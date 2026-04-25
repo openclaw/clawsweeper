@@ -328,17 +328,61 @@ function sleepMs(milliseconds: number): void {
 let lastThrottleHeartbeatAt = 0;
 let throttleHeartbeatContext: (() => string) | null = null;
 
-function shouldRetryGh(error: unknown): boolean {
-  const output =
-    typeof error === "object" && error !== null && "stderr" in error
-      ? String((error as { stderr?: unknown }).stderr ?? "")
-      : "";
-  const message = `${error instanceof Error ? error.message : String(error)}\n${output}`;
-  return (
-    message.includes("was submitted too quickly") ||
-    message.includes("secondary rate") ||
-    message.includes("API rate limit exceeded")
-  );
+type GhRetryKind = "none" | "throttle" | "transient";
+
+const GH_THROTTLE_PATTERNS = [
+  /was submitted too quickly/i,
+  /secondary rate/i,
+  /API rate limit exceeded/i,
+];
+
+const GH_TRANSIENT_PATTERNS = [
+  /unexpected EOF/i,
+  /connection reset by peer/i,
+  /error connecting to api\.github\.com/i,
+  /\b(?:502|503|504)\b/,
+  /bad gateway/i,
+  /service unavailable/i,
+  /gateway timeout/i,
+  /\bECONNRESET\b/i,
+  /\bETIMEDOUT\b/i,
+  /\bEAI_AGAIN\b/i,
+  /TLS handshake timeout/i,
+  /\bi\/o timeout\b/i,
+  /Client\.Timeout exceeded/i,
+  /temporary failure/i,
+];
+
+function errorField(error: unknown, field: "stdout" | "stderr"): string {
+  if (typeof error !== "object" || error === null || !(field in error)) return "";
+  const value = (error as Record<string, unknown>)[field];
+  if (Buffer.isBuffer(value)) return value.toString("utf8");
+  return typeof value === "string" ? value : "";
+}
+
+function ghErrorText(error: unknown): string {
+  return [
+    error instanceof Error ? error.message : String(error),
+    errorField(error, "stdout"),
+    errorField(error, "stderr"),
+  ].join("\n");
+}
+
+export function ghRetryKind(error: unknown): GhRetryKind {
+  const message = ghErrorText(error);
+  if (GH_THROTTLE_PATTERNS.some((pattern) => pattern.test(message))) return "throttle";
+  if (GH_TRANSIENT_PATTERNS.some((pattern) => pattern.test(message))) return "transient";
+  return "none";
+}
+
+export function shouldRetryGh(error: unknown): boolean {
+  return ghRetryKind(error) !== "none";
+}
+
+function ghRetryWaitMs(kind: GhRetryKind, attempt: number): number {
+  if (kind === "throttle") return Math.min(600_000, 30_000 * 2 ** attempt);
+  if (kind === "transient") return Math.min(60_000, 2_000 * 2 ** attempt);
+  return 0;
 }
 
 function summarizeGhArgs(args: string[]): string {
@@ -417,10 +461,17 @@ function ghWithRetry(args: string[], attempts = 12): string {
       return gh(args);
     } catch (error) {
       lastError = error;
-      if (!shouldRetryGh(error) || attempt === attempts - 1) throw error;
-      const waitMs = Math.min(600_000, 30_000 * 2 ** attempt);
-      console.error(`GitHub throttled; retrying in ${Math.round(waitMs / 1000)}s`);
-      maybePublishThrottleHeartbeat({ args, attempt, attempts, waitMs });
+      const retryKind = ghRetryKind(error);
+      if (retryKind === "none" || attempt === attempts - 1) throw error;
+      const waitMs = ghRetryWaitMs(retryKind, attempt);
+      const retryLabel =
+        retryKind === "throttle" ? "GitHub throttled" : "Transient GitHub API failure";
+      console.error(
+        `${retryLabel}; retrying ${summarizeGhArgs(args)} in ${Math.round(waitMs / 1000)}s`,
+      );
+      if (retryKind === "throttle") {
+        maybePublishThrottleHeartbeat({ args, attempt, attempts, waitMs });
+      }
       sleepMs(waitMs);
     }
   }
