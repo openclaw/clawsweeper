@@ -5,13 +5,16 @@ import {
   chmodSync,
   existsSync,
   mkdirSync,
+  mkdtempSync,
   readFileSync,
   readdirSync,
   renameSync,
+  rmSync,
   statSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
+import { tmpdir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -1666,6 +1669,29 @@ function trimMiddle(text: string, maxLength: number): string {
   return `${text.slice(0, edge)}\n\n... truncated ${text.length - edge * 2} chars ...\n\n${text.slice(-edge)}`;
 }
 
+export function safeOutputTail(
+  value: string | Buffer | null | undefined,
+  maxLength = 6000,
+): string {
+  if (value == null) return "";
+  const text = typeof value === "string" ? value : value.toString("utf8");
+  return text.slice(-maxLength);
+}
+
+export function prepareMinimalCodexHome(sourceHome: string, targetHome?: string): string {
+  const sourceCodex = join(sourceHome, ".codex");
+  const isolatedHome = targetHome ?? mkdtempSync(join(tmpdir(), "clawsweeper-codex-home-"));
+  const isolatedCodex = join(isolatedHome, ".codex");
+  mkdirSync(isolatedCodex, { recursive: true });
+  for (const filename of ["auth.json", "config.toml"]) {
+    const sourcePath = join(sourceCodex, filename);
+    if (existsSync(sourcePath)) {
+      writeFileSync(join(isolatedCodex, filename), readFileSync(sourcePath));
+    }
+  }
+  return isolatedHome;
+}
+
 function codexFailureReason(detail: string): string {
   if (detail.includes("Codex dirtied the OpenClaw checkout")) return "dirty checkout";
   if (detail.includes("did not produce output")) return "missing structured output";
@@ -1695,15 +1721,20 @@ function codexFailureDecision(status: number | null, stderr: string, stdout = ""
   };
 }
 
-function codexEnv(): NodeJS.ProcessEnv {
+function codexEnv(): { env: NodeJS.ProcessEnv; isolatedHome: string | undefined } {
   const env = { ...process.env };
+  let isolatedHome: string | undefined;
+  if (env.HOME && existsSync(join(env.HOME, ".codex"))) {
+    isolatedHome = prepareMinimalCodexHome(env.HOME);
+    env.HOME = isolatedHome;
+  }
   delete env.GH_TOKEN;
   delete env.GITHUB_TOKEN;
   delete env.OPENCLAW_GH_TOKEN;
   delete env.OPENAI_API_KEY;
   delete env.CODEX_API_KEY;
   env.GIT_OPTIONAL_LOCKS = "0";
-  return env;
+  return { env, isolatedHome };
 }
 
 function openclawDirtyStatus(openclawDir: string): string {
@@ -1745,39 +1776,46 @@ function runCodex(options: {
       `OpenClaw checkout is dirty before reviewing #${options.item.number}:\n${dirtyBefore}`,
     );
   }
-  const result = spawnSync(
-    "codex",
-    [
-      "exec",
-      "-m",
-      options.model,
-      "-c",
-      `model_reasoning_effort="${options.reasoningEffort}"`,
-      "-c",
-      `service_tier="${options.serviceTier}"`,
-      "-c",
-      'forced_login_method="api"',
-      "-c",
-      'approval_policy="never"',
-      "-C",
-      options.openclawDir,
-      "--output-schema",
-      join(ROOT, "schema", "clawsweeper-decision.schema.json"),
-      "--output-last-message",
-      outputPath,
-      "--sandbox",
-      options.sandboxMode,
-      "-",
-    ],
-    {
-      cwd: options.openclawDir,
-      encoding: "utf8",
-      env: codexEnv(),
-      input: readFileSync(promptPath, "utf8"),
-      maxBuffer: 128 * 1024 * 1024,
-      timeout: options.timeoutMs,
-    },
-  );
+  const { env: childEnv, isolatedHome } = codexEnv();
+  const result = (() => {
+    try {
+      return spawnSync(
+        "codex",
+        [
+          "exec",
+          "-m",
+          options.model,
+          "-c",
+          `model_reasoning_effort="${options.reasoningEffort}"`,
+          "-c",
+          `service_tier="${options.serviceTier}"`,
+          "-c",
+          'forced_login_method="api"',
+          "-c",
+          'approval_policy="never"',
+          "-C",
+          options.openclawDir,
+          "--output-schema",
+          join(ROOT, "schema", "clawsweeper-decision.schema.json"),
+          "--output-last-message",
+          outputPath,
+          "--sandbox",
+          options.sandboxMode,
+          "-",
+        ],
+        {
+          cwd: options.openclawDir,
+          encoding: "utf8",
+          env: childEnv,
+          input: readFileSync(promptPath, "utf8"),
+          maxBuffer: 128 * 1024 * 1024,
+          timeout: options.timeoutMs,
+        },
+      );
+    } finally {
+      if (isolatedHome) rmSync(isolatedHome, { recursive: true, force: true });
+    }
+  })();
   const dirtyAfter = openclawDirtyStatus(options.openclawDir);
   if (dirtyAfter) {
     throw new Error(
@@ -1787,7 +1825,7 @@ function runCodex(options: {
   if (result.error) {
     throw new Error(
       `Codex review failed for #${options.item.number}: ${result.error.message}\n${
-        result.stderr.slice(-6000) || result.stdout.slice(-6000) || "No output."
+        safeOutputTail(result.stderr) || safeOutputTail(result.stdout) || "No output."
       }`,
     );
   }
@@ -1795,7 +1833,7 @@ function runCodex(options: {
     throw new Error(
       `Codex review failed for #${options.item.number} with exit ${
         result.status ?? "unknown"
-      }.\n${result.stderr.slice(-6000) || result.stdout.slice(-6000) || "No output."}`,
+      }.\n${safeOutputTail(result.stderr) || safeOutputTail(result.stdout) || "No output."}`,
     );
   }
   if (!existsSync(outputPath)) {
