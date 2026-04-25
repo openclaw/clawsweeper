@@ -17,7 +17,10 @@
     "format:check": "oxfmt --check src package.json tsconfig.json .oxfmtrc.json schema .github/workflows",
     "oxformat": "npm run format",
     "oxformat:check": "npm run format:check",
-    "check": "npm run build && npm run lint && npm run format:check"
+    "check": "npm run build && npm run lint && npm run format:check",
+    "plan:quick": "node dist/clawsweeper.js plan --batch-size 1 --shard-count 1 --max-pages 1 --codex-reasoning-effort medium --codex-service-tier fast",
+    "plan:local": "node dist/clawsweeper.js plan --batch-size 5 --shard-count 40 --max-pages 250 --codex-reasoning-effort medium --codex-service-tier fast",
+    "review:local": "node dist/clawsweeper.js review --openclaw-dir ../openclaw --batch-size 5 --max-pages 250 --artifact-dir artifacts/reviews --codex-reasoning-effort medium --codex-service-tier fast --codex-timeout-ms 600000"
   },
   "devDependencies": {
     "@types/node": "^25.6.0",

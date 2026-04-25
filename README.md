@@ -83,7 +83,7 @@ Each review job:
 1. Checks out this repo.
 2. Uses a planner job that scans open items, prioritizes due activity, and hands explicit item-number batches to review shards.
 3. Checks out `openclaw/openclaw` at `main`, with cached git objects for faster startup.
-4. Runs Codex with `gpt-5.4`, medium reasoning, fast service tier, and a 10-minute per-item timeout inside the OpenClaw checkout.
+4. Runs Codex with `gpt-5.5`, medium reasoning, fast service tier, and a 10-minute per-item timeout inside the OpenClaw checkout.
 5. Writes `items/<number>.md` with the decision, proposed close comment, and a GitHub snapshot hash.
 6. Marks high-confidence allowed close decisions as `proposed_close`.
 
@@ -103,8 +103,8 @@ Requires Node 24.
 source ~/.profile
 npm install
 npm run build
-npm run plan -- --batch-size 5 --shard-count 40 --max-pages 250 --codex-model gpt-5.4 --codex-reasoning-effort medium --codex-service-tier fast
-npm run review -- --openclaw-dir ../openclaw --batch-size 5 --max-pages 250 --artifact-dir artifacts/reviews --codex-model gpt-5.4 --codex-reasoning-effort medium --codex-service-tier fast --codex-timeout-ms 600000
+npm run plan -- --batch-size 5 --shard-count 40 --max-pages 250 --codex-model gpt-5.5 --codex-reasoning-effort medium --codex-service-tier fast
+npm run review -- --openclaw-dir ../openclaw --batch-size 5 --max-pages 250 --artifact-dir artifacts/reviews --codex-model gpt-5.5 --codex-reasoning-effort medium --codex-service-tier fast --codex-timeout-ms 600000
 npm run apply-artifacts -- --artifact-dir artifacts/reviews
 npm run reconcile -- --dry-run
 ```

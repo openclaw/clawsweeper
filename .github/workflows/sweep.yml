@@ -148,7 +148,7 @@ jobs:
             --batch-size "$BATCH_SIZE" \
             --max-pages 250 \
             --shard-count "$SHARD_COUNT" \
-            --codex-model gpt-5.4 \
+            --codex-model gpt-5.5 \
             --codex-reasoning-effort medium \
             --codex-service-tier fast \
             "${item_arg[@]}" > plan.json
@@ -266,7 +266,7 @@ jobs:
             --artifact-dir ../review-artifacts/shard-${{ matrix.shard }} \
             --batch-size ${{ needs.plan.outputs.batch_size }} \
             --max-pages 250 \
-            --codex-model gpt-5.4 \
+            --codex-model gpt-5.5 \
             --codex-reasoning-effort medium \
             --codex-service-tier fast \
             --codex-timeout-ms ${{ needs.plan.outputs.codex_timeout_ms }} \
