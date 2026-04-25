@@ -94,10 +94,10 @@ interface GitInfo {
 interface Evidence {
   label: string;
   detail: string;
-  file?: string | null;
-  line?: number | null;
-  command?: string | null;
-  sha?: string | null;
+  file: string | null;
+  line: number | null;
+  command: string | null;
+  sha: string | null;
 }
 
 interface Decision {
@@ -1105,6 +1105,10 @@ function codexFailureReason(detail: string): string {
   return "codex execution failed";
 }
 
+function evidence(label: string, detail: string): Evidence {
+  return { label, detail, file: null, line: null, command: null, sha: null };
+}
+
 function codexFailureDecision(status: number | null, stderr: string, stdout = ""): Decision {
   const detail = stderr || "No stderr.";
   const reason = codexFailureReason(detail);
@@ -1114,9 +1118,9 @@ function codexFailureDecision(status: number | null, stderr: string, stdout = ""
     confidence: "low",
     summary: `Codex review failed: ${reason}${status === null ? "" : ` (exit ${status})`}.`,
     evidence: [
-      { label: "failure reason", detail: reason },
-      { label: "codex failure detail", detail: trimMiddle(detail, 4000) },
-      { label: "codex stdout", detail: trimMiddle(stdout || "No stdout.", 2000) },
+      evidence("failure reason", reason),
+      evidence("codex failure detail", trimMiddle(detail, 4000)),
+      evidence("codex stdout", trimMiddle(stdout || "No stdout.", 2000)),
     ],
     risks: ["No close action taken because the review did not complete."],
     fixedRelease: null,
@@ -1518,6 +1522,10 @@ function reportEvidence(markdown: string): Evidence[] {
       current = {
         label: heading[1] ?? "",
         detail: heading[2] ?? "",
+        file: null,
+        line: null,
+        command: null,
+        sha: null,
       };
       continue;
     }
