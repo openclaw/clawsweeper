@@ -31,7 +31,9 @@ type ActionTaken =
   | "proposed_close"
   | "skipped_changed_since_review"
   | "skipped_already_closed"
-  | "skipped_maintainer_authored";
+  | "skipped_maintainer_authored"
+  | "skipped_protected_label"
+  | "skipped_invalid_decision";
 
 const MAINTAINER_AUTHOR_ASSOCIATIONS = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
 
@@ -94,10 +96,10 @@ interface GitInfo {
 interface Evidence {
   label: string;
   detail: string;
-  file?: string | null;
-  line?: number | null;
-  command?: string | null;
-  sha?: string | null;
+  file: string | null;
+  line: number | null;
+  command: string | null;
+  sha: string | null;
 }
 
 interface Decision {
@@ -226,7 +228,8 @@ const STATUS_END = "<!-- clawsweeper-status:end -->";
 const DEFAULT_CODEX_MODEL = "gpt-5.4";
 const DEFAULT_REASONING_EFFORT = "medium";
 const DEFAULT_SERVICE_TIER = "fast";
-const REVIEW_POLICY_VERSION = "2026-04-24-policy-v1";
+const REVIEW_POLICY_VERSION = "2026-04-25-policy-v2";
+const PROTECTED_LABELS = new Set(["security", "beta-blocker", "release-blocker", "maintainer"]);
 const ALLOWED_REASONS = new Set<CloseReason>([
   "implemented_on_main",
   "cannot_reproduce",
@@ -234,6 +237,32 @@ const ALLOWED_REASONS = new Set<CloseReason>([
   "incoherent",
   "stale_insufficient_info",
 ]);
+const ALL_REASONS = new Set<CloseReason>([...ALLOWED_REASONS, "none"]);
+const DECISIONS = new Set<DecisionKind>(["close", "keep_open"]);
+const CONFIDENCES = new Set<Confidence>(["high", "medium", "low"]);
+const DECISION_SCHEMA_KEYS = new Set([
+  "decision",
+  "closeReason",
+  "confidence",
+  "summary",
+  "evidence",
+  "risks",
+  "fixedRelease",
+  "fixedSha",
+  "closeComment",
+]);
+const EVIDENCE_SCHEMA_KEYS = new Set(["label", "detail", "file", "line", "command", "sha"]);
+
+function evidenceEntry(options: Partial<Evidence> & Pick<Evidence, "label" | "detail">): Evidence {
+  return {
+    label: options.label,
+    detail: options.detail,
+    file: options.file ?? null,
+    line: options.line ?? null,
+    command: options.command ?? null,
+    sha: options.sha ?? null,
+  };
+}
 
 function parseArgs(argv: string[]): Args {
   const args: Args = { _: [] };
@@ -466,6 +495,81 @@ function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" ? (value as Record<string, unknown>) : {};
 }
 
+function requireRecord(value: unknown, path: string): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    throw new Error(`${path} must be an object`);
+  return value as Record<string, unknown>;
+}
+
+function rejectUnexpectedKeys(
+  record: Record<string, unknown>,
+  allowedKeys: Set<string>,
+  path: string,
+): void {
+  const unexpected = Object.keys(record).filter((key) => !allowedKeys.has(key));
+  if (unexpected.length) throw new Error(`${path} has unexpected keys: ${unexpected.join(", ")}`);
+}
+
+function requireString(value: unknown, path: string): string {
+  if (typeof value !== "string") throw new Error(`${path} must be a string`);
+  return value;
+}
+
+function requireNullableString(value: unknown, path: string): string | null {
+  if (value === null || typeof value === "string") return value;
+  throw new Error(`${path} must be a string or null`);
+}
+
+function requireNullableInteger(value: unknown, path: string): number | null {
+  if (value === null) return value;
+  if (typeof value === "number" && Number.isInteger(value)) return value;
+  throw new Error(`${path} must be an integer or null`);
+}
+
+function requireStringArray(value: unknown, path: string): string[] {
+  if (!Array.isArray(value)) throw new Error(`${path} must be an array`);
+  return value.map((entry, index) => requireString(entry, `${path}[${index}]`));
+}
+
+function parseEvidence(value: unknown, path: string): Evidence {
+  const record = requireRecord(value, path);
+  rejectUnexpectedKeys(record, EVIDENCE_SCHEMA_KEYS, path);
+  return {
+    label: requireString(record.label, `${path}.label`),
+    detail: requireString(record.detail, `${path}.detail`),
+    file: requireNullableString(record.file, `${path}.file`),
+    line: requireNullableInteger(record.line, `${path}.line`),
+    command: requireNullableString(record.command, `${path}.command`),
+    sha: requireNullableString(record.sha, `${path}.sha`),
+  };
+}
+
+function requireEnum<T extends string>(value: unknown, allowed: Set<T>, path: string): T {
+  if (typeof value === "string" && allowed.has(value as T)) return value as T;
+  throw new Error(`${path} has invalid value`);
+}
+
+export function parseDecision(value: unknown): Decision {
+  const record = requireRecord(value, "decision");
+  rejectUnexpectedKeys(record, DECISION_SCHEMA_KEYS, "decision");
+  const evidence = Array.isArray(record.evidence)
+    ? record.evidence.map((entry, index) => parseEvidence(entry, `decision.evidence[${index}]`))
+    : (() => {
+        throw new Error("decision.evidence must be an array");
+      })();
+  return {
+    decision: requireEnum(record.decision, DECISIONS, "decision.decision"),
+    closeReason: requireEnum(record.closeReason, ALL_REASONS, "decision.closeReason"),
+    confidence: requireEnum(record.confidence, CONFIDENCES, "decision.confidence"),
+    summary: requireString(record.summary, "decision.summary"),
+    evidence,
+    risks: requireStringArray(record.risks, "decision.risks"),
+    fixedRelease: requireNullableString(record.fixedRelease, "decision.fixedRelease"),
+    fixedSha: requireNullableString(record.fixedSha, "decision.fixedSha"),
+    closeComment: requireString(record.closeComment, "decision.closeComment"),
+  };
+}
+
 function truncateText(value: unknown, maxLength: number): string {
   if (typeof value !== "string") return "";
   if (value.length <= maxLength) return value;
@@ -499,6 +603,31 @@ function isMaintainerAuthorAssociation(value: unknown): boolean {
 
 function isMaintainerAuthored(item: Pick<Item, "authorAssociation">): boolean {
   return isMaintainerAuthorAssociation(item.authorAssociation);
+}
+
+function normalizeLabelName(label: string): string {
+  return label.trim().toLowerCase();
+}
+
+export function protectedLabels(labels: readonly string[]): string[] {
+  return labels
+    .map((label) => normalizeLabelName(label))
+    .filter(
+      (label, index, normalized) =>
+        PROTECTED_LABELS.has(label) && normalized.indexOf(label) === index,
+    );
+}
+
+export function isProtectedItem(item: Pick<Item, "labels">): boolean {
+  return protectedLabels(item.labels).length > 0;
+}
+
+function protectedLabelReason(labels: readonly string[]): string {
+  return `protected label: ${protectedLabels(labels).join(", ")}`;
+}
+
+export function shouldPlanItem(item: Pick<Item, "authorAssociation" | "labels">): boolean {
+  return !isMaintainerAuthored(item) && !isProtectedItem(item);
 }
 
 function isOlderThanDays(isoTimestamp: string, days: number, now = Date.now()): boolean {
@@ -659,6 +788,23 @@ function replaceSectionValue(markdown: string, heading: string, value: string): 
   const pattern = new RegExp(`((?:^|\\n)## ${heading}\\n\\n)([\\s\\S]*?)(?=\\n## |\\n?$)`);
   if (pattern.test(markdown)) return markdown.replace(pattern, `$1${value.trim()}\n`);
   return `${markdown.trimEnd()}\n\n## ${heading}\n\n${value.trim()}\n`;
+}
+
+function frontMatterStringArray(markdown: string, key: string): string[] {
+  const value = frontMatterValue(markdown, key);
+  if (!value || value === "none") return [];
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (Array.isArray(parsed)) {
+      return parsed.filter((entry): entry is string => typeof entry === "string");
+    }
+  } catch {
+    // Older reports used plain comma-separated labels.
+  }
+  return value
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
 }
 
 function existingReview(number: number, itemsDir: string): ExistingReview | null {
@@ -920,7 +1066,7 @@ function selectCandidates(options: {
   if (options.itemNumbers) {
     const candidates = options.itemNumbers.flatMap((number) => {
       const { item, state } = fetchItem(number);
-      return state === "open" && !isMaintainerAuthored(item) ? [item] : [];
+      return state === "open" ? [item] : [];
     });
     return { candidates, scannedPages: 0 };
   }
@@ -928,7 +1074,6 @@ function selectCandidates(options: {
     if (options.shardIndex !== 0) return { candidates: [], scannedPages: 0 };
     const { item, state } = fetchItem(options.itemNumber);
     if (state !== "open") return { candidates: [], scannedPages: 0 };
-    if (isMaintainerAuthored(item)) return { candidates: [], scannedPages: 0 };
     return { candidates: [item], scannedPages: 0 };
   }
   const due: DueCandidate[] = [];
@@ -940,7 +1085,7 @@ function selectCandidates(options: {
     if (items.length === 0) break;
     for (const item of items) {
       if (item.number % options.shardCount !== options.shardIndex) continue;
-      if (isMaintainerAuthored(item)) continue;
+      if (!shouldPlanItem(item)) continue;
       const candidate = dueCandidate(item, options.itemsDir, now);
       if (candidate) due.push(candidate);
     }
@@ -962,7 +1107,7 @@ function planCandidates(options: {
 }): { shards: PlanShard[]; scannedPages: number; candidates: Item[] } {
   if (options.itemNumber) {
     const { item, state } = fetchItem(options.itemNumber);
-    const shouldReview = state === "open" && !isMaintainerAuthored(item);
+    const shouldReview = state === "open";
     return {
       shards: [{ shard: 0, itemNumbers: shouldReview ? [item.number] : [] }],
       scannedPages: 0,
@@ -979,7 +1124,7 @@ function planCandidates(options: {
     scannedPages = page;
     if (items.length === 0) break;
     for (const item of items) {
-      if (isMaintainerAuthored(item)) continue;
+      if (!shouldPlanItem(item)) continue;
       const candidate = dueCandidate(item, options.itemsDir, now);
       if (candidate) due.push(candidate);
     }
@@ -1114,9 +1259,9 @@ function codexFailureDecision(status: number | null, stderr: string, stdout = ""
     confidence: "low",
     summary: `Codex review failed: ${reason}${status === null ? "" : ` (exit ${status})`}.`,
     evidence: [
-      { label: "failure reason", detail: reason },
-      { label: "codex failure detail", detail: trimMiddle(detail, 4000) },
-      { label: "codex stdout", detail: trimMiddle(stdout || "No stdout.", 2000) },
+      evidenceEntry({ label: "failure reason", detail: reason }),
+      evidenceEntry({ label: "codex failure detail", detail: trimMiddle(detail, 4000) }),
+      evidenceEntry({ label: "codex stdout", detail: trimMiddle(stdout || "No stdout.", 2000) }),
     ],
     risks: ["No close action taken because the review did not complete."],
     fixedRelease: null,
@@ -1130,6 +1275,8 @@ function codexEnv(): NodeJS.ProcessEnv {
   delete env.GH_TOKEN;
   delete env.GITHUB_TOKEN;
   delete env.OPENCLAW_GH_TOKEN;
+  delete env.OPENAI_API_KEY;
+  delete env.CODEX_API_KEY;
   env.GIT_OPTIONAL_LOCKS = "0";
   return env;
 }
@@ -1187,7 +1334,7 @@ function runCodex(options: {
       "-c",
       'approval_policy="never"',
       "--sandbox",
-      "danger-full-access",
+      "read-only",
       "-C",
       options.openclawDir,
       "--output-schema",
@@ -1238,11 +1385,13 @@ function runCodex(options: {
     );
   }
   try {
-    return JSON.parse(readFileSync(outputPath, "utf8").trim()) as Decision;
+    return parseDecision(JSON.parse(readFileSync(outputPath, "utf8").trim()));
   } catch (error) {
     const decision = codexFailureDecision(
       result.status,
-      `Codex wrote invalid JSON to ${outputPath}: ${error instanceof Error ? error.message : String(error)}`,
+      `Codex wrote invalid JSON or schema-invalid output to ${outputPath}: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
       result.stdout,
     );
     throw new Error(
@@ -1515,10 +1664,10 @@ function reportEvidence(markdown: string): Evidence[] {
     const heading = line.match(/^- \*\*(.*?):\*\*\s*(.*)$/);
     if (heading) {
       if (current) entries.push(current);
-      current = {
+      current = evidenceEntry({
         label: heading[1] ?? "",
         detail: heading[2] ?? "",
-      };
+      });
       continue;
     }
     if (!current) continue;
@@ -1531,9 +1680,27 @@ function reportEvidence(markdown: string): Evidence[] {
     }
     const sha = line.match(/^\s+- sha: \[([^\]]+)\]/);
     if (sha?.[1]) current.sha = sha[1];
+    const command = line.match(/^\s+- command: `([\s\S]+)`$/);
+    if (command?.[1]) current.command = command[1];
   }
   if (current) entries.push(current);
   return entries;
+}
+
+function reportDecision(markdown: string, closeReason: CloseReason): Decision {
+  const fixedRelease = frontMatterValue(markdown, "fixed_release");
+  const fixedSha = frontMatterValue(markdown, "fixed_sha");
+  return {
+    decision: "close",
+    closeReason,
+    confidence: "high",
+    summary: sectionValue(markdown, "Summary"),
+    evidence: reportEvidence(markdown),
+    risks: [],
+    fixedRelease: fixedRelease && fixedRelease !== "unknown" ? fixedRelease : null,
+    fixedSha: fixedSha && fixedSha !== "unknown" ? fixedSha : null,
+    closeComment: sectionValue(markdown, "Close Comment"),
+  };
 }
 
 function closeReviewLineFromDecision(decision: Decision, git: GitInfo): string {
@@ -1587,12 +1754,81 @@ function normalizeComment(decision: Decision, git: GitInfo): string {
   });
 }
 
+function hasUsableCloseComment(closeComment: string): boolean {
+  const trimmed = closeComment.trim();
+  return Boolean(trimmed) && trimmed !== "_No close comment posted._";
+}
+
+function hasImplementationSourceEvidence(decision: Decision): boolean {
+  return decision.evidence.some(
+    (entry) => Boolean(entry.file?.trim()) && Boolean(entry.sha?.trim()),
+  );
+}
+
 function canClose(decision: Decision): boolean {
   return (
     decision.decision === "close" &&
     decision.confidence === "high" &&
     ALLOWED_REASONS.has(decision.closeReason)
   );
+}
+
+export function validateCloseDecision(
+  item: Pick<Item, "kind" | "labels">,
+  decision: Decision,
+): { ok: true } | { ok: false; actionTaken: ActionTaken; reason: string } {
+  if (decision.decision !== "close") {
+    return {
+      ok: false,
+      actionTaken: "kept_open",
+      reason: "not a close decision",
+    };
+  }
+  if (isProtectedItem(item)) {
+    return {
+      ok: false,
+      actionTaken: "skipped_protected_label",
+      reason: protectedLabelReason(item.labels),
+    };
+  }
+  if (!canClose(decision)) {
+    return {
+      ok: false,
+      actionTaken: "skipped_invalid_decision",
+      reason: "close decision is not high-confidence with an allowed close reason",
+    };
+  }
+  if (item.kind === "pull_request" && decision.closeReason === "stale_insufficient_info") {
+    return {
+      ok: false,
+      actionTaken: "skipped_invalid_decision",
+      reason: "stale_insufficient_info is not allowed for pull requests",
+    };
+  }
+  if (!decision.summary.trim()) {
+    return { ok: false, actionTaken: "skipped_invalid_decision", reason: "missing summary" };
+  }
+  if (!hasUsableCloseComment(decision.closeComment)) {
+    return {
+      ok: false,
+      actionTaken: "skipped_invalid_decision",
+      reason: "missing close comment",
+    };
+  }
+  if (decision.evidence.length === 0) {
+    return { ok: false, actionTaken: "skipped_invalid_decision", reason: "missing evidence" };
+  }
+  if (
+    decision.closeReason === "implemented_on_main" &&
+    !hasImplementationSourceEvidence(decision)
+  ) {
+    return {
+      ok: false,
+      actionTaken: "skipped_invalid_decision",
+      reason: "implemented_on_main requires evidence with file and sha",
+    };
+  }
+  return { ok: true };
 }
 
 function issueMatchingComment(number: number, body: string): Record<string, unknown> | undefined {
@@ -1655,25 +1891,19 @@ function postClose(options: {
   }
 }
 
-function maybeApplyClose(options: {
+export function reviewActionForDecision(options: {
   item: Item;
   decision: Decision;
   git: GitInfo;
-  applyClosures: boolean;
 }): Action {
-  if (!canClose(options.decision)) return { actionTaken: "kept_open", closeComment: "" };
+  if (options.decision.decision !== "close") return { actionTaken: "kept_open", closeComment: "" };
   if (isMaintainerAuthored(options.item)) {
     return { actionTaken: "skipped_maintainer_authored", closeComment: "" };
   }
+  const validation = validateCloseDecision(options.item, options.decision);
+  if (!validation.ok) return { actionTaken: validation.actionTaken, closeComment: "" };
   const closeComment = normalizeComment(options.decision, options.git);
-  if (!options.applyClosures) return { actionTaken: "proposed_close", closeComment };
-  postClose({
-    number: options.item.number,
-    kind: options.item.kind,
-    reason: options.decision.closeReason,
-    closeComment,
-  });
-  return { actionTaken: "closed", closeComment };
+  return { actionTaken: "proposed_close", closeComment };
 }
 
 function markdownFor(options: {
@@ -1851,8 +2081,11 @@ function reviewCommand(args: Args): void {
           .filter((value) => Number.isInteger(value) && value > 0)
       : undefined;
   const readonlyOpenclaw = boolArg(args.readonly_openclaw);
-  const applyClosures =
+  const requestedApplyClosures =
     boolArg(args.apply_closures) || process.env.CLAWSWEEPER_APPLY_CLOSURES === "true";
+  if (requestedApplyClosures) {
+    console.error("[review] apply_closures is disabled; review shards are proposal-only");
+  }
   ensureDir(artifactDir);
   const git = gitInfo(openclawDir);
   const reviewPolicy = reviewPolicyHash({ model, reasoningEffort, serviceTier });
@@ -1902,7 +2135,7 @@ function reviewCommand(args: Args): void {
         "Per-item Codex failure; continuing with the rest of the shard.",
       );
     }
-    const action = maybeApplyClose({ item, decision, git, applyClosures });
+    const action = reviewActionForDecision({ item, decision, git });
     writeFileSync(
       join(artifactDir, `${item.number}.md`),
       markdownFor({
@@ -1911,7 +2144,7 @@ function reviewCommand(args: Args): void {
         decision,
         git,
         action,
-        reviewMode: applyClosures ? "apply" : "propose",
+        reviewMode: "propose",
         snapshotHash,
         reviewPolicy,
       }),
@@ -1981,10 +2214,20 @@ function applyDecisionsCommand(args: Args): void {
     const storedUpdatedAt = frontMatterValue(markdown, "item_updated_at");
     const storedAuthorAssociation = frontMatterValue(markdown, "author_association");
     const storedKind = frontMatterValue(markdown, "type") as ItemKind | undefined;
+    const storedLabels = frontMatterStringArray(markdown, "labels");
     const archiveClosed = (nextMarkdown: string): void => {
       ensureDir(closedDir);
       writeFileSync(path, nextMarkdown, "utf8");
       renameSync(path, join(closedDir, file));
+    };
+    const markApplySkipped = (actionTaken: ActionTaken, reason: string): boolean => {
+      markdown = replaceFrontMatterValue(markdown, "action_taken", actionTaken);
+      markdown = replaceFrontMatterValue(markdown, "apply_checked_at", new Date().toISOString());
+      writeFileSync(path, markdown, "utf8");
+      results.push({ number, action: actionTaken, reason });
+      processedCount += 1;
+      maybeLogProgress(`skipped #${number}: ${reason}`);
+      return processedCount >= processedLimit;
     };
     if (!hasVerifiedLocalCheckoutAccess(markdown)) {
       results.push({
@@ -2007,12 +2250,21 @@ function applyDecisionsCommand(args: Args): void {
     if (applyKind !== "all" && storedKind && storedKind !== applyKind) {
       continue;
     }
-    const closeComment = renderCloseCommentFromReport(markdown, closeReason);
-    if (!closeComment || closeComment === "_No close comment posted._") {
-      results.push({ number, action: "kept_open", reason: "missing close comment" });
+    if (protectedLabels(storedLabels).length) {
+      if (markApplySkipped("skipped_protected_label", protectedLabelReason(storedLabels))) break;
       continue;
     }
+    const reportValidation = validateCloseDecision(
+      { kind: storedKind ?? "issue", labels: storedLabels },
+      reportDecision(markdown, closeReason),
+    );
+    if (!reportValidation.ok && reportValidation.actionTaken !== "kept_open") {
+      if (markApplySkipped(reportValidation.actionTaken, reportValidation.reason)) break;
+      continue;
+    }
+    const closeComment = renderCloseCommentFromReport(markdown, closeReason);
     const { item, state } = fetchItem(number);
+    markdown = replaceFrontMatterValue(markdown, "labels", JSON.stringify(item.labels));
     if (applyKind !== "all" && item.kind !== applyKind) {
       results.push({
         number,
@@ -2022,6 +2274,19 @@ function applyDecisionsCommand(args: Args): void {
       processedCount += 1;
       maybeLogProgress(`skipped #${number}: type is ${item.kind}`);
       if (processedCount >= processedLimit) break;
+      continue;
+    }
+    if (isProtectedItem(item)) {
+      if (markApplySkipped("skipped_protected_label", protectedLabelReason(item.labels))) break;
+      continue;
+    }
+    const currentReportValidation = validateCloseDecision(
+      { kind: item.kind, labels: item.labels },
+      reportDecision(markdown, closeReason),
+    );
+    if (!currentReportValidation.ok && currentReportValidation.actionTaken !== "kept_open") {
+      if (markApplySkipped(currentReportValidation.actionTaken, currentReportValidation.reason))
+        break;
       continue;
     }
     if (!isOlderThanDays(item.createdAt, minAgeDays)) {
@@ -2486,21 +2751,25 @@ function checkCommand(): void {
   console.log("ok");
 }
 
-const args = parseArgs(process.argv.slice(2));
-const command = args._[0] ?? "review";
-if (command === "plan") planCommand(args);
-else if (command === "review") reviewCommand(args);
-else if (command === "apply-artifacts") applyArtifactsCommand(args);
-else if (command === "apply-decisions") applyDecisionsCommand(args);
-else if (command === "reconcile") reconcileCommand(args);
-else if (command === "dashboard")
-  updateDashboard(
-    resolve(stringArg(args.items_dir, join(ROOT, "items"))),
-    resolve(stringArg(args.closed_dir, join(ROOT, "closed"))),
-  );
-else if (command === "status") statusCommand(args);
-else if (command === "check") checkCommand();
-else {
-  console.error(`Unknown command: ${command}`);
-  process.exit(1);
+export function main(argv = process.argv.slice(2)): void {
+  const args = parseArgs(argv);
+  const command = args._[0] ?? "review";
+  if (command === "plan") planCommand(args);
+  else if (command === "review") reviewCommand(args);
+  else if (command === "apply-artifacts") applyArtifactsCommand(args);
+  else if (command === "apply-decisions") applyDecisionsCommand(args);
+  else if (command === "reconcile") reconcileCommand(args);
+  else if (command === "dashboard")
+    updateDashboard(
+      resolve(stringArg(args.items_dir, join(ROOT, "items"))),
+      resolve(stringArg(args.closed_dir, join(ROOT, "closed"))),
+    );
+  else if (command === "status") statusCommand(args);
+  else if (command === "check") checkCommand();
+  else {
+    console.error(`Unknown command: ${command}`);
+    process.exit(1);
+  }
 }
+
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) main();

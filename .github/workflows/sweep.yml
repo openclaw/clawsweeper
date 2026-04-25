@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       apply_closures:
-        description: "Comment and close during review when Codex gives a high-confidence allowed decision"
+        description: "Deprecated; review shards are proposal-only. Use apply_existing to close unchanged proposed decisions."
         required: false
         default: "false"
       apply_existing:
@@ -126,7 +126,7 @@ jobs:
       - id: mode
         run: |
           {
-            echo "apply_closures=${{ github.event.inputs.apply_closures || 'false' }}"
+            echo "apply_closures=false"
             echo "batch_size=${{ github.event.inputs.batch_size || '5' }}"
             echo "codex_timeout_ms=${{ github.event.inputs.codex_timeout_ms || '600000' }}"
           } >> "$GITHUB_OUTPUT"
@@ -196,6 +196,10 @@ jobs:
     needs: plan
     runs-on: ubuntu-latest
     timeout-minutes: 75
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: read
     strategy:
       fail-fast: false
       matrix:
@@ -205,6 +209,7 @@ jobs:
         with:
           path: clawsweeper
           fetch-depth: 0
+          persist-credentials: false
 
       - uses: actions/setup-node@v4
         with:
@@ -221,7 +226,7 @@ jobs:
         run: npm run build
 
       - name: Install Codex
-        run: npm install -g @openai/codex@latest --prefer-offline
+        run: npm install -g @openai/codex@0.125.0 --prefer-offline
 
       - name: Authenticate Codex
         env:
@@ -258,8 +263,6 @@ jobs:
         env:
           CLAWSWEEPER_APPLY_CLOSURES: ${{ needs.plan.outputs.apply_closures }}
           GH_TOKEN: ${{ secrets.OPENCLAW_GH_TOKEN || github.token }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          CODEX_API_KEY: ${{ secrets.CODEX_API_KEY || secrets.OPENAI_API_KEY }}
         run: |
           npm run review -- \
             --openclaw-dir ../openclaw \
@@ -279,7 +282,8 @@ jobs:
         if: always()
         with:
           name: review-shard-${{ matrix.shard }}
-          path: review-artifacts/shard-${{ matrix.shard }}
+          path: |
+            review-artifacts/shard-${{ matrix.shard }}/*.md
           if-no-files-found: ignore
 
   publish:

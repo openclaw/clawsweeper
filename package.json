@@ -12,12 +12,14 @@
     "reconcile": "node dist/clawsweeper.js reconcile",
     "dashboard": "node dist/clawsweeper.js dashboard",
     "status": "node dist/clawsweeper.js status",
+    "test": "npm run build && node --test test/*.test.mjs",
+    "test:unit": "node --test test/*.test.mjs",
     "lint": "oxlint src --tsconfig tsconfig.json",
-    "format": "oxfmt --write src package.json tsconfig.json .oxfmtrc.json schema .github/workflows",
-    "format:check": "oxfmt --check src package.json tsconfig.json .oxfmtrc.json schema .github/workflows",
+    "format": "oxfmt --write src test package.json tsconfig.json .oxfmtrc.json schema .github/workflows",
+    "format:check": "oxfmt --check src test package.json tsconfig.json .oxfmtrc.json schema .github/workflows",
     "oxformat": "npm run format",
     "oxformat:check": "npm run format:check",
-    "check": "npm run build && npm run lint && npm run format:check"
+    "check": "npm run build && npm run lint && npm run test:unit && npm run format:check"
   },
   "devDependencies": {
     "@types/node": "^25.6.0",
