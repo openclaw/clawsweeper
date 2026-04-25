@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  auditFromSnapshot,
   isProtectedItem,
   parseDecision,
   protectedLabels,
@@ -53,6 +54,23 @@ const git = {
   mainSha: "abcdef1234567890",
   latestRelease: null,
 };
+
+function auditRecord(number, overrides = {}) {
+  return {
+    number,
+    location: "items",
+    path: `items/${number}.md`,
+    kind: "issue",
+    title: `Item ${number}`,
+    labels: [],
+    decision: "keep_open",
+    closeReason: "none",
+    action: "kept_open",
+    reviewStatus: "complete",
+    currentState: undefined,
+    ...overrides,
+  };
+}
 
 test("protected labels are normalized and excluded from normal planning", () => {
   assert.deepEqual(protectedLabels(["Security", "bug", "maintainer", "SECURITY"]), [
@@ -132,4 +150,57 @@ test("decision parser enforces required schema-shaped evidence", () => {
       }),
     /decision\.evidence\[0\]\.file/,
   );
+});
+
+test("audit detects live/local state drift and unsafe proposed records", () => {
+  const result = auditFromSnapshot({
+    openItems: [
+      item({ number: 1, title: "tracked open" }),
+      item({ number: 2, title: "missing open" }),
+      item({ number: 3, title: "reopened archived" }),
+    ],
+    itemRecords: [
+      auditRecord(1),
+      auditRecord(4),
+      auditRecord(5),
+      auditRecord(6, {
+        labels: ["security"],
+        decision: "close",
+        closeReason: "implemented_on_main",
+        action: "proposed_close",
+      }),
+      auditRecord(7, { reviewStatus: "stale_local_checkout_blocked" }),
+    ],
+    closedRecords: [
+      auditRecord(3, { location: "closed", path: "closed/3.md" }),
+      auditRecord(5, { location: "closed", path: "closed/5.md" }),
+    ],
+    scanComplete: true,
+    pagesScanned: 1,
+    generatedAt: "2026-04-26T00:00:00.000Z",
+  });
+
+  assert.equal(result.counts.missingOpen, 1);
+  assert.equal(result.findings.missingOpen[0].number, 2);
+  assert.equal(result.counts.openArchived, 1);
+  assert.equal(result.findings.openArchived[0].closedPath, "closed/3.md");
+  assert.equal(result.counts.staleItemRecords, 4);
+  assert.equal(result.counts.duplicateRecords, 1);
+  assert.equal(result.counts.protectedProposed, 1);
+  assert.equal(result.counts.staleReviews, 1);
+});
+
+test("audit defers stale item drift until the open scan is complete", () => {
+  const result = auditFromSnapshot({
+    openItems: [item({ number: 1 })],
+    itemRecords: [auditRecord(1), auditRecord(2)],
+    closedRecords: [],
+    scanComplete: false,
+    pagesScanned: 1,
+    generatedAt: "2026-04-26T00:00:00.000Z",
+  });
+
+  assert.equal(result.scan.complete, false);
+  assert.equal(result.counts.staleItemRecords, 0);
+  assert.deepEqual(result.findings.staleItemRecords, []);
 });

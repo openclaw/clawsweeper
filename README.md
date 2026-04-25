@@ -76,7 +76,7 @@ Recently reviewed:
 
 ## How It Works
 
-The normal workflow is proposal-only. It runs configurable parallel shards and never comments or closes unless `apply_closures=true` is explicitly set for a manual run.
+The normal workflow is proposal-only. It runs configurable parallel shards and never comments or closes during review. `apply_existing=true` is the only workflow mode that comments or closes items.
 
 Each review job:
 
@@ -95,6 +95,8 @@ To close later without rerunning Codex, dispatch the workflow with `apply_existi
 
 Maintainer-authored items are never auto-closed. Candidate planning and apply mode both read GitHub's `author_association` field and exclude `OWNER`, `MEMBER`, and `COLLABORATOR` items from automated close actions.
 
+`npm run audit` compares live open GitHub items with the generated `items/` and `closed/` records without moving files. It reports missing open records, open records still archived under `closed/`, stale `items/` records that no longer appear open, duplicate markdown records, protected-label proposed closes, and stale review-status records. Use `--output audit-report.json` for the full report, `--sample-limit N` to control console samples, and `--strict` to exit non-zero when state drift is present.
+
 ## Local Run
 
 Requires Node 24.
@@ -106,6 +108,7 @@ npm run build
 npm run plan -- --batch-size 5 --shard-count 40 --max-pages 250 --codex-model gpt-5.5 --codex-reasoning-effort medium --codex-service-tier fast
 npm run review -- --openclaw-dir ../openclaw --batch-size 5 --max-pages 250 --artifact-dir artifacts/reviews --codex-model gpt-5.5 --codex-reasoning-effort medium --codex-service-tier fast --codex-timeout-ms 600000
 npm run apply-artifacts -- --artifact-dir artifacts/reviews
+npm run audit -- --max-pages 250 --sample-limit 25
 npm run reconcile -- --dry-run
 ```
 
@@ -116,7 +119,7 @@ source ~/.profile
 npm run apply-decisions -- --limit 20
 ```
 
-Manual review runs can set `--apply-closures` or workflow input `apply_closures=true`, but the safer path is proposal first, then `apply_existing=true`.
+Manual review runs are proposal-only even if `--apply-closures` or workflow input `apply_closures=true` is set. Use `apply_existing=true` to apply unchanged proposals later.
 
 ## Checks
 

@@ -12,7 +12,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 type ItemKind = "issue" | "pull_request";
@@ -211,6 +211,64 @@ interface ReconcileResult {
   movedToClosed: number;
   movedToItems: number;
   removedStaleClosedCopies: number;
+}
+
+type AuditRecordLocation = "items" | "closed";
+
+interface AuditRecord {
+  number: number;
+  location: AuditRecordLocation;
+  path: string;
+  kind: ItemKind | undefined;
+  title: string;
+  labels: string[];
+  decision: string | undefined;
+  closeReason: string | undefined;
+  action: string | undefined;
+  reviewStatus: string;
+  currentState: string | undefined;
+}
+
+interface AuditFinding {
+  number: number;
+  kind?: ItemKind;
+  title?: string;
+  labels?: string[];
+  itemPath?: string;
+  closedPath?: string;
+  action?: string;
+  decision?: string;
+  closeReason?: string;
+  reviewStatus?: string;
+  currentState?: string;
+}
+
+interface AuditResult {
+  generatedAt: string;
+  targetRepo: string;
+  scan: {
+    complete: boolean;
+    pagesScanned: number;
+    openItemsSeen: number;
+  };
+  counts: {
+    itemRecords: number;
+    closedRecords: number;
+    missingOpen: number;
+    openArchived: number;
+    staleItemRecords: number;
+    duplicateRecords: number;
+    protectedProposed: number;
+    staleReviews: number;
+  };
+  findings: {
+    missingOpen: AuditFinding[];
+    openArchived: AuditFinding[];
+    staleItemRecords: AuditFinding[];
+    duplicateRecords: AuditFinding[];
+    protectedProposed: AuditFinding[];
+    staleReviews: AuditFinding[];
+  };
 }
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -949,19 +1007,35 @@ function fetchOpenItemPage(page: number): Item[] {
     .sort((a, b) => a.number - b.number);
 }
 
-function fetchOpenItemNumbers(maxPages: number): { numbers: Set<number>; pagesScanned: number } {
-  const numbers = new Set<number>();
+function fetchOpenItems(maxPages: number): {
+  items: Item[];
+  pagesScanned: number;
+  complete: boolean;
+} {
+  const items: Item[] = [];
   let pagesScanned = 0;
   for (let page = 1; page <= maxPages; page += 1) {
-    const items = fetchOpenItemPage(page);
+    const pageItems = fetchOpenItemPage(page);
     pagesScanned = page;
-    for (const item of items) numbers.add(item.number);
-    if (items.length === 0) return { numbers, pagesScanned };
-    if (items.length < 100) return { numbers, pagesScanned };
+    items.push(...pageItems);
+    if (pageItems.length === 0 || pageItems.length < 100) {
+      return { items, pagesScanned, complete: true };
+    }
   }
-  throw new Error(
-    `Open item scan reached max_pages=${maxPages} before the final page; refusing to reconcile folders from a partial scan.`,
-  );
+  return { items, pagesScanned, complete: false };
+}
+
+function fetchOpenItemNumbers(maxPages: number): { numbers: Set<number>; pagesScanned: number } {
+  const result = fetchOpenItems(maxPages);
+  if (!result.complete) {
+    throw new Error(
+      `Open item scan reached max_pages=${maxPages} before the final page; refusing to reconcile folders from a partial scan.`,
+    );
+  }
+  return {
+    numbers: new Set(result.items.map((item) => item.number)),
+    pagesScanned: result.pagesScanned,
+  };
 }
 
 function fetchItem(number: number): { item: Item; state: string } {
@@ -2458,6 +2532,165 @@ function numberForMarkdownFile(file: string): number {
   return Number(file.replace(/\.md$/, ""));
 }
 
+function repoRelativePath(path: string): string {
+  return relative(ROOT, path).replaceAll("\\", "/");
+}
+
+function markdownAuditRecord(
+  location: AuditRecordLocation,
+  dir: string,
+  file: string,
+): AuditRecord {
+  const path = join(dir, file);
+  const markdown = readFileSync(path, "utf8");
+  return {
+    number: numberForMarkdownFile(file),
+    location,
+    path: repoRelativePath(path),
+    kind: frontMatterValue(markdown, "type") as ItemKind | undefined,
+    title: frontMatterValue(markdown, "title") ?? "",
+    labels: frontMatterStringArray(markdown, "labels"),
+    decision: frontMatterValue(markdown, "decision"),
+    closeReason: frontMatterValue(markdown, "close_reason"),
+    action: frontMatterValue(markdown, "action_taken"),
+    reviewStatus: effectiveReviewStatus(markdown),
+    currentState: frontMatterValue(markdown, "current_state"),
+  };
+}
+
+function auditRecords(location: AuditRecordLocation, dir: string): AuditRecord[] {
+  return markdownFiles(dir).map((file) => markdownAuditRecord(location, dir, file));
+}
+
+function openItemFinding(item: Item, extra: Partial<AuditFinding> = {}): AuditFinding {
+  return {
+    number: item.number,
+    kind: item.kind,
+    title: item.title,
+    labels: item.labels,
+    ...extra,
+  };
+}
+
+function recordFinding(record: AuditRecord, extra: Partial<AuditFinding> = {}): AuditFinding {
+  return {
+    number: record.number,
+    ...(record.kind ? { kind: record.kind } : {}),
+    title: displayTitle(record.title),
+    labels: record.labels,
+    ...(record.action ? { action: record.action } : {}),
+    ...(record.decision ? { decision: record.decision } : {}),
+    ...(record.closeReason ? { closeReason: record.closeReason } : {}),
+    reviewStatus: record.reviewStatus,
+    ...(record.currentState ? { currentState: record.currentState } : {}),
+    ...(record.location === "items" ? { itemPath: record.path } : { closedPath: record.path }),
+    ...extra,
+  };
+}
+
+function firstByNumber<T extends { number: number }>(records: T[]): Map<number, T> {
+  const map = new Map<number, T>();
+  for (const record of records) {
+    if (!map.has(record.number)) map.set(record.number, record);
+  }
+  return map;
+}
+
+export function auditFromSnapshot(options: {
+  openItems: Item[];
+  itemRecords: AuditRecord[];
+  closedRecords: AuditRecord[];
+  scanComplete: boolean;
+  pagesScanned: number;
+  generatedAt?: string;
+}): AuditResult {
+  const openByNumber = firstByNumber(options.openItems);
+  const itemByNumber = firstByNumber(options.itemRecords);
+  const closedByNumber = firstByNumber(options.closedRecords);
+  const missingOpen: AuditFinding[] = [];
+  const openArchived: AuditFinding[] = [];
+
+  for (const item of options.openItems) {
+    if (itemByNumber.has(item.number)) continue;
+    const closedRecord = closedByNumber.get(item.number);
+    if (closedRecord) {
+      openArchived.push(openItemFinding(item, { closedPath: closedRecord.path }));
+    } else {
+      missingOpen.push(openItemFinding(item));
+    }
+  }
+
+  const staleItemRecords = options.scanComplete
+    ? options.itemRecords
+        .filter((record) => !openByNumber.has(record.number))
+        .map((record) => recordFinding(record))
+    : [];
+  const duplicateRecords = options.itemRecords
+    .filter((record) => closedByNumber.has(record.number))
+    .map((record) => {
+      const closedRecord = closedByNumber.get(record.number);
+      return recordFinding(record, closedRecord ? { closedPath: closedRecord.path } : {});
+    });
+  const protectedProposed = [...options.itemRecords, ...options.closedRecords]
+    .filter((record) => record.action === "proposed_close" && isProtectedItem(record))
+    .map((record) => recordFinding(record));
+  const staleReviews = options.itemRecords
+    .filter((record) => record.reviewStatus.startsWith("stale_"))
+    .map((record) => recordFinding(record));
+
+  return {
+    generatedAt: options.generatedAt ?? new Date().toISOString(),
+    targetRepo: TARGET_REPO,
+    scan: {
+      complete: options.scanComplete,
+      pagesScanned: options.pagesScanned,
+      openItemsSeen: options.openItems.length,
+    },
+    counts: {
+      itemRecords: options.itemRecords.length,
+      closedRecords: options.closedRecords.length,
+      missingOpen: missingOpen.length,
+      openArchived: openArchived.length,
+      staleItemRecords: staleItemRecords.length,
+      duplicateRecords: duplicateRecords.length,
+      protectedProposed: protectedProposed.length,
+      staleReviews: staleReviews.length,
+    },
+    findings: {
+      missingOpen,
+      openArchived,
+      staleItemRecords,
+      duplicateRecords,
+      protectedProposed,
+      staleReviews,
+    },
+  };
+}
+
+function limitAuditFindings(result: AuditResult, limit: number): AuditResult {
+  const boundedLimit = Math.max(0, limit);
+  return {
+    ...result,
+    findings: Object.fromEntries(
+      Object.entries(result.findings).map(([key, findings]) => [
+        key,
+        findings.slice(0, boundedLimit),
+      ]),
+    ) as AuditResult["findings"],
+  };
+}
+
+function auditHasStrictFailures(result: AuditResult): boolean {
+  return (
+    !result.scan.complete ||
+    result.counts.missingOpen > 0 ||
+    result.counts.openArchived > 0 ||
+    result.counts.staleItemRecords > 0 ||
+    result.counts.duplicateRecords > 0 ||
+    result.counts.protectedProposed > 0
+  );
+}
+
 function markReconciledState(markdown: string, state: "open" | "closed"): string {
   let nextMarkdown = replaceFrontMatterValue(markdown, "current_state", state);
   nextMarkdown = replaceFrontMatterValue(nextMarkdown, "reconciled_at", new Date().toISOString());
@@ -2537,6 +2770,29 @@ function reconcileCommand(args: Args): void {
   const dryRun = boolArg(args.dry_run);
   const result = reconcileFolders({ itemsDir, closedDir, maxPages, dryRun });
   console.log(JSON.stringify(result, null, 2));
+}
+
+function auditCommand(args: Args): void {
+  const itemsDir = resolve(stringArg(args.items_dir, join(ROOT, "items")));
+  const closedDir = resolve(stringArg(args.closed_dir, join(ROOT, "closed")));
+  const maxPages = numberArg(args.max_pages, 250);
+  const sampleLimit = numberArg(args.sample_limit, 25);
+  const output = typeof args.output === "string" ? resolve(args.output) : undefined;
+  const strict = boolArg(args.strict);
+  const openItems = fetchOpenItems(maxPages);
+  const result = auditFromSnapshot({
+    openItems: openItems.items,
+    itemRecords: auditRecords("items", itemsDir),
+    closedRecords: auditRecords("closed", closedDir),
+    scanComplete: openItems.complete,
+    pagesScanned: openItems.pagesScanned,
+  });
+  if (output) {
+    ensureDir(dirname(output));
+    writeFileSync(output, `${JSON.stringify(result, null, 2)}\n`, "utf8");
+  }
+  console.log(JSON.stringify(limitAuditFindings(result, sampleLimit), null, 2));
+  if (strict && auditHasStrictFailures(result)) process.exit(1);
 }
 
 function cadenceBucketForReview(
@@ -2758,6 +3014,7 @@ export function main(argv = process.argv.slice(2)): void {
   else if (command === "review") reviewCommand(args);
   else if (command === "apply-artifacts") applyArtifactsCommand(args);
   else if (command === "apply-decisions") applyDecisionsCommand(args);
+  else if (command === "audit") auditCommand(args);
   else if (command === "reconcile") reconcileCommand(args);
   else if (command === "dashboard")
     updateDashboard(

@@ -10,6 +10,7 @@
     "review": "node dist/clawsweeper.js review",
     "apply-artifacts": "node dist/clawsweeper.js apply-artifacts",
     "apply-decisions": "node dist/clawsweeper.js apply-decisions",
+    "audit": "node dist/clawsweeper.js audit",
     "reconcile": "node dist/clawsweeper.js reconcile",
     "dashboard": "node dist/clawsweeper.js dashboard",
     "status": "node dist/clawsweeper.js status",
