@@ -1666,6 +1666,15 @@ function trimMiddle(text: string, maxLength: number): string {
   return `${text.slice(0, edge)}\n\n... truncated ${text.length - edge * 2} chars ...\n\n${text.slice(-edge)}`;
 }
 
+export function safeOutputTail(
+  value: string | Buffer | null | undefined,
+  maxLength = 6000,
+): string {
+  if (value == null) return "";
+  const text = typeof value === "string" ? value : value.toString("utf8");
+  return text.slice(-maxLength);
+}
+
 function codexFailureReason(detail: string): string {
   if (detail.includes("Codex dirtied the OpenClaw checkout")) return "dirty checkout";
   if (detail.includes("did not produce output")) return "missing structured output";
@@ -1787,7 +1796,7 @@ function runCodex(options: {
   if (result.error) {
     throw new Error(
       `Codex review failed for #${options.item.number}: ${result.error.message}\n${
-        result.stderr.slice(-6000) || result.stdout.slice(-6000) || "No output."
+        safeOutputTail(result.stderr) || safeOutputTail(result.stdout) || "No output."
       }`,
     );
   }
@@ -1795,7 +1804,7 @@ function runCodex(options: {
     throw new Error(
       `Codex review failed for #${options.item.number} with exit ${
         result.status ?? "unknown"
-      }.\n${result.stderr.slice(-6000) || result.stdout.slice(-6000) || "No output."}`,
+      }.\n${safeOutputTail(result.stderr) || safeOutputTail(result.stdout) || "No output."}`,
     );
   }
   if (!existsSync(outputPath)) {

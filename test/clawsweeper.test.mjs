@@ -9,6 +9,7 @@ import {
   protectedLabels,
   relatedTitleSearchTerms,
   reviewActionForDecision,
+  safeOutputTail,
   shouldReviewItem,
   shouldRetryGh,
   shouldPlanItem,
@@ -330,4 +331,10 @@ test("GitHub retry classifier distinguishes throttle and transient failures", ()
     { stderr: "gh: HTTP 401: Bad credentials" },
   );
   assert.equal(ghRetryKind(authFailureForIssue502), "none");
+});
+
+test("safeOutputTail tolerates missing process output", () => {
+  assert.equal(safeOutputTail(undefined), "");
+  assert.equal(safeOutputTail(null), "");
+  assert.equal(safeOutputTail("abcdef", 3), "def");
 });
