@@ -131,8 +131,8 @@ npm run oxformat
 
 Required secrets:
 
-- `OPENAI_API_KEY`: OpenAI API key used by Codex.
-- `CODEX_API_KEY`: same API key for `codex exec` CI auth.
+- `OPENAI_API_KEY`: OpenAI API key used to log Codex in before review shards run.
+- `CODEX_API_KEY`: optional compatibility alias for the same key during the login check.
 - `OPENCLAW_GH_TOKEN`: GitHub token with write access to `openclaw/openclaw` issues and PRs.
 
-The workflow logs Codex in with `OPENAI_API_KEY`, passes `CODEX_API_KEY` to `codex exec`, and fails the shard instead of writing fallback review markdown if Codex auth/output fails. It uses `OPENCLAW_GH_TOKEN` for `openclaw/openclaw` comments/closes. The built-in `GITHUB_TOKEN` commits review markdown back to this repo.
+The workflow logs Codex in with `OPENAI_API_KEY`, then runs review shards without OpenAI or Codex API key environment variables. `codex exec` uses the prepared login state, and the shard fails instead of writing fallback review markdown if Codex auth/output fails. It uses `OPENCLAW_GH_TOKEN` for `openclaw/openclaw` comments/closes. The built-in `GITHUB_TOKEN` commits review markdown back to this repo.
