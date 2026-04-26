@@ -37,6 +37,9 @@ checkpoint, and status-only commits are intentionally omitted.
   installation token so GitHub attributes automated comments to the bot.
 - Added Latest Run Activity dashboard counters for recent reviews, close
   decisions, comment syncs, apply skips, and close actions.
+- Added a README Audit Health section plus a separate scheduled/manual workflow
+  path to refresh it without making normal dashboard heartbeats scan GitHub.
+  Thanks @stainlu.
 
 ### Changed
 

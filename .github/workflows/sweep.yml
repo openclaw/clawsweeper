@@ -63,8 +63,13 @@ on:
         description: "Run the low-latency intake lane for new/active issues and PRs"
         required: false
         default: "false"
+      audit_dashboard:
+        description: "Refresh README Audit Health without running review or apply work"
+        required: false
+        default: "false"
   schedule:
     - cron: "*/5 * * * *"
+    - cron: "7 */6 * * *"
     - cron: "17 * * * *"
     - cron: "37 * * * *"
 
@@ -75,12 +80,12 @@ permissions:
   pull-requests: write
 
 concurrency:
-  group: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.apply_existing == 'true' && github.event.inputs.apply_sync_comments_only == 'true') && 'clawsweeper-comment-sync' || ((github.event_name == 'workflow_dispatch' && github.event.inputs.apply_existing == 'true') || (github.event_name == 'schedule' && github.event.schedule == '37 * * * *')) && 'clawsweeper-apply' || ((github.event_name == 'workflow_dispatch' && github.event.inputs.hot_intake == 'true') || (github.event_name == 'schedule' && github.event.schedule == '*/5 * * * *')) && 'clawsweeper-intake' || 'clawsweeper-review' }}
+  group: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.apply_existing == 'true' && github.event.inputs.apply_sync_comments_only == 'true') && 'clawsweeper-comment-sync' || ((github.event_name == 'workflow_dispatch' && github.event.inputs.apply_existing == 'true') || (github.event_name == 'schedule' && github.event.schedule == '37 * * * *')) && 'clawsweeper-apply' || ((github.event_name == 'workflow_dispatch' && github.event.inputs.hot_intake == 'true') || (github.event_name == 'schedule' && github.event.schedule == '*/5 * * * *')) && 'clawsweeper-intake' || ((github.event_name == 'workflow_dispatch' && github.event.inputs.audit_dashboard == 'true') || (github.event_name == 'schedule' && github.event.schedule == '7 */6 * * *')) && 'clawsweeper-audit' || 'clawsweeper-review' }}
   cancel-in-progress: false
 
 jobs:
   plan:
-    if: ${{ !((github.event_name == 'workflow_dispatch' && github.event.inputs.apply_existing == 'true') || (github.event_name == 'schedule' && github.event.schedule == '37 * * * *')) }}
+    if: ${{ !((github.event_name == 'workflow_dispatch' && (github.event.inputs.apply_existing == 'true' || github.event.inputs.audit_dashboard == 'true')) || (github.event_name == 'schedule' && (github.event.schedule == '37 * * * *' || github.event.schedule == '7 */6 * * *'))) }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
@@ -358,7 +363,7 @@ jobs:
 
   publish:
     needs: [plan, review]
-    if: ${{ always() && !((github.event_name == 'workflow_dispatch' && github.event.inputs.apply_existing == 'true') || (github.event_name == 'schedule' && github.event.schedule == '37 * * * *')) }}
+    if: ${{ always() && !((github.event_name == 'workflow_dispatch' && (github.event.inputs.apply_existing == 'true' || github.event.inputs.audit_dashboard == 'true')) || (github.event_name == 'schedule' && (github.event.schedule == '37 * * * *' || github.event.schedule == '7 */6 * * *'))) }}
     runs-on: ubuntu-latest
     env:
       CLAWSWEEPER_APP_ID: ${{ secrets.CLAWSWEEPER_APP_ID }}
@@ -481,6 +486,70 @@ jobs:
             -f batch_size="${{ needs.plan.outputs.batch_size }}" \
             -f shard_count="${{ needs.plan.outputs.shard_count }}" \
             -f codex_timeout_ms="${{ needs.plan.outputs.codex_timeout_ms }}"
+
+  audit-dashboard:
+    if: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.audit_dashboard == 'true') || (github.event_name == 'schedule' && github.event.schedule == '7 */6 * * *') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      CLAWSWEEPER_APP_ID: ${{ secrets.CLAWSWEEPER_APP_ID }}
+      CLAWSWEEPER_APP_PRIVATE_KEY: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Create OpenClaw read token
+        id: openclaw-read-token
+        if: ${{ env.CLAWSWEEPER_APP_ID != '' && env.CLAWSWEEPER_APP_PRIVATE_KEY != '' }}
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ env.CLAWSWEEPER_APP_ID }}
+          private-key: ${{ env.CLAWSWEEPER_APP_PRIVATE_KEY }}
+          owner: openclaw
+          repositories: openclaw
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build ClawSweeper
+        run: npm run build
+
+      - name: Refresh Audit Health
+        env:
+          GH_TOKEN: ${{ steps.openclaw-read-token.outputs.token || secrets.OPENCLAW_GH_TOKEN || github.token }}
+        run: |
+          set -euo pipefail
+          git pull --rebase
+          npm run audit -- --max-pages 250 --sample-limit 25 --output /tmp/clawsweeper-audit.json --update-dashboard
+          npm run status -- \
+            --state "Audit finished" \
+            --detail "Refreshed README Audit Health from a full live OpenClaw state audit. Normal review/apply dashboard heartbeats preserve this block without rerunning the audit scan." \
+            --run-url "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+      - name: Commit Audit Health
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add README.md
+          if git diff --cached --quiet; then
+            echo "No audit health changes"
+          else
+            git commit -m "chore: update sweep audit health"
+            for _attempt in 1 2 3; do
+              if git push; then
+                exit 0
+              fi
+              git fetch origin main
+              git rebase -X theirs origin/main
+            done
+            git push
+          fi
 
   apply-existing:
     if: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.apply_existing == 'true') || (github.event_name == 'schedule' && github.event.schedule == '37 * * * *') }}
