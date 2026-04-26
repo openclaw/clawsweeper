@@ -352,6 +352,8 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 const RECENT_MISSING_OPEN_MS = DAY_MS;
 const STATUS_START = "<!-- clawsweeper-status:start -->";
 const STATUS_END = "<!-- clawsweeper-status:end -->";
+const AUDIT_HEALTH_START = "<!-- clawsweeper-audit:start -->";
+const AUDIT_HEALTH_END = "<!-- clawsweeper-audit:end -->";
 const DEFAULT_CODEX_MODEL = "gpt-5.5";
 const DEFAULT_REASONING_EFFORT = "high";
 const DEFAULT_SERVICE_TIER = "fast";
@@ -3535,6 +3537,119 @@ export function auditHasStrictFailures(result: AuditResult): boolean {
   );
 }
 
+function auditHealthStatus(result: AuditResult): string {
+  return auditHasStrictFailures(result) ? "Action needed" : "Passing";
+}
+
+function auditFindingCategory(category: keyof AuditResult["findings"]): string {
+  switch (category) {
+    case "missingEligibleOpen":
+      return "Missing eligible open";
+    case "openArchived":
+      return "Open archived";
+    case "staleItemRecords":
+      return "Stale item record";
+    case "duplicateRecords":
+      return "Duplicate record";
+    case "protectedProposed":
+      return "Protected proposed close";
+    case "staleReviews":
+      return "Stale review";
+    case "missingOpen":
+      return "Missing open";
+    case "missingMaintainerOpen":
+      return "Missing maintainer open";
+    case "missingProtectedOpen":
+      return "Missing protected open";
+    case "missingRecentOpen":
+      return "Missing recent open";
+  }
+}
+
+function auditFindingDetail(finding: AuditFinding): string {
+  if (finding.closedPath) return finding.closedPath;
+  if (finding.itemPath) return finding.itemPath;
+  if (finding.missingReason) return finding.missingReason;
+  if (finding.action) return finding.action;
+  return "-";
+}
+
+function actionableAuditFindings(result: AuditResult, limit = 3): string {
+  const categories: (keyof AuditResult["findings"])[] = [
+    "missingEligibleOpen",
+    "protectedProposed",
+    "openArchived",
+    "duplicateRecords",
+    "staleReviews",
+    "staleItemRecords",
+  ];
+  const rows: string[] = [];
+  for (const category of categories) {
+    for (const finding of result.findings[category]) {
+      rows.push(
+        `| ${markdownLink(`#${finding.number}`, itemUrl(finding.number, finding.kind ?? "issue"))} | ${auditFindingCategory(category)} | ${displayTitle(finding.title ?? "").replaceAll("|", "\\|")} | ${auditFindingDetail(finding).replaceAll("|", "\\|")} |`,
+      );
+      if (rows.length >= limit) return rows.join("\n");
+    }
+  }
+  return "| _None_ |  |  |  |";
+}
+
+export function auditHealthSection(result: AuditResult | null): string {
+  if (!result) {
+    return `### Audit Health
+
+${AUDIT_HEALTH_START}
+No audit has been published yet. Run \`npm run audit -- --update-dashboard\` to refresh this section.
+${AUDIT_HEALTH_END}`;
+  }
+  return `### Audit Health
+
+${AUDIT_HEALTH_START}
+Last audit: ${formatTimestamp(result.generatedAt)}
+
+Status: **${auditHealthStatus(result)}**
+
+| Metric | Count |
+| --- | ---: |
+| Scan complete | ${result.scan.complete ? "yes" : "no"} |
+| Open items seen | ${result.scan.openItemsSeen} |
+| Missing eligible open records | ${result.counts.missingEligibleOpen} |
+| Missing maintainer-authored open records | ${result.counts.missingMaintainerOpen} |
+| Missing protected open records | ${result.counts.missingProtectedOpen} |
+| Missing recently-created open records | ${result.counts.missingRecentOpen} |
+| Archived records that are open again | ${result.counts.openArchived} |
+| Stale item records | ${result.counts.staleItemRecords} |
+| Duplicate records | ${result.counts.duplicateRecords} |
+| Protected proposed closes | ${result.counts.protectedProposed} |
+| Stale reviews | ${result.counts.staleReviews} |
+
+| Item | Category | Title | Detail |
+| --- | --- | --- | --- |
+${actionableAuditFindings(result)}
+${AUDIT_HEALTH_END}`;
+}
+
+function currentAuditHealthSection(readme: string): string {
+  const match = readme.match(
+    new RegExp(`### Audit Health\\n\\n${AUDIT_HEALTH_START}[\\s\\S]*?${AUDIT_HEALTH_END}`),
+  );
+  return match?.[0] ?? auditHealthSection(null);
+}
+
+function updateAuditHealthDashboard(result: AuditResult): void {
+  const readmePath = join(ROOT, "README.md");
+  const readme = readFileSync(readmePath, "utf8");
+  const section = auditHealthSection(result);
+  const existingPattern = new RegExp(
+    `### Audit Health\\n\\n${AUDIT_HEALTH_START}[\\s\\S]*?${AUDIT_HEALTH_END}`,
+  );
+  const updated = existingPattern.test(readme)
+    ? readme.replace(existingPattern, section)
+    : readme.replace(/\n### Latest Run Activity/, `\n${section}\n\n### Latest Run Activity`);
+  writeFileSync(readmePath, updated, "utf8");
+}
+
 function markReconciledState(markdown: string, state: "open" | "closed"): string {
   let nextMarkdown = replaceFrontMatterValue(markdown, "current_state", state);
   nextMarkdown = replaceFrontMatterValue(nextMarkdown, "reconciled_at", new Date().toISOString());
@@ -3623,6 +3738,7 @@ function auditCommand(args: Args): void {
   const sampleLimit = numberArg(args.sample_limit, 25);
   const output = typeof args.output === "string" ? resolve(args.output) : undefined;
   const strict = boolArg(args.strict);
+  const updateDashboard = boolArg(args.update_dashboard);
   const openItems = fetchOpenItems(maxPages);
   const result = auditFromSnapshot({
     openItems: openItems.items,
@@ -3635,6 +3751,7 @@ function auditCommand(args: Args): void {
     ensureDir(dirname(output));
     writeFileSync(output, `${JSON.stringify(result, null, 2)}\n`, "utf8");
   }
+  if (updateDashboard) updateAuditHealthDashboard(result);
   console.log(JSON.stringify(limitAuditFindings(result, sampleLimit), null, 2));
   if (strict && auditHasStrictFailures(result)) process.exit(1);
 }
@@ -3798,6 +3915,7 @@ function updateDashboard(itemsDir = join(ROOT, "items"), closedDir = join(ROOT, 
   const readme = readFileSync(readmePath, "utf8");
   const stats = dashboardStats(itemsDir, closedDir);
   const status = currentWorkflowStatusBlock(readme);
+  const auditHealth = currentAuditHealthSection(readme);
   const recent =
     stats.recent
       .slice(0, 10)
@@ -3853,6 +3971,8 @@ ${status}
 | Daily new issue cadence (<${RECENT_ISSUE_DAYS}d) | ${formatCadenceBucket(stats.cadence.dailyNewIssues)} |
 | Weekly older issue cadence | ${formatCadenceBucket(stats.cadence.weekly)} |
 | Due now by cadence | ${stats.cadence.due} |
+
+${auditHealth}
 
 ### Latest Run Activity
 

@@ -5,6 +5,7 @@ import {
   applyDecisionPriority,
   auditFromSnapshot,
   auditHasStrictFailures,
+  auditHealthSection,
   ghRetryKind,
   isCodexReviewCommentBody,
   isProtectedItem,
@@ -456,6 +457,44 @@ test("audit classifies missing open records by actionable reason", () => {
   assert.equal(actionableDrift.counts.missingEligibleOpen, 1);
   assert.equal(actionableDrift.findings.missingEligibleOpen[0].missingReason, "eligible");
   assert.equal(auditHasStrictFailures(actionableDrift), true);
+});
+
+test("audit health section summarizes strict status and actionable findings", () => {
+  const result = auditFromSnapshot({
+    openItems: [
+      item({
+        number: 10,
+        title: "eligible missing",
+        createdAt: "2026-04-24T00:00:00.000Z",
+      }),
+      item({ number: 11, title: "reopened archived" }),
+    ],
+    itemRecords: [
+      auditRecord(12, { title: "stale local" }),
+      auditRecord(13, {
+        title: "protected close",
+        labels: ["security"],
+        action: "proposed_close",
+      }),
+    ],
+    closedRecords: [auditRecord(11, { location: "closed", path: "closed/11.md" })],
+    scanComplete: true,
+    pagesScanned: 1,
+    generatedAt: "2026-04-26T12:00:00.000Z",
+  });
+  const section = auditHealthSection(result);
+
+  assert.match(section, /### Audit Health/);
+  assert.match(section, /<!-- clawsweeper-audit:start -->/);
+  assert.match(section, /Status: \*\*Action needed\*\*/);
+  assert.match(section, /\| Missing eligible open records \| 1 \|/);
+  assert.match(section, /\[#10\]\(https:\/\/github\.com\/openclaw\/openclaw\/issues\/10\)/);
+  assert.match(section, /Missing eligible open/);
+  assert.match(section, /\[#13\]\(https:\/\/github\.com\/openclaw\/openclaw\/issues\/13\)/);
+  assert.match(section, /Protected proposed close/);
+  assert.match(section, /\[#11\]\(https:\/\/github\.com\/openclaw\/openclaw\/issues\/11\)/);
+  assert.match(section, /Open archived/);
+  assert.doesNotMatch(section, /\[#12\]\(https:\/\/github\.com\/openclaw\/openclaw\/issues\/12\)/);
 });
 
 test("audit defers stale item drift until the open scan is complete", () => {
