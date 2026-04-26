@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   applyDecisionPriority,
   auditFromSnapshot,
+  auditHasStrictFailures,
   ghRetryKind,
   isCodexReviewCommentBody,
   isProtectedItem,
@@ -400,13 +401,61 @@ test("audit detects live/local state drift and unsafe proposed records", () => {
   });
 
   assert.equal(result.counts.missingOpen, 1);
+  assert.equal(result.counts.missingEligibleOpen, 1);
+  assert.equal(result.counts.missingMaintainerOpen, 0);
+  assert.equal(result.counts.missingProtectedOpen, 0);
+  assert.equal(result.counts.missingRecentOpen, 0);
   assert.equal(result.findings.missingOpen[0].number, 2);
+  assert.equal(result.findings.missingOpen[0].missingReason, "eligible");
+  assert.equal(result.findings.missingEligibleOpen[0].number, 2);
   assert.equal(result.counts.openArchived, 1);
   assert.equal(result.findings.openArchived[0].closedPath, "closed/3.md");
   assert.equal(result.counts.staleItemRecords, 4);
   assert.equal(result.counts.duplicateRecords, 1);
   assert.equal(result.counts.protectedProposed, 1);
   assert.equal(result.counts.staleReviews, 1);
+});
+
+test("audit classifies missing open records by actionable reason", () => {
+  const base = {
+    itemRecords: [],
+    closedRecords: [],
+    scanComplete: true,
+    pagesScanned: 1,
+    generatedAt: "2026-04-26T12:00:00.000Z",
+  };
+  const expectedQueueLag = auditFromSnapshot({
+    ...base,
+    openItems: [
+      item({ number: 1, authorAssociation: "MEMBER" }),
+      item({ number: 2, labels: ["beta-blocker"] }),
+      item({
+        number: 3,
+        createdAt: "2026-04-26T11:30:00.000Z",
+        updatedAt: "2026-04-26T11:30:00.000Z",
+      }),
+    ],
+  });
+
+  assert.equal(expectedQueueLag.counts.missingOpen, 3);
+  assert.equal(expectedQueueLag.counts.missingEligibleOpen, 0);
+  assert.equal(expectedQueueLag.counts.missingMaintainerOpen, 1);
+  assert.equal(expectedQueueLag.counts.missingProtectedOpen, 1);
+  assert.equal(expectedQueueLag.counts.missingRecentOpen, 1);
+  assert.deepEqual(
+    expectedQueueLag.findings.missingOpen.map((finding) => finding.missingReason),
+    ["maintainer_authored", "protected_label", "recently_created"],
+  );
+  assert.equal(auditHasStrictFailures(expectedQueueLag), false);
+
+  const actionableDrift = auditFromSnapshot({
+    ...base,
+    openItems: [item({ number: 4, createdAt: "2026-04-24T00:00:00.000Z" })],
+  });
+
+  assert.equal(actionableDrift.counts.missingEligibleOpen, 1);
+  assert.equal(actionableDrift.findings.missingEligibleOpen[0].missingReason, "eligible");
+  assert.equal(auditHasStrictFailures(actionableDrift), true);
 });
 
 test("audit defers stale item drift until the open scan is complete", () => {

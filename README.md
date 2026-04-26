@@ -159,6 +159,9 @@ another apply run with the same settings.
 `npm run audit` compares live GitHub state with generated records without moving
 files. It reports missing open records, archived open records, stale records,
 duplicates, protected-label proposed closes, and stale review-status records.
+Missing open records are classified as eligible, maintainer-authored, protected,
+or recently created so strict audit mode can flag actionable drift without
+treating expected queue lag or excluded items as failures.
 
 ## Local Run
 

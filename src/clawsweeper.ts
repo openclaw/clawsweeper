@@ -263,6 +263,11 @@ interface ReconcileResult {
 }
 
 type AuditRecordLocation = "items" | "closed";
+type MissingOpenReason =
+  | "eligible"
+  | "maintainer_authored"
+  | "protected_label"
+  | "recently_created";
 
 interface AuditRecord {
   number: number;
@@ -283,6 +288,10 @@ interface AuditFinding {
   kind?: ItemKind;
   title?: string;
   labels?: string[];
+  authorAssociation?: string;
+  createdAt?: string;
+  updatedAt?: string;
+  missingReason?: MissingOpenReason;
   itemPath?: string;
   closedPath?: string;
   action?: string;
@@ -304,6 +313,10 @@ interface AuditResult {
     itemRecords: number;
     closedRecords: number;
     missingOpen: number;
+    missingEligibleOpen: number;
+    missingMaintainerOpen: number;
+    missingProtectedOpen: number;
+    missingRecentOpen: number;
     openArchived: number;
     staleItemRecords: number;
     duplicateRecords: number;
@@ -312,6 +325,10 @@ interface AuditResult {
   };
   findings: {
     missingOpen: AuditFinding[];
+    missingEligibleOpen: AuditFinding[];
+    missingMaintainerOpen: AuditFinding[];
+    missingProtectedOpen: AuditFinding[];
+    missingRecentOpen: AuditFinding[];
     openArchived: AuditFinding[];
     staleItemRecords: AuditFinding[];
     duplicateRecords: AuditFinding[];
@@ -332,6 +349,7 @@ const HOURLY_REVIEW_MS = 60 * 60 * 1000;
 const DAILY_REVIEW_DAYS = 1;
 const WEEKLY_REVIEW_DAYS = 7;
 const DAY_MS = 24 * 60 * 60 * 1000;
+const RECENT_MISSING_OPEN_MS = DAY_MS;
 const STATUS_START = "<!-- clawsweeper-status:start -->";
 const STATUS_END = "<!-- clawsweeper-status:end -->";
 const DEFAULT_CODEX_MODEL = "gpt-5.5";
@@ -3359,8 +3377,23 @@ function openItemFinding(item: Item, extra: Partial<AuditFinding> = {}): AuditFi
     kind: item.kind,
     title: item.title,
     labels: item.labels,
+    authorAssociation: item.authorAssociation,
+    createdAt: item.createdAt,
+    updatedAt: item.updatedAt,
     ...extra,
   };
+}
+
+function isRecentlyCreatedMissingOpen(item: Item, generatedAtMs: number): boolean {
+  const createdAt = Date.parse(item.createdAt);
+  return Number.isFinite(createdAt) && generatedAtMs - createdAt < RECENT_MISSING_OPEN_MS;
+}
+
+function missingOpenReason(item: Item, generatedAtMs: number): MissingOpenReason {
+  if (isMaintainerAuthored(item)) return "maintainer_authored";
+  if (isProtectedItem(item)) return "protected_label";
+  if (isRecentlyCreatedMissingOpen(item, generatedAtMs)) return "recently_created";
+  return "eligible";
 }
 
 function recordFinding(record: AuditRecord, extra: Partial<AuditFinding> = {}): AuditFinding {
@@ -3395,10 +3428,16 @@ export function auditFromSnapshot(options: {
   pagesScanned: number;
   generatedAt?: string;
 }): AuditResult {
+  const generatedAt = options.generatedAt ?? new Date().toISOString();
+  const generatedAtMs = Date.parse(generatedAt);
   const openByNumber = firstByNumber(options.openItems);
   const itemByNumber = firstByNumber(options.itemRecords);
   const closedByNumber = firstByNumber(options.closedRecords);
   const missingOpen: AuditFinding[] = [];
+  const missingEligibleOpen: AuditFinding[] = [];
+  const missingMaintainerOpen: AuditFinding[] = [];
+  const missingProtectedOpen: AuditFinding[] = [];
+  const missingRecentOpen: AuditFinding[] = [];
   const openArchived: AuditFinding[] = [];
 
   for (const item of options.openItems) {
@@ -3407,7 +3446,13 @@ export function auditFromSnapshot(options: {
     if (closedRecord) {
       openArchived.push(openItemFinding(item, { closedPath: closedRecord.path }));
     } else {
-      missingOpen.push(openItemFinding(item));
+      const missingReason = missingOpenReason(item, generatedAtMs);
+      const finding = openItemFinding(item, { missingReason });
+      missingOpen.push(finding);
+      if (missingReason === "maintainer_authored") missingMaintainerOpen.push(finding);
+      else if (missingReason === "protected_label") missingProtectedOpen.push(finding);
+      else if (missingReason === "recently_created") missingRecentOpen.push(finding);
+      else missingEligibleOpen.push(finding);
     }
   }
 
@@ -3430,7 +3475,7 @@ export function auditFromSnapshot(options: {
     .map((record) => recordFinding(record));
 
   return {
-    generatedAt: options.generatedAt ?? new Date().toISOString(),
+    generatedAt,
     targetRepo: TARGET_REPO,
     scan: {
       complete: options.scanComplete,
@@ -3441,6 +3486,10 @@ export function auditFromSnapshot(options: {
       itemRecords: options.itemRecords.length,
       closedRecords: options.closedRecords.length,
       missingOpen: missingOpen.length,
+      missingEligibleOpen: missingEligibleOpen.length,
+      missingMaintainerOpen: missingMaintainerOpen.length,
+      missingProtectedOpen: missingProtectedOpen.length,
+      missingRecentOpen: missingRecentOpen.length,
       openArchived: openArchived.length,
       staleItemRecords: staleItemRecords.length,
       duplicateRecords: duplicateRecords.length,
@@ -3449,6 +3498,10 @@ export function auditFromSnapshot(options: {
     },
     findings: {
       missingOpen,
+      missingEligibleOpen,
+      missingMaintainerOpen,
+      missingProtectedOpen,
+      missingRecentOpen,
       openArchived,
       staleItemRecords,
       duplicateRecords,
@@ -3471,10 +3524,10 @@ function limitAuditFindings(result: AuditResult, limit: number): AuditResult {
   };
 }
 
-function auditHasStrictFailures(result: AuditResult): boolean {
+export function auditHasStrictFailures(result: AuditResult): boolean {
   return (
     !result.scan.complete ||
-    result.counts.missingOpen > 0 ||
+    result.counts.missingEligibleOpen > 0 ||
     result.counts.openArchived > 0 ||
     result.counts.staleItemRecords > 0 ||
     result.counts.duplicateRecords > 0 ||
