@@ -1717,15 +1717,51 @@ function selectCandidates(options: {
   return { candidates, scannedPages };
 }
 
+function openExplicitItems(itemNumbers: readonly number[]): Item[] {
+  const seen = new Set<number>();
+  const candidates: Item[] = [];
+  for (const number of itemNumbers) {
+    if (seen.has(number)) continue;
+    seen.add(number);
+    const { item, state } = fetchItem(number);
+    if (state === "open") candidates.push(item);
+  }
+  return candidates;
+}
+
+export function shardItemNumbers(itemNumbers: readonly number[], shardCount: number): PlanShard[] {
+  const count = Math.max(1, Math.min(Math.max(1, shardCount), itemNumbers.length || 1));
+  const shards = Array.from({ length: count }, (_, shard) => ({
+    shard,
+    itemNumbers: [] as number[],
+  }));
+  itemNumbers.forEach((number, index) => {
+    shards[index % shards.length]?.itemNumbers.push(number);
+  });
+  return shards;
+}
+
 function planCandidates(options: {
   batchSize: number;
   maxPages: number;
   shardCount: number;
   itemsDir: string;
   itemNumber?: number;
+  itemNumbers?: number[];
   reviewPolicy: string;
   hotIntake?: boolean;
 }): { shards: PlanShard[]; scannedPages: number; candidates: Item[] } {
+  if (options.itemNumbers) {
+    const candidates = openExplicitItems(options.itemNumbers);
+    return {
+      shards: shardItemNumbers(
+        candidates.map((item) => item.number),
+        options.shardCount,
+      ),
+      scannedPages: 0,
+      candidates,
+    };
+  }
   if (options.itemNumber) {
     const { item, state } = fetchItem(options.itemNumber);
     const shouldReview = state === "open";
@@ -1775,14 +1811,14 @@ function planCandidates(options: {
     .slice(0, limit)
     .map(({ item }) => item);
 
-  const shards = Array.from(
-    { length: Math.max(1, Math.min(options.shardCount, candidates.length || 1)) },
-    (_, shard) => ({ shard, itemNumbers: [] as number[] }),
-  );
-  candidates.forEach((item, index) => {
-    shards[index % shards.length]?.itemNumbers.push(item.number);
-  });
-  return { shards, scannedPages, candidates };
+  return {
+    shards: shardItemNumbers(
+      candidates.map((item) => item.number),
+      options.shardCount,
+    ),
+    scannedPages,
+    candidates,
+  };
 }
 
 function collectItemContext(item: Item): ItemContext {
@@ -2873,7 +2909,8 @@ function planCommand(args: Args): void {
   const batchSize = numberArg(args.batch_size, 5);
   const maxPages = numberArg(args.max_pages, 250);
   const shardCount = numberArg(args.shard_count, 100);
-  const itemNumber = numberArg(args.item_number, 0) || undefined;
+  const itemNumbers = itemNumbersArg(args.item_numbers, args.item_number);
+  const hasItemNumbersInput = typeof args.item_numbers === "string" && args.item_numbers.trim();
   const hotIntake = boolArg(args.hot_intake);
   const model = stringArg(args.codex_model, DEFAULT_CODEX_MODEL);
   const reasoningEffort = stringArg(args.codex_reasoning_effort, DEFAULT_REASONING_EFFORT);
@@ -2887,7 +2924,7 @@ function planCommand(args: Args): void {
     itemsDir,
     reviewPolicy,
   };
-  if (itemNumber) planOptions.itemNumber = itemNumber;
+  if (hasItemNumbersInput || itemNumbers.length > 0) planOptions.itemNumbers = itemNumbers;
   if (hotIntake) planOptions.hotIntake = true;
   const plan = planCandidates(planOptions);
   console.log(
@@ -2921,13 +2958,10 @@ function reviewCommand(args: Args): void {
   const shardCount = numberArg(args.shard_count, 1);
   const itemNumber = numberArg(args.item_number, 0) || undefined;
   const hotIntake = boolArg(args.hot_intake);
-  const itemNumbers =
-    typeof args.item_numbers === "string" && args.item_numbers.trim()
-      ? args.item_numbers
-          .split(",")
-          .map((value) => Number(value.trim()))
-          .filter((value) => Number.isInteger(value) && value > 0)
-      : undefined;
+  const hasItemNumbersInput = typeof args.item_numbers === "string" && args.item_numbers.trim();
+  const itemNumbers = hasItemNumbersInput
+    ? itemNumbersArg(args.item_numbers, undefined)
+    : undefined;
   const readonlyOpenclaw = boolArg(args.readonly_openclaw);
   const requestedApplyClosures =
     boolArg(args.apply_closures) || process.env.CLAWSWEEPER_APPLY_CLOSURES === "true";

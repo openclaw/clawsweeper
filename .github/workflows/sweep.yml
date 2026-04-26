@@ -59,6 +59,10 @@ on:
         description: "Optional single issue/PR number to review"
         required: false
         default: ""
+      item_numbers:
+        description: "Optional comma-separated issue/PR numbers to review"
+        required: false
+        default: ""
       hot_intake:
         description: "Run the low-latency intake lane for new/active issues and PRs"
         required: false
@@ -186,6 +190,7 @@ jobs:
           BATCH_SIZE: ${{ steps.mode.outputs.batch_size }}
           HOT_INTAKE: ${{ steps.mode.outputs.hot_intake }}
           ITEM_NUMBER: ${{ github.event.inputs.item_number || '' }}
+          ITEM_NUMBERS: ${{ github.event.inputs.item_numbers || '' }}
           MAX_PAGES: ${{ steps.mode.outputs.max_pages }}
           GH_TOKEN: ${{ steps.openclaw-read-token.outputs.token || secrets.OPENCLAW_GH_TOKEN || github.token }}
         run: |
@@ -193,6 +198,9 @@ jobs:
           item_arg=()
           if [ -n "$ITEM_NUMBER" ]; then
             item_arg=(--item-number "$ITEM_NUMBER")
+          fi
+          if [ -n "$ITEM_NUMBERS" ]; then
+            item_arg+=("--item-numbers" "$ITEM_NUMBERS")
           fi
           hot_intake_arg=()
           if [ "$HOT_INTAKE" = "true" ]; then
@@ -475,7 +483,7 @@ jobs:
           fi
 
       - name: Continue sweep
-        if: ${{ success() && needs.plan.outputs.hot_intake != 'true' && needs.plan.outputs.apply_closures != 'true' && needs.plan.outputs.planned_count == needs.plan.outputs.planned_capacity && (github.event_name != 'workflow_dispatch' || github.event.inputs.item_number == '') }}
+        if: ${{ success() && needs.plan.outputs.hot_intake != 'true' && needs.plan.outputs.apply_closures != 'true' && needs.plan.outputs.planned_count == needs.plan.outputs.planned_capacity && (github.event_name != 'workflow_dispatch' || (github.event.inputs.item_number == '' && github.event.inputs.item_numbers == '')) }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |

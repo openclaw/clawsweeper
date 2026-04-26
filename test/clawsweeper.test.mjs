@@ -15,6 +15,7 @@ import {
   relatedTitleSearchTerms,
   reviewActionForDecision,
   safeOutputTail,
+  shardItemNumbers,
   shouldReviewItem,
   shouldRetryGh,
   shouldPlanItem,
@@ -321,6 +322,18 @@ test("comment matcher recognizes old and new Codex review comments", () => {
 test("item number args merge and sort workflow inputs", () => {
   assert.deepEqual(itemNumbersArg("42, 7, nope, 42", "5"), [5, 7, 42]);
   assert.deepEqual(itemNumbersArg("", undefined), []);
+});
+
+test("explicit item numbers shard targeted review runs", () => {
+  assert.deepEqual(shardItemNumbers([5, 7, 42, 99], 2), [
+    { shard: 0, itemNumbers: [5, 42] },
+    { shard: 1, itemNumbers: [7, 99] },
+  ]);
+  assert.deepEqual(shardItemNumbers([5, 7], 50), [
+    { shard: 0, itemNumbers: [5] },
+    { shard: 1, itemNumbers: [7] },
+  ]);
+  assert.deepEqual(shardItemNumbers([], 50), [{ shard: 0, itemNumbers: [] }]);
 });
 
 test("apply mode prioritizes matching close proposals before comment sync", () => {

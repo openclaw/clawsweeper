@@ -40,6 +40,8 @@ checkpoint, and status-only commits are intentionally omitted.
 - Added a README Audit Health section plus a separate scheduled/manual workflow
   path to refresh it without making normal dashboard heartbeats scan GitHub.
   Thanks @stainlu.
+- Added comma-separated targeted review dispatch so Audit Health findings can be
+  reviewed together without waiting for normal batch selection. Thanks @stainlu.
 
 ### Changed
 
