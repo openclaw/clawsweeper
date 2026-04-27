@@ -659,7 +659,15 @@ function ghWithRetry(args: string[], attempts = 12): string {
 
 function ghJson<T>(args: string[]): T {
   const text = ghWithRetry(args);
-  return JSON.parse(text) as T;
+  try {
+    return JSON.parse(text) as T;
+  } catch (error) {
+    throw new Error(
+      `Failed to parse JSON from ${summarizeGhArgs(args)}: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
 }
 
 function ghJsonLines<T>(args: string[]): T[] {
@@ -668,7 +676,15 @@ function ghJsonLines<T>(args: string[]): T[] {
   return text
     .split("\n")
     .filter(Boolean)
-    .map((line) => JSON.parse(line) as T);
+    .map((line) => {
+      try {
+        return JSON.parse(line) as T;
+      } catch (error) {
+        throw new Error(
+          `Failed to parse JSON line: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    });
 }
 
 function sha256(text: string): string {
