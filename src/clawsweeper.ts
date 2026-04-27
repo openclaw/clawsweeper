@@ -3841,7 +3841,7 @@ export function auditFromSnapshot(options: {
       const closedRecord = closedByNumber.get(record.number);
       return recordFinding(record, closedRecord ? { closedPath: closedRecord.path } : {});
     });
-  const protectedProposed = [...options.itemRecords, ...options.closedRecords]
+  const protectedProposed = options.itemRecords
     .filter((record) => record.action === "proposed_close" && isProtectedItem(record))
     .map((record) => recordFinding(record));
   const staleReviews = options.itemRecords

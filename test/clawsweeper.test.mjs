@@ -553,6 +553,12 @@ test("audit detects live/local state drift and unsafe proposed records", () => {
     closedRecords: [
       auditRecord(3, { location: "closed", path: "closed/3.md" }),
       auditRecord(5, { location: "closed", path: "closed/5.md" }),
+      auditRecord(8, {
+        location: "closed",
+        path: "closed/8.md",
+        labels: ["security"],
+        action: "proposed_close",
+      }),
     ],
     scanComplete: true,
     pagesScanned: 1,
@@ -572,6 +578,7 @@ test("audit detects live/local state drift and unsafe proposed records", () => {
   assert.equal(result.counts.staleItemRecords, 4);
   assert.equal(result.counts.duplicateRecords, 1);
   assert.equal(result.counts.protectedProposed, 1);
+  assert.equal(result.findings.protectedProposed[0].number, 6);
   assert.equal(result.counts.staleReviews, 1);
 });
 
