@@ -3946,6 +3946,29 @@ function auditFindingDetail(finding: AuditFinding): string {
   return "-";
 }
 
+function auditReviewTargetNumbers(result: AuditResult, limit = 10): number[] {
+  const categories: (keyof AuditResult["findings"])[] = [
+    "missingEligibleOpen",
+    "openArchived",
+    "staleReviews",
+  ];
+  const numbers = new Set<number>();
+  for (const category of categories) {
+    for (const finding of result.findings[category]) {
+      if (category === "staleReviews" && finding.currentState === "closed") continue;
+      numbers.add(finding.number);
+      if (numbers.size >= limit) return [...numbers];
+    }
+  }
+  return [...numbers];
+}
+
+function auditReviewTargets(result: AuditResult): string {
+  const numbers = auditReviewTargetNumbers(result);
+  if (numbers.length === 0) return "Targeted review input: _none_";
+  return `Targeted review input: \`${numbers.join(",")}\``;
+}
+
 function actionableAuditFindings(result: AuditResult, limit = 3): string {
   const categories: (keyof AuditResult["findings"])[] = [
     "missingEligibleOpen",
@@ -3981,6 +4004,8 @@ ${AUDIT_HEALTH_START}
 Last audit: ${formatTimestamp(result.generatedAt)}
 
 Status: **${auditHealthStatus(result)}**
+
+${auditReviewTargets(result)}
 
 | Metric | Count |
 | --- | ---: |

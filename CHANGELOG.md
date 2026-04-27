@@ -42,6 +42,8 @@ checkpoint, and status-only commits are intentionally omitted.
   Thanks @stainlu.
 - Added comma-separated targeted review dispatch so Audit Health findings can be
   reviewed together without waiting for normal batch selection. Thanks @stainlu.
+- Added copyable targeted review inputs to Audit Health for reviewable drift
+  findings. Thanks @stainlu.
 
 ### Changed
 

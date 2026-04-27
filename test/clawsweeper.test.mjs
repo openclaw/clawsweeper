@@ -626,6 +626,7 @@ test("audit health section summarizes strict status and actionable findings", ()
         createdAt: "2026-04-24T00:00:00.000Z",
       }),
       item({ number: 11, title: "reopened archived" }),
+      item({ number: 14, title: "stale open review" }),
     ],
     itemRecords: [
       auditRecord(12, { title: "stale local" }),
@@ -633,6 +634,11 @@ test("audit health section summarizes strict status and actionable findings", ()
         title: "protected close",
         labels: ["security"],
         action: "proposed_close",
+      }),
+      auditRecord(14, {
+        title: "stale open review",
+        currentState: "open",
+        reviewStatus: "stale_reopened",
       }),
     ],
     closedRecords: [auditRecord(11, { location: "closed", path: "closed/11.md" })],
@@ -645,6 +651,7 @@ test("audit health section summarizes strict status and actionable findings", ()
   assert.match(section, /### Audit Health/);
   assert.match(section, /<!-- clawsweeper-audit:start -->/);
   assert.match(section, /Status: \*\*Action needed\*\*/);
+  assert.match(section, /Targeted review input: `10,11,14`/);
   assert.match(section, /\| Missing eligible open records \| 1 \|/);
   assert.match(section, /\[#10\]\(https:\/\/github\.com\/openclaw\/openclaw\/issues\/10\)/);
   assert.match(section, /Missing eligible open/);

@@ -232,6 +232,8 @@ or recently created so strict audit mode can flag actionable drift without
 treating expected queue lag or excluded items as failures.
 Use `--update-dashboard` to publish the latest audit health into this README
 without making every normal dashboard heartbeat scan all open GitHub items.
+Audit Health includes a copyable `item_numbers` input for reviewable findings
+such as missing eligible records, reopened archived records, and stale reviews.
 The workflow refreshes Audit Health on a separate six-hour schedule, and it can
 be run manually with `audit_dashboard=true`.
 
