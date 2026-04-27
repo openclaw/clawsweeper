@@ -14,6 +14,8 @@ import {
   itemNumbersArg,
   lockedConversationApplyReason,
   openClosingPullRequestApplyReason,
+  parseGhJson,
+  parseGhJsonLines,
   parseDecision,
   protectedLabels,
   relatedTitleSearchTerms,
@@ -118,6 +120,20 @@ test("protected labels are normalized and excluded from normal planning", () => 
   assert.equal(isProtectedItem(item({ labels: ["release-blocker"] })), true);
   assert.equal(shouldPlanItem(item({ labels: ["beta-blocker"] })), false);
   assert.equal(shouldPlanItem(item({ labels: ["bug"] })), true);
+});
+
+test("parseGhJson adds gh command context to malformed JSON errors", () => {
+  assert.throws(
+    () => parseGhJson("{", ["api", "repos/openclaw/openclaw/issues"]),
+    /Failed to parse JSON from gh api repos\/openclaw\/openclaw\/issues:/,
+  );
+});
+
+test("parseGhJsonLines adds line number and command context to malformed JSONL errors", () => {
+  assert.throws(
+    () => parseGhJsonLines('{"ok":true}\nnot-json\n', ["issue", "list", "--json", "number"]),
+    /Failed to parse JSON line 2 from gh issue list --json:/,
+  );
 });
 
 test("protected labels block close proposals even for otherwise valid decisions", () => {
