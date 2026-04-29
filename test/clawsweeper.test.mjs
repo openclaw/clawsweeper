@@ -908,6 +908,39 @@ Land this docs-only PR after maintainer review.
   assert.doesNotMatch(comment, /Best possible solution:/);
 });
 
+test("pull request keep-open review comments suppress duplicate remaining risk text", () => {
+  const comment = renderReviewCommentFromReport(
+    `${reportFrontMatter({
+      type: "pull_request",
+      number: "74267",
+      decision: "keep_open",
+      close_reason: "none",
+      work_candidate: "none",
+      pull_head_sha: "abc123def456",
+    })}
+
+## Summary
+
+Keep this docs-only PR open for maintainer review.
+
+## What This Changes
+
+Documents ClawSweeper self-review smoke coverage.
+
+## Best Possible Solution
+
+Land this docs-only PR after maintainer review.
+
+## Risks / Open Questions
+
+Land this docs-only PR after maintainer review.
+`,
+    "none",
+  );
+
+  assert.match(comment, /Remaining risk \/ open question:/);
+});
+
 test("pull request review reports carry verdict and repair markers", () => {
   const markdown = `${reportFrontMatter({
     type: "pull_request",
