@@ -13,6 +13,7 @@ import {
 } from "./lib.js";
 import { ghText } from "./github-cli.js";
 import { readJsonFileIfExists as readJsonIfExists } from "./json-file.js";
+import { commitFindingPrTitle } from "./pr-title.js";
 import { escapeRegExp, slug } from "./text-utils.js";
 
 const args = parseArgs(process.argv.slice(2));
@@ -323,7 +324,7 @@ function writeSyntheticRun(context: LooseRecord) {
           ? `Original commit author: ${stripEmailIdentity(context.report.author)}.`
           : "Original commit author unknown.",
       ],
-      pr_title: prTitle(summary, context.report.body),
+      pr_title: commitFindingPrTitle(summary, context.report.body),
       pr_body: prBody({ ...context, summary, likelyFiles, validation }),
       source_prs: [],
       repair_strategy: "new_fix_pr",
@@ -501,30 +502,6 @@ function section(markdown: string, heading: string) {
 
 function validationCommands(repo: string) {
   return repo === "openclaw/openclaw" ? ["pnpm check:changed"] : ["git diff --check"];
-}
-
-function prTitle(summary: LooseRecord, markdown: string = "") {
-  const text = [summary, markdown].join("\n");
-  if (
-    /extension[- ]shard matrix|extension shard|run_checks_node_extensions|checks-node-extensions/i.test(
-      text,
-    )
-  ) {
-    return "fix(ci): gate extension aggregate on shard matrix";
-  }
-
-  let title = summary.replace(/^[-*\s]+/, "");
-  title = title.replace(
-    /^Found (?:one|an?|the)?\s*(?:high|medium|low|critical)?\s*(?:CI\s+)?(?:regression|bug|issue|finding):\s*/i,
-    "",
-  );
-  title = compact(title, 68).replace(/[.!?]+$/, "");
-  const prefix = /\b(?:CI|workflow|check|job|matrix|GitHub Actions)\b/i.test(summary)
-    ? "fix(ci):"
-    : "fix:";
-  return /^fix(?:\(|:)/i.test(title)
-    ? title
-    : `${prefix} ${title || "address ClawSweeper finding"}`;
 }
 
 function prBody(context: LooseRecord) {

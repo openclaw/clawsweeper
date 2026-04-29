@@ -326,7 +326,8 @@
               }
             },
             "pr_title": {
-              "type": "string"
+              "type": "string",
+              "maxLength": 256
             },
             "pr_body": {
               "type": "string"

@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 import type { JsonValue, LooseRecord } from "./json-types.js";
+import { GITHUB_PR_TITLE_MAX_LENGTH } from "./pr-title.js";
 
 const REPAIR_STRATEGIES = new Set([
   "repair_contributor_branch",
@@ -17,6 +18,11 @@ export function validateFixArtifact(fixArtifact: LooseRecord): LooseRecord {
     if (typeof fixArtifact[key] !== "string" || !fixArtifact[key].trim()) {
       throw new Error(`fix_artifact.${key} is required`);
     }
+  }
+  if (String(fixArtifact.pr_title).length > GITHUB_PR_TITLE_MAX_LENGTH) {
+    throw new Error(
+      `fix_artifact.pr_title must be ${GITHUB_PR_TITLE_MAX_LENGTH} characters or fewer`,
+    );
   }
   for (const key of [
     "affected_surfaces",
