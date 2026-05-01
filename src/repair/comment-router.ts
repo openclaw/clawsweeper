@@ -25,6 +25,7 @@ import {
   automergeGateBlockReason,
   automergeClusterId,
   automergeJobPath,
+  automergeRebaseRepairReason,
   buildAutomergeMergeArgs,
   commandHasAction,
   commandStatusMarker,
@@ -555,34 +556,19 @@ function classifyAutomergePass(
   }));
   const failedCheckBlockers = repairableCheckBlockers(command.target?.checks);
   if (failedCheckBlockers.length > 0) {
-    const alreadyPlanned = autoRepairAlreadyPlanned(command);
-    if (alreadyPlanned) return { ...command, status: "skipped", reason: alreadyPlanned };
-    const repairJobPath = command.target?.job_path ?? command.target?.automerge_job_path;
-    return {
-      ...command,
-      repair_reason: `${command.repair_reason ?? "structured ClawSweeper verdict: pass"}; current checks are failing: ${failedCheckBlockers.slice(0, 5).join(", ")}`,
-      status: "ready",
-      actions: [
-        ...pauseLabelActions,
-        ...(command.target?.job_path
-          ? []
-          : [
-              {
-                action: "ensure_automerge_job",
-                job_path: repairJobPath,
-                status: execute ? "pending" : "planned",
-              },
-            ]),
-        {
-          action: "dispatch_repair",
-          workflow,
-          job_path: repairJobPath,
-          mode: command.target?.mode,
-          status: execute ? "pending" : "planned",
-        },
-        { action: "comment", status: execute ? "pending" : "planned" },
-      ],
-    };
+    return classifyPassedAutomergeRepair(
+      command,
+      pauseLabelActions,
+      `${command.repair_reason ?? "structured ClawSweeper verdict: pass"}; current checks are failing: ${failedCheckBlockers.slice(0, 5).join(", ")}`,
+    );
+  }
+  const rebaseRepairReason = automergeRebaseRepairReason(command.target);
+  if (rebaseRepairReason) {
+    return classifyPassedAutomergeRepair(
+      command,
+      pauseLabelActions,
+      `${command.repair_reason ?? "structured ClawSweeper verdict: pass"}; ${rebaseRepairReason}`,
+    );
   }
   return {
     ...command,
@@ -590,6 +576,41 @@ function classifyAutomergePass(
     actions: [
       ...pauseLabelActions,
       { action: "merge", status: execute ? "pending" : "planned" },
+      { action: "comment", status: execute ? "pending" : "planned" },
+    ],
+  };
+}
+
+function classifyPassedAutomergeRepair(
+  command: LooseRecord,
+  pauseLabelActions: LooseRecord[],
+  repairReason: string,
+): JsonValue {
+  const alreadyPlanned = autoRepairAlreadyPlanned(command);
+  if (alreadyPlanned) return { ...command, status: "skipped", reason: alreadyPlanned };
+  const repairJobPath = command.target?.job_path ?? command.target?.automerge_job_path;
+  return {
+    ...command,
+    repair_reason: repairReason,
+    status: "ready",
+    actions: [
+      ...pauseLabelActions,
+      ...(command.target?.job_path
+        ? []
+        : [
+            {
+              action: "ensure_automerge_job",
+              job_path: repairJobPath,
+              status: execute ? "pending" : "planned",
+            },
+          ]),
+      {
+        action: "dispatch_repair",
+        workflow,
+        job_path: repairJobPath,
+        mode: command.target?.mode,
+        status: execute ? "pending" : "planned",
+      },
       { action: "comment", status: execute ? "pending" : "planned" },
     ],
   };
@@ -1471,6 +1492,7 @@ function classifyPullTarget(pull: LooseRecord, issueNumber: JsonValue): JsonValu
     automerge_cluster_id: automergeCluster,
     automerge_job_path: adoptedJobPath ?? automergePath,
     mode: jobPath ? dispatchMode(jobPath) : "autonomous",
+    mergeable: pull.mergeable ?? null,
     merge_state_status: pull.mergeStateStatus ?? null,
     review_decision: pull.reviewDecision ?? null,
     checks: summarizeChecks(pull.statusCheckRollup ?? []),

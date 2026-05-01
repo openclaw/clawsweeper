@@ -163,6 +163,23 @@ export function repairableCheckBlockers(checks: LooseRecord = {}) {
   });
 }
 
+export function automergeRebaseRepairReason(target: LooseRecord = {}): string | null {
+  const mergeStateStatus = String(target.merge_state_status ?? target.mergeStateStatus ?? "")
+    .trim()
+    .toUpperCase();
+  if (mergeStateStatus === "DIRTY")
+    return "PR is behind or has merge conflicts and needs a cloud rebase repair before automerge";
+  if (mergeStateStatus === "BEHIND")
+    return "PR is behind the base branch and needs a cloud rebase repair before automerge";
+
+  const mergeable = String(target.mergeable ?? "")
+    .trim()
+    .toUpperCase();
+  if (mergeable === "CONFLICTING")
+    return "PR has merge conflicts and needs a cloud rebase repair before automerge";
+  return null;
+}
+
 export function commandHasAction(command: LooseRecord, actionName: string): boolean {
   return (command.actions ?? []).some((action: JsonValue) => action.action === actionName);
 }
