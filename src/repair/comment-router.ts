@@ -25,6 +25,7 @@ import {
   automergeGateBlockReason,
   automergeClusterId,
   automergeJobPath,
+  automergeMergeFailureRepairReason,
   automergeRebaseRepairReason,
   buildAutomergeMergeArgs,
   commandHasAction,
@@ -952,6 +953,41 @@ function executeCommand(command: LooseRecord) {
       command.status = "waiting";
       return;
     }
+    if (merge.status === "repair_needed" && canRepairPullTarget(command.target)) {
+      const alreadyPlanned = autoRepairAlreadyPlanned(command);
+      if (alreadyPlanned) {
+        command.actions = command.actions.map((action: JsonValue) =>
+          action.action === "merge"
+            ? { ...action, status: "blocked", reason: alreadyPlanned }
+            : action,
+        );
+      } else {
+        command.repair_reason = `${command.repair_reason ?? "structured ClawSweeper verdict: pass"}; ${merge.repair_reason ?? merge.reason}`;
+        const job = ensureAutomergeJob(command);
+        if (job.status_detail === "written") {
+          command.actions.push({
+            action: "dispatch_repair",
+            workflow,
+            job_path: command.target.job_path,
+            mode: command.target.mode,
+            status: "waiting",
+            reason: "adopted job must be committed before worker dispatch",
+          });
+          command.status = "waiting";
+          return;
+        }
+        const repair = dispatchRepair(command);
+        dispatched = { ...dispatched, repair };
+        command.actions.push({
+          action: "dispatch_repair",
+          workflow,
+          job_path: command.target.job_path,
+          mode: command.target.mode,
+          status: "executed",
+          dispatched_at: new Date().toISOString(),
+        });
+      }
+    }
   }
   if (
     command.intent === "clawsweeper_needs_human" &&
@@ -1375,6 +1411,17 @@ function executeAutomerge(command: LooseRecord) {
     }),
   );
   if (result.status !== 0) {
+    const failure = stripAnsi(result.stderr || result.stdout).trim();
+    const repairReason = automergeMergeFailureRepairReason(failure);
+    if (repairReason) {
+      return {
+        action: "merge",
+        status: "repair_needed",
+        reason: `merge command failed: ${failure}`,
+        repair_reason: repairReason,
+        merge_method: "squash",
+      };
+    }
     ensureMergeReadyLabel(command.repo);
     ghBestEffort([
       "issue",
@@ -1388,7 +1435,7 @@ function executeAutomerge(command: LooseRecord) {
     return {
       action: "merge",
       status: "blocked",
-      reason: `merge command failed: ${stripAnsi(result.stderr || result.stdout).trim()}`,
+      reason: `merge command failed: ${failure}`,
       merge_method: "squash",
     };
   }

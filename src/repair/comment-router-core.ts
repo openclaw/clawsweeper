@@ -180,6 +180,23 @@ export function automergeRebaseRepairReason(target: LooseRecord = {}): string | 
   return null;
 }
 
+export function automergeMergeFailureRepairReason(reason: JsonValue): string | null {
+  const text = String(reason ?? "")
+    .trim()
+    .toLowerCase();
+  if (!text) return null;
+  if (text.includes("mergepullrequest") && text.includes("merge conflict")) {
+    return "PR has merge conflicts and needs a cloud rebase repair before automerge";
+  }
+  if (text.includes("pull request has merge conflicts")) {
+    return "PR has merge conflicts and needs a cloud rebase repair before automerge";
+  }
+  if (text.includes("merge command failed") && text.includes("merge conflict")) {
+    return "PR has merge conflicts and needs a cloud rebase repair before automerge";
+  }
+  return null;
+}
+
 export function commandHasAction(command: LooseRecord, actionName: string): boolean {
   return (command.actions ?? []).some((action: JsonValue) => action.action === actionName);
 }
@@ -542,7 +559,7 @@ export function renderResponse(command: LooseRecord, dispatched: LooseRecord) {
       const workflow = dispatchedWorkflowLink(dispatched.repair);
       return [
         marker,
-        "Thanks, ClawSweeper. ClawSweeper saw the passing review, but current checks are failing.",
+        "Thanks, ClawSweeper. ClawSweeper saw the passing review, but the PR needs another repair pass before merge.",
         "",
         `Source: \`${command.trusted_bot_author ?? command.author ?? "trusted automation"}\``,
         `Feedback: ${command.repair_reason ?? "ClawSweeper reported a passing review."}`,
