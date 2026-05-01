@@ -76,7 +76,9 @@ export const REPOSITORY_PROFILES: readonly RepositoryProfile[] = [
 
 export function repositoryProfileFor(targetRepo: string): RepositoryProfile {
   const normalized = normalizeRepo(targetRepo);
-  const profile = REPOSITORY_PROFILES.find((candidate) => candidate.targetRepo === normalized);
+  const profile = REPOSITORY_PROFILES.find(
+    (candidate) => normalizeRepo(candidate.targetRepo) === normalized,
+  );
   if (!profile) {
     throw new Error(
       `Unsupported target repo: ${targetRepo}. Known repos: ${REPOSITORY_PROFILES.map((candidate) => candidate.targetRepo).join(", ")}`,
