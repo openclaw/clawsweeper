@@ -3151,7 +3151,7 @@ function closeReasonText(reason: CloseReason): string {
     case "not_actionable_in_repo":
       return "not actionable in this repository";
     case "incoherent":
-      return "not actionable";
+      return "too unclear to act on";
     case "stale_insufficient_info":
       return "stale with insufficient information";
     case "none":
