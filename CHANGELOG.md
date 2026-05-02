@@ -70,6 +70,8 @@ checkpoint, and status-only commits are intentionally omitted.
   explain the recommended path.
 - Made review prompts acknowledge prior plugin links and prefer public
   `docs.openclaw.ai` links where appropriate.
+- Clarified `incoherent` close-reason wording so rendered reports no longer
+  collide with `not_actionable_in_repo` (#29). Thanks @xthunder0.
 - Made apply runs issue-only by default, with no age floor, while still excluding
   maintainer-authored items.
 - Made apply runs checkpoint their progress, publish dashboard heartbeats, and
