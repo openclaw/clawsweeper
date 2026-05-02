@@ -1058,6 +1058,33 @@ test("not-actionable-in-repo closes are allowed with evidence and comment", () =
   assert.match(action.closeComment, /outside the OpenClaw source shell/);
 });
 
+test("close reason labels keep incoherent distinct from not actionable in repo", () => {
+  const rows = formatRecentClosedRows([
+    {
+      repo: "openclaw/openclaw",
+      number: 1,
+      kind: "issue",
+      title: "Unclear report",
+      closeReason: "incoherent",
+      appliedAt: "2026-04-26T20:00:00.000Z",
+      reportPath: "records/openclaw-openclaw/closed/1.md",
+    },
+    {
+      repo: "openclaw/openclaw",
+      number: 2,
+      kind: "issue",
+      title: "Repository settings request",
+      closeReason: "not_actionable_in_repo",
+      appliedAt: "2026-04-26T20:01:00.000Z",
+      reportPath: "records/openclaw-openclaw/closed/2.md",
+    },
+  ]);
+
+  assert.match(rows, /too unclear to act on/);
+  assert.match(rows, /not actionable in this repository/);
+  assert.doesNotMatch(rows, /\|\s*not actionable\s*\|/);
+});
+
 test("public comments avoid self-referencing the current item number", () => {
   const comment = sanitizePublicSelfReferences(
     "Issue #69400 is tracked by PR #69425, which says Fixes #69400. Close #69400 later.",
