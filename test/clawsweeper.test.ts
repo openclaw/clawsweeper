@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
+
+const tmpPrefix = join(tmpdir(), "clawsweeper-test-");
 
 import {
   applyDecisionPriority,
@@ -38,6 +43,7 @@ import {
   reviewActionForDecision,
   reviewPriority,
   renderReviewCommentFromReport,
+  renderWorkPlanFromReport,
   reviewPromptTelemetryForTest,
   runtimeBudgetExceeded,
   safeOutputTail,
@@ -2095,6 +2101,125 @@ Full review comments:
   assert.match(markers, /clawsweeper-verdict:needs-changes/);
   assert.match(markers, /clawsweeper-action:fix-required/);
   assert.doesNotMatch(markers, /clawsweeper-verdict:needs-human/);
+});
+
+function workPlanCandidateReport(overrides = {}) {
+  const frontmatter = {
+    number: 321,
+    repository: "openclaw/clawsweeper",
+    type: "issue",
+    title: "Render work plans",
+    reviewed_at: new Date().toISOString(),
+    review_status: "complete",
+    local_checkout_access: "verified",
+    decision: "keep_open",
+    action_taken: "kept_open",
+    work_candidate: "queue_fix_pr",
+    work_status: "candidate",
+    work_priority: "medium",
+    work_confidence: "high",
+    work_likely_files: JSON.stringify(["src/clawsweeper.ts", "test/clawsweeper.test.ts"]),
+    work_validation: JSON.stringify(["pnpm run check"]),
+    work_cluster_refs: JSON.stringify(["openclaw/clawsweeper#26"]),
+    ...overrides,
+  };
+  return `---
+${Object.entries(frontmatter)
+  .map(([key, value]) => `${key}: ${value}`)
+  .join("\n")}
+---
+
+# #321: Render work plans
+
+## Summary
+
+The dashboard has queue_fix_pr candidates but no generated coding plan.
+
+## Repair Work Prompt
+
+Render generated plan markdown from existing report fields.
+`;
+}
+
+test("renderWorkPlanFromReport renders dashboard plan artifacts for fresh queue_fix_pr candidates", () => {
+  const plan = renderWorkPlanFromReport(workPlanCandidateReport(), {
+    reportPath: "records/openclaw-clawsweeper/items/321.md",
+  });
+  assert.ok(plan);
+  assert.match(plan, /# Coding Plan for openclaw\/clawsweeper#321: Render work plans/);
+  assert.match(plan, /Render generated plan markdown from existing report fields\./);
+  assert.match(plan, /- `src\/clawsweeper\.ts`/);
+  assert.match(plan, /- `pnpm run check`/);
+  assert.match(plan, /openclaw\/clawsweeper#26/);
+});
+
+test("renderWorkPlanFromReport returns null for stale, reclassified, or non-candidate reports", () => {
+  assert.equal(renderWorkPlanFromReport(workPlanCandidateReport({ work_candidate: "none" })), null);
+  assert.equal(
+    renderWorkPlanFromReport(workPlanCandidateReport({ work_status: "manual_review" })),
+    null,
+  );
+  assert.equal(renderWorkPlanFromReport(workPlanCandidateReport({ action_taken: "closed" })), null);
+  assert.equal(
+    renderWorkPlanFromReport(workPlanCandidateReport({ reviewed_at: "2026-01-01T00:00:00.000Z" })),
+    null,
+  );
+});
+
+test("apply-artifacts writes and removes generated work plans", () => {
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    const artifactDir = join(root, "artifacts");
+    const itemsDir = join(root, "items");
+    const closedDir = join(root, "closed");
+    const plansDir = join(root, "plans");
+    mkdirSync(artifactDir, { recursive: true });
+    writeFileSync(join(artifactDir, "321.md"), workPlanCandidateReport(), "utf8");
+    execFileSync(process.execPath, [
+      "dist/clawsweeper.js",
+      "apply-artifacts",
+      "--target-repo",
+      "openclaw/clawsweeper",
+      "--artifact-dir",
+      artifactDir,
+      "--items-dir",
+      itemsDir,
+      "--closed-dir",
+      closedDir,
+      "--plans-dir",
+      plansDir,
+      "--replay-closed-artifacts",
+      "--skip-reconcile",
+    ]);
+    const planPath = join(plansDir, "321.md");
+    assert.ok(existsSync(planPath));
+    assert.match(readFileSync(planPath, "utf8"), /## Plan\n\nRender generated plan markdown/);
+
+    writeFileSync(
+      join(artifactDir, "321.md"),
+      workPlanCandidateReport({ work_candidate: "none", work_status: "none" }),
+      "utf8",
+    );
+    execFileSync(process.execPath, [
+      "dist/clawsweeper.js",
+      "apply-artifacts",
+      "--target-repo",
+      "openclaw/clawsweeper",
+      "--artifact-dir",
+      artifactDir,
+      "--items-dir",
+      itemsDir,
+      "--closed-dir",
+      closedDir,
+      "--plans-dir",
+      plansDir,
+      "--replay-closed-artifacts",
+      "--skip-reconcile",
+    ]);
+    assert.equal(existsSync(planPath), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("security-needs-attention reports block unopted repair and automerge pass markers", () => {

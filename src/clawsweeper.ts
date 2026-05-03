@@ -371,6 +371,7 @@ interface DashboardItem {
   action: string;
   reviewStatus: string;
   reportPath: string;
+  planPath?: string | undefined;
   workCandidate: string;
   workPriority: string;
   workStatus: string;
@@ -904,6 +905,10 @@ function defaultItemsDir(profile = targetProfile()): string {
 
 function defaultClosedDir(profile = targetProfile()): string {
   return join(repoRecordsDir(profile), "closed");
+}
+
+function defaultPlansDir(profile = targetProfile()): string {
+  return join(repoRecordsDir(profile), "plans");
 }
 
 function reportFileName(repo: string, number: number): string {
@@ -4643,6 +4648,111 @@ function reportDecision(markdown: string, closeReason: CloseReason): Decision {
   };
 }
 
+function workPlanPathForReport(file: string, plansDir = defaultPlansDir()): string {
+  return join(plansDir, basename(file));
+}
+
+function shouldRenderWorkPlanFromReport(markdown: string): boolean {
+  return (
+    frontMatterValue(markdown, "decision") === "keep_open" &&
+    frontMatterValue(markdown, "action_taken") === "kept_open" &&
+    frontMatterValue(markdown, "work_candidate") === "queue_fix_pr" &&
+    frontMatterValue(markdown, "work_status") === "candidate" &&
+    isFresh({
+      reviewedAt: frontMatterValue(markdown, "reviewed_at"),
+      reviewStatus: effectiveReviewStatus(markdown),
+    })
+  );
+}
+
+function formattedMarkdownList(
+  values: readonly string[],
+  formatter: (value: string) => string,
+): string {
+  return values.length ? values.map((value) => `- ${formatter(value)}`).join("\n") : "- none";
+}
+
+function inlineCode(value: string): string {
+  return `\`${value.replaceAll("`", "\\`")}\``;
+}
+
+export function renderWorkPlanFromReport(
+  markdown: string,
+  options: { reportPath?: string } = {},
+): string | null {
+  if (!shouldRenderWorkPlanFromReport(markdown)) return null;
+  const repo = markdownRepository(markdown);
+  const number = frontMatterValue(markdown, "number") ?? "unknown";
+  const title = frontMatterValue(markdown, "title") ?? "Untitled";
+  const reviewedAt = frontMatterValue(markdown, "reviewed_at") ?? "unknown";
+  const workPrompt = reviewSectionValue(markdown, "repairWorkPrompt").trim();
+  const likelyFiles = frontMatterStringArray(markdown, "work_likely_files");
+  const validation = frontMatterStringArray(markdown, "work_validation");
+  const clusterRefs = frontMatterStringArray(markdown, "work_cluster_refs");
+  const reportPath = options.reportPath ?? "unknown";
+  return `---
+number: ${number}
+repository: ${repo}
+title: ${JSON.stringify(title)}
+source_report: ${reportPath}
+reviewed_at: ${reviewedAt}
+work_candidate: ${frontMatterValue(markdown, "work_candidate") ?? "none"}
+work_priority: ${frontMatterValue(markdown, "work_priority") ?? "low"}
+work_confidence: ${frontMatterValue(markdown, "work_confidence") ?? "low"}
+---
+
+# Coding Plan for ${repo}#${number}: ${title}
+
+Source report: ${reportPath === "unknown" ? "unknown" : markdownLink(reportPath, reportPath)}
+
+## Summary
+
+${reviewSectionValue(markdown, "summary") || "No summary provided."}
+
+## Plan
+
+${workPrompt || "No repair work prompt provided."}
+
+## Likely Files
+
+${formattedMarkdownList(likelyFiles, inlineCode)}
+
+## Validation
+
+${formattedMarkdownList(validation, inlineCode)}
+
+## Cluster References
+
+${formattedMarkdownList(clusterRefs, (value) => value)}
+
+## Notes
+
+- This file is generated dashboard state from the durable review report.
+- Regenerate it from the source report instead of editing it by hand.
+`;
+}
+
+function syncWorkPlanFromReport(options: {
+  markdown: string;
+  reportPath: string;
+  plansDir: string;
+  dryRun?: boolean;
+}): boolean {
+  const planPath = workPlanPathForReport(options.reportPath, options.plansDir);
+  const plan = renderWorkPlanFromReport(options.markdown, {
+    reportPath: repoRelativePath(options.reportPath),
+  });
+  if (!plan) {
+    if (!options.dryRun && existsSync(planPath)) unlinkSync(planPath);
+    return false;
+  }
+  if (!options.dryRun) {
+    ensureDir(dirname(planPath));
+    writeFileSync(planPath, plan, "utf8");
+  }
+  return true;
+}
+
 function runtimeReviewText(runtime?: {
   model?: string | undefined;
   reasoningEffort?: string | undefined;
@@ -6154,6 +6264,11 @@ function applyDecisionsCommand(args: Args): void {
       if (dryRun) return;
       ensureDir(closedDir);
       writeFileSync(path, nextMarkdown, "utf8");
+      syncWorkPlanFromReport({
+        markdown: nextMarkdown,
+        reportPath: path,
+        plansDir: defaultPlansDir(),
+      });
       renameSync(path, join(closedDir, file));
     };
     const markApplySkipped = (actionTaken: ActionTaken, reason: string): boolean => {
@@ -6484,6 +6599,7 @@ function applyArtifactsCommand(args: Args): void {
   const artifactDir = resolve(stringArg(args.artifact_dir, "artifacts"));
   const itemsDir = resolve(stringArg(args.items_dir, defaultItemsDir()));
   const closedDir = resolve(stringArg(args.closed_dir, defaultClosedDir()));
+  const plansDir = resolve(stringArg(args.plans_dir, defaultPlansDir()));
   const skipReconcile = boolArg(args.skip_reconcile);
   const replayClosedArtifacts = boolArg(args.replay_closed_artifacts);
   const maxPages = numberArg(args.max_pages, 250);
@@ -6517,14 +6633,21 @@ function applyArtifactsCommand(args: Args): void {
       const destinationDir = destination === "closed" ? closedDir : itemsDir;
       const stalePath = join(destinationDir === itemsDir ? closedDir : itemsDir, destinationFile);
       if (existsSync(stalePath)) unlinkSync(stalePath);
-      writeFileSync(join(destinationDir, destinationFile), markdown, "utf8");
+      const reportPath = join(destinationDir, destinationFile);
+      writeFileSync(reportPath, markdown, "utf8");
+      if (destination === "closed") {
+        const planPath = workPlanPathForReport(reportPath, plansDir);
+        if (existsSync(planPath)) unlinkSync(planPath);
+      } else {
+        syncWorkPlanFromReport({ markdown, reportPath, plansDir });
+      }
       appliedArtifacts += 1;
     }
   }
   console.error(
     `[apply-artifacts] applied=${appliedArtifacts} skipped_closed=${skippedClosedArtifacts}`,
   );
-  if (!skipReconcile) reconcileFolders({ itemsDir, closedDir });
+  if (!skipReconcile) reconcileFolders({ itemsDir, closedDir, plansDir });
 }
 
 function artifactTargetIsOpen(number: number, openNumbers: Set<number> | null): boolean {
@@ -6927,6 +7050,7 @@ function moveMarkdownFile(options: {
 function reconcileFolders(options: {
   itemsDir: string;
   closedDir: string;
+  plansDir?: string;
   maxPages?: number;
   dryRun?: boolean;
   fetchClosedAt?: boolean;
@@ -6934,6 +7058,7 @@ function reconcileFolders(options: {
   const maxPages = options.maxPages ?? 250;
   const dryRun = options.dryRun ?? false;
   const fetchClosedAt = options.fetchClosedAt ?? true;
+  const plansDir = options.plansDir ?? defaultPlansDir();
   ensureDir(options.itemsDir);
   ensureDir(options.closedDir);
   const { numbers: openNumbers, pagesScanned } = fetchOpenItemNumbers(maxPages);
@@ -6965,6 +7090,10 @@ function reconcileFolders(options: {
     }
     const markdown = markReconciledState(sourceMarkdown, "closed", { closedAt });
     moveMarkdownFile({ sourcePath, destinationPath, markdown, dryRun });
+    if (!dryRun) {
+      const planPath = workPlanPathForReport(sourcePath, plansDir);
+      if (existsSync(planPath)) unlinkSync(planPath);
+    }
     movedToClosed += 1;
   }
 
@@ -6982,6 +7111,7 @@ function reconcileFolders(options: {
     }
     const markdown = markReconciledState(sourceMarkdown, "open");
     moveMarkdownFile({ sourcePath, destinationPath, markdown, dryRun });
+    syncWorkPlanFromReport({ markdown, reportPath: destinationPath, plansDir, dryRun });
     movedToItems += 1;
   }
 
@@ -6999,10 +7129,18 @@ function reconcileCommand(args: Args): void {
   repoFromArgs(args);
   const itemsDir = resolve(stringArg(args.items_dir, defaultItemsDir()));
   const closedDir = resolve(stringArg(args.closed_dir, defaultClosedDir()));
+  const plansDir = resolve(stringArg(args.plans_dir, defaultPlansDir()));
   const maxPages = numberArg(args.max_pages, 250);
   const dryRun = boolArg(args.dry_run);
   const fetchClosedAt = !boolArg(args.skip_closed_at);
-  const result = reconcileFolders({ itemsDir, closedDir, maxPages, dryRun, fetchClosedAt });
+  const result = reconcileFolders({
+    itemsDir,
+    closedDir,
+    plansDir,
+    maxPages,
+    dryRun,
+    fetchClosedAt,
+  });
   console.log(JSON.stringify(result, null, 2));
 }
 
@@ -7062,6 +7200,7 @@ function dashboardStats(
 ): DashboardStats {
   const files = markdownFiles(itemsDir);
   const closedFiles = markdownFiles(closedDir);
+  const plansDir = defaultPlansDir(profile);
   const now = Date.now();
   let fresh = 0;
   let proposedClose = 0;
@@ -7132,6 +7271,9 @@ function dashboardStats(
       action,
       reviewStatus,
       reportPath: repoRelativePath(join(itemsDir, file)),
+      planPath: existsSync(join(plansDir, file))
+        ? repoRelativePath(join(plansDir, file))
+        : undefined,
       workCandidate,
       workPriority,
       workStatus,
@@ -7340,9 +7482,12 @@ function formatWorkQueueRows(items: readonly DashboardItem[], limit = 10): strin
         const repo = item.repo ?? targetRepo();
         const title = markdownTableCell(displayTitle(item.title));
         const report = markdownLink(item.reportPath, reportFileUrl(item.number, item.reportPath));
-        return `| ${markdownLink(`#${item.number}`, itemUrlFor(repo, item.number, item.kind))} | ${title} | ${item.workPriority} | ${item.workStatus} | ${formatTimestamp(item.reviewedAt)} | ${report} |`;
+        const plan = item.planPath
+          ? markdownLink(item.planPath, reportFileUrl(item.number, item.planPath))
+          : "_pending_";
+        return `| ${markdownLink(`#${item.number}`, itemUrlFor(repo, item.number, item.kind))} | ${title} | ${item.workPriority} | ${item.workStatus} | ${formatTimestamp(item.reviewedAt)} | ${plan} | ${report} |`;
       })
-      .join("\n") || "| _None_ |  |  |  |  |  |"
+      .join("\n") || "| _None_ |  |  |  |  |  |  |"
   );
 }
 
@@ -7385,9 +7530,12 @@ function formatFleetWorkQueueRows(items: readonly DashboardItem[], limit = 15): 
         const repo = item.repo ?? targetRepo();
         const title = markdownTableCell(displayTitle(item.title));
         const report = markdownLink(item.reportPath, reportFileUrl(item.number, item.reportPath));
-        return `| ${markdownLink(repo, repoUrlFor(repo))} | ${markdownLink(`#${item.number}`, itemUrlFor(repo, item.number, item.kind))} | ${title} | ${item.workPriority} | ${item.workStatus} | ${formatTimestamp(item.reviewedAt)} | ${report} |`;
+        const plan = item.planPath
+          ? markdownLink(item.planPath, reportFileUrl(item.number, item.planPath))
+          : "_pending_";
+        return `| ${markdownLink(repo, repoUrlFor(repo))} | ${markdownLink(`#${item.number}`, itemUrlFor(repo, item.number, item.kind))} | ${title} | ${item.workPriority} | ${item.workStatus} | ${formatTimestamp(item.reviewedAt)} | ${plan} | ${report} |`;
       })
-      .join("\n") || "| _None_ |  |  |  |  |  |  |"
+      .join("\n") || "| _None_ |  |  |  |  |  |  |  |"
   );
 }
 
@@ -7553,8 +7701,8 @@ ${formatRecentClosedRows(stats.recentClosed)}
 
 #### Work Candidates
 
-| Item | Title | Priority | Status | Reviewed | Report |
-| --- | --- | --- | --- | --- | --- |
+| Item | Title | Priority | Status | Reviewed | Plan | Report |
+| --- | --- | --- | --- | --- | --- | --- |
 ${formatWorkQueueRows(stats.workQueue)}
 
 #### Recently Reviewed
@@ -7680,8 +7828,8 @@ ${formatFleetRecentClosedRows(recentClosed)}
 
 ### Work Candidates Across Repos
 
-| Repository | Item | Title | Priority | Status | Reviewed | Report |
-| --- | --- | --- | --- | --- | --- | --- |
+| Repository | Item | Title | Priority | Status | Reviewed | Plan | Report |
+| --- | --- | --- | --- | --- | --- | --- | --- |
 ${formatFleetWorkQueueRows(workQueue)}
 
 <details>

@@ -16,7 +16,16 @@ Reports store the lane fields in frontmatter:
 - `work_cluster_refs`, `work_validation`, and `work_likely_files`
 
 The dashboard shows fresh `queue_fix_pr` reports whose `work_status` is
-`candidate`. This is a manual promotion queue for the repair lane.
+`candidate`. This is a manual promotion queue for the repair lane. For each
+fresh candidate, apply/reconcile also generates
+`records/<repo-slug>/plans/<number>.md` from the existing report fields. The
+dashboard links both the source report and the generated coding plan so
+maintainers can promote from a concise implementation view without editing the
+durable report.
+
+Plan artifacts are generated state. They are removed when the item closes,
+archives, becomes stale, or is reclassified away from `queue_fix_pr`; regenerate
+them from the source report instead of editing them by hand.
 
 ## Reproducible Bug Auto-Implementation
 

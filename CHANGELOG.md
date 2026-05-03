@@ -15,6 +15,8 @@ checkpoint, and status-only commits are intentionally omitted.
   checked-in source of truth.
 - Replaced per-lane capacity config with a single `workers.max` budget and
   dynamic background lane scheduling.
+- Added generated coding-plan artifacts for fresh `queue_fix_pr` work candidates
+  and linked them from the dashboard work-candidate tables.
 - Added a generated 1200x630 social preview card plus large-image Open Graph and
   Twitter metadata for the docs site.
 
