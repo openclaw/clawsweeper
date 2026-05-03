@@ -72,6 +72,18 @@ export const REPOSITORY_PROFILES: readonly RepositoryProfile[] = [
       pull_request: ["implemented_on_main"],
     },
   },
+  {
+    targetRepo: "iambuddy829-del/harnes",
+    slug: "iambuddy829-del-harnes",
+    displayName: "Harnes",
+    checkoutDir: "harnes",
+    promptNote:
+      "Use the Harnes source tree (private CanTime ops audit/readiness harness) and current main branch. Conservative review like the ClawSweeper self-review profile. Codex-CLI generated PRs land here regularly; ClawSweeper is being adopted to gate trusted automerge for those.",
+    applyCloseRules: {
+      issue: [],
+      pull_request: ["implemented_on_main"],
+    },
+  },
 ];
 
 export function repositoryProfileFor(targetRepo: string): RepositoryProfile {
