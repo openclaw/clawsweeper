@@ -72,6 +72,18 @@ export const REPOSITORY_PROFILES: readonly RepositoryProfile[] = [
       pull_request: ["implemented_on_main"],
     },
   },
+  {
+    targetRepo: "Barenhvrd/polymarket-bot",
+    slug: "barenhvrd-polymarket-bot",
+    displayName: "Polymarket Bot",
+    checkoutDir: "polymarket-bot",
+    promptNote:
+      "Use the Polymarket bot source tree and current main branch. This is a live-trading automation repository, so review issues and PRs conservatively for correctness, safety, operational risk, and reproducibility. Keep apply disabled for both issues and pull requests until maintainers explicitly opt into close automation.",
+    applyCloseRules: {
+      issue: [],
+      pull_request: [],
+    },
+  },
 ];
 
 export function repositoryProfileFor(targetRepo: string): RepositoryProfile {

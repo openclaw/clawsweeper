@@ -10,6 +10,15 @@ test("repositoryProfileFor matches mixed-case input against canonical profiles",
   assert.equal(profile.slug, "openclaw-clawhub");
 });
 
+test("polymarket-bot profile is review-only", () => {
+  const profile = repositoryProfileFor("barenhvrd/polymarket-bot");
+
+  assert.equal(profile.slug, "barenhvrd-polymarket-bot");
+  assert.equal(profile.checkoutDir, "polymarket-bot");
+  assert.deepEqual(profile.applyCloseRules.issue, []);
+  assert.deepEqual(profile.applyCloseRules.pull_request, []);
+});
+
 test("profile lookup normalizes candidate target repos as well as input", () => {
   const mixedCaseProfile = {
     ...REPOSITORY_PROFILES[0],
