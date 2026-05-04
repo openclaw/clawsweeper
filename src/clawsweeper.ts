@@ -6172,6 +6172,7 @@ function applyDecisionsCommand(args: Args): void {
   repoFromArgs(args);
   const itemsDir = resolve(stringArg(args.items_dir, defaultItemsDir()));
   const closedDir = resolve(stringArg(args.closed_dir, defaultClosedDir()));
+  const plansDir = resolve(stringArg(args.plans_dir, defaultPlansDir()));
   const limit = numberArg(args.limit, 20);
   const processedLimit = numberArg(args.processed_limit, Math.max(limit * 2, 50));
   const minAgeDays = numberArg(args.min_age_days, 0);
@@ -6267,7 +6268,7 @@ function applyDecisionsCommand(args: Args): void {
       syncWorkPlanFromReport({
         markdown: nextMarkdown,
         reportPath: path,
-        plansDir: defaultPlansDir(),
+        plansDir,
       });
       renameSync(path, join(closedDir, file));
     };

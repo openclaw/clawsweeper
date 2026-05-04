@@ -2222,6 +2222,87 @@ test("apply-artifacts writes and removes generated work plans", () => {
   }
 });
 
+test("apply-decisions removes archived work plans from the scoped plans directory", () => {
+  const root = mkdtempSync(tmpPrefix);
+  const originalPath = process.env.PATH;
+  const defaultPlanDir = join(process.cwd(), "records", "openclaw-clawsweeper", "plans");
+  const defaultPlanPath = join(defaultPlanDir, "321.md");
+  try {
+    const binDir = join(root, "bin");
+    const itemsDir = join(root, "items");
+    const closedDir = join(root, "closed");
+    const plansDir = join(root, "plans");
+    mkdirSync(binDir, { recursive: true });
+    mkdirSync(itemsDir, { recursive: true });
+    mkdirSync(plansDir, { recursive: true });
+    mkdirSync(defaultPlanDir, { recursive: true });
+    writeFileSync(
+      join(binDir, "gh"),
+      `#!/usr/bin/env node
+const args = process.argv.slice(2).join(" ");
+if (args.includes("/comments")) {
+  console.log(JSON.stringify([[]]));
+} else {
+  console.log(JSON.stringify({
+    number: 321,
+    title: "Render work plans",
+    html_url: "https://github.com/openclaw/clawsweeper/issues/321",
+    created_at: "2026-05-01T00:00:00Z",
+    updated_at: "2026-05-01T00:00:00Z",
+    closed_at: "2026-05-02T00:00:00Z",
+    state: "closed",
+    locked: false,
+    active_lock_reason: null,
+    author_association: "CONTRIBUTOR",
+    user: { login: "reporter" },
+    labels: [],
+    pull_request: null
+  }));
+}
+`,
+      { mode: 0o755 },
+    );
+    writeFileSync(
+      join(itemsDir, "321.md"),
+      workPlanCandidateReport({
+        item_snapshot_hash: "reviewed-snapshot",
+        item_updated_at: "2026-05-01T00:00:00Z",
+      }),
+      "utf8",
+    );
+    writeFileSync(join(plansDir, "321.md"), "scoped generated plan\n", "utf8");
+    writeFileSync(defaultPlanPath, "default generated plan\n", "utf8");
+
+    process.env.PATH = `${binDir}:${originalPath ?? ""}`;
+    execFileSync(process.execPath, [
+      "dist/clawsweeper.js",
+      "apply-decisions",
+      "--target-repo",
+      "openclaw/clawsweeper",
+      "--items-dir",
+      itemsDir,
+      "--closed-dir",
+      closedDir,
+      "--plans-dir",
+      plansDir,
+      "--limit",
+      "1",
+      "--processed-limit",
+      "1",
+      "--close-delay-ms",
+      "0",
+    ]);
+
+    assert.equal(existsSync(join(plansDir, "321.md")), false);
+    assert.ok(existsSync(defaultPlanPath));
+    assert.ok(existsSync(join(closedDir, "321.md")));
+  } finally {
+    process.env.PATH = originalPath;
+    rmSync(root, { recursive: true, force: true });
+    rmSync(defaultPlanPath, { force: true });
+  }
+});
+
 test("security-needs-attention reports block unopted repair and automerge pass markers", () => {
   const securitySection = `
 ## Security Review
