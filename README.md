@@ -94,6 +94,32 @@ and backfills. `pnpm commit-reports -- --since 24h`, `--findings`,
 `--non-clean`, `--repo`, and `--author` query flat per-SHA commit storage
 without date buckets.
 
+External repositories should not add one-off private target profiles upstream.
+Set the repository variable `CLAWSWEEPER_EXTRA_PROFILES_JSON` to a JSON array
+instead. Extra profiles are intentionally conservative: issue auto-close is
+always disabled, and pull-request auto-close can only opt into
+`implemented_on_main`.
+
+```json
+[
+  {
+    "targetRepo": "example-org/ops-bot",
+    "displayName": "Ops Bot",
+    "checkoutDir": "ops-bot",
+    "promptNote": "Focus on operational safety and reproducible evidence.",
+    "applyCloseRules": {
+      "issue": [],
+      "pull_request": []
+    }
+  }
+]
+```
+
+Local operators can also point `CLAWSWEEPER_EXTRA_PROFILES_PATH` at the same JSON
+array. Slugs default to the normalized `owner-repo` form, checkout directories
+default to the repository name, and extra profiles cannot override built-in
+OpenClaw targets.
+
 ## Guardrails
 
 ClawSweeper may propose a close only when the item is clearly one of these:
