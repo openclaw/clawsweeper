@@ -12,6 +12,7 @@ export const DEFAULT_REPAIR_RUN_NAME_PREFIX = "repair cluster ";
 const DEFAULT_CAPACITY_POLL_MS = 30_000;
 const DEFAULT_CAPACITY_TIMEOUT_MS = 30 * 60 * 1000;
 const ACTIVE_WORKFLOW_STATUSES = ["queued", "in_progress", "waiting", "requested", "pending"];
+const ACTIVE_WORKFLOW_STATUS_SET = new Set(ACTIVE_WORKFLOW_STATUSES);
 
 export function readMaxLiveWorkers(args: LooseRecord = {}) {
   return readMaxLiveWorkerLimit(
@@ -110,24 +111,16 @@ export function listActiveWorkflowRuns({
   workflow = REPAIR_CLUSTER_WORKFLOW,
   runNamePrefix = "",
   excludeRunNamePrefix = "",
+  fetchWorkflowRuns = fetchRecentWorkflowRuns,
 }: LooseRecord = {}) {
-  const runs: LooseRecord[] = [];
-  for (const status of ACTIVE_WORKFLOW_STATUSES) {
-    const workflowRuns = ghJson([
-      "api",
-      "--method",
-      "GET",
-      `repos/${repo}/actions/workflows/${encodeURIComponent(workflow)}/runs`,
-      "-f",
-      `status=${status}`,
-      "-f",
-      "per_page=100",
-      "--jq",
-      ".workflow_runs",
-    ]);
-    if (Array.isArray(workflowRuns))
-      runs.push(...workflowRuns.map((run: JsonValue) => normalizeWorkflowRun(run, status)));
-  }
+  const fetchRuns =
+    typeof fetchWorkflowRuns === "function" ? fetchWorkflowRuns : fetchRecentWorkflowRuns;
+  const workflowRuns = fetchRuns({ repo, workflow });
+  const runs = Array.isArray(workflowRuns)
+    ? workflowRuns
+        .filter(isActiveWorkflowRun)
+        .map((run: JsonValue) => normalizeWorkflowRun(run, String(run.status ?? "")))
+    : [];
   return [
     ...new Map(runs.map((run: JsonValue) => [String(run.databaseId ?? run.id), run])).values(),
   ]
@@ -136,6 +129,19 @@ export function listActiveWorkflowRuns({
       (left: JsonValue, right: JsonValue) =>
         Date.parse(right.createdAt ?? "") - Date.parse(left.createdAt ?? ""),
     );
+}
+
+function fetchRecentWorkflowRuns({ repo, workflow }: LooseRecord) {
+  return ghJson([
+    "api",
+    "--method",
+    "GET",
+    `repos/${repo}/actions/workflows/${encodeURIComponent(workflow)}/runs`,
+    "-f",
+    "per_page=100",
+    "--jq",
+    ".workflow_runs",
+  ]);
 }
 
 export function repairRunNamePrefixForJob(
@@ -227,6 +233,10 @@ export function normalizeWorkflowRun(run: LooseRecord, fallbackStatus: string) {
     url: run.html_url ?? run.url ?? null,
     displayTitle: run.displayTitle ?? run.display_title ?? run.name ?? null,
   };
+}
+
+function isActiveWorkflowRun(run: LooseRecord) {
+  return ACTIVE_WORKFLOW_STATUS_SET.has(String(run.status ?? ""));
 }
 
 function joinRepairRunNamePrefix(prefix: JsonValue, jobPath: string) {

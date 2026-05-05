@@ -28,6 +28,9 @@ checkpoint, and status-only commits are intentionally omitted.
 - Fixed live worker scheduling to filter GitHub Actions runs through supported
   `workflowName` JSON fields instead of silently falling back to zero active
   workers when `gh run list --workflow` is unavailable.
+- Reduced repair live-capacity polling from one GitHub Actions API request per
+  active status to a single recent-runs request filtered locally, and avoided an
+  immediate duplicate capacity probe in the dispatch loop.
 - Retried Codex edit workers after TPM/rate-limit exits and collapsed JSONL failure transcripts into concise repair status reasons.
 - Added deterministic merged closing-PR provenance to issue close reports and
   public close comments when GitHub exposes a high-confidence closing PR.

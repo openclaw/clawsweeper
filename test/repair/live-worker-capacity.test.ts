@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   MAX_LIVE_WORKERS,
+  listActiveWorkflowRuns,
   normalizeWorkflowRun,
   readMaxLiveWorkers,
   repairRunNameForJob,
@@ -60,4 +61,55 @@ test("workflow run normalization prefers the human Actions URL", () => {
     "queued",
   );
   assert.equal(run.url, "https://github.com/openclaw/clawsweeper/actions/runs/123");
+});
+
+test("active workflow runs are filtered from one recent-runs fetch", () => {
+  const calls = [];
+  const runs = listActiveWorkflowRuns({
+    repo: "openclaw/clawsweeper",
+    workflow: "repair-cluster.yml",
+    runNamePrefix: "repair cluster ",
+    excludeRunNamePrefix: "repair cluster skip",
+    fetchWorkflowRuns: ({ repo, workflow }) => {
+      calls.push({ repo, workflow });
+      return [
+        {
+          id: 1,
+          status: "completed",
+          display_title: "repair cluster completed",
+          created_at: "2026-05-05T00:04:00.000Z",
+        },
+        {
+          id: 2,
+          status: "queued",
+          display_title: "repair cluster older.md",
+          created_at: "2026-05-05T00:01:00.000Z",
+        },
+        {
+          id: 3,
+          status: "in_progress",
+          display_title: "repair cluster newer.md",
+          created_at: "2026-05-05T00:03:00.000Z",
+        },
+        {
+          id: 4,
+          status: "waiting",
+          display_title: "repair cluster skip this.md",
+          created_at: "2026-05-05T00:05:00.000Z",
+        },
+        {
+          id: 5,
+          status: "requested",
+          display_title: "automerge repair jobs/openclaw/inbox/pr.md",
+          created_at: "2026-05-05T00:02:00.000Z",
+        },
+      ];
+    },
+  });
+
+  assert.deepEqual(calls, [{ repo: "openclaw/clawsweeper", workflow: "repair-cluster.yml" }]);
+  assert.deepEqual(
+    runs.map((run) => run.databaseId),
+    [3, 2],
+  );
 });

@@ -7,7 +7,6 @@ import {
   activeRepairWorkflowRunForJob,
   assertLiveWorkerCapacity,
   currentProjectRepo,
-  liveWorkerCapacity,
   parseArgs,
   parseJob,
   readMaxLiveWorkers,
@@ -87,10 +86,9 @@ while (!failed && index < jobs.length) {
       requested: 1,
       maxLiveWorkers,
     });
-    const refreshed = liveWorkerCapacity({ repo, workflow, requested: 1, maxLiveWorkers });
-    batchSize = Math.min(batchSize, Math.max(1, refreshed.available || capacity.available || 1));
+    batchSize = Math.min(batchSize, Math.max(1, capacity.available || 1));
     console.log(
-      `live worker capacity: ${refreshed.active}/${refreshed.max_live_workers} active; dispatching next ${batchSize} run(s)`,
+      `live worker capacity: ${capacity.active}/${capacity.max_live_workers} active; dispatching next ${batchSize} run(s)`,
     );
   }
 
