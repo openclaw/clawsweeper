@@ -100,6 +100,8 @@ checkpoint, and status-only commits are intentionally omitted.
   commit lists no longer process entries that are omitted from Codex input.
 - Thanks @stainlu for the repair prompt, GitHub pagination, lazy context
   compaction, and review telemetry PRs.
+- Cached the static review prompt and decision schema within each ClawSweeper
+  process instead of re-reading them during review planning and item prompts.
 
 ## 0.2.0 - 2026-05-03
 

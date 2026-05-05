@@ -38,7 +38,9 @@ import {
   reviewActionForDecision,
   reviewPriority,
   renderReviewCommentFromReport,
+  reviewDecisionSchemaText,
   reviewPromptTelemetryForTest,
+  reviewPromptTemplate,
   runtimeBudgetExceeded,
   safeOutputTail,
   sameAuthorCounterpartApplyReason,
@@ -211,6 +213,14 @@ test("compactMappedSlice maps every entry when no compaction is needed", () => {
   });
   assert.deepEqual(result, [10, 20, 30]);
   assert.deepEqual(mapped, [1, 2, 3]);
+});
+
+test("review prompt assets match tracked files", () => {
+  assert.equal(reviewPromptTemplate(), readFileSync("prompts/review-item.md", "utf8"));
+  assert.deepEqual(
+    JSON.parse(reviewDecisionSchemaText()),
+    JSON.parse(readFileSync("schema/clawsweeper-decision.schema.json", "utf8")),
+  );
 });
 
 test("main CLI args ignore package-manager double dash separators", () => {

@@ -639,6 +639,8 @@ const DEFAULT_CODEX_MODEL = "gpt-5.5";
 const DEFAULT_REASONING_EFFORT = "high";
 const DEFAULT_SERVICE_TIER = "";
 const REVIEW_POLICY_VERSION = "2026-05-05-policy-v13";
+const REVIEW_ITEM_PROMPT_PATH = join(ROOT, "prompts", "review-item.md");
+const CLAWSWEEPER_DECISION_SCHEMA_PATH = join(ROOT, "schema", "clawsweeper-decision.schema.json");
 const REVIEW_COMMENT_MARKER_PREFIX = "<!-- clawsweeper-review";
 const REVIEW_START_STATUS_MARKER_PREFIX = "<!-- clawsweeper-review-status";
 const AUTOMERGE_LABEL = "clawsweeper:automerge";
@@ -1068,6 +1070,9 @@ function ghJsonLines<T>(args: string[]): T[] {
 function sha256(text: string): string {
   return createHash("sha256").update(text).digest("hex");
 }
+
+let reviewPromptTemplateCache: string | undefined;
+let reviewDecisionSchemaCache: string | undefined;
 
 function itemSnapshotHash(item: Item, context: ItemContext): string {
   const snapshotItem = {
@@ -3243,12 +3248,14 @@ function gitInfo(openclawDir: string): GitInfo {
   return { mainSha, latestRelease };
 }
 
-function reviewPromptTemplate(): string {
-  return readFileSync(join(ROOT, "prompts", "review-item.md"), "utf8");
+export function reviewPromptTemplate(): string {
+  reviewPromptTemplateCache ??= readFileSync(REVIEW_ITEM_PROMPT_PATH, "utf8");
+  return reviewPromptTemplateCache;
 }
 
-function reviewDecisionSchemaText(): string {
-  return readFileSync(join(ROOT, "schema", "clawsweeper-decision.schema.json"), "utf8");
+export function reviewDecisionSchemaText(): string {
+  reviewDecisionSchemaCache ??= readFileSync(CLAWSWEEPER_DECISION_SCHEMA_PATH, "utf8");
+  return reviewDecisionSchemaCache;
 }
 
 function contextJsonForPrompt(context: ItemContext): string {
@@ -3465,7 +3472,7 @@ function runCodex(options: {
       "-C",
       options.openclawDir,
       "--output-schema",
-      join(ROOT, "schema", "clawsweeper-decision.schema.json"),
+      CLAWSWEEPER_DECISION_SCHEMA_PATH,
       "--output-last-message",
       outputPath,
       "--sandbox",
@@ -7735,7 +7742,7 @@ function statusCommand(args: Args): void {
 }
 
 function checkCommand(): void {
-  JSON.parse(readFileSync(join(ROOT, "schema", "clawsweeper-decision.schema.json"), "utf8"));
+  JSON.parse(reviewDecisionSchemaText());
   if (!existsSync(join(ROOT, ".github", "workflows", "sweep.yml")))
     throw new Error("Missing workflow");
   console.log("ok");
