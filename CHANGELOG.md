@@ -80,6 +80,8 @@ checkpoint, and status-only commits are intentionally omitted.
   replayed automerge commands.
 - Updated targeted re-review command comments with live progress while the review
   workflow runs.
+- Compacted review prompt context lazily so large comment, timeline, file, and
+  commit lists no longer process entries that are omitted from Codex input.
 
 ## 0.2.0 - 2026-05-03
 

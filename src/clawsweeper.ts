@@ -1397,14 +1397,19 @@ export function closeReasonApplyAgeSkipReason(
   return null;
 }
 
-function compactSlice<T>(items: T[], limit: number): unknown[] {
-  if (items.length <= limit) return items as unknown[];
-  const keepStart = Math.floor(limit / 2);
-  const keepEnd = Math.max(0, limit - keepStart);
+export function compactMappedSlice<T>(
+  items: readonly T[],
+  limit: number,
+  mapper: (item: T) => unknown,
+): unknown[] {
+  const boundedLimit = Math.max(0, Math.floor(limit));
+  if (items.length <= boundedLimit) return items.map(mapper);
+  const keepStart = Math.floor(boundedLimit / 2);
+  const keepEnd = Math.max(0, boundedLimit - keepStart);
   return [
-    ...items.slice(0, keepStart),
-    { omitted: items.length - limit, note: "middle entries omitted from prompt context" },
-    ...items.slice(items.length - keepEnd),
+    ...items.slice(0, keepStart).map(mapper),
+    { omitted: items.length - boundedLimit, note: "middle entries omitted from prompt context" },
+    ...(keepEnd > 0 ? items.slice(items.length - keepEnd).map(mapper) : []),
   ];
 }
 
@@ -3041,8 +3046,8 @@ function collectItemContext(item: Item): ItemContext {
   const timeline = ghPaged<unknown>(`repos/${targetRepo()}/issues/${item.number}/timeline`);
   const context: ItemContext = {
     issue: compactIssue(issue),
-    comments: compactSlice(comments.map(compactComment), 24),
-    timeline: compactSlice(timeline.map(compactTimelineEvent), 80),
+    comments: compactMappedSlice(comments, 24, compactComment),
+    timeline: compactMappedSlice(timeline, 80, compactTimelineEvent),
     counts: {
       comments: comments.length,
       timeline: timeline.length,
@@ -3053,7 +3058,7 @@ function collectItemContext(item: Item): ItemContext {
   if (item.kind === "issue") {
     const closingPullRequests = closingPullRequestsForIssue(item.number);
     if (closingPullRequests.length > 0) {
-      context.closingPullRequests = compactSlice(closingPullRequests.map(compactPullRequest), 12);
+      context.closingPullRequests = compactMappedSlice(closingPullRequests, 12, compactPullRequest);
       context.counts = {
         ...context.counts,
         comments: comments.length,
@@ -3068,9 +3073,9 @@ function collectItemContext(item: Item): ItemContext {
     const pullCommits = ghPaged<unknown>(`repos/${targetRepo()}/pulls/${item.number}/commits`);
     pullReviewComments = ghPaged<unknown>(`repos/${targetRepo()}/pulls/${item.number}/comments`);
     context.pullRequest = compactPullRequest(pullRequest);
-    context.pullFiles = compactSlice(pullFiles.map(compactPullFile), 80);
-    context.pullCommits = compactSlice(pullCommits.map(compactPullCommit), 80);
-    context.pullReviewComments = compactSlice(pullReviewComments.map(compactComment), 40);
+    context.pullFiles = compactMappedSlice(pullFiles, 80, compactPullFile);
+    context.pullCommits = compactMappedSlice(pullCommits, 80, compactPullCommit);
+    context.pullReviewComments = compactMappedSlice(pullReviewComments, 40, compactComment);
     context.counts = {
       ...context.counts,
       comments: comments.length,
