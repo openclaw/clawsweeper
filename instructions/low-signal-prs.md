@@ -29,6 +29,11 @@ owner discussion, green checks, or a focused fix that should be preserved.
   generated baselines, other extensions, runtime surfaces, or review artifacts.
 - Bot/review spam: repeated bot pings or copied bot output without author-owned
   fixes, especially when checks are still red.
+- Missing or mock-only real behavior proof: an external PR claims a behavior fix
+  but provides no after-fix evidence from a real setup, or only lists unit tests,
+  mocks, snapshots, lint, typechecks, or CI. Ask for screenshots, terminal
+  screenshots, console output, copied live output, linked artifacts, recordings,
+  or redacted runtime logs instead.
 
 ## Evidence bar
 
@@ -98,6 +103,8 @@ needed.
 - Security-sensitive PRs are not low-signal cleanup. Route them to central
   OpenClaw security handling instead of ClawSweeper Repair.
 - A green PR with a focused bug fix and clear reproduction.
+- A PR with sufficient after-fix real behavior proof from a real setup, even if
+  the proof is a terminal screenshot, console excerpt, or redacted runtime log.
 - A PR with recent maintainer review, assignment, or active author follow-up.
 - A unique bug report with reproduction detail, even if noisy.
 - Anything that would require technical judgment about correctness beyond the

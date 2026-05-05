@@ -38,12 +38,24 @@ For a PR that needs work, the visible comment starts with:
 Codex review: needs changes before merge.
 ```
 
+For an external PR that lacks after-fix real behavior proof, the visible comment
+starts with:
+
+```text
+Codex review: needs real behavior proof before merge.
+```
+
 The body should include the strongest actionable, non-overlapping sections the
 report has:
 
 - `**Summary**` from the typed `changeSummary` field, not from the
   merge verdict or maintainer follow-up summary; when `reproductionAssessment`
   is present, this section also includes a compact `Reproducibility:` line
+- `**Real behavior proof**` near the top for PRs, from the typed
+  `realBehaviorProof` field. When proof is missing, mock-only, or insufficient,
+  this section should tell contributors that terminal screenshots, console
+  output, copied live output, linked artifacts, recordings, and redacted logs
+  count even for non-visual CLI or text changes
 - `**Next step before merge**` for PRs, or `**Next step**` for issues, from the
   work-candidate reason or next action
 - `**Security**` from the typed `securityReview` field, so supply-chain,
@@ -98,6 +110,11 @@ hands, ClawSweeper emits a human-only verdict:
 ```html
 <!-- clawsweeper-verdict:needs-human item=<number> sha=<pull-head-sha> confidence=<confidence> -->
 ```
+
+Missing, mock-only, or insufficient `realBehaviorProof` is always human-only:
+ClawSweeper must not emit `clawsweeper-action:fix-required` or pass/automerge
+markers for proof-only blockers because automation cannot prove the
+contributor's real setup for them.
 
 Clean/close-style PR verdicts also stay human-only from the repair point of
 view. Closing remains outside the repair loop.

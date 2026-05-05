@@ -9,6 +9,7 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Added
 
+- Added a real behavior proof assessment to PR reviews so missing, mock-only, or insufficient contributor proof blocks pass/automerge markers and asks for screenshots, terminal output, redacted logs, recordings, linked artifacts, or copied live output instead.
 - Added `config/automation-limits.json` plus docs and a drift check so review,
   commit-review, repair, and issue-implementation capacity defaults have one
   checked-in source of truth.

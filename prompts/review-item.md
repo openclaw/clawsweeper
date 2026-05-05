@@ -84,6 +84,8 @@ likely owner.
 
 For PRs, include a dedicated security review pass in addition to the functional review. Inspect whether the diff could introduce a security or supply-chain regression, especially when it touches CI workflows, GitHub Action refs, dependency sources, lockfiles, install/build/release scripts, package publishing metadata, secrets handling, permissions, downloaded artifacts, generated/vendor/minified files, or other code execution paths. Check whether those changes are consistent with the PR title, body, discussion, and stated purpose before deciding. Be cautious when a small or unrelated functional change also introduces new third-party code execution, broadens secret or permission access, changes package resolution, adds lifecycle hooks, downloads and executes artifacts, or mixes infrastructure changes into otherwise cosmetic work. Do not infer malicious intent without concrete evidence. Always summarize this pass in `securityReview`; set `status: "cleared"` when the diff has no concrete security or supply-chain concern, `status: "needs_attention"` when there is a concrete concern, and `status: "not_applicable"` for non-PR items without a security-sensitive report. Put concrete security concerns in `securityReview.concerns` with file/line when possible, and also include blocking concerns in `risks` and `evidence` when they affect the merge/close decision.
 
+For PRs, include a dedicated `realBehaviorProof` assessment before any pass, automerge, or repair verdict. External PRs must show that the contributor ran the changed behavior after the fix in a real setup. Unit tests, mocks, snapshots, lint, typechecks, and CI are supplemental only; they are not real behavior proof by themselves. Treat screenshots, recordings, terminal screenshots, console output, copied live output, linked artifacts, and redacted runtime logs as valid proof, including for non-visual CLI, console, text, or error-message changes. Use `status: "sufficient"` only when the PR body or linked artifacts include after-fix real behavior evidence and an observed improved result. Use `status: "missing"` when proof is absent, `status: "mock_only"` when proof is only tests/mocks/CI, `status: "insufficient"` when the evidence does not show the changed real behavior after the fix, `status: "override"` when the PR has `proof: override`, and `status: "not_applicable"` for non-PR items or maintainer/bot PRs where the gate does not apply. When proof is missing, mock-only, or insufficient, set `needsContributorAction: true`, make the PR a human-only merge blocker, and do not request ClawSweeper repair markers because automation cannot prove the contributor's setup for them.
+
 For PRs, also emit Codex `/review`-style findings in `reviewFindings`.
 Review the diff as another engineer's proposed patch and list every discrete,
 actionable bug the author would likely fix. Findings must be introduced by the
@@ -317,6 +319,14 @@ security or supply-chain issue was found, `needs_attention` with one or more
 typed concerns when the patch or discussion raises a concrete security issue,
 and `not_applicable` for ordinary non-PR issue triage where no patch security
 review applies.
+
+Always fill `realBehaviorProof`. For external PRs, this is a merge gate, not a
+nice-to-have. Missing, mock-only, or insufficient proof should appear near the
+top of the public review as "needs real behavior proof before merge"; tell the
+contributor that terminal screenshots, console output, copied live output,
+linked artifacts, and redacted logs count. Use `evidenceKind: "none"` when proof
+is absent or mock-only, and set `needsContributorAction: false` only for
+`sufficient`, `override`, or `not_applicable`.
 
 Always fill the work-lane fields too. For non-candidates, use
 `workCandidate: "none"`, low confidence/priority, an empty `workPrompt`, and

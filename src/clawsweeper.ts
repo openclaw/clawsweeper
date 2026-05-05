@@ -83,6 +83,22 @@ type ReproductionStatus =
 type OverallCorrectness = "patch is correct" | "patch is incorrect" | "not a patch";
 type SecurityReviewStatus = "cleared" | "needs_attention" | "not_applicable";
 type SecurityConcernSeverity = "high" | "medium" | "low";
+type RealBehaviorProofStatus =
+  | "sufficient"
+  | "missing"
+  | "mock_only"
+  | "insufficient"
+  | "not_applicable"
+  | "override";
+type RealBehaviorProofEvidenceKind =
+  | "screenshot"
+  | "recording"
+  | "terminal"
+  | "logs"
+  | "live_output"
+  | "linked_artifact"
+  | "none"
+  | "not_applicable";
 type CloseReason =
   | "implemented_on_main"
   | "cannot_reproduce"
@@ -221,6 +237,13 @@ interface SecurityReview {
   concerns: SecurityConcern[];
 }
 
+interface RealBehaviorProof {
+  status: RealBehaviorProofStatus;
+  summary: string;
+  evidenceKind: RealBehaviorProofEvidenceKind;
+  needsContributorAction: boolean;
+}
+
 interface FixedPullRequest {
   repo: string;
   number: number;
@@ -252,6 +275,7 @@ interface Decision {
   solutionAssessment: string;
   reviewFindings: ReviewFinding[];
   securityReview: SecurityReview;
+  realBehaviorProof: RealBehaviorProof;
   overallCorrectness: OverallCorrectness;
   overallConfidenceScore: number;
   fixedRelease?: string | null;
@@ -594,11 +618,12 @@ const RECENT_MISSING_OPEN_MS = DAY_MS;
 const DEFAULT_CODEX_MODEL = "gpt-5.5";
 const DEFAULT_REASONING_EFFORT = "high";
 const DEFAULT_SERVICE_TIER = "";
-const REVIEW_POLICY_VERSION = "2026-04-29-policy-v12";
+const REVIEW_POLICY_VERSION = "2026-05-05-policy-v13";
 const REVIEW_COMMENT_MARKER_PREFIX = "<!-- clawsweeper-review";
 const REVIEW_START_STATUS_MARKER_PREFIX = "<!-- clawsweeper-review-status";
 const AUTOMERGE_LABEL = "clawsweeper:automerge";
 const AUTOFIX_LABEL = "clawsweeper:autofix";
+const PROOF_OVERRIDE_LABEL = "proof: override";
 const PROTECTED_LABELS = new Set(["security", "beta-blocker", "release-blocker", "maintainer"]);
 const ALLOWED_REASONS = new Set<CloseReason>([
   "implemented_on_main",
@@ -636,6 +661,24 @@ const SECURITY_REVIEW_STATUSES = new Set<SecurityReviewStatus>([
   "not_applicable",
 ]);
 const SECURITY_CONCERN_SEVERITIES = new Set<SecurityConcernSeverity>(["high", "medium", "low"]);
+const REAL_BEHAVIOR_PROOF_STATUSES = new Set<RealBehaviorProofStatus>([
+  "sufficient",
+  "missing",
+  "mock_only",
+  "insufficient",
+  "not_applicable",
+  "override",
+]);
+const REAL_BEHAVIOR_PROOF_EVIDENCE_KINDS = new Set<RealBehaviorProofEvidenceKind>([
+  "screenshot",
+  "recording",
+  "terminal",
+  "logs",
+  "live_output",
+  "linked_artifact",
+  "none",
+  "not_applicable",
+]);
 const OVERALL_CORRECTNESS_VALUES = new Set<OverallCorrectness>([
   "patch is correct",
   "patch is incorrect",
@@ -664,6 +707,7 @@ const DECISION_SCHEMA_KEYS = new Set([
   "solutionAssessment",
   "reviewFindings",
   "securityReview",
+  "realBehaviorProof",
   "overallCorrectness",
   "overallConfidenceScore",
   "fixedRelease",
@@ -681,6 +725,12 @@ const DECISION_SCHEMA_KEYS = new Set([
 ]);
 const EVIDENCE_SCHEMA_KEYS = new Set(["label", "detail", "file", "line", "command", "sha"]);
 const SECURITY_REVIEW_SCHEMA_KEYS = new Set(["status", "summary", "concerns"]);
+const REAL_BEHAVIOR_PROOF_SCHEMA_KEYS = new Set([
+  "status",
+  "summary",
+  "evidenceKind",
+  "needsContributorAction",
+]);
 const SECURITY_CONCERN_SCHEMA_KEYS = new Set([
   "title",
   "body",
@@ -714,6 +764,7 @@ const REVIEW_SECTIONS = {
   solutionAssessment: "Solution Assessment",
   reviewFindings: "Review Findings",
   securityReview: "Security Review",
+  realBehaviorProof: "Real Behavior Proof",
   workCandidate: "Work Candidate",
   repairWorkPrompt: "Repair Work Prompt",
   evidence: "Evidence",
@@ -1184,6 +1235,24 @@ function parseSecurityReview(value: unknown, path: string): SecurityReview {
   };
 }
 
+function parseRealBehaviorProof(value: unknown, path: string): RealBehaviorProof {
+  const record = requireRecord(value, path);
+  rejectUnexpectedKeys(record, REAL_BEHAVIOR_PROOF_SCHEMA_KEYS, path);
+  return {
+    status: requireEnum(record.status, REAL_BEHAVIOR_PROOF_STATUSES, `${path}.status`),
+    summary: requireString(record.summary, `${path}.summary`),
+    evidenceKind: requireEnum(
+      record.evidenceKind,
+      REAL_BEHAVIOR_PROOF_EVIDENCE_KINDS,
+      `${path}.evidenceKind`,
+    ),
+    needsContributorAction: requireBoolean(
+      record.needsContributorAction,
+      `${path}.needsContributorAction`,
+    ),
+  };
+}
+
 function requireEnum<T extends string>(value: unknown, allowed: Set<T>, path: string): T {
   if (typeof value === "string" && allowed.has(value as T)) return value as T;
   throw new Error(`${path} has invalid value`);
@@ -1251,6 +1320,10 @@ export function parseDecision(value: unknown): Decision {
     solutionAssessment: requireString(record.solutionAssessment, "decision.solutionAssessment"),
     reviewFindings,
     securityReview: parseSecurityReview(record.securityReview, "decision.securityReview"),
+    realBehaviorProof: parseRealBehaviorProof(
+      record.realBehaviorProof,
+      "decision.realBehaviorProof",
+    ),
     overallCorrectness: requireEnum(
       record.overallCorrectness,
       OVERALL_CORRECTNESS_VALUES,
@@ -3223,6 +3296,12 @@ function codexFailureDecision(status: number | null, stderr: string, stdout = ""
       summary: "Security review did not run because the Codex review failed before completion.",
       concerns: [],
     },
+    realBehaviorProof: {
+      status: "not_applicable",
+      summary: "Real behavior proof was not assessed because the Codex review failed.",
+      evidenceKind: "not_applicable",
+      needsContributorAction: false,
+    },
     overallCorrectness: "not a patch",
     overallConfidenceScore: 0,
     fixedRelease: null,
@@ -3982,6 +4061,33 @@ function publicSecurityReviewLine(review: SecurityReview): string {
   return `${prefix}: ${sentence(review.summary)}`;
 }
 
+function publicRealBehaviorProofLine(proof: RealBehaviorProof): string {
+  const summary = sentence(proof.summary);
+  switch (proof.status) {
+    case "sufficient":
+      return `Sufficient (${proof.evidenceKind}): ${summary}`;
+    case "override":
+      return `Override: ${summary || "A maintainer applied proof: override."}`;
+    case "missing":
+      return `Needs real behavior proof before merge: ${
+        summary ||
+        "the PR must include after-fix evidence from a real setup. Terminal screenshots, console output, copied live output, linked artifacts, and redacted logs count."
+      }`;
+    case "mock_only":
+      return `Needs real behavior proof before merge: ${
+        summary ||
+        "tests, mocks, snapshots, lint, typechecks, and CI are supplemental only. Terminal screenshots, console output, copied live output, linked artifacts, and redacted logs count."
+      }`;
+    case "insufficient":
+      return `Needs stronger real behavior proof before merge: ${
+        summary ||
+        "include after-fix evidence from a real setup. Terminal screenshots, console output, copied live output, linked artifacts, and redacted logs count."
+      }`;
+    case "not_applicable":
+      return summary ? `Not applicable: ${summary}` : "";
+  }
+}
+
 function closeIntro(reason: CloseReason): string {
   switch (reason) {
     case "implemented_on_main":
@@ -4199,6 +4305,89 @@ function reportSecurityReview(markdown: string): SecurityReview {
   return { status, summary, concerns };
 }
 
+function defaultRealBehaviorProof(markdown: string): RealBehaviorProof {
+  const type = frontMatterValue(markdown, "type");
+  if (frontMatterStringArray(markdown, "labels").includes(PROOF_OVERRIDE_LABEL)) {
+    return {
+      status: "override",
+      summary: "A maintainer applied proof: override for this PR.",
+      evidenceKind: "not_applicable",
+      needsContributorAction: false,
+    };
+  }
+  return {
+    status: "not_applicable",
+    summary:
+      type === "pull_request"
+        ? "No real behavior proof assessment was recorded in this older report."
+        : "Real behavior proof is not required for non-PR issue triage.",
+    evidenceKind: "not_applicable",
+    needsContributorAction: false,
+  };
+}
+
+function reportRealBehaviorProof(markdown: string): RealBehaviorProof {
+  const section = reviewSectionValue(markdown, "realBehaviorProof");
+  if (!section.trim()) {
+    const defaultProof = defaultRealBehaviorProof(markdown);
+    if (defaultProof.status === "override") return defaultProof;
+    if (isExternalPullRequestReport(markdown)) {
+      return {
+        status: "missing",
+        summary:
+          "No after-fix real behavior proof was recorded for this external PR; terminal screenshots, console output, copied live output, linked artifacts, recordings, and redacted logs count.",
+        evidenceKind: "none",
+        needsContributorAction: true,
+      };
+    }
+    return defaultProof;
+  }
+  const statusValue = sectionLineValue(section, "Status");
+  const evidenceKindValue = sectionLineValue(section, "Evidence kind");
+  const summary = sectionLineValue(section, "Summary");
+  const needsContributorActionValue = sectionLineValue(section, "Needs contributor action");
+  const status = REAL_BEHAVIOR_PROOF_STATUSES.has(statusValue as RealBehaviorProofStatus)
+    ? (statusValue as RealBehaviorProofStatus)
+    : undefined;
+  const evidenceKind = REAL_BEHAVIOR_PROOF_EVIDENCE_KINDS.has(
+    evidenceKindValue as RealBehaviorProofEvidenceKind,
+  )
+    ? (evidenceKindValue as RealBehaviorProofEvidenceKind)
+    : undefined;
+  if (!status || !evidenceKind || !summary) return defaultRealBehaviorProof(markdown);
+  return {
+    status,
+    summary,
+    evidenceKind,
+    needsContributorAction: /^true$/i.test(needsContributorActionValue ?? ""),
+  };
+}
+
+function isAutomationReportAuthor(author: string | undefined): boolean {
+  return Boolean(author && (/\[bot\]$/i.test(author) || author.startsWith("app/")));
+}
+
+function isExternalPullRequestReport(markdown: string): boolean {
+  if (frontMatterValue(markdown, "type") !== "pull_request") return false;
+  const authorAssociation = frontMatterValue(markdown, "author_association");
+  if (!authorAssociation) return false;
+  if (isMaintainerAuthorAssociation(authorAssociation)) return false;
+  return !isAutomationReportAuthor(frontMatterValue(markdown, "author"));
+}
+
+function realBehaviorProofBlocksMerge(markdown: string): boolean {
+  if (!isExternalPullRequestReport(markdown)) return false;
+  if (frontMatterStringArray(markdown, "labels").includes(PROOF_OVERRIDE_LABEL)) return false;
+  const proof = reportRealBehaviorProof(markdown);
+  return (
+    proof.needsContributorAction ||
+    proof.status === "missing" ||
+    proof.status === "mock_only" ||
+    proof.status === "insufficient" ||
+    (proof.status !== "sufficient" && proof.status !== "override")
+  );
+}
+
 function parseBoldListHeading(line: string): { label: string; detail: string } | null {
   const prefix = "- **";
   if (!line.startsWith(prefix)) return null;
@@ -4348,6 +4537,7 @@ function reportDecision(markdown: string, closeReason: CloseReason): Decision {
     solutionAssessment: reviewSectionValue(markdown, "solutionAssessment"),
     reviewFindings: reportReviewFindings(markdown),
     securityReview: reportSecurityReview(markdown),
+    realBehaviorProof: reportRealBehaviorProof(markdown),
     overallCorrectness: reportOverallCorrectness(markdown),
     overallConfidenceScore: reportOverallConfidenceScore(markdown),
     fixedRelease: fixedRelease && fixedRelease !== "unknown" ? fixedRelease : null,
@@ -4578,6 +4768,7 @@ function renderKeepOpenCommentFromReport(markdown: string): string {
   const likelyOwners = reportLikelyOwners(markdown).slice(0, 5).map(likelyOwnerLine);
   const reviewFindings = reportReviewFindings(markdown);
   const securityReview = reportSecurityReview(markdown);
+  const realBehaviorProof = reportRealBehaviorProof(markdown);
   const summary = reviewSectionValue(markdown, "summary");
   const changeSummary = reviewSectionValue(markdown, "changeSummary");
   const bestSolution = reviewSectionValue(markdown, "bestSolution");
@@ -4592,6 +4783,7 @@ function renderKeepOpenCommentFromReport(markdown: string): string {
   const isPullRequest = frontMatterValue(markdown, "type") === "pull_request";
   const isRepairCandidate = workCandidate === "queue_fix_pr";
   const isRepairLoopPass = isPullRequest && Boolean(repairLoopPassModeFromReport(markdown));
+  const hasRealBehaviorProofBlocker = isPullRequest && realBehaviorProofBlocksMerge(markdown);
   const summaryLine = sentence(summary) || "_No summary provided._";
   const changeSummaryLine = sentence(changeSummary || summary) || "_No change summary provided._";
   const fallbackNextStep =
@@ -4601,15 +4793,17 @@ function renderKeepOpenCommentFromReport(markdown: string): string {
   const details: string[] = [];
   const hasReviewFindings = isPullRequest && reviewFindings.length > 0;
   const lines = [
-    isRepairLoopPass
-      ? "Codex review: passed."
-      : isPullRequest && isRepairCandidate
-        ? "Codex review: needs changes before merge."
-        : hasReviewFindings
-          ? "Codex review: found issues before merge."
-          : isPullRequest
-            ? "Codex review: needs maintainer review before merge."
-            : "Codex review: keeping this open for maintainer follow-up; there is still a little grit to resolve.",
+    hasRealBehaviorProofBlocker
+      ? "Codex review: needs real behavior proof before merge."
+      : isRepairLoopPass
+        ? "Codex review: passed."
+        : isPullRequest && isRepairCandidate
+          ? "Codex review: needs changes before merge."
+          : hasReviewFindings
+            ? "Codex review: found issues before merge."
+            : isPullRequest
+              ? "Codex review: needs maintainer review before merge."
+              : "Codex review: keeping this open for maintainer follow-up; there is still a little grit to resolve.",
     "",
   ];
   if (isPullRequest) {
@@ -4620,6 +4814,13 @@ function renderKeepOpenCommentFromReport(markdown: string): string {
     );
   } else {
     appendPublicSection(lines, "Summary", publicSummaryBody(summaryLine, reproductionAssessment));
+  }
+  if (isPullRequest) {
+    appendPublicSection(
+      lines,
+      "Real behavior proof",
+      publicRealBehaviorProofLine(realBehaviorProof),
+    );
   }
   appendPublicSection(lines, isPullRequest ? "Next step before merge" : "Next step", nextStepLine);
   const securityLine = publicSecurityReviewLine(securityReview);
@@ -4878,9 +5079,10 @@ export function reviewAutomationMarkersFromReport(markdown: string): string {
   if (frontMatterValue(markdown, "review_status") === "failed") {
     return `<!-- clawsweeper-verdict:needs-human ${baseAttrs} -->`;
   }
+  const hasRealBehaviorProofBlocker = realBehaviorProofBlocksMerge(markdown);
   if (reportSecurityReview(markdown).status === "needs_attention") {
     const markers = [`<!-- clawsweeper-security:security-sensitive ${baseAttrs} -->`];
-    if (securitySensitiveRepairAllowed(markdown)) {
+    if (!hasRealBehaviorProofBlocker && securitySensitiveRepairAllowed(markdown)) {
       markers.push(
         `<!-- clawsweeper-verdict:needs-changes ${baseAttrs} -->`,
         `<!-- clawsweeper-action:fix-required ${baseAttrs} finding=security-review -->`,
@@ -4889,6 +5091,9 @@ export function reviewAutomationMarkersFromReport(markdown: string): string {
       markers.push(`<!-- clawsweeper-verdict:needs-human ${baseAttrs} -->`);
     }
     return markers.join("\n");
+  }
+  if (hasRealBehaviorProofBlocker) {
+    return `<!-- clawsweeper-verdict:needs-human ${baseAttrs} -->`;
   }
   if (decision === "keep_open") {
     if (repairLoopPassModeFromReport(markdown)) {
@@ -4933,6 +5138,7 @@ function repairLoopFindingRepairAllowed(markdown: string): boolean {
   const labels = frontMatterStringArray(markdown, "labels");
   return (
     (labels.includes(AUTOMERGE_LABEL) || labels.includes(AUTOFIX_LABEL)) &&
+    !realBehaviorProofBlocksMerge(markdown) &&
     reportReviewFindings(markdown).length > 0
   );
 }
@@ -4944,6 +5150,7 @@ function isRepairLoopPassReport(markdown: string): boolean {
     frontMatterValue(markdown, "review_status") === "complete" &&
     frontMatterValue(markdown, "confidence") === "high" &&
     frontMatterValue(markdown, "decision") === "keep_open" &&
+    !realBehaviorProofBlocksMerge(markdown) &&
     reportOverallCorrectness(markdown) === "patch is correct" &&
     reportReviewFindings(markdown).length === 0
   );
@@ -5323,6 +5530,18 @@ function renderSecurityReviewReportSection(decision: Decision): string {
   return lines.join("\n");
 }
 
+function renderRealBehaviorProofReportSection(decision: Decision): string {
+  return [
+    `Status: ${decision.realBehaviorProof.status}`,
+    "",
+    `Evidence kind: ${decision.realBehaviorProof.evidenceKind}`,
+    "",
+    `Needs contributor action: ${decision.realBehaviorProof.needsContributorAction}`,
+    "",
+    `Summary: ${sentence(decision.realBehaviorProof.summary)}`,
+  ].join("\n");
+}
+
 function markdownFor(options: {
   item: Item;
   context: ItemContext;
@@ -5374,6 +5593,7 @@ function markdownFor(options: {
   const solutionAssessment = options.decision.solutionAssessment.trim() || "_Not provided._";
   const reviewFindings = renderReviewFindingsReportSection(options.decision);
   const securityReview = renderSecurityReviewReportSection(options.decision);
+  const realBehaviorProof = renderRealBehaviorProofReportSection(options.decision);
   const workCandidateSection = renderWorkCandidateReportSection(options.decision);
   const repairWorkPromptSection = renderRepairWorkPromptReportSection(options.decision);
   return `---
@@ -5435,6 +5655,9 @@ reproduction_confidence: ${options.decision.reproductionConfidence}
 requires_new_feature: ${options.decision.requiresNewFeature}
 requires_new_config_option: ${options.decision.requiresNewConfigOption}
 requires_product_decision: ${options.decision.requiresProductDecision}
+real_behavior_proof_status: ${options.decision.realBehaviorProof.status}
+real_behavior_proof_evidence_kind: ${options.decision.realBehaviorProof.evidenceKind}
+real_behavior_proof_needs_contributor_action: ${options.decision.realBehaviorProof.needsContributorAction}
 ---
 
 # ${markdownLink(`#${options.item.number}: ${options.item.title}`, options.item.url)}
@@ -5500,6 +5723,10 @@ ${reviewFindings}
 ## ${REVIEW_SECTIONS.securityReview}
 
 ${securityReview}
+
+## ${REVIEW_SECTIONS.realBehaviorProof}
+
+${realBehaviorProof}
 
 ## ${REVIEW_SECTIONS.workCandidate}
 

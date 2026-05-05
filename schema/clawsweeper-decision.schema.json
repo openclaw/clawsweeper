@@ -22,6 +22,7 @@
     "solutionAssessment",
     "reviewFindings",
     "securityReview",
+    "realBehaviorProof",
     "overallCorrectness",
     "overallConfidenceScore",
     "fixedRelease",
@@ -288,6 +289,46 @@
               }
             }
           }
+        }
+      }
+    },
+    "realBehaviorProof": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Dedicated PR proof assessment. For external PRs, after-fix evidence from a real setup is required; tests, mocks, snapshots, lint, typechecks, and CI are supplemental only.",
+      "required": ["status", "summary", "evidenceKind", "needsContributorAction"],
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "sufficient",
+            "missing",
+            "mock_only",
+            "insufficient",
+            "not_applicable",
+            "override"
+          ]
+        },
+        "summary": {
+          "type": "string",
+          "description": "One concise sentence explaining whether the PR body contains after-fix real behavior proof."
+        },
+        "evidenceKind": {
+          "type": "string",
+          "enum": [
+            "screenshot",
+            "recording",
+            "terminal",
+            "logs",
+            "live_output",
+            "linked_artifact",
+            "none",
+            "not_applicable"
+          ]
+        },
+        "needsContributorAction": {
+          "type": "boolean",
+          "description": "True when the contributor must add or improve real behavior proof before merge. This must be false for sufficient, override, and not_applicable statuses."
         }
       }
     },

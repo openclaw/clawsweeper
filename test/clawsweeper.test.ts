@@ -145,6 +145,12 @@ function closeDecision(overrides = {}) {
       summary: "No patch security review is needed for this issue cleanup decision.",
       concerns: [],
     },
+    realBehaviorProof: {
+      status: "not_applicable",
+      summary: "Real behavior proof is not required for non-PR issue triage.",
+      evidenceKind: "not_applicable",
+      needsContributorAction: false,
+    },
     overallCorrectness: "not a patch",
     overallConfidenceScore: 0.75,
     fixedRelease: null,
@@ -195,6 +201,27 @@ ${Object.entries(values)
   .map(([key, value]) => `${key}: ${value}`)
   .join("\n")}
 ---
+`;
+}
+
+function realBehaviorProofReportSection(overrides = {}) {
+  const values = {
+    status: "sufficient",
+    evidenceKind: "terminal",
+    needsContributorAction: false,
+    summary:
+      "The PR includes a terminal transcript from a real OpenClaw setup showing the fixed behavior after the patch.",
+    ...overrides,
+  };
+  return `## Real Behavior Proof
+
+Status: ${values.status}
+
+Evidence kind: ${values.evidenceKind}
+
+Needs contributor action: ${values.needsContributorAction}
+
+Summary: ${values.summary}
 `;
 }
 
@@ -1682,6 +1709,157 @@ Full review comments:
   assert.doesNotMatch(comment, /clawsweeper-verdict:needs-human/);
 });
 
+test("sufficient real behavior proof allows automerge pass markers", () => {
+  const report = `${reportFrontMatter({
+    type: "pull_request",
+    number: "74459",
+    decision: "keep_open",
+    close_reason: "none",
+    review_status: "complete",
+    confidence: "high",
+    author: "contributor",
+    author_association: "CONTRIBUTOR",
+    labels: JSON.stringify(["clawsweeper:automerge"]),
+    work_candidate: "none",
+    pull_head_sha: "abc123def456",
+  })}
+
+## Summary
+
+Keep this focused PR open for automerge.
+
+## What This Changes
+
+Fixes the gateway status output.
+
+## Best Possible Solution
+
+Merge after required checks are green.
+
+${realBehaviorProofReportSection()}
+
+## Review Findings
+
+Overall correctness: patch is correct
+
+Overall confidence: 0.9
+
+Full review comments:
+
+- none
+`;
+
+  const comment = renderReviewCommentFromReport(report, "none");
+  const markers = reviewAutomationMarkersFromReport(report);
+
+  assert.match(comment, /\*\*Real behavior proof\*\*\nSufficient \(terminal\):/);
+  assert.match(markers, /clawsweeper-verdict:pass/);
+  assert.doesNotMatch(markers, /clawsweeper-verdict:needs-human/);
+});
+
+test("missing real behavior proof blocks pass and repair markers", () => {
+  const report = `${reportFrontMatter({
+    type: "pull_request",
+    number: "74460",
+    decision: "keep_open",
+    close_reason: "none",
+    review_status: "complete",
+    confidence: "high",
+    author: "contributor",
+    author_association: "CONTRIBUTOR",
+    labels: JSON.stringify(["clawsweeper:automerge"]),
+    work_candidate: "queue_fix_pr",
+    pull_head_sha: "abc123def456",
+  })}
+
+## Summary
+
+Keep this PR open until the contributor proves the fix in a real setup.
+
+## What This Changes
+
+Fixes the gateway status output.
+
+## Best Possible Solution
+
+Ask the contributor to add after-fix proof from their real setup.
+
+${realBehaviorProofReportSection({
+  status: "missing",
+  evidenceKind: "none",
+  needsContributorAction: true,
+  summary:
+    "The PR body does not include after-fix evidence from a real setup; terminal screenshots, console output, copied live output, linked artifacts, recordings, and redacted logs count.",
+})}
+
+## Review Findings
+
+Overall correctness: patch is correct
+
+Overall confidence: 0.9
+
+Full review comments:
+
+- none
+`;
+
+  const comment = renderReviewCommentFromReport(report, "none");
+  const markers = reviewAutomationMarkersFromReport(report);
+
+  assert.match(comment, /Codex review: needs real behavior proof before merge\./);
+  assert.match(comment, /\*\*Real behavior proof\*\*/);
+  assert.match(comment, /terminal screenshots, console output, copied live output/);
+  assert.match(markers, /clawsweeper-verdict:needs-human/);
+  assert.doesNotMatch(markers, /clawsweeper-verdict:pass/);
+  assert.doesNotMatch(markers, /clawsweeper-action:fix-required/);
+});
+
+test("mock-only real behavior proof blocks repair markers", () => {
+  const report = `${reportFrontMatter({
+    type: "pull_request",
+    number: "74461",
+    decision: "keep_open",
+    close_reason: "none",
+    confidence: "high",
+    author: "contributor",
+    author_association: "CONTRIBUTOR",
+    labels: JSON.stringify(["clawsweeper:autofix"]),
+    work_candidate: "queue_fix_pr",
+    pull_head_sha: "abc123def456",
+  })}
+
+## Summary
+
+Keep this PR open until proof covers real behavior.
+
+${realBehaviorProofReportSection({
+  status: "mock_only",
+  evidenceKind: "none",
+  needsContributorAction: true,
+  summary:
+    "The PR only cites unit tests and CI; the contributor needs a terminal screenshot, console output, copied live output, recording, linked artifact, or redacted runtime log from a real setup.",
+})}
+
+## Review Findings
+
+Overall correctness: patch is incorrect
+
+Overall confidence: 0.9
+
+Full review comments:
+
+- **[P3] Add a changelog entry:** \`CHANGELOG.md:12\`
+  - body: The PR changes user-visible behavior and needs a changelog entry.
+  - confidence: 0.8
+`;
+
+  const markers = reviewAutomationMarkersFromReport(report);
+
+  assert.match(markers, /clawsweeper-verdict:needs-human/);
+  assert.doesNotMatch(markers, /clawsweeper-action:fix-required/);
+  assert.doesNotMatch(markers, /clawsweeper-verdict:needs-changes/);
+});
+
 test("pull request automerge pass is not blocked by generic protected labels", () => {
   const comment = renderReviewCommentFromReport(
     `${reportFrontMatter({
@@ -2198,6 +2376,11 @@ test("decision parser enforces required schema-shaped evidence", () => {
     delete decision.securityReview;
     return parseDecision(decision);
   }, /decision\.securityReview/);
+  assert.throws(() => {
+    const decision = closeDecision();
+    delete decision.realBehaviorProof;
+    return parseDecision(decision);
+  }, /decision\.realBehaviorProof/);
   const workCandidate = parseDecision(
     closeDecision({
       decision: "keep_open",
@@ -2216,6 +2399,7 @@ test("decision parser enforces required schema-shaped evidence", () => {
   assert.equal(workCandidate.workCandidate, "queue_fix_pr");
   assert.equal(workCandidate.itemCategory, "bug");
   assert.equal(workCandidate.reproductionStatus, "reproduced");
+  assert.equal(workCandidate.realBehaviorProof.status, "not_applicable");
   assert.deepEqual(workCandidate.workClusterRefs, ["#123", "#456"]);
 });
 
@@ -2237,6 +2421,18 @@ test("review prompt requires a dedicated securityReview section", () => {
   assert.match(prompt, /Always summarize this pass in `securityReview`/);
   assert.match(prompt, /Always fill `securityReview`/);
   assert.match(prompt, /status: "needs_attention"/);
+});
+
+test("review prompt requires real behavior proof for PR reviews", () => {
+  const prompt = readFileSync("prompts/review-item.md", "utf8");
+
+  assert.match(prompt, /realBehaviorProof/);
+  assert.match(prompt, /Terminal screenshots|terminal screenshots/);
+  assert.match(
+    prompt,
+    /Unit tests, mocks, snapshots, lint, typechecks, and CI are supplemental only/,
+  );
+  assert.match(prompt, /do not request ClawSweeper repair markers/);
 });
 
 test("review prompt asks for concise public review fields", () => {
