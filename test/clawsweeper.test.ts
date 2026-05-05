@@ -15,6 +15,7 @@ import {
   dashboardClosedAt,
   fixedPullRequestFromCommitPullsForTest,
   formatRecentClosedRows,
+  githubPaginatedPath,
   ghRetryKind,
   hotIntakeRecencyMs,
   isCodexReviewCommentBody,
@@ -162,6 +163,21 @@ function closeDecision(overrides = {}) {
     ...overrides,
   };
 }
+
+test("githubPaginatedPath requests maximum REST page size by default", () => {
+  assert.equal(
+    githubPaginatedPath("repos/openclaw/openclaw/issues/123/comments"),
+    "repos/openclaw/openclaw/issues/123/comments?per_page=100",
+  );
+  assert.equal(
+    githubPaginatedPath("repos/openclaw/openclaw/issues?state=open&sort=created"),
+    "repos/openclaw/openclaw/issues?state=open&sort=created&per_page=100",
+  );
+  assert.equal(
+    githubPaginatedPath("repos/openclaw/openclaw/issues?per_page=50&state=open"),
+    "repos/openclaw/openclaw/issues?per_page=50&state=open",
+  );
+});
 
 test("main CLI args ignore package-manager double dash separators", () => {
   assert.deepEqual(parseClawsweeperArgs(["apply-decisions", "--", "--dry-run"]), {

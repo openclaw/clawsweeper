@@ -80,6 +80,8 @@ checkpoint, and status-only commits are intentionally omitted.
   replayed automerge commands.
 - Updated targeted re-review command comments with live progress while the review
   workflow runs.
+- Requested 100-item REST pages for paginated GitHub list calls, reducing
+  review and repair API page fan-out on large issues and pull requests.
 
 ## 0.2.0 - 2026-05-03
 

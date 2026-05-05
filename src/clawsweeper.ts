@@ -1921,8 +1921,17 @@ function compactPullCommit(value: unknown): unknown {
   };
 }
 
+export function githubPaginatedPath(path: string): string {
+  const [basePart, query = ""] = path.split("?", 2);
+  const base = basePart ?? path;
+  const params = new URLSearchParams(query);
+  if (!params.has("per_page")) params.set("per_page", "100");
+  const serialized = params.toString();
+  return serialized ? `${base}?${serialized}` : base;
+}
+
 function ghPaged<T>(path: string): T[] {
-  const pages = ghJson<unknown[]>(["api", path, "--paginate", "--slurp"]);
+  const pages = ghJson<unknown[]>(["api", githubPaginatedPath(path), "--paginate", "--slurp"]);
   if (!Array.isArray(pages)) return [];
   return pages.flatMap((page) => (Array.isArray(page) ? (page as T[]) : []));
 }

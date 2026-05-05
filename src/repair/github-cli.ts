@@ -47,8 +47,20 @@ export function ghJsonBestEffort<T = JsonValue>(
   }
 }
 
+export function githubPaginatedPath(apiPath: string): string {
+  const [basePart, query = ""] = apiPath.split("?", 2);
+  const base = basePart ?? apiPath;
+  const params = new URLSearchParams(query);
+  if (!params.has("per_page")) params.set("per_page", "100");
+  const serialized = params.toString();
+  return serialized ? `${base}?${serialized}` : base;
+}
+
 export function ghPaged<T = JsonValue>(apiPath: string, options: GhRunOptions = {}): T[] {
-  const pages = ghJson<JsonValue[]>(["api", apiPath, "--paginate", "--slurp"], options);
+  const pages = ghJson<JsonValue[]>(
+    ["api", githubPaginatedPath(apiPath), "--paginate", "--slurp"],
+    options,
+  );
   if (!Array.isArray(pages)) return [];
   return pages.flatMap((page: JsonValue) => (Array.isArray(page) ? (page as T[]) : []));
 }
@@ -57,7 +69,10 @@ export function ghPagedWithRetry<T = JsonValue>(
   apiPath: string,
   options: GhRetryOptions | number = {},
 ): T[] {
-  const pages = ghJsonWithRetry<JsonValue[]>(["api", apiPath, "--paginate", "--slurp"], options);
+  const pages = ghJsonWithRetry<JsonValue[]>(
+    ["api", githubPaginatedPath(apiPath), "--paginate", "--slurp"],
+    options,
+  );
   if (!Array.isArray(pages)) return [];
   return pages.flatMap((page: JsonValue) => (Array.isArray(page) ? (page as T[]) : []));
 }
@@ -67,7 +82,7 @@ export async function ghPagedWithRetryAsync<T = JsonValue>(
   options: GhRetryOptions | number = {},
 ): Promise<T[]> {
   const pages = await ghJsonWithRetryAsync<JsonValue[]>(
-    ["api", apiPath, "--paginate", "--slurp"],
+    ["api", githubPaginatedPath(apiPath), "--paginate", "--slurp"],
     options,
   );
   if (!Array.isArray(pages)) return [];
