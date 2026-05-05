@@ -367,6 +367,13 @@ repo, start/end timestamps, and review-step outcome. Publish includes artifact
 and metric counts in the status detail so setup noise, missing artifacts, and
 real review failures can be separated while monitoring.
 
+Each item report also records durable review cost proxies in front matter and a
+`Review Telemetry` section: prompt characters, static prompt characters, GitHub
+context characters, output schema characters, additional prompt characters,
+context collection milliseconds, and Codex review milliseconds. These fields are
+intended for scheduler and prompt-budget experiments, so later throughput work
+can compare time and token proxies without scraping transient workflow logs.
+
 The generated state checkout uses a blobless partial clone, but it intentionally
 keeps full commit history by default. Publish jobs rebase and retry state writes
 after races, and shallow state history can make those retries less reliable.

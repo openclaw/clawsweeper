@@ -36,6 +36,7 @@ import {
   reviewActionForDecision,
   reviewPriority,
   renderReviewCommentFromReport,
+  reviewPromptTelemetryForTest,
   runtimeBudgetExceeded,
   safeOutputTail,
   sameAuthorCounterpartApplyReason,
@@ -215,6 +216,28 @@ function auditRecord(number, overrides = {}) {
     ...overrides,
   };
 }
+
+test("review prompt telemetry records durable cost proxies", () => {
+  const context = {
+    issue: { number: 123, title: "Sample item" },
+    comments: [{ author: "contributor", body: "This still reproduces." }],
+    timeline: [],
+    counts: { comments: 1, timeline: 0 },
+  };
+
+  const telemetry = reviewPromptTelemetryForTest(
+    item({ title: "Telemetry regression" }),
+    context,
+    git,
+    "keep extra instructions visible",
+  );
+
+  assert.ok(telemetry.staticPromptChars > 1000);
+  assert.ok(telemetry.schemaChars > 1000);
+  assert.ok(telemetry.contextChars >= JSON.stringify(context, null, 2).length);
+  assert.ok(telemetry.promptChars > telemetry.staticPromptChars + telemetry.contextChars);
+  assert.equal(telemetry.additionalPromptChars, "keep extra instructions visible".length);
+});
 
 test("protected labels are normalized and excluded from normal planning", () => {
   assert.deepEqual(protectedLabels(["Security", "bug", "maintainer", "SECURITY"]), [

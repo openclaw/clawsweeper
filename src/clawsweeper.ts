@@ -315,6 +315,26 @@ interface ReviewRuntime {
   reasoningEffort: string;
   sandboxMode?: string;
   serviceTier?: string;
+  promptChars?: number;
+  staticPromptChars?: number;
+  contextChars?: number;
+  schemaChars?: number;
+  additionalPromptChars?: number;
+  contextElapsedMs?: number;
+  codexElapsedMs?: number;
+}
+
+interface ReviewPromptTelemetry {
+  promptChars: number;
+  staticPromptChars: number;
+  contextChars: number;
+  schemaChars: number;
+  additionalPromptChars: number;
+}
+
+interface ReviewPromptBuild {
+  text: string;
+  telemetry: ReviewPromptTelemetry;
 }
 
 interface DashboardItem {
@@ -1029,8 +1049,8 @@ function reviewPolicyHash(options: {
       serviceTier: options.serviceTier ?? DEFAULT_SERVICE_TIER,
       targetRepo: targetRepo(),
       repositoryProfile: targetProfile(),
-      prompt: readFileSync(join(ROOT, "prompts", "review-item.md"), "utf8"),
-      schema: readFileSync(join(ROOT, "schema", "clawsweeper-decision.schema.json"), "utf8"),
+      prompt: reviewPromptTemplate(),
+      schema: reviewDecisionSchemaText(),
     }),
   ).slice(0, 16);
 }
@@ -3136,8 +3156,27 @@ function gitInfo(openclawDir: string): GitInfo {
   return { mainSha, latestRelease };
 }
 
-function promptFor(item: Item, context: ItemContext, git: GitInfo, additionalPrompt = ""): string {
-  const prompt = readFileSync(join(ROOT, "prompts", "review-item.md"), "utf8");
+function reviewPromptTemplate(): string {
+  return readFileSync(join(ROOT, "prompts", "review-item.md"), "utf8");
+}
+
+function reviewDecisionSchemaText(): string {
+  return readFileSync(join(ROOT, "schema", "clawsweeper-decision.schema.json"), "utf8");
+}
+
+function contextJsonForPrompt(context: ItemContext): string {
+  return JSON.stringify(context, null, 2);
+}
+
+function buildReviewPrompt(
+  item: Item,
+  context: ItemContext,
+  git: GitInfo,
+  additionalPrompt = "",
+): ReviewPromptBuild {
+  const prompt = reviewPromptTemplate();
+  const contextJson = contextJsonForPrompt(context);
+  const schema = reviewDecisionSchemaText();
   const extra = additionalPrompt.trim()
     ? `
 
@@ -3146,7 +3185,7 @@ function promptFor(item: Item, context: ItemContext, git: GitInfo, additionalPro
 ${additionalPrompt.trim()}
 `
     : "";
-  return `${prompt}
+  const text = `${prompt}
 
 ## Repository State
 
@@ -3166,10 +3205,42 @@ ${additionalPrompt.trim()}
 ## GitHub Context
 
 \`\`\`json
-${JSON.stringify(context, null, 2)}
+${contextJson}
 \`\`\`
 ${extra}
 `;
+  return {
+    text,
+    telemetry: {
+      promptChars: text.length,
+      staticPromptChars: prompt.length,
+      contextChars: contextJson.length,
+      schemaChars: schema.length,
+      additionalPromptChars: additionalPrompt.trim().length,
+    },
+  };
+}
+
+function promptFor(item: Item, context: ItemContext, git: GitInfo, additionalPrompt = ""): string {
+  return buildReviewPrompt(item, context, git, additionalPrompt).text;
+}
+
+function reviewPromptTelemetry(
+  item: Item,
+  context: ItemContext,
+  git: GitInfo,
+  additionalPrompt = "",
+): ReviewPromptTelemetry {
+  return buildReviewPrompt(item, context, git, additionalPrompt).telemetry;
+}
+
+export function reviewPromptTelemetryForTest(
+  item: Item,
+  context: ItemContext,
+  git: GitInfo,
+  additionalPrompt = "",
+): ReviewPromptTelemetry {
+  return reviewPromptTelemetry(item, context, git, additionalPrompt);
 }
 
 function codexFailureReason(detail: string): string {
@@ -3270,15 +3341,15 @@ function runCodex(options: {
   timeoutMs: number;
   workDir: string;
   additionalPrompt?: string;
+  prompt?: string;
 }): Decision {
   ensureDir(options.workDir);
   const promptPath = join(options.workDir, `${options.item.number}.prompt.md`);
   const outputPath = join(options.workDir, `${options.item.number}.json`);
-  writeFileSync(
-    promptPath,
-    promptFor(options.item, options.context, options.git, options.additionalPrompt),
-    "utf8",
-  );
+  const prompt =
+    options.prompt ??
+    promptFor(options.item, options.context, options.git, options.additionalPrompt);
+  writeFileSync(promptPath, prompt, "utf8");
   const dirtyBefore = openclawDirtyStatus(options.openclawDir);
   if (dirtyBefore) {
     throw new Error(
@@ -3312,7 +3383,7 @@ function runCodex(options: {
       cwd: options.openclawDir,
       encoding: "utf8",
       env: codexEnv(),
-      input: readFileSync(promptPath, "utf8"),
+      input: prompt,
       maxBuffer: 128 * 1024 * 1024,
       timeout: options.timeoutMs,
     },
@@ -4380,6 +4451,11 @@ function runtimeReviewText(runtime?: {
   return "";
 }
 
+function reviewTelemetryNumber(value: number | undefined): string {
+  if (value === undefined || !Number.isFinite(value)) return "unknown";
+  return String(Math.max(0, Math.round(value)));
+}
+
 function runtimeReviewTextFromReport(markdown: string): string {
   return runtimeReviewText({
     model: frontMatterValue(markdown, "review_model") ?? "",
@@ -5408,6 +5484,13 @@ review_model: ${options.runtime.model}
 review_reasoning_effort: ${options.runtime.reasoningEffort}
 review_sandbox: ${options.runtime.sandboxMode ?? "unknown"}
 review_service_tier: ${options.runtime.serviceTier || "default"}
+review_prompt_chars: ${reviewTelemetryNumber(options.runtime.promptChars)}
+review_static_prompt_chars: ${reviewTelemetryNumber(options.runtime.staticPromptChars)}
+review_context_chars: ${reviewTelemetryNumber(options.runtime.contextChars)}
+review_schema_chars: ${reviewTelemetryNumber(options.runtime.schemaChars)}
+review_additional_prompt_chars: ${reviewTelemetryNumber(options.runtime.additionalPromptChars)}
+review_context_elapsed_ms: ${reviewTelemetryNumber(options.runtime.contextElapsedMs)}
+review_codex_elapsed_ms: ${reviewTelemetryNumber(options.runtime.codexElapsedMs)}
 review_mode: ${options.reviewMode}
 review_status: ${options.decision.summary.startsWith("Codex review failed") ? "failed" : "complete"}
 local_checkout_access: verified
@@ -5528,6 +5611,16 @@ ${options.action.closeComment ? options.action.closeComment : "_No close comment
 - related items: ${options.context.counts?.relatedItems ?? options.context.relatedItems?.length ?? 0}
 - PR files: ${options.context.counts?.pullFiles ?? options.context.pullFiles?.length ?? 0}
 - PR commits: ${options.context.counts?.pullCommits ?? options.context.pullCommits?.length ?? 0}
+
+## Review Telemetry
+
+- prompt chars: ${reviewTelemetryNumber(options.runtime.promptChars)}
+- static prompt chars: ${reviewTelemetryNumber(options.runtime.staticPromptChars)}
+- context chars: ${reviewTelemetryNumber(options.runtime.contextChars)}
+- schema chars: ${reviewTelemetryNumber(options.runtime.schemaChars)}
+- additional prompt chars: ${reviewTelemetryNumber(options.runtime.additionalPromptChars)}
+- context collection ms: ${reviewTelemetryNumber(options.runtime.contextElapsedMs)}
+- Codex review ms: ${reviewTelemetryNumber(options.runtime.codexElapsedMs)}
   `;
 }
 
@@ -5632,7 +5725,10 @@ function reviewCommand(args: Args): void {
     console.error(
       `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} start #${item.number} (${completed + 1}/${candidates.length})`,
     );
+    const contextStartedAt = Date.now();
     const context = collectItemContext(item);
+    const contextElapsedMs = Date.now() - contextStartedAt;
+    const prompt = buildReviewPrompt(item, context, git, additionalPrompt);
     const snapshotHash = itemSnapshotHash(item, context);
     try {
       const startComment = postReviewStartStatusComment({
@@ -5653,6 +5749,8 @@ function reviewCommand(args: Args): void {
       );
     }
     let decision: Decision;
+    let codexElapsedMs = 0;
+    const codexStartedAt = Date.now();
     try {
       decision = runCodex({
         item,
@@ -5666,6 +5764,7 @@ function reviewCommand(args: Args): void {
         timeoutMs,
         workDir: join(artifactDir, "codex"),
         additionalPrompt,
+        prompt: prompt.text,
       });
     } catch (error) {
       codexFailures += 1;
@@ -5674,9 +5773,19 @@ function reviewCommand(args: Args): void {
         error instanceof Error ? error.message : String(error),
         "Per-item Codex failure; continuing with the rest of the shard.",
       );
+    } finally {
+      codexElapsedMs = Date.now() - codexStartedAt;
     }
     decision = attachFixedPullRequest(decision, item, context);
-    const runtime = { model, reasoningEffort, sandboxMode, serviceTier };
+    const runtime = {
+      model,
+      reasoningEffort,
+      sandboxMode,
+      serviceTier,
+      ...prompt.telemetry,
+      contextElapsedMs,
+      codexElapsedMs,
+    };
     const action = reviewActionForDecision({ item, decision, git, runtime });
     writeFileSync(
       join(artifactDir, reportFileName(item.repo, item.number)),
