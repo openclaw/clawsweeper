@@ -15,6 +15,7 @@
     "audit": "node dist/clawsweeper.js audit",
     "reconcile": "node dist/clawsweeper.js reconcile",
     "status": "node dist/clawsweeper.js status",
+    "policy-rfc": "node dist/policy-rfc/index.js",
     "commit-review": "node dist/commit-sweeper.js",
     "commit-reports": "node dist/commit-sweeper.js reports",
     "repair:validate": "node dist/repair/validate-all.js",
