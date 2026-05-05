@@ -281,6 +281,23 @@ test("repository context handles missing candidates, huge files, and invalid pac
   assert.match(context, /package_scripts: none/);
 });
 
+test("repository context renders first lines when discovery has no tokens", () => {
+  const tmp = makeGitRepo({
+    "package.json": JSON.stringify({ private: true }),
+    "README.md": Array.from({ length: 120 }, (_, index) => `line ${index + 1}`).join("\n"),
+  });
+
+  const context = buildRepositoryContext({
+    targetDir: tmp,
+    fixArtifact: {},
+  });
+
+  assert.match(context, /--- README\.md ---/);
+  assert.match(context, /1: line 1/);
+  assert.match(context, /80: line 80/);
+  assert.doesNotMatch(context, /120: line 120/);
+});
+
 test("repository context reports no candidates when nothing scores", () => {
   const tmp = makeGitRepo({
     "notes.bin": "no supported extension\n",

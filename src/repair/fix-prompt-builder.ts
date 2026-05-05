@@ -319,6 +319,7 @@ export function buildRepositoryContext({ fixArtifact, targetDir }: LooseRecord) 
 function buildRepositorySnippets({ targetDir, candidates, fixArtifact }: LooseRecord) {
   const tokens = discoveryTokens(fixArtifact).slice(0, 40);
   const out: JsonValue[] = [];
+  let renderedLength = 0;
   for (const candidate of candidates) {
     const pathname = path.join(targetDir, candidate.file);
     if (!fs.existsSync(pathname)) continue;
@@ -327,8 +328,10 @@ function buildRepositorySnippets({ targetDir, candidates, fixArtifact }: LooseRe
     const content = fs.readFileSync(pathname, "utf8");
     const excerpt = focusedFileExcerpt(content, tokens);
     if (!excerpt) continue;
-    out.push(`--- ${candidate.file} ---\n${excerpt}`);
-    if (out.join("\n\n").length > REPOSITORY_SNIPPET_LIMIT) break;
+    const rendered = `--- ${candidate.file} ---\n${excerpt}`;
+    renderedLength += rendered.length + (out.length > 0 ? 2 : 0);
+    out.push(rendered);
+    if (renderedLength > REPOSITORY_SNIPPET_LIMIT) break;
   }
   return out.join("\n\n").slice(0, REPOSITORY_SNIPPET_LIMIT);
 }
@@ -339,6 +342,8 @@ function focusedFileExcerpt(content: string, tokens: string[]) {
   const lowerTokens = tokens
     .map((token) => token.toLowerCase())
     .filter((token) => token.length >= 4);
+  if (lowerTokens.length === 0)
+    return renderSelectedExcerptLines(lines, firstLineIndexes(lines, 80));
   for (let index = 0; index < lines.length; index += 1) {
     const lower = lines[index]!.toLowerCase();
     if (lowerTokens.some((token) => lower.includes(token))) {
@@ -354,14 +359,25 @@ function focusedFileExcerpt(content: string, tokens: string[]) {
   const selected =
     matched.size > 0
       ? [...matched].sort((left, right) => left - right)
-      : lines.map((_, index) => index).slice(0, 80);
+      : firstLineIndexes(lines, 80);
+  return renderSelectedExcerptLines(lines, selected);
+}
+
+function firstLineIndexes(lines: readonly string[], limit: number) {
+  return Array.from({ length: Math.min(lines.length, limit) }, (_, index) => index);
+}
+
+function renderSelectedExcerptLines(lines: readonly string[], selected: readonly number[]) {
   const rendered: string[] = [];
   let previous = -2;
+  let renderedLength = 0;
   for (const line of selected) {
     if (line !== previous + 1) rendered.push("...");
-    rendered.push(`${line + 1}: ${lines[line]}`);
+    const renderedLine = `${line + 1}: ${lines[line]}`;
+    rendered.push(renderedLine);
+    renderedLength += renderedLine.length + 1;
     previous = line;
-    if (rendered.join("\n").length > 3_200) break;
+    if (renderedLength > 3_200) break;
   }
   return rendered.join("\n");
 }

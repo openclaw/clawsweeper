@@ -80,6 +80,8 @@ checkpoint, and status-only commits are intentionally omitted.
   replayed automerge commands.
 - Updated targeted re-review command comments with live progress while the review
   workflow runs.
+- Avoided full-file token scans for repair repository snippets when no discovery
+  tokens exist, keeping untargeted fix prompts cheaper to build.
 
 ## 0.2.0 - 2026-05-03
 
