@@ -104,6 +104,29 @@ export function issueImplementationJobPath(repo: string, issueNumber: JsonValue)
   return `jobs/${owner}/inbox/${issueImplementationClusterId(repo, issueNumber)}.md`;
 }
 
+export function createCachedLabelNumberLookup(fetchNumbers: (label: string) => JsonValue[]) {
+  const cache = new Map<string, number[]>();
+  return (label: string) => {
+    const key = String(label ?? "");
+    const cached = cache.get(key);
+    if (cached) return [...cached];
+    const numbers = uniquePositiveIntegers(fetchNumbers(key));
+    cache.set(key, numbers);
+    return [...numbers];
+  };
+}
+
+function uniquePositiveIntegers(values: JsonValue): number[] {
+  if (!Array.isArray(values)) return [];
+  return [
+    ...new Set(
+      values
+        .map((value: JsonValue) => Number(value))
+        .filter((number: number) => Number.isInteger(number) && number > 0),
+    ),
+  ];
+}
+
 export function renderAutomergeJob({
   repo,
   issueNumber,

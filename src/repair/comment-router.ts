@@ -33,6 +33,7 @@ import {
   automergeTransientWaitConfig,
   buildAutomergeMergeArgs,
   commandHasAction,
+  createCachedLabelNumberLookup,
   hasCommandResponseMarker,
   commandStatusMarker,
   commandStatusMarkerPrefix,
@@ -132,6 +133,11 @@ const collaboratorPermissionCache = new Map();
 const activeRepairRunsByPrefix = new Map<string, LooseRecord[]>();
 const liveTargetCache = new Map<number, LooseRecord>();
 const issueCommentsCache = new Map<number, JsonValue[]>();
+const openIssueNumbersByLabel = createCachedLabelNumberLookup((label) =>
+  ghPaged<JsonValue>(
+    `repos/${targetRepo}/issues?state=open&labels=${encodeURIComponent(label)}&per_page=100`,
+  ).map((issue: JsonValue) => issue.number),
+);
 const comments = measure("list_candidate_comments", () => listCandidateComments());
 const rawCommands: LooseRecord[] = [];
 
@@ -2392,11 +2398,7 @@ function isGitHubNotFoundError(error: unknown) {
 }
 
 function listOpenIssueNumbersWithLabel(label: string) {
-  return ghPaged<JsonValue>(
-    `repos/${targetRepo}/issues?state=open&labels=${encodeURIComponent(label)}&per_page=100`,
-  )
-    .map((issue: JsonValue) => Number(issue.number))
-    .filter((number) => Number.isInteger(number) && number > 0);
+  return openIssueNumbersByLabel(label);
 }
 
 function isClawSweeperReviewMarkerComment(comment: JsonValue) {

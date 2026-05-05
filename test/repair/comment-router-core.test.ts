@@ -21,6 +21,7 @@ import {
   commandResponseMarker,
   commandResponseMarkerPrefix,
   commandStatusMarkerPrefix,
+  createCachedLabelNumberLookup,
   existingCommandStatusBlocksReplay,
   existingModeStatusBlocksReplay,
   hasCommandResponseMarker,
@@ -185,6 +186,23 @@ test("parseCommand recognizes maintainer slash commands", () => {
     intent: "autoclose",
     autoclose_message: "Not a direction for OpenClaw",
   });
+});
+
+test("cached label number lookup fetches each label once and returns stable copies", () => {
+  const calls: string[] = [];
+  const lookup = createCachedLabelNumberLookup((label) => {
+    calls.push(label);
+    return label === "clawsweeper:autofix" ? ["10", 10, 0, "bad", 11, 10] : [20];
+  });
+
+  const first = lookup("clawsweeper:autofix");
+  first.push(99);
+
+  assert.deepEqual(first, [10, 11, 99]);
+  assert.deepEqual(lookup("clawsweeper:autofix"), [10, 11]);
+  assert.deepEqual(lookup("clawsweeper:automerge"), [20]);
+  assert.deepEqual(lookup("clawsweeper:autofix"), [10, 11]);
+  assert.deepEqual(calls, ["clawsweeper:autofix", "clawsweeper:automerge"]);
 });
 
 test("autoclose reason parser preserves maintainer wording", () => {
