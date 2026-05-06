@@ -18,6 +18,7 @@ import {
   automergeTransientWaitConfig,
   buildAutomergeMergeArgs,
   commandHasAction,
+  createCachedIssueCommentsLookup,
   commandResponseMarker,
   commandResponseMarkerPrefix,
   commandStatusMarkerPrefix,
@@ -203,6 +204,23 @@ test("cached label number lookup fetches each label once and returns stable copi
   assert.deepEqual(lookup("clawsweeper:automerge"), [20]);
   assert.deepEqual(lookup("clawsweeper:autofix"), [10, 11]);
   assert.deepEqual(calls, ["clawsweeper:autofix", "clawsweeper:automerge"]);
+});
+
+test("cached issue comments lookup fetches each issue once and returns stable copies", () => {
+  const calls: number[] = [];
+  const lookup = createCachedIssueCommentsLookup((number) => {
+    calls.push(number);
+    return [{ id: number * 10 }, { id: number * 10 + 1 }];
+  });
+
+  const first = lookup(12);
+  first.push({ id: 999 });
+
+  assert.deepEqual(first, [{ id: 120 }, { id: 121 }, { id: 999 }]);
+  assert.deepEqual(lookup("12"), [{ id: 120 }, { id: 121 }]);
+  assert.deepEqual(lookup(13), [{ id: 130 }, { id: 131 }]);
+  assert.deepEqual(lookup(0), []);
+  assert.deepEqual(calls, [12, 13]);
 });
 
 test("autoclose reason parser preserves maintainer wording", () => {

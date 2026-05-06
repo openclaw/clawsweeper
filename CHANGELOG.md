@@ -52,6 +52,8 @@ checkpoint, and status-only commits are intentionally omitted.
   immediate duplicate capacity probe in the dispatch loop.
 - Cached comment-router open-label issue lookups per run so repair-loop comment
   discovery and command synthesis do not repeat identical GitHub searches.
+- Cached comment-router issue comment lookups per run so targeted command routing
+  and replay/status checks do not repeat identical comment pagination.
 - Retried Codex edit workers after TPM/rate-limit exits and collapsed JSONL failure transcripts into concise repair status reasons.
 - Added deterministic merged closing-PR provenance to issue close reports and
   public close comments when GitHub exposes a high-confidence closing PR.

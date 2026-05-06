@@ -116,6 +116,22 @@ export function createCachedLabelNumberLookup(fetchNumbers: (label: string) => J
   };
 }
 
+export function createCachedIssueCommentsLookup<T = JsonValue>(
+  fetchComments: (number: number) => T[],
+) {
+  const cache = new Map<number, T[]>();
+  return (number: JsonValue): T[] => {
+    const key = Number(number);
+    if (!Number.isInteger(key) || key <= 0) return [];
+    const cached = cache.get(key);
+    if (cached) return [...cached];
+    const comments = fetchComments(key);
+    const safeComments = Array.isArray(comments) ? comments : [];
+    cache.set(key, safeComments);
+    return [...safeComments];
+  };
+}
+
 function uniquePositiveIntegers(values: JsonValue): number[] {
   if (!Array.isArray(values)) return [];
   return [
