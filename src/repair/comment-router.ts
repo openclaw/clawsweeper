@@ -33,6 +33,7 @@ import {
   automergeTransientWaitConfig,
   buildAutomergeMergeArgs,
   commandHasAction,
+  createCachedIssueCommentsLookup,
   createCachedLabelNumberLookup,
   hasCommandResponseMarker,
   commandStatusMarker,
@@ -77,7 +78,6 @@ import {
   ghJsonWithRetry as ghJson,
   ghJsonWithRetryAsync as ghJsonAsync,
   ghPagedWithRetry as ghPaged,
-  ghPagedWithRetryAsync as ghPagedAsync,
   ghSpawn,
   ghTextWithRetry as ghText,
 } from "./github-cli.js";
@@ -132,7 +132,9 @@ let repairLoopControlEntriesCache: LooseRecord[] | null = null;
 const collaboratorPermissionCache = new Map();
 const activeRepairRunsByPrefix = new Map<string, LooseRecord[]>();
 const liveTargetCache = new Map<number, LooseRecord>();
-const issueCommentsCache = new Map<number, JsonValue[]>();
+const cachedIssueComments = createCachedIssueCommentsLookup((number) =>
+  ghPaged<JsonValue>(`repos/${targetRepo}/issues/${number}/comments?per_page=100`),
+);
 const openIssueNumbersByLabel = createCachedLabelNumberLookup((label) =>
   ghPaged<JsonValue>(
     `repos/${targetRepo}/issues?state=open&labels=${encodeURIComponent(label)}&per_page=100`,
@@ -306,7 +308,7 @@ async function prehydrateCommandLookups(commands: LooseRecord[]) {
       liveTargetCache.set(number, await fetchLiveTargetAsync(number));
     }),
     mapLimit(issueNumbers, lookupConcurrency, async (number) => {
-      issueCommentsCache.set(number, await fetchIssueCommentsAsync(number));
+      cachedIssueComments(number);
     }),
   ]);
 }
@@ -2317,10 +2319,7 @@ function linesFromMarkdownSection(section: JsonValue): string[] {
 }
 
 function issueCommentsFor(number: JsonValue): JsonValue[] {
-  return (
-    issueCommentsCache.get(Number(number)) ??
-    ghPaged<JsonValue>(`repos/${targetRepo}/issues/${number}/comments?per_page=100`)
-  );
+  return cachedIssueComments(number);
 }
 
 function listRepairLoopReviewComments() {
@@ -2586,9 +2585,7 @@ function hasExistingResponse(
   intent: JsonValue,
   headSha: JsonValue,
 ) {
-  const comments =
-    issueCommentsCache.get(Number(number)) ??
-    ghPaged(`repos/${targetRepo}/issues/${number}/comments?per_page=100`);
+  const comments = cachedIssueComments(number);
   return comments.some((comment: JsonValue) => {
     const body = String(comment.body ?? "");
     if (!hasCommandResponseMarker(body, { commentId, intent, headSha, matchAnyHead: true })) {
@@ -2611,18 +2608,12 @@ function hasExistingResponse(
 
 function hasExistingModeStatusResponse(number: JsonValue, intent: JsonValue) {
   const markerPrefix = commandStatusMarkerPrefix({ issue_number: number, intent });
-  const comments =
-    issueCommentsCache.get(Number(number)) ??
-    ghPaged(`repos/${targetRepo}/issues/${number}/comments?per_page=100`);
+  const comments = cachedIssueComments(number);
   return comments.some((comment: JsonValue) => {
     if (!isTrustedStatusComment(comment)) return false;
     const body = String(comment.body ?? "");
     return body.includes(markerPrefix) && !body.includes("could not enable");
   });
-}
-
-async function fetchIssueCommentsAsync(number: JsonValue) {
-  return ghPagedAsync<JsonValue>(`repos/${targetRepo}/issues/${number}/comments?per_page=100`);
 }
 
 function postComment(command: LooseRecord, body: string) {
