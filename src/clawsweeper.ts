@@ -3606,6 +3606,10 @@ function shortSha(sha: string): string {
   return sha.slice(0, 12);
 }
 
+function isCommitSha(value: string): boolean {
+  return /^[0-9a-f]{7,40}$/i.test(value.trim());
+}
+
 function releaseUrl(tag: string): string {
   return repoUrl(`/releases/tag/${encodeURIComponent(tag)}`);
 }
@@ -4095,7 +4099,8 @@ function likelyOwnerLine(owner: LikelyOwner): string {
   const role = owner.role.trim();
   const reason = sentence(owner.reason.trim() || "Related by repository history.");
   const commits = owner.commits
-    .filter(Boolean)
+    .map((commit) => commit.trim())
+    .filter(isCommitSha)
     .slice(0, 3)
     .map((commit) => linkedSha(commit))
     .join(", ");

@@ -626,6 +626,32 @@ test("close comments suppress duplicate best solution text", () => {
   assert.doesNotMatch(action.closeComment, /Best possible solution:/);
 });
 
+test("likely owner commit links ignore non-sha values", () => {
+  const action = reviewActionForDecision({
+    item: item(),
+    decision: closeDecision({
+      likelyOwners: [
+        {
+          person: "@alice",
+          role: "feature contributor",
+          reason: "The changelog credits a pull request for this feature surface.",
+          commits: ["https://github.com/openclaw/openclaw/pull/76079", " abcdef1234567890 "],
+          files: ["CHANGELOG.md"],
+          confidence: "medium",
+        },
+      ],
+    }),
+    git,
+  });
+
+  assert.equal(action.actionTaken, "proposed_close");
+  assert.doesNotMatch(action.closeComment, /\/commit\/https:/);
+  assert.match(
+    action.closeComment,
+    /\[abcdef123456\]\(https:\/\/github\.com\/openclaw\/openclaw\/commit\/abcdef1234567890\)/,
+  );
+});
+
 test("skill-only OpenClaw PRs can close through ClawHub with upload guidance", () => {
   const decision = closeDecision({
     closeReason: "clawhub",
