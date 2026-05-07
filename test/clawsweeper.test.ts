@@ -17,10 +17,12 @@ import {
   closeReasonsArg,
   closingPullRequestReferenceTarget,
   compactMappedSlice,
+  compactMappedWindow,
   codexEnv,
   dashboardClosedAt,
   fixedPullRequestFromCommitPullsForTest,
   formatRecentClosedRows,
+  githubContextWindowPlan,
   githubPaginatedPath,
   ghRetryKind,
   hotIntakeRecencyMs,
@@ -220,6 +222,58 @@ test("compactMappedSlice maps every entry when no compaction is needed", () => {
   });
   assert.deepEqual(result, [10, 20, 30]);
   assert.deepEqual(mapped, [1, 2, 3]);
+});
+
+test("compactMappedWindow marks omitted entries when hydration is already bounded", () => {
+  const mapped: number[] = [];
+  const result = compactMappedWindow([1, 2, 5, 6], 6, 4, (value) => {
+    mapped.push(value);
+    return value * 10;
+  });
+  assert.deepEqual(result, [
+    10,
+    20,
+    { omitted: 2, note: "middle entries omitted from prompt context" },
+    50,
+    60,
+  ]);
+  assert.deepEqual(mapped, [1, 2, 5, 6]);
+});
+
+test("compactMappedWindow keeps bounded hydrated context when total is larger than limit", () => {
+  const mapped: number[] = [];
+  const result = compactMappedWindow([1, 2, 99, 100], 100, 4, (value) => {
+    mapped.push(value);
+    return value;
+  });
+  assert.deepEqual(result, [
+    1,
+    2,
+    { omitted: 96, note: "middle entries omitted from prompt context" },
+    99,
+    100,
+  ]);
+  assert.deepEqual(mapped, [1, 2, 99, 100]);
+});
+
+test("githubContextWindowPlan includes prior page when the tail crosses a page boundary", () => {
+  assert.deepEqual(githubContextWindowPlan(101, 80), {
+    keepStart: 40,
+    keepEnd: 40,
+    tailFirstPageNumber: 1,
+    lastPageNumber: 2,
+    tailOffset: 61,
+  });
+});
+
+test("githubContextWindowPlan keeps large tails to the final page when possible", () => {
+  assert.deepEqual(githubContextWindowPlan(3000, 80), {
+    keepStart: 40,
+    keepEnd: 40,
+    tailFirstPageNumber: 30,
+    lastPageNumber: 30,
+    tailOffset: 60,
+  });
 });
 
 test("review prompt assets match tracked files", () => {
