@@ -2092,7 +2092,7 @@ function ghPaged<T>(path: string): T[] {
   return pages.flatMap((page) => (Array.isArray(page) ? (page as T[]) : []));
 }
 
-interface ContextHydration<T> {
+export interface ContextHydration<T> {
   items: T[];
   total: number;
   hydrated: number;
@@ -2140,22 +2140,28 @@ export function githubContextWindowPlan(
   };
 }
 
-function ghPagedContextWindow<T>(
+export function ghPagedContextWindow<T>(
   path: string,
   totalCount: unknown,
   promptLimit: number,
+  fetchers: {
+    page?: (path: string, page: number) => T[];
+    paged?: (path: string) => T[];
+  } = {},
 ): ContextHydration<T> {
+  const fetchPage = fetchers.page ?? ghPage<T>;
+  const fetchPaged = fetchers.paged ?? ghPaged<T>;
   const total = githubCount(totalCount);
   const boundedLimit = Math.max(0, Math.floor(promptLimit));
   if (total === null) {
-    const items = ghPaged<T>(path);
+    const items = fetchPaged(path);
     return { items, total: items.length, hydrated: items.length, truncated: false };
   }
   if (total === 0 || boundedLimit === 0) {
     return { items: [], total, hydrated: 0, truncated: total > 0 };
   }
   if (total <= boundedLimit) {
-    const items = total <= 100 ? ghPage<T>(path, 1) : ghPaged<T>(path);
+    const items = total <= 100 ? fetchPage(path, 1) : fetchPaged(path);
     return {
       items,
       total: Math.max(total, items.length),
@@ -2165,12 +2171,12 @@ function ghPagedContextWindow<T>(
   }
 
   const plan = githubContextWindowPlan(total, boundedLimit);
-  const firstPage = plan.keepStart > 0 ? ghPage<T>(path, 1) : [];
+  const firstPage = plan.keepStart > 0 ? fetchPage(path, 1) : [];
   const headItems = firstPage.slice(0, plan.keepStart);
   const tailPages: T[] = [];
   if (plan.keepEnd > 0) {
     for (let page = plan.tailFirstPageNumber; page <= plan.lastPageNumber; page += 1) {
-      tailPages.push(...(page === 1 && plan.keepStart > 0 ? firstPage : ghPage<T>(path, page)));
+      tailPages.push(...(page === 1 && plan.keepStart > 0 ? firstPage : fetchPage(path, page)));
     }
   }
   const tailItems = tailPages.slice(plan.tailOffset, plan.tailOffset + plan.keepEnd);
