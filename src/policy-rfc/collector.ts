@@ -203,7 +203,7 @@ function repoForSlug(slug: string): string {
 }
 
 function itemFromPath(relativePath: string): string {
-  const match = relativePath.match(/\/items\/([^/.]+)\./);
+  const match = relativePath.match(/\/(?:items|closed)\/([^/.]+)\./);
   return match?.[1] ? `#${match[1]}` : relativePath;
 }
 

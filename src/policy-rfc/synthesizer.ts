@@ -9,7 +9,7 @@ export function synthesizePolicyProposal(
   pattern: ScoredPolicyPattern,
   options: SynthesizeOptions = {},
 ): SynthesizedPolicyProposal {
-  const createdAt = options.createdAt ?? new Date().toISOString();
+  const createdAt = options.createdAt ?? pattern.latestObservedAt ?? new Date(0).toISOString();
   const json = policyProposalJson(pattern, createdAt);
   return {
     id: pattern.id,

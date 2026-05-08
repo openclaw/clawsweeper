@@ -41,7 +41,7 @@ export function scorePolicyPatterns(
       distinctRepos: distinctRepos.length,
       successfulOutcomes,
       latestObservedAt,
-      now: options.now ?? new Date(),
+      now: options.now ?? deterministicReferenceDate(latestObservedAt),
     });
 
     scored.push({
@@ -97,6 +97,13 @@ function recencyScore(latestObservedAt: string | undefined, now: Date): number {
   if (ageDays <= 90) return 0.7;
   if (ageDays <= 180) return 0.4;
   return 0.2;
+}
+
+function deterministicReferenceDate(latestObservedAt: string | undefined): Date {
+  if (!latestObservedAt) return new Date(0);
+  const latest = new Date(latestObservedAt);
+  if (Number.isNaN(latest.valueOf())) return new Date(0);
+  return latest;
 }
 
 function policyPatternId(patternType: PolicyPatternType, value: string): string {

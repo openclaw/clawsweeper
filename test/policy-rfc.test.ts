@@ -10,8 +10,13 @@ import {
   synthesizePolicyProposal,
 } from "../dist/policy-rfc/index.js";
 
-function writeRecord(root: string, item: number, body: string): void {
-  const dir = join(root, "openclaw-openclaw", "items");
+function writeRecord(
+  root: string,
+  item: number,
+  body: string,
+  section: "items" | "closed" = "items",
+): void {
+  const dir = join(root, "openclaw-openclaw", section);
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, `${item}.md`), body);
 }
@@ -107,6 +112,35 @@ test("collector tolerates missing and malformed records", () => {
   });
 });
 
+test("collector preserves item numbers for archived closed records", () => {
+  const recordsRoot = mkdtempSync(join(tmpdir(), "clawsweeper-policy-rfc-"));
+  try {
+    writeRecord(
+      recordsRoot,
+      42,
+      `---
+labels: ["bug"]
+reviewed_at: 2026-05-05T00:00:00.000Z
+---
+<!-- clawsweeper-repair:validation-fix -->
+`,
+      "closed",
+    );
+
+    assert.ok(
+      collectFixture(recordsRoot).some(
+        (item) =>
+          item.patternType === "repair_marker" &&
+          item.value === "validation-fix" &&
+          item.item === "#42" &&
+          item.sourceRecord === "records/openclaw-openclaw/closed/42.md",
+      ),
+    );
+  } finally {
+    rmSync(recordsRoot, { recursive: true, force: true });
+  }
+});
+
 test("scorer rejects low-frequency patterns", () => {
   withPolicyFixture((recordsRoot) => {
     const rejected = scorePolicyPatterns(collectFixture(recordsRoot), {
@@ -136,6 +170,26 @@ test("scorer accepts patterns above the configured threshold", () => {
   });
 });
 
+test("scorer default reference date is derived from evidence, not wall clock", () => {
+  const observations = [1, 2, 3].map((item) => ({
+    patternType: "repair_marker" as const,
+    value: "old-pattern",
+    repo: "openclaw/openclaw",
+    item: `#${item}`,
+    sourceRecord: `records/openclaw-openclaw/items/${item}.md`,
+    observedAt: "2026-01-01T00:00:00.000Z",
+    successfulOutcome: true,
+  }));
+
+  assert.deepEqual(
+    scorePolicyPatterns(observations, { minOccurrences: 3 }),
+    scorePolicyPatterns(observations, {
+      minOccurrences: 3,
+      now: new Date("2026-01-01T00:00:00.000Z"),
+    }),
+  );
+});
+
 test("synthesizer produces stable markdown and proposal JSON", () => {
   withPolicyFixture((recordsRoot) => {
     const accepted = scorePolicyPatterns(collectFixture(recordsRoot), {
@@ -156,5 +210,22 @@ test("synthesizer produces stable markdown and proposal JSON", () => {
     assert.equal(proposal.json.pattern_type, "repair_marker");
     assert.equal(proposal.json.evidence_items.length, 3);
     assert.equal(proposal.json.created_at, "2026-05-04T00:00:00.000Z");
+  });
+});
+
+test("synthesizer defaults created_at to latest evidence timestamp", () => {
+  withPolicyFixture((recordsRoot) => {
+    const accepted = scorePolicyPatterns(collectFixture(recordsRoot), {
+      minOccurrences: 3,
+    });
+    const repairPattern = accepted.find((item) => item.patternType === "repair_marker");
+    assert.ok(repairPattern);
+
+    const first = synthesizePolicyProposal(repairPattern);
+    const second = synthesizePolicyProposal(repairPattern);
+
+    assert.equal(first.json.created_at, "2026-05-03T00:00:00.000Z");
+    assert.equal(first.markdown, second.markdown);
+    assert.deepEqual(first.json, second.json);
   });
 });
