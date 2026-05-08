@@ -141,6 +141,9 @@ checkpoint, and status-only commits are intentionally omitted.
   review and repair API page fan-out on large issues and pull requests.
 - Bounded repair cluster PR file and commit hydration to the context carried
   into generated plans, avoiding full pagination for very large pull requests.
+- Validated repair cluster hydration limit environment overrides so malformed
+  values fall back to safe defaults and multi-page bounded hydration stays
+  covered. Thanks @stainlu (#49).
 - Compacted review prompt context lazily so large comment, timeline, file, and
   commit lists no longer process entries that are omitted from Codex input.
 - Scoped every sweep workflow status write to the active target repository so
