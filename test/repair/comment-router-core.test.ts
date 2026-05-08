@@ -19,6 +19,7 @@ import {
   buildAutomergeMergeArgs,
   commandHasAction,
   createCachedIssueCommentsLookup,
+  createCachedIssueCommentsLookupAsync,
   commandResponseMarker,
   commandResponseMarkerPrefix,
   commandStatusMarkerPrefix,
@@ -221,6 +222,52 @@ test("cached issue comments lookup fetches each issue once and returns stable co
   assert.deepEqual(lookup(13), [{ id: 130 }, { id: 131 }]);
   assert.deepEqual(lookup(0), []);
   assert.deepEqual(calls, [12, 13]);
+});
+
+test("cached async issue comments lookup shares cache and in-flight fetches", async () => {
+  const cache = new Map<number, { id: number }[]>();
+  const calls: number[] = [];
+  const asyncLookup = createCachedIssueCommentsLookupAsync(async (number) => {
+    calls.push(number);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    return [{ id: number * 10 }];
+  }, cache);
+  const syncLookup = createCachedIssueCommentsLookup((number) => {
+    calls.push(number);
+    return [{ id: number * 100 }];
+  }, cache);
+
+  const [first, second] = await Promise.all([asyncLookup(12), asyncLookup("12")]);
+  first.push({ id: 999 });
+
+  assert.deepEqual(first, [{ id: 120 }, { id: 999 }]);
+  assert.deepEqual(second, [{ id: 120 }]);
+  assert.deepEqual(syncLookup(12), [{ id: 120 }]);
+  assert.deepEqual(await asyncLookup(0), []);
+  assert.deepEqual(calls, [12]);
+});
+
+test("cached issue comments lookup does not cache malformed fetch results", async () => {
+  const cache = new Map<number, { id: number }[]>();
+  let syncCalls = 0;
+  const syncLookup = createCachedIssueCommentsLookup(() => {
+    syncCalls += 1;
+    return "bad" as never;
+  }, cache);
+
+  assert.deepEqual(syncLookup(12), []);
+  assert.deepEqual(syncLookup(12), []);
+  assert.equal(syncCalls, 2);
+
+  let asyncCalls = 0;
+  const asyncLookup = createCachedIssueCommentsLookupAsync(async () => {
+    asyncCalls += 1;
+    return "bad" as never;
+  }, cache);
+
+  assert.deepEqual(await asyncLookup(12), []);
+  assert.deepEqual(await asyncLookup(12), []);
+  assert.equal(asyncCalls, 2);
 });
 
 test("autoclose reason parser preserves maintainer wording", () => {
