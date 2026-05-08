@@ -1,0 +1,77 @@
+name: Sync fork from upstream
+
+on:
+  schedule:
+    - cron: "17 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-from-upstream-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  replay:
+    name: Replay fork patches on upstream main
+    if: github.repository == 'ds4psb-ai/clawsweeper'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - uses: ./.github/actions/setup-pnpm
+
+      - name: Replay fork-only commits on latest upstream/main
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "ds4psb-ai fork sync"
+          git config user.email "ted.taeeun.kim@gmail.com"
+
+          git remote add upstream https://github.com/openclaw/clawsweeper.git 2>/dev/null || true
+          git fetch --no-tags origin main
+          git fetch --no-tags upstream main
+
+          old_fork="$(git rev-parse origin/main)"
+          upstream_head="$(git rev-parse upstream/main)"
+          mapfile -t patch_stack < <(git rev-list --reverse --no-merges "${upstream_head}..${old_fork}")
+
+          echo "upstream/main: ${upstream_head}"
+          echo "fork main: ${old_fork}"
+          echo "fork-only commits to replay: ${#patch_stack[@]}"
+
+          git checkout -B fork-sync "${upstream_head}"
+          for commit in "${patch_stack[@]}"; do
+            subject="$(git log -1 --format=%s "${commit}")"
+            echo "::group::replay ${commit} ${subject}"
+            if git cherry-pick -x "${commit}"; then
+              echo "replayed ${commit}"
+            else
+              if git diff --quiet && git diff --cached --quiet; then
+                echo "${commit} is already represented on upstream/main; skipping empty cherry-pick"
+                git cherry-pick --skip
+              else
+                echo "Conflict while replaying ${commit}: ${subject}" >&2
+                git status --short >&2
+                exit 1
+              fi
+            fi
+            echo "::endgroup::"
+          done
+
+      - name: Verify canonical fork state
+        run: pnpm run check
+
+      - name: Force-update fork main after successful verification
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)" ]; then
+            echo "Fork main already matches the verified replay result."
+            exit 0
+          fi
+          git push --force-with-lease=main:$(git rev-parse origin/main) origin HEAD:main
