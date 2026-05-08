@@ -52,6 +52,7 @@ jobs:
     name: Skip disabled target commit review
     if: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.target_repo == 'openclaw/clawhub' && vars.CLAWSWEEPER_ENABLE_CLAWHUB != '1' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - name: Explain skipped commit review
         run: |
