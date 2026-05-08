@@ -2116,6 +2116,18 @@ function githubCount(value: unknown): number | null {
   return Math.floor(count);
 }
 
+function githubEndpointResultCap(path: string): number | null {
+  const [basePath = path] = path.split("?", 1);
+  if (/^\/?repos\/[^/]+\/[^/]+\/pulls\/\d+\/files$/.test(basePath)) return 3000;
+  if (/^\/?repos\/[^/]+\/[^/]+\/pulls\/\d+\/commits$/.test(basePath)) return 250;
+  return null;
+}
+
+function githubRetrievableTotal(path: string, total: number): number {
+  const cap = githubEndpointResultCap(path);
+  return cap === null ? total : Math.min(total, cap);
+}
+
 interface GithubContextWindowPlan {
   keepStart: number;
   keepEnd: number;
@@ -2159,20 +2171,24 @@ export function ghPagedContextWindow<T>(
     const items = fetchPaged(path);
     return { items, total: items.length, hydrated: items.length, truncated: false };
   }
-  if (total === 0 || boundedLimit === 0) {
+  const retrievableTotal = githubRetrievableTotal(path, total);
+  if (retrievableTotal === 0 || boundedLimit === 0) {
     return { items: [], total, hydrated: 0, truncated: total > 0 };
   }
-  if (total <= boundedLimit) {
-    const items = total <= 100 ? fetchPage(path, 1) : fetchPaged(path);
+  if (retrievableTotal <= boundedLimit) {
+    const items =
+      retrievableTotal <= 100
+        ? fetchPage(path, 1).slice(0, retrievableTotal)
+        : fetchPaged(path).slice(0, retrievableTotal);
     return {
       items,
       total: Math.max(total, items.length),
       hydrated: items.length,
-      truncated: false,
+      truncated: total > items.length,
     };
   }
 
-  const plan = githubContextWindowPlan(total, boundedLimit);
+  const plan = githubContextWindowPlan(retrievableTotal, boundedLimit);
   const firstPage = plan.keepStart > 0 ? fetchPage(path, 1) : [];
   const headItems = firstPage.slice(0, plan.keepStart);
   const tailPages: T[] = [];

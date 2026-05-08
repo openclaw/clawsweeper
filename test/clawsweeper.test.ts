@@ -277,6 +277,55 @@ test("githubContextWindowPlan keeps large tails to the final page when possible"
   });
 });
 
+test("ghPagedContextWindow caps pull files tail fetches to GitHub's retrievable window", () => {
+  const fetchedPages: number[] = [];
+  const result = ghPagedContextWindow<number>("/repos/openclaw/openclaw/pulls/1/files", 4000, 80, {
+    page: (_path, page) => {
+      fetchedPages.push(page);
+      if (page > 30) return [];
+      const start = (page - 1) * 100 + 1;
+      return Array.from({ length: 100 }, (_value, index) => start + index);
+    },
+    paged: () => {
+      throw new Error("full pagination should not be used for truncated pull files");
+    },
+  });
+
+  assert.deepEqual(fetchedPages, [1, 30]);
+  assert.deepEqual(result.items, [
+    ...Array.from({ length: 40 }, (_value, index) => index + 1),
+    ...Array.from({ length: 40 }, (_value, index) => index + 2961),
+  ]);
+  assert.equal(result.total, 4000);
+  assert.equal(result.hydrated, 80);
+  assert.equal(result.truncated, true);
+});
+
+test("ghPagedContextWindow caps pull commit tail fetches to GitHub's PR commits window", () => {
+  const fetchedPages: number[] = [];
+  const result = ghPagedContextWindow<number>("/repos/openclaw/openclaw/pulls/1/commits", 270, 80, {
+    page: (_path, page) => {
+      fetchedPages.push(page);
+      if (page > 3) return [];
+      const start = (page - 1) * 100 + 1;
+      const length = page === 3 ? 50 : 100;
+      return Array.from({ length }, (_value, index) => start + index);
+    },
+    paged: () => {
+      throw new Error("full pagination should not be used for truncated pull commits");
+    },
+  });
+
+  assert.deepEqual(fetchedPages, [1, 3]);
+  assert.deepEqual(result.items, [
+    ...Array.from({ length: 40 }, (_value, index) => index + 1),
+    ...Array.from({ length: 40 }, (_value, index) => index + 211),
+  ]);
+  assert.equal(result.total, 270);
+  assert.equal(result.hydrated, 80);
+  assert.equal(result.truncated, true);
+});
+
 test("ghPagedContextWindow reuses page one when the retained tail overlaps it", () => {
   const fetchedPages: number[] = [];
   const result = ghPagedContextWindow<number>("/repos/openclaw/openclaw/pulls/1/files", 101, 80, {

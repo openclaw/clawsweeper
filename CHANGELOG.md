@@ -36,6 +36,9 @@ checkpoint, and status-only commits are intentionally omitted.
 - Kept Policy RFC output deterministic by deriving default timestamps from
   evidence instead of wall-clock time and preserving item numbers for archived
   `closed/` records. Thanks @Freeak88 (#39).
+- Preserved Policy RFC recency scoring by sharing one deterministic evidence
+  reference date across scored patterns instead of resetting each pattern's age
+  to zero. Thanks @Freeak88 (#39).
 - Documented that Node 22 notifier-test `cancelledByParent` failures are
   environmental because the repository requires Node 24+. Thanks @ds4psb-ai
   (#54).
@@ -144,6 +147,9 @@ checkpoint, and status-only commits are intentionally omitted.
 - Validated repair cluster hydration limit environment overrides so malformed
   values fall back to safe defaults and multi-page bounded hydration stays
   covered. Thanks @stainlu (#49).
+- Clamped review-context tail hydration to GitHub's retrievable PR endpoint
+  windows so very large PRs keep the newest available file and commit context
+  instead of requesting pages beyond the API caps. Thanks @stainlu (#53).
 - Compacted review prompt context lazily so large comment, timeline, file, and
   commit lists no longer process entries that are omitted from Codex input.
 - Scoped every sweep workflow status write to the active target repository so

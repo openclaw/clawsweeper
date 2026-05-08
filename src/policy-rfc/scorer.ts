@@ -13,6 +13,7 @@ export function scorePolicyPatterns(
 ): ScoredPolicyPattern[] {
   const minDistinctItems = options.minDistinctItems ?? Math.min(2, options.minOccurrences);
   const minDistinctRepos = options.minDistinctRepos ?? 1;
+  const referenceDate = options.now ?? deterministicReferenceDate(observations);
   const groups = new Map<string, PolicyPatternObservation[]>();
 
   for (const observation of observations) {
@@ -41,7 +42,7 @@ export function scorePolicyPatterns(
       distinctRepos: distinctRepos.length,
       successfulOutcomes,
       latestObservedAt,
-      now: options.now ?? deterministicReferenceDate(latestObservedAt),
+      now: referenceDate,
     });
 
     scored.push({
@@ -99,11 +100,13 @@ function recencyScore(latestObservedAt: string | undefined, now: Date): number {
   return 0.2;
 }
 
-function deterministicReferenceDate(latestObservedAt: string | undefined): Date {
-  if (!latestObservedAt) return new Date(0);
-  const latest = new Date(latestObservedAt);
-  if (Number.isNaN(latest.valueOf())) return new Date(0);
-  return latest;
+function deterministicReferenceDate(observations: readonly PolicyPatternObservation[]): Date {
+  const latest = observations
+    .map((item) => (item.observedAt ? new Date(item.observedAt).valueOf() : Number.NaN))
+    .filter(Number.isFinite)
+    .sort((left, right) => left - right)
+    .at(-1);
+  return latest === undefined ? new Date(0) : new Date(latest);
 }
 
 function policyPatternId(patternType: PolicyPatternType, value: string): string {

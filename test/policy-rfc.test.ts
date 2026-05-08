@@ -190,6 +190,44 @@ test("scorer default reference date is derived from evidence, not wall clock", (
   );
 });
 
+test("scorer default reference date preserves recency differences across patterns", () => {
+  const observations = [
+    ...[1, 2, 3].map((item) => ({
+      patternType: "repair_marker" as const,
+      value: "old-pattern",
+      repo: "openclaw/openclaw",
+      item: `#${item}`,
+      sourceRecord: `records/openclaw-openclaw/items/${item}.md`,
+      observedAt: "2026-01-01T00:00:00.000Z",
+      successfulOutcome: true,
+    })),
+    ...[4, 5, 6].map((item) => ({
+      patternType: "repair_marker" as const,
+      value: "recent-pattern",
+      repo: "openclaw/openclaw",
+      item: `#${item}`,
+      sourceRecord: `records/openclaw-openclaw/items/${item}.md`,
+      observedAt: "2026-05-01T00:00:00.000Z",
+      successfulOutcome: true,
+    })),
+  ];
+
+  const scored = scorePolicyPatterns(observations, { minOccurrences: 3 });
+  const oldPattern = scored.find((item) => item.value === "old-pattern");
+  const recentPattern = scored.find((item) => item.value === "recent-pattern");
+
+  assert.ok(oldPattern);
+  assert.ok(recentPattern);
+  assert.ok(recentPattern.confidenceScore > oldPattern.confidenceScore);
+  assert.deepEqual(
+    scored,
+    scorePolicyPatterns(observations, {
+      minOccurrences: 3,
+      now: new Date("2026-05-01T00:00:00.000Z"),
+    }),
+  );
+});
+
 test("synthesizer produces stable markdown and proposal JSON", () => {
   withPolicyFixture((recordsRoot) => {
     const accepted = scorePolicyPatterns(collectFixture(recordsRoot), {
