@@ -9,6 +9,12 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Added
 
+- Added the proposal-only Policy RFC Engine for mining durable ClawSweeper
+  records into maintainer-reviewable draft policy proposals. Thanks @Freeak88
+  (#39).
+- Added a fork-only `sync-from-upstream` verifier that replays the launch-ready
+  fork patch stack on the latest upstream `main`, runs `pnpm run check`, and
+  updates `ds4psb-ai/clawsweeper@main` only after the replayed tree is green.
 - Added a light privacy reminder and stronger screenshot-or-video nudge to real behavior proof review guidance.
 - Added agent-led real behavior proof judgement so ClawSweeper can inspect linked screenshots, videos, logs, and terminal output with a read-only GitHub token, explain the proof verdict in the review comment, tell contributors how to trigger a fresh review after adding proof, and sync `proof: sufficient` when the evidence is convincing.
 - Added a real behavior proof assessment to PR reviews so missing, mock-only, or insufficient contributor proof blocks pass/automerge markers and asks for screenshots, terminal output, redacted logs, recordings, linked artifacts, or copied live output instead.
@@ -24,6 +30,17 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Fixed
 
+- Guarded likely-owner commit links so public review comments no longer render
+  PR numbers, PR URLs, or other non-SHA provenance as broken `/commit/...`
+  links. Thanks @samzong (#52).
+- Kept Policy RFC output deterministic by deriving default timestamps from
+  evidence instead of wall-clock time and preserving item numbers for archived
+  `closed/` records. Thanks @Freeak88 (#39).
+- Documented that Node 22 notifier-test `cancelledByParent` failures are
+  environmental because the repository requires Node 24+. Thanks @ds4psb-ai
+  (#54).
+- Hardened CI by adding explicit timeouts to disabled-target echo jobs and
+  concurrency groups to write-side repair workflows. Thanks @ds4psb-ai (#55).
 - Gave manual exact-item review dispatches their own concurrency group so
   targeted maintainer reviews no longer wait behind broad normal backfill runs.
 - Downgraded screenshot-only browser runtime proof so ClawSweeper no longer accepts "no visible console/CSP violation" screenshots as sufficient real behavior proof. Thanks @BunsDev.
