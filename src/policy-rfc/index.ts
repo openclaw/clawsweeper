@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -38,6 +38,7 @@ export function runPolicyRfc(options: RunPolicyRfcOptions): {
   });
 
   mkdirSync(outputDir, { recursive: true });
+  removeStalePolicyProposalFiles(outputDir);
   for (const pattern of scored) {
     const proposal = synthesizePolicyProposal(pattern, { createdAt: options.createdAt });
     writeFileSync(join(outputDir, `${proposal.id}.md`), proposal.markdown);
@@ -48,6 +49,14 @@ export function runPolicyRfc(options: RunPolicyRfcOptions): {
   }
 
   return { proposals: scored.length, outputDir };
+}
+
+function removeStalePolicyProposalFiles(outputDir: string): void {
+  for (const entry of readdirSync(outputDir, { withFileTypes: true })) {
+    if (!entry.isFile()) continue;
+    if (!/^policy-rfc-.+\.(?:json|md)$/.test(entry.name)) continue;
+    rmSync(join(outputDir, entry.name), { force: true });
+  }
 }
 
 function main(): void {

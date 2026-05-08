@@ -39,6 +39,9 @@ checkpoint, and status-only commits are intentionally omitted.
 - Preserved Policy RFC recency scoring by sharing one deterministic evidence
   reference date across scored patterns instead of resetting each pattern's age
   to zero. Thanks @Freeak88 (#39).
+- Cleared stale generated Policy RFC proposal files before each run writes the
+  current proposal set, while preserving non-generated operator notes. Thanks
+  @Freeak88 (#39).
 - Documented that Node 22 notifier-test `cancelledByParent` failures are
   environmental because the repository requires Node 24+. Thanks @ds4psb-ai
   (#54).

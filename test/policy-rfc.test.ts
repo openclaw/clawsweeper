@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
 import {
   collectPolicyPatterns,
+  runPolicyRfc,
   scorePolicyPatterns,
   synthesizePolicyProposal,
 } from "../dist/policy-rfc/index.js";
@@ -265,5 +266,39 @@ test("synthesizer defaults created_at to latest evidence timestamp", () => {
     assert.equal(first.json.created_at, "2026-05-03T00:00:00.000Z");
     assert.equal(first.markdown, second.markdown);
     assert.deepEqual(first.json, second.json);
+  });
+});
+
+test("runPolicyRfc removes stale generated proposal files before writing current output", () => {
+  withPolicyFixture((recordsRoot) => {
+    const outputRoot = mkdtempSync(join(tmpdir(), "clawsweeper-policy-rfc-output-"));
+    try {
+      const first = runPolicyRfc({
+        recordsRoot,
+        outputRoot,
+        targetRepo: "openclaw/openclaw",
+        minOccurrences: 3,
+      });
+      const generatedFiles = readdirSync(first.outputDir).filter(
+        (name) => name.endsWith(".md") || name.endsWith(".json"),
+      );
+      assert.ok(generatedFiles.length > 0);
+
+      writeFileSync(join(first.outputDir, "policy-rfc-stale-deadbeef.md"), "stale\n");
+      writeFileSync(join(first.outputDir, "policy-rfc-stale-deadbeef.json"), "{}\n");
+      writeFileSync(join(first.outputDir, "operator-note.txt"), "preserve me\n");
+
+      const second = runPolicyRfc({
+        recordsRoot,
+        outputRoot,
+        targetRepo: "openclaw/openclaw",
+        minOccurrences: 4,
+      });
+
+      assert.equal(second.proposals, 0);
+      assert.deepEqual(readdirSync(second.outputDir).sort(), ["operator-note.txt"]);
+    } finally {
+      rmSync(outputRoot, { recursive: true, force: true });
+    }
   });
 });
