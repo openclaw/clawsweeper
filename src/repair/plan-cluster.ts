@@ -14,12 +14,26 @@ import {
 import { ghJson, ghPaged, ghPagedLimit, ghText } from "./github-cli.js";
 import { hasSecurityRepairOptInLabel } from "./security-boundary.js";
 
-const MAX_LINKED_REFS = Number(process.env.CLAWSWEEPER_MAX_LINKED_REFS ?? 0);
+function readNonNegativeIntegerEnv(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === "") return fallback;
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < 0) {
+    console.warn(`${name} must be a non-negative integer; using default ${fallback}`);
+    return fallback;
+  }
+  return Math.floor(value);
+}
+
+const MAX_LINKED_REFS = readNonNegativeIntegerEnv("CLAWSWEEPER_MAX_LINKED_REFS", 0);
 const HYDRATE_COMMENTS = process.env.CLAWSWEEPER_HYDRATE_COMMENTS === "1";
-const MAX_COMMENTS_PER_ITEM = Number(process.env.CLAWSWEEPER_MAX_COMMENTS_PER_ITEM ?? 30);
-const MAX_REVIEW_COMMENTS_PER_PR = Number(process.env.CLAWSWEEPER_MAX_REVIEW_COMMENTS_PER_PR ?? 50);
-const MAX_FILES_PER_PR = Number(process.env.CLAWSWEEPER_MAX_FILES_PER_PR ?? 80);
-const MAX_COMMITS_PER_PR = Number(process.env.CLAWSWEEPER_MAX_COMMITS_PER_PR ?? 80);
+const MAX_COMMENTS_PER_ITEM = readNonNegativeIntegerEnv("CLAWSWEEPER_MAX_COMMENTS_PER_ITEM", 30);
+const MAX_REVIEW_COMMENTS_PER_PR = readNonNegativeIntegerEnv(
+  "CLAWSWEEPER_MAX_REVIEW_COMMENTS_PER_PR",
+  50,
+);
+const MAX_FILES_PER_PR = readNonNegativeIntegerEnv("CLAWSWEEPER_MAX_FILES_PER_PR", 80);
+const MAX_COMMITS_PER_PR = readNonNegativeIntegerEnv("CLAWSWEEPER_MAX_COMMITS_PER_PR", 80);
 const MAINTAINER_AUTHOR_ASSOCIATIONS = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
 const REVIEW_BOT_PATTERN =
   /\b(greptile|codex|asile|coderabbit|code rabbit|copilot|reviewdog|sonar|deepsource|codecov|github-actions)\b/i;
