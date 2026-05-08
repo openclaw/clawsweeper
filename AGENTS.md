@@ -67,6 +67,11 @@ pnpm run check
 
 Use `pnpm run check` before handoff for code/test/workflow changes.
 
+`engines.node` is `>=24`. Node 22 will install (no `engine-strict`) but the
+notifier tests' 5-second retry paths surface as `cancelledByParent` under the
+old `node:test` runner. Run on Node 24 or newer before reporting test
+failures.
+
 ## GitHub Checks
 
 Useful live probes:
