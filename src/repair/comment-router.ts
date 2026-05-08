@@ -34,6 +34,7 @@ import {
   buildAutomergeMergeArgs,
   commandHasAction,
   createCachedIssueCommentsLookup,
+  createCachedIssueCommentsLookupAsync,
   createCachedLabelNumberLookup,
   hasCommandResponseMarker,
   commandStatusMarker,
@@ -78,6 +79,7 @@ import {
   ghJsonWithRetry as ghJson,
   ghJsonWithRetryAsync as ghJsonAsync,
   ghPagedWithRetry as ghPaged,
+  ghPagedWithRetryAsync as ghPagedAsync,
   ghSpawn,
   ghTextWithRetry as ghText,
 } from "./github-cli.js";
@@ -132,8 +134,14 @@ let repairLoopControlEntriesCache: LooseRecord[] | null = null;
 const collaboratorPermissionCache = new Map();
 const activeRepairRunsByPrefix = new Map<string, LooseRecord[]>();
 const liveTargetCache = new Map<number, LooseRecord>();
-const cachedIssueComments = createCachedIssueCommentsLookup((number) =>
-  ghPaged<JsonValue>(`repos/${targetRepo}/issues/${number}/comments?per_page=100`),
+const issueCommentsCache = new Map<number, JsonValue[]>();
+const cachedIssueComments = createCachedIssueCommentsLookup(
+  (number) => ghPaged<JsonValue>(`repos/${targetRepo}/issues/${number}/comments?per_page=100`),
+  issueCommentsCache,
+);
+const cachedIssueCommentsAsync = createCachedIssueCommentsLookupAsync(
+  (number) => ghPagedAsync<JsonValue>(`repos/${targetRepo}/issues/${number}/comments?per_page=100`),
+  issueCommentsCache,
 );
 const openIssueNumbersByLabel = createCachedLabelNumberLookup((label) =>
   ghPaged<JsonValue>(
@@ -308,7 +316,7 @@ async function prehydrateCommandLookups(commands: LooseRecord[]) {
       liveTargetCache.set(number, await fetchLiveTargetAsync(number));
     }),
     mapLimit(issueNumbers, lookupConcurrency, async (number) => {
-      cachedIssueComments(number);
+      await cachedIssueCommentsAsync(number);
     }),
   ]);
 }
