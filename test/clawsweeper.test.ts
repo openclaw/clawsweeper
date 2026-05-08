@@ -21,6 +21,7 @@ import {
   codexEnv,
   dashboardClosedAt,
   fixedPullRequestFromCommitPullsForTest,
+  ghPagedContextWindow,
   formatRecentClosedRows,
   githubContextWindowPlan,
   githubPaginatedPath,
@@ -273,6 +274,51 @@ test("githubContextWindowPlan keeps large tails to the final page when possible"
     tailFirstPageNumber: 30,
     lastPageNumber: 30,
     tailOffset: 60,
+  });
+});
+
+test("ghPagedContextWindow reuses page one when the retained tail overlaps it", () => {
+  const fetchedPages: number[] = [];
+  const result = ghPagedContextWindow<number>("/repos/openclaw/openclaw/pulls/1/files", 101, 80, {
+    page: (_path, page) => {
+      fetchedPages.push(page);
+      const start = (page - 1) * 100 + 1;
+      const length = page === 1 ? 100 : 1;
+      return Array.from({ length }, (_value, index) => start + index);
+    },
+    paged: () => {
+      throw new Error("full pagination should not be used when GitHub reports a total");
+    },
+  });
+
+  assert.deepEqual(fetchedPages, [1, 2]);
+  assert.deepEqual(result.items, [
+    ...Array.from({ length: 40 }, (_value, index) => index + 1),
+    ...Array.from({ length: 40 }, (_value, index) => index + 62),
+  ]);
+  assert.equal(result.total, 101);
+  assert.equal(result.hydrated, 80);
+  assert.equal(result.truncated, true);
+});
+
+test("ghPagedContextWindow falls back to full pagination when GitHub omits totals", () => {
+  const result = ghPagedContextWindow<number>(
+    "/repos/openclaw/openclaw/issues/1/comments",
+    null,
+    2,
+    {
+      page: () => {
+        throw new Error("single-page fetch should not be used without a total");
+      },
+      paged: () => [1, 2, 3],
+    },
+  );
+
+  assert.deepEqual(result, {
+    items: [1, 2, 3],
+    total: 3,
+    hydrated: 3,
+    truncated: false,
   });
 });
 

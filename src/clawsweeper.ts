@@ -2099,6 +2099,11 @@ interface ContextHydration<T> {
   truncated: boolean;
 }
 
+interface GithubContextWindowFetchers<T> {
+  page?: (path: string, page: number) => T[];
+  paged?: (path: string) => T[];
+}
+
 function ghPage<T>(path: string, page: number): T[] {
   const items = ghJson<unknown[]>(["api", githubPagePath(path, page)]);
   return Array.isArray(items) ? (items as T[]) : [];
@@ -2140,22 +2145,25 @@ export function githubContextWindowPlan(
   };
 }
 
-function ghPagedContextWindow<T>(
+export function ghPagedContextWindow<T>(
   path: string,
   totalCount: unknown,
   promptLimit: number,
+  fetchers: GithubContextWindowFetchers<T> = {},
 ): ContextHydration<T> {
+  const fetchPage = fetchers.page ?? ghPage<T>;
+  const fetchPaged = fetchers.paged ?? ghPaged<T>;
   const total = githubCount(totalCount);
   const boundedLimit = Math.max(0, Math.floor(promptLimit));
   if (total === null) {
-    const items = ghPaged<T>(path);
+    const items = fetchPaged(path);
     return { items, total: items.length, hydrated: items.length, truncated: false };
   }
   if (total === 0 || boundedLimit === 0) {
     return { items: [], total, hydrated: 0, truncated: total > 0 };
   }
   if (total <= boundedLimit) {
-    const items = total <= 100 ? ghPage<T>(path, 1) : ghPaged<T>(path);
+    const items = total <= 100 ? fetchPage(path, 1) : fetchPaged(path);
     return {
       items,
       total: Math.max(total, items.length),
@@ -2165,12 +2173,12 @@ function ghPagedContextWindow<T>(
   }
 
   const plan = githubContextWindowPlan(total, boundedLimit);
-  const firstPage = plan.keepStart > 0 ? ghPage<T>(path, 1) : [];
+  const firstPage = plan.keepStart > 0 ? fetchPage(path, 1) : [];
   const headItems = firstPage.slice(0, plan.keepStart);
   const tailPages: T[] = [];
   if (plan.keepEnd > 0) {
     for (let page = plan.tailFirstPageNumber; page <= plan.lastPageNumber; page += 1) {
-      tailPages.push(...(page === 1 && plan.keepStart > 0 ? firstPage : ghPage<T>(path, page)));
+      tailPages.push(...(page === 1 && plan.keepStart > 0 ? firstPage : fetchPage(path, page)));
     }
   }
   const tailItems = tailPages.slice(plan.tailOffset, plan.tailOffset + plan.keepEnd);
