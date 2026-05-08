@@ -70,8 +70,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [ "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)" ]; then
-            echo "Fork main already matches the verified replay result."
+          if [ "$(git rev-parse HEAD^{tree})" = "$(git rev-parse origin/main^{tree})" ]; then
+            echo "Fork main already matches the verified replay tree."
             exit 0
           fi
           git push --force-with-lease=main:$(git rev-parse origin/main) origin HEAD:main
