@@ -39,6 +39,10 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
   CLAWSWEEPER_APP_CLIENT_ID: Iv23liOECG0slfuhz093
 
+concurrency:
+  group: clawsweeper-repair-self-heal
+  cancel-in-progress: false
+
 jobs:
   self-heal:
     runs-on: ${{ github.event_name == 'workflow_dispatch' && inputs.runner || vars.CLAWSWEEPER_WORKER_RUNNER || 'blacksmith-4vcpu-ubuntu-2404' }}

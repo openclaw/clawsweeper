@@ -68,6 +68,10 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
   CLAWSWEEPER_APP_CLIENT_ID: Iv23liOECG0slfuhz093
 
+concurrency:
+  group: repair-comment-router-${{ github.event.inputs.target_repo || github.event.client_payload.target_repo || 'openclaw/openclaw' }}
+  cancel-in-progress: false
+
 jobs:
   route-comments:
     runs-on: ubuntu-latest
