@@ -184,6 +184,37 @@ function closeDecision(overrides = {}) {
   };
 }
 
+function reviewFinding(overrides = {}) {
+  return {
+    title: "Missing changelog entry",
+    body: "This user-facing fix needs a CHANGELOG.md entry.",
+    priority: 3,
+    confidenceScore: 0.9,
+    file: "src/runtime.ts",
+    lineStart: 12,
+    lineEnd: 12,
+    ...overrides,
+  };
+}
+
+function changelogReviewDecision(overrides = {}) {
+  return closeDecision({
+    decision: "keep_open",
+    closeReason: "none",
+    confidence: "high",
+    bestSolution: "Add the required changelog entry before merge.",
+    reviewFindings: [reviewFinding({ title: "Add the required changelog entry" })],
+    overallCorrectness: "patch is incorrect",
+    workCandidate: "queue_fix_pr",
+    workConfidence: "high",
+    workPriority: "medium",
+    workReason: "Add the required changelog entry.",
+    workPrompt: "Add a CHANGELOG.md entry.",
+    workLikelyFiles: ["CHANGELOG.md"],
+    ...overrides,
+  });
+}
+
 test("githubPaginatedPath requests maximum REST page size by default", () => {
   assert.equal(
     githubPaginatedPath("repos/openclaw/openclaw/issues/123/comments"),
@@ -2174,6 +2205,91 @@ Full review comments:
   assert.doesNotMatch(markers, /clawsweeper-verdict:needs-changes/);
 });
 
+test("OpenClaw contributor changelog-entry findings are normalized", () => {
+  const decision = parseDecision(
+    changelogReviewDecision(),
+    item({ repo: "openclaw/openclaw", kind: "pull_request" }),
+  );
+
+  assert.deepEqual(decision.reviewFindings, []);
+  assert.equal(decision.overallCorrectness, "patch is correct");
+  assert.equal(decision.workCandidate, "none");
+  assert.equal(decision.workReason, "");
+});
+
+test("OpenClaw maintainer changelog-entry findings stay actionable", () => {
+  const decision = parseDecision(
+    changelogReviewDecision(),
+    item({ repo: "openclaw/openclaw", kind: "pull_request", authorAssociation: "MEMBER" }),
+  );
+
+  assert.deepEqual(
+    decision.reviewFindings.map((finding) => finding.title),
+    ["Add the required changelog entry"],
+  );
+  assert.equal(decision.overallCorrectness, "patch is incorrect");
+  assert.equal(decision.workCandidate, "queue_fix_pr");
+});
+
+test("OpenClaw changelog normalization keeps real findings actionable", () => {
+  const decision = parseDecision(
+    changelogReviewDecision({
+      reviewFindings: [
+        reviewFinding({ file: "CHANGELOG.md" }),
+        reviewFinding({
+          title: "Preserve the existing option value",
+          body: "The patch resets configured values when the dialog is reopened.",
+          priority: 1,
+          confidenceScore: 0.89,
+          file: "src/options.ts",
+          lineStart: 42,
+          lineEnd: 42,
+        }),
+      ],
+      workReason: "Fix the option reset bug.",
+      workPrompt: "Fix src/options.ts and add a regression test.",
+      workLikelyFiles: ["src/options.ts"],
+    }),
+    item({ repo: "openclaw/openclaw", kind: "pull_request" }),
+  );
+
+  assert.deepEqual(
+    decision.reviewFindings.map((finding) => finding.title),
+    ["Preserve the existing option value"],
+  );
+  assert.equal(decision.overallCorrectness, "patch is incorrect");
+  assert.equal(decision.workCandidate, "queue_fix_pr");
+});
+
+test("OpenClaw changelog normalization keeps changelog tooling findings actionable", () => {
+  const decision = parseDecision(
+    changelogReviewDecision({
+      reviewFindings: [
+        reviewFinding({
+          title: "Missing CHANGELOG.md entry validation",
+          body: "The parser accepts malformed changelog entries.",
+          priority: 2,
+          confidenceScore: 0.82,
+          file: "src/clawsweeper.ts",
+          lineStart: 42,
+          lineEnd: 42,
+        }),
+      ],
+      workReason: "Add changelog parser coverage.",
+      workPrompt: "Add parser coverage.",
+      workLikelyFiles: ["test/clawsweeper.test.ts"],
+    }),
+    item({ repo: "openclaw/openclaw", kind: "pull_request" }),
+  );
+
+  assert.deepEqual(
+    decision.reviewFindings.map((finding) => finding.title),
+    ["Missing CHANGELOG.md entry validation"],
+  );
+  assert.equal(decision.overallCorrectness, "patch is incorrect");
+  assert.equal(decision.workCandidate, "queue_fix_pr");
+});
+
 test("pull request automerge pass is not blocked by generic protected labels", () => {
   const comment = renderReviewCommentFromReport(
     `${reportFrontMatter({
@@ -3025,8 +3141,9 @@ test("review prompt keeps automerge opt-in from becoming generic manual review",
   assert.match(prompt, /large `size:\*` label/);
   assert.match(prompt, /choose `queue_fix_pr` even when the\s+finding is process-only or P3/);
   assert.match(prompt, /Changelog entries are maintainer-owned/);
-  assert.match(prompt, /Do not ask\s+the PR author to add one/);
-  assert.doesNotMatch(prompt, /Examples include a missing required changelog\s+entry/);
+  assert.match(prompt, /do not create a\s+review finding,\s+needs-changes\s+verdict/i);
+  assert.match(prompt, /do not ask the PR\s+author to add one/);
+  assert.doesNotMatch(prompt, /missing required changelog\s+entry/);
   assert.match(prompt, /does not by itself block a clean automerge verdict/);
 });
 

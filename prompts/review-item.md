@@ -234,10 +234,10 @@ Keep open any item with a protected label: `security`, `beta-blocker`, `release-
 For OpenClaw PR changelog review, repo policy requires user-facing `fix`,
 `feat`, and `perf` changes to have a `CHANGELOG.md` entry, but forbidden bot or
 maintainer handles must not be forced into a `Thanks @...` line. Do not create a
-review finding, contributor action, or public author request for a missing
-changelog entry. Changelog entries are maintainer-owned: use `workPrompt` or the
-automerge repair lane to tell ClawSweeper to add or repair the entry. Do not ask
-the PR author to add one. Also do not create a review finding merely because a
+review finding, needs-changes verdict, contributor action, public author request,
+or next-step blocker solely because a contributor PR lacks a changelog entry.
+Changelog entries are maintainer-owned landing/release work; do not ask the PR
+author to add one. Also do not create a review finding merely because a
 changelog entry lacks `Thanks @steipete`, `Thanks @openclaw`, or `Thanks
 @codex`; if those are the only known source authors, preserving credit in PR
 history/source links is sufficient.

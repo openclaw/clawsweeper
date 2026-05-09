@@ -652,7 +652,7 @@ const RECENT_MISSING_OPEN_MS = DAY_MS;
 const DEFAULT_CODEX_MODEL = "gpt-5.5";
 const DEFAULT_REASONING_EFFORT = "high";
 const DEFAULT_SERVICE_TIER = "";
-const REVIEW_POLICY_VERSION = "2026-05-05-policy-v14";
+const REVIEW_POLICY_VERSION = "2026-05-09-policy-v15";
 const REVIEW_ITEM_PROMPT_PATH = join(ROOT, "prompts", "review-item.md");
 const CLAWSWEEPER_DECISION_SCHEMA_PATH = join(ROOT, "schema", "clawsweeper-decision.schema.json");
 const REVIEW_COMMENT_MARKER_PREFIX = "<!-- clawsweeper-review";
@@ -1248,6 +1248,68 @@ function parseReviewFinding(value: unknown, path: string): ReviewFinding {
   };
 }
 
+type DecisionNormalizationItem = Pick<Item, "repo" | "kind" | "authorAssociation">;
+
+const CHANGELOG_ENTRY_REVIEW_PATTERN = /\b(?:changelog\.md|changelog\s+entry|release[- ]?note)\b/i;
+const MISSING_CHANGELOG_ACTION_PATTERN =
+  /\b(?:add|include|missing|no|lacks?|needs?|requires?|required|without)\b/i;
+const CHANGELOG_TOOLING_PATTERN =
+  /\b(?:coverage|duplicate|generator|malformed|parser|validation|validator|wrong\s+section)\b/i;
+
+function isOpenClawContributorPullRequest(item: DecisionNormalizationItem | undefined): boolean {
+  return (
+    item !== undefined &&
+    normalizeRepo(item.repo) === DEFAULT_TARGET_REPO &&
+    item.kind === "pull_request" &&
+    !isMaintainerAuthorAssociation(item.authorAssociation)
+  );
+}
+
+function isContributorChangelogEntryFinding(
+  item: DecisionNormalizationItem | undefined,
+  finding: ReviewFinding,
+): boolean {
+  const text = `${finding.title}\n${finding.body}`;
+  return (
+    isOpenClawContributorPullRequest(item) &&
+    CHANGELOG_ENTRY_REVIEW_PATTERN.test(text) &&
+    MISSING_CHANGELOG_ACTION_PATTERN.test(text) &&
+    !CHANGELOG_TOOLING_PATTERN.test(text)
+  );
+}
+
+const CLEAN_OPENCLAW_PR_REVIEW_NEXT_STEP =
+  "Continue normal maintainer review; ClawSweeper found no patch-correctness issue.";
+
+function normalizeDecisionForItem(
+  decision: Decision,
+  item: DecisionNormalizationItem | undefined,
+): Decision {
+  const reviewFindings = decision.reviewFindings.filter(
+    (finding) => !isContributorChangelogEntryFinding(item, finding),
+  );
+  if (reviewFindings.length === decision.reviewFindings.length) return decision;
+  if (reviewFindings.length > 0) return { ...decision, reviewFindings };
+
+  return {
+    ...decision,
+    reviewFindings,
+    bestSolution: CLEAN_OPENCLAW_PR_REVIEW_NEXT_STEP,
+    overallCorrectness:
+      decision.overallCorrectness === "patch is incorrect"
+        ? "patch is correct"
+        : decision.overallCorrectness,
+    workCandidate: "none",
+    workConfidence: "low",
+    workPriority: "low",
+    workReason: "",
+    workPrompt: "",
+    workClusterRefs: [],
+    workValidation: [],
+    workLikelyFiles: [],
+  };
+}
+
 function parseSecurityConcern(value: unknown, path: string): SecurityConcern {
   const record = requireRecord(value, path);
   rejectUnexpectedKeys(record, SECURITY_CONCERN_SCHEMA_KEYS, path);
@@ -1303,7 +1365,7 @@ function requireEnum<T extends string>(value: unknown, allowed: Set<T>, path: st
   throw new Error(`${path} has invalid value`);
 }
 
-export function parseDecision(value: unknown): Decision {
+export function parseDecision(value: unknown, item?: DecisionNormalizationItem): Decision {
   const record = requireRecord(value, "decision");
   rejectUnexpectedKeys(record, DECISION_SCHEMA_KEYS, "decision");
   const evidence = Array.isArray(record.evidence)
@@ -1326,7 +1388,7 @@ export function parseDecision(value: unknown): Decision {
     : (() => {
         throw new Error("decision.reviewFindings must be an array");
       })();
-  return {
+  const decision: Decision = {
     decision: requireEnum(record.decision, DECISIONS, "decision.decision"),
     closeReason: requireEnum(record.closeReason, ALL_REASONS, "decision.closeReason"),
     confidence: requireEnum(record.confidence, CONFIDENCES, "decision.confidence"),
@@ -1391,6 +1453,7 @@ export function parseDecision(value: unknown): Decision {
     workValidation: requireStringArray(record.workValidation, "decision.workValidation"),
     workLikelyFiles: requireStringArray(record.workLikelyFiles, "decision.workLikelyFiles"),
   };
+  return normalizeDecisionForItem(decision, item);
 }
 
 function login(value: unknown): string | undefined {
@@ -3744,7 +3807,7 @@ function runCodex(options: {
     );
   }
   try {
-    return parseDecision(JSON.parse(readFileSync(outputPath, "utf8").trim()));
+    return parseDecision(JSON.parse(readFileSync(outputPath, "utf8").trim()), options.item);
   } catch (error) {
     const decision = codexFailureDecision(
       result.status,
