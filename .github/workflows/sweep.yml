@@ -74,7 +74,7 @@ on:
       shard_count:
         description: "Parallel shards (capped by config/automation-limits.json)"
         required: false
-        default: "70"
+        default: "100"
       item_number:
         description: "Optional single issue/PR number to review"
         required: false
@@ -637,7 +637,7 @@ jobs:
                 active_shards=0
               fi
               # Planning, publish, queued, and not-yet-expanded matrix runs still occupy
-              # scheduler attention, but they should not reserve a whole 35-70 shard lane.
+              # scheduler attention, but they should not reserve a whole 35-100 shard lane.
               if [ "$active_shards" -lt 1 ]; then
                 active_shards=1
               fi

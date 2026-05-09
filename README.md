@@ -404,7 +404,7 @@ source ~/.profile
 corepack enable
 pnpm install
 pnpm run build
-pnpm run plan -- --target-repo openclaw/openclaw --batch-size 5 --shard-count 70 --max-pages 250 --codex-model gpt-5.5 --codex-reasoning-effort high
+pnpm run plan -- --target-repo openclaw/openclaw --batch-size 5 --shard-count 100 --max-pages 250 --codex-model gpt-5.5 --codex-reasoning-effort high
 pnpm run review -- --target-repo openclaw/openclaw --target-dir ../openclaw --batch-size 5 --max-pages 250 --artifact-dir artifacts/reviews --codex-model gpt-5.5 --codex-reasoning-effort high --codex-timeout-ms 600000
 pnpm run apply-artifacts -- --target-repo openclaw/openclaw --artifact-dir artifacts/reviews --skip-dashboard
 pnpm run audit -- --target-repo openclaw/openclaw --max-pages 250 --sample-limit 25 --update-dashboard
@@ -461,7 +461,7 @@ default, subject to the selected repository profile; pass `target_repo`,
 `apply_kind=issue`, or `apply_kind=pull_request` to narrow a manual run.
 
 Scheduled runs cover the configured product profiles. `openclaw/openclaw` runs
-normal backfill every 5 minutes with up to 70 review shards when the system is
+normal backfill every 5 minutes with up to 100 review shards when the system is
 quiet; `openclaw/clawhub` runs on offset review/apply/audit crons so its reports
 live under `records/openclaw-clawhub/` without colliding with default repo
 records. `openclaw/clawsweeper` has a scheduled read-only audit row and is
@@ -477,7 +477,7 @@ is active. Throughput defaults live in
 ClawSweeper has one main capacity knob:
 `config/automation-limits.json` -> `workers.max`. The current value is `100`.
 Quiet-system lane limits are derived from that number: normal review gets up to
-70 shards, hot intake up to 35 shards, commit review 5 commits per page, and
+100 shards, hot intake up to 35 shards, commit review 5 commits per page, and
 repair/issue implementation 40 live workers. Exact-item review, repair, and
 issue implementation are priority work; normal review, hot intake, and commit
 review are background work and automatically yield when priority work is active.
