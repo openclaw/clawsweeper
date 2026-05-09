@@ -3024,7 +3024,9 @@ test("review prompt keeps automerge opt-in from becoming generic manual review",
   assert.match(prompt, /`maintainer` label/);
   assert.match(prompt, /large `size:\*` label/);
   assert.match(prompt, /choose `queue_fix_pr` even when the\s+finding is process-only or P3/);
-  assert.match(prompt, /missing required changelog\s+entry/);
+  assert.match(prompt, /Changelog entries are maintainer-owned/);
+  assert.match(prompt, /Do not ask\s+the PR author to add one/);
+  assert.doesNotMatch(prompt, /Examples include a missing required changelog\s+entry/);
   assert.match(prompt, /does not by itself block a clean automerge verdict/);
 });
 

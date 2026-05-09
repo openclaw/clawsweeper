@@ -195,9 +195,9 @@ the exact head. Do not choose `manual_review` solely because the PR has the
 `maintainer` label, a large `size:*` label, broad surface area, or ordinary
 maintainer-review expectations. If review findings name a narrow mechanical
 blocker that an automated worker can fix, choose `queue_fix_pr` even when the
-finding is process-only or P3. Examples include a missing required changelog
-entry, docs/diagnostic copy, validation-only warning, focused test coverage, or
-a failing check with a clear file-level repair. Concrete security findings are
+finding is process-only or P3. Examples include docs/diagnostic copy,
+validation-only warning, focused test coverage, or a failing check with a clear
+file-level repair. Concrete security findings are
 not automatically human-review blockers after a maintainer opts a PR into
 `clawsweeper:automerge` or `clawsweeper:autofix`; if the defect has a narrow
 code/test repair, choose `queue_fix_pr` and let the repair loop try first. Use
@@ -234,9 +234,13 @@ Keep open any item with a protected label: `security`, `beta-blocker`, `release-
 For OpenClaw PR changelog review, repo policy requires user-facing `fix`,
 `feat`, and `perf` changes to have a `CHANGELOG.md` entry, but forbidden bot or
 maintainer handles must not be forced into a `Thanks @...` line. Do not create a
-review finding merely because a changelog entry lacks `Thanks @steipete`,
-`Thanks @openclaw`, or `Thanks @codex`; if those are the only known source
-authors, preserving credit in PR history/source links is sufficient.
+review finding, contributor action, or public author request for a missing
+changelog entry. Changelog entries are maintainer-owned: use `workPrompt` or the
+automerge repair lane to tell ClawSweeper to add or repair the entry. Do not ask
+the PR author to add one. Also do not create a review finding merely because a
+changelog entry lacks `Thanks @steipete`, `Thanks @openclaw`, or `Thanks
+@codex`; if those are the only known source authors, preserving credit in PR
+history/source links is sufficient.
 
 When citing docs in the close comment, link the public `docs.openclaw.ai` page rather than the internal `docs/*.md` GitHub file whenever a public page exists. The docs site publishes the same content and is the user-facing target. Keep `file`, `line`, and `sha` populated in the structured `evidence` object for auditability, but the prose/comment should prefer links like `https://docs.openclaw.ai/plugins/building-plugins` over `https://github.com/openclaw/openclaw/blob/.../docs/plugins/building-plugins.md`.
 
