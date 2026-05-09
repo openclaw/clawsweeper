@@ -846,7 +846,7 @@ test("skill-only OpenClaw PRs can close through ClawHub with upload guidance", (
   assert.match(action.closeComment, /installable community skill/);
 });
 
-test("ClawHub policy only allows implemented-on-main PR close proposals", () => {
+test("ClawHub policy only allows main-implemented PR close proposals", () => {
   const implementedPr = validateCloseDecision(
     item({
       repo: "openclaw/clawhub",
@@ -1277,6 +1277,17 @@ test("invalid close semantics are rejected", () => {
   assert.equal(stalePr.ok, false);
   assert.equal(stalePr.actionTaken, "skipped_invalid_decision");
 
+  const mostlyImplementedIssue = validateCloseDecision(
+    item({ kind: "issue" }),
+    closeDecision({ closeReason: "mostly_implemented_on_main" }),
+  );
+  assert.equal(mostlyImplementedIssue.ok, false);
+  assert.equal(mostlyImplementedIssue.actionTaken, "skipped_invalid_decision");
+  assert.equal(
+    mostlyImplementedIssue.reason,
+    "mostly_implemented_on_main is allowed only for pull requests",
+  );
+
   const missingEvidence = validateCloseDecision(item(), closeDecision({ evidence: [] }));
   assert.equal(missingEvidence.ok, false);
   assert.equal(missingEvidence.actionTaken, "skipped_invalid_decision");
@@ -1425,6 +1436,17 @@ test("implemented-on-main closes require fix provenance", () => {
     }),
   );
   assert.equal(blameAndMainTimestamp.ok, true);
+
+  const mostlyImplementedPr = validateCloseDecision(
+    item({ kind: "pull_request" }),
+    closeDecision({
+      closeReason: "mostly_implemented_on_main",
+      summary: "Current main implements the useful part of this older PR.",
+      closeComment:
+        "Closing this older PR because current main already covers the useful change and the remaining branch diff is obsolete.",
+    }),
+  );
+  assert.equal(mostlyImplementedPr.ok, true);
 });
 
 test("duplicate or superseded closes are allowed with evidence and comment", () => {
@@ -1461,15 +1483,16 @@ test("apply close reason filters support exact fast-close lanes", () => {
   assert.throws(() => closeReasonsArg("stale"), /Invalid apply close reason: stale/);
 });
 
-test("stale insufficient-info closes require older items while implemented closes can be immediate", () => {
+test("stale and mostly-implemented closes require older items while implemented closes can be immediate", () => {
   const now = Date.parse("2026-04-28T12:00:00Z");
   const freshItem = item({ createdAt: "2026-04-28T11:59:00Z" });
+  const oldItem = item({ createdAt: "2026-01-01T00:00:00Z" });
 
   assert.equal(
     closeReasonApplyAgeSkipReason(freshItem, "implemented_on_main", {
       minAgeMs: 0,
       minAgeDescription: "0 minutes",
-      staleMinAgeDays: 30,
+      staleMinAgeDays: 60,
       now,
     }),
     null,
@@ -1478,7 +1501,7 @@ test("stale insufficient-info closes require older items while implemented close
     closeReasonApplyAgeSkipReason(freshItem, "duplicate_or_superseded", {
       minAgeMs: 5 * 60 * 1000,
       minAgeDescription: "5 minutes",
-      staleMinAgeDays: 30,
+      staleMinAgeDays: 60,
       now,
     }),
     "created less than or equal to 5 minutes ago",
@@ -1487,10 +1510,28 @@ test("stale insufficient-info closes require older items while implemented close
     closeReasonApplyAgeSkipReason(freshItem, "stale_insufficient_info", {
       minAgeMs: 0,
       minAgeDescription: "0 minutes",
-      staleMinAgeDays: 30,
+      staleMinAgeDays: 60,
       now,
     }),
-    "stale_insufficient_info requires item older than 30 days",
+    "stale_insufficient_info requires item older than 60 days",
+  );
+  assert.equal(
+    closeReasonApplyAgeSkipReason(freshItem, "mostly_implemented_on_main", {
+      minAgeMs: 0,
+      minAgeDescription: "0 minutes",
+      staleMinAgeDays: 60,
+      now,
+    }),
+    "mostly_implemented_on_main requires item older than 60 days",
+  );
+  assert.equal(
+    closeReasonApplyAgeSkipReason(oldItem, "mostly_implemented_on_main", {
+      minAgeMs: 0,
+      minAgeDescription: "0 minutes",
+      staleMinAgeDays: 60,
+      now,
+    }),
+    null,
   );
 });
 

@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 export type RepositoryItemKind = "issue" | "pull_request";
 export type RepositoryCloseReason =
   | "implemented_on_main"
+  | "mostly_implemented_on_main"
   | "cannot_reproduce"
   | "clawhub"
   | "duplicate_or_superseded"
@@ -50,6 +51,7 @@ interface OpenClawFallbackConfig {
 
 const OPENCLAW_CLOSE_REASONS: readonly RepositoryCloseReason[] = [
   "implemented_on_main",
+  "mostly_implemented_on_main",
   "cannot_reproduce",
   "clawhub",
   "duplicate_or_superseded",

@@ -47,6 +47,7 @@
       "type": "string",
       "enum": [
         "implemented_on_main",
+        "mostly_implemented_on_main",
         "cannot_reproduce",
         "clawhub",
         "duplicate_or_superseded",
@@ -354,7 +355,7 @@
     },
     "fixedAt": {
       "type": ["string", "null"],
-      "description": "ISO-8601 commit or merge timestamp for the fix/proof SHA when known. Required for implemented_on_main when fixedRelease is null so maintainers know when it became fixed on main."
+      "description": "ISO-8601 commit or merge timestamp for the fix/proof SHA when known. Required for implemented_on_main and mostly_implemented_on_main when fixedRelease is null so maintainers know when it became fixed on main."
     },
     "closeComment": {
       "type": "string"

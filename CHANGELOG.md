@@ -24,6 +24,10 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Fixed
 
+- Added age-gated `mostly_implemented_on_main` PR cleanup so ClawSweeper can
+  close older pull requests when current `main` already contains the useful
+  change and the remaining diff is obsolete, minor, risky churn, or separately
+  tracked.
 - Rendered deterministic close comments during review even when the model omits
   `closeComment`, while keeping apply strict about requiring a stored usable
   close comment before mutating GitHub.

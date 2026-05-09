@@ -184,19 +184,64 @@ test("workflow utilities select eligible proposed close records", () => {
       "",
     ].join("\n"),
   );
+  write(
+    path.join(root, "records/openclaw-openclaw/items/openclaw-openclaw-12.md"),
+    [
+      "---",
+      "repository: openclaw/openclaw",
+      "type: pull_request",
+      "decision: close",
+      "confidence: high",
+      "action_taken: proposed_close",
+      "close_reason: mostly_implemented_on_main",
+      `item_created_at: ${oldDate}`,
+      "---",
+      "",
+    ].join("\n"),
+  );
+  write(
+    path.join(root, "records/openclaw-openclaw/items/openclaw-openclaw-13.md"),
+    [
+      "---",
+      "repository: openclaw/openclaw",
+      "type: issue",
+      "decision: close",
+      "confidence: high",
+      "action_taken: proposed_close",
+      "close_reason: mostly_implemented_on_main",
+      `item_created_at: ${oldDate}`,
+      "---",
+      "",
+    ].join("\n"),
+  );
+  write(
+    path.join(root, "records/openclaw-openclaw/items/openclaw-openclaw-14.md"),
+    [
+      "---",
+      "repository: openclaw/openclaw",
+      "type: pull_request",
+      "decision: close",
+      "confidence: high",
+      "action_taken: proposed_close",
+      "close_reason: mostly_implemented_on_main",
+      `item_created_at: ${new Date().toISOString()}`,
+      "---",
+      "",
+    ].join("\n"),
+  );
 
   const selected = withCwd(root, () =>
     proposedItemNumbers({
       targetRepo: "openclaw/openclaw",
       applyKind: "all",
       applyCloseReasons: "all",
-      staleMinAgeDays: 30,
+      staleMinAgeDays: 60,
       minAgeDays: 0,
       minAgeMinutes: null,
     }),
   );
 
-  assert.deepEqual(selected, [5]);
+  assert.deepEqual(selected, [5, 12]);
 });
 
 function withCwd(cwd, callback) {

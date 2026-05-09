@@ -257,6 +257,7 @@ export function proposedItemNumbers(options: ProposedItemOptions): number[] {
     "duplicate_or_superseded",
     "incoherent",
     "implemented_on_main",
+    "mostly_implemented_on_main",
     "not_actionable_in_repo",
     "stale_insufficient_info",
   ]);
@@ -289,7 +290,7 @@ export function proposedItemNumbers(options: ProposedItemOptions): number[] {
       if (!allowedForTarget(options.targetRepo, type, reason, allowedReasons)) return [];
       if (allowedCloseReasons && !allowedCloseReasons.has(reason)) return [];
       if (
-        reason === "stale_insufficient_info" &&
+        (reason === "stale_insufficient_info" || reason === "mostly_implemented_on_main") &&
         !olderThan(
           frontMatterValue(markdown, "item_created_at"),
           options.staleMinAgeDays * 24 * 60 * 60 * 1000,
@@ -420,8 +421,12 @@ function allowedForTarget(
   allowedReasons: ReadonlySet<string>,
 ): boolean {
   if (targetRepo === "openclaw/clawhub")
-    return type === "pull_request" && reason === "implemented_on_main";
+    return (
+      type === "pull_request" &&
+      (reason === "implemented_on_main" || reason === "mostly_implemented_on_main")
+    );
   if (type === "pull_request" && reason === "stale_insufficient_info") return false;
+  if (type !== "pull_request" && reason === "mostly_implemented_on_main") return false;
   return allowedReasons.has(reason);
 }
 

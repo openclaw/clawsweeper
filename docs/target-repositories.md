@@ -24,7 +24,8 @@ without a TypeScript change. It is intentionally narrow:
 - repo name must match `allow_repo_name_pattern`
 - denied repositories are rejected
 - issues cannot be auto-closed
-- PRs can auto-close only for `implemented_on_main`
+- PRs can auto-close only for `implemented_on_main` or age-gated
+  `mostly_implemented_on_main`
 - scheduled dashboard/backfill rows are not added automatically
 
 This is enough for event-driven review after the target repo has the dispatcher

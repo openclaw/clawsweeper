@@ -17,7 +17,10 @@ test("repositoryProfileFor supports fs-safe event reviews", () => {
   assert.equal(profile.slug, "openclaw-fs-safe");
   assert.equal(profile.checkoutDir, "fs-safe");
   assert.deepEqual(profile.applyCloseRules.issue, []);
-  assert.deepEqual(profile.applyCloseRules.pull_request, ["implemented_on_main"]);
+  assert.deepEqual(profile.applyCloseRules.pull_request, [
+    "implemented_on_main",
+    "mostly_implemented_on_main",
+  ]);
 });
 
 test("generic OpenClaw fallback supports conservative event-only onboarding", () => {
@@ -29,7 +32,10 @@ test("generic OpenClaw fallback supports conservative event-only onboarding", ()
   assert.equal(profile.checkoutDir, "example-tool");
   assert.match(profile.promptNote, /generic OpenClaw onboarding profile/);
   assert.deepEqual(profile.applyCloseRules.issue, []);
-  assert.deepEqual(profile.applyCloseRules.pull_request, ["implemented_on_main"]);
+  assert.deepEqual(profile.applyCloseRules.pull_request, [
+    "implemented_on_main",
+    "mostly_implemented_on_main",
+  ]);
 });
 
 test("generic OpenClaw fallback keeps denied repositories unsupported", () => {

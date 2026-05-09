@@ -274,9 +274,9 @@ Exact event runs skip the bulk planner, shard matrix, artifact upload, and
 separate publish job. They still use the same review and apply code paths, but
 only for the selected item number and only with immediate-safe reasons enabled
 by default: `implemented_on_main` and `duplicate_or_superseded`.
-`stale_insufficient_info` is never applied to young items; apply requires those
-issue reports to be at least 60 days old unless a manual run explicitly changes
-the threshold.
+`stale_insufficient_info` issue reports and `mostly_implemented_on_main` PR
+reports are never applied to young items; apply requires those reports to be at
+least 60 days old unless a manual run explicitly changes the threshold.
 
 The external state dashboard is fleet-scoped. Each configured repository gets
 its own record folder, status JSON, audit state, cadence counts, and recent

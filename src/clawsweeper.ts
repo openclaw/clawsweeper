@@ -102,6 +102,7 @@ type RealBehaviorProofEvidenceKind =
   | "not_applicable";
 type CloseReason =
   | "implemented_on_main"
+  | "mostly_implemented_on_main"
   | "cannot_reproduce"
   | "clawhub"
   | "duplicate_or_superseded"
@@ -664,6 +665,7 @@ const PROOF_SUFFICIENT_LABEL = "proof: sufficient";
 const PROTECTED_LABELS = new Set(["security", "beta-blocker", "release-blocker", "maintainer"]);
 const ALLOWED_REASONS = new Set<CloseReason>([
   "implemented_on_main",
+  "mostly_implemented_on_main",
   "cannot_reproduce",
   "clawhub",
   "duplicate_or_superseded",
@@ -1567,10 +1569,10 @@ export function closeReasonApplyAgeSkipReason(
 ): string | null {
   const now = options.now ?? Date.now();
   if (
-    closeReason === "stale_insufficient_info" &&
+    (closeReason === "stale_insufficient_info" || closeReason === "mostly_implemented_on_main") &&
     !isOlderThanDays(item.createdAt, options.staleMinAgeDays, now)
   ) {
-    return `stale_insufficient_info requires item older than ${options.staleMinAgeDays} days`;
+    return `${closeReason} requires item older than ${options.staleMinAgeDays} days`;
   }
   if (!isOlderThanMs(item.createdAt, options.minAgeMs, now)) {
     return `created less than or equal to ${options.minAgeDescription} ago`;
@@ -3828,6 +3830,8 @@ function closeReasonText(reason: CloseReason): string {
   switch (reason) {
     case "implemented_on_main":
       return "already implemented on main";
+    case "mostly_implemented_on_main":
+      return "mostly implemented on main";
     case "cannot_reproduce":
       return "cannot reproduce on current main";
     case "clawhub":
@@ -4487,6 +4491,8 @@ function closeIntro(reason: CloseReason): string {
   switch (reason) {
     case "implemented_on_main":
       return "Thanks for the context here. I did a careful shell check against current `main`, and this is already implemented.";
+    case "mostly_implemented_on_main":
+      return "Thanks for the context here. I did a careful shell check against current `main`, and the useful part of this older PR is already implemented there.";
     case "cannot_reproduce":
       return "Thanks for the report. I gave this a fresh shell check against current `main`, and I could not reproduce it anymore.";
     case "clawhub":
@@ -4508,6 +4514,8 @@ function closeOutro(reason: CloseReason): string {
   switch (reason) {
     case "implemented_on_main":
       return "So I’m closing this as already implemented rather than keeping a duplicate issue open.";
+    case "mostly_implemented_on_main":
+      return "So I’m closing this older PR as already covered on `main` rather than keeping a mostly-duplicated branch open.";
     case "clawhub":
       return `So I’m closing this as a scope-fit item for the plugin/community path. Please upload or publish it through ${markdownLink("ClawHub.com", targetProfile().communityUrl ?? "https://clawhub.ai/")} so it can live as an installable community skill instead of a bundled OpenClaw core change.`;
     case "duplicate_or_superseded":
@@ -5559,6 +5567,13 @@ export function validateCloseDecision(
       reason: `${decision.closeReason} is not allowed for ${profile.targetRepo} ${item.kind} apply policy`,
     };
   }
+  if (item.kind !== "pull_request" && decision.closeReason === "mostly_implemented_on_main") {
+    return {
+      ok: false,
+      actionTaken: "skipped_invalid_decision",
+      reason: "mostly_implemented_on_main is allowed only for pull requests",
+    };
+  }
   if (item.kind === "pull_request" && decision.closeReason === "stale_insufficient_info") {
     return {
       ok: false,
@@ -5580,65 +5595,69 @@ export function validateCloseDecision(
     return { ok: false, actionTaken: "skipped_invalid_decision", reason: "missing evidence" };
   }
   if (
-    decision.closeReason === "implemented_on_main" &&
+    isImplementationCloseReason(decision.closeReason) &&
     !hasImplementationSourceEvidence(decision)
   ) {
     return {
       ok: false,
       actionTaken: "skipped_invalid_decision",
-      reason: "implemented_on_main requires evidence with file and sha",
+      reason: `${decision.closeReason} requires evidence with file and sha`,
     };
   }
-  if (decision.closeReason === "implemented_on_main" && !decision.fixedSha?.trim()) {
+  if (isImplementationCloseReason(decision.closeReason) && !decision.fixedSha?.trim()) {
     return {
       ok: false,
       actionTaken: "skipped_invalid_decision",
-      reason: "implemented_on_main requires fixedSha",
+      reason: `${decision.closeReason} requires fixedSha`,
     };
   }
   if (
-    decision.closeReason === "implemented_on_main" &&
+    isImplementationCloseReason(decision.closeReason) &&
     decision.fixedAt &&
     !hasValidFixedAt(decision)
   ) {
     return {
       ok: false,
       actionTaken: "skipped_invalid_decision",
-      reason: "implemented_on_main fixedAt must be an ISO timestamp",
+      reason: `${decision.closeReason} fixedAt must be an ISO timestamp`,
     };
   }
   if (
-    decision.closeReason === "implemented_on_main" &&
+    isImplementationCloseReason(decision.closeReason) &&
     !decision.fixedRelease?.trim() &&
     !hasValidFixedAt(decision)
   ) {
     return {
       ok: false,
       actionTaken: "skipped_invalid_decision",
-      reason: "implemented_on_main requires fixedRelease or fixedAt",
+      reason: `${decision.closeReason} requires fixedRelease or fixedAt`,
     };
   }
   if (
-    decision.closeReason === "implemented_on_main" &&
+    isImplementationCloseReason(decision.closeReason) &&
     !hasImplementationHistoryEvidence(decision)
   ) {
     return {
       ok: false,
       actionTaken: "skipped_invalid_decision",
-      reason: "implemented_on_main requires git history provenance evidence",
+      reason: `${decision.closeReason} requires git history provenance evidence`,
     };
   }
   if (
-    decision.closeReason === "implemented_on_main" &&
+    isImplementationCloseReason(decision.closeReason) &&
     !hasImplementationReleaseStateEvidence(decision)
   ) {
     return {
       ok: false,
       actionTaken: "skipped_invalid_decision",
-      reason: "implemented_on_main requires release or main-only provenance evidence",
+      reason: `${decision.closeReason} requires release or main-only provenance evidence`,
     };
   }
   return { ok: true };
+}
+
+function isImplementationCloseReason(reason: CloseReason): boolean {
+  return reason === "implemented_on_main" || reason === "mostly_implemented_on_main";
 }
 
 function reviewCommentMarker(number: number): string {
@@ -5993,7 +6012,7 @@ function closeItem(options: { number: number; kind: ItemKind; reason: CloseReaso
   if (options.kind === "pull_request") {
     ghWithRetry(["pr", "close", String(options.number)]);
   } else {
-    const reason = options.reason === "implemented_on_main" ? "completed" : "not_planned";
+    const reason = isImplementationCloseReason(options.reason) ? "completed" : "not_planned";
     const closePayloadFile = join(ROOT, ".artifacts", `close-${options.number}.json`);
     writeFileSync(
       closePayloadFile,

@@ -119,6 +119,14 @@ Use reason-specific anchors:
   release tag/version. If it is only on current `main`, say that and include the
   commit timestamp. If you cannot establish either the shipped release or the
   main-only timestamp with high confidence, keep the item open.
+- For `mostly_implemented_on_main`, use the same source/history/release
+  provenance standard as `implemented_on_main`, but only for pull requests older
+  than 60 days whose central useful change is already on current `main`.
+  Confirm that any leftover diff is minor, obsolete, risky churn, style-only,
+  superseded by current code, or already tracked by a narrower canonical item.
+  Also confirm there has been no recent substantive human response that changes
+  the decision. Keep the PR open when a meaningful unique fix, feature,
+  security hardening, test, doc, migration, or product decision remains.
 - For `clawhub`, inspect `VISION.md` and the relevant plugin/skill/MCP/channel/provider docs or APIs, then confirm the request can be satisfied outside core without a missing extension API.
 - For `duplicate_or_superseded`, read the canonical related report/PR from the provided context or `gh`, and explain whether it is open, closed, merged, or already shipped.
 - For `not_actionable_in_repo`, read enough discussion/context to confirm the action belongs to repo/project administration, third-party setup, external ownership, or historical cleanup rather than OpenClaw code/docs.
@@ -133,6 +141,7 @@ hedge for an otherwise policy-valid close.
 Close only when the evidence is strong and the repository policy allows it. Allowed close reasons:
 
 - `implemented_on_main`: current `main` already implements or fixes the request well enough.
+- `mostly_implemented_on_main`: an older PR is more than 60 days old, current `main` already implements the central useful part of the PR, and no meaningful unique remainder should be merged from the branch. Use only for pull requests, not issues. The close comment must say what part is already on `main`, what leftover part is minor/obsolete/superseded or separately tracked, and why keeping the stale branch open is not useful.
 - `cannot_reproduce`: you tried a reasonable reproduction path against current `main` and it does not reproduce, or the report is obsolete and no longer matches current behavior.
 - `clawhub`: useful idea, but it belongs as a ClawHub skill/plugin rather than OpenClaw core. Use `VISION.md` as the scope anchor. Prefer this when the requested capability is optional integration/provider/channel/skill/bundle/MCP work, can be built with current skill/MCP/plugin surfaces, has no concrete missing core extension API, and has no protected maintainer signal. This includes service-specific channels, providers, optional skills, and plugin-discovery/publishing ideas when the current plugin or bundle-style interface is sufficient. For OpenClaw PRs that only add bundled skills under paths like `skills/<vendor>/**`, set `itemCategory: "skill"` and prefer `closeReason: "clawhub"` with high confidence; the close comment should ask the contributor to upload or publish it through ClawHub.com instead of bundling it in OpenClaw core. Keep open when the item reports a regression in bundled core behavior, identifies a missing plugin API needed before external implementation is possible, involves security/core hardening, or clearly needs explicit maintainer product judgment.
 - `duplicate_or_superseded`: another issue/PR already tracks the same remaining work, or the linked discussion/PR clearly supersedes this item. Link the canonical item and explain whether it is open or closed/merged. For clusters with the same root cause, keep one canonical issue open and close satellites when their unique logs, platforms, or context can be preserved by linking them in the close comment. Unique evidence blocks duplicate close only when it implies a distinct root cause, platform-specific fix, or separate remaining product behavior.
@@ -140,9 +149,9 @@ Close only when the evidence is strong and the repository policy allows it. Allo
 - `incoherent`: the item is too unclear or internally contradictory after reading the title/body/comments.
 - `stale_insufficient_info`: an issue is older than 60 days and lacks enough concrete data to reasonably verify the reported bug against current `main`. Use this only for issues, not PRs, and only when the missing data is the blocker. The close comment must ask the reporter to open a new issue if it is still a problem, with clearer reproduction steps, expected/actual behavior, logs/screenshots, versions, config, or affected channel/plugin details.
 
-For `openclaw/clawhub`, review every issue and PR with the same depth, but only close PRs where current `main` definitely implements the PR’s intended change. For ClawHub, use `implemented_on_main` only for those PRs, and keep all issues plus all other PR outcomes open.
+For `openclaw/clawhub`, review every issue and PR with the same depth, but only close PRs where current `main` definitely implements the PR’s intended change or an older PR is mostly implemented on `main` under the `mostly_implemented_on_main` rules. For ClawHub, use `implemented_on_main` or `mostly_implemented_on_main` only for those PRs, and keep all issues plus all other PR outcomes open.
 
-Do a canonical-search pass before keeping an older issue open only because a
+Do a canonical-search pass before keeping an older item open only because a
 small part might remain. Start with the provided `relatedItems`, then search
 GitHub and local reports for the central user problem, not just exact title
 words. Useful checks include `gh issue list --repo <repo> --state all --search
@@ -153,16 +162,19 @@ one canonical issue or PR now owns the remaining work, close this item as
 `duplicate_or_superseded` and link that canonical item. If current `main` solves
 the central user problem and only minor unconfirmed leftovers remain, prefer
 `implemented_on_main` with fix provenance, or `duplicate_or_superseded` when a
-narrower follow-up tracks the leftovers. If the item is older than 60 days,
-partially addressed, and the only remaining blocker is missing reporter data to
-verify whether anything still fails on current `main`, `stale_insufficient_info`
-is acceptable for issues. Do not use stale age to close a clearly described
-remaining feature, config surface, security hardening task, or product decision;
-keep those open or route them to the canonical item.
+narrower follow-up tracks the leftovers. If the item is an issue older than 60
+days, partially addressed, and the only remaining blocker is missing reporter
+data to verify whether anything still fails on current `main`,
+`stale_insufficient_info` is acceptable. If the item is a pull request older
+than 60 days and the central useful change is already on `main`, use
+`mostly_implemented_on_main` when the leftover PR diff is minor, obsolete,
+superseded, risky churn, or separately tracked. Do not use stale age to close a
+clearly described remaining feature, config surface, security hardening task, or
+product decision; keep those open or route them to the canonical item.
 
-Close as implemented when current `main` solves the observable user problem well enough, even if it did not use the exact workflow, file split, or field names proposed in the item. For broad umbrella requests, weigh the title and central user problem first. If current `main` solves the central problem and any leftovers are already tracked by a narrower related item, close as `duplicate_or_superseded` or `implemented_on_main` as appropriate and link the canonical follow-up. Keep open when a meaningful requested capability remains missing and no narrower canonical follow-up exists.
+Close as implemented when current `main` solves the observable user problem well enough, even if it did not use the exact workflow, file split, or field names proposed in the item. For broad umbrella requests, weigh the title and central user problem first. If current `main` solves the central problem and any leftovers are already tracked by a narrower related item, close as `duplicate_or_superseded` or `implemented_on_main` as appropriate and link the canonical follow-up. For older PRs where current `main` covers most of the branch but not every line, use `mostly_implemented_on_main` instead of stretching `implemented_on_main`. Keep open when a meaningful requested capability remains missing and no narrower canonical follow-up exists.
 
-Keep open for everything else, including real bugs, unclear-but-salvageable reports, stale PRs that might still contain useful work, optional features that require a new core/plugin API first, or anything where the evidence is not high-confidence.
+Keep open for everything else, including real bugs, unclear-but-salvageable reports, stale PRs that still contain useful unique work, optional features that require a new core/plugin API first, or anything where the evidence is not high-confidence.
 
 For keep-open items, also decide whether this is a safe ClawSweeper repair
 candidate. This is not permission to mutate GitHub; it only marks a manual work
