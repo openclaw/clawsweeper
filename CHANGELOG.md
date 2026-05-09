@@ -27,6 +27,9 @@ checkpoint, and status-only commits are intentionally omitted.
 - Ignored non-SHA likely-owner provenance values when rendering public commit
   links, avoiding broken `/commit/...` URLs in review comments. Thanks @samzong.
 - Kept missing changelog entries as maintainer-owned ClawSweeper repair work instead of asking PR authors to add them. Thanks @obviyus.
+- Suppressed changelog-only OpenClaw PR review findings after model output so
+  contributor PRs do not get needs-changes or fix-required markers solely for
+  maintainer-owned release notes. Thanks @rubencu.
 - Gave manual exact-item review dispatches their own concurrency group so
   targeted maintainer reviews no longer wait behind broad normal backfill runs.
 - Downgraded screenshot-only browser runtime proof so ClawSweeper no longer accepts "no visible console/CSP violation" screenshots as sufficient real behavior proof. Thanks @BunsDev.
