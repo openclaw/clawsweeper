@@ -30,6 +30,8 @@ checkpoint, and status-only commits are intentionally omitted.
 - Suppressed changelog-only OpenClaw PR review findings after model output so
   contributor PRs do not get needs-changes or fix-required markers solely for
   maintainer-owned release notes. Thanks @rubencu.
+- Added explicit timeouts for disabled-target workflow guard jobs and
+  concurrency groups for write-side repair workflows. Thanks @ds4psb-ai.
 - Gave manual exact-item review dispatches their own concurrency group so
   targeted maintainer reviews no longer wait behind broad normal backfill runs.
 - Downgraded screenshot-only browser runtime proof so ClawSweeper no longer accepts "no visible console/CSP violation" screenshots as sufficient real behavior proof. Thanks @BunsDev.
