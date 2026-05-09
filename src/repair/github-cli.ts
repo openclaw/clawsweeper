@@ -48,12 +48,19 @@ export function ghJsonBestEffort<T = JsonValue>(
 }
 
 export function githubPaginatedPath(apiPath: string): string {
-  const [basePart, query = ""] = apiPath.split("?", 2);
-  const base = basePart ?? apiPath;
-  const params = new URLSearchParams(query);
-  if (!params.has("per_page")) params.set("per_page", "100");
-  const serialized = params.toString();
-  return serialized ? `${base}?${serialized}` : base;
+  return githubPathWithQueryDefaults(apiPath, { per_page: "100" });
+}
+
+export function githubLimitedPagePath(apiPath: string, limit: number, page = 1): string {
+  const normalizedLimit = Number.isFinite(limit) ? Math.floor(limit) : 1;
+  const normalizedPage = Number.isFinite(page) ? Math.floor(page) : 1;
+  const pageSize = Math.max(1, Math.min(100, normalizedLimit));
+  const pageNumber = Math.max(1, normalizedPage);
+  return githubPathWithQueryDefaults(
+    apiPath,
+    { per_page: String(pageSize), page: String(pageNumber) },
+    { override: true },
+  );
 }
 
 export function ghPaged<T = JsonValue>(apiPath: string, options: GhRunOptions = {}): T[] {
@@ -87,6 +94,28 @@ export async function ghPagedWithRetryAsync<T = JsonValue>(
   );
   if (!Array.isArray(pages)) return [];
   return pages.flatMap((page: JsonValue) => (Array.isArray(page) ? (page as T[]) : []));
+}
+
+export function ghPagedLimit<T = JsonValue>(
+  apiPath: string,
+  limit: number,
+  options: GhRunOptions = {},
+): T[] {
+  const max = Number.isFinite(limit) ? Math.max(0, Math.floor(limit)) : 0;
+  if (max <= 0) return [];
+
+  const perPage = Math.min(100, max);
+  const out: T[] = [];
+  for (let page = 1; out.length < max; page += 1) {
+    const entries = ghJson<JsonValue[]>(
+      ["api", githubLimitedPagePath(apiPath, perPage, page)],
+      options,
+    );
+    if (!Array.isArray(entries) || entries.length === 0) break;
+    out.push(...(entries as T[]));
+    if (entries.length < perPage) break;
+  }
+  return out.slice(0, max);
 }
 
 export function ghText(ghArgs: string[], options: GhRunOptions = {}): string {
@@ -232,6 +261,21 @@ export function shouldRetryGh(error: unknown): boolean {
 function resolveRetryOptions(options: GhRetryOptions | number): GhRetryOptions {
   if (typeof options === "number") return { attempts: options };
   return options;
+}
+
+function githubPathWithQueryDefaults(
+  apiPath: string,
+  defaults: Record<string, string>,
+  { override = false }: { override?: boolean } = {},
+): string {
+  const [basePart, query = ""] = apiPath.split("?", 2);
+  const base = basePart ?? apiPath;
+  const params = new URLSearchParams(query);
+  for (const [key, value] of Object.entries(defaults)) {
+    if (override || !params.has(key)) params.set(key, value);
+  }
+  const serialized = params.toString();
+  return serialized ? `${base}?${serialized}` : base;
 }
 
 function bufferLikeToString(value: unknown): string {

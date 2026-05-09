@@ -116,6 +116,48 @@ export function createCachedLabelNumberLookup(fetchNumbers: (label: string) => J
   };
 }
 
+export function createCachedIssueCommentsLookup<T = JsonValue>(
+  fetchComments: (number: number) => T[],
+  cache = new Map<number, T[]>(),
+) {
+  return (number: JsonValue): T[] => {
+    const key = Number(number);
+    if (!Number.isInteger(key) || key <= 0) return [];
+    const cached = cache.get(key);
+    if (cached) return [...cached];
+    const comments = fetchComments(key);
+    if (!Array.isArray(comments)) return [];
+    cache.set(key, comments);
+    return [...comments];
+  };
+}
+
+export function createCachedIssueCommentsLookupAsync<T = JsonValue>(
+  fetchComments: (number: number) => Promise<T[]>,
+  cache = new Map<number, T[]>(),
+) {
+  const inFlight = new Map<number, Promise<T[]>>();
+  return async (number: JsonValue): Promise<T[]> => {
+    const key = Number(number);
+    if (!Number.isInteger(key) || key <= 0) return [];
+    const cached = cache.get(key);
+    if (cached) return [...cached];
+    const pending = inFlight.get(key);
+    if (pending) return [...(await pending)];
+    const next = fetchComments(key)
+      .then((comments) => {
+        if (!Array.isArray(comments)) return [];
+        cache.set(key, comments);
+        return comments;
+      })
+      .finally(() => {
+        inFlight.delete(key);
+      });
+    inFlight.set(key, next);
+    return [...(await next)];
+  };
+}
+
 function uniquePositiveIntegers(values: JsonValue): number[] {
   if (!Array.isArray(values)) return [];
   return [

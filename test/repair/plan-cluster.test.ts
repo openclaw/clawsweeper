@@ -222,9 +222,141 @@ test("plan-cluster treats same-repo PR branches as writable despite raw maintain
   assert.match(pull.branch_write_reason, /same-repo head branch/);
 });
 
+test("plan-cluster bounds PR file and commit hydration", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-plan-bounded-pr-"));
+  const binDir = path.join(tmp, "bin");
+  const jobPath = path.join(tmp, "job.md");
+  const runDir = path.join(tmp, "run");
+  fs.mkdirSync(binDir);
+  fs.writeFileSync(path.join(binDir, "gh"), fakeGhScript(), { mode: 0o755 });
+
+  fs.writeFileSync(
+    jobPath,
+    [
+      "---",
+      "repo: openclaw/openclaw",
+      "cluster_id: automerge-openclaw-openclaw-74134",
+      "mode: autonomous",
+      "allowed_actions:",
+      "  - comment",
+      "  - fix",
+      "  - raise_pr",
+      "blocked_actions:",
+      "  - close",
+      "  - merge",
+      "source: pr_automerge",
+      "canonical:",
+      "  - #74134",
+      "candidates:",
+      "  - #74134",
+      "allow_fix_pr: true",
+      "allow_merge: false",
+      "security_policy: central_security_only",
+      "security_sensitive: false",
+      "---",
+      "Maintainer opted #74134 into ClawSweeper automerge.",
+      "",
+    ].join("\n"),
+  );
+
+  execFileSync(process.execPath, ["dist/repair/plan-cluster.js", jobPath, "--run-dir", runDir], {
+    cwd: process.cwd(),
+    env: {
+      ...process.env,
+      PATH: `${binDir}${path.delimiter}${process.env.PATH}`,
+      FAKE_GH_LARGE_PR: "1",
+      CLAWSWEEPER_MAX_FILES_PER_PR: "eighty",
+      CLAWSWEEPER_MAX_COMMITS_PER_PR: "many",
+    },
+    stdio: "pipe",
+  });
+
+  const clusterPlan = JSON.parse(fs.readFileSync(path.join(runDir, "cluster-plan.json"), "utf8"));
+  const pull = clusterPlan.items[0].pull_request;
+
+  assert.equal(pull.changed_files, 120);
+  assert.equal(pull.files_hydrated, 80);
+  assert.equal(pull.files_truncated, 40);
+  assert.equal(pull.files.length, 80);
+  assert.equal(pull.commits_count, 120);
+  assert.equal(pull.commits_hydrated, 80);
+  assert.equal(pull.commits_truncated, 40);
+  assert.equal(pull.commits.length, 80);
+});
+
+test("plan-cluster bounded PR hydration follows multiple GitHub pages", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-plan-bounded-pr-pages-"));
+  const binDir = path.join(tmp, "bin");
+  const jobPath = path.join(tmp, "job.md");
+  const runDir = path.join(tmp, "run");
+  const ghLog = path.join(tmp, "gh.log");
+  fs.mkdirSync(binDir);
+  fs.writeFileSync(path.join(binDir, "gh"), fakeGhScript(), { mode: 0o755 });
+
+  fs.writeFileSync(
+    jobPath,
+    [
+      "---",
+      "repo: openclaw/openclaw",
+      "cluster_id: automerge-openclaw-openclaw-74134",
+      "mode: autonomous",
+      "allowed_actions:",
+      "  - comment",
+      "  - fix",
+      "  - raise_pr",
+      "blocked_actions:",
+      "  - close",
+      "  - merge",
+      "source: pr_automerge",
+      "canonical:",
+      "  - #74134",
+      "candidates:",
+      "  - #74134",
+      "allow_fix_pr: true",
+      "allow_merge: false",
+      "security_policy: central_security_only",
+      "security_sensitive: false",
+      "---",
+      "Maintainer opted #74134 into ClawSweeper automerge.",
+      "",
+    ].join("\n"),
+  );
+
+  execFileSync(process.execPath, ["dist/repair/plan-cluster.js", jobPath, "--run-dir", runDir], {
+    cwd: process.cwd(),
+    env: {
+      ...process.env,
+      PATH: `${binDir}${path.delimiter}${process.env.PATH}`,
+      FAKE_GH_LARGE_PR: "1",
+      FAKE_GH_LARGE_PR_COUNT: "150",
+      FAKE_GH_LOG: ghLog,
+      CLAWSWEEPER_MAX_FILES_PER_PR: "150",
+      CLAWSWEEPER_MAX_COMMITS_PER_PR: "150",
+    },
+    stdio: "pipe",
+  });
+
+  const clusterPlan = JSON.parse(fs.readFileSync(path.join(runDir, "cluster-plan.json"), "utf8"));
+  const pull = clusterPlan.items[0].pull_request;
+  const ghCalls = fs.readFileSync(ghLog, "utf8");
+
+  assert.equal(pull.changed_files, 150);
+  assert.equal(pull.files_hydrated, 150);
+  assert.equal(pull.files_truncated, 0);
+  assert.equal(pull.files.length, 150);
+  assert.equal(pull.commits_count, 150);
+  assert.equal(pull.commits_hydrated, 150);
+  assert.equal(pull.commits_truncated, 0);
+  assert.equal(pull.commits.length, 150);
+  assert.equal((ghCalls.match(/pulls\/74134\/files\?per_page=100&page=/g) ?? []).length, 2);
+  assert.equal((ghCalls.match(/pulls\/74134\/commits\?per_page=100&page=/g) ?? []).length, 2);
+});
+
 function fakeGhScript() {
   return `#!/usr/bin/env node
+const fs = require("node:fs");
 const args = process.argv.slice(2);
+if (process.env.FAKE_GH_LOG) fs.appendFileSync(process.env.FAKE_GH_LOG, args.join(" ") + "\\n");
 function write(value) {
   process.stdout.write(JSON.stringify(value));
 }
@@ -246,6 +378,10 @@ if (endpoint === "repos/openclaw/openclaw/branches/main") {
 }
 if (isPaged()) {
   write([pagedResponse(endpoint)]);
+  process.exit(0);
+}
+if (/\\?(?:.*&)?per_page=/.test(endpoint)) {
+  write(pagedResponse(endpoint));
   process.exit(0);
 }
 if (endpoint === "repos/openclaw/openclaw/issues/74134") {
@@ -282,6 +418,8 @@ function issue(number, labels, body) {
   };
 }
 function pull(number, sha) {
+  const large = process.env.FAKE_GH_LARGE_PR === "1";
+  const largeCount = Number(process.env.FAKE_GH_LARGE_PR_COUNT || 120);
   return {
     draft: false,
     merged: false,
@@ -300,11 +438,34 @@ function pull(number, sha) {
     requested_teams: [],
     additions: 1,
     deletions: 0,
-    changed_files: 1,
+    changed_files: large ? largeCount : 1,
+    commits: large ? largeCount : 1,
+    review_comments: 0,
   };
 }
 function pagedResponse(endpoint) {
-  if (endpoint.endsWith("/commits")) return [{ sha: "commit-sha", commit: { message: "test" }, author: { login: "contributor" } }];
+  const [endpointPath, query = ""] = endpoint.split("?");
+  const params = new URLSearchParams(query);
+  const limit = Math.max(1, Number(params.get("per_page") || 1));
+  const page = Math.max(1, Number(params.get("page") || 1));
+  const total = Number(process.env.FAKE_GH_LARGE_PR_COUNT || 120);
+  const start = (page - 1) * limit;
+  const count = Math.max(0, Math.min(limit, total - start));
+  if (endpointPath.endsWith("/files")) {
+    return Array.from({ length: count }, (_, index) => ({
+      filename: "src/file-" + (start + index) + ".ts",
+      status: "modified",
+      additions: 1,
+      deletions: 0,
+    }));
+  }
+  if (endpointPath.endsWith("/commits")) {
+    return Array.from({ length: count }, (_, index) => ({
+      sha: "commit-sha-" + (start + index),
+      commit: { message: "test " + (start + index) },
+      author: { login: "contributor" },
+    }));
+  }
   return [];
 }
 `;

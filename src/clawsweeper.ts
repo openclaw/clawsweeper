@@ -306,12 +306,20 @@ interface ItemContext {
   pullReviewComments?: unknown[];
   counts?: {
     comments: number;
+    commentsHydrated?: number;
+    commentsTruncated?: boolean;
     timeline: number;
     closingPullRequests?: number;
     relatedItems?: number;
     pullFiles?: number;
+    pullFilesHydrated?: number;
+    pullFilesTruncated?: boolean;
     pullCommits?: number;
+    pullCommitsHydrated?: number;
+    pullCommitsTruncated?: boolean;
     pullReviewComments?: number;
+    pullReviewCommentsHydrated?: number;
+    pullReviewCommentsTruncated?: boolean;
   };
 }
 
@@ -644,7 +652,7 @@ const RECENT_MISSING_OPEN_MS = DAY_MS;
 const DEFAULT_CODEX_MODEL = "gpt-5.5";
 const DEFAULT_REASONING_EFFORT = "high";
 const DEFAULT_SERVICE_TIER = "";
-const REVIEW_POLICY_VERSION = "2026-05-05-policy-v14";
+const REVIEW_POLICY_VERSION = "2026-05-09-policy-v15";
 const REVIEW_ITEM_PROMPT_PATH = join(ROOT, "prompts", "review-item.md");
 const CLAWSWEEPER_DECISION_SCHEMA_PATH = join(ROOT, "schema", "clawsweeper-decision.schema.json");
 const REVIEW_COMMENT_MARKER_PREFIX = "<!-- clawsweeper-review";
@@ -1240,6 +1248,68 @@ function parseReviewFinding(value: unknown, path: string): ReviewFinding {
   };
 }
 
+type DecisionNormalizationItem = Pick<Item, "repo" | "kind" | "authorAssociation">;
+
+const CHANGELOG_ENTRY_REVIEW_PATTERN = /\b(?:changelog\.md|changelog\s+entry|release[- ]?note)\b/i;
+const MISSING_CHANGELOG_ACTION_PATTERN =
+  /\b(?:add|include|missing|no|lacks?|needs?|requires?|required|without)\b/i;
+const CHANGELOG_TOOLING_PATTERN =
+  /\b(?:coverage|duplicate|generator|malformed|parser|validation|validator|wrong\s+section)\b/i;
+
+function isOpenClawContributorPullRequest(item: DecisionNormalizationItem | undefined): boolean {
+  return (
+    item !== undefined &&
+    normalizeRepo(item.repo) === DEFAULT_TARGET_REPO &&
+    item.kind === "pull_request" &&
+    !isMaintainerAuthorAssociation(item.authorAssociation)
+  );
+}
+
+function isContributorChangelogEntryFinding(
+  item: DecisionNormalizationItem | undefined,
+  finding: ReviewFinding,
+): boolean {
+  const text = `${finding.title}\n${finding.body}`;
+  return (
+    isOpenClawContributorPullRequest(item) &&
+    CHANGELOG_ENTRY_REVIEW_PATTERN.test(text) &&
+    MISSING_CHANGELOG_ACTION_PATTERN.test(text) &&
+    !CHANGELOG_TOOLING_PATTERN.test(text)
+  );
+}
+
+const CLEAN_OPENCLAW_PR_REVIEW_NEXT_STEP =
+  "Continue normal maintainer review; ClawSweeper found no patch-correctness issue.";
+
+function normalizeDecisionForItem(
+  decision: Decision,
+  item: DecisionNormalizationItem | undefined,
+): Decision {
+  const reviewFindings = decision.reviewFindings.filter(
+    (finding) => !isContributorChangelogEntryFinding(item, finding),
+  );
+  if (reviewFindings.length === decision.reviewFindings.length) return decision;
+  if (reviewFindings.length > 0) return { ...decision, reviewFindings };
+
+  return {
+    ...decision,
+    reviewFindings,
+    bestSolution: CLEAN_OPENCLAW_PR_REVIEW_NEXT_STEP,
+    overallCorrectness:
+      decision.overallCorrectness === "patch is incorrect"
+        ? "patch is correct"
+        : decision.overallCorrectness,
+    workCandidate: "none",
+    workConfidence: "low",
+    workPriority: "low",
+    workReason: "",
+    workPrompt: "",
+    workClusterRefs: [],
+    workValidation: [],
+    workLikelyFiles: [],
+  };
+}
+
 function parseSecurityConcern(value: unknown, path: string): SecurityConcern {
   const record = requireRecord(value, path);
   rejectUnexpectedKeys(record, SECURITY_CONCERN_SCHEMA_KEYS, path);
@@ -1295,7 +1365,7 @@ function requireEnum<T extends string>(value: unknown, allowed: Set<T>, path: st
   throw new Error(`${path} has invalid value`);
 }
 
-export function parseDecision(value: unknown): Decision {
+export function parseDecision(value: unknown, item?: DecisionNormalizationItem): Decision {
   const record = requireRecord(value, "decision");
   rejectUnexpectedKeys(record, DECISION_SCHEMA_KEYS, "decision");
   const evidence = Array.isArray(record.evidence)
@@ -1318,7 +1388,7 @@ export function parseDecision(value: unknown): Decision {
     : (() => {
         throw new Error("decision.reviewFindings must be an array");
       })();
-  return {
+  const decision: Decision = {
     decision: requireEnum(record.decision, DECISIONS, "decision.decision"),
     closeReason: requireEnum(record.closeReason, ALL_REASONS, "decision.closeReason"),
     confidence: requireEnum(record.confidence, CONFIDENCES, "decision.confidence"),
@@ -1383,6 +1453,7 @@ export function parseDecision(value: unknown): Decision {
     workValidation: requireStringArray(record.workValidation, "decision.workValidation"),
     workLikelyFiles: requireStringArray(record.workLikelyFiles, "decision.workLikelyFiles"),
   };
+  return normalizeDecisionForItem(decision, item);
 }
 
 function login(value: unknown): string | undefined {
@@ -1512,14 +1583,37 @@ export function compactMappedSlice<T>(
   limit: number,
   mapper: (item: T) => unknown,
 ): unknown[] {
+  return compactMappedWindow(items, items.length, limit, mapper);
+}
+
+export function compactMappedWindow<T>(
+  items: readonly T[],
+  total: number,
+  limit: number,
+  mapper: (item: T) => unknown,
+): unknown[] {
   const boundedLimit = Math.max(0, Math.floor(limit));
-  if (items.length <= boundedLimit) return items.map(mapper);
+  const boundedTotal = Math.max(0, Math.floor(total));
+  if (boundedTotal <= boundedLimit && items.length <= boundedLimit) return items.map(mapper);
+  if (boundedLimit === 0) {
+    return boundedTotal > 0
+      ? [{ omitted: boundedTotal, note: "middle entries omitted from prompt context" }]
+      : [];
+  }
   const keepStart = Math.floor(boundedLimit / 2);
   const keepEnd = Math.max(0, boundedLimit - keepStart);
+  const retained =
+    items.length > boundedLimit && boundedTotal === items.length
+      ? items
+      : items.slice(0, boundedLimit);
+  const retainedStart = retained.slice(0, keepStart);
+  const retainedEnd =
+    keepEnd > 0 ? retained.slice(Math.max(keepStart, retained.length - keepEnd)) : [];
+  const omitted = Math.max(0, boundedTotal - retainedStart.length - retainedEnd.length);
   return [
-    ...items.slice(0, keepStart).map(mapper),
-    { omitted: items.length - boundedLimit, note: "middle entries omitted from prompt context" },
-    ...(keepEnd > 0 ? items.slice(items.length - keepEnd).map(mapper) : []),
+    ...retainedStart.map(mapper),
+    ...(omitted > 0 ? [{ omitted, note: "middle entries omitted from prompt context" }] : []),
+    ...retainedEnd.map(mapper),
   ];
 }
 
@@ -2045,10 +2139,117 @@ export function githubPaginatedPath(path: string): string {
   return serialized ? `${base}?${serialized}` : base;
 }
 
+function githubPagePath(path: string, page: number, perPage = 100): string {
+  const [basePart, query = ""] = path.split("?", 2);
+  const base = basePart ?? path;
+  const params = new URLSearchParams(query);
+  params.set("per_page", String(Math.max(1, Math.floor(perPage))));
+  params.set("page", String(Math.max(1, Math.floor(page))));
+  const serialized = params.toString();
+  return serialized ? `${base}?${serialized}` : base;
+}
+
 function ghPaged<T>(path: string): T[] {
   const pages = ghJson<unknown[]>(["api", githubPaginatedPath(path), "--paginate", "--slurp"]);
   if (!Array.isArray(pages)) return [];
   return pages.flatMap((page) => (Array.isArray(page) ? (page as T[]) : []));
+}
+
+export interface ContextHydration<T> {
+  items: T[];
+  total: number;
+  hydrated: number;
+  truncated: boolean;
+}
+
+function ghPage<T>(path: string, page: number): T[] {
+  const items = ghJson<unknown[]>(["api", githubPagePath(path, page)]);
+  return Array.isArray(items) ? (items as T[]) : [];
+}
+
+function githubCount(value: unknown): number | null {
+  const count =
+    typeof value === "number" ? value : typeof value === "string" ? Number(value) : Number.NaN;
+  if (!Number.isFinite(count) || count < 0) return null;
+  return Math.floor(count);
+}
+
+interface GithubContextWindowPlan {
+  keepStart: number;
+  keepEnd: number;
+  tailFirstPageNumber: number;
+  lastPageNumber: number;
+  tailOffset: number;
+}
+
+export function githubContextWindowPlan(
+  total: number,
+  promptLimit: number,
+  perPage = 100,
+): GithubContextWindowPlan {
+  const boundedTotal = Math.max(0, Math.floor(total));
+  const boundedLimit = Math.max(0, Math.floor(promptLimit));
+  const boundedPerPage = Math.max(1, Math.floor(perPage));
+  const keepStart = Math.floor(boundedLimit / 2);
+  const keepEnd = Math.max(0, boundedLimit - keepStart);
+  const tailStartIndex = Math.max(0, boundedTotal - keepEnd);
+  const tailFirstPageNumber = Math.floor(tailStartIndex / boundedPerPage) + 1;
+  return {
+    keepStart,
+    keepEnd,
+    tailFirstPageNumber,
+    lastPageNumber: Math.max(1, Math.ceil(boundedTotal / boundedPerPage)),
+    tailOffset: tailStartIndex - (tailFirstPageNumber - 1) * boundedPerPage,
+  };
+}
+
+export function ghPagedContextWindow<T>(
+  path: string,
+  totalCount: unknown,
+  promptLimit: number,
+  fetchers: {
+    page?: (path: string, page: number) => T[];
+    paged?: (path: string) => T[];
+  } = {},
+): ContextHydration<T> {
+  const fetchPage = fetchers.page ?? ghPage<T>;
+  const fetchPaged = fetchers.paged ?? ghPaged<T>;
+  const total = githubCount(totalCount);
+  const boundedLimit = Math.max(0, Math.floor(promptLimit));
+  if (total === null) {
+    const items = fetchPaged(path);
+    return { items, total: items.length, hydrated: items.length, truncated: false };
+  }
+  if (total === 0 || boundedLimit === 0) {
+    return { items: [], total, hydrated: 0, truncated: total > 0 };
+  }
+  if (total <= boundedLimit) {
+    const items = total <= 100 ? fetchPage(path, 1) : fetchPaged(path);
+    return {
+      items,
+      total: Math.max(total, items.length),
+      hydrated: items.length,
+      truncated: false,
+    };
+  }
+
+  const plan = githubContextWindowPlan(total, boundedLimit);
+  const firstPage = plan.keepStart > 0 ? fetchPage(path, 1) : [];
+  const headItems = firstPage.slice(0, plan.keepStart);
+  const tailPages: T[] = [];
+  if (plan.keepEnd > 0) {
+    for (let page = plan.tailFirstPageNumber; page <= plan.lastPageNumber; page += 1) {
+      tailPages.push(...(page === 1 && plan.keepStart > 0 ? firstPage : fetchPage(path, page)));
+    }
+  }
+  const tailItems = tailPages.slice(plan.tailOffset, plan.tailOffset + plan.keepEnd);
+  const items = [...headItems, ...tailItems];
+  return {
+    items,
+    total,
+    hydrated: items.length,
+    truncated: total > items.length,
+  };
 }
 
 function ensureDir(path: string): void {
@@ -3161,14 +3362,22 @@ function planCandidates(options: {
 
 function collectItemContext(item: Item): ItemContext {
   const issue = ghJson<unknown>(["api", `repos/${targetRepo()}/issues/${item.number}`]);
-  const comments = ghPaged<unknown>(`repos/${targetRepo()}/issues/${item.number}/comments`);
+  const issueRecord = asRecord(issue);
+  const commentsWindow = ghPagedContextWindow<unknown>(
+    `repos/${targetRepo()}/issues/${item.number}/comments`,
+    issueRecord.comments,
+    24,
+  );
+  const comments = commentsWindow.items;
   const timeline = ghPaged<unknown>(`repos/${targetRepo()}/issues/${item.number}/timeline`);
   const context: ItemContext = {
     issue: compactIssue(issue),
-    comments: compactMappedSlice(comments, 24, compactComment),
+    comments: compactMappedWindow(comments, commentsWindow.total, 24, compactComment),
     timeline: compactMappedSlice(timeline, 80, compactTimelineEvent),
     counts: {
-      comments: comments.length,
+      comments: commentsWindow.total,
+      commentsHydrated: commentsWindow.hydrated,
+      commentsTruncated: commentsWindow.truncated,
       timeline: timeline.length,
     },
   };
@@ -3180,7 +3389,9 @@ function collectItemContext(item: Item): ItemContext {
       context.closingPullRequests = compactMappedSlice(closingPullRequests, 12, compactPullRequest);
       context.counts = {
         ...context.counts,
-        comments: comments.length,
+        comments: commentsWindow.total,
+        commentsHydrated: commentsWindow.hydrated,
+        commentsTruncated: commentsWindow.truncated,
         timeline: timeline.length,
         closingPullRequests: closingPullRequests.length,
       };
@@ -3188,20 +3399,54 @@ function collectItemContext(item: Item): ItemContext {
   }
   if (item.kind === "pull_request") {
     pullRequest = ghJson<unknown>(["api", `repos/${targetRepo()}/pulls/${item.number}`]);
-    const pullFiles = ghPaged<unknown>(`repos/${targetRepo()}/pulls/${item.number}/files`);
-    const pullCommits = ghPaged<unknown>(`repos/${targetRepo()}/pulls/${item.number}/commits`);
-    pullReviewComments = ghPaged<unknown>(`repos/${targetRepo()}/pulls/${item.number}/comments`);
+    const pullRecord = asRecord(pullRequest);
+    const pullFilesWindow = ghPagedContextWindow<unknown>(
+      `repos/${targetRepo()}/pulls/${item.number}/files`,
+      pullRecord.changed_files,
+      80,
+    );
+    const pullFiles = pullFilesWindow.items;
+    const pullCommitsWindow = ghPagedContextWindow<unknown>(
+      `repos/${targetRepo()}/pulls/${item.number}/commits`,
+      pullRecord.commits,
+      80,
+    );
+    const pullCommits = pullCommitsWindow.items;
+    const pullReviewCommentsWindow = ghPagedContextWindow<unknown>(
+      `repos/${targetRepo()}/pulls/${item.number}/comments`,
+      pullRecord.review_comments,
+      40,
+    );
+    pullReviewComments = pullReviewCommentsWindow.items;
     context.pullRequest = compactPullRequest(pullRequest);
-    context.pullFiles = compactMappedSlice(pullFiles, 80, compactPullFile);
-    context.pullCommits = compactMappedSlice(pullCommits, 80, compactPullCommit);
-    context.pullReviewComments = compactMappedSlice(pullReviewComments, 40, compactComment);
+    context.pullFiles = compactMappedWindow(pullFiles, pullFilesWindow.total, 80, compactPullFile);
+    context.pullCommits = compactMappedWindow(
+      pullCommits,
+      pullCommitsWindow.total,
+      80,
+      compactPullCommit,
+    );
+    context.pullReviewComments = compactMappedWindow(
+      pullReviewComments,
+      pullReviewCommentsWindow.total,
+      40,
+      compactComment,
+    );
     context.counts = {
       ...context.counts,
-      comments: comments.length,
+      comments: commentsWindow.total,
+      commentsHydrated: commentsWindow.hydrated,
+      commentsTruncated: commentsWindow.truncated,
       timeline: timeline.length,
-      pullFiles: pullFiles.length,
-      pullCommits: pullCommits.length,
-      pullReviewComments: pullReviewComments.length,
+      pullFiles: pullFilesWindow.total,
+      pullFilesHydrated: pullFilesWindow.hydrated,
+      pullFilesTruncated: pullFilesWindow.truncated,
+      pullCommits: pullCommitsWindow.total,
+      pullCommitsHydrated: pullCommitsWindow.hydrated,
+      pullCommitsTruncated: pullCommitsWindow.truncated,
+      pullReviewComments: pullReviewCommentsWindow.total,
+      pullReviewCommentsHydrated: pullReviewCommentsWindow.hydrated,
+      pullReviewCommentsTruncated: pullReviewCommentsWindow.truncated,
     };
   }
   const relatedOptions: Parameters<typeof relatedItemsContext>[0] = {
@@ -3216,14 +3461,28 @@ function collectItemContext(item: Item): ItemContext {
   if (relatedItems.length) {
     context.relatedItems = relatedItems;
     const counts: NonNullable<ItemContext["counts"]> = {
-      comments: context.counts?.comments ?? comments.length,
+      comments: context.counts?.comments ?? commentsWindow.total,
+      commentsHydrated: context.counts?.commentsHydrated ?? commentsWindow.hydrated,
+      commentsTruncated: context.counts?.commentsTruncated ?? commentsWindow.truncated,
       timeline: context.counts?.timeline ?? timeline.length,
       relatedItems: relatedItems.length,
     };
     if (context.counts?.pullFiles !== undefined) counts.pullFiles = context.counts.pullFiles;
+    if (context.counts?.pullFilesHydrated !== undefined)
+      counts.pullFilesHydrated = context.counts.pullFilesHydrated;
+    if (context.counts?.pullFilesTruncated !== undefined)
+      counts.pullFilesTruncated = context.counts.pullFilesTruncated;
     if (context.counts?.pullCommits !== undefined) counts.pullCommits = context.counts.pullCommits;
+    if (context.counts?.pullCommitsHydrated !== undefined)
+      counts.pullCommitsHydrated = context.counts.pullCommitsHydrated;
+    if (context.counts?.pullCommitsTruncated !== undefined)
+      counts.pullCommitsTruncated = context.counts.pullCommitsTruncated;
     if (context.counts?.pullReviewComments !== undefined)
       counts.pullReviewComments = context.counts.pullReviewComments;
+    if (context.counts?.pullReviewCommentsHydrated !== undefined)
+      counts.pullReviewCommentsHydrated = context.counts.pullReviewCommentsHydrated;
+    if (context.counts?.pullReviewCommentsTruncated !== undefined)
+      counts.pullReviewCommentsTruncated = context.counts.pullReviewCommentsTruncated;
     if (context.counts?.closingPullRequests !== undefined)
       counts.closingPullRequests = context.counts.closingPullRequests;
     context.counts = counts;
@@ -3548,7 +3807,7 @@ function runCodex(options: {
     );
   }
   try {
-    return parseDecision(JSON.parse(readFileSync(outputPath, "utf8").trim()));
+    return parseDecision(JSON.parse(readFileSync(outputPath, "utf8").trim()), options.item);
   } catch (error) {
     const decision = codexFailureDecision(
       result.status,
@@ -3604,6 +3863,10 @@ function commitUrl(sha: string): string {
 
 function shortSha(sha: string): string {
   return sha.slice(0, 12);
+}
+
+function isCommitSha(value: string): boolean {
+  return /^[0-9a-f]{7,40}$/i.test(value.trim());
 }
 
 function releaseUrl(tag: string): string {
@@ -4095,7 +4358,8 @@ function likelyOwnerLine(owner: LikelyOwner): string {
   const role = owner.role.trim();
   const reason = sentence(owner.reason.trim() || "Related by repository history.");
   const commits = owner.commits
-    .filter(Boolean)
+    .map((commit) => commit.trim())
+    .filter(isCommitSha)
     .slice(0, 3)
     .map((commit) => linkedSha(commit))
     .join(", ");
@@ -4886,6 +5150,20 @@ function runtimeReviewText(runtime?: {
 function reviewTelemetryNumber(value: number | undefined): string {
   if (value === undefined || !Number.isFinite(value)) return "unknown";
   return String(Math.max(0, Math.round(value)));
+}
+
+function contextCountText(
+  total: number | undefined,
+  fallback: number,
+  hydrated?: number,
+  truncated?: boolean,
+): string {
+  const displayTotal =
+    total === undefined || !Number.isFinite(total) ? Math.max(0, fallback) : Math.max(0, total);
+  if (hydrated === undefined || !Number.isFinite(hydrated)) return String(displayTotal);
+  const displayHydrated = Math.max(0, Math.round(hydrated));
+  if (!truncated && displayHydrated >= displayTotal) return String(displayTotal);
+  return `${displayTotal} (hydrated ${displayHydrated}${truncated ? ", truncated" : ""})`;
 }
 
 function runtimeReviewTextFromReport(markdown: string): string {
@@ -6075,11 +6353,32 @@ ${options.action.closeComment ? options.action.closeComment : "_No close comment
 
 ## GitHub Snapshot
 
-- comments: ${options.context.counts?.comments ?? options.context.comments.length}
+- comments: ${contextCountText(
+    options.context.counts?.comments,
+    options.context.comments.length,
+    options.context.counts?.commentsHydrated,
+    options.context.counts?.commentsTruncated,
+  )}
 - timeline events: ${options.context.counts?.timeline ?? options.context.timeline.length}
 - related items: ${options.context.counts?.relatedItems ?? options.context.relatedItems?.length ?? 0}
-- PR files: ${options.context.counts?.pullFiles ?? options.context.pullFiles?.length ?? 0}
-- PR commits: ${options.context.counts?.pullCommits ?? options.context.pullCommits?.length ?? 0}
+- PR files: ${contextCountText(
+    options.context.counts?.pullFiles,
+    options.context.pullFiles?.length ?? 0,
+    options.context.counts?.pullFilesHydrated,
+    options.context.counts?.pullFilesTruncated,
+  )}
+- PR commits: ${contextCountText(
+    options.context.counts?.pullCommits,
+    options.context.pullCommits?.length ?? 0,
+    options.context.counts?.pullCommitsHydrated,
+    options.context.counts?.pullCommitsTruncated,
+  )}
+- PR review comments: ${contextCountText(
+    options.context.counts?.pullReviewComments,
+    options.context.pullReviewComments?.length ?? 0,
+    options.context.counts?.pullReviewCommentsHydrated,
+    options.context.counts?.pullReviewCommentsTruncated,
+  )}
 
 ## Review Telemetry
 

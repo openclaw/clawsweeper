@@ -11,13 +11,29 @@ import {
   repoRoot,
   validateJob,
 } from "./lib.js";
-import { ghJson, ghPaged, ghText } from "./github-cli.js";
+import { ghJson, ghPaged, ghPagedLimit, ghText } from "./github-cli.js";
 import { hasSecurityRepairOptInLabel } from "./security-boundary.js";
 
-const MAX_LINKED_REFS = Number(process.env.CLAWSWEEPER_MAX_LINKED_REFS ?? 0);
+function readNonNegativeIntegerEnv(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === "") return fallback;
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < 0) {
+    console.warn(`${name} must be a non-negative integer; using default ${fallback}`);
+    return fallback;
+  }
+  return Math.floor(value);
+}
+
+const MAX_LINKED_REFS = readNonNegativeIntegerEnv("CLAWSWEEPER_MAX_LINKED_REFS", 0);
 const HYDRATE_COMMENTS = process.env.CLAWSWEEPER_HYDRATE_COMMENTS === "1";
-const MAX_COMMENTS_PER_ITEM = Number(process.env.CLAWSWEEPER_MAX_COMMENTS_PER_ITEM ?? 30);
-const MAX_REVIEW_COMMENTS_PER_PR = Number(process.env.CLAWSWEEPER_MAX_REVIEW_COMMENTS_PER_PR ?? 50);
+const MAX_COMMENTS_PER_ITEM = readNonNegativeIntegerEnv("CLAWSWEEPER_MAX_COMMENTS_PER_ITEM", 30);
+const MAX_REVIEW_COMMENTS_PER_PR = readNonNegativeIntegerEnv(
+  "CLAWSWEEPER_MAX_REVIEW_COMMENTS_PER_PR",
+  50,
+);
+const MAX_FILES_PER_PR = readNonNegativeIntegerEnv("CLAWSWEEPER_MAX_FILES_PER_PR", 80);
+const MAX_COMMITS_PER_PR = readNonNegativeIntegerEnv("CLAWSWEEPER_MAX_COMMITS_PER_PR", 80);
 const MAINTAINER_AUTHOR_ASSOCIATIONS = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
 const REVIEW_BOT_PATTERN =
   /\b(greptile|codex|asile|coderabbit|code rabbit|copilot|reviewdog|sonar|deepsource|codecov|github-actions)\b/i;
@@ -141,6 +157,8 @@ const plan = {
     hydrate_comments: HYDRATE_COMMENTS,
     max_comments_per_item: MAX_COMMENTS_PER_ITEM,
     max_review_comments_per_pr: MAX_REVIEW_COMMENTS_PER_PR,
+    max_files_per_pr: MAX_FILES_PER_PR,
+    max_commits_per_pr: MAX_COMMITS_PER_PR,
   },
   items: itemList.map((item: JsonValue) => summarizeItem(item, job)),
   canonical_candidates: canonicalCandidates(itemList, job),
@@ -184,10 +202,16 @@ function hydrateItem(repo: string, number: JsonValue) {
   }
   const comments = HYDRATE_COMMENTS ? ghPaged(`repos/${repo}/issues/${number}/comments`) : [];
   const pullRequest = issue.pull_request ? ghJson(["api", `repos/${repo}/pulls/${number}`]) : null;
-  const files = pullRequest ? ghPaged(`repos/${repo}/pulls/${number}/files`) : [];
-  const commits = pullRequest ? ghPaged(`repos/${repo}/pulls/${number}/commits`) : [];
+  const files = pullRequest
+    ? ghPagedLimit(`repos/${repo}/pulls/${number}/files`, MAX_FILES_PER_PR)
+    : [];
+  const commits = pullRequest
+    ? ghPagedLimit(`repos/${repo}/pulls/${number}/commits`, MAX_COMMITS_PER_PR)
+    : [];
   const reviews = pullRequest ? ghPaged(`repos/${repo}/pulls/${number}/reviews`) : [];
   const reviewComments = pullRequest ? ghPaged(`repos/${repo}/pulls/${number}/comments`) : [];
+  const changedFilesCount = countValue(pullRequest?.changed_files, files.length);
+  const commitsCount = countValue(pullRequest?.commits, commits.length);
   const checks = pullRequest ? ghPrChecks(repo, number) : [];
 
   return {
@@ -240,13 +264,18 @@ function hydrateItem(repo: string, number: JsonValue) {
             .filter(Boolean),
           additions: pullRequest.additions,
           deletions: pullRequest.deletions,
-          changed_files: pullRequest.changed_files,
+          changed_files: changedFilesCount,
+          files_hydrated: files.length,
+          files_truncated: Math.max(0, changedFilesCount - files.length),
           files: files.map((file: JsonValue) => ({
             filename: file.filename,
             status: file.status,
             additions: file.additions,
             deletions: file.deletions,
           })),
+          commits_count: commitsCount,
+          commits_hydrated: commits.length,
+          commits_truncated: Math.max(0, commitsCount - commits.length),
           commits: commits.map((commit: JsonValue) => ({
             sha: commit.sha,
             message: firstLine(commit.commit?.message),
@@ -300,6 +329,11 @@ function unavailableItem(repo: string, number: JsonValue, error: JsonValue) {
     pull_request: null,
     hydration_error: reason || "GitHub ref could not be hydrated.",
   };
+}
+
+function countValue(value: JsonValue, fallback = 0) {
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0 ? Math.floor(number) : fallback;
 }
 
 function summarizeItem(item: LooseRecord, job: LooseRecord) {
@@ -356,9 +390,14 @@ function summarizeItem(item: LooseRecord, job: LooseRecord) {
           requested_reviewers: item.pull_request.requested_reviewers,
           requested_teams: item.pull_request.requested_teams,
           changed_files: item.pull_request.changed_files,
+          files_hydrated: item.pull_request.files_hydrated,
+          files_truncated: item.pull_request.files_truncated,
           additions: item.pull_request.additions,
           deletions: item.pull_request.deletions,
           files: item.pull_request.files,
+          commits_count: item.pull_request.commits_count,
+          commits_hydrated: item.pull_request.commits_hydrated,
+          commits_truncated: item.pull_request.commits_truncated,
           commits: item.pull_request.commits,
           reviews: item.pull_request.reviews,
           review_comments_count: item.pull_request.review_comments.length,

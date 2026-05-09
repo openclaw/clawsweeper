@@ -24,6 +24,12 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Fixed
 
+- Ignored non-SHA likely-owner provenance values when rendering public commit
+  links, avoiding broken `/commit/...` URLs in review comments. Thanks @samzong.
+- Kept missing changelog entries as maintainer-owned ClawSweeper repair work instead of asking PR authors to add them. Thanks @obviyus.
+- Suppressed changelog-only OpenClaw PR review findings after model output so
+  contributor PRs do not get needs-changes or fix-required markers solely for
+  maintainer-owned release notes. Thanks @rubencu.
 - Gave manual exact-item review dispatches their own concurrency group so
   targeted maintainer reviews no longer wait behind broad normal backfill runs.
 - Downgraded screenshot-only browser runtime proof so ClawSweeper no longer accepts "no visible console/CSP violation" screenshots as sufficient real behavior proof. Thanks @BunsDev.
@@ -52,6 +58,8 @@ checkpoint, and status-only commits are intentionally omitted.
   immediate duplicate capacity probe in the dispatch loop.
 - Cached comment-router open-label issue lookups per run so repair-loop comment
   discovery and command synthesis do not repeat identical GitHub searches.
+- Cached comment-router issue comment lookups per run so targeted command routing
+  and replay/status checks do not repeat identical comment pagination.
 - Retried Codex edit workers after TPM/rate-limit exits and collapsed JSONL failure transcripts into concise repair status reasons.
 - Added deterministic merged closing-PR provenance to issue close reports and
   public close comments when GitHub exposes a high-confidence closing PR.
@@ -120,6 +128,8 @@ checkpoint, and status-only commits are intentionally omitted.
   tokens exist, keeping untargeted fix prompts cheaper to build.
 - Requested 100-item REST pages for paginated GitHub list calls, reducing
   review and repair API page fan-out on large issues and pull requests.
+- Bounded repair cluster PR file and commit hydration to the context carried
+  into generated plans, avoiding full pagination for very large pull requests.
 - Compacted review prompt context lazily so large comment, timeline, file, and
   commit lists no longer process entries that are omitted from Codex input.
 - Scoped every sweep workflow status write to the active target repository so

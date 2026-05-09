@@ -17,10 +17,13 @@ import {
   closeReasonsArg,
   closingPullRequestReferenceTarget,
   compactMappedSlice,
+  compactMappedWindow,
   codexEnv,
   dashboardClosedAt,
   fixedPullRequestFromCommitPullsForTest,
   formatRecentClosedRows,
+  githubContextWindowPlan,
+  ghPagedContextWindow,
   githubPaginatedPath,
   ghRetryKind,
   hotIntakeRecencyMs,
@@ -181,6 +184,37 @@ function closeDecision(overrides = {}) {
   };
 }
 
+function reviewFinding(overrides = {}) {
+  return {
+    title: "Missing changelog entry",
+    body: "This user-facing fix needs a CHANGELOG.md entry.",
+    priority: 3,
+    confidenceScore: 0.9,
+    file: "src/runtime.ts",
+    lineStart: 12,
+    lineEnd: 12,
+    ...overrides,
+  };
+}
+
+function changelogReviewDecision(overrides = {}) {
+  return closeDecision({
+    decision: "keep_open",
+    closeReason: "none",
+    confidence: "high",
+    bestSolution: "Add the required changelog entry before merge.",
+    reviewFindings: [reviewFinding({ title: "Add the required changelog entry" })],
+    overallCorrectness: "patch is incorrect",
+    workCandidate: "queue_fix_pr",
+    workConfidence: "high",
+    workPriority: "medium",
+    workReason: "Add the required changelog entry.",
+    workPrompt: "Add a CHANGELOG.md entry.",
+    workLikelyFiles: ["CHANGELOG.md"],
+    ...overrides,
+  });
+}
+
 test("githubPaginatedPath requests maximum REST page size by default", () => {
   assert.equal(
     githubPaginatedPath("repos/openclaw/openclaw/issues/123/comments"),
@@ -220,6 +254,105 @@ test("compactMappedSlice maps every entry when no compaction is needed", () => {
   });
   assert.deepEqual(result, [10, 20, 30]);
   assert.deepEqual(mapped, [1, 2, 3]);
+});
+
+test("compactMappedWindow marks omitted entries when hydration is already bounded", () => {
+  const mapped: number[] = [];
+  const result = compactMappedWindow([1, 2, 5, 6], 6, 4, (value) => {
+    mapped.push(value);
+    return value * 10;
+  });
+  assert.deepEqual(result, [
+    10,
+    20,
+    { omitted: 2, note: "middle entries omitted from prompt context" },
+    50,
+    60,
+  ]);
+  assert.deepEqual(mapped, [1, 2, 5, 6]);
+});
+
+test("compactMappedWindow keeps bounded hydrated context when total is larger than limit", () => {
+  const mapped: number[] = [];
+  const result = compactMappedWindow([1, 2, 99, 100], 100, 4, (value) => {
+    mapped.push(value);
+    return value;
+  });
+  assert.deepEqual(result, [
+    1,
+    2,
+    { omitted: 96, note: "middle entries omitted from prompt context" },
+    99,
+    100,
+  ]);
+  assert.deepEqual(mapped, [1, 2, 99, 100]);
+});
+
+test("githubContextWindowPlan includes prior page when the tail crosses a page boundary", () => {
+  assert.deepEqual(githubContextWindowPlan(101, 80), {
+    keepStart: 40,
+    keepEnd: 40,
+    tailFirstPageNumber: 1,
+    lastPageNumber: 2,
+    tailOffset: 61,
+  });
+});
+
+test("githubContextWindowPlan keeps large tails to the final page when possible", () => {
+  assert.deepEqual(githubContextWindowPlan(3000, 80), {
+    keepStart: 40,
+    keepEnd: 40,
+    tailFirstPageNumber: 30,
+    lastPageNumber: 30,
+    tailOffset: 60,
+  });
+});
+
+test("ghPagedContextWindow reuses first page when tail overlaps the head page", () => {
+  const fetchedPages: number[] = [];
+  const window = ghPagedContextWindow<number>(
+    "repos/openclaw/openclaw/issues/123/comments",
+    101,
+    80,
+    {
+      page: (_path, page) => {
+        fetchedPages.push(page);
+        const start = (page - 1) * 100 + 1;
+        const end = Math.min(page * 100, 101);
+        return Array.from({ length: end - start + 1 }, (_, index) => start + index);
+      },
+    },
+  );
+
+  assert.deepEqual(fetchedPages, [1, 2]);
+  assert.deepEqual(window.items, [
+    ...Array.from({ length: 40 }, (_, index) => index + 1),
+    ...Array.from({ length: 40 }, (_, index) => index + 62),
+  ]);
+  assert.equal(window.total, 101);
+  assert.equal(window.hydrated, 80);
+  assert.equal(window.truncated, true);
+});
+
+test("ghPagedContextWindow falls back to full pagination when total is missing", () => {
+  const window = ghPagedContextWindow<number>(
+    "repos/openclaw/openclaw/pulls/123/files",
+    undefined,
+    80,
+    {
+      paged: () => [1, 2, 3],
+      page: () => {
+        throw new Error("page fetch should not be used without a total count");
+      },
+    },
+  );
+
+  assert.deepEqual(window, {
+    items: [1, 2, 3],
+    total: 3,
+    hydrated: 3,
+    truncated: false,
+  });
 });
 
 test("review prompt assets match tracked files", () => {
@@ -624,6 +757,32 @@ test("close comments suppress duplicate best solution text", () => {
 
   assert.equal(action.actionTaken, "proposed_close");
   assert.doesNotMatch(action.closeComment, /Best possible solution:/);
+});
+
+test("likely owner commit links ignore non-sha values", () => {
+  const action = reviewActionForDecision({
+    item: item(),
+    decision: closeDecision({
+      likelyOwners: [
+        {
+          person: "@alice",
+          role: "feature contributor",
+          reason: "The changelog credits a pull request for this feature surface.",
+          commits: ["https://github.com/openclaw/openclaw/pull/76079", " abcdef1234567890 "],
+          files: ["CHANGELOG.md"],
+          confidence: "medium",
+        },
+      ],
+    }),
+    git,
+  });
+
+  assert.equal(action.actionTaken, "proposed_close");
+  assert.doesNotMatch(action.closeComment, /\/commit\/https:/);
+  assert.match(
+    action.closeComment,
+    /\[abcdef123456\]\(https:\/\/github\.com\/openclaw\/openclaw\/commit\/abcdef1234567890\)/,
+  );
 });
 
 test("skill-only OpenClaw PRs can close through ClawHub with upload guidance", () => {
@@ -2046,6 +2205,91 @@ Full review comments:
   assert.doesNotMatch(markers, /clawsweeper-verdict:needs-changes/);
 });
 
+test("OpenClaw contributor changelog-entry findings are normalized", () => {
+  const decision = parseDecision(
+    changelogReviewDecision(),
+    item({ repo: "openclaw/openclaw", kind: "pull_request" }),
+  );
+
+  assert.deepEqual(decision.reviewFindings, []);
+  assert.equal(decision.overallCorrectness, "patch is correct");
+  assert.equal(decision.workCandidate, "none");
+  assert.equal(decision.workReason, "");
+});
+
+test("OpenClaw maintainer changelog-entry findings stay actionable", () => {
+  const decision = parseDecision(
+    changelogReviewDecision(),
+    item({ repo: "openclaw/openclaw", kind: "pull_request", authorAssociation: "MEMBER" }),
+  );
+
+  assert.deepEqual(
+    decision.reviewFindings.map((finding) => finding.title),
+    ["Add the required changelog entry"],
+  );
+  assert.equal(decision.overallCorrectness, "patch is incorrect");
+  assert.equal(decision.workCandidate, "queue_fix_pr");
+});
+
+test("OpenClaw changelog normalization keeps real findings actionable", () => {
+  const decision = parseDecision(
+    changelogReviewDecision({
+      reviewFindings: [
+        reviewFinding({ file: "CHANGELOG.md" }),
+        reviewFinding({
+          title: "Preserve the existing option value",
+          body: "The patch resets configured values when the dialog is reopened.",
+          priority: 1,
+          confidenceScore: 0.89,
+          file: "src/options.ts",
+          lineStart: 42,
+          lineEnd: 42,
+        }),
+      ],
+      workReason: "Fix the option reset bug.",
+      workPrompt: "Fix src/options.ts and add a regression test.",
+      workLikelyFiles: ["src/options.ts"],
+    }),
+    item({ repo: "openclaw/openclaw", kind: "pull_request" }),
+  );
+
+  assert.deepEqual(
+    decision.reviewFindings.map((finding) => finding.title),
+    ["Preserve the existing option value"],
+  );
+  assert.equal(decision.overallCorrectness, "patch is incorrect");
+  assert.equal(decision.workCandidate, "queue_fix_pr");
+});
+
+test("OpenClaw changelog normalization keeps changelog tooling findings actionable", () => {
+  const decision = parseDecision(
+    changelogReviewDecision({
+      reviewFindings: [
+        reviewFinding({
+          title: "Missing CHANGELOG.md entry validation",
+          body: "The parser accepts malformed changelog entries.",
+          priority: 2,
+          confidenceScore: 0.82,
+          file: "src/clawsweeper.ts",
+          lineStart: 42,
+          lineEnd: 42,
+        }),
+      ],
+      workReason: "Add changelog parser coverage.",
+      workPrompt: "Add parser coverage.",
+      workLikelyFiles: ["test/clawsweeper.test.ts"],
+    }),
+    item({ repo: "openclaw/openclaw", kind: "pull_request" }),
+  );
+
+  assert.deepEqual(
+    decision.reviewFindings.map((finding) => finding.title),
+    ["Missing CHANGELOG.md entry validation"],
+  );
+  assert.equal(decision.overallCorrectness, "patch is incorrect");
+  assert.equal(decision.workCandidate, "queue_fix_pr");
+});
+
 test("pull request automerge pass is not blocked by generic protected labels", () => {
   const comment = renderReviewCommentFromReport(
     `${reportFrontMatter({
@@ -2896,7 +3140,10 @@ test("review prompt keeps automerge opt-in from becoming generic manual review",
   assert.match(prompt, /`maintainer` label/);
   assert.match(prompt, /large `size:\*` label/);
   assert.match(prompt, /choose `queue_fix_pr` even when the\s+finding is process-only or P3/);
-  assert.match(prompt, /missing required changelog\s+entry/);
+  assert.match(prompt, /Changelog entries are maintainer-owned/);
+  assert.match(prompt, /do not create a\s+review finding,\s+needs-changes\s+verdict/i);
+  assert.match(prompt, /do not ask the PR\s+author to add one/);
+  assert.doesNotMatch(prompt, /missing required changelog\s+entry/);
   assert.match(prompt, /does not by itself block a clean automerge verdict/);
 });
 
