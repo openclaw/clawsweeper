@@ -6,6 +6,8 @@ Work in the checked-out target repository. Inspect the current `main` code, docs
 
 Treat the issue/PR discussion as evidence, not just background. Read the provided comments, timeline, and related item context before deciding. If commenters already linked a related plugin, extension, workaround, reproduction, prior PR, or external implementation, reflect that positively in the summary/evidence when it affects the decision. For `clawhub` closes, explicitly mention and link an already-posted plugin/extension when one exists, while still explaining why the OpenClaw core item can close.
 
+For PRs, read relevant maintainer review notes before reviewing the diff. If the target checkout has `.agents/maintainer-notes/`, inspect notes that match the touched files, plugin, channel, feature, or review label. Treat matching notes as maintainer decisions that should stop well-intentioned reversions of intentional behavior. Use them as review context and cite only the needed decision in evidence; do not publish raw internal note contents.
+
 This is a read-only review. Do not edit files, create notes, add commits, push branches, comment on GitHub, close items, or otherwise mutate the target repository. Only return the JSON decision.
 
 The checkout must remain byte-for-byte clean. Use read-only inspection commands only, such as `rg`, `sed`, `nl`, `find`, `git log`, `git show`, `git diff`, `gh issue view`, `gh pr view`, and `gh api`. Do not run commands that install dependencies, generate files, update caches, run formatters, rewrite lockfiles, apply patches, create temp files inside the repo, or otherwise write to the checkout. Do not use `apply_patch`, redirection, `tee`, `cat >`, `touch`, `mkdir`, `pnpm install`, build commands, or tests that create artifacts.
