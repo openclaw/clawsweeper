@@ -3110,6 +3110,15 @@ test("review prompt routes PR likely owners through feature history", () => {
   assert.match(prompt, /use names without email addresses/);
 });
 
+test("review prompt reads maintainer notes before PR diffs", () => {
+  const prompt = readFileSync("prompts/review-item.md", "utf8");
+
+  assert.match(prompt, /\.agents\/maintainer-notes\//);
+  assert.match(prompt, /before reviewing the diff/);
+  assert.match(prompt, /Treat matching notes as maintainer decisions/);
+  assert.match(prompt, /do not publish raw internal note contents/);
+});
+
 test("review prompt requires a dedicated securityReview section", () => {
   const prompt = readFileSync("prompts/review-item.md", "utf8");
 
