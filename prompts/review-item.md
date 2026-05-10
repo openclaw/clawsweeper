@@ -92,6 +92,8 @@ For PRs, include a dedicated security review pass in addition to the functional 
 
 For PRs, include a dedicated `realBehaviorProof` assessment before any pass, automerge, or repair verdict. External PRs must show that the contributor ran the changed behavior after the fix in a real setup. Unit tests, mocks, snapshots, lint, typechecks, and CI are supplemental only; they are not real behavior proof by themselves. Treat screenshots, recordings, terminal screenshots, console output, copied live output, linked artifacts, and redacted runtime logs as valid proof, including for non-visual CLI, console, text, or error-message changes. Prefer asking for screenshots or videos when they can show the behavior, including terminal screenshots for text or console changes, while keeping logs and live output acceptable. Remind contributors to redact private information like IP addresses, API keys, phone numbers, non-public endpoints, and other private details before posting evidence. A plain app screenshot is sufficient only for behavior it directly shows. Do not mark screenshot-only proof sufficient for browser runtime, CSP, CORS, `connect-src`, auth callback, network, or security changes when the proof only says no console error, warning, or violation is visible; require console output, a network trace, terminal/live output, logs, a recording with diagnostics, or a linked artifact that actually shows the runtime path. Use your tools and best judgement: inspect the PR body, comments, links, screenshots, videos, logs, terminal output, and changed behavior context; you may download/open GitHub attachment links, generate stills or contact sheets from videos, inspect terminal screenshots and logs, and compare the proof against the PR diff. Use the provided scratch directory for downloaded artifacts and keep the target checkout read-only. Use `status: "sufficient"` only when the evidence convincingly shows after-fix real behavior and an observed improved result. Use `status: "missing"` when proof is absent, `status: "mock_only"` when proof is only tests/mocks/CI, `status: "insufficient"` when the evidence is unrelated, unviewable, too weak, or does not show the changed real behavior after the fix, `status: "override"` when the PR has `proof: override`, and `status: "not_applicable"` for non-PR items or maintainer/bot PRs where the gate does not apply. When proof is missing, mock-only, or insufficient, set `needsContributorAction: true`, make the PR a human-only merge blocker, and do not request ClawSweeper repair markers because automation cannot prove the contributor's setup for them.
 
+For PRs, always fill `telegramVisibleProof`. Use `status: "needed"` only when the PR touches Telegram behavior and the user-visible change can be easily demonstrated by the `telegram-crabbox-e2e-proof` skill, such as message formatting, slash-command output, reply text, attachments, reactions, threading, mentions, or other visible Telegram chat behavior. Use `status: "not_needed"` for non-Telegram PRs and for Telegram changes that are internal-only, test-only, docs-only, logging-only, retry/network reliability only, auth/secret plumbing only, or otherwise not meaningfully visible in a short Telegram Desktop recording.
+
 For PRs, also emit Codex `/review`-style findings in `reviewFindings`.
 Review the diff as another engineer's proposed patch and list every discrete,
 actionable bug the author would likely fix. Findings must be introduced by the
@@ -386,6 +388,12 @@ it does not, they can ask a maintainer to comment `@clawsweeper re-review`. Use
 `evidenceKind: "none"` when proof is absent or mock-only, and set
 `needsContributorAction: false` only for `sufficient`, `override`, or
 `not_applicable`.
+
+Always fill `telegramVisibleProof`. This only controls the
+`mantis: telegram-visible-proof` label. Mark it `needed` when a Telegram PR has
+visible chat behavior the `telegram-crabbox-e2e-proof` skill can show in a
+short recording. Mark it `not_needed` for non-Telegram PRs or Telegram work
+that is not usefully visible in that recording.
 
 Always fill the work-lane fields too. For non-candidates, use
 `workCandidate: "none"`, low confidence/priority, an empty `workPrompt`, and

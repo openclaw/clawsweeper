@@ -100,6 +100,7 @@ type RealBehaviorProofEvidenceKind =
   | "linked_artifact"
   | "none"
   | "not_applicable";
+type TelegramVisibleProofStatus = "needed" | "not_needed";
 type CloseReason =
   | "implemented_on_main"
   | "mostly_implemented_on_main"
@@ -246,6 +247,11 @@ interface RealBehaviorProof {
   needsContributorAction: boolean;
 }
 
+interface TelegramVisibleProof {
+  status: TelegramVisibleProofStatus;
+  summary: string;
+}
+
 interface FixedPullRequest {
   repo: string;
   number: number;
@@ -278,6 +284,7 @@ interface Decision {
   reviewFindings: ReviewFinding[];
   securityReview: SecurityReview;
   realBehaviorProof: RealBehaviorProof;
+  telegramVisibleProof: TelegramVisibleProof;
   overallCorrectness: OverallCorrectness;
   overallConfidenceScore: number;
   fixedRelease?: string | null;
@@ -662,6 +669,9 @@ const AUTOMERGE_LABEL = "clawsweeper:automerge";
 const AUTOFIX_LABEL = "clawsweeper:autofix";
 const PROOF_OVERRIDE_LABEL = "proof: override";
 const PROOF_SUFFICIENT_LABEL = "proof: sufficient";
+const TELEGRAM_VISIBLE_PROOF_LABEL = "mantis: telegram-visible-proof";
+const TELEGRAM_VISIBLE_PROOF_LABEL_COLOR = "5319e7";
+const TELEGRAM_VISIBLE_PROOF_LABEL_DESCRIPTION = "Mantis should capture Telegram visible proof.";
 const PROTECTED_LABELS = new Set(["security", "beta-blocker", "release-blocker", "maintainer"]);
 const ALLOWED_REASONS = new Set<CloseReason>([
   "implemented_on_main",
@@ -719,6 +729,10 @@ const REAL_BEHAVIOR_PROOF_EVIDENCE_KINDS = new Set<RealBehaviorProofEvidenceKind
   "none",
   "not_applicable",
 ]);
+const TELEGRAM_VISIBLE_PROOF_STATUSES = new Set<TelegramVisibleProofStatus>([
+  "needed",
+  "not_needed",
+]);
 const OVERALL_CORRECTNESS_VALUES = new Set<OverallCorrectness>([
   "patch is correct",
   "patch is incorrect",
@@ -748,6 +762,7 @@ const DECISION_SCHEMA_KEYS = new Set([
   "reviewFindings",
   "securityReview",
   "realBehaviorProof",
+  "telegramVisibleProof",
   "overallCorrectness",
   "overallConfidenceScore",
   "fixedRelease",
@@ -771,6 +786,7 @@ const REAL_BEHAVIOR_PROOF_SCHEMA_KEYS = new Set([
   "evidenceKind",
   "needsContributorAction",
 ]);
+const TELEGRAM_VISIBLE_PROOF_SCHEMA_KEYS = new Set(["status", "summary"]);
 const SECURITY_CONCERN_SCHEMA_KEYS = new Set([
   "title",
   "body",
@@ -805,6 +821,7 @@ const REVIEW_SECTIONS = {
   reviewFindings: "Review Findings",
   securityReview: "Security Review",
   realBehaviorProof: "Real Behavior Proof",
+  telegramVisibleProof: "Telegram Visible Proof",
   workCandidate: "Work Candidate",
   repairWorkPrompt: "Repair Work Prompt",
   evidence: "Evidence",
@@ -1362,6 +1379,15 @@ function parseRealBehaviorProof(value: unknown, path: string): RealBehaviorProof
   };
 }
 
+function parseTelegramVisibleProof(value: unknown, path: string): TelegramVisibleProof {
+  const record = requireRecord(value, path);
+  rejectUnexpectedKeys(record, TELEGRAM_VISIBLE_PROOF_SCHEMA_KEYS, path);
+  return {
+    status: requireEnum(record.status, TELEGRAM_VISIBLE_PROOF_STATUSES, `${path}.status`),
+    summary: requireString(record.summary, `${path}.summary`),
+  };
+}
+
 function requireEnum<T extends string>(value: unknown, allowed: Set<T>, path: string): T {
   if (typeof value === "string" && allowed.has(value as T)) return value as T;
   throw new Error(`${path} has invalid value`);
@@ -1432,6 +1458,10 @@ export function parseDecision(value: unknown, item?: DecisionNormalizationItem):
     realBehaviorProof: parseRealBehaviorProof(
       record.realBehaviorProof,
       "decision.realBehaviorProof",
+    ),
+    telegramVisibleProof: parseTelegramVisibleProof(
+      record.telegramVisibleProof,
+      "decision.telegramVisibleProof",
     ),
     overallCorrectness: requireEnum(
       record.overallCorrectness,
@@ -3671,6 +3701,10 @@ function codexFailureDecision(status: number | null, stderr: string, stdout = ""
       evidenceKind: "not_applicable",
       needsContributorAction: false,
     },
+    telegramVisibleProof: {
+      status: "not_needed",
+      summary: "Telegram visible proof was not assessed because the Codex review failed.",
+    },
     overallCorrectness: "not a patch",
     overallConfidenceScore: 0,
     fixedRelease: null,
@@ -4777,6 +4811,20 @@ function reportRealBehaviorProof(markdown: string): RealBehaviorProof {
   });
 }
 
+function reportTelegramVisibleProof(markdown: string): TelegramVisibleProof {
+  const section = reviewSectionValue(markdown, "telegramVisibleProof");
+  const statusValue = sectionLineValue(section, "Status");
+  const status = TELEGRAM_VISIBLE_PROOF_STATUSES.has(statusValue as TelegramVisibleProofStatus)
+    ? (statusValue as TelegramVisibleProofStatus)
+    : "not_needed";
+  return {
+    status,
+    summary:
+      sectionLineValue(section, "Summary") ??
+      "No Telegram visible-proof assessment was recorded in this report.",
+  };
+}
+
 function screenshotProofNeedsRuntimeOutput(summary: string): boolean {
   if (
     /\b(?:no|without|absence of|zero|none)\b[^.]{0,120}\b(?:visible\s+)?(?:console|network|error|warning|violation|csp|cors)\b/i.test(
@@ -4831,6 +4879,67 @@ export function realBehaviorProofSufficientLabelsForTest(
     ? (status as RealBehaviorProofStatus)
     : "not_applicable";
   return nextRealBehaviorProofSufficientLabels(labels, { status: proofStatus });
+}
+
+function nextTelegramVisibleProofLabels(
+  labels: readonly string[],
+  proof: Pick<TelegramVisibleProof, "status">,
+): string[] {
+  const nextLabels = labels.filter((label) => label !== TELEGRAM_VISIBLE_PROOF_LABEL);
+  if (proof.status === "needed") nextLabels.push(TELEGRAM_VISIBLE_PROOF_LABEL);
+  return nextLabels;
+}
+
+export function telegramVisibleProofLabelsForTest(
+  labels: readonly string[],
+  status: string,
+): string[] {
+  const proofStatus = TELEGRAM_VISIBLE_PROOF_STATUSES.has(status as TelegramVisibleProofStatus)
+    ? (status as TelegramVisibleProofStatus)
+    : "not_needed";
+  return nextTelegramVisibleProofLabels(labels, { status: proofStatus });
+}
+
+function syncTelegramVisibleProofLabel(options: {
+  number: number;
+  labels: readonly string[];
+  proof: Pick<TelegramVisibleProof, "status">;
+  dryRun: boolean;
+}): string[] {
+  const nextLabels = nextTelegramVisibleProofLabels(options.labels, options.proof);
+  const hadLabel = options.labels.includes(TELEGRAM_VISIBLE_PROOF_LABEL);
+  const wantsLabel = nextLabels.includes(TELEGRAM_VISIBLE_PROOF_LABEL);
+  if (hadLabel === wantsLabel) return nextLabels;
+  if (options.dryRun) return nextLabels;
+  if (wantsLabel) ensureTelegramVisibleProofLabel();
+  ghWithRetry([
+    "issue",
+    "edit",
+    String(options.number),
+    wantsLabel ? "--add-label" : "--remove-label",
+    TELEGRAM_VISIBLE_PROOF_LABEL,
+  ]);
+  return nextLabels;
+}
+
+function ensureTelegramVisibleProofLabel(): void {
+  try {
+    ghWithRetry(
+      [
+        "label",
+        "create",
+        TELEGRAM_VISIBLE_PROOF_LABEL,
+        "--color",
+        TELEGRAM_VISIBLE_PROOF_LABEL_COLOR,
+        "--description",
+        TELEGRAM_VISIBLE_PROOF_LABEL_DESCRIPTION,
+      ],
+      2,
+    );
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (!/already exists/i.test(message)) throw error;
+  }
 }
 
 function syncRealBehaviorProofSufficientLabel(options: {
@@ -5029,6 +5138,7 @@ function reportDecision(markdown: string, closeReason: CloseReason): Decision {
     reviewFindings: reportReviewFindings(markdown),
     securityReview: reportSecurityReview(markdown),
     realBehaviorProof: reportRealBehaviorProof(markdown),
+    telegramVisibleProof: reportTelegramVisibleProof(markdown),
     overallCorrectness: reportOverallCorrectness(markdown),
     overallConfidenceScore: reportOverallConfidenceScore(markdown),
     fixedRelease: fixedRelease && fixedRelease !== "unknown" ? fixedRelease : null,
@@ -6175,6 +6285,14 @@ function renderRealBehaviorProofReportSection(decision: Decision): string {
   ].join("\n");
 }
 
+function renderTelegramVisibleProofReportSection(decision: Decision): string {
+  return [
+    `Status: ${decision.telegramVisibleProof.status}`,
+    "",
+    `Summary: ${sentence(decision.telegramVisibleProof.summary)}`,
+  ].join("\n");
+}
+
 function markdownFor(options: {
   item: Item;
   context: ItemContext;
@@ -6227,6 +6345,7 @@ function markdownFor(options: {
   const reviewFindings = renderReviewFindingsReportSection(options.decision);
   const securityReview = renderSecurityReviewReportSection(options.decision);
   const realBehaviorProof = renderRealBehaviorProofReportSection(options.decision);
+  const telegramVisibleProof = renderTelegramVisibleProofReportSection(options.decision);
   const workCandidateSection = renderWorkCandidateReportSection(options.decision);
   const repairWorkPromptSection = renderRepairWorkPromptReportSection(options.decision);
   return `---
@@ -6298,6 +6417,7 @@ requires_product_decision: ${options.decision.requiresProductDecision}
 real_behavior_proof_status: ${options.decision.realBehaviorProof.status}
 real_behavior_proof_evidence_kind: ${options.decision.realBehaviorProof.evidenceKind}
 real_behavior_proof_needs_contributor_action: ${options.decision.realBehaviorProof.needsContributorAction}
+telegram_visible_proof_status: ${options.decision.telegramVisibleProof.status}
 ---
 
 # ${markdownLink(`#${options.item.number}: ${options.item.title}`, options.item.url)}
@@ -6367,6 +6487,10 @@ ${securityReview}
 ## ${REVIEW_SECTIONS.realBehaviorProof}
 
 ${realBehaviorProof}
+
+## ${REVIEW_SECTIONS.telegramVisibleProof}
+
+${telegramVisibleProof}
 
 ## ${REVIEW_SECTIONS.workCandidate}
 
@@ -6775,6 +6899,12 @@ function applyDecisionsCommand(args: Args): void {
         number,
         labels: item.labels,
         proof: reportRealBehaviorProof(markdown),
+        dryRun,
+      });
+      item.labels = syncTelegramVisibleProofLabel({
+        number,
+        labels: item.labels,
+        proof: reportTelegramVisibleProof(markdown),
         dryRun,
       });
     }

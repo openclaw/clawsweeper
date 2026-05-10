@@ -23,6 +23,7 @@
     "reviewFindings",
     "securityReview",
     "realBehaviorProof",
+    "telegramVisibleProof",
     "overallCorrectness",
     "overallConfidenceScore",
     "fixedRelease",
@@ -335,6 +336,22 @@
         "needsContributorAction": {
           "type": "boolean",
           "description": "True when the contributor must add or improve real behavior proof before merge. This must be false for sufficient, override, and not_applicable statuses."
+        }
+      }
+    },
+    "telegramVisibleProof": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "For Telegram PRs, classify whether the change is user-visible and easy to demonstrate with the telegram-crabbox-e2e-proof skill.",
+      "required": ["status", "summary"],
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": ["needed", "not_needed"]
+        },
+        "summary": {
+          "type": "string",
+          "description": "One concise sentence explaining why the PR should or should not receive the mantis: telegram-visible-proof label."
         }
       }
     },

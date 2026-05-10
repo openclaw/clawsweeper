@@ -63,6 +63,7 @@ import {
   shouldReviewItem,
   shouldRetryGh,
   shouldPlanItem,
+  telegramVisibleProofLabelsForTest,
   validateCloseDecision,
 } from "../dist/clawsweeper.js";
 import { checkConclusionForFrontMatter } from "../dist/commit-checks.js";
@@ -165,6 +166,10 @@ function closeDecision(overrides = {}) {
       summary: "Real behavior proof is not required for non-PR issue triage.",
       evidenceKind: "not_applicable",
       needsContributorAction: false,
+    },
+    telegramVisibleProof: {
+      status: "not_needed",
+      summary: "This non-PR issue triage does not need Telegram visible proof.",
     },
     overallCorrectness: "not a patch",
     overallConfidenceScore: 0.75,
@@ -3148,6 +3153,15 @@ test("review prompt requires real behavior proof for PR reviews", () => {
   assert.match(prompt, /do not request ClawSweeper repair markers/);
 });
 
+test("review prompt classifies Telegram visible proof candidates", () => {
+  const prompt = readFileSync("prompts/review-item.md", "utf8");
+
+  assert.match(prompt, /telegramVisibleProof/);
+  assert.match(prompt, /telegram-crabbox-e2e-proof/);
+  assert.match(prompt, /message formatting/);
+  assert.match(prompt, /mantis: telegram-visible-proof/);
+});
+
 test("ClawSweeper proof judgement controls the sufficient proof label", () => {
   assert.deepEqual(realBehaviorProofSufficientLabelsForTest(["proof: supplied"], "sufficient"), [
     "proof: supplied",
@@ -3161,6 +3175,20 @@ test("ClawSweeper proof judgement controls the sufficient proof label", () => {
     ["proof: supplied"],
   );
   assert.deepEqual(realBehaviorProofSufficientLabelsForTest(["proof: sufficient"], "missing"), []);
+});
+
+test("ClawSweeper Telegram proof judgement controls the Mantis proof label", () => {
+  assert.deepEqual(telegramVisibleProofLabelsForTest(["channel: telegram"], "needed"), [
+    "channel: telegram",
+    "mantis: telegram-visible-proof",
+  ]);
+  assert.deepEqual(
+    telegramVisibleProofLabelsForTest(
+      ["channel: telegram", "mantis: telegram-visible-proof"],
+      "not_needed",
+    ),
+    ["channel: telegram"],
+  );
 });
 
 test("review workflow gives Codex a read-only inspection token", () => {
