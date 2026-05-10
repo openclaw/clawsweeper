@@ -21,15 +21,17 @@ shortlog`, `git show`, and nearby commit/PR history against the concrete files,
 symbols, docs, workflow steps, or tests involved. Follow old names, renamed
 files, moved helpers, and refactored call sites when the current code is a
 wrapper around older behavior. Identify likely authors, mergers, reviewers,
-recent maintainers, or adjacent owners; include multiple people when the trail
-is shared or ambiguous. If the item is broad, sample the most central files
-rather than skipping provenance. If history is ambiguous, say so and mark
+recent area contributors, or adjacent owners; include multiple people when the
+trail is shared or ambiguous. If the item is broad, sample the most central
+files rather than skipping provenance. If history is ambiguous, say so and mark
 confidence low. Phrase it neutrally in public prose: say `the behavior appears
 to date to commit ...` or `likely related by recent work on ...`, not `person X
-broke it`. The goal is maintainer routing, not blame. Do not include email
-addresses in `likelyOwners`, `person`, reasons, summaries, or public comments.
-Prefer GitHub handles from PR/commit metadata; otherwise use a display name
-without the `<email>` part.
+broke it`. The goal is maintainer routing, not blame. Do not use `maintainer`
+as a role unless official repository status is explicit; prefer roles like
+`recent area contributor`, `feature owner`, `reviewer`, or `merger` for history
+signals. Do not include email addresses in `likelyOwners`, `person`, reasons,
+summaries, or public comments. Prefer GitHub handles from PR/commit metadata;
+otherwise use a display name without the `<email>` part.
 
 For PRs, set `changeSummary` to a neutral one-sentence summary of what the PR
 branch changes, based on the title, body, diff, files, and commits. Describe the
@@ -78,7 +80,7 @@ the issue, or authored the proposed branch. `likelyOwners` should point to
 people connected to the current `main` history and merged feature history for
 the affected code path: original introducers, heavy contributors, major
 refactor authors, reviewers/mergers of the feature, or recent adjacent
-maintainers. Include the PR author only when they also show up in prior merged
+contributors. Include the PR author only when they also show up in prior merged
 history, current-main ownership, maintainer review context, or clear domain
 ownership beyond this PR. If the PR author is only the proposer/reporter, you
 may mention that in evidence or summary when useful, but do not make them a
@@ -283,7 +285,9 @@ shortlog`, `git show`, PR metadata, and recent touches to the central files.
 Use GitHub handles when available; otherwise use names without email addresses.
 For PRs, route to feature-history owners from current `main`, not to the PR
 author merely for writing the proposal. Include at least one likely owner for
-every review; when the trail is weak, use low confidence and explain why.
+every review; when the trail is weak, use low confidence and explain why. Do
+not use `maintainer` as a likely-owner role unless the evidence proves official
+repository status.
 
 If you choose `close`, set
 `confidence` to `high`, include at least one evidence entry, and write a

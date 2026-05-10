@@ -612,6 +612,8 @@ test("review actions only propose valid closes and never apply directly", () => 
   assert.match(action.closeComment, /Likely related people:/);
   assert.match(action.closeComment, /@alice/);
   assert.match(action.closeComment, /@bob/);
+  assert.doesNotMatch(action.closeComment, /role: recent maintainer/);
+  assert.match(action.closeComment, /role: recent area contributor/);
   assert.match(action.closeComment, /Codex review notes: model gpt-5\.5, reasoning high;/);
 });
 
@@ -1910,6 +1912,8 @@ Reason: Normal maintainer review is sufficient.
   assert.match(comment, /Needs attention:/);
   assert.match(comment, /Confirm issue write scope/);
   assert.match(comment, /Review details/);
+  assert.doesNotMatch(comment, /recent workflow maintainer/);
+  assert.match(comment, /recent workflow contributor/);
   assert.match(comment, /<!-- clawsweeper-security:security-sensitive item=74265 sha=abc123def456/);
   assert.match(comment, /<!-- clawsweeper-verdict:needs-human item=74265 sha=abc123def456/);
 });
@@ -3101,6 +3105,7 @@ test("review prompt routes PR likely owners through feature history", () => {
   assert.match(prompt, /git log --follow -- <file>/);
   assert.match(prompt, /do not list the PR author solely/);
   assert.match(prompt, /not to the PR\s+author merely for writing the proposal/);
+  assert.match(prompt, /Do\s+not use `maintainer` as a likely-owner role/);
   assert.match(prompt, /Do not include email\s+addresses in `likelyOwners`/);
   assert.match(prompt, /use names without email addresses/);
 });

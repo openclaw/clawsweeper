@@ -4357,9 +4357,20 @@ function closeEvidenceLine(evidence: Evidence): string {
   return `- ${prefix}${detail}${evidenceLocation(evidence)}`;
 }
 
+function publicLikelyOwnerRole(role: string): string {
+  return role
+    .trim()
+    .replace(/\brecent workflow maintainers\b/gi, "recent workflow contributors")
+    .replace(/\brecent workflow maintainer\b/gi, "recent workflow contributor")
+    .replace(/\brecent adjacent maintainers\b/gi, "recent adjacent contributors")
+    .replace(/\brecent adjacent maintainer\b/gi, "recent adjacent contributor")
+    .replace(/\brecent maintainers\b/gi, "recent area contributors")
+    .replace(/\brecent maintainer\b/gi, "recent area contributor");
+}
+
 function likelyOwnerLine(owner: LikelyOwner): string {
   const person = owner.person.trim() || "unknown";
-  const role = owner.role.trim();
+  const role = publicLikelyOwnerRole(owner.role);
   const reason = sentence(owner.reason.trim() || "Related by repository history.");
   const commits = owner.commits
     .map((commit) => commit.trim())
@@ -6200,7 +6211,7 @@ function markdownFor(options: {
   const likelyOwners = options.decision.likelyOwners.length
     ? options.decision.likelyOwners
         .map((owner) => {
-          const bits = [`- **${owner.person}:** ${owner.role}`];
+          const bits = [`- **${owner.person}:** ${publicLikelyOwnerRole(owner.role)}`];
           bits.push(`  - reason: ${owner.reason}`);
           bits.push(`  - confidence: ${owner.confidence}`);
           if (owner.commits.length) bits.push(`  - commits: ${owner.commits.join(", ")}`);
