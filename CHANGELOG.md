@@ -44,6 +44,9 @@ checkpoint, and status-only commits are intentionally omitted.
 - Suppressed changelog-only OpenClaw PR review findings after model output so
   contributor PRs do not get needs-changes or fix-required markers solely for
   maintainer-owned release notes. Thanks @rubencu.
+- Clarified likely-owner role wording in generated review comments and reports
+  so history-based routing does not imply official maintainer status. Thanks
+  @rubencu.
 - Added explicit timeouts for disabled-target workflow guard jobs and
   concurrency groups for write-side repair workflows. Thanks @ds4psb-ai.
 - Gave manual exact-item review dispatches their own concurrency group so
