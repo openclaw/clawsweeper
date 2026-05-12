@@ -18,6 +18,7 @@ import {
   closingPullRequestReferenceTarget,
   compactMappedSlice,
   compactMappedWindow,
+  compactPullFilesForPrompt,
   codexEnv,
   dashboardClosedAt,
   fixedPullRequestFromCommitPullsForTest,
@@ -292,6 +293,52 @@ test("compactMappedWindow keeps bounded hydrated context when total is larger th
     100,
   ]);
   assert.deepEqual(mapped, [1, 2, 99, 100]);
+});
+
+test("compactPullFilesForPrompt budgets patch text across retained files", () => {
+  const files = Array.from({ length: 4 }, (_, index) => ({
+    filename: `src/file-${index}.ts`,
+    status: "modified",
+    additions: 100,
+    deletions: 0,
+    changes: 100,
+    patch: `${index}`.repeat(1000),
+  }));
+
+  const result = compactPullFilesForPrompt(files, 4, 4, {
+    patchBudgetChars: 1000,
+    maxPatchChars: 1000,
+  });
+
+  assert.equal(result.patchesTruncated, 4);
+  assert.equal(result.files.length, 4);
+  for (const file of result.files) {
+    const patch = String((file as { patch: unknown }).patch);
+    assert.equal(patch.split("\n\n[truncated")[0].length, 250);
+    assert.match(patch, /\[truncated 750 chars\]/);
+  }
+});
+
+test("compactPullFilesForPrompt preserves file window omission markers", () => {
+  const files = Array.from({ length: 4 }, (_, index) => ({
+    filename: `src/file-${index}.ts`,
+    status: "modified",
+    additions: 1,
+    deletions: 0,
+    changes: 1,
+    patch: `diff-${index}`,
+  }));
+
+  const result = compactPullFilesForPrompt(files, 10, 4, {
+    patchBudgetChars: 1000,
+    maxPatchChars: 1000,
+  });
+
+  assert.deepEqual(result.files[2], {
+    omitted: 6,
+    note: "middle entries omitted from prompt context",
+  });
+  assert.equal(result.patchesTruncated, 0);
 });
 
 test("githubContextWindowPlan includes prior page when the tail crosses a page boundary", () => {

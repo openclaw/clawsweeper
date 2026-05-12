@@ -322,6 +322,7 @@ interface ItemContext {
     pullFiles?: number;
     pullFilesHydrated?: number;
     pullFilesTruncated?: boolean;
+    pullFilePatchesTruncated?: number;
     pullCommits?: number;
     pullCommitsHydrated?: number;
     pullCommitsTruncated?: boolean;
@@ -1619,20 +1620,35 @@ export function compactMappedSlice<T>(
   return compactMappedWindow(items, items.length, limit, mapper);
 }
 
-export function compactMappedWindow<T>(
+interface OmittedPromptEntries {
+  omitted: number;
+  note: string;
+}
+
+function omittedPromptEntries(omitted: number): OmittedPromptEntries {
+  return { omitted, note: "middle entries omitted from prompt context" };
+}
+
+function isOmittedPromptEntries<T>(entry: T | OmittedPromptEntries): entry is OmittedPromptEntries {
+  return (
+    typeof entry === "object" &&
+    entry !== null &&
+    "omitted" in entry &&
+    "note" in entry &&
+    typeof (entry as { omitted?: unknown }).omitted === "number"
+  );
+}
+
+function compactWindowEntries<T>(
   items: readonly T[],
   total: number,
   limit: number,
-  mapper: (item: T) => unknown,
-): unknown[] {
+): Array<T | OmittedPromptEntries> {
   const boundedLimit = Math.max(0, Math.floor(limit));
   const boundedTotal = Math.max(0, Math.floor(total));
-  if (boundedTotal <= boundedLimit && items.length <= boundedLimit) return items.map(mapper);
-  if (boundedLimit === 0) {
-    return boundedTotal > 0
-      ? [{ omitted: boundedTotal, note: "middle entries omitted from prompt context" }]
-      : [];
-  }
+  if (boundedTotal <= boundedLimit && items.length <= boundedLimit) return [...items];
+  if (boundedLimit === 0) return boundedTotal > 0 ? [omittedPromptEntries(boundedTotal)] : [];
+
   const keepStart = Math.floor(boundedLimit / 2);
   const keepEnd = Math.max(0, boundedLimit - keepStart);
   const retained =
@@ -1644,10 +1660,21 @@ export function compactMappedWindow<T>(
     keepEnd > 0 ? retained.slice(Math.max(keepStart, retained.length - keepEnd)) : [];
   const omitted = Math.max(0, boundedTotal - retainedStart.length - retainedEnd.length);
   return [
-    ...retainedStart.map(mapper),
-    ...(omitted > 0 ? [{ omitted, note: "middle entries omitted from prompt context" }] : []),
-    ...retainedEnd.map(mapper),
+    ...retainedStart,
+    ...(omitted > 0 ? [omittedPromptEntries(omitted)] : []),
+    ...retainedEnd,
   ];
+}
+
+export function compactMappedWindow<T>(
+  items: readonly T[],
+  total: number,
+  limit: number,
+  mapper: (item: T) => unknown,
+): unknown[] {
+  return compactWindowEntries(items, total, limit).map((entry) =>
+    isOmittedPromptEntries(entry) ? entry : mapper(entry),
+  );
 }
 
 function compactIssue(value: unknown): unknown {
@@ -2141,7 +2168,66 @@ export function sameAuthorCounterpartApplyReason(
   return null;
 }
 
-function compactPullFile(value: unknown): unknown {
+const PULL_FILE_PATCH_PROMPT_BUDGET_CHARS = 48_000;
+const PULL_FILE_PATCH_PROMPT_MAX_CHARS = 2_000;
+
+interface CompactPullFilesForPromptOptions {
+  patchBudgetChars?: number;
+  maxPatchChars?: number;
+}
+
+interface CompactPullFilesForPromptResult {
+  files: unknown[];
+  patchesTruncated: number;
+}
+
+export function compactPullFilesForPrompt(
+  files: readonly unknown[],
+  total: number,
+  limit: number,
+  options: CompactPullFilesForPromptOptions = {},
+): CompactPullFilesForPromptResult {
+  const windowEntries = compactWindowEntries(files, total, limit);
+  const retainedFiles = windowEntries.filter(
+    (entry): entry is unknown => !isOmittedPromptEntries(entry),
+  );
+  let remainingPatchFiles = retainedFiles.filter((file) => {
+    const patch = asRecord(file).patch;
+    return typeof patch === "string" && patch.length > 0;
+  }).length;
+  let remainingPatchBudget = Math.max(
+    0,
+    Math.floor(options.patchBudgetChars ?? PULL_FILE_PATCH_PROMPT_BUDGET_CHARS),
+  );
+  const maxPatchChars = Math.max(
+    0,
+    Math.floor(options.maxPatchChars ?? PULL_FILE_PATCH_PROMPT_MAX_CHARS),
+  );
+  let patchesTruncated = 0;
+  const nextPatchLimit = (file: unknown): number => {
+    const patch = asRecord(file).patch;
+    if (typeof patch !== "string" || patch.length === 0) return maxPatchChars;
+    const fairLimit =
+      remainingPatchFiles > 0 ? Math.ceil(remainingPatchBudget / remainingPatchFiles) : 0;
+    const patchLimit = Math.max(0, Math.min(maxPatchChars, fairLimit));
+    remainingPatchBudget = Math.max(0, remainingPatchBudget - Math.min(patch.length, patchLimit));
+    remainingPatchFiles = Math.max(0, remainingPatchFiles - 1);
+    if (patch.length > patchLimit) patchesTruncated += 1;
+    return patchLimit;
+  };
+
+  return {
+    files: windowEntries.map((entry) =>
+      isOmittedPromptEntries(entry) ? entry : compactPullFile(entry, nextPatchLimit(entry)),
+    ),
+    patchesTruncated,
+  };
+}
+
+function compactPullFile(
+  value: unknown,
+  patchMaxChars = PULL_FILE_PATCH_PROMPT_MAX_CHARS,
+): unknown {
   const file = asRecord(value);
   return {
     filename: file.filename,
@@ -2149,7 +2235,7 @@ function compactPullFile(value: unknown): unknown {
     additions: file.additions,
     deletions: file.deletions,
     changes: file.changes,
-    patch: truncateText(file.patch, 2000),
+    patch: truncateText(file.patch, patchMaxChars),
   };
 }
 
@@ -3439,6 +3525,7 @@ function collectItemContext(item: Item): ItemContext {
       80,
     );
     const pullFiles = pullFilesWindow.items;
+    const compactPullFiles = compactPullFilesForPrompt(pullFiles, pullFilesWindow.total, 80);
     const pullCommitsWindow = ghPagedContextWindow<unknown>(
       `repos/${targetRepo()}/pulls/${item.number}/commits`,
       pullRecord.commits,
@@ -3452,7 +3539,7 @@ function collectItemContext(item: Item): ItemContext {
     );
     pullReviewComments = pullReviewCommentsWindow.items;
     context.pullRequest = compactPullRequest(pullRequest);
-    context.pullFiles = compactMappedWindow(pullFiles, pullFilesWindow.total, 80, compactPullFile);
+    context.pullFiles = compactPullFiles.files;
     context.pullCommits = compactMappedWindow(
       pullCommits,
       pullCommitsWindow.total,
@@ -3474,6 +3561,7 @@ function collectItemContext(item: Item): ItemContext {
       pullFiles: pullFilesWindow.total,
       pullFilesHydrated: pullFilesWindow.hydrated,
       pullFilesTruncated: pullFilesWindow.truncated,
+      pullFilePatchesTruncated: compactPullFiles.patchesTruncated,
       pullCommits: pullCommitsWindow.total,
       pullCommitsHydrated: pullCommitsWindow.hydrated,
       pullCommitsTruncated: pullCommitsWindow.truncated,
@@ -3505,6 +3593,8 @@ function collectItemContext(item: Item): ItemContext {
       counts.pullFilesHydrated = context.counts.pullFilesHydrated;
     if (context.counts?.pullFilesTruncated !== undefined)
       counts.pullFilesTruncated = context.counts.pullFilesTruncated;
+    if (context.counts?.pullFilePatchesTruncated !== undefined)
+      counts.pullFilePatchesTruncated = context.counts.pullFilePatchesTruncated;
     if (context.counts?.pullCommits !== undefined) counts.pullCommits = context.counts.pullCommits;
     if (context.counts?.pullCommitsHydrated !== undefined)
       counts.pullCommitsHydrated = context.counts.pullCommitsHydrated;
@@ -6529,6 +6619,7 @@ ${options.action.closeComment ? options.action.closeComment : "_No close comment
     options.context.counts?.pullFilesHydrated,
     options.context.counts?.pullFilesTruncated,
   )}
+- PR file patches truncated: ${options.context.counts?.pullFilePatchesTruncated ?? 0}
 - PR commits: ${contextCountText(
     options.context.counts?.pullCommits,
     options.context.pullCommits?.length ?? 0,

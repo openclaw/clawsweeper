@@ -82,6 +82,9 @@ checkpoint, and status-only commits are intentionally omitted.
   instead of reserving an entire 35-70 shard lane for every planning or
   publishing background run, so saturated backlog runs keep using available
   Codex capacity.
+- Bounded the total pull request patch text kept in review prompts while
+  preserving hydrated file metadata, so large OpenClaw PR reviews spend fewer
+  tokens on repeated diff hunks.
 - Reserved pending/planning background sweep matrices at their quiet lane size
   and capped broad manual `shard_count` inputs by live scheduler allowance, so
   overlapping manual or scheduled review runs stay inside the Codex worker
