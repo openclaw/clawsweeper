@@ -1537,6 +1537,14 @@ jobs:
     runs-on: [self-hosted, macOS, ARM64, mac-mini]
     timeout-minutes: 360
     steps:
+      - name: Sanitize workspace (read-only residue from prior codex runs)
+        shell: bash
+        run: |
+          set +e
+          ws="$(dirname "${GITHUB_WORKSPACE}")"
+          [ -d "$ws" ] || exit 0
+          /bin/chmod -R u+w "$ws" 2>/dev/null
+          exit 0
       - uses: actions/checkout@v6
         with:
           filter: blob:none
