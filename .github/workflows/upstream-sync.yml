@@ -1,0 +1,168 @@
+name: Upstream Sync
+
+# Daily check for new commits on the upstream fork. Opens a PR with the merge
+# (never force-pushes to main). Conflicts arrive as draft PRs.
+#
+# Source-of-truth registry: ~/Projects/personal/agent-system/FORKS.md
+# Owner routine: CTO agent on Multica (home workspace).
+
+on:
+  schedule:
+    # 06:00 SAST = 04:00 UTC. Daily.
+    - cron: "0 4 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+env:
+  UPSTREAM_REPO: openclaw/clawsweeper
+  UPSTREAM_BRANCH: main
+  FORK_BRANCH: main
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout fork
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Add upstream remote and fetch
+        run: |
+          git remote add upstream "https://github.com/${UPSTREAM_REPO}.git"
+          git fetch upstream "${UPSTREAM_BRANCH}" --quiet
+
+      - name: Check for upstream changes
+        id: check
+        run: |
+          BEHIND=$(git rev-list --count "origin/${FORK_BRANCH}..upstream/${UPSTREAM_BRANCH}")
+          echo "behind=${BEHIND}" >> "$GITHUB_OUTPUT"
+          echo "Behind upstream by ${BEHIND} commits."
+          if [ "${BEHIND}" = "0" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Stop if up-to-date
+        if: steps.check.outputs.skip == 'true'
+        run: echo "::notice::Fork is up to date with ${UPSTREAM_REPO}@${UPSTREAM_BRANCH}. Nothing to do."
+
+      - name: Configure git author
+        if: steps.check.outputs.skip != 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Create sync branch and attempt merge
+        if: steps.check.outputs.skip != 'true'
+        id: merge
+        run: |
+          DATE=$(date -u +%Y-%m-%d)
+          BRANCH="sync/upstream-${DATE}"
+          echo "branch=${BRANCH}" >> "$GITHUB_OUTPUT"
+
+          # Reuse same-day branch if it already exists (idempotent re-runs).
+          if git ls-remote --exit-code origin "refs/heads/${BRANCH}" >/dev/null 2>&1; then
+            echo "::notice::Sync branch ${BRANCH} already exists — refreshing."
+            git fetch origin "${BRANCH}"
+            git checkout -B "${BRANCH}" "origin/${BRANCH}"
+          else
+            git checkout -B "${BRANCH}" "origin/${FORK_BRANCH}"
+          fi
+
+          if git merge --no-ff --no-edit "upstream/${UPSTREAM_BRANCH}"; then
+            echo "draft=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Clean merge."
+          else
+            # Capture conflicted paths, abort, mark draft.
+            CONFLICTS=$(git diff --name-only --diff-filter=U | head -30)
+            echo "::warning::Merge conflicts:%0A${CONFLICTS}"
+            git merge --abort
+            # Reset to fork main; PR body will explain.
+            git checkout -B "${BRANCH}" "origin/${FORK_BRANCH}"
+            echo "draft=true" >> "$GITHUB_OUTPUT"
+            echo "conflicts<<EOF" >> "$GITHUB_OUTPUT"
+            echo "${CONFLICTS}" >> "$GITHUB_OUTPUT"
+            echo "EOF" >> "$GITHUB_OUTPUT"
+          fi
+
+          git push origin "${BRANCH}" --force-with-lease
+
+      - name: Open or update PR
+        if: steps.check.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BRANCH: ${{ steps.merge.outputs.branch }}
+          DRAFT: ${{ steps.merge.outputs.draft }}
+          CONFLICTS: ${{ steps.merge.outputs.conflicts }}
+          BEHIND: ${{ steps.check.outputs.behind }}
+        run: |
+          set -e
+
+          TITLE="sync: ${UPSTREAM_REPO}@${UPSTREAM_BRANCH} → ${FORK_BRANCH}"
+
+          if [ "${DRAFT}" = "true" ]; then
+            BODY=$(cat <<EOF
+          ⚠️ **Conflict detected** during automated sync from \`${UPSTREAM_REPO}@${UPSTREAM_BRANCH}\`.
+
+          - Commits behind upstream: ${BEHIND}
+          - Conflicted paths:
+          \`\`\`
+          ${CONFLICTS}
+          \`\`\`
+
+          Resolve manually:
+          \`\`\`bash
+          git fetch origin ${BRANCH}
+          git checkout ${BRANCH}
+          git fetch upstream ${UPSTREAM_BRANCH}
+          git merge upstream/${UPSTREAM_BRANCH}
+          # resolve conflicts, then:
+          git push origin ${BRANCH}
+          \`\`\`
+
+          Triggered by daily upstream sync. Registry: \`agent-system/FORKS.md\`.
+          EOF
+          )
+          else
+            BODY=$(cat <<EOF
+          Automated daily sync from \`${UPSTREAM_REPO}@${UPSTREAM_BRANCH}\`.
+
+          - Commits pulled: ${BEHIND}
+          - Strategy: \`git merge --no-ff\` (preserves fork lineage)
+
+          Awaiting:
+          - [ ] Warden review (when runner is online)
+          - [ ] CTO agent triage
+          - [ ] Merge
+
+          Registry: \`agent-system/FORKS.md\`.
+          EOF
+          )
+          fi
+
+          # Find existing open PR for this branch, or create one.
+          EXISTING=$(gh pr list --head "${BRANCH}" --state open --json number -q '.[0].number')
+          if [ -n "${EXISTING}" ]; then
+            gh pr edit "${EXISTING}" --title "${TITLE}" --body "${BODY}"
+            echo "::notice::Updated existing PR #${EXISTING}."
+          else
+            DRAFT_FLAG=""
+            [ "${DRAFT}" = "true" ] && DRAFT_FLAG="--draft"
+            PR_URL=$(gh pr create \
+              --base "${FORK_BRANCH}" \
+              --head "${BRANCH}" \
+              --title "${TITLE}" \
+              --body "${BODY}" \
+              ${DRAFT_FLAG})
+            echo "::notice::Opened ${PR_URL}"
+            PR_NUM=$(echo "${PR_URL}" | grep -oE '[0-9]+$')
+            LABEL="upstream-sync"
+            [ "${DRAFT}" = "true" ] && LABEL="${LABEL},needs-conflict-resolution"
+            # Best-effort label add (skip silently if labels don't exist yet)
+            gh pr edit "${PR_NUM}" --add-label "${LABEL}" 2>/dev/null || \
+              echo "::warning::Could not add labels (may not exist). Run: gh label create upstream-sync; gh label create needs-conflict-resolution"
+          fi
