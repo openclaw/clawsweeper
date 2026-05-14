@@ -285,41 +285,17 @@ jobs:
           auth-mode: subscription
           login-status: "true"
 
-      - uses: actions/cache@v5
-        with:
-          path: ${{ steps.target.outputs.target_checkout_dir }}-cache.git
-          key: ${{ steps.target.outputs.target_repo_name }}-event-git-${{ runner.os }}-${{ github.run_id }}
-          restore-keys: |
-            ${{ steps.target.outputs.target_repo_name }}-event-git-${{ runner.os }}-
-            ${{ steps.target.outputs.target_repo_name }}-git-${{ runner.os }}-
-
       - name: Check out target repository
         timeout-minutes: 10
-        env:
-          GH_TOKEN: ${{ steps.target-read-token.outputs.token }}
-          # abort fetch/clone if transfer stalls below 1KB/s for 30s
-          # (consumer-network self-hosted runner can wedge git forever otherwise)
-          GIT_HTTP_LOW_SPEED_LIMIT: '1000'
-          GIT_HTTP_LOW_SPEED_TIME: '30'
-        run: |
-          set -euo pipefail
-          url="https://x-access-token:${GH_TOKEN}@github.com/${{ steps.target.outputs.target_repo }}.git"
-          cache_dir="${{ steps.target.outputs.target_checkout_dir }}-cache.git"
-          checkout_dir="${{ steps.target.outputs.target_checkout_dir }}"
-          if [ -d "$cache_dir" ]; then
-            git -C "$cache_dir" remote set-url origin "$url"
-            git -C "$cache_dir" config remote.origin.promisor true
-            git -C "$cache_dir" config remote.origin.partialclonefilter blob:none
-            if [ -f "$cache_dir/shallow" ]; then
-              git -C "$cache_dir" fetch --prune --unshallow --filter=blob:none origin main
-            else
-              git -C "$cache_dir" fetch --prune --filter=blob:none origin main
-            fi
-          else
-            git clone --bare --filter=blob:none --single-branch --branch main "$url" "$cache_dir"
-          fi
-          git clone --reference-if-able "$cache_dir" --dissociate --filter=blob:none --branch main --single-branch "$url" "$checkout_dir"
-          git -C "$checkout_dir" rev-parse --short HEAD
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ steps.target.outputs.target_repo }}
+          token: ${{ steps.target-read-token.outputs.token }}
+          path: ${{ steps.target.outputs.target_checkout_dir }}
+          ref: main
+          filter: blob:none
+          fetch-depth: 0
+          persist-credentials: false
 
       - name: Review exact event item
         id: review-exact-event-item
@@ -881,40 +857,17 @@ jobs:
           auth-mode: subscription
           login-status: "true"
 
-      - uses: actions/cache@v5
-        with:
-          path: ${{ needs.plan.outputs.target_checkout_dir }}-cache.git
-          key: ${{ needs.plan.outputs.target_repo_name }}-git-${{ runner.os }}-${{ github.run_id }}
-          restore-keys: |
-            ${{ needs.plan.outputs.target_repo_name }}-git-${{ runner.os }}-
-
       - name: Check out target repository
         timeout-minutes: 10
-        env:
-          GH_TOKEN: ${{ steps.target-read-token.outputs.token }}
-          # abort fetch/clone if transfer stalls below 1KB/s for 30s
-          # (consumer-network self-hosted runner can wedge git forever otherwise)
-          GIT_HTTP_LOW_SPEED_LIMIT: '1000'
-          GIT_HTTP_LOW_SPEED_TIME: '30'
-        run: |
-          set -euo pipefail
-          url="https://x-access-token:${GH_TOKEN}@github.com/${{ needs.plan.outputs.target_repo }}.git"
-          cache_dir="${{ needs.plan.outputs.target_checkout_dir }}-cache.git"
-          checkout_dir="${{ needs.plan.outputs.target_checkout_dir }}"
-          if [ -d "$cache_dir" ]; then
-            git -C "$cache_dir" remote set-url origin "$url"
-            git -C "$cache_dir" config remote.origin.promisor true
-            git -C "$cache_dir" config remote.origin.partialclonefilter blob:none
-            if [ -f "$cache_dir/shallow" ]; then
-              git -C "$cache_dir" fetch --prune --unshallow --filter=blob:none origin main
-            else
-              git -C "$cache_dir" fetch --prune --filter=blob:none origin main
-            fi
-          else
-            git clone --bare --filter=blob:none --single-branch --branch main "$url" "$cache_dir"
-          fi
-          git clone --reference-if-able "$cache_dir" --dissociate --filter=blob:none --branch main --single-branch "$url" "$checkout_dir"
-          git -C "$checkout_dir" rev-parse --short HEAD
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ needs.plan.outputs.target_repo }}
+          token: ${{ steps.target-read-token.outputs.token }}
+          path: ${{ needs.plan.outputs.target_checkout_dir }}
+          ref: main
+          filter: blob:none
+          fetch-depth: 0
+          persist-credentials: false
 
       - name: Mark shard start
         id: shard-start
