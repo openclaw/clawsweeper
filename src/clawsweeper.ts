@@ -2145,12 +2145,20 @@ function compactPullFile(value: unknown): unknown {
   const file = asRecord(value);
   return {
     filename: file.filename,
+    previous_filename: file.previous_filename,
     status: file.status,
     additions: file.additions,
     deletions: file.deletions,
     changes: file.changes,
     patch: truncateText(file.patch, 2000),
   };
+}
+
+function compactPullFilePaths(value: unknown): string[] {
+  const file = asRecord(value);
+  return [file.filename, file.previous_filename].filter(
+    (path): path is string => typeof path === "string" && path.length > 0,
+  );
 }
 
 function compactPullCommit(value: unknown): unknown {
@@ -2291,7 +2299,8 @@ function ensureDir(path: string): void {
 
 function frontMatterValue(markdown: string, key: string): string | undefined {
   const match = markdown.match(new RegExp(`^${key}:\\s*(.+)$`, "m"));
-  return match?.[1]?.trim().replace(/^"|"$/g, "");
+  const value = match?.[1]?.trim();
+  return value?.startsWith('"') && value.endsWith('"') ? value.slice(1, -1) : value;
 }
 
 export function applyDecisionPriority(markdown: string, applyKind: ApplyKind): number {
@@ -2377,6 +2386,10 @@ function frontMatterStringArray(markdown: string, key: string): string[] {
     .split(",")
     .map((entry) => entry.trim())
     .filter(Boolean);
+}
+
+function frontMatterBoolean(markdown: string, key: string): boolean {
+  return /^true$/i.test(frontMatterValue(markdown, key) ?? "");
 }
 
 function existingReview(
@@ -4764,6 +4777,15 @@ function defaultRealBehaviorProof(markdown: string): RealBehaviorProof {
       needsContributorAction: false,
     };
   }
+  if (isDocsOnlyPullRequestReport(markdown)) {
+    return {
+      status: "not_applicable",
+      summary:
+        "Real behavior proof is not required because this PR only changes files under docs/.",
+      evidenceKind: "not_applicable",
+      needsContributorAction: false,
+    };
+  }
   return {
     status: "not_applicable",
     summary:
@@ -4776,10 +4798,12 @@ function defaultRealBehaviorProof(markdown: string): RealBehaviorProof {
 }
 
 function reportRealBehaviorProof(markdown: string): RealBehaviorProof {
+  const defaultProof = defaultRealBehaviorProof(markdown);
+  if (defaultProof.status === "override" || isDocsOnlyPullRequestReport(markdown)) {
+    return defaultProof;
+  }
   const section = reviewSectionValue(markdown, "realBehaviorProof");
   if (!section.trim()) {
-    const defaultProof = defaultRealBehaviorProof(markdown);
-    if (defaultProof.status === "override") return defaultProof;
     if (isExternalPullRequestReport(markdown)) {
       return {
         status: "missing",
@@ -4861,6 +4885,21 @@ function normalizeRealBehaviorProof(proof: RealBehaviorProof): RealBehaviorProof
     };
   }
   return proof;
+}
+
+function pullRequestFilePathsFromReport(markdown: string): string[] {
+  return frontMatterStringArray(markdown, "pull_files");
+}
+
+function isDocsPath(file: string): boolean {
+  return file.startsWith("docs/");
+}
+
+function isDocsOnlyPullRequestReport(markdown: string): boolean {
+  if (frontMatterValue(markdown, "type") !== "pull_request") return false;
+  if (frontMatterBoolean(markdown, "pull_files_truncated")) return false;
+  const files = pullRequestFilePathsFromReport(markdown);
+  return files.length > 0 && files.every(isDocsPath);
 }
 
 function nextRealBehaviorProofSufficientLabels(
@@ -4979,6 +5018,7 @@ function isExternalPullRequestReport(markdown: string): boolean {
 function realBehaviorProofBlocksMerge(markdown: string): boolean {
   if (!isExternalPullRequestReport(markdown)) return false;
   if (frontMatterStringArray(markdown, "labels").includes(PROOF_OVERRIDE_LABEL)) return false;
+  if (isDocsOnlyPullRequestReport(markdown)) return false;
   const proof = reportRealBehaviorProof(markdown);
   return (
     proof.needsContributorAction ||
@@ -6294,6 +6334,16 @@ function renderTelegramVisibleProofReportSection(decision: Decision): string {
   ].join("\n");
 }
 
+export function pullRequestFilePathsFromContextForTest(context: {
+  pullFiles?: unknown[];
+}): string[] {
+  return (context.pullFiles ?? []).flatMap(compactPullFilePaths);
+}
+
+function pullRequestFilePathsFromContext(context: ItemContext): string[] {
+  return pullRequestFilePathsFromContextForTest(context);
+}
+
 function markdownFor(options: {
   item: Item;
   context: ItemContext;
@@ -6349,6 +6399,8 @@ function markdownFor(options: {
   const telegramVisibleProof = renderTelegramVisibleProofReportSection(options.decision);
   const workCandidateSection = renderWorkCandidateReportSection(options.decision);
   const repairWorkPromptSection = renderRepairWorkPromptReportSection(options.decision);
+  const pullFiles = pullRequestFilePathsFromContext(options.context);
+  const pullFilesTruncated = Boolean(options.context.counts?.pullFilesTruncated);
   return `---
 number: ${options.item.number}
 repository: ${options.item.repo}
@@ -6409,6 +6461,8 @@ work_prompt_sha256: ${options.decision.workPrompt ? sha256(options.decision.work
 work_cluster_refs: ${jsonFrontMatterValue(options.decision.workClusterRefs)}
 work_validation: ${jsonFrontMatterValue(options.decision.workValidation)}
 work_likely_files: ${jsonFrontMatterValue(options.decision.workLikelyFiles)}
+pull_files: ${jsonFrontMatterValue(pullFiles)}
+pull_files_truncated: ${pullFilesTruncated}
 item_category: ${options.decision.itemCategory}
 reproduction_status: ${options.decision.reproductionStatus}
 reproduction_confidence: ${options.decision.reproductionConfidence}

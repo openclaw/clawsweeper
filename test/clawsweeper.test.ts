@@ -56,6 +56,7 @@ import {
   sameAuthorCounterpartApplyReason,
   sanitizePublicSelfReferences,
   appendFloorBackfillCandidateNumbersForTest,
+  pullRequestFilePathsFromContextForTest,
   selectDueCandidateNumbersForTest,
   shardItemNumbers,
   shouldStopSaturatedPlanScan,
@@ -2121,6 +2122,132 @@ Full review comments:
   assert.match(comment, /\*\*Real behavior proof\*\*\nSufficient \(terminal\):/);
   assert.match(markers, /clawsweeper-verdict:pass/);
   assert.doesNotMatch(markers, /clawsweeper-verdict:needs-human/);
+});
+
+test("docs-only external PRs do not require real behavior proof", () => {
+  const report = `${reportFrontMatter({
+    type: "pull_request",
+    number: "74462",
+    decision: "keep_open",
+    close_reason: "none",
+    review_status: "complete",
+    confidence: "high",
+    author: "contributor",
+    author_association: "CONTRIBUTOR",
+    labels: JSON.stringify(["clawsweeper:automerge"]),
+    work_candidate: "none",
+    pull_head_sha: "abc123def456",
+    pull_files: JSON.stringify(["docs/usage.md", "docs/plugins/building-plugins.md"]),
+    pull_files_truncated: false,
+  })}
+
+## Summary
+
+Keep this docs-only PR open for automerge.
+
+## What This Changes
+
+Clarifies plugin docs.
+
+## Best Possible Solution
+
+Merge after required checks are green.
+
+${realBehaviorProofReportSection({
+  status: "missing",
+  evidenceKind: "none",
+  needsContributorAction: true,
+  summary: "The PR body does not include after-fix evidence from a real setup.",
+})}
+
+## Review Findings
+
+Overall correctness: patch is correct
+
+Overall confidence: 0.9
+
+Full review comments:
+
+- none
+`;
+
+  const comment = renderReviewCommentFromReport(report, "none");
+  const markers = reviewAutomationMarkersFromReport(report);
+
+  assert.match(comment, /\*\*Real behavior proof\*\*\nNot applicable:/);
+  assert.match(comment, /only changes files under docs\//);
+  assert.match(markers, /clawsweeper-verdict:pass/);
+  assert.doesNotMatch(markers, /clawsweeper-verdict:needs-human/);
+});
+
+test("renamed source paths remain part of docs-only proof checks", () => {
+  assert.deepEqual(
+    pullRequestFilePathsFromContextForTest({
+      pullFiles: [
+        {
+          filename: "docs/runtime.md",
+          previous_filename: "src/runtime.ts",
+          status: "renamed",
+        },
+      ],
+    }),
+    ["docs/runtime.md", "src/runtime.ts"],
+  );
+});
+
+test("mixed docs and source external PRs still require real behavior proof", () => {
+  const report = `${reportFrontMatter({
+    type: "pull_request",
+    number: "74463",
+    decision: "keep_open",
+    close_reason: "none",
+    review_status: "complete",
+    confidence: "high",
+    author: "contributor",
+    author_association: "CONTRIBUTOR",
+    labels: JSON.stringify(["clawsweeper:automerge"]),
+    work_candidate: "none",
+    pull_head_sha: "abc123def456",
+    pull_files: JSON.stringify(["docs/usage.md", "src/runtime.ts"]),
+    pull_files_truncated: false,
+  })}
+
+## Summary
+
+Keep this PR open until the contributor proves the fix in a real setup.
+
+## What This Changes
+
+Changes runtime behavior and docs.
+
+## Best Possible Solution
+
+Ask the contributor to add after-fix proof from their real setup.
+
+${realBehaviorProofReportSection({
+  status: "missing",
+  evidenceKind: "none",
+  needsContributorAction: true,
+  summary: "The PR body does not include after-fix evidence from a real setup.",
+})}
+
+## Review Findings
+
+Overall correctness: patch is correct
+
+Overall confidence: 0.9
+
+Full review comments:
+
+- none
+`;
+
+  const comment = renderReviewCommentFromReport(report, "none");
+  const markers = reviewAutomationMarkersFromReport(report);
+
+  assert.match(comment, /Codex review: needs real behavior proof before merge\./);
+  assert.match(markers, /clawsweeper-verdict:needs-human/);
+  assert.doesNotMatch(markers, /clawsweeper-verdict:pass/);
 });
 
 test("screenshot-only browser runtime proof blocks pass markers", () => {

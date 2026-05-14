@@ -301,7 +301,7 @@
     "realBehaviorProof": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Dedicated PR proof assessment. For external PRs, after-fix evidence from a real setup is required; tests, mocks, snapshots, lint, typechecks, and CI are supplemental only.",
+      "description": "Dedicated PR proof assessment. For external PRs, after-fix evidence from a real setup is required unless the PR only changes files under docs/; tests, mocks, snapshots, lint, typechecks, and CI are supplemental only.",
       "required": ["status", "summary", "evidenceKind", "needsContributorAction"],
       "properties": {
         "status": {
