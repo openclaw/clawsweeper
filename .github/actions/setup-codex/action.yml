@@ -5,7 +5,7 @@ inputs:
     description: Codex CLI npm package version.
     default: "0.128.0"
   auth-mode:
-    description: Authentication mode. Use proxy to keep OPENAI_API_KEY out of Codex subprocesses, or login for legacy codex login.
+    description: Authentication mode. `proxy` runs codex-responses-api-proxy from OPENAI_API_KEY. `login` runs `codex login --with-api-key`. `subscription` uses the runner's existing `~/.codex/auth.json` (ChatGPT subscription JWT) — no API key required.
     default: "proxy"
   codex-home:
     description: CODEX_HOME directory. Defaults to an isolated per-run ClawSweeper directory.
@@ -46,6 +46,7 @@ runs:
         if [[ "${{ inputs['auth-mode'] }}" == "proxy" ]] && ! npm list -g --depth=0 "@openai/codex-responses-api-proxy@${{ inputs.version }}" >/dev/null 2>&1; then
           npm install -g "@openai/codex-responses-api-proxy@${{ inputs.version }}" --prefer-offline --no-audit --no-fund
         fi
+        # subscription mode needs no extra install — uses runner's existing auth.json
         codex --version
 
     - name: Resolve Codex home
@@ -109,8 +110,35 @@ runs:
           codex login status
         fi
 
+    - name: Authenticate Codex with ChatGPT subscription
+      if: ${{ inputs['auth-mode'] == 'subscription' }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        export CODEX_HOME="${CODEX_HOME:?}"
+        # Bridge the per-run isolated CODEX_HOME to the runner's persistent ChatGPT auth.
+        # `~/.codex/auth.json` must already exist on the runner with mode=chatgpt (4–5 kB JWT).
+        # See: project_codex_billing_paths memory note.
+        if [[ ! -f "$HOME/.codex/auth.json" ]]; then
+          echo "::error::No ~/.codex/auth.json on this runner. Run \`codex login\` once and pick \"Sign in with ChatGPT\"." >&2
+          exit 1
+        fi
+        size=$(stat -f%z "$HOME/.codex/auth.json" 2>/dev/null || stat -c%s "$HOME/.codex/auth.json")
+        if [[ "$size" -lt 500 ]]; then
+          echo "::error::~/.codex/auth.json is $size bytes — looks like an API-key entry (expected ChatGPT JWT, ~4–5 kB). Re-login with \`codex logout && codex login\` and pick \"Sign in with ChatGPT\"." >&2
+          exit 1
+        fi
+        ln -sf "$HOME/.codex/auth.json" "$CODEX_HOME/auth.json"
+        # Mode assertion fails loudly if somehow we're still on apikey.
+        status=$(codex login status 2>&1 || true)
+        echo "$status"
+        echo "$status" | grep -Fq "Logged in using ChatGPT" || { echo "::error::codex not in ChatGPT mode: $status" >&2; exit 1; }
+        if [[ "${{ inputs['login-status'] }}" == "true" ]]; then
+          codex login status
+        fi
+
     - name: Reject unknown Codex auth mode
-      if: ${{ inputs['auth-mode'] != 'proxy' && inputs['auth-mode'] != 'login' }}
+      if: ${{ inputs['auth-mode'] != 'proxy' && inputs['auth-mode'] != 'login' && inputs['auth-mode'] != 'subscription' }}
       shell: bash
       run: |
         echo "Unsupported setup-codex auth-mode: ${{ inputs['auth-mode'] }}" >&2

@@ -1,6 +1,6 @@
 name: ClawSweeper
 
-run-name: ${{ github.event_name == 'repository_dispatch' && format('Review event item {0}#{1}', github.event.client_payload.target_repo || 'openclaw/openclaw', github.event.client_payload.item_number || '?') || (github.event_name == 'workflow_dispatch' && github.event.inputs.apply_existing == 'true' && github.event.inputs.apply_sync_comments_only == 'true') && 'Sync Codex review comments' || ((github.event_name == 'workflow_dispatch' && github.event.inputs.apply_existing == 'true') || (github.event_name == 'schedule' && (github.event.schedule == '3 * * * *' || github.event.schedule == '18 * * * *' || github.event.schedule == '33 * * * *' || github.event.schedule == '48 * * * *' || github.event.schedule == '8,23,38,53 * * * *'))) && 'Apply ClawSweeper closures' || ((github.event_name == 'workflow_dispatch' && github.event.inputs.audit_dashboard == 'true') || (github.event_name == 'schedule' && (github.event.schedule == '7 */6 * * *' || github.event.schedule == '12 */6 * * *' || github.event.schedule == '17 */6 * * *'))) && 'Audit ClawSweeper state' || ((github.event_name == 'workflow_dispatch' && github.event.inputs.hot_intake == 'true') || (github.event_name == 'schedule' && (github.event.schedule == '*/5 * * * *' || github.event.schedule == '2/5 * * * *'))) && 'Review hot ClawSweeper items' || 'Review ClawSweeper items' }}
+run-name: ${{ github.event_name == 'repository_dispatch' && format('Review event item {0}#{1}', github.event.client_payload.target_repo || 'bermont-digital/multica', github.event.client_payload.item_number || '?') || (github.event_name == 'workflow_dispatch' && github.event.inputs.apply_existing == 'true' && github.event.inputs.apply_sync_comments_only == 'true') && 'Sync Codex review comments' || ((github.event_name == 'workflow_dispatch' && github.event.inputs.apply_existing == 'true') || (github.event_name == 'schedule' && (github.event.schedule == '3 * * * *' || github.event.schedule == '18 * * * *' || github.event.schedule == '33 * * * *' || github.event.schedule == '48 * * * *' || github.event.schedule == '8,23,38,53 * * * *'))) && 'Apply ClawSweeper closures' || ((github.event_name == 'workflow_dispatch' && github.event.inputs.audit_dashboard == 'true') || (github.event_name == 'schedule' && (github.event.schedule == '7 */6 * * *' || github.event.schedule == '12 */6 * * *' || github.event.schedule == '17 */6 * * *'))) && 'Audit ClawSweeper state' || ((github.event_name == 'workflow_dispatch' && github.event.inputs.hot_intake == 'true') || (github.event_name == 'schedule' && (github.event.schedule == '*/5 * * * *' || github.event.schedule == '2/5 * * * *'))) && 'Review hot ClawSweeper items' || 'Review ClawSweeper items' }}
 
 on:
   repository_dispatch:
@@ -10,7 +10,7 @@ on:
       target_repo:
         description: "Repository to sweep"
         required: false
-        default: "openclaw/openclaw"
+        default: "bermont-digital/multica"
       apply_existing:
         description: "Apply existing proposed close decisions without rerunning Codex; skips items changed since review"
         required: false
@@ -128,19 +128,24 @@ permissions:
   issues: write
   pull-requests: write
 
+defaults:
+  run:
+    # macOS /bin/bash is 3.2 — empty `${arr[@]}` under `set -u` is fatal there. Force bash 5 from Homebrew on self-hosted runners.
+    shell: /opt/homebrew/bin/bash -e {0}
+
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
-  CLAWSWEEPER_APP_CLIENT_ID: Iv23liOECG0slfuhz093
+  CLAWSWEEPER_APP_CLIENT_ID: Iv23lirdjmVqYd1gwY26
 
 concurrency:
-  group: ${{ github.event_name == 'repository_dispatch' && format('clawsweeper-event-{0}-{1}', github.event.client_payload.target_repo || 'openclaw/openclaw', github.event.client_payload.item_number || github.run_id) || format('{0}-{1}', (github.event_name == 'workflow_dispatch' && github.event.inputs.apply_existing == 'true' && github.event.inputs.apply_sync_comments_only == 'true') && 'clawsweeper-comment-sync' || ((github.event_name == 'workflow_dispatch' && github.event.inputs.apply_existing == 'true') || (github.event_name == 'schedule' && (github.event.schedule == '3 * * * *' || github.event.schedule == '18 * * * *' || github.event.schedule == '33 * * * *' || github.event.schedule == '48 * * * *' || github.event.schedule == '8,23,38,53 * * * *'))) && 'clawsweeper-apply' || (github.event_name == 'workflow_dispatch' && (github.event.inputs.item_number != '' || github.event.inputs.item_numbers != '')) && format('clawsweeper-intake-exact-{0}', github.event.inputs.item_number || github.event.inputs.item_numbers) || ((github.event_name == 'workflow_dispatch' && github.event.inputs.hot_intake == 'true') || (github.event_name == 'schedule' && (github.event.schedule == '*/5 * * * *' || github.event.schedule == '2/5 * * * *'))) && 'clawsweeper-intake-v2' || ((github.event_name == 'workflow_dispatch' && github.event.inputs.audit_dashboard == 'true') || (github.event_name == 'schedule' && (github.event.schedule == '7 */6 * * *' || github.event.schedule == '12 */6 * * *' || github.event.schedule == '17 */6 * * *'))) && 'clawsweeper-audit' || 'clawsweeper-review', github.event.inputs.target_repo || github.event.client_payload.target_repo || ((github.event.schedule == '17 */6 * * *') && 'openclaw/clawsweeper' || ((github.event.schedule == '2/5 * * * *' || github.event.schedule == '22 * * * *' || github.event.schedule == '8,23,38,53 * * * *' || github.event.schedule == '12 */6 * * *') && 'openclaw/clawhub' || 'openclaw/openclaw'))) }}
+  group: ${{ github.event_name == 'repository_dispatch' && format('clawsweeper-event-{0}-{1}', github.event.client_payload.target_repo || 'bermont-digital/multica', github.event.client_payload.item_number || github.run_id) || format('{0}-{1}', (github.event_name == 'workflow_dispatch' && github.event.inputs.apply_existing == 'true' && github.event.inputs.apply_sync_comments_only == 'true') && 'clawsweeper-comment-sync' || ((github.event_name == 'workflow_dispatch' && github.event.inputs.apply_existing == 'true') || (github.event_name == 'schedule' && (github.event.schedule == '3 * * * *' || github.event.schedule == '18 * * * *' || github.event.schedule == '33 * * * *' || github.event.schedule == '48 * * * *' || github.event.schedule == '8,23,38,53 * * * *'))) && 'clawsweeper-apply' || (github.event_name == 'workflow_dispatch' && (github.event.inputs.item_number != '' || github.event.inputs.item_numbers != '')) && format('clawsweeper-intake-exact-{0}', github.event.inputs.item_number || github.event.inputs.item_numbers) || ((github.event_name == 'workflow_dispatch' && github.event.inputs.hot_intake == 'true') || (github.event_name == 'schedule' && (github.event.schedule == '*/5 * * * *' || github.event.schedule == '2/5 * * * *'))) && 'clawsweeper-intake-v2' || ((github.event_name == 'workflow_dispatch' && github.event.inputs.audit_dashboard == 'true') || (github.event_name == 'schedule' && (github.event.schedule == '7 */6 * * *' || github.event.schedule == '12 */6 * * *' || github.event.schedule == '17 */6 * * *'))) && 'clawsweeper-audit' || 'clawsweeper-review', github.event.inputs.target_repo || github.event.client_payload.target_repo || ((github.event.schedule == '17 */6 * * *') && 'openclaw/clawsweeper' || ((github.event.schedule == '2/5 * * * *' || github.event.schedule == '22 * * * *' || github.event.schedule == '8,23,38,53 * * * *' || github.event.schedule == '12 */6 * * *') && 'openclaw/clawhub' || 'bermont-digital/multica'))) }}
   cancel-in-progress: ${{ github.event_name == 'repository_dispatch' }}
 
 jobs:
   event-disabled-target:
     name: Skip disabled target event
     if: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.target_repo == 'openclaw/clawhub' && vars.CLAWSWEEPER_ENABLE_CLAWHUB != '1' }}
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, macOS, ARM64, mac-mini]
     steps:
       - name: Explain skipped event
         run: |
@@ -150,7 +155,7 @@ jobs:
   event-review-apply:
     name: Review, comment, and apply event item
     if: ${{ github.event_name == 'repository_dispatch' && !(github.event.client_payload.target_repo == 'openclaw/clawhub' && vars.CLAWSWEEPER_ENABLE_CLAWHUB != '1') }}
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, macOS, ARM64, mac-mini]
     timeout-minutes: 120
     permissions:
       actions: write
@@ -168,7 +173,7 @@ jobs:
         id: target
         run: |
           set -euo pipefail
-          target_repo="${{ github.event.client_payload.target_repo || 'openclaw/openclaw' }}"
+          target_repo="${{ github.event.client_payload.target_repo || 'bermont-digital/multica' }}"
           item_number="${{ github.event.client_payload.item_number || '' }}"
           item_kind="${{ github.event.client_payload.item_kind || '' }}"
           if ! printf '%s' "$target_repo" | grep -Eq '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$'; then
@@ -276,9 +281,8 @@ jobs:
             --wait-ms 120000
 
       - uses: ./.github/actions/setup-codex
-        env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         with:
+          auth-mode: subscription
           login-status: "true"
 
       - uses: actions/cache@v5
@@ -290,9 +294,16 @@ jobs:
             ${{ steps.target.outputs.target_repo_name }}-git-${{ runner.os }}-
 
       - name: Check out target repository
+        timeout-minutes: 10
+        env:
+          GH_TOKEN: ${{ steps.target-read-token.outputs.token }}
+          # abort fetch/clone if transfer stalls below 1KB/s for 30s
+          # (consumer-network self-hosted runner can wedge git forever otherwise)
+          GIT_HTTP_LOW_SPEED_LIMIT: '1000'
+          GIT_HTTP_LOW_SPEED_TIME: '30'
         run: |
           set -euo pipefail
-          url="https://github.com/${{ steps.target.outputs.target_repo }}.git"
+          url="https://x-access-token:${GH_TOKEN}@github.com/${{ steps.target.outputs.target_repo }}.git"
           cache_dir="${{ steps.target.outputs.target_checkout_dir }}-cache.git"
           checkout_dir="${{ steps.target.outputs.target_checkout_dir }}"
           if [ -d "$cache_dir" ]; then
@@ -330,7 +341,7 @@ jobs:
             --batch-size 1 \
             --max-pages 1 \
             --codex-model gpt-5.5 \
-            --codex-reasoning-effort high \
+            --codex-reasoning-effort low \
             --codex-sandbox danger-full-access \
             --codex-timeout-ms 600000 \
             --item-numbers "${{ steps.target.outputs.item_number }}" \
@@ -341,14 +352,18 @@ jobs:
 
       - name: Create state token
         id: state-token
-        uses: ./.github/actions/create-state-token
+        uses: actions/create-github-app-token@1b10c78c7865c340bc4f6099eb2f838309f1e8c3 # v3.1.1
         with:
           client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
           private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
+          owner: valkyriweb
+          repositories: clawsweeper-state
+          permission-contents: write
 
       - uses: ./.github/actions/setup-state
         with:
           token: ${{ steps.state-token.outputs.token }}
+          state-repository: valkyriweb/clawsweeper-state
 
       - name: Publish event result and apply safe close
         id: publish-event-result
@@ -490,7 +505,7 @@ jobs:
   plan:
     name: Plan review candidates
     if: ${{ github.event_name != 'repository_dispatch' && !((github.event_name == 'workflow_dispatch' && (github.event.inputs.apply_existing == 'true' || github.event.inputs.audit_dashboard == 'true')) || (github.event_name == 'schedule' && ((github.event.schedule == '3 * * * *' || github.event.schedule == '18 * * * *' || github.event.schedule == '33 * * * *' || github.event.schedule == '48 * * * *' || github.event.schedule == '8,23,38,53 * * * *') || (github.event.schedule == '7 */6 * * *' || github.event.schedule == '12 */6 * * *' || github.event.schedule == '17 */6 * * *')))) && !(github.event_name == 'schedule' && (github.event.schedule == '2/5 * * * *' || github.event.schedule == '22 * * * *') && vars.CLAWSWEEPER_ENABLE_CLAWHUB != '1') }}
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, macOS, ARM64, mac-mini]
     timeout-minutes: 30
     outputs:
       batch_size: ${{ steps.mode.outputs.batch_size }}
@@ -530,7 +545,7 @@ jobs:
                 target_repo="openclaw/clawhub"
                 ;;
               *)
-                target_repo="openclaw/openclaw"
+                target_repo="bermont-digital/multica"
                 ;;
             esac
           fi
@@ -561,14 +576,18 @@ jobs:
 
       - name: Create state token
         id: state-token
-        uses: ./clawsweeper/.github/actions/create-state-token
+        uses: actions/create-github-app-token@1b10c78c7865c340bc4f6099eb2f838309f1e8c3 # v3.1.1
         with:
           client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
           private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
+          owner: valkyriweb
+          repositories: clawsweeper-state
+          permission-contents: write
 
       - uses: ./clawsweeper/.github/actions/setup-state
         with:
           token: ${{ steps.state-token.outputs.token }}
+          state-repository: valkyriweb/clawsweeper-state
           worktree-path: clawsweeper
           fetch-depth: 1
 
@@ -686,7 +705,7 @@ jobs:
             else
               batch_size="${{ github.event.inputs.batch_size || '3' }}"
             fi
-            if [ "$target_repo" = "openclaw/openclaw" ]; then
+            if [ "$target_repo" = "bermont-digital/multica" ]; then
               min_active_shards="$normal_active_floor"
             else
               min_active_shards="0"
@@ -763,7 +782,7 @@ jobs:
             --max-pages "$MAX_PAGES" \
             --shard-count "$SHARD_COUNT" \
             --codex-model gpt-5.5 \
-            --codex-reasoning-effort high \
+            --codex-reasoning-effort low \
             --codex-sandbox danger-full-access \
             --min-active-shards "$MIN_ACTIVE_SHARDS" \
             --min-backfill-review-age-minutes "$MIN_BACKFILL_REVIEW_AGE_MINUTES" \
@@ -805,7 +824,7 @@ jobs:
   review:
     name: Review shard ${{ matrix.shard }}
     needs: plan
-    runs-on: ${{ vars.CLAWSWEEPER_REVIEW_RUNNER || 'ubuntu-latest' }}
+    runs-on: ${{ vars.CLAWSWEEPER_REVIEW_RUNNER && fromJson(vars.CLAWSWEEPER_REVIEW_RUNNER) || fromJson('["self-hosted", "macOS", "ARM64", "mac-mini"]') }}
     timeout-minutes: 75
     continue-on-error: true
     permissions:
@@ -858,9 +877,8 @@ jobs:
           path: clawsweeper/dist
 
       - uses: ./clawsweeper/.github/actions/setup-codex
-        env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         with:
+          auth-mode: subscription
           login-status: "true"
 
       - uses: actions/cache@v5
@@ -871,9 +889,16 @@ jobs:
             ${{ needs.plan.outputs.target_repo_name }}-git-${{ runner.os }}-
 
       - name: Check out target repository
+        timeout-minutes: 10
+        env:
+          GH_TOKEN: ${{ steps.target-read-token.outputs.token }}
+          # abort fetch/clone if transfer stalls below 1KB/s for 30s
+          # (consumer-network self-hosted runner can wedge git forever otherwise)
+          GIT_HTTP_LOW_SPEED_LIMIT: '1000'
+          GIT_HTTP_LOW_SPEED_TIME: '30'
         run: |
           set -euo pipefail
-          url="https://github.com/${{ needs.plan.outputs.target_repo }}.git"
+          url="https://x-access-token:${GH_TOKEN}@github.com/${{ needs.plan.outputs.target_repo }}.git"
           cache_dir="${{ needs.plan.outputs.target_checkout_dir }}-cache.git"
           checkout_dir="${{ needs.plan.outputs.target_checkout_dir }}"
           if [ -d "$cache_dir" ]; then
@@ -928,7 +953,7 @@ jobs:
             --batch-size ${{ needs.plan.outputs.batch_size }} \
             --max-pages ${{ needs.plan.outputs.max_pages }} \
             --codex-model gpt-5.5 \
-            --codex-reasoning-effort high \
+            --codex-reasoning-effort low \
             --codex-sandbox danger-full-access \
             --codex-timeout-ms ${{ needs.plan.outputs.codex_timeout_ms }} \
             --item-numbers "${{ matrix.item_numbers }}" \
@@ -1001,7 +1026,7 @@ jobs:
     name: Publish review artifacts
     needs: [plan, review]
     if: ${{ always() && needs.plan.result == 'success' && needs.review.result != 'cancelled' && needs.plan.outputs.target_repo != '' && github.event_name != 'repository_dispatch' && !((github.event_name == 'workflow_dispatch' && (github.event.inputs.apply_existing == 'true' || github.event.inputs.audit_dashboard == 'true')) || (github.event_name == 'schedule' && ((github.event.schedule == '3 * * * *' || github.event.schedule == '18 * * * *' || github.event.schedule == '33 * * * *' || github.event.schedule == '48 * * * *' || github.event.schedule == '8,23,38,53 * * * *') || (github.event.schedule == '7 */6 * * *' || github.event.schedule == '12 */6 * * *' || github.event.schedule == '17 */6 * * *')))) }}
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, macOS, ARM64, mac-mini]
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v6
@@ -1023,14 +1048,18 @@ jobs:
 
       - name: Create state token
         id: state-token
-        uses: ./.github/actions/create-state-token
+        uses: actions/create-github-app-token@1b10c78c7865c340bc4f6099eb2f838309f1e8c3 # v3.1.1
         with:
           client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
           private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
+          owner: valkyriweb
+          repositories: clawsweeper-state
+          permission-contents: write
 
       - uses: ./.github/actions/setup-state
         with:
           token: ${{ steps.state-token.outputs.token }}
+          state-repository: valkyriweb/clawsweeper-state
 
       - uses: ./.github/actions/setup-pnpm
         with:
@@ -1088,7 +1117,8 @@ jobs:
       - name: Commit review records
         env:
           EXACT_ITEM: ${{ github.event.inputs.item_number || github.event.inputs.item_numbers || '' }}
-          GH_TOKEN: ${{ github.token }}
+          # Multica is private and owned by a different account than this workflow — use the App-minted target token, not github.token (scoped to valkyriweb/clawsweeper).
+          GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
           HOT_INTAKE: ${{ needs.plan.outputs.hot_intake }}
           TARGET_REPO: ${{ needs.plan.outputs.target_repo }}
         run: |
@@ -1106,7 +1136,7 @@ jobs:
             --rebase-strategy theirs
 
       - name: Dispatch reproducible bug implementation candidates
-        if: ${{ success() && needs.plan.outputs.target_repo == 'openclaw/openclaw' && vars.CLAWSWEEPER_AUTO_IMPLEMENT_REPRO_BUGS == '1' }}
+        if: ${{ success() && needs.plan.outputs.target_repo == 'bermont-digital/multica' && vars.CLAWSWEEPER_AUTO_IMPLEMENT_REPRO_BUGS == '1' }}
         env:
           GH_TOKEN: ${{ github.token }}
           TARGET_REPO: ${{ needs.plan.outputs.target_repo }}
@@ -1311,7 +1341,7 @@ jobs:
     name: Recover failed review shards
     needs: [plan, review, publish]
     if: ${{ always() && needs.plan.result == 'success' && needs.review.result != 'skipped' && !contains(github.event.inputs.additional_prompt || '', '[clawsweeper-recovery-attempt=1]') && needs.plan.outputs.planned_item_numbers != '' && github.event_name != 'repository_dispatch' }}
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, macOS, ARM64, mac-mini]
     timeout-minutes: 10
     permissions:
       actions: write
@@ -1404,7 +1434,7 @@ jobs:
   audit-dashboard:
     name: Audit state
     if: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.audit_dashboard == 'true') || (github.event_name == 'schedule' && (github.event.schedule == '7 */6 * * *' || github.event.schedule == '12 */6 * * *' || github.event.schedule == '17 */6 * * *')) }}
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, macOS, ARM64, mac-mini]
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v6
@@ -1425,7 +1455,7 @@ jobs:
                 target_repo="openclaw/clawsweeper"
                 ;;
               *)
-                target_repo="openclaw/openclaw"
+                target_repo="bermont-digital/multica"
                 ;;
             esac
           fi
@@ -1466,14 +1496,18 @@ jobs:
 
       - name: Create state token
         id: state-token
-        uses: ./.github/actions/create-state-token
+        uses: actions/create-github-app-token@1b10c78c7865c340bc4f6099eb2f838309f1e8c3 # v3.1.1
         with:
           client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
           private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
+          owner: valkyriweb
+          repositories: clawsweeper-state
+          permission-contents: write
 
       - uses: ./.github/actions/setup-state
         with:
           token: ${{ steps.state-token.outputs.token }}
+          state-repository: valkyriweb/clawsweeper-state
 
       - uses: ./.github/actions/setup-pnpm
         with:
@@ -1517,13 +1551,13 @@ jobs:
           GH_TOKEN: ${{ steps.state-token.outputs.token }}
         run: |
           gh workflow run dashboard.yml \
-            --repo openclaw/clawsweeper-state \
+            --repo valkyriweb/clawsweeper-state \
             --ref main || echo "Best-effort dashboard refresh dispatch failed; scheduled state dashboard will retry."
 
   apply-existing:
     name: Apply close proposals
     if: ${{ ((github.event_name == 'workflow_dispatch' && github.event.inputs.apply_existing == 'true') || (github.event_name == 'schedule' && (github.event.schedule == '3 * * * *' || github.event.schedule == '18 * * * *' || github.event.schedule == '33 * * * *' || github.event.schedule == '48 * * * *' || github.event.schedule == '8,23,38,53 * * * *'))) && !(github.event_name == 'schedule' && github.event.schedule == '8,23,38,53 * * * *' && vars.CLAWSWEEPER_ENABLE_CLAWHUB != '1') }}
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, macOS, ARM64, mac-mini]
     timeout-minutes: 360
     steps:
       - uses: actions/checkout@v6
@@ -1541,7 +1575,7 @@ jobs:
                 target_repo="openclaw/clawhub"
                 ;;
               *)
-                target_repo="openclaw/openclaw"
+                target_repo="bermont-digital/multica"
                 ;;
             esac
           fi
@@ -1567,14 +1601,18 @@ jobs:
 
       - name: Create state token
         id: state-token
-        uses: ./.github/actions/create-state-token
+        uses: actions/create-github-app-token@1b10c78c7865c340bc4f6099eb2f838309f1e8c3 # v3.1.1
         with:
           client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
           private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
+          owner: valkyriweb
+          repositories: clawsweeper-state
+          permission-contents: write
 
       - uses: ./.github/actions/setup-state
         with:
           token: ${{ steps.state-token.outputs.token }}
+          state-repository: valkyriweb/clawsweeper-state
 
       - uses: ./.github/actions/setup-pnpm
         with:
@@ -1852,7 +1890,7 @@ jobs:
             -f apply_checkpoint_size="$APPLY_CHECKPOINT_SIZE"
 
       - name: Queue review backstops
-        if: ${{ success() && steps.target.outputs.target_repo == 'openclaw/openclaw' }}
+        if: ${{ success() && steps.target.outputs.target_repo == 'bermont-digital/multica' }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -1899,7 +1937,7 @@ jobs:
               --ref main \
               -f apply_existing=false \
               -f hot_intake=true \
-              -f target_repo=openclaw/openclaw \
+              -f target_repo=bermont-digital/multica \
               -f batch_size=1 \
               -f shard_count="$hot_intake_shards" \
               -f codex_timeout_ms=600000
@@ -1911,7 +1949,7 @@ jobs:
               --ref main \
               -f apply_existing=false \
               -f hot_intake=false \
-              -f target_repo=openclaw/openclaw \
+              -f target_repo=bermont-digital/multica \
               -f batch_size=3 \
               -f shard_count="$normal_shards" \
               -f codex_timeout_ms=600000
