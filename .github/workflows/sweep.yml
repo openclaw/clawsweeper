@@ -1057,7 +1057,10 @@ jobs:
 
       - name: Apply review artifacts
         env:
-          GH_TOKEN: ${{ github.token }}
+          # External targets (CLIP-SA, bermont-digital) are not reachable from github.token,
+          # which is scoped to valkyriweb/clawsweeper only. Use the App-minted target token
+          # so apply-artifacts can fetch issue metadata and edit placeholder comments.
+          GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
           EXACT_ITEM: ${{ github.event.inputs.item_number || github.event.inputs.item_numbers || '' }}
           HOT_INTAKE: ${{ needs.plan.outputs.hot_intake }}
           MAX_PAGES: ${{ needs.plan.outputs.max_pages }}
