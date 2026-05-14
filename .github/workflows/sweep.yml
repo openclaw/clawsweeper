@@ -295,7 +295,6 @@ jobs:
           ref: main
           filter: blob:none
           fetch-depth: 0
-          persist-credentials: false
 
       - name: Review exact event item
         id: review-exact-event-item
@@ -867,7 +866,6 @@ jobs:
           ref: main
           filter: blob:none
           fetch-depth: 0
-          persist-credentials: false
 
       - name: Mark shard start
         id: shard-start
