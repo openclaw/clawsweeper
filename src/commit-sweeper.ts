@@ -296,7 +296,7 @@ function runCodex(options: {
   );
   const codexConfig = [
     `model_reasoning_effort="${options.reasoningEffort}"`,
-    'forced_login_method="api"',
+    'forced_login_method="chatgpt"',
     'approval_policy="never"',
   ];
   if (options.serviceTier) codexConfig.splice(1, 0, `service_tier="${options.serviceTier}"`);
