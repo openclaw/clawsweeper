@@ -107,20 +107,19 @@ on:
         description: "Refresh audit state without running review or apply work"
         required: false
         default: "false"
-  schedule:
-    - cron: "*/5 * * * *"
-    # ClawHub review/apply schedules stay opt-in until the ClawSweeper app is installed there.
-    - cron: "2/5 * * * *"
-    - cron: "7 */6 * * *"
-    - cron: "12 */6 * * *"
-    - cron: "17 */6 * * *"
-    - cron: "1/5 * * * *"
-    - cron: "22 * * * *"
-    - cron: "3 * * * *"
-    - cron: "18 * * * *"
-    - cron: "33 * * * *"
-    - cron: "48 * * * *"
-    - cron: "8,23,38,53 * * * *"
+  # schedule:  # DISABLED during isolated-test phase 2026-05-14; re-enable once trial wiring verified.
+  #   - cron: "*/5 * * * *"
+  #   - cron: "2/5 * * * *"
+  #   - cron: "7 */6 * * *"
+  #   - cron: "12 */6 * * *"
+  #   - cron: "17 */6 * * *"
+  #   - cron: "1/5 * * * *"
+  #   - cron: "22 * * * *"
+  #   - cron: "3 * * * *"
+  #   - cron: "18 * * * *"
+  #   - cron: "33 * * * *"
+  #   - cron: "48 * * * *"
+  #   - cron: "8,23,38,53 * * * *"
 
 permissions:
   contents: write
