@@ -286,7 +286,7 @@ jobs:
 
       - name: Check out target repository
         timeout-minutes: 10
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           repository: ${{ steps.target.outputs.target_repo }}
           token: ${{ steps.target-read-token.outputs.token }}
@@ -873,7 +873,7 @@ jobs:
 
       - name: Check out target repository
         timeout-minutes: 10
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           repository: ${{ needs.plan.outputs.target_repo }}
           token: ${{ steps.target-read-token.outputs.token }}
