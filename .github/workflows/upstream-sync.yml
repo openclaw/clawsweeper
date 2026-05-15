@@ -26,7 +26,7 @@ jobs:
   sync:
     runs-on: ubuntu-latest
     steps:
-      - name: Generate app token (workflow-write scope for push)
+      - name: Generate app token
         id: app-token
         uses: actions/create-github-app-token@1b10c78c7865c340bc4f6099eb2f838309f1e8c3 # v3.1.1
         with:
@@ -34,8 +34,6 @@ jobs:
           private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
           owner: valkyriweb
           repositories: clawsweeper
-          permission-contents: write
-          permission-workflows: write
 
       - name: Checkout fork
         uses: actions/checkout@v4
@@ -106,7 +104,7 @@ jobs:
       - name: Open or update PR
         if: steps.check.outputs.skip != 'true'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           BRANCH: ${{ steps.merge.outputs.branch }}
           DRAFT: ${{ steps.merge.outputs.draft }}
           CONFLICTS: ${{ steps.merge.outputs.conflicts }}
@@ -157,14 +155,15 @@ jobs:
           fi
 
           # Find existing open PR for this branch, or create one.
-          EXISTING=$(gh pr list --head "${BRANCH}" --state open --json number -q '.[0].number')
+          EXISTING=$(gh pr list --repo valkyriweb/clawsweeper --head "${BRANCH}" --state open --json number -q '.[0].number')
           if [ -n "${EXISTING}" ]; then
-            gh pr edit "${EXISTING}" --title "${TITLE}" --body "${BODY}"
+            gh pr edit "${EXISTING}" --repo valkyriweb/clawsweeper --title "${TITLE}" --body "${BODY}"
             echo "::notice::Updated existing PR #${EXISTING}."
           else
             DRAFT_FLAG=""
             [ "${DRAFT}" = "true" ] && DRAFT_FLAG="--draft"
             PR_URL=$(gh pr create \
+              --repo valkyriweb/clawsweeper \
               --base "${FORK_BRANCH}" \
               --head "${BRANCH}" \
               --title "${TITLE}" \
