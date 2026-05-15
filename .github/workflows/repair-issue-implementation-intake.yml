@@ -177,11 +177,21 @@ jobs:
             cap_args=(--max-live-workers "$MAX_LIVE_WORKERS")
           fi
           git pull --rebase
-          pnpm run repair:dispatch -- "${{ steps.prepare.outputs.job_path }}" \
-            --mode autonomous \
-            --wait-for-capacity \
-            "${cap_args[@]}" \
-            --runner "$RUNNER" \
-            --execution-runner "$EXECUTION_RUNNER" \
-            --model "$MODEL" \
-            --ref main
+          if [ "${#cap_args[@]}" -gt 0 ]; then
+            pnpm run repair:dispatch -- "${{ steps.prepare.outputs.job_path }}" \
+              --mode autonomous \
+              --wait-for-capacity \
+              "${cap_args[@]}" \
+              --runner "$RUNNER" \
+              --execution-runner "$EXECUTION_RUNNER" \
+              --model "$MODEL" \
+              --ref main
+          else
+            pnpm run repair:dispatch -- "${{ steps.prepare.outputs.job_path }}" \
+              --mode autonomous \
+              --wait-for-capacity \
+              --runner "$RUNNER" \
+              --execution-runner "$EXECUTION_RUNNER" \
+              --model "$MODEL" \
+              --ref main
+          fi
