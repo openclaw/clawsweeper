@@ -3,49 +3,40 @@ import test from "node:test";
 
 import { REPOSITORY_PROFILES, repositoryProfileFor } from "../dist/repository-profiles.js";
 
-test("repositoryProfileFor matches mixed-case input against canonical profiles", () => {
-  const profile = repositoryProfileFor("OpenClaw/ClawHub");
+test("repositoryProfileFor matches mixed-case input against private target profiles", () => {
+  const profile = repositoryProfileFor("CLIP-SA/Core-Wholesale");
 
-  assert.equal(profile.targetRepo, "openclaw/clawhub");
-  assert.equal(profile.slug, "openclaw-clawhub");
+  assert.equal(profile.targetRepo, "clip-sa/core-wholesale");
+  assert.equal(profile.slug, "clip-sa-core-wholesale");
+  assert.equal(profile.checkoutDir, "core-wholesale");
 });
 
-test("repositoryProfileFor supports fs-safe event reviews", () => {
-  const profile = repositoryProfileFor("OpenClaw/fs-safe");
+test("repositoryProfileFor carries service-area routing notes", () => {
+  const profile = repositoryProfileFor("bermont-digital/multica");
 
-  assert.equal(profile.targetRepo, "openclaw/fs-safe");
-  assert.equal(profile.slug, "openclaw-fs-safe");
-  assert.equal(profile.checkoutDir, "fs-safe");
+  assert.equal(profile.targetRepo, "bermont-digital/multica");
+  assert.match(profile.promptNote, /area:backend-go/);
+  assert.match(profile.promptNote, /area:frontend-next/);
+  assert.match(profile.promptNote, /area:daemon/);
   assert.deepEqual(profile.applyCloseRules.issue, []);
-  assert.deepEqual(profile.applyCloseRules.pull_request, [
-    "implemented_on_main",
-    "mostly_implemented_on_main",
-  ]);
+  assert.deepEqual(profile.applyCloseRules.pull_request, []);
 });
 
-test("generic OpenClaw fallback supports conservative event-only onboarding", () => {
-  const profile = repositoryProfileFor("OpenClaw/example-tool");
-
-  assert.equal(profile.targetRepo, "openclaw/example-tool");
-  assert.equal(profile.slug, "openclaw-example-tool");
-  assert.equal(profile.displayName, "example-tool");
-  assert.equal(profile.checkoutDir, "example-tool");
-  assert.match(profile.promptNote, /generic OpenClaw onboarding profile/);
-  assert.deepEqual(profile.applyCloseRules.issue, []);
-  assert.deepEqual(profile.applyCloseRules.pull_request, [
-    "implemented_on_main",
-    "mostly_implemented_on_main",
-  ]);
-});
-
-test("generic OpenClaw fallback keeps denied repositories unsupported", () => {
+test("private-repo triage disables generic OpenClaw fallback", () => {
   assert.throws(
-    () => repositoryProfileFor("openclaw/clawsweeper-state"),
-    /Unsupported target repo: openclaw\/clawsweeper-state/,
+    () => repositoryProfileFor("OpenClaw/example-tool"),
+    /Unsupported target repo: OpenClaw\/example-tool/,
   );
 });
 
-test("generic fallback does not support repositories outside OpenClaw", () => {
+test("old Core AI frontend repo is not a target profile", () => {
+  assert.throws(
+    () => repositoryProfileFor("CLIP-SA/core-ai-frontend"),
+    /Unsupported target repo: CLIP-SA\/core-ai-frontend/,
+  );
+});
+
+test("generic fallback does not support unknown repositories", () => {
   assert.throws(
     () => repositoryProfileFor("other-org/example-tool"),
     /Unsupported target repo: other-org\/example-tool/,

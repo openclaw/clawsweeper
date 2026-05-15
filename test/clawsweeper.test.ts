@@ -7,6 +7,12 @@ import test from "node:test";
 
 const tmpPrefix = join(tmpdir(), "clawsweeper-test-");
 
+function readWorkflowFixture(name: string): string {
+  const activePath = join(".github", "workflows", name);
+  if (existsSync(activePath)) return readFileSync(activePath, "utf8");
+  return readFileSync(join(".github", "workflows", "_disabled", name), "utf8");
+}
+
 import {
   applyDecisionPriority,
   auditFromSnapshot,
@@ -854,61 +860,43 @@ test("skill-only OpenClaw PRs can close through ClawHub with upload guidance", (
   assert.match(action.closeComment, /installable community skill/);
 });
 
-test("ClawHub policy only allows main-implemented PR close proposals", () => {
+test("private target policy keeps auto-close disabled during triage", () => {
   const implementedPr = validateCloseDecision(
     item({
-      repo: "openclaw/clawhub",
+      repo: "bermont-digital/multica",
       kind: "pull_request",
-      url: "https://github.com/openclaw/clawhub/pull/123",
+      url: "https://github.com/bermont-digital/multica/pull/123",
     }),
     closeDecision(),
   );
-  assert.equal(implementedPr.ok, true);
+  assert.equal(implementedPr.ok, false);
+  assert.equal(implementedPr.actionTaken, "skipped_invalid_decision");
 
   const implementedIssue = validateCloseDecision(
     item({
-      repo: "openclaw/clawhub",
+      repo: "CLIP-SA/core-wholesale",
       kind: "issue",
-      url: "https://github.com/openclaw/clawhub/issues/123",
+      url: "https://github.com/CLIP-SA/core-wholesale/issues/123",
     }),
     closeDecision(),
   );
   assert.equal(implementedIssue.ok, false);
   assert.equal(implementedIssue.actionTaken, "skipped_invalid_decision");
-
-  const nonImplementedPr = validateCloseDecision(
-    item({
-      repo: "openclaw/clawhub",
-      kind: "pull_request",
-      url: "https://github.com/openclaw/clawhub/pull/123",
-    }),
-    closeDecision({ closeReason: "cannot_reproduce" }),
-  );
-  assert.equal(nonImplementedPr.ok, false);
-  assert.equal(nonImplementedPr.actionTaken, "skipped_invalid_decision");
 });
 
-test("ClawSweeper policy allows self PR review without issue auto-close", () => {
-  const implementedPr = validateCloseDecision(
-    item({
-      repo: "openclaw/clawsweeper",
-      kind: "pull_request",
-      url: "https://github.com/openclaw/clawsweeper/pull/17",
-    }),
-    closeDecision(),
+test("unsupported OpenClaw satellite repos are not active triage targets", () => {
+  assert.throws(
+    () =>
+      validateCloseDecision(
+        item({
+          repo: "openclaw/clawsweeper",
+          kind: "pull_request",
+          url: "https://github.com/openclaw/clawsweeper/pull/17",
+        }),
+        closeDecision(),
+      ),
+    /Unsupported target repo: openclaw\/clawsweeper/,
   );
-  assert.equal(implementedPr.ok, true);
-
-  const implementedIssue = validateCloseDecision(
-    item({
-      repo: "openclaw/clawsweeper",
-      kind: "issue",
-      url: "https://github.com/openclaw/clawsweeper/issues/17",
-    }),
-    closeDecision(),
-  );
-  assert.equal(implementedIssue.ok, false);
-  assert.equal(implementedIssue.actionTaken, "skipped_invalid_decision");
 });
 
 test("review policy changes force fresh complete reports back into planning", () => {
@@ -2613,12 +2601,19 @@ test("apply-artifacts writes and removes generated work plans", () => {
     const closedDir = join(root, "closed");
     const plansDir = join(root, "plans");
     mkdirSync(artifactDir, { recursive: true });
-    writeFileSync(join(artifactDir, "321.md"), workPlanCandidateReport(), "utf8");
+    writeFileSync(
+      join(artifactDir, "321.md"),
+      workPlanCandidateReport({
+        repository: "bermont-digital/multica",
+        work_cluster_refs: JSON.stringify(["bermont-digital/multica#26"]),
+      }),
+      "utf8",
+    );
     execFileSync(process.execPath, [
       "dist/clawsweeper.js",
       "apply-artifacts",
       "--target-repo",
-      "openclaw/clawsweeper",
+      "bermont-digital/multica",
       "--artifact-dir",
       artifactDir,
       "--items-dir",
@@ -2636,14 +2631,18 @@ test("apply-artifacts writes and removes generated work plans", () => {
 
     writeFileSync(
       join(artifactDir, "321.md"),
-      workPlanCandidateReport({ work_candidate: "none", work_status: "none" }),
+      workPlanCandidateReport({
+        repository: "bermont-digital/multica",
+        work_candidate: "none",
+        work_status: "none",
+      }),
       "utf8",
     );
     execFileSync(process.execPath, [
       "dist/clawsweeper.js",
       "apply-artifacts",
       "--target-repo",
-      "openclaw/clawsweeper",
+      "bermont-digital/multica",
       "--artifact-dir",
       artifactDir,
       "--items-dir",
@@ -2664,7 +2663,7 @@ test("apply-artifacts writes and removes generated work plans", () => {
 test("apply-decisions removes archived work plans from the scoped plans directory", () => {
   const root = mkdtempSync(tmpPrefix);
   const originalPath = process.env.PATH;
-  const defaultPlanDir = join(process.cwd(), "records", "openclaw-clawsweeper", "plans");
+  const defaultPlanDir = join(process.cwd(), "records", "bermont-digital-multica", "plans");
   const defaultPlanPath = join(defaultPlanDir, "321.md");
   try {
     const binDir = join(root, "bin");
@@ -2704,6 +2703,8 @@ if (args.includes("/comments")) {
     writeFileSync(
       join(itemsDir, "321.md"),
       workPlanCandidateReport({
+        repository: "bermont-digital/multica",
+        work_cluster_refs: JSON.stringify(["bermont-digital/multica#26"]),
         item_snapshot_hash: "reviewed-snapshot",
         item_updated_at: "2026-05-01T00:00:00Z",
       }),
@@ -2717,7 +2718,7 @@ if (args.includes("/comments")) {
       "dist/clawsweeper.js",
       "apply-decisions",
       "--target-repo",
-      "openclaw/clawsweeper",
+      "bermont-digital/multica",
       "--items-dir",
       itemsDir,
       "--closed-dir",
@@ -3119,13 +3120,11 @@ test("review prompt routes PR likely owners through feature history", () => {
   const prompt = readFileSync("prompts/review-item.md", "utf8");
 
   assert.match(prompt, /feature-history hunt/);
-  assert.match(prompt, /who introduced the feature/);
+  assert.match(prompt, /not just latest-line blame/);
   assert.match(prompt, /git log --follow -- <file>/);
   assert.match(prompt, /do not list the PR author solely/);
-  assert.match(prompt, /not to the PR\s+author merely for writing the proposal/);
-  assert.match(prompt, /Do\s+not use `maintainer` as a likely-owner role/);
-  assert.match(prompt, /Do not include email\s+addresses in `likelyOwners`/);
-  assert.match(prompt, /use names without email addresses/);
+  assert.match(prompt, /without email addresses/);
+  assert.match(prompt, /The goal is routing, not blame/);
 });
 
 test("review prompt reads maintainer notes before PR diffs", () => {
@@ -3134,14 +3133,14 @@ test("review prompt reads maintainer notes before PR diffs", () => {
   assert.match(prompt, /\.agents\/maintainer-notes\//);
   assert.match(prompt, /before reviewing the diff/);
   assert.match(prompt, /Treat matching notes as maintainer decisions/);
-  assert.match(prompt, /do not publish raw internal note contents/);
+  assert.match(prompt, /do not publish raw note contents/);
 });
 
 test("review prompt requires a dedicated securityReview section", () => {
   const prompt = readFileSync("prompts/review-item.md", "utf8");
 
-  assert.match(prompt, /Always summarize this pass in `securityReview`/);
-  assert.match(prompt, /Always fill `securityReview`/);
+  assert.match(prompt, /\*\*Security review\*\*/);
+  assert.match(prompt, /Always fill `bestSolution`.*`securityReview`/s);
   assert.match(prompt, /status: "needs_attention"/);
 });
 
@@ -3149,30 +3148,20 @@ test("review prompt requires real behavior proof for PR reviews", () => {
   const prompt = readFileSync("prompts/review-item.md", "utf8");
 
   assert.match(prompt, /realBehaviorProof/);
-  assert.match(prompt, /Terminal screenshots|terminal screenshots/);
-  assert.match(prompt, /download\/open GitHub attachment links/);
-  assert.match(prompt, /generate stills or contact sheets from videos/);
-  assert.match(prompt, /compare the proof against the PR diff/);
-  assert.match(prompt, /Prefer asking for screenshots or videos/);
-  assert.match(prompt, /redact private information like IP addresses, API keys/);
-  assert.match(prompt, /screenshot-only proof sufficient/);
-  assert.match(prompt, /no visible console violation/);
-  assert.match(prompt, /scratch directory/);
-  assert.match(prompt, /@clawsweeper re-review/);
-  assert.match(
-    prompt,
-    /Unit tests, mocks, snapshots, lint, typechecks, and CI are supplemental only/,
-  );
-  assert.match(prompt, /do not request ClawSweeper repair markers/);
+  assert.match(prompt, /terminal screenshots/);
+  assert.match(prompt, /console output/);
+  assert.match(prompt, /redacted runtime logs/);
+  assert.match(prompt, /Unit tests, mocks, and CI are supplemental only/);
+  assert.match(prompt, /For PRs from team members or agents/);
+  assert.match(prompt, /needsContributorAction: true/);
 });
 
-test("review prompt classifies Telegram visible proof candidates", () => {
+test("review prompt drops OpenClaw-specific Telegram proof policy", () => {
   const prompt = readFileSync("prompts/review-item.md", "utf8");
 
-  assert.match(prompt, /telegramVisibleProof/);
-  assert.match(prompt, /telegram-crabbox-e2e-proof/);
-  assert.match(prompt, /message formatting/);
-  assert.match(prompt, /mantis: telegram-visible-proof/);
+  assert.doesNotMatch(prompt, /telegramVisibleProof/);
+  assert.doesNotMatch(prompt, /telegram-crabbox-e2e-proof/);
+  assert.doesNotMatch(prompt, /mantis: telegram-visible-proof/);
 });
 
 test("ClawSweeper proof judgement controls the sufficient proof label", () => {
@@ -3205,7 +3194,7 @@ test("ClawSweeper Telegram proof judgement controls the Mantis proof label", () 
 });
 
 test("review workflow gives Codex a read-only inspection token", () => {
-  const workflow = readFileSync(".github/workflows/sweep.yml", "utf8");
+  const workflow = readWorkflowFixture("sweep.yml");
 
   assert.match(workflow, /id: codex-inspection-token/);
   assert.match(workflow, /permission-issues: read/);
@@ -3213,7 +3202,7 @@ test("review workflow gives Codex a read-only inspection token", () => {
 });
 
 test("manual exact-item review dispatches avoid broad review concurrency", () => {
-  const workflow = readFileSync(".github/workflows/sweep.yml", "utf8");
+  const workflow = readWorkflowFixture("sweep.yml");
 
   assert.match(
     workflow,
@@ -3226,7 +3215,7 @@ test("manual exact-item review dispatches avoid broad review concurrency", () =>
 });
 
 test("sweep workflow publishes target-scoped state paths", () => {
-  const workflow = readFileSync(".github/workflows/sweep.yml", "utf8");
+  const workflow = readWorkflowFixture("sweep.yml");
 
   assert.match(workflow, /target_slug="\$TARGET_REPO"/);
   assert.match(workflow, /--path "records\/\$\{target_slug\}"/);
@@ -3236,7 +3225,7 @@ test("sweep workflow publishes target-scoped state paths", () => {
 });
 
 test("sweep planning-started status publish is bounded", () => {
-  const workflow = readFileSync(".github/workflows/sweep.yml", "utf8");
+  const workflow = readWorkflowFixture("sweep.yml");
   const block = workflow.slice(
     workflow.indexOf("- name: Publish planning-started status"),
     workflow.indexOf("- id: mode"),
@@ -3247,12 +3236,12 @@ test("sweep planning-started status publish is bounded", () => {
 });
 
 test("review capacity probes use REST actions run listing", () => {
-  const sweepWorkflow = readFileSync(".github/workflows/sweep.yml", "utf8");
+  const sweepWorkflow = readWorkflowFixture("sweep.yml");
   const sweepBlock = sweepWorkflow.slice(
     sweepWorkflow.indexOf("- id: mode"),
     sweepWorkflow.indexOf("- id: select"),
   );
-  const commitWorkflow = readFileSync(".github/workflows/commit-review.yml", "utf8");
+  const commitWorkflow = readWorkflowFixture("commit-review.yml");
   const commitBlock = commitWorkflow.slice(
     commitWorkflow.indexOf("- name: Select commits"),
     commitWorkflow.indexOf('if [ "$ENABLED" = "false" ]'),
@@ -3268,12 +3257,12 @@ test("review capacity probes use REST actions run listing", () => {
 });
 
 test("background review capacity reserves expanding matrices and caps broad manual input", () => {
-  const workflow = readFileSync(".github/workflows/sweep.yml", "utf8");
+  const workflow = readWorkflowFixture("sweep.yml");
   const modeBlock = workflow.slice(
     workflow.indexOf("- id: mode"),
     workflow.indexOf("- id: select"),
   );
-  const commitWorkflow = readFileSync(".github/workflows/commit-review.yml", "utf8");
+  const commitWorkflow = readWorkflowFixture("commit-review.yml");
   const commitBlock = commitWorkflow.slice(
     commitWorkflow.indexOf("- name: Select commits"),
     commitWorkflow.indexOf('if [ "$ENABLED" = "false" ]'),
@@ -3289,7 +3278,7 @@ test("background review capacity reserves expanding matrices and caps broad manu
 });
 
 test("github activity workflow coalesces noisy observer runs", () => {
-  const workflow = readFileSync(".github/workflows/github-activity.yml", "utf8");
+  const workflow = readWorkflowFixture("github-activity.yml");
 
   assert.match(workflow, /group: >-/);
   assert.match(workflow, /github-activity-\$\{\{ github\.event_name \}\}/);
@@ -3308,7 +3297,7 @@ test("github activity workflow coalesces noisy observer runs", () => {
 });
 
 test("issue implementation workflow lets job intent choose dispatch capacity", () => {
-  const workflow = readFileSync(".github/workflows/repair-issue-implementation-intake.yml", "utf8");
+  const workflow = readWorkflowFixture("repair-issue-implementation-intake.yml");
 
   assert.match(workflow, /cap_args=\(\)/);
   assert.match(workflow, /--max-live-workers "\$MAX_LIVE_WORKERS"/);
@@ -3316,55 +3305,46 @@ test("issue implementation workflow lets job intent choose dispatch capacity", (
   assert.doesNotMatch(workflow, /worker-limit issue_implementation/);
 });
 
-test("review prompt asks for concise public review fields", () => {
+test("review prompt asks for concise non-overlapping public review fields", () => {
   const prompt = readFileSync("prompts/review-item.md", "utf8");
 
-  assert.match(prompt, /Keep these fields concise because they become the public review comment/);
-  assert.match(prompt, /one short sentence for `changeSummary`, `workReason`, `bestSolution`/);
-  assert.match(
-    prompt,
-    /merge\s+automation is reported by the command\/status comment and hidden markers/,
-  );
+  assert.match(prompt, /Keep user-visible fields non-overlapping/);
+  assert.match(prompt, /Keep `changeSummary`, `workReason`, `bestSolution`, and `securityReview.summary` to one short sentence/);
+  assert.match(prompt, /Do not repeat the same sentence across fields/);
 });
 
-test("review prompt keeps automerge opt-in from becoming generic manual review", () => {
+test("review prompt routes narrow work to Clownfish without making changelog author work", () => {
   const prompt = readFileSync("prompts/review-item.md", "utf8");
 
-  assert.match(prompt, /explicitly opted into `clawsweeper:automerge`/);
-  assert.match(prompt, /Do not choose `manual_review` solely because/);
-  assert.match(prompt, /`maintainer` label/);
-  assert.match(prompt, /large `size:\*` label/);
-  assert.match(prompt, /choose `queue_fix_pr` even when the\s+finding is process-only or P3/);
-  assert.match(prompt, /Changelog entries are maintainer-owned/);
-  assert.match(prompt, /do not create a\s+review finding,\s+needs-changes\s+verdict/i);
-  assert.match(prompt, /do not ask the PR\s+author to add one/);
+  assert.match(prompt, /Delegation contract/);
+  assert.match(prompt, /workCandidate: "queue_fix_pr"/);
+  assert.match(prompt, /Clownfish agent job/);
+  assert.match(prompt, /service area/);
+  assert.match(prompt, /docs\//);
+  assert.match(prompt, /changelog entries are maintainer and agent landing work/i);
+  assert.match(prompt, /Do not ask the PR author to add one/);
   assert.doesNotMatch(prompt, /missing required changelog\s+entry/);
-  assert.match(prompt, /does not by itself block a clean automerge verdict/);
 });
 
 test("review prompts require reproduction and solution assessment details", () => {
   const itemPrompt = readFileSync("prompts/review-item.md", "utf8");
   const commitPrompt = readFileSync("prompts/review-commit.md", "utf8");
 
-  assert.match(itemPrompt, /Always fill `reproductionAssessment`/);
-  assert.match(itemPrompt, /itemCategory: "bug"/);
-  assert.match(itemPrompt, /itemCategory: "skill"/);
-  assert.match(itemPrompt, /skills\/<vendor>/);
-  assert.match(itemPrompt, /upload or publish it through ClawHub\.com/);
+  assert.match(itemPrompt, /Always fill .*`reproductionAssessment`/s);
+  assert.match(itemPrompt, /Use `"bug"` only for broken existing behaviour/);
   assert.match(itemPrompt, /requiresNewConfigOption/);
-  assert.match(itemPrompt, /automatic\s+bug-fix PR creation/);
-  assert.match(itemPrompt, /For every other issue or PR reference,\s+use the full GitHub URL/);
-  assert.doesNotMatch(itemPrompt, /normal `#123` links/);
-  assert.match(itemPrompt, /Always fill `solutionAssessment`/);
-  assert.match(itemPrompt, /Do we have a high-confidence way to reproduce the\s+issue\?/);
-  assert.match(itemPrompt, /Is this the best way to solve the issue\?/);
+  assert.match(itemPrompt, /automatic bug-fix PR creation/);
+  assert.match(itemPrompt, /For all other issue\/PR references, use the full GitHub URL/);
+  assert.match(itemPrompt, /Always fill .*`solutionAssessment`/s);
+  assert.match(itemPrompt, /do we have a high-confidence way to reproduce the issue\?/);
+  assert.match(itemPrompt, /is this the best way to solve the issue\?/);
   assert.match(commitPrompt, /The checkout is current target\s+`main`, not the commit snapshot/);
   assert.match(commitPrompt, /Do we have a high-confidence way to reproduce the issue\?/);
   assert.match(commitPrompt, /Is this the best way to solve the issue\?/);
 });
 
 test("commit review workflow settles and reviews from target main", () => {
-  const workflow = readFileSync(".github/workflows/commit-review.yml", "utf8");
+  const workflow = readWorkflowFixture("commit-review.yml");
 
   assert.match(workflow, /CLAWSWEEPER_COMMIT_REVIEW_SETTLE_SECONDS \|\| '60'/);
   assert.match(workflow, /sleep "\$SETTLE_SECONDS"/);
@@ -3374,7 +3354,7 @@ test("commit review workflow settles and reviews from target main", () => {
 });
 
 test("sweep target write tokens can merge pull requests", () => {
-  const workflow = readFileSync(".github/workflows/sweep.yml", "utf8");
+  const workflow = readWorkflowFixture("sweep.yml");
   const targetWriteTokenBlocks = workflow
     .split("- name: Create target write token")
     .slice(1)
@@ -3388,7 +3368,7 @@ test("sweep target write tokens can merge pull requests", () => {
 });
 
 test("sweep review recovery uses explicit failed shard artifacts", () => {
-  const workflow = readFileSync(".github/workflows/sweep.yml", "utf8");
+  const workflow = readWorkflowFixture("sweep.yml");
 
   assert.match(workflow, /- name: Review shard\n\s+id: review-shard\n\s+continue-on-error: true/);
   assert.match(workflow, /- name: Record failed review shard/);
@@ -3403,7 +3383,7 @@ test("sweep review recovery uses explicit failed shard artifacts", () => {
 });
 
 test("sweep dashboard status writes are scoped to the target repository", () => {
-  const workflow = readFileSync(".github/workflows/sweep.yml", "utf8");
+  const workflow = readWorkflowFixture("sweep.yml");
   const statusCalls = [...workflow.matchAll(new RegExp("pnpm run status -- \\\\", "g"))];
 
   assert.ok(statusCalls.length > 0);

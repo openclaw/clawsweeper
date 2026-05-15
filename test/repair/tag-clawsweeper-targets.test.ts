@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import test from "node:test";
 
 test("label tagging uses retrying GitHub helpers", () => {
@@ -15,8 +16,14 @@ test("label tagging uses retrying GitHub helpers", () => {
   assert.match(source, /ghTextWithRetry\(\[\s*"issue",\s*"edit"/);
 });
 
+function readWorkflowFixture(name: string): string {
+  const activePath = join(".github", "workflows", name);
+  if (existsSync(activePath)) return readFileSync(activePath, "utf8");
+  return readFileSync(join(".github", "workflows", "_disabled", name), "utf8");
+}
+
 test("label tagging is non-blocking in repair workers", () => {
-  const workflow = readFileSync(".github/workflows/repair-cluster-worker.yml", "utf8");
+  const workflow = readWorkflowFixture("repair-cluster-worker.yml");
   const step = workflow.split("- name: Tag ClawSweeper targets")[1]?.split("\n      - name: ")[0];
 
   assert.ok(step, "expected Tag ClawSweeper targets step");

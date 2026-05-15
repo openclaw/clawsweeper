@@ -6632,6 +6632,7 @@ function reviewCommand(args: Args): void {
     ? itemNumbersArg(args.item_numbers, undefined)
     : undefined;
   const readonlyOpenclaw = boolArg(args.readonly_openclaw);
+  const skipStartComment = boolArg(args.skip_start_comment);
   ensureDir(artifactDir);
   const git = gitInfo(openclawDir);
   const reviewPolicy = reviewPolicyHash({ model, reasoningEffort, sandboxMode, serviceTier });
@@ -6668,22 +6669,28 @@ function reviewCommand(args: Args): void {
     const proofScratchDir = join(codexWorkDir, "proof-scratch", String(item.number));
     const prompt = buildReviewPrompt(item, context, git, additionalPrompt, { proofScratchDir });
     const snapshotHash = itemSnapshotHash(item, context);
-    try {
-      const startComment = postReviewStartStatusComment({
-        item,
-        position: completed + 1,
-        total: candidates.length,
-        shardIndex,
-        shardCount,
-      });
+    if (!skipStartComment) {
+      try {
+        const startComment = postReviewStartStatusComment({
+          item,
+          position: completed + 1,
+          total: candidates.length,
+          shardIndex,
+          shardCount,
+        });
+        console.error(
+          `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} start-comment=${startComment} #${item.number}`,
+        );
+      } catch (error) {
+        console.error(
+          `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} start-comment=failed #${item.number}: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+    } else {
       console.error(
-        `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} start-comment=${startComment} #${item.number}`,
-      );
-    } catch (error) {
-      console.error(
-        `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} start-comment=failed #${item.number}: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
+        `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} start-comment=skipped #${item.number}`,
       );
     }
     let decision: Decision;

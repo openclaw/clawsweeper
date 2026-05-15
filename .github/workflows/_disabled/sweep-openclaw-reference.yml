@@ -1,6 +1,6 @@
 name: ClawSweeper
 
-run-name: ${{ github.event_name == 'repository_dispatch' && format('Review event item {0}#{1}', github.event.client_payload.target_repo || 'bermont-digital/multica', github.event.client_payload.item_number || '?') || (github.event_name == 'workflow_dispatch' && github.event.inputs.apply_existing == 'true' && github.event.inputs.apply_sync_comments_only == 'true') && 'Sync Codex review comments' || (github.event_name == 'workflow_dispatch' && github.event.inputs.apply_existing == 'true') && 'Apply ClawSweeper closures' || (github.event_name == 'workflow_dispatch' && github.event.inputs.audit_dashboard == 'true') && 'Audit ClawSweeper state' || (github.event_name == 'workflow_dispatch' && github.event.inputs.hot_intake == 'true') && 'Review hot ClawSweeper items' || 'Review ClawSweeper items' }}
+run-name: ${{ github.event_name == 'repository_dispatch' && format('Review event item {0}#{1}', github.event.client_payload.target_repo || 'bermont-digital/multica', github.event.client_payload.item_number || '?') || (github.event_name == 'workflow_dispatch' && github.event.inputs.apply_existing == 'true' && github.event.inputs.apply_sync_comments_only == 'true') && 'Sync Codex review comments' || ((github.event_name == 'workflow_dispatch' && github.event.inputs.apply_existing == 'true') || (github.event_name == 'schedule' && (github.event.schedule == '3 * * * *' || github.event.schedule == '18 * * * *' || github.event.schedule == '33 * * * *' || github.event.schedule == '48 * * * *' || github.event.schedule == '8,23,38,53 * * * *'))) && 'Apply ClawSweeper closures' || ((github.event_name == 'workflow_dispatch' && github.event.inputs.audit_dashboard == 'true') || (github.event_name == 'schedule' && (github.event.schedule == '7 */6 * * *' || github.event.schedule == '12 */6 * * *' || github.event.schedule == '17 */6 * * *'))) && 'Audit ClawSweeper state' || ((github.event_name == 'workflow_dispatch' && github.event.inputs.hot_intake == 'true') || (github.event_name == 'schedule' && (github.event.schedule == '*/5 * * * *' || github.event.schedule == '2/5 * * * *'))) && 'Review hot ClawSweeper items' || 'Review ClawSweeper items' }}
 
 on:
   repository_dispatch:
@@ -107,13 +107,19 @@ on:
         description: "Refresh audit state without running review or apply work"
         required: false
         default: "false"
-  schedule:
-    # Three normal triage sweeps per day for the default target (bermont-digital/multica).
-    # Hot intake stays manual; PR-open review is handled by Codex Review later.
-    # Use workflow_dispatch.target_repo for other repos until per-repo schedules are proven worth the runner time.
-    - cron: "0 6 * * *"
-    - cron: "0 12 * * *"
-    - cron: "0 18 * * *"
+  # schedule:  # DISABLED during isolated-test phase 2026-05-14; re-enable once trial wiring verified.
+  #   - cron: "*/5 * * * *"
+  #   - cron: "2/5 * * * *"
+  #   - cron: "7 */6 * * *"
+  #   - cron: "12 */6 * * *"
+  #   - cron: "17 */6 * * *"
+  #   - cron: "1/5 * * * *"
+  #   - cron: "22 * * * *"
+  #   - cron: "3 * * * *"
+  #   - cron: "18 * * * *"
+  #   - cron: "33 * * * *"
+  #   - cron: "48 * * * *"
+  #   - cron: "8,23,38,53 * * * *"
 
 permissions:
   contents: write
@@ -131,13 +137,23 @@ env:
   CLAWSWEEPER_APP_CLIENT_ID: Iv23lirdjmVqYd1gwY26
 
 concurrency:
-  group: ${{ github.event_name == 'repository_dispatch' && format('clawsweeper-event-{0}-{1}', github.event.client_payload.target_repo || 'bermont-digital/multica', github.event.client_payload.item_number || github.run_id) || format('{0}-{1}', (github.event_name == 'workflow_dispatch' && github.event.inputs.apply_existing == 'true' && github.event.inputs.apply_sync_comments_only == 'true') && 'clawsweeper-comment-sync' || (github.event_name == 'workflow_dispatch' && github.event.inputs.apply_existing == 'true') && 'clawsweeper-apply' || (github.event_name == 'workflow_dispatch' && (github.event.inputs.item_number != '' || github.event.inputs.item_numbers != '')) && format('clawsweeper-intake-exact-{0}', github.event.inputs.item_number || github.event.inputs.item_numbers) || (github.event_name == 'workflow_dispatch' && github.event.inputs.hot_intake == 'true') && 'clawsweeper-intake-v2' || (github.event_name == 'workflow_dispatch' && github.event.inputs.audit_dashboard == 'true') && 'clawsweeper-audit' || 'clawsweeper-review', github.event.inputs.target_repo || github.event.client_payload.target_repo || 'bermont-digital/multica') }}
+  group: ${{ github.event_name == 'repository_dispatch' && format('clawsweeper-event-{0}-{1}', github.event.client_payload.target_repo || 'bermont-digital/multica', github.event.client_payload.item_number || github.run_id) || format('{0}-{1}', (github.event_name == 'workflow_dispatch' && github.event.inputs.apply_existing == 'true' && github.event.inputs.apply_sync_comments_only == 'true') && 'clawsweeper-comment-sync' || ((github.event_name == 'workflow_dispatch' && github.event.inputs.apply_existing == 'true') || (github.event_name == 'schedule' && (github.event.schedule == '3 * * * *' || github.event.schedule == '18 * * * *' || github.event.schedule == '33 * * * *' || github.event.schedule == '48 * * * *' || github.event.schedule == '8,23,38,53 * * * *'))) && 'clawsweeper-apply' || (github.event_name == 'workflow_dispatch' && (github.event.inputs.item_number != '' || github.event.inputs.item_numbers != '')) && format('clawsweeper-intake-exact-{0}', github.event.inputs.item_number || github.event.inputs.item_numbers) || ((github.event_name == 'workflow_dispatch' && github.event.inputs.hot_intake == 'true') || (github.event_name == 'schedule' && (github.event.schedule == '*/5 * * * *' || github.event.schedule == '2/5 * * * *'))) && 'clawsweeper-intake-v2' || ((github.event_name == 'workflow_dispatch' && github.event.inputs.audit_dashboard == 'true') || (github.event_name == 'schedule' && (github.event.schedule == '7 */6 * * *' || github.event.schedule == '12 */6 * * *' || github.event.schedule == '17 */6 * * *'))) && 'clawsweeper-audit' || 'clawsweeper-review', github.event.inputs.target_repo || github.event.client_payload.target_repo || ((github.event.schedule == '17 */6 * * *') && 'openclaw/clawsweeper' || ((github.event.schedule == '2/5 * * * *' || github.event.schedule == '22 * * * *' || github.event.schedule == '8,23,38,53 * * * *' || github.event.schedule == '12 */6 * * *') && 'openclaw/clawhub' || 'bermont-digital/multica'))) }}
   cancel-in-progress: ${{ github.event_name == 'repository_dispatch' }}
 
 jobs:
+  event-disabled-target:
+    name: Skip disabled target event
+    if: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.target_repo == 'openclaw/clawhub' && vars.CLAWSWEEPER_ENABLE_CLAWHUB != '1' }}
+    runs-on: [self-hosted, macOS, ARM64, mac-mini]
+    steps:
+      - name: Explain skipped event
+        run: |
+          echo "Skipping ${{ github.event.client_payload.target_repo }}#${{ github.event.client_payload.item_number || '?' }}."
+          echo "Set CLAWSWEEPER_ENABLE_CLAWHUB=1 after installing the ClawSweeper GitHub App on openclaw/clawhub."
+
   event-review-apply:
     name: Review, comment, and apply event item
-    if: ${{ github.event_name == 'repository_dispatch' }}
+    if: ${{ github.event_name == 'repository_dispatch' && !(github.event.client_payload.target_repo == 'openclaw/clawhub' && vars.CLAWSWEEPER_ENABLE_CLAWHUB != '1') }}
     runs-on: [self-hosted, macOS, ARM64, mac-mini]
     timeout-minutes: 120
     permissions:
@@ -303,6 +319,7 @@ jobs:
             --codex-sandbox danger-full-access \
             --codex-timeout-ms 600000 \
             --item-numbers "${{ steps.target.outputs.item_number }}" \
+            --readonly-openclaw \
             --shard-index 0 \
             --shard-count 1 \
             "${additional_prompt_arg[@]}"
@@ -461,7 +478,7 @@ jobs:
 
   plan:
     name: Plan review candidates
-    if: ${{ github.event_name != 'repository_dispatch' && !(github.event_name == 'workflow_dispatch' && (github.event.inputs.apply_existing == 'true' || github.event.inputs.audit_dashboard == 'true')) }}
+    if: ${{ github.event_name != 'repository_dispatch' && !((github.event_name == 'workflow_dispatch' && (github.event.inputs.apply_existing == 'true' || github.event.inputs.audit_dashboard == 'true')) || (github.event_name == 'schedule' && ((github.event.schedule == '3 * * * *' || github.event.schedule == '18 * * * *' || github.event.schedule == '33 * * * *' || github.event.schedule == '48 * * * *' || github.event.schedule == '8,23,38,53 * * * *') || (github.event.schedule == '7 */6 * * *' || github.event.schedule == '12 */6 * * *' || github.event.schedule == '17 */6 * * *')))) && !(github.event_name == 'schedule' && (github.event.schedule == '2/5 * * * *' || github.event.schedule == '22 * * * *') && vars.CLAWSWEEPER_ENABLE_CLAWHUB != '1') }}
     runs-on: [self-hosted, macOS, ARM64, mac-mini]
     timeout-minutes: 30
     outputs:
@@ -505,7 +522,14 @@ jobs:
         run: |
           target_repo="${{ github.event.inputs.target_repo || github.event.client_payload.target_repo || '' }}"
           if [ -z "$target_repo" ]; then
-            target_repo="bermont-digital/multica"
+            case "${{ github.event.schedule || '' }}" in
+              "2/5 * * * *"|"22 * * * *"|"8,23,38,53 * * * *"|"12 */6 * * *")
+                target_repo="openclaw/clawhub"
+                ;;
+              *)
+                target_repo="bermont-digital/multica"
+                ;;
+            esac
           fi
           target_owner="${target_repo%%/*}"
           target_name="${target_repo#*/}"
@@ -562,7 +586,7 @@ jobs:
           retention-days: 1
 
       - name: Publish planning-started status
-        if: ${{ !(github.event_name == 'workflow_dispatch' && github.event.inputs.apply_existing == 'true') && !(github.event_name == 'workflow_dispatch' && github.event.inputs.hot_intake == 'true' && github.event.inputs.item_number == '' && github.event.inputs.item_numbers == '') }}
+        if: ${{ !((github.event_name == 'workflow_dispatch' && github.event.inputs.apply_existing == 'true') || (github.event_name == 'schedule' && (github.event.schedule == '3 * * * *' || github.event.schedule == '18 * * * *' || github.event.schedule == '33 * * * *' || github.event.schedule == '48 * * * *'))) && !((github.event_name == 'workflow_dispatch' && github.event.inputs.hot_intake == 'true' && github.event.inputs.item_number == '' && github.event.inputs.item_numbers == '') || (github.event_name == 'schedule' && (github.event.schedule == '*/5 * * * *' || github.event.schedule == '2/5 * * * *'))) }}
         continue-on-error: true
         working-directory: clawsweeper
         run: |
@@ -644,7 +668,7 @@ jobs:
           active_background_workers="$(( $(active_run_count "ClawSweeper Commit Review") * commit_page_size + $(active_sweep_background_workers) ))"
           hot_intake_shards="$(worker_limit hot_intake --active-critical "$active_critical_workers" --active-background "$active_background_workers")"
           normal_shards="$(worker_limit normal_review --active-critical "$active_critical_workers" --active-background "$active_background_workers")"
-          hot_intake="${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.hot_intake == 'true') && 'true' || 'false' }}"
+          hot_intake="${{ ((github.event_name == 'workflow_dispatch' && github.event.inputs.hot_intake == 'true') || (github.event_name == 'schedule' && (github.event.schedule == '*/5 * * * *' || github.event.schedule == '2/5 * * * *'))) && 'true' || 'false' }}"
           exact_item="${{ github.event.client_payload.item_number || github.event.inputs.item_number || github.event.inputs.item_numbers || '' }}"
           target_repo="${{ steps.target.outputs.target_repo }}"
           if [ "$hot_intake" = "true" ] && [ -n "$exact_item" ]; then
@@ -900,6 +924,7 @@ jobs:
             --codex-timeout-ms ${{ needs.plan.outputs.codex_timeout_ms }} \
             --item-numbers "${{ matrix.item_numbers }}" \
             "${hot_intake_arg[@]}" \
+            --readonly-openclaw \
             --shard-index ${{ matrix.shard }} \
             --shard-count ${{ needs.plan.outputs.planned_shards }} \
             "${additional_prompt_arg[@]}"
@@ -966,7 +991,7 @@ jobs:
   publish:
     name: Publish review artifacts
     needs: [plan, review]
-    if: ${{ always() && needs.plan.result == 'success' && needs.review.result != 'cancelled' && needs.plan.outputs.target_repo != '' && github.event_name != 'repository_dispatch' && !(github.event_name == 'workflow_dispatch' && (github.event.inputs.apply_existing == 'true' || github.event.inputs.audit_dashboard == 'true')) }}
+    if: ${{ always() && needs.plan.result == 'success' && needs.review.result != 'cancelled' && needs.plan.outputs.target_repo != '' && github.event_name != 'repository_dispatch' && !((github.event_name == 'workflow_dispatch' && (github.event.inputs.apply_existing == 'true' || github.event.inputs.audit_dashboard == 'true')) || (github.event_name == 'schedule' && ((github.event.schedule == '3 * * * *' || github.event.schedule == '18 * * * *' || github.event.schedule == '33 * * * *' || github.event.schedule == '48 * * * *' || github.event.schedule == '8,23,38,53 * * * *') || (github.event.schedule == '7 */6 * * *' || github.event.schedule == '12 */6 * * *' || github.event.schedule == '17 */6 * * *')))) }}
     runs-on: [self-hosted, macOS, ARM64, mac-mini]
     timeout-minutes: 60
     steps:
@@ -1385,7 +1410,7 @@ jobs:
 
   audit-dashboard:
     name: Audit state
-    if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.audit_dashboard == 'true' }}
+    if: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.audit_dashboard == 'true') || (github.event_name == 'schedule' && (github.event.schedule == '7 */6 * * *' || github.event.schedule == '12 */6 * * *' || github.event.schedule == '17 */6 * * *')) }}
     runs-on: [self-hosted, macOS, ARM64, mac-mini]
     timeout-minutes: 45
     steps:
@@ -1399,7 +1424,17 @@ jobs:
         run: |
           target_repo="${{ github.event.inputs.target_repo || github.event.client_payload.target_repo || '' }}"
           if [ -z "$target_repo" ]; then
-            target_repo="bermont-digital/multica"
+            case "${{ github.event.schedule || '' }}" in
+              "12 */6 * * *")
+                target_repo="openclaw/clawhub"
+                ;;
+              "17 */6 * * *")
+                target_repo="openclaw/clawsweeper"
+                ;;
+              *)
+                target_repo="bermont-digital/multica"
+                ;;
+            esac
           fi
           target_owner="${target_repo%%/*}"
           target_name="${target_repo#*/}"
@@ -1498,7 +1533,7 @@ jobs:
 
   apply-existing:
     name: Apply close proposals
-    if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_existing == 'true' }}
+    if: ${{ ((github.event_name == 'workflow_dispatch' && github.event.inputs.apply_existing == 'true') || (github.event_name == 'schedule' && (github.event.schedule == '3 * * * *' || github.event.schedule == '18 * * * *' || github.event.schedule == '33 * * * *' || github.event.schedule == '48 * * * *' || github.event.schedule == '8,23,38,53 * * * *'))) && !(github.event_name == 'schedule' && github.event.schedule == '8,23,38,53 * * * *' && vars.CLAWSWEEPER_ENABLE_CLAWHUB != '1') }}
     runs-on: [self-hosted, macOS, ARM64, mac-mini]
     timeout-minutes: 360
     steps:
@@ -1520,7 +1555,14 @@ jobs:
         run: |
           target_repo="${{ github.event.inputs.target_repo || '' }}"
           if [ -z "$target_repo" ]; then
-            target_repo="bermont-digital/multica"
+            case "${{ github.event.schedule || '' }}" in
+              "8,23,38,53 * * * *")
+                target_repo="openclaw/clawhub"
+                ;;
+              *)
+                target_repo="bermont-digital/multica"
+                ;;
+            esac
           fi
           target_owner="${target_repo%%/*}"
           target_name="${target_repo#*/}"
