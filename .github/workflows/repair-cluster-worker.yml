@@ -58,6 +58,7 @@ jobs:
     outputs:
       allow_execute: ${{ steps.capture_gates.outputs.allow_execute }}
       allow_fix_pr: ${{ steps.capture_gates.outputs.allow_fix_pr }}
+      allow_automerge: ${{ steps.capture_gates.outputs.allow_automerge }}
       allow_merge: ${{ steps.capture_gates.outputs.allow_merge }}
       job_exists: ${{ steps.check_job.outputs.job_exists }}
     env:
@@ -223,6 +224,7 @@ jobs:
       CLAWSWEEPER_ALLOWED_OWNER: ${{ vars.CLAWSWEEPER_ALLOWED_OWNER || 'bermont-digital' }}
       CLAWSWEEPER_ALLOW_EXECUTE: ${{ needs.cluster.outputs.allow_execute == '1' && '1' || '0' }}
       CLAWSWEEPER_ALLOW_FIX_PR: ${{ needs.cluster.outputs.allow_fix_pr == '1' && '1' || '0' }}
+      CLAWSWEEPER_ALLOW_AUTOMERGE: ${{ needs.cluster.outputs.allow_automerge == '1' && '1' || '0' }}
       CLAWSWEEPER_ALLOW_MERGE: ${{ needs.cluster.outputs.allow_merge || '0' }}
       CLAWSWEEPER_CODEX_REASONING_EFFORT: ${{ vars.CLAWSWEEPER_CODEX_REASONING_EFFORT || 'high' }}
       CLAWSWEEPER_CODEX_REVIEW_ATTEMPTS: ${{ vars.CLAWSWEEPER_CODEX_REVIEW_ATTEMPTS || '4' }}
