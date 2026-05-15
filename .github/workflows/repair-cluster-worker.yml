@@ -76,7 +76,7 @@ jobs:
       CLAWSWEEPER_CODEX_TIMEOUT_MS: ${{ vars.CLAWSWEEPER_CODEX_TIMEOUT_MS || '1800000' }}
       CLAWSWEEPER_CODEX_REASONING_EFFORT: ${{ vars.CLAWSWEEPER_CODEX_REASONING_EFFORT || 'high' }}
       CLAWSWEEPER_MODEL: ${{ inputs.model || vars.CLAWSWEEPER_MODEL || 'gpt-5.5' }}
-      CODEX_CLI_VERSION: ${{ vars.CLAWSWEEPER_CODEX_CLI_VERSION || '0.128.0' }}
+      CODEX_CLI_VERSION: ${{ vars.CLAWSWEEPER_CODEX_CLI_VERSION || '0.130.0' }}
       OPENCLAW_LOCAL_CHECK: "0"
     steps:
       - uses: actions/checkout@v5
@@ -254,7 +254,7 @@ jobs:
       CLAWSWEEPER_CLOSE_SUPERSEDED_SOURCE_PRS: ${{ vars.CLAWSWEEPER_CLOSE_SUPERSEDED_SOURCE_PRS || '1' }}
       CLAWSWEEPER_GIT_USER_NAME: ${{ vars.CLAWSWEEPER_GIT_USER_NAME || 'clawsweeper[bot]' }}
       CLAWSWEEPER_GIT_USER_EMAIL: ${{ vars.CLAWSWEEPER_GIT_USER_EMAIL || '274271284+clawsweeper[bot]@users.noreply.github.com' }}
-      CODEX_CLI_VERSION: ${{ vars.CLAWSWEEPER_CODEX_CLI_VERSION || '0.128.0' }}
+      CODEX_CLI_VERSION: ${{ vars.CLAWSWEEPER_CODEX_CLI_VERSION || '0.130.0' }}
       OPENCLAW_LOCAL_CHECK: "0"
     steps:
       - uses: actions/checkout@v5

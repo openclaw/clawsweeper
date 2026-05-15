@@ -3,7 +3,7 @@ description: Cache, install, and authenticate the OpenAI Codex CLI.
 inputs:
   version:
     description: Codex CLI npm package version.
-    default: "0.128.0"
+    default: "0.130.0"
   auth-mode:
     description: Authentication mode. `proxy` runs codex-responses-api-proxy from OPENAI_API_KEY. `login` runs `codex login --with-api-key`. `subscription` uses the runner's existing `~/.codex/auth.json` (ChatGPT subscription JWT) — no API key required.
     default: "proxy"

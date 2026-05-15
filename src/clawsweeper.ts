@@ -3813,7 +3813,7 @@ function runCodex(options: {
     // cannot be used with reasoning.effort 'minimal': image_gen, web_search.").
     // Harmless at other effort levels; review prompt does its own gh/git tool calls.
     // `web_search` is a STRING enum in Codex config; valid values per Codex CLI
-    // (v0.128.0): "disabled", "cached", "live".
+    // (v0.130.0): "disabled", "cached", "live".
     'web_search="disabled"',
     "features.image_generation=false",
   ];
