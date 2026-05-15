@@ -485,8 +485,9 @@ function isProtectedLabel(label: string): boolean {
 }
 
 function securitySensitiveText(text: string): boolean {
+  const normalized = text.replace(/\bnot\b[^\n.]{0,80}\bsecurity-sensitive\b/gi, "not-sensitive");
   return /\b(?:security|vulnerability|cve|ghsa|secret|credential|token|exploit|xss|csrf|ssrf|rce)\b/i.test(
-    text,
+    normalized,
   );
 }
 

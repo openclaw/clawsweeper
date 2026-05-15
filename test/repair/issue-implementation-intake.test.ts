@@ -56,7 +56,7 @@ test("strict reproducible bug reports are eligible for implementation intake", (
 });
 
 test("generated Security Review heading does not block issue implementation intake", () => {
-  const markdown = `${report()}\n## Security Review\n\nStatus: not_applicable\n\nConcerns:\n\n- none\n`;
+  const markdown = `${report()}\n## Security Review\n\nStatus: not_applicable\n\nSummary: This is not a security-sensitive report.\n\nConcerns:\n\n- none\n`;
   const decision = reportOnlyDecision({
     targetRepo: "openclaw/openclaw",
     report: parseReviewReport(markdown),
