@@ -182,6 +182,8 @@ interface ExistingReview {
   decision: string | undefined;
   reviewStatus: string | undefined;
   reviewPolicy: string | undefined;
+  reviewFailureReason: string | undefined;
+  reviewTimeoutEscalated: boolean;
 }
 
 interface LatestRelease {
@@ -2400,6 +2402,8 @@ function existingReview(
     decision: frontMatterValue(markdown, "decision"),
     reviewStatus: effectiveReviewStatus(markdown),
     reviewPolicy: frontMatterValue(markdown, "review_policy"),
+    reviewFailureReason: frontMatterValue(markdown, "review_failure_reason"),
+    reviewTimeoutEscalated: frontMatterValue(markdown, "review_timeout_escalated") === "true",
   };
 }
 
@@ -2427,6 +2431,8 @@ function buildExistingReviewIndex(itemsDir: string): ExistingReviewIndex {
       decision: frontMatterValue(markdown, "decision"),
       reviewStatus: effectiveReviewStatus(markdown),
       reviewPolicy: frontMatterValue(markdown, "review_policy"),
+      reviewFailureReason: frontMatterValue(markdown, "review_failure_reason"),
+      reviewTimeoutEscalated: frontMatterValue(markdown, "review_timeout_escalated") === "true",
     });
   }
   return { byKey };
@@ -3083,6 +3089,7 @@ function selectCandidates(options: {
   itemNumbers?: number[];
   reviewPolicy?: string;
   hotIntake?: boolean;
+  reviewIndex?: ExistingReviewIndex;
 }): { candidates: Item[]; scannedPages: number } {
   if (options.itemNumbers) {
     const candidates = options.itemNumbers.flatMap((number) => {
@@ -3099,7 +3106,7 @@ function selectCandidates(options: {
   }
   const due: DueCandidate[] = [];
   const now = Date.now();
-  const reviewIndex = buildExistingReviewIndex(options.itemsDir);
+  const reviewIndex = options.reviewIndex ?? buildExistingReviewIndex(options.itemsDir);
   if (options.hotIntake) {
     const { items, pagesScanned } = fetchHotIntakeItems(options.maxPages);
     for (const item of items) {
@@ -3658,6 +3665,64 @@ export function isCodexTimeoutError(value: unknown): boolean {
   if (value === null || value === undefined) return false;
   const message = value instanceof Error ? value.message : typeof value === "string" ? value : "";
   return /\bETIMEDOUT\b|\btimed out\b/i.test(message);
+}
+
+// Per-item Codex timeout escalator (slice B).
+//
+// Outlier items that exhaust the shard-wide cap (default 600s) get exactly
+// one retry at this larger cap on the next sweep. Sticky: once an item has
+// been retried at the escalated cap and still timed out, we don't escalate
+// it again until a successful review clears the failure state.
+export const REVIEW_TIMEOUT_ESCALATED_MS = 1_200_000;
+
+export type ReviewFailureReason = "none" | "timeout" | "other";
+
+export function reviewFailureReasonForSummary(summary: string): ReviewFailureReason {
+  if (!summary.startsWith("Codex review failed")) return "none";
+  // codexFailureDecision builds `Codex review failed: <reason>...`; the reason
+  // string `timeout` comes from codexFailureReason for ETIMEDOUT / 'timed out'.
+  if (/^Codex review failed: timeout\b/.test(summary)) return "timeout";
+  return "other";
+}
+
+export interface PriorReviewForTimeoutEscalation {
+  reviewStatus: string | undefined;
+  reviewFailureReason: string | undefined;
+  reviewTimeoutEscalated: boolean;
+}
+
+export function shouldEscalateCodexTimeout(
+  prior: PriorReviewForTimeoutEscalation | null | undefined,
+): boolean {
+  if (!prior) return false;
+  if (prior.reviewStatus !== "failed") return false;
+  if (prior.reviewFailureReason !== "timeout") return false;
+  // Already escalated last time and it still failed — don't escalate again.
+  return !prior.reviewTimeoutEscalated;
+}
+
+export function nextReviewTimeoutEscalated(options: {
+  prior: PriorReviewForTimeoutEscalation | null | undefined;
+  ranAtEscalatedCap: boolean;
+  failureReason: ReviewFailureReason;
+}): boolean {
+  // A successful review clears the escalated flag so future timeouts re-arm.
+  if (options.failureReason === "none") return false;
+  // Sticky-up while in a failed state.
+  return options.ranAtEscalatedCap || Boolean(options.prior?.reviewTimeoutEscalated);
+}
+
+export function effectiveCodexTimeoutMs(options: {
+  baseTimeoutMs: number;
+  escalatedTimeoutMs?: number;
+  prior: PriorReviewForTimeoutEscalation | null | undefined;
+}): { timeoutMs: number; escalated: boolean } {
+  const escalated = shouldEscalateCodexTimeout(options.prior);
+  const cap = options.escalatedTimeoutMs ?? REVIEW_TIMEOUT_ESCALATED_MS;
+  return {
+    timeoutMs: escalated ? Math.max(options.baseTimeoutMs, cap) : options.baseTimeoutMs,
+    escalated,
+  };
 }
 
 function reviewTimeoutCommentMarker(number: number): string {
@@ -6396,7 +6461,16 @@ function markdownFor(options: {
   snapshotHash: string;
   reviewPolicy: string;
   runtime: ReviewRuntime;
+  priorReview?: ExistingReview | null;
+  ranAtEscalatedCap?: boolean;
 }): string {
+  const failureReason = reviewFailureReasonForSummary(options.decision.summary);
+  const reviewStatusValue = failureReason === "none" ? "complete" : "failed";
+  const timeoutEscalated = nextReviewTimeoutEscalated({
+    prior: options.priorReview ?? null,
+    ranAtEscalatedCap: Boolean(options.ranAtEscalatedCap),
+    failureReason,
+  });
   const labels = options.item.labels.length ? options.item.labels.join(", ") : "none";
   const fixedPullRequest = options.decision.fixedPullRequest;
   const evidence = options.decision.evidence.length
@@ -6469,7 +6543,9 @@ review_additional_prompt_chars: ${reviewTelemetryNumber(options.runtime.addition
 review_context_elapsed_ms: ${reviewTelemetryNumber(options.runtime.contextElapsedMs)}
 review_codex_elapsed_ms: ${reviewTelemetryNumber(options.runtime.codexElapsedMs)}
 review_mode: ${options.reviewMode}
-review_status: ${options.decision.summary.startsWith("Codex review failed") ? "failed" : "complete"}
+review_status: ${reviewStatusValue}
+review_failure_reason: ${failureReason}
+review_timeout_escalated: ${timeoutEscalated}
 local_checkout_access: verified
 item_snapshot_hash: ${options.snapshotHash}
 close_comment_sha256: ${options.action.closeComment ? sha256(options.action.closeComment) : "none"}
@@ -6713,6 +6789,7 @@ function reviewCommand(args: Args): void {
   const git = gitInfo(openclawDir);
   const reviewPolicy = reviewPolicyHash({ model, reasoningEffort, sandboxMode, serviceTier });
   if (readonlyOpenclaw) makeTreeReadOnly(openclawDir);
+  const reviewIndex = buildExistingReviewIndex(itemsDir);
   const selectionOptions: Parameters<typeof selectCandidates>[0] = {
     batchSize,
     maxPages,
@@ -6720,6 +6797,7 @@ function reviewCommand(args: Args): void {
     shardCount,
     itemsDir,
     reviewPolicy,
+    reviewIndex,
   };
   if (itemNumber) selectionOptions.itemNumber = itemNumber;
   if (itemNumbers) selectionOptions.itemNumbers = itemNumbers;
@@ -6770,6 +6848,16 @@ function reviewCommand(args: Args): void {
         `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} start-comment=skipped #${item.number}`,
       );
     }
+    const priorReview = indexedExistingReview(item, itemsDir, reviewIndex);
+    const { timeoutMs: itemTimeoutMs, escalated: ranAtEscalatedCap } = effectiveCodexTimeoutMs({
+      baseTimeoutMs: timeoutMs,
+      prior: priorReview,
+    });
+    if (ranAtEscalatedCap) {
+      console.error(
+        `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} timeout-escalated #${item.number} base_ms=${timeoutMs} item_ms=${itemTimeoutMs} (prior sweep timed out)`,
+      );
+    }
     let decision: Decision;
     let codexElapsedMs = 0;
     const codexStartedAt = Date.now();
@@ -6783,7 +6871,7 @@ function reviewCommand(args: Args): void {
         reasoningEffort,
         sandboxMode,
         serviceTier,
-        timeoutMs,
+        timeoutMs: itemTimeoutMs,
         workDir: codexWorkDir,
         additionalPrompt,
         proofScratchDir,
@@ -6810,7 +6898,7 @@ function reviewCommand(args: Args): void {
           postReviewTimeoutComment({
             item,
             elapsedMs: codexElapsedMs,
-            timeoutMs,
+            timeoutMs: itemTimeoutMs,
             model,
             reasoningEffort,
           });
@@ -6851,6 +6939,8 @@ function reviewCommand(args: Args): void {
         snapshotHash,
         reviewPolicy,
         runtime,
+        priorReview,
+        ranAtEscalatedCap,
       }),
       "utf8",
     );

@@ -47,6 +47,11 @@ import {
   parseDecision,
   protectedLabels,
   renderEvidenceEntry,
+  reviewFailureReasonForSummary,
+  shouldEscalateCodexTimeout,
+  nextReviewTimeoutEscalated,
+  effectiveCodexTimeoutMs,
+  REVIEW_TIMEOUT_ESCALATED_MS,
   realBehaviorProofSufficientLabelsForTest,
   relatedTitleSearchTerms,
   renderReviewStartStatusComment,
@@ -3857,6 +3862,157 @@ test("renderEvidenceEntry fences multi-line detail and keeps single-line detail 
     withTrailing.endsWith("  - command: `codex exec --model gpt-5.5`"),
     `trailing command line missing: ${JSON.stringify(withTrailing.split("\n").slice(-3))}`,
   );
+});
+
+test("reviewFailureReasonForSummary classifies success / timeout / other Codex outcomes", () => {
+  assert.equal(reviewFailureReasonForSummary("Close the issue: implemented on main."), "none");
+  assert.equal(reviewFailureReasonForSummary("Codex review failed: timeout (exit 1)."), "timeout");
+  assert.equal(reviewFailureReasonForSummary("Codex review failed: timeout."), "timeout");
+  assert.equal(
+    reviewFailureReasonForSummary("Codex review failed: invalid structured output."),
+    "other",
+  );
+  assert.equal(
+    reviewFailureReasonForSummary("Codex review failed: codex execution failed."),
+    "other",
+  );
+});
+
+test("shouldEscalateCodexTimeout escalates exactly once after a timeout", () => {
+  // No prior review → don't escalate.
+  assert.equal(shouldEscalateCodexTimeout(null), false);
+  assert.equal(shouldEscalateCodexTimeout(undefined), false);
+  // Prior success → don't escalate.
+  assert.equal(
+    shouldEscalateCodexTimeout({
+      reviewStatus: "complete",
+      reviewFailureReason: "none",
+      reviewTimeoutEscalated: false,
+    }),
+    false,
+  );
+  // Prior non-timeout failure → don't escalate.
+  assert.equal(
+    shouldEscalateCodexTimeout({
+      reviewStatus: "failed",
+      reviewFailureReason: "other",
+      reviewTimeoutEscalated: false,
+    }),
+    false,
+  );
+  // Prior timeout, not yet escalated → escalate.
+  assert.equal(
+    shouldEscalateCodexTimeout({
+      reviewStatus: "failed",
+      reviewFailureReason: "timeout",
+      reviewTimeoutEscalated: false,
+    }),
+    true,
+  );
+  // Prior timeout, already escalated → don't escalate again.
+  assert.equal(
+    shouldEscalateCodexTimeout({
+      reviewStatus: "failed",
+      reviewFailureReason: "timeout",
+      reviewTimeoutEscalated: true,
+    }),
+    false,
+  );
+  // Missing reason on old records → don't escalate (additive field; old records self-heal).
+  assert.equal(
+    shouldEscalateCodexTimeout({
+      reviewStatus: "failed",
+      reviewFailureReason: undefined,
+      reviewTimeoutEscalated: false,
+    }),
+    false,
+  );
+});
+
+test("nextReviewTimeoutEscalated stays sticky on failure and clears on success", () => {
+  // Success clears the flag, even if prior was escalated.
+  assert.equal(
+    nextReviewTimeoutEscalated({
+      prior: { reviewTimeoutEscalated: true } as never,
+      ranAtEscalatedCap: true,
+      failureReason: "none",
+    }),
+    false,
+  );
+  // First timeout at default cap: not yet escalated.
+  assert.equal(
+    nextReviewTimeoutEscalated({ prior: null, ranAtEscalatedCap: false, failureReason: "timeout" }),
+    false,
+  );
+  // Second sweep, ran at escalated cap, timed out again: flag set.
+  assert.equal(
+    nextReviewTimeoutEscalated({
+      prior: { reviewTimeoutEscalated: false } as never,
+      ranAtEscalatedCap: true,
+      failureReason: "timeout",
+    }),
+    true,
+  );
+  // Third sweep on a stuck item: prior was escalated, current ran at default — stays escalated.
+  assert.equal(
+    nextReviewTimeoutEscalated({
+      prior: { reviewTimeoutEscalated: true } as never,
+      ranAtEscalatedCap: false,
+      failureReason: "timeout",
+    }),
+    true,
+  );
+  // Non-timeout failure preserves the prior escalated bit (avoids accidental re-escalation later).
+  assert.equal(
+    nextReviewTimeoutEscalated({
+      prior: { reviewTimeoutEscalated: true } as never,
+      ranAtEscalatedCap: false,
+      failureReason: "other",
+    }),
+    true,
+  );
+});
+
+test("effectiveCodexTimeoutMs picks base cap by default and the escalated cap once after a timeout", () => {
+  const baseTimeoutMs = 600_000;
+  // No prior review → base cap.
+  const fresh = effectiveCodexTimeoutMs({ baseTimeoutMs, prior: null });
+  assert.equal(fresh.timeoutMs, baseTimeoutMs);
+  assert.equal(fresh.escalated, false);
+  // Prior timeout, not yet escalated → escalated cap (1200s default).
+  const escalated = effectiveCodexTimeoutMs({
+    baseTimeoutMs,
+    prior: {
+      reviewStatus: "failed",
+      reviewFailureReason: "timeout",
+      reviewTimeoutEscalated: false,
+    },
+  });
+  assert.equal(escalated.timeoutMs, REVIEW_TIMEOUT_ESCALATED_MS);
+  assert.equal(escalated.escalated, true);
+  // Prior timeout, already escalated → back to base cap (no further escalation).
+  const stuck = effectiveCodexTimeoutMs({
+    baseTimeoutMs,
+    prior: {
+      reviewStatus: "failed",
+      reviewFailureReason: "timeout",
+      reviewTimeoutEscalated: true,
+    },
+  });
+  assert.equal(stuck.timeoutMs, baseTimeoutMs);
+  assert.equal(stuck.escalated, false);
+  // Explicit escalatedTimeoutMs honored.
+  const custom = effectiveCodexTimeoutMs({
+    baseTimeoutMs,
+    escalatedTimeoutMs: 900_000,
+    prior: {
+      reviewStatus: "failed",
+      reviewFailureReason: "timeout",
+      reviewTimeoutEscalated: false,
+    },
+  });
+  assert.equal(custom.timeoutMs, 900_000);
+  assert.equal(custom.escalated, true);
 });
 
 test("isCodexTimeoutError flags spawnSync ETIMEDOUT and 'timed out' messages", () => {
