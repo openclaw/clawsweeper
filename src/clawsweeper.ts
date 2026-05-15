@@ -3654,6 +3654,36 @@ function codexFailureReason(detail: string): string {
   return "codex execution failed";
 }
 
+export function isCodexTimeoutError(value: unknown): boolean {
+  if (value === null || value === undefined) return false;
+  const message = value instanceof Error ? value.message : typeof value === "string" ? value : "";
+  return /\bETIMEDOUT\b|\btimed out\b/i.test(message);
+}
+
+function reviewTimeoutCommentMarker(number: number): string {
+  return `<!-- clawsweeper-review-timeout item=${number} -->`;
+}
+
+function renderReviewTimeoutComment(options: {
+  number: number;
+  elapsedMs: number;
+  timeoutMs: number;
+  model: string;
+  reasoningEffort: string;
+}): string {
+  const elapsedS = Math.round(options.elapsedMs / 1000);
+  const timeoutS = Math.round(options.timeoutMs / 1000);
+  return [
+    `ClawSweeper review timed out after ${elapsedS}s (cap ${timeoutS}s).`,
+    "",
+    `Codex model \`${options.model}\` at reasoning effort \`${options.reasoningEffort}\` did not complete in the configured window.`,
+    "",
+    "The next scheduled sweep will reattempt this item. No automated retry is queued.",
+    "",
+    reviewTimeoutCommentMarker(options.number),
+  ].join("\n");
+}
+
 function codexFailureDecision(status: number | null, stderr: string, stdout = ""): Decision {
   const detail = stderr || "No stderr.";
   const reason = codexFailureReason(detail);
@@ -6682,6 +6712,7 @@ function reviewCommand(args: Args): void {
   );
   let completed = 0;
   let codexFailures = 0;
+  let codexTimeoutFailures = 0;
   for (const item of candidates) {
     console.error(
       `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} start #${item.number} (${completed + 1}/${candidates.length})`,
@@ -6737,12 +6768,41 @@ function reviewCommand(args: Args): void {
         prompt: prompt.text,
       });
     } catch (error) {
-      codexFailures += 1;
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      const isTimeout = isCodexTimeoutError(errorMessage);
+      if (isTimeout) {
+        codexTimeoutFailures += 1;
+      } else {
+        codexFailures += 1;
+      }
       decision = codexFailureDecision(
         null,
-        error instanceof Error ? error.message : String(error),
-        "Per-item Codex failure; continuing with the rest of the shard.",
+        errorMessage,
+        isTimeout
+          ? "Per-item Codex timeout; the next scheduled sweep will reattempt."
+          : "Per-item Codex failure; continuing with the rest of the shard.",
       );
+      if (isTimeout) {
+        codexElapsedMs = Date.now() - codexStartedAt;
+        try {
+          postReviewTimeoutComment({
+            item,
+            elapsedMs: codexElapsedMs,
+            timeoutMs,
+            model,
+            reasoningEffort,
+          });
+          console.error(
+            `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} timeout-comment=posted #${item.number} elapsed_ms=${codexElapsedMs}`,
+          );
+        } catch (commentError) {
+          console.error(
+            `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} timeout-comment=failed #${item.number}: ${
+              commentError instanceof Error ? commentError.message : String(commentError)
+            }`,
+          );
+        }
+      }
     } finally {
       codexElapsedMs = Date.now() - codexStartedAt;
     }
@@ -6780,11 +6840,50 @@ function reviewCommand(args: Args): void {
   console.error(
     `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} complete reviewed=${completed}`,
   );
+  if (codexTimeoutFailures > 0) {
+    console.error(
+      `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} codex-timeouts=${codexTimeoutFailures} (commented on issue, not requeueing; next scheduled sweep will reattempt)`,
+    );
+  }
   if (codexFailures > 0) {
     throw new Error(
       `Codex failed for ${codexFailures} item${codexFailures === 1 ? "" : "s"}; review artifacts were written and the workflow recovery lane can requeue the planned set.`,
     );
   }
+}
+
+function postReviewTimeoutComment(options: {
+  item: Item;
+  elapsedMs: number;
+  timeoutMs: number;
+  model: string;
+  reasoningEffort: string;
+}): "posted" | "existing" {
+  const marker = reviewTimeoutCommentMarker(options.item.number);
+  const existing = ghPaged<unknown>(`repos/${targetRepo()}/issues/${options.item.number}/comments`)
+    .map(asRecord)
+    .find((candidate) => {
+      const body = candidate.body;
+      return typeof body === "string" && body.includes(marker);
+    });
+  if (existing) return "existing";
+  const body = renderReviewTimeoutComment({
+    number: options.item.number,
+    elapsedMs: options.elapsedMs,
+    timeoutMs: options.timeoutMs,
+    model: options.model,
+    reasoningEffort: options.reasoningEffort,
+  });
+  const payload = writeCommentPayload(options.item.number, body);
+  ghWithRetry([
+    "api",
+    `repos/${targetRepo()}/issues/${options.item.number}/comments`,
+    "--method",
+    "POST",
+    "--input",
+    payload,
+  ]);
+  return "posted";
 }
 
 function applyDecisionsCommand(args: Args): void {

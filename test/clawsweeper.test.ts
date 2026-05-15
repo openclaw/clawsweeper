@@ -34,6 +34,7 @@ import {
   ghRetryKind,
   hotIntakeRecencyMs,
   isCodexReviewCommentBody,
+  isCodexTimeoutError,
   isGitHubNotFoundError,
   isGitHubRequiresAuthenticationError,
   isLockedConversationCommentError,
@@ -3788,4 +3789,13 @@ test("safeOutputTail tolerates missing process output", () => {
   assert.equal(safeOutputTail(undefined), "");
   assert.equal(safeOutputTail(null), "");
   assert.equal(safeOutputTail("abcdef", 3), "def");
+});
+
+test("isCodexTimeoutError flags spawnSync ETIMEDOUT and 'timed out' messages", () => {
+  assert.equal(isCodexTimeoutError("Codex review failed for #4: spawnSync codex ETIMEDOUT"), true);
+  assert.equal(isCodexTimeoutError("Codex review failed: timed out after 600000ms"), true);
+  assert.equal(isCodexTimeoutError("Codex review failed: process exited with code 1"), false);
+  assert.equal(isCodexTimeoutError("Rate limit reached for gpt-5.5 on tokens per min"), false);
+  assert.equal(isCodexTimeoutError(undefined), false);
+  assert.equal(isCodexTimeoutError(null), false);
 });
