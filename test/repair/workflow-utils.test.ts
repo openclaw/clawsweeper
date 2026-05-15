@@ -257,6 +257,62 @@ test("workflow utilities select eligible proposed close records", () => {
   assert.deepEqual(selected, [5, 12]);
 });
 
+test("workflow utilities re-elect skipped_changed_since_review records once a fresh review supersedes the skip", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-workflow-skip-"));
+  const oldDate = "2024-01-01T00:00:00Z";
+  const baseFrontMatter = (number, overrides) => {
+    const fields = {
+      repository: "openclaw/openclaw",
+      type: "issue",
+      decision: "close",
+      confidence: "high",
+      action_taken: "skipped_changed_since_review",
+      close_reason: "implemented_on_main",
+      item_created_at: oldDate,
+      ...overrides,
+    };
+    const lines = ["---"];
+    for (const [key, value] of Object.entries(fields)) lines.push(`${key}: ${value}`);
+    lines.push("---", "");
+    write(
+      path.join(root, `records/openclaw-openclaw/items/openclaw-openclaw-${number}.md`),
+      lines.join("\n"),
+    );
+  };
+
+  // #20: fresh review (21:00) AFTER the apply skip (20:00) — should be re-eligible.
+  baseFrontMatter(20, {
+    reviewed_at: "2026-05-15T21:00:00Z",
+    apply_checked_at: "2026-05-15T20:00:00Z",
+  });
+  // #21: skip is newer than review — stays skipped, stays invisible.
+  baseFrontMatter(21, {
+    reviewed_at: "2026-05-15T20:00:00Z",
+    apply_checked_at: "2026-05-15T21:00:00Z",
+  });
+  // #22: skip with no apply_checked_at recorded but a review_at present — trust the review.
+  baseFrontMatter(22, {
+    reviewed_at: "2026-05-15T21:00:00Z",
+  });
+  // #23: no reviewed_at at all — cannot supersede, stays invisible.
+  baseFrontMatter(23, {
+    apply_checked_at: "2026-05-15T20:00:00Z",
+  });
+
+  const selected = withCwd(root, () =>
+    proposedItemNumbers({
+      targetRepo: "openclaw/openclaw",
+      applyKind: "all",
+      applyCloseReasons: "all",
+      staleMinAgeDays: 60,
+      minAgeDays: 0,
+      minAgeMinutes: null,
+    }),
+  );
+
+  assert.deepEqual(selected, [20, 22]);
+});
+
 function withCwd(cwd, callback) {
   const previous = process.cwd();
   process.chdir(cwd);

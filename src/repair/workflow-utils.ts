@@ -285,7 +285,11 @@ export function proposedItemNumbers(options: ProposedItemOptions): number[] {
       if (options.applyKind !== "all" && type && type !== options.applyKind) return [];
       if (frontMatterValue(markdown, "decision") !== "close") return [];
       if (frontMatterValue(markdown, "confidence") !== "high") return [];
-      if (frontMatterValue(markdown, "action_taken") !== "proposed_close") return [];
+      const actionTaken = frontMatterValue(markdown, "action_taken");
+      const eligibleAction =
+        actionTaken === "proposed_close" ||
+        (actionTaken === "skipped_changed_since_review" && reviewSupersedesApply(markdown));
+      if (!eligibleAction) return [];
       const reason = frontMatterValue(markdown, "close_reason");
       if (!allowedForTarget(options.targetRepo, type, reason, allowedReasons)) return [];
       if (allowedCloseReasons && !allowedCloseReasons.has(reason)) return [];
@@ -302,6 +306,19 @@ export function proposedItemNumbers(options: ProposedItemOptions): number[] {
       return [numberFor(name)];
     })
     .sort((left, right) => left - right);
+}
+
+// A record stuck on action_taken: skipped_changed_since_review becomes
+// re-eligible once a fresh review has superseded the skip — i.e. reviewed_at
+// is newer than apply_checked_at. This prevents stale skips from poisoning
+// records forever after the apply-guard's snapshot comparison flips its
+// mind (e.g. issueReviewComment selector bugs, transient comment churn).
+function reviewSupersedesApply(markdown: string): boolean {
+  const reviewedAt = frontMatterValue(markdown, "reviewed_at");
+  const applyCheckedAt = frontMatterValue(markdown, "apply_checked_at");
+  if (!reviewedAt) return false;
+  if (!applyCheckedAt) return true;
+  return Date.parse(reviewedAt) > Date.parse(applyCheckedAt);
 }
 
 function proposedItemOptions(): ProposedItemOptions {
