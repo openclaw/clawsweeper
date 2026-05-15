@@ -5529,7 +5529,11 @@ function renderKeepOpenCommentFromReport(markdown: string): string {
             ? "Codex review: found issues before merge."
             : isPullRequest
               ? "Codex review: needs maintainer review before merge."
-              : "Codex review: keeping this open for maintainer follow-up; there is still a little grit to resolve.",
+              : isRepairCandidate
+                ? "Codex review: keeping open — repair candidate queued."
+                : workCandidate === "manual_review"
+                  ? "Codex review: keeping open — needs maintainer decision."
+                  : "Codex review: keeping open.",
     "",
   ];
   if (isPullRequest) {
