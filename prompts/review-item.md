@@ -22,7 +22,7 @@ If the repository has a `docs/` directory, check it for documentation relevant t
 
 ## Delegation contract
 
-When `workCandidate: "queue_fix_pr"`, the `workPrompt` becomes a Clownfish agent job. Write it so an autonomous agent can attempt the fix with confidence:
+When `workCandidate: "queue_fix_pr"`, the `workPrompt` becomes an implementation-agent job. Write it so an autonomous agent can attempt the fix with confidence:
 
 - The service area and the specific files most likely affected
 - The observable bug or missing behaviour (what is broken or absent, not just what the issue says)

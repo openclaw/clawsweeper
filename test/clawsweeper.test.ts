@@ -3309,16 +3309,19 @@ test("review prompt asks for concise non-overlapping public review fields", () =
   const prompt = readFileSync("prompts/review-item.md", "utf8");
 
   assert.match(prompt, /Keep user-visible fields non-overlapping/);
-  assert.match(prompt, /Keep `changeSummary`, `workReason`, `bestSolution`, and `securityReview.summary` to one short sentence/);
+  assert.match(
+    prompt,
+    /Keep `changeSummary`, `workReason`, `bestSolution`, and `securityReview.summary` to one short sentence/,
+  );
   assert.match(prompt, /Do not repeat the same sentence across fields/);
 });
 
-test("review prompt routes narrow work to Clownfish without making changelog author work", () => {
+test("review prompt routes narrow work to an implementation agent without making changelog author work", () => {
   const prompt = readFileSync("prompts/review-item.md", "utf8");
 
   assert.match(prompt, /Delegation contract/);
   assert.match(prompt, /workCandidate: "queue_fix_pr"/);
-  assert.match(prompt, /Clownfish agent job/);
+  assert.match(prompt, /implementation-agent job/);
   assert.match(prompt, /service area/);
   assert.match(prompt, /docs\//);
   assert.match(prompt, /changelog entries are maintainer and agent landing work/i);
