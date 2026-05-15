@@ -3808,6 +3808,12 @@ function runCodex(options: {
     `model_reasoning_effort="${options.reasoningEffort}"`,
     'forced_login_method="chatgpt"',
     'approval_policy="never"',
+    // Disable builtin tools the ClawSweeper review path doesn't use. Required for
+    // reasoning_effort="minimal" (Responses API HTTP 400: "The following tools
+    // cannot be used with reasoning.effort 'minimal': image_gen, web_search.").
+    // Harmless at other effort levels; review prompt does its own gh/git tool calls.
+    "web_search=false",
+    "features.image_generation=false",
   ];
   if (options.serviceTier) codexConfig.splice(1, 0, `service_tier="${options.serviceTier}"`);
   const result = spawnSync(
