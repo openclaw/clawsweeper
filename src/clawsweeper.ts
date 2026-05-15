@@ -3678,7 +3678,7 @@ function renderReviewTimeoutComment(options: {
     "",
     `Codex model \`${options.model}\` at reasoning effort \`${options.reasoningEffort}\` did not complete in the configured window.`,
     "",
-    "The next scheduled sweep will reattempt this item. No automated retry is queued.",
+    "Needs investigation or manual retry. No automated retry is queued.",
     "",
     reviewTimeoutCommentMarker(options.number),
   ].join("\n");
@@ -6779,7 +6779,7 @@ function reviewCommand(args: Args): void {
         null,
         errorMessage,
         isTimeout
-          ? "Per-item Codex timeout; the next scheduled sweep will reattempt."
+          ? "Per-item Codex timeout; needs investigation or manual retry."
           : "Per-item Codex failure; continuing with the rest of the shard.",
       );
       if (isTimeout) {
@@ -6842,7 +6842,7 @@ function reviewCommand(args: Args): void {
   );
   if (codexTimeoutFailures > 0) {
     console.error(
-      `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} codex-timeouts=${codexTimeoutFailures} (commented on issue, not requeueing; next scheduled sweep will reattempt)`,
+      `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} codex-timeouts=${codexTimeoutFailures} (commented on issue, not requeueing; needs investigation or manual retry)`,
     );
   }
   if (codexFailures > 0) {
