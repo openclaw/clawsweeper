@@ -130,6 +130,7 @@ jobs:
         if: ${{ steps.check_job.outputs.job_exists == '1' }}
         with:
           version: ${{ env.CODEX_CLI_VERSION }}
+          auth-mode: subscription
 
       - name: Verify GitHub read token
         if: ${{ steps.check_job.outputs.job_exists == '1' }}
@@ -284,6 +285,7 @@ jobs:
         if: ${{ steps.check_job.outputs.job_exists == '1' }}
         with:
           version: ${{ env.CODEX_CLI_VERSION }}
+          auth-mode: subscription
           cache-suffix: target-pnpm
 
       - name: Download worker artifacts
