@@ -22,7 +22,7 @@ on:
       report_repo:
         description: "Repository containing the ClawSweeper report"
         required: false
-        default: "valkyriweb/clawsweeper"
+        default: "valkyriweb/clawsweeper-state"
         type: string
       report_path:
         description: "Path to the ClawSweeper report"
@@ -56,7 +56,7 @@ permissions:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
-  CLAWSWEEPER_APP_CLIENT_ID: Iv23liOECG0slfuhz093
+  CLAWSWEEPER_APP_CLIENT_ID: Iv23lirdjmVqYd1gwY26
   CLAWSWEEPER_ALLOWED_OWNER: ${{ vars.CLAWSWEEPER_ALLOWED_OWNER || 'bermont-digital' }}
   CLAWSWEEPER_ALLOW_EXECUTE: ${{ vars.CLAWSWEEPER_ALLOW_EXECUTE == '1' && '1' || '0' }}
   CLAWSWEEPER_ALLOW_FIX_PR: ${{ vars.CLAWSWEEPER_ALLOW_FIX_PR == '1' && '1' || '0' }}
@@ -128,7 +128,7 @@ jobs:
           ENABLED: ${{ github.event.inputs.enabled || github.event.client_payload.enabled || vars.CLAWSWEEPER_AUTO_IMPLEMENT_REPRO_BUGS || 'false' }}
           TARGET_REPO: ${{ github.event.inputs.target_repo || github.event.client_payload.target_repo || 'openclaw/openclaw' }}
           ITEM_NUMBER: ${{ github.event.inputs.item_number || github.event.client_payload.item_number }}
-          REPORT_REPO: ${{ github.event.inputs.report_repo || github.event.client_payload.report_repo || 'valkyriweb/clawsweeper' }}
+          REPORT_REPO: ${{ github.event.inputs.report_repo || github.event.client_payload.report_repo || 'valkyriweb/clawsweeper-state' }}
           REPORT_PATH: ${{ github.event.inputs.report_path || github.event.client_payload.report_path }}
           REPORT_URL: ${{ github.event.inputs.report_url || github.event.client_payload.report_url }}
         run: |
@@ -142,6 +142,9 @@ jobs:
           )
           if [ -n "${REPORT_PATH:-}" ]; then
             args+=(--report-path "$REPORT_PATH")
+            if [ -f "${CLAWSWEEPER_STATE_DIR}/${REPORT_PATH}" ]; then
+              args+=(--report-file "${CLAWSWEEPER_STATE_DIR}/${REPORT_PATH}")
+            fi
           fi
           if [ -n "${REPORT_URL:-}" ]; then
             args+=(--report-url "$REPORT_URL")

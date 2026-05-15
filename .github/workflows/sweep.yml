@@ -1135,6 +1135,7 @@ jobs:
               -f enabled=true \
               -f target_repo="$TARGET_REPO" \
               -f item_number="$item_number" \
+              -f report_repo="valkyriweb/clawsweeper-state" \
               -f report_path="$report_path" \
               -f report_url="$report_url"
           done < /tmp/issue-implementation-candidates.tsv
