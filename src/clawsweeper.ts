@@ -5950,35 +5950,62 @@ export function isCodexReviewCommentBody(body: string): boolean {
   );
 }
 
+function isReviewStatusStartedComment(comment: Record<string, unknown>): boolean {
+  const body = comment.body;
+  return typeof body === "string" && body.includes(REVIEW_START_STATUS_MARKER_PREFIX);
+}
+
+function commentTimestampForSort(comment: Record<string, unknown>): string {
+  const updated = comment.updated_at;
+  if (typeof updated === "string") return updated;
+  const created = comment.created_at;
+  return typeof created === "string" ? created : "";
+}
+
+function newestFirst(comments: readonly Record<string, unknown>[]): Record<string, unknown>[] {
+  return [...comments].sort((a, b) =>
+    commentTimestampForSort(b).localeCompare(commentTimestampForSort(a)),
+  );
+}
+
 function issueReviewComment(
   number: number,
   fallbackBodies: readonly string[] = [],
 ): Record<string, unknown> | undefined {
   const marker = reviewCommentMarker(number);
-  const comments = ghPaged<unknown>(`repos/${targetRepo()}/issues/${number}/comments`).map(
+  const allComments = ghPaged<unknown>(`repos/${targetRepo()}/issues/${number}/comments`).map(
     asRecord,
   );
-  const markedComments = comments.filter((candidate) => {
-    const body = candidate.body;
-    return typeof body === "string" && body.includes(marker);
-  });
+  // The transient "review started" status comment carries the review marker too
+  // but is not the verdict comment; never let it shadow a real review comment.
+  const comments = allComments.filter((candidate) => !isReviewStatusStartedComment(candidate));
+  const markedComments = newestFirst(
+    comments.filter((candidate) => {
+      const body = candidate.body;
+      return typeof body === "string" && body.includes(marker);
+    }),
+  );
   const patchableMarked = markedComments.find(canPatchReviewComment);
   if (patchableMarked) return patchableMarked;
   const marked = markedComments[0];
   if (marked) return marked;
   const exactBodies = new Set(fallbackBodies.map((body) => body.trim()).filter(Boolean));
-  const exactComments = comments.filter((candidate) => {
-    const body = candidate.body;
-    return typeof body === "string" && exactBodies.has(body.trim());
-  });
+  const exactComments = newestFirst(
+    comments.filter((candidate) => {
+      const body = candidate.body;
+      return typeof body === "string" && exactBodies.has(body.trim());
+    }),
+  );
   const patchableExact = exactComments.find(canPatchReviewComment);
   if (patchableExact) return patchableExact;
   const exact = exactComments[0];
   if (exact) return exact;
-  const codexComments = comments.filter((candidate) => {
-    const body = candidate.body;
-    return typeof body === "string" && isCodexReviewCommentBody(body);
-  });
+  const codexComments = newestFirst(
+    comments.filter((candidate) => {
+      const body = candidate.body;
+      return typeof body === "string" && isCodexReviewCommentBody(body);
+    }),
+  );
   return codexComments.find(canPatchReviewComment) ?? codexComments[0];
 }
 
