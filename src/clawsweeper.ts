@@ -4004,6 +4004,32 @@ function linkedSha(sha: string): string {
   return markdownLink(shortSha(sha), commitUrl(sha));
 }
 
+export function renderEvidenceEntry(entry: Evidence, mainSha: string): string {
+  const bits: string[] = [];
+  if (entry.detail.includes("\n")) {
+    // Multi-line detail (e.g. Codex stderr JSON): emit a fenced code block
+    // under the label so the second line onwards doesn't collide with the
+    // surrounding Markdown list / downstream YAML capture.
+    bits.push(`- **${entry.label}:**`);
+    bits.push("");
+    bits.push("  ```");
+    for (const line of entry.detail.split("\n")) bits.push(`  ${line}`);
+    bits.push("  ```");
+  } else {
+    bits.push(`- **${entry.label}:** ${entry.detail}`);
+  }
+  if (entry.file) {
+    const parsed = splitFileAndLine(entry.file, entry.line);
+    const label = `${parsed.file}${parsed.line ? `:${parsed.line}` : ""}`;
+    bits.push(
+      `  - file: ${markdownLink(label, fileUrl(parsed.file, entry.sha ?? mainSha, parsed.line))}`,
+    );
+  }
+  if (entry.command) bits.push(`  - command: \`${entry.command}\``);
+  if (entry.sha) bits.push(`  - sha: ${linkedSha(entry.sha)}`);
+  return bits.join("\n");
+}
+
 function linkedRelease(tag: string): string {
   return markdownLink(tag, releaseUrl(tag));
 }
@@ -6375,19 +6401,7 @@ function markdownFor(options: {
   const fixedPullRequest = options.decision.fixedPullRequest;
   const evidence = options.decision.evidence.length
     ? options.decision.evidence
-        .map((entry) => {
-          const bits = [`- **${entry.label}:** ${entry.detail}`];
-          if (entry.file) {
-            const parsed = splitFileAndLine(entry.file, entry.line);
-            const label = `${parsed.file}${parsed.line ? `:${parsed.line}` : ""}`;
-            bits.push(
-              `  - file: ${markdownLink(label, fileUrl(parsed.file, entry.sha ?? options.git.mainSha, parsed.line))}`,
-            );
-          }
-          if (entry.command) bits.push(`  - command: \`${entry.command}\``);
-          if (entry.sha) bits.push(`  - sha: ${linkedSha(entry.sha)}`);
-          return bits.join("\n");
-        })
+        .map((entry) => renderEvidenceEntry(entry, options.git.mainSha))
         .join("\n")
     : "- none";
   const risks = options.decision.risks.length

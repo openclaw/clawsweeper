@@ -46,6 +46,7 @@ import {
   parseGhJsonLines,
   parseDecision,
   protectedLabels,
+  renderEvidenceEntry,
   realBehaviorProofSufficientLabelsForTest,
   relatedTitleSearchTerms,
   renderReviewStartStatusComment,
@@ -3789,6 +3790,73 @@ test("safeOutputTail tolerates missing process output", () => {
   assert.equal(safeOutputTail(undefined), "");
   assert.equal(safeOutputTail(null), "");
   assert.equal(safeOutputTail("abcdef", 3), "def");
+});
+
+test("renderEvidenceEntry fences multi-line detail and keeps single-line detail inline", () => {
+  const mainSha = "0000000000000000000000000000000000000000";
+
+  // Single-line detail: unchanged inline form.
+  const singleLine = renderEvidenceEntry(
+    {
+      label: "failure reason",
+      detail: "Codex exited with status 1",
+      file: null,
+      line: null,
+      command: null,
+      sha: null,
+    },
+    mainSha,
+  );
+  assert.equal(singleLine, "- **failure reason:** Codex exited with status 1");
+
+  // Multi-line detail (e.g. Codex stderr JSON): fenced code block under the label.
+  const multiLineDetail = [
+    '{"type":"error","code":"unsupported_value","message":"Unsupported value:',
+    " 'minimal' is not supported with the 'gpt-5.5-codex-1p-codexswic-ev3' model.",
+    " Supported values are: 'none', 'low', 'medium', 'high', and 'xhigh'.\"}",
+  ].join("\n");
+  const multiLine = renderEvidenceEntry(
+    {
+      label: "codex failure detail",
+      detail: multiLineDetail,
+      file: null,
+      line: null,
+      command: null,
+      sha: null,
+    },
+    mainSha,
+  );
+  const lines = multiLine.split("\n");
+  assert.equal(lines[0], "- **codex failure detail:**");
+  assert.equal(lines[1], "");
+  assert.equal(lines[2], "  ```");
+  assert.equal(lines[lines.length - 1], "  ```");
+  // Every body line is indented under the list item.
+  for (let i = 3; i < lines.length - 1; i++) {
+    assert.ok(lines[i].startsWith("  "), `line ${i} not indented: ${JSON.stringify(lines[i])}`);
+  }
+  // No raw newline collides with the surrounding list (the second source line
+  // shows up indented, not flush-left).
+  assert.ok(
+    multiLine.includes("   'minimal' is not supported"),
+    "second stderr line should be indented under the list item",
+  );
+  // Trailing fields still render below the code block.
+  const withTrailing = renderEvidenceEntry(
+    {
+      label: "codex failure detail",
+      detail: multiLineDetail,
+      file: null,
+      line: null,
+      command: "codex exec --model gpt-5.5",
+      sha: null,
+    },
+    mainSha,
+  );
+  assert.ok(
+    withTrailing.endsWith("  - command: `codex exec --model gpt-5.5`"),
+    `trailing command line missing: ${JSON.stringify(withTrailing.split("\n").slice(-3))}`,
+  );
 });
 
 test("isCodexTimeoutError flags spawnSync ETIMEDOUT and 'timed out' messages", () => {
