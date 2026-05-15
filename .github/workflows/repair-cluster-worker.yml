@@ -83,13 +83,27 @@ jobs:
         with:
           filter: blob:none
 
+      - name: Resolve target owner
+        id: target_owner
+        env:
+          JOB_PATH: ${{ inputs.job }}
+        run: |
+          set -euo pipefail
+          owner="${JOB_PATH#jobs/}"
+          owner="${owner%%/*}"
+          if [ -z "$owner" ] || [ "$owner" = "$JOB_PATH" ]; then
+            echo "Could not resolve target owner from job path: $JOB_PATH" >&2
+            exit 1
+          fi
+          echo "owner=$owner" >> "$GITHUB_OUTPUT"
+
       - name: Create GitHub App token
         id: app_token
         uses: actions/create-github-app-token@1b10c78c7865c340bc4f6099eb2f838309f1e8c3 # v3.1.1
         with:
           client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
           private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
-          owner: ${{ env.CLAWSWEEPER_ALLOWED_OWNER }}
+          owner: ${{ steps.target_owner.outputs.owner }}
           permission-contents: read
           permission-issues: read
           permission-pull-requests: read
@@ -247,13 +261,27 @@ jobs:
         with:
           filter: blob:none
 
+      - name: Resolve target owner
+        id: target_owner
+        env:
+          JOB_PATH: ${{ inputs.job }}
+        run: |
+          set -euo pipefail
+          owner="${JOB_PATH#jobs/}"
+          owner="${owner%%/*}"
+          if [ -z "$owner" ] || [ "$owner" = "$JOB_PATH" ]; then
+            echo "Could not resolve target owner from job path: $JOB_PATH" >&2
+            exit 1
+          fi
+          echo "owner=$owner" >> "$GITHUB_OUTPUT"
+
       - name: Create GitHub App token
         id: app_token
         uses: actions/create-github-app-token@1b10c78c7865c340bc4f6099eb2f838309f1e8c3 # v3.1.1
         with:
           client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
           private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
-          owner: ${{ env.CLAWSWEEPER_ALLOWED_OWNER }}
+          owner: ${{ steps.target_owner.outputs.owner }}
           permission-actions: write
           permission-contents: write
           permission-issues: write
