@@ -615,28 +615,36 @@ function fetchIssue(repo: string, number: JsonValue) {
 }
 
 function fetchPullRequestView(repo: string, number: JsonValue) {
-  return ghJson([
-    "pr",
-    "view",
-    String(number),
-    "--repo",
-    repo,
-    "--json",
-    [
-      "baseRefName",
-      "isDraft",
-      "mergeable",
-      "mergeCommit",
-      "mergeStateStatus",
-      "mergedAt",
-      "reviewDecision",
-      "state",
-      "statusCheckRollup",
-      "title",
-      "updatedAt",
-      "url",
-    ].join(","),
-  ]);
+  const fields = [
+    "baseRefName",
+    "isDraft",
+    "mergeable",
+    "mergeCommit",
+    "mergeStateStatus",
+    "mergedAt",
+    "reviewDecision",
+    "state",
+    "statusCheckRollup",
+    "title",
+    "updatedAt",
+    "url",
+  ];
+  try {
+    return ghPrView(repo, number, fields);
+  } catch (error) {
+    const detail = ghErrorText(error);
+    if (!/statusCheckRollup|Resource not accessible by integration/i.test(detail)) throw error;
+    const view = ghPrView(
+      repo,
+      number,
+      fields.filter((field) => field !== "statusCheckRollup"),
+    );
+    return { ...view, statusCheckRollup: [] };
+  }
+}
+
+function ghPrView(repo: string, number: JsonValue, fields: string[]) {
+  return ghJson(["pr", "view", String(number), "--repo", repo, "--json", fields.join(",")]);
 }
 
 function findLatestResultPath() {
