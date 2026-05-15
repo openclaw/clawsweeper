@@ -3812,7 +3812,8 @@ function runCodex(options: {
     // reasoning_effort="minimal" (Responses API HTTP 400: "The following tools
     // cannot be used with reasoning.effort 'minimal': image_gen, web_search.").
     // Harmless at other effort levels; review prompt does its own gh/git tool calls.
-    "web_search=false",
+    // `web_search` is a STRING enum in Codex config ("off"/"live"/"on"), not a bool.
+    'web_search="off"',
     "features.image_generation=false",
   ];
   if (options.serviceTier) codexConfig.splice(1, 0, `service_tier="${options.serviceTier}"`);
