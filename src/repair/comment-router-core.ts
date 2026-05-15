@@ -256,6 +256,7 @@ export function renderIssueImplementationJob({
   reviewReportUrl = null,
   reviewReportPath = null,
   strictBugOnly = false,
+  allowAutomerge = false,
 }: LooseRecord) {
   const clusterId = issueImplementationClusterId(repo, issueNumber);
   const branch = issueImplementationJobBranch(repo, issueNumber);
@@ -267,6 +268,12 @@ export function renderIssueImplementationJob({
   const reportPath = String(reviewReportPath ?? "").trim();
   const reportUrl = String(reviewReportUrl ?? "").trim();
   const strictBug = Boolean(strictBugOnly);
+  const mergeAllowed = Boolean(allowAutomerge);
+  const allowedActions = mergeAllowed
+    ? ["comment", "label", "fix", "raise_pr", "merge"]
+    : ["comment", "label", "fix", "raise_pr"];
+  const blockedActions = mergeAllowed ? ["close"] : ["close", "merge"];
+  const humanRequiredActions = mergeAllowed ? ["close"] : ["close", "merge"];
   const maintainerContext = [
     commentUrl ? `- Command comment: ${commentUrl}` : null,
     author ? `- Requested by: ${author}` : null,
@@ -299,22 +306,20 @@ This job came from ClawSweeper's reproducible bug lane. Treat it as bug-only:
   label; the executor also applies this label after opening or updating the PR.
 `
     : "";
+  const mergeInstruction = mergeAllowed
+    ? "\nFinal merge is enabled only through GitHub auto-merge after post-flight gates pass. Do not directly merge from the worker.\n"
+    : "";
   return `---
 repo: ${repo}
 cluster_id: ${clusterId}
 mode: autonomous
 ${renderJobIntentFrontmatter("implement_issue")}
 allowed_actions:
-  - comment
-  - label
-  - fix
-  - raise_pr
+${allowedActions.map((action) => `  - ${action}`).join("\n")}
 blocked_actions:
-  - close
-  - merge
+${blockedActions.map((action) => `  - ${action}`).join("\n")}
 require_human_for:
-  - close
-  - merge
+${humanRequiredActions.map((action) => `  - ${action}`).join("\n")}
 canonical:
   - ${ref}
 candidates:
@@ -323,7 +328,7 @@ cluster_refs:
   - ${ref}
 allow_instant_close: false
 allow_fix_pr: true
-allow_merge: false
+allow_merge: ${mergeAllowed ? "true" : "false"}
 allow_unmerged_fix_close: false
 allow_post_merge_close: false
 require_fix_before_close: false
@@ -353,10 +358,10 @@ ${bugOnlyGuardrails}
 When code changes are appropriate, emit a fix artifact with
 \`repair_strategy: "new_fix_pr"\`, \`source_prs: []\`, this issue in
 \`linked_refs\`, and validation commands for the touched surface.
-
+${mergeInstruction}
 ## Guardrails
 
-- Do not merge.
+- ${mergeAllowed ? "Do not merge directly; post-flight owns GitHub auto-merge." : "Do not merge."}
 - Do not close the issue from this lane.
 - Keep one PR for this issue; reuse \`${branch}\` if it already exists.
 - Keep the diff narrow and avoid unrelated refactors.

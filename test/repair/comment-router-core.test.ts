@@ -555,6 +555,34 @@ test("renderIssueImplementationJob validates and opens one non-closing fix PR la
   assert.match(job.body, /Keep it scoped to the toolbar/);
 });
 
+test("renderIssueImplementationJob can opt into post-flight GitHub auto-merge", () => {
+  const raw = renderIssueImplementationJob({
+    repo: "openclaw/openclaw",
+    issueNumber: 74113,
+    title: "Fix broken export docs",
+    allowAutomerge: true,
+  });
+  const match = raw.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
+  assert.ok(match);
+  const job = {
+    frontmatter: parseSimpleYaml(match[1]),
+    body: match[2].trim(),
+  };
+
+  assert.deepEqual(validateJob(job), []);
+  assert.equal(job.frontmatter.allow_merge, true);
+  assert.deepEqual(job.frontmatter.blocked_actions, ["close"]);
+  assert.deepEqual(job.frontmatter.allowed_actions, [
+    "comment",
+    "label",
+    "fix",
+    "raise_pr",
+    "merge",
+  ]);
+  assert.match(job.body, /GitHub auto-merge after post-flight gates pass/);
+  assert.match(job.body, /Do not merge directly/);
+});
+
 test("automerge changelog gate blocks user-facing OpenClaw changes without changelog", () => {
   assert.equal(
     automergeChangelogBlockReason({

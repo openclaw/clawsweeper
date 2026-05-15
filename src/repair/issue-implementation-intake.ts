@@ -276,6 +276,7 @@ function writeJob(context: LooseRecord) {
     reviewReportUrl: context.reportUrl,
     reviewReportPath: context.reportPath,
     strictBugOnly: true,
+    allowAutomerge: process.env.CLAWSWEEPER_ALLOW_AUTOMERGE === "1",
   });
   fs.mkdirSync(path.dirname(context.jobPath), { recursive: true });
   fs.writeFileSync(context.jobPath, body, "utf8");

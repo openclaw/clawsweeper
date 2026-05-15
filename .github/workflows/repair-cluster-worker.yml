@@ -65,6 +65,7 @@ jobs:
       CLAWSWEEPER_ALLOWED_OWNER: ${{ vars.CLAWSWEEPER_ALLOWED_OWNER || 'bermont-digital' }}
       CLAWSWEEPER_ALLOW_EXECUTE: ${{ (inputs.mode == 'execute' || inputs.mode == 'autonomous') && vars.CLAWSWEEPER_ALLOW_EXECUTE == '1' && '1' || '0' }}
       CLAWSWEEPER_ALLOW_FIX_PR: ${{ (inputs.mode == 'execute' || inputs.mode == 'autonomous') && vars.CLAWSWEEPER_ALLOW_FIX_PR == '1' && '1' || '0' }}
+      CLAWSWEEPER_ALLOW_AUTOMERGE: ${{ (inputs.mode == 'execute' || inputs.mode == 'autonomous') && vars.CLAWSWEEPER_ALLOW_AUTOMERGE == '1' && '1' || '0' }}
       CLAWSWEEPER_ALLOW_MERGE: ${{ (inputs.mode == 'execute' || inputs.mode == 'autonomous') && (vars.CLAWSWEEPER_ALLOW_MERGE || '0') || '0' }}
       CLAWSWEEPER_HYDRATE_CLUSTER_REFS: ${{ vars.CLAWSWEEPER_HYDRATE_CLUSTER_REFS || '1' }}
       CLAWSWEEPER_HYDRATE_COMMENTS: ${{ vars.CLAWSWEEPER_HYDRATE_COMMENTS || '1' }}
@@ -118,6 +119,7 @@ jobs:
           {
             echo "allow_execute=${CLAWSWEEPER_ALLOW_EXECUTE}"
             echo "allow_fix_pr=${CLAWSWEEPER_ALLOW_FIX_PR}"
+            echo "allow_automerge=${CLAWSWEEPER_ALLOW_AUTOMERGE}"
             echo "allow_merge=${CLAWSWEEPER_ALLOW_MERGE}"
           } >> "$GITHUB_OUTPUT"
 
