@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  assertAllowedOwner,
   hasDeterministicSecuritySignal,
   hasSecuritySignalText,
   parseArgs,
@@ -49,6 +50,16 @@ candidates:
   - "#1"
 `);
   assert.deepEqual(validateJob({ frontmatter }), ["unsupported job_intent: surprise"]);
+});
+
+test("allowed owner guard accepts comma-separated owner lists", () => {
+  assert.doesNotThrow(() =>
+    assertAllowedOwner("valkyriweb/clawsweeper", "bermont-digital, valkyriweb"),
+  );
+  assert.throws(
+    () => assertAllowedOwner("CLIP-SA/core-ai", "bermont-digital,valkyriweb"),
+    /repo owner CLIP-SA does not match CLAWSWEEPER_ALLOWED_OWNER=/,
+  );
 });
 
 test("security signal detection ignores non-security advisory wording", () => {

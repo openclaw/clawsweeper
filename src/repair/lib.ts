@@ -457,10 +457,13 @@ export function parseArgs(argv: string[]): CliArgs {
 
 export function assertAllowedOwner(repo: string, allowedOwner?: string) {
   if (!allowedOwner) return;
-  const owner = repo.split("/")[0];
-  if (owner !== allowedOwner) {
-    throw new Error(`repo owner ${owner} does not match CLAWSWEEPER_ALLOWED_OWNER=${allowedOwner}`);
-  }
+  const owner = repo.split("/")[0] ?? "";
+  const allowedOwners = allowedOwner
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+  if (!allowedOwners.length || allowedOwners.includes(owner)) return;
+  throw new Error(`repo owner ${owner} does not match CLAWSWEEPER_ALLOWED_OWNER=${allowedOwner}`);
 }
 
 export function makeRunDir(job: ParsedJob | LooseRecord, mode: string) {
