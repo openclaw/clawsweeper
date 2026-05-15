@@ -13,23 +13,35 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
-  pull-requests: write
+  contents: read
 
 env:
   UPSTREAM_REPO: openclaw/clawsweeper
   UPSTREAM_BRANCH: main
   FORK_BRANCH: main
+  CLAWSWEEPER_APP_CLIENT_ID: Iv23lirdjmVqYd1gwY26
 
 jobs:
   sync:
     runs-on: ubuntu-latest
     steps:
+      - name: Generate app token
+        id: app-token
+        uses: actions/create-github-app-token@1b10c78c7865c340bc4f6099eb2f838309f1e8c3 # v3.1.1
+        with:
+          client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
+          owner: valkyriweb
+          repositories: clawsweeper
+          permission-contents: write
+          permission-pull-requests: write
+          permission-workflows: write
+
       - name: Checkout fork
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ steps.app-token.outputs.token }}
 
       - name: Add upstream remote and fetch
         run: |
@@ -94,7 +106,7 @@ jobs:
       - name: Open or update PR
         if: steps.check.outputs.skip != 'true'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           BRANCH: ${{ steps.merge.outputs.branch }}
           DRAFT: ${{ steps.merge.outputs.draft }}
           CONFLICTS: ${{ steps.merge.outputs.conflicts }}
