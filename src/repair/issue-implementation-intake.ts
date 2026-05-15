@@ -218,7 +218,8 @@ function eligibilityDecision({
   if (fm.requires_product_decision === "true") blockers.push("requires a product decision");
   if (frontMatterStringArray(fm.labels).some(isProtectedLabel))
     blockers.push("protected label present");
-  if (securitySensitiveText(reportMarkdown)) blockers.push("security-sensitive signal present");
+  if (securitySensitiveReviewReport(reportMarkdown))
+    blockers.push("security-sensitive signal present");
   if (!section(report.body, "Repair Work Prompt").trim())
     blockers.push("missing repair work prompt");
   if (frontMatterStringArray(fm.work_validation).length === 0)
@@ -457,6 +458,10 @@ function securitySensitiveText(text: string): boolean {
   return /\b(?:security|vulnerability|cve|ghsa|secret|credential|token|exploit|xss|csrf|ssrf|rce)\b/i.test(
     text,
   );
+}
+
+function securitySensitiveReviewReport(markdown: string): boolean {
+  return securitySensitiveText(markdown.replace(/^## Security Review\s*$/gim, ""));
 }
 
 function asRecord(value: unknown): Record<string, JsonValue> {

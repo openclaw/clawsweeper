@@ -54,6 +54,30 @@ test("strict reproducible bug reports are eligible for implementation intake", (
   assert.equal(decision.status, "queued_for_repair");
 });
 
+test("generated Security Review heading does not block issue implementation intake", () => {
+  const markdown = `${report()}\n## Security Review\n\nStatus: not_applicable\n\nConcerns:\n\n- none\n`;
+  const decision = reportOnlyDecision({
+    targetRepo: "openclaw/openclaw",
+    report: parseReviewReport(markdown),
+    reportMarkdown: markdown,
+  });
+
+  assert.equal(decision.shouldRepair, true);
+  assert.equal(decision.status, "queued_for_repair");
+});
+
+test("security-sensitive review report content blocks issue implementation intake", () => {
+  const markdown = `${report()}\n## Security Review\n\nConcerns:\n\n- Possible credential leak in the reported behavior.\n`;
+  const decision = reportOnlyDecision({
+    targetRepo: "openclaw/openclaw",
+    report: parseReviewReport(markdown),
+    reportMarkdown: markdown,
+  });
+
+  assert.equal(decision.shouldRepair, false);
+  assert.match(decision.blockers.join("\n"), /security-sensitive signal/);
+});
+
 test("implementation intake rejects feature and config-option work", () => {
   for (const overrides of [
     { item_category: "feature" },
