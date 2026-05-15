@@ -21,12 +21,12 @@ on:
       runner:
         description: "Runner label for cluster planning/review work"
         required: true
-        default: blacksmith-4vcpu-ubuntu-2404
+        default: '["self-hosted","macOS","ARM64","mac-mini"]'
         type: string
       execution_runner:
         description: "Runner label for fix/apply execution work"
         required: true
-        default: blacksmith-16vcpu-ubuntu-2404
+        default: '["self-hosted","macOS","ARM64","mac-mini"]'
         type: string
       model:
         description: "Codex model"
@@ -53,7 +53,7 @@ concurrency:
 jobs:
   cluster:
     name: Plan and review cluster
-    runs-on: ${{ inputs.runner }}
+    runs-on: ${{ fromJson(inputs.runner) }}
     timeout-minutes: 90
     outputs:
       allow_execute: ${{ steps.capture_gates.outputs.allow_execute }}
@@ -62,7 +62,7 @@ jobs:
       job_exists: ${{ steps.check_job.outputs.job_exists }}
     env:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-      CLAWSWEEPER_ALLOWED_OWNER: ${{ vars.CLAWSWEEPER_ALLOWED_OWNER || 'openclaw' }}
+      CLAWSWEEPER_ALLOWED_OWNER: ${{ vars.CLAWSWEEPER_ALLOWED_OWNER || 'bermont-digital' }}
       CLAWSWEEPER_ALLOW_EXECUTE: ${{ (inputs.mode == 'execute' || inputs.mode == 'autonomous') && vars.CLAWSWEEPER_ALLOW_EXECUTE == '1' && '1' || '0' }}
       CLAWSWEEPER_ALLOW_FIX_PR: ${{ (inputs.mode == 'execute' || inputs.mode == 'autonomous') && vars.CLAWSWEEPER_ALLOW_FIX_PR == '1' && '1' || '0' }}
       CLAWSWEEPER_ALLOW_MERGE: ${{ (inputs.mode == 'execute' || inputs.mode == 'autonomous') && (vars.CLAWSWEEPER_ALLOW_MERGE || '0') || '0' }}
@@ -87,7 +87,7 @@ jobs:
         with:
           client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
           private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
-          owner: ${{ vars.CLAWSWEEPER_ALLOWED_OWNER || github.repository_owner }}
+          owner: ${{ env.CLAWSWEEPER_ALLOWED_OWNER }}
           permission-contents: read
           permission-issues: read
           permission-pull-requests: read
@@ -98,10 +98,13 @@ jobs:
         with:
           client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
           private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
+          owner: valkyriweb
+          repository: clawsweeper-state
 
       - uses: ./.github/actions/setup-state
         with:
           token: ${{ steps.state-token.outputs.token }}
+          state-repository: valkyriweb/clawsweeper-state
 
       - name: Check job file
         id: check_job
@@ -210,11 +213,11 @@ jobs:
     name: Execute and apply cluster actions
     needs: cluster
     if: ${{ needs.cluster.result == 'success' && needs.cluster.outputs.job_exists == '1' && (inputs.mode == 'execute' || inputs.mode == 'autonomous') && !inputs.dry_run }}
-    runs-on: ${{ inputs.execution_runner }}
+    runs-on: ${{ fromJson(inputs.execution_runner) }}
     timeout-minutes: 45
     env:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-      CLAWSWEEPER_ALLOWED_OWNER: ${{ vars.CLAWSWEEPER_ALLOWED_OWNER || 'openclaw' }}
+      CLAWSWEEPER_ALLOWED_OWNER: ${{ vars.CLAWSWEEPER_ALLOWED_OWNER || 'bermont-digital' }}
       CLAWSWEEPER_ALLOW_EXECUTE: ${{ needs.cluster.outputs.allow_execute == '1' && '1' || '0' }}
       CLAWSWEEPER_ALLOW_FIX_PR: ${{ needs.cluster.outputs.allow_fix_pr == '1' && '1' || '0' }}
       CLAWSWEEPER_ALLOW_MERGE: ${{ needs.cluster.outputs.allow_merge || '0' }}
@@ -245,7 +248,7 @@ jobs:
         with:
           client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
           private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
-          owner: ${{ vars.CLAWSWEEPER_ALLOWED_OWNER || github.repository_owner }}
+          owner: ${{ env.CLAWSWEEPER_ALLOWED_OWNER }}
           permission-actions: write
           permission-contents: write
           permission-issues: write
@@ -258,10 +261,13 @@ jobs:
         with:
           client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
           private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
+          owner: valkyriweb
+          repository: clawsweeper-state
 
       - uses: ./.github/actions/setup-state
         with:
           token: ${{ steps.state-token.outputs.token }}
+          state-repository: valkyriweb/clawsweeper-state
 
       - name: Check job file
         id: check_job

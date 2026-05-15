@@ -13,7 +13,7 @@ on:
       target_repo:
         description: "Target repository"
         required: true
-        default: "openclaw/openclaw"
+        default: "bermont-digital/multica"
         type: string
       item_number:
         description: "Issue number with a strict reproducible bug review"
@@ -22,7 +22,7 @@ on:
       report_repo:
         description: "Repository containing the ClawSweeper report"
         required: false
-        default: "openclaw/clawsweeper"
+        default: "valkyriweb/clawsweeper"
         type: string
       report_path:
         description: "Path to the ClawSweeper report"
@@ -37,12 +37,12 @@ on:
       runner:
         description: "Runner label for repair planning/review work"
         required: false
-        default: blacksmith-4vcpu-ubuntu-2404
+        default: '["self-hosted","macOS","ARM64","mac-mini"]'
         type: string
       execution_runner:
         description: "Runner label for fix/apply execution work"
         required: false
-        default: blacksmith-16vcpu-ubuntu-2404
+        default: '["self-hosted","macOS","ARM64","mac-mini"]'
         type: string
       model:
         description: "Codex model for repair worker"
@@ -57,7 +57,7 @@ permissions:
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
   CLAWSWEEPER_APP_CLIENT_ID: Iv23liOECG0slfuhz093
-  CLAWSWEEPER_ALLOWED_OWNER: ${{ vars.CLAWSWEEPER_ALLOWED_OWNER || 'openclaw' }}
+  CLAWSWEEPER_ALLOWED_OWNER: ${{ vars.CLAWSWEEPER_ALLOWED_OWNER || 'bermont-digital' }}
   CLAWSWEEPER_ALLOW_EXECUTE: ${{ vars.CLAWSWEEPER_ALLOW_EXECUTE == '1' && '1' || '0' }}
   CLAWSWEEPER_ALLOW_FIX_PR: ${{ vars.CLAWSWEEPER_ALLOW_FIX_PR == '1' && '1' || '0' }}
   CLAWSWEEPER_ALLOW_MERGE: "0"
@@ -72,7 +72,7 @@ concurrency:
 
 jobs:
   intake:
-    runs-on: ${{ github.event.inputs.runner || vars.CLAWSWEEPER_ISSUE_IMPLEMENTATION_INTAKE_RUNNER || 'blacksmith-4vcpu-ubuntu-2404' }}
+    runs-on: ${{ fromJson(github.event.inputs.runner || vars.CLAWSWEEPER_ISSUE_IMPLEMENTATION_INTAKE_RUNNER || '["self-hosted","macOS","ARM64","mac-mini"]') }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
@@ -84,13 +84,23 @@ jobs:
         with:
           build-script: build:repair
 
+      - name: Resolve target repository
+        id: target
+        env:
+          TARGET_REPO: ${{ github.event.inputs.target_repo || github.event.client_payload.target_repo || 'bermont-digital/multica' }}
+        run: |
+          set -euo pipefail
+          echo "owner=${TARGET_REPO%%/*}" >> "$GITHUB_OUTPUT"
+          echo "name=${TARGET_REPO#*/}" >> "$GITHUB_OUTPUT"
+
       - name: Create GitHub App token
         id: app_token
         uses: actions/create-github-app-token@1b10c78c7865c340bc4f6099eb2f838309f1e8c3 # v3.1.1
         with:
           client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
           private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
-          owner: ${{ vars.CLAWSWEEPER_ALLOWED_OWNER || github.repository_owner }}
+          owner: ${{ steps.target.outputs.owner }}
+          repositories: ${{ steps.target.outputs.name }}
           permission-contents: write
           permission-issues: write
           permission-pull-requests: write
@@ -103,10 +113,13 @@ jobs:
         with:
           client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
           private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
+          owner: valkyriweb
+          repository: clawsweeper-state
 
       - uses: ./.github/actions/setup-state
         with:
           token: ${{ steps.state-token.outputs.token }}
+          state-repository: valkyriweb/clawsweeper-state
 
       - name: Prepare issue implementation intake
         id: prepare
@@ -115,7 +128,7 @@ jobs:
           ENABLED: ${{ github.event.inputs.enabled || github.event.client_payload.enabled || vars.CLAWSWEEPER_AUTO_IMPLEMENT_REPRO_BUGS || 'false' }}
           TARGET_REPO: ${{ github.event.inputs.target_repo || github.event.client_payload.target_repo || 'openclaw/openclaw' }}
           ITEM_NUMBER: ${{ github.event.inputs.item_number || github.event.client_payload.item_number }}
-          REPORT_REPO: ${{ github.event.inputs.report_repo || github.event.client_payload.report_repo || 'openclaw/clawsweeper' }}
+          REPORT_REPO: ${{ github.event.inputs.report_repo || github.event.client_payload.report_repo || 'valkyriweb/clawsweeper' }}
           REPORT_PATH: ${{ github.event.inputs.report_path || github.event.client_payload.report_path }}
           REPORT_URL: ${{ github.event.inputs.report_url || github.event.client_payload.report_url }}
         run: |
@@ -151,8 +164,8 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.app_token.outputs.token }}
           MAX_LIVE_WORKERS: ${{ vars.CLAWSWEEPER_AUTO_IMPLEMENT_MAX_LIVE_WORKERS || '' }}
-          RUNNER: ${{ github.event.inputs.runner || vars.CLAWSWEEPER_WORKER_RUNNER || 'blacksmith-4vcpu-ubuntu-2404' }}
-          EXECUTION_RUNNER: ${{ github.event.inputs.execution_runner || vars.CLAWSWEEPER_EXECUTION_RUNNER || 'blacksmith-16vcpu-ubuntu-2404' }}
+          RUNNER: ${{ github.event.inputs.runner || vars.CLAWSWEEPER_WORKER_RUNNER || '["self-hosted","macOS","ARM64","mac-mini"]' }}
+          EXECUTION_RUNNER: ${{ github.event.inputs.execution_runner || vars.CLAWSWEEPER_EXECUTION_RUNNER || '["self-hosted","macOS","ARM64","mac-mini"]' }}
           MODEL: ${{ github.event.inputs.model || vars.CLAWSWEEPER_MODEL || 'gpt-5.5' }}
         run: |
           set -euo pipefail
