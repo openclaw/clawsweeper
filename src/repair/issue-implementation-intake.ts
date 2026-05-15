@@ -207,7 +207,7 @@ function eligibilityDecision({
     blockers.push(`work candidate is ${fm.work_candidate || "unknown"}`);
   if (fm.work_confidence !== "high")
     blockers.push(`work confidence is ${fm.work_confidence || "unknown"}`);
-  if (fm.item_category !== "bug")
+  if (!isEligibleIssueImplementationCategory(fm.item_category))
     blockers.push(`item category is ${fm.item_category || "unknown"}`);
   if (fm.reproduction_status !== "reproduced")
     blockers.push(`reproduction status is ${fm.reproduction_status || "unknown"}`);
@@ -376,16 +376,36 @@ function searchOpenPullRequestsMentioningIssue(repo: string, number: number): Lo
         "--method",
         "GET",
         "-f",
-        `q=repo:${repo} is:pr is:open "${number}"`,
+        `q=repo:${repo} is:pr is:open "#${number}"`,
         "--jq",
         ".items",
       ],
       { attempts: 3 },
     );
-    return Array.isArray(result) ? result : [];
+    return Array.isArray(result)
+      ? result.filter((item) => issueReferenceTextMatches(repo, number, item.body))
+      : [];
   } catch (error) {
     throw new Error(`failed to search open PRs mentioning issue: ${ghErrorText(error)}`);
   }
+}
+
+function isEligibleIssueImplementationCategory(category: string | undefined) {
+  return new Set(["bug", "docs"]).has(
+    String(category ?? "")
+      .trim()
+      .toLowerCase(),
+  );
+}
+
+export function issueReferenceTextMatches(repo: string, number: number, value: JsonValue) {
+  const text = String(value ?? "");
+  if (!text) return false;
+  const escapedRepo = escapeRegExp(repo);
+  return new RegExp(
+    `(?:^|[^A-Za-z0-9_])(?:#${number}\\b|${escapedRepo}/issues/${number}\\b|https://github\\.com/${escapedRepo}/issues/${number}\\b)`,
+    "i",
+  ).test(text);
 }
 
 function attachedPrText(live: LooseRecord): boolean {

@@ -3,6 +3,7 @@ import test from "node:test";
 import { readFileSync } from "node:fs";
 
 import {
+  issueReferenceTextMatches,
   parseReviewReport,
   reportOnlyDecision,
 } from "../../dist/repair/issue-implementation-intake.js";
@@ -76,6 +77,43 @@ test("security-sensitive review report content blocks issue implementation intak
 
   assert.equal(decision.shouldRepair, false);
   assert.match(decision.blockers.join("\n"), /security-sensitive signal/);
+});
+
+test("strict docs reports are eligible for implementation intake", () => {
+  const markdown = report({
+    item_category: "docs",
+    labels: JSON.stringify(["area:docs"]),
+    work_validation: JSON.stringify(["pnpm --filter @multica/docs typecheck"]),
+    work_likely_files: JSON.stringify(["apps/docs/content/docs/example.zh.mdx"]),
+  });
+  const decision = reportOnlyDecision({
+    targetRepo: "openclaw/openclaw",
+    report: parseReviewReport(markdown),
+    reportMarkdown: markdown,
+  });
+
+  assert.equal(decision.shouldRepair, true);
+  assert.equal(decision.status, "queued_for_repair");
+});
+
+test("implementation intake issue reference matching ignores unrelated version numbers", () => {
+  assert.equal(
+    issueReferenceTextMatches(
+      "bermont-digital/multica",
+      11,
+      "Bumps mermaid from 11.14.0 to 11.15.0. <summary>Changelog</summary>",
+    ),
+    false,
+  );
+  assert.equal(issueReferenceTextMatches("bermont-digital/multica", 11, "Fixes #11"), true);
+  assert.equal(
+    issueReferenceTextMatches(
+      "bermont-digital/multica",
+      11,
+      "Fixes https://github.com/bermont-digital/multica/issues/11",
+    ),
+    true,
+  );
 });
 
 test("implementation intake rejects feature and config-option work", () => {
