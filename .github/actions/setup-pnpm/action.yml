@@ -16,6 +16,24 @@ inputs:
 runs:
   using: composite
   steps:
+    - name: Ensure gh CLI is on PATH
+      shell: bash
+      run: |
+        set -euo pipefail
+        if command -v gh >/dev/null 2>&1; then
+          echo "gh already on PATH: $(command -v gh)"
+          exit 0
+        fi
+        for candidate in /opt/homebrew/bin /usr/local/bin /home/linuxbrew/.linuxbrew/bin; do
+          if [ -x "$candidate/gh" ]; then
+            echo "$candidate" >> "$GITHUB_PATH"
+            echo "resolved gh at $candidate/gh"
+            exit 0
+          fi
+        done
+        echo "gh CLI not found on runner; install it (brew install gh / apt-get install gh) or ensure it is on PATH for the actions-runner service." >&2
+        exit 1
+
     - uses: actions/setup-node@v6
       with:
         node-version: ${{ inputs.node-version }}
