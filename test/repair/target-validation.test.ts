@@ -171,6 +171,27 @@ test("validation parser requires env assignments before env command", () => {
   );
 });
 
+test("validation preflight accepts pnpm filter package scripts", () => {
+  const cwd = packageFixture({ typecheck: "turbo typecheck" });
+
+  assert.deepEqual(
+    preflightTargetValidationPlan(
+      {
+        fixArtifact: {
+          validation_commands: ["pnpm --filter @multica/docs typecheck"],
+        },
+        targetDir: cwd,
+      },
+      validationOptions("bermont-digital/multica"),
+    ),
+    {
+      status: "passed",
+      resolved_commands: ["pnpm --filter @multica/docs typecheck"],
+      available_scripts: ["typecheck"],
+    },
+  );
+});
+
 test("validation preflight accepts scoped OpenGrep commands", () => {
   const cwd = packageFixture({ "check:changed": "node check.js" });
   const command =

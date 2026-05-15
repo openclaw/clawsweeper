@@ -13,6 +13,7 @@ export function packageScriptRequirement(
   if (commandParts[0] !== "pnpm") return null;
   let index = 1;
   if (commandParts[index] === "-s" || commandParts[index] === "--silent") index += 1;
+  while (commandParts[index] === "--filter" || commandParts[index] === "-F") index += 2;
   if (commandParts[index] === "run") index += 1;
   const script = commandParts[index];
   if (!script || ["exec", "dlx", "install", "add", "remove"].includes(script)) return null;
