@@ -18,8 +18,22 @@ test("repositoryProfileFor carries service-area routing notes", () => {
   assert.match(profile.promptNote, /area:backend-go/);
   assert.match(profile.promptNote, /area:frontend-next/);
   assert.match(profile.promptNote, /area:daemon/);
-  assert.deepEqual(profile.applyCloseRules.issue, []);
-  assert.deepEqual(profile.applyCloseRules.pull_request, []);
+  assert.deepEqual(profile.applyCloseRules.issue, [
+    "implemented_on_main",
+    "duplicate_or_superseded",
+    "cannot_reproduce",
+    "incoherent",
+    "not_actionable_in_repo",
+    "stale_insufficient_info",
+  ]);
+  assert.deepEqual(profile.applyCloseRules.pull_request, [
+    "implemented_on_main",
+    "mostly_implemented_on_main",
+    "duplicate_or_superseded",
+    "cannot_reproduce",
+    "incoherent",
+    "not_actionable_in_repo",
+  ]);
 });
 
 test("private-repo triage disables generic OpenClaw fallback", () => {

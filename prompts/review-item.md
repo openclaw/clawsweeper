@@ -82,7 +82,7 @@ Do a canonical-search pass before keeping an older item open. Search GitHub and 
 
 Keep open for everything else: real bugs, unclear-but-salvageable reports, stale PRs with useful unique work, optional features requiring a missing API first, or anything where evidence is not high-confidence.
 
-Keep open any item whose author association is `OWNER`, `MEMBER`, or `COLLABORATOR`. Keep open any item with a protected label: `security`, `beta-blocker`, `release-blocker`, or `maintainer`. Keep open when an open PR references the issue with `Fixes #N`, `Closes #N`, or `Resolves #N`. Keep open when the current item appears paired with an open issue or PR by the same author.
+Author association (`OWNER`, `MEMBER`, `COLLABORATOR`, or any external) does not change close eligibility on its own. Apply the same evidence bar to every item: close when evidence and confidence support an allowed reason; keep open otherwise. Keep open any item with a protected label: `security`, `beta-blocker`, `release-blocker`, or `maintainer`. Keep open when an open PR references the issue with `Fixes #N`, `Closes #N`, or `Resolves #N`. Keep open when the current item appears paired with an open issue or PR by the same author.
 
 ## Work lane
 

@@ -6163,9 +6163,6 @@ export function reviewActionForDecision(options: {
   runtime?: Pick<ReviewRuntime, "model" | "reasoningEffort">;
 }): Action {
   if (options.decision.decision !== "close") return { actionTaken: "kept_open", closeComment: "" };
-  if (isMaintainerAuthored(options.item)) {
-    return { actionTaken: "skipped_maintainer_authored", closeComment: "" };
-  }
   const validation = validateCloseDecision(options.item, options.decision, {
     requireCloseComment: false,
   });
@@ -6855,7 +6852,6 @@ function applyDecisionsCommand(args: Args): void {
     const action = frontMatterValue(markdown, "action_taken");
     const storedHash = frontMatterValue(markdown, "item_snapshot_hash");
     const storedUpdatedAt = frontMatterValue(markdown, "item_updated_at");
-    const storedAuthorAssociation = frontMatterValue(markdown, "author_association");
     const archiveClosed = (nextMarkdown: string): void => {
       if (dryRun) return;
       ensureDir(closedDir);
@@ -6934,33 +6930,6 @@ function applyDecisionsCommand(args: Args): void {
         if (markApplySkipped("skipped_protected_label", protectedLabelReason(item.labels))) break;
       }
       if (isCloseProposal) continue;
-    }
-    const currentAuthorAssociation = normalizeAuthorAssociation(item.authorAssociation);
-    const reviewedAuthorAssociation = normalizeAuthorAssociation(storedAuthorAssociation);
-    if (
-      isMaintainerAuthorAssociation(currentAuthorAssociation) ||
-      isMaintainerAuthorAssociation(reviewedAuthorAssociation)
-    ) {
-      const authorAssociation = isMaintainerAuthorAssociation(currentAuthorAssociation)
-        ? currentAuthorAssociation
-        : reviewedAuthorAssociation;
-      if (isCloseProposal) {
-        markdown = replaceFrontMatterValue(markdown, "author_association", authorAssociation);
-        markdown = replaceFrontMatterValue(markdown, "action_taken", "skipped_maintainer_authored");
-        markdown = replaceFrontMatterValue(markdown, "apply_checked_at", new Date().toISOString());
-        if (!dryRun) writeFileSync(path, markdown, "utf8");
-      }
-      if (isCloseProposal) {
-        results.push({
-          number,
-          action: "skipped_maintainer_authored",
-          reason: `author association is ${authorAssociation}`,
-        });
-        processedCount += 1;
-        maybeLogProgress(`skipped #${number}: maintainer authored`);
-        if (processedCount >= processedLimit) break;
-        continue;
-      }
     }
     const updatedSinceReview = Boolean(storedUpdatedAt && item.updatedAt !== storedUpdatedAt);
     const reviewCommentOnlyUpdate = item.updatedAt === commentUpdatedAt(existingReviewComment);

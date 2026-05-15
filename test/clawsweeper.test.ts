@@ -860,7 +860,7 @@ test("skill-only OpenClaw PRs can close through ClawHub with upload guidance", (
   assert.match(action.closeComment, /installable community skill/);
 });
 
-test("private target policy keeps auto-close disabled during triage", () => {
+test("private target policy allows full auto-close on configured reasons", () => {
   const implementedPr = validateCloseDecision(
     item({
       repo: "bermont-digital/multica",
@@ -869,8 +869,7 @@ test("private target policy keeps auto-close disabled during triage", () => {
     }),
     closeDecision(),
   );
-  assert.equal(implementedPr.ok, false);
-  assert.equal(implementedPr.actionTaken, "skipped_invalid_decision");
+  assert.equal(implementedPr.ok, true);
 
   const implementedIssue = validateCloseDecision(
     item({
@@ -880,8 +879,7 @@ test("private target policy keeps auto-close disabled during triage", () => {
     }),
     closeDecision(),
   );
-  assert.equal(implementedIssue.ok, false);
-  assert.equal(implementedIssue.actionTaken, "skipped_invalid_decision");
+  assert.equal(implementedIssue.ok, true);
 });
 
 test("unsupported OpenClaw satellite repos are not active triage targets", () => {
