@@ -14,6 +14,8 @@ export type RepositoryCloseReason =
   | "stale_insufficient_info"
   | "none";
 
+export type ReviewProvider = "codex" | "claude-bridge";
+
 export interface RepositoryProfile {
   targetRepo: string;
   slug: string;
@@ -23,6 +25,10 @@ export interface RepositoryProfile {
   communityUrl?: string;
   promptNote: string;
   applyCloseRules: Partial<Record<RepositoryItemKind, readonly RepositoryCloseReason[]>>;
+  // Optional per-target override of the review provider. Highest-precedence
+  // input to `resolveReviewProvider()`; lets one repo opt out of (or back
+  // into) the global default without touching the workflow or the repo var.
+  reviewProvider?: ReviewProvider;
 }
 
 interface TargetRepositoryConfig {
@@ -39,7 +45,10 @@ interface ConfiguredRepositoryProfile {
   communityUrl?: string;
   promptNote: string;
   applyCloseRules: Partial<Record<RepositoryItemKind, readonly RepositoryCloseReason[]>>;
+  reviewProvider?: ReviewProvider;
 }
+
+const REVIEW_PROVIDER_SET: ReadonlySet<ReviewProvider> = new Set(["codex", "claude-bridge"]);
 
 interface OpenClawFallbackConfig {
   owner: string;
@@ -131,6 +140,7 @@ function configuredRepositoryProfile(profile: ConfiguredRepositoryProfile): Repo
   };
   if (profile.docsUrl) result.docsUrl = profile.docsUrl;
   if (profile.communityUrl) result.communityUrl = profile.communityUrl;
+  if (profile.reviewProvider) result.reviewProvider = profile.reviewProvider;
   return result;
 }
 
@@ -207,6 +217,15 @@ function validateConfiguredRepositoryProfile(
   }
   if (profile.community_url !== undefined) {
     result.communityUrl = stringValue(profile.community_url, `${label}.community_url`);
+  }
+  if (profile.review_provider !== undefined) {
+    const provider = stringValue(profile.review_provider, `${label}.review_provider`);
+    if (!REVIEW_PROVIDER_SET.has(provider as ReviewProvider)) {
+      throw new Error(
+        `${label}.review_provider must be one of: ${[...REVIEW_PROVIDER_SET].join(", ")} (got ${provider})`,
+      );
+    }
+    result.reviewProvider = provider as ReviewProvider;
   }
   return result;
 }

@@ -48,6 +48,7 @@ import {
   parseGhJsonLines,
   parseDecision,
   protectedLabels,
+  resolveReviewProvider,
   runClaude,
   runReview,
   type ClaudeBridgePostFn,
@@ -4392,6 +4393,94 @@ test("runClaude post-fn timeouts surface a 'timed out' marker so slice B's escal
   // Critical: failure marker must trip the existing timeout classifier so
   // slice B (per-item escalator) still escalates whichever provider ran.
   assert.equal(isCodexTimeoutError(caught), true);
+});
+
+test("runClaude defaults to sonnet-4-6 with adaptive thinking when model is omitted", () => {
+  let capturedBody: unknown = null;
+  const stubPost: ClaudeBridgePostFn = ({ body }) => {
+    capturedBody = body;
+    return {
+      status: 200,
+      body: JSON.stringify({
+        content: [{ type: "tool_use", name: "submit_decision", input: closeDecision() }],
+      }),
+    };
+  };
+  // Force the DEFAULT_CLAUDE_MODEL branch by omitting model in the options.
+  const opts = claudeOptionsForTest({ item: { number: 20 } as never, postFn: stubPost });
+  // Cast through unknown so we can wipe the model that the test helper sets.
+  (opts as unknown as { model: string }).model = "";
+  runClaude(opts);
+  const sent = capturedBody as { model: string; thinking?: { type: string; display: string } };
+  assert.equal(sent.model, "claude-sonnet-4-6");
+  assert.deepEqual(sent.thinking, { type: "adaptive", display: "summarized" });
+});
+
+test("runClaude swaps non-Claude model ids for the Claude default before calling the bridge", () => {
+  let capturedBody: unknown = null;
+  const stubPost: ClaudeBridgePostFn = ({ body }) => {
+    capturedBody = body;
+    return {
+      status: 200,
+      body: JSON.stringify({
+        content: [{ type: "tool_use", name: "submit_decision", input: closeDecision() }],
+      }),
+    };
+  };
+  // Workflow currently passes --codex-model gpt-5.5 regardless of provider; the
+  // bridge must not forward that to Anthropic verbatim.
+  runClaude(
+    claudeOptionsForTest({ item: { number: 21 } as never, model: "gpt-5.5", postFn: stubPost }),
+  );
+  const sent = capturedBody as { model: string; thinking?: unknown };
+  assert.equal(sent.model, "claude-sonnet-4-6");
+  // Adaptive thinking attaches because the *coerced* model supports it.
+  assert.deepEqual(sent.thinking, { type: "adaptive", display: "summarized" });
+});
+
+test("runClaude omits the thinking block for models that don't support adaptive thinking", () => {
+  let capturedBody: unknown = null;
+  const stubPost: ClaudeBridgePostFn = ({ body }) => {
+    capturedBody = body;
+    return {
+      status: 200,
+      body: JSON.stringify({
+        content: [{ type: "tool_use", name: "submit_decision", input: closeDecision() }],
+      }),
+    };
+  };
+  runClaude(
+    claudeOptionsForTest({
+      item: { number: 22 } as never,
+      model: "claude-sonnet-4-5-20250929",
+      postFn: stubPost,
+    }),
+  );
+  const sent = capturedBody as { model: string; thinking?: unknown };
+  assert.equal(sent.model, "claude-sonnet-4-5-20250929");
+  assert.equal(sent.thinking, undefined);
+});
+
+test("resolveReviewProvider precedence: explicit > env > fallback, with validation", () => {
+  // Default fallback when nothing supplied.
+  assert.equal(resolveReviewProvider({}), "codex");
+  // Caller-supplied fallback wins over the compiled-in 'codex' default.
+  assert.equal(resolveReviewProvider({ fallback: "claude-bridge" }), "claude-bridge");
+  // Env beats fallback.
+  assert.equal(resolveReviewProvider({ env: "claude-bridge", fallback: "codex" }), "claude-bridge");
+  // Explicit (profile.reviewProvider) beats env.
+  assert.equal(resolveReviewProvider({ explicit: "codex", env: "claude-bridge" }), "codex");
+  // Empty / whitespace strings fall through.
+  assert.equal(resolveReviewProvider({ explicit: "", env: "  " }), "codex");
+  // Unknown provider id from either source throws with a labelled error.
+  assert.throws(
+    () => resolveReviewProvider({ env: "openai" }),
+    /CLAWSWEEPER_REVIEW_PROVIDER has unsupported review provider: openai/,
+  );
+  assert.throws(
+    () => resolveReviewProvider({ explicit: "gpt-5" }),
+    /profile\.reviewProvider has unsupported review provider: gpt-5/,
+  );
 });
 
 test("runReview routes provider 'claude-bridge' through runClaude", () => {

@@ -22,6 +22,7 @@ import {
   repositoryProfileFor,
   repositoryProfileForSlug,
   type RepositoryProfile,
+  type ReviewProvider,
 } from "./repository-profiles.js";
 import { codexEnv } from "./codex-env.js";
 import {
@@ -4178,7 +4179,11 @@ function makeTreeReadOnly(path: string): void {
 // the Anthropic-via-claude-bridge goal adds `claude-bridge` via runClaude
 // (this slice). Default routing stays Codex — slice 6 wires the precedence
 // (repo var, workflow input, slice-B escalation).
-export type ReviewProvider = "codex" | "claude-bridge";
+// ReviewProvider is the canonical union type for review backends. Defined in
+// repository-profiles.ts (so the profile schema can reference it without a
+// circular import) and re-exported here for back-compat with downstream
+// consumers of `clawsweeper.ts`.
+export type { ReviewProvider } from "./repository-profiles.js";
 
 // Per-call HTTP seam for the Claude bridge. Default impl spawns curl so the
 // review loop stays synchronous (matches runCodex's spawnSync architecture);
@@ -4233,8 +4238,60 @@ export function runReview(options: RunReviewOptions): Decision {
   }
 }
 
+const REVIEW_PROVIDER_IDS: ReadonlySet<ReviewProvider> = new Set(["codex", "claude-bridge"]);
+
+// Provider routing precedence:
+//   1. `explicit` — per-target override from the repository profile
+//      (`reviewProvider` in `config/target-repositories.json`). Lets a single
+//      repo opt out / in regardless of the global default.
+//   2. `env` — `CLAWSWEEPER_REVIEW_PROVIDER` repo variable, threaded into the
+//      runner via the workflow env block. The flip lever for the live
+//      default; setting the repo var is a no-deploy change.
+//   3. `fallback` — compiled-in default. Stays `codex` so a missing config
+//      can't silently route every sweep through the bridge.
+export function resolveReviewProvider(opts: {
+  explicit?: string | undefined;
+  env?: string | undefined;
+  fallback?: ReviewProvider;
+}): ReviewProvider {
+  const fallback = opts.fallback ?? "codex";
+  const sources: Array<{ label: string; value: string | undefined }> = [
+    { label: "profile.reviewProvider", value: opts.explicit },
+    { label: "CLAWSWEEPER_REVIEW_PROVIDER", value: opts.env },
+  ];
+  for (const { label, value } of sources) {
+    if (value === undefined || value === null) continue;
+    const trimmed = String(value).trim();
+    if (trimmed === "") continue;
+    if (!REVIEW_PROVIDER_IDS.has(trimmed as ReviewProvider)) {
+      throw new Error(
+        `${label} has unsupported review provider: ${trimmed} (expected one of: ${[...REVIEW_PROVIDER_IDS].join(", ")})`,
+      );
+    }
+    return trimmed as ReviewProvider;
+  }
+  return fallback;
+}
+
 const DEFAULT_CLAUDE_BRIDGE_URL = "http://127.0.0.1:9100";
-const DEFAULT_CLAUDE_MODEL = "claude-sonnet-4-5-20250929";
+// Defaults to Sonnet 4.6 so the bridge picks up the adaptive-thinking shape
+// below. Older sonnet 4.5 model ids still work — adaptive thinking just
+// degrades to a no-op for non-supporting models (see `supportsAdaptiveThinking`).
+const DEFAULT_CLAUDE_MODEL = "claude-sonnet-4-6";
+
+// Mirrors pi-mono-fork/packages/ai/src/providers/anthropic.ts:supportsAdaptiveThinking.
+// Adaptive thinking lets the model self-regulate its thinking budget per turn;
+// only Sonnet 4.6+, Opus 4.6+, and Opus 4.7 understand `thinking.type=adaptive`.
+function supportsAdaptiveThinking(modelId: string): boolean {
+  return /^claude-(?:sonnet-4-6|opus-4-(?:6|7))(?:[-.]|$)/.test(modelId);
+}
+
+// Defensive fallback: if a caller routes a non-Claude model id (e.g. the
+// workflow's `--codex-model gpt-5.5`) through the bridge, swap it for
+// `DEFAULT_CLAUDE_MODEL` instead of forwarding a guaranteed-400 to Anthropic.
+function looksLikeClaudeModel(modelId: string): boolean {
+  return modelId.startsWith("claude-");
+}
 const CLAUDE_REVIEW_BRIDGE_SOURCE = "clawsweeper-review";
 const CLAUDE_DECISION_TOOL_NAME = "submit_decision";
 const CLAUDE_DECISION_TOOL_DESCRIPTION =
@@ -4333,7 +4390,11 @@ export function runClaude(options: RunClaudeOptions): Decision {
   const item = options.item;
   const bridgeUrl =
     options.bridgeUrl ?? process.env.CLAWSWEEPER_BRIDGE_URL ?? DEFAULT_CLAUDE_BRIDGE_URL;
-  const model = options.model || DEFAULT_CLAUDE_MODEL;
+  // Coerce non-Claude model ids (the workflow passes `--codex-model gpt-5.5`
+  // regardless of provider) to the Claude default. Without this, a bridge
+  // flip with the old flag wiring would 400 every request.
+  const requestedModel = options.model || DEFAULT_CLAUDE_MODEL;
+  const model = looksLikeClaudeModel(requestedModel) ? requestedModel : DEFAULT_CLAUDE_MODEL;
   const postFn = options.postFn ?? defaultClaudeBridgePost;
 
   ensureDir(options.workDir);
@@ -4361,7 +4422,13 @@ export function runClaude(options: RunClaudeOptions): Decision {
 
   const schema = JSON.parse(reviewDecisionSchemaText());
 
-  const body = {
+  // Adaptive thinking is Claude-4.6+ only; the model self-regulates its
+  // thinking budget per turn. `display: "summarized"` matches pi-mono-fork's
+  // anthropic provider default so bridge OTel spans stay comparable.
+  const thinkingBlock: Record<string, unknown> | undefined = supportsAdaptiveThinking(model)
+    ? { type: "adaptive", display: "summarized" }
+    : undefined;
+  const body: Record<string, unknown> = {
     model,
     max_tokens: 8192,
     system: CLAUDE_SYSTEM_PROMPT,
@@ -4376,6 +4443,7 @@ export function runClaude(options: RunClaudeOptions): Decision {
     tool_choice: { type: "tool", name: CLAUDE_DECISION_TOOL_NAME },
     metadata: { user_id: `clawsweeper-#${item.number}` },
   };
+  if (thinkingBlock) body.thinking = thinkingBlock;
 
   const url = `${bridgeUrl.replace(/\/+$/, "")}/source/${CLAUDE_REVIEW_BRIDGE_SOURCE}/v1/messages`;
 
@@ -7380,6 +7448,13 @@ function reviewCommand(args: Args): void {
   const sandboxMode = stringArg(args.codex_sandbox, "read-only");
   const serviceTier = stringArg(args.codex_service_tier, DEFAULT_SERVICE_TIER);
   const timeoutMs = numberArg(args.codex_timeout_ms, 600_000);
+  const reviewProvider = resolveReviewProvider({
+    explicit: profile.reviewProvider,
+    env: process.env.CLAWSWEEPER_REVIEW_PROVIDER,
+  });
+  console.error(
+    `[review] ${new Date().toISOString()} provider=${reviewProvider} target=${profile.targetRepo}`,
+  );
   const additionalPrompt = stringArg(
     args.additional_prompt,
     process.env.CLAWSWEEPER_ADDITIONAL_PROMPT ?? "",
@@ -7476,7 +7551,7 @@ function reviewCommand(args: Args): void {
     const codexStartedAt = Date.now();
     try {
       decision = runReview({
-        provider: "codex",
+        provider: reviewProvider,
         item,
         context,
         git,
