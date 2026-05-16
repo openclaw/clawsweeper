@@ -36,6 +36,20 @@ import {
 import { parseGhJson, parseGhJsonLines } from "./github-json.js";
 import { stableJson } from "./stable-json.js";
 import { runText } from "./command.js";
+import {
+  buildHistorySnippets,
+  buildRelatedItemBodies,
+  buildSourceExcerpts,
+  extractShasFromText,
+  extractSourceRefsFromText,
+  parseGitLogTabular,
+  type HistorySnippet,
+  type HistorySnippetCommit,
+  type ReleaseProvenance,
+  type RelatedItemBody,
+  type SourceExcerpt,
+  type SourceRef,
+} from "./evidence-collector.js";
 import { AUTOMATION_LIMITS } from "./limits.js";
 import {
   boolArg,
@@ -52,6 +66,14 @@ export { codexEnv } from "./codex-env.js";
 export { parseGhJson, parseGhJsonLines } from "./github-json.js";
 export { itemNumbersArg } from "./clawsweeper-args.js";
 export { safeOutputTail } from "./clawsweeper-text.js";
+export {
+  buildHistorySnippets,
+  buildRelatedItemBodies,
+  buildSourceExcerpts,
+  extractShasFromText,
+  extractSourceRefsFromText,
+  parseGitLogTabular,
+} from "./evidence-collector.js";
 export {
   ghRetryKind,
   isGitHubNotFoundError,
@@ -331,6 +353,32 @@ interface ItemContext {
     pullReviewCommentsHydrated?: number;
     pullReviewCommentsTruncated?: boolean;
   };
+  // Slice 5: pre-collected evidence for the Claude review path. Optional so
+  // the Codex path stays byte-identical when these are omitted (the parity
+  // guard in test/clawsweeper.test.ts enforces this). Populated by
+  // collectItemContext() when an openclawDir + mainSha are available.
+  sourceExcerpts?: SourceExcerpt[];
+  historySnippets?: HistorySnippet[];
+  releaseProvenance?: ReleaseProvenance;
+  relatedItemBodies?: RelatedItemBody[];
+}
+
+// Optional evidence fields are derived from the underlying issue/PR/main SHA
+// and not part of the snapshot identity. Stripped before hashing so the
+// review-path context (with evidence) and apply-path context (without
+// evidence) produce the same hash for the same underlying item.
+const EVIDENCE_CONTEXT_FIELDS: ReadonlyArray<keyof ItemContext> = [
+  "sourceExcerpts",
+  "historySnippets",
+  "releaseProvenance",
+  "relatedItemBodies",
+];
+
+function snapshotContext(context: ItemContext): ItemContext {
+  if (!EVIDENCE_CONTEXT_FIELDS.some((field) => context[field] !== undefined)) return context;
+  const trimmed = { ...context } as ItemContext;
+  for (const field of EVIDENCE_CONTEXT_FIELDS) delete trimmed[field];
+  return trimmed;
 }
 
 interface LocalRelatedTitleEntry {
@@ -1130,7 +1178,17 @@ function itemSnapshotHash(item: Item, context: ItemContext): string {
     author: item.author,
     labels: item.labels,
   };
-  return sha256(stableJson({ item: snapshotItem, context }));
+  // Slice 5: hash the stable context only. New evidence fields are derived
+  // from the issue body + current main SHA + file history; if any of those
+  // change, the underlying compactIssue body / mainSha (recorded elsewhere)
+  // will already flag the change. Including derived evidence here would make
+  // the review-path hash diverge from the apply-path hash and break
+  // skipped_changed_since_review.
+  return sha256(stableJson({ item: snapshotItem, context: snapshotContext(context) }));
+}
+
+export function itemSnapshotHashForTest(item: Item, context: ItemContext): string {
+  return itemSnapshotHash(item, context);
 }
 
 function reviewPolicyHash(options: {
@@ -3402,7 +3460,23 @@ function planCandidates(options: {
   };
 }
 
-function collectItemContext(item: Item): ItemContext {
+// Slice 5: opts let collectItemContext populate the optional evidence
+// fields used by the Claude review path. Without opts, behavior is
+// byte-identical to the pre-slice-5 implementation — the apply-decisions
+// path continues to call collectItemContext(item) bare and gets the
+// snapshot-stable context only.
+export interface CollectItemContextOptions {
+  openclawDir?: string;
+  mainSha?: string;
+  latestRelease?: LatestRelease | null;
+  /**
+   * Per-subprocess timeout (ms). Default 5_000 — if a probe wedges we skip
+   * the field rather than blocking the review. Set 0 to disable.
+   */
+  probeTimeoutMs?: number;
+}
+
+function collectItemContext(item: Item, opts: CollectItemContextOptions = {}): ItemContext {
   const issue = ghJson<unknown>(["api", `repos/${targetRepo()}/issues/${item.number}`]);
   const issueRecord = asRecord(issue);
   const commentsWindow = ghPagedContextWindow<unknown>(
@@ -3529,7 +3603,223 @@ function collectItemContext(item: Item): ItemContext {
       counts.closingPullRequests = context.counts.closingPullRequests;
     context.counts = counts;
   }
+  // Slice 5: populate Claude-only evidence fields after relatedItems lands
+  // so relatedItemBodies can read them. Gated on openclawDir + mainSha so
+  // the bare apply-decisions call site stays cheap and snapshot-stable.
+  if (opts.openclawDir && opts.mainSha) {
+    populateClaudeEvidence({
+      item,
+      context,
+      issue,
+      pullRequest,
+      openclawDir: opts.openclawDir,
+      mainSha: opts.mainSha,
+      latestRelease: opts.latestRelease ?? null,
+      probeTimeoutMs: opts.probeTimeoutMs ?? 5_000,
+    });
+  }
   return context;
+}
+
+// --- slice 5: Claude-path evidence collection ----------------------------
+
+function populateClaudeEvidence(options: {
+  item: Item;
+  context: ItemContext;
+  issue: unknown;
+  pullRequest: unknown;
+  openclawDir: string;
+  mainSha: string;
+  latestRelease: LatestRelease | null;
+  probeTimeoutMs: number;
+}): void {
+  const { item, context, issue, pullRequest, openclawDir, mainSha, probeTimeoutMs } = options;
+  const evidenceText = collectEvidenceSourceText({ item, context, issue, pullRequest });
+
+  // Source excerpts: parse path refs, then fetch each blob at mainSha.
+  const refs = extractSourceRefsFromText(evidenceText);
+  if (refs.length) {
+    const excerpts = buildSourceExcerpts({
+      refs,
+      mainSha,
+      fetchBlob: (path) => fetchBlobAtSha(openclawDir, mainSha, path, probeTimeoutMs),
+    });
+    if (excerpts.length) context.sourceExcerpts = excerpts;
+  }
+
+  // History snippets: pull recent commits for each path Claude will see
+  // (excerpt paths + PR file paths). Caps at 10 paths / 10 commits each.
+  const historyPaths = uniqueHistoryPaths(context, refs);
+  if (historyPaths.length) {
+    const snippets = buildHistorySnippets({
+      paths: historyPaths,
+      fetchLog: (path, limit) => fetchGitLogTabular(openclawDir, path, limit, probeTimeoutMs),
+    });
+    if (snippets.length) context.historySnippets = snippets;
+  }
+
+  // Release provenance: the latest release SHA is known; for SHAs cited in
+  // the issue/PR body, look up which release tag (if any) contains them.
+  const release = buildReleaseProvenance({
+    openclawDir,
+    latestRelease: options.latestRelease,
+    citedShas: extractShasFromText(evidenceText),
+    probeTimeoutMs,
+  });
+  if (release) context.releaseProvenance = release;
+
+  // Related-item bodies: tight 2 kB excerpts pulled from the existing
+  // relatedItems entries so Claude can read the linked issue without
+  // chasing it down with a follow-up gh call.
+  const relatedBodies = buildRelatedItemBodies({
+    related: extractRelatedForBodies(context.relatedItems ?? []),
+  });
+  if (relatedBodies.length) context.relatedItemBodies = relatedBodies;
+}
+
+function collectEvidenceSourceText(options: {
+  item: Item;
+  context: ItemContext;
+  issue: unknown;
+  pullRequest: unknown;
+}): string {
+  const parts: string[] = [options.item.title];
+  const issueBody = asRecord(options.issue).body;
+  if (typeof issueBody === "string") parts.push(issueBody);
+  const pullBody = asRecord(options.pullRequest).body;
+  if (typeof pullBody === "string") parts.push(pullBody);
+  for (const comment of options.context.comments) {
+    const body = asRecord(comment).body;
+    if (typeof body === "string") parts.push(body);
+  }
+  return parts.join("\n\n");
+}
+
+function uniqueHistoryPaths(context: ItemContext, refs: SourceRef[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const ref of refs) {
+    if (seen.has(ref.path)) continue;
+    seen.add(ref.path);
+    out.push(ref.path);
+  }
+  for (const file of context.pullFiles ?? []) {
+    const path = asRecord(file).path ?? asRecord(file).filename;
+    if (typeof path !== "string" || seen.has(path)) continue;
+    seen.add(path);
+    out.push(path);
+  }
+  return out.slice(0, 10);
+}
+
+function extractRelatedForBodies(relatedItems: ReadonlyArray<unknown>): Array<{
+  number: number;
+  kind: "issue" | "pull_request";
+  title: string;
+  url: string;
+  body: string | null;
+}> {
+  const out: Array<{
+    number: number;
+    kind: "issue" | "pull_request";
+    title: string;
+    url: string;
+    body: string | null;
+  }> = [];
+  for (const entry of relatedItems) {
+    const record = asRecord(entry);
+    const issue = asRecord(record.issue);
+    const number = issue.number;
+    if (typeof number !== "number") continue;
+    const body = typeof issue.body === "string" ? issue.body : null;
+    const url = typeof issue.url === "string" ? issue.url : "";
+    const title = typeof issue.title === "string" ? issue.title : "";
+    const kind: "issue" | "pull_request" = record.pullRequest ? "pull_request" : "issue";
+    out.push({ number, kind, title, url, body });
+  }
+  return out;
+}
+
+function fetchBlobAtSha(
+  openclawDir: string,
+  sha: string,
+  path: string,
+  probeTimeoutMs: number,
+): string | null {
+  try {
+    return runText("git", ["show", `${sha}:${path}`], {
+      cwd: openclawDir,
+      stdio: ["ignore", "pipe", "ignore"],
+      trim: "none",
+      timeout: probeTimeoutMs > 0 ? probeTimeoutMs : 0,
+    });
+  } catch {
+    return null;
+  }
+}
+
+function fetchGitLogTabular(
+  openclawDir: string,
+  path: string,
+  limit: number,
+  probeTimeoutMs: number,
+): HistorySnippetCommit[] {
+  try {
+    const text = runText(
+      "git",
+      ["log", "--follow", `-n${limit}`, "--format=%H%x09%aI%x09%an%x09%s", "--", path],
+      {
+        cwd: openclawDir,
+        stdio: ["ignore", "pipe", "ignore"],
+        trim: "end",
+        timeout: probeTimeoutMs > 0 ? probeTimeoutMs : 0,
+      },
+    );
+    return parseGitLogTabular(text);
+  } catch {
+    return [];
+  }
+}
+
+function buildReleaseProvenance(options: {
+  openclawDir: string;
+  latestRelease: LatestRelease | null;
+  citedShas: string[];
+  probeTimeoutMs: number;
+}): ReleaseProvenance | null {
+  const latest = options.latestRelease;
+  if (!latest?.tagName || !latest.sha) return null;
+  const provenance: ReleaseProvenance = {
+    tagName: latest.tagName,
+    sha: latest.sha,
+    publishedAt: latest.publishedAt ?? null,
+  };
+  const containing: Array<{ sha: string; tagName: string }> = [];
+  for (const sha of options.citedShas.slice(0, 5)) {
+    const tag = firstContainingTag(options.openclawDir, sha, options.probeTimeoutMs);
+    if (tag) containing.push({ sha, tagName: tag });
+  }
+  if (containing.length) provenance.containingReleases = containing;
+  return provenance;
+}
+
+function firstContainingTag(
+  openclawDir: string,
+  sha: string,
+  probeTimeoutMs: number,
+): string | null {
+  try {
+    const text = runText("git", ["tag", "--contains", sha, "--sort=creatordate"], {
+      cwd: openclawDir,
+      stdio: ["ignore", "pipe", "ignore"],
+      trim: "end",
+      timeout: probeTimeoutMs > 0 ? probeTimeoutMs : 0,
+    });
+    const first = text.split(/\r?\n/).find((line) => line.trim());
+    return first ? first.trim() : null;
+  } catch {
+    return null;
+  }
 }
 
 function gitInfo(openclawDir: string): GitInfo {
@@ -3678,6 +3968,26 @@ export function reviewPromptTelemetryForTest(
   additionalPrompt = "",
 ): ReviewPromptTelemetry {
   return reviewPromptTelemetry(item, context, git, additionalPrompt);
+}
+
+// Slice 5 snapshot fixture support. Mirrors the runClaude code path: sibling
+// template, runtime-capabilities block stripped. Keep this as the only
+// surface tests touch — if runClaude diverges, update this wrapper too so
+// the golden snapshot exercises the real Claude render.
+export function buildClaudeReviewPromptForTest(
+  item: Item,
+  context: ItemContext,
+  git: GitInfo,
+  additionalPrompt = "",
+): string {
+  return buildReviewPrompt(
+    item,
+    context,
+    git,
+    additionalPrompt,
+    {},
+    { template: reviewClaudePromptTemplate(), includeRuntimeCapabilities: false },
+  ).text;
 }
 
 function codexFailureReason(detail: string): string {
@@ -7117,7 +7427,11 @@ function reviewCommand(args: Args): void {
       `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} start #${item.number} (${completed + 1}/${candidates.length})`,
     );
     const contextStartedAt = Date.now();
-    const context = collectItemContext(item);
+    const context = collectItemContext(item, {
+      openclawDir,
+      mainSha: git.mainSha,
+      latestRelease: git.latestRelease,
+    });
     const contextElapsedMs = Date.now() - contextStartedAt;
     const codexWorkDir = join(artifactDir, "codex");
     const proofScratchDir = join(codexWorkDir, "proof-scratch", String(item.number));

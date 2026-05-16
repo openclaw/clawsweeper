@@ -1,0 +1,70 @@
+{
+  "item": {
+    "repo": "openclaw/openclaw",
+    "number": 4242,
+    "kind": "issue",
+    "title": "Slice 5 evidence snapshot",
+    "url": "https://github.com/openclaw/openclaw/issues/4242",
+    "createdAt": "2026-04-01T00:00:00Z",
+    "updatedAt": "2026-04-10T00:00:00Z",
+    "author": "external-user",
+    "authorAssociation": "NONE",
+    "labels": ["bug"]
+  },
+  "context": {
+    "issue": {
+      "number": 4242,
+      "title": "Slice 5 evidence snapshot",
+      "body": "Repro at src/foo.ts:42 — looks broken since abc1234.",
+      "labels": ["bug"]
+    },
+    "comments": [{ "author": "contributor", "body": "Still reproduces on main." }],
+    "timeline": [],
+    "counts": { "comments": 1, "timeline": 0 },
+    "sourceExcerpts": [
+      {
+        "path": "src/foo.ts",
+        "sha": "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+        "startLine": 30,
+        "endLine": 60,
+        "body": "function foo() {\n  return 'broken';\n}"
+      }
+    ],
+    "historySnippets": [
+      {
+        "path": "src/foo.ts",
+        "commits": [
+          {
+            "sha": "abc1234",
+            "date": "2026-03-01T00:00:00Z",
+            "author": "Alice",
+            "subject": "refactor: foo"
+          }
+        ]
+      }
+    ],
+    "releaseProvenance": {
+      "tagName": "v1.2.3",
+      "sha": "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+      "publishedAt": "2026-04-01T00:00:00Z",
+      "containingReleases": [{ "sha": "abc1234", "tagName": "v1.2.0" }]
+    },
+    "relatedItemBodies": [
+      {
+        "number": 4100,
+        "kind": "issue",
+        "title": "Earlier discussion",
+        "url": "https://github.com/openclaw/openclaw/issues/4100",
+        "bodyExcerpt": "Previously discussed at #4100; root cause traced to foo()."
+      }
+    ]
+  },
+  "git": {
+    "mainSha": "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+    "latestRelease": {
+      "tagName": "v1.2.3",
+      "sha": "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+      "publishedAt": "2026-04-01T00:00:00Z"
+    }
+  }
+}

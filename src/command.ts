@@ -6,6 +6,14 @@ export type RunTextOptions = {
   maxBuffer?: number;
   stdio?: ["ignore", "pipe", "pipe"] | ["ignore", "pipe", "ignore"];
   trim?: "both" | "end" | "none";
+  /**
+   * Hard wall-clock timeout (ms). Forwarded to execFileSync; the child is
+   * killed with SIGTERM (or `killSignal`) on expiry and execFileSync throws.
+   * Use when a probe must never wedge a review — slice 5 evidence helpers
+   * pass 5_000 so a slow `git`/`gh` call skips the field instead of failing
+   * the whole review.
+   */
+  timeout?: number;
 };
 
 export function runText(
@@ -17,6 +25,7 @@ export function runText(
     maxBuffer = 64 * 1024 * 1024,
     stdio = ["ignore", "pipe", "pipe"],
     trim = "end",
+    timeout,
   }: RunTextOptions = {},
 ): string {
   const text = execFileSync(resolveExecutable(command), args, {
@@ -25,6 +34,7 @@ export function runText(
     env: { ...process.env, GIT_OPTIONAL_LOCKS: "0", ...env },
     maxBuffer,
     stdio,
+    ...(timeout !== undefined ? { timeout } : {}),
   });
   if (trim === "both") return text.trim();
   if (trim === "end") return text.trimEnd();

@@ -33,8 +33,10 @@ import {
   githubPaginatedPath,
   ghRetryKind,
   hotIntakeRecencyMs,
+  buildClaudeReviewPromptForTest,
   isCodexReviewCommentBody,
   isCodexTimeoutError,
+  itemSnapshotHashForTest,
   isGitHubNotFoundError,
   isGitHubRequiresAuthenticationError,
   isLockedConversationCommentError,
@@ -498,6 +500,129 @@ test("Codex prompt telemetry remains byte-identical after the Claude builder opt
   assert.equal(telemetry.staticPromptChars, reviewPromptTemplate().length);
   assert.equal(telemetry.additionalPromptChars, "keep extra instructions visible".length);
   assert.equal(telemetry.contextChars, JSON.stringify(context, null, 2).length);
+});
+
+test("Codex prompt staticPromptChars stays byte-identical when slice 5 evidence fields are present", () => {
+  // Slice 5 regression guard: the new optional ItemContext fields
+  // (sourceExcerpts, historySnippets, releaseProvenance, relatedItemBodies)
+  // land inside the JSON context block. They must enlarge contextChars
+  // but must not move staticPromptChars or any other prompt-template byte.
+  const baseContext = {
+    issue: { number: 4242, title: "Slice 5 evidence parity" },
+    comments: [],
+    timeline: [],
+    counts: { comments: 0, timeline: 0 },
+  };
+  const withEvidence = {
+    ...baseContext,
+    sourceExcerpts: [
+      {
+        path: "src/foo.ts",
+        sha: "deadbeef",
+        startLine: 30,
+        endLine: 60,
+        body: "line 30\nline 31\n...\nline 60",
+      },
+    ],
+    historySnippets: [
+      {
+        path: "src/foo.ts",
+        commits: [{ sha: "abc1234", date: "2026-01-01", author: "Alice", subject: "fix: foo" }],
+      },
+    ],
+    releaseProvenance: {
+      tagName: "v1.2.3",
+      sha: "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+      publishedAt: "2026-04-01T00:00:00Z",
+    },
+    relatedItemBodies: [
+      {
+        number: 99,
+        kind: "issue",
+        title: "Linked",
+        url: "https://example.test/99",
+        bodyExcerpt: "prior discussion summary",
+      },
+    ],
+  };
+  const base = reviewPromptTelemetryForTest(
+    item({ title: "Slice 5 evidence parity" }),
+    baseContext,
+    git,
+  );
+  const enriched = reviewPromptTelemetryForTest(
+    item({ title: "Slice 5 evidence parity" }),
+    withEvidence,
+    git,
+  );
+  assert.equal(enriched.staticPromptChars, base.staticPromptChars);
+  assert.equal(enriched.schemaChars, base.schemaChars);
+  assert.equal(enriched.additionalPromptChars, base.additionalPromptChars);
+  assert.ok(
+    enriched.contextChars > base.contextChars,
+    "evidence fields must enlarge the JSON context block",
+  );
+  assert.equal(enriched.contextChars, JSON.stringify(withEvidence, null, 2).length);
+});
+
+test("itemSnapshotHash strips slice 5 evidence so review-path and apply-path hashes match", () => {
+  // The review path populates new evidence fields; the apply-decisions
+  // path calls collectItemContext bare. If snapshot hashing included the
+  // evidence fields the two paths would never agree and
+  // skipped_changed_since_review would mis-fire.
+  const baseContext = {
+    issue: { number: 7, title: "Snapshot stability" },
+    comments: [],
+    timeline: [],
+    counts: { comments: 0, timeline: 0 },
+  };
+  const enriched = {
+    ...baseContext,
+    sourceExcerpts: [
+      { path: "src/foo.ts", sha: "deadbeef", startLine: 1, endLine: 3, body: "line" },
+    ],
+    releaseProvenance: { tagName: "v1.0", sha: "abc", publishedAt: null },
+  };
+  const sample = item({ number: 7, title: "Snapshot stability" });
+  assert.equal(
+    itemSnapshotHashForTest(sample, baseContext),
+    itemSnapshotHashForTest(sample, enriched),
+  );
+});
+
+test("Claude review prompt assembles a golden snapshot from a synthetic context", () => {
+  // Golden snapshot: locks the rendered Claude prompt for a fixed item +
+  // context-with-evidence pair. If the template or builder shifts bytes,
+  // regenerate the fixture deliberately by re-running with UPDATE_SNAPSHOTS=1.
+  const fixture = JSON.parse(readFileSync("test/fixtures/claude-prompt-snapshot.json", "utf8"));
+  const text = buildClaudeReviewPromptForTest(fixture.item, fixture.context, fixture.git);
+  const fixturePath = "test/fixtures/claude-prompt-snapshot.md";
+  if (process.env.UPDATE_SNAPSHOTS === "1") {
+    writeFileSync(fixturePath, text, "utf8");
+  }
+  assert.equal(text, readFileSync(fixturePath, "utf8"));
+  // Negative-content guard: the snapshot must never include Codex's runtime
+  // sandbox/tool-loop instructions. Slice 4 stripped them from the template;
+  // slice 5 verifies they never sneak back in via the assembled prompt.
+  for (const forbidden of [
+    "## Runtime Capabilities",
+    "available network",
+    "scratch directory",
+    "gh issue view",
+    "git log",
+    "git blame",
+  ]) {
+    assert.ok(
+      !text.toLowerCase().includes(forbidden.toLowerCase()),
+      `Claude prompt snapshot must not contain ${JSON.stringify(forbidden)}`,
+    );
+  }
+  // Positive-content guard: the new evidence fields must be visible in the
+  // assembled JSON context block.
+  assert.ok(text.includes("sourceExcerpts"), "snapshot missing sourceExcerpts in context JSON");
+  assert.ok(text.includes("historySnippets"), "snapshot missing historySnippets");
+  assert.ok(text.includes("releaseProvenance"), "snapshot missing releaseProvenance");
+  assert.ok(text.includes("relatedItemBodies"), "snapshot missing relatedItemBodies");
 });
 
 test("main CLI args ignore package-manager double dash separators", () => {
