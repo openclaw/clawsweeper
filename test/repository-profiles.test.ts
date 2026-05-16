@@ -36,6 +36,36 @@ test("repositoryProfileFor carries service-area routing notes", () => {
   ]);
 });
 
+test("valkyriweb/pi-mono profile carries pi service-area routing notes", () => {
+  const profile = repositoryProfileFor("valkyriweb/pi-mono");
+
+  assert.equal(profile.targetRepo, "valkyriweb/pi-mono");
+  assert.equal(profile.slug, "valkyriweb-pi-mono");
+  assert.equal(profile.checkoutDir, "pi-mono-fork");
+  assert.match(profile.promptNote, /area:coding-agent/);
+  assert.match(profile.promptNote, /area:extensions/);
+  assert.match(profile.promptNote, /area:tui/);
+  assert.match(profile.promptNote, /area:sdk/);
+  assert.match(profile.promptNote, /area:docs/);
+  assert.match(profile.promptNote, /area:tests/);
+  assert.deepEqual(profile.applyCloseRules.issue, [
+    "implemented_on_main",
+    "duplicate_or_superseded",
+    "cannot_reproduce",
+    "incoherent",
+    "not_actionable_in_repo",
+    "stale_insufficient_info",
+  ]);
+  assert.deepEqual(profile.applyCloseRules.pull_request, [
+    "implemented_on_main",
+    "mostly_implemented_on_main",
+    "duplicate_or_superseded",
+    "cannot_reproduce",
+    "incoherent",
+    "not_actionable_in_repo",
+  ]);
+});
+
 test("private-repo triage disables generic OpenClaw fallback", () => {
   assert.throws(
     () => repositoryProfileFor("OpenClaw/example-tool"),

@@ -74,6 +74,30 @@
       }
     },
     {
+      "target_repo": "valkyriweb/pi-mono",
+      "display_name": "Pi (mono-fork)",
+      "checkout_dir": "pi-mono-fork",
+      "prompt_note": "Pi is Luke's fork of the Pi agent toolkit (coding agent CLI, unified LLM API, TUI/web UI libraries, Slack bot, vLLM pods). The local checkout lives at `~/Projects/personal/pi-mono-fork/`; the GitHub repo is `valkyriweb/pi-mono`. Service areas: `area:coding-agent` (the agent harness, session, tools, executor, context), `area:extensions` (dream-memory, pi-memory, claude-bridge, and other extension packages), `area:tui` (terminal UI, themes, keybindings, components), `area:sdk` (SDK integrations, custom providers, model additions), `area:docs` (markdown docs, examples, prompt templates), `area:tests` (unit and integration tests). Use at most two area tags. When the item spans multiple areas, use `area:cross-cutting`. Validation: `pnpm --filter coding-agent test` for harness changes; `pnpm -r build` for the monorepo. Default review provider stays Codex; Claude-bridge routing is opt-in per slice 7.",
+      "apply_close_rules": {
+        "issue": [
+          "implemented_on_main",
+          "duplicate_or_superseded",
+          "cannot_reproduce",
+          "incoherent",
+          "not_actionable_in_repo",
+          "stale_insufficient_info"
+        ],
+        "pull_request": [
+          "implemented_on_main",
+          "mostly_implemented_on_main",
+          "duplicate_or_superseded",
+          "cannot_reproduce",
+          "incoherent",
+          "not_actionable_in_repo"
+        ]
+      }
+    },
+    {
       "target_repo": "valkyriweb/clawsweeper",
       "display_name": "ClawSweeper",
       "checkout_dir": "clawsweeper",
