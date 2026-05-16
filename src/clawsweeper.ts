@@ -2511,7 +2511,10 @@ function indexedExistingReview(
 }
 
 function inferReviewStatus(markdown: string): string {
-  return markdown.includes("Codex review failed") ? "failed" : "complete";
+  // codexFailureDecision emits either "Codex review failed" or "Claude review failed"
+  // depending on the provider that ran the call. Match both prefixes here so the
+  // summary->status inference works regardless of which backend produced the body.
+  return /\b(Codex|Claude) review failed\b/.test(markdown) ? "failed" : "complete";
 }
 
 function hasBlockedLocalCheckoutAccess(markdown: string): boolean {
@@ -3991,13 +3994,15 @@ export function buildClaudeReviewPromptForTest(
   ).text;
 }
 
-function codexFailureReason(detail: string): string {
+function codexFailureReason(provider: ReviewProvider, detail: string): string {
   if (detail.includes("Codex dirtied the OpenClaw checkout")) return "dirty checkout";
   if (detail.includes("did not produce output")) return "missing structured output";
-  if (detail.includes("invalid JSON")) return "invalid structured output";
+  if (detail.includes("invalid JSON") || detail.includes("invalid structured output")) {
+    return "invalid structured output";
+  }
   if (detail.includes("ENOBUFS") || detail.includes("maxBuffer")) return "output buffer overflow";
   if (detail.includes("timed out") || detail.includes("ETIMEDOUT")) return "timeout";
-  return "codex execution failed";
+  return provider === "claude-bridge" ? "claude execution failed" : "codex execution failed";
 }
 
 export function isCodexTimeoutError(value: unknown): boolean {
@@ -4017,10 +4022,11 @@ export const REVIEW_TIMEOUT_ESCALATED_MS = 1_200_000;
 export type ReviewFailureReason = "none" | "timeout" | "other";
 
 export function reviewFailureReasonForSummary(summary: string): ReviewFailureReason {
-  if (!summary.startsWith("Codex review failed")) return "none";
-  // codexFailureDecision builds `Codex review failed: <reason>...`; the reason
-  // string `timeout` comes from codexFailureReason for ETIMEDOUT / 'timed out'.
-  if (/^Codex review failed: timeout\b/.test(summary)) return "timeout";
+  // codexFailureDecision builds `${providerLabel} review failed: <reason>...`; the
+  // reason string `timeout` comes from codexFailureReason for ETIMEDOUT / 'timed out'.
+  // Match either provider's prefix so this stays correct after the slice-6 claude flip.
+  if (!/^(Codex|Claude) review failed\b/.test(summary)) return "none";
+  if (/^(Codex|Claude) review failed: timeout\b/.test(summary)) return "timeout";
   return "other";
 }
 
@@ -4088,32 +4094,42 @@ function renderReviewTimeoutComment(options: {
   ].join("\n");
 }
 
-function codexFailureDecision(status: number | null, stderr: string, stdout = ""): Decision {
+export function codexFailureDecision(
+  provider: ReviewProvider,
+  status: number | null,
+  stderr: string,
+  stdout = "",
+): Decision {
+  const providerLabel = provider === "claude-bridge" ? "Claude" : "Codex";
+  const providerSlug = providerLabel.toLowerCase();
   const detail = stderr || "No stderr.";
-  const reason = codexFailureReason(detail);
+  const reason = codexFailureReason(provider, detail);
   return {
     decision: "keep_open",
     closeReason: "none",
     confidence: "low",
-    summary: `Codex review failed: ${reason}${status === null ? "" : ` (exit ${status})`}.`,
+    summary: `${providerLabel} review failed: ${reason}${status === null ? "" : ` (exit ${status})`}.`,
     changeSummary: "Review failed before ClawSweeper could summarize the requested change.",
     evidence: [
       evidenceEntry({ label: "failure reason", detail: reason }),
-      evidenceEntry({ label: "codex failure detail", detail: trimMiddle(detail, 4000) }),
-      evidenceEntry({ label: "codex stdout", detail: trimMiddle(stdout || "No stdout.", 2000) }),
+      evidenceEntry({ label: `${providerSlug} failure detail`, detail: trimMiddle(detail, 4000) }),
+      evidenceEntry({
+        label: `${providerSlug} stdout`,
+        detail: trimMiddle(stdout || "No stdout.", 2000),
+      }),
     ],
     likelyOwners: [
       {
         person: "unknown",
         role: "review did not complete",
-        reason: "Codex failed before it could trace repository history.",
+        reason: `${providerLabel} failed before it could trace repository history.`,
         commits: [],
         files: [],
         confidence: "low",
       },
     ],
     risks: ["No close action taken because the review did not complete."],
-    bestSolution: "Retry the Codex review after fixing the execution failure.",
+    bestSolution: `Retry the ${providerLabel} review after fixing the execution failure.`,
     itemCategory: "unclear",
     reproductionStatus: "unclear",
     reproductionConfidence: "low",
@@ -4127,18 +4143,18 @@ function codexFailureDecision(status: number | null, stderr: string, stdout = ""
     reviewFindings: [],
     securityReview: {
       status: "not_applicable",
-      summary: "Security review did not run because the Codex review failed before completion.",
+      summary: `Security review did not run because the ${providerLabel} review failed before completion.`,
       concerns: [],
     },
     realBehaviorProof: {
       status: "not_applicable",
-      summary: "Real behavior proof was not assessed because the Codex review failed.",
+      summary: `Real behavior proof was not assessed because the ${providerLabel} review failed.`,
       evidenceKind: "not_applicable",
       needsContributorAction: false,
     },
     telegramVisibleProof: {
       status: "not_needed",
-      summary: "Telegram visible proof was not assessed because the Codex review failed.",
+      summary: `Telegram visible proof was not assessed because the ${providerLabel} review failed.`,
     },
     overallCorrectness: "not a patch",
     overallConfidenceScore: 0,
@@ -4621,6 +4637,7 @@ function runCodex(options: {
   }
   if (!existsSync(outputPath)) {
     const decision = codexFailureDecision(
+      "codex",
       result.status,
       `Codex exited successfully but did not write ${outputPath}.`,
       result.stdout,
@@ -4635,6 +4652,7 @@ function runCodex(options: {
     return parseDecision(JSON.parse(readFileSync(outputPath, "utf8").trim()), options.item);
   } catch (error) {
     const decision = codexFailureDecision(
+      "codex",
       result.status,
       `Codex wrote invalid JSON or schema-invalid output to ${outputPath}: ${
         error instanceof Error ? error.message : String(error)
@@ -7582,12 +7600,14 @@ function reviewCommand(args: Args): void {
       } else {
         codexFailures += 1;
       }
+      const providerLabelForStdout = reviewProvider === "claude-bridge" ? "Claude" : "Codex";
       decision = codexFailureDecision(
+        reviewProvider,
         null,
         errorMessage,
         isTimeout
-          ? "Per-item Codex timeout; needs investigation or manual retry."
-          : "Per-item Codex failure; continuing with the rest of the shard.",
+          ? `Per-item ${providerLabelForStdout} timeout; needs investigation or manual retry.`
+          : `Per-item ${providerLabelForStdout} failure; continuing with the rest of the shard.`,
       );
       if (isTimeout) {
         codexElapsedMs = Date.now() - codexStartedAt;

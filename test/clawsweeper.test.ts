@@ -34,6 +34,7 @@ import {
   ghRetryKind,
   hotIntakeRecencyMs,
   buildClaudeReviewPromptForTest,
+  codexFailureDecision,
   isCodexReviewCommentBody,
   isCodexTimeoutError,
   itemSnapshotHashForTest,
@@ -4119,6 +4120,73 @@ test("reviewFailureReasonForSummary classifies success / timeout / other Codex o
   assert.equal(
     reviewFailureReasonForSummary("Codex review failed: codex execution failed."),
     "other",
+  );
+  // Claude-prefixed summaries (post slice-6 claude-bridge flip) classify the same way.
+  assert.equal(reviewFailureReasonForSummary("Claude review failed: timeout."), "timeout");
+  assert.equal(
+    reviewFailureReasonForSummary("Claude review failed: claude execution failed."),
+    "other",
+  );
+  assert.equal(
+    reviewFailureReasonForSummary("Claude review failed: invalid structured output."),
+    "other",
+  );
+});
+
+test("codexFailureDecision brands failure summary by provider", () => {
+  const codexDecision = codexFailureDecision("codex", 1, "spawnSync codex ETIMEDOUT");
+  assert.equal(codexDecision.summary, "Codex review failed: timeout (exit 1).");
+  assert.equal(codexDecision.decision, "keep_open");
+  assert.equal(
+    codexDecision.bestSolution,
+    "Retry the Codex review after fixing the execution failure.",
+  );
+  assert.equal(
+    codexDecision.likelyOwners[0]?.reason,
+    "Codex failed before it could trace repository history.",
+  );
+  assert.equal(
+    codexDecision.securityReview.summary,
+    "Security review did not run because the Codex review failed before completion.",
+  );
+  assert.ok(
+    codexDecision.evidence.some((entry) => entry.label === "codex failure detail"),
+    "codex failure detail evidence label missing",
+  );
+
+  const claudeDecision = codexFailureDecision(
+    "claude-bridge",
+    null,
+    "Claude review failed for #4: bridge HTTP 502 Bad Gateway",
+  );
+  assert.equal(claudeDecision.summary, "Claude review failed: claude execution failed.");
+  assert.equal(
+    claudeDecision.bestSolution,
+    "Retry the Claude review after fixing the execution failure.",
+  );
+  assert.equal(
+    claudeDecision.likelyOwners[0]?.reason,
+    "Claude failed before it could trace repository history.",
+  );
+  assert.equal(
+    claudeDecision.securityReview.summary,
+    "Security review did not run because the Claude review failed before completion.",
+  );
+  assert.equal(
+    claudeDecision.realBehaviorProof.summary,
+    "Real behavior proof was not assessed because the Claude review failed.",
+  );
+  assert.equal(
+    claudeDecision.telegramVisibleProof.summary,
+    "Telegram visible proof was not assessed because the Claude review failed.",
+  );
+  assert.ok(
+    claudeDecision.evidence.some((entry) => entry.label === "claude failure detail"),
+    "claude failure detail evidence label missing",
+  );
+  assert.ok(
+    claudeDecision.evidence.some((entry) => entry.label === "claude stdout"),
+    "claude stdout evidence label missing",
   );
 });
 
