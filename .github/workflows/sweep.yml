@@ -108,12 +108,15 @@ on:
         required: false
         default: "false"
   schedule:
-    # Three normal triage sweeps per day for the default target (bermont-digital/multica).
+    # Per-cron target routing is handled in the plan job's "Resolve target repository"
+    # step via a case statement on github.event.schedule.
+    #
+    # valkyriweb/pi-mono: one daily sweep at 05:00 UTC.
+    # bermont-digital/multica is still the workflow_dispatch default for manual triggers
+    # but no longer runs on a cron — propose-only re-reviews of long-standing open PRs
+    # were producing no signal change. Re-add a multica cron if that calculus shifts.
     # Hot intake stays manual; PR-open review is handled by Codex Review later.
-    # Use workflow_dispatch.target_repo for other repos until per-repo schedules are proven worth the runner time.
-    - cron: "0 6 * * *"
-    - cron: "0 12 * * *"
-    - cron: "0 18 * * *"
+    - cron: "0 5 * * *" # valkyriweb/pi-mono daily
 
 permissions:
   contents: write
@@ -508,7 +511,16 @@ jobs:
         run: |
           target_repo="${{ github.event.inputs.target_repo || github.event.client_payload.target_repo || '' }}"
           if [ -z "$target_repo" ]; then
-            target_repo="bermont-digital/multica"
+            # Scheduled runs pick their target by cron expression. workflow_dispatch
+            # and repository_dispatch supply target_repo explicitly and skip this branch.
+            case "${{ github.event.schedule }}" in
+              "0 5 * * *")
+                target_repo="valkyriweb/pi-mono"
+                ;;
+              *)
+                target_repo="bermont-digital/multica"
+                ;;
+            esac
           fi
           target_owner="${target_repo%%/*}"
           target_name="${target_repo#*/}"
