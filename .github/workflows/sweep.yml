@@ -862,6 +862,28 @@ jobs:
           filter: blob:none
           fetch-depth: 0
 
+      # Hydrate prior review state into the shard worktree so the per-item
+      # Codex timeout escalator (and any other state-aware logic in
+      # `selectCandidates` / `markdownFor`) can read previous failures. Without
+      # this, `defaultItemsDir()` resolves to an empty path on the shard and
+      # the escalator silently no-ops.
+      - name: Create state token
+        id: shard-state-token
+        uses: actions/create-github-app-token@1b10c78c7865c340bc4f6099eb2f838309f1e8c3 # v3.1.1
+        with:
+          client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
+          owner: valkyriweb
+          repositories: clawsweeper-state
+          permission-contents: read
+
+      - uses: ./clawsweeper/.github/actions/setup-state
+        with:
+          token: ${{ steps.shard-state-token.outputs.token }}
+          state-repository: valkyriweb/clawsweeper-state
+          worktree-path: clawsweeper
+          fetch-depth: 1
+
       - name: Mark shard start
         id: shard-start
         run: echo "started_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ')" >> "$GITHUB_OUTPUT"
