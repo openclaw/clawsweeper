@@ -46,7 +46,9 @@ import {
   parseGhJsonLines,
   parseDecision,
   protectedLabels,
+  runClaude,
   runReview,
+  type ClaudeBridgePostFn,
   renderEvidenceEntry,
   reviewFailureReasonForSummary,
   shouldEscalateCodexTimeout,
@@ -4016,25 +4018,172 @@ test("effectiveCodexTimeoutMs picks base cap by default and the escalated cap on
   assert.equal(custom.escalated, true);
 });
 
-test("runReview throws a clear marker when the claude-bridge provider is selected before slice 3 lands", () => {
-  assert.throws(
-    () =>
-      runReview({
-        provider: "claude-bridge",
-        // Only `item.number` is read before the throw; other fields are inert here.
-        item: { number: 42 } as never,
-        context: {} as never,
-        git: {} as never,
+function claudeOptionsForTest(
+  overrides: Partial<Parameters<typeof runClaude>[0]> = {},
+): Parameters<typeof runClaude>[0] {
+  return {
+    item: { number: 7, repo: "valkyriweb/clawsweeper" } as never,
+    context: {} as never,
+    git: {} as never,
+    model: "claude-sonnet-4-5-20250929",
+    openclawDir: "/tmp/ignored",
+    reasoningEffort: "low",
+    sandboxMode: "read-only",
+    serviceTier: "default",
+    timeoutMs: 60_000,
+    workDir: mkdtempSync(join(tmpdir(), "claude-review-")),
+    prompt: "Pretend review prompt body for unit tests.",
+    bridgeUrl: "http://127.0.0.1:9100",
+    ...overrides,
+  };
+}
+
+test("runClaude POSTs forced-tool-use, persists the response, and returns a parsed Decision", () => {
+  const expected = closeDecision();
+  let capturedUrl = "";
+  let capturedBody: unknown = null;
+  const stubPost: ClaudeBridgePostFn = ({ url, body }) => {
+    capturedUrl = url;
+    capturedBody = body;
+    return {
+      status: 200,
+      body: JSON.stringify({
+        id: "msg_test",
+        type: "message",
+        role: "assistant",
         model: "claude-sonnet-4-5-20250929",
-        openclawDir: "/tmp/ignored",
-        reasoningEffort: "low",
-        sandboxMode: "read-only",
-        serviceTier: "default",
-        timeoutMs: 1000,
-        workDir: "/tmp/ignored",
+        stop_reason: "tool_use",
+        content: [
+          {
+            type: "tool_use",
+            id: "toolu_test",
+            name: "submit_decision",
+            input: expected,
+          },
+        ],
       }),
-    /claude-bridge review provider not yet implemented for #42; slice 3 wires runClaude/,
+    };
+  };
+  const options = claudeOptionsForTest({
+    item: { number: 7, repo: "valkyriweb/clawsweeper" } as never,
+    postFn: stubPost,
+  });
+  const decision = runClaude(options);
+  assert.equal(decision.decision, expected.decision);
+  assert.equal(decision.closeReason, expected.closeReason);
+  assert.deepEqual(decision.likelyOwners, expected.likelyOwners);
+  // Routes to /source/clawsweeper-review so Opik spans get the source tag.
+  assert.match(capturedUrl, /\/source\/clawsweeper-review\/v1\/messages$/);
+  const sentBody = capturedBody as {
+    model: string;
+    tools: Array<{ name: string; input_schema: { type: string } }>;
+    tool_choice: { type: string; name: string };
+    metadata: { user_id: string };
+  };
+  assert.equal(sentBody.tools[0]?.name, "submit_decision");
+  assert.equal(sentBody.tools[0]?.input_schema.type, "object");
+  assert.deepEqual(sentBody.tool_choice, { type: "tool", name: "submit_decision" });
+  assert.equal(sentBody.metadata.user_id, "clawsweeper-#7");
+  // Response is persisted next to the prompt for debug ergonomics.
+  assert.equal(existsSync(join(options.workDir, "7.claude-response.json")), true);
+});
+
+test("runClaude throws when the response contains no submit_decision tool_use block", () => {
+  const stubPost: ClaudeBridgePostFn = () => ({
+    status: 200,
+    body: JSON.stringify({
+      id: "msg_no_tool",
+      type: "message",
+      stop_reason: "end_turn",
+      content: [{ type: "text", text: "I can't decide." }],
+    }),
+  });
+  assert.throws(
+    () => runClaude(claudeOptionsForTest({ item: { number: 8 } as never, postFn: stubPost })),
+    /no submit_decision tool_use in response \(stop_reason=end_turn\)/,
   );
+});
+
+test("runClaude throws invalid-structured-output when tool_use.input fails parseDecision", () => {
+  const stubPost: ClaudeBridgePostFn = () => ({
+    status: 200,
+    body: JSON.stringify({
+      content: [
+        {
+          type: "tool_use",
+          name: "submit_decision",
+          input: { decision: "definitely_not_a_real_enum" },
+        },
+      ],
+    }),
+  });
+  assert.throws(
+    () => runClaude(claudeOptionsForTest({ item: { number: 9 } as never, postFn: stubPost })),
+    /invalid structured output/,
+  );
+});
+
+test("runClaude throws on HTTP 5xx from the bridge with the status code in the message", () => {
+  const stubPost: ClaudeBridgePostFn = () => ({
+    status: 502,
+    body: '{"type":"error","error":{"type":"bridge_error","message":"upstream failed"}}',
+  });
+  assert.throws(
+    () => runClaude(claudeOptionsForTest({ item: { number: 10 } as never, postFn: stubPost })),
+    /Claude review failed for #10: bridge HTTP 502/,
+  );
+});
+
+test("runClaude post-fn timeouts surface a 'timed out' marker so slice B's escalator still arms", () => {
+  const stubPost: ClaudeBridgePostFn = () => {
+    throw new Error("curl timed out after 1000ms");
+  };
+  let caught: unknown;
+  try {
+    runClaude(
+      claudeOptionsForTest({ item: { number: 11 } as never, postFn: stubPost, timeoutMs: 1000 }),
+    );
+    assert.fail("expected runClaude to throw");
+  } catch (error) {
+    caught = error;
+  }
+  const message = (caught as Error).message;
+  assert.match(message, /Claude review failed for #11: timed out after 1000ms/);
+  // Critical: failure marker must trip the existing timeout classifier so
+  // slice B (per-item escalator) still escalates whichever provider ran.
+  assert.equal(isCodexTimeoutError(caught), true);
+});
+
+test("runReview routes provider 'claude-bridge' through runClaude", () => {
+  const expected = closeDecision();
+  let routed = false;
+  const stubPost: ClaudeBridgePostFn = () => {
+    routed = true;
+    return {
+      status: 200,
+      body: JSON.stringify({
+        content: [{ type: "tool_use", name: "submit_decision", input: expected }],
+      }),
+    };
+  };
+  const decision = runReview({
+    provider: "claude-bridge",
+    item: { number: 12, repo: "valkyriweb/clawsweeper" } as never,
+    context: {} as never,
+    git: {} as never,
+    model: "claude-sonnet-4-5-20250929",
+    openclawDir: "/tmp/ignored",
+    reasoningEffort: "low",
+    sandboxMode: "read-only",
+    serviceTier: "default",
+    timeoutMs: 60_000,
+    workDir: mkdtempSync(join(tmpdir(), "claude-route-")),
+    prompt: "Pretend review prompt body.",
+    bridgeUrl: "http://127.0.0.1:9100",
+    postFn: stubPost,
+  });
+  assert.equal(routed, true);
+  assert.equal(decision.decision, expected.decision);
 });
 
 test("runReview throws a clear error for an unknown provider", () => {

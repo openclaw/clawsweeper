@@ -3837,8 +3837,23 @@ function makeTreeReadOnly(path: string): void {
 }
 
 // Provider seam for the per-item review call. Defaults to Codex; slice A of
-// the Anthropic-via-claude-bridge goal wires `claude-bridge` in slice 3.
+// the Anthropic-via-claude-bridge goal adds `claude-bridge` via runClaude
+// (this slice). Default routing stays Codex — slice 6 wires the precedence
+// (repo var, workflow input, slice-B escalation).
 export type ReviewProvider = "codex" | "claude-bridge";
+
+// Per-call HTTP seam for the Claude bridge. Default impl spawns curl so the
+// review loop stays synchronous (matches runCodex's spawnSync architecture);
+// tests inject a stub to avoid touching the network.
+export interface ClaudeBridgePostResult {
+  status: number;
+  body: string;
+}
+export type ClaudeBridgePostFn = (request: {
+  url: string;
+  body: unknown;
+  timeoutMs: number;
+}) => ClaudeBridgePostResult;
 
 export interface RunReviewOptions {
   provider: ReviewProvider;
@@ -3855,25 +3870,232 @@ export interface RunReviewOptions {
   additionalPrompt?: string;
   proofScratchDir?: string;
   prompt?: string;
+  // claude-bridge only. Ignored for the codex provider.
+  bridgeUrl?: string;
+  postFn?: ClaudeBridgePostFn;
 }
 
-// Dispatcher: routes a per-item review call to the configured provider. Pure
-// refactor in this slice — only `codex` is implemented; `claude-bridge` throws
-// with a clear marker so slice 6 routing can be wired before slice 3 lands
-// without silently no-op'ing.
+// Dispatcher: routes a per-item review call to the configured provider. Both
+// providers throw a per-item Error on failure; reviewCommand's catch block
+// converts the error into a failure-shaped Decision. Keep failure markers
+// stable across providers — `isCodexTimeoutError` and `codexFailureReason`
+// both substring-match on the error message regardless of which provider
+// produced it.
 export function runReview(options: RunReviewOptions): Decision {
   const { provider, ...rest } = options;
   switch (provider) {
     case "codex":
       return runCodex(rest);
     case "claude-bridge":
-      throw new Error(
-        `claude-bridge review provider not yet implemented for #${options.item.number}; slice 3 wires runClaude`,
-      );
+      return runClaude(rest);
     default: {
       const exhaustive: never = provider;
       throw new Error(`Unknown review provider: ${String(exhaustive)}`);
     }
+  }
+}
+
+const DEFAULT_CLAUDE_BRIDGE_URL = "http://127.0.0.1:9100";
+const DEFAULT_CLAUDE_MODEL = "claude-sonnet-4-5-20250929";
+const CLAUDE_REVIEW_BRIDGE_SOURCE = "clawsweeper-review";
+const CLAUDE_DECISION_TOOL_NAME = "submit_decision";
+const CLAUDE_DECISION_TOOL_DESCRIPTION =
+  "Submit the final ClawSweeper review decision for this item. Call exactly once.";
+// Minimal neutral system message. Slice 4 adds a sibling prompt template
+// (`prompts/review-item-claude.md`) that owns task framing; for now the full
+// Codex prompt is shoved into the user message and this system stays terse.
+const CLAUDE_SYSTEM_PROMPT =
+  "You are running as part of ClawSweeper's review path. The user message is the full " +
+  "review prompt for one GitHub issue or PR. Call the submit_decision tool exactly once " +
+  "with your structured decision.";
+
+interface RunClaudeOptions {
+  item: Item;
+  context: ItemContext;
+  git: GitInfo;
+  model: string;
+  openclawDir: string;
+  reasoningEffort: string;
+  sandboxMode: string;
+  serviceTier: string;
+  timeoutMs: number;
+  workDir: string;
+  additionalPrompt?: string;
+  proofScratchDir?: string;
+  prompt?: string;
+  bridgeUrl?: string;
+  postFn?: ClaudeBridgePostFn;
+}
+
+// Synchronous HTTP POST via curl. Matches runCodex's spawnSync architecture
+// so the review loop stays sync; making runReview async would ripple through
+// reviewCommand → main → the entire CLI. curl is already a smoke-test
+// dependency on the bridge runbook, and it's universally available.
+function defaultClaudeBridgePost(request: {
+  url: string;
+  body: unknown;
+  timeoutMs: number;
+}): ClaudeBridgePostResult {
+  const STATUS_SENTINEL = "\n__CLAWSWEEPER_HTTP_STATUS__";
+  const result = spawnSync(
+    "curl",
+    [
+      "-sS",
+      "-X",
+      "POST",
+      "-H",
+      "content-type: application/json",
+      "-H",
+      "x-bridge-agent: clawsweeper",
+      "-w",
+      `${STATUS_SENTINEL}%{http_code}`,
+      "--max-time",
+      String(Math.max(1, Math.ceil(request.timeoutMs / 1000))),
+      "--data-binary",
+      "@-",
+      request.url,
+    ],
+    {
+      input: JSON.stringify(request.body),
+      encoding: "utf8",
+      maxBuffer: 32 * 1024 * 1024,
+      // Belt + braces around curl's --max-time so a wedged curl process can't
+      // outlive the per-item budget.
+      timeout: request.timeoutMs + 5_000,
+    },
+  );
+  if (result.error) throw result.error;
+  // curl exit codes: 28 = operation timeout; 6 = couldn't resolve host;
+  // 7 = couldn't connect (bridge down).
+  if (result.status === 28) {
+    throw new Error(`curl timed out after ${request.timeoutMs}ms`);
+  }
+  if (result.status === 6 || result.status === 7) {
+    throw new Error(
+      `bridge unreachable: curl exit ${result.status} (${(result.stderr ?? "").trim()})`,
+    );
+  }
+  if (result.status !== 0) {
+    throw new Error(`curl exited ${result.status}: ${safeOutputTail(result.stderr ?? "")}`);
+  }
+  const output = result.stdout ?? "";
+  const sentinelIdx = output.lastIndexOf(STATUS_SENTINEL);
+  if (sentinelIdx < 0) {
+    throw new Error(`curl did not return status sentinel: ${safeOutputTail(output)}`);
+  }
+  const statusText = output.slice(sentinelIdx + STATUS_SENTINEL.length).trim();
+  const status = Number.parseInt(statusText, 10);
+  if (!Number.isFinite(status)) {
+    throw new Error(`curl returned non-numeric status sentinel: ${statusText}`);
+  }
+  return { status, body: output.slice(0, sentinelIdx) };
+}
+
+export function runClaude(options: RunClaudeOptions): Decision {
+  const item = options.item;
+  const bridgeUrl =
+    options.bridgeUrl ?? process.env.CLAWSWEEPER_BRIDGE_URL ?? DEFAULT_CLAUDE_BRIDGE_URL;
+  const model = options.model || DEFAULT_CLAUDE_MODEL;
+  const postFn = options.postFn ?? defaultClaudeBridgePost;
+
+  ensureDir(options.workDir);
+  const proofScratchDir =
+    options.proofScratchDir ?? join(options.workDir, "proof-scratch", String(item.number));
+  ensureDir(proofScratchDir);
+
+  const prompt =
+    options.prompt ??
+    buildReviewPrompt(item, options.context, options.git, options.additionalPrompt, {
+      proofScratchDir,
+    }).text;
+
+  const promptPath = join(options.workDir, `${item.number}.claude-prompt.md`);
+  const responsePath = join(options.workDir, `${item.number}.claude-response.json`);
+  writeFileSync(promptPath, prompt, "utf8");
+
+  const schema = JSON.parse(reviewDecisionSchemaText());
+
+  const body = {
+    model,
+    max_tokens: 8192,
+    system: CLAUDE_SYSTEM_PROMPT,
+    messages: [{ role: "user", content: prompt }],
+    tools: [
+      {
+        name: CLAUDE_DECISION_TOOL_NAME,
+        description: CLAUDE_DECISION_TOOL_DESCRIPTION,
+        input_schema: schema,
+      },
+    ],
+    tool_choice: { type: "tool", name: CLAUDE_DECISION_TOOL_NAME },
+    metadata: { user_id: `clawsweeper-#${item.number}` },
+  };
+
+  const url = `${bridgeUrl.replace(/\/+$/, "")}/source/${CLAUDE_REVIEW_BRIDGE_SOURCE}/v1/messages`;
+
+  let response: ClaudeBridgePostResult;
+  try {
+    response = postFn({ url, body, timeoutMs: options.timeoutMs });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    // Stable timeout marker across providers so isCodexTimeoutError fires
+    // and codexFailureReason classifies as "timeout" — keeps slice B's
+    // escalator working whichever provider produced the failure.
+    if (isCodexTimeoutError(message)) {
+      throw new Error(
+        `Claude review failed for #${item.number}: timed out after ${options.timeoutMs}ms`,
+      );
+    }
+    throw new Error(`Claude review failed for #${item.number}: ${message}`);
+  }
+
+  // Persist response for debug ergonomics (same shape as runCodex's outputPath).
+  try {
+    writeFileSync(responsePath, response.body, "utf8");
+  } catch {
+    // Swallow — the persisted artifact is best-effort.
+  }
+
+  if (response.status < 200 || response.status >= 300) {
+    throw new Error(
+      `Claude review failed for #${item.number}: bridge HTTP ${response.status} ${
+        safeOutputTail(response.body) || "(no body)"
+      }`,
+    );
+  }
+
+  let payload: unknown;
+  try {
+    payload = JSON.parse(response.body);
+  } catch (error) {
+    throw new Error(
+      `Claude review failed for #${item.number}: invalid JSON body (${
+        error instanceof Error ? error.message : String(error)
+      })`,
+    );
+  }
+
+  const content = (payload as { content?: unknown })?.content;
+  const toolUse = Array.isArray(content)
+    ? (content as Array<{ type?: string; name?: string; input?: unknown }>).find(
+        (block) => block?.type === "tool_use" && block.name === CLAUDE_DECISION_TOOL_NAME,
+      )
+    : undefined;
+  if (!toolUse) {
+    const stopReason = (payload as { stop_reason?: string })?.stop_reason ?? "unknown";
+    throw new Error(
+      `Claude review failed for #${item.number}: no submit_decision tool_use in response (stop_reason=${stopReason})`,
+    );
+  }
+
+  try {
+    return parseDecision(toolUse.input, item);
+  } catch (error) {
+    throw new Error(
+      `Claude review failed for #${item.number}: invalid structured output (${
+        error instanceof Error ? error.message : String(error)
+      })`,
+    );
   }
 }
 
