@@ -3836,6 +3836,47 @@ function makeTreeReadOnly(path: string): void {
   chmodSync(path, 0o555);
 }
 
+// Provider seam for the per-item review call. Defaults to Codex; slice A of
+// the Anthropic-via-claude-bridge goal wires `claude-bridge` in slice 3.
+export type ReviewProvider = "codex" | "claude-bridge";
+
+export interface RunReviewOptions {
+  provider: ReviewProvider;
+  item: Item;
+  context: ItemContext;
+  git: GitInfo;
+  model: string;
+  openclawDir: string;
+  reasoningEffort: string;
+  sandboxMode: string;
+  serviceTier: string;
+  timeoutMs: number;
+  workDir: string;
+  additionalPrompt?: string;
+  proofScratchDir?: string;
+  prompt?: string;
+}
+
+// Dispatcher: routes a per-item review call to the configured provider. Pure
+// refactor in this slice — only `codex` is implemented; `claude-bridge` throws
+// with a clear marker so slice 6 routing can be wired before slice 3 lands
+// without silently no-op'ing.
+export function runReview(options: RunReviewOptions): Decision {
+  const { provider, ...rest } = options;
+  switch (provider) {
+    case "codex":
+      return runCodex(rest);
+    case "claude-bridge":
+      throw new Error(
+        `claude-bridge review provider not yet implemented for #${options.item.number}; slice 3 wires runClaude`,
+      );
+    default: {
+      const exhaustive: never = provider;
+      throw new Error(`Unknown review provider: ${String(exhaustive)}`);
+    }
+  }
+}
+
 function runCodex(options: {
   item: Item;
   context: ItemContext;
@@ -6862,7 +6903,8 @@ function reviewCommand(args: Args): void {
     let codexElapsedMs = 0;
     const codexStartedAt = Date.now();
     try {
-      decision = runCodex({
+      decision = runReview({
+        provider: "codex",
         item,
         context,
         git,

@@ -46,6 +46,7 @@ import {
   parseGhJsonLines,
   parseDecision,
   protectedLabels,
+  runReview,
   renderEvidenceEntry,
   reviewFailureReasonForSummary,
   shouldEscalateCodexTimeout,
@@ -4013,6 +4014,48 @@ test("effectiveCodexTimeoutMs picks base cap by default and the escalated cap on
   });
   assert.equal(custom.timeoutMs, 900_000);
   assert.equal(custom.escalated, true);
+});
+
+test("runReview throws a clear marker when the claude-bridge provider is selected before slice 3 lands", () => {
+  assert.throws(
+    () =>
+      runReview({
+        provider: "claude-bridge",
+        // Only `item.number` is read before the throw; other fields are inert here.
+        item: { number: 42 } as never,
+        context: {} as never,
+        git: {} as never,
+        model: "claude-sonnet-4-5-20250929",
+        openclawDir: "/tmp/ignored",
+        reasoningEffort: "low",
+        sandboxMode: "read-only",
+        serviceTier: "default",
+        timeoutMs: 1000,
+        workDir: "/tmp/ignored",
+      }),
+    /claude-bridge review provider not yet implemented for #42; slice 3 wires runClaude/,
+  );
+});
+
+test("runReview throws a clear error for an unknown provider", () => {
+  assert.throws(
+    () =>
+      runReview({
+        // Force an off-type value through to exercise the `default` branch.
+        provider: "openai" as never,
+        item: { number: 1 } as never,
+        context: {} as never,
+        git: {} as never,
+        model: "x",
+        openclawDir: "/tmp/ignored",
+        reasoningEffort: "low",
+        sandboxMode: "read-only",
+        serviceTier: "default",
+        timeoutMs: 1000,
+        workDir: "/tmp/ignored",
+      }),
+    /Unknown review provider: openai/,
+  );
 });
 
 test("isCodexTimeoutError flags spawnSync ETIMEDOUT and 'timed out' messages", () => {
