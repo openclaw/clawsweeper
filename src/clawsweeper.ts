@@ -4440,7 +4440,15 @@ export function runClaude(options: RunClaudeOptions): Decision {
         input_schema: schema,
       },
     ],
-    tool_choice: { type: "tool", name: CLAUDE_DECISION_TOOL_NAME },
+    // tool_choice: "auto" rather than forced tool use. Anthropic rejects the
+    // combo of extended/adaptive thinking + forced tool_choice with a 400
+    // ("Thinking may not be enabled when tool_choice forces tool use."), so
+    // forcing the tool would defeat the whole point of routing to Claude.
+    // Sonnet 4.6 reliably calls `submit_decision` when the system prompt
+    // demands it and there is only one tool registered — verified by direct
+    // bridge probe. On the rare miss, the parser throws and the caller
+    // produces a conservative `keep_open` failure decision.
+    tool_choice: { type: "auto" },
     metadata: { user_id: `clawsweeper-#${item.number}` },
   };
   if (thinkingBlock) body.thinking = thinkingBlock;

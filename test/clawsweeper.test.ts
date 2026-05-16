@@ -4318,12 +4318,16 @@ test("runClaude POSTs forced-tool-use, persists the response, and returns a pars
   const sentBody = capturedBody as {
     model: string;
     tools: Array<{ name: string; input_schema: { type: string } }>;
-    tool_choice: { type: string; name: string };
+    tool_choice: { type: string; name?: string };
     metadata: { user_id: string };
   };
   assert.equal(sentBody.tools[0]?.name, "submit_decision");
   assert.equal(sentBody.tools[0]?.input_schema.type, "object");
-  assert.deepEqual(sentBody.tool_choice, { type: "tool", name: "submit_decision" });
+  // tool_choice: "auto" is required when adaptive thinking is enabled — Anthropic
+  // rejects forced tool_choice + thinking. Sonnet 4.6 still reliably calls
+  // `submit_decision` because it is the only tool registered and the system
+  // prompt demands one call.
+  assert.deepEqual(sentBody.tool_choice, { type: "auto" });
   assert.equal(sentBody.metadata.user_id, "clawsweeper-#7");
   // Response is persisted next to the prompt for debug ergonomics.
   assert.equal(existsSync(join(options.workDir, "7.claude-response.json")), true);
