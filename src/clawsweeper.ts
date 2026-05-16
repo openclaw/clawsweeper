@@ -665,6 +665,7 @@ const DEFAULT_REASONING_EFFORT = "high";
 const DEFAULT_SERVICE_TIER = "";
 const REVIEW_POLICY_VERSION = "2026-05-09-policy-v16";
 const REVIEW_ITEM_PROMPT_PATH = join(ROOT, "prompts", "review-item.md");
+const REVIEW_ITEM_CLAUDE_PROMPT_PATH = join(ROOT, "prompts", "review-item-claude.md");
 const CLAWSWEEPER_DECISION_SCHEMA_PATH = join(ROOT, "schema", "clawsweeper-decision.schema.json");
 const REVIEW_COMMENT_MARKER_PREFIX = "<!-- clawsweeper-review";
 const REVIEW_START_STATUS_MARKER_PREFIX = "<!-- clawsweeper-review-status";
@@ -1114,6 +1115,7 @@ function sha256(text: string): string {
 }
 
 let reviewPromptTemplateCache: string | undefined;
+let reviewClaudePromptTemplateCache: string | undefined;
 let reviewDecisionSchemaCache: string | undefined;
 
 function itemSnapshotHash(item: Item, context: ItemContext): string {
@@ -3564,6 +3566,18 @@ export function reviewPromptTemplate(): string {
   return reviewPromptTemplateCache;
 }
 
+// Sibling template for the Claude review path (slice 4). The Codex prompt
+// assumes sandboxed mid-flight tool access (`gh`, `git`, shell); the Claude
+// path has none. This template strips those instructions and tells the model
+// that all evidence lives inert in the pre-collected context block. Keep the
+// decision-rubric sections (Fields, Reproduction metadata, Close reasons,
+// Work lane, Pull requests, Close comment format, Voice) consistent across
+// both files so verdict shape stays interchangeable.
+export function reviewClaudePromptTemplate(): string {
+  reviewClaudePromptTemplateCache ??= readFileSync(REVIEW_ITEM_CLAUDE_PROMPT_PATH, "utf8");
+  return reviewClaudePromptTemplateCache;
+}
+
 export function reviewDecisionSchemaText(): string {
   reviewDecisionSchemaCache ??= readFileSync(CLAWSWEEPER_DECISION_SCHEMA_PATH, "utf8");
   return reviewDecisionSchemaCache;
@@ -3573,14 +3587,24 @@ function contextJsonForPrompt(context: ItemContext): string {
   return JSON.stringify(context, null, 2);
 }
 
+// Optional per-provider knobs for buildReviewPrompt. Defaults reproduce the
+// original Codex output byte-for-byte. The Claude path passes its sibling
+// template and skips the Runtime Capabilities block (no sandbox, no network,
+// no scratch dir to point at).
+export interface BuildReviewPromptOptions {
+  template?: string;
+  includeRuntimeCapabilities?: boolean;
+}
+
 function buildReviewPrompt(
   item: Item,
   context: ItemContext,
   git: GitInfo,
   additionalPrompt = "",
   runtimeHints: ReviewPromptRuntimeHints = {},
+  opts: BuildReviewPromptOptions = {},
 ): ReviewPromptBuild {
-  const prompt = reviewPromptTemplate();
+  const prompt = opts.template ?? reviewPromptTemplate();
   const contextJson = contextJsonForPrompt(context);
   const schema = reviewDecisionSchemaText();
   const proofScratchDir = runtimeHints.proofScratchDir?.trim();
@@ -3592,6 +3616,16 @@ function buildReviewPrompt(
 ${additionalPrompt.trim()}
 `
     : "";
+  const runtimeCapabilities =
+    (opts.includeRuntimeCapabilities ?? true)
+      ? `
+
+## Runtime Capabilities
+
+- You may use the available network and read-only GitHub token to inspect PR body links, comments, screenshots, videos, logs, terminal output, and target-repo artifacts.
+- Download proof artifacts into ${proofScratchDir ? `\`${proofScratchDir}\`` : "a temporary scratch directory"} before inspecting them.
+- The target checkout is read-only for review. Do not modify repository files; use the scratch directory or /tmp for downloaded evidence and generated video stills/contact sheets.`
+      : "";
   const text = `${prompt}
 
 ## Repository State
@@ -3607,13 +3641,7 @@ ${additionalPrompt.trim()}
 - Created at: ${item.createdAt}
 - Updated at: ${item.updatedAt}
 - Current main SHA: ${git.mainSha}
-- Latest release: ${git.latestRelease?.tagName ?? "unknown"} (${git.latestRelease?.sha ?? "unknown sha"})
-
-## Runtime Capabilities
-
-- You may use the available network and read-only GitHub token to inspect PR body links, comments, screenshots, videos, logs, terminal output, and target-repo artifacts.
-- Download proof artifacts into ${proofScratchDir ? `\`${proofScratchDir}\`` : "a temporary scratch directory"} before inspecting them.
-- The target checkout is read-only for review. Do not modify repository files; use the scratch directory or /tmp for downloaded evidence and generated video stills/contact sheets.
+- Latest release: ${git.latestRelease?.tagName ?? "unknown"} (${git.latestRelease?.sha ?? "unknown sha"})${runtimeCapabilities}
 
 ## GitHub Context
 
@@ -4005,9 +4033,17 @@ export function runClaude(options: RunClaudeOptions): Decision {
 
   const prompt =
     options.prompt ??
-    buildReviewPrompt(item, options.context, options.git, options.additionalPrompt, {
-      proofScratchDir,
-    }).text;
+    buildReviewPrompt(
+      item,
+      options.context,
+      options.git,
+      options.additionalPrompt,
+      { proofScratchDir },
+      // Claude path: use the sibling template that strips tool-loop guidance,
+      // and omit the Runtime Capabilities block (no sandbox, no network, no
+      // scratch dir to point at).
+      { template: reviewClaudePromptTemplate(), includeRuntimeCapabilities: false },
+    ).text;
 
   const promptPath = join(options.workDir, `${item.number}.claude-prompt.md`);
   const responsePath = join(options.workDir, `${item.number}.claude-response.json`);

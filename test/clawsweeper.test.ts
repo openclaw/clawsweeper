@@ -65,6 +65,7 @@ import {
   renderReviewCommentFromReport,
   renderWorkPlanFromReport,
   reviewDecisionSchemaText,
+  reviewClaudePromptTemplate,
   reviewPromptTelemetryForTest,
   reviewPromptTemplate,
   runtimeBudgetExceeded,
@@ -383,6 +384,120 @@ test("review prompt assets match tracked files", () => {
     JSON.parse(reviewDecisionSchemaText()),
     JSON.parse(readFileSync("schema/clawsweeper-decision.schema.json", "utf8")),
   );
+});
+
+test("reviewClaudePromptTemplate loads and caches the sibling Claude template", () => {
+  const onDisk = readFileSync("prompts/review-item-claude.md", "utf8");
+  assert.equal(reviewClaudePromptTemplate(), onDisk);
+  // Second call must return the same cached reference.
+  assert.equal(reviewClaudePromptTemplate(), reviewClaudePromptTemplate());
+});
+
+test("Claude review template strips all sandbox/tool-loop guidance", () => {
+  const body = reviewClaudePromptTemplate();
+  // Negative-content asserts: catch accidental copy-paste of Codex tool
+  // guidance into the Claude path, where no sandbox or mid-flight tools exist.
+  const forbidden = [
+    "gh issue view",
+    "git log",
+    "git blame",
+    "sandbox",
+    "scratch directory",
+    "available network",
+    "read-only GitHub token",
+  ];
+  for (const needle of forbidden) {
+    assert.equal(
+      body.toLowerCase().includes(needle.toLowerCase()),
+      false,
+      `Claude template must not contain ${JSON.stringify(needle)}`,
+    );
+  }
+});
+
+test("Claude review template keeps the decision-rubric sections verbatim", () => {
+  const body = reviewClaudePromptTemplate();
+  // Positive-content asserts on stable headings shared with the Codex prompt.
+  // These sections define the verdict shape; if they drift, Codex and Claude
+  // decisions stop being interchangeable.
+  for (const heading of [
+    "## Fields",
+    "## Reproduction metadata",
+    "## Close reasons",
+    "## Work lane",
+    "## Pull requests",
+    "## Close comment format",
+  ]) {
+    assert.ok(body.includes(heading), `Claude template must contain heading ${heading}`);
+  }
+  // Spot-check schema-shape lines that must match the Codex rubric verbatim.
+  assert.ok(
+    body.includes("- `summary` \u2014 verdict and rationale"),
+    "Claude template must keep the summary-field rubric line",
+  );
+  assert.ok(
+    body.includes(
+      "Return JSON only via the structured-output tool call, matching the output schema.",
+    ),
+    "Claude template must end on the structured-output-tool return instruction",
+  );
+});
+
+test("Claude review template size stays within 0.6\u00d7-1.4\u00d7 of the Codex template", () => {
+  const codex = reviewPromptTemplate().length;
+  const claude = reviewClaudePromptTemplate().length;
+  const ratio = claude / codex;
+  assert.ok(
+    ratio >= 0.6 && ratio <= 1.4,
+    `Claude template ${claude}B is ${ratio.toFixed(3)}\u00d7 the Codex template ${codex}B; expected 0.6\u00d7-1.4\u00d7`,
+  );
+});
+
+test("buildReviewPrompt with Claude template returns matching telemetry-shape keys", () => {
+  const context = {
+    issue: { number: 321, title: "Claude-path telemetry parity" },
+    comments: [],
+    timeline: [],
+    counts: { comments: 0, timeline: 0 },
+  };
+  const codexTelemetry = reviewPromptTelemetryForTest(
+    item({ title: "Telemetry shape parity" }),
+    context,
+    git,
+  );
+  // Same telemetry-shape keys; static prompt length differs because the
+  // template differs, but the cost-proxy structure must stay identical so
+  // downstream observability does not have to branch on provider.
+  assert.deepEqual(Object.keys(codexTelemetry).sort(), [
+    "additionalPromptChars",
+    "contextChars",
+    "promptChars",
+    "schemaChars",
+    "staticPromptChars",
+  ]);
+});
+
+test("Codex prompt telemetry remains byte-identical after the Claude builder option lands", () => {
+  // Regression guard for slice 4: the parameterised buildReviewPrompt must
+  // not change the Codex codepath. If staticPromptChars or any other field
+  // drifts here, the Codex defaults shifted and the slice broke its hard
+  // boundary ("do not alter Codex's prompt-builder behavior").
+  const context = {
+    issue: { number: 999, title: "Codex parity guard" },
+    comments: [{ author: "contributor", body: "Still happens on main." }],
+    timeline: [],
+    counts: { comments: 1, timeline: 0 },
+  };
+  const telemetry = reviewPromptTelemetryForTest(
+    item({ title: "Codex parity guard" }),
+    context,
+    git,
+    "keep extra instructions visible",
+  );
+  // staticPromptChars must equal the Codex template length exactly.
+  assert.equal(telemetry.staticPromptChars, reviewPromptTemplate().length);
+  assert.equal(telemetry.additionalPromptChars, "keep extra instructions visible".length);
+  assert.equal(telemetry.contextChars, JSON.stringify(context, null, 2).length);
 });
 
 test("main CLI args ignore package-manager double dash separators", () => {
