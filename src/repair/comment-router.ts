@@ -1049,6 +1049,17 @@ function latestAutomergeMaintainerAttribution(command: LooseRecord) {
     if (!["executed", "waiting"].includes(String(entry.status ?? ""))) continue;
     candidates.push(entry);
   }
+  for (const entry of commands ?? []) {
+    if (entry === command) continue;
+    if (entry.repo !== command.repo) continue;
+    if (Number(entry.issue_number) !== Number(command.issue_number)) continue;
+    if (!["automerge", "maintainer_approve_automerge"].includes(String(entry.intent ?? ""))) {
+      continue;
+    }
+    if (entry.trusted_bot) continue;
+    if (!["ready", "executed", "waiting"].includes(String(entry.status ?? ""))) continue;
+    candidates.push(entry);
+  }
   const latest = candidates
     .map((entry) => ({
       entry,

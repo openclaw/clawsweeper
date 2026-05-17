@@ -112,6 +112,30 @@ test("appendLedger reports compact executed writes", () => {
   assert.equal(ledger.commands.length, 1);
 });
 
+test("appendLedger preserves maintainer identity fields for automerge attribution", () => {
+  const ledger = { updated_at: null, commands: [] };
+
+  appendLedger(ledger, [
+    {
+      idempotency_key: "automerge-opt-in",
+      comment_id: "126",
+      comment_version_key: "126:2026-04-29T03:02:00Z",
+      comment_updated_at: "2026-04-29T03:02:00Z",
+      status: "executed",
+      intent: "automerge",
+      issue_number: 74499,
+      repo: "openclaw/openclaw",
+      author: "maintainer-user",
+      author_id: 123456,
+      author_name: "Maintainer User",
+    },
+  ]);
+
+  assert.equal(ledger.commands[0].author, "maintainer-user");
+  assert.equal(ledger.commands[0].author_id, 123456);
+  assert.equal(ledger.commands[0].author_name, "Maintainer User");
+});
+
 test("appendLedger preserves compact executed actions for repair caps", () => {
   const ledger = { updated_at: null, commands: [] };
 
