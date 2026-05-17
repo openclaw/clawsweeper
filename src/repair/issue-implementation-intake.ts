@@ -232,7 +232,10 @@ function eligibilityDecision({
   }
   const fm = report.frontmatter;
   const blockers: string[] = [];
-  if (fm.repository !== targetRepo)
+  // Case-insensitive repo comparison: reviewers/renderers normalize the
+  // `repository` frontmatter field to lowercase (`clip-sa/core-ai`) but the
+  // workflow input may carry the canonical mixed-case form (`CLIP-SA/core-ai`).
+  if ((fm.repository ?? "").toLowerCase() !== targetRepo.toLowerCase())
     blockers.push(`report repository is ${fm.repository || "unknown"}`);
   if (fm.type !== "issue") blockers.push(`report type is ${fm.type || "unknown"}`);
   if (fm.state_at_review !== "open") blockers.push("item was not open at review");
@@ -469,10 +472,19 @@ export function issueReferenceTextMatches(repo: string, number: number, value: J
   ).test(text);
 }
 
-function attachedPrText(live: LooseRecord): boolean {
+export function attachedPrText(live: LooseRecord): boolean {
   const issue = asRecord(live.issue);
   const comments = Array.isArray(live.comments) ? live.comments : [];
-  const text = [issue.body, ...comments.map((comment: JsonValue) => asRecord(comment).body)]
+  // Filter out bot-authored comments. Codex review evidence routinely cites
+  // past PRs (`PR #14`, `pull request 19`, etc.) as historical forensic
+  // context, but those mentions are the reviewer's own narrative, not an
+  // attached PR. Scanning only the issue body + human comments stops the
+  // gate from self-disqualifying any issue with a rich review attached.
+  const humanComments = comments.filter((comment: JsonValue) => {
+    const login = String(asRecord(asRecord(comment).user).login ?? "");
+    return !login.endsWith("[bot]");
+  });
+  const text = [issue.body, ...humanComments.map((comment: JsonValue) => asRecord(comment).body)]
     .map((part) => String(part ?? ""))
     .join("\n");
   return /\/pull\/\d+\b|\b(?:PR|pull request)\s+#?\d+\b/i.test(text);

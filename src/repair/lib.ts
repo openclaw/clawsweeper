@@ -457,12 +457,15 @@ export function parseArgs(argv: string[]): CliArgs {
 
 export function assertAllowedOwner(repo: string, allowedOwner?: string) {
   if (!allowedOwner) return;
+  // GitHub repo identifiers are case-insensitive, so the allowlist match
+  // must be too. Preserve original casing in the error message for clarity.
   const owner = repo.split("/")[0] ?? "";
   const allowedOwners = allowedOwner
     .split(",")
     .map((entry) => entry.trim())
     .filter(Boolean);
-  if (!allowedOwners.length || allowedOwners.includes(owner)) return;
+  const allowedLower = allowedOwners.map((entry) => entry.toLowerCase());
+  if (!allowedOwners.length || allowedLower.includes(owner.toLowerCase())) return;
   throw new Error(`repo owner ${owner} does not match CLAWSWEEPER_ALLOWED_OWNER=${allowedOwner}`);
 }
 

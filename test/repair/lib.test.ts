@@ -62,6 +62,21 @@ test("allowed owner guard accepts comma-separated owner lists", () => {
   );
 });
 
+test("allowed owner guard matches owners case-insensitively", () => {
+  // GitHub repo identifiers are case-insensitive. Reviewer-side normalization
+  // can lowercase the slug in the frontmatter while the var keeps canonical
+  // casing; the guard must still accept the match.
+  assert.doesNotThrow(() =>
+    assertAllowedOwner("clip-sa/core-ai", "bermont-digital,valkyriweb,CLIP-SA"),
+  );
+  assert.doesNotThrow(() =>
+    assertAllowedOwner("CLIP-SA/core-ai", "bermont-digital,valkyriweb,clip-sa"),
+  );
+  assert.doesNotThrow(() =>
+    assertAllowedOwner("Valkyriweb/clawsweeper", "bermont-digital,VALKYRIWEB"),
+  );
+});
+
 test("security signal detection ignores non-security advisory wording", () => {
   assert.equal(
     hasSecuritySignalText(

@@ -172,6 +172,48 @@ test("validation parser requires env assignments before env command", () => {
   );
 });
 
+test("validation parser accepts composer install", () => {
+  assert.deepEqual(parseAllowedValidationCommand("composer install"), ["composer", "install"]);
+  assert.deepEqual(
+    parseAllowedValidationCommand("composer install --no-interaction --prefer-dist"),
+    ["composer", "install", "--no-interaction", "--prefer-dist"],
+  );
+});
+
+test("validation parser accepts composer test scripts", () => {
+  assert.deepEqual(parseAllowedValidationCommand("composer test"), ["composer", "test"]);
+  assert.deepEqual(parseAllowedValidationCommand("composer run test"), ["composer", "run", "test"]);
+  assert.deepEqual(parseAllowedValidationCommand("composer run-script test"), [
+    "composer",
+    "run-script",
+    "test",
+  ]);
+});
+
+test("validation parser accepts php artisan test", () => {
+  assert.deepEqual(parseAllowedValidationCommand("php artisan test"), ["php", "artisan", "test"]);
+});
+
+test("validation parser accepts vendor/bin test runners", () => {
+  assert.deepEqual(parseAllowedValidationCommand("vendor/bin/phpunit"), ["vendor/bin/phpunit"]);
+  assert.deepEqual(parseAllowedValidationCommand("./vendor/bin/pest"), ["./vendor/bin/pest"]);
+  assert.deepEqual(parseAllowedValidationCommand("vendor/bin/pest --parallel"), [
+    "vendor/bin/pest",
+    "--parallel",
+  ]);
+});
+
+test("validation parser still rejects unknown executables", () => {
+  assert.throws(
+    () => parseAllowedValidationCommand("cargo test"),
+    /unsupported validation command/,
+  );
+  assert.throws(
+    () => parseAllowedValidationCommand("vendor/lib/phpunit"),
+    /unsupported validation command/,
+  );
+});
+
 test("validation preflight accepts pnpm filter package scripts", () => {
   const cwd = packageFixture({ typecheck: "turbo typecheck" });
 

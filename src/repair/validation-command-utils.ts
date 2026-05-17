@@ -85,10 +85,16 @@ function validationExecutable(parts: readonly string[]) {
 }
 
 function isAllowedValidationExecutable(executable: string) {
+  // `composer` and `php` cover Laravel / Symfony / generic PHP validation
+  // commands (`composer install`, `composer test`, `php artisan test`).
+  // `vendor/bin/<binary>` matches PHP test runners installed by Composer
+  // (`vendor/bin/phpunit`, `vendor/bin/pest`). The existing shell-metachar
+  // guard above still blocks dangerous invocations of any of these.
   return (
-    ["pnpm", "npm", "node", "git"].includes(executable) ||
+    ["pnpm", "npm", "node", "git", "composer", "php"].includes(executable) ||
     executable === "scripts/run-opengrep.sh" ||
-    executable === "./scripts/run-opengrep.sh"
+    executable === "./scripts/run-opengrep.sh" ||
+    /^(?:\.\/)?vendor\/bin\/[A-Za-z0-9_.-]+$/.test(executable)
   );
 }
 

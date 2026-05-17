@@ -3,6 +3,7 @@ import test from "node:test";
 import { readFileSync } from "node:fs";
 
 import {
+  attachedPrText,
   issueReferenceTextMatches,
   parseReviewReport,
   reportOnlyDecision,
@@ -229,4 +230,58 @@ test("comment router default allows one same-head infrastructure retry", () => {
   const source = readFileSync("src/repair/config.ts", "utf8");
 
   assert.match(source, /CLAWSWEEPER_MAX_REPAIRS_PER_HEAD \?\? 2/);
+});
+
+test("eligibility matches report repository against target repo case-insensitively", () => {
+  // Reviewer/renderer lowercases the `repository` frontmatter field, but the
+  // workflow input typically keeps GitHub's canonical mixed-case slug.
+  const markdown = report({ repository: "clip-sa/core-ai", number: "29" });
+  const decision = reportOnlyDecision({
+    targetRepo: "CLIP-SA/core-ai",
+    report: parseReviewReport(markdown),
+    reportMarkdown: markdown,
+  });
+
+  assert.equal(decision.shouldRepair, true);
+  assert.equal(decision.status, "queued_for_repair");
+});
+
+test("attachedPrText ignores bot-authored comments", () => {
+  // The reviewer's own evidence narrative routinely cites past PRs as
+  // historical context. Those mentions live in `*-clawsweeper[bot]`
+  // comments and must not self-disqualify the issue at intake time.
+  const live = {
+    issue: { body: "No PR yet, just an issue body." },
+    comments: [
+      {
+        user: { login: "valkyriweb-clawsweeper[bot]" },
+        body: "Codex review: PR #14 introduced the hardcode; see /pull/19 for context.",
+      },
+    ],
+  };
+
+  assert.equal(attachedPrText(live), false);
+});
+
+test("attachedPrText still flags human PR references", () => {
+  const live = {
+    issue: { body: "See PR #42 for the workaround." },
+    comments: [],
+  };
+
+  assert.equal(attachedPrText(live), true);
+});
+
+test("attachedPrText flags human comment PR mentions", () => {
+  const live = {
+    issue: { body: "" },
+    comments: [
+      {
+        user: { login: "valkyriweb" },
+        body: "This is being fixed in /pull/77.",
+      },
+    ],
+  };
+
+  assert.equal(attachedPrText(live), true);
 });
