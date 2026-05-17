@@ -391,6 +391,7 @@ updateAutomergeProgressStatus({
 if (plannedFixActions.length === 0) {
   report.status = "skipped";
   report.reason = "no planned fix actions";
+  appendAutomergeRepairOutcomeComment(report, resultPath);
   writeReport(report, resultPath);
   process.exit(0);
 }
