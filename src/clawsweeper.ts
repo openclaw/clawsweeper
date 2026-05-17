@@ -710,7 +710,7 @@ const PRIORITY_LABELS = [
     triagePriority: "P2",
     name: "P2",
     color: "FBCA04",
-    description: "Normal backlog priority with limited blast radius.",
+    description: "Normal priority bug or improvement with limited blast radius.",
   },
   {
     priority: 3,

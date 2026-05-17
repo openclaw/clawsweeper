@@ -4361,7 +4361,7 @@ test("ClawSweeper priority label scheme exposes P0 through P3 labels", () => {
     {
       name: "P2",
       color: "FBCA04",
-      description: "Normal backlog priority with limited blast radius.",
+      description: "Normal priority bug or improvement with limited blast radius.",
     },
     {
       name: "P3",
@@ -4376,6 +4376,28 @@ test("ClawSweeper priority label descriptions fit GitHub label limits", () => {
     assert.ok(
       label.description.length <= 100,
       `${label.name} description is ${label.description.length} characters`,
+    );
+  }
+});
+
+test("ClawSweeper priority label descriptions stay aligned with prompt and schema", () => {
+  const schema = JSON.parse(reviewDecisionSchemaText()) as {
+    properties?: {
+      triagePriority?: {
+        description?: string;
+      };
+    };
+  };
+  const schemaDescription = schema.properties?.triagePriority?.description ?? "";
+  const prompt = reviewPromptTemplate();
+  for (const label of priorityLabelSchemeForTest()) {
+    assert.ok(
+      prompt.includes(`\`${label.name}\`: ${label.description}`),
+      `${label.name} description is missing from the review prompt`,
+    );
+    assert.ok(
+      schemaDescription.includes(`${label.name}: ${label.description}`),
+      `${label.name} description is missing from the schema`,
     );
   }
 });

@@ -71,15 +71,12 @@ strict bug-fix automation candidate even if useful.
 
 Set `triagePriority` as ClawSweeper's maintainer-facing priority label for both
 issues and pull requests. This is not the same as `reviewFindings[].priority`
-and is not limited to PR patch defects. Use `P0` for critical production-breaking,
-data-loss, security-impacting, or core-operation-blocking work that needs
-immediate maintainer attention. Use `P1` for important user-facing bugs, serious
-regressions, broken major workflows, or urgent maintainer-priority work that
-should be handled soon. Use `P2` for meaningful bugs, incomplete behavior,
-polish issues, or useful improvements with limited blast radius and normal
-backlog priority. Use `P3` for minor cleanup, documentation, cosmetic polish,
-small ergonomics issues, or speculative improvements. Use `none` only when
-ClawSweeper should intentionally leave priority labels absent.
+and is not limited to PR patch defects. Use the current GitHub label rubric:
+`P0`: Emergency: data loss, security bypass, crash loop, or unusable core runtime.
+`P1`: Urgent regression or broken agent/channel workflow affecting real users now.
+`P2`: Normal priority bug or improvement with limited blast radius.
+`P3`: Low-risk cleanup, docs, polish, ergonomics, or speculative feature.
+Use `none` only when ClawSweeper should intentionally leave priority labels absent.
 
 Populate structured reproduction metadata separately from the public prose.
 Use `reproductionStatus: "reproduced"` only when there is a concrete,
