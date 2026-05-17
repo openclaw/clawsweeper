@@ -65,6 +65,13 @@ type ApplyKind = ItemKind | "all";
 type DecisionKind = "close" | "keep_open";
 type WorkCandidateKind = "none" | "manual_review" | "queue_fix_pr";
 type TriagePriority = "P0" | "P1" | "P2" | "P3" | "none";
+type RiskLabelName =
+  | "risk:data-loss"
+  | "risk:security"
+  | "risk:crash-loop"
+  | "risk:message-loss"
+  | "risk:session-state"
+  | "risk:auth-provider";
 type ItemCategory =
   | "bug"
   | "regression"
@@ -276,6 +283,7 @@ interface Decision {
   risks: string[];
   bestSolution: string;
   triagePriority: TriagePriority;
+  riskLabels: RiskLabelName[];
   itemCategory: ItemCategory;
   reproductionStatus: ReproductionStatus;
   reproductionConfidence: Confidence;
@@ -723,6 +731,43 @@ const PRIORITY_LABELS = [
 const PRIORITY_LABEL_NAMES: ReadonlySet<string> = new Set(
   PRIORITY_LABELS.map((label) => label.name),
 );
+const RISK_LABELS = [
+  {
+    name: "risk:data-loss",
+    color: "B60205",
+    description: "Can lose, corrupt, or silently drop user/session/config data.",
+  },
+  {
+    name: "risk:security",
+    color: "B60205",
+    description: "Security boundary, credential, authz, sandbox, or sensitive-data risk.",
+  },
+  {
+    name: "risk:crash-loop",
+    color: "D93F0B",
+    description: "Crash, hang, restart loop, or process-level availability failure.",
+  },
+  {
+    name: "risk:message-loss",
+    color: "D93F0B",
+    description: "Channel message delivery can be lost, duplicated, or misrouted.",
+  },
+  {
+    name: "risk:session-state",
+    color: "FBCA04",
+    description: "Session, memory, transcript, context, or agent state can drift or corrupt.",
+  },
+  {
+    name: "risk:auth-provider",
+    color: "FBCA04",
+    description: "Auth, provider routing, model choice, or SecretRef resolution may break.",
+  },
+] as const satisfies readonly {
+  name: RiskLabelName;
+  color: string;
+  description: string;
+}[];
+const RISK_LABEL_NAMES: ReadonlySet<string> = new Set(RISK_LABELS.map((label) => label.name));
 const ISSUE_ADVISORY_LABELS = [
   {
     name: "clawsweeper:current-main-repro",
@@ -830,6 +875,7 @@ const SECURITY_REVIEW_STATUSES = new Set<SecurityReviewStatus>([
   "not_applicable",
 ]);
 const SECURITY_CONCERN_SEVERITIES = new Set<SecurityConcernSeverity>(["high", "medium", "low"]);
+const RISK_LABEL_VALUES = new Set<RiskLabelName>(RISK_LABELS.map((label) => label.name));
 const REAL_BEHAVIOR_PROOF_STATUSES = new Set<RealBehaviorProofStatus>([
   "sufficient",
   "missing",
@@ -871,6 +917,7 @@ const DECISION_SCHEMA_KEYS = new Set([
   "risks",
   "bestSolution",
   "triagePriority",
+  "riskLabels",
   "itemCategory",
   "reproductionStatus",
   "reproductionConfidence",
@@ -1337,6 +1384,21 @@ function requireStringArray(value: unknown, path: string): string[] {
   return value.map((entry, index) => requireString(entry, `${path}[${index}]`));
 }
 
+function requireEnumArray<T extends string>(value: unknown, allowed: Set<T>, path: string): T[] {
+  return requireStringArray(value, path).map((entry, index) =>
+    requireEnum(entry, allowed, `${path}[${index}]`),
+  );
+}
+
+function requireRiskLabels(value: unknown): RiskLabelName[] {
+  const labels = requireEnumArray(value, RISK_LABEL_VALUES, "decision.riskLabels");
+  if (labels.length > 3) throw new Error("decision.riskLabels must contain at most 3 labels");
+  if (new Set(labels).size !== labels.length) {
+    throw new Error("decision.riskLabels must not contain duplicates");
+  }
+  return labels;
+}
+
 function isEnvironmentAccessCaveat(value: string): boolean {
   return /(?:GH_TOKEN|GITHUB_TOKEN|authenticated gh|gh (?:was |is )?unavailable|unauthenticated gh|shallow clone|GitHub auth(?:entication)? (?:was |is )?unavailable|could not use authenticated GitHub)/i.test(
     value,
@@ -1554,6 +1616,7 @@ export function parseDecision(value: unknown, item?: DecisionNormalizationItem):
       TRIAGE_PRIORITIES,
       "decision.triagePriority",
     ),
+    riskLabels: requireRiskLabels(record.riskLabels),
     itemCategory: requireEnum(record.itemCategory, ITEM_CATEGORIES, "decision.itemCategory"),
     reproductionStatus: requireEnum(
       record.reproductionStatus,
@@ -3952,6 +4015,7 @@ function codexFailureDecision(status: number | null, stderr: string, stdout = ""
     risks: ["No close action taken because the review did not complete."],
     bestSolution: "Retry the Codex review after fixing the execution failure.",
     triagePriority: "none",
+    riskLabels: [],
     itemCategory: "unclear",
     reproductionStatus: "unclear",
     reproductionConfidence: "low",
@@ -5043,6 +5107,12 @@ function triagePriorityFromReport(markdown: string): TriagePriority {
   return TRIAGE_PRIORITIES.has(value as TriagePriority) ? (value as TriagePriority) : "none";
 }
 
+function riskLabelsFromReport(markdown: string): RiskLabelName[] {
+  return frontMatterStringArray(markdown, "risk_labels").filter((label): label is RiskLabelName =>
+    RISK_LABEL_NAMES.has(label),
+  );
+}
+
 function reportReviewFindings(markdown: string): ReviewFinding[] {
   const section = reviewSectionValue(markdown, "reviewFindings");
   const findings: ReviewFinding[] = [];
@@ -5332,10 +5402,59 @@ export function priorityLabelsForTest(labels: readonly string[], triagePriority:
   return nextPriorityLabels(labels, priority);
 }
 
+function nextRiskLabels(labels: readonly string[], riskLabels: readonly RiskLabelName[]): string[] {
+  const nextLabels = labels.filter((label) => !RISK_LABEL_NAMES.has(label));
+  const uniqueRiskLabels = new Set(riskLabels);
+  for (const label of RISK_LABELS) {
+    if (uniqueRiskLabels.has(label.name)) nextLabels.push(label.name);
+  }
+  return nextLabels;
+}
+
+export function riskLabelSchemeForTest(): {
+  name: string;
+  color: string;
+  description: string;
+}[] {
+  return RISK_LABELS.map(({ name, color, description }) => ({ name, color, description }));
+}
+
+export function riskLabelsForTest(
+  labels: readonly string[],
+  riskLabels: readonly string[],
+): string[] {
+  return nextRiskLabels(
+    labels,
+    riskLabels.filter((label): label is RiskLabelName => RISK_LABEL_NAMES.has(label)),
+  );
+}
+
 function ensurePriorityLabel(label: PriorityLabelSpec): void {
   try {
     ghWithRetry(
       ["label", "create", label.name, "--color", label.color, "--description", label.description],
+      2,
+    );
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (!/already exists/i.test(message)) throw error;
+  }
+}
+
+function ensureRiskLabel(name: RiskLabelName): void {
+  const definition = RISK_LABELS.find((label) => label.name === name);
+  if (!definition) return;
+  try {
+    ghWithRetry(
+      [
+        "label",
+        "create",
+        definition.name,
+        "--color",
+        definition.color,
+        "--description",
+        definition.description,
+      ],
       2,
     );
   } catch (error) {
@@ -5518,6 +5637,35 @@ function syncPriorityLabel(options: {
   }
   if (labelToAdd) {
     ghWithRetry(["issue", "edit", String(options.number), "--add-label", labelToAdd]);
+  }
+  return { labels: nextLabels, changed };
+}
+
+function syncRiskLabels(options: {
+  number: number;
+  labels: readonly string[];
+  riskLabels: readonly RiskLabelName[];
+  dryRun: boolean;
+}): { labels: string[]; changed: boolean } {
+  const nextLabels = nextRiskLabels(options.labels, options.riskLabels);
+  const currentLabelKeys = new Set(options.labels.map((label) => label.toLowerCase()));
+  const nextLabelKeys = new Set(nextLabels.map((label) => label.toLowerCase()));
+  const labelsToAdd = nextLabels.filter(
+    (label): label is RiskLabelName =>
+      RISK_LABEL_NAMES.has(label) && !currentLabelKeys.has(label.toLowerCase()),
+  );
+  const labelsToRemove = options.labels.filter(
+    (label) => RISK_LABEL_NAMES.has(label) && !nextLabelKeys.has(label.toLowerCase()),
+  );
+  const changed = labelsToAdd.length > 0 || labelsToRemove.length > 0;
+  if (!changed) return { labels: nextLabels, changed };
+  if (options.dryRun) return { labels: nextLabels, changed };
+  for (const label of labelsToAdd) {
+    ensureRiskLabel(label);
+    ghWithRetry(["issue", "edit", String(options.number), "--add-label", label]);
+  }
+  for (const label of labelsToRemove) {
+    ghWithRetry(["issue", "edit", String(options.number), "--remove-label", label]);
   }
   return { labels: nextLabels, changed };
 }
@@ -5818,6 +5966,7 @@ function reportDecision(markdown: string, closeReason: CloseReason): Decision {
     risks: [],
     bestSolution: reviewSectionValue(markdown, "bestSolution"),
     triagePriority: triagePriorityFromReport(markdown),
+    riskLabels: riskLabelsFromReport(markdown),
     itemCategory:
       (frontMatterValue(markdown, "item_category") as ItemCategory | undefined) ?? "unclear",
     reproductionStatus:
@@ -7285,6 +7434,7 @@ work_cluster_refs: ${jsonFrontMatterValue(options.decision.workClusterRefs)}
 work_validation: ${jsonFrontMatterValue(options.decision.workValidation)}
 work_likely_files: ${jsonFrontMatterValue(options.decision.workLikelyFiles)}
 triage_priority: ${options.decision.triagePriority}
+risk_labels: ${jsonFrontMatterValue(options.decision.riskLabels)}
 pull_files: ${jsonFrontMatterValue(pullFiles)}
 pull_files_truncated: ${pullFilesTruncated}
 item_category: ${options.decision.itemCategory}
@@ -7931,6 +8081,15 @@ function applyDecisionsCommand(args: Args): void {
       });
       item.labels = syncResult.labels;
       clawSweeperLabelsChanged ||= syncResult.changed;
+      markdown = replaceFrontMatterValue(markdown, "labels", JSON.stringify(item.labels));
+      const riskSyncResult = syncRiskLabels({
+        number,
+        labels: item.labels,
+        riskLabels: riskLabelsFromReport(markdown),
+        dryRun,
+      });
+      item.labels = riskSyncResult.labels;
+      clawSweeperLabelsChanged ||= riskSyncResult.changed;
       markdown = replaceFrontMatterValue(markdown, "labels", JSON.stringify(item.labels));
     }
     if (state === "open" && item.kind === "issue" && !isCloseProposal && isCurrentCompleteReport) {

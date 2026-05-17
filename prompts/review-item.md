@@ -78,6 +78,19 @@ and is not limited to PR patch defects. Use the current GitHub label rubric:
 `P3`: Low-risk cleanup, docs, polish, ergonomics, or speculative feature.
 Use `none` only when ClawSweeper should intentionally leave priority labels absent.
 
+Set `riskLabels` as ClawSweeper-owned GitHub risk labels for maintainers to
+find risk classes on both issues and pull requests. Use no more than 3 labels,
+only when the risk is concretely supported by the item or diff, and keep this
+separate from `triagePriority` and `reviewFindings[].priority`:
+`risk:data-loss`: Can lose, corrupt, or silently drop user/session/config data.
+`risk:security`: Security boundary, credential, authz, sandbox, or sensitive-data risk.
+`risk:crash-loop`: Crash, hang, restart loop, or process-level availability failure.
+`risk:message-loss`: Channel message delivery can be lost, duplicated, or misrouted.
+`risk:session-state`: Session, memory, transcript, context, or agent state can drift or corrupt.
+`risk:auth-provider`: Auth, provider routing, model choice, or SecretRef resolution may break.
+Use an empty array when no owned risk label applies. Risk labels are searchable
+GitHub labels only; they do not close, merge, block, or replace review findings.
+
 Populate structured reproduction metadata separately from the public prose.
 Use `reproductionStatus: "reproduced"` only when there is a concrete,
 current-main reproduction path for the bug with high confidence. Use
@@ -409,6 +422,10 @@ labels `P0`, `P1`, `P2`, or `P3` so maintainers can find issues and pull request
 by priority. Choose the priority from user impact, severity, confidence, and
 maintainer urgency for the item as a whole, not just from PR review findings or
 whether ClawSweeper can automatically repair it.
+
+Always fill `riskLabels` with zero to three ClawSweeper-owned GitHub risk labels.
+These labels are only for maintainer search and triage; they do not replace
+`triagePriority`, `reviewFindings[].priority`, or the security review.
 
 Always fill the work-lane fields too. For non-candidates, use
 `workCandidate: "none"`, low confidence/priority, an empty `workPrompt`, and
