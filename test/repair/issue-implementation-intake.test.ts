@@ -96,6 +96,24 @@ test("strict docs reports are eligible for implementation intake", () => {
   assert.equal(decision.status, "queued_for_repair");
 });
 
+test("strict regression reports are eligible for implementation intake", () => {
+  const markdown = report({
+    repository: "valkyriweb/pi-mono",
+    item_category: "regression",
+    labels: JSON.stringify(["area:ci"]),
+    work_validation: JSON.stringify(["pnpm -F @pi-mono/ai check"]),
+    work_likely_files: JSON.stringify(["packages/ai/src/models.generated.ts"]),
+  });
+  const decision = reportOnlyDecision({
+    targetRepo: "valkyriweb/pi-mono",
+    report: parseReviewReport(markdown),
+    reportMarkdown: markdown,
+  });
+
+  assert.equal(decision.shouldRepair, true);
+  assert.equal(decision.status, "queued_for_repair");
+});
+
 test("implementation intake issue reference matching ignores unrelated version numbers", () => {
   assert.equal(
     issueReferenceTextMatches(

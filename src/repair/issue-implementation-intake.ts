@@ -391,7 +391,11 @@ function searchOpenPullRequestsMentioningIssue(repo: string, number: number): Lo
 }
 
 function isEligibleIssueImplementationCategory(category: string | undefined) {
-  return new Set(["bug", "docs"]).has(
+  // `regression` is included alongside `bug` so reviewer-tagged regressions
+  // (e.g. CI-break/generated-file-drift issues) can flow through the strict
+  // implementation lane. Fork divergence from upstream openclaw/clawsweeper,
+  // which restricts this lane to `bug` only.
+  return new Set(["bug", "regression", "docs"]).has(
     String(category ?? "")
       .trim()
       .toLowerCase(),

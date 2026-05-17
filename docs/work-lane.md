@@ -32,7 +32,7 @@ them from the source report instead of editing them by hand.
 The automatic issue implementation lane is stricter than the manual work queue.
 It can create a PR only for reviewed issues that are exactly:
 
-- `item_category: bug`
+- `item_category: bug`, `regression`, or `docs`
 - `reproduction_status: reproduced`
 - `reproduction_confidence: high`
 - `work_candidate: queue_fix_pr`
@@ -45,6 +45,11 @@ This intentionally excludes mixed feature/config/product work. If a fix would
 add a flag, setting, new mode, provider support, broad UX behavior, dependency,
 or maintainer policy choice, the review must not classify it as an automatic
 bug implementation candidate.
+
+`regression` is accepted alongside `bug` so reviewer-tagged regressions such as
+CI-break or generated-file-drift issues can flow through the same strict lane.
+Fork divergence from upstream `openclaw/clawsweeper`, which restricts the lane
+to `bug` only.
 
 After review publish, `sweep.yml` scans the just-produced artifacts and dispatches
 `repair-issue-implementation-intake.yml` for eligible reports when
