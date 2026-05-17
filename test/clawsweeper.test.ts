@@ -3373,7 +3373,36 @@ test("review prompt requires target package-manager detection for validation com
   assert.match(prompt, /package\.json#packageManager/);
   assert.match(prompt, /pnpm-lock\.yaml/);
   assert.match(prompt, /package-lock\.json/);
+  assert.match(prompt, /composer\.json/);
   assert.match(prompt, /Do not assume pnpm/);
+});
+
+test("review prompt requires scoped work_validation across toolchains", () => {
+  const prompt = readFileSync("prompts/review-item.md", "utf8");
+
+  // The mandate itself: validation must be scoped, never whole-suite.
+  assert.match(prompt, /Validation must be scoped to the changed code, never the whole suite/);
+
+  // Whole-suite anti-patterns to call out explicitly so the reviewer LLM
+  // recognises them as forbidden.
+  assert.match(prompt, /bare `pnpm test`/);
+  assert.match(prompt, /`composer test`/);
+  assert.match(prompt, /`phpunit` with no path filter/);
+
+  // Per-toolchain scoped examples. These are the concrete patterns the
+  // reviewer should emit; fixture-asserting them keeps the table from
+  // silently regressing.
+  assert.match(prompt, /pnpm test src\/foo\.test\.ts/);
+  assert.match(prompt, /npm test -- src\/foo\.test\.ts/);
+  assert.match(prompt, /vendor\/bin\/pest tests\/Feature\/ProductSearchToolTest\.php/);
+  assert.match(prompt, /vendor\/bin\/phpunit tests\/Unit\/MyTest\.php/);
+
+  // Escape hatch: when no scoped command exists, route to manual_review
+  // rather than smuggling a whole-suite command through.
+  assert.match(
+    prompt,
+    /set `workCandidate: "manual_review"` rather than emitting a whole-suite command/,
+  );
 });
 
 test("review prompt routes PR likely owners through feature history", () => {

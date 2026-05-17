@@ -30,7 +30,18 @@ When `workCandidate: "queue_fix_pr"`, the `workPrompt` becomes an implementation
 - The validation command(s) the agent must run before opening a PR
 - Whether `docs/` updates are expected and which files
 
-Detect the target's package manager before naming any validation command. Check `package.json#packageManager` first; otherwise infer from committed lockfiles (`pnpm-lock.yaml` → pnpm, `package-lock.json` → npm, `yarn.lock` → yarn). Use that tool's invocation form — for example `pnpm --filter <pkg> check` for pnpm targets, `npm run check --workspace=<pkg>` or `npm run check` for npm workspaces. Do not assume pnpm. Name validation commands that already exist as scripts in the target's `package.json` so the implementation agent can run them verbatim.
+Detect the target's package manager before naming any validation command. Check `package.json#packageManager` first; otherwise infer from committed lockfiles (`pnpm-lock.yaml` → pnpm, `package-lock.json` → npm, `yarn.lock` → yarn). For PHP targets check for `composer.json` (composer). Use that tool's invocation form — for example `pnpm --filter <pkg> check` for pnpm targets, `npm run check --workspace=<pkg>` or `npm run check` for npm workspaces, `vendor/bin/pest` or `vendor/bin/phpunit` for composer targets. Do not assume pnpm. Name validation commands that already exist as scripts in the target's `package.json` or `composer.json` so the implementation agent can run them verbatim.
+
+**Validation must be scoped to the changed code, never the whole suite.** Whole-suite commands — bare `pnpm test`, `composer test`, `phpunit` with no path filter, `pytest` with no path — run baseline tests that often need services the fix-PR lane does not provision (databases, queues, external APIs). They surface failures the fix never caused, and the validation-fix pass cannot honestly clear them. Always point validation at the changed file(s) or a narrow filter. Per-toolchain examples of acceptable scoped commands:
+
+| Toolchain | Scoped pattern | Example |
+|---|---|---|
+| pnpm | `pnpm test <changed_test_file>` or `pnpm --filter <pkg> typecheck` | `pnpm test src/foo.test.ts` |
+| npm | `npm test -- <changed_test_file>` or `npm run typecheck --workspace=<pkg>` | `npm test -- src/foo.test.ts` |
+| composer + Pest (Laravel) | `composer install` then `vendor/bin/pest <changed_test_file>` | `vendor/bin/pest tests/Feature/ProductSearchToolTest.php` |
+| composer + PHPUnit | `composer install` then `vendor/bin/phpunit <changed_test_path>` or `--filter=<TestClass>` | `vendor/bin/phpunit tests/Unit/MyTest.php` |
+
+If no scoped command can be named with confidence — for example the touched code has no obvious test file and adding one is part of the fix — set `workCandidate: "manual_review"` rather than emitting a whole-suite command.
 
 Keep the prompt narrow: fix broken existing behaviour, add regression coverage if appropriate, and stop if the fix would add a new feature, new config option, or change product policy.
 
