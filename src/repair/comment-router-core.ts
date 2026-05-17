@@ -1,5 +1,6 @@
 import type { JsonValue, LooseRecord } from "./json-types.js";
 import { renderJobIntentFrontmatter } from "./job-intent.js";
+import { compactText } from "./text-utils.js";
 export const REPAIR_INTENTS = new Set([
   "fix_ci",
   "address_review",
@@ -625,6 +626,147 @@ export function buildAutomergeMergeArgs({
     args.push("--match-head-commit", expectedHeadSha);
   }
   return args;
+}
+
+export function buildAutomergeSquashMessage({
+  command,
+  view,
+  target,
+  comments,
+}: LooseRecord): LooseRecord {
+  const number = Number(command.issue_number);
+  const rawTitle = String(view.title ?? target.title ?? `PR #${number}`).trim();
+  const subject = rawTitle.includes(`#${number}`) ? rawTitle : `${rawTitle} (#${number})`;
+  const summaryLines = reviewSummaryLines(command);
+  const fixupLines = automergeFixupLines({ view, comments });
+  const validationLines = [
+    `ClawSweeper review passed for head ${target.head_sha ?? command.expected_head_sha ?? "unknown"}.`,
+    "Required merge gates passed before the squash merge.",
+  ];
+  const body = [
+    "Summary:",
+    ...summaryLines.map((line: string) => `- ${line}`),
+    "",
+    "Automerge notes:",
+    ...fixupLines.map((line: string) => `- ${line}`),
+    "",
+    "Validation:",
+    ...validationLines.map((line: string) => `- ${line}`),
+    "",
+    `Prepared head SHA: ${target.head_sha ?? command.expected_head_sha ?? "unknown"}`,
+    ...(command.comment_url ? [`Review: ${command.comment_url}`] : []),
+    "",
+    ...automergeCreditTrailers({ command, commits: view.commits ?? [] }),
+  ].join("\n");
+  return { subject, body: body.trimEnd(), summaryLines, fixupLines };
+}
+
+function reviewSummaryLines(command: LooseRecord): string[] {
+  const lines = linesFromMarkdownSection(command.review_summary);
+  if (lines.length > 0) return lines.slice(0, 4);
+  return [
+    `Merged ${command.target?.title ?? `PR #${command.issue_number}`} after ClawSweeper review.`,
+  ];
+}
+
+function automergeFixupLines({ view, comments }: LooseRecord): string[] {
+  const lines: string[] = [];
+  const safeComments = Array.isArray(comments) ? comments : [];
+  const commits = Array.isArray(view.commits) ? view.commits : [];
+  const sawRepair = safeComments.some((comment: JsonValue) =>
+    String(comment.body ?? "").includes("clawsweeper_auto_repair"),
+  );
+  const sawFinding = safeComments.some((comment: JsonValue) =>
+    /Codex review: found issues before merge|clawsweeper-action:fix-required/i.test(
+      String(comment.body ?? ""),
+    ),
+  );
+  if (sawRepair) lines.push("Ran the ClawSweeper repair loop before final review.");
+  if (sawFinding) lines.push("Addressed earlier ClawSweeper review findings before merge.");
+  const followupCommits = commits.slice(1).map(commitHeadline).filter(Boolean);
+  const followupPrefix =
+    sawRepair || sawFinding
+      ? "Included post-review commit in the final squash"
+      : "PR branch already contained follow-up commit before automerge";
+  for (const headline of followupCommits.slice(0, 6)) {
+    lines.push(`${followupPrefix}: ${headline}`);
+  }
+  const uniqueLines = unique(lines).slice(0, 8);
+  return uniqueLines.length > 0
+    ? uniqueLines
+    : ["No ClawSweeper repair was needed after automerge opt-in."];
+}
+
+function automergeCreditTrailers({ command, commits }: LooseRecord): string[] {
+  const trailers: string[] = [];
+  const coAuthorKeys = new Set<string>();
+  for (const trailer of coAuthorTrailersFromCommits(commits, coAuthorKeys)) {
+    trailers.push(trailer);
+  }
+
+  const maintainer = maintainerCredit(command.maintainer_attribution ?? command);
+  if (!maintainer) return trailers;
+  trailers.push(`Approved-by: ${maintainer.login}`);
+  if (!coAuthorKeys.has(maintainer.coAuthorKey)) {
+    trailers.push(`Co-authored-by: ${maintainer.name} <${maintainer.email}>`);
+  }
+  return trailers;
+}
+
+function coAuthorTrailersFromCommits(commits: JsonValue, seen: Set<string>): string[] {
+  if (!Array.isArray(commits)) return [];
+  const trailers: string[] = [];
+  for (const commit of commits) {
+    for (const author of commit?.authors ?? []) {
+      const name = String(author?.name ?? author?.login ?? "").trim();
+      const email = String(author?.email ?? "").trim();
+      if (!name || !email) continue;
+      const key = coAuthorKey(name, email);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      trailers.push(`Co-authored-by: ${name} <${email}>`);
+    }
+  }
+  return trailers;
+}
+
+function maintainerCredit(value: LooseRecord): LooseRecord | null {
+  const login = normalizedLogin(value.author ?? value.login);
+  if (!login || login.includes("[bot]")) return null;
+  const id = String(value.author_id ?? value.id ?? "").trim();
+  const name = String(value.author_name ?? value.name ?? login).trim() || login;
+  const email = id
+    ? `${id}+${login}@users.noreply.github.com`
+    : `${login}@users.noreply.github.com`;
+  return {
+    login,
+    name,
+    email,
+    coAuthorKey: coAuthorKey(name, email),
+  };
+}
+
+function coAuthorKey(name: string, email: string) {
+  return `${name.trim().toLowerCase()} <${email.trim().toLowerCase()}>`;
+}
+
+function commitHeadline(commit: JsonValue): string {
+  return compactText(commit?.messageHeadline ?? commit?.headline ?? commit?.message ?? "", 160);
+}
+
+function linesFromMarkdownSection(section: JsonValue): string[] {
+  const text = String(section ?? "").trim();
+  if (!text) return [];
+  const bulletLines = text
+    .split(/\n+/)
+    .map((line: string) => line.replace(/^\s*[-*]\s+/, "").trim())
+    .filter(Boolean);
+  if (bulletLines.length > 1) return bulletLines.map((line) => compactText(line, 220));
+  return [compactText(text, 320)];
+}
+
+function unique<T>(items: T[]): T[] {
+  return [...new Set(items)];
 }
 
 export function reviewedHeadShaBlockReason({

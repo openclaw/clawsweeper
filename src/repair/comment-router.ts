@@ -33,6 +33,7 @@ import {
   automergeRebaseRepairReason,
   automergeTransientWaitConfig,
   buildAutomergeMergeArgs,
+  buildAutomergeSquashMessage,
   commandHasAction,
   createCachedIssueCommentsLookup,
   createCachedIssueCommentsLookupAsync,
@@ -172,6 +173,7 @@ for (const comment of comments) {
     repo: targetRepo,
     issue_number: issueNumber,
     author: comment.user?.login ?? null,
+    author_id: comment.user?.id ?? null,
     author_association: String(comment.author_association ?? "").toUpperCase(),
     comment_created_at: comment.created_at,
     comment_updated_at: comment.updated_at,
@@ -1027,6 +1029,38 @@ function latestAutomergeResumeAt(command: LooseRecord) {
     }
   }
   return latest;
+}
+
+function latestAutomergeMaintainerAttribution(command: LooseRecord) {
+  const candidates: LooseRecord[] = [];
+  if (
+    !command.trusted_bot &&
+    ["automerge", "maintainer_approve_automerge"].includes(command.intent)
+  ) {
+    candidates.push(command);
+  }
+  for (const entry of ledger.commands ?? []) {
+    if (entry.repo !== command.repo) continue;
+    if (Number(entry.issue_number) !== Number(command.issue_number)) continue;
+    if (!["automerge", "maintainer_approve_automerge"].includes(String(entry.intent ?? ""))) {
+      continue;
+    }
+    if (entry.trusted_bot) continue;
+    if (!["executed", "waiting"].includes(String(entry.status ?? ""))) continue;
+    candidates.push(entry);
+  }
+  const latest = candidates
+    .map((entry) => ({
+      entry,
+      at: Date.parse(String(entry.comment_updated_at ?? entry.comment_created_at ?? "")) || 0,
+    }))
+    .sort((left, right) => right.at - left.at)[0]?.entry;
+  if (!latest?.author) return null;
+  return {
+    author: latest.author,
+    author_id: latest.author_id,
+    author_name: latest.author_name,
+  };
 }
 
 function repairLoopStoppedReason(command: LooseRecord) {
@@ -1991,7 +2025,10 @@ function executeAutomerge(command: LooseRecord) {
     return { action: "merge", status: "blocked", reason: gateBlock, merge_method: "squash" };
   }
   const mergeMessage = buildAutomergeSquashMessage({
-    command,
+    command: {
+      ...command,
+      maintainer_attribution: latestAutomergeMaintainerAttribution(command),
+    },
     view,
     target: latestTarget,
     comments: issueCommentsFor(command.issue_number),
@@ -2085,96 +2122,6 @@ function sleepMs(ms: number) {
   if (ms <= 0) return;
   const buffer = new SharedArrayBuffer(4);
   Atomics.wait(new Int32Array(buffer), 0, 0, ms);
-}
-
-function buildAutomergeSquashMessage({
-  command,
-  view,
-  target,
-  comments,
-}: LooseRecord): LooseRecord {
-  const number = Number(command.issue_number);
-  const rawTitle = String(view.title ?? target.title ?? `PR #${number}`).trim();
-  const subject = rawTitle.includes(`#${number}`) ? rawTitle : `${rawTitle} (#${number})`;
-  const summaryLines = reviewSummaryLines(command);
-  const fixupLines = automergeFixupLines({ view, comments });
-  const validationLines = [
-    `ClawSweeper review passed for head ${target.head_sha ?? command.expected_head_sha ?? "unknown"}.`,
-    "Required merge gates passed before the squash merge.",
-  ];
-  const body = [
-    "Summary:",
-    ...summaryLines.map((line: string) => `- ${line}`),
-    "",
-    "Automerge notes:",
-    ...fixupLines.map((line: string) => `- ${line}`),
-    "",
-    "Validation:",
-    ...validationLines.map((line: string) => `- ${line}`),
-    "",
-    `Prepared head SHA: ${target.head_sha ?? command.expected_head_sha ?? "unknown"}`,
-    ...(command.comment_url ? [`Review: ${command.comment_url}`] : []),
-    "",
-    ...coAuthorTrailersFromCommits(view.commits ?? []),
-  ].join("\n");
-  return { subject, body: body.trimEnd(), summaryLines, fixupLines };
-}
-
-function reviewSummaryLines(command: LooseRecord): string[] {
-  const lines = linesFromMarkdownSection(command.review_summary);
-  if (lines.length > 0) return lines.slice(0, 4);
-  return [
-    `Merged ${command.target?.title ?? `PR #${command.issue_number}`} after ClawSweeper review.`,
-  ];
-}
-
-function automergeFixupLines({ view, comments }: LooseRecord): string[] {
-  const lines: string[] = [];
-  const commits = Array.isArray(view.commits) ? view.commits : [];
-  const sawRepair = comments.some((comment: JsonValue) =>
-    String(comment.body ?? "").includes("clawsweeper_auto_repair"),
-  );
-  const sawFinding = comments.some((comment: JsonValue) =>
-    /Codex review: found issues before merge|clawsweeper-action:fix-required/i.test(
-      String(comment.body ?? ""),
-    ),
-  );
-  if (sawRepair) lines.push("Ran the ClawSweeper repair loop before final review.");
-  if (sawFinding) lines.push("Addressed earlier ClawSweeper review findings before merge.");
-  const followupCommits = commits.slice(1).map(commitHeadline).filter(Boolean);
-  const followupPrefix =
-    sawRepair || sawFinding
-      ? "Included post-review commit in the final squash"
-      : "PR branch already contained follow-up commit before automerge";
-  for (const headline of followupCommits.slice(0, 6)) {
-    lines.push(`${followupPrefix}: ${headline}`);
-  }
-  const uniqueLines = unique(lines).slice(0, 8);
-  return uniqueLines.length > 0
-    ? uniqueLines
-    : ["No ClawSweeper repair was needed after automerge opt-in."];
-}
-
-function coAuthorTrailersFromCommits(commits: JsonValue): string[] {
-  if (!Array.isArray(commits)) return [];
-  const trailers: string[] = [];
-  const seen = new Set<string>();
-  for (const commit of commits) {
-    for (const author of commit?.authors ?? []) {
-      const name = String(author?.name ?? author?.login ?? "").trim();
-      const email = String(author?.email ?? "").trim();
-      if (!name || !email) continue;
-      const key = `${name.toLowerCase()} <${email.toLowerCase()}>`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      trailers.push(`Co-authored-by: ${name} <${email}>`);
-    }
-  }
-  return trailers;
-}
-
-function commitHeadline(commit: JsonValue): string {
-  return compactText(commit?.messageHeadline ?? commit?.headline ?? commit?.message ?? "", 160);
 }
 
 function writeAutomergeMergeBody(command: LooseRecord, target: LooseRecord, body: string) {
@@ -2364,17 +2311,6 @@ function extractMarkdownSection(body: JsonValue, heading: string): string | null
     "i",
   );
   return pattern.exec(text)?.[1]?.trim() || null;
-}
-
-function linesFromMarkdownSection(section: JsonValue): string[] {
-  const text = String(section ?? "").trim();
-  if (!text) return [];
-  const bulletLines = text
-    .split(/\n+/)
-    .map((line: string) => line.replace(/^\s*[-*]\s+/, "").trim())
-    .filter(Boolean);
-  if (bulletLines.length > 1) return bulletLines.map((line) => compactText(line, 220));
-  return [compactText(text, 320)];
 }
 
 function issueCommentsFor(number: JsonValue): JsonValue[] {

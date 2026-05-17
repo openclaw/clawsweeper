@@ -18,6 +18,7 @@ import {
   automergeReadinessRepairReason,
   automergeTransientWaitConfig,
   buildAutomergeMergeArgs,
+  buildAutomergeSquashMessage,
   commandHasAction,
   createCachedIssueCommentsLookup,
   createCachedIssueCommentsLookupAsync,
@@ -1709,6 +1710,82 @@ test("automerge merge args pin the reviewed head SHA", () => {
       "abc123",
     ],
   );
+});
+
+test("automerge squash message credits the initiating maintainer with approval and co-author trailers", () => {
+  const message = buildAutomergeSquashMessage({
+    command: {
+      issue_number: 123,
+      expected_head_sha: "abc123",
+      target: { title: "fix: test" },
+      maintainer_attribution: {
+        author: "maintainer-user",
+        author_id: 123456,
+      },
+    },
+    target: { head_sha: "abc123", title: "fix: test" },
+    view: {
+      title: "fix: test",
+      commits: [
+        {
+          authors: [
+            {
+              name: "Contributor",
+              email: "111+contributor@users.noreply.github.com",
+            },
+          ],
+        },
+      ],
+    },
+    comments: [],
+  });
+
+  assert.match(
+    message.body,
+    /^Co-authored-by: Contributor <111\+contributor@users\.noreply\.github\.com>$/m,
+  );
+  assert.match(message.body, /^Approved-by: maintainer-user$/m);
+  assert.match(
+    message.body,
+    /^Co-authored-by: maintainer-user <123456\+maintainer-user@users\.noreply\.github\.com>$/m,
+  );
+});
+
+test("automerge squash message dedupes maintainer co-author trailer", () => {
+  const message = buildAutomergeSquashMessage({
+    command: {
+      issue_number: 123,
+      expected_head_sha: "abc123",
+      target: { title: "fix: test" },
+      maintainer_attribution: {
+        author: "maintainer-user",
+        author_id: 123456,
+      },
+    },
+    target: { head_sha: "abc123", title: "fix: test" },
+    view: {
+      title: "fix: test",
+      commits: [
+        {
+          authors: [
+            {
+              name: "maintainer-user",
+              email: "123456+maintainer-user@users.noreply.github.com",
+            },
+          ],
+        },
+      ],
+    },
+    comments: [],
+  });
+
+  assert.equal(
+    message.body.match(
+      /^Co-authored-by: maintainer-user <123456\+maintainer-user@users\.noreply\.github\.com>$/gm,
+    )?.length,
+    1,
+  );
+  assert.match(message.body, /^Approved-by: maintainer-user$/m);
 });
 
 test("automerge gate block only reports the global merge policy gate", () => {
