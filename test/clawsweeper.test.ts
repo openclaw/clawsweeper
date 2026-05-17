@@ -4351,12 +4351,12 @@ test("ClawSweeper priority label scheme exposes P0 through P3 labels", () => {
     {
       name: "P0",
       color: "B60205",
-      description: "Critical impact; needs immediate maintainer attention.",
+      description: "Emergency: data loss, security bypass, crash loop, or unusable core runtime.",
     },
     {
       name: "P1",
       color: "D93F0B",
-      description: "High-priority user-facing bug, regression, or broken workflow.",
+      description: "Urgent regression or broken agent/channel workflow affecting real users now.",
     },
     {
       name: "P2",
@@ -4366,7 +4366,7 @@ test("ClawSweeper priority label scheme exposes P0 through P3 labels", () => {
     {
       name: "P3",
       color: "0E8A16",
-      description: "Low-priority cleanup, docs, polish, ergonomics, or speculative work.",
+      description: "Low-risk cleanup, docs, polish, ergonomics, or speculative feature.",
     },
   ]);
 });

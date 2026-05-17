@@ -696,14 +696,14 @@ const PRIORITY_LABELS = [
     triagePriority: "P0",
     name: "P0",
     color: "B60205",
-    description: "Critical impact; needs immediate maintainer attention.",
+    description: "Emergency: data loss, security bypass, crash loop, or unusable core runtime.",
   },
   {
     priority: 1,
     triagePriority: "P1",
     name: "P1",
     color: "D93F0B",
-    description: "High-priority user-facing bug, regression, or broken workflow.",
+    description: "Urgent regression or broken agent/channel workflow affecting real users now.",
   },
   {
     priority: 2,
@@ -717,7 +717,7 @@ const PRIORITY_LABELS = [
     triagePriority: "P3",
     name: "P3",
     color: "0E8A16",
-    description: "Low-priority cleanup, docs, polish, ergonomics, or speculative work.",
+    description: "Low-risk cleanup, docs, polish, ergonomics, or speculative feature.",
   },
 ] as const;
 const PRIORITY_LABEL_NAMES: ReadonlySet<string> = new Set(
