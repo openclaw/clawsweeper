@@ -52,6 +52,7 @@ import {
   staleAutomergeActivationReason,
   usesSharedAutomergeStatus,
 } from "../../dist/repair/comment-router-core.js";
+import { CLAWSWEEPER_CO_AUTHOR_TRAILER } from "../../dist/repair/co-author-credit.js";
 import { parseSimpleYaml, validateJob } from "../../dist/repair/lib.js";
 
 test("parseCommand recognizes maintainer slash commands", () => {
@@ -1799,6 +1800,10 @@ test("automerge squash message credits the initiating maintainer with approval a
     message.body,
     /^Co-authored-by: Contributor <111\+contributor@users\.noreply\.github\.com>$/m,
   );
+  assert.match(
+    message.body,
+    /^Co-authored-by: clawsweeper\[bot\] <274271284\+clawsweeper\[bot\]@users\.noreply\.github\.com>$/m,
+  );
   assert.match(message.body, /^Approved-by: maintainer-user$/m);
   assert.match(
     message.body,
@@ -1843,6 +1848,41 @@ test("automerge squash message dedupes maintainer co-author trailer", () => {
   assert.match(message.body, /^Approved-by: maintainer-user$/m);
 });
 
+test("automerge squash message dedupes ClawSweeper co-author trailer", () => {
+  const message = buildAutomergeSquashMessage({
+    command: {
+      issue_number: 123,
+      expected_head_sha: "abc123",
+      target: { title: "fix: test" },
+      maintainer_attribution: {
+        author: "maintainer-user",
+        author_id: 123456,
+      },
+    },
+    target: { head_sha: "abc123", title: "fix: test" },
+    view: {
+      title: "fix: test",
+      commits: [
+        {
+          authors: [
+            {
+              name: "clawsweeper[bot]",
+              email: "274271284+clawsweeper[bot]@users.noreply.github.com",
+            },
+          ],
+        },
+      ],
+    },
+    comments: [],
+  });
+
+  assert.equal(
+    message.body.split("\n").filter((line) => line === CLAWSWEEPER_CO_AUTHOR_TRAILER).length,
+    1,
+  );
+  assert.match(message.body, /^Approved-by: maintainer-user$/m);
+});
+
 test("automerge squash message credits maintainer metadata carried by replacement PR body", () => {
   const body = [
     "Replacement PR body",
@@ -1869,6 +1909,10 @@ test("automerge squash message credits maintainer metadata carried by replacemen
   });
 
   assert.match(message.body, /^Approved-by: maintainer-user$/m);
+  assert.match(
+    message.body,
+    /^Co-authored-by: clawsweeper\[bot\] <274271284\+clawsweeper\[bot\]@users\.noreply\.github\.com>$/m,
+  );
   assert.match(
     message.body,
     /^Co-authored-by: maintainer-user <123456\+maintainer-user@users\.noreply\.github\.com>$/m,

@@ -1,4 +1,9 @@
 import type { JsonValue, LooseRecord } from "./json-types.js";
+import {
+  CLAWSWEEPER_CO_AUTHOR,
+  CLAWSWEEPER_CO_AUTHOR_TRAILER,
+  coAuthorKey,
+} from "./co-author-credit.js";
 import { runCommand as run } from "./command-runner.js";
 import { parsePullRequestUrl } from "./github-ref.js";
 import { repoRoot } from "./lib.js";
@@ -81,9 +86,22 @@ export function sourceContributorCredits({
 }
 
 export function coAuthorTrailers(contributorCredits: LooseRecord[]): string[] {
-  return contributorCredits.map(
-    (credit: JsonValue) => `Co-authored-by: ${credit.name} <${credit.email}>`,
-  );
+  const seen = new Set<string>();
+  const trailers: string[] = [];
+  for (const credit of contributorCredits) {
+    const name = String(credit.name ?? "").trim();
+    const email = String(credit.email ?? "").trim();
+    if (!name || !email) continue;
+    const key = coAuthorKey(name, email);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    trailers.push(`Co-authored-by: ${name} <${email}>`);
+  }
+  const clawsweeperKey = coAuthorKey(CLAWSWEEPER_CO_AUTHOR.name, CLAWSWEEPER_CO_AUTHOR.email);
+  if (!seen.has(clawsweeperKey)) {
+    trailers.push(CLAWSWEEPER_CO_AUTHOR_TRAILER);
+  }
+  return trailers;
 }
 
 export function publicContributorCredit(credit: JsonValue): LooseRecord {

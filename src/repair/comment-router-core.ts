@@ -1,4 +1,9 @@
 import type { JsonValue, LooseRecord } from "./json-types.js";
+import {
+  CLAWSWEEPER_CO_AUTHOR_TRAILER,
+  clawsweeperCoAuthorKey,
+  coAuthorKey,
+} from "./co-author-credit.js";
 import { renderJobIntentFrontmatter } from "./job-intent.js";
 import { compactText } from "./text-utils.js";
 export const REPAIR_INTENTS = new Set([
@@ -736,6 +741,10 @@ function automergeCreditTrailers({ command, commits }: LooseRecord): string[] {
   for (const trailer of coAuthorTrailersFromCommits(commits, coAuthorKeys)) {
     trailers.push(trailer);
   }
+  if (!coAuthorKeys.has(clawsweeperCoAuthorKey())) {
+    coAuthorKeys.add(clawsweeperCoAuthorKey());
+    trailers.push(CLAWSWEEPER_CO_AUTHOR_TRAILER);
+  }
 
   const maintainer = maintainerCredit(
     command.maintainer_attribution ?? automergeRequestedByFromBody(command.target?.body) ?? command,
@@ -794,10 +803,6 @@ export function automergeRequestedByFromBody(body: JsonValue): LooseRecord | nul
     author_id: attrs.id ?? attrs.author_id ?? null,
     author_name: attrs.name ?? attrs.author_name ?? null,
   };
-}
-
-function coAuthorKey(name: string, email: string) {
-  return `${name.trim().toLowerCase()} <${email.trim().toLowerCase()}>`;
 }
 
 function commitHeadline(commit: JsonValue): string {
