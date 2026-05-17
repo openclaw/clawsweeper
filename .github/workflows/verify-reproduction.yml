@@ -128,6 +128,22 @@ jobs:
           filter: blob:none
           fetch-depth: 0
 
+      - name: Ensure OrbStack Docker on PATH
+        # The mac-mini self-hosted runner gets Docker via OrbStack at
+        # ~/.orbstack/bin/ but the runner's launchd shell does not see that
+        # path by default. Prepend it so `docker compose` (Compose v2 plugin)
+        # resolves to OrbStack's bundled binary instead of any older Docker
+        # CLI that may be earlier on PATH and would reject the `compose`
+        # subcommand.
+        run: |
+          set -euo pipefail
+          if [ -d "$HOME/.orbstack/bin" ]; then
+            echo "$HOME/.orbstack/bin" >> "$GITHUB_PATH"
+          fi
+          export PATH="$HOME/.orbstack/bin:$PATH"
+          docker --version || true
+          docker compose version || true
+
       - name: Run verify-reproduction
         id: verify
         env:
