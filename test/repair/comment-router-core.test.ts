@@ -12,6 +12,7 @@ import {
   automergeChangelogBlockReason,
   automergeFailedChecksRepairReason,
   automergeClusterId,
+  automergeRequestedByFromBody,
   automergeGateBlockReason,
   automergeJobBranch,
   automergeJobPath,
@@ -503,6 +504,9 @@ test("renderAutomergeJob validates and keeps merge owned by router", () => {
     repo: "openclaw/openclaw",
     issueNumber: 74112,
     title: "Tighten cross-session message handling",
+    author: "maintainer-user",
+    authorId: 123456,
+    commentUrl: "https://github.com/openclaw/openclaw/pull/74112#issuecomment-1",
   });
   const match = raw.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
   assert.ok(match);
@@ -514,6 +518,12 @@ test("renderAutomergeJob validates and keeps merge owned by router", () => {
   assert.deepEqual(validateJob(job), []);
   assert.equal(job.frontmatter.job_intent, "automerge_pr");
   assert.equal(job.frontmatter.source, "pr_automerge");
+  assert.equal(job.frontmatter.requested_by, "maintainer-user");
+  assert.equal(job.frontmatter.requested_by_id, "123456");
+  assert.equal(
+    job.frontmatter.request_comment_url,
+    "https://github.com/openclaw/openclaw/pull/74112#issuecomment-1",
+  );
   assert.equal(job.frontmatter.allow_fix_pr, true);
   assert.equal(job.frontmatter.allow_merge, false);
   assert.deepEqual(job.frontmatter.blocked_actions, ["close", "merge"]);
@@ -525,6 +535,7 @@ test("renderAutomergeJob validates and keeps merge owned by router", () => {
   assert.match(job.body, /add a changelog entry when required/);
   assert.match(job.body, /Never add forbidden changelog credit lines/);
   assert.match(job.body, /router owns final merge/);
+  assert.match(job.body, /Requested by: maintainer-user/);
 });
 
 test("renderIssueImplementationJob validates and opens one non-closing fix PR lane", () => {
@@ -1786,6 +1797,38 @@ test("automerge squash message dedupes maintainer co-author trailer", () => {
     1,
   );
   assert.match(message.body, /^Approved-by: maintainer-user$/m);
+});
+
+test("automerge squash message credits maintainer metadata carried by replacement PR body", () => {
+  const body = [
+    "Replacement PR body",
+    '<!-- clawsweeper-automerge-requested-by login="maintainer-user" id="123456" -->',
+  ].join("\n");
+  assert.deepEqual(automergeRequestedByFromBody(body), {
+    author: "maintainer-user",
+    author_id: "123456",
+    author_name: null,
+  });
+
+  const message = buildAutomergeSquashMessage({
+    command: {
+      issue_number: 124,
+      expected_head_sha: "def456",
+      target: { title: "fix: replacement", body },
+    },
+    target: { head_sha: "def456", title: "fix: replacement", body },
+    view: {
+      title: "fix: replacement",
+      commits: [],
+    },
+    comments: [],
+  });
+
+  assert.match(message.body, /^Approved-by: maintainer-user$/m);
+  assert.match(
+    message.body,
+    /^Co-authored-by: maintainer-user <123456\+maintainer-user@users\.noreply\.github\.com>$/m,
+  );
 });
 
 test("automerge gate block only reports the global merge policy gate", () => {

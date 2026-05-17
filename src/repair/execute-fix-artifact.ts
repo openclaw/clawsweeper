@@ -1017,6 +1017,7 @@ function openReplacementPrFromPreparedRepairCheckout({
     clusterId: result.cluster_id,
     provenance,
     contributorCredits,
+    maintainerAttribution: jobMaintainerAttribution(),
   });
   const bodyPath = path.join(workRoot, "replacement-pr-body.md");
   fs.writeFileSync(bodyPath, body);
@@ -1347,6 +1348,7 @@ function executeReplacementBranch({
     clusterId: result.cluster_id,
     provenance,
     contributorCredits,
+    maintainerAttribution: jobMaintainerAttribution(),
   });
   if (dryRun) {
     return {
@@ -2975,6 +2977,16 @@ function githubRepoCloneUrl(repo: string) {
 function setupGitIdentity(cwd: JsonValue) {
   run("git", ["config", "user.name", clawsweeperGitUserName()], { cwd });
   run("git", ["config", "user.email", clawsweeperGitUserEmail()], { cwd });
+}
+
+function jobMaintainerAttribution() {
+  const author = String(job.frontmatter.requested_by ?? "").trim();
+  if (!author) return null;
+  return {
+    author,
+    author_id: job.frontmatter.requested_by_id ?? null,
+    comment_url: job.frontmatter.request_comment_url ?? null,
+  };
 }
 
 function firstSourcePullRequest(fixArtifact: LooseRecord) {

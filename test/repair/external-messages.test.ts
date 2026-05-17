@@ -108,6 +108,10 @@ test("replacement PR body records replacement reason and co-author credit", () =
         co_authored_by: "Co-authored-by: Mona Octocat <1+octocat@users.noreply.github.com>",
       },
     ],
+    maintainerAttribution: {
+      author: "maintainer-user",
+      author_id: 123456,
+    },
     provenance: { model: "gpt-test", reasoning: "medium", reviewedSha: "abcdef1234567890" },
   });
 
@@ -116,6 +120,11 @@ test("replacement PR body records replacement reason and co-author credit", () =
   assert.match(
     body,
     /@octocat: Co-authored-by: Mona Octocat <1\+octocat@users\.noreply\.github\.com>/,
+  );
+  assert.match(body, /Automerge requested by: @maintainer-user/);
+  assert.match(
+    body,
+    /<!-- clawsweeper-automerge-requested-by login="maintainer-user" id="123456" -->/,
   );
 });
 

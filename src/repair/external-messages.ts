@@ -395,6 +395,7 @@ export function replacementPrBody({
   clusterId,
   provenance,
   contributorCredits,
+  maintainerAttribution = null,
 }: LooseRecord) {
   const lines = [
     fixArtifact.pr_body.trim(),
@@ -406,11 +407,37 @@ export function replacementPrBody({
     `- Validation: ${listOrNone(fixArtifact.validation_commands)}`,
     "- Replacement reason: ClawSweeper could not update the source PR branch directly, so it opened a writable replacement PR instead.",
   ];
+  const maintainer = automergeMaintainerAttribution(maintainerAttribution);
+  if (maintainer) {
+    lines.push(`- Automerge requested by: @${maintainer.login}`);
+    lines.push(
+      `<!-- clawsweeper-automerge-requested-by login="${escapeHtmlAttribute(
+        maintainer.login,
+      )}" id="${escapeHtmlAttribute(maintainer.id)}" -->`,
+    );
+  }
   if (fallbackReason) lines.push(`- Repair fallback: ${fallbackReason}`);
   const creditLines = contributorCreditLines(contributorCredits);
   if (creditLines.length > 0) lines.push("", ...creditLines);
   lines.push("", fishNotes(provenance));
   return `${lines.join("\n")}\n`;
+}
+
+function automergeMaintainerAttribution(value: LooseRecord): LooseRecord | null {
+  const login = String(value?.author ?? value?.login ?? value?.requested_by ?? "").trim();
+  if (!login || login.includes("[bot]")) return null;
+  return {
+    login,
+    id: String(value?.author_id ?? value?.id ?? value?.requested_by_id ?? "").trim(),
+  };
+}
+
+function escapeHtmlAttribute(value: JsonValue) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/"/g, "&quot;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
 }
 
 export function defaultCloseComment({

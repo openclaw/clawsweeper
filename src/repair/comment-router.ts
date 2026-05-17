@@ -1545,6 +1545,9 @@ function ensureAutomergeJob(command: LooseRecord) {
         issueNumber: command.issue_number,
         title: command.target.title,
         repairMode: repairJobModeForCommand(command),
+        author: command.author,
+        authorId: command.author_id,
+        commentUrl: command.comment_url,
       }),
     );
     statusDetail = "written";
@@ -2242,6 +2245,7 @@ function classifyPullTarget(pull: LooseRecord, issueNumber: JsonValue): JsonValu
   return {
     kind: "pull_request",
     title: pull.title ?? null,
+    body: pull.body ?? null,
     branch,
     head_sha: pull.headRefOid ?? null,
     author,

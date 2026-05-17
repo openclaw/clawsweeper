@@ -81,6 +81,10 @@ export function repoSlug(repo: string) {
     .replace(/^-+|-+$/g, "");
 }
 
+function yamlScalar(value: JsonValue): string {
+  return JSON.stringify(String(value ?? ""));
+}
+
 export function automergeClusterId(repo: string, issueNumber: JsonValue) {
   return `automerge-${repoSlug(repo)}-${Number(issueNumber)}`;
 }
@@ -183,6 +187,9 @@ export function renderAutomergeJob({
   issueNumber,
   title = null,
   repairMode: rawRepairMode = "automerge",
+  author = null,
+  authorId = null,
+  commentUrl = null,
 }: LooseRecord) {
   const clusterId = automergeClusterId(repo, issueNumber);
   const branch = automergeJobBranch(repo, issueNumber);
@@ -190,6 +197,17 @@ export function renderAutomergeJob({
   const prUrl = `https://github.com/${repo}/pull/${Number(issueNumber)}`;
   const safeTitle = String(title ?? `PR ${ref}`).trim() || `PR ${ref}`;
   const repairMode = String(rawRepairMode) === "autofix" ? "autofix" : "automerge";
+  const maintainerFrontmatter = [
+    author ? `requested_by: ${yamlScalar(author)}` : null,
+    authorId ? `requested_by_id: ${yamlScalar(authorId)}` : null,
+    commentUrl ? `request_comment_url: ${yamlScalar(commentUrl)}` : null,
+  ]
+    .filter(Boolean)
+    .join("\n");
+  const maintainerContext = [
+    author ? `Requested by: ${author}` : null,
+    commentUrl ? `Request comment: ${commentUrl}` : null,
+  ].filter(Boolean);
   const finalMergeLine =
     repairMode === "autofix"
       ? "Final merge is disabled for autofix. Keep the PR open after a passing ClawSweeper verdict unless a maintainer explicitly changes mode."
@@ -226,11 +244,12 @@ security_policy: central_security_only
 security_sensitive: false
 target_branch: ${branch}
 source: ${AUTOMERGE_JOB_SOURCE}
----
+${maintainerFrontmatter ? `${maintainerFrontmatter}\n` : ""}---
 
 # ClawSweeper adopted PR repair candidate
 
 Maintainer opted ${ref} into ClawSweeper ${repairMode}.
+${maintainerContext.length > 0 ? `\n${maintainerContext.join("\n")}\n` : ""}
 
 Source PR: ${prUrl}
 Title: ${safeTitle}
@@ -704,7 +723,9 @@ function automergeCreditTrailers({ command, commits }: LooseRecord): string[] {
     trailers.push(trailer);
   }
 
-  const maintainer = maintainerCredit(command.maintainer_attribution ?? command);
+  const maintainer = maintainerCredit(
+    command.maintainer_attribution ?? automergeRequestedByFromBody(command.target?.body) ?? command,
+  );
   if (!maintainer) return trailers;
   trailers.push(`Approved-by: ${maintainer.login}`);
   if (!coAuthorKeys.has(maintainer.coAuthorKey)) {
@@ -743,6 +764,21 @@ function maintainerCredit(value: LooseRecord): LooseRecord | null {
     name,
     email,
     coAuthorKey: coAuthorKey(name, email),
+  };
+}
+
+export function automergeRequestedByFromBody(body: JsonValue): LooseRecord | null {
+  const marker = String(body ?? "").match(
+    /<!--\s*clawsweeper-automerge-requested-by\s+([^>]*)-->/i,
+  );
+  if (!marker) return null;
+  const attrs = markerAttributes(marker[1] ?? "");
+  const author = attrs.login ?? attrs.author ?? attrs.requested_by;
+  if (!author) return null;
+  return {
+    author,
+    author_id: attrs.id ?? attrs.author_id ?? null,
+    author_name: attrs.name ?? attrs.author_name ?? null,
   };
 }
 
