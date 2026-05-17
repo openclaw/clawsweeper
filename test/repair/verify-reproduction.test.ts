@@ -29,6 +29,7 @@ function report(overrides: Record<string, string> = {}) {
     requires_new_feature: "false",
     requires_new_config_option: "false",
     requires_product_decision: "false",
+    security_review_status: "not_applicable",
     ...overrides,
   };
   const frontmatter = Object.entries(fields)

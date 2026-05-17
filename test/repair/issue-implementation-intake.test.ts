@@ -34,6 +34,7 @@ function report(overrides = {}) {
     requires_new_feature: "false",
     requires_new_config_option: "false",
     requires_product_decision: "false",
+    security_review_status: "not_applicable",
     ...overrides,
   };
   const frontmatter = Object.entries(fields)
@@ -55,8 +56,8 @@ test("strict reproducible bug reports are eligible for implementation intake", (
   assert.equal(decision.status, "queued_for_repair");
 });
 
-test("generated Security Review heading does not block issue implementation intake", () => {
-  const markdown = `${report()}\n## Security Review\n\nStatus: not_applicable\n\nSummary: This is not a security-sensitive report.\n\nConcerns:\n\n- none\n`;
+test("security review verdict 'cleared' is eligible for issue implementation intake", () => {
+  const markdown = report({ security_review_status: "cleared" });
   const decision = reportOnlyDecision({
     targetRepo: "openclaw/openclaw",
     report: parseReviewReport(markdown),
@@ -67,8 +68,19 @@ test("generated Security Review heading does not block issue implementation inta
   assert.equal(decision.status, "queued_for_repair");
 });
 
-test("security-sensitive review report content blocks issue implementation intake", () => {
-  const markdown = `${report()}\n## Security Review\n\nConcerns:\n\n- Possible credential leak in the reported behavior.\n`;
+test("security review verdict 'not_applicable' is eligible for issue implementation intake", () => {
+  const markdown = report({ security_review_status: "not_applicable" });
+  const decision = reportOnlyDecision({
+    targetRepo: "openclaw/openclaw",
+    report: parseReviewReport(markdown),
+    reportMarkdown: markdown,
+  });
+
+  assert.equal(decision.shouldRepair, true);
+});
+
+test("security review verdict 'needs_attention' blocks issue implementation intake", () => {
+  const markdown = report({ security_review_status: "needs_attention" });
   const decision = reportOnlyDecision({
     targetRepo: "openclaw/openclaw",
     report: parseReviewReport(markdown),
@@ -76,7 +88,35 @@ test("security-sensitive review report content blocks issue implementation intak
   });
 
   assert.equal(decision.shouldRepair, false);
-  assert.match(decision.blockers.join("\n"), /security-sensitive signal/);
+  assert.match(decision.blockers.join("\n"), /security review verdict is needs_attention/);
+});
+
+test("missing security review verdict fails closed", () => {
+  // Simulate a legacy report that pre-dates the renderer change: every
+  // frontmatter field except `security_review_status` is present.
+  const markdown = report().replace(/\nsecurity_review_status: [^\n]*\n/, "\n");
+  const decision = reportOnlyDecision({
+    targetRepo: "openclaw/openclaw",
+    report: parseReviewReport(markdown),
+    reportMarkdown: markdown,
+  });
+
+  assert.equal(decision.shouldRepair, false);
+  assert.match(decision.blockers.join("\n"), /missing security review verdict/);
+});
+
+test("narrative prose mentioning 'security' no longer blocks intake", () => {
+  // Regression: pre-verdict-gate, the reviewer's boilerplate sentence
+  // 'Non-PR issue; no diff to review for security concerns.' false-positive
+  // the regex scan. The verdict gate trusts the schema-validated status.
+  const markdown = `${report()}\n## Security Review\n\nStatus: not_applicable\n\nSummary: Non-PR issue; no diff to review for security concerns.\n\nConcerns:\n\n- none\n`;
+  const decision = reportOnlyDecision({
+    targetRepo: "openclaw/openclaw",
+    report: parseReviewReport(markdown),
+    reportMarkdown: markdown,
+  });
+
+  assert.equal(decision.shouldRepair, true);
 });
 
 test("strict docs reports are eligible for implementation intake", () => {

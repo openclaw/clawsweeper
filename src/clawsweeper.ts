@@ -7277,6 +7277,7 @@ requires_product_decision: ${options.decision.requiresProductDecision}
 real_behavior_proof_status: ${options.decision.realBehaviorProof.status}
 real_behavior_proof_evidence_kind: ${options.decision.realBehaviorProof.evidenceKind}
 real_behavior_proof_needs_contributor_action: ${options.decision.realBehaviorProof.needsContributorAction}
+security_review_status: ${options.decision.securityReview.status}
 telegram_visible_proof_status: ${options.decision.telegramVisibleProof.status}
 ---
 

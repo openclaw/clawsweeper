@@ -180,10 +180,14 @@ export function reportOnlyDecision({
   reportMarkdown: string;
   lane?: IntakeLane;
 }): IntakeDecision {
+  // `reportMarkdown` is preserved on the public type for backward compat
+  // with callers (CLI, tests, other repos) that still pass the rendered
+  // markdown; intake no longer needs it now that the security verdict and
+  // every other gate read structured frontmatter fields instead.
+  void reportMarkdown;
   return eligibilityDecision({
     targetRepo,
     report,
-    reportMarkdown,
     live: null,
     enabled: "true",
     lane,
@@ -206,21 +210,20 @@ function intakeDecision({
   live: LooseRecord;
   lane?: IntakeLane;
 }): IntakeDecision {
-  return eligibilityDecision({ enabled, targetRepo, report, reportMarkdown, live, lane });
+  void reportMarkdown;
+  return eligibilityDecision({ enabled, targetRepo, report, live, lane });
 }
 
 function eligibilityDecision({
   enabled,
   targetRepo,
   report,
-  reportMarkdown,
   live,
   lane = "reproduced",
 }: {
   enabled: string;
   targetRepo: string;
   report: ReviewReport;
-  reportMarkdown: string;
   live: LooseRecord | null;
   lane?: IntakeLane;
 }): IntakeDecision {
@@ -254,8 +257,19 @@ function eligibilityDecision({
   if (fm.requires_product_decision === "true") blockers.push("requires a product decision");
   if (frontMatterStringArray(fm.labels).some(isProtectedLabel))
     blockers.push("protected label present");
-  if (securitySensitiveReviewReport(reportMarkdown))
-    blockers.push("security-sensitive signal present");
+  // Trust the reviewer's schema-validated `securityReview.status` verdict
+  // (promoted to `security_review_status` frontmatter by the renderer) over
+  // a regex scan of the narrative prose. Fail-closed when the field is
+  // missing or unknown so legacy reports must be re-reviewed before they
+  // re-enter intake.
+  const securityVerdict = fm.security_review_status;
+  if (securityVerdict !== "cleared" && securityVerdict !== "not_applicable") {
+    blockers.push(
+      securityVerdict
+        ? `security review verdict is ${securityVerdict}`
+        : "missing security review verdict",
+    );
+  }
   if (!section(report.body, "Repair Work Prompt").trim())
     blockers.push("missing repair work prompt");
   if (frontMatterStringArray(fm.work_validation).length === 0)
@@ -536,10 +550,6 @@ function securitySensitiveText(text: string): boolean {
   return /\b(?:security|vulnerability|cve|ghsa|secret|credential|token|exploit|xss|csrf|ssrf|rce)\b/i.test(
     normalized,
   );
-}
-
-function securitySensitiveReviewReport(markdown: string): boolean {
-  return securitySensitiveText(markdown.replace(/^## Security Review\s*$/gim, ""));
 }
 
 function asRecord(value: unknown): Record<string, JsonValue> {
