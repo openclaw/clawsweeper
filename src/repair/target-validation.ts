@@ -166,10 +166,23 @@ function installWithPnpm(cwd: string, env: NodeJS.ProcessEnv, timeoutMs: number)
 
 function installWithNpm(cwd: string, env: NodeJS.ProcessEnv, timeoutMs: number) {
   const hasLockfile = fs.existsSync(path.join(cwd, "package-lock.json"));
-  const args = hasLockfile
-    ? ["ci", "--no-audit", "--no-fund", "--prefer-offline"]
-    : ["install", "--no-audit", "--no-fund", "--prefer-offline"];
-  run("npm", args, { cwd, env, timeoutMs });
+  const installArgs = ["install", "--no-audit", "--no-fund", "--prefer-offline"];
+  if (!hasLockfile) {
+    run("npm", installArgs, { cwd, env, timeoutMs });
+    return;
+  }
+  try {
+    run("npm", ["ci", "--no-audit", "--no-fund", "--prefer-offline"], { cwd, env, timeoutMs });
+  } catch (error) {
+    // `npm ci` is strict — it exits EUSAGE when package.json and the
+    // committed lockfile drift (e.g. an upstream merge bumped a dep but
+    // didn't regenerate the lock). Targets in that state still install
+    // cleanly under `npm install`. Mirror the pnpm OUTDATED_LOCKFILE
+    // retry so we don't false-positive a verification error on a
+    // lockfile-drift target.
+    if (!/EUSAGE|out of sync|can only install/i.test(String(error.message))) throw error;
+    run("npm", installArgs, { cwd, env, timeoutMs });
+  }
 }
 
 export function runAllowedValidationCommands(
