@@ -4970,9 +4970,10 @@ function publicRealBehaviorProofLine(proof: RealBehaviorProof): string {
 function publicMantisRecommendationBlock(recommendation: MantisRecommendation): string {
   if (recommendation.status !== "recommended" || recommendation.scenario === "none") return "";
   const comment = recommendation.maintainerComment.trim();
+  const ambiguousMantisMention = new RegExp(`@${"mantis"}\\b`, "i");
   if (
     !comment.startsWith("@openclaw-mantis ") ||
-    /@mantis\b/i.test(comment) ||
+    ambiguousMantisMention.test(comment) ||
     /\b(?:gh\s+workflow|workflow_dispatch|dispatch|trigger\s+the\s+workflow)\b/i.test(comment) ||
     comment.length > 500 ||
     comment.includes("\n")

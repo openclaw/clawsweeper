@@ -482,8 +482,9 @@ Known Mantis lanes:
   dedicated transport scenario fits and the proof can be described concretely.
 
 When `mantisRecommendation.status` is `recommended`, write a single-line
-`maintainerComment` that starts with `@openclaw-mantis`, never `@Mantis`, and
-describes the exact behavior to prove. Example:
+`maintainerComment` that starts with `@openclaw-mantis` and describes the exact
+behavior to prove. Do not use any shorter or ambiguous Mantis account mention.
+Example:
 `@openclaw-mantis telegram desktop proof: verify that /stop targets the active
 topic and does not affect other topics.` Keep it short enough to paste into a
 PR comment.

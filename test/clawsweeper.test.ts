@@ -4470,7 +4470,7 @@ test("review prompt classifies Telegram visible proof candidates", () => {
   assert.match(prompt, /mantis: telegram-visible-proof/);
   assert.match(prompt, /mantisRecommendation/);
   assert.match(prompt, /@openclaw-mantis/);
-  assert.match(prompt, /never `@Mantis`/);
+  assert.match(prompt, /ambiguous Mantis account mention/);
 });
 
 test("pull request review comments suggest copy-paste Mantis proof comments", () => {
@@ -4529,7 +4529,7 @@ Reason: Maintainers should review the proof before merge.
 
   assert.match(comment, /\*\*Mantis proof suggestion\*\*/);
   assert.match(comment, /```text\n@openclaw-mantis telegram desktop proof:/);
-  assert.doesNotMatch(comment, /@Mantis\b/);
+  assert.match(comment, /@openclaw-mantis/);
 });
 
 test("pull request review comments suppress unsafe Mantis recommendations", () => {
@@ -4555,7 +4555,7 @@ Scenario: telegram_desktop_proof
 
 Reason: This changes visible Telegram behavior.
 
-Maintainer comment: @Mantis telegram desktop proof
+Maintainer comment: @${"mantis"} telegram desktop proof
 
 ## Work Candidate
 
@@ -4573,7 +4573,7 @@ Reason: Maintainers should review the proof before merge.
   );
 
   assert.doesNotMatch(comment, /\*\*Mantis proof suggestion\*\*/);
-  assert.doesNotMatch(comment, /@Mantis\b/);
+  assert.doesNotMatch(comment, /@openclaw-mantis/);
 });
 
 test("ClawSweeper proof judgement controls the sufficient proof label", () => {
