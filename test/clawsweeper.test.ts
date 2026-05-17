@@ -2191,15 +2191,19 @@ Reason: Maintainers should review the tests after the targeted lane is green.
   );
   assert.match(
     comment,
-    /Maintainers can comment `@clawsweeper review`, `@clawsweeper re-review`, or `@clawsweeper re-run` to request a fresh review only\./,
+    /PR authors can comment `@clawsweeper re-review` or `@clawsweeper re-run` on their own open PR or issue to request a fresh review only\./,
   );
   assert.match(
     comment,
-    /Those review commands do not start repair, autofix, rebase, CI repair, or automerge\./,
+    /Maintainers can also comment `@clawsweeper review` to request a fresh review only\./,
   );
   assert.match(
     comment,
-    /Repair and merge flows require explicit commands such as `@clawsweeper autofix`, `@clawsweeper automerge`, `@clawsweeper fix ci`, or `@clawsweeper address review`\./,
+    /Fresh-review commands do not start repair, autofix, rebase, CI repair, or automerge\./,
+  );
+  assert.match(
+    comment,
+    /Maintainer-only repair and merge flows require explicit commands such as `@clawsweeper autofix`, `@clawsweeper automerge`, `@clawsweeper fix ci`, or `@clawsweeper address review`\./,
   );
   assert.match(
     comment,
