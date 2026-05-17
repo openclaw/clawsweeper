@@ -46,17 +46,64 @@ export type RepairDeltaValidationPlan = {
   reason: string;
 };
 
+/**
+ * Target package manager detected for toolchain bootstrap.
+ *
+ * `corepackSpec` is the full `pnpm@x.y.z` / `npm@x.y.z` string we pass to
+ * `corepack prepare --activate`. Use `null` when the binary is part of the
+ * default Node distribution (npm) and we don't want corepack to manage a
+ * pinned version.
+ */
+export type TargetPackageManager = {
+  kind: "pnpm" | "npm";
+  corepackSpec: string | null;
+};
+
+/**
+ * Decide which package manager `prepareTargetToolchain` should use for a
+ * given target checkout. Detection order:
+ *
+ * 1. `package.json#packageManager` — explicit and authoritative.
+ * 2. Lockfile presence: `pnpm-lock.yaml` → pnpm, `package-lock.json` → npm,
+ *    `yarn.lock` → unsupported (we don't bootstrap yarn targets).
+ * 3. Fallback: assume pnpm so existing OpenClaw/clawsweeper targets keep
+ *    their current bootstrap behavior.
+ *
+ * Pure function — exported for unit tests.
+ */
+export function detectTargetPackageManager(cwd: string): TargetPackageManager {
+  const declared = readDeclaredPackageManager(path.join(cwd, "package.json"));
+  if (declared) {
+    if (declared.startsWith("pnpm@")) return { kind: "pnpm", corepackSpec: declared };
+    if (declared.startsWith("npm@")) return { kind: "npm", corepackSpec: declared };
+    if (declared.startsWith("yarn@"))
+      throw new Error(`unsupported target package manager: ${declared}`);
+    throw new Error(`unrecognized target package manager: ${declared}`);
+  }
+  if (fs.existsSync(path.join(cwd, "pnpm-lock.yaml")))
+    return { kind: "pnpm", corepackSpec: "pnpm@10.33.0" };
+  if (fs.existsSync(path.join(cwd, "yarn.lock")))
+    throw new Error("unsupported target package manager: yarn (no committed pnpm/npm lockfile)");
+  if (fs.existsSync(path.join(cwd, "package-lock.json")))
+    return { kind: "npm", corepackSpec: null };
+  return { kind: "pnpm", corepackSpec: "pnpm@10.33.0" };
+}
+
+function readDeclaredPackageManager(packagePath: string): string | null {
+  if (!fs.existsSync(packagePath)) return null;
+  try {
+    const pkg = JSON.parse(fs.readFileSync(packagePath, "utf8"));
+    return typeof pkg?.packageManager === "string" ? pkg.packageManager : null;
+  } catch {
+    return null;
+  }
+}
+
 export function prepareTargetToolchain(cwd: string, options: TargetValidationOptions) {
   if (!options.installTargetDeps) return;
-  const packagePath = path.join(cwd, "package.json");
-  if (!fs.existsSync(packagePath)) return;
+  if (!fs.existsSync(path.join(cwd, "package.json"))) return;
 
-  const packageJson = JSON.parse(fs.readFileSync(packagePath, "utf8"));
-  const packageManager = String(packageJson.packageManager ?? "pnpm@10.33.0");
-  if (!packageManager.startsWith("pnpm@")) {
-    throw new Error(`unsupported target package manager: ${packageManager}`);
-  }
-
+  const pm = detectTargetPackageManager(cwd);
   const validationEnv = targetValidationEnv();
   const setupTimeoutMs = targetValidationTimeoutMs(
     "CLAWSWEEPER_TARGET_SETUP_TIMEOUT_MS",
@@ -76,12 +123,19 @@ export function prepareTargetToolchain(cwd: string, options: TargetValidationOpt
     ],
     { cwd, env: validationEnv, timeoutMs: setupTimeoutMs },
   );
-  run("corepack", ["enable"], { cwd, env: validationEnv, timeoutMs: setupTimeoutMs });
-  run("corepack", ["prepare", packageManager, "--activate"], {
-    cwd,
-    env: validationEnv,
-    timeoutMs: setupTimeoutMs,
-  });
+  if (pm.corepackSpec) {
+    run("corepack", ["enable"], { cwd, env: validationEnv, timeoutMs: setupTimeoutMs });
+    run("corepack", ["prepare", pm.corepackSpec, "--activate"], {
+      cwd,
+      env: validationEnv,
+      timeoutMs: setupTimeoutMs,
+    });
+  }
+  if (pm.kind === "pnpm") installWithPnpm(cwd, validationEnv, installTimeoutMs);
+  else installWithNpm(cwd, validationEnv, installTimeoutMs);
+}
+
+function installWithPnpm(cwd: string, env: NodeJS.ProcessEnv, timeoutMs: number) {
   // Targets without a committed `pnpm-lock.yaml` (e.g. forks that .gitignore
   // it) must install without `--frozen-lockfile` from the start; otherwise
   // pnpm fails with ERR_PNPM_NO_LOCKFILE before the retry path can help.
@@ -94,7 +148,7 @@ export function prepareTargetToolchain(cwd: string, options: TargetValidationOpt
     "--config.enable-pre-post-scripts=true",
   ];
   try {
-    run("pnpm", installArgs, { cwd, env: validationEnv, timeoutMs: installTimeoutMs });
+    run("pnpm", installArgs, { cwd, env, timeoutMs });
   } catch (error) {
     if (!hasLockfile || !/ERR_PNPM_OUTDATED_LOCKFILE/i.test(String(error.message))) throw error;
     run(
@@ -102,12 +156,20 @@ export function prepareTargetToolchain(cwd: string, options: TargetValidationOpt
       installArgs.map((arg) => (arg === "--frozen-lockfile" ? "--no-frozen-lockfile" : arg)),
       {
         cwd,
-        env: validationEnv,
-        timeoutMs: installTimeoutMs,
+        env,
+        timeoutMs,
       },
     );
     restoreTargetLockfile(cwd);
   }
+}
+
+function installWithNpm(cwd: string, env: NodeJS.ProcessEnv, timeoutMs: number) {
+  const hasLockfile = fs.existsSync(path.join(cwd, "package-lock.json"));
+  const args = hasLockfile
+    ? ["ci", "--no-audit", "--no-fund", "--prefer-offline"]
+    : ["install", "--no-audit", "--no-fund", "--prefer-offline"];
+  run("npm", args, { cwd, env, timeoutMs });
 }
 
 export function runAllowedValidationCommands(

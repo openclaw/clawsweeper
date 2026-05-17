@@ -7,6 +7,7 @@ import test from "node:test";
 
 import {
   canSkipInternalCodexReviewForRepairDelta,
+  detectTargetPackageManager,
   preflightTargetValidationPlan,
   repairDeltaValidationPlan,
   requiredValidationCommands,
@@ -351,6 +352,76 @@ function packageFixture(scripts) {
   fs.writeFileSync(path.join(cwd, "package.json"), `${JSON.stringify({ scripts }, null, 2)}\n`);
   return cwd;
 }
+
+function pmFixture(pkg = {}, lockfiles = []) {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-pm-"));
+  fs.writeFileSync(path.join(cwd, "package.json"), `${JSON.stringify(pkg, null, 2)}\n`);
+  for (const name of lockfiles) fs.writeFileSync(path.join(cwd, name), "");
+  return cwd;
+}
+
+test("detectTargetPackageManager honors explicit packageManager pnpm declaration", () => {
+  const cwd = pmFixture({ packageManager: "pnpm@9.12.0" });
+  assert.deepEqual(detectTargetPackageManager(cwd), {
+    kind: "pnpm",
+    corepackSpec: "pnpm@9.12.0",
+  });
+});
+
+test("detectTargetPackageManager honors explicit packageManager npm declaration", () => {
+  const cwd = pmFixture({ packageManager: "npm@10.8.2" });
+  assert.deepEqual(detectTargetPackageManager(cwd), {
+    kind: "npm",
+    corepackSpec: "npm@10.8.2",
+  });
+});
+
+test("detectTargetPackageManager rejects yarn even when explicitly declared", () => {
+  const cwd = pmFixture({ packageManager: "yarn@4.5.1" });
+  assert.throws(() => detectTargetPackageManager(cwd), /unsupported target package manager: yarn/);
+});
+
+test("detectTargetPackageManager falls back to lockfile heuristic for pnpm", () => {
+  const cwd = pmFixture({}, ["pnpm-lock.yaml"]);
+  assert.deepEqual(detectTargetPackageManager(cwd), {
+    kind: "pnpm",
+    corepackSpec: "pnpm@10.33.0",
+  });
+});
+
+test("detectTargetPackageManager detects npm from package-lock.json", () => {
+  // valkyriweb/pi-mono shape: npm workspaces, no packageManager field, no
+  // pnpm-lock.yaml. Without lockfile-driven detection the bootstrap would
+  // default to pnpm and fail to install workspace-internal packages.
+  const cwd = pmFixture(
+    { workspaces: ["packages/*"], dependencies: { "@example/local": "^1.0.0" } },
+    ["package-lock.json"],
+  );
+  assert.deepEqual(detectTargetPackageManager(cwd), { kind: "npm", corepackSpec: null });
+});
+
+test("detectTargetPackageManager rejects yarn lockfiles", () => {
+  const cwd = pmFixture({}, ["yarn.lock"]);
+  assert.throws(() => detectTargetPackageManager(cwd), /unsupported target package manager: yarn/);
+});
+
+test("detectTargetPackageManager defaults to pnpm when no signals are present", () => {
+  // Preserves current OpenClaw/clawsweeper bootstrap behavior.
+  const cwd = pmFixture({});
+  assert.deepEqual(detectTargetPackageManager(cwd), {
+    kind: "pnpm",
+    corepackSpec: "pnpm@10.33.0",
+  });
+});
+
+test("detectTargetPackageManager prefers packageManager field over lockfile heuristic", () => {
+  // Mixed-signal target: package-lock.json present but packageManager pins pnpm.
+  const cwd = pmFixture({ packageManager: "pnpm@10.0.0" }, ["package-lock.json"]);
+  assert.deepEqual(detectTargetPackageManager(cwd), {
+    kind: "pnpm",
+    corepackSpec: "pnpm@10.0.0",
+  });
+});
 
 function gitPackageFixture(scripts) {
   const cwd = packageFixture(scripts);
