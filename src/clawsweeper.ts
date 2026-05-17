@@ -1713,7 +1713,17 @@ export function compactMappedWindow<T>(
   ];
 }
 
-function compactIssue(value: unknown): unknown {
+// Body cap for related-item context. Closed PRs that get pulled in as
+// "related items" carry their full description, which is rarely the
+// load-bearing detail for the primary review and is the largest single
+// driver of context bloat (see #28 — a 12 kB closed-PR body + 12 kB issue
+// body per related item blew the Claude reviewer's prompt past max_tokens).
+// 2 kB keeps enough for a title + opening paragraph so the reviewer can
+// orient itself, without dragging in change-by-change rationale that
+// belongs to the closed PR's own thread.
+const RELATED_ITEM_BODY_LIMIT = 2000;
+
+function compactIssue(value: unknown, options?: { bodyLimit?: number }): unknown {
   const issue = asRecord(value);
   return {
     number: issue.number,
@@ -1727,7 +1737,7 @@ function compactIssue(value: unknown): unknown {
     createdAt: issue.created_at,
     updatedAt: issue.updated_at,
     closedAt: issue.closed_at,
-    body: truncateText(issue.body, 12000),
+    body: truncateText(issue.body, options?.bodyLimit ?? 12000),
   };
 }
 
@@ -1766,7 +1776,7 @@ function compactTimelineEvent(value: unknown): unknown {
   };
 }
 
-function compactPullRequest(value: unknown): unknown {
+function compactPullRequest(value: unknown, options?: { bodyLimit?: number }): unknown {
   const pull = asRecord(value);
   const head = asRecord(pull.head);
   const base = asRecord(pull.base);
@@ -1794,7 +1804,7 @@ function compactPullRequest(value: unknown): unknown {
     changedFiles: pull.changed_files,
     createdAt: pull.created_at,
     updatedAt: pull.updated_at,
-    body: truncateText(pull.body, 12000),
+    body: truncateText(pull.body, options?.bodyLimit ?? 12000),
   };
 }
 
@@ -1933,7 +1943,7 @@ function compactRelatedItem(number: number, mentionedIn: string[]): Record<strin
     const issueRecord = asRecord(issue);
     const related: Record<string, unknown> = {
       mentionedIn: mentionedIn.slice(0, 6),
-      issue: compactIssue(issue),
+      issue: compactIssue(issue, { bodyLimit: RELATED_ITEM_BODY_LIMIT }),
       commentCount: issueRecord.comments,
     };
 
@@ -1941,6 +1951,7 @@ function compactRelatedItem(number: number, mentionedIn: string[]): Record<strin
       try {
         related.pullRequest = compactPullRequest(
           ghJson<unknown>(["api", `repos/${targetRepo()}/pulls/${number}`]),
+          { bodyLimit: RELATED_ITEM_BODY_LIMIT },
         );
       } catch (error) {
         related.pullRequestError = error instanceof Error ? error.message : String(error);
