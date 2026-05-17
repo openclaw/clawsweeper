@@ -37,6 +37,7 @@
     "repair:comment-webhook": "node dist/repair/comment-webhook.js",
     "repair:commit-finding-intake": "node dist/repair/commit-finding-intake.js",
     "repair:issue-implementation-intake": "node dist/repair/issue-implementation-intake.js",
+    "repair:verify-reproduction": "node dist/repair/verify-reproduction.js",
     "repair:publish-main": "node dist/repair/publish-main.js",
     "repair:notify-merge": "node dist/repair/notify-merge.js",
     "repair:notify-events": "node dist/repair/notify-events.js",

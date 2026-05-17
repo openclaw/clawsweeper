@@ -111,6 +111,7 @@ function candidates() {
   );
   const targetRepo = stringArg("target-repo", stringArg("target_repo", "openclaw/openclaw"));
   const reportRepo = stringArg("report-repo", stringArg("report_repo", "openclaw/clawsweeper"));
+  const lane = parseLaneArg(stringArg("lane", "reproduced"));
   const out: LooseRecord[] = [];
   if (truthy(enabled) && fs.existsSync(artifactDir)) {
     for (const file of findMarkdownFiles(artifactDir)) {
@@ -120,7 +121,12 @@ function candidates() {
       const repository = report.frontmatter.repository || targetRepo;
       const reportPath = `records/${repoSlug(repository)}/items/${number}.md`;
       const reportUrl = `https://github.com/${reportRepo}/blob/main/${reportPath}`;
-      const decision = reportOnlyDecision({ targetRepo, report, reportMarkdown: markdown });
+      const decision = reportOnlyDecision({
+        targetRepo,
+        report,
+        reportMarkdown: markdown,
+        lane,
+      });
       if (!decision.shouldRepair) continue;
       out.push({ item_number: number, report_path: reportPath, report_url: reportUrl });
     }
@@ -147,16 +153,41 @@ export function parseReviewReport(markdown: string): ReviewReport {
   return { frontmatter, body: match ? markdown.slice(match[0].length) : markdown };
 }
 
+/**
+ * Implementation-intake eligibility lane.
+ *
+ * - `reproduced`: strict reproducible-bug lane. Used by the default issue
+ *   implementation intake. The reviewer must have already executed the
+ *   reproduction (frontmatter `reproduction_status: reproduced`).
+ * - `verifiable`: pre-intake verify-reproduction lane. Accepts reviews that
+ *   are source-reproducible at high confidence (`reproduction_status:
+ *   source_reproducible`). A separate worker runs the reviewer's
+ *   `work_validation` commands against a live target checkout and, on a
+ *   reproduced failure, patches the report to `reproduced` so it can
+ *   re-enter the strict lane. Every other eligibility check still applies
+ *   identically — only the accepted reproduction status differs.
+ */
+export type IntakeLane = "reproduced" | "verifiable";
+
 export function reportOnlyDecision({
   targetRepo,
   report,
   reportMarkdown,
+  lane = "reproduced",
 }: {
   targetRepo: string;
   report: ReviewReport;
   reportMarkdown: string;
+  lane?: IntakeLane;
 }): IntakeDecision {
-  return eligibilityDecision({ targetRepo, report, reportMarkdown, live: null, enabled: "true" });
+  return eligibilityDecision({
+    targetRepo,
+    report,
+    reportMarkdown,
+    live: null,
+    enabled: "true",
+    lane,
+  });
 }
 
 function intakeDecision({
@@ -165,6 +196,7 @@ function intakeDecision({
   report,
   reportMarkdown,
   live,
+  lane = "reproduced",
 }: {
   enabled: string;
   targetRepo: string;
@@ -172,8 +204,9 @@ function intakeDecision({
   report: ReviewReport;
   reportMarkdown: string;
   live: LooseRecord;
+  lane?: IntakeLane;
 }): IntakeDecision {
-  return eligibilityDecision({ enabled, targetRepo, report, reportMarkdown, live });
+  return eligibilityDecision({ enabled, targetRepo, report, reportMarkdown, live, lane });
 }
 
 function eligibilityDecision({
@@ -182,12 +215,14 @@ function eligibilityDecision({
   report,
   reportMarkdown,
   live,
+  lane = "reproduced",
 }: {
   enabled: string;
   targetRepo: string;
   report: ReviewReport;
   reportMarkdown: string;
   live: LooseRecord | null;
+  lane?: IntakeLane;
 }): IntakeDecision {
   if (!truthy(enabled)) {
     return decision("disabled", false, "issue implementation intake disabled");
@@ -209,7 +244,8 @@ function eligibilityDecision({
     blockers.push(`work confidence is ${fm.work_confidence || "unknown"}`);
   if (!isEligibleIssueImplementationCategory(fm.item_category))
     blockers.push(`item category is ${fm.item_category || "unknown"}`);
-  if (fm.reproduction_status !== "reproduced")
+  const acceptedReproStatus = lane === "verifiable" ? "source_reproducible" : "reproduced";
+  if (fm.reproduction_status !== acceptedReproStatus)
     blockers.push(`reproduction status is ${fm.reproduction_status || "unknown"}`);
   if (fm.reproduction_confidence !== "high")
     blockers.push(`reproduction confidence is ${fm.reproduction_confidence || "unknown"}`);
@@ -256,6 +292,13 @@ function eligibilityDecision({
       reason: blockers[0] ?? "not eligible",
       blockers,
     };
+  }
+  if (lane === "verifiable") {
+    return decision(
+      "queued_for_verification",
+      true,
+      "source-reproducible bug is eligible for live reproduction verification",
+    );
   }
   return decision(
     "queued_for_repair",
@@ -518,6 +561,13 @@ function positiveInteger(value: string, label: string): number {
 
 function truthy(value: JsonValue) {
   return ["1", "true", "yes", "on"].includes(String(value ?? "").toLowerCase());
+}
+
+function parseLaneArg(value: string): IntakeLane {
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "verifiable") return "verifiable";
+  if (normalized === "" || normalized === "reproduced") return "reproduced";
+  die(`unknown intake lane: ${value} (expected reproduced or verifiable)`);
 }
 
 function repoSlug(repo: string) {

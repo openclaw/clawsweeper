@@ -1182,6 +1182,63 @@ jobs:
               -f report_url="$report_url"
           done < /tmp/issue-implementation-candidates.tsv
 
+      - name: Dispatch verifiable reproduction candidates
+        # source_reproducible reports flow through verify-reproduction.yml,
+        # which runs work_validation on a clean main checkout. Confirmed
+        # failures get the report frontmatter upgraded to `reproduced` and
+        # then dispatched back through the strict implementation intake.
+        if: ${{ success() && vars.CLAWSWEEPER_AUTO_IMPLEMENT_REPRO_BUGS == '1' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_REPO: ${{ needs.plan.outputs.target_repo }}
+          ENABLED: ${{ vars.CLAWSWEEPER_AUTO_IMPLEMENT_REPRO_BUGS == '1' && 'true' || 'false' }}
+          MAX_DISPATCH: ${{ vars.CLAWSWEEPER_VERIFY_REPRODUCTION_MAX_DISPATCH_PER_SWEEP || vars.CLAWSWEEPER_AUTO_IMPLEMENT_MAX_DISPATCH_PER_SWEEP || '' }}
+        run: |
+          set -euo pipefail
+          if [ -z "$MAX_DISPATCH" ]; then
+            MAX_DISPATCH="$(pnpm run --silent workflow -- limit issue_implementation.dispatches_per_sweep_default)"
+          fi
+          candidate_output="$(pnpm run --silent repair:issue-implementation-intake -- candidates \
+            --enabled "$ENABLED" \
+            --target-repo "$TARGET_REPO" \
+            --lane verifiable \
+            --artifact-dir artifacts)"
+          echo "$candidate_output"
+          candidates_json="$(CANDIDATE_OUTPUT="$candidate_output" node <<'NODE'
+          const output = JSON.parse(process.env.CANDIDATE_OUTPUT || "{}");
+          console.log(JSON.stringify(output.candidates || []));
+          NODE
+          )"
+          if [ -z "$candidates_json" ] || [ "$candidates_json" = "[]" ]; then
+            echo "No verifiable reproduction candidates."
+            exit 0
+          fi
+          CANDIDATES_JSON="$candidates_json" MAX_DISPATCH="$MAX_DISPATCH" node <<'NODE' > /tmp/verify-reproduction-candidates.tsv
+          const candidates = JSON.parse(process.env.CANDIDATES_JSON || "[]");
+          const limit = Math.max(0, Number(process.env.MAX_DISPATCH || "0"));
+          for (const candidate of candidates.slice(0, limit)) {
+            console.log([
+              candidate.item_number,
+              candidate.report_path,
+              candidate.report_url,
+            ].join("\t"));
+          }
+          NODE
+          if [ ! -s /tmp/verify-reproduction-candidates.tsv ]; then
+            echo "No verifiable candidates remained after dispatch cap."
+            exit 0
+          fi
+          while IFS=$'\t' read -r item_number report_path report_url; do
+            echo "Dispatching verify-reproduction for $TARGET_REPO#$item_number"
+            gh workflow run verify-reproduction.yml \
+              --ref main \
+              -f target_repo="$TARGET_REPO" \
+              -f item_number="$item_number" \
+              -f report_repo="valkyriweb/clawsweeper-state" \
+              -f report_path="$report_path" \
+              -f report_url="$report_url"
+          done < /tmp/verify-reproduction-candidates.tsv
+
       - name: Dispatch background review comment sync
         if: ${{ success() && needs.plan.outputs.hot_intake != 'true' && github.event_name != 'repository_dispatch' && (github.event_name != 'workflow_dispatch' || (github.event.inputs.item_number == '' && github.event.inputs.item_numbers == '')) }}
         env:

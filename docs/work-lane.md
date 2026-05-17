@@ -59,6 +59,35 @@ have an open PR reference or existing ClawSweeper implementation PR, writes the
 normal `source: issue_implementation` job, commits the ledger, then dispatches
 `repair-cluster-worker.yml` in autonomous mode.
 
+### Verify-Reproduction Lane
+
+The strict lane above requires the reviewer to have already executed the
+reproduction (`reproduction_status: reproduced`). Reviewer sandboxes do not
+always run the target's build/test commands, so many otherwise-eligible
+reports stop at `reproduction_status: source_reproducible` — confident from
+source inspection but unverified live.
+
+The verify-reproduction lane closes that gap. After review publish, `sweep.yml`
+also dispatches `verify-reproduction.yml` for reports that match the strict
+gate in every other way and have `reproduction_status: source_reproducible`
+with `reproduction_confidence: high`. The verify worker:
+
+1. Checks out the target repo at `main`.
+2. Bootstraps its toolchain (`prepareTargetToolchain`).
+3. Runs the reviewer's `work_validation` commands
+   (`runAllowedValidationCommands`).
+4. If any command fails: patches the report frontmatter to
+   `reproduction_status: reproduced` plus `reproduction_verified_at` and
+   `reproduction_verified_evidence`, commits the patch to the state repo, and
+   dispatches `repair-issue-implementation-intake.yml`.
+5. If all commands pass: leaves the report untouched and posts a
+   could-not-reproduce comment on the source issue.
+
+The verify lane reuses the strict intake invariants — only the accepted
+`reproduction_status` differs. Every other blocker (protected labels,
+security signal, attached PR, missing repair prompt, manual-review work
+candidate, etc.) applies identically.
+
 Comment-triggered issue implementation uses the same durable job format. If a
 worker starts before the new state commit is visible in its checkout, the worker
 reconstructs the minimal `source: issue_implementation` job from the job path

@@ -1,0 +1,276 @@
+name: verify reproduction
+
+# Pre-intake lane for source-reproducible bug reports. Checks out the target
+# repository, installs its toolchain, and runs the reviewer's
+# `work_validation` commands against a clean main. A failing run upgrades the
+# report frontmatter to `reproduction_status: reproduced` and dispatches the
+# strict implementation intake; a passing run leaves the report alone and
+# posts evidence on the source issue.
+
+on:
+  repository_dispatch:
+    types: [clawsweeper_verify_reproduction]
+  workflow_dispatch:
+    inputs:
+      target_repo:
+        description: "Target repository"
+        required: true
+        type: string
+      target_ref:
+        description: "Target ref to check out and validate against"
+        required: false
+        default: "main"
+        type: string
+      item_number:
+        description: "Issue number to verify"
+        required: true
+        type: string
+      report_repo:
+        description: "Repository containing the ClawSweeper report"
+        required: false
+        default: "valkyriweb/clawsweeper-state"
+        type: string
+      report_path:
+        description: "Path to the ClawSweeper report in the state repo"
+        required: true
+        type: string
+      report_url:
+        description: "Public report URL"
+        required: false
+        default: ""
+        type: string
+      runner:
+        description: "Runner label for verification work"
+        required: false
+        default: '["self-hosted","macOS","ARM64","mac-mini"]'
+        type: string
+
+permissions:
+  contents: write
+  actions: write
+  issues: write
+  pull-requests: write
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+  CLAWSWEEPER_APP_CLIENT_ID: Iv23lirdjmVqYd1gwY26
+  CLAWSWEEPER_ALLOWED_OWNER: ${{ vars.CLAWSWEEPER_ALLOWED_OWNER || 'bermont-digital' }}
+  CLAWSWEEPER_GIT_USER_NAME: ${{ vars.CLAWSWEEPER_GIT_USER_NAME || 'clawsweeper[bot]' }}
+  CLAWSWEEPER_GIT_USER_EMAIL: ${{ vars.CLAWSWEEPER_GIT_USER_EMAIL || '274271284+clawsweeper[bot]@users.noreply.github.com' }}
+
+concurrency:
+  group: verify-reproduction-${{ github.event.inputs.target_repo || github.event.client_payload.target_repo }}-${{ github.event.inputs.item_number || github.event.client_payload.item_number }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: /opt/homebrew/bin/bash -e {0}
+
+jobs:
+  verify:
+    runs-on: ${{ fromJson(github.event.inputs.runner || vars.CLAWSWEEPER_VERIFY_REPRODUCTION_RUNNER || '["self-hosted","macOS","ARM64","mac-mini"]') }}
+    timeout-minutes: 45
+    steps:
+      - name: Checkout clawsweeper
+        uses: actions/checkout@v6
+        with:
+          filter: blob:none
+          fetch-depth: 0
+
+      - uses: ./.github/actions/setup-pnpm
+        with:
+          build-script: build:repair
+
+      - name: Resolve target repository
+        id: target
+        env:
+          TARGET_REPO: ${{ github.event.inputs.target_repo || github.event.client_payload.target_repo }}
+        run: |
+          set -euo pipefail
+          echo "owner=${TARGET_REPO%%/*}" >> "$GITHUB_OUTPUT"
+          echo "name=${TARGET_REPO#*/}" >> "$GITHUB_OUTPUT"
+          echo "repo=${TARGET_REPO}" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub App token
+        id: app_token
+        uses: actions/create-github-app-token@1b10c78c7865c340bc4f6099eb2f838309f1e8c3 # v3.1.1
+        with:
+          client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
+          owner: ${{ steps.target.outputs.owner }}
+          repositories: ${{ steps.target.outputs.name }}
+          permission-contents: read
+          permission-issues: write
+          permission-pull-requests: read
+          permission-actions: read
+
+      - name: Create state token
+        id: state-token
+        uses: ./.github/actions/create-state-token
+        with:
+          client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
+          owner: valkyriweb
+          repository: clawsweeper-state
+
+      - uses: ./.github/actions/setup-state
+        with:
+          token: ${{ steps.state-token.outputs.token }}
+          state-repository: valkyriweb/clawsweeper-state
+
+      - name: Checkout target repository
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ steps.target.outputs.repo }}
+          ref: ${{ github.event.inputs.target_ref || github.event.client_payload.target_ref || 'main' }}
+          path: target-checkout
+          token: ${{ steps.app_token.outputs.token }}
+          filter: blob:none
+          fetch-depth: 0
+
+      - name: Run verify-reproduction
+        id: verify
+        env:
+          TARGET_REPO: ${{ github.event.inputs.target_repo || github.event.client_payload.target_repo }}
+          ITEM_NUMBER: ${{ github.event.inputs.item_number || github.event.client_payload.item_number }}
+          REPORT_REPO: ${{ github.event.inputs.report_repo || github.event.client_payload.report_repo || 'valkyriweb/clawsweeper-state' }}
+          REPORT_PATH: ${{ github.event.inputs.report_path || github.event.client_payload.report_path }}
+          REPORT_URL: ${{ github.event.inputs.report_url || github.event.client_payload.report_url }}
+          BASE_BRANCH: ${{ github.event.inputs.target_ref || github.event.client_payload.target_ref || 'main' }}
+        run: |
+          set -euo pipefail
+          report_file="${CLAWSWEEPER_STATE_DIR}/${REPORT_PATH}"
+          if [ ! -f "$report_file" ]; then
+            echo "report file missing: $report_file"
+            exit 1
+          fi
+          target_checkout="$GITHUB_WORKSPACE/target-checkout"
+          pnpm run repair:verify-reproduction -- run \
+            --target-repo "$TARGET_REPO" \
+            --item-number "$ITEM_NUMBER" \
+            --report-repo "$REPORT_REPO" \
+            --report-path "$REPORT_PATH" \
+            --report-url "$REPORT_URL" \
+            --report-file "$report_file" \
+            --target-checkout "$target_checkout" \
+            --base-branch "$BASE_BRANCH"
+
+      - name: Commit verification audit
+        if: always()
+        run: |
+          set -euo pipefail
+          pnpm run repair:publish-main -- \
+            --message "chore: record reproduction verification" \
+            --path results \
+            --max-attempts 12 \
+            --push-attempts 4
+
+      - name: Commit patched review report
+        if: ${{ steps.verify.outputs.verified == 'true' }}
+        env:
+          REPORT_PATH: ${{ steps.verify.outputs.report_path }}
+          TARGET_REPO: ${{ steps.target.outputs.repo }}
+          ITEM_NUMBER: ${{ steps.verify.outputs.item_number }}
+        working-directory: ${{ env.CLAWSWEEPER_STATE_DIR }}
+        run: |
+          set -euo pipefail
+          git config user.name "${CLAWSWEEPER_GIT_USER_NAME}"
+          git config user.email "${CLAWSWEEPER_GIT_USER_EMAIL}"
+          git add -- "${REPORT_PATH}"
+          if git diff --cached --quiet; then
+            echo "no patched report changes to commit"
+            exit 0
+          fi
+          git commit -m "chore: verify reproduction ${TARGET_REPO}#${ITEM_NUMBER}"
+          for attempt in 1 2 3 4 5; do
+            if git push; then
+              exit 0
+            fi
+            git pull --rebase
+          done
+          echo "failed to push patched report after 5 attempts"
+          exit 1
+
+      - name: Dispatch implementation intake
+        if: ${{ steps.verify.outputs.verified == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_REPO: ${{ steps.target.outputs.repo }}
+          ITEM_NUMBER: ${{ steps.verify.outputs.item_number }}
+          REPORT_PATH: ${{ steps.verify.outputs.report_path }}
+          REPORT_URL: ${{ steps.verify.outputs.report_url }}
+        run: |
+          set -euo pipefail
+          gh workflow run repair-issue-implementation-intake.yml \
+            --ref main \
+            -f enabled=true \
+            -f target_repo="$TARGET_REPO" \
+            -f item_number="$ITEM_NUMBER" \
+            -f report_repo="valkyriweb/clawsweeper-state" \
+            -f report_path="$REPORT_PATH" \
+            -f report_url="$REPORT_URL"
+
+      - name: Comment on source issue
+        if: always()
+        env:
+          GH_TOKEN: ${{ steps.app_token.outputs.token }}
+          TARGET_REPO: ${{ steps.target.outputs.repo }}
+          ITEM_NUMBER: ${{ steps.verify.outputs.item_number || github.event.inputs.item_number || github.event.client_payload.item_number }}
+          STATUS: ${{ steps.verify.outputs.status }}
+          VERIFIED: ${{ steps.verify.outputs.verified }}
+          EVIDENCE: ${{ steps.verify.outputs.evidence }}
+          REPORT_URL: ${{ steps.verify.outputs.report_url }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          if [ -z "${STATUS:-}" ] || [ -z "${ITEM_NUMBER:-}" ]; then
+            echo "verify step did not produce outputs; skipping comment"
+            exit 0
+          fi
+          case "${VERIFIED}" in
+            true)
+              header="ClawSweeper status: reproduction verified on main."
+              body="The reviewer's \`work_validation\` commands failed on a clean checkout of \`main\`, confirming the bug reproduces. Frontmatter upgraded to \`reproduction_status: reproduced\` and the strict implementation intake has been dispatched."
+              ;;
+            false)
+              case "${STATUS}" in
+                not_reproduced)
+                  header="ClawSweeper status: could not reproduce on main."
+                  body="The reviewer's \`work_validation\` commands all passed on a clean checkout of \`main\`. Either the bug has been fixed since review, the reproduction commands need refinement, or the failure is environment-specific. No implementation PR will be queued from this report."
+                  ;;
+                not_eligible)
+                  header="ClawSweeper status: verify-reproduction skipped."
+                  body="This report is not eligible for the verify-reproduction lane."
+                  ;;
+                *)
+                  header="ClawSweeper status: verification error."
+                  body="An error prevented verification from running to completion."
+                  ;;
+              esac
+              ;;
+            *)
+              echo "verify step did not produce a usable verified output; skipping comment"
+              exit 0
+              ;;
+          esac
+          tmp="$(mktemp)"
+          {
+            echo "${header}"
+            echo
+            echo "${body}"
+            echo
+            echo "Report: ${REPORT_URL}"
+            echo
+            echo "<details><summary>Evidence</summary>"
+            echo
+            echo '```'
+            echo "${EVIDENCE}"
+            echo '```'
+            echo
+            echo "</details>"
+            echo
+            echo "Run: ${RUN_URL}"
+            echo
+            echo "<!-- clawsweeper-verify-reproduction item=${ITEM_NUMBER} -->"
+          } > "$tmp"
+          gh issue comment "${ITEM_NUMBER}" --repo "${TARGET_REPO}" --body-file "$tmp"
