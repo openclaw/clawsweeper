@@ -82,9 +82,13 @@ export function prepareTargetToolchain(cwd: string, options: TargetValidationOpt
     env: validationEnv,
     timeoutMs: setupTimeoutMs,
   });
+  // Targets without a committed `pnpm-lock.yaml` (e.g. forks that .gitignore
+  // it) must install without `--frozen-lockfile` from the start; otherwise
+  // pnpm fails with ERR_PNPM_NO_LOCKFILE before the retry path can help.
+  const hasLockfile = fs.existsSync(path.join(cwd, "pnpm-lock.yaml"));
   const installArgs = [
     "install",
-    "--frozen-lockfile",
+    hasLockfile ? "--frozen-lockfile" : "--no-frozen-lockfile",
     "--prefer-offline",
     "--config.engine-strict=false",
     "--config.enable-pre-post-scripts=true",
@@ -92,7 +96,7 @@ export function prepareTargetToolchain(cwd: string, options: TargetValidationOpt
   try {
     run("pnpm", installArgs, { cwd, env: validationEnv, timeoutMs: installTimeoutMs });
   } catch (error) {
-    if (!/ERR_PNPM_OUTDATED_LOCKFILE/i.test(String(error.message))) throw error;
+    if (!hasLockfile || !/ERR_PNPM_OUTDATED_LOCKFILE/i.test(String(error.message))) throw error;
     run(
       "pnpm",
       installArgs.map((arg) => (arg === "--frozen-lockfile" ? "--no-frozen-lockfile" : arg)),
