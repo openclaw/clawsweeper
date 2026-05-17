@@ -3366,6 +3366,16 @@ test("decision parser enforces required schema-shaped evidence", () => {
   assert.deepEqual(workCandidate.workClusterRefs, ["#123", "#456"]);
 });
 
+test("review prompt requires target package-manager detection for validation commands", () => {
+  const prompt = readFileSync("prompts/review-item.md", "utf8");
+
+  assert.match(prompt, /Detect the target's package manager/);
+  assert.match(prompt, /package\.json#packageManager/);
+  assert.match(prompt, /pnpm-lock\.yaml/);
+  assert.match(prompt, /package-lock\.json/);
+  assert.match(prompt, /Do not assume pnpm/);
+});
+
 test("review prompt routes PR likely owners through feature history", () => {
   const prompt = readFileSync("prompts/review-item.md", "utf8");
 

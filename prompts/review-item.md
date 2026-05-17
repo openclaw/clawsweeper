@@ -30,6 +30,8 @@ When `workCandidate: "queue_fix_pr"`, the `workPrompt` becomes an implementation
 - The validation command(s) the agent must run before opening a PR
 - Whether `docs/` updates are expected and which files
 
+Detect the target's package manager before naming any validation command. Check `package.json#packageManager` first; otherwise infer from committed lockfiles (`pnpm-lock.yaml` → pnpm, `package-lock.json` → npm, `yarn.lock` → yarn). Use that tool's invocation form — for example `pnpm --filter <pkg> check` for pnpm targets, `npm run check --workspace=<pkg>` or `npm run check` for npm workspaces. Do not assume pnpm. Name validation commands that already exist as scripts in the target's `package.json` so the implementation agent can run them verbatim.
+
 Keep the prompt narrow: fix broken existing behaviour, add regression coverage if appropriate, and stop if the fix would add a new feature, new config option, or change product policy.
 
 ## People and provenance
