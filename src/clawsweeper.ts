@@ -6538,6 +6538,18 @@ function appendReviewQuestionDetails(
   }
 }
 
+function reviewWorkflowCallout(): string[] {
+  return [
+    "**Workflow note:** Future ClawSweeper reviews update this same comment in place.",
+    "",
+    collapsedDetailsBlock("How this review workflow works", [
+      "ClawSweeper keeps one durable marker-backed review comment per issue or PR.",
+      "Re-runs edit this comment so the latest verdict, findings, and automation markers stay together instead of adding duplicate bot comments.",
+    ]),
+    "",
+  ];
+}
+
 function renderKeepOpenCommentFromReport(markdown: string): string {
   const evidence = reportEvidence(markdown).slice(0, 6).map(closeEvidenceLine);
   const likelyOwners = reportLikelyOwners(markdown).slice(0, 5).map(likelyOwnerLine);
@@ -6580,6 +6592,7 @@ function renderKeepOpenCommentFromReport(markdown: string): string {
               ? "Codex review: needs maintainer review before merge."
               : "Codex review: keeping this open for maintainer follow-up; there is still a little grit to resolve.",
     "",
+    ...reviewWorkflowCallout(),
   ];
   if (isPullRequest) {
     appendPublicSection(

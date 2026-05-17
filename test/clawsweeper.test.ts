@@ -2178,6 +2178,15 @@ Reason: Maintainers should review the tests after the targeted lane is green.
   assert.match(comment, /Codex review: needs maintainer review before merge\./);
   assert.match(
     comment,
+    /\*\*Workflow note:\*\* Future ClawSweeper reviews update this same comment in place\./,
+  );
+  assert.match(comment, /<summary>How this review workflow works<\/summary>/);
+  assert.match(
+    comment,
+    /latest verdict, findings, and automation markers stay together instead of adding duplicate bot comments/,
+  );
+  assert.match(
+    comment,
     /\*\*Summary\*\*\nAdds regression coverage for session-scoped model overrides\./,
   );
   assert.match(comment, /\*\*Next step before merge\*\*/);
@@ -2383,6 +2392,10 @@ Reason: The fix is narrow and can be made on the PR branch.
   );
 
   assert.match(comment, /Codex review: needs changes before merge\./);
+  assert.match(
+    comment,
+    /\*\*Workflow note:\*\* Future ClawSweeper reviews update this same comment in place\./,
+  );
   assert.match(
     comment,
     /\*\*Review findings\*\*\n- \[P1\] Validate replace paths — `src\/config\/apply\.ts:42-44`/,
