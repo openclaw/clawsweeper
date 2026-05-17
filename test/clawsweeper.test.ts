@@ -2187,6 +2187,14 @@ Reason: Maintainers should review the tests after the targeted lane is green.
   );
   assert.match(
     comment,
+    /Maintainers can comment `@clawsweeper review`, `@clawsweeper re-review`, or `@clawsweeper re-run` to request a fresh review\./,
+  );
+  assert.match(
+    comment,
+    /Maintainers can comment `@clawsweeper explain` to ask for more context, or `@clawsweeper stop` to stop active automation\./,
+  );
+  assert.match(
+    comment,
     /\*\*Summary\*\*\nAdds regression coverage for session-scoped model overrides\./,
   );
   assert.match(comment, /\*\*Next step before merge\*\*/);

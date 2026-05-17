@@ -6545,6 +6545,8 @@ function reviewWorkflowCallout(): string[] {
     collapsedDetailsBlock("How this review workflow works", [
       "ClawSweeper keeps one durable marker-backed review comment per issue or PR.",
       "Re-runs edit this comment so the latest verdict, findings, and automation markers stay together instead of adding duplicate bot comments.",
+      "Maintainers can comment `@clawsweeper review`, `@clawsweeper re-review`, or `@clawsweeper re-run` to request a fresh review.",
+      "Maintainers can comment `@clawsweeper explain` to ask for more context, or `@clawsweeper stop` to stop active automation.",
     ]),
     "",
   ];
