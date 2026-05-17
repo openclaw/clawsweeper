@@ -553,6 +553,20 @@ export function maintainerAutomergeOptInApprovesNeedsHuman({
   return Number.isFinite(verdictTime) && Number.isFinite(resumeTime) && resumeTime > 0;
 }
 
+export function latestRepairLoopResumeTime(entries: JsonValue, command: LooseRecord) {
+  if (!Array.isArray(entries)) return 0;
+  let latest = 0;
+  for (const entry of entries) {
+    if (!entry || typeof entry !== "object") continue;
+    if (entry.repo !== command.repo) continue;
+    if (Number(entry.issue_number) !== Number(command.issue_number)) continue;
+    if (!["autofix", "automerge"].includes(String(entry.intent ?? ""))) continue;
+    if (!["executed", "waiting"].includes(String(entry.status ?? ""))) continue;
+    latest = Math.max(latest, Date.parse(String(entry.comment_updated_at ?? "")) || 0);
+  }
+  return latest;
+}
+
 export function commandHasAction(command: LooseRecord, actionName: string): boolean {
   return (command.actions ?? []).some((action: JsonValue) => action.action === actionName);
 }

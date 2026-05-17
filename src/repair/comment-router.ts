@@ -48,6 +48,7 @@ import {
   issueImplementationClusterId,
   issueImplementationJobPath,
   maintainerAutomergeOptInApprovesNeedsHuman as maintainerAutomergeOptInApprovesNeedsHumanReason,
+  latestRepairLoopResumeTime,
   parseCommand,
   pausedModeStatusBlocksReplay,
   parseTrustedAutomation,
@@ -1017,18 +1018,7 @@ function autoRepairAlreadyPlanned(command: LooseRecord) {
 }
 
 function latestAutomergeResumeAt(command: LooseRecord) {
-  let latest = 0;
-  for (const entry of ledger.commands ?? []) {
-    if (
-      entry.repo === command.repo &&
-      Number(entry.issue_number) === Number(command.issue_number) &&
-      ["autofix", "automerge"].includes(entry.intent) &&
-      entry.status === "executed"
-    ) {
-      latest = Math.max(latest, Date.parse(entry.comment_updated_at ?? "") || 0);
-    }
-  }
-  return latest;
+  return latestRepairLoopResumeTime(ledger.commands ?? [], command);
 }
 
 function latestAutomergeMaintainerAttribution(command: LooseRecord) {

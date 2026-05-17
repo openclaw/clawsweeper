@@ -35,6 +35,7 @@ import {
   issueImplementationJobPath,
   isAuthorReadOnlyCommandAllowed,
   isCanonicalLandingNeedsHumanText,
+  latestRepairLoopResumeTime,
   isMaintainerCommandAllowed,
   maintainerAutomergeOptInApprovesNeedsHuman,
   parseCommand,
@@ -898,6 +899,49 @@ test("canonical landing needs-human text can be approved by active automerge opt
       optInTime: 0,
     }),
     false,
+  );
+});
+
+test("canonical landing needs-human accepts waiting automerge opt-in as active resume intent", () => {
+  const optInTime = latestRepairLoopResumeTime(
+    [
+      {
+        repo: "openclaw/openclaw",
+        issue_number: 83186,
+        intent: "automerge",
+        status: "waiting",
+        comment_updated_at: "2026-05-17T17:09:01Z",
+      },
+      {
+        repo: "openclaw/openclaw",
+        issue_number: 83186,
+        intent: "automerge",
+        status: "blocked",
+        comment_updated_at: "2026-05-17T17:10:01Z",
+      },
+      {
+        repo: "openclaw/openclaw",
+        issue_number: 83186,
+        intent: "status",
+        status: "executed",
+        comment_updated_at: "2026-05-17T17:11:01Z",
+      },
+    ],
+    {
+      repo: "openclaw/openclaw",
+      issue_number: 83186,
+    },
+  );
+
+  assert.equal(optInTime, Date.parse("2026-05-17T17:09:01Z"));
+  assert.equal(
+    maintainerAutomergeOptInApprovesNeedsHuman({
+      reason:
+        "No repair lane is needed; the open PR already contains the focused implementation and this review found no actionable blocker for automation to fix.",
+      commentCreatedAt: "2026-05-17T16:54:05Z",
+      optInTime,
+    }),
+    true,
   );
 });
 
