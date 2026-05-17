@@ -2187,7 +2187,19 @@ Reason: Maintainers should review the tests after the targeted lane is green.
   );
   assert.match(
     comment,
-    /Maintainers can comment `@clawsweeper review`, `@clawsweeper re-review`, or `@clawsweeper re-run` to request a fresh review\./,
+    /A fresh review can be triggered by maintainer comments, exact-item GitHub events, scheduled\/background review runs, or manual workflow dispatch\./,
+  );
+  assert.match(
+    comment,
+    /Maintainers can comment `@clawsweeper review`, `@clawsweeper re-review`, or `@clawsweeper re-run` to request a fresh review only\./,
+  );
+  assert.match(
+    comment,
+    /Those review commands do not start repair, autofix, rebase, CI repair, or automerge\./,
+  );
+  assert.match(
+    comment,
+    /Repair and merge flows require explicit commands such as `@clawsweeper autofix`, `@clawsweeper automerge`, `@clawsweeper fix ci`, or `@clawsweeper address review`\./,
   );
   assert.match(
     comment,
