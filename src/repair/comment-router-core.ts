@@ -550,8 +550,12 @@ export function maintainerAutomergeOptInApprovesNeedsHuman({
   commentCreatedAt,
   commentUpdatedAt,
   optInTime,
+  replacementAutomergeRequestedBy,
 }: LooseRecord) {
   if (!isCanonicalLandingNeedsHumanText(reason)) return false;
+  if (replacementAutomergeRequestedBy && maintainerCredit(replacementAutomergeRequestedBy)) {
+    return true;
+  }
   const verdictTime = Date.parse(String(commentCreatedAt ?? commentUpdatedAt ?? ""));
   const resumeTime =
     typeof optInTime === "number" ? optInTime : Date.parse(String(optInTime ?? ""));

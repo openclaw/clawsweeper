@@ -946,6 +946,48 @@ test("canonical landing needs-human accepts waiting automerge opt-in as active r
   );
 });
 
+test("canonical landing needs-human accepts replacement PR automerge requester marker", () => {
+  const replacementBody = [
+    "Makes https://github.com/openclaw/openclaw/pull/83186 merge-ready for the ClawSweeper automerge loop.",
+    "",
+    "ClawSweeper replacement notes:",
+    '- Automerge requested by: @Takhoffman',
+    '<!-- clawsweeper-automerge-requested-by login="Takhoffman" id="781889" -->',
+  ].join("\n");
+
+  assert.deepEqual(automergeRequestedByFromBody(replacementBody), {
+    author: "Takhoffman",
+    author_id: "781889",
+    author_name: null,
+  });
+  assert.equal(
+    maintainerAutomergeOptInApprovesNeedsHuman({
+      reason:
+        "No repair lane is needed; this automerge-opted replacement PR should proceed through exact-head checks and normal merge gates.",
+      commentCreatedAt: "2026-05-17T18:03:35Z",
+      optInTime: 0,
+      replacementAutomergeRequestedBy: automergeRequestedByFromBody(replacementBody),
+    }),
+    true,
+  );
+});
+
+test("canonical landing needs-human ignores bot replacement PR automerge requester markers", () => {
+  assert.equal(
+    maintainerAutomergeOptInApprovesNeedsHuman({
+      reason:
+        "No repair lane is needed; this automerge-opted replacement PR should proceed through exact-head checks and normal merge gates.",
+      commentCreatedAt: "2026-05-17T18:03:35Z",
+      optInTime: 0,
+      replacementAutomergeRequestedBy: {
+        author: "clawsweeper[bot]",
+        author_id: "274271284",
+      },
+    }),
+    false,
+  );
+});
+
 test("parseTrustedAutomation explains security-sensitive human-review pauses", () => {
   const trustedAuthors = new Set(["clawsweeper[bot]"]);
   const parsed = parseTrustedAutomation(

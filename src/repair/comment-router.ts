@@ -29,6 +29,7 @@ import {
   automergeClusterId,
   automergeJobPath,
   automergeMergeFailureRepairReason,
+  automergeRequestedByFromBody,
   automergeReadinessRepairReason,
   automergeRebaseRepairReason,
   automergeTransientWaitConfig,
@@ -963,6 +964,7 @@ function maintainerAutomergeOptInApprovesNeedsHuman(command: LooseRecord) {
     commentCreatedAt: command.comment_created_at,
     commentUpdatedAt: command.comment_updated_at,
     optInTime: latestAutomergeResumeAt(command),
+    replacementAutomergeRequestedBy: automergeRequestedByFromBody(command.target?.body),
   });
 }
 
