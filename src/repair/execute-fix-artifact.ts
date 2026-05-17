@@ -70,6 +70,7 @@ import { compactText, escapeRegExp } from "./text-utils.js";
 import {
   shouldCloseSupersededSourcePrs,
   shouldSeedReplacementBranchFromSource,
+  sourceBranchWriteBlockReason,
 } from "./execute-fix-policy.js";
 import { replacementLabelsToCopy } from "./replacement-labels.js";
 import {
@@ -426,7 +427,7 @@ if (NON_EXECUTABLE_REPAIR_STRATEGIES.has(repairStrategy)) {
   process.exit(0);
 }
 
-const fixArtifact = validateFixArtifact(executableFixArtifact);
+let fixArtifact = validateFixArtifact(executableFixArtifact);
 const securityBlock = validateFixSecurityScope({ job, resultPath, fixArtifact, plannedFixActions });
 if (securityBlock) {
   report.status = "skipped";
@@ -460,6 +461,29 @@ if (scopeBlock) {
   });
   writeReport(report, resultPath);
   process.exit(0);
+}
+
+const sourceBranchPreflight = preflightRepairSourceBranchWrite(fixArtifact);
+if (sourceBranchPreflight.status === "replace_uneditable_branch") {
+  report.source_branch_preflight = sourceBranchPreflight;
+  report.actions.push({
+    action: "repair_contributor_branch",
+    status: "blocked",
+    target: sourceBranchPreflight.source_pr,
+    repair_strategy: "repair_contributor_branch",
+    reason: sourceBranchPreflight.reason,
+    fallback: "open_fix_pr",
+  });
+  fixArtifact = {
+    ...fixArtifact,
+    repair_strategy: "replace_uneditable_branch",
+    branch_update_blockers: uniqueStrings([
+      ...(fixArtifact.branch_update_blockers ?? []),
+      sourceBranchPreflight.reason,
+    ]),
+  };
+} else if (sourceBranchPreflight.status !== "not_applicable") {
+  report.source_branch_preflight = sourceBranchPreflight;
 }
 
 workRoot =
@@ -711,6 +735,52 @@ function shouldPromoteNeedsHumanReplacement(fixArtifact: LooseRecord, workerResu
   return hasReplacementDecision && hasUneditableOrUnsafeSource && hasBlockedFixAction;
 }
 
+function preflightRepairSourceBranchWrite(fixArtifact: LooseRecord) {
+  if (fixArtifact.repair_strategy !== "repair_contributor_branch") {
+    return { status: "not_applicable" };
+  }
+  const sourcePr = firstSourcePullRequest(fixArtifact);
+  const pull = fetchPullRequest(result.repo, sourcePr.number);
+  if (pull.state !== "open") {
+    return {
+      status: "blocked",
+      source_pr: sourcePr.url,
+      reason: `source PR #${sourcePr.number} is ${pull.state}`,
+    };
+  }
+  const pauseBlock = liveRepairPauseBlock({
+    pull,
+    number: sourcePr.number,
+    target: sourcePr.url,
+  });
+  if (pauseBlock) {
+    return {
+      status: "blocked",
+      source_pr: sourcePr.url,
+      reason: pauseBlock.reason,
+    };
+  }
+  const branchBlock = sourceBranchWriteBlockReason(result.repo, pull);
+  if (!branchBlock) {
+    return {
+      status: "writable",
+      source_pr: sourcePr.url,
+      head_repo: pull.head.repo.full_name,
+      head_ref: pull.head.ref,
+      same_repo_branch: pull.head.repo.full_name === result.repo,
+      maintainer_can_modify: pull.maintainer_can_modify === true,
+    };
+  }
+  return {
+    status: "replace_uneditable_branch",
+    source_pr: sourcePr.url,
+    head_repo: pull.head?.repo?.full_name ?? null,
+    head_ref: pull.head?.ref ?? null,
+    maintainer_can_modify: pull.maintainer_can_modify === true,
+    reason: `source PR #${sourcePr.number} ${branchBlock}`,
+  };
+}
+
 function executeRepairBranch({ fixArtifact, targetDir }: LooseRecord) {
   const baseBranch = String(process.env.CLAWSWEEPER_FIX_BASE_BRANCH ?? DEFAULT_BASE_BRANCH);
   const sourcePr = firstSourcePullRequest(fixArtifact);
@@ -726,9 +796,8 @@ function executeRepairBranch({ fixArtifact, targetDir }: LooseRecord) {
   if (!pull.head?.repo?.full_name || !pull.head?.ref)
     throw new Error(`source PR #${sourcePr.number} is missing head repo/ref`);
   const sameRepoBranch = pull.head.repo.full_name === result.repo;
-  if (pull.maintainer_can_modify !== true && !sameRepoBranch) {
-    throw new Error(`source PR #${sourcePr.number} has maintainer_can_modify=false`);
-  }
+  const branchBlock = sourceBranchWriteBlockReason(result.repo, pull);
+  if (branchBlock) throw new Error(`source PR #${sourcePr.number} ${branchBlock}`);
 
   const branch = safeBranchName(
     `clawsweeper-repair/repair-${result.cluster_id}-${sourcePr.number}`,
