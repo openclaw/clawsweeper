@@ -951,7 +951,7 @@ test("canonical landing needs-human accepts replacement PR automerge requester m
     "Makes https://github.com/openclaw/openclaw/pull/83186 merge-ready for the ClawSweeper automerge loop.",
     "",
     "ClawSweeper replacement notes:",
-    '- Automerge requested by: @Takhoffman',
+    "- Automerge requested by: @Takhoffman",
     '<!-- clawsweeper-automerge-requested-by login="Takhoffman" id="781889" -->',
   ].join("\n");
 
