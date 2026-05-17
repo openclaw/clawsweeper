@@ -238,6 +238,10 @@ jobs:
                   header="ClawSweeper status: could not reproduce on main."
                   body="The reviewer's \`work_validation\` commands all passed on a clean checkout of \`main\`. Either the bug has been fixed since review, the reproduction commands need refinement, or the failure is environment-specific. No implementation PR will be queued from this report."
                   ;;
+                blocked)
+                  header="ClawSweeper status: verification blocked by missing runner service."
+                  body="The reviewer's \`work_validation\` commands could not run to completion — the captured output matched an unambiguous environment-failure signature (e.g. database unreachable, autoload missing, tooling absent). This is NOT a confirmed reproduction; the runner is missing infrastructure the test suite depends on. Provision the missing service on the verify-reproduction runner (e.g. ship a \`docker-compose.test.yml\` in the target repo, or install the dep on the runner) and re-dispatch."
+                  ;;
                 not_eligible)
                   header="ClawSweeper status: verify-reproduction skipped."
                   body="This report is not eligible for the verify-reproduction lane."

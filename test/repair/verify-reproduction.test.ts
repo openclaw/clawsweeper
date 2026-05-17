@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { applyReproductionPatch } from "../../dist/repair/verify-reproduction.js";
+import { applyReproductionPatch, detectEnvFailure } from "../../dist/repair/verify-reproduction.js";
 import {
   parseReviewReport,
   reportOnlyDecision,
@@ -133,4 +133,85 @@ test("applyReproductionPatch leaves markdown without frontmatter untouched", () 
     evidence: "n/a",
   });
   assert.equal(patched, plain);
+});
+
+test("detectEnvFailure flags Postgres Connection refused on port 5432", () => {
+  // Real captured output from the CLIP-SA/core-ai #29 demo run (2026-05-17)
+  // where verify-reproduction incorrectly promoted the item to `reproduced`
+  // because the runner had no Postgres up. This is the regression case.
+  const output = `QueryException SQLSTATE[08006] [7] connection to server at "127.0.0.1", port 5432 failed: Connection refused
+Is the server running on that host and accepting TCP/IP connections?
+Tests: 10 failed (0 assertions) Duration: 0.37s`;
+
+  const result = detectEnvFailure(output);
+
+  assert.ok(result, "expected env-failure detection on Postgres connection refused");
+  assert.equal(result?.reason, "database_unreachable");
+  assert.match(result?.evidence ?? "", /SQLSTATE\[08006\]|Connection refused.*5432/);
+});
+
+test("detectEnvFailure flags Redis ECONNREFUSED on port 6379", () => {
+  const output = `Error: connect ECONNREFUSED 127.0.0.1:6379
+    at TCPConnectWrap.afterConnect [as oncomplete]`;
+
+  const result = detectEnvFailure(output);
+
+  assert.equal(result?.reason, "database_unreachable");
+});
+
+test("detectEnvFailure flags missing Laravel artisan", () => {
+  const output = "Could not open input file: artisan";
+
+  const result = detectEnvFailure(output);
+
+  assert.equal(result?.reason, "app_not_initialized");
+});
+
+test("detectEnvFailure flags Composer autoload misses", () => {
+  const output = `PHP Fatal error: Uncaught Error: Class "App\\Services\\ProductSearchService" not found in /app/tests/Feature/McpServerTest.php`;
+
+  const result = detectEnvFailure(output);
+
+  assert.equal(result?.reason, "autoload_missing");
+});
+
+test("detectEnvFailure flags Node missing-module errors", () => {
+  const output = `Error: Cannot find module '@scope/pkg'
+    Require stack:
+    - /workspace/src/index.js`;
+
+  const result = detectEnvFailure(output);
+
+  assert.equal(result?.reason, "node_deps_missing");
+});
+
+test("detectEnvFailure flags missing vendor/bin tooling", () => {
+  const output = "sh: No such file or directory: vendor/bin/pest";
+
+  const result = detectEnvFailure(output);
+
+  assert.equal(result?.reason, "tooling_missing");
+});
+
+test("detectEnvFailure returns null for genuine test failures", () => {
+  // The validation command actually exercised the bug — assertions failed,
+  // tests ran, no infrastructure missing. This is the case where the lane
+  // SHOULD promote to `reproduced: true`.
+  const output = `FAIL  Tests\\Feature\\ProductSearchToolTest > it returns formatted product results
+Expected: ["Wine Glass 350ml"]
+Received: []
+Tests: 1 failed, 9 passed (24 assertions)
+Duration: 1.21s`;
+
+  assert.equal(detectEnvFailure(output), null);
+});
+
+test("detectEnvFailure does not flag ECONNREFUSED on non-database ports", () => {
+  // A real test that exercises an app endpoint and gets a legitimate
+  // connection refused on, say, port 8080 (the app under test) is a real
+  // failure, not an env failure. The regex is pinned to known DB/cache
+  // ports specifically to avoid this misclassification.
+  const output = `Error: connect ECONNREFUSED 127.0.0.1:8080`;
+
+  assert.equal(detectEnvFailure(output), null);
 });

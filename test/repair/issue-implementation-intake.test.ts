@@ -1,11 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { readFileSync } from "node:fs";
 
 import {
   attachedPrText,
+  effectiveReproductionStatus,
   issueReferenceTextMatches,
   parseReviewReport,
+  readVerifyReproductionAudit,
   reportOnlyDecision,
 } from "../../dist/repair/issue-implementation-intake.js";
 import {
@@ -284,4 +289,137 @@ test("attachedPrText flags human comment PR mentions", () => {
   };
 
   assert.equal(attachedPrText(live), true);
+});
+
+// --- verify-reproduction audit overlay (#29) ---
+
+function writeAudit(
+  resultsRoot: string,
+  repoSlug: string,
+  itemNumber: number,
+  frontmatter: Record<string, string>,
+): void {
+  const dir = path.join(resultsRoot, repoSlug);
+  fs.mkdirSync(dir, { recursive: true });
+  const fmLines = Object.entries(frontmatter)
+    .map(([k, v]) => `${k}: ${v}`)
+    .join("\n");
+  fs.writeFileSync(
+    path.join(dir, `${itemNumber}.md`),
+    `---\n${fmLines}\n---\n\n# Verify Reproduction ${itemNumber}\n`,
+    "utf8",
+  );
+}
+
+test("readVerifyReproductionAudit returns null when audit file is absent", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-audit-"));
+  try {
+    const audit = readVerifyReproductionAudit("openclaw/openclaw", 999, tmp);
+    assert.equal(audit, null);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("readVerifyReproductionAudit parses a verified-reproduced audit", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-audit-"));
+  try {
+    writeAudit(tmp, "clip-sa-core-ai", 29, {
+      repo: "CLIP-SA/core-ai",
+      number: "29",
+      status: "reproduced",
+      verified: "true",
+      reason: "validation command failed on a clean main checkout",
+    });
+    const audit = readVerifyReproductionAudit("CLIP-SA/core-ai", 29, tmp);
+    assert.ok(audit);
+    assert.equal(audit?.status, "reproduced");
+    assert.equal(audit?.verified, true);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("effectiveReproductionStatus promotes source_reproducible → reproduced when audit verifies", () => {
+  const markdown = report({ reproduction_status: "source_reproducible" });
+  const parsed = parseReviewReport(markdown);
+  const audit = { status: "reproduced" as const, verified: true, reason: "" };
+
+  assert.equal(effectiveReproductionStatus(parsed, audit), "reproduced");
+});
+
+test("effectiveReproductionStatus surfaces blocked when verify-reproduction flagged env failure", () => {
+  const markdown = report({ reproduction_status: "source_reproducible" });
+  const parsed = parseReviewReport(markdown);
+  const audit = {
+    status: "blocked" as const,
+    verified: false,
+    reason: "environment failure: database_unreachable",
+  };
+
+  assert.equal(effectiveReproductionStatus(parsed, audit), "blocked");
+});
+
+test("effectiveReproductionStatus falls through to source when audit absent", () => {
+  const markdown = report({ reproduction_status: "source_reproducible" });
+  const parsed = parseReviewReport(markdown);
+
+  assert.equal(effectiveReproductionStatus(parsed, null), "source_reproducible");
+});
+
+test("effectiveReproductionStatus keeps reproduced source even when audit downgrades", () => {
+  const markdown = report({ reproduction_status: "reproduced" });
+  const parsed = parseReviewReport(markdown);
+  const audit = { status: "not_reproduced" as const, verified: false, reason: "" };
+
+  // Reviewer's verdict wins — they had richer context than the runner.
+  assert.equal(effectiveReproductionStatus(parsed, audit), "reproduced");
+});
+
+test("reportOnlyDecision becomes eligible when audit promotes source_reproducible → reproduced", () => {
+  // The original #29 demo failure: source report says `source_reproducible`,
+  // verify-reproduction patched the file locally but the patched copy never
+  // made it back to state. Intake without audit-overlay rejects; with the
+  // audit overlay it now correctly accepts.
+  const markdown = report({ reproduction_status: "source_reproducible" });
+  const audit = { status: "reproduced" as const, verified: true, reason: "" };
+  const decision = reportOnlyDecision({
+    targetRepo: "openclaw/openclaw",
+    report: parseReviewReport(markdown),
+    reportMarkdown: markdown,
+    audit,
+  });
+
+  assert.equal(decision.shouldRepair, true);
+  assert.equal(decision.status, "queued_for_repair");
+});
+
+test("reportOnlyDecision rejects with clear reason when audit reports environment-blocked", () => {
+  const markdown = report({ reproduction_status: "source_reproducible" });
+  const audit = {
+    status: "blocked" as const,
+    verified: false,
+    reason: "environment failure: database_unreachable",
+  };
+  const decision = reportOnlyDecision({
+    targetRepo: "openclaw/openclaw",
+    report: parseReviewReport(markdown),
+    reportMarkdown: markdown,
+    audit,
+  });
+
+  assert.equal(decision.shouldRepair, false);
+  assert.match(decision.blockers.join("\n"), /environment-blocked.*database_unreachable/);
+});
+
+test("reportOnlyDecision still falls back to source status when audit absent", () => {
+  const markdown = report({ reproduction_status: "source_reproducible" });
+  const decision = reportOnlyDecision({
+    targetRepo: "openclaw/openclaw",
+    report: parseReviewReport(markdown),
+    reportMarkdown: markdown,
+  });
+
+  assert.equal(decision.shouldRepair, false);
+  assert.match(decision.blockers.join("\n"), /reproduction status is source_reproducible/);
 });

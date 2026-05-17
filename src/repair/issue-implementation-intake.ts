@@ -53,6 +53,10 @@ function prepare() {
   const live = truthy(enabled)
     ? liveIssueContext({ repo: targetRepo, number: itemNumber })
     : { issue: null, comments: [], existingPrs: [], existingBranchPrs: [] };
+  // Read the verify-reproduction audit (if any) so eligibility can honor
+  // a verified reproduction even when the patched source report did not
+  // make it back to the state branch before this intake checkout was made.
+  const audit = readVerifyReproductionAudit(targetRepo, itemNumber);
   const decision = intakeDecision({
     enabled,
     targetRepo,
@@ -60,6 +64,7 @@ function prepare() {
     report,
     reportMarkdown,
     live,
+    audit,
   });
   const jobPath = path.join(repoRoot(), issueImplementationJobPath(targetRepo, itemNumber));
   const auditPath = path.join(
@@ -169,16 +174,116 @@ export function parseReviewReport(markdown: string): ReviewReport {
  */
 export type IntakeLane = "reproduced" | "verifiable";
 
+/**
+ * Shape of a verify-reproduction audit record on disk, restricted to the
+ * frontmatter fields intake reads when overlaying the audit on top of the
+ * source report's `reproduction_status`.
+ */
+export type VerifyReproductionAudit = {
+  status: "not_eligible" | "reproduced" | "not_reproduced" | "blocked" | "verification_error";
+  verified: boolean;
+  reason: string;
+};
+
+/**
+ * Read the verify-reproduction audit for a target item if it exists.
+ *
+ * The audit is written by `src/repair/verify-reproduction.ts` after the
+ * lane runs the reviewer's `work_validation` commands against a clean
+ * target checkout. Intake reads it to overlay any verification result on
+ * top of the source report's `reproduction_status` (belt-and-suspenders
+ * for the report-mutation path that verify-reproduction also takes).
+ *
+ * Returns null when no audit has been recorded yet, the file is unreadable,
+ * or the frontmatter cannot be parsed. Exported for unit tests.
+ */
+export function readVerifyReproductionAudit(
+  targetRepo: string,
+  itemNumber: number,
+  resultsRoot?: string,
+): VerifyReproductionAudit | null {
+  const root = resultsRoot ?? path.join(repoRoot(), "results", "verify-reproduction");
+  const auditPath = path.join(root, repoSlug(targetRepo), `${itemNumber}.md`);
+  if (!fs.existsSync(auditPath)) return null;
+  let markdown: string;
+  try {
+    markdown = fs.readFileSync(auditPath, "utf8");
+  } catch {
+    return null;
+  }
+  const fmMatch = markdown.match(/^---\n([\s\S]*?)\n---\n?/);
+  if (!fmMatch) return null;
+  const frontmatter: Record<string, string> = {};
+  for (const line of (fmMatch[1] ?? "").split(/\r?\n/)) {
+    const kv = line.match(/^([A-Za-z0-9_-]+):\s*(.*)$/);
+    if (!kv) continue;
+    frontmatter[kv[1] ?? ""] = stripQuotes(kv[2] ?? "");
+  }
+  const rawStatus = frontmatter.status ?? "verification_error";
+  const status: VerifyReproductionAudit["status"] =
+    rawStatus === "not_eligible" ||
+    rawStatus === "reproduced" ||
+    rawStatus === "not_reproduced" ||
+    rawStatus === "blocked" ||
+    rawStatus === "verification_error"
+      ? rawStatus
+      : "verification_error";
+  return {
+    status,
+    verified: frontmatter.verified === "true",
+    reason: frontmatter.reason ?? "",
+  };
+}
+
+/**
+ * Determine the effective `reproduction_status` for an item by overlaying
+ * any verify-reproduction audit on top of the source report.
+ *
+ * Source report is the original review verdict (`reproduced`,
+ * `source_reproducible`, etc). The verify-reproduction lane may later run
+ * the reviewer's commands against a clean checkout and (a) confirm the
+ * bug, promoting `source_reproducible` → `reproduced`, (b) fail to
+ * reproduce, leaving the source value alone (the source mutation path also
+ * doesn't write back in this case), or (c) hit an environment failure
+ * (missing service on the runner), explicitly downgrading to `blocked`.
+ *
+ * Intake trusts verified audit results when present. This handles the
+ * race where verify-reproduction patched the report locally but the
+ * patched copy did not make it back to the state branch before intake
+ * checked out a fresh copy — the audit (a separately-tracked file in
+ * `results/verify-reproduction/`) is the surviving source of truth.
+ *
+ * Exported for unit tests.
+ */
+export function effectiveReproductionStatus(
+  report: ReviewReport,
+  audit: VerifyReproductionAudit | null,
+): string {
+  const source = report.frontmatter.reproduction_status ?? "unknown";
+  // Source already says reproduced — nothing to overlay. (Audit downgrades
+  // of an already-reproduced item are out of scope; the reviewer's verdict
+  // wins because they had richer context than the validation runner does.)
+  if (source === "reproduced") return "reproduced";
+  if (audit) {
+    if (audit.status === "reproduced" && audit.verified) return "reproduced";
+    if (audit.status === "blocked") return "blocked";
+    if (audit.status === "not_reproduced") return "not_reproduced";
+  }
+  return source;
+}
+
 export function reportOnlyDecision({
   targetRepo,
   report,
   reportMarkdown,
   lane = "reproduced",
+  audit = null,
 }: {
   targetRepo: string;
   report: ReviewReport;
   reportMarkdown: string;
   lane?: IntakeLane;
+  audit?: VerifyReproductionAudit | null;
 }): IntakeDecision {
   // `reportMarkdown` is preserved on the public type for backward compat
   // with callers (CLI, tests, other repos) that still pass the rendered
@@ -191,6 +296,7 @@ export function reportOnlyDecision({
     live: null,
     enabled: "true",
     lane,
+    audit,
   });
 }
 
@@ -201,6 +307,7 @@ function intakeDecision({
   reportMarkdown,
   live,
   lane = "reproduced",
+  audit = null,
 }: {
   enabled: string;
   targetRepo: string;
@@ -209,9 +316,10 @@ function intakeDecision({
   reportMarkdown: string;
   live: LooseRecord;
   lane?: IntakeLane;
+  audit?: VerifyReproductionAudit | null;
 }): IntakeDecision {
   void reportMarkdown;
-  return eligibilityDecision({ enabled, targetRepo, report, live, lane });
+  return eligibilityDecision({ enabled, targetRepo, report, live, lane, audit });
 }
 
 function eligibilityDecision({
@@ -220,12 +328,14 @@ function eligibilityDecision({
   report,
   live,
   lane = "reproduced",
+  audit = null,
 }: {
   enabled: string;
   targetRepo: string;
   report: ReviewReport;
   live: LooseRecord | null;
   lane?: IntakeLane;
+  audit?: VerifyReproductionAudit | null;
 }): IntakeDecision {
   if (!truthy(enabled)) {
     return decision("disabled", false, "issue implementation intake disabled");
@@ -251,8 +361,16 @@ function eligibilityDecision({
   if (!isEligibleIssueImplementationCategory(fm.item_category))
     blockers.push(`item category is ${fm.item_category || "unknown"}`);
   const acceptedReproStatus = lane === "verifiable" ? "source_reproducible" : "reproduced";
-  if (fm.reproduction_status !== acceptedReproStatus)
-    blockers.push(`reproduction status is ${fm.reproduction_status || "unknown"}`);
+  const effectiveStatus = effectiveReproductionStatus(report, audit);
+  if (effectiveStatus === "blocked") {
+    blockers.push(
+      `verify-reproduction marked the item environment-blocked${
+        audit?.reason ? `: ${audit.reason}` : ""
+      }`,
+    );
+  } else if (effectiveStatus !== acceptedReproStatus) {
+    blockers.push(`reproduction status is ${effectiveStatus || "unknown"}`);
+  }
   if (fm.reproduction_confidence !== "high")
     blockers.push(`reproduction confidence is ${fm.reproduction_confidence || "unknown"}`);
   if (fm.requires_new_feature === "true") blockers.push("requires a new feature");

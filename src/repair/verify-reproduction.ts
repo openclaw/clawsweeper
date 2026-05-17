@@ -36,7 +36,71 @@ const VERIFIABLE_LANE: IntakeLane = "verifiable";
 
 const args = parseArgs(process.argv.slice(2));
 
-type VerificationStatus = "not_eligible" | "reproduced" | "not_reproduced" | "verification_error";
+type VerificationStatus =
+  | "not_eligible"
+  | "reproduced"
+  | "not_reproduced"
+  | "blocked"
+  | "verification_error";
+
+export type EnvFailureReason =
+  | "database_unreachable"
+  | "app_not_initialized"
+  | "autoload_missing"
+  | "node_deps_missing"
+  | "tooling_missing";
+
+const ENV_FAILURE_PATTERNS: Array<{ regex: RegExp; reason: EnvFailureReason }> = [
+  // Postgres / MySQL / Redis unreachable on the standard ports, plus the
+  // generic Node/Bun ECONNREFUSED signature. Pinned to known DB/cache ports
+  // so a real test that happens to hit "connection refused" against an
+  // application endpoint isn't misclassified.
+  {
+    regex:
+      /SQLSTATE\[08006\]|Connection refused.*\b(5432|3306|6379)\b|ECONNREFUSED.*\b(5432|3306|6379)\b/i,
+    reason: "database_unreachable",
+  },
+  // Laravel was never bootstrapped (no `artisan`, no working directory).
+  { regex: /Could not open input file:\s*artisan/i, reason: "app_not_initialized" },
+  // Composer autoload didn't run before the test command fired.
+  {
+    regex: /Class "[^"]+" not found|require\(\): Failed opening required/i,
+    reason: "autoload_missing",
+  },
+  // Node deps missing (lane should have installed them via prepare step).
+  { regex: /Cannot find module|npm ERR! code ENOENT/i, reason: "node_deps_missing" },
+  // Common "binary not on PATH" shapes that aren't a real test failure.
+  {
+    regex: /command not found|No such file or directory.*vendor\/bin/i,
+    reason: "tooling_missing",
+  },
+];
+
+/**
+ * Scan a validation command's captured output for unambiguous
+ * environment-failure signatures. Returns the first match or null if the
+ * failure looks like a real test/assertion failure.
+ *
+ * The verify-reproduction lane uses this to distinguish "bug reproduced"
+ * (the reviewer's command surfaced the real bug) from "missing service"
+ * (the command never exercised the bug because the runner lacks Postgres /
+ * Redis / vendor autoload / etc). Only the former is allowed to promote
+ * `reproduction_status: source_reproducible` → `reproduced`. Env failures
+ * are surfaced explicitly via `status: blocked` so the operator can fix
+ * the runner rather than letting a false positive cascade into a fix-PR
+ * attempt with no real bug to fix.
+ *
+ * Exported for unit tests.
+ */
+export function detectEnvFailure(
+  output: string,
+): { reason: EnvFailureReason; evidence: string } | null {
+  for (const { regex, reason } of ENV_FAILURE_PATTERNS) {
+    const match = output.match(regex);
+    if (match) return { reason, evidence: match[0].slice(0, 200) };
+  }
+  return null;
+}
 
 type VerificationOutcome = {
   status: VerificationStatus;
@@ -200,13 +264,24 @@ function run() {
     };
   } catch (error) {
     const message = compactText(String((error as Error)?.message ?? error), 4000);
-    outcome = {
-      status: "reproduced",
-      verified: true,
-      reason: "validation command failed on a clean main checkout",
-      evidence: message,
-      executedCommands,
-    };
+    const envFailure = detectEnvFailure(message);
+    if (envFailure) {
+      outcome = {
+        status: "blocked",
+        verified: false,
+        reason: `environment failure: ${envFailure.reason}`,
+        evidence: `Detected env-failure signature \`${envFailure.evidence}\` — the validation command never exercised the bug. Operator must provision the missing service on the runner before reproduction can be verified.\n\nFull output:\n${message}`,
+        executedCommands,
+      };
+    } else {
+      outcome = {
+        status: "reproduced",
+        verified: true,
+        reason: "validation command failed on a clean main checkout",
+        evidence: message,
+        executedCommands,
+      };
+    }
   }
 
   if (outcome.verified) {
