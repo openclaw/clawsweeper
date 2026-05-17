@@ -4227,6 +4227,14 @@ test("decision parser enforces required schema-shaped evidence", () => {
     () =>
       parseDecision({
         ...closeDecision(),
+        impactLabels: ["impact:data-loss", "impact:data-loss"],
+      }),
+    /decision\.impactLabels must not contain duplicates/,
+  );
+  assert.throws(
+    () =>
+      parseDecision({
+        ...closeDecision(),
         requiresNewConfigOption: "false",
       }),
     /decision\.requiresNewConfigOption/,
@@ -4496,6 +4504,15 @@ test("ClawSweeper impact label descriptions stay aligned with prompt and schema"
       `${label.name} description is missing from the schema`,
     );
   }
+});
+
+test("ClawSweeper impact label schema avoids unsupported response-format keywords", () => {
+  const schema = JSON.parse(reviewDecisionSchemaText()) as {
+    properties?: {
+      impactLabels?: Record<string, unknown>;
+    };
+  };
+  assert.equal(schema.properties?.impactLabels?.uniqueItems, undefined);
 });
 
 test("ClawSweeper impact labels remove stale owned labels and preserve unrelated labels", () => {

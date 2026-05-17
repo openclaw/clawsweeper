@@ -161,7 +161,6 @@
     "impactLabels": {
       "type": "array",
       "maxItems": 3,
-      "uniqueItems": true,
       "items": {
         "type": "string",
         "enum": [
