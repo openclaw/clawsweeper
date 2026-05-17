@@ -2183,31 +2183,31 @@ Reason: Maintainers should review the tests after the targeted lane is green.
   assert.match(comment, /<summary>How this review workflow works<\/summary>/);
   assert.match(
     comment,
-    /latest verdict, findings, and automation markers stay together instead of adding duplicate bot comments/,
+    /- Re-runs edit this comment so the latest verdict, findings, and automation markers stay together instead of adding duplicate bot comments\./,
   );
   assert.match(
     comment,
-    /A fresh review can be triggered by maintainer comments, exact-item GitHub events, scheduled\/background review runs, or manual workflow dispatch\./,
+    /- A fresh review can be triggered by maintainer comments, exact-item GitHub events, scheduled\/background review runs, or manual workflow dispatch\./,
   );
   assert.match(
     comment,
-    /PR authors can comment `@clawsweeper re-review` or `@clawsweeper re-run` on their own open PR or issue to request a fresh review only\./,
+    /- PR authors can comment `@clawsweeper re-review` or `@clawsweeper re-run` on their own open PR or issue to request a fresh review only\./,
   );
   assert.match(
     comment,
-    /Maintainers can also comment `@clawsweeper review` to request a fresh review only\./,
+    /- Maintainers can also comment `@clawsweeper review` to request a fresh review only\./,
   );
   assert.match(
     comment,
-    /Fresh-review commands do not start repair, autofix, rebase, CI repair, or automerge\./,
+    /- Fresh-review commands do not start repair, autofix, rebase, CI repair, or automerge\./,
   );
   assert.match(
     comment,
-    /Maintainer-only repair and merge flows require explicit commands such as `@clawsweeper autofix`, `@clawsweeper automerge`, `@clawsweeper fix ci`, or `@clawsweeper address review`\./,
+    /- Maintainer-only repair and merge flows require explicit commands such as `@clawsweeper autofix`, `@clawsweeper automerge`, `@clawsweeper fix ci`, or `@clawsweeper address review`\./,
   );
   assert.match(
     comment,
-    /Maintainers can comment `@clawsweeper explain` to ask for more context, or `@clawsweeper stop` to stop active automation\./,
+    /- Maintainers can comment `@clawsweeper explain` to ask for more context, or `@clawsweeper stop` to stop active automation\./,
   );
   assert.match(
     comment,
