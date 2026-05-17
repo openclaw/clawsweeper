@@ -94,6 +94,7 @@ import {
   type TargetValidationOptions,
 } from "./target-validation.js";
 import { uniqueStrings } from "./validation-command-utils.js";
+import { enforceValidationFixScope } from "./validation-fix-scope.js";
 import { validateActivePrAreaCapacity } from "./execute-fix-area-capacity.js";
 import {
   repairPauseLabel,
@@ -2406,6 +2407,27 @@ function validateAndReviewLoop({
           evidence: [],
           validation_commands_run: validationCommands,
         };
+        // Snapshot the in-scope changed-file set before validation-fix runs.
+        // Codex's pass has free-write access to the target checkout; we
+        // restore anything it touches outside this set before the worker
+        // commits its edits.
+        const preValidationFixTracked = run("git", ["diff", "--name-only", baseBranch, "--"], {
+          cwd: targetDir,
+        })
+          .split("\n")
+          .map((line) => line.trim())
+          .filter(Boolean);
+        const preValidationFixUntracked = run(
+          "git",
+          ["ls-files", "--others", "--exclude-standard"],
+          { cwd: targetDir },
+        )
+          .split("\n")
+          .map((line) => line.trim())
+          .filter(Boolean);
+        const allowedFiles = [
+          ...new Set([...preValidationFixTracked, ...preValidationFixUntracked]),
+        ];
         runCodexValidationFix({
           fixArtifact,
           targetDir,
@@ -2415,6 +2437,18 @@ function validateAndReviewLoop({
           validationPlan,
           validationCommands,
         });
+        const scopeGuard = enforceValidationFixScope({
+          targetDir,
+          baseBranch,
+          allowedFiles,
+          likelyFiles: Array.isArray(fixArtifact?.likely_files) ? fixArtifact.likely_files : [],
+        });
+        if (scopeGuard.reverted_files.length) {
+          logProgress("validation-fix scope guard reverted out-of-scope edits", {
+            attempt,
+            reverted: scopeGuard.reverted_files,
+          });
+        }
         onReviewFix?.(`validation-${attempt}`);
         continue;
       }
