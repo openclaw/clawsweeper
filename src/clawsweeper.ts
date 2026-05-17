@@ -4970,9 +4970,10 @@ function publicRealBehaviorProofLine(proof: RealBehaviorProof): string {
 function publicMantisRecommendationBlock(recommendation: MantisRecommendation): string {
   if (recommendation.status !== "recommended" || recommendation.scenario === "none") return "";
   const comment = recommendation.maintainerComment.trim();
+  const accountMention = "@openclaw-mantis";
   const ambiguousMantisMention = new RegExp(`@${"mantis"}\\b`, "i");
   if (
-    !comment.startsWith("@openclaw-mantis ") ||
+    !comment.startsWith(`${accountMention} `) ||
     ambiguousMantisMention.test(comment) ||
     /\b(?:gh\s+workflow|workflow_dispatch|dispatch|trigger\s+the\s+workflow)\b/i.test(comment) ||
     comment.length > 500 ||
@@ -4980,11 +4981,13 @@ function publicMantisRecommendationBlock(recommendation: MantisRecommendation): 
   ) {
     return "";
   }
+  const commandBody = comment.slice(accountMention.length).trim();
+  if (!commandBody) return "";
   const reason = sentence(recommendation.reason);
   const intro = reason
-    ? `${reason} A maintainer can ask Mantis to capture proof by commenting:`
-    : "A maintainer can ask Mantis to capture proof by commenting:";
-  return [intro, "", "```text", comment, "```"].join("\n");
+    ? `${reason} A maintainer can ask Mantis to capture proof by posting a new PR comment that starts with the OpenClaw Mantis account mention, followed by:`
+    : "A maintainer can ask Mantis to capture proof by posting a new PR comment that starts with the OpenClaw Mantis account mention, followed by:";
+  return [intro, "", "```text", commandBody, "```"].join("\n");
 }
 
 function closeIntro(reason: CloseReason): string {

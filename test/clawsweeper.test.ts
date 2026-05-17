@@ -4528,8 +4528,9 @@ Reason: Maintainers should review the proof before merge.
   );
 
   assert.match(comment, /\*\*Mantis proof suggestion\*\*/);
-  assert.match(comment, /```text\n@openclaw-mantis telegram desktop proof:/);
-  assert.match(comment, /@openclaw-mantis/);
+  assert.match(comment, /starts with the OpenClaw Mantis account mention/);
+  assert.match(comment, /```text\ntelegram desktop proof:/);
+  assert.doesNotMatch(comment, /@openclaw-mantis/);
 });
 
 test("pull request review comments suppress unsafe Mantis recommendations", () => {

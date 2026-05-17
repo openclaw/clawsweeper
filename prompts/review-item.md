@@ -484,7 +484,8 @@ Known Mantis lanes:
 When `mantisRecommendation.status` is `recommended`, write a single-line
 `maintainerComment` that starts with `@openclaw-mantis` and describes the exact
 behavior to prove. Do not use any shorter or ambiguous Mantis account mention.
-Example:
+ClawSweeper validates the account mention but does not render it publicly, so
+its own review comment does not accidentally start a Mantis workflow. Example:
 `@openclaw-mantis telegram desktop proof: verify that /stop targets the active
 topic and does not affect other topics.` Keep it short enough to paste into a
 PR comment.
