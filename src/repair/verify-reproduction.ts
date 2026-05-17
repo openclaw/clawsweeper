@@ -14,6 +14,7 @@ import {
   runAllowedValidationCommands,
   type TargetValidationOptions,
 } from "./target-validation.js";
+import { setupComposeStack, teardownComposeStack, type ComposeContext } from "./compose-stack.js";
 import { compactText } from "./text-utils.js";
 
 /**
@@ -241,47 +242,82 @@ function run() {
     return;
   }
 
+  // Bring up the target repo's declared test stack (Postgres, Redis, etc.)
+  // BEFORE running validation. If the repo ships no `docker-compose.test.yml`,
+  // `composeContext` stays null and the lane behaves exactly as before.
+  // Boot failure is fatal to verification — we cannot run the reviewer's
+  // commands without their declared services.
+  let composeContext: ComposeContext | null = null;
+  try {
+    composeContext = setupComposeStack(targetCheckout);
+  } catch (error) {
+    outcome = {
+      status: "verification_error",
+      verified: false,
+      reason: "compose stack failed to start",
+      evidence: compactText(String((error as Error)?.message ?? error), 4000),
+      executedCommands: [],
+    };
+    writeAudit({
+      auditPath,
+      targetRepo,
+      itemNumber,
+      reportRepo,
+      reportPath,
+      reportUrl,
+      preparedAt,
+      outcome,
+    });
+    emitOutputs({ outcome, reportPath, reportUrl, auditPath, itemNumber, targetRepo });
+    console.log(JSON.stringify({ status: outcome.status, verified: false }));
+    return;
+  }
+
   // The reviewer asserts these commands FAIL on `main` (that is the bug).
   // A successful run = the bug did NOT reproduce. A thrown error from the
   // runner = reproduction confirmed. We deliberately invert the usual
   // success/failure semantics that target-validation uses for fix flows.
   let executedCommands: string[] = [];
   try {
-    executedCommands = runAllowedValidationCommands(
-      validationCommands,
-      targetCheckout,
-      validationOptions,
-      baseBranch,
-    );
-    outcome = {
-      status: "not_reproduced",
-      verified: false,
-      reason: "validation commands all passed on a clean main checkout",
-      evidence: executedCommands.length
-        ? `Passed: ${executedCommands.map((cmd) => `\`${cmd}\``).join(", ")}`
-        : "no commands executed",
-      executedCommands,
-    };
-  } catch (error) {
-    const message = compactText(String((error as Error)?.message ?? error), 4000);
-    const envFailure = detectEnvFailure(message);
-    if (envFailure) {
+    try {
+      executedCommands = runAllowedValidationCommands(
+        validationCommands,
+        targetCheckout,
+        validationOptions,
+        baseBranch,
+      );
       outcome = {
-        status: "blocked",
+        status: "not_reproduced",
         verified: false,
-        reason: `environment failure: ${envFailure.reason}`,
-        evidence: `Detected env-failure signature \`${envFailure.evidence}\` — the validation command never exercised the bug. Operator must provision the missing service on the runner before reproduction can be verified.\n\nFull output:\n${message}`,
+        reason: "validation commands all passed on a clean main checkout",
+        evidence: executedCommands.length
+          ? `Passed: ${executedCommands.map((cmd) => `\`${cmd}\``).join(", ")}`
+          : "no commands executed",
         executedCommands,
       };
-    } else {
-      outcome = {
-        status: "reproduced",
-        verified: true,
-        reason: "validation command failed on a clean main checkout",
-        evidence: message,
-        executedCommands,
-      };
+    } catch (error) {
+      const message = compactText(String((error as Error)?.message ?? error), 4000);
+      const envFailure = detectEnvFailure(message);
+      if (envFailure) {
+        outcome = {
+          status: "blocked",
+          verified: false,
+          reason: `environment failure: ${envFailure.reason}`,
+          evidence: `Detected env-failure signature \`${envFailure.evidence}\` — the validation command never exercised the bug. Operator must provision the missing service on the runner before reproduction can be verified.\n\nFull output:\n${message}`,
+          executedCommands,
+        };
+      } else {
+        outcome = {
+          status: "reproduced",
+          verified: true,
+          reason: "validation command failed on a clean main checkout",
+          evidence: message,
+          executedCommands,
+        };
+      }
     }
+  } finally {
+    teardownComposeStack(composeContext);
   }
 
   if (outcome.verified) {
