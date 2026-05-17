@@ -50,6 +50,7 @@ import {
   renderResponse,
   sharedAutomergeStatusMarkerPrefix,
   staleAutomergeActivationReason,
+  shouldClearMaintainerCommandReaction,
   usesSharedAutomergeStatus,
 } from "../../dist/repair/comment-router-core.js";
 import { CLAWSWEEPER_CO_AUTHOR_TRAILER } from "../../dist/repair/co-author-credit.js";
@@ -202,6 +203,52 @@ test("parseCommand recognizes maintainer slash commands", () => {
     intent: "autoclose",
     autoclose_message: "Not a direction for OpenClaw",
   });
+});
+
+test("terminal maintainer command reactions clear after successful handling", () => {
+  assert.equal(
+    shouldClearMaintainerCommandReaction({
+      trusted_bot: false,
+      comment_id: "4472074866",
+      status: "executed",
+      intent: "automerge",
+    }),
+    true,
+  );
+});
+
+test("terminal maintainer command reactions clear after skipped handling", () => {
+  assert.equal(
+    shouldClearMaintainerCommandReaction({
+      trusted_bot: false,
+      comment_id: "4472074866",
+      status: "skipped",
+      reason: "comment version already processed in ledger",
+      intent: "automerge",
+    }),
+    true,
+  );
+});
+
+test("in-progress maintainer command reactions stay visible", () => {
+  assert.equal(
+    shouldClearMaintainerCommandReaction({
+      trusted_bot: false,
+      comment_id: "4472074866",
+      status: "waiting",
+      intent: "automerge",
+    }),
+    false,
+  );
+  assert.equal(
+    shouldClearMaintainerCommandReaction({
+      trusted_bot: true,
+      comment_id: "4472074866",
+      status: "executed",
+      intent: "clawsweeper_auto_merge",
+    }),
+    false,
+  );
 });
 
 test("cached label number lookup fetches each label once and returns stable copies", () => {
