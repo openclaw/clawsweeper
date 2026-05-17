@@ -42,7 +42,7 @@ on:
       runner:
         description: "Runner label for verification work"
         required: false
-        default: '["self-hosted","macOS","ARM64","mac-mini"]'
+        default: '["ubuntu-latest"]'
         type: string
 
 permissions:
@@ -62,13 +62,9 @@ concurrency:
   group: verify-reproduction-${{ github.event.inputs.target_repo || github.event.client_payload.target_repo }}-${{ github.event.inputs.item_number || github.event.client_payload.item_number }}
   cancel-in-progress: false
 
-defaults:
-  run:
-    shell: /opt/homebrew/bin/bash -e {0}
-
 jobs:
   verify:
-    runs-on: ${{ fromJson(github.event.inputs.runner || vars.CLAWSWEEPER_VERIFY_REPRODUCTION_RUNNER || '["self-hosted","macOS","ARM64","mac-mini"]') }}
+    runs-on: ${{ fromJson(github.event.inputs.runner || vars.CLAWSWEEPER_VERIFY_REPRODUCTION_RUNNER || '["ubuntu-latest"]') }}
     timeout-minutes: 45
     steps:
       - name: Checkout clawsweeper
@@ -128,21 +124,23 @@ jobs:
           filter: blob:none
           fetch-depth: 0
 
-      - name: Ensure OrbStack Docker on PATH
-        # The mac-mini self-hosted runner gets Docker via OrbStack at
-        # ~/.orbstack/bin/ but the runner's launchd shell does not see that
-        # path by default. Prepend it so `docker compose` (Compose v2 plugin)
-        # resolves to OrbStack's bundled binary instead of any older Docker
-        # CLI that may be earlier on PATH and would reject the `compose`
-        # subcommand.
+      - name: Setup PHP (Laravel/Composer targets)
+        # The verify-reproduction lane runs the target repo's validation
+        # commands (composer install + ./vendor/bin/pest, etc.) so it needs
+        # a working PHP toolchain. ubuntu-latest ships PHP but a pinned
+        # modern version keeps results reproducible across runner image
+        # updates. Non-PHP targets ignore this; the action is cheap.
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.3"
+          extensions: mbstring, pdo_pgsql, pdo_sqlite, bcmath, intl
+          coverage: none
+          tools: composer:v2
+
+      - name: Probe Docker (sanity)
         run: |
-          set -euo pipefail
-          if [ -d "$HOME/.orbstack/bin" ]; then
-            echo "$HOME/.orbstack/bin" >> "$GITHUB_PATH"
-          fi
-          export PATH="$HOME/.orbstack/bin:$PATH"
-          docker --version || true
-          docker compose version || true
+          docker --version
+          docker compose version
 
       - name: Run verify-reproduction
         id: verify
