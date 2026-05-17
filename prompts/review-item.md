@@ -135,6 +135,41 @@ correct` when the PR has no blocking correctness finding, and `not a patch` for
 issues and other non-PR reviews. Set `overallConfidenceScore` to a 0-1 number
 matching your confidence in the overall verdict.
 
+For PRs, include a dedicated solution-fit and upgrade-safety pass before
+deciding the merge verdict. First check whether the problem is already solved by
+current code, documented configuration, CLI flags, env vars, provider settings,
+plugin/skill surfaces, setup workflow, or an existing maintainer-approved
+pattern. Search the codebase and docs for the existing capability before
+accepting a new implementation path.
+
+Treat duplicated behavior as a high-priority defect. If the PR reimplements
+behavior that is already available through config, docs, current APIs, plugins,
+skills, or an existing setup path, add a P1 review finding unless the PR proves
+the existing path is insufficient and the new behavior is explicitly needed. The
+finding should point to the existing supported path and explain why the
+duplicate implementation would create maintenance drift, conflicting behavior,
+or user confusion.
+
+Treat compatibility and user settings as merge-critical. Look for changes that
+override existing preferences, persisted config, provider choices, auth/session
+state, local workspace state, generated files, shortcuts, routes, schemas, or
+documented defaults. A new default must not change an existing user's stored
+value during upgrade unless the PR includes an explicit, narrow, tested
+migration and the behavior is clearly intentional.
+
+Call out upgrade and settings breakage directly in `reviewFindings`: use P1
+when existing setups can break, existing config/preferences can be overwritten,
+current behavior is silently replaced, or duplicated behavior creates a
+competing source of truth. Use P2 only for lower-blast-radius compatibility
+risks where the existing behavior remains intact but migration, docs, or upgrade
+proof is missing. Use P3 only for low-risk discoverability or docs gaps.
+
+When the PR changes defaults, config loading, migrations, schemas, provider
+routing, persisted preferences, install/startup behavior, compatibility paths,
+or setup workflows, require evidence for both fresh-install behavior and upgrade
+behavior. If upgrade behavior is ambiguous, mark the PR incorrect or needing
+maintainer review rather than assuming the new default is safe.
+
 Use reason-specific anchors:
 
 - For `implemented_on_main`, verify the current behavior in source and,

@@ -4302,6 +4302,32 @@ test("review prompt requires a dedicated securityReview section", () => {
   assert.match(prompt, /status: "needs_attention"/);
 });
 
+test("review prompt treats duplicated behavior as a P1 PR finding", () => {
+  const prompt = readFileSync("prompts/review-item.md", "utf8");
+
+  assert.match(prompt, /dedicated solution-fit and upgrade-safety pass/);
+  assert.match(prompt, /current code, documented configuration, CLI flags, env vars/);
+  assert.match(prompt, /Search the codebase and docs for the existing capability/);
+  assert.match(prompt, /Treat duplicated behavior as a high-priority defect/);
+  assert.match(prompt, /add a P1 review finding unless the PR proves/);
+  assert.match(prompt, /maintenance drift, conflicting behavior,\s+or user confusion/);
+});
+
+test("review prompt requires upgrade and preference overwrite checks", () => {
+  const prompt = readFileSync("prompts/review-item.md", "utf8");
+
+  assert.match(prompt, /Treat compatibility and user settings as merge-critical/);
+  assert.match(prompt, /override existing preferences, persisted config, provider choices/);
+  assert.match(
+    prompt,
+    /A new default must not change an existing user's stored\s+value during upgrade/,
+  );
+  assert.match(prompt, /Call out upgrade and settings breakage directly in `reviewFindings`/);
+  assert.match(prompt, /existing config\/preferences can be overwritten/);
+  assert.match(prompt, /require evidence for both fresh-install behavior and upgrade\s+behavior/);
+  assert.match(prompt, /If upgrade behavior is ambiguous, mark the PR incorrect/);
+});
+
 test("review prompt requires real behavior proof for PR reviews", () => {
   const prompt = readFileSync("prompts/review-item.md", "utf8");
 
