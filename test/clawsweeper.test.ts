@@ -60,8 +60,8 @@ import {
   reviewDecisionSchemaText,
   reviewPromptTelemetryForTest,
   reviewPromptTemplate,
-  riskLabelsForTest,
-  riskLabelSchemeForTest,
+  impactLabelsForTest,
+  impactLabelSchemeForTest,
   runtimeBudgetExceeded,
   safeOutputTail,
   sameAuthorCounterpartApplyReason,
@@ -159,7 +159,7 @@ function closeDecision(overrides = {}) {
     risks: [],
     bestSolution: "Keep the implementation as-is.",
     triagePriority: "P2",
-    riskLabels: [],
+    impactLabels: [],
     itemCategory: "bug",
     reproductionStatus: "reproduced",
     reproductionConfidence: "high",
@@ -4206,17 +4206,22 @@ test("decision parser enforces required schema-shaped evidence", () => {
     () =>
       parseDecision({
         ...closeDecision(),
-        riskLabels: ["risk:unknown"],
+        impactLabels: ["impact:unknown"],
       }),
-    /decision\.riskLabels\[0\]/,
+    /decision\.impactLabels\[0\]/,
   );
   assert.throws(
     () =>
       parseDecision({
         ...closeDecision(),
-        riskLabels: ["risk:data-loss", "risk:security", "risk:crash-loop", "risk:message-loss"],
+        impactLabels: [
+          "impact:data-loss",
+          "impact:security",
+          "impact:crash-loop",
+          "impact:message-loss",
+        ],
       }),
-    /decision\.riskLabels must contain at most 3 labels/,
+    /decision\.impactLabels must contain at most 3 labels/,
   );
   assert.throws(
     () =>
@@ -4427,43 +4432,43 @@ test("ClawSweeper priority labels follow triage priority", () => {
   assert.deepEqual(priorityLabelsForTest(["P0", "bug"], "none"), ["bug"]);
 });
 
-test("ClawSweeper risk label scheme exposes owned risk labels", () => {
-  assert.deepEqual(riskLabelSchemeForTest(), [
+test("ClawSweeper impact label scheme exposes owned impact labels", () => {
+  assert.deepEqual(impactLabelSchemeForTest(), [
     {
-      name: "risk:data-loss",
+      name: "impact:data-loss",
       color: "B60205",
       description: "Can lose, corrupt, or silently drop user/session/config data.",
     },
     {
-      name: "risk:security",
+      name: "impact:security",
       color: "B60205",
       description: "Security boundary, credential, authz, sandbox, or sensitive-data risk.",
     },
     {
-      name: "risk:crash-loop",
+      name: "impact:crash-loop",
       color: "D93F0B",
       description: "Crash, hang, restart loop, or process-level availability failure.",
     },
     {
-      name: "risk:message-loss",
+      name: "impact:message-loss",
       color: "D93F0B",
       description: "Channel message delivery can be lost, duplicated, or misrouted.",
     },
     {
-      name: "risk:session-state",
+      name: "impact:session-state",
       color: "FBCA04",
       description: "Session, memory, transcript, context, or agent state can drift or corrupt.",
     },
     {
-      name: "risk:auth-provider",
+      name: "impact:auth-provider",
       color: "FBCA04",
       description: "Auth, provider routing, model choice, or SecretRef resolution may break.",
     },
   ]);
 });
 
-test("ClawSweeper risk label descriptions fit GitHub label limits", () => {
-  for (const label of riskLabelSchemeForTest()) {
+test("ClawSweeper impact label descriptions fit GitHub label limits", () => {
+  for (const label of impactLabelSchemeForTest()) {
     assert.ok(
       label.description.length <= 100,
       `${label.name} description is ${label.description.length} characters`,
@@ -4471,17 +4476,17 @@ test("ClawSweeper risk label descriptions fit GitHub label limits", () => {
   }
 });
 
-test("ClawSweeper risk label descriptions stay aligned with prompt and schema", () => {
+test("ClawSweeper impact label descriptions stay aligned with prompt and schema", () => {
   const schema = JSON.parse(reviewDecisionSchemaText()) as {
     properties?: {
-      riskLabels?: {
+      impactLabels?: {
         description?: string;
       };
     };
   };
-  const schemaDescription = schema.properties?.riskLabels?.description ?? "";
+  const schemaDescription = schema.properties?.impactLabels?.description ?? "";
   const prompt = reviewPromptTemplate();
-  for (const label of riskLabelSchemeForTest()) {
+  for (const label of impactLabelSchemeForTest()) {
     assert.ok(
       prompt.includes(`\`${label.name}\`: ${label.description}`),
       `${label.name} description is missing from the review prompt`,
@@ -4493,25 +4498,25 @@ test("ClawSweeper risk label descriptions stay aligned with prompt and schema", 
   }
 });
 
-test("ClawSweeper risk labels remove stale owned labels and preserve unrelated labels", () => {
+test("ClawSweeper impact labels remove stale owned labels and preserve unrelated labels", () => {
   assert.deepEqual(
-    riskLabelsForTest(
-      ["bug", "risk:data-loss", "risk:security", "proof: sufficient", "P1"],
-      ["risk:message-loss", "risk:session-state", "not-a-risk-label"],
+    impactLabelsForTest(
+      ["bug", "impact:data-loss", "impact:security", "proof: sufficient", "P1"],
+      ["impact:message-loss", "impact:session-state", "not-an-impact-label"],
     ),
-    ["bug", "proof: sufficient", "P1", "risk:message-loss", "risk:session-state"],
+    ["bug", "proof: sufficient", "P1", "impact:message-loss", "impact:session-state"],
   );
-  assert.deepEqual(riskLabelsForTest(["bug", "risk:auth-provider"], []), ["bug"]);
+  assert.deepEqual(impactLabelsForTest(["bug", "impact:auth-provider"], []), ["bug"]);
 });
 
-test("ClawSweeper risk labels do not alter PR review finding priorities", () => {
+test("ClawSweeper impact labels do not alter PR review finding priorities", () => {
   const decision = parseDecision(
     closeDecision({
-      riskLabels: ["risk:data-loss", "risk:security"],
+      impactLabels: ["impact:data-loss", "impact:security"],
       reviewFindings: [
         {
           title: "A concrete review finding",
-          body: "This remains a PR review finding priority, not a triage risk label.",
+          body: "This remains a PR review finding priority, not an impact label.",
           priority: 1,
           confidenceScore: 0.9,
           file: "src/example.ts",
@@ -4521,7 +4526,7 @@ test("ClawSweeper risk labels do not alter PR review finding priorities", () => 
       ],
     }),
   );
-  assert.deepEqual(decision.riskLabels, ["risk:data-loss", "risk:security"]);
+  assert.deepEqual(decision.impactLabels, ["impact:data-loss", "impact:security"]);
   assert.equal(decision.reviewFindings[0]?.priority, 1);
 });
 

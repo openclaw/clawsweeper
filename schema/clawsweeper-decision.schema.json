@@ -13,7 +13,7 @@
     "risks",
     "bestSolution",
     "triagePriority",
-    "riskLabels",
+    "impactLabels",
     "itemCategory",
     "reproductionStatus",
     "reproductionConfidence",
@@ -158,22 +158,22 @@
       "enum": ["P0", "P1", "P2", "P3", "none"],
       "description": "ClawSweeper-maintained triage priority for maintainers to sort issues and pull requests. P0: Emergency: data loss, security bypass, crash loop, or unusable core runtime. P1: Urgent regression or broken agent/channel workflow affecting real users now. P2: Normal priority bug or improvement with limited blast radius. P3: Low-risk cleanup, docs, polish, ergonomics, or speculative feature. Use none only when no priority label should be applied."
     },
-    "riskLabels": {
+    "impactLabels": {
       "type": "array",
       "maxItems": 3,
       "uniqueItems": true,
       "items": {
         "type": "string",
         "enum": [
-          "risk:data-loss",
-          "risk:security",
-          "risk:crash-loop",
-          "risk:message-loss",
-          "risk:session-state",
-          "risk:auth-provider"
+          "impact:data-loss",
+          "impact:security",
+          "impact:crash-loop",
+          "impact:message-loss",
+          "impact:session-state",
+          "impact:auth-provider"
         ]
       },
-      "description": "ClawSweeper-owned GitHub risk labels for maintainers to find risk classes on issues and pull requests. Use at most 3. risk:data-loss: Can lose, corrupt, or silently drop user/session/config data. risk:security: Security boundary, credential, authz, sandbox, or sensitive-data risk. risk:crash-loop: Crash, hang, restart loop, or process-level availability failure. risk:message-loss: Channel message delivery can be lost, duplicated, or misrouted. risk:session-state: Session, memory, transcript, context, or agent state can drift or corrupt. risk:auth-provider: Auth, provider routing, model choice, or SecretRef resolution may break."
+      "description": "ClawSweeper-owned GitHub impact labels for maintainers to find the affected problem class on issues and pull requests. These describe what the item is about, not PR merge risk. Use at most 3. impact:data-loss: Can lose, corrupt, or silently drop user/session/config data. impact:security: Security boundary, credential, authz, sandbox, or sensitive-data risk. impact:crash-loop: Crash, hang, restart loop, or process-level availability failure. impact:message-loss: Channel message delivery can be lost, duplicated, or misrouted. impact:session-state: Session, memory, transcript, context, or agent state can drift or corrupt. impact:auth-provider: Auth, provider routing, model choice, or SecretRef resolution may break."
     },
     "itemCategory": {
       "type": "string",

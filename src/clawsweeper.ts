@@ -65,13 +65,13 @@ type ApplyKind = ItemKind | "all";
 type DecisionKind = "close" | "keep_open";
 type WorkCandidateKind = "none" | "manual_review" | "queue_fix_pr";
 type TriagePriority = "P0" | "P1" | "P2" | "P3" | "none";
-type RiskLabelName =
-  | "risk:data-loss"
-  | "risk:security"
-  | "risk:crash-loop"
-  | "risk:message-loss"
-  | "risk:session-state"
-  | "risk:auth-provider";
+type ImpactLabelName =
+  | "impact:data-loss"
+  | "impact:security"
+  | "impact:crash-loop"
+  | "impact:message-loss"
+  | "impact:session-state"
+  | "impact:auth-provider";
 type ItemCategory =
   | "bug"
   | "regression"
@@ -283,7 +283,7 @@ interface Decision {
   risks: string[];
   bestSolution: string;
   triagePriority: TriagePriority;
-  riskLabels: RiskLabelName[];
+  impactLabels: ImpactLabelName[];
   itemCategory: ItemCategory;
   reproductionStatus: ReproductionStatus;
   reproductionConfidence: Confidence;
@@ -731,43 +731,43 @@ const PRIORITY_LABELS = [
 const PRIORITY_LABEL_NAMES: ReadonlySet<string> = new Set(
   PRIORITY_LABELS.map((label) => label.name),
 );
-const RISK_LABELS = [
+const IMPACT_LABELS = [
   {
-    name: "risk:data-loss",
+    name: "impact:data-loss",
     color: "B60205",
     description: "Can lose, corrupt, or silently drop user/session/config data.",
   },
   {
-    name: "risk:security",
+    name: "impact:security",
     color: "B60205",
     description: "Security boundary, credential, authz, sandbox, or sensitive-data risk.",
   },
   {
-    name: "risk:crash-loop",
+    name: "impact:crash-loop",
     color: "D93F0B",
     description: "Crash, hang, restart loop, or process-level availability failure.",
   },
   {
-    name: "risk:message-loss",
+    name: "impact:message-loss",
     color: "D93F0B",
     description: "Channel message delivery can be lost, duplicated, or misrouted.",
   },
   {
-    name: "risk:session-state",
+    name: "impact:session-state",
     color: "FBCA04",
     description: "Session, memory, transcript, context, or agent state can drift or corrupt.",
   },
   {
-    name: "risk:auth-provider",
+    name: "impact:auth-provider",
     color: "FBCA04",
     description: "Auth, provider routing, model choice, or SecretRef resolution may break.",
   },
 ] as const satisfies readonly {
-  name: RiskLabelName;
+  name: ImpactLabelName;
   color: string;
   description: string;
 }[];
-const RISK_LABEL_NAMES: ReadonlySet<string> = new Set(RISK_LABELS.map((label) => label.name));
+const IMPACT_LABEL_NAMES: ReadonlySet<string> = new Set(IMPACT_LABELS.map((label) => label.name));
 const ISSUE_ADVISORY_LABELS = [
   {
     name: "clawsweeper:current-main-repro",
@@ -875,7 +875,7 @@ const SECURITY_REVIEW_STATUSES = new Set<SecurityReviewStatus>([
   "not_applicable",
 ]);
 const SECURITY_CONCERN_SEVERITIES = new Set<SecurityConcernSeverity>(["high", "medium", "low"]);
-const RISK_LABEL_VALUES = new Set<RiskLabelName>(RISK_LABELS.map((label) => label.name));
+const IMPACT_LABEL_VALUES = new Set<ImpactLabelName>(IMPACT_LABELS.map((label) => label.name));
 const REAL_BEHAVIOR_PROOF_STATUSES = new Set<RealBehaviorProofStatus>([
   "sufficient",
   "missing",
@@ -917,7 +917,7 @@ const DECISION_SCHEMA_KEYS = new Set([
   "risks",
   "bestSolution",
   "triagePriority",
-  "riskLabels",
+  "impactLabels",
   "itemCategory",
   "reproductionStatus",
   "reproductionConfidence",
@@ -1390,11 +1390,11 @@ function requireEnumArray<T extends string>(value: unknown, allowed: Set<T>, pat
   );
 }
 
-function requireRiskLabels(value: unknown): RiskLabelName[] {
-  const labels = requireEnumArray(value, RISK_LABEL_VALUES, "decision.riskLabels");
-  if (labels.length > 3) throw new Error("decision.riskLabels must contain at most 3 labels");
+function requireImpactLabels(value: unknown): ImpactLabelName[] {
+  const labels = requireEnumArray(value, IMPACT_LABEL_VALUES, "decision.impactLabels");
+  if (labels.length > 3) throw new Error("decision.impactLabels must contain at most 3 labels");
   if (new Set(labels).size !== labels.length) {
-    throw new Error("decision.riskLabels must not contain duplicates");
+    throw new Error("decision.impactLabels must not contain duplicates");
   }
   return labels;
 }
@@ -1616,7 +1616,7 @@ export function parseDecision(value: unknown, item?: DecisionNormalizationItem):
       TRIAGE_PRIORITIES,
       "decision.triagePriority",
     ),
-    riskLabels: requireRiskLabels(record.riskLabels),
+    impactLabels: requireImpactLabels(record.impactLabels),
     itemCategory: requireEnum(record.itemCategory, ITEM_CATEGORIES, "decision.itemCategory"),
     reproductionStatus: requireEnum(
       record.reproductionStatus,
@@ -4015,7 +4015,7 @@ function codexFailureDecision(status: number | null, stderr: string, stdout = ""
     risks: ["No close action taken because the review did not complete."],
     bestSolution: "Retry the Codex review after fixing the execution failure.",
     triagePriority: "none",
-    riskLabels: [],
+    impactLabels: [],
     itemCategory: "unclear",
     reproductionStatus: "unclear",
     reproductionConfidence: "low",
@@ -5107,9 +5107,9 @@ function triagePriorityFromReport(markdown: string): TriagePriority {
   return TRIAGE_PRIORITIES.has(value as TriagePriority) ? (value as TriagePriority) : "none";
 }
 
-function riskLabelsFromReport(markdown: string): RiskLabelName[] {
-  return frontMatterStringArray(markdown, "risk_labels").filter((label): label is RiskLabelName =>
-    RISK_LABEL_NAMES.has(label),
+function impactLabelsFromReport(markdown: string): ImpactLabelName[] {
+  return frontMatterStringArray(markdown, "impact_labels").filter(
+    (label): label is ImpactLabelName => IMPACT_LABEL_NAMES.has(label),
   );
 }
 
@@ -5402,30 +5402,33 @@ export function priorityLabelsForTest(labels: readonly string[], triagePriority:
   return nextPriorityLabels(labels, priority);
 }
 
-function nextRiskLabels(labels: readonly string[], riskLabels: readonly RiskLabelName[]): string[] {
-  const nextLabels = labels.filter((label) => !RISK_LABEL_NAMES.has(label));
-  const uniqueRiskLabels = new Set(riskLabels);
-  for (const label of RISK_LABELS) {
-    if (uniqueRiskLabels.has(label.name)) nextLabels.push(label.name);
+function nextImpactLabels(
+  labels: readonly string[],
+  impactLabels: readonly ImpactLabelName[],
+): string[] {
+  const nextLabels = labels.filter((label) => !IMPACT_LABEL_NAMES.has(label));
+  const uniqueImpactLabels = new Set(impactLabels);
+  for (const label of IMPACT_LABELS) {
+    if (uniqueImpactLabels.has(label.name)) nextLabels.push(label.name);
   }
   return nextLabels;
 }
 
-export function riskLabelSchemeForTest(): {
+export function impactLabelSchemeForTest(): {
   name: string;
   color: string;
   description: string;
 }[] {
-  return RISK_LABELS.map(({ name, color, description }) => ({ name, color, description }));
+  return IMPACT_LABELS.map(({ name, color, description }) => ({ name, color, description }));
 }
 
-export function riskLabelsForTest(
+export function impactLabelsForTest(
   labels: readonly string[],
-  riskLabels: readonly string[],
+  impactLabels: readonly string[],
 ): string[] {
-  return nextRiskLabels(
+  return nextImpactLabels(
     labels,
-    riskLabels.filter((label): label is RiskLabelName => RISK_LABEL_NAMES.has(label)),
+    impactLabels.filter((label): label is ImpactLabelName => IMPACT_LABEL_NAMES.has(label)),
   );
 }
 
@@ -5441,8 +5444,8 @@ function ensurePriorityLabel(label: PriorityLabelSpec): void {
   }
 }
 
-function ensureRiskLabel(name: RiskLabelName): void {
-  const definition = RISK_LABELS.find((label) => label.name === name);
+function ensureImpactLabel(name: ImpactLabelName): void {
+  const definition = IMPACT_LABELS.find((label) => label.name === name);
   if (!definition) return;
   try {
     ghWithRetry(
@@ -5641,27 +5644,27 @@ function syncPriorityLabel(options: {
   return { labels: nextLabels, changed };
 }
 
-function syncRiskLabels(options: {
+function syncImpactLabels(options: {
   number: number;
   labels: readonly string[];
-  riskLabels: readonly RiskLabelName[];
+  impactLabels: readonly ImpactLabelName[];
   dryRun: boolean;
 }): { labels: string[]; changed: boolean } {
-  const nextLabels = nextRiskLabels(options.labels, options.riskLabels);
+  const nextLabels = nextImpactLabels(options.labels, options.impactLabels);
   const currentLabelKeys = new Set(options.labels.map((label) => label.toLowerCase()));
   const nextLabelKeys = new Set(nextLabels.map((label) => label.toLowerCase()));
   const labelsToAdd = nextLabels.filter(
-    (label): label is RiskLabelName =>
-      RISK_LABEL_NAMES.has(label) && !currentLabelKeys.has(label.toLowerCase()),
+    (label): label is ImpactLabelName =>
+      IMPACT_LABEL_NAMES.has(label) && !currentLabelKeys.has(label.toLowerCase()),
   );
   const labelsToRemove = options.labels.filter(
-    (label) => RISK_LABEL_NAMES.has(label) && !nextLabelKeys.has(label.toLowerCase()),
+    (label) => IMPACT_LABEL_NAMES.has(label) && !nextLabelKeys.has(label.toLowerCase()),
   );
   const changed = labelsToAdd.length > 0 || labelsToRemove.length > 0;
   if (!changed) return { labels: nextLabels, changed };
   if (options.dryRun) return { labels: nextLabels, changed };
   for (const label of labelsToAdd) {
-    ensureRiskLabel(label);
+    ensureImpactLabel(label);
     ghWithRetry(["issue", "edit", String(options.number), "--add-label", label]);
   }
   for (const label of labelsToRemove) {
@@ -5966,7 +5969,7 @@ function reportDecision(markdown: string, closeReason: CloseReason): Decision {
     risks: [],
     bestSolution: reviewSectionValue(markdown, "bestSolution"),
     triagePriority: triagePriorityFromReport(markdown),
-    riskLabels: riskLabelsFromReport(markdown),
+    impactLabels: impactLabelsFromReport(markdown),
     itemCategory:
       (frontMatterValue(markdown, "item_category") as ItemCategory | undefined) ?? "unclear",
     reproductionStatus:
@@ -7434,7 +7437,7 @@ work_cluster_refs: ${jsonFrontMatterValue(options.decision.workClusterRefs)}
 work_validation: ${jsonFrontMatterValue(options.decision.workValidation)}
 work_likely_files: ${jsonFrontMatterValue(options.decision.workLikelyFiles)}
 triage_priority: ${options.decision.triagePriority}
-risk_labels: ${jsonFrontMatterValue(options.decision.riskLabels)}
+impact_labels: ${jsonFrontMatterValue(options.decision.impactLabels)}
 pull_files: ${jsonFrontMatterValue(pullFiles)}
 pull_files_truncated: ${pullFilesTruncated}
 item_category: ${options.decision.itemCategory}
@@ -8082,14 +8085,14 @@ function applyDecisionsCommand(args: Args): void {
       item.labels = syncResult.labels;
       clawSweeperLabelsChanged ||= syncResult.changed;
       markdown = replaceFrontMatterValue(markdown, "labels", JSON.stringify(item.labels));
-      const riskSyncResult = syncRiskLabels({
+      const impactSyncResult = syncImpactLabels({
         number,
         labels: item.labels,
-        riskLabels: riskLabelsFromReport(markdown),
+        impactLabels: impactLabelsFromReport(markdown),
         dryRun,
       });
-      item.labels = riskSyncResult.labels;
-      clawSweeperLabelsChanged ||= riskSyncResult.changed;
+      item.labels = impactSyncResult.labels;
+      clawSweeperLabelsChanged ||= impactSyncResult.changed;
       markdown = replaceFrontMatterValue(markdown, "labels", JSON.stringify(item.labels));
     }
     if (state === "open" && item.kind === "issue" && !isCloseProposal && isCurrentCompleteReport) {
