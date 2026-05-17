@@ -6546,7 +6546,7 @@ function reviewWorkflowCallout(): string[] {
       "- ClawSweeper keeps one durable marker-backed review comment per issue or PR.",
       "- Re-runs edit this comment so the latest verdict, findings, and automation markers stay together instead of adding duplicate bot comments.",
       "- A fresh review can be triggered by maintainer comments, exact-item GitHub events, scheduled/background review runs, or manual workflow dispatch.",
-      "- PR authors can comment `@clawsweeper re-review` or `@clawsweeper re-run` on their own open PR or issue to request a fresh review only.",
+      "- PR/issue authors can comment `@clawsweeper re-review` or `@clawsweeper re-run` on their own open PR or issue to request a fresh review only.",
       "- Maintainers can also comment `@clawsweeper review` to request a fresh review only.",
       "- Fresh-review commands do not start repair, autofix, rebase, CI repair, or automerge.",
       "- Maintainer-only repair and merge flows require explicit commands such as `@clawsweeper autofix`, `@clawsweeper automerge`, `@clawsweeper fix ci`, or `@clawsweeper address review`.",

@@ -2191,7 +2191,7 @@ Reason: Maintainers should review the tests after the targeted lane is green.
   );
   assert.match(
     comment,
-    /- PR authors can comment `@clawsweeper re-review` or `@clawsweeper re-run` on their own open PR or issue to request a fresh review only\./,
+    /- PR\/issue authors can comment `@clawsweeper re-review` or `@clawsweeper re-run` on their own open PR or issue to request a fresh review only\./,
   );
   assert.match(
     comment,
