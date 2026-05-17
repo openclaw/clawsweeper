@@ -455,6 +455,39 @@ visible chat behavior the `telegram-crabbox-e2e-proof` skill can show in a
 short recording. Mark it `not_needed` for non-Telegram PRs or Telegram work
 that is not usefully visible in that recording.
 
+Always fill `mantisRecommendation`. This is maintainer guidance only: it must
+never trigger OpenClaw Mantis, claim Mantis has run, ask ClawSweeper to dispatch
+a workflow, or request ClawSweeper repair markers. Recommend Mantis only when a
+PR changes behavior that is best verified in a real transport or visible UI.
+Use `status: "not_recommended"`, `scenario: "none"`, and an empty
+`maintainerComment` for issues, docs-only/test-only/internal refactors, CI-only
+work, pure schema/type changes, or behavior where unit tests are the better
+proof.
+
+Known Mantis lanes:
+
+- `telegram_live`: Telegram live QA with a redacted transcript visual. Use for
+  bot-to-bot Telegram commands, mention handling, reply delivery, and observable
+  message transcripts.
+- `telegram_desktop_proof`: agentic native Telegram Desktop before/after visual
+  proof. Use for visible Telegram UI behavior, topics, buttons, callbacks,
+  formatting, media, or flows where native UI GIFs are useful.
+- `discord_status_reactions`: before/after Discord queued/thinking/done status
+  reaction proof. Use only for status reaction behavior.
+- `discord_thread_attachment`: before/after Discord thread reply filePath
+  attachment proof. Use only for thread attachment behavior.
+- `slack_desktop_smoke`: Slack desktop/VNC proof. Use for Slack desktop or
+  gateway-visible behavior.
+- `visual_task`: generic visible browser/desktop proof. Use only when no
+  dedicated transport scenario fits and the proof can be described concretely.
+
+When `mantisRecommendation.status` is `recommended`, write a single-line
+`maintainerComment` that starts with `@openclaw-mantis`, never `@Mantis`, and
+describes the exact behavior to prove. Example:
+`@openclaw-mantis telegram desktop proof: verify that /stop targets the active
+topic and does not affect other topics.` Keep it short enough to paste into a
+PR comment.
+
 Always fill `triagePriority`. ClawSweeper syncs this value to one of the GitHub
 labels `P0`, `P1`, `P2`, or `P3` so maintainers can find issues and pull requests
 by priority. Choose the priority from user impact, severity, confidence, and

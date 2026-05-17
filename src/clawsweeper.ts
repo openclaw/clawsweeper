@@ -109,6 +109,15 @@ type RealBehaviorProofEvidenceKind =
   | "none"
   | "not_applicable";
 type TelegramVisibleProofStatus = "needed" | "not_needed";
+type MantisRecommendationStatus = "recommended" | "not_recommended";
+type MantisRecommendationScenario =
+  | "none"
+  | "telegram_live"
+  | "telegram_desktop_proof"
+  | "discord_status_reactions"
+  | "discord_thread_attachment"
+  | "slack_desktop_smoke"
+  | "visual_task";
 type CloseReason =
   | "implemented_on_main"
   | "mostly_implemented_on_main"
@@ -261,6 +270,13 @@ interface TelegramVisibleProof {
   summary: string;
 }
 
+interface MantisRecommendation {
+  status: MantisRecommendationStatus;
+  scenario: MantisRecommendationScenario;
+  reason: string;
+  maintainerComment: string;
+}
+
 interface FixedPullRequest {
   repo: string;
   number: number;
@@ -296,6 +312,7 @@ interface Decision {
   securityReview: SecurityReview;
   realBehaviorProof: RealBehaviorProof;
   telegramVisibleProof: TelegramVisibleProof;
+  mantisRecommendation: MantisRecommendation;
   overallCorrectness: OverallCorrectness;
   overallConfidenceScore: number;
   fixedRelease?: string | null;
@@ -684,7 +701,7 @@ const RECENT_MISSING_OPEN_MS = DAY_MS;
 const DEFAULT_CODEX_MODEL = "gpt-5.5";
 const DEFAULT_REASONING_EFFORT = "high";
 const DEFAULT_SERVICE_TIER = "";
-const REVIEW_POLICY_VERSION = "2026-05-17-policy-v17";
+const REVIEW_POLICY_VERSION = "2026-05-17-policy-v18";
 const REVIEW_ITEM_PROMPT_PATH = join(ROOT, "prompts", "review-item.md");
 const CLAWSWEEPER_DECISION_SCHEMA_PATH = join(ROOT, "schema", "clawsweeper-decision.schema.json");
 const REVIEW_COMMENT_MARKER_PREFIX = "<!-- clawsweeper-review";
@@ -898,6 +915,19 @@ const TELEGRAM_VISIBLE_PROOF_STATUSES = new Set<TelegramVisibleProofStatus>([
   "needed",
   "not_needed",
 ]);
+const MANTIS_RECOMMENDATION_STATUSES = new Set<MantisRecommendationStatus>([
+  "recommended",
+  "not_recommended",
+]);
+const MANTIS_RECOMMENDATION_SCENARIOS = new Set<MantisRecommendationScenario>([
+  "none",
+  "telegram_live",
+  "telegram_desktop_proof",
+  "discord_status_reactions",
+  "discord_thread_attachment",
+  "slack_desktop_smoke",
+  "visual_task",
+]);
 const OVERALL_CORRECTNESS_VALUES = new Set<OverallCorrectness>([
   "patch is correct",
   "patch is incorrect",
@@ -930,6 +960,7 @@ const DECISION_SCHEMA_KEYS = new Set([
   "securityReview",
   "realBehaviorProof",
   "telegramVisibleProof",
+  "mantisRecommendation",
   "overallCorrectness",
   "overallConfidenceScore",
   "fixedRelease",
@@ -954,6 +985,12 @@ const REAL_BEHAVIOR_PROOF_SCHEMA_KEYS = new Set([
   "needsContributorAction",
 ]);
 const TELEGRAM_VISIBLE_PROOF_SCHEMA_KEYS = new Set(["status", "summary"]);
+const MANTIS_RECOMMENDATION_SCHEMA_KEYS = new Set([
+  "status",
+  "scenario",
+  "reason",
+  "maintainerComment",
+]);
 const SECURITY_CONCERN_SCHEMA_KEYS = new Set([
   "title",
   "body",
@@ -989,6 +1026,7 @@ const REVIEW_SECTIONS = {
   securityReview: "Security Review",
   realBehaviorProof: "Real Behavior Proof",
   telegramVisibleProof: "Telegram Visible Proof",
+  mantisRecommendation: "Mantis Recommendation",
   workCandidate: "Work Candidate",
   repairWorkPrompt: "Repair Work Prompt",
   evidence: "Evidence",
@@ -1571,6 +1609,17 @@ function parseTelegramVisibleProof(value: unknown, path: string): TelegramVisibl
   };
 }
 
+function parseMantisRecommendation(value: unknown, path: string): MantisRecommendation {
+  const record = requireRecord(value, path);
+  rejectUnexpectedKeys(record, MANTIS_RECOMMENDATION_SCHEMA_KEYS, path);
+  return {
+    status: requireEnum(record.status, MANTIS_RECOMMENDATION_STATUSES, `${path}.status`),
+    scenario: requireEnum(record.scenario, MANTIS_RECOMMENDATION_SCENARIOS, `${path}.scenario`),
+    reason: requireString(record.reason, `${path}.reason`),
+    maintainerComment: requireString(record.maintainerComment, `${path}.maintainerComment`),
+  };
+}
+
 function requireEnum<T extends string>(value: unknown, allowed: Set<T>, path: string): T {
   if (typeof value === "string" && allowed.has(value as T)) return value as T;
   throw new Error(`${path} has invalid value`);
@@ -1651,6 +1700,10 @@ export function parseDecision(value: unknown, item?: DecisionNormalizationItem):
     telegramVisibleProof: parseTelegramVisibleProof(
       record.telegramVisibleProof,
       "decision.telegramVisibleProof",
+    ),
+    mantisRecommendation: parseMantisRecommendation(
+      record.mantisRecommendation,
+      "decision.mantisRecommendation",
     ),
     overallCorrectness: requireEnum(
       record.overallCorrectness,
@@ -4050,6 +4103,12 @@ function codexFailureDecision(status: number | null, stderr: string, stdout = ""
       status: "not_needed",
       summary: "Telegram visible proof was not assessed because the Codex review failed.",
     },
+    mantisRecommendation: {
+      status: "not_recommended",
+      scenario: "none",
+      reason: "Mantis was not assessed because the Codex review failed.",
+      maintainerComment: "",
+    },
     overallCorrectness: "not a patch",
     overallConfidenceScore: 0,
     fixedRelease: null,
@@ -4908,6 +4967,25 @@ function publicRealBehaviorProofLine(proof: RealBehaviorProof): string {
   }
 }
 
+function publicMantisRecommendationBlock(recommendation: MantisRecommendation): string {
+  if (recommendation.status !== "recommended" || recommendation.scenario === "none") return "";
+  const comment = recommendation.maintainerComment.trim();
+  if (
+    !comment.startsWith("@openclaw-mantis ") ||
+    /@mantis\b/i.test(comment) ||
+    /\b(?:gh\s+workflow|workflow_dispatch|dispatch|trigger\s+the\s+workflow)\b/i.test(comment) ||
+    comment.length > 500 ||
+    comment.includes("\n")
+  ) {
+    return "";
+  }
+  const reason = sentence(recommendation.reason);
+  const intro = reason
+    ? `${reason} A maintainer can ask Mantis to capture proof by commenting:`
+    : "A maintainer can ask Mantis to capture proof by commenting:";
+  return [intro, "", "```text", comment, "```"].join("\n");
+}
+
 function closeIntro(reason: CloseReason): string {
   switch (reason) {
     case "implemented_on_main":
@@ -5320,6 +5398,28 @@ function reportTelegramVisibleProof(markdown: string): TelegramVisibleProof {
     summary:
       sectionLineValue(section, "Summary") ??
       "No Telegram visible-proof assessment was recorded in this report.",
+  };
+}
+
+function reportMantisRecommendation(markdown: string): MantisRecommendation {
+  const section = reviewSectionValue(markdown, "mantisRecommendation");
+  const statusValue = sectionLineValue(section, "Status");
+  const scenarioValue = sectionLineValue(section, "Scenario");
+  const status = MANTIS_RECOMMENDATION_STATUSES.has(statusValue as MantisRecommendationStatus)
+    ? (statusValue as MantisRecommendationStatus)
+    : "not_recommended";
+  const scenario = MANTIS_RECOMMENDATION_SCENARIOS.has(
+    scenarioValue as MantisRecommendationScenario,
+  )
+    ? (scenarioValue as MantisRecommendationScenario)
+    : "none";
+  return {
+    status,
+    scenario,
+    reason:
+      sectionLineValue(section, "Reason") ??
+      "No Mantis recommendation was recorded in this report.",
+    maintainerComment: sectionLineValue(section, "Maintainer comment") ?? "",
   };
 }
 
@@ -6025,6 +6125,7 @@ function reportDecision(markdown: string, closeReason: CloseReason): Decision {
     securityReview: reportSecurityReview(markdown),
     realBehaviorProof: reportRealBehaviorProof(markdown),
     telegramVisibleProof: reportTelegramVisibleProof(markdown),
+    mantisRecommendation: reportMantisRecommendation(markdown),
     overallCorrectness: reportOverallCorrectness(markdown),
     overallConfidenceScore: reportOverallConfidenceScore(markdown),
     fixedRelease: fixedRelease && fixedRelease !== "unknown" ? fixedRelease : null,
@@ -6562,6 +6663,7 @@ function renderKeepOpenCommentFromReport(markdown: string): string {
   const reviewFindings = reportReviewFindings(markdown);
   const securityReview = reportSecurityReview(markdown);
   const realBehaviorProof = reportRealBehaviorProof(markdown);
+  const mantisRecommendation = reportMantisRecommendation(markdown);
   const summary = reviewSectionValue(markdown, "summary");
   const changeSummary = reviewSectionValue(markdown, "changeSummary");
   const bestSolution = reviewSectionValue(markdown, "bestSolution");
@@ -6616,6 +6718,10 @@ function renderKeepOpenCommentFromReport(markdown: string): string {
       publicRealBehaviorProofLine(realBehaviorProof),
     );
   }
+  const mantisSuggestion = isPullRequest
+    ? publicMantisRecommendationBlock(mantisRecommendation)
+    : "";
+  if (mantisSuggestion) appendPublicSection(lines, "Mantis proof suggestion", mantisSuggestion);
   appendPublicSection(lines, isPullRequest ? "Next step before merge" : "Next step", nextStepLine);
   const securityLine = publicSecurityReviewLine(securityReview);
   if (securityLine) appendPublicSection(lines, "Security", securityLine);
@@ -7367,6 +7473,18 @@ function renderTelegramVisibleProofReportSection(decision: Decision): string {
   ].join("\n");
 }
 
+function renderMantisRecommendationReportSection(decision: Decision): string {
+  return [
+    `Status: ${decision.mantisRecommendation.status}`,
+    "",
+    `Scenario: ${decision.mantisRecommendation.scenario}`,
+    "",
+    `Reason: ${sentence(decision.mantisRecommendation.reason)}`,
+    "",
+    `Maintainer comment: ${decision.mantisRecommendation.maintainerComment.trim()}`,
+  ].join("\n");
+}
+
 export function pullRequestFilePathsFromContextForTest(context: {
   pullFiles?: unknown[];
 }): string[] {
@@ -7430,6 +7548,7 @@ function markdownFor(options: {
   const securityReview = renderSecurityReviewReportSection(options.decision);
   const realBehaviorProof = renderRealBehaviorProofReportSection(options.decision);
   const telegramVisibleProof = renderTelegramVisibleProofReportSection(options.decision);
+  const mantisRecommendation = renderMantisRecommendationReportSection(options.decision);
   const workCandidateSection = renderWorkCandidateReportSection(options.decision);
   const repairWorkPromptSection = renderRepairWorkPromptReportSection(options.decision);
   const pullFiles = pullRequestFilePathsFromContext(options.context);
@@ -7508,6 +7627,8 @@ real_behavior_proof_status: ${options.decision.realBehaviorProof.status}
 real_behavior_proof_evidence_kind: ${options.decision.realBehaviorProof.evidenceKind}
 real_behavior_proof_needs_contributor_action: ${options.decision.realBehaviorProof.needsContributorAction}
 telegram_visible_proof_status: ${options.decision.telegramVisibleProof.status}
+mantis_recommendation_status: ${options.decision.mantisRecommendation.status}
+mantis_recommendation_scenario: ${options.decision.mantisRecommendation.scenario}
 ---
 
 # ${markdownLink(`#${options.item.number}: ${options.item.title}`, options.item.url)}
@@ -7581,6 +7702,10 @@ ${realBehaviorProof}
 ## ${REVIEW_SECTIONS.telegramVisibleProof}
 
 ${telegramVisibleProof}
+
+## ${REVIEW_SECTIONS.mantisRecommendation}
+
+${mantisRecommendation}
 
 ## ${REVIEW_SECTIONS.workCandidate}
 

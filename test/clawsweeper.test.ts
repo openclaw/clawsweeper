@@ -197,6 +197,12 @@ function closeDecision(overrides = {}) {
       status: "not_needed",
       summary: "This non-PR issue triage does not need Telegram visible proof.",
     },
+    mantisRecommendation: {
+      status: "not_recommended",
+      scenario: "none",
+      reason: "Mantis proof is not useful for this issue triage.",
+      maintainerComment: "",
+    },
     overallCorrectness: "not a patch",
     overallConfidenceScore: 0.75,
     fixedRelease: null,
@@ -4462,6 +4468,112 @@ test("review prompt classifies Telegram visible proof candidates", () => {
   assert.match(prompt, /telegram-crabbox-e2e-proof/);
   assert.match(prompt, /message formatting/);
   assert.match(prompt, /mantis: telegram-visible-proof/);
+  assert.match(prompt, /mantisRecommendation/);
+  assert.match(prompt, /@openclaw-mantis/);
+  assert.match(prompt, /never `@Mantis`/);
+});
+
+test("pull request review comments suggest copy-paste Mantis proof comments", () => {
+  const comment = renderReviewCommentFromReport(
+    `${reportFrontMatter({
+      type: "pull_request",
+      number: "83140",
+      decision: "keep_open",
+      close_reason: "none",
+      work_candidate: "none",
+      pull_head_sha: "abc123def456",
+    })}
+
+## Summary
+
+Keep this Telegram PR open for maintainer review.
+
+## What This Changes
+
+Fixes Telegram topic stop targeting.
+
+## Real Behavior Proof
+
+Status: mock_only
+
+Evidence kind: none
+
+Needs contributor action: true
+
+Summary: Current proof is test-only for visible Telegram topic behavior.
+
+## Mantis Recommendation
+
+Status: recommended
+
+Scenario: telegram_desktop_proof
+
+Reason: This changes visible Telegram topic behavior that should be proven in native Telegram Desktop.
+
+Maintainer comment: @openclaw-mantis telegram desktop proof: verify that /stop targets the active topic and does not affect other topics.
+
+## Work Candidate
+
+Candidate: none
+
+Confidence: low
+
+Priority: low
+
+Status: none
+
+Reason: Maintainers should review the proof before merge.
+	`,
+    "none",
+  );
+
+  assert.match(comment, /\*\*Mantis proof suggestion\*\*/);
+  assert.match(comment, /```text\n@openclaw-mantis telegram desktop proof:/);
+  assert.doesNotMatch(comment, /@Mantis\b/);
+});
+
+test("pull request review comments suppress unsafe Mantis recommendations", () => {
+  const comment = renderReviewCommentFromReport(
+    `${reportFrontMatter({
+      type: "pull_request",
+      number: "83140",
+      decision: "keep_open",
+      close_reason: "none",
+      work_candidate: "none",
+      pull_head_sha: "abc123def456",
+    })}
+
+## Summary
+
+Keep this Telegram PR open for maintainer review.
+
+## Mantis Recommendation
+
+Status: recommended
+
+Scenario: telegram_desktop_proof
+
+Reason: This changes visible Telegram behavior.
+
+Maintainer comment: @Mantis telegram desktop proof
+
+## Work Candidate
+
+Candidate: none
+
+Confidence: low
+
+Priority: low
+
+Status: none
+
+Reason: Maintainers should review the proof before merge.
+	`,
+    "none",
+  );
+
+  assert.doesNotMatch(comment, /\*\*Mantis proof suggestion\*\*/);
+  assert.doesNotMatch(comment, /@Mantis\b/);
 });
 
 test("ClawSweeper proof judgement controls the sufficient proof label", () => {
