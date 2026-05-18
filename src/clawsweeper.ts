@@ -7069,6 +7069,14 @@ export function labelJustificationsMarkdownForTest(
   return labelJustificationsMarkdown(justifications);
 }
 
+function labelJustificationsFromPublicReport(markdown: string): LabelJustification[] {
+  return labelJustificationsFromReport(markdown, {
+    triagePriority: triagePriorityFromReport(markdown),
+    impactLabels: impactLabelsFromReport(markdown),
+    mergeRiskLabels: mergeRiskLabelsFromReport(markdown),
+  });
+}
+
 function inlineCode(value: string): string {
   return `\`${value.replaceAll("`", "\\`")}\``;
 }
@@ -7777,6 +7785,10 @@ function renderKeepOpenCommentFromReport(markdown: string): string {
     details.push("Best possible solution:", "", bestSolutionLine);
   }
   appendReviewQuestionDetails(details, reproductionAssessment, solutionAssessment);
+  const labelJustifications = labelJustificationsFromPublicReport(markdown);
+  if (labelJustifications.length) {
+    details.push("", "Label justifications:", "", labelJustificationsMarkdown(labelJustifications));
+  }
   if (isPullRequest && reviewFindings.length) {
     details.push(
       "",

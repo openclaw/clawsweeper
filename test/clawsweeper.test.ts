@@ -2659,6 +2659,85 @@ Full review comments:
   assert.doesNotMatch(markers, /clawsweeper-verdict:needs-human/);
 });
 
+test("public PR review comments include label justifications in review details", () => {
+  const report = `${reportFrontMatter({
+    type: "pull_request",
+    number: "74461",
+    decision: "keep_open",
+    close_reason: "none",
+    review_status: "complete",
+    confidence: "high",
+    author: "contributor",
+    author_association: "CONTRIBUTOR",
+    labels: JSON.stringify([]),
+    work_candidate: "none",
+    triage_priority: "P1",
+    impact_labels: JSON.stringify(["impact:message-loss"]),
+    merge_risk_labels: JSON.stringify(["merge-risk: 🚨 compatibility"]),
+    label_justifications: JSON.stringify([
+      {
+        label: "P1",
+        reason: "The PR changes an active channel workflow affecting real users.",
+      },
+      {
+        label: "impact:message-loss",
+        reason: "The diff touches message retry and delivery ordering.",
+      },
+      {
+        label: "merge-risk: 🚨 compatibility",
+        reason: "Merging changes the default upgrade behavior for existing configs.",
+      },
+    ]),
+  })}
+
+## Summary
+
+Keep this PR open for maintainer review.
+
+## What This Changes
+
+Changes message delivery behavior.
+
+## Best Possible Solution
+
+Review the compatibility impact before merge.
+
+## Risks
+
+Compatibility risk remains for existing configs.
+
+${realBehaviorProofReportSection({
+  status: "insufficient",
+  needsContributorAction: true,
+  summary: "The PR has tests but no real setup proof yet.",
+})}
+
+## Review Findings
+
+Overall correctness: patch is correct
+
+Overall confidence: 0.8
+
+Full review comments:
+
+- none
+`;
+
+  const comment = renderReviewCommentFromReport(report, "none");
+
+  assert.match(comment, /<details>\n<summary>Review details<\/summary>/);
+  assert.match(comment, /Label justifications:/);
+  assert.match(comment, /- `P1`: The PR changes an active channel workflow affecting real users\./);
+  assert.match(
+    comment,
+    /- `impact:message-loss`: The diff touches message retry and delivery ordering\./,
+  );
+  assert.match(
+    comment,
+    /- `merge-risk: 🚨 compatibility`: Merging changes the default upgrade behavior for existing configs\./,
+  );
+});
+
 test("media proof receives a shiny proof rating boost", () => {
   const report = `${reportFrontMatter({
     type: "pull_request",
