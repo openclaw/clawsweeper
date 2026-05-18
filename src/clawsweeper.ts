@@ -126,6 +126,8 @@ type PrStatusLabelKind =
   | "needs_proof"
   | "waiting_on_author"
   | "ready_for_maintainer_look";
+type PrEggState = "incubating" | "warming" | "wobbling" | "hatched";
+type PrEggRarity = "common" | "uncommon" | "rare" | "glimmer" | "legendary";
 type TelegramVisibleProofStatus = "needed" | "not_needed";
 type MantisRecommendationStatus = "recommended" | "not_recommended";
 type MantisRecommendationScenario =
@@ -5454,6 +5456,79 @@ function publicPrRatingLine(rating: PrRating, proof: RealBehaviorProof): string 
   return lines.join("\n");
 }
 
+function prEggSeedFromReport(markdown: string): string {
+  const repo = markdownRepository(markdown);
+  const number = frontMatterValue(markdown, "number") ?? "unknown";
+  const headSha = frontMatterValue(markdown, "pull_head_sha") ?? "unknown";
+  return `${repo}#${number}@${headSha}`;
+}
+
+function prEggStateFromReport(
+  markdown: string,
+  options: {
+    realBehaviorProof: RealBehaviorProof;
+    prRating: PrRating;
+    reviewFindings: readonly Pick<ReviewFinding, "priority">[];
+    securityReview: Pick<SecurityReview, "status">;
+    overallCorrectness: OverallCorrectness;
+  },
+): PrEggState {
+  const isReady =
+    options.prRating.nextSteps.length === 0 &&
+    isReadyForMaintainerLook({
+      realBehaviorProof: options.realBehaviorProof,
+      reviewFindings: options.reviewFindings,
+      securityReview: options.securityReview,
+      overallCorrectness: options.overallCorrectness,
+    });
+  if (isReady) return "hatched";
+  const labels = frontMatterStringArray(markdown, "labels");
+  if (labels.includes("status: 🔁 re-review loop")) return "wobbling";
+  const hasUnresolvedWork =
+    options.prRating.nextSteps.length > 0 ||
+    hasUnresolvedContributorWork({
+      realBehaviorProof: options.realBehaviorProof,
+      reviewFindings: options.reviewFindings,
+      securityReview: options.securityReview,
+      overallCorrectness: options.overallCorrectness,
+    });
+  return hasUnresolvedWork ? "warming" : "incubating";
+}
+
+function publicPrEggLine(
+  markdown: string,
+  options: {
+    realBehaviorProof: RealBehaviorProof;
+    prRating: PrRating;
+    reviewFindings: readonly Pick<ReviewFinding, "priority">[];
+    securityReview: Pick<SecurityReview, "status">;
+    overallCorrectness: OverallCorrectness;
+  },
+): string {
+  const seed = prEggSeedFromReport(markdown);
+  const state = prEggStateFromReport(markdown, options);
+  if (state === "hatched") {
+    const creature = prEggCreature(seed);
+    const shareUrl = `https://x.com/intent/tweet?text=${encodeURIComponent(creature.shareText)}`;
+    return [
+      `✨ Hatched: ${creature.rarityLabel} ${creature.name}`,
+      "",
+      "```text",
+      creature.portrait,
+      "```",
+      `Trait: ${creature.trait}.`,
+      `Share on X: ${markdownLink("post this hatch", shareUrl)}`,
+      `Copy: ${creature.shareText}`,
+    ].join("\n");
+  }
+  const stateLines: Record<Exclude<PrEggState, "hatched">, string> = {
+    incubating: "🥚 Incubating: this PR egg is tucked into the review nest.",
+    warming: "🔥 Warming up: proof, findings, or rank-up moves are still in progress.",
+    wobbling: "🔁 Wobbling: a re-review loop is active, so the shell is rattling.",
+  };
+  return [stateLines[state], "", "```text", pickSeeded(PR_EGG_ART, seed, state), "```"].join("\n");
+}
+
 function publicMantisRecommendationBlock(recommendation: MantisRecommendation): string {
   if (recommendation.status !== "recommended" || recommendation.scenario === "none") return "";
   const comment = recommendation.maintainerComment.trim();
@@ -6102,6 +6177,116 @@ function hasShinyProof(proof: Pick<RealBehaviorProof, "status" | "evidenceKind">
       proof.evidenceKind === "screenshot" ||
       proof.evidenceKind === "linked_artifact")
   );
+}
+
+const PR_EGG_ART = [
+  "       .-.\n     .'   '.\n    /       \\\n   |         |\n    \\       /\n     '.___.'",
+  "       .-.\n    .-'   '-.\n   /  .- -.  \\\n  |  /     \\  |\n   \\  '._.'  /\n    '-.___.-'",
+  "       .-.\n    .-'   '-.\n   /  _   _  \\\n  |  (_) (_)  |\n   \\   ___   /\n    '.___._.'",
+];
+
+const PR_EGG_RARITIES: { rarity: PrEggRarity; label: string; cutoff: number }[] = [
+  { rarity: "common", label: "🥚 common", cutoff: 7000 },
+  { rarity: "uncommon", label: "🌱 uncommon", cutoff: 9000 },
+  { rarity: "rare", label: "💎 rare", cutoff: 9800 },
+  { rarity: "glimmer", label: "✨ glimmer", cutoff: 9990 },
+  { rarity: "legendary", label: "🌈 legendary", cutoff: 10000 },
+];
+
+const PR_EGG_ADJECTIVES = [
+  "Gilded",
+  "Moonlit",
+  "Velvet",
+  "Neon",
+  "Tiny",
+  "Brave",
+  "Clockwork",
+  "Pearl",
+  "Mossy",
+  "Cosmic",
+  "Sunspot",
+  "Frosted",
+];
+
+const PR_EGG_SPECIES = [
+  "Shellbean",
+  "Clawlet",
+  "Lint Imp",
+  "Merge Sprite",
+  "Proofling",
+  "Diff Drake",
+  "Patch Peep",
+  "Review Wisp",
+  "Branchling",
+  "Test Hopper",
+  "Crabkin",
+  "Signal Puff",
+];
+
+const PR_EGG_TRAITS = [
+  "keeps receipts",
+  "sniffs out flaky tests",
+  "guards the happy path",
+  "collects tiny proofs",
+  "purrs at green checks",
+  "stacks clean commits",
+  "polishes edge cases",
+  "watches the merge queue",
+  "finds missing screenshots",
+  "sleeps inside passing CI",
+  "sparkles near resolved comments",
+  "hums during re-review",
+];
+
+const PR_EGG_PORTRAITS = [
+  "     /\\_/\\\\\n   ~( o.o )~\n    /| ^ |\\\\\n   (_|___|_)",
+  "     .-^-.\n   .' o o '.\n  /  \\_-_/  \\\n   '._/ \\_.'",
+  "    __/\\__\n  .'  oo  '.\n <   \\__/   >\n   `-.__.-'",
+  "    .--.\n  .'_\\/_'.\n  |  o o |\n  |  \\_/ |\n   '.___.'",
+  "    /\\   /\\\n   (  'v'  )\n  /|  ___  |\\\\\n    `-----'",
+  "     .---.\n   .' ^ ^ '.\n  (   \\_/   )\n   '-.___.-'",
+];
+
+function hashNumber(seed: string, salt: string): number {
+  return Number.parseInt(sha256(`${salt}:${seed}`).slice(0, 12), 16);
+}
+
+function pickSeeded<T>(values: readonly T[], seed: string, salt: string): T {
+  return values[hashNumber(seed, salt) % values.length]!;
+}
+
+function prEggRarity(seed: string): { rarity: PrEggRarity; label: string } {
+  const roll = hashNumber(seed, "rarity") % 10000;
+  return PR_EGG_RARITIES.find((entry) => roll < entry.cutoff) ?? PR_EGG_RARITIES[0]!;
+}
+
+function prEggCreature(seed: string): {
+  name: string;
+  rarity: PrEggRarity;
+  rarityLabel: string;
+  trait: string;
+  portrait: string;
+  shareText: string;
+} {
+  const rarity = prEggRarity(seed);
+  const name = `${pickSeeded(PR_EGG_ADJECTIVES, seed, "adjective")} ${pickSeeded(
+    PR_EGG_SPECIES,
+    seed,
+    "species",
+  )}`;
+  const shareText = `My PR egg hatched a ${rarity.label} ${name} in ClawSweeper.`;
+  return {
+    name,
+    rarity: rarity.rarity,
+    rarityLabel: rarity.label,
+    trait: pickSeeded(PR_EGG_TRAITS, seed, "trait"),
+    portrait: pickSeeded(PR_EGG_PORTRAITS, seed, "portrait"),
+    shareText,
+  };
+}
+
+export function prEggCreatureForTest(seed: string): ReturnType<typeof prEggCreature> {
+  return prEggCreature(seed);
 }
 
 function defaultRatingNextSteps(options: {
@@ -8092,6 +8277,17 @@ function renderKeepOpenCommentFromReport(markdown: string): string {
   }
   if (isPullRequest) {
     appendPublicSection(lines, "PR rating", publicPrRatingLine(prRating, realBehaviorProof));
+    appendPublicSection(
+      lines,
+      "PR egg",
+      publicPrEggLine(markdown, {
+        realBehaviorProof,
+        prRating,
+        reviewFindings,
+        securityReview,
+        overallCorrectness: reportOverallCorrectness(markdown),
+      }),
+    );
     appendPublicSection(
       lines,
       "Real behavior proof",

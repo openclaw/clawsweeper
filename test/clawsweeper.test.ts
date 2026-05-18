@@ -58,6 +58,7 @@ import {
   mergeRiskLabelSchemeForTest,
   prRatingLabelsForTest,
   prRatingLabelSchemeForTest,
+  prEggCreatureForTest,
   prStatusLabelsForTest,
   prStatusLabelSchemeForTest,
   priorityLabelsForTest,
@@ -2798,6 +2799,176 @@ Full review comments:
   assert.match(comment, /Proof: 🦀 challenger crab ✨ media proof bonus/);
   assert.match(comment, /Shiny media proof means a screenshot, video, or linked artifact/);
   assert.doesNotMatch(comment, /Rank-up moves:/);
+});
+
+test("pull request review comments render warming PR egg for unresolved work", () => {
+  const report = `${reportFrontMatter({
+    type: "pull_request",
+    number: "74470",
+    decision: "keep_open",
+    close_reason: "none",
+    review_status: "complete",
+    confidence: "high",
+    author: "contributor",
+    author_association: "CONTRIBUTOR",
+    labels: JSON.stringify([]),
+    work_candidate: "none",
+    pull_head_sha: "abc123def456",
+  })}
+
+## Summary
+
+Keep this PR open until proof is added.
+
+## What This Changes
+
+Fixes the gateway status output.
+
+## Best Possible Solution
+
+Add proof and re-review.
+
+${realBehaviorProofReportSection({
+  status: "missing",
+  evidenceKind: "none",
+  needsContributorAction: true,
+  summary: "The PR has no real behavior proof yet.",
+})}
+
+${prRatingReportSection({
+  overallTier: "F",
+  proofTier: "F",
+  patchTier: "B",
+  overallLabel: "🧂 unranked krab",
+  proofLabel: "🧂 unranked krab",
+  patchLabel: "🐚 platinum hermit",
+  summary: "Proof is missing, so this PR is not ready yet.",
+  nextSteps: "- Add after-fix proof from a real setup.",
+})}
+
+## Review Findings
+
+Overall correctness: patch is correct
+
+Overall confidence: 0.9
+
+Full review comments:
+
+- none
+`;
+
+  const comment = renderReviewCommentFromReport(report, "none");
+
+  assert.match(comment, /\*\*PR egg\*\*\n🔥 Warming up:/);
+  assert.match(comment, /```text\n[\s\S]+?\n```/);
+  assert.doesNotMatch(comment, /✨ Hatched:/);
+  assert.doesNotMatch(comment, /Share on X:/);
+});
+
+test("pull request review comments hatch deterministic collectible PR egg", () => {
+  const report = `${reportFrontMatter({
+    type: "pull_request",
+    number: "74471",
+    decision: "keep_open",
+    close_reason: "none",
+    review_status: "complete",
+    confidence: "high",
+    author: "contributor",
+    author_association: "CONTRIBUTOR",
+    labels: JSON.stringify(["protected: maintainer-authored"]),
+    work_candidate: "none",
+    pull_head_sha: "abc123def456",
+  })}
+
+## Summary
+
+Keep this clean PR open for maintainer review.
+
+## What This Changes
+
+Fixes the gateway status output.
+
+## Best Possible Solution
+
+Merge after maintainer review.
+
+${realBehaviorProofReportSection()}
+
+${prRatingReportSection({
+  overallTier: "B",
+  proofTier: "A",
+  patchTier: "B",
+  summary: "This PR has strong proof and normal merge-ready implementation quality.",
+  nextSteps: "",
+})}
+
+## Review Findings
+
+Overall correctness: patch is correct
+
+Overall confidence: 0.9
+
+Full review comments:
+
+- none
+`;
+
+  const first = renderReviewCommentFromReport(report, "none");
+  const second = renderReviewCommentFromReport(report, "none");
+
+  assert.match(first, /\*\*PR egg\*\*\n✨ Hatched: [^\n]+/);
+  assert.match(first, /```text\n[\s\S]+?\n```/);
+  assert.match(first, /Trait: [^.]+\./);
+  assert.match(first, /Share on X: \[post this hatch\]\(https:\/\/x\.com\/intent\/tweet\?text=/);
+  assert.match(first, /Copy: My PR egg hatched a [^\n]+ in ClawSweeper\./);
+  assert.equal(
+    first.match(/\*\*PR egg\*\*[\s\S]*?\*\*Real behavior proof\*\*/)?.[0],
+    second.match(/\*\*PR egg\*\*[\s\S]*?\*\*Real behavior proof\*\*/)?.[0],
+  );
+});
+
+test("issues do not render PR egg game", () => {
+  const report = `${reportFrontMatter({
+    type: "issue",
+    number: "74472",
+    decision: "keep_open",
+    close_reason: "none",
+    review_status: "complete",
+    confidence: "medium",
+    work_candidate: "none",
+  })}
+
+## Summary
+
+Keep this issue open for more reproduction detail.
+
+## Best Possible Solution
+
+Ask for reproduction details.
+`;
+
+  const comment = renderReviewCommentFromReport(report, "none");
+
+  assert.doesNotMatch(comment, /\*\*PR egg\*\*/);
+});
+
+test("PR egg creature generation exposes emoji rarity collectibles", () => {
+  const stable = prEggCreatureForTest("openclaw/openclaw#74471@abc123def456");
+  assert.deepEqual(stable, prEggCreatureForTest("openclaw/openclaw#74471@abc123def456"));
+  assert.match(stable.rarityLabel, /^(🥚 common|🌱 uncommon|💎 rare|✨ glimmer|🌈 legendary)$/);
+
+  let glimmerOrLegendary: ReturnType<typeof prEggCreatureForTest> | null = null;
+  for (let index = 0; index < 50000; index += 1) {
+    const candidate = prEggCreatureForTest(`rarity-seed-${index}`);
+    if (candidate.rarity === "glimmer" || candidate.rarity === "legendary") {
+      glimmerOrLegendary = candidate;
+      break;
+    }
+  }
+
+  assert.ok(glimmerOrLegendary);
+  assert.match(glimmerOrLegendary.rarityLabel, /^(✨ glimmer|🌈 legendary)$/);
+  assert.match(glimmerOrLegendary.shareText, /^My PR egg hatched a .+ in ClawSweeper\.$/);
 });
 
 test("docs-only external PRs do not require real behavior proof", () => {
