@@ -46,6 +46,9 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
   CLAWSWEEPER_APP_CLIENT_ID: Iv23lirdjmVqYd1gwY26
   CLAWSWEEPER_USAGE_TELEMETRY: "1"
+  CLAWSWEEPER_USAGE_SERVICE_NAME: clawsweeper-runner
+  # Set CLAWSWEEPER_USAGE_OTLP_ENDPOINT or OTEL_EXPORTER_OTLP_ENDPOINT on the runner/repo
+  # to broadcast usage events via OTLP.
   OPIK_URL: https://opik.bermont.digital/api
   OPIK_PROJECT_NAME: clawsweeper
 

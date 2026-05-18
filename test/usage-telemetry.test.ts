@@ -7,6 +7,7 @@ import test from "node:test";
 import {
   appendUsageEventJsonl,
   buildUsageTelemetryEvent,
+  emitUsageEventOtlpHttp,
   emitUsageTelemetry,
   parseCodexTokenUsageFromJsonl,
 } from "../src/usage-telemetry.ts";
@@ -179,6 +180,37 @@ test("appendUsageEventJsonl writes local JSONL and fails soft", () => {
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("emitUsageEventOtlpHttp is opt-in and skips zero-token events", () => {
+  const event = buildUsageTelemetryEvent(
+    {
+      status: "success",
+      tokens: { input: 0, cache_read: 0, output: 0, reasoning_output: 0, total: 0 },
+    },
+    { emittedAt: new Date(0), env: {} },
+  );
+
+  assert.equal(
+    emitUsageEventOtlpHttp(event, {
+      CLAWSWEEPER_USAGE_TELEMETRY: "1",
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://127.0.0.1:9",
+    }),
+    false,
+  );
+  assert.equal(
+    emitUsageEventOtlpHttp(
+      buildUsageTelemetryEvent(
+        {
+          status: "success",
+          tokens: { input: 1, cache_read: 0, output: 0, reasoning_output: 0, total: 1 },
+        },
+        { emittedAt: new Date(0), env: {} },
+      ),
+      { OTEL_EXPORTER_OTLP_ENDPOINT: "http://127.0.0.1:9" },
+    ),
+    false,
+  );
 });
 
 test("emitUsageTelemetry swallows emitter failures", async () => {

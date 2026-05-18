@@ -1,3 +1,5 @@
+import { spawnSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { appendFileSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 
@@ -201,7 +203,181 @@ export function appendUsageEventJsonl(path: string, event: UsageTelemetryEvent):
   try {
     mkdirSync(dirname(path), { recursive: true });
     appendFileSync(path, `${JSON.stringify(event)}\n`, "utf8");
+    emitUsageEventOtlpHttp(event);
     return true;
+  } catch {
+    return false;
+  }
+}
+
+type OtlpAttributeValue =
+  | { stringValue: string }
+  | { intValue: string }
+  | { doubleValue: number }
+  | { boolValue: boolean };
+
+function otlpAttribute(
+  key: string,
+  value: unknown,
+): { key: string; value: OtlpAttributeValue } | null {
+  if (value === undefined || value === null || value === "") return null;
+  if (typeof value === "boolean") return { key, value: { boolValue: value } };
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return Number.isInteger(value)
+      ? { key, value: { intValue: String(value) } }
+      : { key, value: { doubleValue: value } };
+  }
+  if (typeof value === "string") return { key, value: { stringValue: value } };
+  return { key, value: { stringValue: JSON.stringify(value) } };
+}
+
+function compactAttributes(
+  values: Record<string, unknown>,
+): Array<{ key: string; value: OtlpAttributeValue }> {
+  return Object.entries(values)
+    .map(([key, value]) => otlpAttribute(key, value))
+    .filter((value): value is { key: string; value: OtlpAttributeValue } => value !== null);
+}
+
+function parseResourceAttributes(value: string | undefined): Record<string, string> {
+  const attributes: Record<string, string> = {};
+  for (const part of String(value ?? "").split(",")) {
+    const index = part.indexOf("=");
+    if (index <= 0) continue;
+    const key = part.slice(0, index).trim();
+    const attributeValue = part.slice(index + 1).trim();
+    if (key && attributeValue) attributes[key] = attributeValue;
+  }
+  return attributes;
+}
+
+function otlpTracesEndpoint(env: NodeJS.ProcessEnv = process.env): string | null {
+  const explicit = env.CLAWSWEEPER_USAGE_OTLP_ENDPOINT || env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT;
+  if (explicit) return explicit;
+
+  const base = env.OTEL_EXPORTER_OTLP_ENDPOINT;
+  if (!base) return null;
+  const trimmed = base.replace(/\/+$/, "");
+  return trimmed.endsWith("/v1/traces") ? trimmed : `${trimmed}/v1/traces`;
+}
+
+function usageStatusCode(status: UsageStatus): number {
+  return status === "success" || status === "result_repair" ? 1 : 2;
+}
+
+function otlpPayloadForUsageEvent(
+  event: UsageTelemetryEvent,
+  env: NodeJS.ProcessEnv = process.env,
+): Record<string, unknown> {
+  const resourceAttributes = {
+    ...parseResourceAttributes(env.OTEL_RESOURCE_ATTRIBUTES),
+    "service.name": env.CLAWSWEEPER_USAGE_SERVICE_NAME || "clawsweeper-runner",
+    "service.namespace":
+      env.CLAWSWEEPER_USAGE_SERVICE_NAMESPACE ||
+      parseResourceAttributes(env.OTEL_RESOURCE_ATTRIBUTES)["service.namespace"] ||
+      "clawsweeper",
+    "telemetry.source": "clawsweeper-usage",
+    "agent.product": "clawsweeper",
+    "agent.surface": "github-actions-runner",
+  };
+  const startedAtMs = Date.parse(event.emitted_at) - (event.elapsed_ms ?? 0);
+  const endTimeUnixNano = `${BigInt(Date.parse(event.emitted_at)) * 1_000_000n}`;
+  const startTimeUnixNano = `${BigInt(Number.isFinite(startedAtMs) ? startedAtMs : Date.parse(event.emitted_at)) * 1_000_000n}`;
+  const phase = event.phase || "usage";
+  const workflow = event.workflow || "clawsweeper";
+
+  return {
+    resourceSpans: [
+      {
+        resource: { attributes: compactAttributes(resourceAttributes) },
+        scopeSpans: [
+          {
+            scope: { name: "clawsweeper.usage", version: "1" },
+            spans: [
+              {
+                traceId: randomBytes(16).toString("hex"),
+                spanId: randomBytes(8).toString("hex"),
+                name: `clawsweeper.${workflow}.${phase}`,
+                kind: 1,
+                startTimeUnixNano,
+                endTimeUnixNano,
+                attributes: compactAttributes({
+                  "gen_ai.system": "openai-codex",
+                  "gen_ai.operation.name": "clawsweeper.codex_exec",
+                  "gen_ai.request.model": event.model,
+                  "gen_ai.usage.input_tokens": event.tokens?.input,
+                  "gen_ai.usage.output_tokens": event.tokens?.output,
+                  "gen_ai.usage.cached_input_tokens": event.tokens?.cache_read,
+                  "gen_ai.usage.reasoning_output_tokens": event.tokens?.reasoning_output,
+                  "gen_ai.usage.total_tokens": event.tokens?.total,
+                  "clawsweeper.surface": event.surface,
+                  "clawsweeper.workflow": event.workflow,
+                  "clawsweeper.mode": event.mode,
+                  "clawsweeper.phase": event.phase,
+                  "clawsweeper.target_repo": event.target_repo,
+                  "clawsweeper.cluster_id": event.cluster_id,
+                  "clawsweeper.item_number": event.item_number,
+                  "clawsweeper.commit_sha": event.commit_sha,
+                  "clawsweeper.job_path": event.job_path,
+                  "clawsweeper.status": event.status,
+                  "clawsweeper.reasoning_effort": event.reasoning_effort,
+                  "clawsweeper.service_tier": event.service_tier,
+                  "clawsweeper.sandbox": event.sandbox,
+                  "clawsweeper.timeout_ms": event.timeout_ms,
+                  "clawsweeper.elapsed_ms": event.elapsed_ms,
+                  "github.repository": event.github_repository,
+                  "github.run_id": event.github_run_id,
+                  "github.run_attempt": event.github_run_attempt,
+                  "github.job": event.github_job,
+                  "runner.name": event.runner_name,
+                }),
+                status: { code: usageStatusCode(event.status), message: event.status },
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  };
+}
+
+export function emitUsageEventOtlpHttp(
+  event: UsageTelemetryEvent,
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  if (env.CLAWSWEEPER_USAGE_TELEMETRY !== "1") return false;
+  if (!event.tokens || event.tokens.total <= 0) return false;
+
+  const endpoint = otlpTracesEndpoint(env);
+  if (!endpoint) return false;
+
+  try {
+    const headers = ["Content-Type: application/json"];
+    const authHeader = env.OTEL_EXPORTER_OTLP_HEADERS || env.CLAWSWEEPER_USAGE_OTLP_HEADERS;
+    if (authHeader) {
+      for (const header of authHeader.split(",")) {
+        const trimmed = header.trim();
+        if (trimmed) headers.push(trimmed.includes(":") ? trimmed : trimmed.replace("=", ": "));
+      }
+    }
+    const result = spawnSync(
+      "curl",
+      [
+        "--silent",
+        "--show-error",
+        "--fail",
+        "--max-time",
+        String(env.CLAWSWEEPER_USAGE_OTLP_TIMEOUT_SECONDS || "5"),
+        "-X",
+        "POST",
+        ...headers.flatMap((header) => ["-H", header]),
+        "--data-binary",
+        JSON.stringify(otlpPayloadForUsageEvent(event, env)),
+        endpoint,
+      ],
+      { encoding: "utf8", stdio: "ignore" },
+    );
+    return result.status === 0;
   } catch {
     return false;
   }
