@@ -16,6 +16,7 @@
     "impactLabels",
     "mergeRiskLabels",
     "mergeRiskOptions",
+    "labelJustifications",
     "itemCategory",
     "reproductionStatus",
     "reproductionConfidence",
@@ -226,6 +227,43 @@
         }
       },
       "description": "Risk-specific maintainer options for the Risk before merge section. Use [] when mergeRiskLabels is []. When mergeRiskLabels is non-empty, provide 1-3 prose-first options. Do not use a fixed menu: tailor titles and bodies to this PR. Mark at most one option recommended, and only when evidence supports a clear best path. Include pause_or_close when the PR may not be worth the risk. Put a copyable @clawsweeper automerge instruction only in automergeInstruction for a recommended fix_before_merge option suitable for automation."
+    },
+    "labelJustifications": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["label", "reason"],
+        "properties": {
+          "label": {
+            "type": "string",
+            "enum": [
+              "P0",
+              "P1",
+              "P2",
+              "P3",
+              "impact:data-loss",
+              "impact:security",
+              "impact:crash-loop",
+              "impact:message-loss",
+              "impact:session-state",
+              "impact:auth-provider",
+              "merge-risk: 🚨 compatibility",
+              "merge-risk: 🚨 message-delivery",
+              "merge-risk: 🚨 session-state",
+              "merge-risk: 🚨 auth-provider",
+              "merge-risk: 🚨 security-boundary",
+              "merge-risk: 🚨 availability",
+              "merge-risk: 🚨 automation"
+            ]
+          },
+          "reason": {
+            "type": "string",
+            "description": "One concise maintainer-facing sentence explaining why this exact selected label applies."
+          }
+        }
+      },
+      "description": "One justification for every selected ClawSweeper-managed triage, impact, and merge-risk label. Include the selected triagePriority unless it is none, every selected impactLabels entry, and every selected mergeRiskLabels entry. Do not include labels that were not selected."
     },
     "itemCategory": {
       "type": "string",

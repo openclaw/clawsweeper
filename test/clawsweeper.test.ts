@@ -46,6 +46,7 @@ import {
   isMissingGitHubLabelErrorForTest,
   issueAdvisoryLabelsForTest,
   isProtectedItem,
+  labelJustificationsMarkdownForTest,
   itemNumbersArg,
   lockedConversationApplyReason,
   makeTreeReadOnlyForTest,
@@ -178,6 +179,12 @@ function closeDecision(overrides = {}) {
     impactLabels: [],
     mergeRiskLabels: [],
     mergeRiskOptions: [],
+    labelJustifications: [
+      {
+        label: "P2",
+        reason: "Normal priority applies to this limited-scope implemented behavior check.",
+      },
+    ],
     itemCategory: "bug",
     reproductionStatus: "reproduced",
     reproductionConfidence: "high",
@@ -4885,6 +4892,44 @@ test("decision parser enforces required schema-shaped evidence", () => {
       }),
     /decision\.mergeRiskOptions\[0\]\.automergeInstruction requires a recommended option/,
   );
+  assert.throws(() => {
+    const decision = closeDecision();
+    delete decision.labelJustifications;
+    return parseDecision(decision);
+  }, /decision\.labelJustifications must be an array/);
+  assert.throws(
+    () =>
+      parseDecision({
+        ...closeDecision({
+          impactLabels: ["impact:message-loss"],
+          labelJustifications: [
+            {
+              label: "P2",
+              reason: "Normal priority applies to this limited-scope implemented behavior check.",
+            },
+          ],
+        }),
+      }),
+    /decision\.labelJustifications missing selected labels: impact:message-loss/,
+  );
+  assert.throws(
+    () =>
+      parseDecision({
+        ...closeDecision({
+          labelJustifications: [
+            {
+              label: "P2",
+              reason: "Normal priority applies to this limited-scope implemented behavior check.",
+            },
+            {
+              label: "impact:data-loss",
+              reason: "The selected labels did not include this impact area.",
+            },
+          ],
+        }),
+      }),
+    /decision\.labelJustifications contains unselected labels: impact:data-loss/,
+  );
   assert.throws(
     () =>
       parseDecision({
@@ -5257,6 +5302,30 @@ test("ClawSweeper priority labels follow triage priority", () => {
   assert.deepEqual(priorityLabelsForTest(["P0", "bug"], "none"), ["bug"]);
 });
 
+test("ClawSweeper label justifications render selected label reasons", () => {
+  assert.equal(
+    labelJustificationsMarkdownForTest([
+      {
+        label: "P1",
+        reason: "The PR changes an active channel workflow affecting real users.",
+      },
+      {
+        label: "impact:message-loss",
+        reason: "The diff touches message retry and delivery ordering.",
+      },
+      {
+        label: "merge-risk: 🚨 compatibility",
+        reason: "Merging changes the default upgrade behavior for existing configs.",
+      },
+    ]),
+    [
+      "- `P1`: The PR changes an active channel workflow affecting real users.",
+      "- `impact:message-loss`: The diff touches message retry and delivery ordering.",
+      "- `merge-risk: 🚨 compatibility`: Merging changes the default upgrade behavior for existing configs.",
+    ].join("\n"),
+  );
+});
+
 test("ClawSweeper impact label scheme exposes owned impact labels", () => {
   assert.deepEqual(impactLabelSchemeForTest(), [
     {
@@ -5442,6 +5511,20 @@ test("ClawSweeper impact labels do not alter PR review finding priorities", () =
   const decision = parseDecision(
     closeDecision({
       impactLabels: ["impact:data-loss", "impact:security"],
+      labelJustifications: [
+        {
+          label: "P2",
+          reason: "Normal priority applies to this limited-scope implemented behavior check.",
+        },
+        {
+          label: "impact:data-loss",
+          reason: "The selected labels include a data-loss impact classification.",
+        },
+        {
+          label: "impact:security",
+          reason: "The selected labels include a security impact classification.",
+        },
+      ],
       reviewFindings: [
         {
           title: "A concrete review finding",

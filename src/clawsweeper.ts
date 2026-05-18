@@ -81,6 +81,7 @@ type MergeRiskLabelName =
   | "merge-risk: 🚨 availability"
   | "merge-risk: 🚨 automation";
 type MergeRiskOptionCategory = "fix_before_merge" | "accept_risk" | "pause_or_close";
+type ReviewLabelName = Exclude<TriagePriority, "none"> | ImpactLabelName | MergeRiskLabelName;
 type ItemCategory =
   | "bug"
   | "regression"
@@ -314,6 +315,11 @@ interface MergeRiskOption {
   automergeInstruction: string;
 }
 
+export interface LabelJustification {
+  label: ReviewLabelName;
+  reason: string;
+}
+
 interface Decision {
   decision: DecisionKind;
   closeReason: CloseReason;
@@ -328,6 +334,7 @@ interface Decision {
   impactLabels: ImpactLabelName[];
   mergeRiskLabels: MergeRiskLabelName[];
   mergeRiskOptions: MergeRiskOption[];
+  labelJustifications: LabelJustification[];
   itemCategory: ItemCategory;
   reproductionStatus: ReproductionStatus;
   reproductionConfidence: Confidence;
@@ -1069,6 +1076,14 @@ const IMPACT_LABEL_VALUES = new Set<ImpactLabelName>(IMPACT_LABELS.map((label) =
 const MERGE_RISK_LABEL_VALUES = new Set<MergeRiskLabelName>(
   MERGE_RISK_LABELS.map((label) => label.name),
 );
+const REVIEW_LABEL_VALUES = new Set<ReviewLabelName>([
+  "P0",
+  "P1",
+  "P2",
+  "P3",
+  ...IMPACT_LABELS.map((label) => label.name),
+  ...MERGE_RISK_LABELS.map((label) => label.name),
+]);
 const REAL_BEHAVIOR_PROOF_STATUSES = new Set<RealBehaviorProofStatus>([
   "sufficient",
   "missing",
@@ -1132,6 +1147,7 @@ const DECISION_SCHEMA_KEYS = new Set([
   "impactLabels",
   "mergeRiskLabels",
   "mergeRiskOptions",
+  "labelJustifications",
   "itemCategory",
   "reproductionStatus",
   "reproductionConfidence",
@@ -1190,6 +1206,7 @@ const MERGE_RISK_OPTION_SCHEMA_KEYS = new Set([
   "recommended",
   "automergeInstruction",
 ]);
+const LABEL_JUSTIFICATION_SCHEMA_KEYS = new Set(["label", "reason"]);
 const SECURITY_CONCERN_SCHEMA_KEYS = new Set([
   "title",
   "body",
@@ -1704,6 +1721,55 @@ function validateMergeRiskOptions(
   }
 }
 
+function parseLabelJustification(value: unknown, path: string): LabelJustification {
+  const record = requireRecord(value, path);
+  rejectUnexpectedKeys(record, LABEL_JUSTIFICATION_SCHEMA_KEYS, path);
+  const label = requireEnum(record.label, REVIEW_LABEL_VALUES, `${path}.label`);
+  const reason = requireString(record.reason, `${path}.reason`).trim();
+  if (!reason) throw new Error(`${path}.reason must not be empty`);
+  return { label, reason };
+}
+
+function requireLabelJustifications(value: unknown): LabelJustification[] {
+  if (!Array.isArray(value)) throw new Error("decision.labelJustifications must be an array");
+  const justifications = value.map((entry, index) =>
+    parseLabelJustification(entry, `decision.labelJustifications[${index}]`),
+  );
+  const labels = justifications.map((entry) => entry.label);
+  if (new Set(labels).size !== labels.length) {
+    throw new Error("decision.labelJustifications must not contain duplicate labels");
+  }
+  return justifications;
+}
+
+function selectedReviewLabels(
+  decision: Pick<Decision, "triagePriority" | "impactLabels" | "mergeRiskLabels">,
+): ReviewLabelName[] {
+  return [
+    ...(decision.triagePriority === "none" ? [] : [decision.triagePriority]),
+    ...decision.impactLabels,
+    ...decision.mergeRiskLabels,
+  ];
+}
+
+function validateLabelJustifications(
+  decision: Pick<
+    Decision,
+    "triagePriority" | "impactLabels" | "mergeRiskLabels" | "labelJustifications"
+  >,
+): void {
+  const selected = new Set(selectedReviewLabels(decision));
+  const justified = new Set(decision.labelJustifications.map((entry) => entry.label));
+  const missing = [...selected].filter((label) => !justified.has(label));
+  if (missing.length) {
+    throw new Error(`decision.labelJustifications missing selected labels: ${missing.join(", ")}`);
+  }
+  const extra = [...justified].filter((label) => !selected.has(label));
+  if (extra.length) {
+    throw new Error(`decision.labelJustifications contains unselected labels: ${extra.join(", ")}`);
+  }
+}
+
 function isEnvironmentAccessCaveat(value: string): boolean {
   return /(?:GH_TOKEN|GITHUB_TOKEN|authenticated gh|gh (?:was |is )?unavailable|unauthenticated gh|shallow clone|GitHub auth(?:entication)? (?:was |is )?unavailable|could not use authenticated GitHub)/i.test(
     value,
@@ -1803,6 +1869,7 @@ function normalizeDecisionForItem(
     bestSolution: CLEAN_OPENCLAW_PR_REVIEW_NEXT_STEP,
     triagePriority: decision.triagePriority,
     mergeRiskOptions: decision.mergeRiskOptions,
+    labelJustifications: decision.labelJustifications,
     overallCorrectness:
       decision.overallCorrectness === "patch is incorrect"
         ? "patch is correct"
@@ -1948,6 +2015,7 @@ export function parseDecision(value: unknown, item?: DecisionNormalizationItem):
     impactLabels: requireImpactLabels(record.impactLabels),
     mergeRiskLabels: requireMergeRiskLabels(record.mergeRiskLabels),
     mergeRiskOptions: requireMergeRiskOptions(record.mergeRiskOptions),
+    labelJustifications: requireLabelJustifications(record.labelJustifications),
     itemCategory: requireEnum(record.itemCategory, ITEM_CATEGORIES, "decision.itemCategory"),
     reproductionStatus: requireEnum(
       record.reproductionStatus,
@@ -2011,6 +2079,7 @@ export function parseDecision(value: unknown, item?: DecisionNormalizationItem):
     workLikelyFiles: requireStringArray(record.workLikelyFiles, "decision.workLikelyFiles"),
   };
   validateMergeRiskOptions(decision);
+  validateLabelJustifications(decision);
   return normalizeDecisionForItem(decision, item);
 }
 
@@ -4374,6 +4443,7 @@ function codexFailureDecision(status: number | null, stderr: string, stdout = ""
     impactLabels: [],
     mergeRiskLabels: [],
     mergeRiskOptions: [],
+    labelJustifications: [],
     itemCategory: "unclear",
     reproductionStatus: "unclear",
     reproductionConfidence: "low",
@@ -5617,6 +5687,30 @@ function mergeRiskOptionsFromReport(markdown: string): MergeRiskOption[] {
       }
     })
     .filter((entry): entry is MergeRiskOption => Boolean(entry));
+}
+
+function labelJustificationsFromReport(
+  markdown: string,
+  labels: Pick<Decision, "triagePriority" | "impactLabels" | "mergeRiskLabels">,
+): LabelJustification[] {
+  const selected = new Set(selectedReviewLabels(labels));
+  const fromFrontMatter = frontMatterJsonArray(markdown, "label_justifications")
+    .map((entry, index) => {
+      try {
+        return parseLabelJustification(entry, `label_justifications[${index}]`);
+      } catch {
+        return null;
+      }
+    })
+    .filter((entry): entry is LabelJustification => Boolean(entry))
+    .filter((entry) => selected.has(entry.label));
+  const byLabel = new Map(fromFrontMatter.map((entry) => [entry.label, entry]));
+  return selectedReviewLabels(labels).map((label) => ({
+    label,
+    reason:
+      byLabel.get(label)?.reason ??
+      "Older review report did not store a label-specific justification.",
+  }));
 }
 
 function reportReviewFindings(markdown: string): ReviewFinding[] {
@@ -6890,10 +6984,15 @@ function reportDecision(markdown: string, closeReason: CloseReason): Decision {
     likelyOwners: reportLikelyOwners(markdown),
     risks: [],
     bestSolution: reviewSectionValue(markdown, "bestSolution"),
-    triagePriority: triagePriorityFromReport(markdown),
-    impactLabels: impactLabelsFromReport(markdown),
-    mergeRiskLabels: mergeRiskLabelsFromReport(markdown),
+    triagePriority,
+    impactLabels,
+    mergeRiskLabels,
     mergeRiskOptions: mergeRiskOptionsFromReport(markdown),
+    labelJustifications: labelJustificationsFromReport(markdown, {
+      triagePriority,
+      impactLabels,
+      mergeRiskLabels,
+    }),
     itemCategory:
       (frontMatterValue(markdown, "item_category") as ItemCategory | undefined) ?? "unclear",
     reproductionStatus:
@@ -6954,6 +7053,17 @@ function formattedMarkdownList(
   formatter: (value: string) => string,
 ): string {
   return values.length ? values.map((value) => `- ${formatter(value)}`).join("\n") : "- none";
+}
+
+function labelJustificationsMarkdown(justifications: readonly LabelJustification[]): string {
+  if (!justifications.length) return "- none";
+  return justifications.map((entry) => `- ${inlineCode(entry.label)}: ${entry.reason}`).join("\n");
+}
+
+export function labelJustificationsMarkdownForTest(
+  justifications: readonly LabelJustification[],
+): string {
+  return labelJustificationsMarkdown(justifications);
 }
 
 function inlineCode(value: string): string {
@@ -8564,6 +8674,7 @@ triage_priority: ${options.decision.triagePriority}
 impact_labels: ${jsonFrontMatterValue(options.decision.impactLabels)}
 merge_risk_labels: ${jsonFrontMatterValue(options.decision.mergeRiskLabels)}
 merge_risk_options: ${JSON.stringify(options.decision.mergeRiskOptions)}
+label_justifications: ${JSON.stringify(options.decision.labelJustifications)}
 pull_files: ${jsonFrontMatterValue(pullFiles)}
 pull_files_truncated: ${pullFilesTruncated}
 item_category: ${options.decision.itemCategory}
@@ -8618,6 +8729,10 @@ ${options.decision.decision === "close" ? "Close" : "Keep open"}: ${closeReasonT
 Confidence: ${options.decision.confidence}
 
 Action taken: ${options.action.actionTaken}
+
+## Label Justifications
+
+${labelJustificationsMarkdown(options.decision.labelJustifications)}
 
 ## ${REVIEW_SECTIONS.summary}
 

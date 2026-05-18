@@ -131,6 +131,13 @@ multiple valid repair paths. Set `automergeInstruction` only for a recommended
 `fix_before_merge` option that ClawSweeper automerge can reasonably execute;
 otherwise set it to an empty string.
 
+Fill `labelJustifications` with one object for every selected ClawSweeper-managed
+label. Include the selected `triagePriority` unless it is `none`, every selected
+`impactLabels` entry, and every selected `mergeRiskLabels` entry. Do not include
+labels that were not selected. Each `reason` should be one concise
+maintainer-facing sentence grounded in the item, diff, current behavior, or
+discussion.
+
 Populate structured reproduction metadata separately from the public prose.
 Use `reproductionStatus: "reproduced"` only when there is a concrete,
 current-main reproduction path for the bug with high confidence. Use
@@ -581,6 +588,10 @@ explain why the risk matters in `risks`, and fill `mergeRiskOptions` with
 decision-useful maintainer options. Use `mergeRiskOptions: []` whenever
 `mergeRiskLabels` is empty. Avoid making ClawSweeper sound more certain than the
 evidence supports.
+
+Always fill `labelJustifications` too. There must be exactly one justification
+for each selected triage priority label, impact label, and merge-risk label, and
+zero justifications for labels ClawSweeper did not select.
 
 Always fill the work-lane fields too. For non-candidates, use
 `workCandidate: "none"`, low confidence/priority, an empty `workPrompt`, and
