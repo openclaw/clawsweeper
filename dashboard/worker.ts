@@ -1,4 +1,14 @@
 const ACTIVE_RUN_STATUSES = new Set(["queued", "in_progress", "waiting", "requested", "pending"]);
+type DashboardEnv = Record<string, unknown>;
+type DashboardContext = { waitUntil?: (promise: Promise<unknown>) => void };
+type GithubAppJsonOptions = { method?: string; body?: BodyInit; errorLabel?: string };
+
+declare global {
+  interface CacheStorage {
+    default: Cache;
+  }
+}
+
 const ACTIVE_RUN_STATUS_FILTERS = ["in_progress", "queued", "waiting", "requested", "pending"];
 const TERMINAL_BAD_CONCLUSIONS = new Set(["failure", "timed_out", "action_required"]);
 const EVENT_LIMIT = 200;
@@ -85,7 +95,7 @@ const TRIAGE_VIEWS = [
 let githubAppTokenCache = null;
 
 export default {
-  async fetch(request, env, ctx) {
+  async fetch(request: Request, env: DashboardEnv = {}, ctx?: DashboardContext) {
     const url = new URL(request.url);
     if (
       url.hostname.includes("-ingest.") &&
@@ -1600,7 +1610,7 @@ async function githubAppInstallationId(appJwt, repo) {
   return String(installationId);
 }
 
-async function githubAppJson(path, appJwt, options = {}) {
+async function githubAppJson(path, appJwt, options: GithubAppJsonOptions = {}) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort("timeout"), GITHUB_TIMEOUT_MS);
   const response = await fetch(`https://api.github.com${path}`, {
@@ -2956,8 +2966,8 @@ function linkClass(url, label, className) {
 }
 function compactText(value) {
   return String(value ?? "")
-    .replace(/\b([0-9a-f]{10})[0-9a-f]{22,}\b/gi, "$1")
-    .replace(/\s+/g, " ")
+    .replace(/\\b([0-9a-f]{10})[0-9a-f]{22,}\\b/gi, "$1")
+    .replace(/[\\t\\n\\r\\f ]+/g, " ")
     .trim();
 }
 function pipelineItemLabel(row) {

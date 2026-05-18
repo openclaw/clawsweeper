@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { generateKeyPairSync } from "node:crypto";
 import test from "node:test";
 
-import worker from "../dashboard/worker.js";
+import worker from "../dashboard/worker.ts";
 
 class MemoryKv {
   private values = new Map<string, string>();
@@ -1219,6 +1219,21 @@ test("dashboard shares in-flight GitHub App installation token across parallel r
     globalThis.fetch = originalFetch;
     Object.defineProperty(globalThis, "caches", { configurable: true, value: originalCaches });
   }
+});
+
+test("dashboard html preserves client compactText regex escapes", async () => {
+  const response = await worker.fetch(new Request("https://example.test/"));
+  const body = await response.text();
+  const match = body.match(/function compactText\(value\) \{[\s\S]*?\n\}/);
+  assert.ok(match, "compactText function should render in dashboard html");
+  const compactText = new Function(`${match[0]}; return compactText;`)() as (
+    value: unknown,
+  ) => string;
+
+  assert.equal(
+    compactText("1234567890abcdef1234567890abcdef\n\t repeated   spaces"),
+    "1234567890 repeated spaces",
+  );
 });
 
 async function activePrFetch(input: RequestInfo | URL) {

@@ -1,5 +1,5 @@
 name = "clawsweeper-status"
-main = "worker.js"
+main = "worker.ts"
 account_id = "91b59577e757131d68d55a471fe32aca"
 compatibility_date = "2026-05-11"
 workers_dev = true
