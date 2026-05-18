@@ -7308,7 +7308,7 @@ function publicMergeRiskLine(
   const choices = mergeRiskResolutionChoices(bestSolutionLine, nextStepLine);
   return [
     `Why this matters: ${risks}`,
-    choices.length ? ["", "Choices:", ...choices].join("\n") : "",
+    choices.length ? ["", "Maintainer choices:", ...choices].join("\n") : "",
   ]
     .filter(Boolean)
     .join("\n");
@@ -7317,15 +7317,38 @@ function publicMergeRiskLine(
 function mergeRiskResolutionChoices(bestSolutionLine: string, nextStepLine: string): string[] {
   const choices: string[] = [];
   const recommended = sentence(bestSolutionLine) || sentence(nextStepLine);
-  if (recommended) choices.push(`1. ${recommended} (recommended)`);
+  if (recommended) choices.push(mergeRiskAutomergeChoice(recommended, true));
   const alternate = sentence(nextStepLine);
   if (alternate && !publicReviewTextIsSame(alternate, recommended)) {
-    choices.push(`2. ${alternate}`);
+    choices.push(mergeRiskAgentChoice(alternate));
   }
   if (choices.length === 0) {
-    choices.push("1. Decide whether the merge risk is acceptable before merging. (recommended)");
+    choices.push(
+      mergeRiskAutomergeChoice("Decide whether the merge risk is acceptable before merging.", true),
+    );
   }
   return choices.slice(0, 3);
+}
+
+function mergeRiskAutomergeChoice(instruction: string, recommended: boolean): string {
+  return [
+    `1. ${recommended ? "(recommended) " : ""}Start ClawSweeper automerge with special instructions:`,
+    "",
+    "```text",
+    "@clawsweeper automerge",
+    `Special instructions: ${instruction}`,
+    "```",
+  ].join("\n");
+}
+
+function mergeRiskAgentChoice(instruction: string): string {
+  return [
+    "2. Ask an LLM or repair agent to update the PR before merge:",
+    "",
+    "```text",
+    `Fix this PR before merge: ${instruction}`,
+    "```",
+  ].join("\n");
 }
 
 function issueReproductionHelpSuggestions(markdown: string): string[] {

@@ -4300,11 +4300,15 @@ Reason: Confirm whether this intentional fail-closed behavior is acceptable for 
   assert.match(comment, new RegExp(escapeRegExpForTest(mergeRisk)));
   assert.match(
     comment,
-    /Land only after maintainers accept the upgrade behavior for configured fallback users\. \(recommended\)/,
+    /Maintainer choices:\n1\. \(recommended\) Start ClawSweeper automerge with special instructions:/,
   );
   assert.match(
     comment,
-    /Confirm whether this intentional fail-closed behavior is acceptable for existing fallback users\./,
+    /@clawsweeper automerge\nSpecial instructions: Land only after maintainers accept the upgrade behavior for configured fallback users\./,
+  );
+  assert.match(
+    comment,
+    /Fix this PR before merge: Confirm whether this intentional fail-closed behavior is acceptable for existing fallback users\./,
   );
   assert.doesNotMatch(comment, /Remaining risk \/ open question:/);
 });

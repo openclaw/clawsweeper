@@ -102,6 +102,23 @@ test("parseCommand recognizes maintainer slash commands", () => {
     command: "auto merge",
     intent: "automerge",
   });
+  assert.deepEqual(
+    parseCommand(
+      "@clawsweeper automerge\nSpecial instructions: preserve fallback behavior by default.",
+    ),
+    {
+      trigger: "mention",
+      command: "automerge",
+      intent: "automerge",
+      automerge_instructions: "Special instructions: preserve fallback behavior by default.",
+    },
+  );
+  assert.deepEqual(parseCommand("/clawsweeper automerge\nPreserve existing config behavior."), {
+    trigger: "slash",
+    command: "automerge",
+    intent: "automerge",
+    automerge_instructions: "Preserve existing config behavior.",
+  });
   assert.deepEqual(parseCommand("/clawsweeper automerge!"), {
     trigger: "slash",
     command: "automerge",
@@ -556,6 +573,7 @@ test("renderAutomergeJob validates and keeps merge owned by router", () => {
     author: "maintainer-user",
     authorId: 123456,
     commentUrl: "https://github.com/openclaw/openclaw/pull/74112#issuecomment-1",
+    automergeInstructions: "Special instructions: preserve existing behavior by default.",
   });
   const match = raw.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
   assert.ok(match);
@@ -585,6 +603,8 @@ test("renderAutomergeJob validates and keeps merge owned by router", () => {
   assert.match(job.body, /Never add forbidden changelog credit lines/);
   assert.match(job.body, /router owns final merge/);
   assert.match(job.body, /Requested by: maintainer-user/);
+  assert.match(job.body, /Maintainer special instructions:/);
+  assert.match(job.body, /Special instructions: preserve existing behavior by default\./);
 });
 
 test("renderIssueImplementationJob validates and opens one non-closing fix PR lane", () => {

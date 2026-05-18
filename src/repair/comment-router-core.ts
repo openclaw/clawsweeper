@@ -202,6 +202,7 @@ export function renderAutomergeJob({
   author = null,
   authorId = null,
   commentUrl = null,
+  automergeInstructions = null,
 }: LooseRecord) {
   const clusterId = automergeClusterId(repo, issueNumber);
   const branch = automergeJobBranch(repo, issueNumber);
@@ -220,6 +221,7 @@ export function renderAutomergeJob({
     author ? `Requested by: ${author}` : null,
     commentUrl ? `Request comment: ${commentUrl}` : null,
   ].filter(Boolean);
+  const extraInstructions = String(automergeInstructions ?? "").trim();
   const finalMergeLine =
     repairMode === "autofix"
       ? "Final merge is disabled for autofix. Keep the PR open after a passing ClawSweeper verdict unless a maintainer explicitly changes mode."
@@ -274,6 +276,7 @@ ClawSweeper should use this job only for the bounded ClawSweeper review/fix loop
 - Never add forbidden changelog credit lines for \`@codex\`, \`@openclaw\`, or \`@steipete\`; preserve contributor credit through source links and commit/PR history.
 - ${finalMergeLine}
 - Keep repair scope limited to actionable ClawSweeper findings, failing relevant checks, and required review feedback on this PR.
+${extraInstructions ? `\nMaintainer special instructions:\n\n${extraInstructions}\n` : ""}
 `;
 }
 
@@ -957,11 +960,15 @@ export function parseCommand(body: string) {
     const slash = line.match(/^\s*\/clawsweeper(?:\s+(.+))?\s*$/i);
     if (slash) {
       const command = commandFromText("slash", slash[1] ?? "status");
+      const rest = lines
+        .slice(index + 1)
+        .join("\n")
+        .trim();
+      if (command.intent === "automerge" && rest) {
+        command.automerge_instructions = rest;
+        return command;
+      }
       if (command.intent === "implement_issue") {
-        const rest = lines
-          .slice(index + 1)
-          .join("\n")
-          .trim();
         if (rest)
           return commandFromText("slash", `${issueImplementationRestPrefix(command)}\n${rest}`);
       }
@@ -979,6 +986,10 @@ export function parseCommand(body: string) {
           .trim();
         if (command.intent === "implement_issue" && rest)
           return commandFromText("mention", `${issueImplementationRestPrefix(command)}\n${rest}`);
+        if (command.intent === "automerge" && rest) {
+          command.automerge_instructions = rest;
+          return command;
+        }
         if (command.command === "status" && rest) return commandFromText("mention", rest);
         return command;
       }

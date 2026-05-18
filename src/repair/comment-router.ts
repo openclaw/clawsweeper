@@ -1724,6 +1724,7 @@ function ensureAutomergeJob(command: LooseRecord) {
         author: command.author,
         authorId: command.author_id,
         commentUrl: command.comment_url,
+        automergeInstructions: command.automerge_instructions,
       }),
     );
     statusDetail = "written";

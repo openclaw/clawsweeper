@@ -119,8 +119,10 @@ discussion:
 `merge-risk: 🚨 availability`: 🚨 Merging this PR could cause crashes, hangs, restart loops, stalls, or process outages.
 `merge-risk: 🚨 automation`: 🚨 Merging this PR could break CI, automerge, proof capture, label sync, or automation.
 When merge risk is present, explain it in `risks` in maintainer-facing language
-and make `bestSolution` the best mitigation path. The public review comment will
-turn that into 1-3 choices and mark the best option `(recommended)`.
+and make `bestSolution` the best mitigation path. Write it as an imperative
+instruction a maintainer can paste into another LLM or into `@clawsweeper
+automerge` as special instructions. The public review comment will turn that
+into 1-3 maintainer choices and mark the best option `(recommended)`.
 
 Populate structured reproduction metadata separately from the public prose.
 Use `reproductionStatus: "reproduced"` only when there is a concrete,
@@ -569,7 +571,8 @@ risk is adequately covered by normal review/CI. For PRs with non-obvious
 compatibility, delivery, session-state, auth-provider, security-boundary,
 availability, or automation risk, add the matching `merge-risk:*` labels,
 explain why the risk matters in `risks`, and put the preferred mitigation in
-`bestSolution` so maintainers see a recommended choice before merge.
+`bestSolution` as a paste-ready instruction so maintainers see a recommended
+choice before merge.
 
 Always fill the work-lane fields too. For non-candidates, use
 `workCandidate: "none"`, low confidence/priority, an empty `workPrompt`, and
