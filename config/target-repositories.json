@@ -120,6 +120,27 @@
           "not_actionable_in_repo"
         ]
       }
+    },
+    {
+      "target_repo": "valkyriweb/openclaw",
+      "display_name": "OpenClaw (fork)",
+      "checkout_dir": "openclaw",
+      "prompt_note": "Luke's patched fork of OpenClaw (agent gateway). Tracks upstream openclaw/openclaw with carry-forward patches tracked in ~/Projects/infra/openclaw-claude/docs/issues.md (ISSUE-040, ISSUE-042, ISSUE-077, ISSUE-091, ISSUE-094, ISSUE-095, cron-list-fix). Service areas: `area:agent-runtime` (ACP, agent loop, session lifecycle), `area:tools` (bash/exec, image_generate, web, sessions_*), `area:plugins` (advisor, context-intelligence, pi-ai), `area:bridge` (claude-bridge sidecar), `area:tests` (vitest). Use at most two area tags. When the item spans multiple areas, use `area:cross-cutting`. Validation: `pnpm exec vitest run <test-file>`. **CRITICAL: do NOT propose closing carry-forward PRs as 'implemented on main' \u2014 these are upstream-bound patches, not yet merged upstream.** Carry-forward PRs are typically named with `carry(<version>):` prefix; treat them as long-lived.",
+      "apply_close_rules": {
+        "issue": [
+          "duplicate_or_superseded",
+          "cannot_reproduce",
+          "incoherent",
+          "not_actionable_in_repo",
+          "stale_insufficient_info"
+        ],
+        "pull_request": [
+          "duplicate_or_superseded",
+          "cannot_reproduce",
+          "incoherent",
+          "not_actionable_in_repo"
+        ]
+      }
     }
   ]
 }
