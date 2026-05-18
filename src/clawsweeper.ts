@@ -5468,6 +5468,14 @@ function prEggVisualSeedFromReport(markdown: string): string {
   return `${identitySeed}@${headSha}`;
 }
 
+function prEggShareTargetUrl(markdown: string): string {
+  const commentUrl = frontMatterValue(markdown, "review_comment_url");
+  if (commentUrl && commentUrl !== "unknown") return commentUrl;
+  const repo = markdownRepository(markdown);
+  const number = frontMatterValue(markdown, "number") ?? "unknown";
+  return `https://github.com/${repo}/pull/${number}`;
+}
+
 function isContributorFacingRankUpStep(step: string): boolean {
   const normalized = step
     .trim()
@@ -5559,13 +5567,16 @@ function publicPrEggLine(
   ];
   if (state === "hatched") {
     const creature = prEggCreature(identitySeed, visualSeed);
-    const shareUrl = `https://x.com/intent/tweet?text=${encodeURIComponent(creature.shareText)}`;
+    const shareUrl = `https://x.com/intent/tweet?text=${encodeURIComponent(
+      creature.shareText,
+    )}&url=${encodeURIComponent(prEggShareTargetUrl(markdown))}`;
     return [
       `✨ Hatched: ${creature.rarityLabel} ${creature.name}`,
       "",
       "```text",
       creature.portrait,
       "```",
+      `Rarity: ${creature.rarityLabel}.`,
       `Trait: ${creature.trait}.`,
       `Share on X: ${markdownLink("post this hatch", shareUrl)}`,
       `Copy: ${creature.shareText}`,
