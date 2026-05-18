@@ -1931,6 +1931,35 @@ test("duplicate or superseded close sentence filters current item URLs", () => {
   );
 });
 
+test("duplicate or superseded reference extraction ignores repeated malformed GitHub URLs", () => {
+  const repeatedMalformedUrl = Array.from({ length: 100 }, () => "https://github.com/").join("");
+  const action = reviewActionForDecision({
+    item: item({ number: 123 }),
+    decision: closeDecision({
+      closeReason: "duplicate_or_superseded",
+      summary: `Close as duplicate after checking ${repeatedMalformedUrl}.`,
+      bestSolution: "Keep remaining work on https://github.com/openclaw/openclaw/issues/456.",
+      evidence: [
+        {
+          label: "Malformed URL noise",
+          detail: repeatedMalformedUrl,
+        },
+        {
+          label: "Canonical issue",
+          detail: "https://github.com/openclaw/openclaw/issues/456 tracks the same work.",
+        },
+      ],
+    }),
+    git,
+  });
+
+  assert.equal(action.actionTaken, "proposed_close");
+  assert.match(
+    action.closeComment,
+    /So I’m closing this here and keeping the remaining discussion on https:\/\/github\.com\/openclaw\/openclaw\/issues\/456\./,
+  );
+});
+
 test("duplicate or superseded close sentence includes duplicate-labeled canonical URL", () => {
   const action = reviewActionForDecision({
     item: item({ number: 123 }),

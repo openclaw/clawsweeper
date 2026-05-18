@@ -5646,7 +5646,9 @@ function closeOutro(reason: CloseReason, canonicalLinks: string[] = []): string 
 
 function issueOrPullReferenceNumbers(value: string): string[] {
   return [
-    ...value.matchAll(/https:\/\/github\.com\/[^\s)]+\/(?:issues|pull)\/(\d+)|#(\d+)\b/g),
+    ...value.matchAll(
+      /https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/(?:issues|pull)\/(\d+)|#(\d+)\b/g,
+    ),
   ].map((match) => match[1] ?? match[2] ?? "");
 }
 
