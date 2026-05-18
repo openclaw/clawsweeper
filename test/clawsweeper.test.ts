@@ -53,6 +53,8 @@ import {
   parseGhJson,
   parseGhJsonLines,
   parseDecision,
+  prRatingLabelsForTest,
+  prRatingLabelSchemeForTest,
   priorityLabelsForTest,
   priorityLabelSchemeForTest,
   protectedLabels,
@@ -192,6 +194,13 @@ function closeDecision(overrides = {}) {
       summary: "Real behavior proof is not required for non-PR issue triage.",
       evidenceKind: "not_applicable",
       needsContributorAction: false,
+    },
+    prRating: {
+      proofTier: "NA",
+      patchTier: "NA",
+      overallTier: "NA",
+      summary: "PR readiness rating is not applicable to this issue cleanup decision.",
+      nextSteps: [],
     },
     telegramVisibleProof: {
       status: "not_needed",
@@ -543,6 +552,40 @@ Evidence kind: ${values.evidenceKind}
 Needs contributor action: ${values.needsContributorAction}
 
 Summary: ${values.summary}
+`;
+}
+
+function prRatingReportSection(overrides = {}) {
+  const values = {
+    overallTier: "B",
+    proofTier: "A",
+    patchTier: "B",
+    overallLabel: "🐚 platinum hermit",
+    proofLabel: "🦞 diamond lobster",
+    patchLabel: "🐚 platinum hermit",
+    summary: "This PR has strong proof and normal merge-ready implementation quality.",
+    nextSteps: "- none",
+    ...overrides,
+  };
+  return `## PR Rating
+
+Overall tier: ${values.overallTier}
+
+Proof tier: ${values.proofTier}
+
+Patch tier: ${values.patchTier}
+
+Overall label: ${values.overallLabel}
+
+Proof label: ${values.proofLabel}
+
+Patch label: ${values.patchLabel}
+
+Summary: ${values.summary}
+
+Next rank-up steps:
+
+${values.nextSteps}
 `;
 }
 
@@ -2557,9 +2600,71 @@ Full review comments:
   const comment = renderReviewCommentFromReport(report, "none");
   const markers = reviewAutomationMarkersFromReport(report);
 
+  assert.match(comment, /\*\*PR rating\*\*\nOverall: 🦞 diamond lobster/);
+  assert.match(comment, /Proof: 🦞 diamond lobster/);
+  assert.match(comment, /Patch quality: 🦞 diamond lobster/);
   assert.match(comment, /\*\*Real behavior proof\*\*\nSufficient \(terminal\):/);
   assert.match(markers, /clawsweeper-verdict:pass/);
   assert.doesNotMatch(markers, /clawsweeper-verdict:needs-human/);
+});
+
+test("media proof receives a shiny proof rating boost", () => {
+  const report = `${reportFrontMatter({
+    type: "pull_request",
+    number: "74460",
+    decision: "keep_open",
+    close_reason: "none",
+    review_status: "complete",
+    confidence: "high",
+    author: "contributor",
+    author_association: "CONTRIBUTOR",
+    labels: JSON.stringify([]),
+    work_candidate: "none",
+  })}
+
+## Summary
+
+Keep this focused PR open.
+
+## What This Changes
+
+Fixes a visible UI behavior.
+
+## Best Possible Solution
+
+Merge after maintainer review.
+
+${realBehaviorProofReportSection({
+  evidenceKind: "recording",
+  summary: "The PR includes a short recording from a real setup showing the fixed UI behavior.",
+})}
+
+${prRatingReportSection({
+  overallTier: "S",
+  proofTier: "S",
+  patchTier: "S",
+  overallLabel: "🦀 challenger crab",
+  proofLabel: "🦀 challenger crab ✨",
+  patchLabel: "🦀 challenger crab",
+  summary: "The PR has direct media proof and a clean, high-confidence patch.",
+})}
+
+## Review Findings
+
+Overall correctness: patch is correct
+
+Overall confidence: 0.98
+
+Full review comments:
+
+- none
+`;
+
+  const comment = renderReviewCommentFromReport(report, "none");
+
+  assert.match(comment, /\*\*PR rating\*\*\nOverall: 🦀 challenger crab/);
+  assert.match(comment, /Proof: 🦀 challenger crab ✨ media proof bonus/);
+  assert.doesNotMatch(comment, /Rank-up moves:/);
 });
 
 test("docs-only external PRs do not require real behavior proof", () => {
@@ -4606,6 +4711,33 @@ test("ClawSweeper proof label sync recognizes missing optional labels", () => {
       "proof: sufficient",
     ),
     false,
+  );
+});
+
+test("ClawSweeper PR rating labels use one themed overall label", () => {
+  assert.deepEqual(prRatingLabelsForTest(["bug"], "A"), ["bug", "rating: 🦞 diamond lobster"]);
+  assert.deepEqual(
+    prRatingLabelsForTest(["rating: 🦀 challenger crab", "bug", "rating: 🦐 gold shrimp"], "D"),
+    ["bug", "rating: 🦪 silver shellfish"],
+  );
+  assert.deepEqual(prRatingLabelsForTest(["bug"], "bogus"), [
+    "bug",
+    "rating: 🌊 off-meta tidepool",
+  ]);
+});
+
+test("ClawSweeper PR rating label scheme exposes boring internal tiers", () => {
+  assert.deepEqual(
+    prRatingLabelSchemeForTest().map(({ tier, name }) => ({ tier, name })),
+    [
+      { tier: "S", name: "rating: 🦀 challenger crab" },
+      { tier: "A", name: "rating: 🦞 diamond lobster" },
+      { tier: "B", name: "rating: 🐚 platinum hermit" },
+      { tier: "C", name: "rating: 🦐 gold shrimp" },
+      { tier: "D", name: "rating: 🦪 silver shellfish" },
+      { tier: "F", name: "rating: 🧂 unranked krab" },
+      { tier: "NA", name: "rating: 🌊 off-meta tidepool" },
+    ],
   );
 });
 

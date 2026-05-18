@@ -449,6 +449,30 @@ it does not, they can ask a maintainer to comment `@clawsweeper re-review`. Use
 `needsContributorAction: false` only for `sufficient`, `override`, or
 `not_applicable`.
 
+Always fill `prRating` with boring internal tiers `S`, `A`, `B`, `C`, `D`, `F`,
+or `NA`; public output maps these to funny crustacean labels. Rate PR evidence
+and merge readiness, not the contributor. Use a calibrated
+standard-distribution-style scale: `S` is rare and reserved for exceptional PRs
+with unusually strong proof, clean implementation, convincing validation, and no
+meaningful blockers; `A` is clearly above average; `B` is the normal good and
+likely mergeable rating; `C` means useful signal exists but confidence is
+limited; `D` means proof, validation, or implementation signal is thin; `F`
+means not merge-ready because proof is missing/unusable or the patch has serious
+correctness or safety concerns; `NA` is only for non-PR or not-applicable
+reviews. Set `proofTier` from real behavior proof quality, `patchTier` from
+implementation correctness, security review, scope, review findings, and
+validation, and `overallTier` from the weaker merge-readiness signal. Real
+screenshots, recordings, or linked media that directly show the changed behavior
+are strong proof boosters and should be treated as shiny evidence; this does not
+override the browser runtime, network, CSP, or security rule above, where
+ordinary screenshots need visible diagnostics to be sufficient. Missing,
+mock-only, or insufficient proof must cap or lower the overall rating because
+real behavior proof remains a merge gate. Include `nextSteps` as 0-3 concrete
+rank-up moves only when they are merge-relevant and likely to improve reviewer
+confidence. Use an empty array for `S`, `A`, and `NA`, and usually for `B`
+unless one specific action materially reduces risk. Do not invent optional
+polish work or create churn for already-good PRs.
+
 Always fill `telegramVisibleProof`. This only controls the
 `mantis: telegram-visible-proof` label. Mark it `needed` when a Telegram PR has
 visible chat behavior the `telegram-crabbox-e2e-proof` skill can show in a

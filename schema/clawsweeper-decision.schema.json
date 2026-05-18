@@ -25,6 +25,7 @@
     "reviewFindings",
     "securityReview",
     "realBehaviorProof",
+    "prRating",
     "telegramVisibleProof",
     "mantisRecommendation",
     "overallCorrectness",
@@ -360,6 +361,41 @@
         "needsContributorAction": {
           "type": "boolean",
           "description": "True when the contributor must add or improve real behavior proof before merge. This must be false for sufficient, override, and not_applicable statuses."
+        }
+      }
+    },
+    "prRating": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Calibrated PR readiness rating. Use boring internal tiers S/A/B/C/D/F/NA; public rendering maps them to funny crustacean labels. Rate the PR evidence and merge readiness, not the contributor. S is rare and exceptional, A is clearly above average, B is the normal good/mergeable rating, C is useful but uncertain, D is weak/thin signal, F is not merge-ready, and NA is only for non-PR or not-applicable items. Real screenshots, recordings, or linked media that directly show the changed behavior are strong boosters, but screenshots alone are not enough for browser runtime, network, CSP, or security claims unless diagnostics are visible.",
+      "required": ["proofTier", "patchTier", "overallTier", "summary", "nextSteps"],
+      "properties": {
+        "proofTier": {
+          "type": "string",
+          "enum": ["S", "A", "B", "C", "D", "F", "NA"],
+          "description": "Rating for real behavior proof quality only."
+        },
+        "patchTier": {
+          "type": "string",
+          "enum": ["S", "A", "B", "C", "D", "F", "NA"],
+          "description": "Rating for implementation quality, review findings, security concerns, scope, and validation."
+        },
+        "overallTier": {
+          "type": "string",
+          "enum": ["S", "A", "B", "C", "D", "F", "NA"],
+          "description": "Overall merge-readiness tier after combining proof and patch quality. Missing, mock-only, or insufficient proof must cap or lower the overall rating because real behavior proof remains a merge gate."
+        },
+        "summary": {
+          "type": "string",
+          "description": "One concise sentence explaining the calibrated overall rating without insulting the contributor."
+        },
+        "nextSteps": {
+          "type": "array",
+          "maxItems": 3,
+          "items": {
+            "type": "string"
+          },
+          "description": "Zero to three concrete, merge-relevant rank-up moves. Use an empty array for S/A/NA and for B when there is no material risk reducer. Do not invent optional polish work."
         }
       }
     },

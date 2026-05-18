@@ -108,6 +108,7 @@ type RealBehaviorProofEvidenceKind =
   | "linked_artifact"
   | "none"
   | "not_applicable";
+type PrRatingTier = "S" | "A" | "B" | "C" | "D" | "F" | "NA";
 type TelegramVisibleProofStatus = "needed" | "not_needed";
 type MantisRecommendationStatus = "recommended" | "not_recommended";
 type MantisRecommendationScenario =
@@ -265,6 +266,14 @@ interface RealBehaviorProof {
   needsContributorAction: boolean;
 }
 
+interface PrRating {
+  proofTier: PrRatingTier;
+  patchTier: PrRatingTier;
+  overallTier: PrRatingTier;
+  summary: string;
+  nextSteps: string[];
+}
+
 interface TelegramVisibleProof {
   status: TelegramVisibleProofStatus;
   summary: string;
@@ -311,6 +320,7 @@ interface Decision {
   reviewFindings: ReviewFinding[];
   securityReview: SecurityReview;
   realBehaviorProof: RealBehaviorProof;
+  prRating: PrRating;
   telegramVisibleProof: TelegramVisibleProof;
   mantisRecommendation: MantisRecommendation;
   overallCorrectness: OverallCorrectness;
@@ -712,6 +722,56 @@ const PROOF_OVERRIDE_LABEL = "proof: override";
 const PROOF_SUFFICIENT_LABEL = "proof: sufficient";
 const PROOF_SUFFICIENT_LABEL_COLOR = "0e8a16";
 const PROOF_SUFFICIENT_LABEL_DESCRIPTION = "Contributor real behavior proof is sufficient.";
+const PR_RATING_LABELS = [
+  {
+    tier: "S",
+    name: "rating: 🦀 challenger crab",
+    color: "1f883d",
+    description: "Exceptional PR readiness: strong proof, clean patch, and convincing validation.",
+  },
+  {
+    tier: "A",
+    name: "rating: 🦞 diamond lobster",
+    color: "0a7bd9",
+    description: "Very strong PR readiness with only minor maintainer review expected.",
+  },
+  {
+    tier: "B",
+    name: "rating: 🐚 platinum hermit",
+    color: "8250df",
+    description: "Good normal PR readiness with ordinary maintainer review expected.",
+  },
+  {
+    tier: "C",
+    name: "rating: 🦐 gold shrimp",
+    color: "d4a72c",
+    description: "Decent PR readiness signal, but merge confidence is limited.",
+  },
+  {
+    tier: "D",
+    name: "rating: 🦪 silver shellfish",
+    color: "bf8700",
+    description: "Thin PR readiness signal; proof, validation, or implementation needs work.",
+  },
+  {
+    tier: "F",
+    name: "rating: 🧂 unranked krab",
+    color: "cf222e",
+    description: "Not merge-ready due to missing proof or serious correctness/safety concerns.",
+  },
+  {
+    tier: "NA",
+    name: "rating: 🌊 off-meta tidepool",
+    color: "6e7781",
+    description: "PR readiness rating does not apply to this item.",
+  },
+] as const satisfies readonly {
+  tier: PrRatingTier;
+  name: string;
+  color: string;
+  description: string;
+}[];
+const PR_RATING_LABEL_NAMES = new Set<string>(PR_RATING_LABELS.map((label) => label.name));
 const TELEGRAM_VISIBLE_PROOF_LABEL = "mantis: telegram-visible-proof";
 const TELEGRAM_VISIBLE_PROOF_LABEL_COLOR = "5319e7";
 const TELEGRAM_VISIBLE_PROOF_LABEL_DESCRIPTION = "Mantis should capture Telegram visible proof.";
@@ -901,6 +961,7 @@ const REAL_BEHAVIOR_PROOF_STATUSES = new Set<RealBehaviorProofStatus>([
   "not_applicable",
   "override",
 ]);
+const PR_RATING_TIERS = new Set<PrRatingTier>(["S", "A", "B", "C", "D", "F", "NA"]);
 const REAL_BEHAVIOR_PROOF_EVIDENCE_KINDS = new Set<RealBehaviorProofEvidenceKind>([
   "screenshot",
   "recording",
@@ -959,6 +1020,7 @@ const DECISION_SCHEMA_KEYS = new Set([
   "reviewFindings",
   "securityReview",
   "realBehaviorProof",
+  "prRating",
   "telegramVisibleProof",
   "mantisRecommendation",
   "overallCorrectness",
@@ -983,6 +1045,13 @@ const REAL_BEHAVIOR_PROOF_SCHEMA_KEYS = new Set([
   "summary",
   "evidenceKind",
   "needsContributorAction",
+]);
+const PR_RATING_SCHEMA_KEYS = new Set([
+  "proofTier",
+  "patchTier",
+  "overallTier",
+  "summary",
+  "nextSteps",
 ]);
 const TELEGRAM_VISIBLE_PROOF_SCHEMA_KEYS = new Set(["status", "summary"]);
 const MANTIS_RECOMMENDATION_SCHEMA_KEYS = new Set([
@@ -1025,6 +1094,7 @@ const REVIEW_SECTIONS = {
   reviewFindings: "Review Findings",
   securityReview: "Security Review",
   realBehaviorProof: "Real Behavior Proof",
+  prRating: "PR Rating",
   telegramVisibleProof: "Telegram Visible Proof",
   mantisRecommendation: "Mantis Recommendation",
   workCandidate: "Work Candidate",
@@ -1600,6 +1670,18 @@ function parseRealBehaviorProof(value: unknown, path: string): RealBehaviorProof
   };
 }
 
+function parsePrRating(value: unknown, path: string): PrRating {
+  const record = requireRecord(value, path);
+  rejectUnexpectedKeys(record, PR_RATING_SCHEMA_KEYS, path);
+  return normalizePrRating({
+    proofTier: requireEnum(record.proofTier, PR_RATING_TIERS, `${path}.proofTier`),
+    patchTier: requireEnum(record.patchTier, PR_RATING_TIERS, `${path}.patchTier`),
+    overallTier: requireEnum(record.overallTier, PR_RATING_TIERS, `${path}.overallTier`),
+    summary: requireString(record.summary, `${path}.summary`),
+    nextSteps: requireStringArray(record.nextSteps, `${path}.nextSteps`).slice(0, 3),
+  });
+}
+
 function parseTelegramVisibleProof(value: unknown, path: string): TelegramVisibleProof {
   const record = requireRecord(value, path);
   rejectUnexpectedKeys(record, TELEGRAM_VISIBLE_PROOF_SCHEMA_KEYS, path);
@@ -1697,6 +1779,7 @@ export function parseDecision(value: unknown, item?: DecisionNormalizationItem):
       record.realBehaviorProof,
       "decision.realBehaviorProof",
     ),
+    prRating: parsePrRating(record.prRating, "decision.prRating"),
     telegramVisibleProof: parseTelegramVisibleProof(
       record.telegramVisibleProof,
       "decision.telegramVisibleProof",
@@ -4099,6 +4182,13 @@ function codexFailureDecision(status: number | null, stderr: string, stdout = ""
       evidenceKind: "not_applicable",
       needsContributorAction: false,
     },
+    prRating: {
+      proofTier: "NA",
+      patchTier: "NA",
+      overallTier: "NA",
+      summary: "PR readiness rating was not assessed because the Codex review failed.",
+      nextSteps: [],
+    },
     telegramVisibleProof: {
       status: "not_needed",
       summary: "Telegram visible proof was not assessed because the Codex review failed.",
@@ -4967,6 +5057,20 @@ function publicRealBehaviorProofLine(proof: RealBehaviorProof): string {
   }
 }
 
+function publicPrRatingLine(rating: PrRating, proof: RealBehaviorProof): string {
+  const shiny = hasShinyProof(proof) ? " ✨ media proof bonus" : "";
+  const lines = [
+    `Overall: ${themedRatingName(rating.overallTier)}`,
+    `Proof: ${themedRatingName(rating.proofTier)}${shiny}`,
+    `Patch quality: ${themedRatingName(rating.patchTier)}`,
+    `Summary: ${sentence(rating.summary)}`,
+  ];
+  if (rating.nextSteps.length) {
+    lines.push("", "Rank-up moves:", ...rating.nextSteps.slice(0, 3).map((step) => `- ${step}`));
+  }
+  return lines.join("\n");
+}
+
 function publicMantisRecommendationBlock(recommendation: MantisRecommendation): string {
   if (recommendation.status !== "recommended" || recommendation.scenario === "none") return "";
   const comment = recommendation.maintainerComment.trim();
@@ -5405,6 +5509,41 @@ function reportTelegramVisibleProof(markdown: string): TelegramVisibleProof {
   };
 }
 
+function reportPrRating(markdown: string): PrRating {
+  const section = reviewSectionValue(markdown, "prRating");
+  const proofTierValue =
+    sectionLineValue(section, "Proof tier") ?? frontMatterValue(markdown, "pr_rating_proof");
+  const patchTierValue =
+    sectionLineValue(section, "Patch tier") ?? frontMatterValue(markdown, "pr_rating_patch");
+  const overallTierValue =
+    sectionLineValue(section, "Overall tier") ?? frontMatterValue(markdown, "pr_rating_overall");
+  const summary = sectionLineValue(section, "Summary");
+  const nextSteps = sectionList(section, "Next rank-up steps").slice(0, 3);
+  if (
+    PR_RATING_TIERS.has(proofTierValue as PrRatingTier) &&
+    PR_RATING_TIERS.has(patchTierValue as PrRatingTier) &&
+    PR_RATING_TIERS.has(overallTierValue as PrRatingTier) &&
+    summary
+  ) {
+    return normalizePrRating({
+      proofTier: proofTierValue as PrRatingTier,
+      patchTier: patchTierValue as PrRatingTier,
+      overallTier: overallTierValue as PrRatingTier,
+      summary,
+      nextSteps,
+    });
+  }
+  const proof = reportRealBehaviorProof(markdown);
+  return derivedPrRating({
+    isPullRequest: frontMatterValue(markdown, "type") === "pull_request",
+    proof,
+    findings: reportReviewFindings(markdown),
+    securityReview: reportSecurityReview(markdown),
+    overallCorrectness: reportOverallCorrectness(markdown),
+    overallConfidenceScore: reportOverallConfidenceScore(markdown),
+  });
+}
+
 function reportMantisRecommendation(markdown: string): MantisRecommendation {
   const section = reviewSectionValue(markdown, "mantisRecommendation");
   const statusValue = sectionLineValue(section, "Status");
@@ -5464,6 +5603,159 @@ function normalizeRealBehaviorProof(proof: RealBehaviorProof): RealBehaviorProof
   return proof;
 }
 
+function ratingIndex(tier: PrRatingTier): number {
+  return ["S", "A", "B", "C", "D", "F", "NA"].indexOf(tier);
+}
+
+function lowerRatingTier(a: PrRatingTier, b: PrRatingTier): PrRatingTier {
+  if (a === "NA") return b;
+  if (b === "NA") return a;
+  return ratingIndex(a) >= ratingIndex(b) ? a : b;
+}
+
+function proofTierFromRealBehaviorProof(proof: RealBehaviorProof): PrRatingTier {
+  switch (proof.status) {
+    case "sufficient":
+      if (
+        proof.evidenceKind === "recording" ||
+        proof.evidenceKind === "screenshot" ||
+        proof.evidenceKind === "linked_artifact"
+      ) {
+        return "S";
+      }
+      return "A";
+    case "override":
+      return "A";
+    case "insufficient":
+    case "mock_only":
+      return "D";
+    case "missing":
+      return "F";
+    case "not_applicable":
+      return "NA";
+  }
+}
+
+function patchTierFromReview(options: {
+  isPullRequest: boolean;
+  findings: readonly ReviewFinding[];
+  securityReview: SecurityReview;
+  overallCorrectness: OverallCorrectness;
+  overallConfidenceScore: number;
+}): PrRatingTier {
+  if (!options.isPullRequest || options.overallCorrectness === "not a patch") return "NA";
+  if (options.securityReview.status === "needs_attention") return "F";
+  const highestPriority = Math.min(...options.findings.map((finding) => finding.priority), 4);
+  if (options.overallCorrectness === "patch is incorrect") {
+    if (highestPriority <= 1) return "F";
+    if (highestPriority === 2) return "D";
+    return "C";
+  }
+  if (highestPriority <= 1) return "D";
+  if (highestPriority === 2) return "C";
+  if (highestPriority === 3) return "B";
+  if (options.overallConfidenceScore >= 0.95) return "S";
+  if (options.overallConfidenceScore >= 0.8) return "A";
+  if (options.overallConfidenceScore >= 0.6) return "B";
+  return "C";
+}
+
+function ratingLabelForTier(tier: PrRatingTier): (typeof PR_RATING_LABELS)[number] {
+  const label = PR_RATING_LABELS.find((candidate) => candidate.tier === tier);
+  if (label) return label;
+  return PR_RATING_LABELS[6];
+}
+
+function themedRatingName(tier: PrRatingTier): string {
+  return ratingLabelForTier(tier).name.replace(/^rating:\s*/, "");
+}
+
+function hasShinyProof(proof: Pick<RealBehaviorProof, "status" | "evidenceKind">): boolean {
+  return (
+    proof.status === "sufficient" &&
+    (proof.evidenceKind === "recording" ||
+      proof.evidenceKind === "screenshot" ||
+      proof.evidenceKind === "linked_artifact")
+  );
+}
+
+function defaultRatingNextSteps(options: {
+  proof: RealBehaviorProof;
+  findings: readonly ReviewFinding[];
+  securityReview: SecurityReview;
+  overallCorrectness: OverallCorrectness;
+  overallTier: PrRatingTier;
+}): string[] {
+  if (options.overallTier === "S" || options.overallTier === "A" || options.overallTier === "NA") {
+    return [];
+  }
+  const steps: string[] = [];
+  if (
+    options.proof.status === "missing" ||
+    options.proof.status === "mock_only" ||
+    options.proof.status === "insufficient"
+  ) {
+    steps.push(
+      "Add after-fix proof from a real setup, such as a short recording, terminal output, linked artifact, or redacted logs.",
+    );
+  }
+  if (options.securityReview.status === "needs_attention") {
+    steps.push("Resolve the security review concern or explain why the changed path is safe.");
+  }
+  const highestPriority = Math.min(...options.findings.map((finding) => finding.priority), 4);
+  if (options.overallCorrectness === "patch is incorrect" || highestPriority <= 2) {
+    steps.push(
+      "Address the highest-priority review finding and re-run the changed-surface validation.",
+    );
+  }
+  if (!steps.length) {
+    steps.push(
+      "Tighten the PR description with what changed, how it was validated, and any remaining risk.",
+    );
+  }
+  return steps.slice(0, 3);
+}
+
+function normalizePrRating(rating: PrRating): PrRating {
+  if (rating.overallTier === "S" || rating.overallTier === "A" || rating.overallTier === "NA") {
+    return { ...rating, nextSteps: [] };
+  }
+  return { ...rating, nextSteps: rating.nextSteps.slice(0, 3) };
+}
+
+function derivedPrRating(options: {
+  isPullRequest: boolean;
+  proof: RealBehaviorProof;
+  findings: readonly ReviewFinding[];
+  securityReview: SecurityReview;
+  overallCorrectness: OverallCorrectness;
+  overallConfidenceScore: number;
+}): PrRating {
+  const proofTier = proofTierFromRealBehaviorProof(options.proof);
+  const patchTier = patchTierFromReview(options);
+  const overallTier =
+    proofTier === "NA" && patchTier === "NA" ? "NA" : lowerRatingTier(proofTier, patchTier);
+  return normalizePrRating({
+    proofTier,
+    patchTier,
+    overallTier,
+    summary:
+      overallTier === "NA"
+        ? "PR readiness rating is not applicable to this item."
+        : "PR readiness rating was derived from proof quality, review findings, security review, and reviewer confidence.",
+    nextSteps: defaultRatingNextSteps({ ...options, overallTier }),
+  });
+}
+
+function nextPrRatingLabels(
+  labels: readonly string[],
+  rating: Pick<PrRating, "overallTier">,
+): string[] {
+  const nextLabels = labels.filter((label) => !PR_RATING_LABEL_NAMES.has(label));
+  nextLabels.push(ratingLabelForTier(rating.overallTier).name);
+  return nextLabels;
+}
+
 function pullRequestFilePathsFromReport(markdown: string): string[] {
   return frontMatterStringArray(markdown, "pull_files");
 }
@@ -5496,6 +5788,25 @@ export function realBehaviorProofSufficientLabelsForTest(
     ? (status as RealBehaviorProofStatus)
     : "not_applicable";
   return nextRealBehaviorProofSufficientLabels(labels, { status: proofStatus });
+}
+
+export function prRatingLabelsForTest(labels: readonly string[], tier: string): string[] {
+  const overallTier = PR_RATING_TIERS.has(tier as PrRatingTier) ? (tier as PrRatingTier) : "NA";
+  return nextPrRatingLabels(labels, { overallTier });
+}
+
+export function prRatingLabelSchemeForTest(): {
+  tier: PrRatingTier;
+  name: string;
+  color: string;
+  description: string;
+}[] {
+  return PR_RATING_LABELS.map(({ tier, name, color, description }) => ({
+    tier,
+    name,
+    color,
+    description,
+  }));
 }
 
 function nextTelegramVisibleProofLabels(
@@ -5866,6 +6177,54 @@ function syncTelegramVisibleProofLabel(options: {
   return nextLabels;
 }
 
+function ensurePrRatingLabel(tier: PrRatingTier): void {
+  const definition = ratingLabelForTier(tier);
+  try {
+    ghWithRetry(
+      [
+        "label",
+        "create",
+        definition.name,
+        "--color",
+        definition.color,
+        "--description",
+        definition.description,
+      ],
+      2,
+    );
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (!/already exists/i.test(message)) throw error;
+  }
+}
+
+function syncPrRatingLabel(options: {
+  number: number;
+  labels: readonly string[];
+  rating: Pick<PrRating, "overallTier">;
+  dryRun: boolean;
+}): string[] {
+  const nextLabels = nextPrRatingLabels(options.labels, options.rating);
+  const currentLabelKeys = new Set(options.labels.map((label) => label.toLowerCase()));
+  const nextLabelKeys = new Set(nextLabels.map((label) => label.toLowerCase()));
+  const labelsToRemove = options.labels.filter(
+    (label) => PR_RATING_LABEL_NAMES.has(label) && !nextLabelKeys.has(label.toLowerCase()),
+  );
+  const labelToAdd = nextLabels.find(
+    (label) => PR_RATING_LABEL_NAMES.has(label) && !currentLabelKeys.has(label.toLowerCase()),
+  );
+  if (!labelsToRemove.length && !labelToAdd) return nextLabels;
+  if (options.dryRun) return nextLabels;
+  if (labelToAdd) ensurePrRatingLabel(options.rating.overallTier);
+  for (const label of labelsToRemove) {
+    ghWithRetry(["issue", "edit", String(options.number), "--remove-label", label]);
+  }
+  if (labelToAdd) {
+    ghWithRetry(["issue", "edit", String(options.number), "--add-label", labelToAdd]);
+  }
+  return nextLabels;
+}
+
 function ensureTelegramVisibleProofLabel(): void {
   try {
     ghWithRetry(
@@ -6074,6 +6433,20 @@ function sectionLineValue(section: string, label: string): string | undefined {
   return undefined;
 }
 
+function sectionList(section: string, label: string): string[] {
+  const lines = section.split("\n");
+  const start = lines.findIndex((line) => line.trim() === `${label}:`);
+  if (start === -1) return [];
+  const values: string[] = [];
+  for (let index = start + 1; index < lines.length; index += 1) {
+    const line = lines[index]!;
+    if (/^[A-Z][A-Za-z -]+:/.test(line)) break;
+    const item = line.match(/^\s*-\s+(.+)$/);
+    if (item?.[1]) values.push(item[1].trim());
+  }
+  return values;
+}
+
 function workCandidateReasonText(section: string): string {
   const lines = section.split("\n");
   const reasonStart = lines.findIndex((line) => line.startsWith("Reason:"));
@@ -6128,6 +6501,7 @@ function reportDecision(markdown: string, closeReason: CloseReason): Decision {
     reviewFindings: reportReviewFindings(markdown),
     securityReview: reportSecurityReview(markdown),
     realBehaviorProof: reportRealBehaviorProof(markdown),
+    prRating: reportPrRating(markdown),
     telegramVisibleProof: reportTelegramVisibleProof(markdown),
     mantisRecommendation: reportMantisRecommendation(markdown),
     overallCorrectness: reportOverallCorrectness(markdown),
@@ -6667,6 +7041,7 @@ function renderKeepOpenCommentFromReport(markdown: string): string {
   const reviewFindings = reportReviewFindings(markdown);
   const securityReview = reportSecurityReview(markdown);
   const realBehaviorProof = reportRealBehaviorProof(markdown);
+  const prRating = reportPrRating(markdown);
   const mantisRecommendation = reportMantisRecommendation(markdown);
   const summary = reviewSectionValue(markdown, "summary");
   const changeSummary = reviewSectionValue(markdown, "changeSummary");
@@ -6716,6 +7091,7 @@ function renderKeepOpenCommentFromReport(markdown: string): string {
     appendPublicSection(lines, "Summary", publicSummaryBody(summaryLine, reproductionAssessment));
   }
   if (isPullRequest) {
+    appendPublicSection(lines, "PR rating", publicPrRatingLine(prRating, realBehaviorProof));
     appendPublicSection(
       lines,
       "Real behavior proof",
@@ -7469,6 +7845,32 @@ function renderRealBehaviorProofReportSection(decision: Decision): string {
   ].join("\n");
 }
 
+function renderPrRatingReportSection(decision: Decision): string {
+  const nextSteps = decision.prRating.nextSteps.length
+    ? decision.prRating.nextSteps.map((step) => `- ${step}`).join("\n")
+    : "- none";
+  const shiny = hasShinyProof(decision.realBehaviorProof) ? " ✨" : "";
+  return [
+    `Overall tier: ${decision.prRating.overallTier}`,
+    "",
+    `Proof tier: ${decision.prRating.proofTier}`,
+    "",
+    `Patch tier: ${decision.prRating.patchTier}`,
+    "",
+    `Overall label: ${themedRatingName(decision.prRating.overallTier)}`,
+    "",
+    `Proof label: ${themedRatingName(decision.prRating.proofTier)}${shiny}`,
+    "",
+    `Patch label: ${themedRatingName(decision.prRating.patchTier)}`,
+    "",
+    `Summary: ${sentence(decision.prRating.summary)}`,
+    "",
+    "Next rank-up steps:",
+    "",
+    nextSteps,
+  ].join("\n");
+}
+
 function renderTelegramVisibleProofReportSection(decision: Decision): string {
   return [
     `Status: ${decision.telegramVisibleProof.status}`,
@@ -7551,6 +7953,7 @@ function markdownFor(options: {
   const reviewFindings = renderReviewFindingsReportSection(options.decision);
   const securityReview = renderSecurityReviewReportSection(options.decision);
   const realBehaviorProof = renderRealBehaviorProofReportSection(options.decision);
+  const prRating = renderPrRatingReportSection(options.decision);
   const telegramVisibleProof = renderTelegramVisibleProofReportSection(options.decision);
   const mantisRecommendation = renderMantisRecommendationReportSection(options.decision);
   const workCandidateSection = renderWorkCandidateReportSection(options.decision);
@@ -7630,6 +8033,9 @@ requires_product_decision: ${options.decision.requiresProductDecision}
 real_behavior_proof_status: ${options.decision.realBehaviorProof.status}
 real_behavior_proof_evidence_kind: ${options.decision.realBehaviorProof.evidenceKind}
 real_behavior_proof_needs_contributor_action: ${options.decision.realBehaviorProof.needsContributorAction}
+pr_rating_overall: ${options.decision.prRating.overallTier}
+pr_rating_proof: ${options.decision.prRating.proofTier}
+pr_rating_patch: ${options.decision.prRating.patchTier}
 telegram_visible_proof_status: ${options.decision.telegramVisibleProof.status}
 mantis_recommendation_status: ${options.decision.mantisRecommendation.status}
 mantis_recommendation_scenario: ${options.decision.mantisRecommendation.scenario}
@@ -7702,6 +8108,10 @@ ${securityReview}
 ## ${REVIEW_SECTIONS.realBehaviorProof}
 
 ${realBehaviorProof}
+
+## ${REVIEW_SECTIONS.prRating}
+
+${prRating}
 
 ## ${REVIEW_SECTIONS.telegramVisibleProof}
 
@@ -8139,6 +8549,12 @@ function applyDecisionsCommand(args: Args): void {
         number,
         labels: item.labels,
         proof: reportRealBehaviorProof(markdown),
+        dryRun,
+      });
+      item.labels = syncPrRatingLabel({
+        number,
+        labels: item.labels,
+        rating: reportPrRating(markdown),
         dryRun,
       });
       item.labels = syncTelegramVisibleProofLabel({
