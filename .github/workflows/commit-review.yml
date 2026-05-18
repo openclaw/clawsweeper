@@ -41,7 +41,7 @@ permissions:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
-  CLAWSWEEPER_APP_CLIENT_ID: Iv23liOECG0slfuhz093
+  CLAWSWEEPER_APP_CLIENT_ID: Iv23lirdjmVqYd1gwY26
 
 concurrency:
   group: commit-review-${{ github.event.inputs.target_repo || github.event.client_payload.target_repo || 'openclaw/openclaw' }}-${{ github.event.inputs.commit_sha || github.event.client_payload.after_sha || github.event.client_payload.commit_sha || github.run_id }}
@@ -512,7 +512,7 @@ jobs:
         with:
           client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
           private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
-          owner: openclaw
+          owner: valkyriweb
           repositories: clawsweeper
           permission-actions: write
           permission-contents: write
@@ -526,7 +526,7 @@ jobs:
           set -euo pipefail
           node dist/commit-sweeper.js dispatch-findings \
             --artifact-dir commit-artifacts \
-            --repair-repo openclaw/clawsweeper \
+            --repair-repo valkyriweb/clawsweeper \
             --repair-workflow repair-commit-finding-intake.yml \
             --dispatch-mode workflow_dispatch \
             --report-repo "${{ github.repository }}" \
