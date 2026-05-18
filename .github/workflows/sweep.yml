@@ -113,12 +113,16 @@ on:
     #
     # valkyriweb/pi-mono: one daily sweep at 05:00 UTC.
     # valkyriweb/openclaw: one daily sweep at 06:00 UTC.
+    # valkyriweb/lue-kube: one daily sweep at 07:00 UTC.
+    # valkyriweb/openclaw-claude: one daily sweep at 08:00 UTC.
     # bermont-digital/multica is still the workflow_dispatch default for manual triggers
     # but no longer runs on a cron — propose-only re-reviews of long-standing open PRs
     # were producing no signal change. Re-add a multica cron if that calculus shifts.
     # Hot intake stays manual; PR-open review is handled by Codex Review later.
     - cron: "0 5 * * *" # valkyriweb/pi-mono daily
     - cron: "0 6 * * *" # valkyriweb/openclaw daily
+    - cron: "0 7 * * *" # valkyriweb/lue-kube daily
+    - cron: "0 8 * * *" # valkyriweb/openclaw-claude daily
 
 permissions:
   contents: write
@@ -521,6 +525,12 @@ jobs:
                 ;;
               "0 6 * * *")
                 target_repo="valkyriweb/openclaw"
+                ;;
+              "0 7 * * *")
+                target_repo="valkyriweb/lue-kube"
+                ;;
+              "0 8 * * *")
+                target_repo="valkyriweb/openclaw-claude"
                 ;;
               *)
                 target_repo="bermont-digital/multica"

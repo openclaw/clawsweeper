@@ -141,6 +141,37 @@
           "not_actionable_in_repo"
         ]
       }
+    },
+    {
+      "target_repo": "valkyriweb/lue-kube",
+      "display_name": "lue-kube (work cluster)",
+      "checkout_dir": "lue-kube",
+      "prompt_note": "K3s cluster repo for client workloads (Laravel, WordPress, OpenClaw). Areas: `area:apps` (k3s/apps/<name>/{base,overlays/prod}), `area:flux` (Flux CD reconciliation), `area:cluster` (cluster-level config, system add-ons, sealed-secrets), `area:secrets`, `area:docs`. Use at most two area tags. Validation: `kubectl --context lue-kube` for cluster-side checks; manifests don't ship without `flux reconcile`. Carry-forward PRs do not exist here.",
+      "apply_close_rules": {
+        "issue": [
+          "duplicate_or_superseded",
+          "cannot_reproduce",
+          "incoherent",
+          "not_actionable_in_repo",
+          "stale_insufficient_info"
+        ],
+        "pull_request": [
+          "duplicate_or_superseded",
+          "cannot_reproduce",
+          "incoherent",
+          "not_actionable_in_repo"
+        ]
+      }
+    },
+    {
+      "target_repo": "valkyriweb/openclaw-claude",
+      "display_name": "OpenClaw management hub (docs + methodology)",
+      "checkout_dir": "openclaw-claude",
+      "prompt_note": "Methodology + releases + postmortems + Paperclip wiring. Repo is mostly markdown; no source build. Areas: `area:methodology`, `area:releases`, `area:issues`, `area:goals`, `area:scripts`. Use at most two area tags. **No test suite** \u2014 proposals must be read-only diff against existing docs. **Do NOT propose closing methodology TODOs or pending-work notes as `stale_insufficient_info`** \u2014 these are intentional handoffs, not abandoned items.",
+      "apply_close_rules": {
+        "issue": ["duplicate_or_superseded", "cannot_reproduce", "not_actionable_in_repo"],
+        "pull_request": ["duplicate_or_superseded", "cannot_reproduce", "not_actionable_in_repo"]
+      }
     }
   ]
 }
