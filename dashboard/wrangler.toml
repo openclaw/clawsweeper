@@ -9,8 +9,8 @@ pattern = "clawsweeper.openclaw.ai"
 custom_domain = true
 
 [vars]
-CLAWSWEEPER_REPO = "openclaw/clawsweeper"
-TARGET_REPOS = "openclaw/openclaw,openclaw/clawhub,openclaw/clawsweeper,openclaw/fs-safe"
+CLAWSWEEPER_REPO = "valkyriweb/clawsweeper"
+TARGET_REPOS = "valkyriweb/pi-mono,bermont-digital/multica,valkyriweb/openclaw,valkyriweb/lue-kube,valkyriweb/openclaw-claude,valkyriweb/clawsweeper"
 WORKER_BUDGET = "80"
 CACHE_TTL_SECONDS = "20"
 INCLUDE_CI_STATUS = "1"
