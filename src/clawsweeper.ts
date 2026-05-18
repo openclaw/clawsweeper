@@ -128,6 +128,7 @@ type PrStatusLabelKind =
   | "ready_for_maintainer_look";
 type PrEggState = "incubating" | "warming" | "wobbling" | "hatched";
 type PrEggRarity = "common" | "uncommon" | "rare" | "glimmer" | "legendary";
+type PrEggSpriteLayer = readonly [string, string, string, string, string, string, string];
 type TelegramVisibleProofStatus = "needed" | "not_needed";
 type MantisRecommendationStatus = "recommended" | "not_recommended";
 type MantisRecommendationScenario =
@@ -6258,13 +6259,183 @@ const PR_EGG_TRAITS = [
   "hums during re-review",
 ];
 
-const PR_EGG_PORTRAITS = [
-  "     /\\_/\\\\\n   ~( o.o )~\n    /| ^ |\\\\\n   (_|___|_)",
-  "     .-^-.\n   .' o o '.\n  /  \\_-_/  \\\n   '._/ \\_.'",
-  "    __/\\__\n  .'  oo  '.\n <   \\__/   >\n   `-.__.-'",
-  "    .--.\n  .'_\\/_'.\n  |  o o |\n  |  \\_/ |\n   '.___.'",
-  "    /\\   /\\\n   (  'v'  )\n  /|  ___  |\\\\\n    `-----'",
-  "     .---.\n   .' ^ ^ '.\n  (   \\_/   )\n   '-.___.-'",
+const PR_EGG_SPRITE_WIDTH = 19;
+
+const PR_EGG_AURAS: PrEggSpriteLayer[] = [
+  [
+    "                   ",
+    "                   ",
+    "                   ",
+    "                   ",
+    "                   ",
+    "                   ",
+    "                   ",
+  ],
+  [
+    "  *             *  ",
+    "       .           ",
+    "                   ",
+    "                   ",
+    "                   ",
+    "           .       ",
+    "  *             *  ",
+  ],
+  [
+    "   .-.       .-.   ",
+    "  (   )     (   )  ",
+    "   `-'       `-'   ",
+    "                   ",
+    "   .-.       .-.   ",
+    "  (   )     (   )  ",
+    "   `-'       `-'   ",
+  ],
+];
+
+const PR_EGG_TOPS: PrEggSpriteLayer[] = [
+  [
+    "       .---.       ",
+    "     .'     '.     ",
+    "                   ",
+    "                   ",
+    "                   ",
+    "                   ",
+    "                   ",
+  ],
+  [
+    "       /\\_/\\       ",
+    "     .'     '.     ",
+    "                   ",
+    "                   ",
+    "                   ",
+    "                   ",
+    "                   ",
+  ],
+  [
+    "     _/     \\_     ",
+    "   .'         '.   ",
+    "                   ",
+    "                   ",
+    "                   ",
+    "                   ",
+    "                   ",
+  ],
+  [
+    "       .-^-.       ",
+    "    .-'     '-.    ",
+    "                   ",
+    "                   ",
+    "                   ",
+    "                   ",
+    "                   ",
+  ],
+];
+
+const PR_EGG_FACES: PrEggSpriteLayer[] = [
+  [
+    "                   ",
+    "                   ",
+    "    /  o   o  \\    ",
+    "   |     v     |   ",
+    "                   ",
+    "                   ",
+    "                   ",
+  ],
+  [
+    "                   ",
+    "                   ",
+    "    /  -   -  \\    ",
+    "   |    ._.    |   ",
+    "                   ",
+    "                   ",
+    "                   ",
+  ],
+  [
+    "                   ",
+    "                   ",
+    "    /  *   *  \\    ",
+    "   |    \\_/    |   ",
+    "                   ",
+    "                   ",
+    "                   ",
+  ],
+  [
+    "                   ",
+    "                   ",
+    "    /  >   <  \\    ",
+    "   |    \\w/    |   ",
+    "                   ",
+    "                   ",
+    "                   ",
+  ],
+];
+
+const PR_EGG_BODIES: PrEggSpriteLayer[] = [
+  [
+    "                   ",
+    "                   ",
+    "                   ",
+    "                   ",
+    "    \\   ___   /    ",
+    "     '.___.'       ",
+    "                   ",
+  ],
+  [
+    "                   ",
+    "                   ",
+    "                   ",
+    "                   ",
+    "    \\  \\___/  /    ",
+    "   <_'-----'_>     ",
+    "                   ",
+  ],
+  [
+    "                   ",
+    "                   ",
+    "                   ",
+    "                   ",
+    "    \\  /___\\  /    ",
+    "     '(____)'      ",
+    "                   ",
+  ],
+  [
+    "                   ",
+    "                   ",
+    "                   ",
+    "                   ",
+    "    \\  .---.  /    ",
+    "     `-(___)-'     ",
+    "                   ",
+  ],
+];
+
+const PR_EGG_FEET: PrEggSpriteLayer[] = [
+  [
+    "                   ",
+    "                   ",
+    "                   ",
+    "                   ",
+    "                   ",
+    "                   ",
+    "       /|_|\\       ",
+  ],
+  [
+    "                   ",
+    "                   ",
+    "                   ",
+    "                   ",
+    "                   ",
+    "                   ",
+    "      _/|_|\\_      ",
+  ],
+  [
+    "                   ",
+    "                   ",
+    "                   ",
+    "                   ",
+    "                   ",
+    "                   ",
+    "       ~~~~~       ",
+  ],
 ];
 
 function hashNumber(seed: string, salt: string): number {
@@ -6273,6 +6444,26 @@ function hashNumber(seed: string, salt: string): number {
 
 function pickSeeded<T>(values: readonly T[], seed: string, salt: string): T {
   return values[hashNumber(seed, salt) % values.length]!;
+}
+
+function composePrEggSprite(seed: string): string {
+  const layers = [
+    pickSeeded(PR_EGG_AURAS, seed, "aura"),
+    pickSeeded(PR_EGG_TOPS, seed, "top"),
+    pickSeeded(PR_EGG_FACES, seed, "face"),
+    pickSeeded(PR_EGG_BODIES, seed, "body"),
+    pickSeeded(PR_EGG_FEET, seed, "feet"),
+  ];
+  return Array.from({ length: 7 }, (_value, lineIndex) =>
+    layers
+      .map((layer) => layer[lineIndex]!)
+      .reduce((composed, layerLine) =>
+        Array.from({ length: PR_EGG_SPRITE_WIDTH }, (_char, charIndex) => {
+          const overlay = layerLine[charIndex] ?? " ";
+          return overlay === " " ? (composed[charIndex] ?? " ") : overlay;
+        }).join(""),
+      ),
+  ).join("\n");
 }
 
 function prEggRarity(seed: string): { rarity: PrEggRarity; label: string } {
@@ -6300,13 +6491,18 @@ function prEggCreature(seed: string): {
     rarity: rarity.rarity,
     rarityLabel: rarity.label,
     trait: pickSeeded(PR_EGG_TRAITS, seed, "trait"),
-    portrait: pickSeeded(PR_EGG_PORTRAITS, seed, "portrait"),
+    portrait: composePrEggSprite(seed),
     shareText,
   };
 }
 
 export function prEggCreatureForTest(seed: string): ReturnType<typeof prEggCreature> {
   return prEggCreature(seed);
+}
+
+export function prEggSpriteMetricsForTest(seed: string): { lines: string[]; width: number } {
+  const lines = composePrEggSprite(seed).split("\n");
+  return { lines, width: PR_EGG_SPRITE_WIDTH };
 }
 
 function defaultRatingNextSteps(options: {

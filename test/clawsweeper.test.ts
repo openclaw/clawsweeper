@@ -59,6 +59,7 @@ import {
   prRatingLabelsForTest,
   prRatingLabelSchemeForTest,
   prEggCreatureForTest,
+  prEggSpriteMetricsForTest,
   prStatusLabelsForTest,
   prStatusLabelSchemeForTest,
   priorityLabelsForTest,
@@ -2976,6 +2977,24 @@ test("PR egg creature generation exposes emoji rarity collectibles", () => {
   assert.ok(glimmerOrLegendary);
   assert.match(glimmerOrLegendary.rarityLabel, /^(✨ glimmer|🌈 legendary)$/);
   assert.match(glimmerOrLegendary.shareText, /^My PR egg hatched a .+ in ClawSweeper\.$/);
+});
+
+test("PR egg ASCII sprites compose fixed-width deterministic layers", () => {
+  const first = prEggSpriteMetricsForTest("openclaw/openclaw#74471@abc123def456");
+  const second = prEggSpriteMetricsForTest("openclaw/openclaw#74471@abc123def456");
+  const other = prEggSpriteMetricsForTest("openclaw/openclaw#74471@def456abc123");
+
+  assert.deepEqual(first, second);
+  assert.equal(first.lines.length, 7);
+  assert.ok(first.lines.some((line) => /[^\s]/.test(line)));
+  for (const line of first.lines) {
+    assert.equal(line.length, first.width);
+    assert.doesNotMatch(line, /[\p{Extended_Pictographic}]/u);
+  }
+  assert.ok(
+    first.lines.some((line, index) => line !== other.lines[index]),
+    "different head SHAs should alter at least one composed sprite layer",
+  );
 });
 
 test("docs-only external PRs do not require real behavior proof", () => {
