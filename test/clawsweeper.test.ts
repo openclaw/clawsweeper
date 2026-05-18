@@ -3054,7 +3054,8 @@ test("PR egg ASCII sprites compose fixed-width deterministic layers", () => {
   const other = prEggSpriteMetricsForTest("openclaw/openclaw#74471@def456abc123");
 
   assert.deepEqual(first, second);
-  assert.equal(first.lines.length, 7);
+  assert.equal(first.lines.length, 11);
+  assert.equal(first.width, 31);
   assert.ok(first.lines.some((line) => /[^\s]/.test(line)));
   for (const line of first.lines) {
     assert.equal(line.length, first.width);
