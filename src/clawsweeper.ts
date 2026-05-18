@@ -5496,6 +5496,14 @@ function prEggStateFromReport(
   return hasUnresolvedWork ? "warming" : "incubating";
 }
 
+function prEggProofUnlocked(proof: Pick<RealBehaviorProof, "status">): boolean {
+  return (
+    proof.status === "sufficient" ||
+    proof.status === "override" ||
+    proof.status === "not_applicable"
+  );
+}
+
 function publicPrEggLine(
   markdown: string,
   options: {
@@ -5506,6 +5514,21 @@ function publicPrEggLine(
     overallCorrectness: OverallCorrectness;
   },
 ): string {
+  if (!prEggProofUnlocked(options.realBehaviorProof)) {
+    return [
+      "🎁 Pass real behavior proof to wake the egg and unlock a hatchable treat.",
+      "",
+      "<details>",
+      "<summary>Where did the egg go?</summary>",
+      "",
+      "- The egg game starts only after the PR passes the real-behavior proof check.",
+      "- Before that, no creature, rarity, or ASCII portrait is rolled. The treat waits for real proof.",
+      "- This is still just collectible flavor: proof affects review readiness, not creature quality.",
+      "",
+      "</details>",
+    ].join("\n");
+  }
+
   const seed = prEggSeedFromReport(markdown);
   const state = prEggStateFromReport(markdown, options);
   const explainer = [
@@ -5513,8 +5536,8 @@ function publicPrEggLine(
     "<details>",
     "<summary>What is this egg doing here?</summary>",
     "",
-    "- Every PR gets a tiny egg. It is here for vibes, not verdicts: it does not change labels, ratings, merge decisions, or automation.",
-    "- The shell reacts to review momentum: missing proof warms it up, re-review makes it wobble, and a clean final review lets it hatch.",
+    "- Eggs appear after the PR passes real-behavior proof. It is here for vibes, not verdicts: it does not change labels, ratings, merge decisions, or automation.",
+    "- The shell reacts to review momentum: open follow-up work warms it up, re-review makes it wobble, and a clean final review lets it hatch.",
     "- The hatch is seeded from this repository, PR number, and reviewed head SHA, so the same PR revision gets the same little creature every time.",
     "- Rarity is just collectible sparkle: 🥚 common, 🌱 uncommon, 💎 rare, ✨ glimmer, and 🌈 legendary.",
     "",
