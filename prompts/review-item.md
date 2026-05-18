@@ -171,7 +171,12 @@ Treat provider fallback removal, fail-closed routing, missing-harness behavior,
 startup/install checks, and strict config validation as upgrade-sensitive even
 when they fix a real bug. If current users may only discover the change because
 an existing workflow stops at runtime, call out the user-visible failure mode and
-the required maintainer choice before merge.
+the required maintainer choice before merge. When preserving the existing
+behavior as the default plus adding an explicit strict config option would avoid
+breaking current users, recommend that path in `bestSolution` or `workReason`
+instead of treating unconditional fail-closed behavior as the only acceptable
+fix. Require tests or proof for both the default compatibility mode and the
+opt-in strict mode.
 
 Call out upgrade and settings breakage directly in `reviewFindings`: use P1
 when existing setups can break, existing config/preferences can be overwritten,
