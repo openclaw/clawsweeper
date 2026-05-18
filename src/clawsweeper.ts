@@ -720,7 +720,7 @@ const AUTOMERGE_LABEL = "clawsweeper:automerge";
 const AUTOFIX_LABEL = "clawsweeper:autofix";
 const PROOF_OVERRIDE_LABEL = "proof: override";
 const PROOF_SUFFICIENT_LABEL = "proof: sufficient";
-const PROOF_SUFFICIENT_LABEL_COLOR = "0e8a16";
+const PROOF_SUFFICIENT_LABEL_COLOR = "9BD3A0";
 const PROOF_SUFFICIENT_LABEL_DESCRIPTION = "Contributor real behavior proof is sufficient.";
 const PR_RATING_LABELS = [
   {
@@ -773,7 +773,7 @@ const PR_RATING_LABELS = [
 }[];
 const PR_RATING_LABEL_NAMES = new Set<string>(PR_RATING_LABELS.map((label) => label.name));
 const TELEGRAM_VISIBLE_PROOF_LABEL = "mantis: telegram-visible-proof";
-const TELEGRAM_VISIBLE_PROOF_LABEL_COLOR = "5319e7";
+const TELEGRAM_VISIBLE_PROOF_LABEL_COLOR = "D9CCF5";
 const TELEGRAM_VISIBLE_PROOF_LABEL_DESCRIPTION = "Mantis should capture Telegram visible proof.";
 const PRIORITY_LABELS = [
   {
@@ -801,7 +801,7 @@ const PRIORITY_LABELS = [
     priority: 3,
     triagePriority: "P3",
     name: "P3",
-    color: "0E8A16",
+    color: "B8E0B0",
     description: "Low-risk cleanup, docs, polish, ergonomics, or speculative feature.",
   },
 ] as const;
@@ -831,12 +831,12 @@ const IMPACT_LABELS = [
   },
   {
     name: "impact:session-state",
-    color: "FBCA04",
+    color: "F9D65C",
     description: "Session, memory, transcript, context, or agent state can drift or corrupt.",
   },
   {
     name: "impact:auth-provider",
-    color: "FBCA04",
+    color: "F9D65C",
     description: "Auth, provider routing, model choice, or SecretRef resolution may break.",
   },
 ] as const satisfies readonly {
@@ -848,12 +848,12 @@ const IMPACT_LABEL_NAMES: ReadonlySet<string> = new Set(IMPACT_LABELS.map((label
 const ISSUE_ADVISORY_LABELS = [
   {
     name: "clawsweeper:current-main-repro",
-    color: "1D76DB",
+    color: "CFE3F8",
     description: "ClawSweeper found a high-confidence current-main issue reproduction.",
   },
   {
     name: "clawsweeper:source-repro",
-    color: "1D76DB",
+    color: "CFE3F8",
     description: "ClawSweeper found a high-confidence source-level issue reproduction.",
   },
   {
@@ -870,17 +870,17 @@ const ISSUE_ADVISORY_LABELS = [
   },
   {
     name: "clawsweeper:needs-info",
-    color: "D876E3",
+    color: "EADFF8",
     description: "ClawSweeper needs more reporter information before it can verify this issue.",
   },
   {
     name: "clawsweeper:linked-pr-open",
-    color: "5319E7",
+    color: "D9CCF5",
     description: "ClawSweeper found an open linked pull request for this issue.",
   },
   {
     name: "clawsweeper:no-new-fix-pr",
-    color: "BFDADC",
+    color: "EDEDED",
     description: "ClawSweeper does not recommend queueing a new automated fix PR for this issue.",
   },
   {
@@ -890,7 +890,7 @@ const ISSUE_ADVISORY_LABELS = [
   },
   {
     name: "clawsweeper:fix-shape-clear",
-    color: "0E8A16",
+    color: "9BD3A0",
     description: "ClawSweeper found a clear likely implementation shape for this issue.",
   },
   {

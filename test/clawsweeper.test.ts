@@ -4777,7 +4777,7 @@ test("ClawSweeper priority label scheme exposes P0 through P3 labels", () => {
     },
     {
       name: "P3",
-      color: "0E8A16",
+      color: "B8E0B0",
       description: "Low-risk cleanup, docs, polish, ergonomics, or speculative feature.",
     },
   ]);
@@ -4844,12 +4844,12 @@ test("ClawSweeper impact label scheme exposes owned impact labels", () => {
     },
     {
       name: "impact:session-state",
-      color: "FBCA04",
+      color: "F9D65C",
       description: "Session, memory, transcript, context, or agent state can drift or corrupt.",
     },
     {
       name: "impact:auth-provider",
-      color: "FBCA04",
+      color: "F9D65C",
       description: "Auth, provider routing, model choice, or SecretRef resolution may break.",
     },
   ]);

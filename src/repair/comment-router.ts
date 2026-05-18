@@ -3056,7 +3056,7 @@ function ensureAutofixLabel(repo: string) {
     "--repo",
     repo,
     "--color",
-    "1D76DB",
+    "CFE3F8",
     "--description",
     "Maintainer opted this PR into bounded ClawSweeper-reviewed autofix without merge",
   ]);
@@ -3092,7 +3092,7 @@ function ensureMergeReadyLabel(repo: string) {
     "--repo",
     repo,
     "--color",
-    "5319E7",
+    "D9CCF5",
     "--description",
     "ClawSweeper found the PR merge-ready but a human gate is still closed",
   ]);
