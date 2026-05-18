@@ -129,8 +129,9 @@ permissions:
 
 defaults:
   run:
-    # macOS /bin/bash is 3.2 — empty `${arr[@]}` under `set -u` is fatal there. Force bash 5 from Homebrew on self-hosted runners.
-    shell: /opt/homebrew/bin/bash -e {0}
+    # Use the runner-resolved Bash instead of a Homebrew-only path. Optional arrays below use
+    # `${arr[@]+"${arr[@]}"}` so macOS Bash 3.2 also works with `set -u`.
+    shell: bash -e {0}
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
@@ -322,7 +323,7 @@ jobs:
             --readonly-openclaw \
             --shard-index 0 \
             --shard-count 1 \
-            "${additional_prompt_arg[@]}"
+            ${additional_prompt_arg[@]+"${additional_prompt_arg[@]}"}
 
       - name: Create state token
         id: state-token
@@ -768,8 +769,8 @@ jobs:
             --codex-sandbox danger-full-access \
             --min-active-shards "$MIN_ACTIVE_SHARDS" \
             --min-backfill-review-age-minutes "$MIN_BACKFILL_REVIEW_AGE_MINUTES" \
-            "${hot_intake_arg[@]}" \
-            "${item_arg[@]}" > plan.json
+            ${hot_intake_arg[@]+"${hot_intake_arg[@]}"} \
+            ${item_arg[@]+"${item_arg[@]}"} > plan.json
           pnpm run --silent workflow -- plan-output \
             --plan plan.json \
             --batch-size "$BATCH_SIZE" \
@@ -923,11 +924,11 @@ jobs:
             --codex-sandbox danger-full-access \
             --codex-timeout-ms ${{ needs.plan.outputs.codex_timeout_ms }} \
             --item-numbers "${{ matrix.item_numbers }}" \
-            "${hot_intake_arg[@]}" \
+            ${hot_intake_arg[@]+"${hot_intake_arg[@]}"} \
             --readonly-openclaw \
             --shard-index ${{ matrix.shard }} \
             --shard-count ${{ needs.plan.outputs.planned_shards }} \
-            "${additional_prompt_arg[@]}"
+            ${additional_prompt_arg[@]+"${additional_prompt_arg[@]}"}
 
       - name: Record shard metrics
         if: always()
@@ -1714,7 +1715,7 @@ jobs:
               --skip-dashboard \
               --limit 0 \
               --min-age-days "$min_age_days" \
-              "${min_age_minutes_arg[@]}" \
+              ${min_age_minutes_arg[@]+"${min_age_minutes_arg[@]}"} \
               --apply-kind "$apply_kind" \
               --apply-close-reasons "$apply_close_reasons" \
               --stale-min-age-days "$stale_min_age_days" \
@@ -1722,8 +1723,8 @@ jobs:
               --progress-every "$progress_every" \
               --processed-limit "$((checkpoint_size * 20))" \
               --comment-sync-min-age-days "$comment_sync_min_age_days" \
-              "${item_numbers_arg[@]}" \
-              "${sync_comments_arg[@]}"
+              ${item_numbers_arg[@]+"${item_numbers_arg[@]}"} \
+              ${sync_comments_arg[@]+"${sync_comments_arg[@]}"}
             cp apply-report.json ".artifacts/apply-reports/apply-report-$checkpoint.json"
             result_count="$(pnpm run --silent workflow -- count-report --report ".artifacts/apply-reports/apply-report-$checkpoint.json")"
             synced_count="$(pnpm run --silent workflow -- count-actions --report ".artifacts/apply-reports/apply-report-$checkpoint.json" --action review_comment_synced)"
@@ -1753,7 +1754,7 @@ jobs:
               --skip-dashboard \
               --limit "$chunk_limit" \
               --min-age-days "$min_age_days" \
-              "${min_age_minutes_arg[@]}" \
+              ${min_age_minutes_arg[@]+"${min_age_minutes_arg[@]}"} \
               --apply-kind "$apply_kind" \
               --apply-close-reasons "$apply_close_reasons" \
               --stale-min-age-days "$stale_min_age_days" \
@@ -1761,8 +1762,8 @@ jobs:
               --progress-every "$progress_every" \
               --processed-limit "$((chunk_limit * 20))" \
               --comment-sync-min-age-days "$comment_sync_min_age_days" \
-              "${item_numbers_arg[@]}" \
-              "${sync_comments_arg[@]}"
+              ${item_numbers_arg[@]+"${item_numbers_arg[@]}"} \
+              ${sync_comments_arg[@]+"${sync_comments_arg[@]}"}
             cp apply-report.json ".artifacts/apply-reports/apply-report-$checkpoint.json"
             pnpm run workflow -- merge-apply-reports --dir .artifacts/apply-reports --output apply-report.json
             closed_in_chunk="$(pnpm run --silent workflow -- count-actions --report ".artifacts/apply-reports/apply-report-$checkpoint.json" --action closed)"
