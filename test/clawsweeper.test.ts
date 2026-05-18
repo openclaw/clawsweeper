@@ -3048,18 +3048,19 @@ test("PR egg creature generation exposes emoji rarity collectibles", () => {
   assert.match(glimmerOrLegendary.shareText, /^My PR egg hatched a .+ in ClawSweeper\.$/);
 });
 
-test("PR egg ASCII sprites compose fixed-width deterministic layers", () => {
+test("PR egg ASCII sprites render fixed-width deterministic silhouettes", () => {
   const first = prEggSpriteMetricsForTest("openclaw/openclaw#74471@abc123def456");
   const second = prEggSpriteMetricsForTest("openclaw/openclaw#74471@abc123def456");
   const other = prEggSpriteMetricsForTest("openclaw/openclaw#74471@def456abc123");
 
   assert.deepEqual(first, second);
-  assert.equal(first.lines.length, 11);
-  assert.equal(first.width, 31);
+  assert.equal(first.lines.length, 12);
+  assert.equal(first.width, 29);
   assert.ok(first.lines.some((line) => /[^\s]/.test(line)));
   for (const line of first.lines) {
     assert.equal(line.length, first.width);
     assert.doesNotMatch(line, /[\p{Extended_Pictographic}]/u);
+    assert.match(line, /\S/, "sprite lines should stay visually dense");
   }
   assert.ok(
     first.lines.some((line, index) => line !== other.lines[index]),

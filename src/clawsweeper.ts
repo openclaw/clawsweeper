@@ -128,7 +128,6 @@ type PrStatusLabelKind =
   | "ready_for_maintainer_look";
 type PrEggState = "incubating" | "warming" | "wobbling" | "hatched";
 type PrEggRarity = "common" | "uncommon" | "rare" | "glimmer" | "legendary";
-type PrEggSpriteLayer = readonly string[];
 type TelegramVisibleProofStatus = "needed" | "not_needed";
 type MantisRecommendationStatus = "recommended" | "not_recommended";
 type MantisRecommendationScenario =
@@ -6282,211 +6281,63 @@ const PR_EGG_TRAITS = [
   "hums during re-review",
 ];
 
-const PR_EGG_SPRITE_WIDTH = 31;
-const PR_EGG_SPRITE_HEIGHT = 11;
+const PR_EGG_SPRITE_WIDTH = 29;
+const PR_EGG_SPRITE_HEIGHT = 12;
 
-function prEggSpriteLayer(lines: readonly string[]): PrEggSpriteLayer {
+function prEggSpriteLines(lines: readonly string[]): string[] {
   return Array.from({ length: PR_EGG_SPRITE_HEIGHT }, (_value, index) =>
     (lines[index] ?? "").padEnd(PR_EGG_SPRITE_WIDTH, " ").slice(0, PR_EGG_SPRITE_WIDTH),
   );
 }
 
-const PR_EGG_AURAS: PrEggSpriteLayer[] = [
-  prEggSpriteLayer([]),
-  prEggSpriteLayer([
-    " *                         * ",
-    "       .             .       ",
-    "                             ",
-    "   .                     .   ",
-    "                             ",
-    "                             ",
-    "                             ",
-    "     .                 .     ",
-    "                             ",
-    "       .             .       ",
-    " *                         * ",
+const PR_EGG_BASE_SPRITES = [
+  prEggSpriteLines([
+    "        /\\     /\\        ",
+    "      _/  \\___/  \\_      ",
+    "     /  ( o   o )  \\     ",
+    "    |      \\_/      |    ",
+    "    |   /\\  ===  /\\ |    ",
+    "     \\_/  \\_____/  \\_/   ",
+    "        _/|_| |_|\\_      ",
+    "       /__| | | |__\\     ",
+    "          ' ' ' '        ",
+    "         /_/     \\_\\     ",
   ]),
-  prEggSpriteLayer([
-    " .                           .",
-    "      *                 *     ",
-    "                             ",
-    "                             ",
-    " .                         . ",
-    "                             ",
-    " .                         . ",
-    "                             ",
-    "      *                 *     ",
-    " .                           .",
+  prEggSpriteLines([
+    "        .--^^^^--.       ",
+    "     .-'  o    o  '-.    ",
+    "    /       \\__/      \\   ",
+    "   |    /\\  ____  /\\   |  ",
+    "   |   /  \\/____\\/  \\  |  ",
+    "    \\  \\_.------._/  /  ",
+    "     '._  `----'  _.'   ",
+    "        '-.____.-'      ",
+    "       _/|_|  |_|\\_     ",
+    "      /__|      |__\\    ",
   ]),
-  prEggSpriteLayer([
-    "    /\\                 /\\    ",
-    "   /  \\               /  \\   ",
-    "   \\__/               \\__/   ",
-    "                             ",
-    "  .--.                 .--.  ",
-    " (    )               (    ) ",
-    "  '--'                 '--'  ",
-    "        .          .        ",
-    "    /\\                /\\    ",
-    "   /__\\              /__\\   ",
+  prEggSpriteLines([
+    "       _..------.._      ",
+    "    .-'  .-.  .-.  '-.   ",
+    "   /    ( * )( * )    \\  ",
+    "  |        .--.        | ",
+    "  |   <\\   ====   />   | ",
+    "   \\    '.______.'    /  ",
+    "    '-._   ____   _.-'   ",
+    "        `-.____.-'       ",
+    "       __/|_||_|\\__      ",
+    "      /__.'    '.__\\     ",
   ]),
-];
-
-const PR_EGG_TOPS: PrEggSpriteLayer[] = [
-  prEggSpriteLayer([
-    "             .---.             ",
-    "          .-'     '-.          ",
-    "        .'  .---.    '.        ",
-  ]),
-  prEggSpriteLayer([
-    "          /\\       /\\          ",
-    "        _/  \\_.-._/  \\_        ",
-    "       /                 \\      ",
-  ]),
-  prEggSpriteLayer([
-    "            _..---.._           ",
-    "        _.-'  .---.  '-._       ",
-    "      .'     /     \\     '.     ",
-  ]),
-  prEggSpriteLayer([
-    "        .--.   .^.   .--.       ",
-    "       /    \\_/   \\_/    \\      ",
-    "      /                   \\     ",
-  ]),
-  prEggSpriteLayer([
-    "           __/\\___/\\__          ",
-    "        .-'  _     _  '-.       ",
-    "      .'    (_)   (_)    '.     ",
-  ]),
-];
-
-const PR_EGG_FACES: PrEggSpriteLayer[] = [
-  prEggSpriteLayer([
-    "",
-    "",
-    "",
-    "           o       o           ",
-    "               v               ",
-  ]),
-  prEggSpriteLayer([
-    "",
-    "",
-    "",
-    "           -       -           ",
-    "              ._.              ",
-  ]),
-  prEggSpriteLayer([
-    "",
-    "",
-    "",
-    "           *       *           ",
-    "              \\_/              ",
-  ]),
-  prEggSpriteLayer([
-    "",
-    "",
-    "",
-    "           >       <           ",
-    "              \\w/              ",
-  ]),
-  prEggSpriteLayer(["", "", "", "         {o}     {o}         ", "              .-.            "]),
-];
-
-const PR_EGG_BODIES: PrEggSpriteLayer[] = [
-  prEggSpriteLayer([
-    "",
-    "",
-    "",
-    "",
-    "    |      .-----'.      |     ",
-    "     \\    /  ___  \\    /      ",
-    "      '.  \\______/  .'        ",
-    "        '-.______.-'          ",
-  ]),
-  prEggSpriteLayer([
-    "",
-    "",
-    "",
-    "",
-    "    |    _/|     |\\_    |     ",
-    "   <|   /  |_____|  \\   |>    ",
-    "     \\  \\_.-----._/  /       ",
-    "      '._  `---'  _.'        ",
-  ]),
-  prEggSpriteLayer([
-    "",
-    "",
-    "",
-    "",
-    "    |    .-._____.-.    |     ",
-    "     \\  (   \\___/   )  /      ",
-    "      '. \\  /___\\  / .'       ",
-    "        '-`-.___.-'-'         ",
-  ]),
-  prEggSpriteLayer([
-    "",
-    "",
-    "",
-    "",
-    "    |    /\\  ___  /\\    |     ",
-    "   /|   /  \\/___\\/  \\   |\\    ",
-    "  <_|   \\  /_____\\  /   |_>   ",
-    "        '-._____.-'          ",
-  ]),
-];
-
-const PR_EGG_FEET: PrEggSpriteLayer[] = [
-  prEggSpriteLayer([
-    "",
-    "",
-    "",
-    "",
-    "",
-    "",
-    "",
-    "",
-    "          /|_|\\   /|_|\\       ",
-    "         /_| |_\\ /_| |_\\      ",
-    "        '---'     '---'       ",
-  ]),
-  prEggSpriteLayer([
-    "",
-    "",
-    "",
-    "",
-    "",
-    "",
-    "",
-    "",
-    "        _/|_|\\_ _/|_|\\_       ",
-    "       /__| |__X__| |__\\      ",
-    "          ' '     ' '         ",
-  ]),
-  prEggSpriteLayer([
-    "",
-    "",
-    "",
-    "",
-    "",
-    "",
-    "",
-    "",
-    "         ~~~/|_|\\~~~~         ",
-    "       ~~~~/_| |_\\~~~~        ",
-    "          ~~~~~~~~~           ",
-  ]),
-  prEggSpriteLayer([
-    "",
-    "",
-    "",
-    "",
-    "",
-    "",
-    "",
-    "",
-    "        __     _     __       ",
-    "       /  \\___/ \\___/  \\      ",
-    "       \\__/         \\__/      ",
+  prEggSpriteLines([
+    "       /\\  .---.  /\\     ",
+    "      /  \\/     \\/  \\    ",
+    "     /   ( -   - )   \\   ",
+    "    |       ._.       |  ",
+    "    |   /|  ===  |\\   |  ",
+    "     \\  \\|______/|/  /   ",
+    "      '._  `--'  _.'     ",
+    "         '-.__.-'        ",
+    "       _/|_|  |_|\\_      ",
+    "      /__|      |__\\     ",
   ]),
 ];
 
@@ -6498,24 +6349,36 @@ function pickSeeded<T>(values: readonly T[], seed: string, salt: string): T {
   return values[hashNumber(seed, salt) % values.length]!;
 }
 
-function composePrEggSprite(seed: string): string {
-  const layers = [
-    pickSeeded(PR_EGG_AURAS, seed, "aura"),
-    pickSeeded(PR_EGG_TOPS, seed, "top"),
-    pickSeeded(PR_EGG_FACES, seed, "face"),
-    pickSeeded(PR_EGG_BODIES, seed, "body"),
-    pickSeeded(PR_EGG_FEET, seed, "feet"),
-  ];
-  return Array.from({ length: PR_EGG_SPRITE_HEIGHT }, (_value, lineIndex) =>
-    layers
-      .map((layer) => layer[lineIndex]!)
-      .reduce((composed, layerLine) =>
-        Array.from({ length: PR_EGG_SPRITE_WIDTH }, (_char, charIndex) => {
-          const overlay = layerLine[charIndex] ?? " ";
-          return overlay === " " ? (composed[charIndex] ?? " ") : overlay;
-        }).join(""),
-      ),
-  ).join("\n");
+function decoratePrEggSprite(
+  lines: readonly string[],
+  seed: string,
+  rarity: PrEggRarity,
+): string[] {
+  const body = lines.filter((line) => line.trim().length > 0);
+  const sigil = pickSeeded(["*", "+", "=", "~"], seed, "sprite-sigil");
+  if (rarity === "legendary") {
+    return prEggSpriteLines(["*====[ LEGENDARY ]====*", ...body, "*=====================*"]);
+  }
+  if (rarity === "glimmer") {
+    return prEggSpriteLines([
+      ...body,
+      "       `-----------'       ",
+      `.${sigil}~~~~~~~~~~~~~~~~~~~${sigil}.`,
+    ]);
+  }
+  if (rarity === "rare") {
+    return prEggSpriteLines([
+      ...body,
+      "       `-----------'       ",
+      ` ${sigil}===================${sigil}`,
+    ]);
+  }
+  return prEggSpriteLines([...body, "       .-----------.       ", "      '-------------'      "]);
+}
+
+function composePrEggSprite(seed: string, rarity: PrEggRarity): string {
+  const base = pickSeeded(PR_EGG_BASE_SPRITES, seed, "base-sprite");
+  return decoratePrEggSprite(base, seed, rarity).join("\n");
 }
 
 function prEggRarity(seed: string): { rarity: PrEggRarity; label: string } {
@@ -6543,7 +6406,7 @@ function prEggCreature(seed: string): {
     rarity: rarity.rarity,
     rarityLabel: rarity.label,
     trait: pickSeeded(PR_EGG_TRAITS, seed, "trait"),
-    portrait: composePrEggSprite(seed),
+    portrait: composePrEggSprite(seed, rarity.rarity),
     shareText,
   };
 }
@@ -6553,7 +6416,7 @@ export function prEggCreatureForTest(seed: string): ReturnType<typeof prEggCreat
 }
 
 export function prEggSpriteMetricsForTest(seed: string): { lines: string[]; width: number } {
-  const lines = composePrEggSprite(seed).split("\n");
+  const lines = composePrEggSprite(seed, "common").split("\n");
   return { lines, width: PR_EGG_SPRITE_WIDTH };
 }
 
