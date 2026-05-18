@@ -5530,6 +5530,14 @@ test("ClawSweeper PR status labels respect priority ordering", () => {
   assert.deepEqual(
     prStatusLabelsForTest([], {
       proofStatus: "missing",
+      hasRecentReReviewRequest: true,
+      hasAutomergeLabel: true,
+    }),
+    ["status: 🚀 automerge armed"],
+  );
+  assert.deepEqual(
+    prStatusLabelsForTest([], {
+      proofStatus: "missing",
       hasRecentAuthorActivity: true,
       hasRecentReReviewRequest: true,
     }),
@@ -5570,14 +5578,15 @@ test("ClawSweeper PR status label scheme exposes workflow states", () => {
   assert.deepEqual(
     prStatusLabelSchemeForTest().map(({ kind, name, color }) => ({ kind, name, color })),
     [
+      { kind: "automerge_armed", name: "status: 🚀 automerge armed", color: "0E8A16" },
       { kind: "re_review_loop", name: "status: 🔁 re-review loop", color: "8250DF" },
-      { kind: "actively_grinding", name: "status: 🛠️ actively grinding", color: "BF8700" },
-      { kind: "needs_proof", name: "status: 📣 needs proof", color: "D4C5F9" },
+      { kind: "actively_grinding", name: "status: 🛠️ actively grinding", color: "0969DA" },
+      { kind: "needs_proof", name: "status: 📣 needs proof", color: "D93F0B" },
       { kind: "waiting_on_author", name: "status: ⏳ waiting on author", color: "FBCA04" },
       {
         kind: "ready_for_maintainer_look",
         name: "status: 👀 ready for maintainer look",
-        color: "0E8A16",
+        color: "2DA44E",
       },
     ],
   );

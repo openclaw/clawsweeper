@@ -120,6 +120,7 @@ type RealBehaviorProofEvidenceKind =
   | "not_applicable";
 type PrRatingTier = "S" | "A" | "B" | "C" | "D" | "F" | "NA";
 type PrStatusLabelKind =
+  | "automerge_armed"
   | "re_review_loop"
   | "actively_grinding"
   | "needs_proof"
@@ -806,6 +807,12 @@ const PR_RATING_LABELS = [
 const PR_RATING_LABEL_NAMES = new Set<string>(PR_RATING_LABELS.map((label) => label.name));
 const PR_STATUS_LABELS = [
   {
+    kind: "automerge_armed",
+    name: "status: 🚀 automerge armed",
+    color: "0E8A16",
+    description: "This PR is in ClawSweeper's automerge lane.",
+  },
+  {
     kind: "re_review_loop",
     name: "status: 🔁 re-review loop",
     color: "8250DF",
@@ -814,13 +821,13 @@ const PR_STATUS_LABELS = [
   {
     kind: "actively_grinding",
     name: "status: 🛠️ actively grinding",
-    color: "BF8700",
+    color: "0969DA",
     description: "The PR author has acted after the latest ClawSweeper review and work remains.",
   },
   {
     kind: "needs_proof",
     name: "status: 📣 needs proof",
-    color: "D4C5F9",
+    color: "D93F0B",
     description:
       "The PR needs real behavior proof before ClawSweeper can clear the contributor ask.",
   },
@@ -833,7 +840,7 @@ const PR_STATUS_LABELS = [
   {
     kind: "ready_for_maintainer_look",
     name: "status: 👀 ready for maintainer look",
-    color: "0E8A16",
+    color: "2DA44E",
     description: "ClawSweeper has no concrete contributor-facing blocker left for this PR.",
   },
 ] as const satisfies readonly {
@@ -6224,10 +6231,12 @@ function prStatusLabelKind(options: {
   reviewFindings: readonly Pick<ReviewFinding, "priority">[];
   securityReview: Pick<SecurityReview, "status">;
   overallCorrectness: OverallCorrectness;
+  hasAutomergeLabel: boolean;
   hasRecentReReviewRequest: boolean;
   hasRecentAuthorActivity: boolean;
 }): PrStatusLabelKind | null {
   const unresolvedWork = hasUnresolvedContributorWork(options);
+  if (options.hasAutomergeLabel) return "automerge_armed";
   if (options.hasRecentReReviewRequest) return "re_review_loop";
   if (options.hasRecentAuthorActivity && unresolvedWork) return "actively_grinding";
   if (proofNeedsContributorAction(options.realBehaviorProof)) return "needs_proof";
@@ -6325,6 +6334,7 @@ function prStatusLabelKindFromReport(
     reviewFindings: reportReviewFindings(markdown),
     securityReview: reportSecurityReview(markdown),
     overallCorrectness: reportOverallCorrectness(markdown),
+    hasAutomergeLabel: frontMatterStringArray(markdown, "labels").includes(AUTOMERGE_LABEL),
     hasRecentReReviewRequest: hasRecentReReviewRequest(
       context,
       frontMatterValue(markdown, "reviewed_at"),
@@ -6345,6 +6355,7 @@ export function prStatusLabelsForTest(
     findingPriorities?: readonly number[];
     securityStatus?: string;
     overallCorrectness?: string;
+    hasAutomergeLabel?: boolean;
     hasRecentReReviewRequest?: boolean;
     hasRecentAuthorActivity?: boolean;
   },
@@ -6370,6 +6381,7 @@ export function prStatusLabelsForTest(
     )
       ? (options.overallCorrectness as OverallCorrectness)
       : "patch is correct",
+    hasAutomergeLabel: options.hasAutomergeLabel === true,
     hasRecentReReviewRequest: options.hasRecentReReviewRequest === true,
     hasRecentAuthorActivity: options.hasRecentAuthorActivity === true,
   });
