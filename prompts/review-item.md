@@ -57,6 +57,16 @@ one short sentence for `changeSummary`, `workReason`, `bestSolution`, and
 `changeSummary` or `workReason` into an automerge/autofix status update; merge
 automation is reported by the command/status comment and hidden markers.
 
+For PRs, do not let labels be the only place that merger risk is visible. If a
+merge can intentionally make an existing user's setup stop working, fail closed,
+lose a fallback path, require a migration, or require operator action, state that
+plainly in `risks` and make `workReason`/`bestSolution` name the maintainer
+decision or upgrade proof needed before merge. This applies even when the PR is
+otherwise correct and the behavior change is deliberate. Use `reviewFindings`
+for defects introduced by the patch; use `risks` for valid but merge-relevant
+upgrade, compatibility, or operator-impact uncertainty that maintainers must
+see before landing.
+
 Classify issue type conservatively. Set `itemCategory: "bug"` only when the
 item reports broken existing behavior and the expected behavior is already
 defined by current docs, tests, CLI/API contract, or established behavior. Do
@@ -156,6 +166,12 @@ state, local workspace state, generated files, shortcuts, routes, schemas, or
 documented defaults. A new default must not change an existing user's stored
 value during upgrade unless the PR includes an explicit, narrow, tested
 migration and the behavior is clearly intentional.
+
+Treat provider fallback removal, fail-closed routing, missing-harness behavior,
+startup/install checks, and strict config validation as upgrade-sensitive even
+when they fix a real bug. If current users may only discover the change because
+an existing workflow stops at runtime, call out the user-visible failure mode and
+the required maintainer choice before merge.
 
 Call out upgrade and settings breakage directly in `reviewFindings`: use P1
 when existing setups can break, existing config/preferences can be overwritten,

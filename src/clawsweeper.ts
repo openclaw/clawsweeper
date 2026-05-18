@@ -4915,6 +4915,12 @@ function publicReviewTextDiffers(left: string, right: string): boolean {
   );
 }
 
+function publicReviewTextIsSame(left: string, right: string): boolean {
+  const normalizedLeft = normalizePublicReviewText(left);
+  const normalizedRight = normalizePublicReviewText(right);
+  return Boolean(normalizedLeft) && normalizedLeft === normalizedRight;
+}
+
 function isReportNoneList(value: string): boolean {
   return !value.trim() || value.trim() === "- none";
 }
@@ -7116,6 +7122,17 @@ function publicSummaryBody(summaryLine: string, reproductionAssessment: string):
     .join("\n\n");
 }
 
+function publicMergeRiskLine(
+  risks: string,
+  nextStepLine: string,
+  bestSolutionLine: string,
+): string {
+  if (isReportNoneList(risks)) return "";
+  if (publicReviewTextIsSame(risks, nextStepLine)) return "";
+  if (bestSolutionLine && publicReviewTextIsSame(risks, bestSolutionLine)) return "";
+  return risks;
+}
+
 function issueReproductionHelpSuggestions(markdown: string): string[] {
   if (frontMatterValue(markdown, "type") !== "issue") return [];
   const reproductionStatus = frontMatterValue(markdown, "reproduction_status");
@@ -7226,6 +7243,9 @@ function renderKeepOpenCommentFromReport(markdown: string): string {
     "Continue tracking this item until the missing behavior is implemented or a maintainer decides the product direction.";
   const nextStepLine = sentence(workReason || bestSolution || fallbackNextStep);
   const bestSolutionLine = sentence(bestSolution);
+  const mergeRiskLine = isPullRequest
+    ? publicMergeRiskLine(risks, nextStepLine, bestSolutionLine)
+    : "";
   const details: string[] = [];
   const hasReviewFindings = isPullRequest && reviewFindings.length > 0;
   const lines = [
@@ -7274,6 +7294,7 @@ function renderKeepOpenCommentFromReport(markdown: string): string {
     ? publicMantisRecommendationBlock(mantisRecommendation)
     : "";
   if (mantisSuggestion) appendPublicSection(lines, "Mantis proof suggestion", mantisSuggestion);
+  if (mergeRiskLine) appendPublicSection(lines, "Risk before merge", mergeRiskLine);
   appendPublicSection(lines, isPullRequest ? "Next step before merge" : "Next step", nextStepLine);
   const securityLine = publicSecurityReviewLine(securityReview);
   if (securityLine) appendPublicSection(lines, "Security", securityLine);
@@ -7308,6 +7329,7 @@ function renderKeepOpenCommentFromReport(markdown: string): string {
   if (likelyOwners.length) details.push("", "Likely related people:", "", ...likelyOwners);
   if (
     !isReportNoneList(risks) &&
+    !mergeRiskLine &&
     publicReviewTextDiffers(risks, nextStepLine) &&
     (!bestSolutionLine || publicReviewTextDiffers(risks, bestSolutionLine))
   ) {

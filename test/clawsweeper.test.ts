@@ -4245,8 +4245,62 @@ Reason: ${duplicateRisk}
 
   assert.ok(comment.includes(`**Next step before merge**\n${duplicateRisk}`));
   assert.doesNotMatch(comment, /Remaining risk \/ open question:/);
+  assert.doesNotMatch(comment, /\*\*Risk before merge\*\*/);
   assert.equal(comment.split(duplicateRisk).length - 1, 1);
 });
+
+test("pull request keep-open review comments surface distinct merge risks", () => {
+  const mergeRisk =
+    "Existing users configured with a missing Codex harness would fail closed instead of continuing through their fallback model.";
+  const comment = renderReviewCommentFromReport(
+    `${reportFrontMatter({
+      type: "pull_request",
+      number: "83400",
+      decision: "keep_open",
+      close_reason: "none",
+      work_candidate: "none",
+      pull_head_sha: "abc123def456",
+    })}
+
+## Summary
+
+Keep this fail-closed provider-routing PR open for maintainer review.
+
+## What This Changes
+
+Changes missing Codex harness selection from fallback-tolerant behavior to a typed fail-closed error.
+
+## Best Possible Solution
+
+Land only after maintainers accept the upgrade behavior for configured fallback users.
+
+## Risks / Open Questions
+
+${mergeRisk}
+
+## Work Candidate
+
+Candidate: none
+
+Confidence: low
+
+Priority: low
+
+Status: none
+
+Reason: Confirm whether this intentional fail-closed behavior is acceptable for existing fallback users.
+`,
+    "none",
+  );
+
+  assert.match(comment, /\*\*Risk before merge\*\*/);
+  assert.match(comment, new RegExp(escapeRegExpForTest(mergeRisk)));
+  assert.doesNotMatch(comment, /Remaining risk \/ open question:/);
+});
+
+function escapeRegExpForTest(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
 
 test("pull request review reports carry verdict and repair markers", () => {
   const markdown = `${reportFrontMatter({
