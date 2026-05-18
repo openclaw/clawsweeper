@@ -5022,35 +5022,37 @@ test("ClawSweeper impact label scheme exposes owned impact labels", () => {
       name: "impact:data-loss",
       color: "B60205",
       description:
-        "Impact area: user/session/config data can be lost, corrupted, or silently dropped.",
+        "This issue or PR is about lost, corrupted, or silently dropped user/session/config data.",
     },
     {
       name: "impact:security",
       color: "B60205",
       description:
-        "Impact area: security boundary, credentials, authz, sandboxing, or sensitive data.",
+        "This issue or PR is about security boundaries, credentials, authz, sandboxing, or sensitive data.",
     },
     {
       name: "impact:crash-loop",
       color: "D93F0B",
-      description: "Impact area: crash, hang, restart loop, or process-level availability failure.",
+      description:
+        "This issue or PR is about crashes, hangs, restart loops, or process-level availability.",
     },
     {
       name: "impact:message-loss",
       color: "D93F0B",
       description:
-        "Impact area: channel messages can be lost, duplicated, misrouted, or suppressed.",
+        "This issue or PR is about lost, duplicated, misrouted, or suppressed channel messages.",
     },
     {
       name: "impact:session-state",
       color: "F9D65C",
-      description: "Impact area: session, memory, transcript, context, or agent state can drift.",
+      description:
+        "This issue or PR is about session, memory, transcript, context, or agent state drift.",
     },
     {
       name: "impact:auth-provider",
       color: "F9D65C",
       description:
-        "Impact area: auth, provider routing, model choice, or SecretRef resolution can break.",
+        "This issue or PR is about auth, provider routing, model choice, or SecretRef resolution.",
     },
   ]);
 });
@@ -5100,41 +5102,55 @@ test("ClawSweeper merge-risk label scheme exposes PR-only merge warning labels",
     {
       name: "merge-risk: 🚨 compatibility",
       color: "D1242F",
-      description: "🚨 May break existing users, config, migrations, defaults, or upgrade paths.",
+      description:
+        "🚨 Merging this PR could break existing users, config, migrations, defaults, or upgrades.",
     },
     {
       name: "merge-risk: 🚨 message-delivery",
       color: "D1242F",
-      description: "🚨 May drop, duplicate, misroute, suppress, or wrongly target messages.",
+      description:
+        "🚨 Merging this PR could drop, duplicate, misroute, suppress, or wrongly target messages.",
     },
     {
       name: "merge-risk: 🚨 session-state",
       color: "F97316",
       description:
-        "🚨 May lose, corrupt, stale, or mis-associate session, agent, or context state.",
+        "🚨 Merging this PR could lose, corrupt, stale, or mis-associate session or agent state.",
     },
     {
       name: "merge-risk: 🚨 auth-provider",
       color: "F97316",
-      description: "🚨 May break OAuth, tokens, provider routing, model choice, or credentials.",
+      description:
+        "🚨 Merging this PR could break OAuth, tokens, provider routing, model choice, or credentials.",
     },
     {
       name: "merge-risk: 🚨 security-boundary",
       color: "B60205",
-      description: "🚨 May affect sandboxing, authorization, credentials, or sensitive data.",
+      description:
+        "🚨 Merging this PR could weaken sandboxing, authorization, credentials, or sensitive data.",
     },
     {
       name: "merge-risk: 🚨 availability",
       color: "D93F0B",
-      description: "🚨 May cause crashes, hangs, restart loops, stalls, or process outages.",
+      description:
+        "🚨 Merging this PR could cause crashes, hangs, restart loops, stalls, or process outages.",
     },
     {
       name: "merge-risk: 🚨 automation",
       color: "FBCA04",
       description:
-        "🚨 May affect CI, automerge, proof capture, label sync, or maintainer automation.",
+        "🚨 Merging this PR could break CI, automerge, proof capture, label sync, or automation.",
     },
   ]);
+});
+
+test("ClawSweeper merge-risk label descriptions fit GitHub label limits", () => {
+  for (const label of mergeRiskLabelSchemeForTest()) {
+    assert.ok(
+      label.description.length <= 100,
+      `${label.name} description is ${label.description.length} characters`,
+    );
+  }
 });
 
 test("ClawSweeper merge-risk label descriptions stay aligned with prompt and schema", () => {
