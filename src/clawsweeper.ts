@@ -821,32 +821,35 @@ const IMPACT_LABELS = [
   {
     name: "impact:data-loss",
     color: "B60205",
-    description: "Can lose, corrupt, or silently drop user/session/config data.",
+    description:
+      "Impact area: user/session/config data can be lost, corrupted, or silently dropped.",
   },
   {
     name: "impact:security",
     color: "B60205",
-    description: "Security boundary, credential, authz, sandbox, or sensitive-data risk.",
+    description:
+      "Impact area: security boundary, credentials, authz, sandboxing, or sensitive data.",
   },
   {
     name: "impact:crash-loop",
     color: "D93F0B",
-    description: "Crash, hang, restart loop, or process-level availability failure.",
+    description: "Impact area: crash, hang, restart loop, or process-level availability failure.",
   },
   {
     name: "impact:message-loss",
     color: "D93F0B",
-    description: "Channel message delivery can be lost, duplicated, or misrouted.",
+    description: "Impact area: channel messages can be lost, duplicated, misrouted, or suppressed.",
   },
   {
     name: "impact:session-state",
     color: "F9D65C",
-    description: "Session, memory, transcript, context, or agent state can drift or corrupt.",
+    description: "Impact area: session, memory, transcript, context, or agent state can drift.",
   },
   {
     name: "impact:auth-provider",
     color: "F9D65C",
-    description: "Auth, provider routing, model choice, or SecretRef resolution may break.",
+    description:
+      "Impact area: auth, provider routing, model choice, or SecretRef resolution can break.",
   },
 ] as const satisfies readonly {
   name: ImpactLabelName;

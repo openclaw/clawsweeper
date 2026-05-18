@@ -93,12 +93,12 @@ find the affected problem class on both issues and pull requests. Use no more
 than 3 labels, only when the impact area is concretely supported by the item or
 diff, and keep this separate from `triagePriority` and
 `reviewFindings[].priority`:
-`impact:data-loss`: Can lose, corrupt, or silently drop user/session/config data.
-`impact:security`: Security boundary, credential, authz, sandbox, or sensitive-data risk.
-`impact:crash-loop`: Crash, hang, restart loop, or process-level availability failure.
-`impact:message-loss`: Channel message delivery can be lost, duplicated, or misrouted.
-`impact:session-state`: Session, memory, transcript, context, or agent state can drift or corrupt.
-`impact:auth-provider`: Auth, provider routing, model choice, or SecretRef resolution may break.
+`impact:data-loss`: Impact area: user/session/config data can be lost, corrupted, or silently dropped.
+`impact:security`: Impact area: security boundary, credentials, authz, sandboxing, or sensitive data.
+`impact:crash-loop`: Impact area: crash, hang, restart loop, or process-level availability failure.
+`impact:message-loss`: Impact area: channel messages can be lost, duplicated, misrouted, or suppressed.
+`impact:session-state`: Impact area: session, memory, transcript, context, or agent state can drift.
+`impact:auth-provider`: Impact area: auth, provider routing, model choice, or SecretRef resolution can break.
 Use an empty array when no owned impact label applies. Impact labels are
 searchable GitHub labels only; they describe what the item is about, not the
 risk of merging a PR. They do not close, merge, block, or replace review
