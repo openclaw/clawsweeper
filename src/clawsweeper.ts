@@ -62,6 +62,12 @@ import {
   type Args,
 } from "./clawsweeper-args.js";
 import { escapeRegExp, safeOutputTail, trimMiddle, truncateText } from "./clawsweeper-text.js";
+import {
+  appendUsageEventJsonl,
+  buildUsageTelemetryEvent,
+  parseCodexTokenUsageFromJsonl,
+  type UsageStatus,
+} from "./usage-telemetry.js";
 
 export { codexEnv } from "./codex-env.js";
 export { parseGhJson, parseGhJsonLines } from "./github-json.js";
@@ -4569,6 +4575,7 @@ function runCodex(options: {
   ensureDir(proofScratchDir);
   const promptPath = join(options.workDir, `${options.item.number}.prompt.md`);
   const outputPath = join(options.workDir, `${options.item.number}.json`);
+  const usageEventsPath = join(options.workDir, "usage-events.jsonl");
   const prompt =
     options.prompt ??
     buildReviewPrompt(options.item, options.context, options.git, options.additionalPrompt, {
@@ -4595,6 +4602,7 @@ function runCodex(options: {
     "features.image_generation=false",
   ];
   if (options.serviceTier) codexConfig.splice(1, 0, `service_tier="${options.serviceTier}"`);
+  const startedAt = Date.now();
   const result = spawnSync(
     "codex",
     [
@@ -4608,6 +4616,7 @@ function runCodex(options: {
       CLAWSWEEPER_DECISION_SCHEMA_PATH,
       "--output-last-message",
       outputPath,
+      "--json",
       "--sandbox",
       options.sandboxMode,
       "--add-dir",
@@ -4626,13 +4635,42 @@ function runCodex(options: {
       timeout: options.timeoutMs,
     },
   );
+  const elapsedMs = Date.now() - startedAt;
+  const emitUsage = (status: UsageStatus) => {
+    try {
+      const parsed = parseCodexTokenUsageFromJsonl(result.stdout ?? "");
+      appendUsageEventJsonl(
+        usageEventsPath,
+        buildUsageTelemetryEvent({
+          workflow: "sweep",
+          mode: "review",
+          phase: "item-review",
+          target_repo: targetRepo(),
+          item_number: options.item.number,
+          model: options.model,
+          reasoning_effort: options.reasoningEffort,
+          service_tier: options.serviceTier,
+          sandbox: options.sandboxMode,
+          timeout_ms: options.timeoutMs,
+          elapsed_ms: elapsedMs,
+          output_path: relative(options.workDir, outputPath),
+          status,
+          tokens: parsed?.tokens ?? null,
+        }),
+      );
+    } catch {
+      // Telemetry must never change the review outcome.
+    }
+  };
   const dirtyAfter = openclawDirtyStatus(options.openclawDir);
   if (dirtyAfter) {
+    emitUsage("failed");
     throw new Error(
       `Codex dirtied the OpenClaw checkout while reviewing #${options.item.number}:\n${dirtyAfter}`,
     );
   }
   if (result.error) {
+    emitUsage((result.error as NodeJS.ErrnoException).code === "ETIMEDOUT" ? "timeout" : "failed");
     throw new Error(
       `Codex review failed for #${options.item.number}: ${result.error.message}\n${
         safeOutputTail(result.stderr) || safeOutputTail(result.stdout) || "No output."
@@ -4640,6 +4678,7 @@ function runCodex(options: {
     );
   }
   if (result.status !== 0) {
+    emitUsage("failed");
     throw new Error(
       `Codex review failed for #${options.item.number} with exit ${
         result.status ?? "unknown"
@@ -4647,6 +4686,7 @@ function runCodex(options: {
     );
   }
   if (!existsSync(outputPath)) {
+    emitUsage("missing_result");
     const decision = codexFailureDecision(
       "codex",
       result.status,
@@ -4660,8 +4700,14 @@ function runCodex(options: {
     );
   }
   try {
-    return parseDecision(JSON.parse(readFileSync(outputPath, "utf8").trim()), options.item);
+    const decision = parseDecision(
+      JSON.parse(readFileSync(outputPath, "utf8").trim()),
+      options.item,
+    );
+    emitUsage("success");
+    return decision;
   } catch (error) {
+    emitUsage("schema_invalid");
     const decision = codexFailureDecision(
       "codex",
       result.status,

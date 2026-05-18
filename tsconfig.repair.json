@@ -5,8 +5,8 @@
     "moduleResolution": "NodeNext",
     "lib": ["ES2024"],
     "types": ["node"],
-    "rootDir": "src/repair",
-    "outDir": "dist/repair",
+    "rootDir": "src",
+    "outDir": "dist",
     "strict": true,
     "noUncheckedIndexedAccess": true,
     "exactOptionalPropertyTypes": true,
@@ -15,5 +15,5 @@
     "forceConsistentCasingInFileNames": true,
     "skipLibCheck": true
   },
-  "include": ["src/repair/**/*.ts"]
+  "include": ["src/usage-telemetry.ts", "src/repair/**/*.ts"]
 }

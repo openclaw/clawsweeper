@@ -15,6 +15,12 @@ import {
   validateJob,
 } from "./lib.js";
 import {
+  appendUsageEventJsonl,
+  buildUsageTelemetryEvent,
+  parseCodexTokenUsageFromJsonl,
+  type UsageStatus,
+} from "../usage-telemetry.js";
+import {
   codexSubprocessEnv,
   repairCodexReasoningEffort,
   repairCodexServiceTier,
@@ -75,6 +81,7 @@ const runDir = makeRunDir(job, mode);
 const promptPath = path.join(runDir, "prompt.md");
 const resultPath = path.join(runDir, "result.json");
 const transcriptPath = path.join(runDir, "codex.jsonl");
+const usageEventsPath = path.join(runDir, "usage-events.jsonl");
 const promptContext: Record<string, string> = {};
 const targetCheckout = dryRun ? "" : prepareTargetCheckout(job);
 if (targetCheckout) {
@@ -157,6 +164,14 @@ const child = await runCodex({
   stderrPath: path.join(runDir, "codex.stderr.log"),
   timeoutMs: codexTimeoutMs,
 });
+emitCodexUsage({
+  phase: "primary",
+  transcriptPath,
+  stderrPath: path.join(runDir, "codex.stderr.log"),
+  timeoutMs: codexTimeoutMs,
+  result: child,
+  status: codexUsageStatus(child, resultPath, "success"),
+});
 
 if ((child.error as JsonValue)?.code === "ETIMEDOUT") {
   writeBlockedResult(`Codex worker timed out after ${codexTimeoutMs}ms`);
@@ -231,6 +246,59 @@ function runCodex({
   });
 }
 
+function codexUsageStatus(
+  result: LooseRecord,
+  outputPath: string,
+  successStatus: UsageStatus,
+): UsageStatus {
+  const errorCode = (result.error as LooseRecord | undefined)?.code;
+  if (errorCode === "ETIMEDOUT") return "timeout";
+  if (errorCode === "ENOBUFS") return "buffer_exceeded";
+  if (result.error) return "failed";
+  if (result.status !== 0) return "failed";
+  if (!fs.existsSync(outputPath)) return "missing_result";
+  return successStatus;
+}
+
+function emitCodexUsage({
+  phase,
+  transcriptPath: codexTranscriptPath,
+  stderrPath,
+  timeoutMs,
+  result,
+  status,
+}: LooseRecord & { status: UsageStatus }) {
+  try {
+    const parsed = parseCodexTokenUsageFromJsonl(String(result.stdout ?? ""));
+
+    appendUsageEventJsonl(
+      usageEventsPath,
+      buildUsageTelemetryEvent({
+        workflow: "repair-worker",
+        mode,
+        phase: String(phase ?? "primary"),
+        target_repo: stringValue(job.frontmatter.repo),
+        cluster_id: stringValue(job.frontmatter.cluster_id),
+        job_path: job.relativePath,
+        model,
+        reasoning_effort: codexReasoningEffort,
+        service_tier: codexServiceTier,
+        sandbox: "read-only",
+        timeout_ms: Number(timeoutMs),
+        elapsed_ms: Number(result.elapsedMs ?? 0),
+        transcript_path: path.relative(runDir, String(codexTranscriptPath)),
+        ...(fs.existsSync(String(stderrPath))
+          ? { stderr_path: path.relative(runDir, String(stderrPath)) }
+          : {}),
+        status,
+        tokens: parsed?.tokens ?? null,
+      }),
+    );
+  } catch {
+    // Telemetry must never change the repair worker outcome.
+  }
+}
+
 function spawnCodexWithHeartbeat({
   args: commandArgs,
   cwd,
@@ -280,7 +348,7 @@ function spawnCodexWithHeartbeat({
       clearTimeout(timeout);
       fs.writeFileSync(codexTranscriptPath, stdout);
       if (stderr) fs.writeFileSync(stderrPath, stderr);
-      resolve(result);
+      resolve({ ...result, elapsedMs: Date.now() - startedAt });
     };
 
     const append = (stream: "stdout" | "stderr", chunk: JsonValue) => {
@@ -366,12 +434,22 @@ async function repairResultIfNeeded() {
       "```",
     ].join("\n");
 
+    const repairTranscriptPath = path.join(runDir, `codex-repair-${attempt}.jsonl`);
+    const repairStderrPath = path.join(runDir, `codex-repair-${attempt}.stderr.log`);
     const repair = await runCodex({
       input: repairPrompt,
       outputPath: resultPath,
-      transcriptPath: path.join(runDir, `codex-repair-${attempt}.jsonl`),
-      stderrPath: path.join(runDir, `codex-repair-${attempt}.stderr.log`),
+      transcriptPath: repairTranscriptPath,
+      stderrPath: repairStderrPath,
       timeoutMs: resultRepairTimeoutMs,
+    });
+    emitCodexUsage({
+      phase: "result_repair",
+      transcriptPath: repairTranscriptPath,
+      stderrPath: repairStderrPath,
+      timeoutMs: resultRepairTimeoutMs,
+      result: repair,
+      status: codexUsageStatus(repair, resultPath, "result_repair"),
     });
     if ((repair.error as JsonValue)?.code === "ETIMEDOUT") {
       console.error(`Codex result repair timed out after ${resultRepairTimeoutMs}ms`);

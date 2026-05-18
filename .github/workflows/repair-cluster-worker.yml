@@ -45,6 +45,9 @@ permissions:
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
   CLAWSWEEPER_APP_CLIENT_ID: Iv23lirdjmVqYd1gwY26
+  CLAWSWEEPER_USAGE_TELEMETRY: "1"
+  OPIK_URL: https://opik.bermont.digital/api
+  OPIK_PROJECT_NAME: clawsweeper
 
 concurrency:
   group: clawsweeper-repair-${{ inputs.job }}-${{ inputs.mode }}
@@ -207,6 +210,15 @@ jobs:
         with:
           name: clawsweeper-codex-debug-cluster-${{ github.run_id }}-${{ github.run_attempt }}
           path: .clawsweeper-repair/codex-debug/cluster/**
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Upload cluster usage telemetry
+        if: ${{ always() && steps.check_job.outputs.job_exists == '1' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: clawsweeper-repair-usage-cluster-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .clawsweeper-repair/runs/**/usage-events.jsonl
           if-no-files-found: warn
           retention-days: 7
 
@@ -408,6 +420,15 @@ jobs:
         with:
           name: clawsweeper-codex-debug-execute-${{ github.run_id }}-${{ github.run_attempt }}
           path: .clawsweeper-repair/codex-debug/execute/**
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Upload execute usage telemetry
+        if: ${{ always() && steps.check_job.outputs.job_exists == '1' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: clawsweeper-repair-usage-execute-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .clawsweeper-repair/runs/**/usage-events.jsonl
           if-no-files-found: warn
           retention-days: 7
 

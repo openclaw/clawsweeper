@@ -95,6 +95,12 @@ import {
 } from "./target-validation.js";
 import { uniqueStrings } from "./validation-command-utils.js";
 import { enforceValidationFixScope } from "./validation-fix-scope.js";
+import {
+  appendUsageEventJsonl,
+  buildUsageTelemetryEvent,
+  parseCodexTokenUsageFromJsonl,
+  type UsageStatus,
+} from "../usage-telemetry.js";
 import { validateActivePrAreaCapacity } from "./execute-fix-area-capacity.js";
 import {
   repairPauseLabel,
@@ -305,12 +311,72 @@ function spawnCodexSyncWithHeartbeat(
   label: string,
   args: string[],
   options: SpawnSyncOptionsWithStringEncoding,
-) {
+): LooseRecord {
+  const startedAt = Date.now();
   const heartbeat = startCodexHeartbeat(label);
   try {
-    return spawnSync("codex", args, options);
+    const result = spawnSync("codex", args, options);
+    return { ...result, elapsedMs: Date.now() - startedAt };
   } finally {
     stopCodexHeartbeat(heartbeat);
+  }
+}
+
+function codexUsageStatus(child: LooseRecord, outputPath?: string): UsageStatus {
+  const errorCode = (child.error as LooseRecord | undefined)?.code;
+  if (errorCode === "ETIMEDOUT") return "timeout";
+  if (errorCode === "ENOBUFS") return "buffer_exceeded";
+  if (child.error) return "failed";
+  if (child.status !== 0) return "failed";
+  if (outputPath && !fs.existsSync(outputPath)) return "missing_result";
+  return "success";
+}
+
+function emitCodexUsage({
+  phase,
+  child,
+  transcriptPath,
+  stderrPath,
+  outputPath,
+  sandbox,
+  timeoutMs,
+}: {
+  phase: string;
+  child: LooseRecord;
+  transcriptPath: string;
+  stderrPath?: string;
+  outputPath?: string;
+  sandbox: string;
+  timeoutMs: number;
+}) {
+  try {
+    const parsed = parseCodexTokenUsageFromJsonl(String(child.stdout ?? ""));
+    appendUsageEventJsonl(
+      path.join(workRoot, "usage-events.jsonl"),
+      buildUsageTelemetryEvent({
+        workflow: "repair-execute-fix",
+        mode: String(result.mode ?? job.frontmatter.mode ?? ""),
+        phase,
+        target_repo: stringValue(result.repo ?? job.frontmatter.repo),
+        cluster_id: stringValue(result.cluster_id ?? job.frontmatter.cluster_id),
+        job_path: job.relativePath,
+        model,
+        reasoning_effort: codexReasoningEffort,
+        service_tier: codexServiceTier,
+        sandbox,
+        timeout_ms: timeoutMs,
+        elapsed_ms: Number(child.elapsedMs ?? 0),
+        transcript_path: path.relative(workRoot, transcriptPath),
+        ...(stderrPath && fs.existsSync(stderrPath)
+          ? { stderr_path: path.relative(workRoot, stderrPath) }
+          : {}),
+        ...(outputPath ? { output_path: path.relative(workRoot, outputPath) } : {}),
+        status: codexUsageStatus(child, outputPath),
+        tokens: parsed?.tokens ?? null,
+      }),
+    );
+  } catch {
+    // Telemetry must never change the repair execution outcome.
   }
 }
 
@@ -1740,6 +1806,8 @@ function editValidatePrepareMerge({
         isAutomergeRepair: isAutomergeRepairJob(),
       });
       const summaryPath = path.join(workRoot, `${mode}-codex-summary-${attempt}.md`);
+      const transcriptPath = path.join(workRoot, `${mode}-codex-${attempt}.jsonl`);
+      const stderrPath = path.join(workRoot, `${mode}-codex-${attempt}.stderr.log`);
       const workerTimeoutMs = currentCodexTimeoutMs();
       logProgress("starting Codex edit pass", {
         mode,
@@ -1782,15 +1850,17 @@ function editValidatePrepareMerge({
           maxBuffer: codexStdioMaxBuffer,
         },
       );
-      fs.writeFileSync(
-        path.join(workRoot, `${mode}-codex-${attempt}.jsonl`),
-        codexResult.stdout ?? "",
-      );
-      if (codexResult.stderr)
-        fs.writeFileSync(
-          path.join(workRoot, `${mode}-codex-${attempt}.stderr.log`),
-          codexResult.stderr,
-        );
+      fs.writeFileSync(transcriptPath, codexResult.stdout ?? "");
+      if (codexResult.stderr) fs.writeFileSync(stderrPath, codexResult.stderr);
+      emitCodexUsage({
+        phase: "edit-worker",
+        child: codexResult,
+        transcriptPath,
+        stderrPath,
+        outputPath: summaryPath,
+        sandbox: codexWriteSandbox,
+        timeoutMs: workerTimeoutMs,
+      });
       if ((codexResult.error as JsonValue)?.code === "ETIMEDOUT") {
         throw new Error(`Codex fix worker timed out after ${workerTimeoutMs}ms`);
       }
@@ -2098,6 +2168,14 @@ function runCodexBaseReconcile({
       workRoot,
       `${mode}-final-base-reconcile-summary-${attempt}-${codexAttempt}.md`,
     );
+    const transcriptPath = path.join(
+      workRoot,
+      `${mode}-final-base-reconcile-${attempt}-${codexAttempt}.jsonl`,
+    );
+    const stderrPath = path.join(
+      workRoot,
+      `${mode}-final-base-reconcile-${attempt}-${codexAttempt}.stderr.log`,
+    );
     const reconcileTimeoutMs = currentCodexTimeoutMs();
     const codexResult = spawnCodexSyncWithHeartbeat(
       `Codex final rebase worker ${mode} attempt ${attempt}.${codexAttempt}`,
@@ -2126,15 +2204,17 @@ function runCodexBaseReconcile({
         maxBuffer: codexStdioMaxBuffer,
       },
     );
-    fs.writeFileSync(
-      path.join(workRoot, `${mode}-final-base-reconcile-${attempt}-${codexAttempt}.jsonl`),
-      codexResult.stdout ?? "",
-    );
-    if (codexResult.stderr)
-      fs.writeFileSync(
-        path.join(workRoot, `${mode}-final-base-reconcile-${attempt}-${codexAttempt}.stderr.log`),
-        codexResult.stderr,
-      );
+    fs.writeFileSync(transcriptPath, codexResult.stdout ?? "");
+    if (codexResult.stderr) fs.writeFileSync(stderrPath, codexResult.stderr);
+    emitCodexUsage({
+      phase: "final-base-reconcile",
+      child: codexResult,
+      transcriptPath,
+      stderrPath,
+      outputPath: summaryPath,
+      sandbox: codexWriteSandbox,
+      timeoutMs: reconcileTimeoutMs,
+    });
     if ((codexResult.error as JsonValue)?.code === "ETIMEDOUT") {
       throw new Error(`Codex final rebase worker timed out after ${reconcileTimeoutMs}ms`);
     }
@@ -2172,6 +2252,8 @@ function runCodexWritePreflight() {
 
   const smokeDir = fs.mkdtempSync(path.join(workRoot, "codex-write-preflight-"));
   const summaryPath = path.join(workRoot, "codex-write-preflight-summary.md");
+  const transcriptPath = path.join(workRoot, "codex-write-preflight.jsonl");
+  const stderrPath = path.join(workRoot, "codex-write-preflight.stderr.log");
   const expectedPath = path.join(smokeDir, "preflight.txt");
   const prompt = [
     "You are running a ClawSweeper Repair Codex write preflight.",
@@ -2211,9 +2293,17 @@ function runCodexWritePreflight() {
       maxBuffer: 16 * 1024 * 1024,
     },
   );
-  fs.writeFileSync(path.join(workRoot, "codex-write-preflight.jsonl"), child.stdout ?? "");
-  if (child.stderr)
-    fs.writeFileSync(path.join(workRoot, "codex-write-preflight.stderr.log"), child.stderr);
+  fs.writeFileSync(transcriptPath, child.stdout ?? "");
+  if (child.stderr) fs.writeFileSync(stderrPath, child.stderr);
+  emitCodexUsage({
+    phase: "write-preflight",
+    child,
+    transcriptPath,
+    stderrPath,
+    outputPath: summaryPath,
+    sandbox: codexWriteSandbox,
+    timeoutMs: codexPreflightTimeoutMs,
+  });
 
   if ((child.error as JsonValue)?.code === "ETIMEDOUT") {
     return blockedCodexWritePreflight(
@@ -2596,6 +2686,8 @@ function runCodexReview({
     "```",
   ].join("\n");
   const reviewTimeoutMs = currentCodexTimeoutMs();
+  const transcriptPath = path.join(workRoot, `${mode}-codex-review-${attempt}.jsonl`);
+  const stderrPath = path.join(workRoot, `${mode}-codex-review-${attempt}.stderr.log`);
   const child = spawnCodexSyncWithHeartbeat(
     `Codex /review ${mode} attempt ${attempt}`,
     [
@@ -2625,15 +2717,17 @@ function runCodexReview({
       maxBuffer: codexStdioMaxBuffer,
     },
   );
-  fs.writeFileSync(
-    path.join(workRoot, `${mode}-codex-review-${attempt}.jsonl`),
-    child.stdout ?? "",
-  );
-  if (child.stderr)
-    fs.writeFileSync(
-      path.join(workRoot, `${mode}-codex-review-${attempt}.stderr.log`),
-      child.stderr,
-    );
+  fs.writeFileSync(transcriptPath, child.stdout ?? "");
+  if (child.stderr) fs.writeFileSync(stderrPath, child.stderr);
+  emitCodexUsage({
+    phase: "codex-review",
+    child,
+    transcriptPath,
+    stderrPath,
+    outputPath,
+    sandbox: codexReviewSandbox,
+    timeoutMs: reviewTimeoutMs,
+  });
   if ((child.error as JsonValue)?.code === "ETIMEDOUT")
     throw new Error(`Codex /review timed out after ${reviewTimeoutMs}ms`);
   if (child.error) throw new Error(child.error.message || String(child.error));
@@ -2720,6 +2814,9 @@ function runCodexReviewFix({ fixArtifact, targetDir, mode, review, attempt }: Lo
     "```",
   ].join("\n");
   const reviewFixTimeoutMs = currentCodexTimeoutMs();
+  const outputPath = path.join(workRoot, `${mode}-codex-review-fix-${attempt}.md`);
+  const transcriptPath = path.join(workRoot, `${mode}-codex-review-fix-${attempt}.jsonl`);
+  const stderrPath = path.join(workRoot, `${mode}-codex-review-fix-${attempt}.stderr.log`);
   const child = spawnCodexSyncWithHeartbeat(
     `Codex review-fix worker ${mode} attempt ${attempt}`,
     [
@@ -2733,7 +2830,7 @@ function runCodexReviewFix({ fixArtifact, targetDir, mode, review, attempt }: Lo
       ...codexWriteSandboxConfigArgs(),
       ...codexConfigArgs(),
       "--output-last-message",
-      path.join(workRoot, `${mode}-codex-review-fix-${attempt}.md`),
+      outputPath,
       "--ephemeral",
       "--json",
       "-",
@@ -2747,15 +2844,17 @@ function runCodexReviewFix({ fixArtifact, targetDir, mode, review, attempt }: Lo
       maxBuffer: codexStdioMaxBuffer,
     },
   );
-  fs.writeFileSync(
-    path.join(workRoot, `${mode}-codex-review-fix-${attempt}.jsonl`),
-    child.stdout ?? "",
-  );
-  if (child.stderr)
-    fs.writeFileSync(
-      path.join(workRoot, `${mode}-codex-review-fix-${attempt}.stderr.log`),
-      child.stderr,
-    );
+  fs.writeFileSync(transcriptPath, child.stdout ?? "");
+  if (child.stderr) fs.writeFileSync(stderrPath, child.stderr);
+  emitCodexUsage({
+    phase: "review-fix",
+    child,
+    transcriptPath,
+    stderrPath,
+    outputPath,
+    sandbox: codexWriteSandbox,
+    timeoutMs: reviewFixTimeoutMs,
+  });
   if ((child.error as JsonValue)?.code === "ETIMEDOUT")
     throw new Error(`Codex review-fix worker timed out after ${reviewFixTimeoutMs}ms`);
   if (child.error) throw new Error(child.error.message || String(child.error));
@@ -2808,6 +2907,9 @@ function runCodexValidationFix({
     "```",
   ].join("\n");
   const validationFixTimeoutMs = currentCodexTimeoutMs();
+  const outputPath = path.join(workRoot, `${mode}-codex-validation-fix-${attempt}.md`);
+  const transcriptPath = path.join(workRoot, `${mode}-codex-validation-fix-${attempt}.jsonl`);
+  const stderrPath = path.join(workRoot, `${mode}-codex-validation-fix-${attempt}.stderr.log`);
   const child = spawnCodexSyncWithHeartbeat(
     `Codex validation-fix worker ${mode} attempt ${attempt}`,
     [
@@ -2821,7 +2923,7 @@ function runCodexValidationFix({
       ...codexWriteSandboxConfigArgs(),
       ...codexConfigArgs(),
       "--output-last-message",
-      path.join(workRoot, `${mode}-codex-validation-fix-${attempt}.md`),
+      outputPath,
       "--ephemeral",
       "--json",
       "-",
@@ -2835,15 +2937,17 @@ function runCodexValidationFix({
       maxBuffer: codexStdioMaxBuffer,
     },
   );
-  fs.writeFileSync(
-    path.join(workRoot, `${mode}-codex-validation-fix-${attempt}.jsonl`),
-    child.stdout ?? "",
-  );
-  if (child.stderr)
-    fs.writeFileSync(
-      path.join(workRoot, `${mode}-codex-validation-fix-${attempt}.stderr.log`),
-      child.stderr,
-    );
+  fs.writeFileSync(transcriptPath, child.stdout ?? "");
+  if (child.stderr) fs.writeFileSync(stderrPath, child.stderr);
+  emitCodexUsage({
+    phase: "validation-fix",
+    child,
+    transcriptPath,
+    stderrPath,
+    outputPath,
+    sandbox: codexWriteSandbox,
+    timeoutMs: validationFixTimeoutMs,
+  });
   if ((child.error as JsonValue)?.code === "ETIMEDOUT")
     throw new Error(`Codex validation-fix worker timed out after ${validationFixTimeoutMs}ms`);
   if (child.error) throw new Error(child.error.message || String(child.error));
@@ -3141,6 +3245,10 @@ function findOpenPullRequestForBranch(branch: string, cwd: JsonValue) {
     ],
     { cwd, env: ghEnv(), timeoutMs: currentNetworkCommandTimeoutMs() },
   ).trim();
+}
+
+function stringValue(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
 }
 
 function safeBranchName(value: JsonValue) {

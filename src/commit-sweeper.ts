@@ -15,6 +15,12 @@ import { codexEnv } from "./codex-env.js";
 import { runText } from "./command.js";
 import { ghRetryKind, ghRetryWaitMs } from "./github-retry.js";
 import { DEFAULT_TARGET_REPO, repositoryProfileFor } from "./repository-profiles.js";
+import {
+  appendUsageEventJsonl,
+  buildUsageTelemetryEvent,
+  parseCodexTokenUsageFromJsonl,
+  type UsageStatus,
+} from "./usage-telemetry.js";
 
 export { isReviewableCommitPath } from "./commit-classifier.js";
 
@@ -282,6 +288,7 @@ function runCodex(options: {
   ensureDir(options.workDir);
   const promptPath = join(options.workDir, `${options.sha}.prompt.md`);
   const outputPath = join(options.workDir, `${options.sha}.md`);
+  const usageEventsPath = join(options.workDir, "usage-events.jsonl");
   writeFileSync(
     promptPath,
     promptForCommit({
@@ -300,6 +307,7 @@ function runCodex(options: {
     'approval_policy="never"',
   ];
   if (options.serviceTier) codexConfig.splice(1, 0, `service_tier="${options.serviceTier}"`);
+  const startedAt = Date.now();
   const result = spawnSync(
     "codex",
     [
@@ -311,6 +319,7 @@ function runCodex(options: {
       options.targetDir,
       "--output-last-message",
       outputPath,
+      "--json",
       "--sandbox",
       options.sandboxMode,
       "-",
@@ -324,6 +333,33 @@ function runCodex(options: {
       timeout: options.timeoutMs,
     },
   );
+  const elapsedMs = Date.now() - startedAt;
+  const emitUsage = (status: UsageStatus) => {
+    try {
+      const parsed = parseCodexTokenUsageFromJsonl(result.stdout ?? "");
+      appendUsageEventJsonl(
+        usageEventsPath,
+        buildUsageTelemetryEvent({
+          workflow: "commit-review",
+          mode: "commit-review",
+          phase: "commit-review",
+          target_repo: options.targetRepo,
+          commit_sha: options.sha,
+          model: options.model,
+          reasoning_effort: options.reasoningEffort,
+          service_tier: options.serviceTier,
+          sandbox: options.sandboxMode,
+          timeout_ms: options.timeoutMs,
+          elapsed_ms: elapsedMs,
+          output_path: relative(options.workDir, outputPath),
+          status,
+          tokens: parsed?.tokens ?? null,
+        }),
+      );
+    } catch {
+      // Telemetry must never change the commit review outcome.
+    }
+  };
   if (result.error || result.status !== 0 || !existsSync(outputPath)) {
     const timeout = Boolean(
       result.error &&
@@ -336,6 +372,9 @@ function runCodex(options: {
         : `exit ${result.status ?? "unknown"}\n${
             safeOutputTail(result.stderr) || safeOutputTail(result.stdout) || "No output."
           }`;
+    emitUsage(
+      timeout ? "timeout" : result.error || result.status !== 0 ? "failed" : "missing_result",
+    );
     return failureReport({
       targetRepo: options.targetRepo,
       sha: options.sha,
@@ -345,6 +384,7 @@ function runCodex(options: {
       timeout,
     });
   }
+  emitUsage("success");
   return stripMarkdownFence(readFileSync(outputPath, "utf8"));
 }
 

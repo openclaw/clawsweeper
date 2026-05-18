@@ -16,6 +16,7 @@ export function codexSubprocessEnv(): NodeJS.ProcessEnv {
   if (process.env.GITHUB_ACTIONS === "true") {
     delete env.OPENAI_API_KEY;
     delete env.CODEX_API_KEY;
+    delete env.OPIK_API_KEY;
   }
   return withoutColor(env);
 }

@@ -145,6 +145,9 @@ defaults:
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
   CLAWSWEEPER_APP_CLIENT_ID: Iv23lirdjmVqYd1gwY26
+  CLAWSWEEPER_USAGE_TELEMETRY: "1"
+  OPIK_URL: https://opik.bermont.digital/api
+  OPIK_PROJECT_NAME: clawsweeper
 
 concurrency:
   group: ${{ github.event_name == 'repository_dispatch' && format('clawsweeper-event-{0}-{1}', github.event.client_payload.target_repo || 'bermont-digital/multica', github.event.client_payload.item_number || github.run_id) || format('{0}-{1}', (github.event_name == 'workflow_dispatch' && github.event.inputs.apply_existing == 'true' && github.event.inputs.apply_sync_comments_only == 'true') && 'clawsweeper-comment-sync' || (github.event_name == 'workflow_dispatch' && github.event.inputs.apply_existing == 'true') && 'clawsweeper-apply' || (github.event_name == 'workflow_dispatch' && (github.event.inputs.item_number != '' || github.event.inputs.item_numbers != '')) && format('clawsweeper-intake-exact-{0}', github.event.inputs.item_number || github.event.inputs.item_numbers) || (github.event_name == 'workflow_dispatch' && github.event.inputs.hot_intake == 'true') && 'clawsweeper-intake-v2' || (github.event_name == 'workflow_dispatch' && github.event.inputs.audit_dashboard == 'true') && 'clawsweeper-audit' || 'clawsweeper-review', github.event.inputs.target_repo || github.event.client_payload.target_repo || 'bermont-digital/multica') }}
@@ -322,6 +325,17 @@ jobs:
             --shard-index 0 \
             --shard-count 1 \
             ${additional_prompt_arg[@]+"${additional_prompt_arg[@]}"}
+
+      - name: Upload event usage telemetry
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: clawsweeper-event-usage-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            artifacts/event/usage-events.jsonl
+            artifacts/event/**/usage-events.jsonl
+          if-no-files-found: warn
+          retention-days: 7
 
       - name: Create state token
         id: state-token
@@ -1007,6 +1021,16 @@ jobs:
             "item_numbers": "${{ matrix.item_numbers }}"
           }
           JSON
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: review-usage-${{ matrix.shard }}
+          path: |
+            review-artifacts/shard-${{ matrix.shard }}/usage-events.jsonl
+            review-artifacts/shard-${{ matrix.shard }}/**/usage-events.jsonl
+          if-no-files-found: warn
+          retention-days: 7
 
       - uses: actions/upload-artifact@v7
         if: always()
