@@ -177,6 +177,7 @@ function closeDecision(overrides = {}) {
     triagePriority: "P2",
     impactLabels: [],
     mergeRiskLabels: [],
+    mergeRiskOptions: [],
     itemCategory: "bug",
     reproductionStatus: "reproduced",
     reproductionConfidence: "high",
@@ -4252,10 +4253,16 @@ Reason: ${duplicateRisk}
   assert.equal(comment.split(duplicateRisk).length - 1, 1);
 });
 
-test("pull request keep-open review comments surface distinct merge risks", () => {
-  const mergeRisk =
-    "Existing users configured with a missing Codex harness would fail closed instead of continuing through their fallback model.";
-  const comment = renderReviewCommentFromReport(
+function mergeRiskReviewComment({
+  risk,
+  options,
+  bestSolution = "Resolve the merge risk before maintainers decide whether to land this PR.",
+}: {
+  risk: string;
+  options: readonly Record<string, unknown>[];
+  bestSolution?: string;
+}): string {
+  return renderReviewCommentFromReport(
     `${reportFrontMatter({
       type: "pull_request",
       number: "83400",
@@ -4263,6 +4270,7 @@ test("pull request keep-open review comments surface distinct merge risks", () =
       close_reason: "none",
       work_candidate: "none",
       pull_head_sha: "abc123def456",
+      merge_risk_options: JSON.stringify(options),
     })}
 
 ## Summary
@@ -4275,11 +4283,11 @@ Changes missing Codex harness selection from fallback-tolerant behavior to a typ
 
 ## Best Possible Solution
 
-Land only after maintainers accept the upgrade behavior for configured fallback users.
+${bestSolution}
 
 ## Risks / Open Questions
 
-${mergeRisk}
+${risk}
 
 ## Work Candidate
 
@@ -4295,26 +4303,162 @@ Reason: Confirm whether this intentional fail-closed behavior is acceptable for 
 `,
     "none",
   );
+}
+
+test("pull request keep-open review comments render repairable merge-risk options with one copy block", () => {
+  const mergeRisk =
+    "Existing users configured with a missing Codex harness would fail closed instead of continuing through their fallback model.";
+  const comment = mergeRiskReviewComment({
+    risk: mergeRisk,
+    bestSolution:
+      "Keep fallback behavior as the default and add a strict config option for the fail-closed behavior.",
+    options: [
+      {
+        title: "Preserve existing behavior by default",
+        body: "Keep fallback behavior as the default and add a strict config option for the fail-closed behavior.",
+        category: "fix_before_merge",
+        recommended: true,
+        automergeInstruction:
+          "Keep fallback behavior as the default and add a strict config option for the fail-closed behavior.",
+      },
+      {
+        title: "Make the breaking change explicit",
+        body: "Keep fail-closed behavior only if docs, tests, and release notes warn existing fallback users.",
+        category: "fix_before_merge",
+        recommended: false,
+        automergeInstruction: "",
+      },
+      {
+        title: "Do not merge as-is",
+        body: "Pause or close this PR if maintainers do not want to take this compatibility risk.",
+        category: "pause_or_close",
+        recommended: false,
+        automergeInstruction: "",
+      },
+    ],
+  });
 
   assert.match(comment, /\*\*Risk before merge\*\*/);
   assert.match(comment, new RegExp(escapeRegExpForTest(mergeRisk)));
   assert.match(
     comment,
-    /Maintainer choices:\n1\. \(recommended\) Fix the PR before merge with ClawSweeper automerge:/,
+    /Maintainer options:\n1\. \*\*Preserve existing behavior by default \(recommended\)\*\*/,
   );
+  assert.match(comment, /2\. \*\*Make the breaking change explicit\*\*/);
+  assert.match(comment, /3\. \*\*Do not merge as-is\*\*/);
   assert.match(
     comment,
-    /@clawsweeper automerge\nSpecial instructions: Land only after maintainers accept the upgrade behavior for configured fallback users\./,
-  );
-  assert.match(
-    comment,
-    /2\. Accept the merge risk explicitly:[\s\S]*Merge as-is only if maintainers intentionally accept this risk: Land only after maintainers accept the upgrade behavior for configured fallback users\./,
-  );
-  assert.match(
-    comment,
-    /3\. Stop automation and require a human merge decision:[\s\S]*Do not automerge this PR\. Ask a maintainer to decide whether to require changes, merge anyway, or close the PR as not worth the risk: Land only after maintainers accept the upgrade behavior for configured fallback users\./,
+    /<summary>Copy recommended ClawSweeper instruction<\/summary>[\s\S]*@clawsweeper automerge\nSpecial instructions: Keep fallback behavior as the default and add a strict config option for the fail-closed behavior\./,
   );
   assert.doesNotMatch(comment, /Remaining risk \/ open question:/);
+});
+
+test("pull request keep-open review comments can recommend accepting intentional risk without a copy block", () => {
+  const comment = mergeRiskReviewComment({
+    risk: "This hardening intentionally rejects requests that older integrations currently pass.",
+    bestSolution:
+      "Merge only if maintainers accept the compatibility break as intentional hardening.",
+    options: [
+      {
+        title: "Accept the behavior change explicitly",
+        body: "Merge only if maintainers agree the security hardening is worth the compatibility break.",
+        category: "accept_risk",
+        recommended: true,
+        automergeInstruction: "",
+      },
+      {
+        title: "Add migration guidance before merge",
+        body: "Document the rejected request shape and add release-note guidance for affected integrations.",
+        category: "fix_before_merge",
+        recommended: false,
+        automergeInstruction: "",
+      },
+    ],
+  });
+
+  assert.match(comment, /1\. \*\*Accept the behavior change explicitly \(recommended\)\*\*/);
+  assert.doesNotMatch(comment, /Copy recommended ClawSweeper instruction/);
+});
+
+test("pull request keep-open review comments do not force a recommendation for unclear merge risk", () => {
+  const comment = mergeRiskReviewComment({
+    risk: "The PR changes session ownership without proving how existing resumed sessions transition.",
+    options: [
+      {
+        title: "Require a maintainer design decision",
+        body: "Decide whether resumed sessions should migrate, fail fast, or continue using the old ownership model.",
+        category: "pause_or_close",
+        recommended: false,
+        automergeInstruction: "",
+      },
+      {
+        title: "Add migration proof before merge",
+        body: "Add tests or manual validation covering sessions created before this change.",
+        category: "fix_before_merge",
+        recommended: false,
+        automergeInstruction: "",
+      },
+    ],
+  });
+
+  assert.doesNotMatch(comment, /\(recommended\)/);
+  assert.doesNotMatch(comment, /Copy recommended ClawSweeper instruction/);
+});
+
+test("pull request keep-open review comments allow multiple fix-before-merge options", () => {
+  const comment = mergeRiskReviewComment({
+    risk: "The retry path may duplicate queued user messages after partial provider sends.",
+    bestSolution: "Guard retries with delivery state before merge.",
+    options: [
+      {
+        title: "Guard retries with delivery state",
+        body: "Track whether the user message was already sent before retrying provider fallback.",
+        category: "fix_before_merge",
+        recommended: true,
+        automergeInstruction:
+          "Track whether the user message was already sent before retrying provider fallback.",
+      },
+      {
+        title: "Disable fallback after partial sends",
+        body: "Fail fast once delivery starts instead of retrying through another provider.",
+        category: "fix_before_merge",
+        recommended: false,
+        automergeInstruction: "",
+      },
+    ],
+  });
+
+  assert.match(comment, /1\. \*\*Guard retries with delivery state \(recommended\)\*\*/);
+  assert.match(comment, /2\. \*\*Disable fallback after partial sends\*\*/);
+  assert.match(comment, /@clawsweeper automerge/);
+});
+
+test("pull request keep-open review comments include pause or close when risk may outweigh value", () => {
+  const comment = mergeRiskReviewComment({
+    risk: "The PR changes automation proof capture without proving failed paths still upload artifacts.",
+    options: [
+      {
+        title: "Prove artifact parity before merge",
+        body: "Show that artifacts upload on success, failure, and skipped-review paths.",
+        category: "fix_before_merge",
+        recommended: false,
+        automergeInstruction: "",
+      },
+      {
+        title: "Pause or close",
+        body: "Close this PR if maintainers decide the proof-capture regression risk outweighs the workflow cleanup.",
+        category: "pause_or_close",
+        recommended: false,
+        automergeInstruction: "",
+      },
+    ],
+  });
+
+  assert.match(
+    comment,
+    /2\. \*\*Pause or close\*\*  \n   Close this PR if maintainers decide the proof-capture regression risk outweighs the workflow cleanup\./,
+  );
+  assert.doesNotMatch(comment, /Copy recommended ClawSweeper instruction/);
 });
 
 function escapeRegExpForTest(value: string): string {
@@ -4651,6 +4795,95 @@ test("decision parser enforces required schema-shaped evidence", () => {
         mergeRiskLabels: ["merge-risk: 🚨 compatibility", "merge-risk: 🚨 compatibility"],
       }),
     /decision\.mergeRiskLabels must not contain duplicates/,
+  );
+  assert.equal(
+    parseDecision({
+      ...closeDecision(),
+      mergeRiskOptions: undefined,
+    }).mergeRiskOptions.length,
+    0,
+  );
+  assert.throws(
+    () =>
+      parseDecision({
+        ...closeDecision(),
+        mergeRiskOptions: [
+          {
+            title: "Accept the risk",
+            body: "Merge only if maintainers accept this risk.",
+            category: "accept_risk",
+            recommended: false,
+            automergeInstruction: "",
+          },
+        ],
+      }),
+    /decision\.mergeRiskOptions must be empty when mergeRiskLabels is empty/,
+  );
+  assert.throws(
+    () =>
+      parseDecision({
+        ...closeDecision(),
+        mergeRiskLabels: ["merge-risk: 🚨 compatibility"],
+      }),
+    /decision\.mergeRiskOptions must include 1-3 options when mergeRiskLabels is not empty/,
+  );
+  assert.throws(
+    () =>
+      parseDecision({
+        ...closeDecision(),
+        mergeRiskLabels: ["merge-risk: 🚨 compatibility"],
+        mergeRiskOptions: [
+          {
+            title: "Preserve behavior",
+            body: "Keep the existing default behavior before merge.",
+            category: "fix_before_merge",
+            recommended: true,
+            automergeInstruction: "Keep the existing default behavior before merge.",
+          },
+          {
+            title: "Accept risk",
+            body: "Merge only if maintainers accept the compatibility break.",
+            category: "accept_risk",
+            recommended: true,
+            automergeInstruction: "",
+          },
+        ],
+      }),
+    /decision\.mergeRiskOptions must not contain more than one recommended option/,
+  );
+  assert.throws(
+    () =>
+      parseDecision({
+        ...closeDecision(),
+        mergeRiskLabels: ["merge-risk: 🚨 security-boundary"],
+        mergeRiskOptions: [
+          {
+            title: "Accept risk",
+            body: "Merge only if maintainers accept the hardening tradeoff.",
+            category: "accept_risk",
+            recommended: true,
+            automergeInstruction: "Merge the intentional hardening change.",
+          },
+        ],
+      }),
+    /decision\.mergeRiskOptions\[0\]\.automergeInstruction requires fix_before_merge category/,
+  );
+  assert.throws(
+    () =>
+      parseDecision({
+        ...closeDecision(),
+        mergeRiskLabels: ["merge-risk: 🚨 message-delivery"],
+        mergeRiskOptions: [
+          {
+            title: "Guard delivery",
+            body: "Add delivery-state tests before merge.",
+            category: "fix_before_merge",
+            recommended: false,
+            automergeInstruction: "Add delivery-state tests before merge.",
+          },
+        ],
+      }),
+    /decision\.mergeRiskOptions\[0\]\.automergeInstruction requires a recommended option/,
   );
   assert.throws(
     () =>

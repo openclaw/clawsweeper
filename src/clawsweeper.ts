@@ -80,6 +80,7 @@ type MergeRiskLabelName =
   | "merge-risk: 🚨 security-boundary"
   | "merge-risk: 🚨 availability"
   | "merge-risk: 🚨 automation";
+type MergeRiskOptionCategory = "fix_before_merge" | "accept_risk" | "pause_or_close";
 type ItemCategory =
   | "bug"
   | "regression"
@@ -305,6 +306,14 @@ interface FixedPullRequest {
   source: string;
 }
 
+interface MergeRiskOption {
+  title: string;
+  body: string;
+  category: MergeRiskOptionCategory;
+  recommended: boolean;
+  automergeInstruction: string;
+}
+
 interface Decision {
   decision: DecisionKind;
   closeReason: CloseReason;
@@ -318,6 +327,7 @@ interface Decision {
   triagePriority: TriagePriority;
   impactLabels: ImpactLabelName[];
   mergeRiskLabels: MergeRiskLabelName[];
+  mergeRiskOptions: MergeRiskOption[];
   itemCategory: ItemCategory;
   reproductionStatus: ReproductionStatus;
   reproductionConfidence: Confidence;
@@ -1103,6 +1113,11 @@ const OVERALL_CORRECTNESS_VALUES = new Set<OverallCorrectness>([
 
 type ReviewArtifactDestination = "items" | "closed" | "skip_closed";
 const CONFIDENCES = new Set<Confidence>(["high", "medium", "low"]);
+const MERGE_RISK_OPTION_CATEGORIES = new Set<MergeRiskOptionCategory>([
+  "fix_before_merge",
+  "accept_risk",
+  "pause_or_close",
+]);
 const DECISION_SCHEMA_KEYS = new Set([
   "decision",
   "closeReason",
@@ -1116,6 +1131,7 @@ const DECISION_SCHEMA_KEYS = new Set([
   "triagePriority",
   "impactLabels",
   "mergeRiskLabels",
+  "mergeRiskOptions",
   "itemCategory",
   "reproductionStatus",
   "reproductionConfidence",
@@ -1166,6 +1182,13 @@ const MANTIS_RECOMMENDATION_SCHEMA_KEYS = new Set([
   "scenario",
   "reason",
   "maintainerComment",
+]);
+const MERGE_RISK_OPTION_SCHEMA_KEYS = new Set([
+  "title",
+  "body",
+  "category",
+  "recommended",
+  "automergeInstruction",
 ]);
 const SECURITY_CONCERN_SCHEMA_KEYS = new Set([
   "title",
@@ -1623,6 +1646,64 @@ function requireMergeRiskLabels(value: unknown): MergeRiskLabelName[] {
   return labels;
 }
 
+function parseMergeRiskOption(value: unknown, path: string): MergeRiskOption {
+  const record = requireRecord(value, path);
+  rejectUnexpectedKeys(record, MERGE_RISK_OPTION_SCHEMA_KEYS, path);
+  return {
+    title: requireString(record.title, `${path}.title`).trim(),
+    body: requireString(record.body, `${path}.body`).trim(),
+    category: requireEnum(record.category, MERGE_RISK_OPTION_CATEGORIES, `${path}.category`),
+    recommended: requireBoolean(record.recommended, `${path}.recommended`),
+    automergeInstruction: requireString(
+      record.automergeInstruction,
+      `${path}.automergeInstruction`,
+    ).trim(),
+  };
+}
+
+function requireMergeRiskOptions(value: unknown): MergeRiskOption[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) throw new Error("decision.mergeRiskOptions must be an array");
+  const options = value.map((entry, index) =>
+    parseMergeRiskOption(entry, `decision.mergeRiskOptions[${index}]`),
+  );
+  if (options.length > 3)
+    throw new Error("decision.mergeRiskOptions must contain at most 3 options");
+  const recommended = options.filter((option) => option.recommended);
+  if (recommended.length > 1) {
+    throw new Error("decision.mergeRiskOptions must not contain more than one recommended option");
+  }
+  for (const [index, option] of options.entries()) {
+    if (!option.title)
+      throw new Error(`decision.mergeRiskOptions[${index}].title must not be empty`);
+    if (!option.body) throw new Error(`decision.mergeRiskOptions[${index}].body must not be empty`);
+    if (option.automergeInstruction && option.category !== "fix_before_merge") {
+      throw new Error(
+        `decision.mergeRiskOptions[${index}].automergeInstruction requires fix_before_merge category`,
+      );
+    }
+    if (option.automergeInstruction && !option.recommended) {
+      throw new Error(
+        `decision.mergeRiskOptions[${index}].automergeInstruction requires a recommended option`,
+      );
+    }
+  }
+  return options;
+}
+
+function validateMergeRiskOptions(
+  decision: Pick<Decision, "mergeRiskLabels" | "mergeRiskOptions">,
+): void {
+  if (decision.mergeRiskLabels.length === 0 && decision.mergeRiskOptions.length > 0) {
+    throw new Error("decision.mergeRiskOptions must be empty when mergeRiskLabels is empty");
+  }
+  if (decision.mergeRiskLabels.length > 0 && decision.mergeRiskOptions.length === 0) {
+    throw new Error(
+      "decision.mergeRiskOptions must include 1-3 options when mergeRiskLabels is not empty",
+    );
+  }
+}
+
 function isEnvironmentAccessCaveat(value: string): boolean {
   return /(?:GH_TOKEN|GITHUB_TOKEN|authenticated gh|gh (?:was |is )?unavailable|unauthenticated gh|shallow clone|GitHub auth(?:entication)? (?:was |is )?unavailable|could not use authenticated GitHub)/i.test(
     value,
@@ -1721,6 +1802,7 @@ function normalizeDecisionForItem(
     reviewFindings,
     bestSolution: CLEAN_OPENCLAW_PR_REVIEW_NEXT_STEP,
     triagePriority: decision.triagePriority,
+    mergeRiskOptions: decision.mergeRiskOptions,
     overallCorrectness:
       decision.overallCorrectness === "patch is incorrect"
         ? "patch is correct"
@@ -1865,6 +1947,7 @@ export function parseDecision(value: unknown, item?: DecisionNormalizationItem):
     ),
     impactLabels: requireImpactLabels(record.impactLabels),
     mergeRiskLabels: requireMergeRiskLabels(record.mergeRiskLabels),
+    mergeRiskOptions: requireMergeRiskOptions(record.mergeRiskOptions),
     itemCategory: requireEnum(record.itemCategory, ITEM_CATEGORIES, "decision.itemCategory"),
     reproductionStatus: requireEnum(
       record.reproductionStatus,
@@ -1927,6 +2010,7 @@ export function parseDecision(value: unknown, item?: DecisionNormalizationItem):
     workValidation: requireStringArray(record.workValidation, "decision.workValidation"),
     workLikelyFiles: requireStringArray(record.workLikelyFiles, "decision.workLikelyFiles"),
   };
+  validateMergeRiskOptions(decision);
   return normalizeDecisionForItem(decision, item);
 }
 
@@ -2940,6 +3024,17 @@ function frontMatterStringArray(markdown: string, key: string): string[] {
     .split(",")
     .map((entry) => entry.trim())
     .filter(Boolean);
+}
+
+function frontMatterJsonArray(markdown: string, key: string): unknown[] {
+  const value = frontMatterValue(markdown, key);
+  if (!value || value === "none") return [];
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
 }
 
 function frontMatterBoolean(markdown: string, key: string): boolean {
@@ -4278,6 +4373,7 @@ function codexFailureDecision(status: number | null, stderr: string, stdout = ""
     triagePriority: "none",
     impactLabels: [],
     mergeRiskLabels: [],
+    mergeRiskOptions: [],
     itemCategory: "unclear",
     reproductionStatus: "unclear",
     reproductionConfidence: "low",
@@ -5509,6 +5605,18 @@ function mergeRiskLabelsFromReport(markdown: string): MergeRiskLabelName[] {
   return frontMatterStringArray(markdown, "merge_risk_labels").filter(
     (label): label is MergeRiskLabelName => MERGE_RISK_LABEL_NAMES.has(label),
   );
+}
+
+function mergeRiskOptionsFromReport(markdown: string): MergeRiskOption[] {
+  return frontMatterJsonArray(markdown, "merge_risk_options")
+    .map((entry, index) => {
+      try {
+        return parseMergeRiskOption(entry, `merge_risk_options[${index}]`);
+      } catch {
+        return null;
+      }
+    })
+    .filter((entry): entry is MergeRiskOption => Boolean(entry));
 }
 
 function reportReviewFindings(markdown: string): ReviewFinding[] {
@@ -6785,6 +6893,7 @@ function reportDecision(markdown: string, closeReason: CloseReason): Decision {
     triagePriority: triagePriorityFromReport(markdown),
     impactLabels: impactLabelsFromReport(markdown),
     mergeRiskLabels: mergeRiskLabelsFromReport(markdown),
+    mergeRiskOptions: mergeRiskOptionsFromReport(markdown),
     itemCategory:
       (frontMatterValue(markdown, "item_category") as ItemCategory | undefined) ?? "unclear",
     reproductionStatus:
@@ -7301,57 +7410,71 @@ function publicMergeRiskLine(
   risks: string,
   nextStepLine: string,
   bestSolutionLine: string,
+  options: readonly MergeRiskOption[],
 ): string {
   if (isReportNoneList(risks)) return "";
   if (publicReviewTextIsSame(risks, nextStepLine)) return "";
   if (bestSolutionLine && publicReviewTextIsSame(risks, bestSolutionLine)) return "";
-  const choices = mergeRiskResolutionChoices(bestSolutionLine, nextStepLine);
+  const choices = options.length
+    ? mergeRiskOptionsLines(options)
+    : mergeRiskFallbackOptionsLines(bestSolutionLine, nextStepLine);
   return [
     `Why this matters: ${risks}`,
-    choices.length ? ["", "Maintainer choices:", ...choices].join("\n") : "",
+    choices.length ? ["", "Maintainer options:", ...choices].join("\n") : "",
   ]
     .filter(Boolean)
     .join("\n");
 }
 
-function mergeRiskResolutionChoices(bestSolutionLine: string, nextStepLine: string): string[] {
+function mergeRiskFallbackOptionsLines(bestSolutionLine: string, nextStepLine: string): string[] {
   const recommended = sentence(bestSolutionLine) || sentence(nextStepLine);
   const instruction = recommended || "Decide whether the merge risk is acceptable before merging.";
-  return [
-    mergeRiskAutomergeChoice(instruction),
-    mergeRiskAcceptChoice(instruction),
-    mergeRiskHumanDecisionChoice(instruction),
-  ];
+  return mergeRiskOptionsLines([
+    {
+      title: "Decide the mitigation before merge",
+      body: instruction,
+      category: "fix_before_merge",
+      recommended: false,
+      automergeInstruction: "",
+    },
+    {
+      title: "Pause or close",
+      body: "Do not merge this PR until maintainers decide whether the risk is worth taking.",
+      category: "pause_or_close",
+      recommended: false,
+      automergeInstruction: "",
+    },
+  ]);
 }
 
-function mergeRiskAutomergeChoice(instruction: string): string {
+function mergeRiskOptionsLines(options: readonly MergeRiskOption[]): string[] {
+  const lines = options.flatMap((option, index) => [
+    `${index + 1}. **${option.title}${option.recommended ? " (recommended)" : ""}**  `,
+    `   ${option.body}`,
+  ]);
+  const recommendedRepair = options.find(
+    (option) =>
+      option.recommended &&
+      option.category === "fix_before_merge" &&
+      option.automergeInstruction.trim(),
+  );
+  if (recommendedRepair) {
+    lines.push("", mergeRiskAutomergeInstructionBlock(recommendedRepair.automergeInstruction));
+  }
+  return lines;
+}
+
+function mergeRiskAutomergeInstructionBlock(instruction: string): string {
   return [
-    "1. (recommended) Fix the PR before merge with ClawSweeper automerge:",
+    "<details>",
+    "<summary>Copy recommended ClawSweeper instruction</summary>",
     "",
     "```text",
     "@clawsweeper automerge",
     `Special instructions: ${instruction}`,
     "```",
-  ].join("\n");
-}
-
-function mergeRiskAcceptChoice(instruction: string): string {
-  return [
-    "2. Accept the merge risk explicitly:",
     "",
-    "```text",
-    `Merge as-is only if maintainers intentionally accept this risk: ${instruction}`,
-    "```",
-  ].join("\n");
-}
-
-function mergeRiskHumanDecisionChoice(instruction: string): string {
-  return [
-    "3. Stop automation and require a human merge decision:",
-    "",
-    "```text",
-    `Do not automerge this PR. Ask a maintainer to decide whether to require changes, merge anyway, or close the PR as not worth the risk: ${instruction}`,
-    "```",
+    "</details>",
   ].join("\n");
 }
 
@@ -7450,6 +7573,7 @@ function renderKeepOpenCommentFromReport(markdown: string): string {
   const reproductionAssessment = reviewSectionValue(markdown, "reproductionAssessment");
   const solutionAssessment = reviewSectionValue(markdown, "solutionAssessment");
   const risks = reviewSectionValue(markdown, "risks");
+  const mergeRiskOptions = mergeRiskOptionsFromReport(markdown);
   const workReason = reportWorkCandidateReason(markdown);
   const workCandidate = frontMatterValue(markdown, "work_candidate");
   const validation = frontMatterStringArray(markdown, "work_validation")
@@ -7466,7 +7590,7 @@ function renderKeepOpenCommentFromReport(markdown: string): string {
   const nextStepLine = sentence(workReason || bestSolution || fallbackNextStep);
   const bestSolutionLine = sentence(bestSolution);
   const mergeRiskLine = isPullRequest
-    ? publicMergeRiskLine(risks, nextStepLine, bestSolutionLine)
+    ? publicMergeRiskLine(risks, nextStepLine, bestSolutionLine, mergeRiskOptions)
     : "";
   const details: string[] = [];
   const hasReviewFindings = isPullRequest && reviewFindings.length > 0;
@@ -8439,6 +8563,7 @@ work_likely_files: ${jsonFrontMatterValue(options.decision.workLikelyFiles)}
 triage_priority: ${options.decision.triagePriority}
 impact_labels: ${jsonFrontMatterValue(options.decision.impactLabels)}
 merge_risk_labels: ${jsonFrontMatterValue(options.decision.mergeRiskLabels)}
+merge_risk_options: ${JSON.stringify(options.decision.mergeRiskOptions)}
 pull_files: ${jsonFrontMatterValue(pullFiles)}
 pull_files_truncated: ${pullFilesTruncated}
 item_category: ${options.decision.itemCategory}

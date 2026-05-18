@@ -15,6 +15,7 @@
     "triagePriority",
     "impactLabels",
     "mergeRiskLabels",
+    "mergeRiskOptions",
     "itemCategory",
     "reproductionStatus",
     "reproductionConfidence",
@@ -193,6 +194,38 @@
         ]
       },
       "description": "PR-only ClawSweeper-owned GitHub labels for merge risks that green CI does not settle. These describe what could go wrong specifically because this PR is merged, not the affected or solved problem class. Use at most 3 for pull requests and [] for issues. merge-risk: 🚨 compatibility: 🚨 Merging this PR could break existing users, config, migrations, defaults, or upgrades. merge-risk: 🚨 message-delivery: 🚨 Merging this PR could drop, duplicate, misroute, suppress, or wrongly target messages. merge-risk: 🚨 session-state: 🚨 Merging this PR could lose, corrupt, stale, or mis-associate session or agent state. merge-risk: 🚨 auth-provider: 🚨 Merging this PR could break OAuth, tokens, provider routing, model choice, or credentials. merge-risk: 🚨 security-boundary: 🚨 Merging this PR could weaken sandboxing, authorization, credentials, or sensitive data. merge-risk: 🚨 availability: 🚨 Merging this PR could cause crashes, hangs, restart loops, stalls, or process outages. merge-risk: 🚨 automation: 🚨 Merging this PR could break CI, automerge, proof capture, label sync, or automation."
+    },
+    "mergeRiskOptions": {
+      "type": "array",
+      "maxItems": 3,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["title", "body", "category", "recommended", "automergeInstruction"],
+        "properties": {
+          "title": {
+            "type": "string",
+            "description": "Short maintainer-facing option title."
+          },
+          "body": {
+            "type": "string",
+            "description": "One concrete sentence explaining this maintainer option."
+          },
+          "category": {
+            "type": "string",
+            "enum": ["fix_before_merge", "accept_risk", "pause_or_close"]
+          },
+          "recommended": {
+            "type": "boolean",
+            "description": "True for at most one option, only when the evidence supports a clear best path."
+          },
+          "automergeInstruction": {
+            "type": "string",
+            "description": "Only for a recommended fix_before_merge option suitable for automation; otherwise empty."
+          }
+        }
+      },
+      "description": "Risk-specific maintainer options for the Risk before merge section. Use [] when mergeRiskLabels is []. When mergeRiskLabels is non-empty, provide 1-3 prose-first options. Do not use a fixed menu: tailor titles and bodies to this PR. Mark at most one option recommended, and only when evidence supports a clear best path. Include pause_or_close when the PR may not be worth the risk. Put a copyable @clawsweeper automerge instruction only in automergeInstruction for a recommended fix_before_merge option suitable for automation."
     },
     "itemCategory": {
       "type": "string",

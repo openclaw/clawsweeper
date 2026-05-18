@@ -119,10 +119,17 @@ discussion:
 `merge-risk: 🚨 availability`: 🚨 Merging this PR could cause crashes, hangs, restart loops, stalls, or process outages.
 `merge-risk: 🚨 automation`: 🚨 Merging this PR could break CI, automerge, proof capture, label sync, or automation.
 When merge risk is present, explain it in `risks` in maintainer-facing language
-and make `bestSolution` the best mitigation path. Write it as an imperative
-instruction a maintainer can paste into another LLM or into `@clawsweeper
-automerge` as special instructions. The public review comment will turn that
-into 1-3 maintainer choices and mark the best option `(recommended)`.
+and make `bestSolution` the best end state. Fill `mergeRiskOptions` with 1-3
+risk-specific maintainer options. Do not use a fixed menu. Each option needs a
+short title and one concrete sentence. Mark exactly one option `recommended:
+true` only when the evidence supports a clear best path; otherwise leave every
+option `recommended: false`. Use `category: "fix_before_merge"` for repair
+paths, `category: "accept_risk"` when maintainers may intentionally own the
+risk, and `category: "pause_or_close"` when the PR may need to pause or close as
+not worth the risk. Multiple fix-before-merge options are allowed when there are
+multiple valid repair paths. Set `automergeInstruction` only for a recommended
+`fix_before_merge` option that ClawSweeper automerge can reasonably execute;
+otherwise set it to an empty string.
 
 Populate structured reproduction metadata separately from the public prose.
 Use `reproductionStatus: "reproduced"` only when there is a concrete,
@@ -570,9 +577,10 @@ Always fill `mergeRiskLabels` too. Use `[]` for issues and for PRs whose merge
 risk is adequately covered by normal review/CI. For PRs with non-obvious
 compatibility, delivery, session-state, auth-provider, security-boundary,
 availability, or automation risk, add the matching `merge-risk:*` labels,
-explain why the risk matters in `risks`, and put the preferred mitigation in
-`bestSolution` as a paste-ready instruction so maintainers see a recommended
-choice before merge.
+explain why the risk matters in `risks`, and fill `mergeRiskOptions` with
+decision-useful maintainer options. Use `mergeRiskOptions: []` whenever
+`mergeRiskLabels` is empty. Avoid making ClawSweeper sound more certain than the
+evidence supports.
 
 Always fill the work-lane fields too. For non-candidates, use
 `workCandidate: "none"`, low confidence/priority, an empty `workPrompt`, and
