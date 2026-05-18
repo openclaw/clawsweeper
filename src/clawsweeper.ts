@@ -720,49 +720,49 @@ const AUTOMERGE_LABEL = "clawsweeper:automerge";
 const AUTOFIX_LABEL = "clawsweeper:autofix";
 const PROOF_OVERRIDE_LABEL = "proof: override";
 const PROOF_SUFFICIENT_LABEL = "proof: sufficient";
-const PROOF_SUFFICIENT_LABEL_COLOR = "9BD3A0";
+const PROOF_SUFFICIENT_LABEL_COLOR = "B7D7BF";
 const PROOF_SUFFICIENT_LABEL_DESCRIPTION = "Contributor real behavior proof is sufficient.";
 const PR_RATING_LABELS = [
   {
     tier: "S",
     name: "rating: 🦀 challenger crab",
-    color: "1f883d",
+    color: "1F883D",
     description: "Exceptional PR readiness: strong proof, clean patch, and convincing validation.",
   },
   {
     tier: "A",
     name: "rating: 🦞 diamond lobster",
-    color: "0a7bd9",
+    color: "0969DA",
     description: "Very strong PR readiness with only minor maintainer review expected.",
   },
   {
     tier: "B",
     name: "rating: 🐚 platinum hermit",
-    color: "8250df",
+    color: "4E6E8E",
     description: "Good normal PR readiness with ordinary maintainer review expected.",
   },
   {
     tier: "C",
     name: "rating: 🦐 gold shrimp",
-    color: "d4a72c",
+    color: "9A6700",
     description: "Decent PR readiness signal, but merge confidence is limited.",
   },
   {
     tier: "D",
     name: "rating: 🦪 silver shellfish",
-    color: "bf8700",
+    color: "6E7781",
     description: "Thin PR readiness signal; proof, validation, or implementation needs work.",
   },
   {
     tier: "F",
     name: "rating: 🧂 unranked krab",
-    color: "cf222e",
+    color: "8C2F39",
     description: "Not merge-ready due to missing proof or serious correctness/safety concerns.",
   },
   {
     tier: "NA",
     name: "rating: 🌊 off-meta tidepool",
-    color: "6e7781",
+    color: "6E7781",
     description: "PR readiness rating does not apply to this item.",
   },
 ] as const satisfies readonly {
@@ -773,7 +773,7 @@ const PR_RATING_LABELS = [
 }[];
 const PR_RATING_LABEL_NAMES = new Set<string>(PR_RATING_LABELS.map((label) => label.name));
 const TELEGRAM_VISIBLE_PROOF_LABEL = "mantis: telegram-visible-proof";
-const TELEGRAM_VISIBLE_PROOF_LABEL_COLOR = "D9CCF5";
+const TELEGRAM_VISIBLE_PROOF_LABEL_COLOR = "D8DCE3";
 const TELEGRAM_VISIBLE_PROOF_LABEL_DESCRIPTION = "Mantis should capture Telegram visible proof.";
 const PRIORITY_LABELS = [
   {
@@ -801,7 +801,7 @@ const PRIORITY_LABELS = [
     priority: 3,
     triagePriority: "P3",
     name: "P3",
-    color: "B8E0B0",
+    color: "B7D7BF",
     description: "Low-risk cleanup, docs, polish, ergonomics, or speculative feature.",
   },
 ] as const;
@@ -848,17 +848,17 @@ const IMPACT_LABEL_NAMES: ReadonlySet<string> = new Set(IMPACT_LABELS.map((label
 const ISSUE_ADVISORY_LABELS = [
   {
     name: "clawsweeper:current-main-repro",
-    color: "CFE3F8",
+    color: "D7E3EF",
     description: "ClawSweeper found a high-confidence current-main issue reproduction.",
   },
   {
     name: "clawsweeper:source-repro",
-    color: "CFE3F8",
+    color: "D7E3EF",
     description: "ClawSweeper found a high-confidence source-level issue reproduction.",
   },
   {
     name: "clawsweeper:not-repro-on-main",
-    color: "C2E0C6",
+    color: "C8DCCB",
     description:
       "ClawSweeper found high-confidence evidence that this issue no longer reproduces on main.",
   },
@@ -870,17 +870,17 @@ const ISSUE_ADVISORY_LABELS = [
   },
   {
     name: "clawsweeper:needs-info",
-    color: "EADFF8",
+    color: "D8DEE9",
     description: "ClawSweeper needs more reporter information before it can verify this issue.",
   },
   {
     name: "clawsweeper:linked-pr-open",
-    color: "D9CCF5",
+    color: "D8DCE3",
     description: "ClawSweeper found an open linked pull request for this issue.",
   },
   {
     name: "clawsweeper:no-new-fix-pr",
-    color: "EDEDED",
+    color: "E5E7EB",
     description: "ClawSweeper does not recommend queueing a new automated fix PR for this issue.",
   },
   {
@@ -890,7 +890,7 @@ const ISSUE_ADVISORY_LABELS = [
   },
   {
     name: "clawsweeper:fix-shape-clear",
-    color: "9BD3A0",
+    color: "B7D7BF",
     description: "ClawSweeper found a clear likely implementation shape for this issue.",
   },
   {

@@ -4731,15 +4731,15 @@ test("ClawSweeper PR rating labels use one themed overall label", () => {
 
 test("ClawSweeper PR rating label scheme exposes boring internal tiers", () => {
   assert.deepEqual(
-    prRatingLabelSchemeForTest().map(({ tier, name }) => ({ tier, name })),
+    prRatingLabelSchemeForTest().map(({ tier, name, color }) => ({ tier, name, color })),
     [
-      { tier: "S", name: "rating: 🦀 challenger crab" },
-      { tier: "A", name: "rating: 🦞 diamond lobster" },
-      { tier: "B", name: "rating: 🐚 platinum hermit" },
-      { tier: "C", name: "rating: 🦐 gold shrimp" },
-      { tier: "D", name: "rating: 🦪 silver shellfish" },
-      { tier: "F", name: "rating: 🧂 unranked krab" },
-      { tier: "NA", name: "rating: 🌊 off-meta tidepool" },
+      { tier: "S", name: "rating: 🦀 challenger crab", color: "1F883D" },
+      { tier: "A", name: "rating: 🦞 diamond lobster", color: "0969DA" },
+      { tier: "B", name: "rating: 🐚 platinum hermit", color: "4E6E8E" },
+      { tier: "C", name: "rating: 🦐 gold shrimp", color: "9A6700" },
+      { tier: "D", name: "rating: 🦪 silver shellfish", color: "6E7781" },
+      { tier: "F", name: "rating: 🧂 unranked krab", color: "8C2F39" },
+      { tier: "NA", name: "rating: 🌊 off-meta tidepool", color: "6E7781" },
     ],
   );
 });
@@ -4777,7 +4777,7 @@ test("ClawSweeper priority label scheme exposes P0 through P3 labels", () => {
     },
     {
       name: "P3",
-      color: "B8E0B0",
+      color: "B7D7BF",
       description: "Low-risk cleanup, docs, polish, ergonomics, or speculative feature.",
     },
   ]);
