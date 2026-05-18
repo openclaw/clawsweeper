@@ -6192,14 +6192,12 @@ function hasBlockingReviewFindings(findings: readonly Pick<ReviewFinding, "prior
 }
 
 function hasUnresolvedContributorWork(options: {
-  prRating: Pick<PrRating, "nextSteps">;
   realBehaviorProof: Pick<RealBehaviorProof, "status">;
   reviewFindings: readonly Pick<ReviewFinding, "priority">[];
   securityReview: Pick<SecurityReview, "status">;
   overallCorrectness: OverallCorrectness;
 }): boolean {
   return (
-    options.prRating.nextSteps.length > 0 ||
     proofNeedsContributorAction(options.realBehaviorProof) ||
     hasBlockingReviewFindings(options.reviewFindings) ||
     options.securityReview.status === "needs_attention" ||
@@ -6208,14 +6206,12 @@ function hasUnresolvedContributorWork(options: {
 }
 
 function isReadyForMaintainerLook(options: {
-  prRating: Pick<PrRating, "nextSteps">;
   realBehaviorProof: Pick<RealBehaviorProof, "status">;
   reviewFindings: readonly Pick<ReviewFinding, "priority">[];
   securityReview: Pick<SecurityReview, "status">;
   overallCorrectness: OverallCorrectness;
 }): boolean {
   return (
-    options.prRating.nextSteps.length === 0 &&
     !hasBlockingReviewFindings(options.reviewFindings) &&
     options.securityReview.status !== "needs_attention" &&
     (options.realBehaviorProof.status === "sufficient" ||
@@ -6226,7 +6222,6 @@ function isReadyForMaintainerLook(options: {
 }
 
 function prStatusLabelKind(options: {
-  prRating: Pick<PrRating, "nextSteps">;
   realBehaviorProof: Pick<RealBehaviorProof, "status">;
   reviewFindings: readonly Pick<ReviewFinding, "priority">[];
   securityReview: Pick<SecurityReview, "status">;
@@ -6329,7 +6324,6 @@ function prStatusLabelKindFromReport(
 ): PrStatusLabelKind | null {
   if (frontMatterValue(markdown, "type") !== "pull_request") return null;
   return prStatusLabelKind({
-    prRating: reportPrRating(markdown),
     realBehaviorProof: reportRealBehaviorProof(markdown),
     reviewFindings: reportReviewFindings(markdown),
     securityReview: reportSecurityReview(markdown),
@@ -6362,7 +6356,6 @@ export function prStatusLabelsForTest(
 ): string[] {
   if (options.isPullRequest === false) return nextPrStatusLabels(labels, null);
   const statusKind = prStatusLabelKind({
-    prRating: { nextSteps: [...(options.nextSteps ?? [])] },
     realBehaviorProof: {
       status: REAL_BEHAVIOR_PROOF_STATUSES.has(options.proofStatus as RealBehaviorProofStatus)
         ? (options.proofStatus as RealBehaviorProofStatus)

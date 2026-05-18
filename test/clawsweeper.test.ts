@@ -5489,7 +5489,7 @@ test("ClawSweeper PR rating label scheme exposes boring internal tiers", () => {
 test("ClawSweeper PR status labels use one current workflow status", () => {
   assert.deepEqual(
     prStatusLabelsForTest(["bug", "status: ⏳ waiting on author"], {
-      nextSteps: ["Add proof."],
+      findingPriorities: [2],
       hasRecentAuthorActivity: true,
     }),
     ["bug", "status: 🛠️ actively grinding"],
@@ -5558,9 +5558,22 @@ test("ClawSweeper PR status labels respect priority ordering", () => {
   );
   assert.deepEqual(
     prStatusLabelsForTest([], {
-      nextSteps: ["Address the review finding."],
+      findingPriorities: [2],
     }),
     ["status: ⏳ waiting on author"],
+  );
+});
+
+test("ClawSweeper PR status treats maintainer-only rank-up moves as ready", () => {
+  assert.deepEqual(
+    prStatusLabelsForTest([], {
+      nextSteps: [
+        "Maintainer accepts the relative details.reportPath contract change before merge.",
+      ],
+      proofStatus: "sufficient",
+      overallCorrectness: "patch is correct",
+    }),
+    ["status: 👀 ready for maintainer look"],
   );
 });
 
