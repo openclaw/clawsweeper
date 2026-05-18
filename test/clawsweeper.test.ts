@@ -39,6 +39,7 @@ import {
   isCodexTimeoutError,
   itemSnapshotHashForTest,
   isGitHubNotFoundError,
+  isGitHubCommitPullLookupMiss,
   isGitHubRequiresAuthenticationError,
   isLockedConversationCommentError,
   isProtectedItem,
@@ -4053,6 +4054,15 @@ test("GitHub not found errors are recognizable non-retryable lookup misses", () 
     "Command failed: gh api repos/openclaw/openclaw/pulls/228\nHTTP 404: Not Found",
   );
   assert.equal(isGitHubNotFoundError(error), true);
+  assert.equal(shouldRetryGh(error), false);
+});
+
+test("GitHub commit PR lookup 422 misses do not fail implemented-on-main reviews", () => {
+  const error = new Error(
+    "Command failed: gh api repos/valkyriweb/pi-mono/commits/c5831df6f1e3f7a2bc7e7ad61fb53669840c438a/pulls\ngh: No commit found for SHA: c5831df6f1e3f7a2bc7e7ad61fb53669840c438a (HTTP 422)",
+  );
+
+  assert.equal(isGitHubCommitPullLookupMiss(error), true);
   assert.equal(shouldRetryGh(error), false);
 });
 

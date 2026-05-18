@@ -5165,9 +5165,14 @@ function fixedPullRequestFromCommitSha(decision: Decision): FixedPullRequest | n
     ]);
     return fixedPullRequestFromCommitPulls(pulls, "GitHub commit PR lookup");
   } catch (error) {
-    if (isGitHubNotFoundError(error)) return null;
+    if (isGitHubNotFoundError(error) || isGitHubCommitPullLookupMiss(error)) return null;
     throw error;
   }
+}
+
+export function isGitHubCommitPullLookupMiss(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /\bHTTP\s*422\b/i.test(message) && /No commit found for SHA/i.test(message);
 }
 
 function attachFixedPullRequest(decision: Decision, item: Item, context: ItemContext): Decision {
