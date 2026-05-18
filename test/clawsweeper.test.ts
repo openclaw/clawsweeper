@@ -5311,6 +5311,35 @@ test("review prompt requires real behavior proof for PR reviews", () => {
   assert.match(prompt, /do not request ClawSweeper repair markers/);
 });
 
+test("review prompt keeps draft and protected workflow state out of PR rank", () => {
+  const prompt = readFileSync("prompts/review-item.md", "utf8");
+
+  assert.match(prompt, /Rate PR evidence\s+and patch quality/);
+  assert.match(prompt, /weaker proof-or-patch quality signal/);
+  assert.match(
+    prompt,
+    /Do not lower `proofTier`, `patchTier`,\s+or `overallTier` solely because the PR is draft/,
+  );
+  assert.match(prompt, /has protected labels/);
+  assert.match(prompt, /not\s+automerge-eligible/);
+  assert.match(prompt, /workflow\s+state signals, not proof or patch quality defects/);
+});
+
+test("decision schema keeps draft and protected workflow state out of PR rank", () => {
+  const schema = JSON.parse(readFileSync("schema/clawsweeper-decision.schema.json", "utf8"));
+  const prRating = schema.properties.prRating;
+
+  assert.match(prRating.description, /Calibrated PR quality rating/);
+  assert.match(prRating.description, /Rate the PR evidence and patch quality/);
+  assert.match(prRating.description, /Do not lower any tier solely because the PR is draft/);
+  assert.match(prRating.description, /has protected labels/);
+  assert.match(prRating.description, /not automerge-eligible/);
+  assert.match(
+    prRating.properties.overallTier.description,
+    /Draft, protected-label, automerge eligibility, and maintainer-waiting workflow states must not lower this tier by themselves/,
+  );
+});
+
 test("review prompt classifies Telegram visible proof candidates", () => {
   const prompt = readFileSync("prompts/review-item.md", "utf8");
 

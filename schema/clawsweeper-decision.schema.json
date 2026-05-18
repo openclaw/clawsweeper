@@ -456,7 +456,7 @@
     "prRating": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Calibrated PR readiness rating. Use boring internal tiers S/A/B/C/D/F/NA; public rendering maps them to funny crustacean labels. Rate the PR evidence and merge readiness, not the contributor. S is rare and exceptional, A is clearly above average, B is the normal good/mergeable rating, C is useful but uncertain, D is weak/thin signal, F is not merge-ready, and NA is only for non-PR or not-applicable items. Real screenshots, recordings, or linked media that directly show the changed behavior are strong boosters, but screenshots alone are not enough for browser runtime, network, CSP, or security claims unless diagnostics are visible.",
+      "description": "Calibrated PR quality rating. Use boring internal tiers S/A/B/C/D/F/NA; public rendering maps them to funny crustacean labels. Rate the PR evidence and patch quality, not the contributor or workflow state. S is rare and exceptional, A is clearly above average, B is the normal good/mergeable quality rating, C is useful but uncertain, D is weak/thin signal, F is not quality-ready, and NA is only for non-PR or not-applicable items. Real screenshots, recordings, or linked media that directly show the changed behavior are strong boosters, but screenshots alone are not enough for browser runtime, network, CSP, or security claims unless diagnostics are visible. Do not lower any tier solely because the PR is draft, has protected labels, is not automerge-eligible, or is waiting on a maintainer decision.",
       "required": ["proofTier", "patchTier", "overallTier", "summary", "nextSteps"],
       "properties": {
         "proofTier": {
@@ -472,7 +472,7 @@
         "overallTier": {
           "type": "string",
           "enum": ["S", "A", "B", "C", "D", "F", "NA"],
-          "description": "Overall merge-readiness tier after combining proof and patch quality. Missing, mock-only, or insufficient proof must cap or lower the overall rating because real behavior proof remains a merge gate."
+          "description": "Overall PR quality tier after combining proof and patch quality. Missing, mock-only, or insufficient proof must cap or lower the overall rating because real behavior proof remains a merge gate. Draft, protected-label, automerge eligibility, and maintainer-waiting workflow states must not lower this tier by themselves."
         },
         "summary": {
           "type": "string",
