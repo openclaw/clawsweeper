@@ -37,6 +37,7 @@ import {
   automergeShepherdWaitConfig,
   canUseAutomergeFastRebase,
 } from "./automerge-shepherd.js";
+import { automergeOutcomeReviewedShaFromResult } from "./automerge-outcome.js";
 import { isCanonicalLandingNeedsHumanText } from "./comment-router-core.js";
 import { parsePullRequestUrl, pullRequestNumberFromUrl } from "./github-ref.js";
 import {
@@ -3448,6 +3449,7 @@ function appendAutomergeRepairOutcomeComment(report: LooseRecord, resultPath: st
   }
 
   const continuation = continueAutomergeAfterNoopRepair({ target });
+  const reviewedSha = continuation.head_sha ?? automergeOutcomeReviewedSha();
   const body = automergeRepairOutcomeComment({
     marker,
     result,
@@ -3456,7 +3458,7 @@ function appendAutomergeRepairOutcomeComment(report: LooseRecord, resultPath: st
     provenance: externalMessageProvenance({
       model,
       reasoning: codexReasoningEffort,
-      reviewedSha: automergeOutcomeReviewedSha(),
+      reviewedSha,
     }),
   });
   const existingStatus = findAutomergeStatusComment(target);
@@ -3471,7 +3473,7 @@ function appendAutomergeRepairOutcomeComment(report: LooseRecord, resultPath: st
         completedAt: new Date().toISOString(),
         durationMs: Date.now() - scriptStartedAt.getTime(),
         runUrl: currentActionsRunUrl(),
-        headSha: automergeOutcomeReviewedSha(),
+        headSha: reviewedSha,
         status: "no branch change",
         details: report?.reason ?? "no executable fix action",
       },
@@ -3497,9 +3499,9 @@ function appendAutomergeRepairOutcomeComment(report: LooseRecord, resultPath: st
 }
 
 function continueAutomergeAfterNoopRepair({ target }: LooseRecord) {
-  const commit = automergeOutcomeReviewedSha();
-  if (!commit) return { status: "skipped", reason: "missing reviewed head SHA" };
   const view = fetchPullRequestViewForRepo({ repo: result.repo, number: target });
+  const commit = automergeOutcomeReviewedSha({ target, targetView: view });
+  if (!commit) return { status: "skipped", reason: "missing reviewed head SHA" };
   const comments = issueCommentsFor(target);
   const readiness = automergeShepherdReadiness({
     view,
@@ -3848,14 +3850,13 @@ function automergeOutcomeTargetPrNumber() {
   return clusterMatch ? Number(clusterMatch[1]) : 0;
 }
 
-function automergeOutcomeReviewedSha() {
-  return (
-    result.reviewed_sha ??
-    result.head_sha ??
-    result.canonical?.pull_request?.head_sha ??
-    result.canonical_item?.pull_request?.head_sha ??
-    null
-  );
+function automergeOutcomeReviewedSha({ target = undefined, targetView = null }: LooseRecord = {}) {
+  return automergeOutcomeReviewedShaFromResult({
+    result,
+    repo: result.repo,
+    target,
+    targetView,
+  });
 }
 
 function automergeOutcomeMarker({ target, resultPath }: LooseRecord) {
