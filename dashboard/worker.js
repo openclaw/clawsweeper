@@ -8,6 +8,12 @@ const GITHUB_TIMEOUT_MS = 4500;
 const OPTIONAL_SECTION_TIMEOUT_MS = 6000;
 const STALE_CACHE_TTL_SECONDS = 900;
 const CI_STATUS_TTL_SECONDS = 7200;
+const RUNNER_MODES = {
+  "mac-mini": ["self-hosted", "macOS", "ARM64", "mac-mini"],
+  macbook: ["self-hosted", "macOS", "ARM64", "macbook"],
+  both: ["self-hosted", "macOS", "ARM64"],
+};
+const RUNNER_VARIABLES = ["CLAWSWEEPER_RUNNER_LABELS", "CLAWSWEEPER_REVIEW_RUNNER"];
 
 export default {
   async fetch(request, env, ctx) {
@@ -23,6 +29,8 @@ export default {
     if (url.pathname === "/api/health") return json({ ok: true, service: "clawsweeper-status" });
     if (url.pathname === "/api/events" && request.method === "POST")
       return ingestEvent(request, env);
+    if (url.pathname === "/api/runner-mode" && request.method === "POST")
+      return setRunnerMode(request, env, ctx);
     if (url.pathname === "/api/status") return statusJson(request, env, ctx);
     if (url.pathname === "/" || url.pathname === "/index.html") return html(dashboardHtml());
     return json({ error: "not_found" }, 404);
@@ -101,6 +109,25 @@ async function ingestEvent(request, env) {
   return json({ ok: true, event });
 }
 
+async function setRunnerMode(request, env, ctx) {
+  const token = bearerToken(request);
+  const adminToken = env.DASHBOARD_ADMIN_TOKEN || env.INGEST_TOKEN;
+  if (!adminToken || token !== adminToken) return json({ error: "unauthorized" }, 401);
+  const body = await request.json().catch(() => null);
+  const mode = String(body?.mode || "").trim();
+  const labels = RUNNER_MODES[mode];
+  if (!labels) return json({ error: "invalid_mode", modes: Object.keys(RUNNER_MODES) }, 400);
+
+  const repo = env.CLAWSWEEPER_REPO || "openclaw/clawsweeper";
+  await Promise.all(
+    RUNNER_VARIABLES.map((name) => upsertGithubVariable(env, repo, name, JSON.stringify(labels))),
+  );
+  await env.STATUS_STORE?.delete?.("snapshot");
+  const result = { ok: true, mode, labels };
+  ctx?.waitUntil?.(writeStoredJson(env, "runner-mode", result));
+  return json(result);
+}
+
 async function statusSnapshot(env, ctx) {
   const ttl = numberFrom(env.CACHE_TTL_SECONDS, 20);
   const cached = await readCachedSnapshot(env, ttl);
@@ -114,12 +141,20 @@ async function statusSnapshot(env, ctx) {
     .map((value) => value.trim())
     .filter(Boolean);
   const budget = numberFrom(env.WORKER_BUDGET, 80);
-  const [runs, filteredActiveRuns] = await Promise.all([
+  const [runs, filteredActiveRuns, runnerConfig, runners] = await Promise.all([
     githubJson(env, `/repos/${repo}/actions/runs?per_page=100`).catch((error) => {
       errors.push(`workflow runs: ${error.message}`);
       return null;
     }),
     activeWorkflowRuns(env, repo, errors),
+    runnerConfigSnapshot(env, repo).catch((error) => {
+      errors.push(`runner config: ${error.message}`);
+      return runnerConfigFromLabels(null);
+    }),
+    githubJson(env, `/repos/${repo}/actions/runners?per_page=100`).catch((error) => {
+      errors.push(`runners: ${error.message}`);
+      return null;
+    }),
   ]);
   const workflowRuns = Array.isArray(runs?.workflow_runs) ? runs.workflow_runs : [];
   const activeRuns = uniqueWorkflowRuns([
@@ -176,6 +211,8 @@ async function statusSnapshot(env, ctx) {
       active_codex_jobs: activeJobs.count,
       failed_recent_runs: failedRuns.length,
       budget_used_percent: budget > 0 ? Math.round((activeJobs.count / budget) * 100) : 0,
+      runner_config: runnerConfig,
+      runners: normalizeRunners(runners),
     },
     averages: {
       automerge_command_to_merge_ms: automerge.average_ms,
@@ -537,14 +574,95 @@ async function githubJson(env, path) {
   const timeout = setTimeout(() => controller.abort("timeout"), GITHUB_TIMEOUT_MS);
   const response = await fetch(`https://api.github.com${path}`, {
     signal: controller.signal,
-    headers: {
-      Accept: "application/vnd.github+json",
-      "User-Agent": "openclaw-clawsweeper-status",
-      ...(env.GITHUB_TOKEN ? { Authorization: `Bearer ${env.GITHUB_TOKEN}` } : {}),
-    },
+    headers: githubHeaders(env),
   }).finally(() => clearTimeout(timeout));
   if (!response.ok) throw new Error(`GitHub ${response.status} for ${path}`);
   return response.json();
+}
+
+function githubHeaders(env) {
+  return {
+    Accept: "application/vnd.github+json",
+    "User-Agent": "openclaw-clawsweeper-status",
+    ...(env.GITHUB_TOKEN ? { Authorization: `Bearer ${env.GITHUB_TOKEN}` } : {}),
+  };
+}
+
+async function githubWriteJson(env, path, options) {
+  const response = await fetch(`https://api.github.com${path}`, {
+    method: options.method,
+    headers: {
+      ...githubHeaders(env),
+      "Content-Type": "application/json",
+      "X-GitHub-Api-Version": "2022-11-28",
+    },
+    body: JSON.stringify(options.body),
+  });
+  if (!response.ok && response.status !== 204) {
+    const text = await response.text().catch(() => "");
+    throw new Error(`GitHub ${response.status} for ${path}: ${text.slice(0, 200)}`);
+  }
+  if (response.status === 204) return null;
+  return response.json().catch(() => null);
+}
+
+async function upsertGithubVariable(env, repo, name, value) {
+  try {
+    await githubWriteJson(env, `/repos/${repo}/actions/variables/${name}`, {
+      method: "PATCH",
+      body: { name, value },
+    });
+  } catch (error) {
+    if (!String(error?.message || error).includes("GitHub 404")) throw error;
+    await githubWriteJson(env, `/repos/${repo}/actions/variables`, {
+      method: "POST",
+      body: { name, value },
+    });
+  }
+}
+
+async function runnerConfigSnapshot(env, repo) {
+  const variable = await githubJson(env, `/repos/${repo}/actions/variables/CLAWSWEEPER_RUNNER_LABELS`).catch(
+    () => null,
+  );
+  return runnerConfigFromLabels(variable?.value ?? null);
+}
+
+function runnerConfigFromLabels(value) {
+  const labels = parseRunnerLabels(value) || RUNNER_MODES["mac-mini"];
+  return {
+    mode: runnerModeForLabels(labels),
+    labels,
+  };
+}
+
+function parseRunnerLabels(value) {
+  if (!value) return null;
+  try {
+    const parsed = JSON.parse(value);
+    if (Array.isArray(parsed) && parsed.every((item) => typeof item === "string")) return parsed;
+  } catch {}
+  return null;
+}
+
+function runnerModeForLabels(labels) {
+  const serialized = JSON.stringify(labels);
+  for (const [mode, modeLabels] of Object.entries(RUNNER_MODES)) {
+    if (JSON.stringify(modeLabels) === serialized) return mode;
+  }
+  return "custom";
+}
+
+function normalizeRunners(value) {
+  const runners = Array.isArray(value?.runners) ? value.runners : [];
+  return runners.map((runner) => ({
+    name: runner.name,
+    status: runner.status,
+    busy: Boolean(runner.busy),
+    labels: Array.isArray(runner.labels)
+      ? runner.labels.map((label) => label.name).filter(Boolean)
+      : [],
+  }));
 }
 
 async function withTimeout(promise, timeoutMs, label) {
@@ -895,6 +1013,7 @@ a:hover { color: #89c8ff; text-decoration: underline; }
 .pipeline-col { overflow: hidden; }
 .side-col { min-width: 0; }
 #pipeline,
+#runnerControl,
 #automerge,
 #closed,
 #events {
@@ -961,6 +1080,26 @@ a:hover { color: #89c8ff; text-decoration: underline; }
   font-style: italic;
 }
 .empty::before { content: "🦀 "; opacity: 0.3; }
+.control-card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 14px;
+}
+.runner-buttons { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0; }
+button {
+  background: #1a2532;
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 8px 10px;
+  cursor: pointer;
+  font: inherit;
+}
+button:hover { border-color: rgba(103, 183, 255, 0.6); }
+button.active { background: rgba(103, 183, 255, 0.16); border-color: var(--blue); }
+.runner-list { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+.runner-row { display: flex; justify-content: space-between; gap: 8px; }
 @media (max-width: 1280px) { .grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } .split { grid-template-columns: 1fr; } header { align-items: start; flex-direction: column; } }
 @media (max-width: 760px) { .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } #pipeline table { min-width: 760px; } }
 @media (max-width: 560px) { main { width: min(100vw - 20px, 1440px); padding-top: 16px; } .grid { grid-template-columns: 1fr; } th:nth-child(4), td:nth-child(4), th:nth-child(6), td:nth-child(6) { display: none; } }
@@ -982,6 +1121,8 @@ a:hover { color: #89c8ff; text-decoration: underline; }
       <div id="pipeline"></div>
     </div>
     <aside class="side-col">
+      <h2>🧭 Runner Lane</h2>
+      <div id="runnerControl"></div>
       <h2>⚡ Automerge Speed</h2>
       <div id="automerge"></div>
       <h2>✅ Last Closed Issues/PRs</h2>
@@ -1099,6 +1240,7 @@ function renderDashboard(data, note) {
     metric("🎯 Capacity", fleet.budget_used_percent + "%", "fleet utilization", fleet.budget_used_percent, "var(--green)")
   ].join("");
   renderPipeline(data.pipeline || []);
+  renderRunnerControl(fleet.runner_config || {}, fleet.runners || []);
   renderAutomerge(data.recent.automerge || []);
   renderClosedItems(data.recent.closed_items || []);
   renderEvents(data.recent.events || []);
@@ -1112,6 +1254,38 @@ function renderPipeline(rows) {
     const detail = pipelineItemDetail(row);
     return '<tr><td><span class="pill" title="' + esc(row.mode) + '">' + esc(modeLabel(row.mode)) + '</span></td><td><span class="item-main" title="' + esc(compactText(row.title)) + '">' + pipelineItemLabel(row) + '</span>' + (detail ? '<div class="muted">' + esc(detail) + '</div>' : "") + '</td><td>' + esc(row.stage) + '<div class="muted">' + esc(row.status) + '</div></td><td>' + ciBadge(row.ci) + '</td><td>' + elapsed(row.elapsed_ms) + '</td><td>' + link(row.run_url, "run") + '</td></tr>';
   }).join("") + '</tbody></table>';
+}
+function renderRunnerControl(config, runners) {
+  const mode = config.mode || "mac-mini";
+  const labels = Array.isArray(config.labels) ? config.labels : [];
+  const rows = runners
+    .filter(runner => runner.labels && runner.labels.includes("self-hosted"))
+    .map(runner => '<div class="runner-row"><span>' + esc(runner.name) + '<div class="muted mono">' + esc((runner.labels || []).join(", ")) + '</div></span><span class="pill ' + (runner.status === "online" ? "green" : "red") + '">' + esc(runner.status) + (runner.busy ? " · busy" : "") + '</span></div>')
+    .join("");
+  document.getElementById("runnerControl").innerHTML = '<div class="control-card"><div>Mode: <span class="pill">' + esc(mode) + '</span></div><div class="muted mono">' + esc(JSON.stringify(labels)) + '</div><div class="runner-buttons">' + ["mac-mini", "macbook", "both"].map(name => '<button class="' + (name === mode ? "active" : "") + '" onclick="setRunnerMode(\'' + name + '\')">' + esc(name) + '</button>').join("") + '</div><div class="muted">Requires dashboard admin token. Both mode uses common labels so either registered Mac can take jobs.</div><div class="runner-list">' + (rows || '<div class="empty">No self-hosted runners returned</div>') + '</div></div>';
+}
+async function setRunnerMode(mode) {
+  let token = localStorage.getItem("clawsweeper:admin-token") || "";
+  if (!token) {
+    token = prompt("Dashboard admin token");
+    if (!token) return;
+    localStorage.setItem("clawsweeper:admin-token", token);
+  }
+  const response = await fetch("/api/runner-mode", {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: "Bearer " + token },
+    body: JSON.stringify({ mode })
+  });
+  if (response.status === 401) {
+    localStorage.removeItem("clawsweeper:admin-token");
+    alert("Unauthorized runner toggle token");
+    return;
+  }
+  if (!response.ok) {
+    alert("Runner toggle failed: " + await response.text());
+    return;
+  }
+  await load();
 }
 function renderAutomerge(rows) {
   if (!rows.length) {
