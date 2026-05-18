@@ -2861,6 +2861,9 @@ Full review comments:
 
   assert.match(comment, /\*\*PR egg\*\*\n🔥 Warming up:/);
   assert.match(comment, /```text\n[\s\S]+?\n```/);
+  assert.match(comment, /<summary>How the PR egg works<\/summary>/);
+  assert.match(comment, /The egg is cosmetic and PR-only/);
+  assert.match(comment, /🥚 common, 🌱 uncommon, 💎 rare, ✨ glimmer, and 🌈 legendary/);
   assert.doesNotMatch(comment, /✨ Hatched:/);
   assert.doesNotMatch(comment, /Share on X:/);
 });
@@ -2921,6 +2924,10 @@ Full review comments:
   assert.match(first, /Trait: [^.]+\./);
   assert.match(first, /Share on X: \[post this hatch\]\(https:\/\/x\.com\/intent\/tweet\?text=/);
   assert.match(first, /Copy: My PR egg hatched a [^\n]+ in ClawSweeper\./);
+  assert.match(
+    first,
+    /Hatches are deterministic from this repository, PR number, and reviewed head SHA/,
+  );
   assert.equal(
     first.match(/\*\*PR egg\*\*[\s\S]*?\*\*Real behavior proof\*\*/)?.[0],
     second.match(/\*\*PR egg\*\*[\s\S]*?\*\*Real behavior proof\*\*/)?.[0],

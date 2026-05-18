@@ -5507,6 +5507,18 @@ function publicPrEggLine(
 ): string {
   const seed = prEggSeedFromReport(markdown);
   const state = prEggStateFromReport(markdown, options);
+  const explainer = [
+    "",
+    "<details>",
+    "<summary>How the PR egg works</summary>",
+    "",
+    "- The egg is cosmetic and PR-only; it does not affect labels, ratings, merge decisions, or automation.",
+    "- Egg states come from the same review signals ClawSweeper already reports: unresolved proof or findings, re-review loops, and clean final-review readiness.",
+    "- Hatches are deterministic from this repository, PR number, and reviewed head SHA, so the same PR revision gets the same creature.",
+    "- Rarity is collectible flavor only: 🥚 common, 🌱 uncommon, 💎 rare, ✨ glimmer, and 🌈 legendary.",
+    "",
+    "</details>",
+  ];
   if (state === "hatched") {
     const creature = prEggCreature(seed);
     const shareUrl = `https://x.com/intent/tweet?text=${encodeURIComponent(creature.shareText)}`;
@@ -5519,6 +5531,7 @@ function publicPrEggLine(
       `Trait: ${creature.trait}.`,
       `Share on X: ${markdownLink("post this hatch", shareUrl)}`,
       `Copy: ${creature.shareText}`,
+      ...explainer,
     ].join("\n");
   }
   const stateLines: Record<Exclude<PrEggState, "hatched">, string> = {
@@ -5526,7 +5539,14 @@ function publicPrEggLine(
     warming: "🔥 Warming up: proof, findings, or rank-up moves are still in progress.",
     wobbling: "🔁 Wobbling: a re-review loop is active, so the shell is rattling.",
   };
-  return [stateLines[state], "", "```text", pickSeeded(PR_EGG_ART, seed, state), "```"].join("\n");
+  return [
+    stateLines[state],
+    "",
+    "```text",
+    pickSeeded(PR_EGG_ART, seed, state),
+    "```",
+    ...explainer,
+  ].join("\n");
 }
 
 function publicMantisRecommendationBlock(recommendation: MantisRecommendation): string {
