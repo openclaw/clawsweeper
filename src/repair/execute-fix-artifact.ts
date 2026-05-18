@@ -1029,6 +1029,7 @@ function openReplacementPrFromPreparedRepairCheckout({
     targetDir,
     repo: result.repo,
   });
+  const mergedSource = mergedReplacementSourcePr({ fixArtifact, sourcePr, targetDir });
   const branch = replacementBranchName(result.cluster_id);
   const areaCapacityBlock = validateActivePrAreaCapacity({
     fixArtifact,
@@ -1052,6 +1053,17 @@ function openReplacementPrFromPreparedRepairCheckout({
 
   ghAuthSetupGit(targetDir);
   run("git", ["checkout", "-B", branch], { cwd: targetDir });
+  const mergedSourceSkip = skipMergedSourceReplacementWithoutDiff({
+    mergedSource,
+    targetDir,
+    baseBranch,
+    branch,
+    fallbackReason,
+    sourcePr,
+    prep,
+    contributorCredits,
+  });
+  if (mergedSourceSkip) return mergedSourceSkip;
   if (!branchHasBaseDiff({ targetDir, baseBranch })) {
     logProgress("prepared replacement branch has no changes versus base; skipping PR create", {
       branch,
@@ -1359,6 +1371,7 @@ function executeReplacementBranch({
     targetDir,
     repo: result.repo,
   });
+  const mergedSource = mergedReplacementSourcePr({ fixArtifact, targetDir });
   const branch = replacementBranchName(result.cluster_id);
   const areaCapacityBlock = validateActivePrAreaCapacity({
     fixArtifact,
@@ -1435,6 +1448,16 @@ function executeReplacementBranch({
   }
 
   if (!branchHasBaseDiff({ targetDir, baseBranch })) {
+    const mergedSourceSkip = skipMergedSourceReplacementWithoutDiff({
+      mergedSource,
+      targetDir,
+      baseBranch,
+      branch,
+      prep,
+      contributorCredits,
+      resumedBranch: branchState.resumed,
+    });
+    if (mergedSourceSkip) return mergedSourceSkip;
     logProgress("replacement branch has no changes versus base; skipping PR create", {
       branch,
       base_branch: baseBranch,
@@ -1534,6 +1557,70 @@ function executeReplacementBranch({
     superseded_sources: supersededSources,
     superseded_source_actions: supersededSourceActions,
     contributor_credit: contributorCredits.map(publicContributorCredit),
+  };
+}
+
+function mergedReplacementSourcePr({ fixArtifact, sourcePr = null, targetDir }: LooseRecord) {
+  const sources = [...(sourcePr?.url ? [sourcePr.url] : []), ...(fixArtifact.source_prs ?? [])];
+  for (const source of uniqueStrings(sources)) {
+    const parsed = parsePullRequestUrl(source);
+    if (!parsed || parsed.repo !== result.repo) continue;
+    const view = fetchSourcePullRequestView({
+      repo: result.repo,
+      number: parsed.number,
+      targetDir,
+    });
+    if (view.mergedAt || view.state === "MERGED") {
+      return {
+        source,
+        pr: `#${parsed.number}`,
+        merged_at: view.mergedAt ?? null,
+      };
+    }
+  }
+  return null;
+}
+
+function skipMergedSourceReplacementWithoutDiff({
+  mergedSource,
+  targetDir,
+  baseBranch,
+  branch,
+  fallbackReason = null,
+  sourcePr = null,
+  prep,
+  contributorCredits,
+  resumedBranch = null,
+}: LooseRecord) {
+  if (!mergedSource) return null;
+  if (branchHasBaseDiff({ targetDir, baseBranch })) return null;
+  logProgress(
+    "source PR already merged and replacement branch has no changes; skipping PR create",
+    {
+      branch,
+      base_branch: baseBranch,
+      source_pr: mergedSource.source,
+      merged_at: mergedSource.merged_at ?? null,
+    },
+  );
+  return {
+    action: "open_fix_pr",
+    status: "skipped",
+    branch,
+    ...(resumedBranch !== null ? { resumed_branch: resumedBranch } : {}),
+    repair_strategy: "replace_uneditable_branch",
+    ...(sourcePr ? { fallback_from: "repair_contributor_branch" } : {}),
+    ...(sourcePr?.url ? { fallback_source_pr: sourcePr.url } : {}),
+    ...(fallbackReason ? { fallback_reason: fallbackReason } : {}),
+    commit: prep.commit,
+    checkpoint_commits: prep.checkpoint_commits,
+    merge_preflight: prep.merge_preflight,
+    supersede_sources: [],
+    merged_source_pr: mergedSource.pr,
+    merged_source_url: mergedSource.source,
+    merged_source_at: mergedSource.merged_at ?? null,
+    contributor_credit: contributorCredits.map(publicContributorCredit),
+    reason: "source PR already merged and replacement branch has no changes versus base",
   };
 }
 

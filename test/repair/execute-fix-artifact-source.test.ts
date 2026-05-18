@@ -50,3 +50,44 @@ test("repair source branch writability preflight runs before expensive repair pr
     "live source-branch writability must be resolved before checkout, validation planning, and Codex write preflight",
   );
 });
+
+test("merged source replacement skip runs before publishing replacement PRs", () => {
+  const sourcePath = path.join(process.cwd(), "src/repair/execute-fix-artifact.ts");
+  const source = fs.readFileSync(sourcePath, "utf8");
+
+  const preparedStart = source.indexOf("function openReplacementPrFromPreparedRepairCheckout(");
+  const preparedEnd = source.indexOf("function executeReplacementBranch(", preparedStart);
+  assert.notEqual(preparedStart, -1);
+  assert.notEqual(preparedEnd, -1);
+  const preparedReplacement = source.slice(preparedStart, preparedEnd);
+  assert.match(
+    preparedReplacement,
+    /mergedReplacementSourcePr\(\{ fixArtifact, sourcePr, targetDir \}\)/,
+  );
+  assert.match(preparedReplacement, /skipMergedSourceReplacementWithoutDiff\(\{/);
+
+  const preparedSkipIndex = preparedReplacement.indexOf("skipMergedSourceReplacementWithoutDiff({");
+  const preparedPushIndex = preparedReplacement.indexOf(
+    "pushRecoverableBranch({ targetDir, branch });",
+  );
+  const preparedCreateIndex = preparedReplacement.indexOf('"pr",\n        "create"');
+  assert.notEqual(preparedSkipIndex, -1);
+  assert.notEqual(preparedPushIndex, -1);
+  assert.notEqual(preparedCreateIndex, -1);
+  assert.ok(
+    preparedSkipIndex < preparedPushIndex && preparedPushIndex < preparedCreateIndex,
+    "merged-source no-diff replacement skip must run before branch push and PR creation",
+  );
+
+  const helperStart = source.indexOf("function skipMergedSourceReplacementWithoutDiff(");
+  const helperEnd = source.indexOf("function labelReplacementPullRequest(", helperStart);
+  assert.notEqual(helperStart, -1);
+  assert.notEqual(helperEnd, -1);
+  const helper = source.slice(helperStart, helperEnd);
+  assert.match(helper, /if \(!mergedSource\) return null;/);
+  assert.match(helper, /if \(branchHasBaseDiff\(\{ targetDir, baseBranch \}\)\) return null;/);
+  assert.match(
+    helper,
+    /reason: "source PR already merged and replacement branch has no changes versus base"/,
+  );
+});
