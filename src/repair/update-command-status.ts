@@ -102,14 +102,16 @@ export function selectCommandStatusComment(
     if (exact) return exact;
   }
   if (!options.marker) return null;
-  return comments
-    .filter(
-      (comment) =>
-        isTrustedStatusComment(comment, options.trustedBots) &&
-        typeof comment.body === "string" &&
-        comment.body.includes(options.marker),
-    )
-    .at(-1) ?? null;
+  return (
+    comments
+      .filter(
+        (comment) =>
+          isTrustedStatusComment(comment, options.trustedBots) &&
+          typeof comment.body === "string" &&
+          comment.body.includes(options.marker),
+      )
+      .at(-1) ?? null
+  );
 }
 
 export function mergeCommandProgressSection(
