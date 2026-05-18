@@ -119,6 +119,12 @@ type RealBehaviorProofEvidenceKind =
   | "none"
   | "not_applicable";
 type PrRatingTier = "S" | "A" | "B" | "C" | "D" | "F" | "NA";
+type PrStatusLabelKind =
+  | "re_review_loop"
+  | "actively_grinding"
+  | "needs_proof"
+  | "waiting_on_author"
+  | "ready_for_maintainer_look";
 type TelegramVisibleProofStatus = "needed" | "not_needed";
 type MantisRecommendationStatus = "recommended" | "not_recommended";
 type MantisRecommendationScenario =
@@ -798,6 +804,45 @@ const PR_RATING_LABELS = [
   description: string;
 }[];
 const PR_RATING_LABEL_NAMES = new Set<string>(PR_RATING_LABELS.map((label) => label.name));
+const PR_STATUS_LABELS = [
+  {
+    kind: "re_review_loop",
+    name: "status: 🔁 re-review loop",
+    color: "8250DF",
+    description: "A fresh ClawSweeper review was explicitly requested after the latest review.",
+  },
+  {
+    kind: "actively_grinding",
+    name: "status: 🛠️ actively grinding",
+    color: "BF8700",
+    description: "The PR author has acted after the latest ClawSweeper review and work remains.",
+  },
+  {
+    kind: "needs_proof",
+    name: "status: 📣 needs proof",
+    color: "D4C5F9",
+    description:
+      "The PR needs real behavior proof before ClawSweeper can clear the contributor ask.",
+  },
+  {
+    kind: "waiting_on_author",
+    name: "status: ⏳ waiting on author",
+    color: "FBCA04",
+    description: "ClawSweeper has contributor-facing work open and is waiting for author action.",
+  },
+  {
+    kind: "ready_for_maintainer_look",
+    name: "status: 👀 ready for maintainer look",
+    color: "0E8A16",
+    description: "ClawSweeper has no concrete contributor-facing blocker left for this PR.",
+  },
+] as const satisfies readonly {
+  kind: PrStatusLabelKind;
+  name: string;
+  color: string;
+  description: string;
+}[];
+const PR_STATUS_LABEL_NAMES = new Set<string>(PR_STATUS_LABELS.map((label) => label.name));
 const TELEGRAM_VISIBLE_PROOF_LABEL = "mantis: telegram-visible-proof";
 const TELEGRAM_VISIBLE_PROOF_LABEL_COLOR = "57606A";
 const TELEGRAM_VISIBLE_PROOF_LABEL_DESCRIPTION = "Mantis should capture Telegram visible proof.";
@@ -6129,6 +6174,222 @@ function nextPrRatingLabels(
   return nextLabels;
 }
 
+function proofNeedsContributorAction(proof: Pick<RealBehaviorProof, "status">): boolean {
+  return (
+    proof.status === "missing" || proof.status === "mock_only" || proof.status === "insufficient"
+  );
+}
+
+function hasBlockingReviewFindings(findings: readonly Pick<ReviewFinding, "priority">[]): boolean {
+  return findings.some((finding) => finding.priority <= 2);
+}
+
+function hasUnresolvedContributorWork(options: {
+  prRating: Pick<PrRating, "nextSteps">;
+  realBehaviorProof: Pick<RealBehaviorProof, "status">;
+  reviewFindings: readonly Pick<ReviewFinding, "priority">[];
+  securityReview: Pick<SecurityReview, "status">;
+  overallCorrectness: OverallCorrectness;
+}): boolean {
+  return (
+    options.prRating.nextSteps.length > 0 ||
+    proofNeedsContributorAction(options.realBehaviorProof) ||
+    hasBlockingReviewFindings(options.reviewFindings) ||
+    options.securityReview.status === "needs_attention" ||
+    options.overallCorrectness === "patch is incorrect"
+  );
+}
+
+function isReadyForMaintainerLook(options: {
+  prRating: Pick<PrRating, "nextSteps">;
+  realBehaviorProof: Pick<RealBehaviorProof, "status">;
+  reviewFindings: readonly Pick<ReviewFinding, "priority">[];
+  securityReview: Pick<SecurityReview, "status">;
+  overallCorrectness: OverallCorrectness;
+}): boolean {
+  return (
+    options.prRating.nextSteps.length === 0 &&
+    !hasBlockingReviewFindings(options.reviewFindings) &&
+    options.securityReview.status !== "needs_attention" &&
+    (options.realBehaviorProof.status === "sufficient" ||
+      options.realBehaviorProof.status === "override" ||
+      options.realBehaviorProof.status === "not_applicable") &&
+    options.overallCorrectness === "patch is correct"
+  );
+}
+
+function prStatusLabelKind(options: {
+  prRating: Pick<PrRating, "nextSteps">;
+  realBehaviorProof: Pick<RealBehaviorProof, "status">;
+  reviewFindings: readonly Pick<ReviewFinding, "priority">[];
+  securityReview: Pick<SecurityReview, "status">;
+  overallCorrectness: OverallCorrectness;
+  hasRecentReReviewRequest: boolean;
+  hasRecentAuthorActivity: boolean;
+}): PrStatusLabelKind | null {
+  const unresolvedWork = hasUnresolvedContributorWork(options);
+  if (options.hasRecentReReviewRequest) return "re_review_loop";
+  if (options.hasRecentAuthorActivity && unresolvedWork) return "actively_grinding";
+  if (proofNeedsContributorAction(options.realBehaviorProof)) return "needs_proof";
+  if (unresolvedWork) return "waiting_on_author";
+  if (isReadyForMaintainerLook(options)) return "ready_for_maintainer_look";
+  return null;
+}
+
+function prStatusLabelForKind(kind: PrStatusLabelKind): (typeof PR_STATUS_LABELS)[number] {
+  const label = PR_STATUS_LABELS.find((candidate) => candidate.kind === kind);
+  if (!label) throw new Error(`unknown PR status label kind: ${kind}`);
+  return label;
+}
+
+function nextPrStatusLabels(
+  labels: readonly string[],
+  statusKind: PrStatusLabelKind | null,
+): string[] {
+  const nextLabels = labels.filter((label) => !PR_STATUS_LABEL_NAMES.has(label));
+  if (statusKind) nextLabels.push(prStatusLabelForKind(statusKind).name);
+  return nextLabels;
+}
+
+function eventTimestampMs(value: unknown): number | null {
+  const record = asRecord(value);
+  return timestampMs(stringOrUndefined(record.updatedAt) ?? stringOrUndefined(record.createdAt));
+}
+
+function isAfterReview(value: unknown, reviewedAtMs: number | null): boolean {
+  if (reviewedAtMs === null) return false;
+  const eventMs = eventTimestampMs(value);
+  return eventMs !== null && eventMs > reviewedAtMs;
+}
+
+function isReReviewRequestText(text: unknown): boolean {
+  const body = stringOrUndefined(text)?.trim() ?? "";
+  if (!body) return false;
+  return (
+    /^\s*\/review(?:\s|$)/im.test(body) ||
+    /^\s*\/clawsweeper\s+(?:re-?review|rerun|re-run|run\s+review|review)(?:\s|$)/im.test(body) ||
+    /(?:^|\s)@clawsweeper(?:\[bot\])?\s+(?:re-?review|rerun|re-run|run\s+review|review)(?:\s|$)/im.test(
+      body,
+    )
+  );
+}
+
+function hasRecentReReviewRequest(
+  context: Pick<ItemContext, "comments">,
+  reviewedAt: string | undefined,
+): boolean {
+  const reviewedAtMs = timestampMs(reviewedAt);
+  return context.comments.some((comment) => {
+    const record = asRecord(comment);
+    return isAfterReview(comment, reviewedAtMs) && isReReviewRequestText(record.body);
+  });
+}
+
+function hasRecentAuthorActivity(
+  context: Pick<ItemContext, "comments" | "timeline">,
+  options: { reviewedAt: string | undefined; author: string | undefined },
+): boolean {
+  const author = String(options.author ?? "")
+    .trim()
+    .toLowerCase();
+  if (!author) return false;
+  const reviewedAtMs = timestampMs(options.reviewedAt);
+  return (
+    context.comments.some((comment) => {
+      const record = asRecord(comment);
+      return (
+        isAfterReview(comment, reviewedAtMs) &&
+        stringOrUndefined(record.author)?.toLowerCase() === author
+      );
+    }) ||
+    context.timeline.some((event) => {
+      const record = asRecord(event);
+      return (
+        isAfterReview(event, reviewedAtMs) &&
+        stringOrUndefined(record.actor)?.toLowerCase() === author &&
+        typeof record.commitId === "string" &&
+        record.commitId.length > 0
+      );
+    })
+  );
+}
+
+function prStatusLabelKindFromReport(
+  markdown: string,
+  context: ItemContext,
+): PrStatusLabelKind | null {
+  if (frontMatterValue(markdown, "type") !== "pull_request") return null;
+  return prStatusLabelKind({
+    prRating: reportPrRating(markdown),
+    realBehaviorProof: reportRealBehaviorProof(markdown),
+    reviewFindings: reportReviewFindings(markdown),
+    securityReview: reportSecurityReview(markdown),
+    overallCorrectness: reportOverallCorrectness(markdown),
+    hasRecentReReviewRequest: hasRecentReReviewRequest(
+      context,
+      frontMatterValue(markdown, "reviewed_at"),
+    ),
+    hasRecentAuthorActivity: hasRecentAuthorActivity(context, {
+      reviewedAt: frontMatterValue(markdown, "reviewed_at"),
+      author: frontMatterValue(markdown, "author"),
+    }),
+  });
+}
+
+export function prStatusLabelsForTest(
+  labels: readonly string[],
+  options: {
+    isPullRequest?: boolean;
+    nextSteps?: readonly string[];
+    proofStatus?: string;
+    findingPriorities?: readonly number[];
+    securityStatus?: string;
+    overallCorrectness?: string;
+    hasRecentReReviewRequest?: boolean;
+    hasRecentAuthorActivity?: boolean;
+  },
+): string[] {
+  if (options.isPullRequest === false) return nextPrStatusLabels(labels, null);
+  const statusKind = prStatusLabelKind({
+    prRating: { nextSteps: [...(options.nextSteps ?? [])] },
+    realBehaviorProof: {
+      status: REAL_BEHAVIOR_PROOF_STATUSES.has(options.proofStatus as RealBehaviorProofStatus)
+        ? (options.proofStatus as RealBehaviorProofStatus)
+        : "not_applicable",
+    },
+    reviewFindings: (options.findingPriorities ?? [])
+      .filter((priority): priority is 0 | 1 | 2 | 3 => [0, 1, 2, 3].includes(priority))
+      .map((priority) => ({ priority })),
+    securityReview: {
+      status: SECURITY_REVIEW_STATUSES.has(options.securityStatus as SecurityReviewStatus)
+        ? (options.securityStatus as SecurityReviewStatus)
+        : "cleared",
+    },
+    overallCorrectness: OVERALL_CORRECTNESS_VALUES.has(
+      options.overallCorrectness as OverallCorrectness,
+    )
+      ? (options.overallCorrectness as OverallCorrectness)
+      : "patch is correct",
+    hasRecentReReviewRequest: options.hasRecentReReviewRequest === true,
+    hasRecentAuthorActivity: options.hasRecentAuthorActivity === true,
+  });
+  return nextPrStatusLabels(labels, statusKind);
+}
+
+export function prStatusLabelSchemeForTest(): {
+  kind: PrStatusLabelKind;
+  name: string;
+  color: string;
+  description: string;
+}[] {
+  return PR_STATUS_LABELS.map(({ kind, name, color, description }) => ({
+    kind,
+    name,
+    color,
+    description,
+  }));
+}
+
 function pullRequestFilePathsFromReport(markdown: string): string[] {
   return frontMatterStringArray(markdown, "pull_files");
 }
@@ -6694,6 +6955,27 @@ function ensurePrRatingLabel(tier: PrRatingTier): void {
   }
 }
 
+function ensurePrStatusLabel(kind: PrStatusLabelKind): void {
+  const definition = prStatusLabelForKind(kind);
+  try {
+    ghWithRetry(
+      [
+        "label",
+        "create",
+        definition.name,
+        "--color",
+        definition.color,
+        "--description",
+        definition.description,
+      ],
+      2,
+    );
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (!/already exists/i.test(message)) throw error;
+  }
+}
+
 function syncPrRatingLabel(options: {
   number: number;
   labels: readonly string[];
@@ -6712,6 +6994,33 @@ function syncPrRatingLabel(options: {
   if (!labelsToRemove.length && !labelToAdd) return nextLabels;
   if (options.dryRun) return nextLabels;
   if (labelToAdd) ensurePrRatingLabel(options.rating.overallTier);
+  for (const label of labelsToRemove) {
+    ghWithRetry(["issue", "edit", String(options.number), "--remove-label", label]);
+  }
+  if (labelToAdd) {
+    ghWithRetry(["issue", "edit", String(options.number), "--add-label", labelToAdd]);
+  }
+  return nextLabels;
+}
+
+function syncPrStatusLabel(options: {
+  number: number;
+  labels: readonly string[];
+  statusKind: PrStatusLabelKind | null;
+  dryRun: boolean;
+}): string[] {
+  const nextLabels = nextPrStatusLabels(options.labels, options.statusKind);
+  const currentLabelKeys = new Set(options.labels.map((label) => label.toLowerCase()));
+  const nextLabelKeys = new Set(nextLabels.map((label) => label.toLowerCase()));
+  const labelsToRemove = options.labels.filter(
+    (label) => PR_STATUS_LABEL_NAMES.has(label) && !nextLabelKeys.has(label.toLowerCase()),
+  );
+  const labelToAdd = nextLabels.find(
+    (label) => PR_STATUS_LABEL_NAMES.has(label) && !currentLabelKeys.has(label.toLowerCase()),
+  );
+  if (!labelsToRemove.length && !labelToAdd) return nextLabels;
+  if (options.dryRun) return nextLabels;
+  if (options.statusKind && labelToAdd) ensurePrStatusLabel(options.statusKind);
   for (const label of labelsToRemove) {
     ghWithRetry(["issue", "edit", String(options.number), "--remove-label", label]);
   }
@@ -9313,6 +9622,12 @@ function applyDecisionsCommand(args: Args): void {
         number,
         labels: item.labels,
         rating: reportPrRating(markdown),
+        dryRun,
+      });
+      item.labels = syncPrStatusLabel({
+        number,
+        labels: item.labels,
+        statusKind: prStatusLabelKindFromReport(markdown, currentItemContext()),
         dryRun,
       });
       item.labels = syncTelegramVisibleProofLabel({

@@ -58,6 +58,8 @@ import {
   mergeRiskLabelSchemeForTest,
   prRatingLabelsForTest,
   prRatingLabelSchemeForTest,
+  prStatusLabelsForTest,
+  prStatusLabelSchemeForTest,
   priorityLabelsForTest,
   priorityLabelSchemeForTest,
   protectedLabels,
@@ -5480,6 +5482,103 @@ test("ClawSweeper PR rating label scheme exposes boring internal tiers", () => {
       { tier: "D", name: "rating: 🦪 silver shellfish", color: "7A828E" },
       { tier: "F", name: "rating: 🧂 unranked krab", color: "8C2F39" },
       { tier: "NA", name: "rating: 🌊 off-meta tidepool", color: "6E7781" },
+    ],
+  );
+});
+
+test("ClawSweeper PR status labels use one current workflow status", () => {
+  assert.deepEqual(
+    prStatusLabelsForTest(["bug", "status: ⏳ waiting on author"], {
+      nextSteps: ["Add proof."],
+      hasRecentAuthorActivity: true,
+    }),
+    ["bug", "status: 🛠️ actively grinding"],
+  );
+  assert.deepEqual(
+    prStatusLabelsForTest(["bug", "status: 🛠️ actively grinding"], {
+      proofStatus: "sufficient",
+      overallCorrectness: "patch is correct",
+    }),
+    ["bug", "status: 👀 ready for maintainer look"],
+  );
+});
+
+test("ClawSweeper PR status labels preserve other label families", () => {
+  assert.deepEqual(
+    prStatusLabelsForTest(
+      [
+        "rating: 🦞 diamond lobster",
+        "merge-risk: 🚨 compatibility",
+        "proof: sufficient",
+        "status: custom-user-label",
+      ],
+      {
+        proofStatus: "missing",
+      },
+    ),
+    [
+      "rating: 🦞 diamond lobster",
+      "merge-risk: 🚨 compatibility",
+      "proof: sufficient",
+      "status: custom-user-label",
+      "status: 📣 needs proof",
+    ],
+  );
+});
+
+test("ClawSweeper PR status labels respect priority ordering", () => {
+  assert.deepEqual(
+    prStatusLabelsForTest([], {
+      proofStatus: "missing",
+      hasRecentAuthorActivity: true,
+      hasRecentReReviewRequest: true,
+    }),
+    ["status: 🔁 re-review loop"],
+  );
+  assert.deepEqual(
+    prStatusLabelsForTest([], {
+      proofStatus: "missing",
+      hasRecentAuthorActivity: true,
+    }),
+    ["status: 🛠️ actively grinding"],
+  );
+  assert.deepEqual(
+    prStatusLabelsForTest([], {
+      proofStatus: "missing",
+    }),
+    ["status: 📣 needs proof"],
+  );
+  assert.deepEqual(
+    prStatusLabelsForTest([], {
+      nextSteps: ["Address the review finding."],
+    }),
+    ["status: ⏳ waiting on author"],
+  );
+});
+
+test("ClawSweeper PR status labels are PR-only", () => {
+  assert.deepEqual(
+    prStatusLabelsForTest(["bug", "status: ⏳ waiting on author"], {
+      isPullRequest: false,
+      nextSteps: ["Add proof."],
+    }),
+    ["bug"],
+  );
+});
+
+test("ClawSweeper PR status label scheme exposes workflow states", () => {
+  assert.deepEqual(
+    prStatusLabelSchemeForTest().map(({ kind, name, color }) => ({ kind, name, color })),
+    [
+      { kind: "re_review_loop", name: "status: 🔁 re-review loop", color: "8250DF" },
+      { kind: "actively_grinding", name: "status: 🛠️ actively grinding", color: "BF8700" },
+      { kind: "needs_proof", name: "status: 📣 needs proof", color: "D4C5F9" },
+      { kind: "waiting_on_author", name: "status: ⏳ waiting on author", color: "FBCA04" },
+      {
+        kind: "ready_for_maintainer_look",
+        name: "status: 👀 ready for maintainer look",
+        color: "0E8A16",
+      },
     ],
   );
 });
