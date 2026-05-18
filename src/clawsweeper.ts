@@ -847,6 +847,43 @@ const IMPACT_LABELS = [
 const IMPACT_LABEL_NAMES: ReadonlySet<string> = new Set(IMPACT_LABELS.map((label) => label.name));
 const ISSUE_ADVISORY_LABELS = [
   {
+    name: "issue-rating: 🦀 challenger crab",
+    color: "1F883D",
+    description:
+      "Exceptional issue quality: high-confidence current-main reproduction and actionable evidence.",
+  },
+  {
+    name: "issue-rating: 🦞 diamond lobster",
+    color: "0969DA",
+    description:
+      "Very strong issue quality with high-confidence source-level or clear reproduction.",
+  },
+  {
+    name: "issue-rating: 🐚 platinum hermit",
+    color: "0F766E",
+    description: "Good issue quality with a plausible reproduction path needing some confirmation.",
+  },
+  {
+    name: "issue-rating: 🦐 gold shrimp",
+    color: "B7791F",
+    description: "Decent issue quality, but reproduction details are still incomplete.",
+  },
+  {
+    name: "issue-rating: 🦪 silver shellfish",
+    color: "7A828E",
+    description: "Thin issue quality; more reproduction proof or environment detail is needed.",
+  },
+  {
+    name: "issue-rating: 🧂 unranked krab",
+    color: "8C2F39",
+    description: "Issue quality is currently too unclear to act on safely.",
+  },
+  {
+    name: "issue-rating: 🌊 off-meta tidepool",
+    color: "6E7781",
+    description: "Issue quality rating does not apply to this item.",
+  },
+  {
     name: "clawsweeper:current-main-repro",
     color: "0A3069",
     description: "ClawSweeper found a high-confidence current-main issue reproduction.",
@@ -5955,9 +5992,45 @@ function isIssueAdvisoryLabel(label: string): boolean {
   return ISSUE_ADVISORY_LABEL_NAMES.has(label.toLowerCase());
 }
 
+function issueRatingLabelForState(state: IssueAdvisoryLabelState): string {
+  if (state.type !== "issue") return "";
+  if (state.reproductionStatus === "not_applicable") {
+    return "issue-rating: 🌊 off-meta tidepool";
+  }
+  if (state.reproductionStatus === "reproduced" && state.reproductionConfidence === "high") {
+    return "issue-rating: 🦀 challenger crab";
+  }
+  if (
+    (state.reproductionStatus === "source_reproducible" ||
+      state.reproductionStatus === "reproduced") &&
+    state.reproductionConfidence === "high"
+  ) {
+    return "issue-rating: 🦞 diamond lobster";
+  }
+  if (
+    (state.reproductionStatus === "source_reproducible" ||
+      state.reproductionStatus === "reproduced") &&
+    state.reproductionConfidence === "medium"
+  ) {
+    return "issue-rating: 🐚 platinum hermit";
+  }
+  if (state.reproductionStatus === "unclear" && state.reproductionConfidence === "medium") {
+    return "issue-rating: 🦐 gold shrimp";
+  }
+  if (
+    state.reproductionStatus === "not_reproduced" ||
+    (state.reproductionStatus === "unclear" && state.reproductionConfidence === "low")
+  ) {
+    return "issue-rating: 🦪 silver shellfish";
+  }
+  return "issue-rating: 🧂 unranked krab";
+}
+
 function wantedIssueAdvisoryLabels(state: IssueAdvisoryLabelState): Set<string> {
   const labels = new Set<string>();
   if (state.type !== "issue") return labels;
+  const issueRatingLabel = issueRatingLabelForState(state);
+  if (issueRatingLabel) labels.add(issueRatingLabel);
   if (state.reproductionConfidence === "high") {
     if (state.reproductionStatus === "reproduced") labels.add("clawsweeper:current-main-repro");
     if (state.reproductionStatus === "source_reproducible") labels.add("clawsweeper:source-repro");
