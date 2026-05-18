@@ -1711,15 +1711,40 @@ test("renderResponse reports explicit human-review pause actions", () => {
       comment_id: "458",
       intent: "clawsweeper_needs_human",
       trusted_bot_author: "clawsweeper[bot]",
-      repair_reason: "structured ClawSweeper verdict: human-review",
+      repair_reason:
+        "Protected maintainer labeling plus proof-label automation risk make this a maintainer validation item rather than a ClawSweeper repair job.",
       target: { head_sha: "def458" },
     },
     null,
   );
 
   assert.match(body, /pausing this repair loop/);
+  assert.match(body, /Why human review is needed:/);
+  assert.match(body, /proof-label or proof-gate automation/);
+  assert.match(body, /Recommended next action:/);
+  assert.match(body, /Add redacted real behavior proof/);
+  assert.match(body, /@clawsweeper automerge/);
   assert.match(body, /`clawsweeper:human-review`/);
   assert.doesNotMatch(body, /did not dispatch/);
+});
+
+test("renderResponse gives generic human-review pauses a next action", () => {
+  const body = renderResponse(
+    {
+      comment_id: "459",
+      intent: "clawsweeper_needs_human",
+      trusted_bot_author: "clawsweeper[bot]",
+      repair_reason: "structured ClawSweeper verdict: human-review",
+      target: { head_sha: "def459" },
+    },
+    null,
+  );
+
+  assert.match(body, /Why human review is needed:/);
+  assert.match(body, /resolved or accepted by a maintainer/);
+  assert.match(body, /Recommended next action:/);
+  assert.match(body, /resolve the blocker or explicitly accept the risk/);
+  assert.match(body, /`clawsweeper:human-review`/);
 });
 
 test("renderResponse reports automerge completion", () => {

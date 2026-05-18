@@ -1406,12 +1406,18 @@ export function renderResponse(command: LooseRecord, dispatched: LooseRecord) {
     ].join("\n");
   }
   if (command.intent === "clawsweeper_needs_human") {
+    const reason = command.repair_reason ?? "ClawSweeper requested human review.";
+    const nextAction = humanReviewNextAction(reason);
     return [
       marker,
       "ClawSweeper is pausing this repair loop for human review.",
       "",
       `Source: \`${command.trusted_bot_author ?? command.author ?? "trusted automation"}\``,
-      `Reason: ${command.repair_reason ?? "ClawSweeper requested human review."}`,
+      `Reason: ${reason}`,
+      "",
+      "Why human review is needed:",
+      humanReviewJustification(reason),
+      ...(nextAction ? ["", "Recommended next action:", nextAction] : []),
       "",
       `I added \`${HUMAN_REVIEW_LABEL}\` and left the final call with a maintainer.`,
     ].join("\n");
@@ -1766,6 +1772,58 @@ function renderStatusBody(command: LooseRecord) {
     lines.push("- Existing PR repair: not applicable until a ClawSweeper PR exists.");
   }
   return lines.join("\n");
+}
+
+function humanReviewJustification(reason: JsonValue) {
+  const text = String(reason ?? "");
+  if (/proof-label automation|proof[- ]label|proof gate|proof sufficien/i.test(text)) {
+    return [
+      "This PR affects proof-label or proof-gate automation. ClawSweeper can identify the risk,",
+      "but a maintainer needs to decide whether the available proof is enough before automation continues.",
+    ].join(" ");
+  }
+  if (/protected maintainer|maintainer validation|maintainer label/i.test(text)) {
+    return [
+      "This item touches a maintainer-protected decision point. ClawSweeper is keeping the item open",
+      "so a maintainer can own the final validation choice.",
+    ].join(" ");
+  }
+  if (/security|secret|credential|permission/i.test(text)) {
+    return [
+      "This item has security-sensitive risk. ClawSweeper is pausing instead of making an autonomous",
+      "change that could affect trust, credentials, permissions, or exposure.",
+    ].join(" ");
+  }
+  return [
+    "ClawSweeper found a blocker that should be resolved or accepted by a maintainer before the",
+    "repair or automerge loop continues.",
+  ].join(" ");
+}
+
+function humanReviewNextAction(reason: JsonValue) {
+  const text = String(reason ?? "");
+  if (/proof-label automation|proof[- ]label|proof gate|proof sufficien/i.test(text)) {
+    return [
+      "Add redacted real behavior proof for the affected proof-label workflow, then comment",
+      "`@clawsweeper automerge` to ask ClawSweeper to re-review and continue.",
+    ].join(" ");
+  }
+  if (/protected maintainer|maintainer validation|maintainer label/i.test(text)) {
+    return [
+      "Have a maintainer review the flagged decision, then either add the missing proof and re-run",
+      "ClawSweeper or merge manually if the maintainer accepts the remaining risk.",
+    ].join(" ");
+  }
+  if (/security|secret|credential|permission/i.test(text)) {
+    return [
+      "Have a maintainer review the security-sensitive detail and provide an explicit safe path",
+      "before asking ClawSweeper to continue.",
+    ].join(" ");
+  }
+  return [
+    "Review the reason above, resolve the blocker or explicitly accept the risk, then ask",
+    "ClawSweeper to continue if automation is still appropriate.",
+  ].join(" ");
 }
 
 function automergeLabelState(labels: JsonValue[]) {
