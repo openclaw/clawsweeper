@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   automergeRepairOutcomeComment,
+  closingReferencesFromMarkdown,
   externalMessageProvenance,
   issueImplementationResultStatusComment,
   repairContributorBranchComment,
@@ -112,6 +113,7 @@ test("replacement PR body records replacement reason and co-author credit", () =
       author: "maintainer-user",
       author_id: 123456,
     },
+    sourceClosingReferences: ["Closes #74124", "closes #74124", "Fixes openclaw/openclaw#81234"],
     provenance: { model: "gpt-test", reasoning: "medium", reviewedSha: "abcdef1234567890" },
   });
 
@@ -124,7 +126,24 @@ test("replacement PR body records replacement reason and co-author credit", () =
   assert.match(body, /Automerge requested by: @maintainer-user/);
   assert.match(
     body,
+    /Inherited issue-closing references from the source PR:\nCloses #74124\nFixes openclaw\/openclaw#81234/,
+  );
+  assert.match(
+    body,
     /<!-- clawsweeper-automerge-requested-by login="maintainer-user" id="123456" -->/,
+  );
+});
+
+test("closingReferencesFromMarkdown extracts GitHub closing syntax", () => {
+  assert.deepEqual(
+    closingReferencesFromMarkdown(
+      "Context.\n\nCloses #74124, openclaw/openclaw#81234\nFixes https://github.com/openclaw/openclaw/issues/81235\ncloses #74124",
+    ),
+    [
+      "Closes #74124",
+      "Closes openclaw/openclaw#81234",
+      "Fixes https://github.com/openclaw/openclaw/issues/81235",
+    ],
   );
 });
 
