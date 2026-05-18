@@ -12,7 +12,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import test from "node:test";
 
 const tmpPrefix = join(tmpdir(), "clawsweeper-test-");
@@ -73,6 +73,7 @@ import {
   reviewDecisionSchemaText,
   reviewPromptTelemetryForTest,
   reviewPromptTemplate,
+  runCodexForTest,
   impactLabelsForTest,
   impactLabelSchemeForTest,
   runtimeBudgetExceeded,
@@ -4406,6 +4407,67 @@ test("runtime budget only trips after a positive elapsed limit", () => {
   assert.equal(runtimeBudgetExceeded(1000, 0, 100000), false);
   assert.equal(runtimeBudgetExceeded(1000, 5000, 5999), false);
   assert.equal(runtimeBudgetExceeded(1000, 5000, 6000), true);
+});
+
+test("runCodex accepts valid structured output after non-zero Codex exit", () => {
+  const root = mkdtempSync(tmpPrefix);
+  const openclawDir = join(root, "openclaw");
+  const workDir = join(root, "codex-work");
+  const binDir = join(root, "bin");
+  mkdirSync(openclawDir, { recursive: true });
+  mkdirSync(binDir, { recursive: true });
+  execFileSync("git", ["init"], { cwd: openclawDir, stdio: "ignore" });
+  const codexPath = join(binDir, "codex");
+  writeFileSync(
+    codexPath,
+    `#!/usr/bin/env node
+const fs = require("node:fs");
+const outputIndex = process.argv.indexOf("--output-last-message");
+if (outputIndex === -1) process.exit(2);
+fs.writeFileSync(process.argv[outputIndex + 1], process.env.CODEX_DECISION_JSON);
+process.stderr.write("wrote structured output before shutdown failure\\n");
+process.exit(1);
+`,
+  );
+  chmodSync(codexPath, 0o755);
+  const originalPath = process.env.PATH;
+  const originalDecision = process.env.CODEX_DECISION_JSON;
+  process.env.PATH = `${binDir}${delimiter}${process.env.PATH ?? ""}`;
+  process.env.CODEX_DECISION_JSON = JSON.stringify(
+    closeDecision({
+      decision: "keep_open",
+      closeReason: "none",
+      confidence: "medium",
+      summary: "Keep open for maintainer follow-up.",
+      bestSolution: "Review the routing invariant.",
+      closeComment: "",
+      workReason: "Maintainer review is required.",
+    }),
+  );
+  try {
+    const decision = runCodexForTest({
+      item: item({ number: 83393 }),
+      context: { issue: {}, comments: [], timeline: [] },
+      git: { mainSha: "abc123", latestRelease: null },
+      model: "gpt-test",
+      openclawDir,
+      reasoningEffort: "high",
+      sandboxMode: "read-only",
+      serviceTier: "",
+      timeoutMs: 10_000,
+      workDir,
+      prompt: "Return a review decision.",
+    });
+
+    assert.equal(decision.decision, "keep_open");
+    assert.equal(decision.summary, "Keep open for maintainer follow-up.");
+  } finally {
+    if (originalPath === undefined) delete process.env.PATH;
+    else process.env.PATH = originalPath;
+    if (originalDecision === undefined) delete process.env.CODEX_DECISION_JSON;
+    else process.env.CODEX_DECISION_JSON = originalDecision;
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("decision parser enforces required schema-shaped evidence", () => {
