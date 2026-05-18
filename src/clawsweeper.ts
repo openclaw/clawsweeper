@@ -209,6 +209,10 @@ interface ExistingReview {
   itemUpdatedAt: string | undefined;
   reviewCommentSyncedAt: string | undefined;
   decision: string | undefined;
+  closeReason: string | undefined;
+  actionTaken: string | undefined;
+  workCandidate: string | undefined;
+  mainSha: string | undefined;
   reviewStatus: string | undefined;
   reviewPolicy: string | undefined;
   reviewFailureReason: string | undefined;
@@ -2478,6 +2482,10 @@ function existingReview(
     itemUpdatedAt: frontMatterValue(markdown, "item_updated_at"),
     reviewCommentSyncedAt: frontMatterValue(markdown, "review_comment_synced_at"),
     decision: frontMatterValue(markdown, "decision"),
+    closeReason: frontMatterValue(markdown, "close_reason"),
+    actionTaken: frontMatterValue(markdown, "action_taken"),
+    workCandidate: frontMatterValue(markdown, "work_candidate"),
+    mainSha: frontMatterValue(markdown, "main_sha"),
     reviewStatus: effectiveReviewStatus(markdown),
     reviewPolicy: frontMatterValue(markdown, "review_policy"),
     reviewFailureReason: frontMatterValue(markdown, "review_failure_reason"),
@@ -2507,6 +2515,10 @@ function buildExistingReviewIndex(itemsDir: string): ExistingReviewIndex {
       itemUpdatedAt: frontMatterValue(markdown, "item_updated_at"),
       reviewCommentSyncedAt: frontMatterValue(markdown, "review_comment_synced_at"),
       decision: frontMatterValue(markdown, "decision"),
+      closeReason: frontMatterValue(markdown, "close_reason"),
+      actionTaken: frontMatterValue(markdown, "action_taken"),
+      workCandidate: frontMatterValue(markdown, "work_candidate"),
+      mainSha: frontMatterValue(markdown, "main_sha"),
       reviewStatus: effectiveReviewStatus(markdown),
       reviewPolicy: frontMatterValue(markdown, "review_policy"),
       reviewFailureReason: frontMatterValue(markdown, "review_failure_reason"),
@@ -2634,13 +2646,24 @@ function hasReviewPolicyMismatch(review: ExistingReview | null, reviewPolicy?: s
   return Boolean(review && reviewPolicy && review.reviewPolicy !== reviewPolicy);
 }
 
+function reviewNeedsMainRefresh(review: ExistingReview | null, currentMainSha?: string): boolean {
+  if (!review || !currentMainSha || !review.mainSha || review.mainSha === currentMainSha) {
+    return false;
+  }
+  if (review.workCandidate === "queue_fix_pr") return true;
+  if (review.decision === "close" && review.actionTaken !== "closed") return true;
+  return false;
+}
+
 export function shouldReviewItem(
   item: Item,
   review: ExistingReview | null,
   now = Date.now(),
   reviewPolicy?: string,
+  currentMainSha?: string,
 ): boolean {
   if (hasReviewPolicyMismatch(review, reviewPolicy)) return true;
+  if (reviewNeedsMainRefresh(review, currentMainSha)) return true;
   const reviewedAt = reviewedAtMs(review);
   if (reviewedAt === null) return true;
   return now - reviewedAt >= reviewCadenceMs(item, review, now);
@@ -2697,9 +2720,10 @@ function dueCandidate(
   now = Date.now(),
   reviewPolicy?: string,
   reviewIndex?: ExistingReviewIndex,
+  currentMainSha?: string,
 ): DueCandidate | null {
   const review = indexedExistingReview(item, itemsDir, reviewIndex);
-  if (!shouldReviewItem(item, review, now, reviewPolicy)) return null;
+  if (!shouldReviewItem(item, review, now, reviewPolicy, currentMainSha)) return null;
   return {
     item,
     review,
@@ -3171,6 +3195,7 @@ function selectCandidates(options: {
   reviewPolicy?: string;
   hotIntake?: boolean;
   reviewIndex?: ExistingReviewIndex;
+  currentMainSha?: string;
 }): { candidates: Item[]; scannedPages: number } {
   if (options.itemNumbers) {
     const candidates = options.itemNumbers.flatMap((number) => {
@@ -3199,6 +3224,7 @@ function selectCandidates(options: {
         now,
         options.reviewPolicy,
         reviewIndex,
+        options.currentMainSha,
       );
       if (candidate) due.push(candidate);
     }
@@ -3223,6 +3249,7 @@ function selectCandidates(options: {
         now,
         options.reviewPolicy,
         reviewIndex,
+        options.currentMainSha,
       );
       if (candidate) due.push(candidate);
     }
@@ -3322,6 +3349,7 @@ function planCandidates(options: {
   hotIntake?: boolean;
   minimumActiveShards?: number;
   minimumBackfillReviewAgeMs?: number;
+  currentMainSha?: string;
 }): PlanCandidateResult {
   const shardCount = planShardCount(options.shardCount);
   const batchSize = Math.max(1, options.batchSize);
@@ -3390,6 +3418,7 @@ function planCandidates(options: {
         now,
         options.reviewPolicy,
         reviewIndex,
+        options.currentMainSha,
       );
       if (candidate) due.push(candidate);
     }
@@ -3433,6 +3462,7 @@ function planCandidates(options: {
         now,
         options.reviewPolicy,
         reviewIndex,
+        options.currentMainSha,
       );
       if (candidate) {
         due.push(candidate);
@@ -6905,6 +6935,16 @@ function commentUpdatedAt(comment: Record<string, unknown> | undefined): string 
   return typeof createdAt === "string" ? createdAt : undefined;
 }
 
+export function isReviewCommentOnlyUpdate(
+  itemUpdatedAt: string,
+  reviewCommentUpdatedAt: string | undefined,
+): boolean {
+  const itemUpdatedMs = Date.parse(itemUpdatedAt);
+  const commentUpdatedMs = Date.parse(reviewCommentUpdatedAt ?? "");
+  if (!Number.isFinite(itemUpdatedMs) || !Number.isFinite(commentUpdatedMs)) return false;
+  return Math.abs(itemUpdatedMs - commentUpdatedMs) <= 5_000;
+}
+
 function commentId(comment: Record<string, unknown> | undefined): number | null {
   const id = comment?.id;
   return typeof id === "number" && Number.isInteger(id) ? id : null;
@@ -7471,6 +7511,33 @@ ${options.action.closeComment ? options.action.closeComment : "_No close comment
   `;
 }
 
+function currentTargetDefaultBranchSha(): string | undefined {
+  try {
+    const repo = ghJson<{ default_branch?: string }>([
+      "api",
+      `repos/${targetRepo()}`,
+      "--jq",
+      "{default_branch}",
+    ]);
+    const branch = repo.default_branch;
+    if (!branch) return undefined;
+    const result = ghJson<{ sha?: string }>([
+      "api",
+      `repos/${targetRepo()}/branches/${branch}`,
+      "--jq",
+      "{sha:.commit.sha}",
+    ]);
+    return result.sha;
+  } catch (error) {
+    console.error(
+      `Unable to resolve current main SHA for ${targetRepo()}; falling back to cadence-only planning: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+    return undefined;
+  }
+}
+
 function planCommand(args: Args): void {
   repoFromArgs(args);
   const itemsDir = resolve(stringArg(args.items_dir, defaultItemsDir()));
@@ -7499,6 +7566,8 @@ function planCommand(args: Args): void {
     minimumActiveShards,
     minimumBackfillReviewAgeMs,
   };
+  const currentMainSha = currentTargetDefaultBranchSha();
+  if (currentMainSha) planOptions.currentMainSha = currentMainSha;
   if (hasItemNumbersInput || itemNumbers.length > 0) planOptions.itemNumbers = itemNumbers;
   if (hotIntake) planOptions.hotIntake = true;
   const plan = planCandidates(planOptions);
@@ -7566,6 +7635,7 @@ function reviewCommand(args: Args): void {
     itemsDir,
     reviewPolicy,
     reviewIndex,
+    currentMainSha: git.mainSha,
   };
   if (itemNumber) selectionOptions.itemNumber = itemNumber;
   if (itemNumbers) selectionOptions.itemNumbers = itemNumbers;
@@ -7945,7 +8015,10 @@ function applyDecisionsCommand(args: Args): void {
       if (isCloseProposal) continue;
     }
     const updatedSinceReview = Boolean(storedUpdatedAt && item.updatedAt !== storedUpdatedAt);
-    const reviewCommentOnlyUpdate = item.updatedAt === commentUpdatedAt(existingReviewComment);
+    const reviewCommentOnlyUpdate = isReviewCommentOnlyUpdate(
+      item.updatedAt,
+      commentUpdatedAt(existingReviewComment),
+    );
     if (state !== "open") {
       if (item.closedAt) {
         markdown = replaceFrontMatterValue(markdown, "current_item_closed_at", item.closedAt);

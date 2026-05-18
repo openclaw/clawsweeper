@@ -82,6 +82,7 @@ import {
   shouldStopSaturatedPlanScan,
   shouldSyncReviewComment,
   shouldReviewItem,
+  isReviewCommentOnlyUpdate,
   shouldRetryGh,
   shouldPlanItem,
   telegramVisibleProofLabelsForTest,
@@ -1166,6 +1167,25 @@ test("review policy changes force fresh complete reports back into planning", ()
   assert.equal(shouldReviewItem(item(), review, now, "old-policy"), false);
 });
 
+test("main branch changes force stale repair candidates back into planning", () => {
+  const reviewedAt = "2026-04-30T12:00:00Z";
+  const now = Date.parse("2026-04-30T12:05:00Z");
+  const review = {
+    path: "items/123.md",
+    markdown: "",
+    reviewedAt,
+    itemUpdatedAt: "2026-04-30T11:00:00Z",
+    decision: "keep_open",
+    workCandidate: "queue_fix_pr",
+    mainSha: "old-main",
+    reviewStatus: "complete",
+    reviewPolicy: "current",
+  };
+
+  assert.equal(shouldReviewItem(item(), review, now, "current", "old-main"), false);
+  assert.equal(shouldReviewItem(item(), review, now, "current", "new-main"), true);
+});
+
 test("hot new items review daily unless target-side activity requires hourly cadence", () => {
   const now = Date.parse("2026-04-26T12:00:00Z");
   const review = (reviewedAt, itemUpdatedAt) => ({
@@ -1239,6 +1259,11 @@ test("hot new items review daily unless target-side activity requires hourly cad
     ),
     true,
   );
+});
+
+test("apply guard tolerates GitHub issue updated_at skew for ClawSweeper review comments", () => {
+  assert.equal(isReviewCommentOnlyUpdate("2026-05-17T09:08:39Z", "2026-05-17T09:08:38Z"), true);
+  assert.equal(isReviewCommentOnlyUpdate("2026-05-17T09:08:39Z", "2026-05-17T09:07:30Z"), false);
 });
 
 test("scheduler ignores ClawSweeper-owned updated_at churn after review", () => {
