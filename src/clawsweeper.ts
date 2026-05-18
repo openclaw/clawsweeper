@@ -5456,11 +5456,16 @@ function publicPrRatingLine(rating: PrRating, proof: RealBehaviorProof): string 
   return lines.join("\n");
 }
 
-function prEggSeedFromReport(markdown: string): string {
+function prEggIdentitySeedFromReport(markdown: string): string {
   const repo = markdownRepository(markdown);
   const number = frontMatterValue(markdown, "number") ?? "unknown";
+  return `${repo}#${number}`;
+}
+
+function prEggVisualSeedFromReport(markdown: string): string {
+  const identitySeed = prEggIdentitySeedFromReport(markdown);
   const headSha = frontMatterValue(markdown, "pull_head_sha") ?? "unknown";
-  return `${repo}#${number}@${headSha}`;
+  return `${identitySeed}@${headSha}`;
 }
 
 function prEggStateFromReport(
@@ -5471,6 +5476,7 @@ function prEggStateFromReport(
     reviewFindings: readonly Pick<ReviewFinding, "priority">[];
     securityReview: Pick<SecurityReview, "status">;
     overallCorrectness: OverallCorrectness;
+    statusKind?: PrStatusLabelKind | null;
   },
 ): PrEggState {
   const isReady =
@@ -5482,8 +5488,7 @@ function prEggStateFromReport(
       overallCorrectness: options.overallCorrectness,
     });
   if (isReady) return "hatched";
-  const labels = frontMatterStringArray(markdown, "labels");
-  if (labels.includes("status: 🔁 re-review loop")) return "wobbling";
+  if (options.statusKind === "re_review_loop") return "wobbling";
   const hasUnresolvedWork =
     options.prRating.nextSteps.length > 0 ||
     hasUnresolvedContributorWork({
@@ -5511,6 +5516,7 @@ function publicPrEggLine(
     reviewFindings: readonly Pick<ReviewFinding, "priority">[];
     securityReview: Pick<SecurityReview, "status">;
     overallCorrectness: OverallCorrectness;
+    statusKind?: PrStatusLabelKind | null;
   },
 ): string {
   if (!prEggProofUnlocked(options.realBehaviorProof)) {
@@ -5528,7 +5534,8 @@ function publicPrEggLine(
     ].join("\n");
   }
 
-  const seed = prEggSeedFromReport(markdown);
+  const identitySeed = prEggIdentitySeedFromReport(markdown);
+  const visualSeed = prEggVisualSeedFromReport(markdown);
   const state = prEggStateFromReport(markdown, options);
   const explainer = [
     "",
@@ -5537,13 +5544,13 @@ function publicPrEggLine(
     "",
     "- Eggs appear after the PR passes real-behavior proof. It is here for vibes, not verdicts: it does not change labels, ratings, merge decisions, or automation.",
     "- The shell reacts to review momentum: open follow-up work warms it up, re-review makes it wobble, and a clean final review lets it hatch.",
-    "- The hatch is seeded from this repository, PR number, and reviewed head SHA, so the same PR revision gets the same little creature every time.",
+    "- The hatch is seeded from this repository and PR number, so the same PR keeps the same creature; the reviewed head SHA can only change safe visual details.",
     "- Rarity is just collectible sparkle: 🥚 common, 🌱 uncommon, 💎 rare, ✨ glimmer, and 🌈 legendary.",
     "",
     "</details>",
   ];
   if (state === "hatched") {
-    const creature = prEggCreature(seed);
+    const creature = prEggCreature(identitySeed, visualSeed);
     const shareUrl = `https://x.com/intent/tweet?text=${encodeURIComponent(creature.shareText)}`;
     return [
       `✨ Hatched: ${creature.rarityLabel} ${creature.name}`,
@@ -5566,7 +5573,7 @@ function publicPrEggLine(
     stateLines[state],
     "",
     "```text",
-    pickSeeded(PR_EGG_ART, seed, state),
+    pickSeeded(PR_EGG_ART, visualSeed, state),
     "```",
     ...explainer,
   ].join("\n");
@@ -6386,7 +6393,10 @@ function prEggRarity(seed: string): { rarity: PrEggRarity; label: string } {
   return PR_EGG_RARITIES.find((entry) => roll < entry.cutoff) ?? PR_EGG_RARITIES[0]!;
 }
 
-function prEggCreature(seed: string): {
+function prEggCreature(
+  identitySeed: string,
+  visualSeed = identitySeed,
+): {
   name: string;
   rarity: PrEggRarity;
   rarityLabel: string;
@@ -6394,10 +6404,10 @@ function prEggCreature(seed: string): {
   portrait: string;
   shareText: string;
 } {
-  const rarity = prEggRarity(seed);
-  const name = `${pickSeeded(PR_EGG_ADJECTIVES, seed, "adjective")} ${pickSeeded(
+  const rarity = prEggRarity(identitySeed);
+  const name = `${pickSeeded(PR_EGG_ADJECTIVES, identitySeed, "adjective")} ${pickSeeded(
     PR_EGG_SPECIES,
-    seed,
+    identitySeed,
     "species",
   )}`;
   const shareText = `My PR egg hatched a ${rarity.label} ${name} in ClawSweeper.`;
@@ -6405,14 +6415,17 @@ function prEggCreature(seed: string): {
     name,
     rarity: rarity.rarity,
     rarityLabel: rarity.label,
-    trait: pickSeeded(PR_EGG_TRAITS, seed, "trait"),
-    portrait: composePrEggSprite(seed, rarity.rarity),
+    trait: pickSeeded(PR_EGG_TRAITS, identitySeed, "trait"),
+    portrait: composePrEggSprite(visualSeed, rarity.rarity),
     shareText,
   };
 }
 
-export function prEggCreatureForTest(seed: string): ReturnType<typeof prEggCreature> {
-  return prEggCreature(seed);
+export function prEggCreatureForTest(
+  identitySeed: string,
+  visualSeed = identitySeed,
+): ReturnType<typeof prEggCreature> {
+  return prEggCreature(identitySeed, visualSeed);
 }
 
 export function prEggSpriteMetricsForTest(seed: string): { lines: string[]; width: number } {
@@ -8337,7 +8350,10 @@ function reviewWorkflowCallout(): string[] {
   ];
 }
 
-function renderKeepOpenCommentFromReport(markdown: string): string {
+function renderKeepOpenCommentFromReport(
+  markdown: string,
+  options: { prStatusKind?: PrStatusLabelKind | null } = {},
+): string {
   const evidence = reportEvidence(markdown).slice(0, 6).map(closeEvidenceLine);
   const likelyOwners = reportLikelyOwners(markdown).slice(0, 5).map(likelyOwnerLine);
   const reviewFindings = reportReviewFindings(markdown);
@@ -8417,6 +8433,7 @@ function renderKeepOpenCommentFromReport(markdown: string): string {
         reviewFindings,
         securityReview,
         overallCorrectness: reportOverallCorrectness(markdown),
+        statusKind: options.prStatusKind ?? null,
       }),
     );
     appendPublicSection(
@@ -8485,12 +8502,16 @@ function renderKeepOpenCommentFromReport(markdown: string): string {
   );
 }
 
-export function renderReviewCommentFromReport(markdown: string, reason: CloseReason): string {
+export function renderReviewCommentFromReport(
+  markdown: string,
+  reason: CloseReason,
+  options: { prStatusKind?: PrStatusLabelKind | null } = {},
+): string {
   const decision = frontMatterValue(markdown, "decision");
   const body =
     decision === "close" && reason !== "none"
       ? renderCloseCommentFromReport(markdown, reason)
-      : renderKeepOpenCommentFromReport(markdown);
+      : renderKeepOpenCommentFromReport(markdown, options);
   const markers = reviewAutomationMarkersFromReport(markdown);
   return markers ? `${body.trimEnd()}\n\n${markers}` : body;
 }
@@ -9958,6 +9979,7 @@ function applyDecisionsCommand(args: Args): void {
       if (processedCount >= processedLimit) break;
       continue;
     }
+    let currentPrStatusKind: PrStatusLabelKind | null = null;
     if (state === "open" && item.kind === "pull_request") {
       item.labels = syncRealBehaviorProofSufficientLabel({
         number,
@@ -9971,10 +9993,15 @@ function applyDecisionsCommand(args: Args): void {
         rating: reportPrRating(markdown),
         dryRun,
       });
+      currentPrStatusKind = prStatusLabelKindFromReport(
+        markdown,
+        currentItemContext(),
+        item.labels,
+      );
       item.labels = syncPrStatusLabel({
         number,
         labels: item.labels,
-        statusKind: prStatusLabelKindFromReport(markdown, currentItemContext(), item.labels),
+        statusKind: currentPrStatusKind,
         dryRun,
       });
       item.labels = syncTelegramVisibleProofLabel({
@@ -9985,7 +10012,9 @@ function applyDecisionsCommand(args: Args): void {
       });
     }
     markdown = replaceFrontMatterValue(markdown, "labels", JSON.stringify(item.labels));
-    const reviewComment = renderReviewCommentFromReport(markdown, closeReason ?? "none");
+    const reviewComment = renderReviewCommentFromReport(markdown, closeReason ?? "none", {
+      prStatusKind: currentPrStatusKind,
+    });
     const existingReviewComment = issueReviewComment(number, [
       reviewComment,
       reviewSectionValue(markdown, "closeComment"),

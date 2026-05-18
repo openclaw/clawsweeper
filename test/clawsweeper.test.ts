@@ -2997,11 +2997,131 @@ Full review comments:
   assert.match(first, /Trait: [^.]+\./);
   assert.match(first, /Share on X: \[post this hatch\]\(https:\/\/x\.com\/intent\/tweet\?text=/);
   assert.match(first, /Copy: My PR egg hatched a [^\n]+ in ClawSweeper\./);
-  assert.match(first, /same PR revision gets the same little creature every time/);
+  assert.match(first, /same PR keeps the same creature/);
   assert.equal(
     first.match(/\*\*PR egg\*\*[\s\S]*?\*\*Real behavior proof\*\*/)?.[0],
     second.match(/\*\*PR egg\*\*[\s\S]*?\*\*Real behavior proof\*\*/)?.[0],
   );
+});
+
+test("PR egg hatch identity stays stable across reviewed PR revisions", () => {
+  const reportForHead = (headSha: string) => `${reportFrontMatter({
+    type: "pull_request",
+    number: "74471",
+    decision: "keep_open",
+    close_reason: "none",
+    review_status: "complete",
+    confidence: "high",
+    author: "contributor",
+    author_association: "CONTRIBUTOR",
+    labels: JSON.stringify(["protected: maintainer-authored"]),
+    work_candidate: "none",
+    pull_head_sha: headSha,
+  })}
+
+## Summary
+
+Keep this clean PR open for maintainer review.
+
+## What This Changes
+
+Fixes the gateway status output.
+
+## Best Possible Solution
+
+Merge after maintainer review.
+
+${realBehaviorProofReportSection()}
+
+${prRatingReportSection({
+  overallTier: "B",
+  proofTier: "A",
+  patchTier: "B",
+  summary: "This PR has strong proof and normal merge-ready implementation quality.",
+  nextSteps: "",
+})}
+
+## Review Findings
+
+Overall correctness: patch is correct
+
+Overall confidence: 0.9
+
+Full review comments:
+
+- none
+`;
+
+  const first = renderReviewCommentFromReport(reportForHead("abc123def456"), "none");
+  const second = renderReviewCommentFromReport(reportForHead("def456abc123"), "none");
+
+  assert.equal(first.match(/✨ Hatched: [^\n]+/)?.[0], second.match(/✨ Hatched: [^\n]+/)?.[0]);
+  assert.equal(first.match(/Trait: [^\n]+/)?.[0], second.match(/Trait: [^\n]+/)?.[0]);
+  assert.equal(first.match(/Copy: [^\n]+/)?.[0], second.match(/Copy: [^\n]+/)?.[0]);
+  assert.match(first, /same PR keeps the same creature/);
+});
+
+test("PR egg wobbling follows current re-review status signal", () => {
+  const report = `${reportFrontMatter({
+    type: "pull_request",
+    number: "74473",
+    decision: "keep_open",
+    close_reason: "none",
+    review_status: "complete",
+    confidence: "high",
+    author: "contributor",
+    author_association: "CONTRIBUTOR",
+    labels: JSON.stringify([]),
+    work_candidate: "none",
+    pull_head_sha: "abc123def456",
+  })}
+
+## Summary
+
+Keep this PR open during the requested re-review loop.
+
+## What This Changes
+
+Fixes the gateway status output.
+
+## Best Possible Solution
+
+Re-review the latest author update.
+
+${realBehaviorProofReportSection({
+  status: "sufficient",
+  evidenceKind: "terminal",
+  needsContributorAction: false,
+  summary: "The PR includes terminal output from a real setup.",
+})}
+
+${prRatingReportSection({
+  overallTier: "B",
+  proofTier: "A",
+  patchTier: "B",
+  overallLabel: "🐚 platinum hermit",
+  proofLabel: "🦀 challenger crab",
+  patchLabel: "🐚 platinum hermit",
+  summary: "Proof is present, but one follow-up remains.",
+  nextSteps: "- Wait for the requested re-review result.",
+})}
+
+## Review Findings
+
+Overall correctness: patch is correct
+
+Overall confidence: 0.9
+
+Full review comments:
+
+- none
+`;
+
+  assert.match(
+    renderReviewCommentFromReport(report, "none", { prStatusKind: "re_review_loop" }),
+    /\*\*PR egg\*\*\n🔁 Wobbling:/,
+  );
+  assert.match(renderReviewCommentFromReport(report, "none"), /\*\*PR egg\*\*\n🔥 Warming up:/);
 });
 
 test("issues do not render PR egg game", () => {
