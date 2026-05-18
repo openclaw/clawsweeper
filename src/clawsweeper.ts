@@ -7993,6 +7993,10 @@ function reviewCommentMarker(number: number): string {
   return `${REVIEW_COMMENT_MARKER_PREFIX} item=${number} -->`;
 }
 
+function closeAppliedCommentMarker(number: number): string {
+  return `<!-- clawsweeper-close-applied item=${number} -->`;
+}
+
 function pullHeadShaFromContext(context: ItemContext): string | null {
   const pull = asRecord(context.pullRequest);
   const head = asRecord(pull.head);
@@ -8306,6 +8310,76 @@ function upsertReviewComment(
     ]);
   }
   return issueReviewComment(number, [markedBody]);
+}
+
+function issueCommentWithMarker(
+  number: number,
+  marker: string,
+): Record<string, unknown> | undefined {
+  const comments = ghPaged<unknown>(`repos/${targetRepo()}/issues/${number}/comments`).map(
+    asRecord,
+  );
+  return comments.find((candidate) => {
+    const body = candidate.body;
+    return typeof body === "string" && body.includes(marker);
+  });
+}
+
+function closeAppliedEvidenceLink(markdown: string, itemUrl: string): string {
+  const reviewCommentUrl = frontMatterValue(markdown, "review_comment_url");
+  if (reviewCommentUrl && reviewCommentUrl !== "unknown") {
+    return markdownLink("durable ClawSweeper review", reviewCommentUrl);
+  }
+  const fixedPrUrl = frontMatterValue(markdown, "fixed_pr_url");
+  const fixedPrNumber = frontMatterValue(markdown, "fixed_pr_number");
+  if (fixedPrUrl && fixedPrUrl !== "unknown") {
+    const label =
+      fixedPrNumber && fixedPrNumber !== "unknown" ? `fix PR #${fixedPrNumber}` : "fix PR";
+    return markdownLink(label, fixedPrUrl);
+  }
+  return markdownLink("closed PR", itemUrl);
+}
+
+function renderCloseAppliedComment(options: {
+  number: number;
+  closeReason: CloseReason;
+  markdown: string;
+  itemUrl: string;
+}): string {
+  return [
+    "ClawSweeper applied the proposed close for this PR.",
+    "",
+    "- Action: closed this PR.",
+    `- Close reason: ${closeReasonText(options.closeReason)}.`,
+    `- Evidence: ${closeAppliedEvidenceLink(options.markdown, options.itemUrl)}.`,
+    "",
+    closeAppliedCommentMarker(options.number),
+  ].join("\n");
+}
+
+function ensureCloseAppliedComment(options: {
+  number: number;
+  closeReason: CloseReason;
+  markdown: string;
+  itemUrl: string;
+  dryRun: boolean;
+}): string {
+  const marker = closeAppliedCommentMarker(options.number);
+  if (issueCommentWithMarker(options.number, marker)) {
+    return "matching ClawSweeper close-applied comment already exists";
+  }
+  const body = renderCloseAppliedComment(options);
+  if (options.dryRun) return "dry-run: would post close-applied comment";
+  const payload = writeCommentPayload(options.number, body);
+  ghWithRetry([
+    "api",
+    `repos/${targetRepo()}/issues/${options.number}/comments`,
+    "--method",
+    "POST",
+    "--input",
+    payload,
+  ]);
+  return "posted close-applied comment";
 }
 
 function postReviewStartStatusComment(options: {
@@ -9557,17 +9631,42 @@ function applyDecisionsCommand(args: Args): void {
     }
     logProgress(`closing #${number}`);
     if (dryRun) {
+      const closeAppliedCommentReason =
+        item.kind === "pull_request"
+          ? ensureCloseAppliedComment({
+              number,
+              closeReason,
+              markdown,
+              itemUrl: item.url,
+              dryRun,
+            })
+          : null;
       closedCount += 1;
       processedCount += 1;
       results.push({
         number,
         action: "closed",
-        reason: `dry-run: would close as ${closeReasonText(closeReason)}`,
+        reason: [
+          `dry-run: would close as ${closeReasonText(closeReason)}`,
+          closeAppliedCommentReason,
+        ]
+          .filter(Boolean)
+          .join("; "),
       });
       logProgress(`would close #${number}`);
       if (processedCount >= processedLimit) break;
       continue;
     }
+    const closeAppliedCommentReason =
+      item.kind === "pull_request"
+        ? ensureCloseAppliedComment({
+            number,
+            closeReason,
+            markdown,
+            itemUrl: item.url,
+            dryRun,
+          })
+        : null;
     closeItem({ number, kind: item.kind, reason: closeReason });
     sleepMs(closeDelayMs);
     markdown = replaceSectionValue(markdown, REVIEW_SECTIONS.closeComment, reviewComment);
@@ -9577,7 +9676,11 @@ function applyDecisionsCommand(args: Args): void {
     archiveClosed(markdown);
     closedCount += 1;
     processedCount += 1;
-    results.push({ number, action: "closed", reason: closeReasonText(closeReason) });
+    results.push({
+      number,
+      action: "closed",
+      reason: [closeReasonText(closeReason), closeAppliedCommentReason].filter(Boolean).join("; "),
+    });
     logProgress(`closed #${number}`);
     if (processedCount >= processedLimit) break;
   }
