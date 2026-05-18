@@ -12,6 +12,7 @@ import {
   automergeChangelogBlockReason,
   automergeFailedChecksRepairReason,
   automergeClusterId,
+  automergeRequestedByFromComments,
   automergeRequestedByFromBody,
   automergeGateBlockReason,
   automergeJobBranch,
@@ -2022,6 +2023,65 @@ test("automerge squash message credits maintainer metadata carried by replacemen
     message.body,
     /^Co-authored-by: clawsweeper\[bot\] <274271284\+clawsweeper\[bot\]@users\.noreply\.github\.com>$/m,
   );
+  assert.match(
+    message.body,
+    /^Co-authored-by: maintainer-user <123456\+maintainer-user@users\.noreply\.github\.com>$/m,
+  );
+});
+
+test("automerge squash message credits requester from earlier automerge status marker", () => {
+  const comments = [
+    {
+      id: 4479302465,
+      user: {
+        login: "maintainer-user",
+        id: 123456,
+      },
+      created_at: "2026-05-18T15:39:35Z",
+      body: "@clawsweeper automerge",
+    },
+    {
+      id: 4479324116,
+      user: {
+        login: "clawsweeper[bot]",
+        id: 274271284,
+      },
+      created_at: "2026-05-18T15:42:14Z",
+      body: [
+        "<!-- clawsweeper-command-status:83614:automerge:2239f3ec0c513b0e7b467331c11ab75a6656617d -->",
+        "<!-- clawsweeper-command:4479302465:2026-05-18T15:39:35Z:automerge:2239f3ec0c513b0e7b467331c11ab75a6656617d -->",
+        "ClawSweeper automerge is enabled.",
+      ].join("\n"),
+    },
+  ];
+
+  assert.deepEqual(automergeRequestedByFromComments(comments), {
+    author: "maintainer-user",
+    author_id: 123456,
+    author_name: null,
+  });
+
+  const message = buildAutomergeSquashMessage({
+    command: {
+      issue_number: 83614,
+      expected_head_sha: "9f19a96427f9dbb50e69ea310518984e776eb48d",
+      target: { title: "fix: two phase" },
+      author: "clawsweeper[bot]",
+      author_id: 274271284,
+      trusted_bot: true,
+    },
+    target: {
+      head_sha: "9f19a96427f9dbb50e69ea310518984e776eb48d",
+      title: "fix: two phase",
+    },
+    view: {
+      title: "fix: two phase",
+      commits: [],
+    },
+    comments,
+  });
+
+  assert.match(message.body, /^Approved-by: maintainer-user$/m);
   assert.match(
     message.body,
     /^Co-authored-by: maintainer-user <123456\+maintainer-user@users\.noreply\.github\.com>$/m,

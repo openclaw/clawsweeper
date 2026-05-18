@@ -708,7 +708,7 @@ export function buildAutomergeSquashMessage({
     `Prepared head SHA: ${target.head_sha ?? command.expected_head_sha ?? "unknown"}`,
     ...(command.comment_url ? [`Review: ${command.comment_url}`] : []),
     "",
-    ...automergeCreditTrailers({ command, commits: view.commits ?? [] }),
+    ...automergeCreditTrailers({ command, comments, commits: view.commits ?? [] }),
   ].join("\n");
   return { subject, body: body.trimEnd(), summaryLines, fixupLines };
 }
@@ -749,7 +749,7 @@ function automergeFixupLines({ view, comments }: LooseRecord): string[] {
     : ["No ClawSweeper repair was needed after automerge opt-in."];
 }
 
-function automergeCreditTrailers({ command, commits }: LooseRecord): string[] {
+function automergeCreditTrailers({ command, comments, commits }: LooseRecord): string[] {
   const trailers: string[] = [];
   const coAuthorKeys = new Set<string>();
   for (const trailer of coAuthorTrailersFromCommits(commits, coAuthorKeys)) {
@@ -761,7 +761,10 @@ function automergeCreditTrailers({ command, commits }: LooseRecord): string[] {
   }
 
   const maintainer = maintainerCredit(
-    command.maintainer_attribution ?? automergeRequestedByFromBody(command.target?.body) ?? command,
+    command.maintainer_attribution ??
+      automergeRequestedByFromComments(comments) ??
+      automergeRequestedByFromBody(command.target?.body) ??
+      command,
   );
   if (!maintainer) return trailers;
   trailers.push(`Approved-by: ${maintainer.login}`);
@@ -769,6 +772,42 @@ function automergeCreditTrailers({ command, commits }: LooseRecord): string[] {
     trailers.push(`Co-authored-by: ${maintainer.name} <${maintainer.email}>`);
   }
   return trailers;
+}
+
+export function automergeRequestedByFromComments(comments: JsonValue): LooseRecord | null {
+  if (!Array.isArray(comments)) return null;
+  const byId = new Map<string, LooseRecord>();
+  for (const comment of comments) {
+    const id = String(comment?.id ?? "").trim();
+    if (id) byId.set(id, comment);
+  }
+  const candidates: Array<{ at: number; comment: LooseRecord }> = [];
+  for (const statusComment of comments) {
+    const body = String(statusComment?.body ?? "");
+    for (const marker of body.matchAll(
+      /<!--\s*clawsweeper-command:([^:\s>]+):(.+?):(automerge|maintainer_approve_automerge):([^>\s]+)\s*-->/gi,
+    )) {
+      const [, commentId, createdAt, intent] = marker;
+      if (!["automerge", "maintainer_approve_automerge"].includes(String(intent))) continue;
+      const original = byId.get(String(commentId ?? "").trim());
+      if (!original || original === statusComment) continue;
+      if (String(original?.user?.login ?? original?.author ?? "").includes("[bot]")) continue;
+      const parsed = parseCommand(String(original?.body ?? ""));
+      if (!["automerge", "maintainer_approve_automerge"].includes(String(parsed.intent))) continue;
+      candidates.push({
+        at: Date.parse(String(createdAt ?? original?.created_at ?? original?.createdAt ?? "")) || 0,
+        comment: original,
+      });
+    }
+  }
+  const latest = candidates.sort((left, right) => right.at - left.at)[0]?.comment;
+  const author = latest?.user?.login ?? latest?.author;
+  if (!author) return null;
+  return {
+    author,
+    author_id: latest?.user?.id ?? latest?.author_id ?? null,
+    author_name: latest?.user?.name ?? latest?.author_name ?? null,
+  };
 }
 
 function coAuthorTrailersFromCommits(commits: JsonValue, seen: Set<string>): string[] {
