@@ -193,6 +193,32 @@ test("selectCommandStatusComment honors custom trusted bots during marker fallba
   });
 });
 
+test("selectCommandStatusComment does not append progress to Mantis proof comments", () => {
+  const marker = "<!-- mantis-telegram-desktop-proof -->";
+  const options = parseOptions(["--marker", marker]);
+  const selected = selectCommandStatusComment(
+    [
+      {
+        id: 4471379948,
+        user: { login: "clawsweeper[bot]" },
+        body: [
+          marker,
+          "## Mantis Telegram Desktop Proof",
+          "",
+          "Summary: Mantis did not generate before/after GIFs.",
+        ].join("\n"),
+      },
+    ],
+    {
+      marker: options.marker,
+      statusCommentId: options.statusCommentId,
+      trustedBots: options.trustedBots,
+    },
+  );
+
+  assert.equal(selected, null);
+});
+
 test("mergeCommandProgressSection replaces existing progress blocks in place", () => {
   const body = mergeCommandProgressSection(
     [

@@ -109,7 +109,7 @@ export function selectCommandStatusComment(
         typeof comment.body === "string" &&
         comment.body.includes(options.marker),
     )
-    .at(-1);
+    .at(-1) ?? null;
 }
 
 export function mergeCommandProgressSection(
@@ -190,5 +190,9 @@ function optionalNumber(value: JsonValue) {
 }
 
 function isTrustedStatusComment(comment: LooseRecord, trustedBots: Set<string>) {
-  return isAllowedMutationActor(comment.user?.login, trustedBots);
+  return (
+    isAllowedMutationActor(comment.user?.login, trustedBots) &&
+    typeof comment.body === "string" &&
+    !comment.body.includes("<!-- mantis-")
+  );
 }
