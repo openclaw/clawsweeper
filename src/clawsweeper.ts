@@ -5476,44 +5476,33 @@ function prEggShareTargetUrl(markdown: string): string {
   return `https://github.com/${repo}/pull/${number}`;
 }
 
-function isContributorFacingRankUpStep(step: string): boolean {
-  const normalized = step
-    .trim()
-    .replace(/[.。]+$/u, "")
-    .toLowerCase();
-  if (!normalized || normalized === "none" || normalized === "n/a" || normalized === "na") {
-    return false;
+function prStatusLabelKindFromLabels(labels: readonly string[]): PrStatusLabelKind | null {
+  for (const label of PR_STATUS_LABELS) {
+    if (labels.includes(label.name)) return label.kind;
   }
-  return !/\bmaintainer\b/.test(normalized);
+  return null;
 }
 
-function hasContributorFacingRankUpSteps(rating: Pick<PrRating, "nextSteps">): boolean {
-  return rating.nextSteps.some(isContributorFacingRankUpStep);
+function prEggStatusLabelKindFromReportLabels(markdown: string): PrStatusLabelKind | null {
+  const fromParsedLabels = prStatusLabelKindFromLabels(frontMatterStringArray(markdown, "labels"));
+  if (fromParsedLabels) return fromParsedLabels;
+  const rawLabels = frontMatterValue(markdown, "labels") ?? "";
+  return PR_STATUS_LABELS.find((label) => rawLabels.includes(label.name))?.kind ?? null;
 }
 
-function prEggStateFromReport(
-  markdown: string,
-  options: {
-    realBehaviorProof: RealBehaviorProof;
-    prRating: PrRating;
-    reviewFindings: readonly Pick<ReviewFinding, "priority">[];
-    securityReview: Pick<SecurityReview, "status">;
-    overallCorrectness: OverallCorrectness;
-    statusKind?: PrStatusLabelKind | null;
-  },
-): PrEggState {
-  const hasRankUpWork = hasContributorFacingRankUpSteps(options.prRating);
-  if (options.statusKind === "ready_for_maintainer_look") return "hatched";
-  if (options.statusKind === "re_review_loop") return "wobbling";
-  const hasUnresolvedWork =
-    hasRankUpWork ||
-    hasUnresolvedContributorWork({
-      realBehaviorProof: options.realBehaviorProof,
-      reviewFindings: options.reviewFindings,
-      securityReview: options.securityReview,
-      overallCorrectness: options.overallCorrectness,
-    });
-  return hasUnresolvedWork ? "warming" : "incubating";
+function prEggStateFromStatus(statusKind: PrStatusLabelKind | null | undefined): PrEggState {
+  if (statusKind === "ready_for_maintainer_look" || statusKind === "automerge_armed") {
+    return "hatched";
+  }
+  if (statusKind === "re_review_loop") return "wobbling";
+  if (
+    statusKind === "actively_grinding" ||
+    statusKind === "waiting_on_author" ||
+    statusKind === "needs_proof"
+  ) {
+    return "warming";
+  }
+  return "incubating";
 }
 
 function prEggProofUnlocked(proof: Pick<RealBehaviorProof, "status">): boolean {
@@ -5552,7 +5541,7 @@ function publicPrEggLine(
 
   const identitySeed = prEggIdentitySeedFromReport(markdown);
   const visualSeed = prEggVisualSeedFromReport(markdown);
-  const state = prEggStateFromReport(markdown, options);
+  const state = prEggStateFromStatus(options.statusKind);
   const explainer = [
     "",
     "<details>",
@@ -8407,6 +8396,7 @@ function renderKeepOpenCommentFromReport(
   const mergeRiskLine = isPullRequest
     ? publicMergeRiskLine(risks, nextStepLine, bestSolutionLine, mergeRiskOptions)
     : "";
+  const prEggStatusKind = options.prStatusKind ?? prEggStatusLabelKindFromReportLabels(markdown);
   const details: string[] = [];
   const hasReviewFindings = isPullRequest && reviewFindings.length > 0;
   const lines = [
@@ -8454,7 +8444,7 @@ function renderKeepOpenCommentFromReport(
         reviewFindings,
         securityReview,
         overallCorrectness: reportOverallCorrectness(markdown),
-        statusKind: options.prStatusKind ?? null,
+        statusKind: prEggStatusKind,
       }),
     );
     appendPublicSection(

@@ -2679,7 +2679,9 @@ Full review comments:
 - none
 `;
 
-  const comment = renderReviewCommentFromReport(report, "none");
+  const comment = renderReviewCommentFromReport(report, "none", {
+    prStatusKind: "ready_for_maintainer_look",
+  });
   const markers = reviewAutomationMarkersFromReport(report);
 
   assert.match(comment, /\*\*PR rating\*\*\nOverall: 🦞 diamond lobster/);
@@ -2900,7 +2902,7 @@ Full review comments:
   assert.doesNotMatch(eggSection, /Share on X:/);
 });
 
-test("pull request review comments render warming PR egg after proof passes", () => {
+test("pull request review comments render warming PR egg from active status after proof passes", () => {
   const report = `${reportFrontMatter({
     type: "pull_request",
     number: "74470",
@@ -2956,7 +2958,9 @@ Full review comments:
 - none
 `;
 
-  const comment = renderReviewCommentFromReport(report, "none");
+  const comment = renderReviewCommentFromReport(report, "none", {
+    prStatusKind: "actively_grinding",
+  });
   const eggSection = comment.match(/\*\*PR egg\*\*[\s\S]*?\*\*Real behavior proof\*\*/)?.[0] ?? "";
 
   assert.match(eggSection, /\*\*PR egg\*\*\n🔥 Warming up:/);
@@ -3224,6 +3228,145 @@ Full review comments:
   }
 });
 
+test("PR egg hatches from ready status label when explicit status signal is absent", () => {
+  const report = `${reportFrontMatter({
+    type: "pull_request",
+    number: "83632",
+    decision: "keep_open",
+    close_reason: "none",
+    review_status: "complete",
+    confidence: "high",
+    author: "contributor",
+    author_association: "CONTRIBUTOR",
+    labels: JSON.stringify(["proof: sufficient", "status: 👀 ready for maintainer look"]),
+    work_candidate: "none",
+    pull_head_sha: "27d246732015a4ea4fc48dd828c121857f1e5124",
+    review_comment_url: "https://github.com/openclaw/openclaw/pull/83632#issuecomment-4478578658",
+  })}
+
+## Summary
+
+Focused patch with proof and maintainer-facing follow-up decisions.
+
+## What This Changes
+
+Improves Telegram proof capture.
+
+## Best Possible Solution
+
+Merge after maintainer review.
+
+${realBehaviorProofReportSection({
+  status: "sufficient",
+  evidenceKind: "terminal",
+  needsContributorAction: false,
+  summary: "The PR includes terminal output from a real setup.",
+})}
+
+${prRatingReportSection({
+  overallTier: "A",
+  proofTier: "A",
+  patchTier: "A",
+  overallLabel: "🐚 platinum hermit",
+  proofLabel: "🐚 platinum hermit",
+  patchLabel: "🐚 platinum hermit",
+  summary: "Proof is present, with maintainer policy decisions remaining.",
+  nextSteps: [
+    "- Decide whether `guest.enabled` should remain `auto` by default or require explicit opt-in.",
+    "- If keeping auto, add or run upgrade-safety proof for omitted guest config and account allowlist combinations.",
+  ].join("\n"),
+})}
+
+## Review Findings
+
+Overall correctness: patch is correct
+
+Overall confidence: 0.9
+
+Full review comments:
+
+- none
+`;
+
+  const comment = renderReviewCommentFromReport(report, "none");
+
+  assert.match(comment, /\*\*PR egg\*\*\n✨ Hatched: [^\n]+/);
+  assert.match(comment, /Rarity: [^\n]+\./);
+  assert.match(
+    comment,
+    /Share on X: \[post this hatch\]\(https:\/\/x\.com\/intent\/tweet\?text=[^)]+&url=https%3A%2F%2Fgithub\.com%2Fopenclaw%2Fopenclaw%2Fpull%2F83632%23issuecomment-4478578658\)/,
+  );
+  assert.doesNotMatch(comment, /\*\*PR egg\*\*\n🔥 Warming up:/);
+});
+
+test("PR egg lifecycle follows the current PR status signal", () => {
+  const report = `${reportFrontMatter({
+    type: "pull_request",
+    number: "74475",
+    decision: "keep_open",
+    close_reason: "none",
+    review_status: "complete",
+    confidence: "high",
+    author: "contributor",
+    author_association: "CONTRIBUTOR",
+    labels: JSON.stringify([]),
+    work_candidate: "none",
+    pull_head_sha: "abc123def456",
+  })}
+
+## Summary
+
+Keep this PR open for status-driven egg rendering.
+
+## What This Changes
+
+Fixes the gateway status output.
+
+## Best Possible Solution
+
+Follow the current PR status.
+
+${realBehaviorProofReportSection({
+  status: "sufficient",
+  evidenceKind: "terminal",
+  needsContributorAction: false,
+  summary: "The PR includes terminal output from a real setup.",
+})}
+
+${prRatingReportSection({
+  overallTier: "B",
+  proofTier: "A",
+  patchTier: "B",
+  summary: "Proof is present; lifecycle is status-driven.",
+  nextSteps: "",
+})}
+
+## Review Findings
+
+Overall correctness: patch is correct
+
+Overall confidence: 0.9
+
+Full review comments:
+
+- none
+`;
+
+  const cases = [
+    ["automerge_armed", /\*\*PR egg\*\*\n✨ Hatched:/],
+    ["ready_for_maintainer_look", /\*\*PR egg\*\*\n✨ Hatched:/],
+    ["re_review_loop", /\*\*PR egg\*\*\n🔁 Wobbling:/],
+    ["actively_grinding", /\*\*PR egg\*\*\n🔥 Warming up:/],
+    ["waiting_on_author", /\*\*PR egg\*\*\n🔥 Warming up:/],
+    ["needs_proof", /\*\*PR egg\*\*\n🔥 Warming up:/],
+    [null, /\*\*PR egg\*\*\n🥚 Incubating:/],
+  ] as const;
+
+  for (const [prStatusKind, expected] of cases) {
+    assert.match(renderReviewCommentFromReport(report, "none", { prStatusKind }), expected);
+  }
+});
+
 test("PR egg wobbling follows current re-review status signal", () => {
   const report = `${reportFrontMatter({
     type: "pull_request",
@@ -3284,7 +3427,7 @@ Full review comments:
     renderReviewCommentFromReport(report, "none", { prStatusKind: "re_review_loop" }),
     /\*\*PR egg\*\*\n🔁 Wobbling:/,
   );
-  assert.match(renderReviewCommentFromReport(report, "none"), /\*\*PR egg\*\*\n🔥 Warming up:/);
+  assert.match(renderReviewCommentFromReport(report, "none"), /\*\*PR egg\*\*\n🥚 Incubating:/);
 });
 
 test("issues do not render PR egg game", () => {
