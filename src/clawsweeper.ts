@@ -6458,8 +6458,10 @@ function sectionList(section: string, label: string): string[] {
   for (let index = start + 1; index < lines.length; index += 1) {
     const line = lines[index]!;
     if (/^[A-Z][A-Za-z -]+:/.test(line)) break;
-    const item = line.match(/^\s*-\s+(.+)$/);
-    if (item?.[1]) values.push(item[1].trim());
+    const trimmed = line.trimStart();
+    if (!trimmed.startsWith("- ")) continue;
+    const item = trimmed.slice(2).trim();
+    if (item) values.push(item);
   }
   return values;
 }
