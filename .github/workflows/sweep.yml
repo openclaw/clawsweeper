@@ -112,23 +112,18 @@ on:
     # step via a case statement on github.event.schedule.
     #
     # Cadence revised 2026-05-18 for the realtime-receiver era: push-mode dispatch
-    # handles real-time review on every event, so cron becomes a backstop for items
-    # dispatch missed plus periodic re-evaluation. Daily on every target is overkill;
-    # frequency now matches per-target activity:
+    # handles real-time review on every event, so cron becomes a daily backstop for
+    # items dispatch missed plus periodic re-evaluation.
     #
-    # valkyriweb/pi-mono: daily 05:00 UTC. Active upstream fork — catch upstream-sync drift.
-    # valkyriweb/openclaw: weekdays 06:00 UTC. Low-traffic private fork.
-    # valkyriweb/lue-kube: every 12h at 07:00 / 19:00 UTC. Active ops repo.
-    # valkyriweb/openclaw-claude: weekdays 08:00 UTC. Doc commits.
-    # bermont-digital/multica: weekdays 09:00 UTC. Replaces the dispatch-only era
-    #   that produced no signal under propose-only; with realtime receivers live,
-    #   the cron now serves as a drift-catch backstop.
-    # CLIP-SA/* + valkyriweb/clawsweeper-self: workflow_dispatch only.
-    - cron: "0 5 * * *" # valkyriweb/pi-mono daily
-    - cron: "0 6 * * 1-5" # valkyriweb/openclaw weekdays
-    - cron: "0 7,19 * * *" # valkyriweb/lue-kube every 12h
-    - cron: "0 8 * * 1-5" # valkyriweb/openclaw-claude weekdays
-    - cron: "0 9 * * 1-5" # bermont-digital/multica weekdays
+    # valkyriweb/pi-mono: 05:00 UTC. Active upstream fork — catch upstream-sync drift.
+    # valkyriweb/openclaw: 06:00 UTC. Low-traffic private fork.
+    # valkyriweb/lue-kube: 07:00 UTC. Active ops repo.
+    # valkyriweb/openclaw-claude: 08:00 UTC. Doc commits.
+    # bermont-digital/multica + CLIP-SA/* + valkyriweb/clawsweeper-self: workflow_dispatch only.
+    - cron: "0 5 * * *" # valkyriweb/pi-mono
+    - cron: "0 6 * * *" # valkyriweb/openclaw
+    - cron: "0 7 * * *" # valkyriweb/lue-kube
+    - cron: "0 8 * * *" # valkyriweb/openclaw-claude
 
 permissions:
   contents: write
@@ -551,17 +546,14 @@ jobs:
               "0 5 * * *")
                 target_repo="valkyriweb/pi-mono"
                 ;;
-              "0 6 * * 1-5")
+              "0 6 * * *")
                 target_repo="valkyriweb/openclaw"
                 ;;
-              "0 7,19 * * *")
+              "0 7 * * *")
                 target_repo="valkyriweb/lue-kube"
                 ;;
-              "0 8 * * 1-5")
+              "0 8 * * *")
                 target_repo="valkyriweb/openclaw-claude"
-                ;;
-              "0 9 * * 1-5")
-                target_repo="bermont-digital/multica"
                 ;;
               *)
                 target_repo="bermont-digital/multica"
