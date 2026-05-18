@@ -662,6 +662,18 @@ test("automerge changelog gate blocks user-facing OpenClaw changes without chang
   assert.equal(
     automergeChangelogBlockReason({
       repo: "openclaw/openclaw",
+      title: "Log Telegram outbound delivery success",
+      files: [
+        { path: "extensions/telegram/src/send.ts" },
+        { path: "extensions/telegram/src/send.test.ts" },
+      ],
+    }),
+    "CHANGELOG.md entry is required for user-facing ClawSweeper automerge changes",
+  );
+
+  assert.equal(
+    automergeChangelogBlockReason({
+      repo: "openclaw/openclaw",
       title: "fix(discord): cool down Cloudflare 429 responses",
       files: [{ path: "CHANGELOG.md" }, { path: "extensions/discord/src/api.ts" }],
     }),
@@ -693,7 +705,7 @@ test("automerge activation sends missing changelog directly to repair", () => {
     automergeActivationRepairReason({
       intent: "automerge",
       repo: "openclaw/openclaw",
-      title: "fix(memory): preserve session corpus labels",
+      title: "Preserve session corpus labels",
       files: [
         { path: "extensions/memory-core/src/tools.ts" },
         { path: "extensions/memory-core/src/tools.test.ts" },

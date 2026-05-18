@@ -400,12 +400,11 @@ When code changes are appropriate, emit a fix artifact with
 `;
 }
 
-export function automergeChangelogBlockReason({ repo, title, files }: LooseRecord): string | null {
+export function automergeChangelogBlockReason({ repo, files }: LooseRecord): string | null {
   if (String(repo ?? "").toLowerCase() !== "openclaw/openclaw") return null;
 
   const paths = normalizeChangedPaths(files);
   if (paths.some(isChangelogPath)) return null;
-  if (!automergeTitleUsuallyNeedsChangelog(title)) return null;
   if (!paths.some(isPotentiallyUserFacingPath)) return null;
 
   return "CHANGELOG.md entry is required for user-facing ClawSweeper automerge changes";
@@ -421,10 +420,6 @@ function normalizeChangedPaths(files: JsonValue): string[] {
 
 function isChangelogPath(file: string): boolean {
   return /(^|\/)CHANGELOG\.md$/i.test(file);
-}
-
-function automergeTitleUsuallyNeedsChangelog(title: JsonValue): boolean {
-  return /^(?:feat|fix|perf)(?:\([^)]+\))?:/i.test(String(title ?? "").trim());
 }
 
 function isPotentiallyUserFacingPath(file: string): boolean {
