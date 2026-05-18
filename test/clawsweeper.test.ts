@@ -2942,7 +2942,7 @@ ${prRatingReportSection({
   proofLabel: "🦀 challenger crab",
   patchLabel: "🐚 platinum hermit",
   summary: "Proof is present, but one follow-up remains.",
-  nextSteps: "- Resolve the remaining maintainer follow-up.",
+  nextSteps: "- Add after-fix validation output from the changed path.",
 })}
 
 ## Review Findings
@@ -3018,8 +3018,12 @@ Full review comments:
 - none
 `;
 
-  const first = renderReviewCommentFromReport(report, "none");
-  const second = renderReviewCommentFromReport(report, "none");
+  const first = renderReviewCommentFromReport(report, "none", {
+    prStatusKind: "ready_for_maintainer_look",
+  });
+  const second = renderReviewCommentFromReport(report, "none", {
+    prStatusKind: "ready_for_maintainer_look",
+  });
 
   assert.match(first, /\*\*PR egg\*\*\n✨ Hatched: [^\n]+/);
   assert.match(first, /```text\n[\s\S]+?\n```/);
@@ -3081,13 +3085,79 @@ Full review comments:
 - none
 `;
 
-  const first = renderReviewCommentFromReport(reportForHead("abc123def456"), "none");
-  const second = renderReviewCommentFromReport(reportForHead("def456abc123"), "none");
+  const first = renderReviewCommentFromReport(reportForHead("abc123def456"), "none", {
+    prStatusKind: "ready_for_maintainer_look",
+  });
+  const second = renderReviewCommentFromReport(reportForHead("def456abc123"), "none", {
+    prStatusKind: "ready_for_maintainer_look",
+  });
 
   assert.equal(first.match(/✨ Hatched: [^\n]+/)?.[0], second.match(/✨ Hatched: [^\n]+/)?.[0]);
   assert.equal(first.match(/Trait: [^\n]+/)?.[0], second.match(/Trait: [^\n]+/)?.[0]);
   assert.equal(first.match(/Copy: [^\n]+/)?.[0], second.match(/Copy: [^\n]+/)?.[0]);
   assert.match(first, /same PR keeps the same creature/);
+});
+
+test("PR egg hatches from ready status despite non-contributor rank-up sentinels", () => {
+  const reportForNextSteps = (nextSteps: string) => `${reportFrontMatter({
+    type: "pull_request",
+    number: "83606",
+    decision: "keep_open",
+    close_reason: "none",
+    review_status: "complete",
+    confidence: "high",
+    author: "contributor",
+    author_association: "CONTRIBUTOR",
+    labels: JSON.stringify([]),
+    work_candidate: "none",
+    pull_head_sha: "abc123def456",
+  })}
+
+## Summary
+
+Keep this proof-sufficient PR open for maintainer review.
+
+## What This Changes
+
+Fixes the gateway status output.
+
+## Best Possible Solution
+
+Merge after maintainer review.
+
+${realBehaviorProofReportSection()}
+
+${prRatingReportSection({
+  overallTier: "B",
+  proofTier: "A",
+  patchTier: "B",
+  summary: "This PR has strong proof and normal merge-ready implementation quality.",
+  nextSteps,
+})}
+
+## Review Findings
+
+Overall correctness: patch is correct
+
+Overall confidence: 0.9
+
+Full review comments:
+
+- none
+`;
+
+  for (const nextSteps of [
+    "- none",
+    "- n/a",
+    "- Maintainer accepts the relative details.reportPath contract change before merge.",
+  ]) {
+    const comment = renderReviewCommentFromReport(reportForNextSteps(nextSteps), "none", {
+      prStatusKind: "ready_for_maintainer_look",
+    });
+
+    assert.match(comment, /\*\*PR egg\*\*\n✨ Hatched: [^\n]+/);
+    assert.doesNotMatch(comment, /\*\*PR egg\*\*\n🔥 Warming up:/);
+  }
 });
 
 test("PR egg wobbling follows current re-review status signal", () => {

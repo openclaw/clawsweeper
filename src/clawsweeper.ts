@@ -5468,6 +5468,21 @@ function prEggVisualSeedFromReport(markdown: string): string {
   return `${identitySeed}@${headSha}`;
 }
 
+function isContributorFacingRankUpStep(step: string): boolean {
+  const normalized = step
+    .trim()
+    .replace(/[.。]+$/u, "")
+    .toLowerCase();
+  if (!normalized || normalized === "none" || normalized === "n/a" || normalized === "na") {
+    return false;
+  }
+  return !/\bmaintainer\b/.test(normalized);
+}
+
+function hasContributorFacingRankUpSteps(rating: Pick<PrRating, "nextSteps">): boolean {
+  return rating.nextSteps.some(isContributorFacingRankUpStep);
+}
+
 function prEggStateFromReport(
   markdown: string,
   options: {
@@ -5479,18 +5494,11 @@ function prEggStateFromReport(
     statusKind?: PrStatusLabelKind | null;
   },
 ): PrEggState {
-  const isReady =
-    options.prRating.nextSteps.length === 0 &&
-    isReadyForMaintainerLook({
-      realBehaviorProof: options.realBehaviorProof,
-      reviewFindings: options.reviewFindings,
-      securityReview: options.securityReview,
-      overallCorrectness: options.overallCorrectness,
-    });
-  if (isReady) return "hatched";
+  const hasRankUpWork = hasContributorFacingRankUpSteps(options.prRating);
+  if (options.statusKind === "ready_for_maintainer_look") return "hatched";
   if (options.statusKind === "re_review_loop") return "wobbling";
   const hasUnresolvedWork =
-    options.prRating.nextSteps.length > 0 ||
+    hasRankUpWork ||
     hasUnresolvedContributorWork({
       realBehaviorProof: options.realBehaviorProof,
       reviewFindings: options.reviewFindings,
