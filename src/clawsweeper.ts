@@ -7017,6 +7017,50 @@ function publicSummaryBody(summaryLine: string, reproductionAssessment: string):
     .join("\n\n");
 }
 
+function issueReproductionHelpSuggestions(markdown: string): string[] {
+  if (frontMatterValue(markdown, "type") !== "issue") return [];
+  const reproductionStatus = frontMatterValue(markdown, "reproduction_status");
+  const reproductionConfidence = frontMatterValue(markdown, "reproduction_confidence");
+  if (reproductionStatus === "reproduced" && reproductionConfidence === "high") return [];
+  const reproductionAssessment = sentence(reviewSectionValue(markdown, "reproductionAssessment"));
+  if (/^yes\b/i.test(reproductionAssessment)) return [];
+  const sections = [
+    reviewSectionValue(markdown, "summary"),
+    reproductionAssessment,
+    reviewSectionValue(markdown, "solutionAssessment"),
+    reviewSectionValue(markdown, "evidence"),
+    reviewSectionValue(markdown, "risks"),
+  ];
+  const text = sections.join("\n").toLowerCase();
+  const suggestions: string[] = [];
+  const hasMedia = /\b(?:screenshot|screen shot|video|recording|gif|image)\b/i.test(text);
+  const hasSteps = /\b(?:step|steps|command|run|click|launch|workflow)\b/i.test(text);
+  const hasExpectedActual = /\bexpected\b/i.test(text) && /\bactual\b/i.test(text);
+  const hasLogs = /\b(?:log|logs|terminal|console|stack trace|traceback|output|error)\b/i.test(
+    text,
+  );
+  const hasVersionContext =
+    /\b(?:version|platform|os|macos|windows|linux|browser|provider|channel|config|settings)\b/i.test(
+      text,
+    );
+  if (!hasMedia) {
+    suggestions.push("Add a screenshot or short recording showing the behavior.");
+  }
+  if (!hasSteps) {
+    suggestions.push("Include the exact command, prompt, or workflow that triggered it.");
+  }
+  if (!hasExpectedActual) {
+    suggestions.push("Add expected vs actual behavior.");
+  }
+  if (!hasLogs) {
+    suggestions.push("Include redacted logs or terminal output.");
+  }
+  if (!hasVersionContext) {
+    suggestions.push("Share version, platform, channel/provider, and relevant config details.");
+  }
+  return suggestions.slice(0, 3);
+}
+
 function appendReviewQuestionDetails(
   details: string[],
   reproductionAssessment: string | undefined,
@@ -7108,6 +7152,16 @@ function renderKeepOpenCommentFromReport(markdown: string): string {
     );
   } else {
     appendPublicSection(lines, "Summary", publicSummaryBody(summaryLine, reproductionAssessment));
+  }
+  if (!isPullRequest) {
+    const reproductionHelp = issueReproductionHelpSuggestions(markdown);
+    if (reproductionHelp.length) {
+      appendPublicSection(
+        lines,
+        "Ways to help us reproduce this",
+        reproductionHelp.map((suggestion) => `- ${suggestion}`).join("\n"),
+      );
+    }
   }
   if (isPullRequest) {
     appendPublicSection(lines, "PR rating", publicPrRatingLine(prRating, realBehaviorProof));

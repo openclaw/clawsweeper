@@ -2322,11 +2322,48 @@ Reason: The bug is narrow and source-reproducible.
     /\*\*Summary\*\*\nKeep open\. Slack typing callbacks are disabled in message-tool-only group replies\.\n\nReproducibility: yes\. A source-level reproduction is clear/,
   );
   assert.ok(comment.indexOf("Reproducibility: yes.") < comment.indexOf("**Next step**"));
+  assert.doesNotMatch(comment, /\*\*Ways to help us reproduce this\*\*/);
   assert.doesNotMatch(comment, /\*\*Security\*\*/);
   assert.doesNotMatch(comment, /Not applicable:/);
   assert.match(
     comment,
     /Do we have a high-confidence way to reproduce the issue\?\n\nYes\. A source-level reproduction is clear/,
+  );
+});
+
+test("issue keep-open review comments suggest concrete reproduction help", () => {
+  const comment = renderReviewCommentFromReport(
+    `${reportFrontMatter({
+      type: "issue",
+      number: "75878",
+      decision: "keep_open",
+      close_reason: "none",
+      work_candidate: "manual_review",
+      reproduction_status: "unclear",
+      reproduction_confidence: "low",
+    })}
+
+## Summary
+
+Keep open. The app sometimes does the wrong thing.
+
+## Reproduction Assessment
+
+Unclear. The report describes an intermittent visible failure but does not include enough information to reproduce it.
+
+## Best Possible Solution
+
+Ask for enough details to reproduce the issue before planning a fix.
+`,
+    "none",
+  );
+
+  assert.match(comment, /\*\*Ways to help us reproduce this\*\*/);
+  assert.match(comment, /- Add a screenshot or short recording showing the behavior\./);
+  assert.match(comment, /- Include the exact command, prompt, or workflow that triggered it\./);
+  assert.match(comment, /- Add expected vs actual behavior\./);
+  assert.ok(
+    comment.indexOf("**Ways to help us reproduce this**") < comment.indexOf("**Next step**"),
   );
 });
 
