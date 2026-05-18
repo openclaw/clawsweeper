@@ -7420,7 +7420,7 @@ function publicMergeRiskLine(
     : mergeRiskFallbackOptionsLines(bestSolutionLine, nextStepLine);
   return [
     `Why this matters: ${risks}`,
-    choices.length ? ["", "Maintainer options:", ...choices].join("\n") : "",
+    choices.length ? ["", "**Maintainer options:**", ...choices].join("\n") : "",
   ]
     .filter(Boolean)
     .join("\n");
