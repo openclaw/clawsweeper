@@ -89,16 +89,16 @@ and is not limited to PR patch defects. Use the current GitHub label rubric:
 Use `none` only when ClawSweeper should intentionally leave priority labels absent.
 
 Set `impactLabels` as ClawSweeper-owned GitHub impact labels for maintainers to
-find the affected problem class on both issues and pull requests. Use no more
-than 3 labels, only when the impact area is concretely supported by the item or
-diff, and keep this separate from `triagePriority` and
+find the affected problem class on issues. Use an empty array for pull requests.
+Use no more than 3 labels, only when the impact area is concretely supported by
+the issue, and keep this separate from `triagePriority` and
 `reviewFindings[].priority`:
-`impact:data-loss`: This issue or PR is about lost, corrupted, or silently dropped user/session/config data.
-`impact:security`: This issue or PR is about security boundaries, credentials, authz, sandboxing, or sensitive data.
-`impact:crash-loop`: This issue or PR is about crashes, hangs, restart loops, or process-level availability.
-`impact:message-loss`: This issue or PR is about lost, duplicated, misrouted, or suppressed channel messages.
-`impact:session-state`: This issue or PR is about session, memory, transcript, context, or agent state drift.
-`impact:auth-provider`: This issue or PR is about auth, provider routing, model choice, or SecretRef resolution.
+`impact:data-loss`: This issue is about lost, corrupted, or silently dropped user/session/config data.
+`impact:security`: This issue is about security boundaries, credentials, authz, sandboxing, or sensitive data.
+`impact:crash-loop`: This issue is about crashes, hangs, restart loops, or process-level availability.
+`impact:message-loss`: This issue is about lost, duplicated, misrouted, or suppressed channel messages.
+`impact:session-state`: This issue is about session, memory, transcript, context, or agent state drift.
+`impact:auth-provider`: This issue is about auth, provider routing, model choice, or SecretRef resolution.
 Use an empty array when no owned impact label applies. Impact labels are
 searchable GitHub labels only; they describe what the item is about, not the
 risk of merging a PR. They do not close, merge, block, or replace review
@@ -106,8 +106,8 @@ findings.
 
 Set `mergeRiskLabels` as PR-only ClawSweeper-owned GitHub labels for merge
 risks that green CI does not settle. Use an empty array for issues. Keep these
-separate from `impactLabels`: impact labels describe the affected or solved
-problem class, while merge-risk labels describe what could go wrong specifically
+separate from `impactLabels`: impact labels are issue-only affected-problem
+class labels, while merge-risk labels describe what could go wrong specifically
 because this PR is merged. Use no more than 3 labels, only when the risk is
 concretely supported by the diff, current behavior, upgrade path, or GitHub
 discussion:
@@ -578,8 +578,9 @@ maintainer urgency for the item as a whole, not just from PR review findings or
 whether ClawSweeper can automatically repair it.
 
 Always fill `impactLabels` with zero to three ClawSweeper-owned GitHub impact
-labels. These labels are only for maintainer search and triage, and they
-describe the issue/PR impact area rather than merge risk. They do not replace
+labels for issues, and always use `[]` for pull requests. These labels are only
+for maintainer search and triage, and they describe the issue impact area rather
+than merge risk. They do not replace
 `triagePriority`, `reviewFindings[].priority`, or the security review.
 
 Always fill `mergeRiskLabels` too. Use `[]` for issues and for PRs whose merge

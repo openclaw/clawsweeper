@@ -839,37 +839,35 @@ const IMPACT_LABELS = [
     name: "impact:data-loss",
     color: "B60205",
     description:
-      "This issue or PR is about lost, corrupted, or silently dropped user/session/config data.",
+      "This issue is about lost, corrupted, or silently dropped user/session/config data.",
   },
   {
     name: "impact:security",
     color: "B60205",
     description:
-      "This issue or PR is about security boundaries, credentials, authz, sandboxing, or sensitive data.",
+      "This issue is about security boundaries, credentials, authz, sandboxing, or sensitive data.",
   },
   {
     name: "impact:crash-loop",
     color: "D93F0B",
     description:
-      "This issue or PR is about crashes, hangs, restart loops, or process-level availability.",
+      "This issue is about crashes, hangs, restart loops, or process-level availability.",
   },
   {
     name: "impact:message-loss",
     color: "D93F0B",
-    description:
-      "This issue or PR is about lost, duplicated, misrouted, or suppressed channel messages.",
+    description: "This issue is about lost, duplicated, misrouted, or suppressed channel messages.",
   },
   {
     name: "impact:session-state",
     color: "F9D65C",
-    description:
-      "This issue or PR is about session, memory, transcript, context, or agent state drift.",
+    description: "This issue is about session, memory, transcript, context, or agent state drift.",
   },
   {
     name: "impact:auth-provider",
     color: "F9D65C",
     description:
-      "This issue or PR is about auth, provider routing, model choice, or SecretRef resolution.",
+      "This issue is about auth, provider routing, model choice, or SecretRef resolution.",
   },
 ] as const satisfies readonly {
   name: ImpactLabelName;
@@ -6974,8 +6972,9 @@ function reportDecision(markdown: string, closeReason: CloseReason): Decision {
   const fixedRelease = frontMatterValue(markdown, "fixed_release");
   const fixedSha = frontMatterValue(markdown, "fixed_sha");
   const fixedAt = frontMatterValue(markdown, "fixed_at");
+  const kind = frontMatterValue(markdown, "type");
   const triagePriority = triagePriorityFromReport(markdown);
-  const impactLabels = impactLabelsFromReport(markdown);
+  const impactLabels = kind === "pull_request" ? [] : impactLabelsFromReport(markdown);
   const mergeRiskLabels = mergeRiskLabelsFromReport(markdown);
   return {
     decision: "close",
@@ -9445,7 +9444,7 @@ function applyDecisionsCommand(args: Args): void {
       const impactSyncResult = syncImpactLabels({
         number,
         labels: item.labels,
-        impactLabels: impactLabelsFromReport(markdown),
+        impactLabels: item.kind === "pull_request" ? [] : impactLabelsFromReport(markdown),
         dryRun,
       });
       item.labels = impactSyncResult.labels;

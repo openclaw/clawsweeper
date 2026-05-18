@@ -5511,37 +5511,37 @@ test("ClawSweeper impact label scheme exposes owned impact labels", () => {
       name: "impact:data-loss",
       color: "B60205",
       description:
-        "This issue or PR is about lost, corrupted, or silently dropped user/session/config data.",
+        "This issue is about lost, corrupted, or silently dropped user/session/config data.",
     },
     {
       name: "impact:security",
       color: "B60205",
       description:
-        "This issue or PR is about security boundaries, credentials, authz, sandboxing, or sensitive data.",
+        "This issue is about security boundaries, credentials, authz, sandboxing, or sensitive data.",
     },
     {
       name: "impact:crash-loop",
       color: "D93F0B",
       description:
-        "This issue or PR is about crashes, hangs, restart loops, or process-level availability.",
+        "This issue is about crashes, hangs, restart loops, or process-level availability.",
     },
     {
       name: "impact:message-loss",
       color: "D93F0B",
       description:
-        "This issue or PR is about lost, duplicated, misrouted, or suppressed channel messages.",
+        "This issue is about lost, duplicated, misrouted, or suppressed channel messages.",
     },
     {
       name: "impact:session-state",
       color: "F9D65C",
       description:
-        "This issue or PR is about session, memory, transcript, context, or agent state drift.",
+        "This issue is about session, memory, transcript, context, or agent state drift.",
     },
     {
       name: "impact:auth-provider",
       color: "F9D65C",
       description:
-        "This issue or PR is about auth, provider routing, model choice, or SecretRef resolution.",
+        "This issue is about auth, provider routing, model choice, or SecretRef resolution.",
     },
   ]);
 });
