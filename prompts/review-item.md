@@ -104,6 +104,24 @@ searchable GitHub labels only; they describe what the item is about, not the
 risk of merging a PR. They do not close, merge, block, or replace review
 findings.
 
+Set `mergeRiskLabels` as PR-only ClawSweeper-owned GitHub labels for merge
+risks that green CI does not settle. Use an empty array for issues. Keep these
+separate from `impactLabels`: impact labels describe the affected or solved
+problem class, while merge-risk labels describe what could go wrong specifically
+because this PR is merged. Use no more than 3 labels, only when the risk is
+concretely supported by the diff, current behavior, upgrade path, or GitHub
+discussion:
+`merge-risk: 🚨 compatibility`: 🚨 May break existing users, config, migrations, defaults, or upgrade paths.
+`merge-risk: 🚨 message-delivery`: 🚨 May drop, duplicate, misroute, suppress, or wrongly target messages.
+`merge-risk: 🚨 session-state`: 🚨 May lose, corrupt, stale, or mis-associate session, agent, or context state.
+`merge-risk: 🚨 auth-provider`: 🚨 May break OAuth, tokens, provider routing, model choice, or credentials.
+`merge-risk: 🚨 security-boundary`: 🚨 May affect sandboxing, authorization, credentials, or sensitive data.
+`merge-risk: 🚨 availability`: 🚨 May cause crashes, hangs, restart loops, stalls, or process outages.
+`merge-risk: 🚨 automation`: 🚨 May affect CI, automerge, proof capture, label sync, or maintainer automation.
+When merge risk is present, explain it in `risks` in maintainer-facing language
+and make `bestSolution` the best mitigation path. The public review comment will
+turn that into 1-3 choices and mark the best option `(recommended)`.
+
 Populate structured reproduction metadata separately from the public prose.
 Use `reproductionStatus: "reproduced"` only when there is a concrete,
 current-main reproduction path for the bug with high confidence. Use
@@ -545,6 +563,13 @@ Always fill `impactLabels` with zero to three ClawSweeper-owned GitHub impact
 labels. These labels are only for maintainer search and triage, and they
 describe the issue/PR impact area rather than merge risk. They do not replace
 `triagePriority`, `reviewFindings[].priority`, or the security review.
+
+Always fill `mergeRiskLabels` too. Use `[]` for issues and for PRs whose merge
+risk is adequately covered by normal review/CI. For PRs with non-obvious
+compatibility, delivery, session-state, auth-provider, security-boundary,
+availability, or automation risk, add the matching `merge-risk:*` labels,
+explain why the risk matters in `risks`, and put the preferred mitigation in
+`bestSolution` so maintainers see a recommended choice before merge.
 
 Always fill the work-lane fields too. For non-candidates, use
 `workCandidate: "none"`, low confidence/priority, an empty `workPrompt`, and

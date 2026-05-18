@@ -53,6 +53,8 @@ import {
   parseGhJson,
   parseGhJsonLines,
   parseDecision,
+  mergeRiskLabelsForTest,
+  mergeRiskLabelSchemeForTest,
   prRatingLabelsForTest,
   prRatingLabelSchemeForTest,
   priorityLabelsForTest,
@@ -174,6 +176,7 @@ function closeDecision(overrides = {}) {
     bestSolution: "Keep the implementation as-is.",
     triagePriority: "P2",
     impactLabels: [],
+    mergeRiskLabels: [],
     itemCategory: "bug",
     reproductionStatus: "reproduced",
     reproductionConfidence: "high",
@@ -4295,6 +4298,14 @@ Reason: Confirm whether this intentional fail-closed behavior is acceptable for 
 
   assert.match(comment, /\*\*Risk before merge\*\*/);
   assert.match(comment, new RegExp(escapeRegExpForTest(mergeRisk)));
+  assert.match(
+    comment,
+    /Land only after maintainers accept the upgrade behavior for configured fallback users\. \(recommended\)/,
+  );
+  assert.match(
+    comment,
+    /Confirm whether this intentional fail-closed behavior is acceptable for existing fallback users\./,
+  );
   assert.doesNotMatch(comment, /Remaining risk \/ open question:/);
 });
 
@@ -4603,6 +4614,35 @@ test("decision parser enforces required schema-shaped evidence", () => {
         impactLabels: ["impact:data-loss", "impact:data-loss"],
       }),
     /decision\.impactLabels must not contain duplicates/,
+  );
+  assert.throws(
+    () =>
+      parseDecision({
+        ...closeDecision(),
+        mergeRiskLabels: ["merge-risk:unknown"],
+      }),
+    /decision\.mergeRiskLabels\[0\]/,
+  );
+  assert.throws(
+    () =>
+      parseDecision({
+        ...closeDecision(),
+        mergeRiskLabels: [
+          "merge-risk: 🚨 compatibility",
+          "merge-risk: 🚨 message-delivery",
+          "merge-risk: 🚨 session-state",
+          "merge-risk: 🚨 auth-provider",
+        ],
+      }),
+    /decision\.mergeRiskLabels must contain at most 3 labels/,
+  );
+  assert.throws(
+    () =>
+      parseDecision({
+        ...closeDecision(),
+        mergeRiskLabels: ["merge-risk: 🚨 compatibility", "merge-risk: 🚨 compatibility"],
+      }),
+    /decision\.mergeRiskLabels must not contain duplicates/,
   );
   assert.throws(
     () =>
@@ -5049,6 +5089,81 @@ test("ClawSweeper impact label schema avoids unsupported response-format keyword
     };
   };
   assert.equal(schema.properties?.impactLabels?.uniqueItems, undefined);
+});
+
+test("ClawSweeper merge-risk label scheme exposes PR-only merge warning labels", () => {
+  assert.deepEqual(mergeRiskLabelSchemeForTest(), [
+    {
+      name: "merge-risk: 🚨 compatibility",
+      color: "D1242F",
+      description: "🚨 May break existing users, config, migrations, defaults, or upgrade paths.",
+    },
+    {
+      name: "merge-risk: 🚨 message-delivery",
+      color: "D1242F",
+      description: "🚨 May drop, duplicate, misroute, suppress, or wrongly target messages.",
+    },
+    {
+      name: "merge-risk: 🚨 session-state",
+      color: "F97316",
+      description:
+        "🚨 May lose, corrupt, stale, or mis-associate session, agent, or context state.",
+    },
+    {
+      name: "merge-risk: 🚨 auth-provider",
+      color: "F97316",
+      description: "🚨 May break OAuth, tokens, provider routing, model choice, or credentials.",
+    },
+    {
+      name: "merge-risk: 🚨 security-boundary",
+      color: "B60205",
+      description: "🚨 May affect sandboxing, authorization, credentials, or sensitive data.",
+    },
+    {
+      name: "merge-risk: 🚨 availability",
+      color: "D93F0B",
+      description: "🚨 May cause crashes, hangs, restart loops, stalls, or process outages.",
+    },
+    {
+      name: "merge-risk: 🚨 automation",
+      color: "FBCA04",
+      description:
+        "🚨 May affect CI, automerge, proof capture, label sync, or maintainer automation.",
+    },
+  ]);
+});
+
+test("ClawSweeper merge-risk label descriptions stay aligned with prompt and schema", () => {
+  const schema = JSON.parse(reviewDecisionSchemaText()) as {
+    properties?: {
+      mergeRiskLabels?: {
+        description?: string;
+      };
+    };
+  };
+  const schemaDescription = schema.properties?.mergeRiskLabels?.description ?? "";
+  const prompt = reviewPromptTemplate();
+  for (const label of mergeRiskLabelSchemeForTest()) {
+    assert.ok(
+      prompt.includes(`\`${label.name}\`: ${label.description}`),
+      `${label.name} description is missing from the review prompt`,
+    );
+    assert.ok(
+      schemaDescription.includes(`${label.name}: ${label.description}`),
+      `${label.name} description is missing from the schema`,
+    );
+  }
+});
+
+test("ClawSweeper merge-risk labels remove stale owned labels and preserve unrelated labels", () => {
+  assert.deepEqual(
+    mergeRiskLabelsForTest(
+      ["bug", "merge-risk: 🚨 compatibility", "merge-risk: 🚨 availability", "impact:message-loss"],
+      ["merge-risk: 🚨 message-delivery", "merge-risk: 🚨 automation", "not-a-merge-risk-label"],
+    ),
+    ["bug", "impact:message-loss", "merge-risk: 🚨 message-delivery", "merge-risk: 🚨 automation"],
+  );
+  assert.deepEqual(mergeRiskLabelsForTest(["bug", "merge-risk: 🚨 auth-provider"], []), ["bug"]);
 });
 
 test("ClawSweeper impact labels remove stale owned labels and preserve unrelated labels", () => {

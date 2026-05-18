@@ -72,6 +72,14 @@ type ImpactLabelName =
   | "impact:message-loss"
   | "impact:session-state"
   | "impact:auth-provider";
+type MergeRiskLabelName =
+  | "merge-risk: 🚨 compatibility"
+  | "merge-risk: 🚨 message-delivery"
+  | "merge-risk: 🚨 session-state"
+  | "merge-risk: 🚨 auth-provider"
+  | "merge-risk: 🚨 security-boundary"
+  | "merge-risk: 🚨 availability"
+  | "merge-risk: 🚨 automation";
 type ItemCategory =
   | "bug"
   | "regression"
@@ -309,6 +317,7 @@ interface Decision {
   bestSolution: string;
   triagePriority: TriagePriority;
   impactLabels: ImpactLabelName[];
+  mergeRiskLabels: MergeRiskLabelName[];
   itemCategory: ItemCategory;
   reproductionStatus: ReproductionStatus;
   reproductionConfidence: Confidence;
@@ -845,6 +854,51 @@ const IMPACT_LABELS = [
   description: string;
 }[];
 const IMPACT_LABEL_NAMES: ReadonlySet<string> = new Set(IMPACT_LABELS.map((label) => label.name));
+const MERGE_RISK_LABELS = [
+  {
+    name: "merge-risk: 🚨 compatibility",
+    color: "D1242F",
+    description: "🚨 May break existing users, config, migrations, defaults, or upgrade paths.",
+  },
+  {
+    name: "merge-risk: 🚨 message-delivery",
+    color: "D1242F",
+    description: "🚨 May drop, duplicate, misroute, suppress, or wrongly target messages.",
+  },
+  {
+    name: "merge-risk: 🚨 session-state",
+    color: "F97316",
+    description: "🚨 May lose, corrupt, stale, or mis-associate session, agent, or context state.",
+  },
+  {
+    name: "merge-risk: 🚨 auth-provider",
+    color: "F97316",
+    description: "🚨 May break OAuth, tokens, provider routing, model choice, or credentials.",
+  },
+  {
+    name: "merge-risk: 🚨 security-boundary",
+    color: "B60205",
+    description: "🚨 May affect sandboxing, authorization, credentials, or sensitive data.",
+  },
+  {
+    name: "merge-risk: 🚨 availability",
+    color: "D93F0B",
+    description: "🚨 May cause crashes, hangs, restart loops, stalls, or process outages.",
+  },
+  {
+    name: "merge-risk: 🚨 automation",
+    color: "FBCA04",
+    description:
+      "🚨 May affect CI, automerge, proof capture, label sync, or maintainer automation.",
+  },
+] as const satisfies readonly {
+  name: MergeRiskLabelName;
+  color: string;
+  description: string;
+}[];
+const MERGE_RISK_LABEL_NAMES: ReadonlySet<string> = new Set(
+  MERGE_RISK_LABELS.map((label) => label.name),
+);
 const ISSUE_ADVISORY_LABELS = [
   {
     name: "issue-rating: 🦀 challenger crab",
@@ -990,6 +1044,9 @@ const SECURITY_REVIEW_STATUSES = new Set<SecurityReviewStatus>([
 ]);
 const SECURITY_CONCERN_SEVERITIES = new Set<SecurityConcernSeverity>(["high", "medium", "low"]);
 const IMPACT_LABEL_VALUES = new Set<ImpactLabelName>(IMPACT_LABELS.map((label) => label.name));
+const MERGE_RISK_LABEL_VALUES = new Set<MergeRiskLabelName>(
+  MERGE_RISK_LABELS.map((label) => label.name),
+);
 const REAL_BEHAVIOR_PROOF_STATUSES = new Set<RealBehaviorProofStatus>([
   "sufficient",
   "missing",
@@ -1046,6 +1103,7 @@ const DECISION_SCHEMA_KEYS = new Set([
   "bestSolution",
   "triagePriority",
   "impactLabels",
+  "mergeRiskLabels",
   "itemCategory",
   "reproductionStatus",
   "reproductionConfidence",
@@ -1544,6 +1602,15 @@ function requireImpactLabels(value: unknown): ImpactLabelName[] {
   return labels;
 }
 
+function requireMergeRiskLabels(value: unknown): MergeRiskLabelName[] {
+  const labels = requireEnumArray(value, MERGE_RISK_LABEL_VALUES, "decision.mergeRiskLabels");
+  if (labels.length > 3) throw new Error("decision.mergeRiskLabels must contain at most 3 labels");
+  if (new Set(labels).size !== labels.length) {
+    throw new Error("decision.mergeRiskLabels must not contain duplicates");
+  }
+  return labels;
+}
+
 function isEnvironmentAccessCaveat(value: string): boolean {
   return /(?:GH_TOKEN|GITHUB_TOKEN|authenticated gh|gh (?:was |is )?unavailable|unauthenticated gh|shallow clone|GitHub auth(?:entication)? (?:was |is )?unavailable|could not use authenticated GitHub)/i.test(
     value,
@@ -1785,6 +1852,7 @@ export function parseDecision(value: unknown, item?: DecisionNormalizationItem):
       "decision.triagePriority",
     ),
     impactLabels: requireImpactLabels(record.impactLabels),
+    mergeRiskLabels: requireMergeRiskLabels(record.mergeRiskLabels),
     itemCategory: requireEnum(record.itemCategory, ITEM_CATEGORIES, "decision.itemCategory"),
     reproductionStatus: requireEnum(
       record.reproductionStatus,
@@ -4197,6 +4265,7 @@ function codexFailureDecision(status: number | null, stderr: string, stdout = ""
     bestSolution: "Retry the Codex review after fixing the execution failure.",
     triagePriority: "none",
     impactLabels: [],
+    mergeRiskLabels: [],
     itemCategory: "unclear",
     reproductionStatus: "unclear",
     reproductionConfidence: "low",
@@ -5424,6 +5493,12 @@ function impactLabelsFromReport(markdown: string): ImpactLabelName[] {
   );
 }
 
+function mergeRiskLabelsFromReport(markdown: string): MergeRiskLabelName[] {
+  return frontMatterStringArray(markdown, "merge_risk_labels").filter(
+    (label): label is MergeRiskLabelName => MERGE_RISK_LABEL_NAMES.has(label),
+  );
+}
+
 function reportReviewFindings(markdown: string): ReviewFinding[] {
   const section = reviewSectionValue(markdown, "reviewFindings");
   const findings: ReviewFinding[] = [];
@@ -5972,6 +6047,42 @@ export function impactLabelsForTest(
   );
 }
 
+function nextMergeRiskLabels(
+  labels: readonly string[],
+  mergeRiskLabels: readonly MergeRiskLabelName[],
+): string[] {
+  const nextLabels = labels.filter((label) => !MERGE_RISK_LABEL_NAMES.has(label));
+  const uniqueMergeRiskLabels = new Set(mergeRiskLabels);
+  for (const label of MERGE_RISK_LABELS) {
+    if (uniqueMergeRiskLabels.has(label.name)) nextLabels.push(label.name);
+  }
+  return nextLabels;
+}
+
+export function mergeRiskLabelSchemeForTest(): {
+  name: string;
+  color: string;
+  description: string;
+}[] {
+  return MERGE_RISK_LABELS.map(({ name, color, description }) => ({
+    name,
+    color,
+    description,
+  }));
+}
+
+export function mergeRiskLabelsForTest(
+  labels: readonly string[],
+  mergeRiskLabels: readonly string[],
+): string[] {
+  return nextMergeRiskLabels(
+    labels,
+    mergeRiskLabels.filter((label): label is MergeRiskLabelName =>
+      MERGE_RISK_LABEL_NAMES.has(label),
+    ),
+  );
+}
+
 function ensurePriorityLabel(label: PriorityLabelSpec): void {
   try {
     ghWithRetry(
@@ -5986,6 +6097,28 @@ function ensurePriorityLabel(label: PriorityLabelSpec): void {
 
 function ensureImpactLabel(name: ImpactLabelName): void {
   const definition = IMPACT_LABELS.find((label) => label.name === name);
+  if (!definition) return;
+  try {
+    ghWithRetry(
+      [
+        "label",
+        "create",
+        definition.name,
+        "--color",
+        definition.color,
+        "--description",
+        definition.description,
+      ],
+      2,
+    );
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (!/already exists/i.test(message)) throw error;
+  }
+}
+
+function ensureMergeRiskLabel(name: MergeRiskLabelName): void {
+  const definition = MERGE_RISK_LABELS.find((label) => label.name === name);
   if (!definition) return;
   try {
     ghWithRetry(
@@ -6241,6 +6374,35 @@ function syncImpactLabels(options: {
   if (options.dryRun) return { labels: nextLabels, changed };
   for (const label of labelsToAdd) {
     ensureImpactLabel(label);
+    ghWithRetry(["issue", "edit", String(options.number), "--add-label", label]);
+  }
+  for (const label of labelsToRemove) {
+    ghWithRetry(["issue", "edit", String(options.number), "--remove-label", label]);
+  }
+  return { labels: nextLabels, changed };
+}
+
+function syncMergeRiskLabels(options: {
+  number: number;
+  labels: readonly string[];
+  mergeRiskLabels: readonly MergeRiskLabelName[];
+  dryRun: boolean;
+}): { labels: string[]; changed: boolean } {
+  const nextLabels = nextMergeRiskLabels(options.labels, options.mergeRiskLabels);
+  const currentLabelKeys = new Set(options.labels.map((label) => label.toLowerCase()));
+  const nextLabelKeys = new Set(nextLabels.map((label) => label.toLowerCase()));
+  const labelsToAdd = nextLabels.filter(
+    (label): label is MergeRiskLabelName =>
+      MERGE_RISK_LABEL_NAMES.has(label) && !currentLabelKeys.has(label.toLowerCase()),
+  );
+  const labelsToRemove = options.labels.filter(
+    (label) => MERGE_RISK_LABEL_NAMES.has(label) && !nextLabelKeys.has(label.toLowerCase()),
+  );
+  const changed = labelsToAdd.length > 0 || labelsToRemove.length > 0;
+  if (!changed) return { labels: nextLabels, changed };
+  if (options.dryRun) return { labels: nextLabels, changed };
+  for (const label of labelsToAdd) {
+    ensureMergeRiskLabel(label);
     ghWithRetry(["issue", "edit", String(options.number), "--add-label", label]);
   }
   for (const label of labelsToRemove) {
@@ -6610,6 +6772,7 @@ function reportDecision(markdown: string, closeReason: CloseReason): Decision {
     bestSolution: reviewSectionValue(markdown, "bestSolution"),
     triagePriority: triagePriorityFromReport(markdown),
     impactLabels: impactLabelsFromReport(markdown),
+    mergeRiskLabels: mergeRiskLabelsFromReport(markdown),
     itemCategory:
       (frontMatterValue(markdown, "item_category") as ItemCategory | undefined) ?? "unclear",
     reproductionStatus:
@@ -7130,7 +7293,27 @@ function publicMergeRiskLine(
   if (isReportNoneList(risks)) return "";
   if (publicReviewTextIsSame(risks, nextStepLine)) return "";
   if (bestSolutionLine && publicReviewTextIsSame(risks, bestSolutionLine)) return "";
-  return risks;
+  const choices = mergeRiskResolutionChoices(bestSolutionLine, nextStepLine);
+  return [
+    `Why this matters: ${risks}`,
+    choices.length ? ["", "Choices:", ...choices].join("\n") : "",
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+function mergeRiskResolutionChoices(bestSolutionLine: string, nextStepLine: string): string[] {
+  const choices: string[] = [];
+  const recommended = sentence(bestSolutionLine) || sentence(nextStepLine);
+  if (recommended) choices.push(`1. ${recommended} (recommended)`);
+  const alternate = sentence(nextStepLine);
+  if (alternate && !publicReviewTextIsSame(alternate, recommended)) {
+    choices.push(`2. ${alternate}`);
+  }
+  if (choices.length === 0) {
+    choices.push("1. Decide whether the merge risk is acceptable before merging. (recommended)");
+  }
+  return choices.slice(0, 3);
 }
 
 function issueReproductionHelpSuggestions(markdown: string): string[] {
@@ -8216,6 +8399,7 @@ work_validation: ${jsonFrontMatterValue(options.decision.workValidation)}
 work_likely_files: ${jsonFrontMatterValue(options.decision.workLikelyFiles)}
 triage_priority: ${options.decision.triagePriority}
 impact_labels: ${jsonFrontMatterValue(options.decision.impactLabels)}
+merge_risk_labels: ${jsonFrontMatterValue(options.decision.mergeRiskLabels)}
 pull_files: ${jsonFrontMatterValue(pullFiles)}
 pull_files_truncated: ${pullFilesTruncated}
 item_category: ${options.decision.itemCategory}
@@ -8898,6 +9082,17 @@ function applyDecisionsCommand(args: Args): void {
       item.labels = impactSyncResult.labels;
       clawSweeperLabelsChanged ||= impactSyncResult.changed;
       markdown = replaceFrontMatterValue(markdown, "labels", JSON.stringify(item.labels));
+      if (item.kind === "pull_request") {
+        const mergeRiskSyncResult = syncMergeRiskLabels({
+          number,
+          labels: item.labels,
+          mergeRiskLabels: mergeRiskLabelsFromReport(markdown),
+          dryRun,
+        });
+        item.labels = mergeRiskSyncResult.labels;
+        clawSweeperLabelsChanged ||= mergeRiskSyncResult.changed;
+        markdown = replaceFrontMatterValue(markdown, "labels", JSON.stringify(item.labels));
+      }
     }
     if (state === "open" && item.kind === "issue" && !isCloseProposal && isCurrentCompleteReport) {
       currentClosingPullRequests = closingPullRequestsForIssue(number);

@@ -14,6 +14,7 @@
     "bestSolution",
     "triagePriority",
     "impactLabels",
+    "mergeRiskLabels",
     "itemCategory",
     "reproductionStatus",
     "reproductionConfidence",
@@ -175,6 +176,23 @@
         ]
       },
       "description": "ClawSweeper-owned GitHub impact labels for maintainers to find the affected problem class on issues and pull requests. These describe what the item is about, not PR merge risk. Use at most 3. impact:data-loss: Can lose, corrupt, or silently drop user/session/config data. impact:security: Security boundary, credential, authz, sandbox, or sensitive-data risk. impact:crash-loop: Crash, hang, restart loop, or process-level availability failure. impact:message-loss: Channel message delivery can be lost, duplicated, or misrouted. impact:session-state: Session, memory, transcript, context, or agent state can drift or corrupt. impact:auth-provider: Auth, provider routing, model choice, or SecretRef resolution may break."
+    },
+    "mergeRiskLabels": {
+      "type": "array",
+      "maxItems": 3,
+      "items": {
+        "type": "string",
+        "enum": [
+          "merge-risk: 🚨 compatibility",
+          "merge-risk: 🚨 message-delivery",
+          "merge-risk: 🚨 session-state",
+          "merge-risk: 🚨 auth-provider",
+          "merge-risk: 🚨 security-boundary",
+          "merge-risk: 🚨 availability",
+          "merge-risk: 🚨 automation"
+        ]
+      },
+      "description": "PR-only ClawSweeper-owned GitHub labels for merge risks that green CI does not settle. These describe what could go wrong specifically because this PR is merged, not the affected or solved problem class. Use at most 3 for pull requests and [] for issues. merge-risk: 🚨 compatibility: 🚨 May break existing users, config, migrations, defaults, or upgrade paths. merge-risk: 🚨 message-delivery: 🚨 May drop, duplicate, misroute, suppress, or wrongly target messages. merge-risk: 🚨 session-state: 🚨 May lose, corrupt, stale, or mis-associate session, agent, or context state. merge-risk: 🚨 auth-provider: 🚨 May break OAuth, tokens, provider routing, model choice, or credentials. merge-risk: 🚨 security-boundary: 🚨 May affect sandboxing, authorization, credentials, or sensitive data. merge-risk: 🚨 availability: 🚨 May cause crashes, hangs, restart loops, stalls, or process outages. merge-risk: 🚨 automation: 🚨 May affect CI, automerge, proof capture, label sync, or maintainer automation."
     },
     "itemCategory": {
       "type": "string",
