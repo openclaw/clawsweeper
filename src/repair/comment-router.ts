@@ -144,6 +144,7 @@ const collaboratorPermissionCache = new Map();
 const activeRepairRunsByPrefix = new Map<string, LooseRecord[]>();
 const liveTargetCache = new Map<number, LooseRecord>();
 const issueCommentsCache = new Map<number, JsonValue[]>();
+const PROOF_OVERRIDE_DESCRIPTION_MARKER = "<!-- clawsweeper-proof-override-note -->";
 const cachedIssueComments = createCachedIssueCommentsLookup(
   (number) => ghPaged<JsonValue>(`repos/${targetRepo}/issues/${number}/comments?per_page=100`),
   issueCommentsCache,
@@ -550,7 +551,12 @@ function classifyCommand(command: LooseRecord): JsonValue {
     ) {
       return { ...next, status: "skipped", reason: `${mode} already enabled for this PR` };
     }
+    const approvedProofOverride =
+      command.intent === "automerge" && !activationRepairReason
+        ? approvedMissingProofNeedsHuman(command, target)
+        : null;
     if (
+      !approvedProofOverride &&
       pausedModeStatusBlocksReplay({
         hasPauseLabels: pauseLabels.length > 0,
         hasExistingModeStatusResponse: hasExistingModeStatusResponse(
@@ -594,28 +600,43 @@ function classifyCommand(command: LooseRecord): JsonValue {
       actions: [
         ...actions,
         { action: "label", label: modeLabel, status: execute ? "pending" : "planned" },
-        ...(activationRepairReason
+        ...(approvedProofOverride
           ? [
               {
-                action: "dispatch_repair",
-                workflow,
-                job_path: target.job_path ?? target.automerge_job_path,
-                mode: target.mode ?? "autonomous",
+                action: "update_description_note",
+                note: approvedProofOverride.note,
                 status: execute ? "pending" : "planned",
               },
+              { action: "merge", status: execute ? "pending" : "planned" },
             ]
-          : [
-              {
-                action: "dispatch_clawsweeper",
-                workflow: reviewWorkflow,
-                status: execute ? "pending" : "planned",
-              },
-            ]),
+          : activationRepairReason
+            ? [
+                {
+                  action: "dispatch_repair",
+                  workflow,
+                  job_path: target.job_path ?? target.automerge_job_path,
+                  mode: target.mode ?? "autonomous",
+                  status: execute ? "pending" : "planned",
+                },
+              ]
+            : [
+                {
+                  action: "dispatch_clawsweeper",
+                  workflow: reviewWorkflow,
+                  status: execute ? "pending" : "planned",
+                },
+              ]),
         { action: "comment", status: execute ? "pending" : "planned" },
       ],
-      ...(activationRepairReason
-        ? { repair_reason: `${mode} enabled; ${activationRepairReason}` }
-        : {}),
+      ...(approvedProofOverride
+        ? {
+            intent: "clawsweeper_auto_merge",
+            expected_head_sha: approvedProofOverride.expected_head_sha,
+            repair_reason: approvedProofOverride.reason,
+          }
+        : activationRepairReason
+          ? { repair_reason: `${mode} enabled; ${activationRepairReason}` }
+          : {}),
     };
   }
   if (AUTOCLOSE_INTENTS.has(command.intent)) {
@@ -942,6 +963,15 @@ function classifyNeedsHuman(
               },
             ]
           : []),
+        ...(missingProofNeedsHumanReason(command.repair_reason)
+          ? [
+              {
+                action: "update_description_note",
+                note: proofOverrideDescriptionNote(command),
+                status: execute ? "pending" : "planned",
+              },
+            ]
+          : []),
         { action: "merge", status: execute ? "pending" : "planned" },
         { action: "comment", status: execute ? "pending" : "planned" },
       ],
@@ -967,6 +997,88 @@ function maintainerAutomergeOptInApprovesNeedsHuman(command: LooseRecord) {
     optInTime: latestAutomergeResumeAt(command),
     replacementAutomergeRequestedBy: automergeRequestedByFromBody(command.target?.body),
   });
+}
+
+function approvedMissingProofNeedsHuman(command: LooseRecord, target: LooseRecord) {
+  const comments = cachedIssueComments(command.issue_number);
+  const trusted = comments
+    .map((comment: JsonValue) => {
+      const parsed = parseTrustedAutomation(comment, { trustedAuthors: trustedBots });
+      if (!parsed || parsed.intent !== "clawsweeper_needs_human") return null;
+      if (!missingProofNeedsHumanReason(parsed.repair_reason)) return null;
+      if (
+        reviewedHeadShaBlockReason({
+          expectedHeadSha: parsed.expected_head_sha,
+          currentHeadSha: target.head_sha,
+          markerName: "human-review",
+        })
+      ) {
+        return null;
+      }
+      return {
+        parsed,
+        commentCreatedAt: comment.created_at,
+        commentUpdatedAt: comment.updated_at,
+      };
+    })
+    .filter(Boolean)
+    .sort(
+      (left: JsonValue, right: JsonValue) =>
+        (Date.parse(String(right.commentUpdatedAt ?? right.commentCreatedAt ?? "")) || 0) -
+        (Date.parse(String(left.commentUpdatedAt ?? left.commentCreatedAt ?? "")) || 0),
+    );
+  const latest = trusted[0];
+  if (!latest) return null;
+  const reason = `${latest.parsed.repair_reason}; maintainer automerge opt-in records proof: override and approves landing the canonical PR`;
+  if (
+    !maintainerAutomergeOptInApprovesNeedsHumanReason({
+      reason,
+      commentCreatedAt: latest.commentCreatedAt,
+      commentUpdatedAt: latest.commentUpdatedAt,
+      optInTime: command.comment_updated_at ?? command.comment_created_at,
+      replacementAutomergeRequestedBy: automergeRequestedByFromBody(target.body),
+    })
+  ) {
+    return null;
+  }
+  return {
+    reason,
+    expected_head_sha: latest.parsed.expected_head_sha,
+    note: proofOverrideDescriptionNote({
+      ...command,
+      repair_reason: reason,
+      expected_head_sha: latest.parsed.expected_head_sha,
+    }),
+  };
+}
+
+function missingProofNeedsHumanReason(value: JsonValue) {
+  const text = String(value ?? "");
+  return /missing (?:real behavior )?proof|missing proof|proof needs maintainer handling|missing.*proof/i.test(
+    text,
+  );
+}
+
+function proofOverrideDescriptionNote(command: LooseRecord) {
+  const maintainer = String(command.author ?? "")
+    .replace(/^@/, "")
+    .trim();
+  const maintainerLine =
+    maintainer && !maintainer.includes("[bot]")
+      ? `Maintainer: @${maintainer}`
+      : "Maintainer: recorded by ClawSweeper automerge.";
+  const sha = String(command.expected_head_sha ?? "").trim();
+  return [
+    PROOF_OVERRIDE_DESCRIPTION_MARKER,
+    "### Maintainer note: proof: override",
+    "",
+    "A maintainer opted this PR into ClawSweeper automerge even though ClawSweeper found missing real behavior proof. Treat this as an explicit `proof: override` for the current automerge decision.",
+    "",
+    `- ${maintainerLine}`,
+    sha ? `- Reviewed head: ${sha}` : null,
+  ]
+    .filter(Boolean)
+    .join("\n");
 }
 
 function automergeBlocked(command: LooseRecord, reason: string) {
@@ -1278,6 +1390,12 @@ function executeCommand(command: LooseRecord) {
       command.issue_number &&
       shouldMerge
     ) {
+      if (commandHasAction(command, "label")) {
+        applyLabelActions(command);
+      }
+      if (commandHasAction(command, "update_description_note")) {
+        applyDescriptionNoteActions(command);
+      }
       const pauseLabels = command.actions
         .filter((action: JsonValue) => action.action === "remove_label")
         .map((action: JsonValue) => String(action.label ?? ""))
@@ -1304,11 +1422,15 @@ function executeCommand(command: LooseRecord) {
       const merge = executeAutomerge(command);
       dispatched = { ...dispatched, merge };
       command.actions = command.actions.map((action: JsonValue) =>
-        action.action === "remove_label"
+        action.action === "label"
           ? { ...action, status: "executed", label: action.label }
-          : action.action === "merge"
-            ? { ...action, ...merge, completed_at: new Date().toISOString() }
-            : action,
+          : action.action === "remove_label"
+            ? { ...action, status: "executed", label: action.label }
+            : action.action === "update_description_note"
+              ? { ...action, status: "executed" }
+              : action.action === "merge"
+                ? { ...action, ...merge, completed_at: new Date().toISOString() }
+                : action,
       );
       if (merge.status === "waiting") {
         command.status = "waiting";
@@ -1435,6 +1557,58 @@ function applyRemoveLabelActions(command: LooseRecord) {
       ? { ...action, status: "executed", label: action.label }
       : action,
   );
+}
+
+function applyLabelActions(command: LooseRecord) {
+  const labels = (command.actions ?? [])
+    .filter((action: JsonValue) => action.action === "label")
+    .map((action: JsonValue) => String(action.label ?? ""))
+    .filter(Boolean);
+  if (labels.length === 0) return;
+  for (const label of labels) {
+    if (label === AUTOMERGE_LABEL || label === AUTOFIX_LABEL)
+      ensureRepairLoopLabel(command.repo, label);
+    ghBestEffort([
+      "issue",
+      "edit",
+      String(command.issue_number),
+      "--repo",
+      command.repo,
+      "--add-label",
+      label,
+    ]);
+  }
+  command.target = {
+    ...command.target,
+    labels: [...new Set([...(command.target?.labels ?? []), ...labels])],
+  };
+}
+
+function applyDescriptionNoteActions(command: LooseRecord) {
+  const notes = (command.actions ?? [])
+    .filter((action: JsonValue) => action.action === "update_description_note")
+    .map((action: JsonValue) => String(action.note ?? "").trim())
+    .filter(Boolean);
+  if (notes.length === 0) return;
+  let body = String(command.target?.body ?? "").trimEnd();
+  for (const note of notes) {
+    body = body.includes(PROOF_OVERRIDE_DESCRIPTION_MARKER)
+      ? body.replace(
+          new RegExp(`${escapeRegExp(PROOF_OVERRIDE_DESCRIPTION_MARKER)}[\\s\\S]*$`),
+          note,
+        )
+      : `${body}${body ? "\n\n" : ""}${note}`;
+  }
+  const payloadPath = writePayload(repoRoot(), `pr-description-${command.issue_number}`, { body });
+  ghText([
+    "api",
+    `repos/${command.repo}/issues/${command.issue_number}`,
+    "--method",
+    "PATCH",
+    "--input",
+    payloadPath,
+  ]);
+  command.target = { ...command.target, body };
 }
 
 function workerCapacityRequests(commands: LooseRecord[]) {
