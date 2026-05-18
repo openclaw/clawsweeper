@@ -4300,7 +4300,7 @@ Reason: Confirm whether this intentional fail-closed behavior is acceptable for 
   assert.match(comment, new RegExp(escapeRegExpForTest(mergeRisk)));
   assert.match(
     comment,
-    /Maintainer choices:\n1\. \(recommended\) Start ClawSweeper automerge with special instructions:/,
+    /Maintainer choices:\n1\. \(recommended\) Fix the PR before merge with ClawSweeper automerge:/,
   );
   assert.match(
     comment,
@@ -4308,7 +4308,11 @@ Reason: Confirm whether this intentional fail-closed behavior is acceptable for 
   );
   assert.match(
     comment,
-    /Fix this PR before merge: Confirm whether this intentional fail-closed behavior is acceptable for existing fallback users\./,
+    /2\. Accept the merge risk explicitly:[\s\S]*Merge as-is only if maintainers intentionally accept this risk: Land only after maintainers accept the upgrade behavior for configured fallback users\./,
+  );
+  assert.match(
+    comment,
+    /3\. Stop automation and require a human merge decision:[\s\S]*Do not automerge this PR\. Ask a maintainer to decide whether to require changes, merge anyway, or close the PR as not worth the risk: Land only after maintainers accept the upgrade behavior for configured fallback users\./,
   );
   assert.doesNotMatch(comment, /Remaining risk \/ open question:/);
 });

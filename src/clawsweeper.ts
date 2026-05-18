@@ -7315,24 +7315,18 @@ function publicMergeRiskLine(
 }
 
 function mergeRiskResolutionChoices(bestSolutionLine: string, nextStepLine: string): string[] {
-  const choices: string[] = [];
   const recommended = sentence(bestSolutionLine) || sentence(nextStepLine);
-  if (recommended) choices.push(mergeRiskAutomergeChoice(recommended, true));
-  const alternate = sentence(nextStepLine);
-  if (alternate && !publicReviewTextIsSame(alternate, recommended)) {
-    choices.push(mergeRiskAgentChoice(alternate));
-  }
-  if (choices.length === 0) {
-    choices.push(
-      mergeRiskAutomergeChoice("Decide whether the merge risk is acceptable before merging.", true),
-    );
-  }
-  return choices.slice(0, 3);
+  const instruction = recommended || "Decide whether the merge risk is acceptable before merging.";
+  return [
+    mergeRiskAutomergeChoice(instruction),
+    mergeRiskAcceptChoice(instruction),
+    mergeRiskHumanDecisionChoice(instruction),
+  ];
 }
 
-function mergeRiskAutomergeChoice(instruction: string, recommended: boolean): string {
+function mergeRiskAutomergeChoice(instruction: string): string {
   return [
-    `1. ${recommended ? "(recommended) " : ""}Start ClawSweeper automerge with special instructions:`,
+    "1. (recommended) Fix the PR before merge with ClawSweeper automerge:",
     "",
     "```text",
     "@clawsweeper automerge",
@@ -7341,12 +7335,22 @@ function mergeRiskAutomergeChoice(instruction: string, recommended: boolean): st
   ].join("\n");
 }
 
-function mergeRiskAgentChoice(instruction: string): string {
+function mergeRiskAcceptChoice(instruction: string): string {
   return [
-    "2. Ask an LLM or repair agent to update the PR before merge:",
+    "2. Accept the merge risk explicitly:",
     "",
     "```text",
-    `Fix this PR before merge: ${instruction}`,
+    `Merge as-is only if maintainers intentionally accept this risk: ${instruction}`,
+    "```",
+  ].join("\n");
+}
+
+function mergeRiskHumanDecisionChoice(instruction: string): string {
+  return [
+    "3. Stop automation and require a human merge decision:",
+    "",
+    "```text",
+    `Do not automerge this PR. Ask a maintainer to decide whether to require changes, merge anyway, or close the PR as not worth the risk: ${instruction}`,
     "```",
   ].join("\n");
 }
