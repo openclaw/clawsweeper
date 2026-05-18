@@ -6285,6 +6285,7 @@ function hasRecentReReviewRequest(
   const reviewedAtMs = timestampMs(reviewedAt);
   return context.comments.some((comment) => {
     const record = asRecord(comment);
+    if (isAutomationReportAuthor(stringOrUndefined(record.author))) return false;
     return isAfterReview(comment, reviewedAtMs) && isReReviewRequestText(record.body);
   });
 }
@@ -6321,6 +6322,7 @@ function hasRecentAuthorActivity(
 function prStatusLabelKindFromReport(
   markdown: string,
   context: ItemContext,
+  currentLabels: readonly string[],
 ): PrStatusLabelKind | null {
   if (frontMatterValue(markdown, "type") !== "pull_request") return null;
   return prStatusLabelKind({
@@ -6328,7 +6330,7 @@ function prStatusLabelKindFromReport(
     reviewFindings: reportReviewFindings(markdown),
     securityReview: reportSecurityReview(markdown),
     overallCorrectness: reportOverallCorrectness(markdown),
-    hasAutomergeLabel: frontMatterStringArray(markdown, "labels").includes(AUTOMERGE_LABEL),
+    hasAutomergeLabel: currentLabels.includes(AUTOMERGE_LABEL),
     hasRecentReReviewRequest: hasRecentReReviewRequest(
       context,
       frontMatterValue(markdown, "reviewed_at"),
@@ -6352,9 +6354,22 @@ export function prStatusLabelsForTest(
     hasAutomergeLabel?: boolean;
     hasRecentReReviewRequest?: boolean;
     hasRecentAuthorActivity?: boolean;
+    reviewedAt?: string;
+    comments?: readonly {
+      author?: string;
+      body?: string;
+      createdAt?: string;
+      updatedAt?: string;
+    }[];
   },
 ): string[] {
   if (options.isPullRequest === false) return nextPrStatusLabels(labels, null);
+  const hasRecentReReviewRequestValue =
+    options.hasRecentReReviewRequest ??
+    hasRecentReReviewRequest(
+      { comments: [...(options.comments ?? [])] },
+      options.reviewedAt ?? "2026-01-01T00:00:00Z",
+    );
   const statusKind = prStatusLabelKind({
     realBehaviorProof: {
       status: REAL_BEHAVIOR_PROOF_STATUSES.has(options.proofStatus as RealBehaviorProofStatus)
@@ -6374,8 +6389,8 @@ export function prStatusLabelsForTest(
     )
       ? (options.overallCorrectness as OverallCorrectness)
       : "patch is correct",
-    hasAutomergeLabel: options.hasAutomergeLabel === true,
-    hasRecentReReviewRequest: options.hasRecentReReviewRequest === true,
+    hasAutomergeLabel: options.hasAutomergeLabel ?? labels.includes(AUTOMERGE_LABEL),
+    hasRecentReReviewRequest: hasRecentReReviewRequestValue,
     hasRecentAuthorActivity: options.hasRecentAuthorActivity === true,
   });
   return nextPrStatusLabels(labels, statusKind);
@@ -9632,7 +9647,7 @@ function applyDecisionsCommand(args: Args): void {
       item.labels = syncPrStatusLabel({
         number,
         labels: item.labels,
-        statusKind: prStatusLabelKindFromReport(markdown, currentItemContext()),
+        statusKind: prStatusLabelKindFromReport(markdown, currentItemContext(), item.labels),
         dryRun,
       });
       item.labels = syncTelegramVisibleProofLabel({

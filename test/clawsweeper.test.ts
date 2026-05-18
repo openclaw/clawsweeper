@@ -5528,12 +5528,11 @@ test("ClawSweeper PR status labels preserve other label families", () => {
 
 test("ClawSweeper PR status labels respect priority ordering", () => {
   assert.deepEqual(
-    prStatusLabelsForTest([], {
+    prStatusLabelsForTest(["clawsweeper:automerge"], {
       proofStatus: "missing",
       hasRecentReReviewRequest: true,
-      hasAutomergeLabel: true,
     }),
-    ["status: 🚀 automerge armed"],
+    ["clawsweeper:automerge", "status: 🚀 automerge armed"],
   );
   assert.deepEqual(
     prStatusLabelsForTest([], {
@@ -5561,6 +5560,37 @@ test("ClawSweeper PR status labels respect priority ordering", () => {
       findingPriorities: [2],
     }),
     ["status: ⏳ waiting on author"],
+  );
+});
+
+test("ClawSweeper PR status ignores bot-authored re-review guidance", () => {
+  assert.deepEqual(
+    prStatusLabelsForTest([], {
+      proofStatus: "missing",
+      reviewedAt: "2026-01-01T00:00:00Z",
+      comments: [
+        {
+          author: "openclaw-clawsweeper[bot]",
+          body: "After adding proof, comment `@clawsweeper re-review`.",
+          updatedAt: "2026-01-01T00:01:00Z",
+        },
+      ],
+    }),
+    ["status: 📣 needs proof"],
+  );
+  assert.deepEqual(
+    prStatusLabelsForTest([], {
+      proofStatus: "missing",
+      reviewedAt: "2026-01-01T00:00:00Z",
+      comments: [
+        {
+          author: "contributor",
+          body: "@clawsweeper re-review",
+          createdAt: "2026-01-01T00:01:00Z",
+        },
+      ],
+    }),
+    ["status: 🔁 re-review loop"],
   );
 });
 
