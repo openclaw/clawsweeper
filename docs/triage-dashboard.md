@@ -16,6 +16,8 @@ good stale snapshot when one is available.
 
 The existing live pipeline dashboard remains at `/`.
 
+The pull-request proof triage dashboard lives separately at `/pr-proof-triage`.
+
 ## Data Model
 
 The worker discovers labels in the target repository whose names start with

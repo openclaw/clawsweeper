@@ -221,6 +221,12 @@ issue labels as read-only maintainer views, backed by GitHub Search snapshots
 instead of GitHub Project writes. See
 [`docs/triage-dashboard.md`](docs/triage-dashboard.md).
 
+The optional PR proof triage page at `/pr-proof-triage` exposes open pull
+requests that are blocked on real behavior proof labels, including missing
+proof, supplied-but-not-sufficient proof, mock-only proof, and proof label
+mismatches. See
+[`docs/pr-proof-triage-dashboard.md`](docs/pr-proof-triage-dashboard.md).
+
 ## How It Works
 
 ClawSweeper is split into four operational lanes:

@@ -5549,6 +5549,7 @@ function publicPrEggLine(
     "",
     "- Eggs appear after the PR passes real-behavior proof. It is here for vibes, not verdicts: it does not change labels, ratings, merge decisions, or automation.",
     "- The shell reacts to review momentum: open follow-up work warms it up, re-review makes it wobble, and a clean final review lets it hatch.",
+    "- How to hatch it: reach `status: 👀 ready for maintainer look` or `status: 🚀 automerge armed`; that usually means sufficient real-behavior proof, no blocking P0/P1/P2 findings, no security attention needed, and clean correctness.",
     "- The hatch is seeded from this repository and PR number, so the same PR keeps the same creature; the reviewed head SHA can only change safe visual details.",
     "- Rarity is just collectible sparkle: 🥚 common, 🌱 uncommon, 💎 rare, ✨ glimmer, and 🌈 legendary.",
     "",

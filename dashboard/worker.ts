@@ -8,7 +8,6 @@ declare global {
     default: Cache;
   }
 }
-
 const ACTIVE_RUN_STATUS_FILTERS = ["in_progress", "queued", "waiting", "requested", "pending"];
 const TERMINAL_BAD_CONCLUSIONS = new Set(["failure", "timed_out", "action_required"]);
 const EVENT_LIMIT = 200;
@@ -31,6 +30,7 @@ const SUPPORT_WORKFLOW_NAMES = new Set([
 ]);
 const TRIAGE_CACHE_TTL_SECONDS = 120;
 const DEFAULT_TRIAGE_ITEMS_PER_VIEW = 500;
+const DEFAULT_PR_PROOF_ITEMS_PER_VIEW = 500;
 const MAX_TRIAGE_ITEMS_PER_VIEW = 1000;
 const TRIAGE_SEARCH_PAGE_SIZE = 100;
 const TRIAGE_FOCUSED_FALLBACK_ITEMS_PER_VIEW = 100;
@@ -39,6 +39,14 @@ const TRIAGE_LINKED_PR_BATCH_SIZE = 25;
 const TRIAGE_LABEL_PREFIX = "clawsweeper:";
 const GITHUB_APP_TOKEN_REFRESH_SKEW_MS = 120_000;
 const GITHUB_APP_TOKEN_DEFAULT_TTL_MS = 50 * 60_000;
+const PR_PROOF_LABEL_NAMES = [
+  "triage: needs-real-behavior-proof",
+  "triage: mock-only-proof",
+  "proof: supplied",
+  "proof: sufficient",
+  "proof: override",
+  "mantis: telegram-visible-proof",
+];
 const TRIAGE_VIEWS = [
   {
     id: "clawsweeper",
@@ -91,6 +99,65 @@ const TRIAGE_VIEWS = [
     allLabels: ["clawsweeper:needs-live-repro"],
   },
 ];
+const PR_PROOF_VIEWS = [
+  {
+    id: "proof-triage",
+    title: "Proof triage",
+    description: "Open pull requests carrying proof or proof-triage labels.",
+    anyLabels: "proof",
+    itemLimit: 100,
+  },
+  {
+    id: "needs-proof",
+    title: "Needs proof",
+    description: "Open PRs where real behavior proof is still requested.",
+    allLabels: ["triage: needs-real-behavior-proof"],
+    itemLimit: 100,
+  },
+  {
+    id: "missing-proof",
+    title: "No proof supplied",
+    description: "Proof is requested, but no supplied, sufficient, or override label is present.",
+    allLabels: ["triage: needs-real-behavior-proof"],
+    withoutLabels: ["proof: supplied", "proof: sufficient", "proof: override"],
+  },
+  {
+    id: "supplied-awaiting-review",
+    title: "Supplied, needs review",
+    description: "Proof has been supplied, but ClawSweeper has not marked it sufficient.",
+    allLabels: ["proof: supplied"],
+    withoutLabels: ["proof: sufficient", "proof: override"],
+  },
+  {
+    id: "sufficient-proof",
+    title: "Proof sufficient",
+    description: "ClawSweeper judged the real behavior proof sufficient.",
+    allLabels: ["proof: sufficient"],
+    itemLimit: 100,
+  },
+  {
+    id: "mock-only-proof",
+    title: "Mock-only proof",
+    description: "Proof appears to rely only on tests, mocks, snapshots, lint, typecheck, or CI.",
+    allLabels: ["triage: mock-only-proof"],
+    itemLimit: 100,
+  },
+  {
+    id: "telegram-proof",
+    title: "Telegram proof",
+    description: "PRs where Mantis should capture Telegram visible proof.",
+    allLabels: ["mantis: telegram-visible-proof"],
+    itemLimit: 100,
+  },
+  {
+    id: "sufficient-with-need-label",
+    title: "Sufficient + needs label",
+    description:
+      "PRs that have sufficient proof but still carry the needs-real-behavior-proof label.",
+    allLabels: ["triage: needs-real-behavior-proof", "proof: sufficient"],
+    itemLimit: 100,
+  },
+];
 
 let githubAppTokenCache = null;
 
@@ -110,8 +177,12 @@ export default {
       return ingestEvent(request, env);
     if (url.pathname === "/api/status") return statusJson(request, env, ctx);
     if (url.pathname === "/api/triage") return triageJson(request, env, ctx);
+    if (url.pathname === "/api/pr-proof-triage") return prProofTriageJson(request, env, ctx);
     if (url.pathname === "/" || url.pathname === "/index.html") return html(dashboardHtml());
-    if (url.pathname === "/triage" || url.pathname === "/triage.html") return html(triageHtml());
+    if (url.pathname === "/triage" || url.pathname === "/triage.html")
+      return html(triageHtml(issueTriagePageConfig()));
+    if (url.pathname === "/pr-proof-triage" || url.pathname === "/pr-proof-triage.html")
+      return html(triageHtml(prProofTriagePageConfig()));
     return json({ error: "not_found" }, 404);
   },
 };
@@ -227,6 +298,58 @@ function triageSnapshotLooksEmpty(snapshot) {
 
 function triageCacheRequest(request, bucket) {
   return new Request(new URL(`/api/triage-cache/v2/${bucket}`, request.url).toString(), {
+    method: "GET",
+  });
+}
+
+async function prProofTriageJson(request, env, ctx) {
+  const ttl = numberFrom(env.PR_PROOF_TRIAGE_CACHE_TTL_SECONDS, TRIAGE_CACHE_TTL_SECONDS);
+  const staleTtl = numberFrom(env.STALE_CACHE_TTL_SECONDS, STALE_CACHE_TTL_SECONDS);
+  const cache = caches.default;
+  const cached = await cache.match(prProofTriageCacheRequest(request, "fresh"));
+  if (cached) return cors(new Response(cached.body, cached));
+
+  const snapshot = await prProofTriageSnapshot(env);
+  const body = JSON.stringify(snapshot, null, 2);
+  const looksEmpty = triageSnapshotLooksEmpty(snapshot);
+  if (looksEmpty) {
+    const stale = await cache.match(prProofTriageCacheRequest(request, "stale"));
+    if (stale) return cors(new Response(stale.body, stale));
+  }
+  if (!looksEmpty) {
+    const responseHeaders = {
+      "content-type": "application/json; charset=utf-8",
+      "cache-control": `public, max-age=${ttl}`,
+    };
+    const staleResponseHeaders = {
+      "content-type": "application/json; charset=utf-8",
+      "cache-control": `public, max-age=${staleTtl}`,
+    };
+    ctx?.waitUntil?.(
+      Promise.all([
+        cache.put(
+          prProofTriageCacheRequest(request, "fresh"),
+          new Response(body, { headers: responseHeaders }),
+        ),
+        cache.put(
+          prProofTriageCacheRequest(request, "stale"),
+          new Response(body, { headers: staleResponseHeaders }),
+        ),
+      ]),
+    );
+  }
+  return cors(
+    new Response(body, {
+      headers: {
+        "content-type": "application/json; charset=utf-8",
+        "cache-control": "no-store",
+      },
+    }),
+  );
+}
+
+function prProofTriageCacheRequest(request, bucket) {
+  return new Request(new URL(`/api/pr-proof-triage-cache/v1/${bucket}`, request.url).toString(), {
     method: "GET",
   });
 }
@@ -390,6 +513,32 @@ async function triageSnapshot(env) {
       label_prefix: TRIAGE_LABEL_PREFIX,
       item_limit_per_view: itemLimit,
       search_request_budget_remaining: searchBudget.remaining,
+    },
+    counts,
+    views,
+    diagnostics: {
+      errors: errors.slice(0, 20),
+    },
+  };
+}
+
+async function prProofTriageSnapshot(env) {
+  const generatedAt = new Date().toISOString();
+  const errors = [];
+  const repos = prProofTargetRepos(env);
+  const itemLimit = prProofItemsPerView(env);
+  const repoSnapshots = await Promise.all(
+    repos.map((repo) => prProofSnapshotForRepo(env, repo, errors, itemLimit)),
+  );
+  const views = mergePrProofRepoViews(repoSnapshots, itemLimit);
+  const counts = Object.fromEntries(views.map((view) => [view.id, view.total_count]));
+  return {
+    schema_version: 1,
+    generated_at: generatedAt,
+    source: {
+      target_repositories: repos,
+      labels: PR_PROOF_LABEL_NAMES,
+      item_limit_per_view: itemLimit,
     },
     counts,
     views,
@@ -658,6 +807,23 @@ async function triageSnapshotForRepo(
   };
 }
 
+async function prProofSnapshotForRepo(env, repo, errors, itemLimit) {
+  const repoLabels = await repoProofLabels(env, repo).catch((error) => {
+    errors.push(`${repo} proof labels: ${error.message}`);
+    return [];
+  });
+  const discoveredLabels = repoLabels.map((label) => label.name);
+  const views = [];
+  for (const view of PR_PROOF_VIEWS) {
+    views.push(await prProofViewForRepo(env, repo, view, discoveredLabels, errors, itemLimit));
+  }
+  return {
+    repository: repo,
+    labels: repoLabels,
+    views,
+  };
+}
+
 function triageViewFromItems(repo, definition, discoveredLabels, sourceItems, itemLimit) {
   const query = triageSearchQuery(repo, definition, discoveredLabels);
   if (!query) {
@@ -691,6 +857,10 @@ function triageViewFromItems(repo, definition, discoveredLabels, sourceItems, it
 }
 
 function triageItemMatchesView(item, definition, discoveredLabels) {
+  return labeledItemMatchesView(item, definition, discoveredLabels);
+}
+
+function labeledItemMatchesView(item, definition, discoveredLabels) {
   const labels = new Set((item.labels || []).map((label) => label.name.toLowerCase()));
   const available = new Set(discoveredLabels.map((label) => label.toLowerCase()));
   const allLabels = (definition.allLabels || []).filter((label) =>
@@ -737,6 +907,13 @@ function triageSearchPageCount(limit, totalCount) {
   return Math.ceil(Math.min(limit, Math.max(1, Number(totalCount || 0))) / TRIAGE_SEARCH_PAGE_SIZE);
 }
 
+function prProofItemsPerView(env) {
+  return Math.min(
+    MAX_TRIAGE_ITEMS_PER_VIEW,
+    Math.max(1, numberFrom(env.PR_PROOF_ITEMS_PER_VIEW, DEFAULT_PR_PROOF_ITEMS_PER_VIEW)),
+  );
+}
+
 function mergeTriageRepoViews(repoSnapshots, itemLimit) {
   return TRIAGE_VIEWS.map((definition) => {
     const repoViews = repoSnapshots.map((repo) =>
@@ -748,6 +925,32 @@ function mergeTriageRepoViews(repoSnapshots, itemLimit) {
       .slice(0, itemLimit);
     const totalCount = repoViews.reduce((total, view) => total + (view?.total_count || 0), 0);
     const combinedQuery = combinedTriageSearchQuery(repoSnapshots, definition, repoViews);
+    const viewItemLimit =
+      Math.max(...repoViews.map((view) => view?.item_limit || 0).filter(Boolean)) || itemLimit;
+    return {
+      id: definition.id,
+      title: definition.title,
+      description: definition.description,
+      total_count: totalCount,
+      query: combinedQuery,
+      github_url: combinedQuery ? githubSearchUrl(combinedQuery) : null,
+      item_limit: viewItemLimit,
+      items,
+    };
+  });
+}
+
+function mergePrProofRepoViews(repoSnapshots, itemLimit) {
+  return PR_PROOF_VIEWS.map((definition) => {
+    const repoViews = repoSnapshots.map((repo) =>
+      repo.views.find((view) => view.id === definition.id),
+    );
+    const items = repoViews
+      .flatMap((view) => view?.items || [])
+      .sort(newestTriageCreatedFirst)
+      .slice(0, itemLimit);
+    const totalCount = repoViews.reduce((total, view) => total + (view?.total_count || 0), 0);
+    const combinedQuery = combinedPrProofSearchQuery(repoSnapshots, definition, repoViews);
     const viewItemLimit =
       Math.max(...repoViews.map((view) => view?.item_limit || 0).filter(Boolean)) || itemLimit;
     return {
@@ -786,6 +989,24 @@ function combinedTriageSearchQuery(repoSnapshots, definition, repoViews) {
   for (const label of definition.allLabels || []) parts.push(`label:${quoteSearchValue(label)}`);
   for (const label of definition.withoutLabels || [])
     parts.push(`-label:${quoteSearchValue(label)}`);
+  return parts.join(" ");
+}
+
+function combinedPrProofSearchQuery(repoSnapshots, definition, repoViews) {
+  const repos = repoViews
+    .filter((view) => view?.query)
+    .map((view) => view.repository)
+    .filter(Boolean);
+  if (!repos.length) return null;
+  const parts = [...repos.map((repo) => `repo:${repo}`), "is:pr", "is:open"];
+  const availableLabels = [
+    ...new Set(
+      repoSnapshots
+        .filter((repo) => repos.includes(repo.repository))
+        .flatMap((repo) => repo.labels.map((label) => label.name)),
+    ),
+  ];
+  appendProofSearchLabels(parts, definition, availableLabels);
   return parts.join(" ");
 }
 
@@ -856,6 +1077,41 @@ async function triageViewForRepo(
   };
 }
 
+async function prProofViewForRepo(env, repo, definition, discoveredLabels, errors, itemLimit) {
+  const query = prProofSearchQuery(repo, definition, discoveredLabels);
+  const viewItemLimit = Math.min(itemLimit, Math.max(1, definition.itemLimit || itemLimit));
+  if (!query) {
+    return {
+      id: definition.id,
+      repository: repo,
+      title: definition.title,
+      description: definition.description,
+      query: null,
+      github_url: null,
+      item_limit: viewItemLimit,
+      total_count: 0,
+      items: [],
+    };
+  }
+  const search = await githubIssueSearch(env, query, viewItemLimit).catch((error) => {
+    errors.push(`${repo} ${definition.id}: ${error.message}`);
+    return { total_count: 0, items: [] };
+  });
+  return {
+    id: definition.id,
+    repository: repo,
+    title: definition.title,
+    description: definition.description,
+    query,
+    github_url: githubSearchUrl(query),
+    item_limit: viewItemLimit,
+    total_count: search.total_count || 0,
+    items: Array.isArray(search.items)
+      ? search.items.map((issue) => normalizeProofPullRequest(repo, issue))
+      : [],
+  };
+}
+
 function triageSearchQuery(repo, definition, discoveredLabels) {
   const available = new Set(discoveredLabels.map((label) => label.toLowerCase()));
   const allLabels = (definition.allLabels || []).filter((label) =>
@@ -881,6 +1137,36 @@ function triageSearchQuery(repo, definition, discoveredLabels) {
   return parts.join(" ");
 }
 
+function prProofSearchQuery(repo, definition, discoveredLabels) {
+  const parts = [`repo:${repo}`, "is:pr", "is:open"];
+  if (!appendProofSearchLabels(parts, definition, discoveredLabels)) return null;
+  return parts.join(" ");
+}
+
+function appendProofSearchLabels(parts, definition, discoveredLabels) {
+  const available = new Set(discoveredLabels.map((label) => label.toLowerCase()));
+  const allLabels = (definition.allLabels || []).filter((label) =>
+    available.has(label.toLowerCase()),
+  );
+  const withoutLabels = (definition.withoutLabels || []).filter((label) =>
+    available.has(label.toLowerCase()),
+  );
+  let anyLabels = [];
+  if (definition.anyLabels === "proof") {
+    anyLabels = PR_PROOF_LABEL_NAMES.filter((label) => available.has(label.toLowerCase()));
+  } else {
+    anyLabels = (definition.anyLabels || []).filter((label) => available.has(label.toLowerCase()));
+  }
+  if ((definition.allLabels || []).length && allLabels.length !== definition.allLabels.length) {
+    return false;
+  }
+  if (definition.anyLabels && anyLabels.length === 0) return false;
+  if (anyLabels.length) parts.push(`label:${anyLabels.map(quoteSearchValue).join(",")}`);
+  for (const label of allLabels) parts.push(`label:${quoteSearchValue(label)}`);
+  for (const label of withoutLabels) parts.push(`-label:${quoteSearchValue(label)}`);
+  return true;
+}
+
 function newestTriageCreatedFirst(left, right) {
   const created = Date.parse(right?.created_at || "") - Date.parse(left?.created_at || "");
   if (Number.isFinite(created) && created !== 0) return created;
@@ -902,6 +1188,26 @@ async function repoClawsweeperLabels(env, repo) {
     labels.push(
       ...rows
         .filter((label) => String(label.name || "").startsWith(TRIAGE_LABEL_PREFIX))
+        .map((label) => ({
+          name: String(label.name || ""),
+          color: String(label.color || ""),
+          description: String(label.description || ""),
+        })),
+    );
+    if (rows.length < 100) break;
+  }
+  return labels.sort((left, right) => left.name.localeCompare(right.name));
+}
+
+async function repoProofLabels(env, repo) {
+  const names = new Set(PR_PROOF_LABEL_NAMES.map((label) => label.toLowerCase()));
+  const labels = [];
+  for (let page = 1; page <= 4; page += 1) {
+    const rows = await githubJson(env, `/repos/${repo}/labels?per_page=100&page=${page}`);
+    if (!Array.isArray(rows) || rows.length === 0) break;
+    labels.push(
+      ...rows
+        .filter((label) => names.has(String(label.name || "").toLowerCase()))
         .map((label) => ({
           name: String(label.name || ""),
           color: String(label.color || ""),
@@ -962,6 +1268,29 @@ function normalizeTriageIssue(repo, issue) {
   };
 }
 
+function normalizeProofPullRequest(repo, issue) {
+  const normalized = normalizeTriageIssue(repo, issue);
+  return {
+    ...normalized,
+    proof_state: proofStateFromLabels(normalized.labels),
+  };
+}
+
+function proofStateFromLabels(labels) {
+  const names = new Set((labels || []).map((label) => label.name.toLowerCase()));
+  const has = (name) => names.has(name);
+  if (has("proof: override")) return "Override";
+  if (has("proof: sufficient") && has("triage: needs-real-behavior-proof")) {
+    return "Sufficient + needs label";
+  }
+  if (has("proof: sufficient")) return "Sufficient";
+  if (has("proof: supplied")) return "Supplied, needs review";
+  if (has("triage: mock-only-proof")) return "Mock-only proof";
+  if (has("triage: needs-real-behavior-proof")) return "Needs proof";
+  if (has("mantis: telegram-visible-proof")) return "Telegram proof";
+  return "";
+}
+
 function triageTargetRepos(env) {
   const configured = String(env.TRIAGE_TARGET_REPOS || "")
     .split(",")
@@ -973,6 +1302,15 @@ function triageTargetRepos(env) {
     .map((value) => value.trim())
     .filter(Boolean);
   return targetRepos.length ? [targetRepos[0]] : ["openclaw/openclaw"];
+}
+
+function prProofTargetRepos(env) {
+  const configured = String(env.PR_PROOF_TARGET_REPOS || "")
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
+  if (configured.length) return configured;
+  return triageTargetRepos(env);
 }
 
 function quoteSearchValue(value) {
@@ -1888,13 +2226,118 @@ function cors(response) {
   return response;
 }
 
-function triageHtml() {
+function issueTriagePageConfig() {
+  return {
+    title: "ClawSweeper Triage",
+    loadingSubtitle: "Loading advisory issue labels...",
+    endpoint: "/api/triage",
+    storagePrefix: "clawsweeper:triage",
+    defaultView: "clawsweeper",
+    navLabel: "Issue triage views",
+    filterPlaceholder: "Title, number, author, assignee, label...",
+    itemNoun: "issue",
+    itemLabel: "Issue",
+    emptySnapshotText: "No matching issues in the current snapshot.",
+    emptyFilterText: "No issues match the current filter.",
+    highlightLabelPrefixes: ["clawsweeper:"],
+    links: [
+      { href: "/", label: "Live pipeline" },
+      { href: "/pr-proof-triage", label: "PR proof triage" },
+    ],
+    columns: [
+      { key: "issue", label: "Issue", width: 420, min: 240 },
+      { key: "assignees", label: "Assignees", width: 140, min: 100 },
+      { key: "priority", label: "Priority", width: 92, min: 76 },
+      { key: "prs", label: "Linked PRs", width: 180, min: 120 },
+      { key: "labels", label: "Labels", width: 430, min: 220 },
+      { key: "updated", label: "Updated", width: 130, min: 110 },
+      { key: "comments", label: "Comments", width: 96, min: 84 },
+    ],
+    metrics: [
+      {
+        label: "ClawSweeper issues",
+        view: "clawsweeper",
+        detail: "any discovered clawsweeper label",
+      },
+      { label: "Ready candidates", view: "ready-candidates", detail: "queueable and unblocked" },
+      { label: "Blocked queue", view: "queueable-blocked", detail: "queueable but no-new-fix-pr" },
+      { label: "Linked PRs", view: "already-has-pr", detail: "open fix PR already found" },
+      {
+        label: "Needs review",
+        view: "needs-maintainer-review",
+        detail: "maintainer decision next",
+      },
+      { label: "Product/security", view: "product-security", detail: "policy or security call" },
+    ],
+  };
+}
+
+function prProofTriagePageConfig() {
+  return {
+    title: "ClawSweeper PR Proof Triage",
+    loadingSubtitle: "Loading pull request proof labels...",
+    endpoint: "/api/pr-proof-triage",
+    storagePrefix: "clawsweeper:pr-proof-triage",
+    defaultView: "missing-proof",
+    navLabel: "Pull request proof triage views",
+    filterPlaceholder: "Title, number, author, assignee, proof state, label...",
+    itemNoun: "PR",
+    itemLabel: "Pull request",
+    emptySnapshotText: "No matching pull requests in the current snapshot.",
+    emptyFilterText: "No pull requests match the current filter.",
+    highlightLabelPrefixes: ["triage:", "proof:", "mantis:"],
+    links: [
+      { href: "/", label: "Live pipeline" },
+      { href: "/triage", label: "Issue triage" },
+    ],
+    columns: [
+      { key: "issue", label: "Pull request", width: 420, min: 240 },
+      { key: "author", label: "Author", width: 130, min: 100 },
+      { key: "assignees", label: "Assignees", width: 140, min: 100 },
+      { key: "priority", label: "Priority", width: 86, min: 76 },
+      { key: "proof", label: "Proof state", width: 180, min: 140 },
+      { key: "labels", label: "Labels", width: 430, min: 220 },
+      { key: "updated", label: "Updated", width: 130, min: 110 },
+      { key: "comments", label: "Comments", width: 96, min: 84 },
+    ],
+    metrics: [
+      { label: "Proof triage PRs", view: "proof-triage", detail: "proof-related labels" },
+      { label: "Needs proof", view: "needs-proof", detail: "real behavior proof requested" },
+      { label: "No proof supplied", view: "missing-proof", detail: "most stuck bucket" },
+      {
+        label: "Supplied, needs review",
+        view: "supplied-awaiting-review",
+        detail: "waiting on sufficiency decision",
+      },
+      {
+        label: "Proof sufficient",
+        view: "sufficient-proof",
+        detail: "proof gate appears satisfied",
+      },
+      { label: "Mock-only proof", view: "mock-only-proof", detail: "needs stronger proof" },
+    ],
+  };
+}
+
+function escapeHtml(value) {
+  return String(value ?? "").replace(
+    /[&<>"]/g,
+    (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[char],
+  );
+}
+
+function serializedPageConfig(config) {
+  return JSON.stringify(config).replace(/</g, "\\u003c");
+}
+
+function triageHtml(config) {
+  const pageConfig = serializedPageConfig(config);
   return `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ClawSweeper Triage</title>
+<title>${escapeHtml(config.title)}</title>
 <style>
 :root {
   color-scheme: dark;
@@ -2095,6 +2538,7 @@ tr:last-child td { border-bottom: 0; }
   cursor: pointer;
 }
 .label-pill.clawsweeper { border-color: rgba(103, 183, 255, 0.35); }
+.label-pill.highlight { border-color: rgba(103, 183, 255, 0.35); }
 .label-pill:hover,
 .priority-filter:hover {
   border-color: rgba(103, 183, 255, 0.55);
@@ -2184,11 +2628,11 @@ body.resizing-col {
 <main>
   <header>
     <div>
-      <h1>ClawSweeper Triage</h1>
-      <div class="muted" id="subtitle">Loading advisory issue labels...</div>
+      <h1>${escapeHtml(config.title)}</h1>
+      <div class="muted" id="subtitle">${escapeHtml(config.loadingSubtitle)}</div>
     </div>
     <div class="top-links">
-      <a class="pill" href="/">Live pipeline</a>
+      ${config.links.map((link) => `<a class="pill" href="${escapeHtml(link.href)}">${escapeHtml(link.label)}</a>`).join("")}
       <span class="muted mono" id="updated"></span>
     </div>
   </header>
@@ -2197,16 +2641,16 @@ body.resizing-col {
     <div class="control-group">
       <label class="field">
         <span>Filter</span>
-        <input id="issue-filter" type="search" placeholder="Title, number, author, assignee, label...">
+        <input id="issue-filter" type="search" placeholder="${escapeHtml(config.filterPlaceholder)}">
       </label>
       <button class="secondary-button" id="clear-filter" type="button">Clear</button>
       <label class="field">
         <span>Sort</span>
         <select id="issue-sort">
-          <option value="created-desc">Newest issue first</option>
-          <option value="created-asc">Oldest issue first</option>
-          <option value="number-desc">Highest issue number first</option>
-          <option value="number-asc">Lowest issue number first</option>
+          <option value="created-desc">Newest ${escapeHtml(config.itemNoun)} first</option>
+          <option value="created-asc">Oldest ${escapeHtml(config.itemNoun)} first</option>
+          <option value="number-desc">Highest ${escapeHtml(config.itemNoun)} number first</option>
+          <option value="number-asc">Lowest ${escapeHtml(config.itemNoun)} number first</option>
           <option value="updated-desc">Recently updated first</option>
           <option value="updated-asc">Least recently updated first</option>
           <option value="comments-desc">Most comments first</option>
@@ -2216,7 +2660,7 @@ body.resizing-col {
     </div>
     <span class="muted mono" id="visible-count">Showing 0 loaded</span>
   </section>
-  <nav class="tabs" id="tabs" aria-label="Triage views"></nav>
+  <nav class="tabs" id="tabs" aria-label="${escapeHtml(config.navLabel)}"></nav>
   <section class="view-head">
     <div class="view-title">
       <strong id="view-name">Loading</strong>
@@ -2229,36 +2673,13 @@ body.resizing-col {
   <section id="diagnostics" class="muted"></section>
 </main>
 <script>
+const PAGE = ${pageConfig};
 const fmt = new Intl.NumberFormat();
 const rel = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
-const COLUMN_ORDER = ["issue", "assignees", "priority", "prs", "labels", "updated", "comments"];
-const COLUMN_LABELS = {
-  issue: "Issue",
-  assignees: "Assignees",
-  priority: "Priority",
-  prs: "Linked PRs",
-  labels: "Labels",
-  updated: "Updated",
-  comments: "Comments",
-};
-const COLUMN_DEFAULTS = {
-  issue: 420,
-  assignees: 140,
-  priority: 92,
-  prs: 180,
-  labels: 430,
-  updated: 130,
-  comments: 96,
-};
-const COLUMN_MIN = {
-  issue: 240,
-  assignees: 100,
-  priority: 76,
-  prs: 120,
-  labels: 220,
-  updated: 110,
-  comments: 84,
-};
+const COLUMN_ORDER = PAGE.columns.map(column => column.key);
+const COLUMN_LABELS = Object.fromEntries(PAGE.columns.map(column => [column.key, column.label]));
+const COLUMN_DEFAULTS = Object.fromEntries(PAGE.columns.map(column => [column.key, column.width]));
+const COLUMN_MIN = Object.fromEntries(PAGE.columns.map(column => [column.key, column.min]));
 function storageGet(key) {
   try {
     return localStorage.getItem(key) || "";
@@ -2272,9 +2693,9 @@ function storageSet(key, value) {
   } catch {}
 }
 let state = null;
-let activeView = location.hash.replace(/^#/, "") || storageGet("clawsweeper:triage-view") || "clawsweeper";
-let filterText = storageGet("clawsweeper:triage-filter");
-let sortMode = storageGet("clawsweeper:triage-sort") || "created-desc";
+let activeView = location.hash.replace(/^#/, "") || storageGet(PAGE.storagePrefix + ":view") || PAGE.defaultView;
+let filterText = storageGet(PAGE.storagePrefix + ":filter");
+let sortMode = storageGet(PAGE.storagePrefix + ":sort") || "created-desc";
 let filterTimer = null;
 let columnWidths = loadColumnWidths();
 function esc(value) {
@@ -2283,7 +2704,7 @@ function esc(value) {
 function loadColumnWidths() {
   let saved = {};
   try {
-    saved = JSON.parse(storageGet("clawsweeper:triage-columns") || "{}");
+    saved = JSON.parse(storageGet(PAGE.storagePrefix + ":columns") || "{}");
   } catch {
     saved = {};
   }
@@ -2293,7 +2714,7 @@ function loadColumnWidths() {
   }));
 }
 function saveColumnWidths() {
-  storageSet("clawsweeper:triage-columns", JSON.stringify(columnWidths));
+  storageSet(PAGE.storagePrefix + ":columns", JSON.stringify(columnWidths));
 }
 function tableWidth() {
   return COLUMN_ORDER.reduce((total, key) => total + columnWidths[key], 0);
@@ -2337,7 +2758,8 @@ function labelPill(label) {
   const name = label.name || String(label);
   const color = label.color ? '#' + label.color : '';
   const style = color ? ' style="background: color-mix(in srgb, ' + esc(color) + ' 22%, #1a2532); border-color: color-mix(in srgb, ' + esc(color) + ' 55%, #2a3646);"' : '';
-  const cls = name.startsWith("clawsweeper:") ? "label-pill clawsweeper" : "label-pill";
+  const highlighted = (PAGE.highlightLabelPrefixes || []).some(prefix => name.startsWith(prefix));
+  const cls = highlighted ? "label-pill highlight" : "label-pill";
   return '<button class="' + cls + '" type="button" data-filter-value="' + esc(name) + '"' + style + ' title="Filter by ' + esc(name) + '">' + esc(name) + '</button>';
 }
 function assigneePills(row) {
@@ -2375,6 +2797,7 @@ function searchableText(row) {
       pr.state,
     ]),
     priorityFor(row),
+    row.proof_state,
     ...(row.labels || []).map(label => label.name)
   ].join(" ").toLowerCase();
 }
@@ -2403,7 +2826,7 @@ function renderTabs(views) {
   document.querySelectorAll("[data-view]").forEach(button => {
     button.addEventListener("click", () => {
       activeView = button.dataset.view;
-      storageSet("clawsweeper:triage-view", activeView);
+      storageSet(PAGE.storagePrefix + ":view", activeView);
       history.replaceState(null, "", "#" + activeView);
       render();
     });
@@ -2411,14 +2834,9 @@ function renderTabs(views) {
 }
 function renderMetrics(views) {
   const byId = Object.fromEntries(views.map(view => [view.id, view.total_count || 0]));
-  document.getElementById("metrics").innerHTML = [
-    metric("ClawSweeper issues", byId.clawsweeper, "any discovered clawsweeper label"),
-    metric("Ready candidates", byId["ready-candidates"], "queueable and unblocked"),
-    metric("Blocked queue", byId["queueable-blocked"], "queueable but no-new-fix-pr"),
-    metric("Linked PRs", byId["already-has-pr"], "open fix PR already found"),
-    metric("Needs review", byId["needs-maintainer-review"], "maintainer decision next"),
-    metric("Product/security", byId["product-security"], "policy or security call")
-  ].join("");
+  document.getElementById("metrics").innerHTML = PAGE.metrics.map(item =>
+    metric(item.label, byId[item.view], item.detail)
+  ).join("");
 }
 function renderTable(view) {
   document.getElementById("view-name").textContent = view.title + " (" + fmt.format(view.total_count || 0) + ")";
@@ -2427,6 +2845,32 @@ function renderTable(view) {
   query.href = view.github_url || "https://github.com/issues";
   query.style.display = view.github_url ? "inline-flex" : "none";
   renderRows(view);
+}
+function authorCell(row) {
+  return row.author ? '<button class="label-pill" type="button" data-filter-value="' + esc(row.author) + '" title="Filter by ' + esc(row.author) + '">' + esc(row.author) + '</button>' : '<span class="muted">Unknown</span>';
+}
+function proofStateCell(row) {
+  return row.proof_state ? '<button class="priority-filter" type="button" data-filter-value="' + esc(row.proof_state) + '" title="Filter by ' + esc(row.proof_state) + '">' + esc(row.proof_state) + '</button>' : '<span class="muted">-</span>';
+}
+function rowCellHtml(key, row) {
+  if (key === "issue") {
+    const itemLabel = row.repository + "#" + row.number;
+    return '<div class="issue-cell"><a class="issue-title" href="' + esc(row.url) + '" target="_blank" rel="noreferrer">' + esc(compact(row.title)) + '</a><span class="muted mono">' + esc(itemLabel) + (row.author ? " opened by " + esc(row.author) : "") + '</span></div>';
+  }
+  if (key === "author") return authorCell(row);
+  if (key === "assignees") return '<div class="assignee-list">' + assigneePills(row) + '</div>';
+  if (key === "priority") {
+    const priority = priorityFor(row);
+    return priority
+      ? '<button class="priority-filter" type="button" data-filter-value="' + esc(priority) + '" title="Filter by ' + esc(priority) + '">' + esc(priority) + '</button>'
+      : '<span class="muted">-</span>';
+  }
+  if (key === "proof") return proofStateCell(row);
+  if (key === "prs") return '<div class="pr-list">' + linkedPullRequestPills(row) + '</div>';
+  if (key === "labels") return '<div class="label-list">' + (row.labels || []).map(labelPill).join("") + '</div>';
+  if (key === "updated") return '<span title="' + esc(row.updated_at || "") + '">' + esc(since(row.updated_at)) + '</span>';
+  if (key === "comments") return esc(fmt.format(row.comments || 0));
+  return "";
 }
 function renderRows(view) {
   const rows = filteredRows(view.items || []);
@@ -2448,27 +2892,16 @@ function renderRows(view) {
       " for this view";
   }
   if (!view.items || !view.items.length) {
-    document.getElementById("table").innerHTML = '<div class="empty">No matching issues in the current snapshot.</div>';
+    document.getElementById("table").innerHTML = '<div class="empty">' + esc(PAGE.emptySnapshotText) + '</div>';
     return;
   }
   if (!rows.length) {
-    document.getElementById("table").innerHTML = '<div class="empty">No issues match the current filter.</div>';
+    document.getElementById("table").innerHTML = '<div class="empty">' + esc(PAGE.emptyFilterText) + '</div>';
     return;
   }
   const tableRows = rows.map(row => {
-    const priority = priorityFor(row);
-    const issueLabel = row.repository + "#" + row.number;
-    const priorityCell = priority
-      ? '<button class="priority-filter" type="button" data-filter-value="' + esc(priority) + '" title="Filter by ' + esc(priority) + '">' + esc(priority) + '</button>'
-      : "-";
     return '<tr>' +
-      '<td><div class="issue-cell"><a class="issue-title" href="' + esc(row.url) + '" target="_blank" rel="noreferrer">' + esc(compact(row.title)) + '</a><span class="muted mono">' + esc(issueLabel) + (row.author ? " opened by " + esc(row.author) : "") + '</span></div></td>' +
-      '<td><div class="assignee-list">' + assigneePills(row) + '</div></td>' +
-      '<td class="priority">' + priorityCell + '</td>' +
-      '<td><div class="pr-list">' + linkedPullRequestPills(row) + '</div></td>' +
-      '<td><div class="label-list">' + (row.labels || []).map(labelPill).join("") + '</div></td>' +
-      '<td><span title="' + esc(row.updated_at || "") + '">' + esc(since(row.updated_at)) + '</span></td>' +
-      '<td>' + esc(fmt.format(row.comments || 0)) + '</td>' +
+      COLUMN_ORDER.map(key => '<td>' + rowCellHtml(key, row) + '</td>').join("") +
       '</tr>';
   }).join("");
   document.getElementById("table").innerHTML =
@@ -2491,7 +2924,7 @@ function initControls() {
     clearTimeout(filterTimer);
     filterTimer = setTimeout(() => {
       filterText = input.value;
-      storageSet("clawsweeper:triage-filter", filterText);
+      storageSet(PAGE.storagePrefix + ":filter", filterText);
       const view = currentView();
       if (view) renderRows(view);
     }, 80);
@@ -2499,14 +2932,14 @@ function initControls() {
   document.getElementById("clear-filter").addEventListener("click", () => {
     filterText = "";
     input.value = "";
-    storageSet("clawsweeper:triage-filter", filterText);
+    storageSet(PAGE.storagePrefix + ":filter", filterText);
     const view = currentView();
     if (view) renderRows(view);
     input.focus();
   });
   sort.addEventListener("change", event => {
     sortMode = event.target.value;
-    storageSet("clawsweeper:triage-sort", sortMode);
+    storageSet(PAGE.storagePrefix + ":sort", sortMode);
     const view = currentView();
     if (view) renderRows(view);
   });
@@ -2515,7 +2948,7 @@ function initControls() {
     if (!target) return;
     filterText = target.getAttribute("data-filter-value") || "";
     input.value = filterText;
-    storageSet("clawsweeper:triage-filter", filterText);
+    storageSet(PAGE.storagePrefix + ":filter", filterText);
     const view = currentView();
     if (view) renderRows(view);
     input.focus();
@@ -2564,8 +2997,8 @@ function render() {
 }
 async function load() {
   try {
-    const response = await fetch("/api/triage", { cache: "no-store" });
-    if (!response.ok) throw new Error("/api/triage returned " + response.status);
+    const response = await fetch(PAGE.endpoint, { cache: "no-store" });
+    if (!response.ok) throw new Error(PAGE.endpoint + " returned " + response.status);
     state = await response.json();
     render();
   } catch (error) {
@@ -2587,7 +3020,7 @@ function dashboardHtml() {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>🦞 ClawSweeper Live</title>
+<title>ðŸ¦ž ClawSweeper Live</title>
 <style>
 :root {
   color-scheme: dark;
@@ -2651,7 +3084,7 @@ h1 {
   align-items: center;
   gap: 10px;
 }
-h1::before { content: "🦞"; font-size: 32px; animation: wave 3s ease-in-out infinite; }
+h1::before { content: "ðŸ¦ž"; font-size: 32px; animation: wave 3s ease-in-out infinite; }
 h2 {
   margin: 28px 0 12px;
   font-size: 16px;
@@ -2903,7 +3336,7 @@ a:hover { color: #89c8ff; text-decoration: underline; }
   text-align: center;
   font-style: italic;
 }
-.empty::before { content: "🦀 "; opacity: 0.3; }
+.empty::before { content: "ðŸ¦€ "; opacity: 0.3; }
 @media (max-width: 1280px) { .grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } .split { grid-template-columns: 1fr; } header { align-items: start; flex-direction: column; } .top-links { justify-content: flex-start; } }
 @media (max-width: 760px) { .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .work-row { grid-template-columns: 1fr; align-items: start; } .work-state, .stage-block, .timebox { justify-content: start; justify-items: start; } }
 @media (max-width: 560px) { main { width: min(100vw - 20px, 1440px); padding-top: 16px; } .grid, .closed-stats { grid-template-columns: 1fr; } .side-row { grid-template-columns: 1fr; } .side-meta { justify-content: flex-start; } }
@@ -2914,26 +3347,27 @@ a:hover { color: #89c8ff; text-decoration: underline; }
   <header>
     <div>
       <h1>ClawSweeper Live</h1>
-      <div class="muted" id="subtitle">🌊 Loading pipeline state...</div>
+      <div class="muted" id="subtitle">ðŸŒŠ Loading pipeline state...</div>
     </div>
     <div class="top-links">
       <a class="pill" href="/triage">Issue triage</a>
+      <a class="pill" href="/pr-proof-triage">PR proof triage</a>
       <span class="muted mono" id="updated"></span>
     </div>
   </header>
   <section class="grid" id="metrics"></section>
   <section class="split">
     <div class="pipeline-col">
-      <h2>🌀 Active Pipeline</h2>
+      <h2>ðŸŒ€ Active Pipeline</h2>
       <div id="pipeline"></div>
     </div>
     <aside class="side-col">
-      <h2>⚡ Automerge Speed</h2>
+      <h2>âš¡ Automerge Speed</h2>
       <div id="automerge"></div>
-      <h2>✅ Closed by ClawSweeper</h2>
+      <h2>âœ… Closed by ClawSweeper</h2>
       <div id="closed-stats"></div>
       <div id="closed"></div>
-      <h2>📡 Recent Activity</h2>
+      <h2>ðŸ“¡ Recent Activity</h2>
       <div id="events"></div>
     </aside>
   </section>
@@ -3038,15 +3472,15 @@ async function load() {
 
 function renderDashboard(data, note) {
   document.getElementById("subtitle").textContent = data.source.target_repositories.join(", ");
-  document.getElementById("updated").textContent = "Updated " + since(data.generated_at) + (note ? " · " + note : "");
+  document.getElementById("updated").textContent = "Updated " + since(data.generated_at) + (note ? " \u00b7 " + note : "");
   const fleet = data.fleet;
   document.getElementById("metrics").innerHTML = [
-    metric("🦾 Claw Workers", fmt.format(fleet.active_codex_jobs), "budget " + fleet.worker_budget, fleet.budget_used_percent, "var(--green)"),
-    metric("🌊 Active Sweeps", fmt.format(fleet.active_workflow_runs), "support " + fmt.format(fleet.support_workflow_runs || 0), Math.min(100, fleet.active_workflow_runs * 3), "var(--blue)"),
-    metric("⏳ Queue Depth", fmt.format(fleet.queued_workflow_runs), "support queue " + fmt.format(fleet.support_queued_workflow_runs || 0), Math.min(100, fleet.queued_workflow_runs * 10), "var(--amber)"),
-    metric("💥 Recent Snags", fmt.format(fleet.failed_recent_runs), "last page", Math.min(100, fleet.failed_recent_runs * 15), fleet.failed_recent_runs ? "var(--red)" : "var(--green)"),
-    metric("⚡ Merge Speed", data.averages.automerge_command_to_merge_ms ? elapsed(data.averages.automerge_command_to_merge_ms) : "n/a", data.averages.automerge_samples + " samples", 60, "var(--violet)"),
-    metric("🎯 Capacity", fleet.budget_used_percent + "%", "fleet utilization", fleet.budget_used_percent, "var(--green)")
+    metric("ðŸ¦¾ Claw Workers", fmt.format(fleet.active_codex_jobs), "budget " + fleet.worker_budget, fleet.budget_used_percent, "var(--green)"),
+    metric("ðŸŒŠ Active Sweeps", fmt.format(fleet.active_workflow_runs), "support " + fmt.format(fleet.support_workflow_runs || 0), Math.min(100, fleet.active_workflow_runs * 3), "var(--blue)"),
+    metric("â³ Queue Depth", fmt.format(fleet.queued_workflow_runs), "support queue " + fmt.format(fleet.support_queued_workflow_runs || 0), Math.min(100, fleet.queued_workflow_runs * 10), "var(--amber)"),
+    metric("ðŸ’¥ Recent Snags", fmt.format(fleet.failed_recent_runs), "last page", Math.min(100, fleet.failed_recent_runs * 15), fleet.failed_recent_runs ? "var(--red)" : "var(--green)"),
+    metric("âš¡ Merge Speed", data.averages.automerge_command_to_merge_ms ? elapsed(data.averages.automerge_command_to_merge_ms) : "n/a", data.averages.automerge_samples + " samples", 60, "var(--violet)"),
+    metric("ðŸŽ¯ Capacity", fleet.budget_used_percent + "%", "fleet utilization", fleet.budget_used_percent, "var(--green)")
   ].join("");
   renderPipeline(data.pipeline || []);
   renderAutomerge(data.recent.automerge || []);

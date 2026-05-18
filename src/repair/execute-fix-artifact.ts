@@ -108,6 +108,7 @@ import {
   fetchSourcePullRequestView,
   prepareReviewThreadsForMerge,
   publicContributorCredit,
+  sourceClosingReferences,
   sourceContributorCredits,
   supersededReplacementSources,
 } from "./execute-fix-github.js";
@@ -1100,6 +1101,11 @@ function openReplacementPrFromPreparedRepairCheckout({
     provenance,
     contributorCredits,
     maintainerAttribution: jobMaintainerAttribution(),
+    sourceClosingReferences: sourceClosingReferences({
+      fixArtifact,
+      targetDir,
+      repo: result.repo,
+    }),
   });
   const bodyPath = path.join(workRoot, "replacement-pr-body.md");
   fs.writeFileSync(bodyPath, body);
@@ -1432,6 +1438,11 @@ function executeReplacementBranch({
     provenance,
     contributorCredits,
     maintainerAttribution: jobMaintainerAttribution(),
+    sourceClosingReferences: sourceClosingReferences({
+      fixArtifact,
+      targetDir,
+      repo: result.repo,
+    }),
   });
   if (dryRun) {
     return {

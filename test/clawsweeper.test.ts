@@ -2968,6 +2968,12 @@ Full review comments:
   assert.match(eggSection, /<summary>What is this egg doing here\?<\/summary>/);
   assert.match(eggSection, /Eggs appear after the PR passes real-behavior proof/);
   assert.match(eggSection, /It is here for vibes, not verdicts/);
+  assert.match(
+    eggSection,
+    /How to hatch it: reach `status: 👀 ready for maintainer look` or `status: 🚀 automerge armed`/,
+  );
+  assert.match(eggSection, /sufficient real-behavior proof, no blocking P0\/P1\/P2 findings/);
+  assert.match(eggSection, /no security attention needed, and clean correctness/);
   assert.match(eggSection, /🥚 common, 🌱 uncommon, 💎 rare, ✨ glimmer, and 🌈 legendary/);
   assert.doesNotMatch(eggSection, /🎁 Pass real behavior proof/);
   assert.doesNotMatch(eggSection, /✨ Hatched:/);
@@ -3039,6 +3045,10 @@ Full review comments:
     /Share on X: \[post this hatch\]\(https:\/\/x\.com\/intent\/tweet\?text=[^)]+&url=https%3A%2F%2Fgithub\.com%2Fopenclaw%2Fopenclaw%2Fpull%2F74471%23issuecomment-987654321\)/,
   );
   assert.match(first, /Copy: My PR egg hatched a [^\n]+ in ClawSweeper\./);
+  assert.match(
+    first,
+    /How to hatch it: reach `status: 👀 ready for maintainer look` or `status: 🚀 automerge armed`/,
+  );
   assert.match(first, /same PR keeps the same creature/);
   assert.equal(
     first.match(/\*\*PR egg\*\*[\s\S]*?\*\*Real behavior proof\*\*/)?.[0],

@@ -9,6 +9,7 @@ import { parsePullRequestUrl } from "./github-ref.js";
 import { repoRoot } from "./lib.js";
 import { repairGhEnv as ghEnv } from "./process-env.js";
 import { uniqueStrings } from "./validation-command-utils.js";
+import { closingReferencesFromMarkdown } from "./external-messages.js";
 
 const ghCommandTimeoutMs = Math.max(
   30_000,
@@ -49,6 +50,31 @@ export function fetchSourcePullRequestView({
       },
     ),
   );
+}
+
+export function sourceClosingReferences({
+  fixArtifact,
+  targetDir,
+  repo,
+}: {
+  fixArtifact: LooseRecord;
+  targetDir: string;
+  repo: string;
+}): string[] {
+  const references: string[] = [];
+  for (const source of fixArtifact.source_prs ?? []) {
+    const parsed = parsePullRequestUrl(source);
+    if (!parsed || parsed.repo !== repo) continue;
+    const view = JSON.parse(
+      run("gh", ["pr", "view", String(parsed.number), "--repo", repo, "--json", "body"], {
+        cwd: targetDir,
+        env: ghEnv(),
+        timeoutMs: ghCommandTimeoutMs,
+      }),
+    );
+    references.push(...closingReferencesFromMarkdown(view.body));
+  }
+  return uniqueStrings(references);
 }
 
 export function sourceContributorCredits({
