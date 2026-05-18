@@ -7578,17 +7578,30 @@ function mergeRiskOptionsLines(options: readonly MergeRiskOption[]): string[] {
 }
 
 function mergeRiskAutomergeInstructionBlock(instruction: string): string {
+  const specialInstructions = normalizeMergeRiskAutomergeInstruction(instruction);
+  if (!specialInstructions) return "";
   return [
     "<details>",
-    "<summary>Copy recommended ClawSweeper instruction</summary>",
+    "<summary>Copy recommended automerge instruction</summary>",
     "",
     "```text",
     "@clawsweeper automerge",
-    `Special instructions: ${instruction}`,
+    "",
+    "Special instructions:",
+    specialInstructions,
     "```",
     "",
     "</details>",
   ].join("\n");
+}
+
+function normalizeMergeRiskAutomergeInstruction(instruction: string): string {
+  return instruction
+    .trim()
+    .replace(/^@clawsweeper\s+(?:automerge|autofix)\b[:\s-]*/i, "")
+    .replace(/^special instructions:\s*/i, "")
+    .replace(/^this PR:\s*/i, "")
+    .trim();
 }
 
 function issueReproductionHelpSuggestions(markdown: string): string[] {

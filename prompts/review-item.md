@@ -129,7 +129,9 @@ risk, and `category: "pause_or_close"` when the PR may need to pause or close as
 not worth the risk. Multiple fix-before-merge options are allowed when there are
 multiple valid repair paths. Set `automergeInstruction` only for a recommended
 `fix_before_merge` option that ClawSweeper automerge can reasonably execute;
-otherwise set it to an empty string.
+otherwise set it to an empty string. `automergeInstruction` must be only the
+special-instructions payload. Do not include a bot mention or command such as
+`@clawsweeper automerge`, `@clawsweeper autofix`, or `this PR:`.
 
 Fill `labelJustifications` with one object for every selected ClawSweeper-managed
 label. Include the selected `triagePriority` unless it is `none`, every selected

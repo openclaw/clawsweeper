@@ -222,11 +222,11 @@
           },
           "automergeInstruction": {
             "type": "string",
-            "description": "Only for a recommended fix_before_merge option suitable for automation; otherwise empty."
+            "description": "Only for a recommended fix_before_merge option suitable for automation; otherwise empty. This must be only the special-instructions payload, without @clawsweeper automerge, @clawsweeper autofix, or this PR command text."
           }
         }
       },
-      "description": "Risk-specific maintainer options for the Risk before merge section. Use [] when mergeRiskLabels is []. When mergeRiskLabels is non-empty, provide 1-3 prose-first options. Do not use a fixed menu: tailor titles and bodies to this PR. Mark at most one option recommended, and only when evidence supports a clear best path. Include pause_or_close when the PR may not be worth the risk. Put a copyable @clawsweeper automerge instruction only in automergeInstruction for a recommended fix_before_merge option suitable for automation."
+      "description": "Risk-specific maintainer options for the Risk before merge section. Use [] when mergeRiskLabels is []. When mergeRiskLabels is non-empty, provide 1-3 prose-first options. Do not use a fixed menu: tailor titles and bodies to this PR. Mark at most one option recommended, and only when evidence supports a clear best path. Include pause_or_close when the PR may not be worth the risk. Put only the special-instructions payload in automergeInstruction for a recommended fix_before_merge option suitable for automation; do not include @clawsweeper automerge, @clawsweeper autofix, or this PR command text."
     },
     "labelJustifications": {
       "type": "array",

@@ -4355,9 +4355,33 @@ test("pull request keep-open review comments render repairable merge-risk option
   assert.match(comment, /3\. \*\*Do not merge as-is\*\*/);
   assert.match(
     comment,
-    /<summary>Copy recommended ClawSweeper instruction<\/summary>[\s\S]*@clawsweeper automerge\nSpecial instructions: Keep fallback behavior as the default and add a strict config option for the fail-closed behavior\./,
+    /<summary>Copy recommended automerge instruction<\/summary>[\s\S]*@clawsweeper automerge\n\nSpecial instructions:\nKeep fallback behavior as the default and add a strict config option for the fail-closed behavior\./,
   );
   assert.doesNotMatch(comment, /Remaining risk \/ open question:/);
+});
+
+test("pull request keep-open review comments strip nested ClawSweeper commands from copy block", () => {
+  const comment = mergeRiskReviewComment({
+    risk: "Delivery repair should not run with nested bot commands in the pasteable instruction.",
+    bestSolution: "Repair duplicate delivery and add regression coverage before merge.",
+    options: [
+      {
+        title: "Repair delivery before merge",
+        body: "Fix duplicate active-requester delivery and add regression coverage before merge.",
+        category: "fix_before_merge",
+        recommended: true,
+        automergeInstruction:
+          "@clawsweeper autofix this PR: prevent duplicate active-requester delivery and add focused regression coverage before merging.",
+      },
+    ],
+  });
+
+  assert.match(
+    comment,
+    /@clawsweeper automerge\n\nSpecial instructions:\nprevent duplicate active-requester delivery and add focused regression coverage before merging\./,
+  );
+  assert.doesNotMatch(comment, /Special instructions: @clawsweeper/);
+  assert.doesNotMatch(comment, /autofix this PR:/);
 });
 
 test("pull request keep-open review comments can recommend accepting intentional risk without a copy block", () => {
