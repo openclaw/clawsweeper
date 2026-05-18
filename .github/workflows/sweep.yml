@@ -411,6 +411,10 @@ jobs:
         run: |
           state="Failed"
           detail="The targeted re-review did not finish cleanly. Check the workflow run for details."
+          if [ "$REVIEW_OUTCOME" = "cancelled" ]; then
+            state="Superseded"
+            detail="A newer re-review for this item started before this run finished, so GitHub cancelled this older run. Check the latest ClawSweeper run for the current result."
+          fi
           if [ "$REVIEW_OUTCOME" = "success" ] && [ "$PUBLISH_OUTCOME" = "success" ] && [ "$ROUTE_OUTCOME" = "success" ]; then
             state="Complete"
             detail="The targeted re-review finished, the durable review comment was updated, and the synced verdict was routed."

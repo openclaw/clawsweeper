@@ -6950,6 +6950,18 @@ test("event review completion removes ClawSweeper eyes reaction", () => {
   assert.doesNotMatch(block, /issues\/comments\/\$ITEM_NUMBER\/reactions/);
 });
 
+test("event re-review status explains superseded cancellations", () => {
+  const workflow = readFileSync(".github/workflows/sweep.yml", "utf8");
+  const block = workflow.slice(
+    workflow.indexOf("- name: Mark re-review complete"),
+    workflow.indexOf("- name: Commit event comment router ledger"),
+  );
+
+  assert.match(block, /\[ "\$REVIEW_OUTCOME" = "cancelled" \]/);
+  assert.match(block, /state="Superseded"/);
+  assert.match(block, /A newer re-review for this item started before this run finished/);
+});
+
 test("manual exact-item review dispatches avoid broad review concurrency", () => {
   const workflow = readFileSync(".github/workflows/sweep.yml", "utf8");
 
