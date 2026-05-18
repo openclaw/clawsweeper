@@ -375,7 +375,7 @@ export function emitUsageEventOtlpHttp(
         JSON.stringify(otlpPayloadForUsageEvent(event, env)),
         endpoint,
       ],
-      { encoding: "utf8", stdio: "ignore" },
+      { encoding: "utf8", env: { ...process.env, ...env }, stdio: "ignore" },
     );
     return result.status === 0;
   } catch {

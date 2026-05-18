@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -177,6 +177,56 @@ test("appendUsageEventJsonl writes local JSONL and fails soft", () => {
     assert.equal(appendUsageEventJsonl(path, event), true);
     assert.equal(readFileSync(path, "utf8"), `${JSON.stringify(event)}\n`);
     assert.equal(appendUsageEventJsonl(dir, event), false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("emitUsageEventOtlpHttp only broadcasts sanitized OTLP attributes", () => {
+  const dir = mkdtempSync(join(tmpdir(), "clawsweeper-otlp-"));
+  try {
+    const binDir = join(dir, "bin");
+    const argsPath = join(dir, "curl-args.json");
+    mkdirSync(binDir, { recursive: true });
+    const curlPath = join(binDir, "curl");
+    writeFileSync(
+      curlPath,
+      `#!/usr/bin/env node\nrequire("node:fs").writeFileSync(${JSON.stringify(argsPath)}, JSON.stringify(process.argv.slice(2)));\n`,
+    );
+    chmodSync(curlPath, 0o755);
+
+    const event = buildUsageTelemetryEvent(
+      {
+        workflow: "repair-worker",
+        phase: "primary",
+        model: "gpt-5.5",
+        transcript_path: "transcripts/raw-codex.jsonl",
+        stderr_path: "stderr.log",
+        output_path: "raw-output.json",
+        status: "success",
+        tokens: { input: 11, cache_read: 2, output: 3, reasoning_output: 4, total: 20 },
+      },
+      { emittedAt: new Date("2026-05-18T00:00:00.000Z"), env: {} },
+    );
+
+    assert.equal(
+      emitUsageEventOtlpHttp(event, {
+        CLAWSWEEPER_USAGE_TELEMETRY: "1",
+        CLAWSWEEPER_USAGE_OTLP_ENDPOINT: "http://collector.test/v1/traces",
+        CLAWSWEEPER_USAGE_SERVICE_NAME: "clawsweeper-runner",
+        CLAWSWEEPER_USAGE_SERVICE_NAMESPACE: "mac-mini",
+        PATH: `${binDir}:${process.env.PATH}`,
+      }),
+      true,
+    );
+
+    const args = JSON.parse(readFileSync(argsPath, "utf8")) as string[];
+    const payload = args[args.indexOf("--data-binary") + 1];
+    assert.match(payload, /clawsweeper-runner/);
+    assert.match(payload, /clawsweeper\.repair-worker\.primary/);
+    assert.match(payload, /gen_ai\.usage\.total_tokens/);
+    assert.doesNotMatch(payload, /transcript_path|stderr_path|output_path/);
+    assert.doesNotMatch(payload, /raw-codex|raw-output|stderr\.log/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
