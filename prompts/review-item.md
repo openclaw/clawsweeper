@@ -91,7 +91,7 @@ For `duplicate_or_superseded`: read the canonical item; explain its status.
 For `not_actionable_in_repo`: confirm the action is outside the source repo boundary.
 For `stale_insufficient_info`: check code for an obvious known fix first; confirm missing data is the blocker.
 
-Do a canonical-search pass before keeping an older item open. Search GitHub and local reports for the central user problem. Use `gh issue list --state all --search "..."` and `gh search issues "... repo:<owner/repo>"`. Follow synonyms and linked PRs. If current `main` solves the central problem and only minor unconfirmed leftovers remain, prefer `implemented_on_main` with provenance.
+Do a canonical-search pass before keeping an older item open. Search GitHub and local reports for the central user problem. Use `gh issue list --state all --search "..."` and `gh search issues "... repo:<owner/repo>"`. Follow synonyms and linked PRs. For release, packaging, dependency, or CI-breakage reports, also search current source, changelog, and git history for the unique error strings, package names, model IDs, and affected release tags (`git log -S`, `git log -G`, `git tag --contains`, and package changelogs). Do not keep a repair candidate open from stale release evidence until this post-release provenance check is done. If current `main` solves the central problem and only minor unconfirmed leftovers remain, prefer `implemented_on_main` with provenance.
 
 Keep open for everything else: real bugs, unclear-but-salvageable reports, stale PRs with useful unique work, optional features requiring a missing API first, or anything where evidence is not high-confidence.
 

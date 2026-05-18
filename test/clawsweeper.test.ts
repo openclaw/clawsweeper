@@ -3643,6 +3643,15 @@ test("review prompt routes narrow work to an implementation agent without making
   assert.doesNotMatch(prompt, /missing required changelog\s+entry/);
 });
 
+test("review prompt requires post-release provenance search before repair routing", () => {
+  const prompt = readFileSync("prompts/review-item.md", "utf8");
+
+  assert.match(prompt, /release, packaging, dependency, or CI-breakage reports/);
+  assert.match(prompt, /unique error strings, package names, model IDs/);
+  assert.match(prompt, /git log -S/);
+  assert.match(prompt, /Do not keep a repair candidate open from stale release evidence/);
+});
+
 test("review prompts require reproduction and solution assessment details", () => {
   const itemPrompt = readFileSync("prompts/review-item.md", "utf8");
   const commitPrompt = readFileSync("prompts/review-commit.md", "utf8");
