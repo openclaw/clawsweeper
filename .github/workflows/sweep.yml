@@ -111,18 +111,24 @@ on:
     # Per-cron target routing is handled in the plan job's "Resolve target repository"
     # step via a case statement on github.event.schedule.
     #
-    # valkyriweb/pi-mono: one daily sweep at 05:00 UTC.
-    # valkyriweb/openclaw: one daily sweep at 06:00 UTC.
-    # valkyriweb/lue-kube: one daily sweep at 07:00 UTC.
-    # valkyriweb/openclaw-claude: one daily sweep at 08:00 UTC.
-    # bermont-digital/multica is still the workflow_dispatch default for manual triggers
-    # but no longer runs on a cron — propose-only re-reviews of long-standing open PRs
-    # were producing no signal change. Re-add a multica cron if that calculus shifts.
-    # Hot intake stays manual; PR-open review is handled by Codex Review later.
+    # Cadence revised 2026-05-18 for the realtime-receiver era: push-mode dispatch
+    # handles real-time review on every event, so cron becomes a backstop for items
+    # dispatch missed plus periodic re-evaluation. Daily on every target is overkill;
+    # frequency now matches per-target activity:
+    #
+    # valkyriweb/pi-mono: daily 05:00 UTC. Active upstream fork — catch upstream-sync drift.
+    # valkyriweb/openclaw: weekdays 06:00 UTC. Low-traffic private fork.
+    # valkyriweb/lue-kube: every 12h at 07:00 / 19:00 UTC. Active ops repo.
+    # valkyriweb/openclaw-claude: weekdays 08:00 UTC. Doc commits.
+    # bermont-digital/multica: weekdays 09:00 UTC. Replaces the dispatch-only era
+    #   that produced no signal under propose-only; with realtime receivers live,
+    #   the cron now serves as a drift-catch backstop.
+    # CLIP-SA/* + valkyriweb/clawsweeper-self: workflow_dispatch only.
     - cron: "0 5 * * *" # valkyriweb/pi-mono daily
-    - cron: "0 6 * * *" # valkyriweb/openclaw daily
-    - cron: "0 7 * * *" # valkyriweb/lue-kube daily
-    - cron: "0 8 * * *" # valkyriweb/openclaw-claude daily
+    - cron: "0 6 * * 1-5" # valkyriweb/openclaw weekdays
+    - cron: "0 7,19 * * *" # valkyriweb/lue-kube every 12h
+    - cron: "0 8 * * 1-5" # valkyriweb/openclaw-claude weekdays
+    - cron: "0 9 * * 1-5" # bermont-digital/multica weekdays
 
 permissions:
   contents: write
@@ -523,14 +529,17 @@ jobs:
               "0 5 * * *")
                 target_repo="valkyriweb/pi-mono"
                 ;;
-              "0 6 * * *")
+              "0 6 * * 1-5")
                 target_repo="valkyriweb/openclaw"
                 ;;
-              "0 7 * * *")
+              "0 7,19 * * *")
                 target_repo="valkyriweb/lue-kube"
                 ;;
-              "0 8 * * *")
+              "0 8 * * 1-5")
                 target_repo="valkyriweb/openclaw-claude"
+                ;;
+              "0 9 * * 1-5")
+                target_repo="bermont-digital/multica"
                 ;;
               *)
                 target_repo="bermont-digital/multica"
