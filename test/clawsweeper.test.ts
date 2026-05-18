@@ -2603,6 +2603,8 @@ Full review comments:
   assert.match(comment, /\*\*PR rating\*\*\nOverall: 🦞 diamond lobster/);
   assert.match(comment, /Proof: 🦞 diamond lobster/);
   assert.match(comment, /Patch quality: 🦞 diamond lobster/);
+  assert.match(comment, /<summary>What the crustacean ranks mean<\/summary>/);
+  assert.match(comment, /🧂 unranked krab: not merge-ready/);
   assert.match(comment, /\*\*Real behavior proof\*\*\nSufficient \(terminal\):/);
   assert.match(markers, /clawsweeper-verdict:pass/);
   assert.doesNotMatch(markers, /clawsweeper-verdict:needs-human/);
@@ -2664,6 +2666,7 @@ Full review comments:
 
   assert.match(comment, /\*\*PR rating\*\*\nOverall: 🦀 challenger crab/);
   assert.match(comment, /Proof: 🦀 challenger crab ✨ media proof bonus/);
+  assert.match(comment, /Shiny media proof means a screenshot, video, or linked artifact/);
   assert.doesNotMatch(comment, /Rank-up moves:/);
 });
 

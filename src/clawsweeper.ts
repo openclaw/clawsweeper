@@ -5068,6 +5068,23 @@ function publicPrRatingLine(rating: PrRating, proof: RealBehaviorProof): string 
   if (rating.nextSteps.length) {
     lines.push("", "Rank-up moves:", ...rating.nextSteps.slice(0, 3).map((step) => `- ${step}`));
   }
+  lines.push(
+    "",
+    "<details>",
+    "<summary>What the crustacean ranks mean</summary>",
+    "",
+    "- 🦀 challenger crab: rare, exceptional readiness with strong proof, clean implementation, and convincing validation.",
+    "- 🦞 diamond lobster: very strong readiness with only minor maintainer review expected.",
+    "- 🐚 platinum hermit: good normal PR, likely mergeable with ordinary maintainer review.",
+    "- 🦐 gold shrimp: useful signal, but proof or patch confidence is still limited.",
+    "- 🦪 silver shellfish: thin signal; proof, validation, or implementation needs work.",
+    "- 🧂 unranked krab: not merge-ready because proof is missing/unusable or there are serious correctness or safety concerns.",
+    "- 🌊 off-meta tidepool: rating does not apply to this item.",
+    "",
+    "Shiny media proof means a screenshot, video, or linked artifact directly shows the changed behavior. Runtime, network, CSP, and security claims still need visible diagnostics.",
+    "",
+    "</details>",
+  );
   return lines.join("\n");
 }
 
