@@ -6974,6 +6974,9 @@ function reportDecision(markdown: string, closeReason: CloseReason): Decision {
   const fixedRelease = frontMatterValue(markdown, "fixed_release");
   const fixedSha = frontMatterValue(markdown, "fixed_sha");
   const fixedAt = frontMatterValue(markdown, "fixed_at");
+  const triagePriority = triagePriorityFromReport(markdown);
+  const impactLabels = impactLabelsFromReport(markdown);
+  const mergeRiskLabels = mergeRiskLabelsFromReport(markdown);
   return {
     decision: "close",
     closeReason,
