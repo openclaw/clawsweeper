@@ -5511,12 +5511,12 @@ function publicPrEggLine(
   const explainer = [
     "",
     "<details>",
-    "<summary>How the PR egg works</summary>",
+    "<summary>What is this egg doing here?</summary>",
     "",
-    "- The egg is cosmetic and PR-only; it does not affect labels, ratings, merge decisions, or automation.",
-    "- Egg states come from the same review signals ClawSweeper already reports: unresolved proof or findings, re-review loops, and clean final-review readiness.",
-    "- Hatches are deterministic from this repository, PR number, and reviewed head SHA, so the same PR revision gets the same creature.",
-    "- Rarity is collectible flavor only: 🥚 common, 🌱 uncommon, 💎 rare, ✨ glimmer, and 🌈 legendary.",
+    "- Every PR gets a tiny egg. It is here for vibes, not verdicts: it does not change labels, ratings, merge decisions, or automation.",
+    "- The shell reacts to review momentum: missing proof warms it up, re-review makes it wobble, and a clean final review lets it hatch.",
+    "- The hatch is seeded from this repository, PR number, and reviewed head SHA, so the same PR revision gets the same little creature every time.",
+    "- Rarity is just collectible sparkle: 🥚 common, 🌱 uncommon, 💎 rare, ✨ glimmer, and 🌈 legendary.",
     "",
     "</details>",
   ];
