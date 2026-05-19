@@ -1,6 +1,6 @@
 name: ClawSweeper
 
-run-name: ${{ github.event_name == 'repository_dispatch' && format('Review event item {0}#{1}', github.event.client_payload.target_repo || 'openclaw/openclaw', github.event.client_payload.item_number || '?') || (github.event_name == 'workflow_dispatch' && github.event.inputs.apply_existing == 'true' && github.event.inputs.apply_sync_comments_only == 'true') && 'Sync Codex review comments' || ((github.event_name == 'workflow_dispatch' && github.event.inputs.apply_existing == 'true') || (github.event_name == 'schedule' && (github.event.schedule == '3 * * * *' || github.event.schedule == '18 * * * *' || github.event.schedule == '33 * * * *' || github.event.schedule == '48 * * * *' || github.event.schedule == '8,23,38,53 * * * *'))) && 'Apply ClawSweeper closures' || ((github.event_name == 'workflow_dispatch' && github.event.inputs.audit_dashboard == 'true') || (github.event_name == 'schedule' && (github.event.schedule == '7 */6 * * *' || github.event.schedule == '12 */6 * * *' || github.event.schedule == '17 */6 * * *'))) && 'Audit ClawSweeper state' || ((github.event_name == 'workflow_dispatch' && github.event.inputs.hot_intake == 'true') || (github.event_name == 'schedule' && (github.event.schedule == '*/5 * * * *' || github.event.schedule == '2/5 * * * *'))) && 'Review hot ClawSweeper items' || 'Review ClawSweeper items' }}
+run-name: ${{ github.event_name == 'repository_dispatch' && format('Review event item {0}#{1}', github.event.client_payload.target_repo || 'openclaw/openclaw', github.event.client_payload.item_number || '?') || ((github.event_name == 'workflow_dispatch' && github.event.inputs.apply_existing == 'true' && github.event.inputs.apply_sync_comments_only == 'true') || (github.event_name == 'schedule' && github.event.schedule == '6,21,36,51 * * * *')) && 'Sync Codex review comments' || ((github.event_name == 'workflow_dispatch' && github.event.inputs.apply_existing == 'true') || (github.event_name == 'schedule' && (github.event.schedule == '3 * * * *' || github.event.schedule == '18 * * * *' || github.event.schedule == '33 * * * *' || github.event.schedule == '48 * * * *' || github.event.schedule == '8,23,38,53 * * * *'))) && 'Apply ClawSweeper closures' || ((github.event_name == 'workflow_dispatch' && github.event.inputs.audit_dashboard == 'true') || (github.event_name == 'schedule' && (github.event.schedule == '7 */6 * * *' || github.event.schedule == '12 */6 * * *' || github.event.schedule == '17 */6 * * *'))) && 'Audit ClawSweeper state' || ((github.event_name == 'workflow_dispatch' && github.event.inputs.hot_intake == 'true') || (github.event_name == 'schedule' && (github.event.schedule == '*/5 * * * *' || github.event.schedule == '2/5 * * * *'))) && 'Review hot ClawSweeper items' || 'Review ClawSweeper items' }}
 
 on:
   repository_dispatch:
@@ -47,6 +47,14 @@ on:
         description: "Only sync durable review comments; do not close items"
         required: false
         default: "false"
+      apply_sync_open_pr_batch:
+        description: "Select the next cursor-based open PR batch for no-LLM durable comment sync"
+        required: false
+        default: "false"
+      apply_sync_batch_size:
+        description: "Open PRs per cursor-based comment sync batch"
+        required: false
+        default: "25"
       apply_comment_sync_min_age_days:
         description: "Minimum age in days before comment-only sync rewrites an existing review comment"
         required: false
@@ -121,6 +129,7 @@ on:
     - cron: "33 * * * *"
     - cron: "48 * * * *"
     - cron: "8,23,38,53 * * * *"
+    - cron: "6,21,36,51 * * * *"
 
 permissions:
   contents: write
@@ -133,7 +142,7 @@ env:
   CLAWSWEEPER_APP_CLIENT_ID: Iv23liOECG0slfuhz093
 
 concurrency:
-  group: ${{ github.event_name == 'repository_dispatch' && format('clawsweeper-event-{0}-{1}', github.event.client_payload.target_repo || 'openclaw/openclaw', github.event.client_payload.item_number || github.run_id) || format('{0}-{1}', (github.event_name == 'workflow_dispatch' && github.event.inputs.apply_existing == 'true' && github.event.inputs.apply_sync_comments_only == 'true') && 'clawsweeper-comment-sync' || ((github.event_name == 'workflow_dispatch' && github.event.inputs.apply_existing == 'true') || (github.event_name == 'schedule' && (github.event.schedule == '3 * * * *' || github.event.schedule == '18 * * * *' || github.event.schedule == '33 * * * *' || github.event.schedule == '48 * * * *' || github.event.schedule == '8,23,38,53 * * * *'))) && 'clawsweeper-apply' || (github.event_name == 'workflow_dispatch' && (github.event.inputs.item_number != '' || github.event.inputs.item_numbers != '')) && format('clawsweeper-intake-exact-{0}', github.event.inputs.item_number || github.event.inputs.item_numbers) || ((github.event_name == 'workflow_dispatch' && github.event.inputs.hot_intake == 'true') || (github.event_name == 'schedule' && (github.event.schedule == '*/5 * * * *' || github.event.schedule == '2/5 * * * *'))) && 'clawsweeper-intake-v2' || ((github.event_name == 'workflow_dispatch' && github.event.inputs.audit_dashboard == 'true') || (github.event_name == 'schedule' && (github.event.schedule == '7 */6 * * *' || github.event.schedule == '12 */6 * * *' || github.event.schedule == '17 */6 * * *'))) && 'clawsweeper-audit' || 'clawsweeper-review', github.event.inputs.target_repo || github.event.client_payload.target_repo || ((github.event.schedule == '17 */6 * * *') && 'openclaw/clawsweeper' || ((github.event.schedule == '2/5 * * * *' || github.event.schedule == '22 * * * *' || github.event.schedule == '8,23,38,53 * * * *' || github.event.schedule == '12 */6 * * *') && 'openclaw/clawhub' || 'openclaw/openclaw'))) }}
+  group: ${{ github.event_name == 'repository_dispatch' && format('clawsweeper-event-{0}-{1}', github.event.client_payload.target_repo || 'openclaw/openclaw', github.event.client_payload.item_number || github.run_id) || format('{0}-{1}', ((github.event_name == 'workflow_dispatch' && github.event.inputs.apply_existing == 'true' && github.event.inputs.apply_sync_comments_only == 'true') || (github.event_name == 'schedule' && github.event.schedule == '6,21,36,51 * * * *')) && 'clawsweeper-comment-sync' || ((github.event_name == 'workflow_dispatch' && github.event.inputs.apply_existing == 'true') || (github.event_name == 'schedule' && (github.event.schedule == '3 * * * *' || github.event.schedule == '18 * * * *' || github.event.schedule == '33 * * * *' || github.event.schedule == '48 * * * *' || github.event.schedule == '8,23,38,53 * * * *'))) && 'clawsweeper-apply' || (github.event_name == 'workflow_dispatch' && (github.event.inputs.item_number != '' || github.event.inputs.item_numbers != '')) && format('clawsweeper-intake-exact-{0}', github.event.inputs.item_number || github.event.inputs.item_numbers) || ((github.event_name == 'workflow_dispatch' && github.event.inputs.hot_intake == 'true') || (github.event_name == 'schedule' && (github.event.schedule == '*/5 * * * *' || github.event.schedule == '2/5 * * * *'))) && 'clawsweeper-intake-v2' || ((github.event_name == 'workflow_dispatch' && github.event.inputs.audit_dashboard == 'true') || (github.event_name == 'schedule' && (github.event.schedule == '7 */6 * * *' || github.event.schedule == '12 */6 * * *' || github.event.schedule == '17 */6 * * *'))) && 'clawsweeper-audit' || 'clawsweeper-review', github.event.inputs.target_repo || github.event.client_payload.target_repo || ((github.event.schedule == '17 */6 * * *') && 'openclaw/clawsweeper' || ((github.event.schedule == '2/5 * * * *' || github.event.schedule == '22 * * * *' || github.event.schedule == '8,23,38,53 * * * *' || github.event.schedule == '12 */6 * * *') && 'openclaw/clawhub' || 'openclaw/openclaw'))) }}
   cancel-in-progress: ${{ github.event_name == 'repository_dispatch' }}
 
 jobs:
@@ -542,7 +551,7 @@ jobs:
 
   plan:
     name: Plan review candidates
-    if: ${{ github.event_name != 'repository_dispatch' && !((github.event_name == 'workflow_dispatch' && (github.event.inputs.apply_existing == 'true' || github.event.inputs.audit_dashboard == 'true')) || (github.event_name == 'schedule' && ((github.event.schedule == '3 * * * *' || github.event.schedule == '18 * * * *' || github.event.schedule == '33 * * * *' || github.event.schedule == '48 * * * *' || github.event.schedule == '8,23,38,53 * * * *') || (github.event.schedule == '7 */6 * * *' || github.event.schedule == '12 */6 * * *' || github.event.schedule == '17 */6 * * *')))) && !(github.event_name == 'schedule' && (github.event.schedule == '2/5 * * * *' || github.event.schedule == '22 * * * *') && vars.CLAWSWEEPER_ENABLE_CLAWHUB != '1') }}
+    if: ${{ github.event_name != 'repository_dispatch' && !((github.event_name == 'workflow_dispatch' && (github.event.inputs.apply_existing == 'true' || github.event.inputs.audit_dashboard == 'true')) || (github.event_name == 'schedule' && ((github.event.schedule == '3 * * * *' || github.event.schedule == '18 * * * *' || github.event.schedule == '33 * * * *' || github.event.schedule == '48 * * * *' || github.event.schedule == '8,23,38,53 * * * *' || github.event.schedule == '6,21,36,51 * * * *') || (github.event.schedule == '7 */6 * * *' || github.event.schedule == '12 */6 * * *' || github.event.schedule == '17 */6 * * *')))) && !(github.event_name == 'schedule' && (github.event.schedule == '2/5 * * * *' || github.event.schedule == '22 * * * *') && vars.CLAWSWEEPER_ENABLE_CLAWHUB != '1') }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     outputs:
@@ -638,7 +647,7 @@ jobs:
           retention-days: 1
 
       - name: Publish planning-started status
-        if: ${{ !((github.event_name == 'workflow_dispatch' && github.event.inputs.apply_existing == 'true') || (github.event_name == 'schedule' && (github.event.schedule == '3 * * * *' || github.event.schedule == '18 * * * *' || github.event.schedule == '33 * * * *' || github.event.schedule == '48 * * * *'))) && !((github.event_name == 'workflow_dispatch' && github.event.inputs.hot_intake == 'true' && github.event.inputs.item_number == '' && github.event.inputs.item_numbers == '') || (github.event_name == 'schedule' && (github.event.schedule == '*/5 * * * *' || github.event.schedule == '2/5 * * * *'))) }}
+        if: ${{ !((github.event_name == 'workflow_dispatch' && github.event.inputs.apply_existing == 'true') || (github.event_name == 'schedule' && (github.event.schedule == '3 * * * *' || github.event.schedule == '18 * * * *' || github.event.schedule == '33 * * * *' || github.event.schedule == '48 * * * *' || github.event.schedule == '6,21,36,51 * * * *'))) && !((github.event_name == 'workflow_dispatch' && github.event.inputs.hot_intake == 'true' && github.event.inputs.item_number == '' && github.event.inputs.item_numbers == '') || (github.event_name == 'schedule' && (github.event.schedule == '*/5 * * * *' || github.event.schedule == '2/5 * * * *'))) }}
         continue-on-error: true
         working-directory: clawsweeper
         run: |
@@ -1068,7 +1077,7 @@ jobs:
   publish:
     name: Publish review artifacts
     needs: [plan, review]
-    if: ${{ always() && needs.plan.result == 'success' && needs.review.result != 'cancelled' && needs.plan.outputs.target_repo != '' && github.event_name != 'repository_dispatch' && !((github.event_name == 'workflow_dispatch' && (github.event.inputs.apply_existing == 'true' || github.event.inputs.audit_dashboard == 'true')) || (github.event_name == 'schedule' && ((github.event.schedule == '3 * * * *' || github.event.schedule == '18 * * * *' || github.event.schedule == '33 * * * *' || github.event.schedule == '48 * * * *' || github.event.schedule == '8,23,38,53 * * * *') || (github.event.schedule == '7 */6 * * *' || github.event.schedule == '12 */6 * * *' || github.event.schedule == '17 */6 * * *')))) }}
+    if: ${{ always() && needs.plan.result == 'success' && needs.review.result != 'cancelled' && needs.plan.outputs.target_repo != '' && github.event_name != 'repository_dispatch' && !((github.event_name == 'workflow_dispatch' && (github.event.inputs.apply_existing == 'true' || github.event.inputs.audit_dashboard == 'true')) || (github.event_name == 'schedule' && ((github.event.schedule == '3 * * * *' || github.event.schedule == '18 * * * *' || github.event.schedule == '33 * * * *' || github.event.schedule == '48 * * * *' || github.event.schedule == '8,23,38,53 * * * *' || github.event.schedule == '6,21,36,51 * * * *') || (github.event.schedule == '7 */6 * * *' || github.event.schedule == '12 */6 * * *' || github.event.schedule == '17 */6 * * *')))) }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -1594,7 +1603,7 @@ jobs:
 
   apply-existing:
     name: Apply close proposals
-    if: ${{ ((github.event_name == 'repository_dispatch' && github.event.action == 'clawsweeper_hatch') || (github.event_name == 'workflow_dispatch' && github.event.inputs.apply_existing == 'true') || (github.event_name == 'schedule' && (github.event.schedule == '3 * * * *' || github.event.schedule == '18 * * * *' || github.event.schedule == '33 * * * *' || github.event.schedule == '48 * * * *' || github.event.schedule == '8,23,38,53 * * * *'))) && !(github.event_name == 'repository_dispatch' && github.event.client_payload.target_repo == 'openclaw/clawhub' && vars.CLAWSWEEPER_ENABLE_CLAWHUB != '1') && !(github.event_name == 'schedule' && github.event.schedule == '8,23,38,53 * * * *' && vars.CLAWSWEEPER_ENABLE_CLAWHUB != '1') }}
+    if: ${{ ((github.event_name == 'repository_dispatch' && github.event.action == 'clawsweeper_hatch') || (github.event_name == 'workflow_dispatch' && github.event.inputs.apply_existing == 'true') || (github.event_name == 'schedule' && (github.event.schedule == '3 * * * *' || github.event.schedule == '18 * * * *' || github.event.schedule == '33 * * * *' || github.event.schedule == '48 * * * *' || github.event.schedule == '8,23,38,53 * * * *' || github.event.schedule == '6,21,36,51 * * * *'))) && !(github.event_name == 'repository_dispatch' && github.event.client_payload.target_repo == 'openclaw/clawhub' && vars.CLAWSWEEPER_ENABLE_CLAWHUB != '1') && !(github.event_name == 'schedule' && github.event.schedule == '8,23,38,53 * * * *' && vars.CLAWSWEEPER_ENABLE_CLAWHUB != '1') }}
     runs-on: ubuntu-latest
     timeout-minutes: 360
     steps:
@@ -1676,9 +1685,20 @@ jobs:
           close_delay_ms="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_close_delay_ms || '2000' }}"
           progress_every="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_progress_every || '10' }}"
           checkpoint_size="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_checkpoint_size || '50' }}"
+          sync_batch_size="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_sync_batch_size || '25' }}"
+          sync_open_pr_batch="${{ github.event_name == 'schedule' && github.event.schedule == '6,21,36,51 * * * *' && 'true' || (github.event_name == 'workflow_dispatch' && github.event.inputs.apply_sync_open_pr_batch || 'false') }}"
           item_numbers="${{ github.event_name == 'repository_dispatch' && github.event.client_payload.item_number || github.event.inputs.apply_item_numbers || '' }}"
           sync_comments_only="${{ github.event_name == 'repository_dispatch' && github.event.action == 'clawsweeper_hatch' && 'true' || (github.event_name == 'workflow_dispatch' && github.event.inputs.apply_sync_comments_only || 'false') }}"
           comment_sync_min_age_days="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_comment_sync_min_age_days || '7' }}"
+          target_slug="$TARGET_REPO"
+          target_slug="${target_slug//\//-}"
+          cursor_path="results/comment-sync-cursors/${target_slug}.json"
+          next_cursor=""
+          if [ "$sync_open_pr_batch" = "true" ]; then
+            sync_comments_only="true"
+            apply_kind="pull_request"
+            comment_sync_min_age_days="0"
+          fi
           sync_comments_arg=()
           if [ "$sync_comments_only" = "true" ]; then
             sync_comments_arg=(--sync-comments-only)
@@ -1709,6 +1729,46 @@ jobs:
             fi
           }
           pnpm run reconcile -- --target-repo "$TARGET_REPO" --skip-closed-at
+          if [ "$sync_open_pr_batch" = "true" ] && [ -z "$item_numbers" ]; then
+            batch_env=".artifacts/comment-sync-batch.env"
+            pnpm run --silent workflow -- comment-sync-batch \
+              --target-repo "$TARGET_REPO" \
+              --apply-kind "$apply_kind" \
+              --batch-size "$sync_batch_size" \
+              --cursor-path "$cursor_path" > "$batch_env"
+            cat "$batch_env"
+            item_numbers="$(awk -F= '$1 == "item_numbers" { print $2 }' "$batch_env")"
+            next_cursor="$(awk -F= '$1 == "next_cursor" { print $2 }' "$batch_env")"
+            batch_count="$(awk -F= '$1 == "count" { print $2 }' "$batch_env")"
+            if [ "${batch_count:-0}" -eq 0 ]; then
+              pnpm run status -- \
+                --target-repo "$TARGET_REPO" \
+                --state "Apply comments idle" \
+                --detail "No open PR review records were available for cursor-based comment sync. Cursor remains ${next_cursor:-0}." \
+                --run-url "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+              publish_status "chore: update idle sweep comment sync status"
+              {
+                echo "APPLY_CLOSED_TOTAL=0"
+                echo "APPLY_LIMIT=1"
+                echo "APPLY_MIN_AGE_DAYS=$min_age_days"
+                echo "APPLY_MIN_AGE_MINUTES=$min_age_minutes"
+                echo "APPLY_KIND=$apply_kind"
+                echo "APPLY_CLOSE_REASONS=$apply_close_reasons"
+                echo "APPLY_STALE_MIN_AGE_DAYS=$stale_min_age_days"
+                echo "APPLY_CLOSE_DELAY_MS=$close_delay_ms"
+                echo "APPLY_PROGRESS_EVERY=$progress_every"
+                echo "APPLY_CHECKPOINT_SIZE=$checkpoint_size"
+                echo "APPLY_ITEM_NUMBERS="
+                echo "APPLY_TARGET_REPO=$TARGET_REPO"
+                echo "APPLY_SYNC_COMMENTS_ONLY=true"
+                echo "APPLY_SYNC_OPEN_PR_BATCH=true"
+                echo "APPLY_COMMENT_SYNC_MIN_AGE_DAYS=$comment_sync_min_age_days"
+                echo "APPLY_NOOP=true"
+              } >> "$GITHUB_ENV"
+              exit 0
+            fi
+            echo "Selected cursor-based comment sync batch: $item_numbers"
+          fi
           if [ "$sync_comments_only" != "true" ] && [ -z "$item_numbers" ]; then
             item_numbers="$(pnpm run --silent workflow -- proposed-item-numbers \
               --target-repo "$TARGET_REPO" \
@@ -1783,11 +1843,17 @@ jobs:
             cp apply-report.json ".artifacts/apply-reports/apply-report-$checkpoint.json"
             result_count="$(pnpm run --silent workflow -- count-report --report ".artifacts/apply-reports/apply-report-$checkpoint.json")"
             synced_count="$(pnpm run --silent workflow -- count-actions --report ".artifacts/apply-reports/apply-report-$checkpoint.json" --action review_comment_synced)"
-            publish_changes "chore: sync sweep review comments checkpoint $checkpoint" records assets/pr-eggs apply-report.json
+            if [ "$sync_open_pr_batch" = "true" ]; then
+              pnpm run workflow -- write-comment-sync-cursor \
+                --cursor-path "$cursor_path" \
+                --next-cursor "$next_cursor" \
+                --target-repo "$TARGET_REPO"
+            fi
+            publish_changes "chore: sync sweep review comments checkpoint $checkpoint" records assets/pr-eggs apply-report.json results/comment-sync-cursors
             pnpm run status -- \
               --target-repo "$TARGET_REPO" \
               --state "Apply comments synced" \
-              --detail "Comment-only apply checkpoint $checkpoint finished. Synced durable review comments: $synced_count. Result records: $result_count. Item numbers: ${item_numbers:-all}." \
+              --detail "Comment-only apply checkpoint $checkpoint finished. Synced durable review comments: $synced_count. Result records: $result_count. Item numbers: ${item_numbers:-all}. Next cursor: ${next_cursor:-none}." \
               --run-url "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
             publish_status "chore: update sweep comment sync status"
             echo "::endgroup::"
@@ -1863,6 +1929,7 @@ jobs:
             echo "APPLY_ITEM_NUMBERS=$item_numbers"
             echo "APPLY_TARGET_REPO=$TARGET_REPO"
             echo "APPLY_SYNC_COMMENTS_ONLY=$sync_comments_only"
+            echo "APPLY_SYNC_OPEN_PR_BATCH=$sync_open_pr_batch"
             echo "APPLY_COMMENT_SYNC_MIN_AGE_DAYS=$comment_sync_min_age_days"
           } >> "$GITHUB_ENV"
 
@@ -1874,13 +1941,18 @@ jobs:
           fi
           target_slug="$APPLY_TARGET_REPO"
           target_slug="${target_slug//\//-}"
-          pnpm run repair:publish-main -- \
-            --message "chore: apply sweep decisions" \
-            --path "records/${target_slug}" \
-            --path assets/pr-eggs \
-            --path apply-report.json \
-            --path "results/sweep-status/${target_slug}.json" \
+          publish_args=(
+            --message "chore: apply sweep decisions"
+            --path "records/${target_slug}"
+            --path assets/pr-eggs
+            --path apply-report.json
+            --path "results/sweep-status/${target_slug}.json"
             --rebase-strategy apply-records
+          )
+          if [ "${APPLY_SYNC_OPEN_PR_BATCH:-false}" = "true" ]; then
+            publish_args+=(--path results/comment-sync-cursors)
+          fi
+          pnpm run repair:publish-main -- "${publish_args[@]}"
 
       - name: Continue apply sweep
         if: ${{ success() }}

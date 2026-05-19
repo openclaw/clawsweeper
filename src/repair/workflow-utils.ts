@@ -69,6 +69,16 @@ function runCli(): void {
     case "proposed-item-numbers":
       process.stdout.write(proposedItemNumbers(proposedItemOptions()).join(","));
       break;
+    case "comment-sync-batch":
+      printOutput(commentSyncBatchOutput(commentSyncBatchOptions()));
+      break;
+    case "write-comment-sync-cursor":
+      writeCommentSyncCursor(
+        requiredString("cursor-path"),
+        numberArg("next-cursor", 0),
+        requiredString("target-repo"),
+      );
+      break;
     case "merge-apply-reports":
       mergeApplyReports(requiredString("dir"), requiredString("output"));
       break;
@@ -243,6 +253,13 @@ type ProposedItemOptions = {
   minAgeMinutes: number | null;
 };
 
+type CommentSyncBatchOptions = {
+  targetRepo: string;
+  applyKind: string;
+  batchSize: number;
+  cursorPath: string;
+};
+
 export function proposedItemNumbers(options: ProposedItemOptions): number[] {
   const targetSlug = options.targetRepo
     .toLowerCase()
@@ -304,6 +321,47 @@ export function proposedItemNumbers(options: ProposedItemOptions): number[] {
     .sort((left, right) => left - right);
 }
 
+export function commentSyncBatchOutput(options: CommentSyncBatchOptions): Record<string, string> {
+  const candidates = commentSyncCandidates(options.targetRepo, options.applyKind);
+  const cursor = readCommentSyncCursor(options.cursorPath);
+  const afterCursor = candidates.filter((number) => number > cursor).slice(0, options.batchSize);
+  const selected =
+    afterCursor.length > 0
+      ? afterCursor
+      : candidates.filter((number) => number > 0).slice(0, options.batchSize);
+  const nextCursor = selected.length > 0 ? selected[selected.length - 1] : cursor;
+  return {
+    item_numbers: selected.join(","),
+    count: String(selected.length),
+    cursor: String(cursor),
+    next_cursor: String(nextCursor),
+    wrapped: String(candidates.length > 0 && afterCursor.length === 0),
+  };
+}
+
+export function writeCommentSyncCursor(
+  cursorPath: string,
+  nextCursor: number,
+  targetRepo: string,
+): void {
+  if (!Number.isInteger(nextCursor) || nextCursor < 0) {
+    throw new Error("--next-cursor must be a non-negative integer");
+  }
+  fs.mkdirSync(path.dirname(cursorPath), { recursive: true });
+  fs.writeFileSync(
+    cursorPath,
+    `${JSON.stringify(
+      {
+        target_repo: targetRepo,
+        next_after_number: nextCursor,
+        updated_at: new Date().toISOString(),
+      },
+      null,
+      2,
+    )}\n`,
+  );
+}
+
 function proposedItemOptions(): ProposedItemOptions {
   return {
     targetRepo: requiredString("target-repo"),
@@ -313,6 +371,48 @@ function proposedItemOptions(): ProposedItemOptions {
     minAgeDays: numberArg("min-age-days", 0),
     minAgeMinutes: optionalString("min-age-minutes") ? numberArg("min-age-minutes", 0) : null,
   };
+}
+
+function commentSyncBatchOptions(): CommentSyncBatchOptions {
+  return {
+    targetRepo: requiredString("target-repo"),
+    applyKind: optionalString("apply-kind") || "pull_request",
+    batchSize: numberArg("batch-size", 25),
+    cursorPath: requiredString("cursor-path"),
+  };
+}
+
+function commentSyncCandidates(targetRepo: string, applyKind: string): number[] {
+  const targetSlug = targetRepo
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "");
+  const itemsDir = path.join("records", targetSlug, "items");
+  if (!fs.existsSync(itemsDir)) return [];
+
+  return fs
+    .readdirSync(itemsDir)
+    .filter((name) => /(?:^|[a-z0-9-]-)\d+\.md$/.test(name))
+    .flatMap((name) => {
+      const markdown = fs.readFileSync(path.join(itemsDir, name), "utf8");
+      if (repoFor(markdown, name) !== targetRepo) return [];
+      const type = frontMatterValue(markdown, "type");
+      if (applyKind !== "all" && type !== applyKind) return [];
+      if (frontMatterValue(markdown, "review_status") !== "complete") return [];
+      if (!frontMatterValue(markdown, "item_snapshot_hash")) return [];
+      const actionTaken = frontMatterValue(markdown, "action_taken");
+      if (actionTaken !== "kept_open" && actionTaken !== "proposed_close") return [];
+      return [numberFor(name)];
+    })
+    .sort((left, right) => left - right);
+}
+
+function readCommentSyncCursor(cursorPath: string): number {
+  if (!fs.existsSync(cursorPath)) return 0;
+  const parsed: unknown = JSON.parse(fs.readFileSync(cursorPath, "utf8"));
+  if (!isJsonObject(parsed)) return 0;
+  const cursor = Number(parsed.next_after_number);
+  return Number.isInteger(cursor) && cursor >= 0 ? cursor : 0;
 }
 
 function readApplyActions(reportPath: string): ApplyAction[] {
