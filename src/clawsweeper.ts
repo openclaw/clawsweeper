@@ -5583,7 +5583,7 @@ function publicPrEggLine(
   const visualSeed = prEggVisualSeedFromReport(markdown);
   const state = prEggStateFromStatus(options.statusKind);
   const hatchInstruction =
-    "How to hatch it: reach `status: 👀 ready for maintainer look` or `status: 🚀 automerge armed`, then the PR author or a maintainer can comment `@clawsweeper hatch` to generate its image.";
+    "How to hatch it: once this PR reaches `status: 👀 ready for maintainer look` or `status: 🚀 automerge armed`, the PR author or a maintainer can comment `@clawsweeper hatch` to turn this ASCII egg into its generated creature image.";
   const explainer = [
     "",
     "<details>",

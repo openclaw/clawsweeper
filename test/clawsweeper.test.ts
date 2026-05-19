@@ -2972,7 +2972,7 @@ Full review comments:
   assert.match(eggSection, /It is here for vibes, not verdicts/);
   assert.match(
     eggSection,
-    /\*\*PR egg\*\*\n🔥 Warming up:[^\n]+\nHow to hatch it: reach `status: 👀 ready for maintainer look` or `status: 🚀 automerge armed`, then the PR author or a maintainer can comment `@clawsweeper hatch` to generate its image\./,
+    /\*\*PR egg\*\*\n🔥 Warming up:[^\n]+\nHow to hatch it: once this PR reaches `status: 👀 ready for maintainer look` or `status: 🚀 automerge armed`, the PR author or a maintainer can comment `@clawsweeper hatch` to turn this ASCII egg into its generated creature image\./,
   );
   assert.match(
     eggSection,
@@ -2981,7 +2981,7 @@ Full review comments:
   assert.match(eggSection, /no security attention needed, and clean correctness/);
   assert.match(
     eggSection,
-    /PR author or a maintainer can comment `@clawsweeper hatch` to generate its image/,
+    /PR author or a maintainer can comment `@clawsweeper hatch` to turn this ASCII egg into its generated creature image/,
   );
   assert.match(eggSection, /🥚 common, 🌱 uncommon, 💎 rare, ✨ glimmer, and 🌈 legendary/);
   assert.doesNotMatch(eggSection, /🎁 Pass real behavior proof/);
@@ -3060,7 +3060,7 @@ Full review comments:
   assert.match(first, /Copy: My PR egg hatched a [^\n]+ in ClawSweeper\./);
   assert.match(
     first,
-    /Image traits: [^\n]+\nHow to hatch it: reach `status: 👀 ready for maintainer look` or `status: 🚀 automerge armed`, then the PR author or a maintainer can comment `@clawsweeper hatch` to generate its image\./,
+    /Image traits: [^\n]+\nHow to hatch it: once this PR reaches `status: 👀 ready for maintainer look` or `status: 🚀 automerge armed`, the PR author or a maintainer can comment `@clawsweeper hatch` to turn this ASCII egg into its generated creature image\./,
   );
   assert.match(first, /same PR keeps the same creature/);
   assert.equal(
