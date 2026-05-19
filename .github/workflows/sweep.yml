@@ -51,10 +51,6 @@ on:
         description: "Select the next cursor-based open PR batch for no-LLM durable comment sync"
         required: false
         default: "false"
-      apply_sync_batch_size:
-        description: "Open PRs per cursor-based comment sync batch"
-        required: false
-        default: "25"
       apply_comment_sync_min_age_days:
         description: "Minimum age in days before comment-only sync rewrites an existing review comment"
         required: false
@@ -1685,7 +1681,7 @@ jobs:
           close_delay_ms="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_close_delay_ms || '2000' }}"
           progress_every="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_progress_every || '10' }}"
           checkpoint_size="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_checkpoint_size || '50' }}"
-          sync_batch_size="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_sync_batch_size || '25' }}"
+          sync_batch_size="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_limit || '25' }}"
           sync_open_pr_batch="${{ github.event_name == 'schedule' && github.event.schedule == '6,21,36,51 * * * *' && 'true' || (github.event_name == 'workflow_dispatch' && github.event.inputs.apply_sync_open_pr_batch || 'false') }}"
           item_numbers="${{ github.event_name == 'repository_dispatch' && github.event.client_payload.item_number || github.event.inputs.apply_item_numbers || '' }}"
           sync_comments_only="${{ github.event_name == 'repository_dispatch' && github.event.action == 'clawsweeper_hatch' && 'true' || (github.event_name == 'workflow_dispatch' && github.event.inputs.apply_sync_comments_only || 'false') }}"
