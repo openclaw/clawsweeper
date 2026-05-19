@@ -5875,6 +5875,7 @@ test("pull request keep-open review comments render repairable merge-risk option
 
   assert.match(comment, /\*\*Risk before merge\*\*/);
   assert.match(comment, new RegExp(escapeRegExpForTest(mergeRisk)));
+  assert.doesNotMatch(comment, /Why this matters:/);
   assert.match(
     comment,
     /\*\*Maintainer options:\*\*\n1\. \*\*Preserve existing behavior by default \(recommended\)\*\*/,

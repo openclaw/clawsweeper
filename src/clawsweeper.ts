@@ -8619,10 +8619,7 @@ function publicMergeRiskLine(
   const choices = options.length
     ? mergeRiskOptionsLines(options)
     : mergeRiskFallbackOptionsLines(bestSolutionLine, nextStepLine);
-  return [
-    `Why this matters: ${risks}`,
-    choices.length ? ["", "**Maintainer options:**", ...choices].join("\n") : "",
-  ]
+  return [risks, choices.length ? ["", "**Maintainer options:**", ...choices].join("\n") : ""]
     .filter(Boolean)
     .join("\n");
 }
