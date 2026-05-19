@@ -2976,6 +2976,10 @@ Full review comments:
   );
   assert.match(eggSection, /sufficient real-behavior proof, no blocking P0\/P1\/P2 findings/);
   assert.match(eggSection, /no security attention needed, and clean correctness/);
+  assert.match(
+    eggSection,
+    /PR author or a maintainer can comment `@clawsweeper hatch` to generate its image/,
+  );
   assert.match(eggSection, /🥚 common, 🌱 uncommon, 💎 rare, ✨ glimmer, and 🌈 legendary/);
   assert.doesNotMatch(eggSection, /🎁 Pass real behavior proof/);
   assert.doesNotMatch(eggSection, /✨ Hatched:/);
@@ -3054,6 +3058,10 @@ Full review comments:
   assert.match(
     first,
     /How to hatch it: reach `status: 👀 ready for maintainer look` or `status: 🚀 automerge armed`/,
+  );
+  assert.match(
+    first,
+    /PR author or a maintainer can comment `@clawsweeper hatch` to generate its image/,
   );
   assert.match(first, /same PR keeps the same creature/);
   assert.equal(
