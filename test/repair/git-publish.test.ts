@@ -23,6 +23,7 @@ test("commitMessageForPublishedPaths skips CI for generated-only publishes", () 
   assert.equal(
     commitMessageForPublishedPaths("chore: update sweep records", [
       "records",
+      "assets/pr-eggs",
       "results/sweep-status",
     ]),
     "chore: update sweep records\n\n[skip ci]",

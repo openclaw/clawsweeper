@@ -38,6 +38,7 @@ const GENERATED_PUBLISH_PATHS = [
   "jobs",
   "records",
   "results",
+  "assets",
 ] as const;
 const SKIP_CI_DIRECTIVE_PATTERN =
   /\[(?:skip ci|ci skip|no ci|skip actions|actions skip)\]|^skip-checks:\s*true$/im;

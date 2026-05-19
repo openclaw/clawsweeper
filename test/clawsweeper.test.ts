@@ -59,6 +59,7 @@ import {
   prRatingLabelsForTest,
   prRatingLabelSchemeForTest,
   prEggCreatureForTest,
+  prEggImagePromptForTest,
   prEggSpriteMetricsForTest,
   prStatusLabelsForTest,
   prStatusLabelSchemeForTest,
@@ -3143,6 +3144,84 @@ test("PR egg creature exposes deterministic image traits", () => {
     assert.equal(typeof value, "string");
     assert.ok(value.length > 0);
   }
+});
+
+test("PR egg image prompt uses deterministic hatch traits with badge constraints", () => {
+  const prompt = prEggImagePromptForTest(
+    "openclaw/openclaw#74471",
+    "openclaw/openclaw#74471@abc123",
+  );
+
+  assert.match(prompt, /square collectible mascot badge/);
+  assert.match(prompt, /GitHub pull request hatch/);
+  assert.match(prompt, /Scene location:/);
+  assert.match(prompt, /Accessory:/);
+  assert.match(prompt, /Palette:/);
+  assert.match(prompt, /displayed at 256x256/);
+  assert.match(prompt, /no text, no letters, no numbers, no logos/);
+});
+
+test("hatched PR egg embeds durable image URL above ASCII fallback", () => {
+  const report = `${reportFrontMatter({
+    type: "pull_request",
+    number: "74476",
+    decision: "keep_open",
+    close_reason: "none",
+    review_status: "complete",
+    confidence: "high",
+    author: "contributor",
+    author_association: "CONTRIBUTOR",
+    labels: JSON.stringify([]),
+    work_candidate: "none",
+    pull_head_sha: "abc123def456",
+    pr_egg_image_url:
+      "https://raw.githubusercontent.com/openclaw/clawsweeper-state/state/assets/pr-eggs/openclaw-openclaw/74476.png",
+  })}
+
+## Summary
+
+Keep this clean PR open for maintainer review.
+
+## What This Changes
+
+Fixes the gateway status output.
+
+## Best Possible Solution
+
+Merge after maintainer review.
+
+${realBehaviorProofReportSection()}
+
+${prRatingReportSection({
+  overallTier: "B",
+  proofTier: "A",
+  patchTier: "B",
+  summary: "This PR has strong proof and normal merge-ready implementation quality.",
+  nextSteps: "",
+})}
+
+## Review Findings
+
+Overall correctness: patch is correct
+
+Overall confidence: 0.9
+
+Full review comments:
+
+- none
+`;
+
+  const comment = renderReviewCommentFromReport(report, "none", {
+    prStatusKind: "ready_for_maintainer_look",
+  });
+  const eggSection = comment.match(/\*\*PR egg\*\*[\s\S]*?\*\*Real behavior proof\*\*/)?.[0] ?? "";
+
+  assert.match(
+    eggSection,
+    /<img src="https:\/\/raw\.githubusercontent\.com\/openclaw\/clawsweeper-state\/state\/assets\/pr-eggs\/openclaw-openclaw\/74476\.png" width="256" height="256" alt="Hatched PR egg: [^"]+">/,
+  );
+  assert.match(eggSection, /```text\n[\s\S]+?\n```/);
+  assert.ok(eggSection.indexOf("<img ") < eggSection.indexOf("```text"));
 });
 
 test("PR egg share link falls back to PR URL before durable comment metadata exists", () => {

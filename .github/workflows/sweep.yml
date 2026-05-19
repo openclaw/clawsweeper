@@ -1259,6 +1259,7 @@ jobs:
         timeout-minutes: 15
         env:
           GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           TARGET_REPO: ${{ needs.plan.outputs.target_repo }}
         run: |
           set -euo pipefail
@@ -1298,6 +1299,7 @@ jobs:
           pnpm run repair:publish-main -- \
             --message "chore: sync selected review comments" \
             --path "records/${target_slug}" \
+            --path assets/pr-eggs \
             --path apply-report.json \
             --path "results/sweep-status/${target_slug}.json" \
             --rebase-strategy theirs
@@ -1307,6 +1309,7 @@ jobs:
         timeout-minutes: 30
         env:
           GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           TARGET_REPO: ${{ needs.plan.outputs.target_repo }}
         run: |
           set -euo pipefail
@@ -1351,6 +1354,7 @@ jobs:
           pnpm run repair:publish-main -- \
             --message "chore: apply selected sweep decisions" \
             --path "records/${target_slug}" \
+            --path assets/pr-eggs \
             --path apply-report.json \
             --path "results/sweep-status/${target_slug}.json" \
             --rebase-strategy theirs
@@ -1654,6 +1658,7 @@ jobs:
       - name: Apply unchanged proposed decisions with checkpoints
         env:
           GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           TARGET_REPO: ${{ steps.target.outputs.target_repo }}
           CLAWSWEEPER_PUBLISH_THROTTLE_STATUS: "true"
           CLAWSWEEPER_RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -1772,7 +1777,7 @@ jobs:
             cp apply-report.json ".artifacts/apply-reports/apply-report-$checkpoint.json"
             result_count="$(pnpm run --silent workflow -- count-report --report ".artifacts/apply-reports/apply-report-$checkpoint.json")"
             synced_count="$(pnpm run --silent workflow -- count-actions --report ".artifacts/apply-reports/apply-report-$checkpoint.json" --action review_comment_synced)"
-            publish_changes "chore: sync sweep review comments checkpoint $checkpoint" records apply-report.json
+            publish_changes "chore: sync sweep review comments checkpoint $checkpoint" records assets/pr-eggs apply-report.json
             pnpm run status -- \
               --target-repo "$TARGET_REPO" \
               --state "Apply comments synced" \
@@ -1814,7 +1819,7 @@ jobs:
             result_count="$(pnpm run --silent workflow -- count-report --report ".artifacts/apply-reports/apply-report-$checkpoint.json")"
             closed_total=$((closed_total + closed_in_chunk))
             echo "Checkpoint $checkpoint result_count=$result_count closed_in_chunk=$closed_in_chunk closed_total=$closed_total/$limit"
-            publish_changes "chore: apply sweep decisions checkpoint $checkpoint" records apply-report.json
+            publish_changes "chore: apply sweep decisions checkpoint $checkpoint" records assets/pr-eggs apply-report.json
             pnpm run status -- \
               --target-repo "$TARGET_REPO" \
               --state "Apply in progress" \
@@ -1865,6 +1870,7 @@ jobs:
           pnpm run repair:publish-main -- \
             --message "chore: apply sweep decisions" \
             --path "records/${target_slug}" \
+            --path assets/pr-eggs \
             --path apply-report.json \
             --path "results/sweep-status/${target_slug}.json" \
             --rebase-strategy apply-records
