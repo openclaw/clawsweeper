@@ -164,6 +164,7 @@ type ActionTaken =
   | "kept_open"
   | "proposed_close"
   | "review_comment_synced"
+  | "hatch_comment_synced"
   | "skipped_comment_auth"
   | "skipped_locked_conversation"
   | "skipped_changed_since_review"
@@ -5638,6 +5639,28 @@ function publicPrEggLine(
   ].join("\n");
 }
 
+function publicPrEggLineFromReport(
+  markdown: string,
+  statusKind?: PrStatusLabelKind | null,
+): string {
+  const options: {
+    realBehaviorProof: RealBehaviorProof;
+    prRating: PrRating;
+    reviewFindings: readonly Pick<ReviewFinding, "priority">[];
+    securityReview: Pick<SecurityReview, "status">;
+    overallCorrectness: OverallCorrectness;
+    statusKind?: PrStatusLabelKind | null;
+  } = {
+    realBehaviorProof: reportRealBehaviorProof(markdown),
+    prRating: reportPrRating(markdown),
+    reviewFindings: reportReviewFindings(markdown),
+    securityReview: reportSecurityReview(markdown),
+    overallCorrectness: reportOverallCorrectness(markdown),
+  };
+  if (statusKind !== undefined) options.statusKind = statusKind;
+  return publicPrEggLine(markdown, options);
+}
+
 function prEggImageRelativePath(markdown: string): string {
   const repo = markdownRepository(markdown);
   const profile = repositoryProfileFor(repo);
@@ -9505,6 +9528,57 @@ function ensureHatchMissingRecordComment(number: number, dryRun: boolean): strin
   return "posted hatch-missing-record comment";
 }
 
+function hatchCommentMarker(number: number): string {
+  return `<!-- clawsweeper-pr-egg-hatch:${number} -->`;
+}
+
+function renderHatchComment(
+  number: number,
+  markdown: string,
+  statusKind: PrStatusLabelKind | null | undefined,
+): string {
+  return [
+    "ClawSweeper PR egg hatch",
+    "",
+    publicPrEggLineFromReport(markdown, statusKind),
+    "",
+    hatchCommentMarker(number),
+  ].join("\n");
+}
+
+function upsertHatchComment(
+  number: number,
+  markdown: string,
+  statusKind: PrStatusLabelKind | null | undefined,
+  dryRun: boolean,
+): Record<string, unknown> | undefined {
+  const body = renderHatchComment(number, markdown, statusKind);
+  const existing = issueCommentWithMarker(number, hatchCommentMarker(number));
+  const id = commentId(existing);
+  if (dryRun) return existing;
+  const payload = writeCommentPayload(number, body);
+  if (id !== null && canPatchReviewComment(existing)) {
+    ghWithRetry([
+      "api",
+      `repos/${targetRepo()}/issues/comments/${id}`,
+      "--method",
+      "PATCH",
+      "--input",
+      payload,
+    ]);
+  } else {
+    ghWithRetry([
+      "api",
+      `repos/${targetRepo()}/issues/${number}/comments`,
+      "--method",
+      "POST",
+      "--input",
+      payload,
+    ]);
+  }
+  return issueCommentWithMarker(number, hatchCommentMarker(number));
+}
+
 function postReviewStartStatusComment(options: {
   item: Item;
   position: number;
@@ -10270,6 +10344,7 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
   const dryRun = boolArg(args.dry_run);
   const syncCommentsOnly = boolArg(args.sync_comments_only);
   const hatchPrEggImage = boolArg(args.hatch_pr_egg_image);
+  const hatchOnly = syncCommentsOnly && hatchPrEggImage;
   const commentSyncMinAgeDays = numberArg(args.comment_sync_min_age_days, 0);
   const maxRuntimeMs = numberArg(args.max_runtime_ms, 0);
   const reportPath = resolve(stringArg(args.report_path, join(ROOT, "apply-report.json")));
@@ -10432,6 +10507,38 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
       results.push({ number, action: "skipped_already_closed", reason: `state is ${state}` });
       processedCount += 1;
       maybeLogProgress(`skipped comment sync #${number}: already ${state}`);
+      if (processedCount >= processedLimit) break;
+      continue;
+    }
+    if (hatchOnly) {
+      const statusKind = prEggStatusLabelKindFromReportLabels(markdown);
+      if (item.kind !== "pull_request") {
+        results.push({ number, action: "kept_open", reason: "hatch requires a pull request" });
+        processedCount += 1;
+        maybeLogProgress(`skipped PR egg image #${number}: not a pull request`);
+        if (processedCount >= processedLimit) break;
+        continue;
+      }
+      if (!dryRun && shouldEnsurePrEggImage(markdown, statusKind)) {
+        try {
+          markdown = (await ensurePrEggImage(markdown)) ?? markdown;
+        } catch (error) {
+          console.error(
+            `[apply] ${new Date().toISOString()} skipped PR egg image for #${number}: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+        }
+      }
+      upsertHatchComment(number, markdown, statusKind, dryRun);
+      if (!dryRun) writeFileSync(path, markdown, "utf8");
+      results.push({
+        number,
+        action: "hatch_comment_synced",
+        reason: "synced PR egg hatch comment",
+      });
+      processedCount += 1;
+      maybeLogProgress(`synced PR egg hatch comment #${number}`);
       if (processedCount >= processedLimit) break;
       continue;
     }

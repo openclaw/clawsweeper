@@ -4620,6 +4620,188 @@ if (args[0] === "api" && /\\/issues\\/84244\\/comments(?:\\?|$)/.test(path)) {
   }
 });
 
+test("hatch sync posts PR egg comment without publishing stale review changes", () => {
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    const itemsDir = join(root, "items");
+    const closedDir = join(root, "closed");
+    const plansDir = join(root, "plans");
+    const reportPath = join(root, "apply-report.json");
+    const logPath = join(root, "gh.log");
+    mkdirSync(itemsDir, { recursive: true });
+    mkdirSync(plansDir, { recursive: true });
+    writeFileSync(
+      join(itemsDir, "74476.md"),
+      `${reportFrontMatter({
+        repository: "openclaw/clawsweeper",
+        type: "pull_request",
+        number: "74476",
+        title: "Keep hatch separate",
+        url: "https://github.com/openclaw/clawsweeper/pull/74476",
+        decision: "keep_open",
+        close_reason: "none",
+        confidence: "high",
+        action_taken: "kept_open",
+        review_status: "complete",
+        local_checkout_access: "verified",
+        author: "contributor",
+        author_association: "CONTRIBUTOR",
+        labels: JSON.stringify([
+          "proof: sufficient",
+          "rating: 🐚 platinum hermit",
+          "status: 👀 ready for maintainer look",
+        ]),
+        item_snapshot_hash: "snapshot-a",
+        item_updated_at: "2026-05-19T20:00:00Z",
+        pull_head_sha: "abc123def456",
+        pr_egg_image_url:
+          "https://raw.githubusercontent.com/openclaw/clawsweeper-state/state/assets/pr-eggs/openclaw-clawsweeper/74476.png",
+      })}
+
+## Summary
+
+This newer durable record contains a stale pending P2 finding that must not be published by hatch.
+
+## What This Changes
+
+Keeps hatch isolated.
+
+## Best Possible Solution
+
+Merge after maintainer review.
+
+${realBehaviorProofReportSection()}
+
+${prRatingReportSection()}
+
+## Review Findings
+
+Overall correctness: patch is incorrect
+
+Overall confidence: 0.84
+
+Full review comments:
+
+- **[P2] Pending stale finding:** \`src/example.ts:1\`
+  - body: This finding should not appear in the existing review comment during hatch.
+`,
+      "utf8",
+    );
+
+    const ghMock = `
+const { appendFileSync, readFileSync } = require("fs");
+const logPath = ${JSON.stringify(logPath)};
+const rawArgs = process.argv.slice(2);
+const args = rawArgs[0] === "--repo" ? rawArgs.slice(2) : rawArgs;
+appendFileSync(logPath, JSON.stringify(args) + "\\n");
+const path = args[1] || "";
+if (args[0] === "api" && /\\/issues\\/74476$/.test(path)) {
+  console.log(JSON.stringify({
+    number: 74476,
+    title: "Keep hatch separate",
+    html_url: "https://github.com/openclaw/clawsweeper/pull/74476",
+    created_at: "2026-05-19T19:00:00Z",
+    updated_at: "2026-05-19T20:00:00Z",
+    closed_at: null,
+    state: "open",
+    locked: false,
+    active_lock_reason: null,
+    author_association: "CONTRIBUTOR",
+    user: { login: "contributor" },
+    labels: [{ name: "status: 👀 ready for maintainer look" }],
+    pull_request: {}
+  }));
+} else if (args[0] === "api" && /\\/issues\\/74476\\/comments(?:\\?|$)/.test(path)) {
+  if (args.includes("--method") && args.includes("POST")) {
+    const input = args[args.indexOf("--input") + 1];
+    appendFileSync(logPath, JSON.stringify(["comment-body", JSON.parse(readFileSync(input, "utf8")).body]) + "\\n");
+    console.log(JSON.stringify({
+      id: 987476,
+      html_url: "https://github.com/openclaw/clawsweeper/pull/74476#issuecomment-987476"
+    }));
+  } else {
+    console.log(JSON.stringify([[
+      {
+        id: 444,
+        html_url: "https://github.com/openclaw/clawsweeper/pull/74476#issuecomment-444",
+        body: "Codex review: needs maintainer review before merge.\\n\\n<!-- clawsweeper-review item=74476 -->",
+        user: { login: "clawsweeper" },
+        created_at: "2026-05-19T19:55:00Z",
+        updated_at: "2026-05-19T19:55:00Z"
+      }
+    ]]));
+  }
+} else if (args[0] === "api" && /\\/issues\\/comments\\/444$/.test(path)) {
+  appendFileSync(logPath, JSON.stringify(["patched-review-comment"]) + "\\n");
+  process.exit(1);
+} else if (args[0] === "label" || args[0] === "issue") {
+  appendFileSync(logPath, JSON.stringify(["unexpected-label-or-issue-command", ...args]) + "\\n");
+  process.exit(1);
+} else {
+  console.error("unexpected gh args", JSON.stringify(args));
+  process.exit(1);
+}
+`;
+    withMockGh(root, ghMock, () => {
+      runApplyDecisionsForTest({
+        itemsDir,
+        closedDir,
+        plansDir,
+        reportPath,
+        extraArgs: [
+          "--sync-comments-only",
+          "--hatch-pr-egg-image",
+          "--item-numbers",
+          "74476",
+          "--processed-limit",
+          "10",
+        ],
+      });
+    });
+
+    assert.deepEqual(JSON.parse(readFileSync(reportPath, "utf8")), [
+      {
+        number: 74476,
+        action: "hatch_comment_synced",
+        reason: "synced PR egg hatch comment",
+      },
+    ]);
+    const calls = readFileSync(logPath, "utf8")
+      .trim()
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as string[]);
+    assert.ok(
+      calls.some(
+        (args) =>
+          args[0] === "api" &&
+          args[1] === "repos/openclaw/clawsweeper/issues/74476/comments" &&
+          args.includes("POST"),
+      ),
+    );
+    assert.equal(
+      calls.some((args) => args[0] === "patched-review-comment"),
+      false,
+    );
+    assert.equal(
+      calls.some((args) => args[0] === "unexpected-label-or-issue-command"),
+      false,
+    );
+    const hatchBody = calls.find((args) => args[0] === "comment-body")?.[1] ?? "";
+    assert.match(hatchBody, /ClawSweeper PR egg hatch/);
+    assert.match(
+      hatchBody,
+      /<img src="https:\/\/raw\.githubusercontent\.com\/openclaw\/clawsweeper-state\/state\/assets\/pr-eggs\/openclaw-clawsweeper\/74476\.png"/,
+    );
+    assert.match(hatchBody, /```text\n[\s\S]+?\n```/);
+    assert.match(hatchBody, /clawsweeper-pr-egg-hatch:74476/);
+    assert.doesNotMatch(hatchBody, /Pending stale finding/);
+    assert.doesNotMatch(hatchBody, /Codex review: needs changes/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("apply-decisions does not advisory-label close proposals before close gates finish", () => {
   const root = mkdtempSync(tmpPrefix);
   try {
