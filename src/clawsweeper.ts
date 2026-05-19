@@ -341,6 +341,18 @@ export interface LabelJustification {
   reason: string;
 }
 
+interface LabelTransitionJustification {
+  action: "add" | "remove";
+  label: string;
+  reason: string;
+}
+
+interface ReviewCommentRenderOptions {
+  prStatusKind?: PrStatusLabelKind | null;
+  previousLabels?: readonly string[];
+  hasOpenLinkedPullRequest?: boolean;
+}
+
 interface Decision {
   decision: DecisionKind;
   closeReason: CloseReason;
@@ -8143,15 +8155,185 @@ function labelJustificationsMarkdown(justifications: readonly LabelJustification
   return justifications.map((entry) => `- ${inlineCode(entry.label)}: ${entry.reason}`).join("\n");
 }
 
+function labelTransitionJustificationsMarkdown(
+  justifications: readonly LabelTransitionJustification[],
+): string {
+  if (!justifications.length) return "- none";
+  return justifications
+    .map((entry) => `- ${entry.action} ${inlineCode(entry.label)}: ${entry.reason}`)
+    .join("\n");
+}
+
 export function labelJustificationsMarkdownForTest(
   justifications: readonly LabelJustification[],
 ): string {
   return labelJustificationsMarkdown(justifications);
 }
 
+function isClawSweeperOwnedLabel(label: string): boolean {
+  return (
+    PRIORITY_LABEL_NAMES.has(label) ||
+    IMPACT_LABEL_NAMES.has(label) ||
+    MERGE_RISK_LABEL_NAMES.has(label) ||
+    PR_RATING_LABEL_NAMES.has(label) ||
+    PR_STATUS_LABEL_NAMES.has(label) ||
+    label === PROOF_SUFFICIENT_LABEL ||
+    PROOF_MEDIA_LABEL_NAMES.has(label) ||
+    label === TELEGRAM_VISIBLE_PROOF_LABEL ||
+    isIssueAdvisoryLabel(label)
+  );
+}
+
+function desiredClawSweeperLabelsFromPublicReport(
+  markdown: string,
+  currentLabels: readonly string[],
+  options: ReviewCommentRenderOptions = {},
+): string[] {
+  const isPullRequest = frontMatterValue(markdown, "type") === "pull_request";
+  let labels = nextPriorityLabels(currentLabels, triagePriorityFromReport(markdown));
+  labels = nextImpactLabels(labels, isPullRequest ? [] : impactLabelsFromReport(markdown));
+  if (isPullRequest) {
+    const realBehaviorProof = reportRealBehaviorProof(markdown);
+    labels = nextMergeRiskLabels(labels, mergeRiskLabelsFromReport(markdown));
+    labels = nextRealBehaviorProofSufficientLabels(labels, realBehaviorProof);
+    labels = nextRealBehaviorProofMediaLabels(labels, realBehaviorProof);
+    labels = nextPrRatingLabels(labels, reportPrRating(markdown));
+    labels = nextPrStatusLabels(
+      labels,
+      options.prStatusKind ?? prEggStatusLabelKindFromReportLabels(markdown),
+    );
+    labels = nextTelegramVisibleProofLabels(labels, reportTelegramVisibleProof(markdown));
+  } else {
+    const issueOptions: { hasOpenLinkedPullRequest?: boolean } = {};
+    if (options.hasOpenLinkedPullRequest !== undefined) {
+      issueOptions.hasOpenLinkedPullRequest = options.hasOpenLinkedPullRequest;
+    }
+    labels = nextIssueAdvisoryLabels(
+      labels,
+      issueAdvisoryLabelStateFromReport(markdown, issueOptions),
+    );
+  }
+  return labels;
+}
+
+function labelTransitionReason(
+  markdown: string,
+  label: string,
+  action: LabelTransitionJustification["action"],
+  finalJustifications: ReadonlyMap<string, string>,
+  options: ReviewCommentRenderOptions = {},
+): string {
+  const isPullRequest = frontMatterValue(markdown, "type") === "pull_request";
+  const realBehaviorProof = reportRealBehaviorProof(markdown);
+  if (action === "add") {
+    const finalReason = finalJustifications.get(label);
+    if (finalReason) return finalReason;
+  }
+  if (PRIORITY_LABEL_NAMES.has(label)) {
+    const priority = triagePriorityFromReport(markdown);
+    return action === "add"
+      ? `Current review triage priority is ${priority}.`
+      : priority === "none"
+        ? "Current review triage priority is none."
+        : `Current review triage priority is ${priority}, so this older priority label is no longer current.`;
+  }
+  if (IMPACT_LABEL_NAMES.has(label)) {
+    const labels = impactLabelsFromReport(markdown);
+    return action === "add"
+      ? "Current review selected this impact label."
+      : labels.length
+        ? `Current review impact labels are ${labels.map(inlineCode).join(", ")}.`
+        : "Current review selected no impact labels.";
+  }
+  if (MERGE_RISK_LABEL_NAMES.has(label)) {
+    const labels = mergeRiskLabelsFromReport(markdown);
+    return action === "add"
+      ? "Current PR review selected this merge-risk label."
+      : labels.length
+        ? `Current PR review merge-risk labels are ${labels.map(inlineCode).join(", ")}.`
+        : "Current PR review selected no merge-risk labels.";
+  }
+  if (PR_RATING_LABEL_NAMES.has(label)) {
+    const rating = reportPrRating(markdown);
+    const current = ratingLabelForTier(rating.overallTier).name;
+    return action === "add"
+      ? `Current PR rating is ${themedRatingName(rating.overallTier)} because proof is ${themedRatingName(
+          rating.proofTier,
+        )}, patch quality is ${themedRatingName(rating.patchTier)}, and ${sentence(rating.summary)}`
+      : `Current PR rating is ${inlineCode(current)}, so this older rating label is no longer current.`;
+  }
+  if (PR_STATUS_LABEL_NAMES.has(label)) {
+    const statusKind = options.prStatusKind ?? prEggStatusLabelKindFromReportLabels(markdown);
+    return action === "add" && statusKind
+      ? prStatusLabelForKind(statusKind).description
+      : statusKind
+        ? `Current PR status label is ${inlineCode(prStatusLabelForKind(statusKind).name)}.`
+        : "Current PR status no longer selects a status label.";
+  }
+  if (label === PROOF_SUFFICIENT_LABEL) {
+    return action === "add"
+      ? `${PROOF_SUFFICIENT_LABEL_DESCRIPTION} ${sentence(realBehaviorProof.summary)}`
+      : `Current real behavior proof status is ${realBehaviorProof.status}, not sufficient.`;
+  }
+  if (PROOF_MEDIA_LABEL_NAMES.has(label)) {
+    const mediaLabel = PROOF_MEDIA_LABELS.find(
+      (candidate) => candidate.evidenceKind === realBehaviorProof.evidenceKind,
+    );
+    return action === "add" && mediaLabel
+      ? `${mediaLabel.description} ${sentence(realBehaviorProof.summary)}`
+      : `Current real behavior proof evidence kind is ${realBehaviorProof.evidenceKind}.`;
+  }
+  if (label === TELEGRAM_VISIBLE_PROOF_LABEL) {
+    const proof = reportTelegramVisibleProof(markdown);
+    return action === "add"
+      ? `${TELEGRAM_VISIBLE_PROOF_LABEL_DESCRIPTION} ${sentence(proof.summary)}`
+      : `Current Telegram visible-proof status is ${proof.status}.`;
+  }
+  if (isIssueAdvisoryLabel(label)) {
+    return isPullRequest
+      ? "This advisory label applies only to issues, not pull requests."
+      : action === "add"
+        ? "Current issue advisory state selects this label."
+        : "Current issue advisory state no longer selects this label.";
+  }
+  return action === "add"
+    ? "Current ClawSweeper review state selects this label."
+    : "Current ClawSweeper review state no longer selects this label.";
+}
+
+function labelTransitionJustificationsFromPublicReport(
+  markdown: string,
+  finalJustifications: readonly LabelJustification[],
+  options: ReviewCommentRenderOptions = {},
+): LabelTransitionJustification[] {
+  const currentLabels = options.previousLabels ?? frontMatterStringArray(markdown, "labels");
+  const desiredLabels = desiredClawSweeperLabelsFromPublicReport(markdown, currentLabels, options);
+  const currentKeys = new Set(currentLabels.map((label) => label.toLowerCase()));
+  const desiredKeys = new Set(desiredLabels.map((label) => label.toLowerCase()));
+  const finalByLabel = new Map(finalJustifications.map((entry) => [entry.label, entry.reason]));
+  const transitions: LabelTransitionJustification[] = [];
+  for (const label of desiredLabels) {
+    if (!isClawSweeperOwnedLabel(label) || currentKeys.has(label.toLowerCase())) continue;
+    transitions.push({
+      action: "add",
+      label,
+      reason: labelTransitionReason(markdown, label, "add", finalByLabel, options),
+    });
+  }
+  for (const label of currentLabels) {
+    if (!isClawSweeperOwnedLabel(label) || desiredKeys.has(label.toLowerCase())) continue;
+    transitions.push({
+      action: "remove",
+      label,
+      reason: labelTransitionReason(markdown, label, "remove", finalByLabel, options),
+    });
+  }
+  return transitions;
+}
+
 function labelJustificationsFromPublicReport(
   markdown: string,
-  options: { prStatusKind?: PrStatusLabelKind | null } = {},
+  options: ReviewCommentRenderOptions = {},
 ): LabelJustification[] {
   const justifications = labelJustificationsFromReport(markdown, {
     triagePriority: triagePriorityFromReport(markdown),
@@ -8835,7 +9017,7 @@ function reviewWorkflowCallout(): string[] {
 
 function renderKeepOpenCommentFromReport(
   markdown: string,
-  _options: { prStatusKind?: PrStatusLabelKind | null } = {},
+  options: ReviewCommentRenderOptions = {},
 ): string {
   const evidence = reportEvidence(markdown).slice(0, 6).map(closeEvidenceLine);
   const likelyOwners = reportLikelyOwners(markdown).slice(0, 5).map(likelyOwnerLine);
@@ -8928,7 +9110,20 @@ function renderKeepOpenCommentFromReport(
     details.push("Best possible solution:", "", bestSolutionLine);
   }
   appendReviewQuestionDetails(details, reproductionAssessment, solutionAssessment);
-  const labelJustifications = labelJustificationsFromPublicReport(markdown);
+  const labelJustifications = labelJustificationsFromPublicReport(markdown, options);
+  const labelTransitionJustifications = labelTransitionJustificationsFromPublicReport(
+    markdown,
+    labelJustifications,
+    options,
+  );
+  if (labelTransitionJustifications.length) {
+    details.push(
+      "",
+      "Label changes:",
+      "",
+      labelTransitionJustificationsMarkdown(labelTransitionJustifications),
+    );
+  }
   if (labelJustifications.length) {
     details.push("", "Label justifications:", "", labelJustificationsMarkdown(labelJustifications));
   }
@@ -8976,7 +9171,7 @@ function renderKeepOpenCommentFromReport(
 export function renderReviewCommentFromReport(
   markdown: string,
   reason: CloseReason,
-  options: { prStatusKind?: PrStatusLabelKind | null } = {},
+  options: ReviewCommentRenderOptions = {},
 ): string {
   const decision = frontMatterValue(markdown, "decision");
   const body =
@@ -10554,6 +10749,7 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
       continue;
     }
     const { item, state } = fetchItem(number);
+    const previousLabels = [...item.labels];
     let currentContext: ItemContext | undefined;
     let currentClosingPullRequests: unknown[] | undefined;
     let clawSweeperLabelsChanged = false;
@@ -10657,9 +10853,19 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
         );
       }
     }
-    const reviewComment = renderReviewCommentFromReport(markdown, closeReason ?? "none", {
+    const renderOptions: ReviewCommentRenderOptions = {
       prStatusKind: currentPrStatusKind,
-    });
+      previousLabels,
+    };
+    if (item.kind === "issue" && currentClosingPullRequests) {
+      renderOptions.hasOpenLinkedPullRequest =
+        openClosingPullRequestApplyReason(currentClosingPullRequests) !== null;
+    }
+    const reviewComment = renderReviewCommentFromReport(
+      markdown,
+      closeReason ?? "none",
+      renderOptions,
+    );
     const existingReviewComment = issueReviewComment(number, [
       reviewComment,
       reviewSectionValue(markdown, "closeComment"),

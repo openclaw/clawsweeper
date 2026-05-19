@@ -2764,6 +2764,15 @@ Full review comments:
   const comment = renderReviewCommentFromReport(report, "none");
 
   assert.match(comment, /<details>\n<summary>Review details<\/summary>/);
+  assert.match(comment, /Label changes:/);
+  assert.match(
+    comment,
+    /- add `P1`: The PR changes an active channel workflow affecting real users\./,
+  );
+  assert.match(
+    comment,
+    /- add `merge-risk: 🚨 compatibility`: Merging changes the default upgrade behavior for existing configs\./,
+  );
   assert.match(comment, /Label justifications:/);
   assert.match(comment, /- `P1`: The PR changes an active channel workflow affecting real users\./);
   assert.match(
@@ -2825,11 +2834,106 @@ Full review comments:
 
   const comment = renderReviewCommentFromReport(report, "none");
 
+  assert.match(comment, /Label changes:/);
+  assert.match(
+    comment,
+    /- add `rating: 🦪 silver shellfish`: Current PR rating is 🦪 silver shellfish because proof is 🦪 silver shellfish, patch quality is 🦞 diamond lobster, and PR readiness rating was derived from proof quality, review findings, security review, and reviewer confidence\./,
+  );
+  assert.match(
+    comment,
+    /- remove `rating: 🦞 diamond lobster`: Current PR rating is `rating: 🦪 silver shellfish`, so this older rating label is no longer current\./,
+  );
   assert.match(comment, /Label justifications:/);
   assert.match(
     comment,
     /- `rating: 🦪 silver shellfish`: Current PR rating is 🦪 silver shellfish because proof is 🦪 silver shellfish, patch quality is 🦞 diamond lobster, and PR readiness rating was derived from proof quality, review findings, security review, and reviewer confidence\. Replaced prior `rating: 🦞 diamond lobster`\./,
   );
+});
+
+test("public PR review details justify stale owned label removals", () => {
+  const report = `${reportFrontMatter({
+    type: "pull_request",
+    number: "84007",
+    decision: "keep_open",
+    close_reason: "none",
+    review_status: "complete",
+    confidence: "high",
+    author: "contributor",
+    author_association: "CONTRIBUTOR",
+    labels: JSON.stringify(["status: 📣 needs proof"]),
+    work_candidate: "none",
+    triage_priority: "none",
+    impact_labels: JSON.stringify([]),
+    merge_risk_labels: JSON.stringify([]),
+    label_justifications: JSON.stringify([]),
+  })}
+
+## Summary
+
+Keep this PR open for maintainer review.
+
+## What This Changes
+
+Updates an already-reviewed PR.
+
+## Best Possible Solution
+
+Add current real behavior proof before merge.
+
+${realBehaviorProofReportSection({
+  status: "insufficient",
+  evidenceKind: "none",
+  needsContributorAction: true,
+  summary: "The current review has no usable real behavior proof.",
+})}
+
+## Review Findings
+
+Overall correctness: patch is correct
+
+Overall confidence: 0.9
+
+Full review comments:
+
+- none
+`;
+
+  const comment = renderReviewCommentFromReport(report, "none", {
+    prStatusKind: "needs_proof",
+    previousLabels: [
+      "P1",
+      "impact:message-loss",
+      "merge-risk: 🚨 compatibility",
+      "proof: sufficient",
+      "proof: 🎥 video",
+      "mantis: telegram-visible-proof",
+      "status: 📣 needs proof",
+    ],
+  });
+
+  assert.match(comment, /Label changes:/);
+  assert.match(comment, /- remove `P1`: Current review triage priority is none\./);
+  assert.match(
+    comment,
+    /- remove `impact:message-loss`: Current review selected no impact labels\./,
+  );
+  assert.match(
+    comment,
+    /- remove `merge-risk: 🚨 compatibility`: Current PR review selected no merge-risk labels\./,
+  );
+  assert.match(
+    comment,
+    /- remove `proof: sufficient`: Current real behavior proof status is insufficient, not sufficient\./,
+  );
+  assert.match(
+    comment,
+    /- remove `proof: 🎥 video`: Current real behavior proof evidence kind is none\./,
+  );
+  assert.match(
+    comment,
+    /- remove `mantis: telegram-visible-proof`: Current Telegram visible-proof status is not_needed\./,
+  );
+  assert.doesNotMatch(comment, /remove `status: 📣 needs proof`/);
 });
 
 test("media proof receives a shiny proof rating boost", () => {
