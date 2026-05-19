@@ -5582,6 +5582,8 @@ function publicPrEggLine(
   const identitySeed = prEggIdentitySeedFromReport(markdown);
   const visualSeed = prEggVisualSeedFromReport(markdown);
   const state = prEggStateFromStatus(options.statusKind);
+  const hatchInstruction =
+    "How to hatch it: reach `status: 👀 ready for maintainer look` or `status: 🚀 automerge armed`, then the PR author or a maintainer can comment `@clawsweeper hatch` to generate its image.";
   const explainer = [
     "",
     "<details>",
@@ -5589,8 +5591,7 @@ function publicPrEggLine(
     "",
     "- Eggs appear after the PR passes real-behavior proof. It is here for vibes, not verdicts: it does not change labels, ratings, merge decisions, or automation.",
     "- The shell reacts to review momentum: open follow-up work warms it up, re-review makes it wobble, and a clean final review lets it hatch.",
-    "- How to hatch it: reach `status: 👀 ready for maintainer look` or `status: 🚀 automerge armed`; that usually means sufficient real-behavior proof, no blocking P0/P1/P2 findings, no security attention needed, and clean correctness.",
-    "- When the egg is hatchable, the PR author or a maintainer can comment `@clawsweeper hatch` to generate its image.",
+    "- Hatchable usually means sufficient real-behavior proof, no blocking P0/P1/P2 findings, no security attention needed, and clean correctness.",
     "- The hatch is seeded from this repository and PR number, so the same PR keeps the same creature; the reviewed head SHA can only change safe visual details.",
     "- Rarity is just collectible sparkle: 🥚 common, 🌱 uncommon, 💎 rare, ✨ glimmer, and 🌈 legendary.",
     "",
@@ -5619,6 +5620,7 @@ function publicPrEggLine(
       `Rarity: ${creature.rarityLabel}.`,
       `Trait: ${creature.trait}.`,
       `Image traits: location ${creature.imageTraits.location}; accessory ${creature.imageTraits.accessory}; palette ${creature.imageTraits.palette}; mood ${creature.imageTraits.mood}; pose ${creature.imageTraits.pose}; shell ${creature.imageTraits.texture}; lighting ${creature.imageTraits.lighting}; background ${creature.imageTraits.backgroundDetail}.`,
+      hatchInstruction,
       `Share on X: ${markdownLink("post this hatch", shareUrl)}`,
       `Copy: ${creature.shareText}`,
       ...explainer,
@@ -5631,6 +5633,7 @@ function publicPrEggLine(
   };
   return [
     stateLines[state],
+    hatchInstruction,
     "",
     "```text",
     pickSeeded(PR_EGG_ART, visualSeed, state),
