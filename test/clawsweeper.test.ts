@@ -3043,6 +3043,10 @@ Full review comments:
   assert.match(first, /Trait: [^.]+\./);
   assert.match(
     first,
+    /Image traits: location [^;]+; accessory [^;]+; palette [^;]+; mood [^;]+; pose [^;]+; shell [^;]+; lighting [^;]+; background [^.]+\./,
+  );
+  assert.match(
+    first,
     /Share on X: \[post this hatch\]\(https:\/\/x\.com\/intent\/tweet\?text=[^)]+&url=https%3A%2F%2Fgithub\.com%2Fopenclaw%2Fopenclaw%2Fpull%2F74471%23issuecomment-987654321\)/,
   );
   assert.match(first, /Copy: My PR egg hatched a [^\n]+ in ClawSweeper\./);
@@ -3115,8 +3119,30 @@ Full review comments:
   assert.equal(first.match(/✨ Hatched: [^\n]+/)?.[0], second.match(/✨ Hatched: [^\n]+/)?.[0]);
   assert.equal(first.match(/Rarity: [^\n]+/)?.[0], second.match(/Rarity: [^\n]+/)?.[0]);
   assert.equal(first.match(/Trait: [^\n]+/)?.[0], second.match(/Trait: [^\n]+/)?.[0]);
+  assert.equal(first.match(/Image traits: [^\n]+/)?.[0], second.match(/Image traits: [^\n]+/)?.[0]);
   assert.equal(first.match(/Copy: [^\n]+/)?.[0], second.match(/Copy: [^\n]+/)?.[0]);
   assert.match(first, /same PR keeps the same creature/);
+});
+
+test("PR egg creature exposes deterministic image traits", () => {
+  const first = prEggCreatureForTest("openclaw/openclaw#74471", "openclaw/openclaw#74471@abc123");
+  const second = prEggCreatureForTest("openclaw/openclaw#74471", "openclaw/openclaw#74471@def456");
+
+  assert.deepEqual(first.imageTraits, second.imageTraits);
+  assert.deepEqual(Object.keys(first.imageTraits).sort(), [
+    "accessory",
+    "backgroundDetail",
+    "lighting",
+    "location",
+    "mood",
+    "palette",
+    "pose",
+    "texture",
+  ]);
+  for (const value of Object.values(first.imageTraits)) {
+    assert.equal(typeof value, "string");
+    assert.ok(value.length > 0);
+  }
 });
 
 test("PR egg share link falls back to PR URL before durable comment metadata exists", () => {

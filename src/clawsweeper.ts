@@ -5588,6 +5588,7 @@ function publicPrEggLine(
       "```",
       `Rarity: ${creature.rarityLabel}.`,
       `Trait: ${creature.trait}.`,
+      `Image traits: location ${creature.imageTraits.location}; accessory ${creature.imageTraits.accessory}; palette ${creature.imageTraits.palette}; mood ${creature.imageTraits.mood}; pose ${creature.imageTraits.pose}; shell ${creature.imageTraits.texture}; lighting ${creature.imageTraits.lighting}; background ${creature.imageTraits.backgroundDetail}.`,
       `Share on X: ${markdownLink("post this hatch", shareUrl)}`,
       `Copy: ${creature.shareText}`,
       ...explainer,
@@ -6319,6 +6320,126 @@ const PR_EGG_TRAITS = [
   "hums during re-review",
 ];
 
+const PR_EGG_LOCATIONS = [
+  "CI tidepool",
+  "merge queue dock",
+  "flaky test forest",
+  "release reef",
+  "review cove",
+  "branch lighthouse",
+  "artifact grotto",
+  "status garden",
+  "diff observatory",
+  "proof lagoon",
+  "workflow harbor",
+  "green-check meadow",
+];
+
+const PR_EGG_ACCESSORIES = [
+  "tiny test log scroll",
+  "green check lantern",
+  "miniature diff map",
+  "shell-shaped keyboard",
+  "review stamp",
+  "commit compass",
+  "proof snapshot camera",
+  "little merge flag",
+  "CI status badge",
+  "lint brush",
+  "rollback rope",
+  "release bell",
+];
+
+const PR_EGG_PALETTES = [
+  "pearl, teal, and neon green",
+  "moonlit blue and soft silver",
+  "coral, mint, and warm cream",
+  "charcoal, cyan, and signal green",
+  "sunrise gold and clean white",
+  "moss green and polished brass",
+  "violet, aqua, and starlight",
+  "rose quartz and slate",
+  "cobalt, lime, and pearl",
+  "amber, ink, and glacier blue",
+  "seafoam, black, and opal",
+  "plum, gold, and soft gray",
+];
+
+const PR_EGG_MOODS = [
+  "curious",
+  "proud",
+  "sleepy but ready",
+  "focused",
+  "celebratory",
+  "watchful",
+  "mischievous",
+  "calm",
+  "determined",
+  "sparkly",
+  "patient",
+  "bright-eyed",
+];
+
+const PR_EGG_POSES = [
+  "holding its accessory up for inspection",
+  "standing beside its cracked shell",
+  "peeking out from the egg shell",
+  "guarding a tiny green check",
+  "waving from a small platform",
+  "sitting proudly on a smooth stone",
+  "leaning over a miniature review desk",
+  "nestled inside a glowing shell",
+  "pointing at a small proof artifact",
+  "balancing on a branch marker",
+  "curling around a status light",
+  "stepping out of a freshly hatched shell",
+];
+
+const PR_EGG_TEXTURES = [
+  "smooth pearl shell",
+  "soft speckled shell",
+  "glossy opal shell",
+  "matte ceramic shell",
+  "translucent glimmer shell",
+  "brushed metal shell",
+  "soft velvet shell",
+  "polished stone shell",
+  "paper lantern shell",
+  "frosted glass shell",
+  "woven fiber shell",
+  "starlit enamel shell",
+];
+
+const PR_EGG_LIGHTING = [
+  "soft studio lighting",
+  "gentle morning glow",
+  "tiny status-light glow",
+  "moonlit rim light",
+  "warm desk-lamp glow",
+  "clean product lighting",
+  "subtle sparkle highlights",
+  "cool dashboard glow",
+  "soft underwater shimmer",
+  "golden review-room light",
+  "calm overcast light",
+  "bright celebratory glints",
+];
+
+const PR_EGG_BACKGROUND_DETAILS = [
+  "small green status lights",
+  "tiny shells and proof notes",
+  "subtle branch markers",
+  "miniature CI buoys",
+  "soft code-shaped tiles",
+  "little resolved-comment flags",
+  "smooth stones and checkmarks",
+  "tiny artifact crates",
+  "gentle dashboard dots",
+  "small review tokens",
+  "quiet workflow signs",
+  "delicate sparkle particles",
+];
+
 const PR_EGG_SPRITE_WIDTH = 29;
 const PR_EGG_SPRITE_HEIGHT = 12;
 
@@ -6432,6 +6553,16 @@ function prEggCreature(
   rarity: PrEggRarity;
   rarityLabel: string;
   trait: string;
+  imageTraits: {
+    location: string;
+    accessory: string;
+    palette: string;
+    mood: string;
+    pose: string;
+    texture: string;
+    lighting: string;
+    backgroundDetail: string;
+  };
   portrait: string;
   shareText: string;
 } {
@@ -6447,6 +6578,16 @@ function prEggCreature(
     rarity: rarity.rarity,
     rarityLabel: rarity.label,
     trait: pickSeeded(PR_EGG_TRAITS, identitySeed, "trait"),
+    imageTraits: {
+      location: pickSeeded(PR_EGG_LOCATIONS, identitySeed, "location"),
+      accessory: pickSeeded(PR_EGG_ACCESSORIES, identitySeed, "accessory"),
+      palette: pickSeeded(PR_EGG_PALETTES, identitySeed, "palette"),
+      mood: pickSeeded(PR_EGG_MOODS, identitySeed, "mood"),
+      pose: pickSeeded(PR_EGG_POSES, identitySeed, "pose"),
+      texture: pickSeeded(PR_EGG_TEXTURES, identitySeed, "texture"),
+      lighting: pickSeeded(PR_EGG_LIGHTING, identitySeed, "lighting"),
+      backgroundDetail: pickSeeded(PR_EGG_BACKGROUND_DETAILS, identitySeed, "background-detail"),
+    },
     portrait: composePrEggSprite(visualSeed, rarity.rarity),
     shareText,
   };
