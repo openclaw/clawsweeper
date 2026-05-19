@@ -5659,8 +5659,9 @@ function publicPrEggLineFromReport(
     reviewFindings: reportReviewFindings(markdown),
     securityReview: reportSecurityReview(markdown),
     overallCorrectness: reportOverallCorrectness(markdown),
+    statusKind:
+      statusKind === undefined ? prEggStatusLabelKindFromReportLabels(markdown) : statusKind,
   };
-  if (statusKind !== undefined) options.statusKind = statusKind;
   return publicPrEggLine(markdown, options);
 }
 
@@ -6762,6 +6763,14 @@ export function prEggImagePromptForTest(identitySeed: string, visualSeed = ident
 export function prEggSpriteMetricsForTest(seed: string): { lines: string[]; width: number } {
   const lines = composePrEggSprite(seed, "common").split("\n");
   return { lines, width: PR_EGG_SPRITE_WIDTH };
+}
+
+export function renderPrEggCommentForTest(
+  number: number,
+  markdown: string,
+  statusKind?: PrStatusLabelKind | null,
+): string {
+  return renderHatchComment(number, markdown, statusKind);
 }
 
 function defaultRatingNextSteps(options: {
@@ -8766,7 +8775,7 @@ function reviewWorkflowCallout(): string[] {
 
 function renderKeepOpenCommentFromReport(
   markdown: string,
-  options: { prStatusKind?: PrStatusLabelKind | null } = {},
+  _options: { prStatusKind?: PrStatusLabelKind | null } = {},
 ): string {
   const evidence = reportEvidence(markdown).slice(0, 6).map(closeEvidenceLine);
   const likelyOwners = reportLikelyOwners(markdown).slice(0, 5).map(likelyOwnerLine);
@@ -8800,7 +8809,6 @@ function renderKeepOpenCommentFromReport(
   const mergeRiskLine = isPullRequest
     ? publicMergeRiskLine(risks, nextStepLine, bestSolutionLine, mergeRiskOptions)
     : "";
-  const prEggStatusKind = options.prStatusKind ?? prEggStatusLabelKindFromReportLabels(markdown);
   const details: string[] = [];
   const hasReviewFindings = isPullRequest && reviewFindings.length > 0;
   const lines = [
@@ -8839,18 +8847,6 @@ function renderKeepOpenCommentFromReport(
   }
   if (isPullRequest) {
     appendPublicSection(lines, "PR rating", publicPrRatingLine(prRating, realBehaviorProof));
-    appendPublicSection(
-      lines,
-      "PR egg",
-      publicPrEggLine(markdown, {
-        realBehaviorProof,
-        prRating,
-        reviewFindings,
-        securityReview,
-        overallCorrectness: reportOverallCorrectness(markdown),
-        statusKind: prEggStatusKind,
-      }),
-    );
     appendPublicSection(
       lines,
       "Real behavior proof",
@@ -9541,7 +9537,7 @@ function renderHatchComment(
   statusKind: PrStatusLabelKind | null | undefined,
 ): string {
   return [
-    "ClawSweeper PR egg hatch",
+    "ClawSweeper PR egg",
     "",
     publicPrEggLineFromReport(markdown, statusKind),
     "",
@@ -10609,6 +10605,14 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
       reviewSectionValue(markdown, "closeComment"),
     ]);
     const markedReviewComment = markedReviewCommentBody(number, reviewComment);
+    const prEggComment =
+      item.kind === "pull_request" && !isCloseProposal
+        ? renderHatchComment(number, markdown, currentPrStatusKind)
+        : "";
+    const existingPrEggComment =
+      item.kind === "pull_request" && !isCloseProposal
+        ? issueCommentWithMarker(number, hatchCommentMarker(number))
+        : undefined;
     if (isProtectedItem(item)) {
       if (isCloseProposal) {
         if (markApplySkipped("skipped_protected_label", protectedLabelReason(item.labels))) break;
@@ -10801,6 +10805,10 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
     const needsReviewCommentReferenceSync =
       frontMatterValue(markdown, "review_comment_id") === "unknown" ||
       frontMatterValue(markdown, "review_comment_url") === "unknown";
+    const needsPrEggCommentSync =
+      item.kind === "pull_request" &&
+      !isCloseProposal &&
+      !commentBodyMatches(existingPrEggComment, prEggComment);
     const needsReviewCommentSync = shouldSyncReviewComment({
       syncCommentsOnly,
       isCloseProposal,
@@ -10824,23 +10832,28 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
     const labelSyncProgressMessage = issueAdvisoryLabelsChanged
       ? `synced advisory issue labels #${number}`
       : `synced ClawSweeper labels #${number}`;
-    if (needsReviewCommentSync) {
-      const lockedReason = needsReviewCommentBodySync ? lockedConversationApplyReason(item) : null;
+    if (needsReviewCommentSync || needsPrEggCommentSync) {
+      const lockedReason =
+        needsReviewCommentBodySync || needsPrEggCommentSync
+          ? lockedConversationApplyReason(item)
+          : null;
       if (lockedReason) {
         if (markApplySkipped("skipped_locked_conversation", lockedReason)) break;
         continue;
       }
       let syncedComment = existingReviewComment;
-      let syncReason = "recorded existing durable comment metadata";
+      const syncReasons: string[] = [];
       if (needsReviewCommentBodySync) {
         if (dryRun) {
-          syncReason = existingReviewComment
-            ? "would update durable Codex review comment"
-            : "would create durable Codex review comment";
+          syncReasons.push(
+            existingReviewComment
+              ? "would update durable Codex review comment"
+              : "would create durable Codex review comment",
+          );
         } else {
           try {
             syncedComment = upsertReviewComment(number, reviewComment, existingReviewComment);
-            syncReason = "updated durable Codex review comment";
+            syncReasons.push("updated durable Codex review comment");
           } catch (error) {
             const commentAuthError = isGitHubRequiresAuthenticationError(error);
             if (!commentAuthError && !isLockedConversationCommentError(error)) throw error;
@@ -10854,21 +10867,42 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
             continue;
           }
         }
+      } else if (needsReviewCommentSync) {
+        syncReasons.push("recorded existing durable comment metadata");
       }
-      markdown = updateReviewCommentMetadata(markdown, syncedComment, markedReviewComment);
+      if (needsPrEggCommentSync) {
+        if (dryRun) {
+          syncReasons.push(
+            existingPrEggComment
+              ? "would update durable PR egg comment"
+              : "would create durable PR egg comment",
+          );
+        } else {
+          upsertHatchComment(number, markdown, currentPrStatusKind, dryRun);
+          syncReasons.push("synced durable PR egg comment");
+        }
+      }
+      if (needsReviewCommentSync) {
+        markdown = updateReviewCommentMetadata(markdown, syncedComment, markedReviewComment);
+      }
       if (!dryRun) writeFileSync(path, markdown, "utf8");
       results.push({
         number,
-        action: "review_comment_synced",
-        reason: syncReason,
+        action: needsReviewCommentSync ? "review_comment_synced" : "hatch_comment_synced",
+        reason: syncReasons.join("; "),
       });
       processedCount += 1;
-      maybeLogProgress(`synced review comment #${number}`);
+      maybeLogProgress(
+        needsReviewCommentSync
+          ? `synced review comment #${number}`
+          : `synced PR egg comment #${number}`,
+      );
       if (processedCount >= processedLimit) break;
     }
     if (
       clawSweeperLabelsChanged &&
       !needsReviewCommentSync &&
+      !needsPrEggCommentSync &&
       (!isCloseProposal || syncCommentsOnly)
     ) {
       if (!dryRun) writeFileSync(path, markdown, "utf8");
