@@ -760,13 +760,13 @@ const PROOF_SUFFICIENT_LABEL_DESCRIPTION = "Contributor real behavior proof is s
 const PROOF_MEDIA_LABELS = [
   {
     evidenceKind: "screenshot",
-    name: "proof: screenshot",
+    name: "proof: 📸 screenshot",
     color: "0969DA",
     description: "Contributor real behavior proof includes screenshot evidence.",
   },
   {
     evidenceKind: "recording",
-    name: "proof: video",
+    name: "proof: 🎥 video",
     color: "8250DF",
     description: "Contributor real behavior proof includes video or recording evidence.",
   },

@@ -6179,13 +6179,13 @@ test("ClawSweeper proof judgement controls the sufficient proof label", () => {
 test("ClawSweeper proof evidence kind controls media proof labels", () => {
   assert.deepEqual(realBehaviorProofMediaLabelsForTest(["bug"], "screenshot"), [
     "bug",
-    "proof: screenshot",
+    "proof: 📸 screenshot",
   ]);
-  assert.deepEqual(realBehaviorProofMediaLabelsForTest(["proof: screenshot"], "recording"), [
-    "proof: video",
+  assert.deepEqual(realBehaviorProofMediaLabelsForTest(["proof: 📸 screenshot"], "recording"), [
+    "proof: 🎥 video",
   ]);
   assert.deepEqual(
-    realBehaviorProofMediaLabelsForTest(["proof: screenshot", "proof: video"], "terminal"),
+    realBehaviorProofMediaLabelsForTest(["proof: 📸 screenshot", "proof: 🎥 video"], "terminal"),
     [],
   );
 });
