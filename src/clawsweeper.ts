@@ -337,7 +337,7 @@ interface MergeRiskOption {
 }
 
 export interface LabelJustification {
-  label: ReviewLabelName;
+  label: string;
   reason: string;
 }
 
@@ -1842,7 +1842,7 @@ function validateLabelJustifications(
     "triagePriority" | "impactLabels" | "mergeRiskLabels" | "labelJustifications"
   >,
 ): void {
-  const selected = new Set(selectedReviewLabels(decision));
+  const selected = new Set<string>(selectedReviewLabels(decision));
   const justified = new Set(decision.labelJustifications.map((entry) => entry.label));
   const missing = [...selected].filter((label) => !justified.has(label));
   if (missing.length) {
@@ -6040,7 +6040,7 @@ function labelJustificationsFromReport(
   markdown: string,
   labels: Pick<Decision, "triagePriority" | "impactLabels" | "mergeRiskLabels">,
 ): LabelJustification[] {
-  const selected = new Set(selectedReviewLabels(labels));
+  const selected = new Set<string>(selectedReviewLabels(labels));
   const fromFrontMatter = frontMatterJsonArray(markdown, "label_justifications")
     .map((entry, index) => {
       try {
@@ -8149,12 +8149,72 @@ export function labelJustificationsMarkdownForTest(
   return labelJustificationsMarkdown(justifications);
 }
 
-function labelJustificationsFromPublicReport(markdown: string): LabelJustification[] {
-  return labelJustificationsFromReport(markdown, {
+function labelJustificationsFromPublicReport(
+  markdown: string,
+  options: { prStatusKind?: PrStatusLabelKind | null } = {},
+): LabelJustification[] {
+  const justifications = labelJustificationsFromReport(markdown, {
     triagePriority: triagePriorityFromReport(markdown),
     impactLabels: impactLabelsFromReport(markdown),
     mergeRiskLabels: mergeRiskLabelsFromReport(markdown),
   });
+  const byLabel = new Map(justifications.map((entry) => [entry.label, entry]));
+  const add = (label: string | null | undefined, reason: string): void => {
+    if (!label || byLabel.has(label)) return;
+    byLabel.set(label, { label, reason });
+  };
+  const isPullRequest = frontMatterValue(markdown, "type") === "pull_request";
+  const realBehaviorProof = reportRealBehaviorProof(markdown);
+  if (isPullRequest) {
+    const rating = reportPrRating(markdown);
+    const ratingLabel = ratingLabelForTier(rating.overallTier).name;
+    const previousRatingLabel = frontMatterStringArray(markdown, "labels").find(
+      (label) => PR_RATING_LABEL_NAMES.has(label) && label !== ratingLabel,
+    );
+    const changed = previousRatingLabel
+      ? ` Replaced prior ${inlineCode(previousRatingLabel)}.`
+      : "";
+    add(
+      ratingLabel,
+      `Current PR rating is ${themedRatingName(rating.overallTier)} because proof is ${themedRatingName(
+        rating.proofTier,
+      )}, patch quality is ${themedRatingName(rating.patchTier)}, and ${sentence(
+        rating.summary,
+      )}${changed}`,
+    );
+    const statusKind = options.prStatusKind ?? prEggStatusLabelKindFromReportLabels(markdown);
+    if (statusKind) {
+      add(
+        prStatusLabelForKind(statusKind).name,
+        `${prStatusLabelForKind(statusKind).description} ${publicRealBehaviorProofLine(
+          realBehaviorProof,
+        )}`,
+      );
+    }
+    if (realBehaviorProof.status === "sufficient") {
+      add(
+        PROOF_SUFFICIENT_LABEL,
+        `${PROOF_SUFFICIENT_LABEL_DESCRIPTION} ${sentence(realBehaviorProof.summary)}`,
+      );
+    }
+    const proofMediaLabel = PROOF_MEDIA_LABELS.find(
+      (label) => label.evidenceKind === realBehaviorProof.evidenceKind,
+    );
+    if (proofMediaLabel) {
+      add(
+        proofMediaLabel.name,
+        `${proofMediaLabel.description} ${sentence(realBehaviorProof.summary)}`,
+      );
+    }
+    const telegramProof = reportTelegramVisibleProof(markdown);
+    if (telegramProof.status === "needed") {
+      add(
+        TELEGRAM_VISIBLE_PROOF_LABEL,
+        `${TELEGRAM_VISIBLE_PROOF_LABEL_DESCRIPTION} ${sentence(telegramProof.summary)}`,
+      );
+    }
+  }
+  return [...byLabel.values()];
 }
 
 function inlineCode(value: string): string {
