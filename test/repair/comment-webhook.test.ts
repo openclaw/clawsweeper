@@ -81,6 +81,33 @@ test("comment webhook accepts author read-only re-review commands", () => {
   });
 });
 
+test("comment webhook accepts author read-only hatch commands", () => {
+  const result = classifyIssueCommentWebhook({
+    event: "issue_comment",
+    payload: {
+      action: "created",
+      repository: { full_name: "openclaw/openclaw" },
+      issue: { number: 76992, user: { login: "nickmopen" } },
+      installation: { id: 123 },
+      comment: {
+        id: 457,
+        body: "@clawsweeper hatch",
+        author_association: "CONTRIBUTOR",
+        user: { login: "NickMOpen" },
+      },
+    },
+  });
+
+  assert.deepEqual(result, {
+    accepted: true,
+    targetRepo: "openclaw/openclaw",
+    itemNumber: 76992,
+    commentId: 457,
+    installationId: 123,
+    sourceAction: "created",
+  });
+});
+
 test("comment webhook rejects non-author read-only re-review commands", () => {
   const result = classifyIssueCommentWebhook({
     event: "issue_comment",
