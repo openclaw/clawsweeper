@@ -65,6 +65,7 @@ import {
   priorityLabelsForTest,
   priorityLabelSchemeForTest,
   protectedLabels,
+  realBehaviorProofMediaLabelsForTest,
   realBehaviorProofSufficientLabelsForTest,
   relatedTitleSearchTerms,
   renderReviewStartStatusComment,
@@ -6173,6 +6174,20 @@ test("ClawSweeper proof judgement controls the sufficient proof label", () => {
     ["proof: supplied"],
   );
   assert.deepEqual(realBehaviorProofSufficientLabelsForTest(["proof: sufficient"], "missing"), []);
+});
+
+test("ClawSweeper proof evidence kind controls media proof labels", () => {
+  assert.deepEqual(realBehaviorProofMediaLabelsForTest(["bug"], "screenshot"), [
+    "bug",
+    "proof: screenshot",
+  ]);
+  assert.deepEqual(realBehaviorProofMediaLabelsForTest(["proof: screenshot"], "recording"), [
+    "proof: video",
+  ]);
+  assert.deepEqual(
+    realBehaviorProofMediaLabelsForTest(["proof: screenshot", "proof: video"], "terminal"),
+    [],
+  );
 });
 
 test("ClawSweeper proof label sync recognizes missing optional labels", () => {

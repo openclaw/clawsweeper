@@ -757,6 +757,26 @@ const PROOF_OVERRIDE_LABEL = "proof: override";
 const PROOF_SUFFICIENT_LABEL = "proof: sufficient";
 const PROOF_SUFFICIENT_LABEL_COLOR = "1A7F37";
 const PROOF_SUFFICIENT_LABEL_DESCRIPTION = "Contributor real behavior proof is sufficient.";
+const PROOF_MEDIA_LABELS = [
+  {
+    evidenceKind: "screenshot",
+    name: "proof: screenshot",
+    color: "0969DA",
+    description: "Contributor real behavior proof includes screenshot evidence.",
+  },
+  {
+    evidenceKind: "recording",
+    name: "proof: video",
+    color: "8250DF",
+    description: "Contributor real behavior proof includes video or recording evidence.",
+  },
+] as const satisfies readonly {
+  evidenceKind: RealBehaviorProofEvidenceKind;
+  name: string;
+  color: string;
+  description: string;
+}[];
+const PROOF_MEDIA_LABEL_NAMES = new Set<string>(PROOF_MEDIA_LABELS.map((label) => label.name));
 const PR_RATING_LABELS = [
   {
     tier: "S",
@@ -6774,6 +6794,16 @@ function nextRealBehaviorProofSufficientLabels(
   return nextLabels;
 }
 
+function nextRealBehaviorProofMediaLabels(
+  labels: readonly string[],
+  proof: Pick<RealBehaviorProof, "evidenceKind">,
+): string[] {
+  const nextLabels = labels.filter((label) => !PROOF_MEDIA_LABEL_NAMES.has(label));
+  const mediaLabel = PROOF_MEDIA_LABELS.find((label) => label.evidenceKind === proof.evidenceKind);
+  if (mediaLabel) nextLabels.push(mediaLabel.name);
+  return nextLabels;
+}
+
 export function realBehaviorProofSufficientLabelsForTest(
   labels: readonly string[],
   status: string,
@@ -6782,6 +6812,18 @@ export function realBehaviorProofSufficientLabelsForTest(
     ? (status as RealBehaviorProofStatus)
     : "not_applicable";
   return nextRealBehaviorProofSufficientLabels(labels, { status: proofStatus });
+}
+
+export function realBehaviorProofMediaLabelsForTest(
+  labels: readonly string[],
+  evidenceKind: string,
+): string[] {
+  const proofEvidenceKind = REAL_BEHAVIOR_PROOF_EVIDENCE_KINDS.has(
+    evidenceKind as RealBehaviorProofEvidenceKind,
+  )
+    ? (evidenceKind as RealBehaviorProofEvidenceKind)
+    : "not_applicable";
+  return nextRealBehaviorProofMediaLabels(labels, { evidenceKind: proofEvidenceKind });
 }
 
 export function prRatingLabelsForTest(labels: readonly string[], tier: string): string[] {
@@ -7442,6 +7484,31 @@ function ensureRealBehaviorProofSufficientLabel(): boolean {
   }
 }
 
+function ensureRealBehaviorProofMediaLabel(name: string): boolean {
+  const definition = PROOF_MEDIA_LABELS.find((label) => label.name === name);
+  if (!definition) return false;
+  try {
+    ghWithRetry(
+      [
+        "label",
+        "create",
+        definition.name,
+        "--color",
+        definition.color,
+        "--description",
+        definition.description,
+      ],
+      2,
+    );
+    return true;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (/already exists/i.test(message)) return true;
+    console.warn(`Skipping optional label sync for ${definition.name}: ${message}`);
+    return false;
+  }
+}
+
 function syncRealBehaviorProofSufficientLabel(options: {
   number: number;
   labels: readonly string[];
@@ -7470,6 +7537,42 @@ function syncRealBehaviorProofSufficientLabel(options: {
       }`,
     );
     return wantsLabel ? [...options.labels] : nextLabels;
+  }
+  return nextLabels;
+}
+
+function syncRealBehaviorProofMediaLabels(options: {
+  number: number;
+  labels: readonly string[];
+  proof: Pick<RealBehaviorProof, "evidenceKind">;
+  dryRun: boolean;
+}): string[] {
+  const nextLabels = nextRealBehaviorProofMediaLabels(options.labels, options.proof);
+  const currentLabelKeys = new Set(options.labels.map((label) => label.toLowerCase()));
+  const nextLabelKeys = new Set(nextLabels.map((label) => label.toLowerCase()));
+  const labelsToAdd = nextLabels.filter(
+    (label) => PROOF_MEDIA_LABEL_NAMES.has(label) && !currentLabelKeys.has(label.toLowerCase()),
+  );
+  const labelsToRemove = options.labels.filter(
+    (label) => PROOF_MEDIA_LABEL_NAMES.has(label) && !nextLabelKeys.has(label.toLowerCase()),
+  );
+  if (!labelsToAdd.length && !labelsToRemove.length) return nextLabels;
+  if (options.dryRun) return nextLabels;
+  for (const label of labelsToAdd) {
+    if (!ensureRealBehaviorProofMediaLabel(label)) return [...options.labels];
+    ghWithRetry(["issue", "edit", String(options.number), "--add-label", label]);
+  }
+  for (const label of labelsToRemove) {
+    try {
+      ghWithRetry(["issue", "edit", String(options.number), "--remove-label", label]);
+    } catch (error) {
+      if (!missingLabelError(error, label)) throw error;
+      console.warn(
+        `Skipping optional label sync for ${label}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
   }
   return nextLabels;
 }
@@ -9993,10 +10096,17 @@ function applyDecisionsCommand(args: Args): void {
     }
     let currentPrStatusKind: PrStatusLabelKind | null = null;
     if (state === "open" && item.kind === "pull_request") {
+      const realBehaviorProof = reportRealBehaviorProof(markdown);
       item.labels = syncRealBehaviorProofSufficientLabel({
         number,
         labels: item.labels,
-        proof: reportRealBehaviorProof(markdown),
+        proof: realBehaviorProof,
+        dryRun,
+      });
+      item.labels = syncRealBehaviorProofMediaLabels({
+        number,
+        labels: item.labels,
+        proof: realBehaviorProof,
         dryRun,
       });
       item.labels = syncPrRatingLabel({
