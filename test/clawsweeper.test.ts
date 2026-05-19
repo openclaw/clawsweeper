@@ -4465,6 +4465,32 @@ function runApplyDecisionsForTest(options: {
   ]);
 }
 
+function runReconcileForTest(options: {
+  itemsDir: string;
+  closedDir: string;
+  plansDir: string;
+  extraArgs?: string[];
+}): string {
+  return execFileSync(
+    process.execPath,
+    [
+      "dist/clawsweeper.js",
+      "reconcile",
+      "--target-repo",
+      "openclaw/clawsweeper",
+      "--items-dir",
+      options.itemsDir,
+      "--closed-dir",
+      options.closedDir,
+      "--plans-dir",
+      options.plansDir,
+      "--skip-closed-at",
+      ...(options.extraArgs ?? []),
+    ],
+    { encoding: "utf8" },
+  );
+}
+
 test("renderWorkPlanFromReport renders dashboard plan artifacts for fresh queue_fix_pr candidates", () => {
   const plan = renderWorkPlanFromReport(workPlanCandidateReport(), {
     reportPath: "records/openclaw-clawsweeper/items/321.md",
@@ -4797,6 +4823,86 @@ if (args[0] === "api" && /\\/issues\\/84244\\/comments(?:\\?|$)/.test(path)) {
           /clawsweeper-hatch-missing-record:84244/.test(args[1]),
       ),
     );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("reconcile preserves exact open item records missed by the broad open scan", () => {
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    const itemsDir = join(root, "items");
+    const closedDir = join(root, "closed");
+    const plansDir = join(root, "plans");
+    const logPath = join(root, "gh.log");
+    mkdirSync(itemsDir, { recursive: true });
+    mkdirSync(closedDir, { recursive: true });
+    mkdirSync(plansDir, { recursive: true });
+    writeFileSync(
+      join(itemsDir, "84347.md"),
+      `${reportFrontMatter({
+        repository: "openclaw/clawsweeper",
+        type: "pull_request",
+        number: "84347",
+        title: "Preserve exact PR",
+        url: "https://github.com/openclaw/clawsweeper/pull/84347",
+      })}
+
+## Summary
+
+Keep this open PR record.
+`,
+      "utf8",
+    );
+
+    const ghMock = `
+const { appendFileSync } = require("fs");
+const logPath = ${JSON.stringify(logPath)};
+const rawArgs = process.argv.slice(2);
+const args = rawArgs[0] === "--repo" ? rawArgs.slice(2) : rawArgs;
+appendFileSync(logPath, JSON.stringify(args) + "\\n");
+const path = args[1] || "";
+if (args[0] === "api" && /\\/issues\\?state=open/.test(path)) {
+  console.log("");
+} else if (args[0] === "api" && /\\/issues\\/84347$/.test(path)) {
+  console.log(JSON.stringify({
+    number: 84347,
+    title: "Preserve exact PR",
+    html_url: "https://github.com/openclaw/clawsweeper/pull/84347",
+    created_at: "2026-05-19T22:39:22Z",
+    updated_at: "2026-05-19T22:56:27Z",
+    closed_at: null,
+    state: "open",
+    locked: false,
+    active_lock_reason: null,
+    author_association: "CONTRIBUTOR",
+    user: { login: "contributor" },
+    labels: [],
+    pull_request: {}
+  }));
+} else {
+  console.error("unexpected gh args", JSON.stringify(args));
+  process.exit(1);
+}
+`;
+    withMockGh(root, ghMock, () => {
+      const output = runReconcileForTest({
+        itemsDir,
+        closedDir,
+        plansDir,
+        extraArgs: ["--item-numbers", "84347"],
+      });
+      assert.equal(JSON.parse(output).movedToClosed, 0);
+    });
+
+    assert.ok(existsSync(join(itemsDir, "84347.md")));
+    assert.equal(existsSync(join(closedDir, "84347.md")), false);
+    const calls = readFileSync(logPath, "utf8")
+      .trim()
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as string[]);
+    assert.ok(calls.some((args) => args[0] === "api" && args[1].endsWith("/issues/84347")));
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

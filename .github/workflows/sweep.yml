@@ -1724,7 +1724,11 @@ jobs:
               git restore results/sweep-status || true
             fi
           }
-          pnpm run reconcile -- --target-repo "$TARGET_REPO" --skip-closed-at
+          reconcile_args=(--target-repo "$TARGET_REPO" --skip-closed-at)
+          if [ -n "$item_numbers" ]; then
+            reconcile_args+=(--item-numbers "$item_numbers")
+          fi
+          pnpm run reconcile -- "${reconcile_args[@]}"
           if [ "$sync_open_pr_batch" = "true" ] && [ -z "$item_numbers" ]; then
             batch_env=".artifacts/comment-sync-batch.env"
             pnpm run --silent workflow -- comment-sync-batch \

@@ -11751,6 +11751,7 @@ function reconcileFolders(options: {
   maxPages?: number;
   dryRun?: boolean;
   fetchClosedAt?: boolean;
+  preserveItemNumbers?: readonly number[];
 }): ReconcileResult {
   const maxPages = options.maxPages ?? 250;
   const dryRun = options.dryRun ?? false;
@@ -11759,6 +11760,10 @@ function reconcileFolders(options: {
   ensureDir(options.itemsDir);
   ensureDir(options.closedDir);
   const { numbers: openNumbers, pagesScanned } = fetchOpenItemNumbers(maxPages);
+  for (const number of options.preserveItemNumbers ?? []) {
+    const { state } = fetchItem(number);
+    if (state === "open") openNumbers.add(number);
+  }
   let movedToClosed = 0;
   let movedToItems = 0;
   let removedStaleClosedCopies = 0;
@@ -11830,6 +11835,7 @@ function reconcileCommand(args: Args): void {
   const maxPages = numberArg(args.max_pages, 250);
   const dryRun = boolArg(args.dry_run);
   const fetchClosedAt = !boolArg(args.skip_closed_at);
+  const preserveItemNumbers = itemNumbersArg(args.item_numbers, args.item_number);
   const result = reconcileFolders({
     itemsDir,
     closedDir,
@@ -11837,6 +11843,7 @@ function reconcileCommand(args: Args): void {
     maxPages,
     dryRun,
     fetchClosedAt,
+    preserveItemNumbers,
   });
   console.log(JSON.stringify(result, null, 2));
 }
