@@ -7228,11 +7228,12 @@ test("sweep workflow schedules cursor-based PR comment sync batches", () => {
   const workflow = readFileSync(".github/workflows/sweep.yml", "utf8");
 
   assert.match(workflow, /cron: "6,21,36,51 \* \* \* \*"/);
-  assert.match(workflow, /apply_sync_open_pr_batch:/);
+  assert.doesNotMatch(workflow, /apply_sync_open_pr_batch:/);
   assert.match(
     workflow,
     /sync_batch_size="\$\{\{ github\.event_name == 'workflow_dispatch' && github\.event\.inputs\.apply_limit \|\| '25' \}\}"/,
   );
+  assert.match(workflow, /\$item_numbers" = "__cursor__"/);
   assert.match(workflow, /comment-sync-batch/);
   assert.match(workflow, /write-comment-sync-cursor/);
   assert.match(workflow, /results\/comment-sync-cursors\/\$\{target_slug\}\.json/);
