@@ -2935,6 +2935,62 @@ Full review comments:
   assert.doesNotMatch(comment, /remove `status: 📣 needs proof`/);
 });
 
+test("public PR review details justify derived rating label changes", () => {
+  const report = `${reportFrontMatter({
+    type: "pull_request",
+    number: "84006",
+    decision: "keep_open",
+    close_reason: "none",
+    review_status: "complete",
+    confidence: "high",
+    author: "contributor",
+    author_association: "CONTRIBUTOR",
+    labels: JSON.stringify(["rating: 🦞 diamond lobster"]),
+    work_candidate: "none",
+    triage_priority: "none",
+    impact_labels: JSON.stringify([]),
+    merge_risk_labels: JSON.stringify([]),
+    label_justifications: JSON.stringify([]),
+  })}
+
+## Summary
+
+Keep this PR open for maintainer review.
+
+## What This Changes
+
+Changes a PR under active review.
+
+## Best Possible Solution
+
+Add proof before merge.
+
+${realBehaviorProofReportSection({
+  status: "insufficient",
+  needsContributorAction: true,
+  summary: "The PR still needs current real-environment proof for the changed behavior.",
+})}
+
+## Review Findings
+
+Overall correctness: patch is correct
+
+Overall confidence: 0.9
+
+Full review comments:
+
+- none
+`;
+
+  const comment = renderReviewCommentFromReport(report, "none");
+
+  assert.match(comment, /Label justifications:/);
+  assert.match(
+    comment,
+    /- `rating: 🦪 silver shellfish`: Current PR rating is 🦪 silver shellfish because proof is 🦪 silver shellfish, patch quality is 🦞 diamond lobster, and PR readiness rating was derived from proof quality, review findings, security review, and reviewer confidence\. Replaced prior `rating: 🦞 diamond lobster`\./,
+  );
+});
+
 test("media proof receives a shiny proof rating boost", () => {
   const report = `${reportFrontMatter({
     type: "pull_request",
