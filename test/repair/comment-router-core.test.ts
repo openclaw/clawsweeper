@@ -1581,7 +1581,7 @@ test("renderResponse reports PR egg hatch dispatches", () => {
     {
       hatch: {
         workflow: "sweep.yml",
-        event: "workflow_dispatch",
+        event: "repository_dispatch",
       },
     },
   );

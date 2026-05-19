@@ -7105,6 +7105,22 @@ test("manual exact-item review dispatches avoid broad review concurrency", () =>
   );
 });
 
+test("sweep workflow requires hatch command dispatch provenance for PR egg images", () => {
+  const workflow = readFileSync(".github/workflows/sweep.yml", "utf8");
+
+  assert.match(workflow, /types: \[clawsweeper_item, clawsweeper_hatch\]/);
+  assert.doesNotMatch(workflow, /^\s+hatch_pr_egg_image:\s*$/m);
+  assert.match(
+    workflow,
+    /github\.event_name == 'repository_dispatch' && github\.event\.action == 'clawsweeper_hatch'/,
+  );
+  assert.match(
+    workflow,
+    /hatch_pr_egg_image="\$\{\{ github\.event_name == 'repository_dispatch' && github\.event\.action == 'clawsweeper_hatch' && github\.event\.client_payload\.hatch_pr_egg_image == 'true' && 'true' \|\| 'false' \}\}"/,
+  );
+  assert.doesNotMatch(workflow, /github\.event\.inputs\.hatch_pr_egg_image/);
+});
+
 test("sweep workflow publishes target-scoped state paths", () => {
   const workflow = readFileSync(".github/workflows/sweep.yml", "utf8");
 

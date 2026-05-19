@@ -1923,31 +1923,21 @@ function dispatchClawSweeperReview(command: LooseRecord) {
 }
 
 function dispatchPrEggHatch(command: LooseRecord) {
+  const payload = JSON.stringify({
+    event_type: "clawsweeper_hatch",
+    client_payload: {
+      target_repo: command.repo,
+      item_number: String(command.issue_number),
+      item_kind: command.target?.kind ?? "pull_request",
+      hatch_pr_egg_image: "true",
+    },
+  });
   const result = ghSpawn(
-    [
-      "workflow",
-      "run",
-      reviewWorkflow,
-      "--repo",
-      reviewRepo,
-      "-f",
-      `target_repo=${command.repo}`,
-      "-f",
-      "apply_existing=true",
-      "-f",
-      "apply_sync_comments_only=true",
-      "-f",
-      `apply_item_numbers=${command.issue_number}`,
-      "-f",
-      "apply_limit=0",
-      "-f",
-      "apply_comment_sync_min_age_days=0",
-      "-f",
-      "apply_progress_every=1",
-      "-f",
-      "hatch_pr_egg_image=true",
-    ],
-    { env: dispatchTokenEnv() },
+    ["api", `repos/${reviewRepo}/dispatches`, "--method", "POST", "--input", "-"],
+    {
+      env: dispatchTokenEnv(),
+      input: payload,
+    },
   );
   if (result.status !== 0) {
     throw new Error(
@@ -1956,7 +1946,7 @@ function dispatchPrEggHatch(command: LooseRecord) {
   }
   return {
     workflow: reviewWorkflow,
-    event: "workflow_dispatch",
+    event: "repository_dispatch",
     repo: reviewRepo,
     item_number: command.issue_number,
   };

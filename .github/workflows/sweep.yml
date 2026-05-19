@@ -4,7 +4,7 @@ run-name: ${{ github.event_name == 'repository_dispatch' && format('Review event
 
 on:
   repository_dispatch:
-    types: [clawsweeper_item]
+    types: [clawsweeper_item, clawsweeper_hatch]
   workflow_dispatch:
     inputs:
       target_repo:
@@ -45,10 +45,6 @@ on:
         default: ""
       apply_sync_comments_only:
         description: "Only sync durable review comments; do not close items"
-        required: false
-        default: "false"
-      hatch_pr_egg_image:
-        description: "Generate a hatched PR egg image while syncing a selected PR comment"
         required: false
         default: "false"
       apply_comment_sync_min_age_days:
@@ -153,7 +149,7 @@ jobs:
 
   event-review-apply:
     name: Review, comment, and apply event item
-    if: ${{ github.event_name == 'repository_dispatch' && !(github.event.client_payload.target_repo == 'openclaw/clawhub' && vars.CLAWSWEEPER_ENABLE_CLAWHUB != '1') }}
+    if: ${{ github.event_name == 'repository_dispatch' && github.event.action != 'clawsweeper_hatch' && !(github.event.client_payload.target_repo == 'openclaw/clawhub' && vars.CLAWSWEEPER_ENABLE_CLAWHUB != '1') }}
     runs-on: ubuntu-latest
     timeout-minutes: 120
     permissions:
@@ -1598,7 +1594,7 @@ jobs:
 
   apply-existing:
     name: Apply close proposals
-    if: ${{ ((github.event_name == 'workflow_dispatch' && github.event.inputs.apply_existing == 'true') || (github.event_name == 'schedule' && (github.event.schedule == '3 * * * *' || github.event.schedule == '18 * * * *' || github.event.schedule == '33 * * * *' || github.event.schedule == '48 * * * *' || github.event.schedule == '8,23,38,53 * * * *'))) && !(github.event_name == 'schedule' && github.event.schedule == '8,23,38,53 * * * *' && vars.CLAWSWEEPER_ENABLE_CLAWHUB != '1') }}
+    if: ${{ ((github.event_name == 'repository_dispatch' && github.event.action == 'clawsweeper_hatch') || (github.event_name == 'workflow_dispatch' && github.event.inputs.apply_existing == 'true') || (github.event_name == 'schedule' && (github.event.schedule == '3 * * * *' || github.event.schedule == '18 * * * *' || github.event.schedule == '33 * * * *' || github.event.schedule == '48 * * * *' || github.event.schedule == '8,23,38,53 * * * *'))) && !(github.event_name == 'repository_dispatch' && github.event.client_payload.target_repo == 'openclaw/clawhub' && vars.CLAWSWEEPER_ENABLE_CLAWHUB != '1') && !(github.event_name == 'schedule' && github.event.schedule == '8,23,38,53 * * * *' && vars.CLAWSWEEPER_ENABLE_CLAWHUB != '1') }}
     runs-on: ubuntu-latest
     timeout-minutes: 360
     steps:
@@ -1610,7 +1606,7 @@ jobs:
       - name: Resolve target repository
         id: target
         run: |
-          target_repo="${{ github.event.inputs.target_repo || '' }}"
+          target_repo="${{ github.event_name == 'repository_dispatch' && github.event.client_payload.target_repo || github.event.inputs.target_repo || '' }}"
           if [ -z "$target_repo" ]; then
             case "${{ github.event.schedule || '' }}" in
               "8,23,38,53 * * * *")
@@ -1675,13 +1671,13 @@ jobs:
           min_age_minutes="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_min_age_minutes || '' }}"
           apply_kind="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_kind || 'all' }}"
           apply_close_reasons="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_close_reasons || 'all' }}"
-          hatch_pr_egg_image="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.hatch_pr_egg_image || 'false' }}"
+          hatch_pr_egg_image="${{ github.event_name == 'repository_dispatch' && github.event.action == 'clawsweeper_hatch' && github.event.client_payload.hatch_pr_egg_image == 'true' && 'true' || 'false' }}"
           stale_min_age_days="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_stale_min_age_days || '60' }}"
           close_delay_ms="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_close_delay_ms || '2000' }}"
           progress_every="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_progress_every || '10' }}"
           checkpoint_size="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_checkpoint_size || '50' }}"
-          item_numbers="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_item_numbers || '' }}"
-          sync_comments_only="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_sync_comments_only || 'false' }}"
+          item_numbers="${{ github.event_name == 'repository_dispatch' && github.event.client_payload.item_number || github.event.inputs.apply_item_numbers || '' }}"
+          sync_comments_only="${{ github.event_name == 'repository_dispatch' && github.event.action == 'clawsweeper_hatch' && 'true' || (github.event_name == 'workflow_dispatch' && github.event.inputs.apply_sync_comments_only || 'false') }}"
           comment_sync_min_age_days="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_comment_sync_min_age_days || '7' }}"
           sync_comments_arg=()
           if [ "$sync_comments_only" = "true" ]; then
