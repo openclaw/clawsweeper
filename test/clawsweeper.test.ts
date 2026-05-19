@@ -4535,6 +4535,91 @@ if (args[0] === "api" && /\\/issues\\/321\\/comments(?:\\?|$)/.test(path)) {
   }
 });
 
+test("apply-decisions reports hatch requests with no durable item record", () => {
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    const itemsDir = join(root, "items");
+    const closedDir = join(root, "closed");
+    const plansDir = join(root, "plans");
+    const reportPath = join(root, "apply-report.json");
+    const logPath = join(root, "gh.log");
+    mkdirSync(itemsDir, { recursive: true });
+    mkdirSync(plansDir, { recursive: true });
+
+    const ghMock = `
+const { appendFileSync, readFileSync } = require("fs");
+const logPath = ${JSON.stringify(logPath)};
+const rawArgs = process.argv.slice(2);
+const args = rawArgs[0] === "--repo" ? rawArgs.slice(2) : rawArgs;
+appendFileSync(logPath, JSON.stringify(args) + "\\n");
+const path = args[1] || "";
+if (args[0] === "api" && /\\/issues\\/84244\\/comments(?:\\?|$)/.test(path)) {
+  if (args.includes("--method") && args.includes("POST")) {
+    const input = args[args.indexOf("--input") + 1];
+    appendFileSync(logPath, JSON.stringify(["comment-body", JSON.parse(readFileSync(input, "utf8")).body]) + "\\n");
+    console.log(JSON.stringify({
+      id: 984244,
+      html_url: "https://github.com/openclaw/clawsweeper/pull/84244#issuecomment-984244"
+    }));
+  } else {
+    console.log(JSON.stringify([[]]));
+  }
+} else {
+  console.error("unexpected gh args", JSON.stringify(args));
+  process.exit(1);
+}
+`;
+    withMockGh(root, ghMock, () => {
+      runApplyDecisionsForTest({
+        itemsDir,
+        closedDir,
+        plansDir,
+        reportPath,
+        extraArgs: [
+          "--sync-comments-only",
+          "--hatch-pr-egg-image",
+          "--item-numbers",
+          "84244",
+          "--processed-limit",
+          "10",
+        ],
+      });
+    });
+
+    assert.deepEqual(JSON.parse(readFileSync(reportPath, "utf8")), [
+      {
+        number: 84244,
+        action: "skipped_missing_record",
+        reason: "no current durable ClawSweeper review record; posted hatch-missing-record comment",
+      },
+    ]);
+    const calls = readFileSync(logPath, "utf8")
+      .trim()
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as string[]);
+    assert.ok(
+      calls.some(
+        (args) =>
+          args[0] === "api" &&
+          args[1] === "repos/openclaw/clawsweeper/issues/84244/comments" &&
+          args.includes("POST"),
+      ),
+    );
+    assert.ok(
+      calls.some(
+        (args) =>
+          args[0] === "comment-body" &&
+          /no current durable ClawSweeper review record/.test(args[1]) &&
+          /@clawsweeper re-review/.test(args[1]) &&
+          /clawsweeper-hatch-missing-record:84244/.test(args[1]),
+      ),
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("apply-decisions does not advisory-label close proposals before close gates finish", () => {
   const root = mkdtempSync(tmpPrefix);
   try {

@@ -173,6 +173,7 @@ type ActionTaken =
   | "skipped_maintainer_authored"
   | "skipped_protected_label"
   | "skipped_invalid_decision"
+  | "skipped_missing_record"
   | "skipped_runtime_budget";
 
 const MAINTAINER_AUTHOR_ASSOCIATIONS = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
@@ -9471,6 +9472,39 @@ function ensureCloseAppliedComment(options: {
   return "posted close-applied comment";
 }
 
+function hatchMissingRecordMarker(number: number): string {
+  return `<!-- clawsweeper-hatch-missing-record:${number} -->`;
+}
+
+function renderHatchMissingRecordComment(number: number): string {
+  return [
+    "ClawSweeper could not hatch this PR egg yet.",
+    "",
+    "Reason: there is no current durable ClawSweeper review record for this PR, so there is no PR egg state record to update.",
+    "Ask for `@clawsweeper re-review` first, then retry `@clawsweeper hatch` after the ClawSweeper review comment appears.",
+    "",
+    hatchMissingRecordMarker(number),
+  ].join("\n");
+}
+
+function ensureHatchMissingRecordComment(number: number, dryRun: boolean): string {
+  const marker = hatchMissingRecordMarker(number);
+  if (issueCommentWithMarker(number, marker)) {
+    return "matching ClawSweeper hatch-missing-record comment already exists";
+  }
+  if (dryRun) return "dry-run: would post hatch-missing-record comment";
+  const payload = writeCommentPayload(number, renderHatchMissingRecordComment(number));
+  ghWithRetry([
+    "api",
+    `repos/${targetRepo()}/issues/${number}/comments`,
+    "--method",
+    "POST",
+    "--input",
+    payload,
+  ]);
+  return "posted hatch-missing-record comment";
+}
+
 function postReviewStartStatusComment(options: {
   item: Item;
   position: number;
@@ -10264,11 +10298,38 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
   const maybeLogProgress = (message: string): void => {
     if (processedCount % progressEvery === 0) logProgress(message);
   };
+  const recordMissingHatchResults = (existingNumbers: Set<number>): void => {
+    if (!hatchPrEggImage || requestedItemNumbers.length === 0) return;
+    for (const number of requestedItemNumbers) {
+      if (existingNumbers.has(number)) continue;
+      let commentReason = "no current durable ClawSweeper review record";
+      try {
+        commentReason = ensureHatchMissingRecordComment(number, dryRun);
+      } catch (error) {
+        console.error(
+          `[apply] ${new Date().toISOString()} failed to post PR egg missing-record notice for #${number}: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+      results.push({
+        number,
+        action: "skipped_missing_record",
+        reason: `no current durable ClawSweeper review record; ${commentReason}`,
+      });
+      processedCount += 1;
+      maybeLogProgress(`skipped PR egg image #${number}: missing durable record`);
+      if (processedCount >= processedLimit) break;
+    }
+  };
   if (!existsSync(itemsDir)) {
     console.log("No items directory.");
+    recordMissingHatchResults(new Set());
+    ensureDir(dirname(reportPath));
+    writeFileSync(reportPath, JSON.stringify(results, null, 2), "utf8");
     return;
   }
-  const files = readdirSync(itemsDir)
+  const fileEntries = readdirSync(itemsDir)
     .filter((name) => parseReportFileName(name) !== null)
     .filter((name) => {
       const markdown = readFileSync(join(itemsDir, name), "utf8");
@@ -10291,11 +10352,17 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
         left.priority - right.priority ||
         left.applyCheckedAt - right.applyCheckedAt ||
         left.number - right.number,
-    )
-    .map((entry) => entry.name);
+    );
+  const files = fileEntries.map((entry) => entry.name);
   logProgress(
     `starting apply: files=${files.length} dry_run=${dryRun} apply_kind=${applyKind} min_age=${minAgeDescription} apply_close_reasons=${closeReasonFilterText(applyCloseReasons)} stale_min_age_days=${staleMinAgeDays} close_delay_ms=${closeDelayMs} sync_comments_only=${syncCommentsOnly} comment_sync_min_age_days=${commentSyncMinAgeDays} max_runtime_ms=${maxRuntimeMs} item_numbers=${requestedItemNumbers.join(",") || "all"}`,
   );
+  recordMissingHatchResults(new Set(fileEntries.map((entry) => entry.number)));
+  if (processedCount >= processedLimit) {
+    ensureDir(dirname(reportPath));
+    writeFileSync(reportPath, JSON.stringify(results, null, 2), "utf8");
+    return;
+  }
   for (const file of files) {
     if (runtimeBudgetExceeded(startedAtMs, maxRuntimeMs, Date.now())) {
       results.push({
