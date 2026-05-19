@@ -140,6 +140,11 @@ test("parseCommand recognizes maintainer slash commands", () => {
     command: "re-run",
     intent: "re_review",
   });
+  assert.deepEqual(parseCommand("/clawsweeper hatch"), {
+    trigger: "slash",
+    command: "hatch",
+    intent: "hatch",
+  });
   assert.deepEqual(parseCommand("/review"), {
     trigger: "slash",
     command: "review",
@@ -766,6 +771,11 @@ test("parseCommand recognizes ClawSweeper bot mentions", () => {
     trigger: "mention",
     command: "review",
     intent: "re_review",
+  });
+  assert.deepEqual(parseCommand("@clawsweeper hatch"), {
+    trigger: "mention",
+    command: "hatch",
+    intent: "hatch",
   });
   assert.deepEqual(parseCommand("@clawsweeper implement"), {
     trigger: "mention",
@@ -1560,6 +1570,29 @@ test("renderResponse reports maintainer re-review dispatches", () => {
   assert.doesNotMatch(body, /repair worker/);
 });
 
+test("renderResponse reports PR egg hatch dispatches", () => {
+  const body = renderResponse(
+    {
+      comment_id: "462",
+      intent: "hatch",
+      issue_number: 74108,
+      target: { head_sha: "def462" },
+    },
+    {
+      hatch: {
+        workflow: "sweep.yml",
+        event: "workflow_dispatch",
+      },
+    },
+  );
+
+  assert.match(body, /PR egg hatch requested/);
+  assert.match(body, /If the egg is hatchable/);
+  assert.match(body, /Action: PR egg hatch queued/);
+  assert.match(body, /ASCII egg stays as the fallback/);
+  assert.match(body, /clawsweeper-command-status:74108:hatch:def462/);
+});
+
 test("renderResponse reports issue implementation repair dispatches", () => {
   const body = renderResponse(
     {
@@ -2219,10 +2252,17 @@ test("maintainer command authorization requires maintainer repository permission
   );
 });
 
-test("author read-only command authorization only allows own re-review", () => {
+test("author read-only command authorization allows own re-review and hatch", () => {
   assert.equal(
     isAuthorReadOnlyCommandAllowed({
       command: { intent: "re_review", author: "NickMOpen" },
+      target: { kind: "pull_request", author: "nickmopen" },
+    }),
+    true,
+  );
+  assert.equal(
+    isAuthorReadOnlyCommandAllowed({
+      command: { intent: "hatch", author: "NickMOpen" },
       target: { kind: "pull_request", author: "nickmopen" },
     }),
     true,
@@ -2236,7 +2276,7 @@ test("author read-only command authorization only allows own re-review", () => {
   );
   assert.equal(
     isAuthorReadOnlyCommandAllowed({
-      command: { intent: "re_review", author: "somebody-else" },
+      command: { intent: "hatch", author: "somebody-else" },
       target: { kind: "pull_request", author: "nickmopen" },
     }),
     false,

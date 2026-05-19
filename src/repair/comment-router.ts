@@ -445,6 +445,36 @@ function classifyCommand(command: LooseRecord): JsonValue {
       ],
     };
   }
+  if (command.intent === "hatch") {
+    if (String(issue.state ?? "").toLowerCase() !== "open") {
+      return {
+        ...next,
+        status: "ready",
+        reason: "hatch requires an open pull request",
+        actions: [{ action: "comment", status: execute ? "pending" : "planned" }],
+      };
+    }
+    if (!pull) {
+      return {
+        ...next,
+        status: "ready",
+        reason: "hatch requires a pull request",
+        actions: [{ action: "comment", status: execute ? "pending" : "planned" }],
+      };
+    }
+    return {
+      ...next,
+      status: "ready",
+      actions: [
+        {
+          action: "dispatch_hatch",
+          workflow: reviewWorkflow,
+          status: execute ? "pending" : "planned",
+        },
+        { action: "comment", status: execute ? "pending" : "planned" },
+      ],
+    };
+  }
   if (command.intent === "implement_issue") {
     if (String(issue.state ?? "").toLowerCase() !== "open") {
       return {
@@ -1214,6 +1244,7 @@ function executeCommand(command: LooseRecord) {
       (action: JsonValue) => action.action === "dispatch_repair",
     );
     const shouldDispatchClawSweeper = commandHasAction(command, "dispatch_clawsweeper");
+    const shouldDispatchHatch = commandHasAction(command, "dispatch_hatch");
     const shouldMerge = commandHasAction(command, "merge");
     const shouldApplyHumanReviewLabel = commandHasAction(command, "label");
     if (!command.trusted_bot) reactToComment(command, "eyes");
@@ -1366,6 +1397,21 @@ function executeCommand(command: LooseRecord) {
             status: "executed",
             dispatched_at: new Date().toISOString(),
             ...clawsweeper,
+          };
+        }
+        return action;
+      });
+    }
+    if (command.intent === "hatch" && command.issue_number && shouldDispatchHatch) {
+      const hatch = dispatchPrEggHatch(command);
+      dispatched = { ...dispatched, hatch };
+      command.actions = command.actions.map((action: JsonValue) => {
+        if (action.action === "dispatch_hatch") {
+          return {
+            ...action,
+            status: "executed",
+            dispatched_at: new Date().toISOString(),
+            ...hatch,
           };
         }
         return action;
@@ -1871,6 +1917,46 @@ function dispatchClawSweeperReview(command: LooseRecord) {
   return {
     workflow: reviewWorkflow,
     event: "repository_dispatch",
+    repo: reviewRepo,
+    item_number: command.issue_number,
+  };
+}
+
+function dispatchPrEggHatch(command: LooseRecord) {
+  const result = ghSpawn(
+    [
+      "workflow",
+      "run",
+      reviewWorkflow,
+      "--repo",
+      reviewRepo,
+      "-f",
+      `target_repo=${command.repo}`,
+      "-f",
+      "apply_existing=true",
+      "-f",
+      "apply_sync_comments_only=true",
+      "-f",
+      `apply_item_numbers=${command.issue_number}`,
+      "-f",
+      "apply_limit=0",
+      "-f",
+      "apply_comment_sync_min_age_days=0",
+      "-f",
+      "apply_progress_every=1",
+      "-f",
+      "hatch_pr_egg_image=true",
+    ],
+    { env: dispatchTokenEnv() },
+  );
+  if (result.status !== 0) {
+    throw new Error(
+      `failed to dispatch PR egg hatch for #${command.issue_number}: ${result.stderr || result.stdout}`,
+    );
+  }
+  return {
+    workflow: reviewWorkflow,
+    event: "workflow_dispatch",
     repo: reviewRepo,
     item_number: command.issue_number,
   };

@@ -10234,6 +10234,7 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
   const progressEvery = Math.max(1, numberArg(args.progress_every, 10));
   const dryRun = boolArg(args.dry_run);
   const syncCommentsOnly = boolArg(args.sync_comments_only);
+  const hatchPrEggImage = boolArg(args.hatch_pr_egg_image);
   const commentSyncMinAgeDays = numberArg(args.comment_sync_min_age_days, 0);
   const maxRuntimeMs = numberArg(args.max_runtime_ms, 0);
   const reportPath = resolve(stringArg(args.report_path, join(ROOT, "apply-report.json")));
@@ -10408,6 +10409,7 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
     markdown = replaceFrontMatterValue(markdown, "labels", JSON.stringify(item.labels));
     if (
       !dryRun &&
+      hatchPrEggImage &&
       item.kind === "pull_request" &&
       shouldEnsurePrEggImage(markdown, currentPrStatusKind)
     ) {

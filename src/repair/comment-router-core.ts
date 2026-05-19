@@ -647,7 +647,7 @@ export function isMaintainerCommandAllowed({
 
 export function isAuthorReadOnlyCommandAllowed({ command, target }: LooseRecord) {
   const intent = String(command?.intent ?? "");
-  if (intent !== "re_review") return false;
+  if (intent !== "re_review" && intent !== "hatch") return false;
   const author = normalizedLogin(command?.author);
   const targetAuthor = normalizedLogin(target?.author);
   return Boolean(author && targetAuthor && author === targetAuthor);
@@ -1181,7 +1181,7 @@ export function renderResponse(command: LooseRecord, dispatched: LooseRecord) {
       marker,
       "ClawSweeper is here and listening for maintainer commands.",
       "",
-      "Supported commands: `/review`, `/clawsweeper status`, `/clawsweeper re-review`, `/clawsweeper implement`, `@clawsweeper fix`, `/clawsweeper build`, `/clawsweeper fix ci`, `/clawsweeper address review`, `/clawsweeper rebase`, `/clawsweeper autofix`, `/clawsweeper automerge`, `/clawsweeper approve`, `/autoclose <reason>`, `/clawsweeper explain`, `/clawsweeper stop`.",
+      "Supported commands: `/review`, `/clawsweeper status`, `/clawsweeper re-review`, `@clawsweeper hatch`, `/clawsweeper implement`, `@clawsweeper fix`, `/clawsweeper build`, `/clawsweeper fix ci`, `/clawsweeper address review`, `/clawsweeper rebase`, `/clawsweeper autofix`, `/clawsweeper automerge`, `/clawsweeper approve`, `/autoclose <reason>`, `/clawsweeper explain`, `/clawsweeper stop`.",
       "",
       "I only act for maintainers, or for trusted ClawSweeper feedback on a ClawSweeper PR or PR opted into `clawsweeper:autofix` or `clawsweeper:automerge`.",
     ].join("\n");
@@ -1265,6 +1265,22 @@ export function renderResponse(command: LooseRecord, dispatched: LooseRecord) {
             "Result: the existing ClawSweeper review comment will be edited in place when the review finishes.",
           ].join("\n")
         : `Reason: ${command.reason ?? "re-review requires an open issue or PR"}.`,
+    ].join("\n");
+  }
+  if (command.intent === "hatch") {
+    return [
+      marker,
+      dispatched?.hatch
+        ? "ClawSweeper PR egg hatch requested."
+        : "ClawSweeper could not hatch this PR egg yet.",
+      "",
+      dispatched?.hatch
+        ? [
+            "I queued a comment sync for this PR. If the egg is hatchable, ClawSweeper will generate the image once and update the existing review comment.",
+            reviewDispatchLine(dispatched.hatch, "Action", "PR egg hatch queued"),
+            "The ASCII egg stays as the fallback.",
+          ].join("\n")
+        : `Reason: ${command.reason ?? "hatch requires an open pull request from the PR author or a maintainer"}.`,
     ].join("\n");
   }
   if (command.intent === "implement_issue") {
@@ -1533,6 +1549,7 @@ function normalizeIntent(command: LooseRecord) {
   if (!command || command === "status") return "status";
   if (["help", "?"].includes(command)) return "help";
   if (["explain", "why"].includes(command)) return "explain";
+  if (["hatch", "hatch egg", "pr egg hatch", "hatch pr egg"].includes(command)) return "hatch";
   if (["fix ci", "fix-ci", "ci", "repair ci", "repair checks", "fix checks"].includes(command))
     return "fix_ci";
   if (["address review", "address-review", "fix review"].includes(command)) return "address_review";

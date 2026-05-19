@@ -47,6 +47,10 @@ on:
         description: "Only sync durable review comments; do not close items"
         required: false
         default: "false"
+      hatch_pr_egg_image:
+        description: "Generate a hatched PR egg image while syncing a selected PR comment"
+        required: false
+        default: "false"
       apply_comment_sync_min_age_days:
         description: "Minimum age in days before comment-only sync rewrites an existing review comment"
         required: false
@@ -1671,6 +1675,7 @@ jobs:
           min_age_minutes="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_min_age_minutes || '' }}"
           apply_kind="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_kind || 'all' }}"
           apply_close_reasons="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_close_reasons || 'all' }}"
+          hatch_pr_egg_image="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.hatch_pr_egg_image || 'false' }}"
           stale_min_age_days="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_stale_min_age_days || '60' }}"
           close_delay_ms="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_close_delay_ms || '2000' }}"
           progress_every="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_progress_every || '10' }}"
@@ -1681,6 +1686,10 @@ jobs:
           sync_comments_arg=()
           if [ "$sync_comments_only" = "true" ]; then
             sync_comments_arg=(--sync-comments-only)
+          fi
+          hatch_pr_egg_image_arg=()
+          if [ "$hatch_pr_egg_image" = "true" ]; then
+            hatch_pr_egg_image_arg=(--hatch-pr-egg-image)
           fi
           min_age_minutes_arg=()
           if [ -n "$min_age_minutes" ]; then
@@ -1773,6 +1782,7 @@ jobs:
               --processed-limit "$((checkpoint_size * 20))" \
               --comment-sync-min-age-days "$comment_sync_min_age_days" \
               "${item_numbers_arg[@]}" \
+              "${hatch_pr_egg_image_arg[@]}" \
               "${sync_comments_arg[@]}"
             cp apply-report.json ".artifacts/apply-reports/apply-report-$checkpoint.json"
             result_count="$(pnpm run --silent workflow -- count-report --report ".artifacts/apply-reports/apply-report-$checkpoint.json")"
@@ -1812,6 +1822,7 @@ jobs:
               --processed-limit "$((chunk_limit * 20))" \
               --comment-sync-min-age-days "$comment_sync_min_age_days" \
               "${item_numbers_arg[@]}" \
+              "${hatch_pr_egg_image_arg[@]}" \
               "${sync_comments_arg[@]}"
             cp apply-report.json ".artifacts/apply-reports/apply-report-$checkpoint.json"
             pnpm run workflow -- merge-apply-reports --dir .artifacts/apply-reports --output apply-report.json
