@@ -280,6 +280,62 @@ test("publishMainCommit preserves state-only automerge jobs on broad jobs publis
   );
 });
 
+test("publishMainCommit preserves state-only PR egg images on PR egg asset publishes", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-publish-"));
+  const origin = path.join(root, "origin.git");
+  const work = path.join(root, "work");
+  const state = path.join(root, "state");
+  run("git", ["init", "--bare", origin], root);
+  run("git", ["clone", origin, state], root);
+  configureUser(state);
+  write(path.join(state, "assets/pr-eggs/openclaw-openclaw/84269.png"), "old egg\n");
+  write(path.join(state, "assets/pr-eggs/openclaw-openclaw/readme.txt"), "not preserved\n");
+  run("git", ["add", "."], state);
+  run("git", ["commit", "-m", "initial state"], state);
+  run("git", ["push", "origin", "HEAD:state"], state);
+  run("git", ["--git-dir", origin, "symbolic-ref", "HEAD", "refs/heads/state"], root);
+  run("git", ["checkout", "-B", "state", "origin/state"], state);
+
+  fs.mkdirSync(work);
+  write(path.join(work, "assets/pr-eggs/openclaw-openclaw/84374.png"), "new egg\n");
+
+  const result = withEnv({ CLAWSWEEPER_STATE_DIR: state }, () =>
+    withCwd(work, () =>
+      publishMainCommit({
+        message: "chore: publish PR egg assets",
+        paths: ["assets/pr-eggs"],
+        maxAttempts: 1,
+        pushAttempts: 1,
+      }),
+    ),
+  );
+
+  assert.equal(result, "committed");
+  assert.equal(
+    run(
+      "git",
+      ["--git-dir", origin, "show", "state:assets/pr-eggs/openclaw-openclaw/84269.png"],
+      root,
+    ),
+    "old egg\n",
+  );
+  assert.equal(
+    run(
+      "git",
+      ["--git-dir", origin, "show", "state:assets/pr-eggs/openclaw-openclaw/84374.png"],
+      root,
+    ),
+    "new egg\n",
+  );
+  assert.throws(() =>
+    run(
+      "git",
+      ["--git-dir", origin, "show", "state:assets/pr-eggs/openclaw-openclaw/readme.txt"],
+      root,
+    ),
+  );
+});
+
 test("publish-main CLI accepts package-manager double dash separators", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-publish-"));
   const origin = path.join(root, "origin.git");

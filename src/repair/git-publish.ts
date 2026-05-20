@@ -213,7 +213,7 @@ function syncStatePublishPaths(paths: readonly string[], stateRoot: string): voi
     if (!destination.startsWith(`${stateRoot}/`) && destination !== stateRoot) {
       throw new Error(`Refusing to publish outside state root: ${path}`);
     }
-    const preserved = preserveStateOnlyAutomergeJobs({ path, source, destination });
+    const preserved = preserveStateOnlyFiles({ path, source, destination });
     try {
       rmSync(destination, { force: true, recursive: true });
       if (existsSync(source)) {
@@ -227,7 +227,7 @@ function syncStatePublishPaths(paths: readonly string[], stateRoot: string): voi
   }
 }
 
-function preserveStateOnlyAutomergeJobs({
+function preserveStateOnlyFiles({
   path,
   source,
   destination,
@@ -237,12 +237,12 @@ function preserveStateOnlyAutomergeJobs({
   destination: string;
 }): { root: string; files: string[] } {
   const root = mkdtempSync(join(tmpdir(), "clawsweeper-state-preserve-"));
-  if (path !== "jobs" || !existsSync(destination)) return { root, files: [] };
+  if (!existsSync(destination)) return { root, files: [] };
 
   const files: string[] = [];
   for (const file of listFiles(destination)) {
     const rel = relative(destination, file);
-    if (!/^[^/]+\/inbox\/automerge-.+\.md$/.test(rel)) continue;
+    if (!shouldPreserveStateOnlyFile(path, rel)) continue;
     if (existsSync(resolve(source, rel))) continue;
     const target = resolve(root, rel);
     mkdirSync(dirname(target), { recursive: true });
@@ -250,6 +250,14 @@ function preserveStateOnlyAutomergeJobs({
     files.push(rel);
   }
   return { root, files };
+}
+
+function shouldPreserveStateOnlyFile(path: string, rel: string): boolean {
+  if (path === "jobs") return /^[^/]+\/inbox\/automerge-.+\.md$/.test(rel);
+  if (path === "assets/pr-eggs" || path === "assets/pr-eggs/") {
+    return /^[^/]+\/\d+\.png$/.test(rel);
+  }
+  return false;
 }
 
 function restorePreservedFiles(preserved: { root: string; files: string[] }, destination: string) {
