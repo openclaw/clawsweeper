@@ -3145,7 +3145,7 @@ function dashboardHtml() {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ðŸ¦ž ClawSweeper Live</title>
+<title>🦞 ClawSweeper Live</title>
 <style>
 :root {
   color-scheme: dark;
@@ -3209,7 +3209,7 @@ h1 {
   align-items: center;
   gap: 10px;
 }
-h1::before { content: "ðŸ¦ž"; font-size: 32px; animation: wave 3s ease-in-out infinite; }
+h1::before { content: "🦞"; font-size: 32px; animation: wave 3s ease-in-out infinite; }
 h2 {
   margin: 28px 0 12px;
   font-size: 16px;
@@ -3482,7 +3482,7 @@ button.active { background: rgba(103, 183, 255, 0.16); border-color: var(--blue)
   text-align: center;
   font-style: italic;
 }
-.empty::before { content: "ðŸ¦€ "; opacity: 0.3; }
+.empty::before { content: "🦀 "; opacity: 0.3; }
 @media (max-width: 1280px) { .grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } .split { grid-template-columns: 1fr; } header { align-items: start; flex-direction: column; } .top-links { justify-content: flex-start; } }
 @media (max-width: 760px) { .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .work-row { grid-template-columns: 1fr; align-items: start; } .work-state, .stage-block, .timebox { justify-content: start; justify-items: start; } }
 @media (max-width: 560px) { main { width: min(100vw - 20px, 1440px); padding-top: 16px; } .grid, .closed-stats { grid-template-columns: 1fr; } .side-row { grid-template-columns: 1fr; } .side-meta { justify-content: flex-start; } }
@@ -3493,7 +3493,7 @@ button.active { background: rgba(103, 183, 255, 0.16); border-color: var(--blue)
   <header>
     <div>
       <h1>ClawSweeper Live</h1>
-      <div class="muted" id="subtitle">ðŸŒŠ Loading pipeline state...</div>
+      <div class="muted" id="subtitle">🌊 Loading pipeline state...</div>
     </div>
     <div class="top-links">
       <a class="pill" href="/triage">Issue triage</a>
@@ -3504,18 +3504,18 @@ button.active { background: rgba(103, 183, 255, 0.16); border-color: var(--blue)
   <section class="grid" id="metrics"></section>
   <section class="split">
     <div class="pipeline-col">
-      <h2>ðŸŒ€ Active Pipeline</h2>
+      <h2>🌀 Active Pipeline</h2>
       <div id="pipeline"></div>
     </div>
     <aside class="side-col">
       <h2>🧭 Runner Lane</h2>
       <div id="runnerControl"></div>
-      <h2>âš¡ Automerge Speed</h2>
+      <h2>⚡ Automerge Speed</h2>
       <div id="automerge"></div>
-      <h2>âœ… Closed by ClawSweeper</h2>
+      <h2>✅ Closed by ClawSweeper</h2>
       <div id="closed-stats"></div>
       <div id="closed"></div>
-      <h2>ðŸ“¡ Recent Activity</h2>
+      <h2>📡 Recent Activity</h2>
       <div id="events"></div>
     </aside>
   </section>
@@ -3623,12 +3623,12 @@ function renderDashboard(data, note) {
   document.getElementById("updated").textContent = "Updated " + since(data.generated_at) + (note ? " \u00b7 " + note : "");
   const fleet = data.fleet;
   document.getElementById("metrics").innerHTML = [
-    metric("ðŸ¦¾ Claw Workers", fmt.format(fleet.active_codex_jobs), "budget " + fleet.worker_budget, fleet.budget_used_percent, "var(--green)"),
-    metric("ðŸŒŠ Active Sweeps", fmt.format(fleet.active_workflow_runs), "support " + fmt.format(fleet.support_workflow_runs || 0), Math.min(100, fleet.active_workflow_runs * 3), "var(--blue)"),
-    metric("â³ Queue Depth", fmt.format(fleet.queued_workflow_runs), "support queue " + fmt.format(fleet.support_queued_workflow_runs || 0), Math.min(100, fleet.queued_workflow_runs * 10), "var(--amber)"),
-    metric("ðŸ’¥ Recent Snags", fmt.format(fleet.failed_recent_runs), "last page", Math.min(100, fleet.failed_recent_runs * 15), fleet.failed_recent_runs ? "var(--red)" : "var(--green)"),
-    metric("âš¡ Merge Speed", data.averages.automerge_command_to_merge_ms ? elapsed(data.averages.automerge_command_to_merge_ms) : "n/a", data.averages.automerge_samples + " samples", 60, "var(--violet)"),
-    metric("ðŸŽ¯ Capacity", fleet.budget_used_percent + "%", "fleet utilization", fleet.budget_used_percent, "var(--green)")
+    metric("🦾 Claw Workers", fmt.format(fleet.active_codex_jobs), "budget " + fleet.worker_budget, fleet.budget_used_percent, "var(--green)"),
+    metric("🌊 Active Sweeps", fmt.format(fleet.active_workflow_runs), "support " + fmt.format(fleet.support_workflow_runs || 0), Math.min(100, fleet.active_workflow_runs * 3), "var(--blue)"),
+    metric("⏳ Queue Depth", fmt.format(fleet.queued_workflow_runs), "support queue " + fmt.format(fleet.support_queued_workflow_runs || 0), Math.min(100, fleet.queued_workflow_runs * 10), "var(--amber)"),
+    metric("💥 Recent Snags", fmt.format(fleet.failed_recent_runs), "last page", Math.min(100, fleet.failed_recent_runs * 15), fleet.failed_recent_runs ? "var(--red)" : "var(--green)"),
+    metric("⚡ Merge Speed", data.averages.automerge_command_to_merge_ms ? elapsed(data.averages.automerge_command_to_merge_ms) : "n/a", data.averages.automerge_samples + " samples", 60, "var(--violet)"),
+    metric("🎯 Capacity", fleet.budget_used_percent + "%", "fleet utilization", fleet.budget_used_percent, "var(--green)")
   ].join("");
   renderPipeline(data.pipeline || []);
   renderRunnerControl(fleet.runner_config || {}, fleet.runners || []);
