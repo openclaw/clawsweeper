@@ -1,17 +1,22 @@
 name = "clawsweeper-status"
 main = "worker.ts"
-account_id = "91b59577e757131d68d55a471fe32aca"
+account_id = "f6a544e0beaf9e2de3f959d1e5a11611"
 compatibility_date = "2026-05-11"
 workers_dev = true
 
 [[routes]]
-pattern = "clawsweeper.openclaw.ai"
+pattern = "clawsweeper.myhorizon.co.za"
 custom_domain = true
 
 [vars]
 CLAWSWEEPER_REPO = "valkyriweb/clawsweeper"
+CLAWSWEEPER_APP_ID = "3711554"
 CLAWSWEEPER_APP_CLIENT_ID = "Iv23lirdjmVqYd1gwY26"
 TARGET_REPOS = "valkyriweb/pi-mono,bermont-digital/multica,valkyriweb/openclaw,valkyriweb/lue-kube,valkyriweb/openclaw-claude,valkyriweb/clawsweeper"
 WORKER_BUDGET = "80"
 CACHE_TTL_SECONDS = "20"
 INCLUDE_CI_STATUS = "1"
+
+[[kv_namespaces]]
+binding = "STATUS_STORE"
+id = "2aa09e8c521d4b3b8acf6b7e5e3541ba"

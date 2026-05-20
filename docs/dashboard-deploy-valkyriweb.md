@@ -2,26 +2,26 @@
 
 Fork-specific runbook for getting `dashboard/worker.ts` live on Luke's Cloudflare account. Read once, then rerun in ~10 minutes.
 
-Upstream's `dashboard.openclaw.ai` deployment belongs to OpenClaw and we can't push to it. We deploy our own worker at `clawsweeper.valkyriweb.com` (or any subdomain you control) on Luke's Cloudflare account `91b59577e757131d68d55a471fe32aca`.
+Upstream's `dashboard.openclaw.ai` deployment belongs to OpenClaw and we can't push to it. We deploy our own worker at `clawsweeper.myhorizon.co.za` (or any subdomain you control) on Luke's Cloudflare account `f6a544e0beaf9e2de3f959d1e5a11611`.
 
 ## Prerequisites
 
 - `pnpm` install completed at the repo root (`pnpm install`)
 - `valkyriweb-clawsweeper` GitHub App's private key (PEM) — likely in 1Password
-- The App must have **Variables: Read and write** repository permission so the runner-lane buttons work. Check at `gh api /apps/valkyriweb-clawsweeper --jq '.permissions.variables'` — must say `"write"`. If not, add it at <https://github.com/settings/apps/valkyriweb-clawsweeper/permissions> and accept the new permission on the installation.
-- An installation ID for the App against `valkyriweb/clawsweeper`. Find it: `gh api /repos/valkyriweb/clawsweeper/installation --jq '.id'`.
+- The App must have **Variables: Read and write** repository permission so the runner-lane buttons work. Check at `gh api /apps/valkyriweb-clawsweeper --jq '.permissions.actions_variables'` — must say `"write"`. If not, add it at <https://github.com/settings/apps/valkyriweb-clawsweeper/permissions> and accept the new permission on the installation.
+- The current App installation ID for `valkyriweb` is `132284017`.
 
 ## Step 1 — strip the openclaw.ai custom domain
 
 `dashboard/wrangler.toml` ships with an OpenClaw-owned custom domain. Replace the `[[routes]]` block. Two options:
 
-**Option A — workers.dev only (fastest, ugly URL).** Delete the `[[routes]]` block entirely. The worker becomes accessible at `https://clawsweeper-status.<your-subdomain>.workers.dev` (subdomain is the one Cloudflare assigned your account; visible via `npx wrangler whoami`).
+**Option A — workers.dev only (fastest, ugly URL).** Delete the `[[routes]]` block entirely. The worker becomes accessible at `https://clawsweeper-status.<your-subdomain>.workers.dev` (subdomain is the one Cloudflare assigned your account; visible via `pnpm dlx wrangler@4.90.0 whoami`).
 
-**Option B — your own custom domain.** Pick a hostname on a zone you own (`clawsweeper.valkyriweb.com`, `claws.bermont.digital`, whatever). Update the pattern:
+**Option B — your own custom domain.** Pick a hostname on a zone you own (`clawsweeper.myhorizon.co.za`, `claws.bermont.digital`, whatever). Update the pattern:
 
 ```toml
 [[routes]]
-pattern = "clawsweeper.valkyriweb.com"
+pattern = "clawsweeper.myhorizon.co.za"
 custom_domain = true
 ```
 
@@ -30,10 +30,10 @@ Custom domains require the zone to already exist in Cloudflare DNS — they don'
 ## Step 2 — Cloudflare auth
 
 ```bash
-npx wrangler@4.90.0 login
+pnpm dlx wrangler@4.90.0 login
 # Browser opens, click "Allow"
-npx wrangler@4.90.0 whoami
-# Should show account id ending in ...32aca and your workers.dev subdomain
+pnpm dlx wrangler@4.90.0 whoami
+# Should show account id f6a544e0beaf9e2de3f959d1e5a11611 and workers.dev subdomain luke-f6a
 ```
 
 ## Step 3 — KV namespace for STATUS_STORE (recommended)
@@ -42,7 +42,7 @@ The worker degrades to `caches.default` if no KV is bound, which means snapshots
 
 ```bash
 # Create the KV namespace
-npx wrangler@4.90.0 kv namespace create STATUS_STORE \
+pnpm dlx wrangler@4.90.0 kv namespace create STATUS_STORE \
   --config dashboard/wrangler.toml
 # Output gives you an `id = "..."` line — copy it
 ```
@@ -64,26 +64,26 @@ Three secrets, all via `wrangler secret put` (never commit these). Each command 
 ```bash
 # GitHub App private key. Paste the full PEM block including BEGIN/END lines.
 # Literal \n sequences are normalized to newlines by the worker if needed.
-npx wrangler@4.90.0 secret put CLAWSWEEPER_APP_PRIVATE_KEY \
+pnpm dlx wrangler@4.90.0 secret put CLAWSWEEPER_APP_PRIVATE_KEY \
   --config dashboard/wrangler.toml
 
 # Installation ID for the App on valkyriweb/clawsweeper.
-# Get it: gh api /repos/valkyriweb/clawsweeper/installation --jq '.id'
-npx wrangler@4.90.0 secret put CLAWSWEEPER_APP_INSTALLATION_ID \
+# Current valkyriweb installation ID: 132284017
+pnpm dlx wrangler@4.90.0 secret put CLAWSWEEPER_APP_INSTALLATION_ID \
   --config dashboard/wrangler.toml
 
 # Auth token for the /api/events ingest endpoint AND /api/runner-mode.
 # Generate one: openssl rand -hex 32
-npx wrangler@4.90.0 secret put INGEST_TOKEN \
+pnpm dlx wrangler@4.90.0 secret put INGEST_TOKEN \
   --config dashboard/wrangler.toml
 ```
 
-`CLAWSWEEPER_APP_CLIENT_ID` is already in `[vars]` of `wrangler.toml` (`Iv23lirdjmVqYd1gwY26`) so the worker has the issuer it needs.
+`CLAWSWEEPER_APP_ID` (`3711554`) and `CLAWSWEEPER_APP_CLIENT_ID` (`Iv23lirdjmVqYd1gwY26`) are already in `[vars]` of `wrangler.toml`; the numeric App ID is preferred as the GitHub JWT issuer.
 
 **Optional fourth secret** — separate the dashboard admin from the ingest token. If you want a distinct token for the runner-lane buttons:
 
 ```bash
-npx wrangler@4.90.0 secret put DASHBOARD_ADMIN_TOKEN \
+pnpm dlx wrangler@4.90.0 secret put DASHBOARD_ADMIN_TOKEN \
   --config dashboard/wrangler.toml
 ```
 

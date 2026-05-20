@@ -1862,7 +1862,7 @@ async function githubJson(env, path) {
 }
 
 async function githubWriteJson(env, path: string, options: { method: string; body: unknown }) {
-  const token = await githubAuthToken(env);
+  const token = await githubAuthToken(env, "write");
   if (!token) throw new Error("GitHub auth is required for write requests");
   const response = await fetch(`https://api.github.com${path}`, {
     method: options.method,
@@ -1970,7 +1970,7 @@ function hasGithubAuth(env) {
   return Boolean(env.GITHUB_TOKEN || githubAppCredentials(env));
 }
 
-async function githubAuthToken(env) {
+async function githubAuthToken(env, access = "read") {
   if (env.GITHUB_TOKEN) return String(env.GITHUB_TOKEN);
   const credentials = githubAppCredentials(env);
   if (!credentials) return "";
@@ -1979,6 +1979,7 @@ async function githubAuthToken(env) {
   const repos = triageTargetRepos(env);
   const cacheKey = [
     credentials.issuer,
+    access,
     credentials.installationId || repos[0] || "",
     repos.join(","),
   ].join("|");
@@ -1992,7 +1993,7 @@ async function githubAuthToken(env) {
     return githubAppTokenCache.promise;
   }
 
-  const promise = createGithubAppInstallationToken(env, credentials, repos)
+  const promise = createGithubAppInstallationToken(env, credentials, repos, access)
     .then((result) => {
       githubAppTokenCache = {
         key: cacheKey,
@@ -2025,7 +2026,7 @@ function githubAppCredentials(env) {
   };
 }
 
-async function createGithubAppInstallationToken(env, credentials, repos) {
+async function createGithubAppInstallationToken(env, credentials, repos, access = "read") {
   const appJwt = await signGithubAppJwt(credentials.issuer, credentials.privateKey);
   const installationId =
     credentials.installationId || (await githubAppInstallationId(appJwt, repos[0]));
@@ -2035,13 +2036,19 @@ async function createGithubAppInstallationToken(env, credentials, repos) {
     {
       method: "POST",
       body: JSON.stringify({
-        permissions: {
-          actions: "read",
-          checks: "read",
-          contents: "read",
-          issues: "read",
-          pull_requests: "read",
-        },
+        permissions:
+          access === "write"
+            ? {
+                actions_variables: "write",
+              }
+            : {
+                actions: "read",
+                actions_variables: "read",
+                checks: "read",
+                contents: "read",
+                issues: "read",
+                pull_requests: "read",
+              },
       }),
       errorLabel: "GitHub App token",
     },
