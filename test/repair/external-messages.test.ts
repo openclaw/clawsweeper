@@ -217,5 +217,14 @@ test("sample external messages use Codex-style hierarchy and bounded paragraphs"
         `${sample.title} has an overly long paragraph: ${paragraph.length} chars`,
       );
     }
+
+    const bodyWithoutCodeSpans = sample.body.replace(/`[^`\n]+`/g, "");
+    const commandLikeTokens =
+      bodyWithoutCodeSpans.match(/\b(?:pnpm|npm|bun|node|cargo|swift)\s+[^\n`]+/g) ?? [];
+    assert.deepEqual(
+      commandLikeTokens,
+      [],
+      `${sample.title} has command-like text outside inline code: ${commandLikeTokens.join(", ")}`,
+    );
   }
 });
