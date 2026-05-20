@@ -20,6 +20,12 @@ const GITHUB_TIMEOUT_MS = 4500;
 const OPTIONAL_SECTION_TIMEOUT_MS = 6000;
 const STALE_CACHE_TTL_SECONDS = 900;
 const CI_STATUS_TTL_SECONDS = 7200;
+const RUNNER_MODES: Record<string, string[]> = {
+  "mac-mini": ["self-hosted", "macOS", "ARM64", "mac-mini"],
+  macbook: ["self-hosted", "macOS", "ARM64", "macbook"],
+  both: ["self-hosted", "macOS", "ARM64"],
+};
+const RUNNER_VARIABLES = ["CLAWSWEEPER_RUNNER_LABELS", "CLAWSWEEPER_REVIEW_RUNNER"];
 const SUPPORT_WORKFLOW_NAMES = new Set([
   "CI",
   "CodeQL",
@@ -175,6 +181,8 @@ export default {
     if (url.pathname === "/api/health") return json({ ok: true, service: "clawsweeper-status" });
     if (url.pathname === "/api/events" && request.method === "POST")
       return ingestEvent(request, env);
+    if (url.pathname === "/api/runner-mode" && request.method === "POST")
+      return setRunnerMode(request, env, ctx);
     if (url.pathname === "/api/status") return statusJson(request, env, ctx);
     if (url.pathname === "/api/triage") return triageJson(request, env, ctx);
     if (url.pathname === "/api/pr-proof-triage") return prProofTriageJson(request, env, ctx);
@@ -354,6 +362,25 @@ function prProofTriageCacheRequest(request, bucket) {
   });
 }
 
+async function setRunnerMode(request, env, ctx) {
+  const token = bearerToken(request);
+  const adminToken = env.DASHBOARD_ADMIN_TOKEN || env.INGEST_TOKEN;
+  if (!adminToken || token !== adminToken) return json({ error: "unauthorized" }, 401);
+  const body = await request.json().catch(() => null);
+  const mode = String(body?.mode || "").trim();
+  const labels = RUNNER_MODES[mode];
+  if (!labels) return json({ error: "invalid_mode", modes: Object.keys(RUNNER_MODES) }, 400);
+
+  const repo = env.CLAWSWEEPER_REPO || "openclaw/clawsweeper";
+  await Promise.all(
+    RUNNER_VARIABLES.map((name) => upsertGithubVariable(env, repo, name, JSON.stringify(labels))),
+  );
+  await env.STATUS_STORE?.delete?.("snapshot");
+  const result = { ok: true, mode, labels };
+  ctx?.waitUntil?.(writeStoredJson(env, "runner-mode", result));
+  return json(result);
+}
+
 async function ingestEvent(request, env) {
   const token = bearerToken(request);
   if (!env.INGEST_TOKEN || token !== env.INGEST_TOKEN) return json({ error: "unauthorized" }, 401);
@@ -385,12 +412,20 @@ async function statusSnapshot(env, ctx) {
     .map((value) => value.trim())
     .filter(Boolean);
   const budget = numberFrom(env.WORKER_BUDGET, 72);
-  const [runs, filteredActiveRuns] = await Promise.all([
+  const [runs, filteredActiveRuns, runnerConfig, runners] = await Promise.all([
     githubJson(env, `/repos/${repo}/actions/runs?per_page=100`).catch((error) => {
       errors.push(`workflow runs: ${error.message}`);
       return null;
     }),
     activeWorkflowRuns(env, repo, errors),
+    runnerConfigSnapshot(env, repo).catch((error) => {
+      errors.push(`runner config: ${error.message}`);
+      return runnerConfigFromLabels(null);
+    }),
+    githubJson(env, `/repos/${repo}/actions/runners?per_page=100`).catch((error) => {
+      errors.push(`runners: ${error.message}`);
+      return null;
+    }),
   ]);
   const workflowRuns = Array.isArray(runs?.workflow_runs) ? runs.workflow_runs : [];
   const activeRuns = uniqueWorkflowRuns([
@@ -452,6 +487,8 @@ async function statusSnapshot(env, ctx) {
       active_codex_jobs: activeJobs.count,
       failed_recent_runs: failedRuns.length,
       budget_used_percent: budget > 0 ? Math.round((activeJobs.count / budget) * 100) : 0,
+      runner_config: runnerConfig,
+      runners: normalizeRunners(runners),
     },
     averages: {
       automerge_command_to_merge_ms: automerge.average_ms,
@@ -1822,6 +1859,87 @@ async function githubJson(env, path) {
   }).finally(() => clearTimeout(timeout));
   if (!response.ok) throw new Error(`GitHub ${response.status} for ${path}`);
   return response.json();
+}
+
+async function githubWriteJson(env, path: string, options: { method: string; body: unknown }) {
+  const token = await githubAuthToken(env);
+  if (!token) throw new Error("GitHub auth is required for write requests");
+  const response = await fetch(`https://api.github.com${path}`, {
+    method: options.method,
+    headers: {
+      Accept: "application/vnd.github+json",
+      "Content-Type": "application/json",
+      "User-Agent": "openclaw-clawsweeper-status",
+      "X-GitHub-Api-Version": "2022-11-28",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify(options.body),
+  });
+  if (!response.ok && response.status !== 204) {
+    const text = await response.text().catch(() => "");
+    throw new Error(`GitHub ${response.status} for ${path}: ${text.slice(0, 200)}`);
+  }
+  if (response.status === 204) return null;
+  return response.json().catch(() => null);
+}
+
+async function upsertGithubVariable(env, repo: string, name: string, value: string) {
+  try {
+    await githubWriteJson(env, `/repos/${repo}/actions/variables/${name}`, {
+      method: "PATCH",
+      body: { name, value },
+    });
+  } catch (error) {
+    if (!String((error as Error)?.message || error).includes("GitHub 404")) throw error;
+    await githubWriteJson(env, `/repos/${repo}/actions/variables`, {
+      method: "POST",
+      body: { name, value },
+    });
+  }
+}
+
+async function runnerConfigSnapshot(env, repo: string) {
+  const variable = await githubJson(
+    env,
+    `/repos/${repo}/actions/variables/CLAWSWEEPER_RUNNER_LABELS`,
+  ).catch(() => null);
+  return runnerConfigFromLabels(variable?.value ?? null);
+}
+
+function runnerConfigFromLabels(value: string | null) {
+  const labels = parseRunnerLabels(value) || RUNNER_MODES["mac-mini"];
+  return { mode: runnerModeForLabels(labels), labels };
+}
+
+function parseRunnerLabels(value: string | null): string[] | null {
+  if (!value) return null;
+  try {
+    const parsed = JSON.parse(value);
+    if (Array.isArray(parsed) && parsed.every((item) => typeof item === "string")) return parsed;
+  } catch {
+    /* fall through */
+  }
+  return null;
+}
+
+function runnerModeForLabels(labels: string[]): string {
+  const serialized = JSON.stringify(labels);
+  for (const [mode, modeLabels] of Object.entries(RUNNER_MODES)) {
+    if (JSON.stringify(modeLabels) === serialized) return mode;
+  }
+  return "custom";
+}
+
+function normalizeRunners(value) {
+  const runners = Array.isArray(value?.runners) ? value.runners : [];
+  return runners.map((runner) => ({
+    name: runner.name,
+    status: runner.status,
+    busy: Boolean(runner.busy),
+    labels: Array.isArray(runner.labels)
+      ? runner.labels.map((label) => label.name).filter(Boolean)
+      : [],
+  }));
 }
 
 async function githubGraphql(env, query, variables) {
@@ -3197,6 +3315,7 @@ a:hover { color: #89c8ff; text-decoration: underline; }
 .pipeline-col { overflow: hidden; }
 .side-col { min-width: 0; }
 #pipeline,
+#runnerControl,
 #automerge,
 #closed,
 #events {
@@ -3204,6 +3323,26 @@ a:hover { color: #89c8ff; text-decoration: underline; }
   overflow: hidden;
   border-radius: 14px;
 }
+.control-card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 14px;
+}
+.runner-buttons { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0; }
+button {
+  background: #1a2532;
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 8px 10px;
+  cursor: pointer;
+  font: inherit;
+}
+button:hover { border-color: rgba(103, 183, 255, 0.6); }
+button.active { background: rgba(103, 183, 255, 0.16); border-color: var(--blue); }
+.runner-list { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+.runner-row { display: flex; justify-content: space-between; gap: 8px; }
 .work-list,
 .side-list {
   display: grid;
@@ -3362,6 +3501,8 @@ a:hover { color: #89c8ff; text-decoration: underline; }
       <div id="pipeline"></div>
     </div>
     <aside class="side-col">
+      <h2>🧭 Runner Lane</h2>
+      <div id="runnerControl"></div>
       <h2>âš¡ Automerge Speed</h2>
       <div id="automerge"></div>
       <h2>âœ… Closed by ClawSweeper</h2>
@@ -3483,6 +3624,7 @@ function renderDashboard(data, note) {
     metric("ðŸŽ¯ Capacity", fleet.budget_used_percent + "%", "fleet utilization", fleet.budget_used_percent, "var(--green)")
   ].join("");
   renderPipeline(data.pipeline || []);
+  renderRunnerControl(fleet.runner_config || {}, fleet.runners || []);
   renderAutomerge(data.recent.automerge || []);
   renderClosedStats(data.recent.closed_stats);
   renderClosedItems(data.recent.closed_items || []);
@@ -3497,6 +3639,38 @@ function renderPipeline(rows) {
     const detail = pipelineItemDetail(row);
     return '<article class="work-row"><div class="work-main" title="' + esc(compactText(row.title)) + '"><div class="row-top"><span class="pill" title="' + esc(row.mode) + '">' + esc(modeLabel(row.mode)) + '</span>' + pipelineItemLabel(row) + '</div>' + (detail ? '<div class="muted work-title">' + esc(detail) + '</div>' : "") + '</div><div class="work-state"><div class="stage-block"><strong>' + esc(row.stage) + '</strong><span class="muted">' + esc(row.status) + '</span></div>' + ciBadge(row.ci) + linkClass(row.run_url, "run", "pill run-link") + '</div><div class="timebox"><strong>' + elapsed(row.elapsed_ms) + '</strong><span>elapsed</span></div></article>';
   }).join("") + '</div>';
+}
+function renderRunnerControl(config, runners) {
+  const mode = config.mode || "mac-mini";
+  const labels = Array.isArray(config.labels) ? config.labels : [];
+  const rows = runners
+    .filter(runner => runner.labels && runner.labels.includes("self-hosted"))
+    .map(runner => '<div class="runner-row"><span>' + esc(runner.name) + '<div class="muted mono">' + esc((runner.labels || []).join(", ")) + '</div></span><span class="pill ' + (runner.status === "online" ? "green" : "red") + '">' + esc(runner.status) + (runner.busy ? " · busy" : "") + '</span></div>')
+    .join("");
+  document.getElementById("runnerControl").innerHTML = '<div class="control-card"><div>Mode: <span class="pill">' + esc(mode) + '</span></div><div class="muted mono">' + esc(JSON.stringify(labels)) + '</div><div class="runner-buttons">' + ["mac-mini", "macbook", "both"].map(name => '<button class="' + (name === mode ? "active" : "") + '" onclick="setRunnerMode(&apos;' + name + '&apos;)">' + esc(name) + '</button>').join("") + '</div><div class="muted">Requires dashboard admin token. Both mode uses common labels so either registered Mac can take jobs.</div><div class="runner-list">' + (rows || '<div class="empty">No self-hosted runners returned</div>') + '</div></div>';
+}
+async function setRunnerMode(mode) {
+  let token = localStorage.getItem("clawsweeper:admin-token") || "";
+  if (!token) {
+    token = prompt("Dashboard admin token");
+    if (!token) return;
+    localStorage.setItem("clawsweeper:admin-token", token);
+  }
+  const response = await fetch("/api/runner-mode", {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: "Bearer " + token },
+    body: JSON.stringify({ mode })
+  });
+  if (response.status === 401) {
+    localStorage.removeItem("clawsweeper:admin-token");
+    alert("Unauthorized runner toggle token");
+    return;
+  }
+  if (!response.ok) {
+    alert("Runner toggle failed: " + await response.text());
+    return;
+  }
+  await load();
 }
 function renderAutomerge(rows) {
   if (!rows.length) {
