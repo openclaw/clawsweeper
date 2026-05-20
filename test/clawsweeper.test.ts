@@ -5609,6 +5609,171 @@ if (args[0] === "api" && /\\/issues\\/74478$/.test(path)) {
   }
 });
 
+test("apply-decisions refreshes recent PR comments after label sync adds justifications", () => {
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    const itemsDir = join(root, "items");
+    const closedDir = join(root, "closed");
+    const plansDir = join(root, "plans");
+    const reportPath = join(root, "apply-report.json");
+    const logPath = join(root, "gh.log");
+    const itemPath = join(itemsDir, "74479.md");
+    mkdirSync(itemsDir, { recursive: true });
+    mkdirSync(plansDir, { recursive: true });
+    writeFileSync(
+      itemPath,
+      `${reportFrontMatter({
+        repository: "openclaw/clawsweeper",
+        type: "pull_request",
+        number: "74479",
+        title: "Refresh label explanation",
+        url: "https://github.com/openclaw/clawsweeper/pull/74479",
+        decision: "keep_open",
+        close_reason: "none",
+        confidence: "high",
+        action_taken: "kept_open",
+        review_status: "complete",
+        local_checkout_access: "verified",
+        author: "contributor",
+        author_association: "CONTRIBUTOR",
+        labels: JSON.stringify([]),
+        item_snapshot_hash: "snapshot-a",
+        item_updated_at: "2026-05-19T20:00:00Z",
+        pull_head_sha: "abc123def456",
+        review_comment_synced_at: "2026-05-19T23:59:00Z",
+      })}
+
+## Summary
+
+This PR needs labels and the latest comment must explain them.
+
+${realBehaviorProofReportSection({ evidenceKind: "screenshot" })}
+
+${prRatingReportSection({ overallTier: "A" })}
+
+## Review Findings
+
+Overall correctness: patch is correct
+
+Overall confidence: 0.9
+
+Full review comments:
+
+- none
+`,
+      "utf8",
+    );
+
+    const staleCommentBody =
+      "Codex review: needs maintainer review before merge.\n\n<!-- clawsweeper-review item=74479 -->";
+    const ghMock = `
+const { appendFileSync, readFileSync } = require("fs");
+const logPath = ${JSON.stringify(logPath)};
+const staleCommentBody = ${JSON.stringify(staleCommentBody)};
+const rawArgs = process.argv.slice(2);
+const args = rawArgs[0] === "--repo" ? rawArgs.slice(2) : rawArgs;
+appendFileSync(logPath, JSON.stringify(args) + "\\n");
+const path = args[1] || "";
+if (args[0] === "api" && /\\/issues\\/74479$/.test(path)) {
+  console.log(JSON.stringify({
+    number: 74479,
+    title: "Refresh label explanation",
+    html_url: "https://github.com/openclaw/clawsweeper/pull/74479",
+    created_at: "2026-05-19T19:00:00Z",
+    updated_at: "2026-05-19T20:00:00Z",
+    closed_at: null,
+    state: "open",
+    locked: false,
+    active_lock_reason: null,
+    author_association: "CONTRIBUTOR",
+    user: { login: "contributor" },
+    labels: [],
+    pull_request: {}
+  }));
+} else if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/74479\\/timeline(?:\\?|$)/.test(args[2] || "")) {
+  console.log("HTTP/2 200\\n\\n[]");
+} else if (args[0] === "api" && /\\/issues\\/74479\\/timeline(?:\\?|$)/.test(path)) {
+  console.log(JSON.stringify([[]]));
+} else if (args[0] === "api" && /\\/pulls\\/74479$/.test(path)) {
+  console.log(JSON.stringify({
+    number: 74479,
+    html_url: "https://github.com/openclaw/clawsweeper/pull/74479",
+    state: "open",
+    changed_files: 1,
+    commits: 1,
+    review_comments: 0,
+    head: { sha: "abc123def456", ref: "branch", repo: { full_name: "fork/clawsweeper" } },
+    base: { sha: "base-sha", ref: "main", repo: { full_name: "openclaw/clawsweeper" } },
+    user: { login: "contributor" }
+  }));
+} else if (args[0] === "api" && /\\/pulls\\/74479\\/(files|commits|comments)(?:\\?|$)/.test(path)) {
+  console.log(JSON.stringify([[]]));
+} else if (args[0] === "api" && /\\/issues\\/74479\\/comments(?:\\?|$)/.test(path)) {
+  console.log(JSON.stringify([[
+    {
+      id: 987479,
+      html_url: "https://github.com/openclaw/clawsweeper/pull/74479#issuecomment-987479",
+      body: staleCommentBody,
+      user: { login: "clawsweeper[bot]" },
+      created_at: "2026-05-19T23:59:00Z",
+      updated_at: "2026-05-19T23:59:00Z"
+    }
+  ]]));
+} else if (args[0] === "api" && /\\/issues\\/comments\\/987479$/.test(path)) {
+  const input = args[args.indexOf("--input") + 1];
+  appendFileSync(logPath, JSON.stringify(["patched-review-body", JSON.parse(readFileSync(input, "utf8")).body]) + "\\n");
+  console.log(JSON.stringify({
+    id: 987479,
+    html_url: "https://github.com/openclaw/clawsweeper/pull/74479#issuecomment-987479"
+  }));
+} else if (args[0] === "label" && args[1] === "create") {
+  console.log(JSON.stringify({ name: args[2] }));
+} else if (args[0] === "issue" && args[1] === "edit") {
+  console.log("");
+} else {
+  console.error("unexpected gh args", JSON.stringify(args));
+  process.exit(1);
+}
+`;
+    withMockGh(root, ghMock, () => {
+      runApplyDecisionsForTest({
+        itemsDir,
+        closedDir,
+        plansDir,
+        reportPath,
+        extraArgs: [
+          "--sync-comments-only",
+          "--comment-sync-min-age-days",
+          "7",
+          "--item-numbers",
+          "74479",
+        ],
+      });
+    });
+
+    const calls = readFileSync(logPath, "utf8")
+      .trim()
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as string[]);
+    const patchedBody = calls.find((args) => args[0] === "patched-review-body")?.[1] ?? "";
+    assert.match(patchedBody, /Label justifications:/);
+    assert.match(patchedBody, /`proof: sufficient`/);
+    assert.match(patchedBody, /`proof: 📸 screenshot`/);
+    assert.match(patchedBody, /`rating: 🦞 diamond lobster`/);
+    assert.match(readFileSync(itemPath, "utf8"), /^labels_synced_at: /m);
+    assert.deepEqual(JSON.parse(readFileSync(reportPath, "utf8")), [
+      {
+        number: 74479,
+        action: "review_comment_synced",
+        reason: "updated durable Codex review comment; synced durable PR egg comment",
+      },
+    ]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("apply-decisions does not advisory-label close proposals before close gates finish", () => {
   const root = mkdtempSync(tmpPrefix);
   try {

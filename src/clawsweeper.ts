@@ -3151,6 +3151,7 @@ export function shouldSyncReviewComment(options: {
   needsReviewCommentBodySync: boolean;
   needsReviewCommentHashSync: boolean;
   needsReviewCommentReferenceSync: boolean;
+  forceReviewCommentBodySync?: boolean;
   now?: number;
 }): boolean {
   if (
@@ -3161,6 +3162,7 @@ export function shouldSyncReviewComment(options: {
     return false;
   }
   if (!options.syncCommentsOnly || options.isCloseProposal) return true;
+  if (options.forceReviewCommentBodySync && options.needsReviewCommentBodySync) return true;
   if (!options.hasExistingReviewComment || options.needsReviewCommentReferenceSync) return true;
   if (options.commentSyncMinAgeDays <= 0) return true;
   if (!options.reviewCommentSyncedAt) return true;
@@ -11418,6 +11420,7 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
       needsReviewCommentBodySync,
       needsReviewCommentHashSync,
       needsReviewCommentReferenceSync,
+      forceReviewCommentBodySync: clawSweeperLabelsChanged,
     });
     if (clawSweeperLabelsChanged && !dryRun) {
       markdown = replaceFrontMatterValue(markdown, "labels_synced_at", new Date().toISOString());
