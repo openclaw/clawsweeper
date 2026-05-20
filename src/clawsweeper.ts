@@ -7920,12 +7920,13 @@ function syncTelegramVisibleProofLabel(options: {
   labels: readonly string[];
   proof: Pick<TelegramVisibleProof, "status">;
   dryRun: boolean;
-}): string[] {
+}): { labels: string[]; changed: boolean } {
   const nextLabels = nextTelegramVisibleProofLabels(options.labels, options.proof);
   const hadLabel = options.labels.includes(TELEGRAM_VISIBLE_PROOF_LABEL);
   const wantsLabel = nextLabels.includes(TELEGRAM_VISIBLE_PROOF_LABEL);
-  if (hadLabel === wantsLabel) return nextLabels;
-  if (options.dryRun) return nextLabels;
+  const changed = hadLabel !== wantsLabel;
+  if (!changed) return { labels: nextLabels, changed };
+  if (options.dryRun) return { labels: nextLabels, changed };
   if (wantsLabel) ensureTelegramVisibleProofLabel();
   ghWithRetry([
     "issue",
@@ -7934,7 +7935,7 @@ function syncTelegramVisibleProofLabel(options: {
     wantsLabel ? "--add-label" : "--remove-label",
     TELEGRAM_VISIBLE_PROOF_LABEL,
   ]);
-  return nextLabels;
+  return { labels: nextLabels, changed };
 }
 
 function ensurePrRatingLabel(tier: PrRatingTier): void {
@@ -7984,7 +7985,7 @@ function syncPrRatingLabel(options: {
   labels: readonly string[];
   rating: Pick<PrRating, "overallTier">;
   dryRun: boolean;
-}): string[] {
+}): { labels: string[]; changed: boolean } {
   const nextLabels = nextPrRatingLabels(options.labels, options.rating);
   const currentLabelKeys = new Set(options.labels.map((label) => label.toLowerCase()));
   const nextLabelKeys = new Set(nextLabels.map((label) => label.toLowerCase()));
@@ -7994,8 +7995,9 @@ function syncPrRatingLabel(options: {
   const labelToAdd = nextLabels.find(
     (label) => PR_RATING_LABEL_NAMES.has(label) && !currentLabelKeys.has(label.toLowerCase()),
   );
-  if (!labelsToRemove.length && !labelToAdd) return nextLabels;
-  if (options.dryRun) return nextLabels;
+  const changed = labelsToRemove.length > 0 || Boolean(labelToAdd);
+  if (!changed) return { labels: nextLabels, changed };
+  if (options.dryRun) return { labels: nextLabels, changed };
   if (labelToAdd) ensurePrRatingLabel(options.rating.overallTier);
   for (const label of labelsToRemove) {
     ghWithRetry(["issue", "edit", String(options.number), "--remove-label", label]);
@@ -8003,7 +8005,7 @@ function syncPrRatingLabel(options: {
   if (labelToAdd) {
     ghWithRetry(["issue", "edit", String(options.number), "--add-label", labelToAdd]);
   }
-  return nextLabels;
+  return { labels: nextLabels, changed };
 }
 
 function syncPrStatusLabel(options: {
@@ -8011,7 +8013,7 @@ function syncPrStatusLabel(options: {
   labels: readonly string[];
   statusKind: PrStatusLabelKind | null;
   dryRun: boolean;
-}): string[] {
+}): { labels: string[]; changed: boolean } {
   const nextLabels = nextPrStatusLabels(options.labels, options.statusKind);
   const currentLabelKeys = new Set(options.labels.map((label) => label.toLowerCase()));
   const nextLabelKeys = new Set(nextLabels.map((label) => label.toLowerCase()));
@@ -8021,8 +8023,9 @@ function syncPrStatusLabel(options: {
   const labelToAdd = nextLabels.find(
     (label) => PR_STATUS_LABEL_NAMES.has(label) && !currentLabelKeys.has(label.toLowerCase()),
   );
-  if (!labelsToRemove.length && !labelToAdd) return nextLabels;
-  if (options.dryRun) return nextLabels;
+  const changed = labelsToRemove.length > 0 || Boolean(labelToAdd);
+  if (!changed) return { labels: nextLabels, changed };
+  if (options.dryRun) return { labels: nextLabels, changed };
   if (options.statusKind && labelToAdd) ensurePrStatusLabel(options.statusKind);
   for (const label of labelsToRemove) {
     ghWithRetry(["issue", "edit", String(options.number), "--remove-label", label]);
@@ -8030,7 +8033,7 @@ function syncPrStatusLabel(options: {
   if (labelToAdd) {
     ghWithRetry(["issue", "edit", String(options.number), "--add-label", labelToAdd]);
   }
-  return nextLabels;
+  return { labels: nextLabels, changed };
 }
 
 function ensureTelegramVisibleProofLabel(): void {
@@ -8115,13 +8118,16 @@ function syncRealBehaviorProofSufficientLabel(options: {
   labels: readonly string[];
   proof: Pick<RealBehaviorProof, "status">;
   dryRun: boolean;
-}): string[] {
+}): { labels: string[]; changed: boolean } {
   const nextLabels = nextRealBehaviorProofSufficientLabels(options.labels, options.proof);
   const hadLabel = options.labels.includes(PROOF_SUFFICIENT_LABEL);
   const wantsLabel = nextLabels.includes(PROOF_SUFFICIENT_LABEL);
-  if (hadLabel === wantsLabel) return nextLabels;
-  if (options.dryRun) return nextLabels;
-  if (wantsLabel && !ensureRealBehaviorProofSufficientLabel()) return [...options.labels];
+  const changed = hadLabel !== wantsLabel;
+  if (!changed) return { labels: nextLabels, changed };
+  if (options.dryRun) return { labels: nextLabels, changed };
+  if (wantsLabel && !ensureRealBehaviorProofSufficientLabel()) {
+    return { labels: [...options.labels], changed: false };
+  }
   try {
     ghWithRetry([
       "issue",
@@ -8137,9 +8143,11 @@ function syncRealBehaviorProofSufficientLabel(options: {
         error instanceof Error ? error.message : String(error)
       }`,
     );
-    return wantsLabel ? [...options.labels] : nextLabels;
+    return wantsLabel
+      ? { labels: [...options.labels], changed: false }
+      : { labels: nextLabels, changed };
   }
-  return nextLabels;
+  return { labels: nextLabels, changed };
 }
 
 function syncRealBehaviorProofMediaLabels(options: {
@@ -8147,7 +8155,7 @@ function syncRealBehaviorProofMediaLabels(options: {
   labels: readonly string[];
   proof: Pick<RealBehaviorProof, "evidenceKind">;
   dryRun: boolean;
-}): string[] {
+}): { labels: string[]; changed: boolean } {
   const nextLabels = nextRealBehaviorProofMediaLabels(options.labels, options.proof);
   const currentLabelKeys = new Set(options.labels.map((label) => label.toLowerCase()));
   const nextLabelKeys = new Set(nextLabels.map((label) => label.toLowerCase()));
@@ -8157,10 +8165,12 @@ function syncRealBehaviorProofMediaLabels(options: {
   const labelsToRemove = options.labels.filter(
     (label) => PROOF_MEDIA_LABEL_NAMES.has(label) && !nextLabelKeys.has(label.toLowerCase()),
   );
-  if (!labelsToAdd.length && !labelsToRemove.length) return nextLabels;
-  if (options.dryRun) return nextLabels;
+  const changed = labelsToAdd.length > 0 || labelsToRemove.length > 0;
+  if (!changed) return { labels: nextLabels, changed };
+  if (options.dryRun) return { labels: nextLabels, changed };
   for (const label of labelsToAdd) {
-    if (!ensureRealBehaviorProofMediaLabel(label)) return [...options.labels];
+    if (!ensureRealBehaviorProofMediaLabel(label))
+      return { labels: [...options.labels], changed: false };
     ghWithRetry(["issue", "edit", String(options.number), "--add-label", label]);
   }
   for (const label of labelsToRemove) {
@@ -8175,7 +8185,7 @@ function syncRealBehaviorProofMediaLabels(options: {
       );
     }
   }
-  return nextLabels;
+  return { labels: nextLabels, changed };
 }
 
 function isAutomationReportAuthor(author: string | undefined): boolean {
@@ -11114,41 +11124,51 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
     let currentPrStatusKind: PrStatusLabelKind | null = null;
     if (state === "open" && item.kind === "pull_request") {
       const realBehaviorProof = reportRealBehaviorProof(markdown);
-      item.labels = syncRealBehaviorProofSufficientLabel({
+      const proofSufficientSyncResult = syncRealBehaviorProofSufficientLabel({
         number,
         labels: item.labels,
         proof: realBehaviorProof,
         dryRun,
       });
-      item.labels = syncRealBehaviorProofMediaLabels({
+      item.labels = proofSufficientSyncResult.labels;
+      clawSweeperLabelsChanged ||= proofSufficientSyncResult.changed;
+      const proofMediaSyncResult = syncRealBehaviorProofMediaLabels({
         number,
         labels: item.labels,
         proof: realBehaviorProof,
         dryRun,
       });
-      item.labels = syncPrRatingLabel({
+      item.labels = proofMediaSyncResult.labels;
+      clawSweeperLabelsChanged ||= proofMediaSyncResult.changed;
+      const prRatingSyncResult = syncPrRatingLabel({
         number,
         labels: item.labels,
         rating: reportPrRating(markdown),
         dryRun,
       });
+      item.labels = prRatingSyncResult.labels;
+      clawSweeperLabelsChanged ||= prRatingSyncResult.changed;
       currentPrStatusKind = prStatusLabelKindFromReport(
         markdown,
         currentItemContext(),
         item.labels,
       );
-      item.labels = syncPrStatusLabel({
+      const prStatusSyncResult = syncPrStatusLabel({
         number,
         labels: item.labels,
         statusKind: currentPrStatusKind,
         dryRun,
       });
-      item.labels = syncTelegramVisibleProofLabel({
+      item.labels = prStatusSyncResult.labels;
+      clawSweeperLabelsChanged ||= prStatusSyncResult.changed;
+      const telegramVisibleProofSyncResult = syncTelegramVisibleProofLabel({
         number,
         labels: item.labels,
         proof: reportTelegramVisibleProof(markdown),
         dryRun,
       });
+      item.labels = telegramVisibleProofSyncResult.labels;
+      clawSweeperLabelsChanged ||= telegramVisibleProofSyncResult.changed;
     }
     markdown = replaceFrontMatterValue(markdown, "labels", JSON.stringify(item.labels));
     if (

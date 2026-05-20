@@ -5474,6 +5474,141 @@ if (args[0] === "api" && /\\/issues\\/74477$/.test(path)) {
   }
 });
 
+test("apply-decisions records PR label sync as ClawSweeper-owned churn", () => {
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    const itemsDir = join(root, "items");
+    const closedDir = join(root, "closed");
+    const plansDir = join(root, "plans");
+    const reportPath = join(root, "apply-report.json");
+    const logPath = join(root, "gh.log");
+    const itemPath = join(itemsDir, "74478.md");
+    mkdirSync(itemsDir, { recursive: true });
+    mkdirSync(plansDir, { recursive: true });
+    writeFileSync(
+      itemPath,
+      `${reportFrontMatter({
+        repository: "openclaw/clawsweeper",
+        type: "pull_request",
+        number: "74478",
+        title: "Record PR label churn",
+        url: "https://github.com/openclaw/clawsweeper/pull/74478",
+        decision: "keep_open",
+        close_reason: "none",
+        confidence: "high",
+        action_taken: "kept_open",
+        review_status: "complete",
+        local_checkout_access: "verified",
+        author: "contributor",
+        author_association: "CONTRIBUTOR",
+        labels: JSON.stringify([]),
+        item_snapshot_hash: "snapshot-a",
+        item_updated_at: "2026-05-19T20:00:00Z",
+        pull_head_sha: "abc123def456",
+      })}
+
+## Summary
+
+This PR has complete review metadata and needs only ClawSweeper-owned labels.
+
+${realBehaviorProofReportSection({ evidenceKind: "screenshot" })}
+
+${prRatingReportSection({ overallTier: "A" })}
+
+## Review Findings
+
+Overall correctness: patch is correct
+
+Overall confidence: 0.9
+
+Full review comments:
+
+- none
+`,
+      "utf8",
+    );
+
+    const ghMock = `
+const { appendFileSync, readFileSync } = require("fs");
+const logPath = ${JSON.stringify(logPath)};
+const rawArgs = process.argv.slice(2);
+const args = rawArgs[0] === "--repo" ? rawArgs.slice(2) : rawArgs;
+appendFileSync(logPath, JSON.stringify(args) + "\\n");
+const path = args[1] || "";
+if (args[0] === "api" && /\\/issues\\/74478$/.test(path)) {
+  console.log(JSON.stringify({
+    number: 74478,
+    title: "Record PR label churn",
+    html_url: "https://github.com/openclaw/clawsweeper/pull/74478",
+    created_at: "2026-05-19T19:00:00Z",
+    updated_at: "2026-05-19T20:00:00Z",
+    closed_at: null,
+    state: "open",
+    locked: false,
+    active_lock_reason: null,
+    author_association: "CONTRIBUTOR",
+    user: { login: "contributor" },
+    labels: [],
+    pull_request: {}
+  }));
+} else if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/74478\\/timeline(?:\\?|$)/.test(args[2] || "")) {
+  console.log("HTTP/2 200\\n\\n[]");
+} else if (args[0] === "api" && /\\/issues\\/74478\\/timeline(?:\\?|$)/.test(path)) {
+  console.log(JSON.stringify([[]]));
+} else if (args[0] === "api" && /\\/pulls\\/74478$/.test(path)) {
+  console.log(JSON.stringify({
+    number: 74478,
+    html_url: "https://github.com/openclaw/clawsweeper/pull/74478",
+    state: "open",
+    changed_files: 1,
+    commits: 1,
+    review_comments: 0,
+    head: { sha: "abc123def456", ref: "branch", repo: { full_name: "fork/clawsweeper" } },
+    base: { sha: "base-sha", ref: "main", repo: { full_name: "openclaw/clawsweeper" } },
+    user: { login: "contributor" }
+  }));
+} else if (args[0] === "api" && /\\/pulls\\/74478\\/(files|commits|comments)(?:\\?|$)/.test(path)) {
+  console.log(JSON.stringify([[]]));
+} else if (args[0] === "api" && /\\/issues\\/74478\\/comments(?:\\?|$)/.test(path)) {
+  if (args.includes("--method") && args.includes("POST")) {
+    const input = args[args.indexOf("--input") + 1];
+    appendFileSync(logPath, JSON.stringify(["posted-comment-body", JSON.parse(readFileSync(input, "utf8")).body]) + "\\n");
+    console.log(JSON.stringify({
+      id: 987478,
+      html_url: "https://github.com/openclaw/clawsweeper/pull/74478#issuecomment-987478"
+    }));
+  } else {
+    console.log(JSON.stringify([[]]));
+  }
+} else if (args[0] === "label" && args[1] === "create") {
+  console.log(JSON.stringify({ name: args[2] }));
+} else if (args[0] === "issue" && args[1] === "edit") {
+  console.log("");
+} else {
+  console.error("unexpected gh args", JSON.stringify(args));
+  process.exit(1);
+}
+`;
+    withMockGh(root, ghMock, () => {
+      runApplyDecisionsForTest({
+        itemsDir,
+        closedDir,
+        plansDir,
+        reportPath,
+        extraArgs: ["--sync-comments-only", "--item-numbers", "74478"],
+      });
+    });
+
+    const report = readFileSync(itemPath, "utf8");
+    assert.match(report, /^labels_synced_at: /m);
+    assert.match(report, /proof: sufficient/);
+    assert.match(report, /proof: 📸 screenshot/);
+    assert.match(report, /rating: 🦞 diamond lobster/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("apply-decisions does not advisory-label close proposals before close gates finish", () => {
   const root = mkdtempSync(tmpPrefix);
   try {
