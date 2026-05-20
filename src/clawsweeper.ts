@@ -5933,7 +5933,8 @@ function publicPrEggLine(
   }
   const stateLines: Record<Exclude<PrEggState, "hatched">, string> = {
     incubating: "🥚 Incubating: this PR egg is tucked into the review nest.",
-    warming: "🔥 Warming up: proof, findings, or rank-up moves are still in progress.",
+    warming:
+      "🔥 Warming up: real-behavior proof passed; findings, security review, or rank-up moves are still in progress.",
     wobbling: "🔁 Wobbling: a re-review loop is active, so the shell is rattling.",
   };
   return [stateLines[state], "", hatchInstruction, ...explainer].join("\n");

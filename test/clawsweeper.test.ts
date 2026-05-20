@@ -3122,7 +3122,10 @@ Full review comments:
 
   assert.doesNotMatch(comment, /\*\*PR egg\*\*/);
   assert.match(eggComment, /ClawSweeper PR egg/);
-  assert.match(eggComment, /🔥 Warming up:/);
+  assert.match(
+    eggComment,
+    /🔥 Warming up: real-behavior proof passed; findings, security review, or rank-up moves are still in progress\./,
+  );
   assert.doesNotMatch(eggComment, /```text/);
   assert.match(eggComment, /<summary>What is this egg doing here\?<\/summary>/);
   assert.match(eggComment, /Eggs appear after the PR passes real-behavior proof/);
@@ -3139,6 +3142,7 @@ Full review comments:
   assert.match(eggComment, /Comment `@clawsweeper hatch` when this PR is/);
   assert.match(eggComment, /🥚 common, 🌱 uncommon, 💎 rare, ✨ glimmer, and 🌈 legendary/);
   assert.doesNotMatch(eggComment, /🎁 Pass real behavior proof/);
+  assert.doesNotMatch(eggComment, /proof, findings, or rank-up moves are still in progress/);
   assert.doesNotMatch(eggComment, /✨ Hatched:/);
   assert.doesNotMatch(eggComment, /Share on X:/);
 });
@@ -3647,9 +3651,18 @@ Full review comments:
     ["automerge_armed", /✨ Hatched:/],
     ["ready_for_maintainer_look", /✨ Hatched:/],
     ["re_review_loop", /🔁 Wobbling:/],
-    ["actively_grinding", /🔥 Warming up:/],
-    ["waiting_on_author", /🔥 Warming up:/],
-    ["needs_proof", /🔥 Warming up:/],
+    [
+      "actively_grinding",
+      /🔥 Warming up: real-behavior proof passed; findings, security review, or rank-up moves are still in progress\./,
+    ],
+    [
+      "waiting_on_author",
+      /🔥 Warming up: real-behavior proof passed; findings, security review, or rank-up moves are still in progress\./,
+    ],
+    [
+      "needs_proof",
+      /🔥 Warming up: real-behavior proof passed; findings, security review, or rank-up moves are still in progress\./,
+    ],
     [null, /🥚 Incubating:/],
   ] as const;
 
