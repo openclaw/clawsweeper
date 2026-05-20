@@ -2550,6 +2550,56 @@ Full review comments:
   assert.doesNotMatch(markers, /clawsweeper-verdict:needs-changes/);
 });
 
+test("review parser preserves triage labels and risk metadata", () => {
+  const decision = parseDecision(
+    closeDecision({
+      triagePriority: "P2",
+      impactLabels: ["impact:session-state"],
+      mergeRiskLabels: ["merge-risk: 🚨 automation"],
+      mergeRiskOptions: [
+        {
+          title: "Fix workflow before merge",
+          body: "Tighten the dispatcher guard before enabling automation.",
+          category: "fix_before_merge",
+          recommended: true,
+          automergeInstruction: "Add the dispatcher guard and rerun the narrow workflow test.",
+        },
+      ],
+      labelJustifications: [
+        {
+          label: "P2",
+          reason: "This affects normal automation but is not an outage.",
+        },
+        {
+          label: "merge-risk: 🚨 automation",
+          reason: "The PR changes workflow dispatch behavior.",
+        },
+      ],
+      prRating: {
+        proofTier: "B",
+        patchTier: "B",
+        overallTier: "B",
+        summary: "Solid review signal with no obvious blocker.",
+        nextSteps: ["Add one targeted workflow smoke test."],
+      },
+      mantisRecommendation: {
+        status: "recommended",
+        scenario: "telegram_live",
+        reason: "Live Telegram proof would reduce merge risk.",
+        maintainerComment: "@openclaw-mantis run telegram smoke",
+      },
+    }),
+  );
+
+  assert.equal(decision.triagePriority, "P2");
+  assert.deepEqual(decision.impactLabels, ["impact:session-state"]);
+  assert.deepEqual(decision.mergeRiskLabels, ["merge-risk: 🚨 automation"]);
+  assert.equal(decision.mergeRiskOptions[0]?.recommended, true);
+  assert.equal(decision.labelJustifications[1]?.label, "merge-risk: 🚨 automation");
+  assert.equal(decision.prRating.overallTier, "B");
+  assert.equal(decision.mantisRecommendation.status, "recommended");
+});
+
 test("OpenClaw contributor changelog-entry findings are normalized", () => {
   const decision = parseDecision(
     changelogReviewDecision(),

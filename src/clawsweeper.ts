@@ -250,6 +250,62 @@ interface LikelyOwner {
   confidence: Confidence;
 }
 
+type TriagePriority = "P0" | "P1" | "P2" | "P3" | "none";
+type TriageLabel = Exclude<TriagePriority, "none">;
+type ImpactLabel =
+  | "impact:data-loss"
+  | "impact:security"
+  | "impact:crash-loop"
+  | "impact:message-loss"
+  | "impact:session-state"
+  | "impact:auth-provider";
+type MergeRiskLabel =
+  | "merge-risk: 🚨 compatibility"
+  | "merge-risk: 🚨 message-delivery"
+  | "merge-risk: 🚨 session-state"
+  | "merge-risk: 🚨 auth-provider"
+  | "merge-risk: 🚨 security-boundary"
+  | "merge-risk: 🚨 availability"
+  | "merge-risk: 🚨 automation";
+type MergeRiskOptionCategory = "fix_before_merge" | "accept_risk" | "pause_or_close";
+type PrRatingTier = "S" | "A" | "B" | "C" | "D" | "F" | "NA";
+type MantisScenario =
+  | "none"
+  | "telegram_live"
+  | "telegram_desktop_proof"
+  | "discord_status_reactions"
+  | "discord_thread_attachment"
+  | "slack_desktop_smoke"
+  | "visual_task";
+
+interface MergeRiskOption {
+  title: string;
+  body: string;
+  category: MergeRiskOptionCategory;
+  recommended: boolean;
+  automergeInstruction: string;
+}
+
+interface LabelJustification {
+  label: TriageLabel | ImpactLabel | MergeRiskLabel;
+  reason: string;
+}
+
+interface PrRating {
+  proofTier: PrRatingTier;
+  patchTier: PrRatingTier;
+  overallTier: PrRatingTier;
+  summary: string;
+  nextSteps: string[];
+}
+
+interface MantisRecommendation {
+  status: "recommended" | "not_recommended";
+  scenario: MantisScenario;
+  reason: string;
+  maintainerComment: string;
+}
+
 interface ReviewFinding {
   title: string;
   body: string;
@@ -308,6 +364,13 @@ interface Decision {
   likelyOwners: LikelyOwner[];
   risks: string[];
   bestSolution: string;
+  triagePriority: TriagePriority;
+  impactLabels: ImpactLabel[];
+  mergeRiskLabels: MergeRiskLabel[];
+  mergeRiskOptions: MergeRiskOption[];
+  labelJustifications: LabelJustification[];
+  prRating: PrRating;
+  mantisRecommendation: MantisRecommendation;
   itemCategory: ItemCategory;
   reproductionStatus: ReproductionStatus;
   reproductionConfidence: Confidence;
@@ -804,6 +867,51 @@ const OVERALL_CORRECTNESS_VALUES = new Set<OverallCorrectness>([
 
 type ReviewArtifactDestination = "items" | "closed" | "skip_closed";
 const CONFIDENCES = new Set<Confidence>(["high", "medium", "low"]);
+const TRIAGE_PRIORITIES = new Set<TriagePriority>(["P0", "P1", "P2", "P3", "none"]);
+const IMPACT_LABELS = new Set<ImpactLabel>([
+  "impact:data-loss",
+  "impact:security",
+  "impact:crash-loop",
+  "impact:message-loss",
+  "impact:session-state",
+  "impact:auth-provider",
+]);
+const MERGE_RISK_LABELS = new Set<MergeRiskLabel>([
+  "merge-risk: 🚨 compatibility",
+  "merge-risk: 🚨 message-delivery",
+  "merge-risk: 🚨 session-state",
+  "merge-risk: 🚨 auth-provider",
+  "merge-risk: 🚨 security-boundary",
+  "merge-risk: 🚨 availability",
+  "merge-risk: 🚨 automation",
+]);
+const REVIEW_LABELS = new Set<TriageLabel | ImpactLabel | MergeRiskLabel>([
+  "P0",
+  "P1",
+  "P2",
+  "P3",
+  ...IMPACT_LABELS,
+  ...MERGE_RISK_LABELS,
+]);
+const MERGE_RISK_OPTION_CATEGORIES = new Set<MergeRiskOptionCategory>([
+  "fix_before_merge",
+  "accept_risk",
+  "pause_or_close",
+]);
+const PR_RATING_TIERS = new Set<PrRatingTier>(["S", "A", "B", "C", "D", "F", "NA"]);
+const MANTIS_RECOMMENDATION_STATUSES = new Set<MantisRecommendation["status"]>([
+  "recommended",
+  "not_recommended",
+]);
+const MANTIS_SCENARIOS = new Set<MantisScenario>([
+  "none",
+  "telegram_live",
+  "telegram_desktop_proof",
+  "discord_status_reactions",
+  "discord_thread_attachment",
+  "slack_desktop_smoke",
+  "visual_task",
+]);
 const DECISION_SCHEMA_KEYS = new Set([
   "decision",
   "closeReason",
@@ -814,6 +922,13 @@ const DECISION_SCHEMA_KEYS = new Set([
   "likelyOwners",
   "risks",
   "bestSolution",
+  "triagePriority",
+  "impactLabels",
+  "mergeRiskLabels",
+  "mergeRiskOptions",
+  "labelJustifications",
+  "prRating",
+  "mantisRecommendation",
   "itemCategory",
   "reproductionStatus",
   "reproductionConfidence",
@@ -840,6 +955,27 @@ const DECISION_SCHEMA_KEYS = new Set([
   "workClusterRefs",
   "workValidation",
   "workLikelyFiles",
+]);
+const MERGE_RISK_OPTION_SCHEMA_KEYS = new Set([
+  "title",
+  "body",
+  "category",
+  "recommended",
+  "automergeInstruction",
+]);
+const LABEL_JUSTIFICATION_SCHEMA_KEYS = new Set(["label", "reason"]);
+const PR_RATING_SCHEMA_KEYS = new Set([
+  "proofTier",
+  "patchTier",
+  "overallTier",
+  "summary",
+  "nextSteps",
+]);
+const MANTIS_RECOMMENDATION_SCHEMA_KEYS = new Set([
+  "status",
+  "scenario",
+  "reason",
+  "maintainerComment",
 ]);
 const EVIDENCE_SCHEMA_KEYS = new Set(["label", "detail", "file", "line", "command", "sha"]);
 const SECURITY_REVIEW_SCHEMA_KEYS = new Set(["status", "summary", "concerns"]);
@@ -881,6 +1017,7 @@ const REVIEW_SECTIONS = {
   bestSolution: "Best Possible Solution",
   reproductionAssessment: "Reproduction Assessment",
   solutionAssessment: "Solution Assessment",
+  reviewMetadata: "Review Metadata",
   reviewFindings: "Review Findings",
   securityReview: "Security Review",
   realBehaviorProof: "Real Behavior Proof",
@@ -1291,6 +1428,102 @@ function requireStringArray(value: unknown, path: string): string[] {
   return value.map((entry, index) => requireString(entry, `${path}[${index}]`));
 }
 
+function requireEnumArray<T extends string>(
+  value: unknown,
+  allowed: Set<T>,
+  path: string,
+  options: { maxItems?: number } = {},
+): T[] {
+  if (!Array.isArray(value)) throw new Error(`${path} must be an array`);
+  if (options.maxItems !== undefined && value.length > options.maxItems) {
+    throw new Error(`${path} must contain at most ${options.maxItems} items`);
+  }
+  return value.map((entry, index) => requireEnum(entry, allowed, `${path}[${index}]`));
+}
+
+function emptyPrRating(): PrRating {
+  return {
+    proofTier: "NA",
+    patchTier: "NA",
+    overallTier: "NA",
+    summary: "Not applicable.",
+    nextSteps: [],
+  };
+}
+
+function emptyMantisRecommendation(): MantisRecommendation {
+  return {
+    status: "not_recommended",
+    scenario: "none",
+    reason: "Not applicable.",
+    maintainerComment: "",
+  };
+}
+
+function parseMergeRiskOption(value: unknown, path: string): MergeRiskOption {
+  const record = requireRecord(value, path);
+  rejectUnexpectedKeys(record, MERGE_RISK_OPTION_SCHEMA_KEYS, path);
+  return {
+    title: requireString(record.title, `${path}.title`),
+    body: requireString(record.body, `${path}.body`),
+    category: requireEnum(record.category, MERGE_RISK_OPTION_CATEGORIES, `${path}.category`),
+    recommended: requireBoolean(record.recommended, `${path}.recommended`),
+    automergeInstruction: requireString(
+      record.automergeInstruction,
+      `${path}.automergeInstruction`,
+    ),
+  };
+}
+
+function parseMergeRiskOptions(value: unknown, path: string): MergeRiskOption[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) throw new Error(`${path} must be an array`);
+  if (value.length > 3) throw new Error(`${path} must contain at most 3 items`);
+  return value.map((entry, index) => parseMergeRiskOption(entry, `${path}[${index}]`));
+}
+
+function parseLabelJustification(value: unknown, path: string): LabelJustification {
+  const record = requireRecord(value, path);
+  rejectUnexpectedKeys(record, LABEL_JUSTIFICATION_SCHEMA_KEYS, path);
+  return {
+    label: requireEnum(record.label, REVIEW_LABELS, `${path}.label`),
+    reason: requireString(record.reason, `${path}.reason`),
+  };
+}
+
+function parseLabelJustifications(value: unknown, path: string): LabelJustification[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) throw new Error(`${path} must be an array`);
+  return value.map((entry, index) => parseLabelJustification(entry, `${path}[${index}]`));
+}
+
+function parsePrRating(value: unknown, path: string): PrRating {
+  if (value === undefined) return emptyPrRating();
+  const record = requireRecord(value, path);
+  rejectUnexpectedKeys(record, PR_RATING_SCHEMA_KEYS, path);
+  const nextSteps = requireStringArray(record.nextSteps, `${path}.nextSteps`);
+  if (nextSteps.length > 3) throw new Error(`${path}.nextSteps must contain at most 3 items`);
+  return {
+    proofTier: requireEnum(record.proofTier, PR_RATING_TIERS, `${path}.proofTier`),
+    patchTier: requireEnum(record.patchTier, PR_RATING_TIERS, `${path}.patchTier`),
+    overallTier: requireEnum(record.overallTier, PR_RATING_TIERS, `${path}.overallTier`),
+    summary: requireString(record.summary, `${path}.summary`),
+    nextSteps,
+  };
+}
+
+function parseMantisRecommendation(value: unknown, path: string): MantisRecommendation {
+  if (value === undefined) return emptyMantisRecommendation();
+  const record = requireRecord(value, path);
+  rejectUnexpectedKeys(record, MANTIS_RECOMMENDATION_SCHEMA_KEYS, path);
+  return {
+    status: requireEnum(record.status, MANTIS_RECOMMENDATION_STATUSES, `${path}.status`),
+    scenario: requireEnum(record.scenario, MANTIS_SCENARIOS, `${path}.scenario`),
+    reason: requireString(record.reason, `${path}.reason`),
+    maintainerComment: requireString(record.maintainerComment, `${path}.maintainerComment`),
+  };
+}
+
 function isEnvironmentAccessCaveat(value: string): boolean {
   return /(?:GH_TOKEN|GITHUB_TOKEN|authenticated gh|gh (?:was |is )?unavailable|unauthenticated gh|shallow clone|GitHub auth(?:entication)? (?:was |is )?unavailable|could not use authenticated GitHub)/i.test(
     value,
@@ -1502,6 +1735,32 @@ export function parseDecision(value: unknown, item?: DecisionNormalizationItem):
       (risk) => !isEnvironmentAccessCaveat(risk),
     ),
     bestSolution: requireString(record.bestSolution, "decision.bestSolution"),
+    triagePriority:
+      record.triagePriority === undefined
+        ? "none"
+        : requireEnum(record.triagePriority, TRIAGE_PRIORITIES, "decision.triagePriority"),
+    impactLabels:
+      record.impactLabels === undefined
+        ? []
+        : requireEnumArray(record.impactLabels, IMPACT_LABELS, "decision.impactLabels", {
+            maxItems: 3,
+          }),
+    mergeRiskLabels:
+      record.mergeRiskLabels === undefined
+        ? []
+        : requireEnumArray(record.mergeRiskLabels, MERGE_RISK_LABELS, "decision.mergeRiskLabels", {
+            maxItems: 3,
+          }),
+    mergeRiskOptions: parseMergeRiskOptions(record.mergeRiskOptions, "decision.mergeRiskOptions"),
+    labelJustifications: parseLabelJustifications(
+      record.labelJustifications,
+      "decision.labelJustifications",
+    ),
+    prRating: parsePrRating(record.prRating, "decision.prRating"),
+    mantisRecommendation: parseMantisRecommendation(
+      record.mantisRecommendation,
+      "decision.mantisRecommendation",
+    ),
     itemCategory: requireEnum(record.itemCategory, ITEM_CATEGORIES, "decision.itemCategory"),
     reproductionStatus: requireEnum(
       record.reproductionStatus,
@@ -4177,6 +4436,13 @@ export function codexFailureDecision(
     ],
     risks: ["No close action taken because the review did not complete."],
     bestSolution: `Retry the ${providerLabel} review after fixing the execution failure.`,
+    triagePriority: "none",
+    impactLabels: [],
+    mergeRiskLabels: [],
+    mergeRiskOptions: [],
+    labelJustifications: [],
+    prRating: emptyPrRating(),
+    mantisRecommendation: emptyMantisRecommendation(),
     itemCategory: "unclear",
     reproductionStatus: "unclear",
     reproductionConfidence: "low",
@@ -6048,6 +6314,18 @@ function reportDecision(markdown: string, closeReason: CloseReason): Decision {
     likelyOwners: reportLikelyOwners(markdown),
     risks: [],
     bestSolution: reviewSectionValue(markdown, "bestSolution"),
+    triagePriority:
+      (frontMatterValue(markdown, "triage_priority") as TriagePriority | undefined) ?? "none",
+    impactLabels: frontMatterStringArray(markdown, "impact_labels").filter(
+      (label): label is ImpactLabel => IMPACT_LABELS.has(label as ImpactLabel),
+    ),
+    mergeRiskLabels: frontMatterStringArray(markdown, "merge_risk_labels").filter(
+      (label): label is MergeRiskLabel => MERGE_RISK_LABELS.has(label as MergeRiskLabel),
+    ),
+    mergeRiskOptions: [],
+    labelJustifications: [],
+    prRating: emptyPrRating(),
+    mantisRecommendation: emptyMantisRecommendation(),
     itemCategory:
       (frontMatterValue(markdown, "item_category") as ItemCategory | undefined) ?? "unclear",
     reproductionStatus:
@@ -7256,6 +7534,71 @@ function renderTelegramVisibleProofReportSection(decision: Decision): string {
   ].join("\n");
 }
 
+function renderReviewMetadataReportSection(decision: Decision): string {
+  const impactLabels = decision.impactLabels.length ? decision.impactLabels.join(", ") : "none";
+  const mergeRiskLabels = decision.mergeRiskLabels.length
+    ? decision.mergeRiskLabels.join(", ")
+    : "none";
+  const labelJustifications = decision.labelJustifications.length
+    ? decision.labelJustifications
+        .map((entry) => `- **${entry.label}:** ${sentence(entry.reason)}`)
+        .join("\n")
+    : "- none";
+  const mergeRiskOptions = decision.mergeRiskOptions.length
+    ? decision.mergeRiskOptions
+        .map((option) => {
+          const recommended = option.recommended ? "yes" : "no";
+          return [
+            `- **${option.title}:** ${sentence(option.body)}`,
+            `  - category: ${option.category}`,
+            `  - recommended: ${recommended}`,
+            option.automergeInstruction
+              ? `  - automerge instruction: ${option.automergeInstruction}`
+              : "  - automerge instruction: none",
+          ].join("\n");
+        })
+        .join("\n")
+    : "- none";
+  const prRating = decision.prRating;
+  const prNextSteps = prRating.nextSteps.length
+    ? prRating.nextSteps.map((step) => `- ${step}`).join("\n")
+    : "- none";
+  const mantis = decision.mantisRecommendation;
+  return [
+    `Triage priority: ${decision.triagePriority}`,
+    "",
+    `Impact labels: ${impactLabels}`,
+    "",
+    `Merge-risk labels: ${mergeRiskLabels}`,
+    "",
+    "Label justifications:",
+    "",
+    labelJustifications,
+    "",
+    "Merge-risk options:",
+    "",
+    mergeRiskOptions,
+    "",
+    "PR rating:",
+    "",
+    `- proof tier: ${prRating.proofTier}`,
+    `- patch tier: ${prRating.patchTier}`,
+    `- overall tier: ${prRating.overallTier}`,
+    `- summary: ${sentence(prRating.summary)}`,
+    "- next steps:",
+    prNextSteps,
+    "",
+    "Mantis recommendation:",
+    "",
+    `- status: ${mantis.status}`,
+    `- scenario: ${mantis.scenario}`,
+    `- reason: ${sentence(mantis.reason)}`,
+    mantis.maintainerComment
+      ? `- maintainer comment: ${mantis.maintainerComment}`
+      : "- maintainer comment: none",
+  ].join("\n");
+}
+
 function markdownFor(options: {
   item: Item;
   context: ItemContext;
@@ -7302,6 +7645,7 @@ function markdownFor(options: {
   const reproductionAssessment =
     options.decision.reproductionAssessment.trim() || "_Not provided._";
   const solutionAssessment = options.decision.solutionAssessment.trim() || "_Not provided._";
+  const reviewMetadata = renderReviewMetadataReportSection(options.decision);
   const reviewFindings = renderReviewFindingsReportSection(options.decision);
   const securityReview = renderSecurityReviewReportSection(options.decision);
   const realBehaviorProof = renderRealBehaviorProofReportSection(options.decision);
@@ -7370,6 +7714,11 @@ work_prompt_sha256: ${options.decision.workPrompt ? sha256(options.decision.work
 work_cluster_refs: ${jsonFrontMatterValue(options.decision.workClusterRefs)}
 work_validation: ${jsonFrontMatterValue(options.decision.workValidation)}
 work_likely_files: ${jsonFrontMatterValue(options.decision.workLikelyFiles)}
+triage_priority: ${options.decision.triagePriority}
+impact_labels: ${jsonFrontMatterValue(options.decision.impactLabels)}
+merge_risk_labels: ${jsonFrontMatterValue(options.decision.mergeRiskLabels)}
+pr_rating_overall_tier: ${options.decision.prRating.overallTier}
+mantis_recommendation_status: ${options.decision.mantisRecommendation.status}
 item_category: ${options.decision.itemCategory}
 reproduction_status: ${options.decision.reproductionStatus}
 reproduction_confidence: ${options.decision.reproductionConfidence}
@@ -7438,6 +7787,10 @@ ${reproductionAssessment}
 ## ${REVIEW_SECTIONS.solutionAssessment}
 
 ${solutionAssessment}
+
+## ${REVIEW_SECTIONS.reviewMetadata}
+
+${reviewMetadata}
 
 ## ${REVIEW_SECTIONS.reviewFindings}
 
