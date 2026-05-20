@@ -187,6 +187,68 @@ test("publishMainCommit rebuilds generated state commits after rebase conflicts"
   assert.equal(run("git", ["--git-dir", origin, "show", "main:keep.txt"], root), "keep remote\n");
 });
 
+test("publishMainCommit preserves remote-only PR egg images during publish rebuilds", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-publish-"));
+  const origin = path.join(root, "origin.git");
+  const work = path.join(root, "work");
+  const other = path.join(root, "other");
+  run("git", ["init", "--bare", origin], root);
+  run("git", ["clone", origin, work], root);
+  configureUser(work);
+  write(path.join(work, "results/sweep-status/openclaw-openclaw.json"), '{"state":"base"}\n');
+  run("git", ["add", "."], work);
+  run("git", ["commit", "-m", "initial"], work);
+  run("git", ["push", "origin", "HEAD:main"], work);
+  run("git", ["--git-dir", origin, "symbolic-ref", "HEAD", "refs/heads/main"], root);
+  run("git", ["checkout", "-B", "main", "origin/main"], work);
+
+  run("git", ["clone", origin, other], root);
+  configureUser(other);
+  write(path.join(other, "results/sweep-status/openclaw-openclaw.json"), '{"state":"remote"}\n');
+  write(path.join(other, "assets/pr-eggs/openclaw-openclaw/84269.png"), "remote egg\n");
+  run("git", ["add", "."], other);
+  run("git", ["commit", "-m", "remote generated state update"], other);
+  run("git", ["push", "origin", "HEAD:main"], other);
+
+  write(path.join(work, "results/sweep-status/openclaw-openclaw.json"), '{"state":"local"}\n');
+  write(path.join(work, "assets/pr-eggs/openclaw-openclaw/84374.png"), "local egg\n");
+
+  const result = withCwd(work, () =>
+    publishMainCommit({
+      message: "chore: update sweep records",
+      paths: ["results/sweep-status", "assets/pr-eggs"],
+      maxAttempts: 1,
+      pushAttempts: 1,
+    }),
+  );
+
+  assert.equal(result, "committed");
+  assert.equal(
+    run(
+      "git",
+      ["--git-dir", origin, "show", "main:results/sweep-status/openclaw-openclaw.json"],
+      root,
+    ),
+    '{"state":"local"}\n',
+  );
+  assert.equal(
+    run(
+      "git",
+      ["--git-dir", origin, "show", "main:assets/pr-eggs/openclaw-openclaw/84269.png"],
+      root,
+    ),
+    "remote egg\n",
+  );
+  assert.equal(
+    run(
+      "git",
+      ["--git-dir", origin, "show", "main:assets/pr-eggs/openclaw-openclaw/84374.png"],
+      root,
+    ),
+    "local egg\n",
+  );
+});
+
 test("publishMainCommit publishes generated paths to state branch when state root is configured", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-publish-"));
   const origin = path.join(root, "origin.git");

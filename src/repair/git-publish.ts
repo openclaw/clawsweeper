@@ -260,6 +260,31 @@ function shouldPreserveStateOnlyFile(path: string, rel: string): boolean {
   return false;
 }
 
+function preserveStateOnlyCommitFiles({
+  path,
+  sourceCommit,
+}: {
+  path: string;
+  sourceCommit: string;
+}): { root: string; files: string[] } {
+  const root = mkdtempSync(join(tmpdir(), "clawsweeper-state-preserve-"));
+  const source = resolve(path);
+  if (!existsSync(source)) return { root, files: [] };
+
+  const files: string[] = [];
+  const commitPathPrefix = path.replace(/\/+$/, "");
+  for (const file of listFiles(source)) {
+    const rel = relative(source, file);
+    if (!shouldPreserveStateOnlyFile(path, rel)) continue;
+    if (commitHasPath(sourceCommit, `${commitPathPrefix}/${rel}`)) continue;
+    const target = resolve(root, rel);
+    mkdirSync(dirname(target), { recursive: true });
+    cpSync(file, target);
+    files.push(rel);
+  }
+  return { root, files };
+}
+
 function restorePreservedFiles(preserved: { root: string; files: string[] }, destination: string) {
   for (const rel of preserved.files) {
     const source = resolve(preserved.root, rel);
@@ -321,9 +346,15 @@ function rebuildPublishCommit(options: {
   runGit(["reset", "--hard", `${options.remote}/${options.branch}`]);
 
   for (const path of uniqueNonEmpty(options.paths)) {
-    runGit(["rm", "-r", "--ignore-unmatch", "--", path], { allowFailure: true });
-    if (commitHasPath(options.sourceCommit, path)) {
-      runGit(["checkout", options.sourceCommit, "--", path]);
+    const preserved = preserveStateOnlyCommitFiles({ path, sourceCommit: options.sourceCommit });
+    try {
+      runGit(["rm", "-r", "--ignore-unmatch", "--", path], { allowFailure: true });
+      if (commitHasPath(options.sourceCommit, path)) {
+        runGit(["checkout", options.sourceCommit, "--", path]);
+      }
+      restorePreservedFiles(preserved, resolve(path));
+    } finally {
+      rmSync(preserved.root, { force: true, recursive: true });
     }
   }
 
