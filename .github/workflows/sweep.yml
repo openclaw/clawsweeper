@@ -74,7 +74,7 @@ on:
       shard_count:
         description: "Parallel shards (capped by config/automation-limits.json)"
         required: false
-        default: "39"
+        default: "3"
       item_number:
         description: "Optional single issue/PR number to review"
         required: false
@@ -116,12 +116,11 @@ on:
     # items dispatch missed plus periodic re-evaluation.
     #
     # valkyriweb/pi-mono: 05:00 UTC. Active upstream fork — catch upstream-sync drift.
-    # valkyriweb/openclaw: 06:00 UTC. Low-traffic private fork.
     # valkyriweb/lue-kube: 07:00 UTC. Active ops repo.
     # valkyriweb/openclaw-claude: 08:00 UTC. Doc commits.
+    # valkyriweb/openclaw is intentionally not scheduled during the safe-ramp period.
     # bermont-digital/multica + CLIP-SA/* + valkyriweb/clawsweeper-self: workflow_dispatch only.
     - cron: "0 5 * * *" # valkyriweb/pi-mono
-    - cron: "0 6 * * *" # valkyriweb/openclaw
     - cron: "0 7 * * *" # valkyriweb/lue-kube
     - cron: "0 8 * * *" # valkyriweb/openclaw-claude
 
@@ -545,9 +544,6 @@ jobs:
             case "${{ github.event.schedule }}" in
               "0 5 * * *")
                 target_repo="valkyriweb/pi-mono"
-                ;;
-              "0 6 * * *")
-                target_repo="valkyriweb/openclaw"
                 ;;
               "0 7 * * *")
                 target_repo="valkyriweb/lue-kube"

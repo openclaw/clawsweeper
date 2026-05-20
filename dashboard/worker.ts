@@ -21,6 +21,7 @@ const OPTIONAL_SECTION_TIMEOUT_MS = 6000;
 const STALE_CACHE_TTL_SECONDS = 900;
 const CI_STATUS_TTL_SECONDS = 7200;
 const RUNNER_MODES: Record<string, string[]> = {
+  paused: ["self-hosted", "clawsweeper-paused"],
   "mac-mini": ["self-hosted", "macOS", "ARM64", "mac-mini"],
   macbook: ["self-hosted", "macOS", "ARM64", "macbook"],
   both: ["self-hosted", "macOS", "ARM64"],
@@ -3648,13 +3649,13 @@ function renderPipeline(rows) {
   }).join("") + '</div>';
 }
 function renderRunnerControl(config, runners) {
-  const mode = config.mode || "mac-mini";
+  const mode = config.mode || "paused";
   const labels = Array.isArray(config.labels) ? config.labels : [];
   const rows = runners
     .filter(runner => runner.labels && runner.labels.includes("self-hosted"))
     .map(runner => '<div class="runner-row"><span>' + esc(runner.name) + '<div class="muted mono">' + esc((runner.labels || []).join(", ")) + '</div></span><span class="pill ' + (runner.status === "online" ? "green" : "red") + '">' + esc(runner.status) + (runner.busy ? " · busy" : "") + '</span></div>')
     .join("");
-  document.getElementById("runnerControl").innerHTML = '<div class="control-card"><div>Mode: <span class="pill">' + esc(mode) + '</span></div><div class="muted mono">' + esc(JSON.stringify(labels)) + '</div><div class="runner-buttons">' + ["mac-mini", "macbook", "both"].map(name => '<button class="' + (name === mode ? "active" : "") + '" onclick="setRunnerMode(&apos;' + name + '&apos;)">' + esc(name) + '</button>').join("") + '</div><div class="muted">Requires dashboard admin token. Both mode uses common labels so either registered Mac can take jobs.</div><div class="runner-list">' + (rows || '<div class="empty">No self-hosted runners returned</div>') + '</div></div>';
+  document.getElementById("runnerControl").innerHTML = '<div class="control-card"><div>Mode: <span class="pill">' + esc(mode) + '</span></div><div class="muted mono">' + esc(JSON.stringify(labels)) + '</div><div class="runner-buttons">' + ["paused", "mac-mini", "macbook", "both"].map(name => '<button class="' + (name === mode ? "active" : "") + '" onclick="setRunnerMode(&apos;' + name + '&apos;)">' + esc(name) + '</button>').join("") + '</div><div class="muted">Requires dashboard admin token. Paused mode points jobs at a non-matching runner label. Both mode uses common labels so either registered Mac can take jobs.</div><div class="runner-list">' + (rows || '<div class="empty">No self-hosted runners returned</div>') + '</div></div>';
 }
 async function setRunnerMode(mode) {
   let token = localStorage.getItem("clawsweeper:admin-token") || "";

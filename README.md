@@ -438,7 +438,7 @@ source ~/.profile
 corepack enable
 pnpm install
 pnpm run build
-pnpm run plan -- --target-repo openclaw/openclaw --batch-size 5 --shard-count 39 --max-pages 250 --codex-model gpt-5.5 --codex-reasoning-effort high
+pnpm run plan -- --target-repo openclaw/openclaw --batch-size 5 --shard-count 3 --max-pages 250 --codex-model gpt-5.5 --codex-reasoning-effort high
 pnpm run review -- --target-repo openclaw/openclaw --target-dir ../openclaw --batch-size 5 --max-pages 250 --artifact-dir artifacts/reviews --codex-model gpt-5.5 --codex-reasoning-effort high --codex-timeout-ms 600000
 pnpm run apply-artifacts -- --target-repo openclaw/openclaw --artifact-dir artifacts/reviews --skip-dashboard
 pnpm run audit -- --target-repo openclaw/openclaw --max-pages 250 --sample-limit 25 --update-dashboard
@@ -509,15 +509,17 @@ is active. Throughput defaults live in
 ### Worker Budget
 
 ClawSweeper has one main capacity knob:
-`config/automation-limits.json` -> `workers.max`. The current value is `57`.
-Lane limits are derived from that number: normal review defaults to 39 shards
-for manual/backstop runs, scheduled normal review gets up to 27 after reserves,
-hot intake up to 19 shards, commit review 2 commits per page, and
-repair/issue implementation 22 live workers. Exact-item review, repair, and
+`config/automation-limits.json` -> `workers.max`. The current value is `5`.
+Lane limits are derived from that number: normal review defaults to 3 shards
+for manual/backstop runs, scheduled normal review gets up to 1 after reserves,
+hot intake up to 1 shard, commit review 1 commit per page, and
+repair/issue implementation 2 live workers. Exact-item review, repair, and
 issue implementation are priority work; normal review, hot intake, and commit
 review are background work and automatically yield when priority work is active.
 Use `workers.max` first when turning total Codex usage up or down; use the
 individual environment overrides only for temporary lane-specific exceptions.
+For the valkyriweb fork restart procedure, use
+[docs/safe-ramp-valkyriweb.md](docs/safe-ramp-valkyriweb.md).
 
 Target repositories can opt into event-level latency by installing the
 dispatcher workflow in [docs/target-dispatcher.md](docs/target-dispatcher.md).
