@@ -58,9 +58,11 @@ import {
   mergeRiskLabelSchemeForTest,
   prRatingLabelsForTest,
   prRatingLabelSchemeForTest,
+  prepareMediaProofArtifactsForTest,
   prEggCreatureForTest,
   prEggImagePromptForTest,
   prEggSpriteMetricsForTest,
+  proofVideoUrlsFromContextForTest,
   renderPrEggCommentForTest,
   prStatusLabelsForTest,
   prStatusLabelSchemeForTest,
@@ -75,6 +77,7 @@ import {
   reviewAutomationMarkersFromReport,
   reviewActionForDecision,
   reviewPriority,
+  reviewPromptForTest,
   renderReviewCommentFromReport,
   renderReviewContextBudgetForTest,
   renderWorkPlanFromReport,
@@ -7043,6 +7046,98 @@ test("review prompt requires real behavior proof for PR reviews", () => {
     /Unit tests, mocks, snapshots, lint, typechecks, and CI are supplemental only/,
   );
   assert.match(prompt, /do not request ClawSweeper repair markers/);
+});
+
+test("media proof preparation extracts browser-unplayable ffmpeg-decodeable video proof", () => {
+  const dir = mkdtempSync(join(tmpdir(), "clawsweeper-media-proof-"));
+  try {
+    const context = {
+      issue: {},
+      comments: [
+        {
+          body: [
+            "Chromium media error code 4 on this upload, but ffmpeg can decode it:",
+            "https://github.com/user/repo/releases/download/proof/Screen.Recording.mov",
+          ].join("\n"),
+        },
+      ],
+      timeline: [],
+    };
+    const calls: string[] = [];
+    const prepared = prepareMediaProofArtifactsForTest(context, dir, (command, args) => {
+      calls.push(`${command} ${args.join(" ")}`);
+      if (command === "curl") {
+        const outputIndex = args.indexOf("--output");
+        assert.notEqual(outputIndex, -1);
+        writeFileSync(String(args[outputIndex + 1]), "fake mov bytes");
+        return { status: 0, stdout: "", stderr: "" };
+      }
+      if (command === "ffprobe") {
+        return {
+          status: 0,
+          stdout: JSON.stringify({
+            format: { duration: "46.49" },
+            streams: [{ codec_name: "h264", width: 734, height: 1038 }],
+          }),
+          stderr: "",
+        };
+      }
+      if (command === "ffmpeg") {
+        const output = String(args.at(-1));
+        writeFileSync(output, "fake contact sheet");
+        return { status: 0, stdout: "", stderr: "" };
+      }
+      return { status: 1, stdout: "", stderr: `unexpected command: ${command}` };
+    });
+
+    assert.equal(prepared.artifacts.length, 1);
+    assert.equal(prepared.artifacts[0]?.status, "prepared");
+    assert.ok(prepared.manifestPath);
+    assert.ok(prepared.summaryPath);
+    assert.ok(prepared.artifacts[0]?.metadataPath);
+    assert.ok(prepared.artifacts[0]?.contactSheetPath);
+    assert.equal(existsSync(prepared.manifestPath), true);
+    assert.equal(existsSync(prepared.artifacts[0].metadataPath), true);
+    assert.equal(existsSync(prepared.artifacts[0].contactSheetPath), true);
+    assert.match(calls.join("\n"), /^curl /m);
+    assert.match(calls.join("\n"), /^ffprobe /m);
+    assert.match(calls.join("\n"), /^ffmpeg /m);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("runtime prompt tells Codex to inspect ffmpeg video artifacts before browser fallback", () => {
+  const context = {
+    issue: {},
+    comments: [{ body: "Proof: https://github.com/user/repo/releases/download/proof/demo.mov" }],
+    timeline: [],
+  };
+  const prompt = reviewPromptForTest(
+    item({ kind: "pull_request" }),
+    context,
+    { mainSha: "abc123", latestRelease: null },
+    "",
+    {
+      proofScratchDir: "/tmp/proof",
+      mediaProofManifestPath: "/tmp/proof/media-proof-manifest.json",
+      mediaProofSummary: "prepared: https://github.com/user/repo/releases/download/proof/demo.mov",
+    },
+  );
+
+  assert.deepEqual(proofVideoUrlsFromContextForTest(context), [
+    "https://github.com/user/repo/releases/download/proof/demo.mov",
+  ]);
+  assert.match(prompt, /preprocessed linked video proof with ffprobe\/ffmpeg/);
+  assert.match(prompt, /generated contact-sheet image paths before trying browser playback/);
+  assert.match(
+    prompt,
+    /Only fall back to browser playback after checking the prepared ffmpeg artifacts/,
+  );
+  assert.match(
+    prompt,
+    /If browser playback fails but ffprobe metadata and ffmpeg contact sheets are readable/,
+  );
 });
 
 test("review prompt keeps draft and protected workflow state out of PR rank", () => {

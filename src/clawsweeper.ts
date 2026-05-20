@@ -477,6 +477,21 @@ interface ReviewPromptBuild {
   telemetry: ReviewPromptTelemetry;
 }
 
+interface PreparedMediaProofArtifact {
+  url: string;
+  downloadedPath: string | null;
+  metadataPath: string | null;
+  contactSheetPath: string | null;
+  status: "prepared" | "failed";
+  detail: string;
+}
+
+interface PreparedMediaProof {
+  manifestPath: string | null;
+  summaryPath: string | null;
+  artifacts: PreparedMediaProofArtifact[];
+}
+
 interface ReviewContextLedgerEntry {
   section: string;
   label: string;
@@ -489,6 +504,8 @@ interface ReviewContextLedgerEntry {
 
 interface ReviewPromptRuntimeHints {
   proofScratchDir?: string;
+  mediaProofManifestPath?: string;
+  mediaProofSummary?: string;
 }
 
 interface DashboardItem {
@@ -4431,6 +4448,223 @@ function contextJsonForPrompt(context: ItemContext): string {
   return JSON.stringify(context, null, 2);
 }
 
+type MediaProofCommandRunner = (
+  command: string,
+  args: readonly string[],
+) => {
+  status: number | null;
+  stdout?: string | Buffer;
+  stderr?: string | Buffer;
+  error?: Error;
+};
+
+const VIDEO_PROOF_EXTENSIONS = new Set([".mov", ".mp4", ".m4v", ".webm", ".avi", ".mkv"]);
+const MEDIA_PROOF_MANIFEST_FILE = "media-proof-manifest.json";
+const MEDIA_PROOF_SUMMARY_FILE = "media-proof-summary.md";
+const MAX_MEDIA_PROOF_URLS = 4;
+
+function mediaProofCommandRunner(command: string, args: readonly string[]) {
+  return spawnSync(command, [...args], { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 });
+}
+
+function trimTrailingUrlPunctuation(raw: string): string {
+  let end = raw.length;
+  while (end > 0) {
+    const char = raw.charCodeAt(end - 1);
+    if (char !== 44 && char !== 46 && char !== 58 && char !== 59) break;
+    end -= 1;
+  }
+  return raw.slice(0, end);
+}
+
+function proofVideoUrlsFromContext(context: ItemContext): string[] {
+  const text = JSON.stringify(context);
+  const matches = text.match(/https?:\/\/[^\s<>"'\\)]+/g) ?? [];
+  const urls: string[] = [];
+  const seen = new Set<string>();
+  for (const raw of matches) {
+    const cleaned = trimTrailingUrlPunctuation(raw);
+    let parsed: URL;
+    try {
+      parsed = new URL(cleaned);
+    } catch {
+      continue;
+    }
+    const pathname = parsed.pathname.toLowerCase();
+    const isVideo = [...VIDEO_PROOF_EXTENSIONS].some((extension) => pathname.endsWith(extension));
+    if (!isVideo || seen.has(parsed.href)) continue;
+    seen.add(parsed.href);
+    urls.push(parsed.href);
+    if (urls.length >= MAX_MEDIA_PROOF_URLS) break;
+  }
+  return urls;
+}
+
+function mediaProofFileExtension(url: string): string {
+  try {
+    const pathname = new URL(url).pathname.toLowerCase();
+    const extension = [...VIDEO_PROOF_EXTENSIONS].find((candidate) => pathname.endsWith(candidate));
+    return extension ?? ".video";
+  } catch {
+    return ".video";
+  }
+}
+
+function mediaProofSpawnDetail(result: ReturnType<MediaProofCommandRunner>): string {
+  if (result.status === 0) return "ok";
+  const stderr = String(result.stderr ?? "").trim();
+  const stdout = String(result.stdout ?? "").trim();
+  const error = result.error?.message ?? "";
+  const detail = stderr || stdout || error || "command failed without output";
+  return trimMiddle(detail, 1000);
+}
+
+function prepareMediaProofArtifacts(
+  context: ItemContext,
+  proofScratchDir: string,
+  runner: MediaProofCommandRunner = mediaProofCommandRunner,
+): PreparedMediaProof {
+  const urls = proofVideoUrlsFromContext(context);
+  if (urls.length === 0) return { manifestPath: null, summaryPath: null, artifacts: [] };
+  ensureDir(proofScratchDir);
+  const artifacts: PreparedMediaProofArtifact[] = [];
+  for (const [index, url] of urls.entries()) {
+    const ordinal = index + 1;
+    const downloadedPath = join(
+      proofScratchDir,
+      `proof-video-${ordinal}${mediaProofFileExtension(url)}`,
+    );
+    const metadataPath = join(proofScratchDir, `proof-video-${ordinal}.ffprobe.json`);
+    const contactSheetPath = join(proofScratchDir, `proof-video-${ordinal}.contact-sheet.jpg`);
+    const download = runner("curl", [
+      "-L",
+      "--fail",
+      "--silent",
+      "--show-error",
+      "--max-time",
+      "90",
+      "--output",
+      downloadedPath,
+      url,
+    ]);
+    if (download.status !== 0) {
+      artifacts.push({
+        url,
+        downloadedPath: null,
+        metadataPath: null,
+        contactSheetPath: null,
+        status: "failed",
+        detail: `download failed: ${mediaProofSpawnDetail(download)}`,
+      });
+      continue;
+    }
+    const metadata = runner("ffprobe", [
+      "-v",
+      "error",
+      "-print_format",
+      "json",
+      "-show_format",
+      "-show_streams",
+      downloadedPath,
+    ]);
+    if (metadata.status !== 0) {
+      artifacts.push({
+        url,
+        downloadedPath,
+        metadataPath: null,
+        contactSheetPath: null,
+        status: "failed",
+        detail: `ffprobe failed: ${mediaProofSpawnDetail(metadata)}`,
+      });
+      continue;
+    }
+    writeFileSync(metadataPath, String(metadata.stdout ?? "{}"), "utf8");
+    const contactSheet = runner("ffmpeg", [
+      "-hide_banner",
+      "-y",
+      "-i",
+      downloadedPath,
+      "-vf",
+      "fps=1/5,scale=640:-1,tile=5x4",
+      "-frames:v",
+      "1",
+      contactSheetPath,
+    ]);
+    if (contactSheet.status !== 0) {
+      artifacts.push({
+        url,
+        downloadedPath,
+        metadataPath,
+        contactSheetPath: null,
+        status: "failed",
+        detail: `ffmpeg contact sheet failed: ${mediaProofSpawnDetail(contactSheet)}`,
+      });
+      continue;
+    }
+    artifacts.push({
+      url,
+      downloadedPath,
+      metadataPath,
+      contactSheetPath,
+      status: "prepared",
+      detail: "downloaded, probed, and converted to a contact sheet with ffmpeg",
+    });
+  }
+  const manifestPath = join(proofScratchDir, MEDIA_PROOF_MANIFEST_FILE);
+  const summaryPath = join(proofScratchDir, MEDIA_PROOF_SUMMARY_FILE);
+  const prepared: PreparedMediaProof = { manifestPath, summaryPath, artifacts };
+  writeFileSync(manifestPath, JSON.stringify(prepared, null, 2), "utf8");
+  writeFileSync(summaryPath, mediaProofSummaryMarkdown(prepared), "utf8");
+  return prepared;
+}
+
+function mediaProofSummaryMarkdown(prepared: PreparedMediaProof): string {
+  const lines = ["# Prepared Media Proof", ""];
+  for (const artifact of prepared.artifacts) {
+    lines.push(`- ${artifact.status}: ${artifact.url}`);
+    if (artifact.downloadedPath) lines.push(`  - downloaded: ${artifact.downloadedPath}`);
+    if (artifact.metadataPath) lines.push(`  - ffprobe metadata: ${artifact.metadataPath}`);
+    if (artifact.contactSheetPath) lines.push(`  - contact sheet: ${artifact.contactSheetPath}`);
+    lines.push(`  - detail: ${artifact.detail}`);
+  }
+  return `${lines.join("\n")}\n`;
+}
+
+function mediaProofRuntimePrompt(summary: string | undefined, manifestPath: string | undefined) {
+  const trimmed = summary?.trim();
+  if (!trimmed || !manifestPath) return "";
+  return `
+- ClawSweeper preprocessed linked video proof with ffprobe/ffmpeg before this review. Read \`${manifestPath}\` and inspect any generated contact-sheet image paths before trying browser playback.
+- If browser playback fails but ffprobe metadata and ffmpeg contact sheets are readable, assess the proof from those generated artifacts instead of treating the video as uninspectable.
+- Only fall back to browser playback after checking the prepared ffmpeg artifacts. If both ffmpeg extraction and browser playback fail, report the exact failure from the manifest.
+`;
+}
+
+function mediaProofRuntimeHints(
+  proofScratchDir: string,
+  preparedMediaProof: PreparedMediaProof,
+): ReviewPromptRuntimeHints {
+  const hints: ReviewPromptRuntimeHints = { proofScratchDir };
+  if (preparedMediaProof.manifestPath)
+    hints.mediaProofManifestPath = preparedMediaProof.manifestPath;
+  if (preparedMediaProof.summaryPath && preparedMediaProof.artifacts.length) {
+    hints.mediaProofSummary = mediaProofSummaryMarkdown(preparedMediaProof);
+  }
+  return hints;
+}
+
+export function proofVideoUrlsFromContextForTest(context: ItemContext): string[] {
+  return proofVideoUrlsFromContext(context);
+}
+
+export function prepareMediaProofArtifactsForTest(
+  context: ItemContext,
+  proofScratchDir: string,
+  runner: MediaProofCommandRunner,
+): PreparedMediaProof {
+  return prepareMediaProofArtifacts(context, proofScratchDir, runner);
+}
+
 function buildReviewPrompt(
   item: Item,
   context: ItemContext,
@@ -4442,6 +4676,10 @@ function buildReviewPrompt(
   const contextJson = contextJsonForPrompt(context);
   const schema = reviewDecisionSchemaText();
   const proofScratchDir = runtimeHints.proofScratchDir?.trim();
+  const mediaProofPrompt = mediaProofRuntimePrompt(
+    runtimeHints.mediaProofSummary,
+    runtimeHints.mediaProofManifestPath,
+  );
   const extra = additionalPrompt.trim()
     ? `
 
@@ -4472,6 +4710,7 @@ ${additionalPrompt.trim()}
 - You may use the available network and read-only GitHub token to inspect PR body links, comments, screenshots, videos, logs, terminal output, and target-repo artifacts.
 - Download proof artifacts into ${proofScratchDir ? `\`${proofScratchDir}\`` : "a temporary scratch directory"} before inspecting them.
 - The target checkout is read-only for review. Do not modify repository files; use the scratch directory or /tmp for downloaded evidence and generated video stills/contact sheets.
+${mediaProofPrompt}
 
 ## GitHub Context
 
@@ -4508,6 +4747,16 @@ export function reviewPromptTelemetryForTest(
   additionalPrompt = "",
 ): ReviewPromptTelemetry {
   return reviewPromptTelemetry(item, context, git, additionalPrompt);
+}
+
+export function reviewPromptForTest(
+  item: Item,
+  context: ItemContext,
+  git: GitInfo,
+  additionalPrompt = "",
+  runtimeHints: ReviewPromptRuntimeHints = {},
+): string {
+  return buildReviewPrompt(item, context, git, additionalPrompt, runtimeHints).text;
 }
 
 function codexFailureReason(detail: string): string {
@@ -4678,13 +4927,20 @@ function runCodex(options: {
   const proofScratchDir =
     options.proofScratchDir ?? join(options.workDir, "proof-scratch", String(options.item.number));
   ensureDir(proofScratchDir);
+  const preparedMediaProof = options.prompt
+    ? { manifestPath: null, summaryPath: null, artifacts: [] }
+    : prepareMediaProofArtifacts(options.context, proofScratchDir);
   const promptPath = join(options.workDir, `${options.item.number}.prompt.md`);
   const outputPath = join(options.workDir, `${options.item.number}.json`);
   const prompt =
     options.prompt ??
-    buildReviewPrompt(options.item, options.context, options.git, options.additionalPrompt, {
-      proofScratchDir,
-    }).text;
+    buildReviewPrompt(
+      options.item,
+      options.context,
+      options.git,
+      options.additionalPrompt,
+      mediaProofRuntimeHints(proofScratchDir, preparedMediaProof),
+    ).text;
   writeFileSync(promptPath, prompt, "utf8");
   const dirtyBefore = openclawDirtyStatus(options.openclawDir);
   if (dirtyBefore) {
@@ -10502,7 +10758,14 @@ function reviewCommand(args: Args): void {
       const contextElapsedMs = Date.now() - contextStartedAt;
       const codexWorkDir = join(artifactDir, "codex");
       const proofScratchDir = join(codexWorkDir, "proof-scratch", String(item.number));
-      const prompt = buildReviewPrompt(item, context, git, additionalPrompt, { proofScratchDir });
+      const preparedMediaProof = prepareMediaProofArtifacts(context, proofScratchDir);
+      const prompt = buildReviewPrompt(
+        item,
+        context,
+        git,
+        additionalPrompt,
+        mediaProofRuntimeHints(proofScratchDir, preparedMediaProof),
+      );
       const snapshotHash = itemSnapshotHash(item, context);
       try {
         const startComment = postReviewStartStatusComment({
