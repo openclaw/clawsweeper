@@ -2697,7 +2697,7 @@ Full review comments:
   assert.doesNotMatch(markers, /clawsweeper-verdict:needs-human/);
 });
 
-test("public PR review comments include label justifications in review details", () => {
+test("public PR review comments explain label changes without duplicate justifications", () => {
   const report = `${reportFrontMatter({
     type: "pull_request",
     number: "74461",
@@ -2773,16 +2773,8 @@ Full review comments:
     comment,
     /- add `merge-risk: 🚨 compatibility`: Merging changes the default upgrade behavior for existing configs\./,
   );
-  assert.match(comment, /Label justifications:/);
-  assert.match(comment, /- `P1`: The PR changes an active channel workflow affecting real users\./);
-  assert.match(
-    comment,
-    /- `impact:message-loss`: The diff touches message retry and delivery ordering\./,
-  );
-  assert.match(
-    comment,
-    /- `merge-risk: 🚨 compatibility`: Merging changes the default upgrade behavior for existing configs\./,
-  );
+  assert.doesNotMatch(comment, /Label justifications:/);
+  assert.doesNotMatch(comment, /- `impact:message-loss`:/);
 });
 
 test("public PR review details justify derived rating label changes", () => {
@@ -2843,11 +2835,7 @@ Full review comments:
     comment,
     /- remove `rating: 🦞 diamond lobster`: Current PR rating is `rating: 🦪 silver shellfish`, so this older rating label is no longer current\./,
   );
-  assert.match(comment, /Label justifications:/);
-  assert.match(
-    comment,
-    /- `rating: 🦪 silver shellfish`: Current PR rating is 🦪 silver shellfish because proof is 🦪 silver shellfish, patch quality is 🦞 diamond lobster, and PR readiness rating was derived from proof quality, review findings, security review, and reviewer confidence\. Replaced prior `rating: 🦞 diamond lobster`\./,
-  );
+  assert.doesNotMatch(comment, /Label justifications:/);
 });
 
 test("public PR review details justify stale owned label removals", () => {

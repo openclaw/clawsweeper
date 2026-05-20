@@ -9144,9 +9144,6 @@ function renderKeepOpenCommentFromReport(
       labelTransitionJustificationsMarkdown(labelTransitionJustifications),
     );
   }
-  if (labelJustifications.length) {
-    details.push("", "Label justifications:", "", labelJustificationsMarkdown(labelJustifications));
-  }
   if (isPullRequest && reviewFindings.length) {
     details.push(
       "",
