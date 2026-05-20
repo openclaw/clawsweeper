@@ -101,7 +101,7 @@ function codexStyleComment({
 }) {
   const lines = [
     marker,
-    `**${badge}** **${headline}**`,
+    `${renderBadge(badge)} **${headline}**`,
     "",
     compactParagraph(body, COMMENT_PARAGRAPH_LIMIT),
     ...metadataLines(metadata),
@@ -109,6 +109,17 @@ function codexStyleComment({
     provenance ? ["", fishNotes(provenance)] : [],
   ].flat();
   return lines.filter((line) => line !== null && line !== undefined).join("\n");
+}
+
+function renderBadge(badge: "DONE" | "INFO" | "SKIP" | "P2" | "P3") {
+  const symbols: Record<typeof badge, string> = {
+    DONE: "✅",
+    INFO: "ℹ️",
+    SKIP: "⏭️",
+    P2: "💡",
+    P3: "💡",
+  };
+  return `${symbols[badge]} **${badge}**`;
 }
 
 function metadataLines(metadata: JsonValue[]) {
@@ -297,7 +308,7 @@ export function replacementPrBody({
   const lines = [
     fixArtifact.pr_body.trim(),
     "",
-    "**INFO** **Replacement PR opened from a writable branch**",
+    `${renderBadge("INFO")} **Replacement PR opened from a writable branch**`,
     "",
     "ClawSweeper could not update the source PR branch directly, so it opened this writable replacement PR while preserving the original context and credit.",
     "",

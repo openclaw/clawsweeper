@@ -34,7 +34,7 @@ test("automergeRepairOutcomeComment explains no-op repair runs", () => {
   });
 
   assert.match(body, /^<!-- marker -->/);
-  assert.match(body, /\*\*SKIP\*\* \*\*No branch changes were pushed\*\*/);
+  assert.match(body, /⏭️ \*\*SKIP\*\* \*\*No branch changes were pushed\*\*/);
   assert.match(body, /did not find a safe narrow repair to push/i);
   assert.doesNotMatch(body, /Target: #74156/);
   assert.doesNotMatch(body, /#74156/);
@@ -52,7 +52,7 @@ test("repairContributorBranchComment avoids self PR references", () => {
     provenance: { model: "gpt-test", reasoning: "medium", reviewedSha: "abcdef1234567890" },
   });
 
-  assert.match(body, /\*\*DONE\*\* \*\*Repair pushed to the source branch\*\*/);
+  assert.match(body, /✅ \*\*DONE\*\* \*\*Repair pushed to the source branch\*\*/);
   assert.match(body, /Validation: `pnpm check:changed`/);
   assert.doesNotMatch(body, /Source PR:/);
   assert.doesNotMatch(body, /75183/);
@@ -72,7 +72,7 @@ test("replacement comments explain no push rights and keep co-author credit visi
     contributorCredits,
     provenance,
   });
-  assert.match(linkBody, /\*\*INFO\*\* \*\*Replacement PR opened from a writable branch\*\*/);
+  assert.match(linkBody, /ℹ️ \*\*INFO\*\* \*\*Replacement PR opened from a writable branch\*\*/);
   assert.match(linkBody, /push rights/i);
   assert.match(linkBody, /Source PR status: left open/i);
   assert.match(
@@ -87,7 +87,7 @@ test("replacement comments explain no push rights and keep co-author credit visi
   });
   assert.match(
     closeBody,
-    /\*\*DONE\*\* \*\*Source PR closed after opening credited replacement\*\*/,
+    /✅ \*\*DONE\*\* \*\*Source PR closed after opening credited replacement\*\*/,
   );
   assert.match(closeBody, /push rights/i);
   assert.match(closeBody, /Why close: .*credited replacement PR is open/i);
@@ -201,7 +201,7 @@ test("sample external messages use Codex-style hierarchy and bounded paragraphs"
   for (const sample of sampleExternalMessages()) {
     const lines = sample.body.split("\n");
     const hierarchyLine = lines.find((line) =>
-      /^\*\*(?:DONE|INFO|SKIP|P2|P3)\*\* \*\*[^*]+\*\*$/.test(line),
+      /^(?:✅|ℹ️|⏭️|💡) \*\*(?:DONE|INFO|SKIP|P2|P3)\*\* \*\*[^*]+\*\*$/.test(line),
     );
     assert.ok(hierarchyLine, `${sample.title} should include a badge and headline`);
 
