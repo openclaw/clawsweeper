@@ -66,6 +66,14 @@ test("valkyriweb/pi-mono profile carries pi service-area routing notes", () => {
   ]);
 });
 
+test("openclaw-claude profile uses claude-bridge for review canaries", () => {
+  const profile = repositoryProfileFor("valkyriweb/openclaw-claude");
+
+  assert.equal(profile.targetRepo, "valkyriweb/openclaw-claude");
+  assert.equal(profile.reviewProvider, "claude-bridge");
+  assert.match(profile.promptNote, /ops\/release triage/);
+});
+
 test("private-repo triage disables generic OpenClaw fallback", () => {
   assert.throws(
     () => repositoryProfileFor("OpenClaw/example-tool"),
