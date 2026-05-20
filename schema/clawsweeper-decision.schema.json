@@ -31,6 +31,7 @@
     "prRating",
     "telegramVisibleProof",
     "mantisRecommendation",
+    "featureShowcase",
     "overallCorrectness",
     "overallConfidenceScore",
     "fixedRelease",
@@ -533,6 +534,22 @@
         "maintainerComment": {
           "type": "string",
           "description": "When recommended, a single-line PR comment starting with @openclaw-mantis that a maintainer can paste. ClawSweeper validates this mention but does not render it publicly, so review comments do not accidentally start Mantis workflows. Do not use shorter or ambiguous Mantis account mentions. For not_recommended, use an empty string."
+        }
+      }
+    },
+    "featureShowcase": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Positive-only maintainer spotlight for unusually compelling feature ideas in PRs. This is not a merge-readiness score, not a contributor ranking, and not a merge gate. Use showcase only when the PR is a feature or adds a new user-facing capability and the idea is exceptional enough that maintainers should notice it even if ordinary review work remains. Use none for normal useful features.",
+      "required": ["status", "reason"],
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": ["showcase", "none"]
+        },
+        "reason": {
+          "type": "string",
+          "description": "One concise maintainer-facing sentence explaining the idea-level reason for the feature spotlight, or why no spotlight applies. Do not mention contributor worth."
         }
       }
     },

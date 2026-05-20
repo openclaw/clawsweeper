@@ -126,6 +126,7 @@ type PrStatusLabelKind =
   | "needs_proof"
   | "waiting_on_author"
   | "ready_for_maintainer_look";
+type FeatureShowcaseStatus = "showcase" | "none";
 type PrEggState = "incubating" | "warming" | "wobbling" | "hatched";
 type PrEggRarity = "common" | "uncommon" | "rare" | "glimmer" | "legendary";
 type PrEggImageTraits = {
@@ -317,6 +318,11 @@ interface MantisRecommendation {
   maintainerComment: string;
 }
 
+interface FeatureShowcase {
+  status: FeatureShowcaseStatus;
+  reason: string;
+}
+
 interface FixedPullRequest {
   repo: string;
   number: number;
@@ -382,6 +388,7 @@ interface Decision {
   prRating: PrRating;
   telegramVisibleProof: TelegramVisibleProof;
   mantisRecommendation: MantisRecommendation;
+  featureShowcase: FeatureShowcase;
   overallCorrectness: OverallCorrectness;
   overallConfidenceScore: number;
   fixedRelease?: string | null;
@@ -798,6 +805,10 @@ const PROOF_OVERRIDE_LABEL = "proof: override";
 const PROOF_SUFFICIENT_LABEL = "proof: sufficient";
 const PROOF_SUFFICIENT_LABEL_COLOR = "1A7F37";
 const PROOF_SUFFICIENT_LABEL_DESCRIPTION = "Contributor real behavior proof is sufficient.";
+const FEATURE_SHOWCASE_LABEL = "feature: ✨ showcase";
+const FEATURE_SHOWCASE_LABEL_COLOR = "A371F7";
+const FEATURE_SHOWCASE_LABEL_DESCRIPTION =
+  "ClawSweeper spotlight: unusually compelling feature idea for maintainer attention.";
 const PROOF_MEDIA_LABELS = [
   {
     evidenceKind: "screenshot",
@@ -1233,6 +1244,7 @@ const MANTIS_RECOMMENDATION_SCENARIOS = new Set<MantisRecommendationScenario>([
   "slack_desktop_smoke",
   "visual_task",
 ]);
+const FEATURE_SHOWCASE_STATUSES = new Set<FeatureShowcaseStatus>(["showcase", "none"]);
 const OVERALL_CORRECTNESS_VALUES = new Set<OverallCorrectness>([
   "patch is correct",
   "patch is incorrect",
@@ -1275,6 +1287,7 @@ const DECISION_SCHEMA_KEYS = new Set([
   "prRating",
   "telegramVisibleProof",
   "mantisRecommendation",
+  "featureShowcase",
   "overallCorrectness",
   "overallConfidenceScore",
   "fixedRelease",
@@ -1312,6 +1325,7 @@ const MANTIS_RECOMMENDATION_SCHEMA_KEYS = new Set([
   "reason",
   "maintainerComment",
 ]);
+const FEATURE_SHOWCASE_SCHEMA_KEYS = new Set(["status", "reason"]);
 const MERGE_RISK_OPTION_SCHEMA_KEYS = new Set([
   "title",
   "body",
@@ -1357,6 +1371,7 @@ const REVIEW_SECTIONS = {
   prRating: "PR Rating",
   telegramVisibleProof: "Telegram Visible Proof",
   mantisRecommendation: "Mantis Recommendation",
+  featureShowcase: "Feature Showcase",
   workCandidate: "Work Candidate",
   repairWorkPrompt: "Repair Work Prompt",
   evidence: "Evidence",
@@ -2080,6 +2095,15 @@ function parseMantisRecommendation(value: unknown, path: string): MantisRecommen
   };
 }
 
+function parseFeatureShowcase(value: unknown, path: string): FeatureShowcase {
+  const record = requireRecord(value, path);
+  rejectUnexpectedKeys(record, FEATURE_SHOWCASE_SCHEMA_KEYS, path);
+  return {
+    status: requireEnum(record.status, FEATURE_SHOWCASE_STATUSES, `${path}.status`),
+    reason: requireString(record.reason, `${path}.reason`),
+  };
+}
+
 function requireEnum<T extends string>(value: unknown, allowed: Set<T>, path: string): T {
   if (typeof value === "string" && allowed.has(value as T)) return value as T;
   throw new Error(`${path} has invalid value`);
@@ -2169,6 +2193,7 @@ export function parseDecision(value: unknown, item?: DecisionNormalizationItem):
       record.mantisRecommendation,
       "decision.mantisRecommendation",
     ),
+    featureShowcase: parseFeatureShowcase(record.featureShowcase, "decision.featureShowcase"),
     overallCorrectness: requireEnum(
       record.overallCorrectness,
       OVERALL_CORRECTNESS_VALUES,
@@ -4840,6 +4865,10 @@ function codexFailureDecision(status: number | null, stderr: string, stdout = ""
       reason: "Mantis was not assessed because the Codex review failed.",
       maintainerComment: "",
     },
+    featureShowcase: {
+      status: "none",
+      reason: "Feature showcase was not assessed because the Codex review failed.",
+    },
     overallCorrectness: "not a patch",
     overallConfidenceScore: 0,
     fixedRelease: null,
@@ -6588,6 +6617,23 @@ function reportMantisRecommendation(markdown: string): MantisRecommendation {
   };
 }
 
+function reportFeatureShowcase(markdown: string): FeatureShowcase {
+  const section = reviewSectionValue(markdown, "featureShowcase");
+  const statusValue =
+    sectionLineValue(section, "Status") ?? frontMatterValue(markdown, "feature_showcase_status");
+  const status = FEATURE_SHOWCASE_STATUSES.has(statusValue as FeatureShowcaseStatus)
+    ? (statusValue as FeatureShowcaseStatus)
+    : "none";
+  return {
+    status,
+    reason:
+      sectionLineValue(section, "Reason") ??
+      (status === "showcase"
+        ? "This report predates the structured feature showcase reason."
+        : "No feature showcase assessment was recorded in this report."),
+  };
+}
+
 function screenshotProofNeedsRuntimeOutput(summary: string): boolean {
   if (
     /\b(?:no|without|absence of|zero|none)\b[^.]{0,120}\b(?:visible\s+)?(?:console|network|error|warning|violation|csp|cors)\b/i.test(
@@ -7142,6 +7188,77 @@ function nextPrRatingLabels(
   const nextLabels = labels.filter((label) => !PR_RATING_LABEL_NAMES.has(label));
   nextLabels.push(ratingLabelForTier(rating.overallTier).name);
   return nextLabels;
+}
+
+function shouldApplyFeatureShowcaseLabel(options: {
+  isPullRequest: boolean;
+  itemCategory: string | undefined;
+  requiresNewFeature: boolean;
+  showcase: FeatureShowcase;
+  securityReview: Pick<SecurityReview, "status">;
+  overallCorrectness: OverallCorrectness;
+}): boolean {
+  return (
+    options.isPullRequest &&
+    options.showcase.status === "showcase" &&
+    (options.itemCategory === "feature" || options.requiresNewFeature) &&
+    options.securityReview.status !== "needs_attention" &&
+    options.overallCorrectness !== "patch is incorrect"
+  );
+}
+
+function nextFeatureShowcaseLabels(
+  labels: readonly string[],
+  options: {
+    isPullRequest: boolean;
+    itemCategory: string | undefined;
+    requiresNewFeature: boolean;
+    showcase: FeatureShowcase;
+    securityReview: Pick<SecurityReview, "status">;
+    overallCorrectness: OverallCorrectness;
+  },
+): string[] {
+  if (labels.includes(FEATURE_SHOWCASE_LABEL)) return [...labels];
+  return shouldApplyFeatureShowcaseLabel(options)
+    ? [...labels, FEATURE_SHOWCASE_LABEL]
+    : [...labels];
+}
+
+export function featureShowcaseLabelsForTest(
+  labels: readonly string[],
+  options: {
+    isPullRequest?: boolean;
+    itemCategory?: string;
+    requiresNewFeature?: boolean;
+    status?: string;
+    securityReviewStatus?: string;
+    overallCorrectness?: string;
+  },
+): string[] {
+  const status = FEATURE_SHOWCASE_STATUSES.has(options.status as FeatureShowcaseStatus)
+    ? (options.status as FeatureShowcaseStatus)
+    : "none";
+  const securityReviewStatus = SECURITY_REVIEW_STATUSES.has(
+    options.securityReviewStatus as SecurityReviewStatus,
+  )
+    ? (options.securityReviewStatus as SecurityReviewStatus)
+    : "not_applicable";
+  const overallCorrectness = OVERALL_CORRECTNESS_VALUES.has(
+    options.overallCorrectness as OverallCorrectness,
+  )
+    ? (options.overallCorrectness as OverallCorrectness)
+    : "not a patch";
+  return nextFeatureShowcaseLabels(labels, {
+    isPullRequest: options.isPullRequest ?? true,
+    itemCategory: options.itemCategory,
+    requiresNewFeature: options.requiresNewFeature ?? false,
+    showcase: {
+      status,
+      reason: status === "showcase" ? "This is a high-signal feature idea." : "",
+    },
+    securityReview: { status: securityReviewStatus },
+    overallCorrectness,
+  });
 }
 
 function proofNeedsContributorAction(proof: Pick<RealBehaviorProof, "status">): boolean {
@@ -7961,6 +8078,26 @@ function ensurePrRatingLabel(tier: PrRatingTier): void {
   }
 }
 
+function ensureFeatureShowcaseLabel(): void {
+  try {
+    ghWithRetry(
+      [
+        "label",
+        "create",
+        FEATURE_SHOWCASE_LABEL,
+        "--color",
+        FEATURE_SHOWCASE_LABEL_COLOR,
+        "--description",
+        FEATURE_SHOWCASE_LABEL_DESCRIPTION,
+      ],
+      2,
+    );
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (!/already exists/i.test(message)) throw error;
+  }
+}
+
 function ensurePrStatusLabel(kind: PrStatusLabelKind): void {
   const definition = prStatusLabelForKind(kind);
   try {
@@ -7980,6 +8117,27 @@ function ensurePrStatusLabel(kind: PrStatusLabelKind): void {
     const message = error instanceof Error ? error.message : String(error);
     if (!/already exists/i.test(message)) throw error;
   }
+}
+
+function syncFeatureShowcaseLabel(options: {
+  number: number;
+  labels: readonly string[];
+  isPullRequest: boolean;
+  itemCategory: string | undefined;
+  requiresNewFeature: boolean;
+  showcase: FeatureShowcase;
+  securityReview: Pick<SecurityReview, "status">;
+  overallCorrectness: OverallCorrectness;
+  dryRun: boolean;
+}): { labels: string[]; changed: boolean } {
+  const nextLabels = nextFeatureShowcaseLabels(options.labels, options);
+  const changed =
+    nextLabels.includes(FEATURE_SHOWCASE_LABEL) && !options.labels.includes(FEATURE_SHOWCASE_LABEL);
+  if (!changed) return { labels: nextLabels, changed };
+  if (options.dryRun) return { labels: nextLabels, changed };
+  ensureFeatureShowcaseLabel();
+  ghWithRetry(["issue", "edit", String(options.number), "--add-label", FEATURE_SHOWCASE_LABEL]);
+  return { labels: nextLabels, changed };
 }
 
 function syncPrRatingLabel(options: {
@@ -8398,6 +8556,7 @@ function reportDecision(markdown: string, closeReason: CloseReason): Decision {
     prRating: reportPrRating(markdown),
     telegramVisibleProof: reportTelegramVisibleProof(markdown),
     mantisRecommendation: reportMantisRecommendation(markdown),
+    featureShowcase: reportFeatureShowcase(markdown),
     overallCorrectness: reportOverallCorrectness(markdown),
     overallConfidenceScore: reportOverallConfidenceScore(markdown),
     fixedRelease: fixedRelease && fixedRelease !== "unknown" ? fixedRelease : null,
@@ -8469,6 +8628,7 @@ function isClawSweeperOwnedLabel(label: string): boolean {
     MERGE_RISK_LABEL_NAMES.has(label) ||
     PR_RATING_LABEL_NAMES.has(label) ||
     PR_STATUS_LABEL_NAMES.has(label) ||
+    label === FEATURE_SHOWCASE_LABEL ||
     label === PROOF_SUFFICIENT_LABEL ||
     PROOF_MEDIA_LABEL_NAMES.has(label) ||
     label === TELEGRAM_VISIBLE_PROOF_LABEL ||
@@ -8490,6 +8650,14 @@ function desiredClawSweeperLabelsFromPublicReport(
     labels = nextRealBehaviorProofSufficientLabels(labels, realBehaviorProof);
     labels = nextRealBehaviorProofMediaLabels(labels, realBehaviorProof);
     labels = nextPrRatingLabels(labels, reportPrRating(markdown));
+    labels = nextFeatureShowcaseLabels(labels, {
+      isPullRequest,
+      itemCategory: frontMatterValue(markdown, "item_category"),
+      requiresNewFeature: frontMatterValue(markdown, "requires_new_feature") === "true",
+      showcase: reportFeatureShowcase(markdown),
+      securityReview: reportSecurityReview(markdown),
+      overallCorrectness: reportOverallCorrectness(markdown),
+    });
     labels = nextPrStatusLabels(
       labels,
       options.prStatusKind ?? prEggStatusLabelKindFromReportLabels(markdown),
@@ -8561,6 +8729,12 @@ function labelTransitionReason(
       : statusKind
         ? `Current PR status label is ${inlineCode(prStatusLabelForKind(statusKind).name)}.`
         : "Current PR status no longer selects a status label.";
+  }
+  if (label === FEATURE_SHOWCASE_LABEL) {
+    const showcase = reportFeatureShowcase(markdown);
+    return action === "add"
+      ? `${FEATURE_SHOWCASE_LABEL_DESCRIPTION} ${sentence(showcase.reason)}`
+      : "Feature showcase labels are add-only; this label is no longer selected by the current review.";
   }
   if (label === PROOF_SUFFICIENT_LABEL) {
     return action === "add"
@@ -8656,6 +8830,22 @@ function labelJustificationsFromPublicReport(
         rating.summary,
       )}${changed}`,
     );
+    const featureShowcase = reportFeatureShowcase(markdown);
+    if (
+      shouldApplyFeatureShowcaseLabel({
+        isPullRequest,
+        itemCategory: frontMatterValue(markdown, "item_category"),
+        requiresNewFeature: frontMatterValue(markdown, "requires_new_feature") === "true",
+        showcase: featureShowcase,
+        securityReview: reportSecurityReview(markdown),
+        overallCorrectness: reportOverallCorrectness(markdown),
+      })
+    ) {
+      add(
+        FEATURE_SHOWCASE_LABEL,
+        `${FEATURE_SHOWCASE_LABEL_DESCRIPTION} ${sentence(featureShowcase.reason)}`,
+      );
+    }
     const statusKind = options.prStatusKind ?? prEggStatusLabelKindFromReportLabels(markdown);
     if (statusKind) {
       add(
@@ -10358,6 +10548,14 @@ function renderMantisRecommendationReportSection(decision: Decision): string {
   ].join("\n");
 }
 
+function renderFeatureShowcaseReportSection(decision: Decision): string {
+  return [
+    `Status: ${decision.featureShowcase.status}`,
+    "",
+    `Reason: ${sentence(decision.featureShowcase.reason)}`,
+  ].join("\n");
+}
+
 export function pullRequestFilePathsFromContextForTest(context: {
   pullFiles?: unknown[];
 }): string[] {
@@ -10423,6 +10621,7 @@ function markdownFor(options: {
   const prRating = renderPrRatingReportSection(options.decision);
   const telegramVisibleProof = renderTelegramVisibleProofReportSection(options.decision);
   const mantisRecommendation = renderMantisRecommendationReportSection(options.decision);
+  const featureShowcase = renderFeatureShowcaseReportSection(options.decision);
   const workCandidateSection = renderWorkCandidateReportSection(options.decision);
   const repairWorkPromptSection = renderRepairWorkPromptReportSection(options.decision);
   const pullFiles = pullRequestFilePathsFromContext(options.context);
@@ -10509,6 +10708,7 @@ pr_rating_patch: ${options.decision.prRating.patchTier}
 telegram_visible_proof_status: ${options.decision.telegramVisibleProof.status}
 mantis_recommendation_status: ${options.decision.mantisRecommendation.status}
 mantis_recommendation_scenario: ${options.decision.mantisRecommendation.scenario}
+feature_showcase_status: ${options.decision.featureShowcase.status}
 ---
 
 # ${markdownLink(`#${options.item.number}: ${options.item.title}`, options.item.url)}
@@ -10594,6 +10794,10 @@ ${telegramVisibleProof}
 ## ${REVIEW_SECTIONS.mantisRecommendation}
 
 ${mantisRecommendation}
+
+## ${REVIEW_SECTIONS.featureShowcase}
+
+${featureShowcase}
 
 ## ${REVIEW_SECTIONS.workCandidate}
 
@@ -11150,6 +11354,19 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
       });
       item.labels = prRatingSyncResult.labels;
       clawSweeperLabelsChanged ||= prRatingSyncResult.changed;
+      const featureShowcaseSyncResult = syncFeatureShowcaseLabel({
+        number,
+        labels: item.labels,
+        isPullRequest: true,
+        itemCategory: frontMatterValue(markdown, "item_category"),
+        requiresNewFeature: frontMatterValue(markdown, "requires_new_feature") === "true",
+        showcase: reportFeatureShowcase(markdown),
+        securityReview: reportSecurityReview(markdown),
+        overallCorrectness: reportOverallCorrectness(markdown),
+        dryRun,
+      });
+      item.labels = featureShowcaseSyncResult.labels;
+      clawSweeperLabelsChanged ||= featureShowcaseSyncResult.changed;
       currentPrStatusKind = prStatusLabelKindFromReport(
         markdown,
         currentItemContext(),

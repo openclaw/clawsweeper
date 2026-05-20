@@ -140,6 +140,16 @@ labels that were not selected. Each `reason` should be one concise
 maintainer-facing sentence grounded in the item, diff, current behavior, or
 discussion.
 
+For PRs, fill `featureShowcase` as a positive-only maintainer spotlight for
+really compelling feature ideas. Use `status: "showcase"` only when the PR is a
+feature or adds a new user-facing capability and the idea itself is unusually
+worth maintainer attention. The bar is high: normal useful features, routine
+integrations, minor polish, broad unfocused proposals, and changes with serious
+correctness or security concerns should use `status: "none"`. This is not a
+merge-readiness score, not a contributor ranking, and not a merge gate; keep
+the reason focused on the idea's user value, workflow unlock, or strategic
+fit. Use `status: "none"` for issues and non-feature PRs.
+
 Populate structured reproduction metadata separately from the public prose.
 Use `reproductionStatus: "reproduced"` only when there is a concrete,
 current-main reproduction path for the bug with high confidence. Use
