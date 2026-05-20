@@ -286,6 +286,98 @@ test("publishMainCommit publishes generated paths to state branch when state roo
   assert.throws(() => run("git", ["--git-dir", origin, "show", "main:results/ledger.txt"], root));
 });
 
+test("publishMainCommit preserves newer state review records during broad publishes", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-publish-"));
+  const origin = path.join(root, "origin.git");
+  const work = path.join(root, "work");
+  const state = path.join(root, "state");
+  run("git", ["init", "--bare", origin], root);
+  run("git", ["clone", origin, state], root);
+  configureUser(state);
+  write(
+    path.join(state, "records/openclaw-openclaw/items/1.md"),
+    "---\nreviewed_at: 2026-05-20T02:00:00.000Z\nreview_comment_synced_at: 2026-05-20T02:01:00.000Z\n---\nnewer report\n",
+  );
+  run("git", ["add", "."], state);
+  run("git", ["commit", "-m", "initial state"], state);
+  run("git", ["push", "origin", "HEAD:state"], state);
+  run("git", ["--git-dir", origin, "symbolic-ref", "HEAD", "refs/heads/state"], root);
+  run("git", ["checkout", "-B", "state", "origin/state"], state);
+
+  fs.mkdirSync(work);
+  write(
+    path.join(work, "records/openclaw-openclaw/items/1.md"),
+    "---\nreviewed_at: 2026-05-20T01:00:00.000Z\nreview_comment_synced_at: 2026-05-20T01:01:00.000Z\n---\nstale report\n",
+  );
+  write(
+    path.join(work, "records/openclaw-openclaw/items/2.md"),
+    "---\nreviewed_at: 2026-05-20T01:30:00.000Z\n---\nnew local report\n",
+  );
+
+  const result = withEnv({ CLAWSWEEPER_STATE_DIR: state }, () =>
+    withCwd(work, () =>
+      publishMainCommit({
+        message: "chore: sync sweep review comments checkpoint 1",
+        paths: ["records"],
+        maxAttempts: 1,
+        pushAttempts: 1,
+      }),
+    ),
+  );
+
+  assert.equal(result, "committed");
+  assert.equal(
+    run("git", ["--git-dir", origin, "show", "state:records/openclaw-openclaw/items/1.md"], root),
+    "---\nreviewed_at: 2026-05-20T02:00:00.000Z\nreview_comment_synced_at: 2026-05-20T02:01:00.000Z\n---\nnewer report\n",
+  );
+  assert.equal(
+    run("git", ["--git-dir", origin, "show", "state:records/openclaw-openclaw/items/2.md"], root),
+    "---\nreviewed_at: 2026-05-20T01:30:00.000Z\n---\nnew local report\n",
+  );
+});
+
+test("publishMainCommit preserves newer state review records during exact file publishes", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-publish-"));
+  const origin = path.join(root, "origin.git");
+  const work = path.join(root, "work");
+  const state = path.join(root, "state");
+  run("git", ["init", "--bare", origin], root);
+  run("git", ["clone", origin, state], root);
+  configureUser(state);
+  write(
+    path.join(state, "records/openclaw-openclaw/items/1.md"),
+    "---\nreviewed_at: 2026-05-20T02:00:00.000Z\n---\nnewer exact report\n",
+  );
+  run("git", ["add", "."], state);
+  run("git", ["commit", "-m", "initial state"], state);
+  run("git", ["push", "origin", "HEAD:state"], state);
+  run("git", ["--git-dir", origin, "symbolic-ref", "HEAD", "refs/heads/state"], root);
+  run("git", ["checkout", "-B", "state", "origin/state"], state);
+
+  fs.mkdirSync(work);
+  write(
+    path.join(work, "records/openclaw-openclaw/items/1.md"),
+    "---\nreviewed_at: 2026-05-20T01:00:00.000Z\n---\nstale exact report\n",
+  );
+
+  const result = withEnv({ CLAWSWEEPER_STATE_DIR: state }, () =>
+    withCwd(work, () =>
+      publishMainCommit({
+        message: "chore: apply event sweep result for openclaw-openclaw#1",
+        paths: ["records/openclaw-openclaw/items/1.md"],
+        maxAttempts: 1,
+        pushAttempts: 1,
+      }),
+    ),
+  );
+
+  assert.equal(result, "unchanged");
+  assert.equal(
+    run("git", ["--git-dir", origin, "show", "state:records/openclaw-openclaw/items/1.md"], root),
+    "---\nreviewed_at: 2026-05-20T02:00:00.000Z\n---\nnewer exact report\n",
+  );
+});
+
 test("publishMainCommit preserves state-only automerge jobs on broad jobs publishes", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-publish-"));
   const origin = path.join(root, "origin.git");

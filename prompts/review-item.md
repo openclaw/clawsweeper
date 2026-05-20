@@ -163,6 +163,13 @@ For PRs, include a dedicated security review pass in addition to the functional 
 
 For PRs, include a dedicated `realBehaviorProof` assessment before any pass, automerge, or repair verdict. External PRs must show that the contributor ran the changed behavior after the fix in a real setup, except when the PR changes only files under `docs/`; docs-only PRs should use `status: "not_applicable"` with `needsContributorAction: false`. Unit tests, mocks, snapshots, lint, typechecks, and CI are supplemental only; they are not real behavior proof by themselves. Treat screenshots, recordings, terminal screenshots, console output, copied live output, linked artifacts, and redacted runtime logs as valid proof, including for non-visual CLI, console, text, or error-message changes. Prefer asking for screenshots or videos when they can show the behavior, including terminal screenshots for text or console changes, while keeping logs and live output acceptable. Remind contributors to redact private information like IP addresses, API keys, phone numbers, non-public endpoints, and other private details before posting evidence. A plain app screenshot is sufficient only for behavior it directly shows. Do not mark screenshot-only proof sufficient for browser runtime, CSP, CORS, `connect-src`, auth callback, network, or security changes when the proof only says no console error, warning, or violation is visible; require console output, a network trace, terminal/live output, logs, a recording with diagnostics, or a linked artifact that actually shows the runtime path. Use your tools and best judgement: inspect the PR body, comments, links, screenshots, videos, logs, terminal output, and changed behavior context; you may download/open GitHub attachment links, generate stills or contact sheets from videos, inspect terminal screenshots and logs, and compare the proof against the PR diff. Use the provided scratch directory for downloaded artifacts and keep the target checkout read-only. Use `status: "sufficient"` only when the evidence convincingly shows after-fix real behavior and an observed improved result. Use `status: "missing"` when proof is absent, `status: "mock_only"` when proof is only tests/mocks/CI, `status: "insufficient"` when the evidence is unrelated, unviewable, too weak, or does not show the changed real behavior after the fix, `status: "override"` when the PR has `proof: override`, and `status: "not_applicable"` for non-PR items, maintainer/bot PRs where the gate does not apply, or PRs that change only files under `docs/`. When proof is missing, mock-only, or insufficient, set `needsContributorAction: true`, make the PR a human-only merge blocker, and do not request ClawSweeper repair markers because automation cannot prove the contributor's setup for them.
 
+Missing, mock-only, or insufficient real behavior proof is not a substitute for
+the diff review. Even when proof blocks merge, still finish the code/docs
+correctness pass and populate `reviewFindings` for high-confidence source
+defects. In particular, do not stop after asking for proof when the diff changes
+documented contracts, duplicate/idempotency keys, task lifecycle state, fallback
+delivery behavior, request scoping, or persisted settings.
+
 For PRs, always fill `telegramVisibleProof`. Use `status: "needed"` only when the PR touches Telegram behavior and the user-visible change can be easily demonstrated by the `telegram-crabbox-e2e-proof` skill, such as message formatting, slash-command output, reply text, attachments, reactions, threading, mentions, or other visible Telegram chat behavior. Use `status: "not_needed"` for non-Telegram PRs and for Telegram changes that are internal-only, test-only, docs-only, logging-only, retry/network reliability only, auth/secret plumbing only, or otherwise not meaningfully visible in a short Telegram Desktop recording.
 
 For PRs, also emit Codex `/review`-style findings in `reviewFindings`.
@@ -202,6 +209,14 @@ state, local workspace state, generated files, shortcuts, routes, schemas, or
 documented defaults. A new default must not change an existing user's stored
 value during upgrade unless the PR includes an explicit, narrow, tested
 migration and the behavior is clearly intentional.
+
+For task, media, tool-call, retry, duplicate-guard, idempotency, or fallback
+delivery changes, explicitly compare the new request-key and active-task scoping
+against current source, docs, and tests. Check whether the PR changes
+same-request dedupe into all-request serialization, allows a new duplicate send,
+removes a documented fallback, or adds a fallback that docs still deny. If the
+code and docs now disagree, add a review finding rather than hiding it as a
+generic risk.
 
 Treat provider fallback removal, fail-closed routing, missing-harness behavior,
 startup/install checks, and strict config validation as upgrade-sensitive even

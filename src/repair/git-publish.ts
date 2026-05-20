@@ -1,5 +1,13 @@
 import { spawnSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, readdirSync, rmSync, statSync } from "node:fs";
+import {
+  cpSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+} from "node:fs";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
@@ -31,6 +39,16 @@ export type GitRunOptions = {
 };
 
 export type PublishResult = "committed" | "unchanged";
+
+type PreservedFiles = {
+  root: string;
+  files: PreservedFile[];
+};
+
+type PreservedFile = {
+  sourceRel: string;
+  targetRel: string;
+};
 
 const GENERATED_PUBLISH_PATHS = [
   "apply-report.json",
@@ -213,16 +231,19 @@ function syncStatePublishPaths(paths: readonly string[], stateRoot: string): voi
     if (!destination.startsWith(`${stateRoot}/`) && destination !== stateRoot) {
       throw new Error(`Refusing to publish outside state root: ${path}`);
     }
-    const preserved = preserveStateOnlyFiles({ path, source, destination });
+    const preservedStateOnly = preserveStateOnlyFiles({ path, source, destination });
+    const preservedRecords = preserveNewerStateReviewRecords({ path, source, destination });
     try {
       rmSync(destination, { force: true, recursive: true });
       if (existsSync(source)) {
         mkdirSync(dirname(destination), { recursive: true });
         cpSync(source, destination, { recursive: true });
       }
-      restorePreservedFiles(preserved, destination);
+      restorePreservedFiles(preservedStateOnly, destination);
+      restorePreservedFiles(preservedRecords, destination, { overwrite: true });
     } finally {
-      rmSync(preserved.root, { force: true, recursive: true });
+      rmSync(preservedStateOnly.root, { force: true, recursive: true });
+      rmSync(preservedRecords.root, { force: true, recursive: true });
     }
   }
 }
@@ -235,11 +256,11 @@ function preserveStateOnlyFiles({
   path: string;
   source: string;
   destination: string;
-}): { root: string; files: string[] } {
+}): PreservedFiles {
   const root = mkdtempSync(join(tmpdir(), "clawsweeper-state-preserve-"));
   if (!existsSync(destination)) return { root, files: [] };
 
-  const files: string[] = [];
+  const files: PreservedFile[] = [];
   for (const file of listFiles(destination)) {
     const rel = relative(destination, file);
     if (!shouldPreserveStateOnlyFile(path, rel)) continue;
@@ -247,7 +268,7 @@ function preserveStateOnlyFiles({
     const target = resolve(root, rel);
     mkdirSync(dirname(target), { recursive: true });
     cpSync(file, target);
-    files.push(rel);
+    files.push({ sourceRel: rel, targetRel: rel });
   }
   return { root, files };
 }
@@ -266,12 +287,12 @@ function preserveStateOnlyCommitFiles({
 }: {
   path: string;
   sourceCommit: string;
-}): { root: string; files: string[] } {
+}): PreservedFiles {
   const root = mkdtempSync(join(tmpdir(), "clawsweeper-state-preserve-"));
   const source = resolve(path);
   if (!existsSync(source)) return { root, files: [] };
 
-  const files: string[] = [];
+  const files: PreservedFile[] = [];
   const commitPathPrefix = path.replace(/\/+$/, "");
   for (const file of listFiles(source)) {
     const rel = relative(source, file);
@@ -280,16 +301,94 @@ function preserveStateOnlyCommitFiles({
     const target = resolve(root, rel);
     mkdirSync(dirname(target), { recursive: true });
     cpSync(file, target);
-    files.push(rel);
+    files.push({ sourceRel: rel, targetRel: rel });
   }
   return { root, files };
 }
 
-function restorePreservedFiles(preserved: { root: string; files: string[] }, destination: string) {
-  for (const rel of preserved.files) {
-    const source = resolve(preserved.root, rel);
-    const target = resolve(destination, rel);
-    if (existsSync(target)) continue;
+function preserveNewerStateReviewRecords({
+  path,
+  source,
+  destination,
+}: {
+  path: string;
+  source: string;
+  destination: string;
+}): PreservedFiles {
+  const root = mkdtempSync(join(tmpdir(), "clawsweeper-state-preserve-"));
+  if (!isRecordPublishPath(path) || !existsSync(destination) || !existsSync(source)) {
+    return { root, files: [] };
+  }
+
+  if (statSync(destination).isFile() || statSync(source).isFile()) {
+    if (!statSync(destination).isFile() || !statSync(source).isFile()) {
+      return { root, files: [] };
+    }
+    if (!/^records\/[^/]+\/(?:items|closed)\/[^/]+\.md$/.test(normalizePath(path))) {
+      return { root, files: [] };
+    }
+    if (!stateRecordIsNewer(destination, source)) return { root, files: [] };
+    const sourceRel = "record.md";
+    cpSync(destination, resolve(root, sourceRel));
+    return { root, files: [{ sourceRel, targetRel: "" }] };
+  }
+
+  const files: PreservedFile[] = [];
+  for (const file of listFiles(destination)) {
+    const rel = relative(destination, file);
+    const stateRel = normalizePath(join(path, rel));
+    if (!/^records\/[^/]+\/(?:items|closed)\/[^/]+\.md$/.test(stateRel)) continue;
+    const sourceFile = resolve(source, rel);
+    if (!existsSync(sourceFile)) continue;
+    if (!stateRecordIsNewer(file, sourceFile)) continue;
+    const target = resolve(root, rel);
+    mkdirSync(dirname(target), { recursive: true });
+    cpSync(file, target);
+    files.push({ sourceRel: rel, targetRel: rel });
+  }
+  return { root, files };
+}
+
+function isRecordPublishPath(path: string): boolean {
+  return path === "records" || path.startsWith("records/");
+}
+
+function normalizePath(path: string): string {
+  return path.replaceAll("\\", "/");
+}
+
+function stateRecordIsNewer(stateFile: string, sourceFile: string): boolean {
+  const state = reviewRecordTimestamps(readFileSync(stateFile, "utf8"));
+  const source = reviewRecordTimestamps(readFileSync(sourceFile, "utf8"));
+  if (state.reviewedAt !== source.reviewedAt) return state.reviewedAt > source.reviewedAt;
+  return state.syncedAt > source.syncedAt;
+}
+
+function reviewRecordTimestamps(markdown: string): { reviewedAt: number; syncedAt: number } {
+  return {
+    reviewedAt: frontMatterTime(markdown, "reviewed_at"),
+    syncedAt: frontMatterTime(markdown, "review_comment_synced_at"),
+  };
+}
+
+function frontMatterTime(markdown: string, key: string): number {
+  const match = markdown.match(new RegExp(`^${key}:\\s*(.+)$`, "m"));
+  if (!match) return 0;
+  const value = match[1];
+  if (!value) return 0;
+  const parsed = Date.parse(value.trim());
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function restorePreservedFiles(
+  preserved: PreservedFiles,
+  destination: string,
+  options: { overwrite?: boolean } = {},
+) {
+  for (const file of preserved.files) {
+    const source = resolve(preserved.root, file.sourceRel);
+    const target = file.targetRel ? resolve(destination, file.targetRel) : destination;
+    if (!options.overwrite && existsSync(target)) continue;
     mkdirSync(dirname(target), { recursive: true });
     cpSync(source, target);
   }

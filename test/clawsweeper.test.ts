@@ -7017,6 +7017,9 @@ test("review prompt requires upgrade and preference overwrite checks", () => {
   );
   assert.match(prompt, /Call out upgrade and settings breakage directly in `reviewFindings`/);
   assert.match(prompt, /existing config\/preferences can be overwritten/);
+  assert.match(prompt, /task, media, tool-call, retry, duplicate-guard/);
+  assert.match(prompt, /same-request dedupe into all-request serialization/);
+  assert.match(prompt, /code and docs now disagree/);
   assert.match(prompt, /preserving the existing\s+behavior as the default/);
   assert.match(prompt, /explicit strict config option/);
   assert.match(prompt, /default compatibility mode and the\s+opt-in strict mode/);
@@ -7042,6 +7045,8 @@ test("review prompt requires real behavior proof for PR reviews", () => {
     prompt,
     /Unit tests, mocks, snapshots, lint, typechecks, and CI are supplemental only/,
   );
+  assert.match(prompt, /not a substitute for\s+the diff review/);
+  assert.match(prompt, /still finish the code\/docs\s+correctness pass/);
   assert.match(prompt, /do not request ClawSweeper repair markers/);
 });
 
