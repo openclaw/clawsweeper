@@ -3061,7 +3061,7 @@ Full review comments:
   assert.match(eggComment, /🎁 Pass real behavior proof/);
   assert.match(eggComment, /wake the egg and unlock a hatchable treat/);
   assert.match(eggComment, /<summary>Where did the egg go\?<\/summary>/);
-  assert.match(eggComment, /no creature, rarity, or ASCII portrait is rolled/);
+  assert.match(eggComment, /no creature or rarity is rolled/);
   assert.doesNotMatch(eggComment, /```text/);
   assert.doesNotMatch(eggComment, /🔥 Warming up:/);
   assert.doesNotMatch(eggComment, /✨ Hatched:/);
@@ -3132,23 +3132,20 @@ Full review comments:
   assert.doesNotMatch(comment, /\*\*PR egg\*\*/);
   assert.match(eggComment, /ClawSweeper PR egg/);
   assert.match(eggComment, /🔥 Warming up:/);
-  assert.match(eggComment, /```text\n[\s\S]+?\n```/);
+  assert.doesNotMatch(eggComment, /```text/);
   assert.match(eggComment, /<summary>What is this egg doing here\?<\/summary>/);
   assert.match(eggComment, /Eggs appear after the PR passes real-behavior proof/);
   assert.match(eggComment, /It is here for vibes, not verdicts/);
   assert.match(
     eggComment,
-    /🔥 Warming up:[^\n]+\nHow to hatch it: once this PR reaches `status: 👀 ready for maintainer look` or `status: 🚀 automerge armed`, the PR author or a maintainer can comment `@clawsweeper hatch` to turn this ASCII egg into its generated creature image\./,
+    /🔥 Warming up:[\s\S]+### Hatch command[\s\S]+Comment `@clawsweeper hatch` when this PR is `status: 👀 ready for maintainer look`, `status: 🚀 automerge armed`, opted into `clawsweeper:automerge`, merged, or closed\./,
   );
   assert.match(
     eggComment,
     /Hatchable usually means sufficient real-behavior proof, no blocking P0\/P1\/P2 findings/,
   );
   assert.match(eggComment, /no security attention needed, and clean correctness/);
-  assert.match(
-    eggComment,
-    /PR author or a maintainer can comment `@clawsweeper hatch` to turn this ASCII egg into its generated creature image/,
-  );
+  assert.match(eggComment, /Comment `@clawsweeper hatch` when this PR is/);
   assert.match(eggComment, /🥚 common, 🌱 uncommon, 💎 rare, ✨ glimmer, and 🌈 legendary/);
   assert.doesNotMatch(eggComment, /🎁 Pass real behavior proof/);
   assert.doesNotMatch(eggComment, /✨ Hatched:/);
@@ -3213,7 +3210,8 @@ Full review comments:
   assert.doesNotMatch(reviewComment, /\*\*PR egg\*\*/);
   assert.match(first, /ClawSweeper PR egg/);
   assert.match(first, /✨ Hatched: [^\n]+/);
-  assert.match(first, /```text\n[\s\S]+?\n```/);
+  assert.doesNotMatch(first, /```text/);
+  assert.match(first, /### Hatch command/);
   assert.match(first, /Rarity: [^\n]+\./);
   assert.match(first, /Trait: [^.]+\./);
   assert.match(
@@ -3227,7 +3225,7 @@ Full review comments:
   assert.match(first, /Copy: My PR egg hatched a [^\n]+ in ClawSweeper\./);
   assert.match(
     first,
-    /Image traits: [^\n]+\nHow to hatch it: once this PR reaches `status: 👀 ready for maintainer look` or `status: 🚀 automerge armed`, the PR author or a maintainer can comment `@clawsweeper hatch` to turn this ASCII egg into its generated creature image\./,
+    /### Hatch command[\s\S]+Comment `@clawsweeper hatch` when this PR is `status: 👀 ready for maintainer look`, `status: 🚀 automerge armed`, opted into `clawsweeper:automerge`, merged, or closed\.[\s\S]+Rarity:/,
   );
   assert.match(first, /same PR keeps the same creature/);
   assert.equal(first, second);
@@ -3336,7 +3334,7 @@ test("PR egg image prompt uses deterministic hatch traits with badge constraints
   assert.match(prompt, /no text, no letters, no numbers, no logos/);
 });
 
-test("hatched PR egg embeds durable image URL above ASCII fallback", () => {
+test("hatched PR egg embeds durable image URL above hatch metadata", () => {
   const report = `${reportFrontMatter({
     type: "pull_request",
     number: "74476",
@@ -3396,8 +3394,8 @@ Full review comments:
     eggComment,
     /<img src="https:\/\/raw\.githubusercontent\.com\/openclaw\/clawsweeper-state\/state\/assets\/pr-eggs\/openclaw-openclaw\/74476\.png" width="256" height="256" alt="Hatched PR egg: [^"]+">/,
   );
-  assert.match(eggComment, /```text\n[\s\S]+?\n```/);
-  assert.ok(eggComment.indexOf("<img ") < eggComment.indexOf("```text"));
+  assert.doesNotMatch(eggComment, /```text/);
+  assert.ok(eggComment.indexOf("<img ") < eggComment.indexOf("### Hatch command"));
 });
 
 test("PR egg share link falls back to PR URL before durable comment metadata exists", () => {
@@ -5081,10 +5079,144 @@ if (args[0] === "api" && /\\/issues\\/74476$/.test(path)) {
       hatchBody,
       /<img src="https:\/\/raw\.githubusercontent\.com\/openclaw\/clawsweeper-state\/state\/assets\/pr-eggs\/openclaw-clawsweeper\/74476\.png"/,
     );
-    assert.match(hatchBody, /```text\n[\s\S]+?\n```/);
+    assert.doesNotMatch(hatchBody, /```text/);
+    assert.match(hatchBody, /### Hatch command/);
     assert.match(hatchBody, /clawsweeper-pr-egg-hatch:74476/);
     assert.doesNotMatch(hatchBody, /Pending stale finding/);
     assert.doesNotMatch(hatchBody, /Codex review: needs changes/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("hatch sync can use archived closed PR records", () => {
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    const itemsDir = join(root, "items");
+    const closedDir = join(root, "closed");
+    const plansDir = join(root, "plans");
+    const reportPath = join(root, "apply-report.json");
+    const logPath = join(root, "gh.log");
+    mkdirSync(itemsDir, { recursive: true });
+    mkdirSync(closedDir, { recursive: true });
+    mkdirSync(plansDir, { recursive: true });
+    writeFileSync(
+      join(closedDir, "74479.md"),
+      `${reportFrontMatter({
+        repository: "openclaw/clawsweeper",
+        type: "pull_request",
+        number: "74479",
+        title: "Closed hatch",
+        url: "https://github.com/openclaw/clawsweeper/pull/74479",
+        decision: "keep_open",
+        close_reason: "none",
+        confidence: "high",
+        action_taken: "kept_open",
+        review_status: "complete",
+        local_checkout_access: "verified",
+        author: "contributor",
+        author_association: "CONTRIBUTOR",
+        labels: JSON.stringify(["proof: sufficient"]),
+        current_state: "closed",
+        current_item_closed_at: "2026-05-19T21:00:00Z",
+        pull_head_sha: "abc123def456",
+      })}
+
+## Summary
+
+This PR closed after review.
+
+${realBehaviorProofReportSection()}
+
+${prRatingReportSection()}
+
+## Review Findings
+
+Overall correctness: patch is correct
+
+Overall confidence: 0.95
+
+Full review comments:
+
+- none
+`,
+      "utf8",
+    );
+
+    const ghMock = `
+const { appendFileSync, readFileSync } = require("fs");
+const logPath = ${JSON.stringify(logPath)};
+const rawArgs = process.argv.slice(2);
+const args = rawArgs[0] === "--repo" ? rawArgs.slice(2) : rawArgs;
+appendFileSync(logPath, JSON.stringify(args) + "\\n");
+const path = args[1] || "";
+if (args[0] === "api" && /\\/issues\\/74479$/.test(path)) {
+  console.log(JSON.stringify({
+    number: 74479,
+    title: "Closed hatch",
+    html_url: "https://github.com/openclaw/clawsweeper/pull/74479",
+    created_at: "2026-05-19T19:00:00Z",
+    updated_at: "2026-05-19T21:00:00Z",
+    closed_at: "2026-05-19T21:00:00Z",
+    state: "closed",
+    locked: false,
+    active_lock_reason: null,
+    author_association: "CONTRIBUTOR",
+    user: { login: "contributor" },
+    labels: [{ name: "proof: sufficient" }],
+    pull_request: {}
+  }));
+} else if (args[0] === "api" && /\\/issues\\/74479\\/comments(?:\\?|$)/.test(path)) {
+  if (args.includes("--method") && args.includes("POST")) {
+    const input = args[args.indexOf("--input") + 1];
+    appendFileSync(logPath, JSON.stringify(["comment-body", JSON.parse(readFileSync(input, "utf8")).body]) + "\\n");
+    console.log(JSON.stringify({
+      id: 987479,
+      html_url: "https://github.com/openclaw/clawsweeper/pull/74479#issuecomment-987479"
+    }));
+  } else {
+    console.log(JSON.stringify([[]]));
+  }
+} else {
+  console.error("unexpected gh args", JSON.stringify(args));
+  process.exit(1);
+}
+`;
+    withMockGh(root, ghMock, () => {
+      runApplyDecisionsForTest({
+        itemsDir,
+        closedDir,
+        plansDir,
+        reportPath,
+        extraArgs: [
+          "--sync-comments-only",
+          "--hatch-pr-egg-image",
+          "--item-numbers",
+          "74479",
+          "--processed-limit",
+          "10",
+        ],
+      });
+    });
+
+    assert.deepEqual(JSON.parse(readFileSync(reportPath, "utf8")), [
+      {
+        number: 74479,
+        action: "hatch_comment_synced",
+        reason: "synced PR egg hatch comment",
+      },
+    ]);
+    const calls = readFileSync(logPath, "utf8")
+      .trim()
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as string[]);
+    const hatchBody = calls.find((args) => args[0] === "comment-body")?.[1] ?? "";
+    assert.match(hatchBody, /✨ Hatched: [^\n]+/);
+    assert.match(hatchBody, /### Hatch command/);
+    assert.match(hatchBody, /merged, or closed/);
+    assert.doesNotMatch(hatchBody, /```text/);
+    assert.match(hatchBody, /clawsweeper-pr-egg-hatch:74479/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
