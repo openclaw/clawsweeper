@@ -10,7 +10,11 @@ function listOrNone(items: JsonValue[]) {
 }
 
 function code(value: JsonValue) {
-  return `\`${String(value ?? "").replace(/`/g, "\\`")}\``;
+  const text = String(value ?? "");
+  const longestBacktickRun = Math.max(0, ...(text.match(/`+/g) ?? []).map((run) => run.length));
+  const fence = "`".repeat(longestBacktickRun + 1);
+  const padding = text.startsWith("`") || text.endsWith("`") ? " " : "";
+  return `${fence}${padding}${text}${padding}${fence}`;
 }
 
 function codeList(items: JsonValue[]) {

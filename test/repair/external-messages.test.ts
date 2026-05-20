@@ -49,12 +49,13 @@ test("automergeRepairOutcomeComment explains no-op repair runs", () => {
 test("repairContributorBranchComment avoids self PR references", () => {
   const body = repairContributorBranchComment({
     sourcePrUrl: "https://github.com/openclaw/openclaw/pull/75183",
-    validationCommands: ["pnpm check:changed"],
+    validationCommands: ["pnpm check:changed", 'node -e "console.log(`ok`)"'],
     provenance: { model: "gpt-test", reasoning: "medium", reviewedSha: "abcdef1234567890" },
   });
 
   assert.match(body, /✅ \*\*DONE\*\* \*\*Repair pushed to the source branch\*\*/);
   assert.match(body, /Validation: `pnpm check:changed`/);
+  assert.match(body, /``node -e "console\.log\(`ok`\)"``/);
   assert.doesNotMatch(body, /Source PR:/);
   assert.doesNotMatch(body, /75183/);
 });
