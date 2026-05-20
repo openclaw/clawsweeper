@@ -90,7 +90,8 @@ function scan(absolute: string): void {
   }
   if (!stat.isFile() || !isTextFile(absolute)) return;
   const relative = path.relative(root, absolute);
-  if (relative === "scripts/check-active-surface.ts") return;
+  const canonicalRelative = relative.split(path.sep).join("/");
+  if (canonicalRelative === "scripts/check-active-surface.ts") return;
   const text = fs.readFileSync(absolute, "utf8");
   const lines = text.split(/\r?\n/);
   lines.forEach((line, index) => {
@@ -98,7 +99,7 @@ function scan(absolute: string): void {
       const match = retired.pattern.exec(line);
       if (!match) continue;
       findings.push({
-        file: relative,
+        file: canonicalRelative,
         line: index + 1,
         column: match.index + 1,
         label: retired.label,

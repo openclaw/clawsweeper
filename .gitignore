@@ -1,4 +1,5 @@
 node_modules/
+.pnpm-store/
 dist/
 .DS_Store
 .env
@@ -13,3 +14,4 @@ repair-apply-report.json
 jobs/
 records/
 results/
+triage-dashboard-dev*.log

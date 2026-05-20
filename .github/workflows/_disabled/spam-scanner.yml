@@ -58,7 +58,7 @@ env:
   CLAWSWEEPER_APP_CLIENT_ID: Iv23liOECG0slfuhz093
 
 concurrency:
-  group: spam-scanner-${{ github.event.inputs.target_repo || github.event.client_payload.target_repo || vars.CLAWSWEEPER_TARGET_REPO || 'openclaw/openclaw' }}
+  group: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.comment_id && format('spam-scanner-{0}-issue-comment-{1}', github.event.client_payload.target_repo || 'openclaw/openclaw', github.event.client_payload.comment_id) || github.event_name == 'repository_dispatch' && github.event.client_payload.review_comment_id && format('spam-scanner-{0}-review-comment-{1}', github.event.client_payload.target_repo || 'openclaw/openclaw', github.event.client_payload.review_comment_id) || format('spam-scanner-{0}', github.event.inputs.target_repo || github.event.client_payload.target_repo || vars.CLAWSWEEPER_TARGET_REPO || 'openclaw/openclaw') }}
   cancel-in-progress: false
 
 jobs:
@@ -156,9 +156,31 @@ jobs:
       - name: Commit spam scanner audit
         if: always()
         run: |
+          target_repo="${{ github.event_name == 'repository_dispatch' && (github.event.client_payload.target_repo || 'openclaw/openclaw') || github.event.inputs.target_repo || vars.CLAWSWEEPER_TARGET_REPO || 'openclaw/openclaw' }}"
+          comment_ids="${{ github.event_name == 'workflow_dispatch' && inputs.comment_ids || github.event.client_payload.comment_id || '' }}"
+          review_comment_ids="${{ github.event_name == 'workflow_dispatch' && inputs.review_comment_ids || github.event.client_payload.review_comment_id || '' }}"
+          publish_args=(--message "chore: record ClawSweeper spam scan")
+          if [ "${{ github.event_name }}" = "repository_dispatch" ] && { [ -n "$comment_ids" ] || [ -n "$review_comment_ids" ]; }; then
+            target_slug="${target_repo//\//-}"
+            IFS=',' read -r -a issue_ids <<< "$comment_ids"
+            for id in "${issue_ids[@]}"; do
+              if [ -n "$id" ]; then
+                publish_args+=(--path "results/spam-audit/${target_slug}/issue_comment-${id}.json")
+              fi
+            done
+            IFS=',' read -r -a review_ids <<< "$review_comment_ids"
+            for id in "${review_ids[@]}"; do
+              if [ -n "$id" ]; then
+                publish_args+=(--path "results/spam-audit/${target_slug}/pull_request_review_comment-${id}.json")
+              fi
+            done
+          else
+            publish_args+=(
+              --path results/spam-scanner.json
+              --path results/spam-scanner-latest.json
+              --path results/spam-audit
+            )
+          fi
           pnpm run repair:publish-main -- \
-            --message "chore: record ClawSweeper spam scan" \
-            --path results/spam-scanner.json \
-            --path results/spam-scanner-latest.json \
-            --path results/spam-audit \
+            "${publish_args[@]}" \
             --rebase-strategy theirs

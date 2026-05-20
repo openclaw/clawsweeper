@@ -28,7 +28,8 @@ export function runText(
     timeout,
   }: RunTextOptions = {},
 ): string {
-  const text = execFileSync(resolveExecutable(command), args, {
+  const resolved = resolveCommand(command, args);
+  const text = execFileSync(resolved.command, resolved.args, {
     cwd,
     encoding: "utf8",
     env: { ...process.env, GIT_OPTIONAL_LOCKS: "0", ...env },
@@ -41,6 +42,26 @@ export function runText(
   return text;
 }
 
+function resolveCommand(command: string, args: string[]): { command: string; args: string[] } {
+  if (command === "gh" && process.env.GH_BIN) {
+    return {
+      command: process.env.GH_BIN,
+      args: [...envArgs("GH_BIN_ARGS"), ...args],
+    };
+  }
+  return { command: resolveExecutable(command), args };
+}
+
 function resolveExecutable(command: string): string {
   return command === "git" ? (process.env.GIT_BIN ?? "/usr/bin/git") : command;
+}
+
+function envArgs(name: string): string[] {
+  const value = process.env[name];
+  if (!value) return [];
+  const parsed = JSON.parse(value) as unknown;
+  if (!Array.isArray(parsed) || !parsed.every((entry) => typeof entry === "string")) {
+    throw new Error(`${name} must be a JSON string array`);
+  }
+  return parsed;
 }

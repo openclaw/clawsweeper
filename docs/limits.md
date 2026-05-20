@@ -29,7 +29,7 @@ The mental model:
 
 | Name | Current | Meaning |
 | --- | ---: | --- |
-| `workers.max` | 80 | Maximum global Codex worker budget used to derive lane limits. |
+| `workers.max` | 57 | Maximum global Codex worker budget used to derive lane limits. |
 | `workers.reserve_for_interactive` | 10 | Worker slots background lanes leave open for exact/manual/urgent work. |
 | `workers.expansion_reserve` | 20 | Extra slots background lanes leave open for independently planned matrix expansion. |
 | `workers.minimum_background` | 10 | Target floor for background progress when enough global capacity is available. |
@@ -37,24 +37,24 @@ The mental model:
 ## Derived Limits
 
 Derived limits are intentionally percentages of `workers.max`. With
-`workers.max = 80`, normal review can use 56 workers, hot intake can use 28,
-commit review can use 4 commits per page, and repair lanes can dispatch 32 live
+`workers.max = 57`, normal review can use 39 workers, hot intake can use 19,
+commit review can use 2 commits per page, and repair lanes can dispatch 22 live
 workers.
 
 | Name | Current | Meaning |
 | --- | ---: | --- |
-| `review_shards.normal_default` | 56 | Quiet-system normal review shard ceiling. |
-| `review_shards.normal_active_floor` | 24 | Minimum active normal review shards to keep queued for `openclaw/openclaw`. |
-| `review_shards.hot_intake_default` | 28 | Quiet-system broad hot-intake review shard ceiling. |
+| `review_shards.normal_default` | 39 | Quiet-system normal review shard ceiling. |
+| `review_shards.normal_active_floor` | 17 | Minimum active normal review shards to keep queued for `openclaw/openclaw`. |
+| `review_shards.hot_intake_default` | 19 | Quiet-system broad hot-intake review shard ceiling. |
 | `review_shards.exact_item_default` | 1 | Exact-item hot-intake shard count. |
-| `review_shards.hard_cap` | 80 | Maximum accepted review shard count. |
-| `commit_review.page_size_default` | 4 | Commits selected per commit-review page. |
-| `commit_review.page_size_hard_cap` | 80 | Maximum commit-review page size. |
-| `repair_live_runs.default` | 32 | Default live repair workflow run cap for manual dispatch/requeue/self-heal. |
-| `repair_live_runs.hard_cap` | 80 | Absolute live repair run cap accepted by the CLI. |
-| `repair_live_runs.automerge_default` | 32 | Live repair run cap for automerge comment-router dispatches. |
-| `repair_live_runs.issue_implementation_default` | 32 | Live repair run cap for issue-to-PR implementation intake. |
-| `issue_implementation.dispatches_per_sweep_default` | 3 | Maximum implementation intake jobs queued from one review publish run. |
+| `review_shards.hard_cap` | 57 | Maximum accepted review shard count. |
+| `commit_review.page_size_default` | 2 | Commits selected per commit-review page. |
+| `commit_review.page_size_hard_cap` | 57 | Maximum commit-review page size. |
+| `repair_live_runs.default` | 22 | Default live repair workflow run cap for manual dispatch/requeue/self-heal. |
+| `repair_live_runs.hard_cap` | 57 | Absolute live repair run cap accepted by the CLI. |
+| `repair_live_runs.automerge_default` | 22 | Live repair run cap for automerge comment-router dispatches. |
+| `repair_live_runs.issue_implementation_default` | 22 | Live repair run cap for issue-to-PR implementation intake. |
+| `issue_implementation.dispatches_per_sweep_default` | 2 | Maximum implementation intake jobs queued from one review publish run. |
 
 Formula summary:
 
@@ -96,13 +96,13 @@ priority work.
 
 Examples with the current config:
 
-- Quiet system: manual normal review can request 56 shards; scheduled normal
-  review gets 50 after reserving 10 slots for exact/manual/urgent work and 20
+- Quiet system: manual normal review can request 39 shards; scheduled normal
+  review gets 27 after reserving 10 slots for exact/manual/urgent work and 20
   slots for in-flight matrix expansion.
-- 24 active repair workers and 16 active background workers: normal review gets
-  10 because `80 - 10 interactive reserve - 20 expansion reserve - 24 priority
-  - 16 background = 10`.
-- 72 active priority workers: commit review gets 1, so commit review yields but
+- 21 active repair workers and 13 active background workers: normal review gets
+  1 because `57 - 10 interactive reserve - 20 expansion reserve - 21 priority
+  - 13 background = -7`, and enabled lanes keep a minimum of one worker.
+- 49 active priority workers: commit review gets 1, so commit review yields but
   does not fully stall.
 
 Use these commands to inspect the effective values from a checkout:
@@ -111,7 +111,7 @@ Use these commands to inspect the effective values from a checkout:
 pnpm run --silent workflow -- worker-config
 pnpm run --silent workflow -- limit review_shards.normal_default
 pnpm run --silent workflow -- worker-limit normal_review
-pnpm run --silent workflow -- worker-limit commit_review --active-critical 72
+pnpm run --silent workflow -- worker-limit commit_review --active-critical 64
 ```
 
 Change `workers.max` first when tuning rate-limit pressure. For example, setting

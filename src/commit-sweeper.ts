@@ -64,7 +64,7 @@ function repoSlug(targetRepo: string): string {
 }
 
 export function commitReportRelativePath(targetRepo: string, sha: string): string {
-  return join("records", repoSlug(targetRepo), "commits", `${assertSha(sha)}.md`);
+  return `records/${repoSlug(targetRepo)}/commits/${assertSha(sha)}.md`;
 }
 
 function artifactReportRelativePath(targetRepo: string, sha: string): string {

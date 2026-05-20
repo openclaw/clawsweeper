@@ -103,10 +103,17 @@ export function selectCommentsForRouting({
 }
 
 export function isAllowedMutationActor(login: JsonValue, trustedBots: Iterable<string>) {
-  const actor = normalizeGitHubActor(login);
+  const actor = String(login ?? "")
+    .trim()
+    .toLowerCase();
   if (!actor) return false;
   for (const trustedBot of trustedBots) {
-    if (normalizeGitHubActor(trustedBot) === actor) return true;
+    if (
+      String(trustedBot ?? "")
+        .trim()
+        .toLowerCase() === actor
+    )
+      return true;
   }
   return false;
 }
@@ -180,6 +187,8 @@ export function appendLedger(current: LooseRecord, entries: LooseRecord[]) {
         repo: entry.repo,
         issue_number: entry.issue_number,
         author: entry.author,
+        author_id: entry.author_id ?? null,
+        author_name: entry.author_name ?? null,
         author_association: entry.author_association,
         trigger: entry.trigger,
         command: entry.command,

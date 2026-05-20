@@ -37,6 +37,7 @@ import {
   automergeShepherdWaitConfig,
   canUseAutomergeFastRebase,
 } from "./automerge-shepherd.js";
+import { automergeOutcomeReviewedShaFromResult } from "./automerge-outcome.js";
 import { isCanonicalLandingNeedsHumanText } from "./comment-router-core.js";
 import { parsePullRequestUrl, pullRequestNumberFromUrl } from "./github-ref.js";
 import {
@@ -70,6 +71,7 @@ import { compactText, escapeRegExp } from "./text-utils.js";
 import {
   shouldCloseSupersededSourcePrs,
   shouldSeedReplacementBranchFromSource,
+  sourceBranchWriteBlockReason,
 } from "./execute-fix-policy.js";
 import { replacementLabelsToCopy } from "./replacement-labels.js";
 import {
@@ -114,6 +116,7 @@ import {
   fetchSourcePullRequestView,
   prepareReviewThreadsForMerge,
   publicContributorCredit,
+  sourceClosingReferences,
   sourceContributorCredits,
   supersededReplacementSources,
 } from "./execute-fix-github.js";
@@ -458,6 +461,7 @@ updateAutomergeProgressStatus({
 if (plannedFixActions.length === 0) {
   report.status = "skipped";
   report.reason = "no planned fix actions";
+  appendAutomergeRepairOutcomeComment(report, resultPath);
   writeReport(report, resultPath);
   process.exit(0);
 }
@@ -492,7 +496,7 @@ if (NON_EXECUTABLE_REPAIR_STRATEGIES.has(repairStrategy)) {
   process.exit(0);
 }
 
-const fixArtifact = validateFixArtifact(executableFixArtifact);
+let fixArtifact = validateFixArtifact(executableFixArtifact);
 const securityBlock = validateFixSecurityScope({ job, resultPath, fixArtifact, plannedFixActions });
 if (securityBlock) {
   report.status = "skipped";
@@ -526,6 +530,29 @@ if (scopeBlock) {
   });
   writeReport(report, resultPath);
   process.exit(0);
+}
+
+const sourceBranchPreflight = preflightRepairSourceBranchWrite(fixArtifact);
+if (sourceBranchPreflight.status === "replace_uneditable_branch") {
+  report.source_branch_preflight = sourceBranchPreflight;
+  report.actions.push({
+    action: "repair_contributor_branch",
+    status: "blocked",
+    target: sourceBranchPreflight.source_pr,
+    repair_strategy: "repair_contributor_branch",
+    reason: sourceBranchPreflight.reason,
+    fallback: "open_fix_pr",
+  });
+  fixArtifact = {
+    ...fixArtifact,
+    repair_strategy: "replace_uneditable_branch",
+    branch_update_blockers: uniqueStrings([
+      ...(fixArtifact.branch_update_blockers ?? []),
+      sourceBranchPreflight.reason,
+    ]),
+  };
+} else if (sourceBranchPreflight.status !== "not_applicable") {
+  report.source_branch_preflight = sourceBranchPreflight;
 }
 
 workRoot =
@@ -777,6 +804,52 @@ function shouldPromoteNeedsHumanReplacement(fixArtifact: LooseRecord, workerResu
   return hasReplacementDecision && hasUneditableOrUnsafeSource && hasBlockedFixAction;
 }
 
+function preflightRepairSourceBranchWrite(fixArtifact: LooseRecord) {
+  if (fixArtifact.repair_strategy !== "repair_contributor_branch") {
+    return { status: "not_applicable" };
+  }
+  const sourcePr = firstSourcePullRequest(fixArtifact);
+  const pull = fetchPullRequest(result.repo, sourcePr.number);
+  if (pull.state !== "open") {
+    return {
+      status: "blocked",
+      source_pr: sourcePr.url,
+      reason: `source PR #${sourcePr.number} is ${pull.state}`,
+    };
+  }
+  const pauseBlock = liveRepairPauseBlock({
+    pull,
+    number: sourcePr.number,
+    target: sourcePr.url,
+  });
+  if (pauseBlock) {
+    return {
+      status: "blocked",
+      source_pr: sourcePr.url,
+      reason: pauseBlock.reason,
+    };
+  }
+  const branchBlock = sourceBranchWriteBlockReason(result.repo, pull);
+  if (!branchBlock) {
+    return {
+      status: "writable",
+      source_pr: sourcePr.url,
+      head_repo: pull.head.repo.full_name,
+      head_ref: pull.head.ref,
+      same_repo_branch: pull.head.repo.full_name === result.repo,
+      maintainer_can_modify: pull.maintainer_can_modify === true,
+    };
+  }
+  return {
+    status: "replace_uneditable_branch",
+    source_pr: sourcePr.url,
+    head_repo: pull.head?.repo?.full_name ?? null,
+    head_ref: pull.head?.ref ?? null,
+    maintainer_can_modify: pull.maintainer_can_modify === true,
+    reason: `source PR #${sourcePr.number} ${branchBlock}`,
+  };
+}
+
 function executeRepairBranch({ fixArtifact, targetDir }: LooseRecord) {
   const baseBranch = String(process.env.CLAWSWEEPER_FIX_BASE_BRANCH ?? DEFAULT_BASE_BRANCH);
   const sourcePr = firstSourcePullRequest(fixArtifact);
@@ -792,9 +865,8 @@ function executeRepairBranch({ fixArtifact, targetDir }: LooseRecord) {
   if (!pull.head?.repo?.full_name || !pull.head?.ref)
     throw new Error(`source PR #${sourcePr.number} is missing head repo/ref`);
   const sameRepoBranch = pull.head.repo.full_name === result.repo;
-  if (pull.maintainer_can_modify !== true && !sameRepoBranch) {
-    throw new Error(`source PR #${sourcePr.number} has maintainer_can_modify=false`);
-  }
+  const branchBlock = sourceBranchWriteBlockReason(result.repo, pull);
+  if (branchBlock) throw new Error(`source PR #${sourcePr.number} ${branchBlock}`);
 
   const branch = safeBranchName(
     `clawsweeper-repair/repair-${result.cluster_id}-${sourcePr.number}`,
@@ -1026,6 +1098,7 @@ function openReplacementPrFromPreparedRepairCheckout({
     targetDir,
     repo: result.repo,
   });
+  const mergedSource = mergedReplacementSourcePr({ fixArtifact, sourcePr, targetDir });
   const branch = replacementBranchName(result.cluster_id);
   const areaCapacityBlock = validateActivePrAreaCapacity({
     fixArtifact,
@@ -1049,6 +1122,17 @@ function openReplacementPrFromPreparedRepairCheckout({
 
   ghAuthSetupGit(targetDir);
   run("git", ["checkout", "-B", branch], { cwd: targetDir });
+  const mergedSourceSkip = skipMergedSourceReplacementWithoutDiff({
+    mergedSource,
+    targetDir,
+    baseBranch,
+    branch,
+    fallbackReason,
+    sourcePr,
+    prep,
+    contributorCredits,
+  });
+  if (mergedSourceSkip) return mergedSourceSkip;
   if (!branchHasBaseDiff({ targetDir, baseBranch })) {
     logProgress("prepared replacement branch has no changes versus base; skipping PR create", {
       branch,
@@ -1084,6 +1168,12 @@ function openReplacementPrFromPreparedRepairCheckout({
     clusterId: result.cluster_id,
     provenance,
     contributorCredits,
+    maintainerAttribution: jobMaintainerAttribution(),
+    sourceClosingReferences: sourceClosingReferences({
+      fixArtifact,
+      targetDir,
+      repo: result.repo,
+    }),
   });
   const bodyPath = path.join(workRoot, "replacement-pr-body.md");
   fs.writeFileSync(bodyPath, body);
@@ -1355,6 +1445,7 @@ function executeReplacementBranch({
     targetDir,
     repo: result.repo,
   });
+  const mergedSource = mergedReplacementSourcePr({ fixArtifact, targetDir });
   const branch = replacementBranchName(result.cluster_id);
   const areaCapacityBlock = validateActivePrAreaCapacity({
     fixArtifact,
@@ -1414,6 +1505,12 @@ function executeReplacementBranch({
     clusterId: result.cluster_id,
     provenance,
     contributorCredits,
+    maintainerAttribution: jobMaintainerAttribution(),
+    sourceClosingReferences: sourceClosingReferences({
+      fixArtifact,
+      targetDir,
+      repo: result.repo,
+    }),
   });
   if (dryRun) {
     return {
@@ -1430,6 +1527,16 @@ function executeReplacementBranch({
   }
 
   if (!branchHasBaseDiff({ targetDir, baseBranch })) {
+    const mergedSourceSkip = skipMergedSourceReplacementWithoutDiff({
+      mergedSource,
+      targetDir,
+      baseBranch,
+      branch,
+      prep,
+      contributorCredits,
+      resumedBranch: branchState.resumed,
+    });
+    if (mergedSourceSkip) return mergedSourceSkip;
     logProgress("replacement branch has no changes versus base; skipping PR create", {
       branch,
       base_branch: baseBranch,
@@ -1529,6 +1636,70 @@ function executeReplacementBranch({
     superseded_sources: supersededSources,
     superseded_source_actions: supersededSourceActions,
     contributor_credit: contributorCredits.map(publicContributorCredit),
+  };
+}
+
+function mergedReplacementSourcePr({ fixArtifact, sourcePr = null, targetDir }: LooseRecord) {
+  const sources = [...(sourcePr?.url ? [sourcePr.url] : []), ...(fixArtifact.source_prs ?? [])];
+  for (const source of uniqueStrings(sources)) {
+    const parsed = parsePullRequestUrl(source);
+    if (!parsed || parsed.repo !== result.repo) continue;
+    const view = fetchSourcePullRequestView({
+      repo: result.repo,
+      number: parsed.number,
+      targetDir,
+    });
+    if (view.mergedAt || view.state === "MERGED") {
+      return {
+        source,
+        pr: `#${parsed.number}`,
+        merged_at: view.mergedAt ?? null,
+      };
+    }
+  }
+  return null;
+}
+
+function skipMergedSourceReplacementWithoutDiff({
+  mergedSource,
+  targetDir,
+  baseBranch,
+  branch,
+  fallbackReason = null,
+  sourcePr = null,
+  prep,
+  contributorCredits,
+  resumedBranch = null,
+}: LooseRecord) {
+  if (!mergedSource) return null;
+  if (branchHasBaseDiff({ targetDir, baseBranch })) return null;
+  logProgress(
+    "source PR already merged and replacement branch has no changes; skipping PR create",
+    {
+      branch,
+      base_branch: baseBranch,
+      source_pr: mergedSource.source,
+      merged_at: mergedSource.merged_at ?? null,
+    },
+  );
+  return {
+    action: "open_fix_pr",
+    status: "skipped",
+    branch,
+    ...(resumedBranch !== null ? { resumed_branch: resumedBranch } : {}),
+    repair_strategy: "replace_uneditable_branch",
+    ...(sourcePr ? { fallback_from: "repair_contributor_branch" } : {}),
+    ...(sourcePr?.url ? { fallback_source_pr: sourcePr.url } : {}),
+    ...(fallbackReason ? { fallback_reason: fallbackReason } : {}),
+    commit: prep.commit,
+    checkpoint_commits: prep.checkpoint_commits,
+    merge_preflight: prep.merge_preflight,
+    supersede_sources: [],
+    merged_source_pr: mergedSource.pr,
+    merged_source_url: mergedSource.source,
+    merged_source_at: mergedSource.merged_at ?? null,
+    contributor_credit: contributorCredits.map(publicContributorCredit),
+    reason: "source PR already merged and replacement branch has no changes versus base",
   };
 }
 
@@ -3115,6 +3286,16 @@ function setupGitIdentity(cwd: JsonValue) {
   run("git", ["config", "user.email", clawsweeperGitUserEmail()], { cwd });
 }
 
+function jobMaintainerAttribution() {
+  const author = String(job.frontmatter.requested_by ?? "").trim();
+  if (!author) return null;
+  return {
+    author,
+    author_id: job.frontmatter.requested_by_id ?? null,
+    comment_url: job.frontmatter.request_comment_url ?? null,
+  };
+}
+
 function firstSourcePullRequest(fixArtifact: LooseRecord) {
   for (const source of fixArtifact.source_prs ?? []) {
     const parsed = parsePullRequestUrl(source);
@@ -3410,6 +3591,7 @@ function appendAutomergeRepairOutcomeComment(report: LooseRecord, resultPath: st
   }
 
   const continuation = continueAutomergeAfterNoopRepair({ target });
+  const reviewedSha = continuation.head_sha ?? automergeOutcomeReviewedSha();
   const body = automergeRepairOutcomeComment({
     marker,
     result,
@@ -3418,7 +3600,7 @@ function appendAutomergeRepairOutcomeComment(report: LooseRecord, resultPath: st
     provenance: externalMessageProvenance({
       model,
       reasoning: codexReasoningEffort,
-      reviewedSha: automergeOutcomeReviewedSha(),
+      reviewedSha,
     }),
   });
   const existingStatus = findAutomergeStatusComment(target);
@@ -3433,7 +3615,7 @@ function appendAutomergeRepairOutcomeComment(report: LooseRecord, resultPath: st
         completedAt: new Date().toISOString(),
         durationMs: Date.now() - scriptStartedAt.getTime(),
         runUrl: currentActionsRunUrl(),
-        headSha: automergeOutcomeReviewedSha(),
+        headSha: reviewedSha,
         status: "no branch change",
         details: report?.reason ?? "no executable fix action",
       },
@@ -3459,9 +3641,9 @@ function appendAutomergeRepairOutcomeComment(report: LooseRecord, resultPath: st
 }
 
 function continueAutomergeAfterNoopRepair({ target }: LooseRecord) {
-  const commit = automergeOutcomeReviewedSha();
-  if (!commit) return { status: "skipped", reason: "missing reviewed head SHA" };
   const view = fetchPullRequestViewForRepo({ repo: result.repo, number: target });
+  const commit = automergeOutcomeReviewedSha({ target, targetView: view });
+  if (!commit) return { status: "skipped", reason: "missing reviewed head SHA" };
   const comments = issueCommentsFor(target);
   const readiness = automergeShepherdReadiness({
     view,
@@ -3810,14 +3992,13 @@ function automergeOutcomeTargetPrNumber() {
   return clusterMatch ? Number(clusterMatch[1]) : 0;
 }
 
-function automergeOutcomeReviewedSha() {
-  return (
-    result.reviewed_sha ??
-    result.head_sha ??
-    result.canonical?.pull_request?.head_sha ??
-    result.canonical_item?.pull_request?.head_sha ??
-    null
-  );
+function automergeOutcomeReviewedSha({ target = undefined, targetView = null }: LooseRecord = {}) {
+  return automergeOutcomeReviewedShaFromResult({
+    result,
+    repo: result.repo,
+    target,
+    targetView,
+  });
 }
 
 function automergeOutcomeMarker({ target, resultPath }: LooseRecord) {

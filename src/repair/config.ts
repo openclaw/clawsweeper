@@ -12,7 +12,7 @@ import {
 export { DEFAULT_HEAD_PREFIX, DEFAULT_TARGET_REPO } from "./constants.js";
 
 const DEFAULT_ALLOWED_ASSOCIATIONS = ["OWNER", "MEMBER", "COLLABORATOR"];
-const DEFAULT_TRUSTED_BOTS = [
+export const DEFAULT_TRUSTED_BOTS = [
   "clawsweeper[bot]",
   "openclaw-clawsweeper[bot]",
   "valkyriweb-clawsweeper[bot]",

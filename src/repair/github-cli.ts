@@ -118,6 +118,26 @@ export function ghPagedLimit<T = JsonValue>(
   return out.slice(0, max);
 }
 
+export function ghPagedLimitWithRetry<T = JsonValue>(
+  apiPath: string,
+  limit: number,
+  options: GhRetryOptions | number = {},
+): T[] {
+  const resolved = resolveRetryOptions(options);
+  const attempts = Math.max(1, resolved.attempts ?? 6);
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      return ghPagedLimit<T>(apiPath, limit, resolved);
+    } catch (error) {
+      lastError = error;
+      if (attempt >= attempts || !shouldRetryGh(error)) throw error;
+      sleepMs(Math.min(1000 * attempt, 5000));
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error(String(lastError));
+}
+
 export function ghText(ghArgs: string[], options: GhRunOptions = {}): string {
   const text = execFileSync("gh", ghArgs, {
     cwd: options.cwd ?? repoRoot(),

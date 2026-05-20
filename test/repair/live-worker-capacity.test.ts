@@ -11,19 +11,19 @@ import {
 } from "../../dist/repair/live-worker-capacity.js";
 
 test("live worker capacity refuses limits above the global Codex cap", () => {
-  assert.equal(MAX_LIVE_WORKERS, 80);
-  assert.equal(readMaxLiveWorkers({ "max-live-workers": "80" }), 80);
+  assert.equal(MAX_LIVE_WORKERS, 57);
+  assert.equal(readMaxLiveWorkers({ "max-live-workers": "57" }), 57);
   assert.throws(
-    () => readMaxLiveWorkers({ "max-live-workers": "81" }),
-    /max-live-workers must be <= 80/,
+    () => readMaxLiveWorkers({ "max-live-workers": "58" }),
+    /max-live-workers must be <= 57/,
   );
 });
 
 test("live worker capacity accepts env default within the global Codex cap", () => {
   const previous = process.env.CLAWSWEEPER_MAX_LIVE_WORKERS;
-  process.env.CLAWSWEEPER_MAX_LIVE_WORKERS = "75";
+  process.env.CLAWSWEEPER_MAX_LIVE_WORKERS = "55";
   try {
-    assert.equal(readMaxLiveWorkers(), 75);
+    assert.equal(readMaxLiveWorkers(), 55);
   } finally {
     if (previous === undefined) delete process.env.CLAWSWEEPER_MAX_LIVE_WORKERS;
     else process.env.CLAWSWEEPER_MAX_LIVE_WORKERS = previous;
@@ -61,6 +61,7 @@ test("workflow run normalization prefers the human Actions URL", () => {
     "queued",
   );
   assert.equal(run.url, "https://github.com/openclaw/clawsweeper/actions/runs/123");
+  assert.equal(run.updatedAt, null);
 });
 
 test("active workflow runs are filtered from one recent-runs fetch", () => {
@@ -70,6 +71,7 @@ test("active workflow runs are filtered from one recent-runs fetch", () => {
     workflow: "repair-cluster.yml",
     runNamePrefix: "repair cluster ",
     excludeRunNamePrefix: "repair cluster skip",
+    nowMs: Date.parse("2026-05-05T00:06:00.000Z"),
     fetchWorkflowRuns: ({ repo, workflow }) => {
       calls.push({ repo, workflow });
       return [
@@ -111,5 +113,38 @@ test("active workflow runs are filtered from one recent-runs fetch", () => {
   assert.deepEqual(
     runs.map((run) => run.databaseId),
     [3, 2],
+  );
+});
+
+test("stale queued workflow runs do not consume repair capacity", () => {
+  const runs = listActiveWorkflowRuns({
+    nowMs: Date.parse("2026-05-05T08:00:00.000Z"),
+    staleQueuedMs: 60 * 60 * 1000,
+    fetchWorkflowRuns: () => [
+      {
+        id: 1,
+        status: "queued",
+        display_title: "repair cluster stale queued.md",
+        created_at: "2026-05-05T00:00:00.000Z",
+        updated_at: "2026-05-05T00:00:00.000Z",
+      },
+      {
+        id: 2,
+        status: "waiting",
+        display_title: "repair cluster fresh waiting.md",
+        created_at: "2026-05-05T07:30:00.000Z",
+      },
+      {
+        id: 3,
+        status: "in_progress",
+        display_title: "repair cluster old but running.md",
+        created_at: "2026-05-04T00:00:00.000Z",
+      },
+    ],
+  });
+
+  assert.deepEqual(
+    runs.map((run) => run.databaseId),
+    [2, 3],
   );
 });

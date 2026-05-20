@@ -158,7 +158,7 @@ function isAuthorReadOnlyWebhookCommand({
   issue: LooseRecord;
 }) {
   const parsed = parseCommand(String(comment.body ?? ""));
-  if (parsed?.intent !== "re_review") return false;
+  if (parsed?.intent !== "re_review" && parsed?.intent !== "hatch") return false;
   const commentAuthor = normalizedLogin(asRecord(comment.user).login);
   const issueAuthor = normalizedLogin(asRecord(issue.user).login);
   return Boolean(commentAuthor && issueAuthor && commentAuthor === issueAuthor);
