@@ -2575,7 +2575,9 @@ function extractMarkdownSection(body: JsonValue, heading: string): string | null
   const pattern = new RegExp(
     `(?:^|\\n)(?:\\*\\*${escapeRegExp(heading)}\\*\\*|${escapeRegExp(
       heading,
-    )}:)\\s*\\n+([\\s\\S]*?)(?=\\n\\n(?:\\*\\*[^\\n*]{1,80}\\*\\*|[A-Z][^\\n:]{0,80}:\\n)|\\n<details>|\\n<!--|$)`,
+    )}:|(?:✅|ℹ️|⏭️|🚨|💡|🔎)\\s+\\*\\*(?:DONE|INFO|SKIP|P[123])\\*\\*\\s+\\*\\*${escapeRegExp(
+      heading,
+    )}\\*\\*\\s+\\*\\*[^\\n*]+\\*\\*)\\s*\\n+([\\s\\S]*?)(?=\\n\\n(?:(?:\\*\\*[^\\n*]{1,80}\\*\\*)|(?:(?:✅|ℹ️|⏭️|🚨|💡|🔎)\\s+\\*\\*)|[A-Z][^\\n:]{0,80}:\\n)|\\n<details>|\\n<!--|$)`,
     "i",
   );
   return pattern.exec(text)?.[1]?.trim() || null;

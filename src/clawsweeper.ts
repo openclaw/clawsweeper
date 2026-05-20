@@ -5748,13 +5748,13 @@ function publicRealBehaviorProofLine(proof: RealBehaviorProof): string {
 function publicPrRatingLine(rating: PrRating, proof: RealBehaviorProof): string {
   const shiny = hasShinyProof(proof) ? " ✨ media proof bonus" : "";
   const lines = [
-    `Overall: ${themedRatingName(rating.overallTier)}`,
-    `Proof: ${themedRatingName(rating.proofTier)}${shiny}`,
-    `Patch quality: ${themedRatingName(rating.patchTier)}`,
-    `Summary: ${sentence(rating.summary)}`,
+    `Overall ${themedRatingName(rating.overallTier)} with proof ${themedRatingName(
+      rating.proofTier,
+    )}${shiny} and patch quality ${themedRatingName(rating.patchTier)}.`,
+    sentence(rating.summary),
   ];
   if (rating.nextSteps.length) {
-    lines.push("", "Rank-up moves:", ...rating.nextSteps.slice(0, 3).map((step) => `- ${step}`));
+    lines.push("", ...rating.nextSteps.slice(0, 3).map((step) => `- ${step}`));
   }
   lines.push(
     "",
@@ -9121,8 +9121,37 @@ function collapsedDetailsBlock(summary: string, lines: readonly string[]): strin
   return ["<details>", `<summary>${summary}</summary>`, "", body, "", "</details>"].join("\n");
 }
 
-function appendPublicSection(lines: string[], heading: string, body: string): void {
-  lines.push(`**${heading}**`, body, "");
+type ReviewCommentBadge = "DONE" | "INFO" | "SKIP" | "P1" | "P2" | "P3";
+
+function renderReviewCommentBadge(badge: ReviewCommentBadge): string {
+  const symbols: Record<ReviewCommentBadge, string> = {
+    DONE: "✅",
+    INFO: "ℹ️",
+    SKIP: "⏭️",
+    P1: "🚨",
+    P2: "💡",
+    P3: "🔎",
+  };
+  return `${symbols[badge]} **${badge}**`;
+}
+
+function appendPublicSection(
+  lines: string[],
+  heading: string,
+  body: string,
+  options: {
+    badge?: ReviewCommentBadge;
+    headline?: string;
+    metadata?: readonly string[];
+  } = {},
+): void {
+  const badge = options.badge ?? "INFO";
+  const headline = options.headline ?? heading;
+  const metadata = (options.metadata ?? []).filter(Boolean);
+  lines.push(`${renderReviewCommentBadge(badge)} **${heading}** **${headline}**`);
+  if (body.trim()) lines.push("", body.trim());
+  if (metadata.length) lines.push("", ...metadata);
+  lines.push("");
 }
 
 function publicReproducibilityLine(reproductionAssessment: string): string {
@@ -9139,6 +9168,67 @@ function publicSummaryBody(summaryLine: string, reproductionAssessment: string):
   return [summaryLine, publicReproducibilityLine(reproductionAssessment)]
     .filter(Boolean)
     .join("\n\n");
+}
+
+function reviewStatusBadge({
+  hasRealBehaviorProofBlocker,
+  isRepairLoopPass,
+  isPullRequest,
+  isRepairCandidate,
+  hasReviewFindings,
+}: {
+  hasRealBehaviorProofBlocker: boolean;
+  isRepairLoopPass: boolean;
+  isPullRequest: boolean;
+  isRepairCandidate: boolean;
+  hasReviewFindings: boolean;
+}): ReviewCommentBadge {
+  if (hasRealBehaviorProofBlocker) return "P2";
+  if (isRepairLoopPass) return "DONE";
+  if (isPullRequest && isRepairCandidate) return "P2";
+  if (hasReviewFindings) return "P2";
+  if (isPullRequest) return "INFO";
+  return "INFO";
+}
+
+function reviewStatusHeadline({
+  hasRealBehaviorProofBlocker,
+  isRepairLoopPass,
+  isPullRequest,
+  isRepairCandidate,
+  hasReviewFindings,
+}: {
+  hasRealBehaviorProofBlocker: boolean;
+  isRepairLoopPass: boolean;
+  isPullRequest: boolean;
+  isRepairCandidate: boolean;
+  hasReviewFindings: boolean;
+}): string {
+  if (hasRealBehaviorProofBlocker) return "Needs real behavior proof before merge";
+  if (isRepairLoopPass) return "Passed review";
+  if (isPullRequest && isRepairCandidate) return "Needs changes before merge";
+  if (hasReviewFindings) return "Found issues before merge";
+  if (isPullRequest) return "Needs maintainer review before merge";
+  return "Keep open for maintainer follow-up";
+}
+
+function legacyReviewStatusLine(headline: string): string {
+  if (headline === "Passed review") return "Codex review: passed.";
+  if (headline === "Needs real behavior proof before merge") {
+    return "Codex review: needs real behavior proof before merge.";
+  }
+  if (headline === "Needs changes before merge") return "Codex review: needs changes before merge.";
+  if (headline === "Found issues before merge") return "Codex review: found issues before merge.";
+  if (headline === "Needs maintainer review before merge") {
+    return "Codex review: needs maintainer review before merge.";
+  }
+  return `Codex review: ${headline.toLowerCase()}.`;
+}
+
+function reviewedHeadFooter(markdown: string): string {
+  const sha = frontMatterValue(markdown, "pull_head_sha");
+  const reviewed = sha ? ` · reviewed against ${String(sha).slice(0, 12)}` : "";
+  return `_ClawSweeper 🐠${reviewed}._`;
 }
 
 function publicMergeRiskLine(
@@ -9342,18 +9432,18 @@ function renderKeepOpenCommentFromReport(
     : "";
   const details: string[] = [];
   const hasReviewFindings = isPullRequest && reviewFindings.length > 0;
+  const statusContext = {
+    hasRealBehaviorProofBlocker,
+    isRepairLoopPass,
+    isPullRequest,
+    isRepairCandidate,
+    hasReviewFindings,
+  };
   const lines = [
-    hasRealBehaviorProofBlocker
-      ? "Codex review: needs real behavior proof before merge."
-      : isRepairLoopPass
-        ? "Codex review: passed."
-        : isPullRequest && isRepairCandidate
-          ? "Codex review: needs changes before merge."
-          : hasReviewFindings
-            ? "Codex review: found issues before merge."
-            : isPullRequest
-              ? "Codex review: needs maintainer review before merge."
-              : "Codex review: keeping this open for maintainer follow-up; there is still a little grit to resolve.",
+    `${renderReviewCommentBadge(reviewStatusBadge(statusContext))} **Codex review** **${reviewStatusHeadline(
+      statusContext,
+    )}**`,
+    `<!-- ${legacyReviewStatusLine(reviewStatusHeadline(statusContext))} -->`,
     "",
     ...reviewWorkflowCallout(),
   ];
@@ -9362,9 +9452,13 @@ function renderKeepOpenCommentFromReport(
       lines,
       "Summary",
       publicSummaryBody(changeSummaryLine, reproductionAssessment),
+      { badge: "INFO", headline: "Review the changed behavior" },
     );
   } else {
-    appendPublicSection(lines, "Summary", publicSummaryBody(summaryLine, reproductionAssessment));
+    appendPublicSection(lines, "Summary", publicSummaryBody(summaryLine, reproductionAssessment), {
+      badge: "INFO",
+      headline: "Review the reported behavior",
+    });
   }
   if (!isPullRequest) {
     const reproductionHelp = issueReproductionHelpSuggestions(markdown);
@@ -9372,28 +9466,71 @@ function renderKeepOpenCommentFromReport(
       appendPublicSection(
         lines,
         "Ways to help us reproduce this",
-        reproductionHelp.map((suggestion) => `- ${suggestion}`).join("\n"),
+        "The report is still missing enough real-world detail to reproduce the issue confidently.",
+        {
+          badge: "P3",
+          headline: "Add concrete reproduction evidence",
+          metadata: reproductionHelp.map((suggestion) => `- ${suggestion}`),
+        },
       );
     }
   }
   if (isPullRequest) {
-    appendPublicSection(lines, "PR rating", publicPrRatingLine(prRating, realBehaviorProof));
+    appendPublicSection(lines, "PR rating", publicPrRatingLine(prRating, realBehaviorProof), {
+      badge: isRepairLoopPass ? "DONE" : "INFO",
+      headline: "Rate readiness from proof and patch quality",
+    });
     appendPublicSection(
       lines,
       "Real behavior proof",
       publicRealBehaviorProofLine(realBehaviorProof),
+      {
+        badge: realBehaviorProofBlocksMerge(markdown) ? "P2" : "DONE",
+        headline: "Assess whether proof is merge-ready",
+      },
     );
   }
   const mantisSuggestion = isPullRequest
     ? publicMantisRecommendationBlock(mantisRecommendation)
     : "";
-  if (mantisSuggestion) appendPublicSection(lines, "Mantis proof suggestion", mantisSuggestion);
-  if (mergeRiskLine) appendPublicSection(lines, "Risk before merge", mergeRiskLine);
-  appendPublicSection(lines, isPullRequest ? "Next step before merge" : "Next step", nextStepLine);
+  if (mantisSuggestion) {
+    appendPublicSection(lines, "Mantis proof suggestion", mantisSuggestion, {
+      badge: "INFO",
+      headline: "Collect stronger validation evidence",
+    });
+  }
+  if (mergeRiskLine) {
+    appendPublicSection(lines, "Risk before merge", mergeRiskLine, {
+      badge: "P2",
+      headline: "Resolve the remaining merge risk",
+    });
+  }
+  appendPublicSection(lines, isPullRequest ? "Next step before merge" : "Next step", nextStepLine, {
+    badge: isRepairLoopPass ? "DONE" : isRepairCandidate ? "P2" : "INFO",
+    headline: isPullRequest ? "Take the next merge decision" : "Take the next triage step",
+  });
   const securityLine = publicSecurityReviewLine(securityReview);
-  if (securityLine) appendPublicSection(lines, "Security", securityLine);
+  if (securityLine) {
+    appendPublicSection(lines, "Security", securityLine, {
+      badge: securityReview.status === "needs_attention" ? "P2" : "DONE",
+      headline:
+        securityReview.status === "needs_attention"
+          ? "Confirm the security-sensitive change"
+          : "No security blocker found",
+    });
+  }
   if (isPullRequest && reviewFindings.length) {
-    lines.push("**Review findings**", ...reviewFindings.slice(0, 3).map(reviewFindingSummaryLine));
+    const highestPriority = Math.min(...reviewFindings.map((finding) => finding.priority));
+    appendPublicSection(
+      lines,
+      "Review findings",
+      "ClawSweeper found focused review comments that should be addressed before merge.",
+      {
+        badge: highestPriority === 1 ? "P1" : highestPriority === 2 ? "P2" : "P3",
+        headline: "Address the highest-signal findings",
+        metadata: reviewFindings.slice(0, 3).map(reviewFindingSummaryLine),
+      },
+    );
   }
   if (bestSolutionLine && publicReviewTextDiffers(bestSolutionLine, nextStepLine)) {
     details.push("Best possible solution:", "", bestSolutionLine);
@@ -9450,6 +9587,7 @@ function renderKeepOpenCommentFromReport(
   if (reviewLine) details.push("", reviewLine);
   const detailsBlock = collapsedDetailsBlock("Review details", details);
   if (detailsBlock) lines.push("", detailsBlock);
+  lines.push("", reviewedHeadFooter(markdown));
   return sanitizePublicSelfReferences(
     lines.join("\n"),
     Number(frontMatterValue(markdown, "number")),

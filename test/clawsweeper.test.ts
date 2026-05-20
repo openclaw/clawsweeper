@@ -2311,7 +2311,7 @@ Reason: Maintainers should review the tests after the targeted lane is green.
   );
   assert.match(
     comment,
-    /\*\*Summary\*\*\nAdds regression coverage for session-scoped model overrides\./,
+    /ℹ️ \*\*INFO\*\* \*\*Summary\*\* \*\*Review the changed behavior\*\*\n\nAdds regression coverage for session-scoped model overrides\./,
   );
   assert.match(comment, /\*\*Next step before merge\*\*/);
   assert.match(comment, /Maintainers should review the tests after the targeted lane is green\./);
@@ -2370,7 +2370,7 @@ Reason: The bug is narrow and source-reproducible.
 
   assert.match(
     comment,
-    /\*\*Summary\*\*\nKeep open\. Slack typing callbacks are disabled in message-tool-only group replies\.\n\nReproducibility: yes\. A source-level reproduction is clear/,
+    /ℹ️ \*\*INFO\*\* \*\*Summary\*\* \*\*Review the reported behavior\*\*\n\nKeep open\. Slack typing callbacks are disabled in message-tool-only group replies\.\n\nReproducibility: yes\. A source-level reproduction is clear/,
   );
   assert.ok(comment.indexOf("Reproducibility: yes.") < comment.indexOf("**Next step**"));
   assert.doesNotMatch(comment, /\*\*Ways to help us reproduce this\*\*/);
@@ -2559,7 +2559,7 @@ Reason: The fix is narrow and can be made on the PR branch.
   );
   assert.match(
     comment,
-    /\*\*Review findings\*\*\n- \[P1\] Validate replace paths — `src\/config\/apply\.ts:42-44`/,
+    /🚨 \*\*P1\*\* \*\*Review findings\*\* \*\*Address the highest-signal findings\*\*[\s\S]*- \[P1\] Validate replace paths — `src\/config\/apply\.ts:42-44`/,
   );
   assert.match(comment, /Full review comments:/);
   assert.match(comment, /A misspelled replace path is currently ignored/);
@@ -2595,7 +2595,7 @@ Land this docs-only PR after maintainer review.
 
   assert.match(
     comment,
-    /\*\*Next step before merge\*\*\nLand this docs-only PR after maintainer review\./,
+    /ℹ️ \*\*INFO\*\* \*\*Next step before merge\*\* \*\*Take the next merge decision\*\*\n\nLand this docs-only PR after maintainer review\./,
   );
   assert.doesNotMatch(comment, /Best possible solution:/);
 });
@@ -2639,7 +2639,10 @@ Full review comments:
   );
 
   assert.match(comment, /Codex review: passed\./);
-  assert.match(comment, /\*\*Next step before merge\*\*\nMerge after required checks are green\./);
+  assert.match(
+    comment,
+    /✅ \*\*DONE\*\* \*\*Next step before merge\*\* \*\*Take the next merge decision\*\*\n\nMerge after required checks are green\./,
+  );
   assert.doesNotMatch(comment, /Automerge follow-up:/);
   assert.match(comment, /<!-- clawsweeper-verdict:pass item=74453 sha=abc123def456/);
   assert.doesNotMatch(comment, /clawsweeper-verdict:needs-human/);
@@ -2690,12 +2693,17 @@ Full review comments:
   });
   const markers = reviewAutomationMarkersFromReport(report);
 
-  assert.match(comment, /\*\*PR rating\*\*\nOverall: 🦞 diamond lobster/);
-  assert.match(comment, /Proof: 🦞 diamond lobster/);
-  assert.match(comment, /Patch quality: 🦞 diamond lobster/);
+  assert.match(comment, /✅ \*\*DONE\*\* \*\*PR rating\*\*/);
+  assert.match(
+    comment,
+    /Overall 🦞 diamond lobster with proof 🦞 diamond lobster and patch quality 🦞 diamond lobster\./,
+  );
   assert.match(comment, /<summary>What the crustacean ranks mean<\/summary>/);
   assert.match(comment, /🧂 unranked krab: not merge-ready/);
-  assert.match(comment, /\*\*Real behavior proof\*\*\nSufficient \(terminal\):/);
+  assert.match(
+    comment,
+    /✅ \*\*DONE\*\* \*\*Real behavior proof\*\* \*\*Assess whether proof is merge-ready\*\*\n\nSufficient \(terminal\):/,
+  );
   assert.match(markers, /clawsweeper-verdict:pass/);
   assert.doesNotMatch(markers, /clawsweeper-verdict:needs-human/);
 });
@@ -2989,8 +2997,11 @@ Full review comments:
 
   const comment = renderReviewCommentFromReport(report, "none");
 
-  assert.match(comment, /\*\*PR rating\*\*\nOverall: 🦀 challenger crab/);
-  assert.match(comment, /Proof: 🦀 challenger crab ✨ media proof bonus/);
+  assert.match(comment, /ℹ️ \*\*INFO\*\* \*\*PR rating\*\*/);
+  assert.match(
+    comment,
+    /Overall 🦀 challenger crab with proof 🦀 challenger crab ✨ media proof bonus and patch quality 🦀 challenger crab\./,
+  );
   assert.match(comment, /Shiny media proof means a screenshot, video, or linked artifact/);
   assert.doesNotMatch(comment, /Rank-up moves:/);
 });
@@ -3860,7 +3871,10 @@ Full review comments:
   const comment = renderReviewCommentFromReport(report, "none");
   const markers = reviewAutomationMarkersFromReport(report);
 
-  assert.match(comment, /\*\*Real behavior proof\*\*\nNot applicable:/);
+  assert.match(
+    comment,
+    /✅ \*\*DONE\*\* \*\*Real behavior proof\*\* \*\*Assess whether proof is merge-ready\*\*\n\nNot applicable:/,
+  );
   assert.match(comment, /only changes files under docs\//);
   assert.match(markers, /clawsweeper-verdict:pass/);
   assert.doesNotMatch(markers, /clawsweeper-verdict:needs-human/);
@@ -4270,7 +4284,7 @@ Full review comments:
   assert.match(comment, /Codex review: passed\./);
   assert.match(
     comment,
-    /\*\*Next step before merge\*\*\nLeave this draft open after fixes are complete\./,
+    /✅ \*\*DONE\*\* \*\*Next step before merge\*\* \*\*Take the next merge decision\*\*\n\nLeave this draft open after fixes are complete\./,
   );
   assert.doesNotMatch(comment, /Autofix follow-up:/);
   assert.match(comment, /<!-- clawsweeper-verdict:pass item=74610 sha=abc123def456/);
@@ -6547,7 +6561,11 @@ Reason: ${duplicateRisk}
     "none",
   );
 
-  assert.ok(comment.includes(`**Next step before merge**\n${duplicateRisk}`));
+  assert.ok(
+    comment.includes(
+      `ℹ️ **INFO** **Next step before merge** **Take the next merge decision**\n\n${duplicateRisk}`,
+    ),
+  );
   assert.doesNotMatch(comment, /Remaining risk \/ open question:/);
   assert.doesNotMatch(comment, /\*\*Risk before merge\*\*/);
   assert.equal(comment.split(duplicateRisk).length - 1, 1);

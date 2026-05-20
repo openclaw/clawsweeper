@@ -1141,7 +1141,7 @@ function markdownSection(body: string, heading: string) {
   const escaped = heading.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const match = String(body ?? "").match(
     new RegExp(
-      `(?:^|\\n)\\*\\*${escaped}\\*\\*\\s*\\n([\\s\\S]*?)(?=\\n\\n\\*\\*|\\n<details|\\n<!--|$)`,
+      `(?:^|\\n)(?:\\*\\*${escaped}\\*\\*|(?:✅|ℹ️|⏭️|🚨|💡|🔎)\\s+\\*\\*(?:DONE|INFO|SKIP|P[123])\\*\\*\\s+\\*\\*${escaped}\\*\\*\\s+\\*\\*[^\\n*]+\\*\\*)\\s*\\n([\\s\\S]*?)(?=\\n\\n(?:\\*\\*|(?:✅|ℹ️|⏭️|🚨|💡|🔎)\\s+\\*\\*)|\\n<details|\\n<!--|$)`,
       "i",
     ),
   );
