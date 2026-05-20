@@ -3138,11 +3138,11 @@ Full review comments:
   assert.match(eggComment, /It is here for vibes, not verdicts/);
   assert.match(
     eggComment,
-    /🔥 Warming up:[\s\S]+### Hatch command[\s\S]+Comment `@clawsweeper hatch` when this PR is `status: 👀 ready for maintainer look`, `status: 🚀 automerge armed`, opted into `clawsweeper:automerge`, merged, or closed\./,
+    /🔥 Warming up:[\s\S]+### Hatch command[\s\S]+Hatchability rules:[\s\S]+- Merged PRs are hatchable\.[\s\S]+- Open PRs are hatchable when they are `status: 👀 ready for maintainer look`, `status: 🚀 automerge armed`, or labeled `clawsweeper:automerge`\.[\s\S]+- Closed unmerged PRs are hatchable only when one of those hatchable labels is still present in the durable record\./,
   );
   assert.match(
     eggComment,
-    /Hatchable usually means sufficient real-behavior proof, no blocking P0\/P1\/P2 findings/,
+    /Hatchability usually comes from sufficient real-behavior proof, no blocking P0\/P1\/P2 findings/,
   );
   assert.match(eggComment, /no security attention needed, and clean correctness/);
   assert.match(eggComment, /Comment `@clawsweeper hatch` when this PR is/);
@@ -3225,7 +3225,7 @@ Full review comments:
   assert.match(first, /Copy: My PR egg hatched a [^\n]+ in ClawSweeper\./);
   assert.match(
     first,
-    /### Hatch command[\s\S]+Comment `@clawsweeper hatch` when this PR is `status: 👀 ready for maintainer look`, `status: 🚀 automerge armed`, opted into `clawsweeper:automerge`, merged, or closed\.[\s\S]+Rarity:/,
+    /### Hatch command[\s\S]+Merged PRs are hatchable\.[\s\S]+Closed unmerged PRs are hatchable only when one of those hatchable labels is still present in the durable record\.[\s\S]+Rarity:/,
   );
   assert.match(first, /same PR keeps the same creature/);
   assert.equal(first, second);
@@ -5089,7 +5089,7 @@ if (args[0] === "api" && /\\/issues\\/74476$/.test(path)) {
   }
 });
 
-test("hatch sync can use archived closed PR records", () => {
+test("hatch sync can use archived merged PR records without hatchable labels", () => {
   const root = mkdtempSync(tmpPrefix);
   try {
     const itemsDir = join(root, "items");
@@ -5177,6 +5177,11 @@ if (args[0] === "api" && /\\/issues\\/74479$/.test(path)) {
   } else {
     console.log(JSON.stringify([[]]));
   }
+} else if (args[0] === "api" && /\\/pulls\\/74479$/.test(path)) {
+  console.log(JSON.stringify({
+    merged: true,
+    merged_at: "2026-05-19T21:00:00Z"
+  }));
 } else {
   console.error("unexpected gh args", JSON.stringify(args));
   process.exit(1);
@@ -5214,12 +5219,62 @@ if (args[0] === "api" && /\\/issues\\/74479$/.test(path)) {
     const hatchBody = calls.find((args) => args[0] === "comment-body")?.[1] ?? "";
     assert.match(hatchBody, /✨ Hatched: [^\n]+/);
     assert.match(hatchBody, /### Hatch command/);
-    assert.match(hatchBody, /merged, or closed/);
+    assert.match(hatchBody, /Merged PRs are hatchable/);
+    assert.match(
+      hatchBody,
+      /Closed unmerged PRs are hatchable only when one of those hatchable labels/,
+    );
     assert.doesNotMatch(hatchBody, /```text/);
     assert.match(hatchBody, /clawsweeper-pr-egg-hatch:74479/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("closed PR egg hatch still requires hatchable durable labels", () => {
+  const report = `${reportFrontMatter({
+    repository: "openclaw/clawsweeper",
+    type: "pull_request",
+    number: "74480",
+    title: "Closed without hatch label",
+    url: "https://github.com/openclaw/clawsweeper/pull/74480",
+    decision: "keep_open",
+    close_reason: "none",
+    confidence: "high",
+    action_taken: "kept_open",
+    review_status: "complete",
+    local_checkout_access: "verified",
+    author: "contributor",
+    author_association: "CONTRIBUTOR",
+    labels: JSON.stringify(["proof: sufficient"]),
+    current_state: "closed",
+    current_item_closed_at: "2026-05-19T21:00:00Z",
+    pull_head_sha: "abc123def456",
+  })}
+
+## Summary
+
+This PR closed after review.
+
+${realBehaviorProofReportSection()}
+
+${prRatingReportSection()}
+
+## Review Findings
+
+Overall correctness: patch is correct
+
+Overall confidence: 0.95
+
+Full review comments:
+
+- none
+`;
+
+  const eggComment = renderPrEggCommentForTest(74480, report);
+  assert.match(eggComment, /🥚 Incubating:/);
+  assert.match(eggComment, /clawsweeper:automerge/);
+  assert.doesNotMatch(eggComment, /✨ Hatched:/);
 });
 
 test("normal PR comment sync moves PR egg into a separate marker-backed comment", () => {

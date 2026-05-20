@@ -3751,6 +3751,16 @@ function fetchItem(number: number): { item: Item; state: string } {
   };
 }
 
+function fetchPullRequestMerged(number: number): boolean {
+  const pull = ghJson<{ merged?: boolean; merged_at?: string | null }>([
+    "api",
+    `repos/${targetRepo()}/pulls/${number}`,
+    "--jq",
+    "{merged:.merged,merged_at:.merged_at}",
+  ]);
+  return pull.merged === true || typeof pull.merged_at === "string";
+}
+
 function fetchOpenItemCounts(): OpenItemCounts {
   const [owner, name] = targetRepo().split("/");
   if (!owner || !name) throw new Error(`Invalid target repo: ${targetRepo()}`);
@@ -5536,17 +5546,33 @@ function prStatusLabelKindFromLabels(labels: readonly string[]): PrStatusLabelKi
 }
 
 function prEggStatusLabelKindFromReportLabels(markdown: string): PrStatusLabelKind | null {
-  const fromParsedLabels = prStatusLabelKindFromLabels(frontMatterStringArray(markdown, "labels"));
+  const parsedLabels = frontMatterStringArray(markdown, "labels");
+  const fromParsedLabels = prStatusLabelKindFromLabels(parsedLabels);
   if (fromParsedLabels) return fromParsedLabels;
+  if (parsedLabels.includes(AUTOMERGE_LABEL)) return "automerge_armed";
   const rawLabels = frontMatterValue(markdown, "labels") ?? "";
+  if (rawLabels.includes(AUTOMERGE_LABEL)) return "automerge_armed";
   return PR_STATUS_LABELS.find((label) => rawLabels.includes(label.name))?.kind ?? null;
 }
 
-function prEggStateFromStatus(
+function prEggIsMergedFromReport(markdown: string): boolean {
+  return (
+    nonUnknownFrontMatter(markdown, "merged_at") !== null ||
+    nonUnknownFrontMatter(markdown, "pull_merged_at") !== null ||
+    frontMatterValue(markdown, "merged") === "true"
+  );
+}
+
+function prEggRenderStatusKind(
+  markdown: string,
   statusKind: PrStatusLabelKind | null | undefined,
-  options: { hatchableAfterClose?: boolean } = {},
-): PrEggState {
-  if (options.hatchableAfterClose) return "hatched";
+): PrStatusLabelKind | null {
+  if (statusKind) return statusKind;
+  if (prEggIsMergedFromReport(markdown)) return "ready_for_maintainer_look";
+  return null;
+}
+
+function prEggStateFromStatus(statusKind: PrStatusLabelKind | null | undefined): PrEggState {
   if (statusKind === "ready_for_maintainer_look" || statusKind === "automerge_armed") {
     return "hatched";
   }
@@ -5578,7 +5604,6 @@ function publicPrEggLine(
     securityReview: Pick<SecurityReview, "status">;
     overallCorrectness: OverallCorrectness;
     statusKind?: PrStatusLabelKind | null;
-    hatchableAfterClose?: boolean;
   },
 ): string {
   if (!prEggProofUnlocked(options.realBehaviorProof)) {
@@ -5598,14 +5623,17 @@ function publicPrEggLine(
 
   const identitySeed = prEggIdentitySeedFromReport(markdown);
   const visualSeed = prEggVisualSeedFromReport(markdown);
-  const state = prEggStateFromStatus(
-    options.statusKind,
-    options.hatchableAfterClose ? { hatchableAfterClose: true } : {},
-  );
+  const renderStatusKind = prEggRenderStatusKind(markdown, options.statusKind);
+  const state = prEggStateFromStatus(renderStatusKind);
   const hatchInstruction = [
     "### Hatch command",
     "",
-    "Comment `@clawsweeper hatch` when this PR is `status: 👀 ready for maintainer look`, `status: 🚀 automerge armed`, opted into `clawsweeper:automerge`, merged, or closed.",
+    "Comment `@clawsweeper hatch` when this PR is hatchable.",
+    "",
+    "Hatchability rules:",
+    "- Merged PRs are hatchable.",
+    "- Open PRs are hatchable when they are `status: 👀 ready for maintainer look`, `status: 🚀 automerge armed`, or labeled `clawsweeper:automerge`.",
+    "- Closed unmerged PRs are hatchable only when one of those hatchable labels is still present in the durable record.",
   ].join("\n");
   const explainer = [
     "",
@@ -5614,7 +5642,7 @@ function publicPrEggLine(
     "",
     "- Eggs appear after the PR passes real-behavior proof. It is here for vibes, not verdicts: it does not change labels, ratings, merge decisions, or automation.",
     "- The shell reacts to review momentum: open follow-up work warms it up, re-review makes it wobble, and a clean final review lets it hatch.",
-    "- Hatchable usually means sufficient real-behavior proof, no blocking P0/P1/P2 findings, no security attention needed, and clean correctness.",
+    "- Hatchability usually comes from sufficient real-behavior proof, no blocking P0/P1/P2 findings, no security attention needed, and clean correctness. A merged PR is already final, so merge makes the egg hatchable independently.",
     "- The hatch is seeded from this repository and PR number, so the same PR keeps the same creature; the reviewed head SHA can only change safe visual details.",
     "- Rarity is just collectible sparkle: 🥚 common, 🌱 uncommon, 💎 rare, ✨ glimmer, and 🌈 legendary.",
     "",
@@ -5666,7 +5694,6 @@ function publicPrEggLineFromReport(
     securityReview: Pick<SecurityReview, "status">;
     overallCorrectness: OverallCorrectness;
     statusKind?: PrStatusLabelKind | null;
-    hatchableAfterClose?: boolean;
   } = {
     realBehaviorProof: reportRealBehaviorProof(markdown),
     prRating: reportPrRating(markdown),
@@ -5675,9 +5702,6 @@ function publicPrEggLineFromReport(
     overallCorrectness: reportOverallCorrectness(markdown),
     statusKind:
       statusKind === undefined ? prEggStatusLabelKindFromReportLabels(markdown) : statusKind,
-    hatchableAfterClose:
-      frontMatterValue(markdown, "current_state") === "closed" ||
-      Boolean(frontMatterValue(markdown, "current_item_closed_at")),
   };
   return publicPrEggLine(markdown, options);
 }
@@ -5710,12 +5734,11 @@ function prEggImageAlreadyRecorded(markdown: string): boolean {
 function shouldEnsurePrEggImage(
   markdown: string,
   statusKind: PrStatusLabelKind | null | undefined,
-  options: { hatchableAfterClose?: boolean } = {},
 ): boolean {
   return (
     frontMatterValue(markdown, "type") === "pull_request" &&
     prEggProofUnlocked(reportRealBehaviorProof(markdown)) &&
-    prEggStateFromStatus(statusKind, options) === "hatched" &&
+    prEggStateFromStatus(statusKind) === "hatched" &&
     !prEggImageAlreadyRecorded(markdown)
   );
 }
@@ -10783,8 +10806,6 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
       return currentContext;
     };
     if (hatchOnly) {
-      const statusKind = prEggStatusLabelKindFromReportLabels(markdown);
-      const hatchableAfterClose = state !== "open";
       if (item.kind !== "pull_request") {
         results.push({ number, action: "kept_open", reason: "hatch requires a pull request" });
         processedCount += 1;
@@ -10792,7 +10813,11 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
         if (processedCount >= processedLimit) break;
         continue;
       }
-      if (!dryRun && shouldEnsurePrEggImage(markdown, statusKind, { hatchableAfterClose })) {
+      const merged = state !== "open" && fetchPullRequestMerged(number);
+      const statusKind = merged
+        ? "ready_for_maintainer_look"
+        : prEggStatusLabelKindFromReportLabels(markdown);
+      if (!dryRun && shouldEnsurePrEggImage(markdown, statusKind)) {
         try {
           markdown = (await ensurePrEggImage(markdown)) ?? markdown;
         } catch (error) {
@@ -10803,12 +10828,7 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
           );
         }
       }
-      upsertHatchComment(
-        number,
-        markdown,
-        hatchableAfterClose ? "ready_for_maintainer_look" : statusKind,
-        dryRun,
-      );
+      upsertHatchComment(number, markdown, statusKind, dryRun);
       if (!dryRun) writeFileSync(path, markdown, "utf8");
       results.push({
         number,
