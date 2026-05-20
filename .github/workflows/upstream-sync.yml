@@ -1,7 +1,8 @@
 name: Upstream Sync
 
 # Daily check for new commits on the upstream fork. Opens a PR with the merge
-# (never force-pushes to main). Conflicts arrive as draft PRs.
+# (never force-pushes to main). On conflict: log paths and exit 0 — no PR,
+# no email churn. Resolve manually; the next daily run will pick up again.
 #
 # Source-of-truth registry: ~/Projects/personal/agent-system/FORKS.md
 # Owner routine: CTO agent on Multica (home workspace).
@@ -36,7 +37,7 @@ jobs:
           repositories: clawsweeper
 
       - name: Checkout fork
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
@@ -87,58 +88,32 @@ jobs:
             echo "draft=false" >> "$GITHUB_OUTPUT"
             echo "::notice::Clean merge."
           else
-            # Capture conflicted paths, abort, mark draft.
+            # Conflicts: log paths, abort, exit cleanly. No PR, no email churn.
+            # Subsequent daily runs will keep trying; resolve manually when ready.
             CONFLICTS=$(git diff --name-only --diff-filter=U | head -30)
-            echo "::warning::Merge conflicts:%0A${CONFLICTS}"
+            COUNT=$(echo "${CONFLICTS}" | grep -c . || true)
+            echo "::notice::Conflicts in ${COUNT} file(s); skipping PR. Resolve manually:"
+            echo "${CONFLICTS}"
             git merge --abort
-            # Reset to fork main; PR body will explain.
-            git checkout -B "${BRANCH}" "origin/${FORK_BRANCH}"
-            echo "draft=true" >> "$GITHUB_OUTPUT"
-            echo "conflicts<<EOF" >> "$GITHUB_OUTPUT"
-            echo "${CONFLICTS}" >> "$GITHUB_OUTPUT"
-            echo "EOF" >> "$GITHUB_OUTPUT"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
 
           git push "https://x-access-token:${{ steps.app-token.outputs.token }}@github.com/valkyriweb/clawsweeper.git" "${BRANCH}" --force-with-lease
 
       - name: Open or update PR
-        if: steps.check.outputs.skip != 'true'
+        if: steps.check.outputs.skip != 'true' && steps.merge.outputs.skip != 'true'
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           BRANCH: ${{ steps.merge.outputs.branch }}
           DRAFT: ${{ steps.merge.outputs.draft }}
-          CONFLICTS: ${{ steps.merge.outputs.conflicts }}
           BEHIND: ${{ steps.check.outputs.behind }}
         run: |
           set -e
 
           TITLE="sync: ${UPSTREAM_REPO}@${UPSTREAM_BRANCH} → ${FORK_BRANCH}"
 
-          if [ "${DRAFT}" = "true" ]; then
-            BODY=$(cat <<EOF
-          ⚠️ **Conflict detected** during automated sync from \`${UPSTREAM_REPO}@${UPSTREAM_BRANCH}\`.
-
-          - Commits behind upstream: ${BEHIND}
-          - Conflicted paths:
-          \`\`\`
-          ${CONFLICTS}
-          \`\`\`
-
-          Resolve manually:
-          \`\`\`bash
-          git fetch origin ${BRANCH}
-          git checkout ${BRANCH}
-          git fetch upstream ${UPSTREAM_BRANCH}
-          git merge upstream/${UPSTREAM_BRANCH}
-          # resolve conflicts, then:
-          git push origin ${BRANCH}
-          \`\`\`
-
-          Triggered by daily upstream sync. Registry: \`agent-system/FORKS.md\`.
-          EOF
-          )
-          else
-            BODY=$(cat <<EOF
+          BODY=$(cat <<EOF
           Automated daily sync from \`${UPSTREAM_REPO}@${UPSTREAM_BRANCH}\`.
 
           - Commits pulled: ${BEHIND}
@@ -152,7 +127,6 @@ jobs:
           Registry: \`agent-system/FORKS.md\`.
           EOF
           )
-          fi
 
           # Find existing open PR for this branch, or create one.
           EXISTING=$(gh pr list --repo valkyriweb/clawsweeper --head "${BRANCH}" --state open --json number -q '.[0].number')
@@ -160,20 +134,15 @@ jobs:
             gh pr edit "${EXISTING}" --repo valkyriweb/clawsweeper --title "${TITLE}" --body "${BODY}"
             echo "::notice::Updated existing PR #${EXISTING}."
           else
-            DRAFT_FLAG=""
-            [ "${DRAFT}" = "true" ] && DRAFT_FLAG="--draft"
             PR_URL=$(gh pr create \
               --repo valkyriweb/clawsweeper \
               --base "${FORK_BRANCH}" \
               --head "${BRANCH}" \
               --title "${TITLE}" \
-              --body "${BODY}" \
-              ${DRAFT_FLAG})
+              --body "${BODY}")
             echo "::notice::Opened ${PR_URL}"
             PR_NUM=$(echo "${PR_URL}" | grep -oE '[0-9]+$')
-            LABEL="upstream-sync"
-            [ "${DRAFT}" = "true" ] && LABEL="${LABEL},needs-conflict-resolution"
-            # Best-effort label add (skip silently if labels don't exist yet)
-            gh pr edit "${PR_NUM}" --add-label "${LABEL}" 2>/dev/null || \
-              echo "::warning::Could not add labels (may not exist). Run: gh label create upstream-sync; gh label create needs-conflict-resolution"
+            # Best-effort label add (skip silently if label doesn't exist yet)
+            gh pr edit "${PR_NUM}" --add-label "upstream-sync" 2>/dev/null || \
+              echo "::warning::Could not add label upstream-sync (may not exist). Run: gh label create upstream-sync"
           fi
