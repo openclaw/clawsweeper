@@ -258,6 +258,8 @@ jobs:
         with:
           build-script: build:all
 
+      - uses: ./.github/actions/setup-media-proof-tools
+
       - name: Mark re-review command in progress
         continue-on-error: true
         env:
@@ -921,6 +923,8 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         with:
           login-status: "true"
+
+      - uses: ./clawsweeper/.github/actions/setup-media-proof-tools
 
       - uses: actions/cache@v5
         with:
