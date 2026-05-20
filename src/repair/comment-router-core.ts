@@ -1601,7 +1601,7 @@ function normalizeIntent(command: LooseRecord) {
   ) {
     return "automerge";
   }
-  if (["approve", "approve automerge", "approve merge"].includes(command)) {
+  if (["approve", "approve automerge", "approve merge", "merge"].includes(command)) {
     return "maintainer_approve_automerge";
   }
   if (command === "autoclose" || command.startsWith("autoclose ")) return "autoclose";
