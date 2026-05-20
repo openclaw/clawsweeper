@@ -42,6 +42,7 @@ test("automergeRepairOutcomeComment explains no-op repair runs", () => {
   assert.match(body, /Executor outcome: no planned fix actions\./);
   assert.match(body, /`route_security` on `this PR`: planned - central handling required/);
   assert.match(body, /No branch update, rebase, replacement PR, merge/i);
+  assert.match(body, /ClawSweeper 🐠/);
   assert.match(body, /model gpt-test, reasoning medium; reviewed against 0123456789ab/);
 });
 
@@ -193,6 +194,7 @@ test("external message provenance normalizes accidental xhigh reasoning", () => 
   });
 
   assert.equal(provenance.reasoning, "high");
+  assert.match(body, /ClawSweeper 🐠/);
   assert.match(body, /model gpt-test, reasoning high/);
   assert.doesNotMatch(body, /reasoning xhigh/);
 });

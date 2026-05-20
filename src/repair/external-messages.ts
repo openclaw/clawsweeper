@@ -141,7 +141,7 @@ function fishNotes(provenance: LooseRecord) {
   const reasoning = repairCodexReasoningEffort(provenance?.reasoning);
   const reviewedSha = provenance?.reviewedSha ?? provenance?.reviewed_sha;
   const reviewed = reviewedSha ? `; reviewed against ${String(reviewedSha).slice(0, 12)}` : "";
-  return `fish notes: model ${model}, reasoning ${reasoning}${reviewed}.`;
+  return `_ClawSweeper 🐠 · model ${model}, reasoning ${reasoning}${reviewed}._`;
 }
 
 export function externalMessageProvenance({ model, reasoning, reviewedSha }: LooseRecord = {}) {
