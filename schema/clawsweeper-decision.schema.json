@@ -12,6 +12,11 @@
     "likelyOwners",
     "risks",
     "bestSolution",
+    "triagePriority",
+    "impactLabels",
+    "mergeRiskLabels",
+    "mergeRiskOptions",
+    "labelJustifications",
     "itemCategory",
     "reproductionStatus",
     "reproductionConfidence",
@@ -23,7 +28,9 @@
     "reviewFindings",
     "securityReview",
     "realBehaviorProof",
+    "prRating",
     "telegramVisibleProof",
+    "mantisRecommendation",
     "overallCorrectness",
     "overallConfidenceScore",
     "fixedRelease",
@@ -150,6 +157,113 @@
     "bestSolution": {
       "type": "string",
       "description": "The best possible product/code/docs direction for this item, whether the item should close or stay open. Do not repeat the change summary, workReason, or risk list."
+    },
+    "triagePriority": {
+      "type": "string",
+      "enum": ["P0", "P1", "P2", "P3", "none"],
+      "description": "ClawSweeper-maintained triage priority for maintainers to sort issues and pull requests. P0: Emergency: data loss, security bypass, crash loop, or unusable core runtime. P1: Urgent regression or broken agent/channel workflow affecting real users now. P2: Normal priority bug or improvement with limited blast radius. P3: Low-risk cleanup, docs, polish, ergonomics, or speculative feature. Use none only when no priority label should be applied."
+    },
+    "impactLabels": {
+      "type": "array",
+      "maxItems": 3,
+      "items": {
+        "type": "string",
+        "enum": [
+          "impact:data-loss",
+          "impact:security",
+          "impact:crash-loop",
+          "impact:message-loss",
+          "impact:session-state",
+          "impact:auth-provider"
+        ]
+      },
+      "description": "ClawSweeper-owned GitHub impact labels for maintainers to find the affected problem class on issues. Use [] for pull requests. These describe what the issue is about, not PR merge risk. Use at most 3. impact:data-loss: This issue is about lost, corrupted, or silently dropped user/session/config data. impact:security: This issue is about security boundaries, credentials, authz, sandboxing, or sensitive data. impact:crash-loop: This issue is about crashes, hangs, restart loops, or process-level availability. impact:message-loss: This issue is about lost, duplicated, misrouted, or suppressed channel messages. impact:session-state: This issue is about session, memory, transcript, context, or agent state drift. impact:auth-provider: This issue is about auth, provider routing, model choice, or SecretRef resolution."
+    },
+    "mergeRiskLabels": {
+      "type": "array",
+      "maxItems": 3,
+      "items": {
+        "type": "string",
+        "enum": [
+          "merge-risk: 🚨 compatibility",
+          "merge-risk: 🚨 message-delivery",
+          "merge-risk: 🚨 session-state",
+          "merge-risk: 🚨 auth-provider",
+          "merge-risk: 🚨 security-boundary",
+          "merge-risk: 🚨 availability",
+          "merge-risk: 🚨 automation"
+        ]
+      },
+      "description": "PR-only ClawSweeper-owned GitHub labels for merge risks that green CI does not settle. These describe what could go wrong specifically because this PR is merged, not the affected or solved problem class. Use at most 3 for pull requests and [] for issues. merge-risk: 🚨 compatibility: 🚨 Merging this PR could break existing users, config, migrations, defaults, or upgrades. merge-risk: 🚨 message-delivery: 🚨 Merging this PR could drop, duplicate, misroute, suppress, or wrongly target messages. merge-risk: 🚨 session-state: 🚨 Merging this PR could lose, corrupt, stale, or mis-associate session or agent state. merge-risk: 🚨 auth-provider: 🚨 Merging this PR could break OAuth, tokens, provider routing, model choice, or credentials. merge-risk: 🚨 security-boundary: 🚨 Merging this PR could weaken sandboxing, authorization, credentials, or sensitive data. merge-risk: 🚨 availability: 🚨 Merging this PR could cause crashes, hangs, restart loops, stalls, or process outages. merge-risk: 🚨 automation: 🚨 Merging this PR could break CI, automerge, proof capture, label sync, or automation."
+    },
+    "mergeRiskOptions": {
+      "type": "array",
+      "maxItems": 3,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["title", "body", "category", "recommended", "automergeInstruction"],
+        "properties": {
+          "title": {
+            "type": "string",
+            "description": "Short maintainer-facing option title."
+          },
+          "body": {
+            "type": "string",
+            "description": "One concrete sentence explaining this maintainer option."
+          },
+          "category": {
+            "type": "string",
+            "enum": ["fix_before_merge", "accept_risk", "pause_or_close"]
+          },
+          "recommended": {
+            "type": "boolean",
+            "description": "True for at most one option, only when the evidence supports a clear best path."
+          },
+          "automergeInstruction": {
+            "type": "string",
+            "description": "Only for a recommended fix_before_merge option suitable for automation; otherwise empty. This must be only the special-instructions payload, without @clawsweeper automerge, @clawsweeper autofix, or this PR command text."
+          }
+        }
+      },
+      "description": "Risk-specific maintainer options for the Risk before merge section. Use [] when mergeRiskLabels is []. When mergeRiskLabels is non-empty, provide 1-3 prose-first options. Do not use a fixed menu: tailor titles and bodies to this PR. Mark at most one option recommended, and only when evidence supports a clear best path. Include pause_or_close when the PR may not be worth the risk. Put only the special-instructions payload in automergeInstruction for a recommended fix_before_merge option suitable for automation; do not include @clawsweeper automerge, @clawsweeper autofix, or this PR command text."
+    },
+    "labelJustifications": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["label", "reason"],
+        "properties": {
+          "label": {
+            "type": "string",
+            "enum": [
+              "P0",
+              "P1",
+              "P2",
+              "P3",
+              "impact:data-loss",
+              "impact:security",
+              "impact:crash-loop",
+              "impact:message-loss",
+              "impact:session-state",
+              "impact:auth-provider",
+              "merge-risk: 🚨 compatibility",
+              "merge-risk: 🚨 message-delivery",
+              "merge-risk: 🚨 session-state",
+              "merge-risk: 🚨 auth-provider",
+              "merge-risk: 🚨 security-boundary",
+              "merge-risk: 🚨 availability",
+              "merge-risk: 🚨 automation"
+            ]
+          },
+          "reason": {
+            "type": "string",
+            "description": "One concise maintainer-facing sentence explaining why this exact selected label applies."
+          }
+        }
+      },
+      "description": "One justification for every selected ClawSweeper-managed triage, impact, and merge-risk label. Include the selected triagePriority unless it is none, every selected impactLabels entry, and every selected mergeRiskLabels entry. Do not include labels that were not selected."
     },
     "itemCategory": {
       "type": "string",
@@ -301,7 +415,7 @@
     "realBehaviorProof": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Dedicated PR proof assessment. For external PRs, after-fix evidence from a real setup is required; tests, mocks, snapshots, lint, typechecks, and CI are supplemental only.",
+      "description": "Dedicated PR proof assessment. For external PRs, after-fix evidence from a real setup is required unless the PR only changes files under docs/; tests, mocks, snapshots, lint, typechecks, and CI are supplemental only.",
       "required": ["status", "summary", "evidenceKind", "needsContributorAction"],
       "properties": {
         "status": {
@@ -339,6 +453,41 @@
         }
       }
     },
+    "prRating": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Calibrated PR quality rating. Use boring internal tiers S/A/B/C/D/F/NA; public rendering maps them to funny crustacean labels. Rate the PR evidence and patch quality, not the contributor or workflow state. S is rare and exceptional, A is clearly above average, B is the normal good/mergeable quality rating, C is useful but uncertain, D is weak/thin signal, F is not quality-ready, and NA is only for non-PR or not-applicable items. Real screenshots, recordings, or linked media that directly show the changed behavior are strong boosters, but screenshots alone are not enough for browser runtime, network, CSP, or security claims unless diagnostics are visible. Do not lower any tier solely because the PR is draft, has protected labels, is not automerge-eligible, or is waiting on a maintainer decision.",
+      "required": ["proofTier", "patchTier", "overallTier", "summary", "nextSteps"],
+      "properties": {
+        "proofTier": {
+          "type": "string",
+          "enum": ["S", "A", "B", "C", "D", "F", "NA"],
+          "description": "Rating for real behavior proof quality only."
+        },
+        "patchTier": {
+          "type": "string",
+          "enum": ["S", "A", "B", "C", "D", "F", "NA"],
+          "description": "Rating for implementation quality, review findings, security concerns, scope, and validation."
+        },
+        "overallTier": {
+          "type": "string",
+          "enum": ["S", "A", "B", "C", "D", "F", "NA"],
+          "description": "Overall PR quality tier after combining proof and patch quality. Missing, mock-only, or insufficient proof must cap or lower the overall rating because real behavior proof remains a merge gate. Draft, protected-label, automerge eligibility, and maintainer-waiting workflow states must not lower this tier by themselves."
+        },
+        "summary": {
+          "type": "string",
+          "description": "One concise sentence explaining the calibrated overall rating without insulting the contributor."
+        },
+        "nextSteps": {
+          "type": "array",
+          "maxItems": 3,
+          "items": {
+            "type": "string"
+          },
+          "description": "Zero to three concrete, merge-relevant rank-up moves. Use an empty array for S/A/NA and for B when there is no material risk reducer. Do not invent optional polish work."
+        }
+      }
+    },
     "telegramVisibleProof": {
       "type": "object",
       "additionalProperties": false,
@@ -352,6 +501,38 @@
         "summary": {
           "type": "string",
           "description": "One concise sentence explaining why the PR should or should not receive the mantis: telegram-visible-proof label."
+        }
+      }
+    },
+    "mantisRecommendation": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "For PRs, recommend a copy-paste maintainer comment for OpenClaw Mantis only when live transport or visual proof would materially help review. Do not claim Mantis has run and do not dispatch any workflow.",
+      "required": ["status", "scenario", "reason", "maintainerComment"],
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": ["recommended", "not_recommended"]
+        },
+        "scenario": {
+          "type": "string",
+          "enum": [
+            "none",
+            "telegram_live",
+            "telegram_desktop_proof",
+            "discord_status_reactions",
+            "discord_thread_attachment",
+            "slack_desktop_smoke",
+            "visual_task"
+          ]
+        },
+        "reason": {
+          "type": "string",
+          "description": "One concise sentence explaining why this Mantis lane would or would not add useful maintainer proof."
+        },
+        "maintainerComment": {
+          "type": "string",
+          "description": "When recommended, a single-line PR comment starting with @openclaw-mantis that a maintainer can paste. ClawSweeper validates this mention but does not render it publicly, so review comments do not accidentally start Mantis workflows. Do not use shorter or ambiguous Mantis account mentions. For not_recommended, use an empty string."
         }
       }
     },

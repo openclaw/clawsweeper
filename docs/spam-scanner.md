@@ -17,7 +17,7 @@ Default behavior:
 - model: `gpt-4o-mini`
 - schedule: hourly cron at minute 17
 - catch-up window: 3 hours
-- cap: 100 comments
+- cap: 100 prioritized comments, selected from a bounded recent over-fetch
 - dedupe: comment kind, id, and `updated_at`
 - action: `none`
 
@@ -33,7 +33,7 @@ Inputs:
 - `target_repo`: repository to scan
 - `lookback_minutes`: fallback window for scheduled/manual catch-up
 - `since`: optional explicit ISO lower bound
-- `max_comments`: cap across issue comments and PR review comments
+- `max_comments`: cap for prioritized scanned comments
 - `comment_ids`: exact issue comment replay
 - `review_comment_ids`: exact PR review comment replay
 - `model`: cheap scanner model, default `gpt-4o-mini`
@@ -48,6 +48,11 @@ drop a newly added workflow's first tick. Manual dispatch is the immediate
 verification path.
 
 ## Comment Sources
+
+The scanner reads recent comments newest-first and over-fetches a bounded
+window before applying the `max_comments` cap. Broad scans prioritize
+deterministic spam-shaped candidates first, then fill the rest of the scan
+sample with normal recent comments so stale audit cleanup still runs.
 
 The scanner reads:
 
@@ -86,8 +91,6 @@ Deterministic signals are intentionally simple and cheap:
 
 - GitHub minimized reason contains `spam` or `abuse`
 - known URL shortener
-- multiple non-GitHub external links
-- outside author with a non-GitHub external link
 - service-pitch wording such as web scraping, data extraction, flash sale, or
   sample work
 - priced short service pitch
@@ -95,6 +98,10 @@ Deterministic signals are intentionally simple and cheap:
 GitHub, raw GitHub content, and localhost links are treated as project context,
 not spam links. Maintainer, collaborator, member, contributor, and trusted bot
 comments are not sent to the cheap model.
+
+Multiple non-GitHub external links and outside-author external links are
+recorded as supporting signals only. They do not make a comment a model
+candidate unless a stronger spam-shaped signal is also present.
 
 Only comments with deterministic signals are sent to `gpt-4o-mini`. The model
 returns strict JSON:

@@ -87,7 +87,10 @@ export function bodyHash(body: JsonValue) {
     .digest("hex");
 }
 
-export function isProtectedSpamAuthor(comment: SpamScanComment, trustedBots = new Set<string>()) {
+export function isProtectedSpamAuthor(
+  comment: SpamScanComment,
+  trustedBots: ReadonlySet<string> = new Set<string>(),
+) {
   const author = String(comment.author ?? "").toLowerCase();
   if (PROTECTED_ASSOCIATIONS.has(comment.author_association)) return true;
   if (author.endsWith("[bot]")) return true;
@@ -110,24 +113,78 @@ export function deterministicSpamSignals(comment: SpamScanComment) {
     signals.push("solicitation_language");
   }
   if (externalUrlCount >= 2) signals.push("multiple_external_links");
-  if (comment.author_association === "NONE" && externalUrlCount > 0) {
-    signals.push("outside_author_with_external_link");
-  }
   if (body.length < 900 && urls.length > 0 && /\$\s*\d+/.test(body)) {
     signals.push("priced_service_pitch");
   }
+  if (
+    comment.author_association === "NONE" &&
+    externalUrlCount > 0 &&
+    signals.some((signal) => signal !== "multiple_external_links")
+  ) {
+    signals.push("outside_author_with_external_link");
+  }
 
   return {
-    candidate: signals.length > 0,
+    candidate: signals.some(isSpamCandidateSignal),
     signals,
     urls: urls.map((url) => redactUrl(url)),
   };
+}
+
+function isSpamCandidateSignal(signal: string) {
+  return signal !== "multiple_external_links" && signal !== "outside_author_with_external_link";
 }
 
 export function shouldSendToCheapModel(comment: SpamScanComment, trustedBots = new Set<string>()) {
   if (isProtectedSpamAuthor(comment, trustedBots)) return false;
   if (comment.body.trim().length < 12) return false;
   return deterministicSpamSignals(comment).candidate;
+}
+
+export function prioritizeSpamScanComments({
+  comments,
+  maxComments,
+  processedCommentVersionKeys = new Set<string>(),
+  trustedBots = new Set<string>(),
+}: {
+  comments: SpamScanComment[];
+  maxComments: number;
+  processedCommentVersionKeys?: ReadonlySet<string>;
+  trustedBots?: ReadonlySet<string>;
+}) {
+  const selected: SpamScanComment[] = [];
+  const selectedKeys = new Set<string>();
+  const unprocessed = comments.filter(
+    (comment) => !processedCommentVersionKeys.has(commentVersionKey(comment)),
+  );
+
+  appendSelection(
+    selected,
+    selectedKeys,
+    unprocessed.filter(
+      (comment) =>
+        !isProtectedSpamAuthor(comment, trustedBots) && deterministicSpamSignals(comment).candidate,
+    ),
+    maxComments,
+  );
+  appendSelection(selected, selectedKeys, unprocessed, maxComments);
+  appendSelection(selected, selectedKeys, comments, maxComments);
+  return selected;
+}
+
+function appendSelection(
+  selected: SpamScanComment[],
+  selectedKeys: Set<string>,
+  candidates: SpamScanComment[],
+  maxComments: number,
+) {
+  for (const comment of candidates) {
+    if (selected.length >= maxComments) return;
+    const key = spamAuditKey(comment);
+    if (selectedKeys.has(key)) continue;
+    selected.push(comment);
+    selectedKeys.add(key);
+  }
 }
 
 export function buildSpamModelInput(comments: SpamScanComment[]) {

@@ -23,6 +23,43 @@ dashboard links both the source report and the generated coding plan so
 maintainers can promote from a concise implementation view without editing the
 durable report.
 
+For open issues with complete, current kept-open reviews, apply/comment-sync
+also projects a small owned set of advisory GitHub labels from the same
+structured fields. Comments explain the evidence; labels expose routing state
+for GitHub issue lists, searches, and project views. These labels do not
+dispatch repair, merge, or close work, and they do not replace maintainer-owned
+action labels such as `clawsweeper:autofix` or `clawsweeper:automerge`.
+Failed or stale reports are skipped so outdated review conclusions do not mutate
+live issue labels.
+Close proposals are not label-mutated during apply, so advisory label writes do
+not advance an issue's `updated_at` before close eligibility gates have finished.
+When ClawSweeper does sync labels, the report frontmatter records
+`labels_synced_at`. The scheduler treats `updated_at` values up to that timestamp
+as ClawSweeper-owned churn, similar to durable review comment syncs, so a
+label-only apply pass does not immediately queue another review of the same item.
+
+| Label                                 | Source condition                                                                                                              |
+| ------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `clawsweeper:current-main-repro`      | `type: issue`, `reproduction_status: reproduced`, and `reproduction_confidence: high`                                         |
+| `clawsweeper:source-repro`            | `type: issue`, `reproduction_status: source_reproducible`, and `reproduction_confidence: high`                                |
+| `clawsweeper:not-repro-on-main`       | `type: issue`, `reproduction_status: not_reproduced`, and `reproduction_confidence: high`                                     |
+| `clawsweeper:needs-live-repro`        | `type: issue`, `reproduction_status: source_reproducible`, and reproduction confidence below high                             |
+| `clawsweeper:needs-info`              | `type: issue`, `reproduction_status: unclear`, and reproduction confidence below high                                         |
+| `clawsweeper:linked-pr-open`          | the live issue has an open GitHub closing-PR reference                                                                        |
+| `clawsweeper:no-new-fix-pr`           | an open linked PR, manual-review lane, product decision, or security review means a new automated fix PR should not be queued |
+| `clawsweeper:queueable-fix`           | `work_candidate: queue_fix_pr`, `work_status: candidate`, and `work_confidence: high`                                         |
+| `clawsweeper:fix-shape-clear`         | high-confidence `queue_fix_pr` or `manual_review` work includes a repair prompt, likely files, or validation                  |
+| `clawsweeper:needs-maintainer-review` | `work_candidate: manual_review` or `work_status: manual_review`                                                               |
+| `clawsweeper:needs-product-decision`  | `requires_product_decision: true`                                                                                             |
+| `clawsweeper:needs-security-review`   | `item_category: security` or a `securityReview` status of `needs_attention`                                                   |
+
+The advisory-label sync owns only this label group. Reruns add labels that match
+the latest report, remove stale labels from this group, and preserve unrelated
+labels plus action/proof labels such as `clawsweeper:autofix`,
+`clawsweeper:automerge`, `clawsweeper:human-review`,
+`clawsweeper:merge-ready`, `proof: sufficient`, and
+`mantis: telegram-visible-proof`.
+
 Plan artifacts are generated state. They are removed when the item closes,
 archives, becomes stale, or is reclassified away from `queue_fix_pr`; regenerate
 them from the source report instead of editing them by hand.

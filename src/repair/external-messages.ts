@@ -9,6 +9,29 @@ function listOrNone(items: JsonValue[]) {
   return items?.length ? items.join("; ") : "none";
 }
 
+const CLOSING_REFERENCE_PATTERN =
+  /\b(?<verb>close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+(?<targets>(?:https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/issues\/\d+|[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+#\d+|#\d+)(?:\s*,\s*(?:https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/issues\/\d+|[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+#\d+|#\d+))*)/gi;
+
+export function closingReferencesFromMarkdown(body: JsonValue) {
+  const seen = new Set<string>();
+  const references: string[] = [];
+  for (const match of String(body ?? "").matchAll(CLOSING_REFERENCE_PATTERN)) {
+    const verb = String(match.groups?.verb ?? "").trim();
+    const targets = String(match.groups?.targets ?? "")
+      .split(/\s*,\s*/)
+      .map((target) => target.trim())
+      .filter(Boolean);
+    for (const target of targets) {
+      const reference = `${verb} ${target}`.replace(/\s+/g, " ").trim();
+      const key = reference.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      references.push(reference);
+    }
+  }
+  return references;
+}
+
 function visibleSelfReference(value: JsonValue, target: JsonValue) {
   const text = String(value ?? "");
   const number = String(target ?? "").replace(/^#/, "");
@@ -395,6 +418,8 @@ export function replacementPrBody({
   clusterId,
   provenance,
   contributorCredits,
+  maintainerAttribution = null,
+  sourceClosingReferences = [],
 }: LooseRecord) {
   const lines = [
     fixArtifact.pr_body.trim(),
@@ -406,11 +431,61 @@ export function replacementPrBody({
     `- Validation: ${listOrNone(fixArtifact.validation_commands)}`,
     "- Replacement reason: ClawSweeper could not update the source PR branch directly, so it opened a writable replacement PR instead.",
   ];
+  const maintainer = automergeMaintainerAttribution(maintainerAttribution);
+  if (maintainer) {
+    lines.push(`- Automerge requested by: @${maintainer.login}`);
+    lines.push(
+      `<!-- clawsweeper-automerge-requested-by login="${escapeHtmlAttribute(
+        maintainer.login,
+      )}" id="${escapeHtmlAttribute(maintainer.id)}" -->`,
+    );
+  }
   if (fallbackReason) lines.push(`- Repair fallback: ${fallbackReason}`);
+  const closingReferences = uniqueLines(sourceClosingReferences);
+  if (closingReferences.length > 0) {
+    lines.push(
+      "",
+      "Inherited issue-closing references from the source PR:",
+      ...closingReferences.map((reference) => `${reference}`),
+    );
+  }
   const creditLines = contributorCreditLines(contributorCredits);
   if (creditLines.length > 0) lines.push("", ...creditLines);
   lines.push("", fishNotes(provenance));
   return `${lines.join("\n")}\n`;
+}
+
+function uniqueLines(values: JsonValue[]) {
+  const seen = new Set<string>();
+  const lines: string[] = [];
+  for (const value of Array.isArray(values) ? values : []) {
+    const line = String(value ?? "")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (!line) continue;
+    const key = line.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    lines.push(line);
+  }
+  return lines;
+}
+
+function automergeMaintainerAttribution(value: LooseRecord): LooseRecord | null {
+  const login = String(value?.author ?? value?.login ?? value?.requested_by ?? "").trim();
+  if (!login || login.includes("[bot]")) return null;
+  return {
+    login,
+    id: String(value?.author_id ?? value?.id ?? value?.requested_by_id ?? "").trim(),
+  };
+}
+
+function escapeHtmlAttribute(value: JsonValue) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/"/g, "&quot;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
 }
 
 export function defaultCloseComment({

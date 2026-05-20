@@ -44,6 +44,7 @@ jobs:
             README.md
             package.json
             pnpm-lock.yaml
+            tsconfig.dashboard.json
             tsconfig.json
             tsconfig.repair.json
           sparse-checkout-cone-mode: false

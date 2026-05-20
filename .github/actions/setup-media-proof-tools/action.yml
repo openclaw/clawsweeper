@@ -1,0 +1,24 @@
+name: Setup media proof tools
+description: Install ffmpeg/ffprobe for ClawSweeper video proof inspection.
+
+runs:
+  using: composite
+  steps:
+    - name: Install ffmpeg and ffprobe
+      shell: bash
+      run: |
+        set -euo pipefail
+        if command -v ffmpeg >/dev/null 2>&1 && command -v ffprobe >/dev/null 2>&1; then
+          ffmpeg -version | head -n 1
+          ffprobe -version | head -n 1
+          exit 0
+        fi
+        if command -v apt-get >/dev/null 2>&1; then
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg
+        else
+          echo "ffmpeg/ffprobe are required for video proof inspection, and apt-get is unavailable on this runner." >&2
+          exit 1
+        fi
+        ffmpeg -version | head -n 1
+        ffprobe -version | head -n 1

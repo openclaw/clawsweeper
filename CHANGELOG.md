@@ -14,9 +14,11 @@ checkpoint, and status-only commits are intentionally omitted.
   signed status-event ingest.
 - Added a live-dashboard panel for the latest closed issues and pull requests
   across configured target repositories.
+- Added 24-hour ClawSweeper-owned close stats to the live dashboard.
 - Added a live-dashboard CI refresher workflow that posts target pull request
   check summaries into Worker storage, so active rows can show stored PR check
   state without slow browser-time GitHub fanout.
+- Added a read-only live triage dashboard for ClawSweeper advisory-label views, focused issue queues, and linked pull request visibility. Thanks @brokemac79.
 - Added a canonical repair `job_intent` contract and orchestration docs so
   automerge, issue implementation, commit finding, low-signal cleanup, and
   ordinary repair jobs share one routing surface.
@@ -25,7 +27,13 @@ checkpoint, and status-only commits are intentionally omitted.
   durable spam audit records without blocking users or mutating repositories.
 - Added a light privacy reminder and stronger screenshot-or-video nudge to real behavior proof review guidance.
 - Added agent-led real behavior proof judgement so ClawSweeper can inspect linked screenshots, videos, logs, and terminal output with a read-only GitHub token, explain the proof verdict in the review comment, tell contributors how to trigger a fresh review after adding proof, and sync `proof: sufficient` when the evidence is convincing.
+- Added a durable review-context budget ledger to generated reports so prompt section sizes, hydrated counts, and truncation state are visible after each run, thanks @stainlu.
 - Added a real behavior proof assessment to PR reviews so missing, mock-only, or insufficient contributor proof blocks pass/automerge markers and asks for screenshots, terminal output, redacted logs, recordings, linked artifacts, or copied live output instead.
+- Added advisory issue labels for reproduction, linked-PR, work-lane,
+  missing-info, product-decision, and security-review routing states, projected
+  from existing review report fields without changing repair, merge, or close
+  behavior. Label-only syncs now record `labels_synced_at` so scheduler cadence
+  ignores ClawSweeper-owned label `updated_at` churn. Thanks @brokemac79.
 - Added `config/automation-limits.json` plus docs and a drift check so review,
   commit-review, repair, and issue-implementation capacity defaults have one
   checked-in source of truth.
@@ -38,7 +46,38 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Fixed
 
+- Reduced the shared Codex worker budget from 72 to 57 so background review, commit-review, repair, and issue-implementation lanes run about 20% fewer parallel workers.
+- Clarified re-review guidance so PR/issue authors and users with repository write access can request a fresh read-only review without a maintainer relay.
+- Mirrored ClawSweeper repair publish events into the live dashboard ingest so the Recent Activity panel shows fleet signals.
+- Filled the live dashboard Recent Activity panel from recent ClawSweeper closes when no explicit activity events have arrived yet.
+- Deduped live-dashboard PR close activity across explicit `/issues/` events and backfilled `/pull/` rows.
+- Kept live-dashboard worker pressure focused on ClawSweeper worker runs by separating support workflows such as GitHub activity, spam intake, dashboard CI, CI, and CodeQL.
+- Fetched live-dashboard closed-item pages concurrently so the ClawSweeper close stats do not time out and render as zero during busy periods.
+- Coalesced duplicate spam comment intake deliveries by target comment so noisy edited-comment bursts stop wasting runner slots.
+- Required exact trusted-bot login matches before allowing comment-router mutation actions.
+- Limited `/autoclose` linked-target expansion to same-repo items explicitly referenced in the maintainer command text.
+- Restored target checkout file modes after read-only review runs and kept `.git` metadata writable for local Git inspection.
+- Counted unverified local-checkout apply records against the apply processed limit so one stale report cannot be retried forever while later records still mutate.
+- Ignored stale queued repair workflow runs when reserving live worker capacity, so abandoned Actions queue entries no longer block automerge repair dispatches.
+- Kept active automerge opt-ins moving through canonical no-finding human-review pauses instead of requiring a second maintainer approval.
+- Retried sweep target repository checkouts without cached Git references when
+  a stale partial-clone cache breaks shard startup.
+- Reduced the shared Codex worker budget by 10% so review, commit-review,
+  repair, automerge, issue-implementation, and dashboard utilization lanes use
+  lower default fan-out.
+- Cleared ClawSweeper-owned `eyes` reactions from target issues and pull
+  requests when event reviews complete, while preserving user reactions. Thanks
+  @samzong.
+- Kept event re-review progress updates scoped to ClawSweeper-owned status
+  comments, so empty command markers cannot cause unrelated human comments to be
+  edited. Thanks @hxy91819.
+- Added live spam comment intake for GitHub activity events so deterministic
+  spam candidates dispatch exact comment scans immediately instead of waiting
+  for the hourly audit sweep.
+- Counted both trusted ClawSweeper bot logins in live-dashboard close stats.
 - Counted active live-dashboard workflow runs from GitHub status-filtered Actions pages so older in-progress reviews are not hidden by newer completed runs.
+- Reworked live-dashboard tables into compact linked rows so pipeline run links,
+  CI state, and side-panel items fit without cramped columns.
 - Replaced the state-repository PAT dependency with a short-lived GitHub App token for ClawSweeper state checkouts and publishes, so rotated PATs no longer break `openclaw/clawsweeper-state` access.
 - Clarified uneditable source PR replacement comments and PR bodies so they state
   the push-rights blocker, explain why source PRs are closed after a replacement
@@ -63,8 +102,16 @@ checkpoint, and status-only commits are intentionally omitted.
   the edge, retaining the last good browser snapshot, and reducing rate-prone
   GitHub detail calls so transient 403s no longer blank the pipeline.
 - Cleared stale `clawsweeper:human-review` and `clawsweeper:merge-ready` pause labels when a later exact-head trusted pass arrives for an automerge PR, so transient cancelled reviews no longer strand maintainer opt-ins.
-- Tightened spam scanner prefilters so GitHub context links and contributor
-  proof comments do not trigger audit records as spam candidates.
+- Tightened spam scanner prefilters so GitHub context links, contributor proof
+  comments, and ordinary external evidence/log links do not trigger audit
+  records as spam candidates, while broad scans prioritize real spam-shaped
+  candidates across recent comment churn.
+- Kept repeated broad spam sweeps from spending their scan cap on already
+  processed deterministic candidates.
+- Put duplicate/superseded canonical issue and pull request links directly in
+  the public close sentence instead of only inside review details.
+- Kept event re-reviews from failing when a target repository has not created
+  the optional `proof: sufficient` label yet.
 - Removed stale spam audit files when a reprocessed comment no longer matches
   the scanner candidate filters.
 - Derived repair dispatch worker caps from `job_intent` when no explicit cap is

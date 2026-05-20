@@ -29,10 +29,12 @@ import {
   automergeClusterId,
   automergeJobPath,
   automergeMergeFailureRepairReason,
+  automergeRequestedByFromBody,
   automergeReadinessRepairReason,
   automergeRebaseRepairReason,
   automergeTransientWaitConfig,
   buildAutomergeMergeArgs,
+  buildAutomergeSquashMessage,
   commandHasAction,
   createCachedIssueCommentsLookup,
   createCachedIssueCommentsLookupAsync,
@@ -43,10 +45,11 @@ import {
   existingCommandStatusBlocksReplay,
   existingModeStatusBlocksReplay,
   isAuthorReadOnlyCommandAllowed,
-  isCanonicalLandingNeedsHumanText,
   isMaintainerCommandAllowed,
   issueImplementationClusterId,
   issueImplementationJobPath,
+  maintainerAutomergeOptInApprovesNeedsHuman as maintainerAutomergeOptInApprovesNeedsHumanReason,
+  latestRepairLoopResumeTime,
   parseCommand,
   pausedModeStatusBlocksReplay,
   parseTrustedAutomation,
@@ -59,6 +62,7 @@ import {
   renderResponse,
   sharedAutomergeStatusMarkerPrefix,
   staleAutomergeActivationReason,
+  shouldClearMaintainerCommandReaction,
   usesSharedAutomergeStatus,
 } from "./comment-router-core.js";
 import { mergeAutomergeTimelineSection } from "./automerge-status-timeline.js";
@@ -140,6 +144,7 @@ const collaboratorPermissionCache = new Map();
 const activeRepairRunsByPrefix = new Map<string, LooseRecord[]>();
 const liveTargetCache = new Map<number, LooseRecord>();
 const issueCommentsCache = new Map<number, JsonValue[]>();
+const PROOF_OVERRIDE_DESCRIPTION_MARKER = "<!-- clawsweeper-proof-override-note -->";
 const cachedIssueComments = createCachedIssueCommentsLookup(
   (number) => ghPaged<JsonValue>(`repos/${targetRepo}/issues/${number}/comments?per_page=100`),
   issueCommentsCache,
@@ -172,6 +177,7 @@ for (const comment of comments) {
     repo: targetRepo,
     issue_number: issueNumber,
     author: comment.user?.login ?? null,
+    author_id: comment.user?.id ?? null,
     author_association: String(comment.author_association ?? "").toUpperCase(),
     comment_created_at: comment.created_at,
     comment_updated_at: comment.updated_at,
@@ -439,6 +445,36 @@ function classifyCommand(command: LooseRecord): JsonValue {
       ],
     };
   }
+  if (command.intent === "hatch") {
+    if (String(issue.state ?? "").toLowerCase() !== "open") {
+      return {
+        ...next,
+        status: "ready",
+        reason: "hatch requires an open pull request",
+        actions: [{ action: "comment", status: execute ? "pending" : "planned" }],
+      };
+    }
+    if (!pull) {
+      return {
+        ...next,
+        status: "ready",
+        reason: "hatch requires a pull request",
+        actions: [{ action: "comment", status: execute ? "pending" : "planned" }],
+      };
+    }
+    return {
+      ...next,
+      status: "ready",
+      actions: [
+        {
+          action: "dispatch_hatch",
+          workflow: reviewWorkflow,
+          status: execute ? "pending" : "planned",
+        },
+        { action: "comment", status: execute ? "pending" : "planned" },
+      ],
+    };
+  }
   if (command.intent === "implement_issue") {
     if (String(issue.state ?? "").toLowerCase() !== "open") {
       return {
@@ -545,7 +581,12 @@ function classifyCommand(command: LooseRecord): JsonValue {
     ) {
       return { ...next, status: "skipped", reason: `${mode} already enabled for this PR` };
     }
+    const approvedProofOverride =
+      command.intent === "automerge" && !activationRepairReason
+        ? approvedMissingProofNeedsHuman(command, target)
+        : null;
     if (
+      !approvedProofOverride &&
       pausedModeStatusBlocksReplay({
         hasPauseLabels: pauseLabels.length > 0,
         hasExistingModeStatusResponse: hasExistingModeStatusResponse(
@@ -589,28 +630,43 @@ function classifyCommand(command: LooseRecord): JsonValue {
       actions: [
         ...actions,
         { action: "label", label: modeLabel, status: execute ? "pending" : "planned" },
-        ...(activationRepairReason
+        ...(approvedProofOverride
           ? [
               {
-                action: "dispatch_repair",
-                workflow,
-                job_path: target.job_path ?? target.automerge_job_path,
-                mode: target.mode ?? "autonomous",
+                action: "update_description_note",
+                note: approvedProofOverride.note,
                 status: execute ? "pending" : "planned",
               },
+              { action: "merge", status: execute ? "pending" : "planned" },
             ]
-          : [
-              {
-                action: "dispatch_clawsweeper",
-                workflow: reviewWorkflow,
-                status: execute ? "pending" : "planned",
-              },
-            ]),
+          : activationRepairReason
+            ? [
+                {
+                  action: "dispatch_repair",
+                  workflow,
+                  job_path: target.job_path ?? target.automerge_job_path,
+                  mode: target.mode ?? "autonomous",
+                  status: execute ? "pending" : "planned",
+                },
+              ]
+            : [
+                {
+                  action: "dispatch_clawsweeper",
+                  workflow: reviewWorkflow,
+                  status: execute ? "pending" : "planned",
+                },
+              ]),
         { action: "comment", status: execute ? "pending" : "planned" },
       ],
-      ...(activationRepairReason
-        ? { repair_reason: `${mode} enabled; ${activationRepairReason}` }
-        : {}),
+      ...(approvedProofOverride
+        ? {
+            intent: "clawsweeper_auto_merge",
+            expected_head_sha: approvedProofOverride.expected_head_sha,
+            repair_reason: approvedProofOverride.reason,
+          }
+        : activationRepairReason
+          ? { repair_reason: `${mode} enabled; ${activationRepairReason}` }
+          : {}),
     };
   }
   if (AUTOCLOSE_INTENTS.has(command.intent)) {
@@ -937,6 +993,15 @@ function classifyNeedsHuman(
               },
             ]
           : []),
+        ...(missingProofNeedsHumanReason(command.repair_reason)
+          ? [
+              {
+                action: "update_description_note",
+                note: proofOverrideDescriptionNote(command),
+                status: execute ? "pending" : "planned",
+              },
+            ]
+          : []),
         { action: "merge", status: execute ? "pending" : "planned" },
         { action: "comment", status: execute ? "pending" : "planned" },
       ],
@@ -955,13 +1020,95 @@ function classifyNeedsHuman(
 function maintainerAutomergeOptInApprovesNeedsHuman(command: LooseRecord) {
   if (!command.trusted_bot) return false;
   if (!hasLabel(command.target, AUTOMERGE_LABEL)) return false;
-  const reason = String(command.repair_reason ?? "");
-  if (!isCanonicalLandingNeedsHumanText(reason)) return false;
-  const verdictTime = Date.parse(
-    String(command.comment_updated_at ?? command.comment_created_at ?? ""),
+  return maintainerAutomergeOptInApprovesNeedsHumanReason({
+    reason: command.repair_reason,
+    commentCreatedAt: command.comment_created_at,
+    commentUpdatedAt: command.comment_updated_at,
+    optInTime: latestAutomergeResumeAt(command),
+    replacementAutomergeRequestedBy: automergeRequestedByFromBody(command.target?.body),
+  });
+}
+
+function approvedMissingProofNeedsHuman(command: LooseRecord, target: LooseRecord) {
+  const comments = cachedIssueComments(command.issue_number);
+  const trusted = comments
+    .map((comment: JsonValue) => {
+      const parsed = parseTrustedAutomation(comment, { trustedAuthors: trustedBots });
+      if (!parsed || parsed.intent !== "clawsweeper_needs_human") return null;
+      if (!missingProofNeedsHumanReason(parsed.repair_reason)) return null;
+      if (
+        reviewedHeadShaBlockReason({
+          expectedHeadSha: parsed.expected_head_sha,
+          currentHeadSha: target.head_sha,
+          markerName: "human-review",
+        })
+      ) {
+        return null;
+      }
+      return {
+        parsed,
+        commentCreatedAt: comment.created_at,
+        commentUpdatedAt: comment.updated_at,
+      };
+    })
+    .filter(Boolean)
+    .sort(
+      (left: JsonValue, right: JsonValue) =>
+        (Date.parse(String(right.commentUpdatedAt ?? right.commentCreatedAt ?? "")) || 0) -
+        (Date.parse(String(left.commentUpdatedAt ?? left.commentCreatedAt ?? "")) || 0),
+    );
+  const latest = trusted[0];
+  if (!latest) return null;
+  const reason = `${latest.parsed.repair_reason}; maintainer automerge opt-in records proof: override and approves landing the canonical PR`;
+  if (
+    !maintainerAutomergeOptInApprovesNeedsHumanReason({
+      reason,
+      commentCreatedAt: latest.commentCreatedAt,
+      commentUpdatedAt: latest.commentUpdatedAt,
+      optInTime: command.comment_updated_at ?? command.comment_created_at,
+      replacementAutomergeRequestedBy: automergeRequestedByFromBody(target.body),
+    })
+  ) {
+    return null;
+  }
+  return {
+    reason,
+    expected_head_sha: latest.parsed.expected_head_sha,
+    note: proofOverrideDescriptionNote({
+      ...command,
+      repair_reason: reason,
+      expected_head_sha: latest.parsed.expected_head_sha,
+    }),
+  };
+}
+
+function missingProofNeedsHumanReason(value: JsonValue) {
+  const text = String(value ?? "");
+  return /missing (?:real behavior )?proof|missing proof|proof needs maintainer handling|missing.*proof/i.test(
+    text,
   );
-  const optInTime = latestAutomergeResumeAt(command);
-  return Number.isFinite(verdictTime) && optInTime > verdictTime;
+}
+
+function proofOverrideDescriptionNote(command: LooseRecord) {
+  const maintainer = String(command.author ?? "")
+    .replace(/^@/, "")
+    .trim();
+  const maintainerLine =
+    maintainer && !maintainer.includes("[bot]")
+      ? `Maintainer: @${maintainer}`
+      : "Maintainer: recorded by ClawSweeper automerge.";
+  const sha = String(command.expected_head_sha ?? "").trim();
+  return [
+    PROOF_OVERRIDE_DESCRIPTION_MARKER,
+    "### Maintainer note: proof: override",
+    "",
+    "A maintainer opted this PR into ClawSweeper automerge even though ClawSweeper found missing real behavior proof. Treat this as an explicit `proof: override` for the current automerge decision.",
+    "",
+    `- ${maintainerLine}`,
+    sha ? `- Reviewed head: ${sha}` : null,
+  ]
+    .filter(Boolean)
+    .join("\n");
 }
 
 function automergeBlocked(command: LooseRecord, reason: string) {
@@ -1016,18 +1163,50 @@ function autoRepairAlreadyPlanned(command: LooseRecord) {
 }
 
 function latestAutomergeResumeAt(command: LooseRecord) {
-  let latest = 0;
-  for (const entry of ledger.commands ?? []) {
-    if (
-      entry.repo === command.repo &&
-      Number(entry.issue_number) === Number(command.issue_number) &&
-      ["autofix", "automerge"].includes(entry.intent) &&
-      entry.status === "executed"
-    ) {
-      latest = Math.max(latest, Date.parse(entry.comment_updated_at ?? "") || 0);
-    }
+  return latestRepairLoopResumeTime(ledger.commands ?? [], command);
+}
+
+function latestAutomergeMaintainerAttribution(command: LooseRecord) {
+  const candidates: LooseRecord[] = [];
+  if (
+    !command.trusted_bot &&
+    ["automerge", "maintainer_approve_automerge"].includes(command.intent)
+  ) {
+    candidates.push(command);
   }
-  return latest;
+  for (const entry of ledger.commands ?? []) {
+    if (entry.repo !== command.repo) continue;
+    if (Number(entry.issue_number) !== Number(command.issue_number)) continue;
+    if (!["automerge", "maintainer_approve_automerge"].includes(String(entry.intent ?? ""))) {
+      continue;
+    }
+    if (entry.trusted_bot) continue;
+    if (!["executed", "waiting"].includes(String(entry.status ?? ""))) continue;
+    candidates.push(entry);
+  }
+  for (const entry of commands ?? []) {
+    if (entry === command) continue;
+    if (entry.repo !== command.repo) continue;
+    if (Number(entry.issue_number) !== Number(command.issue_number)) continue;
+    if (!["automerge", "maintainer_approve_automerge"].includes(String(entry.intent ?? ""))) {
+      continue;
+    }
+    if (entry.trusted_bot) continue;
+    if (!["ready", "executed", "waiting"].includes(String(entry.status ?? ""))) continue;
+    candidates.push(entry);
+  }
+  const latest = candidates
+    .map((entry) => ({
+      entry,
+      at: Date.parse(String(entry.comment_updated_at ?? entry.comment_created_at ?? "")) || 0,
+    }))
+    .sort((left, right) => right.at - left.at)[0]?.entry;
+  if (!latest?.author) return null;
+  return {
+    author: latest.author,
+    author_id: latest.author_id,
+    author_name: latest.author_name,
+  };
 }
 
 function repairLoopStoppedReason(command: LooseRecord) {
@@ -1059,27 +1238,70 @@ function isRepairLoopControlIntent(command: LooseRecord) {
 }
 
 function executeCommand(command: LooseRecord) {
-  let dispatched = null;
-  const shouldDispatchRepair = command.actions?.some(
-    (action: JsonValue) => action.action === "dispatch_repair",
-  );
-  const shouldDispatchClawSweeper = commandHasAction(command, "dispatch_clawsweeper");
-  const shouldMerge = commandHasAction(command, "merge");
-  const shouldApplyHumanReviewLabel = commandHasAction(command, "label");
-  if (!command.trusted_bot) reactToComment(command, "eyes");
-  if (
-    shouldDispatchRepair &&
-    (canRepairPullTarget(command.target) ||
-      ["autofix", "automerge", "implement_issue"].includes(command.intent))
-  ) {
-    if (["autofix", "automerge"].includes(command.intent)) {
-      applyRepairLoopOptIn(command);
-    }
-    const job =
-      command.intent === "implement_issue"
-        ? ensureIssueImplementationJob(command)
-        : ensureAutomergeJob(command);
-    if (job.status_detail === "written") {
+  try {
+    let dispatched = null;
+    const shouldDispatchRepair = command.actions?.some(
+      (action: JsonValue) => action.action === "dispatch_repair",
+    );
+    const shouldDispatchClawSweeper = commandHasAction(command, "dispatch_clawsweeper");
+    const shouldDispatchHatch = commandHasAction(command, "dispatch_hatch");
+    const shouldMerge = commandHasAction(command, "merge");
+    const shouldApplyHumanReviewLabel = commandHasAction(command, "label");
+    if (!command.trusted_bot) reactToComment(command, "eyes");
+    if (
+      shouldDispatchRepair &&
+      (canRepairPullTarget(command.target) ||
+        ["autofix", "automerge", "implement_issue"].includes(command.intent))
+    ) {
+      if (["autofix", "automerge"].includes(command.intent)) {
+        applyRepairLoopOptIn(command);
+      }
+      const job =
+        command.intent === "implement_issue"
+          ? ensureIssueImplementationJob(command)
+          : ensureAutomergeJob(command);
+      if (job.status_detail === "written") {
+        command.actions = command.actions.map((action: JsonValue) => {
+          if (
+            action.action === "ensure_automerge_job" ||
+            action.action === "ensure_issue_implementation_job"
+          )
+            return { ...action, status: "executed", ...job };
+          if (action.action === "label")
+            return { ...action, status: "executed", label: action.label };
+          if (action.action === "remove_label")
+            return { ...action, status: "executed", label: action.label };
+          if (action.action === "dispatch_repair") {
+            return {
+              ...action,
+              job_path: command.target.job_path,
+              mode: command.target.mode,
+              status: "waiting",
+              reason: "adopted job must be committed before worker dispatch",
+            };
+          }
+          return action;
+        });
+        command.status = "waiting";
+        return;
+      }
+      const repair = dispatchRepair(command);
+      dispatched = REPAIR_INTENTS.has(command.intent) ? repair : { repair };
+      const labelsToRemove = command.actions
+        .filter((action: JsonValue) => action.action === "remove_label")
+        .map((action: JsonValue) => String(action.label ?? ""))
+        .filter(Boolean);
+      for (const pausedLabel of labelsToRemove) {
+        ghBestEffort([
+          "issue",
+          "edit",
+          String(command.issue_number),
+          "--repo",
+          command.repo,
+          "--remove-label",
+          pausedLabel,
+        ]);
+      }
       command.actions = command.actions.map((action: JsonValue) => {
         if (
           action.action === "ensure_automerge_job" ||
@@ -1095,156 +1317,22 @@ function executeCommand(command: LooseRecord) {
             ...action,
             job_path: command.target.job_path,
             mode: command.target.mode,
-            status: "waiting",
-            reason: "adopted job must be committed before worker dispatch",
+            ...dispatchRepairActionStatus(repair),
           };
         }
         return action;
       });
-      command.status = "waiting";
-      return;
     }
-    const repair = dispatchRepair(command);
-    dispatched = REPAIR_INTENTS.has(command.intent) ? repair : { repair };
-    const labelsToRemove = command.actions
-      .filter((action: JsonValue) => action.action === "remove_label")
-      .map((action: JsonValue) => String(action.label ?? ""))
-      .filter(Boolean);
-    for (const pausedLabel of labelsToRemove) {
-      ghBestEffort([
-        "issue",
-        "edit",
-        String(command.issue_number),
-        "--repo",
-        command.repo,
-        "--remove-label",
-        pausedLabel,
-      ]);
-    }
-    command.actions = command.actions.map((action: JsonValue) => {
-      if (
-        action.action === "ensure_automerge_job" ||
-        action.action === "ensure_issue_implementation_job"
-      )
-        return { ...action, status: "executed", ...job };
-      if (action.action === "label") return { ...action, status: "executed", label: action.label };
-      if (action.action === "remove_label")
-        return { ...action, status: "executed", label: action.label };
-      if (action.action === "dispatch_repair") {
-        return {
-          ...action,
-          job_path: command.target.job_path,
-          mode: command.target.mode,
-          ...dispatchRepairActionStatus(repair),
-        };
-      }
-      return action;
-    });
-  }
-  if (
-    ["autofix", "automerge"].includes(command.intent) &&
-    command.issue_number &&
-    shouldDispatchClawSweeper
-  ) {
-    const modeLabel = command.intent === "autofix" ? AUTOFIX_LABEL : AUTOMERGE_LABEL;
-    const oppositeModeLabel = command.intent === "autofix" ? AUTOMERGE_LABEL : AUTOFIX_LABEL;
-    const job = ensureAutomergeJob(command);
-    ensureRepairLoopLabel(command.repo, modeLabel);
-    for (const pausedLabel of pauseLabelsOn(command.target)) {
-      ghBestEffort([
-        "issue",
-        "edit",
-        String(command.issue_number),
-        "--repo",
-        command.repo,
-        "--remove-label",
-        pausedLabel,
-      ]);
-    }
-    if (hasLabel(command.target, oppositeModeLabel)) {
-      ghBestEffort([
-        "issue",
-        "edit",
-        String(command.issue_number),
-        "--repo",
-        command.repo,
-        "--remove-label",
-        oppositeModeLabel,
-      ]);
-    }
-    ghBestEffort([
-      "issue",
-      "edit",
-      String(command.issue_number),
-      "--repo",
-      command.repo,
-      "--add-label",
-      modeLabel,
-    ]);
-    const clawsweeper = dispatchClawSweeperReview(command);
-    dispatched = { ...dispatched, clawsweeper };
-    command.actions = command.actions.map((action: JsonValue) => {
-      if (action.action === "label")
-        return { ...action, status: "executed", label: action.label ?? modeLabel };
-      if (action.action === "remove_label")
-        return { ...action, status: "executed", label: action.label };
-      if (action.action === "ensure_automerge_job")
-        return { ...action, status: "executed", ...job };
-      if (action.action === "dispatch_clawsweeper") {
-        return {
-          ...action,
-          status: "executed",
-          dispatched_at: new Date().toISOString(),
-          ...clawsweeper,
-        };
-      }
-      return action;
-    });
-  }
-  if (
-    ["freeform_assist", "re_review"].includes(command.intent) &&
-    command.issue_number &&
-    shouldDispatchClawSweeper
-  ) {
-    const clawsweeper = dispatchClawSweeperReview(command);
-    dispatched = { ...dispatched, clawsweeper };
-    command.actions = command.actions.map((action: JsonValue) => {
-      if (action.action === "dispatch_clawsweeper") {
-        return {
-          ...action,
-          status: "executed",
-          dispatched_at: new Date().toISOString(),
-          ...clawsweeper,
-        };
-      }
-      return action;
-    });
-  }
-  if (
-    AUTOCLOSE_INTENTS.has(command.intent) &&
-    command.issue_number &&
-    command.autoclose_targets?.length > 0
-  ) {
-    const autoclose = executeAutoclose(command);
-    dispatched = { ...dispatched, autoclose };
-    command.actions = command.actions.map((action: JsonValue) =>
-      action.action === "autoclose"
-        ? { ...action, ...autoclose, completed_at: new Date().toISOString() }
-        : action,
-    );
-  }
-  if (
-    MERGE_INTENTS.has(command.intent) &&
-    !shouldDispatchRepair &&
-    command.issue_number &&
-    shouldMerge
-  ) {
-    const pauseLabels = command.actions
-      .filter((action: JsonValue) => action.action === "remove_label")
-      .map((action: JsonValue) => String(action.label ?? ""))
-      .filter(Boolean);
-    if (pauseLabels.length > 0) {
-      for (const pausedLabel of pauseLabels) {
+    if (
+      ["autofix", "automerge"].includes(command.intent) &&
+      command.issue_number &&
+      shouldDispatchClawSweeper
+    ) {
+      const modeLabel = command.intent === "autofix" ? AUTOFIX_LABEL : AUTOMERGE_LABEL;
+      const oppositeModeLabel = command.intent === "autofix" ? AUTOMERGE_LABEL : AUTOFIX_LABEL;
+      const job = ensureAutomergeJob(command);
+      ensureRepairLoopLabel(command.repo, modeLabel);
+      for (const pausedLabel of pauseLabelsOn(command.target)) {
         ghBestEffort([
           "issue",
           "edit",
@@ -1255,114 +1343,236 @@ function executeCommand(command: LooseRecord) {
           pausedLabel,
         ]);
       }
-      command.target = {
-        ...command.target,
-        labels: (command.target?.labels ?? []).filter(
-          (label: JsonValue) => !pauseLabels.includes(String(label)),
-        ),
-      };
+      if (hasLabel(command.target, oppositeModeLabel)) {
+        ghBestEffort([
+          "issue",
+          "edit",
+          String(command.issue_number),
+          "--repo",
+          command.repo,
+          "--remove-label",
+          oppositeModeLabel,
+        ]);
+      }
+      ghBestEffort([
+        "issue",
+        "edit",
+        String(command.issue_number),
+        "--repo",
+        command.repo,
+        "--add-label",
+        modeLabel,
+      ]);
+      const clawsweeper = dispatchClawSweeperReview(command);
+      dispatched = { ...dispatched, clawsweeper };
+      command.actions = command.actions.map((action: JsonValue) => {
+        if (action.action === "label")
+          return { ...action, status: "executed", label: action.label ?? modeLabel };
+        if (action.action === "remove_label")
+          return { ...action, status: "executed", label: action.label };
+        if (action.action === "ensure_automerge_job")
+          return { ...action, status: "executed", ...job };
+        if (action.action === "dispatch_clawsweeper") {
+          return {
+            ...action,
+            status: "executed",
+            dispatched_at: new Date().toISOString(),
+            ...clawsweeper,
+          };
+        }
+        return action;
+      });
     }
-    const merge = executeAutomerge(command);
-    dispatched = { ...dispatched, merge };
-    command.actions = command.actions.map((action: JsonValue) =>
-      action.action === "remove_label"
-        ? { ...action, status: "executed", label: action.label }
-        : action.action === "merge"
-          ? { ...action, ...merge, completed_at: new Date().toISOString() }
+    if (
+      ["freeform_assist", "re_review"].includes(command.intent) &&
+      command.issue_number &&
+      shouldDispatchClawSweeper
+    ) {
+      const clawsweeper = dispatchClawSweeperReview(command);
+      dispatched = { ...dispatched, clawsweeper };
+      command.actions = command.actions.map((action: JsonValue) => {
+        if (action.action === "dispatch_clawsweeper") {
+          return {
+            ...action,
+            status: "executed",
+            dispatched_at: new Date().toISOString(),
+            ...clawsweeper,
+          };
+        }
+        return action;
+      });
+    }
+    if (command.intent === "hatch" && command.issue_number && shouldDispatchHatch) {
+      const hatch = dispatchPrEggHatch(command);
+      dispatched = { ...dispatched, hatch };
+      command.actions = command.actions.map((action: JsonValue) => {
+        if (action.action === "dispatch_hatch") {
+          return {
+            ...action,
+            status: "executed",
+            dispatched_at: new Date().toISOString(),
+            ...hatch,
+          };
+        }
+        return action;
+      });
+    }
+    if (
+      AUTOCLOSE_INTENTS.has(command.intent) &&
+      command.issue_number &&
+      command.autoclose_targets?.length > 0
+    ) {
+      const autoclose = executeAutoclose(command);
+      dispatched = { ...dispatched, autoclose };
+      command.actions = command.actions.map((action: JsonValue) =>
+        action.action === "autoclose"
+          ? { ...action, ...autoclose, completed_at: new Date().toISOString() }
           : action,
-    );
-    if (merge.status === "waiting") {
-      command.status = "waiting";
-      return;
+      );
     }
-    if (merge.status === "repair_needed" && canRepairPullTarget(command.target)) {
-      const alreadyPlanned = autoRepairAlreadyPlanned(command);
-      if (alreadyPlanned) {
-        command.actions = command.actions.map((action: JsonValue) =>
-          action.action === "merge"
-            ? { ...action, status: "blocked", reason: alreadyPlanned }
-            : action,
-        );
-      } else {
-        command.repair_reason = `${command.repair_reason ?? "structured ClawSweeper verdict: pass"}; ${merge.repair_reason ?? merge.reason}`;
-        const job = ensureAutomergeJob(command);
-        if (job.status_detail === "written") {
+    if (
+      MERGE_INTENTS.has(command.intent) &&
+      !shouldDispatchRepair &&
+      command.issue_number &&
+      shouldMerge
+    ) {
+      if (commandHasAction(command, "label")) {
+        applyLabelActions(command);
+      }
+      if (commandHasAction(command, "update_description_note")) {
+        applyDescriptionNoteActions(command);
+      }
+      const pauseLabels = command.actions
+        .filter((action: JsonValue) => action.action === "remove_label")
+        .map((action: JsonValue) => String(action.label ?? ""))
+        .filter(Boolean);
+      if (pauseLabels.length > 0) {
+        for (const pausedLabel of pauseLabels) {
+          ghBestEffort([
+            "issue",
+            "edit",
+            String(command.issue_number),
+            "--repo",
+            command.repo,
+            "--remove-label",
+            pausedLabel,
+          ]);
+        }
+        command.target = {
+          ...command.target,
+          labels: (command.target?.labels ?? []).filter(
+            (label: JsonValue) => !pauseLabels.includes(String(label)),
+          ),
+        };
+      }
+      const merge = executeAutomerge(command);
+      dispatched = { ...dispatched, merge };
+      command.actions = command.actions.map((action: JsonValue) =>
+        action.action === "label"
+          ? { ...action, status: "executed", label: action.label }
+          : action.action === "remove_label"
+            ? { ...action, status: "executed", label: action.label }
+            : action.action === "update_description_note"
+              ? { ...action, status: "executed" }
+              : action.action === "merge"
+                ? { ...action, ...merge, completed_at: new Date().toISOString() }
+                : action,
+      );
+      if (merge.status === "waiting") {
+        command.status = "waiting";
+        return;
+      }
+      if (merge.status === "repair_needed" && canRepairPullTarget(command.target)) {
+        const alreadyPlanned = autoRepairAlreadyPlanned(command);
+        if (alreadyPlanned) {
+          command.actions = command.actions.map((action: JsonValue) =>
+            action.action === "merge"
+              ? { ...action, status: "blocked", reason: alreadyPlanned }
+              : action,
+          );
+        } else {
+          command.repair_reason = `${command.repair_reason ?? "structured ClawSweeper verdict: pass"}; ${merge.repair_reason ?? merge.reason}`;
+          const job = ensureAutomergeJob(command);
+          if (job.status_detail === "written") {
+            command.actions.push({
+              action: "dispatch_repair",
+              workflow,
+              job_path: command.target.job_path,
+              mode: command.target.mode,
+              status: "waiting",
+              reason: "adopted job must be committed before worker dispatch",
+            });
+            command.status = "waiting";
+            return;
+          }
+          const repair = dispatchRepair(command);
+          dispatched = { ...dispatched, repair };
           command.actions.push({
             action: "dispatch_repair",
             workflow,
             job_path: command.target.job_path,
             mode: command.target.mode,
-            status: "waiting",
-            reason: "adopted job must be committed before worker dispatch",
+            ...dispatchRepairActionStatus(repair),
           });
-          command.status = "waiting";
-          return;
         }
-        const repair = dispatchRepair(command);
-        dispatched = { ...dispatched, repair };
-        command.actions.push({
-          action: "dispatch_repair",
-          workflow,
-          job_path: command.target.job_path,
-          mode: command.target.mode,
-          ...dispatchRepairActionStatus(repair),
-        });
       }
     }
-  }
-  if (
-    command.intent === "clawsweeper_needs_human" &&
-    command.issue_number &&
-    shouldApplyHumanReviewLabel
-  ) {
-    ensureHumanReviewLabel(command.repo);
-    ghBestEffort([
-      "issue",
-      "edit",
-      String(command.issue_number),
-      "--repo",
-      command.repo,
-      "--add-label",
-      HUMAN_REVIEW_LABEL,
-    ]);
-    command.actions = command.actions.map((action: JsonValue) =>
-      action.action === "label"
-        ? { ...action, status: "executed", label: HUMAN_REVIEW_LABEL }
-        : action,
-    );
-  }
-  if (command.intent === "stop" && command.issue_number && shouldApplyHumanReviewLabel) {
-    applyRemoveLabelActions(command);
-    ensureHumanReviewLabel(command.repo);
-    ghBestEffort([
-      "issue",
-      "edit",
-      String(command.issue_number),
-      "--repo",
-      command.repo,
-      "--add-label",
-      HUMAN_REVIEW_LABEL,
-    ]);
-    command.actions = command.actions.map((action: JsonValue) =>
-      action.action === "label"
-        ? { ...action, status: "executed", label: HUMAN_REVIEW_LABEL }
-        : action,
-    );
-  }
+    if (
+      command.intent === "clawsweeper_needs_human" &&
+      command.issue_number &&
+      shouldApplyHumanReviewLabel
+    ) {
+      ensureHumanReviewLabel(command.repo);
+      ghBestEffort([
+        "issue",
+        "edit",
+        String(command.issue_number),
+        "--repo",
+        command.repo,
+        "--add-label",
+        HUMAN_REVIEW_LABEL,
+      ]);
+      command.actions = command.actions.map((action: JsonValue) =>
+        action.action === "label"
+          ? { ...action, status: "executed", label: HUMAN_REVIEW_LABEL }
+          : action,
+      );
+    }
+    if (command.intent === "stop" && command.issue_number && shouldApplyHumanReviewLabel) {
+      applyRemoveLabelActions(command);
+      ensureHumanReviewLabel(command.repo);
+      ghBestEffort([
+        "issue",
+        "edit",
+        String(command.issue_number),
+        "--repo",
+        command.repo,
+        "--add-label",
+        HUMAN_REVIEW_LABEL,
+      ]);
+      command.actions = command.actions.map((action: JsonValue) =>
+        action.action === "label"
+          ? { ...action, status: "executed", label: HUMAN_REVIEW_LABEL }
+          : action,
+      );
+    }
 
-  const commentResult = postComment(command, renderResponse(command, dispatched));
-  command.actions = command.actions.map((action: JsonValue) =>
-    action.action === "comment"
-      ? {
-          ...action,
-          status: "executed",
-          commented_at: new Date().toISOString(),
-          response_comment_id: commentResult.comment_id,
-          response_comment_mode: commentResult.mode,
-        }
-      : action,
-  );
-  command.status = commandHasWaitingRepairDispatch(command) ? "waiting" : "executed";
+    const commentResult = postComment(command, renderResponse(command, dispatched));
+    command.actions = command.actions.map((action: JsonValue) =>
+      action.action === "comment"
+        ? {
+            ...action,
+            status: "executed",
+            commented_at: new Date().toISOString(),
+            response_comment_id: commentResult.comment_id,
+            response_comment_mode: commentResult.mode,
+          }
+        : action,
+    );
+    command.status = commandHasWaitingRepairDispatch(command) ? "waiting" : "executed";
+  } finally {
+    clearTerminalMaintainerCommandReaction(command);
+  }
 }
 
 function applyRemoveLabelActions(command: LooseRecord) {
@@ -1393,6 +1603,58 @@ function applyRemoveLabelActions(command: LooseRecord) {
       ? { ...action, status: "executed", label: action.label }
       : action,
   );
+}
+
+function applyLabelActions(command: LooseRecord) {
+  const labels = (command.actions ?? [])
+    .filter((action: JsonValue) => action.action === "label")
+    .map((action: JsonValue) => String(action.label ?? ""))
+    .filter(Boolean);
+  if (labels.length === 0) return;
+  for (const label of labels) {
+    if (label === AUTOMERGE_LABEL || label === AUTOFIX_LABEL)
+      ensureRepairLoopLabel(command.repo, label);
+    ghBestEffort([
+      "issue",
+      "edit",
+      String(command.issue_number),
+      "--repo",
+      command.repo,
+      "--add-label",
+      label,
+    ]);
+  }
+  command.target = {
+    ...command.target,
+    labels: [...new Set([...(command.target?.labels ?? []), ...labels])],
+  };
+}
+
+function applyDescriptionNoteActions(command: LooseRecord) {
+  const notes = (command.actions ?? [])
+    .filter((action: JsonValue) => action.action === "update_description_note")
+    .map((action: JsonValue) => String(action.note ?? "").trim())
+    .filter(Boolean);
+  if (notes.length === 0) return;
+  let body = String(command.target?.body ?? "").trimEnd();
+  for (const note of notes) {
+    body = body.includes(PROOF_OVERRIDE_DESCRIPTION_MARKER)
+      ? body.replace(
+          new RegExp(`${escapeRegExp(PROOF_OVERRIDE_DESCRIPTION_MARKER)}[\\s\\S]*$`),
+          note,
+        )
+      : `${body}${body ? "\n\n" : ""}${note}`;
+  }
+  const payloadPath = writePayload(repoRoot(), `pr-description-${command.issue_number}`, { body });
+  ghText([
+    "api",
+    `repos/${command.repo}/issues/${command.issue_number}`,
+    "--method",
+    "PATCH",
+    "--input",
+    payloadPath,
+  ]);
+  command.target = { ...command.target, body };
 }
 
 function workerCapacityRequests(commands: LooseRecord[]) {
@@ -1473,7 +1735,11 @@ function acknowledgeSkippedMaintainerCommand(command: LooseRecord) {
   const targetedProcessedComment =
     itemNumbers.size > 0 && reason === "comment version already processed in ledger";
   if (!targetedProcessedComment && !/already enabled for this PR/i.test(reason)) return;
-  reactToComment(command, "eyes");
+  try {
+    reactToComment(command, "eyes");
+  } finally {
+    clearTerminalMaintainerCommandReaction(command);
+  }
 }
 
 function ensureAutomergeJob(command: LooseRecord) {
@@ -1501,6 +1767,10 @@ function ensureAutomergeJob(command: LooseRecord) {
         issueNumber: command.issue_number,
         title: command.target.title,
         repairMode: repairJobModeForCommand(command),
+        author: command.author,
+        authorId: command.author_id,
+        commentUrl: command.comment_url,
+        automergeInstructions: command.automerge_instructions,
       }),
     );
     statusDetail = "written";
@@ -1581,7 +1851,14 @@ function repairJobModeForCommand(command: LooseRecord) {
 
 function dispatchClawSweeperReview(command: LooseRecord) {
   const commandStatus =
-    command.intent === "re_review" ? { command_status_marker: commandStatusMarker(command) } : {};
+    command.intent === "re_review"
+      ? {
+          command_status_marker: commandStatusMarker(command),
+          ...(command.status_comment_id
+            ? { status_comment_id: String(command.status_comment_id) }
+            : {}),
+        }
+      : {};
   const payload = JSON.stringify({
     event_type: "clawsweeper_item",
     client_payload: {
@@ -1636,6 +1913,36 @@ function dispatchClawSweeperReview(command: LooseRecord) {
       item_number: command.issue_number,
       fallback_reason: stripAnsi(result.stderr || result.stdout).trim(),
     };
+  }
+  return {
+    workflow: reviewWorkflow,
+    event: "repository_dispatch",
+    repo: reviewRepo,
+    item_number: command.issue_number,
+  };
+}
+
+function dispatchPrEggHatch(command: LooseRecord) {
+  const payload = JSON.stringify({
+    event_type: "clawsweeper_hatch",
+    client_payload: {
+      target_repo: command.repo,
+      item_number: String(command.issue_number),
+      item_kind: command.target?.kind ?? "pull_request",
+      hatch_pr_egg_image: "true",
+    },
+  });
+  const result = ghSpawn(
+    ["api", `repos/${reviewRepo}/dispatches`, "--method", "POST", "--input", "-"],
+    {
+      env: dispatchTokenEnv(),
+      input: payload,
+    },
+  );
+  if (result.status !== 0) {
+    throw new Error(
+      `failed to dispatch PR egg hatch for #${command.issue_number}: ${result.stderr || result.stdout}`,
+    );
   }
   return {
     workflow: reviewWorkflow,
@@ -1829,7 +2136,7 @@ function discoverAutocloseTargets({ command, issue, pull }: LooseRecord): JsonVa
   return targets;
 }
 
-function collectAutocloseCandidateNumbers({ command, issue, pull }: LooseRecord): number[] {
+function collectAutocloseCandidateNumbers({ command }: LooseRecord): number[] {
   const numbers = new Set<number>();
   const add = (value: JsonValue) => {
     const number = Number(value);
@@ -1837,25 +2144,7 @@ function collectAutocloseCandidateNumbers({ command, issue, pull }: LooseRecord)
   };
   add(command.issue_number);
   addAutocloseNumbersFromText(numbers, command.autoclose_message);
-  addAutocloseNumbersFromText(numbers, issue.body);
-  addAutocloseNumbersFromText(numbers, pull?.body);
-  for (const linked of pull?.closingIssuesReferences ?? []) add(linked.number);
-  for (const number of fetchTimelineLinkedNumbers(command.issue_number)) add(number);
   return [...numbers];
-}
-
-function fetchTimelineLinkedNumbers(number: JsonValue): number[] {
-  try {
-    const timeline = ghPaged(`repos/${targetRepo}/issues/${number}/timeline?per_page=100`);
-    const numbers = new Set<number>();
-    for (const event of timeline) {
-      addAutocloseNumbersFromText(numbers, event?.body);
-      addAutocloseNumbersFromText(numbers, event?.source?.issue?.html_url);
-    }
-    return [...numbers];
-  } catch {
-    return [];
-  }
 }
 
 function addAutocloseNumbersFromText(numbers: Set<number>, text: string) {
@@ -2003,7 +2292,10 @@ function executeAutomerge(command: LooseRecord) {
     return { action: "merge", status: "blocked", reason: gateBlock, merge_method: "squash" };
   }
   const mergeMessage = buildAutomergeSquashMessage({
-    command,
+    command: {
+      ...command,
+      maintainer_attribution: latestAutomergeMaintainerAttribution(command),
+    },
     view,
     target: latestTarget,
     comments: issueCommentsFor(command.issue_number),
@@ -2097,96 +2389,6 @@ function sleepMs(ms: number) {
   if (ms <= 0) return;
   const buffer = new SharedArrayBuffer(4);
   Atomics.wait(new Int32Array(buffer), 0, 0, ms);
-}
-
-function buildAutomergeSquashMessage({
-  command,
-  view,
-  target,
-  comments,
-}: LooseRecord): LooseRecord {
-  const number = Number(command.issue_number);
-  const rawTitle = String(view.title ?? target.title ?? `PR #${number}`).trim();
-  const subject = rawTitle.includes(`#${number}`) ? rawTitle : `${rawTitle} (#${number})`;
-  const summaryLines = reviewSummaryLines(command);
-  const fixupLines = automergeFixupLines({ view, comments });
-  const validationLines = [
-    `ClawSweeper review passed for head ${target.head_sha ?? command.expected_head_sha ?? "unknown"}.`,
-    "Required merge gates passed before the squash merge.",
-  ];
-  const body = [
-    "Summary:",
-    ...summaryLines.map((line: string) => `- ${line}`),
-    "",
-    "Automerge notes:",
-    ...fixupLines.map((line: string) => `- ${line}`),
-    "",
-    "Validation:",
-    ...validationLines.map((line: string) => `- ${line}`),
-    "",
-    `Prepared head SHA: ${target.head_sha ?? command.expected_head_sha ?? "unknown"}`,
-    ...(command.comment_url ? [`Review: ${command.comment_url}`] : []),
-    "",
-    ...coAuthorTrailersFromCommits(view.commits ?? []),
-  ].join("\n");
-  return { subject, body: body.trimEnd(), summaryLines, fixupLines };
-}
-
-function reviewSummaryLines(command: LooseRecord): string[] {
-  const lines = linesFromMarkdownSection(command.review_summary);
-  if (lines.length > 0) return lines.slice(0, 4);
-  return [
-    `Merged ${command.target?.title ?? `PR #${command.issue_number}`} after ClawSweeper review.`,
-  ];
-}
-
-function automergeFixupLines({ view, comments }: LooseRecord): string[] {
-  const lines: string[] = [];
-  const commits = Array.isArray(view.commits) ? view.commits : [];
-  const sawRepair = comments.some((comment: JsonValue) =>
-    String(comment.body ?? "").includes("clawsweeper_auto_repair"),
-  );
-  const sawFinding = comments.some((comment: JsonValue) =>
-    /Codex review: found issues before merge|clawsweeper-action:fix-required/i.test(
-      String(comment.body ?? ""),
-    ),
-  );
-  if (sawRepair) lines.push("Ran the ClawSweeper repair loop before final review.");
-  if (sawFinding) lines.push("Addressed earlier ClawSweeper review findings before merge.");
-  const followupCommits = commits.slice(1).map(commitHeadline).filter(Boolean);
-  const followupPrefix =
-    sawRepair || sawFinding
-      ? "Included post-review commit in the final squash"
-      : "PR branch already contained follow-up commit before automerge";
-  for (const headline of followupCommits.slice(0, 6)) {
-    lines.push(`${followupPrefix}: ${headline}`);
-  }
-  const uniqueLines = unique(lines).slice(0, 8);
-  return uniqueLines.length > 0
-    ? uniqueLines
-    : ["No ClawSweeper repair was needed after automerge opt-in."];
-}
-
-function coAuthorTrailersFromCommits(commits: JsonValue): string[] {
-  if (!Array.isArray(commits)) return [];
-  const trailers: string[] = [];
-  const seen = new Set<string>();
-  for (const commit of commits) {
-    for (const author of commit?.authors ?? []) {
-      const name = String(author?.name ?? author?.login ?? "").trim();
-      const email = String(author?.email ?? "").trim();
-      if (!name || !email) continue;
-      const key = `${name.toLowerCase()} <${email.toLowerCase()}>`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      trailers.push(`Co-authored-by: ${name} <${email}>`);
-    }
-  }
-  return trailers;
-}
-
-function commitHeadline(commit: JsonValue): string {
-  return compactText(commit?.messageHeadline ?? commit?.headline ?? commit?.message ?? "", 160);
 }
 
 function writeAutomergeMergeBody(command: LooseRecord, target: LooseRecord, body: string) {
@@ -2296,10 +2498,12 @@ function classifyPullTarget(pull: LooseRecord, issueNumber: JsonValue): JsonValu
   return {
     kind: "pull_request",
     title: pull.title ?? null,
+    body: pull.body ?? null,
     branch,
     head_sha: pull.headRefOid ?? null,
     author,
     labels,
+    files: pull.files ?? [],
     is_clawsweeper_pr: branch.startsWith(headPrefix),
     cluster_id: clusterId ?? (adoptedJobPath ? automergeCluster : null),
     job_path: jobPath,
@@ -2375,17 +2579,6 @@ function extractMarkdownSection(body: JsonValue, heading: string): string | null
     "i",
   );
   return pattern.exec(text)?.[1]?.trim() || null;
-}
-
-function linesFromMarkdownSection(section: JsonValue): string[] {
-  const text = String(section ?? "").trim();
-  if (!text) return [];
-  const bulletLines = text
-    .split(/\n+/)
-    .map((line: string) => line.replace(/^\s*[-*]\s+/, "").trim())
-    .filter(Boolean);
-  if (bulletLines.length > 1) return bulletLines.map((line) => compactText(line, 220));
-  return [compactText(text, 320)];
 }
 
 function issueCommentsFor(number: JsonValue): JsonValue[] {
@@ -2865,6 +3058,59 @@ function reactToComment(command: LooseRecord, content: string) {
   }
 }
 
+function clearTerminalMaintainerCommandReaction(command: LooseRecord) {
+  if (!shouldClearMaintainerCommandReaction(command)) return;
+  removeOwnCommentReaction(command, "eyes");
+}
+
+function removeOwnCommentReaction(command: LooseRecord, content: string) {
+  if (!command.comment_id) return;
+  let reactions: LooseRecord[] = [];
+  try {
+    const fetched = ghJson<LooseRecord[]>(
+      [
+        "api",
+        `repos/${command.repo}/issues/comments/${command.comment_id}/reactions?content=${encodeURIComponent(content)}`,
+      ],
+      { attempts: 1 },
+    );
+    if (Array.isArray(fetched)) reactions = fetched;
+  } catch (error) {
+    const message = compactText(ghErrorText(error), 220);
+    console.warn(
+      `warning: failed to list ${content} reactions for comment ${command.comment_id}: ${message}`,
+    );
+    return;
+  }
+
+  for (const reaction of reactions) {
+    if (!isOwnCommentReaction(reaction, content)) continue;
+    try {
+      ghText(
+        [
+          "api",
+          `repos/${command.repo}/issues/comments/${command.comment_id}/reactions/${reaction.id}`,
+          "--method",
+          "DELETE",
+        ],
+        { attempts: 1 },
+      );
+    } catch (error) {
+      const message = compactText(ghErrorText(error), 220);
+      if (/\b404\b|not found/i.test(message)) continue;
+      console.warn(
+        `warning: failed to delete ${content} reaction ${reaction.id} from comment ${command.comment_id}: ${message}`,
+      );
+    }
+  }
+}
+
+function isOwnCommentReaction(reaction: LooseRecord, content: string) {
+  if (String(reaction?.content ?? "").toLowerCase() !== content.toLowerCase()) return false;
+  const login = String(reaction?.user?.login ?? "").toLowerCase();
+  return isAllowedMutationActor(login, trustedBots);
+}
+
 function ensureAutomergeLabel(repo: string) {
   ghBestEffort([
     "label",
@@ -2873,7 +3119,7 @@ function ensureAutomergeLabel(repo: string) {
     "--repo",
     repo,
     "--color",
-    "0E8A16",
+    "1A7F37",
     "--description",
     "Maintainer opted this ClawSweeper PR into bounded ClawSweeper-reviewed automerge",
   ]);
@@ -2887,7 +3133,7 @@ function ensureAutofixLabel(repo: string) {
     "--repo",
     repo,
     "--color",
-    "1D76DB",
+    "0A3069",
     "--description",
     "Maintainer opted this PR into bounded ClawSweeper-reviewed autofix without merge",
   ]);
@@ -2923,7 +3169,7 @@ function ensureMergeReadyLabel(repo: string) {
     "--repo",
     repo,
     "--color",
-    "5319E7",
+    "57606A",
     "--description",
     "ClawSweeper found the PR merge-ready but a human gate is still closed",
   ]);

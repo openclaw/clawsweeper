@@ -8,6 +8,7 @@ import test from "node:test";
 import {
   artifactItemNumbers,
   automationLimit,
+  commentSyncBatchOutput,
   countActions,
   countCommandActions,
   countRequeueRequired,
@@ -15,6 +16,7 @@ import {
   planOutputFields,
   plannedItemNumberCsv,
   proposedItemNumbers,
+  writeCommentSyncCursor,
 } from "../../dist/repair/workflow-utils.js";
 import { AUTOMATION_LIMITS, WORKER_CONFIG, workerLimit } from "../../dist/repair/limits.js";
 
@@ -48,9 +50,9 @@ test("worker scheduler lets background lanes yield to active work", () => {
     workerLimit("normal_review"),
     Math.min(AUTOMATION_LIMITS.review_shards.normal_default, quietBackgroundCapacity),
   );
-  assert.equal(workerLimit("normal_review", { activeCritical: 24, activeBackground: 16 }), 10);
+  assert.equal(workerLimit("normal_review", { activeCritical: 21, activeBackground: 13 }), 1);
   assert.equal(workerLimit("commit_review"), AUTOMATION_LIMITS.commit_review.page_size_default);
-  assert.equal(workerLimit("commit_review", { activeCritical: 72 }), 1);
+  assert.equal(workerLimit("commit_review", { activeCritical: 49 }), 1);
   assert.equal(workerLimit("repair"), AUTOMATION_LIMITS.repair_live_runs.default);
 });
 
@@ -313,6 +315,74 @@ test("workflow utilities re-elect skipped_changed_since_review records once a fr
   assert.deepEqual(selected, [20, 22]);
 });
 
+test("workflow utilities select cursor-based PR comment sync batches", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-workflow-"));
+  const cursorPath = path.join(root, "results/comment-sync-cursors/openclaw-openclaw.json");
+  writeCommentSyncRecord(root, 10, "pull_request", "kept_open");
+  writeCommentSyncRecord(root, 20, "pull_request", "proposed_close");
+  writeCommentSyncRecord(root, 30, "pull_request", "kept_open");
+  writeCommentSyncRecord(root, 40, "issue", "kept_open");
+  writeCommentSyncRecord(root, 50, "pull_request", "reviewed");
+
+  assert.deepEqual(
+    withCwd(root, () =>
+      commentSyncBatchOutput({
+        targetRepo: "openclaw/openclaw",
+        applyKind: "pull_request",
+        batchSize: 2,
+        cursorPath,
+      }),
+    ),
+    {
+      item_numbers: "10,20",
+      count: "2",
+      cursor: "0",
+      next_cursor: "20",
+      wrapped: "false",
+    },
+  );
+
+  writeCommentSyncCursor(cursorPath, 20, "openclaw/openclaw");
+
+  assert.deepEqual(
+    withCwd(root, () =>
+      commentSyncBatchOutput({
+        targetRepo: "openclaw/openclaw",
+        applyKind: "pull_request",
+        batchSize: 2,
+        cursorPath,
+      }),
+    ),
+    {
+      item_numbers: "30",
+      count: "1",
+      cursor: "20",
+      next_cursor: "30",
+      wrapped: "false",
+    },
+  );
+
+  writeCommentSyncCursor(cursorPath, 99, "openclaw/openclaw");
+
+  assert.deepEqual(
+    withCwd(root, () =>
+      commentSyncBatchOutput({
+        targetRepo: "openclaw/openclaw",
+        applyKind: "pull_request",
+        batchSize: 2,
+        cursorPath,
+      }),
+    ),
+    {
+      item_numbers: "10,20",
+      count: "2",
+      cursor: "99",
+      next_cursor: "20",
+      wrapped: "true",
+    },
+  );
+});
+
 function withCwd(cwd, callback) {
   const previous = process.cwd();
   process.chdir(cwd);
@@ -326,4 +396,20 @@ function withCwd(cwd, callback) {
 function write(file, content) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, content);
+}
+
+function writeCommentSyncRecord(root, number, type, actionTaken) {
+  write(
+    path.join(root, `records/openclaw-openclaw/items/openclaw-openclaw-${number}.md`),
+    [
+      "---",
+      "repository: openclaw/openclaw",
+      `type: ${type}`,
+      "review_status: complete",
+      "item_snapshot_hash: abc123",
+      `action_taken: ${actionTaken}`,
+      "---",
+      "",
+    ].join("\n"),
+  );
 }

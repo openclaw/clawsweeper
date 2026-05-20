@@ -176,9 +176,13 @@ jobs:
         run: |
           set -euo pipefail
           active_runs_json() {
-            gh api "repos/${{ github.repository }}/actions/runs?per_page=100" \
-              --jq '[.workflow_runs[] | {databaseId:.id, workflowName:.name, displayTitle:.display_title, status:.status}]' 2>/dev/null \
-              || printf '[]'
+            {
+              for run_status in in_progress pending queued waiting requested; do
+                gh api "repos/${{ github.repository }}/actions/runs?per_page=100&status=${run_status}" \
+                  --jq '.workflow_runs[] | {databaseId:.id, workflowName:.name, displayTitle:.display_title, status:.status}' 2>/dev/null \
+                  || true
+              done
+            } | jq -s 'unique_by(.databaseId)'
           }
           ACTIVE_RUNS_JSON="$(active_runs_json)"
           active_run_count() {

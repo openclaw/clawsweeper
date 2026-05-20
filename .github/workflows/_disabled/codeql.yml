@@ -40,10 +40,12 @@ jobs:
         with:
           sparse-checkout: |
             .github
+            dashboard
             scripts
             src
             package.json
             pnpm-lock.yaml
+            tsconfig.dashboard.json
             tsconfig.json
             tsconfig.repair.json
           sparse-checkout-cone-mode: false

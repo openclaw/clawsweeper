@@ -16,6 +16,10 @@ import {
 
 type EventSeverity = "info" | "warning" | "error";
 type EventStatus = "sent" | "planned" | "failed" | "skipped";
+type DashboardIngestConfig = {
+  url: string;
+  token: string;
+};
 
 export type ClawSweeperEvent = {
   key: string;
@@ -321,6 +325,7 @@ export async function runClawSweeperEventNotifier(
   const runId = stringArg(args["run-id"]) ?? env.RUN_ID ?? env.GITHUB_RUN_ID;
   const dryRun = Boolean(args["dry-run"] || env.CLAWSWEEPER_EVENT_NOTIFY_DRY_RUN === "1");
   const strict = Boolean(args.strict || env.CLAWSWEEPER_EVENT_NOTIFY_STRICT === "1");
+  const dashboardConfig = resolveDashboardIngestConfig(env);
 
   if (!fs.existsSync(inputPath) && (!runRecordPath || !fs.existsSync(runRecordPath))) {
     const summary = summaryRow("skipped", 0, 0, 0, 0, 0, "event sources missing");
@@ -366,13 +371,29 @@ export async function runClawSweeperEventNotifier(
           deliver: true,
         },
       });
-      const notifiedAt = now().toISOString();
-      nextLedger = addEventLedgerEntry(nextLedger, event, {
-        notifiedAt,
-        hookRunId: result.runId,
-        discordTarget: config.discordTarget,
-      });
-      reportActions.push(reportRow(event, "sent", "sent to OpenClaw hook", result.runId));
+      let dashboardStatus = "status dashboard not configured";
+      let dashboardDelivered = true;
+      if (dashboardConfig) {
+        try {
+          await postStatusDashboardEvent({ config: dashboardConfig, fetcher, event });
+          dashboardStatus = "sent to status dashboard";
+        } catch (error) {
+          dashboardDelivered = false;
+          dashboardStatus = `status dashboard failed: ${errorText(error)}`;
+          reportActions.push(reportRow(event, "failed", dashboardStatus, result.runId));
+        }
+      }
+      if (dashboardDelivered) {
+        const notifiedAt = now().toISOString();
+        nextLedger = addEventLedgerEntry(nextLedger, event, {
+          notifiedAt,
+          hookRunId: result.runId,
+          discordTarget: config.discordTarget,
+        });
+      }
+      reportActions.push(
+        reportRow(event, "sent", `sent to OpenClaw hook; ${dashboardStatus}`, result.runId),
+      );
     } catch (error) {
       reportActions.push(reportRow(event, "failed", errorText(error)));
     }
@@ -413,6 +434,54 @@ export async function runClawSweeperEventNotifier(
   };
   log(JSON.stringify(summary, null, 2));
   return summary;
+}
+
+function resolveDashboardIngestConfig(env: NodeJS.ProcessEnv): DashboardIngestConfig | null {
+  const token = stringOrNull(env.CLAWSWEEPER_STATUS_INGEST_TOKEN);
+  if (!token) return null;
+  const url =
+    stringOrNull(env.CLAWSWEEPER_STATUS_INGEST_URL) ??
+    `${trimTrailingSlash(stringOrNull(env.CLAWSWEEPER_STATUS_URL) ?? "https://clawsweeper.openclaw.ai")}/api/events`;
+  return { url, token };
+}
+
+async function postStatusDashboardEvent({
+  config,
+  fetcher,
+  event,
+}: {
+  config: DashboardIngestConfig;
+  fetcher: typeof fetch;
+  event: ClawSweeperEvent;
+}): Promise<void> {
+  const response = await fetcher(config.url, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${config.token}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(statusDashboardPayload(event)),
+  });
+  if (!response.ok)
+    throw new Error(`dashboard ingest returned ${response.status}: ${await response.text()}`);
+}
+
+function statusDashboardPayload(event: ClawSweeperEvent): JsonObject {
+  return {
+    event_type: event.type,
+    mode: event.type.replace(/^clawsweeper\./, ""),
+    stage: event.action,
+    status: event.status,
+    repository: event.repo,
+    item_url: event.url,
+    run_url: event.runUrl,
+    title: event.title ?? `${event.repo}${event.target ?? ""}`,
+    note: event.reason,
+  };
+}
+
+function trimTrailingSlash(value: string): string {
+  return value.replace(/\/+$/, "");
 }
 
 function createEvent(params: {

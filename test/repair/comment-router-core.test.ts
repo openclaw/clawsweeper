@@ -12,12 +12,15 @@ import {
   automergeChangelogBlockReason,
   automergeFailedChecksRepairReason,
   automergeClusterId,
+  automergeRequestedByFromComments,
+  automergeRequestedByFromBody,
   automergeGateBlockReason,
   automergeJobBranch,
   automergeJobPath,
   automergeReadinessRepairReason,
   automergeTransientWaitConfig,
   buildAutomergeMergeArgs,
+  buildAutomergeSquashMessage,
   commandHasAction,
   createCachedIssueCommentsLookup,
   createCachedIssueCommentsLookupAsync,
@@ -33,7 +36,9 @@ import {
   issueImplementationJobPath,
   isAuthorReadOnlyCommandAllowed,
   isCanonicalLandingNeedsHumanText,
+  latestRepairLoopResumeTime,
   isMaintainerCommandAllowed,
+  maintainerAutomergeOptInApprovesNeedsHuman,
   parseCommand,
   pausedModeStatusBlocksReplay,
   parseTrustedAutomation,
@@ -46,8 +51,10 @@ import {
   renderResponse,
   sharedAutomergeStatusMarkerPrefix,
   staleAutomergeActivationReason,
+  shouldClearMaintainerCommandReaction,
   usesSharedAutomergeStatus,
 } from "../../dist/repair/comment-router-core.js";
+import { CLAWSWEEPER_CO_AUTHOR_TRAILER } from "../../dist/repair/co-author-credit.js";
 import { parseSimpleYaml, validateJob } from "../../dist/repair/lib.js";
 
 test("parseCommand recognizes maintainer slash commands", () => {
@@ -96,6 +103,23 @@ test("parseCommand recognizes maintainer slash commands", () => {
     command: "auto merge",
     intent: "automerge",
   });
+  assert.deepEqual(
+    parseCommand(
+      "@clawsweeper automerge\nSpecial instructions: preserve fallback behavior by default.",
+    ),
+    {
+      trigger: "mention",
+      command: "automerge",
+      intent: "automerge",
+      automerge_instructions: "Special instructions: preserve fallback behavior by default.",
+    },
+  );
+  assert.deepEqual(parseCommand("/clawsweeper automerge\nPreserve existing config behavior."), {
+    trigger: "slash",
+    command: "automerge",
+    intent: "automerge",
+    automerge_instructions: "Preserve existing config behavior.",
+  });
   assert.deepEqual(parseCommand("/clawsweeper automerge!"), {
     trigger: "slash",
     command: "automerge",
@@ -115,6 +139,11 @@ test("parseCommand recognizes maintainer slash commands", () => {
     trigger: "slash",
     command: "re-run",
     intent: "re_review",
+  });
+  assert.deepEqual(parseCommand("/clawsweeper hatch"), {
+    trigger: "slash",
+    command: "hatch",
+    intent: "hatch",
   });
   assert.deepEqual(parseCommand("/review"), {
     trigger: "slash",
@@ -168,7 +197,12 @@ test("parseCommand recognizes maintainer slash commands", () => {
   assert.deepEqual(parseCommand("/clawsweeper merge"), {
     trigger: "slash",
     command: "merge",
-    intent: "help",
+    intent: "maintainer_approve_automerge",
+  });
+  assert.deepEqual(parseCommand("@clawsweeper merge"), {
+    trigger: "mention",
+    command: "merge",
+    intent: "maintainer_approve_automerge",
   });
   assert.deepEqual(parseCommand("/automerge"), {
     trigger: "slash",
@@ -197,6 +231,52 @@ test("parseCommand recognizes maintainer slash commands", () => {
     intent: "autoclose",
     autoclose_message: "Not a direction for OpenClaw",
   });
+});
+
+test("terminal maintainer command reactions clear after successful handling", () => {
+  assert.equal(
+    shouldClearMaintainerCommandReaction({
+      trusted_bot: false,
+      comment_id: "4472074866",
+      status: "executed",
+      intent: "automerge",
+    }),
+    true,
+  );
+});
+
+test("terminal maintainer command reactions clear after skipped handling", () => {
+  assert.equal(
+    shouldClearMaintainerCommandReaction({
+      trusted_bot: false,
+      comment_id: "4472074866",
+      status: "skipped",
+      reason: "comment version already processed in ledger",
+      intent: "automerge",
+    }),
+    true,
+  );
+});
+
+test("in-progress maintainer command reactions stay visible", () => {
+  assert.equal(
+    shouldClearMaintainerCommandReaction({
+      trusted_bot: false,
+      comment_id: "4472074866",
+      status: "waiting",
+      intent: "automerge",
+    }),
+    false,
+  );
+  assert.equal(
+    shouldClearMaintainerCommandReaction({
+      trusted_bot: true,
+      comment_id: "4472074866",
+      status: "executed",
+      intent: "clawsweeper_auto_merge",
+    }),
+    false,
+  );
 });
 
 test("cached label number lookup fetches each label once and returns stable copies", () => {
@@ -501,6 +581,10 @@ test("renderAutomergeJob validates and keeps merge owned by router", () => {
     repo: "openclaw/openclaw",
     issueNumber: 74112,
     title: "Tighten cross-session message handling",
+    author: "maintainer-user",
+    authorId: 123456,
+    commentUrl: "https://github.com/openclaw/openclaw/pull/74112#issuecomment-1",
+    automergeInstructions: "Special instructions: preserve existing behavior by default.",
   });
   const match = raw.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
   assert.ok(match);
@@ -512,6 +596,12 @@ test("renderAutomergeJob validates and keeps merge owned by router", () => {
   assert.deepEqual(validateJob(job), []);
   assert.equal(job.frontmatter.job_intent, "automerge_pr");
   assert.equal(job.frontmatter.source, "pr_automerge");
+  assert.equal(job.frontmatter.requested_by, "maintainer-user");
+  assert.equal(job.frontmatter.requested_by_id, "123456");
+  assert.equal(
+    job.frontmatter.request_comment_url,
+    "https://github.com/openclaw/openclaw/pull/74112#issuecomment-1",
+  );
   assert.equal(job.frontmatter.allow_fix_pr, true);
   assert.equal(job.frontmatter.allow_merge, false);
   assert.deepEqual(job.frontmatter.blocked_actions, ["close", "merge"]);
@@ -523,6 +613,9 @@ test("renderAutomergeJob validates and keeps merge owned by router", () => {
   assert.match(job.body, /add a changelog entry when required/);
   assert.match(job.body, /Never add forbidden changelog credit lines/);
   assert.match(job.body, /router owns final merge/);
+  assert.match(job.body, /Requested by: maintainer-user/);
+  assert.match(job.body, /Maintainer special instructions:/);
+  assert.match(job.body, /Special instructions: preserve existing behavior by default\./);
 });
 
 test("renderIssueImplementationJob validates and opens one non-closing fix PR lane", () => {
@@ -599,6 +692,27 @@ test("automerge changelog gate blocks user-facing OpenClaw changes without chang
   assert.equal(
     automergeChangelogBlockReason({
       repo: "openclaw/openclaw",
+      title: "fix(agents): normalize Copilot replay tool IDs",
+      files: [{ filename: "src/agents/openai-transport-stream.ts" }],
+    }),
+    "CHANGELOG.md entry is required for user-facing ClawSweeper automerge changes",
+  );
+
+  assert.equal(
+    automergeChangelogBlockReason({
+      repo: "openclaw/openclaw",
+      title: "Log Telegram outbound delivery success",
+      files: [
+        { path: "extensions/telegram/src/send.ts" },
+        { path: "extensions/telegram/src/send.test.ts" },
+      ],
+    }),
+    "CHANGELOG.md entry is required for user-facing ClawSweeper automerge changes",
+  );
+
+  assert.equal(
+    automergeChangelogBlockReason({
+      repo: "openclaw/openclaw",
       title: "fix(discord): cool down Cloudflare 429 responses",
       files: [{ path: "CHANGELOG.md" }, { path: "extensions/discord/src/api.ts" }],
     }),
@@ -630,7 +744,7 @@ test("automerge activation sends missing changelog directly to repair", () => {
     automergeActivationRepairReason({
       intent: "automerge",
       repo: "openclaw/openclaw",
-      title: "fix(memory): preserve session corpus labels",
+      title: "Preserve session corpus labels",
       files: [
         { path: "extensions/memory-core/src/tools.ts" },
         { path: "extensions/memory-core/src/tools.test.ts" },
@@ -690,6 +804,11 @@ test("parseCommand recognizes ClawSweeper bot mentions", () => {
     trigger: "mention",
     command: "review",
     intent: "re_review",
+  });
+  assert.deepEqual(parseCommand("@clawsweeper hatch"), {
+    trigger: "mention",
+    command: "hatch",
+    intent: "hatch",
   });
   assert.deepEqual(parseCommand("@clawsweeper implement"), {
     trigger: "mention",
@@ -852,10 +971,16 @@ test("parseTrustedAutomation treats trusted ClawSweeper needs-human as a pause",
   assert.match(parsed.repair_reason, /needs-human/);
 });
 
-test("canonical landing needs-human text can be approved by later automerge opt-in", () => {
+test("canonical landing needs-human text can be approved by active automerge opt-in", () => {
   assert.equal(
     isCanonicalLandingNeedsHumanText(
       "No repair lane is needed because the PR already contains the narrow fix; maintainer action is to land one canonical fix.",
+    ),
+    true,
+  );
+  assert.equal(
+    isCanonicalLandingNeedsHumanText(
+      "The PR is an active automerge candidate with no code finding, but the protected label and missing real behavior proof require maintainer handling.",
     ),
     true,
   );
@@ -869,6 +994,119 @@ test("canonical landing needs-human text can be approved by later automerge opt-
     isCanonicalLandingNeedsHumanText(
       "Maintainer action is to land the canonical fix.\n- [P1] Still broken",
     ),
+    false,
+  );
+  assert.equal(
+    maintainerAutomergeOptInApprovesNeedsHuman({
+      reason:
+        "The PR is an active automerge candidate with no code finding, but missing proof needs maintainer handling.",
+      commentCreatedAt: "2026-05-17T00:45:00Z",
+      commentUpdatedAt: "2026-05-17T00:55:00Z",
+      optInTime: "2026-05-17T00:50:00Z",
+    }),
+    true,
+  );
+  assert.equal(
+    maintainerAutomergeOptInApprovesNeedsHuman({
+      reason:
+        "The PR is an active automerge candidate with no code finding, but missing proof needs maintainer handling.",
+      commentCreatedAt: "2026-05-17T00:55:00Z",
+      optInTime: "2026-05-17T00:50:00Z",
+    }),
+    true,
+  );
+  assert.equal(
+    maintainerAutomergeOptInApprovesNeedsHuman({
+      reason:
+        "The PR is an active automerge candidate with no code finding, but missing proof needs maintainer handling.",
+      commentCreatedAt: "2026-05-17T00:55:00Z",
+      optInTime: 0,
+    }),
+    false,
+  );
+});
+
+test("canonical landing needs-human accepts waiting automerge opt-in as active resume intent", () => {
+  const optInTime = latestRepairLoopResumeTime(
+    [
+      {
+        repo: "openclaw/openclaw",
+        issue_number: 83186,
+        intent: "automerge",
+        status: "waiting",
+        comment_updated_at: "2026-05-17T17:09:01Z",
+      },
+      {
+        repo: "openclaw/openclaw",
+        issue_number: 83186,
+        intent: "automerge",
+        status: "blocked",
+        comment_updated_at: "2026-05-17T17:10:01Z",
+      },
+      {
+        repo: "openclaw/openclaw",
+        issue_number: 83186,
+        intent: "status",
+        status: "executed",
+        comment_updated_at: "2026-05-17T17:11:01Z",
+      },
+    ],
+    {
+      repo: "openclaw/openclaw",
+      issue_number: 83186,
+    },
+  );
+
+  assert.equal(optInTime, Date.parse("2026-05-17T17:09:01Z"));
+  assert.equal(
+    maintainerAutomergeOptInApprovesNeedsHuman({
+      reason:
+        "No repair lane is needed; the open PR already contains the focused implementation and this review found no actionable blocker for automation to fix.",
+      commentCreatedAt: "2026-05-17T16:54:05Z",
+      optInTime,
+    }),
+    true,
+  );
+});
+
+test("canonical landing needs-human accepts replacement PR automerge requester marker", () => {
+  const replacementBody = [
+    "Makes https://github.com/openclaw/openclaw/pull/83186 merge-ready for the ClawSweeper automerge loop.",
+    "",
+    "ClawSweeper replacement notes:",
+    "- Automerge requested by: @Takhoffman",
+    '<!-- clawsweeper-automerge-requested-by login="Takhoffman" id="781889" -->',
+  ].join("\n");
+
+  assert.deepEqual(automergeRequestedByFromBody(replacementBody), {
+    author: "Takhoffman",
+    author_id: "781889",
+    author_name: null,
+  });
+  assert.equal(
+    maintainerAutomergeOptInApprovesNeedsHuman({
+      reason:
+        "No repair lane is needed; this automerge-opted replacement PR should proceed through exact-head checks and normal merge gates.",
+      commentCreatedAt: "2026-05-17T18:03:35Z",
+      optInTime: 0,
+      replacementAutomergeRequestedBy: automergeRequestedByFromBody(replacementBody),
+    }),
+    true,
+  );
+});
+
+test("canonical landing needs-human ignores bot replacement PR automerge requester markers", () => {
+  assert.equal(
+    maintainerAutomergeOptInApprovesNeedsHuman({
+      reason:
+        "No repair lane is needed; this automerge-opted replacement PR should proceed through exact-head checks and normal merge gates.",
+      commentCreatedAt: "2026-05-17T18:03:35Z",
+      optInTime: 0,
+      replacementAutomergeRequestedBy: {
+        author: "clawsweeper[bot]",
+        author_id: "274271284",
+      },
+    }),
     false,
   );
 });
@@ -1365,6 +1603,29 @@ test("renderResponse reports maintainer re-review dispatches", () => {
   assert.doesNotMatch(body, /repair worker/);
 });
 
+test("renderResponse reports PR egg hatch dispatches", () => {
+  const body = renderResponse(
+    {
+      comment_id: "462",
+      intent: "hatch",
+      issue_number: 74108,
+      target: { head_sha: "def462" },
+    },
+    {
+      hatch: {
+        workflow: "sweep.yml",
+        event: "repository_dispatch",
+      },
+    },
+  );
+
+  assert.match(body, /PR egg hatch requested/);
+  assert.match(body, /If the egg is hatchable/);
+  assert.match(body, /Action: PR egg hatch queued/);
+  assert.match(body, /ASCII egg stays as the fallback/);
+  assert.match(body, /clawsweeper-command-status:74108:hatch:def462/);
+});
+
 test("renderResponse reports issue implementation repair dispatches", () => {
   const body = renderResponse(
     {
@@ -1436,6 +1697,18 @@ test("renderResponse reports maintainer autoclose results", () => {
   assert.doesNotMatch(body, /ClawSweeper Repair/i);
 });
 
+test("renderResponse documents explicit autoclose linked-target scope", () => {
+  const body = renderResponse({
+    comment_id: "461",
+    intent: "autoclose",
+    reason: "autoclose requires a maintainer close reason",
+    target: { head_sha: null },
+  });
+
+  assert.match(body, /explicitly referenced in the command text/);
+  assert.doesNotMatch(body, /bounded linked open same-repo items/);
+});
+
 test("renderResponse reports automerge repair dispatches", () => {
   const body = renderResponse(
     {
@@ -1504,15 +1777,40 @@ test("renderResponse reports explicit human-review pause actions", () => {
       comment_id: "458",
       intent: "clawsweeper_needs_human",
       trusted_bot_author: "clawsweeper[bot]",
-      repair_reason: "structured ClawSweeper verdict: human-review",
+      repair_reason:
+        "Protected maintainer labeling plus proof-label automation risk make this a maintainer validation item rather than a ClawSweeper repair job.",
       target: { head_sha: "def458" },
     },
     null,
   );
 
   assert.match(body, /pausing this repair loop/);
+  assert.match(body, /Why human review is needed:/);
+  assert.match(body, /proof-label or proof-gate automation/);
+  assert.match(body, /Recommended next action:/);
+  assert.match(body, /Add redacted real behavior proof/);
+  assert.match(body, /@clawsweeper automerge/);
   assert.match(body, /`clawsweeper:human-review`/);
   assert.doesNotMatch(body, /did not dispatch/);
+});
+
+test("renderResponse gives generic human-review pauses a next action", () => {
+  const body = renderResponse(
+    {
+      comment_id: "459",
+      intent: "clawsweeper_needs_human",
+      trusted_bot_author: "clawsweeper[bot]",
+      repair_reason: "structured ClawSweeper verdict: human-review",
+      target: { head_sha: "def459" },
+    },
+    null,
+  );
+
+  assert.match(body, /Why human review is needed:/);
+  assert.match(body, /resolved or accepted by a maintainer/);
+  assert.match(body, /Recommended next action:/);
+  assert.match(body, /resolve the blocker or explicitly accept the risk/);
+  assert.match(body, /`clawsweeper:human-review`/);
 });
 
 test("renderResponse reports automerge completion", () => {
@@ -1683,6 +1981,216 @@ test("automerge merge args pin the reviewed head SHA", () => {
   );
 });
 
+test("automerge squash message credits the initiating maintainer with approval and co-author trailers", () => {
+  const message = buildAutomergeSquashMessage({
+    command: {
+      issue_number: 123,
+      expected_head_sha: "abc123",
+      target: { title: "fix: test" },
+      maintainer_attribution: {
+        author: "maintainer-user",
+        author_id: 123456,
+      },
+    },
+    target: { head_sha: "abc123", title: "fix: test" },
+    view: {
+      title: "fix: test",
+      commits: [
+        {
+          authors: [
+            {
+              name: "Contributor",
+              email: "111+contributor@users.noreply.github.com",
+            },
+          ],
+        },
+      ],
+    },
+    comments: [],
+  });
+
+  assert.match(
+    message.body,
+    /^Co-authored-by: Contributor <111\+contributor@users\.noreply\.github\.com>$/m,
+  );
+  assert.match(
+    message.body,
+    /^Co-authored-by: clawsweeper\[bot\] <274271284\+clawsweeper\[bot\]@users\.noreply\.github\.com>$/m,
+  );
+  assert.match(message.body, /^Approved-by: maintainer-user$/m);
+  assert.match(
+    message.body,
+    /^Co-authored-by: maintainer-user <123456\+maintainer-user@users\.noreply\.github\.com>$/m,
+  );
+});
+
+test("automerge squash message dedupes maintainer co-author trailer", () => {
+  const message = buildAutomergeSquashMessage({
+    command: {
+      issue_number: 123,
+      expected_head_sha: "abc123",
+      target: { title: "fix: test" },
+      maintainer_attribution: {
+        author: "maintainer-user",
+        author_id: 123456,
+      },
+    },
+    target: { head_sha: "abc123", title: "fix: test" },
+    view: {
+      title: "fix: test",
+      commits: [
+        {
+          authors: [
+            {
+              name: "maintainer-user",
+              email: "123456+maintainer-user@users.noreply.github.com",
+            },
+          ],
+        },
+      ],
+    },
+    comments: [],
+  });
+
+  assert.equal(
+    message.body.match(
+      /^Co-authored-by: maintainer-user <123456\+maintainer-user@users\.noreply\.github\.com>$/gm,
+    )?.length,
+    1,
+  );
+  assert.match(message.body, /^Approved-by: maintainer-user$/m);
+});
+
+test("automerge squash message dedupes ClawSweeper co-author trailer", () => {
+  const message = buildAutomergeSquashMessage({
+    command: {
+      issue_number: 123,
+      expected_head_sha: "abc123",
+      target: { title: "fix: test" },
+      maintainer_attribution: {
+        author: "maintainer-user",
+        author_id: 123456,
+      },
+    },
+    target: { head_sha: "abc123", title: "fix: test" },
+    view: {
+      title: "fix: test",
+      commits: [
+        {
+          authors: [
+            {
+              name: "clawsweeper[bot]",
+              email: "274271284+clawsweeper[bot]@users.noreply.github.com",
+            },
+          ],
+        },
+      ],
+    },
+    comments: [],
+  });
+
+  assert.equal(
+    message.body.split("\n").filter((line) => line === CLAWSWEEPER_CO_AUTHOR_TRAILER).length,
+    1,
+  );
+  assert.match(message.body, /^Approved-by: maintainer-user$/m);
+});
+
+test("automerge squash message credits maintainer metadata carried by replacement PR body", () => {
+  const body = [
+    "Replacement PR body",
+    '<!-- clawsweeper-automerge-requested-by login="maintainer-user" id="123456" -->',
+  ].join("\n");
+  assert.deepEqual(automergeRequestedByFromBody(body), {
+    author: "maintainer-user",
+    author_id: "123456",
+    author_name: null,
+  });
+
+  const message = buildAutomergeSquashMessage({
+    command: {
+      issue_number: 124,
+      expected_head_sha: "def456",
+      target: { title: "fix: replacement", body },
+    },
+    target: { head_sha: "def456", title: "fix: replacement", body },
+    view: {
+      title: "fix: replacement",
+      commits: [],
+    },
+    comments: [],
+  });
+
+  assert.match(message.body, /^Approved-by: maintainer-user$/m);
+  assert.match(
+    message.body,
+    /^Co-authored-by: clawsweeper\[bot\] <274271284\+clawsweeper\[bot\]@users\.noreply\.github\.com>$/m,
+  );
+  assert.match(
+    message.body,
+    /^Co-authored-by: maintainer-user <123456\+maintainer-user@users\.noreply\.github\.com>$/m,
+  );
+});
+
+test("automerge squash message credits requester from earlier automerge status marker", () => {
+  const comments = [
+    {
+      id: 4479302465,
+      user: {
+        login: "maintainer-user",
+        id: 123456,
+      },
+      created_at: "2026-05-18T15:39:35Z",
+      body: "@clawsweeper automerge",
+    },
+    {
+      id: 4479324116,
+      user: {
+        login: "clawsweeper[bot]",
+        id: 274271284,
+      },
+      created_at: "2026-05-18T15:42:14Z",
+      body: [
+        "<!-- clawsweeper-command-status:83614:automerge:2239f3ec0c513b0e7b467331c11ab75a6656617d -->",
+        "<!-- clawsweeper-command:4479302465:2026-05-18T15:39:35Z:automerge:2239f3ec0c513b0e7b467331c11ab75a6656617d -->",
+        "ClawSweeper automerge is enabled.",
+      ].join("\n"),
+    },
+  ];
+
+  assert.deepEqual(automergeRequestedByFromComments(comments), {
+    author: "maintainer-user",
+    author_id: 123456,
+    author_name: null,
+  });
+
+  const message = buildAutomergeSquashMessage({
+    command: {
+      issue_number: 83614,
+      expected_head_sha: "9f19a96427f9dbb50e69ea310518984e776eb48d",
+      target: { title: "fix: two phase" },
+      author: "clawsweeper[bot]",
+      author_id: 274271284,
+      trusted_bot: true,
+    },
+    target: {
+      head_sha: "9f19a96427f9dbb50e69ea310518984e776eb48d",
+      title: "fix: two phase",
+    },
+    view: {
+      title: "fix: two phase",
+      commits: [],
+    },
+    comments,
+  });
+
+  assert.match(message.body, /^Approved-by: maintainer-user$/m);
+  assert.match(
+    message.body,
+    /^Co-authored-by: maintainer-user <123456\+maintainer-user@users\.noreply\.github\.com>$/m,
+  );
+});
+
 test("automerge gate block only reports the global merge policy gate", () => {
   assert.equal(
     automergeGateBlockReason({
@@ -1777,10 +2285,17 @@ test("maintainer command authorization requires maintainer repository permission
   );
 });
 
-test("author read-only command authorization only allows own re-review", () => {
+test("author read-only command authorization allows own re-review and hatch", () => {
   assert.equal(
     isAuthorReadOnlyCommandAllowed({
       command: { intent: "re_review", author: "NickMOpen" },
+      target: { kind: "pull_request", author: "nickmopen" },
+    }),
+    true,
+  );
+  assert.equal(
+    isAuthorReadOnlyCommandAllowed({
+      command: { intent: "hatch", author: "NickMOpen" },
       target: { kind: "pull_request", author: "nickmopen" },
     }),
     true,
@@ -1794,7 +2309,7 @@ test("author read-only command authorization only allows own re-review", () => {
   );
   assert.equal(
     isAuthorReadOnlyCommandAllowed({
-      command: { intent: "re_review", author: "somebody-else" },
+      command: { intent: "hatch", author: "somebody-else" },
       target: { kind: "pull_request", author: "nickmopen" },
     }),
     false,

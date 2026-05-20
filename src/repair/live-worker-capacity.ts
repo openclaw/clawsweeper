@@ -11,8 +11,10 @@ export const DEFAULT_AUTOMERGE_REPAIR_RUN_NAME_PREFIX = "automerge repair ";
 export const DEFAULT_REPAIR_RUN_NAME_PREFIX = "repair cluster ";
 const DEFAULT_CAPACITY_POLL_MS = 30_000;
 const DEFAULT_CAPACITY_TIMEOUT_MS = 30 * 60 * 1000;
+const DEFAULT_STALE_QUEUED_WORKFLOW_MS = 6 * 60 * 60 * 1000;
 const ACTIVE_WORKFLOW_STATUSES = ["queued", "in_progress", "waiting", "requested", "pending"];
 const ACTIVE_WORKFLOW_STATUS_SET = new Set(ACTIVE_WORKFLOW_STATUSES);
+const QUEUED_WORKFLOW_STATUS_SET = new Set(["queued", "waiting", "requested", "pending"]);
 
 export function readMaxLiveWorkers(args: LooseRecord = {}) {
   return readMaxLiveWorkerLimit(
@@ -111,14 +113,18 @@ export function listActiveWorkflowRuns({
   workflow = REPAIR_CLUSTER_WORKFLOW,
   runNamePrefix = "",
   excludeRunNamePrefix = "",
+  nowMs = Date.now(),
+  staleQueuedMs = process.env.CLAWSWEEPER_STALE_QUEUED_WORKFLOW_MS ??
+    DEFAULT_STALE_QUEUED_WORKFLOW_MS,
   fetchWorkflowRuns = fetchRecentWorkflowRuns,
 }: LooseRecord = {}) {
   const fetchRuns =
     typeof fetchWorkflowRuns === "function" ? fetchWorkflowRuns : fetchRecentWorkflowRuns;
   const workflowRuns = fetchRuns({ repo, workflow });
+  const staleQueuedWindowMs = readNonNegativeInteger(staleQueuedMs, "stale queued workflow ms");
   const runs = Array.isArray(workflowRuns)
     ? workflowRuns
-        .filter(isActiveWorkflowRun)
+        .filter((run: JsonValue) => isActiveWorkflowRun(run, Number(nowMs), staleQueuedWindowMs))
         .map((run: JsonValue) => normalizeWorkflowRun(run, String(run.status ?? "")))
     : [];
   return [
@@ -132,16 +138,17 @@ export function listActiveWorkflowRuns({
 }
 
 function fetchRecentWorkflowRuns({ repo, workflow }: LooseRecord) {
-  return ghJson([
-    "api",
-    "--method",
-    "GET",
-    `repos/${repo}/actions/workflows/${encodeURIComponent(workflow)}/runs`,
-    "-f",
-    "per_page=100",
-    "--jq",
-    ".workflow_runs",
-  ]);
+  return ACTIVE_WORKFLOW_STATUSES.flatMap((status) => {
+    const runs = ghJson([
+      "api",
+      "--method",
+      "GET",
+      `repos/${repo}/actions/workflows/${encodeURIComponent(workflow)}/runs?per_page=100&status=${encodeURIComponent(status)}`,
+      "--jq",
+      ".workflow_runs",
+    ]);
+    return Array.isArray(runs) ? runs : [];
+  });
 }
 
 export function repairRunNamePrefixForJob(
@@ -230,13 +237,20 @@ export function normalizeWorkflowRun(run: LooseRecord, fallbackStatus: string) {
     status: run.status ?? fallbackStatus,
     conclusion: run.conclusion ?? null,
     createdAt: run.createdAt ?? run.created_at ?? null,
+    updatedAt: run.updatedAt ?? run.updated_at ?? null,
     url: run.html_url ?? run.url ?? null,
     displayTitle: run.displayTitle ?? run.display_title ?? run.name ?? null,
   };
 }
 
-function isActiveWorkflowRun(run: LooseRecord) {
-  return ACTIVE_WORKFLOW_STATUS_SET.has(String(run.status ?? ""));
+function isActiveWorkflowRun(run: LooseRecord, nowMs: number, staleQueuedMs: number) {
+  const status = String(run.status ?? "");
+  if (!ACTIVE_WORKFLOW_STATUS_SET.has(status)) return false;
+  if (!QUEUED_WORKFLOW_STATUS_SET.has(status)) return true;
+  if (staleQueuedMs <= 0) return true;
+  const lastChangedAt = workflowRunLastChangedAt(run);
+  if (!Number.isFinite(lastChangedAt)) return true;
+  return Math.max(0, nowMs - lastChangedAt) <= staleQueuedMs;
 }
 
 function joinRepairRunNamePrefix(prefix: JsonValue, jobPath: string) {
@@ -251,6 +265,12 @@ function readPositiveInteger(value: JsonValue, name: string) {
     throw new Error(`${name} must be a positive integer`);
   }
   return number;
+}
+
+function workflowRunLastChangedAt(run: LooseRecord) {
+  const updated = Date.parse(String(run.updatedAt ?? run.updated_at ?? ""));
+  if (Number.isFinite(updated)) return updated;
+  return Date.parse(String(run.createdAt ?? run.created_at ?? ""));
 }
 
 function readMaxLiveWorkerLimit(value: JsonValue) {

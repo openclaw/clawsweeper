@@ -385,7 +385,7 @@ function createGithubLabel() {
     "--repo",
     repo,
     "--color",
-    "0E8A16",
+    "F97316",
     "--description",
     CLAWSWEEPER_LABEL_DESCRIPTION,
   ]);

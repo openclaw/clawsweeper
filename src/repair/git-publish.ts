@@ -38,6 +38,7 @@ const GENERATED_PUBLISH_PATHS = [
   "jobs",
   "records",
   "results",
+  "assets",
 ] as const;
 const SKIP_CI_DIRECTIVE_PATTERN =
   /\[(?:skip ci|ci skip|no ci|skip actions|actions skip)\]|^skip-checks:\s*true$/im;
@@ -212,7 +213,7 @@ function syncStatePublishPaths(paths: readonly string[], stateRoot: string): voi
     if (!destination.startsWith(`${stateRoot}/`) && destination !== stateRoot) {
       throw new Error(`Refusing to publish outside state root: ${path}`);
     }
-    const preserved = preserveStateOnlyAutomergeJobs({ path, source, destination });
+    const preserved = preserveStateOnlyFiles({ path, source, destination });
     try {
       rmSync(destination, { force: true, recursive: true });
       if (existsSync(source)) {
@@ -226,7 +227,7 @@ function syncStatePublishPaths(paths: readonly string[], stateRoot: string): voi
   }
 }
 
-function preserveStateOnlyAutomergeJobs({
+function preserveStateOnlyFiles({
   path,
   source,
   destination,
@@ -236,13 +237,46 @@ function preserveStateOnlyAutomergeJobs({
   destination: string;
 }): { root: string; files: string[] } {
   const root = mkdtempSync(join(tmpdir(), "clawsweeper-state-preserve-"));
-  if (path !== "jobs" || !existsSync(destination)) return { root, files: [] };
+  if (!existsSync(destination)) return { root, files: [] };
 
   const files: string[] = [];
   for (const file of listFiles(destination)) {
     const rel = relative(destination, file);
-    if (!/^[^/]+\/inbox\/automerge-.+\.md$/.test(rel)) continue;
+    if (!shouldPreserveStateOnlyFile(path, rel)) continue;
     if (existsSync(resolve(source, rel))) continue;
+    const target = resolve(root, rel);
+    mkdirSync(dirname(target), { recursive: true });
+    cpSync(file, target);
+    files.push(rel);
+  }
+  return { root, files };
+}
+
+function shouldPreserveStateOnlyFile(path: string, rel: string): boolean {
+  if (path === "jobs") return /^[^/]+\/inbox\/automerge-.+\.md$/.test(rel);
+  if (path === "assets/pr-eggs" || path === "assets/pr-eggs/") {
+    return /^[^/]+\/\d+\.png$/.test(rel);
+  }
+  return false;
+}
+
+function preserveStateOnlyCommitFiles({
+  path,
+  sourceCommit,
+}: {
+  path: string;
+  sourceCommit: string;
+}): { root: string; files: string[] } {
+  const root = mkdtempSync(join(tmpdir(), "clawsweeper-state-preserve-"));
+  const source = resolve(path);
+  if (!existsSync(source)) return { root, files: [] };
+
+  const files: string[] = [];
+  const commitPathPrefix = path.replace(/\/+$/, "");
+  for (const file of listFiles(source)) {
+    const rel = relative(source, file);
+    if (!shouldPreserveStateOnlyFile(path, rel)) continue;
+    if (commitHasPath(sourceCommit, `${commitPathPrefix}/${rel}`)) continue;
     const target = resolve(root, rel);
     mkdirSync(dirname(target), { recursive: true });
     cpSync(file, target);
@@ -312,9 +346,15 @@ function rebuildPublishCommit(options: {
   runGit(["reset", "--hard", `${options.remote}/${options.branch}`]);
 
   for (const path of uniqueNonEmpty(options.paths)) {
-    runGit(["rm", "-r", "--ignore-unmatch", "--", path], { allowFailure: true });
-    if (commitHasPath(options.sourceCommit, path)) {
-      runGit(["checkout", options.sourceCommit, "--", path]);
+    const preserved = preserveStateOnlyCommitFiles({ path, sourceCommit: options.sourceCommit });
+    try {
+      runGit(["rm", "-r", "--ignore-unmatch", "--", path], { allowFailure: true });
+      if (commitHasPath(options.sourceCommit, path)) {
+        runGit(["checkout", options.sourceCommit, "--", path]);
+      }
+      restorePreservedFiles(preserved, resolve(path));
+    } finally {
+      rmSync(preserved.root, { force: true, recursive: true });
     }
   }
 
