@@ -2,23 +2,11 @@ import type { JsonValue, LooseRecord } from "./json-types.js";
 import { randomInt } from "node:crypto";
 import { repairCodexReasoningEffort } from "./process-env.js";
 
+const SIGNATURE = "ClawSweeper 🐠";
 const EVIDENCE_LIMIT = 5;
-const COMMENT_PARAGRAPH_LIMIT = 520;
 
 function listOrNone(items: JsonValue[]) {
   return items?.length ? items.join("; ") : "none";
-}
-
-function code(value: JsonValue) {
-  const text = String(value ?? "");
-  const longestBacktickRun = Math.max(0, ...(text.match(/`+/g) ?? []).map((run) => run.length));
-  const fence = "`".repeat(longestBacktickRun + 1);
-  const padding = text.startsWith("`") || text.endsWith("`") ? " " : "";
-  return `${fence}${padding}${text}${padding}${fence}`;
-}
-
-function codeList(items: JsonValue[]) {
-  return items?.length ? items.map(code).join("; ") : "none";
 }
 
 const CLOSING_REFERENCE_PATTERN =
@@ -86,50 +74,155 @@ function evidenceLines(evidence: JsonValue) {
     );
 }
 
-function codexStyleComment({
-  marker,
-  badge,
-  headline,
-  body,
-  metadata = [],
-  footer,
-  provenance,
-}: {
-  marker?: JsonValue;
-  badge: "DONE" | "INFO" | "SKIP" | "P2" | "P3";
-  headline: string;
-  body: string;
-  metadata?: JsonValue[];
-  footer?: JsonValue;
-  provenance?: LooseRecord;
-}) {
-  const lines = [
-    marker,
-    `${renderBadge(badge)} **${headline}**`,
-    "",
-    compactParagraph(body, COMMENT_PARAGRAPH_LIMIT),
-    ...metadataLines(metadata),
-    footer ? ["", footer] : [],
-    provenance ? ["", fishNotes(provenance)] : [],
-  ].flat();
-  return lines.filter((line) => line !== null && line !== undefined).join("\n");
-}
+const repairBranchOpeners = [
+  "Thanks for the contribution here. ClawSweeper gave this branch a little current boost so the original PR can stay the canonical swim lane instead of opening a replacement.",
+  "Thanks for the contribution here. ClawSweeper nudged this branch back into the current, so the original PR can stay the review lane.",
+  "Thanks for the work here. ClawSweeper patched this branch directly so the contributor trail stays right where it started.",
+  "Thanks for the contribution here. ClawSweeper was able to repair this branch in place, which keeps the original PR as the clean canonical path.",
+  "Thanks for the work here. ClawSweeper got this branch swimming again without needing a replacement PR.",
+  "Thanks for the contribution here. ClawSweeper pushed the narrow repair here so review, credit, and history stay together.",
+  "Thanks for the work on this. ClawSweeper could write to this branch, so it kept the fix in the original PR instead of making a new one.",
+  "Thanks for the contribution here. ClawSweeper gave the branch a tidy little reef repair and kept this PR as the main lane.",
+];
 
-function renderBadge(badge: "DONE" | "INFO" | "SKIP" | "P2" | "P3") {
-  const symbols: Record<typeof badge, string> = {
-    DONE: "✅",
-    INFO: "ℹ️",
-    SKIP: "⏭️",
-    P2: "💡",
-    P3: "💡",
-  };
-  return `${symbols[badge]} **${badge}**`;
-}
+const preservedCreditLines = [
+  "Contributor credit stays right here with this PR's history and changelog context. no lost treasure, no mystery bubbles.",
+  "Contributor credit stays attached to this PR and its history. no one gets washed out with the tide.",
+  "The contributor trail stays intact here: branch history, PR context, and changelog credit all still point back to this work.",
+  "Credit stays anchored to this PR. ClawSweeper is just moving the fix along, not stealing the shiny bits.",
+  "The useful context and credit stay on this branch. tidy swim, same contributor trail.",
+  "This keeps attribution in the original current: commits, review context, and changelog notes all stay visible.",
+  "Credit remains with the original contribution. ClawSweeper is just doing the branch-maintenance snorkel.",
+  "The contribution stays credited here. no vanishing act, no suspicious bubbles.",
+  "Attribution stays exactly where it should: with the original branch and PR history.",
+  "Contributor credit stays on this reef marker, with the PR history doing the receipts.",
+];
 
-function metadataLines(metadata: JsonValue[]) {
-  const lines = metadata.filter(Boolean).map((line) => String(line));
-  return lines.length ? ["", ...lines] : [];
-}
+const replacementPermissionLines = [
+  "Thanks for the work on this. ClawSweeper could not push to this branch with the permissions available, so it opened a narrow replacement PR to keep the fix swimming forward without losing the contributor trail. not your fault, just GitHub branch-permission tides.",
+  "Thanks for the work on this. ClawSweeper did not have permission to update this branch directly, so it opened a narrow replacement PR instead. that's a branch access thing, not a knock on the contribution.",
+  "Thanks for the contribution here. ClawSweeper could not safely push to this branch, so it opened a replacement PR from a writable branch and carried the contributor trail along with it.",
+  "Thanks for the work here. GitHub would not let ClawSweeper push to this branch with the available credentials, so the fix moved to a narrow replacement PR. nothing personal, just permission currents.",
+  "Thanks for the contribution. ClawSweeper hit a branch-permission wall on this PR, so it opened a replacement branch to keep review moving while preserving credit.",
+  "Thanks for the work here. ClawSweeper could not write to the source branch, so it opened a replacement PR rather than letting the fix drift. attribution still points back here.",
+  "Thanks for the contribution here. ClawSweeper tried the original lane first, but branch permissions blocked the push, so a replacement PR is carrying the fix forward.",
+  "Thanks for the work on this. ClawSweeper opened a replacement PR only because the source branch was not writable from the available bot permissions. branch tides, not contributor blame.",
+  "Thanks for the useful work here. ClawSweeper could not update this branch directly, so the replacement PR is the writable swim lane for the same fix path.",
+  "Thanks for the contribution. The source branch was not safely writable by ClawSweeper, so it opened a replacement PR and kept the credit trail visible.",
+];
+
+const sourceStaysOpenLines = [
+  "This source PR is staying open for maintainer and contributor review.",
+  "This source PR stays open so maintainers and the original contributor can compare the paths.",
+  "Leaving this source PR open for review context and contributor follow-up.",
+  "This source PR remains open; the replacement is just the writable fix lane.",
+  "Keeping this PR open so the original context is easy to inspect.",
+  "This PR stays open for now, with the replacement linked as the current fix path.",
+];
+
+const automergeNoChangeOpeners = [
+  "This repair pass finished without changing the PR. ClawSweeper checked the branch and found no safe patch to push this time.",
+  "ClawSweeper finished this automerge repair pass without changing the branch.",
+  "No new branch changes from this pass. ClawSweeper left the branch untouched instead of making a noisy edit.",
+  "This pass ended as a no-op: no narrow repair surfaced, so ClawSweeper left the branch untouched.",
+  "ClawSweeper took another look; no safe branch change was available on this pass.",
+];
+
+const automergeNoChangeClosers = [
+  "No branch push, rebase, replacement PR, merge, or ClawSweeper re-review was started on this pass.",
+  "No push, rebase, replacement PR, merge, or ClawSweeper re-review happened on this pass.",
+  "ClawSweeper left the PR as-is: no push, no rebase, no replacement PR, no merge, and no fresh ClawSweeper pass.",
+  "Nothing moved downstream from this pass: no branch update, replacement PR, merge, or re-review.",
+  "This pass stayed observational only. No branch push, replacement, merge, or re-review was started.",
+];
+
+const carriedCreditLines = [
+  "Contributor credit is carried into the replacement PR body and changelog plan.",
+  "Contributor credit is copied into the replacement PR notes and changelog path.",
+  "The replacement PR carries the original credit trail forward.",
+  "Attribution is preserved in the replacement PR body and release-note trail.",
+  "The original contribution stays credited in the replacement PR context.",
+  "Credit follows the fix over to the replacement PR. no sneaky treasure grab.",
+  "The replacement PR keeps the contributor trail visible for review and changelog credit.",
+  "Attribution stays attached; the replacement just gives the fix a writable branch.",
+];
+
+const closeOnlyWhenEnabledLines = [
+  "Closing this source PR only because source-PR closing was explicitly enabled for this run.",
+  "Closing this source PR because this run explicitly enabled source-PR closeout.",
+  "This source PR is being closed only under the explicit source-close setting for this ClawSweeper run.",
+  "Closing this one because the run was configured to close superseded source PRs after opening the replacement.",
+  "This closeout is intentional for this run: the replacement PR is now the active review lane.",
+];
+
+const cleanupOpeners = [
+  ({ target }: LooseRecord) =>
+    `Thanks for the report and the useful trail here. ClawSweeper reviewed this cluster and is closing #${target}.`,
+  ({ target }: LooseRecord) =>
+    `Thanks for the report and all the context here. ClawSweeper reviewed the cluster and is closing #${target}.`,
+  ({ target }: LooseRecord) =>
+    `Thanks for leaving a clear trail here. ClawSweeper checked this cluster and is closing #${target}.`,
+  ({ target }: LooseRecord) =>
+    `Thanks for the useful report. ClawSweeper traced this through the cluster and is closing #${target}.`,
+  ({ target }: LooseRecord) =>
+    `Thanks for the context here. ClawSweeper matched this against the cluster and is closing #${target}.`,
+  ({ target }: LooseRecord) =>
+    `Thanks for the signal on this one. ClawSweeper reviewed the related path and is closing #${target}.`,
+];
+
+const duplicateLines = [
+  ({ canonical }: LooseRecord) =>
+    `This looks like the same school as ${issueRef(canonical)}, so ClawSweeper is keeping ${issueRef(canonical)} as the canonical thread where fixes, validation, and follow-up can all swim together.`,
+  ({ canonical }: LooseRecord) =>
+    `This appears to overlap ${issueRef(canonical)}, so ClawSweeper is keeping that thread as the canonical place for the fix, validation, and follow-up.`,
+  ({ canonical }: LooseRecord) =>
+    `This is tracking the same current as ${issueRef(canonical)}. Keeping ${issueRef(canonical)} canonical keeps review and validation in one place.`,
+  ({ canonical }: LooseRecord) =>
+    `This duplicates the path in ${issueRef(canonical)}, so ClawSweeper is keeping the canonical trail there instead of splitting the reef map.`,
+  ({ canonical }: LooseRecord) =>
+    `Same school as ${issueRef(canonical)}. ClawSweeper is keeping the canonical discussion there so the useful bits do not scatter.`,
+  ({ canonical }: LooseRecord) =>
+    `This matches ${issueRef(canonical)} closely enough that keeping one canonical thread is the cleaner swim lane.`,
+];
+
+const supersededCanonicalLines = [
+  ({ canonical }: LooseRecord) =>
+    `This is superseded by ${issueRef(canonical)}. ClawSweeper is keeping that reef marker as the canonical path so the useful context and contributor credit stay visible.`,
+  ({ canonical }: LooseRecord) =>
+    `This has been overtaken by ${issueRef(canonical)}, so ClawSweeper is keeping that as the current canonical path.`,
+  ({ canonical }: LooseRecord) =>
+    `${issueRef(canonical)} is now the better canonical thread. Closing this keeps validation and context from drifting apart.`,
+  ({ canonical }: LooseRecord) =>
+    `This is superseded by ${issueRef(canonical)}. Keeping the newer path canonical makes follow-up easier to review.`,
+  ({ canonical }: LooseRecord) =>
+    `The active fix trail is now ${issueRef(canonical)}, so ClawSweeper is closing this older marker and keeping the context attached there.`,
+];
+
+const supersededFixLines = [
+  ({ candidateFix }: LooseRecord) =>
+    `This is superseded by landed fix ${issueRef(candidateFix)}. ClawSweeper is closing this older overlap so validation and follow-up stay attached to the shipped path instead of drifting around the reef.`,
+  ({ candidateFix }: LooseRecord) =>
+    `Landed fix ${issueRef(candidateFix)} covers this path now, so ClawSweeper is closing the older overlap and keeping the receipts on the shipped fix.`,
+  ({ candidateFix }: LooseRecord) =>
+    `This has been handled by landed fix ${issueRef(candidateFix)}. Closing this keeps follow-up tied to the code that actually shipped.`,
+  ({ candidateFix }: LooseRecord) =>
+    `${issueRef(candidateFix)} has landed for this path, so ClawSweeper is closing this older thread to keep validation from scattering.`,
+  ({ candidateFix }: LooseRecord) =>
+    `The shipped fix is ${issueRef(candidateFix)}. Closing this older overlap keeps the current tidy.`,
+];
+
+const candidateFixLines = [
+  ({ candidateFix }: LooseRecord) =>
+    `This is covered by candidate fix ${issueRef(candidateFix)}. ClawSweeper is closing this thread so validation and follow-up stay attached to that fix path instead of scattering like bubbles.`,
+  ({ candidateFix }: LooseRecord) =>
+    `Candidate fix ${issueRef(candidateFix)} is carrying this path now, so ClawSweeper is keeping follow-up attached there.`,
+  ({ candidateFix }: LooseRecord) =>
+    `This is covered by ${issueRef(candidateFix)}. Closing this keeps the active review lane focused instead of splitting the school.`,
+  ({ candidateFix }: LooseRecord) =>
+    `${issueRef(candidateFix)} is the active fix path for this one, so ClawSweeper is closing this duplicate current.`,
+  ({ candidateFix }: LooseRecord) =>
+    `This belongs with candidate fix ${issueRef(candidateFix)} now. Keeping one lane makes review and validation less slippery.`,
+];
 
 const reopenLines = [
   "If this still reproduces by a different route, reply here and we can fish it back out.",
@@ -140,12 +233,20 @@ const reopenLines = [
   "If the canonical path does not cover your case, reply here and we can fish the thread back out.",
 ];
 
+const postMergeCloseLines = [
+  "Closing this now that the validated fix is merged. If this still splashes on current main by a different path, reply here and we can reopen or split it back out.",
+  "Closing this now that the validated fix has landed. If current main still shows a different path, reply here and we can reopen.",
+  "The validated fix is merged, so ClawSweeper is closing this trail. If a separate reproduction remains, reply here and we can split it back out.",
+  "Closing after the canonical fix landed. If another route still reproduces, reply here and we can pull that thread back up.",
+  "This is closed now that the fix is on main. If the issue still swims through a different channel, reply here and we can reopen.",
+];
+
 function fishNotes(provenance: LooseRecord) {
   const model = provenance?.model ?? process.env.CLAWSWEEPER_MODEL ?? "gpt-5.5";
   const reasoning = repairCodexReasoningEffort(provenance?.reasoning);
   const reviewedSha = provenance?.reviewedSha ?? provenance?.reviewed_sha;
   const reviewed = reviewedSha ? `; reviewed against ${String(reviewedSha).slice(0, 12)}` : "";
-  return `_ClawSweeper 🐠 · model ${model}, reasoning ${reasoning}${reviewed}._`;
+  return `fish notes: model ${model}, reasoning ${reasoning}${reviewed}.`;
 }
 
 export function externalMessageProvenance({ model, reasoning, reviewedSha }: LooseRecord = {}) {
@@ -154,6 +255,10 @@ export function externalMessageProvenance({ model, reasoning, reviewedSha }: Loo
     reasoning: repairCodexReasoningEffort(reasoning),
     reviewedSha,
   };
+}
+
+function withFishNotes(lines: JsonValue, provenance: LooseRecord) {
+  return [...lines, "", fishNotes(provenance)].join("\n");
 }
 
 function contributorCreditLines(contributorCredits: JsonValue) {
@@ -174,13 +279,17 @@ function contributorCreditLines(contributorCredits: JsonValue) {
 }
 
 export function repairContributorBranchComment({ validationCommands, provenance }: LooseRecord) {
-  return codexStyleComment({
-    badge: "DONE",
-    headline: "Repair pushed to the source branch",
-    body: "ClawSweeper pushed a narrow repair to the source branch, so the original PR remains the canonical review path and contributor credit stays with the original history.",
-    metadata: [`_Validation: ${codeList(validationCommands)}_`],
+  return withFishNotes(
+    [
+      `${SIGNATURE} reef update`,
+      "",
+      variant(repairBranchOpeners),
+      "",
+      `Validation: ${listOrNone(validationCommands)}`,
+      variant(preservedCreditLines),
+    ],
     provenance,
-  });
+  );
 }
 
 export function automergeRepairOutcomeComment({
@@ -190,23 +299,22 @@ export function automergeRepairOutcomeComment({
   target,
   provenance,
 }: LooseRecord) {
-  const metadata = [
-    `_Executor outcome: ${compactForComment(report?.reason ?? "no executable fix action", 260)}._`,
+  const lines = [
+    marker,
+    `${SIGNATURE} automerge status`,
+    "",
+    variant(automergeNoChangeOpeners),
+    "",
+    `Executor outcome: ${compactForComment(report?.reason ?? "no executable fix action", 260)}.`,
   ];
   const summary = compactForComment(visibleSelfReference(result?.summary, target), 900);
-  if (summary) metadata.push(`_Worker summary: ${summary}_`);
+  if (summary) lines.push(`Worker summary: ${summary}`);
   const actionLines = automergeOutcomeActionLines(result?.actions, target);
   if (actionLines.length > 0) {
-    metadata.push("Worker actions:", ...actionLines);
+    lines.push("", "Worker actions:", ...actionLines);
   }
-  return codexStyleComment({
-    marker,
-    badge: "SKIP",
-    headline: "No branch changes were pushed",
-    body: "ClawSweeper checked this PR but did not find a safe narrow repair to push. No branch update, rebase, replacement PR, merge, or fresh ClawSweeper re-review was started on this pass.",
-    metadata,
-    provenance,
-  });
+  lines.push("", variant(automergeNoChangeClosers));
+  return withFishNotes(lines, provenance);
 }
 
 export function issueImplementationResultStatusComment({
@@ -238,17 +346,21 @@ export function replacementSourceLinkComment({
   provenance,
   contributorCredits,
 }: LooseRecord) {
-  return codexStyleComment({
-    badge: "INFO",
-    headline: "Replacement PR opened from a writable branch",
-    body: "ClawSweeper could not update the source PR branch directly because GitHub did not grant sufficient push rights to the bot, so it opened a narrow replacement PR from a writable branch. The source PR stays open for comparison, and contributor credit is preserved in the replacement notes.",
-    metadata: [
+  return withFishNotes(
+    [
+      `${SIGNATURE} reef update`,
+      "",
+      variant(replacementPermissionLines),
+      "",
+      "Why replacement: ClawSweeper could not update the source PR branch directly; GitHub did not grant sufficient push rights to the bot for that branch.",
       `Replacement PR: ${replacementPrUrl}`,
       "Source PR status: left open for maintainer and contributor comparison.",
+      variant(sourceStaysOpenLines),
+      variant(carriedCreditLines),
       ...contributorCreditLines(contributorCredits),
     ],
     provenance,
-  });
+  );
 }
 
 function automergeOutcomeActionLines(actions: LooseRecord[], targetPr: JsonValue) {
@@ -274,10 +386,6 @@ function compactForComment(value: JsonValue, max: JsonValue) {
   return `${text.slice(0, Math.max(0, max - 1)).trimEnd()}...`;
 }
 
-function compactParagraph(value: JsonValue, max: number) {
-  return compactForComment(value, max);
-}
-
 function escapeRegExp(value: string) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -287,17 +395,21 @@ export function replacementSourceCloseComment({
   provenance,
   contributorCredits,
 }: LooseRecord) {
-  return codexStyleComment({
-    badge: "DONE",
-    headline: "Source PR closed after opening credited replacement",
-    body: "ClawSweeper could not update the source PR branch directly because GitHub did not grant sufficient push rights to the bot. This run explicitly closes the superseded source PR after opening a credited replacement PR, so review continues in one place.",
-    metadata: [
+  return withFishNotes(
+    [
+      `${SIGNATURE} reef update`,
+      "",
+      variant(replacementPermissionLines),
+      "",
+      "Why replacement: ClawSweeper could not update the source PR branch directly; GitHub did not grant sufficient push rights to the bot for that branch.",
       `Replacement PR: ${replacementPrUrl}`,
       "Why close: this run explicitly closes the superseded source PR after the credited replacement PR is open, so review continues in one place.",
+      variant(closeOnlyWhenEnabledLines),
+      variant(carriedCreditLines),
       ...contributorCreditLines(contributorCredits),
     ],
     provenance,
-  });
+  );
 }
 
 export function replacementPrBody({
@@ -312,14 +424,11 @@ export function replacementPrBody({
   const lines = [
     fixArtifact.pr_body.trim(),
     "",
-    `${renderBadge("INFO")} **Replacement PR opened from a writable branch**`,
-    "",
-    "ClawSweeper could not update the source PR branch directly, so it opened this writable replacement PR while preserving the original context and credit.",
-    "",
-    `- Cluster: ${code(clusterId)}`,
+    `${SIGNATURE} replacement reef notes:`,
+    `- Cluster: ${clusterId}`,
     `- Source PRs: ${(fixArtifact.source_prs ?? []).join(", ") || "none"}`,
     `- Credit: ${listOrNone(fixArtifact.credit_notes)}`,
-    `- Validation: ${codeList(fixArtifact.validation_commands)}`,
+    `- Validation: ${listOrNone(fixArtifact.validation_commands)}`,
     "- Replacement reason: ClawSweeper could not update the source PR branch directly, so it opened a writable replacement PR instead.",
   ];
   const maintainer = automergeMaintainerAttribution(maintainerAttribution);
@@ -390,55 +499,45 @@ export function defaultCloseComment({
   reason,
   provenance,
 }: LooseRecord) {
-  let badge: "DONE" | "INFO" | "SKIP" | "P2" | "P3" = "DONE";
-  let headline = `Close ${issueRef(target)} after cluster review`;
-  let body = `ClawSweeper reviewed the cluster and is closing ${issueRef(target)}. `;
+  const lines = [`${SIGNATURE} reef cleanup`, "", variant(cleanupOpeners, { target })];
+
+  lines.push("");
   if (classification === "duplicate" && canonical) {
-    badge = "P3";
-    headline = `Close duplicate in favor of ${issueRef(canonical)}`;
-    body += `${issueRef(target)} overlaps ${issueRef(canonical)}, so keeping one canonical thread keeps fixes, validation, and follow-up in one place.`;
+    lines.push(variant(duplicateLines, { canonical }));
   } else if (classification === "superseded" && canonical) {
-    badge = "P3";
-    headline = `Close superseded thread in favor of ${issueRef(canonical)}`;
-    body += `${issueRef(canonical)} is now the current canonical thread, so closing this one keeps validation and context from drifting.`;
+    lines.push(variant(supersededCanonicalLines, { canonical }));
   } else if (classification === "superseded" && candidateFix) {
-    badge = "P3";
-    headline = `Close superseded thread after ${issueRef(candidateFix)} landed`;
-    body += `${issueRef(candidateFix)} landed for this path, so closing the older overlap keeps follow-up attached to the shipped fix.`;
+    lines.push(variant(supersededFixLines, { candidateFix }));
   } else if (classification === "fixed_by_candidate" && candidateFix) {
-    badge = "P3";
-    headline = `Close thread covered by candidate fix ${issueRef(candidateFix)}`;
-    body += `${issueRef(candidateFix)} is carrying this fix path now, so follow-up should stay attached to that review lane.`;
+    lines.push(variant(candidateFixLines, { candidateFix }));
   } else if (classification === "low_signal") {
-    badge = "SKIP";
-    headline = "Close low-signal PR cleanup candidate";
-    body +=
-      "This PR does not currently present a reviewable OpenClaw fix with maintainer signal, current validation, or a focused product path. Reopen from a clean branch with a scoped summary, linked issue or rationale, and validation if this still needs attention.";
+    lines.push(
+      "This falls under low-signal PR cleanup: the PR does not currently present a reviewable OpenClaw fix with maintainer signal, current validation, or a focused product path. Please reopen from a clean branch with a scoped summary, linked issue or rationale, and validation if this still needs another swim.",
+    );
   } else {
-    body += String(reason ?? "");
+    lines.push(reason);
   }
 
-  const metadata = [`Cluster: ${code(clusterId)}`, `Reviewed item: ${issueRef(target)} - ${title}`];
+  lines.push("", `Cluster: \`${clusterId}\``, `Reviewed item: #${target} - ${title}`);
   const renderedEvidence = evidenceLines(action.evidence);
-  if (renderedEvidence.length) metadata.push("Evidence:", ...renderedEvidence);
-  return codexStyleComment({
-    badge,
-    headline,
-    body,
-    metadata,
-    footer: variant(reopenLines),
-    provenance,
-  });
+  if (renderedEvidence.length) lines.push("", "Evidence:", ...renderedEvidence);
+  lines.push("", variant(reopenLines));
+  lines.push("", fishNotes(provenance));
+  return lines.join("\n");
 }
 
 export function postMergeCloseoutComment({ actionName, fixUrl, provenance }: LooseRecord) {
   const relation = actionName === "close_superseded" ? "superseded by" : "covered by";
-  return codexStyleComment({
-    badge: "DONE",
-    headline: "Close thread after canonical fix landed",
-    body: `This thread is ${relation} ${fixUrl}, which has landed as the canonical ClawSweeper fix path for this cluster. Closing now keeps follow-up attached to the code that shipped; reply here if a separate reproduction remains.`,
+  return withFishNotes(
+    [
+      `${SIGNATURE} landed`,
+      "",
+      `Thanks for the report and context here. This is ${relation} ${fixUrl}, which has landed as the canonical ClawSweeper fix path for this cluster.`,
+      "",
+      variant(postMergeCloseLines),
+    ],
     provenance,
-  });
+  );
 }
 
 export function sampleExternalMessages() {

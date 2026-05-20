@@ -10,7 +10,6 @@ import {
   replacementPrBody,
   replacementSourceCloseComment,
   replacementSourceLinkComment,
-  sampleExternalMessages,
 } from "../../dist/repair/external-messages.js";
 
 test("automergeRepairOutcomeComment explains no-op repair runs", () => {
@@ -34,28 +33,28 @@ test("automergeRepairOutcomeComment explains no-op repair runs", () => {
   });
 
   assert.match(body, /^<!-- marker -->/);
-  assert.match(body, /⏭️ \*\*SKIP\*\* \*\*No branch changes were pushed\*\*/);
-  assert.match(body, /did not find a safe narrow repair to push/i);
+  assert.match(body, /(without changing|no-op|No new branch changes|no safe branch change)/i);
   assert.doesNotMatch(body, /Target: #74156/);
   assert.doesNotMatch(body, /#74156/);
   assert.doesNotMatch(body, /issuecomment-/);
   assert.match(body, /Executor outcome: no planned fix actions\./);
   assert.match(body, /`route_security` on `this PR`: planned - central handling required/);
-  assert.match(body, /No branch update, rebase, replacement PR, merge/i);
-  assert.match(body, /ClawSweeper 🐠/);
+  assert.match(
+    body,
+    /(No branch push|No push|left the PR as-is|Nothing moved downstream|observational only)/i,
+  );
   assert.match(body, /model gpt-test, reasoning medium; reviewed against 0123456789ab/);
 });
 
 test("repairContributorBranchComment avoids self PR references", () => {
   const body = repairContributorBranchComment({
     sourcePrUrl: "https://github.com/openclaw/openclaw/pull/75183",
-    validationCommands: ["pnpm check:changed", 'node -e "console.log(`ok`)"'],
+    validationCommands: ["pnpm check:changed"],
     provenance: { model: "gpt-test", reasoning: "medium", reviewedSha: "abcdef1234567890" },
   });
 
-  assert.match(body, /✅ \*\*DONE\*\* \*\*Repair pushed to the source branch\*\*/);
-  assert.match(body, /Validation: `pnpm check:changed`/);
-  assert.match(body, /``node -e "console\.log\(`ok`\)"``/);
+  assert.match(body, /reef update/);
+  assert.match(body, /Validation: pnpm check:changed/);
   assert.doesNotMatch(body, /Source PR:/);
   assert.doesNotMatch(body, /75183/);
 });
@@ -74,8 +73,7 @@ test("replacement comments explain no push rights and keep co-author credit visi
     contributorCredits,
     provenance,
   });
-  assert.match(linkBody, /ℹ️ \*\*INFO\*\* \*\*Replacement PR opened from a writable branch\*\*/);
-  assert.match(linkBody, /push rights/i);
+  assert.match(linkBody, /Why replacement: .*push rights/i);
   assert.match(linkBody, /Source PR status: left open/i);
   assert.match(
     linkBody,
@@ -87,11 +85,7 @@ test("replacement comments explain no push rights and keep co-author credit visi
     contributorCredits,
     provenance,
   });
-  assert.match(
-    closeBody,
-    /✅ \*\*DONE\*\* \*\*Source PR closed after opening credited replacement\*\*/,
-  );
-  assert.match(closeBody, /push rights/i);
+  assert.match(closeBody, /Why replacement: .*push rights/i);
   assert.match(closeBody, /Why close: .*credited replacement PR is open/i);
   assert.match(
     closeBody,
@@ -195,37 +189,6 @@ test("external message provenance normalizes accidental xhigh reasoning", () => 
   });
 
   assert.equal(provenance.reasoning, "high");
-  assert.match(body, /ClawSweeper 🐠/);
   assert.match(body, /model gpt-test, reasoning high/);
   assert.doesNotMatch(body, /reasoning xhigh/);
-});
-
-test("sample external messages use Codex-style hierarchy and bounded paragraphs", () => {
-  for (const sample of sampleExternalMessages()) {
-    const lines = sample.body.split("\n");
-    const hierarchyLine = lines.find((line) =>
-      /^(?:✅|ℹ️|⏭️|💡) \*\*(?:DONE|INFO|SKIP|P2|P3)\*\* \*\*[^*]+\*\*$/.test(line),
-    );
-    assert.ok(hierarchyLine, `${sample.title} should include a badge and headline`);
-
-    const paragraphs = sample.body
-      .split(/\n{2,}/)
-      .map((paragraph) => paragraph.replace(/\n/g, " ").trim())
-      .filter(Boolean);
-    for (const paragraph of paragraphs) {
-      assert.ok(
-        paragraph.length <= 700,
-        `${sample.title} has an overly long paragraph: ${paragraph.length} chars`,
-      );
-    }
-
-    const bodyWithoutCodeSpans = sample.body.replace(/`[^`\n]+`/g, "");
-    const commandLikeTokens =
-      bodyWithoutCodeSpans.match(/\b(?:pnpm|npm|bun|node|cargo|swift)\s+[^\n`]+/g) ?? [];
-    assert.deepEqual(
-      commandLikeTokens,
-      [],
-      `${sample.title} has command-like text outside inline code: ${commandLikeTokens.join(", ")}`,
-    );
-  }
 });
