@@ -19,7 +19,15 @@ inputs:
 runs:
   using: composite
   steps:
+    # On GitHub-hosted runners, restore/save Codex + npm caches via the GHA
+    # cache service (~50s/job). On self-hosted runners ~/.clawsweeper-repair/codex
+    # (Codex CLI install) and ~/.npm already persist across runs, so the cache
+    # step is pure wasted I/O. The install step below is idempotent — it
+    # reinstalls only when codex is missing or the version differs.
+    # Verified 2026-05-21: actions/cache@v5 added ~50s to setup-codex on
+    # mac-mini runners with 2.3 GB ~/.clawsweeper-repair already on disk.
     - name: Cache Codex CLI and npm downloads
+      if: runner.environment != 'self-hosted'
       uses: actions/cache@v5
       with:
         path: |

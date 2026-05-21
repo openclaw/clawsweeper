@@ -74,7 +74,14 @@ runs:
           echo "fallback_restore_key=${RUNNER_OS:-unknown}-pnpm-"
         } >> "$GITHUB_OUTPUT"
 
+    # On GitHub-hosted runners, restore/save the pnpm store from the GHA
+    # cache service (~50s/job, ~550 MB). On self-hosted runners, the pnpm
+    # store at ~/Library/pnpm/store (macOS) / ~/.local/share/pnpm/store (Linux)
+    # already persists across runs, so the cache step is pure wasted I/O.
+    # Verified 2026-05-21: actions/cache@v5 download took 51s on mac-mini
+    # runners while a 1.9 GB local store was already present.
     - uses: actions/cache@v5
+      if: runner.environment != 'self-hosted'
       with:
         path: ${{ steps.pnpm-store.outputs.path }}
         key: ${{ steps.pnpm-cache-key.outputs.key }}
