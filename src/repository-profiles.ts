@@ -29,6 +29,14 @@ export interface RepositoryProfile {
   // input to `resolveReviewProvider()`; lets one repo opt out of (or back
   // into) the global default without touching the workflow or the repo var.
   reviewProvider?: ReviewProvider;
+  // Per-target opt-in for reviewing maintainer-authored (OWNER/MEMBER/
+  // COLLABORATOR) items. Default false preserves upstream behaviour, which
+  // skipped these in the planner to avoid the bot closing maintainer-filed
+  // issues. Closure safety now lives in `applyCloseRules` (per-reason
+  // per-target), so personal/ops repos can safely opt in here to get triage
+  // on their own items. `CLAWSWEEPER_INCLUDE_MAINTAINER_AUTHORED=true` is a
+  // fleet-wide override.
+  includeMaintainerAuthored?: boolean;
 }
 
 interface TargetRepositoryConfig {
@@ -46,6 +54,7 @@ interface ConfiguredRepositoryProfile {
   promptNote: string;
   applyCloseRules: Partial<Record<RepositoryItemKind, readonly RepositoryCloseReason[]>>;
   reviewProvider?: ReviewProvider;
+  includeMaintainerAuthored?: boolean;
 }
 
 const REVIEW_PROVIDER_SET: ReadonlySet<ReviewProvider> = new Set(["codex", "claude-bridge"]);
@@ -141,6 +150,9 @@ function configuredRepositoryProfile(profile: ConfiguredRepositoryProfile): Repo
   if (profile.docsUrl) result.docsUrl = profile.docsUrl;
   if (profile.communityUrl) result.communityUrl = profile.communityUrl;
   if (profile.reviewProvider) result.reviewProvider = profile.reviewProvider;
+  if (profile.includeMaintainerAuthored !== undefined) {
+    result.includeMaintainerAuthored = profile.includeMaintainerAuthored;
+  }
   return result;
 }
 
@@ -226,6 +238,12 @@ function validateConfiguredRepositoryProfile(
       );
     }
     result.reviewProvider = provider as ReviewProvider;
+  }
+  if (profile.include_maintainer_authored !== undefined) {
+    if (typeof profile.include_maintainer_authored !== "boolean") {
+      throw new Error(`${label}.include_maintainer_authored must be a boolean`);
+    }
+    result.includeMaintainerAuthored = profile.include_maintainer_authored;
   }
   return result;
 }

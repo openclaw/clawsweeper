@@ -735,6 +735,103 @@ test("protected labels are normalized and excluded from normal planning", () => 
   assert.equal(shouldPlanItem(item({ labels: ["bug"] })), true);
 });
 
+test("shouldPlanItem skips maintainer-authored items by default but honours per-target opt-in", async () => {
+  const { repositoryProfileFor } = await import("../dist/repository-profiles.js");
+  const defaultProfile = repositoryProfileFor("openclaw/openclaw");
+  const ownerItem = item({ authorAssociation: "OWNER" });
+  const memberItem = item({ authorAssociation: "MEMBER" });
+  const collaboratorItem = item({ authorAssociation: "COLLABORATOR" });
+  const contributorItem = item({ authorAssociation: "CONTRIBUTOR" });
+
+  // Default profile (openclaw/openclaw) does not opt in — maintainer items are skipped.
+  assert.equal(shouldPlanItem(ownerItem, defaultProfile), false);
+  assert.equal(shouldPlanItem(memberItem, defaultProfile), false);
+  assert.equal(shouldPlanItem(collaboratorItem, defaultProfile), false);
+  assert.equal(shouldPlanItem(contributorItem, defaultProfile), true);
+
+  // Per-target opt-in flag flips the gate just for that profile.
+  const optInProfile = { ...defaultProfile, includeMaintainerAuthored: true };
+  assert.equal(shouldPlanItem(ownerItem, optInProfile), true);
+  assert.equal(shouldPlanItem(memberItem, optInProfile), true);
+  assert.equal(shouldPlanItem(collaboratorItem, optInProfile), true);
+
+  // Protected labels still win regardless of the opt-in flag.
+  assert.equal(
+    shouldPlanItem(
+      item({ authorAssociation: "OWNER", labels: ["release-blocker"] }),
+      optInProfile,
+    ),
+    false,
+  );
+});
+
+test("CLAWSWEEPER_INCLUDE_MAINTAINER_AUTHORED env var forces maintainer-item planning fleet-wide", async () => {
+  const { repositoryProfileFor } = await import("../dist/repository-profiles.js");
+  const profile = repositoryProfileFor("openclaw/openclaw"); // not opted-in by config
+  const ownerItem = item({ authorAssociation: "OWNER" });
+
+  const prev = process.env.CLAWSWEEPER_INCLUDE_MAINTAINER_AUTHORED;
+  try {
+    delete process.env.CLAWSWEEPER_INCLUDE_MAINTAINER_AUTHORED;
+    assert.equal(shouldPlanItem(ownerItem, profile), false);
+
+    for (const truthy of ["true", "1", "yes", "TRUE", "Yes"]) {
+      process.env.CLAWSWEEPER_INCLUDE_MAINTAINER_AUTHORED = truthy;
+      assert.equal(
+        shouldPlanItem(ownerItem, profile),
+        true,
+        `expected env=${truthy} to enable maintainer planning`,
+      );
+    }
+
+    for (const falsy of ["", "false", "0", "no", "maybe"]) {
+      process.env.CLAWSWEEPER_INCLUDE_MAINTAINER_AUTHORED = falsy;
+      assert.equal(
+        shouldPlanItem(ownerItem, profile),
+        false,
+        `expected env=${JSON.stringify(falsy)} to keep default skip‐maintainer`,
+      );
+    }
+  } finally {
+    if (prev === undefined) {
+      delete process.env.CLAWSWEEPER_INCLUDE_MAINTAINER_AUTHORED;
+    } else {
+      process.env.CLAWSWEEPER_INCLUDE_MAINTAINER_AUTHORED = prev;
+    }
+  }
+});
+
+test("target-repositories.json opts Luke's personal repos into maintainer-authored review", async () => {
+  const { repositoryProfileFor } = await import("../dist/repository-profiles.js");
+  for (const repo of [
+    "valkyriweb/openclaw-claude",
+    "valkyriweb/clawsweeper",
+    "valkyriweb/lue-kube",
+    "valkyriweb/pi-mono",
+    "valkyriweb/openclaw",
+  ]) {
+    const profile = repositoryProfileFor(repo);
+    assert.equal(
+      profile.includeMaintainerAuthored,
+      true,
+      `${repo} should opt into maintainer-authored planning`,
+    );
+  }
+  for (const repo of [
+    "openclaw/openclaw",
+    "bermont-digital/multica",
+    "CLIP-SA/core-ai",
+    "CLIP-SA/core-wholesale",
+  ]) {
+    const profile = repositoryProfileFor(repo);
+    assert.notEqual(
+      profile.includeMaintainerAuthored,
+      true,
+      `${repo} should NOT opt into maintainer-authored planning`,
+    );
+  }
+});
+
 test("parseGhJson adds gh command context to malformed JSON errors", () => {
   assert.throws(
     () => parseGhJson("{", ["api", "repos/openclaw/openclaw/issues"]),

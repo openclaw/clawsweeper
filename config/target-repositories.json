@@ -77,6 +77,7 @@
       "target_repo": "valkyriweb/pi-mono",
       "display_name": "Pi (mono-fork)",
       "checkout_dir": "pi-mono-fork",
+      "include_maintainer_authored": true,
       "prompt_note": "Pi is Luke's fork of the Pi agent toolkit (coding agent CLI, unified LLM API, TUI/web UI libraries, Slack bot, vLLM pods). The local checkout lives at `~/Projects/personal/pi-mono-fork/`; the GitHub repo is `valkyriweb/pi-mono`. Service areas: `area:coding-agent` (the agent harness, session, tools, executor, context), `area:extensions` (dream-memory, pi-memory, claude-bridge, and other extension packages), `area:tui` (terminal UI, themes, keybindings, components), `area:sdk` (SDK integrations, custom providers, model additions), `area:docs` (markdown docs, examples, prompt templates), `area:tests` (unit and integration tests). Use at most two area tags. When the item spans multiple areas, use `area:cross-cutting`. Validation: `pnpm --filter coding-agent test` for harness changes; `pnpm -r build` for the monorepo. Default review provider stays Codex; Claude-bridge routing is opt-in per slice 7.",
       "apply_close_rules": {
         "issue": [
@@ -101,6 +102,7 @@
       "target_repo": "valkyriweb/clawsweeper",
       "display_name": "ClawSweeper",
       "checkout_dir": "clawsweeper",
+      "include_maintainer_authored": true,
       "prompt_note": "ClawSweeper is the GitHub issue/PR triage and repair automation in this repository. Service areas: `area:workflow` (GitHub Actions, tokens, permissions, dispatch), `area:repair` (issue intake, worker planning/execution, post-flight merge), `area:github-api` (gh/REST/GraphQL calls, search, permissions), `area:validation` (target validation command parsing), `area:tests` (unit and repair tests). Use at most two area tags. When fixing workflow bugs, prefer surgical changes with regression tests and validate with `pnpm run check` or the narrowest repair test/build gate.",
       "apply_close_rules": {
         "issue": [
@@ -125,6 +127,7 @@
       "target_repo": "valkyriweb/openclaw",
       "display_name": "OpenClaw (fork)",
       "checkout_dir": "openclaw",
+      "include_maintainer_authored": true,
       "prompt_note": "Luke's patched fork of OpenClaw (agent gateway). Tracks upstream openclaw/openclaw with carry-forward patches tracked in ~/Projects/infra/openclaw-claude/docs/issues.md (ISSUE-040, ISSUE-042, ISSUE-077, ISSUE-091, ISSUE-094, ISSUE-095, cron-list-fix). Service areas: `area:agent-runtime` (ACP, agent loop, session lifecycle), `area:tools` (bash/exec, image_generate, web, sessions_*), `area:plugins` (advisor, context-intelligence, pi-ai), `area:bridge` (claude-bridge sidecar), `area:tests` (vitest). Use at most two area tags. When the item spans multiple areas, use `area:cross-cutting`. Validation: `pnpm exec vitest run <test-file>`. **CRITICAL: do NOT propose closing carry-forward PRs as 'implemented on main' \u2014 these are upstream-bound patches, not yet merged upstream.** Carry-forward PRs are typically named with `carry(<version>):` prefix; treat them as long-lived.",
       "apply_close_rules": {
         "issue": [
@@ -146,6 +149,7 @@
       "target_repo": "valkyriweb/lue-kube",
       "display_name": "lue-kube (work cluster)",
       "checkout_dir": "lue-kube",
+      "include_maintainer_authored": true,
       "prompt_note": "K3s cluster repo for client workloads (Laravel, WordPress, OpenClaw). Areas: `area:apps` (k3s/apps/<name>/{base,overlays/prod}), `area:flux` (Flux CD reconciliation), `area:cluster` (cluster-level config, system add-ons, sealed-secrets), `area:secrets`, `area:docs`. Use at most two area tags. Validation: `kubectl --context lue-kube` for cluster-side checks; manifests don't ship without `flux reconcile`. Carry-forward PRs do not exist here.",
       "apply_close_rules": {
         "issue": [
@@ -168,6 +172,7 @@
       "display_name": "OpenClaw management hub (release/runtime ops)",
       "checkout_dir": "openclaw-claude",
       "review_provider": "claude-bridge",
+      "include_maintainer_authored": true,
       "prompt_note": "OpenClaw management hub for Luke's production OpenClaw runtime: release notes, update logs, live-runtime issues, methodology, Paperclip wiring, plans, state, and docs. Mostly markdown; no source build. Areas: `area:release-risk`, `area:runtime-k8s`, `area:pi-harness`, `area:bridge-cache`, `area:skills-extensions`, `area:telemetry-evals`, `area:media-audio`, `area:context-health`, `area:docs-cleanup`, `area:methodology`. Use at most two area tags. Review as an ops/release triage assistant, not a generic stale-docs cleaner. Important work: read linked release logs/changelogs completely, compare against Luke's active runtime/cluster surfaces, and flag stability fixes, breaking config changes, Docker/Kubernetes/runtime impacts, prompt-cache/context health, Pi harness/bridge changes, skills/extensions, TTS/STT/media, heartbeats, telemetry/tracing/Opik/evals, active-memory, smoke/staging/build-test needs, and CHANGELOG/release tracking updates. Treat `docs/releases.md`, `docs/agent-context/update-release-runbook.md`, `state/update-log.jsonl`, `memory/MEMORY.md`, and `docs/issues.md` as operational state, not stale clutter. Prefer `manual_review` for release audits, runtime decisions, workflow design, plans, state logs, pending methodology, or anything needing cluster/operator judgment. Use `queue_fix_pr` only for narrow docs/index/changelog cleanup with an obvious existing file and no product/runtime decision; if no scoped validation command exists, choose `manual_review`. Do not propose closing methodology TODOs, pending-work notes, active plans, issue tracker entries, or release records as stale. Close only clear duplicates, cannot-reproduce reports, or items outside this repo boundary.",
       "apply_close_rules": {
         "issue": ["duplicate_or_superseded", "cannot_reproduce", "not_actionable_in_repo"],

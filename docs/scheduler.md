@@ -289,6 +289,13 @@ The planner considers only open issues and PRs that pass `shouldPlanItem`.
 Protected labels and other non-reviewable items are skipped before Codex work is
 allocated.
 
+Maintainer-authored items (OWNER/MEMBER/COLLABORATOR) are skipped by default,
+but a target can opt in by setting `include_maintainer_authored: true` in
+`config/target-repositories.json`. Closure safety lives in `apply_close_rules`
+per-target, so opting in only changes what reaches review — it does not change
+what the bot is allowed to close. `CLAWSWEEPER_INCLUDE_MAINTAINER_AUTHORED=true`
+is a fleet-wide override (accepts `true`/`1`/`yes`).
+
 Review cadence is **activity-driven** by default. `shouldReviewItem` returns
 true when, and only when, one of these is true:
 

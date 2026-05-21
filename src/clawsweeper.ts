@@ -1873,8 +1873,33 @@ function protectedLabelReason(labels: readonly string[]): string {
   return `protected label: ${protectedLabels(labels).join(", ")}`;
 }
 
-export function shouldPlanItem(item: Pick<Item, "authorAssociation" | "labels">): boolean {
-  return !isMaintainerAuthored(item) && !isProtectedItem(item);
+/**
+ * `CLAWSWEEPER_INCLUDE_MAINTAINER_AUTHORED` (fleet-wide) or the per-target
+ * `includeMaintainerAuthored` profile flag opts a repo into reviewing
+ * maintainer-authored items. Default behaviour preserves the upstream policy
+ * of skipping OWNER/MEMBER/COLLABORATOR items at the planner. Closure safety
+ * still lives in `applyCloseRules` per-target, so enabling this here only
+ * affects whether items reach review — not whether they can be closed.
+ *
+ * Recognised env values: `true`/`1`/`yes` enable, anything else (including
+ * unset) defers to the per-target flag.
+ */
+function includeMaintainerAuthored(
+  profile: RepositoryProfile = targetProfile(),
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  const raw = (env.CLAWSWEEPER_INCLUDE_MAINTAINER_AUTHORED ?? "").trim().toLowerCase();
+  if (raw === "true" || raw === "1" || raw === "yes") return true;
+  return profile.includeMaintainerAuthored === true;
+}
+
+export function shouldPlanItem(
+  item: Pick<Item, "authorAssociation" | "labels">,
+  profile: RepositoryProfile = targetProfile(),
+): boolean {
+  if (isProtectedItem(item)) return false;
+  if (!isMaintainerAuthored(item)) return true;
+  return includeMaintainerAuthored(profile);
 }
 
 function isOlderThanDays(isoTimestamp: string, days: number, now = Date.now()): boolean {
