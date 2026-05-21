@@ -152,6 +152,12 @@ env:
   # CLAWSWEEPER_MAX_REVIEW_STALENESS (never|daily|weekly|hourly) to force periodic
   # re-checks. See docs/safe-ramp-valkyriweb.md for the trade-offs.
   CLAWSWEEPER_MAX_REVIEW_STALENESS: ${{ vars.CLAWSWEEPER_MAX_REVIEW_STALENESS || 'never' }}
+  # Fork installs run under their own bot login (e.g. `valkyriweb-clawsweeper[bot]`).
+  # The patchable-author allowlist in src/clawsweeper.ts hardcodes the upstream login;
+  # operators must set the `CLAWSWEEPER_COMMENT_AUTHOR_LOGIN` repo variable to their
+  # bot's login for sticky-comment patching to work. Without this passthrough the
+  # repo variable is set but never reaches the node process. See issue #68.
+  CLAWSWEEPER_COMMENT_AUTHOR_LOGIN: ${{ vars.CLAWSWEEPER_COMMENT_AUTHOR_LOGIN || '' }}
   OPIK_URL: https://opik.bermont.digital/api
   OPIK_PROJECT_NAME: clawsweeper
 
