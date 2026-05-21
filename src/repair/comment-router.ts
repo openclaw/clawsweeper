@@ -33,6 +33,7 @@ import {
   automergeReadinessRepairReason,
   automergeRebaseRepairReason,
   automergeTransientWaitConfig,
+  assistDispatchClientPayload,
   buildAutomergeMergeArgs,
   buildAutomergeSquashMessage,
   commandHasAction,
@@ -1951,24 +1952,9 @@ function dispatchClawSweeperReview(command: LooseRecord) {
 }
 
 function dispatchClawSweeperAssist(command: LooseRecord) {
-  const visual = command.intent === "visual_assist";
   const payload = JSON.stringify({
     event_type: "clawsweeper_assist",
-    client_payload: {
-      target_repo: command.repo,
-      item_number: String(command.issue_number),
-      item_kind: command.target?.kind ?? "",
-      mode: visual ? "visual" : "text",
-      comment_id: String(command.comment_id ?? ""),
-      comment_url: String(command.comment_url ?? ""),
-      author: String(command.author ?? ""),
-      question: String(
-        visual ? (command.visual_prompt ?? "") : (command.freeform_prompt ?? command.command ?? ""),
-      ).slice(0, 3000),
-      model: "gpt-5.5",
-      reasoning_effort: visual ? "medium" : "low",
-      timeout_ms: visual ? "480000" : "120000",
-    },
+    client_payload: assistDispatchClientPayload(command),
   });
   const result = ghSpawn(
     ["api", `repos/${reviewRepo}/dispatches`, "--method", "POST", "--input", "-"],

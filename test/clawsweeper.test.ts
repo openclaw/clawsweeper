@@ -9507,7 +9507,7 @@ test("visual explainer sanitizer rejects network and external resources", () => 
 
 test("assist workflow leaves timeout buffer around visual Codex generation", () => {
   const workflow = readFileSync(".github/workflows/assist.yml", "utf8");
-  const router = readFileSync("src/repair/comment-router.ts", "utf8");
+  const routerCore = readFileSync("src/repair/comment-router-core.ts", "utf8");
   assert.match(workflow, /timeout-minutes:\s+12/);
-  assert.match(router, /timeout_ms:\s+visual \? "480000" : "120000"/);
+  assert.match(routerCore, /timeout_ms:\s+visual \? "480000" : "120000"/);
 });

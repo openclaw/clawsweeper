@@ -1568,6 +1568,24 @@ function visualPromptFromCommand(command: LooseRecord) {
     .trim();
 }
 
+export function assistDispatchClientPayload(command: LooseRecord): LooseRecord {
+  const visual = command.intent === "visual_assist";
+  return {
+    target_repo: command.repo,
+    item_number: String(command.issue_number),
+    mode: visual ? "visual" : "text",
+    comment_id: String(command.comment_id ?? ""),
+    comment_url: String(command.comment_url ?? ""),
+    author: String(command.author ?? ""),
+    question: String(
+      visual ? (command.visual_prompt ?? "") : (command.freeform_prompt ?? command.command ?? ""),
+    ).slice(0, 3000),
+    model: "gpt-5.5",
+    reasoning_effort: visual ? "medium" : "low",
+    timeout_ms: visual ? "480000" : "120000",
+  };
+}
+
 function issueImplementationRestPrefix(command: LooseRecord) {
   return command.command === "fix" ? "fix issue" : command.command;
 }
