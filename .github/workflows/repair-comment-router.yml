@@ -88,6 +88,7 @@ jobs:
             results
             scripts/hydrate-state.ts
             src/repair
+            src/usage-telemetry.ts
             package.json
             pnpm-lock.yaml
             tsconfig.repair.json
