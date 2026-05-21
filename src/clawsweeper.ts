@@ -8873,7 +8873,7 @@ function reviewCommand(args: Args): void {
   }
   if (codexFailures > 0) {
     throw new Error(
-      `Codex failed for ${codexFailures} item${codexFailures === 1 ? "" : "s"}; review artifacts were written and the workflow recovery lane can requeue the planned set.`,
+      `${reviewProvider} review failed for ${codexFailures} item${codexFailures === 1 ? "" : "s"}; review artifacts were written and the workflow recovery lane can requeue the planned set.`,
     );
   }
 }

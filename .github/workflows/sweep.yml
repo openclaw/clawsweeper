@@ -884,7 +884,13 @@ jobs:
           repositories: ${{ needs.plan.outputs.target_repo_name }}
           permission-contents: read
           permission-issues: write
-          permission-pull-requests: read
+          # write — needed to POST the "review started" sticky status comment
+          # via /issues/{n}/comments. When the item is a PR, GitHub Apps gate that
+          # endpoint on `pull-requests`, NOT `issues`, even though the path says
+          # /issues/. Without write the start-comment 403s and the whole review
+          # shard fails before reaching the model (see CLIP-SA/core-wholesale
+          # canary, 2026-05-21).
+          permission-pull-requests: write
 
       - name: Create target Codex inspection token
         id: codex-inspection-token
