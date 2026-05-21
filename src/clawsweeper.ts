@@ -5012,6 +5012,10 @@ export function runClaude(options: RunClaudeOptions): Decision {
   throw new Error(`Claude review failed for #${item.number}: exhausted Claude retry attempts`);
 }
 
+export function runCodexForTest(options: Parameters<typeof runCodex>[0]): Decision {
+  return runCodex(options);
+}
+
 function runCodex(options: {
   item: Item;
   context: ItemContext;
@@ -5136,6 +5140,34 @@ function runCodex(options: {
     );
   }
   if (result.status !== 0) {
+    // PR #103 backport: if Codex wrote schema-valid output before exiting
+    // non-zero (e.g. shutdown errors after the structured-output tool fired),
+    // accept the output rather than discard a usable review. Only throw if
+    // the file is missing or unparseable.
+    if (existsSync(outputPath)) {
+      try {
+        const decision = parseDecision(
+          JSON.parse(readFileSync(outputPath, "utf8").trim()),
+          options.item,
+        );
+        emitUsage("success");
+        console.error(
+          `[review] ${new Date().toISOString()} codex-exit-nonzero-output-accepted #${
+            options.item.number
+          } status=${result.status ?? "unknown"} stderr=${JSON.stringify(safeOutputTail(result.stderr))}`,
+        );
+        return decision;
+      } catch (error) {
+        emitUsage("failed");
+        throw new Error(
+          `Codex review failed for #${options.item.number} with exit ${
+            result.status ?? "unknown"
+          } and wrote invalid JSON or schema-invalid output to ${outputPath}: ${
+            error instanceof Error ? error.message : String(error)
+          }.\n${safeOutputTail(result.stderr) || safeOutputTail(result.stdout) || "No output."}`,
+        );
+      }
+    }
     emitUsage("failed");
     throw new Error(
       `Codex review failed for #${options.item.number} with exit ${
