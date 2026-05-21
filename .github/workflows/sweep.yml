@@ -974,6 +974,14 @@ jobs:
           # Set repo var to `claude-bridge` to route every review through
           # the pi-claude-bridge running on the mac-mini runner (127.0.0.1:9100).
           CLAWSWEEPER_REVIEW_PROVIDER: ${{ vars.CLAWSWEEPER_REVIEW_PROVIDER || '' }}
+          # Route `claude` CLI calls (claude-code provider) through the local
+          # pi-claude-bridge proxy on the mac-mini runner. The bridge holds the
+          # real upstream auth in its .env (_BRIDGE_OAUTH_TOKEN) and re-signs
+          # every outgoing request, so the runner never sees the real key.
+          # ANTHROPIC_API_KEY is a non-empty placeholder — required only to
+          # pass `claude`'s local auth pre-check; the bridge overrides it.
+          ANTHROPIC_BASE_URL: http://127.0.0.1:9100
+          ANTHROPIC_API_KEY: sk-ant-via-bridge-placeholder
         run: |
           hot_intake_arg=()
           if [ "${{ needs.plan.outputs.hot_intake }}" = "true" ]; then
