@@ -95,6 +95,7 @@ import {
   sameAuthorCounterpartApplyReason,
   sanitizePublicSelfReferences,
   appendFloorBackfillCandidateNumbersForTest,
+  applyVisualExplainerCsp,
   pullRequestFilePathsFromContextForTest,
   selectDueCandidateNumbersForTest,
   shardItemNumbers,
@@ -9484,6 +9485,16 @@ test("visual explainer sanitizer allows self-contained inline interactions", () 
   assert.deepEqual(validateVisualExplainerHtml(html), []);
 });
 
+test("visual explainer CSP overrides model-provided policies", () => {
+  const loose =
+    '<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="default-src *"><title>PR</title></head><body></body></html>';
+  const html = applyVisualExplainerCsp(loose);
+  assert.equal((html.match(/Content-Security-Policy/g) ?? []).length, 1);
+  assert.doesNotMatch(html, /default-src \*/);
+  assert.match(html, /default-src 'none'/);
+  assert.match(html, /connect-src 'none'/);
+});
+
 test("visual explainer sanitizer rejects network and external resources", () => {
   const html =
     '<!doctype html><html><head><script src="https://example.com/app.js"></script></head><body><img src="https://example.com/a.png"><script>fetch("https://example.com"); localStorage.setItem("x","y");</script></body></html>';
@@ -9492,4 +9503,11 @@ test("visual explainer sanitizer rejects network and external resources", () => 
   assert.match(violations.join("\n"), /network APIs/);
   assert.match(violations.join("\n"), /browser storage/);
   assert.match(violations.join("\n"), /external resources/);
+});
+
+test("assist workflow leaves timeout buffer around visual Codex generation", () => {
+  const workflow = readFileSync(".github/workflows/assist.yml", "utf8");
+  const router = readFileSync("src/repair/comment-router.ts", "utf8");
+  assert.match(workflow, /timeout-minutes:\s+12/);
+  assert.match(router, /timeout_ms:\s+visual \? "480000" : "120000"/);
 });

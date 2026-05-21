@@ -5335,10 +5335,16 @@ export function visualExplainerCspMeta(): string {
 
 export function applyVisualExplainerCsp(html: string): string {
   const meta = visualExplainerCspMeta();
-  if (/http-equiv=["']Content-Security-Policy["']/i.test(html)) return html;
-  if (/<head\b[^>]*>/i.test(html))
-    return html.replace(/<head\b[^>]*>/i, (match) => `${match}\n${meta}`);
-  return html.replace(/<html\b[^>]*>/i, (match) => `${match}\n<head>\n${meta}\n</head>`);
+  const withoutGeneratedCsp = html.replace(
+    /<meta\b[^>]*\bhttp-equiv\s*=\s*(?:"Content-Security-Policy"|'Content-Security-Policy'|Content-Security-Policy)[^>]*>\s*/gi,
+    "",
+  );
+  if (/<head\b[^>]*>/i.test(withoutGeneratedCsp))
+    return withoutGeneratedCsp.replace(/<head\b[^>]*>/i, (match) => `${match}\n${meta}`);
+  return withoutGeneratedCsp.replace(
+    /<html\b[^>]*>/i,
+    (match) => `${match}\n<head>\n${meta}\n</head>`,
+  );
 }
 
 function runCodexVisualExplainer(options: {
