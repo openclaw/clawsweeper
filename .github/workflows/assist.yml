@@ -61,6 +61,7 @@ jobs:
         with:
           filter: blob:none
           sparse-checkout: |
+            .github/actions/setup-pnpm
             config
             src
             package.json
