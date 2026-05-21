@@ -53,7 +53,7 @@
       "target_repo": "CLIP-SA/core-wholesale",
       "display_name": "Core Wholesale",
       "checkout_dir": "core-wholesale",
-      "review_provider": "claude-bridge",
+      "review_provider": "pi",
       "prompt_note": "Core Wholesale is a multi-stack ecommerce platform. Service areas: `area:next-frontend` (Next.js storefront, React components, pages), `area:woocommerce` (WooCommerce plugin customisations, hooks, REST API extensions), `area:wordpress` (WordPress core customisations, themes, ACF, plugin integrations), `area:mysql` (database schema, queries, migrations, performance), `area:openclaw-integration` (OpenClaw agent/AI integration, tool dispatch, session management). Use at most two area tags. When the item spans multiple areas, use `area:cross-cutting`. Validation: appropriate per area \u2014 PHP unit tests for WP/WC, `pnpm build` for Next.js, SQL migration checks for MySQL.",
       "apply_close_rules": {
         "issue": [
