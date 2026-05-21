@@ -71,7 +71,7 @@ jobs:
 
       - uses: ./.github/actions/setup-pnpm
         with:
-          build-script: build
+          build-script: build:repair
 
       - id: limit
         env:

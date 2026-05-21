@@ -5195,7 +5195,7 @@ function runCodexAssist(options: {
     {
       cwd: ROOT,
       encoding: "utf8",
-      env: codexEnv({ ghToken: process.env.GH_TOKEN }),
+      env: codexEnv(),
       input: prompt,
       maxBuffer: 32 * 1024 * 1024,
       timeout: options.timeoutMs,
