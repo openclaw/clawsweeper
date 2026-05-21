@@ -1187,7 +1187,7 @@ test("main branch changes force stale repair candidates back into planning", () 
   assert.equal(shouldReviewItem(item(), review, now, "current", "new-main"), true);
 });
 
-test("hot new items review daily unless target-side activity requires hourly cadence", () => {
+test("reviews are activity-driven: cold items stay cold regardless of age", () => {
   const now = Date.parse("2026-04-26T12:00:00Z");
   const review = (reviewedAt, itemUpdatedAt) => ({
     path: "items/123.md",
@@ -1199,54 +1199,51 @@ test("hot new items review daily unless target-side activity requires hourly cad
     reviewPolicy: "current",
   });
 
+  // Hot issue, reviewed 2h ago, no activity — skip.
   assert.equal(
     shouldReviewItem(
-      item({
-        createdAt: "2026-04-24T00:00:00Z",
-        updatedAt: "2026-04-24T00:00:00Z",
-      }),
+      item({ createdAt: "2026-04-24T00:00:00Z", updatedAt: "2026-04-24T00:00:00Z" }),
       review("2026-04-26T10:00:00Z", "2026-04-24T00:00:00Z"),
       now,
       "current",
     ),
     false,
   );
+
+  // Hot issue, reviewed 26h ago, still no activity — skip (old contract said true).
   assert.equal(
     shouldReviewItem(
-      item({
-        createdAt: "2026-04-24T00:00:00Z",
-        updatedAt: "2026-04-24T00:00:00Z",
-      }),
+      item({ createdAt: "2026-04-24T00:00:00Z", updatedAt: "2026-04-24T00:00:00Z" }),
       review("2026-04-25T10:00:00Z", "2026-04-24T00:00:00Z"),
       now,
       "current",
     ),
-    true,
+    false,
   );
+
+  // Hot issue with fresh GitHub activity since last review — re-review.
   assert.equal(
     shouldReviewItem(
-      item({
-        createdAt: "2026-04-24T00:00:00Z",
-        updatedAt: "2026-04-26T11:10:00Z",
-      }),
+      item({ createdAt: "2026-04-24T00:00:00Z", updatedAt: "2026-04-26T11:10:00Z" }),
       review("2026-04-26T10:00:00Z", "2026-04-24T00:00:00Z"),
       now,
       "current",
     ),
     true,
   );
+
+  // Old quiet issue, reviewed 2d ago — skip.
   assert.equal(
     shouldReviewItem(
-      item({
-        createdAt: "2026-03-01T00:00:00Z",
-        updatedAt: "2026-03-01T00:00:00Z",
-      }),
+      item({ createdAt: "2026-03-01T00:00:00Z", updatedAt: "2026-03-01T00:00:00Z" }),
       review("2026-04-24T12:00:00Z", "2026-03-01T00:00:00Z"),
       now,
       "current",
     ),
     false,
   );
+
+  // PR, no activity, reviewed >1d ago — skip (old contract said true on PR daily cadence).
   assert.equal(
     shouldReviewItem(
       item({
@@ -1258,8 +1255,93 @@ test("hot new items review daily unless target-side activity requires hourly cad
       now,
       "current",
     ),
-    true,
+    false,
   );
+});
+
+test("CLAWSWEEPER_MAX_REVIEW_STALENESS forces periodic re-review on quiet items", () => {
+  const now = Date.parse("2026-04-26T12:00:00Z");
+  const review = (reviewedAt, itemUpdatedAt) => ({
+    path: "items/123.md",
+    markdown: "",
+    reviewedAt,
+    itemUpdatedAt,
+    decision: "keep_open",
+    reviewStatus: "complete",
+    reviewPolicy: "current",
+  });
+  const quietIssue = item({
+    createdAt: "2026-04-24T00:00:00Z",
+    updatedAt: "2026-04-24T00:00:00Z",
+  });
+
+  const prev = process.env.CLAWSWEEPER_MAX_REVIEW_STALENESS;
+  try {
+    // never (default) — cold item stays cold.
+    process.env.CLAWSWEEPER_MAX_REVIEW_STALENESS = "never";
+    assert.equal(
+      shouldReviewItem(
+        quietIssue,
+        review("2026-04-19T11:00:00Z", "2026-04-24T00:00:00Z"), // 7d+ stale
+        now,
+        "current",
+      ),
+      false,
+    );
+
+    // daily — same item now exceeds 24h staleness floor, re-review.
+    process.env.CLAWSWEEPER_MAX_REVIEW_STALENESS = "daily";
+    assert.equal(
+      shouldReviewItem(
+        quietIssue,
+        review("2026-04-25T10:00:00Z", "2026-04-24T00:00:00Z"), // 26h stale
+        now,
+        "current",
+      ),
+      true,
+    );
+
+    // weekly — 26h stale item still skipped under weekly floor.
+    process.env.CLAWSWEEPER_MAX_REVIEW_STALENESS = "weekly";
+    assert.equal(
+      shouldReviewItem(
+        quietIssue,
+        review("2026-04-25T10:00:00Z", "2026-04-24T00:00:00Z"),
+        now,
+        "current",
+      ),
+      false,
+    );
+
+    // weekly — 8d stale item now exceeds the floor, re-review.
+    assert.equal(
+      shouldReviewItem(
+        quietIssue,
+        review("2026-04-18T10:00:00Z", "2026-04-24T00:00:00Z"),
+        now,
+        "current",
+      ),
+      true,
+    );
+
+    // Unknown value falls back to never (safe default, never amplifies spend).
+    process.env.CLAWSWEEPER_MAX_REVIEW_STALENESS = "every-hour-please";
+    assert.equal(
+      shouldReviewItem(
+        quietIssue,
+        review("2026-04-19T11:00:00Z", "2026-04-24T00:00:00Z"),
+        now,
+        "current",
+      ),
+      false,
+    );
+  } finally {
+    if (prev === undefined) {
+      delete process.env.CLAWSWEEPER_MAX_REVIEW_STALENESS;
+    } else {
+      process.env.CLAWSWEEPER_MAX_REVIEW_STALENESS = prev;
+    }
+  }
 });
 
 test("apply guard tolerates GitHub issue updated_at skew for ClawSweeper review comments", () => {

@@ -289,14 +289,19 @@ The planner considers only open issues and PRs that pass `shouldPlanItem`.
 Protected labels and other non-reviewable items are skipped before Codex work is
 allocated.
 
-Review cadence:
+Review cadence is **activity-driven** by default. `shouldReviewItem` returns
+true when, and only when, one of these is true:
 
-- items with target-side activity since the last real review: hourly
-- items created in the last 7 days without new target-side activity: daily
-- pull requests outside the hot window: daily
-- issues created in the last 30 days: daily
-- older inactive issues: weekly
-- review policy hash changes: due immediately
+- the review policy hash changes (prompts or instructions updated)
+- main advances on a fix-pending review (`workCandidate=queue_fix_pr`, or
+  `decision=close` not yet applied)
+- there is no prior complete review for the item
+- GitHub `updated_at` is later than the stored `reviewed_at` (or
+  `review_comment_synced_at` / `labels_synced_at`), meaning real reporter or
+  maintainer activity has happened
+
+If none of those hold, the item is **not** re-reviewed. Cold issues do not
+incur Codex spend on a timer.
 
 The activity check ignores ClawSweeper-owned GitHub mutations that are already
 recorded in durable report frontmatter. `review_comment_synced_at` covers public
@@ -305,8 +310,28 @@ writes such as priority or advisory issue-label syncs. If GitHub `updated_at` is
 at or before either marker, the planner does not treat it as fresh reporter or
 maintainer activity.
 
-Selection uses weighted buckets so hot issues cannot starve pull requests and
-older issue backlog forever. The normal scheduler cycles through:
+### Optional periodic re-review ceiling
+
+Set `CLAWSWEEPER_MAX_REVIEW_STALENESS` (repository variable) to force a periodic
+re-check even when there has been no activity:
+
+- `never` (default) — pure activity-driven, no timer-based re-review
+- `daily` — re-review when an item has been quiet for more than 24h
+- `weekly` — re-review when an item has been quiet for more than 7d
+- `hourly` — debug-only; re-review every hour
+
+Unknown values fall back to `never` so a typo never silently amplifies spend.
+The knob is read at planner time, so changing the repo variable takes effect on
+the next scheduled run; no redeploy needed.
+
+Policy-hash, main-sha, and missing-review triggers always fire regardless of
+the staleness setting.
+
+### Selection ordering
+
+Once a candidate set has been gated by `shouldReviewItem`, selection uses
+weighted buckets so hot issues cannot starve pull requests and older issue
+backlog forever. The normal scheduler cycles through:
 
 - hot issues
 - hot pull requests
@@ -315,7 +340,9 @@ older issue backlog forever. The normal scheduler cycles through:
 - recent issues
 - weekly older issues
 
-Within each bucket, earlier due times and older reviews win before item number.
+Bucket labels (`hot`, `daily`, `weekly`) describe the item's age and kind for
+fairness ordering; they no longer drive when an item becomes due. Within each
+bucket, earlier due times and older reviews win before item number.
 
 ## Planning
 
@@ -517,8 +544,11 @@ To change how many normal Codex sessions can run, update both
 The workflow can otherwise continue with stale defaults during continuation
 runs.
 
-To change review cadence, update the cadence constants and the scheduler bucket
-logic in `src/clawsweeper.ts`, then update dashboard labels and this document.
+To change review cadence: the default is activity-driven via `shouldReviewItem`
+in `src/clawsweeper.ts`. To force periodic re-checks, set the
+`CLAWSWEEPER_MAX_REVIEW_STALENESS` repository variable on the fork running the
+sweep (`never|daily|weekly|hourly`). For deeper changes, edit `shouldReviewItem`
+and the bucket logic, then update dashboard labels and this document.
 
 To add a new target repository, add a repository profile, wire schedule target
 resolution and concurrency target resolution in `.github/workflows/sweep.yml`,

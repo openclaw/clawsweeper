@@ -2916,6 +2916,31 @@ function reviewNeedsMainRefresh(review: ExistingReview | null, currentMainSha?: 
   return false;
 }
 
+/**
+ * Optional periodic re-check ceiling. By default we are activity-driven only:
+ * an item is re-reviewed when GitHub `updatedAt` moves past our `reviewedAt`,
+ * when the review policy hash changes, when main advances on a fix-pending
+ * item, or when there is no prior complete review. We do NOT re-review cold
+ * items on a timer.
+ *
+ * `CLAWSWEEPER_MAX_REVIEW_STALENESS` opts back in to time-based re-checks if a
+ * fleet operator wants belt-and-braces. Recognised values:
+ *   never  (default) — pure activity-driven, no timer-based re-review
+ *   daily            — force re-review when no activity for >24h
+ *   weekly           — force re-review when no activity for >7d
+ *   hourly           — debug-only: legacy behaviour, re-review hourly on activity tier
+ *
+ * Unknown values fall back to `never` so a typo never silently amplifies spend.
+ */
+function maxReviewStalenessMs(env: NodeJS.ProcessEnv = process.env): number | null {
+  const raw = (env.CLAWSWEEPER_MAX_REVIEW_STALENESS ?? "never").trim().toLowerCase();
+  if (raw === "" || raw === "never" || raw === "off" || raw === "none") return null;
+  if (raw === "hourly") return HOURLY_REVIEW_MS;
+  if (raw === "daily") return DAILY_REVIEW_DAYS * DAY_MS;
+  if (raw === "weekly") return WEEKLY_REVIEW_DAYS * DAY_MS;
+  return null;
+}
+
 export function shouldReviewItem(
   item: Item,
   review: ExistingReview | null,
@@ -2927,7 +2952,10 @@ export function shouldReviewItem(
   if (reviewNeedsMainRefresh(review, currentMainSha)) return true;
   const reviewedAt = reviewedAtMs(review);
   if (reviewedAt === null) return true;
-  return now - reviewedAt >= reviewCadenceMs(item, review, now);
+  if (hasActivitySinceReview(item, review)) return true;
+  const stalenessLimitMs = maxReviewStalenessMs();
+  if (stalenessLimitMs === null) return false;
+  return now - reviewedAt >= stalenessLimitMs;
 }
 
 export function reviewPriority(

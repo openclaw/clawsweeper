@@ -147,6 +147,11 @@ env:
   CLAWSWEEPER_USAGE_OTLP_ENDPOINT: ${{ vars.CLAWSWEEPER_USAGE_OTLP_ENDPOINT || vars.OTEL_EXPORTER_OTLP_ENDPOINT || '' }}
   CLAWSWEEPER_USAGE_OTLP_HEADERS: ${{ vars.CLAWSWEEPER_USAGE_OTLP_HEADERS || vars.OTEL_EXPORTER_OTLP_HEADERS || '' }}
   CLAWSWEEPER_USAGE_SERVICE_NAMESPACE: ${{ vars.CLAWSWEEPER_USAGE_SERVICE_NAMESPACE || vars.OTEL_SERVICE_NAMESPACE || '' }}
+  # Activity-driven re-review by default: planner skips items with no GitHub
+  # `updatedAt` change since the last reviewed_at. Override with the repo variable
+  # CLAWSWEEPER_MAX_REVIEW_STALENESS (never|daily|weekly|hourly) to force periodic
+  # re-checks. See docs/safe-ramp-valkyriweb.md for the trade-offs.
+  CLAWSWEEPER_MAX_REVIEW_STALENESS: ${{ vars.CLAWSWEEPER_MAX_REVIEW_STALENESS || 'never' }}
   OPIK_URL: https://opik.bermont.digital/api
   OPIK_PROJECT_NAME: clawsweeper
 

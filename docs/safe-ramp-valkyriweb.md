@@ -128,6 +128,37 @@ Move one notch at a time:
 - repair/comment-router: enable only after a real maintainer command needs it.
 - commit-review: last; it can spend on every pushed commit.
 
+## Re-review cadence
+
+At this ramp level the planner is **activity-driven only**: an open item is
+re-reviewed when GitHub's `updatedAt` moves past the stored `reviewed_at`, or
+when the review-policy hash or main SHA shifts on a fix-pending item. Items
+that sit quietly are not re-reviewed on a timer. That removes the daily/weekly
+background spend that was previously baked into the cadence ladder.
+
+If scale justifies forced periodic re-checks again, set the
+`CLAWSWEEPER_MAX_REVIEW_STALENESS` repo variable on `valkyriweb/clawsweeper`:
+
+```bash
+# Force re-review when an item has been quiet for >24h
+gh variable set CLAWSWEEPER_MAX_REVIEW_STALENESS \
+  --repo valkyriweb/clawsweeper \
+  --body daily
+
+# Or weekly belt-and-braces sweep
+gh variable set CLAWSWEEPER_MAX_REVIEW_STALENESS \
+  --repo valkyriweb/clawsweeper \
+  --body weekly
+
+# Back to pure activity-driven (default)
+gh variable delete CLAWSWEEPER_MAX_REVIEW_STALENESS \
+  --repo valkyriweb/clawsweeper
+```
+
+Recognised values: `never` (default), `daily`, `weekly`, `hourly` (debug only).
+Unknown values fall back to `never` so a typo never silently amplifies spend.
+The knob is read at planner time — no redeploy needed.
+
 ## Emergency stop
 
 ```bash
