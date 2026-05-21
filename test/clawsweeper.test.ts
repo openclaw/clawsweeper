@@ -4513,6 +4513,30 @@ test("reviewFailureReasonForSummary classifies success / timeout / other Codex o
     reviewFailureReasonForSummary("Claude review failed: invalid structured output."),
     "other",
   );
+  // Claude Code (CLI) and Pi providers must also classify correctly, otherwise
+  // their failure summaries get treated as `none` (successful review) by
+  // downstream callers like `markdownFor` — a real regression caught during
+  // PR #69 review. Keep these in sync with `reviewProviderLabel`.
+  assert.equal(
+    reviewFailureReasonForSummary("Claude Code review failed: timeout (exit 1)."),
+    "timeout",
+  );
+  assert.equal(
+    reviewFailureReasonForSummary("Claude Code review failed: claude execution failed."),
+    "other",
+  );
+  assert.equal(reviewFailureReasonForSummary("Pi review failed: timeout."), "timeout");
+  assert.equal(
+    reviewFailureReasonForSummary("Pi review failed: pi execution failed (exit 1)."),
+    "other",
+  );
+  // Negative: a non-failure summary that happens to start with a provider
+  // name must NOT classify as a failure (regex anchored on `review failed`).
+  assert.equal(
+    reviewFailureReasonForSummary("Claude Code reviewed this PR and approved it."),
+    "none",
+  );
+  assert.equal(reviewFailureReasonForSummary("Pi reviewed the changes successfully."), "none");
 });
 
 test("codexFailureDecision brands failure summary by provider", () => {
@@ -4604,6 +4628,51 @@ test("codexFailureDecision brands failure summary by provider", () => {
       (entry) => entry.label === "failure reason" && entry.detail === "claude execution failed",
     ),
     "non-truncation failures must surface claude execution failed reason",
+  );
+
+  // Claude Code provider (CLI route) — distinct label + slug so triage
+  // doesn't confuse it with the bridge-direct provider or with codex.
+  const claudeCodeDecision = codexFailureDecision(
+    "claude-code",
+    1,
+    "Claude review failed for #21 with exit 1.\nSessionEnd hook failed.",
+  );
+  assert.equal(
+    claudeCodeDecision.summary,
+    "Claude Code review failed: claude execution failed (exit 1).",
+  );
+  assert.equal(
+    claudeCodeDecision.bestSolution,
+    "Retry the Claude Code review after fixing the execution failure.",
+  );
+  assert.equal(
+    claudeCodeDecision.likelyOwners[0]?.reason,
+    "Claude Code failed before it could trace repository history.",
+  );
+  assert.equal(
+    claudeCodeDecision.securityReview.summary,
+    "Security review did not run because the Claude Code review failed before completion.",
+  );
+  assert.ok(
+    claudeCodeDecision.evidence.some((entry) => entry.label === "claude-code failure detail"),
+    "claude-code failure detail evidence label missing",
+  );
+  assert.ok(
+    claudeCodeDecision.evidence.some((entry) => entry.label === "claude-code stdout"),
+    "claude-code stdout evidence label missing",
+  );
+
+  // Pi provider — distinct label + slug.
+  const piDecision = codexFailureDecision("pi", 1, "pi review failed: bridge timeout");
+  assert.equal(piDecision.summary, "Pi review failed: pi execution failed (exit 1).");
+  assert.equal(piDecision.bestSolution, "Retry the Pi review after fixing the execution failure.");
+  assert.equal(
+    piDecision.likelyOwners[0]?.reason,
+    "Pi failed before it could trace repository history.",
+  );
+  assert.ok(
+    piDecision.evidence.some((entry) => entry.label === "pi failure detail"),
+    "pi failure detail evidence label missing",
   );
 });
 

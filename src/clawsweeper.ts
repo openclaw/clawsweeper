@@ -4375,7 +4375,17 @@ function codexFailureReason(provider: ReviewProvider, detail: string): string {
   }
   if (detail.includes("ENOBUFS") || detail.includes("maxBuffer")) return "output buffer overflow";
   if (detail.includes("timed out") || detail.includes("ETIMEDOUT")) return "timeout";
-  return provider === "claude-bridge" ? "claude execution failed" : "codex execution failed";
+  switch (provider) {
+    case "claude-bridge":
+      return "claude execution failed";
+    case "claude-code":
+      return "claude execution failed";
+    case "pi":
+      return "pi execution failed";
+    case "codex":
+    default:
+      return "codex execution failed";
+  }
 }
 
 export function isCodexTimeoutError(value: unknown): boolean {
@@ -4394,12 +4404,20 @@ export const REVIEW_TIMEOUT_ESCALATED_MS = 1_200_000;
 
 export type ReviewFailureReason = "none" | "timeout" | "other";
 
+// All known provider labels emitted by `reviewProviderLabel`. Kept in sync
+// with that function so `reviewFailureReasonForSummary` classifies failures
+// from every provider — not just the two original ones. Adding a new
+// provider means adding its label here too (see the regression test).
+const REVIEW_FAILURE_PREFIX_RE = /^(Codex|Claude|Claude Code|Pi) review failed\b/;
+const REVIEW_FAILURE_TIMEOUT_RE = /^(Codex|Claude|Claude Code|Pi) review failed: timeout\b/;
+
 export function reviewFailureReasonForSummary(summary: string): ReviewFailureReason {
   // codexFailureDecision builds `${providerLabel} review failed: <reason>...`; the
   // reason string `timeout` comes from codexFailureReason for ETIMEDOUT / 'timed out'.
-  // Match either provider's prefix so this stays correct after the slice-6 claude flip.
-  if (!/^(Codex|Claude) review failed\b/.test(summary)) return "none";
-  if (/^(Codex|Claude) review failed: timeout\b/.test(summary)) return "timeout";
+  // Match every provider's prefix so new providers (claude-code, pi) don't get
+  // misclassified as `none` (i.e. as successful reviews) by this parser.
+  if (!REVIEW_FAILURE_PREFIX_RE.test(summary)) return "none";
+  if (REVIEW_FAILURE_TIMEOUT_RE.test(summary)) return "timeout";
   return "other";
 }
 
@@ -4473,8 +4491,8 @@ export function codexFailureDecision(
   stderr: string,
   stdout = "",
 ): Decision {
-  const providerLabel = provider === "claude-bridge" ? "Claude" : "Codex";
-  const providerSlug = providerLabel.toLowerCase();
+  const providerLabel = reviewProviderLabel(provider);
+  const providerSlug = reviewProviderSlug(provider);
   const detail = stderr || "No stderr.";
   const reason = codexFailureReason(provider, detail);
   return {
@@ -7200,7 +7218,35 @@ function runtimeReviewTextFromReport(markdown: string): string {
 }
 
 function reviewProviderLabel(provider?: ReviewProvider): string {
-  return provider === "claude-bridge" ? "Claude" : "Codex";
+  switch (provider) {
+    case "claude-bridge":
+      return "Claude";
+    case "claude-code":
+      return "Claude Code";
+    case "pi":
+      return "Pi";
+    case "codex":
+    default:
+      return "Codex";
+  }
+}
+
+// Slug used in failure-evidence labels (e.g. `${slug} failure detail`).
+// Lowercase, single-token form. `claude-bridge` keeps the legacy `claude`
+// slug so historical comment text and snapshot tests stay stable; the
+// newer providers get distinct slugs so triage isn't confused.
+function reviewProviderSlug(provider?: ReviewProvider): string {
+  switch (provider) {
+    case "claude-bridge":
+      return "claude";
+    case "claude-code":
+      return "claude-code";
+    case "pi":
+      return "pi";
+    case "codex":
+    default:
+      return "codex";
+  }
 }
 
 function actualReviewModel(provider: ReviewProvider, requestedModel: string): string {
@@ -8796,7 +8842,7 @@ function reviewCommand(args: Args): void {
       } else {
         codexFailures += 1;
       }
-      const providerLabelForStdout = reviewProvider === "claude-bridge" ? "Claude" : "Codex";
+      const providerLabelForStdout = reviewProviderLabel(reviewProvider);
       decision = codexFailureDecision(
         reviewProvider,
         null,
