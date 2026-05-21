@@ -3,6 +3,7 @@ import path from "node:path";
 
 import { runCommand as run } from "./command-runner.js";
 import type { JsonValue, LooseRecord } from "./json-types.js";
+import { renderStuckFindingsConstraint, type StuckFinding } from "./stuck-findings.js";
 import { compactText } from "./text-utils.js";
 
 const FIX_ARTIFACT_PROMPT_LIMIT = 36_000;
@@ -26,6 +27,7 @@ export function buildFixPrompt({
   maxEditAttempts,
   validationCommands,
   isAutomergeRepair = false,
+  stuckFindings = [] as readonly StuckFinding[],
 }: LooseRecord) {
   return [
     "You are editing the target repository for ClawSweeper Repair.",
@@ -69,6 +71,7 @@ export function buildFixPrompt({
       ? "Previous attempt produced no target repo diff. This time make the smallest concrete code/test change that satisfies the artifact; do not return analysis only."
       : "",
     previousSummary ? `Previous no-diff summary: ${compactText(previousSummary, 1200)}` : "",
+    renderStuckFindingsConstraint(stuckFindings),
     fallbackReason ? `Fallback reason: ${fallbackReason}` : "",
     "",
     "Repository discovery context:",

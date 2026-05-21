@@ -64,6 +64,12 @@ import {
   buildRepositoryContext,
   renderFixArtifactForPrompt,
 } from "./fix-prompt-builder.js";
+import { ghPagedLimit } from "./github-cli.js";
+import {
+  detectStuckFindings,
+  stuckFindingsToTelemetry,
+  type StuckFinding,
+} from "./stuck-findings.js";
 import { canTreatRebaseAsCompleteRepair } from "./fix-edit-policy.js";
 import { applyMechanicalChangelogFix } from "./mechanical-changelog.js";
 import { tryResolveMechanicalRebaseConflicts } from "./mechanical-rebase-conflicts.js";
@@ -945,6 +951,20 @@ function executeRepairBranch({ fixArtifact, targetDir }: LooseRecord) {
     }
   }
 
+  const stuckFindings = detectStuckFindings({
+    repo: result.repo,
+    prNumber: sourcePr.number,
+    fetcher: (apiPath, limit) =>
+      ghPagedLimit<{ body?: string; created_at?: string }>(apiPath, limit, {
+        cwd: targetDir,
+      }),
+  });
+  if (stuckFindings.length > 0) {
+    logProgress("wrong-diff replay armed: prior repair attempt(s) left findings unmodified", {
+      pr_number: sourcePr.number,
+      stuck_findings: stuckFindingsToTelemetry(stuckFindings),
+    });
+  }
   const prep = editValidatePrepareMerge({
     fixArtifact,
     targetDir,
@@ -954,6 +974,7 @@ function executeRepairBranch({ fixArtifact, targetDir }: LooseRecord) {
     fallbackReason: null,
     sourceHead,
     rebaseResult,
+    stuckFindings,
   });
   (prep.merge_preflight as JsonValue).target = `#${sourcePr.number}`;
   return pushRepairBranchAndUpdateStatus({
@@ -1913,6 +1934,7 @@ function editValidatePrepareMerge({
   pushCheckpoint = null,
   sourceHead = null,
   rebaseResult = null,
+  stuckFindings = [] as readonly StuckFinding[],
 }: LooseRecord) {
   let producedChanges = allowExistingChanges;
   let previousSummary = "";
@@ -1975,6 +1997,7 @@ function editValidatePrepareMerge({
         maxEditAttempts,
         validationCommands: validationPreflight.resolved_commands ?? [],
         isAutomergeRepair: isAutomergeRepairJob(),
+        stuckFindings,
       });
       const summaryPath = path.join(workRoot, `${mode}-codex-summary-${attempt}.md`);
       const transcriptPath = path.join(workRoot, `${mode}-codex-${attempt}.jsonl`);

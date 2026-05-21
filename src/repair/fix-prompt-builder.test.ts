@@ -144,6 +144,51 @@ test("fix prompt includes rebase and previous no-diff recovery details", () => {
   assert.match(prompt, /Fallback reason: source branch is stale/);
 });
 
+test("fix prompt pins Codex to stuck findings when prior attempts left them unmodified", () => {
+  const prompt = buildFixPrompt({
+    fixArtifact: {
+      summary: "Repair the stuck automerge branch.",
+      changelog_required: false,
+    },
+    branch: "clawsweeper/repair-cluster-55",
+    mode: "repair",
+    attempt: 1,
+    previousNoDiff: false,
+    repositoryContext: "candidate_files (1):\nsrc/clawsweeper.ts (1)",
+    maxEditAttempts: 3,
+    stuckFindings: [
+      {
+        priority: 2,
+        summary: "Tighten the max_tokens failure classifier",
+        filePath: "src/clawsweeper.ts",
+        line: 4364,
+        priorOccurrences: 1,
+      },
+    ],
+  });
+
+  assert.match(prompt, /Previous repair attempt\(s\) on this PR did not modify/);
+  assert.match(
+    prompt,
+    /\[P2\] Tighten the max_tokens failure classifier — `src\/clawsweeper\.ts:4364`/,
+  );
+  assert.match(prompt, /make ONLY the targeted change\(s\) at the cited file:line/);
+});
+
+test("fix prompt does not emit a stuck-findings block when none survived", () => {
+  const prompt = buildFixPrompt({
+    fixArtifact: { summary: "Routine fix." },
+    branch: "clawsweeper/repair-cluster-1",
+    mode: "repair",
+    attempt: 1,
+    repositoryContext: "candidate_files (0):\nnone matched",
+    maxEditAttempts: 3,
+    stuckFindings: [],
+  });
+
+  assert.doesNotMatch(prompt, /Previous repair attempt\(s\) on this PR did not modify/);
+});
+
 test("fix prompt compacts oversized artifacts before sending them to Codex", () => {
   const hugeBody = "Codex review evidence with repeated context.\n".repeat(4000);
   const prompt = buildFixPrompt({
