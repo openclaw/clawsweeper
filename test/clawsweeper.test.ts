@@ -757,10 +757,7 @@ test("shouldPlanItem skips maintainer-authored items by default but honours per-
 
   // Protected labels still win regardless of the opt-in flag.
   assert.equal(
-    shouldPlanItem(
-      item({ authorAssociation: "OWNER", labels: ["release-blocker"] }),
-      optInProfile,
-    ),
+    shouldPlanItem(item({ authorAssociation: "OWNER", labels: ["release-blocker"] }), optInProfile),
     false,
   );
 });
