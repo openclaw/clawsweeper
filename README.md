@@ -163,7 +163,6 @@ Common commands:
 @clawsweeper approve
 @clawsweeper explain
 @clawsweeper ask is this blocked by flaky CI?
-@clawsweeper visual focus on risky files
 @clawsweeper stop
 @clawsweeper why did automerge stop here?
 ```
@@ -181,13 +180,6 @@ Common commands:
   non-durable answer comment and never edits the durable ClawSweeper review
   comment, closes, merges, labels, pushes, repairs, or emits review/apply
   markers.
-- `visual`, `viz`, and `visualize` dispatch a maintainer-only, PR-only visual
-  assist lane. The trailing text becomes the focus prompt for an LLM-generated
-  self-contained HTML/CSS/inline-JS explainer. ClawSweeper validates the page
-  against a no-network/no-external-assets policy, uploads it as a workflow
-  artifact, and posts a separate link comment. It is explanatory only and does
-  not edit durable review comments or trigger close, merge, repair, label, or
-  branch changes.
 - `fix ci`, `address review`, and `rebase` dispatch the repair worker only for
   ClawSweeper PRs or PRs already opted into `clawsweeper:autofix` or
   `clawsweeper:automerge`.

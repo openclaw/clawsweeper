@@ -5213,197 +5213,6 @@ function runCodexAssist(options: {
   return stripTextFence(readFileSync(outputPath, "utf8"));
 }
 
-function visualExplainerArtifactName(repo: string, number: number, headSha: string): string {
-  const slug = repo.replace(/[^A-Za-z0-9_.-]+/g, "-");
-  const sha = /^[0-9a-f]{7,40}$/i.test(headSha) ? headSha.slice(0, 12) : "unknown";
-  return `${slug}-${number}-${sha}.html`;
-}
-
-function visualExplainerRunUrl(): string {
-  const server = process.env.GITHUB_SERVER_URL || "https://github.com";
-  const repository = process.env.GITHUB_REPOSITORY || "";
-  const runId = process.env.GITHUB_RUN_ID || "";
-  return repository && runId ? `${server}/${repository}/actions/runs/${runId}` : "";
-}
-
-function visualExplainerHeadSha(context: ItemContext): string {
-  const pull = asRecord(context.pullRequest);
-  const head = asRecord(pull.head);
-  const sha = head.sha;
-  return typeof sha === "string" && sha ? sha : "unknown";
-}
-
-function buildVisualExplainerPrompt(options: {
-  item: Item;
-  context: ItemContext;
-  focusPrompt: string;
-  sourceCommentUrl: string;
-  author: string;
-  generatedAt: string;
-}): string {
-  const packet = {
-    metadata: {
-      repository: options.item.repo,
-      itemNumber: options.item.number,
-      itemType: options.item.kind,
-      itemUrl: options.item.url,
-      sourceCommentUrl: options.sourceCommentUrl || null,
-      requestAuthor: options.author || null,
-      generatedAt: options.generatedAt,
-      focusPrompt: options.focusPrompt || "default maintainer overview",
-      artifactKind: "interactive_pr_visual_explainer",
-    },
-    item: options.item,
-    context: options.context,
-  };
-  return [
-    "You are ClawSweeper visual assist, a read-only PR explainer generator for maintainers.",
-    "",
-    "Generate one self-contained HTML document that makes this pull request easier to review visually.",
-    "",
-    "Hard safety contract:",
-    "- This is an explanatory visualization, not a ClawSweeper review verdict.",
-    "- Do not recommend or imply that ClawSweeper has closed, merged, labeled, pushed, rebased, repaired, approved, or rejected the PR.",
-    "- Do not emit hidden ClawSweeper verdict, action, security, or review markers.",
-    "- Use only the supplied PR_CONTEXT JSON. Do not invent files, checks, commits, comments, screenshots, labels, or behavior.",
-    "- Mark uncertainty and truncation explicitly when the context is incomplete.",
-    "",
-    "HTML contract:",
-    "- Return only the complete HTML document, starting with <!doctype html> or <html>.",
-    "- Inline CSS is allowed.",
-    "- Inline JavaScript is allowed only for local interactions such as filters, tabs, collapsible sections, sorting, and toggles.",
-    "- Do not load external scripts, stylesheets, fonts, iframes, images, or other assets.",
-    "- Do not make network requests.",
-    "- Do not use eval, Function, dynamic import, workers, cookies, localStorage, sessionStorage, forms, or navigation-changing JavaScript.",
-    "- Include a clear footer with repository, PR URL, head SHA when present, generated timestamp, and source comment URL when present.",
-    "",
-    "Useful visual structures:",
-    "- maintainer summary",
-    "- file/subsystem map",
-    "- changed-file table with additions/deletions/status",
-    "- risk and proof callouts",
-    "- CI/check summary if available",
-    "- review-comment grouping",
-    "- timeline or commit list",
-    "- filters or toggles that help large PRs become skimmable",
-    "",
-    "Maintainer focus prompt:",
-    options.focusPrompt || "Create a balanced maintainer overview of this PR.",
-    "",
-    "PR_CONTEXT JSON:",
-    "```json",
-    JSON.stringify(packet, null, 2),
-    "```",
-  ].join("\n");
-}
-
-export function validateVisualExplainerHtml(html: string): string[] {
-  const text = String(html ?? "");
-  const violations: string[] = [];
-  const checks: Array<[RegExp, string]> = [
-    [/<script\b[^>]*\bsrc\s*=/i, "external script sources are not allowed"],
-    [/<link\b[^>]*\bhref\s*=/i, "external stylesheets or linked resources are not allowed"],
-    [/<iframe\b/i, "iframes are not allowed"],
-    [/<object\b/i, "objects are not allowed"],
-    [/<embed\b/i, "embeds are not allowed"],
-    [/<form\b/i, "forms are not allowed"],
-    [/\b(?:fetch|XMLHttpRequest|WebSocket|EventSource)\s*\(/i, "network APIs are not allowed"],
-    [/\b(?:eval|Function|importScripts)\s*\(/i, "dynamic code execution is not allowed"],
-    [/\bimport\s*\(/i, "dynamic imports are not allowed"],
-    [/\b(?:Worker|SharedWorker|ServiceWorker)\s*\(/i, "workers are not allowed"],
-    [/\b(?:localStorage|sessionStorage|document\.cookie)\b/i, "browser storage is not allowed"],
-    [/\blocation\.(?:href|assign|replace)\b/i, "navigation-changing JavaScript is not allowed"],
-    [/\bwindow\.open\s*\(/i, "window.open is not allowed"],
-    [/\b(?:src|href)\s*=\s*["'](?:https?:)?\/\//i, "external resources are not allowed"],
-    [/\b(?:src|href)\s*=\s*["']data:(?!image\/)/i, "only data image URLs are allowed"],
-  ];
-  for (const [pattern, message] of checks) {
-    if (pattern.test(text)) violations.push(message);
-  }
-  if (!/<(?:!doctype\s+html|html)\b/i.test(text.slice(0, 200))) {
-    violations.push("HTML document must start with <!doctype html> or <html>");
-  }
-  if (Buffer.byteLength(text, "utf8") > 2_000_000) {
-    violations.push("HTML document exceeds the 2 MB size limit");
-  }
-  return [...new Set(violations)];
-}
-
-export function visualExplainerCspMeta(): string {
-  return `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'; connect-src 'none'; frame-ancestors 'none'">`;
-}
-
-export function applyVisualExplainerCsp(html: string): string {
-  const meta = visualExplainerCspMeta();
-  const withoutGeneratedCsp = html.replace(
-    /<meta\b[^>]*\bhttp-equiv\s*=\s*(?:"Content-Security-Policy"|'Content-Security-Policy'|Content-Security-Policy)[^>]*>\s*/gi,
-    "",
-  );
-  if (/<head\b[^>]*>/i.test(withoutGeneratedCsp))
-    return withoutGeneratedCsp.replace(/<head\b[^>]*>/i, (match) => `${match}\n${meta}`);
-  return withoutGeneratedCsp.replace(
-    /<html\b[^>]*>/i,
-    (match) => `${match}\n<head>\n${meta}\n</head>`,
-  );
-}
-
-function runCodexVisualExplainer(options: {
-  item: Item;
-  context: ItemContext;
-  focusPrompt: string;
-  sourceCommentUrl: string;
-  author: string;
-  model: string;
-  reasoningEffort: string;
-  sandboxMode: string;
-  timeoutMs: number;
-  workDir: string;
-  generatedAt: string;
-}): string {
-  ensureDir(options.workDir);
-  const promptPath = join(options.workDir, `${options.item.number}.visual.prompt.md`);
-  const outputPath = join(options.workDir, `${options.item.number}.visual.html`);
-  const prompt = buildVisualExplainerPrompt(options);
-  writeFileSync(promptPath, prompt, "utf8");
-  const codexConfig = [
-    `model_reasoning_effort="${options.reasoningEffort}"`,
-    'forced_login_method="api"',
-    'approval_policy="never"',
-  ];
-  const result = spawnSync(
-    "codex",
-    [
-      "exec",
-      "-m",
-      options.model,
-      ...codexConfig.flatMap((config) => ["-c", config]),
-      "--output-last-message",
-      outputPath,
-      "--sandbox",
-      options.sandboxMode,
-      "-",
-    ],
-    {
-      cwd: ROOT,
-      encoding: "utf8",
-      env: codexEnv({ ghToken: process.env.GH_TOKEN }),
-      input: prompt,
-      maxBuffer: 64 * 1024 * 1024,
-      timeout: options.timeoutMs,
-    },
-  );
-  if (result.error || result.status !== 0 || !existsSync(outputPath)) {
-    const detail =
-      result.error instanceof Error
-        ? result.error.message
-        : `exit ${result.status ?? "unknown"}: ${
-            safeOutputTail(result.stderr) || safeOutputTail(result.stdout) || "No output."
-          }`;
-    throw new Error(`Codex visual explainer failed for #${options.item.number}: ${detail}`);
-  }
-  return stripTextFence(readFileSync(outputPath, "utf8"));
-}
-
 function assistCommentMarker(commentId: string): string {
   return `<!-- clawsweeper-assist:${commentId || "unknown"} -->`;
 }
@@ -5425,63 +5234,6 @@ function renderAssistComment(options: {
     "---",
     `${sourceLine}`,
     `Assist model: ${options.model}, reasoning ${options.reasoningEffort}.`,
-    assistCommentMarker(options.sourceCommentId),
-  ].join("\n");
-}
-
-function renderVisualExplainerComment(options: {
-  artifactName: string;
-  runUrl: string;
-  model: string;
-  reasoningEffort: string;
-  sourceCommentUrl: string;
-  sourceCommentId: string;
-  focusPrompt: string;
-}): string {
-  const sourceLine = options.sourceCommentUrl
-    ? `Source: ${options.sourceCommentUrl}`
-    : `Source comment: ${options.sourceCommentId || "unknown"}`;
-  const artifactLine = options.runUrl
-    ? `Artifact: [${options.artifactName}](${options.runUrl})`
-    : `Artifact: ${options.artifactName}`;
-  return [
-    "ClawSweeper visual assist: I generated a read-only interactive HTML explainer for this PR.",
-    "",
-    artifactLine,
-    `Focus: ${options.focusPrompt || "default maintainer overview"}`,
-    "",
-    "This artifact is explanatory only. It is not a ClawSweeper review verdict and it does not close, merge, label, push, repair, or approve this PR.",
-    "",
-    "---",
-    `${sourceLine}`,
-    `Visual assist model: ${options.model}, reasoning ${options.reasoningEffort}.`,
-    assistCommentMarker(options.sourceCommentId),
-  ].join("\n");
-}
-
-function renderVisualExplainerFallbackComment(options: {
-  error: unknown;
-  model: string;
-  reasoningEffort: string;
-  sourceCommentUrl: string;
-  sourceCommentId: string;
-  focusPrompt: string;
-}): string {
-  const detail = options.error instanceof Error ? options.error.message : String(options.error);
-  const sourceLine = options.sourceCommentUrl
-    ? `Source: ${options.sourceCommentUrl}`
-    : `Source comment: ${options.sourceCommentId || "unknown"}`;
-  return [
-    "ClawSweeper visual assist: I could not safely generate the interactive HTML explainer this time.",
-    "",
-    `Reason: ${truncateText(detail, 700)}`,
-    `Focus: ${options.focusPrompt || "default maintainer overview"}`,
-    "",
-    "No review, repair, close, merge, label, or branch action was taken.",
-    "",
-    "---",
-    `${sourceLine}`,
-    `Visual assist model: ${options.model}, reasoning ${options.reasoningEffort}.`,
     assistCommentMarker(options.sourceCommentId),
   ].join("\n");
 }
@@ -13556,18 +13308,13 @@ function assistCommand(args: Args): void {
   repoFromArgs(args);
   const itemNumber = numberArg(args.item_number, 0);
   if (!itemNumber) throw new Error("--item-number is required for assist");
-  const mode = stringArg(args.mode, "text").trim().toLowerCase();
   const question = stringArg(args.question, "").trim();
-  if (!question && mode !== "visual") throw new Error("--question is required for assist");
+  if (!question) throw new Error("--question is required for assist");
   const model = stringArg(args.codex_model, "gpt-5.5");
-  const reasoningEffort = stringArg(
-    args.codex_reasoning_effort,
-    mode === "visual" ? "medium" : "low",
-  );
+  const reasoningEffort = stringArg(args.codex_reasoning_effort, "low");
   const sandboxMode = stringArg(args.codex_sandbox, "read-only");
-  const timeoutMs = numberArg(args.codex_timeout_ms, mode === "visual" ? 480_000 : 120_000);
+  const timeoutMs = numberArg(args.codex_timeout_ms, 120_000);
   const workDir = resolve(stringArg(args.work_dir, join(ROOT, ".artifacts", "assist-codex")));
-  const outputDir = resolve(stringArg(args.output_dir, join(ROOT, "artifacts", "assist")));
   const sourceCommentId = stringArg(args.comment_id, "");
   const sourceCommentUrl = stringArg(args.comment_url, "");
   const author = stringArg(args.author, "");
@@ -13576,92 +13323,6 @@ function assistCommand(args: Args): void {
     throw new Error(`assist requires an open issue or PR; #${itemNumber} is ${state}`);
   }
   const context = collectItemContext(item);
-  if (mode === "visual") {
-    if (item.kind !== "pull_request") {
-      const comment = renderVisualExplainerFallbackComment({
-        error: new Error("visual explainers are currently PR-only"),
-        model,
-        reasoningEffort,
-        sourceCommentUrl,
-        sourceCommentId,
-        focusPrompt: question,
-      });
-      postAssistComment(item.number, comment);
-      console.log(
-        JSON.stringify({ posted: true, item: item.number, mode, fallback: "not_pull_request" }),
-      );
-      return;
-    }
-    try {
-      ensureDir(outputDir);
-      const generatedAt = new Date().toISOString();
-      const rawHtml = runCodexVisualExplainer({
-        item,
-        context,
-        focusPrompt: question,
-        sourceCommentUrl,
-        author,
-        model,
-        reasoningEffort,
-        sandboxMode,
-        timeoutMs,
-        workDir,
-        generatedAt,
-      });
-      const html = applyVisualExplainerCsp(rawHtml);
-      const violations = validateVisualExplainerHtml(html);
-      if (violations.length > 0) {
-        throw new Error(`generated HTML did not pass safety checks: ${violations.join("; ")}`);
-      }
-      const artifactName = visualExplainerArtifactName(
-        item.repo,
-        item.number,
-        visualExplainerHeadSha(context),
-      );
-      const artifactPath = join(outputDir, artifactName);
-      writeFileSync(artifactPath, html, "utf8");
-      const comment = renderVisualExplainerComment({
-        artifactName,
-        runUrl: visualExplainerRunUrl(),
-        model,
-        reasoningEffort,
-        sourceCommentUrl,
-        sourceCommentId,
-        focusPrompt: question,
-      });
-      postAssistComment(item.number, comment);
-      console.log(
-        JSON.stringify({
-          posted: true,
-          item: item.number,
-          mode,
-          model,
-          reasoningEffort,
-          artifact: artifactPath,
-        }),
-      );
-      return;
-    } catch (error) {
-      const comment = renderVisualExplainerFallbackComment({
-        error,
-        model,
-        reasoningEffort,
-        sourceCommentUrl,
-        sourceCommentId,
-        focusPrompt: question,
-      });
-      postAssistComment(item.number, comment);
-      console.log(
-        JSON.stringify({
-          posted: true,
-          item: item.number,
-          mode,
-          fallback: "generation_failed",
-        }),
-      );
-      return;
-    }
-  }
   const answer = runCodexAssist({
     item,
     context,
@@ -13682,7 +13343,7 @@ function assistCommand(args: Args): void {
     sourceCommentId,
   });
   postAssistComment(item.number, comment);
-  console.log(JSON.stringify({ posted: true, item: item.number, mode, model, reasoningEffort }));
+  console.log(JSON.stringify({ posted: true, item: item.number, model, reasoningEffort }));
 }
 
 function checkCommand(): void {

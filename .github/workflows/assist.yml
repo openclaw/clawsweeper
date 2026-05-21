@@ -35,14 +35,6 @@ on:
         required: false
         default: ""
         type: string
-      mode:
-        description: "Assist mode: text or visual"
-        required: false
-        default: "text"
-        type: choice
-        options:
-          - text
-          - visual
 
 permissions:
   contents: read
@@ -85,14 +77,9 @@ jobs:
       - id: limit
         env:
           GH_TOKEN: ${{ github.token }}
-          MODE: ${{ github.event.client_payload.mode || inputs.mode || 'text' }}
         run: |
           set -euo pipefail
-          lane="assist"
-          if [ "$MODE" = "visual" ]; then
-            lane="assist_visual"
-          fi
-          cap="$(pnpm run --silent workflow -- worker-limit "$lane")"
+          cap="$(pnpm run --silent workflow -- worker-limit assist)"
           active_assist_jobs() {
             local runs total id jobs
             total=0
@@ -129,7 +116,7 @@ jobs:
     needs: capacity
     if: ${{ needs.capacity.outputs.proceed == 'true' }}
     runs-on: ${{ vars.CLAWSWEEPER_WORKER_RUNNER || 'blacksmith-4vcpu-ubuntu-2404' }}
-    timeout-minutes: 12
+    timeout-minutes: 8
     env:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
     steps:
@@ -161,7 +148,6 @@ jobs:
           TARGET_REPO: ${{ github.event.client_payload.target_repo || inputs.target_repo }}
           ITEM_NUMBER: ${{ github.event.client_payload.item_number || inputs.item_number }}
           QUESTION: ${{ github.event.client_payload.question || inputs.question }}
-          MODE: ${{ github.event.client_payload.mode || inputs.mode || 'text' }}
           COMMENT_ID: ${{ github.event.client_payload.comment_id || inputs.comment_id || '' }}
           COMMENT_URL: ${{ github.event.client_payload.comment_url || inputs.comment_url || '' }}
           AUTHOR: ${{ github.event.client_payload.author || inputs.author || '' }}
@@ -173,7 +159,6 @@ jobs:
           node dist/clawsweeper.js assist \
             --target-repo "$TARGET_REPO" \
             --item-number "$ITEM_NUMBER" \
-            --mode "$MODE" \
             --question "$QUESTION" \
             --comment-id "$COMMENT_ID" \
             --comment-url "$COMMENT_URL" \
@@ -181,13 +166,4 @@ jobs:
             --codex-model "$MODEL" \
             --codex-reasoning-effort "$REASONING_EFFORT" \
             --codex-sandbox read-only \
-            --codex-timeout-ms "$TIMEOUT_MS" \
-            --output-dir artifacts/assist
-
-      - name: Upload visual explainer artifact
-        if: ${{ always() && (github.event.client_payload.mode || inputs.mode || 'text') == 'visual' }}
-        uses: actions/upload-artifact@v7
-        with:
-          name: clawsweeper-visual-${{ github.event.client_payload.item_number || inputs.item_number }}
-          path: artifacts/assist
-          if-no-files-found: ignore
+            --codex-timeout-ms "$TIMEOUT_MS"
