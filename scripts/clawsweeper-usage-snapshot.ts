@@ -200,9 +200,14 @@ export function buildUsageSnapshotFromJsonl(
       bucketAdd(byModel, parsed.model ?? "unknown", parsed.tokens);
       bucketAdd(bySession, parsed.session_id ?? parsed.github_run_id ?? "unknown", parsed.tokens);
       if (
-        ["failed", "timeout", "buffer_exceeded", "missing_result", "schema_invalid"].includes(
-          parsed.status,
-        )
+        [
+          "failed",
+          "timeout",
+          "buffer_exceeded",
+          "missing_result",
+          "output_truncated",
+          "schema_invalid",
+        ].includes(parsed.status)
       ) {
         bucketAdd(
           failedOrTimeout,

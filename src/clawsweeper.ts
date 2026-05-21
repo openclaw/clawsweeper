@@ -4358,6 +4358,17 @@ export function buildClaudeReviewPromptForTest(
 function codexFailureReason(provider: ReviewProvider, detail: string): string {
   if (detail.includes("Codex dirtied the OpenClaw checkout")) return "dirty checkout";
   if (detail.includes("did not produce output")) return "missing structured output";
+  // Tightened predicate: classify as truncation only on explicit truncation
+  // markers. A bare `max_tokens` substring matches provider/bridge config
+  // errors like `Invalid max_tokens: 16384`, which are distinct failure modes
+  // and must not be silently retried as truncation. Accept both KV-form
+  // (`stop_reason=max_tokens`) and JSON-form (`"stop_reason": "max_tokens"`).
+  if (
+    /\boutput truncated\b/i.test(detail) ||
+    /\bstop_reason\s*[:=]\s*["']?max_tokens\b/i.test(detail)
+  ) {
+    return "output truncation";
+  }
   if (detail.includes("invalid JSON") || detail.includes("invalid structured output")) {
     return "invalid structured output";
   }
@@ -4662,6 +4673,10 @@ const DEFAULT_CLAUDE_BRIDGE_URL = "http://127.0.0.1:9100";
 // below. Older sonnet 4.5 model ids still work — adaptive thinking just
 // degrades to a no-op for non-supporting models (see `supportsAdaptiveThinking`).
 const DEFAULT_CLAUDE_MODEL = "claude-sonnet-4-6";
+const DEFAULT_CLAUDE_REVIEW_MAX_TOKENS = 16_384;
+const DEFAULT_CLAUDE_REVIEW_RETRY_MAX_TOKENS = 32_768;
+const CLAUDE_REVIEW_MAX_TOKENS_ENV = "CLAWSWEEPER_CLAUDE_REVIEW_MAX_TOKENS";
+const CLAUDE_REVIEW_RETRY_MAX_TOKENS_ENV = "CLAWSWEEPER_CLAUDE_REVIEW_RETRY_MAX_TOKENS";
 
 // Mirrors pi-mono-fork/packages/ai/src/providers/anthropic.ts:supportsAdaptiveThinking.
 // Adaptive thinking lets the model self-regulate its thinking budget per turn;
@@ -4676,6 +4691,24 @@ function supportsAdaptiveThinking(modelId: string): boolean {
 function looksLikeClaudeModel(modelId: string): boolean {
   return modelId.startsWith("claude-");
 }
+
+function positiveIntegerEnv(name: string, fallback: number): number {
+  const raw = process.env[name]?.trim();
+  if (!raw) return fallback;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function claudeReviewMaxTokenAttempts(): [number, number] {
+  const first = positiveIntegerEnv(CLAUDE_REVIEW_MAX_TOKENS_ENV, DEFAULT_CLAUDE_REVIEW_MAX_TOKENS);
+  const configuredRetry = positiveIntegerEnv(
+    CLAUDE_REVIEW_RETRY_MAX_TOKENS_ENV,
+    DEFAULT_CLAUDE_REVIEW_RETRY_MAX_TOKENS,
+  );
+  const retry = configuredRetry > first ? configuredRetry : first * 2;
+  return [first, retry];
+}
+
 const CLAUDE_REVIEW_BRIDGE_SOURCE = "clawsweeper-review";
 const CLAUDE_DECISION_TOOL_NAME = "submit_decision";
 const CLAUDE_DECISION_TOOL_DESCRIPTION =
@@ -4847,9 +4880,8 @@ export function runClaude(options: RunClaudeOptions): Decision {
   const thinkingBlock: Record<string, unknown> | undefined = supportsAdaptiveThinking(model)
     ? { type: "adaptive", display: "summarized" }
     : undefined;
-  const body: Record<string, unknown> = {
+  const baseBody: Record<string, unknown> = {
     model,
-    max_tokens: 8192,
     system: CLAUDE_SYSTEM_PROMPT,
     messages: [{ role: "user", content: prompt }],
     tools: [
@@ -4870,80 +4902,114 @@ export function runClaude(options: RunClaudeOptions): Decision {
     tool_choice: { type: "auto" },
     metadata: { user_id: `clawsweeper-#${item.number}` },
   };
-  if (thinkingBlock) body.thinking = thinkingBlock;
+  if (thinkingBlock) baseBody.thinking = thinkingBlock;
 
   const url = `${bridgeUrl.replace(/\/+$/, "")}/source/${CLAUDE_REVIEW_BRIDGE_SOURCE}/v1/messages`;
 
-  let response: ClaudeBridgePostResult;
+  const maxTokenAttempts = claudeReviewMaxTokenAttempts();
   const startedAt = Date.now();
-  try {
-    response = postFn({ url, body, timeoutMs: options.timeoutMs });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    // Stable timeout marker across providers so isCodexTimeoutError fires
-    // and codexFailureReason classifies as "timeout" — keeps slice B's
-    // escalator working whichever provider produced the failure.
-    if (isCodexTimeoutError(message)) {
+  let retriedAfterMaxTokens = false;
+  for (let attemptIndex = 0; attemptIndex < maxTokenAttempts.length; attemptIndex += 1) {
+    const maxTokens = maxTokenAttempts[attemptIndex] ?? DEFAULT_CLAUDE_REVIEW_MAX_TOKENS;
+    const body: Record<string, unknown> = { ...baseBody, max_tokens: maxTokens };
+
+    let response: ClaudeBridgePostResult;
+    try {
+      response = postFn({ url, body, timeoutMs: options.timeoutMs });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      // Stable timeout marker across providers so isCodexTimeoutError fires
+      // and codexFailureReason classifies as "timeout" — keeps slice B's
+      // escalator working whichever provider produced the failure.
+      if (isCodexTimeoutError(message)) {
+        throw new Error(
+          `Claude review failed for #${item.number}: timed out after ${options.timeoutMs}ms`,
+        );
+      }
+      throw new Error(`Claude review failed for #${item.number}: ${message}`);
+    }
+
+    // Persist response for debug ergonomics (same shape as runCodex's outputPath).
+    try {
+      writeFileSync(responsePath, response.body, "utf8");
+    } catch {
+      // Swallow — the persisted artifact is best-effort.
+    }
+
+    if (response.status < 200 || response.status >= 300) {
       throw new Error(
-        `Claude review failed for #${item.number}: timed out after ${options.timeoutMs}ms`,
+        `Claude review failed for #${item.number}: bridge HTTP ${response.status} ${
+          safeOutputTail(response.body) || "(no body)"
+        }`,
       );
     }
-    throw new Error(`Claude review failed for #${item.number}: ${message}`);
-  }
 
-  // Persist response for debug ergonomics (same shape as runCodex's outputPath).
-  try {
-    writeFileSync(responsePath, response.body, "utf8");
-  } catch {
-    // Swallow — the persisted artifact is best-effort.
-  }
+    let payload: unknown;
+    try {
+      payload = JSON.parse(response.body);
+    } catch (error) {
+      throw new Error(
+        `Claude review failed for #${item.number}: invalid JSON body (${
+          error instanceof Error ? error.message : String(error)
+        })`,
+      );
+    }
 
-  if (response.status < 200 || response.status >= 300) {
-    throw new Error(
-      `Claude review failed for #${item.number}: bridge HTTP ${response.status} ${
-        safeOutputTail(response.body) || "(no body)"
-      }`,
-    );
-  }
-
-  let payload: unknown;
-  try {
-    payload = JSON.parse(response.body);
-  } catch (error) {
-    throw new Error(
-      `Claude review failed for #${item.number}: invalid JSON body (${
-        error instanceof Error ? error.message : String(error)
-      })`,
-    );
-  }
-
-  const content = (payload as { content?: unknown })?.content;
-  const toolUse = Array.isArray(content)
-    ? (content as Array<{ type?: string; name?: string; input?: unknown }>).find(
-        (block) => block?.type === "tool_use" && block.name === CLAUDE_DECISION_TOOL_NAME,
-      )
-    : undefined;
-  const elapsedMs = Date.now() - startedAt;
-  if (!toolUse) {
-    emitUsage("failed", payload, elapsedMs);
     const stopReason = (payload as { stop_reason?: string })?.stop_reason ?? "unknown";
-    throw new Error(
-      `Claude review failed for #${item.number}: no submit_decision tool_use in response (stop_reason=${stopReason})`,
-    );
+    const elapsedMs = Date.now() - startedAt;
+    if (stopReason === "max_tokens") {
+      if (attemptIndex < maxTokenAttempts.length - 1) {
+        retriedAfterMaxTokens = true;
+        continue;
+      }
+      emitUsage("output_truncated", payload, elapsedMs);
+      throw new Error(
+        `Claude review failed for #${item.number}: output truncated after max_tokens=${maxTokens} (stop_reason=max_tokens)`,
+      );
+    }
+
+    const content = (payload as { content?: unknown })?.content;
+    const toolUse = Array.isArray(content)
+      ? (content as Array<{ type?: string; name?: string; input?: unknown }>).find(
+          (block) => block?.type === "tool_use" && block.name === CLAUDE_DECISION_TOOL_NAME,
+        )
+      : undefined;
+    if (!toolUse) {
+      if (retriedAfterMaxTokens) {
+        emitUsage("output_truncated", payload, elapsedMs);
+        throw new Error(
+          `Claude review failed for #${item.number}: output truncated after retry max_tokens=${maxTokens} (previous stop_reason=max_tokens; retry stop_reason=${stopReason}; no submit_decision tool_use)`,
+        );
+      }
+      emitUsage("failed", payload, elapsedMs);
+      throw new Error(
+        `Claude review failed for #${item.number}: no submit_decision tool_use in response (stop_reason=${stopReason})`,
+      );
+    }
+
+    try {
+      const decision = parseDecision(toolUse.input, item);
+      emitUsage("success", payload, elapsedMs);
+      return decision;
+    } catch (error) {
+      if (retriedAfterMaxTokens) {
+        emitUsage("output_truncated", payload, elapsedMs);
+        throw new Error(
+          `Claude review failed for #${item.number}: output truncated after retry max_tokens=${maxTokens} (previous stop_reason=max_tokens; invalid submit_decision payload: ${
+            error instanceof Error ? error.message : String(error)
+          })`,
+        );
+      }
+      emitUsage("schema_invalid", payload, elapsedMs);
+      throw new Error(
+        `Claude review failed for #${item.number}: invalid structured output (${
+          error instanceof Error ? error.message : String(error)
+        })`,
+      );
+    }
   }
 
-  try {
-    const decision = parseDecision(toolUse.input, item);
-    emitUsage("success", payload, elapsedMs);
-    return decision;
-  } catch (error) {
-    emitUsage("schema_invalid", payload, elapsedMs);
-    throw new Error(
-      `Claude review failed for #${item.number}: invalid structured output (${
-        error instanceof Error ? error.message : String(error)
-      })`,
-    );
-  }
+  throw new Error(`Claude review failed for #${item.number}: exhausted Claude retry attempts`);
 }
 
 function runCodex(options: {

@@ -37,6 +37,7 @@ export type UsageStatus =
   | "timeout"
   | "buffer_exceeded"
   | "missing_result"
+  | "output_truncated"
   | "result_repair"
   | "schema_invalid";
 
