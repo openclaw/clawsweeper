@@ -97,6 +97,7 @@ function requiredWorkerLane(value: string): WorkerLane {
     "issue_implementation",
     "exact_item",
     "assist",
+    "assist_visual",
   ]);
   if (allowed.has(value as WorkerLane)) return value as WorkerLane;
   throw new Error(`unknown worker lane: ${value}`);

@@ -13,11 +13,17 @@ export type WorkerConfig = {
     assist: {
       max: number;
     };
+    assist_visual: {
+      max: number;
+    };
   };
 };
 
 export type AutomationLimits = {
   assist: {
+    default: number;
+  };
+  assist_visual: {
     default: number;
   };
   review_shards: {
@@ -50,7 +56,8 @@ export type WorkerLane =
   | "automerge_repair"
   | "issue_implementation"
   | "exact_item"
-  | "assist";
+  | "assist"
+  | "assist_visual";
 
 export const WORKER_CONFIG = readWorkerConfig();
 export const AUTOMATION_LIMITS = deriveAutomationLimits(WORKER_CONFIG);
@@ -67,6 +74,9 @@ export function deriveAutomationLimits(config: WorkerConfig): AutomationLimits {
   return {
     assist: {
       default: Math.min(config.lanes.assist.max, max),
+    },
+    assist_visual: {
+      default: Math.min(config.lanes.assist_visual.max, max),
     },
     review_shards: {
       normal_default: percent(max, 70),
@@ -107,6 +117,7 @@ export function workerLimit(
 ): number {
   if (lane === "exact_item") return limits.review_shards.exact_item_default;
   if (lane === "assist") return priorityLimit(limits.assist.default, activeCritical);
+  if (lane === "assist_visual") return priorityLimit(limits.assist_visual.default, activeCritical);
   if (lane === "repair") return priorityLimit(limits.repair_live_runs.default, activeCritical);
   if (lane === "automerge_repair")
     return priorityLimit(limits.repair_live_runs.automerge_default, activeCritical);
@@ -157,6 +168,9 @@ function validateWorkerConfig(value: unknown): WorkerConfig {
     lanes: {
       assist: {
         max: positiveInteger(value, "lanes.assist.max"),
+      },
+      assist_visual: {
+        max: positiveInteger(value, "lanes.assist_visual.max"),
       },
     },
   };

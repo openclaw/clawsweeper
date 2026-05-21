@@ -1181,7 +1181,7 @@ export function renderResponse(command: LooseRecord, dispatched: LooseRecord) {
       marker,
       "ClawSweeper is here and listening for maintainer commands.",
       "",
-      "Supported commands: `/review`, `/clawsweeper status`, `/clawsweeper re-review`, `@clawsweeper hatch`, `/clawsweeper implement`, `@clawsweeper fix`, `/clawsweeper build`, `/clawsweeper ask <question>`, `/clawsweeper fix ci`, `/clawsweeper address review`, `/clawsweeper rebase`, `/clawsweeper autofix`, `/clawsweeper automerge`, `/clawsweeper approve`, `/autoclose <reason>`, `/clawsweeper explain`, `/clawsweeper stop`.",
+      "Supported commands: `/review`, `/clawsweeper status`, `/clawsweeper re-review`, `@clawsweeper hatch`, `/clawsweeper implement`, `@clawsweeper fix`, `/clawsweeper build`, `/clawsweeper ask <question>`, `@clawsweeper visual <prompt>`, `/clawsweeper fix ci`, `/clawsweeper address review`, `/clawsweeper rebase`, `/clawsweeper autofix`, `/clawsweeper automerge`, `/clawsweeper approve`, `/autoclose <reason>`, `/clawsweeper explain`, `/clawsweeper stop`.",
       "",
       "I only act for maintainers, or for trusted ClawSweeper feedback on a ClawSweeper PR or PR opted into `clawsweeper:autofix` or `clawsweeper:automerge`.",
     ].join("\n");
@@ -1201,6 +1201,20 @@ export function renderResponse(command: LooseRecord, dispatched: LooseRecord) {
         : `Reason: ${command.reason ?? "freeform assist requires an open issue or PR"}.`,
       "",
       `Request: ${inlineQuote(command.freeform_prompt ?? command.command ?? "No request text provided.")}`,
+    ].join("\n");
+  }
+  if (command.intent === "visual_assist") {
+    return [
+      marker,
+      dispatched?.clawsweeper
+        ? "ClawSweeper visual explainer is being generated."
+        : "ClawSweeper could not start a visual explainer for this PR.",
+      "",
+      dispatched?.clawsweeper
+        ? "I queued a read-only visual pass. It will post a separate artifact link comment and will not edit the durable ClawSweeper review comment or trigger close, merge, repair, label, or branch changes."
+        : `Reason: ${command.reason ?? "visual explainers require an open pull request and maintainer permission"}.`,
+      "",
+      `Focus: ${inlineQuote(command.visual_prompt ?? "default maintainer overview")}`,
     ].join("\n");
   }
   if (command.intent === "stop") {
@@ -1517,6 +1531,7 @@ function commandFromText(trigger: JsonValue, value: JsonValue) {
   const parsed: LooseRecord = { trigger, command: parsedCommand, intent };
   if (intent === "autoclose") parsed.autoclose_message = autocloseReasonFromCommand(rawCommand);
   if (intent === "freeform_assist") parsed.freeform_prompt = assistPromptFromCommand(rawCommand);
+  if (intent === "visual_assist") parsed.visual_prompt = visualPromptFromCommand(rawCommand);
   if (intent === "implement_issue")
     parsed.implementation_prompt = implementationPromptFromCommand(rawText);
   return parsed;
@@ -1546,6 +1561,13 @@ function assistPromptFromCommand(command: LooseRecord) {
   return prompt.replace(/^(?:ask|explain)\b[:\s-]*/i, "").trim() || prompt;
 }
 
+function visualPromptFromCommand(command: LooseRecord) {
+  return String(command ?? "")
+    .trim()
+    .replace(/^(?:visual|viz|visualize)\b[:\s-]*/i, "")
+    .trim();
+}
+
 function issueImplementationRestPrefix(command: LooseRecord) {
   return command.command === "fix" ? "fix issue" : command.command;
 }
@@ -1561,6 +1583,16 @@ function normalizeIntent(command: LooseRecord) {
     command.startsWith("why ")
   ) {
     return "freeform_assist";
+  }
+  if (
+    command === "visual" ||
+    command.startsWith("visual ") ||
+    command === "viz" ||
+    command.startsWith("viz ") ||
+    command === "visualize" ||
+    command.startsWith("visualize ")
+  ) {
+    return "visual_assist";
   }
   if (["hatch", "hatch egg", "pr egg hatch", "hatch pr egg"].includes(command)) return "hatch";
   if (["fix ci", "fix-ci", "ci", "repair ci", "repair checks", "fix checks"].includes(command))

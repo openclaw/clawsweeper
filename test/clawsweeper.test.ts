@@ -104,6 +104,8 @@ import {
   shouldRetryGh,
   shouldPlanItem,
   telegramVisibleProofLabelsForTest,
+  validateVisualExplainerHtml,
+  visualExplainerCspMeta,
   validateCloseDecision,
 } from "../dist/clawsweeper.js";
 import { checkConclusionForFrontMatter } from "../dist/commit-checks.js";
@@ -9475,4 +9477,19 @@ test("safeOutputTail tolerates missing process output", () => {
   assert.equal(safeOutputTail(undefined), "");
   assert.equal(safeOutputTail(null), "");
   assert.equal(safeOutputTail("abcdef", 3), "def");
+});
+
+test("visual explainer sanitizer allows self-contained inline interactions", () => {
+  const html = `<!doctype html><html><head>${visualExplainerCspMeta()}<style>button{color:blue}</style></head><body><button id="toggle">Toggle</button><section hidden>Risk map</section><script>document.getElementById("toggle").addEventListener("click",()=>{document.querySelector("section").hidden=false;});</script></body></html>`;
+  assert.deepEqual(validateVisualExplainerHtml(html), []);
+});
+
+test("visual explainer sanitizer rejects network and external resources", () => {
+  const html =
+    '<!doctype html><html><head><script src="https://example.com/app.js"></script></head><body><img src="https://example.com/a.png"><script>fetch("https://example.com"); localStorage.setItem("x","y");</script></body></html>';
+  const violations = validateVisualExplainerHtml(html);
+  assert.match(violations.join("\n"), /external script sources/);
+  assert.match(violations.join("\n"), /network APIs/);
+  assert.match(violations.join("\n"), /browser storage/);
+  assert.match(violations.join("\n"), /external resources/);
 });

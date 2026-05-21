@@ -8,6 +8,9 @@
   "lanes": {
     "assist": {
       "max": 5
+    },
+    "assist_visual": {
+      "max": 2
     }
   }
 }

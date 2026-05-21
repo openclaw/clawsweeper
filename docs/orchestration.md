@@ -14,6 +14,11 @@ ClawSweeper should stay simple at the orchestration boundary:
 5. Comments, records, ledgers, and dashboards are generated status surfaces,
    not independent sources of truth.
 
+Visual assist explainers are read-only generated artifacts. They may use an LLM
+to render self-contained HTML/CSS/inline-JS from deterministic PR context, but
+the sanitizer, artifact publication, permissions, and GitHub comments remain
+deterministic ClawSweeper responsibilities.
+
 ## Canonical Job Intent
 
 Repair jobs carry `job_intent` in frontmatter. This is the durable routing

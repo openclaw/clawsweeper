@@ -449,6 +449,7 @@ Supported commands:
 /clawsweeper automerge
 /clawsweeper approve
 /clawsweeper explain
+@clawsweeper visual focus on risky files
 /clawsweeper stop
 @clawsweeper re-review
 @clawsweeper re-run
@@ -467,6 +468,13 @@ Behavior:
   review with the mention text as one-off instructions. The model can answer or
   recommend existing structured safe actions, but cannot directly merge, close,
   label, or push code.
+- `visual`, `viz`, and `visualize`: dispatch a maintainer-only, PR-only visual
+  assist lane. The trailing command text becomes the LLM focus prompt. The lane
+  generates one self-contained HTML/CSS/inline-JS explainer from deterministic PR
+  context, validates it with a no-network/no-external-assets sanitizer, uploads
+  it as a workflow artifact, and posts a separate link comment. It is
+  explanatory only and never edits durable review comments, emits review/apply
+  markers, closes, merges, labels, pushes, or repairs.
 - `fix ci`: dispatch the existing ClawSweeper PR's job for repair.
 - `address review`: dispatch the existing ClawSweeper PR's job for repair.
 - `rebase`: dispatch the existing ClawSweeper PR's job for repair.
