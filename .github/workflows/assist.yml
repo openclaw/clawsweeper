@@ -132,7 +132,7 @@ jobs:
           private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
           owner: ${{ vars.CLAWSWEEPER_ALLOWED_OWNER || github.repository_owner }}
           permission-issues: write
-          permission-pull-requests: read
+          permission-pull-requests: write
 
       - uses: ./.github/actions/setup-pnpm
         with:
