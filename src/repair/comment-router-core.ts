@@ -1433,7 +1433,7 @@ export function renderResponse(command: LooseRecord, dispatched: LooseRecord) {
       "",
       "Why human review is needed:",
       humanReviewJustification(reason),
-      ...(nextAction ? ["", "Recommended next action:", nextAction] : []),
+      ...(nextAction ? ["", "What the maintainer can do as a next step:", nextAction] : []),
       "",
       `I added \`${HUMAN_REVIEW_LABEL}\` and left the final call with a maintainer.`,
     ].join("\n");
@@ -1832,27 +1832,33 @@ function humanReviewJustification(reason: JsonValue) {
 
 function humanReviewNextAction(reason: JsonValue) {
   const text = String(reason ?? "");
+  const approveInstruction =
+    "If the maintainer accepts the current risk and wants ClawSweeper to continue merge gates, comment `@clawsweeper approve`.";
   if (/proof-label automation|proof[- ]label|proof gate|proof sufficien/i.test(text)) {
     return [
-      "Add redacted real behavior proof for the affected proof-label workflow, then comment",
-      "`@clawsweeper automerge` to ask ClawSweeper to re-review and continue.",
+      approveInstruction,
+      "If proof is still missing, add redacted real behavior proof for the affected proof-label workflow, then comment `@clawsweeper automerge` to re-review and continue.",
+      "If automation should not continue, leave `clawsweeper:human-review` in place or comment `@clawsweeper stop`.",
     ].join(" ");
   }
   if (/protected maintainer|maintainer validation|maintainer label/i.test(text)) {
     return [
-      "Have a maintainer review the flagged decision, then either add the missing proof and re-run",
-      "ClawSweeper or merge manually if the maintainer accepts the remaining risk.",
+      approveInstruction,
+      "If the flagged decision needs more evidence first, add the missing proof or resolve the maintainer-owned blocker, then comment `@clawsweeper automerge`.",
+      "If the maintainer wants to own landing outside automation, merge manually after repository gates pass.",
     ].join(" ");
   }
   if (/security|secret|credential|permission/i.test(text)) {
     return [
-      "Have a maintainer review the security-sensitive detail and provide an explicit safe path",
-      "before asking ClawSweeper to continue.",
+      approveInstruction,
+      "If the security-sensitive detail still needs changes, describe the safe path or push the fix, then comment `@clawsweeper automerge`.",
+      "If the risk should not be automated, keep the PR paused for manual review or comment `@clawsweeper stop`.",
     ].join(" ");
   }
   return [
-    "Review the reason above, resolve the blocker or explicitly accept the risk, then ask",
-    "ClawSweeper to continue if automation is still appropriate.",
+    approveInstruction,
+    "If more work is needed, resolve the blocker first, then comment `@clawsweeper automerge` to re-review and continue.",
+    "If automation should stay paused, leave `clawsweeper:human-review` in place or comment `@clawsweeper stop`.",
   ].join(" ");
 }
 

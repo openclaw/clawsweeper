@@ -1773,9 +1773,11 @@ test("renderResponse reports explicit human-review pause actions", () => {
   assert.match(body, /pausing this repair loop/);
   assert.match(body, /Why human review is needed:/);
   assert.match(body, /proof-label or proof-gate automation/);
-  assert.match(body, /Recommended next action:/);
-  assert.match(body, /Add redacted real behavior proof/);
+  assert.match(body, /What the maintainer can do as a next step:/);
+  assert.match(body, /@clawsweeper approve/);
+  assert.match(body, /add redacted real behavior proof/);
   assert.match(body, /@clawsweeper automerge/);
+  assert.match(body, /@clawsweeper stop/);
   assert.match(body, /`clawsweeper:human-review`/);
   assert.doesNotMatch(body, /did not dispatch/);
 });
@@ -1794,8 +1796,11 @@ test("renderResponse gives generic human-review pauses a next action", () => {
 
   assert.match(body, /Why human review is needed:/);
   assert.match(body, /resolved or accepted by a maintainer/);
-  assert.match(body, /Recommended next action:/);
-  assert.match(body, /resolve the blocker or explicitly accept the risk/);
+  assert.match(body, /What the maintainer can do as a next step:/);
+  assert.match(body, /@clawsweeper approve/);
+  assert.match(body, /resolve the blocker first/);
+  assert.match(body, /@clawsweeper automerge/);
+  assert.match(body, /@clawsweeper stop/);
   assert.match(body, /`clawsweeper:human-review`/);
 });
 
