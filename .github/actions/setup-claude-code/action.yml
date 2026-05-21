@@ -1,0 +1,73 @@
+name: Setup Claude Code CLI
+description: Ensure the Anthropic Claude Code CLI is installed and authenticated on the runner.
+inputs:
+  version:
+    description: Claude Code CLI npm package version. Empty installs the latest.
+    default: ""
+  cache-suffix:
+    description: Extra cache key suffix for target-tool downloads.
+    default: ""
+runs:
+  using: composite
+  steps:
+    # On GitHub-hosted runners restore ~/.npm via the GHA cache service so
+    # `npm install -g @anthropic-ai/claude-code` is fast. On self-hosted
+    # runners ~/.npm and ~/.claude already persist across runs, so the cache
+    # step is pure wasted I/O. See setup-codex/action.yml for the same gate
+    # rationale (perf PR #60).
+    - name: Cache npm downloads
+      if: runner.environment != 'self-hosted'
+      uses: actions/cache@v5
+      with:
+        path: |
+          ~/.npm
+          ~/.cache/node/corepack
+        key: ${{ runner.os }}-node24-claude-code-${{ inputs.version || 'latest' }}-${{ inputs['cache-suffix'] || 'default' }}-v1
+        restore-keys: |
+          ${{ runner.os }}-node24-claude-code-${{ inputs.version || 'latest' }}-
+          ${{ runner.os }}-node24-claude-code-
+
+    - name: Install Claude Code CLI
+      shell: bash
+      run: |
+        set -euo pipefail
+        if command -v claude >/dev/null 2>&1; then
+          installed=$(claude --version 2>/dev/null | head -1 || true)
+          echo "claude already on PATH: $installed"
+          if [[ -z "${{ inputs.version }}" ]] || echo "$installed" | grep -Fq "${{ inputs.version }}"; then
+            exit 0
+          fi
+          echo "Version mismatch — reinstalling at ${{ inputs.version }}."
+        fi
+        target="@anthropic-ai/claude-code"
+        if [[ -n "${{ inputs.version }}" ]]; then
+          target="@anthropic-ai/claude-code@${{ inputs.version }}"
+        fi
+        npm install -g "$target" --prefer-offline --no-audit --no-fund
+        claude --version
+
+    - name: Verify Claude credentials on self-hosted
+      if: runner.environment == 'self-hosted'
+      shell: bash
+      run: |
+        set -euo pipefail
+        # Claude Code stores credentials at ~/.claude/credentials.json (or the
+        # macOS keychain on darwin if the user chose keychain mode). We accept
+        # either, but at least one must be present on a self-hosted runner —
+        # otherwise the first review call will hang on an interactive login
+        # prompt that no one will ever answer.
+        if [[ -f "$HOME/.claude/credentials.json" ]]; then
+          size=$(stat -f%z "$HOME/.claude/credentials.json" 2>/dev/null || stat -c%s "$HOME/.claude/credentials.json")
+          if [[ "$size" -lt 100 ]]; then
+            echo "::error::~/.claude/credentials.json is $size bytes; looks empty. Run \`claude login\` on this runner." >&2
+            exit 1
+          fi
+          echo "Found ~/.claude/credentials.json ($size bytes)."
+          exit 0
+        fi
+        if security find-generic-password -s "Claude Code" >/dev/null 2>&1; then
+          echo "Found Claude Code credential in macOS keychain."
+          exit 0
+        fi
+        echo "::error::No Claude Code credentials. Run \`claude login\` on this runner." >&2
+        exit 1

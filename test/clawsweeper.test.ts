@@ -60,8 +60,11 @@ import {
   protectedLabels,
   resolveReviewProvider,
   runClaude,
+  runClaudeCode,
+  runPi,
   runReview,
   type ClaudeBridgePostFn,
+  type SpawnFn,
   renderEvidenceEntry,
   reviewFailureReasonForSummary,
   shouldEscalateCodexTimeout,
@@ -5252,4 +5255,363 @@ test("isCodexTimeoutError flags spawnSync ETIMEDOUT and 'timed out' messages", (
   assert.equal(isCodexTimeoutError("Rate limit reached for gpt-5.5 on tokens per min"), false);
   assert.equal(isCodexTimeoutError(undefined), false);
   assert.equal(isCodexTimeoutError(null), false);
+});
+
+// =====================================================================
+// runClaudeCode (direct Claude Code CLI provider)
+// =====================================================================
+
+function claudeCodeOptionsForTest(
+  overrides: Partial<Parameters<typeof runClaudeCode>[0]> = {},
+): Parameters<typeof runClaudeCode>[0] {
+  return {
+    item: { number: 11, repo: "valkyriweb/clawsweeper" } as never,
+    context: {} as never,
+    git: {} as never,
+    model: "claude-sonnet-4-6",
+    openclawDir: "/tmp/ignored",
+    reasoningEffort: "low",
+    sandboxMode: "read-only",
+    serviceTier: "default",
+    timeoutMs: 60_000,
+    workDir: mkdtempSync(join(tmpdir(), "claude-code-review-")),
+    prompt: "Pretend review prompt body for unit tests.",
+    ...overrides,
+  };
+}
+
+test("runClaudeCode spawns claude -p with JSON schema, parses the envelope, and returns a Decision", () => {
+  const expected = closeDecision();
+  let capturedCmd = "";
+  let capturedArgs: readonly string[] = [];
+  let capturedInput = "";
+  const stubSpawn: SpawnFn = (command, args, opts) => {
+    capturedCmd = command;
+    capturedArgs = args;
+    capturedInput = opts.input ?? "";
+    return {
+      status: 0,
+      stdout: JSON.stringify({
+        type: "result",
+        is_error: false,
+        result: JSON.stringify(expected),
+      }),
+      stderr: "",
+    };
+  };
+  const options = claudeCodeOptionsForTest({ spawnFn: stubSpawn });
+  const oldRunId = process.env.GITHUB_RUN_ID;
+  const oldRepository = process.env.GITHUB_REPOSITORY;
+  delete process.env.GITHUB_RUN_ID;
+  delete process.env.GITHUB_REPOSITORY;
+  let decision: ReturnType<typeof runClaudeCode> | undefined;
+  try {
+    decision = runClaudeCode(options);
+  } finally {
+    if (oldRunId === undefined) delete process.env.GITHUB_RUN_ID;
+    else process.env.GITHUB_RUN_ID = oldRunId;
+    if (oldRepository === undefined) delete process.env.GITHUB_REPOSITORY;
+    else process.env.GITHUB_REPOSITORY = oldRepository;
+  }
+  assert.ok(decision);
+  assert.equal(decision.decision, expected.decision);
+  assert.equal(decision.closeReason, expected.closeReason);
+  assert.equal(capturedCmd, "claude");
+  // CLI flag shape — exact ordering lifted from clawpatch/src/provider.ts.
+  assert.ok(capturedArgs.includes("-p"));
+  assert.ok(capturedArgs.includes("--output-format"));
+  assert.ok(capturedArgs.includes("json"));
+  assert.ok(capturedArgs.includes("--json-schema"));
+  assert.ok(capturedArgs.includes("--add-dir"));
+  assert.ok(capturedArgs.includes("--allowedTools"));
+  // Prompt is piped as stdin.
+  assert.match(capturedInput, /Pretend review prompt body/);
+  // Persisted artifacts.
+  assert.equal(existsSync(join(options.workDir, "11.claude-code-prompt.md")), true);
+  assert.equal(existsSync(join(options.workDir, "11.claude-code-response.json")), true);
+  // Telemetry: provider=anthropic, status=success, session_id from local default.
+  const usageEvents = readFileSync(join(options.workDir, "usage-events.jsonl"), "utf8")
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line));
+  assert.equal(usageEvents.length, 1);
+  assert.equal(usageEvents[0].provider, "anthropic");
+  assert.equal(usageEvents[0].status, "success");
+  assert.equal(usageEvents[0].session_id, "local:clawsweeper-review:valkyriweb/clawsweeper:11");
+});
+
+test("runClaudeCode maps ETIMEDOUT to the stable 'timed out after Nms' marker", () => {
+  const timeoutError = new Error("timed out after 60000ms") as Error & { code: string };
+  timeoutError.code = "ETIMEDOUT";
+  const stubSpawn: SpawnFn = () => ({
+    status: null,
+    stdout: "",
+    stderr: "",
+    error: timeoutError,
+  });
+  const options = claudeCodeOptionsForTest({ spawnFn: stubSpawn, timeoutMs: 60_000 });
+  assert.throws(
+    () => runClaudeCode(options),
+    /Claude review failed for #11: timed out after 60000ms/,
+  );
+  // The thrown error is what isCodexTimeoutError matches against.
+  try {
+    runClaudeCode(options);
+  } catch (error) {
+    assert.equal(isCodexTimeoutError(error), true);
+  }
+  // Telemetry recorded the timeout (two calls = two events).
+  const usageEvents = readFileSync(join(options.workDir, "usage-events.jsonl"), "utf8")
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line));
+  assert.equal(usageEvents.length, 2);
+  assert.equal(usageEvents[0].status, "timeout");
+});
+
+test("runClaudeCode flags non-JSON envelope output as schema_invalid", () => {
+  const stubSpawn: SpawnFn = () => ({
+    status: 0,
+    stdout: "not actually json",
+    stderr: "",
+  });
+  const options = claudeCodeOptionsForTest({ spawnFn: stubSpawn });
+  assert.throws(() => runClaudeCode(options), /non-JSON envelope/);
+  const usageEvents = readFileSync(join(options.workDir, "usage-events.jsonl"), "utf8")
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line));
+  assert.equal(usageEvents[0].status, "schema_invalid");
+});
+
+test("runClaudeCode surfaces envelope is_error: true as a provider failure", () => {
+  const stubSpawn: SpawnFn = () => ({
+    status: 0,
+    stdout: JSON.stringify({
+      type: "result",
+      is_error: true,
+      error: "rate limit hit",
+    }),
+    stderr: "",
+  });
+  const options = claudeCodeOptionsForTest({ spawnFn: stubSpawn });
+  assert.throws(() => runClaudeCode(options), /rate limit hit/);
+  const usageEvents = readFileSync(join(options.workDir, "usage-events.jsonl"), "utf8")
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line));
+  assert.equal(usageEvents[0].status, "failed");
+});
+
+test("runClaudeCode reports schema_invalid when the inner result fails Decision parsing", () => {
+  const stubSpawn: SpawnFn = () => ({
+    status: 0,
+    stdout: JSON.stringify({
+      type: "result",
+      is_error: false,
+      result: JSON.stringify({ totally: "wrong shape" }),
+    }),
+    stderr: "",
+  });
+  const options = claudeCodeOptionsForTest({ spawnFn: stubSpawn });
+  assert.throws(() => runClaudeCode(options), /invalid structured output/);
+  const usageEvents = readFileSync(join(options.workDir, "usage-events.jsonl"), "utf8")
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line));
+  assert.equal(usageEvents[0].status, "schema_invalid");
+});
+
+test("resolveReviewProvider accepts claude-code", () => {
+  assert.equal(resolveReviewProvider({ env: "claude-code" }), "claude-code");
+});
+
+// =====================================================================
+// runPi (pi-mono-fork CLI)
+// =====================================================================
+
+function piOptionsForTest(
+  overrides: Partial<Parameters<typeof runPi>[0]> = {},
+): Parameters<typeof runPi>[0] {
+  return {
+    item: { number: 13, repo: "valkyriweb/clawsweeper" } as never,
+    context: {} as never,
+    git: {} as never,
+    model: "anthropic/claude-sonnet-4-6",
+    openclawDir: "/tmp/ignored",
+    reasoningEffort: "low",
+    sandboxMode: "read-only",
+    serviceTier: "default",
+    timeoutMs: 60_000,
+    workDir: mkdtempSync(join(tmpdir(), "pi-review-")),
+    prompt: "Pretend review prompt body for unit tests.",
+    ...overrides,
+  };
+}
+
+test("runPi spawns pi -p with --mode json --no-session and returns a Decision", () => {
+  const expected = closeDecision();
+  let capturedCmd = "";
+  let capturedArgs: readonly string[] = [];
+  let capturedInput = "";
+  const stubSpawn: SpawnFn = (command, args, opts) => {
+    capturedCmd = command;
+    capturedArgs = args;
+    capturedInput = opts.input ?? "";
+    return {
+      status: 0,
+      stdout: JSON.stringify(expected),
+      stderr: "",
+    };
+  };
+  const options = piOptionsForTest({ spawnFn: stubSpawn });
+  const decision = runPi(options);
+  assert.equal(decision.decision, expected.decision);
+  assert.equal(capturedCmd, "pi");
+  assert.ok(capturedArgs.includes("-p"));
+  assert.ok(capturedArgs.includes("--mode"));
+  assert.ok(capturedArgs.includes("json"));
+  // --no-session is mandatory to avoid parallel session-DB races.
+  assert.ok(capturedArgs.includes("--no-session"));
+  // Read-only sandbox restricts tools.
+  assert.ok(capturedArgs.includes("-t"));
+  // Prompt is wrapped with schema instruction.
+  assert.match(capturedInput, /Pretend review prompt body/);
+  assert.match(capturedInput, /JSON Schema/);
+  // Telemetry tagged provider=pi.
+  const usageEvents = readFileSync(join(options.workDir, "usage-events.jsonl"), "utf8")
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line));
+  assert.equal(usageEvents.length, 1);
+  assert.equal(usageEvents[0].provider, "pi");
+  assert.equal(usageEvents[0].status, "success");
+});
+
+test("runPi extracts the last assistant text from a line-stream of JSON events", () => {
+  const expected = closeDecision();
+  const stream =
+    JSON.stringify({ type: "start" }) +
+    "\n" +
+    JSON.stringify({ type: "tool", name: "read" }) +
+    "\n" +
+    JSON.stringify({ type: "assistant", text: JSON.stringify(expected) });
+  const stubSpawn: SpawnFn = () => ({ status: 0, stdout: stream, stderr: "" });
+  const decision = runPi(piOptionsForTest({ spawnFn: stubSpawn }));
+  assert.equal(decision.decision, expected.decision);
+});
+
+test("runPi tolerates ```json fenced``` payloads in the final assistant text", () => {
+  const expected = closeDecision();
+  const fenced = "```json\n" + JSON.stringify(expected) + "\n```";
+  const stream = JSON.stringify({ type: "assistant", text: fenced });
+  const stubSpawn: SpawnFn = () => ({ status: 0, stdout: stream, stderr: "" });
+  const decision = runPi(piOptionsForTest({ spawnFn: stubSpawn }));
+  assert.equal(decision.decision, expected.decision);
+});
+
+test("runPi maps ETIMEDOUT to the stable 'timed out after Nms' marker", () => {
+  const timeoutError = new Error("timed out after 60000ms") as Error & { code: string };
+  timeoutError.code = "ETIMEDOUT";
+  const stubSpawn: SpawnFn = () => ({
+    status: null,
+    stdout: "",
+    stderr: "",
+    error: timeoutError,
+  });
+  const options = piOptionsForTest({ spawnFn: stubSpawn, timeoutMs: 60_000 });
+  assert.throws(() => runPi(options), /Pi review failed for #13: timed out after 60000ms/);
+  try {
+    runPi(options);
+  } catch (error) {
+    assert.equal(isCodexTimeoutError(error), true);
+  }
+});
+
+test("runPi flags malformed (non-JSON) output as schema_invalid", () => {
+  const stubSpawn: SpawnFn = () => ({
+    status: 0,
+    stdout: "this is not json at all",
+    stderr: "",
+  });
+  const options = piOptionsForTest({ spawnFn: stubSpawn });
+  assert.throws(() => runPi(options), /non-JSON payload/);
+  const usageEvents = readFileSync(join(options.workDir, "usage-events.jsonl"), "utf8")
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line));
+  assert.equal(usageEvents[0].status, "schema_invalid");
+});
+
+test("runPi reports schema_invalid when the payload fails Decision parsing", () => {
+  const stubSpawn: SpawnFn = () => ({
+    status: 0,
+    stdout: JSON.stringify({ totally: "wrong shape" }),
+    stderr: "",
+  });
+  const options = piOptionsForTest({ spawnFn: stubSpawn });
+  assert.throws(() => runPi(options), /invalid structured output/);
+  const usageEvents = readFileSync(join(options.workDir, "usage-events.jsonl"), "utf8")
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line));
+  assert.equal(usageEvents[0].status, "schema_invalid");
+});
+
+test("resolveReviewProvider accepts pi", () => {
+  assert.equal(resolveReviewProvider({ env: "pi" }), "pi");
+});
+
+test("runReview dispatches pi to runPi", () => {
+  const expected = closeDecision();
+  const stubSpawn: SpawnFn = () => ({
+    status: 0,
+    stdout: JSON.stringify(expected),
+    stderr: "",
+  });
+  const decision = runReview({
+    provider: "pi",
+    item: { number: 88, repo: "valkyriweb/clawsweeper" } as never,
+    context: {} as never,
+    git: {} as never,
+    model: "anthropic/claude-sonnet-4-6",
+    openclawDir: "/tmp/ignored",
+    reasoningEffort: "low",
+    sandboxMode: "read-only",
+    serviceTier: "default",
+    timeoutMs: 60_000,
+    workDir: mkdtempSync(join(tmpdir(), "pi-dispatch-")),
+    prompt: "x",
+    spawnFn: stubSpawn,
+  });
+  assert.equal(decision.decision, expected.decision);
+});
+
+test("runReview dispatches claude-code to runClaudeCode", () => {
+  const expected = closeDecision();
+  const stubSpawn: SpawnFn = () => ({
+    status: 0,
+    stdout: JSON.stringify({
+      type: "result",
+      is_error: false,
+      result: JSON.stringify(expected),
+    }),
+    stderr: "",
+  });
+  const decision = runReview({
+    provider: "claude-code",
+    item: { number: 99, repo: "valkyriweb/clawsweeper" } as never,
+    context: {} as never,
+    git: {} as never,
+    model: "claude-sonnet-4-6",
+    openclawDir: "/tmp/ignored",
+    reasoningEffort: "low",
+    sandboxMode: "read-only",
+    serviceTier: "default",
+    timeoutMs: 60_000,
+    workDir: mkdtempSync(join(tmpdir(), "claude-code-dispatch-")),
+    prompt: "x",
+    spawnFn: stubSpawn,
+  });
+  assert.equal(decision.decision, expected.decision);
 });

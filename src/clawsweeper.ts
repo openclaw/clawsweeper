@@ -21,6 +21,7 @@ import {
   normalizeRepo,
   repositoryProfileFor,
   repositoryProfileForSlug,
+  REVIEW_PROVIDER_SET,
   type RepositoryProfile,
   type ReviewProvider,
 } from "./repository-profiles.js";
@@ -4608,9 +4609,12 @@ export interface RunReviewOptions {
   additionalPrompt?: string;
   proofScratchDir?: string;
   prompt?: string;
-  // claude-bridge only. Ignored for the codex provider.
+  // claude-bridge only. Ignored for other providers.
   bridgeUrl?: string;
   postFn?: ClaudeBridgePostFn;
+  // claude-code / pi only. Ignored for codex and claude-bridge. Lets tests
+  // inject a fake spawnSync without touching real CLIs.
+  spawnFn?: SpawnFn;
 }
 
 // Dispatcher: routes a per-item review call to the configured provider. Both
@@ -4626,6 +4630,10 @@ export function runReview(options: RunReviewOptions): Decision {
       return runCodex(rest);
     case "claude-bridge":
       return runClaude(rest);
+    case "claude-code":
+      return runClaudeCode(rest);
+    case "pi":
+      return runPi(rest);
     default: {
       const exhaustive: never = provider;
       throw new Error(`Unknown review provider: ${String(exhaustive)}`);
@@ -4633,7 +4641,9 @@ export function runReview(options: RunReviewOptions): Decision {
   }
 }
 
-const REVIEW_PROVIDER_IDS: ReadonlySet<ReviewProvider> = new Set(["codex", "claude-bridge"]);
+// Single source of truth lives in `repository-profiles.ts`; re-exported alias
+// kept for call-site readability inside this module.
+const REVIEW_PROVIDER_IDS = REVIEW_PROVIDER_SET;
 
 // Provider routing precedence:
 //   1. `explicit` — per-target override from the repository profile
@@ -5014,6 +5024,496 @@ export function runClaude(options: RunClaudeOptions): Decision {
 
 export function runCodexForTest(options: Parameters<typeof runCodex>[0]): Decision {
   return runCodex(options);
+}
+
+// Default impl of SpawnFn that wraps node:child_process spawnSync and narrows
+// stdio fields to plain strings (the native overload returns string | Buffer
+// depending on encoding, but our providers always pass `encoding: "utf8"`).
+function defaultSpawnFn(
+  command: string,
+  args: readonly string[],
+  opts: {
+    cwd?: string;
+    env?: NodeJS.ProcessEnv;
+    input?: string;
+    encoding: "utf8";
+    maxBuffer?: number;
+    timeout?: number;
+  },
+): ReturnType<SpawnFn> {
+  const raw = spawnSync(command, [...args], opts) as unknown as {
+    status: number | null;
+    stdout: string | Buffer | null;
+    stderr: string | Buffer | null;
+    error?: Error & { code?: string };
+  };
+  const normalized: ReturnType<SpawnFn> = {
+    status: raw.status,
+    stdout: typeof raw.stdout === "string" ? raw.stdout : (raw.stdout?.toString("utf8") ?? ""),
+    stderr: typeof raw.stderr === "string" ? raw.stderr : (raw.stderr?.toString("utf8") ?? ""),
+  };
+  if (raw.error) normalized.error = raw.error;
+  return normalized;
+}
+
+// Spawn seam shared by all CLI-spawning providers (codex, claude-code, pi).
+// Tests inject a fake matching this shape so they don't touch real binaries.
+export type SpawnFn = (
+  command: string,
+  args: readonly string[],
+  options: {
+    cwd?: string;
+    env?: NodeJS.ProcessEnv;
+    input?: string;
+    encoding: "utf8";
+    maxBuffer?: number;
+    timeout?: number;
+  },
+) => {
+  status: number | null;
+  stdout: string;
+  stderr: string;
+  error?: Error & { code?: string };
+};
+
+interface RunCliReviewOptions {
+  item: Item;
+  context: ItemContext;
+  git: GitInfo;
+  model: string;
+  openclawDir: string;
+  reasoningEffort: string;
+  sandboxMode: string;
+  serviceTier: string;
+  timeoutMs: number;
+  workDir: string;
+  additionalPrompt?: string;
+  proofScratchDir?: string;
+  prompt?: string;
+  spawnFn?: SpawnFn;
+}
+
+export type RunClaudeCodeOptions = RunCliReviewOptions;
+
+// Direct Claude Code CLI provider.
+//
+// Runs the locally-installed `claude` CLI with `-p --output-format json
+// --json-schema <schema>` so structured output is enforced by the provider
+// itself (no bridge, no curl, no separate proxy). The envelope shape is
+// `{ type: "result", is_error, result, error? }` where `result` is a
+// JSON-encoded string conforming to the schema — JSON.parse twice.
+//
+// Failure modes use the same Error message contract as runCodex / runClaude:
+//   - timeout → message contains `timed out after ${timeoutMs}ms` so
+//     `isCodexTimeoutError` matches and slice B's escalator still kicks in;
+//   - bad JSON / envelope error → telemetry status `schema_invalid`.
+//
+// Reference impl (CLI flag shapes): clawpatch/src/provider.ts:buildClaudeArgs
+// + parseClaudeEnvelope. Adapted here for clawsweeper's Decision shape.
+export function runClaudeCode(options: RunClaudeCodeOptions): Decision {
+  const item = options.item;
+  const spawn: SpawnFn = options.spawnFn ?? defaultSpawnFn;
+
+  ensureDir(options.workDir);
+  const proofScratchDir =
+    options.proofScratchDir ?? join(options.workDir, "proof-scratch", String(item.number));
+  ensureDir(proofScratchDir);
+
+  const prompt =
+    options.prompt ??
+    buildReviewPrompt(
+      item,
+      options.context,
+      options.git,
+      options.additionalPrompt,
+      { proofScratchDir },
+      // Claude Code path uses the same sibling template as the bridge — strips
+      // tool-loop guidance and omits Runtime Capabilities. The CLI itself owns
+      // the sandbox.
+      { template: reviewClaudePromptTemplate(), includeRuntimeCapabilities: false },
+    ).text;
+
+  const promptPath = join(options.workDir, `${item.number}.claude-code-prompt.md`);
+  const responsePath = join(options.workDir, `${item.number}.claude-code-response.json`);
+  const usageEventsPath = join(options.workDir, "usage-events.jsonl");
+  writeFileSync(promptPath, prompt, "utf8");
+
+  const itemRepo = normalizeRepo((item as { repo?: string }).repo ?? targetRepo());
+  const sessionId = process.env.GITHUB_RUN_ID
+    ? `github:${process.env.GITHUB_REPOSITORY ?? REPORT_REPO}:${process.env.GITHUB_RUN_ID}`
+    : `local:clawsweeper-review:${itemRepo}:${item.number}`;
+  const turnId = `sweep:item-review:${itemRepo}:${item.number}`;
+
+  const model = options.model || DEFAULT_CLAUDE_MODEL;
+  const schema = reviewDecisionSchemaText();
+
+  const args: string[] = [
+    "-p",
+    "--output-format",
+    "json",
+    "--json-schema",
+    schema,
+    "--add-dir",
+    options.openclawDir,
+    "--model",
+    model,
+  ];
+  // Read-only sandbox: restrict to read/grep/glob tools. workspace-write
+  // permission would let the model edit the OpenClaw checkout, which the
+  // review path explicitly forbids (see runCodex's dirty-status check).
+  if (options.sandboxMode === "read-only") {
+    args.push("--allowedTools", "Read Glob Grep");
+  } else {
+    args.push("--dangerously-skip-permissions");
+  }
+
+  const emitUsage = (status: UsageStatus, elapsedMs: number): void => {
+    try {
+      appendUsageEventJsonl(
+        usageEventsPath,
+        buildUsageTelemetryEvent({
+          workflow: "sweep",
+          mode: "review",
+          phase: "item-review",
+          provider: "anthropic",
+          session_id: sessionId,
+          turn_id: turnId,
+          target_repo: itemRepo,
+          item_number: item.number,
+          model,
+          reasoning_effort: options.reasoningEffort,
+          service_tier: options.serviceTier,
+          sandbox: options.sandboxMode,
+          timeout_ms: options.timeoutMs,
+          elapsed_ms: elapsedMs,
+          output_path: relative(options.workDir, responsePath),
+          status,
+          tokens: null,
+        }),
+      );
+    } catch {
+      // Telemetry must never change the review outcome.
+    }
+  };
+
+  const startedAt = Date.now();
+  const result = spawn("claude", args, {
+    cwd: options.openclawDir,
+    encoding: "utf8",
+    env: { ...process.env },
+    input: prompt,
+    maxBuffer: 128 * 1024 * 1024,
+    timeout: options.timeoutMs,
+  });
+  const elapsedMs = Date.now() - startedAt;
+  const stdout = result.stdout ?? "";
+  const stderr = result.stderr ?? "";
+
+  // Persist raw stdout for debug ergonomics (mirrors runClaude's responsePath).
+  try {
+    writeFileSync(responsePath, stdout, "utf8");
+  } catch {
+    // Best-effort.
+  }
+
+  if (result.error) {
+    const timedOut = (result.error as NodeJS.ErrnoException).code === "ETIMEDOUT";
+    emitUsage(timedOut ? "timeout" : "failed", elapsedMs);
+    if (timedOut) {
+      throw new Error(
+        `Claude review failed for #${item.number}: timed out after ${options.timeoutMs}ms`,
+      );
+    }
+    throw new Error(
+      `Claude review failed for #${item.number}: ${result.error.message}\n${
+        safeOutputTail(stderr) || safeOutputTail(stdout) || "No output."
+      }`,
+    );
+  }
+  if (result.status !== 0) {
+    emitUsage("failed", elapsedMs);
+    throw new Error(
+      `Claude review failed for #${item.number} with exit ${
+        result.status ?? "unknown"
+      }.\n${safeOutputTail(stderr) || safeOutputTail(stdout) || "No output."}`,
+    );
+  }
+
+  let envelope: { is_error?: boolean; result?: unknown; error?: string };
+  try {
+    envelope = JSON.parse(stdout.trim()) as typeof envelope;
+  } catch (error) {
+    emitUsage("schema_invalid", elapsedMs);
+    throw new Error(
+      `Claude review failed for #${item.number}: non-JSON envelope (${
+        error instanceof Error ? error.message : String(error)
+      }): ${safeOutputTail(stdout)}`,
+    );
+  }
+  if (envelope.is_error === true) {
+    emitUsage("failed", elapsedMs);
+    throw new Error(
+      `Claude review failed for #${item.number}: ${envelope.error ?? "unknown CLI error"}`,
+    );
+  }
+  const inner = envelope.result;
+  if (inner === undefined || inner === null) {
+    emitUsage("schema_invalid", elapsedMs);
+    throw new Error(`Claude review failed for #${item.number}: envelope.result missing`);
+  }
+  let payload: unknown;
+  try {
+    payload = typeof inner === "string" ? JSON.parse(inner) : inner;
+  } catch (error) {
+    emitUsage("schema_invalid", elapsedMs);
+    throw new Error(
+      `Claude review failed for #${item.number}: envelope.result is not valid JSON (${
+        error instanceof Error ? error.message : String(error)
+      })`,
+    );
+  }
+
+  try {
+    const decision = parseDecision(payload, item);
+    emitUsage("success", elapsedMs);
+    return decision;
+  } catch (error) {
+    emitUsage("schema_invalid", elapsedMs);
+    throw new Error(
+      `Claude review failed for #${item.number}: invalid structured output (${
+        error instanceof Error ? error.message : String(error)
+      })`,
+    );
+  }
+}
+
+export type RunPiOptions = RunCliReviewOptions;
+
+// Pi review provider (pi-mono-fork CLI).
+//
+// Pi has no `--json-schema` flag, so the schema is inlined in the prompt and
+// the response is post-validated via parseDecision (which uses the same Zod
+// schema the rest of the codebase relies on). Expect a higher `schema_invalid`
+// rate than codex / claude-code because there is no provider-level enforcement.
+//
+// `--no-session` is non-optional: parallel sweep shards otherwise race on
+// Pi's session DB. `-t read,glob,grep` restricts tools in read-only mode so
+// the model cannot mutate the OpenClaw checkout.
+//
+// Reference impl (CLI flag shapes + envelope parsing): clawpatch/src/provider.ts
+// (buildPiArgs / wrapPiPrompt / parsePiEnvelope / extractPiAssistantText).
+export function runPi(options: RunPiOptions): Decision {
+  const item = options.item;
+  const spawn: SpawnFn = options.spawnFn ?? defaultSpawnFn;
+
+  ensureDir(options.workDir);
+  const proofScratchDir =
+    options.proofScratchDir ?? join(options.workDir, "proof-scratch", String(item.number));
+  ensureDir(proofScratchDir);
+
+  const basePrompt =
+    options.prompt ??
+    buildReviewPrompt(
+      item,
+      options.context,
+      options.git,
+      options.additionalPrompt,
+      { proofScratchDir },
+      { template: reviewClaudePromptTemplate(), includeRuntimeCapabilities: false },
+    ).text;
+
+  const schemaText = reviewDecisionSchemaText();
+  const wrapped =
+    `${basePrompt}\n\n---\nRespond with ONLY a single JSON object matching this JSON Schema. ` +
+    `No prose, no markdown fences, no commentary.\n\nSchema:\n${schemaText}`;
+
+  const promptPath = join(options.workDir, `${item.number}.pi-prompt.md`);
+  const responsePath = join(options.workDir, `${item.number}.pi-response.txt`);
+  const usageEventsPath = join(options.workDir, "usage-events.jsonl");
+  writeFileSync(promptPath, wrapped, "utf8");
+
+  const itemRepo = normalizeRepo((item as { repo?: string }).repo ?? targetRepo());
+  const sessionId = process.env.GITHUB_RUN_ID
+    ? `github:${process.env.GITHUB_REPOSITORY ?? REPORT_REPO}:${process.env.GITHUB_RUN_ID}`
+    : `local:clawsweeper-review:${itemRepo}:${item.number}`;
+  const turnId = `sweep:item-review:${itemRepo}:${item.number}`;
+
+  const args: string[] = ["-p", "--mode", "json", "--no-session"];
+  if (options.model && options.model.length > 0) {
+    args.push("--model", options.model);
+  }
+  if (options.sandboxMode === "read-only") {
+    args.push("-t", "read,glob,grep");
+  }
+
+  const emitUsage = (status: UsageStatus, elapsedMs: number): void => {
+    try {
+      appendUsageEventJsonl(
+        usageEventsPath,
+        buildUsageTelemetryEvent({
+          workflow: "sweep",
+          mode: "review",
+          phase: "item-review",
+          provider: "pi",
+          session_id: sessionId,
+          turn_id: turnId,
+          target_repo: itemRepo,
+          item_number: item.number,
+          model: options.model,
+          reasoning_effort: options.reasoningEffort,
+          service_tier: options.serviceTier,
+          sandbox: options.sandboxMode,
+          timeout_ms: options.timeoutMs,
+          elapsed_ms: elapsedMs,
+          output_path: relative(options.workDir, responsePath),
+          status,
+          tokens: null,
+        }),
+      );
+    } catch {
+      // Telemetry must never change the review outcome.
+    }
+  };
+
+  const startedAt = Date.now();
+  const result = spawn("pi", args, {
+    cwd: options.openclawDir,
+    encoding: "utf8",
+    env: { ...process.env },
+    input: wrapped,
+    maxBuffer: 128 * 1024 * 1024,
+    timeout: options.timeoutMs,
+  });
+  const elapsedMs = Date.now() - startedAt;
+  const stdout = result.stdout ?? "";
+  const stderr = result.stderr ?? "";
+
+  try {
+    writeFileSync(responsePath, stdout, "utf8");
+  } catch {
+    // Best-effort.
+  }
+
+  if (result.error) {
+    const timedOut = (result.error as NodeJS.ErrnoException).code === "ETIMEDOUT";
+    emitUsage(timedOut ? "timeout" : "failed", elapsedMs);
+    if (timedOut) {
+      throw new Error(
+        `Pi review failed for #${item.number}: timed out after ${options.timeoutMs}ms`,
+      );
+    }
+    throw new Error(
+      `Pi review failed for #${item.number}: ${result.error.message}\n${
+        safeOutputTail(stderr) || safeOutputTail(stdout) || "No output."
+      }`,
+    );
+  }
+  if (result.status !== 0) {
+    emitUsage("failed", elapsedMs);
+    throw new Error(
+      `Pi review failed for #${item.number} with exit ${
+        result.status ?? "unknown"
+      }.\n${safeOutputTail(stderr) || safeOutputTail(stdout) || "No output."}`,
+    );
+  }
+
+  let payload: unknown;
+  try {
+    payload = extractPiJsonPayload(stdout);
+  } catch (error) {
+    emitUsage("schema_invalid", elapsedMs);
+    throw new Error(
+      `Pi review failed for #${item.number}: ${
+        error instanceof Error ? error.message : String(error)
+      }: ${safeOutputTail(stdout)}`,
+    );
+  }
+
+  try {
+    const decision = parseDecision(payload, item);
+    emitUsage("success", elapsedMs);
+    return decision;
+  } catch (error) {
+    emitUsage("schema_invalid", elapsedMs);
+    throw new Error(
+      `Pi review failed for #${item.number}: invalid structured output (${
+        error instanceof Error ? error.message : String(error)
+      })`,
+    );
+  }
+}
+
+// Extract the JSON object Pi emitted. Pi's `--mode json` outputs one JSON
+// event per line; the final assistant text holds the payload we want. If the
+// whole stdout parses as a single object, prefer that.
+export function extractPiJsonPayload(stdout: string): unknown {
+  const trimmed = stdout.trim();
+  if (trimmed.length === 0) {
+    throw new Error("pi provider produced no output");
+  }
+  const candidate = extractPiAssistantText(trimmed);
+  const stripped = stripJsonFences(candidate).trim();
+  try {
+    return JSON.parse(stripped) as unknown;
+  } catch {
+    throw new Error("pi provider returned non-JSON payload");
+  }
+}
+
+function extractPiAssistantText(stdout: string): string {
+  // Try the whole stdout first — pi may emit a single envelope.
+  const single = tryParseJsonObject(stdout);
+  if (single !== undefined) {
+    return assistantTextFromPiObject(single) ?? stdout;
+  }
+  // Otherwise scan lines bottom-up for the last assistant text.
+  const lines = stdout.split(/\r?\n/u).filter((line) => line.trim().length > 0);
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    const line = lines[index];
+    if (line === undefined) continue;
+    const parsed = tryParseJsonObject(line);
+    if (parsed === undefined) continue;
+    const text = assistantTextFromPiObject(parsed);
+    if (text !== null && text.length > 0) return text;
+  }
+  return stdout;
+}
+
+function assistantTextFromPiObject(value: unknown): string | null {
+  if (typeof value !== "object" || value === null) return null;
+  const record = value as Record<string, unknown>;
+  for (const key of ["text", "content", "result", "message"]) {
+    const inner = record[key];
+    if (typeof inner === "string") return inner;
+  }
+  if (Array.isArray(record["content"])) {
+    const joined = (record["content"] as unknown[])
+      .map((part) => {
+        if (typeof part === "string") return part;
+        if (typeof part === "object" && part !== null) {
+          const partRecord = part as Record<string, unknown>;
+          if (typeof partRecord["text"] === "string") return partRecord["text"];
+        }
+        return "";
+      })
+      .filter((piece) => piece.length > 0)
+      .join("");
+    if (joined.length > 0) return joined;
+  }
+  return null;
+}
+
+function tryParseJsonObject(value: string): unknown {
+  try {
+    return JSON.parse(value) as unknown;
+  } catch {
+    return undefined;
+  }
+}
+
+function stripJsonFences(value: string): string {
+  const match = /^```(?:json)?\s*([\s\S]*?)\s*```$/u.exec(value.trim());
+  return match?.[1] ?? value;
 }
 
 function runCodex(options: {

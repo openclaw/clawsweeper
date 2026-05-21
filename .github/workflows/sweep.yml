@@ -293,6 +293,16 @@ jobs:
           auth-mode: subscription
           login-status: "true"
 
+      # Conditional providers: setup-claude-code / setup-pi only run when the
+      # active review_provider for this run matches. Setup-codex stays
+      # unconditional because it is cheap when warm and many helper steps
+      # call the codex CLI regardless of the review provider.
+      - if: ${{ vars.CLAWSWEEPER_REVIEW_PROVIDER == 'claude-code' }}
+        uses: ./.github/actions/setup-claude-code
+
+      - if: ${{ vars.CLAWSWEEPER_REVIEW_PROVIDER == 'pi' }}
+        uses: ./.github/actions/setup-pi
+
       - name: Check out target repository
         timeout-minutes: 10
         uses: actions/checkout@v6
@@ -901,6 +911,13 @@ jobs:
         with:
           auth-mode: subscription
           login-status: "true"
+
+      # Conditional providers — see event-review-apply for rationale.
+      - if: ${{ vars.CLAWSWEEPER_REVIEW_PROVIDER == 'claude-code' }}
+        uses: ./clawsweeper/.github/actions/setup-claude-code
+
+      - if: ${{ vars.CLAWSWEEPER_REVIEW_PROVIDER == 'pi' }}
+        uses: ./clawsweeper/.github/actions/setup-pi
 
       - name: Check out target repository
         timeout-minutes: 10

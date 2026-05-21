@@ -1,0 +1,57 @@
+name: Setup Pi CLI
+description: Ensure the Pi coding-agent CLI is installed and authenticated on the runner.
+inputs:
+  version:
+    description: Pi npm package version. Empty installs the latest.
+    default: ""
+  cache-suffix:
+    description: Extra cache key suffix for target-tool downloads.
+    default: ""
+runs:
+  using: composite
+  steps:
+    # See setup-codex / setup-claude-code for the self-hosted cache-skip
+    # rationale (perf PR #60). Hosted runners still benefit from caching
+    # ~/.npm because $HOME is ephemeral.
+    - name: Cache npm downloads
+      if: runner.environment != 'self-hosted'
+      uses: actions/cache@v5
+      with:
+        path: |
+          ~/.npm
+          ~/.cache/node/corepack
+        key: ${{ runner.os }}-node24-pi-${{ inputs.version || 'latest' }}-${{ inputs['cache-suffix'] || 'default' }}-v1
+        restore-keys: |
+          ${{ runner.os }}-node24-pi-${{ inputs.version || 'latest' }}-
+          ${{ runner.os }}-node24-pi-
+
+    - name: Install Pi CLI
+      shell: bash
+      run: |
+        set -euo pipefail
+        if command -v pi >/dev/null 2>&1; then
+          # Pi writes --version to stderr historically; check both.
+          installed=$(pi --version 2>&1 | head -1 || true)
+          echo "pi already on PATH: $installed"
+          if [[ -z "${{ inputs.version }}" ]] || echo "$installed" | grep -Fq "${{ inputs.version }}"; then
+            exit 0
+          fi
+          echo "Version mismatch — reinstalling at ${{ inputs.version }}."
+        fi
+        # Self-hosted runners typically build pi from source at
+        # ~/Projects/personal/pi-mono-fork and symlink the binary into PATH.
+        # If pi is not found, do not try to npm install — pi is not on a
+        # public npm registry. Fail loudly so the operator notices.
+        echo "::error::pi CLI not found on this runner. On self-hosted, build from ~/Projects/personal/pi-mono-fork and symlink the binary into PATH. On hosted runners, vendor pi as a build artifact." >&2
+        exit 1
+
+    - name: Verify Pi config on self-hosted
+      if: runner.environment == 'self-hosted'
+      shell: bash
+      run: |
+        set -euo pipefail
+        if [[ ! -f "$HOME/.pi/config.toml" ]] && [[ ! -d "$HOME/.pi" ]]; then
+          echo "::error::No pi config at ~/.pi. Run \`pi\` once on this runner to initialise it." >&2
+          exit 1
+        fi
+        echo "pi config present at ~/.pi"
