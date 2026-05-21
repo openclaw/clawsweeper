@@ -9,6 +9,7 @@ type CliOptions = {
   sinceHours: number;
   limit: number;
   now: Date;
+  sessionId?: string;
   paths: string[];
 };
 
@@ -17,8 +18,11 @@ type UsageRow = {
   input: number;
   output: number;
   cache_read: number;
+  cache_creation: number;
   reasoning_output: number;
   total: number;
+  cache_input: number;
+  cache_read_ratio: number;
 };
 
 type InvocationRow = UsageRow & {
@@ -28,7 +32,10 @@ type InvocationRow = UsageRow & {
   phase: string;
   target_repo: string;
   item: string;
+  provider: string;
   model: string;
+  session_id: string;
+  turn_id: string;
   github_run_id: string;
   status: string;
 };
@@ -45,11 +52,24 @@ export type UsageSnapshot = {
   by_workflow: Record<string, UsageRow>;
   by_target_repo: Record<string, UsageRow>;
   by_model: Record<string, UsageRow>;
+  by_session: Record<string, UsageRow>;
   failed_or_timeout: Record<string, UsageRow>;
+  session_timeline_session_id: string | null;
+  session_timeline: InvocationRow[];
 };
 
 function emptyRow(): UsageRow {
-  return { calls: 0, input: 0, output: 0, cache_read: 0, reasoning_output: 0, total: 0 };
+  return {
+    calls: 0,
+    input: 0,
+    output: 0,
+    cache_read: 0,
+    cache_creation: 0,
+    reasoning_output: 0,
+    total: 0,
+    cache_input: 0,
+    cache_read_ratio: 0,
+  };
 }
 
 function tokenValue(tokens: UsageTokens | null | undefined, key: keyof UsageTokens): number {
@@ -57,13 +77,20 @@ function tokenValue(tokens: UsageTokens | null | undefined, key: keyof UsageToke
   return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : 0;
 }
 
+function refreshCacheHealth(row: UsageRow): void {
+  row.cache_input = row.input + row.cache_read + row.cache_creation;
+  row.cache_read_ratio = row.cache_input > 0 ? row.cache_read / row.cache_input : 0;
+}
+
 function addTokens(row: UsageRow, tokens: UsageTokens | null | undefined): void {
   row.calls += 1;
   row.input += tokenValue(tokens, "input");
   row.output += tokenValue(tokens, "output");
   row.cache_read += tokenValue(tokens, "cache_read");
+  row.cache_creation += tokenValue(tokens, "cache_creation");
   row.reasoning_output += tokenValue(tokens, "reasoning_output");
   row.total += tokenValue(tokens, "total");
+  refreshCacheHealth(row);
 }
 
 function bucketAdd(
@@ -104,7 +131,10 @@ function invocationRow(event: UsageTelemetryEvent): InvocationRow {
     phase: event.phase ?? "unknown",
     target_repo: event.target_repo ?? "unknown",
     item: itemKey(event),
+    provider: event.provider ?? "unknown",
     model: event.model ?? "unknown",
+    session_id: event.session_id ?? "unknown",
+    turn_id: event.turn_id ?? "unknown",
     github_run_id: event.github_run_id ?? "unknown",
     status: event.status,
   };
@@ -132,16 +162,18 @@ function collectUsageFiles(paths: string[]): string[] {
 
 export function buildUsageSnapshotFromJsonl(
   contentsByFile: readonly { path: string; contents: string }[],
-  options: { sinceHours?: number; now?: Date; limit?: number } = {},
+  options: { sinceHours?: number; now?: Date; limit?: number; sessionId?: string } = {},
 ): UsageSnapshot {
   const now = options.now ?? new Date();
   const sinceHours = options.sinceHours ?? 48;
   const limit = options.limit ?? 10;
+  const sessionId = options.sessionId;
   const cutoff = new Date(now.getTime() - sinceHours * 60 * 60 * 1000);
   const totals = emptyRow();
   const byWorkflow: Record<string, UsageRow> = {};
   const byTargetRepo: Record<string, UsageRow> = {};
   const byModel: Record<string, UsageRow> = {};
+  const bySession: Record<string, UsageRow> = {};
   const failedOrTimeout: Record<string, UsageRow> = {};
   const invocations: InvocationRow[] = [];
   let eventsRead = 0;
@@ -166,6 +198,7 @@ export function buildUsageSnapshotFromJsonl(
       bucketAdd(byWorkflow, parsed.workflow ?? "unknown", parsed.tokens);
       bucketAdd(byTargetRepo, parsed.target_repo ?? "unknown", parsed.tokens);
       bucketAdd(byModel, parsed.model ?? "unknown", parsed.tokens);
+      bucketAdd(bySession, parsed.session_id ?? parsed.github_run_id ?? "unknown", parsed.tokens);
       if (
         ["failed", "timeout", "buffer_exceeded", "missing_result", "schema_invalid"].includes(
           parsed.status,
@@ -193,7 +226,15 @@ export function buildUsageSnapshotFromJsonl(
     by_workflow: sortBucket(byWorkflow),
     by_target_repo: sortBucket(byTargetRepo),
     by_model: sortBucket(byModel),
+    by_session: sortBucket(bySession),
     failed_or_timeout: sortBucket(failedOrTimeout),
+    session_timeline_session_id: sessionId ?? null,
+    session_timeline: sessionId
+      ? invocations
+          .filter((event) => event.session_id === sessionId)
+          .sort((a, b) => a.emitted_at.localeCompare(b.emitted_at))
+          .slice(0, limit)
+      : [],
   };
 }
 
@@ -220,6 +261,13 @@ export function parseCliArgs(argv: readonly string[], now = new Date()): CliOpti
       const value = argv[index + 1];
       if (!value) throw new Error("--now requires an ISO timestamp");
       options.now = new Date(value);
+      index += 1;
+      continue;
+    }
+    if (arg === "--session-id") {
+      const value = argv[index + 1];
+      if (!value) throw new Error("--session-id requires a value");
+      options.sessionId = value;
       index += 1;
       continue;
     }

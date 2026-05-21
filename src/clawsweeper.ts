@@ -65,6 +65,7 @@ import { escapeRegExp, safeOutputTail, trimMiddle, truncateText } from "./clawsw
 import {
   appendUsageEventJsonl,
   buildUsageTelemetryEvent,
+  parseClaudeTokenUsageFromMessage,
   parseCodexTokenUsageFromJsonl,
   type UsageStatus,
 } from "./usage-telemetry.js";
@@ -476,6 +477,7 @@ interface Action {
 }
 
 interface ReviewRuntime {
+  provider?: ReviewProvider;
   model: string;
   reasoningEffort: string;
   sandboxMode?: string;
@@ -4747,7 +4749,42 @@ export function runClaude(options: RunClaudeOptions): Decision {
 
   const promptPath = join(options.workDir, `${item.number}.claude-prompt.md`);
   const responsePath = join(options.workDir, `${item.number}.claude-response.json`);
+  const usageEventsPath = join(options.workDir, "usage-events.jsonl");
   writeFileSync(promptPath, prompt, "utf8");
+
+  const itemRepo = normalizeRepo((item as { repo?: string }).repo ?? targetRepo());
+  const sessionId = process.env.GITHUB_RUN_ID
+    ? `github:${process.env.GITHUB_REPOSITORY ?? REPORT_REPO}:${process.env.GITHUB_RUN_ID}`
+    : `local:clawsweeper-review:${itemRepo}:${item.number}`;
+  const turnId = `sweep:item-review:${itemRepo}:${item.number}`;
+  const emitUsage = (status: UsageStatus, message: unknown, elapsedMs: number): void => {
+    try {
+      appendUsageEventJsonl(
+        usageEventsPath,
+        buildUsageTelemetryEvent({
+          workflow: "sweep",
+          mode: "review",
+          phase: "item-review",
+          provider: "anthropic",
+          session_id: sessionId,
+          turn_id: turnId,
+          target_repo: itemRepo,
+          item_number: item.number,
+          model,
+          reasoning_effort: options.reasoningEffort,
+          service_tier: options.serviceTier,
+          sandbox: options.sandboxMode,
+          timeout_ms: options.timeoutMs,
+          elapsed_ms: elapsedMs,
+          output_path: relative(options.workDir, responsePath),
+          status,
+          tokens: parseClaudeTokenUsageFromMessage(message),
+        }),
+      );
+    } catch {
+      // Telemetry must never change the review outcome.
+    }
+  };
 
   const schema = JSON.parse(reviewDecisionSchemaText());
 
@@ -4785,6 +4822,7 @@ export function runClaude(options: RunClaudeOptions): Decision {
   const url = `${bridgeUrl.replace(/\/+$/, "")}/source/${CLAUDE_REVIEW_BRIDGE_SOURCE}/v1/messages`;
 
   let response: ClaudeBridgePostResult;
+  const startedAt = Date.now();
   try {
     response = postFn({ url, body, timeoutMs: options.timeoutMs });
   } catch (error) {
@@ -4832,7 +4870,9 @@ export function runClaude(options: RunClaudeOptions): Decision {
         (block) => block?.type === "tool_use" && block.name === CLAUDE_DECISION_TOOL_NAME,
       )
     : undefined;
+  const elapsedMs = Date.now() - startedAt;
   if (!toolUse) {
+    emitUsage("failed", payload, elapsedMs);
     const stopReason = (payload as { stop_reason?: string })?.stop_reason ?? "unknown";
     throw new Error(
       `Claude review failed for #${item.number}: no submit_decision tool_use in response (stop_reason=${stopReason})`,
@@ -4840,8 +4880,11 @@ export function runClaude(options: RunClaudeOptions): Decision {
   }
 
   try {
-    return parseDecision(toolUse.input, item);
+    const decision = parseDecision(toolUse.input, item);
+    emitUsage("success", payload, elapsedMs);
+    return decision;
   } catch (error) {
+    emitUsage("schema_invalid", payload, elapsedMs);
     throw new Error(
       `Claude review failed for #${item.number}: invalid structured output (${
         error instanceof Error ? error.message : String(error)
@@ -6505,26 +6548,38 @@ function runtimeReviewTextFromReport(markdown: string): string {
   });
 }
 
+function reviewProviderLabel(provider?: ReviewProvider): string {
+  return provider === "claude-bridge" ? "Claude" : "Codex";
+}
+
+function actualReviewModel(provider: ReviewProvider, requestedModel: string): string {
+  if (provider === "claude-bridge" && !looksLikeClaudeModel(requestedModel)) {
+    return DEFAULT_CLAUDE_MODEL;
+  }
+  return requestedModel;
+}
+
 function closeReviewLineFromDecision(
   decision: Decision,
   git: GitInfo,
-  runtime?: Pick<ReviewRuntime, "model" | "reasoningEffort">,
+  runtime?: Pick<ReviewRuntime, "provider" | "model" | "reasoningEffort">,
 ): string {
   const fixed = fixedInText(decision);
   const parts = [runtimeReviewText(runtime), `reviewed against ${linkedSha(git.mainSha)}`].filter(
     Boolean,
   );
   if (fixed !== "not determined") parts.push(`fix evidence: ${fixed}`);
-  return `Codex review notes: ${parts.join("; ")}.`;
+  return `${reviewProviderLabel(runtime?.provider)} review notes: ${parts.join("; ")}.`;
 }
 
 function closeReviewLineFromReport(markdown: string): string {
   const mainSha = frontMatterValue(markdown, "main_sha");
   const fixed = fixedInReportText(markdown);
+  const provider = frontMatterValue(markdown, "review_provider") as ReviewProvider | undefined;
   const parts: string[] = [runtimeReviewTextFromReport(markdown)].filter(Boolean);
   if (mainSha && mainSha !== "unknown") parts.push(`reviewed against ${linkedSha(mainSha)}`);
   if (fixed !== "not determined") parts.push(`fix evidence: ${fixed}`);
-  return parts.length ? `Codex review notes: ${parts.join("; ")}.` : "";
+  return parts.length ? `${reviewProviderLabel(provider)} review notes: ${parts.join("; ")}.` : "";
 }
 
 function renderCloseComment(options: {
@@ -7144,10 +7199,13 @@ export function renderReviewStartStatusComment(options: ReviewStartStatusComment
 export function isCodexReviewCommentBody(body: string): boolean {
   return (
     body.includes("Codex review:") ||
+    body.includes("Claude review:") ||
     body.includes("Codex review notes:") ||
+    body.includes("Claude review notes:") ||
     body.includes("Codex Review notes:") ||
     body.includes("Codex automated review:") ||
     body.includes("after Codex review.") ||
+    body.includes("after Claude review.") ||
     body.includes("after Codex automated review.")
   );
 }
@@ -7680,6 +7738,7 @@ fixed_pr_sha: ${fixedPullRequest?.sha ?? "unknown"}
 fixed_pr_confidence: ${fixedPullRequest?.confidence ?? "unknown"}
 fixed_pr_source: ${fixedPullRequest ? JSON.stringify(fixedPullRequest.source) : "unknown"}
 review_policy: ${options.reviewPolicy}
+review_provider: ${options.runtime.provider ?? "codex"}
 review_model: ${options.runtime.model}
 review_reasoning_effort: ${options.runtime.reasoningEffort}
 review_sandbox: ${options.runtime.sandboxMode ?? "unknown"}
@@ -7750,7 +7809,7 @@ Updated at: ${formatTimestamp(options.item.updatedAt)}
 
 Reviewed against: ${linkedSha(options.git.mainSha)}
 
-Codex review: ${runtimeReviewText(options.runtime)}
+${reviewProviderLabel(options.runtime.provider)} review: ${runtimeReviewText(options.runtime)}
 
 Latest release at review time: ${
     options.git.latestRelease?.tagName
@@ -7865,7 +7924,7 @@ ${options.action.closeComment ? options.action.closeComment : "_No close comment
 - schema chars: ${reviewTelemetryNumber(options.runtime.schemaChars)}
 - additional prompt chars: ${reviewTelemetryNumber(options.runtime.additionalPromptChars)}
 - context collection ms: ${reviewTelemetryNumber(options.runtime.contextElapsedMs)}
-- Codex review ms: ${reviewTelemetryNumber(options.runtime.codexElapsedMs)}
+- model review ms: ${reviewTelemetryNumber(options.runtime.codexElapsedMs)}
   `;
 }
 
@@ -8121,7 +8180,8 @@ function reviewCommand(args: Args): void {
     }
     decision = attachFixedPullRequest(decision, item, context);
     const runtime = {
-      model,
+      provider: reviewProvider,
+      model: actualReviewModel(reviewProvider, model),
       reasoningEffort,
       sandboxMode,
       serviceTier,

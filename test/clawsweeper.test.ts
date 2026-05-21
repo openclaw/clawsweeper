@@ -4495,6 +4495,12 @@ test("runClaude POSTs forced-tool-use, persists the response, and returns a pars
         role: "assistant",
         model: "claude-sonnet-4-5-20250929",
         stop_reason: "tool_use",
+        usage: {
+          input_tokens: 10,
+          cache_creation_input_tokens: 20,
+          cache_read_input_tokens: 30,
+          output_tokens: 4,
+        },
         content: [
           {
             type: "tool_use",
@@ -4510,7 +4516,20 @@ test("runClaude POSTs forced-tool-use, persists the response, and returns a pars
     item: { number: 7, repo: "valkyriweb/clawsweeper" } as never,
     postFn: stubPost,
   });
-  const decision = runClaude(options);
+  const oldRunId = process.env.GITHUB_RUN_ID;
+  const oldRepository = process.env.GITHUB_REPOSITORY;
+  delete process.env.GITHUB_RUN_ID;
+  delete process.env.GITHUB_REPOSITORY;
+  let decision: ReturnType<typeof runClaude> | undefined;
+  try {
+    decision = runClaude(options);
+  } finally {
+    if (oldRunId === undefined) delete process.env.GITHUB_RUN_ID;
+    else process.env.GITHUB_RUN_ID = oldRunId;
+    if (oldRepository === undefined) delete process.env.GITHUB_REPOSITORY;
+    else process.env.GITHUB_REPOSITORY = oldRepository;
+  }
+  assert.ok(decision);
   assert.equal(decision.decision, expected.decision);
   assert.equal(decision.closeReason, expected.closeReason);
   assert.deepEqual(decision.likelyOwners, expected.likelyOwners);
@@ -4532,6 +4551,22 @@ test("runClaude POSTs forced-tool-use, persists the response, and returns a pars
   assert.equal(sentBody.metadata.user_id, "clawsweeper-#7");
   // Response is persisted next to the prompt for debug ergonomics.
   assert.equal(existsSync(join(options.workDir, "7.claude-response.json")), true);
+  const usageEvents = readFileSync(join(options.workDir, "usage-events.jsonl"), "utf8")
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line));
+  assert.equal(usageEvents.length, 1);
+  assert.equal(usageEvents[0].provider, "anthropic");
+  assert.equal(usageEvents[0].model, "claude-sonnet-4-5-20250929");
+  assert.equal(usageEvents[0].session_id, "local:clawsweeper-review:valkyriweb/clawsweeper:7");
+  assert.deepEqual(usageEvents[0].tokens, {
+    input: 10,
+    cache_read: 30,
+    cache_creation: 20,
+    output: 4,
+    reasoning_output: 0,
+    total: 64,
+  });
 });
 
 test("runClaude throws when the response contains no submit_decision tool_use block", () => {

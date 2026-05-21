@@ -1,12 +1,17 @@
 import { spawnSync } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { appendFileSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 
 export type CodexTokenUsage = {
   input_tokens?: number;
+  prompt_tokens?: number;
   cached_input_tokens?: number;
+  cache_read_input_tokens?: number;
+  cache_creation_input_tokens?: number;
+  cache_write_input_tokens?: number;
   output_tokens?: number;
+  completion_tokens?: number;
   reasoning_output_tokens?: number;
   total_tokens?: number;
 };
@@ -14,6 +19,7 @@ export type CodexTokenUsage = {
 export type UsageTokens = {
   input: number;
   cache_read: number;
+  cache_creation: number;
   output: number;
   reasoning_output: number;
   total: number;
@@ -38,6 +44,9 @@ export type UsageEventMetadata = {
   workflow?: string;
   mode?: string;
   phase?: string;
+  provider?: string;
+  session_id?: string;
+  turn_id?: string;
   target_repo?: string;
   cluster_id?: string;
   item_number?: number;
@@ -88,9 +97,22 @@ function readTokenUsage(value: unknown): CodexTokenUsage | null {
 
   const usage: CodexTokenUsage = {};
   if (typeof value.input_tokens === "number") usage.input_tokens = value.input_tokens;
-  if (typeof value.cached_input_tokens === "number")
+  if (typeof value.prompt_tokens === "number") usage.prompt_tokens = value.prompt_tokens;
+  if (typeof value.cached_input_tokens === "number") {
     usage.cached_input_tokens = value.cached_input_tokens;
+  }
+  if (typeof value.cache_read_input_tokens === "number") {
+    usage.cache_read_input_tokens = value.cache_read_input_tokens;
+  }
+  if (typeof value.cache_creation_input_tokens === "number") {
+    usage.cache_creation_input_tokens = value.cache_creation_input_tokens;
+  }
+  if (typeof value.cache_write_input_tokens === "number") {
+    usage.cache_write_input_tokens = value.cache_write_input_tokens;
+  }
   if (typeof value.output_tokens === "number") usage.output_tokens = value.output_tokens;
+  if (typeof value.completion_tokens === "number")
+    usage.completion_tokens = value.completion_tokens;
   if (typeof value.reasoning_output_tokens === "number") {
     usage.reasoning_output_tokens = value.reasoning_output_tokens;
   }
@@ -104,16 +126,20 @@ export function normalizeCodexTokenUsage(
 ): UsageTokens | null {
   if (!usage) return null;
 
-  const input = safeNumber(usage.input_tokens);
-  const cacheRead = safeNumber(usage.cached_input_tokens);
-  const output = safeNumber(usage.output_tokens);
+  const input = safeNumber(usage.input_tokens) || safeNumber(usage.prompt_tokens);
+  const cacheRead =
+    safeNumber(usage.cached_input_tokens) || safeNumber(usage.cache_read_input_tokens);
+  const cacheCreation =
+    safeNumber(usage.cache_creation_input_tokens) || safeNumber(usage.cache_write_input_tokens);
+  const output = safeNumber(usage.output_tokens) || safeNumber(usage.completion_tokens);
   const reasoningOutput = safeNumber(usage.reasoning_output_tokens);
   const explicitTotal = safeNumber(usage.total_tokens);
-  const total = explicitTotal || input + cacheRead + output + reasoningOutput;
+  const total = explicitTotal || input + cacheRead + cacheCreation + output + reasoningOutput;
 
   return {
     input,
     cache_read: cacheRead,
+    cache_creation: cacheCreation,
     output,
     reasoning_output: reasoningOutput,
     total,
@@ -157,6 +183,11 @@ export function parseCodexTokenUsageFromJsonl(stdout: string): CodexTokenUsagePa
   return result;
 }
 
+export function parseClaudeTokenUsageFromMessage(message: unknown): UsageTokens | null {
+  const usage = isRecord(message) ? readTokenUsage(message.usage) : null;
+  return normalizeCodexTokenUsage(usage);
+}
+
 export function githubUsageMetadataFromEnv(
   env: NodeJS.ProcessEnv = process.env,
 ): UsageGitHubMetadata {
@@ -169,17 +200,59 @@ export function githubUsageMetadataFromEnv(
   return metadata;
 }
 
+function providerForModel(model: string | undefined): string | undefined {
+  if (!model) return undefined;
+  if (model.startsWith("claude-")) return "anthropic";
+  if (model.startsWith("gpt-")) return "openai-codex";
+  return undefined;
+}
+
+function defaultSessionId(
+  metadata: UsageEventMetadata,
+  github: UsageGitHubMetadata,
+): string | undefined {
+  if (metadata.session_id) return metadata.session_id;
+  if (github.github_run_id) {
+    return `github:${github.github_repository ?? "unknown"}:${github.github_run_id}`;
+  }
+  return undefined;
+}
+
+function defaultTurnId(metadata: UsageEventMetadata): string | undefined {
+  if (metadata.turn_id) return metadata.turn_id;
+  const subject =
+    typeof metadata.item_number === "number"
+      ? `item:${metadata.item_number}`
+      : metadata.commit_sha
+        ? `commit:${metadata.commit_sha}`
+        : metadata.job_path
+          ? `job:${metadata.job_path}`
+          : undefined;
+  if (!subject) return undefined;
+  return [metadata.workflow, metadata.phase, metadata.target_repo, subject]
+    .filter(Boolean)
+    .join(":");
+}
+
 export function buildUsageTelemetryEvent(
   metadata: UsageEventMetadata,
   options: { env?: NodeJS.ProcessEnv; emittedAt?: Date } = {},
 ): UsageTelemetryEvent {
+  const github = githubUsageMetadataFromEnv(options.env);
+  const provider = metadata.provider ?? providerForModel(metadata.model);
+  const sessionId = defaultSessionId(metadata, github);
+  const turnId = defaultTurnId(metadata);
+
   return {
     surface: "clawsweeper",
     emitted_at: (options.emittedAt ?? new Date()).toISOString(),
-    ...githubUsageMetadataFromEnv(options.env),
+    ...github,
     ...(metadata.workflow ? { workflow: metadata.workflow } : {}),
     ...(metadata.mode ? { mode: metadata.mode } : {}),
     ...(metadata.phase ? { phase: metadata.phase } : {}),
+    ...(provider ? { provider } : {}),
+    ...(sessionId ? { session_id: sessionId } : {}),
+    ...(turnId ? { turn_id: turnId } : {}),
     ...(metadata.target_repo ? { target_repo: metadata.target_repo } : {}),
     ...(metadata.cluster_id ? { cluster_id: metadata.cluster_id } : {}),
     ...(typeof metadata.item_number === "number" ? { item_number: metadata.item_number } : {}),
@@ -265,6 +338,27 @@ function usageStatusCode(status: UsageStatus): number {
   return status === "success" || status === "result_repair" ? 1 : 2;
 }
 
+function cacheInputTokens(tokens: UsageTokens | null | undefined): number {
+  if (!tokens) return 0;
+  return tokens.input + tokens.cache_read + tokens.cache_creation;
+}
+
+function cacheReadRatio(tokens: UsageTokens | null | undefined): number | undefined {
+  const input = cacheInputTokens(tokens);
+  if (input <= 0) return undefined;
+  return tokens ? tokens.cache_read / input : undefined;
+}
+
+function traceIdFor(event: UsageTelemetryEvent): string {
+  const key =
+    event.session_id ||
+    [event.github_repository, event.github_run_id, event.workflow, event.target_repo]
+      .filter(Boolean)
+      .join(":") ||
+    event.emitted_at;
+  return createHash("sha256").update(key).digest("hex").slice(0, 32);
+}
+
 function otlpPayloadForUsageEvent(
   event: UsageTelemetryEvent,
   env: NodeJS.ProcessEnv = process.env,
@@ -295,22 +389,32 @@ function otlpPayloadForUsageEvent(
             scope: { name: "clawsweeper.usage", version: "1" },
             spans: [
               {
-                traceId: randomBytes(16).toString("hex"),
+                traceId: traceIdFor(event),
                 spanId: randomBytes(8).toString("hex"),
                 name: `clawsweeper.${workflow}.${phase}`,
                 kind: 1,
                 startTimeUnixNano,
                 endTimeUnixNano,
                 attributes: compactAttributes({
-                  "gen_ai.system": "openai-codex",
-                  "gen_ai.operation.name": "clawsweeper.codex_exec",
+                  "gen_ai.system": event.provider || "openai-codex",
+                  "gen_ai.operation.name": `clawsweeper.${event.mode || "model_call"}`,
                   "gen_ai.request.model": event.model,
+                  "gen_ai.response.model": event.model,
                   "gen_ai.usage.input_tokens": event.tokens?.input,
                   "gen_ai.usage.output_tokens": event.tokens?.output,
                   "gen_ai.usage.cached_input_tokens": event.tokens?.cache_read,
+                  "gen_ai.usage.cache_read_input_tokens": event.tokens?.cache_read,
+                  "gen_ai.usage.cache_creation_input_tokens": event.tokens?.cache_creation,
                   "gen_ai.usage.reasoning_output_tokens": event.tokens?.reasoning_output,
                   "gen_ai.usage.total_tokens": event.tokens?.total,
+                  "gen_ai.usage.cache_input_tokens": cacheInputTokens(event.tokens),
+                  "gen_ai.usage.cache_read_ratio": cacheReadRatio(event.tokens),
                   "clawsweeper.surface": event.surface,
+                  "clawsweeper.provider": event.provider,
+                  "agent.session_id": event.session_id,
+                  "agent.turn_id": event.turn_id,
+                  "clawsweeper.session_id": event.session_id,
+                  "clawsweeper.turn_id": event.turn_id,
                   "clawsweeper.workflow": event.workflow,
                   "clawsweeper.mode": event.mode,
                   "clawsweeper.phase": event.phase,

@@ -9,6 +9,7 @@ import {
   buildUsageTelemetryEvent,
   emitUsageEventOtlpHttp,
   emitUsageTelemetry,
+  parseClaudeTokenUsageFromMessage,
   parseCodexTokenUsageFromJsonl,
 } from "../src/usage-telemetry.ts";
 
@@ -45,6 +46,7 @@ test("parses a single Codex token_count event", () => {
   assert.deepEqual(result?.tokens, {
     input: 10,
     cache_read: 4,
+    cache_creation: 0,
     output: 5,
     reasoning_output: 2,
     total: 21,
@@ -71,6 +73,26 @@ test("maps cached_input_tokens to cache_read", () => {
   );
 
   assert.equal(result?.tokens.cache_read, 99);
+});
+
+test("parses Claude message usage with cache creation and cache reads", () => {
+  const tokens = parseClaudeTokenUsageFromMessage({
+    usage: {
+      input_tokens: 12,
+      cache_creation_input_tokens: 34,
+      cache_read_input_tokens: 56,
+      output_tokens: 7,
+    },
+  });
+
+  assert.deepEqual(tokens, {
+    input: 12,
+    cache_read: 56,
+    cache_creation: 34,
+    output: 7,
+    reasoning_output: 0,
+    total: 109,
+  });
 });
 
 test("ignores malformed JSONL and non-usage lines", () => {
@@ -113,7 +135,14 @@ test("buildUsageTelemetryEvent only includes explicit sanitized metadata", () =>
       stderr_path: "codex.stderr.log",
       output_path: "result.json",
       status: "success",
-      tokens: { input: 1, cache_read: 2, output: 3, reasoning_output: 4, total: 10 },
+      tokens: {
+        input: 1,
+        cache_read: 2,
+        cache_creation: 0,
+        output: 3,
+        reasoning_output: 4,
+        total: 10,
+      },
       prompt: "must not leak",
       output: "must not leak",
       transcript: "must not leak",
@@ -146,6 +175,9 @@ test("buildUsageTelemetryEvent only includes explicit sanitized metadata", () =>
     workflow: "repair-worker",
     mode: "plan",
     phase: "primary",
+    provider: "openai-codex",
+    session_id: "github:openclaw/clawsweeper:100",
+    turn_id: "repair-worker:primary:openclaw/openclaw:item:123",
     target_repo: "openclaw/openclaw",
     cluster_id: "cluster-1",
     item_number: 123,
@@ -161,7 +193,14 @@ test("buildUsageTelemetryEvent only includes explicit sanitized metadata", () =>
     stderr_path: "codex.stderr.log",
     output_path: "result.json",
     status: "success",
-    tokens: { input: 1, cache_read: 2, output: 3, reasoning_output: 4, total: 10 },
+    tokens: {
+      input: 1,
+      cache_read: 2,
+      cache_creation: 0,
+      output: 3,
+      reasoning_output: 4,
+      total: 10,
+    },
   });
 });
 
@@ -204,7 +243,14 @@ test("emitUsageEventOtlpHttp only broadcasts sanitized OTLP attributes", () => {
         stderr_path: "stderr.log",
         output_path: "raw-output.json",
         status: "success",
-        tokens: { input: 11, cache_read: 2, output: 3, reasoning_output: 4, total: 20 },
+        tokens: {
+          input: 11,
+          cache_read: 2,
+          cache_creation: 5,
+          output: 3,
+          reasoning_output: 4,
+          total: 25,
+        },
       },
       { emittedAt: new Date("2026-05-18T00:00:00.000Z"), env: {} },
     );
@@ -225,6 +271,8 @@ test("emitUsageEventOtlpHttp only broadcasts sanitized OTLP attributes", () => {
     assert.match(payload, /clawsweeper-runner/);
     assert.match(payload, /clawsweeper\.repair-worker\.primary/);
     assert.match(payload, /gen_ai\.usage\.total_tokens/);
+    assert.match(payload, /gen_ai\.usage\.cache_creation_input_tokens/);
+    assert.match(payload, /gen_ai\.usage\.cache_read_ratio/);
     assert.doesNotMatch(payload, /transcript_path|stderr_path|output_path/);
     assert.doesNotMatch(payload, /raw-codex|raw-output|stderr\.log/);
   } finally {
@@ -236,7 +284,14 @@ test("emitUsageEventOtlpHttp is opt-in and skips zero-token events", () => {
   const event = buildUsageTelemetryEvent(
     {
       status: "success",
-      tokens: { input: 0, cache_read: 0, output: 0, reasoning_output: 0, total: 0 },
+      tokens: {
+        input: 0,
+        cache_read: 0,
+        cache_creation: 0,
+        output: 0,
+        reasoning_output: 0,
+        total: 0,
+      },
     },
     { emittedAt: new Date(0), env: {} },
   );
@@ -253,7 +308,14 @@ test("emitUsageEventOtlpHttp is opt-in and skips zero-token events", () => {
       buildUsageTelemetryEvent(
         {
           status: "success",
-          tokens: { input: 1, cache_read: 0, output: 0, reasoning_output: 0, total: 1 },
+          tokens: {
+            input: 1,
+            cache_read: 0,
+            cache_creation: 0,
+            output: 0,
+            reasoning_output: 0,
+            total: 1,
+          },
         },
         { emittedAt: new Date(0), env: {} },
       ),

@@ -215,6 +215,9 @@ Live pipeline dashboard: https://clawsweeper.openclaw.ai/
 The Cloudflare dashboard is observability-only: it shows active workers,
 repair/automerge pipeline rows, CI state, recent failures, and automerge timing
 without owning GitHub mutations. See [`docs/live-dashboard.md`](docs/live-dashboard.md).
+Model usage telemetry writes sanitized `usage-events.jsonl` artifacts and can
+broadcast OTLP spans for SigNoz/Opik fan-out, including cache health and
+per-session timelines. See [`docs/telemetry.md`](docs/telemetry.md).
 
 The optional triage dashboard page at `/triage` exposes ClawSweeper advisory
 issue labels as read-only maintainer views, backed by GitHub Search snapshots
