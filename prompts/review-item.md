@@ -206,6 +206,21 @@ finding should point to the existing supported path and explain why the
 duplicate implementation would create maintenance drift, conflicting behavior,
 or user confusion.
 
+Treat plugin API surface changes as compatibility-sensitive. If a PR adds,
+removes, renames, deprecates, changes behavior for, or adds new similar/parallel
+calls to a plugin API, require explicit maintainer-visible discussion, existing
+maintainer approval, or a narrow repair path before merge. Use
+`merge-risk: 🚨 compatibility`, name the plugin API concern in `risks`, and make
+`mergeRiskOptions` spell out the maintainer choices or repair path. Prefer a
+resolvable P1 review finding when the problem can be fixed mechanically by
+preserving the existing API, removing the duplicate/parallel call, adding a
+clear deprecation path, documenting the upgrade behavior, or adding focused
+compatibility tests. Choose `queue_fix_pr` for plugin API findings only when the
+repair is concrete and does not require choosing the API direction. Use
+`manual_review` when the unresolved blocker is whether the new API should exist,
+whether the old API may be removed, or what permanent plugin contract
+maintainers want.
+
 Treat compatibility and user settings as merge-critical. Look for changes that
 override existing preferences, persisted config, provider choices, auth/session
 state, local workspace state, generated files, shortcuts, routes, schemas, or

@@ -7513,6 +7513,31 @@ test("review prompt treats duplicated behavior as a P1 PR finding", () => {
   assert.match(prompt, /maintenance drift, conflicting behavior,\s+or user confusion/);
 });
 
+test("review prompt treats plugin API changes as compatibility-sensitive P1 repair work", () => {
+  const prompt = readFileSync("prompts/review-item.md", "utf8");
+
+  assert.match(prompt, /Treat plugin API surface changes as compatibility-sensitive/);
+  assert.match(prompt, /adds,\s+removes, renames, deprecates, changes behavior for/);
+  assert.match(prompt, /adds new similar\/parallel\s+calls to a plugin API/);
+  assert.match(prompt, /require explicit maintainer-visible discussion/);
+  assert.match(prompt, /Use\s+`merge-risk: 🚨 compatibility`/);
+  assert.match(prompt, /name the plugin API concern in `risks`/);
+  assert.match(prompt, /make\s+`mergeRiskOptions` spell out the maintainer choices or repair path/);
+  assert.match(prompt, /Prefer a\s+resolvable P1 review finding/);
+  assert.match(prompt, /preserving the existing API/);
+  assert.match(prompt, /removing the duplicate\/parallel call/);
+  assert.match(prompt, /clear deprecation path/);
+  assert.match(prompt, /focused\s+compatibility tests/);
+  assert.match(
+    prompt,
+    /Choose\s+`queue_fix_pr` for plugin API findings only when the\s+repair is concrete/,
+  );
+  assert.match(
+    prompt,
+    /Use\s+`manual_review` when the unresolved blocker is whether the new API should exist/,
+  );
+});
+
 test("review prompt requires upgrade and preference overwrite checks", () => {
   const prompt = readFileSync("prompts/review-item.md", "utf8");
 
