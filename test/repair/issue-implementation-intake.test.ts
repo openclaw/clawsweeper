@@ -7,11 +7,13 @@ import { readFileSync } from "node:fs";
 
 import {
   attachedPrText,
+  blocksIssueImplementationPr,
   effectiveReproductionStatus,
   issueReferenceTextMatches,
   parseReviewReport,
   readVerifyReproductionAudit,
   reportOnlyDecision,
+  securitySensitiveText,
 } from "../../dist/repair/issue-implementation-intake.js";
 import {
   renderIssueImplementationJob,
@@ -158,6 +160,46 @@ test("strict regression reports are eligible for implementation intake", () => {
 
   assert.equal(decision.shouldRepair, true);
   assert.equal(decision.status, "queued_for_repair");
+});
+
+test("implementation intake ignores cross-repo PR evidence links", () => {
+  const markdown = report({
+    repository: "valkyriweb/clawsweeper",
+    work_cluster_refs: JSON.stringify([
+      "#54",
+      "https://github.com/valkyriweb/openclaw-claude/pull/12",
+    ]),
+  });
+  const decision = reportOnlyDecision({
+    targetRepo: "valkyriweb/clawsweeper",
+    report: parseReviewReport(markdown),
+    reportMarkdown: markdown,
+  });
+
+  assert.equal(decision.shouldRepair, true);
+  assert.equal(
+    blocksIssueImplementationPr(
+      "https://github.com/valkyriweb/openclaw-claude/pull/12",
+      "valkyriweb/clawsweeper",
+    ),
+    false,
+  );
+  assert.equal(
+    blocksIssueImplementationPr(
+      "https://github.com/valkyriweb/clawsweeper/pull/55",
+      "valkyriweb/clawsweeper",
+    ),
+    true,
+  );
+  assert.equal(blocksIssueImplementationPr("PR #55", "valkyriweb/clawsweeper"), true);
+});
+
+test("security-sensitive live text does not flag token-shaped code identifiers", () => {
+  assert.equal(securitySensitiveText("runClaude hardcodes max_tokens=8192"), false);
+  assert.equal(securitySensitiveText("output_tokens reached 8191 in usage telemetry"), false);
+  assert.equal(securitySensitiveText("cache_read_input_tokens appears in Anthropic usage"), false);
+  assert.equal(securitySensitiveText("leaked bearer token in logs"), true);
+  assert.equal(securitySensitiveText("GITHUB_TOKEN=ghs_1234567890abcdef"), true);
 });
 
 test("implementation intake issue reference matching ignores unrelated version numbers", () => {

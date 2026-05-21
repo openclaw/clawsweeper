@@ -93,13 +93,25 @@ jobs:
             tsconfig.repair.json
           sparse-checkout-cone-mode: false
 
+      - uses: ./.github/actions/setup-pnpm
+        with:
+          build-script: build:repair
+
+      - name: Resolve target owner
+        id: target-owner
+        env:
+          TARGET_REPO: ${{ github.event_name == 'workflow_dispatch' && inputs.target_repo || github.event.client_payload.target_repo || vars.CLAWSWEEPER_TARGET_REPO || 'openclaw/openclaw' }}
+        run: |
+          set -euo pipefail
+          echo "owner=${TARGET_REPO%%/*}" >> "$GITHUB_OUTPUT"
+
       - name: Create GitHub App token
         id: app_token
         uses: actions/create-github-app-token@1b10c78c7865c340bc4f6099eb2f838309f1e8c3 # v3.1.1
         with:
           client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
           private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
-          owner: ${{ vars.CLAWSWEEPER_ALLOWED_OWNER || github.repository_owner }}
+          owner: ${{ steps.target-owner.outputs.owner }}
           permission-actions: write
           permission-contents: write
           permission-issues: write
@@ -115,10 +127,6 @@ jobs:
       - uses: ./.github/actions/setup-state
         with:
           token: ${{ steps.state-token.outputs.token }}
-
-      - uses: ./.github/actions/setup-pnpm
-        with:
-          build-script: build:repair
 
       - name: Route ClawSweeper comments
         env:
@@ -181,7 +189,7 @@ jobs:
           pnpm run repair:comment-router -- "${args[@]}"
 
       - name: Commit comment router ledger
-        if: always()
+        if: always() && steps.app_token.outcome == 'success'
         run: |
           pnpm run repair:publish-main -- \
             --message "chore: record ClawSweeper comment routing" \
@@ -261,7 +269,7 @@ jobs:
           pnpm run repair:comment-router -- "${args[@]}"
 
       - name: Commit comment router retry ledger
-        if: ${{ always() && steps.waiting-repair-dispatches.outputs.count != '' && steps.waiting-repair-dispatches.outputs.count != '0' }}
+        if: ${{ always() && steps.app_token.outcome == 'success' && steps.waiting-repair-dispatches.outputs.count != '' && steps.waiting-repair-dispatches.outputs.count != '0' }}
         run: |
           pnpm run repair:publish-main -- \
             --message "chore: record ClawSweeper repair dispatch retry" \

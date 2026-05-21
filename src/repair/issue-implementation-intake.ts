@@ -397,7 +397,7 @@ function eligibilityDecision({
     blockers.push("missing validation commands");
   if (
     frontMatterStringArray(fm.work_cluster_refs).some((ref) =>
-      /\/pull\/\d+|^pr[#:\s-]*\d+$/i.test(ref),
+      blocksIssueImplementationPr(ref, targetRepo),
     )
   )
     blockers.push("work cluster references a PR");
@@ -675,9 +675,24 @@ function isProtectedLabel(label: string): boolean {
   );
 }
 
-function securitySensitiveText(text: string): boolean {
+export function blocksIssueImplementationPr(ref: string, targetRepo: string): boolean {
+  const text = ref.trim();
+  if (/^pr[#:\s-]*\d+$/i.test(text)) return true;
+  const pullUrl = text.match(/github\.com\/([^/\s]+\/[^/\s]+)\/pull\/\d+/i);
+  if (!pullUrl) return false;
+  return pullUrl[1]?.toLowerCase() === targetRepo.toLowerCase();
+}
+
+export function securitySensitiveText(text: string): boolean {
   const normalized = text.replace(/\bnot\b[^\n.]{0,80}\bsecurity-sensitive\b/gi, "not-sensitive");
-  return /\b(?:security|vulnerability|cve|ghsa|secret|credential|token|exploit|xss|csrf|ssrf|rce)\b/i.test(
+  if (
+    /\b(?:security|vulnerability|cve|ghsa|secret|credential|exploit|xss|csrf|ssrf|rce)\b/i.test(
+      normalized,
+    )
+  ) {
+    return true;
+  }
+  return /\b(?:bearer|access|refresh|auth|api|personal access|github|otel|signoz)\s+token\b|\b[A-Z0-9_]*TOKEN\s*[:=]\s*\S{8,}|\btoken\s*[:=]\s*\S{8,}/i.test(
     normalized,
   );
 }
