@@ -1,0 +1,168 @@
+name: ClawSweeper assist
+
+run-name: ${{ format('Assist {0}#{1}', github.event.client_payload.target_repo || 'openclaw/openclaw', github.event.client_payload.item_number || '?') }}
+
+on:
+  repository_dispatch:
+    types: [clawsweeper_assist]
+  workflow_dispatch:
+    inputs:
+      target_repo:
+        description: "Repository containing the issue or PR"
+        required: true
+        default: openclaw/openclaw
+        type: string
+      item_number:
+        description: "Issue or PR number"
+        required: true
+        type: string
+      question:
+        description: "Maintainer question to answer"
+        required: true
+        type: string
+      comment_id:
+        description: "Source issue comment id"
+        required: false
+        default: ""
+        type: string
+      comment_url:
+        description: "Source issue comment URL"
+        required: false
+        default: ""
+        type: string
+      author:
+        description: "Source comment author"
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+  CLAWSWEEPER_APP_CLIENT_ID: Iv23liOECG0slfuhz093
+  CODEX_CLI_VERSION: ${{ vars.CLAWSWEEPER_CODEX_CLI_VERSION || '0.128.0' }}
+
+concurrency:
+  group: ${{ format('clawsweeper-assist-{0}-{1}-{2}', github.event.client_payload.target_repo || inputs.target_repo || 'openclaw/openclaw', github.event.client_payload.item_number || inputs.item_number || github.run_id, github.event.client_payload.comment_id || inputs.comment_id || github.run_id) }}
+  cancel-in-progress: false
+
+jobs:
+  capacity:
+    runs-on: ubuntu-latest
+    outputs:
+      proceed: ${{ steps.limit.outputs.proceed }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          filter: blob:none
+          sparse-checkout: |
+            config
+            src
+            package.json
+            pnpm-lock.yaml
+            tsconfig.json
+            tsconfig.repair.json
+          sparse-checkout-cone-mode: false
+
+      - uses: ./.github/actions/setup-pnpm
+        with:
+          build-script: build
+
+      - id: limit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          cap="$(pnpm run --silent workflow -- worker-limit assist)"
+          active_assist_jobs() {
+            local runs total id jobs
+            total=0
+            runs="$(gh run list --repo "${{ github.repository }}" --status in_progress --limit 100 --json databaseId,workflowName \
+              | jq -r '.[] | select(.workflowName == "ClawSweeper assist") | .databaseId')"
+            while IFS= read -r id; do
+              if [ -z "$id" ]; then
+                continue
+              fi
+              jobs="$(gh run view "$id" --repo "${{ github.repository }}" --json jobs 2>/dev/null \
+                | jq '[.jobs[]? | select(.name == "assist") | select(.status == "in_progress" or .status == "pending" or .status == "queued" or .status == "waiting" or .status == "requested")] | length' 2>/dev/null \
+                || printf '0')"
+              if [[ "$jobs" =~ ^[0-9]+$ ]]; then
+                total=$((total + jobs))
+              fi
+            done <<< "$runs"
+            printf '%s' "$total"
+          }
+
+          for attempt in $(seq 1 80); do
+            active="$(active_assist_jobs)"
+            if [ "$active" -lt "$cap" ]; then
+              echo "proceed=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "::notice::Assist lane is at capacity (${active}/${cap}); waiting for a slot."
+            sleep 15
+          done
+
+          echo "::warning::Assist lane stayed at capacity (${cap}) for 20 minutes; leaving this run without posting an answer."
+          echo "proceed=false" >> "$GITHUB_OUTPUT"
+
+  assist:
+    needs: capacity
+    if: ${{ needs.capacity.outputs.proceed == 'true' }}
+    runs-on: ${{ vars.CLAWSWEEPER_WORKER_RUNNER || 'blacksmith-4vcpu-ubuntu-2404' }}
+    timeout-minutes: 8
+    env:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          filter: blob:none
+
+      - name: Create GitHub App token
+        id: app_token
+        uses: actions/create-github-app-token@1b10c78c7865c340bc4f6099eb2f838309f1e8c3 # v3.1.1
+        with:
+          client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
+          owner: ${{ vars.CLAWSWEEPER_ALLOWED_OWNER || github.repository_owner }}
+          permission-issues: write
+          permission-pull-requests: read
+
+      - uses: ./.github/actions/setup-pnpm
+        with:
+          build-script: build
+
+      - uses: ./.github/actions/setup-codex
+        with:
+          version: ${{ env.CODEX_CLI_VERSION }}
+
+      - name: Answer maintainer question
+        env:
+          GH_TOKEN: ${{ steps.app_token.outputs.token }}
+          TARGET_REPO: ${{ github.event.client_payload.target_repo || inputs.target_repo }}
+          ITEM_NUMBER: ${{ github.event.client_payload.item_number || inputs.item_number }}
+          QUESTION: ${{ github.event.client_payload.question || inputs.question }}
+          COMMENT_ID: ${{ github.event.client_payload.comment_id || inputs.comment_id || '' }}
+          COMMENT_URL: ${{ github.event.client_payload.comment_url || inputs.comment_url || '' }}
+          AUTHOR: ${{ github.event.client_payload.author || inputs.author || '' }}
+          MODEL: ${{ github.event.client_payload.model || 'gpt-5.5' }}
+          REASONING_EFFORT: ${{ github.event.client_payload.reasoning_effort || 'low' }}
+          TIMEOUT_MS: ${{ github.event.client_payload.timeout_ms || '120000' }}
+        run: |
+          set -euo pipefail
+          node dist/clawsweeper.js assist \
+            --target-repo "$TARGET_REPO" \
+            --item-number "$ITEM_NUMBER" \
+            --question "$QUESTION" \
+            --comment-id "$COMMENT_ID" \
+            --comment-url "$COMMENT_URL" \
+            --author "$AUTHOR" \
+            --codex-model "$MODEL" \
+            --codex-reasoning-effort "$REASONING_EFFORT" \
+            --codex-sandbox read-only \
+            --codex-timeout-ms "$TIMEOUT_MS"

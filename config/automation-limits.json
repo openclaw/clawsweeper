@@ -4,5 +4,10 @@
     "reserve_for_interactive": 10,
     "expansion_reserve": 20,
     "minimum_background": 10
+  },
+  "lanes": {
+    "assist": {
+      "max": 5
+    }
   }
 }

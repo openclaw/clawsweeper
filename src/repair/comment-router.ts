@@ -415,8 +415,8 @@ function classifyCommand(command: LooseRecord): JsonValue {
       status: "ready",
       actions: [
         {
-          action: "dispatch_clawsweeper",
-          workflow: reviewWorkflow,
+          action: "dispatch_assist",
+          workflow: "assist.yml",
           status: execute ? "pending" : "planned",
         },
         { action: "comment", status: execute ? "pending" : "planned" },
@@ -1244,6 +1244,7 @@ function executeCommand(command: LooseRecord) {
       (action: JsonValue) => action.action === "dispatch_repair",
     );
     const shouldDispatchClawSweeper = commandHasAction(command, "dispatch_clawsweeper");
+    const shouldDispatchAssist = commandHasAction(command, "dispatch_assist");
     const shouldDispatchHatch = commandHasAction(command, "dispatch_hatch");
     const shouldMerge = commandHasAction(command, "merge");
     const shouldApplyHumanReviewLabel = commandHasAction(command, "label");
@@ -1383,11 +1384,22 @@ function executeCommand(command: LooseRecord) {
         return action;
       });
     }
-    if (
-      ["freeform_assist", "re_review"].includes(command.intent) &&
-      command.issue_number &&
-      shouldDispatchClawSweeper
-    ) {
+    if (command.intent === "freeform_assist" && command.issue_number && shouldDispatchAssist) {
+      const clawsweeper = dispatchClawSweeperAssist(command);
+      dispatched = { ...dispatched, clawsweeper };
+      command.actions = command.actions.map((action: JsonValue) => {
+        if (action.action === "dispatch_assist") {
+          return {
+            ...action,
+            status: "executed",
+            dispatched_at: new Date().toISOString(),
+            ...clawsweeper,
+          };
+        }
+        return action;
+      });
+    }
+    if (command.intent === "re_review" && command.issue_number && shouldDispatchClawSweeper) {
       const clawsweeper = dispatchClawSweeperReview(command);
       dispatched = { ...dispatched, clawsweeper };
       command.actions = command.actions.map((action: JsonValue) => {
@@ -1916,6 +1928,44 @@ function dispatchClawSweeperReview(command: LooseRecord) {
   }
   return {
     workflow: reviewWorkflow,
+    event: "repository_dispatch",
+    repo: reviewRepo,
+    item_number: command.issue_number,
+  };
+}
+
+function dispatchClawSweeperAssist(command: LooseRecord) {
+  const payload = JSON.stringify({
+    event_type: "clawsweeper_assist",
+    client_payload: {
+      target_repo: command.repo,
+      item_number: String(command.issue_number),
+      item_kind: command.target?.kind ?? "",
+      comment_id: String(command.comment_id ?? ""),
+      comment_url: String(command.comment_url ?? ""),
+      author: String(command.author ?? ""),
+      question: String(command.freeform_prompt ?? command.command ?? "").slice(0, 3000),
+      model: "gpt-5.5",
+      reasoning_effort: "low",
+      timeout_ms: "120000",
+    },
+  });
+  const result = ghSpawn(
+    ["api", `repos/${reviewRepo}/dispatches`, "--method", "POST", "--input", "-"],
+    {
+      env: dispatchTokenEnv(),
+      input: payload,
+    },
+  );
+  if (result.status !== 0) {
+    throw new Error(
+      `failed to dispatch ClawSweeper assist for #${command.issue_number}: ${
+        result.stderr || result.stdout
+      }`,
+    );
+  }
+  return {
+    workflow: "assist.yml",
     event: "repository_dispatch",
     repo: reviewRepo,
     item_number: command.issue_number,

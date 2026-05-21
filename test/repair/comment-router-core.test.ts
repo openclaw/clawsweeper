@@ -829,6 +829,18 @@ test("parseCommand recognizes ClawSweeper bot mentions", () => {
     intent: "freeform_assist",
     freeform_prompt: "why did automerge stop here?",
   });
+  assert.deepEqual(parseCommand("/clawsweeper ask is this blocked on flaky CI?"), {
+    trigger: "slash",
+    command: "ask is this blocked on flaky ci?",
+    intent: "freeform_assist",
+    freeform_prompt: "is this blocked on flaky CI?",
+  });
+  assert.deepEqual(parseCommand("/clawsweeper explain why this PR is not automerge-ready"), {
+    trigger: "slash",
+    command: "explain why this pr is not automerge-ready",
+    intent: "freeform_assist",
+    freeform_prompt: "why this PR is not automerge-ready",
+  });
   assert.deepEqual(parseCommand("@clawsweeper: why did automerge stop here?"), {
     trigger: "mention",
     command: "why did automerge stop here?",
@@ -1639,7 +1651,9 @@ test("renderResponse reports freeform assist dispatches as read-only", () => {
   );
 
   assert.match(body, /taking a look at your question/);
-  assert.match(body, /read-only assist pass/);
+  assert.match(body, /lightweight read-only assist pass/);
+  assert.match(body, /separate answer comment/);
+  assert.match(body, /will not edit the durable ClawSweeper review comment/);
   assert.match(body, /why did automerge stop here/);
   assert.doesNotMatch(body, /repair worker/);
 });

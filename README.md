@@ -162,6 +162,7 @@ Common commands:
 @clawsweeper automerge
 @clawsweeper approve
 @clawsweeper explain
+@clawsweeper ask is this blocked by flaky CI?
 @clawsweeper stop
 @clawsweeper why did automerge stop here?
 ```
@@ -173,9 +174,12 @@ Common commands:
   issue/PR, intent, and head SHA. The visible badge is one lobster plus the
   current state: `👀` for acknowledgement, `🧹` for review, `🔧` for repair, and
   `✅` for completed/paused work.
-- Freeform `@clawsweeper ...` mentions dispatch a read-only assist review that
-  answers the maintainer request in the next ClawSweeper comment. Action-looking
-  prose still maps through existing safe markers and deterministic gates.
+- Freeform `@clawsweeper ...` mentions and explicit `ask ...` questions dispatch
+  the maintainer-only assist lane. Assist runs `gpt-5.5` with low reasoning, a
+  120-second per-item timeout, and its own five-job cap. It posts a separate
+  non-durable answer comment and never edits the durable ClawSweeper review
+  comment, closes, merges, labels, pushes, repairs, or emits review/apply
+  markers.
 - `fix ci`, `address review`, and `rebase` dispatch the repair worker only for
   ClawSweeper PRs or PRs already opted into `clawsweeper:autofix` or
   `clawsweeper:automerge`.

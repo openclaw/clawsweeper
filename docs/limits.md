@@ -22,6 +22,8 @@ The mental model:
 - `workers.max` is the global Codex capacity budget.
 - Priority lanes are repair, issue implementation, and exact-item review.
 - Background lanes are normal review, hot intake, and commit review.
+- Assist has a small fixed cap because it is lightweight maintainer Q&A, not a
+  derived review or repair lane.
 - Background lanes shrink when priority work is already active.
 - Runtime overrides are escape hatches, not the normal tuning surface.
 
@@ -33,6 +35,7 @@ The mental model:
 | `workers.reserve_for_interactive` | 10 | Worker slots background lanes leave open for exact/manual/urgent work. |
 | `workers.expansion_reserve` | 20 | Extra slots background lanes leave open for independently planned matrix expansion. |
 | `workers.minimum_background` | 10 | Target floor for background progress when enough global capacity is available. |
+| `lanes.assist.max` | 5 | Maximum concurrent lightweight assist jobs. |
 
 ## Derived Limits
 
@@ -43,6 +46,7 @@ workers.
 
 | Name | Current | Meaning |
 | --- | ---: | --- |
+| `assist.default` | 5 | Maintainer assist job cap. |
 | `review_shards.normal_default` | 39 | Quiet-system normal review shard ceiling. |
 | `review_shards.normal_active_floor` | 17 | Minimum active normal review shards to keep queued for `openclaw/openclaw`. |
 | `review_shards.hot_intake_default` | 19 | Quiet-system broad hot-intake review shard ceiling. |

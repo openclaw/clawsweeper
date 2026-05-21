@@ -1181,7 +1181,7 @@ export function renderResponse(command: LooseRecord, dispatched: LooseRecord) {
       marker,
       "ClawSweeper is here and listening for maintainer commands.",
       "",
-      "Supported commands: `/review`, `/clawsweeper status`, `/clawsweeper re-review`, `@clawsweeper hatch`, `/clawsweeper implement`, `@clawsweeper fix`, `/clawsweeper build`, `/clawsweeper fix ci`, `/clawsweeper address review`, `/clawsweeper rebase`, `/clawsweeper autofix`, `/clawsweeper automerge`, `/clawsweeper approve`, `/autoclose <reason>`, `/clawsweeper explain`, `/clawsweeper stop`.",
+      "Supported commands: `/review`, `/clawsweeper status`, `/clawsweeper re-review`, `@clawsweeper hatch`, `/clawsweeper implement`, `@clawsweeper fix`, `/clawsweeper build`, `/clawsweeper ask <question>`, `/clawsweeper fix ci`, `/clawsweeper address review`, `/clawsweeper rebase`, `/clawsweeper autofix`, `/clawsweeper automerge`, `/clawsweeper approve`, `/autoclose <reason>`, `/clawsweeper explain`, `/clawsweeper stop`.",
       "",
       "I only act for maintainers, or for trusted ClawSweeper feedback on a ClawSweeper PR or PR opted into `clawsweeper:autofix` or `clawsweeper:automerge`.",
     ].join("\n");
@@ -1193,11 +1193,11 @@ export function renderResponse(command: LooseRecord, dispatched: LooseRecord) {
     return [
       marker,
       dispatched?.clawsweeper
-        ? "ClawSweeper is taking a look at your question."
+        ? "ClawSweeper assist is taking a look at your question."
         : "ClawSweeper could not start a freeform assist pass for this item.",
       "",
       dispatched?.clawsweeper
-        ? "I asked ClawSweeper to answer this maintainer mention in the next review comment. Tiny claws, bounded scope: this is a read-only assist pass unless it produces one of the existing structured safe-action markers."
+        ? "I queued a lightweight read-only assist pass. It will post a separate answer comment and will not edit the durable ClawSweeper review comment or trigger close, merge, repair, label, or branch changes."
         : `Reason: ${command.reason ?? "freeform assist requires an open issue or PR"}.`,
       "",
       `Request: ${inlineQuote(command.freeform_prompt ?? command.command ?? "No request text provided.")}`,
@@ -1516,7 +1516,7 @@ function commandFromText(trigger: JsonValue, value: JsonValue) {
     intent === "freeform_assist" || intent === "autoclose" ? rawNormalized : command;
   const parsed: LooseRecord = { trigger, command: parsedCommand, intent };
   if (intent === "autoclose") parsed.autoclose_message = autocloseReasonFromCommand(rawCommand);
-  if (intent === "freeform_assist") parsed.freeform_prompt = rawCommand;
+  if (intent === "freeform_assist") parsed.freeform_prompt = assistPromptFromCommand(rawCommand);
   if (intent === "implement_issue")
     parsed.implementation_prompt = implementationPromptFromCommand(rawText);
   return parsed;
@@ -1541,6 +1541,11 @@ function implementationPromptFromCommand(command: LooseRecord) {
     .trim();
 }
 
+function assistPromptFromCommand(command: LooseRecord) {
+  const prompt = String(command ?? "").trim();
+  return prompt.replace(/^(?:ask|explain)\b[:\s-]*/i, "").trim() || prompt;
+}
+
 function issueImplementationRestPrefix(command: LooseRecord) {
   return command.command === "fix" ? "fix issue" : command.command;
 }
@@ -1549,6 +1554,14 @@ function normalizeIntent(command: LooseRecord) {
   if (!command || command === "status") return "status";
   if (["help", "?"].includes(command)) return "help";
   if (["explain", "why"].includes(command)) return "explain";
+  if (
+    command === "ask" ||
+    command.startsWith("ask ") ||
+    command.startsWith("explain ") ||
+    command.startsWith("why ")
+  ) {
+    return "freeform_assist";
+  }
   if (["hatch", "hatch egg", "pr egg hatch", "hatch pr egg"].includes(command)) return "hatch";
   if (["fix ci", "fix-ci", "ci", "repair ci", "repair checks", "fix checks"].includes(command))
     return "fix_ci";

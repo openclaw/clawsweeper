@@ -5103,6 +5103,153 @@ function runCodex(options: {
   }
 }
 
+function stripTextFence(markdown: string): string {
+  const trimmed = markdown.trim();
+  const match = trimmed.match(/^```(?:markdown|md|text)?\s*\n([\s\S]*?)\n```\s*$/i);
+  return match ? (match[1]?.trim() ?? trimmed) : trimmed;
+}
+
+function buildAssistPrompt(options: {
+  item: Item;
+  context: ItemContext;
+  question: string;
+  sourceCommentUrl: string;
+  author: string;
+}): string {
+  return [
+    "You are ClawSweeper assist, a lightweight read-only maintainer Q&A helper for GitHub issues and pull requests.",
+    "",
+    "Hard safety contract:",
+    "- Answer the maintainer's question concisely from the supplied context.",
+    "- Do not recommend closing, merging, labeling, pushing, rebasing, or repairing as an executed action.",
+    "- Do not emit hidden ClawSweeper verdict, action, security, or review markers.",
+    "- If the question needs a full correctness review, say that and suggest `@clawsweeper review`.",
+    "- If the question needs branch edits or CI repair, say that and suggest the existing repair command.",
+    "- Prefer concrete evidence: check names, comments, files, commit SHAs, timestamps, and URLs present in context.",
+    "",
+    "Response format:",
+    "- Start with `ClawSweeper assist:` followed by the direct answer.",
+    "- Include short `Evidence:` bullets when evidence exists.",
+    "- Include one `Suggested next action:` line.",
+    "",
+    "Request metadata:",
+    `- Repository: ${options.item.repo}`,
+    `- Item: #${options.item.number}`,
+    `- Type: ${options.item.kind}`,
+    `- Title: ${options.item.title}`,
+    `- URL: ${options.item.url}`,
+    `- Request author: ${options.author || "unknown"}`,
+    `- Source comment: ${options.sourceCommentUrl || "unknown"}`,
+    "",
+    "Maintainer question:",
+    options.question,
+    "",
+    "GitHub context JSON:",
+    "```json",
+    JSON.stringify(options.context, null, 2),
+    "```",
+  ].join("\n");
+}
+
+function runCodexAssist(options: {
+  item: Item;
+  context: ItemContext;
+  question: string;
+  sourceCommentUrl: string;
+  author: string;
+  model: string;
+  reasoningEffort: string;
+  sandboxMode: string;
+  timeoutMs: number;
+  workDir: string;
+}): string {
+  ensureDir(options.workDir);
+  const promptPath = join(options.workDir, `${options.item.number}.assist.prompt.md`);
+  const outputPath = join(options.workDir, `${options.item.number}.assist.md`);
+  const prompt = buildAssistPrompt({
+    item: options.item,
+    context: options.context,
+    question: options.question,
+    sourceCommentUrl: options.sourceCommentUrl,
+    author: options.author,
+  });
+  writeFileSync(promptPath, prompt, "utf8");
+  const codexConfig = [
+    `model_reasoning_effort="${options.reasoningEffort}"`,
+    'forced_login_method="api"',
+    'approval_policy="never"',
+  ];
+  const result = spawnSync(
+    "codex",
+    [
+      "exec",
+      "-m",
+      options.model,
+      ...codexConfig.flatMap((config) => ["-c", config]),
+      "--output-last-message",
+      outputPath,
+      "--sandbox",
+      options.sandboxMode,
+      "-",
+    ],
+    {
+      cwd: ROOT,
+      encoding: "utf8",
+      env: codexEnv({ ghToken: process.env.GH_TOKEN }),
+      input: prompt,
+      maxBuffer: 32 * 1024 * 1024,
+      timeout: options.timeoutMs,
+    },
+  );
+  if (result.error || result.status !== 0 || !existsSync(outputPath)) {
+    const detail =
+      result.error instanceof Error
+        ? result.error.message
+        : `exit ${result.status ?? "unknown"}: ${
+            safeOutputTail(result.stderr) || safeOutputTail(result.stdout) || "No output."
+          }`;
+    throw new Error(`Codex assist failed for #${options.item.number}: ${detail}`);
+  }
+  return stripTextFence(readFileSync(outputPath, "utf8"));
+}
+
+function assistCommentMarker(commentId: string): string {
+  return `<!-- clawsweeper-assist:${commentId || "unknown"} -->`;
+}
+
+function renderAssistComment(options: {
+  body: string;
+  model: string;
+  reasoningEffort: string;
+  sourceCommentUrl: string;
+  sourceCommentId: string;
+}): string {
+  const body = options.body.trim() || "ClawSweeper assist: I could not produce an answer.";
+  const sourceLine = options.sourceCommentUrl
+    ? `Source: ${options.sourceCommentUrl}`
+    : `Source comment: ${options.sourceCommentId || "unknown"}`;
+  return [
+    body,
+    "",
+    "---",
+    `${sourceLine}`,
+    `Assist model: ${options.model}, reasoning ${options.reasoningEffort}.`,
+    assistCommentMarker(options.sourceCommentId),
+  ].join("\n");
+}
+
+function postAssistComment(number: number, body: string): void {
+  const payload = writeCommentPayload(number, body);
+  ghWithRetry([
+    "api",
+    `repos/${targetRepo()}/issues/${number}/comments`,
+    "--method",
+    "POST",
+    "--input",
+    payload,
+  ]);
+}
+
 function closeReasonText(reason: CloseReason): string {
   switch (reason) {
     case "implemented_on_main":
@@ -13157,6 +13304,48 @@ function statusCommand(args: Args): void {
   console.log(JSON.stringify({ status_path: sweepStatusRelativePath(profile), state, detail }));
 }
 
+function assistCommand(args: Args): void {
+  repoFromArgs(args);
+  const itemNumber = numberArg(args.item_number, 0);
+  if (!itemNumber) throw new Error("--item-number is required for assist");
+  const question = stringArg(args.question, "").trim();
+  if (!question) throw new Error("--question is required for assist");
+  const model = stringArg(args.codex_model, "gpt-5.5");
+  const reasoningEffort = stringArg(args.codex_reasoning_effort, "low");
+  const sandboxMode = stringArg(args.codex_sandbox, "read-only");
+  const timeoutMs = numberArg(args.codex_timeout_ms, 120_000);
+  const workDir = resolve(stringArg(args.work_dir, join(ROOT, ".artifacts", "assist-codex")));
+  const sourceCommentId = stringArg(args.comment_id, "");
+  const sourceCommentUrl = stringArg(args.comment_url, "");
+  const author = stringArg(args.author, "");
+  const { item, state } = fetchItem(itemNumber);
+  if (state.toLowerCase() !== "open") {
+    throw new Error(`assist requires an open issue or PR; #${itemNumber} is ${state}`);
+  }
+  const context = collectItemContext(item);
+  const answer = runCodexAssist({
+    item,
+    context,
+    question,
+    sourceCommentUrl,
+    author,
+    model,
+    reasoningEffort,
+    sandboxMode,
+    timeoutMs,
+    workDir,
+  });
+  const comment = renderAssistComment({
+    body: answer,
+    model,
+    reasoningEffort,
+    sourceCommentUrl,
+    sourceCommentId,
+  });
+  postAssistComment(item.number, comment);
+  console.log(JSON.stringify({ posted: true, item: item.number, model, reasoningEffort }));
+}
+
 function checkCommand(): void {
   JSON.parse(reviewDecisionSchemaText());
   if (!existsSync(join(ROOT, ".github", "workflows", "sweep.yml")))
@@ -13180,6 +13369,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
       resolve(stringArg(args.closed_dir, defaultClosedDir())),
     );
   } else if (command === "status") statusCommand(args);
+  else if (command === "assist") assistCommand(args);
   else if (command === "check") checkCommand();
   else {
     console.error(`Unknown command: ${command}`);

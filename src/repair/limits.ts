@@ -9,9 +9,17 @@ export type WorkerConfig = {
     expansion_reserve: number;
     minimum_background: number;
   };
+  lanes: {
+    assist: {
+      max: number;
+    };
+  };
 };
 
 export type AutomationLimits = {
+  assist: {
+    default: number;
+  };
   review_shards: {
     normal_default: number;
     normal_active_floor: number;
@@ -41,7 +49,8 @@ export type WorkerLane =
   | "repair"
   | "automerge_repair"
   | "issue_implementation"
-  | "exact_item";
+  | "exact_item"
+  | "assist";
 
 export const WORKER_CONFIG = readWorkerConfig();
 export const AUTOMATION_LIMITS = deriveAutomationLimits(WORKER_CONFIG);
@@ -56,6 +65,9 @@ export function readWorkerConfig(
 export function deriveAutomationLimits(config: WorkerConfig): AutomationLimits {
   const max = config.workers.max;
   return {
+    assist: {
+      default: Math.min(config.lanes.assist.max, max),
+    },
     review_shards: {
       normal_default: percent(max, 70),
       normal_active_floor: percent(max, 30),
@@ -94,6 +106,7 @@ export function workerLimit(
   } = {},
 ): number {
   if (lane === "exact_item") return limits.review_shards.exact_item_default;
+  if (lane === "assist") return priorityLimit(limits.assist.default, activeCritical);
   if (lane === "repair") return priorityLimit(limits.repair_live_runs.default, activeCritical);
   if (lane === "automerge_repair")
     return priorityLimit(limits.repair_live_runs.automerge_default, activeCritical);
@@ -140,6 +153,11 @@ function validateWorkerConfig(value: unknown): WorkerConfig {
       reserve_for_interactive: nonNegativeInteger(value, "workers.reserve_for_interactive"),
       expansion_reserve: nonNegativeInteger(value, "workers.expansion_reserve"),
       minimum_background: positiveInteger(value, "workers.minimum_background"),
+    },
+    lanes: {
+      assist: {
+        max: positiveInteger(value, "lanes.assist.max"),
+      },
     },
   };
 }
