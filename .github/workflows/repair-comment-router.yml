@@ -129,6 +129,7 @@ jobs:
       - uses: ./.github/actions/setup-state
         with:
           token: ${{ steps.state-token.outputs.token }}
+          state-repository: valkyriweb/clawsweeper-state
 
       - name: Route ClawSweeper comments
         env:
