@@ -20,6 +20,7 @@ import { readJsonFileIfExists as readJsonIfExists } from "./json-file.js";
 import { renderJobIntentFrontmatter } from "./job-intent.js";
 import { commitFindingPrTitle } from "./pr-title.js";
 import { escapeRegExp, slug } from "./text-utils.js";
+import { isGithubUrl, sanitizeResultEvidence } from "./url-safety.js";
 
 const args = parseArgs(process.argv.slice(2));
 const command = args._[0] ?? "prepare";
@@ -37,9 +38,9 @@ function prepare() {
     "report-path",
     stringArg("report_path", `records/${repoSlug(targetRepo)}/commits/${sha}.md`),
   );
-  const reportUrl =
-    stringArg("report-url", stringArg("report_url", "")) ||
-    `https://github.com/${reportRepo}/blob/main/${reportPath}`;
+  const defaultReportUrl = `https://github.com/${reportRepo}/blob/main/${reportPath}`;
+  const dispatchReportUrl = stringArg("report-url", stringArg("report_url", ""));
+  const reportUrl = isGithubUrl(dispatchReportUrl) ? dispatchReportUrl : defaultReportUrl;
   const active = truthy(enabled);
   const reportRead: CommitFindingReportReadResult = active
     ? readReport({ reportRepo, reportPath })
@@ -353,6 +354,7 @@ function writeSyntheticRun(context: LooseRecord) {
     `${JSON.stringify(result.fix_artifact, null, 2)}\n`,
     "utf8",
   );
+  sanitizeResultEvidence(result);
   fs.writeFileSync(
     path.join(context.runDir, "result.json"),
     `${JSON.stringify(result, null, 2)}\n`,

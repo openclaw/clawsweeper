@@ -19,6 +19,7 @@ import {
   repairCodexReasoningEffort,
   repairCodexServiceTier,
 } from "./process-env.js";
+import { sanitizeResultEvidence } from "./url-safety.js";
 
 const args = parseArgs(process.argv.slice(2));
 const jobPath = args._[0];
@@ -106,6 +107,7 @@ if (!dryRun) {
     clusterPlanPath: promptContext.clusterPlanPath,
   });
   if (deterministicResult) {
+    sanitizeResultEvidence(deterministicResult);
     fs.writeFileSync(resultPath, `${JSON.stringify(deterministicResult, null, 2)}\n`);
     console.log(`result: ${path.relative(repoRoot(), resultPath)}`);
     process.exit(0);
@@ -145,6 +147,7 @@ if (dryRun) {
     actions: [],
     prompt_path: path.relative(repoRoot(), promptPath),
   };
+  sanitizeResultEvidence(dryResult);
   fs.writeFileSync(resultPath, `${JSON.stringify(dryResult, null, 2)}\n`);
   console.log(JSON.stringify(dryResult, null, 2));
   process.exit(0);
@@ -181,7 +184,9 @@ if (child.status !== 0) {
 if (!fs.existsSync(resultPath)) {
   writeBlockedResult("Codex worker completed without a structured result.json artifact.");
 }
+sanitizeResultFile(resultPath);
 await repairResultIfNeeded();
+sanitizeResultFile(resultPath);
 
 console.log(`result: ${path.relative(repoRoot(), resultPath)}`);
 
@@ -383,6 +388,7 @@ async function repairResultIfNeeded() {
       );
       return;
     }
+    sanitizeResultFile(resultPath);
   }
 }
 
@@ -450,5 +456,19 @@ function writeBlockedResult(summary: LooseRecord) {
     canonical_pr: null,
     fix_artifact: null,
   };
+  sanitizeResultEvidence(result);
   fs.writeFileSync(resultPath, `${JSON.stringify(result, null, 2)}\n`);
+}
+
+function sanitizeResultFile(filePath: string) {
+  if (!fs.existsSync(filePath)) return;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(fs.readFileSync(filePath, "utf8"));
+  } catch {
+    return;
+  }
+  if (!parsed || typeof parsed !== "object") return;
+  sanitizeResultEvidence(parsed as LooseRecord);
+  fs.writeFileSync(filePath, `${JSON.stringify(parsed, null, 2)}\n`);
 }

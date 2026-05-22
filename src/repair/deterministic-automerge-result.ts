@@ -1,5 +1,6 @@
 import { automergeChangelogBlockReason } from "./comment-router-core.js";
 import type { JsonValue, LooseRecord } from "./json-types.js";
+import { sanitizeCheckLink, sanitizeEvidenceList } from "./url-safety.js";
 
 export function deterministicAutomergeResult({
   job,
@@ -35,18 +36,20 @@ export function deterministicAutomergeResult({
   ].join(" ");
   const likelyFiles = likelyRepairFiles(files, Boolean(changelogReason));
   const failedChecks = failingCheckEvidence(canonical);
-  const evidence = [
-    `Source PR: ${prUrl}`,
-    canonical.pull_request?.head_sha ? `Current head: ${canonical.pull_request.head_sha}` : null,
-    ...failedChecks,
-    canonical.pull_request?.branch_writable === false
-      ? `Branch writable: false (${canonical.pull_request?.branch_write_reason ?? "unknown"})`
-      : "Branch writable: true or executor will fall back safely",
-    canonical.pull_request?.files_truncated > 0
-      ? `Changed files truncated by ${canonical.pull_request.files_truncated}; Codex must inspect live diff before editing`
-      : null,
-    changelogReason,
-  ].filter(Boolean);
+  const evidence = sanitizeEvidenceList(
+    [
+      `Source PR: ${prUrl}`,
+      canonical.pull_request?.head_sha ? `Current head: ${canonical.pull_request.head_sha}` : null,
+      ...failedChecks,
+      canonical.pull_request?.branch_writable === false
+        ? `Branch writable: false (${canonical.pull_request?.branch_write_reason ?? "unknown"})`
+        : "Branch writable: true or executor will fall back safely",
+      canonical.pull_request?.files_truncated > 0
+        ? `Changed files truncated by ${canonical.pull_request.files_truncated}; Codex must inspect live diff before editing`
+        : null,
+      changelogReason,
+    ].filter(Boolean),
+  );
   const reason =
     "Maintainer opted this PR into ClawSweeper automerge/autofix repair; run the direct Codex edit loop after live hydration instead of a separate read-only planning pass.";
   const fixArtifact = {
@@ -150,19 +153,20 @@ function failingCheckEvidence(item: LooseRecord): string[] {
     .map((check: JsonValue) => {
       const name = String(check?.name ?? "unnamed check").trim();
       const state = String(check?.state ?? check?.conclusion ?? check?.status ?? "unknown").trim();
-      const details = safeCheckDetails(check?.link ?? check?.html_url);
-      return `Failing check: ${name}:${state}${details ? ` (${details})` : ""}`;
+      const rawLink = String(check?.link ?? check?.html_url ?? "").trim();
+      const safeLink = sanitizeCheckLink(rawLink);
+      const hint = safeLink ? safeLink : safeCheckHostHint(rawLink);
+      return `Failing check: ${name}:${state}${hint ? ` (${hint})` : ""}`;
     })
     .filter(Boolean)
     .slice(0, 12);
 }
 
-function safeCheckDetails(value: JsonValue): string {
-  const link = String(value ?? "").trim();
-  if (!link) return "";
+function safeCheckHostHint(rawLink: string): string {
+  if (!rawLink) return "";
   try {
-    const url = new URL(link);
-    if (url.hostname === "github.com") return link;
+    const url = new URL(rawLink);
+    if (url.hostname === "github.com") return "";
     return `external check details on ${url.hostname}`;
   } catch {
     return "";
