@@ -213,6 +213,63 @@ test("runClawSweeperEventNotifier posts hook payloads and records ledger", async
   assert.equal(ledger.notifications[0].discordTarget, "channel:123");
 });
 
+test("runClawSweeperEventNotifier limits sent hook messages per run", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-events-limit-"));
+  fs.writeFileSync(
+    path.join(root, "repair-apply-report.json"),
+    `${JSON.stringify(
+      [1, 2, 3, 4].map((number) => ({
+        repo: "openclaw/openclaw",
+        target: `#${number}`,
+        action: "close_duplicate",
+        status: "executed",
+        run_id: "987",
+        published_at: `2026-05-02T10:00:0${number}Z`,
+      })),
+    )}\n`,
+  );
+
+  const requests: Record<string, unknown>[] = [];
+  const summary = await runClawSweeperEventNotifier(
+    ["--run-id", "987", "--max-sent", "2", "--write-report"],
+    {
+      root,
+      fetch: async (_input, init) => {
+        requests.push(JSON.parse(String(init?.body)));
+        return new Response(JSON.stringify({ ok: true, runId: `hook-${requests.length}` }), {
+          status: 200,
+        });
+      },
+      now: () => new Date("2026-05-02T11:00:00Z"),
+      log: () => undefined,
+      env: {
+        CLAWSWEEPER_OPENCLAW_HOOK_URL: "https://claw.example/hooks",
+        CLAWSWEEPER_OPENCLAW_HOOK_TOKEN: "secret",
+        CLAWSWEEPER_DISCORD_TARGET: "channel:123",
+      },
+    },
+  );
+
+  assert.equal(summary.sent, 2);
+  assert.equal(summary.skipped, 2);
+  assert.equal(requests.length, 2);
+
+  const ledger = JSON.parse(
+    fs.readFileSync(path.join(root, "notifications/clawsweeper-event-ledger.json"), "utf8"),
+  );
+  assert.equal(ledger.notifications.length, 2);
+
+  const report = JSON.parse(
+    fs.readFileSync(path.join(root, "notifications/clawsweeper-event-report.json"), "utf8"),
+  );
+  assert.equal(report.max_sent_messages, 2);
+  assert.equal(
+    report.actions.filter((action: Record<string, unknown>) => action.status === "skipped").length,
+    2,
+  );
+  assert.match(report.actions.at(-1).reason, /sent message limit reached \(2\)/);
+});
+
 test("runClawSweeperEventNotifier mirrors events to the live status dashboard", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-events-dashboard-"));
   fs.writeFileSync(

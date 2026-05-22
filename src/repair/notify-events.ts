@@ -74,6 +74,7 @@ export type ClawSweeperEventNotifierRuntime = {
 const DEFAULT_INPUT_PATH = "repair-apply-report.json";
 const DEFAULT_LEDGER_PATH = "notifications/clawsweeper-event-ledger.json";
 const DEFAULT_REPORT_PATH = "notifications/clawsweeper-event-report.json";
+const DEFAULT_MAX_SENT_MESSAGES = 3;
 const MERGE_ACTIONS = new Set(["merge_candidate", "merge_canonical"]);
 const CLOSE_ACTIONS = new Set([
   "close",
@@ -325,6 +326,10 @@ export async function runClawSweeperEventNotifier(
   const runId = stringArg(args["run-id"]) ?? env.RUN_ID ?? env.GITHUB_RUN_ID;
   const dryRun = Boolean(args["dry-run"] || env.CLAWSWEEPER_EVENT_NOTIFY_DRY_RUN === "1");
   const strict = Boolean(args.strict || env.CLAWSWEEPER_EVENT_NOTIFY_STRICT === "1");
+  const maxSentMessages = nonNegativeInt(
+    stringArg(args["max-sent"]) ?? env.CLAWSWEEPER_EVENT_NOTIFY_MAX_SENT,
+    DEFAULT_MAX_SENT_MESSAGES,
+  );
   const dashboardConfig = resolveDashboardIngestConfig(env);
 
   if (!fs.existsSync(inputPath) && (!runRecordPath || !fs.existsSync(runRecordPath))) {
@@ -355,9 +360,17 @@ export async function runClawSweeperEventNotifier(
 
   const reportActions: JsonObject[] = [...collected.skipped];
   let nextLedger = ledger;
+  let sentMessages = 0;
   for (const event of collected.events) {
+    if (sentMessages >= maxSentMessages) {
+      reportActions.push(
+        reportRow(event, "skipped", `sent message limit reached (${maxSentMessages})`),
+      );
+      continue;
+    }
     if (dryRun) {
       reportActions.push(reportRow(event, "planned", "dry run"));
+      sentMessages += 1;
       continue;
     }
     try {
@@ -371,6 +384,7 @@ export async function runClawSweeperEventNotifier(
           deliver: true,
         },
       });
+      sentMessages += 1;
       let dashboardStatus = "status dashboard not configured";
       let dashboardDelivered = true;
       if (dashboardConfig) {
@@ -410,6 +424,7 @@ export async function runClawSweeperEventNotifier(
       ledger: path.relative(root, ledgerPath),
       dry_run: dryRun,
       run_id: runId ?? null,
+      max_sent_messages: maxSentMessages,
       considered: collected.considered,
       pending: collected.events.length,
       sent: reportActions.filter((action) => action.status === "sent").length,
@@ -630,6 +645,11 @@ function summaryRow(
   reason: string | null,
 ): ClawSweeperEventNotifierSummary {
   return { status, considered, pending, sent, failed, skipped, exitCode: 0, reason };
+}
+
+export function nonNegativeInt(value: string | undefined, fallback: number): number {
+  const parsed = Number.parseInt(value ?? "", 10);
+  return Number.isInteger(parsed) && parsed >= 0 ? parsed : fallback;
 }
 
 function writeJsonFile(filePath: string, value: JsonValue) {
