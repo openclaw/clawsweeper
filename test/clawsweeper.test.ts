@@ -2284,7 +2284,7 @@ Reason: Maintainers should review the tests after the targeted lane is green.
   assert.match(comment, /Codex review: needs maintainer review before merge\./);
   assert.match(
     comment,
-    /\*\*Latest ClawSweeper review:\*\* 2026-05-22 04:43 UTC \/ May 22, 2026, 12:43 AM ET\. GitHub's header may show when this durable comment was first created\./,
+    /\*\*Latest ClawSweeper review:\*\* 2026-05-22 04:43 UTC \/ May 22, 2026, 12:43 AM ET\./,
   );
   assert.match(
     comment,

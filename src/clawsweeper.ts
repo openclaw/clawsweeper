@@ -9676,10 +9676,7 @@ function reviewWorkflowCallout(): string[] {
 function reviewFreshnessCallout(markdown: string): string[] {
   const timestamp = formatReviewFreshnessTimestamp(frontMatterValue(markdown, "reviewed_at"));
   if (!timestamp) return [];
-  return [
-    `**Latest ClawSweeper review:** ${timestamp}. GitHub's header may show when this durable comment was first created.`,
-    "",
-  ];
+  return [`**Latest ClawSweeper review:** ${timestamp}.`, ""];
 }
 
 function renderKeepOpenCommentFromReport(
