@@ -195,8 +195,11 @@ jobs:
           active_sweep_background_workers() {
             local runs total id title status active_shards
             total=0
+            # Match on title PREFIX — sweep.yml run-name now appends
+            # `— {target_repo}` so titles are no longer exact equals.
+            # See sweep.yml's active_sweep_background_workers for rationale.
             runs="$(printf '%s' "$ACTIVE_RUNS_JSON" \
-              | jq -r '.[] | select(.workflowName == "ClawSweeper") | select(.status == "in_progress" or .status == "pending" or .status == "queued" or .status == "waiting" or .status == "requested") | select(.displayTitle == "Review ClawSweeper items" or .displayTitle == "Review hot ClawSweeper items") | [.databaseId, .displayTitle, .status] | @tsv' 2>/dev/null || true)"
+              | jq -r '.[] | select(.workflowName == "ClawSweeper") | select(.status == "in_progress" or .status == "pending" or .status == "queued" or .status == "waiting" or .status == "requested") | select(.displayTitle | (startswith("Review ClawSweeper items") or startswith("Review hot ClawSweeper items"))) | [.databaseId, .displayTitle, .status] | @tsv' 2>/dev/null || true)"
             while IFS=$'\t' read -r id title status; do
               if [ -z "$id" ]; then
                 continue
@@ -214,11 +217,15 @@ jobs:
               # created shard jobs yet. Reserve their quiet lane size so commit review
               # does not over-allocate while a sweep matrix is still expanding.
               if [ "$active_shards" -lt 1 ]; then
-                if [ "$title" = "Review hot ClawSweeper items" ]; then
-                  active_shards="$(pnpm --dir clawsweeper run --silent workflow -- limit review_shards.hot_intake_default)"
-                else
-                  active_shards="$(pnpm --dir clawsweeper run --silent workflow -- limit review_shards.normal_default)"
-                fi
+                # Hot vs normal: prefix-match the disambiguated title.
+                case "$title" in
+                  "Review hot ClawSweeper items"*)
+                    active_shards="$(pnpm --dir clawsweeper run --silent workflow -- limit review_shards.hot_intake_default)"
+                    ;;
+                  *)
+                    active_shards="$(pnpm --dir clawsweeper run --silent workflow -- limit review_shards.normal_default)"
+                    ;;
+                esac
               fi
               total=$((total + active_shards))
             done <<< "$runs"

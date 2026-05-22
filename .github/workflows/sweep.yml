@@ -1,6 +1,10 @@
 name: ClawSweeper
 
-run-name: ${{ github.event_name == 'repository_dispatch' && format('Review event item {0}#{1}', github.event.client_payload.target_repo || 'bermont-digital/multica', github.event.client_payload.item_number || '?') || (github.event_name == 'workflow_dispatch' && github.event.inputs.apply_existing == 'true' && github.event.inputs.apply_sync_comments_only == 'true') && 'Sync Codex review comments' || (github.event_name == 'workflow_dispatch' && github.event.inputs.apply_existing == 'true') && 'Apply ClawSweeper closures' || (github.event_name == 'workflow_dispatch' && github.event.inputs.audit_dashboard == 'true') && 'Audit ClawSweeper state' || (github.event_name == 'workflow_dispatch' && github.event.inputs.hot_intake == 'true') && 'Review hot ClawSweeper items' || 'Review ClawSweeper items' }}
+# run-name carries the target_repo (and item scope when set) so concurrent dispatches
+# against different repos are distinguishable on the Actions dashboard. Previously every
+# workflow_dispatch fell through to a literal 'Review ClawSweeper items' regardless of
+# target, making same-time runs against different repos look like duplicates.
+run-name: ${{ github.event_name == 'repository_dispatch' && format('Review event item {0}#{1}', github.event.client_payload.target_repo || 'bermont-digital/multica', github.event.client_payload.item_number || '?') || (github.event_name == 'workflow_dispatch' && github.event.inputs.apply_existing == 'true' && github.event.inputs.apply_sync_comments_only == 'true') && format('Sync Codex review comments — {0}', github.event.inputs.target_repo || 'bermont-digital/multica') || (github.event_name == 'workflow_dispatch' && github.event.inputs.apply_existing == 'true') && format('Apply ClawSweeper closures — {0}', github.event.inputs.target_repo || 'bermont-digital/multica') || (github.event_name == 'workflow_dispatch' && github.event.inputs.audit_dashboard == 'true') && format('Audit ClawSweeper state — {0}', github.event.inputs.target_repo || 'bermont-digital/multica') || (github.event_name == 'workflow_dispatch' && github.event.inputs.hot_intake == 'true') && format('Review hot ClawSweeper items — {0}', github.event.inputs.target_repo || 'bermont-digital/multica') || (github.event_name == 'workflow_dispatch' && github.event.inputs.item_number != '') && format('Review ClawSweeper items — {0}#{1}', github.event.inputs.target_repo || 'bermont-digital/multica', github.event.inputs.item_number) || (github.event_name == 'workflow_dispatch' && github.event.inputs.item_numbers != '') && format('Review ClawSweeper items — {0} [{1}]', github.event.inputs.target_repo || 'bermont-digital/multica', github.event.inputs.item_numbers) || github.event_name == 'workflow_dispatch' && format('Review ClawSweeper items — {0}', github.event.inputs.target_repo || 'bermont-digital/multica') || 'Review ClawSweeper items' }}
 
 on:
   repository_dispatch:
@@ -682,8 +686,13 @@ jobs:
           active_sweep_background_workers() {
             local runs total id title status active_shards
             total=0
+            # Match on title PREFIX, not exact equality — run-name now appends
+            # `— {target_repo}` (and optionally `#{n}` / `[nums]`) so concurrent
+            # dispatches against different repos are distinguishable. The two
+            # background-worker prefixes are disjoint (`Review hot…` never
+            # startswith `Review ClawSweeper items` because of the `hot` word).
             runs="$(printf '%s' "$ACTIVE_RUNS_JSON" \
-              | CURRENT_RUN_ID="${GITHUB_RUN_ID:-0}" jq -r '.[] | select((.databaseId | tostring) != env.CURRENT_RUN_ID) | select(.workflowName == "ClawSweeper") | select(.status == "in_progress" or .status == "pending" or .status == "queued" or .status == "waiting" or .status == "requested") | select(.displayTitle == "Review ClawSweeper items" or .displayTitle == "Review hot ClawSweeper items") | [.databaseId, .displayTitle, .status] | @tsv' 2>/dev/null || true)"
+              | CURRENT_RUN_ID="${GITHUB_RUN_ID:-0}" jq -r '.[] | select((.databaseId | tostring) != env.CURRENT_RUN_ID) | select(.workflowName == "ClawSweeper") | select(.status == "in_progress" or .status == "pending" or .status == "queued" or .status == "waiting" or .status == "requested") | select(.displayTitle | (startswith("Review ClawSweeper items") or startswith("Review hot ClawSweeper items"))) | [.databaseId, .displayTitle, .status] | @tsv' 2>/dev/null || true)"
             while IFS=$'\t' read -r id title status; do
               if [ -z "$id" ]; then
                 continue
@@ -701,11 +710,18 @@ jobs:
               # created shard jobs yet. Reserve their quiet lane size so a second
               # planner cannot over-allocate before the first matrix expands.
               if [ "$active_shards" -lt 1 ]; then
-                if [ "$title" = "Review hot ClawSweeper items" ]; then
-                  active_shards="$(limit review_shards.hot_intake_default)"
-                else
-                  active_shards="$(limit review_shards.normal_default)"
-                fi
+                # Hot vs normal: prefix-match the disambiguated title; the hot
+                # default applies whether the run was `Review hot ClawSweeper items`
+                # (legacy) or `Review hot ClawSweeper items — {target_repo}` (after
+                # the run-name change).
+                case "$title" in
+                  "Review hot ClawSweeper items"*)
+                    active_shards="$(limit review_shards.hot_intake_default)"
+                    ;;
+                  *)
+                    active_shards="$(limit review_shards.normal_default)"
+                    ;;
+                esac
               fi
               total=$((total + active_shards))
             done <<< "$runs"
@@ -2040,10 +2056,15 @@ jobs:
           const runs = JSON.parse(process.env.RUNS_JSON || "[]");
           const now = Date.now();
           const active = new Set(["in_progress", "pending", "queued", "waiting", "requested"]);
-          function recent(title, windowMs) {
+          // Match on title PREFIX — run-name now appends `— {target_repo}` so
+          // titles are no longer exact equals. The two prefixes we care about
+          // ("Review ClawSweeper items" and "Review hot ClawSweeper items") are
+          // disjoint: the latter never startswith the former because of the
+          // `hot` word, so a hot run can't masquerade as a normal review here.
+          function recent(titlePrefix, windowMs) {
             return runs.some((run) => {
               if (run.workflowName !== "ClawSweeper") return false;
-              if (run.displayTitle !== title) return false;
+              if (!String(run.displayTitle || "").startsWith(titlePrefix)) return false;
               if (active.has(String(run.status))) return true;
               const createdAt = Date.parse(String(run.createdAt || ""));
               return Number.isFinite(createdAt) && now - createdAt < windowMs;
