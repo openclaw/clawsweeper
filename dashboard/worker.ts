@@ -3237,6 +3237,9 @@ h2 {
   transform: translateY(-1px);
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
 }
+/* Clickable metric tiles (e.g. Recent Snags). Inherit text styling from .metric. */
+a.metric-link { display: block; text-decoration: none; color: inherit; cursor: pointer; }
+a.metric-link:hover { border-color: rgba(255, 120, 120, 0.5); }
 .metric::before {
   content: "";
   position: absolute;
@@ -3573,8 +3576,12 @@ function modeLabel(mode) {
     "hot-review": "hot",
   }[mode] || mode;
 }
-function metric(label, value, sub, pct, color) {
-  return '<div class="metric"><span>' + esc(label) + '</span><strong>' + esc(value) + '</strong><div class="muted">' + esc(sub || "") + '</div><div class="band"><i style="width:' + Math.max(0, Math.min(100, pct || 0)) + '%;background:' + (color || "var(--blue)") + '"></i></div></div>';
+function metric(label, value, sub, pct, color, href) {
+  const inner = '<span>' + esc(label) + '</span><strong>' + esc(value) + '</strong><div class="muted">' + esc(sub || "") + '</div><div class="band"><i style="width:' + Math.max(0, Math.min(100, pct || 0)) + '%;background:' + (color || "var(--blue)") + '"></i></div>';
+  if (href) {
+    return '<a class="metric metric-link" href="' + esc(href) + '" target="_blank" rel="noopener" title="' + esc(label) + ' — open">' + inner + '</a>';
+  }
+  return '<div class="metric">' + inner + '</div>';
 }
 function ciBadge(ci) {
   if (!ci) return '<span class="pill">ci unknown</span>';
@@ -3627,7 +3634,9 @@ function renderDashboard(data, note) {
     metric("🦾 Claw Workers", fmt.format(fleet.active_codex_jobs), "budget " + fleet.worker_budget, fleet.budget_used_percent, "var(--green)"),
     metric("🌊 Active Sweeps", fmt.format(fleet.active_workflow_runs), "support " + fmt.format(fleet.support_workflow_runs || 0), Math.min(100, fleet.active_workflow_runs * 3), "var(--blue)"),
     metric("⏳ Queue Depth", fmt.format(fleet.queued_workflow_runs), "support queue " + fmt.format(fleet.support_queued_workflow_runs || 0), Math.min(100, fleet.queued_workflow_runs * 10), "var(--amber)"),
-    metric("💥 Recent Snags", fmt.format(fleet.failed_recent_runs), "last page", Math.min(100, fleet.failed_recent_runs * 15), fleet.failed_recent_runs ? "var(--red)" : "var(--green)"),
+    // Recent Snags tile is a link to the clawsweeper repo's Actions tab filtered to failures,
+    // so operators can drill straight from the count to the underlying runs.
+    metric("💥 Recent Snags", fmt.format(fleet.failed_recent_runs), "last page", Math.min(100, fleet.failed_recent_runs * 15), fleet.failed_recent_runs ? "var(--red)" : "var(--green)", fleet.failed_recent_runs && data.source && data.source.clawsweeper_repo ? "https://github.com/" + data.source.clawsweeper_repo + "/actions?query=is%3Afailure" : null),
     metric("⚡ Merge Speed", data.averages.automerge_command_to_merge_ms ? elapsed(data.averages.automerge_command_to_merge_ms) : "n/a", data.averages.automerge_samples + " samples", 60, "var(--violet)"),
     metric("🎯 Capacity", fleet.budget_used_percent + "%", "fleet utilization", fleet.budget_used_percent, "var(--green)")
   ].join("");
