@@ -5616,6 +5616,40 @@ function runCodex(options: {
     },
   );
   const elapsedMs = Date.now() - startedAt;
+  // Persist codex stdout/stderr to disk so they survive the run as artifacts.
+  // Without this the only diagnostic on a 600s timeout was `tokens: null` in the
+  // usage event — codex was alive but emitted nothing. Captured here even when
+  // status=success so the JSONL transcript is recoverable if a downstream parse
+  // mystery shows up. Cap at 4 MiB (tail) to keep artifact size predictable;
+  // codex success-path JSONL transcripts can run into MB across many turns.
+  const stdoutPath = join(options.workDir, `${options.item.number}.codex.stdout.log`);
+  const stderrPath = join(options.workDir, `${options.item.number}.codex.stderr.log`);
+  const persistCodexOutput = (label: string, text: string | undefined, path: string): void => {
+    try {
+      const max = 4 * 1024 * 1024;
+      const s = text ?? "";
+      const bytes = Buffer.byteLength(s, "utf8");
+      const payload =
+        bytes > max ? `[truncated head; tail of ${bytes} bytes]\n${s.slice(-max)}` : s;
+      writeFileSync(path, payload, "utf8");
+      // Surface the size in the workflow log so reviewers can scan stdout for
+      // 'stderr=0B stdout=0B' fingerprints without downloading artifacts.
+      console.error(
+        `[review] ${new Date().toISOString()} codex-${label}-persisted #${
+          options.item.number
+        } path=${relative(options.workDir, path)} bytes=${bytes}`,
+      );
+    } catch (err) {
+      // Persistence must never change the review outcome.
+      console.error(
+        `[review] ${new Date().toISOString()} codex-${label}-persist-failed #${
+          options.item.number
+        } err=${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  };
+  persistCodexOutput("stdout", result.stdout, stdoutPath);
+  persistCodexOutput("stderr", result.stderr, stderrPath);
   const emitUsage = (status: UsageStatus) => {
     try {
       const parsed = parseCodexTokenUsageFromJsonl(result.stdout ?? "");
@@ -5633,6 +5667,10 @@ function runCodex(options: {
           sandbox: options.sandboxMode,
           timeout_ms: options.timeoutMs,
           elapsed_ms: elapsedMs,
+          // Schema fields already exist on UsageEventMetadata; both paths are
+          // workDir-relative so artifacts can be located after upload.
+          transcript_path: relative(options.workDir, stdoutPath),
+          stderr_path: relative(options.workDir, stderrPath),
           output_path: relative(options.workDir, outputPath),
           status,
           tokens: parsed?.tokens ?? null,

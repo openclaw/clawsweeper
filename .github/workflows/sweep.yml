@@ -356,6 +356,11 @@ jobs:
           path: |
             artifacts/event/usage-events.jsonl
             artifacts/event/**/usage-events.jsonl
+            # Codex spawn observability — stdout/stderr captured per item even
+            # on success, so a future 600s-timeout hang has actual evidence.
+            # See runCodex() in src/clawsweeper.ts.
+            artifacts/event/**/*.codex.stdout.log
+            artifacts/event/**/*.codex.stderr.log
           if-no-files-found: warn
           retention-days: 7
 
@@ -1066,6 +1071,9 @@ jobs:
           path: |
             review-artifacts/shard-${{ matrix.shard }}/usage-events.jsonl
             review-artifacts/shard-${{ matrix.shard }}/**/usage-events.jsonl
+            # Codex spawn observability — see event-review-apply for rationale.
+            review-artifacts/shard-${{ matrix.shard }}/**/*.codex.stdout.log
+            review-artifacts/shard-${{ matrix.shard }}/**/*.codex.stderr.log
           if-no-files-found: warn
           retention-days: 7
 
