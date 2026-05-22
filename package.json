@@ -78,7 +78,13 @@
     "format:check": "oxfmt --check src scripts test dashboard package.json tsconfig.json tsconfig.repair.json tsconfig.dashboard.json .oxfmtrc.json config schema .github/actions .github/workflows",
     "oxformat": "pnpm run format",
     "oxformat:check": "pnpm run format:check",
-    "check": "pnpm run check:active-surface && pnpm run check:limits && pnpm run build:all && pnpm run lint && pnpm run test:unit && pnpm run test:repair && pnpm run test:coverage:changed && pnpm run test:coverage && pnpm run format:check"
+    "check": "pnpm run check:active-surface && pnpm run check:limits && pnpm run build:all && pnpm run lint && pnpm run test:unit && pnpm run test:repair && pnpm run test:coverage:changed && pnpm run test:coverage && pnpm run format:check",
+    "check:changed": "pnpm run check",
+    "test:changed": "pnpm run test:unit",
+    "crabbox:hydrate": "crabbox actions hydrate",
+    "crabbox:run": "crabbox run",
+    "crabbox:stop": "crabbox stop",
+    "crabbox:warmup": "crabbox warmup"
   },
   "devDependencies": {
     "@types/node": "^25.6.0",
