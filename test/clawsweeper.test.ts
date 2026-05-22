@@ -2239,6 +2239,7 @@ test("pull request keep-open review comments label the change summary", () => {
       close_reason: "none",
       work_candidate: "none",
       pull_head_sha: "abc123def456",
+      reviewed_at: "2026-05-22T04:43:12.000Z",
     })}
 
 ## Summary
@@ -2281,6 +2282,10 @@ Reason: Maintainers should review the tests after the targeted lane is green.
   );
 
   assert.match(comment, /Codex review: needs maintainer review before merge\./);
+  assert.match(
+    comment,
+    /\*\*Latest ClawSweeper review:\*\* 2026-05-22 04:43 UTC \/ May 22, 2026, 12:43 AM ET\. GitHub's header may show when this durable comment was first created\./,
+  );
   assert.match(
     comment,
     /\*\*Workflow note:\*\* Future ClawSweeper reviews update this same comment in place\./,

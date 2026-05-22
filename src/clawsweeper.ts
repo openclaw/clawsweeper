@@ -5383,6 +5383,23 @@ function formatTimestamp(iso: string | undefined): string {
   }).format(date);
 }
 
+function formatReviewFreshnessTimestamp(iso: string | undefined): string {
+  if (!iso) return "";
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return iso;
+  const utc = date.toISOString().slice(0, 16).replace("T", " ");
+  const eastern = new Intl.DateTimeFormat("en-US", {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+    timeZone: "America/New_York",
+  }).format(date);
+  return `${utc} UTC / ${eastern} ET`;
+}
+
 function workflowStatusBlock(options?: {
   state?: string | undefined;
   detail?: string | undefined;
@@ -9656,6 +9673,15 @@ function reviewWorkflowCallout(): string[] {
   ];
 }
 
+function reviewFreshnessCallout(markdown: string): string[] {
+  const timestamp = formatReviewFreshnessTimestamp(frontMatterValue(markdown, "reviewed_at"));
+  if (!timestamp) return [];
+  return [
+    `**Latest ClawSweeper review:** ${timestamp}. GitHub's header may show when this durable comment was first created.`,
+    "",
+  ];
+}
+
 function renderKeepOpenCommentFromReport(
   markdown: string,
   options: ReviewCommentRenderOptions = {},
@@ -9707,6 +9733,7 @@ function renderKeepOpenCommentFromReport(
               ? "Codex review: needs maintainer review before merge."
               : "Codex review: keeping this open for maintainer follow-up; there is still a little grit to resolve.",
     "",
+    ...reviewFreshnessCallout(markdown),
     ...reviewWorkflowCallout(),
   ];
   if (isPullRequest) {
