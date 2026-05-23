@@ -8911,6 +8911,82 @@ Reason: ${duplicateRisk}
   assert.equal(comment.split(duplicateRisk).length - 1, 1);
 });
 
+test("OpenClaw pull request comments render PR surface before summary", () => {
+  const comment = renderReviewCommentFromReport(
+    `${reportFrontMatter({
+      repository: "openclaw/openclaw",
+      type: "pull_request",
+      number: "12345",
+      decision: "keep_open",
+      close_reason: "none",
+      work_candidate: "none",
+      pr_surface_files: JSON.stringify([
+        { path: "src/runtime.ts", additions: 10, deletions: 2 },
+        { path: "src/runtime.test.ts", additions: 7, deletions: 1 },
+        { path: "docs/usage.md", additions: 4, deletions: 0 },
+      ]),
+      pr_surface_files_truncated: "false",
+    })}
+
+## Summary
+
+Keep this PR open for maintainer review.
+
+## What This Changes
+
+Adds a small runtime change with tests and docs.
+`,
+    "none",
+  );
+
+  assert.match(
+    comment,
+    /\*\*PR Surface\*\*\nSource \+8, Tests \+6, Docs \+4\. Total \+18 across 3 files\./,
+  );
+  assert.match(comment, /<summary>View PR surface stats<\/summary>/);
+  assert.match(
+    comment,
+    /\| \*\*Total\*\* \| \*\*3\*\* \| \*\*21\*\* \| \*\*3\*\* \| \*\*\+18\*\* \|/,
+  );
+  assert.ok(comment.indexOf("**PR Surface**") < comment.indexOf("**Summary**"));
+});
+
+test("PR surface is OpenClaw pull-request only", () => {
+  const frontMatter = {
+    decision: "keep_open",
+    close_reason: "none",
+    work_candidate: "none",
+    pr_surface_files: JSON.stringify([{ path: "src/runtime.ts", additions: 10, deletions: 2 }]),
+    pr_surface_files_truncated: "false",
+  };
+  const body = `
+
+## Summary
+
+Keep this open.
+`;
+
+  const otherRepoComment = renderReviewCommentFromReport(
+    `${reportFrontMatter({
+      ...frontMatter,
+      repository: "example/project",
+      type: "pull_request",
+    })}${body}`,
+    "none",
+  );
+  const issueComment = renderReviewCommentFromReport(
+    `${reportFrontMatter({
+      ...frontMatter,
+      repository: "openclaw/openclaw",
+      type: "issue",
+    })}${body}`,
+    "none",
+  );
+
+  assert.doesNotMatch(otherRepoComment, /\*\*PR Surface\*\*/);
+  assert.doesNotMatch(issueComment, /\*\*PR Surface\*\*/);
+});
+
 function mergeRiskReviewComment({
   risk,
   options,

@@ -38,6 +38,12 @@ import { stableJson } from "./stable-json.js";
 import { runText } from "./command.js";
 import { AUTOMATION_LIMITS } from "./limits.js";
 import {
+  buildOpenClawPrSurfaceStats,
+  renderOpenClawPrSurfaceSummary,
+  renderOpenClawPrSurfaceTable,
+  type PrSurfaceFile,
+} from "./pr-surface-stats.js";
+import {
   boolArg,
   itemNumbersArg,
   numberArg,
@@ -7832,6 +7838,63 @@ function pullRequestFilePathsFromReport(markdown: string): string[] {
   return frontMatterStringArray(markdown, "pull_files");
 }
 
+function prSurfaceFilesFromContext(context: ItemContext): PrSurfaceFile[] {
+  if (context.counts?.pullFilesTruncated) return [];
+  return (context.pullFiles ?? [])
+    .map((entry) => {
+      const file = asRecord(entry);
+      const path = typeof file.filename === "string" ? file.filename.trim() : "";
+      if (!path) return null;
+      return {
+        path,
+        additions: nonNegativeInteger(file.additions),
+        deletions: nonNegativeInteger(file.deletions),
+      };
+    })
+    .filter((entry): entry is PrSurfaceFile => Boolean(entry));
+}
+
+function nonNegativeInteger(value: unknown): number {
+  const number = Number(value);
+  return Number.isInteger(number) && number > 0 ? number : 0;
+}
+
+function prSurfaceFilesFromReport(markdown: string): PrSurfaceFile[] {
+  if (frontMatterBoolean(markdown, "pr_surface_files_truncated")) return [];
+  return frontMatterJsonArray(markdown, "pr_surface_files")
+    .map((entry) => {
+      const file = asRecord(entry);
+      const path = typeof file.path === "string" ? file.path.trim() : "";
+      if (!path) return null;
+      return {
+        path,
+        additions: nonNegativeInteger(file.additions),
+        deletions: nonNegativeInteger(file.deletions),
+      };
+    })
+    .filter((entry): entry is PrSurfaceFile => Boolean(entry));
+}
+
+function shouldRenderOpenClawPrSurface(markdown: string): boolean {
+  return (
+    frontMatterValue(markdown, "type") === "pull_request" &&
+    normalizeRepo(markdownRepository(markdown)) === "openclaw/openclaw"
+  );
+}
+
+function renderOpenClawPrSurfaceFromReport(markdown: string): string {
+  if (!shouldRenderOpenClawPrSurface(markdown)) return "";
+  const files = prSurfaceFilesFromReport(markdown);
+  if (files.length === 0) return "";
+  const stats = buildOpenClawPrSurfaceStats(files);
+  const summary = renderOpenClawPrSurfaceSummary(stats);
+  if (!summary) return "";
+  const details = collapsedDetailsBlock("View PR surface stats", [
+    renderOpenClawPrSurfaceTable(stats),
+  ]);
+  return details ? `${summary}\n\n${details}` : summary;
+}
+
 function isDocsPath(file: string): boolean {
   return file.startsWith("docs/");
 }
@@ -10183,6 +10246,8 @@ function renderKeepOpenCommentFromReport(
     ...reviewFreshnessCallout(markdown),
     ...reviewWorkflowCallout(),
   ];
+  const prSurface = renderOpenClawPrSurfaceFromReport(markdown);
+  if (prSurface) appendPublicSection(lines, "PR Surface", prSurface);
   if (isPullRequest) {
     appendPublicSection(
       lines,
@@ -11272,6 +11337,7 @@ function markdownFor(options: {
   const repairWorkPromptSection = renderRepairWorkPromptReportSection(options.decision);
   const pullFiles = pullRequestFilePathsFromContext(options.context);
   const pullFilesTruncated = Boolean(options.context.counts?.pullFilesTruncated);
+  const prSurfaceFiles = prSurfaceFilesFromContext(options.context);
   return `---
 number: ${options.item.number}
 repository: ${options.item.repo}
@@ -11339,6 +11405,8 @@ merge_risk_options: ${JSON.stringify(options.decision.mergeRiskOptions)}
 label_justifications: ${JSON.stringify(options.decision.labelJustifications)}
 pull_files: ${jsonFrontMatterValue(pullFiles)}
 pull_files_truncated: ${pullFilesTruncated}
+pr_surface_files: ${jsonFrontMatterValue(prSurfaceFiles)}
+pr_surface_files_truncated: ${pullFilesTruncated}
 item_category: ${options.decision.itemCategory}
 reproduction_status: ${options.decision.reproductionStatus}
 reproduction_confidence: ${options.decision.reproductionConfidence}
@@ -13565,7 +13633,7 @@ function markdownTableCell(value: string): string {
   return value.replaceAll("|", "\\|");
 }
 
-function jsonFrontMatterValue(value: readonly string[]): string {
+function jsonFrontMatterValue(value: readonly unknown[]): string {
   return JSON.stringify(value);
 }
 
