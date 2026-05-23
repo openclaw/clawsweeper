@@ -9705,6 +9705,23 @@ test("review prompt reads maintainer notes before PR diffs", () => {
   assert.match(prompt, /do not publish raw internal note contents/);
 });
 
+test("review prompts read target AGENTS instructions before reviewing", () => {
+  const itemPrompt = readFileSync("prompts/review-item.md", "utf8");
+  const commitPrompt = readFileSync("prompts/review-commit.md", "utf8");
+
+  for (const prompt of [itemPrompt, commitPrompt]) {
+    assert.match(
+      prompt,
+      /Before reviewing, read the target\s+repository's `AGENTS\.md` if present/,
+    );
+    assert.match(prompt, /follow its repository-specific\s+instructions/);
+    assert.match(
+      prompt,
+      /do not conflict with this prompt or higher-priority\s+system\/developer instructions/,
+    );
+  }
+});
+
 test("review prompt requires a dedicated securityReview section", () => {
   const prompt = readFileSync("prompts/review-item.md", "utf8");
 

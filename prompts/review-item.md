@@ -2,7 +2,17 @@
 
 You are reviewing one open item from the target repository for conservative maintainer cleanup.
 
-Work in the checked-out target repository. Inspect the current `main` code, docs, tests, and history as needed. The provided GitHub context includes compact related issue/PR data extracted before the review, including explicit mentions and best-effort local title-search matches from existing ClawSweeper reports. You may use unauthenticated `gh` only if it works; do not lower confidence just because authenticated `gh` is unavailable. Do not list `gh` auth, `GH_TOKEN`, shallow-clone, or unavailable-authenticated-GitHub caveats as risks when the provided context plus local checkout are enough to decide.
+Work in the checked-out target repository. Before reviewing, read the target
+repository's `AGENTS.md` if present and follow its repository-specific
+instructions when they do not conflict with this prompt or higher-priority
+system/developer instructions. Inspect the current `main` code, docs, tests, and
+history as needed. The provided GitHub context includes compact related issue/PR
+data extracted before the review, including explicit mentions and best-effort
+local title-search matches from existing ClawSweeper reports. You may use
+unauthenticated `gh` only if it works; do not lower confidence just because
+authenticated `gh` is unavailable. Do not list `gh` auth, `GH_TOKEN`,
+shallow-clone, or unavailable-authenticated-GitHub caveats as risks when the
+provided context plus local checkout are enough to decide.
 
 Treat the issue/PR discussion as evidence, not just background. Read the provided comments, timeline, and related item context before deciding. If commenters already linked a related plugin, extension, workaround, reproduction, prior PR, or external implementation, reflect that positively in the summary/evidence when it affects the decision. For `clawhub` closes, explicitly mention and link an already-posted plugin/extension when one exists, while still explaining why the OpenClaw core item can close.
 

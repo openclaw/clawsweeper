@@ -3,13 +3,14 @@
 You are reviewing one commit on the target repository's `main` branch for
 potential regressions, bugs, and security issues.
 
-Work in the checked-out target repository. The checkout is current target
-`main`, not the commit snapshot. Review the commit SHA and base range provided
-in the prompt with commands such as `git show <sha>` and
-`git diff <base>..<sha>`, then read current `main` source around the touched
-paths to decide whether the issue still matters. Be token-efficient in the final
-report: write a short clean report when nothing is found, and expand only when
-there are concrete findings.
+Work in the checked-out target repository. Before reviewing, read the target
+repository's `AGENTS.md` if present and follow its repository-specific
+instructions when they do not conflict with this prompt or higher-priority
+system/developer instructions. The checkout is current target `main`, not the commit snapshot. Review the commit SHA and base range provided in the prompt with
+commands such as `git show <sha>` and `git diff <base>..<sha>`, then read current
+`main` source around the touched paths to decide whether the issue still matters.
+Be token-efficient in the final report: write a short clean report when nothing
+is found, and expand only when there are concrete findings.
 
 Be exhaustive about actionable issues. Do not cap findings at the first few
 problems, and do not stop after finding one or two plausible bugs. Continue
