@@ -1410,6 +1410,14 @@ function targetRepo(): string {
   return activeRepositoryProfile.targetRepo;
 }
 
+function isOpenClawRepo(repo: string | null | undefined): boolean {
+  return normalizeRepo(String(repo ?? "")).startsWith("openclaw/");
+}
+
+function prEggEnabledForMarkdown(markdown: string): boolean {
+  return isOpenClawRepo(markdownRepository(markdown));
+}
+
 function setTargetRepo(targetRepoName: string): RepositoryProfile {
   activeRepositoryProfile = repositoryProfileFor(targetRepoName);
   return activeRepositoryProfile;
@@ -6330,6 +6338,7 @@ function publicPrEggLineFromReport(
 
 function prEggImageRelativePath(markdown: string): string {
   const repo = markdownRepository(markdown);
+  if (!isOpenClawRepo(repo)) throw new Error(`PR egg is disabled for target repo: ${repo}`);
   const profile = repositoryProfileFor(repo);
   const number = frontMatterValue(markdown, "number") ?? "unknown";
   return `assets/pr-eggs/${profile.slug}/${number}.png`;
@@ -6358,6 +6367,7 @@ function shouldEnsurePrEggImage(
   statusKind: PrStatusLabelKind | null | undefined,
 ): boolean {
   return (
+    prEggEnabledForMarkdown(markdown) &&
     frontMatterValue(markdown, "type") === "pull_request" &&
     prEggProofUnlocked(reportRealBehaviorProof(markdown)) &&
     prEggStateFromStatus(statusKind) === "hatched" &&
@@ -10913,6 +10923,7 @@ function renderHatchComment(
   markdown: string,
   statusKind: PrStatusLabelKind | null | undefined,
 ): string {
+  if (!prEggEnabledForMarkdown(markdown)) return "";
   return [
     "ClawSweeper PR egg",
     "",
@@ -10929,6 +10940,7 @@ function upsertHatchComment(
   dryRun: boolean,
 ): Record<string, unknown> | undefined {
   const body = renderHatchComment(number, markdown, statusKind);
+  if (!body) return issueCommentWithMarker(number, hatchCommentMarker(number));
   const existing = issueCommentWithMarker(number, hatchCommentMarker(number));
   const id = commentId(existing);
   if (dryRun) return existing;
@@ -11774,7 +11786,8 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
     if (processedCount % progressEvery === 0) logProgress(message);
   };
   const recordMissingHatchResults = (existingNumbers: Set<number>): void => {
-    if (!hatchPrEggImage || requestedItemNumbers.length === 0) return;
+    if (!hatchPrEggImage || requestedItemNumbers.length === 0 || !isOpenClawRepo(targetRepo()))
+      return;
     for (const number of requestedItemNumbers) {
       if (existingNumbers.has(number)) continue;
       let commentReason = "no current durable ClawSweeper review record";
@@ -12113,6 +12126,13 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
       return result;
     };
     if (hatchOnly) {
+      if (!isOpenClawRepo(repo)) {
+        results.push({ number, action: "kept_open", reason: "PR egg is disabled for this repo" });
+        processedCount += 1;
+        maybeLogProgress(`skipped PR egg image #${number}: disabled for repo ${repo}`);
+        if (processedCount >= processedLimit) break;
+        continue;
+      }
       if (item.kind !== "pull_request") {
         results.push({ number, action: "kept_open", reason: "hatch requires a pull request" });
         processedCount += 1;
@@ -12305,11 +12325,11 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
     ]);
     const markedReviewComment = markedReviewCommentBody(number, reviewComment);
     const prEggComment =
-      item.kind === "pull_request" && !isCloseProposal
+      item.kind === "pull_request" && !isCloseProposal && isOpenClawRepo(repo)
         ? renderHatchComment(number, markdown, currentPrStatusKind)
         : "";
     const existingPrEggComment =
-      item.kind === "pull_request" && !isCloseProposal
+      item.kind === "pull_request" && !isCloseProposal && isOpenClawRepo(repo)
         ? issueCommentWithMarker(number, hatchCommentMarker(number))
         : undefined;
     const protectedApplyReason = applyProtectedLabelReason(item.labels, closeReason);
@@ -12512,6 +12532,7 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
       frontMatterValue(markdown, "review_comment_url") === "unknown";
     const needsPrEggCommentSync =
       item.kind === "pull_request" &&
+      isOpenClawRepo(repo) &&
       !isCloseProposal &&
       !commentBodyMatches(existingPrEggComment, prEggComment);
     const needsReviewCommentSync = shouldSyncReviewComment({

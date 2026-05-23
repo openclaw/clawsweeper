@@ -3358,6 +3358,60 @@ Full review comments:
   assert.doesNotMatch(eggComment, /Share on X:/);
 });
 
+test("PR egg comment is hidden outside OpenClaw repositories", () => {
+  const report = `${reportFrontMatter({
+    repository: "steipete/summarize",
+    type: "pull_request",
+    number: "74470",
+    decision: "keep_open",
+    close_reason: "none",
+    review_status: "complete",
+    confidence: "high",
+    author: "contributor",
+    author_association: "CONTRIBUTOR",
+    labels: JSON.stringify(["status: 👀 ready for maintainer look"]),
+    work_candidate: "none",
+    pull_head_sha: "abc123def456",
+  })}
+
+## Summary
+
+Keep this PR open.
+
+${realBehaviorProofReportSection({
+  status: "sufficient",
+  evidenceKind: "terminal",
+  needsContributorAction: false,
+  summary: "The PR has sufficient proof.",
+})}
+
+${prRatingReportSection({
+  overallTier: "A",
+  proofTier: "A",
+  patchTier: "A",
+  overallLabel: "🦀 challenger crab",
+  proofLabel: "🦀 challenger crab",
+  patchLabel: "🦀 challenger crab",
+  summary: "Ready for maintainer review.",
+  nextSteps: "none",
+})}
+
+## Review Findings
+
+Overall correctness: patch is correct
+
+Overall confidence: 0.9
+
+Full review comments:
+
+- none
+`;
+
+  const eggComment = renderPrEggCommentForTest(74470, report, "ready_for_maintainer_look");
+
+  assert.equal(eggComment, "");
+});
+
 test("PR egg comment renders warming PR egg from active status after proof passes", () => {
   const report = `${reportFrontMatter({
     type: "pull_request",

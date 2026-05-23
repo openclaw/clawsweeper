@@ -509,6 +509,9 @@ function classifyGithubIssueCommentWebhook({ event, payload }) {
   if (!isEligibleGithubWebhookRepository(repo)) {
     return { accepted: false, reason: "repository not eligible" };
   }
+  if (isGithubWebhookHatchCommand(comment) && !isOpenClawRepo(targetRepo)) {
+    return { accepted: false, reason: "PR egg is disabled for this repo" };
+  }
   const itemNumber = Number(issue.number);
   const commentId = Number(comment.id);
   const installationId = Number(objectValue(payload.installation).id);
@@ -606,9 +609,23 @@ function isEligibleGithubWebhookRepository(repo) {
   return owner === "openclaw" || owner === "steipete";
 }
 
+function isOpenClawRepo(repo) {
+  return String(repo || "")
+    .trim()
+    .toLowerCase()
+    .startsWith("openclaw/");
+}
+
 function targetDefaultBranch(repo) {
   const branch = String(repo.default_branch || "main").trim() || "main";
   return /^[A-Za-z0-9_./-]+$/.test(branch) ? branch : "main";
+}
+
+function isGithubWebhookHatchCommand(comment) {
+  const body = String(comment.body || "");
+  return /(^|[ \t\r\n])@(?:clawsweeper|openclaw-clawsweeper)\b(?:\[bot\])?\s+(?:hatch|hatch egg|pr egg hatch|hatch pr egg)\b/i.test(
+    body,
+  );
 }
 
 function isIgnoredGithubWebhookLabelMutation({ action, payload }) {

@@ -116,6 +116,26 @@ test("comment webhook accepts author read-only hatch commands", () => {
   });
 });
 
+test("comment webhook ignores hatch commands outside OpenClaw repositories", () => {
+  const result = classifyIssueCommentWebhook({
+    event: "issue_comment",
+    payload: {
+      action: "created",
+      repository: { full_name: "steipete/summarize" },
+      issue: { number: 76992, user: { login: "nickmopen" } },
+      installation: { id: 123 },
+      comment: {
+        id: 457,
+        body: "@clawsweeper hatch",
+        author_association: "CONTRIBUTOR",
+        user: { login: "NickMOpen" },
+      },
+    },
+  });
+
+  assert.deepEqual(result, { accepted: false, reason: "PR egg is disabled for this repo" });
+});
+
 test("comment webhook rejects commands from ineligible repositories", () => {
   const result = classifyIssueCommentWebhook({
     event: "issue_comment",

@@ -343,6 +343,9 @@ function classifyCommand(command: LooseRecord): JsonValue {
   if (command.comment_version_key && processedCommentVersions.has(command.comment_version_key)) {
     return { ...command, status: "skipped", reason: "comment version already processed in ledger" };
   }
+  if (command.intent === "hatch" && !isOpenClawRepo(String(command.repo ?? ""))) {
+    return { ...command, status: "ignored", reason: "PR egg is disabled for this repo" };
+  }
   let authorization: LooseRecord | null = null;
   if (command.trusted_bot) {
     if (!trustedBots.has(String(command.author ?? "").toLowerCase())) {
@@ -771,6 +774,10 @@ function classifyCommand(command: LooseRecord): JsonValue {
       { action: "comment", status: execute ? "pending" : "planned" },
     ],
   };
+}
+
+function isOpenClawRepo(repo: string): boolean {
+  return repo.trim().toLowerCase().startsWith("openclaw/");
 }
 
 function classifyAutoclose(command: LooseRecord, issue: LooseRecord, pull: LooseRecord): JsonValue {

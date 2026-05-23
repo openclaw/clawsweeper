@@ -179,6 +179,9 @@ export function classifyIssueCommentWebhook({
   if (!isEligibleRepositoryPayload(repo)) {
     return { accepted: false, reason: "repository not eligible" };
   }
+  if (parseCommand(String(comment.body ?? ""))?.intent === "hatch" && !isOpenClawRepo(targetRepo)) {
+    return { accepted: false, reason: "PR egg is disabled for this repo" };
+  }
   const itemNumber = Number(issue.number);
   const commentId = Number(comment.id);
   const installationId = Number(asRecord(payload.installation).id);
@@ -274,6 +277,10 @@ function isEligibleRepositoryPayload(repo: LooseRecord) {
   } catch {
     return false;
   }
+}
+
+function isOpenClawRepo(repo: string) {
+  return repo.trim().toLowerCase().startsWith("openclaw/");
 }
 
 function targetDefaultBranch(repo: LooseRecord) {
