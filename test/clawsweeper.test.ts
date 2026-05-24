@@ -10171,14 +10171,19 @@ test("review prompts treat target AGENTS as optional review policy", () => {
   for (const prompt of [itemPrompt, commitPrompt]) {
     assert.match(
       prompt,
-      /Before reviewing, read the target\s+repository's `AGENTS\.md` if present/,
+      /Before reviewing, read the target\s+repository's full `AGENTS\.md` file if present/,
     );
-    assert.match(prompt, /optional repository-authored\s+review policy and review guidance/);
+    assert.match(prompt, /Do not rely only on search\s+snippets/);
     assert.match(
       prompt,
-      /do not conflict with this prompt or higher-priority\s+system\/developer instructions/,
+      /`head` output, local excerpts, partial line ranges, or truncated\s+copies/,
     );
-    assert.match(prompt, /existing repository profiles and\s+owner\/default fallback behavior/);
+    assert.match(prompt, /optional\s+repository-authored\s+review policy and review guidance/);
+    assert.match(
+      prompt,
+      /do not conflict with this prompt or higher-priority\s+system\/developer\s+instructions/,
+    );
+    assert.match(prompt, /existing repository\s+profiles and owner\/default fallback behavior/);
     assert.match(prompt, /Use target `AGENTS\.md` policy as review input/);
   }
 

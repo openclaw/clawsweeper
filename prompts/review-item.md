@@ -3,13 +3,15 @@
 You are reviewing one open item from the target repository for conservative maintainer cleanup.
 
 Work in the checked-out target repository. Before reviewing, read the target
-repository's `AGENTS.md` if present. Treat it as optional repository-authored
-review policy and review guidance for that target, not only as setup
-instructions. Apply concrete target-specific instructions or guidance when they
-do not conflict with this prompt or higher-priority system/developer instructions. If
-`AGENTS.md` is absent, unrelated, or lower-confidence than the repository's
-observed behavior, continue with ClawSweeper's existing repository profiles and
-owner/default fallback behavior. Inspect the current `main` code, docs, tests,
+repository's full `AGENTS.md` file if present. Do not rely only on search
+snippets, `head` output, local excerpts, partial line ranges, or truncated
+copies when applying repository policy. Treat `AGENTS.md` as optional
+repository-authored review policy and review guidance for that target, not only
+as setup instructions. Apply concrete target-specific instructions or guidance
+when they do not conflict with this prompt or higher-priority system/developer
+instructions. If `AGENTS.md` is absent, unrelated, or lower-confidence than the
+repository's observed behavior, continue with ClawSweeper's existing repository
+profiles and owner/default fallback behavior. Inspect the current `main` code, docs, tests,
 and history as needed. The provided GitHub context includes compact related
 issue/PR data extracted before the review, including explicit mentions, linked
 closing PRs, best-effort local title-search matches from existing ClawSweeper

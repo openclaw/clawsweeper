@@ -4,13 +4,15 @@ You are reviewing one commit on the target repository's `main` branch for
 potential regressions, bugs, and security issues.
 
 Work in the checked-out target repository. Before reviewing, read the target
-repository's `AGENTS.md` if present. Treat it as optional repository-authored
-review policy and review guidance for that target, not only as setup
-instructions. Apply concrete target-specific instructions or guidance when they
-do not conflict with this prompt or higher-priority system/developer instructions. If
-`AGENTS.md` is absent, unrelated, or lower-confidence than the repository's
-observed behavior, continue with ClawSweeper's existing repository profiles and
-owner/default fallback behavior. The checkout is current target `main`, not the commit snapshot. Review the commit SHA and base range provided in the prompt
+repository's full `AGENTS.md` file if present. Do not rely only on search
+snippets, `head` output, local excerpts, partial line ranges, or truncated
+copies when applying repository policy. Treat `AGENTS.md` as optional
+repository-authored review policy and review guidance for that target, not only
+as setup instructions. Apply concrete target-specific instructions or guidance
+when they do not conflict with this prompt or higher-priority system/developer
+instructions. If `AGENTS.md` is absent, unrelated, or lower-confidence than the
+repository's observed behavior, continue with ClawSweeper's existing repository
+profiles and owner/default fallback behavior. The checkout is current target `main`, not the commit snapshot. Review the commit SHA and base range provided in the prompt
 with commands such as `git show <sha>` and `git diff <base>..<sha>`, then read
 current `main` source around the touched paths to decide whether the issue still
 matters. Be token-efficient in the final report: write a short clean report when
