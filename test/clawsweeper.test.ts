@@ -9309,10 +9309,19 @@ Adds a small runtime change with tests and docs.
   );
 
   const evidenceDetails = detailsBody(comment, "Evidence reviewed");
+  const visibleBeforeEvidence = comment.slice(
+    0,
+    comment.indexOf("<summary>Evidence reviewed</summary>"),
+  );
 
+  assert.match(
+    visibleBeforeEvidence,
+    /PR surface: Source \+8, Tests \+6, Docs \+4\. Total \+18 across 3 files\./,
+  );
+  assert.doesNotMatch(visibleBeforeEvidence, /<summary>View PR surface stats<\/summary>/);
   assert.doesNotMatch(
-    comment.slice(0, comment.indexOf("<summary>Evidence reviewed</summary>")),
-    /\*\*PR Surface\*\*/,
+    visibleBeforeEvidence,
+    /\| \*\*Total\*\* \| \*\*3\*\* \| \*\*21\*\* \| \*\*3\*\* \| \*\*\+18\*\* \|/,
   );
   assert.match(
     evidenceDetails,
@@ -9357,8 +9366,8 @@ Keep this open.
     "none",
   );
 
-  assert.doesNotMatch(otherRepoComment, /\*\*PR Surface\*\*/);
-  assert.doesNotMatch(issueComment, /\*\*PR Surface\*\*/);
+  assert.doesNotMatch(otherRepoComment, /PR surface:/);
+  assert.doesNotMatch(issueComment, /PR surface:/);
 });
 
 function mergeRiskReviewComment({

@@ -10825,6 +10825,20 @@ function publicSummaryBody(summaryLine: string, reproductionAssessment: string):
     .join("\n\n");
 }
 
+function publicPrSummaryBody(
+  summaryLine: string,
+  reproductionAssessment: string,
+  prSurfaceSummary: string,
+): string {
+  return [
+    summaryLine,
+    prSurfaceSummary ? `PR surface: ${prSurfaceSummary}` : "",
+    publicReproducibilityLine(reproductionAssessment),
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+}
+
 function publicMergeRiskLine(
   risks: string,
   nextStepLine: string,
@@ -11044,12 +11058,13 @@ function renderKeepOpenCommentFromReport(
             : "Codex review: keeping this open for maintainer follow-up; there is still a little grit to resolve.";
   const lines = [`${verdictLine}${reviewFreshnessText(markdown)}`, ""];
   const prSurface = renderOpenClawPrSurfaceFromReport(markdown);
+  const prSurfaceSummary = prSurface.split("\n\n", 1)[0]?.trim() ?? "";
   if (prSurface) evidenceDetails.push("PR surface:", "", prSurface);
   if (isPullRequest) {
     appendPublicSection(
       lines,
       "Summary",
-      publicSummaryBody(changeSummaryLine, reproductionAssessment),
+      publicPrSummaryBody(changeSummaryLine, reproductionAssessment, prSurfaceSummary),
     );
   } else {
     appendPublicSection(lines, "Summary", publicSummaryBody(summaryLine, reproductionAssessment));
