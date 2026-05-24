@@ -6217,17 +6217,19 @@ function formatReviewFreshnessTimestamp(iso: string | undefined): string {
   if (!iso) return "";
   const date = new Date(iso);
   if (Number.isNaN(date.getTime())) return iso;
-  const utc = date.toISOString().slice(0, 16).replace("T", " ");
+  const utc = date.toISOString().slice(11, 16);
   const eastern = new Intl.DateTimeFormat("en-US", {
     year: "numeric",
-    month: "short",
+    month: "long",
     day: "numeric",
     hour: "numeric",
     minute: "2-digit",
     hour12: true,
     timeZone: "America/New_York",
-  }).format(date);
-  return `${utc} UTC / ${eastern} ET`;
+  })
+    .format(date)
+    .replace(" at ", ", ");
+  return `${eastern} ET / ${utc} UTC`;
 }
 
 function workflowStatusBlock(options?: {
@@ -6783,22 +6785,8 @@ function publicRealBehaviorProofLine(proof: RealBehaviorProof): string {
   }
 }
 
-function publicPrRatingLine(rating: PrRating, proof: RealBehaviorProof): string {
-  const shiny = hasShinyProof(proof) ? " ✨ media proof bonus" : "";
-  const lines = [
-    `Overall: ${themedRatingName(rating.overallTier)}`,
-    `Proof: ${themedRatingName(rating.proofTier)}${shiny}`,
-    `Patch quality: ${themedRatingName(rating.patchTier)}`,
-    `Summary: ${sentence(rating.summary)}`,
-  ];
-  if (rating.nextSteps.length) {
-    lines.push("", "Rank-up moves:", ...rating.nextSteps.slice(0, 3).map((step) => `- ${step}`));
-  }
-  lines.push(
-    "",
-    "<details>",
-    "<summary>What the crustacean ranks mean</summary>",
-    "",
+function publicRankDetailsBlock(): string {
+  return collapsedDetailsBlock("What the crustacean ranks mean", [
     "- 🦀 challenger crab: rare, exceptional readiness with strong proof, clean implementation, and convincing validation.",
     "- 🦞 diamond lobster: very strong readiness with only minor maintainer review expected.",
     "- 🐚 platinum hermit: good normal PR, likely mergeable with ordinary maintainer review.",
@@ -6808,9 +6796,47 @@ function publicPrRatingLine(rating: PrRating, proof: RealBehaviorProof): string 
     "- 🌊 off-meta tidepool: rating does not apply to this item.",
     "",
     "Shiny media proof means a screenshot, video, or linked artifact directly shows the changed behavior. Runtime, network, CSP, and security claims still need visible diagnostics.",
+  ]);
+}
+
+function publicMergeReadinessResult(rating: PrRating, proof: RealBehaviorProof): string {
+  if (rating.overallTier === "NA") return "rating does not apply to this item.";
+  switch (proof.status) {
+    case "missing":
+      return "blocked until real behavior proof is added.";
+    case "mock_only":
+      return "blocked until real behavior proof from a real setup is added.";
+    case "insufficient":
+      return "blocked until stronger real behavior proof is added.";
+    case "sufficient":
+    case "override":
+      if (rating.patchTier === "F" || rating.patchTier === "D") {
+        return "blocked by patch quality or review findings.";
+      }
+      if (rating.overallTier === "S" || rating.overallTier === "A" || rating.overallTier === "B") {
+        return "ready for maintainer review.";
+      }
+      return "needs maintainer review before merge.";
+    case "not_applicable":
+      return rating.patchTier === "F" || rating.patchTier === "D"
+        ? "blocked by patch quality or review findings."
+        : "ready for maintainer review.";
+  }
+}
+
+function publicMergeReadinessBlock(rating: PrRating, proof: RealBehaviorProof): string {
+  const shiny = hasShinyProof(proof) ? " ✨ media proof bonus" : "";
+  const lines = [
+    `Overall: ${themedRatingName(rating.overallTier)}`,
+    `Proof: ${themedRatingName(rating.proofTier)}${shiny}`,
+    `Patch quality: ${themedRatingName(rating.patchTier)}`,
+    `Result: ${publicMergeReadinessResult(rating, proof)}`,
     "",
-    "</details>",
-  );
+    "Overall follows the weaker of proof and patch quality, so missing proof can cap an otherwise strong patch.",
+  ];
+  if (rating.nextSteps.length) {
+    lines.push("", "Rank-up moves:", ...rating.nextSteps.slice(0, 3).map((step) => `- ${step}`));
+  }
   return lines.join("\n");
 }
 
@@ -10127,9 +10153,7 @@ function labelTransitionReason(
     const rating = reportPrRating(markdown);
     const current = ratingLabelForTier(rating.overallTier).name;
     return action === "add"
-      ? `Current PR rating is ${themedRatingName(rating.overallTier)} because proof is ${themedRatingName(
-          rating.proofTier,
-        )}, patch quality is ${themedRatingName(rating.patchTier)}, and ${sentence(rating.summary)}`
+      ? `Overall readiness is ${themedRatingName(rating.overallTier)}.`
       : `Current PR rating is ${inlineCode(current)}, so this older rating label is no longer current.`;
   }
   if (PR_STATUS_LABEL_NAMES.has(label)) {
@@ -10234,11 +10258,9 @@ function labelJustificationsFromPublicReport(
       : "";
     add(
       ratingLabel,
-      `Current PR rating is ${themedRatingName(rating.overallTier)} because proof is ${themedRatingName(
+      `Overall readiness is ${themedRatingName(rating.overallTier)}; proof is ${themedRatingName(
         rating.proofTier,
-      )}, patch quality is ${themedRatingName(rating.patchTier)}, and ${sentence(
-        rating.summary,
-      )}${changed}`,
+      )} and patch quality is ${themedRatingName(rating.patchTier)}.${changed}`,
     );
     const featureShowcase = reportFeatureShowcase(markdown);
     if (
@@ -10894,8 +10916,6 @@ function appendReviewQuestionDetails(
 
 function reviewWorkflowCallout(): string[] {
   return [
-    "**Workflow note:** Future ClawSweeper reviews update this same comment in place.",
-    "",
     collapsedDetailsBlock("How this review workflow works", [
       "- ClawSweeper keeps one durable marker-backed review comment per issue or PR.",
       "- Re-runs edit this comment so the latest verdict, findings, and automation markers stay together instead of adding duplicate bot comments.",
@@ -10910,10 +10930,9 @@ function reviewWorkflowCallout(): string[] {
   ];
 }
 
-function reviewFreshnessCallout(markdown: string): string[] {
+function reviewFreshnessText(markdown: string): string {
   const timestamp = formatReviewFreshnessTimestamp(frontMatterValue(markdown, "reviewed_at"));
-  if (!timestamp) return [];
-  return [`**Latest ClawSweeper review:** ${timestamp}.`, ""];
+  return timestamp ? ` _Reviewed ${timestamp}._` : "";
 }
 
 function renderKeepOpenCommentFromReport(
@@ -10952,26 +10971,24 @@ function renderKeepOpenCommentFromReport(
   const mergeRiskLine = isPullRequest
     ? publicMergeRiskLine(risks, nextStepLine, bestSolutionLine, mergeRiskOptions)
     : "";
-  const details: string[] = [];
+  const reviewDetails: string[] = [];
+  const labelDetails: string[] = [];
+  const evidenceDetails: string[] = [];
   const hasReviewFindings = isPullRequest && reviewFindings.length > 0;
-  const lines = [
-    hasRealBehaviorProofBlocker
-      ? "Codex review: needs real behavior proof before merge."
-      : isRepairLoopPass
-        ? "Codex review: passed."
-        : isPullRequest && isRepairCandidate
-          ? "Codex review: needs changes before merge."
-          : hasReviewFindings
-            ? "Codex review: found issues before merge."
-            : isPullRequest
-              ? "Codex review: needs maintainer review before merge."
-              : "Codex review: keeping this open for maintainer follow-up; there is still a little grit to resolve.",
-    "",
-    ...reviewFreshnessCallout(markdown),
-    ...reviewWorkflowCallout(),
-  ];
+  const verdictLine = hasRealBehaviorProofBlocker
+    ? "Codex review: needs real behavior proof before merge."
+    : isRepairLoopPass
+      ? "Codex review: passed."
+      : isPullRequest && isRepairCandidate
+        ? "Codex review: needs changes before merge."
+        : hasReviewFindings
+          ? "Codex review: found issues before merge."
+          : isPullRequest
+            ? "Codex review: needs maintainer review before merge."
+            : "Codex review: keeping this open for maintainer follow-up; there is still a little grit to resolve.";
+  const lines = [`${verdictLine}${reviewFreshnessText(markdown)}`, ""];
   const prSurface = renderOpenClawPrSurfaceFromReport(markdown);
-  if (prSurface) appendPublicSection(lines, "PR Surface", prSurface);
+  if (prSurface) evidenceDetails.push("PR surface:", "", prSurface);
   if (isPullRequest) {
     appendPublicSection(
       lines,
@@ -10992,11 +11009,10 @@ function renderKeepOpenCommentFromReport(
     }
   }
   if (isPullRequest) {
-    appendPublicSection(lines, "PR rating", publicPrRatingLine(prRating, realBehaviorProof));
     appendPublicSection(
       lines,
-      "Real behavior proof",
-      publicRealBehaviorProofLine(realBehaviorProof),
+      "Merge readiness",
+      publicMergeReadinessBlock(prRating, realBehaviorProof),
     );
   }
   const mantisSuggestion = isPullRequest
@@ -11011,9 +11027,9 @@ function renderKeepOpenCommentFromReport(
     lines.push("**Review findings**", ...reviewFindings.slice(0, 3).map(reviewFindingSummaryLine));
   }
   if (bestSolutionLine && publicReviewTextDiffers(bestSolutionLine, nextStepLine)) {
-    details.push("Best possible solution:", "", bestSolutionLine);
+    reviewDetails.push("Best possible solution:", "", bestSolutionLine);
   }
-  appendReviewQuestionDetails(details, reproductionAssessment, solutionAssessment);
+  appendReviewQuestionDetails(reviewDetails, reproductionAssessment, solutionAssessment);
   const labelJustifications = labelJustificationsFromPublicReport(markdown, options);
   const labelTransitionJustifications = labelTransitionJustificationsFromPublicReport(
     markdown,
@@ -11021,19 +11037,23 @@ function renderKeepOpenCommentFromReport(
     options,
   );
   if (labelTransitionJustifications.length) {
-    details.push(
-      "",
+    labelDetails.push(
       "Label changes:",
       "",
       labelTransitionJustificationsMarkdown(labelTransitionJustifications),
     );
   }
   if (labelJustifications.length) {
-    details.push("", "Label justifications:", "", labelJustificationsMarkdown(labelJustifications));
+    if (labelDetails.length) labelDetails.push("");
+    labelDetails.push(
+      "Label justifications:",
+      "",
+      labelJustificationsMarkdown(labelJustifications),
+    );
   }
   if (isPullRequest && reviewFindings.length) {
-    details.push(
-      "",
+    reviewDetails.push(
+      ...(reviewDetails.length ? [""] : []),
       "Full review comments:",
       "",
       ...reviewFindings.map(reviewFindingDetailedLine),
@@ -11043,28 +11063,60 @@ function renderKeepOpenCommentFromReport(
     );
   }
   if (securityReview.concerns.length) {
-    details.push(
-      "",
+    evidenceDetails.push(
+      ...(evidenceDetails.length ? [""] : []),
       "Security concerns:",
       "",
       ...securityReview.concerns.map(securityConcernDetailedLine),
     );
   }
-  if (validation.length) details.push("", "Acceptance criteria:", "", ...validation);
-  if (evidence.length) details.push("", "What I checked:", "", ...evidence);
-  if (likelyOwners.length) details.push("", "Likely related people:", "", ...likelyOwners);
+  if (validation.length) {
+    evidenceDetails.push(
+      ...(evidenceDetails.length ? [""] : []),
+      "Acceptance criteria:",
+      "",
+      ...validation,
+    );
+  }
+  if (evidence.length) {
+    evidenceDetails.push(
+      ...(evidenceDetails.length ? [""] : []),
+      "What I checked:",
+      "",
+      ...evidence,
+    );
+  }
+  if (likelyOwners.length) {
+    evidenceDetails.push(
+      ...(evidenceDetails.length ? [""] : []),
+      "Likely related people:",
+      "",
+      ...likelyOwners,
+    );
+  }
   if (
     !isReportNoneList(risks) &&
     !mergeRiskLine &&
     publicReviewTextDiffers(risks, nextStepLine) &&
     (!bestSolutionLine || publicReviewTextDiffers(risks, bestSolutionLine))
   ) {
-    details.push("", "Remaining risk / open question:", "", risks);
+    reviewDetails.push(
+      ...(reviewDetails.length ? [""] : []),
+      "Remaining risk / open question:",
+      "",
+      risks,
+    );
   }
   const reviewLine = closeReviewLineFromReport(markdown);
-  if (reviewLine) details.push("", reviewLine);
-  const detailsBlock = collapsedDetailsBlock("Review details", details);
+  if (reviewLine) reviewDetails.push(...(reviewDetails.length ? [""] : []), reviewLine);
+  const detailsBlock = collapsedDetailsBlock("Review details", reviewDetails);
   if (detailsBlock) lines.push("", detailsBlock);
+  const labelDetailsBlock = collapsedDetailsBlock("Label changes", labelDetails);
+  if (labelDetailsBlock) lines.push("", labelDetailsBlock);
+  const evidenceDetailsBlock = collapsedDetailsBlock("Evidence reviewed", evidenceDetails);
+  if (evidenceDetailsBlock) lines.push("", evidenceDetailsBlock);
+  if (isPullRequest) lines.push("", publicRankDetailsBlock());
+  lines.push("", ...reviewWorkflowCallout());
   return sanitizePublicSelfReferences(
     lines.join("\n"),
     Number(frontMatterValue(markdown, "number")),
