@@ -12,6 +12,14 @@ import {
   uniqueNonEmpty,
 } from "../../dist/repair/git-publish.js";
 
+for (const key of [
+  "CLAWSWEEPER_STATE_DIR",
+  "CLAWSWEEPER_PUBLISH_ROOT",
+  "CLAWSWEEPER_PUBLISH_BRANCH",
+]) {
+  delete process.env[key];
+}
+
 test("uniqueNonEmpty trims, drops blanks, and deduplicates paths", () => {
   assert.deepEqual(uniqueNonEmpty([" jobs ", "", "results", "jobs", "results "]), [
     "jobs",
