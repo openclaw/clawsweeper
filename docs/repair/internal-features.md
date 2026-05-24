@@ -189,7 +189,7 @@ pushes, opens PRs, and comments using the GitHub token.
 For same-branch automerge repairs, the executor can stay alive after pushing a
 deterministic repair. It waits for the exact-head ClawSweeper verdict and GitHub
 checks on the new head, then dispatches the comment router immediately when the
-PR is ready so merge does not depend on the next scheduled sweep. See
+PR is ready so merge does not depend on a broad repair sweep. See
 [`automerge-flow.md`](automerge-flow.md) for the full wait and repair decision
 table.
 
@@ -518,9 +518,8 @@ the per-PR automerge authorization.
 Otherwise it leaves the PR open and labels it `clawsweeper:human-review` and
 `clawsweeper:merge-ready` when merge gates are closed.
 
-The scheduled workflow is dry by default. Set
-`CLAWSWEEPER_COMMENT_ROUTER_EXECUTE=1` to let scheduled runs post replies and
-dispatch workers. Manual workflow dispatch can also pass `execute=true`.
+The workflow is not scheduled. Exact `clawsweeper_comment` dispatches execute
+for the source comment, and manual workflow dispatch can pass `execute=true`.
 Branch mutation still requires the downstream `CLAWSWEEPER_ALLOW_EXECUTE=1` and
 `CLAWSWEEPER_ALLOW_FIX_PR=1` gates.
 
@@ -588,8 +587,8 @@ Important gates:
   Workflows treat any value except literal `1` as closed.
 - `CLAWSWEEPER_ALLOW_MERGE`: allows ClawSweeper to merge. Keep this `0` unless a
   maintainer explicitly opens it.
-- `CLAWSWEEPER_COMMENT_ROUTER_EXECUTE`: lets scheduled comment routing post
-  replies and dispatch workers.
+- exact `clawsweeper_comment` dispatch or workflow dispatch with `execute=true`
+  lets comment routing post replies and dispatch workers.
 
 Important defaults:
 

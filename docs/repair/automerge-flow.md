@@ -128,7 +128,7 @@ Every automerge decision is bound to a concrete PR head SHA.
   accidentally.
 
 This is why repair workers dispatch an immediate exact-head review after a
-branch push instead of waiting for the normal scheduled sweep.
+branch push instead of relying on broad scheduled repair sweeps.
 
 ## Checks: Wait, Repair, Or Merge
 

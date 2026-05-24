@@ -257,8 +257,8 @@ comments get an immediate `eyes` reaction from the ClawSweeper app. Maintainer
 commands also get one queued status comment that the router edits in place after
 it classifies the command, so the visible reply is available as soon as the
 target dispatcher starts. Exact comment dispatches scan only the source comment
-and use per-comment receiver concurrency; the scheduled sweep remains a
-five-minute fallback.
+and use per-comment receiver concurrency; broad scheduled repair sweeps are
+disabled.
 The status comment itself uses one compact badge: `🦞👀` for acknowledgement,
 `🦞🧹` for review, `🦞🔧` for repair/build/fix work, and `🦞✅` for completed or
 paused work.
@@ -349,7 +349,7 @@ Use `--comment-id <id>`, `--comment-ids <a,b>`, `--item-number <number>`, or
 `--item-numbers <a,b>` to route only specific comments or specific open issue
 or PR comments. The event review workflow uses this targeted path after syncing
 its durable ClawSweeper verdict so automerge can act on a fresh `pass` marker
-without waiting for the scheduled comment-router sweep. No-op targeted
+without waiting for a broad repair sweep. No-op targeted
 acknowledgements, such as already-processed commands or already-enabled
 automerge commands, do not publish a durable ledger commit.
 
@@ -414,11 +414,10 @@ If `main` advanced after validation, the worker rebases again; any conflicts are
 handed back to Codex for resolution, then validation and Codex `/review` rerun
 before push.
 
-The scheduled workflow is dry by default. Set
-`CLAWSWEEPER_COMMENT_ROUTER_EXECUTE=1` in repo variables to let scheduled runs
-post replies and dispatch workers. Manual workflow dispatch can also pass
-`execute=true`. Branch mutation still requires the downstream execution gates,
-including `CLAWSWEEPER_ALLOW_EXECUTE=1` and `CLAWSWEEPER_ALLOW_FIX_PR=1`.
+The workflow is not scheduled. Exact `clawsweeper_comment` dispatches execute
+for the source comment, and manual workflow dispatch can pass `execute=true`.
+Branch mutation still requires the downstream execution gates, including
+`CLAWSWEEPER_ALLOW_EXECUTE=1` and `CLAWSWEEPER_ALLOW_FIX_PR=1`.
 
 ## Token Strategy
 

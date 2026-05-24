@@ -202,15 +202,13 @@ It also removes repair-loop labels, so older automerge/autofix commands and
 trusted pass markers cannot continue the loop after the stop.
 
 The router writes an idempotency marker into each reply and records processed
-comments in `results/comment-router.json`. The scheduled workflow is dry by
-default; set `CLAWSWEEPER_COMMENT_ROUTER_EXECUTE=1` to let scheduled runs post
-replies and dispatch workers.
+comments in `results/comment-router.json`. Repair routing is no longer
+scheduled: exact `clawsweeper_comment` dispatches execute for the source
+comment, and workflow dispatch can be used for one-off dry or live routing.
 
-Scheduled runs also sweep open PRs with `clawsweeper:autofix` or
-`clawsweeper:automerge` labels. When a labelled PR is stale, failing checks, or
-dirty/behind its base branch, the router can synthesize an internal trusted
-repair-loop command and re-enter the normal repair path without waiting for a
-new GitHub comment. `clawsweeper:human-review` still pauses that path.
+The router can still synthesize an internal trusted repair-loop command for
+open PRs with `clawsweeper:autofix` or `clawsweeper:automerge` labels during
+explicit live routing. `clawsweeper:human-review` still pauses that path.
 
 ## Local Run
 
@@ -347,7 +345,7 @@ The workflow needs:
 - If a contributor branch changes while a repair is preparing its push, the
   executor records `requeue_required: true` and the same workflow dispatches a
   fresh repair run for the latest head after publishing the result. This keeps
-  the force-with-lease guard intact without waiting for a later scheduled sweep.
+  the force-with-lease guard intact without relying on a later broad sweep.
 - optional `CLAWSWEEPER_NETWORK_COMMAND_TIMEOUT_MS` variable; repair execution
   uses bounded Git/GitHub network calls so a stuck clone, fetch, push, or API
   request fails in time for the executor to write a blocked report and upload
@@ -363,9 +361,9 @@ The workflow needs:
 - In-flight branch repair workers re-fetch the live PR before mutation and block
   if `clawsweeper:human-review` is present, so a trusted needs-human verdict or
   maintainer stop wins over stale queued repair jobs.
-- optional `CLAWSWEEPER_COMMENT_ROUTER_EXECUTE=1` to let the scheduled comment
-  router respond to maintainer-only `/clawsweeper ...` and
-  `@clawsweeper ...` / `@openclaw-clawsweeper ...` commands. Without it,
-  scheduled runs only write a dry report.
+- exact `clawsweeper_comment` dispatches or workflow dispatch with
+  `execute=true` to let the comment router respond to maintainer-only
+  `/clawsweeper ...` and `@clawsweeper ...` /
+  `@openclaw-clawsweeper ...` commands.
 
 Keep exact secret names, token scopes, and execution-window procedures in private operations docs or repository settings notes. Do not put token values or live operational credentials in job files.

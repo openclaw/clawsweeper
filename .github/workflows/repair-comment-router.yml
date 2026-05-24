@@ -55,8 +55,6 @@ on:
         required: true
         default: blacksmith-16vcpu-ubuntu-2404
         type: string
-  schedule:
-    - cron: "*/5 * * * *"
 
 permissions:
   contents: write
@@ -206,8 +204,7 @@ jobs:
             args+=(--force-reprocess)
           fi
           if { [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.execute }}" = "true" ]; } ||
-             { [ "${{ github.event_name }}" = "repository_dispatch" ]; } ||
-             { [ "${{ github.event_name }}" = "schedule" ] && [ "${{ vars.CLAWSWEEPER_COMMENT_ROUTER_EXECUTE || '0' }}" = "1" ]; }; then
+             { [ "${{ github.event_name }}" = "repository_dispatch" ]; }; then
             args+=(--execute)
           fi
           pnpm run repair:comment-router -- "${args[@]}"

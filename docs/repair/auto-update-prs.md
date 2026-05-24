@@ -117,7 +117,7 @@ The status comment is edited in place through the whole loop. Its progress
 section records review, repair, re-review, and merge rows with durations, run
 links, and linked commit hashes. A branch repair that pushes a new commit also
 dispatches the next exact-head review immediately from the repair worker, so the
-loop does not wait for the scheduled comment-router sweep before checking the
+loop does not rely on a broad repair sweep before checking the
 repaired head. For base-sync-only blockers, the executor first tries a
 deterministic rebase fast path and pushes that result without a Codex edit pass;
 if the rebase or known mechanical conflict resolvers cannot finish cleanly, it
@@ -230,9 +230,11 @@ ClawSweeper has three layers of duplicate protection:
 - the comment router writes an idempotency marker in its reply, records
   processed comment versions in `results/comment-router.json`, and edits one
   command-status reply in place per item, intent, and head SHA;
-- scheduled router scans synthesize an internal repair-loop command for open
-  PRs that still carry `clawsweeper:autofix` or `clawsweeper:automerge`, so
-  stale labelled PRs can be repaired or re-reviewed without a fresh comment;
+- explicit live router runs can synthesize an internal repair-loop command for
+  open PRs that still carry `clawsweeper:autofix` or
+  `clawsweeper:automerge`, so stale labelled PRs can be repaired or
+  re-reviewed without a fresh comment when a maintainer or exact event invokes
+  the router;
 - trusted ClawSweeper repairs are capped per PR and per PR head SHA.
 
 The default caps are ten automatic repair iterations per PR and two
@@ -348,7 +350,8 @@ Durable state:
 
 Important knobs:
 
-- `CLAWSWEEPER_COMMENT_ROUTER_EXECUTE=1` enables scheduled writes and dispatches;
+- exact `clawsweeper_comment` dispatches and workflow dispatch with
+  `execute=true` enable live writes and dispatches;
 - `CLAWSWEEPER_TRUSTED_BOTS` controls trusted automation authors;
 - `CLAWSWEEPER_MAX_REPAIRS_PER_PR` controls total automatic repair
   iterations per PR; default `10`.
@@ -376,5 +379,5 @@ pnpm run repair:comment-router -- \
   --max-comments 100
 ```
 
-The scheduled workflow remains dry unless `CLAWSWEEPER_COMMENT_ROUTER_EXECUTE=1`
-is set or a maintainer manually dispatches the workflow with `execute=true`.
+The workflow is not scheduled. Use an exact `clawsweeper_comment` dispatch or
+manual workflow dispatch with `execute=true` for live routing.

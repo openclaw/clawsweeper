@@ -28,8 +28,6 @@ on:
         required: true
         default: blacksmith-16vcpu-ubuntu-2404
         type: string
-  schedule:
-    - cron: "17,47 * * * *"
 
 permissions:
   contents: write
@@ -90,8 +88,7 @@ jobs:
           max_age_hours="${{ github.event_name == 'workflow_dispatch' && inputs.max_age_hours || vars.CLAWSWEEPER_SELF_HEAL_MAX_AGE_HOURS || '6' }}"
           runner="${{ github.event_name == 'workflow_dispatch' && inputs.runner || vars.CLAWSWEEPER_WORKER_RUNNER || 'blacksmith-4vcpu-ubuntu-2404' }}"
           execution_runner="${{ github.event_name == 'workflow_dispatch' && inputs.execution_runner || vars.CLAWSWEEPER_EXECUTION_RUNNER || 'blacksmith-16vcpu-ubuntu-2404' }}"
-          if { [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.execute }}" = "true" ]; } ||
-             { [ "${{ github.event_name }}" = "schedule" ] && [ "${{ vars.CLAWSWEEPER_SELF_HEAL_EXECUTE || '0' }}" = "1" ]; }; then
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.execute }}" = "true" ]; then
             execute="true"
           fi
 
@@ -102,7 +99,7 @@ jobs:
           pnpm run repair:self-heal -- "${args[@]}"
 
       - name: Commit self-heal ledger
-        if: ${{ always() && ((github.event_name == 'workflow_dispatch' && inputs.execute) || (github.event_name == 'schedule' && vars.CLAWSWEEPER_SELF_HEAL_EXECUTE == '1')) }}
+        if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.execute }}
         run: |
           if [ ! -f results/self-heal.json ]; then
             echo "No self-heal ledger"
