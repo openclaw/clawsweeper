@@ -6826,6 +6826,10 @@ function publicMergeReadinessResult(rating: PrRating, proof: RealBehaviorProof):
 
 function publicMergeReadinessBlock(rating: PrRating, proof: RealBehaviorProof): string {
   const shiny = hasShinyProof(proof) ? " ✨ media proof bonus" : "";
+  const proofGuidance =
+    proof.status === "missing" || proof.status === "mock_only" || proof.status === "insufficient"
+      ? publicRealBehaviorProofLine(proof)
+      : "";
   const lines = [
     `Overall: ${themedRatingName(rating.overallTier)}`,
     `Proof: ${themedRatingName(rating.proofTier)}${shiny}`,
@@ -6836,6 +6840,9 @@ function publicMergeReadinessBlock(rating: PrRating, proof: RealBehaviorProof): 
   ];
   if (rating.nextSteps.length) {
     lines.push("", "Rank-up moves:", ...rating.nextSteps.slice(0, 3).map((step) => `- ${step}`));
+  }
+  if (proofGuidance) {
+    lines.push("", "Proof guidance:", proofGuidance);
   }
   return lines.join("\n");
 }

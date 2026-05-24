@@ -3074,6 +3074,10 @@ Full review comments:
     comment,
     /Overall follows the weaker of proof and patch quality, so missing proof can cap an otherwise strong patch\./,
   );
+  assert.match(comment, /Proof guidance:\nNeeds real behavior proof before merge:/);
+  assert.match(comment, /The PR has no real ingestion-run proof yet\./);
+  assert.match(comment, /After adding proof, update the PR body/);
+  assert.match(comment, /@clawsweeper re-review/);
   assert.match(
     labelDetails,
     /- `rating: 🧂 unranked krab`: Overall readiness is 🧂 unranked krab; proof is 🧂 unranked krab and patch quality is 🦞 diamond lobster\./,
