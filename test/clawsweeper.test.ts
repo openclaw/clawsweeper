@@ -487,6 +487,59 @@ Needs real behavior proof before merge.
   assert.doesNotMatch(JSON.stringify(review), /How this review workflow works/);
 });
 
+test("latest ClawSweeper durable review parser supports compact merge readiness layout", () => {
+  const latest = issueComment(
+    2,
+    `Codex review: needs real behavior proof before merge. _Reviewed May 24, 2026, 8:34 AM ET / 12:34 UTC._
+
+**Summary**
+The PR changes review comment layout.
+
+**Merge readiness**
+Overall: 🧂 unranked krab
+Proof: 🧂 unranked krab
+Patch quality: 🦞 diamond lobster
+Result: blocked until real behavior proof is added.
+
+Overall follows the weaker of proof and patch quality, so missing proof can cap an otherwise strong patch.
+
+Proof guidance:
+Needs real behavior proof before merge: The PR has no real ingestion-run proof yet. After adding proof, update the PR body; ClawSweeper should re-review automatically.
+
+**Next step before merge**
+Add real behavior proof.
+
+**Review findings**
+- [P2] Keep prior-review extraction in sync — src/clawsweeper.ts:11021
+
+<details>
+<summary>Label changes</summary>
+
+- add \`P2\`
+
+</details>
+
+<!-- clawsweeper-verdict:needs-human item=123 sha=newsha confidence=high -->
+
+<!-- clawsweeper-review item=123 -->`,
+    "clawsweeper[bot]",
+    "2026-05-24T02:00:00Z",
+  );
+
+  const review = extractLatestClawSweeperReviewForTest([latest], 123);
+
+  assert.ok(review);
+  assert.equal(review.status, "needs real behavior proof before merge.");
+  assert.equal(review.reviewedAt, "May 24, 2026, 8:34 AM ET / 12:34 UTC");
+  assert.equal(review.reviewedSha, "newsha");
+  assert.equal(review.summary, "The PR changes review comment layout.");
+  assert.equal(review.rating, "Overall: 🧂 unranked krab");
+  assert.match(review.proofStatus, /^Needs real behavior proof before merge:/);
+  assert.equal(review.nextStep, "Add real behavior proof.");
+  assert.equal(review.findings[0]?.priority, "P2");
+  assert.equal(review.findings[0]?.title, "Keep prior-review extraction in sync");
+});
+
 test("githubContextWindowPlan includes prior page when the tail crosses a page boundary", () => {
   assert.deepEqual(githubContextWindowPlan(101, 80), {
     keepStart: 40,

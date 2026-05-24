@@ -2735,12 +2735,45 @@ function firstNonEmptyLine(value: string): string {
 }
 
 function previousReviewStatus(body: string): string {
-  return firstLineAfterPrefix(body, "Codex review:");
+  return firstLineAfterPrefix(body, "Codex review:")
+    .replace(/\s*_Reviewed[^_]*_\s*$/i, "")
+    .trim();
 }
 
 function previousReviewReviewedAt(body: string): string | null {
   const value = firstLineAfterPrefix(body, "**Latest ClawSweeper review:**");
-  return value ? value.replace(/\.$/, "").trim() : null;
+  if (value) return value.replace(/\.$/, "").trim();
+  const firstLine = body.split(/\r?\n/, 1)[0] ?? "";
+  const inline = firstLine.match(/_Reviewed\s+(.+?)\._/i);
+  return inline?.[1]?.trim() || null;
+}
+
+function firstMergeReadinessLine(body: string, prefix: string): string {
+  const readiness = markdownSection(body, "Merge readiness");
+  if (!readiness) return "";
+  const lowerPrefix = prefix.toLowerCase();
+  return (
+    readiness
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .find((line) => line.toLowerCase().startsWith(lowerPrefix)) ?? ""
+  );
+}
+
+function previousReviewRating(body: string): string {
+  return (
+    firstNonEmptyLine(markdownSection(body, "PR rating")) ||
+    firstMergeReadinessLine(body, "Overall:")
+  );
+}
+
+function previousReviewProofStatus(body: string): string {
+  const oldProofStatus = firstNonEmptyLine(markdownSection(body, "Real behavior proof"));
+  if (oldProofStatus) return oldProofStatus;
+  const readiness = markdownSection(body, "Merge readiness");
+  if (!readiness) return "";
+  const proofGuidance = readiness.match(/(?:^|\n)Proof guidance:\s*\n+([^\n]+)/i);
+  return proofGuidance?.[1]?.trim() || firstMergeReadinessLine(body, "Proof:");
 }
 
 function previousReviewFindings(body: string): Array<{ priority: string; title: string }> {
@@ -2780,8 +2813,8 @@ function extractLatestClawSweeperReview(
     verdictMarker,
     actionMarker,
     summary: firstNonEmptyLine(markdownSection(body, "Summary")),
-    proofStatus: firstNonEmptyLine(markdownSection(body, "Real behavior proof")),
-    rating: firstNonEmptyLine(markdownSection(body, "PR rating")),
+    proofStatus: previousReviewProofStatus(body),
+    rating: previousReviewRating(body),
     nextStep:
       firstNonEmptyLine(markdownSection(body, "Next step before merge")) ||
       firstNonEmptyLine(markdownSection(body, "Next step")),
