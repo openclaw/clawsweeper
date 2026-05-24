@@ -382,6 +382,20 @@ test("comment router side effects are driven by planned actions", () => {
   assert.match(body, /could not start a re-review/);
   assert.match(body, /re-review requires an open issue or PR/);
   assert.doesNotMatch(body, /re-review requested/);
+
+  const staleReReview = {
+    intent: "re_review",
+    status: "skipped",
+    reason: "PR closed after this re_review command",
+  };
+
+  assert.equal(commandHasAction(staleReReview, "dispatch_clawsweeper"), false);
+  assert.equal(commandHasAction(staleReReview, "comment"), false);
+
+  const staleBody = renderResponse(staleReReview, null);
+  assert.match(staleBody, /could not start a re-review/);
+  assert.match(staleBody, /PR closed after this re_review command/);
+  assert.doesNotMatch(staleBody, /re-review requested/);
 });
 
 test("force reprocess bypasses existing command status guards", () => {
