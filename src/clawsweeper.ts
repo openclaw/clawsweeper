@@ -426,6 +426,7 @@ interface ItemContext {
   issue: unknown;
   comments: unknown[];
   timeline: unknown[];
+  previousClawSweeperReview?: unknown;
   closingPullRequests?: unknown[];
   relatedItems?: unknown[];
   pullRequest?: unknown;
@@ -436,6 +437,8 @@ interface ItemContext {
     comments: number;
     commentsHydrated?: number;
     commentsTruncated?: boolean;
+    commentsIncluded?: number;
+    commentsFiltered?: number;
     timeline: number;
     timelineHydrated?: number;
     timelineTruncated?: boolean;
@@ -450,6 +453,8 @@ interface ItemContext {
     pullReviewComments?: number;
     pullReviewCommentsHydrated?: number;
     pullReviewCommentsTruncated?: boolean;
+    pullReviewCommentsIncluded?: number;
+    pullReviewCommentsFiltered?: number;
   };
 }
 
@@ -2568,11 +2573,237 @@ function compactComment(value: unknown): unknown {
   return {
     id: comment.id,
     author: login(comment.user),
+    authorAssociation: normalizeAuthorAssociation(comment.author_association),
     url: comment.html_url,
     createdAt: comment.created_at,
     updatedAt: comment.updated_at,
     body: truncateText(comment.body, 6000),
   };
+}
+
+const CLAWSWEEPER_BOT_AUTHORS = new Set(
+  [
+    "clawsweeper",
+    "clawsweeper[bot]",
+    "openclaw-clawsweeper[bot]",
+    process.env.CLAWSWEEPER_COMMENT_AUTHOR_LOGIN,
+  ].filter((login): login is string => typeof login === "string" && login.length > 0),
+);
+const CLAWSWEEPER_COMMAND_ONLY_PATTERN = /^@clawsweeper\s+(?:re-review|re-run|review)\s*$/i;
+
+interface PreviousClawSweeperReview {
+  status: string;
+  reviewedAt: string | null;
+  reviewedSha: string | null;
+  verdictMarker: string | null;
+  actionMarker: string | null;
+  summary: string;
+  proofStatus: string;
+  rating: string;
+  nextStep: string;
+  findings: Array<{ priority: string; title: string }>;
+  commentId: unknown;
+  commentUrl: unknown;
+  commentUpdatedAt: unknown;
+}
+
+function rawCommentBody(value: unknown): string {
+  const body = asRecord(value).body;
+  return typeof body === "string" ? body : "";
+}
+
+function timestampValueMs(value: unknown): number {
+  return typeof value === "string" ? Date.parse(value) || 0 : 0;
+}
+
+function commentTimestampMs(value: unknown): number {
+  const comment = asRecord(value);
+  return timestampValueMs(comment.updated_at) || timestampValueMs(comment.created_at);
+}
+
+function isClawSweeperComment(value: unknown): boolean {
+  return CLAWSWEEPER_BOT_AUTHORS.has((login(asRecord(value).user) ?? "").toLowerCase());
+}
+
+function isClawSweeperDurableReviewComment(value: unknown, number: number): boolean {
+  return (
+    isClawSweeperComment(value) &&
+    rawCommentBody(value).includes(`${REVIEW_COMMENT_MARKER_PREFIX} item=${number} -->`)
+  );
+}
+
+function isClawSweeperNoiseComment(value: unknown, number: number): boolean {
+  const body = rawCommentBody(value);
+  if (!body.trim() || !isClawSweeperComment(value)) return false;
+  if (isClawSweeperDurableReviewComment(value, number)) return true;
+  if (/clawsweeper-pr-egg-hatch:/i.test(body)) return true;
+  if (/clawsweeper-command(?:-status|-ack)?:/i.test(body)) return true;
+  if (/clawsweeper-review-status:/i.test(body)) return true;
+  if (/^ClawSweeper status: review started\./i.test(body)) return true;
+  return false;
+}
+
+function isClawSweeperCommandOnlyComment(value: unknown): boolean {
+  return CLAWSWEEPER_COMMAND_ONLY_PATTERN.test(rawCommentBody(value).trim());
+}
+
+function shouldIncludeReviewContextComment(value: unknown, number: number): boolean {
+  if (isClawSweeperNoiseComment(value, number)) return false;
+  if (isClawSweeperCommandOnlyComment(value)) return false;
+  return true;
+}
+
+function filterReviewContextComments(
+  comments: readonly unknown[],
+  number: number,
+): { included: unknown[]; filtered: number } {
+  const included = comments.filter((comment) => shouldIncludeReviewContextComment(comment, number));
+  return { included, filtered: comments.length - included.length };
+}
+
+function minNonNegative(values: number[]): number {
+  const candidates = values.filter((value) => value >= 0);
+  return candidates.length ? Math.min(...candidates) : -1;
+}
+
+function markdownSection(body: string, heading: string): string {
+  const marker = `**${heading.toLowerCase()}**`;
+  const lowerBody = body.toLowerCase();
+  const markerIndex = lowerBody.indexOf(marker);
+  if (markerIndex < 0) return "";
+  const sectionStart = body.indexOf("\n", markerIndex + marker.length);
+  if (sectionStart < 0) return "";
+  const contentStart = sectionStart + 1;
+  const relative = body.slice(contentStart);
+  const end = minNonNegative([
+    relative.indexOf("\n**"),
+    relative.indexOf("\n<details"),
+    relative.indexOf("\n<!--"),
+  ]);
+  return (end < 0 ? relative : relative.slice(0, end)).trim();
+}
+
+function firstLineAfterPrefix(body: string, prefix: string): string {
+  const lowerBody = body.toLowerCase();
+  const lowerPrefix = prefix.toLowerCase();
+  const index = lowerBody.indexOf(lowerPrefix);
+  if (index < 0) return "";
+  const start = index + prefix.length;
+  const end = body.indexOf("\n", start);
+  return body.slice(start, end < 0 ? undefined : end).trim();
+}
+
+function htmlMarkerWithPrefix(body: string, prefix: string): string | null {
+  const lowerPrefix = prefix.toLowerCase();
+  let searchFrom = 0;
+  while (searchFrom < body.length) {
+    const start = body.indexOf("<!--", searchFrom);
+    if (start < 0) return null;
+    const end = body.indexOf("-->", start + 4);
+    if (end < 0) return null;
+    const marker = body.slice(start, end + 3);
+    const inner = body
+      .slice(start + 4, end)
+      .trim()
+      .toLowerCase();
+    if (inner.startsWith(lowerPrefix)) return marker;
+    searchFrom = end + 3;
+  }
+  return null;
+}
+
+function markerAttribute(marker: string | null, name: string): string | null {
+  if (!marker) return null;
+  const inner = marker.slice(4, -3).trim();
+  for (const part of inner.split(/\s+/)) {
+    const separator = part.indexOf("=");
+    if (separator <= 0) continue;
+    if (part.slice(0, separator).toLowerCase() === name.toLowerCase()) {
+      return part.slice(separator + 1) || null;
+    }
+  }
+  return null;
+}
+
+function firstNonEmptyLine(value: string): string {
+  return (
+    value
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .find(Boolean) ?? ""
+  );
+}
+
+function previousReviewStatus(body: string): string {
+  return firstLineAfterPrefix(body, "Codex review:");
+}
+
+function previousReviewReviewedAt(body: string): string | null {
+  const value = firstLineAfterPrefix(body, "**Latest ClawSweeper review:**");
+  return value ? value.replace(/\.$/, "").trim() : null;
+}
+
+function previousReviewFindings(body: string): Array<{ priority: string; title: string }> {
+  return body
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .flatMap((line) => {
+      if (!line.startsWith("- [P")) return [];
+      const close = line.indexOf("]");
+      if (close < 5) return [];
+      const priority = line.slice(3, close);
+      if (!/^P[0-3]$/.test(priority)) return [];
+      const rest = line.slice(close + 1).trim();
+      const dash = minNonNegative([rest.indexOf(" - "), rest.indexOf(" — ")]);
+      const title = (dash < 0 ? rest : rest.slice(0, dash)).trim();
+      return title ? [{ priority, title }] : [];
+    });
+}
+
+function extractLatestClawSweeperReview(
+  comments: readonly unknown[],
+  number: number,
+): PreviousClawSweeperReview | null {
+  const latest = comments
+    .filter((comment) => isClawSweeperDurableReviewComment(comment, number))
+    .sort((left, right) => commentTimestampMs(right) - commentTimestampMs(left))[0];
+  if (!latest) return null;
+  const comment = asRecord(latest);
+  const body = rawCommentBody(latest);
+  const verdictMarker = htmlMarkerWithPrefix(body, "clawsweeper-verdict:");
+  const actionMarker = htmlMarkerWithPrefix(body, "clawsweeper-action:");
+  const reviewedSha = markerAttribute(verdictMarker, "sha") ?? markerAttribute(actionMarker, "sha");
+  return {
+    status: previousReviewStatus(body),
+    reviewedAt: previousReviewReviewedAt(body),
+    reviewedSha,
+    verdictMarker,
+    actionMarker,
+    summary: firstNonEmptyLine(markdownSection(body, "Summary")),
+    proofStatus: firstNonEmptyLine(markdownSection(body, "Real behavior proof")),
+    rating: firstNonEmptyLine(markdownSection(body, "PR rating")),
+    nextStep:
+      firstNonEmptyLine(markdownSection(body, "Next step before merge")) ||
+      firstNonEmptyLine(markdownSection(body, "Next step")),
+    findings: previousReviewFindings(body),
+    commentId: comment.id,
+    commentUrl: comment.html_url,
+    commentUpdatedAt: comment.updated_at,
+  };
+}
+
+export function filterReviewContextCommentsForTest(
+  comments: readonly unknown[],
+  number: number,
+): { included: unknown[]; filtered: number } {
+  return filterReviewContextComments(comments, number);
+}
+
+export function extractLatestClawSweeperReviewForTest(
+  comments: readonly unknown[],
+  number: number,
+): PreviousClawSweeperReview | null {
+  return extractLatestClawSweeperReview(comments, number);
 }
 
 function compactTimelineEvent(value: unknown): unknown {
@@ -4860,6 +5091,8 @@ function collectItemContext(
     24,
   );
   const comments = commentsWindow.items;
+  const filteredComments = filterReviewContextComments(comments, item.number);
+  const previousClawSweeperReview = extractLatestClawSweeperReview(comments, item.number);
   const timelineWindow = ghPagedLinkHeaderContextWindow<unknown>(
     `repos/${targetRepo()}/issues/${item.number}/timeline`,
     80,
@@ -4867,19 +5100,28 @@ function collectItemContext(
   const timeline = timelineWindow.items;
   const context: ItemContext = {
     issue: compactIssue(issue),
-    comments: compactMappedWindow(comments, commentsWindow.total, 24, compactComment),
+    comments: compactMappedWindow(
+      filteredComments.included,
+      filteredComments.included.length,
+      24,
+      compactComment,
+    ),
     timeline: compactMappedWindow(timeline, timelineWindow.total, 80, compactTimelineEvent),
     counts: {
       comments: commentsWindow.total,
       commentsHydrated: commentsWindow.hydrated,
       commentsTruncated: commentsWindow.truncated,
+      commentsIncluded: filteredComments.included.length,
+      commentsFiltered: filteredComments.filtered,
       timeline: timelineWindow.total,
       timelineHydrated: timelineWindow.hydrated,
       timelineTruncated: timelineWindow.truncated,
     },
   };
+  if (previousClawSweeperReview) context.previousClawSweeperReview = previousClawSweeperReview;
   let pullRequest: unknown = null;
   let pullReviewComments: unknown[] | null = null;
+  let filteredPullReviewComments: { included: unknown[]; filtered: number } | null = null;
   if (item.kind === "issue") {
     const closingPullRequests = closingPullRequestsForIssue(item.number);
     if (closingPullRequests.length > 0) {
@@ -4889,6 +5131,8 @@ function collectItemContext(
         comments: commentsWindow.total,
         commentsHydrated: commentsWindow.hydrated,
         commentsTruncated: commentsWindow.truncated,
+        commentsIncluded: filteredComments.included.length,
+        commentsFiltered: filteredComments.filtered,
         timeline: timelineWindow.total,
         timelineHydrated: timelineWindow.hydrated,
         timelineTruncated: timelineWindow.truncated,
@@ -4917,6 +5161,7 @@ function collectItemContext(
       40,
     );
     pullReviewComments = pullReviewCommentsWindow.items;
+    filteredPullReviewComments = filterReviewContextComments(pullReviewComments, item.number);
     context.pullRequest = compactPullRequest(pullRequest);
     context.pullFiles = compactMappedWindow(pullFiles, pullFilesWindow.total, 80, compactPullFile);
     context.pullCommits = compactMappedWindow(
@@ -4926,8 +5171,8 @@ function collectItemContext(
       compactPullCommit,
     );
     context.pullReviewComments = compactMappedWindow(
-      pullReviewComments,
-      pullReviewCommentsWindow.total,
+      filteredPullReviewComments.included,
+      filteredPullReviewComments.included.length,
       40,
       compactComment,
     );
@@ -4936,6 +5181,8 @@ function collectItemContext(
       comments: commentsWindow.total,
       commentsHydrated: commentsWindow.hydrated,
       commentsTruncated: commentsWindow.truncated,
+      commentsIncluded: filteredComments.included.length,
+      commentsFiltered: filteredComments.filtered,
       timeline: timelineWindow.total,
       timelineHydrated: timelineWindow.hydrated,
       timelineTruncated: timelineWindow.truncated,
@@ -4948,6 +5195,8 @@ function collectItemContext(
       pullReviewComments: pullReviewCommentsWindow.total,
       pullReviewCommentsHydrated: pullReviewCommentsWindow.hydrated,
       pullReviewCommentsTruncated: pullReviewCommentsWindow.truncated,
+      pullReviewCommentsIncluded: filteredPullReviewComments.included.length,
+      pullReviewCommentsFiltered: filteredPullReviewComments.filtered,
     };
   }
   const relationTimeline =
@@ -4957,11 +5206,12 @@ function collectItemContext(
   const relatedOptions: Parameters<typeof relatedItemsContext>[0] = {
     item,
     issue,
-    comments,
+    comments: filteredComments.included,
     timeline: relationTimeline,
   };
   if (pullRequest) relatedOptions.pullRequest = pullRequest;
-  if (pullReviewComments) relatedOptions.pullReviewComments = pullReviewComments;
+  if (filteredPullReviewComments)
+    relatedOptions.pullReviewComments = filteredPullReviewComments.included;
   const relatedItems = relatedItemsContext(relatedOptions);
   if (relatedItems.length) {
     context.relatedItems = relatedItems;
@@ -4969,6 +5219,8 @@ function collectItemContext(
       comments: context.counts?.comments ?? commentsWindow.total,
       commentsHydrated: context.counts?.commentsHydrated ?? commentsWindow.hydrated,
       commentsTruncated: context.counts?.commentsTruncated ?? commentsWindow.truncated,
+      commentsIncluded: filteredComments.included.length,
+      commentsFiltered: filteredComments.filtered,
       timeline: context.counts?.timeline ?? timeline.length,
       relatedItems: relatedItems.length,
     };
@@ -4992,6 +5244,10 @@ function collectItemContext(
       counts.pullReviewCommentsHydrated = context.counts.pullReviewCommentsHydrated;
     if (context.counts?.pullReviewCommentsTruncated !== undefined)
       counts.pullReviewCommentsTruncated = context.counts.pullReviewCommentsTruncated;
+    if (context.counts?.pullReviewCommentsIncluded !== undefined)
+      counts.pullReviewCommentsIncluded = context.counts.pullReviewCommentsIncluded;
+    if (context.counts?.pullReviewCommentsFiltered !== undefined)
+      counts.pullReviewCommentsFiltered = context.counts.pullReviewCommentsFiltered;
     if (context.counts?.closingPullRequests !== undefined)
       counts.closingPullRequests = context.counts.closingPullRequests;
     context.counts = counts;
@@ -10206,6 +10462,12 @@ function reviewContextLedger(context: ItemContext): ReviewContextLedgerEntry[] {
       total: counts?.timeline,
       hydrated: counts?.timelineHydrated,
       truncated: counts?.timelineTruncated,
+    }),
+    reviewContextLedgerEntry({
+      section: "previousClawSweeperReview",
+      label: "previous ClawSweeper review",
+      value: context.previousClawSweeperReview ?? null,
+      entries: context.previousClawSweeperReview === undefined ? 0 : 1,
     }),
     reviewContextLedgerEntry({
       section: "closingPullRequests",

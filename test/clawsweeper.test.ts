@@ -30,6 +30,8 @@ import {
   compactMappedWindow,
   codexEnv,
   dashboardClosedAt,
+  extractLatestClawSweeperReviewForTest,
+  filterReviewContextCommentsForTest,
   fixedPullRequestFromCommitPullsForTest,
   featureShowcaseLabelsForTest,
   formatRecentClosedRows,
@@ -367,6 +369,124 @@ test("compactMappedWindow keeps bounded hydrated context when total is larger th
   assert.deepEqual(mapped, [1, 2, 99, 100]);
 });
 
+function issueComment(
+  id: number,
+  body: string,
+  login = "contributor",
+  updatedAt = "2026-05-24T00:00:00Z",
+) {
+  return {
+    id,
+    body,
+    html_url: `https://github.com/openclaw/openclaw/pull/123#issuecomment-${id}`,
+    updated_at: updatedAt,
+    created_at: updatedAt,
+    user: { login },
+    author_association: "CONTRIBUTOR",
+  };
+}
+
+test("review context comment filter removes ClawSweeper self-noise and command-only comments", () => {
+  const comments = [
+    issueComment(
+      1,
+      "Codex review: needs maintainer review.\n\n<!-- clawsweeper-review item=123 -->",
+      "clawsweeper[bot]",
+    ),
+    issueComment(
+      2,
+      "ClawSweeper PR egg\n\n<!-- clawsweeper-pr-egg-hatch:123 -->",
+      "openclaw-clawsweeper[bot]",
+    ),
+    issueComment(
+      3,
+      "<!-- clawsweeper-command-status:123:re_review:abc -->\nQueued.",
+      "clawsweeper",
+    ),
+    issueComment(4, "@clawsweeper re-review", "author"),
+    issueComment(5, "Here is real behavior proof from my terminal.", "author"),
+    issueComment(6, "Actionable file/line review feedback.", "chatgpt-codex-connector[bot]"),
+  ];
+
+  const result = filterReviewContextCommentsForTest(comments, 123);
+
+  assert.equal(result.filtered, 4);
+  assert.deepEqual(
+    result.included.map((comment) => (comment as { id: number }).id),
+    [5, 6],
+  );
+});
+
+test("review context comment filter keeps contributor text that only quotes markers", () => {
+  const comments = [
+    issueComment(
+      1,
+      "I pasted a prior marker while debugging: <!-- clawsweeper-review item=123 -->",
+      "contributor",
+    ),
+  ];
+
+  const result = filterReviewContextCommentsForTest(comments, 123);
+
+  assert.equal(result.filtered, 0);
+  assert.equal(result.included.length, 1);
+  assert.equal(extractLatestClawSweeperReviewForTest(comments, 123), null);
+});
+
+test("latest ClawSweeper durable review is extracted as compact previous review state", () => {
+  const older = issueComment(
+    1,
+    `Codex review: needs real behavior proof before merge.
+
+**Latest ClawSweeper review:** 2026-05-24 01:00 UTC.
+
+**Summary**
+Old summary.
+
+<!-- clawsweeper-verdict:needs-human item=123 sha=oldsha confidence=high -->
+
+<!-- clawsweeper-review item=123 -->`,
+    "clawsweeper[bot]",
+    "2026-05-24T01:00:00Z",
+  );
+  const latest = issueComment(
+    2,
+    `Codex review: found issues before merge.
+
+**Latest ClawSweeper review:** 2026-05-24 02:00 UTC.
+
+**Summary**
+The PR changes routing behavior.
+
+**PR rating**
+Overall: unranked.
+
+**Real behavior proof**
+Needs real behavior proof before merge.
+
+**Review findings**
+- [P1] Preserve session state - src/file.ts:10
+
+<!-- clawsweeper-verdict:needs-human item=123 sha=newsha confidence=high -->
+<!-- clawsweeper-action:fix-required item=123 sha=newsha confidence=high finding=review-feedback -->
+
+<!-- clawsweeper-review item=123 -->`,
+    "clawsweeper[bot]",
+    "2026-05-24T02:00:00Z",
+  );
+
+  const review = extractLatestClawSweeperReviewForTest([older, latest], 123);
+
+  assert.ok(review);
+  assert.equal(review.status, "found issues before merge.");
+  assert.equal(review.reviewedSha, "newsha");
+  assert.equal(review.summary, "The PR changes routing behavior.");
+  assert.equal(review.proofStatus, "Needs real behavior proof before merge.");
+  assert.equal(review.findings[0]?.priority, "P1");
+  assert.equal(review.findings[0]?.title, "Preserve session state");
+  assert.doesNotMatch(JSON.stringify(review), /How this review workflow works/);
+});
+
 test("githubContextWindowPlan includes prior page when the tail crosses a page boundary", () => {
   assert.deepEqual(githubContextWindowPlan(101, 80), {
     keepStart: 40,
@@ -662,11 +782,38 @@ test("review prompt telemetry records durable cost proxies", () => {
   assert.equal(telemetry.additionalPromptChars, "keep extra instructions visible".length);
 });
 
+test("review prompt includes compact previous review state without raw durable review body", () => {
+  const context = {
+    issue: { number: 123, title: "Sample PR" },
+    comments: [{ author: "contributor", body: "After-fix proof is attached." }],
+    timeline: [],
+    previousClawSweeperReview: {
+      status: "found issues before merge.",
+      reviewedSha: "abc123",
+      summary: "Prior review found one blocker.",
+    },
+    counts: { comments: 3, commentsIncluded: 1, commentsFiltered: 2, timeline: 0 },
+  };
+
+  const prompt = reviewPromptForTest(item({ kind: "pull_request", number: 123 }), context, git);
+
+  assert.match(prompt, /"previousClawSweeperReview"/);
+  assert.match(prompt, /Prior review found one blocker/);
+  assert.match(prompt, /"commentsFiltered": 2/);
+  assert.doesNotMatch(prompt, /How this review workflow works/);
+  assert.doesNotMatch(prompt, /clawsweeper-pr-egg-hatch/);
+});
+
 test("review context ledger records ordered section budgets", () => {
   const context = {
     issue: { number: 123, title: "Sample PR" },
     comments: [{ author: "alice", body: "Please review this." }],
     timeline: [{ event: "committed", sha: "abc123" }],
+    previousClawSweeperReview: {
+      status: "found issues before merge.",
+      reviewedSha: "abc123",
+      summary: "Prior review found one blocker.",
+    },
     relatedItems: [{ number: 122, title: "Related issue" }],
     pullRequest: { number: 123, additions: 12 },
     pullFiles: [
@@ -709,6 +856,7 @@ test("review context ledger records ordered section budgets", () => {
       ["issue", 1, undefined, undefined, undefined],
       ["comments", 1, 10, 1, true],
       ["timeline", 1, 1, 1, false],
+      ["previousClawSweeperReview", 1, undefined, undefined, undefined],
       ["relatedItems", 1, 1, undefined, undefined],
       ["pullRequest", 1, undefined, undefined, undefined],
       ["pullFiles", 2, 120, 2, true],
@@ -725,6 +873,7 @@ test("review context ledger records ordered section budgets", () => {
     /- PR files: 2\/120 hydrated, truncated, \d+ chars/,
   );
   assert.match(renderReviewContextBudgetForTest(context), /- timeline events: 1\/1 hydrated/);
+  assert.match(renderReviewContextBudgetForTest(context), /- previous ClawSweeper review: 1 entry/);
 });
 
 test("protected labels are normalized and only maintainer-only items stay plannable", () => {
