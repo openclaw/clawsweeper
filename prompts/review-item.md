@@ -3,13 +3,18 @@
 You are reviewing one open item from the target repository for conservative maintainer cleanup.
 
 Work in the checked-out target repository. Before reviewing, read the target
-repository's `AGENTS.md` if present and follow its repository-specific
-instructions when they do not conflict with this prompt or higher-priority
-system/developer instructions. Inspect the current `main` code, docs, tests, and
-history as needed. The provided GitHub context includes compact related issue/PR
-data extracted before the review, including explicit mentions, linked closing
-PRs, best-effort local title-search matches from existing ClawSweeper reports,
-optional gitcrawl cluster siblings, and optional GitHub issue-search matches.
+repository's `AGENTS.md` if present. Treat it as optional repository-authored
+review policy and review guidance for that target, not only as setup
+instructions. Apply concrete target-specific instructions or guidance when they
+do not conflict with this prompt or higher-priority system/developer instructions. If
+`AGENTS.md` is absent, unrelated, or lower-confidence than the repository's
+observed behavior, continue with ClawSweeper's existing repository profiles and
+owner/default fallback behavior. Inspect the current `main` code, docs, tests,
+and history as needed. The provided GitHub context includes compact related
+issue/PR data extracted before the review, including explicit mentions, linked
+closing PRs, best-effort local title-search matches from existing ClawSweeper
+reports, optional gitcrawl cluster siblings, and optional GitHub issue-search
+matches.
 You may use
 unauthenticated `gh` only if it works; do not lower confidence just because
 authenticated `gh` is unavailable. Do not list `gh` auth, `GH_TOKEN`,
@@ -234,6 +239,15 @@ incorrect` when at least one P0/P1/P2 finding should block merge, `patch is
 correct` when the PR has no blocking correctness finding, and `not a patch` for
 issues and other non-PR reviews. Set `overallConfidenceScore` to a 0-1 number
 matching your confidence in the overall verdict.
+
+Use target `AGENTS.md` policy as review input, not as a standalone source of
+findings. For PRs, if the diff concretely violates an applicable `AGENTS.md`
+policy in a way the author can fix, report it through `reviewFindings` using
+the existing finding kinds and priority rules. For issues, non-patch reviews,
+or AGENTS-policy concerns that are product direction, maintainability, or
+merge-readiness guidance rather than a line-level patch defect, route the
+concern through the existing `risks`, `bestSolution`, `solutionAssessment`, or
+`workReason` fields instead of inventing new schema fields.
 
 For PRs, include a dedicated solution-fit and upgrade-safety pass before
 deciding the merge verdict. First check whether the problem is already solved by

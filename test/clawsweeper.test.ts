@@ -10164,7 +10164,7 @@ test("review prompt reads maintainer notes before PR diffs", () => {
   assert.match(prompt, /do not publish raw internal note contents/);
 });
 
-test("review prompts read target AGENTS instructions before reviewing", () => {
+test("review prompts treat target AGENTS as optional review policy", () => {
   const itemPrompt = readFileSync("prompts/review-item.md", "utf8");
   const commitPrompt = readFileSync("prompts/review-commit.md", "utf8");
 
@@ -10173,12 +10173,25 @@ test("review prompts read target AGENTS instructions before reviewing", () => {
       prompt,
       /Before reviewing, read the target\s+repository's `AGENTS\.md` if present/,
     );
-    assert.match(prompt, /follow its repository-specific\s+instructions/);
+    assert.match(prompt, /optional repository-authored\s+review policy and review guidance/);
     assert.match(
       prompt,
       /do not conflict with this prompt or higher-priority\s+system\/developer instructions/,
     );
+    assert.match(prompt, /existing repository profiles and\s+owner\/default fallback behavior/);
+    assert.match(prompt, /Use target `AGENTS\.md` policy as review input/);
   }
+
+  assert.match(itemPrompt, /report it through `reviewFindings`/);
+  assert.match(
+    itemPrompt,
+    /route the\s+concern through the existing `risks`, `bestSolution`, `solutionAssessment`, or\s+`workReason` fields/,
+  );
+  assert.match(
+    commitPrompt,
+    /Report an AGENTS-policy conflict only when the commit creates a\s+concrete bug/,
+  );
+  assert.match(commitPrompt, /keep it out of `result: findings`/);
 });
 
 test("review prompt requires a dedicated securityReview section", () => {
