@@ -87,6 +87,72 @@ test("comment webhook accepts author read-only re-review commands", () => {
   });
 });
 
+test("comment webhook rejects stale re-review commands on closed PRs before fast ack", () => {
+  const result = classifyIssueCommentWebhook({
+    event: "issue_comment",
+    payload: {
+      action: "edited",
+      repository: { full_name: "openclaw/openclaw" },
+      issue: {
+        number: 76991,
+        state: "closed",
+        closed_at: "2026-05-19T05:02:03Z",
+        pull_request: {},
+      },
+      installation: { id: 123 },
+      comment: {
+        id: 456,
+        body: "@clawsweeper re-review",
+        created_at: "2026-05-18T19:30:48Z",
+        updated_at: "2026-05-23T18:14:04Z",
+        author_association: "MEMBER",
+        user: { login: "user" },
+      },
+    },
+  });
+
+  assert.deepEqual(result, {
+    accepted: false,
+    reason: "PR closed after this re_review command",
+  });
+});
+
+test("comment webhook still accepts post-close re-review commands for router response", () => {
+  const result = classifyIssueCommentWebhook({
+    event: "issue_comment",
+    payload: {
+      action: "created",
+      repository: { full_name: "openclaw/openclaw" },
+      issue: {
+        number: 76991,
+        state: "closed",
+        closed_at: "2026-05-19T05:02:03Z",
+        pull_request: {},
+      },
+      installation: { id: 123 },
+      comment: {
+        id: 456,
+        body: "@clawsweeper re-review",
+        created_at: "2026-05-19T05:03:00Z",
+        updated_at: "2026-05-19T05:03:00Z",
+        author_association: "MEMBER",
+        user: { login: "user" },
+      },
+    },
+  });
+
+  assert.deepEqual(result, {
+    accepted: true,
+    type: "issue_comment",
+    targetRepo: "openclaw/openclaw",
+    targetBranch: "main",
+    itemNumber: 76991,
+    commentId: 456,
+    installationId: 123,
+    sourceAction: "created",
+  });
+});
+
 test("comment webhook accepts author read-only hatch commands", () => {
   const result = classifyIssueCommentWebhook({
     event: "issue_comment",

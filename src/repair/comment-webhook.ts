@@ -4,7 +4,7 @@ import http from "node:http";
 
 import { repositoryProfileFor } from "../repository-profiles.js";
 import type { JsonValue, LooseRecord } from "./json-types.js";
-import { parseCommand } from "./comment-router-core.js";
+import { parseCommand, staleClosedItemCommandReason } from "./comment-router-core.js";
 
 const DEFAULT_PORT = 8787;
 const REVIEW_REPO = "openclaw/clawsweeper";
@@ -165,6 +165,7 @@ export function classifyIssueCommentWebhook({
   if (!COMMAND_PATTERN.test(String(comment.body ?? ""))) {
     return { accepted: false, reason: "no ClawSweeper command" };
   }
+  const parsedCommand = parseCommand(String(comment.body ?? ""));
   if (
     !ALLOWED_ASSOCIATIONS.has(association) &&
     !isAuthorReadOnlyWebhookCommand({ comment, issue })
@@ -179,9 +180,19 @@ export function classifyIssueCommentWebhook({
   if (!isEligibleRepositoryPayload(repo)) {
     return { accepted: false, reason: "repository not eligible" };
   }
-  if (parseCommand(String(comment.body ?? ""))?.intent === "hatch" && !isOpenClawRepo(targetRepo)) {
+  if (parsedCommand?.intent === "hatch" && !isOpenClawRepo(targetRepo)) {
     return { accepted: false, reason: "PR egg is disabled for this repo" };
   }
+  const staleReason = staleClosedItemCommandReason({
+    command: {
+      intent: parsedCommand?.intent,
+      comment_created_at: comment.created_at,
+      comment_updated_at: comment.updated_at,
+    },
+    issue,
+    pull: issue.pull_request,
+  });
+  if (staleReason) return { accepted: false, reason: staleReason };
   const itemNumber = Number(issue.number);
   const commentId = Number(comment.id);
   const installationId = Number(asRecord(payload.installation).id);
