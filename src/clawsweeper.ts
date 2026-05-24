@@ -2735,17 +2735,23 @@ function firstNonEmptyLine(value: string): string {
 }
 
 function previousReviewStatus(body: string): string {
-  return firstLineAfterPrefix(body, "Codex review:")
-    .replace(/\s*_Reviewed[^_]*_\s*$/i, "")
-    .trim();
+  const status = firstLineAfterPrefix(body, "Codex review:");
+  const reviewedIndex = status.toLowerCase().indexOf("_reviewed ");
+  return (reviewedIndex < 0 ? status : status.slice(0, reviewedIndex)).trim();
 }
 
 function previousReviewReviewedAt(body: string): string | null {
   const value = firstLineAfterPrefix(body, "**Latest ClawSweeper review:**");
   if (value) return value.replace(/\.$/, "").trim();
   const firstLine = body.split(/\r?\n/, 1)[0] ?? "";
-  const inline = firstLine.match(/_Reviewed\s+(.+?)\._/i);
-  return inline?.[1]?.trim() || null;
+  const lowerFirstLine = firstLine.toLowerCase();
+  const prefix = "_reviewed ";
+  const start = lowerFirstLine.indexOf(prefix);
+  if (start < 0) return null;
+  const valueStart = start + prefix.length;
+  const end = firstLine.indexOf("._", valueStart);
+  const inline = firstLine.slice(valueStart, end < 0 ? undefined : end).trim();
+  return inline || null;
 }
 
 function firstMergeReadinessLine(body: string, prefix: string): string {
@@ -2772,8 +2778,18 @@ function previousReviewProofStatus(body: string): string {
   if (oldProofStatus) return oldProofStatus;
   const readiness = markdownSection(body, "Merge readiness");
   if (!readiness) return "";
-  const proofGuidance = readiness.match(/(?:^|\n)Proof guidance:\s*\n+([^\n]+)/i);
-  return proofGuidance?.[1]?.trim() || firstMergeReadinessLine(body, "Proof:");
+  const lines = readiness.split(/\r?\n/);
+  const proofGuidanceIndex = lines.findIndex(
+    (line) => line.trim().toLowerCase() === "proof guidance:",
+  );
+  if (proofGuidanceIndex >= 0) {
+    const guidance = lines
+      .slice(proofGuidanceIndex + 1)
+      .map((line) => line.trim())
+      .find(Boolean);
+    if (guidance) return guidance;
+  }
+  return firstMergeReadinessLine(body, "Proof:");
 }
 
 function previousReviewFindings(body: string): Array<{ priority: string; title: string }> {
