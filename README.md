@@ -339,6 +339,8 @@ fresh GitHub snapshot, labels, maintainer-authorship, and unchanged item state
 are checked immediately before mutation. Maintainer-authored or
 `maintainer`-labeled items can still close when the only protected state is
 maintainer ownership and the close reason is verified `implemented_on_main`.
+Configured OpenClaw targets may close issues as `implemented_on_main` when the
+fix is proven on current `main`, even before the next release ships.
 
 ### Repair Lane
 

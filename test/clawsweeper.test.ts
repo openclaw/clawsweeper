@@ -1148,7 +1148,7 @@ test("skill-only OpenClaw PRs can close through ClawHub with upload guidance", (
   assert.match(action.closeComment, /installable community skill/);
 });
 
-test("ClawHub policy only allows main-implemented PR close proposals", () => {
+test("ClawHub policy allows main-implemented issue and PR close proposals", () => {
   const implementedPr = validateCloseDecision(
     item({
       repo: "openclaw/clawhub",
@@ -1167,8 +1167,7 @@ test("ClawHub policy only allows main-implemented PR close proposals", () => {
     }),
     closeDecision(),
   );
-  assert.equal(implementedIssue.ok, false);
-  assert.equal(implementedIssue.actionTaken, "skipped_invalid_decision");
+  assert.equal(implementedIssue.ok, true);
 
   const nonImplementedPr = validateCloseDecision(
     item({
@@ -1182,7 +1181,7 @@ test("ClawHub policy only allows main-implemented PR close proposals", () => {
   assert.equal(nonImplementedPr.actionTaken, "skipped_invalid_decision");
 });
 
-test("ClawSweeper policy allows self PR review without issue auto-close", () => {
+test("ClawSweeper policy allows self implemented-on-main issue and PR close proposals", () => {
   const implementedPr = validateCloseDecision(
     item({
       repo: "openclaw/clawsweeper",
@@ -1201,8 +1200,7 @@ test("ClawSweeper policy allows self PR review without issue auto-close", () => 
     }),
     closeDecision(),
   );
-  assert.equal(implementedIssue.ok, false);
-  assert.equal(implementedIssue.actionTaken, "skipped_invalid_decision");
+  assert.equal(implementedIssue.ok, true);
 });
 
 test("review policy changes force fresh complete reports back into planning", () => {

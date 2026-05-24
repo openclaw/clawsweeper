@@ -8,6 +8,11 @@ test("repositoryProfileFor matches mixed-case input against canonical profiles",
 
   assert.equal(profile.targetRepo, "openclaw/clawhub");
   assert.equal(profile.slug, "openclaw-clawhub");
+  assert.deepEqual(profile.applyCloseRules.issue, ["implemented_on_main"]);
+  assert.deepEqual(profile.applyCloseRules.pull_request, [
+    "implemented_on_main",
+    "mostly_implemented_on_main",
+  ]);
 });
 
 test("repositoryProfileFor supports fs-safe event reviews", () => {
@@ -16,7 +21,7 @@ test("repositoryProfileFor supports fs-safe event reviews", () => {
   assert.equal(profile.targetRepo, "openclaw/fs-safe");
   assert.equal(profile.slug, "openclaw-fs-safe");
   assert.equal(profile.checkoutDir, "fs-safe");
-  assert.deepEqual(profile.applyCloseRules.issue, []);
+  assert.deepEqual(profile.applyCloseRules.issue, ["implemented_on_main"]);
   assert.deepEqual(profile.applyCloseRules.pull_request, [
     "implemented_on_main",
     "mostly_implemented_on_main",
@@ -32,7 +37,7 @@ test("generic OpenClaw fallback supports conservative event-only onboarding", ()
   assert.equal(profile.checkoutDir, "example-tool");
   assert.match(profile.promptNote, /generic OpenClaw onboarding profile/);
   assert.match(profile.promptNote, /current default branch/);
-  assert.deepEqual(profile.applyCloseRules.issue, []);
+  assert.deepEqual(profile.applyCloseRules.issue, ["implemented_on_main"]);
   assert.deepEqual(profile.applyCloseRules.pull_request, [
     "implemented_on_main",
     "mostly_implemented_on_main",

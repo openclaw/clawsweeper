@@ -47,6 +47,7 @@ checkpoint, and status-only commits are intentionally omitted.
   Twitter metadata for the docs site.
 - Added target fanout so ClawSweeper can dispatch conservative scheduled review and audit batches across eligible `openclaw/*` and `steipete/*` repositories.
 - Added a PR-only low-signal close reason so ClawSweeper can automatically close net-negative branches whose useful part is tiny but whose diff is mostly unrelated or unmergeable churn.
+- Added current-main issue close policy for configured OpenClaw targets, so reviews can close issues that are proven fixed on `main` even before a release ships.
 - Added stronger ClawSweeper storm controls: exact event reviews now get job-level per-item cancellation, GitHub activity coalesces more aggressively, noncritical intake skips when GitHub core quota is low, hot target fanout is lower, and state hydration avoids partial-clone checkout auth failures by default.
 
 ### Fixed

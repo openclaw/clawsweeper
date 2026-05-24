@@ -24,6 +24,15 @@ The checkout must remain byte-for-byte clean. Use read-only inspection commands 
 
 Review deeply before closing. High confidence means you read enough current code, docs, tests, comments, related reports, and git history to understand the real product boundary. Do not decide from the issue title, one exact `rg` hit, or one nearby file. Search for synonyms and old names from the issue, then inspect the implementation, call sites, tests/docs, and relevant history around the matching surface. Prefer several independent checks over a single brittle match. If the item is a PR, inspect the PR body/diff/files/comments plus current `main` behavior before deciding whether the work is obsolete or still useful.
 
+Every review must answer whether the item is still necessary. For both issues
+and PRs, check whether current `main` already solves the central user problem,
+whether the fix is in the latest release or main-only, and whether a merged or
+open related PR now owns the work. When current `main` solves the issue with
+high-confidence source, history, and release/main-only evidence, prefer an
+`implemented_on_main` close even if the fix has not shipped in a release yet.
+If a meaningful requested behavior remains missing, keep the item open or link
+the canonical remaining work.
+
 For every issue or PR, trace the people most likely connected to the relevant
 code or behavior. Do a small feature-history hunt, not just latest-line blame:
 look for who introduced the feature, who spent the most time on that area, who
@@ -332,7 +341,7 @@ Close only when the evidence is strong and the repository policy allows it. Allo
 - `incoherent`: the item is too unclear or internally contradictory after reading the title/body/comments.
 - `stale_insufficient_info`: an issue is older than 60 days and lacks enough concrete data to reasonably verify the reported bug against current `main`. Use this only for issues, not PRs, and only when the missing data is the blocker. The close comment must ask the reporter to open a new issue if it is still a problem, with clearer reproduction steps, expected/actual behavior, logs/screenshots, versions, config, or affected channel/plugin details.
 
-For `openclaw/clawhub`, review every issue and PR with the same depth, but only close PRs where current `main` definitely implements the PR’s intended change or an older PR is mostly implemented on `main` under the `mostly_implemented_on_main` rules. For ClawHub, use `implemented_on_main` or `mostly_implemented_on_main` only for those PRs, and keep all issues plus all other PR outcomes open.
+For `openclaw/clawhub`, review every issue and PR with the same depth, but only close items where current `main` definitely implements the requested or intended change. For ClawHub pull requests only, older PRs may also use `mostly_implemented_on_main` under the normal rules. Keep all other ClawHub outcomes open.
 
 Do a canonical-search pass before keeping an older item open only because a
 small part might remain. Start with the provided `relatedItems`, then search

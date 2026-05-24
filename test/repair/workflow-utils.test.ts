@@ -292,6 +292,53 @@ test("workflow utilities select eligible proposed close records", () => {
   assert.deepEqual(selected, [5, 12, 15]);
 });
 
+test("workflow utilities allow ClawHub implemented-on-main issue proposals", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-workflow-"));
+  write(
+    path.join(root, "records/openclaw-clawhub/items/openclaw-clawhub-7.md"),
+    [
+      "---",
+      "repository: openclaw/clawhub",
+      "type: issue",
+      "decision: close",
+      "confidence: high",
+      "action_taken: proposed_close",
+      "close_reason: implemented_on_main",
+      "item_created_at: 2024-01-01T00:00:00Z",
+      "---",
+      "",
+    ].join("\n"),
+  );
+  write(
+    path.join(root, "records/openclaw-clawhub/items/openclaw-clawhub-8.md"),
+    [
+      "---",
+      "repository: openclaw/clawhub",
+      "type: issue",
+      "decision: close",
+      "confidence: high",
+      "action_taken: proposed_close",
+      "close_reason: duplicate_or_superseded",
+      "item_created_at: 2024-01-01T00:00:00Z",
+      "---",
+      "",
+    ].join("\n"),
+  );
+
+  const selected = withCwd(root, () =>
+    proposedItemNumbers({
+      targetRepo: "openclaw/clawhub",
+      applyKind: "all",
+      applyCloseReasons: "all",
+      staleMinAgeDays: 60,
+      minAgeDays: 0,
+      minAgeMinutes: null,
+    }),
+  );
+
+  assert.deepEqual(selected, [7]);
+});
+
 test("workflow utilities select cursor-based PR comment sync batches", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-workflow-"));
   const cursorPath = path.join(root, "results/comment-sync-cursors/openclaw-openclaw.json");

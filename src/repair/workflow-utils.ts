@@ -524,8 +524,8 @@ function allowedForTarget(
 ): boolean {
   if (targetRepo === "openclaw/clawhub")
     return (
-      type === "pull_request" &&
-      (reason === "implemented_on_main" || reason === "mostly_implemented_on_main")
+      reason === "implemented_on_main" ||
+      (type === "pull_request" && reason === "mostly_implemented_on_main")
     );
   if (type === "pull_request" && reason === "stale_insufficient_info") return false;
   if (type !== "pull_request" && reason === "mostly_implemented_on_main") return false;
