@@ -2892,6 +2892,7 @@ function compactPullRequest(value: unknown): unknown {
     mergedAt: pull.merged_at,
     mergeCommitSha: pull.merge_commit_sha,
     mergeable: pull.mergeable,
+    mergeableState: pull.mergeable_state,
     author: login(pull.user),
     head: {
       ref: head.ref,
@@ -2908,6 +2909,10 @@ function compactPullRequest(value: unknown): unknown {
     updatedAt: pull.updated_at,
     body: truncateText(pull.body, 12000),
   };
+}
+
+export function compactPullRequestForTest(value: unknown): unknown {
+  return compactPullRequest(value);
 }
 
 interface ClosingPullRequestReference {

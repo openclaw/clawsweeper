@@ -28,6 +28,7 @@ import {
   closingPullRequestReferenceTarget,
   compactMappedSlice,
   compactMappedWindow,
+  compactPullRequestForTest,
   codexEnv,
   dashboardClosedAt,
   extractLatestClawSweeperReviewForTest,
@@ -865,6 +866,39 @@ test("review prompt includes compact previous review state without raw durable r
   assert.match(prompt, /"commentsFiltered": 2/);
   assert.doesNotMatch(prompt, /How this review workflow works/);
   assert.doesNotMatch(prompt, /clawsweeper-pr-egg-hatch/);
+});
+
+test("review prompt includes merge state and guards clean behind-branch drift", () => {
+  const compactPullRequest = compactPullRequestForTest({
+    number: 123,
+    title: "Sample PR",
+    html_url: "https://github.com/openclaw/openclaw/pull/123",
+    state: "open",
+    draft: false,
+    merged: false,
+    mergeable: true,
+    mergeable_state: "clean",
+    head: { ref: "feature", sha: "head123" },
+    base: { ref: "main", sha: "base123" },
+    user: { login: "contributor" },
+    additions: 10,
+    deletions: 2,
+    changed_files: 1,
+  });
+  const context = {
+    issue: { number: 123, title: "Sample PR" },
+    comments: [],
+    timeline: [],
+    pullRequest: compactPullRequest,
+    counts: { comments: 0, timeline: 0 },
+  };
+
+  const prompt = reviewPromptForTest(item({ kind: "pull_request", number: 123 }), context, git);
+
+  assert.deepEqual((compactPullRequest as { mergeableState?: unknown }).mergeableState, "clean");
+  assert.match(prompt, /"mergeableState": "clean"/);
+  assert.match(prompt, /Do not treat a branch being behind the current base as proof/);
+  assert.match(prompt, /actual three-way merge result/);
 });
 
 test("review context ledger records ordered section budgets", () => {
