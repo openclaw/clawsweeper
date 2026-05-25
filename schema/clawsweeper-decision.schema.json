@@ -183,10 +183,11 @@
           "impact:crash-loop",
           "impact:message-loss",
           "impact:session-state",
-          "impact:auth-provider"
+          "impact:auth-provider",
+          "impact:other"
         ]
       },
-      "description": "ClawSweeper-owned GitHub impact labels for maintainers to find the affected problem class on issues. Use [] for pull requests. These describe what the issue is about, not PR merge risk. Use at most 3. impact:data-loss: This issue is about lost, corrupted, or silently dropped user/session/config data. impact:security: This issue is about security boundaries, credentials, authz, sandboxing, or sensitive data. impact:crash-loop: This issue is about crashes, hangs, restart loops, or process-level availability. impact:message-loss: This issue is about lost, duplicated, misrouted, or suppressed channel messages. impact:session-state: This issue is about session, memory, transcript, context, or agent state drift. impact:auth-provider: This issue is about auth, provider routing, model choice, or SecretRef resolution."
+      "description": "ClawSweeper-owned GitHub impact labels for maintainers to find the affected problem class on issues. Use [] for pull requests and when no meaningful owned impact signal applies. These describe what the issue is about, not PR merge risk. Use at most 3; impact:other counts toward this max and means meaningful maintainer-visible impact exists but no specific owned impact label fits. Prefer a specific impact label over impact:other. impact:data-loss: This issue is about lost, corrupted, or silently dropped user/session/config data. impact:security: This issue is about security boundaries, credentials, authz, sandboxing, or sensitive data. impact:crash-loop: This issue is about crashes, hangs, restart loops, or process-level availability. impact:message-loss: This issue is about lost, duplicated, misrouted, or suppressed channel messages. impact:session-state: This issue is about session, memory, transcript, context, or agent state drift. impact:auth-provider: This issue is about auth, provider routing, model choice, or SecretRef resolution. impact:other: This issue has meaningful maintainer-visible impact outside the owned taxonomy."
     },
     "mergeRiskLabels": {
       "type": "array",
@@ -200,10 +201,11 @@
           "merge-risk: 🚨 auth-provider",
           "merge-risk: 🚨 security-boundary",
           "merge-risk: 🚨 availability",
-          "merge-risk: 🚨 automation"
+          "merge-risk: 🚨 automation",
+          "merge-risk: 🚨 other"
         ]
       },
-      "description": "PR-only ClawSweeper-owned GitHub labels for merge risks that green CI does not settle. These describe what could go wrong specifically because this PR is merged, not the affected or solved problem class. Use at most 3 for pull requests and [] for issues. merge-risk: 🚨 compatibility: 🚨 Merging this PR could break existing users, config, migrations, defaults, or upgrades. merge-risk: 🚨 message-delivery: 🚨 Merging this PR could drop, duplicate, misroute, suppress, or wrongly target messages. merge-risk: 🚨 session-state: 🚨 Merging this PR could lose, corrupt, stale, or mis-associate session or agent state. merge-risk: 🚨 auth-provider: 🚨 Merging this PR could break OAuth, tokens, provider routing, model choice, or credentials. merge-risk: 🚨 security-boundary: 🚨 Merging this PR could weaken sandboxing, authorization, credentials, or sensitive data. merge-risk: 🚨 availability: 🚨 Merging this PR could cause crashes, hangs, restart loops, stalls, or process outages. merge-risk: 🚨 automation: 🚨 Merging this PR could break CI, automerge, proof capture, label sync, or automation."
+      "description": "PR-only ClawSweeper-owned GitHub labels for merge risks that green CI does not settle. These describe what could go wrong specifically because this PR is merged, not the affected or solved problem class. Use at most 3 for pull requests and [] for issues and when no meaningful owned merge-risk signal applies. merge-risk: 🚨 other counts toward this max and means meaningful merge risk exists but no specific owned merge-risk label fits. Prefer a specific merge-risk label over merge-risk: 🚨 other. merge-risk: 🚨 compatibility: 🚨 Merging this PR could break existing users, config, migrations, defaults, or upgrades. merge-risk: 🚨 message-delivery: 🚨 Merging this PR could drop, duplicate, misroute, suppress, or wrongly target messages. merge-risk: 🚨 session-state: 🚨 Merging this PR could lose, corrupt, stale, or mis-associate session or agent state. merge-risk: 🚨 auth-provider: 🚨 Merging this PR could break OAuth, tokens, provider routing, model choice, or credentials. merge-risk: 🚨 security-boundary: 🚨 Merging this PR could weaken sandboxing, authorization, credentials, or sensitive data. merge-risk: 🚨 availability: 🚨 Merging this PR could cause crashes, hangs, restart loops, stalls, or process outages. merge-risk: 🚨 automation: 🚨 Merging this PR could break CI, automerge, proof capture, label sync, or automation. merge-risk: 🚨 other: 🚨 Merging this PR has meaningful risk outside the owned taxonomy."
     },
     "mergeRiskOptions": {
       "type": "array",
@@ -280,13 +282,15 @@
               "impact:message-loss",
               "impact:session-state",
               "impact:auth-provider",
+              "impact:other",
               "merge-risk: 🚨 compatibility",
               "merge-risk: 🚨 message-delivery",
               "merge-risk: 🚨 session-state",
               "merge-risk: 🚨 auth-provider",
               "merge-risk: 🚨 security-boundary",
               "merge-risk: 🚨 availability",
-              "merge-risk: 🚨 automation"
+              "merge-risk: 🚨 automation",
+              "merge-risk: 🚨 other"
             ]
           },
           "reason": {

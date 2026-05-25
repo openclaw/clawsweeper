@@ -150,10 +150,15 @@ the issue, and keep this separate from `triagePriority` and
 `impact:message-loss`: This issue is about lost, duplicated, misrouted, or suppressed channel messages.
 `impact:session-state`: This issue is about session, memory, transcript, context, or agent state drift.
 `impact:auth-provider`: This issue is about auth, provider routing, model choice, or SecretRef resolution.
-Use an empty array when no owned impact label applies. Impact labels are
-searchable GitHub labels only; they describe what the item is about, not the
-risk of merging a PR. They do not close, merge, block, or replace review
-findings.
+`impact:other`: This issue has meaningful maintainer-visible impact outside the owned taxonomy.
+Use `impact:other` only when the issue has a concrete maintainer-visible impact
+but none of the specific owned impact labels fit. Prefer a specific impact label
+over `impact:other`. Use an empty array when no meaningful owned impact signal
+applies. `impact:other` counts toward the same max of 3 labels and requires a
+matching `labelJustifications` entry that explains the actual impact. Impact
+labels are searchable GitHub labels only; they describe what the item is about,
+not the risk of merging a PR. They do not close, merge, block, or replace
+review findings.
 
 Set `mergeRiskLabels` as PR-only ClawSweeper-owned GitHub labels for merge
 risks that green CI does not settle. Use an empty array for issues. Keep these
@@ -169,6 +174,13 @@ discussion:
 `merge-risk: 🚨 security-boundary`: 🚨 Merging this PR could weaken sandboxing, authorization, credentials, or sensitive data.
 `merge-risk: 🚨 availability`: 🚨 Merging this PR could cause crashes, hangs, restart loops, stalls, or process outages.
 `merge-risk: 🚨 automation`: 🚨 Merging this PR could break CI, automerge, proof capture, label sync, or automation.
+`merge-risk: 🚨 other`: 🚨 Merging this PR has meaningful risk outside the owned taxonomy.
+Use `merge-risk: 🚨 other` only when merging the PR has a concrete risk that
+green CI does not settle but none of the specific owned merge-risk labels fit.
+Prefer a specific merge-risk label over `merge-risk: 🚨 other`. Use an empty
+array when no meaningful owned merge-risk signal applies. `merge-risk: 🚨 other`
+counts toward the same max of 3 labels and requires a matching
+`labelJustifications` entry that explains the actual risk.
 Do not treat a branch being behind the current base as proof that merging the
 PR will delete current-base-only files or commits. When GitHub reports the PR as
 mergeable or clean and the only concern is stale base drift, describe it as

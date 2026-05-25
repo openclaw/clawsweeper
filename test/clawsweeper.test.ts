@@ -10277,6 +10277,52 @@ test("decision parser enforces required schema-shaped evidence", () => {
       }),
     /decision\.mergeRiskOptions\[0\]\.automergeInstruction requires a recommended option/,
   );
+  assert.deepEqual(
+    parseDecision(
+      closeDecision({
+        impactLabels: ["impact:other"],
+        labelJustifications: [
+          {
+            label: "P2",
+            reason: "Normal priority applies to this limited-scope implemented behavior check.",
+          },
+          {
+            label: "impact:other",
+            reason: "The issue has maintainer-visible impact outside the specific taxonomy.",
+          },
+        ],
+      }),
+    ).impactLabels,
+    ["impact:other"],
+  );
+  assert.deepEqual(
+    parseDecision(
+      closeDecision({
+        mergeRiskLabels: ["merge-risk: 🚨 other"],
+        mergeRiskOptions: [
+          {
+            title: "Validate the uncategorized risk",
+            body: "Run targeted validation for the maintainer-visible risk before merge.",
+            category: "fix_before_merge",
+            recommended: true,
+            automergeInstruction:
+              "Run targeted validation for the maintainer-visible risk before merge.",
+          },
+        ],
+        labelJustifications: [
+          {
+            label: "P2",
+            reason: "Normal priority applies to this limited-scope implemented behavior check.",
+          },
+          {
+            label: "merge-risk: 🚨 other",
+            reason: "The PR has a maintainer-visible merge risk outside the specific taxonomy.",
+          },
+        ],
+      }),
+    ).mergeRiskLabels,
+    ["merge-risk: 🚨 other"],
+  );
   assert.throws(() => {
     const decision = closeDecision();
     delete decision.labelJustifications;
@@ -11179,6 +11225,12 @@ test("ClawSweeper impact label scheme exposes owned impact labels", () => {
       description:
         "This issue is about auth, provider routing, model choice, or SecretRef resolution.",
     },
+    {
+      name: "impact:other",
+      color: "C5DEF5",
+      description:
+        "This issue has meaningful maintainer-visible impact outside the owned taxonomy.",
+    },
   ]);
 });
 
@@ -11266,6 +11318,11 @@ test("ClawSweeper merge-risk label scheme exposes PR-only merge warning labels",
       description:
         "🚨 Merging this PR could break CI, automerge, proof capture, label sync, or automation.",
     },
+    {
+      name: "merge-risk: 🚨 other",
+      color: "C5DEF5",
+      description: "🚨 Merging this PR has meaningful risk outside the owned taxonomy.",
+    },
   ]);
 });
 
@@ -11304,9 +11361,9 @@ test("ClawSweeper merge-risk labels remove stale owned labels and preserve unrel
   assert.deepEqual(
     mergeRiskLabelsForTest(
       ["bug", "merge-risk: 🚨 compatibility", "merge-risk: 🚨 availability", "impact:message-loss"],
-      ["merge-risk: 🚨 message-delivery", "merge-risk: 🚨 automation", "not-a-merge-risk-label"],
+      ["merge-risk: 🚨 message-delivery", "merge-risk: 🚨 other", "not-a-merge-risk-label"],
     ),
-    ["bug", "impact:message-loss", "merge-risk: 🚨 message-delivery", "merge-risk: 🚨 automation"],
+    ["bug", "impact:message-loss", "merge-risk: 🚨 message-delivery", "merge-risk: 🚨 other"],
   );
   assert.deepEqual(mergeRiskLabelsForTest(["bug", "merge-risk: 🚨 auth-provider"], []), ["bug"]);
 });
@@ -11315,9 +11372,9 @@ test("ClawSweeper impact labels remove stale owned labels and preserve unrelated
   assert.deepEqual(
     impactLabelsForTest(
       ["bug", "impact:data-loss", "impact:security", "proof: sufficient", "P1"],
-      ["impact:message-loss", "impact:session-state", "not-an-impact-label"],
+      ["impact:message-loss", "impact:other", "not-an-impact-label"],
     ),
-    ["bug", "proof: sufficient", "P1", "impact:message-loss", "impact:session-state"],
+    ["bug", "proof: sufficient", "P1", "impact:message-loss", "impact:other"],
   );
   assert.deepEqual(impactLabelsForTest(["bug", "impact:auth-provider"], []), ["bug"]);
 });

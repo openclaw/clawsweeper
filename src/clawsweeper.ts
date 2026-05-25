@@ -78,7 +78,8 @@ type ImpactLabelName =
   | "impact:crash-loop"
   | "impact:message-loss"
   | "impact:session-state"
-  | "impact:auth-provider";
+  | "impact:auth-provider"
+  | "impact:other";
 type MergeRiskLabelName =
   | "merge-risk: 🚨 compatibility"
   | "merge-risk: 🚨 message-delivery"
@@ -86,7 +87,8 @@ type MergeRiskLabelName =
   | "merge-risk: 🚨 auth-provider"
   | "merge-risk: 🚨 security-boundary"
   | "merge-risk: 🚨 availability"
-  | "merge-risk: 🚨 automation";
+  | "merge-risk: 🚨 automation"
+  | "merge-risk: 🚨 other";
 type MergeRiskOptionCategory = "fix_before_merge" | "accept_risk" | "pause_or_close";
 type ReviewLabelName = Exclude<TriagePriority, "none"> | ImpactLabelName | MergeRiskLabelName;
 type ItemCategory =
@@ -1038,6 +1040,11 @@ const IMPACT_LABELS = [
     description:
       "This issue is about auth, provider routing, model choice, or SecretRef resolution.",
   },
+  {
+    name: "impact:other",
+    color: "C5DEF5",
+    description: "This issue has meaningful maintainer-visible impact outside the owned taxonomy.",
+  },
 ] as const satisfies readonly {
   name: ImpactLabelName;
   color: string;
@@ -1086,6 +1093,11 @@ const MERGE_RISK_LABELS = [
     color: "FBCA04",
     description:
       "🚨 Merging this PR could break CI, automerge, proof capture, label sync, or automation.",
+  },
+  {
+    name: "merge-risk: 🚨 other",
+    color: "C5DEF5",
+    description: "🚨 Merging this PR has meaningful risk outside the owned taxonomy.",
   },
 ] as const satisfies readonly {
   name: MergeRiskLabelName;
