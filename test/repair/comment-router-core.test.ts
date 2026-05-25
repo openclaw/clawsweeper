@@ -51,6 +51,7 @@ import {
   renderResponse,
   sharedAutomergeStatusMarkerPrefix,
   staleAutomergeActivationReason,
+  staleClosedItemCommandReason,
   shouldClearMaintainerCommandReaction,
   usesSharedAutomergeStatus,
 } from "../../dist/repair/comment-router-core.js";
@@ -381,6 +382,20 @@ test("comment router side effects are driven by planned actions", () => {
   assert.match(body, /could not start a re-review/);
   assert.match(body, /re-review requires an open issue or PR/);
   assert.doesNotMatch(body, /re-review requested/);
+
+  const staleReReview = {
+    intent: "re_review",
+    status: "skipped",
+    reason: "PR closed after this re_review command",
+  };
+
+  assert.equal(commandHasAction(staleReReview, "dispatch_clawsweeper"), false);
+  assert.equal(commandHasAction(staleReReview, "comment"), false);
+
+  const staleBody = renderResponse(staleReReview, null);
+  assert.match(staleBody, /could not start a re-review/);
+  assert.match(staleBody, /PR closed after this re_review command/);
+  assert.doesNotMatch(staleBody, /re-review requested/);
 });
 
 test("force reprocess bypasses existing command status guards", () => {
@@ -501,6 +516,31 @@ test("stale automerge activation commands after merge are skipped silently", () 
       },
       issue: { state: "closed", closed_at: "2026-05-01T01:49:03Z" },
       pull: { state: "MERGED", mergedAt: "2026-05-01T01:49:03Z" },
+    }),
+    null,
+  );
+});
+
+test("stale re-review commands before PR close are skipped silently", () => {
+  assert.equal(
+    staleClosedItemCommandReason({
+      command: {
+        intent: "re_review",
+        comment_created_at: "2026-05-18T19:30:48Z",
+      },
+      issue: { state: "closed", closed_at: "2026-05-19T05:02:03Z" },
+      pull: { state: "CLOSED" },
+    }),
+    "PR closed after this re_review command",
+  );
+  assert.equal(
+    staleClosedItemCommandReason({
+      command: {
+        intent: "re_review",
+        comment_created_at: "2026-05-19T05:03:00Z",
+      },
+      issue: { state: "closed", closed_at: "2026-05-19T05:02:03Z" },
+      pull: { state: "CLOSED" },
     }),
     null,
   );

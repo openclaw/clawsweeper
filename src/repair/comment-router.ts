@@ -61,7 +61,7 @@ import {
   renderIssueImplementationJob,
   renderResponse,
   sharedAutomergeStatusMarkerPrefix,
-  staleAutomergeActivationReason,
+  staleClosedItemCommandReason,
   shouldClearMaintainerCommandReaction,
   usesSharedAutomergeStatus,
 } from "./comment-router-core.js";
@@ -428,6 +428,8 @@ function classifyCommand(command: LooseRecord): JsonValue {
   }
   if (command.intent === "re_review") {
     if (String(issue.state ?? "").toLowerCase() !== "open") {
+      const staleReason = staleClosedItemCommandReason({ command: next, issue, pull });
+      if (staleReason) return { ...next, status: "skipped", reason: staleReason };
       return {
         ...next,
         status: "ready",
@@ -525,7 +527,7 @@ function classifyCommand(command: LooseRecord): JsonValue {
     const modeLabel = command.intent === "autofix" ? AUTOFIX_LABEL : AUTOMERGE_LABEL;
     const oppositeModeLabel = command.intent === "autofix" ? AUTOMERGE_LABEL : AUTOFIX_LABEL;
     if (String(issue.state ?? "").toLowerCase() !== "open") {
-      const staleReason = staleAutomergeActivationReason({ command: next, issue, pull });
+      const staleReason = staleClosedItemCommandReason({ command: next, issue, pull });
       if (staleReason) return { ...next, status: "skipped", reason: staleReason };
       if (command.automation_source === "repair_loop_label_sweep") {
         return { ...next, status: "skipped", reason: `${mode} label sweep requires an open PR` };

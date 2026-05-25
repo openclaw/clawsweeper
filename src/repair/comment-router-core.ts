@@ -1665,13 +1665,13 @@ export function hasCommandResponseMarker(body: JsonValue, command: LooseRecord):
   return text.includes(commandResponseMarker(command));
 }
 
-export function staleAutomergeActivationReason({
+export function staleClosedItemCommandReason({
   command,
   issue,
   pull = null,
 }: LooseRecord): string | null {
   const intent = String(command?.intent ?? "");
-  if (!["autofix", "automerge"].includes(intent)) return null;
+  if (!["autofix", "automerge", "re_review"].includes(intent)) return null;
 
   const closedAt = pull?.mergedAt ?? pull?.merged_at ?? issue?.closed_at ?? issue?.closedAt;
   if (!closedAt) return null;
@@ -1689,6 +1689,8 @@ export function staleAutomergeActivationReason({
   }
   return `PR closed after this ${intent} command`;
 }
+
+export const staleAutomergeActivationReason = staleClosedItemCommandReason;
 
 export function repairLoopStopPauseReason({ command, entries = [] }: LooseRecord): string | null {
   const stopAt = latestRepairLoopControlTime(entries, command, ["stop"]);

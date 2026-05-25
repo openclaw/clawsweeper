@@ -488,6 +488,59 @@ Needs real behavior proof before merge.
   assert.doesNotMatch(JSON.stringify(review), /How this review workflow works/);
 });
 
+test("latest ClawSweeper durable review parser supports compact merge readiness layout", () => {
+  const latest = issueComment(
+    2,
+    `Codex review: needs real behavior proof before merge. _Reviewed May 24, 2026, 8:34 AM ET / 12:34 UTC._
+
+**Summary**
+The PR changes review comment layout.
+
+**Merge readiness**
+Overall: 🧂 unranked krab
+Proof: 🧂 unranked krab
+Patch quality: 🦞 diamond lobster
+Result: blocked until real behavior proof is added.
+
+Overall follows the weaker of proof and patch quality, so missing proof can cap an otherwise strong patch.
+
+Proof guidance:
+Needs real behavior proof before merge: The PR has no real ingestion-run proof yet. After adding proof, update the PR body; ClawSweeper should re-review automatically.
+
+**Next step before merge**
+Add real behavior proof.
+
+**Review findings**
+- [P2] Keep prior-review extraction in sync — src/clawsweeper.ts:11021
+
+<details>
+<summary>Label changes</summary>
+
+- add \`P2\`
+
+</details>
+
+<!-- clawsweeper-verdict:needs-human item=123 sha=newsha confidence=high -->
+
+<!-- clawsweeper-review item=123 -->`,
+    "clawsweeper[bot]",
+    "2026-05-24T02:00:00Z",
+  );
+
+  const review = extractLatestClawSweeperReviewForTest([latest], 123);
+
+  assert.ok(review);
+  assert.equal(review.status, "needs real behavior proof before merge.");
+  assert.equal(review.reviewedAt, "May 24, 2026, 8:34 AM ET / 12:34 UTC");
+  assert.equal(review.reviewedSha, "newsha");
+  assert.equal(review.summary, "The PR changes review comment layout.");
+  assert.equal(review.rating, "Overall: 🧂 unranked krab");
+  assert.match(review.proofStatus, /^Needs real behavior proof before merge:/);
+  assert.equal(review.nextStep, "Add real behavior proof.");
+  assert.equal(review.findings[0]?.priority, "P2");
+  assert.equal(review.findings[0]?.title, "Keep prior-review extraction in sync");
+});
+
 test("githubContextWindowPlan includes prior page when the tail crosses a page boundary", () => {
   assert.deepEqual(githubContextWindowPlan(101, 80), {
     keepStart: 40,
@@ -741,6 +794,16 @@ Next rank-up steps:
 
 ${values.nextSteps}
 `;
+}
+
+function detailsBody(markdown, summary) {
+  const marker = `<summary>${summary}</summary>`;
+  const markerIndex = markdown.indexOf(marker);
+  assert.notEqual(markerIndex, -1, `missing details summary ${summary}`);
+  const bodyStart = markerIndex + marker.length;
+  const bodyEnd = markdown.indexOf("</details>", bodyStart);
+  assert.notEqual(bodyEnd, -1, `missing details close for ${summary}`);
+  return markdown.slice(bodyStart, bodyEnd);
 }
 
 function auditRecord(number, overrides = {}) {
@@ -2565,15 +2628,16 @@ Reason: Maintainers should review the tests after the targeted lane is green.
     "none",
   );
 
-  assert.match(comment, /Codex review: needs maintainer review before merge\./);
   assert.match(
     comment,
-    /\*\*Latest ClawSweeper review:\*\* 2026-05-22 04:43 UTC \/ May 22, 2026, 12:43 AM ET\./,
+    /Codex review: needs maintainer review before merge\. _Reviewed May 22, 2026, 12:43 AM ET \/ 04:43 UTC\._/,
   );
+  assert.doesNotMatch(comment, /\*\*Latest ClawSweeper review:\*\*/);
   assert.match(
     comment,
-    /\*\*Workflow note:\*\* Future ClawSweeper reviews update this same comment in place\./,
+    /\*\*Summary\*\*\nAdds regression coverage for session-scoped model overrides\./,
   );
+  assert.doesNotMatch(comment, /\*\*Workflow note:\*\*/);
   assert.match(comment, /<summary>How this review workflow works<\/summary>/);
   assert.match(
     comment,
@@ -2603,10 +2667,6 @@ Reason: Maintainers should review the tests after the targeted lane is green.
     comment,
     /- Maintainers can comment `@clawsweeper explain` to ask for more context, or `@clawsweeper stop` to stop active automation\./,
   );
-  assert.match(
-    comment,
-    /\*\*Summary\*\*\nAdds regression coverage for session-scoped model overrides\./,
-  );
   assert.match(comment, /\*\*Next step before merge\*\*/);
   assert.match(comment, /Maintainers should review the tests after the targeted lane is green\./);
   assert.match(comment, /<details>\n<summary>Review details<\/summary>/);
@@ -2624,7 +2684,20 @@ Reason: Maintainers should review the tests after the targeted lane is green.
   );
   assert.ok(
     comment.indexOf("Is this the best way to solve the issue?") <
-      comment.indexOf("What I checked:"),
+      comment.indexOf("<summary>Evidence reviewed</summary>"),
+  );
+  assert.match(detailsBody(comment, "Evidence reviewed"), /What I checked:/);
+  assert.ok(
+    comment.indexOf("<summary>Review details</summary>") <
+      comment.indexOf("<summary>Evidence reviewed</summary>"),
+  );
+  assert.ok(
+    comment.indexOf("<summary>Evidence reviewed</summary>") <
+      comment.indexOf("<summary>What the crustacean ranks mean</summary>"),
+  );
+  assert.ok(
+    comment.indexOf("<summary>What the crustacean ranks mean</summary>") <
+      comment.indexOf("<summary>How this review workflow works</summary>"),
   );
   assert.match(comment, /<!-- clawsweeper-verdict:needs-human item=74265 sha=abc123def456/);
 });
@@ -2847,10 +2920,8 @@ Reason: The fix is narrow and can be made on the PR branch.
   );
 
   assert.match(comment, /Codex review: needs changes before merge\./);
-  assert.match(
-    comment,
-    /\*\*Workflow note:\*\* Future ClawSweeper reviews update this same comment in place\./,
-  );
+  assert.doesNotMatch(comment, /\*\*Workflow note:\*\*/);
+  assert.match(comment, /<summary>How this review workflow works<\/summary>/);
   assert.match(
     comment,
     /\*\*Review findings\*\*\n- \[P1\] Validate replace paths — `src\/config\/apply\.ts:42-44`/,
@@ -2984,14 +3055,88 @@ Full review comments:
   });
   const markers = reviewAutomationMarkersFromReport(report);
 
-  assert.match(comment, /\*\*PR rating\*\*\nOverall: 🦞 diamond lobster/);
+  assert.match(comment, /\*\*Merge readiness\*\*\nOverall: 🦞 diamond lobster/);
   assert.match(comment, /Proof: 🦞 diamond lobster/);
   assert.match(comment, /Patch quality: 🦞 diamond lobster/);
+  assert.match(comment, /Result: ready for maintainer review\./);
+  assert.match(
+    comment,
+    /Overall follows the weaker of proof and patch quality, so missing proof can cap an otherwise strong patch\./,
+  );
+  assert.doesNotMatch(comment, /\*\*PR rating\*\*/);
+  assert.doesNotMatch(comment, /\*\*Real behavior proof\*\*/);
   assert.match(comment, /<summary>What the crustacean ranks mean<\/summary>/);
+  assert.match(comment, /🦀 challenger crab: rare, exceptional readiness/);
   assert.match(comment, /🧂 unranked krab: not merge-ready/);
-  assert.match(comment, /\*\*Real behavior proof\*\*\nSufficient \(terminal\):/);
   assert.match(markers, /clawsweeper-verdict:pass/);
   assert.doesNotMatch(markers, /clawsweeper-verdict:needs-human/);
+});
+
+test("proof-blocked PR comments show proof cap while preserving patch quality", () => {
+  const report = `${reportFrontMatter({
+    type: "pull_request",
+    number: "74460",
+    decision: "keep_open",
+    close_reason: "none",
+    review_status: "complete",
+    confidence: "high",
+    author: "contributor",
+    author_association: "CONTRIBUTOR",
+    labels: JSON.stringify([]),
+    work_candidate: "none",
+    pull_head_sha: "abc123def456",
+  })}
+
+## Summary
+
+Keep this PR open until proof is added.
+
+## What This Changes
+
+Filters noisy review-context comments before prompting.
+
+## Best Possible Solution
+
+Add real ClawSweeper ingestion proof before merge.
+
+${realBehaviorProofReportSection({
+  status: "missing",
+  evidenceKind: "none",
+  needsContributorAction: true,
+  summary: "The PR has no real ingestion-run proof yet.",
+})}
+
+## Review Findings
+
+Overall correctness: patch is correct
+
+Overall confidence: 0.9
+
+Full review comments:
+
+- none
+`;
+
+  const comment = renderReviewCommentFromReport(report, "none");
+  const labelDetails = detailsBody(comment, "Label changes");
+
+  assert.match(comment, /\*\*Merge readiness\*\*\nOverall: 🧂 unranked krab/);
+  assert.match(comment, /Proof: 🧂 unranked krab/);
+  assert.match(comment, /Patch quality: 🦞 diamond lobster/);
+  assert.match(comment, /Result: blocked until real behavior proof is added\./);
+  assert.match(
+    comment,
+    /Overall follows the weaker of proof and patch quality, so missing proof can cap an otherwise strong patch\./,
+  );
+  assert.match(comment, /Proof guidance:\nNeeds real behavior proof before merge:/);
+  assert.match(comment, /The PR has no real ingestion-run proof yet\./);
+  assert.match(comment, /After adding proof, update the PR body/);
+  assert.match(comment, /@clawsweeper re-review/);
+  assert.match(
+    labelDetails,
+    /- `rating: 🧂 unranked krab`: Overall readiness is 🧂 unranked krab; proof is 🧂 unranked krab and patch quality is 🦞 diamond lobster\./,
+  );
+  assert.doesNotMatch(labelDetails, /PR readiness rating was derived from proof quality/);
 });
 
 test("public PR review comments explain label changes without duplicate justifications", () => {
@@ -3060,20 +3205,35 @@ Full review comments:
 
   const comment = renderReviewCommentFromReport(report, "none");
 
-  assert.match(comment, /<details>\n<summary>Review details<\/summary>/);
-  assert.match(comment, /Label changes:/);
+  assert.match(comment, /<summary>Label changes<\/summary>/);
+  assert.ok(
+    comment.indexOf("<summary>Label changes</summary>") <
+      comment.indexOf("<summary>What the crustacean ranks mean</summary>"),
+  );
+  assert.ok(
+    comment.indexOf("<summary>What the crustacean ranks mean</summary>") <
+      comment.indexOf("<summary>How this review workflow works</summary>"),
+  );
+  if (comment.includes("<summary>Review details</summary>")) {
+    assert.doesNotMatch(detailsBody(comment, "Review details"), /Label changes:/);
+  }
+  const labelDetails = detailsBody(comment, "Label changes");
+  assert.match(labelDetails, /Label changes:/);
   assert.match(
-    comment,
+    labelDetails,
     /- add `P1`: The PR changes an active channel workflow affecting real users\./,
   );
   assert.match(
-    comment,
+    labelDetails,
     /- add `merge-risk: 🚨 compatibility`: Merging changes the default upgrade behavior for existing configs\./,
   );
-  assert.match(comment, /Label justifications:/);
-  assert.match(comment, /- `P1`: The PR changes an active channel workflow affecting real users\./);
+  assert.match(labelDetails, /Label justifications:/);
   assert.match(
-    comment,
+    labelDetails,
+    /- `P1`: The PR changes an active channel workflow affecting real users\./,
+  );
+  assert.match(
+    labelDetails,
     /- `impact:message-loss`: The diff touches message retry and delivery ordering\./,
   );
 });
@@ -3126,20 +3286,21 @@ Full review comments:
 `;
 
   const comment = renderReviewCommentFromReport(report, "none");
+  const labelDetails = detailsBody(comment, "Label changes");
 
-  assert.match(comment, /Label changes:/);
+  assert.match(labelDetails, /Label changes:/);
   assert.match(
-    comment,
-    /- add `rating: 🦪 silver shellfish`: Current PR rating is 🦪 silver shellfish because proof is 🦪 silver shellfish, patch quality is 🦞 diamond lobster, and PR readiness rating was derived from proof quality, review findings, security review, and reviewer confidence\./,
+    labelDetails,
+    /- add `rating: 🦪 silver shellfish`: Overall readiness is 🦪 silver shellfish; proof is 🦪 silver shellfish and patch quality is 🦞 diamond lobster\. Replaced prior `rating: 🦞 diamond lobster`\./,
   );
   assert.match(
-    comment,
+    labelDetails,
     /- remove `rating: 🦞 diamond lobster`: Current PR rating is `rating: 🦪 silver shellfish`, so this older rating label is no longer current\./,
   );
-  assert.match(comment, /Label justifications:/);
+  assert.match(labelDetails, /Label justifications:/);
   assert.match(
-    comment,
-    /- `rating: 🦪 silver shellfish`: Current PR rating is 🦪 silver shellfish because proof is 🦪 silver shellfish, patch quality is 🦞 diamond lobster, and PR readiness rating was derived from proof quality, review findings, security review, and reviewer confidence\. Replaced prior `rating: 🦞 diamond lobster`\./,
+    labelDetails,
+    /- `rating: 🦪 silver shellfish`: Overall readiness is 🦪 silver shellfish; proof is 🦪 silver shellfish and patch quality is 🦞 diamond lobster\. Replaced prior `rating: 🦞 diamond lobster`\./,
   );
 });
 
@@ -3277,20 +3438,21 @@ Full review comments:
 `;
 
   const comment = renderReviewCommentFromReport(report, "none");
+  const labelDetails = detailsBody(comment, "Label changes");
 
-  assert.match(comment, /Label changes:/);
+  assert.match(labelDetails, /Label changes:/);
   assert.match(
-    comment,
-    /- add `rating: 🦪 silver shellfish`: Current PR rating is 🦪 silver shellfish because proof is 🦪 silver shellfish, patch quality is 🦞 diamond lobster, and PR readiness rating was derived from proof quality, review findings, security review, and reviewer confidence\./,
+    labelDetails,
+    /- add `rating: 🦪 silver shellfish`: Overall readiness is 🦪 silver shellfish; proof is 🦪 silver shellfish and patch quality is 🦞 diamond lobster\. Replaced prior `rating: 🦞 diamond lobster`\./,
   );
   assert.match(
-    comment,
+    labelDetails,
     /- remove `rating: 🦞 diamond lobster`: Current PR rating is `rating: 🦪 silver shellfish`, so this older rating label is no longer current\./,
   );
-  assert.match(comment, /Label justifications:/);
+  assert.match(labelDetails, /Label justifications:/);
   assert.match(
-    comment,
-    /- `rating: 🦪 silver shellfish`: Current PR rating is 🦪 silver shellfish because proof is 🦪 silver shellfish, patch quality is 🦞 diamond lobster, and PR readiness rating was derived from proof quality, review findings, security review, and reviewer confidence\. Replaced prior `rating: 🦞 diamond lobster`\./,
+    labelDetails,
+    /- `rating: 🦪 silver shellfish`: Overall readiness is 🦪 silver shellfish; proof is 🦪 silver shellfish and patch quality is 🦞 diamond lobster\. Replaced prior `rating: 🦞 diamond lobster`\./,
   );
 });
 
@@ -3434,7 +3596,7 @@ Full review comments:
 
   const comment = renderReviewCommentFromReport(report, "none");
 
-  assert.match(comment, /\*\*PR rating\*\*\nOverall: 🦀 challenger crab/);
+  assert.match(comment, /\*\*Merge readiness\*\*\nOverall: 🦀 challenger crab/);
   assert.match(comment, /Proof: 🦀 challenger crab ✨ media proof bonus/);
   assert.match(comment, /Shiny media proof means a screenshot, video, or linked artifact/);
   assert.doesNotMatch(comment, /Rank-up moves:/);
@@ -3500,7 +3662,7 @@ Full review comments:
   const eggComment = renderPrEggCommentForTest(74470, report);
 
   assert.doesNotMatch(comment, /\*\*PR egg\*\*/);
-  assert.match(comment, /\*\*Real behavior proof\*\*/);
+  assert.match(comment, /\*\*Merge readiness\*\*/);
   assert.match(eggComment, /ClawSweeper PR egg/);
   assert.match(eggComment, /🎁 Pass real behavior proof/);
   assert.match(eggComment, /wake the egg and unlock a hatchable treat/);
@@ -4359,8 +4521,8 @@ Full review comments:
   const comment = renderReviewCommentFromReport(report, "none");
   const markers = reviewAutomationMarkersFromReport(report);
 
-  assert.match(comment, /\*\*Real behavior proof\*\*\nNot applicable:/);
-  assert.match(comment, /only changes files under docs\//);
+  assert.match(comment, /\*\*Merge readiness\*\*/);
+  assert.match(comment, /Proof: 🌊 off-meta tidepool/);
   assert.match(markers, /clawsweeper-verdict:pass/);
   assert.doesNotMatch(markers, /clawsweeper-verdict:needs-human/);
 });
@@ -4543,7 +4705,7 @@ Full review comments:
   const markers = reviewAutomationMarkersFromReport(report);
 
   assert.match(comment, /Codex review: needs real behavior proof before merge\./);
-  assert.match(comment, /\*\*Real behavior proof\*\*/);
+  assert.match(comment, /\*\*Merge readiness\*\*/);
   assert.match(comment, /terminal screenshots, console output, copied live output/);
   assert.match(comment, /update the PR body; ClawSweeper should re-review automatically/);
   assert.match(comment, /@clawsweeper re-review/);
@@ -9119,7 +9281,7 @@ Reason: ${duplicateRisk}
   assert.equal(comment.split(duplicateRisk).length - 1, 1);
 });
 
-test("OpenClaw pull request comments render PR surface before summary", () => {
+test("OpenClaw pull request comments render PR surface inside evidence details", () => {
   const comment = renderReviewCommentFromReport(
     `${reportFrontMatter({
       repository: "openclaw/openclaw",
@@ -9148,19 +9310,33 @@ Adds a small runtime change with tests and docs.
     "none",
   );
 
-  assert.match(
-    comment,
-    /\*\*PR Surface\*\*\nSource \+8, Tests \+6, Docs \+4\. Total \+18 across 3 files\./,
+  const evidenceDetails = detailsBody(comment, "Evidence reviewed");
+  const visibleBeforeEvidence = comment.slice(
+    0,
+    comment.indexOf("<summary>Evidence reviewed</summary>"),
   );
-  assert.match(comment, /<summary>View PR surface stats<\/summary>/);
+
   assert.match(
-    comment,
+    visibleBeforeEvidence,
+    /PR surface: Source \+8, Tests \+6, Docs \+4\. Total \+18 across 3 files\./,
+  );
+  assert.doesNotMatch(visibleBeforeEvidence, /<summary>View PR surface stats<\/summary>/);
+  assert.doesNotMatch(
+    visibleBeforeEvidence,
+    /\| \*\*Total\*\* \| \*\*3\*\* \| \*\*21\*\* \| \*\*3\*\* \| \*\*\+18\*\* \|/,
+  );
+  assert.match(
+    evidenceDetails,
+    /PR surface:\n\nSource \+8, Tests \+6, Docs \+4\. Total \+18 across 3 files\./,
+  );
+  assert.match(evidenceDetails, /<summary>View PR surface stats<\/summary>/);
+  assert.match(
+    evidenceDetails,
     /\| \*\*Total\*\* \| \*\*3\*\* \| \*\*21\*\* \| \*\*3\*\* \| \*\*\+18\*\* \|/,
   );
   assert.match(comment, /\*\*Review metrics:\*\* none identified\./);
-  assert.ok(comment.indexOf("**PR Surface**") < comment.indexOf("**Summary**"));
-  assert.ok(comment.indexOf("**PR Surface**") < comment.indexOf("**Review metrics:**"));
-  assert.ok(comment.indexOf("**Review metrics:**") < comment.indexOf("**Summary**"));
+  assert.ok(comment.indexOf("PR surface:") < comment.indexOf("**Review metrics:**"));
+  assert.ok(comment.indexOf("**Review metrics:**") < comment.indexOf("**Merge readiness**"));
 });
 
 test("pull request comments render one review metric digest item", () => {
@@ -9244,8 +9420,8 @@ Adds configuration behavior and proof updates.
     /- \*\*Config\/default surfaces changed:\*\* 2 added, 1 changed, 0 removed\./,
   );
   assert.match(comment, /- \*\*Proof files affected:\*\* 3 files affected\./);
-  assert.ok(comment.indexOf("**PR Surface**") < comment.indexOf("**Review metrics:**"));
-  assert.ok(comment.indexOf("**Review metrics:**") < comment.indexOf("**Summary**"));
+  assert.ok(comment.indexOf("PR surface:") < comment.indexOf("**Review metrics:**"));
+  assert.ok(comment.indexOf("**Review metrics:**") < comment.indexOf("**Merge readiness**"));
 });
 
 test("PR surface is OpenClaw pull-request only", () => {
@@ -9280,8 +9456,8 @@ Keep this open.
     "none",
   );
 
-  assert.doesNotMatch(otherRepoComment, /\*\*PR Surface\*\*/);
-  assert.doesNotMatch(issueComment, /\*\*PR Surface\*\*/);
+  assert.doesNotMatch(otherRepoComment, /PR surface:/);
+  assert.doesNotMatch(issueComment, /PR surface:/);
 });
 
 function mergeRiskReviewComment({
@@ -10122,21 +10298,39 @@ test("review prompt reads maintainer notes before PR diffs", () => {
   assert.match(prompt, /do not publish raw internal note contents/);
 });
 
-test("review prompts read target AGENTS instructions before reviewing", () => {
+test("review prompts treat target AGENTS as optional review policy", () => {
   const itemPrompt = readFileSync("prompts/review-item.md", "utf8");
   const commitPrompt = readFileSync("prompts/review-commit.md", "utf8");
 
   for (const prompt of [itemPrompt, commitPrompt]) {
     assert.match(
       prompt,
-      /Before reviewing, read the target\s+repository's `AGENTS\.md` if present/,
+      /Before reviewing, read the target\s+repository's full `AGENTS\.md` file if present/,
     );
-    assert.match(prompt, /follow its repository-specific\s+instructions/);
+    assert.match(prompt, /Do not rely only on search\s+snippets/);
     assert.match(
       prompt,
-      /do not conflict with this prompt or higher-priority\s+system\/developer instructions/,
+      /`head` output, local excerpts, partial line ranges, or truncated\s+copies/,
     );
+    assert.match(prompt, /optional\s+repository-authored\s+review policy and review guidance/);
+    assert.match(
+      prompt,
+      /do not conflict with this prompt or higher-priority\s+system\/developer\s+instructions/,
+    );
+    assert.match(prompt, /existing repository\s+profiles and owner\/default fallback behavior/);
+    assert.match(prompt, /Use target `AGENTS\.md` policy as review input/);
   }
+
+  assert.match(itemPrompt, /report it through `reviewFindings`/);
+  assert.match(
+    itemPrompt,
+    /route the\s+concern through the existing `risks`, `bestSolution`, `solutionAssessment`, or\s+`workReason` fields/,
+  );
+  assert.match(
+    commitPrompt,
+    /Report an AGENTS-policy conflict only when the commit creates a\s+concrete bug/,
+  );
+  assert.match(commitPrompt, /keep it out of `result: findings`/);
 });
 
 test("review prompt requires a dedicated securityReview section", () => {
