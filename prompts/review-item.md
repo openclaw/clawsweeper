@@ -177,6 +177,17 @@ otherwise set it to an empty string. `automergeInstruction` must be only the
 special-instructions payload. Do not include a bot mention or command such as
 `@clawsweeper automerge`, `@clawsweeper autofix`, or `this PR:`.
 
+Fill `reviewMetrics` with concise quantified PR review facts only when they are
+useful, concrete, maintainer-relevant, and grounded in the diff, current
+behavior, repository policy, or discussion. Use `reviewMetrics: []` for issues
+and ordinary PRs where no top-level metric would help maintainers. Each metric
+must have `label`, `value`, and `reason`. The `value` should contain the count
+or measured/change summary when practical, such as `2 added, 1 changed, 0
+removed`, `1 workflow changed`, or `3 files affected`. The `reason` should
+briefly explain why that measured fact matters before merge. Do not use vague
+labels or values, and do not restate full `risks`, `bestSolution`,
+`mergeRiskOptions`, or label rationale in `reviewMetrics`.
+
 Fill `labelJustifications` with one object for every selected ClawSweeper-managed
 label. Include the selected `triagePriority` unless it is `none`, every selected
 `impactLabels` entry, and every selected `mergeRiskLabels` entry. Do not include
@@ -668,6 +679,11 @@ explain why the risk matters in `risks`, and fill `mergeRiskOptions` with
 decision-useful maintainer options. Use `mergeRiskOptions: []` whenever
 `mergeRiskLabels` is empty. Avoid making ClawSweeper sound more certain than the
 evidence supports.
+
+Always fill `reviewMetrics`. Use `[]` unless a PR has concise quantified facts
+that are useful near the top of the report. Good metrics name the measured
+surface, provide a concrete count or change summary, and explain why maintainers
+should notice it before merge.
 
 Always fill `labelJustifications` too. There must be exactly one justification
 for each selected triage priority label, impact label, and merge-risk label, and

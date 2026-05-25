@@ -364,6 +364,12 @@ interface LabelTransitionJustification {
   reason: string;
 }
 
+interface ReviewMetric {
+  label: string;
+  value: string;
+  reason: string;
+}
+
 interface ReviewCommentRenderOptions {
   prStatusKind?: PrStatusLabelKind | null;
   previousLabels?: readonly string[];
@@ -384,6 +390,7 @@ interface Decision {
   impactLabels: ImpactLabelName[];
   mergeRiskLabels: MergeRiskLabelName[];
   mergeRiskOptions: MergeRiskOption[];
+  reviewMetrics: ReviewMetric[];
   labelJustifications: LabelJustification[];
   itemCategory: ItemCategory;
   reproductionStatus: ReproductionStatus;
@@ -1330,6 +1337,7 @@ const DECISION_SCHEMA_KEYS = new Set([
   "impactLabels",
   "mergeRiskLabels",
   "mergeRiskOptions",
+  "reviewMetrics",
   "labelJustifications",
   "itemCategory",
   "reproductionStatus",
@@ -1396,6 +1404,7 @@ const MERGE_RISK_OPTION_SCHEMA_KEYS = new Set([
   "recommended",
   "automergeInstruction",
 ]);
+const REVIEW_METRIC_SCHEMA_KEYS = new Set(["label", "value", "reason"]);
 const LABEL_JUSTIFICATION_SCHEMA_KEYS = new Set(["label", "reason"]);
 const SECURITY_CONCERN_SCHEMA_KEYS = new Set([
   "title",
@@ -1943,6 +1952,25 @@ function requireMergeRiskOptions(value: unknown): MergeRiskOption[] {
   return options;
 }
 
+function parseReviewMetric(value: unknown, path: string): ReviewMetric {
+  const record = requireRecord(value, path);
+  rejectUnexpectedKeys(record, REVIEW_METRIC_SCHEMA_KEYS, path);
+  const metric = {
+    label: requireString(record.label, `${path}.label`).trim(),
+    value: requireString(record.value, `${path}.value`).trim(),
+    reason: requireString(record.reason, `${path}.reason`).trim(),
+  };
+  if (!metric.label) throw new Error(`${path}.label must not be empty`);
+  if (!metric.value) throw new Error(`${path}.value must not be empty`);
+  if (!metric.reason) throw new Error(`${path}.reason must not be empty`);
+  return metric;
+}
+
+function requireReviewMetrics(value: unknown): ReviewMetric[] {
+  if (!Array.isArray(value)) throw new Error("decision.reviewMetrics must be an array");
+  return value.map((entry, index) => parseReviewMetric(entry, `decision.reviewMetrics[${index}]`));
+}
+
 function validateMergeRiskOptions(
   decision: Pick<Decision, "mergeRiskLabels" | "mergeRiskOptions">,
 ): void {
@@ -2259,6 +2287,7 @@ export function parseDecision(value: unknown, item?: DecisionNormalizationItem):
     impactLabels: requireImpactLabels(record.impactLabels),
     mergeRiskLabels: requireMergeRiskLabels(record.mergeRiskLabels),
     mergeRiskOptions: requireMergeRiskOptions(record.mergeRiskOptions),
+    reviewMetrics: requireReviewMetrics(record.reviewMetrics),
     labelJustifications: requireLabelJustifications(record.labelJustifications),
     itemCategory: requireEnum(record.itemCategory, ITEM_CATEGORIES, "decision.itemCategory"),
     reproductionStatus: requireEnum(
@@ -5663,6 +5692,7 @@ function codexFailureDecision(status: number | null, stderr: string, stdout = ""
     impactLabels: [],
     mergeRiskLabels: [],
     mergeRiskOptions: [],
+    reviewMetrics: [],
     labelJustifications: [],
     itemCategory: "unclear",
     reproductionStatus: "unclear",
@@ -8611,6 +8641,28 @@ function renderOpenClawPrSurfaceFromReport(markdown: string): string {
   return details ? `${summary}\n\n${details}` : summary;
 }
 
+function reviewMetricsFromReport(markdown: string): ReviewMetric[] {
+  return frontMatterJsonArray(markdown, "review_metrics")
+    .map((entry) => {
+      const metric = asRecord(entry);
+      const label = typeof metric.label === "string" ? metric.label.trim() : "";
+      const value = typeof metric.value === "string" ? metric.value.trim() : "";
+      const reason = typeof metric.reason === "string" ? metric.reason.trim() : "";
+      if (!label || !value || !reason) return null;
+      return { label, value, reason };
+    })
+    .filter((entry): entry is ReviewMetric => Boolean(entry));
+}
+
+function renderReviewMetricsDigest(metrics: readonly ReviewMetric[]): string {
+  if (metrics.length === 0) return "**Review metrics:** none identified.";
+  const noun = metrics.length === 1 ? "metric" : "metrics";
+  return [
+    `**Review metrics:** ${metrics.length} noteworthy ${noun}.`,
+    ...metrics.map((metric) => `- **${metric.label}:** ${metric.value}. ${metric.reason}`),
+  ].join("\n");
+}
+
 function isDocsPath(file: string): boolean {
   return file.startsWith("docs/");
 }
@@ -9651,6 +9703,7 @@ function reportDecision(markdown: string, closeReason: CloseReason): Decision {
     impactLabels,
     mergeRiskLabels,
     mergeRiskOptions: mergeRiskOptionsFromReport(markdown),
+    reviewMetrics: reviewMetricsFromReport(markdown),
     labelJustifications: labelJustificationsFromReport(markdown, {
       triagePriority,
       impactLabels,
@@ -10934,6 +10987,7 @@ function renderKeepOpenCommentFromReport(
   const solutionAssessment = reviewSectionValue(markdown, "solutionAssessment");
   const risks = reviewSectionValue(markdown, "risks");
   const mergeRiskOptions = mergeRiskOptionsFromReport(markdown);
+  const reviewMetrics = reviewMetricsFromReport(markdown);
   const workReason = reportWorkCandidateReason(markdown);
   const workCandidate = frontMatterValue(markdown, "work_candidate");
   const validation = frontMatterStringArray(markdown, "work_validation")
@@ -10972,6 +11026,7 @@ function renderKeepOpenCommentFromReport(
   ];
   const prSurface = renderOpenClawPrSurfaceFromReport(markdown);
   if (prSurface) appendPublicSection(lines, "PR Surface", prSurface);
+  if (isPullRequest) lines.push(renderReviewMetricsDigest(reviewMetrics), "");
   if (isPullRequest) {
     appendPublicSection(
       lines,
@@ -12145,6 +12200,7 @@ triage_priority: ${options.decision.triagePriority}
 impact_labels: ${jsonFrontMatterValue(options.decision.impactLabels)}
 merge_risk_labels: ${jsonFrontMatterValue(options.decision.mergeRiskLabels)}
 merge_risk_options: ${JSON.stringify(options.decision.mergeRiskOptions)}
+review_metrics: ${JSON.stringify(options.decision.reviewMetrics)}
 label_justifications: ${JSON.stringify(options.decision.labelJustifications)}
 pull_files: ${jsonFrontMatterValue(pullFiles)}
 pull_files_truncated: ${pullFilesTruncated}

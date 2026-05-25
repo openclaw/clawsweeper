@@ -16,6 +16,7 @@
     "impactLabels",
     "mergeRiskLabels",
     "mergeRiskOptions",
+    "reviewMetrics",
     "labelJustifications",
     "itemCategory",
     "reproductionStatus",
@@ -234,6 +235,29 @@
         }
       },
       "description": "Risk-specific maintainer options for the Risk before merge section. Use [] when mergeRiskLabels is []. When mergeRiskLabels is non-empty, provide 1-3 prose-first options. Do not use a fixed menu: tailor titles and bodies to this PR. Mark at most one option recommended, and only when evidence supports a clear best path. Include pause_or_close when the PR may not be worth the risk. Put only the special-instructions payload in automergeInstruction for a recommended fix_before_merge option suitable for automation; do not include @clawsweeper automerge, @clawsweeper autofix, or this PR command text."
+    },
+    "reviewMetrics": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["label", "value", "reason"],
+        "properties": {
+          "label": {
+            "type": "string",
+            "description": "Short maintainer-facing metric name."
+          },
+          "value": {
+            "type": "string",
+            "description": "Concrete count or measured change summary, such as 2 added, 1 changed, 0 removed; 1 workflow changed; or 3 files affected."
+          },
+          "reason": {
+            "type": "string",
+            "description": "One concise sentence explaining why this measured fact matters to maintainers before merge."
+          }
+        }
+      },
+      "description": "Concise quantified PR review facts for the top-level Review metrics digest. Emit [] unless a metric is useful, concrete, maintainer-relevant, and grounded in the diff, current behavior, repository policy, or discussion. Do not use vague metric labels or values."
     },
     "labelJustifications": {
       "type": "array",

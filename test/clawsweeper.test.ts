@@ -193,6 +193,7 @@ function closeDecision(overrides = {}) {
     impactLabels: [],
     mergeRiskLabels: [],
     mergeRiskOptions: [],
+    reviewMetrics: [],
     labelJustifications: [
       {
         label: "P2",
@@ -9133,6 +9134,7 @@ test("OpenClaw pull request comments render PR surface before summary", () => {
         { path: "docs/usage.md", additions: 4, deletions: 0 },
       ]),
       pr_surface_files_truncated: "false",
+      review_metrics: JSON.stringify([]),
     })}
 
 ## Summary
@@ -9155,7 +9157,95 @@ Adds a small runtime change with tests and docs.
     comment,
     /\| \*\*Total\*\* \| \*\*3\*\* \| \*\*21\*\* \| \*\*3\*\* \| \*\*\+18\*\* \|/,
   );
+  assert.match(comment, /\*\*Review metrics:\*\* none identified\./);
   assert.ok(comment.indexOf("**PR Surface**") < comment.indexOf("**Summary**"));
+  assert.ok(comment.indexOf("**PR Surface**") < comment.indexOf("**Review metrics:**"));
+  assert.ok(comment.indexOf("**Review metrics:**") < comment.indexOf("**Summary**"));
+});
+
+test("pull request comments render one review metric digest item", () => {
+  const comment = renderReviewCommentFromReport(
+    `${reportFrontMatter({
+      repository: "openclaw/openclaw",
+      type: "pull_request",
+      number: "12345",
+      decision: "keep_open",
+      close_reason: "none",
+      work_candidate: "none",
+      review_metrics: JSON.stringify([
+        {
+          label: "Workflow surfaces changed",
+          value: "1 workflow changed",
+          reason:
+            "The PR changes repository automation behavior that maintainers should review before merge.",
+        },
+      ]),
+    })}
+
+## Summary
+
+Keep this PR open for maintainer review.
+
+## What This Changes
+
+Updates repository automation.
+`,
+    "none",
+  );
+
+  assert.match(comment, /\*\*Review metrics:\*\* 1 noteworthy metric\./);
+  assert.match(
+    comment,
+    /- \*\*Workflow surfaces changed:\*\* 1 workflow changed\. The PR changes repository automation behavior that maintainers should review before merge\./,
+  );
+});
+
+test("pull request comments render multiple review metric digest items near PR surface", () => {
+  const comment = renderReviewCommentFromReport(
+    `${reportFrontMatter({
+      repository: "openclaw/openclaw",
+      type: "pull_request",
+      number: "12345",
+      decision: "keep_open",
+      close_reason: "none",
+      work_candidate: "none",
+      pr_surface_files: JSON.stringify([{ path: "src/runtime.ts", additions: 10, deletions: 2 }]),
+      pr_surface_files_truncated: "false",
+      review_metrics: JSON.stringify([
+        {
+          label: "Config/default surfaces changed",
+          value: "2 added, 1 changed, 0 removed",
+          reason:
+            "The PR introduces user-facing configuration behavior that maintainers should review before merge.",
+        },
+        {
+          label: "Proof files affected",
+          value: "3 files affected",
+          reason:
+            "The PR touches proof-related code where green unit tests do not cover every runtime path.",
+        },
+      ]),
+    })}
+
+## Summary
+
+Keep this PR open for maintainer review.
+
+## What This Changes
+
+Adds configuration behavior and proof updates.
+`,
+    "none",
+  );
+
+  assert.match(comment, /\*\*Review metrics:\*\* 2 noteworthy metrics\./);
+  assert.match(
+    comment,
+    /- \*\*Config\/default surfaces changed:\*\* 2 added, 1 changed, 0 removed\./,
+  );
+  assert.match(comment, /- \*\*Proof files affected:\*\* 3 files affected\./);
+  assert.ok(comment.indexOf("**PR Surface**") < comment.indexOf("**Review metrics:**"));
+  assert.ok(comment.indexOf("**Review metrics:**") < comment.indexOf("**Summary**"));
 });
 
 test("PR surface is OpenClaw pull-request only", () => {
@@ -9805,6 +9895,38 @@ test("decision parser enforces required schema-shaped evidence", () => {
     }).mergeRiskOptions.length,
     0,
   );
+  assert.deepEqual(
+    parseDecision({
+      ...closeDecision(),
+      reviewMetrics: [
+        {
+          label: "Files affected",
+          value: "3 files affected",
+          reason: "The PR touches enough files that maintainers should scan the changed surface.",
+        },
+      ],
+    }).reviewMetrics,
+    [
+      {
+        label: "Files affected",
+        value: "3 files affected",
+        reason: "The PR touches enough files that maintainers should scan the changed surface.",
+      },
+    ],
+  );
+  assert.throws(() => {
+    const decision = closeDecision();
+    delete decision.reviewMetrics;
+    return parseDecision(decision);
+  }, /decision\.reviewMetrics must be an array/);
+  assert.throws(
+    () =>
+      parseDecision({
+        ...closeDecision(),
+        reviewMetrics: [{ label: "Files affected", value: "3 files affected" }],
+      }),
+    /decision\.reviewMetrics\[0\]\.reason/,
+  );
   assert.throws(
     () =>
       parseDecision({
@@ -9977,6 +10099,18 @@ test("review prompt routes PR likely owners through feature history", () => {
   assert.match(prompt, /Do\s+not use `maintainer` as a likely-owner role/);
   assert.match(prompt, /Do not include email\s+addresses in `likelyOwners`/);
   assert.match(prompt, /use names without email addresses/);
+});
+
+test("review prompt describes concrete review metrics without vague examples", () => {
+  const prompt = readFileSync("prompts/review-item.md", "utf8");
+
+  assert.match(prompt, /Always fill `reviewMetrics`/);
+  assert.match(prompt, /useful, concrete, maintainer-relevant/);
+  assert.match(prompt, /2 added, 1 changed, 0\s+removed/);
+  assert.match(prompt, /Do not use vague\s+labels or values/);
+  assert.doesNotMatch(prompt, /Risky change/);
+  assert.doesNotMatch(prompt, /Some changes/);
+  assert.doesNotMatch(prompt, /This seems risky/);
 });
 
 test("review prompt reads maintainer notes before PR diffs", () => {
