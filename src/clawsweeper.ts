@@ -107,6 +107,12 @@ type ReproductionStatus =
   | "unclear"
   | "not_applicable";
 type OverallCorrectness = "patch is correct" | "patch is incorrect" | "not a patch";
+type AgentsPolicyStatusKind =
+  | "found_applied"
+  | "found_not_applicable"
+  | "not_found"
+  | "conflict_not_applied"
+  | "unreadable_or_unclear";
 type SecurityReviewStatus = "cleared" | "needs_attention" | "not_applicable";
 type SecurityConcernSeverity = "high" | "medium" | "low";
 type RealBehaviorProofStatus =
@@ -398,6 +404,7 @@ interface Decision {
   visionFitEvidence: string[];
   implementationComplexity: ImplementationComplexity;
   autoImplementationCandidate: AutoImplementationCandidate;
+  agentsPolicyStatus: AgentsPolicyStatus;
   reviewFindings: ReviewFinding[];
   securityReview: SecurityReview;
   realBehaviorProof: RealBehaviorProof;
@@ -420,6 +427,14 @@ interface Decision {
   workClusterRefs: string[];
   workValidation: string[];
   workLikelyFiles: string[];
+}
+
+interface AgentsPolicyStatus {
+  found: boolean;
+  readFully: boolean;
+  applied: boolean;
+  status: AgentsPolicyStatusKind;
+  summary: string;
 }
 
 interface ItemContext {
@@ -1311,6 +1326,13 @@ const OVERALL_CORRECTNESS_VALUES = new Set<OverallCorrectness>([
 
 type ReviewArtifactDestination = "items" | "closed" | "skip_closed";
 const CONFIDENCES = new Set<Confidence>(["high", "medium", "low"]);
+const AGENTS_POLICY_STATUSES = new Set<AgentsPolicyStatusKind>([
+  "found_applied",
+  "found_not_applicable",
+  "not_found",
+  "conflict_not_applied",
+  "unreadable_or_unclear",
+]);
 const MERGE_RISK_OPTION_CATEGORIES = new Set<MergeRiskOptionCategory>([
   "fix_before_merge",
   "accept_risk",
@@ -1344,6 +1366,7 @@ const DECISION_SCHEMA_KEYS = new Set([
   "visionFitEvidence",
   "implementationComplexity",
   "autoImplementationCandidate",
+  "agentsPolicyStatus",
   "reviewFindings",
   "securityReview",
   "realBehaviorProof",
@@ -1389,6 +1412,13 @@ const MANTIS_RECOMMENDATION_SCHEMA_KEYS = new Set([
   "maintainerComment",
 ]);
 const FEATURE_SHOWCASE_SCHEMA_KEYS = new Set(["status", "reason"]);
+const AGENTS_POLICY_STATUS_SCHEMA_KEYS = new Set([
+  "found",
+  "readFully",
+  "applied",
+  "status",
+  "summary",
+]);
 const MERGE_RISK_OPTION_SCHEMA_KEYS = new Set([
   "title",
   "body",
@@ -1436,6 +1466,7 @@ const REVIEW_SECTIONS = {
   telegramVisibleProof: "Telegram Visible Proof",
   mantisRecommendation: "Mantis Recommendation",
   featureShowcase: "Feature Showcase",
+  agentsPolicyStatus: "AGENTS.md Policy Status",
   workCandidate: "Work Candidate",
   repairWorkPrompt: "Repair Work Prompt",
   evidence: "Evidence",
@@ -2211,6 +2242,18 @@ function parseFeatureShowcase(value: unknown, path: string): FeatureShowcase {
   };
 }
 
+function parseAgentsPolicyStatus(value: unknown, path: string): AgentsPolicyStatus {
+  const record = requireRecord(value, path);
+  rejectUnexpectedKeys(record, AGENTS_POLICY_STATUS_SCHEMA_KEYS, path);
+  return {
+    found: requireBoolean(record.found, `${path}.found`),
+    readFully: requireBoolean(record.readFully, `${path}.readFully`),
+    applied: requireBoolean(record.applied, `${path}.applied`),
+    status: requireEnum(record.status, AGENTS_POLICY_STATUSES, `${path}.status`),
+    summary: requireString(record.summary, `${path}.summary`),
+  };
+}
+
 function requireEnum<T extends string>(value: unknown, allowed: Set<T>, path: string): T {
   if (typeof value === "string" && allowed.has(value as T)) return value as T;
   throw new Error(`${path} has invalid value`);
@@ -2297,6 +2340,10 @@ export function parseDecision(value: unknown, item?: DecisionNormalizationItem):
       record.autoImplementationCandidate,
       AUTO_IMPLEMENTATION_CANDIDATES,
       "decision.autoImplementationCandidate",
+    ),
+    agentsPolicyStatus: parseAgentsPolicyStatus(
+      record.agentsPolicyStatus,
+      "decision.agentsPolicyStatus",
     ),
     reviewFindings,
     securityReview: parseSecurityReview(record.securityReview, "decision.securityReview"),
@@ -5728,6 +5775,13 @@ function codexFailureDecision(status: number | null, stderr: string, stdout = ""
     visionFitEvidence: [],
     implementationComplexity: "not_applicable",
     autoImplementationCandidate: "none",
+    agentsPolicyStatus: {
+      found: false,
+      readFully: false,
+      applied: false,
+      status: "unreadable_or_unclear",
+      summary: "AGENTS.md policy status was not assessed because the Codex review failed.",
+    },
     reviewFindings: [],
     securityReview: {
       status: "not_applicable",
@@ -7728,6 +7782,39 @@ function reportFeatureShowcase(markdown: string): FeatureShowcase {
       (status === "showcase"
         ? "This report predates the structured feature showcase reason."
         : "No feature showcase assessment was recorded in this report."),
+  };
+}
+
+function reportAgentsPolicyStatus(markdown: string): AgentsPolicyStatus | undefined {
+  const section = reviewSectionValue(markdown, "agentsPolicyStatus");
+  const statusValue =
+    sectionLineValue(section, "Status") ?? frontMatterValue(markdown, "agents_policy_status");
+  if (!AGENTS_POLICY_STATUSES.has(statusValue as AgentsPolicyStatusKind)) return undefined;
+  const status = statusValue as AgentsPolicyStatusKind;
+  return {
+    found: /^true$/i.test(sectionLineValue(section, "Found") ?? ""),
+    readFully: /^true$/i.test(sectionLineValue(section, "Read fully") ?? ""),
+    applied: /^true$/i.test(sectionLineValue(section, "Applied") ?? ""),
+    status,
+    summary:
+      sectionLineValue(section, "Summary") ??
+      agentsPolicyStatusLine({
+        found: false,
+        readFully: false,
+        applied: false,
+        status,
+        summary: "",
+      }),
+  };
+}
+
+function defaultAgentsPolicyStatus(): AgentsPolicyStatus {
+  return {
+    found: false,
+    readFully: false,
+    applied: false,
+    status: "unreadable_or_unclear",
+    summary: "AGENTS.md policy status was not recorded in this report.",
   };
 }
 
@@ -9751,6 +9838,7 @@ function reportDecision(markdown: string, closeReason: CloseReason): Decision {
     reproductionAssessment: reviewSectionValue(markdown, "reproductionAssessment"),
     solutionAssessment: reviewSectionValue(markdown, "solutionAssessment"),
     ...visionFit,
+    agentsPolicyStatus: reportAgentsPolicyStatus(markdown) ?? defaultAgentsPolicyStatus(),
     reviewFindings: reportReviewFindings(markdown),
     securityReview: reportSecurityReview(markdown),
     realBehaviorProof: reportRealBehaviorProof(markdown),
@@ -10665,6 +10753,7 @@ function renderCloseComment(options: {
   bestSolution?: string;
   reproductionAssessment?: string;
   solutionAssessment?: string;
+  agentsPolicyStatus?: AgentsPolicyStatus | undefined;
   evidence: Evidence[];
   likelyOwners?: LikelyOwner[];
   fixedPullRequest?: FixedPullRequest | null;
@@ -10710,6 +10799,8 @@ function renderCloseComment(options: {
       details.push("", ...options.securityReview.concerns.map(securityConcernDetailedLine));
     }
   }
+  const agentsPolicyLine = agentsPolicyStatusLine(options.agentsPolicyStatus);
+  if (agentsPolicyLine) details.push("", agentsPolicyLine);
   if (evidence.length) details.push("", "What I checked:", "", ...evidence);
   if (likelyOwners.length) details.push("", "Likely related people:", "", ...likelyOwners);
 
@@ -10730,6 +10821,7 @@ function renderCloseCommentFromReport(markdown: string, reason: CloseReason): st
       bestSolution: reviewSectionValue(markdown, "bestSolution"),
       reproductionAssessment: reviewSectionValue(markdown, "reproductionAssessment"),
       solutionAssessment: reviewSectionValue(markdown, "solutionAssessment"),
+      agentsPolicyStatus: reportAgentsPolicyStatus(markdown),
       evidence: reportEvidence(markdown),
       likelyOwners: reportLikelyOwners(markdown),
       fixedPullRequest: fixedPullRequestFromReport(markdown),
@@ -10783,6 +10875,7 @@ function normalizeComment(
     bestSolution: decision.bestSolution,
     reproductionAssessment: decision.reproductionAssessment,
     solutionAssessment: decision.solutionAssessment,
+    agentsPolicyStatus: decision.agentsPolicyStatus,
     evidence: decision.evidence,
     likelyOwners: decision.likelyOwners,
     fixedPullRequest: decision.fixedPullRequest ?? null,
@@ -10803,6 +10896,23 @@ function collapsedDetailsBlock(summary: string, lines: readonly string[]): strin
   const body = lines.join("\n").trim();
   if (!body) return "";
   return ["<details>", `<summary>${summary}</summary>`, "", body, "", "</details>"].join("\n");
+}
+
+function agentsPolicyStatusLine(status: AgentsPolicyStatus | undefined): string {
+  switch (status?.status) {
+    case "found_applied":
+      return "AGENTS.md: found and applied where relevant.";
+    case "found_not_applicable":
+      return "AGENTS.md: found, but no applicable review policy affected this item.";
+    case "not_found":
+      return "AGENTS.md: not found in the target repository.";
+    case "conflict_not_applied":
+      return "AGENTS.md: found but not applied because it conflicted with ClawSweeper's review contract.";
+    case "unreadable_or_unclear":
+      return "AGENTS.md: unclear because the file could not be read completely.";
+    default:
+      return "";
+  }
 }
 
 function appendPublicSection(lines: string[], heading: string, body: string): void {
@@ -11016,6 +11126,7 @@ function renderKeepOpenCommentFromReport(
   const realBehaviorProof = reportRealBehaviorProof(markdown);
   const prRating = reportPrRating(markdown);
   const mantisRecommendation = reportMantisRecommendation(markdown);
+  const agentsPolicyStatus = reportAgentsPolicyStatus(markdown);
   const summary = reviewSectionValue(markdown, "summary");
   const changeSummary = reviewSectionValue(markdown, "changeSummary");
   const bestSolution = reviewSectionValue(markdown, "bestSolution");
@@ -11140,6 +11251,10 @@ function renderKeepOpenCommentFromReport(
       "",
       ...securityReview.concerns.map(securityConcernDetailedLine),
     );
+  }
+  const agentsPolicyLine = agentsPolicyStatusLine(agentsPolicyStatus);
+  if (agentsPolicyLine) {
+    reviewDetails.push(...(reviewDetails.length ? [""] : []), agentsPolicyLine);
   }
   if (validation.length) {
     evidenceDetails.push(
@@ -12132,6 +12247,20 @@ function renderFeatureShowcaseReportSection(decision: Decision): string {
   ].join("\n");
 }
 
+function renderAgentsPolicyStatusReportSection(decision: Decision): string {
+  return [
+    `Status: ${decision.agentsPolicyStatus.status}`,
+    "",
+    `Found: ${decision.agentsPolicyStatus.found}`,
+    "",
+    `Read fully: ${decision.agentsPolicyStatus.readFully}`,
+    "",
+    `Applied: ${decision.agentsPolicyStatus.applied}`,
+    "",
+    `Summary: ${sentence(decision.agentsPolicyStatus.summary)}`,
+  ].join("\n");
+}
+
 export function pullRequestFilePathsFromContextForTest(context: {
   pullFiles?: unknown[];
 }): string[] {
@@ -12199,6 +12328,7 @@ function markdownFor(options: {
   const telegramVisibleProof = renderTelegramVisibleProofReportSection(options.decision);
   const mantisRecommendation = renderMantisRecommendationReportSection(options.decision);
   const featureShowcase = renderFeatureShowcaseReportSection(options.decision);
+  const agentsPolicyStatus = renderAgentsPolicyStatusReportSection(options.decision);
   const workCandidateSection = renderWorkCandidateReportSection(options.decision);
   const repairWorkPromptSection = renderRepairWorkPromptReportSection(options.decision);
   const pullFiles = pullRequestFilePathsFromContext(options.context);
@@ -12293,6 +12423,7 @@ telegram_visible_proof_status: ${options.decision.telegramVisibleProof.status}
 mantis_recommendation_status: ${options.decision.mantisRecommendation.status}
 mantis_recommendation_scenario: ${options.decision.mantisRecommendation.scenario}
 feature_showcase_status: ${options.decision.featureShowcase.status}
+agents_policy_status: ${options.decision.agentsPolicyStatus.status}
 ---
 
 # ${markdownLink(`#${options.item.number}: ${options.item.title}`, options.item.url)}
@@ -12386,6 +12517,10 @@ ${mantisRecommendation}
 ## ${REVIEW_SECTIONS.featureShowcase}
 
 ${featureShowcase}
+
+## ${REVIEW_SECTIONS.agentsPolicyStatus}
+
+${agentsPolicyStatus}
 
 ## ${REVIEW_SECTIONS.workCandidate}
 

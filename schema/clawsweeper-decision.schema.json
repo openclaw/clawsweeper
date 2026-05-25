@@ -30,6 +30,7 @@
     "visionFitEvidence",
     "implementationComplexity",
     "autoImplementationCandidate",
+    "agentsPolicyStatus",
     "reviewFindings",
     "securityReview",
     "realBehaviorProof",
@@ -342,6 +343,40 @@
       "type": "string",
       "enum": ["none", "strict_bug", "vision_fit"],
       "description": "Whether this issue should be eligible for automatic PR intake after review. Use strict_bug only for the existing reproduced-bug lane. Use vision_fit only for high-confidence, VISION.md-aligned, small, queue_fix_pr issue work with clear validation and no security/product-decision blocker. Otherwise use none."
+    },
+    "agentsPolicyStatus": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Structured status for the target repository AGENTS.md review policy check. Report whether AGENTS.md was found, read fully, and applied to this review without duplicating policy text.",
+      "required": ["found", "readFully", "applied", "status", "summary"],
+      "properties": {
+        "found": {
+          "type": "boolean",
+          "description": "True when a target repository AGENTS.md was found."
+        },
+        "readFully": {
+          "type": "boolean",
+          "description": "True only when the full target repository AGENTS.md was read, not a snippet or truncated copy."
+        },
+        "applied": {
+          "type": "boolean",
+          "description": "True when relevant AGENTS.md guidance affected the review."
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "found_applied",
+            "found_not_applicable",
+            "not_found",
+            "conflict_not_applied",
+            "unreadable_or_unclear"
+          ]
+        },
+        "summary": {
+          "type": "string",
+          "description": "One concise public-safe sentence summarizing the AGENTS.md policy status."
+        }
+      }
     },
     "reviewFindings": {
       "type": "array",

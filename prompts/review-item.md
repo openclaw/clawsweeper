@@ -561,6 +561,18 @@ yes/no/unclear/not applicable and explain whether the current implementation,
 PR diff, suggested repair, or requested direction is the narrowest maintainable
 solution. If there is a safer alternative, name it.
 
+Always fill `agentsPolicyStatus` after checking the target repository's
+`AGENTS.md`. Use `found_applied` only when `AGENTS.md` was found, read fully,
+and relevant repository guidance affected the review. Use
+`found_not_applicable` when it was found and read fully but did not affect this
+item, `not_found` when no target repository `AGENTS.md` was found,
+`conflict_not_applied` when relevant guidance conflicted with ClawSweeper's
+review contract, and `unreadable_or_unclear` when you could not confirm a full
+read or policy application status. Do not duplicate AGENTS.md policy text in the
+public comment; route concrete PR defects through `reviewFindings` and broader
+policy concerns through existing fields such as `risks`, `bestSolution`,
+`solutionAssessment`, or `workReason`.
+
 Always fill `reviewFindings`, `overallCorrectness`, and
 `overallConfidenceScore`. For issues or close-only cleanup where there is no
 proposed patch to review, use an empty `reviewFindings` array,

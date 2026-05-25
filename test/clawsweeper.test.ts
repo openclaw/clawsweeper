@@ -214,6 +214,13 @@ function closeDecision(overrides = {}) {
     visionFitEvidence: [],
     implementationComplexity: "not_applicable",
     autoImplementationCandidate: "none",
+    agentsPolicyStatus: {
+      found: true,
+      readFully: true,
+      applied: true,
+      status: "found_applied",
+      summary: "Found AGENTS.md and applied relevant repository review guidance.",
+    },
     reviewFindings: [],
     securityReview: {
       status: "not_applicable",
@@ -1290,6 +1297,37 @@ test("close comments suppress duplicate best solution text", () => {
 
   assert.equal(action.actionTaken, "proposed_close");
   assert.doesNotMatch(action.closeComment, /Best possible solution:/);
+});
+
+test("review details show applied AGENTS.md policy status", () => {
+  const action = reviewActionForDecision({
+    item: item(),
+    decision: closeDecision(),
+    git,
+  });
+
+  assert.equal(action.actionTaken, "proposed_close");
+  assert.match(action.closeComment, /<summary>Review details<\/summary>/);
+  assert.match(action.closeComment, /AGENTS\.md: found and applied where relevant\./);
+});
+
+test("review details show missing AGENTS.md policy status", () => {
+  const action = reviewActionForDecision({
+    item: item(),
+    decision: closeDecision({
+      agentsPolicyStatus: {
+        found: false,
+        readFully: false,
+        applied: false,
+        status: "not_found",
+        summary: "No target repository AGENTS.md was found.",
+      },
+    }),
+    git,
+  });
+
+  assert.equal(action.actionTaken, "proposed_close");
+  assert.match(action.closeComment, /AGENTS\.md: not found in the target repository\./);
 });
 
 test("likely owner commit links ignore non-sha values", () => {
@@ -2608,6 +2646,18 @@ Not applicable. This is a test-only PR and the validation path is the targeted t
 
 Yes. Landing the focused regression test after the targeted lane is green is the narrowest useful path.
 
+## AGENTS.md Policy Status
+
+Status: found_applied
+
+Found: true
+
+Read fully: true
+
+Applied: true
+
+Summary: Found AGENTS.md and applied relevant repository review guidance.
+
 ## Work Candidate
 
 Candidate: none
@@ -2680,6 +2730,14 @@ Reason: Maintainers should review the tests after the targeted lane is green.
   assert.match(
     comment,
     /Is this the best way to solve the issue\?\n\nYes\. Landing the focused regression test/,
+  );
+  assert.match(
+    detailsBody(comment, "Review details"),
+    /AGENTS\.md: found and applied where relevant\./,
+  );
+  assert.doesNotMatch(
+    detailsBody(comment, "Evidence reviewed"),
+    /AGENTS\.md: found and applied where relevant\./,
   );
   assert.ok(
     comment.indexOf("Is this the best way to solve the issue?") <
