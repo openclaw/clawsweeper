@@ -1607,7 +1607,7 @@ function renderIssueImplementationRefusal(reason: string) {
 }
 
 function isHardIssueImplementationBlocker(reason: string) {
-  return /\b(?:security|protected label|locked|closed|not open|open issue|pull request|pr reference|references a pr|has a pr|open pr|existing .*pr|already .*pr|unsupported target repo|no usable request|missing repair work prompt)\b/i.test(
+  return /\b(?:security|protected label|locked|closed|not open|open issue|pull request|pr reference|references a pr|has a pr|open pr|existing .*pr|already .*pr|unsupported target repo|report repository is|no usable request|missing repair work prompt)\b/i.test(
     reason,
   );
 }

@@ -2584,6 +2584,7 @@ function classifyIssueTarget(issue: LooseRecord, issueNumber: JsonValue): JsonVa
   const implementationCluster = issueImplementationClusterId(targetRepo, issueNumber);
   const implementationPath = issueImplementationJobPath(targetRepo, issueNumber);
   const jobPath = existingJobPath(implementationCluster, targetRepo);
+  const linkedOpenPrs = issueLinkedOpenPrReferences(issue, issueNumber);
   return {
     kind: "issue",
     state: issue.state ?? null,
@@ -2593,10 +2594,44 @@ function classifyIssueTarget(issue: LooseRecord, issueNumber: JsonValue): JsonVa
     labels: (issue.labels ?? []).map((item: JsonValue) => item.name ?? item),
     cluster_id: jobPath ? implementationCluster : null,
     job_path: jobPath,
+    open_prs: linkedOpenPrs,
     issue_implementation_cluster_id: implementationCluster,
     issue_implementation_job_path: jobPath ?? implementationPath,
     mode: jobPath ? dispatchMode(jobPath) : "autonomous",
   };
+}
+
+function issueLinkedOpenPrReferences(issue: LooseRecord, issueNumber: JsonValue) {
+  const refs = new Set<number>();
+  const comments = issueCommentsFor(issueNumber).map((comment) => comment.body);
+  for (const text of [issue.title, issue.body, ...comments]) {
+    addPullRequestReferenceNumbersFromText(refs, text);
+  }
+  const current = Number(issueNumber);
+  return [...refs]
+    .filter((number) => Number.isFinite(number) && number !== current)
+    .filter((number) => {
+      try {
+        const linked = fetchIssue(number);
+        return Boolean(linked.pull_request) && String(linked.state ?? "").toLowerCase() === "open";
+      } catch {
+        return true;
+      }
+    })
+    .map((number) => `#${number}`);
+}
+
+function addPullRequestReferenceNumbersFromText(numbers: Set<number>, text: JsonValue) {
+  const value = String(text ?? "");
+  if (!value) return;
+  const urlPattern = new RegExp(
+    `https://github\\.com/${escapeRegExp(targetRepo)}/pull/(\\d+)`,
+    "gi",
+  );
+  for (const match of value.matchAll(urlPattern)) numbers.add(Number(match[1]));
+  for (const match of value.matchAll(/\b(?:pr|pull request)\s+#(\d+)\b/gi)) {
+    numbers.add(Number(match[1]));
+  }
 }
 
 function classifyPullTarget(pull: LooseRecord, issueNumber: JsonValue): JsonValue {

@@ -740,6 +740,7 @@ test("renderIssueImplementationJob records maintainer build override metadata", 
 test("issue implementation blocker classifier treats linked PR evidence as hard", () => {
   assert.equal(issueImplementationBlockerClass("open PR already mentions this issue"), "hard");
   assert.equal(issueImplementationBlockerClass("work cluster references a PR"), "hard");
+  assert.equal(issueImplementationBlockerClass("report repository is openclaw/other"), "hard");
   assert.equal(issueImplementationBlockerClass("missing validation commands"), "soft");
 });
 

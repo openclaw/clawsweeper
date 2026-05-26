@@ -242,8 +242,9 @@ test("comment router classifies protected issue build overrides as hard", () => 
   assert.match(source, /issueImplementationOverrideBlockerClass\(command\)/);
   assert.match(source, /target\.kind === "issue" && target\.job_path/);
   assert.match(source, /issueImplementationLinkedPrSignal\(target\)/);
-  assert.match(source, /target\.linked_prs/);
-  assert.match(source, /target\.openPrs/);
+  assert.match(source, /issueLinkedOpenPrReferences\(issue, issueNumber\)/);
+  assert.match(source, /open_prs: linkedOpenPrs/);
+  assert.match(source, /addPullRequestReferenceNumbersFromText/);
   assert.match(source, /target\.locked === true/);
   assert.match(source, /labels\.some\(isIssueImplementationProtectedLabel\)/);
   assert.match(source, /overrideBlockerClass,\n\s+overrideAction: command\.operator_override/);
