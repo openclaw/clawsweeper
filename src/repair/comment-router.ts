@@ -205,6 +205,7 @@ for (const comment of comments) {
       extractMarkdownSection(comment.body, "Automerge follow-up") ??
       extractMarkdownSection(comment.body, "Autofix follow-up"),
     freeform_prompt: parsed.freeform_prompt ?? null,
+    visual_lens: parsed.visual_lens ?? null,
     expected_head_sha: parsed.expected_head_sha ?? null,
     finding_id: parsed.finding_id ?? null,
     status: "pending",
@@ -405,12 +406,15 @@ function classifyCommand(command: LooseRecord): JsonValue {
       actions: [{ action: "comment", status: execute ? "pending" : "planned" }],
     };
   }
-  if (command.intent === "freeform_assist") {
+  if (command.intent === "freeform_assist" || command.intent === "visualize") {
     if (String(issue.state ?? "").toLowerCase() !== "open") {
       return {
         ...next,
         status: "ready",
-        reason: "freeform assist requires an open issue or PR",
+        reason:
+          command.intent === "visualize"
+            ? "visualize requires an open issue or PR"
+            : "freeform assist requires an open issue or PR",
         actions: [{ action: "comment", status: execute ? "pending" : "planned" }],
       };
     }
@@ -1394,7 +1398,11 @@ function executeCommand(command: LooseRecord) {
         return action;
       });
     }
-    if (command.intent === "freeform_assist" && command.issue_number && shouldDispatchAssist) {
+    if (
+      (command.intent === "freeform_assist" || command.intent === "visualize") &&
+      command.issue_number &&
+      shouldDispatchAssist
+    ) {
       const clawsweeper = dispatchClawSweeperAssist(command);
       dispatched = { ...dispatched, clawsweeper };
       command.actions = command.actions.map((action: JsonValue) => {
@@ -2025,6 +2033,8 @@ function dispatchClawSweeperAssist(command: LooseRecord) {
       comment_url: String(command.comment_url ?? ""),
       author: String(command.author ?? ""),
       question: String(command.freeform_prompt ?? command.command ?? "").slice(0, 3000),
+      mode: command.intent === "visualize" ? "visual" : "assist",
+      lens: String(command.visual_lens ?? "auto"),
       model: "gpt-5.5",
       reasoning_effort: "low",
       timeout_ms: "120000",

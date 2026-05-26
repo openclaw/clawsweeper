@@ -937,6 +937,18 @@ test("parseCommand recognizes ClawSweeper bot mentions", () => {
     intent: "freeform_assist",
     freeform_prompt: "why this PR is not automerge-ready",
   });
+  assert.deepEqual(parseCommand("@clawsweeper visualize state"), {
+    trigger: "mention",
+    command: "visualize state",
+    intent: "visualize",
+    visual_lens: "state",
+  });
+  assert.deepEqual(parseCommand("/clawsweeper visualize"), {
+    trigger: "slash",
+    command: "visualize",
+    intent: "visualize",
+    visual_lens: "auto",
+  });
   assert.deepEqual(parseCommand("@clawsweeper: why did automerge stop here?"), {
     trigger: "mention",
     command: "why did automerge stop here?",
@@ -1771,6 +1783,29 @@ test("renderResponse reports freeform assist dispatches as read-only", () => {
   assert.match(body, /separate answer comment/);
   assert.match(body, /will not edit the durable ClawSweeper review comment/);
   assert.match(body, /why did automerge stop here/);
+  assert.doesNotMatch(body, /repair worker/);
+});
+
+test("renderResponse reports visualize dispatches as marker-backed read-only briefs", () => {
+  const body = renderResponse(
+    {
+      comment_id: "463",
+      intent: "visualize",
+      visual_lens: "state",
+      target: { head_sha: "def463" },
+    },
+    {
+      clawsweeper: {
+        workflow: "assist.yml",
+        event: "repository_dispatch",
+      },
+    },
+  );
+
+  assert.match(body, /visual brief is being prepared/);
+  assert.match(body, /read-only visual pass/);
+  assert.match(body, /marker-backed visual brief comment/);
+  assert.match(body, /Lens: `state`/);
   assert.doesNotMatch(body, /repair worker/);
 });
 

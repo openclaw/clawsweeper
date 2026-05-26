@@ -20,6 +20,16 @@ on:
         description: "Maintainer question to answer"
         required: true
         type: string
+      mode:
+        description: "Assist mode: assist or visual"
+        required: false
+        default: assist
+        type: string
+      lens:
+        description: "Visual lens when mode is visual"
+        required: false
+        default: auto
+        type: string
       comment_id:
         description: "Source issue comment id"
         required: false
@@ -148,6 +158,8 @@ jobs:
           TARGET_REPO: ${{ github.event.client_payload.target_repo || inputs.target_repo }}
           ITEM_NUMBER: ${{ github.event.client_payload.item_number || inputs.item_number }}
           QUESTION: ${{ github.event.client_payload.question || inputs.question }}
+          MODE: ${{ github.event.client_payload.mode || 'assist' }}
+          LENS: ${{ github.event.client_payload.lens || 'auto' }}
           COMMENT_ID: ${{ github.event.client_payload.comment_id || inputs.comment_id || '' }}
           COMMENT_URL: ${{ github.event.client_payload.comment_url || inputs.comment_url || '' }}
           AUTHOR: ${{ github.event.client_payload.author || inputs.author || '' }}
@@ -160,6 +172,8 @@ jobs:
             --target-repo "$TARGET_REPO" \
             --item-number "$ITEM_NUMBER" \
             --question "$QUESTION" \
+            --mode "$MODE" \
+            --lens "$LENS" \
             --comment-id "$COMMENT_ID" \
             --comment-url "$COMMENT_URL" \
             --author "$AUTHOR" \

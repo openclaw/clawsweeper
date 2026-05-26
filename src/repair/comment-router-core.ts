@@ -1227,18 +1227,27 @@ export function renderResponse(command: LooseRecord, dispatched: LooseRecord) {
   if (["status", "explain"].includes(command.intent)) {
     return [marker, renderStatusBody(command)].join("\n");
   }
-  if (command.intent === "freeform_assist") {
+  if (command.intent === "freeform_assist" || command.intent === "visualize") {
+    const isVisual = command.intent === "visualize";
     return [
       marker,
       dispatched?.clawsweeper
-        ? "ClawSweeper assist is taking a look at your question."
-        : "ClawSweeper could not start a freeform assist pass for this item.",
+        ? isVisual
+          ? "ClawSweeper visual brief is being prepared."
+          : "ClawSweeper assist is taking a look at your question."
+        : isVisual
+          ? "ClawSweeper could not start a visual brief for this item."
+          : "ClawSweeper could not start a freeform assist pass for this item.",
       "",
       dispatched?.clawsweeper
-        ? "I queued a lightweight read-only assist pass. It will post a separate answer comment and will not edit the durable ClawSweeper review comment or trigger close, merge, repair, label, or branch changes."
-        : `Reason: ${command.reason ?? "freeform assist requires an open issue or PR"}.`,
+        ? isVisual
+          ? "I queued a read-only visual pass. It will create or update one marker-backed visual brief comment and will not trigger close, merge, repair, label, or branch changes."
+          : "I queued a lightweight read-only assist pass. It will post a separate answer comment and will not edit the durable ClawSweeper review comment or trigger close, merge, repair, label, or branch changes."
+        : `Reason: ${command.reason ?? (isVisual ? "visualize requires an open issue or PR" : "freeform assist requires an open issue or PR")}.`,
       "",
-      `Request: ${inlineQuote(command.freeform_prompt ?? command.command ?? "No request text provided.")}`,
+      isVisual
+        ? `Lens: \`${command.visual_lens ?? "auto"}\``
+        : `Request: ${inlineQuote(command.freeform_prompt ?? command.command ?? "No request text provided.")}`,
     ].join("\n");
   }
   if (command.intent === "stop") {
@@ -1552,10 +1561,13 @@ function commandFromText(trigger: JsonValue, value: JsonValue) {
     intent = "freeform_assist";
   }
   const parsedCommand =
-    intent === "freeform_assist" || intent === "autoclose" ? rawNormalized : command;
+    intent === "freeform_assist" || intent === "autoclose" || intent === "visualize"
+      ? rawNormalized
+      : command;
   const parsed: LooseRecord = { trigger, command: parsedCommand, intent };
   if (intent === "autoclose") parsed.autoclose_message = autocloseReasonFromCommand(rawCommand);
   if (intent === "freeform_assist") parsed.freeform_prompt = assistPromptFromCommand(rawCommand);
+  if (intent === "visualize") parsed.visual_lens = visualLensFromCommand(rawCommand);
   if (intent === "implement_issue") {
     parsed.implementation_prompt = implementationPromptFromCommand(rawText);
     if (isIssueImplementationOverride(rawCommand)) parsed.operator_override = true;
@@ -1621,6 +1633,26 @@ function assistPromptFromCommand(command: LooseRecord) {
   return prompt.replace(/^(?:ask|explain)\b[:\s-]*/i, "").trim() || prompt;
 }
 
+export const VISUAL_LENSES = new Set([
+  "ux",
+  "flow",
+  "state",
+  "data",
+  "proof",
+  "risk",
+  "maintainer",
+]);
+
+function visualLensFromCommand(command: LooseRecord) {
+  const lens =
+    String(command ?? "")
+      .trim()
+      .toLowerCase()
+      .replace(/^visuali[sz]e\b[:\s-]*/i, "")
+      .split(/\s+/)[0] ?? "";
+  return VISUAL_LENSES.has(lens) ? lens : "auto";
+}
+
 function issueImplementationRestPrefix(command: LooseRecord) {
   return command.command === "fix" ? "fix issue" : command.command;
 }
@@ -1636,6 +1668,14 @@ function normalizeIntent(command: LooseRecord) {
     command.startsWith("why ")
   ) {
     return "freeform_assist";
+  }
+  if (
+    command === "visualize" ||
+    command === "visualise" ||
+    command.startsWith("visualize ") ||
+    command.startsWith("visualise ")
+  ) {
+    return "visualize";
   }
   if (["hatch", "hatch egg", "pr egg hatch", "hatch pr egg"].includes(command)) return "hatch";
   if (["fix ci", "fix-ci", "ci", "repair ci", "repair checks", "fix checks"].includes(command))

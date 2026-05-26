@@ -2725,6 +2725,7 @@ function isClawSweeperNoiseComment(value: unknown, number: number): boolean {
   if (!body.trim() || !isClawSweeperComment(value)) return false;
   if (isClawSweeperDurableReviewComment(value, number)) return true;
   if (/clawsweeper-pr-egg-hatch:/i.test(body)) return true;
+  if (/clawsweeper-visual\s+item=/i.test(body)) return true;
   if (/clawsweeper-command(?:-status|-ack)?:/i.test(body)) return true;
   if (/clawsweeper-review-status:/i.test(body)) return true;
   if (/^ClawSweeper status: review started\./i.test(body)) return true;
@@ -6106,7 +6107,18 @@ function buildAssistPrompt(options: {
   question: string;
   sourceCommentUrl: string;
   author: string;
+  mode?: string;
+  lens?: string;
 }): string {
+  if (options.mode === "visual")
+    return buildVisualPrompt({
+      item: options.item,
+      context: options.context,
+      question: options.question,
+      sourceCommentUrl: options.sourceCommentUrl,
+      author: options.author,
+      ...(options.lens === undefined ? {} : { lens: options.lens }),
+    });
   return [
     "You are ClawSweeper assist, a lightweight read-only maintainer Q&A helper for GitHub issues and pull requests.",
     "",
@@ -6142,6 +6154,69 @@ function buildAssistPrompt(options: {
   ].join("\n");
 }
 
+function buildVisualPrompt(options: {
+  item: Item;
+  context: ItemContext;
+  question: string;
+  sourceCommentUrl: string;
+  author: string;
+  lens?: string;
+}): string {
+  const requestedLens = normalizeVisualLens(options.lens);
+  return [
+    "You are ClawSweeper visual brief, a read-only maintainer judgment helper for GitHub issues and pull requests.",
+    "",
+    "Hard safety contract:",
+    "- Create a compact GitHub-comment-friendly ASCII/text visual brief only from supplied context.",
+    "- Advisory only: maintainers remain the final judges.",
+    "- Do not recommend closing, merging, labeling, pushing, rebasing, or repairing as an executed action.",
+    "- Do not emit hidden ClawSweeper verdict, action, security, or review markers.",
+    "- Avoid Mermaid and generated images. Use ASCII boxes, arrows, split screens, state tables, and checklists.",
+    "- Use glyphs only in public markdown when they clarify states or transitions; include a legend when more than three glyphs appear.",
+    "",
+    "Lens guidance:",
+    "- ux: user/operator visible behavior.",
+    "- flow: routing, delivery, queues, providers, tools, or pipelines.",
+    "- state: sessions, locks, auth, config, identity, lifecycle, flags, or modes.",
+    "- data: payloads, protocol responses, redaction, projection, storage, schemas, or migrations.",
+    "- proof: missing, stale, disputed, or confusing behavior proof.",
+    "- risk: compatibility, operator impact, security boundary, availability, automation, or session-state tradeoff.",
+    "- maintainer: product, policy, API, UX, or architecture judgment.",
+    "",
+    "Response format:",
+    "- Start with `# Visual brief`.",
+    `- Requested lens: ${requestedLens}. If it is auto, choose the strongest lens and name it near the top.`,
+    "- Prefer compact visuals over long prose.",
+    "- Show before/after or current/proposed behavior when applicable.",
+    "- Show remaining risk or maintainer judgment when applicable.",
+    "- Clearly state that this is advisory and maintainers remain the final judges.",
+    "- End exactly with this footer:",
+    "",
+    "## Maintainer ruling",
+    "",
+    "Benefit:",
+    "Risk:",
+    "Proof needed:",
+    "Recommended next action:",
+    "Question presented:",
+    "",
+    "Request metadata:",
+    `- Repository: ${options.item.repo}`,
+    `- Item: #${options.item.number}`,
+    `- Type: ${options.item.kind}`,
+    `- Title: ${options.item.title}`,
+    `- URL: ${options.item.url}`,
+    `- Request author: ${options.author || "unknown"}`,
+    `- Source comment: ${options.sourceCommentUrl || "unknown"}`,
+    `- Maintainer request: ${options.question || `visualize ${requestedLens}`}`,
+    "",
+    "GitHub context JSON:",
+    "```json",
+    JSON.stringify(options.context, null, 2),
+    "```",
+  ].join("\n");
+}
+
 function runCodexAssist(options: {
   item: Item;
   context: ItemContext;
@@ -6153,6 +6228,8 @@ function runCodexAssist(options: {
   sandboxMode: string;
   timeoutMs: number;
   workDir: string;
+  mode?: string;
+  lens?: string;
 }): string {
   ensureDir(options.workDir);
   const promptPath = join(options.workDir, `${options.item.number}.assist.prompt.md`);
@@ -6163,6 +6240,8 @@ function runCodexAssist(options: {
     question: options.question,
     sourceCommentUrl: options.sourceCommentUrl,
     author: options.author,
+    ...(options.mode === undefined ? {} : { mode: options.mode }),
+    ...(options.lens === undefined ? {} : { lens: options.lens }),
   });
   writeFileSync(promptPath, prompt, "utf8");
   const codexConfig = [
@@ -6208,6 +6287,19 @@ function assistCommentMarker(commentId: string): string {
   return `<!-- clawsweeper-assist:${commentId || "unknown"} -->`;
 }
 
+const VISUAL_LENSES = new Set(["ux", "flow", "state", "data", "proof", "risk", "maintainer"]);
+
+function normalizeVisualLens(value: unknown): string {
+  const lens = String(value ?? "auto")
+    .trim()
+    .toLowerCase();
+  return VISUAL_LENSES.has(lens) ? lens : "auto";
+}
+
+function visualCommentMarker(number: number, lens: string, headSha: string): string {
+  return `<!-- clawsweeper-visual item=${number} lens=${normalizeVisualLens(lens)} sha=${headSha || "na"} -->`;
+}
+
 function renderAssistComment(options: {
   body: string;
   model: string;
@@ -6229,8 +6321,72 @@ function renderAssistComment(options: {
   ].join("\n");
 }
 
+function renderVisualComment(options: {
+  body: string;
+  item: Item;
+  context: ItemContext;
+  lens: string;
+  model: string;
+  reasoningEffort: string;
+  sourceCommentUrl: string;
+  sourceCommentId: string;
+}): string {
+  const body = options.body.trim() || "# Visual brief\n\nNo visual brief could be produced.";
+  const headSha = itemHeadSha(options.item, options.context);
+  const sourceLine = options.sourceCommentUrl
+    ? `Source: ${options.sourceCommentUrl}`
+    : `Source comment: ${options.sourceCommentId || "unknown"}`;
+  return [
+    visualCommentMarker(options.item.number, options.lens, headSha),
+    body,
+    "",
+    "---",
+    `${sourceLine}`,
+    `Visual model: ${options.model}, reasoning ${options.reasoningEffort}.`,
+  ].join("\n");
+}
+
 function postAssistComment(number: number, body: string): void {
   const payload = writeCommentPayload(number, body);
+  ghWithRetry([
+    "api",
+    `repos/${targetRepo()}/issues/${number}/comments`,
+    "--method",
+    "POST",
+    "--input",
+    payload,
+  ]);
+}
+
+function itemHeadSha(item: Item, context: ItemContext): string {
+  if (item.kind !== "pull_request") return "na";
+  const pull = asRecord(context.pullRequest);
+  const head = asRecord(pull.head);
+  return String(head.sha ?? "").trim() || "na";
+}
+
+function postOrUpdateVisualComment(
+  number: number,
+  lens: string,
+  headSha: string,
+  body: string,
+): void {
+  const marker = visualCommentMarker(number, lens, headSha);
+  const existing = ghPaged<unknown>(`repos/${targetRepo()}/issues/${number}/comments?per_page=100`)
+    .map(asRecord)
+    .find((comment) => String(comment.body ?? "").includes(marker));
+  const payload = writeCommentPayload(number, body);
+  if (existing?.id) {
+    ghWithRetry([
+      "api",
+      `repos/${targetRepo()}/issues/comments/${existing.id}`,
+      "--method",
+      "PATCH",
+      "--input",
+      payload,
+    ]);
+    return;
+  }
   ghWithRetry([
     "api",
     `repos/${targetRepo()}/issues/${number}/comments`,
@@ -15440,6 +15596,8 @@ function assistCommand(args: Args): void {
   const sourceCommentId = stringArg(args.comment_id, "");
   const sourceCommentUrl = stringArg(args.comment_url, "");
   const author = stringArg(args.author, "");
+  const mode = stringArg(args.mode, "assist") === "visual" ? "visual" : "assist";
+  const lens = normalizeVisualLens(stringArg(args.lens, "auto"));
   const { item, state } = fetchItem(itemNumber);
   if (state.toLowerCase() !== "open") {
     throw new Error(`assist requires an open issue or PR; #${itemNumber} is ${state}`);
@@ -15456,7 +15614,26 @@ function assistCommand(args: Args): void {
     sandboxMode,
     timeoutMs,
     workDir,
+    mode,
+    lens,
   });
+  if (mode === "visual") {
+    const comment = renderVisualComment({
+      body: answer,
+      item,
+      context,
+      lens,
+      model,
+      reasoningEffort,
+      sourceCommentUrl,
+      sourceCommentId,
+    });
+    postOrUpdateVisualComment(item.number, lens, itemHeadSha(item, context), comment);
+    console.log(
+      JSON.stringify({ posted: true, mode, item: item.number, lens, model, reasoningEffort }),
+    );
+    return;
+  }
   const comment = renderAssistComment({
     body: answer,
     model,
@@ -15465,7 +15642,7 @@ function assistCommand(args: Args): void {
     sourceCommentId,
   });
   postAssistComment(item.number, comment);
-  console.log(JSON.stringify({ posted: true, item: item.number, model, reasoningEffort }));
+  console.log(JSON.stringify({ posted: true, mode, item: item.number, model, reasoningEffort }));
 }
 
 function checkCommand(): void {

@@ -412,6 +412,11 @@ test("review context comment filter removes ClawSweeper self-noise and command-o
       "<!-- clawsweeper-command-status:123:re_review:abc -->\nQueued.",
       "clawsweeper",
     ),
+    issueComment(
+      7,
+      "<!-- clawsweeper-visual item=123 lens=state sha=abc -->\n# Visual brief",
+      "clawsweeper",
+    ),
     issueComment(4, "@clawsweeper re-review", "author"),
     issueComment(5, "Here is real behavior proof from my terminal.", "author"),
     issueComment(6, "Actionable file/line review feedback.", "chatgpt-codex-connector[bot]"),
@@ -419,7 +424,7 @@ test("review context comment filter removes ClawSweeper self-noise and command-o
 
   const result = filterReviewContextCommentsForTest(comments, 123);
 
-  assert.equal(result.filtered, 4);
+  assert.equal(result.filtered, 5);
   assert.deepEqual(
     result.included.map((comment) => (comment as { id: number }).id),
     [5, 6],
