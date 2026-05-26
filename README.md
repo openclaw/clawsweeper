@@ -181,6 +181,7 @@ Common commands:
 @clawsweeper approve
 @clawsweeper explain
 @clawsweeper ask is this blocked by flaky CI?
+@clawsweeper visualize state
 @clawsweeper stop
 @clawsweeper why did automerge stop here?
 ```
@@ -198,6 +199,8 @@ Common commands:
   non-durable answer comment and never edits the durable ClawSweeper review
   comment, closes, merges, labels, pushes, repairs, or emits review/apply
   markers.
+- `visualize [lens]` dispatches the read-only visual assist lane and posts or
+  updates a marker-backed visual brief comment for the requested lens.
 - `fix ci`, `address review`, and `rebase` dispatch the repair worker only for
   ClawSweeper PRs or PRs already opted into `clawsweeper:autofix` or
   `clawsweeper:automerge`.

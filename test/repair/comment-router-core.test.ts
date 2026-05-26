@@ -1541,6 +1541,7 @@ test("renderResponse gives command replies stateful lobster badges", () => {
   assert.match(repairBody, /\n🦞🔧\nClawSweeper issue implementation requested/);
   assert.match(doneBody, /\n🦞✅\nClawSweeper merged this PR/);
   assert.match(body, /@clawsweeper fix/);
+  assert.match(body, /\/clawsweeper visualize \[lens\]/);
 });
 
 test("renderResponse describes stop as revoking repair-loop labels", () => {

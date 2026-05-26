@@ -1219,7 +1219,7 @@ export function renderResponse(command: LooseRecord, dispatched: LooseRecord) {
       marker,
       "ClawSweeper is here and listening for maintainer commands.",
       "",
-      "Supported commands: `/review`, `/clawsweeper status`, `/clawsweeper re-review`, `@clawsweeper hatch`, `/clawsweeper implement`, `@clawsweeper fix`, `/clawsweeper build`, `/clawsweeper ask <question>`, `/clawsweeper fix ci`, `/clawsweeper address review`, `/clawsweeper rebase`, `/clawsweeper autofix`, `/clawsweeper automerge`, `/clawsweeper approve`, `/autoclose <reason>`, `/clawsweeper explain`, `/clawsweeper stop`.",
+      "Supported commands: `/review`, `/clawsweeper status`, `/clawsweeper re-review`, `@clawsweeper hatch`, `/clawsweeper implement`, `@clawsweeper fix`, `/clawsweeper build`, `/clawsweeper ask <question>`, `/clawsweeper visualize [lens]`, `/clawsweeper fix ci`, `/clawsweeper address review`, `/clawsweeper rebase`, `/clawsweeper autofix`, `/clawsweeper automerge`, `/clawsweeper approve`, `/autoclose <reason>`, `/clawsweeper explain`, `/clawsweeper stop`.",
       "",
       "I only act for maintainers, or for trusted ClawSweeper feedback on a ClawSweeper PR or PR opted into `clawsweeper:autofix` or `clawsweeper:automerge`.",
     ].join("\n");
