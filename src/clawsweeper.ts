@@ -6290,9 +6290,7 @@ function assistCommentMarker(commentId: string): string {
 const VISUAL_LENSES = new Set(["ux", "flow", "state", "data", "proof", "risk", "maintainer"]);
 
 function normalizeVisualLens(value: unknown): string {
-  const lens = String(value ?? "auto")
-    .trim()
-    .toLowerCase();
+  const lens = typeof value === "string" ? value.trim().toLowerCase() : "auto";
   return VISUAL_LENSES.has(lens) ? lens : "auto";
 }
 
@@ -6362,7 +6360,7 @@ function itemHeadSha(item: Item, context: ItemContext): string {
   if (item.kind !== "pull_request") return "na";
   const pull = asRecord(context.pullRequest);
   const head = asRecord(pull.head);
-  return String(head.sha ?? "").trim() || "na";
+  return typeof head.sha === "string" ? head.sha.trim() || "na" : "na";
 }
 
 function postOrUpdateVisualComment(
@@ -6374,12 +6372,14 @@ function postOrUpdateVisualComment(
   const marker = visualCommentMarker(number, lens, headSha);
   const existing = ghPaged<unknown>(`repos/${targetRepo()}/issues/${number}/comments?per_page=100`)
     .map(asRecord)
-    .find((comment) => String(comment.body ?? "").includes(marker));
+    .find((comment) => typeof comment.body === "string" && comment.body.includes(marker));
   const payload = writeCommentPayload(number, body);
-  if (existing?.id) {
+  const existingId =
+    typeof existing?.id === "number" || typeof existing?.id === "string" ? existing.id : null;
+  if (existingId) {
     ghWithRetry([
       "api",
-      `repos/${targetRepo()}/issues/comments/${existing.id}`,
+      `repos/${targetRepo()}/issues/comments/${existingId}`,
       "--method",
       "PATCH",
       "--input",
