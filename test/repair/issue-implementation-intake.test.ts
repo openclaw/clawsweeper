@@ -234,6 +234,7 @@ test("comment router rewrites existing issue implementation jobs on override", (
   assert.match(source, /command\.operator_override === true/);
   assert.match(source, /fs\.writeFileSync\(\s*absolute,\s*renderIssueImplementationJob/s);
   assert.match(source, /issueImplementationJobOptions\(command\)/);
+  assert.match(source, /statusDetail = "written"/);
 });
 
 test("comment router classifies protected issue build overrides as hard", () => {
@@ -245,6 +246,8 @@ test("comment router classifies protected issue build overrides as hard", () => 
   assert.match(source, /issueLinkedOpenPrReferences\(issue, issueNumber\)/);
   assert.match(source, /open_prs: linkedOpenPrs/);
   assert.match(source, /addPullRequestReferenceNumbersFromText/);
+  assert.match(source, /searchOpenPullRequestsMentioningIssue\(Number\(issueNumber\)\)/);
+  assert.match(source, /target\.body/);
   assert.match(source, /target\.locked === true/);
   assert.match(source, /labels\.some\(isIssueImplementationProtectedLabel\)/);
   assert.match(source, /overrideBlockerClass,\n\s+overrideAction: command\.operator_override/);

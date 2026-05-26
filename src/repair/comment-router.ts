@@ -1817,6 +1817,7 @@ function ensureAutomergeJob(command: LooseRecord) {
 
 function ensureIssueImplementationJob(command: LooseRecord) {
   if (command.target?.job_path) {
+    let statusDetail = "existing";
     if (command.operator_override === true) {
       const absolute = path.join(repoRoot(), command.target.job_path);
       if (fs.existsSync(absolute)) {
@@ -1824,12 +1825,13 @@ function ensureIssueImplementationJob(command: LooseRecord) {
           absolute,
           renderIssueImplementationJob(issueImplementationJobOptions(command)),
         );
+        statusDetail = "written";
       }
     }
     return {
       job_path: command.target.job_path,
       mode: command.target.mode ?? dispatchMode(command.target.job_path),
-      status_detail: "existing",
+      status_detail: statusDetail,
     };
   }
   if (command.target?.kind !== "issue" || !command.issue_number) {
@@ -1900,7 +1902,9 @@ function issueImplementationOverrideBlockerClass(command: LooseRecord) {
   if (target.kind === "issue" && target.locked === true) return "hard";
   const labels = (target.labels ?? []).map((label: JsonValue) => String(label));
   if (labels.some(isIssueImplementationProtectedLabel)) return "hard";
-  if (issueImplementationSecuritySignal([target.title, labels.join("\n")].join("\n"))) {
+  if (
+    issueImplementationSecuritySignal([target.title, target.body, labels.join("\n")].join("\n"))
+  ) {
     return "hard";
   }
   return "soft";
@@ -2590,6 +2594,7 @@ function classifyIssueTarget(issue: LooseRecord, issueNumber: JsonValue): JsonVa
     state: issue.state ?? null,
     locked: issue.locked ?? null,
     title: issue.title ?? null,
+    body: issue.body ?? null,
     author: issue.user?.login ?? null,
     labels: (issue.labels ?? []).map((item: JsonValue) => item.name ?? item),
     cluster_id: jobPath ? implementationCluster : null,
@@ -2607,6 +2612,9 @@ function issueLinkedOpenPrReferences(issue: LooseRecord, issueNumber: JsonValue)
   for (const text of [issue.title, issue.body, ...comments]) {
     addPullRequestReferenceNumbersFromText(refs, text);
   }
+  for (const number of searchOpenPullRequestsMentioningIssue(Number(issueNumber))) {
+    refs.add(number);
+  }
   const current = Number(issueNumber);
   return [...refs]
     .filter((number) => Number.isFinite(number) && number !== current)
@@ -2619,6 +2627,25 @@ function issueLinkedOpenPrReferences(issue: LooseRecord, issueNumber: JsonValue)
       }
     })
     .map((number) => `#${number}`);
+}
+
+function searchOpenPullRequestsMentioningIssue(issueNumber: number) {
+  try {
+    const result = ghJson(
+      [
+        "api",
+        "search/issues",
+        "-f",
+        `q=repo:${targetRepo} is:pr is:open "${issueNumber}"`,
+        "--jq",
+        ".items",
+      ],
+      { attempts: TARGET_LOOKUP_RETRY_ATTEMPTS },
+    );
+    return Array.isArray(result) ? result.map((item) => Number(item.number)).filter(Boolean) : [];
+  } catch {
+    return [];
+  }
 }
 
 function addPullRequestReferenceNumbersFromText(numbers: Set<number>, text: JsonValue) {
