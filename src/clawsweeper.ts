@@ -8940,6 +8940,168 @@ function pullRequestFilePathsFromReport(markdown: string): string[] {
   return frontMatterStringArray(markdown, "pull_files");
 }
 
+interface ConfigSurfaceChange {
+  change: boolean;
+  keys: string[];
+}
+
+function configSurfaceChangeFromContext(repo: string, context: ItemContext): ConfigSurfaceChange {
+  if (repo !== "openclaw/openclaw") {
+    return { change: false, keys: [] };
+  }
+
+  const keys = new Set<string>();
+  for (const entry of context.pullFiles ?? []) {
+    const file = asRecord(entry);
+    const path = typeof file.filename === "string" ? file.filename.trim() : "";
+    const previousPath =
+      typeof file.previous_filename === "string" ? file.previous_filename.trim() : "";
+    const configSurfacePath = [path, previousPath].find(isOpenClawConfigSurfacePath);
+    if (!configSurfacePath) continue;
+    const patch = typeof file.patch === "string" ? file.patch : null;
+    if (patch !== null && configSurfacePatchIsTruncated(patch)) {
+      keys.add("unknown-config-surface-change");
+    }
+    const lines = patch === null ? [] : changedPatchLines(patch);
+    if (patch === null || lines.length === 0) {
+      keys.add("unknown-config-surface-change");
+    }
+    for (const line of lines) {
+      const lineKeys = configSurfaceKeysFromPatchLine(configSurfacePath, line);
+      if (
+        lineKeys.length === 0 &&
+        !isMarkdownConfigSurfacePath(configSurfacePath) &&
+        configSurfaceLineNeedsUnknownMarker(line)
+      ) {
+        keys.add("unknown-config-surface-change");
+      }
+      for (const key of lineKeys) {
+        keys.add(key);
+      }
+    }
+  }
+
+  if (context.counts?.pullFilesTruncated) {
+    keys.add("unknown-truncated-pull-files");
+  }
+
+  return { change: keys.size > 0, keys: [...keys].sort() };
+}
+
+export function configSurfaceChangeFromPullFilesForTest(options: {
+  repo?: string;
+  pullFiles?: unknown[];
+  pullFilesTruncated?: boolean;
+}): ConfigSurfaceChange {
+  const counts: ItemContext["counts"] = { comments: 0, timeline: 0 };
+  if (options.pullFilesTruncated !== undefined)
+    counts.pullFilesTruncated = options.pullFilesTruncated;
+  const context: ItemContext = {
+    issue: {},
+    comments: [],
+    timeline: [],
+    counts,
+  };
+  if (options.pullFiles !== undefined) context.pullFiles = options.pullFiles;
+  return configSurfaceChangeFromContext(options.repo ?? "openclaw/openclaw", context);
+}
+
+function isOpenClawConfigSurfacePath(path: string): boolean {
+  return (
+    /^src\/config\/(?:zod-schema[^/]*|types[^/]*|schema(?:[-.][^/]*)?)\.ts$/.test(path) ||
+    /^src\/plugins\/manifest(?:-registry)?\.ts$/.test(path) ||
+    /^docs\/gateway\/configuration[^/]*\.md$/.test(path) ||
+    path === "docs/plugins/manifest.md"
+  );
+}
+
+function changedPatchLines(patch: string): string[] {
+  return patch
+    .split("\n")
+    .filter(
+      (line) =>
+        (line.startsWith("+") && !line.startsWith("+++")) ||
+        (line.startsWith("-") && !line.startsWith("---")),
+    )
+    .map((line) => line.slice(1).trim());
+}
+
+function configSurfaceLineNeedsUnknownMarker(line: string): boolean {
+  const trimmed = line.trim();
+  return Boolean(trimmed) && !/^\/\/|^\/\*|^\*/.test(trimmed);
+}
+
+function configSurfacePatchIsTruncated(patch: string): boolean {
+  return /\n\n\[truncated \d+ chars\]$/.test(patch);
+}
+
+function configSurfaceKeysFromPatchLine(path: string, line: string): string[] {
+  const trimmed = line.trim();
+  if (!trimmed || /^\/\/|^\/\*|^\*|^<!--/.test(trimmed)) return [];
+
+  const keys = new Set<string>();
+  for (const match of trimmed.matchAll(/`([^`]+)`/g)) {
+    const token = match[1]?.trim();
+    if (token && markdownConfigSurfaceTokenLooksSemantic(path, trimmed, token)) keys.add(token);
+  }
+
+  if (!isMarkdownConfigSurfacePath(path)) {
+    const property = trimmed.match(
+      /^(?:readonly\s+)?(?:"([^"]+)"|'([^']+)'|([A-Za-z_$][\w$.-]*))\??\s*:/,
+    );
+    const key = property?.[1] ?? property?.[2] ?? property?.[3];
+    if (key && isConfigSurfaceToken(key)) {
+      keys.add(pluginManifestConfigSurfaceKey(path, key));
+    }
+
+    if (/\b(?:z\.enum|Type\.Literal|enum)\b/.test(trimmed)) {
+      for (const match of trimmed.matchAll(/["']([A-Za-z0-9_.-]+)["']/g)) {
+        const token = match[1]?.trim();
+        if (token && isConfigSurfaceToken(token)) keys.add(token);
+      }
+    }
+  }
+
+  return [...keys];
+}
+
+function isMarkdownConfigSurfacePath(path: string): boolean {
+  return path.endsWith(".md") || path.endsWith(".mdx");
+}
+
+function markdownConfigSurfaceTokenLooksSemantic(
+  path: string,
+  line: string,
+  token: string,
+): boolean {
+  if (!isConfigSurfaceToken(token)) return false;
+  if (!isMarkdownConfigSurfacePath(path)) return true;
+  return /[.[\]]/.test(token) || /^[A-Z0-9_]{3,}$/.test(token) || /^\s*(?:\||[-*]\s+`)/.test(line);
+}
+
+function isConfigSurfaceToken(token: string): boolean {
+  return (
+    token.length >= 2 &&
+    token.length <= 120 &&
+    /^[A-Za-z0-9_.[\]-]+$/.test(token) &&
+    /[A-Za-z]/.test(token)
+  );
+}
+
+function pluginManifestConfigSurfaceKey(path: string, key: string): string {
+  if (!path.startsWith("src/plugins/manifest") || key.includes(".") || key === "contracts") {
+    return key;
+  }
+  return `contracts.${key}`;
+}
+
+function configSurfaceReviewRequired(markdown: string): boolean {
+  return (
+    frontMatterBoolean(markdown, "config_surface_change") ||
+    frontMatterStringArray(markdown, "config_surface_keys").length > 0
+  );
+}
+
 function prSurfaceFilesFromContext(context: ItemContext): PrSurfaceFile[] {
   if (context.counts?.pullFilesTruncated) return [];
   return (context.pullFiles ?? [])
@@ -11960,12 +12122,24 @@ export function reviewAutomationMarkersFromReport(markdown: string): string {
     `sha=${markerAttributeValue(headSha)}`,
     `confidence=${markerAttributeValue(confidence)}`,
   ].join(" ");
+  const securityNeedsAttention = reportSecurityReview(markdown).status === "needs_attention";
+  const humanReviewMarkers = (): string => {
+    const markers = [];
+    if (securityNeedsAttention) {
+      markers.push(`<!-- clawsweeper-security:security-sensitive ${baseAttrs} -->`);
+    }
+    markers.push(`<!-- clawsweeper-verdict:needs-human ${baseAttrs} -->`);
+    return markers.join("\n");
+  };
 
   if (frontMatterValue(markdown, "review_status") === "failed") {
-    return `<!-- clawsweeper-verdict:needs-human ${baseAttrs} -->`;
+    return humanReviewMarkers();
+  }
+  if (configSurfaceReviewRequired(markdown)) {
+    return humanReviewMarkers();
   }
   const hasRealBehaviorProofBlocker = realBehaviorProofBlocksMerge(markdown);
-  if (reportSecurityReview(markdown).status === "needs_attention") {
+  if (securityNeedsAttention) {
     const markers = [`<!-- clawsweeper-security:security-sensitive ${baseAttrs} -->`];
     if (!hasRealBehaviorProofBlocker && securitySensitiveRepairAllowed(markdown)) {
       markers.push(
@@ -12035,6 +12209,7 @@ function isRepairLoopPassReport(markdown: string): boolean {
     frontMatterValue(markdown, "review_status") === "complete" &&
     frontMatterValue(markdown, "confidence") === "high" &&
     frontMatterValue(markdown, "decision") === "keep_open" &&
+    !configSurfaceReviewRequired(markdown) &&
     !realBehaviorProofBlocksMerge(markdown) &&
     reportOverallCorrectness(markdown) === "patch is correct" &&
     reportReviewFindings(markdown).length === 0
@@ -12752,6 +12927,7 @@ function markdownFor(options: {
   const repairWorkPromptSection = renderRepairWorkPromptReportSection(options.decision);
   const pullFiles = pullRequestFilePathsFromContext(options.context);
   const pullFilesTruncated = Boolean(options.context.counts?.pullFilesTruncated);
+  const configSurfaceChange = configSurfaceChangeFromContext(options.item.repo, options.context);
   const prSurfaceFiles = prSurfaceFilesFromContext(options.context);
   return `---
 number: ${options.item.number}
@@ -12821,6 +12997,8 @@ review_metrics: ${JSON.stringify(options.decision.reviewMetrics)}
 label_justifications: ${JSON.stringify(options.decision.labelJustifications)}
 pull_files: ${jsonFrontMatterValue(pullFiles)}
 pull_files_truncated: ${pullFilesTruncated}
+config_surface_change: ${configSurfaceChange.change}
+config_surface_keys: ${jsonFrontMatterValue(configSurfaceChange.keys)}
 pr_surface_files: ${jsonFrontMatterValue(prSurfaceFiles)}
 pr_surface_files_truncated: ${pullFilesTruncated}
 item_category: ${options.decision.itemCategory}

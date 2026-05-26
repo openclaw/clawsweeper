@@ -29,6 +29,7 @@ import {
   compactMappedSlice,
   compactMappedWindow,
   compactPullRequestForTest,
+  configSurfaceChangeFromPullFilesForTest,
   codexEnv,
   dashboardClosedAt,
   extractLatestClawSweeperReviewForTest,
@@ -3105,6 +3106,235 @@ Full review comments:
   assert.doesNotMatch(comment, /Automerge follow-up:/);
   assert.match(comment, /<!-- clawsweeper-verdict:pass item=74453 sha=abc123def456/);
   assert.doesNotMatch(comment, /clawsweeper-verdict:needs-human/);
+});
+
+test("config surface reports force human review instead of automerge pass", () => {
+  const report = `${reportFrontMatter({
+    type: "pull_request",
+    number: "74454",
+    decision: "keep_open",
+    close_reason: "none",
+    review_status: "complete",
+    confidence: "high",
+    labels: JSON.stringify(["clawsweeper:automerge"]),
+    work_candidate: "none",
+    pull_head_sha: "abc123def456",
+    config_surface_change: "true",
+    config_surface_keys: JSON.stringify(["contracts.embeddingProviders"]),
+  })}
+
+## Summary
+
+Keep this config-surface PR open for maintainer review.
+
+## Review Findings
+
+Overall correctness: patch is correct
+
+Overall confidence: 0.9
+
+Full review comments:
+
+- none
+`;
+
+  const markers = reviewAutomationMarkersFromReport(report);
+
+  assert.match(markers, /clawsweeper-verdict:needs-human/);
+  assert.doesNotMatch(markers, /clawsweeper-verdict:pass/);
+  assert.doesNotMatch(markers, /clawsweeper-action:fix-required/);
+});
+
+test("config surface reports preserve security-sensitive markers", () => {
+  const report = `${reportFrontMatter({
+    type: "pull_request",
+    number: "74455",
+    decision: "keep_open",
+    close_reason: "none",
+    review_status: "complete",
+    confidence: "high",
+    labels: JSON.stringify(["clawsweeper:automerge"]),
+    work_candidate: "none",
+    pull_head_sha: "abc123def456",
+    config_surface_change: "true",
+    config_surface_keys: JSON.stringify(["unknown-config-surface-change"]),
+  })}
+
+## Summary
+
+Keep this security-sensitive config-surface PR open for maintainer review.
+
+## Security Review
+
+Status: needs_attention
+
+Summary: The config surface change may affect credential handling.
+
+Concerns:
+
+- **[high] Confirm credential scope:** \`src/config/zod-schema.ts:42\`
+  - body: The changed config default may alter credential routing.
+  - confidence: 0.91
+`;
+
+  const markers = reviewAutomationMarkersFromReport(report);
+
+  assert.match(markers, /clawsweeper-security:security-sensitive/);
+  assert.match(markers, /clawsweeper-verdict:needs-human/);
+  assert.doesNotMatch(markers, /clawsweeper-verdict:pass/);
+  assert.doesNotMatch(markers, /clawsweeper-action:fix-required/);
+});
+
+test("config surface detector finds schema and plugin manifest additions", () => {
+  const detection = configSurfaceChangeFromPullFilesForTest({
+    pullFiles: [
+      {
+        filename: "src/config/zod-schema.ts",
+        patch: "@@\n+  experimentalLocalModelLean: z.boolean().optional(),",
+      },
+      {
+        filename: "src/plugins/manifest.ts",
+        patch: "@@\n+    embeddingProviders?: PluginEmbeddingProviderContract[];",
+      },
+      {
+        filename: "docs/plugins/manifest.md",
+        patch: "@@\n+| `contracts.embeddingProviders` | Embedding provider contracts. |",
+      },
+    ],
+  });
+
+  assert.deepEqual(detection, {
+    change: true,
+    keys: ["contracts.embeddingProviders", "experimentalLocalModelLean"],
+  });
+});
+
+test("config surface detector ignores non-semantic docs wording", () => {
+  const detection = configSurfaceChangeFromPullFilesForTest({
+    pullFiles: [
+      {
+        filename: "docs/gateway/configuration.md",
+        patch: "@@\n+This section explains the existing `agents` config in clearer words.",
+      },
+      {
+        filename: "docs/plugins/manifest.md",
+        patch: "@@\n+This paragraph now describes plugin contracts more clearly.",
+      },
+    ],
+  });
+
+  assert.deepEqual(detection, { change: false, keys: [] });
+});
+
+test("config surface detector finds removed schema keys", () => {
+  const detection = configSurfaceChangeFromPullFilesForTest({
+    pullFiles: [
+      {
+        filename: "src/config/zod-schema.ts",
+        patch: "@@\n-  legacyModelProvider: z.string().optional(),",
+      },
+    ],
+  });
+
+  assert.deepEqual(detection, { change: true, keys: ["legacyModelProvider"] });
+});
+
+test("config surface detector finds schema assembly changes", () => {
+  const detection = configSurfaceChangeFromPullFilesForTest({
+    pullFiles: [
+      {
+        filename: "src/config/schema.ts",
+        patch: "@@\n+  allowedProviders: buildAllowedProviderSchema(),",
+      },
+    ],
+  });
+
+  assert.deepEqual(detection, { change: true, keys: ["allowedProviders"] });
+});
+
+test("config surface detector fails closed for schema continuation changes", () => {
+  const detection = configSurfaceChangeFromPullFilesForTest({
+    pullFiles: [
+      {
+        filename: "src/config/zod-schema.ts",
+        patch: "@@\n-    .min(1)\n+    .min(2)",
+      },
+    ],
+  });
+
+  assert.deepEqual(detection, {
+    change: true,
+    keys: ["unknown-config-surface-change"],
+  });
+});
+
+test("config surface detector fails closed for missing patches", () => {
+  const detection = configSurfaceChangeFromPullFilesForTest({
+    pullFiles: [
+      {
+        filename: "docs/plugins/manifest.md",
+      },
+      {
+        filename: "src/config/zod-schema.ts",
+        patch: "",
+      },
+    ],
+  });
+
+  assert.deepEqual(detection, {
+    change: true,
+    keys: ["unknown-config-surface-change"],
+  });
+});
+
+test("config surface detector fails closed for truncated file patches", () => {
+  const detection = configSurfaceChangeFromPullFilesForTest({
+    pullFiles: [
+      {
+        filename: "docs/gateway/configuration.md",
+        patch:
+          "@@\n+This section explains the existing `agents` config in clearer words.\n\n[truncated 120 chars]",
+      },
+    ],
+  });
+
+  assert.deepEqual(detection, {
+    change: true,
+    keys: ["unknown-config-surface-change"],
+  });
+});
+
+test("config surface detector fails closed for renamed config surface files", () => {
+  const detection = configSurfaceChangeFromPullFilesForTest({
+    pullFiles: [
+      {
+        filename: "src/legacy/zod-schema.ts",
+        previous_filename: "src/config/zod-schema.ts",
+      },
+    ],
+  });
+
+  assert.deepEqual(detection, {
+    change: true,
+    keys: ["unknown-config-surface-change"],
+  });
+});
+
+test("config surface detector fails closed for truncated pull files", () => {
+  const detection = configSurfaceChangeFromPullFilesForTest({
+    pullFilesTruncated: true,
+    pullFiles: [
+      {
+        filename: "src/config/schema.help.ts",
+        patch: '@@\n+  experimentalLocalModelLean: "Prefer lean local model routing.",',
+      },
+    ],
+  });
+
+  assert.deepEqual(detection, {
+    change: true,
+    keys: ["experimentalLocalModelLean", "unknown-truncated-pull-files"],
+  });
 });
 
 test("sufficient real behavior proof allows automerge pass markers", () => {
