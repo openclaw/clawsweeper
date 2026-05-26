@@ -6336,11 +6336,10 @@ function renderVisualComment(options: {
     : `Source comment: ${options.sourceCommentId || "unknown"}`;
   return [
     visualCommentMarker(options.item.number, options.lens, headSha),
-    body,
-    "",
-    "---",
     `${sourceLine}`,
     `Visual model: ${options.model}, reasoning ${options.reasoningEffort}.`,
+    "",
+    body,
   ].join("\n");
 }
 
