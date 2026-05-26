@@ -6173,6 +6173,8 @@ function buildVisualPrompt(options: {
     "- Do not emit hidden ClawSweeper verdict, action, security, or review markers.",
     "- Avoid Mermaid and generated images. Use ASCII boxes, arrows, split screens, state tables, and checklists.",
     "- Use glyphs only in public markdown when they clarify states or transitions; include a legend when more than three glyphs appear.",
+    "- Standard glyph meanings: ✅ expected/preserved/working/proven; ❌ broken/dropped/failing/rejected path; ⚠️ maintainer risk/unresolved concern/tradeoff; 🐛 confirmed bug path or pre-fix broken behavior; 🔒 credential/security/privacy/trust boundary; 💾 persisted disk state/storage/file output; 🧠 runtime/in-memory/session/active process state; 🧑‍⚖️ maintainer judgment point.",
+    "- Do not decorate every noun. Prefer glyphs on important states, transitions, risks, proof markers, and maintainer judgment points.",
     "",
     "Lens guidance:",
     "- ux: user/operator visible behavior.",
