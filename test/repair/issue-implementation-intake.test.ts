@@ -235,3 +235,13 @@ test("comment router rewrites existing issue implementation jobs on override", (
   assert.match(source, /fs\.writeFileSync\(\s*absolute,\s*renderIssueImplementationJob/s);
   assert.match(source, /issueImplementationJobOptions\(command\)/);
 });
+
+test("comment router classifies protected issue build overrides as hard", () => {
+  const source = readFileSync("src/repair/comment-router.ts", "utf8");
+
+  assert.match(source, /issueImplementationOverrideBlockerClass\(command\)/);
+  assert.match(source, /target\.locked === true/);
+  assert.match(source, /labels\.some\(isIssueImplementationProtectedLabel\)/);
+  assert.match(source, /overrideBlockerClass,\n\s+overrideAction: command\.operator_override/);
+  assert.match(source, /prepare a non-mutating handoff for this issue/);
+});

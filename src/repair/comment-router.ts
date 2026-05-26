@@ -1869,6 +1869,7 @@ function ensureIssueImplementationJob(command: LooseRecord) {
 }
 
 function issueImplementationJobOptions(command: LooseRecord) {
+  const overrideBlockerClass = issueImplementationOverrideBlockerClass(command);
   return {
     repo: command.repo,
     issueNumber: command.issue_number,
@@ -1881,11 +1882,38 @@ function issueImplementationJobOptions(command: LooseRecord) {
     overrideReason: command.operator_override
       ? "maintainer requested /clawsweeper build override"
       : null,
-    overrideBlockerClass: command.operator_override ? "soft" : null,
+    overrideBlockerClass,
     overrideAction: command.operator_override
-      ? "try the narrowest useful reviewable PR for this issue"
+      ? overrideBlockerClass === "hard"
+        ? "prepare a non-mutating handoff for this issue"
+        : "try the narrowest useful reviewable PR for this issue"
       : null,
   };
+}
+
+function issueImplementationOverrideBlockerClass(command: LooseRecord) {
+  if (command.operator_override !== true) return null;
+  const target = command.target ?? {};
+  if (target.kind === "issue" && target.state && target.state !== "open") return "hard";
+  if (target.kind === "issue" && target.locked === true) return "hard";
+  const labels = (target.labels ?? []).map((label: JsonValue) => String(label));
+  if (labels.some(isIssueImplementationProtectedLabel)) return "hard";
+  if (issueImplementationSecuritySignal([target.title, labels.join("\n")].join("\n"))) {
+    return "hard";
+  }
+  return "soft";
+}
+
+function isIssueImplementationProtectedLabel(label: string) {
+  return ["security", "beta-blocker", "release-blocker", "maintainer"].includes(
+    label.trim().toLowerCase(),
+  );
+}
+
+function issueImplementationSecuritySignal(text: string) {
+  return /\b(?:security|vulnerability|cve|ghsa|secret|credential|token|exploit|xss|csrf|ssrf|rce)\b/i.test(
+    text,
+  );
 }
 
 function repairJobModeForCommand(command: LooseRecord) {
@@ -2543,6 +2571,7 @@ function classifyIssueTarget(issue: LooseRecord, issueNumber: JsonValue): JsonVa
   return {
     kind: "issue",
     state: issue.state ?? null,
+    locked: issue.locked ?? null,
     title: issue.title ?? null,
     author: issue.user?.login ?? null,
     labels: (issue.labels ?? []).map((item: JsonValue) => item.name ?? item),
