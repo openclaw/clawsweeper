@@ -380,6 +380,7 @@ jobs:
       - uses: ./.github/actions/setup-state
         with:
           token: ${{ steps.state-token.outputs.token }}
+          fetch-depth: 1
 
       - name: Publish event result and apply safe close
         id: publish-event-result
