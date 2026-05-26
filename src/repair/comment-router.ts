@@ -1894,6 +1894,8 @@ function issueImplementationJobOptions(command: LooseRecord) {
 function issueImplementationOverrideBlockerClass(command: LooseRecord) {
   if (command.operator_override !== true) return null;
   const target = command.target ?? {};
+  if (target.kind === "issue" && target.job_path) return "hard";
+  if (target.kind === "issue" && issueImplementationLinkedPrSignal(target)) return "hard";
   if (target.kind === "issue" && target.state && target.state !== "open") return "hard";
   if (target.kind === "issue" && target.locked === true) return "hard";
   const labels = (target.labels ?? []).map((label: JsonValue) => String(label));
@@ -1902,6 +1904,20 @@ function issueImplementationOverrideBlockerClass(command: LooseRecord) {
     return "hard";
   }
   return "soft";
+}
+
+function issueImplementationLinkedPrSignal(target: LooseRecord) {
+  const candidates = [
+    target.linked_prs,
+    target.linkedPrs,
+    target.existing_prs,
+    target.existingPrs,
+    target.open_prs,
+    target.openPrs,
+    target.pull_request_urls,
+    target.pullRequestUrls,
+  ];
+  return candidates.some((value) => Array.isArray(value) && value.length > 0);
 }
 
 function isIssueImplementationProtectedLabel(label: string) {
