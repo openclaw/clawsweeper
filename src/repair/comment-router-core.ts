@@ -312,6 +312,7 @@ export function renderIssueImplementationJob({
   const visionFitLane = Boolean(visionFit);
   const override = Boolean(operatorOverride);
   const overrideClass = String(overrideBlockerClass ?? "").trim();
+  const hardOverride = override && overrideClass === "hard";
   const overrideActionText = String(overrideAction ?? "").trim();
   const overrideReasonText =
     String(overrideReason ?? "").trim() || "maintainer requested /clawsweeper build override";
@@ -386,6 +387,20 @@ existing mechanism, and stop with a concrete blocker if the work expands beyond
 automation-safe scope.
 `
     : "";
+  const artifactInstructions = hardOverride
+    ? `
+For this hard override, do not emit a fix artifact and do not prepare a code
+branch. Emit a non-mutating result with \`needs_human\` that contains the plan,
+decomposition, or handoff text and the exact hard-blocker evidence.
+`
+    : `
+When code changes are appropriate, emit a fix artifact with
+\`repair_strategy: "new_fix_pr"\`, \`source_prs: []\`, this issue in
+\`linked_refs\`, and validation commands for the touched surface. Keep working
+until the PR branch is locally validated and ready for clean required CI; if CI
+or type/test validation fails, fix and rerun until it passes or a concrete
+external blocker is proven.
+`;
   return `---
 repo: ${repo}
 cluster_id: ${clusterId}
@@ -394,13 +409,11 @@ ${renderJobIntentFrontmatter("implement_issue")}
 allowed_actions:
   - comment
   - label
-  - fix
-  - raise_pr
-blocked_actions:
-  - close
+${hardOverride ? "" : "  - fix\n  - raise_pr\n"}blocked_actions:
+${hardOverride ? "  - fix\n  - raise_pr\n" : ""}  - close
   - merge
 require_human_for:
-  - close
+${hardOverride ? "  - fix\n  - raise_pr\n" : ""}  - close
   - merge
 canonical:
   - ${ref}
@@ -409,7 +422,7 @@ candidates:
 cluster_refs:
   - ${ref}
 allow_instant_close: false
-allow_fix_pr: true
+allow_fix_pr: ${hardOverride ? "false" : "true"}
 allow_merge: false
 allow_unmerged_fix_close: false
 allow_post_merge_close: false
@@ -438,13 +451,7 @@ implementable by automation, do not change code; report the exact blocker.
 ${bugOnlyGuardrails}
 ${visionFitGuardrails}
 ${overrideGuardrails}
-
-When code changes are appropriate, emit a fix artifact with
-\`repair_strategy: "new_fix_pr"\`, \`source_prs: []\`, this issue in
-\`linked_refs\`, and validation commands for the touched surface. Keep working
-until the PR branch is locally validated and ready for clean required CI; if CI
-or type/test validation fails, fix and rerun until it passes or a concrete
-external blocker is proven.
+${artifactInstructions}
 
 ## Guardrails
 
@@ -1600,7 +1607,7 @@ function renderIssueImplementationRefusal(reason: string) {
 }
 
 function isHardIssueImplementationBlocker(reason: string) {
-  return /\b(?:security|protected label|locked|closed|not open|open issue|pull request|existing .*pr|already .*pr|unsupported target repo|no usable request|missing repair work prompt)\b/i.test(
+  return /\b(?:security|protected label|locked|closed|not open|open issue|pull request|pr reference|references a pr|has a pr|open pr|existing .*pr|already .*pr|unsupported target repo|no usable request|missing repair work prompt)\b/i.test(
     reason,
   );
 }

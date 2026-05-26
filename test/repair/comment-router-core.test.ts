@@ -32,6 +32,7 @@ import {
   existingModeStatusBlocksReplay,
   hasCommandResponseMarker,
   issueImplementationClusterId,
+  issueImplementationBlockerClass,
   issueImplementationJobBranch,
   issueImplementationJobPath,
   isAuthorReadOnlyCommandAllowed,
@@ -726,9 +727,20 @@ test("renderIssueImplementationJob records maintainer build override metadata", 
   assert.equal(job.frontmatter.override_requested_by, "maintainer-user");
   assert.equal(job.frontmatter.override_reason, "maintainer requested /clawsweeper build override");
   assert.equal(job.frontmatter.override_blocker_class, "hard");
+  assert.equal(job.frontmatter.allow_fix_pr, false);
+  assert.equal(job.frontmatter.security_sensitive, false);
+  assert.deepEqual(job.frontmatter.allowed_actions, ["comment", "label"]);
+  assert.deepEqual(job.frontmatter.blocked_actions, ["fix", "raise_pr", "close", "merge"]);
   assert.match(job.body, /hard blocker/);
   assert.match(job.body, /non-code artifact/);
   assert.match(job.body, /do not emit a `new_fix_pr` artifact/);
+  assert.doesNotMatch(job.body, /repair_strategy: "new_fix_pr"/);
+});
+
+test("issue implementation blocker classifier treats linked PR evidence as hard", () => {
+  assert.equal(issueImplementationBlockerClass("open PR already mentions this issue"), "hard");
+  assert.equal(issueImplementationBlockerClass("work cluster references a PR"), "hard");
+  assert.equal(issueImplementationBlockerClass("missing validation commands"), "soft");
 });
 
 test("automerge changelog gate does not block user-facing OpenClaw changes", () => {

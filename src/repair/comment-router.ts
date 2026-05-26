@@ -1817,6 +1817,15 @@ function ensureAutomergeJob(command: LooseRecord) {
 
 function ensureIssueImplementationJob(command: LooseRecord) {
   if (command.target?.job_path) {
+    if (command.operator_override === true) {
+      const absolute = path.join(repoRoot(), command.target.job_path);
+      if (fs.existsSync(absolute)) {
+        fs.writeFileSync(
+          absolute,
+          renderIssueImplementationJob(issueImplementationJobOptions(command)),
+        );
+      }
+    }
     return {
       job_path: command.target.job_path,
       mode: command.target.mode ?? dispatchMode(command.target.job_path),
@@ -1836,23 +1845,7 @@ function ensureIssueImplementationJob(command: LooseRecord) {
     fs.mkdirSync(path.dirname(absolute), { recursive: true });
     fs.writeFileSync(
       absolute,
-      renderIssueImplementationJob({
-        repo: command.repo,
-        issueNumber: command.issue_number,
-        title: command.target.title,
-        commentUrl: command.comment_url,
-        author: command.author,
-        implementationPrompt: command.implementation_prompt,
-        operatorOverride: command.operator_override === true,
-        overrideRequestedBy: command.author,
-        overrideReason: command.operator_override
-          ? "maintainer requested /clawsweeper build override"
-          : null,
-        overrideBlockerClass: command.operator_override ? "soft" : null,
-        overrideAction: command.operator_override
-          ? "try the narrowest useful reviewable PR for this issue"
-          : null,
-      }),
+      renderIssueImplementationJob(issueImplementationJobOptions(command)),
     );
     statusDetail = "written";
   }
@@ -1872,6 +1865,26 @@ function ensureIssueImplementationJob(command: LooseRecord) {
     mode: command.target.mode,
     cluster_id: command.target.cluster_id,
     status_detail: statusDetail,
+  };
+}
+
+function issueImplementationJobOptions(command: LooseRecord) {
+  return {
+    repo: command.repo,
+    issueNumber: command.issue_number,
+    title: command.target.title,
+    commentUrl: command.comment_url,
+    author: command.author,
+    implementationPrompt: command.implementation_prompt,
+    operatorOverride: command.operator_override === true,
+    overrideRequestedBy: command.author,
+    overrideReason: command.operator_override
+      ? "maintainer requested /clawsweeper build override"
+      : null,
+    overrideBlockerClass: command.operator_override ? "soft" : null,
+    overrideAction: command.operator_override
+      ? "try the narrowest useful reviewable PR for this issue"
+      : null,
   };
 }
 

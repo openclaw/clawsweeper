@@ -227,3 +227,11 @@ test("comment router default allows one same-head infrastructure retry", () => {
 
   assert.match(source, /CLAWSWEEPER_MAX_REPAIRS_PER_HEAD \?\? 2/);
 });
+
+test("comment router rewrites existing issue implementation jobs on override", () => {
+  const source = readFileSync("src/repair/comment-router.ts", "utf8");
+
+  assert.match(source, /command\.operator_override === true/);
+  assert.match(source, /fs\.writeFileSync\(\s*absolute,\s*renderIssueImplementationJob/s);
+  assert.match(source, /issueImplementationJobOptions\(command\)/);
+});
