@@ -284,6 +284,7 @@ Supported triggers:
 /clawsweeper re-review
 /clawsweeper implement
 /clawsweeper build
+/clawsweeper build override
 /clawsweeper fix ci
 /clawsweeper address review
 /clawsweeper rebase
@@ -314,6 +315,20 @@ path when a dispatch races ahead of state propagation, so the request does not
 silently skip as stale.
 After opening the PR, the worker updates the existing ClawSweeper command status
 comment with the generated PR link.
+If an issue implementation request is refused, the visible status comment must
+include the concrete reason, whether it is a soft or hard blocker, relevant
+evidence when available, the override command `/clawsweeper build override`,
+and what the override will do for that blocker class. Soft blockers include
+automatic-lane ineligibility, medium/large/unclear implementation complexity,
+new-feature or new-config shape, missing validation commands, incomplete review
+shape, and expected decomposition. A maintainer override for a soft blocker
+allows one bounded attempt to create or update a reviewable implementation PR.
+Hard blockers include security-sensitive signals, protected labels, locked or
+closed issues, existing linked PRs, existing ClawSweeper implementation PRs,
+unsupported target repos, and missing usable request/context. A maintainer
+override for a hard blocker does not permit code generation; it asks the worker
+to produce the safest useful non-code artifact, such as a plan, decomposition,
+or human-review handoff.
 When `CLAWSWEEPER_AUTO_IMPLEMENT_REPRO_BUGS=1`, review publish can also dispatch
 the same lane automatically for strict bug reports only: `item_category: bug`,
 `reproduction_status: reproduced`, `reproduction_confidence: high`, high

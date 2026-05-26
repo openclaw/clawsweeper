@@ -192,6 +192,7 @@ for (const comment of comments) {
     intent: parsed.intent,
     autoclose_message: parsed.autoclose_message ?? null,
     implementation_prompt: parsed.implementation_prompt ?? null,
+    operator_override: parsed.operator_override ?? null,
     trusted_bot: Boolean(parsed.trusted_bot),
     trusted_bot_author: parsed.trusted_bot_author ?? null,
     automation_source: parsed.automation_source ?? null,
@@ -1842,6 +1843,15 @@ function ensureIssueImplementationJob(command: LooseRecord) {
         commentUrl: command.comment_url,
         author: command.author,
         implementationPrompt: command.implementation_prompt,
+        operatorOverride: command.operator_override === true,
+        overrideRequestedBy: command.author,
+        overrideReason: command.operator_override
+          ? "maintainer requested /clawsweeper build override"
+          : null,
+        overrideBlockerClass: command.operator_override ? "soft" : null,
+        overrideAction: command.operator_override
+          ? "try the narrowest useful reviewable PR for this issue"
+          : null,
       }),
     );
     statusDetail = "written";

@@ -74,6 +74,44 @@ test("implementation intake rejects feature and config-option work", () => {
   }
 });
 
+test("implementation intake override permits soft blockers", () => {
+  const markdown = report({
+    item_category: "feature",
+    requires_new_feature: "true",
+    work_validation: JSON.stringify([]),
+  });
+  const decision = reportOnlyDecision({
+    targetRepo: "openclaw/openclaw",
+    report: parseReviewReport(markdown),
+    reportMarkdown: markdown,
+    operatorOverride: true,
+  });
+
+  assert.equal(decision.shouldRepair, true);
+  assert.equal(decision.status, "override_queued_for_repair");
+  assert.equal(decision.blockerClass, "soft");
+  assert.equal(decision.operatorOverride, true);
+  assert.match(decision.reason, /item category is feature/);
+});
+
+test("implementation intake override routes hard blockers to handoff", () => {
+  const markdown = report({
+    labels: JSON.stringify(["security"]),
+  });
+  const decision = reportOnlyDecision({
+    targetRepo: "openclaw/openclaw",
+    report: parseReviewReport(markdown),
+    reportMarkdown: markdown,
+    operatorOverride: true,
+  });
+
+  assert.equal(decision.shouldRepair, true);
+  assert.equal(decision.status, "override_handoff");
+  assert.equal(decision.blockerClass, "hard");
+  assert.equal(decision.operatorOverride, true);
+  assert.match(decision.reason, /protected label present/);
+});
+
 test("vision-fit reports are eligible for sibling implementation intake", () => {
   const markdown = report({
     item_category: "feature",

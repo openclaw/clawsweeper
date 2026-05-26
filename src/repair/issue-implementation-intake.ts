@@ -8,6 +8,8 @@ import { ghErrorText, ghJsonWithRetry } from "./github-cli.js";
 import {
   issueImplementationJobBranch,
   issueImplementationJobPath,
+  issueImplementationBlockerClass,
+  issueImplementationOverrideAction,
   renderIssueImplementationJob,
   REVIEW_REPRODUCIBLE_BUG_TRIGGER_SOURCE,
   REVIEW_VISION_FIT_TRIGGER_SOURCE,
@@ -20,6 +22,8 @@ type IntakeDecision = {
   shouldRepair: boolean;
   reason: string;
   blockers: string[];
+  blockerClass?: "soft" | "hard";
+  operatorOverride?: boolean;
 };
 
 type ReviewReport = {
@@ -39,6 +43,13 @@ function main() {
 function prepare() {
   const enabled = stringArg("enabled", "true");
   const candidateKind = candidateKindArg();
+  const operatorOverride = truthy(
+    stringArg("operator-override", stringArg("operator_override", "")),
+  );
+  const overrideRequestedBy = stringArg(
+    "override-requested-by",
+    stringArg("override_requested_by", ""),
+  );
   const targetRepo = stringArg("target-repo", stringArg("target_repo", "openclaw/openclaw"));
   const reportRepo = stringArg("report-repo", stringArg("report_repo", "openclaw/clawsweeper"));
   const itemNumber = positiveInteger(
@@ -65,6 +76,7 @@ function prepare() {
     report,
     reportMarkdown,
     live,
+    operatorOverride,
   });
   const jobPath = path.join(repoRoot(), issueImplementationJobPath(targetRepo, itemNumber));
   const auditPath = path.join(
@@ -89,6 +101,8 @@ function prepare() {
     jobPath,
     auditPath,
     preparedAt,
+    operatorOverride,
+    overrideRequestedBy,
   };
 
   if (decision.shouldRepair) writeJob(context);
@@ -99,6 +113,8 @@ function prepare() {
     should_repair: decision.shouldRepair,
     reason: decision.reason,
     blockers: decision.blockers.join("; "),
+    blocker_class: decision.blockerClass ?? "",
+    operator_override: decision.operatorOverride === true ? "true" : "false",
     target_repo: targetRepo,
     item_number: itemNumber,
     candidate_kind: candidateKind,
@@ -165,11 +181,13 @@ export function reportOnlyDecision({
   report,
   reportMarkdown,
   candidateKind = "strict_bug",
+  operatorOverride = false,
 }: {
   targetRepo: string;
   report: ReviewReport;
   reportMarkdown: string;
   candidateKind?: CandidateKind;
+  operatorOverride?: boolean;
 }): IntakeDecision {
   return eligibilityDecision({
     targetRepo,
@@ -178,6 +196,7 @@ export function reportOnlyDecision({
     live: null,
     enabled: "true",
     candidateKind,
+    operatorOverride,
   });
 }
 
@@ -188,6 +207,7 @@ function intakeDecision({
   report,
   reportMarkdown,
   live,
+  operatorOverride,
 }: {
   enabled: string;
   targetRepo: string;
@@ -196,8 +216,17 @@ function intakeDecision({
   report: ReviewReport;
   reportMarkdown: string;
   live: LooseRecord;
+  operatorOverride: boolean;
 }): IntakeDecision {
-  return eligibilityDecision({ enabled, targetRepo, candidateKind, report, reportMarkdown, live });
+  return eligibilityDecision({
+    enabled,
+    targetRepo,
+    candidateKind,
+    report,
+    reportMarkdown,
+    live,
+    operatorOverride,
+  });
 }
 
 function eligibilityDecision({
@@ -207,6 +236,7 @@ function eligibilityDecision({
   report,
   reportMarkdown,
   live,
+  operatorOverride = false,
 }: {
   enabled: string;
   targetRepo: string;
@@ -214,6 +244,7 @@ function eligibilityDecision({
   report: ReviewReport;
   reportMarkdown: string;
   live: LooseRecord | null;
+  operatorOverride?: boolean;
 }): IntakeDecision {
   if (!truthy(enabled)) {
     return decision("disabled", false, "issue implementation intake disabled");
@@ -292,11 +323,23 @@ function eligibilityDecision({
   }
 
   if (blockers.length) {
+    const blockerClass = strongestBlockerClass(blockers);
+    if (operatorOverride) {
+      return {
+        status: blockerClass === "hard" ? "override_handoff" : "override_queued_for_repair",
+        shouldRepair: true,
+        reason: blockers[0] ?? "not eligible",
+        blockers,
+        blockerClass,
+        operatorOverride: true,
+      };
+    }
     return {
       status: "not_eligible",
       shouldRepair: false,
       reason: blockers[0] ?? "not eligible",
       blockers,
+      blockerClass,
     };
   }
   return decision(
@@ -328,6 +371,15 @@ function writeJob(context: LooseRecord) {
     reviewReportPath: context.reportPath,
     strictBugOnly: candidateKind === "strict_bug",
     visionFit: candidateKind === "vision_fit",
+    operatorOverride: context.operatorOverride === true,
+    overrideRequestedBy: context.overrideRequestedBy,
+    overrideReason:
+      context.operatorOverride === true ? "maintainer requested /clawsweeper build override" : null,
+    overrideBlockerClass: context.decision.blockerClass,
+    overrideAction:
+      context.operatorOverride === true
+        ? issueImplementationOverrideAction(context.decision.reason)
+        : null,
   });
   fs.mkdirSync(path.dirname(context.jobPath), { recursive: true });
   fs.writeFileSync(context.jobPath, body, "utf8");
@@ -426,6 +478,8 @@ prepared_at: ${context.preparedAt}
 - Decision: \`${context.decision.status}\`
 - Candidate kind: \`${context.candidateKind}\`
 - Reason: ${context.decision.reason}
+- Blocker class: ${context.decision.blockerClass ?? "none"}
+- Operator override: ${context.operatorOverride === true ? "true" : "false"}
 - Report: ${context.reportUrl}
 - Branch: \`${issueImplementationJobBranch(context.targetRepo, context.itemNumber)}\`
 ${jobLine}
@@ -538,6 +592,12 @@ function frontMatterStringArray(value: string | undefined): string[] {
 
 function decision(status: string, shouldRepair: boolean, reason: string): IntakeDecision {
   return { status, shouldRepair, reason, blockers: shouldRepair ? [] : [reason] };
+}
+
+function strongestBlockerClass(blockers: string[]): "soft" | "hard" {
+  return blockers.some((blocker) => issueImplementationBlockerClass(blocker) === "hard")
+    ? "hard"
+    : "soft";
 }
 
 function writeStepOutputs(values: Record<string, JsonValue>) {
