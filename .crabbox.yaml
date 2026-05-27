@@ -1,0 +1,54 @@
+# Crabbox config for valkyriweb/clawsweeper.
+#
+# Default invocation pattern (on-demand Linux GHA runner via owned hardware):
+#
+#   crabbox run --reclaim --slug hydrate-mbp --keep --no-hydrate -- 'echo ready'
+#   crabbox actions hydrate --id <lease-id> --github-runner --ref main
+#
+# This registers old-15-mbp as a one-shot ephemeral GHA runner on this repo,
+# dispatches .github/workflows/crabbox-hydrate.yml, and tears down after the
+# keep-alive window. See /Users/luke/Projects/personal/github-triage/crabbox-vs-gha-bake-off.md
+# for the full timing breakdown and gotchas.
+
+provider: ssh
+target: linux
+
+static:
+  host: lue-and-naddy-mbp-old
+  user: luke
+  port: "22"
+  workRoot: /home/luke/crabbox
+
+actions:
+  workflow: .github/workflows/crabbox-hydrate.yml
+  job: hydrate
+  ref: main
+  runnerLabels:
+    - valkyriweb
+    - clawsweeper
+  runnerVersion: latest
+  ephemeral: true
+
+sync:
+  delete: true
+  checksum: false
+  gitSeed: true
+  fingerprint: true
+  baseRef: main
+  exclude:
+    - .artifacts
+    - .codex
+    - .DS_Store
+    - coverage
+    - dist
+    - node_modules
+    - bin
+
+env:
+  allow:
+    - CI
+    - GOFLAGS
+    - GOWORK
+    - NODE_OPTIONS
+    - PNPM_*
+    - NPM_CONFIG_*
