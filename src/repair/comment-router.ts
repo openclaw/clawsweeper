@@ -346,9 +346,6 @@ function classifyCommand(command: LooseRecord): JsonValue {
   if (command.comment_version_key && processedCommentVersions.has(command.comment_version_key)) {
     return { ...command, status: "skipped", reason: "comment version already processed in ledger" };
   }
-  if (command.intent === "hatch" && !isOpenClawProductRepo(String(command.repo ?? ""))) {
-    return { ...command, status: "ignored", reason: "PR egg is disabled for this repo" };
-  }
   let authorization: LooseRecord | null = null;
   if (command.trusted_bot) {
     if (!trustedBots.has(String(command.author ?? "").toLowerCase())) {
@@ -449,36 +446,6 @@ function classifyCommand(command: LooseRecord): JsonValue {
       actions: [
         {
           action: "dispatch_clawsweeper",
-          workflow: reviewWorkflow,
-          status: execute ? "pending" : "planned",
-        },
-        { action: "comment", status: execute ? "pending" : "planned" },
-      ],
-    };
-  }
-  if (command.intent === "hatch") {
-    if (String(issue.state ?? "").toLowerCase() !== "open") {
-      return {
-        ...next,
-        status: "ready",
-        reason: "hatch requires an open pull request",
-        actions: [{ action: "comment", status: execute ? "pending" : "planned" }],
-      };
-    }
-    if (!pull) {
-      return {
-        ...next,
-        status: "ready",
-        reason: "hatch requires a pull request",
-        actions: [{ action: "comment", status: execute ? "pending" : "planned" }],
-      };
-    }
-    return {
-      ...next,
-      status: "ready",
-      actions: [
-        {
-          action: "dispatch_hatch",
           workflow: reviewWorkflow,
           status: execute ? "pending" : "planned",
         },
@@ -782,10 +749,6 @@ function classifyCommand(command: LooseRecord): JsonValue {
       { action: "comment", status: execute ? "pending" : "planned" },
     ],
   };
-}
-
-function isOpenClawProductRepo(repo: string): boolean {
-  return repo.trim().toLowerCase() === "openclaw/openclaw";
 }
 
 function classifyAutoclose(command: LooseRecord, issue: LooseRecord, pull: LooseRecord): JsonValue {
@@ -1260,7 +1223,6 @@ function executeCommand(command: LooseRecord) {
     );
     const shouldDispatchClawSweeper = commandHasAction(command, "dispatch_clawsweeper");
     const shouldDispatchAssist = commandHasAction(command, "dispatch_assist");
-    const shouldDispatchHatch = commandHasAction(command, "dispatch_hatch");
     const shouldMerge = commandHasAction(command, "merge");
     const shouldApplyHumanReviewLabel = commandHasAction(command, "label");
     if (!command.trusted_bot) reactToComment(command, "eyes");
@@ -1428,21 +1390,6 @@ function executeCommand(command: LooseRecord) {
             status: "executed",
             dispatched_at: new Date().toISOString(),
             ...clawsweeper,
-          };
-        }
-        return action;
-      });
-    }
-    if (command.intent === "hatch" && command.issue_number && shouldDispatchHatch) {
-      const hatch = dispatchPrEggHatch(command);
-      dispatched = { ...dispatched, hatch };
-      command.actions = command.actions.map((action: JsonValue) => {
-        if (action.action === "dispatch_hatch") {
-          return {
-            ...action,
-            status: "executed",
-            dispatched_at: new Date().toISOString(),
-            ...hatch,
           };
         }
         return action;
@@ -2041,36 +1988,6 @@ function dispatchClawSweeperAssist(command: LooseRecord) {
   }
   return {
     workflow: "assist.yml",
-    event: "repository_dispatch",
-    repo: reviewRepo,
-    item_number: command.issue_number,
-  };
-}
-
-function dispatchPrEggHatch(command: LooseRecord) {
-  const payload = JSON.stringify({
-    event_type: "clawsweeper_hatch",
-    client_payload: {
-      target_repo: command.repo,
-      item_number: String(command.issue_number),
-      item_kind: command.target?.kind ?? "pull_request",
-      hatch_pr_egg_image: "true",
-    },
-  });
-  const result = ghSpawn(
-    ["api", `repos/${reviewRepo}/dispatches`, "--method", "POST", "--input", "-"],
-    {
-      env: dispatchTokenEnv(),
-      input: payload,
-    },
-  );
-  if (result.status !== 0) {
-    throw new Error(
-      `failed to dispatch PR egg hatch for #${command.issue_number}: ${result.stderr || result.stdout}`,
-    );
-  }
-  return {
-    workflow: reviewWorkflow,
     event: "repository_dispatch",
     repo: reviewRepo,
     item_number: command.issue_number,

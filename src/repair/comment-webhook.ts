@@ -180,9 +180,6 @@ export function classifyIssueCommentWebhook({
   if (!isEligibleRepositoryPayload(repo)) {
     return { accepted: false, reason: "repository not eligible" };
   }
-  if (parsedCommand?.intent === "hatch" && !isOpenClawProductRepo(targetRepo)) {
-    return { accepted: false, reason: "PR egg is disabled for this repo" };
-  }
   const staleReason = staleClosedItemCommandReason({
     command: {
       intent: parsedCommand?.intent,
@@ -290,10 +287,6 @@ function isEligibleRepositoryPayload(repo: LooseRecord) {
   }
 }
 
-function isOpenClawProductRepo(repo: string) {
-  return repo.trim().toLowerCase() === "openclaw/openclaw";
-}
-
 function targetDefaultBranch(repo: LooseRecord) {
   const branch = String(repo.default_branch ?? "main").trim() || "main";
   return /^[A-Za-z0-9_./-]+$/.test(branch) ? branch : "main";
@@ -317,7 +310,7 @@ function isAuthorReadOnlyWebhookCommand({
   issue: LooseRecord;
 }) {
   const parsed = parseCommand(String(comment.body ?? ""));
-  if (parsed?.intent !== "re_review" && parsed?.intent !== "hatch") return false;
+  if (parsed?.intent !== "re_review") return false;
   const commentAuthor = normalizedLogin(asRecord(comment.user).login);
   const issueAuthor = normalizedLogin(asRecord(issue.user).login);
   return Boolean(commentAuthor && issueAuthor && commentAuthor === issueAuthor);

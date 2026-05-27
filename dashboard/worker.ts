@@ -45,7 +45,7 @@ const CLAWSWEEPER_PULL_ITEM_ACTIONS = new Set([
 ]);
 const CLAWSWEEPER_WEBHOOK_DENY_REPOS = new Set(["openclaw/clawsweeper-state", "openclaw/.github"]);
 const CLAWSWEEPER_AUTHOR_READ_ONLY_COMMAND =
-  "(?:review|re-review|rerun|re-run|rerun[ -]?review|re-run[ -]?review|status|explain|hatch|hatch egg|pr egg hatch|hatch pr egg)";
+  "(?:review|re-review|rerun|re-run|rerun[ -]?review|re-run[ -]?review|status|explain)";
 const OPTIONAL_SECTION_TIMEOUT_MS = 6000;
 const STALE_CACHE_TTL_SECONDS = 900;
 const CI_STATUS_TTL_SECONDS = 7200;
@@ -512,9 +512,6 @@ function classifyGithubIssueCommentWebhook({ event, payload }) {
   if (!isEligibleGithubWebhookRepository(repo)) {
     return { accepted: false, reason: "repository not eligible" };
   }
-  if (isGithubWebhookHatchCommand(comment) && !isOpenClawProductRepo(targetRepo)) {
-    return { accepted: false, reason: "PR egg is disabled for this repo" };
-  }
   const itemNumber = Number(issue.number);
   const commentId = Number(comment.id);
   const installationId = Number(objectValue(payload.installation).id);
@@ -612,24 +609,9 @@ function isEligibleGithubWebhookRepository(repo) {
   return owner === "openclaw" || owner === "steipete";
 }
 
-function isOpenClawProductRepo(repo) {
-  return (
-    String(repo || "")
-      .trim()
-      .toLowerCase() === "openclaw/openclaw"
-  );
-}
-
 function targetDefaultBranch(repo) {
   const branch = String(repo.default_branch || "main").trim() || "main";
   return /^[A-Za-z0-9_./-]+$/.test(branch) ? branch : "main";
-}
-
-function isGithubWebhookHatchCommand(comment) {
-  const body = String(comment.body || "");
-  return /(^|[ \t\r\n])@(?:clawsweeper|openclaw-clawsweeper)\b(?:\[bot\])?\s+(?:hatch|hatch egg|pr egg hatch|hatch pr egg)\b/i.test(
-    body,
-  );
 }
 
 function isIgnoredGithubWebhookLabelMutation({ action, payload }) {

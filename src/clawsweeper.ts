@@ -142,18 +142,6 @@ type PrStatusLabelKind =
   | "waiting_on_author"
   | "ready_for_maintainer_look";
 type FeatureShowcaseStatus = "showcase" | "none";
-type PrEggState = "incubating" | "warming" | "wobbling" | "hatched";
-type PrEggRarity = "common" | "uncommon" | "rare" | "glimmer" | "legendary";
-type PrEggImageTraits = {
-  location: string;
-  accessory: string;
-  palette: string;
-  mood: string;
-  pose: string;
-  texture: string;
-  lighting: string;
-  backgroundDetail: string;
-};
 type TelegramVisibleProofStatus = "needed" | "not_needed";
 type MantisRecommendationStatus = "recommended" | "not_recommended";
 type MantisRecommendationScenario =
@@ -184,7 +172,6 @@ type ActionTaken =
   | "kept_open"
   | "proposed_close"
   | "review_comment_synced"
-  | "hatch_comment_synced"
   | "skipped_comment_auth"
   | "skipped_locked_conversation"
   | "skipped_changed_since_review"
@@ -1506,14 +1493,6 @@ function targetRepo(): string {
   return activeRepositoryProfile.targetRepo;
 }
 
-function isOpenClawProductRepo(repo: string | null | undefined): boolean {
-  return normalizeRepo(String(repo ?? "")) === "openclaw/openclaw";
-}
-
-function prEggEnabledForMarkdown(markdown: string): boolean {
-  return isOpenClawProductRepo(markdownRepository(markdown));
-}
-
 function setTargetRepo(targetRepoName: string): RepositoryProfile {
   activeRepositoryProfile = repositoryProfileFor(targetRepoName);
   return activeRepositoryProfile;
@@ -2724,7 +2703,6 @@ function isClawSweeperNoiseComment(value: unknown, number: number): boolean {
   const body = rawCommentBody(value);
   if (!body.trim() || !isClawSweeperComment(value)) return false;
   if (isClawSweeperDurableReviewComment(value, number)) return true;
-  if (/clawsweeper-pr-egg-hatch:/i.test(body)) return true;
   if (/clawsweeper-visual\s+item=/i.test(body)) return true;
   if (/clawsweeper-command(?:-status|-ack)?:/i.test(body)) return true;
   if (/clawsweeper-review-status:/i.test(body)) return true;
@@ -7285,26 +7263,6 @@ function publicMergeReadinessBlock(rating: PrRating, proof: RealBehaviorProof): 
   return lines.join("\n");
 }
 
-function prEggIdentitySeedFromReport(markdown: string): string {
-  const repo = markdownRepository(markdown);
-  const number = frontMatterValue(markdown, "number") ?? "unknown";
-  return `${repo}#${number}`;
-}
-
-function prEggVisualSeedFromReport(markdown: string): string {
-  const identitySeed = prEggIdentitySeedFromReport(markdown);
-  const headSha = frontMatterValue(markdown, "pull_head_sha") ?? "unknown";
-  return `${identitySeed}@${headSha}`;
-}
-
-function prEggShareTargetUrl(markdown: string): string {
-  const commentUrl = frontMatterValue(markdown, "review_comment_url");
-  if (commentUrl && commentUrl !== "unknown") return commentUrl;
-  const repo = markdownRepository(markdown);
-  const number = frontMatterValue(markdown, "number") ?? "unknown";
-  return `https://github.com/${repo}/pull/${number}`;
-}
-
 function prStatusLabelKindFromLabels(labels: readonly string[]): PrStatusLabelKind | null {
   for (const label of PR_STATUS_LABELS) {
     if (labels.includes(label.name)) return label.kind;
@@ -7312,7 +7270,7 @@ function prStatusLabelKindFromLabels(labels: readonly string[]): PrStatusLabelKi
   return null;
 }
 
-function prEggStatusLabelKindFromReportLabels(markdown: string): PrStatusLabelKind | null {
+function prStatusLabelKindFromReportLabels(markdown: string): PrStatusLabelKind | null {
   const parsedLabels = frontMatterStringArray(markdown, "labels");
   const fromParsedLabels = prStatusLabelKindFromLabels(parsedLabels);
   if (fromParsedLabels) return fromParsedLabels;
@@ -7320,238 +7278,6 @@ function prEggStatusLabelKindFromReportLabels(markdown: string): PrStatusLabelKi
   const rawLabels = frontMatterValue(markdown, "labels") ?? "";
   if (rawLabels.includes(AUTOMERGE_LABEL)) return "automerge_armed";
   return PR_STATUS_LABELS.find((label) => rawLabels.includes(label.name))?.kind ?? null;
-}
-
-function prEggIsMergedFromReport(markdown: string): boolean {
-  return (
-    nonUnknownFrontMatter(markdown, "merged_at") !== null ||
-    nonUnknownFrontMatter(markdown, "pull_merged_at") !== null ||
-    frontMatterValue(markdown, "merged") === "true"
-  );
-}
-
-function prEggRenderStatusKind(
-  markdown: string,
-  statusKind: PrStatusLabelKind | null | undefined,
-): PrStatusLabelKind | null {
-  if (statusKind) return statusKind;
-  if (prEggIsMergedFromReport(markdown)) return "ready_for_maintainer_look";
-  return null;
-}
-
-function prEggStateFromStatus(statusKind: PrStatusLabelKind | null | undefined): PrEggState {
-  if (statusKind === "ready_for_maintainer_look" || statusKind === "automerge_armed") {
-    return "hatched";
-  }
-  if (statusKind === "re_review_loop") return "wobbling";
-  if (
-    statusKind === "actively_grinding" ||
-    statusKind === "waiting_on_author" ||
-    statusKind === "needs_proof"
-  ) {
-    return "warming";
-  }
-  return "incubating";
-}
-
-function prEggProofUnlocked(proof: Pick<RealBehaviorProof, "status">): boolean {
-  return (
-    proof.status === "sufficient" ||
-    proof.status === "override" ||
-    proof.status === "not_applicable"
-  );
-}
-
-function publicPrEggLine(
-  markdown: string,
-  options: {
-    realBehaviorProof: RealBehaviorProof;
-    prRating: PrRating;
-    reviewFindings: readonly Pick<ReviewFinding, "priority">[];
-    securityReview: Pick<SecurityReview, "status">;
-    overallCorrectness: OverallCorrectness;
-    statusKind?: PrStatusLabelKind | null;
-  },
-): string {
-  if (!prEggProofUnlocked(options.realBehaviorProof)) {
-    return [
-      "ClawSweeper PR egg: 🎁 locked until real behavior proof passes.",
-      "",
-      "<details>",
-      "<summary>Details</summary>",
-      "",
-      "- No creature or rarity is rolled until proof passes.",
-      "- Eggs are collectible flavor only; they do not affect labels, ratings, merge decisions, or automation.",
-      "",
-      "</details>",
-    ].join("\n");
-  }
-
-  const identitySeed = prEggIdentitySeedFromReport(markdown);
-  const visualSeed = prEggVisualSeedFromReport(markdown);
-  const renderStatusKind = prEggRenderStatusKind(markdown, options.statusKind);
-  const state = prEggStateFromStatus(renderStatusKind);
-  const explainer = [
-    "",
-    "<details>",
-    "<summary>Rules and details</summary>",
-    "",
-    "Hatchability:",
-    "- Merged PRs are hatchable.",
-    "- Open PRs are hatchable when they are `status: 👀 ready for maintainer look`, `status: 🚀 automerge armed`, or labeled `clawsweeper:automerge`.",
-    "- Closed unmerged PRs are hatchable only when one of those hatchable labels is still present in the durable record.",
-    "",
-    "About:",
-    "- Eggs appear after real-behavior proof passes. They are collectible flavor only.",
-    "- Review momentum changes the shell state: follow-up work warms it, re-review makes it wobble, and a clean final review lets it hatch.",
-    "- The hatch is seeded from this repository and PR number, so the same PR keeps the same creature; the reviewed head SHA can only change safe visual details.",
-    "- Rarity is just collectible sparkle: 🥚 common, 🌱 uncommon, 💎 rare, ✨ glimmer, and 🌈 legendary.",
-    "",
-    "</details>",
-  ];
-  if (state === "hatched") {
-    const creature = prEggCreature(identitySeed, visualSeed);
-    const imageUrl = frontMatterValue(markdown, "pr_egg_image_url");
-    const imageBlock =
-      imageUrl && imageUrl !== "unknown"
-        ? [
-            `<img src="${escapeHtmlAttribute(imageUrl)}" width="${PR_EGG_IMAGE_DISPLAY_SIZE}" height="${PR_EGG_IMAGE_DISPLAY_SIZE}" alt="${escapeHtmlAttribute(`Hatched PR egg: ${creature.rarityLabel} ${creature.name}`)}">`,
-            "",
-          ]
-        : [];
-    const shareUrl = `https://x.com/intent/tweet?text=${encodeURIComponent(
-      creature.shareText,
-    )}&url=${encodeURIComponent(prEggShareTargetUrl(markdown))}`;
-    return [
-      `ClawSweeper PR egg: ✨ hatched ${creature.rarityLabel} ${creature.name}. Rarity: ${creature.rarityLabel}. Trait: ${creature.trait}.`,
-      "",
-      "<details>",
-      "<summary>Details</summary>",
-      "",
-      ...imageBlock,
-      `Share on X: ${markdownLink("post this hatch", shareUrl)}`,
-      `Copy: ${creature.shareText}`,
-      ...explainer.slice(4),
-    ].join("\n");
-  }
-  const stateLines: Record<Exclude<PrEggState, "hatched">, string> = {
-    incubating: "🥚 incubating until a hatchable PR state.",
-    warming: "🔥 warming; proof passed, review follow-up or readiness checks remain.",
-    wobbling: "🔁 wobbling during re-review.",
-  };
-  return [
-    `ClawSweeper PR egg: ${stateLines[state]} Hatch with \`@clawsweeper hatch\` when eligible.`,
-    ...explainer,
-  ].join("\n");
-}
-
-function publicPrEggLineFromReport(
-  markdown: string,
-  statusKind?: PrStatusLabelKind | null,
-): string {
-  const options: {
-    realBehaviorProof: RealBehaviorProof;
-    prRating: PrRating;
-    reviewFindings: readonly Pick<ReviewFinding, "priority">[];
-    securityReview: Pick<SecurityReview, "status">;
-    overallCorrectness: OverallCorrectness;
-    statusKind?: PrStatusLabelKind | null;
-  } = {
-    realBehaviorProof: reportRealBehaviorProof(markdown),
-    prRating: reportPrRating(markdown),
-    reviewFindings: reportReviewFindings(markdown),
-    securityReview: reportSecurityReview(markdown),
-    overallCorrectness: reportOverallCorrectness(markdown),
-    statusKind:
-      statusKind === undefined ? prEggStatusLabelKindFromReportLabels(markdown) : statusKind,
-  };
-  return publicPrEggLine(markdown, options);
-}
-
-function prEggImageRelativePath(markdown: string): string {
-  const repo = markdownRepository(markdown);
-  if (!isOpenClawProductRepo(repo)) throw new Error(`PR egg is disabled for target repo: ${repo}`);
-  const profile = repositoryProfileFor(repo);
-  const number = frontMatterValue(markdown, "number") ?? "unknown";
-  return `assets/pr-eggs/${profile.slug}/${number}.png`;
-}
-
-function prEggImagePublicUrl(relativePath: string): string {
-  const base =
-    process.env.CLAWSWEEPER_PR_EGG_IMAGE_BASE_URL ??
-    "https://raw.githubusercontent.com/openclaw/clawsweeper-state/state";
-  const encodedPath = relativePath.split("/").map(encodeURIComponent).join("/");
-  return `${base.replace(/\/+$/, "")}/${encodedPath}`;
-}
-
-function prEggImageGenerationEnabled(): boolean {
-  if (process.env.CLAWSWEEPER_PR_EGG_IMAGES === "0") return false;
-  return Boolean(process.env.OPENAI_API_KEY);
-}
-
-function prEggImageAlreadyRecorded(markdown: string): boolean {
-  const url = frontMatterValue(markdown, "pr_egg_image_url");
-  return Boolean(url && url !== "unknown");
-}
-
-function shouldEnsurePrEggImage(
-  markdown: string,
-  statusKind: PrStatusLabelKind | null | undefined,
-): boolean {
-  return (
-    prEggEnabledForMarkdown(markdown) &&
-    frontMatterValue(markdown, "type") === "pull_request" &&
-    prEggProofUnlocked(reportRealBehaviorProof(markdown)) &&
-    prEggStateFromStatus(statusKind) === "hatched" &&
-    !prEggImageAlreadyRecorded(markdown)
-  );
-}
-
-async function ensurePrEggImage(markdown: string): Promise<string | null> {
-  if (prEggImageAlreadyRecorded(markdown)) return markdown;
-  const relativePath = prEggImageRelativePath(markdown);
-  const assetPath = resolve(ROOT, relativePath);
-  if (existsSync(assetPath)) {
-    return replaceFrontMatterValue(markdown, "pr_egg_image_url", prEggImagePublicUrl(relativePath));
-  }
-  if (!prEggImageGenerationEnabled()) return null;
-
-  const identitySeed = prEggIdentitySeedFromReport(markdown);
-  const visualSeed = prEggVisualSeedFromReport(markdown);
-  const image = await generatePrEggImage(prEggImagePrompt(prEggCreature(identitySeed, visualSeed)));
-  ensureDir(dirname(assetPath));
-  writeFileSync(assetPath, image);
-  return replaceFrontMatterValue(markdown, "pr_egg_image_url", prEggImagePublicUrl(relativePath));
-}
-
-async function generatePrEggImage(prompt: string): Promise<Buffer> {
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) throw new Error("OPENAI_API_KEY missing");
-  const response = await fetch("https://api.openai.com/v1/images/generations", {
-    method: "POST",
-    headers: {
-      authorization: `Bearer ${apiKey}`,
-      "content-type": "application/json",
-    },
-    body: JSON.stringify({
-      model: process.env.CLAWSWEEPER_PR_EGG_IMAGE_MODEL ?? PR_EGG_IMAGE_MODEL,
-      prompt,
-      size: PR_EGG_IMAGE_SOURCE_SIZE,
-      quality: process.env.CLAWSWEEPER_PR_EGG_IMAGE_QUALITY ?? PR_EGG_IMAGE_QUALITY,
-      output_format: "png",
-    }),
-  });
-  if (!response.ok) {
-    throw new Error(
-      `OpenAI PR egg image generation failed: HTTP ${response.status} ${await response.text()}`,
-    );
-  }
-  const body = (await response.json()) as {
-    data?: { b64_json?: string; url?: string }[];
-  };
-  const encoded = body.data?.[0]?.b64_json;
-  if (!encoded) throw new Error("OpenAI PR egg image response did not include b64_json");
-  return Buffer.from(encoded, "base64");
 }
 
 function publicMantisRecommendationBlock(recommendation: MantisRecommendation): string {
@@ -8303,372 +8029,6 @@ function hasShinyProof(proof: Pick<RealBehaviorProof, "status" | "evidenceKind">
       proof.evidenceKind === "screenshot" ||
       proof.evidenceKind === "linked_artifact")
   );
-}
-
-const PR_EGG_RARITIES: { rarity: PrEggRarity; label: string; cutoff: number }[] = [
-  { rarity: "common", label: "🥚 common", cutoff: 7000 },
-  { rarity: "uncommon", label: "🌱 uncommon", cutoff: 9000 },
-  { rarity: "rare", label: "💎 rare", cutoff: 9800 },
-  { rarity: "glimmer", label: "✨ glimmer", cutoff: 9990 },
-  { rarity: "legendary", label: "🌈 legendary", cutoff: 10000 },
-];
-
-const PR_EGG_ADJECTIVES = [
-  "Gilded",
-  "Moonlit",
-  "Velvet",
-  "Neon",
-  "Tiny",
-  "Brave",
-  "Clockwork",
-  "Pearl",
-  "Mossy",
-  "Cosmic",
-  "Sunspot",
-  "Frosted",
-];
-
-const PR_EGG_SPECIES = [
-  "Shellbean",
-  "Clawlet",
-  "Lint Imp",
-  "Merge Sprite",
-  "Proofling",
-  "Diff Drake",
-  "Patch Peep",
-  "Review Wisp",
-  "Branchling",
-  "Test Hopper",
-  "Crabkin",
-  "Signal Puff",
-];
-
-const PR_EGG_TRAITS = [
-  "keeps receipts",
-  "sniffs out flaky tests",
-  "guards the happy path",
-  "collects tiny proofs",
-  "purrs at green checks",
-  "stacks clean commits",
-  "polishes edge cases",
-  "watches the merge queue",
-  "finds missing screenshots",
-  "sleeps inside passing CI",
-  "sparkles near resolved comments",
-  "hums during re-review",
-];
-
-const PR_EGG_LOCATIONS = [
-  "CI tidepool",
-  "merge queue dock",
-  "flaky test forest",
-  "release reef",
-  "review cove",
-  "branch lighthouse",
-  "artifact grotto",
-  "status garden",
-  "diff observatory",
-  "proof lagoon",
-  "workflow harbor",
-  "green-check meadow",
-];
-
-const PR_EGG_ACCESSORIES = [
-  "tiny test log scroll",
-  "green check lantern",
-  "miniature diff map",
-  "shell-shaped keyboard",
-  "review stamp",
-  "commit compass",
-  "proof snapshot camera",
-  "little merge flag",
-  "CI status badge",
-  "lint brush",
-  "rollback rope",
-  "release bell",
-];
-
-const PR_EGG_PALETTES = [
-  "pearl, teal, and neon green",
-  "moonlit blue and soft silver",
-  "coral, mint, and warm cream",
-  "charcoal, cyan, and signal green",
-  "sunrise gold and clean white",
-  "moss green and polished brass",
-  "violet, aqua, and starlight",
-  "rose quartz and slate",
-  "cobalt, lime, and pearl",
-  "amber, ink, and glacier blue",
-  "seafoam, black, and opal",
-  "plum, gold, and soft gray",
-];
-
-const PR_EGG_MOODS = [
-  "curious",
-  "proud",
-  "sleepy but ready",
-  "focused",
-  "celebratory",
-  "watchful",
-  "mischievous",
-  "calm",
-  "determined",
-  "sparkly",
-  "patient",
-  "bright-eyed",
-];
-
-const PR_EGG_POSES = [
-  "holding its accessory up for inspection",
-  "standing beside its cracked shell",
-  "peeking out from the egg shell",
-  "guarding a tiny green check",
-  "waving from a small platform",
-  "sitting proudly on a smooth stone",
-  "leaning over a miniature review desk",
-  "nestled inside a glowing shell",
-  "pointing at a small proof artifact",
-  "balancing on a branch marker",
-  "curling around a status light",
-  "stepping out of a freshly hatched shell",
-];
-
-const PR_EGG_TEXTURES = [
-  "smooth pearl shell",
-  "soft speckled shell",
-  "glossy opal shell",
-  "matte ceramic shell",
-  "translucent glimmer shell",
-  "brushed metal shell",
-  "soft velvet shell",
-  "polished stone shell",
-  "paper lantern shell",
-  "frosted glass shell",
-  "woven fiber shell",
-  "starlit enamel shell",
-];
-
-const PR_EGG_LIGHTING = [
-  "soft studio lighting",
-  "gentle morning glow",
-  "tiny status-light glow",
-  "moonlit rim light",
-  "warm desk-lamp glow",
-  "clean product lighting",
-  "subtle sparkle highlights",
-  "cool dashboard glow",
-  "soft underwater shimmer",
-  "golden review-room light",
-  "calm overcast light",
-  "bright celebratory glints",
-];
-
-const PR_EGG_BACKGROUND_DETAILS = [
-  "small green status lights",
-  "tiny shells and proof notes",
-  "subtle branch markers",
-  "miniature CI buoys",
-  "soft code-shaped tiles",
-  "little resolved-comment flags",
-  "smooth stones and checkmarks",
-  "tiny artifact crates",
-  "gentle dashboard dots",
-  "small review tokens",
-  "quiet workflow signs",
-  "delicate sparkle particles",
-];
-
-const PR_EGG_IMAGE_DISPLAY_SIZE = 256;
-const PR_EGG_IMAGE_SOURCE_SIZE = "1024x1024";
-const PR_EGG_IMAGE_MODEL = "gpt-image-1-mini";
-const PR_EGG_IMAGE_QUALITY = "low";
-
-const PR_EGG_SPRITE_WIDTH = 29;
-const PR_EGG_SPRITE_HEIGHT = 12;
-
-function prEggSpriteLines(lines: readonly string[]): string[] {
-  return Array.from({ length: PR_EGG_SPRITE_HEIGHT }, (_value, index) =>
-    (lines[index] ?? "").padEnd(PR_EGG_SPRITE_WIDTH, " ").slice(0, PR_EGG_SPRITE_WIDTH),
-  );
-}
-
-const PR_EGG_BASE_SPRITES = [
-  prEggSpriteLines([
-    "        /\\     /\\        ",
-    "      _/  \\___/  \\_      ",
-    "     /  ( o   o )  \\     ",
-    "    |      \\_/      |    ",
-    "    |   /\\  ===  /\\ |    ",
-    "     \\_/  \\_____/  \\_/   ",
-    "        _/|_| |_|\\_      ",
-    "       /__| | | |__\\     ",
-    "          ' ' ' '        ",
-    "         /_/     \\_\\     ",
-  ]),
-  prEggSpriteLines([
-    "        .--^^^^--.       ",
-    "     .-'  o    o  '-.    ",
-    "    /       \\__/      \\   ",
-    "   |    /\\  ____  /\\   |  ",
-    "   |   /  \\/____\\/  \\  |  ",
-    "    \\  \\_.------._/  /  ",
-    "     '._  `----'  _.'   ",
-    "        '-.____.-'      ",
-    "       _/|_|  |_|\\_     ",
-    "      /__|      |__\\    ",
-  ]),
-  prEggSpriteLines([
-    "       _..------.._      ",
-    "    .-'  .-.  .-.  '-.   ",
-    "   /    ( * )( * )    \\  ",
-    "  |        .--.        | ",
-    "  |   <\\   ====   />   | ",
-    "   \\    '.______.'    /  ",
-    "    '-._   ____   _.-'   ",
-    "        `-.____.-'       ",
-    "       __/|_||_|\\__      ",
-    "      /__.'    '.__\\     ",
-  ]),
-  prEggSpriteLines([
-    "       /\\  .---.  /\\     ",
-    "      /  \\/     \\/  \\    ",
-    "     /   ( -   - )   \\   ",
-    "    |       ._.       |  ",
-    "    |   /|  ===  |\\   |  ",
-    "     \\  \\|______/|/  /   ",
-    "      '._  `--'  _.'     ",
-    "         '-.__.-'        ",
-    "       _/|_|  |_|\\_      ",
-    "      /__|      |__\\     ",
-  ]),
-];
-
-function hashNumber(seed: string, salt: string): number {
-  return Number.parseInt(sha256(`${salt}:${seed}`).slice(0, 12), 16);
-}
-
-function pickSeeded<T>(values: readonly T[], seed: string, salt: string): T {
-  return values[hashNumber(seed, salt) % values.length]!;
-}
-
-function decoratePrEggSprite(
-  lines: readonly string[],
-  seed: string,
-  rarity: PrEggRarity,
-): string[] {
-  const body = lines.filter((line) => line.trim().length > 0);
-  const sigil = pickSeeded(["*", "+", "=", "~"], seed, "sprite-sigil");
-  if (rarity === "legendary") {
-    return prEggSpriteLines(["*====[ LEGENDARY ]====*", ...body, "*=====================*"]);
-  }
-  if (rarity === "glimmer") {
-    return prEggSpriteLines([
-      ...body,
-      "       `-----------'       ",
-      `.${sigil}~~~~~~~~~~~~~~~~~~~${sigil}.`,
-    ]);
-  }
-  if (rarity === "rare") {
-    return prEggSpriteLines([
-      ...body,
-      "       `-----------'       ",
-      ` ${sigil}===================${sigil}`,
-    ]);
-  }
-  return prEggSpriteLines([...body, "       .-----------.       ", "      '-------------'      "]);
-}
-
-function composePrEggSprite(seed: string, rarity: PrEggRarity): string {
-  const base = pickSeeded(PR_EGG_BASE_SPRITES, seed, "base-sprite");
-  return decoratePrEggSprite(base, seed, rarity).join("\n");
-}
-
-function prEggImagePrompt(creature: {
-  name: string;
-  rarityLabel: string;
-  trait: string;
-  imageTraits: PrEggImageTraits;
-}): string {
-  const traits = creature.imageTraits;
-  return [
-    "Create a square collectible mascot badge for a GitHub pull request hatch.",
-    `Subject: a cute hatched PR egg creature named ${creature.name}.`,
-    `Rarity: ${creature.rarityLabel}. Personality trait: ${creature.trait}.`,
-    `Scene location: ${traits.location}. Accessory: ${traits.accessory}.`,
-    `Palette: ${traits.palette}. Mood: ${traits.mood}. Pose: ${traits.pose}.`,
-    `Shell material: ${traits.texture}. Lighting: ${traits.lighting}.`,
-    `Background detail: ${traits.backgroundDetail}.`,
-    "Style: polished modern product mascot illustration, clean readable silhouette, centered full-body character, crisp shapes that remain legible when displayed at 256x256.",
-    "Constraints: no text, no letters, no numbers, no logos, no UI chrome, no screenshots, no realistic people, no copyrighted characters.",
-  ].join(" ");
-}
-
-function prEggRarity(seed: string): { rarity: PrEggRarity; label: string } {
-  const roll = hashNumber(seed, "rarity") % 10000;
-  return PR_EGG_RARITIES.find((entry) => roll < entry.cutoff) ?? PR_EGG_RARITIES[0]!;
-}
-
-function prEggCreature(
-  identitySeed: string,
-  visualSeed = identitySeed,
-): {
-  name: string;
-  rarity: PrEggRarity;
-  rarityLabel: string;
-  trait: string;
-  imageTraits: PrEggImageTraits;
-  portrait: string;
-  shareText: string;
-} {
-  const rarity = prEggRarity(identitySeed);
-  const name = `${pickSeeded(PR_EGG_ADJECTIVES, identitySeed, "adjective")} ${pickSeeded(
-    PR_EGG_SPECIES,
-    identitySeed,
-    "species",
-  )}`;
-  const shareText = `My PR egg hatched a ${rarity.label} ${name} in ClawSweeper.`;
-  return {
-    name,
-    rarity: rarity.rarity,
-    rarityLabel: rarity.label,
-    trait: pickSeeded(PR_EGG_TRAITS, identitySeed, "trait"),
-    imageTraits: {
-      location: pickSeeded(PR_EGG_LOCATIONS, identitySeed, "location"),
-      accessory: pickSeeded(PR_EGG_ACCESSORIES, identitySeed, "accessory"),
-      palette: pickSeeded(PR_EGG_PALETTES, identitySeed, "palette"),
-      mood: pickSeeded(PR_EGG_MOODS, identitySeed, "mood"),
-      pose: pickSeeded(PR_EGG_POSES, identitySeed, "pose"),
-      texture: pickSeeded(PR_EGG_TEXTURES, identitySeed, "texture"),
-      lighting: pickSeeded(PR_EGG_LIGHTING, identitySeed, "lighting"),
-      backgroundDetail: pickSeeded(PR_EGG_BACKGROUND_DETAILS, identitySeed, "background-detail"),
-    },
-    portrait: composePrEggSprite(visualSeed, rarity.rarity),
-    shareText,
-  };
-}
-
-export function prEggCreatureForTest(
-  identitySeed: string,
-  visualSeed = identitySeed,
-): ReturnType<typeof prEggCreature> {
-  return prEggCreature(identitySeed, visualSeed);
-}
-
-export function prEggImagePromptForTest(identitySeed: string, visualSeed = identitySeed): string {
-  return prEggImagePrompt(prEggCreature(identitySeed, visualSeed));
-}
-
-export function prEggSpriteMetricsForTest(seed: string): { lines: string[]; width: number } {
-  const lines = composePrEggSprite(seed, "common").split("\n");
-  return { lines, width: PR_EGG_SPRITE_WIDTH };
-}
-
-export function renderPrEggCommentForTest(
-  number: number,
-  markdown: string,
-  statusKind?: PrStatusLabelKind | null,
-): string {
-  return renderHatchComment(number, markdown, statusKind);
 }
 
 function defaultRatingNextSteps(options: {
@@ -10966,7 +10326,7 @@ function desiredClawSweeperLabelsFromPublicReport(
     });
     labels = nextPrStatusLabels(
       labels,
-      options.prStatusKind ?? prEggStatusLabelKindFromReportLabels(markdown),
+      options.prStatusKind ?? prStatusLabelKindFromReportLabels(markdown),
     );
     labels = nextTelegramVisibleProofLabels(labels, reportTelegramVisibleProof(markdown));
   } else {
@@ -11027,7 +10387,7 @@ function labelTransitionReason(
       : `Current PR rating is ${inlineCode(current)}, so this older rating label is no longer current.`;
   }
   if (PR_STATUS_LABEL_NAMES.has(label)) {
-    const statusKind = options.prStatusKind ?? prEggStatusLabelKindFromReportLabels(markdown);
+    const statusKind = options.prStatusKind ?? prStatusLabelKindFromReportLabels(markdown);
     return action === "add" && statusKind
       ? prStatusLabelForKind(statusKind).description
       : statusKind
@@ -11148,7 +10508,7 @@ function labelJustificationsFromPublicReport(
         `${FEATURE_SHOWCASE_LABEL_DESCRIPTION} ${sentence(featureShowcase.reason)}`,
       );
     }
-    const statusKind = options.prStatusKind ?? prEggStatusLabelKindFromReportLabels(markdown);
+    const statusKind = options.prStatusKind ?? prStatusLabelKindFromReportLabels(markdown);
     if (statusKind) {
       add(
         prStatusLabelForKind(statusKind).name,
@@ -12666,95 +12026,6 @@ function ensureCloseAppliedComment(options: {
   return "posted close-applied comment";
 }
 
-function hatchMissingRecordMarker(number: number): string {
-  return `<!-- clawsweeper-hatch-missing-record:${number} -->`;
-}
-
-function renderHatchMissingRecordComment(number: number): string {
-  return [
-    "ClawSweeper could not hatch this PR egg yet.",
-    "",
-    "Reason: there is no current durable ClawSweeper review record for this PR, so there is no PR egg state record to update.",
-    "Ask for `@clawsweeper re-review` first, then retry `@clawsweeper hatch` after the ClawSweeper review comment appears.",
-    "",
-    hatchMissingRecordMarker(number),
-  ].join("\n");
-}
-
-function ensureHatchMissingRecordComment(number: number, dryRun: boolean): string {
-  const marker = hatchMissingRecordMarker(number);
-  if (issueCommentWithMarker(number, marker)) {
-    return "matching ClawSweeper hatch-missing-record comment already exists";
-  }
-  if (dryRun) return "dry-run: would post hatch-missing-record comment";
-  const payload = writeCommentPayload(number, renderHatchMissingRecordComment(number));
-  ghWithRetry([
-    "api",
-    `repos/${targetRepo()}/issues/${number}/comments`,
-    "--method",
-    "POST",
-    "--input",
-    payload,
-  ]);
-  return "posted hatch-missing-record comment";
-}
-
-function hatchCommentMarker(number: number): string {
-  return `<!-- clawsweeper-pr-egg-hatch:${number} -->`;
-}
-
-function renderHatchComment(
-  number: number,
-  markdown: string,
-  statusKind: PrStatusLabelKind | null | undefined,
-): string {
-  if (!prEggEnabledForMarkdown(markdown)) return "";
-  return [publicPrEggLineFromReport(markdown, statusKind), "", hatchCommentMarker(number)].join(
-    "\n",
-  );
-}
-
-function upsertHatchComment(
-  number: number,
-  markdown: string,
-  statusKind: PrStatusLabelKind | null | undefined,
-  dryRun: boolean,
-): Record<string, unknown> | undefined {
-  const body = renderHatchComment(number, markdown, statusKind);
-  const existing = issueCommentWithMarker(number, hatchCommentMarker(number));
-  if (!body) {
-    const id = commentId(existing);
-    if (!dryRun && id !== null && canPatchReviewComment(existing)) {
-      ghWithRetry(["api", `repos/${targetRepo()}/issues/comments/${id}`, "--method", "DELETE"]);
-      return undefined;
-    }
-    return existing;
-  }
-  const id = commentId(existing);
-  if (dryRun) return existing;
-  const payload = writeCommentPayload(number, body);
-  if (id !== null && canPatchReviewComment(existing)) {
-    ghWithRetry([
-      "api",
-      `repos/${targetRepo()}/issues/comments/${id}`,
-      "--method",
-      "PATCH",
-      "--input",
-      payload,
-    ]);
-  } else {
-    ghWithRetry([
-      "api",
-      `repos/${targetRepo()}/issues/${number}/comments`,
-      "--method",
-      "POST",
-      "--input",
-      payload,
-    ]);
-  }
-  return issueCommentWithMarker(number, hatchCommentMarker(number));
-}
-
 function postReviewStartStatusComment(options: {
   item: Item;
   position: number;
@@ -13595,8 +12866,6 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
   const progressEvery = Math.max(1, numberArg(args.progress_every, 10));
   const dryRun = boolArg(args.dry_run);
   const syncCommentsOnly = boolArg(args.sync_comments_only);
-  const hatchPrEggImage = boolArg(args.hatch_pr_egg_image);
-  const hatchOnly = syncCommentsOnly && hatchPrEggImage;
   const commentSyncMinAgeDays = numberArg(args.comment_sync_min_age_days, 0);
   const maxRuntimeMs = numberArg(args.max_runtime_ms, 0);
   const reportPath = resolve(stringArg(args.report_path, join(ROOT, "apply-report.json")));
@@ -13624,35 +12893,6 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
   };
   const maybeLogProgress = (message: string): void => {
     if (processedCount % progressEvery === 0) logProgress(message);
-  };
-  const recordMissingHatchResults = (existingNumbers: Set<number>): void => {
-    if (
-      !hatchPrEggImage ||
-      requestedItemNumbers.length === 0 ||
-      !isOpenClawProductRepo(targetRepo())
-    )
-      return;
-    for (const number of requestedItemNumbers) {
-      if (existingNumbers.has(number)) continue;
-      let commentReason = "no current durable ClawSweeper review record";
-      try {
-        commentReason = ensureHatchMissingRecordComment(number, dryRun);
-      } catch (error) {
-        console.error(
-          `[apply] ${new Date().toISOString()} failed to post PR egg missing-record notice for #${number}: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
-        );
-      }
-      results.push({
-        number,
-        action: "skipped_missing_record",
-        reason: `no current durable ClawSweeper review record; ${commentReason}`,
-      });
-      processedCount += 1;
-      maybeLogProgress(`skipped PR egg image #${number}: missing durable record`);
-      if (processedCount >= processedLimit) break;
-    }
   };
   const reportEntriesForDir = (
     dir: string,
@@ -13684,10 +12924,7 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
         ...applyQueueSortFields(readFileSync(join(dir, name), "utf8"), syncCommentsOnly, applyKind),
       }));
   };
-  const fileEntries = [
-    ...reportEntriesForDir(itemsDir, "items"),
-    ...(hatchOnly ? reportEntriesForDir(closedDir, "closed") : []),
-  ]
+  const fileEntries = reportEntriesForDir(itemsDir, "items")
     .filter((entry, index, entries) => {
       if (entry.location === "items") return true;
       return entries.findIndex((candidate) => candidate.number === entry.number) === index;
@@ -13705,7 +12942,6 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
   const closedThisRun = new Set<string>();
   if (fileEntries.length === 0 && !existsSync(itemsDir)) {
     console.log("No items directory.");
-    recordMissingHatchResults(new Set());
     ensureDir(dirname(reportPath));
     writeFileSync(reportPath, JSON.stringify(results, null, 2), "utf8");
     return;
@@ -13713,16 +12949,10 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
   logProgress(
     `starting apply: files=${files.length} dry_run=${dryRun} apply_kind=${applyKind} min_age=${minAgeDescription} apply_close_reasons=${closeReasonFilterText(applyCloseReasons)} stale_min_age_days=${staleMinAgeDays} close_delay_ms=${closeDelayMs} sync_comments_only=${syncCommentsOnly} comment_sync_min_age_days=${commentSyncMinAgeDays} max_runtime_ms=${maxRuntimeMs} item_numbers=${requestedItemNumbers.join(",") || "all"}`,
   );
-  recordMissingHatchResults(new Set(fileEntries.map((entry) => entry.number)));
-  if (processedCount >= processedLimit) {
-    ensureDir(dirname(reportPath));
-    writeFileSync(reportPath, JSON.stringify(results, null, 2), "utf8");
-    return;
-  }
   for (const entry of fileEntries) {
     const file = entry.name;
     const path = entry.path;
-    if (entry.location === "closed" && !hatchOnly) continue;
+    if (entry.location === "closed") continue;
     if (entry.location === "closed" && requestedItemNumberSet.size === 0) continue;
     if (entry.location === "closed" && !requestedItemNumberSet.has(entry.number)) continue;
     if (runtimeBudgetExceeded(startedAtMs, maxRuntimeMs, Date.now())) {
@@ -13788,13 +13018,13 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
       !storedHash ||
       (action !== "proposed_close" && action !== "kept_open" && !shouldProbeClosedState)
     ) {
-      if (!hatchOnly) continue;
+      continue;
     }
-    if (!hatchOnly && !storedHash && !shouldProbeClosedState) {
+    if (!storedHash && !shouldProbeClosedState) {
       continue;
     }
     let isCloseProposal = isApplyCloseCandidateReport(markdown);
-    if (decision === "close" && !isCloseProposal && !hatchOnly && !shouldProbeClosedState) {
+    if (decision === "close" && !isCloseProposal && !shouldProbeClosedState) {
       continue;
     }
     const { item, state } = fetchItem(number);
@@ -13977,48 +13207,6 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
       sameAuthorPairStartCloseable.set(cacheKey, result);
       return result;
     };
-    if (hatchOnly) {
-      if (!isOpenClawProductRepo(repo)) {
-        results.push({ number, action: "kept_open", reason: "PR egg is disabled for this repo" });
-        processedCount += 1;
-        maybeLogProgress(`skipped PR egg image #${number}: disabled for repo ${repo}`);
-        if (processedCount >= processedLimit) break;
-        continue;
-      }
-      if (item.kind !== "pull_request") {
-        results.push({ number, action: "kept_open", reason: "hatch requires a pull request" });
-        processedCount += 1;
-        maybeLogProgress(`skipped PR egg image #${number}: not a pull request`);
-        if (processedCount >= processedLimit) break;
-        continue;
-      }
-      const merged = state !== "open" && fetchPullRequestMerged(number);
-      const statusKind = merged
-        ? "ready_for_maintainer_look"
-        : prEggStatusLabelKindFromReportLabels(markdown);
-      if (!dryRun && shouldEnsurePrEggImage(markdown, statusKind)) {
-        try {
-          markdown = (await ensurePrEggImage(markdown)) ?? markdown;
-        } catch (error) {
-          console.error(
-            `[apply] ${new Date().toISOString()} skipped PR egg image for #${number}: ${
-              error instanceof Error ? error.message : String(error)
-            }`,
-          );
-        }
-      }
-      upsertHatchComment(number, markdown, statusKind, dryRun);
-      if (!dryRun) writeFileSync(path, markdown, "utf8");
-      results.push({
-        number,
-        action: "hatch_comment_synced",
-        reason: "synced PR egg hatch comment",
-      });
-      processedCount += 1;
-      maybeLogProgress(`synced PR egg hatch comment #${number}`);
-      if (processedCount >= processedLimit) break;
-      continue;
-    }
     if (syncCommentsOnly && state !== "open") {
       results.push({ number, action: "skipped_already_closed", reason: `state is ${state}` });
       processedCount += 1;
@@ -14143,22 +13331,6 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
       clawSweeperLabelsChanged ||= telegramVisibleProofSyncResult.changed;
     }
     markdown = replaceFrontMatterValue(markdown, "labels", JSON.stringify(item.labels));
-    if (
-      !dryRun &&
-      hatchPrEggImage &&
-      item.kind === "pull_request" &&
-      shouldEnsurePrEggImage(markdown, currentPrStatusKind)
-    ) {
-      try {
-        markdown = (await ensurePrEggImage(markdown)) ?? markdown;
-      } catch (error) {
-        console.error(
-          `[apply] ${new Date().toISOString()} skipped PR egg image for #${number}: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
-        );
-      }
-    }
     const renderOptions: ReviewCommentRenderOptions = {
       prStatusKind: currentPrStatusKind,
       previousLabels,
@@ -14177,15 +13349,6 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
       reviewSectionValue(markdown, "closeComment"),
     ]);
     const markedReviewComment = markedReviewCommentBody(number, reviewComment);
-    const prEggEnabled = item.kind === "pull_request" && isOpenClawProductRepo(repo);
-    const prEggComment =
-      item.kind === "pull_request" && !isCloseProposal && prEggEnabled
-        ? renderHatchComment(number, markdown, currentPrStatusKind)
-        : "";
-    const existingPrEggComment =
-      item.kind === "pull_request" && !isCloseProposal
-        ? issueCommentWithMarker(number, hatchCommentMarker(number))
-        : undefined;
     const protectedApplyReason = applyProtectedLabelReason(item.labels, closeReason);
     if (applyBlockingProtectedLabels(item.labels, closeReason).length > 0) {
       if (isCloseProposal) {
@@ -14384,12 +13547,6 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
     const needsReviewCommentReferenceSync =
       frontMatterValue(markdown, "review_comment_id") === "unknown" ||
       frontMatterValue(markdown, "review_comment_url") === "unknown";
-    const needsPrEggCommentSync =
-      item.kind === "pull_request" &&
-      !isCloseProposal &&
-      (prEggEnabled
-        ? !commentBodyMatches(existingPrEggComment, prEggComment)
-        : Boolean(existingPrEggComment));
     const needsReviewCommentSync = shouldSyncReviewComment({
       syncCommentsOnly,
       isCloseProposal,
@@ -14427,11 +13584,8 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
     const labelSyncProgressMessage = issueAdvisoryLabelsChanged
       ? `synced advisory issue labels #${number}`
       : `synced ClawSweeper labels #${number}`;
-    if (needsReviewCommentSync || needsPrEggCommentSync) {
-      const lockedReason =
-        needsReviewCommentBodySync || needsPrEggCommentSync
-          ? lockedConversationApplyReason(item)
-          : null;
+    if (needsReviewCommentSync) {
+      const lockedReason = needsReviewCommentBodySync ? lockedConversationApplyReason(item) : null;
       if (lockedReason) {
         if (markApplySkipped("skipped_locked_conversation", lockedReason)) break;
         continue;
@@ -14465,43 +13619,22 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
       } else if (needsReviewCommentSync) {
         syncReasons.push("recorded existing durable comment metadata");
       }
-      if (needsPrEggCommentSync) {
-        if (dryRun) {
-          syncReasons.push(
-            prEggEnabled
-              ? existingPrEggComment
-                ? "would update durable PR egg comment"
-                : "would create durable PR egg comment"
-              : "would remove disabled PR egg comment",
-          );
-        } else {
-          upsertHatchComment(number, markdown, currentPrStatusKind, dryRun);
-          syncReasons.push(
-            prEggEnabled ? "synced durable PR egg comment" : "removed disabled PR egg comment",
-          );
-        }
-      }
       if (needsReviewCommentSync) {
         markdown = updateReviewCommentMetadata(markdown, syncedComment, markedReviewComment);
       }
       if (!dryRun) writeFileSync(path, markdown, "utf8");
       results.push({
         number,
-        action: needsReviewCommentSync ? "review_comment_synced" : "hatch_comment_synced",
+        action: "review_comment_synced",
         reason: syncReasons.join("; "),
       });
       processedCount += 1;
-      maybeLogProgress(
-        needsReviewCommentSync
-          ? `synced review comment #${number}`
-          : `synced PR egg comment #${number}`,
-      );
+      maybeLogProgress(`synced review comment #${number}`);
       if (processedCount >= processedLimit) break;
     }
     if (
       clawSweeperLabelsChanged &&
       !needsReviewCommentSync &&
-      !needsPrEggCommentSync &&
       (!isCloseProposal || syncCommentsOnly)
     ) {
       if (!dryRun) writeFileSync(path, markdown, "utf8");

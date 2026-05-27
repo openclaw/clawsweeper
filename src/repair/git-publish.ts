@@ -254,9 +254,6 @@ function preserveStateOnlyFiles({
 
 function shouldPreserveStateOnlyFile(path: string, rel: string): boolean {
   if (path === "jobs") return /^[^/]+\/inbox\/automerge-.+\.md$/.test(rel);
-  if (path === "assets/pr-eggs" || path === "assets/pr-eggs/") {
-    return /^[^/]+\/\d+\.png$/.test(rel);
-  }
   return false;
 }
 

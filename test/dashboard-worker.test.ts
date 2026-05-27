@@ -1337,7 +1337,7 @@ test("triage uses ClawSweeper GitHub App credentials when no static token is con
 });
 
 test("hosted webhook accepts author read-only mention commands", async () => {
-  for (const body of ["@clawsweeper Re-run", "@clawsweeper hatch"]) {
+  for (const body of ["@clawsweeper Re-run"]) {
     const response = await worker.fetch(
       signedGithubWebhookRequest({
         event: "issue_comment",
@@ -1365,43 +1365,6 @@ test("hosted webhook accepts author read-only mention commands", async () => {
     );
     assert.equal(response.status, 503, `${body} should pass classification before app config`);
     assert.deepEqual(await response.json(), { error: "github_app_not_configured" });
-  }
-});
-
-test("hosted webhook ignores hatch commands outside the OpenClaw product repository", async () => {
-  for (const repo of ["steipete/summarize", "openclaw/clawsweeper"]) {
-    const response = await worker.fetch(
-      signedGithubWebhookRequest({
-        event: "issue_comment",
-        secret: "test-secret",
-        payload: {
-          action: "created",
-          repository: {
-            full_name: repo,
-            private: false,
-            archived: false,
-            fork: false,
-            has_issues: true,
-          },
-          issue: { number: 76991, user: { login: "contributor" } },
-          installation: { id: 123 },
-          comment: {
-            id: 456,
-            body: "@clawsweeper hatch",
-            author_association: "CONTRIBUTOR",
-            user: { login: "contributor" },
-          },
-        },
-      }),
-      { CLAWSWEEPER_WEBHOOK_SECRET: "test-secret" },
-    );
-
-    assert.equal(response.status, 202);
-    assert.deepEqual(await response.json(), {
-      ok: true,
-      accepted: false,
-      reason: "PR egg is disabled for this repo",
-    });
   }
 });
 
