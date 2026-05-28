@@ -22,6 +22,7 @@ const PULL_ITEM_ACTIONS = new Set([
   "labeled",
   "unlabeled",
 ]);
+const inFlightFastAcks = new Map<string, Promise<number>>();
 
 type AcceptedIssueCommentWebhook = {
   accepted: true;
@@ -117,7 +118,7 @@ export async function handleGitHubWebhook({
       pull_requests: "write",
     },
   });
-  const statusCommentId = await createFastAckComment({
+  const statusCommentId = await createFastAckCommentOnce({
     token: targetToken,
     repo: accepted.targetRepo,
     itemNumber: accepted.itemNumber,
@@ -445,6 +446,39 @@ async function createFastAckComment({
   const id = Number(response.id);
   if (!Number.isInteger(id) || id <= 0) throw new Error("fast ack comment response missing id");
   return (await pruneFastAckComments({ token, repo, itemNumber, sourceCommentId })) ?? id;
+}
+
+async function createFastAckCommentOnce({
+  token,
+  repo,
+  itemNumber,
+  sourceCommentId,
+}: {
+  token: string;
+  repo: string;
+  itemNumber: number;
+  sourceCommentId: number;
+}) {
+  const key = fastAckKey({ repo, itemNumber, sourceCommentId });
+  const pending = inFlightFastAcks.get(key);
+  if (pending) return pending;
+  const next = createFastAckComment({ token, repo, itemNumber, sourceCommentId }).finally(() => {
+    inFlightFastAcks.delete(key);
+  });
+  inFlightFastAcks.set(key, next);
+  return next;
+}
+
+function fastAckKey({
+  repo,
+  itemNumber,
+  sourceCommentId,
+}: {
+  repo: string;
+  itemNumber: number;
+  sourceCommentId: number;
+}) {
+  return `${repo.toLowerCase()}:${itemNumber}:${sourceCommentId}`;
 }
 
 async function pruneFastAckComments({
