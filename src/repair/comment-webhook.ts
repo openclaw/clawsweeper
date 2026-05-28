@@ -22,6 +22,7 @@ const PULL_ITEM_ACTIONS = new Set([
   "labeled",
   "unlabeled",
 ]);
+const FAST_ACK_SETTLE_DELAYS_MS = [250, 1500];
 const inFlightFastAcks = new Map<string, Promise<number>>();
 
 type AcceptedIssueCommentWebhook = {
@@ -138,6 +139,12 @@ export async function handleGitHubWebhook({
     commentId: accepted.commentId,
     statusCommentId,
     sourceAction: accepted.sourceAction,
+  });
+  settleFastAckComments({
+    token: targetToken,
+    repo: accepted.targetRepo,
+    itemNumber: accepted.itemNumber,
+    sourceCommentId: accepted.commentId,
   });
   return { statusCode: 202, body: { ok: true, status_comment_id: statusCommentId } };
 }
@@ -448,6 +455,29 @@ async function createFastAckComment({
   return (await pruneFastAckComments({ token, repo, itemNumber, sourceCommentId })) ?? id;
 }
 
+function settleFastAckComments({
+  token,
+  repo,
+  itemNumber,
+  sourceCommentId,
+}: {
+  token: string;
+  repo: string;
+  itemNumber: number;
+  sourceCommentId: number;
+}) {
+  const cleanup = async () => {
+    for (const delayMs of FAST_ACK_SETTLE_DELAYS_MS) {
+      await sleep(delayMs);
+      await pruneFastAckComments({ token, repo, itemNumber, sourceCommentId });
+    }
+  };
+  void cleanup().catch((error) => {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`[clawsweeper webhook] fast ack cleanup failed: ${message}`);
+  });
+}
+
 async function createFastAckCommentOnce({
   token,
   repo,
@@ -479,6 +509,13 @@ function fastAckKey({
   sourceCommentId: number;
 }) {
   return `${repo.toLowerCase()}:${itemNumber}:${sourceCommentId}`;
+}
+
+function sleep(delayMs: number) {
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, delayMs);
+    timer.unref?.();
+  });
 }
 
 async function pruneFastAckComments({

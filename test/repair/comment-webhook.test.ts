@@ -496,6 +496,106 @@ test("concurrent duplicate command webhooks converge on one fast ack comment", a
   }
 });
 
+test("comment webhook settles duplicate fast ack comments after dispatch", async () => {
+  const previousFetch = globalThis.fetch;
+  const previousAppId = process.env.CLAWSWEEPER_APP_ID;
+  const previousClientId = process.env.CLAWSWEEPER_APP_CLIENT_ID;
+  const previousPrivateKey = process.env.CLAWSWEEPER_APP_PRIVATE_KEY;
+  const { privateKey } = crypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
+  let commentLookups = 0;
+  let deletedAck = 0;
+  let resolveDeleted: (() => void) | undefined;
+  const deleted = new Promise<void>((resolve) => {
+    resolveDeleted = resolve;
+  });
+  process.env.CLAWSWEEPER_APP_ID = "12345";
+  delete process.env.CLAWSWEEPER_APP_CLIENT_ID;
+  process.env.CLAWSWEEPER_APP_PRIVATE_KEY = privateKey
+    .export({ type: "pkcs1", format: "pem" })
+    .toString();
+
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = new URL(String(input));
+    const method = String(init?.method ?? "GET").toUpperCase();
+    const path = `${url.pathname}${url.search}`;
+    if (path === "/repos/openclaw/clawsweeper/installation" && method === "GET") {
+      return jsonResponse({ id: 999 });
+    }
+    if (path === "/app/installations/999/access_tokens" && method === "POST") {
+      return jsonResponse({ token: "dispatch-token" });
+    }
+    if (path === "/app/installations/123/access_tokens" && method === "POST") {
+      return jsonResponse({ token: "target-token" });
+    }
+    if (path.startsWith("/repos/openclaw/openclaw/issues/71898/comments?") && method === "GET") {
+      commentLookups += 1;
+      if (commentLookups <= 2) {
+        return jsonResponse([
+          {
+            id: 9001,
+            body: "<!-- clawsweeper-command-ack:456 -->\nClawSweeper picked this up.",
+            created_at: "2026-05-28T13:00:00Z",
+            user: { login: "clawsweeper[bot]" },
+          },
+        ]);
+      }
+      return jsonResponse([
+        {
+          id: 9001,
+          body: "<!-- clawsweeper-command-ack:456 -->\nClawSweeper picked this up.",
+          created_at: "2026-05-28T13:00:00Z",
+          user: { login: "clawsweeper[bot]" },
+        },
+        {
+          id: 9002,
+          body: "<!-- clawsweeper-command-ack:456 -->\nClawSweeper picked this up.",
+          created_at: "2026-05-28T13:00:01Z",
+          user: { login: "clawsweeper[bot]" },
+        },
+      ]);
+    }
+    if (path === "/repos/openclaw/openclaw/issues/comments/456/reactions" && method === "POST") {
+      return jsonResponse({ id: 1 });
+    }
+    if (path === "/repos/openclaw/clawsweeper/dispatches" && method === "POST") {
+      return jsonResponse({});
+    }
+    if (path === "/repos/openclaw/openclaw/issues/comments/9002" && method === "DELETE") {
+      deletedAck = 9002;
+      resolveDeleted?.();
+      return jsonResponse({});
+    }
+    throw new Error(`unexpected fetch ${method} ${path}`);
+  }) as typeof fetch;
+
+  try {
+    const result = await handleGitHubWebhook({
+      event: "issue_comment",
+      payload: {
+        action: "created",
+        repository: { full_name: "openclaw/openclaw" },
+        issue: { number: 71898 },
+        installation: { id: 123 },
+        comment: {
+          id: 456,
+          body: "@clawsweeper re-review",
+          author_association: "MEMBER",
+          user: { login: "user" },
+        },
+      },
+    });
+
+    assert.deepEqual(result, { statusCode: 202, body: { ok: true, status_comment_id: 9001 } });
+    await deleted;
+    assert.equal(deletedAck, 9002);
+  } finally {
+    globalThis.fetch = previousFetch;
+    restoreEnv("CLAWSWEEPER_APP_ID", previousAppId);
+    restoreEnv("CLAWSWEEPER_APP_CLIENT_ID", previousClientId);
+    restoreEnv("CLAWSWEEPER_APP_PRIVATE_KEY", previousPrivateKey);
+  }
+});
+
 test("webhook signature verification uses sha256 body hmac", () => {
   const secret = "test-secret";
   const body = JSON.stringify({ ok: true });
