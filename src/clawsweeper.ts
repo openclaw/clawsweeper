@@ -2147,6 +2147,10 @@ function normalizeDecisionForItem(
   );
   if (reviewFindings.length === decision.reviewFindings.length) return decision;
   if (reviewFindings.length > 0) return { ...decision, reviewFindings };
+  const overallCorrectness =
+    decision.overallCorrectness === "patch is incorrect"
+      ? "patch is correct"
+      : decision.overallCorrectness;
 
   return {
     ...decision,
@@ -2155,10 +2159,15 @@ function normalizeDecisionForItem(
     triagePriority: decision.triagePriority,
     mergeRiskOptions: decision.mergeRiskOptions,
     labelJustifications: decision.labelJustifications,
-    overallCorrectness:
-      decision.overallCorrectness === "patch is incorrect"
-        ? "patch is correct"
-        : decision.overallCorrectness,
+    overallCorrectness,
+    prRating: derivedPrRating({
+      isPullRequest: item?.kind === "pull_request",
+      proof: decision.realBehaviorProof,
+      findings: reviewFindings,
+      securityReview: decision.securityReview,
+      overallCorrectness,
+      overallConfidenceScore: decision.overallConfidenceScore,
+    }),
     workCandidate: "none",
     workConfidence: "low",
     workPriority: "low",

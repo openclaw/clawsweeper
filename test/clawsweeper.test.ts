@@ -4349,14 +4349,90 @@ Full review comments:
 
 test("OpenClaw contributor changelog-entry findings are normalized", () => {
   const decision = parseDecision(
-    changelogReviewDecision(),
+    changelogReviewDecision({
+      realBehaviorProof: {
+        status: "sufficient",
+        summary: "Terminal output from a real OpenClaw checkout shows the changed behavior.",
+        evidenceKind: "terminal",
+        needsContributorAction: false,
+      },
+      prRating: {
+        proofTier: "A",
+        patchTier: "D",
+        overallTier: "D",
+        summary: "The PR is blocked because the changelog entry is missing.",
+        nextSteps: ["Add changelog entry."],
+      },
+      overallConfidenceScore: 0.9,
+    }),
     item({ repo: "openclaw/openclaw", kind: "pull_request" }),
   );
 
   assert.deepEqual(decision.reviewFindings, []);
   assert.equal(decision.overallCorrectness, "patch is correct");
+  assert.equal(decision.prRating.patchTier, "A");
+  assert.equal(decision.prRating.overallTier, "A");
+  assert.deepEqual(decision.prRating.nextSteps, []);
   assert.equal(decision.workCandidate, "none");
   assert.equal(decision.workReason, "");
+
+  const comment = renderReviewCommentFromReport(
+    `${reportFrontMatter({
+      type: "pull_request",
+      number: "74470",
+      decision: "keep_open",
+      close_reason: "none",
+      review_status: "complete",
+      confidence: "high",
+      labels: JSON.stringify(["clawsweeper:automerge"]),
+      work_candidate: decision.workCandidate,
+      pull_head_sha: "abc123def456",
+      pr_rating_overall: decision.prRating.overallTier,
+      pr_rating_proof: decision.prRating.proofTier,
+      pr_rating_patch: decision.prRating.patchTier,
+    })}
+
+## Summary
+
+Keep this PR open for normal maintainer review.
+
+## What This Changes
+
+Removes the stale review blocker.
+
+## Best Possible Solution
+
+${decision.bestSolution}
+
+${realBehaviorProofReportSection(decision.realBehaviorProof)}
+
+## Review Findings
+
+Overall correctness: ${decision.overallCorrectness}
+
+Overall confidence: ${decision.overallConfidenceScore}
+
+Full review comments:
+
+- none
+
+${prRatingReportSection({
+  overallTier: decision.prRating.overallTier,
+  proofTier: decision.prRating.proofTier,
+  patchTier: decision.prRating.patchTier,
+  summary: decision.prRating.summary,
+  nextSteps: "- none",
+})}`,
+    "none",
+  );
+
+  assert.deepEqual(prRatingLabelsForTest([], decision.prRating.overallTier), [
+    "rating: 🦞 diamond lobster",
+  ]);
+  assert.match(comment, /Patch quality: 🦞 diamond lobster/);
+  assert.match(comment, /Result: ready for maintainer review\./);
+  assert.doesNotMatch(comment, /Result: blocked by patch quality or review findings\./);
+  assert.doesNotMatch(comment, /Add changelog entry/i);
 });
 
 test("OpenClaw maintainer changelog-entry findings stay actionable", () => {
