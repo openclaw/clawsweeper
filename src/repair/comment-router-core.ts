@@ -1170,7 +1170,8 @@ export function parseRoutedCommentCommand(
 }
 
 function trustedCommentHasPriorityFinding(body: string) {
-  return /(?:^|\n)\s*(?:[-*]\s*)?(?:\*\*)?\[P[0-3]\]/i.test(String(body ?? ""));
+  const reviewFindings = markdownSection(body, "Review findings");
+  return /(?:^|;|\n)\s*(?:[-*]\s*)?(?:\*\*)?\[P[0-3]\]/i.test(reviewFindings);
 }
 
 function trustedHumanReviewReason(body: string, verdict: LooseRecord | null) {

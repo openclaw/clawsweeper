@@ -1077,6 +1077,32 @@ test("parseTrustedAutomation repairs trusted pass verdicts that still contain P 
   assert.match(parsed.repair_reason, /P-severity findings/);
 });
 
+test("parseTrustedAutomation does not treat pass verdict risk notes as repair findings", () => {
+  const trustedAuthors = new Set(["clawsweeper[bot]"]);
+  const parsed = parseTrustedAutomation(
+    {
+      user: { login: "clawsweeper[bot]" },
+      body: [
+        "Codex review: passed.",
+        "",
+        "**Risk before merge**",
+        "- [P1] Maintainers should accept the shared directory cleanup boundary.",
+        "- [P1] A bad predicate could remove a live bridge record.",
+        "",
+        "**Next step before merge**",
+        "- [P2] No repair lane is needed; the remaining action is landing risk acceptance.",
+        "",
+        "<!-- clawsweeper-verdict:pass item=87563 sha=613071ef179bd015ec9071d5dde2edc1ad3d9424 confidence=high -->",
+      ].join("\n"),
+    },
+    { trustedAuthors },
+  );
+
+  assert.equal(parsed.intent, "clawsweeper_auto_merge");
+  assert.equal(parsed.expected_head_sha, "613071ef179bd015ec9071d5dde2edc1ad3d9424");
+  assert.match(parsed.repair_reason, /verdict: pass/);
+});
+
 test("parseTrustedAutomation treats trusted ClawSweeper needs-human as a pause", () => {
   const trustedAuthors = new Set(["clawsweeper[bot]"]);
   const parsed = parseTrustedAutomation(
