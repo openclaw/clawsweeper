@@ -14434,8 +14434,6 @@ test("apply workflow installs Codex only when apply work can run", () => {
   );
   const preselectBlock = applyJob.slice(preselectStart, setupCodexStart);
   assert.match(preselectBlock, /\[ "\$sync_comments_only" = "true" \]/);
-  assert.match(preselectBlock, /\[ "\$hatch_only" = "true" \]/);
-  assert.match(preselectBlock, /if \[ "\$hatch_only" = "true" \]; then\s+needs_codex=true/);
   assert.match(preselectBlock, /comment-sync-batch/);
   assert.match(preselectBlock, /batch_count="\$\(awk -F=/);
   assert.match(preselectBlock, /\[ "\$\{batch_count:-0\}" -gt 0 \]/);

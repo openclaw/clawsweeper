@@ -319,6 +319,9 @@ export function proposedItemNumbers(options: ProposedItemOptions): number[] {
         type === "pull_request" &&
         frontMatterValue(markdown, "review_status") === "complete" &&
         frontMatterValue(markdown, "local_checkout_access") === "verified" &&
+        hasPullRequestClosePromotionSignal(markdown, options.targetRepo, {
+          staleMinAgeMs: options.staleMinAgeDays * 24 * 60 * 60 * 1000,
+        }) &&
         allowedForTarget(options.targetRepo, type, "duplicate_or_superseded", allowedReasons) &&
         (!allowedCloseReasons || allowedCloseReasons.has("duplicate_or_superseded"));
       if (!selectableClose && !selectablePromotion) return [];
@@ -339,6 +342,60 @@ export function proposedItemNumbers(options: ProposedItemOptions): number[] {
 
 function isSelectableCloseAction(action: string): boolean {
   return action === "proposed_close" || action === "retry_pr_close_coverage_proof";
+}
+
+function hasPullRequestClosePromotionSignal(
+  markdown: string,
+  targetRepo: string,
+  options: { staleMinAgeMs: number },
+): boolean {
+  return (
+    hasLinkedPullRequestSupersessionSignal(markdown, targetRepo) ||
+    ((hasRecommendedPauseOrCloseOption(markdown) || hasStaleFRatedPullRequestSignal(markdown)) &&
+      olderThan(frontMatterValue(markdown, "item_created_at"), options.staleMinAgeMs))
+  );
+}
+
+function hasLinkedPullRequestSupersessionSignal(markdown: string, targetRepo: string): boolean {
+  const [owner, repo] = targetRepo.split("/");
+  if (!owner || !repo) return false;
+  const pullUrl = new RegExp(
+    `https:\\/\\/github\\.com\\/${escapeRegExp(owner)}\\/${escapeRegExp(repo)}\\/pull\\/\\d+\\b`,
+    "i",
+  );
+  const signal =
+    /\b(supersed(?:e|ed|es|ing)|replace(?:s|d|ment)?|duplicate|duplicated|canonical|covered by|landed in)\b/i;
+  return closePromotionSignalTexts(markdown).some(
+    (text) => pullUrl.test(text) && signal.test(text),
+  );
+}
+
+function hasRecommendedPauseOrCloseOption(markdown: string): boolean {
+  return jsonArrayFrontMatter(markdown, "merge_risk_options").some((entry) => {
+    if (!isJsonObject(entry)) return false;
+    return entry.category === "pause_or_close" && entry.recommended === true;
+  });
+}
+
+function hasStaleFRatedPullRequestSignal(markdown: string): boolean {
+  return (
+    frontMatterValue(markdown, "pr_rating_overall") === "F" ||
+    frontMatterValue(markdown, "pr_rating_proof") === "F" ||
+    sectionLineValue(markdown, "Overall tier") === "F" ||
+    sectionLineValue(markdown, "Proof tier") === "F"
+  );
+}
+
+function closePromotionSignalTexts(markdown: string): string[] {
+  return [
+    ...stringArrayFrontMatter(markdown, "work_cluster_refs"),
+    ...jsonArrayFrontMatter(markdown, "merge_risk_options").flatMap((entry) =>
+      isJsonObject(entry) ? [stringValue(entry.title), stringValue(entry.body)] : [],
+    ),
+    sectionValue(markdown, "Best Possible Solution"),
+    sectionValue(markdown, "Evidence"),
+    sectionValue(markdown, "Close Comment"),
+  ].filter(Boolean);
 }
 
 export function commentSyncBatchOutput(options: CommentSyncBatchOptions): Record<string, string> {
@@ -528,6 +585,43 @@ function frontMatterValue(markdown: string, key: string): string {
       ?.trim()
       .replace(/^"|"$/g, "") ?? ""
   );
+}
+
+function jsonArrayFrontMatter(markdown: string, key: string): JsonValue[] {
+  const raw = frontMatterValue(markdown, key);
+  if (!raw) return [];
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function stringArrayFrontMatter(markdown: string, key: string): string[] {
+  return jsonArrayFrontMatter(markdown, key).filter(
+    (entry): entry is string => typeof entry === "string",
+  );
+}
+
+function sectionValue(markdown: string, heading: string): string {
+  const match = markdown.match(
+    new RegExp(`(?:^|\\n)## ${escapeRegExp(heading)}\\n\\n([\\s\\S]*?)(?=\\n## |\\n?$)`),
+  );
+  return match?.[1]?.trim() ?? "";
+}
+
+function sectionLineValue(markdown: string, key: string): string {
+  const match = markdown.match(new RegExp(`^${escapeRegExp(key)}:\\s*(.+)$`, "m"));
+  return match?.[1]?.trim() ?? "";
+}
+
+function stringValue(value: JsonValue): string {
+  return typeof value === "string" ? value : "";
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function repoFor(markdown: string, name: string): string {
