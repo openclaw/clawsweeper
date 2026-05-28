@@ -108,6 +108,7 @@ import {
   shouldReviewItem,
   shouldRetryGh,
   shouldPlanItem,
+  stripEmptyMaintainerRulingFieldsForTest,
   telegramVisibleProofLabelsForTest,
   validateCloseDecision,
 } from "../dist/clawsweeper.js";
@@ -430,6 +431,49 @@ test("review context comment filter removes ClawSweeper self-noise and command-o
     result.included.map((comment) => (comment as { id: number }).id),
     [5, 6],
   );
+});
+
+test("visual brief sanitizer removes empty maintainer ruling template fields", () => {
+  const body = [
+    "# Visual brief",
+    "",
+    "The routing path is working.",
+    "",
+    "## Maintainer ruling",
+    "",
+    "Benefit:",
+    "Risk:",
+    "Proof needed:",
+    "Recommended next action:",
+    "Question presented:",
+  ].join("\n");
+
+  const sanitized = stripEmptyMaintainerRulingFieldsForTest(body);
+
+  assert.equal(sanitized, "# Visual brief\n\nThe routing path is working.");
+});
+
+test("visual brief sanitizer keeps concrete maintainer ruling fields", () => {
+  const body = [
+    "# Visual brief",
+    "",
+    "## Maintainer ruling",
+    "",
+    "Benefit: Reduces operator confusion.",
+    "Risk:",
+    "Proof needed: Live router and assist smoke.",
+    "Recommended next action:",
+    "Question presented: Should maintainers accept this proof?",
+  ].join("\n");
+
+  const sanitized = stripEmptyMaintainerRulingFieldsForTest(body);
+
+  assert.match(sanitized, /## Maintainer ruling/);
+  assert.match(sanitized, /Benefit: Reduces operator confusion\./);
+  assert.doesNotMatch(sanitized, /^Risk:$/m);
+  assert.doesNotMatch(sanitized, /^Recommended next action:$/m);
+  assert.match(sanitized, /Proof needed: Live router and assist smoke\./);
+  assert.match(sanitized, /Question presented: Should maintainers accept this proof\?/);
 });
 
 test("review context comment filter keeps contributor text that only quotes markers", () => {

@@ -6192,7 +6192,7 @@ function buildVisualPrompt(options: {
     "- Show before/after or current/proposed behavior when applicable.",
     "- Show remaining risk or maintainer judgment when applicable.",
     "- Clearly state that this is advisory and maintainers remain the final judges.",
-    "- End exactly with this footer:",
+    "- End with this footer only when it has concrete content. Omit empty fields.",
     "",
     "## Maintainer ruling",
     "",
@@ -6300,6 +6300,41 @@ function visualCommentMarker(number: number, lens: string, headSha: string): str
   return `<!-- clawsweeper-visual item=${number} lens=${normalizeVisualLens(lens)} sha=${headSha || "na"} -->`;
 }
 
+const MAINTAINER_RULING_FIELDS = new Set([
+  "Benefit",
+  "Risk",
+  "Proof needed",
+  "Recommended next action",
+  "Question presented",
+]);
+
+export function stripEmptyMaintainerRulingFieldsForTest(body: string): string {
+  const lines = body.split(/\r?\n/);
+  const headingIndex = lines.findIndex((line) => /^##\s+Maintainer ruling\s*$/i.test(line.trim()));
+  if (headingIndex === -1) return body;
+
+  let endIndex = lines.length;
+  for (let index = headingIndex + 1; index < lines.length; index += 1) {
+    if (/^##\s+\S/.test(lines[index]?.trim() ?? "")) {
+      endIndex = index;
+      break;
+    }
+  }
+
+  const sectionLines = lines.slice(headingIndex + 1, endIndex);
+  const keptSectionLines = sectionLines.filter((line) => {
+    const match = line.trim().match(/^([^:]+):\s*$/);
+    return !match || !MAINTAINER_RULING_FIELDS.has(match[1]?.trim() ?? "");
+  });
+  const hasConcreteContent = keptSectionLines.some((line) => line.trim().length > 0);
+  const replacement = hasConcreteContent ? [lines[headingIndex]!, ...keptSectionLines] : [];
+
+  return [...lines.slice(0, headingIndex), ...replacement, ...lines.slice(endIndex)]
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
 function renderAssistComment(options: {
   body: string;
   model: string;
@@ -6331,7 +6366,9 @@ function renderVisualComment(options: {
   sourceCommentUrl: string;
   sourceCommentId: string;
 }): string {
-  const body = options.body.trim() || "# Visual brief\n\nNo visual brief could be produced.";
+  const body =
+    stripEmptyMaintainerRulingFieldsForTest(options.body).trim() ||
+    "# Visual brief\n\nNo visual brief could be produced.";
   const headSha = itemHeadSha(options.item, options.context);
   const sourceLine = options.sourceCommentUrl
     ? `Source: ${options.sourceCommentUrl}`
