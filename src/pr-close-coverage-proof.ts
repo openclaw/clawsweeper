@@ -345,7 +345,7 @@ function prCloseCoverageProofCoveredWorkIsConcrete(value: string): boolean {
   ) {
     return false;
   }
-  return /\b(?:behavior|intent|review concern|fix(?:es|ed)?|handling|support|validation|proof|guard|route|transport|proxy|restart|drain|legacy|config)\b/.test(
+  return /\b(?:behavior|intent|review concern|fix(?:es|ed)?|handling|support|validation|proof|guard|route|transport|proxy|bypass|loopback|embeddings?|restart|drain|legacy|config)\b/.test(
     normalized,
   );
 }

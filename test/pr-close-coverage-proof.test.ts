@@ -81,6 +81,21 @@ test("PR close coverage proof can close when coverage is concrete", () => {
   assert.equal(decision.proof.decision, "covered");
 });
 
+test("PR close coverage proof can close concrete loopback embeddings bypass work", () => {
+  const decision = prCloseCoverageProofCloseDecision({
+    sourceSummary: "PR A covers the Ollama managed-proxy loopback transport gap.",
+    coveringSummary: "PR B is the replacement PR carrying the loopback embeddings bypass work.",
+    coveredWork: ["PR B carries the loopback embeddings bypass work from PR A."],
+    uniqueSourceWork: [],
+    decision: "covered",
+    reason:
+      "PR B carries the loopback embeddings bypass work and PR A has no unique remaining work.",
+  });
+
+  assert.equal(decision.close, true);
+  assert.equal(decision.proof.decision, "covered");
+});
+
 test("PR close coverage proof keeps open when source work remains unique", () => {
   const decision = prCloseCoverageProofCloseDecision({
     sourceSummary: "PR A fixes the auth route.",
