@@ -12589,8 +12589,15 @@ function upsertHatchComment(
   dryRun: boolean,
 ): Record<string, unknown> | undefined {
   const body = renderHatchComment(number, markdown, statusKind);
-  if (!body) return issueCommentWithMarker(number, hatchCommentMarker(number));
   const existing = issueCommentWithMarker(number, hatchCommentMarker(number));
+  if (!body) {
+    const id = commentId(existing);
+    if (!dryRun && id !== null && canPatchReviewComment(existing)) {
+      ghWithRetry(["api", `repos/${targetRepo()}/issues/comments/${id}`, "--method", "DELETE"]);
+      return undefined;
+    }
+    return existing;
+  }
   const id = commentId(existing);
   if (dryRun) return existing;
   const payload = writeCommentPayload(number, body);
@@ -14038,12 +14045,13 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
       reviewSectionValue(markdown, "closeComment"),
     ]);
     const markedReviewComment = markedReviewCommentBody(number, reviewComment);
+    const prEggEnabled = item.kind === "pull_request" && isOpenClawProductRepo(repo);
     const prEggComment =
-      item.kind === "pull_request" && !isCloseProposal && isOpenClawProductRepo(repo)
+      item.kind === "pull_request" && !isCloseProposal && prEggEnabled
         ? renderHatchComment(number, markdown, currentPrStatusKind)
         : "";
     const existingPrEggComment =
-      item.kind === "pull_request" && !isCloseProposal && isOpenClawProductRepo(repo)
+      item.kind === "pull_request" && !isCloseProposal
         ? issueCommentWithMarker(number, hatchCommentMarker(number))
         : undefined;
     const protectedApplyReason = applyProtectedLabelReason(item.labels, closeReason);
@@ -14246,9 +14254,10 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
       frontMatterValue(markdown, "review_comment_url") === "unknown";
     const needsPrEggCommentSync =
       item.kind === "pull_request" &&
-      isOpenClawProductRepo(repo) &&
       !isCloseProposal &&
-      !commentBodyMatches(existingPrEggComment, prEggComment);
+      (prEggEnabled
+        ? !commentBodyMatches(existingPrEggComment, prEggComment)
+        : Boolean(existingPrEggComment));
     const needsReviewCommentSync = shouldSyncReviewComment({
       syncCommentsOnly,
       isCloseProposal,
@@ -14327,13 +14336,17 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
       if (needsPrEggCommentSync) {
         if (dryRun) {
           syncReasons.push(
-            existingPrEggComment
-              ? "would update durable PR egg comment"
-              : "would create durable PR egg comment",
+            prEggEnabled
+              ? existingPrEggComment
+                ? "would update durable PR egg comment"
+                : "would create durable PR egg comment"
+              : "would remove disabled PR egg comment",
           );
         } else {
           upsertHatchComment(number, markdown, currentPrStatusKind, dryRun);
-          syncReasons.push("synced durable PR egg comment");
+          syncReasons.push(
+            prEggEnabled ? "synced durable PR egg comment" : "removed disabled PR egg comment",
+          );
         }
       }
       if (needsReviewCommentSync) {

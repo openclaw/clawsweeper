@@ -6671,6 +6671,166 @@ if (args[0] === "api" && /\\/issues\\/74477$/.test(path)) {
     assert.match(eggBody, /^ClawSweeper PR egg: ✨ hatched [^\n]+/);
     assert.match(eggBody, /clawsweeper-pr-egg-hatch:74477/);
     assert.doesNotMatch(eggBody, /<img src=/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("normal PR comment sync removes disabled PR egg comments outside product repo", () => {
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    const itemsDir = join(root, "items");
+    const closedDir = join(root, "closed");
+    const plansDir = join(root, "plans");
+    const reportPath = join(root, "apply-report.json");
+    const logPath = join(root, "gh.log");
+    mkdirSync(itemsDir, { recursive: true });
+    mkdirSync(plansDir, { recursive: true });
+    writeFileSync(
+      join(itemsDir, "74481.md"),
+      `${reportFrontMatter({
+        repository: "openclaw/clawsweeper",
+        type: "pull_request",
+        number: "74481",
+        title: "Remove disabled egg",
+        url: "https://github.com/openclaw/clawsweeper/pull/74481",
+        decision: "keep_open",
+        close_reason: "none",
+        confidence: "high",
+        action_taken: "kept_open",
+        review_status: "complete",
+        local_checkout_access: "verified",
+        author: "contributor",
+        author_association: "CONTRIBUTOR",
+        labels: JSON.stringify(["proof: sufficient"]),
+        item_snapshot_hash: "snapshot-a",
+        item_updated_at: "2026-05-19T20:00:00Z",
+        pull_head_sha: "abc123def456",
+      })}
+
+## Summary
+
+This PR should not keep an egg comment.
+
+${realBehaviorProofReportSection()}
+
+${prRatingReportSection()}
+
+## Review Findings
+
+Overall correctness: patch is correct
+
+Overall confidence: 0.9
+
+Full review comments:
+
+- none
+`,
+      "utf8",
+    );
+
+    const ghMock = `
+const { appendFileSync, readFileSync } = require("fs");
+const logPath = ${JSON.stringify(logPath)};
+const rawArgs = process.argv.slice(2);
+const args = rawArgs[0] === "--repo" ? rawArgs.slice(2) : rawArgs;
+appendFileSync(logPath, JSON.stringify(args) + "\\n");
+const path = args[1] || "";
+if (args[0] === "api" && /\\/issues\\/74481$/.test(path)) {
+  console.log(JSON.stringify({
+    number: 74481,
+    title: "Remove disabled egg",
+    html_url: "https://github.com/openclaw/clawsweeper/pull/74481",
+    created_at: "2026-05-19T19:00:00Z",
+    updated_at: "2026-05-19T20:00:00Z",
+    closed_at: null,
+    state: "open",
+    locked: false,
+    active_lock_reason: null,
+    author_association: "CONTRIBUTOR",
+    user: { login: "contributor" },
+    labels: ["proof: sufficient"],
+    pull_request: {}
+  }));
+} else if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/74481\\/timeline(?:\\?|$)/.test(args[2] || "")) {
+  console.log("HTTP/2 200\\n\\n[]");
+} else if (args[0] === "api" && /\\/issues\\/74481\\/timeline(?:\\?|$)/.test(path)) {
+  console.log(JSON.stringify([[]]));
+} else if (args[0] === "api" && /\\/pulls\\/74481$/.test(path)) {
+  console.log(JSON.stringify({
+    number: 74481,
+    html_url: "https://github.com/openclaw/clawsweeper/pull/74481",
+    state: "open",
+    changed_files: 1,
+    commits: 1,
+    review_comments: 0,
+    head: { sha: "abc123def456", ref: "branch", repo: { full_name: "fork/clawsweeper" } },
+    base: { sha: "base-sha", ref: "main", repo: { full_name: "openclaw/clawsweeper" } },
+    user: { login: "contributor" }
+  }));
+} else if (args[0] === "api" && /\\/pulls\\/74481\\/(files|commits|comments)(?:\\?|$)/.test(path)) {
+  console.log(JSON.stringify([[]]));
+} else if (args[0] === "api" && /\\/issues\\/74481\\/comments(?:\\?|$)/.test(path)) {
+  console.log(JSON.stringify([[
+    {
+      id: 555,
+      html_url: "https://github.com/openclaw/clawsweeper/pull/74481#issuecomment-555",
+      body: "Codex review: stale body\\n\\n<!-- clawsweeper-review item=74481 -->",
+      user: { login: "clawsweeper" },
+      created_at: "2026-05-19T19:55:00Z",
+      updated_at: "2026-05-19T19:55:00Z"
+    },
+    {
+      id: 666,
+      html_url: "https://github.com/openclaw/clawsweeper/pull/74481#issuecomment-666",
+      body: "ClawSweeper PR egg\\n\\nold egg\\n\\n<!-- clawsweeper-pr-egg-hatch:74481 -->",
+      user: { login: "clawsweeper" },
+      created_at: "2026-05-19T19:56:00Z",
+      updated_at: "2026-05-19T19:56:00Z"
+    }
+  ]]));
+} else if (args[0] === "api" && /\\/issues\\/comments\\/555$/.test(path)) {
+  const input = args[args.indexOf("--input") + 1];
+  appendFileSync(logPath, JSON.stringify(["patched-review-body", JSON.parse(readFileSync(input, "utf8")).body]) + "\\n");
+  console.log(JSON.stringify({ id: 555, html_url: "https://github.com/openclaw/clawsweeper/pull/74481#issuecomment-555" }));
+} else if (args[0] === "api" && /\\/issues\\/comments\\/666$/.test(path)) {
+  appendFileSync(logPath, JSON.stringify(["deleted-egg-comment", args.includes("DELETE")]) + "\\n");
+  console.log("{}");
+} else if (args[0] === "label" || args[0] === "issue") {
+  appendFileSync(logPath, JSON.stringify(["label-or-issue-command", ...args]) + "\\n");
+  console.log("{}");
+} else {
+  console.error("unexpected gh args", JSON.stringify(args));
+  process.exit(1);
+}
+`;
+    withMockGh(root, ghMock, () => {
+      runApplyDecisionsForTest({
+        targetRepo: "openclaw/clawsweeper",
+        itemsDir,
+        closedDir,
+        plansDir,
+        reportPath,
+        extraArgs: ["--sync-comments-only", "--item-numbers", "74481", "--processed-limit", "10"],
+      });
+    });
+
+    assert.deepEqual(JSON.parse(readFileSync(reportPath, "utf8")), [
+      {
+        number: 74481,
+        action: "review_comment_synced",
+        reason: "updated durable Codex review comment; removed disabled PR egg comment",
+      },
+    ]);
+    const calls = readFileSync(logPath, "utf8")
+      .trim()
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as string[]);
+    assert.equal(
+      calls.some((args) => args[0] === "deleted-egg-comment" && args[1] === true),
+      true,
+    );
     assert.equal(
       calls.some((args) => args[0] === "unexpected-label-or-issue-command"),
       false,
