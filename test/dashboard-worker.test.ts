@@ -1652,6 +1652,123 @@ test("hosted webhook reuses existing fast ack comments on redelivery", async () 
   }
 });
 
+test("hosted webhook coalesces concurrent duplicate fast ack comments", async () => {
+  const originalFetch = globalThis.fetch;
+  const { privateKey } = generateKeyPairSync("rsa", {
+    modulusLength: 2048,
+    privateKeyEncoding: { type: "pkcs8", format: "pem" },
+    publicKeyEncoding: { type: "spki", format: "pem" },
+  });
+  const comments: Array<{ id: number; body: string; created_at: string; user: { login: string } }> =
+    [];
+  const dispatchBodies: unknown[] = [];
+  let fastAckPosts = 0;
+  let reactions = 0;
+  let releaseAckPost: (() => void) | undefined;
+  let markAckPostStarted: (() => void) | undefined;
+  const ackPostRelease = new Promise<void>((resolve) => {
+    releaseAckPost = resolve;
+  });
+  const ackPostStarted = new Promise<void>((resolve) => {
+    markAckPostStarted = resolve;
+  });
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(String(input));
+    const authorization = new Headers(init?.headers).get("authorization");
+    if (url.pathname === "/repos/openclaw/clawsweeper/installation") {
+      return jsonResponse({ id: 999 });
+    }
+    if (url.pathname === "/app/installations/999/access_tokens") {
+      return jsonResponse({ token: "dispatch-token" });
+    }
+    if (url.pathname === "/app/installations/123/access_tokens") {
+      return jsonResponse({ token: "target-token" });
+    }
+    if (url.pathname === "/repos/openclaw/gogcli/issues/597/comments" && init?.method === "GET") {
+      assert.equal(authorization, "Bearer target-token");
+      return jsonResponse([...comments]);
+    }
+    if (url.pathname === "/repos/openclaw/gogcli/issues/597/comments" && init?.method === "POST") {
+      assert.equal(authorization, "Bearer target-token");
+      fastAckPosts += 1;
+      markAckPostStarted?.();
+      await ackPostRelease;
+      const body = JSON.parse(String(init.body || "{}"));
+      const comment = {
+        id: 777,
+        body: String(body.body || ""),
+        created_at: "2026-05-28T13:00:00Z",
+        user: { login: "openclaw-clawsweeper[bot]" },
+      };
+      comments.push(comment);
+      return jsonResponse(comment);
+    }
+    if (url.pathname === "/repos/openclaw/gogcli/issues/comments/456/reactions") {
+      assert.equal(authorization, "Bearer target-token");
+      reactions += 1;
+      return jsonResponse({});
+    }
+    if (url.pathname === "/repos/openclaw/clawsweeper/dispatches") {
+      assert.equal(authorization, "Bearer dispatch-token");
+      dispatchBodies.push(JSON.parse(String(init?.body)));
+      return new Response(null, { status: 204 });
+    }
+    throw new Error(`unexpected fetch ${url}`);
+  };
+
+  const payload = {
+    action: "created",
+    repository: {
+      full_name: "openclaw/gogcli",
+      default_branch: "trunk",
+      private: false,
+      archived: false,
+      fork: false,
+      has_issues: true,
+    },
+    issue: { number: 597, user: { login: "steipete" } },
+    installation: { id: 123 },
+    comment: {
+      id: 456,
+      body: "@clawsweeper build",
+      author_association: "OWNER",
+      user: { login: "steipete" },
+    },
+  };
+  const env = {
+    CLAWSWEEPER_APP_CLIENT_ID: "Iv23test",
+    CLAWSWEEPER_APP_PRIVATE_KEY: privateKey,
+    CLAWSWEEPER_WEBHOOK_SECRET: "test-secret",
+  };
+
+  try {
+    const left = worker.fetch(
+      signedGithubWebhookRequest({ event: "issue_comment", secret: "test-secret", payload }),
+      env,
+    );
+    const right = worker.fetch(
+      signedGithubWebhookRequest({ event: "issue_comment", secret: "test-secret", payload }),
+      env,
+    );
+    await ackPostStarted;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    releaseAckPost?.();
+    const [leftResponse, rightResponse] = await Promise.all([left, right]);
+
+    assert.equal(leftResponse.status, 202);
+    assert.equal(rightResponse.status, 202);
+    assert.deepEqual(await leftResponse.json(), { ok: true, status_comment_id: 777 });
+    assert.deepEqual(await rightResponse.json(), { ok: true, status_comment_id: 777 });
+    assert.equal(fastAckPosts, 1);
+    assert.equal(reactions, 2);
+    assert.equal(comments.length, 1);
+    assert.match(comments[0]?.body || "", /clawsweeper-command-ack:456/);
+    assert.equal(dispatchBodies.length, 2);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("hosted webhook removes duplicate fast ack comments after concurrent redelivery", async () => {
   const originalFetch = globalThis.fetch;
   const { privateKey } = generateKeyPairSync("rsa", {
