@@ -945,6 +945,12 @@ test("parseCommand recognizes ClawSweeper bot mentions", () => {
     intent: "visualize",
     visual_lens: "state",
   });
+  assert.deepEqual(parseCommand("@clawsweeper visualize"), {
+    trigger: "mention",
+    command: "visualize",
+    intent: "visualize",
+    visual_lens: "auto",
+  });
   assert.deepEqual(parseCommand("/clawsweeper visualize"), {
     trigger: "slash",
     command: "visualize",
@@ -1836,6 +1842,35 @@ test("visualize assist dispatch payload stays within repository_dispatch key lim
   assert.equal(clientPayload.assist.model, "gpt-5.5");
   assert.equal(clientPayload.assist.reasoning_effort, "low");
   assert.equal(clientPayload.assist.timeout_ms, "120000");
+  assert.equal("mode" in clientPayload, false);
+  assert.equal("lens" in clientPayload, false);
+});
+
+test("bare visualize dispatch defaults to auto lens within repository_dispatch key limit", () => {
+  const parsed = parseCommand("@clawsweeper visualize");
+  assert.deepEqual(parsed, {
+    trigger: "mention",
+    command: "visualize",
+    intent: "visualize",
+    visual_lens: "auto",
+  });
+
+  const payload = buildClawSweeperAssistDispatchPayload({
+    repo: "openclaw/clawsweeper",
+    issue_number: 213,
+    target: { kind: "pull_request" },
+    comment_id: "4560428808",
+    comment_url: "https://github.com/openclaw/clawsweeper/pull/213#issuecomment-4560428808",
+    author: "maintainer",
+    ...parsed,
+  });
+
+  const clientPayload = payload.client_payload;
+  assert.equal(payload.event_type, "clawsweeper_assist");
+  assert.equal(Object.keys(clientPayload).length <= 10, true);
+  assert.equal(clientPayload.question, "visualize");
+  assert.equal(clientPayload.assist.mode, "visual");
+  assert.equal(clientPayload.assist.lens, "auto");
   assert.equal("mode" in clientPayload, false);
   assert.equal("lens" in clientPayload, false);
 });
