@@ -9820,6 +9820,44 @@ ${routineCiRisk}
   );
 });
 
+test("pull request risk text keeps diff-caused CI risk actionable", () => {
+  const actionableCiRisk = "The workflow change could cause CI checks to fail after merge.";
+  const comment = renderReviewCommentFromReport(
+    `${reportFrontMatter({
+      type: "pull_request",
+      number: "74270",
+      decision: "keep_open",
+      close_reason: "none",
+      work_candidate: "none",
+      pull_head_sha: "abc123def457",
+    })}
+
+## Summary
+
+Keep this PR open while maintainers verify workflow behavior.
+
+## What This Changes
+
+Updates workflow handling.
+
+## Best Possible Solution
+
+Merge after the workflow risk is addressed.
+
+## Risks / Open Questions
+
+${actionableCiRisk}
+`,
+    "none",
+  );
+
+  assert.match(comment, /\*\*Risk before merge\*\*/);
+  assert.match(
+    comment,
+    new RegExp(`- \\[P1\\] ${actionableCiRisk.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`),
+  );
+});
+
 test("OpenClaw pull request comments render PR surface inside evidence details", () => {
   const comment = renderReviewCommentFromReport(
     `${reportFrontMatter({

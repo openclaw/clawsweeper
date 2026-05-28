@@ -7061,7 +7061,7 @@ function isActionablePriorityText(text: string): boolean {
 }
 
 function isRoutineCiOrReviewText(text: string): boolean {
-  return /\b(?:no automated repair|no clawsweeper repair|normal maintainer review|maintainer review and ci|required checks|status checks|ready for maintainer review|ci(?:\/status)? checks?|flaky ci|red ci)\b/i.test(
+  return /\b(?:no automated repair|no clawsweeper repair|normal maintainer review|maintainer review and ci|required checks|status checks|ready for maintainer review|flaky ci|red ci|unrelated (?:ci|status checks?)|ci(?:\/status)? checks? (?:are|were|is|was|remain|remains) (?:red|failing|pending|missing|flaky|unrelated))\b/i.test(
     stripPriorityPrefix(text),
   );
 }
