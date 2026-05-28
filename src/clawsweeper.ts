@@ -13686,7 +13686,7 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
       }
       continue;
     }
-    if (state === "open" && shouldProbeClosedState && !isCloseProposal) {
+    if (state === "open" && shouldProbeClosedState && !isCloseProposal && !syncCommentsOnly) {
       continue;
     }
     if (isUpgradedCloseCandidate) {

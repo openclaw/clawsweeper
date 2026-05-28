@@ -8169,12 +8169,15 @@ test("apply-decisions keeps existing duplicate PR close proposals open when cove
       /I’m closing this PR/,
     );
 
+    writeFileSync(commentWriteLogPath, "", "utf8");
+
     withMockGh(
       root,
       promotionGhMock({
         number: 348,
         title: "Provider route fallback",
         comment: synced.comment,
+        commentWriteLogPath,
         linkedPulls: {
           400: {
             number: 400,
@@ -8200,6 +8203,7 @@ test("apply-decisions keeps existing duplicate PR close proposals open when cove
               "openclaw/openclaw",
               "--apply-kind",
               "all",
+              "--sync-comments-only",
               "--processed-limit",
               "3",
             ],
@@ -8209,6 +8213,7 @@ test("apply-decisions keeps existing duplicate PR close proposals open when cove
     );
 
     const retryReport = JSON.parse(readFileSync(reportPath, "utf8")) as Array<{
+      number: number;
       action: string;
       reason: string;
     }>;
@@ -8217,9 +8222,14 @@ test("apply-decisions keeps existing duplicate PR close proposals open when cove
       false,
     );
     assert.equal(
+      retryReport.find((entry) => entry.number === 348)?.action,
+      "review_comment_synced",
+    );
+    assert.equal(
       retryReport.some((entry) => /proof should not rerun/.test(entry.reason)),
       false,
     );
+    assert.match(readFileSync(commentWriteLogPath, "utf8"), /issues\/comments\/9348/);
     assert.equal(existsSync(join(closedDir, "348.md")), false);
   } finally {
     rmSync(root, { recursive: true, force: true });
