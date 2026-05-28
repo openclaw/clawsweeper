@@ -10259,13 +10259,7 @@ function duplicateCanonicalPullRequestBlockReason(
   options: { reportDirs?: readonly string[] } = {},
 ): string | null {
   if (item.kind !== "pull_request") return null;
-  const linkedRefs = linkedPullRequestRefsFromReport(markdown, item.number);
-  const canonicalRefs = linkedRefs.filter((ref) =>
-    linkedPullRequestHasSupersessionSignal(markdown, item.number, ref.number),
-  );
-  const refsToCheck =
-    canonicalRefs.length > 0 ? canonicalRefs : linkedRefs.length === 1 ? linkedRefs : [];
-  for (const ref of refsToCheck) {
+  for (const ref of prCloseCoverageProofCandidateRefs(markdown, item)) {
     const { number } = ref;
     try {
       const pull = asRecord(ghJson<unknown>(["api", `repos/${targetRepo()}/pulls/${number}`]));
@@ -10304,14 +10298,25 @@ function shorthandRefIsIssue(number: number): boolean {
   }
 }
 
+function linkedRefCanBePullRequest(ref: PullRequestRef): boolean {
+  if (ref.kind === "pull_url") return true;
+  try {
+    ghJson<unknown>(["api", `repos/${targetRepo()}/pulls/${ref.number}`]);
+    return true;
+  } catch {
+    return !shorthandRefIsIssue(ref.number);
+  }
+}
+
 function prCloseCoverageProofCandidateRefs(markdown: string, item: Item): PullRequestRef[] {
   if (item.kind !== "pull_request") return [];
   const linkedRefs = linkedPullRequestRefsFromReport(markdown, item.number);
-  const canonicalRefs = linkedRefs.filter((ref) =>
-    linkedPullRequestHasSupersessionSignal(markdown, item.number, ref.number),
-  );
+  const canonicalRefs = linkedRefs
+    .filter((ref) => linkedPullRequestHasSupersessionSignal(markdown, item.number, ref.number))
+    .filter(linkedRefCanBePullRequest);
   if (canonicalRefs.length > 0) return canonicalRefs;
-  return linkedRefs.length === 1 ? linkedRefs : [];
+  const possiblePullRequestRefs = linkedRefs.filter(linkedRefCanBePullRequest);
+  return possiblePullRequestRefs.length === 1 ? possiblePullRequestRefs : [];
 }
 
 interface PrCloseCoverageProofGateBlock {
