@@ -15,6 +15,7 @@ import { defaultCloseComment, externalMessageProvenance } from "./external-messa
 import {
   ghBestEffortWithRetry as ghBestEffort,
   ghErrorText,
+  githubLimitedPagePath,
   ghJsonWithRetry as ghJson,
   ghPagedWithRetry as ghPaged,
   ghTextWithRetry as ghWithRetry,
@@ -31,6 +32,13 @@ import {
   buildRepairSquashMergeMessage,
   writeRepairSquashMergeBody,
 } from "./repair-merge-message.js";
+import {
+  compactPrCloseCoverageProofComment,
+  prCloseCoverageProofCandidateCanClose,
+  prCloseCoverageProofCloseDecision,
+  runPrCloseCoverageProofModel,
+  type PrCloseCoverageProofPullRequestView,
+} from "../pr-close-coverage-proof.js";
 
 const MAINTAINER_AUTHOR_ASSOCIATIONS = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
 const CLOSE_ACTIONS = new Set([
@@ -50,6 +58,8 @@ const CLOSE_CLASSIFICATIONS = new Set([
 ]);
 const PASSING_CHECK_CONCLUSIONS = new Set(["SUCCESS", "SKIPPED", "NEUTRAL"]);
 const CLEAN_MERGE_STATES = new Set(["CLEAN"]);
+const PR_CLOSE_COVERAGE_PROOF_COMMENT_LIMIT = 50;
+const GITHUB_MAX_PAGE_SIZE = 100;
 
 const args = parseArgs(process.argv.slice(2));
 const jobPath = args._[0];
@@ -297,7 +307,7 @@ function applyCloseAction({
   if (replacementCloseoutBlock)
     return { ...base, status: "blocked", reason: replacementCloseoutBlock };
 
-  const live = fetchIssue(result.repo, target);
+  let live = fetchIssue(result.repo, target);
   const kind = live.pull_request ? "pull_request" : "issue";
   const authorAssociation = normalizeAuthorAssociation(live.author_association);
   if (hasSecuritySignal(live)) {
@@ -367,6 +377,71 @@ function applyCloseAction({
   }
   const lockedSkip = lockedConversationSkipIfLocked(base, live);
   if (lockedSkip) return lockedSkip;
+
+  const proofValidation = validatePrCloseCoverageProof({
+    result,
+    action,
+    actionName,
+    target,
+    live,
+    canonical,
+    candidateFix,
+    classification,
+  });
+  if (proofValidation?.status === "blocked") {
+    return {
+      ...base,
+      ...proofValidation,
+      live_state: live.state,
+      live_updated_at: live.updated_at,
+    };
+  }
+  live = fetchIssue(result.repo, target);
+  if (expectedUpdatedAt && expectedUpdatedAt !== live.updated_at) {
+    return {
+      ...base,
+      status: "blocked",
+      reason: "target changed since worker review",
+      expected_updated_at: expectedUpdatedAt,
+      live_updated_at: live.updated_at,
+      live_state: live.state,
+    };
+  }
+  if (proofValidation?.status === "covered") {
+    const postProofCoveringFreshnessBlock = validatePrCloseCoverageCoveringFreshness({
+      result,
+      coveringRef: proofValidation.coveringRef,
+      coveringUpdatedAt: proofValidation.coveringUpdatedAt,
+    });
+    if (postProofCoveringFreshnessBlock) {
+      return {
+        ...base,
+        status: "blocked",
+        reason: postProofCoveringFreshnessBlock,
+        requeue_required: true,
+        live_state: live.state,
+        live_updated_at: live.updated_at,
+      };
+    }
+  }
+  const postProofCoveringSafetyBlock = validatePrCloseCoverageCoveringRefSafety({
+    result,
+    actionName,
+    target,
+    live,
+    canonical,
+    candidateFix,
+    classification,
+  });
+  if (postProofCoveringSafetyBlock) {
+    return {
+      ...base,
+      status: "blocked",
+      reason: postProofCoveringSafetyBlock,
+      live_state: live.state,
+      live_updated_at: live.updated_at,
+    };
+  }
 
   if (dryRun) {
     return {
@@ -779,6 +854,441 @@ function validateReplacementCloseout({ result, actionName, target }: LooseRecord
   return "replacement PR closeout is handled by execute-fix after the replacement branch is pushed";
 }
 
+function validatePrCloseCoverageProof({
+  result,
+  action,
+  actionName,
+  target,
+  live,
+  canonical,
+  candidateFix,
+  classification,
+}: LooseRecord) {
+  const coveringRef = prCloseCoverageProofCoveringRef({
+    actionName,
+    classification,
+    canonical,
+    candidateFix,
+  });
+  if (!coveringRef || coveringRef === target || !live.pull_request) return null;
+
+  let source: PrCloseCoverageProofPullRequestView;
+  let covering: PrCloseCoverageProofPullRequestView;
+  try {
+    const coveringIssue = fetchIssue(result.repo, coveringRef);
+    if (!coveringIssue.pull_request) return null;
+
+    source = hydratePrCloseCoveragePullRequest(result.repo, target, live);
+    covering = hydratePrCloseCoveragePullRequest(result.repo, coveringRef, coveringIssue);
+    if (!prCloseCoverageProofCandidateCanClose(covering)) {
+      return {
+        status: "blocked",
+        reason: `PR close coverage proof requires an open or merged covering pull request; #${coveringRef} is ${covering.state}`,
+      };
+    }
+    const coveringSafetyBlock = validatePrCloseCoverageCoveringSafety({
+      result,
+      coveringRef,
+      coveringIssue,
+      covering,
+    });
+    if (coveringSafetyBlock) {
+      return { status: "blocked", reason: coveringSafetyBlock };
+    }
+  } catch (error) {
+    return {
+      status: "blocked",
+      reason: prCloseCoverageProofFailureReason(error),
+    };
+  }
+
+  try {
+    const proof = runPrCloseCoverageProofModel({
+      source,
+      covering,
+      markdown: prCloseCoverageProofRepairSourceReport({
+        result,
+        action,
+        actionName,
+        classification,
+        target,
+        live,
+        coveringRef,
+      }),
+      relationshipSignalSnippets: prCloseCoverageProofRelationshipSignals({
+        action,
+        actionName,
+        coveringRef,
+      }),
+      runtime: prCloseCoverageProofRuntime(),
+    });
+    const closeDecision = prCloseCoverageProofCloseDecision(proof);
+    if (closeDecision.close) {
+      return {
+        status: "covered",
+        coveringRef,
+        coveringUpdatedAt: covering.updatedAt,
+      };
+    }
+    return {
+      status: "blocked",
+      reason: `PR close coverage proof kept the source pull request open: ${closeDecision.reason}`,
+      pr_close_coverage_proof: closeDecision.proof,
+    };
+  } catch (error) {
+    return {
+      status: "blocked",
+      requeue_required: true,
+      reason: prCloseCoverageProofFailureReason(error),
+    };
+  }
+}
+
+function validatePrCloseCoverageCoveringFreshness({
+  result,
+  coveringRef,
+  coveringUpdatedAt,
+}: LooseRecord): string {
+  const expectedUpdatedAt = stringOrNull(coveringUpdatedAt);
+  if (!expectedUpdatedAt) return "";
+
+  try {
+    const liveUpdatedAt = prCloseCoverageCoveringUpdatedAt(result.repo, coveringRef);
+    if (liveUpdatedAt === expectedUpdatedAt) return "";
+    return `linked canonical PR #${coveringRef} changed after coverage proof`;
+  } catch (error) {
+    return prCloseCoverageProofFailureReason(error);
+  }
+}
+
+function validatePrCloseCoverageCoveringRefSafety({
+  result,
+  actionName,
+  target,
+  live,
+  canonical,
+  candidateFix,
+  classification,
+}: LooseRecord): string {
+  const coveringRef = prCloseCoverageProofCoveringRef({
+    actionName,
+    classification,
+    canonical,
+    candidateFix,
+  });
+  if (!coveringRef || coveringRef === target || !live.pull_request) return "";
+
+  try {
+    const coveringIssue = fetchIssue(result.repo, coveringRef);
+    if (!coveringIssue.pull_request) return "";
+    const coveringPull = fetchPullRequest(result.repo, coveringRef);
+    const covering = {
+      state:
+        stringFromUnknown(coveringPull.state) ||
+        stringFromUnknown(coveringIssue.state) ||
+        "unknown",
+      mergedAt: stringOrNull(coveringPull.merged_at ?? coveringPull.mergedAt),
+    };
+    if (!prCloseCoverageProofCandidateCanClose(covering)) {
+      return `PR close coverage proof requires an open or merged covering pull request; #${coveringRef} is ${covering.state}`;
+    }
+    return validatePrCloseCoverageCoveringSafety({
+      result,
+      coveringRef,
+      coveringIssue,
+      covering,
+    });
+  } catch (error) {
+    return prCloseCoverageProofFailureReason(error);
+  }
+}
+
+function prCloseCoverageProofFailureReason(error: unknown): string {
+  return `PR close coverage proof failed: ${error instanceof Error ? error.message : String(error)}`;
+}
+
+function prCloseCoverageCoveringUpdatedAt(repo: string, number: JsonValue): string | null {
+  const pull = fetchPullRequest(repo, number);
+  const pullUpdatedAt = stringOrNull(pull.updated_at ?? pull.updatedAt);
+  if (pullUpdatedAt) return pullUpdatedAt;
+  const issue = fetchIssue(repo, number);
+  return stringOrNull(issue.updated_at ?? issue.updatedAt);
+}
+
+function validatePrCloseCoverageCoveringSafety({
+  result,
+  coveringRef,
+  coveringIssue,
+  covering,
+}: LooseRecord): string {
+  if (covering.mergedAt) return "";
+  const pullRequest = fetchPullRequest(result.repo, coveringRef);
+  const view = fetchPullRequestView(result.repo, coveringRef);
+  const mergeBlock = validateMergeablePullRequest({ pullRequest, view });
+  if (mergeBlock) return formatCoveringPullRequestBlock(coveringRef, mergeBlock);
+  if (resultHasPlannedCloseForTarget(result, coveringRef)) {
+    return `linked canonical PR #${coveringRef} is itself proposed for close`;
+  }
+
+  const labels = labelNames(coveringIssue.labels).map(normalizeLabelName);
+  const proofPassed = labels.some((label) => /^proof:\s*(sufficient|override)\b/i.test(label));
+  const needsProof = labels.some(
+    (label) =>
+      label === "triage: needs-real-behavior-proof" ||
+      (label.startsWith("status:") && label.includes("needs proof")),
+  );
+  if (needsProof && !proofPassed) {
+    return `linked canonical PR #${coveringRef} is still waiting for real behavior proof`;
+  }
+  if (!proofPassed) {
+    return `linked canonical PR #${coveringRef} has no positive real behavior proof`;
+  }
+  return "";
+}
+
+function formatCoveringPullRequestBlock(coveringRef: JsonValue, reason: string): string {
+  if (reason === "pull request is draft") {
+    return `linked canonical PR #${coveringRef} is still draft`;
+  }
+  if (reason === "mergeable state is CONFLICTING") {
+    return `linked canonical PR #${coveringRef} has merge conflicts`;
+  }
+  return `linked canonical PR #${coveringRef} ${reason}`;
+}
+
+function resultHasPlannedCloseForTarget(result: LooseRecord, target: JsonValue): boolean {
+  return (result.actions ?? []).some(
+    (entry: JsonValue) =>
+      CLOSE_ACTIONS.has(String(entry?.action ?? "")) &&
+      normalizeIssueRef(entry?.target, result.repo) === target &&
+      String(entry?.status ?? "") === "planned",
+  );
+}
+
+function labelNames(value: JsonValue): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((entry: JsonValue) => {
+      if (typeof entry === "string") return entry;
+      return stringFromUnknown(entry?.name);
+    })
+    .filter((entry: string) => entry.trim());
+}
+
+function normalizeLabelName(value: string): string {
+  return value.trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+function prCloseCoverageProofRepairSourceReport({
+  result,
+  action,
+  actionName,
+  classification,
+  target,
+  live,
+  coveringRef,
+}: LooseRecord) {
+  const evidence = Array.isArray(action.evidence) ? action.evidence.map(compactSignalText) : [];
+  const lines = [
+    "# PR A repair close action report",
+    "",
+    `Repository: ${stringFromUnknown(result.repo) || "unknown"}`,
+    `Source PR A: #${target} ${stringFromUnknown(live.title) || ""}`.trim(),
+    `Covering PR B: #${coveringRef}`,
+    `Action: ${actionName}`,
+    `Classification: ${classification}`,
+    `Reason: ${stringFromUnknown(action.reason) || "none"}`,
+    `Close comment: ${stringFromUnknown(action.comment) || "none"}`,
+    "",
+    "Evidence:",
+    ...(evidence.length ? evidence.map((entry: string) => `- ${entry}`) : ["- none"]),
+  ];
+  return lines.join("\n");
+}
+
+function prCloseCoverageProofCoveringRef({
+  actionName,
+  classification,
+  canonical,
+  candidateFix,
+}: LooseRecord) {
+  if (actionName === "close_duplicate") return canonical;
+  if (actionName === "close_superseded") return candidateFix || canonical;
+  if (["close_fixed_by_candidate", "post_merge_close"].includes(actionName)) return candidateFix;
+  if (actionName === "close") {
+    if (classification === "duplicate") return canonical;
+    if (classification === "superseded") return candidateFix || canonical;
+    if (classification === "fixed_by_candidate") return candidateFix;
+  }
+  return null;
+}
+
+function hydratePrCloseCoveragePullRequest(
+  repo: string,
+  number: LooseRecord,
+  issue: LooseRecord,
+): PrCloseCoverageProofPullRequestView {
+  const pull = fetchPullRequest(repo, number);
+  const commentsWindow = fetchPrCloseCoverageProofCommentWindow(
+    repo,
+    number,
+    issue.comments,
+    PR_CLOSE_COVERAGE_PROOF_COMMENT_LIMIT,
+  );
+  return {
+    number: Number(number),
+    title: stringFromUnknown(pull.title) || stringFromUnknown(issue.title) || `#${number}`,
+    url:
+      stringFromUnknown(pull.html_url) ||
+      stringFromUnknown(pull.url) ||
+      stringFromUnknown(issue.html_url) ||
+      "",
+    state: stringFromUnknown(pull.state) || stringFromUnknown(issue.state) || "unknown",
+    mergedAt: stringOrNull(pull.merged_at ?? pull.mergedAt),
+    body: stringFromUnknown(pull.body) || "",
+    updatedAt: stringOrNull(pull.updated_at ?? pull.updatedAt ?? issue.updated_at),
+    comments: compactPrCloseCoverageProofCommentWindow(
+      commentsWindow.comments,
+      commentsWindow.total,
+      PR_CLOSE_COVERAGE_PROOF_COMMENT_LIMIT,
+    ),
+    commentsTruncated: commentsWindow.total > PR_CLOSE_COVERAGE_PROOF_COMMENT_LIMIT,
+  };
+}
+
+function fetchPrCloseCoverageProofCommentWindow(
+  repo: string,
+  number: LooseRecord,
+  commentsCount: JsonValue,
+  limit: number,
+): { comments: JsonValue[]; total: number } {
+  const apiPath = `repos/${repo}/issues/${number}/comments`;
+  const total = nonNegativeIntegerFromUnknown(commentsCount);
+  if (total === null || total <= limit) {
+    const comments = ghPaged(apiPath);
+    return { comments, total: total ?? comments.length };
+  }
+
+  if (total <= GITHUB_MAX_PAGE_SIZE) {
+    return {
+      comments: fetchPrCloseCoverageProofCommentPage(apiPath, total, 1),
+      total,
+    };
+  }
+
+  const keepStart = Math.floor(limit / 2);
+  const keepEnd = Math.max(0, limit - keepStart);
+  const first = fetchPrCloseCoverageProofCommentPage(apiPath, keepStart, 1);
+  const last = fetchLastPrCloseCoverageProofComments(apiPath, total, keepEnd);
+  return { comments: [...first, ...last], total };
+}
+
+function fetchLastPrCloseCoverageProofComments(
+  apiPath: string,
+  total: number,
+  limit: number,
+): JsonValue[] {
+  if (limit <= 0) return [];
+  const lastPage = Math.max(1, Math.ceil(total / GITHUB_MAX_PAGE_SIZE));
+  const lastPageComments = fetchPrCloseCoverageProofCommentPage(
+    apiPath,
+    GITHUB_MAX_PAGE_SIZE,
+    lastPage,
+  );
+  if (lastPageComments.length >= limit || lastPage <= 1) {
+    return lastPageComments.slice(Math.max(0, lastPageComments.length - limit));
+  }
+  const previousPageComments = fetchPrCloseCoverageProofCommentPage(
+    apiPath,
+    GITHUB_MAX_PAGE_SIZE,
+    lastPage - 1,
+  );
+  return [...previousPageComments, ...lastPageComments].slice(-limit);
+}
+
+function fetchPrCloseCoverageProofCommentPage(
+  apiPath: string,
+  perPage: number,
+  page: number,
+): JsonValue[] {
+  const entries = ghJson<JsonValue[]>(["api", githubLimitedPagePath(apiPath, perPage, page)]);
+  return Array.isArray(entries) ? entries : [];
+}
+
+function compactPrCloseCoverageProofCommentWindow(
+  comments: JsonValue[],
+  total: number,
+  limit: number,
+): unknown[] {
+  const boundedLimit = Math.max(0, Math.floor(limit));
+  const boundedTotal = Math.max(0, Math.floor(total));
+  if (boundedTotal <= boundedLimit && comments.length <= boundedLimit) {
+    return comments.map(compactPrCloseCoverageProofComment);
+  }
+  if (boundedLimit === 0) {
+    return [{ omitted: boundedTotal, note: "comments omitted from proof context" }];
+  }
+  const keepStart = Math.floor(boundedLimit / 2);
+  const keepEnd = Math.max(0, boundedLimit - keepStart);
+  const omitted = Math.max(0, boundedTotal - keepStart - keepEnd);
+  return [
+    ...comments.slice(0, keepStart).map(compactPrCloseCoverageProofComment),
+    ...(omitted > 0 ? [{ omitted, note: "middle comments omitted from proof context" }] : []),
+    ...comments.slice(comments.length - keepEnd).map(compactPrCloseCoverageProofComment),
+  ];
+}
+
+function prCloseCoverageProofRelationshipSignals({ action, actionName, coveringRef }: LooseRecord) {
+  const signals = [
+    `action: ${actionName}`,
+    `covering_ref: #${coveringRef}`,
+    stringFromUnknown(action.reason),
+    stringFromUnknown(action.comment),
+    ...(Array.isArray(action.evidence) ? action.evidence : []).map(compactSignalText),
+  ];
+  return signals.filter((signal: JsonValue) => typeof signal === "string" && signal.trim());
+}
+
+function prCloseCoverageProofRuntime() {
+  const ghToken = stringSetting(process.env.CLAWSWEEPER_PROOF_INSPECTION_TOKEN, "");
+  const runtime = {
+    model: stringSetting(
+      args["pr-close-coverage-proof-model"] ??
+        process.env.CLAWSWEEPER_PR_CLOSE_COVERAGE_PROOF_MODEL ??
+        process.env.CLAWSWEEPER_MODEL,
+      "gpt-5.5",
+    ),
+    reasoningEffort: stringSetting(
+      args["pr-close-coverage-proof-reasoning-effort"] ??
+        process.env.CLAWSWEEPER_PR_CLOSE_COVERAGE_PROOF_REASONING_EFFORT,
+      "high",
+    ),
+    sandboxMode: stringSetting(
+      args["pr-close-coverage-proof-sandbox"] ??
+        process.env.CLAWSWEEPER_PR_CLOSE_COVERAGE_PROOF_SANDBOX,
+      "read-only",
+    ),
+    serviceTier: stringSetting(
+      args["pr-close-coverage-proof-service-tier"] ??
+        process.env.CLAWSWEEPER_PR_CLOSE_COVERAGE_PROOF_SERVICE_TIER,
+      "",
+    ),
+    timeoutMs: positiveIntegerSetting(
+      args["pr-close-coverage-proof-timeout-ms"] ??
+        process.env.CLAWSWEEPER_PR_CLOSE_COVERAGE_PROOF_TIMEOUT_MS,
+      900_000,
+    ),
+    workDir: path.join(path.dirname(resultPath), "pr-close-coverage-proof"),
+    rootDir: repoRoot(),
+    schemaPath: path.join(repoRoot(), "schema/clawsweeper-pr-close-coverage-proof.schema.json"),
+    promptTemplate: fs.readFileSync(
+      path.join(repoRoot(), "prompts/pr-close-coverage-proof.md"),
+      "utf8",
+    ),
+  };
+  return ghToken ? { ...runtime, ghToken } : runtime;
+}
+
 function validateMergeablePullRequest({ pullRequest, view }: LooseRecord) {
   if (pullRequest.state !== "open") return `pull request is ${pullRequest.state}`;
   if (pullRequest.draft || view.isDraft) return "pull request is draft";
@@ -1040,6 +1550,35 @@ function writePayload(name: string, value: JsonValue) {
 
 function normalizeAuthorAssociation(value: JsonValue) {
   return typeof value === "string" && value.trim() ? value.trim().toUpperCase() : "NONE";
+}
+
+function stringFromUnknown(value: JsonValue) {
+  return typeof value === "string" ? value : "";
+}
+
+function stringOrNull(value: JsonValue) {
+  return typeof value === "string" && value.trim() ? value : null;
+}
+
+function nonNegativeIntegerFromUnknown(value: JsonValue): number | null {
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0 ? Math.floor(number) : null;
+}
+
+function compactSignalText(value: JsonValue) {
+  if (typeof value === "string") return value;
+  if (value === null || value === undefined) return "";
+  return JSON.stringify(value);
+}
+
+function stringSetting(value: JsonValue, fallback: string) {
+  return typeof value === "string" && value.trim() ? value.trim() : fallback;
+}
+
+function positiveIntegerSetting(value: JsonValue, fallback: number) {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number <= 0) return fallback;
+  return Math.floor(number);
 }
 
 function sha256(text: string) {

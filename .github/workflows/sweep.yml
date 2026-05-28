@@ -1417,6 +1417,11 @@ jobs:
           done
           echo "::warning::Unable to dispatch background comment sync after three attempts; apply/comment-sync backstops can pick it up later."
 
+      - uses: ./.github/actions/setup-codex
+        if: ${{ success() && steps.target-write-token.outputs.token != '' && (((github.event_name == 'repository_dispatch' && github.event.action != 'clawsweeper_target_sweep') || github.event.inputs.item_number != '' || github.event.inputs.item_numbers != '') || github.event.inputs.apply_after_review == 'true') }}
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+
       - name: Sync selected review comments
         if: ${{ success() && steps.target-write-token.outputs.token != '' && ((github.event_name == 'repository_dispatch' && github.event.action != 'clawsweeper_target_sweep') || github.event.inputs.item_number != '' || github.event.inputs.item_numbers != '') }}
         timeout-minutes: 15
@@ -1816,6 +1821,81 @@ jobs:
 
       - name: Sync before applying decisions
         run: git pull --rebase
+
+      - name: Preselect apply work that can need Codex
+        id: apply-preselect
+        env:
+          TARGET_REPO: ${{ steps.target.outputs.target_repo }}
+        run: |
+          set -euo pipefail
+          min_age_days="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_min_age_days || '0' }}"
+          min_age_minutes="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_min_age_minutes || '' }}"
+          apply_kind="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_kind || 'all' }}"
+          apply_close_reasons="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_close_reasons || 'all' }}"
+          stale_min_age_days="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_stale_min_age_days || '60' }}"
+          item_numbers="${{ github.event_name == 'repository_dispatch' && github.event.client_payload.item_number || github.event.inputs.apply_item_numbers || '' }}"
+          sync_open_pr_batch="${{ github.event_name == 'schedule' && github.event.schedule == '6,21,36,51 * * * *' && 'true' || 'false' }}"
+          hatch_only="${{ github.event_name == 'repository_dispatch' && github.event.action == 'clawsweeper_hatch' && 'true' || 'false' }}"
+          if [ "$item_numbers" = "__cursor__" ]; then
+            sync_open_pr_batch="true"
+            item_numbers=""
+          fi
+          sync_comments_only="${{ github.event_name == 'repository_dispatch' && github.event.action == 'clawsweeper_hatch' && 'true' || (github.event_name == 'workflow_dispatch' && github.event.inputs.apply_sync_comments_only || 'false') }}"
+          if [ "$sync_open_pr_batch" = "true" ]; then
+            sync_comments_only="true"
+            apply_kind="pull_request"
+          fi
+
+          needs_codex=false
+          if [ "$sync_comments_only" = "true" ]; then
+            if [ "$hatch_only" = "true" ]; then
+              needs_codex=true
+            elif [ "$sync_open_pr_batch" = "true" ]; then
+              target_slug="$TARGET_REPO"
+              target_slug="${target_slug//\//-}"
+              cursor_path="results/comment-sync-cursors/${target_slug}.json"
+              sync_batch_size="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_limit || '25' }}"
+              batch_env=".artifacts/apply-preselect-comment-sync-batch.env"
+              mkdir -p "$(dirname "$batch_env")"
+              pnpm run --silent workflow -- comment-sync-batch \
+                --target-repo "$TARGET_REPO" \
+                --apply-kind "$apply_kind" \
+                --batch-size "$sync_batch_size" \
+                --cursor-path "$cursor_path" > "$batch_env"
+              batch_count="$(awk -F= '$1 == "count" { print $2 }' "$batch_env")"
+              if [ "${batch_count:-0}" -gt 0 ]; then
+                needs_codex=true
+              fi
+            else
+              needs_codex=true
+            fi
+          else
+            if [ -n "$item_numbers" ]; then
+              needs_codex=true
+            else
+              selected="$(pnpm run --silent workflow -- proposed-item-numbers \
+                --target-repo "$TARGET_REPO" \
+                --apply-kind "$apply_kind" \
+                --apply-close-reasons "$apply_close_reasons" \
+                --stale-min-age-days "$stale_min_age_days" \
+                --min-age-days "$min_age_days" \
+                --min-age-minutes "$min_age_minutes")"
+              if [ -n "$selected" ]; then
+                needs_codex=true
+              elif { [ "$apply_kind" = "all" ] || [ "$apply_kind" = "pull_request" ]; } && {
+                [ "$apply_close_reasons" = "all" ] ||
+                  [[ ",$apply_close_reasons," == *",duplicate_or_superseded,"* ]]
+              }; then
+                needs_codex=true
+              fi
+            fi
+          fi
+          echo "needs_codex=$needs_codex" >> "$GITHUB_OUTPUT"
+
+      - uses: ./.github/actions/setup-codex
+        if: ${{ steps.apply-preselect.outputs.needs_codex == 'true' }}
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
 
       - name: Apply unchanged proposed decisions with checkpoints
         env:

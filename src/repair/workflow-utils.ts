@@ -305,7 +305,7 @@ export function proposedItemNumbers(options: ProposedItemOptions): number[] {
       if (options.applyKind !== "all" && type && type !== options.applyKind) return [];
       if (frontMatterValue(markdown, "decision") !== "close") return [];
       if (frontMatterValue(markdown, "confidence") !== "high") return [];
-      if (frontMatterValue(markdown, "action_taken") !== "proposed_close") return [];
+      if (!isSelectableCloseAction(frontMatterValue(markdown, "action_taken"))) return [];
       const reason = frontMatterValue(markdown, "close_reason");
       if (!allowedForTarget(options.targetRepo, type, reason, allowedReasons)) return [];
       if (allowedCloseReasons && !allowedCloseReasons.has(reason)) return [];
@@ -322,6 +322,10 @@ export function proposedItemNumbers(options: ProposedItemOptions): number[] {
       return [numberFor(name)];
     })
     .sort((left, right) => left - right);
+}
+
+function isSelectableCloseAction(action: string): boolean {
+  return action === "proposed_close" || action === "retry_pr_close_coverage_proof";
 }
 
 export function commentSyncBatchOutput(options: CommentSyncBatchOptions): Record<string, string> {

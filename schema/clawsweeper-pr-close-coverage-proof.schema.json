@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "sourceSummary",
+    "coveringSummary",
+    "coveredWork",
+    "uniqueSourceWork",
+    "decision",
+    "reason"
+  ],
+  "properties": {
+    "sourceSummary": {
+      "type": "string",
+      "description": "Concrete summary of the useful work in PR A."
+    },
+    "coveringSummary": {
+      "type": "string",
+      "description": "Concrete summary of the useful work in PR B."
+    },
+    "coveredWork": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Concrete PR A intent, behavior, or review concerns that PR B materially carries forward."
+    },
+    "uniqueSourceWork": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Material PR A work that PR B does not carry forward and that still needs independent review."
+    },
+    "decision": {
+      "type": "string",
+      "enum": ["covered", "keep_open"]
+    },
+    "reason": {
+      "type": "string",
+      "description": "Short explanation for the decision."
+    }
+  }
+}
