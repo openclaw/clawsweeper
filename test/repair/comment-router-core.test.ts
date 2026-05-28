@@ -19,6 +19,7 @@ import {
   automergeJobPath,
   automergeReadinessRepairReason,
   automergeTransientWaitConfig,
+  buildClawSweeperAssistDispatchPayload,
   buildAutomergeMergeArgs,
   buildAutomergeSquashMessage,
   commandHasAction,
@@ -1808,6 +1809,34 @@ test("renderResponse reports visualize dispatches as marker-backed read-only bri
   assert.match(body, /marker-backed visual brief comment/);
   assert.match(body, /Lens: `state`/);
   assert.doesNotMatch(body, /repair worker/);
+});
+
+test("visualize assist dispatch payload stays within repository_dispatch key limit", () => {
+  const payload = buildClawSweeperAssistDispatchPayload({
+    repo: "openclaw/clawsweeper",
+    issue_number: 202,
+    target: { kind: "issue" },
+    comment_id: "4545883320",
+    comment_url: "https://github.com/openclaw/clawsweeper/issues/202#issuecomment-4545883320",
+    author: "maintainer",
+    command: "visualize state",
+    intent: "visualize",
+    visual_lens: "state",
+  });
+
+  const clientPayload = payload.client_payload;
+  assert.equal(payload.event_type, "clawsweeper_assist");
+  assert.equal(Object.keys(clientPayload).length <= 10, true);
+  assert.equal(clientPayload.target_repo, "openclaw/clawsweeper");
+  assert.equal(clientPayload.item_number, "202");
+  assert.equal(clientPayload.question, "visualize state");
+  assert.equal(clientPayload.assist.mode, "visual");
+  assert.equal(clientPayload.assist.lens, "state");
+  assert.equal(clientPayload.assist.model, "gpt-5.5");
+  assert.equal(clientPayload.assist.reasoning_effort, "low");
+  assert.equal(clientPayload.assist.timeout_ms, "120000");
+  assert.equal("mode" in clientPayload, false);
+  assert.equal("lens" in clientPayload, false);
 });
 
 test("renderResponse reports maintainer autoclose results", () => {

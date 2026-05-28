@@ -158,14 +158,14 @@ jobs:
           TARGET_REPO: ${{ github.event.client_payload.target_repo || inputs.target_repo }}
           ITEM_NUMBER: ${{ github.event.client_payload.item_number || inputs.item_number }}
           QUESTION: ${{ github.event.client_payload.question || inputs.question }}
-          MODE: ${{ github.event.client_payload.mode || inputs.mode || 'assist' }}
-          LENS: ${{ github.event.client_payload.lens || inputs.lens || 'auto' }}
+          MODE: ${{ github.event.client_payload.assist.mode || inputs.mode || 'assist' }}
+          LENS: ${{ github.event.client_payload.assist.lens || inputs.lens || 'auto' }}
           COMMENT_ID: ${{ github.event.client_payload.comment_id || inputs.comment_id || '' }}
           COMMENT_URL: ${{ github.event.client_payload.comment_url || inputs.comment_url || '' }}
           AUTHOR: ${{ github.event.client_payload.author || inputs.author || '' }}
-          MODEL: ${{ github.event.client_payload.model || 'gpt-5.5' }}
-          REASONING_EFFORT: ${{ github.event.client_payload.reasoning_effort || 'low' }}
-          TIMEOUT_MS: ${{ github.event.client_payload.timeout_ms || '120000' }}
+          MODEL: ${{ github.event.client_payload.assist.model || 'gpt-5.5' }}
+          REASONING_EFFORT: ${{ github.event.client_payload.assist.reasoning_effort || 'low' }}
+          TIMEOUT_MS: ${{ github.event.client_payload.assist.timeout_ms || '120000' }}
         run: |
           set -euo pipefail
           node dist/clawsweeper.js assist \
