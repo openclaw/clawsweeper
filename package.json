@@ -62,6 +62,7 @@
     "dashboard:dev": "npx wrangler@4.90.0 dev --config dashboard/wrangler.toml",
     "dashboard:refresh-ci": "node scripts/dashboard-refresh-ci.mjs",
     "dashboard:smoke": "node scripts/dashboard-smoke.mjs",
+    "smoke:pr-close-coverage": "pnpm run build && node scripts/pr-close-coverage-smoke.mjs",
     "test": "pnpm run build:all && node --test test/*.test.ts test/repair/*.test.ts dist/repair/*.test.js",
     "test:unit": "node --test test/*.test.ts",
     "test:repair": "pnpm run build:repair && node --test test/repair/*.test.ts dist/repair/*.test.js",

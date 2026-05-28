@@ -438,6 +438,111 @@ test("repair apply executes PR duplicate close when coverage proof says covered"
   }
 });
 
+for (const scenario of [
+  {
+    name: "superseded",
+    action: {
+      action: "close_superseded",
+      classification: "superseded",
+      canonical: "#202",
+    },
+  },
+  {
+    name: "superseded-candidate",
+    action: {
+      action: "close_superseded",
+      classification: "superseded",
+      candidate_fix: "#202",
+    },
+    mergedCandidate: true,
+  },
+  {
+    name: "duplicate-of alias",
+    action: {
+      action: "close_duplicate",
+      classification: "duplicate",
+      duplicate_of: "#202",
+    },
+  },
+  {
+    name: "fixed-by-candidate",
+    action: {
+      action: "close_fixed_by_candidate",
+      classification: "fixed_by_candidate",
+      candidate_fix: "#202",
+    },
+  },
+  {
+    name: "fixed-by alias",
+    action: {
+      action: "close_fixed_by_candidate",
+      classification: "fixed_by_candidate",
+      fixed_by: "#202",
+    },
+  },
+  {
+    name: "fix-candidate alias",
+    action: {
+      action: "close_fixed_by_candidate",
+      classification: "fixed_by_candidate",
+      fix_candidate: "#202",
+    },
+  },
+  {
+    name: "post-merge",
+    action: {
+      action: "post_merge_close",
+      classification: "fixed_by_candidate",
+      candidate_fix: "#202",
+    },
+    mergedCandidate: true,
+  },
+]) {
+  test(`repair apply executes PR ${scenario.name} close when coverage proof says covered`, () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-apply-result-"));
+    try {
+      const paths = writeApplyFixture(tmp, scenario.action);
+      writeFakeGh(paths.binDir, {
+        issues: {
+          101: issue({ number: 101, title: "Add config validation", pullRequest: true }),
+          202: issue({
+            number: 202,
+            title: "Rewrite config validation",
+            pullRequest: true,
+            labels: ["proof: sufficient"],
+          }),
+        },
+        pulls: {
+          101: pull({ number: 101, title: "Add config validation" }),
+          202: pull({
+            number: 202,
+            title: "Rewrite config validation",
+            mergedAt: scenario.mergedCandidate ? "2026-05-26T00:00:00Z" : undefined,
+          }),
+        },
+        comments: {
+          101: [comment("alice", "PR A keeps legacy config behavior intact.")],
+          202: [comment("bob", "PR B carries forward the legacy config behavior.")],
+        },
+        logPath: paths.ghLogPath,
+      });
+      writeFakeCodex(paths.binDir);
+
+      runApplyResult(paths, { proofDecision: "covered" });
+
+      const report = JSON.parse(fs.readFileSync(paths.reportPath, "utf8"));
+      assert.equal(report.actions[0].status, "executed");
+      assert.equal(hasPrCloseCall(paths.ghLogPath), true);
+      assert.equal(
+        report.actions[0].pr_close_coverage_proof.reason,
+        "PR B carries forward the legacy behavior.",
+      );
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+}
+
 test("repair apply rechecks target freshness after coverage proof passes", () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-apply-result-"));
   try {
@@ -680,6 +785,39 @@ test("repair apply leaves issue duplicate close behavior unchanged", () => {
   }
 });
 
+test("repair apply leaves current-main fixed closeout outside coverage proof", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-apply-result-"));
+  try {
+    const paths = writeApplyFixture(tmp, {
+      action: "close_fixed_by_candidate",
+      classification: "fixed_by_candidate",
+      reason: "Already fixed on current main.",
+    });
+    writeFakeGh(paths.binDir, {
+      issues: {
+        101: issue({ number: 101, title: "Add config validation", pullRequest: true }),
+      },
+      pulls: {
+        101: pull({ number: 101, title: "Add config validation" }),
+      },
+      comments: {
+        101: [comment("alice", "Current main already has the config validation fix.")],
+      },
+      logPath: paths.ghLogPath,
+    });
+    writeFakeCodex(paths.binDir);
+
+    runApplyResult(paths, { proofDecision: "covered", failIfProofRuns: true });
+
+    const report = JSON.parse(fs.readFileSync(paths.reportPath, "utf8"));
+    assert.equal(report.actions[0].status, "blocked");
+    assert.equal(report.actions[0].reason, "closure requires candidate_fix");
+    assert.equal(fs.existsSync(paths.ghLogPath) && hasPrCloseCall(paths.ghLogPath), false);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 type ApplyFixturePaths = {
   binDir: string;
   jobPath: string;
@@ -696,6 +834,7 @@ type ApplyFixtureAction = {
   candidate_fix?: string;
   fixed_by?: string;
   fix_candidate?: string;
+  reason?: string;
 };
 
 type FakeGhData = {
@@ -964,8 +1103,8 @@ if (process.env.GH_TOKEN === "write-token") {
 fs.writeFileSync(process.argv[outputIndex + 1], JSON.stringify({
   sourceSummary: "PR A preserves legacy config behavior.",
   coveringSummary: "PR B rewrites parser setup.",
-  coveredWork: covered ? ["Legacy config behavior"] : [],
-  uniqueSourceWork: covered ? [] : ["Legacy config behavior"],
+  coveredWork: covered ? ["Legacy config validation behavior"] : [],
+  uniqueSourceWork: covered ? [] : ["Legacy config validation behavior"],
   decision,
   reason: covered
     ? "PR B carries forward the legacy behavior."

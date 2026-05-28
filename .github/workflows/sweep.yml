@@ -1832,6 +1832,7 @@ jobs:
           min_age_minutes="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_min_age_minutes || '' }}"
           apply_kind="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_kind || 'all' }}"
           apply_close_reasons="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_close_reasons || 'all' }}"
+          normalized_apply_close_reasons="$(printf '%s' "$apply_close_reasons" | tr -d '[:space:]')"
           stale_min_age_days="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_stale_min_age_days || '60' }}"
           item_numbers="${{ github.event_name == 'repository_dispatch' && github.event.client_payload.item_number || github.event.inputs.apply_item_numbers || '' }}"
           sync_open_pr_batch="${{ github.event_name == 'schedule' && github.event.schedule == '6,21,36,51 * * * *' && 'true' || 'false' }}"
@@ -1883,8 +1884,8 @@ jobs:
               if [ -n "$selected" ]; then
                 needs_codex=true
               elif { [ "$apply_kind" = "all" ] || [ "$apply_kind" = "pull_request" ]; } && {
-                [ "$apply_close_reasons" = "all" ] ||
-                  [[ ",$apply_close_reasons," == *",duplicate_or_superseded,"* ]]
+                [ "$normalized_apply_close_reasons" = "all" ] ||
+                  [[ ",$normalized_apply_close_reasons," == *",duplicate_or_superseded,"* ]]
               }; then
                 needs_codex=true
               fi

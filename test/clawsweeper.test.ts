@@ -4801,6 +4801,7 @@ function promotionGhMock(options: {
   issueCommentCount?: number;
   comment: string;
   commentWriteLogPath?: string;
+  closeAppliedBodyLogPath?: string;
   comments?: unknown[];
   timeline?: unknown[];
   linkedPulls?: Record<number, unknown>;
@@ -4840,6 +4841,7 @@ function promotionGhMock(options: {
 	const linkedPullsAfterProof = ${JSON.stringify(options.linkedPullsAfterProof ?? {})};
 	const linkedIssues = ${JSON.stringify(linkedIssues)};
 	const commentWriteLogPath = ${JSON.stringify(options.commentWriteLogPath ?? "")};
+	const closeAppliedBodyLogPath = ${JSON.stringify(options.closeAppliedBodyLogPath ?? "")};
 	const number = ${options.number};
 		const title = ${JSON.stringify(title)};
 		const itemCreatedAt = ${JSON.stringify(itemCreatedAt)};
@@ -4875,6 +4877,10 @@ function promotionGhMock(options: {
 	  console.log("HTTP/2 200\\n\\n" + JSON.stringify(timeline));
 	} else if (args[0] === "api" && new RegExp("/issues/" + number + "/comments$").test(path) && args.includes("--method")) {
 	  if (commentWriteLogPath) appendFileSync(commentWriteLogPath, args.join(" ") + "\\n");
+	  if (closeAppliedBodyLogPath) {
+	    const input = args[args.indexOf("--input") + 1];
+	    appendFileSync(closeAppliedBodyLogPath, JSON.parse(require("fs").readFileSync(input, "utf8")).body + "\\n---body---\\n");
+	  }
 	  console.log("");
 	} else if (args[0] === "api" && new RegExp("/issues/comments/\\d+$").test(path) && args.includes("--method")) {
 	  if (commentWriteLogPath) appendFileSync(commentWriteLogPath, args.join(" ") + "\\n");
@@ -8772,6 +8778,98 @@ test("apply-decisions closes existing duplicate PR close proposals when coverage
     assert.match(
       report.find((entry) => entry.action === "closed")?.reason ?? "",
       /duplicate or superseded/,
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("apply-decisions records successful duplicate PR coverage proof for closed PRs", () => {
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    const itemsDir = join(root, "items");
+    const closedDir = join(root, "closed");
+    const plansDir = join(root, "plans");
+    const reportPath = join(root, "apply-report.json");
+    const closeAppliedBodyLogPath = join(root, "close-applied-body.log");
+    mkdirSync(itemsDir, { recursive: true });
+    mkdirSync(plansDir, { recursive: true });
+    const synced = reportWithSyncedReviewComment(
+      lowSignalCloseReport({
+        number: 360,
+        title: "Provider route fallback",
+        close_reason: "duplicate_or_superseded",
+        work_cluster_refs: JSON.stringify([
+          "Superseded by https://github.com/openclaw/openclaw/pull/400",
+        ]),
+      }).replace(
+        "Closing this PR because the branch is not a useful landing base.",
+        "Closing this PR as superseded by https://github.com/openclaw/openclaw/pull/400.",
+      ),
+      360,
+      "duplicate_or_superseded",
+    );
+    writeFileSync(join(itemsDir, "360.md"), synced.report, "utf8");
+
+    withMockGh(
+      root,
+      promotionGhMock({
+        number: 360,
+        title: "Provider route fallback",
+        comment: synced.comment,
+        closeAppliedBodyLogPath,
+        linkedPulls: {
+          400: {
+            number: 400,
+            title: "Provider cleanup",
+            html_url: "https://github.com/openclaw/openclaw/pull/400",
+            state: "closed",
+            merged_at: "2026-05-02T00:00:00Z",
+            body: "Includes the fallback route behavior from PR 360.",
+            comments: [],
+            labels: [],
+          },
+        },
+      }),
+      () => {
+        withMockCodexProof(
+          root,
+          {
+            type: "decision",
+            decision: "covered",
+            reason: "PR B carries forward PR A's fallback route behavior.",
+          },
+          () => {
+            runApplyDecisionsForTest({
+              itemsDir,
+              closedDir,
+              plansDir,
+              reportPath,
+              extraArgs: [
+                "--target-repo",
+                "openclaw/openclaw",
+                "--apply-kind",
+                "all",
+                "--processed-limit",
+                "3",
+              ],
+            });
+          },
+        );
+      },
+    );
+
+    const closedReport = readFileSync(join(closedDir, "360.md"), "utf8");
+    assert.match(closedReport, /## PR Close Coverage Proof/);
+    assert.match(closedReport, /Reason: PR B carries forward PR A's fallback route behavior\./);
+    const closeAppliedBody = readFileSync(closeAppliedBodyLogPath, "utf8");
+    assert.match(
+      closeAppliedBody,
+      /Coverage proof: PR B carries forward PR A's fallback route behavior\./,
+    );
+    assert.match(
+      closeAppliedBody,
+      /Covering PR: https:\/\/github\.com\/openclaw\/openclaw\/pull\/400\./,
     );
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -14212,7 +14310,11 @@ test("apply workflow installs Codex before PR close coverage proof can run", () 
   assert.match(preselectBlock, /\[ -n "\$item_numbers" \]/);
   assert.match(preselectBlock, /\[ "\$apply_kind" = "all" \]/);
   assert.match(preselectBlock, /\[ "\$apply_kind" = "pull_request" \]/);
-  assert.match(preselectBlock, /",\$apply_close_reasons," == \*",duplicate_or_superseded,"\*/);
+  assert.match(preselectBlock, /normalized_apply_close_reasons=/);
+  assert.match(
+    preselectBlock,
+    /",\$normalized_apply_close_reasons," == \*",duplicate_or_superseded,"\*/,
+  );
 });
 
 test("sweep target tokens fall back when an org app installation is missing", () => {

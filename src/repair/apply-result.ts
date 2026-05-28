@@ -37,6 +37,7 @@ import {
   prCloseCoverageProofCandidateCanClose,
   prCloseCoverageProofCloseDecision,
   runPrCloseCoverageProofModel,
+  type PrCloseCoverageProofModelResult,
   type PrCloseCoverageProofPullRequestView,
 } from "../pr-close-coverage-proof.js";
 
@@ -60,6 +61,21 @@ const PASSING_CHECK_CONCLUSIONS = new Set(["SUCCESS", "SKIPPED", "NEUTRAL"]);
 const CLEAN_MERGE_STATES = new Set(["CLEAN"]);
 const PR_CLOSE_COVERAGE_PROOF_COMMENT_LIMIT = 50;
 const GITHUB_MAX_PAGE_SIZE = 100;
+
+type PrCloseCoverageProofValidation =
+  | {
+      status: "covered";
+      coveringRef: JsonValue;
+      coveringUpdatedAt: string | null;
+      proof: PrCloseCoverageProofModelResult;
+    }
+  | {
+      status: "blocked";
+      reason: string;
+      requeue_required?: true;
+      pr_close_coverage_proof?: PrCloseCoverageProofModelResult;
+    }
+  | null;
 
 const args = parseArgs(process.argv.slice(2));
 const jobPath = args._[0];
@@ -450,6 +466,7 @@ function applyCloseAction({
       reason: "dry run",
       live_state: live.state,
       live_updated_at: live.updated_at,
+      ...prCloseCoverageProofActionReport(proofValidation),
       comment,
     };
   }
@@ -472,7 +489,16 @@ function applyCloseAction({
     reason: closeReasonText(classification),
     live_state: "closed",
     live_updated_at: live.updated_at,
+    ...prCloseCoverageProofActionReport(proofValidation),
   };
+}
+
+function prCloseCoverageProofActionReport(proofValidation: PrCloseCoverageProofValidation): {
+  pr_close_coverage_proof?: PrCloseCoverageProofModelResult;
+} {
+  return proofValidation?.status === "covered" && proofValidation.proof
+    ? { pr_close_coverage_proof: proofValidation.proof }
+    : {};
 }
 
 function applyMergeAction({
@@ -863,7 +889,7 @@ function validatePrCloseCoverageProof({
   canonical,
   candidateFix,
   classification,
-}: LooseRecord) {
+}: LooseRecord): PrCloseCoverageProofValidation {
   const coveringRef = prCloseCoverageProofCoveringRef({
     actionName,
     classification,
@@ -928,6 +954,7 @@ function validatePrCloseCoverageProof({
         status: "covered",
         coveringRef,
         coveringUpdatedAt: covering.updatedAt,
+        proof: closeDecision.proof,
       };
     }
     return {

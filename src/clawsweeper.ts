@@ -47,9 +47,11 @@ import {
 import {
   compactPrCloseCoverageProofComment,
   compactPrCloseCoverageProofText,
+  formatPrCloseCoverageProofDetailList,
   prCloseCoverageProofCandidateCanClose,
   prCloseCoverageProofCloseDecision,
   runPrCloseCoverageProofModel,
+  type PrCloseCoverageProofModelResult,
   type PrCloseCoverageProofPullRequestView,
   type PrCloseCoverageProofRuntime,
 } from "./pr-close-coverage-proof.js";
@@ -1500,6 +1502,7 @@ const REVIEW_SECTIONS = {
   risks: "Risks / Open Questions",
   closeComment: "Close Comment",
 } as const;
+const PR_CLOSE_COVERAGE_PROOF_SECTION = "PR Close Coverage Proof";
 
 type ReviewSection = keyof typeof REVIEW_SECTIONS;
 
@@ -10320,6 +10323,7 @@ interface PrCloseCoverageProofCoveringWitness {
   number: number;
   updatedAt: string | null;
   url: string;
+  proof: PrCloseCoverageProofModelResult;
 }
 
 type PrCloseCoverageProofGateResult =
@@ -10462,6 +10466,7 @@ function prCloseCoverageProofGateResult(options: {
             number: covering.number,
             updatedAt: covering.updatedAt,
             url: covering.url,
+            proof: closeDecision.proof,
           },
         };
       }
@@ -10489,6 +10494,34 @@ function prCloseCoverageProofGateResult(options: {
       reason: "PR close coverage proof did not allow close",
     },
   };
+}
+
+function renderPrCloseCoverageProofReportSection(
+  covering: PrCloseCoverageProofCoveringWitness,
+): string {
+  return [
+    "Decision: covered",
+    `Covering PR: ${covering.url}`,
+    `Reason: ${covering.proof.reason}`,
+    "",
+    "Covered work:",
+    formatPrCloseCoverageProofDetailList(covering.proof.coveredWork),
+    "",
+    "Unique source work:",
+    formatPrCloseCoverageProofDetailList(covering.proof.uniqueSourceWork),
+  ].join("\n");
+}
+
+function applyPrCloseCoverageProofReportSection(
+  markdown: string,
+  gateResult: PrCloseCoverageProofGateResult | undefined,
+): string {
+  if (gateResult?.status !== "allowed") return markdown;
+  return replaceSectionValue(
+    markdown,
+    PR_CLOSE_COVERAGE_PROOF_SECTION,
+    renderPrCloseCoverageProofReportSection(gateResult.covering),
+  );
 }
 
 function recommendedPauseOrCloseOption(markdown: string): MergeRiskOption | null {
@@ -12334,15 +12367,30 @@ function renderCloseAppliedComment(options: {
   markdown: string;
   itemUrl: string;
 }): string {
+  const coverageProofLine = closeAppliedCoverageProofLine(options.markdown);
   return [
     "ClawSweeper applied the proposed close for this PR.",
     "",
     "- Action: closed this PR.",
     `- Close reason: ${closeReasonText(options.closeReason)}.`,
     `- Evidence: ${closeAppliedEvidenceLink(options.markdown, options.itemUrl)}.`,
+    coverageProofLine,
     "",
     closeAppliedCommentMarker(options.number),
-  ].join("\n");
+  ]
+    .filter((line): line is string => line !== null)
+    .join("\n");
+}
+
+function closeAppliedCoverageProofLine(markdown: string): string | null {
+  const proof = sectionValue(markdown, PR_CLOSE_COVERAGE_PROOF_SECTION);
+  if (!proof) return null;
+  const reason = proof.match(/^Reason:\s*(.+)$/m)?.[1]?.trim();
+  if (!reason) return null;
+  const covering = proof.match(/^Covering PR:\s*(.+)$/m)?.[1]?.trim();
+  return [`- Coverage proof: ${sentence(reason)}`, covering ? ` Covering PR: ${covering}.` : ""]
+    .join("")
+    .trim();
 }
 
 function ensureCloseAppliedComment(options: {
@@ -14270,6 +14318,12 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
     if (freshnessBlock) {
       if (markChangedSinceReview(freshnessBlock)) break;
       continue;
+    }
+    if (closeReason === "duplicate_or_superseded") {
+      markdown = applyPrCloseCoverageProofReportSection(
+        markdown,
+        cachedPrCloseCoverageProofGateResult,
+      );
     }
     const lowSignalBlockReason =
       closeReason === "low_signal_unmergeable_pr"
