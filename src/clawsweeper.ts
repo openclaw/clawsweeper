@@ -2703,6 +2703,7 @@ function isClawSweeperNoiseComment(value: unknown, number: number): boolean {
   const body = rawCommentBody(value);
   if (!body.trim() || !isClawSweeperComment(value)) return false;
   if (isClawSweeperDurableReviewComment(value, number)) return true;
+  if (/clawsweeper-pr-egg-hatch:/i.test(body)) return true;
   if (/clawsweeper-visual\s+item=/i.test(body)) return true;
   if (/clawsweeper-command(?:-status|-ack)?:/i.test(body)) return true;
   if (/clawsweeper-review-status:/i.test(body)) return true;
@@ -4727,16 +4728,6 @@ function fetchItem(number: number): { item: Item; state: string } {
   };
 }
 
-function fetchPullRequestMerged(number: number): boolean {
-  const pull = ghJson<{ merged?: boolean; merged_at?: string | null }>([
-    "api",
-    `repos/${targetRepo()}/pulls/${number}`,
-    "--jq",
-    "{merged:.merged,merged_at:.merged_at}",
-  ]);
-  return pull.merged === true || typeof pull.merged_at === "string";
-}
-
 function fetchOpenItemCounts(): OpenItemCounts {
   const [owner, name] = targetRepo().split("/");
   if (!owner || !name) throw new Error(`Invalid target repo: ${targetRepo()}`);
@@ -6514,14 +6505,6 @@ function docsPageUrl(file: string): string | null {
 
 function markdownLink(label: string, url: string): string {
   return `[${label.replaceAll("|", "\\|")}](${url})`;
-}
-
-function escapeHtmlAttribute(value: string): string {
-  return value
-    .replaceAll("&", "&amp;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;");
 }
 
 function linkedSha(sha: string): string {
@@ -12924,17 +12907,12 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
         ...applyQueueSortFields(readFileSync(join(dir, name), "utf8"), syncCommentsOnly, applyKind),
       }));
   };
-  const fileEntries = reportEntriesForDir(itemsDir, "items")
-    .filter((entry, index, entries) => {
-      if (entry.location === "items") return true;
-      return entries.findIndex((candidate) => candidate.number === entry.number) === index;
-    })
-    .sort(
-      (left, right) =>
-        left.priority - right.priority ||
-        left.applyCheckedAt - right.applyCheckedAt ||
-        left.number - right.number,
-    );
+  const fileEntries = reportEntriesForDir(itemsDir, "items").sort(
+    (left, right) =>
+      left.priority - right.priority ||
+      left.applyCheckedAt - right.applyCheckedAt ||
+      left.number - right.number,
+  );
   const files = fileEntries.map((entry) => entry.name);
   const openFileEntryByNumber = new Map(
     fileEntries.filter((entry) => entry.location === "items").map((entry) => [entry.number, entry]),
@@ -12952,9 +12930,6 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
   for (const entry of fileEntries) {
     const file = entry.name;
     const path = entry.path;
-    if (entry.location === "closed") continue;
-    if (entry.location === "closed" && requestedItemNumberSet.size === 0) continue;
-    if (entry.location === "closed" && !requestedItemNumberSet.has(entry.number)) continue;
     if (runtimeBudgetExceeded(startedAtMs, maxRuntimeMs, Date.now())) {
       results.push({
         number: 0,

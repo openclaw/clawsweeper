@@ -401,6 +401,11 @@ test("review context comment filter removes ClawSweeper self-noise and command-o
       "clawsweeper[bot]",
     ),
     issueComment(
+      2,
+      "Legacy generated comment\n\n<!-- clawsweeper-pr-egg-hatch:123 -->",
+      "openclaw-clawsweeper[bot]",
+    ),
+    issueComment(
       3,
       "<!-- clawsweeper-command-status:123:re_review:abc -->\nQueued.",
       "clawsweeper",
@@ -417,7 +422,7 @@ test("review context comment filter removes ClawSweeper self-noise and command-o
 
   const result = filterReviewContextCommentsForTest(comments, 123);
 
-  assert.equal(result.filtered, 4);
+  assert.equal(result.filtered, 5);
   assert.deepEqual(
     result.included.map((comment) => (comment as { id: number }).id),
     [5, 6],
@@ -4924,32 +4929,6 @@ function runApplyDecisionsForTest(options: {
     "0",
     ...(options.extraArgs ?? []),
   ]);
-}
-
-function runReconcileForTest(options: {
-  itemsDir: string;
-  closedDir: string;
-  plansDir: string;
-  extraArgs?: string[];
-}): string {
-  return execFileSync(
-    process.execPath,
-    [
-      "dist/clawsweeper.js",
-      "reconcile",
-      "--target-repo",
-      "openclaw/clawsweeper",
-      "--items-dir",
-      options.itemsDir,
-      "--closed-dir",
-      options.closedDir,
-      "--plans-dir",
-      options.plansDir,
-      "--skip-closed-at",
-      ...(options.extraArgs ?? []),
-    ],
-    { encoding: "utf8" },
-  );
 }
 
 test("renderWorkPlanFromReport renders dashboard plan artifacts for fresh queue_fix_pr candidates", () => {
