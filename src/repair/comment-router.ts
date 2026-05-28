@@ -51,7 +51,7 @@ import {
   issueImplementationJobPath,
   maintainerAutomergeOptInApprovesNeedsHuman as maintainerAutomergeOptInApprovesNeedsHumanReason,
   latestRepairLoopResumeTime,
-  parseCommand,
+  parseRoutedCommentCommand,
   pausedModeStatusBlocksReplay,
   parseTrustedAutomation,
   repairableCheckBlockers,
@@ -163,8 +163,7 @@ const comments = measure("list_candidate_comments", () => listCandidateComments(
 const rawCommands: LooseRecord[] = [];
 
 for (const comment of comments) {
-  const parsed: LooseRecord =
-    parseCommand(comment.body) ?? parseTrustedAutomation(comment, { trustedAuthors: trustedBots });
+  const parsed: LooseRecord = parseRoutedCommentCommand(comment, { trustedAuthors: trustedBots });
   if (!parsed) continue;
   const issueNumber = issueNumberFromUrl(comment.issue_url);
   const command: LooseRecord = {
@@ -1898,15 +1897,14 @@ function repairJobModeForCommand(command: LooseRecord) {
 }
 
 function dispatchClawSweeperReview(command: LooseRecord) {
-  const commandStatus =
-    command.intent === "re_review"
-      ? {
-          command_status_marker: commandStatusMarker(command),
-          ...(command.status_comment_id
-            ? { status_comment_id: String(command.status_comment_id) }
-            : {}),
-        }
-      : {};
+  const commandStatus = ["re_review", "autofix", "automerge"].includes(String(command.intent ?? ""))
+    ? {
+        command_status_marker: commandStatusMarker(command),
+        ...(command.status_comment_id
+          ? { status_comment_id: String(command.status_comment_id) }
+          : {}),
+      }
+    : {};
   const payload = JSON.stringify({
     event_type: "clawsweeper_item",
     client_payload: {

@@ -1160,6 +1160,15 @@ export function parseTrustedAutomation(
   return null;
 }
 
+export function parseRoutedCommentCommand(
+  comment: LooseRecord,
+  { trustedAuthors = new Set() }: LooseRecord = {},
+) {
+  const trusted = parseTrustedAutomation(comment, { trustedAuthors });
+  if (trusted) return trusted;
+  return parseCommand(String(comment?.body ?? ""));
+}
+
 function trustedCommentHasPriorityFinding(body: string) {
   return /(?:^|\n)\s*(?:[-*]\s*)?(?:\*\*)?\[P[0-3]\]/i.test(String(body ?? ""));
 }

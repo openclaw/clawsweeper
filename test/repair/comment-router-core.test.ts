@@ -42,6 +42,7 @@ import {
   isMaintainerCommandAllowed,
   maintainerAutomergeOptInApprovesNeedsHuman,
   parseCommand,
+  parseRoutedCommentCommand,
   pausedModeStatusBlocksReplay,
   parseTrustedAutomation,
   repairableCheckBlockers,
@@ -994,6 +995,37 @@ test("parseTrustedAutomation accepts only trusted ClawSweeper repair signals", (
     parseTrustedAutomation({ ...comment, user: { login: "random-user" } }, { trustedAuthors }),
     null,
   );
+});
+
+test("parseRoutedCommentCommand prefers trusted verdict markers over copyable commands", () => {
+  const trustedAuthors = new Set(["clawsweeper"]);
+  const parsed = parseRoutedCommentCommand(
+    {
+      user: { login: "clawsweeper" },
+      body: [
+        "Codex review: needs changes before merge.",
+        "",
+        "<details>",
+        "<summary>Copy recommended automerge instruction</summary>",
+        "",
+        "```text",
+        "@clawsweeper automerge",
+        "",
+        "Special instructions:",
+        "Only expose structured content to the model.",
+        "```",
+        "</details>",
+        "",
+        "<!-- clawsweeper-verdict:needs-changes item=87540 sha=380baaba8f4490cbb64ae36ba8cb0b78912c45f1 confidence=high -->",
+        "<!-- clawsweeper-action:fix-required item=87540 sha=380baaba8f4490cbb64ae36ba8cb0b78912c45f1 confidence=high finding=review-feedback -->",
+      ].join("\n"),
+    },
+    { trustedAuthors },
+  );
+
+  assert.equal(parsed.intent, "clawsweeper_auto_repair");
+  assert.equal(parsed.expected_head_sha, "380baaba8f4490cbb64ae36ba8cb0b78912c45f1");
+  assert.match(parsed.repair_reason, /fix-required/);
 });
 
 test("parseTrustedAutomation accepts trusted ClawSweeper pass verdicts for automerge", () => {
