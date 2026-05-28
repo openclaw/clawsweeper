@@ -12422,9 +12422,9 @@ function renderCloseAppliedComment(options: {
 function closeAppliedCoverageProofLine(markdown: string): string | null {
   const proof = sectionValue(markdown, PR_CLOSE_COVERAGE_PROOF_SECTION);
   if (!proof) return null;
-  const reason = proof.match(/^Reason:\s*(.+)$/m)?.[1]?.trim();
+  const reason = sectionLineValue(proof, "Reason");
   if (!reason) return null;
-  const covering = proof.match(/^Covering PR:\s*(.+)$/m)?.[1]?.trim();
+  const covering = sectionLineValue(proof, "Covering PR");
   return [`- Coverage proof: ${sentence(reason)}`, covering ? ` Covering PR: ${covering}.` : ""]
     .join("")
     .trim();
