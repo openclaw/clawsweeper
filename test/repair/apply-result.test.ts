@@ -695,6 +695,62 @@ test("repair apply rechecks covering PR freshness after coverage proof passes", 
   }
 });
 
+test("repair apply skips target closed after proof when updated_at is missing", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-apply-result-"));
+  try {
+    const paths = writeApplyFixture(tmp, {
+      action: "close_duplicate",
+      classification: "duplicate",
+      canonical: "#202",
+      omitTargetUpdatedAt: true,
+    });
+    const afterProofPath = path.join(tmp, "proof-ran");
+    writeFakeGh(paths.binDir, {
+      issues: {
+        101: issue({ number: 101, title: "Add config validation", pullRequest: true }),
+        202: issue({
+          number: 202,
+          title: "Rewrite config validation",
+          pullRequest: true,
+          labels: ["proof: sufficient"],
+        }),
+      },
+      pulls: {
+        101: pull({ number: 101, title: "Add config validation" }),
+        202: pull({ number: 202, title: "Rewrite config validation" }),
+      },
+      comments: {
+        101: [comment("alice", "PR A keeps legacy config behavior intact.")],
+        202: [comment("bob", "PR B carries forward the legacy config behavior.")],
+      },
+      afterProofPath,
+      postProofIssues: {
+        101: issue({
+          number: 101,
+          title: "Add config validation",
+          pullRequest: true,
+          state: "closed",
+        }),
+      },
+      logPath: paths.ghLogPath,
+    });
+    writeFakeCodex(paths.binDir);
+
+    runApplyResult(paths, {
+      proofDecision: "covered",
+      afterProofPath,
+      allowMissingUpdatedAt: true,
+    });
+
+    const report = JSON.parse(fs.readFileSync(paths.reportPath, "utf8"));
+    assert.equal(report.actions[0].status, "skipped");
+    assert.equal(report.actions[0].reason, "already closed");
+    assert.equal(hasPrCloseCall(paths.ghLogPath), false);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 test("repair apply treats already-closed PR duplicate close as idempotent before coverage proof", () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-apply-result-"));
   try {
@@ -835,6 +891,7 @@ type ApplyFixtureAction = {
   fixed_by?: string;
   fix_candidate?: string;
   reason?: string;
+  omitTargetUpdatedAt?: boolean;
 };
 
 type FakeGhData = {
@@ -887,6 +944,9 @@ function writeApplyFixture(tmp: string, action: ApplyFixtureAction): ApplyFixtur
       "",
     ].join("\n"),
   );
+  const resultAction = { ...action };
+  const omitTargetUpdatedAt = resultAction.omitTargetUpdatedAt === true;
+  delete resultAction.omitTargetUpdatedAt;
   fs.writeFileSync(
     resultPath,
     JSON.stringify(
@@ -896,10 +956,10 @@ function writeApplyFixture(tmp: string, action: ApplyFixtureAction): ApplyFixtur
         mode: "autonomous",
         actions: [
           {
-            ...action,
+            ...resultAction,
             target: "#101",
             target_kind: "pull_request",
-            target_updated_at: "2026-05-25T00:00:00Z",
+            ...(omitTargetUpdatedAt ? {} : { target_updated_at: "2026-05-25T00:00:00Z" }),
             status: "planned",
             evidence: ["PR B is referenced as the canonical replacement for PR A."],
             idempotency_key: "proof-gated-close",
@@ -922,9 +982,12 @@ function runApplyResult(
     failIfProofRuns?: boolean;
     proofFailureMessage?: string;
     afterProofPath?: string;
+    allowMissingUpdatedAt?: boolean;
   },
 ) {
-  execFileSync(process.execPath, ["dist/repair/apply-result.js", paths.jobPath, paths.resultPath], {
+  const args = ["dist/repair/apply-result.js", paths.jobPath, paths.resultPath];
+  if (options.allowMissingUpdatedAt) args.push("--allow-missing-updated-at");
+  execFileSync(process.execPath, args, {
     cwd: repoRoot,
     env: {
       ...process.env,

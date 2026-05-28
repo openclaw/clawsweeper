@@ -413,6 +413,16 @@ function applyCloseAction({
     };
   }
   live = fetchIssue(result.repo, target);
+  if (live.state !== "open") {
+    return {
+      ...base,
+      status: existingComment ? "executed" : "skipped",
+      reason: existingComment
+        ? "already closed with matching clawsweeper-repair comment"
+        : "already closed",
+      live_state: live.state,
+    };
+  }
   if (expectedUpdatedAt && expectedUpdatedAt !== live.updated_at) {
     return {
       ...base,
