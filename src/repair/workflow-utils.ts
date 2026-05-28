@@ -303,12 +303,24 @@ export function proposedItemNumbers(options: ProposedItemOptions): number[] {
       if (repoFor(markdown, name) !== options.targetRepo) return [];
       const type = frontMatterValue(markdown, "type");
       if (options.applyKind !== "all" && type && type !== options.applyKind) return [];
-      if (frontMatterValue(markdown, "decision") !== "close") return [];
-      if (frontMatterValue(markdown, "confidence") !== "high") return [];
-      if (!isSelectableCloseAction(frontMatterValue(markdown, "action_taken"))) return [];
+      const decision = frontMatterValue(markdown, "decision");
+      const action = frontMatterValue(markdown, "action_taken");
+      const confidence = frontMatterValue(markdown, "confidence");
       const reason = frontMatterValue(markdown, "close_reason");
-      if (!allowedForTarget(options.targetRepo, type, reason, allowedReasons)) return [];
-      if (allowedCloseReasons && !allowedCloseReasons.has(reason)) return [];
+      const selectableClose =
+        decision === "close" &&
+        confidence === "high" &&
+        isSelectableCloseAction(action) &&
+        allowedForTarget(options.targetRepo, type, reason, allowedReasons) &&
+        (!allowedCloseReasons || allowedCloseReasons.has(reason));
+      const selectablePromotion =
+        decision === "keep_open" &&
+        action === "kept_open" &&
+        type === "pull_request" &&
+        frontMatterValue(markdown, "review_status") === "complete" &&
+        frontMatterValue(markdown, "local_checkout_access") === "verified" &&
+        (!allowedCloseReasons || allowedCloseReasons.has("duplicate_or_superseded"));
+      if (!selectableClose && !selectablePromotion) return [];
       if (
         (reason === "stale_insufficient_info" || reason === "mostly_implemented_on_main") &&
         !olderThan(

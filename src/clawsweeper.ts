@@ -13479,6 +13479,9 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
       currentContext ??= collectItemContext(item, { fullTimelineForRelations: true });
       return currentContext;
     };
+    const rememberSelfMutationUpdatedAt = (): void => {
+      if (!dryRun) allowedSelfMutationUpdatedAts.add(fetchItem(number).item.updatedAt);
+    };
     let cachedPrCloseCoverageProofGateResult: PrCloseCoverageProofGateResult | undefined;
     let prCloseCoverageProofGateChecked = false;
     const currentPrCloseCoverageProofGateBlock = (): PrCloseCoverageProofGateBlock | null => {
@@ -13800,7 +13803,7 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
     }
     markdown = replaceFrontMatterValue(markdown, "labels", JSON.stringify(item.labels));
     if (clawSweeperLabelsChanged && !dryRun) {
-      allowedSelfMutationUpdatedAts.add(fetchItem(number).item.updatedAt);
+      rememberSelfMutationUpdatedAt();
     }
     const renderOptions: ReviewCommentRenderOptions = {
       prStatusKind: currentPrStatusKind,
@@ -14060,6 +14063,7 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
         item.labels = impactSyncResult.labels;
         clawSweeperLabelsChanged ||= impactSyncResult.changed;
         markdown = replaceFrontMatterValue(markdown, "labels", JSON.stringify(item.labels));
+        let mergeRiskLabelsChanged = false;
         if (item.kind === "pull_request") {
           const mergeRiskSyncResult = syncMergeRiskLabels({
             number,
@@ -14068,8 +14072,12 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
             dryRun,
           });
           item.labels = mergeRiskSyncResult.labels;
+          mergeRiskLabelsChanged = mergeRiskSyncResult.changed;
           clawSweeperLabelsChanged ||= mergeRiskSyncResult.changed;
           markdown = replaceFrontMatterValue(markdown, "labels", JSON.stringify(item.labels));
+        }
+        if (syncResult.changed || impactSyncResult.changed || mergeRiskLabelsChanged) {
+          rememberSelfMutationUpdatedAt();
         }
       } catch (error) {
         if (!isGitHubRequiresAuthenticationError(error)) throw error;
@@ -14093,6 +14101,7 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
         issueAdvisoryLabelsChanged = syncResult.changed;
         clawSweeperLabelsChanged ||= syncResult.changed;
         markdown = replaceFrontMatterValue(markdown, "labels", JSON.stringify(item.labels));
+        if (syncResult.changed) rememberSelfMutationUpdatedAt();
       } catch (error) {
         if (!isGitHubRequiresAuthenticationError(error)) throw error;
         if (markLabelSyncAuthSkipped("advisory issue")) break;
