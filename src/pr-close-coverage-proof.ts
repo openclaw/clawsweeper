@@ -334,7 +334,9 @@ function prCloseCoverageProofCoveredWorkIsConcrete(value: string): boolean {
   if (!normalized) return false;
   const words = normalized.match(/\b[a-z0-9][a-z0-9'-]*\b/g) ?? [];
   if (words.length < 4) return false;
-  const concreteWords = words.filter((word) => !PR_CLOSE_COVERAGE_PROOF_GENERIC_WORDS.has(word));
+  const concreteWords = words
+    .map((word) => word.replace(/'s$/, ""))
+    .filter((word) => !PR_CLOSE_COVERAGE_PROOF_GENERIC_WORDS.has(word));
   if (concreteWords.length < 2) return false;
   if (
     /\b(?:touch(?:es|ed)?|chang(?:es|ed|ing)|modif(?:ies|ied)|updates?|mentions?|references?)\b.*\b(?:same|nearby|related|shared)\b.*\b(?:file|files|package|module|area|code|path|component|discussion)\b/.test(

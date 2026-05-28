@@ -125,6 +125,21 @@ test("PR close coverage proof rejects same-fix covered work before closing", () 
   assert.match(decision.reason, /incomplete/);
 });
 
+test("PR close coverage proof rejects same-behavior covered work before closing", () => {
+  const decision = prCloseCoverageProofCloseDecision({
+    sourceSummary: "PR A fixes the auth route guard.",
+    coveringSummary: "PR B says it covers PR A.",
+    coveredWork: ["PR B covers PR A's same behavior."],
+    uniqueSourceWork: [],
+    decision: "covered",
+    reason: "PR B covers PR A.",
+  });
+
+  assert.equal(decision.close, false);
+  assert.equal(decision.proof.decision, "keep_open");
+  assert.match(decision.reason, /incomplete/);
+});
+
 for (const coveredWork of ["config", "proof", "legacy"]) {
   test(`PR close coverage proof rejects terse covered work: ${coveredWork}`, () => {
     const decision = prCloseCoverageProofCloseDecision({
