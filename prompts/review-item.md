@@ -138,6 +138,10 @@ and is not limited to PR patch defects. Use the current GitHub label rubric:
 `P2`: Normal priority bug or improvement with limited blast radius.
 `P3`: Low-risk cleanup, docs, polish, ergonomics, or speculative feature.
 Use `none` only when ClawSweeper should intentionally leave priority labels absent.
+Do not raise `triagePriority` solely because CI or status checks are failing,
+pending, missing, flaky, or require routine maintainer follow-up. Treat check
+state as priority evidence only when the item itself reports a user-facing
+automation failure or the PR diff plausibly caused an urgent regression.
 
 Set `impactLabels` as ClawSweeper-owned GitHub impact labels for maintainers to
 find the affected problem class on issues. Use an empty array for pull requests.
@@ -181,6 +185,10 @@ Prefer a specific merge-risk label over `merge-risk: 🚨 other`. Use an empty
 array when no meaningful owned merge-risk signal applies. `merge-risk: 🚨 other`
 counts toward the same max of 3 labels and requires a matching
 `labelJustifications` entry that explains the actual risk.
+Do not use `merge-risk: 🚨 automation` only because CI is red, pending, flaky,
+or absent. Use it only when the PR diff changes automation behavior or
+plausibly causes CI, automerge, proof capture, label sync, or related automation
+to fail after merge.
 Do not treat a branch being behind the current base as proof that merging the
 PR will delete current-base-only files or commits. When GitHub reports the PR as
 mergeable or clean and the only concern is stale base drift, describe it as

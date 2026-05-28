@@ -11565,6 +11565,27 @@ test("ClawSweeper priority label descriptions stay aligned with prompt and schem
   }
 });
 
+test("review prompt keeps unrelated CI noise out of triage priority", () => {
+  const schema = JSON.parse(reviewDecisionSchemaText()) as {
+    properties?: {
+      triagePriority?: {
+        description?: string;
+      };
+    };
+  };
+  const schemaDescription = schema.properties?.triagePriority?.description ?? "";
+  const prompt = reviewPromptTemplate();
+
+  assert.match(prompt, /Do not raise `triagePriority` solely because CI or status checks/);
+  assert.match(
+    prompt,
+    /failing,\s+pending,\s+missing,\s+flaky,\s+or require routine maintainer follow-up/,
+  );
+  assert.match(prompt, /PR diff plausibly caused an urgent regression/);
+  assert.match(schemaDescription, /Do not raise priority solely because CI or status checks/);
+  assert.match(schemaDescription, /diff-caused urgent regressions/);
+});
+
 test("ClawSweeper priority labels follow triage priority", () => {
   assert.deepEqual(priorityLabelsForTest(["bug"], "P2"), ["bug", "P2"]);
   assert.deepEqual(priorityLabelsForTest(["bug", "P3"], "P1"), ["bug", "P1"]);
@@ -11763,6 +11784,25 @@ test("ClawSweeper merge-risk label descriptions stay aligned with prompt and sch
       `${label.name} description is missing from the schema`,
     );
   }
+});
+
+test("review prompt uses automation merge risk only for diff-caused automation risk", () => {
+  const schema = JSON.parse(reviewDecisionSchemaText()) as {
+    properties?: {
+      mergeRiskLabels?: {
+        description?: string;
+      };
+    };
+  };
+  const schemaDescription = schema.properties?.mergeRiskLabels?.description ?? "";
+  const prompt = reviewPromptTemplate();
+
+  assert.match(prompt, /Do not use `merge-risk: 🚨 automation` only because CI is red/);
+  assert.match(prompt, /pending,\s+flaky,\s+or absent/);
+  assert.match(prompt, /PR diff changes automation behavior/);
+  assert.match(prompt, /plausibly causes CI,\s+automerge,\s+proof capture,\s+label sync/);
+  assert.match(schemaDescription, /Do not use merge-risk: 🚨 automation only because CI is red/);
+  assert.match(schemaDescription, /PR diff changes automation behavior/);
 });
 
 test("ClawSweeper merge-risk labels remove stale owned labels and preserve unrelated labels", () => {
