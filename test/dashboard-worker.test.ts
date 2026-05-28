@@ -1351,13 +1351,13 @@ test("hosted webhook accepts author read-only mention commands", async () => {
             fork: false,
             has_issues: true,
           },
-          issue: { number: 76991, user: { login: "nickmopen" } },
+          issue: { number: 76991, user: { login: "contributor" } },
           installation: { id: 123 },
           comment: {
             id: 456,
             body,
             author_association: "CONTRIBUTOR",
-            user: { login: "NickMOpen" },
+            user: { login: "contributor" },
           },
         },
       }),
@@ -1368,39 +1368,41 @@ test("hosted webhook accepts author read-only mention commands", async () => {
   }
 });
 
-test("hosted webhook ignores hatch commands outside OpenClaw repositories", async () => {
-  const response = await worker.fetch(
-    signedGithubWebhookRequest({
-      event: "issue_comment",
-      secret: "test-secret",
-      payload: {
-        action: "created",
-        repository: {
-          full_name: "steipete/summarize",
-          private: false,
-          archived: false,
-          fork: false,
-          has_issues: true,
+test("hosted webhook ignores hatch commands outside the OpenClaw product repository", async () => {
+  for (const repo of ["steipete/summarize", "openclaw/clawsweeper"]) {
+    const response = await worker.fetch(
+      signedGithubWebhookRequest({
+        event: "issue_comment",
+        secret: "test-secret",
+        payload: {
+          action: "created",
+          repository: {
+            full_name: repo,
+            private: false,
+            archived: false,
+            fork: false,
+            has_issues: true,
+          },
+          issue: { number: 76991, user: { login: "contributor" } },
+          installation: { id: 123 },
+          comment: {
+            id: 456,
+            body: "@clawsweeper hatch",
+            author_association: "CONTRIBUTOR",
+            user: { login: "contributor" },
+          },
         },
-        issue: { number: 76991, user: { login: "nickmopen" } },
-        installation: { id: 123 },
-        comment: {
-          id: 456,
-          body: "@clawsweeper hatch",
-          author_association: "CONTRIBUTOR",
-          user: { login: "NickMOpen" },
-        },
-      },
-    }),
-    { CLAWSWEEPER_WEBHOOK_SECRET: "test-secret" },
-  );
+      }),
+      { CLAWSWEEPER_WEBHOOK_SECRET: "test-secret" },
+    );
 
-  assert.equal(response.status, 202);
-  assert.deepEqual(await response.json(), {
-    ok: true,
-    accepted: false,
-    reason: "PR egg is disabled for this repo",
-  });
+    assert.equal(response.status, 202);
+    assert.deepEqual(await response.json(), {
+      ok: true,
+      accepted: false,
+      reason: "PR egg is disabled for this repo",
+    });
+  }
 });
 
 test("hosted webhook returns invalid_json for signed malformed bodies", async () => {

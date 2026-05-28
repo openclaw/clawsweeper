@@ -512,7 +512,7 @@ function classifyGithubIssueCommentWebhook({ event, payload }) {
   if (!isEligibleGithubWebhookRepository(repo)) {
     return { accepted: false, reason: "repository not eligible" };
   }
-  if (isGithubWebhookHatchCommand(comment) && !isOpenClawRepo(targetRepo)) {
+  if (isGithubWebhookHatchCommand(comment) && !isOpenClawProductRepo(targetRepo)) {
     return { accepted: false, reason: "PR egg is disabled for this repo" };
   }
   const itemNumber = Number(issue.number);
@@ -612,11 +612,12 @@ function isEligibleGithubWebhookRepository(repo) {
   return owner === "openclaw" || owner === "steipete";
 }
 
-function isOpenClawRepo(repo) {
-  return String(repo || "")
-    .trim()
-    .toLowerCase()
-    .startsWith("openclaw/");
+function isOpenClawProductRepo(repo) {
+  return (
+    String(repo || "")
+      .trim()
+      .toLowerCase() === "openclaw/openclaw"
+  );
 }
 
 function targetDefaultBranch(repo) {
