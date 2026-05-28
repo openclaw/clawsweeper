@@ -421,7 +421,7 @@ test("workflow utilities select cursor-based PR comment sync batches", () => {
   const cursorPath = path.join(root, "results/comment-sync-cursors/openclaw-openclaw.json");
   writeCommentSyncRecord(root, 10, "pull_request", "kept_open");
   writeCommentSyncRecord(root, 20, "pull_request", "proposed_close");
-  writeCommentSyncRecord(root, 30, "pull_request", "kept_open");
+  writeCommentSyncRecord(root, 30, "pull_request", "skipped_pr_close_coverage_proof");
   writeCommentSyncRecord(root, 40, "issue", "kept_open");
   writeCommentSyncRecord(root, 50, "pull_request", "reviewed");
 

@@ -4882,7 +4882,7 @@ function promotionGhMock(options: {
 	    appendFileSync(closeAppliedBodyLogPath, JSON.parse(require("fs").readFileSync(input, "utf8")).body + "\\n---body---\\n");
 	  }
 	  console.log("");
-	} else if (args[0] === "api" && new RegExp("/issues/comments/\\d+$").test(path) && args.includes("--method")) {
+	} else if (args[0] === "api" && new RegExp("/issues/comments/\\\\d+$").test(path) && args.includes("--method")) {
 	  if (commentWriteLogPath) appendFileSync(commentWriteLogPath, args.join(" ") + "\\n");
 	  console.log("");
 	} else if (args[0] === "api" && new RegExp("/issues/" + number + "/comments(?:\\\\?|$)").test(path)) {
@@ -8061,6 +8061,7 @@ test("apply-decisions keeps existing duplicate PR close proposals open when cove
     const closedDir = join(root, "closed");
     const plansDir = join(root, "plans");
     const reportPath = join(root, "apply-report.json");
+    const commentWriteLogPath = join(root, "comment-write.log");
     mkdirSync(itemsDir, { recursive: true });
     mkdirSync(plansDir, { recursive: true });
     const synced = reportWithSyncedReviewComment(
@@ -8086,6 +8087,7 @@ test("apply-decisions keeps existing duplicate PR close proposals open when cove
         number: 348,
         title: "Provider route fallback",
         comment: synced.comment,
+        commentWriteLogPath,
         linkedPulls: {
           400: {
             number: 400,
@@ -8155,6 +8157,16 @@ test("apply-decisions keeps existing duplicate PR close proposals open when cove
     assert.match(
       readFileSync(join(itemsDir, "348.md"), "utf8"),
       /action_taken: skipped_pr_close_coverage_proof/,
+    );
+    const blockedReport = readFileSync(join(itemsDir, "348.md"), "utf8");
+    assert.match(blockedReport, /^decision: keep_open$/m);
+    assert.match(blockedReport, /^close_reason: none$/m);
+    assert.match(blockedReport, /## PR Close Coverage Proof\n\nDecision: keep_open/);
+    assert.match(blockedReport, /unique fallback route behavior/);
+    assert.match(readFileSync(commentWriteLogPath, "utf8"), /issues\/comments\/9348/);
+    assert.doesNotMatch(
+      renderReviewCommentFromReport(blockedReport, "none"),
+      /I’m closing this PR/,
     );
 
     withMockGh(
@@ -8698,7 +8710,7 @@ test("apply-decisions preserves full PR URL evidence over later bare refs", () =
   }
 });
 
-test("apply-decisions checks duplicate PR coverage proof before syncing close review comments", () => {
+test("apply-decisions checks duplicate PR coverage proof before syncing corrected review comments", () => {
   const root = mkdtempSync(tmpPrefix);
   try {
     const itemsDir = join(root, "items");
@@ -8788,14 +8800,10 @@ test("apply-decisions checks duplicate PR coverage proof before syncing close re
       report.find((entry) => entry.number === 354)?.reason ?? "",
       /unique fallback route behavior/,
     );
-    assert.equal(
-      existsSync(commentWriteLogPath) ? readFileSync(commentWriteLogPath, "utf8") : "",
-      "",
-    );
-    assert.doesNotMatch(
-      readFileSync(join(itemsDir, "354.md"), "utf8"),
-      /review_comment_synced_at:/,
-    );
+    assert.match(readFileSync(commentWriteLogPath, "utf8"), /issues\/354\/comments/);
+    const blockedReport = readFileSync(join(itemsDir, "354.md"), "utf8");
+    assert.match(blockedReport, /^decision: keep_open$/m);
+    assert.match(blockedReport, /^review_comment_synced_at:/m);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

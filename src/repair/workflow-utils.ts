@@ -408,7 +408,13 @@ function commentSyncCandidates(targetRepo: string, applyKind: string): number[] 
       if (frontMatterValue(markdown, "review_status") !== "complete") return [];
       if (!frontMatterValue(markdown, "item_snapshot_hash")) return [];
       const actionTaken = frontMatterValue(markdown, "action_taken");
-      if (actionTaken !== "kept_open" && actionTaken !== "proposed_close") return [];
+      if (
+        actionTaken !== "kept_open" &&
+        actionTaken !== "proposed_close" &&
+        actionTaken !== "skipped_pr_close_coverage_proof"
+      ) {
+        return [];
+      }
       return [numberFor(name)];
     })
     .sort((left, right) => left - right);

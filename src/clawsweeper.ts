@@ -10529,6 +10529,38 @@ function applyPrCloseCoverageProofReportSection(
   );
 }
 
+function applyPrCloseCoverageProofBlockedReport(
+  markdown: string,
+  block: PrCloseCoverageProofGateBlock,
+): string {
+  const previousEvidence = reviewSectionValue(markdown, "evidence");
+  let next = replaceFrontMatterValue(markdown, "decision", "keep_open");
+  next = replaceFrontMatterValue(next, "close_reason", "none");
+  next = replaceSectionValue(
+    next,
+    REVIEW_SECTIONS.summary,
+    `Keep this PR open. ${sentence(block.reason)}`,
+  );
+  next = replaceSectionValue(
+    next,
+    REVIEW_SECTIONS.bestSolution,
+    "Keep this PR open until a linked canonical PR proves it covers this PR's unique work, or a maintainer confirms closure.",
+  );
+  next = replaceSectionValue(
+    next,
+    REVIEW_SECTIONS.evidence,
+    [`- **PR close coverage proof:** ${block.reason}`, previousEvidence.trim()]
+      .filter(Boolean)
+      .join("\n"),
+  );
+  next = replaceSectionValue(next, REVIEW_SECTIONS.closeComment, "_No close comment posted._");
+  return replaceSectionValue(
+    next,
+    PR_CLOSE_COVERAGE_PROOF_SECTION,
+    ["Decision: keep_open", `Reason: ${block.reason}`].join("\n"),
+  );
+}
+
 function recommendedPauseOrCloseOption(markdown: string): MergeRiskOption | null {
   return (
     mergeRiskOptionsFromReport(markdown).find(
@@ -13423,6 +13455,7 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
       !storedHash ||
       (action !== "proposed_close" &&
         action !== "kept_open" &&
+        action !== "skipped_pr_close_coverage_proof" &&
         action !== "retry_pr_close_coverage_proof" &&
         !shouldProbeClosedState)
     ) {
@@ -13777,7 +13810,7 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
       renderOptions.hasOpenLinkedPullRequest =
         openClosingPullRequestApplyReason(currentClosingPullRequests) !== null;
     }
-    const reviewComment = renderReviewCommentFromReport(
+    let reviewComment = renderReviewCommentFromReport(
       markdown,
       closeReason ?? "none",
       renderOptions,
@@ -13790,7 +13823,8 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
     if (existingReviewCommentUpdatedAt) {
       allowedSelfMutationUpdatedAts.add(existingReviewCommentUpdatedAt);
     }
-    const markedReviewComment = markedReviewCommentBody(number, reviewComment);
+    let markedReviewComment = markedReviewCommentBody(number, reviewComment);
+    let proofBlockedForCommentSync: PrCloseCoverageProofGateBlock | null = null;
     const protectedApplyReason = applyProtectedLabelReason(item.labels, closeReason);
     if (applyBlockingProtectedLabels(item.labels, closeReason).length > 0) {
       if (isCloseProposal) {
@@ -14076,18 +14110,18 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
         continue;
       }
     }
-    const reviewCommentHash = sha256(markedReviewComment);
-    const existingReviewCommentMatches = commentBodyMatches(
+    let reviewCommentHash = sha256(markedReviewComment);
+    let existingReviewCommentMatches = commentBodyMatches(
       existingReviewComment,
       markedReviewComment,
     );
-    const needsReviewCommentBodySync = !existingReviewComment || !existingReviewCommentMatches;
-    const needsReviewCommentHashSync =
+    let needsReviewCommentBodySync = !existingReviewComment || !existingReviewCommentMatches;
+    let needsReviewCommentHashSync =
       frontMatterValue(markdown, "review_comment_sha256") !== reviewCommentHash;
-    const needsReviewCommentReferenceSync =
+    let needsReviewCommentReferenceSync =
       frontMatterValue(markdown, "review_comment_id") === "unknown" ||
       frontMatterValue(markdown, "review_comment_url") === "unknown";
-    const needsReviewCommentSync = shouldSyncReviewComment({
+    let needsReviewCommentSync = shouldSyncReviewComment({
       syncCommentsOnly,
       isCloseProposal,
       commentSyncMinAgeDays,
@@ -14124,9 +14158,49 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
       ) {
         const prCloseCoverageBlock = currentPrCloseCoverageProofGateBlock();
         if (prCloseCoverageBlock) {
-          if (markApplySkipped(prCloseCoverageBlock.actionTaken, prCloseCoverageBlock.reason))
-            break;
-          continue;
+          if (prCloseCoverageBlock.actionTaken !== "skipped_pr_close_coverage_proof") {
+            if (markApplySkipped(prCloseCoverageBlock.actionTaken, prCloseCoverageBlock.reason))
+              break;
+            continue;
+          }
+          proofBlockedForCommentSync = prCloseCoverageBlock;
+          markdown = applyPrCloseCoverageProofBlockedReport(markdown, prCloseCoverageBlock);
+          markdown = replaceFrontMatterValue(
+            markdown,
+            "action_taken",
+            prCloseCoverageBlock.actionTaken,
+          );
+          markdown = replaceFrontMatterValue(
+            markdown,
+            "apply_checked_at",
+            new Date().toISOString(),
+          );
+          closeReason = "none";
+          isCloseProposal = false;
+          reviewComment = renderReviewCommentFromReport(markdown, closeReason, renderOptions);
+          markedReviewComment = markedReviewCommentBody(number, reviewComment);
+          reviewCommentHash = sha256(markedReviewComment);
+          existingReviewCommentMatches = commentBodyMatches(
+            existingReviewComment,
+            markedReviewComment,
+          );
+          needsReviewCommentBodySync = !existingReviewComment || !existingReviewCommentMatches;
+          needsReviewCommentHashSync =
+            frontMatterValue(markdown, "review_comment_sha256") !== reviewCommentHash;
+          needsReviewCommentReferenceSync =
+            frontMatterValue(markdown, "review_comment_id") === "unknown" ||
+            frontMatterValue(markdown, "review_comment_url") === "unknown";
+          needsReviewCommentSync = shouldSyncReviewComment({
+            syncCommentsOnly,
+            isCloseProposal,
+            commentSyncMinAgeDays,
+            reviewCommentSyncedAt: frontMatterValue(markdown, "review_comment_synced_at"),
+            hasExistingReviewComment: Boolean(existingReviewComment),
+            needsReviewCommentBodySync,
+            needsReviewCommentHashSync,
+            needsReviewCommentReferenceSync,
+            forceReviewCommentBodySync: true,
+          });
         }
         const coveringFreshnessBlock = postProofCoveringPrFreshnessBlock();
         if (coveringFreshnessBlock) {
@@ -14212,12 +14286,28 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
       if (!dryRun) writeFileSync(path, markdown, "utf8");
       results.push({
         number,
-        action: "review_comment_synced",
-        reason: syncReasons.join("; "),
+        action: proofBlockedForCommentSync?.actionTaken ?? "review_comment_synced",
+        reason: proofBlockedForCommentSync
+          ? [proofBlockedForCommentSync.reason, ...syncReasons].join("; ")
+          : syncReasons.join("; "),
       });
       processedCount += 1;
       maybeLogProgress(`synced review comment #${number}`);
       if (processedCount >= processedLimit) break;
+    }
+    if (proofBlockedForCommentSync) {
+      if (!needsReviewCommentSync) {
+        if (!dryRun) writeFileSync(path, markdown, "utf8");
+        results.push({
+          number,
+          action: proofBlockedForCommentSync.actionTaken,
+          reason: proofBlockedForCommentSync.reason,
+        });
+        processedCount += 1;
+        maybeLogProgress(`skipped #${number}: ${proofBlockedForCommentSync.reason}`);
+        if (processedCount >= processedLimit) break;
+      }
+      continue;
     }
     if (
       clawSweeperLabelsChanged &&
