@@ -7052,15 +7052,17 @@ function publicPlainBullet(text: string): string {
 function isActionablePriorityText(text: string): boolean {
   const body = stripPriorityPrefix(text);
   if (!body || isReportNoneList(body)) return false;
-  if (
-    /\b(?:no automated repair|no clawsweeper repair|normal maintainer review|maintainer review and ci|required checks|status checks|ready for maintainer review)\b/i.test(
-      body,
-    )
-  ) {
+  if (isRoutineCiOrReviewText(body)) {
     return false;
   }
   return /\b(?:add|block|blocked|break|fail(?:\s+|-)?closed|fix|implement|missing|must|need(?:s|ed)?|prove|reject|repair|required|validate|before merge)\b/i.test(
     body,
+  );
+}
+
+function isRoutineCiOrReviewText(text: string): boolean {
+  return /\b(?:no automated repair|no clawsweeper repair|normal maintainer review|maintainer review and ci|required checks|status checks|ready for maintainer review|ci(?:\/status)? checks?|flaky ci|red ci)\b/i.test(
+    stripPriorityPrefix(text),
   );
 }
 
@@ -7070,14 +7072,24 @@ function publicPriorityBulletIfActionable(text: string, fallback: PublicPriority
     : publicPlainBullet(text);
 }
 
-function publicPriorityBulletsFromText(text: string, fallback: PublicPriority): string {
+function publicRiskBulletsFromText(text: string, fallback: PublicPriority): string {
   const lines = text
     .split("\n")
     .map((line) => line.trim())
     .filter(Boolean);
   const bulletLines = lines.filter((line) => /^[-*]\s+/.test(line));
-  if (!bulletLines.length) return publicPriorityBulletFromText(text, fallback);
-  return bulletLines.map((line) => publicPriorityBulletFromText(line, fallback)).join("\n");
+  if (!bulletLines.length) {
+    return isRoutineCiOrReviewText(text)
+      ? publicPlainBullet(text)
+      : publicPriorityBulletFromText(text, fallback);
+  }
+  return bulletLines
+    .map((line) =>
+      isRoutineCiOrReviewText(line)
+        ? publicPlainBullet(line)
+        : publicPriorityBulletFromText(line, fallback),
+    )
+    .join("\n");
 }
 
 function confidenceText(score: number): string {
@@ -11040,7 +11052,7 @@ function publicMergeRiskLine(
     ? mergeRiskOptionsLines(options)
     : mergeRiskFallbackOptionsLines(bestSolutionLine, nextStepLine);
   return [
-    publicPriorityBulletsFromText(risks, "P1"),
+    publicRiskBulletsFromText(risks, "P1"),
     choices.length ? ["", "**Maintainer options:**", ...choices].join("\n") : "",
   ]
     .filter(Boolean)
@@ -11384,7 +11396,7 @@ function renderKeepOpenCommentFromReport(
       ...(reviewDetails.length ? [""] : []),
       "Remaining risk / open question:",
       "",
-      isPullRequest ? publicPriorityBulletsFromText(risks, "P2") : risks,
+      isPullRequest ? publicRiskBulletsFromText(risks, "P2") : risks,
     );
   }
   const reviewLine = closeReviewLineFromReport(markdown);

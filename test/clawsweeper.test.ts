@@ -9781,6 +9781,45 @@ Confirm both merge risks before merge.
   assert.doesNotMatch(comment, /- \[P1\] Blocked workflow actions.*\n- Timeout fallback/s);
 });
 
+test("pull request risk text does not priority-prefix routine CI noise", () => {
+  const routineCiRisk = "CI checks are red on this branch and may be unrelated to the diff.";
+  const comment = renderReviewCommentFromReport(
+    `${reportFrontMatter({
+      type: "pull_request",
+      number: "74269",
+      decision: "keep_open",
+      close_reason: "none",
+      work_candidate: "none",
+      pull_head_sha: "abc123def456",
+    })}
+
+## Summary
+
+Keep this PR open while maintainers verify check state.
+
+## What This Changes
+
+Updates review guidance.
+
+## Best Possible Solution
+
+Merge after the unrelated CI state is understood.
+
+## Risks / Open Questions
+
+${routineCiRisk}
+`,
+    "none",
+  );
+
+  assert.match(comment, /\*\*Risk before merge\*\*/);
+  assert.match(comment, new RegExp(`- ${routineCiRisk.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
+  assert.doesNotMatch(
+    comment,
+    new RegExp(`\\[P[12]\\] ${routineCiRisk.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`),
+  );
+});
+
 test("OpenClaw pull request comments render PR surface inside evidence details", () => {
   const comment = renderReviewCommentFromReport(
     `${reportFrontMatter({
