@@ -3035,6 +3035,7 @@ Reason: The fix is narrow and can be made on the PR branch.
     comment,
     /\*\*Review findings\*\*\n- \[P1\] Validate replace paths — `src\/config\/apply\.ts:42-44`/,
   );
+  assert.doesNotMatch(comment, /\*\*\[P[0-2]\]\*\*/);
   assert.match(comment, /Full review comments:/);
   assert.match(comment, /A misspelled replace path is currently ignored/);
   assert.match(comment, /Overall correctness: patch is incorrect/);
@@ -3069,7 +3070,7 @@ Land this docs-only PR after maintainer review.
 
   assert.match(
     comment,
-    /\*\*Next step before merge\*\*\nLand this docs-only PR after maintainer review\./,
+    /\*\*Next step before merge\*\*\n- \[P2\] Land this docs-only PR after maintainer review\./,
   );
   assert.doesNotMatch(comment, /Best possible solution:/);
 });
@@ -3113,7 +3114,10 @@ Full review comments:
   );
 
   assert.match(comment, /Codex review: passed\./);
-  assert.match(comment, /\*\*Next step before merge\*\*\nMerge after required checks are green\./);
+  assert.match(
+    comment,
+    /\*\*Next step before merge\*\*\n- \[P2\] Merge after required checks are green\./,
+  );
   assert.doesNotMatch(comment, /Automerge follow-up:/);
   assert.match(comment, /<!-- clawsweeper-verdict:pass item=74453 sha=abc123def456/);
   assert.doesNotMatch(comment, /clawsweeper-verdict:needs-human/);
@@ -3466,7 +3470,7 @@ Full review comments:
     comment,
     /Overall follows the weaker of proof and patch quality, so missing proof can cap an otherwise strong patch\./,
   );
-  assert.match(comment, /Proof guidance:\nNeeds real behavior proof before merge:/);
+  assert.match(comment, /Proof guidance:\n- \[P1\] Needs real behavior proof before merge:/);
   assert.match(comment, /The PR has no real ingestion-run proof yet\./);
   assert.match(comment, /After adding proof, update the PR body/);
   assert.match(comment, /@clawsweeper re-review/);
@@ -5269,7 +5273,7 @@ Full review comments:
   assert.match(comment, /Codex review: passed\./);
   assert.match(
     comment,
-    /\*\*Next step before merge\*\*\nLeave this draft open after fixes are complete\./,
+    /\*\*Next step before merge\*\*\n- \[P2\] Leave this draft open after fixes are complete\./,
   );
   assert.doesNotMatch(comment, /Autofix follow-up:/);
   assert.match(comment, /<!-- clawsweeper-verdict:pass item=74610 sha=abc123def456/);
@@ -11159,7 +11163,7 @@ Reason: ${duplicateRisk}
     "none",
   );
 
-  assert.ok(comment.includes(`**Next step before merge**\n${duplicateRisk}`));
+  assert.ok(comment.includes(`**Next step before merge**\n- [P2] ${duplicateRisk}`));
   assert.doesNotMatch(comment, /Remaining risk \/ open question:/);
   assert.doesNotMatch(comment, /\*\*Risk before merge\*\*/);
   assert.equal(comment.split(duplicateRisk).length - 1, 1);

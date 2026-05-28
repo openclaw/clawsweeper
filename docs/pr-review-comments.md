@@ -74,6 +74,14 @@ report has:
 - `Remaining risk:` only when it is not a restatement of the required change or
   best solution
 
+Actionable bullets in risk, finding, next-step, merge-blocking proof guidance,
+acceptance criteria, and remaining-risk text may use plain priority prefixes
+such as `[P0]`, `[P1]`, or `[P2]`. Keep those prefixes unbolded and attached to
+plain-language consequences or required actions. Do not add priority prefixes to
+audit-only details such as label justifications, AGENTS.md notes,
+Mantis/workflow notes, model metadata, related people, PR stats, or generic
+evidence lists.
+
 Full review comments, source links, owner routing, acceptance criteria, and
 evidence stay under the collapsed `Review details` block so the top-level PR
 comment reads like a concise review.

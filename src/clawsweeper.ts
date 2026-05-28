@@ -7003,6 +7003,34 @@ function priorityLabel(priority: ReviewFinding["priority"]): string {
   return `P${priority}`;
 }
 
+type PublicPriority = "P0" | "P1" | "P2";
+
+function publicPriorityFromText(text: string, fallback: PublicPriority): PublicPriority {
+  if (/\b(?:outage|data loss|security exposure|release blocker|widespread)\b/i.test(text)) {
+    return "P0";
+  }
+  if (/\b(?:localized|non-blocking|nonblocking|recoverable|fallback|timeout)\b/i.test(text)) {
+    return "P2";
+  }
+  return fallback;
+}
+
+function stripPriorityPrefix(text: string): string {
+  return text
+    .trim()
+    .replace(/^[-*]\s+/, "")
+    .replace(/^(?:\*\*)?\[P[0-2]\](?:\*\*)?\s*/i, "")
+    .trim();
+}
+
+function publicPriorityBullet(priority: PublicPriority, text: string): string {
+  return `- [${priority}] ${stripPriorityPrefix(sentence(text))}`;
+}
+
+function publicPriorityBulletFromText(text: string, fallback: PublicPriority): string {
+  return publicPriorityBullet(publicPriorityFromText(text, fallback), text);
+}
+
 function confidenceText(score: number): string {
   return score.toFixed(2).replace(/0+$/, "").replace(/\.$/, "");
 }
@@ -7148,7 +7176,7 @@ function publicMergeReadinessBlock(rating: PrRating, proof: RealBehaviorProof): 
   const shiny = hasShinyProof(proof) ? " ✨ media proof bonus" : "";
   const proofGuidance =
     proof.status === "missing" || proof.status === "mock_only" || proof.status === "insufficient"
-      ? publicRealBehaviorProofLine(proof)
+      ? publicPriorityBullet("P1", publicRealBehaviorProofLine(proof))
       : "";
   const lines = [
     `Overall: ${themedRatingName(rating.overallTier)}`,
@@ -7159,7 +7187,13 @@ function publicMergeReadinessBlock(rating: PrRating, proof: RealBehaviorProof): 
     "Overall follows the weaker of proof and patch quality, so missing proof can cap an otherwise strong patch.",
   ];
   if (rating.nextSteps.length) {
-    lines.push("", "Rank-up moves:", ...rating.nextSteps.slice(0, 3).map((step) => `- ${step}`));
+    lines.push(
+      "",
+      "Rank-up moves:",
+      ...rating.nextSteps
+        .slice(0, 3)
+        .map((step) => publicPriorityBulletFromText(step, proofGuidance ? "P1" : "P2")),
+    );
   }
   if (proofGuidance) {
     lines.push("", "Proof guidance:", proofGuidance);
@@ -11575,7 +11609,10 @@ function publicMergeRiskLine(
   const choices = options.length
     ? mergeRiskOptionsLines(options)
     : mergeRiskFallbackOptionsLines(bestSolutionLine, nextStepLine);
-  return [risks, choices.length ? ["", "**Maintainer options:**", ...choices].join("\n") : ""]
+  return [
+    publicPriorityBulletFromText(risks, "P1"),
+    choices.length ? ["", "**Maintainer options:**", ...choices].join("\n") : "",
+  ]
     .filter(Boolean)
     .join("\n");
 }
@@ -11751,10 +11788,12 @@ function renderKeepOpenCommentFromReport(
   const reviewMetrics = reviewMetricsFromReport(markdown);
   const workReason = reportWorkCandidateReason(markdown);
   const workCandidate = frontMatterValue(markdown, "work_candidate");
+  const isPullRequest = frontMatterValue(markdown, "type") === "pull_request";
   const validation = frontMatterStringArray(markdown, "work_validation")
     .slice(0, 5)
-    .map((step) => `- ${step}`);
-  const isPullRequest = frontMatterValue(markdown, "type") === "pull_request";
+    .map((step) =>
+      isPullRequest ? publicPriorityBulletFromText(step, "P1") : `- ${stripPriorityPrefix(step)}`,
+    );
   const isRepairCandidate = workCandidate === "queue_fix_pr";
   const isRepairLoopPass = isPullRequest && Boolean(repairLoopPassModeFromReport(markdown));
   const hasRealBehaviorProofBlocker = isPullRequest && realBehaviorProofBlocksMerge(markdown);
@@ -11763,6 +11802,9 @@ function renderKeepOpenCommentFromReport(
   const fallbackNextStep =
     "Continue tracking this item until the missing behavior is implemented or a maintainer decides the product direction.";
   const nextStepLine = sentence(workReason || bestSolution || fallbackNextStep);
+  const publicNextStepLine = isPullRequest
+    ? publicPriorityBulletFromText(nextStepLine, hasRealBehaviorProofBlocker ? "P1" : "P2")
+    : nextStepLine;
   const bestSolutionLine = sentence(bestSolution);
   const mergeRiskLine = isPullRequest
     ? publicMergeRiskLine(risks, nextStepLine, bestSolutionLine, mergeRiskOptions)
@@ -11818,7 +11860,11 @@ function renderKeepOpenCommentFromReport(
     : "";
   if (mantisSuggestion) appendPublicSection(lines, "Mantis proof suggestion", mantisSuggestion);
   if (mergeRiskLine) appendPublicSection(lines, "Risk before merge", mergeRiskLine);
-  appendPublicSection(lines, isPullRequest ? "Next step before merge" : "Next step", nextStepLine);
+  appendPublicSection(
+    lines,
+    isPullRequest ? "Next step before merge" : "Next step",
+    publicNextStepLine,
+  );
   const securityLine = publicSecurityReviewLine(securityReview);
   if (securityLine) appendPublicSection(lines, "Security", securityLine);
   if (isPullRequest && reviewFindings.length) {
@@ -11906,7 +11952,7 @@ function renderKeepOpenCommentFromReport(
       ...(reviewDetails.length ? [""] : []),
       "Remaining risk / open question:",
       "",
-      risks,
+      isPullRequest ? publicPriorityBulletFromText(risks, "P2") : risks,
     );
   }
   const reviewLine = closeReviewLineFromReport(markdown);
