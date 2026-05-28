@@ -1506,12 +1506,12 @@ function targetRepo(): string {
   return activeRepositoryProfile.targetRepo;
 }
 
-function isOpenClawRepo(repo: string | null | undefined): boolean {
-  return normalizeRepo(String(repo ?? "")).startsWith("openclaw/");
+function isOpenClawProductRepo(repo: string | null | undefined): boolean {
+  return normalizeRepo(String(repo ?? "")) === "openclaw/openclaw";
 }
 
 function prEggEnabledForMarkdown(markdown: string): boolean {
-  return isOpenClawRepo(markdownRepository(markdown));
+  return isOpenClawProductRepo(markdownRepository(markdown));
 }
 
 function setTargetRepo(targetRepoName: string): RepositoryProfile {
@@ -7257,14 +7257,13 @@ function publicPrEggLine(
 ): string {
   if (!prEggProofUnlocked(options.realBehaviorProof)) {
     return [
-      "🎁 Pass real behavior proof to wake the egg and unlock a hatchable treat.",
+      "ClawSweeper PR egg: 🎁 locked until real behavior proof passes.",
       "",
       "<details>",
-      "<summary>Where did the egg go?</summary>",
+      "<summary>Details</summary>",
       "",
-      "- The egg game starts only after the PR passes the real-behavior proof check.",
-      "- Before that, no creature or rarity is rolled. The treat waits for real proof.",
-      "- This is still just collectible flavor: proof affects review readiness, not creature quality.",
+      "- No creature or rarity is rolled until proof passes.",
+      "- Eggs are collectible flavor only; they do not affect labels, ratings, merge decisions, or automation.",
       "",
       "</details>",
     ].join("\n");
@@ -7274,24 +7273,19 @@ function publicPrEggLine(
   const visualSeed = prEggVisualSeedFromReport(markdown);
   const renderStatusKind = prEggRenderStatusKind(markdown, options.statusKind);
   const state = prEggStateFromStatus(renderStatusKind);
-  const hatchInstruction = [
-    "### Hatch command",
-    "",
-    "Comment `@clawsweeper hatch` when this PR is hatchable.",
-    "",
-    "Hatchability rules:",
-    "- Merged PRs are hatchable.",
-    "- Open PRs are hatchable when they are `status: 👀 ready for maintainer look`, `status: 🚀 automerge armed`, or labeled `clawsweeper:automerge`.",
-    "- Closed unmerged PRs are hatchable only when one of those hatchable labels is still present in the durable record.",
-  ].join("\n");
   const explainer = [
     "",
     "<details>",
-    "<summary>What is this egg doing here?</summary>",
+    "<summary>Rules and details</summary>",
     "",
-    "- Eggs appear after the PR passes real-behavior proof. It is here for vibes, not verdicts: it does not change labels, ratings, merge decisions, or automation.",
-    "- The shell reacts to review momentum: open follow-up work warms it up, re-review makes it wobble, and a clean final review lets it hatch.",
-    "- Hatchability usually comes from sufficient real-behavior proof, no blocking P0/P1/P2 findings, no security attention needed, and clean correctness. A merged PR is already final, so merge makes the egg hatchable independently.",
+    "Hatchability:",
+    "- Merged PRs are hatchable.",
+    "- Open PRs are hatchable when they are `status: 👀 ready for maintainer look`, `status: 🚀 automerge armed`, or labeled `clawsweeper:automerge`.",
+    "- Closed unmerged PRs are hatchable only when one of those hatchable labels is still present in the durable record.",
+    "",
+    "About:",
+    "- Eggs appear after real-behavior proof passes. They are collectible flavor only.",
+    "- Review momentum changes the shell state: follow-up work warms it, re-review makes it wobble, and a clean final review lets it hatch.",
     "- The hatch is seeded from this repository and PR number, so the same PR keeps the same creature; the reviewed head SHA can only change safe visual details.",
     "- Rarity is just collectible sparkle: 🥚 common, 🌱 uncommon, 💎 rare, ✨ glimmer, and 🌈 legendary.",
     "",
@@ -7311,26 +7305,26 @@ function publicPrEggLine(
       creature.shareText,
     )}&url=${encodeURIComponent(prEggShareTargetUrl(markdown))}`;
     return [
-      `✨ Hatched: ${creature.rarityLabel} ${creature.name}`,
+      `ClawSweeper PR egg: ✨ hatched ${creature.rarityLabel} ${creature.name}. Rarity: ${creature.rarityLabel}. Trait: ${creature.trait}.`,
+      "",
+      "<details>",
+      "<summary>Details</summary>",
       "",
       ...imageBlock,
-      hatchInstruction,
-      "",
-      `Rarity: ${creature.rarityLabel}.`,
-      `Trait: ${creature.trait}.`,
-      `Image traits: location ${creature.imageTraits.location}; accessory ${creature.imageTraits.accessory}; palette ${creature.imageTraits.palette}; mood ${creature.imageTraits.mood}; pose ${creature.imageTraits.pose}; shell ${creature.imageTraits.texture}; lighting ${creature.imageTraits.lighting}; background ${creature.imageTraits.backgroundDetail}.`,
       `Share on X: ${markdownLink("post this hatch", shareUrl)}`,
       `Copy: ${creature.shareText}`,
-      ...explainer,
+      ...explainer.slice(4),
     ].join("\n");
   }
   const stateLines: Record<Exclude<PrEggState, "hatched">, string> = {
-    incubating: "🥚 Incubating: this PR egg is tucked into the review nest.",
-    warming:
-      "🔥 Warming up: real-behavior proof passed; findings, security review, or rank-up moves are still in progress.",
-    wobbling: "🔁 Wobbling: a re-review loop is active, so the shell is rattling.",
+    incubating: "🥚 incubating until a hatchable PR state.",
+    warming: "🔥 warming; proof passed, review follow-up or readiness checks remain.",
+    wobbling: "🔁 wobbling during re-review.",
   };
-  return [stateLines[state], "", hatchInstruction, ...explainer].join("\n");
+  return [
+    `ClawSweeper PR egg: ${stateLines[state]} Hatch with \`@clawsweeper hatch\` when eligible.`,
+    ...explainer,
+  ].join("\n");
 }
 
 function publicPrEggLineFromReport(
@@ -7358,7 +7352,7 @@ function publicPrEggLineFromReport(
 
 function prEggImageRelativePath(markdown: string): string {
   const repo = markdownRepository(markdown);
-  if (!isOpenClawRepo(repo)) throw new Error(`PR egg is disabled for target repo: ${repo}`);
+  if (!isOpenClawProductRepo(repo)) throw new Error(`PR egg is disabled for target repo: ${repo}`);
   const profile = repositoryProfileFor(repo);
   const number = frontMatterValue(markdown, "number") ?? "unknown";
   return `assets/pr-eggs/${profile.slug}/${number}.png`;
@@ -12583,13 +12577,9 @@ function renderHatchComment(
   statusKind: PrStatusLabelKind | null | undefined,
 ): string {
   if (!prEggEnabledForMarkdown(markdown)) return "";
-  return [
-    "ClawSweeper PR egg",
-    "",
-    publicPrEggLineFromReport(markdown, statusKind),
-    "",
-    hatchCommentMarker(number),
-  ].join("\n");
+  return [publicPrEggLineFromReport(markdown, statusKind), "", hatchCommentMarker(number)].join(
+    "\n",
+  );
 }
 
 function upsertHatchComment(
@@ -13497,7 +13487,11 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
     if (processedCount % progressEvery === 0) logProgress(message);
   };
   const recordMissingHatchResults = (existingNumbers: Set<number>): void => {
-    if (!hatchPrEggImage || requestedItemNumbers.length === 0 || !isOpenClawRepo(targetRepo()))
+    if (
+      !hatchPrEggImage ||
+      requestedItemNumbers.length === 0 ||
+      !isOpenClawProductRepo(targetRepo())
+    )
       return;
     for (const number of requestedItemNumbers) {
       if (existingNumbers.has(number)) continue;
@@ -13845,7 +13839,7 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
       return result;
     };
     if (hatchOnly) {
-      if (!isOpenClawRepo(repo)) {
+      if (!isOpenClawProductRepo(repo)) {
         results.push({ number, action: "kept_open", reason: "PR egg is disabled for this repo" });
         processedCount += 1;
         maybeLogProgress(`skipped PR egg image #${number}: disabled for repo ${repo}`);
@@ -14045,11 +14039,11 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
     ]);
     const markedReviewComment = markedReviewCommentBody(number, reviewComment);
     const prEggComment =
-      item.kind === "pull_request" && !isCloseProposal && isOpenClawRepo(repo)
+      item.kind === "pull_request" && !isCloseProposal && isOpenClawProductRepo(repo)
         ? renderHatchComment(number, markdown, currentPrStatusKind)
         : "";
     const existingPrEggComment =
-      item.kind === "pull_request" && !isCloseProposal && isOpenClawRepo(repo)
+      item.kind === "pull_request" && !isCloseProposal && isOpenClawProductRepo(repo)
         ? issueCommentWithMarker(number, hatchCommentMarker(number))
         : undefined;
     const protectedApplyReason = applyProtectedLabelReason(item.labels, closeReason);
@@ -14252,7 +14246,7 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
       frontMatterValue(markdown, "review_comment_url") === "unknown";
     const needsPrEggCommentSync =
       item.kind === "pull_request" &&
-      isOpenClawRepo(repo) &&
+      isOpenClawProductRepo(repo) &&
       !isCloseProposal &&
       !commentBodyMatches(existingPrEggComment, prEggComment);
     const needsReviewCommentSync = shouldSyncReviewComment({

@@ -182,7 +182,7 @@ test("comment webhook accepts author read-only hatch commands", () => {
   });
 });
 
-test("comment webhook ignores hatch commands outside OpenClaw repositories", () => {
+test("comment webhook ignores hatch commands outside the OpenClaw product repository", () => {
   const result = classifyIssueCommentWebhook({
     event: "issue_comment",
     payload: {
@@ -200,6 +200,24 @@ test("comment webhook ignores hatch commands outside OpenClaw repositories", () 
   });
 
   assert.deepEqual(result, { accepted: false, reason: "PR egg is disabled for this repo" });
+
+  const orgRepoResult = classifyIssueCommentWebhook({
+    event: "issue_comment",
+    payload: {
+      action: "created",
+      repository: { full_name: "openclaw/clawsweeper" },
+      issue: { number: 76992, user: { login: "contributor" } },
+      installation: { id: 123 },
+      comment: {
+        id: 458,
+        body: "@clawsweeper hatch",
+        author_association: "CONTRIBUTOR",
+        user: { login: "contributor" },
+      },
+    },
+  });
+
+  assert.deepEqual(orgRepoResult, { accepted: false, reason: "PR egg is disabled for this repo" });
 });
 
 test("comment webhook rejects commands from ineligible repositories", () => {

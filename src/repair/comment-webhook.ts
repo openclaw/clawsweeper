@@ -180,7 +180,7 @@ export function classifyIssueCommentWebhook({
   if (!isEligibleRepositoryPayload(repo)) {
     return { accepted: false, reason: "repository not eligible" };
   }
-  if (parsedCommand?.intent === "hatch" && !isOpenClawRepo(targetRepo)) {
+  if (parsedCommand?.intent === "hatch" && !isOpenClawProductRepo(targetRepo)) {
     return { accepted: false, reason: "PR egg is disabled for this repo" };
   }
   const staleReason = staleClosedItemCommandReason({
@@ -290,8 +290,8 @@ function isEligibleRepositoryPayload(repo: LooseRecord) {
   }
 }
 
-function isOpenClawRepo(repo: string) {
-  return repo.trim().toLowerCase().startsWith("openclaw/");
+function isOpenClawProductRepo(repo: string) {
+  return repo.trim().toLowerCase() === "openclaw/openclaw";
 }
 
 function targetDefaultBranch(repo: LooseRecord) {

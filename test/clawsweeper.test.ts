@@ -4002,17 +4002,16 @@ Full review comments:
   assert.doesNotMatch(comment, /\*\*PR egg\*\*/);
   assert.match(comment, /\*\*Merge readiness\*\*/);
   assert.match(eggComment, /ClawSweeper PR egg/);
-  assert.match(eggComment, /🎁 Pass real behavior proof/);
-  assert.match(eggComment, /wake the egg and unlock a hatchable treat/);
-  assert.match(eggComment, /<summary>Where did the egg go\?<\/summary>/);
-  assert.match(eggComment, /no creature or rarity is rolled/);
+  assert.match(eggComment, /ClawSweeper PR egg: 🎁 locked until real behavior proof passes\./);
+  assert.match(eggComment, /<summary>Details<\/summary>/);
+  assert.match(eggComment, /No creature or rarity is rolled until proof passes/);
   assert.doesNotMatch(eggComment, /```text/);
-  assert.doesNotMatch(eggComment, /🔥 Warming up:/);
-  assert.doesNotMatch(eggComment, /✨ Hatched:/);
+  assert.doesNotMatch(eggComment, /🔥 warming;/);
+  assert.doesNotMatch(eggComment, /✨ hatched/);
   assert.doesNotMatch(eggComment, /Share on X:/);
 });
 
-test("PR egg comment is hidden outside OpenClaw repositories", () => {
+test("PR egg comment is hidden outside the OpenClaw product repository", () => {
   const report = `${reportFrontMatter({
     repository: "steipete/summarize",
     type: "pull_request",
@@ -4064,6 +4063,12 @@ Full review comments:
   const eggComment = renderPrEggCommentForTest(74470, report, "ready_for_maintainer_look");
 
   assert.equal(eggComment, "");
+
+  const orgRepoReport = report.replace(
+    "repository: steipete/summarize",
+    "repository: openclaw/clawsweeper",
+  );
+  assert.equal(renderPrEggCommentForTest(74470, orgRepoReport, "ready_for_maintainer_look"), "");
 });
 
 test("PR egg comment renders warming PR egg from active status after proof passes", () => {
@@ -4131,26 +4136,24 @@ Full review comments:
   assert.match(eggComment, /ClawSweeper PR egg/);
   assert.match(
     eggComment,
-    /🔥 Warming up: real-behavior proof passed; findings, security review, or rank-up moves are still in progress\./,
+    /🔥 warming; proof passed, review follow-up or readiness checks remain\./,
   );
   assert.doesNotMatch(eggComment, /```text/);
-  assert.match(eggComment, /<summary>What is this egg doing here\?<\/summary>/);
-  assert.match(eggComment, /Eggs appear after the PR passes real-behavior proof/);
-  assert.match(eggComment, /It is here for vibes, not verdicts/);
+  assert.match(eggComment, /<summary>Rules and details<\/summary>/);
+  assert.match(eggComment, /Eggs appear after real-behavior proof passes/);
+  assert.match(eggComment, /collectible flavor only/);
   assert.match(
     eggComment,
-    /🔥 Warming up:[\s\S]+### Hatch command[\s\S]+Hatchability rules:[\s\S]+- Merged PRs are hatchable\.[\s\S]+- Open PRs are hatchable when they are `status: 👀 ready for maintainer look`, `status: 🚀 automerge armed`, or labeled `clawsweeper:automerge`\.[\s\S]+- Closed unmerged PRs are hatchable only when one of those hatchable labels is still present in the durable record\./,
+    /^ClawSweeper PR egg: 🔥 warming; proof passed, review follow-up or readiness checks remain\. Hatch with `@clawsweeper hatch` when eligible\./,
   );
   assert.match(
     eggComment,
-    /Hatchability usually comes from sufficient real-behavior proof, no blocking P0\/P1\/P2 findings/,
+    /Hatchability:[\s\S]+- Merged PRs are hatchable\.[\s\S]+- Open PRs are hatchable when they are `status: 👀 ready for maintainer look`, `status: 🚀 automerge armed`, or labeled `clawsweeper:automerge`\.[\s\S]+- Closed unmerged PRs are hatchable only when one of those hatchable labels is still present in the durable record\./,
   );
-  assert.match(eggComment, /no security attention needed, and clean correctness/);
-  assert.match(eggComment, /Comment `@clawsweeper hatch` when this PR is/);
   assert.match(eggComment, /🥚 common, 🌱 uncommon, 💎 rare, ✨ glimmer, and 🌈 legendary/);
-  assert.doesNotMatch(eggComment, /🎁 Pass real behavior proof/);
+  assert.doesNotMatch(eggComment, /🎁 Egg locked/);
   assert.doesNotMatch(eggComment, /proof, findings, or rank-up moves are still in progress/);
-  assert.doesNotMatch(eggComment, /✨ Hatched:/);
+  assert.doesNotMatch(eggComment, /✨ hatched/);
   assert.doesNotMatch(eggComment, /Share on X:/);
 });
 
@@ -4211,15 +4214,12 @@ Full review comments:
 
   assert.doesNotMatch(reviewComment, /\*\*PR egg\*\*/);
   assert.match(first, /ClawSweeper PR egg/);
-  assert.match(first, /✨ Hatched: [^\n]+/);
+  assert.match(first, /✨ hatched [^\n]+/);
   assert.doesNotMatch(first, /```text/);
-  assert.match(first, /### Hatch command/);
+  assert.match(first, /^ClawSweeper PR egg: ✨ hatched [^\n]+\. Rarity: [^\n]+\. Trait: [^\n]+\./);
   assert.match(first, /Rarity: [^\n]+\./);
   assert.match(first, /Trait: [^.]+\./);
-  assert.match(
-    first,
-    /Image traits: location [^;]+; accessory [^;]+; palette [^;]+; mood [^;]+; pose [^;]+; shell [^;]+; lighting [^;]+; background [^.]+\./,
-  );
+  assert.doesNotMatch(first, /Image traits:/);
   assert.match(
     first,
     /Share on X: \[post this hatch\]\(https:\/\/x\.com\/intent\/tweet\?text=[^)]+&url=https%3A%2F%2Fgithub\.com%2Fopenclaw%2Fopenclaw%2Fpull%2F74471%23issuecomment-987654321\)/,
@@ -4227,7 +4227,7 @@ Full review comments:
   assert.match(first, /Copy: My PR egg hatched a [^\n]+ in ClawSweeper\./);
   assert.match(
     first,
-    /### Hatch command[\s\S]+Merged PRs are hatchable\.[\s\S]+Closed unmerged PRs are hatchable only when one of those hatchable labels is still present in the durable record\.[\s\S]+Rarity:/,
+    /<summary>Details<\/summary>[\s\S]+Share on X:[\s\S]+Hatchability:[\s\S]+Merged PRs are hatchable\.[\s\S]+Closed unmerged PRs are hatchable only when one of those hatchable labels is still present in the durable record\./,
   );
   assert.match(first, /same PR keeps the same creature/);
   assert.equal(first, second);
@@ -4292,10 +4292,9 @@ Full review comments:
     "ready_for_maintainer_look",
   );
 
-  assert.equal(first.match(/✨ Hatched: [^\n]+/)?.[0], second.match(/✨ Hatched: [^\n]+/)?.[0]);
+  assert.equal(first.match(/✨ hatched [^\n]+/)?.[0], second.match(/✨ hatched [^\n]+/)?.[0]);
   assert.equal(first.match(/Rarity: [^\n]+/)?.[0], second.match(/Rarity: [^\n]+/)?.[0]);
   assert.equal(first.match(/Trait: [^\n]+/)?.[0], second.match(/Trait: [^\n]+/)?.[0]);
-  assert.equal(first.match(/Image traits: [^\n]+/)?.[0], second.match(/Image traits: [^\n]+/)?.[0]);
   assert.equal(first.match(/Copy: [^\n]+/)?.[0], second.match(/Copy: [^\n]+/)?.[0]);
   assert.match(first, /same PR keeps the same creature/);
 });
@@ -4397,7 +4396,7 @@ Full review comments:
     /<img src="https:\/\/raw\.githubusercontent\.com\/openclaw\/clawsweeper-state\/state\/assets\/pr-eggs\/openclaw-openclaw\/74476\.png" width="256" height="256" alt="Hatched PR egg: [^"]+">/,
   );
   assert.doesNotMatch(eggComment, /```text/);
-  assert.ok(eggComment.indexOf("<img ") < eggComment.indexOf("### Hatch command"));
+  assert.ok(eggComment.indexOf("<img ") > eggComment.indexOf("<summary>Details</summary>"));
 });
 
 test("PR egg share link falls back to PR URL before durable comment metadata exists", () => {
@@ -4523,8 +4522,8 @@ Full review comments:
     );
 
     assert.doesNotMatch(comment, /\*\*PR egg\*\*/);
-    assert.match(eggComment, /✨ Hatched: [^\n]+/);
-    assert.doesNotMatch(eggComment, /🔥 Warming up:/);
+    assert.match(eggComment, /✨ hatched [^\n]+/);
+    assert.doesNotMatch(eggComment, /🔥 warming;/);
   }
 });
 
@@ -4592,13 +4591,13 @@ Full review comments:
   const eggComment = renderPrEggCommentForTest(83632, report);
 
   assert.doesNotMatch(comment, /\*\*PR egg\*\*/);
-  assert.match(eggComment, /✨ Hatched: [^\n]+/);
+  assert.match(eggComment, /✨ hatched [^\n]+/);
   assert.match(eggComment, /Rarity: [^\n]+\./);
   assert.match(
     eggComment,
     /Share on X: \[post this hatch\]\(https:\/\/x\.com\/intent\/tweet\?text=[^)]+&url=https%3A%2F%2Fgithub\.com%2Fopenclaw%2Fopenclaw%2Fpull%2F83632%23issuecomment-4478578658\)/,
   );
-  assert.doesNotMatch(eggComment, /🔥 Warming up:/);
+  assert.doesNotMatch(eggComment, /🔥 warming;/);
 });
 
 test("PR egg lifecycle follows the current PR status signal", () => {
@@ -4655,22 +4654,19 @@ Full review comments:
 `;
 
   const cases = [
-    ["automerge_armed", /✨ Hatched:/],
-    ["ready_for_maintainer_look", /✨ Hatched:/],
-    ["re_review_loop", /🔁 Wobbling:/],
+    ["automerge_armed", /✨ hatched/],
+    ["ready_for_maintainer_look", /✨ hatched/],
+    ["re_review_loop", /🔁 wobbling/],
     [
       "actively_grinding",
-      /🔥 Warming up: real-behavior proof passed; findings, security review, or rank-up moves are still in progress\./,
+      /🔥 warming; proof passed, review follow-up or readiness checks remain\./,
     ],
     [
       "waiting_on_author",
-      /🔥 Warming up: real-behavior proof passed; findings, security review, or rank-up moves are still in progress\./,
+      /🔥 warming; proof passed, review follow-up or readiness checks remain\./,
     ],
-    [
-      "needs_proof",
-      /🔥 Warming up: real-behavior proof passed; findings, security review, or rank-up moves are still in progress\./,
-    ],
-    [null, /🥚 Incubating:/],
+    ["needs_proof", /🔥 warming; proof passed, review follow-up or readiness checks remain\./],
+    [null, /🥚 incubating/],
   ] as const;
 
   for (const [prStatusKind, expected] of cases) {
@@ -4737,12 +4733,12 @@ Full review comments:
 - none
 `;
 
-  assert.match(renderPrEggCommentForTest(74473, report, "re_review_loop"), /🔁 Wobbling:/);
+  assert.match(renderPrEggCommentForTest(74473, report, "re_review_loop"), /🔁 wobbling/);
   assert.doesNotMatch(
     renderReviewCommentFromReport(report, "none", { prStatusKind: "re_review_loop" }),
     /\*\*PR egg\*\*/,
   );
-  assert.match(renderPrEggCommentForTest(74473, report), /🥚 Incubating:/);
+  assert.match(renderPrEggCommentForTest(74473, report), /🥚 incubating/);
 });
 
 test("issues do not render PR egg game", () => {
@@ -5995,6 +5991,7 @@ if (args[0] === "api" && /\\/issues\\/84244\\/comments(?:\\?|$)/.test(path)) {
 `;
     withMockGh(root, ghMock, () => {
       runApplyDecisionsForTest({
+        targetRepo: "openclaw/openclaw",
         itemsDir,
         closedDir,
         plansDir,
@@ -6026,7 +6023,7 @@ if (args[0] === "api" && /\\/issues\\/84244\\/comments(?:\\?|$)/.test(path)) {
       calls.some(
         (args) =>
           args[0] === "api" &&
-          args[1] === "repos/openclaw/clawsweeper/issues/84244/comments" &&
+          args[1] === "repos/openclaw/openclaw/issues/84244/comments" &&
           args.includes("POST"),
       ),
     );
@@ -6057,7 +6054,7 @@ test("reconcile preserves exact open item records missed by the broad open scan"
     writeFileSync(
       join(itemsDir, "84347.md"),
       `${reportFrontMatter({
-        repository: "openclaw/clawsweeper",
+        repository: "openclaw/openclaw",
         type: "pull_request",
         number: "84347",
         title: "Preserve exact PR",
@@ -6137,11 +6134,11 @@ test("hatch sync posts PR egg comment without publishing stale review changes", 
     writeFileSync(
       join(itemsDir, "74476.md"),
       `${reportFrontMatter({
-        repository: "openclaw/clawsweeper",
+        repository: "openclaw/openclaw",
         type: "pull_request",
         number: "74476",
         title: "Keep hatch separate",
-        url: "https://github.com/openclaw/clawsweeper/pull/74476",
+        url: "https://github.com/openclaw/openclaw/pull/74476",
         decision: "keep_open",
         close_reason: "none",
         confidence: "high",
@@ -6159,7 +6156,7 @@ test("hatch sync posts PR egg comment without publishing stale review changes", 
         item_updated_at: "2026-05-19T20:00:00Z",
         pull_head_sha: "abc123def456",
         pr_egg_image_url:
-          "https://raw.githubusercontent.com/openclaw/clawsweeper-state/state/assets/pr-eggs/openclaw-clawsweeper/74476.png",
+          "https://raw.githubusercontent.com/openclaw/clawsweeper-state/state/assets/pr-eggs/openclaw-openclaw/74476.png",
       })}
 
 ## Summary
@@ -6203,7 +6200,7 @@ if (args[0] === "api" && /\\/issues\\/74476$/.test(path)) {
   console.log(JSON.stringify({
     number: 74476,
     title: "Keep hatch separate",
-    html_url: "https://github.com/openclaw/clawsweeper/pull/74476",
+    html_url: "https://github.com/openclaw/openclaw/pull/74476",
     created_at: "2026-05-19T19:00:00Z",
     updated_at: "2026-05-19T20:00:00Z",
     closed_at: null,
@@ -6221,13 +6218,13 @@ if (args[0] === "api" && /\\/issues\\/74476$/.test(path)) {
     appendFileSync(logPath, JSON.stringify(["comment-body", JSON.parse(readFileSync(input, "utf8")).body]) + "\\n");
     console.log(JSON.stringify({
       id: 987476,
-      html_url: "https://github.com/openclaw/clawsweeper/pull/74476#issuecomment-987476"
+      html_url: "https://github.com/openclaw/openclaw/pull/74476#issuecomment-987476"
     }));
   } else {
     console.log(JSON.stringify([[
       {
         id: 444,
-        html_url: "https://github.com/openclaw/clawsweeper/pull/74476#issuecomment-444",
+        html_url: "https://github.com/openclaw/openclaw/pull/74476#issuecomment-444",
         body: "Codex review: needs maintainer review before merge.\\n\\n<!-- clawsweeper-review item=74476 -->",
         user: { login: "clawsweeper" },
         created_at: "2026-05-19T19:55:00Z",
@@ -6248,6 +6245,7 @@ if (args[0] === "api" && /\\/issues\\/74476$/.test(path)) {
 `;
     withMockGh(root, ghMock, () => {
       runApplyDecisionsForTest({
+        targetRepo: "openclaw/openclaw",
         itemsDir,
         closedDir,
         plansDir,
@@ -6279,7 +6277,7 @@ if (args[0] === "api" && /\\/issues\\/74476$/.test(path)) {
       calls.some(
         (args) =>
           args[0] === "api" &&
-          args[1] === "repos/openclaw/clawsweeper/issues/74476/comments" &&
+          args[1] === "repos/openclaw/openclaw/issues/74476/comments" &&
           args.includes("POST"),
       ),
     );
@@ -6295,10 +6293,10 @@ if (args[0] === "api" && /\\/issues\\/74476$/.test(path)) {
     assert.match(hatchBody, /ClawSweeper PR egg/);
     assert.match(
       hatchBody,
-      /<img src="https:\/\/raw\.githubusercontent\.com\/openclaw\/clawsweeper-state\/state\/assets\/pr-eggs\/openclaw-clawsweeper\/74476\.png"/,
+      /<img src="https:\/\/raw\.githubusercontent\.com\/openclaw\/clawsweeper-state\/state\/assets\/pr-eggs\/openclaw-openclaw\/74476\.png"/,
     );
     assert.doesNotMatch(hatchBody, /```text/);
-    assert.match(hatchBody, /### Hatch command/);
+    assert.match(hatchBody, /^ClawSweeper PR egg: ✨ hatched [^\n]+/);
     assert.match(hatchBody, /clawsweeper-pr-egg-hatch:74476/);
     assert.doesNotMatch(hatchBody, /Pending stale finding/);
     assert.doesNotMatch(hatchBody, /Codex review: needs changes/);
@@ -6321,11 +6319,11 @@ test("hatch sync can use archived merged PR records without hatchable labels", (
     writeFileSync(
       join(closedDir, "74479.md"),
       `${reportFrontMatter({
-        repository: "openclaw/clawsweeper",
+        repository: "openclaw/openclaw",
         type: "pull_request",
         number: "74479",
         title: "Closed hatch",
-        url: "https://github.com/openclaw/clawsweeper/pull/74479",
+        url: "https://github.com/openclaw/openclaw/pull/74479",
         decision: "keep_open",
         close_reason: "none",
         confidence: "high",
@@ -6372,7 +6370,7 @@ if (args[0] === "api" && /\\/issues\\/74479$/.test(path)) {
   console.log(JSON.stringify({
     number: 74479,
     title: "Closed hatch",
-    html_url: "https://github.com/openclaw/clawsweeper/pull/74479",
+    html_url: "https://github.com/openclaw/openclaw/pull/74479",
     created_at: "2026-05-19T19:00:00Z",
     updated_at: "2026-05-19T21:00:00Z",
     closed_at: "2026-05-19T21:00:00Z",
@@ -6390,7 +6388,7 @@ if (args[0] === "api" && /\\/issues\\/74479$/.test(path)) {
     appendFileSync(logPath, JSON.stringify(["comment-body", JSON.parse(readFileSync(input, "utf8")).body]) + "\\n");
     console.log(JSON.stringify({
       id: 987479,
-      html_url: "https://github.com/openclaw/clawsweeper/pull/74479#issuecomment-987479"
+      html_url: "https://github.com/openclaw/openclaw/pull/74479#issuecomment-987479"
     }));
   } else {
     console.log(JSON.stringify([[]]));
@@ -6407,6 +6405,7 @@ if (args[0] === "api" && /\\/issues\\/74479$/.test(path)) {
 `;
     withMockGh(root, ghMock, () => {
       runApplyDecisionsForTest({
+        targetRepo: "openclaw/openclaw",
         itemsDir,
         closedDir,
         plansDir,
@@ -6435,8 +6434,8 @@ if (args[0] === "api" && /\\/issues\\/74479$/.test(path)) {
       .filter(Boolean)
       .map((line) => JSON.parse(line) as string[]);
     const hatchBody = calls.find((args) => args[0] === "comment-body")?.[1] ?? "";
-    assert.match(hatchBody, /✨ Hatched: [^\n]+/);
-    assert.match(hatchBody, /### Hatch command/);
+    assert.match(hatchBody, /✨ hatched [^\n]+/);
+    assert.match(hatchBody, /^ClawSweeper PR egg: ✨ hatched [^\n]+/);
     assert.match(hatchBody, /Merged PRs are hatchable/);
     assert.match(
       hatchBody,
@@ -6451,11 +6450,11 @@ if (args[0] === "api" && /\\/issues\\/74479$/.test(path)) {
 
 test("closed PR egg hatch still requires hatchable durable labels", () => {
   const report = `${reportFrontMatter({
-    repository: "openclaw/clawsweeper",
+    repository: "openclaw/openclaw",
     type: "pull_request",
     number: "74480",
     title: "Closed without hatch label",
-    url: "https://github.com/openclaw/clawsweeper/pull/74480",
+    url: "https://github.com/openclaw/openclaw/pull/74480",
     decision: "keep_open",
     close_reason: "none",
     confidence: "high",
@@ -6490,9 +6489,9 @@ Full review comments:
 `;
 
   const eggComment = renderPrEggCommentForTest(74480, report);
-  assert.match(eggComment, /🥚 Incubating:/);
+  assert.match(eggComment, /🥚 incubating/);
   assert.match(eggComment, /clawsweeper:automerge/);
-  assert.doesNotMatch(eggComment, /✨ Hatched:/);
+  assert.doesNotMatch(eggComment, /✨ hatched/);
 });
 
 test("normal PR comment sync moves PR egg into a separate marker-backed comment", () => {
@@ -6508,11 +6507,11 @@ test("normal PR comment sync moves PR egg into a separate marker-backed comment"
     writeFileSync(
       join(itemsDir, "74477.md"),
       `${reportFrontMatter({
-        repository: "openclaw/clawsweeper",
+        repository: "openclaw/openclaw",
         type: "pull_request",
         number: "74477",
         title: "Move egg comment",
-        url: "https://github.com/openclaw/clawsweeper/pull/74477",
+        url: "https://github.com/openclaw/openclaw/pull/74477",
         decision: "keep_open",
         close_reason: "none",
         confidence: "high",
@@ -6571,7 +6570,7 @@ if (args[0] === "api" && /\\/issues\\/74477$/.test(path)) {
   console.log(JSON.stringify({
     number: 74477,
     title: "Move egg comment",
-    html_url: "https://github.com/openclaw/clawsweeper/pull/74477",
+    html_url: "https://github.com/openclaw/openclaw/pull/74477",
     created_at: "2026-05-19T19:00:00Z",
     updated_at: "2026-05-19T20:00:00Z",
     closed_at: null,
@@ -6594,13 +6593,13 @@ if (args[0] === "api" && /\\/issues\\/74477$/.test(path)) {
 } else if (args[0] === "api" && /\\/pulls\\/74477$/.test(path)) {
   console.log(JSON.stringify({
     number: 74477,
-    html_url: "https://github.com/openclaw/clawsweeper/pull/74477",
+    html_url: "https://github.com/openclaw/openclaw/pull/74477",
     state: "open",
     changed_files: 1,
     commits: 1,
     review_comments: 0,
     head: { sha: "abc123def456", ref: "branch", repo: { full_name: "fork/clawsweeper" } },
-    base: { sha: "base-sha", ref: "main", repo: { full_name: "openclaw/clawsweeper" } },
+    base: { sha: "base-sha", ref: "main", repo: { full_name: "openclaw/openclaw" } },
     user: { login: "contributor" }
   }));
 } else if (args[0] === "api" && /\\/pulls\\/74477\\/(files|commits|comments)(?:\\?|$)/.test(path)) {
@@ -6611,13 +6610,13 @@ if (args[0] === "api" && /\\/issues\\/74477$/.test(path)) {
     appendFileSync(logPath, JSON.stringify(["posted-comment-body", JSON.parse(readFileSync(input, "utf8")).body]) + "\\n");
     console.log(JSON.stringify({
       id: 987477,
-      html_url: "https://github.com/openclaw/clawsweeper/pull/74477#issuecomment-987477"
+      html_url: "https://github.com/openclaw/openclaw/pull/74477#issuecomment-987477"
     }));
   } else {
     console.log(JSON.stringify([[
       {
         id: 555,
-        html_url: "https://github.com/openclaw/clawsweeper/pull/74477#issuecomment-555",
+        html_url: "https://github.com/openclaw/openclaw/pull/74477#issuecomment-555",
         body: "Codex review: stale body with old embedded pet.\\n\\n**PR egg**\\nold egg\\n\\n<!-- clawsweeper-review item=74477 -->",
         user: { login: "clawsweeper" },
         created_at: "2026-05-19T19:55:00Z",
@@ -6630,7 +6629,7 @@ if (args[0] === "api" && /\\/issues\\/74477$/.test(path)) {
   appendFileSync(logPath, JSON.stringify(["patched-review-body", JSON.parse(readFileSync(input, "utf8")).body]) + "\\n");
   console.log(JSON.stringify({
     id: 555,
-    html_url: "https://github.com/openclaw/clawsweeper/pull/74477#issuecomment-555"
+    html_url: "https://github.com/openclaw/openclaw/pull/74477#issuecomment-555"
   }));
 } else if (args[0] === "label" || args[0] === "issue") {
   appendFileSync(logPath, JSON.stringify(["unexpected-label-or-issue-command", ...args]) + "\\n");
@@ -6642,6 +6641,7 @@ if (args[0] === "api" && /\\/issues\\/74477$/.test(path)) {
 `;
     withMockGh(root, ghMock, () => {
       runApplyDecisionsForTest({
+        targetRepo: "openclaw/openclaw",
         itemsDir,
         closedDir,
         plansDir,
@@ -6667,8 +6667,8 @@ if (args[0] === "api" && /\\/issues\\/74477$/.test(path)) {
     assert.match(patchedReviewBody, /Codex review:/);
     assert.doesNotMatch(patchedReviewBody, /\*\*PR egg\*\*/);
     assert.match(eggBody, /ClawSweeper PR egg/);
-    assert.match(eggBody, /✨ Hatched: [^\n]+/);
-    assert.match(eggBody, /@clawsweeper hatch/);
+    assert.match(eggBody, /✨ hatched [^\n]+/);
+    assert.match(eggBody, /^ClawSweeper PR egg: ✨ hatched [^\n]+/);
     assert.match(eggBody, /clawsweeper-pr-egg-hatch:74477/);
     assert.doesNotMatch(eggBody, /<img src=/);
     assert.equal(
@@ -6999,7 +6999,7 @@ if (args[0] === "api" && /\\/issues\\/74479$/.test(path)) {
       {
         number: 74479,
         action: "review_comment_synced",
-        reason: "updated durable Codex review comment; synced durable PR egg comment",
+        reason: "updated durable Codex review comment",
       },
     ]);
   } finally {
