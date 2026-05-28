@@ -14390,7 +14390,7 @@ test("publish workflow installs Codex from the root checkout path", () => {
   assert.doesNotMatch(publishJob, /uses: \.\/clawsweeper\/\.github\/actions\/setup-codex/);
 });
 
-test("apply workflow installs Codex before PR close coverage proof can run", () => {
+test("apply workflow installs Codex only when apply work can run", () => {
   const workflow = readFileSync(".github/workflows/sweep.yml", "utf8");
   const applyJobStart = workflow.indexOf("\n  apply-existing:");
   assert.notEqual(applyJobStart, -1);
@@ -14416,13 +14416,9 @@ test("apply workflow installs Codex before PR close coverage proof can run", () 
   assert.match(preselectBlock, /batch_count="\$\(awk -F=/);
   assert.match(preselectBlock, /\[ "\$\{batch_count:-0\}" -gt 0 \]/);
   assert.match(preselectBlock, /\[ -n "\$item_numbers" \]/);
-  assert.match(preselectBlock, /\[ "\$apply_kind" = "all" \]/);
-  assert.match(preselectBlock, /\[ "\$apply_kind" = "pull_request" \]/);
-  assert.match(preselectBlock, /normalized_apply_close_reasons=/);
-  assert.match(
-    preselectBlock,
-    /",\$normalized_apply_close_reasons," == \*",duplicate_or_superseded,"\*/,
-  );
+  assert.match(preselectBlock, /proposed-item-numbers/);
+  assert.match(preselectBlock, /if \[ -n "\$selected" \]; then\s+needs_codex=true/);
+  assert.doesNotMatch(preselectBlock, /normalized_apply_close_reasons=/);
 });
 
 test("sweep target tokens fall back when an org app installation is missing", () => {
