@@ -405,6 +405,40 @@ test("workflow utilities select eligible proposed close records", () => {
     ].join("\n"),
   );
   write(
+    path.join(root, "records/openclaw-openclaw/items/openclaw-openclaw-24.md"),
+    [
+      "---",
+      "repository: openclaw/openclaw",
+      "type: pull_request",
+      "decision: keep_open",
+      "review_status: complete",
+      "local_checkout_access: verified",
+      "action_taken: kept_open",
+      "close_reason: none",
+      `item_created_at: ${oldDate}`,
+      `work_cluster_refs: ${JSON.stringify(["Superseded by openclaw/openclaw#400"])}`,
+      "---",
+      "",
+    ].join("\n"),
+  );
+  write(
+    path.join(root, "records/openclaw-openclaw/items/openclaw-openclaw-25.md"),
+    [
+      "---",
+      "repository: openclaw/openclaw",
+      "type: pull_request",
+      "decision: keep_open",
+      "review_status: complete",
+      "local_checkout_access: verified",
+      "action_taken: kept_open",
+      "close_reason: none",
+      `item_created_at: ${oldDate}`,
+      `work_cluster_refs: ${JSON.stringify(["Superseded by #400"])}`,
+      "---",
+      "",
+    ].join("\n"),
+  );
+  write(
     path.join(root, "records/openclaw-openclaw/items/openclaw-openclaw-23.md"),
     [
       "---",
@@ -433,7 +467,7 @@ test("workflow utilities select eligible proposed close records", () => {
     }),
   );
 
-  assert.deepEqual(selected, [5, 12, 15, 17, 21, 22]);
+  assert.deepEqual(selected, [5, 12, 15, 17, 21, 22, 24, 25]);
 });
 
 test("workflow utilities allow ClawHub implemented-on-main issue proposals", () => {

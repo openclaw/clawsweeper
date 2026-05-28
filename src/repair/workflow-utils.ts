@@ -357,16 +357,26 @@ function hasPullRequestClosePromotionSignal(
 }
 
 function hasLinkedPullRequestSupersessionSignal(markdown: string, targetRepo: string): boolean {
-  const [owner, repo] = targetRepo.split("/");
-  if (!owner || !repo) return false;
-  const pullUrl = new RegExp(
-    `https:\\/\\/github\\.com\\/${escapeRegExp(owner)}\\/${escapeRegExp(repo)}\\/pull\\/\\d+\\b`,
-    "i",
-  );
+  const pullRef = sameRepoPullRequestRefRegex(targetRepo);
+  if (!pullRef) return false;
   const signal =
     /\b(supersed(?:e|ed|es|ing)|replace(?:s|d|ment)?|duplicate|duplicated|canonical|covered by|landed in)\b/i;
   return closePromotionSignalTexts(markdown).some(
-    (text) => pullUrl.test(text) && signal.test(text),
+    (text) => pullRef.test(text) && signal.test(text),
+  );
+}
+
+function sameRepoPullRequestRefRegex(targetRepo: string): RegExp | null {
+  const [owner, repo] = targetRepo.split("/");
+  if (!owner || !repo) return null;
+  const escapedRepo = `${escapeRegExp(owner)}\\/${escapeRegExp(repo)}`;
+  return new RegExp(
+    [
+      `https:\\/\\/github\\.com\\/${escapedRepo}\\/pull\\/\\d+\\b`,
+      `(?:^|[^\\w/.-])${escapedRepo}#\\d+\\b`,
+      "(?:^|[^\\w/#-])#\\d+\\b",
+    ].join("|"),
+    "i",
   );
 }
 
