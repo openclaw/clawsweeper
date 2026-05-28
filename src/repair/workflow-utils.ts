@@ -319,6 +319,7 @@ export function proposedItemNumbers(options: ProposedItemOptions): number[] {
         type === "pull_request" &&
         frontMatterValue(markdown, "review_status") === "complete" &&
         frontMatterValue(markdown, "local_checkout_access") === "verified" &&
+        allowedForTarget(options.targetRepo, type, "duplicate_or_superseded", allowedReasons) &&
         (!allowedCloseReasons || allowedCloseReasons.has("duplicate_or_superseded"));
       if (!selectableClose && !selectablePromotion) return [];
       if (

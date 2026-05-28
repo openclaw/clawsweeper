@@ -417,6 +417,22 @@ test("workflow utilities allow ClawHub implemented-on-main issue proposals", () 
       "",
     ].join("\n"),
   );
+  write(
+    path.join(root, "records/openclaw-clawhub/items/openclaw-clawhub-9.md"),
+    [
+      "---",
+      "repository: openclaw/clawhub",
+      "type: pull_request",
+      "decision: keep_open",
+      "review_status: complete",
+      "local_checkout_access: verified",
+      "action_taken: kept_open",
+      "close_reason: none",
+      "item_created_at: 2024-01-01T00:00:00Z",
+      "---",
+      "",
+    ].join("\n"),
+  );
 
   const selected = withCwd(root, () =>
     proposedItemNumbers({
