@@ -11202,6 +11202,43 @@ Reason: ${duplicateRisk}
   assert.equal(comment.split(duplicateRisk).length - 1, 1);
 });
 
+test("pull request keep-open review comments prefix each merge risk bullet", () => {
+  const comment = renderReviewCommentFromReport(
+    `${reportFrontMatter({
+      type: "pull_request",
+      number: "74269",
+      decision: "keep_open",
+      close_reason: "none",
+      work_candidate: "none",
+      pull_head_sha: "abc123def456",
+    })}
+
+## Summary
+
+Keep this multi-risk PR open for maintainer review.
+
+## What This Changes
+
+Changes generated review-comment formatting.
+
+## Best Possible Solution
+
+Confirm both merge risks before merge.
+
+## Risks / Open Questions
+
+- Blocked workflow actions must render as P1.
+- Timeout fallback wording should remain scannable.
+`,
+    "none",
+  );
+
+  assert.match(comment, /\*\*Risk before merge\*\*/);
+  assert.match(comment, /- \[P1\] Blocked workflow actions must render as P1\./);
+  assert.match(comment, /- \[P2\] Timeout fallback wording should remain scannable\./);
+  assert.doesNotMatch(comment, /- \[P1\] Blocked workflow actions.*\n- Timeout fallback/s);
+});
+
 test("OpenClaw pull request comments render PR surface inside evidence details", () => {
   const comment = renderReviewCommentFromReport(
     `${reportFrontMatter({

@@ -7038,6 +7038,16 @@ function publicPriorityBulletFromText(text: string, fallback: PublicPriority): s
   return publicPriorityBullet(publicPriorityFromText(text, fallback), text);
 }
 
+function publicPriorityBulletsFromText(text: string, fallback: PublicPriority): string {
+  const lines = text
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const bulletLines = lines.filter((line) => /^[-*]\s+/.test(line));
+  if (!bulletLines.length) return publicPriorityBulletFromText(text, fallback);
+  return bulletLines.map((line) => publicPriorityBulletFromText(line, fallback)).join("\n");
+}
+
 function confidenceText(score: number): string {
   return score.toFixed(2).replace(/0+$/, "").replace(/\.$/, "");
 }
@@ -11617,7 +11627,7 @@ function publicMergeRiskLine(
     ? mergeRiskOptionsLines(options)
     : mergeRiskFallbackOptionsLines(bestSolutionLine, nextStepLine);
   return [
-    publicPriorityBulletFromText(risks, "P1"),
+    publicPriorityBulletsFromText(risks, "P1"),
     choices.length ? ["", "**Maintainer options:**", ...choices].join("\n") : "",
   ]
     .filter(Boolean)
@@ -11959,7 +11969,7 @@ function renderKeepOpenCommentFromReport(
       ...(reviewDetails.length ? [""] : []),
       "Remaining risk / open question:",
       "",
-      isPullRequest ? publicPriorityBulletFromText(risks, "P2") : risks,
+      isPullRequest ? publicPriorityBulletsFromText(risks, "P2") : risks,
     );
   }
   const reviewLine = closeReviewLineFromReport(markdown);
