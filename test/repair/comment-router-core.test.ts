@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
@@ -1837,6 +1838,31 @@ test("visualize assist dispatch payload stays within repository_dispatch key lim
   assert.equal(clientPayload.assist.timeout_ms, "120000");
   assert.equal("mode" in clientPayload, false);
   assert.equal("lens" in clientPayload, false);
+});
+
+test("assist workflow preserves flat field fallbacks after nested dispatch fields", () => {
+  const workflow = readFileSync(".github/workflows/assist.yml", "utf8");
+
+  assert.match(
+    workflow,
+    /MODE: \$\{\{ github\.event\.client_payload\.assist\.mode \|\| github\.event\.client_payload\.mode \|\| inputs\.mode \|\| 'assist' \}\}/,
+  );
+  assert.match(
+    workflow,
+    /LENS: \$\{\{ github\.event\.client_payload\.assist\.lens \|\| github\.event\.client_payload\.lens \|\| inputs\.lens \|\| 'auto' \}\}/,
+  );
+  assert.match(
+    workflow,
+    /MODEL: \$\{\{ github\.event\.client_payload\.assist\.model \|\| github\.event\.client_payload\.model \|\| 'gpt-5\.5' \}\}/,
+  );
+  assert.match(
+    workflow,
+    /REASONING_EFFORT: \$\{\{ github\.event\.client_payload\.assist\.reasoning_effort \|\| github\.event\.client_payload\.reasoning_effort \|\| 'low' \}\}/,
+  );
+  assert.match(
+    workflow,
+    /TIMEOUT_MS: \$\{\{ github\.event\.client_payload\.assist\.timeout_ms \|\| github\.event\.client_payload\.timeout_ms \|\| '120000' \}\}/,
+  );
 });
 
 test("renderResponse reports maintainer autoclose results", () => {
