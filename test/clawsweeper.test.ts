@@ -3075,6 +3075,39 @@ Land this docs-only PR after maintainer review.
   assert.doesNotMatch(comment, /Best possible solution:/);
 });
 
+test("pull request next-step priority prefixes classify fail-closed work as P1", () => {
+  const comment = renderReviewCommentFromReport(
+    `${reportFrontMatter({
+      type: "pull_request",
+      number: "74268",
+      decision: "keep_open",
+      close_reason: "none",
+      work_candidate: "none",
+      pull_head_sha: "abc123def456",
+    })}
+
+## Summary
+
+Keep this compatibility PR open for maintainer review.
+
+## What This Changes
+
+Changes relay restart handling.
+
+## Best Possible Solution
+
+Prove the fail-closed compatibility break is handled before merge.
+`,
+    "none",
+  );
+
+  assert.match(
+    comment,
+    /\*\*Next step before merge\*\*\n- \[P1\] Prove the fail-closed compatibility break is handled before merge\./,
+  );
+  assert.doesNotMatch(comment, /\*\*\[P1\]\*\*/);
+});
+
 test("pull request automerge review comments can emit pass verdicts", () => {
   const comment = renderReviewCommentFromReport(
     `${reportFrontMatter({

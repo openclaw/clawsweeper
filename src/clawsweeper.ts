@@ -7009,6 +7009,13 @@ function publicPriorityFromText(text: string, fallback: PublicPriority): PublicP
   if (/\b(?:outage|data loss|security exposure|release blocker|widespread)\b/i.test(text)) {
     return "P0";
   }
+  if (
+    /\b(?:major regression|blocked workflow|compatibility(?:\s+|-)?break|fail(?:\s+|-)?closed|lifecycle break)\b/i.test(
+      text,
+    )
+  ) {
+    return "P1";
+  }
   if (/\b(?:localized|non-blocking|nonblocking|recoverable|fallback|timeout)\b/i.test(text)) {
     return "P2";
   }
