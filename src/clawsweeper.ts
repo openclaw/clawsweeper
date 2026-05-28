@@ -7075,6 +7075,31 @@ function publicPriorityBulletFromText(text: string, fallback: PublicPriority): s
   return publicPriorityBullet(publicPriorityFromText(text, fallback), text);
 }
 
+function publicPlainBullet(text: string): string {
+  return `- ${stripPriorityPrefix(sentence(text))}`;
+}
+
+function isActionablePriorityText(text: string): boolean {
+  const body = stripPriorityPrefix(text);
+  if (!body || isReportNoneList(body)) return false;
+  if (
+    /\b(?:no automated repair|no clawsweeper repair|normal maintainer review|maintainer review and ci|required checks|status checks|ready for maintainer review)\b/i.test(
+      body,
+    )
+  ) {
+    return false;
+  }
+  return /\b(?:add|block|blocked|break|fail(?:\s+|-)?closed|fix|implement|missing|must|need(?:s|ed)?|prove|reject|repair|required|validate|before merge)\b/i.test(
+    body,
+  );
+}
+
+function publicPriorityBulletIfActionable(text: string, fallback: PublicPriority): string {
+  return isActionablePriorityText(text)
+    ? publicPriorityBulletFromText(text, fallback)
+    : publicPlainBullet(text);
+}
+
 function publicPriorityBulletsFromText(text: string, fallback: PublicPriority): string {
   const lines = text
     .split("\n")
@@ -7241,12 +7266,17 @@ function publicMergeReadinessBlock(rating: PrRating, proof: RealBehaviorProof): 
     "Overall follows the weaker of proof and patch quality, so missing proof can cap an otherwise strong patch.",
   ];
   if (rating.nextSteps.length) {
+    const nextSteps = rating.nextSteps
+      .slice(0, 3)
+      .filter((step) => !isReportNoneList(stripPriorityPrefix(step)));
     lines.push(
       "",
       "Rank-up moves:",
-      ...rating.nextSteps
-        .slice(0, 3)
-        .map((step) => publicPriorityBulletFromText(step, proofGuidance ? "P1" : "P2")),
+      ...(nextSteps.length
+        ? nextSteps.map((step) =>
+            publicPriorityBulletIfActionable(step, proofGuidance ? "P1" : "P2"),
+          )
+        : ["- none"]),
     );
   }
   if (proofGuidance) {
@@ -11851,7 +11881,9 @@ function renderKeepOpenCommentFromReport(
     "Continue tracking this item until the missing behavior is implemented or a maintainer decides the product direction.";
   const nextStepLine = sentence(workReason || bestSolution || fallbackNextStep);
   const publicNextStepLine = isPullRequest
-    ? publicPriorityBulletFromText(nextStepLine, hasRealBehaviorProofBlocker ? "P1" : "P2")
+    ? hasRealBehaviorProofBlocker
+      ? publicPriorityBulletFromText(nextStepLine, "P1")
+      : publicPriorityBulletIfActionable(nextStepLine, "P2")
     : nextStepLine;
   const bestSolutionLine = sentence(bestSolution);
   const mergeRiskLine = isPullRequest

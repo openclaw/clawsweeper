@@ -3114,9 +3114,50 @@ Land this docs-only PR after maintainer review.
 
   assert.match(
     comment,
-    /\*\*Next step before merge\*\*\n- \[P2\] Land this docs-only PR after maintainer review\./,
+    /\*\*Next step before merge\*\*\n- Land this docs-only PR after maintainer review\./,
   );
+  assert.doesNotMatch(comment, /\[P2\] Land this docs-only PR/);
   assert.doesNotMatch(comment, /Best possible solution:/);
+});
+
+test("pull request review comments do not priority-prefix routine no-op guidance", () => {
+  const comment = renderReviewCommentFromReport(
+    `${reportFrontMatter({
+      type: "pull_request",
+      number: "74269",
+      decision: "keep_open",
+      close_reason: "none",
+      work_candidate: "none",
+      pull_head_sha: "abc123def456",
+    })}
+
+## Summary
+
+Keep this narrow PR open for maintainer review.
+
+## PR Rating
+
+Overall tier: B
+Proof tier: B
+Patch tier: B
+Summary: Ready for review.
+Next rank-up steps:
+- none
+
+## Best Possible Solution
+
+No ClawSweeper repair lane is needed; the submitted PR is narrow and the remaining action is normal maintainer review and CI.
+`,
+    "none",
+  );
+
+  assert.match(comment, /Rank-up moves:\n- none/);
+  assert.match(
+    comment,
+    /\*\*Next step before merge\*\*\n- No ClawSweeper repair lane is needed; the submitted PR is narrow and the remaining action is normal maintainer review and CI\./,
+  );
+  assert.doesNotMatch(comment, /\[P2\] none/);
+  assert.doesNotMatch(comment, /\[P2\] No ClawSweeper repair lane is needed/);
 });
 
 test("pull request next-step priority prefixes classify fail-closed work as P1", () => {
@@ -3193,8 +3234,9 @@ Full review comments:
   assert.match(comment, /Codex review: passed\./);
   assert.match(
     comment,
-    /\*\*Next step before merge\*\*\n- \[P2\] Merge after required checks are green\./,
+    /\*\*Next step before merge\*\*\n- Merge after required checks are green\./,
   );
+  assert.doesNotMatch(comment, /\[P2\] Merge after required checks are green/);
   assert.doesNotMatch(comment, /Automerge follow-up:/);
   assert.match(comment, /<!-- clawsweeper-verdict:pass item=74453 sha=abc123def456/);
   assert.doesNotMatch(comment, /clawsweeper-verdict:needs-human/);
@@ -5346,8 +5388,9 @@ Full review comments:
   assert.match(comment, /Codex review: passed\./);
   assert.match(
     comment,
-    /\*\*Next step before merge\*\*\n- \[P2\] Leave this draft open after fixes are complete\./,
+    /\*\*Next step before merge\*\*\n- Leave this draft open after fixes are complete\./,
   );
+  assert.doesNotMatch(comment, /\[P2\] Leave this draft open after fixes are complete/);
   assert.doesNotMatch(comment, /Autofix follow-up:/);
   assert.match(comment, /<!-- clawsweeper-verdict:pass item=74610 sha=abc123def456/);
   assert.doesNotMatch(comment, /Codex review: passed for ClawSweeper automerge/);
