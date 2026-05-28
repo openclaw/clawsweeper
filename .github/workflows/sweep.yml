@@ -1822,6 +1822,22 @@ jobs:
       - name: Sync before applying decisions
         run: git pull --rebase
 
+      - name: Reconcile before apply preselect
+        env:
+          GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
+          TARGET_REPO: ${{ steps.target.outputs.target_repo }}
+        run: |
+          set -euo pipefail
+          item_numbers="${{ github.event_name == 'repository_dispatch' && github.event.client_payload.item_number || github.event.inputs.apply_item_numbers || '' }}"
+          if [ "$item_numbers" = "__cursor__" ]; then
+            item_numbers=""
+          fi
+          reconcile_args=(--target-repo "$TARGET_REPO" --skip-closed-at)
+          if [ -n "$item_numbers" ]; then
+            reconcile_args+=(--item-numbers "$item_numbers")
+          fi
+          pnpm run reconcile -- "${reconcile_args[@]}"
+
       - name: Preselect apply work that can need Codex
         id: apply-preselect
         env:

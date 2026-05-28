@@ -14413,15 +14413,21 @@ test("apply workflow installs Codex only when apply work can run", () => {
   const applyJobStart = workflow.indexOf("\n  apply-existing:");
   assert.notEqual(applyJobStart, -1);
   const applyJob = workflow.slice(applyJobStart);
+  const reconcileStart = applyJob.indexOf("- name: Reconcile before apply preselect");
   const preselectStart = applyJob.indexOf("- name: Preselect apply work that can need Codex");
   const setupCodexStart = applyJob.indexOf("- uses: ./.github/actions/setup-codex", preselectStart);
   const applyStart = applyJob.indexOf(
     "- name: Apply unchanged proposed decisions with checkpoints",
   );
 
+  assert.ok(reconcileStart !== -1);
   assert.ok(preselectStart !== -1);
+  assert.ok(preselectStart > reconcileStart);
   assert.ok(setupCodexStart > preselectStart);
   assert.ok(applyStart > setupCodexStart);
+  const reconcileBlock = applyJob.slice(reconcileStart, preselectStart);
+  assert.match(reconcileBlock, /GH_TOKEN: \$\{\{ steps\.target-write-token\.outputs\.token \}\}/);
+  assert.match(reconcileBlock, /pnpm run reconcile -- "\$\{reconcile_args\[@\]\}"/);
   assert.match(
     applyJob.slice(setupCodexStart, applyStart),
     /if: \$\{\{ steps\.apply-preselect\.outputs\.needs_codex == 'true' \}\}/,
