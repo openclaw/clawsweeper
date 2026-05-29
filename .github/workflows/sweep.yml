@@ -142,12 +142,13 @@ defaults:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
-  # ghx (gh cache proxy) on self-hosted runners: give each run its own daemon
-  # socket so the daemon adopts THIS run's scoped per-target GH_TOKEN at spawn.
-  # Without per-run isolation the 8 shared-user runners reuse one daemon whose
-  # ambient/stale auth makes private-repo GETs 404 (e.g. valkyriweb/lue-kube).
-  # Pair with `dashboard_port: 0` in each host's ~/.ghx/config.yaml. See docs/deployment.md.
-  GHX_SOCKET: /tmp/ghx-${{ github.run_id }}-${{ github.run_attempt }}.sock
+  # Bypass the ghx gh-cache shim on self-hosted runners. ghx proxies gh through one
+  # persistent per-user daemon that adopts a single identity at spawn, so it ignores
+  # clawsweeper's per-target scoped GH_TOKEN and 404s on private targets (e.g.
+  # valkyriweb/lue-kube). Upstream uses native gh; GH_BIN is the supported override
+  # (src/command.ts, src/clawsweeper.ts). gh-native is a symlink to real gh on each
+  # clawsweeper host. ghx stays for openclaw. See docs/deployment.md.
+  GH_BIN: ${{ vars.CLAWSWEEPER_GH_BIN || '/usr/local/bin/gh-native' }}
   CLAWSWEEPER_APP_CLIENT_ID: Iv23lirdjmVqYd1gwY26
   CLAWSWEEPER_USAGE_TELEMETRY: "1"
   CLAWSWEEPER_USAGE_SERVICE_NAME: clawsweeper-runner
