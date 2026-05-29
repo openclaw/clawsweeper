@@ -340,8 +340,18 @@ export function proposedItemNumbers(options: ProposedItemOptions): number[] {
     .sort((left, right) => left - right);
 }
 
+const SELECTABLE_CLOSE_ACTIONS = new Set([
+  "proposed_close",
+  "retry_pr_close_coverage_proof",
+  "kept_open",
+  "skipped_maintainer_authored",
+  "skipped_invalid_decision",
+  "skipped_open_closing_pr",
+  "skipped_same_author_pair",
+]);
+
 function isSelectableCloseAction(action: string): boolean {
-  return action === "proposed_close" || action === "retry_pr_close_coverage_proof";
+  return SELECTABLE_CLOSE_ACTIONS.has(action);
 }
 
 function hasPullRequestClosePromotionSignal(

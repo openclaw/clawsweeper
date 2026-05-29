@@ -461,6 +461,36 @@ test("workflow utilities select eligible proposed close records", () => {
       "",
     ].join("\n"),
   );
+  write(
+    path.join(root, "records/openclaw-openclaw/items/openclaw-openclaw-26.md"),
+    [
+      "---",
+      "repository: openclaw/openclaw",
+      "type: pull_request",
+      "decision: close",
+      "confidence: high",
+      "action_taken: skipped_same_author_pair",
+      "close_reason: duplicate_or_superseded",
+      `item_created_at: ${oldDate}`,
+      "---",
+      "",
+    ].join("\n"),
+  );
+  write(
+    path.join(root, "records/openclaw-openclaw/items/openclaw-openclaw-27.md"),
+    [
+      "---",
+      "repository: openclaw/openclaw",
+      "type: issue",
+      "decision: close",
+      "confidence: high",
+      "action_taken: skipped_open_closing_pr",
+      "close_reason: implemented_on_main",
+      `item_created_at: ${oldDate}`,
+      "---",
+      "",
+    ].join("\n"),
+  );
 
   const selected = withCwd(root, () =>
     proposedItemNumbers({
@@ -473,7 +503,7 @@ test("workflow utilities select eligible proposed close records", () => {
     }),
   );
 
-  assert.deepEqual(selected, [5, 12, 15, 17, 21, 22, 24, 25]);
+  assert.deepEqual(selected, [5, 12, 15, 17, 18, 21, 22, 24, 25, 26, 27]);
 });
 
 test("workflow utilities allow ClawHub implemented-on-main issue proposals", () => {
