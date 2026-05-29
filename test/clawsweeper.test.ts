@@ -8827,6 +8827,108 @@ test("apply-decisions ignores bare refs inside cross-repo markdown link labels f
   }
 });
 
+test("apply-decisions ignores bare refs inside same-repo markdown link labels for duplicate proof", () => {
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    const itemsDir = join(root, "items");
+    const closedDir = join(root, "closed");
+    const plansDir = join(root, "plans");
+    const reportPath = join(root, "apply-report.json");
+    const proofLogPath = join(root, "proof.log");
+    mkdirSync(itemsDir, { recursive: true });
+    mkdirSync(plansDir, { recursive: true });
+    const synced = reportWithSyncedReviewComment(
+      lowSignalCloseReport({
+        number: 358,
+        title: "Provider route fallback",
+        close_reason: "duplicate_or_superseded",
+        work_cluster_refs: JSON.stringify([
+          "Superseded by [fixes #123](https://github.com/openclaw/openclaw/pull/400)",
+        ]),
+      }).replace(
+        "Closing this PR because the branch is not a useful landing base.",
+        "Closing this PR as superseded by the linked canonical PR.",
+      ),
+      358,
+      "duplicate_or_superseded",
+    );
+    writeFileSync(join(itemsDir, "358.md"), synced.report, "utf8");
+
+    withMockGh(
+      root,
+      promotionGhMock({
+        number: 358,
+        title: "Provider route fallback",
+        comment: synced.comment,
+        linkedPulls: {
+          123: {
+            number: 123,
+            title: "Unrelated draft PR",
+            html_url: "https://github.com/openclaw/openclaw/pull/123",
+            state: "open",
+            merged_at: null,
+            mergeable_state: "clean",
+            draft: true,
+            body: "Unrelated provider cleanup.",
+            comments: [],
+            labels: [],
+          },
+          400: {
+            number: 400,
+            title: "Canonical provider replacement",
+            html_url: "https://github.com/openclaw/openclaw/pull/400",
+            state: "closed",
+            merged_at: "2026-05-02T00:00:00Z",
+            body: "Covers the provider route fallback behavior.",
+            comments: [],
+            labels: [],
+          },
+        },
+      }),
+      () => {
+        withMockCodexProof(
+          root,
+          {
+            type: "decision",
+            decision: "keep_open",
+            reason: "PR A still has unique fallback route behavior that PR B does not cover.",
+            invocationLogPath: proofLogPath,
+            expectedPromptIncludes: "Canonical provider replacement",
+          },
+          () => {
+            runApplyDecisionsForTest({
+              itemsDir,
+              closedDir,
+              plansDir,
+              reportPath,
+              extraArgs: [
+                "--target-repo",
+                "openclaw/openclaw",
+                "--apply-kind",
+                "all",
+                "--processed-limit",
+                "3",
+              ],
+            });
+          },
+        );
+      },
+    );
+
+    const report = JSON.parse(readFileSync(reportPath, "utf8")) as Array<{
+      number: number;
+      action: string;
+    }>;
+    assert.equal(
+      report.find((entry) => entry.number === 358)?.action,
+      "skipped_pr_close_coverage_proof",
+    );
+    assert.match(readFileSync(proofLogPath, "utf8"), /proof/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("apply-decisions keeps newline-start bare PR refs tied to their own line", () => {
   const root = mkdtempSync(tmpPrefix);
   try {

@@ -343,10 +343,12 @@ function selectedProposedItemNumbers(
         }) &&
         allowedForTarget(options.targetRepo, type, "duplicate_or_superseded", allowedReasons) &&
         (!allowedCloseReasons || allowedCloseReasons.has("duplicate_or_superseded"));
+      const selectableProofPromotion =
+        selectablePromotion && hasLinkedPullRequestSupersessionSignal(markdown, options.targetRepo);
       if (!selectableClose && !selectablePromotion) return [];
       const prCloseCoverageProofCanRun =
         type === "pull_request" &&
-        ((selectableClose && reason === "duplicate_or_superseded") || selectablePromotion);
+        ((selectableClose && reason === "duplicate_or_superseded") || selectableProofPromotion);
       if (selection === "pr-close-coverage-proof" && !prCloseCoverageProofCanRun) return [];
       if (
         (reason === "stale_insufficient_info" || reason === "mostly_implemented_on_main") &&

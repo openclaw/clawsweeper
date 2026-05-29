@@ -9999,7 +9999,8 @@ const PULL_REQUEST_LINK_LABEL_START = "__clawsweeper_pr_link_label_start__";
 const PULL_REQUEST_LINK_LABEL_END = "__clawsweeper_pr_link_label_end__";
 
 function pullRequestLinkLabel(label: string): string {
-  const trimmed = label.trim();
+  const refRegex = sameRepoPullRequestRefRegex();
+  const trimmed = (refRegex ? label.replace(refRegex, " ") : label).trim();
   return trimmed
     ? `${PULL_REQUEST_LINK_LABEL_START} ${trimmed} ${PULL_REQUEST_LINK_LABEL_END} `
     : "";
