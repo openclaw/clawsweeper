@@ -125,7 +125,7 @@ on:
     # valkyriweb/openclaw is intentionally not scheduled during the safe-ramp period.
     # bermont-digital/multica + CLIP-SA/* + valkyriweb/clawsweeper-self: workflow_dispatch only.
     - cron: "0 5 * * *" # valkyriweb/pi-mono
-    # - cron: "0 7 * * *" # valkyriweb/lue-kube — DISABLED 2026-05-29: app-token 404 on lue-kube (see docs); re-enable after token fix verified
+    - cron: "0 7 * * *" # valkyriweb/lue-kube — re-enabled 2026-05-29 after GH_BIN ghx-bypass fixed scoped-token 404
     - cron: "0 8 * * *" # valkyriweb/openclaw-claude
 
 permissions:
