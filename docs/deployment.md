@@ -105,6 +105,42 @@ Runner service control on a host:
 ssh <host> 'sudo systemctl status actions.runner.valkyriweb-clawsweeper.<name>.service'
 ```
 
+## Autoscaling pool (ARC on lue-kube)
+
+Beyond the static self-hosted runners, an **autoscaling pod pool** runs on the lue-kube
+cluster via [ARC](https://github.com/actions/actions-runner-controller) (actions-runner-controller).
+It registers to this repo with `runnerScaleSetName: lue-clawsweeper` — i.e. it joins the same
+`lue-clawsweeper` pool as the mac-mini/Linux runners, so `CLAWSWEEPER_RUNNER_LABELS` already
+targets it. Scales **0 → 6** on queued jobs, scale-to-zero when idle, balanced ~3/node across
+the x99 + old-mbp workers.
+
+- Manifests live in the **cluster repo**, not here: `infra/lue-kube/k3s/apps/github-runners/`
+  (`base/clawsweeper-scaleset.yaml`) + controller in `k3s/infrastructure/controllers/actions-runner-controller/`.
+  See that app's `README.md`.
+- Auth: GitHub App `valkyriweb-clawsweeper` (sealed secret), not a PAT.
+- Runner image: the cluster's `github-ai-runner` (already `FROM ghcr.io/actions/actions-runner`
+  + codex/pi/gh, native gh). clawsweeper's `GH_BIN=/usr/local/bin/gh-native` resolves in-pod
+  via a baked symlink — same bypass model as the host runners, no ghx in-container.
+- **Codex-free pool**: ARC pods take light jobs (plan/apply/audit) only. Heavy Codex review
+  stays pinned to the mac-mini (`CLAWSWEEPER_REVIEW_RUNNER`) because review needs the
+  mac-mini's ChatGPT-subscription `~/.codex/auth.json`, which ephemeral pods don't have.
+
+```bash
+# pool state (run against lue-kube context)
+kube lue-kube arc-systems     -- get pods                      # controller
+kube lue-kube github-runners  -- get autoscalingrunnerset,ephemeralrunner,pods
+gh api repos/valkyriweb/clawsweeper/actions/runners --jq '.runners[]|select(.name|test("lue-clawsweeper"))|{name,status}'
+```
+
+### Why this shape (and a note on planning infra here)
+
+We set out to build ARC greenfield, then found lue-kube **already had** a GitOps
+`github-runners` app + a custom runner image with the whole toolchain, and a README that
+had pre-decided "StatefulSet now, ARC when a pool is needed." The build collapsed into
+*extend the existing app*, not *stand up a parallel stack*. **Lesson:** before designing
+cluster infra, read the target cluster repo's app dir + README + Flux wiring — the live shape
+often reshapes the plan.
+
 ## Pause / resume / emergency stop
 
 Pausing points `runs-on` at a label no runner has, so jobs queue instead of running.
