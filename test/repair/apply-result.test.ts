@@ -179,6 +179,93 @@ test("repair apply blocks proof subprocess failures after hydrating valid coveri
   }
 });
 
+test("repair apply blocks F-rated covering PRs before coverage proof", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-apply-result-"));
+  try {
+    const paths = writeApplyFixture(tmp, {
+      action: "close_duplicate",
+      classification: "duplicate",
+      canonical: "#202",
+    });
+    writeFakeGh(paths.binDir, {
+      issues: {
+        101: issue({ number: 101, title: "Add config validation", pullRequest: true }),
+        202: issue({
+          number: 202,
+          title: "Rewrite config validation",
+          pullRequest: true,
+          labels: ["proof: sufficient", "rating: 🧂 unranked krab"],
+        }),
+      },
+      pulls: {
+        101: pull({ number: 101, title: "Add config validation" }),
+        202: pull({ number: 202, title: "Rewrite config validation" }),
+      },
+      comments: {
+        101: [comment("alice", "PR A keeps legacy config behavior intact.")],
+        202: [comment("bob", "PR B carries forward the legacy config behavior.")],
+      },
+      logPath: paths.ghLogPath,
+    });
+    writeFakeCodex(paths.binDir);
+
+    runApplyResult(paths, { proofDecision: "covered", failIfProofRuns: true });
+
+    const report = JSON.parse(fs.readFileSync(paths.reportPath, "utf8"));
+    assert.equal(report.actions[0].status, "blocked");
+    assert.equal(report.actions[0].reason, "linked canonical PR #202 is F-rated");
+    assert.equal(report.actions[0].requeue_required, undefined);
+    assert.equal(hasPrCloseCall(paths.ghLogPath), false);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("repair apply compacts PR bodies in coverage proof prompts", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-apply-result-"));
+  try {
+    const paths = writeApplyFixture(tmp, {
+      action: "close_duplicate",
+      classification: "duplicate",
+      canonical: "#202",
+    });
+    const unboundedTail = "UNBOUNDED_BODY_TAIL_SHOULD_NOT_REACH_PROMPT";
+    const longBody = `${"legacy config ".repeat(30)}${unboundedTail}`;
+    writeFakeGh(paths.binDir, {
+      issues: {
+        101: issue({ number: 101, title: "Add config validation", pullRequest: true }),
+        202: issue({
+          number: 202,
+          title: "Rewrite config validation",
+          pullRequest: true,
+          labels: ["proof: sufficient"],
+        }),
+      },
+      pulls: {
+        101: { ...pull({ number: 101, title: "Add config validation" }), body: longBody },
+        202: { ...pull({ number: 202, title: "Rewrite config validation" }), body: longBody },
+      },
+      comments: {
+        101: [comment("alice", "PR A keeps legacy config behavior intact.")],
+        202: [comment("bob", "PR B carries forward the legacy config behavior.")],
+      },
+      logPath: paths.ghLogPath,
+    });
+    writeFakeCodex(paths.binDir);
+
+    runApplyResult(paths, {
+      proofDecision: "covered",
+      unexpectedPromptIncludes: unboundedTail,
+    });
+
+    const report = JSON.parse(fs.readFileSync(paths.reportPath, "utf8"));
+    assert.equal(report.actions[0].status, "executed");
+    assert.equal(hasPrCloseCall(paths.ghLogPath), true);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 for (const scenario of [
   {
     name: "superseded",
@@ -1023,6 +1110,7 @@ function runApplyResult(
   options: {
     proofDecision: "covered" | "keep_open";
     expectedPromptIncludes?: string;
+    unexpectedPromptIncludes?: string;
     failIfProofRuns?: boolean;
     proofFailureMessage?: string;
     afterProofPath?: string;
@@ -1043,6 +1131,7 @@ function runApplyResult(
       PATH: `${paths.binDir}${path.delimiter}${process.env.PATH ?? ""}`,
       PR_CLOSE_COVERAGE_PROOF_DECISION: options.proofDecision,
       PR_CLOSE_COVERAGE_PROOF_EXPECT_PROMPT: options.expectedPromptIncludes ?? "",
+      PR_CLOSE_COVERAGE_PROOF_UNEXPECTED_PROMPT: options.unexpectedPromptIncludes ?? "",
       PR_CLOSE_COVERAGE_PROOF_FAIL_IF_INVOKED: options.failIfProofRuns ? "1" : "",
       PR_CLOSE_COVERAGE_PROOF_FAILURE_MESSAGE: options.proofFailureMessage ?? "",
       PR_CLOSE_COVERAGE_PROOF_AFTER_PROOF_PATH: options.afterProofPath ?? "",
@@ -1197,6 +1286,11 @@ const decision = process.env.PR_CLOSE_COVERAGE_PROOF_DECISION;
 const expectedPrompt = process.env.PR_CLOSE_COVERAGE_PROOF_EXPECT_PROMPT || "";
 if (expectedPrompt && !prompt.includes(expectedPrompt)) {
   process.stderr.write("missing expected proof prompt text: " + expectedPrompt);
+  process.exit(1);
+}
+const unexpectedPrompt = process.env.PR_CLOSE_COVERAGE_PROOF_UNEXPECTED_PROMPT || "";
+if (unexpectedPrompt && prompt.includes(unexpectedPrompt)) {
+  process.stderr.write("unexpected proof prompt text: " + unexpectedPrompt);
   process.exit(1);
 }
 if (process.env.GH_TOKEN === "write-token") {

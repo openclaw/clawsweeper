@@ -34,6 +34,7 @@ import {
 } from "./repair-merge-message.js";
 import {
   compactPrCloseCoverageProofComment,
+  compactPrCloseCoverageProofText,
   prCloseCoverageProofCandidateCanClose,
   prCloseCoverageProofCloseDecision,
   runPrCloseCoverageProofModel,
@@ -1088,6 +1089,9 @@ function validatePrCloseCoverageCoveringSafety({
       label === "triage: needs-real-behavior-proof" ||
       (label.startsWith("status:") && label.includes("needs proof")),
   );
+  if (labels.some((label) => label.startsWith("rating:") && label.includes("unranked"))) {
+    return `linked canonical PR #${coveringRef} is F-rated`;
+  }
   if (needsProof && !proofPassed) {
     return `linked canonical PR #${coveringRef} is still waiting for real behavior proof`;
   }
@@ -1196,7 +1200,7 @@ function hydratePrCloseCoveragePullRequest(
       "",
     state: stringFromUnknown(pull.state) || stringFromUnknown(issue.state) || "unknown",
     mergedAt: stringOrNull(pull.merged_at ?? pull.mergedAt),
-    body: stringFromUnknown(pull.body) || "",
+    body: compactPrCloseCoverageProofText(pull.body),
     updatedAt: stringOrNull(pull.updated_at ?? pull.updatedAt ?? issue.updated_at),
     comments: compactPrCloseCoverageProofCommentWindow(
       commentsWindow.comments,
