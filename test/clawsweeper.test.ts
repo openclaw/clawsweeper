@@ -8722,6 +8722,106 @@ test("apply-decisions keeps newline-start bare PR refs tied to their own line", 
   }
 });
 
+test("apply-decisions ignores unrelated same-line bare PR refs for duplicate proof", () => {
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    const itemsDir = join(root, "items");
+    const closedDir = join(root, "closed");
+    const plansDir = join(root, "plans");
+    const reportPath = join(root, "apply-report.json");
+    mkdirSync(itemsDir, { recursive: true });
+    mkdirSync(plansDir, { recursive: true });
+    const synced = reportWithSyncedReviewComment(
+      lowSignalCloseReport({
+        number: 361,
+        title: "Provider route fallback",
+        close_reason: "duplicate_or_superseded",
+        work_cluster_refs: JSON.stringify(["Superseded by #400; #500 is related"]),
+      }).replace(
+        "Closing this PR because the branch is not a useful landing base.",
+        "Closing this PR as superseded by the linked canonical PR.",
+      ),
+      361,
+      "duplicate_or_superseded",
+    );
+    writeFileSync(join(itemsDir, "361.md"), synced.report, "utf8");
+
+    withMockGh(
+      root,
+      promotionGhMock({
+        number: 361,
+        title: "Provider route fallback",
+        comment: synced.comment,
+        linkedPulls: {
+          400: {
+            number: 400,
+            title: "Provider cleanup",
+            html_url: "https://github.com/openclaw/openclaw/pull/400",
+            state: "closed",
+            merged_at: "2026-05-02T00:00:00Z",
+            body: "Includes the fallback route behavior from PR 361.",
+            comments: [],
+            labels: [],
+          },
+          500: {
+            number: 500,
+            title: "Related draft PR",
+            html_url: "https://github.com/openclaw/openclaw/pull/500",
+            state: "open",
+            merged_at: null,
+            mergeable_state: "clean",
+            draft: true,
+            labels: [],
+          },
+        },
+      }),
+      () => {
+        withMockCodexProof(
+          root,
+          {
+            type: "decision",
+            decision: "covered",
+            reason: "PR B carries forward PR A's fallback route behavior.",
+          },
+          () => {
+            runApplyDecisionsForTest({
+              itemsDir,
+              closedDir,
+              plansDir,
+              reportPath,
+              extraArgs: [
+                "--target-repo",
+                "openclaw/openclaw",
+                "--dry-run",
+                "--apply-kind",
+                "all",
+                "--processed-limit",
+                "3",
+              ],
+            });
+          },
+        );
+      },
+    );
+
+    const report = JSON.parse(readFileSync(reportPath, "utf8")) as Array<{
+      action: string;
+      reason: string;
+    }>;
+    assert.equal(
+      report.some((entry) => entry.action === "closed"),
+      true,
+      JSON.stringify(report),
+    );
+    assert.match(
+      report.find((entry) => entry.action === "closed")?.reason ?? "",
+      /duplicate or superseded/,
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("apply-decisions does not proof-gate duplicate PR closes with bare issue refs", () => {
   const root = mkdtempSync(tmpPrefix);
   try {

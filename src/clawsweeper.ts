@@ -10019,10 +10019,29 @@ function linkedPullRequestRefsFromText(text: string, currentNumber: number): Pul
   return [...refs.values()];
 }
 
-function lineContainingIndex(text: string, index: number): string {
-  const start = text.lastIndexOf("\n", Math.max(0, index - 1)) + 1;
-  const end = text.indexOf("\n", index);
-  return text.slice(start, end === -1 ? text.length : end);
+function relationshipClauseContainingIndex(text: string, index: number): string {
+  const lineStart = text.lastIndexOf("\n", Math.max(0, index - 1)) + 1;
+  const lineEnd = text.indexOf("\n", index);
+  const line = text.slice(lineStart, lineEnd === -1 ? text.length : lineEnd);
+  const relativeIndex = Math.max(0, index - lineStart);
+  let start = 0;
+  let end = line.length;
+  const boundary = /[;,|]|\.(?=\s|$)|\s+(?:and|but|while)\s+/gi;
+
+  for (const match of line.matchAll(boundary)) {
+    const boundaryStart = match.index ?? 0;
+    const boundaryEnd = boundaryStart + match[0].length;
+    if (boundaryEnd <= relativeIndex) {
+      start = boundaryEnd;
+      continue;
+    }
+    if (boundaryStart > relativeIndex) {
+      end = boundaryStart;
+      break;
+    }
+  }
+
+  return line.slice(start, end).trim();
 }
 
 function linkedPullRequestSignalContextsFromText(
@@ -10036,7 +10055,7 @@ function linkedPullRequestSignalContextsFromText(
   for (const match of text.matchAll(regex)) {
     const ref = pullRequestRefFromMatch(match);
     if (!ref || ref.number !== linkedNumber || ref.number === currentNumber) continue;
-    contexts.push(lineContainingIndex(text, pullRequestRefMatchIndex(match)));
+    contexts.push(relationshipClauseContainingIndex(text, pullRequestRefMatchIndex(match)));
   }
   return contexts;
 }
