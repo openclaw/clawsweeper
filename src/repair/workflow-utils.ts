@@ -69,6 +69,9 @@ function runCli(): void {
     case "proposed-item-numbers":
       process.stdout.write(proposedItemNumbers(proposedItemOptions()).join(","));
       break;
+    case "proposed-pr-close-coverage-item-numbers":
+      process.stdout.write(proposedPrCloseCoverageItemNumbers(proposedItemOptions()).join(","));
+      break;
     case "comment-sync-batch":
       printOutput(commentSyncBatchOutput(commentSyncBatchOptions()));
       break;
@@ -253,6 +256,7 @@ type ProposedItemOptions = {
   staleMinAgeDays: number;
   minAgeDays: number;
   minAgeMinutes: number | null;
+  itemNumbers?: ReadonlySet<number> | null;
 };
 
 type CommentSyncBatchOptions = {
@@ -263,6 +267,19 @@ type CommentSyncBatchOptions = {
 };
 
 export function proposedItemNumbers(options: ProposedItemOptions): number[] {
+  return selectedProposedItemNumbers(options, "all");
+}
+
+export function proposedPrCloseCoverageItemNumbers(options: ProposedItemOptions): number[] {
+  return selectedProposedItemNumbers(options, "pr-close-coverage-proof");
+}
+
+type ProposedItemSelection = "all" | "pr-close-coverage-proof";
+
+function selectedProposedItemNumbers(
+  options: ProposedItemOptions,
+  selection: ProposedItemSelection,
+): number[] {
   const targetSlug = options.targetRepo
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
@@ -299,6 +316,8 @@ export function proposedItemNumbers(options: ProposedItemOptions): number[] {
     .readdirSync(itemsDir)
     .filter((name) => /(?:^|[a-z0-9-]-)\d+\.md$/.test(name))
     .flatMap((name) => {
+      const number = numberFor(name);
+      if (options.itemNumbers && !options.itemNumbers.has(number)) return [];
       const markdown = fs.readFileSync(path.join(itemsDir, name), "utf8");
       if (repoFor(markdown, name) !== options.targetRepo) return [];
       const type = frontMatterValue(markdown, "type");
@@ -325,6 +344,10 @@ export function proposedItemNumbers(options: ProposedItemOptions): number[] {
         allowedForTarget(options.targetRepo, type, "duplicate_or_superseded", allowedReasons) &&
         (!allowedCloseReasons || allowedCloseReasons.has("duplicate_or_superseded"));
       if (!selectableClose && !selectablePromotion) return [];
+      const prCloseCoverageProofCanRun =
+        type === "pull_request" &&
+        ((selectableClose && reason === "duplicate_or_superseded") || selectablePromotion);
+      if (selection === "pr-close-coverage-proof" && !prCloseCoverageProofCanRun) return [];
       if (
         (reason === "stale_insufficient_info" || reason === "mostly_implemented_on_main") &&
         !olderThan(
@@ -335,7 +358,7 @@ export function proposedItemNumbers(options: ProposedItemOptions): number[] {
         return [];
       }
       if (!olderThan(frontMatterValue(markdown, "item_created_at"), minAgeMs)) return [];
-      return [numberFor(name)];
+      return [number];
     })
     .sort((left, right) => left - right);
 }
@@ -471,6 +494,7 @@ function proposedItemOptions(): ProposedItemOptions {
     staleMinAgeDays: numberArg("stale-min-age-days", 60),
     minAgeDays: numberArg("min-age-days", 0),
     minAgeMinutes: optionalString("min-age-minutes") ? numberArg("min-age-minutes", 0) : null,
+    itemNumbers: itemNumberSet(optionalString("item-numbers")),
   };
 }
 
@@ -596,6 +620,15 @@ function csvItems(value: string): string[] {
     .split(",")
     .map((item) => item.trim())
     .filter(Boolean);
+}
+
+function itemNumberSet(value: string): ReadonlySet<number> | null {
+  if (!value) return null;
+  const numbers = csvItems(value).map((item) => Number(item));
+  if (numbers.some((number) => !Number.isInteger(number) || number <= 0)) {
+    throw new Error("--item-numbers must be comma-separated positive integers");
+  }
+  return new Set(numbers);
 }
 
 function checkpointNumber(name: string): number {

@@ -16,6 +16,7 @@ import {
   planOutputFields,
   plannedItemNumberCsv,
   proposedItemNumbers,
+  proposedPrCloseCoverageItemNumbers,
   writeCommentSyncCursor,
 } from "../../dist/repair/workflow-utils.js";
 import {
@@ -629,6 +630,86 @@ test("workflow utilities allow ClawHub implemented-on-main issue proposals", () 
   assert.deepEqual(selected, [7]);
 });
 
+test("workflow utilities select proposed PR closes that can need coverage proof", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-workflow-"));
+  const oldDate = "2024-01-01T00:00:00Z";
+  writeProposedRecord(root, 5, "issue", "proposed_close", "implemented_on_main", oldDate);
+  writeProposedRecord(
+    root,
+    6,
+    "pull_request",
+    "proposed_close",
+    "duplicate_or_superseded",
+    oldDate,
+  );
+  writeProposedRecord(root, 7, "issue", "proposed_close", "duplicate_or_superseded", oldDate);
+  writeProposedRecord(
+    root,
+    8,
+    "pull_request",
+    "retry_pr_close_coverage_proof",
+    "duplicate_or_superseded",
+    oldDate,
+  );
+  writeProposedRecord(
+    root,
+    9,
+    "pull_request",
+    "proposed_close",
+    "low_signal_unmergeable_pr",
+    oldDate,
+  );
+  write(
+    path.join(root, "records/openclaw-openclaw/items/openclaw-openclaw-10.md"),
+    [
+      "---",
+      "repository: openclaw/openclaw",
+      "type: pull_request",
+      "decision: keep_open",
+      "review_status: complete",
+      "local_checkout_access: verified",
+      "action_taken: kept_open",
+      "close_reason: none",
+      `item_created_at: ${oldDate}`,
+      `work_cluster_refs: ${JSON.stringify(["Superseded by #400"])}`,
+      "---",
+      "",
+    ].join("\n"),
+  );
+
+  const options = {
+    targetRepo: "openclaw/openclaw",
+    applyKind: "all",
+    applyCloseReasons: "all",
+    staleMinAgeDays: 60,
+    minAgeDays: 0,
+    minAgeMinutes: null,
+  };
+
+  assert.deepEqual(
+    withCwd(root, () => proposedPrCloseCoverageItemNumbers(options)),
+    [6, 8, 10],
+  );
+  assert.deepEqual(
+    withCwd(root, () =>
+      proposedPrCloseCoverageItemNumbers({
+        ...options,
+        itemNumbers: new Set([5, 6]),
+      }),
+    ),
+    [6],
+  );
+  assert.deepEqual(
+    withCwd(root, () =>
+      proposedPrCloseCoverageItemNumbers({
+        ...options,
+        applyCloseReasons: "implemented_on_main",
+      }),
+    ),
+    [],
+  );
+});
+
 test("workflow utilities select cursor-based PR comment sync batches", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-workflow-"));
   const cursorPath = path.join(root, "results/comment-sync-cursors/openclaw-openclaw.json");
@@ -710,6 +791,24 @@ function withCwd(cwd, callback) {
 function write(file, content) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, content);
+}
+
+function writeProposedRecord(root, number, type, actionTaken, closeReason, itemCreatedAt) {
+  write(
+    path.join(root, `records/openclaw-openclaw/items/openclaw-openclaw-${number}.md`),
+    [
+      "---",
+      "repository: openclaw/openclaw",
+      `type: ${type}`,
+      "decision: close",
+      "confidence: high",
+      `action_taken: ${actionTaken}`,
+      `close_reason: ${closeReason}`,
+      `item_created_at: ${itemCreatedAt}`,
+      "---",
+      "",
+    ].join("\n"),
+  );
 }
 
 function writeCommentSyncRecord(root, number, type, actionTaken) {

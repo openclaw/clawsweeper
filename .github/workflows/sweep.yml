@@ -1878,19 +1878,20 @@ jobs:
               batch_count="$(awk -F= '$1 == "count" { print $2 }' "$batch_env")"
             fi
           else
+            proof_args=(
+              --target-repo "$TARGET_REPO"
+              --apply-kind "$apply_kind"
+              --apply-close-reasons "$apply_close_reasons"
+              --stale-min-age-days "$stale_min_age_days"
+              --min-age-days "$min_age_days"
+              --min-age-minutes "$min_age_minutes"
+            )
             if [ -n "$item_numbers" ]; then
+              proof_args+=(--item-numbers "$item_numbers")
+            fi
+            selected="$(pnpm run --silent workflow -- proposed-pr-close-coverage-item-numbers "${proof_args[@]}")"
+            if [ -n "$selected" ]; then
               needs_codex=true
-            else
-              selected="$(pnpm run --silent workflow -- proposed-item-numbers \
-                --target-repo "$TARGET_REPO" \
-                --apply-kind "$apply_kind" \
-                --apply-close-reasons "$apply_close_reasons" \
-                --stale-min-age-days "$stale_min_age_days" \
-                --min-age-days "$min_age_days" \
-                --min-age-minutes "$min_age_minutes")"
-              if [ -n "$selected" ]; then
-                needs_codex=true
-              fi
             fi
           fi
           echo "needs_codex=$needs_codex" >> "$GITHUB_OUTPUT"

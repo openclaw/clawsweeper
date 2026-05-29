@@ -15016,7 +15016,7 @@ test("publish workflow installs Codex from the root checkout path", () => {
   assert.doesNotMatch(publishJob, /uses: \.\/clawsweeper\/\.github\/actions\/setup-codex/);
 });
 
-test("apply workflow installs Codex only when apply work can run", () => {
+test("apply workflow installs Codex only when proof-eligible apply work can run", () => {
   const workflow = readFileSync(".github/workflows/sweep.yml", "utf8");
   const applyJobStart = workflow.indexOf("\n  apply-existing:");
   assert.notEqual(applyJobStart, -1);
@@ -15045,15 +15045,15 @@ test("apply workflow installs Codex only when apply work can run", () => {
   assert.match(preselectBlock, /comment-sync-batch/);
   assert.match(preselectBlock, /batch_count="\$\(awk -F=/);
   const syncOnlyStart = preselectBlock.indexOf('if [ "$sync_comments_only" = "true" ]; then');
-  const nonSyncStart = preselectBlock.indexOf(
-    '\n          else\n            if [ -n "$item_numbers" ]',
-  );
+  const nonSyncStart = preselectBlock.indexOf("\n          else\n            proof_args=(");
   assert.ok(syncOnlyStart !== -1);
   assert.ok(nonSyncStart > syncOnlyStart);
   assert.doesNotMatch(preselectBlock.slice(syncOnlyStart, nonSyncStart), /needs_codex=true/);
   assert.match(preselectBlock, /\[ -n "\$item_numbers" \]/);
-  assert.match(preselectBlock, /proposed-item-numbers/);
+  assert.match(preselectBlock, /proposed-pr-close-coverage-item-numbers/);
+  assert.match(preselectBlock, /proof_args\+=\(--item-numbers "\$item_numbers"\)/);
   assert.match(preselectBlock, /if \[ -n "\$selected" \]; then\s+needs_codex=true/);
+  assert.doesNotMatch(preselectBlock, /if \[ -n "\$item_numbers" \]; then\s+needs_codex=true/);
   assert.doesNotMatch(preselectBlock, /normalized_apply_close_reasons=/);
 });
 
