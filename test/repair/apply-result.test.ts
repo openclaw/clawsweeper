@@ -88,6 +88,49 @@ test("repair apply blocks stale covering PR refs instead of crashing", () => {
   }
 });
 
+test("repair apply requeues transient coverage proof setup failures", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-apply-result-"));
+  try {
+    const paths = writeApplyFixture(tmp, {
+      action: "close_duplicate",
+      classification: "duplicate",
+      canonical: "#202",
+    });
+    writeFakeGh(paths.binDir, {
+      issues: {
+        101: issue({ number: 101, title: "Add config validation", pullRequest: true }),
+        202: issue({
+          number: 202,
+          title: "Rewrite config validation",
+          pullRequest: true,
+          labels: ["proof: sufficient"],
+        }),
+      },
+      pulls: {
+        101: pull({ number: 101, title: "Add config validation" }),
+        202: pull({ number: 202, title: "Rewrite config validation" }),
+      },
+      comments: {
+        101: [comment("alice", "PR A keeps legacy config behavior intact.")],
+        202: [comment("bob", "PR B carries forward the legacy config behavior.")],
+      },
+      prViewFailure: { number: 202, message: "HTTP 502 Bad Gateway" },
+      logPath: paths.ghLogPath,
+    });
+    writeFakeCodex(paths.binDir);
+
+    runApplyResult(paths, { proofDecision: "covered", failIfProofRuns: true });
+
+    const report = JSON.parse(fs.readFileSync(paths.reportPath, "utf8"));
+    assert.equal(report.actions[0].status, "blocked");
+    assert.equal(report.actions[0].requeue_required, true);
+    assert.match(report.actions[0].reason, /HTTP 502 Bad Gateway/);
+    assert.equal(hasPrCloseCall(paths.ghLogPath), false);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 test("repair apply blocks proof subprocess failures after hydrating valid covering PRs", () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-apply-result-"));
   try {
@@ -898,6 +941,7 @@ type FakeGhData = {
   issues: Record<number, Record<string, unknown>>;
   pulls: Record<number, Record<string, unknown>>;
   comments: Record<number, Record<string, unknown>[]>;
+  prViewFailure?: { number: number; message: string };
   afterProofPath?: string;
   postProofIssues?: Record<number, Record<string, unknown>>;
   postProofIssueUpdates?: Record<number, string>;
@@ -1100,6 +1144,10 @@ if (args[0] === "pr" && args[1] === "close") {
 
 if (args[0] === "pr" && args[1] === "view") {
   const number = Number(args[2]);
+  if (data.prViewFailure && data.prViewFailure.number === number) {
+    process.stderr.write(data.prViewFailure.message + "\\n");
+    process.exit(1);
+  }
   const pull = data.pulls[number];
   write({
     baseRefName: "main",

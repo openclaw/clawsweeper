@@ -932,10 +932,7 @@ function validatePrCloseCoverageProof({
       return { status: "blocked", reason: coveringSafetyBlock };
     }
   } catch (error) {
-    return {
-      status: "blocked",
-      reason: prCloseCoverageProofFailureReason(error),
-    };
+    return prCloseCoverageProofSetupFailureBlock(error);
   }
 
   try {
@@ -979,6 +976,23 @@ function validatePrCloseCoverageProof({
       reason: prCloseCoverageProofFailureReason(error),
     };
   }
+}
+
+function prCloseCoverageProofSetupFailureBlock(
+  error: unknown,
+): Extract<PrCloseCoverageProofValidation, { status: "blocked" }> {
+  const block = {
+    status: "blocked" as const,
+    reason: prCloseCoverageProofFailureReason(error),
+  };
+  return prCloseCoverageProofSetupFailureIsTerminal(error)
+    ? block
+    : { ...block, requeue_required: true };
+}
+
+function prCloseCoverageProofSetupFailureIsTerminal(error: unknown): boolean {
+  const text = error instanceof Error ? error.message : String(error);
+  return /\b(?:issue|pull) not found: #\d+\b/i.test(text) || /\bHTTP 404\b/i.test(text);
 }
 
 function validatePrCloseCoverageCoveringFreshness({
