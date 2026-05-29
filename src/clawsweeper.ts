@@ -9975,6 +9975,22 @@ function sameRepoPullRequestRefRegex(): RegExp | null {
   );
 }
 
+function sameRepoPullRequestMarkdownLinkRegex(): RegExp | null {
+  const [owner, repo] = targetRepo().split("/");
+  if (!owner || !repo) return null;
+  const escapedRepo = `${escapeRegExp(owner)}\\/${escapeRegExp(repo)}`;
+  return new RegExp(
+    `\\[[^\\]\\n]{1,200}\\]\\((https:\\/\\/github\\.com\\/${escapedRepo}\\/pull\\/\\d+\\b[^\\s)]*)\\)`,
+    "gi",
+  );
+}
+
+function normalizePullRequestMarkdownLinks(value: string): string {
+  const regex = sameRepoPullRequestMarkdownLinkRegex();
+  if (!regex) return value;
+  return value.replace(regex, "$1");
+}
+
 type PullRequestRefKind = "pull_url" | "same_repo_shorthand" | "bare";
 
 interface PullRequestRef {
@@ -10073,17 +10089,20 @@ function relationshipBoundaryContinuesPullRequestRefList(
 function textEndsWithPullRequestRef(value: string): boolean {
   const regex = sameRepoPullRequestRefRegex();
   if (!regex) return false;
+  const normalized = normalizePullRequestMarkdownLinks(value);
   let lastRefEnd = -1;
-  for (const match of value.matchAll(regex)) {
+  for (const match of normalized.matchAll(regex)) {
     lastRefEnd = (match.index ?? 0) + (match[0]?.length ?? 0);
   }
-  return lastRefEnd >= 0 && /^[\s,;]*$/.test(value.slice(lastRefEnd));
+  return lastRefEnd >= 0 && /^[\s,;]*$/.test(normalized.slice(lastRefEnd));
 }
 
 function textStartsWithStandalonePullRequestRef(value: string): boolean {
   const regex = sameRepoPullRequestRefRegex();
   if (!regex) return false;
-  let remaining = value.trimStart().replace(/^and\s+/i, "");
+  let remaining = normalizePullRequestMarkdownLinks(value)
+    .trimStart()
+    .replace(/^and\s+/i, "");
   let sawRef = false;
   while (remaining) {
     regex.lastIndex = 0;

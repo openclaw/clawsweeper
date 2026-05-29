@@ -8881,6 +8881,11 @@ for (const scenario of [
   { name: "comma", number: 365, refs: "#400, #401" },
   { name: "semicolon", number: 366, refs: "#400; #401" },
   { name: "comma and and", number: 367, refs: "#400, #401, and #402" },
+  {
+    name: "markdown links",
+    number: 368,
+    refs: "[first](https://github.com/openclaw/openclaw/pull/400), [second](https://github.com/openclaw/openclaw/pull/401)",
+  },
 ]) {
   test(`apply-decisions preserves supersession context across shorthand PR ref lists with ${scenario.name}`, () => {
     const root = mkdtempSync(tmpPrefix);
@@ -8952,8 +8957,9 @@ for (const scenario of [
               type: "decision",
               decision: "keep_open",
               reason: "PR B carries forward PR A's fallback route behavior.",
-              keepOpenPromptIncludes: "https://github.com/openclaw/openclaw/pull/400",
-              coveredPromptIncludes: "https://github.com/openclaw/openclaw/pull/401",
+              keepOpenPromptIncludes:
+                "Cleans up provider setup without changing the fallback route.",
+              coveredPromptIncludes: `Includes the fallback route behavior from PR ${scenario.number}.`,
             },
             () => {
               runApplyDecisionsForTest({
