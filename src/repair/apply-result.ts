@@ -62,6 +62,15 @@ const PASSING_CHECK_CONCLUSIONS = new Set(["SUCCESS", "SKIPPED", "NEUTRAL"]);
 const CLEAN_MERGE_STATES = new Set(["CLEAN"]);
 const PR_CLOSE_COVERAGE_PROOF_COMMENT_LIMIT = 50;
 const GITHUB_MAX_PAGE_SIZE = 100;
+const CLAWSWEEPER_COMMAND_ONLY_PATTERN = /^@clawsweeper\s+(?:re-review|re-run|review)\s*$/i;
+const CLAWSWEEPER_BOT_AUTHORS = new Set(
+  [
+    "clawsweeper",
+    "clawsweeper[bot]",
+    "openclaw-clawsweeper[bot]",
+    process.env.CLAWSWEEPER_COMMENT_AUTHOR_LOGIN,
+  ].filter((login): login is string => typeof login === "string" && login.length > 0),
+);
 
 type PrCloseCoverageProofValidation =
   | {
@@ -1199,6 +1208,9 @@ function hydratePrCloseCoveragePullRequest(
     issue.comments,
     PR_CLOSE_COVERAGE_PROOF_COMMENT_LIMIT,
   );
+  const comments = commentsWindow.comments.filter(
+    (comment: JsonValue) => !isClawSweeperNoiseComment(comment),
+  );
   return {
     number: Number(number),
     title: stringFromUnknown(pull.title) || stringFromUnknown(issue.title) || `#${number}`,
@@ -1212,12 +1224,34 @@ function hydratePrCloseCoveragePullRequest(
     body: compactPrCloseCoverageProofText(pull.body),
     updatedAt: stringOrNull(pull.updated_at ?? pull.updatedAt ?? issue.updated_at),
     comments: compactPrCloseCoverageProofCommentWindow(
-      commentsWindow.comments,
-      commentsWindow.total,
+      comments,
+      comments.length,
       PR_CLOSE_COVERAGE_PROOF_COMMENT_LIMIT,
     ),
     commentsTruncated: commentsWindow.total > PR_CLOSE_COVERAGE_PROOF_COMMENT_LIMIT,
   };
+}
+
+function rawCommentBody(value: JsonValue): string {
+  return stringFromUnknown(value?.body);
+}
+
+function isClawSweeperComment(value: JsonValue): boolean {
+  const author = stringFromUnknown(value?.user?.login).toLowerCase();
+  return CLAWSWEEPER_BOT_AUTHORS.has(author);
+}
+
+function isClawSweeperNoiseComment(value: JsonValue): boolean {
+  const body = rawCommentBody(value);
+  if (CLAWSWEEPER_COMMAND_ONLY_PATTERN.test(body.trim())) return true;
+  if (!body.trim() || !isClawSweeperComment(value)) return false;
+  if (/<!--\s*clawsweeper-review\s+item=/i.test(body)) return true;
+  if (/clawsweeper-review-status:/i.test(body)) return true;
+  if (/clawsweeper-command(?:-status|-ack)?:/i.test(body)) return true;
+  if (/clawsweeper-close-applied\s+item=/i.test(body)) return true;
+  if (/clawsweeper-repair:close:/i.test(body)) return true;
+  if (/^ClawSweeper status: review started\./i.test(body)) return true;
+  return false;
 }
 
 function fetchPrCloseCoverageProofCommentWindow(

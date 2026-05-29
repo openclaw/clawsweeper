@@ -266,6 +266,70 @@ test("repair apply compacts PR bodies in coverage proof prompts", () => {
   }
 });
 
+test("repair apply filters automation comments from coverage proof prompts", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-apply-result-"));
+  try {
+    const paths = writeApplyFixture(tmp, {
+      action: "close_duplicate",
+      classification: "duplicate",
+      canonical: "#202",
+    });
+    writeFakeGh(paths.binDir, {
+      issues: {
+        101: issue({ number: 101, title: "Add config validation", pullRequest: true }),
+        202: issue({
+          number: 202,
+          title: "Rewrite config validation",
+          pullRequest: true,
+          labels: ["proof: sufficient"],
+        }),
+      },
+      pulls: {
+        101: pull({ number: 101, title: "Add config validation" }),
+        202: pull({ number: 202, title: "Rewrite config validation" }),
+      },
+      comments: {
+        101: [
+          comment(
+            "clawsweeper[bot]",
+            [
+              "AUTOMATION_SHOULD_NOT_REACH_REPAIR_PROOF",
+              "",
+              "<!-- clawsweeper-repair:close:repair-pr-close-proof:#101:proof-gated-close -->",
+            ].join("\n"),
+          ),
+          comment("alice", "HUMAN_SOURCE_CONTEXT_REACHES_REPAIR_PROOF"),
+        ],
+        202: [
+          comment(
+            "clawsweeper[bot]",
+            [
+              "AUTOMATION_SHOULD_NOT_REACH_REPAIR_PROOF",
+              "",
+              "<!-- clawsweeper-review item=202 -->",
+            ].join("\n"),
+          ),
+          comment("bob", "HUMAN_COVERING_CONTEXT_REACHES_REPAIR_PROOF"),
+        ],
+      },
+      logPath: paths.ghLogPath,
+    });
+    writeFakeCodex(paths.binDir);
+
+    runApplyResult(paths, {
+      proofDecision: "covered",
+      expectedPromptIncludes: "HUMAN_COVERING_CONTEXT_REACHES_REPAIR_PROOF",
+      unexpectedPromptIncludes: "AUTOMATION_SHOULD_NOT_REACH_REPAIR_PROOF",
+    });
+
+    const report = JSON.parse(fs.readFileSync(paths.reportPath, "utf8"));
+    assert.equal(report.actions[0].status, "executed");
+    assert.equal(hasPrCloseCall(paths.ghLogPath), true);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 for (const scenario of [
   {
     name: "superseded",

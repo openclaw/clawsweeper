@@ -2738,6 +2738,8 @@ function isClawSweeperNoiseComment(value: unknown, number: number): boolean {
   if (/clawsweeper-visual\s+item=/i.test(body)) return true;
   if (/clawsweeper-command(?:-status|-ack)?:/i.test(body)) return true;
   if (/clawsweeper-review-status:/i.test(body)) return true;
+  if (/clawsweeper-close-applied\s+item=/i.test(body)) return true;
+  if (/clawsweeper-repair:close:/i.test(body)) return true;
   if (/^ClawSweeper status: review started\./i.test(body)) return true;
   return false;
 }
@@ -9917,6 +9919,10 @@ function closePromotionHasNonAutomationActivityAfterReview(
 ): boolean {
   const reviewedAtMs = timestampMs(frontMatterValue(markdown, "reviewed_at"));
   if (reviewedAtMs === null) return true;
+  return contextHasNonAutomationActivityAfter(context, reviewedAtMs);
+}
+
+function contextHasNonAutomationActivityAfter(context: ItemContext, reviewedAtMs: number): boolean {
   if (
     context.counts?.commentsTruncated ||
     context.counts?.timelineTruncated ||
@@ -10386,6 +10392,7 @@ function coveringPrCloseCoveragePullRequestView(
     numberOrUndefined(issue.comments),
     40,
   );
+  const filteredComments = filterReviewContextComments(commentsWindow.items, number);
   return {
     number,
     title: stringOrUndefined(pull.title) ?? stringOrUndefined(issue.title) ?? `PR #${number}`,
@@ -10399,7 +10406,7 @@ function coveringPrCloseCoveragePullRequestView(
       stringOrUndefined(pull.body) ?? stringOrUndefined(issue.body) ?? "",
     ),
     updatedAt: stringOrUndefined(pull.updated_at) ?? stringOrUndefined(issue.updated_at) ?? null,
-    comments: commentsWindow.items.map(compactPrCloseCoverageProofComment),
+    comments: filteredComments.included.map(compactPrCloseCoverageProofComment),
     commentsTruncated: commentsWindow.truncated,
   };
 }
@@ -13503,19 +13510,24 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
     };
     let cachedPrCloseCoverageProofGateResult: PrCloseCoverageProofGateResult | undefined;
     let prCloseCoverageProofGateChecked = false;
+    let prCloseCoverageProofStartedAtMs: number | null = null;
     const currentPrCloseCoverageProofGateBlock = (): PrCloseCoverageProofGateBlock | null => {
       if (cachedPrCloseCoverageProofGateResult === undefined) {
         prCloseCoverageProofGateChecked = true;
-        cachedPrCloseCoverageProofGateResult =
+        if (
           frontMatterValue(markdown, "decision") === "close" &&
           closeReason === "duplicate_or_superseded"
-            ? prCloseCoverageProofGateResult({
-                markdown,
-                item,
-                context: currentItemContext(),
-                runtime: prCloseCoverageProofRuntime,
-              })
-            : null;
+        ) {
+          prCloseCoverageProofStartedAtMs = Date.now();
+          cachedPrCloseCoverageProofGateResult = prCloseCoverageProofGateResult({
+            markdown,
+            item,
+            context: currentItemContext(),
+            runtime: prCloseCoverageProofRuntime,
+          });
+        } else {
+          cachedPrCloseCoverageProofGateResult = null;
+        }
       }
       return cachedPrCloseCoverageProofGateResult?.status === "blocked"
         ? cachedPrCloseCoverageProofGateResult.block
@@ -13940,8 +13952,23 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
       const refreshedSelfMutationOnlyUpdate = allowedSelfMutationUpdatedAts.has(
         refreshed.item.updatedAt,
       );
+      let refreshedContext: ItemContext | null = null;
+      const selfMutationMaskedNonAutomationActivity = (): boolean => {
+        if (prCloseCoverageProofStartedAtMs === null) return true;
+        refreshedContext ??= collectItemContext(refreshed.item, { fullTimelineForRelations: true });
+        return contextHasNonAutomationActivityAfter(
+          refreshedContext,
+          prCloseCoverageProofStartedAtMs,
+        );
+      };
       if (storedUpdatedAt && refreshed.item.updatedAt !== storedUpdatedAt) {
-        if (refreshedSelfMutationOnlyUpdate) return null;
+        if (refreshedSelfMutationOnlyUpdate) {
+          if (!selfMutationMaskedNonAutomationActivity()) return null;
+          return {
+            reason: "non-automation activity after coverage proof",
+            currentUpdatedAt: refreshed.item.updatedAt,
+          };
+        }
         return {
           reason: "updated_at changed",
           currentUpdatedAt: refreshed.item.updatedAt,
@@ -13950,11 +13977,18 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
       if (!storedUpdatedAt && storedHash) {
         const refreshedHash = itemSnapshotHash(
           refreshed.item,
-          collectItemContext(refreshed.item, { fullTimelineForRelations: true }),
+          (refreshedContext ??= collectItemContext(refreshed.item, {
+            fullTimelineForRelations: true,
+          })),
         );
-        if (refreshedHash !== storedHash && !refreshedSelfMutationOnlyUpdate) {
+        if (refreshedHash !== storedHash) {
+          if (refreshedSelfMutationOnlyUpdate && !selfMutationMaskedNonAutomationActivity()) {
+            return null;
+          }
           return {
-            reason: "snapshot changed",
+            reason: refreshedSelfMutationOnlyUpdate
+              ? "non-automation activity after coverage proof"
+              : "snapshot changed",
             currentSnapshotHash: refreshedHash,
           };
         }
