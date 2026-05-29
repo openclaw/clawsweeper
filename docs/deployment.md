@@ -157,7 +157,7 @@ gh variable set CLAWSWEEPER_RUNNER_LABELS --repo valkyriweb/clawsweeper --body '
 
 ```bash
 gh workflow run sweep.yml --repo valkyriweb/clawsweeper -f target_repo=valkyriweb/lue-kube
-RID=$(gh run list --repo valkyriweb/clawsweeper --workflow sweep.yml -L1 --json databaseId -q '.[].databaseId')
+RID=$(gh api repos/valkyriweb/clawsweeper/actions/workflows/sweep.yml/runs --jq '.workflow_runs[0].id')
 gh api repos/valkyriweb/clawsweeper/actions/runs/$RID/jobs \
   --jq '.jobs[]|select(.name|test("Plan"))|"\(.status)/\(.conclusion)\trunner=\(.runner_name)"'
 ```

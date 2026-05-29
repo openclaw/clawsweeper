@@ -27,7 +27,7 @@ Automated GitHub issue/PR triage + review/repair via GitHub Actions + Codex. Run
 # live runners + selection vars
 gh api repos/valkyriweb/clawsweeper/actions/runners --jq '.runners[]|"\(.name)\t\(.status)\tbusy=\(.busy)"'
 gh variable list --repo valkyriweb/clawsweeper | grep -E 'RUNNER_LABELS|REVIEW_RUNNER'
-gh run list --repo valkyriweb/clawsweeper --workflow sweep.yml -L 5
+gh api repos/valkyriweb/clawsweeper/actions/workflows/sweep.yml/runs --jq '.workflow_runs[:5][]|"\(.conclusion // .status)\t\(.created_at)\t\(.display_title)"'
 ```
 
 ## CLI (built: `pnpm run build:all`; runs `node dist/clawsweeper.js <cmd>`)

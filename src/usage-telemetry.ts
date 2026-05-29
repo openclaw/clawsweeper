@@ -122,6 +122,27 @@ function readTokenUsage(value: unknown): CodexTokenUsage | null {
   return Object.keys(usage).length > 0 ? usage : null;
 }
 
+/**
+ * Sum two Codex token-usage records field-by-field. Used to accumulate per-turn
+ * `turn.completed.usage` into a session total under the current Codex CLI
+ * schema, which (unlike the legacy `token_count` event) emits no running
+ * cumulative total.
+ */
+function addCodexTokenUsage(
+  accumulator: CodexTokenUsage | null,
+  next: CodexTokenUsage,
+): CodexTokenUsage {
+  if (!accumulator) return { ...next };
+  const summed: CodexTokenUsage = { ...accumulator };
+  for (const key of Object.keys(next) as (keyof CodexTokenUsage)[]) {
+    const value = next[key];
+    if (typeof value !== "number") continue;
+    const current = summed[key];
+    summed[key] = (typeof current === "number" ? current : 0) + value;
+  }
+  return summed;
+}
+
 export function normalizeCodexTokenUsage(
   usage: CodexTokenUsage | null | undefined,
 ): UsageTokens | null {
@@ -148,8 +169,16 @@ export function normalizeCodexTokenUsage(
 }
 
 export function parseCodexTokenUsageFromJsonl(stdout: string): CodexTokenUsageParseResult | null {
+  // Legacy Codex CLI schema: `token_count` events carry a cumulative
+  // `payload.info.total_token_usage` plus a per-turn `last_token_usage`.
   let latestTotalUsage: CodexTokenUsage | null = null;
   let latestLastUsage: CodexTokenUsage | null = null;
+  // Current Codex CLI schema (thread events): one `turn.completed` event per
+  // turn with a top-level `usage` object and no cumulative total. Sum per-turn
+  // usage into a session total (reviews are usually single-turn, where the sum
+  // equals the lone turn's usage).
+  let turnTotalUsage: CodexTokenUsage | null = null;
+  let latestTurnUsage: CodexTokenUsage | null = null;
 
   for (const line of stdout.split(/\r?\n/)) {
     const trimmed = line.trim();
@@ -162,25 +191,37 @@ export function parseCodexTokenUsageFromJsonl(stdout: string): CodexTokenUsagePa
       continue;
     }
 
-    if (!isRecord(parsed) || parsed.type !== "token_count") continue;
-    const payload = isRecord(parsed.payload) ? parsed.payload : null;
-    const info = payload && isRecord(payload.info) ? payload.info : null;
-    if (!info) continue;
+    if (!isRecord(parsed)) continue;
 
-    const totalUsage = readTokenUsage(info.total_token_usage);
-    const lastUsage = readTokenUsage(info.last_token_usage);
-    if (lastUsage) latestLastUsage = lastUsage;
-    if (totalUsage) latestTotalUsage = totalUsage;
+    if (parsed.type === "token_count") {
+      const payload = isRecord(parsed.payload) ? parsed.payload : null;
+      const info = payload && isRecord(payload.info) ? payload.info : null;
+      if (!info) continue;
+      const totalUsage = readTokenUsage(info.total_token_usage);
+      const lastUsage = readTokenUsage(info.last_token_usage);
+      if (lastUsage) latestLastUsage = lastUsage;
+      if (totalUsage) latestTotalUsage = totalUsage;
+    } else if (parsed.type === "turn.completed") {
+      const turnUsage = readTokenUsage(parsed.usage);
+      if (turnUsage) {
+        latestTurnUsage = turnUsage;
+        turnTotalUsage = addCodexTokenUsage(turnTotalUsage, turnUsage);
+      }
+    }
   }
 
-  const tokens = normalizeCodexTokenUsage(latestTotalUsage);
-  if (!latestTotalUsage || !tokens) return null;
+  // Prefer the legacy cumulative total when present; otherwise fall back to the
+  // summed per-turn usage from the current schema.
+  const effectiveTotal = latestTotalUsage ?? turnTotalUsage;
+  const tokens = normalizeCodexTokenUsage(effectiveTotal);
+  if (!effectiveTotal || !tokens) return null;
 
   const result: CodexTokenUsageParseResult = {
-    totalTokenUsage: latestTotalUsage,
+    totalTokenUsage: effectiveTotal,
     tokens,
   };
-  if (latestLastUsage) result.lastTokenUsage = latestLastUsage;
+  const effectiveLast = latestLastUsage ?? latestTurnUsage;
+  if (effectiveLast) result.lastTokenUsage = effectiveLast;
   return result;
 }
 

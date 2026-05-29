@@ -75,6 +75,61 @@ test("maps cached_input_tokens to cache_read", () => {
   assert.equal(result?.tokens.cache_read, 99);
 });
 
+function turnCompleted(usage: Record<string, number>): string {
+  return JSON.stringify({ type: "turn.completed", usage });
+}
+
+test("parses a current-schema turn.completed usage event", () => {
+  // Real shape emitted by the current Codex CLI (no `total_tokens`; total is derived).
+  const result = parseCodexTokenUsageFromJsonl(
+    [
+      JSON.stringify({ type: "thread.started", thread_id: "t1" }),
+      JSON.stringify({ type: "turn.started" }),
+      JSON.stringify({ type: "item.completed", item: { type: "agent_message" } }),
+      turnCompleted({
+        input_tokens: 42723,
+        cached_input_tokens: 0,
+        output_tokens: 5727,
+        reasoning_output_tokens: 12,
+      }),
+    ].join("\n"),
+  );
+
+  assert.deepEqual(result?.tokens, {
+    input: 42723,
+    cache_read: 0,
+    cache_creation: 0,
+    output: 5727,
+    reasoning_output: 12,
+    total: 48462,
+  });
+});
+
+test("sums usage across multiple turn.completed events", () => {
+  const result = parseCodexTokenUsageFromJsonl(
+    [
+      turnCompleted({ input_tokens: 100, output_tokens: 10, reasoning_output_tokens: 1 }),
+      turnCompleted({ input_tokens: 200, output_tokens: 20, reasoning_output_tokens: 2 }),
+    ].join("\n"),
+  );
+
+  assert.equal(result?.tokens.input, 300);
+  assert.equal(result?.tokens.output, 30);
+  assert.equal(result?.tokens.reasoning_output, 3);
+  assert.equal(result?.tokens.total, 333);
+});
+
+test("prefers legacy total_token_usage when both schemas appear", () => {
+  const result = parseCodexTokenUsageFromJsonl(
+    [
+      turnCompleted({ input_tokens: 999, output_tokens: 999 }),
+      tokenCount({ input_tokens: 10, output_tokens: 20, total_tokens: 30 }),
+    ].join("\n"),
+  );
+
+  assert.equal(result?.tokens.total, 30);
+});
+
 test("parses Claude message usage with cache creation and cache reads", () => {
   const tokens = parseClaudeTokenUsageFromMessage({
     usage: {
