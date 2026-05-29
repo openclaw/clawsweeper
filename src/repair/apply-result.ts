@@ -78,6 +78,11 @@ type PrCloseCoverageProofValidation =
     }
   | null;
 
+type PrCloseCoverageProofBlock = {
+  reason: string;
+  requeue_required?: true;
+};
+
 const args = parseArgs(process.argv.slice(2));
 const jobPath = args._[0];
 const resultPathArg = args._[1];
@@ -464,7 +469,7 @@ function applyCloseAction({
     return {
       ...base,
       status: "blocked",
-      reason: postProofCoveringSafetyBlock,
+      ...postProofCoveringSafetyBlock,
       live_state: live.state,
       live_updated_at: live.updated_at,
     };
@@ -982,16 +987,17 @@ function validatePrCloseCoverageProof({
 function prCloseCoverageProofSetupFailureBlock(
   error: unknown,
 ): Extract<PrCloseCoverageProofValidation, { status: "blocked" }> {
-  const block = {
-    status: "blocked" as const,
-    reason: prCloseCoverageProofFailureReason(error),
-  };
-  return prCloseCoverageProofSetupFailureIsTerminal(error)
+  return { status: "blocked", ...prCloseCoverageProofFailureBlock(error) };
+}
+
+function prCloseCoverageProofFailureBlock(error: unknown): PrCloseCoverageProofBlock {
+  const block = { reason: prCloseCoverageProofFailureReason(error) };
+  return prCloseCoverageProofFailureIsTerminal(error)
     ? block
     : { ...block, requeue_required: true };
 }
 
-function prCloseCoverageProofSetupFailureIsTerminal(error: unknown): boolean {
+function prCloseCoverageProofFailureIsTerminal(error: unknown): boolean {
   const text = error instanceof Error ? error.message : String(error);
   return /\b(?:issue|pull) not found: #\d+\b/i.test(text) || /\bHTTP 404\b/i.test(text);
 }
@@ -1021,18 +1027,18 @@ function validatePrCloseCoverageCoveringRefSafety({
   canonical,
   candidateFix,
   classification,
-}: LooseRecord): string {
+}: LooseRecord): PrCloseCoverageProofBlock | null {
   const coveringRef = prCloseCoverageProofCoveringRef({
     actionName,
     classification,
     canonical,
     candidateFix,
   });
-  if (!coveringRef || coveringRef === target || !live.pull_request) return "";
+  if (!coveringRef || coveringRef === target || !live.pull_request) return null;
 
   try {
     const coveringIssue = fetchIssue(result.repo, coveringRef);
-    if (!coveringIssue.pull_request) return "";
+    if (!coveringIssue.pull_request) return null;
     const coveringPull = fetchPullRequest(result.repo, coveringRef);
     const covering = {
       state:
@@ -1042,16 +1048,19 @@ function validatePrCloseCoverageCoveringRefSafety({
       mergedAt: stringOrNull(coveringPull.merged_at ?? coveringPull.mergedAt),
     };
     if (!prCloseCoverageProofCandidateCanClose(covering)) {
-      return `PR close coverage proof requires an open or merged covering pull request; #${coveringRef} is ${covering.state}`;
+      return {
+        reason: `PR close coverage proof requires an open or merged covering pull request; #${coveringRef} is ${covering.state}`,
+      };
     }
-    return validatePrCloseCoverageCoveringSafety({
+    const coveringSafetyBlock = validatePrCloseCoverageCoveringSafety({
       result,
       coveringRef,
       coveringIssue,
       covering,
     });
+    return coveringSafetyBlock ? { reason: coveringSafetyBlock } : null;
   } catch (error) {
-    return prCloseCoverageProofFailureReason(error);
+    return prCloseCoverageProofFailureBlock(error);
   }
 }
 

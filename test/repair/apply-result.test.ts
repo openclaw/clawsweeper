@@ -825,6 +825,51 @@ test("repair apply rechecks covering PR freshness after coverage proof passes", 
   }
 });
 
+test("repair apply requeues transient post-proof covering PR safety failures", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-apply-result-"));
+  try {
+    const paths = writeApplyFixture(tmp, {
+      action: "close_duplicate",
+      classification: "duplicate",
+      canonical: "#202",
+    });
+    const afterProofPath = path.join(tmp, "proof-ran");
+    writeFakeGh(paths.binDir, {
+      issues: {
+        101: issue({ number: 101, title: "Add config validation", pullRequest: true }),
+        202: issue({
+          number: 202,
+          title: "Rewrite config validation",
+          pullRequest: true,
+          labels: ["proof: sufficient"],
+        }),
+      },
+      pulls: {
+        101: pull({ number: 101, title: "Add config validation" }),
+        202: pull({ number: 202, title: "Rewrite config validation" }),
+      },
+      comments: {
+        101: [comment("alice", "PR A keeps legacy config behavior intact.")],
+        202: [comment("bob", "PR B carries forward the legacy config behavior.")],
+      },
+      afterProofPath,
+      postProofPrViewFailure: { number: 202, message: "HTTP 502 Bad Gateway" },
+      logPath: paths.ghLogPath,
+    });
+    writeFakeCodex(paths.binDir);
+
+    runApplyResult(paths, { proofDecision: "covered", afterProofPath });
+
+    const report = JSON.parse(fs.readFileSync(paths.reportPath, "utf8"));
+    assert.equal(report.actions[0].status, "blocked");
+    assert.equal(report.actions[0].requeue_required, true);
+    assert.match(report.actions[0].reason, /HTTP 502 Bad Gateway/);
+    assert.equal(hasPrCloseCall(paths.ghLogPath), false);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 test("repair apply skips target closed after proof when updated_at is missing", () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-apply-result-"));
   try {
@@ -1033,6 +1078,7 @@ type FakeGhData = {
   postProofIssues?: Record<number, Record<string, unknown>>;
   postProofIssueUpdates?: Record<number, string>;
   postProofPulls?: Record<number, Record<string, unknown>>;
+  postProofPrViewFailure?: { number: number; message: string };
   logPath: string;
 };
 
@@ -1233,8 +1279,15 @@ if (args[0] === "pr" && args[1] === "close") {
 
 if (args[0] === "pr" && args[1] === "view") {
   const number = Number(args[2]);
-  if (data.prViewFailure && data.prViewFailure.number === number) {
-    process.stderr.write(data.prViewFailure.message + "\\n");
+  const postProofPrViewFailure =
+    data.afterProofPath &&
+    fs.existsSync(data.afterProofPath) &&
+    data.postProofPrViewFailure &&
+    data.postProofPrViewFailure.number === number;
+  const prViewFailure =
+    postProofPrViewFailure ? data.postProofPrViewFailure : data.prViewFailure;
+  if (prViewFailure && prViewFailure.number === number) {
+    process.stderr.write(prViewFailure.message + "\\n");
     process.exit(1);
   }
   const pull = data.pulls[number];
