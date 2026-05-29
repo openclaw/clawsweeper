@@ -10065,7 +10065,7 @@ function relationshipBoundaryContinuesPullRequestRefList(
   boundaryEnd: number,
 ): boolean {
   const boundaryText = line.slice(boundaryStart, boundaryEnd).trim().toLowerCase();
-  if (boundaryText !== "and") return false;
+  if (!["and", ",", ";"].includes(boundaryText)) return false;
   if (!textEndsWithPullRequestRef(line.slice(0, boundaryStart))) return false;
   return textStartsWithStandalonePullRequestRef(line.slice(boundaryEnd));
 }

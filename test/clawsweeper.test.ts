@@ -8844,107 +8844,113 @@ test("apply-decisions ignores unrelated same-line bare PR refs for duplicate pro
   }
 });
 
-test("apply-decisions preserves supersession context across shorthand PR ref lists", () => {
-  const root = mkdtempSync(tmpPrefix);
-  try {
-    const itemsDir = join(root, "items");
-    const closedDir = join(root, "closed");
-    const plansDir = join(root, "plans");
-    const reportPath = join(root, "apply-report.json");
-    mkdirSync(itemsDir, { recursive: true });
-    mkdirSync(plansDir, { recursive: true });
-    const synced = reportWithSyncedReviewComment(
-      lowSignalCloseReport({
-        number: 364,
-        title: "Provider route fallback",
-        close_reason: "duplicate_or_superseded",
-        work_cluster_refs: JSON.stringify(["Superseded by #400 and #401"]),
-      }).replace(
-        "Closing this PR because the branch is not a useful landing base.",
-        "Closing this PR as superseded by the linked canonical PRs.",
-      ),
-      364,
-      "duplicate_or_superseded",
-    );
-    writeFileSync(join(itemsDir, "364.md"), synced.report, "utf8");
+for (const scenario of [
+  { name: "and", number: 364, refs: "#400 and #401" },
+  { name: "comma", number: 365, refs: "#400, #401" },
+  { name: "semicolon", number: 366, refs: "#400; #401" },
+]) {
+  test(`apply-decisions preserves supersession context across shorthand PR ref lists with ${scenario.name}`, () => {
+    const root = mkdtempSync(tmpPrefix);
+    try {
+      const itemsDir = join(root, "items");
+      const closedDir = join(root, "closed");
+      const plansDir = join(root, "plans");
+      const reportPath = join(root, "apply-report.json");
+      mkdirSync(itemsDir, { recursive: true });
+      mkdirSync(plansDir, { recursive: true });
+      const synced = reportWithSyncedReviewComment(
+        lowSignalCloseReport({
+          number: scenario.number,
+          title: "Provider route fallback",
+          close_reason: "duplicate_or_superseded",
+          work_cluster_refs: JSON.stringify([`Superseded by ${scenario.refs}`]),
+        }).replace(
+          "Closing this PR because the branch is not a useful landing base.",
+          "Closing this PR as superseded by the linked canonical PRs.",
+        ),
+        scenario.number,
+        "duplicate_or_superseded",
+      );
+      writeFileSync(join(itemsDir, `${scenario.number}.md`), synced.report, "utf8");
 
-    withMockGh(
-      root,
-      promotionGhMock({
-        number: 364,
-        title: "Provider route fallback",
-        comment: synced.comment,
-        linkedPulls: {
-          400: {
-            number: 400,
-            title: "Initial provider cleanup",
-            html_url: "https://github.com/openclaw/openclaw/pull/400",
-            state: "closed",
-            merged_at: "2026-05-01T00:00:00Z",
-            body: "Cleans up provider setup without changing the fallback route.",
-            comments: [],
-            labels: [],
+      withMockGh(
+        root,
+        promotionGhMock({
+          number: scenario.number,
+          title: "Provider route fallback",
+          comment: synced.comment,
+          linkedPulls: {
+            400: {
+              number: 400,
+              title: "Initial provider cleanup",
+              html_url: "https://github.com/openclaw/openclaw/pull/400",
+              state: "closed",
+              merged_at: "2026-05-01T00:00:00Z",
+              body: "Cleans up provider setup without changing the fallback route.",
+              comments: [],
+              labels: [],
+            },
+            401: {
+              number: 401,
+              title: "Provider cleanup",
+              html_url: "https://github.com/openclaw/openclaw/pull/401",
+              state: "closed",
+              merged_at: "2026-05-02T00:00:00Z",
+              body: `Includes the fallback route behavior from PR ${scenario.number}.`,
+              comments: [],
+              labels: [],
+            },
           },
-          401: {
-            number: 401,
-            title: "Provider cleanup",
-            html_url: "https://github.com/openclaw/openclaw/pull/401",
-            state: "closed",
-            merged_at: "2026-05-02T00:00:00Z",
-            body: "Includes the fallback route behavior from PR 364.",
-            comments: [],
-            labels: [],
-          },
+        }),
+        () => {
+          withMockCodexProof(
+            root,
+            {
+              type: "decision",
+              decision: "keep_open",
+              reason: "PR B carries forward PR A's fallback route behavior.",
+              keepOpenPromptIncludes: "https://github.com/openclaw/openclaw/pull/400",
+              coveredPromptIncludes: "https://github.com/openclaw/openclaw/pull/401",
+            },
+            () => {
+              runApplyDecisionsForTest({
+                itemsDir,
+                closedDir,
+                plansDir,
+                reportPath,
+                extraArgs: [
+                  "--target-repo",
+                  "openclaw/openclaw",
+                  "--dry-run",
+                  "--apply-kind",
+                  "all",
+                  "--processed-limit",
+                  "3",
+                ],
+              });
+            },
+          );
         },
-      }),
-      () => {
-        withMockCodexProof(
-          root,
-          {
-            type: "decision",
-            decision: "keep_open",
-            reason: "PR B carries forward PR A's fallback route behavior.",
-            keepOpenPromptIncludes: "https://github.com/openclaw/openclaw/pull/400",
-            coveredPromptIncludes: "https://github.com/openclaw/openclaw/pull/401",
-          },
-          () => {
-            runApplyDecisionsForTest({
-              itemsDir,
-              closedDir,
-              plansDir,
-              reportPath,
-              extraArgs: [
-                "--target-repo",
-                "openclaw/openclaw",
-                "--dry-run",
-                "--apply-kind",
-                "all",
-                "--processed-limit",
-                "3",
-              ],
-            });
-          },
-        );
-      },
-    );
+      );
 
-    const report = JSON.parse(readFileSync(reportPath, "utf8")) as Array<{
-      action: string;
-      reason: string;
-    }>;
-    assert.equal(
-      report.some((entry) => entry.action === "closed"),
-      true,
-      JSON.stringify(report),
-    );
-    assert.match(
-      report.find((entry) => entry.action === "closed")?.reason ?? "",
-      /duplicate or superseded/,
-    );
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
-});
+      const report = JSON.parse(readFileSync(reportPath, "utf8")) as Array<{
+        action: string;
+        reason: string;
+      }>;
+      assert.equal(
+        report.some((entry) => entry.action === "closed"),
+        true,
+        JSON.stringify(report),
+      );
+      assert.match(
+        report.find((entry) => entry.action === "closed")?.reason ?? "",
+        /duplicate or superseded/,
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+}
 
 test("apply-decisions does not proof-gate duplicate PR closes with bare issue refs", () => {
   const root = mkdtempSync(tmpPrefix);
