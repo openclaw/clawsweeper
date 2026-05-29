@@ -8319,6 +8319,91 @@ test("apply-decisions skips duplicate PR coverage proof during synced comment-on
   }
 });
 
+test("apply-decisions skips duplicate PR coverage proof during stale comment-only sync", () => {
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    const itemsDir = join(root, "items");
+    const closedDir = join(root, "closed");
+    const plansDir = join(root, "plans");
+    const reportPath = join(root, "apply-report.json");
+    const proofLogPath = join(root, "proof.log");
+    const commentWriteLogPath = join(root, "comment-write.log");
+    mkdirSync(itemsDir, { recursive: true });
+    mkdirSync(plansDir, { recursive: true });
+    const reportMarkdown = lowSignalCloseReport({
+      number: 349,
+      title: "Provider route fallback",
+      close_reason: "duplicate_or_superseded",
+      work_cluster_refs: JSON.stringify([
+        "Superseded by https://github.com/openclaw/openclaw/pull/400",
+      ]),
+    }).replace(
+      "Closing this PR because the branch is not a useful landing base.",
+      "Closing this PR as superseded by https://github.com/openclaw/openclaw/pull/400.",
+    );
+    const synced = reportWithSyncedReviewComment(reportMarkdown, 349, "duplicate_or_superseded");
+    writeFileSync(join(itemsDir, "349.md"), synced.report, "utf8");
+
+    withMockGh(
+      root,
+      promotionGhMock({
+        number: 349,
+        title: "Provider route fallback",
+        comment: markedReviewCommentForTest(349, "Stale durable review comment."),
+        commentWriteLogPath,
+        linkedPulls: {
+          400: {
+            number: 400,
+            title: "Provider cleanup",
+            html_url: "https://github.com/openclaw/openclaw/pull/400",
+            state: "closed",
+            merged_at: "2026-05-02T00:00:00Z",
+            body: "Cleans up provider setup without changing the fallback route.",
+            comments: [],
+            labels: [],
+          },
+        },
+      }),
+      () => {
+        withMockCodexProof(
+          root,
+          { type: "failure", message: "proof should not run", invocationLogPath: proofLogPath },
+          () => {
+            runApplyDecisionsForTest({
+              itemsDir,
+              closedDir,
+              plansDir,
+              reportPath,
+              extraArgs: [
+                "--target-repo",
+                "openclaw/openclaw",
+                "--apply-kind",
+                "all",
+                "--sync-comments-only",
+                "--processed-limit",
+                "1",
+              ],
+            });
+          },
+        );
+      },
+    );
+
+    assert.equal(existsSync(proofLogPath), false);
+    assert.match(readFileSync(commentWriteLogPath, "utf8"), /issues\/comments\/9349/);
+    assert.deepEqual(JSON.parse(readFileSync(reportPath, "utf8")), [
+      {
+        number: 349,
+        action: "review_comment_synced",
+        reason: "updated durable Codex review comment",
+      },
+    ]);
+    assert.equal(existsSync(join(closedDir, "349.md")), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("apply-decisions gates duplicate PR closes with shorthand canonical refs", () => {
   const root = mkdtempSync(tmpPrefix);
   try {

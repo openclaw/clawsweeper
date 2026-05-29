@@ -14144,7 +14144,7 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
     if (
       isCloseProposal &&
       closeReason === "duplicate_or_superseded" &&
-      (!syncCommentsOnly || needsReviewCommentSync) &&
+      !syncCommentsOnly &&
       (applyKind === "all" || item.kind === applyKind) &&
       closeReasonEnabled(closeReason, applyCloseReasons)
     ) {
