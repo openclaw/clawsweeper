@@ -10077,16 +10077,26 @@ function textEndsWithPullRequestRef(value: string): boolean {
   for (const match of value.matchAll(regex)) {
     lastRefEnd = (match.index ?? 0) + (match[0]?.length ?? 0);
   }
-  return lastRefEnd >= 0 && value.slice(lastRefEnd).trim() === "";
+  return lastRefEnd >= 0 && /^[\s,;]*$/.test(value.slice(lastRefEnd));
 }
 
 function textStartsWithStandalonePullRequestRef(value: string): boolean {
   const regex = sameRepoPullRequestRefRegex();
   if (!regex) return false;
-  const trimmed = value.trimStart();
-  const match = regex.exec(trimmed);
-  if (!match || pullRequestRefMatchIndex(match) !== 0) return false;
-  return /^[\s,.)\]]*$/.test(trimmed.slice(match[0]?.length ?? 0));
+  let remaining = value.trimStart().replace(/^and\s+/i, "");
+  let sawRef = false;
+  while (remaining) {
+    regex.lastIndex = 0;
+    const match = regex.exec(remaining);
+    if (!match || pullRequestRefMatchIndex(match) !== 0) return false;
+    sawRef = true;
+    remaining = remaining.slice((match.index ?? 0) + (match[0]?.length ?? 0)).trimStart();
+    if (!remaining || /^[\s,;.)\]]+$/.test(remaining)) return true;
+    const separator = remaining.match(/^(?:[,;]\s*(?:and\s+)?|and\s+)/i);
+    if (!separator) return false;
+    remaining = remaining.slice(separator[0].length).trimStart();
+  }
+  return sawRef;
 }
 
 function linkedPullRequestSignalContextsFromText(

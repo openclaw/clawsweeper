@@ -8848,6 +8848,7 @@ for (const scenario of [
   { name: "and", number: 364, refs: "#400 and #401" },
   { name: "comma", number: 365, refs: "#400, #401" },
   { name: "semicolon", number: 366, refs: "#400; #401" },
+  { name: "comma and and", number: 367, refs: "#400, #401, and #402" },
 ]) {
   test(`apply-decisions preserves supersession context across shorthand PR ref lists with ${scenario.name}`, () => {
     const root = mkdtempSync(tmpPrefix);
@@ -8897,6 +8898,16 @@ for (const scenario of [
               state: "closed",
               merged_at: "2026-05-02T00:00:00Z",
               body: `Includes the fallback route behavior from PR ${scenario.number}.`,
+              comments: [],
+              labels: [],
+            },
+            402: {
+              number: 402,
+              title: "Later provider cleanup",
+              html_url: "https://github.com/openclaw/openclaw/pull/402",
+              state: "closed",
+              merged_at: "2026-05-03T00:00:00Z",
+              body: "Follow-up provider cleanup.",
               comments: [],
               labels: [],
             },
