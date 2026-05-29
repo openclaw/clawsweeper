@@ -310,7 +310,7 @@ export function proposedItemNumbers(options: ProposedItemOptions): number[] {
       const selectableClose =
         decision === "close" &&
         confidence === "high" &&
-        isSelectableCloseAction(action) &&
+        isSelectableCloseAction(action, reason) &&
         allowedForTarget(options.targetRepo, type, reason, allowedReasons) &&
         (!allowedCloseReasons || allowedCloseReasons.has(reason));
       const selectablePromotion =
@@ -344,13 +344,17 @@ const SELECTABLE_CLOSE_ACTIONS = new Set([
   "proposed_close",
   "retry_pr_close_coverage_proof",
   "kept_open",
-  "skipped_maintainer_authored",
-  "skipped_invalid_decision",
   "skipped_open_closing_pr",
   "skipped_same_author_pair",
 ]);
 
-function isSelectableCloseAction(action: string): boolean {
+const RETRYABLE_CLOSE_SKIP_ACTIONS = new Set([
+  "skipped_maintainer_authored",
+  "skipped_invalid_decision",
+]);
+
+function isSelectableCloseAction(action: string, reason: string): boolean {
+  if (RETRYABLE_CLOSE_SKIP_ACTIONS.has(action)) return reason === "implemented_on_main";
   return SELECTABLE_CLOSE_ACTIONS.has(action);
 }
 
