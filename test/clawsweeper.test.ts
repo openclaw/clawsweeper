@@ -6564,6 +6564,9 @@ test("apply-decisions upgrades live no-diff kept-open PRs to duplicate closes", 
         item_created_at: "2026-05-01T00:00:00Z",
         item_updated_at: "2026-05-01T00:00:00Z",
         pull_head_sha: "head-sha",
+        work_cluster_refs: JSON.stringify([
+          "Superseded by https://github.com/openclaw/openclaw/pull/400",
+        ]),
       }),
       "utf8",
     );
@@ -6610,6 +6613,36 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/322\\/timeline(?:\\?|$
     base: { sha: "base-sha", ref: "main", repo: { full_name: "openclaw/openclaw" } },
     user: { login: "reporter" }
   }));
+} else if (args[0] === "api" && /\\/pulls\\/400$/.test(path)) {
+  console.log(JSON.stringify({
+    number: 400,
+    title: "Old related PR",
+    html_url: "https://github.com/openclaw/openclaw/pull/400",
+    state: "closed",
+    merged_at: "2026-05-02T00:00:00Z",
+    updated_at: "2026-05-02T00:00:00Z",
+    mergeable_state: "clean",
+    body: "Old related PR body.",
+    labels: [{ name: "proof: sufficient" }]
+  }));
+} else if (args[0] === "api" && /\\/issues\\/400$/.test(path)) {
+  console.log(JSON.stringify({
+    number: 400,
+    title: "Old related PR",
+    html_url: "https://github.com/openclaw/openclaw/pull/400",
+    body: "Old related PR body.",
+    state: "closed",
+    updated_at: "2026-05-02T00:00:00Z",
+    labels: [{ name: "proof: sufficient" }],
+    comments: 0,
+    pull_request: { url: "https://api.github.com/repos/openclaw/openclaw/pulls/400" }
+  }));
+} else if (args[0] === "api" && /\\/issues\\/400\\/comments(?:\\?|$)/.test(path)) {
+  console.log(JSON.stringify([]));
+} else if (args[0] === "api" && /\\/pulls\\/400\\/files(?:\\?|$)/.test(path)) {
+  const files = [{ filename: "src/runtime.ts" }];
+  if (args.includes("--jq")) console.log(JSON.stringify(files.map((file) => file.filename)));
+  else console.log(JSON.stringify([files]));
 } else if (args[0] === "api" && /\\/pulls\\/322\\/(files|commits|comments)(?:\\?|$)/.test(path)) {
   console.log(JSON.stringify([[]]));
 } else if (args[0] === "label" || args[0] === "issue") {
@@ -6620,21 +6653,27 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/322\\/timeline(?:\\?|$
 }
 `;
     withMockGh(root, ghMock, () => {
-      runApplyDecisionsForTest({
-        itemsDir,
-        closedDir,
-        plansDir,
-        reportPath,
-        extraArgs: [
-          "--target-repo",
-          "openclaw/openclaw",
-          "--dry-run",
-          "--apply-kind",
-          "all",
-          "--processed-limit",
-          "3",
-        ],
-      });
+      withMockCodexProof(
+        root,
+        { type: "failure", message: "proof should not run for no-diff PR" },
+        () => {
+          runApplyDecisionsForTest({
+            itemsDir,
+            closedDir,
+            plansDir,
+            reportPath,
+            extraArgs: [
+              "--target-repo",
+              "openclaw/openclaw",
+              "--dry-run",
+              "--apply-kind",
+              "all",
+              "--processed-limit",
+              "3",
+            ],
+          });
+        },
+      );
     });
 
     assert.deepEqual(JSON.parse(readFileSync(reportPath, "utf8")), [
@@ -6996,21 +7035,23 @@ test("apply-decisions promotes PRs superseded by linked pull requests", () => {
     const closedDir = join(root, "closed");
     const plansDir = join(root, "plans");
     const reportPath = join(root, "apply-report.json");
+    const proofLogPath = join(root, "proof.log");
     mkdirSync(itemsDir, { recursive: true });
     mkdirSync(plansDir, { recursive: true });
-    const synced = reportWithSyncedReviewComment(
-      stalePullRequestReport({
-        number: 332,
-        title: "Old activity PR",
-        pr_rating_overall: "D",
-        pr_rating_proof: "D",
-        work_cluster_refs: JSON.stringify([
-          "Superseded by https://github.com/openclaw/openclaw/pull/400",
-        ]),
-      }),
-      332,
-      "none",
-    );
+    const linkedMarkdownLabelReport = stalePullRequestReport({
+      number: 332,
+      title: "Old activity PR",
+      pr_rating_overall: "D",
+      pr_rating_proof: "D",
+      pr_rating_patch: "D",
+      work_cluster_refs: JSON.stringify([
+        "[replacement PR](https://github.com/openclaw/openclaw/pull/400)",
+      ]),
+    })
+      .replace("Overall tier: F", "Overall tier: D")
+      .replace("Proof tier: F", "Proof tier: D")
+      .replace("Patch tier: F", "Patch tier: D");
+    const synced = reportWithSyncedReviewComment(linkedMarkdownLabelReport, 332, "none");
     writeFileSync(join(itemsDir, "332.md"), synced.report, "utf8");
 
     withMockGh(
@@ -7038,6 +7079,7 @@ test("apply-decisions promotes PRs superseded by linked pull requests", () => {
             type: "decision",
             decision: "covered",
             reason: "PR B is the canonical PR covering PR A.",
+            invocationLogPath: proofLogPath,
           },
           () => {
             runApplyDecisionsForTest({
@@ -7073,6 +7115,7 @@ test("apply-decisions promotes PRs superseded by linked pull requests", () => {
       report.find((entry) => entry.action === "closed")?.reason ?? "",
       /duplicate or superseded/,
     );
+    assert.match(readFileSync(proofLogPath, "utf8"), /proof/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

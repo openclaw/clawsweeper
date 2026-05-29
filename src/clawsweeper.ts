@@ -9850,6 +9850,8 @@ function upgradeNoDiffPullRequestReport(markdown: string, item: Item): string {
   upgraded = replaceFrontMatterValue(upgraded, "confidence", "high");
   upgraded = replaceFrontMatterValue(upgraded, "action_taken", "proposed_close");
   upgraded = replaceFrontMatterValue(upgraded, "pr_close_coverage_proof_fallback_refs", "false");
+  upgraded = replaceFrontMatterValue(upgraded, "work_cluster_refs", "[]");
+  upgraded = replaceFrontMatterValue(upgraded, "merge_risk_options", "[]");
   upgraded = replaceFrontMatterValue(upgraded, "work_candidate", "none");
   upgraded = replaceFrontMatterValue(upgraded, "work_status", "none");
   upgraded = replaceSectionValue(
@@ -9990,14 +9992,37 @@ function sameRepoPullRequestUrlRegex(): RegExp | null {
 }
 
 function markdownLinkRegex(): RegExp {
-  return /\[[^\]\n]{1,200}\]\(([^\s)]{1,1000})\)/gi;
+  return /\[([^\]\n]{1,200})\]\(([^\s)]{1,1000})\)/gi;
+}
+
+const PULL_REQUEST_LINK_LABEL_START = "__clawsweeper_pr_link_label_start__";
+const PULL_REQUEST_LINK_LABEL_END = "__clawsweeper_pr_link_label_end__";
+
+function pullRequestLinkLabel(label: string): string {
+  const trimmed = label.trim();
+  return trimmed
+    ? `${PULL_REQUEST_LINK_LABEL_START} ${trimmed} ${PULL_REQUEST_LINK_LABEL_END} `
+    : "";
+}
+
+function stripLeadingPullRequestLinkLabels(value: string): string {
+  const pattern = new RegExp(
+    `^\\s*${escapeRegExp(PULL_REQUEST_LINK_LABEL_START)}[\\s\\S]*?${escapeRegExp(
+      PULL_REQUEST_LINK_LABEL_END,
+    )}\\s*`,
+  );
+  let remaining = value;
+  while (pattern.test(remaining)) {
+    remaining = remaining.replace(pattern, "");
+  }
+  return remaining;
 }
 
 function normalizePullRequestMarkdownLinks(value: string): string {
   const sameRepoPullRequestUrl = sameRepoPullRequestUrlRegex();
   if (!sameRepoPullRequestUrl) return value;
-  return value.replace(markdownLinkRegex(), (_link, target: string) =>
-    sameRepoPullRequestUrl.test(target) ? target : " ",
+  return value.replace(markdownLinkRegex(), (_link: string, label: string, target: string) =>
+    sameRepoPullRequestUrl.test(target) ? `${pullRequestLinkLabel(label)}${target}` : " ",
   );
 }
 
@@ -10111,20 +10136,24 @@ function textEndsWithPullRequestRef(value: string): boolean {
 function textStartsWithStandalonePullRequestRef(value: string): boolean {
   const regex = sameRepoPullRequestRefRegex();
   if (!regex) return false;
-  let remaining = normalizePullRequestMarkdownLinks(value)
-    .trimStart()
-    .replace(/^and\s+/i, "");
+  let remaining = stripLeadingPullRequestLinkLabels(
+    normalizePullRequestMarkdownLinks(value)
+      .trimStart()
+      .replace(/^and\s+/i, ""),
+  );
   let sawRef = false;
   while (remaining) {
     regex.lastIndex = 0;
     const match = regex.exec(remaining);
     if (!match || pullRequestRefMatchIndex(match) !== 0) return false;
     sawRef = true;
-    remaining = remaining.slice((match.index ?? 0) + (match[0]?.length ?? 0)).trimStart();
+    remaining = stripLeadingPullRequestLinkLabels(
+      remaining.slice((match.index ?? 0) + (match[0]?.length ?? 0)).trimStart(),
+    );
     if (!remaining || /^[\s,;.)\]]+$/.test(remaining)) return true;
     const separator = remaining.match(/^(?:[,;]\s*(?:and\s+)?|and\s+)/i);
     if (!separator) return false;
-    remaining = remaining.slice(separator[0].length).trimStart();
+    remaining = stripLeadingPullRequestLinkLabels(remaining.slice(separator[0].length).trimStart());
   }
   return sawRef;
 }
