@@ -6,6 +6,7 @@ This fork is deliberately configured for a slow ramp:
 
 - `workers.max = 5`, so broad manual review defaults to 3 shards and scheduled background work gets 1 shard after reserves.
 - Dashboard Runner Lane has a `paused` mode: `['self-hosted', 'clawsweeper-paused']`.
+- Active pool label is now `['self-hosted', 'lue-clawsweeper']` — spans the mac-mini pool **and** the Linux boxes (old-mbp, x99). Heavy Codex review shards stay pinned to the mac-mini via `CLAWSWEEPER_REVIEW_RUNNER`. Fleet details + runtime checks: [`deployment.md`](deployment.md).
 - `valkyriweb/openclaw` is intentionally not scheduled during the ramp. Do not use it for smoke tests.
 - Mutation lanes should stay off until read-only review is boring.
 
@@ -61,7 +62,7 @@ gh workflow enable sweep.yml --repo valkyriweb/clawsweeper
 
 gh variable set CLAWSWEEPER_RUNNER_LABELS \
   --repo valkyriweb/clawsweeper \
-  --body '["self-hosted","macOS","ARM64","mac-mini"]'
+  --body '["self-hosted","lue-clawsweeper"]'
 
 gh workflow run sweep.yml \
   --repo valkyriweb/clawsweeper \
