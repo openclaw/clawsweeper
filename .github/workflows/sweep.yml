@@ -142,6 +142,12 @@ defaults:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+  # ghx (gh cache proxy) on self-hosted runners: give each run its own daemon
+  # socket so the daemon adopts THIS run's scoped per-target GH_TOKEN at spawn.
+  # Without per-run isolation the 8 shared-user runners reuse one daemon whose
+  # ambient/stale auth makes private-repo GETs 404 (e.g. valkyriweb/lue-kube).
+  # Pair with `dashboard_port: 0` in each host's ~/.ghx/config.yaml. See docs/deployment.md.
+  GHX_SOCKET: /tmp/ghx-${{ github.run_id }}-${{ github.run_attempt }}.sock
   CLAWSWEEPER_APP_CLIENT_ID: Iv23lirdjmVqYd1gwY26
   CLAWSWEEPER_USAGE_TELEMETRY: "1"
   CLAWSWEEPER_USAGE_SERVICE_NAME: clawsweeper-runner
