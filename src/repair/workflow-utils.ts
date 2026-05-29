@@ -399,8 +399,28 @@ function hasLinkedPullRequestSupersessionSignal(markdown: string, targetRepo: st
   const signal =
     /\b(supersed(?:e|ed|es|ing)|replace(?:s|d|ment)?|duplicate|duplicated|canonical|covered by|landed in)\b/i;
   return closePromotionSignalTexts(markdown).some(
-    (text) => pullRef.test(text) && signal.test(text),
+    (text) =>
+      pullRef.test(normalizePullRequestMarkdownLinks(text, targetRepo)) && signal.test(text),
   );
+}
+
+function normalizePullRequestMarkdownLinks(value: string, targetRepo: string): string {
+  const sameRepoPullRequestUrl = sameRepoPullRequestUrlRegex(targetRepo);
+  if (!sameRepoPullRequestUrl) return value;
+  return value.replace(markdownLinkRegex(), (_link, target: string) =>
+    sameRepoPullRequestUrl.test(target) ? target : " ",
+  );
+}
+
+function markdownLinkRegex(): RegExp {
+  return /\[[^\]\n]{1,200}\]\(([^\s)]{1,1000})\)/gi;
+}
+
+function sameRepoPullRequestUrlRegex(targetRepo: string): RegExp | null {
+  const [owner, repo] = targetRepo.split("/");
+  if (!owner || !repo) return null;
+  const escapedRepo = `${escapeRegExp(owner)}\\/${escapeRegExp(repo)}`;
+  return new RegExp(`^https:\\/\\/github\\.com\\/${escapedRepo}\\/pull\\/\\d+\\b`, "i");
 }
 
 function sameRepoPullRequestRefRegex(targetRepo: string): RegExp | null {

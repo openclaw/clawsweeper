@@ -9975,20 +9975,23 @@ function sameRepoPullRequestRefRegex(): RegExp | null {
   );
 }
 
-function sameRepoPullRequestMarkdownLinkRegex(): RegExp | null {
+function sameRepoPullRequestUrlRegex(): RegExp | null {
   const [owner, repo] = targetRepo().split("/");
   if (!owner || !repo) return null;
   const escapedRepo = `${escapeRegExp(owner)}\\/${escapeRegExp(repo)}`;
-  return new RegExp(
-    `\\[[^\\]\\n]{1,200}\\]\\((https:\\/\\/github\\.com\\/${escapedRepo}\\/pull\\/\\d+\\b[^\\s)]*)\\)`,
-    "gi",
-  );
+  return new RegExp(`^https:\\/\\/github\\.com\\/${escapedRepo}\\/pull\\/\\d+\\b`, "i");
+}
+
+function markdownLinkRegex(): RegExp {
+  return /\[[^\]\n]{1,200}\]\(([^\s)]{1,1000})\)/gi;
 }
 
 function normalizePullRequestMarkdownLinks(value: string): string {
-  const regex = sameRepoPullRequestMarkdownLinkRegex();
-  if (!regex) return value;
-  return value.replace(regex, "$1");
+  const sameRepoPullRequestUrl = sameRepoPullRequestUrlRegex();
+  if (!sameRepoPullRequestUrl) return value;
+  return value.replace(markdownLinkRegex(), (_link, target: string) =>
+    sameRepoPullRequestUrl.test(target) ? target : " ",
+  );
 }
 
 type PullRequestRefKind = "pull_url" | "same_repo_shorthand" | "bare";
@@ -10039,8 +10042,9 @@ function pullRequestRefMatchIndex(match: RegExpMatchArray): number {
 function linkedPullRequestRefsFromText(text: string, currentNumber: number): PullRequestRef[] {
   const regex = sameRepoPullRequestRefRegex();
   if (!regex) return [];
+  const normalizedText = normalizePullRequestMarkdownLinks(text);
   const refs = new Map<number, PullRequestRef>();
-  for (const match of text.matchAll(regex)) {
+  for (const match of normalizedText.matchAll(regex)) {
     const ref = pullRequestRefFromMatch(match);
     if (ref && ref.number !== currentNumber) setStrongestPullRequestRef(refs, ref);
   }
@@ -10125,11 +10129,14 @@ function linkedPullRequestSignalContextsFromText(
 ): string[] {
   const regex = sameRepoPullRequestRefRegex();
   if (!regex) return [];
+  const normalizedText = normalizePullRequestMarkdownLinks(text);
   const contexts: string[] = [];
-  for (const match of text.matchAll(regex)) {
+  for (const match of normalizedText.matchAll(regex)) {
     const ref = pullRequestRefFromMatch(match);
     if (!ref || ref.number !== linkedNumber || ref.number === currentNumber) continue;
-    contexts.push(relationshipClauseContainingIndex(text, pullRequestRefMatchIndex(match)));
+    contexts.push(
+      relationshipClauseContainingIndex(normalizedText, pullRequestRefMatchIndex(match)),
+    );
   }
   return contexts;
 }

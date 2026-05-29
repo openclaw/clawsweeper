@@ -676,6 +676,23 @@ test("workflow utilities select proposed PR closes that can need coverage proof"
       "",
     ].join("\n"),
   );
+  write(
+    path.join(root, "records/openclaw-openclaw/items/openclaw-openclaw-11.md"),
+    [
+      "---",
+      "repository: openclaw/openclaw",
+      "type: pull_request",
+      "decision: keep_open",
+      "review_status: complete",
+      "local_checkout_access: verified",
+      "action_taken: kept_open",
+      "close_reason: none",
+      `item_created_at: ${oldDate}`,
+      `work_cluster_refs: ${JSON.stringify(["Superseded by [PR #400](https://github.com/other/repo/pull/400)"])}`,
+      "---",
+      "",
+    ].join("\n"),
+  );
 
   const options = {
     targetRepo: "openclaw/openclaw",
