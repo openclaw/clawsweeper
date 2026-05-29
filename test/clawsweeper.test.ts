@@ -3237,6 +3237,38 @@ Full review comments:
   assert.doesNotMatch(comment, /clawsweeper-verdict:needs-human/);
 });
 
+test("coverage-proof blocked PR reports do not emit repair pass verdicts", () => {
+  const markers = reviewAutomationMarkersFromReport(`${reportFrontMatter({
+    type: "pull_request",
+    number: "74456",
+    decision: "keep_open",
+    close_reason: "none",
+    action_taken: "skipped_pr_close_coverage_proof",
+    review_status: "complete",
+    labels: JSON.stringify(["clawsweeper:automerge"]),
+    work_candidate: "none",
+    pull_head_sha: "abc123def456",
+  })}
+
+## Summary
+
+Keep this superseded PR open until coverage proof passes.
+
+## Review Findings
+
+Overall correctness: patch is correct
+
+Overall confidence: 0.9
+
+Full review comments:
+
+- none
+`);
+
+  assert.match(markers, /clawsweeper-verdict:needs-human/);
+  assert.doesNotMatch(markers, /clawsweeper-verdict:pass/);
+});
+
 test("config surface reports force human review instead of automerge pass", () => {
   const report = `${reportFrontMatter({
     type: "pull_request",

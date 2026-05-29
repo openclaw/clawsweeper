@@ -12161,6 +12161,9 @@ export function reviewAutomationMarkersFromReport(markdown: string): string {
   if (configSurfaceReviewRequired(markdown)) {
     return humanReviewMarkers();
   }
+  if (frontMatterValue(markdown, "action_taken") === "skipped_pr_close_coverage_proof") {
+    return humanReviewMarkers();
+  }
   const hasRealBehaviorProofBlocker = realBehaviorProofBlocksMerge(markdown);
   if (securityNeedsAttention) {
     const markers = [`<!-- clawsweeper-security:security-sensitive ${baseAttrs} -->`];
