@@ -9922,11 +9922,17 @@ function closePromotionHasNonAutomationActivityAfterReview(
   return contextHasNonAutomationActivityAfter(context, reviewedAtMs);
 }
 
-function contextHasNonAutomationActivityAfter(context: ItemContext, reviewedAtMs: number): boolean {
+function contextHasNonAutomationActivityAfter(
+  context: ItemContext,
+  reviewedAtMs: number,
+  options: { truncationCountsAsActivity?: boolean } = {},
+): boolean {
+  const truncationCountsAsActivity = options.truncationCountsAsActivity ?? true;
   if (
-    context.counts?.commentsTruncated ||
-    context.counts?.timelineTruncated ||
-    context.counts?.pullReviewCommentsTruncated
+    truncationCountsAsActivity &&
+    (context.counts?.commentsTruncated ||
+      context.counts?.timelineTruncated ||
+      context.counts?.pullReviewCommentsTruncated)
   ) {
     return true;
   }
@@ -13959,6 +13965,7 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
         return contextHasNonAutomationActivityAfter(
           refreshedContext,
           prCloseCoverageProofStartedAtMs,
+          { truncationCountsAsActivity: false },
         );
       };
       if (storedUpdatedAt && refreshed.item.updatedAt !== storedUpdatedAt) {

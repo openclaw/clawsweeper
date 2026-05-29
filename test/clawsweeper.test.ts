@@ -9593,7 +9593,7 @@ test("apply-decisions rechecks covering PR freshness after coverage proof passes
   }
 });
 
-test("apply-decisions allows self-synced labels after duplicate PR coverage proof passes", () => {
+test("apply-decisions allows self-synced labels after proof with truncated context", () => {
   const root = mkdtempSync(tmpPrefix);
   try {
     const itemsDir = join(root, "items");
@@ -9628,6 +9628,7 @@ test("apply-decisions allows self-synced labels after duplicate PR coverage proo
         number: 359,
         title: "Provider route fallback",
         comment: synced.comment,
+        issueCommentCount: 25,
         itemUpdatedAtAfterLabelSync: "2026-05-01T00:04:00Z",
         itemUpdatedAtAfterLabelSyncLogPath: labelLogPath,
         linkedPulls: {
