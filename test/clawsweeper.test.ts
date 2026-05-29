@@ -6664,26 +6664,57 @@ test("apply-decisions promotes old F-rated stale PRs to duplicate closes", () =>
     const reportPath = join(root, "apply-report.json");
     mkdirSync(itemsDir, { recursive: true });
     mkdirSync(plansDir, { recursive: true });
-    const synced = reportWithSyncedReviewComment(stalePullRequestReport(), 330, "none");
+    const synced = reportWithSyncedReviewComment(
+      stalePullRequestReport({
+        work_cluster_refs: JSON.stringify(["Related discussion in #400"]),
+      }),
+      330,
+      "none",
+    );
     writeFileSync(join(itemsDir, "330.md"), synced.report, "utf8");
 
-    withMockGh(root, promotionGhMock({ number: 330, comment: synced.comment }), () => {
-      runApplyDecisionsForTest({
-        itemsDir,
-        closedDir,
-        plansDir,
-        reportPath,
-        extraArgs: [
-          "--target-repo",
-          "openclaw/openclaw",
-          "--dry-run",
-          "--apply-kind",
-          "all",
-          "--processed-limit",
-          "3",
-        ],
-      });
-    });
+    withMockGh(
+      root,
+      promotionGhMock({
+        number: 330,
+        comment: synced.comment,
+        linkedPulls: {
+          400: {
+            number: 400,
+            title: "Related cleanup",
+            html_url: "https://github.com/openclaw/openclaw/pull/400",
+            state: "closed",
+            merged_at: "2026-05-02T00:00:00Z",
+            body: "Related cleanup, not stale PR coverage evidence.",
+            comments: [],
+            labels: [],
+          },
+        },
+      }),
+      () => {
+        withMockCodexProof(
+          root,
+          { type: "failure", message: "proof should not run for stale promotion incidental ref" },
+          () => {
+            runApplyDecisionsForTest({
+              itemsDir,
+              closedDir,
+              plansDir,
+              reportPath,
+              extraArgs: [
+                "--target-repo",
+                "openclaw/openclaw",
+                "--dry-run",
+                "--apply-kind",
+                "all",
+                "--processed-limit",
+                "3",
+              ],
+            });
+          },
+        );
+      },
+    );
 
     const report = JSON.parse(readFileSync(reportPath, "utf8")) as Array<{
       number: number;
@@ -6702,6 +6733,7 @@ test("apply-decisions promotes old F-rated stale PRs to duplicate closes", () =>
       report.find((entry) => entry.action === "closed")?.reason ?? "",
       /duplicate or superseded/,
     );
+    assert.doesNotMatch(JSON.stringify(report), /proof should not run/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

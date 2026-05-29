@@ -9849,6 +9849,7 @@ function upgradeNoDiffPullRequestReport(markdown: string, item: Item): string {
   upgraded = replaceFrontMatterValue(upgraded, "close_reason", "duplicate_or_superseded");
   upgraded = replaceFrontMatterValue(upgraded, "confidence", "high");
   upgraded = replaceFrontMatterValue(upgraded, "action_taken", "proposed_close");
+  upgraded = replaceFrontMatterValue(upgraded, "pr_close_coverage_proof_fallback_refs", "false");
   upgraded = replaceFrontMatterValue(upgraded, "work_candidate", "none");
   upgraded = replaceFrontMatterValue(upgraded, "work_status", "none");
   upgraded = replaceSectionValue(
@@ -9873,6 +9874,7 @@ interface PullRequestClosePromotion {
   bestSolution: string;
   evidence: string;
   closeComment: string;
+  coverageProofFallbackRefs: boolean;
 }
 
 interface LinkedPullRequestSupersession {
@@ -9899,6 +9901,11 @@ function upgradePullRequestClosePromotionReport(
   upgraded = replaceFrontMatterValue(upgraded, "close_reason", "duplicate_or_superseded");
   upgraded = replaceFrontMatterValue(upgraded, "confidence", "high");
   upgraded = replaceFrontMatterValue(upgraded, "action_taken", "proposed_close");
+  upgraded = replaceFrontMatterValue(
+    upgraded,
+    "pr_close_coverage_proof_fallback_refs",
+    promotion.coverageProofFallbackRefs ? "true" : "false",
+  );
   upgraded = replaceFrontMatterValue(upgraded, "work_candidate", "none");
   upgraded = replaceFrontMatterValue(upgraded, "work_status", "none");
   upgraded = replaceFrontMatterValue(upgraded, "item_updated_at", item.updatedAt);
@@ -10415,6 +10422,7 @@ function prCloseCoverageProofCandidateRefs(markdown: string, item: Item): PullRe
     .filter((ref) => linkedPullRequestHasSupersessionSignal(markdown, item.number, ref.number))
     .filter(linkedRefCanBePullRequest);
   if (canonicalRefs.length > 0) return canonicalRefs;
+  if (frontMatterValue(markdown, "pr_close_coverage_proof_fallback_refs") === "false") return [];
   const possiblePullRequestRefs = linkedRefs.filter(linkedRefCanBePullRequest);
   return possiblePullRequestRefs.length === 1 ? possiblePullRequestRefs : [];
 }
@@ -10688,6 +10696,7 @@ function staleFRatedPullRequestPromotion(
     return null;
   }
   return {
+    coverageProofFallbackRefs: false,
     bestSolution:
       "Close this stale PR. The latest review rated it F, the branch still lacks merge-ready proof, and there has been no human follow-up after the durable review.",
     evidence: [
@@ -10708,6 +10717,7 @@ function pauseOrClosePromotion(
   const option = recommendedPauseOrCloseOption(markdown);
   if (!option || !isOlderThanDays(item.createdAt, staleMinAgeDays)) return null;
   return {
+    coverageProofFallbackRefs: false,
     bestSolution: `Close this stale PR as superseded: ${option.title}. ${option.body}`,
     evidence: [
       `- **recommended close path:** the latest review's recommended merge-risk option is \`${option.title}\`, categorized as \`pause_or_close\`.`,
@@ -10729,6 +10739,7 @@ function linkedPullRequestSupersessionPromotion(
     ? `merged at ${linkedPull.mergedAt}`
     : "still open as the canonical replacement";
   return {
+    coverageProofFallbackRefs: true,
     bestSolution: `Close this PR as superseded by ${linkedPull.url}.`,
     evidence: [
       `- **linked superseding PR:** ${linkedPull.url} (${linkedPull.title}) is ${stateText}.`,
