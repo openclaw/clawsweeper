@@ -5062,6 +5062,8 @@ function withMockCodexProof(
         invocationLogPath?: string;
         expectedPromptIncludes?: string;
         unexpectedPromptIncludes?: string;
+        coveredPromptIncludes?: string;
+        keepOpenPromptIncludes?: string;
       }
     | { type: "failure"; message: string; invocationLogPath?: string },
   run: () => void,
@@ -5084,19 +5086,26 @@ function withMockCodexProof(
 	  process.exit(1);
 	}
 	const unexpectedPrompt = ${JSON.stringify(result.unexpectedPromptIncludes ?? "")};
-	if (unexpectedPrompt && prompt.includes(unexpectedPrompt)) {
-	  process.stderr.write("unexpected proof prompt text: " + unexpectedPrompt);
-	  process.exit(1);
-	}
-	if (invocationLogPath) appendFileSync(invocationLogPath, "proof\\n");
-	writeFileSync(outputPath, JSON.stringify({
-  sourceSummary: "PR A updates the provider route.",
-  coveringSummary: "PR B updates a different provider path.",
-  coveredWork: ${JSON.stringify(result.decision === "covered" ? ["PR B includes PR A's provider route update."] : [])},
-  uniqueSourceWork: ${JSON.stringify(result.decision === "covered" ? [] : ["PR A's provider route update is still unique."])},
-  decision: ${JSON.stringify(result.decision)},
-  reason: ${JSON.stringify(result.reason)}
-}));
+		if (unexpectedPrompt && prompt.includes(unexpectedPrompt)) {
+		  process.stderr.write("unexpected proof prompt text: " + unexpectedPrompt);
+		  process.exit(1);
+		}
+		const coveredPrompt = ${JSON.stringify(result.coveredPromptIncludes ?? "")};
+		const keepOpenPrompt = ${JSON.stringify(result.keepOpenPromptIncludes ?? "")};
+		const decision = coveredPrompt && prompt.includes(coveredPrompt)
+		  ? "covered"
+		  : keepOpenPrompt && prompt.includes(keepOpenPrompt)
+		    ? "keep_open"
+		    : ${JSON.stringify(result.decision)};
+		if (invocationLogPath) appendFileSync(invocationLogPath, "proof\\n");
+		writeFileSync(outputPath, JSON.stringify({
+	  sourceSummary: "PR A updates the provider route.",
+	  coveringSummary: "PR B updates a different provider path.",
+	  coveredWork: decision === "covered" ? ["PR B includes PR A's provider route update."] : [],
+	  uniqueSourceWork: decision === "covered" ? [] : ["PR A's provider route update is still unique."],
+	  decision,
+	  reason: ${JSON.stringify(result.reason)}
+	}));
 `
       : `#!/usr/bin/env node
 const { appendFileSync } = require("fs");
@@ -8795,6 +8804,108 @@ test("apply-decisions ignores unrelated same-line bare PR refs for duplicate pro
             type: "decision",
             decision: "covered",
             reason: "PR B carries forward PR A's fallback route behavior.",
+          },
+          () => {
+            runApplyDecisionsForTest({
+              itemsDir,
+              closedDir,
+              plansDir,
+              reportPath,
+              extraArgs: [
+                "--target-repo",
+                "openclaw/openclaw",
+                "--dry-run",
+                "--apply-kind",
+                "all",
+                "--processed-limit",
+                "3",
+              ],
+            });
+          },
+        );
+      },
+    );
+
+    const report = JSON.parse(readFileSync(reportPath, "utf8")) as Array<{
+      action: string;
+      reason: string;
+    }>;
+    assert.equal(
+      report.some((entry) => entry.action === "closed"),
+      true,
+      JSON.stringify(report),
+    );
+    assert.match(
+      report.find((entry) => entry.action === "closed")?.reason ?? "",
+      /duplicate or superseded/,
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("apply-decisions preserves supersession context across shorthand PR ref lists", () => {
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    const itemsDir = join(root, "items");
+    const closedDir = join(root, "closed");
+    const plansDir = join(root, "plans");
+    const reportPath = join(root, "apply-report.json");
+    mkdirSync(itemsDir, { recursive: true });
+    mkdirSync(plansDir, { recursive: true });
+    const synced = reportWithSyncedReviewComment(
+      lowSignalCloseReport({
+        number: 364,
+        title: "Provider route fallback",
+        close_reason: "duplicate_or_superseded",
+        work_cluster_refs: JSON.stringify(["Superseded by #400 and #401"]),
+      }).replace(
+        "Closing this PR because the branch is not a useful landing base.",
+        "Closing this PR as superseded by the linked canonical PRs.",
+      ),
+      364,
+      "duplicate_or_superseded",
+    );
+    writeFileSync(join(itemsDir, "364.md"), synced.report, "utf8");
+
+    withMockGh(
+      root,
+      promotionGhMock({
+        number: 364,
+        title: "Provider route fallback",
+        comment: synced.comment,
+        linkedPulls: {
+          400: {
+            number: 400,
+            title: "Initial provider cleanup",
+            html_url: "https://github.com/openclaw/openclaw/pull/400",
+            state: "closed",
+            merged_at: "2026-05-01T00:00:00Z",
+            body: "Cleans up provider setup without changing the fallback route.",
+            comments: [],
+            labels: [],
+          },
+          401: {
+            number: 401,
+            title: "Provider cleanup",
+            html_url: "https://github.com/openclaw/openclaw/pull/401",
+            state: "closed",
+            merged_at: "2026-05-02T00:00:00Z",
+            body: "Includes the fallback route behavior from PR 364.",
+            comments: [],
+            labels: [],
+          },
+        },
+      }),
+      () => {
+        withMockCodexProof(
+          root,
+          {
+            type: "decision",
+            decision: "keep_open",
+            reason: "PR B carries forward PR A's fallback route behavior.",
+            keepOpenPromptIncludes: "https://github.com/openclaw/openclaw/pull/400",
+            coveredPromptIncludes: "https://github.com/openclaw/openclaw/pull/401",
           },
           () => {
             runApplyDecisionsForTest({
@@ -14933,7 +15044,13 @@ test("apply workflow installs Codex only when apply work can run", () => {
   assert.match(preselectBlock, /\[ "\$sync_comments_only" = "true" \]/);
   assert.match(preselectBlock, /comment-sync-batch/);
   assert.match(preselectBlock, /batch_count="\$\(awk -F=/);
-  assert.match(preselectBlock, /\[ "\$\{batch_count:-0\}" -gt 0 \]/);
+  const syncOnlyStart = preselectBlock.indexOf('if [ "$sync_comments_only" = "true" ]; then');
+  const nonSyncStart = preselectBlock.indexOf(
+    '\n          else\n            if [ -n "$item_numbers" ]',
+  );
+  assert.ok(syncOnlyStart !== -1);
+  assert.ok(nonSyncStart > syncOnlyStart);
+  assert.doesNotMatch(preselectBlock.slice(syncOnlyStart, nonSyncStart), /needs_codex=true/);
   assert.match(preselectBlock, /\[ -n "\$item_numbers" \]/);
   assert.match(preselectBlock, /proposed-item-numbers/);
   assert.match(preselectBlock, /if \[ -n "\$selected" \]; then\s+needs_codex=true/);

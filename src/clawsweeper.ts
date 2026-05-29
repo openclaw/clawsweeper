@@ -10043,6 +10043,9 @@ function relationshipClauseContainingIndex(text: string, index: number): string 
   for (const match of line.matchAll(boundary)) {
     const boundaryStart = match.index ?? 0;
     const boundaryEnd = boundaryStart + match[0].length;
+    if (relationshipBoundaryContinuesPullRequestRefList(line, boundaryStart, boundaryEnd)) {
+      continue;
+    }
     if (boundaryEnd <= relativeIndex) {
       start = boundaryEnd;
       continue;
@@ -10054,6 +10057,36 @@ function relationshipClauseContainingIndex(text: string, index: number): string 
   }
 
   return line.slice(start, end).trim();
+}
+
+function relationshipBoundaryContinuesPullRequestRefList(
+  line: string,
+  boundaryStart: number,
+  boundaryEnd: number,
+): boolean {
+  const boundaryText = line.slice(boundaryStart, boundaryEnd).trim().toLowerCase();
+  if (boundaryText !== "and") return false;
+  if (!textEndsWithPullRequestRef(line.slice(0, boundaryStart))) return false;
+  return textStartsWithStandalonePullRequestRef(line.slice(boundaryEnd));
+}
+
+function textEndsWithPullRequestRef(value: string): boolean {
+  const regex = sameRepoPullRequestRefRegex();
+  if (!regex) return false;
+  let lastRefEnd = -1;
+  for (const match of value.matchAll(regex)) {
+    lastRefEnd = (match.index ?? 0) + (match[0]?.length ?? 0);
+  }
+  return lastRefEnd >= 0 && value.slice(lastRefEnd).trim() === "";
+}
+
+function textStartsWithStandalonePullRequestRef(value: string): boolean {
+  const regex = sameRepoPullRequestRefRegex();
+  if (!regex) return false;
+  const trimmed = value.trimStart();
+  const match = regex.exec(trimmed);
+  if (!match || pullRequestRefMatchIndex(match) !== 0) return false;
+  return /^[\s,.)\]]*$/.test(trimmed.slice(match[0]?.length ?? 0));
 }
 
 function linkedPullRequestSignalContextsFromText(

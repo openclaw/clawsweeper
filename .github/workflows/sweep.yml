@@ -1876,11 +1876,6 @@ jobs:
                 --batch-size "$sync_batch_size" \
                 --cursor-path "$cursor_path" > "$batch_env"
               batch_count="$(awk -F= '$1 == "count" { print $2 }' "$batch_env")"
-              if [ "${batch_count:-0}" -gt 0 ]; then
-                needs_codex=true
-              fi
-            else
-              needs_codex=true
             fi
           else
             if [ -n "$item_numbers" ]; then
