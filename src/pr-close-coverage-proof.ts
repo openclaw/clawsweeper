@@ -188,6 +188,12 @@ export function summarizePrCloseCoverageProofPullRequest(
   return `#${pull.number} ${pull.title}.${bodyText}${commentText}`;
 }
 
+function stringifyPrCloseCoverageProofPromptJson(value: unknown, space?: number): string {
+  const serialized = JSON.stringify(value, null, space);
+  // These JSON payloads live inside Markdown fences, so untrusted backticks must stay escaped.
+  return (serialized ?? "null").replace(/`/g, "\\u0060");
+}
+
 export function buildPrCloseCoverageProofPrompt(options: {
   source: PrCloseCoverageProofPullRequestView;
   covering: PrCloseCoverageProofPullRequestView;
@@ -200,22 +206,21 @@ export function buildPrCloseCoverageProofPrompt(options: {
     "",
     "Candidate relationship signal snippets:",
     "```json",
-    JSON.stringify(options.relationshipSignalSnippets, null, 2),
+    stringifyPrCloseCoverageProofPromptJson(options.relationshipSignalSnippets, 2),
     "```",
     "",
     "PR A source report JSON string:",
     "```json",
-    JSON.stringify(options.reportMarkdown.trim()),
+    stringifyPrCloseCoverageProofPromptJson(options.reportMarkdown.trim()),
     "```",
     "",
     "Current PR title, body, and comments:",
     "```json",
-    JSON.stringify(
+    stringifyPrCloseCoverageProofPromptJson(
       {
         sourcePrA: options.source,
         coveringPrB: options.covering,
       },
-      null,
       2,
     ),
     "```",
