@@ -439,6 +439,7 @@ interface ItemContext {
   timeline: unknown[];
   previousClawSweeperReview?: unknown;
   closingPullRequests?: unknown[];
+  referencingMergedPullRequests?: unknown[];
   relatedItems?: unknown[];
   pullRequest?: unknown;
   pullFiles?: unknown[];
@@ -454,6 +455,7 @@ interface ItemContext {
     timelineHydrated?: number;
     timelineTruncated?: boolean;
     closingPullRequests?: number;
+    referencingMergedPullRequests?: number;
     relatedItems?: number;
     pullFiles?: number;
     pullFilesHydrated?: number;
@@ -826,7 +828,7 @@ const RECENT_MISSING_OPEN_MS = DAY_MS;
 const DEFAULT_CODEX_MODEL = "gpt-5.5";
 const DEFAULT_REASONING_EFFORT = "high";
 const DEFAULT_SERVICE_TIER = "";
-const REVIEW_POLICY_VERSION = "2026-05-17-policy-v18";
+const REVIEW_POLICY_VERSION = "2026-05-30-policy-v19";
 const REVIEW_ITEM_PROMPT_PATH = join(ROOT, "prompts", "review-item.md");
 const CLAWSWEEPER_DECISION_SCHEMA_PATH = join(ROOT, "schema", "clawsweeper-decision.schema.json");
 const REVIEW_COMMENT_MARKER_PREFIX = "<!-- clawsweeper-review";
@@ -3214,6 +3216,66 @@ const RELATED_ITEMS_LIMIT = 12;
 const RELATED_GITHUB_SEARCH_LIMIT = 5;
 const RELATED_GITCRAWL_LIMIT = 6;
 const RELATED_GITHUB_SEARCH_TIMEOUT_MS = 15_000;
+// 10 referencing PRs × this limit = 20 KB worst case vs 12 closing PRs × 12 000 = 144 KB
+const REFERENCING_PR_BODY_CHARS = 2000;
+
+function compactReferencingMergedPullRequest(candidate: Record<string, unknown>): unknown {
+  const pullRequest = asRecord(candidate.pull_request ?? {});
+  return {
+    number: candidate.number,
+    title: candidate.title,
+    url: candidate.html_url,
+    author: login(candidate.user),
+    mergedAt: pullRequest.merged_at,
+    body: truncateText(
+      typeof candidate.body === "string" ? candidate.body : "",
+      REFERENCING_PR_BODY_CHARS,
+    ),
+  };
+}
+
+// Filters and compacts raw search/issues API items to merged-PR shape only.
+// Drops rows whose pull_request.merged_at is null — serves as both PR-type and merge-timestamp guard.
+export function referencingMergedPullRequestCandidatesForTest(items: unknown[]): unknown[] {
+  return referencingMergedPullRequestCandidates(items);
+}
+
+function referencingMergedPullRequestCandidates(items: unknown[]): unknown[] {
+  return items
+    .map(asRecord)
+    .filter((candidate) => Boolean(asRecord(candidate.pull_request ?? {}).merged_at))
+    .map(compactReferencingMergedPullRequest);
+}
+
+function referencingMergedPullRequestsForIssue(number: number): unknown[] {
+  if (envFlagDisabled(process.env.CLAWSWEEPER_REFERENCING_PR_SEARCH)) return [];
+  const query = `repo:${targetRepo()} is:pr is:merged #${number}`;
+  try {
+    const response = asRecord(
+      ghJsonOnce<unknown>(
+        ["api", `search/issues?q=${encodeURIComponent(query)}&per_page=10`],
+        RELATED_GITHUB_SEARCH_TIMEOUT_MS,
+      ),
+    );
+    const items = Array.isArray(response.items) ? response.items : [];
+    return referencingMergedPullRequestCandidates(items);
+  } catch (error) {
+    console.error(
+      `[referencingMergedPullRequestsForIssue] number=${number} status=failed reason=${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+    return [];
+  }
+}
+
+export function referencingMergedPullRequestsForIssueForTest(number: number): unknown[] {
+  return referencingMergedPullRequestsForIssue(number);
+}
+
+export function compactReferencingMergedPullRequestForTest(candidate: unknown): unknown {
+  return compactReferencingMergedPullRequest(asRecord(candidate));
+}
 
 export function relatedTitleSearchTerms(title: string, limit = 6): string[] {
   const seen = new Set<string>();
@@ -3339,6 +3401,11 @@ function compactLocalRelatedTitleItems(item: Item, seen: ReadonlySet<number>): u
 function envFlagEnabled(value: string | undefined): boolean {
   if (!value) return false;
   return ["1", "true", "yes", "on"].includes(value.trim().toLowerCase());
+}
+
+function envFlagDisabled(value: string | undefined): boolean {
+  if (!value) return false;
+  return ["0", "false", "no", "off", "disabled"].includes(value.trim().toLowerCase());
 }
 
 function quoteGitHubSearchTerm(term: string): string {
@@ -5272,6 +5339,15 @@ function collectItemContext(
         timelineTruncated: timelineWindow.truncated,
         closingPullRequests: closingPullRequests.length,
       };
+    } else {
+      const referencingPRs = referencingMergedPullRequestsForIssue(item.number);
+      if (referencingPRs.length > 0) {
+        context.referencingMergedPullRequests = referencingPRs.slice(0, 10);
+        context.counts = {
+          ...context.counts!,
+          referencingMergedPullRequests: referencingPRs.length,
+        };
+      }
     }
   }
   if (item.kind === "pull_request") {

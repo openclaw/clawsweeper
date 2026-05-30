@@ -362,7 +362,11 @@ Use reason-specific anchors:
   commit timestamp, whether a merged PR closed the issue, and whether that
   commit is included in a shipped release. If the GitHub context includes a
   merged `closingPullRequests` entry, mention that PR as provenance when it
-  matches the implementation evidence. If the fix shipped, name the exact
+  matches the implementation evidence. If the GitHub context includes
+  `referencingMergedPullRequests` instead (merged PRs that mention this issue
+  number but were not formally linked as closing references), start the
+  fix-provenance pass from those PRs and treat any matching one as provenance.
+  If the fix shipped, name the exact
   release tag/version. If it is only on current `main`, say that and include the
   commit timestamp. If you cannot establish either the shipped release or the
   main-only timestamp with high confidence, keep the item open.

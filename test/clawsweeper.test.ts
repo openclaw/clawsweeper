@@ -29,6 +29,9 @@ import {
   compactMappedSlice,
   compactMappedWindow,
   compactPullRequestForTest,
+  compactReferencingMergedPullRequestForTest,
+  referencingMergedPullRequestCandidatesForTest,
+  referencingMergedPullRequestsForIssueForTest,
   configSurfaceChangeFromPullFilesForTest,
   codexEnv,
   dashboardClosedAt,
@@ -2519,6 +2522,189 @@ test("open PRs that close an issue block apply closes", () => {
     ),
     "open PR #69425 (daemon: honor OPENCLAW_WRAPPER) is a closing reference",
   );
+});
+
+test("compactReferencingMergedPullRequest extracts fields from search API response", () => {
+  const result = compactReferencingMergedPullRequestForTest({
+    number: 87654,
+    title: "fix: handle disconnect on shutdown",
+    html_url: "https://github.com/openclaw/openclaw/pull/87654",
+    body: "Fixes the disconnect issue. Refs #78419",
+    user: { login: "contributor" },
+    pull_request: { merged_at: "2026-04-01T10:00:00Z" },
+  });
+  assert.deepEqual(result, {
+    number: 87654,
+    title: "fix: handle disconnect on shutdown",
+    url: "https://github.com/openclaw/openclaw/pull/87654",
+    author: "contributor",
+    mergedAt: "2026-04-01T10:00:00Z",
+    body: "Fixes the disconnect issue. Refs #78419",
+  });
+});
+
+test("compactReferencingMergedPullRequest handles null body", () => {
+  // Compact function produces body:"" for null body; rows with null merged_at are filtered
+  // out upstream by referencingMergedPullRequestCandidates before reaching this function.
+  const result = compactReferencingMergedPullRequestForTest({
+    number: 11111,
+    title: "chore: bump deps",
+    html_url: "https://github.com/openclaw/openclaw/pull/11111",
+    body: null,
+    user: { login: "bot" },
+    pull_request: { merged_at: "2026-01-01T00:00:00Z" },
+  });
+  assert.deepEqual(result, {
+    number: 11111,
+    title: "chore: bump deps",
+    url: "https://github.com/openclaw/openclaw/pull/11111",
+    author: "bot",
+    mergedAt: "2026-01-01T00:00:00Z",
+    body: "",
+  });
+});
+
+test("compactReferencingMergedPullRequest truncates long bodies", () => {
+  const longBody = "x".repeat(4000);
+  const result = compactReferencingMergedPullRequestForTest({
+    number: 22222,
+    title: "refactor: big change",
+    html_url: "https://github.com/openclaw/openclaw/pull/22222",
+    body: longBody,
+    user: { login: "alice" },
+    pull_request: { merged_at: "2026-01-01T00:00:00Z" },
+  });
+  const body = (result as { body: string }).body;
+  assert.ok(body.length < 4000, "body should be shorter than the original 4000 chars");
+  assert.ok(body.length > 0, "body should be non-empty");
+});
+
+test("referencingMergedPullRequestCandidates keeps only items with non-null pull_request.merged_at", () => {
+  const items = [
+    // kept: PR with merge timestamp
+    {
+      number: 1,
+      title: "fix: real fix",
+      html_url: "https://github.com/openclaw/openclaw/pull/1",
+      body: "Refs #999",
+      user: { login: "alice" },
+      pull_request: { merged_at: "2026-03-01T10:00:00Z" },
+    },
+    // dropped: issue (no pull_request field)
+    {
+      number: 2,
+      title: "bug: still broken",
+      html_url: "https://github.com/openclaw/openclaw/issues/2",
+      body: "body",
+      user: { login: "bob" },
+    },
+    // dropped: PR shape present but merged_at is null
+    {
+      number: 3,
+      title: "wip: not merged",
+      html_url: "https://github.com/openclaw/openclaw/pull/3",
+      body: "",
+      user: { login: "carol" },
+      pull_request: { merged_at: null },
+    },
+  ];
+  const result = referencingMergedPullRequestCandidatesForTest(items);
+  assert.equal(result.length, 1);
+  assert.equal((result[0] as { number: number }).number, 1);
+});
+
+test("referencingMergedPullRequestCandidates returns empty for all-issue input", () => {
+  const result = referencingMergedPullRequestCandidatesForTest([
+    {
+      number: 10,
+      title: "issue",
+      html_url: "https://github.com/openclaw/openclaw/issues/10",
+      body: "",
+      user: { login: "x" },
+    },
+  ]);
+  assert.deepEqual(result, []);
+});
+
+test("referencingMergedPullRequestsForIssue returns [] when kill-switch env disables search", () => {
+  const previous = process.env.CLAWSWEEPER_REFERENCING_PR_SEARCH;
+  for (const value of ["0", "false", "no", "off", "disabled", "OFF"]) {
+    process.env.CLAWSWEEPER_REFERENCING_PR_SEARCH = value;
+    try {
+      assert.deepEqual(
+        referencingMergedPullRequestsForIssueForTest(78398),
+        [],
+        `kill-switch should accept "${value}"`,
+      );
+    } finally {
+      if (previous === undefined) delete process.env.CLAWSWEEPER_REFERENCING_PR_SEARCH;
+      else process.env.CLAWSWEEPER_REFERENCING_PR_SEARCH = previous;
+    }
+  }
+});
+
+test("referencingMergedPullRequestsForIssue swallows gh failures and returns []", () => {
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    withMockGh(
+      root,
+      `#!/usr/bin/env node\nprocess.stderr.write("simulated gh failure\\n"); process.exit(1);\n`,
+      () => {
+        assert.deepEqual(referencingMergedPullRequestsForIssueForTest(78398), []);
+      },
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("referencingMergedPullRequestsForIssue filters and compacts mixed gh response", () => {
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    const ghMock = `#!/usr/bin/env node
+console.log(JSON.stringify({
+  items: [
+    {
+      number: 84209,
+      title: "fix: handle disconnect",
+      html_url: "https://github.com/openclaw/openclaw/pull/84209",
+      body: "Refs #78398",
+      user: { login: "alice" },
+      pull_request: { merged_at: "2026-03-04T12:00:00Z" }
+    },
+    {
+      number: 84210,
+      title: "issue, not a pr",
+      html_url: "https://github.com/openclaw/openclaw/issues/84210",
+      body: "mentions #78398",
+      user: { login: "bob" }
+    },
+    {
+      number: 84211,
+      title: "pr, not merged",
+      html_url: "https://github.com/openclaw/openclaw/pull/84211",
+      body: "Refs #78398",
+      user: { login: "carol" },
+      pull_request: { merged_at: null }
+    }
+  ]
+}));
+`;
+    withMockGh(root, ghMock, () => {
+      const result = referencingMergedPullRequestsForIssueForTest(78398);
+      assert.equal(result.length, 1);
+      assert.deepEqual(result[0], {
+        number: 84209,
+        title: "fix: handle disconnect",
+        url: "https://github.com/openclaw/openclaw/pull/84209",
+        author: "alice",
+        mergedAt: "2026-03-04T12:00:00Z",
+        body: "Refs #78398",
+      });
+    });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("same-author open issue and PR pairs block one-sided apply closes", () => {
