@@ -57,6 +57,7 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Fixed
 
+- Added merged PRs that reference an issue to issue review context when GitHub has no formal closing link, so implemented-on-main decisions can see relevant fix provenance. Thanks @openperf.
 - Skipped open-but-locked repair apply targets before close or merge mutations and converted GitHub locked-conversation write denials into terminal skipped records. Thanks @AsishKumarDalal.
 - Kept stale queued workflow ghosts out of commit-review capacity probes after GitHub refuses to cancel old queued runs.
 - Required OpenClaw config-surface changes to pause automerge for maintainer review instead of emitting pass markers, with durable config-surface report metadata. Thanks @osolmaz.
