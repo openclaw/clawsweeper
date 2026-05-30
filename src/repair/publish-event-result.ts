@@ -20,6 +20,14 @@ import {
   syncPublishPaths,
 } from "./git-publish.js";
 import { isJsonObject } from "./json-types.js";
+import { eventReviewMarkerFreshness } from "./comment-router-core.js";
+import { ghJsonWithRetry, ghPagedWithRetry } from "./github-cli.js";
+
+const CLAWSWEEPER_COMMENT_LOGINS = new Set([
+  "clawsweeper",
+  "clawsweeper[bot]",
+  "openclaw-clawsweeper[bot]",
+]);
 
 type ApplyAction = {
   action: string;
@@ -112,18 +120,79 @@ async function publishEventResult(options: EventOptions): Promise<void> {
     });
 
   for (let attempt = 1; attempt <= 20; attempt += 1) {
-    if (publishSnapshot({ paths: recordPaths, options, summary })) return;
+    if (publishSnapshot({ paths: recordPaths, options, summary })) {
+      emitMarkerFreshness(options);
+      return;
+    }
     const delaySeconds = attempt * 3 + Math.floor(Math.random() * 11);
     console.log(
       `Event publish attempt ${attempt} failed; retrying from origin/main in ${delaySeconds}s`,
     );
     await sleep(delaySeconds * 1000);
   }
-  if (!publishSnapshot({ paths: recordPaths, options, summary })) {
-    throw new Error(
-      `Failed to publish event result for ${options.targetRepo}#${options.itemNumber}`,
+  if (publishSnapshot({ paths: recordPaths, options, summary })) {
+    emitMarkerFreshness(options);
+    return;
+  }
+  throw new Error(`Failed to publish event result for ${options.targetRepo}#${options.itemNumber}`);
+}
+
+function emitMarkerFreshness(options: EventOptions): void {
+  const githubOutput = process.env.GITHUB_OUTPUT;
+  if (!githubOutput) return;
+  try {
+    const fresh = verifyMarkerFreshness(options);
+    fs.appendFileSync(githubOutput, `marker_fresh=${fresh ? "1" : "0"}\n`, "utf8");
+  } catch (error) {
+    console.error(
+      `Failed to record durable verdict marker freshness: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    fs.appendFileSync(githubOutput, "marker_fresh=0\n", "utf8");
+  }
+}
+
+function verifyMarkerFreshness(options: EventOptions): boolean {
+  const issue = ghJsonWithRetry<{ pull_request?: unknown }>(
+    ["api", `repos/${options.targetRepo}/issues/${options.itemNumber}`],
+    { attempts: 4 },
+  );
+  if (!issue?.pull_request) return true;
+  const pull = ghJsonWithRetry<{ head?: { sha?: unknown } }>(
+    ["api", `repos/${options.targetRepo}/pulls/${options.itemNumber}`],
+    { attempts: 4 },
+  );
+  const currentHeadSha = typeof pull?.head?.sha === "string" ? pull.head.sha.trim() : "";
+  const freshness = eventReviewMarkerFreshness({
+    itemKind: "pull_request",
+    commentBody: latestVerdictCommentBody(options),
+    currentHeadSha,
+  });
+  if (!freshness.fresh) {
+    console.log(
+      `Durable verdict marker not refreshed for ${options.targetRepo}#${options.itemNumber}: ${
+        freshness.reason ?? "no verdict marker at current head"
+      } (marker sha=${freshness.markerSha ?? "none"}, head=${currentHeadSha || "unknown"})`,
     );
   }
+  return freshness.fresh;
+}
+
+function latestVerdictCommentBody(options: EventOptions): string {
+  const comments = ghPagedWithRetry<{
+    body?: unknown;
+    updated_at?: unknown;
+    user?: { login?: unknown };
+  }>(`repos/${options.targetRepo}/issues/${options.itemNumber}/comments`, { attempts: 4 });
+  const candidate = comments
+    .filter((comment) => {
+      const login = String(comment?.user?.login ?? "").toLowerCase();
+      return (
+        CLAWSWEEPER_COMMENT_LOGINS.has(login) &&
+        String(comment?.body ?? "").includes("clawsweeper-verdict:")
+      );
+    })
+    .sort((a, b) => String(b?.updated_at ?? "").localeCompare(String(a?.updated_at ?? "")))[0];
+  return String(candidate?.body ?? "");
 }
 
 function publishSnapshot({

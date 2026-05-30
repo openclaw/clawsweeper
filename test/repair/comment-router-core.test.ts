@@ -31,6 +31,8 @@ import {
   commandStatusMarkerFromBody,
   commandStatusMarkerPrefix,
   createCachedLabelNumberLookup,
+  durableVerdictMarkerSha,
+  eventReviewMarkerFreshness,
   existingCommandStatusBlocksReplay,
   existingModeStatusBlocksReplay,
   hasCommandResponseMarker,
@@ -1465,6 +1467,65 @@ test("reviewedHeadShaBlockReason rejects stale trusted verdict heads", () => {
     }),
     "ClawSweeper human-review marker targets a stale PR head SHA",
   );
+});
+
+test("durableVerdictMarkerSha extracts the head SHA from the verdict marker", () => {
+  assert.equal(
+    durableVerdictMarkerSha(
+      "Body text\n<!-- clawsweeper-verdict:needs-human item=170 sha=abc123 confidence=high -->",
+    ),
+    "abc123",
+  );
+  assert.equal(
+    durableVerdictMarkerSha(
+      "<!-- clawsweeper-verdict:pass item=170 sha=unknown confidence=low -->",
+    ),
+    null,
+  );
+  assert.equal(durableVerdictMarkerSha("No marker here"), null);
+  assert.equal(durableVerdictMarkerSha(null), null);
+});
+
+test("eventReviewMarkerFreshness treats non-PR items as fresh", () => {
+  const result = eventReviewMarkerFreshness({
+    itemKind: "issue",
+    commentBody: "",
+    currentHeadSha: "abc123",
+  });
+  assert.deepEqual(result, { fresh: true, reason: null, markerSha: null });
+});
+
+test("eventReviewMarkerFreshness passes when the marker matches the current head", () => {
+  const result = eventReviewMarkerFreshness({
+    itemKind: "pull_request",
+    commentBody: "<!-- clawsweeper-verdict:needs-changes item=170 sha=abc123 confidence=high -->",
+    currentHeadSha: "abc123",
+  });
+  assert.equal(result.fresh, true);
+  assert.equal(result.reason, null);
+  assert.equal(result.markerSha, "abc123");
+});
+
+test("eventReviewMarkerFreshness flags a stale marker pinned to an old head", () => {
+  const result = eventReviewMarkerFreshness({
+    itemKind: "pull_request",
+    commentBody: "<!-- clawsweeper-verdict:needs-human item=170 sha=oldsha confidence=high -->",
+    currentHeadSha: "newsha",
+  });
+  assert.equal(result.fresh, false);
+  assert.equal(result.markerSha, "oldsha");
+  assert.equal(result.reason, "ClawSweeper verdict marker targets a stale PR head SHA");
+});
+
+test("eventReviewMarkerFreshness flags a PR with no verdict marker", () => {
+  const result = eventReviewMarkerFreshness({
+    itemKind: "pull_request",
+    commentBody: "Durable review without a verdict marker",
+    currentHeadSha: "newsha",
+  });
+  assert.equal(result.fresh, false);
+  assert.equal(result.markerSha, null);
+  assert.equal(result.reason, "ClawSweeper verdict marker must include the reviewed PR head SHA");
 });
 
 test("auto repair cap allows ten PR repair rounds and blocks the eleventh", () => {

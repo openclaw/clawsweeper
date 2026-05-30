@@ -428,6 +428,7 @@ jobs:
           REVIEW_OUTCOME: ${{ steps.review-exact-event-item.outcome }}
           PUBLISH_OUTCOME: ${{ steps.publish-event-result.outcome }}
           ROUTE_OUTCOME: ${{ steps.route-synced-verdict.outcome }}
+          MARKER_FRESH: ${{ steps.publish-event-result.outputs.marker_fresh }}
         run: |
           state="Failed"
           detail="The targeted re-review did not finish cleanly. Check the workflow run for details."
@@ -436,8 +437,13 @@ jobs:
             detail="A newer re-review for this item started before this run finished, so GitHub cancelled this older run. Check the latest ClawSweeper run for the current result."
           fi
           if [ "$REVIEW_OUTCOME" = "success" ] && [ "$PUBLISH_OUTCOME" = "success" ] && [ "$ROUTE_OUTCOME" = "success" ]; then
-            state="Complete"
-            detail="The targeted re-review finished, the durable review comment was updated, and the synced verdict was routed."
+            if [ "$MARKER_FRESH" = "1" ]; then
+              state="Complete"
+              detail="The targeted re-review finished, the durable review comment advanced to the current PR head, and the synced verdict was routed."
+            else
+              state="Incomplete"
+              detail="The targeted re-review ran, but the durable ClawSweeper verdict marker did not advance to the current PR head SHA, so labels may still reflect the previous review. Re-run the re-review once the head is stable."
+            fi
           fi
           pnpm run repair:update-command-status -- \
             --repo "$TARGET_REPO" \

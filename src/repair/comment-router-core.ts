@@ -928,6 +928,31 @@ export function reviewedHeadShaBlockReason({
   return null;
 }
 
+export function durableVerdictMarkerSha(commentBody: JsonValue): string | null {
+  const marker = clawsweeperMarker(String(commentBody ?? ""), "verdict");
+  const sha = marker?.attrs?.sha;
+  if (typeof sha !== "string") return null;
+  const trimmed = sha.trim();
+  return trimmed && trimmed !== "unknown" ? trimmed : null;
+}
+
+export function eventReviewMarkerFreshness({
+  itemKind,
+  commentBody,
+  currentHeadSha,
+}: LooseRecord): { fresh: boolean; reason: string | null; markerSha: string | null } {
+  if (String(itemKind ?? "") !== "pull_request") {
+    return { fresh: true, reason: null, markerSha: null };
+  }
+  const markerSha = durableVerdictMarkerSha(commentBody);
+  const reason = reviewedHeadShaBlockReason({
+    expectedHeadSha: markerSha ?? "unknown",
+    currentHeadSha: currentHeadSha ?? undefined,
+    markerName: "verdict",
+  });
+  return { fresh: reason === null, reason, markerSha };
+}
+
 type AutoRepairDispatchEntry = {
   repo?: unknown;
   issue_number?: unknown;
