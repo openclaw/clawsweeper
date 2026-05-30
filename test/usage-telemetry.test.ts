@@ -11,7 +11,15 @@ import {
   emitUsageTelemetry,
   parseClaudeTokenUsageFromMessage,
   parseCodexTokenUsageFromJsonl,
+  parsePiTokenUsageFromJsonl,
 } from "../src/usage-telemetry.ts";
+
+function piMessageEnd(role: string, usage?: Record<string, number>): string {
+  return JSON.stringify({
+    type: "message_end",
+    message: { role, content: [], ...(usage ? { usage } : {}) },
+  });
+}
 
 function tokenCount(totalUsage: Record<string, number>): string {
   return JSON.stringify({
@@ -167,6 +175,72 @@ test("returns null when no usage is present", () => {
   assert.equal(parseCodexTokenUsageFromJsonl(""), null);
   assert.equal(parseCodexTokenUsageFromJsonl('{"type":"message"}\nnot json'), null);
   assert.equal(parseCodexTokenUsageFromJsonl('{"type":"token_count","payload":{"info":{}}}'), null);
+});
+
+test("parses pi assistant message_end usage", () => {
+  // Real shape from `pi --mode json` (camelCase usage on the assistant message).
+  const tokens = parsePiTokenUsageFromJsonl(
+    [
+      JSON.stringify({ type: "agent_start" }),
+      piMessageEnd("user"),
+      piMessageEnd("assistant", {
+        input: 2,
+        output: 4,
+        cacheRead: 14101,
+        cacheWrite: 24854,
+        totalTokens: 38961,
+      }),
+    ].join("\n"),
+  );
+  assert.deepEqual(tokens, {
+    input: 2,
+    cache_read: 14101,
+    cache_creation: 24854,
+    output: 4,
+    reasoning_output: 0,
+    total: 38961,
+  });
+});
+
+test("sums pi usage across multiple assistant message_end events", () => {
+  const tokens = parsePiTokenUsageFromJsonl(
+    [
+      piMessageEnd("assistant", { input: 100, output: 10, cacheRead: 5 }),
+      piMessageEnd("assistant", { input: 200, output: 20, cacheRead: 7 }),
+    ].join("\n"),
+  );
+  assert.deepEqual(tokens, {
+    input: 300,
+    cache_read: 12,
+    cache_creation: 0,
+    output: 30,
+    reasoning_output: 0,
+    total: 342,
+  });
+});
+
+test("pi parser ignores non-assistant and echoed usage to avoid double counting", () => {
+  const assistantUsage = { input: 50, output: 5, cacheRead: 0, cacheWrite: 0, totalTokens: 55 };
+  const tokens = parsePiTokenUsageFromJsonl(
+    [
+      piMessageEnd("user"),
+      piMessageEnd("assistant", assistantUsage),
+      // turn_end / agent_end echo the same per-message usage; must not be summed.
+      JSON.stringify({ type: "turn_end", message: { role: "assistant", usage: assistantUsage } }),
+      JSON.stringify({
+        type: "agent_end",
+        messages: [{ role: "assistant", usage: assistantUsage }],
+      }),
+    ].join("\n"),
+  );
+  assert.equal(tokens?.total, 55);
+  assert.equal(tokens?.input, 50);
+});
+
+test("pi parser returns null when no assistant usage is present", () => {
+  assert.equal(parsePiTokenUsageFromJsonl(""), null);
+  assert.equal(parsePiTokenUsageFromJsonl(piMessageEnd("user")), null);
+  assert.equal(parsePiTokenUsageFromJsonl("not json\n{}"), null);
 });
 
 test("buildUsageTelemetryEvent only includes explicit sanitized metadata", () => {

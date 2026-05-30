@@ -5364,6 +5364,12 @@ test("runClaudeCode spawns claude -p with JSON schema, parses the envelope, and 
         type: "result",
         is_error: false,
         result: JSON.stringify(expected),
+        usage: {
+          input_tokens: 11,
+          output_tokens: 22,
+          cache_read_input_tokens: 3,
+          cache_creation_input_tokens: 4,
+        },
       }),
       stderr: "",
     };
@@ -5407,6 +5413,15 @@ test("runClaudeCode spawns claude -p with JSON schema, parses the envelope, and 
   assert.equal(usageEvents[0].provider, "anthropic");
   assert.equal(usageEvents[0].status, "success");
   assert.equal(usageEvents[0].session_id, "local:clawsweeper-review:valkyriweb/clawsweeper:11");
+  // Token usage parsed from the CLI result envelope's top-level `usage`.
+  assert.deepEqual(usageEvents[0].tokens, {
+    input: 11,
+    cache_read: 3,
+    cache_creation: 4,
+    output: 22,
+    reasoning_output: 0,
+    total: 40,
+  });
 });
 
 test("runClaudeCode maps ETIMEDOUT to the stable 'timed out after Nms' marker", () => {

@@ -230,6 +230,53 @@ export function parseClaudeTokenUsageFromMessage(message: unknown): UsageTokens 
   return normalizeCodexTokenUsage(usage);
 }
 
+/**
+ * Map a pi (`@earendil-works/pi-ai`) `Usage` object to the OpenAI/Codex-shaped
+ * record `normalizeCodexTokenUsage` consumes. Pi emits camelCase fields
+ * (`input`/`output`/`cacheRead`/`cacheWrite`) on assistant `message_end` events.
+ * `totalTokens` is intentionally dropped so the total is always derived from the
+ * components (a per-message `totalTokens` is just their sum; deriving avoids an
+ * undercount if any message omits it).
+ */
+function piUsageToCodexTokenUsage(value: unknown): CodexTokenUsage | null {
+  if (!isRecord(value)) return null;
+  const usage: CodexTokenUsage = {};
+  if (typeof value.input === "number") usage.input_tokens = value.input;
+  if (typeof value.cacheRead === "number") usage.cache_read_input_tokens = value.cacheRead;
+  if (typeof value.cacheWrite === "number") usage.cache_creation_input_tokens = value.cacheWrite;
+  if (typeof value.output === "number") usage.output_tokens = value.output;
+  return Object.keys(usage).length > 0 ? usage : null;
+}
+
+/**
+ * Parse pi's `--mode json` event stream (one JSON event per line). Pi reports
+ * token usage per API call on assistant `message_end` events; a tool-using
+ * review makes several calls, so sum their usage into a session total (mirrors
+ * the per-turn sum for the current Codex schema). `turn_end`/`agent_end` echo the
+ * same per-message usage, so only `message_end` is summed to avoid double
+ * counting. Returns null when no assistant usage is present (e.g. an empty
+ * transcript or a timeout before the first token).
+ */
+export function parsePiTokenUsageFromJsonl(stdout: string): UsageTokens | null {
+  let total: CodexTokenUsage | null = null;
+  for (const line of stdout.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(trimmed);
+    } catch {
+      continue;
+    }
+    if (!isRecord(parsed) || parsed.type !== "message_end") continue;
+    const message = isRecord(parsed.message) ? parsed.message : null;
+    if (!message || message.role !== "assistant") continue;
+    const usage = piUsageToCodexTokenUsage(message.usage);
+    if (usage) total = addCodexTokenUsage(total, usage);
+  }
+  return normalizeCodexTokenUsage(total);
+}
+
 export function githubUsageMetadataFromEnv(
   env: NodeJS.ProcessEnv = process.env,
 ): UsageGitHubMetadata {

@@ -68,7 +68,9 @@ import {
   buildUsageTelemetryEvent,
   parseClaudeTokenUsageFromMessage,
   parseCodexTokenUsageFromJsonl,
+  parsePiTokenUsageFromJsonl,
   type UsageStatus,
+  type UsageTokens,
 } from "./usage-telemetry.js";
 
 export { codexEnv } from "./codex-env.js";
@@ -5185,6 +5187,9 @@ export function runClaudeCode(options: RunClaudeCodeOptions): Decision {
     args.push("--dangerously-skip-permissions");
   }
 
+  // Parsed from the CLI result envelope below; the closure reads it by reference
+  // so post-envelope status paths report the usage `claude` reported.
+  let claudeTokens: UsageTokens | null = null;
   const emitUsage = (status: UsageStatus, elapsedMs: number): void => {
     try {
       appendUsageEventJsonl(
@@ -5206,7 +5211,7 @@ export function runClaudeCode(options: RunClaudeCodeOptions): Decision {
           elapsed_ms: elapsedMs,
           output_path: relative(options.workDir, responsePath),
           status,
-          tokens: null,
+          tokens: claudeTokens,
         }),
       );
     } catch {
@@ -5268,6 +5273,9 @@ export function runClaudeCode(options: RunClaudeCodeOptions): Decision {
       }): ${safeOutputTail(stdout)}`,
     );
   }
+  // The `claude -p --output-format json` envelope carries top-level `usage`
+  // (input_tokens/output_tokens/cache_*); record it for every post-parse path.
+  claudeTokens = parseClaudeTokenUsageFromMessage(envelope);
   if (envelope.is_error === true) {
     emitUsage("failed", elapsedMs);
     throw new Error(
@@ -5364,6 +5372,9 @@ export function runPi(options: RunPiOptions): Decision {
     args.push("-t", "read,glob,grep");
   }
 
+  // Parsed from stdout after spawn; the closure reads it by reference so every
+  // status path (success/timeout/failed) reports whatever usage Pi emitted.
+  let piTokens: UsageTokens | null = null;
   const emitUsage = (status: UsageStatus, elapsedMs: number): void => {
     try {
       appendUsageEventJsonl(
@@ -5385,7 +5396,7 @@ export function runPi(options: RunPiOptions): Decision {
           elapsed_ms: elapsedMs,
           output_path: relative(options.workDir, responsePath),
           status,
-          tokens: null,
+          tokens: piTokens,
         }),
       );
     } catch {
@@ -5404,6 +5415,7 @@ export function runPi(options: RunPiOptions): Decision {
   });
   const elapsedMs = Date.now() - startedAt;
   const stdout = result.stdout ?? "";
+  piTokens = parsePiTokenUsageFromJsonl(stdout);
   const stderr = result.stderr ?? "";
 
   try {
