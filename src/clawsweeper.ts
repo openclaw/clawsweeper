@@ -4403,8 +4403,7 @@ export function isCodexTimeoutError(value: unknown): boolean {
 // been retried at the escalated cap and still timed out, we don't escalate
 // it again until a successful review clears the failure state.
 export const REVIEW_TIMEOUT_ESCALATED_MS = 1_200_000;
-export const SMALL_CODEX_PROMPT_STALL_CHARS = 30_000;
-export const SMALL_CODEX_PROMPT_STALL_TIMEOUT_MS = 180_000;
+export const CODEX_IDLE_TIMEOUT_MS = 180_000;
 
 export type ReviewFailureReason = "none" | "timeout" | "other";
 
@@ -4465,13 +4464,11 @@ export function effectiveCodexTimeoutMs(options: {
   };
 }
 
-export function effectiveCodexProcessTimeoutMs(options: {
-  requestedTimeoutMs: number;
-  promptChars: number;
-}): number {
-  if (options.requestedTimeoutMs > 600_000) return options.requestedTimeoutMs;
-  if (options.promptChars > SMALL_CODEX_PROMPT_STALL_CHARS) return options.requestedTimeoutMs;
-  return Math.min(options.requestedTimeoutMs, SMALL_CODEX_PROMPT_STALL_TIMEOUT_MS);
+export function codexIdleTimeoutMs(): number {
+  const raw = process.env.CLAWSWEEPER_CODEX_IDLE_TIMEOUT_MS;
+  if (!raw) return CODEX_IDLE_TIMEOUT_MS;
+  const value = Number.parseInt(raw, 10);
+  return Number.isFinite(value) && value > 0 ? value : CODEX_IDLE_TIMEOUT_MS;
 }
 
 function reviewTimeoutCommentMarker(number: number): string {
@@ -5559,6 +5556,125 @@ function stripJsonFences(value: string): string {
   return match?.[1] ?? value;
 }
 
+interface CodexWatchdogResult {
+  status: number | null;
+  stdout: string;
+  stderr: string;
+  error?: Error & { code?: string };
+}
+
+function runCodexWithIdleWatchdog(options: {
+  args: string[];
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+  input: string;
+  timeoutMs: number;
+  idleTimeoutMs: number;
+}): CodexWatchdogResult {
+  const helper = String.raw`
+const { spawn } = require("node:child_process");
+const fs = require("node:fs");
+const request = JSON.parse(fs.readFileSync(0, "utf8"));
+let stdout = "";
+let stderr = "";
+let settled = false;
+let child;
+function killChild(signal) {
+  if (!child || child.killed) return;
+  try {
+    if (process.platform !== "win32" && child.pid) process.kill(-child.pid, signal);
+    else child.kill(signal);
+  } catch {
+    try { child.kill(signal); } catch {}
+  }
+}
+function finish(code) {
+  if (settled) return;
+  settled = true;
+  clearTimeout(totalTimer);
+  clearTimeout(idleTimer);
+  process.exitCode = code;
+}
+function resetIdleTimer() {
+  clearTimeout(idleTimer);
+  idleTimer = setTimeout(() => {
+    stderr += "\n[clawsweeper] codex idle timeout after " + request.idleTimeoutMs + "ms with no stdout/stderr output\n";
+    process.stderr.write("\n[clawsweeper] codex idle timeout after " + request.idleTimeoutMs + "ms with no stdout/stderr output\n");
+    killChild("SIGTERM");
+    setTimeout(() => killChild("SIGKILL"), 5000).unref();
+    finish(124);
+  }, request.idleTimeoutMs);
+  idleTimer.unref();
+}
+let idleTimer;
+const totalTimer = setTimeout(() => {
+  stderr += "\n[clawsweeper] codex total timeout after " + request.timeoutMs + "ms\n";
+  process.stderr.write("\n[clawsweeper] codex total timeout after " + request.timeoutMs + "ms\n");
+  killChild("SIGTERM");
+  setTimeout(() => killChild("SIGKILL"), 5000).unref();
+  finish(124);
+}, request.timeoutMs);
+totalTimer.unref();
+try {
+  child = spawn("codex", request.args, {
+    cwd: request.cwd,
+    env: request.env,
+    stdio: ["pipe", "pipe", "pipe"],
+    detached: process.platform !== "win32",
+  });
+} catch (error) {
+  stderr += String(error && error.message ? error.message : error);
+  process.stderr.write(stderr);
+  finish(127);
+}
+resetIdleTimer();
+child.stdout.on("data", (chunk) => {
+  const text = chunk.toString("utf8");
+  stdout += text;
+  process.stdout.write(text);
+  resetIdleTimer();
+});
+child.stderr.on("data", (chunk) => {
+  const text = chunk.toString("utf8");
+  stderr += text;
+  process.stderr.write(text);
+  resetIdleTimer();
+});
+child.on("error", (error) => {
+  stderr += String(error && error.message ? error.message : error);
+  process.stderr.write(stderr);
+  finish(127);
+});
+child.on("close", (code, signal) => {
+  if (settled) return;
+  if (signal) stderr += "\n[clawsweeper] codex exited via signal " + signal + "\n";
+  finish(code == null ? 1 : code);
+});
+child.stdin.end(request.input);
+`;
+  const startedAt = Date.now();
+  const result = spawnSync(process.execPath, ["-e", helper], {
+    cwd: options.cwd,
+    encoding: "utf8",
+    input: JSON.stringify(options),
+    maxBuffer: 128 * 1024 * 1024,
+    timeout: options.timeoutMs + 10_000,
+  });
+  const normalized: CodexWatchdogResult = {
+    status: result.status,
+    stdout: result.stdout ?? "",
+    stderr: result.stderr ?? "",
+  };
+  if (result.error) normalized.error = result.error as Error & { code?: string };
+  if (normalized.status === 124 && /codex (idle|total) timeout/i.test(normalized.stderr)) {
+    normalized.error = Object.assign(
+      new Error(`spawnSync codex ETIMEDOUT after ${Date.now() - startedAt}ms`),
+      { code: "ETIMEDOUT" },
+    );
+  }
+  return normalized;
+}
+
 function runCodex(options: {
   item: Item;
   context: ItemContext;
@@ -5607,19 +5723,13 @@ function runCodex(options: {
     "features.image_generation=false",
   ];
   if (options.serviceTier) codexConfig.splice(1, 0, `service_tier="${options.serviceTier}"`);
-  const processTimeoutMs = effectiveCodexProcessTimeoutMs({
-    requestedTimeoutMs: options.timeoutMs,
-    promptChars: prompt.length,
-  });
-  if (processTimeoutMs < options.timeoutMs) {
-    console.error(
-      `[review] ${new Date().toISOString()} codex-small-prompt-stall-cap #${options.item.number} prompt_chars=${prompt.length} requested_ms=${options.timeoutMs} process_ms=${processTimeoutMs}`,
-    );
-  }
+  const idleTimeoutMs = codexIdleTimeoutMs();
+  console.error(
+    `[review] ${new Date().toISOString()} codex-idle-watchdog #${options.item.number} idle_ms=${idleTimeoutMs} total_ms=${options.timeoutMs}`,
+  );
   const startedAt = Date.now();
-  const result = spawnSync(
-    "codex",
-    [
+  const result = runCodexWithIdleWatchdog({
+    args: [
       "exec",
       "-m",
       options.model,
@@ -5637,18 +5747,15 @@ function runCodex(options: {
       proofScratchDir,
       "-",
     ],
-    {
-      cwd: options.openclawDir,
-      encoding: "utf8",
-      env: {
-        ...codexEnv({ ghToken: process.env.CLAWSWEEPER_PROOF_INSPECTION_TOKEN }),
-        CLAWSWEEPER_PROOF_SCRATCH_DIR: proofScratchDir,
-      },
-      input: prompt,
-      maxBuffer: 128 * 1024 * 1024,
-      timeout: processTimeoutMs,
+    cwd: options.openclawDir,
+    env: {
+      ...codexEnv({ ghToken: process.env.CLAWSWEEPER_PROOF_INSPECTION_TOKEN }),
+      CLAWSWEEPER_PROOF_SCRATCH_DIR: proofScratchDir,
     },
-  );
+    input: prompt,
+    timeoutMs: options.timeoutMs,
+    idleTimeoutMs,
+  });
   const elapsedMs = Date.now() - startedAt;
   // Persist codex stdout/stderr to disk so they survive the run as artifacts.
   // Without this the only diagnostic on a 600s timeout was `tokens: null` in the
@@ -5699,7 +5806,7 @@ function runCodex(options: {
           reasoning_effort: options.reasoningEffort,
           service_tier: options.serviceTier,
           sandbox: options.sandboxMode,
-          timeout_ms: processTimeoutMs,
+          timeout_ms: options.timeoutMs,
           elapsed_ms: elapsedMs,
           // Schema fields already exist on UsageEventMetadata; both paths are
           // workDir-relative so artifacts can be located after upload.
@@ -5725,8 +5832,8 @@ function runCodex(options: {
     const timedOut = (result.error as NodeJS.ErrnoException).code === "ETIMEDOUT";
     emitUsage(timedOut ? "timeout" : "failed");
     const failureMessage =
-      timedOut && processTimeoutMs < options.timeoutMs
-        ? `small-prompt stall cap ${processTimeoutMs}ms reached before requested cap ${options.timeoutMs}ms`
+      timedOut && /codex idle timeout/i.test(result.stderr)
+        ? `idle watchdog fired after ${idleTimeoutMs}ms with no Codex output`
         : result.error.message;
     throw new Error(
       `Codex review failed for #${options.item.number}: ${failureMessage}\n${

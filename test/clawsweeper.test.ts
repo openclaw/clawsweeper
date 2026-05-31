@@ -70,9 +70,9 @@ import {
   shouldEscalateCodexTimeout,
   nextReviewTimeoutEscalated,
   effectiveCodexTimeoutMs,
-  effectiveCodexProcessTimeoutMs,
+  codexIdleTimeoutMs,
+  CODEX_IDLE_TIMEOUT_MS,
   REVIEW_TIMEOUT_ESCALATED_MS,
-  SMALL_CODEX_PROMPT_STALL_TIMEOUT_MS,
   renderReviewTimeoutComment,
   realBehaviorProofSufficientLabelsForTest,
   relatedTitleSearchTerms,
@@ -3611,6 +3611,58 @@ process.exit(1);
   }
 });
 
+test("runCodex idle watchdog aborts a stalled Codex subprocess before total timeout", () => {
+  const root = mkdtempSync(tmpPrefix);
+  const openclawDir = join(root, "openclaw");
+  const workDir = join(root, "codex-work");
+  const binDir = join(root, "bin");
+  mkdirSync(openclawDir, { recursive: true });
+  mkdirSync(binDir, { recursive: true });
+  execFileSync("git", ["init"], { cwd: openclawDir, stdio: "ignore" });
+  const codexPath = join(binDir, "codex");
+  writeFileSync(
+    codexPath,
+    `#!/usr/bin/env node
+process.stdout.write(JSON.stringify({ type: "thread.started", thread_id: "stall" }) + "\\n");
+setInterval(() => {}, 1000);
+`,
+  );
+  chmodSync(codexPath, 0o755);
+  const originalPath = process.env.PATH;
+  const originalIdle = process.env.CLAWSWEEPER_CODEX_IDLE_TIMEOUT_MS;
+  process.env.PATH = `${binDir}${delimiter}${process.env.PATH ?? ""}`;
+  process.env.CLAWSWEEPER_CODEX_IDLE_TIMEOUT_MS = "500";
+  try {
+    assert.throws(
+      () =>
+        runCodexForTest({
+          item: item({ number: 144 }),
+          context: { issue: {}, comments: [], timeline: [] },
+          git: { mainSha: "abc123", latestRelease: null },
+          model: "gpt-test",
+          openclawDir,
+          reasoningEffort: "low",
+          sandboxMode: "read-only",
+          serviceTier: "",
+          timeoutMs: 5_000,
+          workDir,
+          prompt: "Return a review decision.",
+        }),
+      /idle watchdog fired after 500ms/,
+    );
+    const stdout = readFileSync(join(workDir, "144.codex.stdout.log"), "utf8");
+    const stderr = readFileSync(join(workDir, "144.codex.stderr.log"), "utf8");
+    assert.match(stdout, /thread\.started/);
+    assert.match(stderr, /codex idle timeout after 500ms/);
+  } finally {
+    if (originalPath === undefined) delete process.env.PATH;
+    else process.env.PATH = originalPath;
+    if (originalIdle === undefined) delete process.env.CLAWSWEEPER_CODEX_IDLE_TIMEOUT_MS;
+    else process.env.CLAWSWEEPER_CODEX_IDLE_TIMEOUT_MS = originalIdle;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("decision parser enforces required schema-shaped evidence", () => {
   assert.equal(parseDecision(closeDecision()).decision, "close");
   assert.equal(parseDecision(closeDecision({ itemCategory: "skill" })).itemCategory, "skill");
@@ -4832,26 +4884,19 @@ test("effectiveCodexTimeoutMs picks base cap by default and the escalated cap on
   assert.equal(custom.escalated, true);
 });
 
-test("effectiveCodexProcessTimeoutMs caps small first-pass Codex prompt stalls", () => {
-  assert.equal(
-    effectiveCodexProcessTimeoutMs({ requestedTimeoutMs: 600_000, promptChars: 26_004 }),
-    SMALL_CODEX_PROMPT_STALL_TIMEOUT_MS,
-  );
-  assert.equal(
-    effectiveCodexProcessTimeoutMs({ requestedTimeoutMs: 600_000, promptChars: 51_110 }),
-    600_000,
-  );
-  assert.equal(
-    effectiveCodexProcessTimeoutMs({
-      requestedTimeoutMs: REVIEW_TIMEOUT_ESCALATED_MS,
-      promptChars: 26_004,
-    }),
-    REVIEW_TIMEOUT_ESCALATED_MS,
-  );
-  assert.equal(
-    effectiveCodexProcessTimeoutMs({ requestedTimeoutMs: 120_000, promptChars: 26_004 }),
-    120_000,
-  );
+test("codexIdleTimeoutMs defaults to the production idle watchdog and accepts test override", () => {
+  const original = process.env.CLAWSWEEPER_CODEX_IDLE_TIMEOUT_MS;
+  try {
+    delete process.env.CLAWSWEEPER_CODEX_IDLE_TIMEOUT_MS;
+    assert.equal(codexIdleTimeoutMs(), CODEX_IDLE_TIMEOUT_MS);
+    process.env.CLAWSWEEPER_CODEX_IDLE_TIMEOUT_MS = "75";
+    assert.equal(codexIdleTimeoutMs(), 75);
+    process.env.CLAWSWEEPER_CODEX_IDLE_TIMEOUT_MS = "0";
+    assert.equal(codexIdleTimeoutMs(), CODEX_IDLE_TIMEOUT_MS);
+  } finally {
+    if (original === undefined) delete process.env.CLAWSWEEPER_CODEX_IDLE_TIMEOUT_MS;
+    else process.env.CLAWSWEEPER_CODEX_IDLE_TIMEOUT_MS = original;
+  }
 });
 
 function claudeOptionsForTest(
