@@ -106,6 +106,9 @@ test("automerge fix prompt makes Codex own PR repair, rebase, and CI discovery",
   assert.match(prompt, /outside likely_files/);
   assert.match(prompt, /validation command hints: pnpm check:changed ; pnpm build/);
   assert.match(prompt, /treat artifact validation commands as hints/);
+  assert.match(prompt, /final polish pass on the changed surface/);
+  assert.match(prompt, /code-craft natural-code rules/);
+  assert.match(prompt, /engineering\/improve-codebase-architecture\/SKILL\.md/);
   assert.doesNotMatch(prompt, /do not push, open PRs, close PRs, or call gh/);
 });
 

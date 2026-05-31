@@ -48,6 +48,7 @@ export function buildFixPrompt({
     "- fix relevant failing CI/check output named in the artifact; do not leave known changed-surface CI failures for a later pass;",
     isAutomergeRepair ? renderAutomergeRepairGuidance() : "",
     renderChangelogRule(fixArtifact),
+    renderMergePolishGuidance(),
     "- prepare the PR so it can pass the ClawSweeper Repair merge_preflight gate;",
     renderGitHubToolRule(isAutomergeRepair),
     "- do not create a final commit unless git rebase/merge conflict resolution requires it; ClawSweeper Repair checkpoints ordinary edits after you return;",
@@ -205,6 +206,14 @@ function compactPromptString(value: string, key: string, depth: number) {
 function renderGitHubToolRule(isAutomergeRepair: boolean) {
   if (!isAutomergeRepair) return "- do not push, open PRs, close PRs, or call gh;";
   return "- do not push, open PRs, close PRs, comment, label, or merge; read-only `gh` commands are allowed for PR comments, review threads, check status, and check logs when available;";
+}
+
+function renderMergePolishGuidance() {
+  return [
+    "- before returning a merge-ready branch, do a final polish pass on the changed surface: apply code-craft natural-code rules for naming, simple flow, small composable pieces, and clear data flow;",
+    "- also apply the architecture checklist from `engineering/improve-codebase-architecture/SKILL.md` when that skill is available; if it is not, use the local Matt Pocock reference `skills/matt-pocock/references/improve-codebase-architecture.md` for deepening, locality/leverage, and deletion-test checks; keep fixes surgical and do not expand into speculative architecture work;",
+    "- if the polish pass reveals larger architecture debt outside this PR's scope, leave it as a follow-up note instead of broadening the diff.",
+  ].join("\n");
 }
 
 function renderAutomergeRepairGuidance() {

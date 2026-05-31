@@ -71,6 +71,7 @@ import {
   nextReviewTimeoutEscalated,
   effectiveCodexTimeoutMs,
   REVIEW_TIMEOUT_ESCALATED_MS,
+  renderReviewTimeoutComment,
   realBehaviorProofSufficientLabelsForTest,
   relatedTitleSearchTerms,
   renderReviewStartStatusComment,
@@ -4769,6 +4770,22 @@ test("nextReviewTimeoutEscalated stays sticky on failure and clears on success",
     }),
     true,
   );
+});
+
+test("renderReviewTimeoutComment describes recovery instead of asking for manual retry", () => {
+  const body = renderReviewTimeoutComment({
+    number: 42,
+    elapsedMs: 600_123,
+    timeoutMs: 600_000,
+    provider: "codex",
+    model: "gpt-5.5",
+    reasoningEffort: "high",
+  });
+
+  assert.match(body, /Codex review timed out after 600s \(cap 600s\)\./);
+  assert.match(body, /workflow recovery lane or the next eligible sweep can retry/i);
+  assert.match(body, /<!-- clawsweeper-review-timeout item=42 -->/);
+  assert.doesNotMatch(body, /No automated retry is queued/);
 });
 
 test("effectiveCodexTimeoutMs picks base cap by default and the escalated cap once after a timeout", () => {

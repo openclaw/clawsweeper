@@ -46,6 +46,9 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Fixed
 
+- Updated review timeouts in-place on the mutable review status comment, then let recovery or the next eligible sweep retry with the escalated timeout cap instead of posting a separate inbox-noise timeout comment.
+- Added a required final merge polish pass to repair/automerge prompts using code-craft natural-code rules, `engineering/improve-codebase-architecture/SKILL.md` when available, and the local Matt Pocock architecture reference as fallback.
+- Relaxed the scheduled comment-router fallback from every 5 minutes to every 15 minutes; exact comment dispatch remains the fast path.
 - Reduced the shared Codex worker budget from 72 to 57 so background review, commit-review, repair, and issue-implementation lanes run about 20% fewer parallel workers.
 - Clarified re-review guidance so PR/issue authors and users with repository write access can request a fresh read-only review without a maintainer relay.
 - Mirrored ClawSweeper repair publish events into the live dashboard ingest so the Recent Activity panel shows fleet signals.

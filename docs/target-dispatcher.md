@@ -185,8 +185,9 @@ exact source comment id and, when available, the queued status comment id. The
 router edits that queued comment in place instead of posting a second reply.
 Exact comment dispatches scan only that comment and use a per-comment receiver
 concurrency group, so one maintainer command does not wait behind an unrelated
-command on the same repository. The scheduled sweep remains a five-minute
-fallback. Bot-authored label churn is also ignored. Human
+command on the same repository. The scheduled sweep remains a fifteen-minute
+fallback to avoid wasting Actions minutes when dispatch hooks are healthy.
+Bot-authored label churn is also ignored. Human
 label changes are debounced and may run after an active dispatcher, but they
 must not cancel a content-changing dispatch before it posts to ClawSweeper.
 Content-changing events such as issue edits and PR synchronizes cancel stale

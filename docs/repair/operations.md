@@ -258,7 +258,8 @@ commands also get one queued status comment that the router edits in place after
 it classifies the command, so the visible reply is available as soon as the
 target dispatcher starts. Exact comment dispatches scan only the source comment
 and use per-comment receiver concurrency; the scheduled sweep remains a
-five-minute fallback.
+fifteen-minute fallback to reduce idle Actions churn when dispatch hooks are
+healthy.
 The status comment itself uses one compact badge: `🦞👀` for acknowledgement,
 `🦞🧹` for review, `🦞🔧` for repair/build/fix work, and `🦞✅` for completed or
 paused work.
@@ -349,7 +350,13 @@ executor. After a deterministic rebase or known mechanical conflict repair is
 pushed, the executor polls the repaired head for GitHub checks and the
 exact-head ClawSweeper pass marker, then dispatches the comment router as soon
 as merge gates are ready. Codex fix/edit remains the fallback when the
-deterministic repair path cannot complete cleanly.
+deterministic repair path cannot complete cleanly. Before a PR is treated as
+merge-ready, the repair prompt asks for a final changed-surface polish pass using
+code-craft natural-code rules and `engineering/improve-codebase-architecture/SKILL.md`
+when that skill is available, with the local Matt Pocock reference
+`skills/matt-pocock/references/improve-codebase-architecture.md` as the fallback
+methodology; broader architecture debt stays as follow-up work instead of widening
+the PR.
 
 For the full automerge decision table, including why pending checks wait instead
 of dispatching repair and how to replay a fixed router against an exact trusted

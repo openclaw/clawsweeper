@@ -56,7 +56,7 @@ on:
         default: '["self-hosted","macOS","ARM64","mac-mini"]'
         type: string
   schedule:
-    - cron: "*/5 * * * *"
+    - cron: "*/15 * * * *"
 
 permissions:
   contents: write

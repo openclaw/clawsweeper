@@ -4467,21 +4467,23 @@ function reviewTimeoutCommentMarker(number: number): string {
   return `<!-- clawsweeper-review-timeout item=${number} -->`;
 }
 
-function renderReviewTimeoutComment(options: {
+export function renderReviewTimeoutComment(options: {
   number: number;
   elapsedMs: number;
   timeoutMs: number;
+  provider: ReviewProvider;
   model: string;
   reasoningEffort: string;
 }): string {
   const elapsedS = Math.round(options.elapsedMs / 1000);
   const timeoutS = Math.round(options.timeoutMs / 1000);
+  const providerLabel = reviewProviderLabel(options.provider);
   return [
-    `ClawSweeper review timed out after ${elapsedS}s (cap ${timeoutS}s).`,
+    `${providerLabel} review timed out after ${elapsedS}s (cap ${timeoutS}s).`,
     "",
-    `Codex model \`${options.model}\` at reasoning effort \`${options.reasoningEffort}\` did not complete in the configured window.`,
+    `${providerLabel} model \`${options.model}\` at reasoning effort \`${options.reasoningEffort}\` did not complete in the configured window.`,
     "",
-    "Needs investigation or manual retry. No automated retry is queued.",
+    "No close or merge action was taken. The timeout artifact was recorded so the workflow recovery lane or the next eligible sweep can retry this item with the escalated timeout cap before asking for manual intervention.",
     "",
     reviewTimeoutCommentMarker(options.number),
   ].join("\n");
@@ -8904,15 +8906,16 @@ function reviewCommand(args: Args): void {
       if (isTimeout) {
         codexElapsedMs = Date.now() - codexStartedAt;
         try {
-          postReviewTimeoutComment({
+          const timeoutCommentResult = postReviewTimeoutComment({
             item,
             elapsedMs: codexElapsedMs,
             timeoutMs: itemTimeoutMs,
-            model,
+            provider: reviewProvider,
+            model: actualReviewModel(reviewProvider, model),
             reasoningEffort,
           });
           console.error(
-            `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} timeout-comment=posted #${item.number} elapsed_ms=${codexElapsedMs}`,
+            `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} timeout-comment=${timeoutCommentResult} #${item.number} elapsed_ms=${codexElapsedMs}`,
           );
         } catch (commentError) {
           console.error(
@@ -8964,7 +8967,7 @@ function reviewCommand(args: Args): void {
   );
   if (codexTimeoutFailures > 0) {
     console.error(
-      `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} codex-timeouts=${codexTimeoutFailures} (commented on issue, not requeueing; needs investigation or manual retry)`,
+      `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} codex-timeouts=${codexTimeoutFailures} (timeout status updated; recovery lane or next eligible sweep can retry with the escalated cap)`,
     );
   }
   if (codexFailures > 0) {
@@ -8974,28 +8977,61 @@ function reviewCommand(args: Args): void {
   }
 }
 
+function patchCommentBody(comment: Record<string, unknown>, number: number, body: string): boolean {
+  const id = commentId(comment);
+  if (id === null || !canPatchReviewComment(comment)) return false;
+  if (commentBodyMatches(comment, body)) return true;
+  const payload = writeCommentPayload(number, body);
+  ghWithRetry([
+    "api",
+    `repos/${targetRepo()}/issues/comments/${id}`,
+    "--method",
+    "PATCH",
+    "--input",
+    payload,
+  ]);
+  return true;
+}
+
 function postReviewTimeoutComment(options: {
   item: Item;
   elapsedMs: number;
   timeoutMs: number;
+  provider: ReviewProvider;
   model: string;
   reasoningEffort: string;
-}): "posted" | "existing" {
+}): "posted" | "existing" | "patched-existing" | "patched-status" {
   const marker = reviewTimeoutCommentMarker(options.item.number);
-  const existing = ghPaged<unknown>(`repos/${targetRepo()}/issues/${options.item.number}/comments`)
-    .map(asRecord)
-    .find((candidate) => {
-      const body = candidate.body;
-      return typeof body === "string" && body.includes(marker);
-    });
-  if (existing) return "existing";
-  const body = renderReviewTimeoutComment({
-    number: options.item.number,
-    elapsedMs: options.elapsedMs,
-    timeoutMs: options.timeoutMs,
-    model: options.model,
-    reasoningEffort: options.reasoningEffort,
+  const comments = ghPaged<unknown>(
+    `repos/${targetRepo()}/issues/${options.item.number}/comments`,
+  ).map(asRecord);
+  const body = markedReviewCommentBody(
+    options.item.number,
+    renderReviewTimeoutComment({
+      number: options.item.number,
+      elapsedMs: options.elapsedMs,
+      timeoutMs: options.timeoutMs,
+      provider: options.provider,
+      model: options.model,
+      reasoningEffort: options.reasoningEffort,
+    }),
+  );
+  const existing = newestFirst(comments).find((candidate) => {
+    const candidateBody = candidate.body;
+    return typeof candidateBody === "string" && candidateBody.includes(marker);
   });
+  if (existing)
+    return patchCommentBody(existing, options.item.number, body) ? "patched-existing" : "existing";
+  const statusComment = newestFirst(comments).find((candidate) => {
+    const candidateBody = candidate.body;
+    return (
+      typeof candidateBody === "string" &&
+      candidateBody.includes(reviewStartStatusCommentMarker(options.item.number))
+    );
+  });
+  if (statusComment && patchCommentBody(statusComment, options.item.number, body)) {
+    return "patched-status";
+  }
   const payload = writeCommentPayload(options.item.number, body);
   ghWithRetry([
     "api",
