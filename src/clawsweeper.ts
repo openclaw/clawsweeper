@@ -4403,7 +4403,7 @@ export function isCodexTimeoutError(value: unknown): boolean {
 // been retried at the escalated cap and still timed out, we don't escalate
 // it again until a successful review clears the failure state.
 export const REVIEW_TIMEOUT_ESCALATED_MS = 1_200_000;
-export const CODEX_IDLE_TIMEOUT_MS = 180_000;
+export const CODEX_STARTUP_TIMEOUT_MS = 60_000;
 
 export type ReviewFailureReason = "none" | "timeout" | "other";
 
@@ -4464,11 +4464,11 @@ export function effectiveCodexTimeoutMs(options: {
   };
 }
 
-export function codexIdleTimeoutMs(): number {
-  const raw = process.env.CLAWSWEEPER_CODEX_IDLE_TIMEOUT_MS;
-  if (!raw) return CODEX_IDLE_TIMEOUT_MS;
+export function codexStartupTimeoutMs(): number {
+  const raw = process.env.CLAWSWEEPER_CODEX_STARTUP_TIMEOUT_MS;
+  if (!raw) return CODEX_STARTUP_TIMEOUT_MS;
   const value = Number.parseInt(raw, 10);
-  return Number.isFinite(value) && value > 0 ? value : CODEX_IDLE_TIMEOUT_MS;
+  return Number.isFinite(value) && value > 0 ? value : CODEX_STARTUP_TIMEOUT_MS;
 }
 
 function reviewTimeoutCommentMarker(number: number): string {
@@ -5563,13 +5563,13 @@ interface CodexWatchdogResult {
   error?: Error & { code?: string };
 }
 
-function runCodexWithIdleWatchdog(options: {
+function runCodexWithStartupWatchdog(options: {
   args: string[];
   cwd: string;
   env: NodeJS.ProcessEnv;
   input: string;
   timeoutMs: number;
-  idleTimeoutMs: number;
+  startupTimeoutMs: number;
 }): CodexWatchdogResult {
   const helper = String.raw`
 const { spawn } = require("node:child_process");
@@ -5592,21 +5592,23 @@ function finish(code) {
   if (settled) return;
   settled = true;
   clearTimeout(totalTimer);
-  clearTimeout(idleTimer);
+  clearTimeout(startupTimer);
   process.exitCode = code;
 }
-function resetIdleTimer() {
-  clearTimeout(idleTimer);
-  idleTimer = setTimeout(() => {
-    stderr += "\n[clawsweeper] codex idle timeout after " + request.idleTimeoutMs + "ms with no stdout/stderr output\n";
-    process.stderr.write("\n[clawsweeper] codex idle timeout after " + request.idleTimeoutMs + "ms with no stdout/stderr output\n");
-    killChild("SIGTERM");
-    setTimeout(() => killChild("SIGKILL"), 5000).unref();
-    finish(124);
-  }, request.idleTimeoutMs);
-  idleTimer.unref();
+let sawOutput = false;
+function noteOutput() {
+  if (sawOutput) return;
+  sawOutput = true;
+  clearTimeout(startupTimer);
 }
-let idleTimer;
+const startupTimer = setTimeout(() => {
+  stderr += "\n[clawsweeper] codex startup timeout after " + request.startupTimeoutMs + "ms with no stdout/stderr output\n";
+  process.stderr.write("\n[clawsweeper] codex startup timeout after " + request.startupTimeoutMs + "ms with no stdout/stderr output\n");
+  killChild("SIGTERM");
+  setTimeout(() => killChild("SIGKILL"), 5000).unref();
+  finish(124);
+}, request.startupTimeoutMs);
+startupTimer.unref();
 const totalTimer = setTimeout(() => {
   stderr += "\n[clawsweeper] codex total timeout after " + request.timeoutMs + "ms\n";
   process.stderr.write("\n[clawsweeper] codex total timeout after " + request.timeoutMs + "ms\n");
@@ -5627,18 +5629,17 @@ try {
   process.stderr.write(stderr);
   finish(127);
 }
-resetIdleTimer();
 child.stdout.on("data", (chunk) => {
   const text = chunk.toString("utf8");
   stdout += text;
   process.stdout.write(text);
-  resetIdleTimer();
+  noteOutput();
 });
 child.stderr.on("data", (chunk) => {
   const text = chunk.toString("utf8");
   stderr += text;
   process.stderr.write(text);
-  resetIdleTimer();
+  noteOutput();
 });
 child.on("error", (error) => {
   stderr += String(error && error.message ? error.message : error);
@@ -5666,7 +5667,7 @@ child.stdin.end(request.input);
     stderr: result.stderr ?? "",
   };
   if (result.error) normalized.error = result.error as Error & { code?: string };
-  if (normalized.status === 124 && /codex (idle|total) timeout/i.test(normalized.stderr)) {
+  if (normalized.status === 124 && /codex (startup|total) timeout/i.test(normalized.stderr)) {
     normalized.error = Object.assign(
       new Error(`spawnSync codex ETIMEDOUT after ${Date.now() - startedAt}ms`),
       { code: "ETIMEDOUT" },
@@ -5723,12 +5724,12 @@ function runCodex(options: {
     "features.image_generation=false",
   ];
   if (options.serviceTier) codexConfig.splice(1, 0, `service_tier="${options.serviceTier}"`);
-  const idleTimeoutMs = codexIdleTimeoutMs();
+  const startupTimeoutMs = codexStartupTimeoutMs();
   console.error(
-    `[review] ${new Date().toISOString()} codex-idle-watchdog #${options.item.number} idle_ms=${idleTimeoutMs} total_ms=${options.timeoutMs}`,
+    `[review] ${new Date().toISOString()} codex-streaming-watchdog #${options.item.number} startup_ms=${startupTimeoutMs} total_ms=${options.timeoutMs}`,
   );
   const startedAt = Date.now();
-  const result = runCodexWithIdleWatchdog({
+  const result = runCodexWithStartupWatchdog({
     args: [
       "exec",
       "-m",
@@ -5754,7 +5755,7 @@ function runCodex(options: {
     },
     input: prompt,
     timeoutMs: options.timeoutMs,
-    idleTimeoutMs,
+    startupTimeoutMs,
   });
   const elapsedMs = Date.now() - startedAt;
   // Persist codex stdout/stderr to disk so they survive the run as artifacts.
@@ -5832,8 +5833,8 @@ function runCodex(options: {
     const timedOut = (result.error as NodeJS.ErrnoException).code === "ETIMEDOUT";
     emitUsage(timedOut ? "timeout" : "failed");
     const failureMessage =
-      timedOut && /codex idle timeout/i.test(result.stderr)
-        ? `idle watchdog fired after ${idleTimeoutMs}ms with no Codex output`
+      timedOut && /codex startup timeout/i.test(result.stderr)
+        ? `startup watchdog fired after ${startupTimeoutMs}ms with no initial Codex output`
         : result.error.message;
     throw new Error(
       `Codex review failed for #${options.item.number}: ${failureMessage}\n${

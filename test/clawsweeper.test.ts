@@ -70,8 +70,8 @@ import {
   shouldEscalateCodexTimeout,
   nextReviewTimeoutEscalated,
   effectiveCodexTimeoutMs,
-  codexIdleTimeoutMs,
-  CODEX_IDLE_TIMEOUT_MS,
+  codexStartupTimeoutMs,
+  CODEX_STARTUP_TIMEOUT_MS,
   REVIEW_TIMEOUT_ESCALATED_MS,
   renderReviewTimeoutComment,
   realBehaviorProofSufficientLabelsForTest,
@@ -3611,7 +3611,7 @@ process.exit(1);
   }
 });
 
-test("runCodex idle watchdog aborts a stalled Codex subprocess before total timeout", () => {
+test("runCodex allows a silent in-progress turn until the total timeout", () => {
   const root = mkdtempSync(tmpPrefix);
   const openclawDir = join(root, "openclaw");
   const workDir = join(root, "codex-work");
@@ -3629,9 +3629,9 @@ setInterval(() => {}, 1000);
   );
   chmodSync(codexPath, 0o755);
   const originalPath = process.env.PATH;
-  const originalIdle = process.env.CLAWSWEEPER_CODEX_IDLE_TIMEOUT_MS;
+  const originalStartup = process.env.CLAWSWEEPER_CODEX_STARTUP_TIMEOUT_MS;
   process.env.PATH = `${binDir}${delimiter}${process.env.PATH ?? ""}`;
-  process.env.CLAWSWEEPER_CODEX_IDLE_TIMEOUT_MS = "500";
+  process.env.CLAWSWEEPER_CODEX_STARTUP_TIMEOUT_MS = "500";
   try {
     assert.throws(
       () =>
@@ -3644,21 +3644,71 @@ setInterval(() => {}, 1000);
           reasoningEffort: "low",
           sandboxMode: "read-only",
           serviceTier: "",
-          timeoutMs: 5_000,
+          timeoutMs: 900,
           workDir,
           prompt: "Return a review decision.",
         }),
-      /idle watchdog fired after 500ms/,
+      /ETIMEDOUT/,
     );
     const stdout = readFileSync(join(workDir, "144.codex.stdout.log"), "utf8");
     const stderr = readFileSync(join(workDir, "144.codex.stderr.log"), "utf8");
     assert.match(stdout, /thread\.started/);
-    assert.match(stderr, /codex idle timeout after 500ms/);
+    assert.match(stderr, /codex total timeout after 900ms/);
+    assert.doesNotMatch(stderr, /codex startup timeout/);
   } finally {
     if (originalPath === undefined) delete process.env.PATH;
     else process.env.PATH = originalPath;
-    if (originalIdle === undefined) delete process.env.CLAWSWEEPER_CODEX_IDLE_TIMEOUT_MS;
-    else process.env.CLAWSWEEPER_CODEX_IDLE_TIMEOUT_MS = originalIdle;
+    if (originalStartup === undefined) delete process.env.CLAWSWEEPER_CODEX_STARTUP_TIMEOUT_MS;
+    else process.env.CLAWSWEEPER_CODEX_STARTUP_TIMEOUT_MS = originalStartup;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("runCodex startup watchdog aborts when Codex never emits initial output", () => {
+  const root = mkdtempSync(tmpPrefix);
+  const openclawDir = join(root, "openclaw");
+  const workDir = join(root, "codex-work");
+  const binDir = join(root, "bin");
+  mkdirSync(openclawDir, { recursive: true });
+  mkdirSync(binDir, { recursive: true });
+  execFileSync("git", ["init"], { cwd: openclawDir, stdio: "ignore" });
+  const codexPath = join(binDir, "codex");
+  writeFileSync(
+    codexPath,
+    `#!/usr/bin/env node
+setInterval(() => {}, 1000);
+`,
+  );
+  chmodSync(codexPath, 0o755);
+  const originalPath = process.env.PATH;
+  const originalStartup = process.env.CLAWSWEEPER_CODEX_STARTUP_TIMEOUT_MS;
+  process.env.PATH = `${binDir}${delimiter}${process.env.PATH ?? ""}`;
+  process.env.CLAWSWEEPER_CODEX_STARTUP_TIMEOUT_MS = "100";
+  try {
+    assert.throws(
+      () =>
+        runCodexForTest({
+          item: item({ number: 145 }),
+          context: { issue: {}, comments: [], timeline: [] },
+          git: { mainSha: "abc123", latestRelease: null },
+          model: "gpt-test",
+          openclawDir,
+          reasoningEffort: "low",
+          sandboxMode: "read-only",
+          serviceTier: "",
+          timeoutMs: 5_000,
+          workDir,
+          prompt: "Return a review decision.",
+        }),
+      /startup watchdog fired after 100ms/,
+    );
+    const stderr = readFileSync(join(workDir, "145.codex.stderr.log"), "utf8");
+    assert.match(stderr, /codex startup timeout after 100ms/);
+  } finally {
+    if (originalPath === undefined) delete process.env.PATH;
+    else process.env.PATH = originalPath;
+    if (originalStartup === undefined) delete process.env.CLAWSWEEPER_CODEX_STARTUP_TIMEOUT_MS;
+    else process.env.CLAWSWEEPER_CODEX_STARTUP_TIMEOUT_MS = originalStartup;
     rmSync(root, { recursive: true, force: true });
   }
 });
@@ -4884,18 +4934,18 @@ test("effectiveCodexTimeoutMs picks base cap by default and the escalated cap on
   assert.equal(custom.escalated, true);
 });
 
-test("codexIdleTimeoutMs defaults to the production idle watchdog and accepts test override", () => {
-  const original = process.env.CLAWSWEEPER_CODEX_IDLE_TIMEOUT_MS;
+test("codexStartupTimeoutMs defaults to the production startup watchdog and accepts test override", () => {
+  const original = process.env.CLAWSWEEPER_CODEX_STARTUP_TIMEOUT_MS;
   try {
-    delete process.env.CLAWSWEEPER_CODEX_IDLE_TIMEOUT_MS;
-    assert.equal(codexIdleTimeoutMs(), CODEX_IDLE_TIMEOUT_MS);
-    process.env.CLAWSWEEPER_CODEX_IDLE_TIMEOUT_MS = "75";
-    assert.equal(codexIdleTimeoutMs(), 75);
-    process.env.CLAWSWEEPER_CODEX_IDLE_TIMEOUT_MS = "0";
-    assert.equal(codexIdleTimeoutMs(), CODEX_IDLE_TIMEOUT_MS);
+    delete process.env.CLAWSWEEPER_CODEX_STARTUP_TIMEOUT_MS;
+    assert.equal(codexStartupTimeoutMs(), CODEX_STARTUP_TIMEOUT_MS);
+    process.env.CLAWSWEEPER_CODEX_STARTUP_TIMEOUT_MS = "75";
+    assert.equal(codexStartupTimeoutMs(), 75);
+    process.env.CLAWSWEEPER_CODEX_STARTUP_TIMEOUT_MS = "0";
+    assert.equal(codexStartupTimeoutMs(), CODEX_STARTUP_TIMEOUT_MS);
   } finally {
-    if (original === undefined) delete process.env.CLAWSWEEPER_CODEX_IDLE_TIMEOUT_MS;
-    else process.env.CLAWSWEEPER_CODEX_IDLE_TIMEOUT_MS = original;
+    if (original === undefined) delete process.env.CLAWSWEEPER_CODEX_STARTUP_TIMEOUT_MS;
+    else process.env.CLAWSWEEPER_CODEX_STARTUP_TIMEOUT_MS = original;
   }
 });
 
