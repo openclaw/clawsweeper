@@ -53,7 +53,12 @@ jobs:
           sparse-checkout: |
             .github/actions
             config/automation-limits.json
+            prompts/pr-close-coverage-proof.md
+            schema/clawsweeper-pr-close-coverage-proof.schema.json
+            src/clawsweeper-text.ts
+            src/codex-env.ts
             src/github-retry.ts
+            src/pr-close-coverage-proof.ts
             src/repair
             src/repository-profiles.ts
             package.json
