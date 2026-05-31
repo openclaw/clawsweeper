@@ -47,6 +47,7 @@ checkpoint, and status-only commits are intentionally omitted.
 ### Fixed
 
 - Updated review timeouts in-place on the mutable review status comment, then let recovery or the next eligible sweep retry with the escalated timeout cap instead of posting a separate inbox-noise timeout comment.
+- Capped first-pass Codex runtime for small review prompts so provider stalls like `lue-kube#144` fail/recover quickly instead of burning the full 10-minute item cap.
 - Added a required final merge polish pass to repair/automerge prompts using code-craft natural-code rules, `engineering/improve-codebase-architecture/SKILL.md` when available, and the local Matt Pocock architecture reference as fallback.
 - Relaxed the scheduled comment-router fallback from every 5 minutes to every 15 minutes; exact comment dispatch remains the fast path.
 - Reduced the shared Codex worker budget from 72 to 57 so background review, commit-review, repair, and issue-implementation lanes run about 20% fewer parallel workers.

@@ -4403,6 +4403,8 @@ export function isCodexTimeoutError(value: unknown): boolean {
 // been retried at the escalated cap and still timed out, we don't escalate
 // it again until a successful review clears the failure state.
 export const REVIEW_TIMEOUT_ESCALATED_MS = 1_200_000;
+export const SMALL_CODEX_PROMPT_STALL_CHARS = 30_000;
+export const SMALL_CODEX_PROMPT_STALL_TIMEOUT_MS = 180_000;
 
 export type ReviewFailureReason = "none" | "timeout" | "other";
 
@@ -4461,6 +4463,15 @@ export function effectiveCodexTimeoutMs(options: {
     timeoutMs: escalated ? Math.max(options.baseTimeoutMs, cap) : options.baseTimeoutMs,
     escalated,
   };
+}
+
+export function effectiveCodexProcessTimeoutMs(options: {
+  requestedTimeoutMs: number;
+  promptChars: number;
+}): number {
+  if (options.requestedTimeoutMs > 600_000) return options.requestedTimeoutMs;
+  if (options.promptChars > SMALL_CODEX_PROMPT_STALL_CHARS) return options.requestedTimeoutMs;
+  return Math.min(options.requestedTimeoutMs, SMALL_CODEX_PROMPT_STALL_TIMEOUT_MS);
 }
 
 function reviewTimeoutCommentMarker(number: number): string {
@@ -5596,6 +5607,15 @@ function runCodex(options: {
     "features.image_generation=false",
   ];
   if (options.serviceTier) codexConfig.splice(1, 0, `service_tier="${options.serviceTier}"`);
+  const processTimeoutMs = effectiveCodexProcessTimeoutMs({
+    requestedTimeoutMs: options.timeoutMs,
+    promptChars: prompt.length,
+  });
+  if (processTimeoutMs < options.timeoutMs) {
+    console.error(
+      `[review] ${new Date().toISOString()} codex-small-prompt-stall-cap #${options.item.number} prompt_chars=${prompt.length} requested_ms=${options.timeoutMs} process_ms=${processTimeoutMs}`,
+    );
+  }
   const startedAt = Date.now();
   const result = spawnSync(
     "codex",
@@ -5626,7 +5646,7 @@ function runCodex(options: {
       },
       input: prompt,
       maxBuffer: 128 * 1024 * 1024,
-      timeout: options.timeoutMs,
+      timeout: processTimeoutMs,
     },
   );
   const elapsedMs = Date.now() - startedAt;
@@ -5679,7 +5699,7 @@ function runCodex(options: {
           reasoning_effort: options.reasoningEffort,
           service_tier: options.serviceTier,
           sandbox: options.sandboxMode,
-          timeout_ms: options.timeoutMs,
+          timeout_ms: processTimeoutMs,
           elapsed_ms: elapsedMs,
           // Schema fields already exist on UsageEventMetadata; both paths are
           // workDir-relative so artifacts can be located after upload.
@@ -5702,9 +5722,14 @@ function runCodex(options: {
     );
   }
   if (result.error) {
-    emitUsage((result.error as NodeJS.ErrnoException).code === "ETIMEDOUT" ? "timeout" : "failed");
+    const timedOut = (result.error as NodeJS.ErrnoException).code === "ETIMEDOUT";
+    emitUsage(timedOut ? "timeout" : "failed");
+    const failureMessage =
+      timedOut && processTimeoutMs < options.timeoutMs
+        ? `small-prompt stall cap ${processTimeoutMs}ms reached before requested cap ${options.timeoutMs}ms`
+        : result.error.message;
     throw new Error(
-      `Codex review failed for #${options.item.number}: ${result.error.message}\n${
+      `Codex review failed for #${options.item.number}: ${failureMessage}\n${
         safeOutputTail(result.stderr) || safeOutputTail(result.stdout) || "No output."
       }`,
     );

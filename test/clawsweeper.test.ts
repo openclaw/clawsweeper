@@ -70,7 +70,9 @@ import {
   shouldEscalateCodexTimeout,
   nextReviewTimeoutEscalated,
   effectiveCodexTimeoutMs,
+  effectiveCodexProcessTimeoutMs,
   REVIEW_TIMEOUT_ESCALATED_MS,
+  SMALL_CODEX_PROMPT_STALL_TIMEOUT_MS,
   renderReviewTimeoutComment,
   realBehaviorProofSufficientLabelsForTest,
   relatedTitleSearchTerms,
@@ -4828,6 +4830,28 @@ test("effectiveCodexTimeoutMs picks base cap by default and the escalated cap on
   });
   assert.equal(custom.timeoutMs, 900_000);
   assert.equal(custom.escalated, true);
+});
+
+test("effectiveCodexProcessTimeoutMs caps small first-pass Codex prompt stalls", () => {
+  assert.equal(
+    effectiveCodexProcessTimeoutMs({ requestedTimeoutMs: 600_000, promptChars: 26_004 }),
+    SMALL_CODEX_PROMPT_STALL_TIMEOUT_MS,
+  );
+  assert.equal(
+    effectiveCodexProcessTimeoutMs({ requestedTimeoutMs: 600_000, promptChars: 51_110 }),
+    600_000,
+  );
+  assert.equal(
+    effectiveCodexProcessTimeoutMs({
+      requestedTimeoutMs: REVIEW_TIMEOUT_ESCALATED_MS,
+      promptChars: 26_004,
+    }),
+    REVIEW_TIMEOUT_ESCALATED_MS,
+  );
+  assert.equal(
+    effectiveCodexProcessTimeoutMs({ requestedTimeoutMs: 120_000, promptChars: 26_004 }),
+    120_000,
+  );
 });
 
 function claudeOptionsForTest(
