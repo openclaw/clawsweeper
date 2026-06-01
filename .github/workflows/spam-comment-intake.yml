@@ -40,6 +40,7 @@ jobs:
             .github/actions
             config/automation-limits.json
             src/repair
+            src/repository-profiles.ts
             package.json
             pnpm-lock.yaml
             tsconfig.repair.json

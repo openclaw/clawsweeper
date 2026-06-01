@@ -90,6 +90,7 @@ jobs:
             results
             scripts/hydrate-state.ts
             src/repair
+            src/repository-profiles.ts
             src/usage-telemetry.ts
             package.json
             pnpm-lock.yaml
