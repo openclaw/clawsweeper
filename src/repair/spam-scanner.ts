@@ -18,12 +18,10 @@ import {
   type SpamScanComment,
 } from "./spam-scanner-core.js";
 import { compactText } from "./text-utils.js";
+import { requireTargetRepo } from "../repository-profiles.js";
 
 const args = parseArgs(process.argv.slice(2));
-const targetRepo = stringSetting(
-  args.repo ?? process.env.CLAWSWEEPER_TARGET_REPO,
-  "openclaw/openclaw",
-);
+const targetRepo = requireTargetRepo(args.repo ?? process.env.CLAWSWEEPER_TARGET_REPO);
 const model = stringSetting(args.model ?? process.env.CLAWSWEEPER_SPAM_MODEL, "gpt-4o-mini");
 const lookbackMinutes = positiveInteger(
   args["lookback-minutes"] ?? process.env.CLAWSWEEPER_SPAM_LOOKBACK_MINUTES ?? 180,

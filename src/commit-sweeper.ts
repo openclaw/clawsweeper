@@ -14,7 +14,7 @@ import { safeOutputTail } from "./clawsweeper-text.js";
 import { codexEnv } from "./codex-env.js";
 import { runText } from "./command.js";
 import { ghRetryKind, ghRetryWaitMs } from "./github-retry.js";
-import { DEFAULT_TARGET_REPO, repositoryProfileFor } from "./repository-profiles.js";
+import { repositoryProfileFor, requireTargetRepo } from "./repository-profiles.js";
 import {
   appendUsageEventJsonl,
   buildUsageTelemetryEvent,
@@ -389,7 +389,7 @@ function runCodex(options: {
 }
 
 function reviewCommand(args: Args): void {
-  const targetRepo = argString(args, "target_repo", DEFAULT_TARGET_REPO);
+  const targetRepo = requireTargetRepo(argString(args, "target_repo", ""));
   const targetDir = resolve(
     argString(args, "target_dir", repositoryProfileFor(targetRepo).checkoutDir),
   );
@@ -437,7 +437,7 @@ function commitShasArg(value: string): string[] {
 }
 
 function classifyCommand(args: Args): void {
-  const targetRepo = argString(args, "target_repo", DEFAULT_TARGET_REPO);
+  const targetRepo = requireTargetRepo(argString(args, "target_repo", ""));
   const targetDir = resolve(
     argString(args, "target_dir", repositoryProfileFor(targetRepo).checkoutDir),
   );
@@ -465,7 +465,7 @@ function classifyCommand(args: Args): void {
 }
 
 function publishCheckCommand(args: Args): void {
-  const targetRepo = argString(args, "target_repo", DEFAULT_TARGET_REPO);
+  const targetRepo = requireTargetRepo(argString(args, "target_repo", ""));
   const reportRepo = argString(
     args,
     "report_repo",

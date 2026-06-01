@@ -6,9 +6,10 @@ import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { hasSecuritySignalText, parseArgs, repoRoot } from "./lib.js";
 import { renderJobIntentFrontmatter } from "./job-intent.js";
+import { requireTargetRepo } from "../repository-profiles.js";
 
 const args = parseArgs(process.argv.slice(2));
-const repo = String(args.repo ?? "openclaw/openclaw");
+const repo = requireTargetRepo(args.repo);
 const dbPath = path.resolve(
   String(args.db ?? path.join(os.homedir(), ".config", "gitcrawl", "gitcrawl.db")),
 );

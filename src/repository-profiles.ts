@@ -150,6 +150,24 @@ export function normalizeRepo(targetRepo: string): string {
   return targetRepo.trim().toLowerCase();
 }
 
+const TARGET_REPO_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
+
+/**
+ * Resolve an explicitly-provided target repo, or throw. There is intentionally NO
+ * fallback default: a missing target must fail fast rather than silently sweeping a
+ * guessed repo (a silent "openclaw/openclaw" default caused a production 404).
+ */
+export function requireTargetRepo(value: unknown): string {
+  const repo = typeof value === "string" ? value.trim() : "";
+  if (!TARGET_REPO_PATTERN.test(repo)) {
+    throw new Error(
+      `No target repository specified. Pass --repo/--target-repo <owner/name> or set CLAWSWEEPER_TARGET_REPO. ` +
+        `Got: ${repo ? JSON.stringify(repo) : "(empty)"}.`,
+    );
+  }
+  return repo;
+}
+
 export function isAutoCloseAllowed(
   profile: RepositoryProfile,
   kind: RepositoryItemKind,

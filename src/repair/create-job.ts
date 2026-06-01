@@ -11,7 +11,7 @@ import { renderJobIntentFrontmatter } from "./job-intent.js";
 const args = parseArgs(process.argv.slice(2));
 const fromReport = args["from-report"] ?? args.from_report;
 const report: LooseRecord = fromReport ? parseClawSweeperReport(String(fromReport)) : null;
-const repo = String(args.repo ?? report?.repo ?? "openclaw/openclaw");
+const repo = String(args.repo ?? report?.repo ?? "").trim();
 const refs = normalizeRefs([
   ...splitRefs(args.refs),
   ...splitRefs(args.issue),

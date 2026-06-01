@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   REPOSITORY_PROFILES,
   repositoryProfileFor,
+  requireTargetRepo,
   resolveRepositoryReviewProvider,
   reviewModelForProvider,
 } from "../dist/repository-profiles.js";
@@ -110,6 +111,17 @@ test("generic fallback does not support unknown repositories", () => {
     () => repositoryProfileFor("other-org/example-tool"),
     /Unsupported target repo: other-org\/example-tool/,
   );
+});
+
+test("requireTargetRepo returns explicitly-provided owner/name targets", () => {
+  assert.equal(requireTargetRepo("valkyriweb/clawsweeper"), "valkyriweb/clawsweeper");
+  assert.equal(requireTargetRepo("openclaw/openclaw"), "openclaw/openclaw");
+});
+
+test("requireTargetRepo fails fast when no target is provided", () => {
+  for (const value of ["", undefined, "  ", "not-a-repo"]) {
+    assert.throws(() => requireTargetRepo(value), /No target repository/);
+  }
 });
 
 test("profile lookup normalizes candidate target repos as well as input", () => {

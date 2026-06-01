@@ -21,6 +21,7 @@ import {
   normalizeRepo,
   repositoryProfileFor,
   repositoryProfileForSlug,
+  requireTargetRepo,
   resolveRepositoryReviewProvider,
   reviewModelForProvider,
   type RepositoryProfile,
@@ -1052,9 +1053,11 @@ function setTargetRepo(targetRepoName: string): RepositoryProfile {
 }
 
 function targetRepoInput(args: Args): string {
-  return stringArg(
-    args.target_repo,
-    process.env.CLAWSWEEPER_TARGET_REPO ?? process.env.TARGET_REPO ?? DEFAULT_TARGET_REPO,
+  return requireTargetRepo(
+    stringArg(
+      args.target_repo,
+      process.env.CLAWSWEEPER_TARGET_REPO ?? process.env.TARGET_REPO ?? "",
+    ),
   );
 }
 

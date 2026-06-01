@@ -3,12 +3,8 @@ import { DEFAULT_ALLOWED_REPOSITORY_PERMISSIONS } from "./comment-router-core.js
 import { currentProjectRepo, readMaxLiveWorkers } from "./lib.js";
 import { assertRepo, commaSet, positiveInteger } from "./comment-router-utils.js";
 import { AUTOMATION_LIMITS } from "./limits.js";
-import {
-  DEFAULT_HEAD_PREFIX,
-  DEFAULT_TARGET_REPO,
-  REPAIR_CLUSTER_WORKFLOW,
-  SWEEP_WORKFLOW,
-} from "./constants.js";
+import { DEFAULT_HEAD_PREFIX, REPAIR_CLUSTER_WORKFLOW, SWEEP_WORKFLOW } from "./constants.js";
+import { requireTargetRepo } from "../repository-profiles.js";
 export { DEFAULT_HEAD_PREFIX, DEFAULT_TARGET_REPO } from "./constants.js";
 
 const DEFAULT_ALLOWED_ASSOCIATIONS = ["OWNER", "MEMBER", "COLLABORATOR"];
@@ -51,10 +47,7 @@ export type CommentRouterConfig = {
 };
 
 export function readCommentRouterConfig(args: LooseRecord): CommentRouterConfig {
-  const targetRepo = stringSetting(
-    args.repo ?? process.env.CLAWSWEEPER_TARGET_REPO,
-    DEFAULT_TARGET_REPO,
-  );
+  const targetRepo = requireTargetRepo(args.repo ?? process.env.CLAWSWEEPER_TARGET_REPO);
   const repairRepo = stringSetting(
     args["repair-repo"] ?? process.env.CLAWSWEEPER_REPO,
     currentProjectRepo(),

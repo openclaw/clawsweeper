@@ -7,6 +7,7 @@ import { ghJsonWithRetry, ghTextWithRetry } from "./github-cli.js";
 import { parseIssueOrPullRef } from "./github-ref.js";
 import { CLAWSWEEPER_LABEL_DESCRIPTION, DEFAULT_LABEL } from "./constants.js";
 import { readJsonFileIfExists as readJson } from "./json-file.js";
+import { requireTargetRepo } from "../repository-profiles.js";
 
 const FIX_PR_STATUSES = new Set(["opened", "pushed", "executed", "blocked", "planned"]);
 const APPLY_STATUSES = new Set(["executed"]);
@@ -260,7 +261,7 @@ function collectFixActions(
 }
 
 function collectOpenClawSweeperPullRequests() {
-  const repo = process.env.CLAWSWEEPER_TARGET_REPO ?? "openclaw/openclaw";
+  const repo = requireTargetRepo(process.env.CLAWSWEEPER_TARGET_REPO);
   const pulls = ghJsonWithRetry([
     "pr",
     "list",
@@ -362,7 +363,7 @@ function postFlightToApplyAction(action: LooseRecord) {
 }
 
 function githubLabelExists() {
-  const repo = process.env.CLAWSWEEPER_TARGET_REPO ?? "openclaw/openclaw";
+  const repo = requireTargetRepo(process.env.CLAWSWEEPER_TARGET_REPO);
   const labels = ghJsonWithRetry([
     "label",
     "list",
@@ -377,7 +378,7 @@ function githubLabelExists() {
 }
 
 function createGithubLabel() {
-  const repo = process.env.CLAWSWEEPER_TARGET_REPO ?? "openclaw/openclaw";
+  const repo = requireTargetRepo(process.env.CLAWSWEEPER_TARGET_REPO);
   ghTextWithRetry([
     "label",
     "create",

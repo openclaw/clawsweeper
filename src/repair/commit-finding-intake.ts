@@ -20,6 +20,7 @@ import { readJsonFileIfExists as readJsonIfExists } from "./json-file.js";
 import { renderJobIntentFrontmatter } from "./job-intent.js";
 import { commitFindingPrTitle } from "./pr-title.js";
 import { escapeRegExp, slug } from "./text-utils.js";
+import { requireTargetRepo } from "../repository-profiles.js";
 
 const args = parseArgs(process.argv.slice(2));
 const command = args._[0] ?? "prepare";
@@ -30,7 +31,7 @@ else die(`unknown command: ${command}`);
 
 function prepare() {
   const enabled = stringArg("enabled", "true");
-  const targetRepo = stringArg("target-repo", stringArg("target_repo", "openclaw/openclaw"));
+  const targetRepo = requireTargetRepo(stringArg("target-repo", stringArg("target_repo", "")));
   const reportRepo = stringArg("report-repo", stringArg("report_repo", "openclaw/clawsweeper"));
   const sha = assertSha(stringArg("commit-sha", stringArg("commit_sha", "")));
   const reportPath = stringArg(
@@ -47,7 +48,7 @@ function prepare() {
   const reportMarkdown = reportRead.ok ? reportRead.markdown : "";
   const report = parseCommitReport(reportMarkdown);
   const clusterId = slug(`clawsweeper-commit-${repoSlug(targetRepo)}-${sha.slice(0, 12)}`);
-  const owner = targetRepo.split("/")[0];
+  const [owner = ""] = targetRepo.split("/");
   const jobPath = path.join(repoRoot(), "jobs", owner, "inbox", `${clusterId}.md`);
   const auditPath = path.join(
     repoRoot(),

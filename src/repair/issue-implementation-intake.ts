@@ -11,6 +11,7 @@ import {
   renderIssueImplementationJob,
   REVIEW_REPRODUCIBLE_BUG_TRIGGER_SOURCE,
 } from "./comment-router-core.js";
+import { requireTargetRepo } from "../repository-profiles.js";
 
 type IntakeDecision = {
   status: string;
@@ -35,7 +36,7 @@ function main() {
 
 function prepare() {
   const enabled = stringArg("enabled", "true");
-  const targetRepo = stringArg("target-repo", stringArg("target_repo", "openclaw/openclaw"));
+  const targetRepo = requireTargetRepo(stringArg("target-repo", stringArg("target_repo", "")));
   const reportRepo = stringArg("report-repo", stringArg("report_repo", "openclaw/clawsweeper"));
   const itemNumber = positiveInteger(
     stringArg("item-number", stringArg("item_number", "")),
@@ -114,7 +115,7 @@ function candidates() {
   const artifactDir = path.resolve(
     stringArg("artifact-dir", stringArg("artifact_dir", "artifacts")),
   );
-  const targetRepo = stringArg("target-repo", stringArg("target_repo", "openclaw/openclaw"));
+  const targetRepo = requireTargetRepo(stringArg("target-repo", stringArg("target_repo", "")));
   const reportRepo = stringArg("report-repo", stringArg("report_repo", "openclaw/clawsweeper"));
   const lane = parseLaneArg(stringArg("lane", "reproduced"));
   const out: LooseRecord[] = [];

@@ -15,7 +15,8 @@ import {
 } from "./lib.js";
 import { ghJson, ghText } from "./github-cli.js";
 import { sleepMs } from "./timing.js";
-import { DEFAULT_TARGET_REPO, REPAIR_CLUSTER_WORKFLOW, REVIEW_BOTS } from "./constants.js";
+import { REPAIR_CLUSTER_WORKFLOW, REVIEW_BOTS } from "./constants.js";
+import { requireTargetRepo } from "../repository-profiles.js";
 import { numberEnv } from "./env-utils.js";
 import { compactText, escapeRegExp } from "./text-utils.js";
 
@@ -27,7 +28,7 @@ const MERGEABILITY_POLL_MS = numberEnv("CLAWSWEEPER_FINALIZER_MERGEABILITY_POLL_
 const MERGEABILITY_POLL_ATTEMPTS = numberEnv("CLAWSWEEPER_FINALIZER_MERGEABILITY_POLL_ATTEMPTS", 3);
 
 const args = parseArgs(process.argv.slice(2));
-const repo = String(args.repo ?? process.env.CLAWSWEEPER_TARGET_REPO ?? DEFAULT_TARGET_REPO);
+const repo = requireTargetRepo(args.repo ?? process.env.CLAWSWEEPER_TARGET_REPO);
 const repairRepo = String(
   args["repair-repo"] ?? process.env.CLAWSWEEPER_REPO ?? currentProjectRepo(),
 );

@@ -6,6 +6,7 @@ import { hasSecuritySignalText, parseArgs, parseJob, repoRoot, validateJob } fro
 import { ghJson } from "./github-cli.js";
 import { REPAIR_CLUSTER_WORKFLOW } from "./constants.js";
 import { readJsonFileIfExists as readJson } from "./json-file.js";
+import { requireTargetRepo } from "../repository-profiles.js";
 
 const args = parseArgs(process.argv.slice(2));
 const jobsDir = path.resolve(
@@ -248,7 +249,7 @@ function latestClusterRecords(runRecords: JsonValue) {
 }
 
 function readOpenClawSweeperPrClusters() {
-  const repo = process.env.CLAWSWEEPER_TARGET_REPO ?? "openclaw/openclaw";
+  const repo = requireTargetRepo(process.env.CLAWSWEEPER_TARGET_REPO);
   const pulls = ghJson([
     "pr",
     "list",
