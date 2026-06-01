@@ -7,8 +7,8 @@ name: ClawSweeper
 run-name: ${{ github.event_name == 'repository_dispatch' && format('Review event item {0}#{1}', github.event.client_payload.target_repo || 'bermont-digital/multica', github.event.client_payload.item_number || '?') || (github.event_name == 'workflow_dispatch' && github.event.inputs.apply_existing == 'true' && github.event.inputs.apply_sync_comments_only == 'true') && format('Sync Codex review comments — {0}', github.event.inputs.target_repo || 'bermont-digital/multica') || (github.event_name == 'workflow_dispatch' && github.event.inputs.apply_existing == 'true') && format('Apply ClawSweeper closures — {0}', github.event.inputs.target_repo || 'bermont-digital/multica') || (github.event_name == 'workflow_dispatch' && github.event.inputs.audit_dashboard == 'true') && format('Audit ClawSweeper state — {0}', github.event.inputs.target_repo || 'bermont-digital/multica') || (github.event_name == 'workflow_dispatch' && github.event.inputs.hot_intake == 'true') && format('Review hot ClawSweeper items — {0}', github.event.inputs.target_repo || 'bermont-digital/multica') || (github.event_name == 'workflow_dispatch' && github.event.inputs.item_number != '') && format('Review ClawSweeper items — {0}#{1}', github.event.inputs.target_repo || 'bermont-digital/multica', github.event.inputs.item_number) || (github.event_name == 'workflow_dispatch' && github.event.inputs.item_numbers != '') && format('Review ClawSweeper items — {0} [{1}]', github.event.inputs.target_repo || 'bermont-digital/multica', github.event.inputs.item_numbers) || github.event_name == 'workflow_dispatch' && format('Review ClawSweeper items — {0}', github.event.inputs.target_repo || 'bermont-digital/multica') || 'Review ClawSweeper items' }}
 
 on:
-  repository_dispatch:
-    types: [clawsweeper_item]
+  # Manual only. Repository-dispatch hot intake and scheduled sweeps are paused
+  # so ClawSweeper does not spend Codex quota without an operator request.
   workflow_dispatch:
     inputs:
       target_repo:
@@ -111,23 +111,6 @@ on:
         description: "Refresh audit state without running review or apply work"
         required: false
         default: "false"
-  schedule:
-    # Per-cron target routing is handled in the plan job's "Resolve target repository"
-    # step via a case statement on github.event.schedule.
-    #
-    # Cadence revised 2026-05-18 for the realtime-receiver era: push-mode dispatch
-    # handles real-time review on every event, so cron becomes a daily backstop for
-    # items dispatch missed plus periodic re-evaluation.
-    #
-    # valkyriweb/pi-mono: 05:00 UTC. Active upstream fork — catch upstream-sync drift.
-    # valkyriweb/lue-kube: 07:00 UTC. Active ops repo.
-    # valkyriweb/openclaw-claude: 08:00 UTC. Doc commits.
-    # valkyriweb/openclaw is intentionally not scheduled during the safe-ramp period.
-    # bermont-digital/multica + CLIP-SA/* + valkyriweb/clawsweeper-self: workflow_dispatch only.
-    - cron: "0 5 * * *" # valkyriweb/pi-mono
-    - cron: "0 7 * * *" # valkyriweb/lue-kube — re-enabled 2026-05-29 after GH_BIN ghx-bypass fixed scoped-token 404
-    - cron: "0 8 * * *" # valkyriweb/openclaw-claude
-
 permissions:
   contents: write
   actions: write
@@ -327,7 +310,21 @@ jobs:
         uses: ./.github/actions/setup-claude-code
 
       - if: ${{ steps.review-routing.outputs.review_provider == 'pi' }}
+        name: Create Pi package token
+        id: pi-package-token
+        uses: actions/create-github-app-token@1b10c78c7865c340bc4f6099eb2f838309f1e8c3 # v3.1.1
+        with:
+          client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
+          owner: valkyriweb
+          repositories: my-pi
+          permission-contents: read
+          permission-packages: read
+
+      - if: ${{ steps.review-routing.outputs.review_provider == 'pi' }}
         uses: ./.github/actions/setup-pi
+        with:
+          token: ${{ steps.pi-package-token.outputs.token }}
 
       - name: Check out target repository
         timeout-minutes: 10
@@ -982,7 +979,21 @@ jobs:
         uses: ./clawsweeper/.github/actions/setup-claude-code
 
       - if: ${{ needs.plan.outputs.review_provider == 'pi' }}
+        name: Create Pi package token
+        id: pi-package-token
+        uses: actions/create-github-app-token@1b10c78c7865c340bc4f6099eb2f838309f1e8c3 # v3.1.1
+        with:
+          client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
+          owner: valkyriweb
+          repositories: my-pi
+          permission-contents: read
+          permission-packages: read
+
+      - if: ${{ needs.plan.outputs.review_provider == 'pi' }}
         uses: ./clawsweeper/.github/actions/setup-pi
+        with:
+          token: ${{ steps.pi-package-token.outputs.token }}
 
       - name: Check out target repository
         timeout-minutes: 10
