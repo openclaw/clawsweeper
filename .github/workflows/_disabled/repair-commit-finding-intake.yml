@@ -13,7 +13,7 @@ on:
       target_repo:
         description: "Target repository"
         required: true
-        default: "openclaw/openclaw"
+        default: "valkyriweb/clawsweeper"
         type: string
       commit_sha:
         description: "Commit SHA with a ClawSweeper finding"
@@ -66,7 +66,7 @@ env:
   CLAWSWEEPER_GIT_USER_EMAIL: ${{ vars.CLAWSWEEPER_GIT_USER_EMAIL || '274271284+clawsweeper[bot]@users.noreply.github.com' }}
 
 concurrency:
-  group: commit-finding-${{ github.event.inputs.target_repo || github.event.client_payload.target_repo || 'openclaw/openclaw' }}-${{ github.event.inputs.commit_sha || github.event.client_payload.commit_sha || github.run_id }}
+  group: commit-finding-${{ github.event.inputs.target_repo || github.event.client_payload.target_repo || 'valkyriweb/clawsweeper' }}-${{ github.event.inputs.commit_sha || github.event.client_payload.commit_sha || github.run_id }}
   cancel-in-progress: false
 
 jobs:
@@ -124,7 +124,7 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.app_token.outputs.token }}
           ENABLED: ${{ github.event.inputs.enabled || github.event.client_payload.enabled || vars.CLAWSWEEPER_COMMIT_FINDING_INTAKE_ENABLED || 'true' }}
-          TARGET_REPO: ${{ github.event.inputs.target_repo || github.event.client_payload.target_repo || 'openclaw/openclaw' }}
+          TARGET_REPO: ${{ github.event.inputs.target_repo || github.event.client_payload.target_repo || 'valkyriweb/clawsweeper' }}
           COMMIT_SHA: ${{ github.event.inputs.commit_sha || github.event.client_payload.commit_sha }}
           REPORT_REPO: ${{ github.event.inputs.report_repo || github.event.client_payload.report_repo || 'openclaw/clawsweeper' }}
           REPORT_PATH: ${{ github.event.inputs.report_path || github.event.client_payload.report_path }}

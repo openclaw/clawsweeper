@@ -13,7 +13,7 @@ on:
       target_repo:
         description: "Repository to scan for spam comments"
         required: true
-        default: openclaw/openclaw
+        default: valkyriweb/clawsweeper
         type: string
       lookback_minutes:
         description: "How far back to scan comments"
@@ -58,7 +58,7 @@ env:
   CLAWSWEEPER_APP_CLIENT_ID: Iv23liOECG0slfuhz093
 
 concurrency:
-  group: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.comment_id && format('spam-scanner-{0}-issue-comment-{1}', github.event.client_payload.target_repo || 'openclaw/openclaw', github.event.client_payload.comment_id) || github.event_name == 'repository_dispatch' && github.event.client_payload.review_comment_id && format('spam-scanner-{0}-review-comment-{1}', github.event.client_payload.target_repo || 'openclaw/openclaw', github.event.client_payload.review_comment_id) || format('spam-scanner-{0}', github.event.inputs.target_repo || github.event.client_payload.target_repo || vars.CLAWSWEEPER_TARGET_REPO || 'openclaw/openclaw') }}
+  group: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.comment_id && format('spam-scanner-{0}-issue-comment-{1}', github.event.client_payload.target_repo || 'valkyriweb/clawsweeper', github.event.client_payload.comment_id) || github.event_name == 'repository_dispatch' && github.event.client_payload.review_comment_id && format('spam-scanner-{0}-review-comment-{1}', github.event.client_payload.target_repo || 'valkyriweb/clawsweeper', github.event.client_payload.review_comment_id) || format('spam-scanner-{0}', github.event.inputs.target_repo || github.event.client_payload.target_repo || vars.CLAWSWEEPER_TARGET_REPO || 'valkyriweb/clawsweeper') }}
   cancel-in-progress: false
 
 jobs:
@@ -113,7 +113,7 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
           set -euo pipefail
-          target_repo="${{ github.event_name == 'workflow_dispatch' && inputs.target_repo || vars.CLAWSWEEPER_TARGET_REPO || 'openclaw/openclaw' }}"
+          target_repo="${{ github.event_name == 'workflow_dispatch' && inputs.target_repo || vars.CLAWSWEEPER_TARGET_REPO || 'valkyriweb/clawsweeper' }}"
           lookback_minutes="${{ github.event_name == 'workflow_dispatch' && inputs.lookback_minutes || vars.CLAWSWEEPER_SPAM_LOOKBACK_MINUTES || '180' }}"
           since="${{ github.event_name == 'workflow_dispatch' && inputs.since || '' }}"
           max_comments="${{ github.event_name == 'workflow_dispatch' && inputs.max_comments || vars.CLAWSWEEPER_SPAM_MAX_COMMENTS || '100' }}"
@@ -122,7 +122,7 @@ jobs:
           model="${{ github.event_name == 'workflow_dispatch' && inputs.model || vars.CLAWSWEEPER_SPAM_MODEL || 'gpt-4o-mini' }}"
           force_reprocess="${{ github.event_name == 'workflow_dispatch' && inputs.force_reprocess || 'false' }}"
           if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
-            target_repo="${{ github.event.client_payload.target_repo || 'openclaw/openclaw' }}"
+            target_repo="${{ github.event.client_payload.target_repo || 'valkyriweb/clawsweeper' }}"
             lookback_minutes="${{ github.event.client_payload.lookback_minutes || vars.CLAWSWEEPER_SPAM_LOOKBACK_MINUTES || '180' }}"
             since=""
             max_comments="${{ github.event.client_payload.max_comments || '1' }}"
@@ -156,7 +156,7 @@ jobs:
       - name: Commit spam scanner audit
         if: always()
         run: |
-          target_repo="${{ github.event_name == 'repository_dispatch' && (github.event.client_payload.target_repo || 'openclaw/openclaw') || github.event.inputs.target_repo || vars.CLAWSWEEPER_TARGET_REPO || 'openclaw/openclaw' }}"
+          target_repo="${{ github.event_name == 'repository_dispatch' && (github.event.client_payload.target_repo || 'valkyriweb/clawsweeper') || github.event.inputs.target_repo || vars.CLAWSWEEPER_TARGET_REPO || 'valkyriweb/clawsweeper' }}"
           comment_ids="${{ github.event_name == 'workflow_dispatch' && inputs.comment_ids || github.event.client_payload.comment_id || '' }}"
           review_comment_ids="${{ github.event_name == 'workflow_dispatch' && inputs.review_comment_ids || github.event.client_payload.review_comment_id || '' }}"
           publish_args=(--message "chore: record ClawSweeper spam scan")

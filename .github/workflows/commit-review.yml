@@ -1,6 +1,6 @@
 name: ClawSweeper Commit Review
 
-run-name: Commit review ${{ github.event.inputs.target_repo || github.event.client_payload.target_repo || 'openclaw/openclaw' }}@${{ github.event.inputs.commit_sha || github.event.client_payload.after_sha || github.event.client_payload.commit_sha || '?' }}
+run-name: Commit review ${{ github.event.inputs.target_repo || github.event.client_payload.target_repo || 'valkyriweb/clawsweeper' }}@${{ github.event.inputs.commit_sha || github.event.client_payload.after_sha || github.event.client_payload.commit_sha || '?' }}
 
 on:
   repository_dispatch:
@@ -14,7 +14,7 @@ on:
       target_repo:
         description: "Repository containing the main commit"
         required: false
-        default: "openclaw/openclaw"
+        default: "valkyriweb/clawsweeper"
       commit_sha:
         description: "Specific commit SHA to review"
         required: true
@@ -54,7 +54,7 @@ env:
   OPIK_PROJECT_NAME: clawsweeper
 
 concurrency:
-  group: commit-review-${{ github.event.inputs.target_repo || github.event.client_payload.target_repo || 'openclaw/openclaw' }}-${{ github.event.inputs.commit_sha || github.event.client_payload.after_sha || github.event.client_payload.commit_sha || github.run_id }}
+  group: commit-review-${{ github.event.inputs.target_repo || github.event.client_payload.target_repo || 'valkyriweb/clawsweeper' }}-${{ github.event.inputs.commit_sha || github.event.client_payload.after_sha || github.event.client_payload.commit_sha || github.run_id }}
   cancel-in-progress: false
 
 jobs:
@@ -116,7 +116,7 @@ jobs:
       - name: Resolve target repository
         id: target
         run: |
-          target_repo="${{ github.event.inputs.target_repo || github.event.client_payload.target_repo || 'openclaw/openclaw' }}"
+          target_repo="${{ github.event.inputs.target_repo || github.event.client_payload.target_repo || 'valkyriweb/clawsweeper' }}"
           if ! printf '%s' "$target_repo" | grep -Eq '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$'; then
             echo "Invalid target_repo: $target_repo" >&2
             exit 1
