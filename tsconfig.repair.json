@@ -15,5 +15,5 @@
     "forceConsistentCasingInFileNames": true,
     "skipLibCheck": true
   },
-  "include": ["src/usage-telemetry.ts", "src/repair/**/*.ts"]
+  "include": ["src/usage-telemetry.ts", "src/repository-profiles.ts", "src/repair/**/*.ts"]
 }
