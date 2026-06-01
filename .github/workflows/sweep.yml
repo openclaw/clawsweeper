@@ -319,7 +319,6 @@ jobs:
           owner: valkyriweb
           repositories: my-pi
           permission-contents: read
-          permission-packages: read
 
       - if: ${{ steps.review-routing.outputs.review_provider == 'pi' }}
         uses: ./.github/actions/setup-pi
@@ -988,7 +987,6 @@ jobs:
           owner: valkyriweb
           repositories: my-pi
           permission-contents: read
-          permission-packages: read
 
       - if: ${{ needs.plan.outputs.review_provider == 'pi' }}
         uses: ./clawsweeper/.github/actions/setup-pi
