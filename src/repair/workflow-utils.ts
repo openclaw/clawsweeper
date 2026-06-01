@@ -5,6 +5,12 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseArgs } from "./lib.js";
 import { isJsonObject } from "./json-types.js";
+import {
+  repositoryProfileFor,
+  resolveRepositoryReviewProvider,
+  reviewModelForProvider,
+  type ReviewProvider,
+} from "../repository-profiles.js";
 import { AUTOMATION_LIMITS, WORKER_CONFIG, workerLimit, type WorkerLane } from "./limits.js";
 
 type ApplyAction = {
@@ -65,6 +71,12 @@ function runCli(): void {
       break;
     case "worker-config":
       process.stdout.write(JSON.stringify(WORKER_CONFIG, null, 2));
+      break;
+    case "review-provider":
+      process.stdout.write(reviewProviderForTarget(requiredString("target-repo")));
+      break;
+    case "review-model":
+      process.stdout.write(reviewModelForTarget(requiredString("target-repo")));
       break;
     case "proposed-item-numbers":
       process.stdout.write(proposedItemNumbers(proposedItemOptions()).join(","));
@@ -143,6 +155,8 @@ export function planOutputFields(
     planned_item_numbers: plannedItemNumberCsv(plan),
     planned_shards: String(matrix.length),
     active_codex_target: String(numberFromPlan(plan.activeCodexTarget, matrix.length)),
+    review_model: reviewModelFromPlan(plan),
+    review_provider: typeof plan.reviewProvider === "string" ? plan.reviewProvider : "",
     due_backlog: String(numberFromPlan(plan.dueBacklog, candidates.length)),
     oldest_unreviewed_at:
       typeof plan.oldestUnreviewedAt === "string" ? plan.oldestUnreviewedAt : "",
@@ -160,6 +174,24 @@ export function planOutputFields(
 function numberFromPlan(value: JsonValue | undefined, fallback: number): number {
   const number = typeof value === "number" ? value : Number(value);
   return Number.isFinite(number) ? number : fallback;
+}
+
+export function reviewProviderForTarget(targetRepo: string): ReviewProvider {
+  const profile = repositoryProfileFor(targetRepo);
+  return resolveRepositoryReviewProvider({
+    explicit: profile.reviewProvider,
+    env: process.env.CLAWSWEEPER_REVIEW_PROVIDER,
+  });
+}
+
+export function reviewModelForTarget(targetRepo: string): string {
+  return reviewModelForProvider(reviewProviderForTarget(targetRepo));
+}
+
+function reviewModelFromPlan(plan: LooseRecord): string {
+  const reviewPolicy = plan.reviewPolicy;
+  if (!isJsonObject(reviewPolicy)) return "";
+  return typeof reviewPolicy.model === "string" ? reviewPolicy.model : "";
 }
 
 function defaultCapacityReason(

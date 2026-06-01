@@ -5693,8 +5693,9 @@ test("runPi spawns pi -p with --mode json --no-session and returns a Decision", 
   assert.ok(capturedArgs.includes("json"));
   // --no-session is mandatory to avoid parallel session-DB races.
   assert.ok(capturedArgs.includes("--no-session"));
-  // Read-only sandbox restricts tools.
+  // Read-only sandbox keeps inspection tools and Agent for cheap explore subagents.
   assert.ok(capturedArgs.includes("-t"));
+  assert.ok(capturedArgs.includes("read,glob,grep,agent,Agent"));
   // Prompt is wrapped with schema instruction.
   assert.match(capturedInput, /Pretend review prompt body/);
   assert.match(capturedInput, /JSON Schema/);

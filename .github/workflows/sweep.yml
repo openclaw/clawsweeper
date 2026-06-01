@@ -287,6 +287,15 @@ jobs:
         with:
           build-script: build:all
 
+      - id: review-routing
+        env:
+          CLAWSWEEPER_REVIEW_PROVIDER: ${{ vars.CLAWSWEEPER_REVIEW_PROVIDER || '' }}
+          TARGET_REPO: ${{ steps.target.outputs.target_repo }}
+        run: |
+          set -euo pipefail
+          echo "review_provider=$(pnpm run --silent workflow -- review-provider --target-repo "$TARGET_REPO")" >> "$GITHUB_OUTPUT"
+          echo "review_model=$(pnpm run --silent workflow -- review-model --target-repo "$TARGET_REPO")" >> "$GITHUB_OUTPUT"
+
       - name: Mark re-review command in progress
         continue-on-error: true
         env:
@@ -314,10 +323,10 @@ jobs:
       # active review_provider for this run matches. Setup-codex stays
       # unconditional because it is cheap when warm and many helper steps
       # call the codex CLI regardless of the review provider.
-      - if: ${{ vars.CLAWSWEEPER_REVIEW_PROVIDER == 'claude-code' }}
+      - if: ${{ steps.review-routing.outputs.review_provider == 'claude-code' }}
         uses: ./.github/actions/setup-claude-code
 
-      - if: ${{ vars.CLAWSWEEPER_REVIEW_PROVIDER == 'pi' }}
+      - if: ${{ steps.review-routing.outputs.review_provider == 'pi' }}
         uses: ./.github/actions/setup-pi
 
       - name: Check out target repository
@@ -337,6 +346,7 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
           ADDITIONAL_PROMPT: ${{ github.event.client_payload.additional_prompt || '' }}
+          CLAWSWEEPER_REVIEW_PROVIDER: ${{ vars.CLAWSWEEPER_REVIEW_PROVIDER || '' }}
         run: |
           set -euo pipefail
           test -n "$GH_TOKEN"
@@ -344,13 +354,14 @@ jobs:
           if [ -n "$ADDITIONAL_PROMPT" ]; then
             additional_prompt_arg=(--additional-prompt "$ADDITIONAL_PROMPT")
           fi
+          review_model="${{ steps.review-routing.outputs.review_model }}"
           timeout --kill-after=30s 12m pnpm run review -- \
             --target-repo "${{ steps.target.outputs.target_repo }}" \
             --target-dir "${{ steps.target.outputs.target_checkout_dir }}" \
             --artifact-dir artifacts/event \
             --batch-size 1 \
             --max-pages 1 \
-            --codex-model gpt-5.5 \
+            --codex-model "$review_model" \
             --codex-reasoning-effort ${{ vars.CODEX_REASONING_EFFORT || 'none' }} \
             --codex-sandbox danger-full-access \
             --codex-timeout-ms 600000 \
@@ -536,6 +547,8 @@ jobs:
       batch_size: ${{ steps.mode.outputs.batch_size }}
       codex_timeout_ms: ${{ steps.mode.outputs.codex_timeout_ms }}
       codex_reasoning_effort: ${{ steps.mode.outputs.codex_reasoning_effort }}
+      review_model: ${{ steps.select.outputs.review_model }}
+      review_provider: ${{ steps.select.outputs.review_provider }}
       # codex_reasoning_effort threads the input/env value to all shards.
       # Default is computed in the 'mode' step (vars.CODEX_REASONING_EFFORT || 'none').
       hot_intake: ${{ steps.mode.outputs.hot_intake }}
@@ -639,6 +652,16 @@ jobs:
         with:
           working-directory: clawsweeper
           build-script: build:all
+
+      - id: review-routing
+        working-directory: clawsweeper
+        env:
+          CLAWSWEEPER_REVIEW_PROVIDER: ${{ vars.CLAWSWEEPER_REVIEW_PROVIDER || '' }}
+          TARGET_REPO: ${{ steps.target.outputs.target_repo }}
+        run: |
+          set -euo pipefail
+          echo "review_provider=$(pnpm run --silent workflow -- review-provider --target-repo "$TARGET_REPO")" >> "$GITHUB_OUTPUT"
+          echo "review_model=$(pnpm run --silent workflow -- review-model --target-repo "$TARGET_REPO")" >> "$GITHUB_OUTPUT"
 
       - uses: actions/upload-artifact@v7
         with:
@@ -810,6 +833,7 @@ jobs:
       - id: select
         working-directory: clawsweeper
         env:
+          CLAWSWEEPER_REVIEW_PROVIDER: ${{ vars.CLAWSWEEPER_REVIEW_PROVIDER || '' }}
           SHARD_COUNT: ${{ steps.mode.outputs.shard_count }}
           BATCH_SIZE: ${{ steps.mode.outputs.batch_size }}
           HOT_INTAKE: ${{ steps.mode.outputs.hot_intake }}
@@ -833,12 +857,13 @@ jobs:
           if [ "$HOT_INTAKE" = "true" ]; then
             hot_intake_arg=(--hot-intake)
           fi
+          review_model="${{ steps.review-routing.outputs.review_model }}"
           pnpm run --silent plan -- \
             --target-repo "$TARGET_REPO" \
             --batch-size "$BATCH_SIZE" \
             --max-pages "$MAX_PAGES" \
             --shard-count "$SHARD_COUNT" \
-            --codex-model gpt-5.5 \
+            --codex-model "$review_model" \
             --codex-reasoning-effort ${{ vars.CODEX_REASONING_EFFORT || 'none' }} \
             --codex-sandbox danger-full-access \
             --min-active-shards "$MIN_ACTIVE_SHARDS" \
@@ -953,10 +978,10 @@ jobs:
           login-status: "true"
 
       # Conditional providers — see event-review-apply for rationale.
-      - if: ${{ vars.CLAWSWEEPER_REVIEW_PROVIDER == 'claude-code' }}
+      - if: ${{ needs.plan.outputs.review_provider == 'claude-code' }}
         uses: ./clawsweeper/.github/actions/setup-claude-code
 
-      - if: ${{ vars.CLAWSWEEPER_REVIEW_PROVIDER == 'pi' }}
+      - if: ${{ needs.plan.outputs.review_provider == 'pi' }}
         uses: ./clawsweeper/.github/actions/setup-pi
 
       - name: Check out target repository
@@ -1040,7 +1065,7 @@ jobs:
             --artifact-dir ../review-artifacts/shard-${{ matrix.shard }} \
             --batch-size ${{ needs.plan.outputs.batch_size }} \
             --max-pages ${{ needs.plan.outputs.max_pages }} \
-            --codex-model gpt-5.5 \
+            --codex-model ${{ needs.plan.outputs.review_model }} \
             --codex-reasoning-effort ${{ needs.plan.outputs.codex_reasoning_effort }} \
             --codex-sandbox danger-full-access \
             --codex-timeout-ms ${{ needs.plan.outputs.codex_timeout_ms }} \

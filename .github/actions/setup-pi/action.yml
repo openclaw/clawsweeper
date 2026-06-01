@@ -2,7 +2,16 @@ name: Setup Pi CLI
 description: Ensure the Pi coding-agent CLI is installed and authenticated on the runner.
 inputs:
   version:
-    description: Pi npm package version. Empty installs the latest.
+    description: "@valkyriweb/pi-coding-agent version. Empty installs the latest published package."
+    default: ""
+  profile-package:
+    description: Versioned Pi profile package to load from ~/.pi/agent/settings.json.
+    default: "@valkyriweb/my-pi-actions"
+  profile-version:
+    description: Pi profile package version. Empty installs the latest published package.
+    default: "0.1.2"
+  token:
+    description: GitHub Packages token with read:packages. Empty uses github.token.
     default: ""
   cache-suffix:
     description: Extra cache key suffix for target-tool downloads.
@@ -20,38 +29,75 @@ runs:
         path: |
           ~/.npm
           ~/.cache/node/corepack
-        key: ${{ runner.os }}-node24-pi-${{ inputs.version || 'latest' }}-${{ inputs['cache-suffix'] || 'default' }}-v1
+        key: ${{ runner.os }}-node24-pi-${{ inputs.version || 'latest' }}-${{ inputs.profile-package }}-${{ inputs.profile-version || 'latest' }}-${{ inputs['cache-suffix'] || 'default' }}-v2
         restore-keys: |
-          ${{ runner.os }}-node24-pi-${{ inputs.version || 'latest' }}-
+          ${{ runner.os }}-node24-pi-${{ inputs.version || 'latest' }}-${{ inputs.profile-package }}-
           ${{ runner.os }}-node24-pi-
 
-    - name: Install Pi CLI
+    - name: Install pinned Pi CLI and profile
       shell: bash
+      env:
+        NODE_AUTH_TOKEN: ${{ inputs.token || github.token }}
+        PI_VERSION: ${{ inputs.version }}
+        PI_PROFILE_PACKAGE: ${{ inputs.profile-package }}
+        PI_PROFILE_VERSION: ${{ inputs.profile-version }}
       run: |
         set -euo pipefail
-        if command -v pi >/dev/null 2>&1; then
-          # Pi writes --version to stderr historically; check both.
-          installed=$(pi --version 2>&1 | head -1 || true)
-          echo "pi already on PATH: $installed"
-          if [[ -z "${{ inputs.version }}" ]] || echo "$installed" | grep -Fq "${{ inputs.version }}"; then
-            exit 0
-          fi
-          echo "Version mismatch — reinstalling at ${{ inputs.version }}."
+        npmrc="$(mktemp)"
+        trap 'rm -f "$npmrc"' EXIT
+        printf '%s\n' '@valkyriweb:registry=https://npm.pkg.github.com' > "$npmrc"
+        if [ -n "${NODE_AUTH_TOKEN:-}" ]; then
+          printf '%s\n' '//npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN}' >> "$npmrc"
         fi
-        # Self-hosted runners typically build pi from source at
-        # ~/Projects/personal/pi-mono-fork and symlink the binary into PATH.
-        # If pi is not found, do not try to npm install — pi is not on a
-        # public npm registry. Fail loudly so the operator notices.
-        echo "::error::pi CLI not found on this runner. On self-hosted, build from ~/Projects/personal/pi-mono-fork and symlink the binary into PATH. On hosted runners, vendor pi as a build artifact." >&2
-        exit 1
-
-    - name: Verify Pi config on self-hosted
-      if: runner.environment == 'self-hosted'
-      shell: bash
-      run: |
-        set -euo pipefail
-        if [[ ! -f "$HOME/.pi/config.toml" ]] && [[ ! -d "$HOME/.pi" ]]; then
-          echo "::error::No pi config at ~/.pi. Run \`pi\` once on this runner to initialise it." >&2
+        export NPM_CONFIG_USERCONFIG="$npmrc"
+        pi_package="@valkyriweb/pi-coding-agent"
+        profile_package="$PI_PROFILE_PACKAGE"
+        if [ -n "$PI_VERSION" ]; then
+          pi_package="$pi_package@$PI_VERSION"
+        fi
+        if [ -n "$PI_PROFILE_VERSION" ]; then
+          profile_package="$profile_package@$PI_PROFILE_VERSION"
+        fi
+        npm install -g "$pi_package" "$profile_package"
+        installed="$(pi --version 2>&1 | head -1 || true)"
+        echo "pi installed: $installed"
+        profile_root="$(npm root -g)/$PI_PROFILE_PACKAGE"
+        if [ ! -f "$profile_root/package.json" ]; then
+          echo "::error::Pi profile package not found after install: $profile_root" >&2
           exit 1
         fi
-        echo "pi config present at ~/.pi"
+        mkdir -p "$HOME/.pi/agent"
+        node - "$HOME/.pi/agent/settings.json" "$profile_root" <<'NODE'
+        const fs = require("node:fs");
+        const path = require("node:path");
+        const [settingsPath, profileRoot] = process.argv.slice(2);
+        const manifestPath = path.join(profileRoot, "package.json");
+        const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+        const missing = (manifest.pi?.extensions ?? [])
+          .map((entry) => path.resolve(profileRoot, entry))
+          .filter((entry) => !fs.existsSync(entry));
+        if (missing.length > 0) {
+          console.error(`Pi profile has missing extension entries: ${missing.join(", ")}`);
+          process.exit(1);
+        }
+        const settings = fs.existsSync(settingsPath) ? JSON.parse(fs.readFileSync(settingsPath, "utf8")) : {};
+        settings.packages = [profileRoot];
+        settings.subagents = {
+          ...(settings.subagents ?? {}),
+          providers: {
+            ...(settings.subagents?.providers ?? {}),
+            anthropic: { ...(settings.subagents?.providers?.anthropic ?? {}), model: "fast" },
+            "claude-bridge": { ...(settings.subagents?.providers?.["claude-bridge"] ?? {}), model: "fast" },
+            openai: { ...(settings.subagents?.providers?.openai ?? {}), model: "fast" }
+          }
+        };
+        fs.writeFileSync(settingsPath, `${JSON.stringify(settings, null, 2)}\n`);
+        NODE
+
+    - name: Verify Pi profile config
+      shell: bash
+      run: |
+        set -euo pipefail
+        test -x "$(command -v pi)"
+        test -f "$HOME/.pi/agent/settings.json"
+        node -e 'const s=require(process.env.HOME+"/.pi/agent/settings.json"); if (!Array.isArray(s.packages) || !s.packages.some((p)=>String(p).includes("my-pi-actions"))) process.exit(1); console.log("pi profile packages:", s.packages.join(", "));'

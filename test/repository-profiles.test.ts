@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { REPOSITORY_PROFILES, repositoryProfileFor } from "../dist/repository-profiles.js";
+import {
+  REPOSITORY_PROFILES,
+  repositoryProfileFor,
+  resolveRepositoryReviewProvider,
+  reviewModelForProvider,
+} from "../dist/repository-profiles.js";
 
 test("repositoryProfileFor matches mixed-case input against private target profiles", () => {
   const profile = repositoryProfileFor("CLIP-SA/Core-Wholesale");
@@ -66,12 +71,24 @@ test("valkyriweb/pi-mono profile carries pi service-area routing notes", () => {
   ]);
 });
 
-test("openclaw-claude profile uses claude-bridge for review canaries", () => {
+test("openclaw-claude profile uses pi for the narrow review canary", () => {
   const profile = repositoryProfileFor("valkyriweb/openclaw-claude");
 
   assert.equal(profile.targetRepo, "valkyriweb/openclaw-claude");
-  assert.equal(profile.reviewProvider, "claude-bridge");
+  assert.equal(profile.reviewProvider, "pi");
   assert.match(profile.promptNote, /ops\/release triage/);
+});
+
+test("review routing maps codex to gpt-5.5 and pi to opus 4.8", () => {
+  assert.equal(reviewModelForProvider("codex"), "gpt-5.5");
+  assert.equal(reviewModelForProvider("pi"), "claude-opus-4-8");
+  assert.equal(reviewModelForProvider("claude-bridge"), "claude-opus-4-8");
+});
+
+test("review provider resolution keeps per-target config ahead of env override", () => {
+  assert.equal(resolveRepositoryReviewProvider({ explicit: "pi", env: "codex" }), "pi");
+  assert.equal(resolveRepositoryReviewProvider({ env: "pi" }), "pi");
+  assert.equal(resolveRepositoryReviewProvider({}), "codex");
 });
 
 test("private-repo triage disables generic OpenClaw fallback", () => {

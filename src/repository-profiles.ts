@@ -16,6 +16,8 @@ export type RepositoryCloseReason =
 
 export type ReviewProvider = "codex" | "claude-bridge" | "claude-code" | "pi";
 
+export type ReviewProviderModels = Record<ReviewProvider, string>;
+
 export interface RepositoryProfile {
   targetRepo: string;
   slug: string;
@@ -42,7 +44,12 @@ export interface RepositoryProfile {
 interface TargetRepositoryConfig {
   schemaVersion: 1;
   repositories: readonly ConfiguredRepositoryProfile[];
+  reviewRouting: ReviewRoutingConfig;
   openclawFallback?: OpenClawFallbackConfig;
+}
+
+interface ReviewRoutingConfig {
+  models: ReviewProviderModels;
 }
 
 interface ConfiguredRepositoryProfile {
@@ -65,6 +72,13 @@ export const REVIEW_PROVIDER_SET: ReadonlySet<ReviewProvider> = new Set([
   "claude-code",
   "pi",
 ]);
+
+const DEFAULT_REVIEW_PROVIDER_MODELS: ReviewProviderModels = {
+  codex: "gpt-5.5",
+  "claude-bridge": "claude-opus-4-8",
+  "claude-code": "claude-opus-4-8",
+  pi: "claude-opus-4-8",
+};
 
 interface OpenClawFallbackConfig {
   owner: string;
@@ -199,9 +213,39 @@ function slugForRepo(targetRepo: string): string {
 function readTargetRepositoryConfig(
   filePath = join(repoRoot(), "config", "target-repositories.json"),
 ): TargetRepositoryConfig {
-  if (!existsSync(filePath)) return { schemaVersion: 1, repositories: [] };
+  if (!existsSync(filePath)) {
+    return { schemaVersion: 1, repositories: [], reviewRouting: defaultReviewRoutingConfig() };
+  }
   const parsed = JSON.parse(readFileSync(filePath, "utf8")) as unknown;
   return validateTargetRepositoryConfig(parsed);
+}
+
+export function reviewModelForProvider(provider: ReviewProvider): string {
+  return TARGET_REPOSITORY_CONFIG.reviewRouting.models[provider];
+}
+
+export function resolveRepositoryReviewProvider(opts: {
+  explicit?: string | undefined;
+  env?: string | undefined;
+  fallback?: ReviewProvider;
+}): ReviewProvider {
+  const fallback = opts.fallback ?? "codex";
+  const sources: Array<{ label: string; value: string | undefined }> = [
+    { label: "profile.reviewProvider", value: opts.explicit },
+    { label: "CLAWSWEEPER_REVIEW_PROVIDER", value: opts.env },
+  ];
+  for (const { label, value } of sources) {
+    if (value === undefined || value === null) continue;
+    const trimmed = String(value).trim();
+    if (trimmed === "") continue;
+    if (!REVIEW_PROVIDER_SET.has(trimmed as ReviewProvider)) {
+      throw new Error(
+        `${label} has unsupported review provider: ${trimmed} (expected one of: ${[...REVIEW_PROVIDER_SET].join(", ")})`,
+      );
+    }
+    return trimmed as ReviewProvider;
+  }
+  return fallback;
 }
 
 function validateTargetRepositoryConfig(value: unknown): TargetRepositoryConfig {
@@ -212,11 +256,32 @@ function validateTargetRepositoryConfig(value: unknown): TargetRepositoryConfig 
   const repositories = arrayValue(config.repositories, "repositories").map((entry, index) =>
     validateConfiguredRepositoryProfile(entry, `repositories[${index}]`),
   );
-  const result: TargetRepositoryConfig = { schemaVersion: 1, repositories };
+  const result: TargetRepositoryConfig = {
+    schemaVersion: 1,
+    repositories,
+    reviewRouting: validateReviewRoutingConfig(config.review_routing),
+  };
   if (config.openclaw_fallback !== undefined) {
     result.openclawFallback = validateOpenClawFallbackConfig(config.openclaw_fallback);
   }
   return result;
+}
+
+function validateReviewRoutingConfig(value: unknown): ReviewRoutingConfig {
+  if (value === undefined) return defaultReviewRoutingConfig();
+  const routing = record(value, "review_routing");
+  const modelsRecord = record(routing.models, "review_routing.models");
+  const models = { ...DEFAULT_REVIEW_PROVIDER_MODELS };
+  for (const provider of REVIEW_PROVIDER_SET) {
+    if (modelsRecord[provider] !== undefined) {
+      models[provider] = stringValue(modelsRecord[provider], `review_routing.models.${provider}`);
+    }
+  }
+  return { models };
+}
+
+function defaultReviewRoutingConfig(): ReviewRoutingConfig {
+  return { models: { ...DEFAULT_REVIEW_PROVIDER_MODELS } };
 }
 
 function validateConfiguredRepositoryProfile(

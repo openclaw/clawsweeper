@@ -21,7 +21,8 @@ import {
   normalizeRepo,
   repositoryProfileFor,
   repositoryProfileForSlug,
-  REVIEW_PROVIDER_SET,
+  resolveRepositoryReviewProvider,
+  reviewModelForProvider,
   type RepositoryProfile,
   type ReviewProvider,
 } from "./repository-profiles.js";
@@ -4671,10 +4672,6 @@ export function runReview(options: RunReviewOptions): Decision {
   }
 }
 
-// Single source of truth lives in `repository-profiles.ts`; re-exported alias
-// kept for call-site readability inside this module.
-const REVIEW_PROVIDER_IDS = REVIEW_PROVIDER_SET;
-
 // Provider routing precedence:
 //   1. `explicit` — per-target override from the repository profile
 //      (`reviewProvider` in `config/target-repositories.json`). Lets a single
@@ -4689,23 +4686,7 @@ export function resolveReviewProvider(opts: {
   env?: string | undefined;
   fallback?: ReviewProvider;
 }): ReviewProvider {
-  const fallback = opts.fallback ?? "codex";
-  const sources: Array<{ label: string; value: string | undefined }> = [
-    { label: "profile.reviewProvider", value: opts.explicit },
-    { label: "CLAWSWEEPER_REVIEW_PROVIDER", value: opts.env },
-  ];
-  for (const { label, value } of sources) {
-    if (value === undefined || value === null) continue;
-    const trimmed = String(value).trim();
-    if (trimmed === "") continue;
-    if (!REVIEW_PROVIDER_IDS.has(trimmed as ReviewProvider)) {
-      throw new Error(
-        `${label} has unsupported review provider: ${trimmed} (expected one of: ${[...REVIEW_PROVIDER_IDS].join(", ")})`,
-      );
-    }
-    return trimmed as ReviewProvider;
-  }
-  return fallback;
+  return resolveRepositoryReviewProvider(opts);
 }
 
 const DEFAULT_CLAUDE_BRIDGE_URL = "http://127.0.0.1:9100";
@@ -5333,8 +5314,9 @@ export type RunPiOptions = RunCliReviewOptions;
 // rate than codex / claude-code because there is no provider-level enforcement.
 //
 // `--no-session` is non-optional: parallel sweep shards otherwise race on
-// Pi's session DB. `-t read,glob,grep` restricts tools in read-only mode so
-// the model cannot mutate the OpenClaw checkout.
+// Pi's session DB. In read-only mode, keep file-inspection tools plus Agent so
+// the main review model can delegate cheap explore/decompose subagents without
+// giving any writer tools access to the target checkout.
 //
 // Reference impl (CLI flag shapes + envelope parsing): clawpatch/src/provider.ts
 // (buildPiArgs / wrapPiPrompt / parsePiEnvelope / extractPiAssistantText).
@@ -5379,7 +5361,7 @@ export function runPi(options: RunPiOptions): Decision {
     args.push("--model", options.model);
   }
   if (options.sandboxMode === "read-only") {
-    args.push("-t", "read,glob,grep");
+    args.push("-t", "read,glob,grep,agent,Agent");
   }
 
   // Parsed from stdout after spawn; the closure reads it by reference so every
@@ -8851,7 +8833,11 @@ function planCommand(args: Args): void {
   const itemNumbers = itemNumbersArg(args.item_numbers, args.item_number);
   const hasItemNumbersInput = typeof args.item_numbers === "string" && args.item_numbers.trim();
   const hotIntake = boolArg(args.hot_intake);
-  const model = stringArg(args.codex_model, DEFAULT_CODEX_MODEL);
+  const reviewProvider = resolveReviewProvider({
+    explicit: repositoryProfileFor(targetRepo()).reviewProvider,
+    env: process.env.CLAWSWEEPER_REVIEW_PROVIDER,
+  });
+  const model = stringArg(args.codex_model, reviewModelForProvider(reviewProvider));
   const reasoningEffort = stringArg(args.codex_reasoning_effort, DEFAULT_REASONING_EFFORT);
   const sandboxMode = stringArg(args.codex_sandbox, "read-only");
   const serviceTier = stringArg(args.codex_service_tier, DEFAULT_SERVICE_TIER);
@@ -8874,6 +8860,7 @@ function planCommand(args: Args): void {
     JSON.stringify(
       {
         ...plan,
+        reviewProvider,
         reviewPolicy,
         matrix: plan.shards.map((shard) => ({
           shard: shard.shard,
@@ -8895,15 +8882,15 @@ function reviewCommand(args: Args): void {
   const itemsDir = resolve(stringArg(args.items_dir, defaultItemsDir()));
   const batchSize = numberArg(args.batch_size, DEFAULT_PLAN_BATCH_SIZE);
   const maxPages = numberArg(args.max_pages, 250);
-  const model = stringArg(args.codex_model, DEFAULT_CODEX_MODEL);
-  const reasoningEffort = stringArg(args.codex_reasoning_effort, DEFAULT_REASONING_EFFORT);
-  const sandboxMode = stringArg(args.codex_sandbox, "read-only");
-  const serviceTier = stringArg(args.codex_service_tier, DEFAULT_SERVICE_TIER);
-  const timeoutMs = numberArg(args.codex_timeout_ms, 600_000);
   const reviewProvider = resolveReviewProvider({
     explicit: profile.reviewProvider,
     env: process.env.CLAWSWEEPER_REVIEW_PROVIDER,
   });
+  const model = stringArg(args.codex_model, reviewModelForProvider(reviewProvider));
+  const reasoningEffort = stringArg(args.codex_reasoning_effort, DEFAULT_REASONING_EFFORT);
+  const sandboxMode = stringArg(args.codex_sandbox, "read-only");
+  const serviceTier = stringArg(args.codex_service_tier, DEFAULT_SERVICE_TIER);
+  const timeoutMs = numberArg(args.codex_timeout_ms, 600_000);
   console.error(
     `[review] ${new Date().toISOString()} provider=${reviewProvider} target=${profile.targetRepo}`,
   );

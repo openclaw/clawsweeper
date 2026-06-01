@@ -1,8 +1,14 @@
 name: spam comment intake
 
+# Disabled 2026-06-01: spam intake isn't needed for Luke's private repos /
+# orgs (no public comment surface to police). Implementation kept intact in
+# case a repo is open-sourced later — re-enable by restoring the
+# repository_dispatch trigger below (and re-enabling github-activity.yml,
+# which sends the `github_activity` dispatch).
 on:
-  repository_dispatch:
-    types: [github_activity]
+  workflow_dispatch: {}
+  # repository_dispatch:
+  #   types: [github_activity]
 
 permissions:
   contents: read
