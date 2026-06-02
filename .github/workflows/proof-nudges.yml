@@ -30,7 +30,7 @@ on:
         required: false
         default: ""
   schedule:
-    - cron: "44 9 * * *"
+    - cron: "0 10 * * *"
 
 permissions:
   contents: read
