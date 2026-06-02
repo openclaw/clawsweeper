@@ -1103,6 +1103,24 @@ test("parseTrustedAutomation accepts only trusted ClawSweeper repair signals", (
   );
 });
 
+test("parseRoutedCommentCommand ignores proof-nudge marker comments", () => {
+  const trustedAuthors = new Set(["clawsweeper[bot]"]);
+  const comment = {
+    user: { login: "clawsweeper[bot]" },
+    body: [
+      "@contributor thanks for the PR. ClawSweeper is still waiting on real behavior proof.",
+      "",
+      "Once proof is added, @clawsweeper re-review can check it.",
+      "",
+      '<!-- clawsweeper-proof-nudge item="86422" sha="abc123" at="2026-06-02T00:00:00.000Z" v="1" -->',
+    ].join("\n"),
+  };
+
+  assert.equal(parseRoutedCommentCommand(comment, { trustedAuthors }), null);
+  assert.equal(parseTrustedAutomation(comment, { trustedAuthors }), null);
+  assert.equal(parseCommand(comment.body), null);
+});
+
 test("parseRoutedCommentCommand prefers trusted verdict markers over copyable commands", () => {
   const trustedAuthors = new Set(["clawsweeper"]);
   const parsed = parseRoutedCommentCommand(

@@ -39,6 +39,32 @@ test("comment webhook accepts maintainer ClawSweeper commands", () => {
   });
 });
 
+test("comment webhook ignores ClawSweeper proof-nudge comments", () => {
+  const result = classifyIssueCommentWebhook({
+    event: "issue_comment",
+    payload: {
+      action: "created",
+      repository: { full_name: "openclaw/openclaw", default_branch: "main" },
+      issue: { number: 86422 },
+      installation: { id: 123 },
+      comment: {
+        id: 456,
+        body: [
+          "@contributor thanks for the PR. ClawSweeper is still waiting on real behavior proof.",
+          "",
+          "Once proof is added, @clawsweeper re-review can check it.",
+          "",
+          '<!-- clawsweeper-proof-nudge item="86422" sha="abc123" at="2026-06-02T00:00:00.000Z" v="1" -->',
+        ].join("\n"),
+        author_association: "MEMBER",
+        user: { login: "clawsweeper[bot]" },
+      },
+    },
+  });
+
+  assert.deepEqual(result, { accepted: false, reason: "proof nudge comment" });
+});
+
 test("comment webhook rejects inline ClawSweeper mentions before visible ack", () => {
   const result = classifyIssueCommentWebhook({
     event: "issue_comment",

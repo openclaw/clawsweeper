@@ -132,6 +132,10 @@ jobs:
           fi
           body_file="$RUNNER_TEMP/clawsweeper-comment-body.txt"
           printf '%s\n' "$COMMENT_BODY" > "$body_file"
+          if grep -Eiq '<!--[[:space:]]*clawsweeper-proof-nudge([[:space:]]|-->)' "$body_file"; then
+            echo "Ignoring ClawSweeper proof-nudge comment."
+            exit 0
+          fi
           if ! grep -Eiq '(^|[[:space:]])@clawsweeper\b|(^|[[:space:]])/(clawsweeper|review|re-review|rerun[ -]?review|status|explain|fix|build|implement|create[ -]?pr|fix[ -]?issue|autofix|auto[ -]?fix|automerge|auto[ -]?merge|approve|stop|autoclose)\b' "$body_file"; then
             echo "No ClawSweeper command found in comment."
             exit 0
@@ -181,13 +185,14 @@ jobs:
 ```
 
 Comments are a lightweight trigger only when the body contains a ClawSweeper
-command. The target workflow reacts with `eyes` and creates one visible queued
+command, and generated proof-nudge comments are explicitly ignored before command
+matching. The target workflow reacts with `eyes` and creates one visible queued
 status comment for maintainer-authored commands when target write permission is
-available, but both acknowledgement writes are best-effort. It must still
-dispatch `clawsweeper_comment` to the comment router when acknowledgement or
-queued-comment creation gets a target-repository 403. The dispatch carries the
-exact source comment id and, when available, the queued status comment id. The
-router edits that queued comment in place instead of posting a second reply.
+available, but both acknowledgement writes are best-effort. It must still dispatch
+`clawsweeper_comment` to the comment router when acknowledgement or queued-comment
+creation gets a target-repository 403. The dispatch carries the exact source
+comment id and, when available, the queued status comment id. The router edits
+that queued comment in place instead of posting a second reply.
 Exact comment dispatches scan only that comment and use a per-comment receiver
 concurrency group, so one maintainer command does not wait behind an unrelated
 command on the same repository. The scheduled sweep remains a five-minute

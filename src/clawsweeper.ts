@@ -753,6 +753,7 @@ type ProofNudgeAction =
   | "skipped_protected_label"
   | "skipped_locked_conversation"
   | "skipped_no_live_head"
+  | "skipped_live_fetch_failed"
   | "skipped_runtime_budget";
 
 interface ProofNudgeResult {
@@ -15343,6 +15344,17 @@ function proofNudgeCandidateRecords(
     );
 }
 
+function proofNudgeLiveFetchFailureReason(error: unknown): string {
+  const rawMessage = error instanceof Error ? error.message : String(error);
+  const lines = rawMessage
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const detail =
+    lines.find((line) => !line.startsWith("Command failed:")) ?? lines[0] ?? "unknown error";
+  return `live GitHub state could not be fetched: ${detail.slice(0, 300)}`;
+}
+
 export function proofNudgeCandidateRecordsForTest(
   itemsDir: string,
   requestedItemNumbers: readonly number[] = [],
@@ -15416,7 +15428,21 @@ function proofNudgesCommand(args: Args): void {
       number: candidate.number,
       reviewedAt: candidate.reviewedAt,
     };
-    const { item, state } = fetchItem(candidate.number);
+    let item: Item;
+    let state: string;
+    try {
+      const fetched = fetchItem(candidate.number);
+      item = fetched.item;
+      state = fetched.state;
+    } catch (error) {
+      results.push({
+        ...resultBase,
+        action: "skipped_live_fetch_failed",
+        reason: proofNudgeLiveFetchFailureReason(error),
+      });
+      processedCount += 1;
+      continue;
+    }
     if (state !== "open") {
       results.push({
         ...resultBase,
@@ -15426,17 +15452,31 @@ function proofNudgesCommand(args: Args): void {
       processedCount += 1;
       continue;
     }
-    const pullDetails =
-      item.kind === "pull_request" ? fetchPullRequestProofNudgeDetails(candidate.number) : {};
-    const comments = item.kind === "pull_request" ? proofNudgeComments(candidate.number) : [];
-    const authorEditedAt =
-      item.kind === "pull_request"
-        ? latestAuthorPullRequestEditAt(candidate.number, item.author)
-        : undefined;
-    const authorReviewActivityAt =
-      item.kind === "pull_request"
-        ? latestAuthorPullRequestReviewActivityAt(candidate.number, item.author)
-        : undefined;
+    let pullDetails: Partial<ProofNudgePullRequestDetails> = {};
+    let comments: ProofNudgeComment[] = [];
+    let authorEditedAt: string | undefined;
+    let authorReviewActivityAt: string | undefined;
+    try {
+      pullDetails =
+        item.kind === "pull_request" ? fetchPullRequestProofNudgeDetails(candidate.number) : {};
+      comments = item.kind === "pull_request" ? proofNudgeComments(candidate.number) : [];
+      authorEditedAt =
+        item.kind === "pull_request"
+          ? latestAuthorPullRequestEditAt(candidate.number, item.author)
+          : undefined;
+      authorReviewActivityAt =
+        item.kind === "pull_request"
+          ? latestAuthorPullRequestReviewActivityAt(candidate.number, item.author)
+          : undefined;
+    } catch (error) {
+      results.push({
+        ...resultBase,
+        action: "skipped_live_fetch_failed",
+        reason: proofNudgeLiveFetchFailureReason(error),
+      });
+      processedCount += 1;
+      continue;
+    }
     const eligibility = proofNudgeEligibility({
       item,
       markdown: candidate.markdown,

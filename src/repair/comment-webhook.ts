@@ -4,7 +4,11 @@ import http from "node:http";
 
 import { repositoryProfileFor } from "../repository-profiles.js";
 import type { JsonValue, LooseRecord } from "./json-types.js";
-import { parseCommand, staleClosedItemCommandReason } from "./comment-router-core.js";
+import {
+  isProofNudgeCommentBody,
+  parseCommand,
+  staleClosedItemCommandReason,
+} from "./comment-router-core.js";
 
 const DEFAULT_PORT = 8787;
 const REVIEW_REPO = "openclaw/clawsweeper";
@@ -171,6 +175,9 @@ export function classifyIssueCommentWebhook({
   const issue = asRecord(payload.issue);
   const repo = asRecord(payload.repository);
   const association = String(comment.author_association ?? "").toUpperCase();
+  if (isProofNudgeCommentBody(String(comment.body ?? ""))) {
+    return { accepted: false, reason: "proof nudge comment" };
+  }
   if (!COMMAND_PATTERN.test(String(comment.body ?? ""))) {
     return { accepted: false, reason: "no ClawSweeper command" };
   }

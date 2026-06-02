@@ -14780,6 +14780,78 @@ Stored report label snapshots can be older than the live PR labels.
   }
 });
 
+test("proof nudges skip stale targeted PRs when live GitHub state cannot be fetched", () => {
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    const itemsDir = join(root, "items");
+    const reportPath = join(root, "proof-nudge-report.json");
+    mkdirSync(itemsDir, { recursive: true });
+    writeFileSync(join(itemsDir, "42.md"), proofNudgeReport({ number: 42 }));
+    writeFileSync(join(itemsDir, "43.md"), proofNudgeReport({ number: 43 }));
+    withMockGh(
+      root,
+      `#!/usr/bin/env node
+const args = process.argv.slice(2);
+const path = args[1] || "";
+if (path.endsWith("/issues/42")) {
+  console.error("Not Found");
+  process.exit(1);
+}
+if (path.endsWith("/issues/43")) {
+  console.log(JSON.stringify({
+    number: 43,
+    title: "Closed proof nudge sample",
+    html_url: "https://github.com/openclaw/openclaw/pull/43",
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-02T00:00:00Z",
+    closed_at: "2026-01-03T00:00:00Z",
+    state: "closed",
+    locked: false,
+    active_lock_reason: null,
+    author_association: "CONTRIBUTOR",
+    user: { login: "contributor" },
+    labels: ["triage: needs-real-behavior-proof"],
+    pull_request: {}
+  }));
+  process.exit(0);
+}
+console.error("unexpected gh args: " + args.join(" "));
+process.exit(1);
+`,
+      () => {
+        execFileSync(process.execPath, [
+          "dist/clawsweeper.js",
+          "proof-nudges",
+          "--target-repo",
+          "openclaw/openclaw",
+          "--items-dir",
+          itemsDir,
+          "--item-numbers",
+          "42,43",
+          "--limit",
+          "10",
+          "--processed-limit",
+          "10",
+          "--report-path",
+          reportPath,
+        ]);
+      },
+    );
+
+    const report = JSON.parse(readFileSync(reportPath, "utf8"));
+    assert.deepEqual(
+      report.map((entry: { number: number; action: string }) => [entry.number, entry.action]),
+      [
+        [42, "skipped_live_fetch_failed"],
+        [43, "skipped_not_open"],
+      ],
+    );
+    assert.match(report[0].reason, /live GitHub state could not be fetched/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("proof nudges become eligible only after proof policy and age gates pass", () => {
   const result = proofNudgeEligibilityForTest({
     item: proofNudgeItem(),

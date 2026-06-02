@@ -1028,6 +1028,7 @@ function isAfterAutoRepairResumeBoundary(entry: AutoRepairDispatchEntry, resumeB
 }
 
 export function parseCommand(body: string) {
+  if (isProofNudgeCommentBody(body)) return null;
   const commandLine = extractClawSweeperCommandLine(body);
   if (!commandLine) return null;
   const command = commandFromText(commandLine.trigger, commandLine.commandText);
@@ -1062,6 +1063,7 @@ export function parseTrustedAutomation(
   if (!trustedAuthors.has(author)) return null;
 
   const body = String(comment?.body ?? "");
+  if (isProofNudgeCommentBody(body)) return null;
   const verdict = clawsweeperMarker(body, "verdict");
   const actionMarker = clawsweeperMarker(body, "action");
   const securityMarker = clawsweeperMarker(body, "security");
@@ -1143,6 +1145,10 @@ export function parseRoutedCommentCommand(
   const trusted = parseTrustedAutomation(comment, { trustedAuthors });
   if (trusted) return trusted;
   return parseCommand(String(comment?.body ?? ""));
+}
+
+export function isProofNudgeCommentBody(body: string) {
+  return /<!--\s*clawsweeper-proof-nudge(?:\s|-->)/i.test(String(body ?? ""));
 }
 
 function trustedCommentHasPriorityFinding(body: string) {
