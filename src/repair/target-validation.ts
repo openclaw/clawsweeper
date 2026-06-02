@@ -162,22 +162,51 @@ function prepareBunToolchain({
 }) {
   // The repair execution workflow provisions pinned Bun before this path runs.
   // Keep a clear fail-fast probe so local/manual runners surface setup gaps early.
-  run("bun", ["--version"], { cwd, env: validationEnv, timeoutMs: setupTimeoutMs });
+  //
+  // ClawSweeper itself runs under pnpm (e.g. `pnpm run repair:execute-fix`), so
+  // process.env carries pnpm-injected `npm_config_user_agent=pnpm/...`. When we
+  // shell out to `bun install` for a target repo whose package.json has a
+  // preinstall hook like `bunx only-allow bun` (e.g. openclaw/clawhub), bun
+  // forwards the parent env to the preinstall script and `only-allow` reads the
+  // pnpm user-agent and refuses to run. Strip the npm_*/PNPM_* injection and
+  // assert a bun user-agent so target preinstalls see a consistent caller.
+  const bunEnv = sanitizeEnvForBun(validationEnv);
+  run("bun", ["--version"], { cwd, env: bunEnv, timeoutMs: setupTimeoutMs });
   const installArgs = ["install", "--frozen-lockfile"];
   try {
-    run("bun", installArgs, { cwd, env: validationEnv, timeoutMs: installTimeoutMs });
+    run("bun", installArgs, { cwd, env: bunEnv, timeoutMs: installTimeoutMs });
   } catch (error) {
     const message = String(error?.message ?? "");
     if (!/lockfile|frozen|out of date|out-of-date/i.test(message)) throw error;
     run("bun", ["install", "--no-frozen-lockfile"], {
       cwd,
-      env: validationEnv,
+      env: bunEnv,
       timeoutMs: installTimeoutMs,
     });
     for (const lockfile of ["bun.lock", "bun.lockb"]) {
       restoreTargetLockfile(cwd, lockfile);
     }
   }
+}
+
+function sanitizeEnvForBun(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const out: NodeJS.ProcessEnv = {};
+  for (const [key, value] of Object.entries(env)) {
+    if (value === undefined) continue;
+    // Strip every npm/pnpm child-process injection. The critical one is
+    // `npm_config_user_agent` (read by `only-allow` to gate package managers),
+    // but `npm_lifecycle_*`, `npm_package_*`, `npm_execpath`, `PNPM_*`, etc.
+    // can also leak parent-tool semantics into bun-managed preinstalls.
+    if (/^npm_/i.test(key)) continue;
+    if (key === "PNPM_HOME" || key === "PNPM_SCRIPT_SRC_DIR" || key === "PNPM_PACKAGE_NAME") {
+      continue;
+    }
+    out[key] = value;
+  }
+  // Declare bun as the active package manager so target preinstall hooks
+  // such as `bunx only-allow bun` recognise the caller.
+  out.npm_config_user_agent = `bun/unknown npm/? node/${process.versions.node} ${process.platform} ${process.arch}`;
+  return out;
 }
 
 function prepareNpmToolchain({

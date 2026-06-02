@@ -438,6 +438,66 @@ test("bun-based target toolchain installs deps and runs configured validation", 
   ]);
 });
 
+test("bun-based target toolchain hides pnpm-injected npm_config_user_agent from preinstall hooks", () => {
+  // Regression guard for the `bunx only-allow bun` preinstall failure on
+  // openclaw/clawhub: ClawSweeper itself runs under pnpm so `process.env`
+  // carries `npm_config_user_agent=pnpm/...`. If that value leaked into the
+  // `bun install` child we'd shell out to, target preinstalls that gate on
+  // `only-allow bun` would refuse to run. prepareBunToolchain must scrub
+  // every `npm_*`/`PNPM_*` injection and assert a bun user-agent instead.
+  const cwd = gitBunPackageFixture({ check: "bun x tsc --noEmit" });
+  git(cwd, "add", ".");
+  git(cwd, "commit", "-m", "initial");
+  attachOrigin(cwd);
+
+  const { binDir, envLogPath } = envLoggingBunFixture(cwd);
+  const previousUserAgent = process.env.npm_config_user_agent;
+  const previousNpmExecpath = process.env.npm_execpath;
+  const previousNpmLifecycleEvent = process.env.npm_lifecycle_event;
+  const previousPnpmHome = process.env.PNPM_HOME;
+  process.env.npm_config_user_agent = "pnpm/10.0.0 npm/? node/v22.0.0 linux x64";
+  process.env.npm_execpath = "/tmp/pnpm";
+  process.env.npm_lifecycle_event = "repair:execute-fix";
+  process.env.PNPM_HOME = "/tmp/pnpm-home";
+  try {
+    withPathPrefix(binDir, () => {
+      prepareTargetToolchain(cwd, {
+        ...validationOptions("openclaw/clawhub", clawhubToolchain()),
+        installTargetDeps: true,
+        installTimeoutMs: 5000,
+        setupTimeoutMs: 5000,
+      });
+    });
+  } finally {
+    restoreEnv("npm_config_user_agent", previousUserAgent);
+    restoreEnv("npm_execpath", previousNpmExecpath);
+    restoreEnv("npm_lifecycle_event", previousNpmLifecycleEvent);
+    restoreEnv("PNPM_HOME", previousPnpmHome);
+  }
+
+  const envEntries = fs
+    .readFileSync(envLogPath, "utf8")
+    .trim()
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .map((line) => JSON.parse(line));
+  assert.equal(envEntries.length, 2, "expected --version and install env snapshots");
+  for (const env of envEntries) {
+    assert.match(
+      String(env.npm_config_user_agent ?? ""),
+      /^bun\//,
+      `expected bun user-agent, got ${JSON.stringify(env.npm_config_user_agent)}`,
+    );
+    assert.equal(env.npm_execpath, undefined, "npm_execpath must not leak to bun children");
+    assert.equal(
+      env.npm_lifecycle_event,
+      undefined,
+      "npm_lifecycle_event must not leak to bun children",
+    );
+    assert.equal(env.PNPM_HOME, undefined, "PNPM_HOME must not leak to bun children");
+  }
+});
+
 test("bun-based target repos still report unrelated missing scripts as blocked", () => {
   // Sanitize is intentionally narrow: only the canonical `pnpm check:changed`
   // shape gets dropped. Any other genuinely missing script (e.g. a typo) must
@@ -641,6 +701,29 @@ if (process.argv[2] === "--version") console.log("1.3.10");
   );
   fs.chmodSync(bunPath, 0o755);
   return { binDir, logPath };
+}
+
+function envLoggingBunFixture(cwd) {
+  const binDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-fake-bun-env-bin-"));
+  const logPath = path.join(cwd, "fake-bun.log");
+  const envLogPath = path.join(cwd, "fake-bun-env.log");
+  const bunPath = path.join(binDir, "bun");
+  fs.writeFileSync(
+    bunPath,
+    `#!/usr/bin/env node
+const fs = require("node:fs");
+fs.appendFileSync(${JSON.stringify(logPath)}, process.argv.slice(2).join(" ") + "\\n");
+fs.appendFileSync(${JSON.stringify(envLogPath)}, JSON.stringify(process.env) + "\\n");
+if (process.argv[2] === "--version") console.log("1.3.10");
+`,
+  );
+  fs.chmodSync(bunPath, 0o755);
+  return { binDir, logPath, envLogPath };
+}
+
+function restoreEnv(key, previous) {
+  if (previous === undefined) delete process.env[key];
+  else process.env[key] = previous;
 }
 
 function withPathPrefix(binDir, callback) {
