@@ -85,7 +85,7 @@ jobs:
           repositories: ${{ steps.target.outputs.target_repo_name }}
           permission-contents: read
           permission-issues: write
-          permission-pull-requests: read
+          permission-pull-requests: write
 
       - name: Create state token
         id: state-token
