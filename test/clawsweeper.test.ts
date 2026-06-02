@@ -16085,7 +16085,11 @@ test("proof nudge workflow is manual-first and scheduled behind repo vars", () =
   assert.doesNotMatch(sweepWorkflow, /proof_nudges/);
   assert.match(workflow, /execute:[\s\S]*?default: "false"/);
   assert.match(workflow, /cron: "0 10 \* \* \*"/);
+  assert.match(workflow, /cron: "0 11 \* \* \*"/);
   assert.match(concurrency, /clawsweeper-proof-nudges/);
+  assert.match(job, /PROOF_NUDGES_SCHEDULE_TZ: America\/Chicago/);
+  assert.match(job, /local_hour=.*date \+%H/);
+  assert.match(job, /steps\.central-time\.outputs\.should_run == 'true'/);
   assert.match(job, /github\.event_name == 'workflow_dispatch'/);
   assert.match(job, /vars\.CLAWSWEEPER_PROOF_NUDGES_SCHEDULED == '1'/);
   assert.match(job, /vars\.CLAWSWEEPER_PROOF_NUDGES_EXECUTE == '1'/);

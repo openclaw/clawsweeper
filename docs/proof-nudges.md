@@ -60,7 +60,7 @@ Useful options:
 
 The `ClawSweeper Proof Nudges` workflow exposes this as a manual `workflow_dispatch` lane. It defaults to dry-run. Use `execute=true` only after reviewing a dry-run report.
 
-The workflow also includes a daily scheduled lane at `0 10 * * *`, which is 5:00 AM Central during daylight time, but it is off by default. This lets maintainers enable scheduled proof nudges later without another code change.
+The workflow also includes daily scheduled lanes at `0 10 * * *` and `0 11 * * *`, but it is off by default. Those UTC schedules are guarded by an `America/Chicago` local-time check so only the 5:00 AM Central run continues across daylight saving time changes.
 
 Scheduled operation uses repository variables:
 
