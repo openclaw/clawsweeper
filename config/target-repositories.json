@@ -133,6 +133,28 @@
       }
     },
     {
+      "target_repo": "valkyriweb/horizon",
+      "display_name": "horizon (product monorepo)",
+      "checkout_dir": "horizon",
+      "include_maintainer_authored": true,
+      "prompt_note": "Horizon is Luke's product monorepo (Bun workspaces): `packages/*` + `apps/*`. Local checkout `~/Projects/work/horizon/`; GitHub repo `valkyriweb/horizon` (private). Packages: `packages/alerts` (Mailgun transactional email delivery), `packages/design` (design system), plus `shared` utilities. Apps: `apps/billing` (PayFast ITN/postback), `apps/whatsapp` (Meta WhatsApp send + webhook), `apps/mail-dashboard`, `apps/mail-landing`. Service areas: `area:alerts` (Mailgun delivery), `area:billing` (PayFast ITN confirmation, idempotency), `area:whatsapp` (Meta send/webhook/egress), `area:mail` (mail-dashboard + mail-landing), `area:design` (design system), `area:shared`, `area:ci`, `area:docs`. Use at most two area tags; `area:cross-cutting` when it spans many. The repo is mid Effect adoption: vendor boundaries (Mailgun, Meta, PayFast) are wrapped with typed errors, AbortSignal timeout, exp+jittered retry, and Effect Layers, while the Promise-facing public APIs stay behavior-identical — review for that contract and flag any public-API regression. Security-sensitive paths must fail closed: PayFast ITN server confirmation, SSRF egress validation (https-only; block private/link-local/metadata; post-DNS recheck), and per-route API-key scope enforcement (403 insufficient_scope). Validation: Bun workspaces — `bun install --frozen-lockfile`, then `bun run --filter '*' build`, `bun run --filter '*' typecheck`, `bun run --filter '*' test`; per package `bun test` + `tsc --noEmit`. Conservative close policy: this is a live product repo, so do not auto-close on implemented_on_main — Effect slices are intentionally reviewed-not-merged.",
+      "apply_close_rules": {
+        "issue": [
+          "duplicate_or_superseded",
+          "cannot_reproduce",
+          "incoherent",
+          "not_actionable_in_repo",
+          "stale_insufficient_info"
+        ],
+        "pull_request": [
+          "duplicate_or_superseded",
+          "cannot_reproduce",
+          "incoherent",
+          "not_actionable_in_repo"
+        ]
+      }
+    },
+    {
       "target_repo": "valkyriweb/clawsweeper",
       "display_name": "ClawSweeper",
       "checkout_dir": "clawsweeper",
