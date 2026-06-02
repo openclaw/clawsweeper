@@ -198,9 +198,7 @@ function sanitizeEnvForBun(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
     // but `npm_lifecycle_*`, `npm_package_*`, `npm_execpath`, `PNPM_*`, etc.
     // can also leak parent-tool semantics into bun-managed preinstalls.
     if (/^npm_/i.test(key)) continue;
-    if (key === "PNPM_HOME" || key === "PNPM_SCRIPT_SRC_DIR" || key === "PNPM_PACKAGE_NAME") {
-      continue;
-    }
+    if (/^PNPM_/i.test(key)) continue;
     out[key] = value;
   }
   // Declare bun as the active package manager so target preinstall hooks

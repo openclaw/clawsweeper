@@ -455,10 +455,12 @@ test("bun-based target toolchain hides pnpm-injected npm_config_user_agent from 
   const previousNpmExecpath = process.env.npm_execpath;
   const previousNpmLifecycleEvent = process.env.npm_lifecycle_event;
   const previousPnpmHome = process.env.PNPM_HOME;
+  const previousPnpmStorePath = process.env.PNPM_STORE_PATH;
   process.env.npm_config_user_agent = "pnpm/10.0.0 npm/? node/v22.0.0 linux x64";
   process.env.npm_execpath = "/tmp/pnpm";
   process.env.npm_lifecycle_event = "repair:execute-fix";
   process.env.PNPM_HOME = "/tmp/pnpm-home";
+  process.env.PNPM_STORE_PATH = "/tmp/pnpm-store";
   try {
     withPathPrefix(binDir, () => {
       prepareTargetToolchain(cwd, {
@@ -473,6 +475,7 @@ test("bun-based target toolchain hides pnpm-injected npm_config_user_agent from 
     restoreEnv("npm_execpath", previousNpmExecpath);
     restoreEnv("npm_lifecycle_event", previousNpmLifecycleEvent);
     restoreEnv("PNPM_HOME", previousPnpmHome);
+    restoreEnv("PNPM_STORE_PATH", previousPnpmStorePath);
   }
 
   const envEntries = fs
@@ -495,6 +498,7 @@ test("bun-based target toolchain hides pnpm-injected npm_config_user_agent from 
       "npm_lifecycle_event must not leak to bun children",
     );
     assert.equal(env.PNPM_HOME, undefined, "PNPM_HOME must not leak to bun children");
+    assert.equal(env.PNPM_STORE_PATH, undefined, "PNPM_* variables must not leak to bun children");
   }
 });
 
