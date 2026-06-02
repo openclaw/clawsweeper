@@ -107,6 +107,32 @@
       }
     },
     {
+      "target_repo": "valkyriweb/my-pi",
+      "display_name": "my-pi (extension & harness lab)",
+      "checkout_dir": "my-pi",
+      "include_maintainer_authored": true,
+      "review_provider": "pi",
+      "prompt_note": "my-pi is Luke's personal Pi extension and harness lab: custom extensions (pi-memory, dream-memory, claude-bridge markers, native-tool-overrides), the my-pi-full profile package, the Pi Setup Registry catalog, and memory/cache/context-strategy docs. It customizes Pi (forked at valkyriweb/pi-mono, local `~/Projects/personal/pi-mono-fork/`) via extensions/packages first; core fork patches only when documented APIs cannot achieve the behavior. The local checkout lives at `~/Projects/personal/my-pi/`; the GitHub repo is `valkyriweb/my-pi`. Service areas: `area:extensions` (extension packages + lifecycle), `area:packages` (my-pi-full profile + package metadata), `area:memory` (pi-memory/dream-memory architecture, recall, consolidation), `area:cache` (prompt-cache stability; system-prompt/tools byte-stability), `area:setup` (docs/pi-setup catalog YAML; generated registry), `area:docs` (markdown docs, ADRs), `area:tests` (extension-gate, evals). Use at most two area tags; `area:cross-cutting` when it spans many. Cache stability is a BLOCKING concern for any prompt-prefix/tools/messages change; pure TUI rendering is cache-irrelevant. Validation: `npm run test:extension-gate` for extension/profile/cache changes, `npm test` for root script tests, and the fork's `test:build-gate` must pass against the pinned pi-mono. Generated files under `docs/pi-setup/generated/` are scanner-owned — never hand-edit. Default review provider is Pi (Claude-bridge Opus), dogfooding pi-on-pi.",
+      "apply_close_rules": {
+        "issue": [
+          "implemented_on_main",
+          "duplicate_or_superseded",
+          "cannot_reproduce",
+          "incoherent",
+          "not_actionable_in_repo",
+          "stale_insufficient_info"
+        ],
+        "pull_request": [
+          "implemented_on_main",
+          "mostly_implemented_on_main",
+          "duplicate_or_superseded",
+          "cannot_reproduce",
+          "incoherent",
+          "not_actionable_in_repo"
+        ]
+      }
+    },
+    {
       "target_repo": "valkyriweb/clawsweeper",
       "display_name": "ClawSweeper",
       "checkout_dir": "clawsweeper",
