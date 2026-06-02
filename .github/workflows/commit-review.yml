@@ -41,7 +41,7 @@ permissions:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
-  CLAWSWEEPER_APP_CLIENT_ID: Iv23liOECG0slfuhz093
+  CLAWSWEEPER_APP_CLIENT_ID: Iv23lirdjmVqYd1gwY26
   CLAWSWEEPER_USAGE_TELEMETRY: "1"
   CLAWSWEEPER_USAGE_SERVICE_NAME: clawsweeper-runner
   # Set repo/org variable CLAWSWEEPER_USAGE_OTLP_ENDPOINT to broadcast usage events via OTLP.
