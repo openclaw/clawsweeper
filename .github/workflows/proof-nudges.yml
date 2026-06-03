@@ -58,15 +58,17 @@ jobs:
         if: ${{ github.event_name == 'schedule' }}
         env:
           PROOF_NUDGES_SCHEDULE_TZ: America/Chicago
+          PROOF_NUDGES_EVENT_SCHEDULE: ${{ github.event.schedule }}
         run: |
-          local_hour="$(TZ="$PROOF_NUDGES_SCHEDULE_TZ" date +%H)"
           local_time="$(TZ="$PROOF_NUDGES_SCHEDULE_TZ" date '+%Y-%m-%d %H:%M:%S %Z')"
-          if [ "$local_hour" = "05" ]; then
+          local_zone="$(TZ="$PROOF_NUDGES_SCHEDULE_TZ" date +%Z)"
+          if { [ "$PROOF_NUDGES_EVENT_SCHEDULE" = "0 10 * * *" ] && [ "$local_zone" = "CDT" ]; } ||
+             { [ "$PROOF_NUDGES_EVENT_SCHEDULE" = "0 11 * * *" ] && [ "$local_zone" = "CST" ]; }; then
             echo "should_run=true" >> "$GITHUB_OUTPUT"
-            echo "Scheduled proof nudges running at $local_time."
+            echo "Scheduled proof nudges running for $PROOF_NUDGES_EVENT_SCHEDULE at $local_time."
           else
             echo "should_run=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::Skipping scheduled proof nudges at $local_time; waiting for 05:00 America/Chicago."
+            echo "::notice::Skipping scheduled proof nudges for $PROOF_NUDGES_EVENT_SCHEDULE at $local_time; waiting for the 5:00 AM America/Chicago cron candidate."
           fi
 
       - uses: actions/checkout@v6
