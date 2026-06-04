@@ -60,7 +60,7 @@ Useful options:
 
 The `ClawSweeper Proof Nudges` workflow exposes this as a manual `workflow_dispatch` lane. It defaults to dry-run. Use `execute=true` only after reviewing a dry-run report.
 
-The workflow also includes daily scheduled lanes at `0 10 * * *` and `0 11 * * *`, but it is off by default. Those UTC schedules are guarded by the scheduled cron string and the current `America/Chicago` timezone abbreviation, so only the 5:00 AM Central candidate continues across daylight saving time changes even if GitHub starts the run late.
+The workflow also includes daily scheduled lanes at `0 10 * * *` and `0 11 * * *`, but it is off by default. Those UTC schedules are guarded by the scheduled cron string, the current `America/Chicago` timezone abbreviation, and the current local hour, so only the matching 5:00 AM Central candidate continues across daylight saving time changes even if GitHub starts a run late. GitHub still creates a workflow run for each cron entry; the non-matching candidate should finish quickly before checkout and may appear in the Actions list as a short successful skipped run.
 
 Scheduled operation uses repository variables:
 
