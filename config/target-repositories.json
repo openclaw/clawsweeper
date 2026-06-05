@@ -61,7 +61,7 @@
       "target_repo": "CLIP-SA/core-wholesale",
       "display_name": "Core Wholesale",
       "checkout_dir": "core-wholesale",
-      "prompt_note": "Core Wholesale is a multi-stack ecommerce platform. Service areas: `area:next-frontend` (Next.js storefront, React components, pages), `area:woocommerce` (WooCommerce plugin customisations, hooks, REST API extensions), `area:wordpress` (WordPress core customisations, themes, ACF, plugin integrations), `area:mysql` (database schema, queries, migrations, performance), `area:openclaw-integration` (OpenClaw agent/AI integration, tool dispatch, session management). Use at most two area tags. When the item spans multiple areas, use `area:cross-cutting`. Validation: appropriate per area \u2014 PHP unit tests for WP/WC, `pnpm build` for Next.js, SQL migration checks for MySQL.",
+      "prompt_note": "Core Wholesale is a multi-stack ecommerce platform. Service areas: `area:next-frontend` (Next.js storefront, React components, pages), `area:woocommerce` (WooCommerce plugin customisations, hooks, REST API extensions), `area:wordpress` (WordPress core customisations, themes, ACF, plugin integrations), `area:mysql` (database schema, queries, migrations, performance), `area:openclaw-integration` (OpenClaw agent/AI integration, tool dispatch, session management). Use at most two area tags. When the item spans multiple areas, use `area:cross-cutting`. Validation: appropriate per area — PHP unit tests for WP/WC, `pnpm build` for Next.js, SQL migration checks for MySQL.",
       "apply_close_rules": {
         "issue": [
           "implemented_on_main",
@@ -137,21 +137,10 @@
       "display_name": "horizon (product monorepo)",
       "checkout_dir": "horizon",
       "include_maintainer_authored": true,
-      "prompt_note": "Horizon is Luke's product monorepo (Bun workspaces): `packages/*` + `apps/*`. Local checkout `~/Projects/work/horizon/`; GitHub repo `valkyriweb/horizon` (private). Packages: `packages/alerts` (Mailgun transactional email delivery), `packages/design` (design system), plus `shared` utilities. Apps: `apps/billing` (PayFast ITN/postback), `apps/whatsapp` (Meta WhatsApp send + webhook), `apps/mail-dashboard`, `apps/mail-landing`. Service areas: `area:alerts` (Mailgun delivery), `area:billing` (PayFast ITN confirmation, idempotency), `area:whatsapp` (Meta send/webhook/egress), `area:mail` (mail-dashboard + mail-landing), `area:design` (design system), `area:shared`, `area:ci`, `area:docs`. Use at most two area tags; `area:cross-cutting` when it spans many. The repo is mid Effect adoption: vendor boundaries (Mailgun, Meta, PayFast) are wrapped with typed errors, AbortSignal timeout, exp+jittered retry, and Effect Layers, while the Promise-facing public APIs stay behavior-identical — review for that contract and flag any public-API regression. Security-sensitive paths must fail closed: PayFast ITN server confirmation, SSRF egress validation (https-only; block private/link-local/metadata; post-DNS recheck), and per-route API-key scope enforcement (403 insufficient_scope). Validation: Bun workspaces — `bun install --frozen-lockfile`, then `bun run --filter '*' build`, `bun run --filter '*' typecheck`, `bun run --filter '*' test`; per package `bun test` + `tsc --noEmit`. Conservative close policy: this is a live product repo, so do not auto-close on implemented_on_main — Effect slices are intentionally reviewed-not-merged.",
+      "prompt_note": "Horizon is Luke's product monorepo (Bun workspaces): `packages/*` + `apps/*`. Local checkout `~/Projects/work/horizon/`; GitHub repo `valkyriweb/horizon` (private). Packages: `packages/alerts` (Mailgun transactional email delivery), `packages/design` (design system), plus `shared` utilities. Apps: `apps/billing` (PayFast ITN/postback), `apps/whatsapp` (Meta WhatsApp send + webhook), `apps/mail-dashboard`, `apps/mail-landing`. Service areas: `area:alerts` (Mailgun delivery), `area:billing` (PayFast ITN confirmation, idempotency), `area:whatsapp` (Meta send/webhook/egress), `area:mail` (mail-dashboard + mail-landing), `area:design` (design system), `area:shared`, `area:ci`, `area:docs`. Use at most two area tags; `area:cross-cutting` when it spans many. The repo is mid Effect adoption: vendor boundaries (Mailgun, Meta, PayFast) are wrapped with typed errors, AbortSignal timeout, exp+jittered retry, and Effect Layers, while the Promise-facing public APIs stay behavior-identical — review for that contract and flag any public-API regression. Security-sensitive paths must fail closed: PayFast ITN server confirmation, SSRF egress validation (https-only; block private/link-local/metadata; post-DNS recheck), and per-route API-key scope enforcement (403 insufficient_scope). Validation: Bun workspaces — `bun install --frozen-lockfile`, then `bun run --filter '*' build`, `bun run --filter '*' typecheck`, `bun run --filter '*' test`; per package `bun test` + `tsc --noEmit`. For every PR review, include code-craft and agent-native-hardening passes: flag unnecessary complexity, poor naming/API shape, brittle agent-unfriendly structure, unsafe boundaries, and missing verification. Conservative close policy: this is a live product repo, so do not auto-close on implemented_on_main — Effect slices are intentionally reviewed-not-merged.",
       "apply_close_rules": {
-        "issue": [
-          "duplicate_or_superseded",
-          "cannot_reproduce",
-          "incoherent",
-          "not_actionable_in_repo",
-          "stale_insufficient_info"
-        ],
-        "pull_request": [
-          "duplicate_or_superseded",
-          "cannot_reproduce",
-          "incoherent",
-          "not_actionable_in_repo"
-        ]
+        "issue": [],
+        "pull_request": []
       }
     },
     {
@@ -184,7 +173,7 @@
       "display_name": "OpenClaw (fork)",
       "checkout_dir": "openclaw",
       "include_maintainer_authored": true,
-      "prompt_note": "Luke's patched fork of OpenClaw (agent gateway). Tracks upstream openclaw/openclaw with carry-forward patches tracked in ~/Projects/infra/openclaw-claude/docs/issues.md (ISSUE-040, ISSUE-042, ISSUE-077, ISSUE-091, ISSUE-094, ISSUE-095, cron-list-fix). Service areas: `area:agent-runtime` (ACP, agent loop, session lifecycle), `area:tools` (bash/exec, image_generate, web, sessions_*), `area:plugins` (advisor, context-intelligence, pi-ai), `area:bridge` (claude-bridge sidecar), `area:tests` (vitest). Use at most two area tags. When the item spans multiple areas, use `area:cross-cutting`. Validation: `pnpm exec vitest run <test-file>`. **CRITICAL: do NOT propose closing carry-forward PRs as 'implemented on main' \u2014 these are upstream-bound patches, not yet merged upstream.** Carry-forward PRs are typically named with `carry(<version>):` prefix; treat them as long-lived.",
+      "prompt_note": "Luke's patched fork of OpenClaw (agent gateway). Tracks upstream openclaw/openclaw with carry-forward patches tracked in ~/Projects/infra/openclaw-claude/docs/issues.md (ISSUE-040, ISSUE-042, ISSUE-077, ISSUE-091, ISSUE-094, ISSUE-095, cron-list-fix). Service areas: `area:agent-runtime` (ACP, agent loop, session lifecycle), `area:tools` (bash/exec, image_generate, web, sessions_*), `area:plugins` (advisor, context-intelligence, pi-ai), `area:bridge` (claude-bridge sidecar), `area:tests` (vitest). Use at most two area tags. When the item spans multiple areas, use `area:cross-cutting`. Validation: `pnpm exec vitest run <test-file>`. **CRITICAL: do NOT propose closing carry-forward PRs as 'implemented on main' — these are upstream-bound patches, not yet merged upstream.** Carry-forward PRs are typically named with `carry(<version>):` prefix; treat them as long-lived.",
       "apply_close_rules": {
         "issue": [
           "duplicate_or_superseded",
@@ -231,8 +220,16 @@
       "include_maintainer_authored": true,
       "prompt_note": "OpenClaw management hub for Luke's production OpenClaw runtime: release notes, update logs, live-runtime issues, methodology, Paperclip wiring, plans, state, and docs. Mostly markdown; no source build. Areas: `area:release-risk`, `area:runtime-k8s`, `area:pi-harness`, `area:bridge-cache`, `area:skills-extensions`, `area:telemetry-evals`, `area:media-audio`, `area:context-health`, `area:docs-cleanup`, `area:methodology`. Use at most two area tags. Review as an ops/release triage assistant, not a generic stale-docs cleaner. Important work: read linked release logs/changelogs completely, compare against Luke's active runtime/cluster surfaces, and flag stability fixes, breaking config changes, Docker/Kubernetes/runtime impacts, prompt-cache/context health, Pi harness/bridge changes, skills/extensions, TTS/STT/media, heartbeats, telemetry/tracing/Opik/evals, active-memory, smoke/staging/build-test needs, and CHANGELOG/release tracking updates. Treat `docs/releases.md`, `docs/agent-context/update-release-runbook.md`, `state/update-log.jsonl`, `memory/MEMORY.md`, and `docs/issues.md` as operational state, not stale clutter. Prefer `manual_review` for release audits, runtime decisions, workflow design, plans, state logs, pending methodology, or anything needing cluster/operator judgment. Use `queue_fix_pr` only for narrow docs/index/changelog cleanup with an obvious existing file and no product/runtime decision; if no scoped validation command exists, choose `manual_review`. Do not propose closing methodology TODOs, pending-work notes, active plans, issue tracker entries, or release records as stale. Close only clear duplicates, cannot-reproduce reports, or items outside this repo boundary.",
       "apply_close_rules": {
-        "issue": ["duplicate_or_superseded", "cannot_reproduce", "not_actionable_in_repo"],
-        "pull_request": ["duplicate_or_superseded", "cannot_reproduce", "not_actionable_in_repo"]
+        "issue": [
+          "duplicate_or_superseded",
+          "cannot_reproduce",
+          "not_actionable_in_repo"
+        ],
+        "pull_request": [
+          "duplicate_or_superseded",
+          "cannot_reproduce",
+          "not_actionable_in_repo"
+        ]
       }
     }
   ]

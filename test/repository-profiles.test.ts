@@ -72,6 +72,21 @@ test("valkyriweb/pi-mono profile carries pi service-area routing notes", () => {
   ]);
 });
 
+test("valkyriweb/horizon profile carries code-craft and hardening review guidance", () => {
+  const profile = repositoryProfileFor("Valkyriweb/Horizon");
+
+  assert.equal(profile.targetRepo, "valkyriweb/horizon");
+  assert.equal(profile.slug, "valkyriweb-horizon");
+  assert.equal(profile.checkoutDir, "horizon");
+  assert.equal(profile.includeMaintainerAuthored, true);
+  assert.match(profile.promptNote, /area:billing/);
+  assert.match(profile.promptNote, /area:whatsapp/);
+  assert.match(profile.promptNote, /code-craft/);
+  assert.match(profile.promptNote, /agent-native-hardening/);
+  assert.deepEqual(profile.applyCloseRules.issue, []);
+  assert.deepEqual(profile.applyCloseRules.pull_request, []);
+});
+
 test("openclaw-claude profile uses pi for the narrow review canary", () => {
   const profile = repositoryProfileFor("valkyriweb/openclaw-claude");
 
