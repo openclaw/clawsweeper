@@ -31,7 +31,6 @@ on:
         default: ""
   schedule:
     - cron: "0 10 * * *"
-    - cron: "0 11 * * *"
 
 permissions:
   contents: read
@@ -53,35 +52,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
-      - name: Check scheduled Central time
-        id: central-time
-        if: ${{ github.event_name == 'schedule' }}
-        env:
-          PROOF_NUDGES_SCHEDULE_TZ: America/Chicago
-          PROOF_NUDGES_EVENT_SCHEDULE: ${{ github.event.schedule }}
-        run: |
-          local_hour="$(TZ="$PROOF_NUDGES_SCHEDULE_TZ" date +%H)"
-          local_time="$(TZ="$PROOF_NUDGES_SCHEDULE_TZ" date '+%Y-%m-%d %H:%M:%S %Z')"
-          local_zone="$(TZ="$PROOF_NUDGES_SCHEDULE_TZ" date +%Z)"
-          if [ "$local_hour" = "05" ] &&
-             { { [ "$PROOF_NUDGES_EVENT_SCHEDULE" = "0 10 * * *" ] && [ "$local_zone" = "CDT" ]; } ||
-               { [ "$PROOF_NUDGES_EVENT_SCHEDULE" = "0 11 * * *" ] && [ "$local_zone" = "CST" ]; }; }; then
-            echo "should_run=true" >> "$GITHUB_OUTPUT"
-            echo "Scheduled proof nudges running for $PROOF_NUDGES_EVENT_SCHEDULE at $local_time."
-          else
-            echo "should_run=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::Skipping scheduled proof nudges for $PROOF_NUDGES_EVENT_SCHEDULE at $local_time; waiting for the matching 5:00 AM America/Chicago cron candidate."
-          fi
-
       - uses: actions/checkout@v6
-        if: ${{ github.event_name != 'schedule' || steps.central-time.outputs.should_run == 'true' }}
         with:
           filter: blob:none
           fetch-depth: 0
 
       - name: Resolve target repository
         id: target
-        if: ${{ github.event_name != 'schedule' || steps.central-time.outputs.should_run == 'true' }}
         env:
           TARGET_REPO_INPUT: ${{ github.event.inputs.target_repo || vars.CLAWSWEEPER_PROOF_NUDGES_TARGET_REPO || 'openclaw/openclaw' }}
         run: |
@@ -100,7 +77,6 @@ jobs:
 
       - name: Create target proof-nudge token
         id: target-proof-token
-        if: ${{ github.event_name != 'schedule' || steps.central-time.outputs.should_run == 'true' }}
         uses: actions/create-github-app-token@1b10c78c7865c340bc4f6099eb2f838309f1e8c3 # v3.1.1
         with:
           client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
@@ -113,24 +89,20 @@ jobs:
 
       - name: Create state token
         id: state-token
-        if: ${{ github.event_name != 'schedule' || steps.central-time.outputs.should_run == 'true' }}
         uses: ./.github/actions/create-state-token
         with:
           client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
           private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
 
       - uses: ./.github/actions/setup-state
-        if: ${{ github.event_name != 'schedule' || steps.central-time.outputs.should_run == 'true' }}
         with:
           token: ${{ steps.state-token.outputs.token }}
 
       - uses: ./.github/actions/setup-pnpm
-        if: ${{ github.event_name != 'schedule' || steps.central-time.outputs.should_run == 'true' }}
         with:
           build-script: build:all
 
       - name: Run proof nudges
-        if: ${{ github.event_name != 'schedule' || steps.central-time.outputs.should_run == 'true' }}
         env:
           GH_TOKEN: ${{ steps.target-proof-token.outputs.token }}
           TARGET_REPO: ${{ steps.target.outputs.target_repo }}
