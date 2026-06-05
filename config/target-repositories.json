@@ -43,6 +43,23 @@
       "package_manager": "pnpm",
       "validation_commands": [],
       "changed_gate": null
+    },
+    {
+      "target_repo": "valkyriweb/horizon",
+      "display_name": "Horizon",
+      "checkout_dir": "horizon",
+      "prompt_note": "Use the Horizon monorepo source tree and current main branch. It is a private product monorepo owned by Luke (@valkyriweb): packages/alerts plus apps/billing, apps/whatsapp, apps/mail-dashboard, and apps/mail-landing. For every PR review, include code-craft and agent-native-hardening passes: flag unnecessary complexity, poor naming/API shape, brittle agent-unfriendly structure, unsafe boundaries, and missing verification. Keep reviews conservative; do not auto-close issues or pull requests unless a future Horizon-specific policy explicitly enables that.",
+      "apply_close_rules": {
+        "issue": [],
+        "pull_request": []
+      },
+      "package_manager": "bun",
+      "validation_commands": [
+        "bun run --filter '*' build",
+        "bun run --filter '*' typecheck",
+        "bun run --filter '*' test"
+      ],
+      "changed_gate": null
     }
   ],
   "generic_fallbacks": [

@@ -28,6 +28,18 @@ test("repositoryProfileFor supports fs-safe event reviews", () => {
   ]);
 });
 
+test("repositoryProfileFor supports Horizon PR review gates", () => {
+  const profile = repositoryProfileFor("Valkyriweb/Horizon");
+
+  assert.equal(profile.targetRepo, "valkyriweb/horizon");
+  assert.equal(profile.slug, "valkyriweb-horizon");
+  assert.equal(profile.checkoutDir, "horizon");
+  assert.match(profile.promptNote, /code-craft/);
+  assert.match(profile.promptNote, /agent-native-hardening/);
+  assert.deepEqual(profile.applyCloseRules.issue, []);
+  assert.deepEqual(profile.applyCloseRules.pull_request, []);
+});
+
 test("generic OpenClaw fallback supports conservative event-only onboarding", () => {
   const profile = repositoryProfileFor("OpenClaw/example-tool");
 
