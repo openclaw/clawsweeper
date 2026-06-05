@@ -220,16 +220,8 @@
       "include_maintainer_authored": true,
       "prompt_note": "OpenClaw management hub for Luke's production OpenClaw runtime: release notes, update logs, live-runtime issues, methodology, Paperclip wiring, plans, state, and docs. Mostly markdown; no source build. Areas: `area:release-risk`, `area:runtime-k8s`, `area:pi-harness`, `area:bridge-cache`, `area:skills-extensions`, `area:telemetry-evals`, `area:media-audio`, `area:context-health`, `area:docs-cleanup`, `area:methodology`. Use at most two area tags. Review as an ops/release triage assistant, not a generic stale-docs cleaner. Important work: read linked release logs/changelogs completely, compare against Luke's active runtime/cluster surfaces, and flag stability fixes, breaking config changes, Docker/Kubernetes/runtime impacts, prompt-cache/context health, Pi harness/bridge changes, skills/extensions, TTS/STT/media, heartbeats, telemetry/tracing/Opik/evals, active-memory, smoke/staging/build-test needs, and CHANGELOG/release tracking updates. Treat `docs/releases.md`, `docs/agent-context/update-release-runbook.md`, `state/update-log.jsonl`, `memory/MEMORY.md`, and `docs/issues.md` as operational state, not stale clutter. Prefer `manual_review` for release audits, runtime decisions, workflow design, plans, state logs, pending methodology, or anything needing cluster/operator judgment. Use `queue_fix_pr` only for narrow docs/index/changelog cleanup with an obvious existing file and no product/runtime decision; if no scoped validation command exists, choose `manual_review`. Do not propose closing methodology TODOs, pending-work notes, active plans, issue tracker entries, or release records as stale. Close only clear duplicates, cannot-reproduce reports, or items outside this repo boundary.",
       "apply_close_rules": {
-        "issue": [
-          "duplicate_or_superseded",
-          "cannot_reproduce",
-          "not_actionable_in_repo"
-        ],
-        "pull_request": [
-          "duplicate_or_superseded",
-          "cannot_reproduce",
-          "not_actionable_in_repo"
-        ]
+        "issue": ["duplicate_or_superseded", "cannot_reproduce", "not_actionable_in_repo"],
+        "pull_request": ["duplicate_or_superseded", "cannot_reproduce", "not_actionable_in_repo"]
       }
     }
   ]
