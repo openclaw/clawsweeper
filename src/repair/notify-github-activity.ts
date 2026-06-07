@@ -378,6 +378,13 @@ export async function runGithubActivityNotifier(
 
 export function routineGithubActivityReason(activity: GithubActivity): string | null {
   const typeAction = `${activity.type}.${activity.action ?? "none"}`;
+  if (
+    activity.type === "issue_comment" &&
+    isBotActor(activity.actor) &&
+    hasCommandStatusMarker(activity)
+  ) {
+    return "routine GitHub activity filtered: ClawSweeper command status comment";
+  }
   const commandLike = activityContainsClawSweeperCommand(activity);
   if (typeAction === "issue_comment.edited" && !commandLike) {
     return "routine GitHub activity filtered: issue comment edit";
@@ -429,7 +436,15 @@ function successfulState(state: string | null): boolean {
 }
 
 function activityContainsClawSweeperCommand(activity: GithubActivity): boolean {
-  const text = [
+  return CLAWSWEEPER_COMMAND_RE.test(activityText(activity));
+}
+
+function hasCommandStatusMarker(activity: GithubActivity): boolean {
+  return /<!--\s*clawsweeper-command(?:-status|-ack|-progress)?:/i.test(activityText(activity));
+}
+
+function activityText(activity: GithubActivity): string {
+  return [
     activity.subject.title,
     stringOrNull(activity.payload.body_excerpt),
     stringOrNull(asJsonObject(activity.payload.comment).body_excerpt),
@@ -437,7 +452,6 @@ function activityContainsClawSweeperCommand(activity: GithubActivity): boolean {
   ]
     .filter((value): value is string => Boolean(value))
     .join("\n");
-  return CLAWSWEEPER_COMMAND_RE.test(text);
 }
 
 function normalizeRepositoryDispatch(

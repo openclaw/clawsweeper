@@ -395,6 +395,37 @@ test("routineGithubActivityReason keeps explicit ClawSweeper commands visible", 
   assert.equal(routineGithubActivityReason(rerun!), null);
 });
 
+test("routineGithubActivityReason filters ClawSweeper command status comment edits", () => {
+  const activity = normalizeGithubActivity({
+    eventName: "issue_comment",
+    payload: {
+      action: "edited",
+      repository: { full_name: "openclaw/openclaw" },
+      sender: { login: "clawsweeper[bot]" },
+      issue: {
+        number: 90328,
+        title: "Expose model picker agent runtimes",
+        state: "open",
+        html_url: "https://github.com/openclaw/openclaw/pull/90328",
+        pull_request: {},
+      },
+      comment: {
+        id: 4643099431,
+        html_url: "https://github.com/openclaw/openclaw/pull/90328#issuecomment-4643099431",
+        body: [
+          "<!-- clawsweeper-command-status:90328:re_review:bc62b391bf7 -->",
+          "<!-- clawsweeper-command:4643099431:2026-06-07T15:28:02Z:re_review:bc62b391bf7 -->",
+          "🦞👀",
+          "ClawSweeper is reviewing @clawsweeper re-review.",
+        ].join("\n"),
+        user: { login: "clawsweeper[bot]" },
+      },
+    },
+  });
+
+  assert.match(routineGithubActivityReason(activity!) ?? "", /command status comment/);
+});
+
 test("routineGithubActivityReason filters duplicate PR synchronize and successful automation", () => {
   const synchronize = normalizeGithubActivity({
     eventName: "pull_request_target",
