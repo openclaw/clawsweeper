@@ -24,6 +24,10 @@ test("run-worker starts Codex in the target checkout when one is available", () 
     [
       "#!/usr/bin/env node",
       "const args = process.argv.slice(2);",
+      "if (args[0] === 'api' && args[1] === 'repos/openclaw/openclaw') {",
+      "  process.stdout.write(JSON.stringify({ default_branch: 'main' }));",
+      "  process.exit(0);",
+      "}",
       "if (args[0] === 'api' && args[1] === 'repos/openclaw/openclaw/branches/main') {",
       "  process.stdout.write(JSON.stringify({ commit: { sha: '1111111111111111111111111111111111111111' } }));",
       "  process.exit(0);",

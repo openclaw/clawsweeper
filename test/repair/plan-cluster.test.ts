@@ -49,6 +49,54 @@ test("plan-cluster carries worker target checkout into artifacts", () => {
   assert.equal(fixArtifact.target_checkout, targetCheckout);
 });
 
+test("plan-cluster hydrates the repository default branch instead of hard-coding main", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-plan-default-branch-"));
+  const binDir = path.join(tmp, "bin");
+  const jobPath = path.join(tmp, "job.md");
+  const runDir = path.join(tmp, "run");
+  fs.mkdirSync(binDir);
+  fs.writeFileSync(path.join(binDir, "gh"), fakeGhScript(), { mode: 0o755 });
+
+  fs.writeFileSync(
+    jobPath,
+    [
+      "---",
+      "repo: openclaw/openclaw",
+      "cluster_id: issue-implementation-openclaw-openclaw-74134",
+      "mode: autonomous",
+      "allowed_actions:",
+      "  - comment",
+      "canonical:",
+      "  - #74134",
+      "candidates:",
+      "  - #74134",
+      "allow_fix_pr: false",
+      "security_policy: central_security_only",
+      "security_sensitive: false",
+      "---",
+      "Plan this item.",
+      "",
+    ].join("\n"),
+  );
+
+  execFileSync(process.execPath, ["dist/repair/plan-cluster.js", jobPath, "--run-dir", runDir], {
+    cwd: process.cwd(),
+    env: {
+      ...process.env,
+      PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
+      FAKE_DEFAULT_BRANCH: "master",
+    },
+    stdio: "pipe",
+  });
+
+  const clusterPlan = JSON.parse(fs.readFileSync(path.join(runDir, "cluster-plan.json"), "utf8"));
+  assert.deepEqual(clusterPlan.main, {
+    name: "master",
+    sha: "master-sha",
+    url: "https://github.com/openclaw/openclaw/tree/master",
+  });
+});
+
 test("plan-cluster allows security repair for adopted PR autofix jobs", () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-plan-security-autofix-"));
   const jobPath = path.join(tmp, "job.md");
@@ -372,8 +420,13 @@ if (args[0] !== "api") {
   process.exit(1);
 }
 const endpoint = args[1];
-if (endpoint === "repos/openclaw/openclaw/branches/main") {
-  write({ commit: { sha: "main-sha" }, _links: { html: "https://github.com/openclaw/openclaw/tree/main" } });
+const defaultBranch = process.env.FAKE_DEFAULT_BRANCH || "main";
+if (endpoint === "repos/openclaw/openclaw") {
+  write({ default_branch: defaultBranch });
+  process.exit(0);
+}
+if (endpoint === "repos/openclaw/openclaw/branches/" + encodeURIComponent(defaultBranch)) {
+  write({ commit: { sha: defaultBranch + "-sha" }, _links: { html: "https://github.com/openclaw/openclaw/tree/" + defaultBranch } });
   process.exit(0);
 }
 if (isPaged()) {

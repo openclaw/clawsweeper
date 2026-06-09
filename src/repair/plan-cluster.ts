@@ -715,12 +715,19 @@ function branchWriteReason(repo: string, pullRequest: LooseRecord) {
 }
 
 function fetchMainBranch(repo: string) {
-  const branch = ghJson(["api", `repos/${repo}/branches/main`]);
+  const name = fetchDefaultBranchName(repo);
+  const branch = ghJson(["api", `repos/${repo}/branches/${encodeURIComponent(name)}`]);
   return {
-    name: "main",
+    name,
     sha: branch.commit?.sha,
     url: branch._links?.html,
   };
+}
+
+function fetchDefaultBranchName(repo: string) {
+  const repository = ghJson(["api", `repos/${repo}`]);
+  const branch = String(repository.default_branch ?? "").trim();
+  return branch || "main";
 }
 
 function offlineMainBranch(repo: string) {
