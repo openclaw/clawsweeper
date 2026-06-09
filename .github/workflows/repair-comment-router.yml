@@ -201,13 +201,15 @@ jobs:
           args=(
             --write-report
             --repo "$target_repo"
-            --target-branch "$target_branch"
             --lookback-minutes "$lookback_minutes"
             --max-comments "$max_comments"
             --runner "$runner"
             --execution-runner "$execution_runner"
             --wait-for-capacity
           )
+          if [ -n "$target_branch" ]; then
+            args+=(--target-branch "$target_branch")
+          fi
           if [ -n "$since" ]; then
             args+=(--since "$since")
           fi
@@ -287,13 +289,15 @@ jobs:
           args=(
             --write-report
             --repo "$target_repo"
-            --target-branch "$target_branch"
             --lookback-minutes "$lookback_minutes"
             --max-comments "$max_comments"
             --runner "$runner"
             --execution-runner "$execution_runner"
             --wait-for-capacity
           )
+          if [ -n "$target_branch" ]; then
+            args+=(--target-branch "$target_branch")
+          fi
           if [ -n "$since" ]; then
             args+=(--since "$since")
           fi

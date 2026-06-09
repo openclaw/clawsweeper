@@ -52,7 +52,14 @@ test("repair comment router workflow preserves repository dispatch target branch
     workflow,
     /target_branch="\$\{\{ github\.event\.client_payload\.target_branch \|\| '' \}\}"/,
   );
-  assert.match(workflow, /--target-branch "\$target_branch"/);
+  assert.equal(
+    [
+      ...workflow.matchAll(
+        /if \[ -n "\$target_branch" \]; then\n\s+args\+=\(--target-branch "\$target_branch"\)\n\s+fi/g,
+      ),
+    ].length,
+    2,
+  );
 });
 
 test("sweep workflow preserves workflow dispatch target branch", () => {
