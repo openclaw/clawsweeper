@@ -27,6 +27,10 @@ on:
         description: "Minimum item age in days before apply-existing can close it"
         required: false
         default: "0"
+      apply_min_age_minutes:
+        description: "Optional minute-level minimum item age before apply-existing can close it"
+        required: false
+        default: ""
       apply_kind:
         description: "Item kind to close in apply-existing mode: issue, pull_request, or all"
         required: false
@@ -55,10 +59,6 @@ on:
         description: "Delay after each close/comment pair to avoid GitHub secondary write throttling"
         required: false
         default: "2000"
-      apply_progress_every:
-        description: "Log apply progress every N processed records, plus every close"
-        required: false
-        default: "10"
       apply_checkpoint_size:
         description: "Fresh closes per checkpoint commit in apply-existing mode"
         required: false
@@ -1502,8 +1502,7 @@ jobs:
               -f apply_sync_comments_only=true \
               -f apply_item_numbers="$item_numbers" \
               -f apply_limit=0 \
-              -f apply_comment_sync_min_age_days=7 \
-              -f apply_progress_every=25; then
+              -f apply_comment_sync_min_age_days=7; then
               echo "Dispatched background comment sync for item numbers: $item_numbers"
               exit 0
             fi
@@ -2012,7 +2011,7 @@ jobs:
         run: |
           set -euo pipefail
           min_age_days="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_min_age_days || '0' }}"
-          min_age_minutes=""
+          min_age_minutes="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_min_age_minutes || '' }}"
           apply_kind="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_kind || 'all' }}"
           apply_close_reasons="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_close_reasons || 'all' }}"
           stale_min_age_days="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_stale_min_age_days || '60' }}"
@@ -2081,12 +2080,12 @@ jobs:
           test -n "$GH_TOKEN"
           limit="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_limit || '20' }}"
           min_age_days="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_min_age_days || '0' }}"
-          min_age_minutes=""
+          min_age_minutes="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_min_age_minutes || '' }}"
           apply_kind="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_kind || 'all' }}"
           apply_close_reasons="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_close_reasons || 'all' }}"
           stale_min_age_days="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_stale_min_age_days || '60' }}"
           close_delay_ms="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_close_delay_ms || '2000' }}"
-          progress_every="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_progress_every || '10' }}"
+          progress_every="10"
           checkpoint_size="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_checkpoint_size || '50' }}"
           sync_batch_size="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_limit || '25' }}"
           item_numbers="${{ github.event_name == 'repository_dispatch' && github.event.client_payload.item_number || github.event.inputs.apply_item_numbers || '' }}"
@@ -2397,6 +2396,7 @@ jobs:
             -f target_repo="$APPLY_TARGET_REPO" \
             -f apply_limit="$APPLY_LIMIT" \
             -f apply_min_age_days="$APPLY_MIN_AGE_DAYS" \
+            -f apply_min_age_minutes="$APPLY_MIN_AGE_MINUTES" \
             -f apply_kind="$APPLY_KIND" \
             -f apply_close_reasons="$APPLY_CLOSE_REASONS" \
             -f apply_stale_min_age_days="$APPLY_STALE_MIN_AGE_DAYS" \
@@ -2404,7 +2404,6 @@ jobs:
             -f apply_sync_comments_only="$APPLY_SYNC_COMMENTS_ONLY" \
             -f apply_comment_sync_min_age_days="$APPLY_COMMENT_SYNC_MIN_AGE_DAYS" \
             -f apply_close_delay_ms="$APPLY_CLOSE_DELAY_MS" \
-            -f apply_progress_every="$APPLY_PROGRESS_EVERY" \
             -f apply_checkpoint_size="$APPLY_CHECKPOINT_SIZE"
 
       - name: Queue review backstops
