@@ -45,14 +45,14 @@ The default workflow is proposal-first. It does not comment or close unless a jo
 ## State Boundaries
 
 `jobs/` and `results/` are durable operational state in
-`openclaw/clawsweeper-state`, not generated source in this repo. They may
+`valkyriweb/clawsweeper-state`, not generated source in this repo. They may
 contain historical run text and audit evidence. Active code, prompts, workflows,
 docs, schemas, and tests are covered by `pnpm run check:active-surface`, which
 rejects retired project names and old token variables before the full gate runs.
 
 ## Dashboard
 
-Live dashboard and generated state: https://github.com/openclaw/clawsweeper-state
+Live dashboard and generated state: https://github.com/valkyriweb/clawsweeper-state
 
 ## How It Works
 
@@ -94,7 +94,7 @@ Each cluster job:
 6. Reviews the worker artifact with deterministic safety checks.
 7. Executes credited fix artifacts through `scripts/execute-fix-artifact.ts` when the fix gate is open: repair a writable contributor branch first, treating same-repo head branches as writable even when GitHub reports `maintainer_can_modify=false`; otherwise raise a narrow replacement PR, copy source labels, add non-bot source PR authors as replacement co-authors, and close the uneditable source PR after the replacement push succeeds.
 8. Applies guarded close/comment and explicit merge actions through `scripts/apply-result.ts`.
-9. Publishes a sanitized result ledger back to `openclaw/clawsweeper-state`
+9. Publishes a sanitized result ledger back to `valkyriweb/clawsweeper-state`
    under `results/`, `jobs/openclaw/closed/`, `repair-apply-report.json`, and
    `notifications/`; the external dashboard and Discord notification dedupe
    render from that ledger.

@@ -168,7 +168,7 @@ Required repository configuration:
 
 Successful event notifications are recorded in
 `notifications/clawsweeper-event-ledger.json` in
-`openclaw/clawsweeper-state`, keyed by event type, repo, target, action, status,
+`valkyriweb/clawsweeper-state`, keyed by event type, repo, target, action, status,
 and stable mutation evidence. This prevents duplicate Discord posts when the
 publish workflow reruns.
 

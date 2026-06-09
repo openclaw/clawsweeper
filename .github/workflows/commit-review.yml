@@ -345,7 +345,7 @@ jobs:
     name: Review commit ${{ matrix.sha }}
     needs: plan
     if: ${{ needs.plan.outputs.planned_count != '0' }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CLAWSWEEPER_REVIEW_RUNNER && fromJson(vars.CLAWSWEEPER_REVIEW_RUNNER) || vars.CLAWSWEEPER_RUNNER_LABELS && fromJson(vars.CLAWSWEEPER_RUNNER_LABELS) || fromJson('["self-hosted", "macOS", "ARM64", "mac-mini"]') }}
     timeout-minutes: 45
     permissions:
       contents: read
@@ -396,9 +396,8 @@ jobs:
           build-script: build
 
       - uses: ./clawsweeper/.github/actions/setup-codex
-        env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         with:
+          auth-mode: subscription
           login-status: "true"
 
       - name: Check out target main

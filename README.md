@@ -26,7 +26,7 @@ At a high level ClawSweeper:
 - can open guarded implementation PRs for strict, reproducible bug issues
 - reviews code-bearing commits that land on target `main` branches
 - publishes dashboard, audit, repair, and activity state to
-  `openclaw/clawsweeper-state`
+  `valkyriweb/clawsweeper-state`
 
 ClawSweeper is not a generic auto-close bot. Review is proposal-only, apply is
 guarded, Codex never gets write credentials during review, and every GitHub
@@ -69,7 +69,7 @@ commenting or closing anything. Closed or already-closed reports move to
 `records/<repo-slug>/closed/<number>.md`; reopened archived items move back to
 `items/` as stale work.
 
-Generated state lives on the `state` branch of `openclaw/clawsweeper-state`:
+Generated state lives on the `state` branch of `valkyriweb/clawsweeper-state`:
 durable `records/`, `jobs/`, `results/`, audit output, workflow status JSON,
 repair ledgers, and the rendered dashboard. The state repo `main` branch is the
 dashboard renderer source, so a checkout on `main` intentionally does not show
@@ -208,7 +208,7 @@ can be used for one-off live routing.
 
 ## Dashboard
 
-Live dashboard and generated state: https://github.com/openclaw/clawsweeper-state
+Live dashboard and generated state: https://github.com/valkyriweb/clawsweeper-state
 
 Live pipeline dashboard: https://clawsweeper.openclaw.ai/
 
@@ -420,7 +420,7 @@ Missing open records are classified as eligible, maintainer-authored, protected,
 or recently created so strict audit mode can flag actionable drift without
 treating expected queue lag or excluded items as failures.
 Use `--update-dashboard` to publish the latest audit state under
-`results/audit/` in `openclaw/clawsweeper-state` without making every normal
+`results/audit/` in `valkyriweb/clawsweeper-state` without making every normal
 status update scan all open GitHub items. The state repo renders reviewable
 findings such as missing eligible records, reopened archived records, and stale
 reviews from that state. The
@@ -580,7 +580,7 @@ Token flow:
   issue/PR/workflow/commit hydration, then creates write/check credentials only
   after Codex exits.
 - The ClawSweeper GitHub App commits generated reports back to
-  `openclaw/clawsweeper-state`.
+  `valkyriweb/clawsweeper-state`.
 
 Required `clawsweeper` app permissions:
 

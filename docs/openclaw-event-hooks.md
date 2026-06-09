@@ -24,7 +24,7 @@ The normal event flow is:
 6. The agent sends the final message to the configured delivery target, or
    replies `NO_REPLY` when the event is intentionally silent.
 7. ClawSweeper records successful sends in the ledger and publishes it to
-   `openclaw/clawsweeper-state`.
+   `valkyriweb/clawsweeper-state`.
 
 The hook call is best-effort by default. A Discord outage or Gateway outage
 must not make an already-completed GitHub mutation roll back or fail the state
@@ -136,7 +136,7 @@ When adding another ClawSweeper-to-OpenClaw event:
    failed send, ledger dedupe, and rerun behavior.
 4. Add the workflow step after the durable event source exists and before the
    state commit that publishes the ledger.
-5. Publish the event report and ledger path to `openclaw/clawsweeper-state`.
+5. Publish the event report and ledger path to `valkyriweb/clawsweeper-state`.
 6. Document required secrets, variables, target channel, and replay behavior.
 
 Do not send directly from every worker. Send once from the publish/finalizer job

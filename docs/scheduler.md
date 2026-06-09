@@ -47,7 +47,7 @@ Important source files:
 - `records/<repo-slug>/closed/<number>.md`: archived closed reports
 
 Generated state is published to the `state` branch of
-`openclaw/clawsweeper-state`. Its `main` branch contains dashboard renderer
+`valkyriweb/clawsweeper-state`. Its `main` branch contains dashboard renderer
 source only. For local record inspection, switch that checkout to `state` or run
 `scripts/hydrate-state.ts` from a `state`-branch checkout before using
 `records/`.
@@ -523,7 +523,7 @@ fast reconciler once before committing records. It does not run the slower
 artifact-apply reconciler and the explicit publish reconciler back to back.
 
 After publishing audit state and reconciled records, audit dispatches the
-`openclaw/clawsweeper-state` dashboard renderer; that repository's 15-minute
+`valkyriweb/clawsweeper-state` dashboard renderer; that repository's 15-minute
 schedule remains the fallback if dispatch is delayed.
 
 ## Monitoring

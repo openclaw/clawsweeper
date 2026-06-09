@@ -74,7 +74,7 @@ Protected authors are skipped before model spend:
 - GitHub bot accounts
 - configured trusted bots
 
-Outputs in `openclaw/clawsweeper-state`:
+Outputs in `valkyriweb/clawsweeper-state`:
 
 - `results/spam-scanner-latest.json`: latest run summary
 - `results/spam-scanner.json`: durable processed comment-version ledger
