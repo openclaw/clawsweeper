@@ -11,6 +11,10 @@ on:
         description: "Repository to sweep"
         required: false
         default: "openclaw/openclaw"
+      target_branch:
+        description: "Target repository branch to review"
+        required: false
+        default: ""
       apply_existing:
         description: "Apply existing proposed close decisions without rerunning Codex; skips items changed since review"
         required: false
@@ -23,10 +27,6 @@ on:
         description: "Minimum item age in days before apply-existing can close it"
         required: false
         default: "0"
-      apply_min_age_minutes:
-        description: "Optional minute-level minimum item age before apply-existing can close it"
-        required: false
-        default: ""
       apply_kind:
         description: "Item kind to close in apply-existing mode: issue, pull_request, or all"
         required: false
@@ -178,7 +178,7 @@ jobs:
         run: |
           set -euo pipefail
           target_repo="${{ github.event.client_payload.target_repo || 'openclaw/openclaw' }}"
-          target_branch="${{ github.event.client_payload.target_branch || 'main' }}"
+          target_branch="${{ github.event.inputs.target_branch || github.event.client_payload.target_branch || 'main' }}"
           item_number="${{ github.event.client_payload.item_number || '' }}"
           item_kind="${{ github.event.client_payload.item_kind || '' }}"
           if ! printf '%s' "$target_repo" | grep -Eq '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$'; then
@@ -2012,7 +2012,7 @@ jobs:
         run: |
           set -euo pipefail
           min_age_days="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_min_age_days || '0' }}"
-          min_age_minutes="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_min_age_minutes || '' }}"
+          min_age_minutes=""
           apply_kind="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_kind || 'all' }}"
           apply_close_reasons="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_close_reasons || 'all' }}"
           stale_min_age_days="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_stale_min_age_days || '60' }}"
@@ -2081,7 +2081,7 @@ jobs:
           test -n "$GH_TOKEN"
           limit="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_limit || '20' }}"
           min_age_days="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_min_age_days || '0' }}"
-          min_age_minutes="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_min_age_minutes || '' }}"
+          min_age_minutes=""
           apply_kind="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_kind || 'all' }}"
           apply_close_reasons="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_close_reasons || 'all' }}"
           stale_min_age_days="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_stale_min_age_days || '60' }}"
@@ -2397,7 +2397,6 @@ jobs:
             -f target_repo="$APPLY_TARGET_REPO" \
             -f apply_limit="$APPLY_LIMIT" \
             -f apply_min_age_days="$APPLY_MIN_AGE_DAYS" \
-            -f apply_min_age_minutes="$APPLY_MIN_AGE_MINUTES" \
             -f apply_kind="$APPLY_KIND" \
             -f apply_close_reasons="$APPLY_CLOSE_REASONS" \
             -f apply_stale_min_age_days="$APPLY_STALE_MIN_AGE_DAYS" \

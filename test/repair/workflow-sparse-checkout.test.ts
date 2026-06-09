@@ -55,6 +55,16 @@ test("repair comment router workflow preserves repository dispatch target branch
   assert.match(workflow, /--target-branch "\$target_branch"/);
 });
 
+test("sweep workflow preserves workflow dispatch target branch", () => {
+  const workflow = fs.readFileSync(path.join(process.cwd(), ".github/workflows/sweep.yml"), "utf8");
+
+  assert.match(workflow, /target_branch:\n\s+description: "Target repository branch to review"/);
+  assert.match(
+    workflow,
+    /target_branch="\$\{\{ github\.event\.inputs\.target_branch \|\| github\.event\.client_payload\.target_branch \|\| 'main' \}\}"/,
+  );
+});
+
 function sparseCheckoutEntries(workflow: string): Set<string> {
   const entries = new Set<string>();
   const lines = workflow.split(/\r?\n/);
