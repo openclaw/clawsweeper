@@ -16,6 +16,7 @@ export const DEFAULT_TRUSTED_BOTS = ["clawsweeper[bot]", "openclaw-clawsweeper[b
 
 export type CommentRouterConfig = {
   targetRepo: string;
+  targetBranch: string;
   repairRepo: string;
   workflow: string;
   reviewRepo: string;
@@ -50,6 +51,10 @@ export function readCommentRouterConfig(args: LooseRecord): CommentRouterConfig 
   const targetRepo = stringSetting(
     args.repo ?? process.env.CLAWSWEEPER_TARGET_REPO,
     DEFAULT_TARGET_REPO,
+  );
+  const targetBranch = stringSetting(
+    args["target-branch"] ?? args.target_branch ?? process.env.CLAWSWEEPER_TARGET_BRANCH,
+    "",
   );
   const repairRepo = stringSetting(
     args["repair-repo"] ?? process.env.CLAWSWEEPER_REPO,
@@ -91,6 +96,7 @@ export function readCommentRouterConfig(args: LooseRecord): CommentRouterConfig 
 
   return {
     targetRepo,
+    targetBranch,
     repairRepo,
     workflow,
     reviewRepo,

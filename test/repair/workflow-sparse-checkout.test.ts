@@ -41,6 +41,20 @@ test("repair build emits the bounded Codex process worker", () => {
   assert.ok(config.include?.includes("src/codex-process-worker.ts"));
 });
 
+test("repair comment router workflow preserves repository dispatch target branch", () => {
+  const workflow = fs.readFileSync(
+    path.join(process.cwd(), ".github/workflows/repair-comment-router.yml"),
+    "utf8",
+  );
+
+  assert.match(workflow, /target_branch:\n\s+description:/);
+  assert.match(
+    workflow,
+    /target_branch="\$\{\{ github\.event\.client_payload\.target_branch \|\| '' \}\}"/,
+  );
+  assert.match(workflow, /--target-branch "\$target_branch"/);
+});
+
 function sparseCheckoutEntries(workflow: string): Set<string> {
   const entries = new Set<string>();
   const lines = workflow.split(/\r?\n/);
