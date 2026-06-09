@@ -17499,7 +17499,7 @@ test("publish workflow installs Codex from the root checkout path", () => {
 });
 
 test("apply workflow installs Codex only when proof-eligible apply work can run", () => {
-  const workflow = readFileSync(".github/workflows/sweep.yml", "utf8");
+  const workflow = readFileSync(".github/workflows/sweep.yml", "utf8").replace(/\r\n/g, "\n");
   const applyJobStart = workflow.indexOf("\n  apply-existing:");
   assert.notEqual(applyJobStart, -1);
   const applyJob = workflow.slice(applyJobStart);
@@ -17527,8 +17527,10 @@ test("apply workflow installs Codex only when proof-eligible apply work can run"
   assert.match(preselectBlock, /comment-sync-batch/);
   assert.match(preselectBlock, /batch_count="\$\(awk -F=/);
   const syncOnlyStart = preselectBlock.indexOf('if [ "$sync_comments_only" = "true" ]; then');
-  const nonSyncStart = preselectBlock.indexOf("\n          else\n            proof_args=(");
   assert.ok(syncOnlyStart !== -1);
+  const nonSyncMatch = /\n\s+else\n\s+proof_args=\(/.exec(preselectBlock.slice(syncOnlyStart));
+  assert.ok(nonSyncMatch);
+  const nonSyncStart = syncOnlyStart + nonSyncMatch.index;
   assert.ok(nonSyncStart > syncOnlyStart);
   assert.doesNotMatch(preselectBlock.slice(syncOnlyStart, nonSyncStart), /needs_codex=true/);
   assert.match(preselectBlock, /\[ -n "\$item_numbers" \]/);
@@ -17537,6 +17539,25 @@ test("apply workflow installs Codex only when proof-eligible apply work can run"
   assert.match(preselectBlock, /if \[ -n "\$selected" \]; then\s+needs_codex=true/);
   assert.doesNotMatch(preselectBlock, /if \[ -n "\$item_numbers" \]; then\s+needs_codex=true/);
   assert.doesNotMatch(preselectBlock, /normalized_apply_close_reasons=/);
+});
+
+test("apply workflow syncs source checkout before state hydration", () => {
+  const workflow = readFileSync(".github/workflows/sweep.yml", "utf8").replace(/\r\n/g, "\n");
+  const applyJobStart = workflow.indexOf("\n  apply-existing:");
+  assert.notEqual(applyJobStart, -1);
+  const applyJob = workflow.slice(applyJobStart);
+  const resolveTargetStart = applyJob.indexOf("- name: Resolve target repository");
+  const syncStart = applyJob.indexOf("- name: Sync source checkout before state hydration");
+  const setupStateStart = applyJob.indexOf("- uses: ./.github/actions/setup-state");
+  const reconcileStart = applyJob.indexOf("- name: Reconcile before apply preselect");
+
+  assert.ok(resolveTargetStart !== -1);
+  assert.ok(syncStart > resolveTargetStart);
+  assert.ok(setupStateStart > syncStart);
+  assert.ok(reconcileStart > setupStateStart);
+  assert.equal(applyJob.indexOf("- name: Sync before applying decisions"), -1);
+  assert.match(applyJob.slice(syncStart, setupStateStart), /run: git pull --rebase/);
+  assert.doesNotMatch(applyJob.slice(setupStateStart, reconcileStart), /git pull --rebase/);
 });
 
 test("sweep target tokens fall back when an org app installation is missing", () => {

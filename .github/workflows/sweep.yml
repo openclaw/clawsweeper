@@ -1957,6 +1957,9 @@ jobs:
             echo "target_repo_name=$target_name"
           } >> "$GITHUB_OUTPUT"
 
+      - name: Sync source checkout before state hydration
+        run: git pull --rebase --autostash
+
       - name: Create target write token
         id: target-write-token
         continue-on-error: true
@@ -1984,9 +1987,6 @@ jobs:
       - uses: ./.github/actions/setup-pnpm
         with:
           build-script: build:all
-
-      - name: Sync before applying decisions
-        run: git pull --rebase --autostash
 
       - name: Reconcile before apply preselect
         env:
