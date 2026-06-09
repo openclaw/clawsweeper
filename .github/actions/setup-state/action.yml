@@ -7,7 +7,7 @@ inputs:
   state-repository:
     description: Generated state repository.
     required: false
-    default: openclaw/clawsweeper-state
+    default: valkyriweb/clawsweeper-state
   state-ref:
     description: Generated state branch.
     required: false

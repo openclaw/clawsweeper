@@ -155,6 +155,7 @@ jobs:
       - uses: ./clawsweeper/.github/actions/setup-state
         with:
           token: ${{ steps.state-token.outputs.token }}
+          state-repository: valkyriweb/clawsweeper-state
           worktree-path: clawsweeper
           fetch-depth: 1
 
@@ -385,6 +386,7 @@ jobs:
       - uses: ./clawsweeper/.github/actions/setup-state
         with:
           token: ${{ steps.state-token.outputs.token }}
+          state-repository: valkyriweb/clawsweeper-state
           worktree-path: clawsweeper
           fetch-depth: 1
 
@@ -514,6 +516,7 @@ jobs:
       - uses: ./.github/actions/setup-state
         with:
           token: ${{ steps.state-token.outputs.token }}
+          state-repository: valkyriweb/clawsweeper-state
 
       - uses: ./.github/actions/setup-pnpm
         with:

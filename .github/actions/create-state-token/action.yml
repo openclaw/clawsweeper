@@ -10,7 +10,7 @@ inputs:
   owner:
     description: State repository owner.
     required: false
-    default: openclaw
+    default: valkyriweb
   repository:
     description: State repository name.
     required: false
