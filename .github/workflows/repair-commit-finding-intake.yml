@@ -22,7 +22,7 @@ on:
       report_repo:
         description: "Repository containing the ClawSweeper report"
         required: false
-        default: "openclaw/clawsweeper"
+        default: "valkyriweb/clawsweeper-state"
         type: string
       report_path:
         description: "Path to the ClawSweeper report"
@@ -37,18 +37,18 @@ on:
       runner:
         description: "Runner label for commit finding intake"
         required: false
-        default: blacksmith-16vcpu-ubuntu-2404
+        default: '["self-hosted","macOS","ARM64","mac-mini"]'
         type: string
 
 permissions:
   contents: write
-  actions: read
+  actions: write
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
-  CLAWSWEEPER_APP_CLIENT_ID: Iv23liOECG0slfuhz093
+  CLAWSWEEPER_APP_CLIENT_ID: Iv23lirdjmVqYd1gwY26
   CODEX_CLI_VERSION: ${{ vars.CLAWSWEEPER_CODEX_CLI_VERSION || '0.128.0' }}
-  CLAWSWEEPER_ALLOWED_OWNER: ${{ vars.CLAWSWEEPER_ALLOWED_OWNER || 'openclaw' }}
+  CLAWSWEEPER_ALLOWED_OWNER: ${{ vars.CLAWSWEEPER_ALLOWED_OWNER || 'valkyriweb' }}
   CLAWSWEEPER_ALLOW_EXECUTE: ${{ vars.CLAWSWEEPER_ALLOW_EXECUTE == '1' && '1' || '0' }}
   CLAWSWEEPER_ALLOW_FIX_PR: ${{ vars.CLAWSWEEPER_ALLOW_FIX_PR == '1' && '1' || '0' }}
   CLAWSWEEPER_ALLOW_MERGE: "0"
@@ -83,10 +83,10 @@ jobs:
 
   intake:
     if: ${{ !(github.event_name == 'repository_dispatch' && github.event.client_payload.target_repo == 'openclaw/clawhub' && vars.CLAWSWEEPER_ENABLE_CLAWHUB != '1') }}
-    runs-on: ${{ github.event.inputs.runner || vars.CLAWSWEEPER_COMMIT_FINDING_RUNNER || 'blacksmith-16vcpu-ubuntu-2404' }}
+    runs-on: ${{ fromJson(github.event.inputs.runner || vars.CLAWSWEEPER_COMMIT_FINDING_RUNNER || '["self-hosted","macOS","ARM64","mac-mini"]') }}
     timeout-minutes: 75
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
         with:
           filter: blob:none
           fetch-depth: 0
@@ -95,13 +95,23 @@ jobs:
         with:
           build-script: build:repair
 
+      - name: Resolve target repository
+        id: target
+        env:
+          TARGET_REPO: ${{ github.event.inputs.target_repo || github.event.client_payload.target_repo || 'valkyriweb/clawsweeper' }}
+        run: |
+          set -euo pipefail
+          echo "owner=${TARGET_REPO%%/*}" >> "$GITHUB_OUTPUT"
+          echo "name=${TARGET_REPO#*/}" >> "$GITHUB_OUTPUT"
+
       - name: Create GitHub App token
         id: app_token
         uses: actions/create-github-app-token@1b10c78c7865c340bc4f6099eb2f838309f1e8c3 # v3.1.1
         with:
           client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
           private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
-          owner: ${{ vars.CLAWSWEEPER_ALLOWED_OWNER || github.repository_owner }}
+          owner: ${{ steps.target.outputs.owner }}
+          repositories: ${{ steps.target.outputs.name }}
           permission-contents: write
           permission-issues: write
           permission-pull-requests: write
@@ -114,10 +124,13 @@ jobs:
         with:
           client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
           private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
+          owner: valkyriweb
+          repository: clawsweeper-state
 
       - uses: ./.github/actions/setup-state
         with:
           token: ${{ steps.state-token.outputs.token }}
+          state-repository: valkyriweb/clawsweeper-state
 
       - name: Prepare commit finding intake
         id: prepare
@@ -126,7 +139,7 @@ jobs:
           ENABLED: ${{ github.event.inputs.enabled || github.event.client_payload.enabled || vars.CLAWSWEEPER_COMMIT_FINDING_INTAKE_ENABLED || 'true' }}
           TARGET_REPO: ${{ github.event.inputs.target_repo || github.event.client_payload.target_repo || 'valkyriweb/clawsweeper' }}
           COMMIT_SHA: ${{ github.event.inputs.commit_sha || github.event.client_payload.commit_sha }}
-          REPORT_REPO: ${{ github.event.inputs.report_repo || github.event.client_payload.report_repo || 'openclaw/clawsweeper' }}
+          REPORT_REPO: ${{ github.event.inputs.report_repo || github.event.client_payload.report_repo || 'valkyriweb/clawsweeper-state' }}
           REPORT_PATH: ${{ github.event.inputs.report_path || github.event.client_payload.report_path }}
           REPORT_URL: ${{ github.event.inputs.report_url || github.event.client_payload.report_url }}
         run: |
