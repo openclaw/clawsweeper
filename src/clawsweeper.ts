@@ -6284,6 +6284,201 @@ function runCodex(options: {
   }
 }
 
+// Recognise the terminal result record in Claude CLI `-p` output. claude-code
+// emits the conversation as JSONL records (an `init`, any number of
+// `stream_event`s, then exactly one `{ "type": "result", ... }`). With
+// `--output-format json` those records arrive as a single JSON array; with
+// `stream-json` they arrive one-per-line. This mirrors how OpenClaw's own
+// claude-stream-json parser locates the terminal record, in either shape.
+function parseClaudeResultRecord(raw: string): {
+  isError: boolean;
+  structuredOutput: unknown;
+  resultText: string;
+  errorText: string;
+} | null {
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  const records: Record<string, unknown>[] = [];
+  const pushRecord = (value: unknown): void => {
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+      records.push(value as Record<string, unknown>);
+    }
+  };
+  try {
+    const parsed: unknown = JSON.parse(trimmed);
+    if (Array.isArray(parsed)) parsed.forEach(pushRecord);
+    else pushRecord(parsed);
+  } catch {
+    for (const line of trimmed.split(/\r?\n/)) {
+      const text = line.trim();
+      if (!text) continue;
+      try {
+        pushRecord(JSON.parse(text));
+      } catch {
+        // Skip non-JSON lines (banners, partial chunks).
+      }
+    }
+  }
+  for (let i = records.length - 1; i >= 0; i -= 1) {
+    const record = records[i];
+    if (record && record.type === "result") {
+      return {
+        isError: record.is_error === true,
+        structuredOutput: record.structured_output,
+        resultText: typeof record.result === "string" ? record.result : "",
+        errorText: typeof record.error === "string" ? record.error : "",
+      };
+    }
+  }
+  return null;
+}
+
+// Pull a bare JSON object out of the reviewer's final text (handles an
+// optional ```json fence or surrounding prose).
+function extractJsonObject(text: string): string | null {
+  const trimmed = text.trim();
+  if (!trimmed) return null;
+  const fence = trimmed.match(/```(?:json)?\s*\n?([\s\S]*?)\n?```/i);
+  const candidate = (fence ? (fence[1]?.trim() ?? "") : trimmed).trim();
+  if (candidate.startsWith("{")) return candidate;
+  const first = candidate.indexOf("{");
+  const last = candidate.lastIndexOf("}");
+  if (first >= 0 && last > first) return candidate.slice(first, last + 1);
+  return null;
+}
+
+// Review a single item with the Claude CLI in headless `-p` mode, as an
+// alternative to the Codex engine. The binary is configurable (CLAUDE_BIN /
+// --claude-bin), so any `claude -p`-compatible CLI can be dropped in. Reuses
+// the same review prompt and the same Decision schema validation as Codex; the
+// schema travels in the prompt (the CLI's inline-only `--json-schema` can't fit
+// the full schema within the platform argv limit). Read-only is enforced by the
+// prompt contract, disabled edit tools, and a dirty-checkout guard.
+function runClaude(options: {
+  item: Item;
+  context: ItemContext;
+  git: GitInfo;
+  model: string;
+  targetDir: string;
+  claudeBin: string;
+  timeoutMs: number;
+  workDir: string;
+  additionalPrompt?: string;
+}): Decision {
+  ensureDir(options.workDir);
+  const proofScratchDir = join(options.workDir, "proof-scratch", String(options.item.number));
+  ensureDir(proofScratchDir);
+  const preparedMediaProof = prepareMediaProofArtifacts(options.context, proofScratchDir);
+  const promptPath = join(options.workDir, `${options.item.number}.claude.prompt.md`);
+  const basePrompt = buildReviewPrompt(
+    options.item,
+    options.context,
+    options.git,
+    options.additionalPrompt,
+    mediaProofRuntimeHints(proofScratchDir, preparedMediaProof),
+  ).text;
+  const prompt = `${basePrompt}
+
+## Output Contract
+
+Return ONLY a single JSON object that conforms exactly to the schema below. No prose, no markdown fences, and no commentary before or after the object. Every required field must be present with a valid enum value.
+
+\`\`\`json
+${reviewDecisionSchemaText()}
+\`\`\`
+`;
+  writeFileSync(promptPath, prompt, "utf8");
+  const dirtyBefore = openclawDirtyStatus(options.targetDir);
+  if (dirtyBefore) {
+    throw new Error(
+      `Target checkout is dirty before reviewing #${options.item.number}:\n${dirtyBefore}`,
+    );
+  }
+  const useShell = process.platform === "win32";
+  const claudeArgs = [
+    "-p",
+    "--output-format",
+    "json",
+    "--permission-mode",
+    "bypassPermissions",
+    "--disallowed-tools",
+    "Edit",
+    "Write",
+    "NotebookEdit",
+    "--add-dir",
+    proofScratchDir,
+  ];
+  if (options.model) claudeArgs.push("--model", options.model);
+  const result = spawnSync(options.claudeBin, claudeArgs, {
+    cwd: options.targetDir,
+    encoding: "utf8",
+    env: { ...process.env, CLAWSWEEPER_PROOF_SCRATCH_DIR: proofScratchDir },
+    input: prompt,
+    maxBuffer: 128 * 1024 * 1024,
+    timeout: options.timeoutMs,
+    ...(useShell ? { shell: true } : {}),
+  });
+  const dirtyAfter = openclawDirtyStatus(options.targetDir);
+  if (dirtyAfter) {
+    throw new Error(
+      `Claude dirtied the target checkout while reviewing #${options.item.number}:\n${dirtyAfter}`,
+    );
+  }
+  if (result.error) {
+    throw new Error(
+      `Claude review failed for #${options.item.number}: ${result.error.message}\n${
+        safeOutputTail(result.stderr) || safeOutputTail(result.stdout) || "No output."
+      }`,
+    );
+  }
+  const parsed = parseClaudeResultRecord(result.stdout ?? "");
+  if (!parsed) {
+    throw new Error(
+      `Claude review produced no parseable result record for #${options.item.number} (exit ${
+        result.status ?? "unknown"
+      }).\n${safeOutputTail(result.stderr) || safeOutputTail(result.stdout) || "No output."}`,
+    );
+  }
+  if (parsed.isError) {
+    throw new Error(
+      `Claude review reported an error for #${options.item.number}: ${
+        parsed.errorText || parsed.resultText || "unknown error"
+      }`,
+    );
+  }
+  let decisionJson: unknown;
+  if (parsed.structuredOutput && typeof parsed.structuredOutput === "object") {
+    decisionJson = parsed.structuredOutput;
+  } else {
+    const jsonText = extractJsonObject(parsed.resultText);
+    if (!jsonText) {
+      throw new Error(
+        `Claude review did not return a JSON decision for #${options.item.number}.\n${safeOutputTail(
+          parsed.resultText,
+        )}`,
+      );
+    }
+    try {
+      decisionJson = JSON.parse(jsonText);
+    } catch (error) {
+      throw new Error(
+        `Claude review returned invalid JSON for #${options.item.number}: ${
+          error instanceof Error ? error.message : String(error)
+        }\n${safeOutputTail(jsonText)}`,
+      );
+    }
+  }
+  try {
+    return parseDecision(decisionJson, options.item);
+  } catch (error) {
+    throw new Error(
+      `Claude review output failed schema validation for #${options.item.number}: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+}
+
 function stripTextFence(markdown: string): string {
   const trimmed = markdown.trim();
   const match = trimmed.match(/^```(?:markdown|md|text)?\s*\n([\s\S]*?)\n```\s*$/i);
@@ -16923,6 +17118,14 @@ function localReviewCommand(args: Args): void {
   const sandboxMode = stringArg(args.codex_sandbox, "read-only");
   const serviceTier = stringArg(args.codex_service_tier, DEFAULT_SERVICE_TIER);
   const timeoutMs = numberArg(args.codex_timeout_ms, 600_000);
+  const engine = stringArg(args.engine, "codex").toLowerCase();
+  if (engine !== "codex" && engine !== "claude") {
+    throw new Error(`--engine must be "codex" or "claude", got "${engine}"`);
+  }
+  // The Claude binary is configurable so any `claude -p`-compatible CLI can be
+  // dropped in; flag takes precedence over CLAUDE_BIN, default "claude".
+  const claudeBin = stringArg(args.claude_bin, process.env.CLAUDE_BIN ?? "claude");
+  const claudeModel = stringArg(args.claude_model, "");
   const outputDir = resolve(stringArg(args.output_dir, join(homedir(), ".clawsweeper-local-reviews")));
   ensureDir(outputDir);
 
@@ -17011,26 +17214,44 @@ function localReviewCommand(args: Args): void {
     `[local-review] repo=${repoName} base=${baseBranch} files=${changedFiles.length} diff=${diff.length} chars`,
   );
   console.error(`[local-review] title: ${commitTitle}`);
-  console.error(`[local-review] model=${model} reasoning=${reasoningEffort}`);
+  console.error(
+    engine === "claude"
+      ? `[local-review] engine=claude bin=${claudeBin}${claudeModel ? ` model=${claudeModel}` : ""}`
+      : `[local-review] engine=codex model=${model} reasoning=${reasoningEffort}`,
+  );
 
   const staleOutputPath = join(outputDir, `${item.number}.json`);
   if (existsSync(staleOutputPath)) {
     unlinkSync(staleOutputPath);
   }
 
-  const decision = runCodex({
-    item,
-    context,
-    git,
-    model,
-    openclawDir: targetDir,
-    reasoningEffort,
-    sandboxMode,
-    serviceTier,
-    timeoutMs,
-    workDir: outputDir,
-    additionalPrompt: `This is a LOCAL review of staged changes, not a GitHub PR. The diff is from git diff ${baseBranch}...HEAD. Focus on code correctness, not PR metadata.`,
-  });
+  const additionalPrompt = `This is a LOCAL review of staged changes, not a GitHub PR. The diff is from git diff ${baseBranch}...HEAD. Focus on code correctness, not PR metadata.`;
+  const decision =
+    engine === "claude"
+      ? runClaude({
+          item,
+          context,
+          git,
+          model: claudeModel,
+          targetDir,
+          claudeBin,
+          timeoutMs,
+          workDir: outputDir,
+          additionalPrompt,
+        })
+      : runCodex({
+          item,
+          context,
+          git,
+          model,
+          openclawDir: targetDir,
+          reasoningEffort,
+          sandboxMode,
+          serviceTier,
+          timeoutMs,
+          workDir: outputDir,
+          additionalPrompt,
+        });
 
   const outputPath = join(outputDir, "local-review.json");
   writeFileSync(outputPath, JSON.stringify(decision, null, 2), "utf8");
