@@ -168,7 +168,7 @@ jobs:
           if [ -n "$MAX_LIVE_WORKERS" ]; then
             cap_args=(--max-live-workers "$MAX_LIVE_WORKERS")
           fi
-          git pull --rebase
+          git pull --rebase --autostash
           pnpm run repair:dispatch -- "${{ steps.prepare.outputs.job_path }}" \
             --mode autonomous \
             --wait-for-capacity \

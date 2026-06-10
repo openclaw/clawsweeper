@@ -501,7 +501,7 @@ jobs:
       - name: Commit reports
         run: |
           set -euo pipefail
-          git pull --rebase
+          git pull --rebase --autostash
           node dist/commit-sweeper.js copy-artifacts --artifact-dir commit-artifacts --records-dir records
           pnpm run repair:publish-main -- \
             --message "chore: update commit review reports" \
