@@ -9,7 +9,7 @@ inputs:
     default: "@valkyriweb/my-pi-actions"
   profile-version:
     description: Pi profile package version. Empty installs the latest published package.
-    default: "0.1.10"
+    default: "0.1.11"
   token:
     description: GitHub Packages token with read:packages. Empty uses github.token.
     default: ""
