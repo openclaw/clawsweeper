@@ -47,6 +47,14 @@ permissions:
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
   CLAWSWEEPER_APP_CLIENT_ID: Iv23lirdjmVqYd1gwY26
+  CLAWSWEEPER_USAGE_TELEMETRY: "1"
+  CLAWSWEEPER_USAGE_SERVICE_NAME: clawsweeper-runner
+  # Set repo/org variable CLAWSWEEPER_USAGE_OTLP_ENDPOINT to broadcast usage events via OTLP.
+  CLAWSWEEPER_USAGE_OTLP_ENDPOINT: ${{ vars.CLAWSWEEPER_USAGE_OTLP_ENDPOINT || vars.OTEL_EXPORTER_OTLP_ENDPOINT || '' }}
+  CLAWSWEEPER_USAGE_OTLP_HEADERS: ${{ vars.CLAWSWEEPER_USAGE_OTLP_HEADERS || vars.OTEL_EXPORTER_OTLP_HEADERS || '' }}
+  CLAWSWEEPER_USAGE_SERVICE_NAMESPACE: ${{ vars.CLAWSWEEPER_USAGE_SERVICE_NAMESPACE || vars.OTEL_SERVICE_NAMESPACE || '' }}
+  OPIK_URL: https://opik.bermont.digital/api
+  OPIK_PROJECT_NAME: clawsweeper
   CODEX_CLI_VERSION: ${{ vars.CLAWSWEEPER_CODEX_CLI_VERSION || '0.128.0' }}
   CLAWSWEEPER_ALLOWED_OWNER: ${{ vars.CLAWSWEEPER_ALLOWED_OWNER || 'valkyriweb' }}
   CLAWSWEEPER_ALLOW_EXECUTE: ${{ vars.CLAWSWEEPER_ALLOW_EXECUTE == '1' && '1' || '0' }}
@@ -221,6 +229,15 @@ jobs:
             --restore repair-apply-report.json \
             --max-attempts 12 \
             --push-attempts 4
+
+      - name: Upload intake usage telemetry
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: clawsweeper-commit-finding-usage-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .clawsweeper-repair/runs/**/usage-events.jsonl
+          if-no-files-found: warn
+          retention-days: 7
 
       - name: Fail on repair failure
         if: ${{ steps.prepare.outputs.should_repair == 'true' && steps.execute.outcome == 'failure' }}

@@ -76,6 +76,9 @@ concurrency:
 
 jobs:
   route-comments:
+    # Scheduled runs only matter when execute mode is on; skip the full
+    # build + state clone for scan-only ticks (event/dispatch runs always run).
+    if: ${{ github.event_name != 'schedule' || (vars.CLAWSWEEPER_COMMENT_ROUTER_EXECUTE || '0') == '1' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:

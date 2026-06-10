@@ -40,10 +40,11 @@ on:
       - edited
   workflow_run:
     workflows:
-      - sweep
+      # Must match each workflow's declared `name:`, not its filename.
+      - ClawSweeper
       - repair cluster worker
-      - repair publish cluster results
-      - commit review
+      - repair publish cluster results # currently in _disabled/; matches if re-enabled
+      - ClawSweeper Commit Review
     types:
       - completed
 
