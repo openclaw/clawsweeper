@@ -485,6 +485,20 @@
             "type": "string"
           },
           "description": "Zero to three concrete, merge-relevant rank-up moves. Use an empty array for S/A/NA and for B when there is no material risk reducer. Do not invent optional polish work."
+        },
+        "requiredActions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Optional. Blocking issues the maintainer MUST address before merge. When present together with suggestions, these are rendered as '⚠️ Action required:' and take precedence over the flat nextSteps list."
+        },
+        "suggestions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Optional. Non-blocking improvement suggestions. Rendered as '💡 Suggestions:' when present."
         }
       }
     },

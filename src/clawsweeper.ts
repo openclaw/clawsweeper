@@ -303,6 +303,9 @@ interface PrRating {
   overallTier: PrRatingTier;
   summary: string;
   nextSteps: string[];
+  /** Categorised next-step split; takes precedence over flat nextSteps when present. */
+  requiredActions?: string[];
+  suggestions?: string[];
 }
 
 interface MantisRecommendation {
@@ -977,6 +980,8 @@ const PR_RATING_SCHEMA_KEYS = new Set([
   "overallTier",
   "summary",
   "nextSteps",
+  "requiredActions",
+  "suggestions",
 ]);
 const MANTIS_RECOMMENDATION_SCHEMA_KEYS = new Set([
   "status",
@@ -1024,6 +1029,7 @@ const REVIEW_SECTIONS = {
   bestSolution: "Best Possible Solution",
   reproductionAssessment: "Reproduction Assessment",
   solutionAssessment: "Solution Assessment",
+  nextActions: "Next Actions",
   reviewMetadata: "Review Metadata",
   reviewFindings: "Review Findings",
   securityReview: "Security Review",
@@ -1512,12 +1518,23 @@ function parsePrRating(value: unknown, path: string): PrRating {
   rejectUnexpectedKeys(record, PR_RATING_SCHEMA_KEYS, path);
   const nextSteps = requireStringArray(record.nextSteps, `${path}.nextSteps`);
   if (nextSteps.length > 3) throw new Error(`${path}.nextSteps must contain at most 3 items`);
+  // Optional categorised split (requiredActions / suggestions); parse permissively for compatibility.
+  const requiredActions =
+    record.requiredActions === undefined
+      ? undefined
+      : requireStringArray(record.requiredActions, `${path}.requiredActions`);
+  const suggestions =
+    record.suggestions === undefined
+      ? undefined
+      : requireStringArray(record.suggestions, `${path}.suggestions`);
   return {
     proofTier: requireEnum(record.proofTier, PR_RATING_TIERS, `${path}.proofTier`),
     patchTier: requireEnum(record.patchTier, PR_RATING_TIERS, `${path}.patchTier`),
     overallTier: requireEnum(record.overallTier, PR_RATING_TIERS, `${path}.overallTier`),
     summary: requireString(record.summary, `${path}.summary`),
     nextSteps,
+    ...(requiredActions !== undefined && { requiredActions }),
+    ...(suggestions !== undefined && { suggestions }),
   };
 }
 
@@ -7613,6 +7630,25 @@ function appendReviewQuestionDetails(
   }
 }
 
+/** Parse categorised next actions from the "Next Actions" section of a state-repo record. */
+function reportNextActions(markdown: string): { required: string[]; suggestions: string[] } {
+  const section = reviewSectionValue(markdown, "nextActions");
+  const required: string[] = [];
+  const suggestions: string[] = [];
+  if (!section || section === "✅ No action required") return { required, suggestions };
+  let current: string[] | null = null;
+  for (const line of section.split("\n")) {
+    if (line.startsWith("⚠️ Action required:")) {
+      current = required;
+    } else if (line.startsWith("💡 Suggestions:")) {
+      current = suggestions;
+    } else if (line.startsWith("- ") && current) {
+      current.push(line.slice(2).trim());
+    }
+  }
+  return { required, suggestions };
+}
+
 function renderKeepOpenCommentFromReport(markdown: string): string {
   const evidence = reportEvidence(markdown).slice(0, 6).map(closeEvidenceLine);
   const likelyOwners = reportLikelyOwners(markdown).slice(0, 5).map(likelyOwnerLine);
@@ -7627,6 +7663,7 @@ function renderKeepOpenCommentFromReport(markdown: string): string {
   const risks = reviewSectionValue(markdown, "risks");
   const workReason = reportWorkCandidateReason(markdown);
   const workCandidate = frontMatterValue(markdown, "work_candidate");
+  const nextActions = reportNextActions(markdown);
   const validation = frontMatterStringArray(markdown, "work_validation")
     .slice(0, 5)
     .map((step) => `- ${step}`);
@@ -7676,7 +7713,26 @@ function renderKeepOpenCommentFromReport(markdown: string): string {
       publicRealBehaviorProofLine(realBehaviorProof),
     );
   }
-  appendPublicSection(lines, isPullRequest ? "Next step before merge" : "Next step", nextStepLine);
+  // Render categorised "Next actions" block when available; fall back to legacy single-line.
+  if (nextActions.required.length > 0 || nextActions.suggestions.length > 0) {
+    const actionParts: string[] = [];
+    if (nextActions.required.length > 0) {
+      actionParts.push("⚠️ Action required:");
+      for (const item of nextActions.required) actionParts.push(`- ${item}`);
+    }
+    if (nextActions.suggestions.length > 0) {
+      if (actionParts.length) actionParts.push("");
+      actionParts.push("💡 Suggestions:");
+      for (const item of nextActions.suggestions) actionParts.push(`- ${item}`);
+    }
+    appendPublicSection(lines, "Next actions", actionParts.join("\n"));
+  } else {
+    appendPublicSection(
+      lines,
+      isPullRequest ? "Next step before merge" : "Next step",
+      nextStepLine,
+    );
+  }
   const securityLine = publicSecurityReviewLine(securityReview);
   if (securityLine) appendPublicSection(lines, "Security", securityLine);
   if (isPullRequest && reviewFindings.length) {
@@ -8459,6 +8515,36 @@ function renderTelegramVisibleProofReportSection(decision: Decision): string {
   ].join("\n");
 }
 
+/**
+ * Render the "Next Actions" section for the state-repo record.
+ * Uses categorised requiredActions/suggestions when present; falls back to legacy nextSteps.
+ * For non-PR items or empty records, renders "✅ No action required".
+ */
+function renderNextActionsReportSection(decision: Decision): string {
+  const prRating = decision.prRating;
+  const hasRequired = prRating.requiredActions !== undefined && prRating.requiredActions.length > 0;
+  const hasSuggestions = prRating.suggestions !== undefined && prRating.suggestions.length > 0;
+  // Categorised path
+  if (hasRequired || hasSuggestions) {
+    const parts: string[] = [];
+    if (hasRequired) {
+      parts.push("⚠️ Action required:");
+      for (const item of prRating.requiredActions!) parts.push(`- ${item}`);
+    }
+    if (hasSuggestions) {
+      if (parts.length) parts.push("");
+      parts.push("💡 Suggestions:");
+      for (const item of prRating.suggestions!) parts.push(`- ${item}`);
+    }
+    return parts.join("\n");
+  }
+  // Legacy flat nextSteps fallback
+  if (prRating.nextSteps.length > 0) {
+    return ["💡 Suggestions:", ...prRating.nextSteps.map((s) => `- ${s}`)].join("\n");
+  }
+  return "✅ No action required";
+}
+
 function renderReviewMetadataReportSection(decision: Decision): string {
   const impactLabels = decision.impactLabels.length ? decision.impactLabels.join(", ") : "none";
   const mergeRiskLabels = decision.mergeRiskLabels.length
@@ -8488,6 +8574,18 @@ function renderReviewMetadataReportSection(decision: Decision): string {
   const prNextSteps = prRating.nextSteps.length
     ? prRating.nextSteps.map((step) => `- ${step}`).join("\n")
     : "- none";
+  const prRequiredActions =
+    prRating.requiredActions !== undefined
+      ? prRating.requiredActions.length
+        ? prRating.requiredActions.map((a) => `- ${a}`).join("\n")
+        : "- none"
+      : null;
+  const prSuggestions =
+    prRating.suggestions !== undefined
+      ? prRating.suggestions.length
+        ? prRating.suggestions.map((s) => `- ${s}`).join("\n")
+        : "- none"
+      : null;
   const mantis = decision.mantisRecommendation;
   return [
     `Triage priority: ${decision.triagePriority}`,
@@ -8512,6 +8610,8 @@ function renderReviewMetadataReportSection(decision: Decision): string {
     `- summary: ${sentence(prRating.summary)}`,
     "- next steps:",
     prNextSteps,
+    ...(prRequiredActions !== null ? ["- required actions:", prRequiredActions] : []),
+    ...(prSuggestions !== null ? ["- suggestions:", prSuggestions] : []),
     "",
     "Mantis recommendation:",
     "",
@@ -8575,6 +8675,7 @@ function markdownFor(options: {
   const securityReview = renderSecurityReviewReportSection(options.decision);
   const realBehaviorProof = renderRealBehaviorProofReportSection(options.decision);
   const telegramVisibleProof = renderTelegramVisibleProofReportSection(options.decision);
+  const nextActionsSection = renderNextActionsReportSection(options.decision);
   const workCandidateSection = renderWorkCandidateReportSection(options.decision);
   const repairWorkPromptSection = renderRepairWorkPromptReportSection(options.decision);
   return `---
@@ -8713,6 +8814,10 @@ ${reproductionAssessment}
 ## ${REVIEW_SECTIONS.solutionAssessment}
 
 ${solutionAssessment}
+
+## ${REVIEW_SECTIONS.nextActions}
+
+${nextActionsSection}
 
 ## ${REVIEW_SECTIONS.reviewMetadata}
 

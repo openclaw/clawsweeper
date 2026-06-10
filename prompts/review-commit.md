@@ -106,12 +106,23 @@ it out of `result: findings`. You may add a short `## Watchlist` section for
 unproven risks, clearly marked as not actionable and not suitable for automatic
 ClawSweeper repair.
 
+Every report MUST include a `## Next actions` section that clearly categorises what the maintainer should do. Use exactly one of:
+
+- `⚠️ Action required:` followed by a bulleted list — for blocking issues the maintainer MUST address (a high-severity finding, a required patch, a security concern).
+- `💡 Suggestions:` followed by a bulleted list — for optional improvements that are not blocking.
+- Both sections may appear together when both required actions and suggestions exist.
+- `✅ No action required` — when nothing actionable was found (use only with `result: nothing_found`).
+
 Clean report format:
 
 ```md
 # Commit <short sha>
 
 Nothing found.
+
+## Next actions
+
+✅ No action required
 
 ## Details
 
@@ -151,6 +162,14 @@ Finding report format:
 - Impact: why this could matter
 - Suggested fix: specific fix direction
 - Confidence: high | medium | low
+
+## Next actions
+
+⚠️ Action required:
+- <one bullet per blocking issue — be specific about the file, line, and fix direction>
+
+💡 Suggestions:
+- <one bullet per optional improvement, or omit this section entirely if none>
 
 ## Details
 

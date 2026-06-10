@@ -5836,3 +5836,127 @@ test("runReview dispatches claude-code to runClaudeCode", () => {
   });
   assert.equal(decision.decision, expected.decision);
 });
+
+// ── Next-actions rendering ────────────────────────────────────────────────────
+
+function nextActionsSection(body: string) {
+  return `## Next Actions\n\n${body}`;
+}
+
+function makeReportWithNextActions(nextActionsBody: string, type = "pull_request") {
+  return [
+    reportFrontMatter({ type, number: "55001", decision: "keep_open", work_candidate: "none" }),
+    "## Summary\n\nThe PR looks good.\n",
+    "## What This Changes\n\nAdds narrower validation.\n",
+    "## Best Possible Solution\n\nApply the fix.\n",
+    "## Reproduction Assessment\n\nNot applicable.\n",
+    "## Solution Assessment\n\nNot applicable.\n",
+    nextActionsSection(nextActionsBody),
+    "## Work Candidate\n\nnone\n",
+  ].join("\n");
+}
+
+test("next-actions: requiredActions and suggestions parsed by parseDecision", () => {
+  const decision = parseDecision(
+    closeDecision({
+      prRating: {
+        proofTier: "C",
+        patchTier: "B",
+        overallTier: "C",
+        summary: "Proof is thin.",
+        nextSteps: [],
+        requiredActions: ["Add a real terminal screenshot showing the fix in action."],
+        suggestions: ["Consider adding a narrow regression test for the changed path."],
+      },
+    }),
+  );
+  assert.deepEqual(decision.prRating.requiredActions, [
+    "Add a real terminal screenshot showing the fix in action.",
+  ]);
+  assert.deepEqual(decision.prRating.suggestions, [
+    "Consider adding a narrow regression test for the changed path.",
+  ]);
+});
+
+test("next-actions: report with required+suggestions renders both sections in comment", () => {
+  const report = makeReportWithNextActions(
+    "⚠️ Action required:\n- Add a real terminal screenshot showing the fix in action.\n\n💡 Suggestions:\n- Consider adding a narrow regression test.",
+  );
+  const comment = renderReviewCommentFromReport(report, "none");
+  assert.match(comment, /⚠️ Action required:/);
+  assert.match(comment, /Add a real terminal screenshot/);
+  assert.match(comment, /💡 Suggestions:/);
+  assert.match(comment, /narrow regression test/);
+  assert.doesNotMatch(comment, /✅ No action required/);
+});
+
+test("next-actions: empty next-actions section falls back to legacy next-step line in comment", () => {
+  const report = makeReportWithNextActions("✅ No action required");
+  const comment = renderReviewCommentFromReport(report, "none");
+  assert.ok(comment.length > 0);
+  assert.doesNotMatch(comment, /⚠️ Action required:/);
+});
+
+test("next-actions: suggestions-only renders 💡 Suggestions in comment", () => {
+  const report = makeReportWithNextActions(
+    "💡 Suggestions:\n- Consider adding a regression test for the edge case.",
+  );
+  const comment = renderReviewCommentFromReport(report, "none");
+  assert.match(comment, /💡 Suggestions:/);
+  assert.match(comment, /regression test for the edge case/);
+  assert.doesNotMatch(comment, /⚠️ Action required:/);
+});
+
+test("next-actions: legacy record with no Next Actions section does not crash", () => {
+  const legacyReport = [
+    reportFrontMatter({
+      type: "pull_request",
+      number: "55002",
+      decision: "keep_open",
+      work_candidate: "none",
+    }),
+    "## Summary\n\nLegacy record.\n",
+    "## What This Changes\n\nMinor fix.\n",
+    "## Best Possible Solution\n\nApply the patch.\n",
+    "## Reproduction Assessment\n\nNot applicable.\n",
+    "## Solution Assessment\n\nNot applicable.\n",
+    "## Work Candidate\n\nnone\n",
+  ].join("\n");
+  const comment = renderReviewCommentFromReport(legacyReport, "none");
+  assert.ok(comment.length > 0);
+  assert.doesNotMatch(comment, /⚠️ Action required:/);
+});
+
+test("next-actions: parsePrRating accepts requiredActions and suggestions as optional", () => {
+  const decision = parseDecision(
+    closeDecision({
+      prRating: {
+        proofTier: "B",
+        patchTier: "A",
+        overallTier: "B",
+        summary: "Good patch.",
+        nextSteps: [],
+        requiredActions: [],
+        suggestions: [],
+      },
+    }),
+  );
+  assert.deepEqual(decision.prRating.requiredActions, []);
+  assert.deepEqual(decision.prRating.suggestions, []);
+});
+
+test("next-actions: legacy prRating without requiredActions/suggestions is backward compatible", () => {
+  const decision = parseDecision(
+    closeDecision({
+      prRating: {
+        proofTier: "NA",
+        patchTier: "NA",
+        overallTier: "NA",
+        summary: "Not applicable.",
+        nextSteps: [],
+      },
+    }),
+  );
+  assert.equal(decision.prRating.requiredActions, undefined);
+  assert.equal(decision.prRating.suggestions, undefined);
+});

@@ -29,6 +29,8 @@ The applicator only auto-closes:
 
 Everything else should be `planned` as non-mutating or escalated as `needs_human`. Do not use `executed`; Projectclawsweeper records execution only after the applicator safely replays a planned mutation.
 Set `fix_artifact.allow_no_pr` to `false` for normal fix/replacement PRs, and use `true` only for an explicitly audited no-PR outcome.
+
+For any `fix_artifact` you emit: `pr_title` must follow Conventional Commits (e.g. `fix: …`, `feat: …`, `refactor: …`), use imperative mood, be 72 characters or fewer, and have no trailing period. `pr_body` must contain these sections in order: `## Summary` (what + why, 2–4 sentences), `## Changes` (bulleted file/behavior changes), `## Verification` (what was run/tested), `## Source` (link to originating finding/record and workflow run URL when available; omit the run URL line rather than fabricating it).
 Already-closed refs are non-mutating evidence only. Use `keep_closed` with `status: "skipped"` if they must appear in the action matrix.
 
 Merge actions require `merge_preflight` for the target. Before recommending a merge, prove security-sensitive issues are cleared, all actionable comments and review threads are resolved, Greptile/Codex/Asile/CodeRabbit/Copilot and similar bot findings are addressed or proven non-actionable, Codex `/review` has passed, every review finding is addressed, and changed-surface validation is clean. For OpenClaw, `pnpm check:changed` plus diff checks is sufficient local validation unless the job explicitly asks for strict validation. Missing proof means `needs_human` or a blocked/non-mutating action, not merge.

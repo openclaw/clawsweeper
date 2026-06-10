@@ -1,5 +1,6 @@
 export const GITHUB_PR_TITLE_MAX_LENGTH = 256;
-export const CLAWSWEEPER_GENERATED_PR_TITLE_MAX_LENGTH = 96;
+// Matches the 72-char cap mandated by prompts/repair/{autonomous,execute}.md.
+export const CLAWSWEEPER_GENERATED_PR_TITLE_MAX_LENGTH = 72;
 
 const FALLBACK_REPAIR_PR_TITLE = "fix: address ClawSweeper finding";
 

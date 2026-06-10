@@ -59,8 +59,11 @@ report has:
   only for behavior they directly show; browser runtime, network, CSP, and
   security proof needs visible diagnostic output, not a "no visible console
   violation" claim
-- `**Next step before merge**` for PRs, or `**Next step**` for issues, from the
-  work-candidate reason or next action
+- `**Next actions**` when the review provides categorised follow-up
+  (`⚠️ Action required:` / `💡 Suggestions:` / `✅ No action required`);
+  legacy records without categorised data fall back to
+  `**Next step before merge**` for PRs, or `**Next step**` for issues, from
+  the work-candidate reason or next action
 - `**Security**` from the typed `securityReview` field, so supply-chain,
   permission, secret-handling, and code-execution concerns have a dedicated
   visible pass; omit this section when the review is `not_applicable` and has
@@ -83,7 +86,8 @@ markers, not in the public review section headings. A clean opted-in PR should
 still read as `Codex review: passed.` in the durable review comment.
 
 Issues use `**Next step**` instead of the PR-specific `**Next step before
-merge**` heading. Non-PR comments are never repair triggers.
+merge**` heading (legacy fallback; categorised reviews use `**Next actions**`
+for both). Non-PR comments are never repair triggers.
 
 ## Repair Markers
 

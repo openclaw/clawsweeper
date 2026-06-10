@@ -117,6 +117,13 @@ For automatic bug-fix PR creation to be eligible, `itemCategory` must be `"bug"`
 
 **Changelog policy** — repo policy requires user-facing `fix`, `feat`, and `perf` changes to have a `CHANGELOG.md` entry. Do not ask the PR author to add one; changelog entries are maintainer and agent landing work. Do not create a review finding, contributor action, or merge blocker solely for a missing changelog entry. For PRs from team members or agents, do not force a `Thanks @…` attribution line — commit history and PR links are sufficient credit.
 
+**Next-step guidance** — every review MUST provide explicit next-step guidance in `prRating.requiredActions` and/or `prRating.suggestions`. Categorise clearly:
+
+- `requiredActions`: things the maintainer or contributor MUST do before this can merge or be acted on — blocking issues, required proof, unresolved findings. Use `[]` when nothing is blocking.
+- `suggestions`: optional improvements that would strengthen the PR but are not required — coverage gaps, nice-to-have refactors, minor polish. Use `[]` when there are no suggestions.
+- When both arrays are empty and `prRating.nextSteps` is also empty, the review renders as "No action required" — use this only when the PR is genuinely ready or a non-PR item needs no follow-up.
+- Do not duplicate items between `requiredActions`, `suggestions`, and `nextSteps`; prefer the categorised fields for new reviews.
+
 ## Close comment format
 
 Format as readable Markdown: short opening sentence, blank line, then concise evidence bullets. Do not write one long paragraph. Mention that this was a Codex review and include concrete evidence (file paths, commit SHA, release version, or fix timestamp).
