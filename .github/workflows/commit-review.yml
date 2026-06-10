@@ -294,6 +294,7 @@ jobs:
             sleep "$SETTLE_SECONDS"
           fi
           url="https://x-access-token:${TARGET_TOKEN}@github.com/${TARGET_REPO}.git"
+          rm -rf "$TARGET_NAME" # self-hosted workspaces persist; a leftover dir from a failed run breaks clone
           git clone --filter=blob:none --no-checkout "$url" "$TARGET_NAME"
           git -C "$TARGET_NAME" fetch --no-tags origin main --depth=1000
           git -C "$TARGET_NAME" fetch --no-tags origin "$COMMIT_SHA" --depth=200
@@ -409,6 +410,7 @@ jobs:
         run: |
           set -euo pipefail
           url="https://x-access-token:${TARGET_TOKEN}@github.com/${TARGET_REPO}.git"
+          rm -rf "$TARGET_NAME" # self-hosted workspaces persist; a leftover dir from a failed run breaks clone
           git clone --filter=blob:none --no-checkout "$url" "$TARGET_NAME"
           git -C "$TARGET_NAME" fetch --no-tags origin main --depth=1000
           git -C "$TARGET_NAME" checkout -B main refs/remotes/origin/main

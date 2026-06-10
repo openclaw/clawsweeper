@@ -9,13 +9,15 @@ import {
   repairRunNameForJob,
   repairRunNamePrefixForJob,
 } from "../../dist/repair/live-worker-capacity.js";
+import { AUTOMATION_LIMITS } from "../../dist/repair/limits.js";
 
 test("live worker capacity refuses limits above the global Codex cap", () => {
-  assert.equal(MAX_LIVE_WORKERS, 5);
-  assert.equal(readMaxLiveWorkers({ "max-live-workers": "5" }), 5);
+  const cap = AUTOMATION_LIMITS.repair_live_runs.hard_cap;
+  assert.equal(MAX_LIVE_WORKERS, cap);
+  assert.equal(readMaxLiveWorkers({ "max-live-workers": String(cap) }), cap);
   assert.throws(
-    () => readMaxLiveWorkers({ "max-live-workers": "6" }),
-    /max-live-workers must be <= 5/,
+    () => readMaxLiveWorkers({ "max-live-workers": String(cap + 1) }),
+    new RegExp(`max-live-workers must be <= ${cap}`),
   );
 });
 

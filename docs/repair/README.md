@@ -242,7 +242,7 @@ pnpm run repair:import-gitcrawl -- --from-gitcrawl --limit 40 --mode autonomous 
 # there first, or use CLAWSWEEPER_MAX_LIVE_WORKERS/--max-live-workers for a
 # one-lane override. With --wait-for-capacity, dispatch can drain a larger file
 # list in capacity-sized waves instead of refusing the whole batch.
-CLAWSWEEPER_MAX_LIVE_WORKERS=2 pnpm run repair:dispatch -- jobs/openclaw/inbox/cluster-example.md \
+CLAWSWEEPER_MAX_LIVE_WORKERS=3 pnpm run repair:dispatch -- jobs/openclaw/inbox/cluster-example.md \
   --mode autonomous \
   --runner blacksmith-4vcpu-ubuntu-2404 \
   --execution-runner blacksmith-16vcpu-ubuntu-2404
