@@ -19,15 +19,24 @@ export function summarizeChecks(checks: LooseRecord[]) {
   const blockers: LooseRecord[] = [];
   const pending: LooseRecord[] = [];
   const terminalBlockers: LooseRecord[] = [];
+  const externalBlockers: LooseRecord[] = [];
   for (const check of latestChecks) {
     const name = String(check.name ?? check.context ?? "unknown check");
     const workflow = String(check.workflowName ?? "");
     const ignoredCheck = ignored.has(name.toLowerCase()) || ignored.has(workflow.toLowerCase());
     const status = String(check.status ?? check.state ?? "").toUpperCase();
     const conclusion = String(check.conclusion ?? "").toUpperCase();
-    const key = conclusion || status || "UNKNOWN";
+    const externalActionRequired = isExternalActionRequiredCheck(check);
+    const key = externalActionRequired ? "ACTION_REQUIRED" : conclusion || status || "UNKNOWN";
     counts[key] = (counts[key] ?? 0) + 1;
     if (ignoredCheck) continue;
+    if (externalActionRequired) {
+      const blocker = `${name}:ACTION_REQUIRED`;
+      blockers.push(blocker);
+      terminalBlockers.push(blocker);
+      externalBlockers.push(blocker);
+      continue;
+    }
     if (status && !["COMPLETED", "SUCCESS"].includes(status)) {
       const blocker = `${name}:${status}`;
       blockers.push(blocker);
@@ -39,7 +48,22 @@ export function summarizeChecks(checks: LooseRecord[]) {
       terminalBlockers.push(blocker);
     }
   }
-  return { total: latestChecks.length, counts, blockers, pending, terminalBlockers };
+  return {
+    total: latestChecks.length,
+    counts,
+    blockers,
+    pending,
+    terminalBlockers,
+    externalBlockers,
+  };
+}
+
+function isExternalActionRequiredCheck(check: LooseRecord) {
+  const url = String(
+    check.targetUrl ?? check.target_url ?? check.detailsUrl ?? check.details_url ?? "",
+  );
+  if (/^https:\/\/vercel\.com\/git\/authorize\b/i.test(url)) return true;
+  return false;
 }
 
 function latestCheckRuns(checks: LooseRecord[]) {

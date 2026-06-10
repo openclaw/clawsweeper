@@ -295,6 +295,22 @@ test("summarizeChecks separates pending checks from terminal blockers", () => {
   assert.deepEqual(checks.terminalBlockers, ["failed-required:FAILURE"]);
 });
 
+test("summarizeChecks marks Vercel authorization checks as external action required", () => {
+  const checks = summarizeChecks([
+    {
+      context: "Vercel – clawhub",
+      state: "FAILURE",
+      targetUrl: "https://vercel.com/git/authorize?team=OpenClaw&type=github",
+    },
+  ]);
+
+  assert.deepEqual(checks.blockers, ["Vercel – clawhub:ACTION_REQUIRED"]);
+  assert.deepEqual(checks.pending, []);
+  assert.deepEqual(checks.terminalBlockers, ["Vercel – clawhub:ACTION_REQUIRED"]);
+  assert.deepEqual(checks.externalBlockers, ["Vercel – clawhub:ACTION_REQUIRED"]);
+  assert.equal(checks.counts.ACTION_REQUIRED, 1);
+});
+
 test("summarizeChecks uses the latest run for duplicate check names", () => {
   const checks = summarizeChecks([
     {

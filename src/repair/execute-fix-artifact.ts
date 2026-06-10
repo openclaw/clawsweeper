@@ -2526,6 +2526,13 @@ function parseCodexRetryAfterMs(message: string) {
 function classifyCodexFailure(detail: string) {
   const text = String(detail ?? "");
   if (
+    /can(?:not|'t|’t)\s+create\s+files?\s+in\s+this\s+mode|switch\s+to\s+execution\s+mode|create\s+`?preflight\.txt`?\s+containing/i.test(
+      text,
+    )
+  ) {
+    return "codex_execution_mode_unavailable";
+  }
+  if (
     /bwrap|loopback|uid map|sandbox wrapper|sandbox startup|operation not permitted/i.test(text)
   ) {
     return "sandbox_unavailable";

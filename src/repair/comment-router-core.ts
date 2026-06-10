@@ -555,7 +555,13 @@ function positiveInt(value: JsonValue, fallback: number) {
 }
 
 export function repairableCheckBlockers(checks: LooseRecord = {}) {
+  const externalBlockers = new Set(
+    (checks.externalBlockers ?? checks.external_blockers ?? []).map((blocker: JsonValue) =>
+      String(blocker ?? ""),
+    ),
+  );
   return (checks.blockers ?? []).filter((blocker: JsonValue) => {
+    if (externalBlockers.has(String(blocker ?? ""))) return false;
     const conclusion = String(blocker ?? "")
       .split(":")
       .pop()
