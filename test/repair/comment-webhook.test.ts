@@ -3,6 +3,7 @@ import crypto from "node:crypto";
 import test from "node:test";
 
 import {
+  adaptiveCodexTimeoutMsForTest,
   classifyItemWebhook,
   classifyIssueCommentWebhook,
   classifyWebhook,
@@ -319,7 +320,129 @@ test("webhook accepts eligible pull request events for generic steipete reposito
     sourceEvent: "pull_request",
     sourceAction: "synchronize",
     supersedesInProgress: true,
+    codexTimeoutMs: 600_000,
   });
+});
+
+test("adaptive Codex timeout preserves the default for small non-media PRs", () => {
+  assert.equal(
+    adaptiveCodexTimeoutMsForTest({
+      changed_files: 4,
+      additions: 120,
+      deletions: 30,
+      body: "Small cleanup without proof assets.",
+    }),
+    600_000,
+  );
+});
+
+test("adaptive Codex timeout scales for large PRs with video proofs", () => {
+  assert.equal(
+    adaptiveCodexTimeoutMsForTest({
+      changed_files: 71,
+      additions: 4176,
+      deletions: 0,
+      body: [
+        "Proof:",
+        "https://uploads.example.invalid/proof-a.mov",
+        "https://uploads.example.invalid/proof-b.mp4.",
+      ].join("\n"),
+    }),
+    1_508_800,
+  );
+});
+
+test("adaptive Codex timeout stays capped within review shard limits", () => {
+  assert.equal(
+    adaptiveCodexTimeoutMsForTest({
+      changed_files: 1000,
+      additions: 50_000,
+      deletions: 10_000,
+      body: [
+        "https://uploads.example.invalid/one.mov",
+        "https://uploads.example.invalid/two.mp4",
+        "https://uploads.example.invalid/three.webm",
+        "https://uploads.example.invalid/four.mkv",
+        "https://uploads.example.invalid/five.avi",
+      ].join("\n"),
+    }),
+    1_800_000,
+  );
+});
+
+test("pull request webhooks dispatch adaptive Codex timeout payload", async () => {
+  const previousFetch = globalThis.fetch;
+  const previousAppId = process.env.CLAWSWEEPER_APP_ID;
+  const previousClientId = process.env.CLAWSWEEPER_APP_CLIENT_ID;
+  const previousPrivateKey = process.env.CLAWSWEEPER_APP_PRIVATE_KEY;
+  const { privateKey } = crypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
+  let dispatchedBody: Record<string, unknown> | undefined;
+  process.env.CLAWSWEEPER_APP_ID = "12345";
+  delete process.env.CLAWSWEEPER_APP_CLIENT_ID;
+  process.env.CLAWSWEEPER_APP_PRIVATE_KEY = privateKey
+    .export({ type: "pkcs1", format: "pem" })
+    .toString();
+
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = new URL(String(input));
+    const method = String(init?.method ?? "GET").toUpperCase();
+    const path = `${url.pathname}${url.search}`;
+    if (path === "/repos/openclaw/clawsweeper/installation" && method === "GET") {
+      return jsonResponse({ id: 999 });
+    }
+    if (path === "/app/installations/999/access_tokens" && method === "POST") {
+      return jsonResponse({ token: "dispatch-token" });
+    }
+    if (path === "/repos/openclaw/clawsweeper/dispatches" && method === "POST") {
+      dispatchedBody = JSON.parse(String(init?.body ?? "{}"));
+      return jsonResponse({});
+    }
+    throw new Error(`unexpected fetch ${method} ${path}`);
+  }) as typeof fetch;
+
+  try {
+    const result = await handleGitHubWebhook({
+      event: "pull_request",
+      payload: {
+        action: "synchronize",
+        repository: {
+          full_name: "openclaw/openclaw",
+          default_branch: "main",
+          private: false,
+          archived: false,
+          fork: false,
+          has_issues: true,
+        },
+        pull_request: {
+          number: 91093,
+          changed_files: 71,
+          additions: 4176,
+          deletions: 0,
+          body: [
+            "Proof:",
+            "https://uploads.example.invalid/proof-a.mov",
+            "https://uploads.example.invalid/proof-b.mp4",
+          ].join("\n"),
+        },
+        installation: { id: 123 },
+      },
+    });
+
+    assert.deepEqual(result, {
+      statusCode: 202,
+      body: { ok: true, dispatched: "clawsweeper_item" },
+    });
+    assert.equal(dispatchedBody?.event_type, "clawsweeper_item");
+    assert.equal(
+      (dispatchedBody?.client_payload as Record<string, unknown>)?.codex_timeout_ms,
+      1_508_800,
+    );
+  } finally {
+    globalThis.fetch = previousFetch;
+    restoreEnv("CLAWSWEEPER_APP_ID", previousAppId);
+    restoreEnv("CLAWSWEEPER_APP_CLIENT_ID", previousClientId);
+    restoreEnv("CLAWSWEEPER_APP_PRIVATE_KEY", previousPrivateKey);
+  }
 });
 
 test("webhook preserves valid repository default branch for item dispatch", () => {

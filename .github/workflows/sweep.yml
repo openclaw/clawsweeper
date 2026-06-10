@@ -181,6 +181,7 @@ jobs:
           target_branch="${{ github.event.client_payload.target_branch || 'main' }}"
           item_number="${{ github.event.client_payload.item_number || '' }}"
           item_kind="${{ github.event.client_payload.item_kind || '' }}"
+          codex_timeout_ms="${{ github.event.client_payload.codex_timeout_ms || '600000' }}"
           if ! printf '%s' "$target_repo" | grep -Eq '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$'; then
             echo "Invalid target_repo: $target_repo" >&2
             exit 1
@@ -200,6 +201,16 @@ jobs:
               exit 1
               ;;
           esac
+          if ! printf '%s' "$codex_timeout_ms" | grep -Eq '^[0-9]+$'; then
+            echo "::warning::Invalid codex_timeout_ms payload '$codex_timeout_ms'; using 600000."
+            codex_timeout_ms="600000"
+          fi
+          if [ "$codex_timeout_ms" -lt 600000 ]; then
+            codex_timeout_ms="600000"
+          fi
+          if [ "$codex_timeout_ms" -gt 1800000 ]; then
+            codex_timeout_ms="1800000"
+          fi
           target_owner="${target_repo%%/*}"
           target_name="${target_repo#*/}"
           target_checkout_dir="$target_name"
@@ -213,6 +224,7 @@ jobs:
             echo "target_branch=$target_branch"
             echo "target_checkout_dir=$target_checkout_dir"
             echo "item_number=$item_number"
+            echo "codex_timeout_ms=$codex_timeout_ms"
           } >> "$GITHUB_OUTPUT"
 
       - uses: ./.github/actions/setup-pnpm
@@ -355,16 +367,24 @@ jobs:
         run: |
           set -euo pipefail
           test -n "$GH_TOKEN"
-          if ! [[ "$CODEX_TIMEOUT_MS" =~ ^[0-9]+$ ]] || [ "$CODEX_TIMEOUT_MS" -lt 1 ]; then
-            echo "Invalid Codex timeout: $CODEX_TIMEOUT_MS" >&2
+          codex_timeout_ms="${{ steps.target.outputs.codex_timeout_ms }}"
+          if ! [[ "$codex_timeout_ms" =~ ^[0-9]+$ ]] || [ "$codex_timeout_ms" -lt 1 ]; then
+            echo "Invalid Codex timeout: $codex_timeout_ms" >&2
             exit 1
           fi
           additional_prompt_arg=()
           if [ -n "$ADDITIONAL_PROMPT" ]; then
             additional_prompt_arg=(--additional-prompt "$ADDITIONAL_PROMPT")
           fi
-          codex_timeout_seconds=$(((CODEX_TIMEOUT_MS + 999) / 1000))
+          codex_timeout_seconds=$(((codex_timeout_ms + 999) / 1000))
           review_timeout_seconds=$((codex_timeout_seconds + 180))
+          if [ "$review_timeout_seconds" -lt 300 ]; then
+            review_timeout_seconds=300
+          fi
+          if [ "$review_timeout_seconds" -gt 4200 ]; then
+            review_timeout_seconds=4200
+          fi
+          echo "::notice::Exact event review timeout is ${review_timeout_seconds}s for per-item Codex timeout ${codex_timeout_seconds}s."
           timeout --kill-after=30s "${review_timeout_seconds}s" pnpm run review -- \
             --target-repo "${{ steps.target.outputs.target_repo }}" \
             --target-dir "${{ steps.target.outputs.target_checkout_dir }}" \
@@ -374,7 +394,7 @@ jobs:
             --codex-model internal \
             --codex-reasoning-effort high \
             --codex-sandbox danger-full-access \
-            --codex-timeout-ms "$CODEX_TIMEOUT_MS" \
+            --codex-timeout-ms "$codex_timeout_ms" \
             --item-numbers "${{ steps.target.outputs.item_number }}" \
             --readonly-openclaw \
             --shard-index 0 \

@@ -18118,6 +18118,36 @@ test("setup-state defaults to an auth-safe shallow checkout", () => {
   assert.match(action, /ref: state/);
 });
 
+test("sweep exact event reviews consume adaptive Codex timeout payload", () => {
+  const workflow = readFileSync(".github/workflows/sweep.yml", "utf8");
+  const resolveBlock = workflow.slice(
+    workflow.indexOf("- name: Resolve event payload"),
+    workflow.indexOf("- name: Create target read token"),
+  );
+  const reviewBlock = workflow.slice(
+    workflow.indexOf("- name: Review exact event item"),
+    workflow.indexOf("- name: Create state token"),
+  );
+
+  assert.match(
+    resolveBlock,
+    /codex_timeout_ms="\$\{\{ github\.event\.client_payload\.codex_timeout_ms \|\| '600000' \}\}"/,
+  );
+  assert.match(resolveBlock, /Invalid codex_timeout_ms payload/);
+  assert.match(resolveBlock, /\[ "\$codex_timeout_ms" -lt 600000 \]/);
+  assert.match(resolveBlock, /\[ "\$codex_timeout_ms" -gt 1800000 \]/);
+  assert.match(resolveBlock, /echo "codex_timeout_ms=\$codex_timeout_ms"/);
+  assert.match(
+    reviewBlock,
+    /codex_timeout_ms="\$\{\{ steps\.target\.outputs\.codex_timeout_ms \}\}"/,
+  );
+  assert.match(reviewBlock, /review_timeout_seconds=\$\(\(codex_timeout_seconds \+ 180\)\)/);
+  assert.match(reviewBlock, /timeout --kill-after=30s "\$\{review_timeout_seconds\}s"/);
+  assert.match(reviewBlock, /--codex-timeout-ms "\$codex_timeout_ms"/);
+  assert.doesNotMatch(reviewBlock, /timeout --kill-after=30s 12m/);
+  assert.doesNotMatch(reviewBlock, /--codex-timeout-ms 600000/);
+});
+
 test("github activity workflow coalesces noisy observer runs", () => {
   const workflow = readFileSync(".github/workflows/github-activity.yml", "utf8");
   const concurrencyBlock = workflow.slice(
@@ -18290,7 +18320,7 @@ test("sweep workflow runs exact event reviews without a global worker gate", () 
     /CODEX_TIMEOUT_MS: \$\{\{ github\.event\.client_payload\.codex_timeout_ms \|\| vars\.CLAWSWEEPER_CODEX_TIMEOUT_MS \|\| '1200000' \}\}/,
   );
   assert.match(exactReviewStep, /review_timeout_seconds=\$\(\(codex_timeout_seconds \+ 180\)\)/);
-  assert.match(exactReviewStep, /--codex-timeout-ms "\$CODEX_TIMEOUT_MS"/);
+  assert.match(exactReviewStep, /--codex-timeout-ms "\$codex_timeout_ms"/);
   assert.doesNotMatch(exactReviewStep, /--codex-timeout-ms 600000/);
   assert.doesNotMatch(eventReviewBlock, /Wait for exact event review capacity/);
   assert.doesNotMatch(eventReviewBlock, /wait-exact-event-capacity/);
