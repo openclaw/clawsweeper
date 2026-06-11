@@ -9452,9 +9452,6 @@ function dataModelUpgradeProofFromReport(markdown: string): boolean {
     reviewSectionValue(markdown, "realBehaviorProof"),
     reviewSectionValue(markdown, "solutionAssessment"),
     reviewSectionValue(markdown, "evidence"),
-    reviewSectionValue(markdown, "bestSolution"),
-    reviewSectionValue(markdown, "reviewFindings"),
-    reviewSectionValue(markdown, "risks"),
   ].join("\n");
   const noMigrationRequiredPattern =
     /\bno\s+(?:data\s+)?migrations?\s+(?:(?:is|are)\s+)?(?:required|needed|necessary)\b/i;
@@ -9464,6 +9461,16 @@ function dataModelUpgradeProofFromReport(markdown: string): boolean {
   );
   if (
     /\b(?:missing|lacks?|without|no)\b[^.]{0,120}\b(?:migration|upgrade|backfill|compatibility)\b/i.test(
+      negativeProofText,
+    )
+  ) {
+    return false;
+  }
+  if (
+    /\b(?:migration|upgrade|backfill|compatibility)\b[^.]{0,160}\b(?:proof|test(?:ed|s|ing)?|cover(?:ed|age)?|verif(?:y|ied|ication)|compatib(?:le|ility))\b[^.]{0,120}\b(?:required|needed|missing|todo|before merge)\b/i.test(
+      negativeProofText,
+    ) ||
+    /\b(?:must|should|needs?|requires?|required|needed|todo)\b[^.]{0,120}\b(?:migration|upgrade|backfill|compatibility)\b[^.]{0,160}\b(?:proof|test(?:ed|s|ing)?|cover(?:ed|age)?|verif(?:y|ied|ication)|compatib(?:le|ility))\b/i.test(
       negativeProofText,
     )
   ) {
