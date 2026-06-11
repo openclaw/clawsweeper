@@ -3746,6 +3746,34 @@ test("data model detector ignores query-only and non-semantic docs changes", () 
   assert.deepEqual(detection, { change: false, surfaces: [] });
 });
 
+test("data model detector flags path-hinted persisted field declarations", () => {
+  const detection = dataModelChangeFromPullFilesForTest({
+    pullFiles: [
+      {
+        filename: "src/db/schema.ts",
+        patch: '@@\n+  lastModel: text("last_model"),',
+      },
+      {
+        filename: "src/state/session-state.ts",
+        patch: "@@\n+  lastModel?: string;",
+      },
+      {
+        filename: "src/cache/schema.ts",
+        patch: "@@\n+  entryFingerprint: string;",
+      },
+    ],
+  });
+
+  assert.deepEqual(detection, {
+    change: true,
+    surfaces: [
+      "database schema: src/db/schema.ts",
+      "persistent cache schema: src/cache/schema.ts",
+      "serialized state: src/state/session-state.ts",
+    ],
+  });
+});
+
 test("data model detector fails closed for missing and truncated likely-surface patches", () => {
   const detection = dataModelChangeFromPullFilesForTest({
     pullFilesTruncated: true,

@@ -9509,6 +9509,7 @@ function dataModelSurfacesFromPatch(
   const add = (surface: string) => surfaces.add(dataModelSurfaceLabel(path, surface));
   const pathHint = dataModelPathHint(path);
   if (pathHint && dataModelTextMatchesPathHint(text, pathHint)) add(pathHint);
+  if (pathHint && dataModelTextLooksLikePersistedShapeField(text, pathHint)) add(pathHint);
   if (
     /\b(?:CREATE|ALTER|DROP)\s+(?:TABLE|INDEX|VIEW|COLUMN)\b|\bADD\s+COLUMN\b|\bPRAGMA\s+user_version\b|\bschema[_-]?version\b/i.test(
       text,
@@ -9566,13 +9567,6 @@ function isLikelyOpenClawDataModelPath(path: string): boolean {
 
 function dataModelPathHint(path: string): string {
   if (
-    /\.sql$|(^|\/)(?:migrations?|schema|database|db|sql)(?:\/|[-_.])|(?:schema|migration|ddl|prisma)\.(?:ts|js|sql|prisma)$/i.test(
-      path,
-    )
-  ) {
-    return "database schema";
-  }
-  if (
     /(^|\/)(?:durable-?objects?|workers?|storage)(?:\/|[-_.])|durable-?object|state-storage/i.test(
       path,
     )
@@ -9603,6 +9597,13 @@ function dataModelPathHint(path: string): string {
   ) {
     return "migration/backfill/repair";
   }
+  if (
+    /\.sql$|(^|\/)(?:migrations?|schema|database|db|sql)(?:\/|[-_.])|(?:schema|migration|ddl|prisma)\.(?:ts|js|sql|prisma)$/i.test(
+      path,
+    )
+  ) {
+    return "database schema";
+  }
   return "";
 }
 
@@ -9632,6 +9633,23 @@ function dataModelTextMatchesPathHint(text: string, pathHint: string): boolean {
     default:
       return false;
   }
+}
+
+function dataModelTextLooksLikePersistedShapeField(text: string, pathHint: string): boolean {
+  if (pathHint === "database schema") {
+    return (
+      /\b[$A-Z_a-z][$\w]*\??\s*:\s*(?:bigint|blob|boolean|bool|datetime|integer|int|jsonb?|numeric|real|serial|sqliteTable|text|timestamp|uuid|varchar)\s*\(/i.test(
+        text,
+      ) ||
+      /\b(?:bigint|blob|boolean|bool|datetime|integer|int|jsonb?|numeric|real|serial|text|timestamp|uuid|varchar)\s*\(\s*["'`][^"'`]+["'`]/i.test(
+        text,
+      )
+    );
+  }
+
+  return /\b[$A-Z_a-z][$\w]*\??\s*:\s*(?:Array|Map|ReadonlyArray|Record|Set|boolean|number|string|unknown|[$A-Z_a-z][$\w]*)(?:\b|[<[\]])/i.test(
+    text,
+  );
 }
 
 function dataModelSurfaceLabel(path: string, surface: string): string {
