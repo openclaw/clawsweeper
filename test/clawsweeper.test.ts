@@ -33,6 +33,7 @@ import {
   referencingMergedPullRequestCandidatesForTest,
   referencingMergedPullRequestsForIssueForTest,
   configSurfaceChangeFromPullFilesForTest,
+  dataModelChangeFromPullFilesForTest,
   codexEnv,
   dashboardClosedAt,
   extractLatestClawSweeperReviewForTest,
@@ -3692,6 +3693,181 @@ test("config surface detector fails closed for truncated pull files", () => {
     change: true,
     keys: ["experimentalLocalModelLean", "unknown-truncated-pull-files"],
   });
+});
+
+test("data model detector finds persistent schema and embedding metadata changes", () => {
+  const detection = dataModelChangeFromPullFilesForTest({
+    pullFiles: [
+      {
+        filename: "packages/database/migrations/018_sessions.sql",
+        patch: "@@\n+ALTER TABLE sessions ADD COLUMN last_model TEXT;",
+      },
+      {
+        filename: "src/memory/vector-store.ts",
+        patch:
+          "@@\n+  embeddingDimension: row.embedding_dimension,\n+  documentId: row.document_id,",
+      },
+      {
+        filename: "src/doctor/backfill.ts",
+        patch: "@@\n+  await backfillMissingSessionVersions(db);",
+      },
+    ],
+  });
+
+  assert.deepEqual(detection, {
+    change: true,
+    surfaces: [
+      "database schema: packages/database/migrations/018_sessions.sql",
+      "migration/backfill/repair: src/doctor/backfill.ts",
+      "vector/embedding metadata: src/memory/vector-store.ts",
+    ],
+  });
+});
+
+test("data model detector ignores query-only and non-semantic docs changes", () => {
+  const detection = dataModelChangeFromPullFilesForTest({
+    pullFiles: [
+      {
+        filename: "src/memory/search.ts",
+        patch: "@@\n+  return query.trim().toLowerCase();",
+      },
+      {
+        filename: "docs/storage.md",
+        patch: "@@\n+This section explains the existing `sessions` table in clearer words.",
+      },
+    ],
+  });
+
+  assert.deepEqual(detection, { change: false, surfaces: [] });
+});
+
+test("data model detector fails closed for missing and truncated likely-surface patches", () => {
+  const detection = dataModelChangeFromPullFilesForTest({
+    pullFilesTruncated: true,
+    pullFiles: [
+      {
+        filename: "src/storage/session-state.ts",
+      },
+      {
+        filename: "packages/database/schema.ts",
+        patch: "@@\n+  schemaVersion: 3,\n\n[truncated 90 chars]",
+      },
+    ],
+  });
+
+  assert.deepEqual(detection, {
+    change: true,
+    surfaces: [
+      "database schema: packages/database/schema.ts",
+      "unknown-data-model-change: packages/database/schema.ts",
+      "unknown-data-model-change: src/storage/session-state.ts",
+      "unknown-truncated-pull-files",
+    ],
+  });
+});
+
+test("data model reports force human review without migration proof", () => {
+  const report = `${reportFrontMatter({
+    repository: "openclaw/openclaw",
+    type: "pull_request",
+    number: "74457",
+    decision: "keep_open",
+    close_reason: "none",
+    review_status: "complete",
+    confidence: "high",
+    labels: JSON.stringify(["clawsweeper:automerge"]),
+    work_candidate: "none",
+    pull_head_sha: "abc123def456",
+    data_model_change: "true",
+    data_model_surfaces: JSON.stringify(["database schema: packages/database/schema.ts"]),
+  })}
+
+## Summary
+
+Keep this data-model PR open for maintainer review.
+
+## What This Changes
+
+Adds a stored database column.
+
+## Best Possible Solution
+
+Merge after required checks are green.
+
+## Review Findings
+
+Overall correctness: patch is correct
+
+Overall confidence: 0.9
+
+Full review comments:
+
+- none
+`;
+
+  const comment = renderReviewCommentFromReport(report, "none");
+  const markers = reviewAutomationMarkersFromReport(report);
+
+  assert.match(comment, /\*\*Stored data model\*\*/);
+  assert.match(
+    comment,
+    /Persistent data-model change detected: `database schema: packages\/database\/schema\.ts`\./,
+  );
+  assert.match(comment, /Confirm migration or upgrade compatibility proof before merge\./);
+  assert.match(markers, /clawsweeper-verdict:needs-human/);
+  assert.doesNotMatch(markers, /clawsweeper-verdict:pass/);
+  assert.doesNotMatch(markers, /clawsweeper-action:fix-required/);
+});
+
+test("data model reports can pass when migration proof is recorded", () => {
+  const report = `${reportFrontMatter({
+    repository: "openclaw/openclaw",
+    type: "pull_request",
+    number: "74458",
+    decision: "keep_open",
+    close_reason: "none",
+    review_status: "complete",
+    confidence: "high",
+    labels: JSON.stringify(["clawsweeper:automerge"]),
+    work_candidate: "none",
+    pull_head_sha: "abc123def456",
+    data_model_change: "true",
+    data_model_surfaces: JSON.stringify(["database schema: packages/database/schema.ts"]),
+  })}
+
+## Summary
+
+Keep this data-model PR open for automerge.
+
+## What This Changes
+
+Adds a stored database column.
+
+## Best Possible Solution
+
+Merge after required checks are green.
+
+## Solution Assessment
+
+The migration is tested against an existing database and preserves upgrade compatibility.
+
+## Review Findings
+
+Overall correctness: patch is correct
+
+Overall confidence: 0.9
+
+Full review comments:
+
+- none
+`;
+
+  const comment = renderReviewCommentFromReport(report, "none");
+
+  assert.match(comment, /Codex review: passed\./);
+  assert.match(comment, /Migration or upgrade compatibility proof is recorded/);
+  assert.match(comment, /clawsweeper-verdict:pass/);
+  assert.doesNotMatch(comment, /clawsweeper-verdict:needs-human/);
 });
 
 test("sufficient real behavior proof allows automerge pass markers", () => {
@@ -14787,6 +14963,20 @@ test("review prompt requires upgrade and preference overwrite checks", () => {
   assert.match(prompt, /default compatibility mode and the\s+opt-in strict mode/);
   assert.match(prompt, /require evidence for both fresh-install behavior and upgrade\s+behavior/);
   assert.match(prompt, /If upgrade behavior is ambiguous, mark the PR incorrect/);
+});
+
+test("review prompt treats stored data-model changes as compatibility-sensitive", () => {
+  const prompt = readFileSync("prompts/review-item.md", "utf8");
+
+  assert.match(prompt, /Treat stored data-model changes as compatibility-sensitive/);
+  assert.match(prompt, /SQL\s+DDL or migrations/);
+  assert.match(prompt, /persistent cache schemas/);
+  assert.match(prompt, /Durable Object or hosted storage schemas/);
+  assert.match(prompt, /serialized JSON state written to disk/);
+  assert.match(prompt, /vector or embedding row identity\/query-compatibility metadata/);
+  assert.match(prompt, /doctor, repair, migration, or backfill code/);
+  assert.match(prompt, /pure query-only changes or non-semantic docs wording/);
+  assert.match(prompt, /migration or upgrade compatibility proof before any pass/);
 });
 
 test("review prompt requires real behavior proof for PR reviews", () => {

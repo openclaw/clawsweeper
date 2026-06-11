@@ -327,6 +327,16 @@ documented defaults. A new default must not change an existing user's stored
 value during upgrade unless the PR includes an explicit, narrow, tested
 migration and the behavior is clearly intentional.
 
+Treat stored data-model changes as compatibility-sensitive. This includes SQL
+DDL or migrations, database schema installers/helpers, persistent cache schemas,
+Durable Object or hosted storage schemas, serialized JSON state written to disk
+or a database, vector or embedding row identity/query-compatibility metadata,
+and doctor, repair, migration, or backfill code that rewrites persisted state.
+Do not treat pure query-only changes or non-semantic docs wording as data-model
+breakage by default. When a PR materially changes a stored data model, require
+maintainer-visible migration or upgrade compatibility proof before any pass,
+automerge, or autofix verdict.
+
 Treat provider fallback removal, fail-closed routing, missing-harness behavior,
 startup/install checks, and strict config validation as upgrade-sensitive even
 when they fix a real bug. If current users may only discover the change because
