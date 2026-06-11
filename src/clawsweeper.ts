@@ -9456,22 +9456,36 @@ function dataModelUpgradeProofFromReport(markdown: string): boolean {
     reviewSectionValue(markdown, "reviewFindings"),
     reviewSectionValue(markdown, "risks"),
   ].join("\n");
+  const noMigrationRequiredPattern =
+    /\bno\s+(?:data\s+)?migrations?\s+(?:(?:is|are)\s+)?(?:required|needed|necessary)\b/i;
+  const negativeProofText = text.replace(
+    new RegExp(noMigrationRequiredPattern.source, "gi"),
+    "migration unnecessary",
+  );
   if (
     /\b(?:missing|lacks?|without|no)\b[^.]{0,120}\b(?:migration|upgrade|backfill|compatibility)\b/i.test(
-      text,
+      negativeProofText,
     )
   ) {
     return false;
   }
   if (
     /\b(?:migration|upgrade|backfill|schema version|existing data|existing database|existing cache|existing state)\b[^.]{0,180}\b(?:not|never)\b[^.]{0,80}\b(?:test(?:ed|s)?|cover(?:ed|age)?|prov(?:e|ed|en)|verif(?:y|ied)|compatib(?:le|ility)|preserv(?:e|ed|es)|migrat(?:e|ed|es)|backfill(?:ed|s)?)\b/i.test(
-      text,
+      negativeProofText,
     ) ||
     /\b(?:not|never)\b[^.]{0,80}\b(?:test(?:ed|s)?|cover(?:ed|age)?|prov(?:e|ed|en)|verif(?:y|ied)|compatib(?:le|ility)|preserv(?:e|ed|es))\b[^.]{0,180}\b(?:migration|upgrade|backfill|schema version|existing data|existing database|existing cache|existing state)\b/i.test(
-      text,
+      negativeProofText,
     )
   ) {
     return false;
+  }
+  if (
+    noMigrationRequiredPattern.test(text) &&
+    /\b(?:existing data|existing database|existing cache|existing state|upgrade compatibility|compatibility)\b[^.]{0,160}\b(?:test(?:ed|s)?|cover(?:ed|age)?|prov(?:e|ed|en)|verif(?:y|ied)|compatib(?:le|ility)|preserv(?:e|ed|es))\b/i.test(
+      text,
+    )
+  ) {
+    return true;
   }
   return (
     /\b(?:migration|upgrade|backfill|schema version|existing data|existing database|existing cache|existing state)\b[^.]{0,180}\b(?:test(?:ed|s)?|cover(?:ed|age)?|prov(?:e|ed|en)|verif(?:y|ied)|compatib(?:le|ility)|preserv(?:e|ed|es)|migrat(?:e|ed|es)|backfill(?:ed|s)?)\b/i.test(

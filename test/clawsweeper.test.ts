@@ -3875,6 +3875,57 @@ Full review comments:
   assert.doesNotMatch(comment, /clawsweeper-verdict:needs-human/);
 });
 
+test("data model reports can pass when no migration is required and compatibility is verified", () => {
+  const report = `${reportFrontMatter({
+    repository: "openclaw/openclaw",
+    type: "pull_request",
+    number: "74460",
+    decision: "keep_open",
+    close_reason: "none",
+    review_status: "complete",
+    confidence: "high",
+    labels: JSON.stringify(["clawsweeper:automerge"]),
+    work_candidate: "none",
+    pull_head_sha: "abc123def456",
+    data_model_change: "true",
+    data_model_surfaces: JSON.stringify(["database schema: packages/database/schema.ts"]),
+  })}
+
+## Summary
+
+Keep this data-model PR open for automerge.
+
+## What This Changes
+
+Adds persisted metadata without changing existing row shape.
+
+## Best Possible Solution
+
+Merge after required checks are green.
+
+## Solution Assessment
+
+No migration is required; existing state remains compatible and upgrade compatibility is verified.
+
+## Review Findings
+
+Overall correctness: patch is correct
+
+Overall confidence: 0.9
+
+Full review comments:
+
+- none
+`;
+
+  const comment = renderReviewCommentFromReport(report, "none");
+
+  assert.match(comment, /Codex review: passed\./);
+  assert.match(comment, /Migration or upgrade compatibility proof is recorded/);
+  assert.match(comment, /clawsweeper-verdict:pass/);
+  assert.doesNotMatch(comment, /clawsweeper-verdict:needs-human/);
+});
+
 test("data model reports reject explicitly negative migration proof", () => {
   const report = `${reportFrontMatter({
     repository: "openclaw/openclaw",
