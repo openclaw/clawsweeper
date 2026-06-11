@@ -2380,14 +2380,7 @@ function parseMantisRecommendation(value: unknown, path: string): MantisRecommen
     status: requireEnum(record.status, MANTIS_RECOMMENDATION_STATUSES, `${path}.status`),
     scenario: requireEnum(record.scenario, MANTIS_RECOMMENDATION_SCENARIOS, `${path}.scenario`),
     reason: requireString(record.reason, `${path}.reason`),
-    // A maintainer comment is only meaningful when mantis IS recommended; when
-    // it is not, models reliably omit this field (treating it as not-applicable)
-    // rather than emitting an empty string. Default to "" so that common, correct
-    // shape validates without a wasted correction round-trip. Codex constrains
-    // its output to the schema and always supplies the field, so this is a no-op
-    // for the Codex engine.
-    maintainerComment:
-      typeof record.maintainerComment === "string" ? record.maintainerComment : "",
+    maintainerComment: requireString(record.maintainerComment, `${path}.maintainerComment`),
   };
 }
 
@@ -6437,7 +6430,8 @@ ${reviewDecisionSchemaText()}
         `[local-review] dropped ${pruned.droppedPaths.length} non-schema key(s) from Claude output for #${options.item.number}: ${pruned.droppedPaths.join(", ")}`,
       );
     }
-    return { value: pruned.value, rawJson: JSON.stringify(pruned.value) };
+    const normalized = normalizeClaudeDecisionShape(pruned.value);
+    return { value: normalized, rawJson: JSON.stringify(normalized) };
   };
 
   // Codex constrains generation to the schema, so its first output always
@@ -6498,6 +6492,30 @@ Fix ONLY the reported problem and return the corrected, COMPLETE decision object
 ${reviewDecisionSchemaText()}
 \`\`\`
 `;
+}
+
+// Claude-only normalization applied to a pruned decision object before strict
+// `parseDecision`. The shared Decision parser stays strict for every engine;
+// this only smooths over the one omission Claude makes systematically.
+//
+// A `mantisRecommendation.maintainerComment` is only meaningful when mantis IS
+// recommended. When it is not (the common case for a code review), models
+// reliably omit the field, so default it to "" — but ONLY in the
+// not-recommended case. A `status: "recommended"` result missing the comment is
+// a genuinely malformed, non-dispatchable recommendation: it is left untouched
+// so strict validation rejects it and the bounded correction retry has Claude
+// supply the command. This preserves the "recommended ⇒ needs a command"
+// invariant that downstream dispatch relies on.
+export function normalizeClaudeDecisionShape(value: unknown): unknown {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+  const decision = value as Record<string, unknown>;
+  const mantis = decision.mantisRecommendation;
+  if (!mantis || typeof mantis !== "object" || Array.isArray(mantis)) return value;
+  const m = mantis as Record<string, unknown>;
+  if (m.status !== "recommended" && typeof m.maintainerComment !== "string") {
+    return { ...decision, mantisRecommendation: { ...m, maintainerComment: "" } };
+  }
+  return value;
 }
 
 function stripTextFence(markdown: string): string {
@@ -17145,6 +17163,14 @@ function localReviewCommand(args: Args): void {
   }
   // The Claude binary is configurable so any `claude -p`-compatible CLI can be
   // dropped in; flag takes precedence over CLAUDE_BIN, default "claude".
+  //
+  // TRUST BOUNDARY (operators): --claude-bin / CLAUDE_BIN names an executable
+  // that this command spawns with the FULL review prompt (the target diff and
+  // repository context) on stdin, and which authenticates from the host's local
+  // Claude credentials. The subprocess env is scrubbed of GitHub/OpenAI/Codex
+  // and ClawSweeper App credentials (see claudeReviewEnv) and the binary is
+  // given only read-only Read/Grep/Glob tools, but it still receives review
+  // content and uses local Claude auth. Only point it at a binary you trust.
   const claudeBin = stringArg(args.claude_bin, process.env.CLAUDE_BIN ?? "claude");
   const claudeModel = stringArg(args.claude_model, "");
   const outputDir = resolve(stringArg(args.output_dir, join(homedir(), ".clawsweeper-local-reviews")));
