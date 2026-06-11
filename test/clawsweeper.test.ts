@@ -3711,6 +3711,10 @@ test("data model detector finds persistent schema and embedding metadata changes
         filename: "src/doctor/backfill.ts",
         patch: "@@\n+  await backfillMissingSessionVersions(db);",
       },
+      {
+        filename: "packages/database/migrations/019_backfill_sessions.sql",
+        patch: "@@\n+UPDATE sessions SET last_model = 'unknown' WHERE last_model IS NULL;",
+      },
     ],
   });
 
@@ -3718,6 +3722,7 @@ test("data model detector finds persistent schema and embedding metadata changes
     change: true,
     surfaces: [
       "database schema: packages/database/migrations/018_sessions.sql",
+      "migration/backfill/repair: packages/database/migrations/019_backfill_sessions.sql",
       "migration/backfill/repair: src/doctor/backfill.ts",
       "vector/embedding metadata: src/memory/vector-store.ts",
     ],

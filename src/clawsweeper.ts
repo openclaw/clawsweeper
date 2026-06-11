@@ -9644,7 +9644,7 @@ function dataModelTextMatchesPathHint(text: string, pathHint: string): boolean {
         text,
       );
     case "migration/backfill/repair":
-      return /\b(?:migration|migrate|upgrade|backfill\w*|doctor|repair|schema|version|existing data)\b/i.test(
+      return /\b(?:migration|migrate|upgrade|backfill\w*|doctor|repair|schema|version|existing data|INSERT|UPDATE|DELETE)\b/i.test(
         text,
       );
     default:
