@@ -3870,6 +3870,53 @@ Full review comments:
   assert.doesNotMatch(comment, /clawsweeper-verdict:needs-human/);
 });
 
+test("data model reports reject explicitly negative migration proof", () => {
+  const report = `${reportFrontMatter({
+    repository: "openclaw/openclaw",
+    type: "pull_request",
+    number: "74459",
+    decision: "keep_open",
+    close_reason: "none",
+    review_status: "complete",
+    confidence: "high",
+    labels: JSON.stringify(["clawsweeper:automerge"]),
+    work_candidate: "none",
+    pull_head_sha: "abc123def456",
+    data_model_change: "true",
+    data_model_surfaces: JSON.stringify(["database schema: packages/database/schema.ts"]),
+  })}
+
+## Summary
+
+Keep this data-model PR open for automerge.
+
+## What This Changes
+
+Adds a stored database column.
+
+## Solution Assessment
+
+The migration is not tested against an existing database.
+
+## Review Findings
+
+Overall correctness: patch is correct
+
+Overall confidence: 0.9
+
+Full review comments:
+
+- none
+`;
+
+  const comment = renderReviewCommentFromReport(report, "none");
+  const markers = reviewAutomationMarkersFromReport(report);
+
+  assert.match(comment, /Confirm migration or upgrade compatibility proof before merge\./);
+  assert.match(markers, /clawsweeper-verdict:needs-human/);
+  assert.doesNotMatch(markers, /clawsweeper-verdict:pass/);
+});
+
 test("sufficient real behavior proof allows automerge pass markers", () => {
   const report = `${reportFrontMatter({
     type: "pull_request",
