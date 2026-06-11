@@ -9487,6 +9487,16 @@ function dataModelUpgradeProofFromReport(markdown: string): boolean {
     return false;
   }
   if (
+    /\b(?:should|would|will|expected|intend(?:ed)?|designed|aims?|plans?|promises?)\b[^.]{0,120}\b(?:preserv(?:e|ed|es)|remain(?:s)? compatible|compatib(?:le|ility)|migration|upgrade|backfill)\b/i.test(
+      negativeProofText,
+    ) ||
+    /\b(?:migration|upgrade|backfill|existing data|existing database|existing cache|existing state)\b[^.]{0,120}\b(?:should|would|will|expected|intend(?:ed)?|designed|aims?|plans?|promises?)\b/i.test(
+      negativeProofText,
+    )
+  ) {
+    return false;
+  }
+  if (
     noMigrationRequiredPattern.test(text) &&
     /\b(?:existing data|existing database|existing cache|existing state|upgrade compatibility|compatibility)\b[^.]{0,160}\b(?:test(?:ed|s)?|cover(?:ed|age)?|prov(?:e|ed|en)|verif(?:y|ied)|compatib(?:le|ility)|preserv(?:e|ed|es))\b/i.test(
       text,
