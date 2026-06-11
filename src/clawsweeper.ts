@@ -9742,7 +9742,7 @@ function renderDataModelWarningFromReport(markdown: string): string {
   const surfaceText = surfaces.length
     ? surfaces
         .slice(0, 6)
-        .map((surface) => `\`${surface}\``)
+        .map((surface) => trustedCommentCodeSpan(surface))
         .join(", ")
     : "an unknown persistent surface";
   const overflow = surfaces.length > 6 ? `, and ${surfaces.length - 6} more` : "";
@@ -9750,6 +9750,18 @@ function renderDataModelWarningFromReport(markdown: string): string {
     ? "Migration or upgrade compatibility proof is recorded; maintainers should verify it before merge."
     : "Confirm migration or upgrade compatibility proof before merge.";
   return `Persistent data-model change detected: ${surfaceText}${overflow}. ${proofLine}`;
+}
+
+function trustedCommentCodeSpan(value: string): string {
+  const escaped = value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/\r?\n|\r/g, " ");
+  const longestBacktickRun = Math.max(0, ...(escaped.match(/`+/g) ?? []).map((run) => run.length));
+  const fence = "`".repeat(longestBacktickRun + 1);
+  const padding = escaped.startsWith("`") || escaped.endsWith("`") ? " " : "";
+  return `${fence}${padding}${escaped}${padding}${fence}`;
 }
 
 function reviewMetricsFromReport(markdown: string): ReviewMetric[] {
