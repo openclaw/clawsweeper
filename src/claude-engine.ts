@@ -125,3 +125,49 @@ export function extractJsonObject(text: string): string | null {
   if (first >= 0 && last > first) return candidate.slice(first, last + 1);
   return null;
 }
+
+export type PruneToSchemaResult = { value: unknown; droppedPaths: string[] };
+
+// Drop object keys a JSON Schema does not define, at every nesting level,
+// returning the pruned value and the dropped key paths. The Codex engine
+// constrains generation to the decision schema (via `--output-schema`), so its
+// output never carries stray keys; the Claude engine only gets the schema as
+// prompt guidance, so the model occasionally adds a plausible-but-unspecified
+// key (e.g. `kind` on a review finding) that strict decision validation would
+// reject outright. Pruning to the schema before validation makes the Claude
+// path tolerant of that harmless improvisation while still surfacing genuine
+// problems (missing required fields, bad enum values) through the validator.
+// The decision schema is flat (no `$ref`/`oneOf`/`anyOf`/`allOf`), so a direct
+// `properties`/`items` walk is sufficient; nodes the schema does not describe
+// as object/array are passed through untouched.
+export function pruneToSchema(value: unknown, schema: unknown): PruneToSchemaResult {
+  const droppedPaths: string[] = [];
+  const walk = (node: unknown, schemaNode: unknown, path: string): unknown => {
+    if (!schemaNode || typeof schemaNode !== "object") return node;
+    const s = schemaNode as Record<string, unknown>;
+    // Recognise object/array nodes by the presence of `properties`/`items`
+    // rather than an exact `type === "object"` string, so nodes typed as a
+    // union (e.g. `["object", "null"]`) or with `type` omitted are still
+    // pruned. The node's own runtime shape is re-checked before descending.
+    if (s.properties && typeof s.properties === "object") {
+      if (!node || typeof node !== "object" || Array.isArray(node)) return node;
+      const properties = s.properties as Record<string, unknown>;
+      const out: Record<string, unknown> = {};
+      for (const [key, child] of Object.entries(node as Record<string, unknown>)) {
+        const childPath = path ? `${path}.${key}` : key;
+        if (Object.prototype.hasOwnProperty.call(properties, key)) {
+          out[key] = walk(child, properties[key], childPath);
+        } else {
+          droppedPaths.push(childPath);
+        }
+      }
+      return out;
+    }
+    if (s.items) {
+      if (!Array.isArray(node)) return node;
+      return node.map((element, index) => walk(element, s.items, `${path}[${index}]`));
+    }
+    return node;
+  };
+  return { value: walk(value, schema, ""), droppedPaths };
+}

@@ -6,9 +6,38 @@ import {
   claudeReviewEnv,
   extractJsonObject,
   parseClaudeResultRecord,
+  pruneToSchema,
   CLAUDE_REVIEW_READONLY_TOOLS,
   SCRUBBED_CREDENTIAL_ENV_KEYS,
 } from "../dist/claude-engine.js";
+
+const REVIEW_FINDING_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    decision: { type: "string" },
+    reviewFindings: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          title: { type: "string" },
+          file: { type: "string" },
+          lineStart: { type: "number" },
+        },
+      },
+    },
+    reviewMetrics: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        properties: { label: { type: "string" }, value: { type: "string" } },
+      },
+    },
+  },
+};
 
 test("buildClaudeReviewArgs uses a read-only tool allow-list and no permission bypass", () => {
   const args = buildClaudeReviewArgs({ proofScratchDir: "/tmp/scratch" });
@@ -101,4 +130,80 @@ test("extractJsonObject handles bare objects, fenced blocks, and surrounding pro
   assert.equal(extractJsonObject('Here is the decision:\n{"a":1}\nThanks.'), '{"a":1}');
   assert.equal(extractJsonObject("no object here"), null);
   assert.equal(extractJsonObject(""), null);
+});
+
+test("pruneToSchema drops the stray keys Claude improvises and keeps real data", () => {
+  // The exact shapes the Claude review engine emitted in live runs: an extra
+  // `kind` on a review finding and a `label_note` on a review metric.
+  const { value, droppedPaths } = pruneToSchema(
+    {
+      decision: "keep_open",
+      reviewFindings: [{ title: "t", file: "a.ts", lineStart: 1, kind: "bug" }],
+      reviewMetrics: [{ label: "scope", value: "small", label_note: "extra" }],
+      bogusTopLevelKey: 123,
+    },
+    REVIEW_FINDING_SCHEMA,
+  );
+  assert.deepEqual(droppedPaths.sort(), [
+    "bogusTopLevelKey",
+    "reviewFindings[0].kind",
+    "reviewMetrics[0].label_note",
+  ]);
+  const pruned = value as Record<string, any>;
+  assert.equal(pruned.decision, "keep_open");
+  assert.equal(pruned.reviewFindings[0].title, "t");
+  assert.equal(pruned.reviewFindings[0].lineStart, 1);
+  assert.equal(pruned.reviewMetrics[0].label, "scope");
+  assert.ok(!("kind" in pruned.reviewFindings[0]));
+  assert.ok(!("label_note" in pruned.reviewMetrics[0]));
+  assert.ok(!("bogusTopLevelKey" in pruned));
+});
+
+test("pruneToSchema prunes nodes typed as a union (e.g. [\"object\",\"null\"]) or with type omitted", () => {
+  const schema = {
+    type: "object",
+    properties: {
+      // nullable object (union type) — must still be pruned
+      nested: {
+        type: ["object", "null"],
+        properties: { keep: { type: "string" } },
+      },
+      // object node with no explicit `type`, only `properties`
+      bag: { properties: { keep: { type: "string" } } },
+    },
+  };
+  const { value, droppedPaths } = pruneToSchema(
+    { nested: { keep: "a", stray: 1 }, bag: { keep: "b", stray2: 2 } },
+    schema,
+  );
+  assert.deepEqual(droppedPaths.sort(), ["bag.stray2", "nested.stray"]);
+  const pruned = value as Record<string, any>;
+  assert.equal(pruned.nested.keep, "a");
+  assert.ok(!("stray" in pruned.nested));
+  assert.equal(pruned.bag.keep, "b");
+  assert.ok(!("stray2" in pruned.bag));
+});
+
+test("pruneToSchema reports nothing to drop for a clean object and ignores unschema'd nodes", () => {
+  assert.deepEqual(
+    pruneToSchema({ decision: "close", reviewFindings: [] }, REVIEW_FINDING_SCHEMA).droppedPaths,
+    [],
+  );
+  // A node the schema does not describe as object/array passes through untouched.
+  assert.equal(pruneToSchema("scalar", REVIEW_FINDING_SCHEMA).value, "scalar");
+  assert.deepEqual(pruneToSchema({ any: 1 }, undefined).value, { any: 1 });
+});
+
+test("pruneToSchema passes values through untouched when the schema node is malformed or mismatched", () => {
+  // null / non-object schema node → value returned as-is (top-of-walk guard).
+  assert.deepEqual(pruneToSchema({ a: 1 }, null).value, { a: 1 });
+  // `properties` present but not an object → not treated as an object node.
+  const notObj = pruneToSchema({ a: 1, b: 2 }, { properties: "nope" });
+  assert.deepEqual(notObj.value, { a: 1, b: 2 });
+  assert.deepEqual(notObj.droppedPaths, []);
+  // Array schema but the value is not an array → returned unchanged, never mapped.
+  assert.deepEqual(
+    pruneToSchema({ a: 1 }, { type: "array", items: { type: "object", properties: {} } }).value,
+    { a: 1 },
+  );
 });

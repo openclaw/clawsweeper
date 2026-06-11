@@ -30,6 +30,7 @@ import {
   claudeReviewEnv,
   extractJsonObject,
   parseClaudeResultRecord,
+  pruneToSchema,
 } from "./claude-engine.js";
 import {
   ghRetryKind,
@@ -2379,7 +2380,14 @@ function parseMantisRecommendation(value: unknown, path: string): MantisRecommen
     status: requireEnum(record.status, MANTIS_RECOMMENDATION_STATUSES, `${path}.status`),
     scenario: requireEnum(record.scenario, MANTIS_RECOMMENDATION_SCENARIOS, `${path}.scenario`),
     reason: requireString(record.reason, `${path}.reason`),
-    maintainerComment: requireString(record.maintainerComment, `${path}.maintainerComment`),
+    // A maintainer comment is only meaningful when mantis IS recommended; when
+    // it is not, models reliably omit this field (treating it as not-applicable)
+    // rather than emitting an empty string. Default to "" so that common, correct
+    // shape validates without a wasted correction round-trip. Codex constrains
+    // its output to the schema and always supplies the field, so this is a no-op
+    // for the Codex engine.
+    maintainerComment:
+      typeof record.maintainerComment === "string" ? record.maintainerComment : "",
   };
 }
 
@@ -5657,6 +5665,16 @@ export function reviewDecisionSchemaText(): string {
   return reviewDecisionSchemaCache;
 }
 
+let reviewDecisionSchemaObjectCache: unknown;
+
+// Parsed form of the decision schema, memoized for the process lifetime (the
+// schema is immutable). Used by the Claude engine to prune model output to the
+// schema before strict validation.
+function reviewDecisionSchemaObject(): unknown {
+  reviewDecisionSchemaObjectCache ??= JSON.parse(reviewDecisionSchemaText());
+  return reviewDecisionSchemaObjectCache;
+}
+
 function contextJsonForPrompt(context: ItemContext): string {
   return JSON.stringify(context, null, 2);
 }
@@ -6347,74 +6365,139 @@ ${reviewDecisionSchemaText()}
   });
   const env = claudeReviewEnv();
   env.CLAWSWEEPER_PROOF_SCRATCH_DIR = proofScratchDir;
-  const result = spawnSync(options.claudeBin, claudeArgs, {
-    cwd: options.targetDir,
-    encoding: "utf8",
-    env,
-    input: prompt,
-    maxBuffer: 128 * 1024 * 1024,
-    timeout: options.timeoutMs,
-    ...(useShell ? { shell: true } : {}),
-  });
-  const dirtyAfter = openclawDirtyStatus(options.targetDir);
-  if (dirtyAfter) {
-    throw new Error(
-      `Claude dirtied the target checkout while reviewing #${options.item.number}:\n${dirtyAfter}`,
-    );
-  }
-  if (result.error) {
-    throw new Error(
-      `Claude review failed for #${options.item.number}: ${result.error.message}\n${
-        safeOutputTail(result.stderr) || safeOutputTail(result.stdout) || "No output."
-      }`,
-    );
-  }
-  const parsed = parseClaudeResultRecord(result.stdout ?? "");
-  if (!parsed) {
-    throw new Error(
-      `Claude review produced no parseable result record for #${options.item.number} (exit ${
-        result.status ?? "unknown"
-      }).\n${safeOutputTail(result.stderr) || safeOutputTail(result.stdout) || "No output."}`,
-    );
-  }
-  if (parsed.isError) {
-    throw new Error(
-      `Claude review reported an error for #${options.item.number}: ${
-        parsed.errorText || parsed.resultText || "unknown error"
-      }`,
-    );
-  }
-  let decisionJson: unknown;
-  if (parsed.structuredOutput && typeof parsed.structuredOutput === "object") {
-    decisionJson = parsed.structuredOutput;
-  } else {
-    const jsonText = extractJsonObject(parsed.resultText);
-    if (!jsonText) {
+  const decisionSchema = reviewDecisionSchemaObject();
+
+  // Run one Claude invocation with the given stdin prompt and reduce its output
+  // to a pruned decision-JSON candidate. Hard failures (spawn error, no result
+  // record, CLI-reported error, no JSON) throw; a parseable-but-imperfect object
+  // is returned for the caller's validation/retry loop.
+  const invokeClaude = (inputPrompt: string): { value: unknown; rawJson: string } => {
+    const result = spawnSync(options.claudeBin, claudeArgs, {
+      cwd: options.targetDir,
+      encoding: "utf8",
+      env,
+      input: inputPrompt,
+      maxBuffer: 128 * 1024 * 1024,
+      timeout: options.timeoutMs,
+      ...(useShell ? { shell: true } : {}),
+    });
+    const dirtyAfter = openclawDirtyStatus(options.targetDir);
+    if (dirtyAfter) {
       throw new Error(
-        `Claude review did not return a JSON decision for #${options.item.number}.\n${safeOutputTail(
-          parsed.resultText,
-        )}`,
+        `Claude dirtied the target checkout while reviewing #${options.item.number}:\n${dirtyAfter}`,
       );
     }
+    if (result.error) {
+      throw new Error(
+        `Claude review failed for #${options.item.number}: ${result.error.message}\n${
+          safeOutputTail(result.stderr) || safeOutputTail(result.stdout) || "No output."
+        }`,
+      );
+    }
+    const parsed = parseClaudeResultRecord(result.stdout ?? "");
+    if (!parsed) {
+      throw new Error(
+        `Claude review produced no parseable result record for #${options.item.number} (exit ${
+          result.status ?? "unknown"
+        }).\n${safeOutputTail(result.stderr) || safeOutputTail(result.stdout) || "No output."}`,
+      );
+    }
+    if (parsed.isError) {
+      throw new Error(
+        `Claude review reported an error for #${options.item.number}: ${
+          parsed.errorText || parsed.resultText || "unknown error"
+        }`,
+      );
+    }
+    let decisionJson: unknown;
+    if (parsed.structuredOutput && typeof parsed.structuredOutput === "object") {
+      decisionJson = parsed.structuredOutput;
+    } else {
+      const jsonText = extractJsonObject(parsed.resultText);
+      if (!jsonText) {
+        throw new Error(
+          `Claude review did not return a JSON decision for #${options.item.number}.\n${safeOutputTail(
+            parsed.resultText,
+          )}`,
+        );
+      }
+      try {
+        decisionJson = JSON.parse(jsonText);
+      } catch (error) {
+        throw new Error(
+          `Claude review returned invalid JSON for #${options.item.number}: ${
+            error instanceof Error ? error.message : String(error)
+          }\n${safeOutputTail(jsonText)}`,
+        );
+      }
+    }
+    const pruned = pruneToSchema(decisionJson, decisionSchema);
+    if (pruned.droppedPaths.length) {
+      console.error(
+        `[local-review] dropped ${pruned.droppedPaths.length} non-schema key(s) from Claude output for #${options.item.number}: ${pruned.droppedPaths.join(", ")}`,
+      );
+    }
+    return { value: pruned.value, rawJson: JSON.stringify(pruned.value) };
+  };
+
+  // Codex constrains generation to the schema, so its first output always
+  // validates. Claude only gets the schema as prompt guidance and its
+  // `--json-schema` is validate-or-drop (not constrained decoding), so a large
+  // schema like this one occasionally comes back with a missing required field
+  // or wrong-typed value. Rather than blind-default critical fields (e.g. the
+  // close/keep decision), feed the exact validation error back and let Claude
+  // self-correct, up to a small bound. Pruning above already absorbs the common
+  // extra-key case without a round-trip.
+  let candidate = invokeClaude(prompt);
+  let lastError: unknown;
+  for (let attempt = 0; attempt <= CLAUDE_REVIEW_MAX_CORRECTIONS; attempt += 1) {
     try {
-      decisionJson = JSON.parse(jsonText);
+      return parseDecision(candidate.value, options.item);
     } catch (error) {
-      throw new Error(
-        `Claude review returned invalid JSON for #${options.item.number}: ${
-          error instanceof Error ? error.message : String(error)
-        }\n${safeOutputTail(jsonText)}`,
+      lastError = error;
+      const message = error instanceof Error ? error.message : String(error);
+      if (attempt === CLAUDE_REVIEW_MAX_CORRECTIONS) break;
+      console.error(
+        `[local-review] Claude decision for #${options.item.number} failed validation (attempt ${
+          attempt + 1
+        }/${CLAUDE_REVIEW_MAX_CORRECTIONS + 1}), asking Claude to correct it: ${message}`,
       );
+      candidate = invokeClaude(claudeCorrectionPrompt(candidate.rawJson, message));
     }
   }
-  try {
-    return parseDecision(decisionJson, options.item);
-  } catch (error) {
-    throw new Error(
-      `Claude review output failed schema validation for #${options.item.number}: ${
-        error instanceof Error ? error.message : String(error)
-      }`,
-    );
-  }
+  throw new Error(
+    `Claude review output failed schema validation for #${options.item.number} after ${
+      CLAUDE_REVIEW_MAX_CORRECTIONS + 1
+    } attempt(s): ${lastError instanceof Error ? lastError.message : String(lastError)}`,
+  );
+}
+
+// How many times the Claude review may be asked to correct a decision object
+// that parses as JSON but fails strict schema validation. One initial attempt
+// plus this many corrections.
+const CLAUDE_REVIEW_MAX_CORRECTIONS = 2;
+
+// Prompt that hands Claude its previous (pruned) decision JSON and the exact
+// validation error, asking for a corrected, complete object. Deliberately
+// self-contained: it does not require re-reading the diff, only fixing the
+// reported problem in the JSON it already produced.
+function claudeCorrectionPrompt(previousJson: string, validationError: string): string {
+  return `Your previous review decision JSON failed strict schema validation with this error:
+
+${validationError}
+
+Here is the JSON you returned:
+
+\`\`\`json
+${previousJson}
+\`\`\`
+
+Fix ONLY the reported problem and return the corrected, COMPLETE decision object. Every required field must be present with a valid value of the correct type and a valid enum value where applicable. Return ONLY the single JSON object — no prose, no markdown fences, no commentary.
+
+\`\`\`json
+${reviewDecisionSchemaText()}
+\`\`\`
+`;
 }
 
 function stripTextFence(markdown: string): string {

@@ -13969,6 +13969,36 @@ fs.writeFileSync(process.argv[outputIndex + 1], process.env.CODEX_DECISION_JSON)
   }
 });
 
+test("decision parser defaults an omitted mantisRecommendation.maintainerComment to empty string", () => {
+  // Models reliably omit maintainerComment when not recommending mantis; the
+  // parser tolerates that (defaults "") instead of failing validation.
+  const decision = parseDecision(
+    closeDecision({
+      mantisRecommendation: {
+        status: "not_recommended",
+        scenario: "none",
+        reason: "No telegram-visible behavior in this change.",
+      },
+    }),
+  );
+  assert.equal(decision.mantisRecommendation.maintainerComment, "");
+  // A provided comment is still preserved verbatim.
+  const withComment = parseDecision(
+    closeDecision({
+      mantisRecommendation: {
+        status: "recommended",
+        scenario: "telegram_live",
+        reason: "Live streaming behavior.",
+        maintainerComment: "Please capture a telegram recording.",
+      },
+    }),
+  );
+  assert.equal(
+    withComment.mantisRecommendation.maintainerComment,
+    "Please capture a telegram recording.",
+  );
+});
+
 test("decision parser enforces required schema-shaped evidence", () => {
   assert.equal(parseDecision(closeDecision()).decision, "close");
   assert.equal(parseDecision(closeDecision({ itemCategory: "skill" })).itemCategory, "skill");
