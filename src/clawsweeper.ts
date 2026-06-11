@@ -9595,8 +9595,11 @@ function dataModelPathHint(path: string): string {
 function dataModelTextMatchesPathHint(text: string, pathHint: string): boolean {
   switch (pathHint) {
     case "database schema":
-      return /\b(?:schema|migration|migrate|table|column|index|database|sqlite|postgres|drizzle|kysely|prisma|sql)\b/i.test(
-        text,
+      return (
+        /\b(?:migration|migrate|schema[_-]?version|user_version|CREATE|ALTER|DROP)\b/i.test(text) ||
+        /\b(?:sqliteTable|pgTable|mysqlTable|defineTable|createTable|createIndex|table|column|index|primaryKey|foreignKey|uniqueIndex)\b/i.test(
+          text,
+        )
       );
     case "durable storage schema":
       return /\b(?:DurableObject|storage|schema|migration|state)\b/i.test(text);

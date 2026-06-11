@@ -3728,6 +3728,11 @@ test("data model detector ignores query-only and non-semantic docs changes", () 
   const detection = dataModelChangeFromPullFilesForTest({
     pullFiles: [
       {
+        filename: "packages/database/search.ts",
+        patch:
+          "@@\n+  return db.select().from(schema.sessions).where(eq(schema.sessions.id, sessionId));",
+      },
+      {
         filename: "src/memory/search.ts",
         patch: "@@\n+  return query.trim().toLowerCase();",
       },
