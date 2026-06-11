@@ -3100,8 +3100,9 @@ function hasExistingModeStatusResponse(number: JsonValue, intent: JsonValue) {
 }
 
 function postComment(command: LooseRecord, body: string) {
-  const existing =
-    findExistingCommandStatusComment(command) ?? findPrecreatedCommandStatusComment(command);
+  const existingStatus = findExistingCommandStatusComment(command);
+  const precreated = findPrecreatedCommandStatusComment(command);
+  const existing = existingStatus ?? precreated;
   const ackMarker = existing ? commandAckMarkerFromBody(existing.body) : null;
   const responseBody = ackMarker && !body.includes(ackMarker) ? `${ackMarker}\n${body}` : body;
   const nextBody = usesSharedAutomergeStatus(command)
@@ -3123,7 +3124,24 @@ function postComment(command: LooseRecord, body: string) {
       "--input",
       payloadPath,
     ]);
-    return { mode: "updated", comment_id: String(existing.id) };
+    const precreatedId = Number(precreated?.id ?? 0) || 0;
+    const existingId = Number(existing.id ?? 0) || 0;
+    if (existingStatus && precreatedId > 0 && precreatedId !== existingId) {
+      ghBestEffort([
+        "api",
+        `repos/${command.repo}/issues/comments/${precreatedId}`,
+        "--method",
+        "DELETE",
+      ]);
+      issueCommentsCache.delete(Number(command.issue_number));
+    }
+    return {
+      mode: "updated",
+      comment_id: String(existing.id),
+      ...(precreatedId > 0 && precreatedId !== existingId
+        ? { pruned_ack_comment_id: String(precreatedId) }
+        : {}),
+    };
   }
   ghText([
     "api",

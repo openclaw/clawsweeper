@@ -16372,6 +16372,15 @@ test("publish workflow installs Codex from the root checkout path", () => {
 
   assert.match(publishJob, /uses: \.\/\.github\/actions\/setup-codex/);
   assert.doesNotMatch(publishJob, /uses: \.\/clawsweeper\/\.github\/actions\/setup-codex/);
+  const setupCodexStart = publishJob.indexOf("- uses: ./.github/actions/setup-codex");
+  const syncCommentsStart = publishJob.indexOf("- name: Sync selected review comments");
+  const applySelectedStart = publishJob.indexOf("- name: Apply selected safe close proposals");
+  assert.ok(setupCodexStart > syncCommentsStart);
+  assert.ok(applySelectedStart > setupCodexStart);
+  assert.match(
+    publishJob.slice(setupCodexStart, applySelectedStart),
+    /if: \$\{\{ success\(\) && steps\.target-write-token\.outputs\.token != '' && github\.event\.inputs\.apply_after_review == 'true' \}\}/,
+  );
 });
 
 test("apply workflow installs Codex only when proof-eligible apply work can run", () => {
@@ -16590,6 +16599,25 @@ test("comment commands keep the router-to-sweep dispatch contract", () => {
   assert.match(routerSource, /event_type:\s*"clawsweeper_item"/);
   assert.match(sweepWorkflow, /types:\s*\[clawsweeper_item,\s*clawsweeper_target_sweep\]/);
   assert.doesNotMatch(sweepWorkflow, /types:\s*\[[^\]]*clawsweeper_comment/);
+});
+
+test("comment router prunes bare ack comments after updating shared automerge status", () => {
+  const routerSource = readFileSync("src/repair/comment-router.ts", "utf8");
+  const postComment = routerSource.slice(
+    routerSource.indexOf("function postComment("),
+    routerSource.indexOf("\nfunction findExistingCommandStatusComment"),
+  );
+
+  assert.match(postComment, /const existingStatus = findExistingCommandStatusComment\(command\);/);
+  assert.match(postComment, /const precreated = findPrecreatedCommandStatusComment\(command\);/);
+  assert.match(postComment, /const existing = existingStatus \?\? precreated;/);
+  assert.match(
+    postComment,
+    /if \(existingStatus && precreatedId > 0 && precreatedId !== existingId\)/,
+  );
+  assert.match(postComment, /issues\/comments\/\$\{precreatedId\}/);
+  assert.match(postComment, /"DELETE"/);
+  assert.match(postComment, /pruned_ack_comment_id: String\(precreatedId\)/);
 });
 
 test("manual exact-item review dispatches avoid broad review concurrency", () => {
@@ -16845,6 +16873,11 @@ test("github activity workflow coalesces noisy observer runs", () => {
   assert.match(concurrencyBlock, /github\.event_name == 'workflow_run'/);
   assert.match(workflow, /Check core API budget/);
   assert.match(workflow, /CLAWSWEEPER_MIN_CORE_REMAINING/);
+  assert.match(workflow, /contents: write/);
+  assert.match(workflow, /Dispatch spam comment intake candidates/);
+  assert.match(workflow, /clawsweeper_spam_comment_intake/);
+  assert.match(workflow, /\["issue_comment", "pull_request_review_comment"\]/);
+  assert.match(workflow, /\["created", "edited"\]/);
   assert.match(concurrencyBlock, /cancel-in-progress: true/);
   assert.doesNotMatch(
     concurrencyBlock,
@@ -16860,6 +16893,8 @@ test("github activity workflow coalesces noisy observer runs", () => {
 test("spam comment intake coalesces duplicate comment deliveries", () => {
   const workflow = readFileSync(".github/workflows/spam-comment-intake.yml", "utf8");
 
+  assert.match(workflow, /types: \[clawsweeper_spam_comment_intake\]/);
+  assert.doesNotMatch(workflow, /types: \[github_activity\]/);
   assert.match(workflow, /group: >-/);
   assert.match(workflow, /spam-comment-intake-\$\{\{ github\.event\.client_payload\.target_repo/);
   assert.match(workflow, /github\.event\.client_payload\.activity\.issue\.number/);

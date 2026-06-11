@@ -2,7 +2,7 @@ name: spam comment intake
 
 on:
   repository_dispatch:
-    types: [github_activity]
+    types: [clawsweeper_spam_comment_intake]
 
 permissions:
   contents: read
