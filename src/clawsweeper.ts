@@ -6344,12 +6344,29 @@ function codexFailureReason(detail: string): string {
   if (detail.includes("invalid JSON")) return "invalid structured output";
   if (detail.includes("ENOBUFS") || detail.includes("maxBuffer")) return "output buffer overflow";
   if (detail.includes("timed out") || detail.includes("ETIMEDOUT")) return "timeout";
+  if (
+    /rate limit reached|tokens per min|\bTPM\b|requests per min|\b429\b|temporarily unavailable|overloaded|please try again in \d+(?:ms|s)/i.test(
+      detail,
+    )
+  ) {
+    return "retryable codex transport failure";
+  }
+  if (
+    /ECONNRESET|EAI_AGAIN|ENOTFOUND|socket hang up|fetch failed|transport failure/i.test(detail)
+  ) {
+    return "retryable codex transport failure";
+  }
   return "codex execution failed";
 }
 
-function codexFailureDecision(status: number | null, stderr: string, stdout = ""): Decision {
-  const detail = stderr || "No stderr.";
-  const reason = codexFailureReason(detail);
+function codexFailureDecision(
+  status: number | null,
+  detail: string,
+  stdout = "",
+  stderr = "",
+): Decision {
+  const failureDetail = detail || "No failure detail.";
+  const reason = codexFailureReason(`${failureDetail}\n${stderr}\n${stdout}`);
   return {
     decision: "keep_open",
     closeReason: "none",
@@ -6358,8 +6375,15 @@ function codexFailureDecision(status: number | null, stderr: string, stdout = ""
     changeSummary: "Review failed before ClawSweeper could summarize the requested change.",
     evidence: [
       evidenceEntry({ label: "failure reason", detail: reason }),
-      evidenceEntry({ label: "codex failure detail", detail: trimMiddle(detail, 4000) }),
-      evidenceEntry({ label: "codex stdout", detail: trimMiddle(stdout || "No stdout.", 2000) }),
+      evidenceEntry({ label: "codex failure detail", detail: trimMiddle(failureDetail, 4000) }),
+      evidenceEntry({
+        label: "codex stderr",
+        detail: trimMiddle(stderr || "No stderr captured.", 3000),
+      }),
+      evidenceEntry({
+        label: "codex stdout",
+        detail: trimMiddle(stdout || "No stdout captured.", 2000),
+      }),
     ],
     likelyOwners: [
       {
@@ -6450,6 +6474,46 @@ function codexFailureDecision(status: number | null, stderr: string, stdout = ""
     workValidation: [],
     workLikelyFiles: [],
   };
+}
+
+export function codexFailureDecisionForTest(
+  status: number | null,
+  detail: string,
+  stdout = "",
+  stderr = "",
+): Decision {
+  return codexFailureDecision(status, detail, stdout, stderr);
+}
+
+function redactedOutputTail(value: string | Buffer | null | undefined, maxLength = 6000): string {
+  return safeOutputTail(value, maxLength)
+    .replace(/\bsk-(?:proj-)?[A-Za-z0-9_-]{20,}\b/g, "[REDACTED_OPENAI_KEY]")
+    .replace(/\bgithub_pat_[A-Za-z0-9_]{20,}\b/g, "[REDACTED_GITHUB_TOKEN]")
+    .replace(/\bgh[pousr]_[A-Za-z0-9_]{20,}\b/g, "[REDACTED_GITHUB_TOKEN]")
+    .replace(/\b(OPENAI_API_KEY|CODEX_API_KEY|GH_TOKEN|GITHUB_TOKEN)=([^\s"']+)/g, "$1=[REDACTED]")
+    .replace(
+      /"((?:OPENAI_API_KEY|CODEX_API_KEY|GH_TOKEN|GITHUB_TOKEN))"\s*:\s*"[^"]*"/g,
+      '"$1":"[REDACTED]"',
+    );
+}
+
+class CodexReviewError extends Error {
+  readonly status: number | null;
+  readonly stdout: string;
+  readonly stderr: string;
+
+  constructor(options: {
+    message: string;
+    status: number | null;
+    stdout?: string;
+    stderr?: string;
+  }) {
+    super(options.message);
+    this.name = "CodexReviewError";
+    this.status = options.status;
+    this.stdout = options.stdout ?? "";
+    this.stderr = options.stderr ?? "";
+  }
 }
 
 function openclawDirtyStatus(openclawDir: string): string {
@@ -6587,11 +6651,12 @@ function runCodex(options: {
     );
   }
   if (result.error) {
-    throw new Error(
-      `Codex review failed for #${options.item.number}: ${result.error.message}\n${
-        safeOutputTail(result.stderr) || safeOutputTail(result.stdout) || "No output."
-      }`,
-    );
+    throw new CodexReviewError({
+      message: `Codex review failed for #${options.item.number}: ${result.error.message}`,
+      status: result.status,
+      stdout: redactedOutputTail(result.stdout),
+      stderr: redactedOutputTail(result.stderr),
+    });
   }
   if (result.status !== 0) {
     if (existsSync(outputPath)) {
@@ -6607,32 +6672,32 @@ function runCodex(options: {
         );
         return decision;
       } catch (error) {
-        throw new Error(
-          `Codex review failed for #${options.item.number} with exit ${
+        throw new CodexReviewError({
+          message: `Codex review failed for #${options.item.number} with exit ${
             result.status ?? "unknown"
           } and wrote invalid JSON or schema-invalid output to ${outputPath}: ${
             error instanceof Error ? error.message : String(error)
-          }.\n${safeOutputTail(result.stderr) || safeOutputTail(result.stdout) || "No output."}`,
-        );
+          }.`,
+          status: result.status,
+          stdout: redactedOutputTail(result.stdout),
+          stderr: redactedOutputTail(result.stderr),
+        });
       }
     }
-    throw new Error(
-      `Codex review failed for #${options.item.number} with exit ${
-        result.status ?? "unknown"
-      }.\n${safeOutputTail(result.stderr) || safeOutputTail(result.stdout) || "No output."}`,
-    );
+    throw new CodexReviewError({
+      message: `Codex review failed for #${options.item.number} with exit ${result.status ?? "unknown"}.`,
+      status: result.status,
+      stdout: redactedOutputTail(result.stdout),
+      stderr: redactedOutputTail(result.stderr),
+    });
   }
   if (!existsSync(outputPath)) {
-    const decision = codexFailureDecision(
-      result.status,
-      `Codex exited successfully but did not write ${outputPath}.`,
-      result.stdout,
-    );
-    throw new Error(
-      `Codex review did not produce output for #${options.item.number}: ${decision.evidence
-        .map((entry) => entry.detail)
-        .join("\n")}`,
-    );
+    throw new CodexReviewError({
+      message: `Codex exited successfully but did not write ${outputPath}.`,
+      status: result.status,
+      stdout: redactedOutputTail(result.stdout),
+      stderr: redactedOutputTail(result.stderr),
+    });
   }
   try {
     return parseDecision(JSON.parse(readFileSync(outputPath, "utf8").trim()), options.item);
@@ -6642,13 +6707,17 @@ function runCodex(options: {
       `Codex wrote invalid JSON or schema-invalid output to ${outputPath}: ${
         error instanceof Error ? error.message : String(error)
       }`,
-      result.stdout,
+      redactedOutputTail(result.stdout),
+      redactedOutputTail(result.stderr),
     );
-    throw new Error(
-      `Codex review wrote invalid JSON for #${options.item.number}: ${decision.evidence
+    throw new CodexReviewError({
+      message: `Codex review wrote invalid JSON for #${options.item.number}: ${decision.evidence
         .map((entry) => entry.detail)
         .join("\n")}`,
-    );
+      status: result.status,
+      stdout: redactedOutputTail(result.stdout),
+      stderr: redactedOutputTail(result.stderr),
+    });
   }
 }
 
@@ -14549,11 +14618,15 @@ function reviewCommand(args: Args): void {
         });
       } catch (error) {
         codexFailures += 1;
-        decision = codexFailureDecision(
-          null,
-          error instanceof Error ? error.message : String(error),
-          "Per-item Codex failure; continuing with the rest of the shard.",
-        );
+        if (error instanceof CodexReviewError) {
+          decision = codexFailureDecision(error.status, error.message, error.stdout, error.stderr);
+        } else {
+          decision = codexFailureDecision(
+            null,
+            error instanceof Error ? error.message : String(error),
+            "Per-item Codex failure; continuing with the rest of the shard.",
+          );
+        }
       } finally {
         codexElapsedMs = Date.now() - codexStartedAt;
       }

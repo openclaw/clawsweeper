@@ -107,6 +107,7 @@ import {
   sameAuthorCounterpartApplyReason,
   sanitizePublicSelfReferences,
   appendFloorBackfillCandidateNumbersForTest,
+  codexFailureDecisionForTest,
   pullRequestFilePathsFromContextForTest,
   selectDueCandidateNumbersForTest,
   shardItemNumbers,
@@ -14081,6 +14082,87 @@ process.exit(1);
     else process.env.CODEX_DECISION_JSON = originalDecision;
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("runCodex preserves redacted process output when Codex exits without a decision", () => {
+  const root = mkdtempSync(tmpPrefix);
+  const openclawDir = join(root, "openclaw");
+  const workDir = join(root, "codex-work");
+  const binDir = join(root, "bin");
+  mkdirSync(openclawDir, { recursive: true });
+  mkdirSync(binDir, { recursive: true });
+  execFileSync("git", ["init"], { cwd: openclawDir, stdio: "ignore" });
+  const codexPath = join(binDir, "codex");
+  writeFileSync(
+    codexPath,
+    `#!/usr/bin/env node
+process.stdout.write("startup banner GH_TOKEN=ghp_abcdefghijklmnopqrstuvwxyz123456\\n");
+process.stderr.write("Rate limit reached for gpt-test on tokens per min (TPM); OPENAI_API_KEY=sk-proj-abcdefghijklmnopqrstuvwxyz123456\\n");
+process.exit(1);
+`,
+  );
+  chmodSync(codexPath, 0o755);
+  const originalPath = process.env.PATH;
+  process.env.PATH = `${binDir}${delimiter}${process.env.PATH ?? ""}`;
+  try {
+    assert.throws(
+      () =>
+        runCodexForTest({
+          item: item({ number: 83394 }),
+          context: { issue: {}, comments: [], timeline: [] },
+          git: { mainSha: "abc123", latestRelease: null },
+          model: "gpt-test",
+          openclawDir,
+          reasoningEffort: "high",
+          sandboxMode: "read-only",
+          serviceTier: "",
+          timeoutMs: 10_000,
+          workDir,
+          prompt: "Return a review decision.",
+        }),
+      (error: unknown) => {
+        const reviewError = error as Error & {
+          status?: number | null;
+          stderr?: string;
+          stdout?: string;
+        };
+        assert.equal(reviewError.status, 1);
+        assert.match(reviewError.stderr ?? "", /Rate limit reached/);
+        assert.match(reviewError.stderr ?? "", /OPENAI_API_KEY=\[REDACTED\]/);
+        assert.doesNotMatch(reviewError.stderr ?? "", /sk-proj-/);
+        assert.match(reviewError.stdout ?? "", /startup banner/);
+        assert.match(reviewError.stdout ?? "", /GH_TOKEN=\[REDACTED\]/);
+        assert.doesNotMatch(reviewError.stdout ?? "", /ghp_/);
+        return true;
+      },
+    );
+  } finally {
+    if (originalPath === undefined) delete process.env.PATH;
+    else process.env.PATH = originalPath;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("codex failure decisions expose stderr and stdout separately", () => {
+  const decision = codexFailureDecisionForTest(
+    1,
+    "Codex review failed for #278 with exit 1.",
+    "startup banner",
+    "Rate limit reached for gpt-test on tokens per min (TPM)",
+  );
+
+  assert.equal(
+    decision.summary,
+    "Codex review failed: retryable codex transport failure (exit 1).",
+  );
+  assert.equal(
+    decision.evidence.find((entry) => entry.label === "codex stderr")?.detail,
+    "Rate limit reached for gpt-test on tokens per min (TPM)",
+  );
+  assert.equal(
+    decision.evidence.find((entry) => entry.label === "codex stdout")?.detail,
+    "startup banner",
+  );
 });
 
 test("decision parser enforces required schema-shaped evidence", () => {
