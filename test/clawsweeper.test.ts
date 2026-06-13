@@ -4412,6 +4412,86 @@ Full review comments:
   assert.doesNotMatch(labelDetails, /PR readiness rating was derived from proof quality/);
 });
 
+test("failed Codex review comments suppress PR readiness ratings", () => {
+  const report = `${reportFrontMatter({
+    type: "pull_request",
+    number: "91210",
+    decision: "keep_open",
+    close_reason: "none",
+    review_status: "failed",
+    confidence: "low",
+    author: "contributor",
+    author_association: "CONTRIBUTOR",
+    labels: JSON.stringify(["proof: supplied", "rating: 🌊 off-meta tidepool"]),
+    work_candidate: "none",
+    pull_head_sha: "abc123def456",
+    triage_priority: "none",
+    impact_labels: JSON.stringify([]),
+    merge_risk_labels: JSON.stringify([]),
+    label_justifications: JSON.stringify([]),
+    pr_rating_overall: "NA",
+    pr_rating_proof: "NA",
+    pr_rating_patch: "NA",
+  })}
+
+## Summary
+
+Codex review failed: retryable codex transport failure (network).
+
+## What This Changes
+
+Review failed before ClawSweeper could summarize the requested change.
+
+## Best Possible Solution
+
+Retry the Codex review after fixing the execution failure.
+
+${realBehaviorProofReportSection({
+  status: "not_applicable",
+  evidenceKind: "not_applicable",
+  needsContributorAction: false,
+  summary: "Real behavior proof was not assessed because the Codex review failed.",
+})}
+
+${prRatingReportSection({
+  overallTier: "NA",
+  proofTier: "NA",
+  patchTier: "NA",
+  overallLabel: "🌊 off-meta tidepool",
+  proofLabel: "🌊 off-meta tidepool",
+  patchLabel: "🌊 off-meta tidepool",
+  summary: "PR readiness rating was not assessed because the Codex review failed.",
+  nextSteps: "- none",
+})}
+
+## Evidence
+
+- **failure reason:** retryable codex transport failure (network)
+- **codex failure detail:** Codex review failed for this PR with exit 1.
+`;
+
+  const comment = renderReviewCommentFromReport(report, "none");
+  const labelDetails = detailsBody(comment, "Label changes");
+
+  assert.match(
+    comment,
+    /^ClawSweeper review: did not complete due to Codex infrastructure failure\./,
+  );
+  assert.match(comment, /\*\*Merge readiness\*\*\nNot assessed\./);
+  assert.match(
+    comment,
+    /This is a ClawSweeper\/Codex infrastructure failure, not a PR readiness or patch-quality verdict\./,
+  );
+  assert.doesNotMatch(comment, /Codex review: needs real behavior proof before merge\./);
+  assert.doesNotMatch(comment, /Overall follows the weaker of proof and patch quality/);
+  assert.doesNotMatch(comment, /<summary>What the crustacean ranks mean<\/summary>/);
+  assert.match(
+    labelDetails,
+    /- remove `rating: 🌊 off-meta tidepool`: Current review failed before PR readiness was assessed, so no rating label should remain\./,
+  );
+  assert.doesNotMatch(labelDetails, /Label justifications:[\s\S]*rating: 🌊 off-meta tidepool/);
+});
+
 test("public PR review comments explain label changes without duplicate justifications", () => {
   const report = `${reportFrontMatter({
     type: "pull_request",

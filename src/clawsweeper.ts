@@ -8236,6 +8236,20 @@ function publicMergeReadinessBlock(rating: PrRating, proof: RealBehaviorProof): 
   return lines.join("\n");
 }
 
+function publicFailedReviewReadinessBlock(markdown: string): string {
+  const reason =
+    reportEvidence(markdown)
+      .find((entry) => entry.label === "failure reason")
+      ?.detail.trim() || "Codex review failed before completion.";
+  return [
+    "Not assessed.",
+    `Failure reason: ${sentence(reason)}`,
+    "",
+    "This is a ClawSweeper/Codex infrastructure failure, not a PR readiness or patch-quality verdict.",
+    "Keep any merge decision on the normal maintainer review path until ClawSweeper can complete a fresh review.",
+  ].join("\n");
+}
+
 function prStatusLabelKindFromLabels(labels: readonly string[]): PrStatusLabelKind | null {
   for (const label of PR_STATUS_LABELS) {
     if (labels.includes(label.name)) return label.kind;
@@ -11001,6 +11015,7 @@ function isExternalPullRequestReport(markdown: string): boolean {
 }
 
 function realBehaviorProofBlocksMerge(markdown: string): boolean {
+  if (frontMatterValue(markdown, "review_status") === "failed") return false;
   if (!isExternalPullRequestReport(markdown)) return false;
   if (frontMatterStringArray(markdown, "labels").includes(PROOF_OVERRIDE_LABEL)) return false;
   if (isDocsOnlyPullRequestReport(markdown)) return false;
@@ -12824,6 +12839,7 @@ function desiredClawSweeperLabelsFromPublicReport(
   options: ReviewCommentRenderOptions = {},
 ): string[] {
   const isPullRequest = frontMatterValue(markdown, "type") === "pull_request";
+  const reviewFailed = frontMatterValue(markdown, "review_status") === "failed";
   let labels = nextPriorityLabels(currentLabels, triagePriorityFromReport(markdown));
   labels = nextImpactLabels(labels, isPullRequest ? [] : impactLabelsFromReport(markdown));
   if (isPullRequest) {
@@ -12831,7 +12847,9 @@ function desiredClawSweeperLabelsFromPublicReport(
     labels = nextMergeRiskLabels(labels, mergeRiskLabelsFromReport(markdown));
     labels = nextRealBehaviorProofSufficientLabels(labels, realBehaviorProof);
     labels = nextRealBehaviorProofMediaLabels(labels, realBehaviorProof);
-    labels = nextPrRatingLabels(labels, reportPrRating(markdown));
+    labels = reviewFailed
+      ? labels.filter((label) => !PR_RATING_LABEL_NAMES.has(label))
+      : nextPrRatingLabels(labels, reportPrRating(markdown));
     labels = nextFeatureShowcaseLabels(labels, {
       isPullRequest,
       itemCategory: frontMatterValue(markdown, "item_category"),
@@ -12896,6 +12914,11 @@ function labelTransitionReason(
         : "Current PR review selected no merge-risk labels.";
   }
   if (PR_RATING_LABEL_NAMES.has(label)) {
+    if (frontMatterValue(markdown, "review_status") === "failed") {
+      return action === "add"
+        ? "Failed reviews do not select PR readiness rating labels."
+        : "Current review failed before PR readiness was assessed, so no rating label should remain.";
+    }
     const rating = reportPrRating(markdown);
     const current = ratingLabelForTier(rating.overallTier).name;
     return action === "add"
@@ -12993,7 +13016,7 @@ function labelJustificationsFromPublicReport(
   };
   const isPullRequest = frontMatterValue(markdown, "type") === "pull_request";
   const realBehaviorProof = reportRealBehaviorProof(markdown);
-  if (isPullRequest) {
+  if (isPullRequest && frontMatterValue(markdown, "review_status") !== "failed") {
     const rating = reportPrRating(markdown);
     const ratingLabel = ratingLabelForTier(rating.overallTier).name;
     const previousRatingLabel = frontMatterStringArray(markdown, "labels").find(
@@ -13743,6 +13766,7 @@ function renderKeepOpenCommentFromReport(
   const workReason = reportWorkCandidateReason(markdown);
   const workCandidate = frontMatterValue(markdown, "work_candidate");
   const isPullRequest = frontMatterValue(markdown, "type") === "pull_request";
+  const reviewFailed = frontMatterValue(markdown, "review_status") === "failed";
   const validation = frontMatterStringArray(markdown, "work_validation")
     .slice(0, 5)
     .map((step) =>
@@ -13750,7 +13774,8 @@ function renderKeepOpenCommentFromReport(
     );
   const isRepairCandidate = workCandidate === "queue_fix_pr";
   const isRepairLoopPass = isPullRequest && Boolean(repairLoopPassModeFromReport(markdown));
-  const hasRealBehaviorProofBlocker = isPullRequest && realBehaviorProofBlocksMerge(markdown);
+  const hasRealBehaviorProofBlocker =
+    isPullRequest && !reviewFailed && realBehaviorProofBlocksMerge(markdown);
   const summaryLine = sentence(summary) || "_No summary provided._";
   const changeSummaryLine = sentence(changeSummary || summary) || "_No change summary provided._";
   const fallbackNextStep =
@@ -13769,17 +13794,19 @@ function renderKeepOpenCommentFromReport(
   const labelDetails: string[] = [];
   const evidenceDetails: string[] = [];
   const hasReviewFindings = isPullRequest && reviewFindings.length > 0;
-  const verdictLine = hasRealBehaviorProofBlocker
-    ? "Codex review: needs real behavior proof before merge."
-    : isRepairLoopPass
-      ? "Codex review: passed."
-      : isPullRequest && isRepairCandidate
-        ? "Codex review: needs changes before merge."
-        : hasReviewFindings
-          ? "Codex review: found issues before merge."
-          : isPullRequest
-            ? "Codex review: needs maintainer review before merge."
-            : "Codex review: keeping this open for maintainer follow-up; there is still a little grit to resolve.";
+  const verdictLine = reviewFailed
+    ? "ClawSweeper review: did not complete due to Codex infrastructure failure."
+    : hasRealBehaviorProofBlocker
+      ? "Codex review: needs real behavior proof before merge."
+      : isRepairLoopPass
+        ? "Codex review: passed."
+        : isPullRequest && isRepairCandidate
+          ? "Codex review: needs changes before merge."
+          : hasReviewFindings
+            ? "Codex review: found issues before merge."
+            : isPullRequest
+              ? "Codex review: needs maintainer review before merge."
+              : "Codex review: keeping this open for maintainer follow-up; there is still a little grit to resolve.";
   const lines = [`${verdictLine}${reviewFreshnessText(markdown)}`, ""];
   const prSurface = renderOpenClawPrSurfaceFromReport(markdown);
   const prSurfaceSummary = prSurface.split("\n\n", 1)[0]?.trim() ?? "";
@@ -13810,7 +13837,9 @@ function renderKeepOpenCommentFromReport(
     appendPublicSection(
       lines,
       "Merge readiness",
-      publicMergeReadinessBlock(prRating, realBehaviorProof),
+      reviewFailed
+        ? publicFailedReviewReadinessBlock(markdown)
+        : publicMergeReadinessBlock(prRating, realBehaviorProof),
     );
   }
   const mantisSuggestion = isPullRequest
@@ -13921,7 +13950,7 @@ function renderKeepOpenCommentFromReport(
   if (labelDetailsBlock) lines.push("", labelDetailsBlock);
   const evidenceDetailsBlock = collapsedDetailsBlock("Evidence reviewed", evidenceDetails);
   if (evidenceDetailsBlock) lines.push("", evidenceDetailsBlock);
-  if (isPullRequest) lines.push("", publicRankDetailsBlock());
+  if (isPullRequest && !reviewFailed) lines.push("", publicRankDetailsBlock());
   lines.push("", ...reviewWorkflowCallout());
   return sanitizePublicSelfReferences(
     lines.join("\n"),
