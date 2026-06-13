@@ -1,4 +1,5 @@
-const CODEX_MODEL_ACCESS_ERROR = /the model .+ does not exist or you do not have access to it/i;
+const CODEX_MODEL_ACCESS_PREFIX = "the model ";
+const CODEX_MODEL_ACCESS_SUFFIX = " does not exist or you do not have access to it";
 
 export function isRetryableCodexTransportError(value: string | null | undefined): boolean {
   const message = value ?? "";
@@ -18,7 +19,11 @@ export function isTerminalCodexErrorMessage(value: string | null | undefined): b
       .map((line) => line.trim())
       .filter(Boolean)
       .at(-1) ?? "";
-  return CODEX_MODEL_ACCESS_ERROR.test(finalLine);
+  const normalized = finalLine.toLowerCase();
+  const prefixIndex = normalized.indexOf(CODEX_MODEL_ACCESS_PREFIX);
+  if (prefixIndex === -1) return false;
+  const modelStart = prefixIndex + CODEX_MODEL_ACCESS_PREFIX.length;
+  return normalized.indexOf(CODEX_MODEL_ACCESS_SUFFIX, modelStart) > modelStart;
 }
 
 export function codexJsonlFailureDetail(value: string | null | undefined): string {

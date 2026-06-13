@@ -63,6 +63,14 @@ test("quoted model access failures do not override the final Codex error", () =>
   assert.equal(isRetryableCodexErrorMessage(message), true);
 });
 
+test("Codex terminal classification stays bounded on repeated model prefixes", () => {
+  const message = `${"the model ".repeat(20_000)}missing suffix`;
+  const startedAt = performance.now();
+
+  assert.equal(isTerminalCodexErrorMessage(message), false);
+  assert.ok(performance.now() - startedAt < 500);
+});
+
 test("Codex context-limit errors are blocked automation outcomes", () => {
   assert.equal(
     isCodexContextLimitError("Error: Requested 142470. Please try again with a smaller input."),
