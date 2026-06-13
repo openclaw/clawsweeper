@@ -4736,6 +4736,64 @@ Full review comments:
   assert.doesNotMatch(comment, /remove `status: 📣 needs proof`/);
 });
 
+test("public PR review details derive ready status instead of preserving stale waiting label", () => {
+  const report = `${reportFrontMatter({
+    type: "pull_request",
+    number: "84008",
+    decision: "keep_open",
+    close_reason: "none",
+    review_status: "complete",
+    confidence: "high",
+    author: "contributor",
+    author_association: "CONTRIBUTOR",
+    labels: JSON.stringify(["status: ⏳ waiting on author"]),
+    work_candidate: "none",
+    triage_priority: "none",
+    impact_labels: JSON.stringify([]),
+    merge_risk_labels: JSON.stringify([]),
+    label_justifications: JSON.stringify([]),
+  })}
+
+## Summary
+
+Keep this PR open for maintainer review.
+
+## What This Changes
+
+Updates an already-reviewed PR.
+
+## Best Possible Solution
+
+Merge after maintainer review.
+
+${realBehaviorProofReportSection({
+  status: "sufficient",
+  evidenceKind: "terminal",
+  needsContributorAction: false,
+  summary: "Terminal proof covers the changed behavior.",
+})}
+
+## Review Findings
+
+Overall correctness: patch is correct
+
+Overall confidence: 0.9
+
+Full review comments:
+
+- none
+`;
+
+  const labelDetails = detailsBody(renderReviewCommentFromReport(report, "none"), "Label changes");
+
+  assert.match(labelDetails, /- add `status: 👀 ready for maintainer look`:/);
+  assert.match(
+    labelDetails,
+    /- remove `status: ⏳ waiting on author`: Current PR status label is `status: 👀 ready for maintainer look`\./,
+  );
+  assert.doesNotMatch(labelDetails, /add `status: ⏳ waiting on author`/);
+});
+
 test("media proof receives a shiny proof rating boost", () => {
   const report = `${reportFrontMatter({
     type: "pull_request",

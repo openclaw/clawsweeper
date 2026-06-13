@@ -8110,6 +8110,18 @@ function prStatusLabelKindFromReportLabels(markdown: string): PrStatusLabelKind 
   return PR_STATUS_LABELS.find((label) => rawLabels.includes(label.name))?.kind ?? null;
 }
 
+function prStatusLabelKindFromPublicReport(
+  markdown: string,
+  currentLabels: readonly string[],
+): PrStatusLabelKind | null {
+  const derived = prStatusLabelKindFromReport(
+    markdown,
+    { issue: null, comments: [], timeline: [] },
+    currentLabels,
+  );
+  return derived ?? prStatusLabelKindFromReportLabels(markdown);
+}
+
 function publicMantisRecommendationBlock(recommendation: MantisRecommendation): string {
   if (recommendation.status !== "recommended" || recommendation.scenario === "none") return "";
   const comment = recommendation.maintainerComment.trim();
@@ -12541,7 +12553,7 @@ function desiredClawSweeperLabelsFromPublicReport(
     });
     labels = nextPrStatusLabels(
       labels,
-      options.prStatusKind ?? prStatusLabelKindFromReportLabels(markdown),
+      options.prStatusKind ?? prStatusLabelKindFromPublicReport(markdown, labels),
     );
     labels = nextTelegramVisibleProofLabels(labels, reportTelegramVisibleProof(markdown));
   } else {
@@ -12602,7 +12614,12 @@ function labelTransitionReason(
       : `Current PR rating is ${inlineCode(current)}, so this older rating label is no longer current.`;
   }
   if (PR_STATUS_LABEL_NAMES.has(label)) {
-    const statusKind = options.prStatusKind ?? prStatusLabelKindFromReportLabels(markdown);
+    const statusKind =
+      options.prStatusKind ??
+      prStatusLabelKindFromPublicReport(
+        markdown,
+        options.previousLabels ?? frontMatterStringArray(markdown, "labels"),
+      );
     return action === "add" && statusKind
       ? prStatusLabelForKind(statusKind).description
       : statusKind
@@ -12723,7 +12740,9 @@ function labelJustificationsFromPublicReport(
         `${FEATURE_SHOWCASE_LABEL_DESCRIPTION} ${sentence(featureShowcase.reason)}`,
       );
     }
-    const statusKind = options.prStatusKind ?? prStatusLabelKindFromReportLabels(markdown);
+    const statusKind =
+      options.prStatusKind ??
+      prStatusLabelKindFromPublicReport(markdown, frontMatterStringArray(markdown, "labels"));
     if (statusKind) {
       add(
         prStatusLabelForKind(statusKind).name,
