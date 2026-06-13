@@ -12,6 +12,7 @@ import { publishCheckFromReport, splitFrontMatter } from "./commit-checks.js";
 import { argBool, argNumber, argString, parseArgs, type Args } from "./clawsweeper-args.js";
 import { safeOutputTail } from "./clawsweeper-text.js";
 import { codexEnv, codexModelArgs, PUBLIC_CODEX_MODEL } from "./codex-env.js";
+import { codexProcessErrorCode, runCodexProcess } from "./codex-process.js";
 import { runText } from "./command.js";
 import { ghRetryKind, ghRetryWaitMs } from "./github-retry.js";
 import { DEFAULT_TARGET_REPO, repositoryProfileFor } from "./repository-profiles.js";
@@ -300,9 +301,8 @@ function runCodex(options: {
     'approval_policy="never"',
   ];
   if (options.serviceTier) codexConfig.splice(1, 0, `service_tier="${options.serviceTier}"`);
-  const result = spawnSync(
-    "codex",
-    [
+  const result = runCodexProcess({
+    args: [
       "exec",
       ...codexModelArgs(options.model),
       ...codexConfig.flatMap((config) => ["-c", config]),
@@ -314,21 +314,13 @@ function runCodex(options: {
       options.sandboxMode,
       "-",
     ],
-    {
-      cwd: options.targetDir,
-      encoding: "utf8",
-      env: codexEnv({ ghToken: process.env.COMMIT_SWEEPER_TARGET_GH_TOKEN }),
-      input: readFileSync(promptPath, "utf8"),
-      maxBuffer: 128 * 1024 * 1024,
-      timeout: options.timeoutMs,
-    },
-  );
+    cwd: options.targetDir,
+    env: codexEnv({ ghToken: process.env.COMMIT_SWEEPER_TARGET_GH_TOKEN }),
+    input: readFileSync(promptPath, "utf8"),
+    timeoutMs: options.timeoutMs,
+  });
   if (result.error || result.status !== 0 || !existsSync(outputPath)) {
-    const timeout = Boolean(
-      result.error &&
-      "code" in result.error &&
-      (result.error as NodeJS.ErrnoException).code === "ETIMEDOUT",
-    );
+    const timeout = codexProcessErrorCode(result.error) === "ETIMEDOUT";
     const detail =
       result.error instanceof Error
         ? `${result.error.message}\n${safeOutputTail(result.stderr) || safeOutputTail(result.stdout)}`

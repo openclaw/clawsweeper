@@ -91,3 +91,42 @@ test("merged source replacement skip runs before publishing replacement PRs", ()
     /reason: "source PR already merged and replacement branch has no changes versus base"/,
   );
 });
+
+test("terminal Codex failures do not request repair requeue", () => {
+  const sourcePath = path.join(process.cwd(), "src/repair/execute-fix-artifact.ts");
+  const source = fs.readFileSync(sourcePath, "utf8");
+  const helperStart = source.indexOf("function isRetryableCodexFailure(");
+  const helperEnd = source.indexOf("function isBlockedFixError(", helperStart);
+
+  assert.notEqual(helperStart, -1);
+  assert.notEqual(helperEnd, -1);
+  const helper = source.slice(helperStart, helperEnd);
+  const terminalGuardIndex = helper.indexOf(
+    "if (messages.some((value) => isTerminalCodexErrorMessage(value))) return false;",
+  );
+  const broadFallbackIndex = helper.indexOf("/Codex .*(?:timed out|failed|exited)");
+
+  assert.notEqual(terminalGuardIndex, -1);
+  assert.notEqual(broadFallbackIndex, -1);
+  assert.ok(
+    terminalGuardIndex < broadFallbackIndex,
+    "terminal model-access failures must be rejected before the broad Codex failure fallback",
+  );
+});
+
+test("repair Codex heartbeat wrapper uses bounded process capture", () => {
+  const sourcePath = path.join(process.cwd(), "src/repair/execute-fix-artifact.ts");
+  const source = fs.readFileSync(sourcePath, "utf8");
+  const helperStart = source.indexOf("function spawnCodexSyncWithHeartbeat(");
+  const helperEnd = source.indexOf("function startCodexHeartbeat(", helperStart);
+
+  assert.notEqual(helperStart, -1);
+  assert.notEqual(helperEnd, -1);
+  const helper = source.slice(helperStart, helperEnd);
+  assert.match(helper, /return runCodexProcess\(\{/);
+  assert.match(helper, /\{ stdoutPath: options\.stdoutPath \}/);
+  assert.match(helper, /\{ stderrPath: options\.stderrPath \}/);
+  assert.doesNotMatch(helper, /spawnSync\("codex"/);
+  assert.doesNotMatch(source, /CLAWSWEEPER_CODEX_STDIO_MAX_BUFFER_MB/);
+  assert.doesNotMatch(source, /writeFileSync\([^)]*codexResult\.stdout/);
+});

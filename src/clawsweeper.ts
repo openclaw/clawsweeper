@@ -30,7 +30,14 @@ import {
   PUBLIC_CODEX_MODEL,
   redactInternalCodexModel,
 } from "./codex-env.js";
-import { codexRetryDelayMs, isRetryableCodexTransportError } from "./codex-transient.js";
+import { codexProcessErrorCode, runCodexProcess } from "./codex-process.js";
+import {
+  codexJsonlFailureDetail,
+  codexRetryDelayMs,
+  isRetryableCodexErrorMessage,
+  isRetryableCodexTransportError,
+  isTerminalCodexErrorMessage,
+} from "./codex-transient.js";
 import {
   ghRetryKind,
   ghRetryWaitMs,
@@ -445,6 +452,7 @@ interface Decision {
   featureShowcase: FeatureShowcase;
   overallCorrectness: OverallCorrectness;
   overallConfidenceScore: number;
+  codexTerminalFailure?: boolean;
   fixedRelease?: string | null;
   fixedSha?: string | null;
   fixedAt?: string | null;
@@ -4661,6 +4669,7 @@ export function isInfrastructureFailedReviewForTest(markdown: string): boolean {
 
 function isInfrastructureFailedReview(markdown: string): boolean {
   const detail = failedReviewFailureDetail(markdown);
+  if (frontMatterBoolean(markdown, "review_terminal_failure")) return false;
   return (
     isRetryableCodexTransportError(detail) ||
     /\b(?:ETIMEDOUT|ECONNRESET|EAI_AGAIN|ENOTFOUND|socket hang up|fetch failed|transport failure|codex transport|Codex worker timed out|Codex review failed: timeout|timed out after|shard timeout|workflow timeout|cancelledByParent)\b/i.test(
@@ -6347,11 +6356,12 @@ export function reviewPromptForTest(
   return buildReviewPrompt(item, context, git, additionalPrompt, runtimeHints).text;
 }
 
-function codexFailureReason(detail: string): string {
+function codexFailureReason(detail: string, errorCode?: string | null): string {
   if (detail.includes("Codex dirtied the OpenClaw checkout")) return "dirty checkout";
   if (detail.includes("did not produce output")) return "missing structured output";
   if (detail.includes("invalid JSON")) return "invalid structured output";
-  if (detail.includes("ENOBUFS") || detail.includes("maxBuffer")) return "output buffer overflow";
+  if (errorCode === "ENOBUFS") return "output buffer overflow";
+  if (isTerminalCodexErrorMessage(detail)) return "model unavailable or access denied";
   if (detail.includes("timed out") || detail.includes("ETIMEDOUT")) return "timeout";
   if (
     /rate limit reached|tokens per min|\bTPM\b|requests per min|\b429\b|temporarily unavailable|overloaded|please try again in \d+(?:ms|s)/i.test(
@@ -6373,11 +6383,15 @@ function codexFailureDecision(
   detail: string,
   stdout = "",
   stderr = "",
+  processResult: { errorCode?: string | null; signal?: NodeJS.Signals | null } = {},
 ): Decision {
   const failureDetail = redactInternalCodexModel(detail || "No failure detail.");
   const safeStdout = redactedOutputTail(stdout || "No stdout captured.");
   const safeStderr = redactedOutputTail(stderr || "No stderr captured.");
-  const reason = codexFailureReason(`${failureDetail}\n${safeStderr}\n${safeStdout}`);
+  const structuredError = redactInternalCodexModel(codexJsonlFailureDetail(stdout));
+  const processFailureDetail = [failureDetail, structuredError].filter(Boolean).join("\n");
+  const reason = codexFailureReason(processFailureDetail, processResult.errorCode);
+  const terminalError = isTerminalCodexErrorMessage(structuredError) ? structuredError : "";
   return {
     decision: "keep_open",
     closeReason: "none",
@@ -6395,6 +6409,15 @@ function codexFailureDecision(
         label: "codex stdout",
         detail: trimMiddle(safeStdout, 2000),
       }),
+      ...(terminalError
+        ? [evidenceEntry({ label: "codex terminal error", detail: terminalError })]
+        : []),
+      ...(processResult.errorCode
+        ? [evidenceEntry({ label: "process error code", detail: processResult.errorCode })]
+        : []),
+      ...(processResult.signal
+        ? [evidenceEntry({ label: "process signal", detail: processResult.signal })]
+        : []),
     ],
     likelyOwners: [
       {
@@ -6471,6 +6494,7 @@ function codexFailureDecision(
     },
     overallCorrectness: "not a patch",
     overallConfidenceScore: 0,
+    codexTerminalFailure: Boolean(terminalError),
     fixedRelease: null,
     fixedSha: null,
     fixedAt: null,
@@ -6492,8 +6516,9 @@ export function codexFailureDecisionForTest(
   detail: string,
   stdout = "",
   stderr = "",
+  processResult: { errorCode?: string | null; signal?: NodeJS.Signals | null } = {},
 ): Decision {
-  return codexFailureDecision(status, detail, stdout, stderr);
+  return codexFailureDecision(status, detail, stdout, stderr, processResult);
 }
 
 function redactedOutputTail(value: string | Buffer | null | undefined, maxLength = 6000): string {
@@ -6517,18 +6542,24 @@ class CodexReviewError extends Error {
   readonly status: number | null;
   readonly stdout: string;
   readonly stderr: string;
+  readonly errorCode: string | null;
+  readonly signal: NodeJS.Signals | null;
 
   constructor(options: {
     message: string;
     status: number | null;
     stdout?: string;
     stderr?: string;
+    errorCode?: string | null;
+    signal?: NodeJS.Signals | null;
   }) {
     super(options.message);
     this.name = "CodexReviewError";
     this.status = options.status;
     this.stdout = options.stdout ?? "";
     this.stderr = options.stderr ?? "";
+    this.errorCode = options.errorCode ?? null;
+    this.signal = options.signal ?? null;
   }
 }
 
@@ -6644,9 +6675,8 @@ function runCodex(options: {
         `Codex review timed out for #${options.item.number} after ${options.timeoutMs}ms.`,
       );
     }
-    const result = spawnSync(
-      "codex",
-      [
+    const result = runCodexProcess({
+      args: [
         "exec",
         ...codexModelArgs(options.model),
         ...codexConfig.flatMap((config) => ["-c", config]),
@@ -6656,24 +6686,21 @@ function runCodex(options: {
         CLAWSWEEPER_DECISION_SCHEMA_PATH,
         "--output-last-message",
         outputPath,
+        "--json",
         "--sandbox",
         options.sandboxMode,
         "--add-dir",
         proofScratchDir,
         "-",
       ],
-      {
-        cwd: options.openclawDir,
-        encoding: "utf8",
-        env: {
-          ...codexEnv({ ghToken: process.env.CLAWSWEEPER_PROOF_INSPECTION_TOKEN }),
-          CLAWSWEEPER_PROOF_SCRATCH_DIR: proofScratchDir,
-        },
-        input: prompt,
-        maxBuffer: 128 * 1024 * 1024,
-        timeout: remainingMs,
+      cwd: options.openclawDir,
+      env: {
+        ...codexEnv({ ghToken: process.env.CLAWSWEEPER_PROOF_INSPECTION_TOKEN }),
+        CLAWSWEEPER_PROOF_SCRATCH_DIR: proofScratchDir,
       },
-    );
+      input: prompt,
+      timeoutMs: remainingMs,
+    });
     const dirtyAfter = openclawDirtyStatus(options.openclawDir);
     if (dirtyAfter) {
       throw new Error(
@@ -6682,6 +6709,7 @@ function runCodex(options: {
     }
     const stderr = redactedOutputTail(result.stderr);
     const stdout = redactedOutputTail(result.stdout);
+    const errorCode = codexProcessErrorCode(result.error);
     let failureDetail = "";
     if (result.error) {
       failureDetail = `Codex review failed for #${options.item.number}: ${redactInternalCodexModel(result.error.message)}`;
@@ -6711,19 +6739,22 @@ function runCodex(options: {
     } else if (!result.error) {
       failureDetail =
         result.status === 0
-          ? `Codex review did not produce output for #${options.item.number}: Codex exited successfully but did not write ${outputPath}.\n${stdout || "No stdout."}`
+          ? `Codex review did not produce output for #${options.item.number}: Codex exited successfully but did not write ${outputPath}.`
           : `Codex review failed for #${options.item.number} with exit ${result.status ?? "unknown"}.`;
     }
-    const diagnosticDetail = `${failureDetail}\n${stderr}\n${stdout}`;
+    const structuredError = redactInternalCodexModel(codexJsonlFailureDetail(result.stdout));
+    const processFailureDetail = [failureDetail, structuredError].filter(Boolean).join("\n");
+    const terminalFailure = isTerminalCodexErrorMessage(processFailureDetail);
     const retryable =
-      result.signal !== null ||
-      (result.status === 0 && !hasOutput) ||
-      isRetryableCodexTransportError(diagnosticDetail) ||
-      /\b(?:ETIMEDOUT|ECONNRESET|EAI_AGAIN|ENOTFOUND|socket hang up|fetch failed|transport failure)\b/i.test(
-        diagnosticDetail,
-      );
+      !terminalFailure &&
+      (result.signal !== null ||
+        (result.status === 0 && !hasOutput) ||
+        isRetryableCodexErrorMessage(processFailureDetail) ||
+        /\b(?:ETIMEDOUT|ECONNRESET|EAI_AGAIN|ENOTFOUND|socket hang up|fetch failed|transport failure)\b/i.test(
+          processFailureDetail,
+        ));
     if (retryable && attempt < maxAttempts) {
-      const delayMs = codexRetryDelayMs(diagnosticDetail, attempt);
+      const delayMs = codexRetryDelayMs(processFailureDetail, attempt);
       if (Date.now() - startedAt + delayMs < options.timeoutMs) {
         console.error(
           `[review] ${new Date().toISOString()} codex-retry #${options.item.number} attempt=${
@@ -6739,6 +6770,8 @@ function runCodex(options: {
       status: result.status,
       stdout,
       stderr,
+      errorCode,
+      signal: result.signal,
     });
   }
   throw new Error(`Codex review failed for #${options.item.number}.`);
@@ -6900,9 +6933,8 @@ function runCodexAssist(options: {
     'forced_login_method="api"',
     'approval_policy="never"',
   ];
-  const result = spawnSync(
-    "codex",
-    [
+  const result = runCodexProcess({
+    args: [
       "exec",
       ...codexModelArgs(options.model),
       ...codexConfig.flatMap((config) => ["-c", config]),
@@ -6912,15 +6944,11 @@ function runCodexAssist(options: {
       options.sandboxMode,
       "-",
     ],
-    {
-      cwd: ROOT,
-      encoding: "utf8",
-      env: codexEnv(),
-      input: prompt,
-      maxBuffer: 32 * 1024 * 1024,
-      timeout: options.timeoutMs,
-    },
-  );
+    cwd: ROOT,
+    env: codexEnv(),
+    input: prompt,
+    timeoutMs: options.timeoutMs,
+  });
   if (result.error || result.status !== 0 || !existsSync(outputPath)) {
     const detail =
       result.error instanceof Error
@@ -14621,6 +14649,7 @@ review_context_elapsed_ms: ${reviewTelemetryNumber(options.runtime.contextElapse
 review_codex_elapsed_ms: ${reviewTelemetryNumber(options.runtime.codexElapsedMs)}
 review_mode: ${options.reviewMode}
 review_status: ${options.decision.summary.startsWith("Codex review failed") ? "failed" : "complete"}
+review_terminal_failure: ${options.decision.codexTerminalFailure === true}
 local_checkout_access: verified
 item_snapshot_hash: ${options.snapshotHash}
 close_comment_sha256: ${options.action.closeComment ? sha256(options.action.closeComment) : "none"}
@@ -15001,7 +15030,10 @@ function reviewCommand(args: Args): void {
       } catch (error) {
         codexFailures += 1;
         if (error instanceof CodexReviewError) {
-          decision = codexFailureDecision(error.status, error.message, error.stdout, error.stderr);
+          decision = codexFailureDecision(error.status, error.message, error.stdout, error.stderr, {
+            errorCode: error.errorCode,
+            signal: error.signal,
+          });
         } else {
           decision = codexFailureDecision(
             null,

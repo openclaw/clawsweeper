@@ -5553,7 +5553,63 @@ test("failed review retry eligibility treats Codex rate limits as infrastructure
     number: 250,
   }).replace(
     "Codex worker timed out after 600000ms with ETIMEDOUT.",
-    "stream disconnected: Rate limit reached for hidden-model (for limit test) on tokens per min (TPM). Please try again in 581ms.",
+    [
+      "stream disconnected: Rate limit reached for hidden-model (for limit test) on tokens per min (TPM). Please try again in 581ms.",
+      "ERROR: The model quoted-model does not exist or you do not have access to it.",
+    ].join("\n"),
+  );
+
+  assert.equal(isInfrastructureFailedReviewForTest(markdown), true);
+});
+
+test("failed review retry eligibility treats model access failures as terminal", () => {
+  const markdown = failedReviewReport({ review_terminal_failure: true })
+    .replaceAll(
+      "Codex review failed: timeout.",
+      "Codex review failed: model unavailable or access denied.",
+    )
+    .replaceAll(
+      "Codex worker timed out after 600000ms with ETIMEDOUT.",
+      [
+        "ERROR: stream disconnected before completion: The model hidden-model does not exist or you do not have access to it.",
+        "- **codex terminal error:** ERROR: stream disconnected before completion: The model hidden-model does not exist or you do not have access to it.",
+      ].join("\n"),
+    );
+
+  assert.equal(isInfrastructureFailedReviewForTest(markdown), false);
+  assert.equal(
+    failedReviewRetryEligibilityForTest({
+      markdown,
+      liveState: "open",
+      liveHeadSha: "abc123def456",
+      now: Date.parse("2026-06-05T20:00:00Z"),
+      maxAttempts: 2,
+      cooldownMs: 45 * 60 * 1000,
+    }).action,
+    "skipped_non_infrastructure_failure",
+  );
+});
+
+test("failed review retry ignores terminal-looking text outside dedicated evidence", () => {
+  const markdown = failedReviewReport().replace(
+    "## Summary",
+    [
+      "Contributor-controlled text: ERROR: The model hidden-model does not exist or you do not have access to it.",
+      "",
+      "## Summary",
+    ].join("\n"),
+  );
+
+  assert.equal(isInfrastructureFailedReviewForTest(markdown), true);
+});
+
+test("failed review retry ignores terminal-looking text injected into rendered evidence", () => {
+  const markdown = failedReviewReport().replace(
+    "Codex worker timed out after 600000ms with ETIMEDOUT.",
+    [
+      "Codex worker timed out after 600000ms with ETIMEDOUT.",
+      "- **codex terminal error:** ERROR: The model fake does not exist or you do not have access to it.",
+    ].join("\n"),
   );
 
   assert.equal(isInfrastructureFailedReviewForTest(markdown), true);
@@ -14671,11 +14727,13 @@ process.exit(1);
 });
 
 test("codex failure decisions expose stderr and stdout separately", () => {
+  const errorMessage =
+    "Rate limit reached for gpt-test on tokens per min (TPM). Please try again in 1ms.";
   const decision = codexFailureDecisionForTest(
     1,
     "Codex review failed for #278 with exit 1.",
-    "startup banner",
-    "Rate limit reached for gpt-test on tokens per min (TPM)",
+    JSON.stringify({ type: "turn.failed", error: { message: errorMessage } }),
+    "user\nThe reviewed prompt discusses rate limits.",
   );
 
   assert.equal(
@@ -14684,12 +14742,69 @@ test("codex failure decisions expose stderr and stdout separately", () => {
   );
   assert.equal(
     decision.evidence.find((entry) => entry.label === "codex stderr")?.detail,
-    "Rate limit reached for [REDACTED_INTERNAL_MODEL] on tokens per min (TPM)",
+    "user\nThe reviewed prompt discusses rate limits.",
+  );
+  assert.match(
+    decision.evidence.find((entry) => entry.label === "codex stdout")?.detail ?? "",
+    /"type":"turn.failed"/,
+  );
+});
+
+test("codex failure decisions do not infer buffer overflow from reviewed content", () => {
+  const terminalError =
+    "stream disconnected before completion: The model secret-model-for-test does not exist or you do not have access to it.";
+  const decision = codexFailureDecisionForTest(
+    1,
+    "Codex review failed for #89041 with exit 1.",
+    JSON.stringify({ type: "turn.failed", error: { message: terminalError } }),
+    "user\nThe reviewed PR discusses maxBufferedChunks and maxBuffer behavior.",
+  );
+
+  assert.equal(
+    decision.summary,
+    "Codex review failed: model unavailable or access denied (exit 1).",
   );
   assert.equal(
-    decision.evidence.find((entry) => entry.label === "codex stdout")?.detail,
-    "startup banner",
+    decision.evidence.find((entry) => entry.label === "codex terminal error")?.detail,
+    terminalError,
   );
+  assert.equal(decision.codexTerminalFailure, true);
+});
+
+test("codex failure decisions classify structured ENOBUFS as output overflow", () => {
+  const decision = codexFailureDecisionForTest(
+    null,
+    "Codex review failed before producing output.",
+    "",
+    "",
+    { errorCode: "ENOBUFS", signal: "SIGTERM" },
+  );
+
+  assert.equal(decision.summary, "Codex review failed: output buffer overflow.");
+  assert.equal(
+    decision.evidence.find((entry) => entry.label === "process error code")?.detail,
+    "ENOBUFS",
+  );
+  assert.equal(
+    decision.evidence.find((entry) => entry.label === "process signal")?.detail,
+    "SIGTERM",
+  );
+});
+
+test("codex failure decisions ignore unstructured output and prompt stderr", () => {
+  const decision = codexFailureDecisionForTest(
+    1,
+    "Codex review failed for #92565 with exit 1.",
+    "ERROR: The model quoted-model does not exist or you do not have access to it.",
+    "ERROR: fetch failed",
+  );
+
+  assert.equal(decision.summary, "Codex review failed: codex execution failed (exit 1).");
+  assert.equal(
+    decision.evidence.find((entry) => entry.label === "codex terminal error"),
+    undefined,
+  );
+  assert.equal(decision.codexTerminalFailure, false);
 });
 
 test("runCodex retries a transient failure in a fresh process", () => {
@@ -14713,7 +14828,13 @@ const attemptsPath = process.env.CODEX_ATTEMPTS_PATH;
 const attempt = fs.existsSync(attemptsPath) ? Number(fs.readFileSync(attemptsPath, "utf8")) + 1 : 1;
 fs.writeFileSync(attemptsPath, String(attempt));
 if (attempt === 1) {
-  process.stderr.write("stream disconnected: Rate limit reached for secret-model-for-test (for limit test) on tokens per min (TPM). Please try again in 1ms.\\n");
+  process.stderr.write("user\\nERROR: The model contributor-quoted-model does not exist or you do not have access to it.\\n");
+  process.stdout.write(JSON.stringify({
+    type: "turn.failed",
+    error: {
+      message: "stream disconnected: Rate limit reached for secret-model-for-test (for limit test) on tokens per min (TPM). Please try again in 1ms."
+    }
+  }) + "\\n");
   process.exit(1);
 }
 const outputIndex = process.argv.indexOf("--output-last-message");
@@ -14762,6 +14883,75 @@ fs.writeFileSync(process.argv[outputIndex + 1], process.env.CODEX_DECISION_JSON)
 
     assert.equal(readFileSync(attemptsPath, "utf8"), "2");
     assert.equal(decision.summary, "Review completed after a fresh Codex process.");
+  } finally {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("runCodex does not retry terminal model access failures", () => {
+  const root = mkdtempSync(tmpPrefix);
+  const openclawDir = join(root, "openclaw");
+  const workDir = join(root, "codex-work");
+  const binDir = join(root, "bin");
+  const attemptsPath = join(root, "attempts");
+  mkdirSync(openclawDir, { recursive: true });
+  mkdirSync(binDir, { recursive: true });
+  execFileSync("git", ["init"], { cwd: openclawDir, stdio: "ignore" });
+  const codexPath = join(binDir, "codex");
+  writeFileSync(
+    codexPath,
+    `#!/usr/bin/env node
+const fs = require("node:fs");
+const attemptsPath = process.env.CODEX_ATTEMPTS_PATH;
+const attempt = fs.existsSync(attemptsPath) ? Number(fs.readFileSync(attemptsPath, "utf8")) + 1 : 1;
+fs.writeFileSync(attemptsPath, String(attempt));
+process.stdout.write(JSON.stringify({
+  type: "turn.failed",
+  error: {
+    message: "stream disconnected before completion: The model secret-model-for-test does not exist or you do not have access to it."
+  }
+}) + "\\n");
+process.exit(1);
+`,
+  );
+  chmodSync(codexPath, 0o755);
+  const previous = {
+    PATH: process.env.PATH,
+    CODEX_ATTEMPTS_PATH: process.env.CODEX_ATTEMPTS_PATH,
+    CLAWSWEEPER_CODEX_REVIEW_ATTEMPTS: process.env.CLAWSWEEPER_CODEX_REVIEW_ATTEMPTS,
+    CLAWSWEEPER_CODEX_REVIEW_RETRY_DELAY_MS: process.env.CLAWSWEEPER_CODEX_REVIEW_RETRY_DELAY_MS,
+  };
+  process.env.PATH = `${binDir}${delimiter}${process.env.PATH ?? ""}`;
+  process.env.CODEX_ATTEMPTS_PATH = attemptsPath;
+  process.env.CLAWSWEEPER_CODEX_REVIEW_ATTEMPTS = "3";
+  process.env.CLAWSWEEPER_CODEX_REVIEW_RETRY_DELAY_MS = "1";
+  try {
+    assert.throws(
+      () =>
+        runCodexForTest({
+          item: item({ number: 89041 }),
+          context: { issue: {}, comments: [], timeline: [] },
+          git: { mainSha: "abc123", latestRelease: null },
+          model: "internal",
+          openclawDir,
+          reasoningEffort: "high",
+          sandboxMode: "read-only",
+          serviceTier: "",
+          timeoutMs: 10_000,
+          workDir,
+          prompt: "Return a review decision.",
+        }),
+      (error: unknown) => {
+        const reviewError = error as Error & { stdout?: string };
+        assert.match(reviewError.stdout ?? "", /does not exist or you do not have access/);
+        return true;
+      },
+    );
+    assert.equal(readFileSync(attemptsPath, "utf8"), "1");
   } finally {
     for (const [key, value] of Object.entries(previous)) {
       if (value === undefined) delete process.env[key];
@@ -17778,7 +17968,7 @@ test("sweep workflow runs exact event reviews without a global worker gate", () 
   assert.doesNotMatch(eventReviewBlock, /Waiting for review capacity/);
 });
 
-test("Codex workflows install latest CLI and keep the actual model secret", () => {
+test("Codex workflows install pinned CLI releases and keep the model secret", () => {
   const action = readFileSync(".github/actions/setup-codex/action.yml", "utf8");
   const workflows = [
     ".github/workflows/assist.yml",
@@ -17789,11 +17979,13 @@ test("Codex workflows install latest CLI and keep the actual model secret", () =
     ".github/workflows/sweep.yml",
   ].map((file) => readFileSync(file, "utf8"));
 
-  assert.match(action, /@openai\/codex@latest/);
-  assert.match(action, /@openai\/codex-responses-api-proxy@latest/);
+  assert.match(action, /codex-version:[\s\S]*default: "0\.139\.0"/);
+  assert.match(action, /proxy-version:[\s\S]*default: "0\.139\.0"/);
+  assert.match(action, /@openai\/codex@\$\{\{ inputs\['codex-version'\] \}\}/);
+  assert.match(action, /@openai\/codex-responses-api-proxy@\$\{\{ inputs\['proxy-version'\] \}\}/);
+  assert.doesNotMatch(action, /@latest/);
   assert.match(action, /env -u OPENAI_API_KEY[\s\S]*-u CLAWSWEEPER_INTERNAL_MODEL/);
   assert.equal(action.match(/--ignore-scripts/g)?.length, 2);
-  assert.doesNotMatch(action, /inputs\['version'\]/);
   for (const workflow of workflows) {
     assert.match(workflow, /CLAWSWEEPER_MODEL: internal/);
     assert.match(workflow, /CLAWSWEEPER_INTERNAL_MODEL: \$\{\{ secrets\.CLAWSWEEPER_MODEL \}\}/);
@@ -17806,11 +17998,45 @@ test("Codex workflows install latest CLI and keep the actual model secret", () =
   }
 });
 
+test("background review fanout keeps per-review transient recovery", () => {
+  const workflow = readFileSync(".github/workflows/sweep.yml", "utf8");
+  const reviewStart = workflow.indexOf("\n  review:");
+  const publishStart = workflow.indexOf("\n  publish:", reviewStart);
+  const reviewJob = workflow.slice(reviewStart, publishStart);
+
+  assert.doesNotMatch(workflow, /\n  codex-smoke:/);
+  assert.match(reviewJob, /needs: plan/);
+  assert.doesNotMatch(reviewJob, /smoke-test/);
+  assert.match(workflow, /publish:[\s\S]*needs: \[plan, review\]/);
+});
+
+test("synchronous Codex review surfaces use the shared bounded runner", () => {
+  for (const file of [
+    "src/clawsweeper.ts",
+    "src/commit-sweeper.ts",
+    "src/pr-close-coverage-proof.ts",
+  ]) {
+    const source = readFileSync(file, "utf8");
+    assert.match(source, /runCodexProcess/);
+    assert.doesNotMatch(source, /spawnSync\(\s*"codex"/);
+  }
+  assert.match(
+    readFileSync("src/clawsweeper.ts", "utf8"),
+    /"--output-last-message",\s*outputPath,\s*"--json"/,
+  );
+});
+
 test("failed Codex workers use bounded automatic retry paths", () => {
   const worker = readFileSync("src/repair/run-worker.ts", "utf8");
+  const outputCapture = readFileSync("src/codex-output-capture.ts", "utf8");
   const executor = readFileSync("src/repair/execute-fix-artifact.ts", "utf8");
   const selfHeal = readFileSync("src/repair/self-heal-failed-runs.ts", "utf8");
 
+  assert.match(worker, /appendCodexOutputCapture/);
+  assert.match(worker, /openCodexOutputCapture\(codexTranscriptPath\)/);
+  assert.match(outputCapture, /DEFAULT_CODEX_OUTPUT_FILE_BYTES = 128 \* 1024 \* 1024/);
+  assert.match(outputCapture, /Codex output truncated; final tail follows/);
+  assert.doesNotMatch(worker, /Codex output exceeded|CLAWSWEEPER_CODEX_STDIO_MAX_BUFFER_MB/);
   assert.match(worker, /Codex worker timed out[\s\S]*process\.exit\(1\)/);
   assert.match(
     worker,

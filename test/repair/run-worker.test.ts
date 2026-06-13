@@ -57,7 +57,9 @@ test("run-worker starts Codex in the target checkout when one is available", () 
       "  fix_artifact: null,",
       "};",
       "fs.writeFileSync(outputPath, `${JSON.stringify(result, null, 2)}\\n`);",
+      'process.stdout.write("s".repeat(2 * 1024 * 1024));',
       'process.stdout.write(\'{"type":"fake"}\\n\');',
+      'process.stderr.write("e".repeat(2 * 1024 * 1024));',
     ].join("\n"),
     { mode: 0o755 },
   );
@@ -90,6 +92,7 @@ test("run-worker starts Codex in the target checkout when one is available", () 
         FAKE_CODEX_CWD_FILE: cwdFile,
         FAKE_CODEX_ARGS_FILE: argsFile,
         CLAWSWEEPER_INTERNAL_MODEL: "secret-model-for-test",
+        CLAWSWEEPER_CODEX_STDIO_MAX_BUFFER_MB: "1",
         PATH: `${fakeBin}${path.delimiter}${process.env.PATH ?? ""}`,
       },
       stdio: "pipe",
@@ -100,6 +103,14 @@ test("run-worker starts Codex in the target checkout when one is available", () 
     assert.equal(args[args.indexOf("--cd") + 1], targetCheckout);
     assert.equal(args.includes("--model"), false);
     assert.equal(args.includes("secret-model-for-test"), false);
+    const runDirs = fs.globSync(
+      path.join(repoRoot, ".clawsweeper-repair/runs/run-worker-target-checkout-plan-*"),
+    );
+    assert.equal(runDirs.length, 1);
+    const runDir = runDirs[0];
+    assert.ok(runDir);
+    assert.ok(fs.statSync(path.join(runDir, "codex.jsonl")).size > 2 * 1024 * 1024);
+    assert.equal(fs.statSync(path.join(runDir, "codex.stderr.log")).size, 2 * 1024 * 1024);
   } finally {
     for (const runDir of fs.globSync(
       path.join(repoRoot, ".clawsweeper-repair/runs/run-worker-target-checkout-plan-*"),

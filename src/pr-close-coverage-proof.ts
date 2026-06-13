@@ -1,8 +1,8 @@
-import { spawnSync } from "node:child_process";
 import { codexModelArgs } from "./codex-env.js";
 import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { codexEnv } from "./codex-env.js";
+import { runCodexProcess } from "./codex-process.js";
 import { safeOutputTail, truncateText } from "./clawsweeper-text.js";
 
 export type PrCloseCoverageProofModelDecision = "covered" | "keep_open";
@@ -259,9 +259,8 @@ export function runPrCloseCoverageProofModel(options: {
   if (options.runtime.serviceTier) {
     codexConfig.splice(1, 0, `service_tier="${options.runtime.serviceTier}"`);
   }
-  const result = spawnSync(
-    "codex",
-    [
+  const result = runCodexProcess({
+    args: [
       "exec",
       ...codexModelArgs(options.runtime.model),
       ...codexConfig.flatMap((config) => ["-c", config]),
@@ -275,15 +274,11 @@ export function runPrCloseCoverageProofModel(options: {
       options.runtime.sandboxMode,
       "-",
     ],
-    {
-      cwd: options.runtime.rootDir,
-      encoding: "utf8",
-      env: codexEnv({ ghToken: options.runtime.ghToken }),
-      input: prompt,
-      maxBuffer: 64 * 1024 * 1024,
-      timeout: options.runtime.timeoutMs,
-    },
-  );
+    cwd: options.runtime.rootDir,
+    env: codexEnv({ ghToken: options.runtime.ghToken }),
+    input: prompt,
+    timeoutMs: options.runtime.timeoutMs,
+  });
   if (result.error) {
     throw new Error(
       `Codex PR close coverage proof failed for #${options.source.number}: ${

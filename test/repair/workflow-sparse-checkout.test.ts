@@ -8,6 +8,9 @@ const REPAIR_PROOF_RUNTIME_PATHS = [
   "schema/clawsweeper-pr-close-coverage-proof.schema.json",
   "src/clawsweeper-text.ts",
   "src/codex-env.ts",
+  "src/codex-output-capture.ts",
+  "src/codex-process-worker.ts",
+  "src/codex-process.ts",
   "src/codex-transient.ts",
   "src/pr-close-coverage-proof.ts",
 ] as const;
@@ -28,6 +31,14 @@ test("sparse repair build workflows include PR close proof runtime files", () =>
       assert.ok(entries.has(requiredPath), `${workflowPath} missing ${requiredPath}`);
     }
   }
+});
+
+test("repair build emits the bounded Codex process worker", () => {
+  const config = JSON.parse(fs.readFileSync("tsconfig.repair.json", "utf8")) as {
+    include?: string[];
+  };
+  assert.ok(config.include?.includes("src/codex-output-capture.ts"));
+  assert.ok(config.include?.includes("src/codex-process-worker.ts"));
 });
 
 function sparseCheckoutEntries(workflow: string): Set<string> {

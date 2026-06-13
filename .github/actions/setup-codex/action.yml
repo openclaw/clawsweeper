@@ -1,6 +1,12 @@
 name: Setup Codex CLI
 description: Cache, install, and authenticate the OpenAI Codex CLI.
 inputs:
+  codex-version:
+    description: Exact Codex CLI npm package version.
+    default: "0.139.0"
+  proxy-version:
+    description: Exact Codex Responses proxy npm package version.
+    default: "0.139.0"
   auth-mode:
     description: Authentication mode. Use proxy to keep OPENAI_API_KEY out of Codex subprocesses, or login for legacy codex login.
     default: "proxy"
@@ -23,9 +29,9 @@ runs:
           ~/.npm
           ~/.cache/node/corepack
           ~/.clawsweeper-repair/codex
-        key: ${{ runner.os }}-node24-codex-latest-${{ inputs['cache-suffix'] || 'default' }}-v3
+        key: ${{ runner.os }}-node24-codex-${{ inputs['codex-version'] }}-proxy-${{ inputs['proxy-version'] }}-${{ inputs['cache-suffix'] || 'default' }}-v4
         restore-keys: |
-          ${{ runner.os }}-node24-codex-latest-
+          ${{ runner.os }}-node24-codex-${{ inputs['codex-version'] }}-proxy-${{ inputs['proxy-version'] }}-
           ${{ runner.os }}-node24-codex-
 
     - name: Install Codex CLI
@@ -38,10 +44,10 @@ runs:
         export PATH="$HOME/.clawsweeper-repair/codex/bin:$PATH"
 
         install_env=(env -u OPENAI_API_KEY -u CODEX_API_KEY -u PROXY_API_KEY -u CLAWSWEEPER_INTERNAL_MODEL)
-        "${install_env[@]}" npm install -g "@openai/codex@latest" \
+        "${install_env[@]}" npm install -g "@openai/codex@${{ inputs['codex-version'] }}" \
           --prefer-online --no-audit --no-fund --ignore-scripts
         if [[ "${{ inputs['auth-mode'] }}" == "proxy" ]]; then
-          "${install_env[@]}" npm install -g "@openai/codex-responses-api-proxy@latest" \
+          "${install_env[@]}" npm install -g "@openai/codex-responses-api-proxy@${{ inputs['proxy-version'] }}" \
             --prefer-online --no-audit --no-fund --ignore-scripts
         fi
         codex --version

@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  codexJsonlFailureDetail,
   codexRetryDelayMs,
   isCodexContextLimitError,
+  isRetryableCodexErrorMessage,
   isRetryableCodexTransportError,
+  isTerminalCodexErrorMessage,
 } from "../../dist/codex-transient.js";
 
 test("Codex closed-stdin tool transport errors are retryable", () => {
@@ -28,6 +31,36 @@ test("Codex TPM rate-limit errors are retryable transport failures", () => {
     "stream disconnected before completion: Rate limit reached for gpt-5.5 on tokens per min (TPM): Limit 40000000, Used 40000000, Requested 126092. Please try again in 189ms.";
   assert.equal(isRetryableCodexTransportError(message), true);
   assert.equal(isCodexContextLimitError(message), false);
+});
+
+test("Codex model access failures are terminal even when the stream disconnects", () => {
+  const message =
+    "ERROR: stream disconnected before completion: The model secret-model-for-test does not exist or you do not have access to it.";
+  assert.equal(isRetryableCodexTransportError(message), true);
+  assert.equal(isRetryableCodexErrorMessage(message), false);
+});
+
+test("Codex JSONL model access errors are trusted terminal failures", () => {
+  const message =
+    "stream disconnected before completion: The model secret-model-for-test does not exist or you do not have access to it.";
+  const jsonl = [
+    JSON.stringify({ type: "error", message: "fetch failed" }),
+    JSON.stringify({ type: "turn.failed", error: { message } }),
+  ].join("\n");
+
+  assert.equal(codexJsonlFailureDetail(jsonl), message);
+  assert.equal(isTerminalCodexErrorMessage(message), true);
+  assert.equal(isRetryableCodexErrorMessage(message), false);
+});
+
+test("quoted model access failures do not override the final Codex error", () => {
+  const message = [
+    "user",
+    "ERROR: stream disconnected before completion: The model quoted-model does not exist or you do not have access to it.",
+    "ERROR: stream disconnected before completion: fetch failed",
+  ].join("\n");
+  assert.equal(isRetryableCodexTransportError(message), true);
+  assert.equal(isRetryableCodexErrorMessage(message), true);
 });
 
 test("Codex context-limit errors are blocked automation outcomes", () => {

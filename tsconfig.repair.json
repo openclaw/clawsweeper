@@ -15,5 +15,10 @@
     "forceConsistentCasingInFileNames": true,
     "skipLibCheck": true
   },
-  "include": ["src/repair/**/*.ts", "src/repository-profiles.ts"]
+  "include": [
+    "src/repair/**/*.ts",
+    "src/repository-profiles.ts",
+    "src/codex-output-capture.ts",
+    "src/codex-process-worker.ts"
+  ]
 }

@@ -4,6 +4,12 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
+import {
+  appendCodexOutputCapture,
+  closeCodexOutputCapture,
+  codexOutputTail,
+  openCodexOutputCapture,
+} from "../codex-output-capture.js";
 import { deterministicAutomergeResult } from "./deterministic-automerge-result.js";
 import {
   assertAllowedOwner,
@@ -37,8 +43,6 @@ const resultRepairTimeoutMs = Number(
 );
 const codexReasoningEffort = repairCodexReasoningEffort();
 const codexServiceTier = repairCodexServiceTier();
-const codexStdioMaxBuffer =
-  Math.max(1, Number(process.env.CLAWSWEEPER_CODEX_STDIO_MAX_BUFFER_MB ?? 128)) * 1024 * 1024;
 const codexHeartbeatMs = Math.max(
   10_000,
   Number(process.env.CLAWSWEEPER_CODEX_HEARTBEAT_MS ?? 60_000),
@@ -247,22 +251,16 @@ function spawnCodexWithHeartbeat({
 }: LooseRecord): Promise<LooseRecord> {
   return new Promise((resolve) => {
     const startedAt = Date.now();
-    let stdout = "";
-    let stderr = "";
-    let stdoutBytes = 0;
-    let stderrBytes = 0;
     let settled = false;
     let timeoutError: Error | null = null;
-    let bufferError: Error | null = null;
+    const stdout = openCodexOutputCapture(codexTranscriptPath);
+    const stderr = openCodexOutputCapture(stderrPath);
 
     const child = spawn("codex", commandArgs, {
       cwd,
       env: codexEnv(),
       stdio: ["pipe", "pipe", "pipe"],
     });
-
-    child.stdout.setEncoding("utf8");
-    child.stderr.setEncoding("utf8");
 
     const heartbeat = setInterval(() => {
       const elapsedSeconds = Math.round((Date.now() - startedAt) / 1000);
@@ -284,40 +282,36 @@ function spawnCodexWithHeartbeat({
       settled = true;
       clearInterval(heartbeat);
       clearTimeout(timeout);
-      fs.writeFileSync(codexTranscriptPath, stdout);
-      if (stderr) fs.writeFileSync(stderrPath, stderr);
+      closeCodexOutputCapture(stdout);
+      closeCodexOutputCapture(stderr);
       resolve(result);
     };
 
-    const append = (stream: "stdout" | "stderr", chunk: JsonValue) => {
-      const text = String(chunk ?? "");
-      const bytes = Buffer.byteLength(text);
+    const append = (stream: "stdout" | "stderr", chunk: Buffer) => {
       if (stream === "stdout") {
-        stdout += text;
-        stdoutBytes += bytes;
+        appendCodexOutputCapture(stdout, chunk);
       } else {
-        stderr += text;
-        stderrBytes += bytes;
-      }
-      if (stdoutBytes + stderrBytes > codexStdioMaxBuffer && !bufferError) {
-        bufferError = new Error(`Codex output exceeded ${codexStdioMaxBuffer} bytes`);
-        (bufferError as LooseRecord).code = "ENOBUFS";
-        child.kill("SIGTERM");
+        appendCodexOutputCapture(stderr, chunk);
       }
     };
 
     child.stdout.on("data", (chunk) => append("stdout", chunk));
     child.stderr.on("data", (chunk) => append("stderr", chunk));
     child.on("error", (error) => {
-      finish({ status: null, stdout, stderr, error });
+      finish({
+        status: null,
+        stdout: codexOutputTail(stdout),
+        stderr: codexOutputTail(stderr),
+        error,
+      });
     });
     child.on("close", (status, signal) => {
       finish({
         status,
         signal,
-        stdout,
-        stderr,
-        error: timeoutError ?? bufferError ?? undefined,
+        stdout: codexOutputTail(stdout),
+        stderr: codexOutputTail(stderr),
+        error: timeoutError ?? undefined,
       });
     });
     child.stdin.end(input);
