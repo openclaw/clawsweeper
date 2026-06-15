@@ -33,6 +33,7 @@ interface ExecOptions {
   cwd: string;
   sandbox: "read-only" | "workspace-write" | "danger-full-access";
   networkAccess: boolean;
+  loginMethod?: "api" | "chatgpt";
   model?: string;
   effort?: string;
   serviceTier?: string;
@@ -70,10 +71,20 @@ const stderr = openCodexOutputCapture(options.stderrPath, {
   tailBytes: options.tailBytes,
 });
 process.env.CODEX_BIN = options.command;
-const child = spawnCodex(["app-server", "--listen", "stdio://"], {
-  cwd: execOptions.cwd,
-  env: process.env,
-});
+const child = spawnCodex(
+  [
+    ...(execOptions.loginMethod
+      ? ["-c", `forced_login_method=${JSON.stringify(execOptions.loginMethod)}`]
+      : []),
+    "app-server",
+    "--listen",
+    "stdio://",
+  ],
+  {
+    cwd: execOptions.cwd,
+    env: process.env,
+  },
+);
 const pending = new Map<
   number,
   {
@@ -405,6 +416,7 @@ function parseExecOptions(args: string[], fallbackCwd: string): ExecOptions {
   let cwd = fallbackCwd;
   let sandbox: ExecOptions["sandbox"] = "read-only";
   let networkAccess = false;
+  let loginMethod: ExecOptions["loginMethod"];
   let model: string | undefined;
   let effort: string | undefined;
   let serviceTier: string | undefined;
@@ -422,6 +434,12 @@ function parseExecOptions(args: string[], fallbackCwd: string): ExecOptions {
       const parsed = parseConfig(value);
       if (parsed.key === "model_reasoning_effort") effort = parsed.value;
       if (parsed.key === "service_tier") serviceTier = parsed.value;
+      if (
+        parsed.key === "forced_login_method" &&
+        (parsed.value === "api" || parsed.value === "chatgpt")
+      ) {
+        loginMethod = parsed.value;
+      }
       if (parsed.key === "sandbox_workspace_write.network_access") {
         networkAccess = parsed.value === "true";
       }
@@ -431,6 +449,7 @@ function parseExecOptions(args: string[], fallbackCwd: string): ExecOptions {
     cwd,
     sandbox,
     networkAccess,
+    ...(loginMethod ? { loginMethod } : {}),
     ...(model ? { model } : {}),
     ...(effort ? { effort } : {}),
     ...(serviceTier ? { serviceTier } : {}),

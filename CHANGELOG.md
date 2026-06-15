@@ -9,6 +9,7 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Added
 
+- Added a fail-closed `CLAWSWEEPER_CODEX_LOGIN_METHOD=chatgpt` override for local Codex OAuth runs while retaining API authentication by default. Thanks @anagnorisis2peripeteia.
 - Added repair-only PR intake that scans an author's open pull requests for actionable failures and creates durable PR-repair jobs. Thanks @Jhacarreiro.
 - Added automatic issue-build lifecycle comments and dashboard cards with issue titles, queued/planning/building/completed/blocked history, live worker links, Actions runs, and generated PR drill-down.
 - Show issue and pull request titles alongside target numbers on active dashboard worker cards and worker detail links.

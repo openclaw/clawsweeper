@@ -11,7 +11,7 @@ import {
 import { publishCheckFromReport, splitFrontMatter } from "./commit-checks.js";
 import { argBool, argNumber, argString, parseArgs, type Args } from "./clawsweeper-args.js";
 import { safeOutputTail } from "./clawsweeper-text.js";
-import { codexEnv, codexModelArgs, PUBLIC_CODEX_MODEL } from "./codex-env.js";
+import { codexEnv, codexLoginConfig, codexModelArgs, PUBLIC_CODEX_MODEL } from "./codex-env.js";
 import { codexProcessErrorCode, runCodexProcess } from "./codex-process.js";
 import { runText } from "./command.js";
 import { ghRetryKind, ghRetryWaitMs } from "./github-retry.js";
@@ -297,7 +297,7 @@ function runCodex(options: {
   );
   const codexConfig = [
     `model_reasoning_effort="${options.reasoningEffort}"`,
-    'forced_login_method="api"',
+    codexLoginConfig(),
     'approval_policy="never"',
   ];
   if (options.serviceTier) codexConfig.splice(1, 0, `service_tier="${options.serviceTier}"`);

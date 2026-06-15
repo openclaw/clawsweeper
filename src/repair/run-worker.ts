@@ -23,6 +23,7 @@ import {
   validateJob,
 } from "./lib.js";
 import {
+  codexLoginConfig,
   codexSubprocessEnv,
   codexModelArgs,
   repairCodexReasoningEffort,
@@ -335,6 +336,7 @@ function codexWorkspaceRoot(): string {
 function codexConfigArgs() {
   const configs = [
     'approval_policy="never"',
+    codexLoginConfig(),
     `model_reasoning_effort=${JSON.stringify(codexReasoningEffort)}`,
   ];
   if (codexServiceTier) configs.push(`service_tier=${JSON.stringify(codexServiceTier)}`);

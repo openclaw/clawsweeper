@@ -289,6 +289,7 @@ test("Codex app-server mode persists and resumes a thread", () => {
   const statePath = join(root, "session", "state.json");
   const outputPath = join(root, "last-message.json");
   const requestsPath = join(root, "requests.jsonl");
+  const argsPath = join(root, "args.json");
   mkdirSync(binDir, { recursive: true });
   const scriptPath = join(root, "app-server-codex.cjs");
   writeFileSync(
@@ -297,6 +298,7 @@ test("Codex app-server mode persists and resumes a thread", () => {
 const fs = require("node:fs");
 const readline = require("node:readline");
 const requestsPath = process.env.CODEX_TEST_REQUESTS_PATH;
+fs.writeFileSync(process.env.CODEX_TEST_ARGS_PATH, JSON.stringify(process.argv.slice(2)));
 const rl = readline.createInterface({ input: process.stdin });
 function send(value) { process.stdout.write(JSON.stringify(value) + "\\n"); }
 rl.on("line", (line) => {
@@ -338,6 +340,7 @@ rl.on("line", (line) => {
   const env = {
     ...process.env,
     CODEX_BIN: codexPath,
+    CODEX_TEST_ARGS_PATH: argsPath,
     CODEX_TEST_REQUESTS_PATH: requestsPath,
   };
 
@@ -352,6 +355,8 @@ rl.on("line", (line) => {
           "workspace-write",
           "-c",
           "sandbox_workspace_write.network_access=false",
+          "-c",
+          'forced_login_method="chatgpt"',
           "--output-last-message",
           outputPath,
           "--json",
@@ -370,6 +375,13 @@ rl.on("line", (line) => {
 
     const state = JSON.parse(readFileSync(statePath, "utf8"));
     assert.equal(state.threadId, "thread-1");
+    assert.deepEqual(JSON.parse(readFileSync(argsPath, "utf8")), [
+      "-c",
+      'forced_login_method="chatgpt"',
+      "app-server",
+      "--listen",
+      "stdio://",
+    ]);
     const requests = readFileSync(requestsPath, "utf8")
       .trim()
       .split("\n")

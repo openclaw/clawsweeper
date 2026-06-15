@@ -6,7 +6,22 @@ export type CodexEnvOptions = {
   ghToken?: string | undefined;
 };
 
+export type CodexLoginMethod = "api" | "chatgpt";
+
 export const PUBLIC_CODEX_MODEL = "internal";
+
+export function codexLoginMethod(
+  value = process.env.CLAWSWEEPER_CODEX_LOGIN_METHOD,
+): CodexLoginMethod {
+  const normalized = value?.trim().toLowerCase();
+  if (!normalized) return "api";
+  if (normalized === "api" || normalized === "chatgpt") return normalized;
+  throw new Error(`Invalid CLAWSWEEPER_CODEX_LOGIN_METHOD: ${value}. Expected "api" or "chatgpt".`);
+}
+
+export function codexLoginConfig(value?: string): string {
+  return `forced_login_method="${codexLoginMethod(value)}"`;
+}
 
 export function internalCodexModel(requestedModel: string): string {
   return process.env.CLAWSWEEPER_INTERNAL_MODEL?.trim() || requestedModel;

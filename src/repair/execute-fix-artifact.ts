@@ -52,6 +52,7 @@ import { parsePullRequestUrl, pullRequestNumberFromUrl } from "./github-ref.js";
 import {
   clawsweeperGitUserEmail,
   clawsweeperGitUserName,
+  codexLoginConfig,
   codexSubprocessEnv as codexEnv,
   codexModelArgs,
   repairCodexReasoningEffort,
@@ -2580,6 +2581,7 @@ function codexReviewSandboxConfigArgs() {
 function codexConfigArgs() {
   const configs = [
     'approval_policy="never"',
+    codexLoginConfig(),
     `model_reasoning_effort=${JSON.stringify(codexReasoningEffort)}`,
   ];
   if (codexServiceTier) configs.push(`service_tier=${JSON.stringify(codexServiceTier)}`);

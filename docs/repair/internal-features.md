@@ -617,6 +617,9 @@ Important defaults:
   to keep automerge repair latency predictable.
 - `CLAWSWEEPER_CODEX_SERVICE_TIER`: Codex service tier. Repair workers default
   to `fast`.
+- `CLAWSWEEPER_CODEX_LOGIN_METHOD`: Codex login mode for local runs. Defaults
+  to `api`; set `chatgpt` to preserve an existing Codex OAuth session. Any other
+  non-empty value fails before Codex starts.
 - `CLAWSWEEPER_CODEX_HEARTBEAT_MS`: repair-worker and execute-side Codex
   subprocess heartbeat interval; default `60000`.
 - `CODEX_BIN`: optional Codex executable override. Native Windows runs resolve

@@ -1,6 +1,6 @@
-import { codexModelArgs, internalCodexModel } from "../codex-env.js";
+import { codexLoginConfig, codexModelArgs, internalCodexModel } from "../codex-env.js";
 
-export { codexModelArgs, internalCodexModel };
+export { codexLoginConfig, codexModelArgs, internalCodexModel };
 
 export function ghCliEnv(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
   return withoutColor({ ...process.env, ...overrides });

@@ -26,6 +26,7 @@ import {
 } from "./repository-profiles.js";
 import {
   codexEnv,
+  codexLoginConfig,
   codexModelArgs,
   PUBLIC_CODEX_MODEL,
   redactInternalCodexModel,
@@ -79,7 +80,12 @@ import {
 } from "./clawsweeper-args.js";
 import { escapeRegExp, safeOutputTail, trimMiddle, truncateText } from "./clawsweeper-text.js";
 
-export { codexEnv, redactInternalCodexModel } from "./codex-env.js";
+export {
+  codexEnv,
+  codexLoginConfig,
+  codexLoginMethod,
+  redactInternalCodexModel,
+} from "./codex-env.js";
 export { parseGhJson, parseGhJsonLines } from "./github-json.js";
 export { itemNumbersArg } from "./clawsweeper-args.js";
 export { safeOutputTail } from "./clawsweeper-text.js";
@@ -6772,7 +6778,7 @@ function runCodex(options: {
   const runReviewPass = (reasoningEffort: string, passAttempts: number): Decision => {
     const codexConfig = [
       `model_reasoning_effort="${reasoningEffort}"`,
-      'forced_login_method="api"',
+      codexLoginConfig(),
       'approval_policy="never"',
     ];
     if (options.serviceTier) codexConfig.splice(1, 0, `service_tier="${options.serviceTier}"`);
@@ -7082,7 +7088,7 @@ function runCodexAssist(options: {
   writeFileSync(promptPath, prompt, "utf8");
   const codexConfig = [
     `model_reasoning_effort="${options.reasoningEffort}"`,
-    'forced_login_method="api"',
+    codexLoginConfig(),
     'approval_policy="never"',
   ];
   const result = runCodexProcess({

@@ -1,4 +1,4 @@
-import { codexModelArgs } from "./codex-env.js";
+import { codexLoginConfig, codexModelArgs } from "./codex-env.js";
 import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { codexEnv } from "./codex-env.js";
@@ -253,7 +253,7 @@ export function runPrCloseCoverageProofModel(options: {
   if (existsSync(outputPath)) unlinkSync(outputPath);
   const codexConfig = [
     `model_reasoning_effort="${options.runtime.reasoningEffort}"`,
-    'forced_login_method="api"',
+    codexLoginConfig(),
     'approval_policy="never"',
   ];
   if (options.runtime.serviceTier) {

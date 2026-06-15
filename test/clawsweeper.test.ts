@@ -35,6 +35,8 @@ import {
   configSurfaceChangeFromPullFilesForTest,
   dataModelChangeFromPullFilesForTest,
   codexEnv,
+  codexLoginConfig,
+  codexLoginMethod,
   dashboardClosedAt,
   extractLatestClawSweeperReviewForTest,
   failedReviewRetryEligibilityForTest,
@@ -19158,6 +19160,33 @@ test("review parser strips environment access caveats from risks", () => {
     }),
   );
   assert.deepEqual(parsed.risks, ["A real product uncertainty remains."]);
+});
+
+test("Codex login method defaults to API and accepts explicit local OAuth", () => {
+  assert.equal(codexLoginMethod(""), "api");
+  assert.equal(codexLoginMethod(" API "), "api");
+  assert.equal(codexLoginMethod(" chatgpt "), "chatgpt");
+  assert.equal(codexLoginConfig("chatgpt"), 'forced_login_method="chatgpt"');
+});
+
+test("Codex login method reads the environment without leaking test state", () => {
+  const original = process.env.CLAWSWEEPER_CODEX_LOGIN_METHOD;
+  try {
+    delete process.env.CLAWSWEEPER_CODEX_LOGIN_METHOD;
+    assert.equal(codexLoginMethod(), "api");
+    process.env.CLAWSWEEPER_CODEX_LOGIN_METHOD = "chatgpt";
+    assert.equal(codexLoginMethod(), "chatgpt");
+  } finally {
+    if (original === undefined) delete process.env.CLAWSWEEPER_CODEX_LOGIN_METHOD;
+    else process.env.CLAWSWEEPER_CODEX_LOGIN_METHOD = original;
+  }
+});
+
+test("Codex login method rejects invalid non-empty overrides", () => {
+  assert.throws(
+    () => codexLoginMethod("oauth"),
+    /Invalid CLAWSWEEPER_CODEX_LOGIN_METHOD: oauth\. Expected "api" or "chatgpt"\./,
+  );
 });
 
 test("codex subprocess env strips GitHub and App credentials", () => {
