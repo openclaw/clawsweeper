@@ -16,7 +16,11 @@ import { codexEnv, codexLoginConfig, codexModelArgs, PUBLIC_CODEX_MODEL } from "
 import { codexProcessErrorCode, runCodexProcess } from "./codex-process.js";
 import { runText } from "./command.js";
 import { ghRetryKind, ghRetryWaitMs } from "./github-retry.js";
-import { DEFAULT_TARGET_REPO, repositoryProfileFor } from "./repository-profiles.js";
+import {
+  configuredRepositoryProfileFor,
+  DEFAULT_TARGET_REPO,
+  repositoryProfileFor,
+} from "./repository-profiles.js";
 
 export { isReviewableCommitPath } from "./commit-classifier.js";
 
@@ -442,15 +446,14 @@ function localReviewCommand(args: Args): void {
       .trim();
 
   // Spec: reject unsupported repos — never silently fall back to a foreign profile.
-  let profileSlug: string;
-  try {
-    profileSlug = repositoryProfileFor(targetRepo).slug;
-  } catch {
+  const profile = configuredRepositoryProfileFor(targetRepo);
+  if (!profile) {
     console.error(
-      `[local-review] no review profile for '${targetRepo}'. Add a repository profile (or generic fallback), or pass --target-repo <known-repo>.`,
+      `[local-review] no review profile for '${targetRepo}'. Add a repository profile, or pass --target-repo <known-repo>.`,
     );
     process.exit(1);
   }
+  const profileSlug = profile.slug;
 
   // Range = merge-base(base, HEAD)..HEAD — the whole branch, reviewed as one unit.
   const headSha = run("git", ["rev-parse", "HEAD"], { cwd: targetDir }).trim();

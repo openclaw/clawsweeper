@@ -95,6 +95,22 @@ test("local-review rejects an unsupported repository instead of a foreign-profil
   }
 });
 
+test("local-review rejects repositories covered only by a generic owner fallback", () => {
+  const dir = initRepo();
+  try {
+    const { status, out } = runLocalReview(dir, [
+      "--target-repo",
+      "openclaw/example-tool",
+      "--base",
+      "HEAD",
+    ]);
+    assert.equal(status, 1);
+    assert.match(out, /no review profile/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("local-review reports nothing to review when HEAD has no commits beyond base", () => {
   const dir = initRepo();
   try {
