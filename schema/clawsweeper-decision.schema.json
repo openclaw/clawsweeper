@@ -701,7 +701,7 @@
         },
         "maintainerComment": {
           "type": "string",
-          "description": "When recommended, a single-line PR comment starting with @openclaw-mantis that a maintainer can paste. ClawSweeper validates this mention but does not render it publicly, so review comments do not accidentally start Mantis workflows. Do not use shorter or ambiguous Mantis account mentions. For not_recommended, use an empty string."
+          "description": "When recommended, a single-line PR comment starting with @openclaw-mantis that a maintainer can paste. ClawSweeper validates and renders this mention inside a fenced text block so the public recommendation is directly copyable without starting Mantis workflows. Do not use shorter or ambiguous Mantis account mentions. For not_recommended, use an empty string."
         }
       }
     },

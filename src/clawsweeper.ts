@@ -8615,9 +8615,9 @@ function publicMantisRecommendationBlock(recommendation: MantisRecommendation): 
   if (!commandBody) return "";
   const reason = sentence(recommendation.reason);
   const intro = reason
-    ? `${reason} A maintainer can ask Mantis to capture proof by posting a new PR comment that starts with the OpenClaw Mantis account mention, followed by:`
-    : "A maintainer can ask Mantis to capture proof by posting a new PR comment that starts with the OpenClaw Mantis account mention, followed by:";
-  return [intro, "", "```text", commandBody, "```"].join("\n");
+    ? `${reason} A maintainer can ask Mantis to capture proof by posting this exact PR comment:`
+    : "A maintainer can ask Mantis to capture proof by posting this exact PR comment:";
+  return [intro, "", "```text", `${accountMention} ${commandBody}`, "```"].join("\n");
 }
 
 function closeIntro(reason: CloseReason): string {
