@@ -28,25 +28,49 @@ test("Codex process resolves command overrides and escaped Windows launchers", (
     command: "codex",
     args: ["exec", "-"],
   });
-  assert.deepEqual(
-    codexSpawnInvocation(
-      ["space value", "a&b"],
+  const escaped = codexSpawnInvocation(
+    ["space value", "a&b"],
+    {
+      CODEX_BIN: String.raw`C:\repo\node_modules\.bin\codex.cmd`,
+      systemroot: String.raw`C:\Windows`,
+    },
+    "win32",
+  );
+  assert.match(escaped.command, /C:\\Windows[\\/]System32[\\/]cmd\.exe/);
+  assert.deepEqual(escaped.args.slice(0, 3), ["/d", "/s", "/c"]);
+  assert.match(escaped.args[3] ?? "", /codex\.cmd/);
+  assert.match(escaped.args[3] ?? "", /\^\^\^"space\^\^\^ value\^\^\^"/);
+  assert.match(escaped.args[3] ?? "", /\^\^\^"a\^\^\^&b\^\^\^"/);
+  assert.equal(escaped.windowsVerbatimArguments, true);
+  const root = mkdtempSync(tmpPrefix);
+  const binDir = join(root, "bin");
+  mkdirSync(binDir);
+  writeFileSync(join(binDir, "codex.cmd"), "@echo off\r\n");
+  try {
+    const invocation = codexSpawnInvocation(
+      ["exec"],
       {
-        CODEX_BIN: String.raw`C:\repo\node_modules\.bin\codex.cmd`,
-        ComSpec: String.raw`C:\Windows\System32\cmd.exe`,
+        CODEX_BIN: "codex",
+        Path: binDir,
+        PATHEXT: ".CMD",
+        SystemRoot: String.raw`C:\Windows`,
       },
       "win32",
-    ),
-    {
-      command: String.raw`C:\Windows\System32\cmd.exe`,
-      args: [
-        "/d",
-        "/s",
-        "/c",
-        String.raw`"C:\repo\node_modules\.bin\codex.cmd ^^^"space^^^ value^^^" ^^^"a^^^&b^^^""`,
-      ],
-      windowsVerbatimArguments: true,
-    },
+      root,
+    );
+    assert.match(invocation.command, /C:\\Windows[\\/]System32[\\/]cmd\.exe/);
+    assert.match(invocation.args[3] ?? "", /codex\.cmd/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+  assert.throws(
+    () =>
+      codexSpawnInvocation(
+        ["exec"],
+        { CODEX_BIN: "codex", Path: "", SystemRoot: String.raw`C:\Windows` },
+        "win32",
+      ),
+    /Unable to resolve Windows Codex command/,
   );
 });
 
@@ -206,7 +230,14 @@ test("Codex process preserves timeout errors and kills a child that ignores SIGT
     scriptPath,
     `
 const fs = require("node:fs");
-fs.writeFileSync(process.env.CODEX_TEST_PID_PATH, String(process.pid));
+const { spawn } = require("node:child_process");
+const grandchild = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+  stdio: "ignore",
+});
+fs.writeFileSync(
+  process.env.CODEX_TEST_PID_PATH,
+  JSON.stringify({ child: process.pid, grandchild: grandchild.pid }),
+);
 process.stderr.write("timeout-tail-marker\\n");
 process.on("SIGTERM", () => {});
 setInterval(() => {}, 1000);
@@ -237,11 +268,16 @@ setInterval(() => {}, 1000);
 
     assert.equal(codexProcessErrorCode(result.error), "ETIMEDOUT", JSON.stringify(result));
     assert.match(result.stderr, /timeout-tail-marker/);
-    const pid = Number(readFileSync(pidPath, "utf8"));
-    assert.throws(
-      () => process.kill(pid, 0),
-      (error: unknown) => (error as NodeJS.ErrnoException).code === "ESRCH",
-    );
+    const pids = JSON.parse(readFileSync(pidPath, "utf8")) as {
+      child: number;
+      grandchild: number;
+    };
+    for (const pid of [pids.child, pids.grandchild]) {
+      assert.throws(
+        () => process.kill(pid, 0),
+        (error: unknown) => (error as NodeJS.ErrnoException).code === "ESRCH",
+      );
+    }
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

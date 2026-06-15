@@ -5,7 +5,7 @@ import {
   type ChildProcessWithoutNullStreams,
 } from "node:child_process";
 import { existsSync } from "node:fs";
-import { delimiter, isAbsolute, normalize, resolve } from "node:path";
+import { delimiter, dirname, isAbsolute, join, normalize, resolve } from "node:path";
 
 export interface CodexSpawnInvocation {
   command: string;
@@ -41,7 +41,7 @@ export function codexSpawnInvocation(
     ...args.map((arg) => escapeWindowsArgument(arg, doubleEscapeMetaCharacters)),
   ].join(" ");
   return {
-    command: env.ComSpec?.trim() || env.comspec?.trim() || "cmd.exe",
+    command: windowsSystemExecutable("cmd.exe", env),
     args: ["/d", "/s", "/c", `"${shellCommand}"`],
     windowsVerbatimArguments: true,
   };
@@ -54,18 +54,34 @@ export function terminateCodexProcessTree(
 ): NodeJS.Timeout | undefined {
   if (process.platform === "win32") {
     if (child.pid) {
-      spawnSync("taskkill.exe", ["/pid", String(child.pid), "/t", "/f"], {
-        stdio: "ignore",
-        windowsHide: true,
-      });
+      spawnSync(
+        windowsSystemExecutable("taskkill.exe", process.env),
+        ["/pid", String(child.pid), "/t", "/f"],
+        {
+          stdio: "ignore",
+          windowsHide: true,
+        },
+      );
     }
     return undefined;
   }
 
-  child.kill(signal);
-  const timer = setTimeout(() => child.kill("SIGKILL"), forceAfterMs);
+  signalPosixProcessGroup(child, signal);
+  const timer = setTimeout(() => signalPosixProcessGroup(child, "SIGKILL"), forceAfterMs);
   timer.unref();
   return timer;
+}
+
+export function waitForCodexProcessExit(child: ChildProcess, timeoutMs = 2_000): Promise<void> {
+  if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
+  return new Promise((resolveExit) => {
+    const timeout = setTimeout(resolveExit, timeoutMs);
+    timeout.unref();
+    child.once("close", () => {
+      clearTimeout(timeout);
+      resolveExit();
+    });
+  });
 }
 
 export function spawnCodex(
@@ -80,29 +96,55 @@ export function spawnCodex(
     cwd: options.cwd,
     env: options.env,
     stdio: ["pipe", "pipe", "pipe"],
+    detached: process.platform !== "win32",
     windowsHide: true,
     ...(invocation.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),
   });
 }
 
+function signalPosixProcessGroup(child: ChildProcess, signal: NodeJS.Signals): void {
+  if (!child.pid) return;
+  try {
+    process.kill(-child.pid, signal);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+  }
+}
+
 function resolveWindowsCommand(command: string, env: NodeJS.ProcessEnv, cwd: string): string {
   if (isAbsolute(command) || /[\\/]/.test(command)) {
-    return command;
+    return resolve(cwd, command);
   }
-  const extensions = (env.PATHEXT || ".COM;.EXE;.BAT;.CMD")
+  const extensions = (windowsEnvironmentValue(env, "PATHEXT") || ".COM;.EXE;.BAT;.CMD")
     .split(";")
     .filter(Boolean)
     .map((extension) => extension.toLowerCase());
   const candidates = extensions.includes("")
     ? [command]
     : [command, ...extensions.map((extension) => `${command}${extension}`)];
-  for (const directory of (env.PATH || "").split(delimiter).filter(Boolean)) {
+  for (const directory of (windowsEnvironmentValue(env, "PATH") || "")
+    .split(delimiter)
+    .filter(Boolean)) {
     for (const candidate of candidates) {
       const filePath = resolve(cwd, directory, candidate);
       if (existsSync(filePath)) return filePath;
     }
   }
-  return command;
+  throw new Error(`Unable to resolve Windows Codex command: ${command}`);
+}
+
+function windowsSystemExecutable(name: string, env: NodeJS.ProcessEnv): string {
+  const systemRoot =
+    windowsEnvironmentValue(env, "SystemRoot") || windowsEnvironmentValue(env, "windir");
+  if (systemRoot) return join(systemRoot, "System32", name);
+  const comSpec = windowsEnvironmentValue(env, "ComSpec");
+  if (comSpec && isAbsolute(comSpec)) return join(dirname(comSpec), name);
+  throw new Error(`Unable to resolve Windows system executable: ${name}`);
+}
+
+function windowsEnvironmentValue(env: NodeJS.ProcessEnv, name: string): string | undefined {
+  const entry = Object.entries(env).find(([key]) => key.toLowerCase() === name.toLowerCase());
+  return entry?.[1]?.trim() || undefined;
 }
 
 function escapeWindowsCommand(value: string): string {

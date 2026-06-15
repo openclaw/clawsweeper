@@ -7,7 +7,7 @@ import {
   codexOutputTail,
   openCodexOutputCapture,
 } from "./codex-output-capture.js";
-import { spawnCodex, terminateCodexProcessTree } from "./codex-spawn.js";
+import { spawnCodex, terminateCodexProcessTree, waitForCodexProcessExit } from "./codex-spawn.js";
 
 interface AppServerOptions {
   statePath: string;
@@ -83,6 +83,7 @@ const pending = new Map<
 >();
 let requestId = 0;
 let spawnError: Error | undefined;
+let timeoutError: Error | undefined;
 let threadId = "";
 let sessionId = "";
 let turnId = "";
@@ -94,10 +95,9 @@ let terminal: WebSocket | null = null;
 let terminalInput = "";
 let heartbeat: NodeJS.Timeout | undefined;
 const timeout = setTimeout(() => {
-  const error = new Error(`Codex app-server timed out after ${options.timeoutMs}ms`);
-  (error as NodeJS.ErrnoException).code = "ETIMEDOUT";
-  terminateCodexProcessTree(child);
-  void finish(1, null, error);
+  timeoutError = new Error(`Codex app-server timed out after ${options.timeoutMs}ms`);
+  (timeoutError as NodeJS.ErrnoException).code = "ETIMEDOUT";
+  forceKillTimer = terminateCodexProcessTree(child);
 }, options.timeoutMs);
 
 child.stderr.on("data", (chunk: Buffer) => appendCodexOutputCapture(stderr, chunk));
@@ -107,7 +107,11 @@ child.once("error", (error) => {
 });
 child.once("close", (status, signal) => {
   if (!settled) {
-    void finish(status ?? 1, signal, spawnError ?? new Error("Codex app-server exited early."));
+    void finish(
+      status ?? 1,
+      signal,
+      timeoutError ?? spawnError ?? new Error("Codex app-server exited early."),
+    );
   }
 });
 
@@ -242,6 +246,7 @@ async function handleRpcMessage(message: RpcMessage): Promise<void> {
   terminalWrite(
     `\r\n\r\n[ClawSweeper] Codex turn ${turnStatus || "finished"}. Deterministic repair gates continue in GitHub Actions.\r\n`,
   );
+  clearTimeout(timeout);
   await updateWorkState(
     failed ? "blocked" : "running",
     failed ? "codex_failed" : "validating",
@@ -377,6 +382,7 @@ async function finish(status: number, signal: NodeJS.Signals | null, error?: Err
   if (child.exitCode === null && child.signalCode === null) {
     child.stdin.end();
     forceKillTimer = terminateCodexProcessTree(child);
+    await waitForCodexProcessExit(child);
   }
   terminal?.close(1000, "turn complete");
   closeCodexOutputCapture(stdout);
