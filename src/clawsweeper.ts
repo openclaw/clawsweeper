@@ -9089,8 +9089,10 @@ function derivedPrRating(options: {
 function nextPrRatingLabels(
   labels: readonly string[],
   rating: Pick<PrRating, "overallTier">,
+  reviewFailed = false,
 ): string[] {
   const nextLabels = labels.filter((label) => !PR_RATING_LABEL_NAMES.has(label));
+  if (reviewFailed) return nextLabels;
   nextLabels.push(ratingLabelForTier(rating.overallTier).name);
   return nextLabels;
 }
@@ -10062,9 +10064,13 @@ export function realBehaviorProofMediaLabelsForTest(
   return nextRealBehaviorProofMediaLabels(labels, { evidenceKind: proofEvidenceKind });
 }
 
-export function prRatingLabelsForTest(labels: readonly string[], tier: string): string[] {
+export function prRatingLabelsForTest(
+  labels: readonly string[],
+  tier: string,
+  reviewFailed = false,
+): string[] {
   const overallTier = PR_RATING_TIERS.has(tier as PrRatingTier) ? (tier as PrRatingTier) : "NA";
-  return nextPrRatingLabels(labels, { overallTier });
+  return nextPrRatingLabels(labels, { overallTier }, reviewFailed);
 }
 
 export function prRatingLabelSchemeForTest(): {
@@ -10734,9 +10740,10 @@ function syncPrRatingLabel(options: {
   number: number;
   labels: readonly string[];
   rating: Pick<PrRating, "overallTier">;
+  reviewFailed?: boolean;
   dryRun: boolean;
 }): { labels: string[]; changed: boolean } {
-  const nextLabels = nextPrRatingLabels(options.labels, options.rating);
+  const nextLabels = nextPrRatingLabels(options.labels, options.rating, options.reviewFailed);
   const currentLabelKeys = new Set(options.labels.map((label) => label.toLowerCase()));
   const nextLabelKeys = new Set(nextLabels.map((label) => label.toLowerCase()));
   const labelsToRemove = options.labels.filter(
@@ -12847,9 +12854,7 @@ function desiredClawSweeperLabelsFromPublicReport(
     labels = nextMergeRiskLabels(labels, mergeRiskLabelsFromReport(markdown));
     labels = nextRealBehaviorProofSufficientLabels(labels, realBehaviorProof);
     labels = nextRealBehaviorProofMediaLabels(labels, realBehaviorProof);
-    labels = reviewFailed
-      ? labels.filter((label) => !PR_RATING_LABEL_NAMES.has(label))
-      : nextPrRatingLabels(labels, reportPrRating(markdown));
+    labels = nextPrRatingLabels(labels, reportPrRating(markdown), reviewFailed);
     labels = nextFeatureShowcaseLabels(labels, {
       isPullRequest,
       itemCategory: frontMatterValue(markdown, "item_category"),
@@ -16199,6 +16204,7 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
         number,
         labels: item.labels,
         rating: reportPrRating(markdown),
+        reviewFailed: frontMatterValue(markdown, "review_status") === "failed",
         dryRun,
       });
       item.labels = prRatingSyncResult.labels;

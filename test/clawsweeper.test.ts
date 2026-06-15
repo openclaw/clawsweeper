@@ -17053,6 +17053,9 @@ test("ClawSweeper PR rating labels use one themed overall label", () => {
     "bug",
     "rating: 🌊 off-meta tidepool",
   ]);
+  assert.deepEqual(prRatingLabelsForTest(["bug", "rating: 🌊 off-meta tidepool"], "NA", true), [
+    "bug",
+  ]);
 });
 
 test("ClawSweeper PR rating label scheme exposes boring internal tiers", () => {
