@@ -19,6 +19,8 @@ interface AppServerOptions {
 
 interface WorkerOptions {
   args: string[];
+  command: string;
+  shell: boolean;
   resultPath: string;
   stdoutPath: string;
   stderrPath: string;
@@ -67,9 +69,10 @@ const stderr = openCodexOutputCapture(options.stderrPath, {
   maxFileBytes: options.maxOutputFileBytes,
   tailBytes: options.tailBytes,
 });
-const child = spawn("codex", ["app-server", "--listen", "stdio://"], {
+const child = spawn(options.command, ["app-server", "--listen", "stdio://"], {
   cwd: execOptions.cwd,
   env: process.env,
+  shell: options.shell,
   stdio: ["pipe", "pipe", "pipe"],
 });
 const pending = new Map<

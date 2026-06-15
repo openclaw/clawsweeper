@@ -9,6 +9,8 @@ import {
 
 interface WorkerOptions {
   args: string[];
+  command: string;
+  shell: boolean;
   resultPath: string;
   stdoutPath: string;
   stderrPath: string;
@@ -25,9 +27,10 @@ const stderr = openCodexOutputCapture(options.stderrPath, {
   maxFileBytes: options.maxOutputFileBytes,
   tailBytes: options.tailBytes,
 });
-const child = spawn("codex", options.args, {
+const child = spawn(options.command, options.args, {
   cwd: process.cwd(),
   env: process.env,
+  shell: options.shell,
   stdio: ["pipe", "pipe", "pipe"],
 });
 let spawnError: Error | undefined;

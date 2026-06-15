@@ -10,7 +10,12 @@ import {
   codexOutputTail,
   openCodexOutputCapture,
 } from "../codex-output-capture.js";
-import { codexAppServerProcessOptionsFromEnv, runCodexProcess } from "../codex-process.js";
+import {
+  codexAppServerProcessOptionsFromEnv,
+  codexProcessCommand,
+  codexProcessUsesShell,
+  runCodexProcess,
+} from "../codex-process.js";
 import { deterministicAutomergeResult } from "./deterministic-automerge-result.js";
 import {
   assertAllowedOwner,
@@ -272,9 +277,11 @@ function spawnCodexWithHeartbeat({
     const stdout = openCodexOutputCapture(codexTranscriptPath);
     const stderr = openCodexOutputCapture(stderrPath);
 
-    const child = spawn("codex", commandArgs, {
+    const childEnv = codexEnv();
+    const child = spawn(codexProcessCommand(childEnv), commandArgs, {
       cwd,
-      env: codexEnv(),
+      env: childEnv,
+      shell: codexProcessUsesShell(),
       stdio: ["pipe", "pipe", "pipe"],
     });
 

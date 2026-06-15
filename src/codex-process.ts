@@ -42,6 +42,14 @@ export interface CodexAppServerProcessOptions {
   agentToken?: string;
 }
 
+export function codexProcessCommand(env: NodeJS.ProcessEnv = process.env): string {
+  return env.CODEX_BIN?.trim() || "codex";
+}
+
+export function codexProcessUsesShell(platform: NodeJS.Platform = process.platform): boolean {
+  return platform === "win32";
+}
+
 export function codexAppServerProcessOptionsFromEnv(
   label: string,
   env: NodeJS.ProcessEnv = process.env,
@@ -87,6 +95,8 @@ export function runCodexProcess(options: {
       optionsPath,
       JSON.stringify({
         args: [...options.args],
+        command: codexProcessCommand(options.env),
+        shell: codexProcessUsesShell(),
         resultPath,
         stdoutPath,
         stderrPath,

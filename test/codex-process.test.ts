@@ -1,12 +1,80 @@
 import assert from "node:assert/strict";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import test from "node:test";
 
-import { codexProcessErrorCode, runCodexProcess } from "../dist/codex-process.js";
+import {
+  codexProcessCommand,
+  codexProcessErrorCode,
+  codexProcessUsesShell,
+  runCodexProcess,
+} from "../dist/codex-process.js";
 
 const tmpPrefix = join(tmpdir(), "clawsweeper-codex-process-test-");
+
+test("Codex process resolves command overrides and Windows shell policy", () => {
+  assert.equal(codexProcessCommand({}), "codex");
+  assert.equal(codexProcessCommand({ CODEX_BIN: "  custom-codex  " }), "custom-codex");
+  assert.equal(codexProcessUsesShell("darwin"), false);
+  assert.equal(codexProcessUsesShell("linux"), false);
+  assert.equal(codexProcessUsesShell("win32"), true);
+});
+
+test("Codex process uses CODEX_BIN and preserves stdin delivery", () => {
+  const root = mkdtempSync(tmpPrefix);
+  const binDir = join(root, "custom codex bin");
+  const markerPath = join(root, "stdin.txt");
+  const scriptPath = join(binDir, "fake-codex.js");
+  mkdirSync(binDir, { recursive: true });
+  writeFileSync(
+    scriptPath,
+    `const fs = require("node:fs");
+const input = fs.readFileSync(0, "utf8");
+fs.writeFileSync(process.env.CODEX_TEST_STDIN_PATH, input);
+process.stdout.write("custom-codex-ok");
+`,
+  );
+  const codexPath =
+    process.platform === "win32" ? join(binDir, "custom-codex.cmd") : join(binDir, "custom-codex");
+  if (process.platform === "win32") {
+    writeFileSync(codexPath, `@echo off\r\nnode "%~dp0\\fake-codex.js" %*\r\n`);
+  } else {
+    writeFileSync(codexPath, `#!/usr/bin/env node\n${readFileSync(scriptPath, "utf8")}`, {
+      mode: 0o755,
+    });
+  }
+
+  try {
+    const result = runCodexProcess({
+      args: ["exec", "-"],
+      cwd: root,
+      env: {
+        ...process.env,
+        CODEX_BIN: codexPath,
+        CODEX_TEST_STDIN_PATH: markerPath,
+      },
+      input: "prompt over stdin",
+      timeoutMs: 10_000,
+    });
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.error, undefined);
+    assert.match(result.stdout, /custom-codex-ok/);
+    assert.equal(existsSync(markerPath), true);
+    assert.equal(readFileSync(markerPath, "utf8"), "prompt over stdin");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 test("Codex process captures bounded rolling tails without terminating large output", () => {
   const root = mkdtempSync(tmpPrefix);

@@ -619,6 +619,9 @@ Important defaults:
   to `fast`.
 - `CLAWSWEEPER_CODEX_HEARTBEAT_MS`: repair-worker and execute-side Codex
   subprocess heartbeat interval; default `60000`.
+- `CODEX_BIN`: optional Codex executable override. Native Windows runs use the
+  command shell so npm-installed `codex.cmd` launchers work; Unix runs keep
+  direct process spawning.
 - `CLAWSWEEPER_MAX_LIVE_WORKERS`: dispatch capacity guard. Existing repair
   lanes derive their checked-in default from `workers.max`; imported gitcrawl
   cluster jobs use `lanes.repair.cluster_max_live_runs`.
