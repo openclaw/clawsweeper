@@ -268,8 +268,8 @@ pnpm local-review -- --base main
 
 It is offline by contract and never contacts GitHub: it requires a clean checkout,
 uses a unique per-run output directory, withholds all GitHub token env vars, skips
-the `gh`-api commit-metadata hydration, and points `GH_CONFIG_DIR` at an empty
-directory so the spawned reviewer cannot fall back to cached `gh` auth. Repositories
+the `gh`-api commit-metadata hydration, points `GH_CONFIG_DIR` at an empty directory,
+disables Codex web search, and explicitly forbids network lookups. Repositories
 without a configured profile are rejected (no foreign-profile fallback). Unlike the
 hosted lane it never writes to GitHub — the local Markdown report is the only output.
 

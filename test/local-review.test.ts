@@ -6,7 +6,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { commitMetadata, LOCAL_REVIEW_SCRUBBED_TOKEN_ENV } from "../dist/commit-sweeper.js";
+import {
+  commitMetadata,
+  localReviewAdditionalPrompt,
+  LOCAL_REVIEW_SCRUBBED_TOKEN_ENV,
+  LOCAL_REVIEW_WEB_SEARCH_CONFIG,
+} from "../dist/commit-sweeper.js";
 
 const GIT = process.env.GIT_BIN ?? "git";
 const CLI = fileURLToPath(new URL("../dist/commit-sweeper.js", import.meta.url));
@@ -120,4 +125,13 @@ test("local-review scrubs both GitHub and GitHub Enterprise token aliases", () =
       `${v} must be in the offline scrub list`,
     );
   }
+});
+
+test("local-review disables web search and forbids network lookups in its prompt", () => {
+  assert.equal(LOCAL_REVIEW_WEB_SEARCH_CONFIG, 'web_search="disabled"');
+  const prompt = localReviewAdditionalPrompt("a".repeat(40), "b".repeat(40), "main");
+  assert.match(prompt, /do not run gh/i);
+  assert.match(prompt, /do not .*web search/i);
+  assert.match(prompt, /do not .*network request/i);
+  assert.match(prompt, /only the local checkout and git history/i);
 });

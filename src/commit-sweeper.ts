@@ -287,6 +287,7 @@ function runCodex(options: {
   timeoutMs: number;
   workDir: string;
   additionalPrompt: string;
+  extraCodexConfig?: readonly string[];
 }): string {
   ensureDir(options.workDir);
   const promptPath = join(options.workDir, `${options.sha}.prompt.md`);
@@ -307,6 +308,7 @@ function runCodex(options: {
     `model_reasoning_effort="${options.reasoningEffort}"`,
     codexLoginConfig(),
     'approval_policy="never"',
+    ...(options.extraCodexConfig ?? []),
   ];
   if (options.serviceTier) codexConfig.splice(1, 0, `service_tier="${options.serviceTier}"`);
   const result = runCodexProcess({
@@ -399,6 +401,15 @@ export const LOCAL_REVIEW_SCRUBBED_TOKEN_ENV: readonly string[] = [
   "COMMIT_SWEEPER_TARGET_GH_TOKEN",
   "CLAWSWEEPER_PROOF_INSPECTION_TOKEN",
 ];
+export const LOCAL_REVIEW_WEB_SEARCH_CONFIG = 'web_search="disabled"';
+
+export function localReviewAdditionalPrompt(
+  baseSha: string,
+  headSha: string,
+  baseBranch: string,
+): string {
+  return `This is a LOCAL pre-PR review of the COMMITTED range ${baseSha.slice(0, 8)}..${headSha.slice(0, 8)} (your branch vs ${baseBranch}) on a clean checkout — no staged or untracked changes. Review code correctness, bugs, and security; ignore PR metadata. This review is offline: do not run gh, use web search, access URLs, or make any network request. Use only the local checkout and git history.`;
+}
 
 // Local, offline pre-PR review of a whole branch: reviews the committed range
 // merge-base(base, HEAD)..HEAD as a single unit, reusing the Commit Sweeper engine.
@@ -463,7 +474,7 @@ function localReviewCommand(args: Args): void {
   ensureDir(ghEmptyConfig);
   process.env.GH_CONFIG_DIR = ghEmptyConfig;
 
-  const additionalPrompt = `This is a LOCAL pre-PR review of the COMMITTED range ${baseSha.slice(0, 8)}..${headSha.slice(0, 8)} (your branch vs ${baseBranch}) on a clean checkout — no staged or untracked changes. Review code correctness, bugs, and security; ignore PR metadata.`;
+  const additionalPrompt = localReviewAdditionalPrompt(baseSha, headSha, baseBranch);
 
   console.error(
     `[local-review] repo=${targetRepo} profile=${profileSlug} base=${baseBranch} range=${baseSha.slice(0, 8)}..${headSha.slice(0, 8)}`,
@@ -483,6 +494,7 @@ function localReviewCommand(args: Args): void {
       timeoutMs: argNumber(args, "codex_timeout_ms", 1_800_000),
       workDir: runDir,
       additionalPrompt,
+      extraCodexConfig: [LOCAL_REVIEW_WEB_SEARCH_CONFIG],
     }),
     metadata,
   );
