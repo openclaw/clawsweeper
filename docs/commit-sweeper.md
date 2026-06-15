@@ -260,7 +260,8 @@ For a manual, offline pre-PR self-review, the `local-review` subcommand reuses t
 same Commit Sweeper engine against the current branch's committed range:
 
 ```text
-clawsweeper local-review --base main
+pnpm run build
+pnpm local-review -- --base main
 # reviews merge-base(<base>, HEAD)..HEAD as one unit
 # writes ~/.clawsweeper-local-reviews/run-<sha>-<ts>-<pid>/local-review.md
 ```
