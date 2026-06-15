@@ -387,6 +387,19 @@ function reviewCommand(args: Args): void {
   console.log(outputPath);
 }
 
+// GitHub credential env vars scrubbed before the offline local-review engine runs.
+// Covers both gh enterprise aliases (GH_ENTERPRISE_TOKEN and GITHUB_ENTERPRISE_TOKEN),
+// since gh honors either; this is belt-and-suspenders with the empty GH_CONFIG_DIR set
+// per run.
+export const LOCAL_REVIEW_SCRUBBED_TOKEN_ENV: readonly string[] = [
+  "GH_TOKEN",
+  "GITHUB_TOKEN",
+  "GH_ENTERPRISE_TOKEN",
+  "GITHUB_ENTERPRISE_TOKEN",
+  "COMMIT_SWEEPER_TARGET_GH_TOKEN",
+  "CLAWSWEEPER_PROOF_INSPECTION_TOKEN",
+];
+
 // Local, offline pre-PR review of a whole branch: reviews the committed range
 // merge-base(base, HEAD)..HEAD as a single unit, reusing the Commit Sweeper engine.
 // Conforms to the #253 replacement spec: clean checkout, unique run dir, no GitHub
@@ -399,13 +412,7 @@ function localReviewCommand(args: Args): void {
   );
 
   // Spec: genuinely offline — withhold every GitHub credential from the review engine.
-  for (const tokenVar of [
-    "GH_TOKEN",
-    "GITHUB_TOKEN",
-    "GH_ENTERPRISE_TOKEN",
-    "COMMIT_SWEEPER_TARGET_GH_TOKEN",
-    "CLAWSWEEPER_PROOF_INSPECTION_TOKEN",
-  ]) {
+  for (const tokenVar of LOCAL_REVIEW_SCRUBBED_TOKEN_ENV) {
     delete process.env[tokenVar];
   }
 

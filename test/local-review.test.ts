@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { commitMetadata } from "../dist/commit-sweeper.js";
+import { commitMetadata, LOCAL_REVIEW_SCRUBBED_TOKEN_ENV } from "../dist/commit-sweeper.js";
 
 const GIT = process.env.GIT_BIN ?? "git";
 const CLI = fileURLToPath(new URL("../dist/commit-sweeper.js", import.meta.url));
@@ -103,5 +103,21 @@ test("local-review reports nothing to review when HEAD has no commits beyond bas
     assert.match(out, /no commits on HEAD beyond/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("local-review scrubs both GitHub and GitHub Enterprise token aliases", () => {
+  for (const v of [
+    "GH_TOKEN",
+    "GITHUB_TOKEN",
+    "GH_ENTERPRISE_TOKEN",
+    "GITHUB_ENTERPRISE_TOKEN",
+    "COMMIT_SWEEPER_TARGET_GH_TOKEN",
+    "CLAWSWEEPER_PROOF_INSPECTION_TOKEN",
+  ]) {
+    assert.ok(
+      LOCAL_REVIEW_SCRUBBED_TOKEN_ENV.includes(v),
+      `${v} must be in the offline scrub list`,
+    );
   }
 });
