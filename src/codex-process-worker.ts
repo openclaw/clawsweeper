@@ -1,4 +1,3 @@
-import { spawn } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import {
   appendCodexOutputCapture,
@@ -6,11 +5,12 @@ import {
   codexOutputTail,
   openCodexOutputCapture,
 } from "./codex-output-capture.js";
+import { spawnCodex, terminateCodexProcessTree } from "./codex-spawn.js";
 
 interface WorkerOptions {
   args: string[];
   command: string;
-  shell: boolean;
+  timeoutMs: number;
   resultPath: string;
   stdoutPath: string;
   stderrPath: string;
@@ -27,15 +27,17 @@ const stderr = openCodexOutputCapture(options.stderrPath, {
   maxFileBytes: options.maxOutputFileBytes,
   tailBytes: options.tailBytes,
 });
-const child = spawn(options.command, options.args, {
-  cwd: process.cwd(),
-  env: process.env,
-  shell: options.shell,
-  stdio: ["pipe", "pipe", "pipe"],
-});
+process.env.CODEX_BIN = options.command;
+const child = spawnCodex(options.args, { cwd: process.cwd(), env: process.env });
 let spawnError: Error | undefined;
+let timeoutError: Error | undefined;
 let terminating = false;
 let forceKillTimer: NodeJS.Timeout | undefined;
+const timeout = setTimeout(() => {
+  timeoutError = new Error(`Codex process timed out after ${options.timeoutMs}ms`);
+  (timeoutError as NodeJS.ErrnoException).code = "ETIMEDOUT";
+  forceKillTimer = terminateCodexProcessTree(child);
+}, options.timeoutMs);
 
 child.stdout.on("data", (chunk: Buffer) => {
   appendCodexOutputCapture(stdout, chunk);
@@ -51,6 +53,7 @@ child.once("error", (error) => {
 });
 child.once("close", (status, signal) => {
   if (forceKillTimer) clearTimeout(forceKillTimer);
+  clearTimeout(timeout);
   closeCodexOutputCapture(stdout);
   closeCodexOutputCapture(stderr);
   writeFileSync(
@@ -58,7 +61,9 @@ child.once("close", (status, signal) => {
     JSON.stringify({
       status,
       signal,
-      ...(spawnError ? { error: serializedError(spawnError) } : {}),
+      ...(timeoutError || spawnError
+        ? { error: serializedError(timeoutError ?? spawnError!) }
+        : {}),
       stdout: codexOutputTail(stdout),
       stderr: codexOutputTail(stderr),
     }),
@@ -73,8 +78,7 @@ for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
     terminating = true;
     process.stdin.unpipe(child.stdin);
     child.stdin.end();
-    child.kill(signal);
-    forceKillTimer = setTimeout(() => child.kill("SIGKILL"), 1000);
+    forceKillTimer = terminateCodexProcessTree(child, signal);
   });
 }
 

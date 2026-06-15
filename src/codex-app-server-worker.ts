@@ -1,4 +1,3 @@
-import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { createInterface } from "node:readline";
@@ -8,6 +7,7 @@ import {
   codexOutputTail,
   openCodexOutputCapture,
 } from "./codex-output-capture.js";
+import { spawnCodex, terminateCodexProcessTree } from "./codex-spawn.js";
 
 interface AppServerOptions {
   statePath: string;
@@ -20,7 +20,7 @@ interface AppServerOptions {
 interface WorkerOptions {
   args: string[];
   command: string;
-  shell: boolean;
+  timeoutMs: number;
   resultPath: string;
   stdoutPath: string;
   stderrPath: string;
@@ -69,11 +69,10 @@ const stderr = openCodexOutputCapture(options.stderrPath, {
   maxFileBytes: options.maxOutputFileBytes,
   tailBytes: options.tailBytes,
 });
-const child = spawn(options.command, ["app-server", "--listen", "stdio://"], {
+process.env.CODEX_BIN = options.command;
+const child = spawnCodex(["app-server", "--listen", "stdio://"], {
   cwd: execOptions.cwd,
   env: process.env,
-  shell: options.shell,
-  stdio: ["pipe", "pipe", "pipe"],
 });
 const pending = new Map<
   number,
@@ -94,6 +93,12 @@ let forceKillTimer: NodeJS.Timeout | undefined;
 let terminal: WebSocket | null = null;
 let terminalInput = "";
 let heartbeat: NodeJS.Timeout | undefined;
+const timeout = setTimeout(() => {
+  const error = new Error(`Codex app-server timed out after ${options.timeoutMs}ms`);
+  (error as NodeJS.ErrnoException).code = "ETIMEDOUT";
+  terminateCodexProcessTree(child);
+  void finish(1, null, error);
+}, options.timeoutMs);
 
 child.stderr.on("data", (chunk: Buffer) => appendCodexOutputCapture(stderr, chunk));
 child.once("error", (error) => {
@@ -116,8 +121,7 @@ lines.on("line", (line) => {
 for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
   process.once(signal, () => {
     if (settled) return;
-    child.kill(signal);
-    forceKillTimer = setTimeout(() => child.kill("SIGKILL"), 1_000);
+    forceKillTimer = terminateCodexProcessTree(child, signal);
   });
 }
 
@@ -364,6 +368,7 @@ function terminalWrite(value: string): void {
 async function finish(status: number, signal: NodeJS.Signals | null, error?: Error): Promise<void> {
   if (settled) return;
   settled = true;
+  clearTimeout(timeout);
   if (heartbeat) clearInterval(heartbeat);
   if (forceKillTimer) clearTimeout(forceKillTimer);
   for (const waiter of pending.values())
@@ -371,7 +376,7 @@ async function finish(status: number, signal: NodeJS.Signals | null, error?: Err
   pending.clear();
   if (child.exitCode === null && child.signalCode === null) {
     child.stdin.end();
-    child.kill("SIGTERM");
+    forceKillTimer = terminateCodexProcessTree(child);
   }
   terminal?.close(1000, "turn complete");
   closeCodexOutputCapture(stdout);

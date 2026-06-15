@@ -15,38 +15,61 @@ import test from "node:test";
 import {
   codexProcessCommand,
   codexProcessErrorCode,
-  codexProcessUsesShell,
+  codexSpawnInvocation,
   runCodexProcess,
 } from "../dist/codex-process.js";
 
 const tmpPrefix = join(tmpdir(), "clawsweeper-codex-process-test-");
 
-test("Codex process resolves command overrides and Windows shell policy", () => {
+test("Codex process resolves command overrides and escaped Windows launchers", () => {
   assert.equal(codexProcessCommand({}), "codex");
   assert.equal(codexProcessCommand({ CODEX_BIN: "  custom-codex  " }), "custom-codex");
-  assert.equal(codexProcessUsesShell("darwin"), false);
-  assert.equal(codexProcessUsesShell("linux"), false);
-  assert.equal(codexProcessUsesShell("win32"), true);
+  assert.deepEqual(codexSpawnInvocation(["exec", "-"], { CODEX_BIN: "codex" }, "linux"), {
+    command: "codex",
+    args: ["exec", "-"],
+  });
+  assert.deepEqual(
+    codexSpawnInvocation(
+      ["space value", "a&b"],
+      {
+        CODEX_BIN: String.raw`C:\repo\node_modules\.bin\codex.cmd`,
+        ComSpec: String.raw`C:\Windows\System32\cmd.exe`,
+      },
+      "win32",
+    ),
+    {
+      command: String.raw`C:\Windows\System32\cmd.exe`,
+      args: [
+        "/d",
+        "/s",
+        "/c",
+        String.raw`"C:\repo\node_modules\.bin\codex.cmd ^^^"space^^^ value^^^" ^^^"a^^^&b^^^""`,
+      ],
+      windowsVerbatimArguments: true,
+    },
+  );
 });
 
-test("Codex process uses CODEX_BIN and preserves stdin delivery", () => {
+test("Codex process uses CODEX_BIN and preserves argv and stdin delivery", () => {
   const root = mkdtempSync(tmpPrefix);
-  const binDir = join(root, "custom codex bin");
+  const binDir = join(root, "custom codex bin", "node_modules", ".bin");
   const markerPath = join(root, "stdin.txt");
-  const scriptPath = join(binDir, "fake-codex.js");
+  const argvPath = join(root, "argv.json");
+  const scriptPath = join(root, "fake-codex.js");
   mkdirSync(binDir, { recursive: true });
   writeFileSync(
     scriptPath,
     `const fs = require("node:fs");
 const input = fs.readFileSync(0, "utf8");
 fs.writeFileSync(process.env.CODEX_TEST_STDIN_PATH, input);
+fs.writeFileSync(process.env.CODEX_TEST_ARGV_PATH, JSON.stringify(process.argv.slice(2)));
 process.stdout.write("custom-codex-ok");
 `,
   );
   const codexPath =
     process.platform === "win32" ? join(binDir, "custom-codex.cmd") : join(binDir, "custom-codex");
   if (process.platform === "win32") {
-    writeFileSync(codexPath, `@echo off\r\nnode "%~dp0\\fake-codex.js" %*\r\n`);
+    writeFileSync(codexPath, `@echo off\r\nnode "%~dp0\\..\\..\\..\\fake-codex.js" %*\r\n`);
   } else {
     writeFileSync(codexPath, `#!/usr/bin/env node\n${readFileSync(scriptPath, "utf8")}`, {
       mode: 0o755,
@@ -55,11 +78,12 @@ process.stdout.write("custom-codex-ok");
 
   try {
     const result = runCodexProcess({
-      args: ["exec", "-"],
+      args: ["exec", "--cd", join(root, "directory with spaces"), "a&b", "-"],
       cwd: root,
       env: {
         ...process.env,
         CODEX_BIN: codexPath,
+        CODEX_TEST_ARGV_PATH: argvPath,
         CODEX_TEST_STDIN_PATH: markerPath,
       },
       input: "prompt over stdin",
@@ -71,6 +95,13 @@ process.stdout.write("custom-codex-ok");
     assert.match(result.stdout, /custom-codex-ok/);
     assert.equal(existsSync(markerPath), true);
     assert.equal(readFileSync(markerPath, "utf8"), "prompt over stdin");
+    assert.deepEqual(JSON.parse(readFileSync(argvPath, "utf8")), [
+      "exec",
+      "--cd",
+      join(root, "directory with spaces"),
+      "a&b",
+      "-",
+    ]);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -167,13 +198,13 @@ process.stderr.write("e".repeat(2 * 1024 * 1024) + "stderr-tail-marker");
 
 test("Codex process preserves timeout errors and kills a child that ignores SIGTERM", () => {
   const root = mkdtempSync(tmpPrefix);
-  const binDir = join(root, "bin");
+  const binDir = join(root, "node_modules", ".bin");
   const pidPath = join(root, "codex.pid");
   mkdirSync(binDir, { recursive: true });
-  const codexPath = join(binDir, "codex");
+  const scriptPath = join(root, "timeout-codex.cjs");
   writeFileSync(
-    codexPath,
-    `#!/usr/bin/env node
+    scriptPath,
+    `
 const fs = require("node:fs");
 fs.writeFileSync(process.env.CODEX_TEST_PID_PATH, String(process.pid));
 process.stderr.write("timeout-tail-marker\\n");
@@ -181,7 +212,15 @@ process.on("SIGTERM", () => {});
 setInterval(() => {}, 1000);
 `,
   );
-  chmodSync(codexPath, 0o755);
+  const codexPath =
+    process.platform === "win32" ? join(binDir, "codex.cmd") : join(binDir, "codex");
+  if (process.platform === "win32") {
+    writeFileSync(codexPath, `@echo off\r\nnode "%~dp0\\..\\..\\timeout-codex.cjs" %*\r\n`);
+  } else {
+    writeFileSync(codexPath, `#!/usr/bin/env node\n${readFileSync(scriptPath, "utf8")}`, {
+      mode: 0o755,
+    });
+  }
 
   try {
     const result = runCodexProcess({
@@ -189,14 +228,14 @@ setInterval(() => {}, 1000);
       cwd: root,
       env: {
         ...process.env,
+        CODEX_BIN: codexPath,
         CODEX_TEST_PID_PATH: pidPath,
-        PATH: `${binDir}${delimiter}${process.env.PATH ?? ""}`,
       },
       input: "",
       timeoutMs: 1000,
     });
 
-    assert.equal(codexProcessErrorCode(result.error), "ETIMEDOUT");
+    assert.equal(codexProcessErrorCode(result.error), "ETIMEDOUT", JSON.stringify(result));
     assert.match(result.stderr, /timeout-tail-marker/);
     const pid = Number(readFileSync(pidPath, "utf8"));
     assert.throws(
@@ -210,15 +249,15 @@ setInterval(() => {}, 1000);
 
 test("Codex app-server mode persists and resumes a thread", () => {
   const root = mkdtempSync(tmpPrefix);
-  const binDir = join(root, "bin");
+  const binDir = join(root, "node_modules", ".bin");
   const statePath = join(root, "session", "state.json");
   const outputPath = join(root, "last-message.json");
   const requestsPath = join(root, "requests.jsonl");
   mkdirSync(binDir, { recursive: true });
-  const codexPath = join(binDir, "codex");
+  const scriptPath = join(root, "app-server-codex.cjs");
   writeFileSync(
-    codexPath,
-    `#!/usr/bin/env node
+    scriptPath,
+    `
 const fs = require("node:fs");
 const readline = require("node:readline");
 const requestsPath = process.env.CODEX_TEST_REQUESTS_PATH;
@@ -251,11 +290,19 @@ rl.on("line", (line) => {
 });
 `,
   );
-  chmodSync(codexPath, 0o755);
+  const codexPath =
+    process.platform === "win32" ? join(binDir, "codex.cmd") : join(binDir, "codex");
+  if (process.platform === "win32") {
+    writeFileSync(codexPath, `@echo off\r\nnode "%~dp0\\..\\..\\app-server-codex.cjs" %*\r\n`);
+  } else {
+    writeFileSync(codexPath, `#!/usr/bin/env node\n${readFileSync(scriptPath, "utf8")}`, {
+      mode: 0o755,
+    });
+  }
   const env = {
     ...process.env,
+    CODEX_BIN: codexPath,
     CODEX_TEST_REQUESTS_PATH: requestsPath,
-    PATH: `${binDir}${delimiter}${process.env.PATH ?? ""}`,
   };
 
   try {

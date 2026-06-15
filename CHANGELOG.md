@@ -74,7 +74,7 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Fixed
 
-- Made every Codex subprocess honor `CODEX_BIN` and launch npm-installed `codex.cmd` wrappers on native Windows. Thanks @anagnorisis2peripeteia.
+- Made every Codex subprocess honor `CODEX_BIN`, safely launch npm-installed `codex.cmd` wrappers on native Windows, and terminate their process trees on timeout. Thanks @anagnorisis2peripeteia.
 - Keep generated implementation PR bodies and terminal issue comments concise, avoid stale blocked states while PR checks are pending, and stop adding ClawSweeper itself as a commit co-author.
 - Prevented trusted ClawSweeper command status comments from re-entering GitHub activity handling and churning review automation. Thanks @ooiuuii.
 - Routed proof-sufficient security reviews that recommend maintainer risk acceptance to maintainer review instead of waiting on the contributor. Thanks @brokemac79.

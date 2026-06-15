@@ -53,3 +53,20 @@ jobs:
 
       - name: Run check
         run: pnpm run check
+
+  windows-codex-launch:
+    name: Windows Codex launcher
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: ./.github/actions/setup-pnpm
+
+      - name: Build process workers
+        run: |
+          pnpm run build
+          pnpm run build:repair
+
+      - name: Verify native Windows launcher
+        run: node --test --test-name-pattern "escaped Windows launchers|CODEX_BIN and preserves argv|timeout errors|app-server mode" test/codex-process.test.ts
