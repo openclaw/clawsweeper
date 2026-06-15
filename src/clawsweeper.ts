@@ -14446,11 +14446,8 @@ function unconfirmedProductDirectionDecisionBlockReason(
   if (!decision.requiresNewFeature && !decision.requiresNewConfigOption) {
     return "unconfirmed_product_direction requires new feature or config surface";
   }
-  if (
-    decision.securityReview.status === "needs_attention" ||
-    decision.securityReview.concerns.length > 0
-  ) {
-    return "unconfirmed_product_direction cannot close security-sensitive work";
+  if (decision.securityReview.status !== "cleared" || decision.securityReview.concerns.length > 0) {
+    return "unconfirmed_product_direction requires a cleared security review";
   }
   if (decision.overallCorrectness !== "patch is correct" || decision.reviewFindings.length > 0) {
     return "unconfirmed_product_direction requires a correct patch with no review findings";
@@ -16342,14 +16339,17 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
       });
       renameSync(path, join(closedDir, file));
     };
-    const markApplySkipped = (actionTaken: ActionTaken, reason: string): boolean => {
-      markdown = replaceFrontMatterValue(markdown, "action_taken", actionTaken);
-      markdown = replaceFrontMatterValue(markdown, "apply_checked_at", new Date().toISOString());
-      if (!dryRun) writeFileSync(path, markdown, "utf8");
+    const recordApplySkipped = (actionTaken: ActionTaken, reason: string): boolean => {
       results.push({ number, action: actionTaken, reason });
       processedCount += 1;
       maybeLogProgress(`skipped #${number}: ${reason}`);
       return processedCount >= processedLimit;
+    };
+    const markApplySkipped = (actionTaken: ActionTaken, reason: string): boolean => {
+      markdown = replaceFrontMatterValue(markdown, "action_taken", actionTaken);
+      markdown = replaceFrontMatterValue(markdown, "apply_checked_at", new Date().toISOString());
+      if (!dryRun) writeFileSync(path, markdown, "utf8");
+      return recordApplySkipped(actionTaken, reason);
     };
     const markLabelSyncAuthSkipped = (labelKind: string): boolean =>
       markApplySkipped(
@@ -17322,6 +17322,14 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
       continue;
     }
     if (closeReason === "unconfirmed_product_direction") {
+      if (!unconfirmedProductDirectionCloseEnabled()) {
+        if (
+          recordApplySkipped("kept_open", "unconfirmed product-direction apply policy is disabled")
+        ) {
+          break;
+        }
+        continue;
+      }
       const productDirectionBlockReason = unconfirmedProductDirectionApplyBlockReasonSafe(
         number,
         item,

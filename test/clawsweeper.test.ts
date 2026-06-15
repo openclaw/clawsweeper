@@ -2204,6 +2204,20 @@ test("unconfirmed product direction proposals require a clean external feature P
     ).ok,
     false,
   );
+  assert.equal(
+    validateCloseDecision(
+      pullRequest,
+      closeDecision({
+        ...decision,
+        securityReview: {
+          status: "not_applicable",
+          summary: "No dedicated security review was completed.",
+          concerns: [],
+        },
+      }),
+    ).ok,
+    false,
+  );
   assert.equal(validateCloseDecision(item({ kind: "issue" }), decision).ok, false);
 });
 
@@ -6215,6 +6229,87 @@ Next rank-up steps:
 ## Close Comment
 
 ClawSweeper proposes closing this PR because product direction is unconfirmed.
+`;
+}
+
+function unconfirmedProductDirectionApplyGhMock(
+  reviewComment: string,
+  options: { maintainerComment?: boolean } = {},
+): string {
+  const maintainerComment = options.maintainerComment
+    ? `,{
+      id: 9901,
+      html_url: "https://github.com/openclaw/openclaw/pull/321#issuecomment-9901",
+      created_at: "2026-05-11T00:00:00Z",
+      updated_at: "2026-05-11T00:00:00Z",
+      author_association: "MEMBER",
+      user: { login: "maintainer" },
+      body: "Please keep this direction open for product review."
+    }`
+    : "";
+  return `
+const rawArgs = process.argv.slice(2);
+const args = rawArgs[0] === "--repo" ? rawArgs.slice(2) : rawArgs;
+const path = args[1] || "";
+if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$)/.test(args[2] || "")) {
+  console.log("HTTP/2 200\\n\\n[]");
+} else if (args[0] === "api" && /\\/issues\\/321\\/comments(?:\\?|$)/.test(path)) {
+  console.log(JSON.stringify([[{
+    id: 9321,
+    html_url: "https://github.com/openclaw/openclaw/pull/321#issuecomment-9321",
+    created_at: "2026-05-10T00:00:00Z",
+    updated_at: "2026-05-10T00:00:00Z",
+    author_association: "NONE",
+    user: { login: "clawsweeper[bot]" },
+    body: ${JSON.stringify(reviewComment)}
+  }${maintainerComment}]]));
+} else if (args[0] === "api" && /\\/issues\\/321\\/timeline(?:\\?|$)/.test(path)) {
+  console.log(JSON.stringify([[]]));
+} else if (args[0] === "api" && /\\/issues\\/321$/.test(path)) {
+  console.log(JSON.stringify({
+    number: 321,
+    title: "External feature PR",
+    html_url: "https://github.com/openclaw/openclaw/pull/321",
+    body: "Adds a new optional feature.",
+    created_at: "2026-05-01T00:00:00Z",
+    updated_at: "2026-05-01T00:00:00Z",
+    closed_at: null,
+    state: "open",
+    locked: false,
+    active_lock_reason: null,
+    author_association: "CONTRIBUTOR",
+    user: { login: "reporter" },
+    labels: [],
+    assignees: [],
+    comments: ${options.maintainerComment ? 2 : 1},
+    pull_request: { url: "https://api.github.com/repos/openclaw/openclaw/pulls/321" }
+  }));
+} else if (args[0] === "issue" && args[1] === "view") {
+  console.log(JSON.stringify({ closedByPullRequestsReferences: [] }));
+} else if (args[0] === "api" && /\\/pulls\\/321$/.test(path)) {
+  console.log(JSON.stringify({
+    number: 321,
+    title: "External feature PR",
+    html_url: "https://github.com/openclaw/openclaw/pull/321",
+    state: "open",
+    changed_files: 1,
+    commits: 1,
+    review_comments: 0,
+    requested_reviewers: [],
+    requested_teams: [],
+    body: "Adds a new optional feature.",
+    head: { sha: "head-sha", ref: "branch", repo: { full_name: "fork/openclaw" } },
+    base: { sha: "base-sha", ref: "main", repo: { full_name: "openclaw/openclaw" } },
+    user: { login: "reporter" }
+  }));
+} else if (args[0] === "api" && /\\/pulls\\/321\\/(files|commits|comments|reviews)(?:\\?|$)/.test(path)) {
+  console.log(JSON.stringify([[]]));
+} else if (args[0] === "label" || args[0] === "issue") {
+  console.log("");
+} else {
+  console.error("unexpected gh args", JSON.stringify(args));
+  process.exit(1);
+}
 `;
 }
 
@@ -12934,6 +13029,150 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/(320|321)\\/timeline(?
         [321, "skipped_same_author_pair"],
       ],
     );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("default-off product-direction apply preserves the durable close proposal", () => {
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    const itemsDir = join(root, "items");
+    const closedDir = join(root, "closed");
+    const plansDir = join(root, "plans");
+    const reportPath = join(root, "apply-report.json");
+    const itemPath = join(itemsDir, "321.md");
+    mkdirSync(itemsDir, { recursive: true });
+    mkdirSync(plansDir, { recursive: true });
+    const synced = reportWithSyncedReviewComment(
+      unconfirmedProductDirectionCloseReport({
+        number: 321,
+        title: "External feature PR",
+        author: "reporter",
+        reviewed_at: "2026-05-10T00:00:01Z",
+      }),
+      321,
+      "unconfirmed_product_direction",
+    );
+    writeFileSync(itemPath, synced.report, "utf8");
+
+    const originalPolicy = process.env.CLAWSWEEPER_UNCONFIRMED_PRODUCT_DIRECTION_CLOSE_ENABLED;
+    delete process.env.CLAWSWEEPER_UNCONFIRMED_PRODUCT_DIRECTION_CLOSE_ENABLED;
+    try {
+      withMockGh(root, unconfirmedProductDirectionApplyGhMock(synced.comment), () => {
+        runApplyDecisionsForTest({
+          itemsDir,
+          closedDir,
+          plansDir,
+          reportPath,
+          extraArgs: [
+            "--target-repo",
+            "openclaw/openclaw",
+            "--apply-kind",
+            "pull_request",
+            "--item-number",
+            "321",
+            "--processed-limit",
+            "1",
+            "--skip-dashboard",
+          ],
+        });
+      });
+    } finally {
+      if (originalPolicy === undefined) {
+        delete process.env.CLAWSWEEPER_UNCONFIRMED_PRODUCT_DIRECTION_CLOSE_ENABLED;
+      } else {
+        process.env.CLAWSWEEPER_UNCONFIRMED_PRODUCT_DIRECTION_CLOSE_ENABLED = originalPolicy;
+      }
+    }
+
+    const result = JSON.parse(readFileSync(reportPath, "utf8")) as Array<{
+      action: string;
+      reason: string;
+    }>;
+    assert.deepEqual(result, [
+      {
+        number: 321,
+        action: "kept_open",
+        reason: "unconfirmed product-direction apply policy is disabled",
+      },
+    ]);
+    assert.match(readFileSync(itemPath, "utf8"), /^action_taken: proposed_close$/m);
+    assert.equal(existsSync(join(closedDir, "321.md")), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("product-direction apply keeps a PR open when a maintainer comment calibrates direction", () => {
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    const itemsDir = join(root, "items");
+    const closedDir = join(root, "closed");
+    const plansDir = join(root, "plans");
+    const reportPath = join(root, "apply-report.json");
+    const itemPath = join(itemsDir, "321.md");
+    mkdirSync(itemsDir, { recursive: true });
+    mkdirSync(plansDir, { recursive: true });
+    const synced = reportWithSyncedReviewComment(
+      unconfirmedProductDirectionCloseReport({
+        number: 321,
+        title: "External feature PR",
+        author: "reporter",
+        reviewed_at: "2026-05-10T00:00:01Z",
+      }),
+      321,
+      "unconfirmed_product_direction",
+    );
+    writeFileSync(itemPath, synced.report, "utf8");
+
+    const originalPolicy = process.env.CLAWSWEEPER_UNCONFIRMED_PRODUCT_DIRECTION_CLOSE_ENABLED;
+    process.env.CLAWSWEEPER_UNCONFIRMED_PRODUCT_DIRECTION_CLOSE_ENABLED = "true";
+    try {
+      withMockGh(
+        root,
+        unconfirmedProductDirectionApplyGhMock(synced.comment, { maintainerComment: true }),
+        () => {
+          runApplyDecisionsForTest({
+            itemsDir,
+            closedDir,
+            plansDir,
+            reportPath,
+            extraArgs: [
+              "--target-repo",
+              "openclaw/openclaw",
+              "--apply-kind",
+              "pull_request",
+              "--item-number",
+              "321",
+              "--processed-limit",
+              "1",
+              "--skip-dashboard",
+            ],
+          });
+        },
+      );
+    } finally {
+      if (originalPolicy === undefined) {
+        delete process.env.CLAWSWEEPER_UNCONFIRMED_PRODUCT_DIRECTION_CLOSE_ENABLED;
+      } else {
+        process.env.CLAWSWEEPER_UNCONFIRMED_PRODUCT_DIRECTION_CLOSE_ENABLED = originalPolicy;
+      }
+    }
+
+    const result = JSON.parse(readFileSync(reportPath, "utf8")) as Array<{
+      action: string;
+      reason: string;
+    }>;
+    assert.deepEqual(result, [
+      {
+        number: 321,
+        action: "kept_open",
+        reason: "maintainer issue comment calibrates product direction",
+      },
+    ]);
+    assert.match(readFileSync(itemPath, "utf8"), /^action_taken: kept_open$/m);
+    assert.equal(existsSync(join(closedDir, "321.md")), false);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
