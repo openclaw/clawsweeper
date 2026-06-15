@@ -20,6 +20,7 @@ export function summarizeChecks(checks: LooseRecord[]) {
   const pending: LooseRecord[] = [];
   const terminalBlockers: LooseRecord[] = [];
   const externalBlockers: LooseRecord[] = [];
+  let gatingTotal = 0;
   for (const check of latestChecks) {
     const name = String(check.name ?? check.context ?? "unknown check");
     const workflow = String(check.workflowName ?? "");
@@ -30,6 +31,7 @@ export function summarizeChecks(checks: LooseRecord[]) {
     const key = externalActionRequired ? "ACTION_REQUIRED" : conclusion || status || "UNKNOWN";
     counts[key] = (counts[key] ?? 0) + 1;
     if (ignoredCheck) continue;
+    gatingTotal += 1;
     if (externalActionRequired) {
       const blocker = `${name}:ACTION_REQUIRED`;
       blockers.push(blocker);
@@ -50,6 +52,7 @@ export function summarizeChecks(checks: LooseRecord[]) {
   }
   return {
     total: latestChecks.length,
+    gatingTotal,
     counts,
     blockers,
     pending,

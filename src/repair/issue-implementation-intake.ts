@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import type { JsonValue, LooseRecord } from "./json-types.js";
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -85,7 +86,8 @@ function prepare() {
         referencedPrs: [],
         clusterExistingPrs: [],
       };
-  const decision = intakeDecision({
+  const jobPath = path.join(repoRoot(), issueImplementationJobPath(targetRepo, itemNumber));
+  let decision = intakeDecision({
     enabled,
     targetRepo,
     itemNumber,
@@ -95,7 +97,14 @@ function prepare() {
     live,
     operatorOverride,
   });
-  const jobPath = path.join(repoRoot(), issueImplementationJobPath(targetRepo, itemNumber));
+  if (decision.shouldRepair && fs.existsSync(jobPath) && !operatorOverride) {
+    decision = {
+      status: "already_queued",
+      shouldRepair: false,
+      reason: "issue implementation job already queued",
+      blockers: ["issue implementation job already queued"],
+    };
+  }
   const auditPath = path.join(
     repoRoot(),
     "results",
@@ -155,13 +164,49 @@ function candidates() {
     "report-repo",
     stringArg("report_repo", "openclaw/clawsweeper-state"),
   );
-  const out: LooseRecord[] = [];
-  if (truthy(enabled) && fs.existsSync(artifactDir)) {
-    for (const file of findMarkdownFiles(artifactDir)) {
+  const reportDir = stringArg("report-dir", stringArg("report_dir", ""));
+  const sourceDirs = [artifactDir, ...(reportDir ? [path.resolve(reportDir)] : [])];
+  const out = discoverImplementationCandidates({
+    enabled: truthy(enabled),
+    candidateKind,
+    targetRepo,
+    reportRepo,
+    sourceDirs,
+  });
+  const itemNumbers = out.map((entry: LooseRecord) => String(entry.item_number)).join(",");
+  writeStepOutputs({
+    count: out.length,
+    item_numbers: itemNumbers,
+    candidates_json: JSON.stringify(out),
+  });
+  console.log(JSON.stringify({ count: out.length, item_numbers: itemNumbers, candidates: out }));
+}
+
+export function discoverImplementationCandidates({
+  enabled,
+  candidateKind,
+  targetRepo,
+  reportRepo,
+  sourceDirs,
+  jobRoot = repoRoot(),
+}: {
+  enabled: boolean;
+  candidateKind: CandidateKind;
+  targetRepo: string;
+  reportRepo: string;
+  sourceDirs: string[];
+  jobRoot?: string;
+}): LooseRecord[] {
+  if (!enabled) return [];
+  const candidatesByIssue = new Map<string, LooseRecord>();
+  for (const sourceDir of sourceDirs) {
+    if (!fs.existsSync(sourceDir)) continue;
+    for (const file of findMarkdownFiles(sourceDir)) {
       const markdown = fs.readFileSync(file, "utf8");
       const report = parseReviewReport(markdown);
       const number = Number(report.frontmatter.number);
       const repository = report.frontmatter.repository || targetRepo;
+      if (!Number.isSafeInteger(number) || number <= 0) continue;
       const reportPath = `records/${repoSlug(repository)}/items/${number}.md`;
       const reportUrl = `https://github.com/${reportRepo}/blob/${reportBranch(reportRepo)}/${reportPath}`;
       const decision = reportOnlyDecision({
@@ -171,16 +216,28 @@ function candidates() {
         candidateKind,
       });
       if (!decision.shouldRepair) continue;
-      out.push({ item_number: number, report_path: reportPath, report_url: reportUrl });
+      const jobPath = path.join(jobRoot, issueImplementationJobPath(repository, number));
+      if (fs.existsSync(jobPath)) continue;
+      if (
+        matchingIntakeAuditExists({
+          root: jobRoot,
+          repo: repository,
+          number,
+          reportMarkdown: markdown,
+        })
+      ) {
+        continue;
+      }
+      candidatesByIssue.set(`${repository.toLowerCase()}#${number}`, {
+        item_number: number,
+        report_path: reportPath,
+        report_url: reportUrl,
+      });
     }
   }
-  const itemNumbers = out.map((entry: LooseRecord) => String(entry.item_number)).join(",");
-  writeStepOutputs({
-    count: out.length,
-    item_numbers: itemNumbers,
-    candidates_json: JSON.stringify(out),
-  });
-  console.log(JSON.stringify({ count: out.length, item_numbers: itemNumbers, candidates: out }));
+  return [...candidatesByIssue.values()].sort(
+    (left, right) => Number(left.item_number) - Number(right.item_number),
+  );
 }
 
 export function parseReviewReport(markdown: string): ReviewReport {
@@ -446,7 +503,6 @@ function writeJob(context: LooseRecord) {
     reviewReportPath: context.reportPath,
     strictBugOnly: candidateKind === "strict_bug",
     visionFit: candidateKind === "vision_fit",
-    automerge: candidateKind === "viable",
     operatorOverride: context.operatorOverride === true,
     overrideRequestedBy: context.overrideRequestedBy,
     overrideReason:
@@ -565,6 +621,7 @@ repo: ${context.targetRepo}
 number: ${context.itemNumber}
 report_repo: ${context.reportRepo}
 report_path: ${context.reportPath}
+report_revision_sha256: ${reportRevisionSha256(context.reportMarkdown)}
 decision: ${context.decision.status}
 prepared_at: ${context.preparedAt}
 ---
@@ -585,6 +642,33 @@ ${jobLine}
 ${context.decision.blockers.length ? context.decision.blockers.map((blocker: string) => `- ${blocker}`).join("\n") : "- none"}
 `;
   fs.writeFileSync(context.auditPath, body, "utf8");
+}
+
+export function reportRevisionSha256(markdown: string) {
+  return crypto.createHash("sha256").update(markdown).digest("hex");
+}
+
+function matchingIntakeAuditExists({
+  root,
+  repo,
+  number,
+  reportMarkdown,
+}: {
+  root: string;
+  repo: string;
+  number: number;
+  reportMarkdown: string;
+}) {
+  const auditPath = path.join(
+    root,
+    "results",
+    "issue-implementation-intake",
+    repoSlug(repo),
+    `${number}.md`,
+  );
+  if (!fs.existsSync(auditPath)) return false;
+  const audit = parseReviewReport(fs.readFileSync(auditPath, "utf8"));
+  return audit.frontmatter.report_revision_sha256 === reportRevisionSha256(reportMarkdown);
 }
 
 function liveIssueContext({

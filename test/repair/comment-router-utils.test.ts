@@ -318,6 +318,7 @@ test("summarizeChecks ignores cancelled default non-gating checks", () => {
   ]);
 
   assert.equal(checks.total, 4);
+  assert.equal(checks.gatingTotal, 1);
   assert.deepEqual(checks.blockers, []);
   assert.equal(checks.counts.CANCELLED, 3);
 });

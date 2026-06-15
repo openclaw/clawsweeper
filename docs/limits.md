@@ -156,8 +156,8 @@ hot intake `31`, and commit review `4`. Existing repair lanes keep their
   `repair_live_runs.issue_implementation_default`.
 - `CLAWSWEEPER_AUTO_IMPLEMENT_MAX_DISPATCH_PER_SWEEP` overrides
   `issue_implementation.dispatches_per_sweep_default`.
-- `CLAWSWEEPER_AUTO_IMPLEMENT_BACKFILL=1` permits scheduled viable-issue
-  dispatch from existing review reports. Without it, the master automatic issue
-  gate applies only to newly opened or reopened issue events.
+- Each enabled automatic issue intake lane scans durable open reports and
+  dispatches at most `issue_implementation.dispatches_per_sweep_default`
+  candidates per target sweep.
 - Manual `sweep.yml` dispatch `shard_count` overrides
   `review_shards.normal_default`, then clamps to `review_shards.hard_cap`.

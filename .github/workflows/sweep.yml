@@ -1340,6 +1340,7 @@ jobs:
           MAX_DISPATCH: ${{ vars.CLAWSWEEPER_AUTO_IMPLEMENT_MAX_DISPATCH_PER_SWEEP || '' }}
         run: |
           set -euo pipefail
+          target_slug="${TARGET_REPO//\//-}"
           if [ -z "$MAX_DISPATCH" ]; then
             MAX_DISPATCH="$(pnpm run --silent workflow -- limit issue_implementation.dispatches_per_sweep_default)"
           fi
@@ -1347,7 +1348,8 @@ jobs:
             --enabled "$ENABLED" \
             --candidate-kind strict_bug \
             --target-repo "$TARGET_REPO" \
-            --artifact-dir artifacts)"
+            --artifact-dir artifacts \
+            --report-dir "records/$target_slug/items")"
           echo "$candidate_output"
           candidates_json="$(CANDIDATE_OUTPUT="$candidate_output" node <<'NODE'
           const output = JSON.parse(process.env.CANDIDATE_OUTPUT || "{}");
@@ -1394,6 +1396,7 @@ jobs:
           MAX_DISPATCH: ${{ vars.CLAWSWEEPER_AUTO_IMPLEMENT_VISION_FIT_MAX_DISPATCH_PER_SWEEP || vars.CLAWSWEEPER_AUTO_IMPLEMENT_MAX_DISPATCH_PER_SWEEP || '' }}
         run: |
           set -euo pipefail
+          target_slug="${TARGET_REPO//\//-}"
           if [ -z "$MAX_DISPATCH" ]; then
             MAX_DISPATCH="$(pnpm run --silent workflow -- limit issue_implementation.dispatches_per_sweep_default)"
           fi
@@ -1401,7 +1404,8 @@ jobs:
             --enabled "$ENABLED" \
             --candidate-kind vision_fit \
             --target-repo "$TARGET_REPO" \
-            --artifact-dir artifacts)"
+            --artifact-dir artifacts \
+            --report-dir "records/$target_slug/items")"
           echo "$candidate_output"
           candidates_json="$(CANDIDATE_OUTPUT="$candidate_output" node <<'NODE'
           const output = JSON.parse(process.env.CANDIDATE_OUTPUT || "{}");
@@ -1439,14 +1443,15 @@ jobs:
               -f report_url="$report_url"
           done < /tmp/vision-fit-implementation-candidates.tsv
 
-      - name: Dispatch viable issue implementation candidates
-        if: ${{ success() && vars.CLAWSWEEPER_AUTO_IMPLEMENT_ISSUES == '1' && vars.CLAWSWEEPER_AUTO_IMPLEMENT_BACKFILL == '1' && steps.target-write-token.outputs.token != '' && needs.plan.outputs.target_repo != 'openclaw/openclaw' && needs.plan.outputs.target_repo != 'openclaw/clawhub' }}
+      - name: Backfill viable open issue implementation candidates
+        if: ${{ success() && vars.CLAWSWEEPER_AUTO_IMPLEMENT_ISSUES == '1' && steps.target-write-token.outputs.token != '' && needs.plan.outputs.target_repo != 'openclaw/openclaw' && needs.plan.outputs.target_repo != 'openclaw/clawhub' }}
         env:
           GH_TOKEN: ${{ github.token }}
           TARGET_REPO: ${{ needs.plan.outputs.target_repo }}
           MAX_DISPATCH: ${{ vars.CLAWSWEEPER_AUTO_IMPLEMENT_MAX_DISPATCH_PER_SWEEP || '' }}
         run: |
           set -euo pipefail
+          target_slug="${TARGET_REPO//\//-}"
           if [ -z "$MAX_DISPATCH" ]; then
             MAX_DISPATCH="$(pnpm run --silent workflow -- limit issue_implementation.dispatches_per_sweep_default)"
           fi
@@ -1455,6 +1460,7 @@ jobs:
             --candidate-kind viable \
             --target-repo "$TARGET_REPO" \
             --artifact-dir artifacts \
+            --report-dir "records/$target_slug/items" \
             --report-repo openclaw/clawsweeper-state)"
           echo "$candidate_output"
           CANDIDATE_OUTPUT="$candidate_output" MAX_DISPATCH="$MAX_DISPATCH" node <<'NODE' > /tmp/viable-implementation-candidates.tsv

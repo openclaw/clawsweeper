@@ -511,11 +511,15 @@ a single PR cannot loop forever.
 
 For PRs labeled `clawsweeper:autofix` or `clawsweeper:automerge`, trusted
 ClawSweeper `pass`, `approved`, or `no-changes` verdict markers become
-`clawsweeper_auto_merge`. Autofix and draft PRs never merge. Automerge merges
-only when the marker SHA matches the current PR head, checks are green, GitHub
+`clawsweeper_auto_merge`. Autofix waits for required checks to appear, settle
+green, and reach GitHub merge-state readiness, then treats that marker as
+terminal success, removes its repair-loop label, and leaves the PR open.
+Generated issue PRs do the same even if a stale automerge label is present.
+Automerge merges only when the marker SHA matches
+the current PR head, checks are green, GitHub
 mergeability is clean, no human-review label is present, the PR is not draft,
 and `CLAWSWEEPER_ALLOW_MERGE=1` is set. The `clawsweeper:automerge` opt-in is
-the per-PR automerge authorization.
+the per-PR automerge authorization for non-generated PRs.
 Otherwise it leaves the PR open and labels it `clawsweeper:human-review` and
 `clawsweeper:merge-ready` when merge gates are closed.
 

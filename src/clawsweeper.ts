@@ -1040,6 +1040,7 @@ const DEFAULT_CODEX_MODEL = PUBLIC_CODEX_MODEL;
 const DEFAULT_REASONING_EFFORT = "high";
 const DEFAULT_SERVICE_TIER = "";
 const DEFAULT_REVIEW_CODEX_TIMEOUT_MS = 1_200_000;
+const DEFAULT_CODEX_FALLBACK_MIN_BUDGET_MS = 120_000;
 const REVIEW_POLICY_VERSION = "2026-05-30-policy-v19";
 const REVIEW_ITEM_PROMPT_PATH = join(ROOT, "prompts", "review-item.md");
 const CLAWSWEEPER_DECISION_SCHEMA_PATH = join(ROOT, "schema", "clawsweeper-decision.schema.json");
@@ -6423,6 +6424,61 @@ function codexFailureReason(detail: string, errorCode?: string | null): string {
   return "codex execution failed";
 }
 
+function codexFallbackMinBudgetMs(): number {
+  const configured = Number(process.env.CLAWSWEEPER_CODEX_FALLBACK_MIN_BUDGET_MS?.trim());
+  return Number.isFinite(configured) && configured > 0
+    ? configured
+    : DEFAULT_CODEX_FALLBACK_MIN_BUDGET_MS;
+}
+
+export function lowerCodexReasoningEffort(effort: string): string | null {
+  switch (effort.trim().toLowerCase()) {
+    case "high":
+    case "medium":
+      return "low";
+    case "low":
+      return "minimal";
+    default:
+      return null;
+  }
+}
+
+function annotateDegradedReview(
+  decision: Decision,
+  options: { item: Item; fromEffort: string; toEffort: string; transportError: CodexReviewError },
+): Decision {
+  const reason = codexFailureReason(
+    `${options.transportError.message}\n${options.transportError.stderr}\n${options.transportError.stdout}`,
+  );
+  const disclosure =
+    `Degraded review: Codex hit a ${reason} at ${options.fromEffort} reasoning effort, so ClawSweeper ` +
+    `completed this review with a single lower-effort (${options.toEffort}) fallback pass. ` +
+    `Treat the verdict as best-effort and re-run for a full-fidelity review once transport recovers.`;
+  const transportDetail =
+    trimMiddle(
+      redactInternalCodexModel(
+        `${options.transportError.message}\n${options.transportError.stderr}`.trim(),
+      ),
+      2000,
+    ) || "No transport detail captured.";
+  return {
+    ...decision,
+    confidence: decision.confidence === "high" ? "medium" : decision.confidence,
+    summary: `${disclosure}\n\n${decision.summary}`,
+    evidence: [
+      evidenceEntry({
+        label: "degraded review mode",
+        detail: `${options.fromEffort} → ${options.toEffort} reasoning effort fallback after ${reason}.`,
+      }),
+      evidenceEntry({
+        label: "original codex transport failure",
+        detail: transportDetail,
+      }),
+      ...decision.evidence,
+    ],
+  };
+}
+
 function codexFailureDecision(
   status: number | null,
   detail: string,
@@ -6593,6 +6649,7 @@ class CodexReviewError extends Error {
   readonly stderr: string;
   readonly errorCode: string | null;
   readonly signal: NodeJS.Signals | null;
+  readonly retryable: boolean;
 
   constructor(options: {
     message: string;
@@ -6601,6 +6658,7 @@ class CodexReviewError extends Error {
     stderr?: string;
     errorCode?: string | null;
     signal?: NodeJS.Signals | null;
+    retryable?: boolean;
   }) {
     super(options.message);
     this.name = "CodexReviewError";
@@ -6609,6 +6667,7 @@ class CodexReviewError extends Error {
     this.stderr = options.stderr ?? "";
     this.errorCode = options.errorCode ?? null;
     this.signal = options.signal ?? null;
+    this.retryable = options.retryable ?? false;
   }
 }
 
@@ -6704,129 +6763,170 @@ function runCodex(options: {
       `OpenClaw checkout is dirty before reviewing #${options.item.number}:\n${dirtyBefore}`,
     );
   }
-  const codexConfig = [
-    `model_reasoning_effort="${options.reasoningEffort}"`,
-    'forced_login_method="api"',
-    'approval_policy="never"',
-  ];
-  if (options.serviceTier) codexConfig.splice(1, 0, `service_tier="${options.serviceTier}"`);
   const configuredAttempts = Number(process.env.CLAWSWEEPER_CODEX_REVIEW_ATTEMPTS ?? 3);
   const maxAttempts = Math.min(
     5,
     Math.max(1, Number.isFinite(configuredAttempts) ? Math.floor(configuredAttempts) : 3),
   );
   const startedAt = Date.now();
-  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    if (existsSync(outputPath)) unlinkSync(outputPath);
-    const remainingMs = options.timeoutMs - (Date.now() - startedAt);
-    if (remainingMs <= 0) {
-      throw new Error(
-        `Codex review timed out for #${options.item.number} after ${options.timeoutMs}ms.`,
-      );
-    }
-    const result = runCodexProcess({
-      args: [
-        "exec",
-        ...codexModelArgs(options.model),
-        ...codexConfig.flatMap((config) => ["-c", config]),
-        "-C",
-        options.openclawDir,
-        "--output-schema",
-        CLAWSWEEPER_DECISION_SCHEMA_PATH,
-        "--output-last-message",
-        outputPath,
-        "--json",
-        "--sandbox",
-        options.sandboxMode,
-        "--add-dir",
-        proofScratchDir,
-        "-",
-      ],
-      cwd: options.openclawDir,
-      env: {
-        ...codexEnv({ ghToken: process.env.CLAWSWEEPER_PROOF_INSPECTION_TOKEN }),
-        CLAWSWEEPER_PROOF_SCRATCH_DIR: proofScratchDir,
-      },
-      input: prompt,
-      stderrPath: join(options.workDir, `${options.item.number}.${attempt}.codex.stderr.log`),
-      stdoutPath: join(options.workDir, `${options.item.number}.${attempt}.codex.stdout.log`),
-      timeoutMs: remainingMs,
-    });
-    const dirtyAfter = openclawDirtyStatus(options.openclawDir);
-    if (dirtyAfter) {
-      throw new Error(
-        `Codex dirtied the OpenClaw checkout while reviewing #${options.item.number}:\n${dirtyAfter}`,
-      );
-    }
-    const stderr = redactedOutputTail(result.stderr);
-    const stdout = redactedOutputTail(result.stdout);
-    const errorCode = codexProcessErrorCode(result.error);
-    let failureDetail = "";
-    if (result.error) {
-      failureDetail = `Codex review failed for #${options.item.number}: ${redactInternalCodexModel(result.error.message)}`;
-    }
-    const hasOutput = existsSync(outputPath);
-    if (!result.error && hasOutput) {
-      try {
-        const decision = parseDecision(
-          JSON.parse(readFileSync(outputPath, "utf8").trim()),
-          options.item,
+  const runReviewPass = (reasoningEffort: string, passAttempts: number): Decision => {
+    const codexConfig = [
+      `model_reasoning_effort="${reasoningEffort}"`,
+      'forced_login_method="api"',
+      'approval_policy="never"',
+    ];
+    if (options.serviceTier) codexConfig.splice(1, 0, `service_tier="${options.serviceTier}"`);
+    for (let attempt = 1; attempt <= passAttempts; attempt += 1) {
+      if (existsSync(outputPath)) unlinkSync(outputPath);
+      const remainingMs = options.timeoutMs - (Date.now() - startedAt);
+      if (remainingMs <= 0) {
+        throw new CodexReviewError({
+          message: `Codex review timed out for #${options.item.number} after ${options.timeoutMs}ms.`,
+          status: null,
+          retryable: false,
+        });
+      }
+      const result = runCodexProcess({
+        args: [
+          "exec",
+          ...codexModelArgs(options.model),
+          ...codexConfig.flatMap((config) => ["-c", config]),
+          "-C",
+          options.openclawDir,
+          "--output-schema",
+          CLAWSWEEPER_DECISION_SCHEMA_PATH,
+          "--output-last-message",
+          outputPath,
+          "--json",
+          "--sandbox",
+          options.sandboxMode,
+          "--add-dir",
+          proofScratchDir,
+          "-",
+        ],
+        cwd: options.openclawDir,
+        env: {
+          ...codexEnv({ ghToken: process.env.CLAWSWEEPER_PROOF_INSPECTION_TOKEN }),
+          CLAWSWEEPER_PROOF_SCRATCH_DIR: proofScratchDir,
+        },
+        input: prompt,
+        stderrPath: join(options.workDir, `${options.item.number}.${attempt}.codex.stderr.log`),
+        stdoutPath: join(options.workDir, `${options.item.number}.${attempt}.codex.stdout.log`),
+        timeoutMs: remainingMs,
+      });
+      const dirtyAfter = openclawDirtyStatus(options.openclawDir);
+      if (dirtyAfter) {
+        throw new Error(
+          `Codex dirtied the OpenClaw checkout while reviewing #${options.item.number}:\n${dirtyAfter}`,
         );
-        if (result.status !== 0) {
-          console.error(
-            `[review] ${new Date().toISOString()} codex-exit-nonzero-output-accepted #${
-              options.item.number
-            } status=${result.status ?? "unknown"} stderr=${JSON.stringify(stderr)}`,
+      }
+      const stderr = redactedOutputTail(result.stderr);
+      const stdout = redactedOutputTail(result.stdout);
+      const errorCode = codexProcessErrorCode(result.error);
+      let failureDetail = "";
+      if (result.error) {
+        failureDetail = `Codex review failed for #${options.item.number}: ${redactInternalCodexModel(result.error.message)}`;
+      }
+      const hasOutput = existsSync(outputPath);
+      if (!result.error && hasOutput) {
+        try {
+          const decision = parseDecision(
+            JSON.parse(readFileSync(outputPath, "utf8").trim()),
+            options.item,
           );
+          if (result.status !== 0) {
+            console.error(
+              `[review] ${new Date().toISOString()} codex-exit-nonzero-output-accepted #${
+                options.item.number
+              } status=${result.status ?? "unknown"} stderr=${JSON.stringify(stderr)}`,
+            );
+          }
+          return decision;
+        } catch (error) {
+          failureDetail = `Codex review failed for #${options.item.number} with exit ${
+            result.status ?? "unknown"
+          } and wrote invalid JSON or schema-invalid output to ${outputPath}: ${
+            error instanceof Error ? error.message : String(error)
+          }.`;
         }
-        return decision;
-      } catch (error) {
-        failureDetail = `Codex review failed for #${options.item.number} with exit ${
-          result.status ?? "unknown"
-        } and wrote invalid JSON or schema-invalid output to ${outputPath}: ${
-          error instanceof Error ? error.message : String(error)
-        }.`;
+      } else if (!result.error) {
+        failureDetail =
+          result.status === 0
+            ? `Codex review did not produce output for #${options.item.number}: Codex exited successfully but did not write ${outputPath}.\n${stdout || "No stdout."}`
+            : `Codex review failed for #${options.item.number} with exit ${result.status ?? "unknown"}.`;
       }
-    } else if (!result.error) {
-      failureDetail =
-        result.status === 0
-          ? `Codex review did not produce output for #${options.item.number}: Codex exited successfully but did not write ${outputPath}.`
-          : `Codex review failed for #${options.item.number} with exit ${result.status ?? "unknown"}.`;
-    }
-    const structuredError = redactInternalCodexModel(codexJsonlFailureDetail(result.stdout));
-    const trustedProcessError = structuredError || stderr;
-    const processFailureDetail = [failureDetail, trustedProcessError].filter(Boolean).join("\n");
-    const terminalFailure = isTerminalCodexErrorMessage(processFailureDetail);
-    const retryable =
-      !terminalFailure &&
-      (result.signal !== null ||
-        (result.status === 0 && !hasOutput) ||
-        isRetryableCodexErrorMessage(processFailureDetail) ||
-        /\b(?:ETIMEDOUT|ECONNRESET|EAI_AGAIN|ENOTFOUND|socket hang up|fetch failed|transport failure)\b/i.test(
-          processFailureDetail,
-        ));
-    if (retryable && attempt < maxAttempts) {
-      const delayMs = codexRetryDelayMs(processFailureDetail, attempt);
-      if (Date.now() - startedAt + delayMs < options.timeoutMs) {
-        console.error(
-          `[review] ${new Date().toISOString()} codex-retry #${options.item.number} attempt=${
-            attempt + 1
-          }/${maxAttempts} delay_ms=${delayMs} reason=transient_transport`,
-        );
-        sleepMs(delayMs);
-        continue;
+      const structuredError = redactInternalCodexModel(codexJsonlFailureDetail(result.stdout));
+      const trustedProcessError = structuredError || stderr;
+      const processFailureDetail = [failureDetail, trustedProcessError].filter(Boolean).join("\n");
+      const terminalFailure = isTerminalCodexErrorMessage(processFailureDetail);
+      const retryable =
+        !terminalFailure &&
+        (result.signal !== null ||
+          (result.status === 0 && !hasOutput) ||
+          isRetryableCodexErrorMessage(processFailureDetail) ||
+          /\b(?:ETIMEDOUT|ECONNRESET|EAI_AGAIN|ENOTFOUND|socket hang up|fetch failed|transport failure)\b/i.test(
+            processFailureDetail,
+          ));
+      if (retryable && attempt < passAttempts) {
+        const delayMs = codexRetryDelayMs(processFailureDetail, attempt);
+        if (Date.now() - startedAt + delayMs < options.timeoutMs) {
+          console.error(
+            `[review] ${new Date().toISOString()} codex-retry #${options.item.number} attempt=${
+              attempt + 1
+            }/${passAttempts} delay_ms=${delayMs} reason=transient_transport`,
+          );
+          sleepMs(delayMs);
+          continue;
+        }
       }
+      throw new CodexReviewError({
+        message: processFailureDetail || `Codex review failed for #${options.item.number}.`,
+        status: result.status,
+        stdout,
+        stderr,
+        errorCode,
+        signal: result.signal,
+        retryable,
+      });
     }
     throw new CodexReviewError({
-      message: failureDetail,
-      status: result.status,
-      stdout,
-      stderr,
-      errorCode,
-      signal: result.signal,
+      message: `Codex review failed for #${options.item.number}.`,
+      status: null,
+      retryable: false,
     });
+  };
+
+  try {
+    return runReviewPass(options.reasoningEffort, maxAttempts);
+  } catch (error) {
+    if (!(error instanceof CodexReviewError) || !error.retryable) throw error;
+    const fallbackEffort = lowerCodexReasoningEffort(options.reasoningEffort);
+    const remainingMs = options.timeoutMs - (Date.now() - startedAt);
+    if (fallbackEffort === null || remainingMs < codexFallbackMinBudgetMs()) throw error;
+    console.error(
+      `[review] ${new Date().toISOString()} codex-fallback #${options.item.number} reason=transient_transport from_effort=${options.reasoningEffort} to_effort=${fallbackEffort} remaining_ms=${remainingMs}`,
+    );
+    try {
+      const decision = runReviewPass(fallbackEffort, 1);
+      return annotateDegradedReview(decision, {
+        item: options.item,
+        fromEffort: options.reasoningEffort,
+        toEffort: fallbackEffort,
+        transportError: error,
+      });
+    } catch (fallbackError) {
+      if (!(fallbackError instanceof CodexReviewError)) throw fallbackError;
+      throw new CodexReviewError({
+        message: `${error.message}\nLower-effort (${fallbackEffort}) fallback also failed: ${fallbackError.message}`,
+        status: fallbackError.status ?? error.status,
+        stdout: fallbackError.stdout || error.stdout,
+        stderr: error.stderr || fallbackError.stderr,
+        errorCode: error.errorCode ?? fallbackError.errorCode,
+        signal: error.signal ?? fallbackError.signal,
+        retryable: error.retryable,
+      });
+    }
   }
-  throw new Error(`Codex review failed for #${options.item.number}.`);
 }
 
 function stripTextFence(markdown: string): string {

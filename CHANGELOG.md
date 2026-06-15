@@ -64,21 +64,24 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Changed
 
-- Enabled new-issue automatic implementation for eligible public `openclaw/*` and `steipete/*` sibling repositories while excluding `openclaw/openclaw` and `openclaw/clawhub`; Codex now discovers viable implementation and validation strategy, while deterministic security, opt-out, source-state, quota, and PR/cluster deduplication gates remain.
+- Enabled automatic implementation plus bounded durable-report backfill for eligible open issues; general viable implementation remains limited to public sibling repositories, while separately gated strict-bug and vision-fit lanes can backfill `openclaw/openclaw`. Codex discovers viable implementation and validation strategy, while deterministic security, opt-out, source-state, quota, report-revision receipt, queued-job, and PR/cluster deduplication gates remain.
 - Increased quiet scheduled review capacity from 48 to 64 workers, switched scheduled backfill to three-item shards to reduce setup and tail-idle overhead, and made seven-day review freshness an explicit scheduler priority.
 - Doubled the global Codex worker budget to 128 with proportional reserves, added job-level dashboard error and recovery rates, and moved the bounded failed-review retry backstop to hourly.
 - Raised the shared Codex worker budget from 24 to 32, tripling quiet scheduled normal-review capacity from 4 to 12 shards while preserving interactive and matrix-expansion reserves, and synchronized live-dashboard budget reporting.
-- Automatically dispatch high-confidence `queue_fix_pr` issue reviews outside `openclaw/openclaw` and `openclaw/clawhub` into the existing implementation worker, then opt generated PRs into the existing review, autofix, and automerge loop. Retryable Codex worker failures now requeue through the bounded repair self-heal path.
+- Automatically dispatch high-confidence `queue_fix_pr` issue reviews outside `openclaw/openclaw` and `openclaw/clawhub` into the existing implementation worker, then opt generated PRs into a bounded review/autofix/re-review loop that stops clean and leaves them open for maintainer merge. Retryable Codex worker failures now requeue through the bounded repair self-heal path.
 - Install the latest Codex CLI for every worker run and keep the actual model name in the `CLAWSWEEPER_MODEL` GitHub Actions secret, exposing only the `internal` alias in workflows, reports, and comments.
 - Removed PR egg hatching, including the `@clawsweeper hatch` command, hatch dispatch path, generated PR egg comments, and `assets/pr-eggs` publishing (#210). Thanks @vincentkoc.
 
 ### Fixed
 
+- Kept issue-generated PRs out of automerge, migrated their labels to `clawsweeper:autofix`, and made clean exact-head autofix reviews wait for required checks to appear, settle green, and reach GitHub merge-state readiness before removing the repair-loop label instead of repeating blocked merge attempts.
 - Correlated active issue-build workers by workflow run when GitHub job titles omit the target, preserved source issue titles and generated PR links across repair lifecycle events, and stopped generic repository repairs from requiring a nonexistent `pnpm check:changed` script.
 - Persisted dashboard lifecycle events in a globally consistent Cloudflare Durable Object so automatic issue-build cards remain visible across edge locations, and accepted Ansible plus repository-local shell-script validation commands without permitting inline shell execution.
 - Prevented ClawSweeper-owned advisory labels from invalidating queued issue implementation source revisions, and accepted quoted arguments plus common validation toolchains while blocking shell/eval runners and removing GitHub write credentials from target validation.
+- Compacted completed ClawSweeper-generated replacement branches to one reviewed commit before publication, removing transient checkpoint and review-repair noise while preserving contributor branch history.
 - Skip optional ClawSweeper label additions when an issue or pull request already has GitHub's 100-label maximum, so one saturated item cannot abort a comment-sync batch.
 - Served stale dashboard status immediately while coalescing a background refresh, bounded job-detail fanout, and cached and parallelized historical GitHub lookups to reduce cold-load latency, diagnostic timeouts, and API usage.
+- Recover transport-exhausted reviews with one bounded lower-effort fallback while preserving the original failure classification when recovery also fails. Thanks @yetval. (#283)
 - Preserved records written by concurrent workers during generated-state publish races while retaining deliberate item-to-closed moves and plan cleanup.
 - Raised and unified Codex review timeouts at 20 minutes, including exact event reviews, so high-context reviews do not fall back at the previous 10-minute ceiling.
 - Deferred workflow utility CLI execution until module initialization completes, preventing apply preselection from crashing on close-action constants.
