@@ -76,7 +76,7 @@ test("Codex process resolves command overrides and escaped Windows launchers", (
 
 test("Codex process uses CODEX_BIN and preserves argv and stdin delivery", () => {
   const root = mkdtempSync(tmpPrefix);
-  const binDir = join(root, "custom codex bin", "node_modules", ".bin");
+  const binDir = join(root, "custom codex bin");
   const markerPath = join(root, "stdin.txt");
   const argvPath = join(root, "argv.json");
   const scriptPath = join(root, "fake-codex.js");
@@ -93,7 +93,7 @@ process.stdout.write("custom-codex-ok");
   const codexPath =
     process.platform === "win32" ? join(binDir, "custom-codex.cmd") : join(binDir, "custom-codex");
   if (process.platform === "win32") {
-    writeFileSync(codexPath, `@echo off\r\nnode "%~dp0\\..\\..\\..\\fake-codex.js" %*\r\n`);
+    writeFileSync(codexPath, `@echo off\r\nnode "%~dp0\\..\\fake-codex.js" %*\r\n`);
   } else {
     writeFileSync(codexPath, `#!/usr/bin/env node\n${readFileSync(scriptPath, "utf8")}`, {
       mode: 0o755,

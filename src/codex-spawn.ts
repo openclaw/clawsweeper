@@ -14,7 +14,7 @@ export interface CodexSpawnInvocation {
 }
 
 const windowsExecutablePattern = /\.(?:com|exe)$/i;
-const windowsCommandShimPattern = /node_modules[\\/]\.bin[\\/][^\\/]+\.cmd$/i;
+const windowsBatchLauncherPattern = /\.(?:bat|cmd)$/i;
 const windowsMetaCharacterPattern = /([()\][%!^"`<>&|;, *?])/g;
 
 export function codexProcessCommand(env: NodeJS.ProcessEnv = process.env): string {
@@ -35,7 +35,7 @@ export function codexSpawnInvocation(
   }
 
   const normalizedCommand = normalize(command);
-  const doubleEscapeMetaCharacters = windowsCommandShimPattern.test(normalizedCommand);
+  const doubleEscapeMetaCharacters = windowsBatchLauncherPattern.test(normalizedCommand);
   const shellCommand = [
     escapeWindowsCommand(normalizedCommand),
     ...args.map((arg) => escapeWindowsArgument(arg, doubleEscapeMetaCharacters)),
