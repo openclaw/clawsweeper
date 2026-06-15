@@ -448,6 +448,14 @@ function localReviewCommand(args: Args): void {
   const runDir = join(reportDir, `run-${headSha.slice(0, 8)}-${Date.now()}-${process.pid}`);
   ensureDir(runDir);
 
+  // Spec: hard-enforce no GitHub access. The review prompt suggests `gh` for issue
+  // refs, and `gh` uses its own configured auth (token-env deletion can't stop it),
+  // so point it at an empty config dir — any `gh` the spawned reviewer runs finds
+  // no cached credentials. Belt-and-suspenders with Codex's read-only sandbox.
+  const ghEmptyConfig = join(runDir, ".gh-empty");
+  ensureDir(ghEmptyConfig);
+  process.env.GH_CONFIG_DIR = ghEmptyConfig;
+
   const additionalPrompt = `This is a LOCAL pre-PR review of the COMMITTED range ${baseSha.slice(0, 8)}..${headSha.slice(0, 8)} (your branch vs ${baseBranch}) on a clean checkout — no staged or untracked changes. Review code correctness, bugs, and security; ignore PR metadata.`;
 
   console.error(
