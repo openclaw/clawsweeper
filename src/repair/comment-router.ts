@@ -2,6 +2,7 @@
 import type { JsonValue, LooseRecord } from "./json-types.js";
 import fs from "node:fs";
 import path from "node:path";
+import { adaptiveReviewBudgetForPullRequest } from "./adaptive-review-budget.js";
 import {
   activeRepairWorkflowRunForJobAfterDispatchRecheck,
   assertLiveWorkerCapacity,
@@ -2035,6 +2036,14 @@ function repairJobModeForCommand(command: LooseRecord) {
 }
 
 function dispatchClawSweeperReview(command: LooseRecord) {
+  const reviewBudget =
+    command.target?.kind === "pull_request"
+      ? adaptiveReviewBudgetForPullRequest(command.target)
+      : null;
+  // workflow_dispatch is at GitHub's input limit, so its one timeout carries both budgets.
+  const fallbackCodexTimeoutMs = reviewBudget
+    ? reviewBudget.codexTimeoutMs + reviewBudget.mediaProofTimeoutMs
+    : null;
   const commandStatus = ["re_review", "autofix", "automerge"].includes(String(command.intent ?? ""))
     ? {
         command_status_marker: commandStatusMarker(command),
@@ -2051,6 +2060,12 @@ function dispatchClawSweeperReview(command: LooseRecord) {
       item_number: String(command.issue_number),
       item_kind: command.target?.kind ?? "",
       additional_prompt: freeformReviewPrompt(command),
+      ...(reviewBudget
+        ? {
+            codex_timeout_ms: reviewBudget.codexTimeoutMs,
+            media_proof_timeout_ms: reviewBudget.mediaProofTimeoutMs,
+          }
+        : {}),
       ...commandStatus,
     },
   });
@@ -2079,6 +2094,7 @@ function dispatchClawSweeperReview(command: LooseRecord) {
         "-f",
         `additional_prompt=${freeformReviewPrompt(command)}`,
         "-f",
+        ...(fallbackCodexTimeoutMs ? [`codex_timeout_ms=${fallbackCodexTimeoutMs}`, "-f"] : []),
         "batch_size=1",
         "-f",
         "shard_count=1",
@@ -2788,6 +2804,9 @@ function classifyPullTarget(pull: LooseRecord, issueNumber: JsonValue): JsonValu
     author,
     labels,
     files: pull.files ?? [],
+    changedFiles: pull.changedFiles ?? null,
+    additions: pull.additions ?? null,
+    deletions: pull.deletions ?? null,
     is_clawsweeper_pr: branch.startsWith(headPrefix),
     cluster_id: adoptedJobPath ? automergeCluster : clusterId,
     job_path: repairJob.jobPath,
@@ -3010,13 +3029,16 @@ function fetchPullRequestView(number: JsonValue) {
       targetRepo,
       "--json",
       [
+        "additions",
         "headRefName",
         "headRefOid",
         "author",
         "baseRefName",
         "body",
+        "changedFiles",
         "closingIssuesReferences",
         "commits",
+        "deletions",
         "files",
         "isDraft",
         "labels",
@@ -3045,13 +3067,16 @@ function fetchPullRequestViewAsync(number: JsonValue) {
       targetRepo,
       "--json",
       [
+        "additions",
         "headRefName",
         "headRefOid",
         "author",
         "baseRefName",
         "body",
+        "changedFiles",
         "closingIssuesReferences",
         "commits",
+        "deletions",
         "files",
         "isDraft",
         "labels",

@@ -18300,6 +18300,10 @@ test("comment commands keep the router-to-sweep dispatch contract", () => {
   );
   assert.match(routerWorkflow, /--status-comment-id "\$status_comment_id"/);
   assert.match(routerSource, /event_type:\s*"clawsweeper_item"/);
+  assert.match(routerSource, /adaptiveReviewBudgetForPullRequest\(command\.target\)/);
+  assert.match(routerSource, /media_proof_timeout_ms: reviewBudget\.mediaProofTimeoutMs/);
+  assert.match(routerSource, /reviewBudget\.codexTimeoutMs \+ reviewBudget\.mediaProofTimeoutMs/);
+  assert.match(routerSource, /`codex_timeout_ms=\$\{fallbackCodexTimeoutMs\}`/);
   assert.match(sweepWorkflow, /types:\s*\[clawsweeper_item,\s*clawsweeper_target_sweep\]/);
   assert.doesNotMatch(sweepWorkflow, /types:\s*\[[^\]]*clawsweeper_comment/);
 });
@@ -18588,17 +18592,39 @@ test("sweep exact event reviews consume adaptive Codex timeout payload", () => {
 
   assert.match(
     resolveBlock,
-    /codex_timeout_ms="\$\{\{ github\.event\.client_payload\.codex_timeout_ms \|\| vars\.CLAWSWEEPER_CODEX_TIMEOUT_MS \|\| '1200000' \}\}"/,
+    /ADAPTIVE_CODEX_TIMEOUT_MS: \$\{\{ github\.event\.client_payload\.codex_timeout_ms \|\| '' \}\}/,
   );
-  assert.match(resolveBlock, /Invalid codex_timeout_ms payload/);
-  assert.match(resolveBlock, /\[ "\$codex_timeout_ms" -lt 600000 \]/);
-  assert.match(resolveBlock, /\[ "\$codex_timeout_ms" -gt 1800000 \]/);
+  assert.match(
+    resolveBlock,
+    /CONFIGURED_CODEX_TIMEOUT_MS: \$\{\{ vars\.CLAWSWEEPER_CODEX_TIMEOUT_MS \|\| '1200000' \}\}/,
+  );
+  assert.match(
+    resolveBlock,
+    /MEDIA_PROOF_TIMEOUT_MS: \$\{\{ github\.event\.client_payload\.media_proof_timeout_ms \|\| '0' \}\}/,
+  );
+  assert.match(resolveBlock, /Ignoring invalid adaptive codex_timeout_ms payload/);
+  assert.match(
+    resolveBlock,
+    /configured_codex_timeout_ms="\$\(\(10#\$configured_codex_timeout_ms\)\)"/,
+  );
+  assert.match(
+    resolveBlock,
+    /adaptive_codex_timeout_ms="\$\(\(10#\$adaptive_codex_timeout_ms\)\)"/,
+  );
+  assert.match(resolveBlock, /media_proof_timeout_ms="\$\(\(10#\$media_proof_timeout_ms\)\)"/);
+  assert.match(resolveBlock, /\[ "\$adaptive_codex_timeout_ms" -lt 600000 \]/);
+  assert.match(resolveBlock, /\[ "\$adaptive_codex_timeout_ms" -gt 1800000 \]/);
+  assert.match(resolveBlock, /\[ "\$adaptive_codex_timeout_ms" -gt "\$codex_timeout_ms" \]/);
   assert.match(resolveBlock, /echo "codex_timeout_ms=\$codex_timeout_ms"/);
+  assert.match(resolveBlock, /echo "media_proof_timeout_ms=\$media_proof_timeout_ms"/);
   assert.match(
     reviewBlock,
     /codex_timeout_ms="\$\{\{ steps\.target\.outputs\.codex_timeout_ms \}\}"/,
   );
-  assert.match(reviewBlock, /review_timeout_seconds=\$\(\(codex_timeout_seconds \+ 180\)\)/);
+  assert.match(
+    reviewBlock,
+    /review_timeout_seconds=\$\(\(codex_timeout_seconds \+ media_proof_timeout_seconds \+ 180\)\)/,
+  );
   assert.match(reviewBlock, /timeout --kill-after=30s "\$\{review_timeout_seconds\}s"/);
   assert.match(reviewBlock, /--codex-timeout-ms "\$codex_timeout_ms"/);
   assert.doesNotMatch(reviewBlock, /timeout --kill-after=30s 12m/);
@@ -18614,13 +18640,10 @@ test("sweep exact event reviews preserve the configured fallback without an adap
 
   assert.match(
     resolveBlock,
-    /github\.event\.client_payload\.codex_timeout_ms \|\| vars\.CLAWSWEEPER_CODEX_TIMEOUT_MS \|\| '1200000'/,
+    /CONFIGURED_CODEX_TIMEOUT_MS: \$\{\{ vars\.CLAWSWEEPER_CODEX_TIMEOUT_MS \|\| '1200000' \}\}/,
   );
-  assert.match(resolveBlock, /using 1200000/);
-  assert.doesNotMatch(
-    resolveBlock,
-    /codex_timeout_ms="\$\{\{ github\.event\.client_payload\.codex_timeout_ms \|\| '600000' \}\}"/,
-  );
+  assert.match(resolveBlock, /codex_timeout_ms="\$configured_codex_timeout_ms"/);
+  assert.match(resolveBlock, /\[ "\$adaptive_codex_timeout_ms" -gt "\$codex_timeout_ms" \]/);
 });
 
 test("github activity workflow coalesces noisy observer runs", () => {
@@ -18796,9 +18819,8 @@ test("sweep workflow runs exact event reviews without a global worker gate", () 
   assert.match(exactReviewStep, /--shard-count 1/);
   assert.match(
     exactReviewStep,
-    /CODEX_TIMEOUT_MS: \$\{\{ github\.event\.client_payload\.codex_timeout_ms \|\| vars\.CLAWSWEEPER_CODEX_TIMEOUT_MS \|\| '1200000' \}\}/,
+    /review_timeout_seconds=\$\(\(codex_timeout_seconds \+ media_proof_timeout_seconds \+ 180\)\)/,
   );
-  assert.match(exactReviewStep, /review_timeout_seconds=\$\(\(codex_timeout_seconds \+ 180\)\)/);
   assert.match(exactReviewStep, /--codex-timeout-ms "\$codex_timeout_ms"/);
   assert.doesNotMatch(exactReviewStep, /--codex-timeout-ms 600000/);
   assert.doesNotMatch(eventReviewBlock, /Wait for exact event review capacity/);

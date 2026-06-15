@@ -3,6 +3,7 @@ import type { JsonValue, LooseRecord } from "./json-types.js";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { adaptiveReviewBudgetForPullRequest } from "./adaptive-review-budget.js";
 import {
   spawn,
   spawnSync,
@@ -3871,6 +3872,17 @@ function dispatchAutomergeCommentRouter({
 function dispatchAutomergeReviewAfterBranchRepair({ target, commit }: LooseRecord) {
   const reviewRepo = String(process.env.CLAWSWEEPER_REVIEW_REPO ?? "openclaw/clawsweeper").trim();
   const dispatchedAt = new Date().toISOString();
+  let reviewBudget = null;
+  try {
+    reviewBudget = adaptiveReviewBudgetForPullRequest(
+      fetchPullRequestViewForRepo({ repo: result.repo, number: target }),
+    );
+  } catch (error) {
+    logProgress("adaptive review budget lookup failed; using configured review timeout", {
+      target,
+      reason: compactText(error instanceof Error ? error.message : String(error), 180),
+    });
+  }
   const payloadPath = writePayload(`automerge-review-dispatch-${target}-${commit}`, {
     event_type: "clawsweeper_item",
     client_payload: {
@@ -3880,6 +3892,12 @@ function dispatchAutomergeReviewAfterBranchRepair({ target, commit }: LooseRecor
       source_event: "repair_completed",
       source_action: "branch_repaired",
       supersedes_in_progress: true,
+      ...(reviewBudget
+        ? {
+            codex_timeout_ms: reviewBudget.codexTimeoutMs,
+            media_proof_timeout_ms: reviewBudget.mediaProofTimeoutMs,
+          }
+        : {}),
     },
   });
   try {
@@ -4012,12 +4030,18 @@ function fetchPullRequestViewForRepo({ repo, number }: LooseRecord) {
         String(repo),
         "--json",
         [
+          "additions",
           "headRefOid",
+          "body",
+          "changedFiles",
+          "deletions",
+          "files",
           "mergeable",
           "mergeStateStatus",
           "mergedAt",
           "state",
           "statusCheckRollup",
+          "title",
         ].join(","),
       ],
       { cwd: repoRoot(), env: ghEnv(), timeoutMs: currentNetworkCommandTimeoutMs() },

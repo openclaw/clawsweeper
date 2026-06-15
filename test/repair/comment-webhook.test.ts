@@ -321,6 +321,7 @@ test("webhook accepts eligible pull request events for generic steipete reposito
     sourceAction: "synchronize",
     supersedesInProgress: true,
     codexTimeoutMs: 600_000,
+    mediaProofTimeoutMs: 0,
   });
 });
 
@@ -336,7 +337,7 @@ test("adaptive Codex timeout preserves the default for small non-media PRs", () 
   );
 });
 
-test("adaptive Codex timeout scales for large PRs with video proofs", () => {
+test("adaptive Codex timeout scales for large PRs", () => {
   assert.equal(
     adaptiveCodexTimeoutMsForTest({
       changed_files: 71,
@@ -348,11 +349,11 @@ test("adaptive Codex timeout scales for large PRs with video proofs", () => {
         "https://uploads.example.invalid/proof-b.mp4.",
       ].join("\n"),
     }),
-    1_508_800,
+    1_268_800,
   );
 });
 
-test("adaptive Codex timeout stays capped within review shard limits", () => {
+test("adaptive Codex timeout stays capped separately from media preprocessing", () => {
   assert.equal(
     adaptiveCodexTimeoutMsForTest({
       changed_files: 1000,
@@ -366,7 +367,7 @@ test("adaptive Codex timeout stays capped within review shard limits", () => {
         "https://uploads.example.invalid/five.avi",
       ].join("\n"),
     }),
-    1_800_000,
+    1_500_000,
   );
 });
 
@@ -435,7 +436,11 @@ test("pull request webhooks dispatch adaptive Codex timeout payload", async () =
     assert.equal(dispatchedBody?.event_type, "clawsweeper_item");
     assert.equal(
       (dispatchedBody?.client_payload as Record<string, unknown>)?.codex_timeout_ms,
-      1_508_800,
+      1_268_800,
+    );
+    assert.equal(
+      (dispatchedBody?.client_payload as Record<string, unknown>)?.media_proof_timeout_ms,
+      240_000,
     );
   } finally {
     globalThis.fetch = previousFetch;
