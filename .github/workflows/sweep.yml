@@ -1654,6 +1654,7 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
           TARGET_REPO: ${{ needs.plan.outputs.target_repo }}
+          CLAWSWEEPER_UNCONFIRMED_PRODUCT_DIRECTION_CLOSE_ENABLED: ${{ vars.CLAWSWEEPER_UNCONFIRMED_PRODUCT_DIRECTION_CLOSE_ENABLED || 'false' }}
         run: |
           set -euo pipefail
           test -n "$GH_TOKEN"
@@ -2162,6 +2163,7 @@ jobs:
           CLAWSWEEPER_RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
           CLAWSWEEPER_THROTTLE_STATUS_MIN_WAIT_MS: "60000"
           CLAWSWEEPER_THROTTLE_STATUS_MIN_INTERVAL_MS: "120000"
+          CLAWSWEEPER_UNCONFIRMED_PRODUCT_DIRECTION_CLOSE_ENABLED: ${{ vars.CLAWSWEEPER_UNCONFIRMED_PRODUCT_DIRECTION_CLOSE_ENABLED || 'false' }}
         run: |
           test -n "$GH_TOKEN"
           limit="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_limit || '20' }}"

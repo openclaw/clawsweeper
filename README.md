@@ -296,6 +296,12 @@ comment-body cooldown markers, never closes PRs, and keeps scheduled operation
 behind default-off repository variables. See
 [`docs/proof-nudges.md`](docs/proof-nudges.md).
 
+The default-off unconfirmed product-direction policy can propose closure for a
+strictly bounded class of technically correct, well-proven external feature PRs
+that still lack maintainer-confirmed direction. Live maintainer signals and
+automation opt-ins veto apply. See
+[`docs/product-direction-close-policy.md`](docs/product-direction-close-policy.md).
+
 ## How It Works
 
 ClawSweeper is split into four operational lanes:

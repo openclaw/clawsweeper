@@ -220,6 +220,7 @@ type CloseReason =
   | "clawhub"
   | "duplicate_or_superseded"
   | "low_signal_unmergeable_pr"
+  | "unconfirmed_product_direction"
   | "not_actionable_in_repo"
   | "incoherent"
   | "stale_insufficient_info"
@@ -1066,6 +1067,8 @@ const DEFAULT_BACKFILL_REVIEW_AGE_MINUTES = 360;
 const DAILY_REVIEW_DAYS = 1;
 const WEEKLY_REVIEW_DAYS = 7;
 const STALE_INSUFFICIENT_INFO_MIN_AGE_DAYS = 60;
+const UNCONFIRMED_PRODUCT_DIRECTION_MIN_AGE_DAYS = 14;
+const UNCONFIRMED_PRODUCT_DIRECTION_MIN_INACTIVE_DAYS = 7;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const RECENT_MISSING_OPEN_MS = DAY_MS;
 const DEFAULT_CODEX_MODEL = PUBLIC_CODEX_MODEL;
@@ -1073,7 +1076,7 @@ const DEFAULT_REASONING_EFFORT = "high";
 const DEFAULT_SERVICE_TIER = "";
 const DEFAULT_REVIEW_CODEX_TIMEOUT_MS = 1_200_000;
 const DEFAULT_CODEX_FALLBACK_MIN_BUDGET_MS = 120_000;
-const REVIEW_POLICY_VERSION = "2026-06-15-policy-v21";
+const REVIEW_POLICY_VERSION = "2026-06-15-policy-v22";
 const REVIEW_ITEM_PROMPT_PATH = join(ROOT, "prompts", "review-item.md");
 const CLAWSWEEPER_DECISION_SCHEMA_PATH = join(ROOT, "schema", "clawsweeper-decision.schema.json");
 const PR_CLOSE_COVERAGE_PROOF_PROMPT_PATH = join(ROOT, "prompts", "pr-close-coverage-proof.md");
@@ -1086,6 +1089,14 @@ const REVIEW_COMMENT_MARKER_PREFIX = "<!-- clawsweeper-review";
 const REVIEW_START_STATUS_MARKER_PREFIX = "<!-- clawsweeper-review-status";
 const AUTOMERGE_LABEL = "clawsweeper:automerge";
 const AUTOFIX_LABEL = "clawsweeper:autofix";
+const HUMAN_REVIEW_LABEL = "clawsweeper:human-review";
+const MANUAL_ONLY_LABEL = "clawsweeper:manual-only";
+const UNCONFIRMED_PRODUCT_DIRECTION_EXEMPT_LABELS = new Set([
+  HUMAN_REVIEW_LABEL,
+  MANUAL_ONLY_LABEL,
+  AUTOMERGE_LABEL,
+  AUTOFIX_LABEL,
+]);
 const PROOF_OVERRIDE_LABEL = "proof: override";
 const PROOF_SUFFICIENT_LABEL = "proof: sufficient";
 const PROOF_SUPPLIED_LABEL = "proof: supplied";
@@ -1482,6 +1493,7 @@ const ALLOWED_REASONS = new Set<CloseReason>([
   "clawhub",
   "duplicate_or_superseded",
   "low_signal_unmergeable_pr",
+  "unconfirmed_product_direction",
   "not_actionable_in_repo",
   "incoherent",
   "stale_insufficient_info",
@@ -3047,6 +3059,27 @@ export function closeReasonApplyAgeSkipReason(
   return null;
 }
 
+export function unconfirmedProductDirectionAgeSkipReason(
+  item: Pick<Item, "createdAt">,
+  reviewedUpdatedAt: string | undefined,
+  reviewedAt: string | undefined,
+  now = Date.now(),
+): string | null {
+  if (!isOlderThanDays(item.createdAt, UNCONFIRMED_PRODUCT_DIRECTION_MIN_AGE_DAYS, now)) {
+    return `unconfirmed_product_direction requires PR older than ${UNCONFIRMED_PRODUCT_DIRECTION_MIN_AGE_DAYS} days`;
+  }
+  const sourceUpdatedAtMs = Date.parse(reviewedUpdatedAt ?? "");
+  const reviewedAtMs = Date.parse(reviewedAt ?? "");
+  if (
+    !Number.isFinite(sourceUpdatedAtMs) ||
+    !Number.isFinite(reviewedAtMs) ||
+    reviewedAtMs - sourceUpdatedAtMs <= UNCONFIRMED_PRODUCT_DIRECTION_MIN_INACTIVE_DAYS * DAY_MS
+  ) {
+    return `unconfirmed_product_direction requires ${UNCONFIRMED_PRODUCT_DIRECTION_MIN_INACTIVE_DAYS} days without source activity before review`;
+  }
+  return null;
+}
+
 function maintainerAssociatedEntries(entries: readonly unknown[]): unknown[] {
   return entries.filter((entry) =>
     isMaintainerAuthorAssociation(asRecord(entry).author_association),
@@ -3083,6 +3116,74 @@ function lowSignalUnmergeablePrApplyBlockReason(number: number): string | null {
   if (maintainerReviews.length > 0) return "maintainer PR review blocks low-signal auto-close";
 
   return null;
+}
+
+function unconfirmedProductDirectionApplyBlockReason(
+  number: number,
+  item: Pick<Item, "createdAt" | "labels">,
+  reviewedUpdatedAt: string | undefined,
+  reviewedAt: string | undefined,
+): string | null {
+  if (!unconfirmedProductDirectionCloseEnabled()) {
+    return "unconfirmed product-direction apply policy is disabled";
+  }
+  const ageBlock = unconfirmedProductDirectionAgeSkipReason(item, reviewedUpdatedAt, reviewedAt);
+  if (ageBlock) return ageBlock;
+  const exemptLabel = item.labels
+    .map(normalizeLabelName)
+    .find((label) => UNCONFIRMED_PRODUCT_DIRECTION_EXEMPT_LABELS.has(label));
+  if (exemptLabel) return `${exemptLabel} exempts this PR from product-direction auto-close`;
+
+  const issue = ghJson<{ assignees?: unknown[] }>([
+    "api",
+    `repos/${targetRepo()}/issues/${number}`,
+    "--jq",
+    "{assignees:[.assignees[]? | {login:.login}]}",
+  ]);
+  if ((issue.assignees ?? []).length > 0) return "assigned PR has active human signal";
+
+  const pull = ghJson<{ requested_reviewers?: unknown[]; requested_teams?: unknown[] }>([
+    "api",
+    `repos/${targetRepo()}/pulls/${number}`,
+    "--jq",
+    "{requested_reviewers:[.requested_reviewers[]? | {login:.login}],requested_teams:[.requested_teams[]? | {slug:.slug}]}",
+  ]);
+  if ((pull.requested_reviewers ?? []).length > 0 || (pull.requested_teams ?? []).length > 0) {
+    return "requested reviewers or teams indicate active review signal";
+  }
+
+  const maintainerComments = maintainerAssociatedEntries(
+    ghPaged<unknown>(`repos/${targetRepo()}/issues/${number}/comments`),
+  );
+  if (maintainerComments.length > 0) return "maintainer issue comment calibrates product direction";
+
+  const maintainerReviews = maintainerAssociatedEntries(
+    ghPaged<unknown>(`repos/${targetRepo()}/pulls/${number}/reviews`),
+  );
+  if (maintainerReviews.length > 0) return "maintainer PR review calibrates product direction";
+
+  const maintainerInlineComments = maintainerAssociatedEntries(
+    ghPaged<unknown>(`repos/${targetRepo()}/pulls/${number}/comments`),
+  );
+  if (maintainerInlineComments.length > 0) {
+    return "maintainer inline review comment calibrates product direction";
+  }
+  return null;
+}
+
+function unconfirmedProductDirectionApplyBlockReasonSafe(
+  number: number,
+  item: Pick<Item, "createdAt" | "labels">,
+  reviewedUpdatedAt: string | undefined,
+  reviewedAt: string | undefined,
+): string | null {
+  try {
+    return unconfirmedProductDirectionApplyBlockReason(number, item, reviewedUpdatedAt, reviewedAt);
+  } catch (error) {
+    return `product-direction calibration check failed: ${
+      error instanceof Error ? error.message : String(error)
+    }`;
+  }
 }
 
 export function compactMappedSlice<T>(
@@ -3904,6 +4005,12 @@ function envFlagEnabled(value: string | undefined): boolean {
 function envFlagDisabled(value: string | undefined): boolean {
   if (!value) return false;
   return ["0", "false", "no", "off", "disabled"].includes(value.trim().toLowerCase());
+}
+
+export function unconfirmedProductDirectionCloseEnabled(
+  env: Record<string, string | undefined> = process.env,
+): boolean {
+  return envFlagEnabled(env.CLAWSWEEPER_UNCONFIRMED_PRODUCT_DIRECTION_CLOSE_ENABLED);
 }
 
 function quoteGitHubSearchTerm(term: string): string {
@@ -7498,6 +7605,8 @@ function closeReasonText(reason: CloseReason): string {
       return "duplicate or superseded";
     case "low_signal_unmergeable_pr":
       return "low-signal unmergeable PR";
+    case "unconfirmed_product_direction":
+      return "feature-like PR without confirmed product direction";
     case "not_actionable_in_repo":
       return "not actionable in this repository";
     case "incoherent":
@@ -8525,6 +8634,8 @@ function closeIntro(reason: CloseReason): string {
       return "Thanks for the context here. I swept through the related work, and this is now duplicate or superseded.";
     case "low_signal_unmergeable_pr":
       return "Thanks for the contribution. I reviewed the branch, and this PR is not a good landing base for OpenClaw.";
+    case "unconfirmed_product_direction":
+      return "Thanks for the contribution. ClawSweeper proposes closing this for now: the implementation may be reasonable, but passing review and proof does not establish that OpenClaw should add this product surface.";
     case "not_actionable_in_repo":
       return "Thanks for writing this up. I checked the repo boundary, and this lives outside the OpenClaw source shell.";
     case "incoherent":
@@ -8550,6 +8661,8 @@ function closeOutro(reason: CloseReason, canonicalLinks: string[] = []): string 
         : "So I’m closing this here because the remaining work is already tracked in the canonical issue.";
     case "low_signal_unmergeable_pr":
       return "So I’m closing this PR rather than keeping an unmergeable branch open. A new narrow PR that carries only the useful part is welcome.";
+    case "unconfirmed_product_direction":
+      return "This is a proposal only until the separate default-off apply policy is enabled and all live maintainer-signal checks pass. A maintainer can sponsor the direction, request a narrower version, or apply `clawsweeper:human-review` to keep it open.";
     case "not_actionable_in_repo":
       return "So I’m closing this as outside the OpenClaw source repository rather than keeping it open as core work.";
     default:
@@ -14309,8 +14422,50 @@ function closeDecisionHasKeepOpenContradiction(decision: Decision): boolean {
   );
 }
 
+function unconfirmedProductDirectionDecisionBlockReason(
+  item: Pick<Item, "kind" | "labels"> & Partial<Pick<Item, "authorAssociation">>,
+  decision: Decision,
+): string | null {
+  if (item.kind !== "pull_request") {
+    return "unconfirmed_product_direction is allowed only for pull requests";
+  }
+  if (!item.authorAssociation) return "unconfirmed_product_direction requires author association";
+  if (isMaintainerAuthorAssociation(item.authorAssociation)) {
+    return "unconfirmed_product_direction cannot close maintainer-authored pull requests";
+  }
+  const exemptLabel = item.labels
+    .map(normalizeLabelName)
+    .find((label) => UNCONFIRMED_PRODUCT_DIRECTION_EXEMPT_LABELS.has(label));
+  if (exemptLabel) return `${exemptLabel} exempts this PR from product-direction auto-close`;
+  if (decision.itemCategory !== "feature") {
+    return "unconfirmed_product_direction requires feature item category";
+  }
+  if (!decision.requiresProductDecision) {
+    return "unconfirmed_product_direction requires a product decision";
+  }
+  if (!decision.requiresNewFeature && !decision.requiresNewConfigOption) {
+    return "unconfirmed_product_direction requires new feature or config surface";
+  }
+  if (
+    decision.securityReview.status === "needs_attention" ||
+    decision.securityReview.concerns.length > 0
+  ) {
+    return "unconfirmed_product_direction cannot close security-sensitive work";
+  }
+  if (decision.overallCorrectness !== "patch is correct" || decision.reviewFindings.length > 0) {
+    return "unconfirmed_product_direction requires a correct patch with no review findings";
+  }
+  if (!["sufficient", "override"].includes(decision.realBehaviorProof.status)) {
+    return "unconfirmed_product_direction requires sufficient real behavior proof";
+  }
+  if (!["S", "A", "B", "C"].includes(decision.prRating.overallTier)) {
+    return "unconfirmed_product_direction requires a quality-ready PR rating";
+  }
+  return null;
+}
+
 export function validateCloseDecision(
-  item: Pick<Item, "kind" | "labels"> & Partial<Pick<Item, "repo">>,
+  item: Pick<Item, "kind" | "labels"> & Partial<Pick<Item, "repo" | "authorAssociation">>,
   decision: Decision,
   options: { requireCloseComment?: boolean } = {},
 ): { ok: true } | { ok: false; actionTaken: ActionTaken; reason: string } {
@@ -14357,6 +14512,16 @@ export function validateCloseDecision(
       actionTaken: "skipped_invalid_decision",
       reason: "low_signal_unmergeable_pr is allowed only for pull requests",
     };
+  }
+  if (decision.closeReason === "unconfirmed_product_direction") {
+    const productDirectionBlock = unconfirmedProductDirectionDecisionBlockReason(item, decision);
+    if (productDirectionBlock) {
+      return {
+        ok: false,
+        actionTaken: "skipped_invalid_decision",
+        reason: productDirectionBlock,
+      };
+    }
   }
   if (item.kind === "pull_request" && decision.closeReason === "stale_insufficient_info") {
     return {
@@ -16257,7 +16422,12 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
       if (needsReviewCommentSync) return false;
       if (
         !validateCloseDecision(
-          { repo, kind: item.kind, labels: item.labels },
+          {
+            repo,
+            kind: item.kind,
+            labels: item.labels,
+            authorAssociation: item.authorAssociation,
+          },
           reportDecision(markdown, closeReason),
           {
             requireCloseComment: !isRetryableSkippedClose,
@@ -16280,6 +16450,17 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
           minAgeDescription,
           staleMinAgeDays,
         })
+      ) {
+        return false;
+      }
+      if (
+        closeReason === "unconfirmed_product_direction" &&
+        unconfirmedProductDirectionApplyBlockReasonSafe(
+          number,
+          item,
+          storedUpdatedAt,
+          frontMatterValue(markdown, "reviewed_at"),
+        )
       ) {
         return false;
       }
@@ -16407,6 +16588,7 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
                   repo: counterpartRepo,
                   kind: counterpartItem.kind,
                   labels: counterpartItem.labels,
+                  authorAssociation: counterpartItem.authorAssociation,
                 },
                 reportDecision(counterpartMarkdown, counterpartReason),
                 { requireCloseComment: !isRetryableCloseSkipReport(counterpartMarkdown) },
@@ -16922,7 +17104,12 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
       closeReasonEnabled(closeReason, applyCloseReasons)
     ) {
       const preSyncReportValidation = validateCloseDecision(
-        { repo, kind: item.kind, labels: item.labels },
+        {
+          repo,
+          kind: item.kind,
+          labels: item.labels,
+          authorAssociation: item.authorAssociation,
+        },
         reportDecision(markdown, closeReason),
         { requireCloseComment: !isRetryableSkippedClose },
       );
@@ -17134,8 +17321,25 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
       if (processedCount >= processedLimit) break;
       continue;
     }
+    if (closeReason === "unconfirmed_product_direction") {
+      const productDirectionBlockReason = unconfirmedProductDirectionApplyBlockReasonSafe(
+        number,
+        item,
+        storedUpdatedAt,
+        frontMatterValue(markdown, "reviewed_at"),
+      );
+      if (productDirectionBlockReason) {
+        if (markApplySkipped("kept_open", productDirectionBlockReason)) break;
+        continue;
+      }
+    }
     const currentReportValidation = validateCloseDecision(
-      { repo, kind: item.kind, labels: item.labels },
+      {
+        repo,
+        kind: item.kind,
+        labels: item.labels,
+        authorAssociation: item.authorAssociation,
+      },
       reportDecision(markdown, closeReason),
       { requireCloseComment: !isRetryableSkippedClose },
     );

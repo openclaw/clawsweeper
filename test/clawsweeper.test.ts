@@ -126,6 +126,8 @@ import {
   stripEmptyMaintainerRulingFieldsForTest,
   telegramVisibleProofLabelsForTest,
   validateCloseDecision,
+  unconfirmedProductDirectionAgeSkipReason,
+  unconfirmedProductDirectionCloseEnabled,
 } from "../dist/clawsweeper.js";
 import { checkConclusionForFrontMatter } from "../dist/commit-checks.js";
 import { skippedNonCodeReport } from "../dist/commit-classifier.js";
@@ -783,6 +785,18 @@ test("review prompt assets match tracked files", () => {
   assert.deepEqual(
     JSON.parse(reviewDecisionSchemaText()),
     JSON.parse(readFileSync("schema/clawsweeper-decision.schema.json", "utf8")),
+  );
+});
+
+test("sweep apply jobs wire the default-off product direction policy gate", () => {
+  const workflow = readFileSync(".github/workflows/sweep.yml", "utf8");
+  assert.equal(
+    workflow.match(/CLAWSWEEPER_UNCONFIRMED_PRODUCT_DIRECTION_CLOSE_ENABLED:/g)?.length,
+    2,
+  );
+  assert.match(
+    workflow,
+    /vars\.CLAWSWEEPER_UNCONFIRMED_PRODUCT_DIRECTION_CLOSE_ENABLED \|\| 'false'/,
   );
 });
 
@@ -2101,6 +2115,134 @@ test("invalid close semantics are rejected", () => {
   );
   assert.equal(missingSource.ok, false);
   assert.equal(missingSource.actionTaken, "skipped_invalid_decision");
+});
+
+test("unconfirmed product direction proposals require a clean external feature PR", () => {
+  const decision = closeDecision({
+    closeReason: "unconfirmed_product_direction",
+    itemCategory: "feature",
+    requiresNewFeature: true,
+    requiresProductDecision: true,
+    overallCorrectness: "patch is correct",
+    securityReview: {
+      status: "cleared",
+      summary: "No security-sensitive behavior is involved.",
+      concerns: [],
+    },
+    realBehaviorProof: {
+      status: "sufficient",
+      summary: "A real terminal transcript demonstrates the added behavior.",
+      evidenceKind: "terminal",
+      needsContributorAction: false,
+    },
+    prRating: {
+      proofTier: "A",
+      patchTier: "B",
+      overallTier: "B",
+      summary: "The patch is technically ready but product direction is unconfirmed.",
+      nextSteps: [],
+    },
+  });
+  const pullRequest = item({
+    kind: "pull_request",
+    url: "https://github.com/openclaw/openclaw/pull/123",
+  });
+
+  assert.deepEqual(validateCloseDecision(pullRequest, decision), { ok: true });
+  assert.deepEqual(
+    validateCloseDecision(
+      {
+        repo: pullRequest.repo,
+        kind: pullRequest.kind,
+        labels: pullRequest.labels,
+        authorAssociation: pullRequest.authorAssociation,
+      },
+      decision,
+    ),
+    { ok: true },
+  );
+  assert.match(
+    reviewActionForDecision({ item: pullRequest, decision, git }).closeComment,
+    /product surface/,
+  );
+  assert.equal(
+    validateCloseDecision(item({ ...pullRequest, labels: ["clawsweeper:human-review"] }), decision)
+      .ok,
+    false,
+  );
+  assert.equal(
+    validateCloseDecision(item({ ...pullRequest, authorAssociation: "MEMBER" }), decision).ok,
+    false,
+  );
+  assert.equal(
+    validateCloseDecision(
+      pullRequest,
+      closeDecision({ ...decision, requiresProductDecision: false }),
+    ).ok,
+    false,
+  );
+  assert.equal(
+    validateCloseDecision(
+      pullRequest,
+      closeDecision({
+        ...decision,
+        securityReview: {
+          status: "cleared",
+          summary: "One concern was recorded despite the cleared status.",
+          concerns: [
+            {
+              title: "Permission boundary",
+              body: "The new surface may cross an authorization boundary.",
+              severity: "medium",
+              confidenceScore: 0.8,
+              file: "src/example.ts",
+              line: 12,
+            },
+          ],
+        },
+      }),
+    ).ok,
+    false,
+  );
+  assert.equal(validateCloseDecision(item({ kind: "issue" }), decision).ok, false);
+});
+
+test("unconfirmed product direction apply policy is default-off and age-gated", () => {
+  assert.equal(unconfirmedProductDirectionCloseEnabled({}), false);
+  assert.equal(
+    unconfirmedProductDirectionCloseEnabled({
+      CLAWSWEEPER_UNCONFIRMED_PRODUCT_DIRECTION_CLOSE_ENABLED: "true",
+    }),
+    true,
+  );
+  const now = Date.parse("2026-06-15T12:00:00Z");
+  assert.equal(
+    unconfirmedProductDirectionAgeSkipReason(
+      item({ createdAt: "2026-06-01T11:59:59Z" }),
+      "2026-06-01T00:00:00Z",
+      "2026-06-08T00:00:01Z",
+      now,
+    ),
+    null,
+  );
+  assert.match(
+    unconfirmedProductDirectionAgeSkipReason(
+      item({ createdAt: "2026-06-10T00:00:00Z" }),
+      "2026-06-01T00:00:00Z",
+      "2026-06-10T00:00:00Z",
+      now,
+    ) ?? "",
+    /older than 14 days/,
+  );
+  assert.match(
+    unconfirmedProductDirectionAgeSkipReason(
+      item({ createdAt: "2026-05-01T00:00:00Z" }),
+      "2026-06-07T00:00:00Z",
+      "2026-06-14T00:00:00Z",
+      now,
+    ) ?? "",
+    /7 days without source activity/,
+  );
 });
 
 test("implemented-on-main closes require fix provenance", () => {
@@ -6022,6 +6164,58 @@ function lowSignalCloseReport(overrides = {}) {
     author_association: "CONTRIBUTOR",
     ...overrides,
   })}\n\n## Evidence\n\n- **branch shape:** PR diff is mostly unrelated provider churn around a tiny possible useful tweak\n\n## Close Comment\n\nClosing this PR because the branch is not a useful landing base.\n`;
+}
+
+function unconfirmedProductDirectionCloseReport(overrides = {}) {
+  return `${workPlanCandidateReport({
+    repository: "openclaw/openclaw",
+    type: "pull_request",
+    decision: "close",
+    action_taken: "proposed_close",
+    close_reason: "unconfirmed_product_direction",
+    confidence: "high",
+    work_candidate: "none",
+    work_status: "none",
+    item_snapshot_hash: "reviewed-snapshot",
+    item_created_at: "2026-05-01T00:00:00Z",
+    item_updated_at: "2026-05-01T00:00:00Z",
+    author_association: "CONTRIBUTOR",
+    item_category: "feature",
+    requires_new_feature: "true",
+    requires_product_decision: "true",
+    ...overrides,
+  })}
+
+## Review Findings
+
+Overall correctness: patch is correct
+Overall confidence: 0.95
+
+## Security Review
+
+Status: cleared
+Summary: No security-sensitive behavior is involved.
+
+## Real Behavior Proof
+
+Status: sufficient
+Evidence kind: terminal
+Needs contributor action: false
+Summary: A real terminal transcript demonstrates the added behavior.
+
+## PR Rating
+
+Overall tier: B
+Proof tier: A
+Patch tier: B
+Summary: The patch is technically ready but product direction is unconfirmed.
+Next rank-up steps:
+- Obtain maintainer product sponsorship.
+
+## Close Comment
+
+ClawSweeper proposes closing this PR because product direction is unconfirmed.
+`;
 }
 
 function stalePullRequestReport(overrides = {}) {
@@ -12572,6 +12766,173 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/(320|321)\\/timeline(?
     assert.deepEqual(
       report.filter((entry) => entry.action === "closed").map((entry) => entry.number),
       [321, 320],
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("apply-decisions does not pair-close an issue when product-direction apply is disabled", () => {
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    const itemsDir = join(root, "items");
+    const closedDir = join(root, "closed");
+    const plansDir = join(root, "plans");
+    const reportPath = join(root, "apply-report.json");
+    mkdirSync(itemsDir, { recursive: true });
+    mkdirSync(plansDir, { recursive: true });
+    const issueSynced = reportWithSyncedReviewComment(
+      implementedCloseReport({
+        repository: "openclaw/openclaw",
+        number: 320,
+        type: "issue",
+        title: "Paired issue",
+        author: "reporter",
+        action_taken: "skipped_same_author_pair",
+      }),
+      320,
+      "implemented_on_main",
+    );
+    const pullSynced = reportWithSyncedReviewComment(
+      unconfirmedProductDirectionCloseReport({
+        number: 321,
+        title: "Paired feature PR",
+        author: "reporter",
+        action_taken: "skipped_same_author_pair",
+      }),
+      321,
+      "unconfirmed_product_direction",
+    );
+    writeFileSync(join(itemsDir, "320.md"), issueSynced.report, "utf8");
+    writeFileSync(join(itemsDir, "321.md"), pullSynced.report, "utf8");
+
+    const ghMock = `
+const comments = {
+  320: ${JSON.stringify(issueSynced.comment)},
+  321: ${JSON.stringify(pullSynced.comment)}
+};
+const rawArgs = process.argv.slice(2);
+const args = rawArgs[0] === "--repo" ? rawArgs.slice(2) : rawArgs;
+const path = args[1] || "";
+const issueNumber = (path.match(/\\/issues\\/(\\d+)/) || [])[1];
+if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/(320|321)\\/timeline(?:\\?|$)/.test(args[2] || "")) {
+  console.log("HTTP/2 200\\n\\n[]");
+} else if (args[0] === "api" && /\\/issues\\/(320|321)\\/comments(?:\\?|$)/.test(path)) {
+  const number = Number(issueNumber);
+  console.log(JSON.stringify([[{
+    id: 9000 + number,
+    html_url: "https://github.com/openclaw/openclaw/issues/" + number + "#issuecomment-" + (9000 + number),
+    created_at: "2026-05-01T01:00:00Z",
+    updated_at: "2026-05-01T01:00:00Z",
+    user: { login: "clawsweeper[bot]" },
+    body: comments[number]
+  }]]));
+} else if (args[0] === "api" && /\\/issues\\/(320|321)\\/timeline(?:\\?|$)/.test(path)) {
+  console.log(JSON.stringify([[]]));
+} else if (args[0] === "api" && /\\/issues\\/320$/.test(path)) {
+  console.log(JSON.stringify({
+    number: 320,
+    title: "Paired issue",
+    html_url: "https://github.com/openclaw/openclaw/issues/320",
+    body: "See #321.",
+    created_at: "2026-05-01T00:00:00Z",
+    updated_at: "2026-05-01T00:00:00Z",
+    closed_at: null,
+    state: "open",
+    locked: false,
+    active_lock_reason: null,
+    author_association: "CONTRIBUTOR",
+    user: { login: "reporter" },
+    labels: [],
+    comments: 1,
+    pull_request: null
+  }));
+} else if (args[0] === "api" && /\\/issues\\/321$/.test(path)) {
+  console.log(JSON.stringify({
+    number: 321,
+    title: "Paired feature PR",
+    html_url: "https://github.com/openclaw/openclaw/pull/321",
+    body: "Fixes #320.",
+    created_at: "2026-05-01T00:00:00Z",
+    updated_at: "2026-05-01T00:00:00Z",
+    closed_at: null,
+    state: "open",
+    locked: false,
+    active_lock_reason: null,
+    author_association: "CONTRIBUTOR",
+    user: { login: "reporter" },
+    labels: [],
+    comments: 1,
+    pull_request: { url: "https://api.github.com/repos/openclaw/openclaw/pulls/321" }
+  }));
+} else if (args[0] === "issue" && args[1] === "view") {
+  console.log(JSON.stringify({ closedByPullRequestsReferences: [] }));
+} else if (args[0] === "api" && /\\/pulls\\/321$/.test(path)) {
+  console.log(JSON.stringify({
+    number: 321,
+    title: "Paired feature PR",
+    html_url: "https://github.com/openclaw/openclaw/pull/321",
+    state: "open",
+    changed_files: 1,
+    commits: 1,
+    review_comments: 0,
+    body: "Fixes #320.",
+    head: { sha: "head-sha", ref: "branch", repo: { full_name: "fork/openclaw" } },
+    base: { sha: "base-sha", ref: "main", repo: { full_name: "openclaw/openclaw" } },
+    user: { login: "reporter" }
+  }));
+} else if (args[0] === "api" && /\\/pulls\\/321\\/(files|commits|comments)(?:\\?|$)/.test(path)) {
+  console.log(JSON.stringify([[]]));
+} else if (args[0] === "label" || args[0] === "issue") {
+  console.log("");
+} else {
+  console.error("unexpected gh args", JSON.stringify(args));
+  process.exit(1);
+}
+`;
+    const originalPolicy = process.env.CLAWSWEEPER_UNCONFIRMED_PRODUCT_DIRECTION_CLOSE_ENABLED;
+    delete process.env.CLAWSWEEPER_UNCONFIRMED_PRODUCT_DIRECTION_CLOSE_ENABLED;
+    try {
+      withMockGh(root, ghMock, () => {
+        runApplyDecisionsForTest({
+          itemsDir,
+          closedDir,
+          plansDir,
+          reportPath,
+          extraArgs: [
+            "--target-repo",
+            "openclaw/openclaw",
+            "--dry-run",
+            "--apply-kind",
+            "all",
+            "--processed-limit",
+            "4",
+          ],
+        });
+      });
+    } finally {
+      if (originalPolicy === undefined) {
+        delete process.env.CLAWSWEEPER_UNCONFIRMED_PRODUCT_DIRECTION_CLOSE_ENABLED;
+      } else {
+        process.env.CLAWSWEEPER_UNCONFIRMED_PRODUCT_DIRECTION_CLOSE_ENABLED = originalPolicy;
+      }
+    }
+
+    const report = JSON.parse(readFileSync(reportPath, "utf8")) as Array<{
+      number: number;
+      action: string;
+      reason: string;
+    }>;
+    assert.equal(
+      report.some((entry) => entry.action === "closed"),
+      false,
+    );
+    assert.deepEqual(
+      report.map((entry) => [entry.number, entry.action]).sort(([left], [right]) => left - right),
+      [
+        [320, "skipped_same_author_pair"],
+        [321, "skipped_same_author_pair"],
+      ],
     );
   } finally {
     rmSync(root, { recursive: true, force: true });
