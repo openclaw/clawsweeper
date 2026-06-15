@@ -100,7 +100,7 @@ function optionalGhJson(path: string, jq: string): string {
   }
 }
 
-function commitMetadata(
+export function commitMetadata(
   targetDir: string,
   targetRepo: string,
   sha: string,
