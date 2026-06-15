@@ -18215,7 +18215,7 @@ test("sweep review continuations stay workflow-dispatch compatible", () => {
 
   for (const block of [continueBlock, recoveryBlock]) {
     assert.match(block, /-f target_repo="\$\{\{ needs\.plan\.outputs\.target_repo \}\}"/);
-    assert.doesNotMatch(block, /-f target_branch=/);
+    assert.match(block, /-f target_branch="\$\{\{ needs\.plan\.outputs\.target_branch \}\}"/);
   }
 });
 

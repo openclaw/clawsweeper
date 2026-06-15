@@ -1634,6 +1634,7 @@ jobs:
               -f apply_existing=false \
               -f hot_intake="${{ needs.plan.outputs.hot_intake }}" \
               -f target_repo="${{ needs.plan.outputs.target_repo }}" \
+              -f target_branch="${{ needs.plan.outputs.target_branch }}" \
               -f batch_size="${{ needs.plan.outputs.batch_size }}" \
               -f shard_count="${{ needs.plan.outputs.shard_count }}" \
               -f codex_timeout_ms="${{ needs.plan.outputs.codex_timeout_ms }}"; then
@@ -1728,6 +1729,7 @@ jobs:
             -f apply_existing=false
             -f hot_intake=false
             -f target_repo="${{ needs.plan.outputs.target_repo }}"
+            -f target_branch="${{ needs.plan.outputs.target_branch }}"
             -f batch_size="${{ needs.plan.outputs.batch_size }}"
             -f shard_count="$recovery_shard_count"
             -f codex_timeout_ms="${{ needs.plan.outputs.codex_timeout_ms }}"
