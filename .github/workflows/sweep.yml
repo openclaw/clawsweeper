@@ -181,7 +181,7 @@ jobs:
           target_branch="${{ github.event.client_payload.target_branch || 'main' }}"
           item_number="${{ github.event.client_payload.item_number || '' }}"
           item_kind="${{ github.event.client_payload.item_kind || '' }}"
-          codex_timeout_ms="${{ github.event.client_payload.codex_timeout_ms || '600000' }}"
+          codex_timeout_ms="${{ github.event.client_payload.codex_timeout_ms || vars.CLAWSWEEPER_CODEX_TIMEOUT_MS || '1200000' }}"
           if ! printf '%s' "$target_repo" | grep -Eq '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$'; then
             echo "Invalid target_repo: $target_repo" >&2
             exit 1
@@ -202,8 +202,8 @@ jobs:
               ;;
           esac
           if ! printf '%s' "$codex_timeout_ms" | grep -Eq '^[0-9]+$'; then
-            echo "::warning::Invalid codex_timeout_ms payload '$codex_timeout_ms'; using 600000."
-            codex_timeout_ms="600000"
+            echo "::warning::Invalid codex_timeout_ms payload '$codex_timeout_ms'; using 1200000."
+            codex_timeout_ms="1200000"
           fi
           if [ "$codex_timeout_ms" -lt 600000 ]; then
             codex_timeout_ms="600000"

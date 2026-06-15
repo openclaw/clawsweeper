@@ -18131,7 +18131,7 @@ test("sweep exact event reviews consume adaptive Codex timeout payload", () => {
 
   assert.match(
     resolveBlock,
-    /codex_timeout_ms="\$\{\{ github\.event\.client_payload\.codex_timeout_ms \|\| '600000' \}\}"/,
+    /codex_timeout_ms="\$\{\{ github\.event\.client_payload\.codex_timeout_ms \|\| vars\.CLAWSWEEPER_CODEX_TIMEOUT_MS \|\| '1200000' \}\}"/,
   );
   assert.match(resolveBlock, /Invalid codex_timeout_ms payload/);
   assert.match(resolveBlock, /\[ "\$codex_timeout_ms" -lt 600000 \]/);
@@ -18146,6 +18146,24 @@ test("sweep exact event reviews consume adaptive Codex timeout payload", () => {
   assert.match(reviewBlock, /--codex-timeout-ms "\$codex_timeout_ms"/);
   assert.doesNotMatch(reviewBlock, /timeout --kill-after=30s 12m/);
   assert.doesNotMatch(reviewBlock, /--codex-timeout-ms 600000/);
+});
+
+test("sweep exact event reviews preserve the configured fallback without an adaptive payload", () => {
+  const workflow = readFileSync(".github/workflows/sweep.yml", "utf8");
+  const resolveBlock = workflow.slice(
+    workflow.indexOf("- name: Resolve event payload"),
+    workflow.indexOf("- name: Create target read token"),
+  );
+
+  assert.match(
+    resolveBlock,
+    /github\.event\.client_payload\.codex_timeout_ms \|\| vars\.CLAWSWEEPER_CODEX_TIMEOUT_MS \|\| '1200000'/,
+  );
+  assert.match(resolveBlock, /using 1200000/);
+  assert.doesNotMatch(
+    resolveBlock,
+    /codex_timeout_ms="\$\{\{ github\.event\.client_payload\.codex_timeout_ms \|\| '600000' \}\}"/,
+  );
 });
 
 test("github activity workflow coalesces noisy observer runs", () => {

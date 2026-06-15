@@ -81,6 +81,7 @@ checkpoint, and status-only commits are intentionally omitted.
 - Served stale dashboard status immediately while coalescing a background refresh, bounded job-detail fanout, and cached and parallelized historical GitHub lookups to reduce cold-load latency, diagnostic timeouts, and API usage.
 - Preserved records written by concurrent workers during generated-state publish races while retaining deliberate item-to-closed moves and plan cleanup.
 - Raised and unified Codex review timeouts at 20 minutes, including exact event reviews, so high-context reviews do not fall back at the previous 10-minute ceiling.
+- Scale pull request review timeouts for large diffs and video proofs while preserving the configured exact-event fallback for dispatches without adaptive payloads. Thanks @TurboTheTurtle.
 - Deferred workflow utility CLI execution until module initialization completes, preventing apply preselection from crashing on close-action constants.
 - Prevented verbose Codex review and repair subprocess output from overflowing memory, retained capped durable logs and bounded redacted diagnostic tails, stopped retrying terminal model-access failures, and pinned the CLI/proxy pair to compatible version 0.139.0. Thanks @fuller-stack-dev.
 - Hydrated generated pull request review findings into automerge repair jobs instead of routing repairs through the original issue-only artifact.
