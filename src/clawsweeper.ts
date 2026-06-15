@@ -16670,6 +16670,33 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
         cachedPrCloseCoverageProofGateResult = undefined;
       }
     }
+    if (
+      state === "open" &&
+      isCloseProposal &&
+      closeReason === "unconfirmed_product_direction" &&
+      !syncCommentsOnly &&
+      (applyKind === "all" || item.kind === applyKind) &&
+      closeReasonEnabled(closeReason, applyCloseReasons)
+    ) {
+      if (!unconfirmedProductDirectionCloseEnabled()) {
+        if (
+          recordApplySkipped("kept_open", "unconfirmed product-direction apply policy is disabled")
+        ) {
+          break;
+        }
+        continue;
+      }
+      const productDirectionBlockReason = unconfirmedProductDirectionApplyBlockReasonSafe(
+        number,
+        item,
+        storedUpdatedAt,
+        frontMatterValue(markdown, "reviewed_at"),
+      );
+      if (productDirectionBlockReason) {
+        if (markApplySkipped("kept_open", productDirectionBlockReason)) break;
+        continue;
+      }
+    }
     let currentPrStatusKind: PrStatusLabelKind | null = null;
     if (state === "open" && item.kind === "pull_request") {
       const realBehaviorProof = reportRealBehaviorProof(markdown);
@@ -17320,26 +17347,6 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
       maybeLogProgress(`skipped #${number}: close reason ${closeReason} not enabled`);
       if (processedCount >= processedLimit) break;
       continue;
-    }
-    if (closeReason === "unconfirmed_product_direction") {
-      if (!unconfirmedProductDirectionCloseEnabled()) {
-        if (
-          recordApplySkipped("kept_open", "unconfirmed product-direction apply policy is disabled")
-        ) {
-          break;
-        }
-        continue;
-      }
-      const productDirectionBlockReason = unconfirmedProductDirectionApplyBlockReasonSafe(
-        number,
-        item,
-        storedUpdatedAt,
-        frontMatterValue(markdown, "reviewed_at"),
-      );
-      if (productDirectionBlockReason) {
-        if (markApplySkipped("kept_open", productDirectionBlockReason)) break;
-        continue;
-      }
     }
     const currentReportValidation = validateCloseDecision(
       {

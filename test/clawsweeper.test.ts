@@ -6305,7 +6305,11 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$
 } else if (args[0] === "api" && /\\/pulls\\/321\\/(files|commits|comments|reviews)(?:\\?|$)/.test(path)) {
   console.log(JSON.stringify([[]]));
 } else if (args[0] === "label" || args[0] === "issue") {
-  console.log("");
+  console.error("unexpected GitHub write", JSON.stringify(args));
+  process.exit(1);
+} else if (args[0] === "api" && args.includes("--method")) {
+  console.error("unexpected GitHub write", JSON.stringify(args));
+  process.exit(1);
 } else {
   console.error("unexpected gh args", JSON.stringify(args));
   process.exit(1);
@@ -13026,7 +13030,7 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/(320|321)\\/timeline(?
       report.map((entry) => [entry.number, entry.action]).sort(([left], [right]) => left - right),
       [
         [320, "skipped_same_author_pair"],
-        [321, "skipped_same_author_pair"],
+        [321, "kept_open"],
       ],
     );
   } finally {
@@ -13054,7 +13058,11 @@ test("default-off product-direction apply preserves the durable close proposal",
       321,
       "unconfirmed_product_direction",
     );
-    writeFileSync(itemPath, synced.report, "utf8");
+    writeFileSync(
+      itemPath,
+      synced.report.replace(/^review_comment_sha256:.*$/m, "review_comment_sha256: stale"),
+      "utf8",
+    );
 
     const originalPolicy = process.env.CLAWSWEEPER_UNCONFIRMED_PRODUCT_DIRECTION_CLOSE_ENABLED;
     delete process.env.CLAWSWEEPER_UNCONFIRMED_PRODUCT_DIRECTION_CLOSE_ENABLED;
@@ -13124,7 +13132,11 @@ test("product-direction apply keeps a PR open when a maintainer comment calibrat
       321,
       "unconfirmed_product_direction",
     );
-    writeFileSync(itemPath, synced.report, "utf8");
+    writeFileSync(
+      itemPath,
+      synced.report.replace(/^review_comment_sha256:.*$/m, "review_comment_sha256: stale"),
+      "utf8",
+    );
 
     const originalPolicy = process.env.CLAWSWEEPER_UNCONFIRMED_PRODUCT_DIRECTION_CLOSE_ENABLED;
     process.env.CLAWSWEEPER_UNCONFIRMED_PRODUCT_DIRECTION_CLOSE_ENABLED = "true";
