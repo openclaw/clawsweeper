@@ -80,6 +80,7 @@ import {
 import { canTreatRebaseAsCompleteRepair } from "./fix-edit-policy.js";
 import { applyMechanicalChangelogFix } from "./mechanical-changelog.js";
 import { tryResolveMechanicalRebaseConflicts } from "./mechanical-rebase-conflicts.js";
+import { compactGeneratedBranchHistory } from "./compact-generated-branch.js";
 import { compactText, escapeRegExp } from "./text-utils.js";
 import {
   shouldCloseSupersededSourcePrs,
@@ -1092,6 +1093,15 @@ function openReplacementPrFromPreparedRepairCheckout({
 
   ghAuthSetupGit(targetDir);
   run("git", ["checkout", "-B", branch], { cwd: targetDir });
+  const historyCompaction = compactReplacementHistory({
+    targetDir,
+    baseBranch,
+    fixArtifact,
+    contributorCredits,
+    checkpointCommits: prep.checkpoint_commits,
+  });
+  prep.commit = historyCompaction.commit;
+  prep.history_compaction = historyCompaction;
   const mergedSourceSkip = skipMergedSourceReplacementWithoutDiff({
     mergedSource,
     targetDir,
@@ -2183,12 +2193,50 @@ function editValidatePrepareMerge({
     checkpointCommits.push(finalCheckpoint);
     pushCheckpoint?.();
   }
+  const historyCompaction =
+    mode === "replacement"
+      ? compactReplacementHistory({
+          targetDir,
+          baseBranch,
+          fixArtifact,
+          contributorCredits,
+          checkpointCommits,
+        })
+      : null;
+  if (historyCompaction?.status === "compacted") {
+    pushCheckpoint?.();
+  }
   const commit = run("git", ["rev-parse", "HEAD"], { cwd: targetDir }).trim();
   return {
     commit,
     checkpoint_commits: checkpointCommits,
+    history_compaction: historyCompaction,
     merge_preflight: buildMergePreflight({ fixArtifact, codexReview }),
   };
+}
+
+function compactReplacementHistory({
+  targetDir,
+  baseBranch,
+  fixArtifact,
+  contributorCredits,
+  checkpointCommits,
+}: LooseRecord) {
+  const compaction = compactGeneratedBranchHistory({
+    targetDir,
+    baseRef: `origin/${baseBranch}`,
+    message: fixArtifact.pr_title,
+    trailers: coAuthorTrailers(contributorCredits),
+  });
+  if (compaction.status === "compacted") {
+    checkpointCommits.splice(0, checkpointCommits.length, compaction.commit);
+    logProgress("compacted generated replacement branch history", {
+      previous_head: compaction.previous_head,
+      previous_commit_count: compaction.previous_commit_count,
+      commit: compaction.commit,
+    });
+  }
+  return compaction;
 }
 
 function logProgress(message: string, details: LooseRecord = {}) {
