@@ -2,6 +2,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { DEFAULT_TRUSTED_BOTS } from "./config.js";
 import type { JsonObject, JsonValue } from "./json-types.js";
 import { asJsonObject } from "./json-types.js";
 import { parseArgs, repoRoot } from "./lib.js";
@@ -50,6 +51,7 @@ export type GithubActivityNotifierRuntime = {
 
 const DEFAULT_REPORT_PATH = "notifications/github-activity-report.json";
 const BODY_EXCERPT_LIMIT = 1200;
+const TRUSTED_CLAWSWEEPER_BOTS = new Set(DEFAULT_TRUSTED_BOTS.map((login) => login.toLowerCase()));
 const CLAWSWEEPER_COMMAND_RE =
   /(^|\s)(@(clawsweeper|openclaw-clawsweeper)(\[bot\])?\b|\/(clawsweeper|review|re-review|re-run|rerun|automerge|autoclose)\b)/i;
 
@@ -380,8 +382,8 @@ export function routineGithubActivityReason(activity: GithubActivity): string | 
   const typeAction = `${activity.type}.${activity.action ?? "none"}`;
   if (
     activity.type === "issue_comment" &&
-    isBotActor(activity.actor) &&
-    hasCommandStatusMarker(activity)
+    isTrustedClawSweeperComment(activity) &&
+    hasCommandStatusMarker(asJsonObject(activity.payload.comment).body_excerpt)
   ) {
     return "routine GitHub activity filtered: ClawSweeper command status comment";
   }
@@ -439,8 +441,23 @@ function activityContainsClawSweeperCommand(activity: GithubActivity): boolean {
   return CLAWSWEEPER_COMMAND_RE.test(activityText(activity));
 }
 
-function hasCommandStatusMarker(activity: GithubActivity): boolean {
-  return /<!--\s*clawsweeper-command(?:-status|-ack|-progress)?:/i.test(activityText(activity));
+function isTrustedClawSweeperComment(activity: GithubActivity): boolean {
+  const commentAuthor = stringOrNull(asJsonObject(activity.payload.comment).author);
+  return isTrustedClawSweeperBot(activity.actor) && isTrustedClawSweeperBot(commentAuthor);
+}
+
+function isTrustedClawSweeperBot(login: string | null): boolean {
+  return typeof login === "string" && TRUSTED_CLAWSWEEPER_BOTS.has(login.toLowerCase());
+}
+
+function hasCommandStatusMarker(value: unknown): boolean {
+  const text = stringOrNull(value);
+  return (
+    typeof text === "string" &&
+    /<!--\s*clawsweeper-command(?:(?:-status|-ack):[^>]+|-progress:(?:start|end)|:[^>]+)\s*-->/i.test(
+      text,
+    )
+  );
 }
 
 function activityText(activity: GithubActivity): string {

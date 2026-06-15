@@ -74,6 +74,7 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Fixed
 
+- Prevented trusted ClawSweeper command status comments from re-entering GitHub activity handling and churning review automation. Thanks @ooiuuii.
 - Routed proof-sufficient security reviews that recommend maintainer risk acceptance to maintainer review instead of waiting on the contributor. Thanks @brokemac79.
 - Prevented automatic issue backfill from spending Codex workers on reports explicitly blocked by product-decision, no-new-fix-PR, or maintainer-review signals.
 - Kept issue-generated PRs out of automerge, migrated their labels to `clawsweeper:autofix`, and made clean exact-head autofix reviews wait for required checks to appear, settle green, and reach GitHub merge-state readiness before removing the repair-loop label instead of repeating blocked merge attempts.
