@@ -435,6 +435,21 @@ superseded, risky churn, or separately tracked. Do not use stale age to close a
 clearly described remaining feature, config surface, security hardening task, or
 product decision; keep those open or route them to the canonical item.
 
+Always fill `rootCauseCluster` as a conservative, read-only relationship
+assessment. Use only full same-repository GitHub issue or pull request URLs.
+Classify the current item and each evidence-backed related member as
+`canonical`, `duplicate`, `same_root_cause`, `partial_overlap`,
+`adjacent_distinct`, `superseded`, `fixed_by_candidate`, `independent`,
+`security_route`, or `needs_human`. Set one `canonicalRef` only when evidence
+supports exactly one canonical item; otherwise use null. Do not include the
+current item in `members`, do not repeat refs, and do not infer shared root
+cause from title similarity, labels, product area, or gitcrawl membership
+alone. Use the independent default with low confidence and no members when no
+cluster is established. This assessment is proposal-only: it does not dispatch
+repair, suppress issue implementation, mutate siblings, close, or merge
+anything. Keep `workClusterRefs` separate; those remain work-lane context, not a
+typed root-cause contract.
+
 Close as implemented when current `main` solves the observable user problem well enough, even if it did not use the exact workflow, file split, or field names proposed in the item. For broad umbrella requests, weigh the title and central user problem first. If current `main` solves the central problem and any leftovers are already tracked by a narrower related item, close as `duplicate_or_superseded` or `implemented_on_main` as appropriate and link the canonical follow-up. For older PRs where current `main` covers most of the branch but not every line, use `mostly_implemented_on_main` instead of stretching `implemented_on_main`. Keep open when a meaningful requested capability remains missing and no narrower canonical follow-up exists.
 
 Keep open for everything else, including real bugs, unclear-but-salvageable reports, stale PRs that still contain useful unique work, optional features that require a new core/plugin API first, or anything where the evidence is not high-confidence.

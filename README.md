@@ -63,7 +63,9 @@ Review prompts include compact related issue and PR context from explicit links,
 linked closing PRs, existing local ClawSweeper reports, optional gitcrawl
 clusters, and opt-in live GitHub issue search for exact event reviews. This is
 advisory context for duplicate/superseded reasoning, not a standalone close
-decision. See
+decision. Reviews also persist a typed, proposal-only root-cause assessment with
+same-repository URLs and at most one evidence-backed canonical item; it does not
+dispatch repair, suppress jobs, mutate siblings, close, or merge. See
 [`docs/related-issue-discovery.md`](docs/related-issue-discovery.md).
 
 For open issues with complete, current kept-open reviews, ClawSweeper also

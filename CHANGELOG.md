@@ -9,6 +9,7 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Added
 
+- Added typed, durable, proposal-only root-cause cluster assessments to reviews, with strict same-repository canonical-item validation and no repair dispatch, job suppression, sibling mutation, close, or merge behavior.
 - Added a fail-closed `CLAWSWEEPER_CODEX_LOGIN_METHOD=chatgpt` override for local Codex OAuth runs while retaining API authentication by default. Thanks @anagnorisis2peripeteia.
 - Added repair-only PR intake that scans an author's open pull requests for actionable failures and creates durable PR-repair jobs. Thanks @Jhacarreiro.
 - Added automatic issue-build lifecycle comments and dashboard cards with issue titles, queued/planning/building/completed/blocked history, live worker links, Actions runs, and generated PR drill-down.

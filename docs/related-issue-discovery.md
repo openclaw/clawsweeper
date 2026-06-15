@@ -22,6 +22,19 @@ The review prompt still requires a conservative canonical-search pass before
 using `duplicate_or_superseded`. The related context is a starting point, not a
 standalone duplicate verdict.
 
+## Root-Cause Assessment
+
+Each new review records a typed `rootCauseCluster` assessment separately from
+the existing work-lane `workClusterRefs`. It classifies the current item and up
+to 12 evidence-backed same-repository issue or PR URLs, records at most one
+canonical item, and preserves a short reason for every member.
+
+The independent low-confidence assessment is the default when no cluster is
+established. High-confidence assessments with a canonical item may be shown in
+the public review comment to make maintainer decisions easier. The assessment
+is proposal-only: it does not dispatch repair, suppress jobs, mutate sibling
+items, close, or merge anything.
+
 ## Live GitHub Search
 
 Live GitHub Search is intentionally opt-in because the Search API has tighter
@@ -70,6 +83,7 @@ older legacy cluster tables are supported on a best-effort basis.
 - Related discovery does not create new labels.
 - Related discovery does not auto-close an item by itself.
 - Related discovery does not make repair or automerge decisions.
+- Root-cause assessments do not dispatch or deduplicate repair jobs.
 - Duplicate or superseded close proposals still require concrete evidence in
   the review and must pass the existing apply-time live-state checks.
 - GitHub Search is enabled only for exact one-item event reviews by default, not

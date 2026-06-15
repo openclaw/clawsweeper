@@ -31,6 +31,7 @@
     "visionFitEvidence",
     "implementationComplexity",
     "autoImplementationCandidate",
+    "rootCauseCluster",
     "agentsPolicyStatus",
     "reviewFindings",
     "securityReview",
@@ -371,6 +372,77 @@
       "type": "string",
       "enum": ["none", "strict_bug", "vision_fit"],
       "description": "Whether this issue should be eligible for automatic PR intake after review. Use strict_bug only for the existing reproduced-bug lane. Use vision_fit only for high-confidence, VISION.md-aligned, small, queue_fix_pr issue work with clear validation and no security/product-decision blocker. Otherwise use none."
+    },
+    "rootCauseCluster": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Read-only root-cause relationship assessment. This does not dispatch repair, suppress jobs, mutate sibling items, close, or merge anything.",
+      "required": ["confidence", "canonicalRef", "currentItemRelationship", "summary", "members"],
+      "properties": {
+        "confidence": {
+          "type": "string",
+          "enum": ["high", "medium", "low"]
+        },
+        "canonicalRef": {
+          "type": ["string", "null"],
+          "pattern": "^https://github\\.com/[^/\\s]+/[^/\\s]+/(?:issues|pull)/[1-9][0-9]*$"
+        },
+        "currentItemRelationship": {
+          "type": "string",
+          "enum": [
+            "canonical",
+            "duplicate",
+            "same_root_cause",
+            "partial_overlap",
+            "adjacent_distinct",
+            "superseded",
+            "fixed_by_candidate",
+            "independent",
+            "security_route",
+            "needs_human"
+          ]
+        },
+        "summary": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500
+        },
+        "members": {
+          "type": "array",
+          "maxItems": 12,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["ref", "relationship", "reason"],
+            "properties": {
+              "ref": {
+                "type": "string",
+                "pattern": "^https://github\\.com/[^/\\s]+/[^/\\s]+/(?:issues|pull)/[1-9][0-9]*$"
+              },
+              "relationship": {
+                "type": "string",
+                "enum": [
+                  "canonical",
+                  "duplicate",
+                  "same_root_cause",
+                  "partial_overlap",
+                  "adjacent_distinct",
+                  "superseded",
+                  "fixed_by_candidate",
+                  "independent",
+                  "security_route",
+                  "needs_human"
+                ]
+              },
+              "reason": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 300
+              }
+            }
+          }
+        }
+      }
     },
     "agentsPolicyStatus": {
       "type": "object",

@@ -202,6 +202,17 @@ type MantisRecommendationScenario =
 type VisionFitStatus = "aligned" | "rejected" | "unclear" | "not_applicable";
 type ImplementationComplexity = "small" | "medium" | "large" | "unclear" | "not_applicable";
 type AutoImplementationCandidate = "none" | "strict_bug" | "vision_fit";
+type RootCauseRelationship =
+  | "canonical"
+  | "duplicate"
+  | "same_root_cause"
+  | "partial_overlap"
+  | "adjacent_distinct"
+  | "superseded"
+  | "fixed_by_candidate"
+  | "independent"
+  | "security_route"
+  | "needs_human";
 type CloseReason =
   | "implemented_on_main"
   | "mostly_implemented_on_main"
@@ -378,6 +389,20 @@ interface FeatureShowcase {
   reason: string;
 }
 
+interface RootCauseClusterMember {
+  ref: string;
+  relationship: RootCauseRelationship;
+  reason: string;
+}
+
+interface RootCauseClusterAssessment {
+  confidence: Confidence;
+  canonicalRef: string | null;
+  currentItemRelationship: RootCauseRelationship;
+  summary: string;
+  members: RootCauseClusterMember[];
+}
+
 interface FixedPullRequest {
   repo: string;
   number: number;
@@ -449,6 +474,7 @@ interface Decision {
   visionFitEvidence: string[];
   implementationComplexity: ImplementationComplexity;
   autoImplementationCandidate: AutoImplementationCandidate;
+  rootCauseCluster: RootCauseClusterAssessment;
   agentsPolicyStatus: AgentsPolicyStatus;
   reviewFindings: ReviewFinding[];
   securityReview: SecurityReview;
@@ -1047,7 +1073,7 @@ const DEFAULT_REASONING_EFFORT = "high";
 const DEFAULT_SERVICE_TIER = "";
 const DEFAULT_REVIEW_CODEX_TIMEOUT_MS = 1_200_000;
 const DEFAULT_CODEX_FALLBACK_MIN_BUDGET_MS = 120_000;
-const REVIEW_POLICY_VERSION = "2026-05-30-policy-v19";
+const REVIEW_POLICY_VERSION = "2026-06-15-policy-v21";
 const REVIEW_ITEM_PROMPT_PATH = join(ROOT, "prompts", "review-item.md");
 const CLAWSWEEPER_DECISION_SCHEMA_PATH = join(ROOT, "schema", "clawsweeper-decision.schema.json");
 const PR_CLOSE_COVERAGE_PROOF_PROMPT_PATH = join(ROOT, "prompts", "pr-close-coverage-proof.md");
@@ -1595,6 +1621,18 @@ const MERGE_RISK_OPTION_CATEGORIES = new Set<MergeRiskOptionCategory>([
   "accept_risk",
   "pause_or_close",
 ]);
+const ROOT_CAUSE_RELATIONSHIPS = new Set<RootCauseRelationship>([
+  "canonical",
+  "duplicate",
+  "same_root_cause",
+  "partial_overlap",
+  "adjacent_distinct",
+  "superseded",
+  "fixed_by_candidate",
+  "independent",
+  "security_route",
+  "needs_human",
+]);
 const DECISION_SCHEMA_KEYS = new Set([
   "decision",
   "closeReason",
@@ -1624,6 +1662,7 @@ const DECISION_SCHEMA_KEYS = new Set([
   "visionFitEvidence",
   "implementationComplexity",
   "autoImplementationCandidate",
+  "rootCauseCluster",
   "agentsPolicyStatus",
   "reviewFindings",
   "securityReview",
@@ -1670,6 +1709,14 @@ const MANTIS_RECOMMENDATION_SCHEMA_KEYS = new Set([
   "maintainerComment",
 ]);
 const FEATURE_SHOWCASE_SCHEMA_KEYS = new Set(["status", "reason"]);
+const ROOT_CAUSE_CLUSTER_SCHEMA_KEYS = new Set([
+  "confidence",
+  "canonicalRef",
+  "currentItemRelationship",
+  "summary",
+  "members",
+]);
+const ROOT_CAUSE_CLUSTER_MEMBER_SCHEMA_KEYS = new Set(["ref", "relationship", "reason"]);
 const AGENTS_POLICY_STATUS_SCHEMA_KEYS = new Set([
   "found",
   "readFully",
@@ -1718,6 +1765,7 @@ const REVIEW_SECTIONS = {
   reproductionAssessment: "Reproduction Assessment",
   solutionAssessment: "Solution Assessment",
   visionFit: "Vision Fit",
+  rootCauseCluster: "Root-Cause Cluster",
   reviewFindings: "Review Findings",
   securityReview: "Security Review",
   realBehaviorProof: "Real Behavior Proof",
@@ -2389,7 +2437,18 @@ function parseReviewFinding(value: unknown, path: string): ReviewFinding {
   };
 }
 
-type DecisionNormalizationItem = Pick<Item, "repo" | "kind" | "authorAssociation">;
+type DecisionNormalizationItem = Pick<Item, "repo" | "number" | "kind" | "authorAssociation">;
+type RootCauseNormalizationItem = Pick<Item, "repo" | "number" | "kind">;
+
+function defaultRootCauseCluster(): RootCauseClusterAssessment {
+  return {
+    confidence: "low",
+    canonicalRef: null,
+    currentItemRelationship: "independent",
+    summary: "No evidence-backed root-cause cluster was established.",
+    members: [],
+  };
+}
 
 const CHANGELOG_ENTRY_REVIEW_PATTERN = /\b(?:changelog\.md|changelog\s+entry|release[- ]?note)\b/i;
 const MISSING_CHANGELOG_ACTION_PATTERN =
@@ -2554,6 +2613,156 @@ function parseFeatureShowcase(value: unknown, path: string): FeatureShowcase {
   };
 }
 
+interface ParsedGitHubItemRef {
+  repo: string;
+  kind: ItemKind;
+  number: number;
+  url: string;
+}
+
+function parseGitHubItemRef(value: string, path: string): ParsedGitHubItemRef {
+  const match = value.match(
+    /^https:\/\/github\.com\/([^/\s]+)\/([^/\s]+)\/(issues|pull)\/([1-9][0-9]*)$/,
+  );
+  if (!match) throw new Error(`${path} must be a full GitHub issue or pull request URL`);
+  const repo = normalizeRepo(`${match[1]}/${match[2]}`);
+  const kind = match[3] === "pull" ? "pull_request" : "issue";
+  const number = Number(match[4]);
+  return {
+    repo,
+    kind,
+    number,
+    url: `https://github.com/${repo}/${kind === "pull_request" ? "pull" : "issues"}/${number}`,
+  };
+}
+
+function decisionItemUrl(item: RootCauseNormalizationItem): string {
+  const segment = item.kind === "pull_request" ? "pull" : "issues";
+  return `https://github.com/${normalizeRepo(item.repo)}/${segment}/${item.number}`;
+}
+
+function parseRootCauseClusterMember(value: unknown, path: string): RootCauseClusterMember {
+  const record = requireRecord(value, path);
+  rejectUnexpectedKeys(record, ROOT_CAUSE_CLUSTER_MEMBER_SCHEMA_KEYS, path);
+  const reason = requireString(record.reason, `${path}.reason`).trim();
+  if (!reason) throw new Error(`${path}.reason must not be empty`);
+  if (reason.length > 300) throw new Error(`${path}.reason must be at most 300 characters`);
+  const ref = parseGitHubItemRef(requireString(record.ref, `${path}.ref`), `${path}.ref`).url;
+  return {
+    ref,
+    relationship: requireEnum(
+      record.relationship,
+      ROOT_CAUSE_RELATIONSHIPS,
+      `${path}.relationship`,
+    ),
+    reason,
+  };
+}
+
+function parseRootCauseCluster(
+  value: unknown,
+  path: string,
+  item?: RootCauseNormalizationItem,
+): RootCauseClusterAssessment {
+  const record = requireRecord(value, path);
+  rejectUnexpectedKeys(record, ROOT_CAUSE_CLUSTER_SCHEMA_KEYS, path);
+  const summary = requireString(record.summary, `${path}.summary`).trim();
+  if (!summary) throw new Error(`${path}.summary must not be empty`);
+  if (summary.length > 500) throw new Error(`${path}.summary must be at most 500 characters`);
+  if (!Array.isArray(record.members)) throw new Error(`${path}.members must be an array`);
+  if (record.members.length > 12) throw new Error(`${path}.members must contain at most 12 items`);
+
+  const members = record.members.map((entry, index) =>
+    parseRootCauseClusterMember(entry, `${path}.members[${index}]`),
+  );
+  const parsedMembers = members.map((member, index) => ({
+    member,
+    parsed: parseGitHubItemRef(member.ref, `${path}.members[${index}].ref`),
+  }));
+  const seenRefs = new Set<string>();
+  for (const { member, parsed } of parsedMembers) {
+    if (seenRefs.has(member.ref)) throw new Error(`${path}.members contains duplicate refs`);
+    seenRefs.add(member.ref);
+    if (item && normalizeRepo(parsed.repo) !== normalizeRepo(item.repo)) {
+      throw new Error(`${path}.members must stay within ${item.repo}`);
+    }
+    if (item && member.ref === decisionItemUrl(item)) {
+      throw new Error(`${path}.members must not repeat the current item`);
+    }
+  }
+
+  const rawCanonicalRef = requireNullableString(record.canonicalRef, `${path}.canonicalRef`);
+  const parsedCanonical = rawCanonicalRef
+    ? parseGitHubItemRef(rawCanonicalRef, `${path}.canonicalRef`)
+    : null;
+  const canonicalRef = parsedCanonical?.url ?? null;
+  if (item && parsedCanonical && normalizeRepo(parsedCanonical.repo) !== normalizeRepo(item.repo)) {
+    throw new Error(`${path}.canonicalRef must stay within ${item.repo}`);
+  }
+  const currentItemRelationship = requireEnum(
+    record.currentItemRelationship,
+    ROOT_CAUSE_RELATIONSHIPS,
+    `${path}.currentItemRelationship`,
+  );
+  const canonicalMembers = members.filter((member) => member.relationship === "canonical");
+  if (canonicalMembers.length > 1)
+    throw new Error(`${path} must have at most one canonical member`);
+
+  const currentUrl = item ? decisionItemUrl(item) : null;
+  if (!canonicalRef) {
+    if (currentItemRelationship === "canonical" || canonicalMembers.length > 0) {
+      throw new Error(`${path}.canonicalRef is required for canonical relationships`);
+    }
+  } else if (currentItemRelationship === "canonical") {
+    if (currentUrl && canonicalRef !== currentUrl) {
+      throw new Error(`${path}.canonicalRef must identify the canonical current item`);
+    }
+    if (canonicalMembers.length > 0) {
+      throw new Error(`${path} cannot mark both the current item and a member canonical`);
+    }
+  } else if (canonicalMembers.length !== 1 || canonicalMembers[0]?.ref !== canonicalRef) {
+    throw new Error(`${path}.canonicalRef must identify exactly one canonical member`);
+  }
+
+  const requiresCanonical = new Set<RootCauseRelationship>([
+    "duplicate",
+    "same_root_cause",
+    "superseded",
+    "fixed_by_candidate",
+  ]);
+  if (requiresCanonical.has(currentItemRelationship) && !canonicalRef) {
+    throw new Error(`${path}.currentItemRelationship requires a canonical ref`);
+  }
+  if (
+    ["independent", "security_route", "needs_human"].includes(currentItemRelationship) &&
+    canonicalRef
+  ) {
+    throw new Error(`${path}.currentItemRelationship cannot claim a canonical ref`);
+  }
+  for (const member of members) {
+    if (requiresCanonical.has(member.relationship) && !canonicalRef) {
+      throw new Error(`${path} relationship ${member.relationship} requires a canonical ref`);
+    }
+    if (member.relationship === "fixed_by_candidate" && parsedCanonical?.kind !== "pull_request") {
+      throw new Error(`${path} fixed_by_candidate requires a canonical pull request`);
+    }
+  }
+  if (
+    currentItemRelationship === "fixed_by_candidate" &&
+    parsedCanonical?.kind !== "pull_request"
+  ) {
+    throw new Error(`${path}.currentItemRelationship fixed_by_candidate requires a canonical PR`);
+  }
+
+  return {
+    confidence: requireEnum(record.confidence, CONFIDENCES, `${path}.confidence`),
+    canonicalRef,
+    currentItemRelationship,
+    summary,
+    members,
+  };
+}
+
 function parseAgentsPolicyStatus(value: unknown, path: string): AgentsPolicyStatus {
   const record = requireRecord(value, path);
   rejectUnexpectedKeys(record, AGENTS_POLICY_STATUS_SCHEMA_KEYS, path);
@@ -2653,6 +2862,11 @@ export function parseDecision(value: unknown, item?: DecisionNormalizationItem):
       record.autoImplementationCandidate,
       AUTO_IMPLEMENTATION_CANDIDATES,
       "decision.autoImplementationCandidate",
+    ),
+    rootCauseCluster: parseRootCauseCluster(
+      record.rootCauseCluster,
+      "decision.rootCauseCluster",
+      item,
     ),
     agentsPolicyStatus: parseAgentsPolicyStatus(
       record.agentsPolicyStatus,
@@ -6563,6 +6777,7 @@ function codexFailureDecision(
     visionFitEvidence: [],
     implementationComplexity: "not_applicable",
     autoImplementationCandidate: "none",
+    rootCauseCluster: defaultRootCauseCluster(),
     agentsPolicyStatus: {
       found: false,
       readFully: false,
@@ -8831,6 +9046,24 @@ function reportFeatureShowcase(markdown: string): FeatureShowcase {
         ? "This report predates the structured feature showcase reason."
         : "No feature showcase assessment was recorded in this report."),
   };
+}
+
+function reportRootCauseCluster(markdown: string): RootCauseClusterAssessment {
+  const raw = frontMatterValue(markdown, "root_cause_cluster");
+  if (!raw) return defaultRootCauseCluster();
+  try {
+    return parseRootCauseCluster(JSON.parse(raw), "root_cause_cluster", {
+      repo: markdownRepository(markdown),
+      number: Number(frontMatterValue(markdown, "number")),
+      kind: (frontMatterValue(markdown, "type") as ItemKind | undefined) ?? "issue",
+    });
+  } catch {
+    return defaultRootCauseCluster();
+  }
+}
+
+export function rootCauseClusterFromReportForTest(markdown: string): RootCauseClusterAssessment {
+  return reportRootCauseCluster(markdown);
 }
 
 function reportAgentsPolicyStatus(markdown: string): AgentsPolicyStatus | undefined {
@@ -11793,6 +12026,7 @@ function reportDecision(markdown: string, closeReason: CloseReason): Decision {
     reproductionAssessment: reviewSectionValue(markdown, "reproductionAssessment"),
     solutionAssessment: reviewSectionValue(markdown, "solutionAssessment"),
     ...visionFit,
+    rootCauseCluster: reportRootCauseCluster(markdown),
     agentsPolicyStatus: reportAgentsPolicyStatus(markdown) ?? defaultAgentsPolicyStatus(),
     reviewFindings: reportReviewFindings(markdown),
     securityReview: reportSecurityReview(markdown),
@@ -13394,6 +13628,7 @@ function renderCloseComment(options: {
   likelyOwners?: LikelyOwner[];
   fixedPullRequest?: FixedPullRequest | null;
   securityReview?: SecurityReview;
+  rootCauseCluster?: RootCauseClusterAssessment;
   reviewLine: string;
   currentItem?: { repo?: string; kind?: ItemKind; number?: number } | undefined;
 }): string {
@@ -13410,6 +13645,8 @@ function renderCloseComment(options: {
       )}.`,
     );
   }
+  const rootCauseCluster = publicRootCauseClusterBlock(options.rootCauseCluster);
+  if (rootCauseCluster) lines.push("", "**Root-cause cluster**", rootCauseCluster);
   const bestSolutionLine = sentence(options.bestSolution ?? "");
   const canonicalLinks = duplicateCanonicalLinks({
     reason: options.reason,
@@ -13462,6 +13699,7 @@ function renderCloseCommentFromReport(markdown: string, reason: CloseReason): st
       likelyOwners: reportLikelyOwners(markdown),
       fixedPullRequest: fixedPullRequestFromReport(markdown),
       securityReview: reportSecurityReview(markdown),
+      rootCauseCluster: reportRootCauseCluster(markdown),
       reviewLine: closeReviewLineFromReport(markdown),
       currentItem: {
         repo: markdownRepository(markdown),
@@ -13516,6 +13754,7 @@ function normalizeComment(
     likelyOwners: decision.likelyOwners,
     fixedPullRequest: decision.fixedPullRequest ?? null,
     securityReview: decision.securityReview,
+    rootCauseCluster: decision.rootCauseCluster,
     reviewLine: closeReviewLineFromDecision(decision, git, runtime),
     currentItem: item,
   });
@@ -13553,6 +13792,35 @@ function agentsPolicyStatusLine(status: AgentsPolicyStatus | undefined): string 
 
 function appendPublicSection(lines: string[], heading: string, body: string): void {
   lines.push(`**${heading}**`, body, "");
+}
+
+function publicRootCauseClusterBlock(cluster: RootCauseClusterAssessment | undefined): string {
+  if (
+    !cluster ||
+    cluster.confidence !== "high" ||
+    !cluster.canonicalRef ||
+    cluster.members.length === 0 ||
+    ["independent", "security_route", "needs_human"].includes(cluster.currentItemRelationship)
+  ) {
+    return "";
+  }
+  const visibleMembers = cluster.members.slice(0, 5);
+  const memberLines = visibleMembers.map(
+    (member) => `- \`${member.relationship}\`: ${member.ref} - ${sentence(member.reason)}`,
+  );
+  if (cluster.members.length > visibleMembers.length) {
+    memberLines.push(`- ${cluster.members.length - visibleMembers.length} more in the report.`);
+  }
+  return [
+    `Relationship: \`${cluster.currentItemRelationship}\``,
+    `Canonical: ${cluster.canonicalRef}`,
+    `Summary: ${sentence(cluster.summary)}`,
+    "",
+    "Members:",
+    ...memberLines,
+    "",
+    "Proposal only: this assessment does not dispatch repair, suppress jobs, mutate sibling items, close, or merge anything.",
+  ].join("\n");
 }
 
 function publicReproducibilityLine(reproductionAssessment: string): string {
@@ -13766,6 +14034,7 @@ function renderKeepOpenCommentFromReport(
   const prRating = reportPrRating(markdown);
   const mantisRecommendation = reportMantisRecommendation(markdown);
   const agentsPolicyStatus = reportAgentsPolicyStatus(markdown);
+  const rootCauseCluster = reportRootCauseCluster(markdown);
   const summary = reviewSectionValue(markdown, "summary");
   const changeSummary = reviewSectionValue(markdown, "changeSummary");
   const bestSolution = reviewSectionValue(markdown, "bestSolution");
@@ -13833,6 +14102,10 @@ function renderKeepOpenCommentFromReport(
     if (dataModelWarning) appendPublicSection(lines, "Stored data model", dataModelWarning);
   } else {
     appendPublicSection(lines, "Summary", publicSummaryBody(summaryLine, reproductionAssessment));
+  }
+  const rootCauseClusterBlock = publicRootCauseClusterBlock(rootCauseCluster);
+  if (rootCauseClusterBlock) {
+    appendPublicSection(lines, "Root-cause cluster", rootCauseClusterBlock);
   }
   if (!isPullRequest) {
     const reproductionHelp = issueReproductionHelpSuggestions(markdown);
@@ -14869,6 +15142,28 @@ function renderFeatureShowcaseReportSection(decision: Decision): string {
   ].join("\n");
 }
 
+function renderRootCauseClusterReportSection(decision: Decision): string {
+  const members = decision.rootCauseCluster.members.length
+    ? decision.rootCauseCluster.members
+        .map(
+          (member) => `- **${member.relationship}:** ${member.ref}\n  - reason: ${member.reason}`,
+        )
+        .join("\n")
+    : "- none";
+  return [
+    `Current item relationship: ${decision.rootCauseCluster.currentItemRelationship}`,
+    "",
+    `Confidence: ${decision.rootCauseCluster.confidence}`,
+    "",
+    `Canonical ref: ${decision.rootCauseCluster.canonicalRef ?? "none"}`,
+    "",
+    `Summary: ${sentence(decision.rootCauseCluster.summary)}`,
+    "",
+    "Members:",
+    members,
+  ].join("\n");
+}
+
 function renderAgentsPolicyStatusReportSection(decision: Decision): string {
   return [
     `Status: ${decision.agentsPolicyStatus.status}`,
@@ -14943,6 +15238,7 @@ function markdownFor(options: {
     options.decision.reproductionAssessment.trim() || "_Not provided._";
   const solutionAssessment = options.decision.solutionAssessment.trim() || "_Not provided._";
   const visionFit = renderVisionFitReportSection(options.decision);
+  const rootCauseCluster = renderRootCauseClusterReportSection(options.decision);
   const reviewFindings = renderReviewFindingsReportSection(options.decision);
   const securityReview = renderSecurityReviewReportSection(options.decision);
   const realBehaviorProof = renderRealBehaviorProofReportSection(options.decision);
@@ -15017,6 +15313,7 @@ work_status: ${workStatusForDecision(options.decision)}
 work_reason_sha256: ${options.decision.workReason ? sha256(options.decision.workReason) : "none"}
 work_prompt_sha256: ${options.decision.workPrompt ? sha256(options.decision.workPrompt) : "none"}
 work_cluster_refs: ${jsonFrontMatterValue(options.decision.workClusterRefs)}
+root_cause_cluster: ${JSON.stringify(options.decision.rootCauseCluster)}
 work_validation: ${jsonFrontMatterValue(options.decision.workValidation)}
 work_likely_files: ${jsonFrontMatterValue(options.decision.workLikelyFiles)}
 triage_priority: ${options.decision.triagePriority}
@@ -15119,6 +15416,10 @@ ${solutionAssessment}
 ## ${REVIEW_SECTIONS.visionFit}
 
 ${visionFit}
+
+## ${REVIEW_SECTIONS.rootCauseCluster}
+
+${rootCauseCluster}
 
 ## ${REVIEW_SECTIONS.reviewFindings}
 

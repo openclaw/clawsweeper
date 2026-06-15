@@ -97,6 +97,7 @@ import {
   reviewPromptForTest,
   renderReviewCommentFromReport,
   renderReviewContextBudgetForTest,
+  rootCauseClusterFromReportForTest,
   renderWorkPlanFromReport,
   restoreTreeModesForTest,
   reviewContextLedgerForTest,
@@ -232,6 +233,13 @@ function closeDecision(overrides = {}) {
     visionFitEvidence: [],
     implementationComplexity: "not_applicable",
     autoImplementationCandidate: "none",
+    rootCauseCluster: {
+      confidence: "low",
+      canonicalRef: null,
+      currentItemRelationship: "independent",
+      summary: "No evidence-backed root-cause cluster was established.",
+      members: [],
+    },
     agentsPolicyStatus: {
       found: true,
       readFully: true,
@@ -3173,6 +3181,95 @@ Reason: The bug is narrow and source-reproducible.
     comment,
     /Do we have a high-confidence way to reproduce the issue\?\n\nYes\. A source-level reproduction is clear/,
   );
+});
+
+test("high-confidence root-cause clusters appear in keep-open review comments", () => {
+  const rootCauseCluster = {
+    confidence: "high",
+    canonicalRef: "https://github.com/openclaw/openclaw/pull/75880",
+    currentItemRelationship: "same_root_cause",
+    summary: "The issue and candidate PR cover the same reproduced callback failure.",
+    members: [
+      {
+        ref: "https://github.com/openclaw/openclaw/pull/75880",
+        relationship: "canonical",
+        reason: "This PR contains the focused fix and regression coverage.",
+      },
+    ],
+  };
+  const comment = renderReviewCommentFromReport(
+    `${reportFrontMatter({
+      type: "issue",
+      number: "75877",
+      root_cause_cluster: JSON.stringify(rootCauseCluster),
+    })}
+
+## Summary
+
+Keep open while maintainers evaluate the candidate fix.
+
+## Best Possible Solution
+
+Review the linked candidate PR.
+`,
+    "none",
+  );
+
+  assert.match(comment, /\*\*Root-cause cluster\*\*/);
+  assert.match(comment, /Relationship: `same_root_cause`/);
+  assert.match(comment, /Canonical: https:\/\/github\.com\/openclaw\/openclaw\/pull\/75880/);
+  assert.match(comment, /- `canonical`: https:\/\/github\.com\/openclaw\/openclaw\/pull\/75880/);
+  assert.match(comment, /Proposal only: this assessment does not dispatch repair/);
+});
+
+test("low-confidence root-cause clusters stay out of public comments", () => {
+  const comment = renderReviewCommentFromReport(
+    `${reportFrontMatter({
+      type: "issue",
+      number: "75877",
+      root_cause_cluster: JSON.stringify({
+        confidence: "low",
+        canonicalRef: null,
+        currentItemRelationship: "independent",
+        summary: "No evidence-backed root-cause cluster was established.",
+        members: [],
+      }),
+    })}
+
+## Summary
+
+Keep open for more evidence.
+`,
+    "none",
+  );
+
+  assert.doesNotMatch(comment, /\*\*Root-cause cluster\*\*/);
+  assert.doesNotMatch(comment, /Proposal only: this assessment/);
+});
+
+test("high-confidence root-cause clusters appear in close comments", () => {
+  const comment = renderReviewCommentFromReport(
+    implementedCloseReport({
+      root_cause_cluster: JSON.stringify({
+        confidence: "high",
+        canonicalRef: "https://github.com/openclaw/clawsweeper/issues/400",
+        currentItemRelationship: "duplicate",
+        summary: "The canonical issue tracks the remaining work.",
+        members: [
+          {
+            ref: "https://github.com/openclaw/clawsweeper/issues/400",
+            relationship: "canonical",
+            reason: "This issue has the broader accepted scope.",
+          },
+        ],
+      }),
+    }),
+    "implemented_on_main",
+  );
+
+  assert.match(comment, /\*\*Root-cause cluster\*\*/);
+  assert.match(comment, /Relationship: `duplicate`/);
+  assert.match(comment, /Canonical: https:\/\/github\.com\/openclaw\/clawsweeper\/issues\/400/);
 });
 
 test("issue keep-open review comments suggest concrete reproduction help", () => {
@@ -15935,6 +16032,226 @@ test("decision parser enforces required schema-shaped evidence", () => {
   assert.equal(workCandidate.reproductionStatus, "reproduced");
   assert.equal(workCandidate.realBehaviorProof.status, "not_applicable");
   assert.deepEqual(workCandidate.workClusterRefs, ["#123", "#456"]);
+});
+
+test("decision parser validates typed root-cause clusters", () => {
+  const canonicalRef = "https://github.com/openclaw/openclaw/pull/456";
+  const rootCauseCluster = {
+    confidence: "high",
+    canonicalRef,
+    currentItemRelationship: "fixed_by_candidate",
+    summary: "The candidate PR fixes the reproduced issue.",
+    members: [
+      {
+        ref: canonicalRef,
+        relationship: "canonical",
+        reason: "The PR contains the focused fix and regression test.",
+      },
+    ],
+  };
+  const parsed = parseDecision(
+    closeDecision({ rootCauseCluster }),
+    item({ repo: "openclaw/openclaw", number: 123, kind: "issue" }),
+  );
+  assert.deepEqual(parsed.rootCauseCluster, rootCauseCluster);
+
+  assert.throws(
+    () =>
+      parseDecision(
+        closeDecision({
+          rootCauseCluster: {
+            ...rootCauseCluster,
+            members: [...rootCauseCluster.members, ...rootCauseCluster.members],
+          },
+        }),
+        item(),
+      ),
+    /duplicate refs/,
+  );
+  assert.throws(
+    () =>
+      parseDecision(
+        closeDecision({
+          rootCauseCluster: {
+            ...rootCauseCluster,
+            canonicalRef: "https://github.com/other/repo/pull/456",
+            members: [
+              {
+                ...rootCauseCluster.members[0],
+                ref: "https://github.com/other/repo/pull/456",
+              },
+            ],
+          },
+        }),
+        item(),
+      ),
+    /must stay within openclaw\/openclaw/,
+  );
+  assert.throws(
+    () =>
+      parseDecision(
+        closeDecision({
+          rootCauseCluster: {
+            ...rootCauseCluster,
+            members: [
+              ...rootCauseCluster.members,
+              {
+                ref: "https://github.com/openclaw/openclaw/issues/789",
+                relationship: "canonical",
+                reason: "A conflicting second canonical item.",
+              },
+            ],
+          },
+        }),
+        item(),
+      ),
+    /at most one canonical member/,
+  );
+  assert.throws(
+    () =>
+      parseDecision(
+        closeDecision({
+          rootCauseCluster: {
+            ...rootCauseCluster,
+            members: [
+              {
+                ...rootCauseCluster.members[0],
+                ref: "https://github.com/openclaw/openclaw/pull/789",
+              },
+            ],
+          },
+        }),
+        item(),
+      ),
+    /canonicalRef must identify exactly one canonical member/,
+  );
+  assert.throws(
+    () =>
+      parseDecision(
+        closeDecision({
+          rootCauseCluster: {
+            ...rootCauseCluster,
+            canonicalRef: "https://github.com/openclaw/openclaw/issues/456",
+            members: [
+              {
+                ...rootCauseCluster.members[0],
+                ref: "https://github.com/openclaw/openclaw/issues/456",
+              },
+            ],
+          },
+        }),
+        item(),
+      ),
+    /fixed_by_candidate requires a canonical PR/,
+  );
+  assert.throws(
+    () =>
+      parseDecision(
+        closeDecision({
+          rootCauseCluster: {
+            ...rootCauseCluster,
+            members: [
+              {
+                ref: "https://github.com/openclaw/openclaw/issues/123",
+                relationship: "canonical",
+                reason: "Incorrectly repeats the current item.",
+              },
+            ],
+            canonicalRef: "https://github.com/openclaw/openclaw/issues/123",
+            currentItemRelationship: "duplicate",
+          },
+        }),
+        item(),
+      ),
+    /must not repeat the current item/,
+  );
+  assert.throws(
+    () =>
+      parseDecision(
+        closeDecision({
+          rootCauseCluster: {
+            ...rootCauseCluster,
+            members: [
+              {
+                ref: "https://github.com/OpenClaw/OpenClaw/issues/123",
+                relationship: "canonical",
+                reason: "Incorrectly repeats the current item with different casing.",
+              },
+            ],
+            canonicalRef: "https://github.com/OpenClaw/OpenClaw/issues/123",
+            currentItemRelationship: "duplicate",
+          },
+        }),
+        item(),
+      ),
+    /must not repeat the current item/,
+  );
+  assert.throws(
+    () =>
+      parseDecision(
+        closeDecision({
+          rootCauseCluster: {
+            ...rootCauseCluster,
+            members: [
+              rootCauseCluster.members[0],
+              {
+                ...rootCauseCluster.members[0],
+                ref: "https://github.com/OpenClaw/OpenClaw/pull/456",
+              },
+            ],
+          },
+        }),
+        item(),
+      ),
+    /duplicate refs/,
+  );
+});
+
+test("root-cause report parsing defaults legacy and malformed reports safely", () => {
+  assert.deepEqual(rootCauseClusterFromReportForTest(reportFrontMatter({ number: "123" })), {
+    confidence: "low",
+    canonicalRef: null,
+    currentItemRelationship: "independent",
+    summary: "No evidence-backed root-cause cluster was established.",
+    members: [],
+  });
+  assert.deepEqual(
+    rootCauseClusterFromReportForTest(
+      reportFrontMatter({
+        number: "123",
+        root_cause_cluster: "{not-json",
+      }),
+    ),
+    {
+      confidence: "low",
+      canonicalRef: null,
+      currentItemRelationship: "independent",
+      summary: "No evidence-backed root-cause cluster was established.",
+      members: [],
+    },
+  );
+  const valid = {
+    confidence: "high",
+    canonicalRef: "https://github.com/openclaw/openclaw/issues/456",
+    currentItemRelationship: "duplicate",
+    summary: "The other issue is the canonical report.",
+    members: [
+      {
+        ref: "https://github.com/openclaw/openclaw/issues/456",
+        relationship: "canonical",
+        reason: "It has the complete reproduction and accepted scope.",
+      },
+    ],
+  };
+  assert.deepEqual(
+    rootCauseClusterFromReportForTest(
+      reportFrontMatter({
+        number: "123",
+        root_cause_cluster: JSON.stringify(valid),
+      }),
+    ),
+    valid,
+  );
 });
 
 test("review prompt routes PR likely owners through feature history", () => {
