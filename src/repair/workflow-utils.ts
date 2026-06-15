@@ -302,6 +302,7 @@ function selectedProposedItemNumbers(
     "mostly_implemented_on_main",
     "not_actionable_in_repo",
     "stale_insufficient_info",
+    "unconfirmed_product_direction",
   ]);
   const allowedCloseReasons =
     options.applyCloseReasons === "all"
@@ -729,6 +730,7 @@ function allowedForTarget(
       reason === "implemented_on_main" ||
       (type === "pull_request" && reason === "mostly_implemented_on_main")
     );
+  if (type !== "pull_request" && reason === "unconfirmed_product_direction") return false;
   if (type === "pull_request" && reason === "stale_insufficient_info") return false;
   if (type !== "pull_request" && reason === "mostly_implemented_on_main") return false;
   if (type !== "pull_request" && reason === "low_signal_unmergeable_pr") return false;

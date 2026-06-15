@@ -821,6 +821,46 @@ test("workflow utilities select proposed PR closes that can need coverage proof"
   );
 });
 
+test("workflow utilities select gated product-direction PR close proposals", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-workflow-"));
+  const oldDate = "2024-01-01T00:00:00Z";
+  writeProposedRecord(
+    root,
+    7,
+    "pull_request",
+    "proposed_close",
+    "unconfirmed_product_direction",
+    oldDate,
+  );
+  writeProposedRecord(root, 8, "issue", "proposed_close", "unconfirmed_product_direction", oldDate);
+
+  const selected = withCwd(root, () =>
+    proposedItemNumbers({
+      targetRepo: "openclaw/openclaw",
+      applyKind: "all",
+      applyCloseReasons: "all",
+      staleMinAgeDays: 60,
+      minAgeDays: 0,
+      minAgeMinutes: null,
+    }),
+  );
+
+  assert.deepEqual(selected, [7]);
+  assert.deepEqual(
+    withCwd(root, () =>
+      proposedPrCloseCoverageItemNumbers({
+        targetRepo: "openclaw/openclaw",
+        applyKind: "all",
+        applyCloseReasons: "all",
+        staleMinAgeDays: 60,
+        minAgeDays: 0,
+        minAgeMinutes: null,
+      }),
+    ),
+    [],
+  );
+});
+
 test("workflow utilities select cursor-based PR comment sync batches", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-workflow-"));
   const cursorPath = path.join(root, "results/comment-sync-cursors/openclaw-openclaw.json");
