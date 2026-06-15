@@ -100,7 +100,12 @@ function optionalGhJson(path: string, jq: string): string {
   }
 }
 
-function commitMetadata(targetDir: string, targetRepo: string, sha: string): CommitMetadata {
+function commitMetadata(
+  targetDir: string,
+  targetRepo: string,
+  sha: string,
+  offline = false,
+): CommitMetadata {
   const separator = "\x1f";
   const raw = run(
     "git",
@@ -114,14 +119,16 @@ function commitMetadata(targetDir: string, targetRepo: string, sha: string): Com
   );
   const parts = raw.split(separator);
   const body = parts.slice(9).join(separator);
-  const githubAuthor = optionalGhJson(
-    `repos/${targetRepo}/commits/${sha}`,
-    ".author.login // empty",
-  );
-  const githubCommitter = optionalGhJson(
-    `repos/${targetRepo}/commits/${sha}`,
-    ".committer.login // empty",
-  );
+  // Offline mode (e.g. local-review) must not contact GitHub: skip the gh-api
+  // author/committer hydration. `gh` uses its own configured auth, so removing
+  // token env vars is not enough — the only way to honor the "no GitHub access"
+  // contract is to not run `gh` at all.
+  const githubAuthor = offline
+    ? ""
+    : optionalGhJson(`repos/${targetRepo}/commits/${sha}`, ".author.login // empty");
+  const githubCommitter = offline
+    ? ""
+    : optionalGhJson(`repos/${targetRepo}/commits/${sha}`, ".committer.login // empty");
   return {
     sha: assertSha(parts[0] ?? sha),
     parents: (parts[1] ?? "")
@@ -435,7 +442,7 @@ function localReviewCommand(args: Args): void {
     process.exit(1);
   }
 
-  const metadata = commitMetadata(targetDir, targetRepo, headSha);
+  const metadata = commitMetadata(targetDir, targetRepo, headSha, true);
 
   // Spec: unique per-run dir so concurrent runs never collide on result paths.
   const runDir = join(reportDir, `run-${headSha.slice(0, 8)}-${Date.now()}-${process.pid}`);
