@@ -251,8 +251,26 @@ Write/check credentials are created only after Codex exits.
 
 The Codex environment strips GitHub and app secrets before subprocess launch.
 
-Commit Sweeper is main-only. PR or branch review is deliberately out of scope
-for this lane.
+The scheduled/hosted Commit Sweeper lane is main-only — automated PR or branch
+review on the server is deliberately out of scope.
+
+## Local branch review (`local-review`)
+
+For a manual, offline pre-PR self-review, the `local-review` subcommand reuses the
+same Commit Sweeper engine against the current branch's committed range:
+
+```text
+clawsweeper local-review --base main
+# reviews merge-base(<base>, HEAD)..HEAD as one unit
+# writes ~/.clawsweeper-local-reviews/run-<sha>-<ts>-<pid>/local-review.md
+```
+
+It is offline by contract and never contacts GitHub: it requires a clean checkout,
+uses a unique per-run output directory, withholds all GitHub token env vars, skips
+the `gh`-api commit-metadata hydration, and points `GH_CONFIG_DIR` at an empty
+directory so the spawned reviewer cannot fall back to cached `gh` auth. Repositories
+without a configured profile are rejected (no foreign-profile fallback). Unlike the
+hosted lane it never writes to GitHub — the local Markdown report is the only output.
 
 ## Enable / Disable
 
