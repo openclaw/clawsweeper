@@ -37,6 +37,7 @@ The mental model:
 | `workers.reserve_for_interactive` | 32 | Worker slots background lanes leave open for exact/manual/urgent work. |
 | `workers.expansion_reserve` | 32 | Extra slots background lanes leave open for independently planned matrix expansion. |
 | `workers.minimum_background` | 16 | Target floor for background progress when enough global capacity is available. |
+| `lanes.exact_review.max_concurrent` | 4 | Maximum concurrent exact-item review workflow runs admitted to Codex. |
 | `lanes.assist.max` | 10 | Maximum concurrent lightweight assist jobs. |
 | `lanes.repair.cluster_max_live_runs` | 2 | Default live repair workflow cap for imported gitcrawl cluster dispatches. |
 
@@ -51,6 +52,7 @@ by default.
 
 | Name | Current | Meaning |
 | --- | ---: | --- |
+| `exact_review.concurrent_max` | 4 | Exact-item review admission cap, clamped to `workers.max`. |
 | `assist.default` | 10 | Maintainer assist job cap. |
 | `review_shards.normal_default` | 89 | Quiet-system normal review shard ceiling. |
 | `review_shards.normal_active_floor` | 38 | Minimum active normal review shards to keep queued for `openclaw/openclaw`. |
@@ -106,6 +108,13 @@ lane allowance; exact-item runs still use the exact-item lane.
 Priority lanes do not subtract the interactive reserve. They cap themselves at
 their derived lane ceiling and at the remaining global budget after other active
 priority work.
+
+Exact-item review runs use a deterministic live Actions semaphore before Codex
+starts. Active exact runs are ordered by creation time and run ID; only the
+oldest `lanes.exact_review.max_concurrent` runs proceed. Cancelled and completed
+runs disappear from the next poll, so no lease or TTL recovery is required.
+This is an exact-review burst limit, not a hard distributed provider semaphore
+across every Codex workflow.
 
 Examples with the current config:
 

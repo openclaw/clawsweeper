@@ -28,6 +28,10 @@ import {
 
 test("workflow utilities expose automation limits", () => {
   assert.equal(
+    automationLimit("exact_review.concurrent_max"),
+    AUTOMATION_LIMITS.exact_review.concurrent_max,
+  );
+  assert.equal(
     automationLimit("review_shards.normal_default"),
     AUTOMATION_LIMITS.review_shards.normal_default,
   );
@@ -126,6 +130,9 @@ test("worker config defaults imported cluster repair capacity for older configs"
         minimum_background: 1,
       },
       lanes: {
+        exact_review: {
+          max_concurrent: 16,
+        },
         assist: {
           max: 5,
         },

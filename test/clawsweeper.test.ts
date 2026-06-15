@@ -18274,8 +18274,11 @@ test("event re-review status explains superseded cancellations", () => {
   assert.match(block, /\[ "\$REVIEW_OUTCOME" = "cancelled" \]/);
   assert.match(block, /state="Superseded"/);
   assert.match(block, /A newer re-review for this item started before this run finished/);
-  assert.doesNotMatch(block, /CAPACITY_OUTCOME/);
-  assert.doesNotMatch(block, /Capacity wait timed out/);
+  assert.match(block, /CAPACITY_OUTCOME/);
+  assert.ok(
+    block.indexOf('[ "$REVIEW_OUTCOME" = "cancelled" ]') >
+      block.indexOf('[ "$CAPACITY_OUTCOME" = "failure" ]'),
+  );
 });
 
 test("event repair retries wait for active worker capacity", () => {
@@ -18796,7 +18799,7 @@ test("reviewed viable issues dispatch generated PRs and backfill durable open re
   assert.equal(workflow.match(/vars\.CLAWSWEEPER_AUTO_IMPLEMENT_ISSUES == '1'/g)?.length, 4);
 });
 
-test("sweep workflow runs exact event reviews without a global worker gate", () => {
+test("sweep workflow admits exact event reviews through an exact-review semaphore", () => {
   const workflow = readFileSync(".github/workflows/sweep.yml", "utf8").replace(/\r\n/g, "\n");
   const eventReviewBlock = workflow.slice(
     workflow.indexOf("\n  event-review-apply:"),
@@ -18805,10 +18808,15 @@ test("sweep workflow runs exact event reviews without a global worker gate", () 
   const setupPnpmIndex = eventReviewBlock.indexOf("- uses: ./.github/actions/setup-pnpm");
   const readTokenIndex = eventReviewBlock.indexOf("- name: Create target read token");
   const writeTokenIndex = eventReviewBlock.indexOf("- name: Create target write token");
+  const waitingStatusIndex = eventReviewBlock.indexOf(
+    "- name: Mark re-review waiting for capacity",
+  );
   const inProgressStatusIndex = eventReviewBlock.indexOf(
     "- name: Mark re-review command in progress",
   );
   const setupCodexIndex = eventReviewBlock.indexOf("- uses: ./.github/actions/setup-codex");
+  const checkoutIndex = eventReviewBlock.indexOf("- name: Check out target repository");
+  const capacityIndex = eventReviewBlock.indexOf("- name: Wait for exact-review Codex capacity");
   const exactReviewIndex = eventReviewBlock.indexOf("- name: Review exact event item");
   const exactReviewStep = eventReviewBlock.slice(
     exactReviewIndex,
@@ -18823,9 +18831,21 @@ test("sweep workflow runs exact event reviews without a global worker gate", () 
   assert.ok(setupPnpmIndex >= 0);
   assert.ok(readTokenIndex > setupPnpmIndex);
   assert.ok(writeTokenIndex > readTokenIndex);
-  assert.ok(inProgressStatusIndex > writeTokenIndex);
+  assert.ok(checkoutIndex > writeTokenIndex);
+  assert.ok(waitingStatusIndex > checkoutIndex);
+  assert.ok(capacityIndex > waitingStatusIndex);
+  assert.ok(inProgressStatusIndex > capacityIndex);
   assert.ok(setupCodexIndex > inProgressStatusIndex);
   assert.ok(exactReviewIndex > setupCodexIndex);
+  assert.match(eventReviewBlock, /pnpm run repair:codex-capacity/);
+  assert.match(eventReviewBlock, /--run-id "\$\{\{ github\.run_id \}\}"/);
+  assert.match(eventReviewBlock, /--state "Waiting for Codex capacity"/);
+  assert.match(eventReviewBlock, /exact-review semaphore admitted this run/);
+  assert.match(eventReviewBlock, /CAPACITY_OUTCOME: \$\{\{ steps\.codex-capacity\.outcome \}\}/);
+  assert.match(
+    eventReviewBlock,
+    /timed out or failed while waiting for exact-review Codex capacity/,
+  );
   assert.match(exactReviewStep, /--batch-size 1/);
   assert.match(exactReviewStep, /--shard-count 1/);
   assert.match(exactReviewStep, /media_preprocessing_reserve_seconds=480/);

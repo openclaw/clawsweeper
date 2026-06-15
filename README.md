@@ -603,7 +603,10 @@ repair/issue implementation lanes use 40% of `workers.max`, currently 51 live
 workers. Imported gitcrawl cluster repair allows 2 live workers by default.
 Exact-item review, repair, and issue implementation are priority work; normal
 review, hot intake, and commit review are background work and automatically
-yield when priority work is active.
+yield when priority work is active. Exact-item runs also wait for deterministic
+live Actions admission before Codex starts, with at most four concurrent exact
+reviews and no state-repository lease. Other lanes retain the existing global
+128-worker scheduling model.
 Use `workers.max` first when turning total Codex usage up or down; use
 `lanes.repair.cluster_max_live_runs` to tune the imported legacy cluster-repair
 lane separately, and individual environment overrides only for temporary

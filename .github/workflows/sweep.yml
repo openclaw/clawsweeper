@@ -315,33 +315,6 @@ jobs:
 
       - uses: ./.github/actions/setup-media-proof-tools
 
-      - name: Mark re-review command in progress
-        continue-on-error: true
-        env:
-          GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
-          TARGET_REPO: ${{ steps.target.outputs.target_repo }}
-          ITEM_NUMBER: ${{ steps.target.outputs.item_number }}
-          COMMAND_STATUS_MARKER: ${{ github.event.client_payload.command_status_marker || '' }}
-          STATUS_COMMENT_ID: ${{ github.event.client_payload.status_comment_id || '' }}
-          RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: |
-          pnpm run repair:update-command-status -- \
-            --repo "$TARGET_REPO" \
-            --item-number "$ITEM_NUMBER" \
-            --marker "$COMMAND_STATUS_MARKER" \
-            --status-comment-id "$STATUS_COMMENT_ID" \
-            --state "Review in progress" \
-            --detail "Targeted re-review run started; Codex is reviewing the item." \
-            --run-url "$RUN_URL" \
-            --wait-ms 120000
-
-      - uses: ./.github/actions/setup-codex
-        env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          CLAWSWEEPER_INTERNAL_MODEL: ${{ secrets.CLAWSWEEPER_MODEL }}
-        with:
-          login-status: "true"
-
       - uses: actions/cache@v5
         with:
           path: ${{ steps.target.outputs.target_checkout_dir }}-cache.git
@@ -381,6 +354,64 @@ jobs:
             git clone --filter=blob:none --branch "$target_branch" --single-branch "$url" "$checkout_dir"
           fi
           git -C "$checkout_dir" rev-parse --short HEAD
+
+      - name: Mark re-review waiting for capacity
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
+          TARGET_REPO: ${{ steps.target.outputs.target_repo }}
+          ITEM_NUMBER: ${{ steps.target.outputs.item_number }}
+          COMMAND_STATUS_MARKER: ${{ github.event.client_payload.command_status_marker || '' }}
+          STATUS_COMMENT_ID: ${{ github.event.client_payload.status_comment_id || '' }}
+          RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          pnpm run repair:update-command-status -- \
+            --repo "$TARGET_REPO" \
+            --item-number "$ITEM_NUMBER" \
+            --marker "$COMMAND_STATUS_MARKER" \
+            --status-comment-id "$STATUS_COMMENT_ID" \
+            --state "Waiting for Codex capacity" \
+            --detail "Targeted re-review checkout is ready and waiting for an exact-review Codex slot." \
+            --run-url "$RUN_URL" \
+            --wait-ms 120000
+
+      - name: Wait for exact-review Codex capacity
+        id: codex-capacity
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          pnpm run repair:codex-capacity -- \
+            --repo "${{ github.repository }}" \
+            --run-id "${{ github.run_id }}" \
+            --poll-ms 30000 \
+            --timeout-ms 1200000
+
+      - name: Mark re-review command in progress
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
+          TARGET_REPO: ${{ steps.target.outputs.target_repo }}
+          ITEM_NUMBER: ${{ steps.target.outputs.item_number }}
+          COMMAND_STATUS_MARKER: ${{ github.event.client_payload.command_status_marker || '' }}
+          STATUS_COMMENT_ID: ${{ github.event.client_payload.status_comment_id || '' }}
+          RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          pnpm run repair:update-command-status -- \
+            --repo "$TARGET_REPO" \
+            --item-number "$ITEM_NUMBER" \
+            --marker "$COMMAND_STATUS_MARKER" \
+            --status-comment-id "$STATUS_COMMENT_ID" \
+            --state "Review in progress" \
+            --detail "The exact-review semaphore admitted this run; Codex is reviewing the item." \
+            --run-url "$RUN_URL" \
+            --wait-ms 120000
+
+      - uses: ./.github/actions/setup-codex
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          CLAWSWEEPER_INTERNAL_MODEL: ${{ secrets.CLAWSWEEPER_MODEL }}
+        with:
+          login-status: "true"
 
       - name: Review exact event item
         id: review-exact-event-item
@@ -519,9 +550,13 @@ jobs:
           REVIEW_OUTCOME: ${{ steps.review-exact-event-item.outcome }}
           PUBLISH_OUTCOME: ${{ steps.publish-event-result.outcome }}
           ROUTE_OUTCOME: ${{ steps.route-synced-verdict.outcome }}
+          CAPACITY_OUTCOME: ${{ steps.codex-capacity.outcome }}
         run: |
           state="Failed"
           detail="The targeted re-review did not finish cleanly. Check the workflow run for details."
+          if [ "$CAPACITY_OUTCOME" = "failure" ]; then
+            detail="The targeted re-review timed out or failed while waiting for exact-review Codex capacity. Retry after capacity recovers."
+          fi
           if [ "$REVIEW_OUTCOME" = "cancelled" ]; then
             state="Superseded"
             detail="A newer re-review for this item started before this run finished, so GitHub cancelled this older run. Check the latest ClawSweeper run for the current result."

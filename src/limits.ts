@@ -10,6 +10,9 @@ export type WorkerConfig = {
     minimum_background: number;
   };
   lanes: {
+    exact_review: {
+      max_concurrent: number;
+    };
     repair: {
       cluster_max_live_runs: number;
     };
@@ -17,6 +20,9 @@ export type WorkerConfig = {
 };
 
 export type AutomationLimits = {
+  exact_review: {
+    concurrent_max: number;
+  };
   review_shards: {
     normal_default: number;
     normal_active_floor: number;
@@ -64,6 +70,9 @@ export function deriveAutomationLimits(config: WorkerConfig): AutomationLimits {
   const max = config.workers.max;
   const clusterRepairMax = Math.min(config.lanes.repair.cluster_max_live_runs, max);
   return {
+    exact_review: {
+      concurrent_max: Math.min(config.lanes.exact_review.max_concurrent, max),
+    },
     review_shards: {
       normal_default: percent(max, 70),
       normal_active_floor: percent(max, 30),
@@ -153,6 +162,9 @@ function validateWorkerConfig(value: unknown): WorkerConfig {
       minimum_background: positiveInteger(value, "workers.minimum_background"),
     },
     lanes: {
+      exact_review: {
+        max_concurrent: positiveInteger(value, "lanes.exact_review.max_concurrent"),
+      },
       repair: {
         cluster_max_live_runs: optionalPositiveInteger(
           value,

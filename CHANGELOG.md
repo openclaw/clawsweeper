@@ -77,6 +77,7 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Fixed
 
+- Added a cancellation-safe four-slot exact-review semaphore, replacing the proposed state-repository lease with deterministic live Actions ranking. Thanks @hxy91819.
 - Made every Codex subprocess honor `CODEX_BIN`, safely launch npm-installed `codex.cmd` wrappers on native Windows, and terminate their process trees on timeout. Thanks @anagnorisis2peripeteia.
 - Reserved the full bounded media preprocessing allowance for exact-event review deadlines and command-dispatch fallbacks, including media discovered only after comment hydration.
 - Keep generated implementation PR bodies and terminal issue comments concise, avoid stale blocked states while PR checks are pending, and stop adding ClawSweeper itself as a commit co-author.

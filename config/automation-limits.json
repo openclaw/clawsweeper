@@ -6,6 +6,9 @@
     "minimum_background": 16
   },
   "lanes": {
+    "exact_review": {
+      "max_concurrent": 4
+    },
     "assist": {
       "max": 10
     },

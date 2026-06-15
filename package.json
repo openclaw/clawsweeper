@@ -53,6 +53,7 @@
     "repair:spam-scan": "node dist/repair/spam-scanner.js",
     "repair:publish-event-result": "node dist/repair/publish-event-result.js",
     "repair:update-command-status": "node dist/repair/update-command-status.js",
+    "repair:codex-capacity": "node dist/repair/codex-capacity.js",
     "workflow": "node dist/repair/workflow-utils.js",
     "repair:promote-stuck-jobs": "node dist/repair/promote-stuck-jobs.js",
     "repair:sweep-openclaw-jobs": "node dist/repair/sweep-openclaw-jobs.js",
