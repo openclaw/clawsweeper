@@ -97,6 +97,7 @@ jobs:
             src/clawsweeper-text.ts
             src/codex-env.ts
             src/codex-output-capture.ts
+            src/codex-spawn.ts
             src/codex-process-worker.ts
             src/codex-process.ts
             src/codex-transient.ts
