@@ -1,9 +1,5 @@
 import type { JsonValue, LooseRecord } from "./json-types.js";
-import {
-  CLAWSWEEPER_CO_AUTHOR_TRAILER,
-  clawsweeperCoAuthorKey,
-  coAuthorKey,
-} from "./co-author-credit.js";
+import { clawsweeperCoAuthorKey, coAuthorKey } from "./co-author-credit.js";
 import {
   extractClawSweeperCommandLine,
   isClawSweeperReReviewCommandText,
@@ -894,10 +890,6 @@ function automergeCreditTrailers({ command, comments, commits }: LooseRecord): s
   for (const trailer of coAuthorTrailersFromCommits(commits, coAuthorKeys)) {
     trailers.push(trailer);
   }
-  if (!coAuthorKeys.has(clawsweeperCoAuthorKey())) {
-    coAuthorKeys.add(clawsweeperCoAuthorKey());
-    trailers.push(CLAWSWEEPER_CO_AUTHOR_TRAILER);
-  }
 
   const maintainer = maintainerCredit(
     command.maintainer_attribution ??
@@ -907,9 +899,6 @@ function automergeCreditTrailers({ command, comments, commits }: LooseRecord): s
   );
   if (!maintainer) return trailers;
   trailers.push(`Approved-by: ${maintainer.login}`);
-  if (!coAuthorKeys.has(maintainer.coAuthorKey)) {
-    trailers.push(`Co-authored-by: ${maintainer.name} <${maintainer.email}>`);
-  }
   return trailers;
 }
 
@@ -958,7 +947,7 @@ function coAuthorTrailersFromCommits(commits: JsonValue, seen: Set<string>): str
       const email = String(author?.email ?? "").trim();
       if (!name || !email) continue;
       const key = coAuthorKey(name, email);
-      if (seen.has(key)) continue;
+      if (key === clawsweeperCoAuthorKey() || seen.has(key)) continue;
       seen.add(key);
       trailers.push(`Co-authored-by: ${name} <${email}>`);
     }
@@ -969,16 +958,8 @@ function coAuthorTrailersFromCommits(commits: JsonValue, seen: Set<string>): str
 function maintainerCredit(value: LooseRecord): LooseRecord | null {
   const login = normalizedLogin(value.author ?? value.login);
   if (!login || login.includes("[bot]")) return null;
-  const id = String(value.author_id ?? value.id ?? "").trim();
-  const name = String(value.author_name ?? value.name ?? login).trim() || login;
-  const email = id
-    ? `${id}+${login}@users.noreply.github.com`
-    : `${login}@users.noreply.github.com`;
   return {
     login,
-    name,
-    email,
-    coAuthorKey: coAuthorKey(name, email),
   };
 }
 

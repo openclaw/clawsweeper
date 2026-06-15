@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import test from "node:test";
 
 import {
@@ -45,7 +46,34 @@ test("issue implementation status updates progress without replacing worker resu
     detail: "Implementation workflow completed.",
   });
 
-  assert.equal(updated.match(/Automatic implementation progress:/g)?.length, 1);
-  assert.match(updated, /State: Complete/);
-  assert.match(updated, /## Implementation result\n\nPull request opened\./);
+  assert.doesNotMatch(updated, /Automatic implementation progress:/);
+  assert.match(updated, /Automatic implementation completed\./);
+  assert.doesNotMatch(updated, /## Implementation result/);
+});
+
+test("issue implementation status collapses an opened PR to a concise terminal comment", () => {
+  const body = renderIssueImplementationStatusComment("", {
+    ...options,
+    state: "PR Opened",
+    detail: "Checks continue on the pull request.",
+    prUrl: "https://github.com/steipete/example/pull/51",
+  });
+
+  assert.match(
+    body,
+    /Implementation PR opened: https:\/\/github\.com\/steipete\/example\/pull\/51/,
+  );
+  assert.match(body, /Status: Checks continue on the pull request\./);
+  assert.doesNotMatch(body, /Automatic implementation progress|Opt out|State:/);
+});
+
+test("issue build workflow reports an opened PR without calling pending CI blocked", () => {
+  const workflow = fs.readFileSync(".github/workflows/repair-cluster-worker.yml", "utf8");
+
+  assert.match(workflow, /state="PR Opened"/);
+  assert.match(workflow, /The implementation PR is open\. Post-flight status:/);
+  assert.doesNotMatch(
+    workflow,
+    /detail="The automatic implementation worker stopped before all post-flight gates passed:/,
+  );
 });

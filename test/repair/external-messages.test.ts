@@ -94,7 +94,7 @@ test("replacement comments explain no push rights and keep co-author credit visi
   );
 });
 
-test("replacement PR body records replacement reason and co-author credit", () => {
+test("replacement PR body keeps public context without internal worker notes", () => {
   const body = replacementPrBody({
     clusterId: "ghcrawl-123",
     fixArtifact: {
@@ -118,13 +118,11 @@ test("replacement PR body records replacement reason and co-author credit", () =
     provenance: { model: "gpt-test", reasoning: "medium", reviewedSha: "abcdef1234567890" },
   });
 
-  assert.match(body, /Replacement reason: ClawSweeper could not update the source PR branch/);
-  assert.match(body, /Repair fallback: source PR #12345 has maintainer_can_modify=false/);
   assert.match(
     body,
-    /@octocat: Co-authored-by: Mona Octocat <1\+octocat@users\.noreply\.github\.com>/,
+    /Replacement for https:\/\/github\.com\/openclaw\/openclaw\/pull\/12345 because the source branch could not be updated\./,
   );
-  assert.match(body, /Automerge requested by: @maintainer-user/);
+  assert.match(body, /Original contributor: @octocat\./);
   assert.match(
     body,
     /Inherited issue-closing references from the source PR:\nCloses #74124\nFixes openclaw\/openclaw#81234/,
@@ -133,6 +131,25 @@ test("replacement PR body records replacement reason and co-author credit", () =
     body,
     /<!-- clawsweeper-automerge-requested-by login="maintainer-user" id="123456" -->/,
   );
+  assert.doesNotMatch(body, /replacement reef notes|fish notes|Cluster:|Repair fallback:/);
+  assert.equal(body.match(/pnpm check/g)?.length ?? 0, 0);
+});
+
+test("issue-generated PR body does not claim to replace a source PR", () => {
+  const body = replacementPrBody({
+    clusterId: "issue-openclaw-gogcli-814",
+    fixArtifact: {
+      pr_body: "## Summary\n\nDocument the existing alias.\n\nFixes #814",
+      source_prs: [],
+      credit_notes: ["Thanks @reporter."],
+      validation_commands: ["pnpm check"],
+    },
+    fallbackReason: "",
+    contributorCredits: [],
+    provenance: { reasoning: "high", reviewedSha: "abcdef1234567890" },
+  });
+
+  assert.equal(body, "## Summary\n\nDocument the existing alias.\n\nFixes #814\n");
 });
 
 test("closingReferencesFromMarkdown extracts GitHub closing syntax", () => {

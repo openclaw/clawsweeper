@@ -134,6 +134,32 @@ export function renderIssueImplementationStatusComment(
   options: StatusOptions,
 ) {
   const marker = issueImplementationStatusMarker(options.itemNumber);
+  const normalizedState = options.state.trim().toLowerCase();
+  if (normalizedState.includes("complete") || normalizedState.includes("open")) {
+    return [
+      marker,
+      "🦞✅",
+      options.prUrl
+        ? `Implementation PR opened: ${options.prUrl}`
+        : "Automatic implementation completed.",
+      options.detail ? `Status: ${options.detail}` : null,
+      options.runUrl ? `Worker: ${options.runUrl}` : null,
+    ]
+      .filter(Boolean)
+      .join("\n");
+  }
+  if (normalizedState.includes("block") || normalizedState.includes("fail")) {
+    return [
+      marker,
+      "🦞⚠️",
+      "Automatic implementation stopped before completion.",
+      options.detail ? `Reason: ${options.detail}` : null,
+      options.prUrl ? `PR: ${options.prUrl}` : null,
+      options.runUrl ? `Worker: ${options.runUrl}` : null,
+    ]
+      .filter(Boolean)
+      .join("\n");
+  }
   const progress = [
     PROGRESS_START,
     "Automatic implementation progress:",

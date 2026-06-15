@@ -74,6 +74,7 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Fixed
 
+- Keep generated implementation PR bodies and terminal issue comments concise, avoid stale blocked states while PR checks are pending, and stop adding ClawSweeper itself as a commit co-author.
 - Prevented trusted ClawSweeper command status comments from re-entering GitHub activity handling and churning review automation. Thanks @ooiuuii.
 - Routed proof-sufficient security reviews that recommend maintainer risk acceptance to maintainer review instead of waiting on the contributor. Thanks @brokemac79.
 - Prevented automatic issue backfill from spending Codex workers on reports explicitly blocked by product-decision, no-new-fix-PR, or maintainer-review signals.

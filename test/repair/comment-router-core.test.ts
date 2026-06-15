@@ -2504,7 +2504,7 @@ test("automerge merge args pin the reviewed head SHA", () => {
   );
 });
 
-test("automerge squash message credits the initiating maintainer with approval and co-author trailers", () => {
+test("automerge squash message credits contributors and records maintainer approval", () => {
   const message = buildAutomergeSquashMessage({
     command: {
       issue_number: 123,
@@ -2536,18 +2536,12 @@ test("automerge squash message credits the initiating maintainer with approval a
     message.body,
     /^Co-authored-by: Contributor <111\+contributor@users\.noreply\.github\.com>$/m,
   );
-  assert.match(
-    message.body,
-    /^Co-authored-by: clawsweeper\[bot\] <274271284\+clawsweeper\[bot\]@users\.noreply\.github\.com>$/m,
-  );
+  assert.doesNotMatch(message.body, /Co-authored-by: clawsweeper\[bot\]/);
   assert.match(message.body, /^Approved-by: maintainer-user$/m);
-  assert.match(
-    message.body,
-    /^Co-authored-by: maintainer-user <123456\+maintainer-user@users\.noreply\.github\.com>$/m,
-  );
+  assert.doesNotMatch(message.body, /Co-authored-by: maintainer-user/);
 });
 
-test("automerge squash message dedupes maintainer co-author trailer", () => {
+test("automerge squash message does not duplicate a contributor as approving maintainer", () => {
   const message = buildAutomergeSquashMessage({
     command: {
       issue_number: 123,
@@ -2584,7 +2578,7 @@ test("automerge squash message dedupes maintainer co-author trailer", () => {
   assert.match(message.body, /^Approved-by: maintainer-user$/m);
 });
 
-test("automerge squash message dedupes ClawSweeper co-author trailer", () => {
+test("automerge squash message omits ClawSweeper co-author trailer", () => {
   const message = buildAutomergeSquashMessage({
     command: {
       issue_number: 123,
@@ -2614,7 +2608,7 @@ test("automerge squash message dedupes ClawSweeper co-author trailer", () => {
 
   assert.equal(
     message.body.split("\n").filter((line) => line === CLAWSWEEPER_CO_AUTHOR_TRAILER).length,
-    1,
+    0,
   );
   assert.match(message.body, /^Approved-by: maintainer-user$/m);
 });
@@ -2645,14 +2639,8 @@ test("automerge squash message credits maintainer metadata carried by replacemen
   });
 
   assert.match(message.body, /^Approved-by: maintainer-user$/m);
-  assert.match(
-    message.body,
-    /^Co-authored-by: clawsweeper\[bot\] <274271284\+clawsweeper\[bot\]@users\.noreply\.github\.com>$/m,
-  );
-  assert.match(
-    message.body,
-    /^Co-authored-by: maintainer-user <123456\+maintainer-user@users\.noreply\.github\.com>$/m,
-  );
+  assert.doesNotMatch(message.body, /Co-authored-by: clawsweeper\[bot\]/);
+  assert.doesNotMatch(message.body, /Co-authored-by: maintainer-user/);
 });
 
 test("automerge squash message credits requester from earlier automerge status marker", () => {
@@ -2708,10 +2696,7 @@ test("automerge squash message credits requester from earlier automerge status m
   });
 
   assert.match(message.body, /^Approved-by: maintainer-user$/m);
-  assert.match(
-    message.body,
-    /^Co-authored-by: maintainer-user <123456\+maintainer-user@users\.noreply\.github\.com>$/m,
-  );
+  assert.doesNotMatch(message.body, /Co-authored-by: maintainer-user/);
 });
 
 test("automerge gate block only reports the global merge policy gate", () => {

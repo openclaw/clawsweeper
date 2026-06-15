@@ -592,6 +592,8 @@ jobs:
               post_flight_report=""
             fi
             if [ -n "$pr_url" ]; then
+              state="PR Opened"
+              detail="The implementation PR is open. Normal pull request checks and maintainer review continue on $pr_url."
               post_flight_ready="false"
               if [ -n "$post_flight_report" ]; then
                 post_flight_ready="$(
@@ -607,8 +609,7 @@ jobs:
                 )"
               fi
               if [ "$post_flight_ready" = "true" ]; then
-                state="Complete"
-                detail="The implementation worker opened or updated $pr_url after edit, validation, internal review, publish, and post-flight checks."
+                detail="The implementation PR passed the worker's edit, validation, review, publish, and post-flight gates."
               else
                 reason="$(
                   jq -r '
@@ -633,7 +634,7 @@ jobs:
                   )"
                 fi
                 if [ -n "$reason" ]; then
-                  detail="The automatic implementation worker stopped before all post-flight gates passed: $reason"
+                  detail="The implementation PR is open. Post-flight status: $reason"
                 fi
               fi
             fi

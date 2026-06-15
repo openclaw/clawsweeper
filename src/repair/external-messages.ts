@@ -420,33 +420,27 @@ export function replacementSourceCloseComment({
 
 export function replacementPrBody({
   fixArtifact,
-  fallbackReason,
-  clusterId,
-  provenance,
   contributorCredits,
   maintainerAttribution = null,
   sourceClosingReferences = [],
 }: LooseRecord) {
-  const lines = [
-    fixArtifact.pr_body.trim(),
-    "",
-    `${SIGNATURE} replacement reef notes:`,
-    `- Cluster: ${clusterId}`,
-    `- Source PRs: ${(fixArtifact.source_prs ?? []).join(", ") || "none"}`,
-    `- Credit: ${listOrNone(fixArtifact.credit_notes)}`,
-    `- Validation: ${listOrNone(fixArtifact.validation_commands)}`,
-    "- Replacement reason: ClawSweeper could not update the source PR branch directly, so it opened a writable replacement PR instead.",
-  ];
+  const lines = [fixArtifact.pr_body.trim()];
+  const sourcePrs = uniqueLines(fixArtifact.source_prs);
+  if (sourcePrs.length > 0) {
+    lines.push(
+      "",
+      "## Source",
+      `Replacement for ${sourcePrs.join(", ")} because the source branch could not be updated.`,
+    );
+  }
   const maintainer = automergeMaintainerAttribution(maintainerAttribution);
   if (maintainer) {
-    lines.push(`- Automerge requested by: @${maintainer.login}`);
     lines.push(
       `<!-- clawsweeper-automerge-requested-by login="${escapeHtmlAttribute(
         maintainer.login,
       )}" id="${escapeHtmlAttribute(maintainer.id)}" -->`,
     );
   }
-  if (fallbackReason) lines.push(`- Repair fallback: ${fallbackReason}`);
   const closingReferences = uniqueLines(sourceClosingReferences);
   if (closingReferences.length > 0) {
     lines.push(
@@ -455,9 +449,22 @@ export function replacementPrBody({
       ...closingReferences.map((reference) => `${reference}`),
     );
   }
-  const creditLines = contributorCreditLines(contributorCredits);
-  if (creditLines.length > 0) lines.push("", ...creditLines);
-  lines.push("", fishNotes(provenance));
+  const contributorLogins = uniqueLines(
+    (Array.isArray(contributorCredits) ? contributorCredits : [])
+      .map((credit: JsonValue) =>
+        String(credit?.login ?? "")
+          .replace(/^@/, "")
+          .trim(),
+      )
+      .filter(Boolean)
+      .map((login: string) => `@${login}`),
+  );
+  if (contributorLogins.length > 0) {
+    lines.push(
+      "",
+      `Original contributor${contributorLogins.length === 1 ? "" : "s"}: ${contributorLogins.join(", ")}.`,
+    );
+  }
   return `${lines.join("\n")}\n`;
 }
 
