@@ -3,6 +3,38 @@ import { createHmac, generateKeyPairSync } from "node:crypto";
 import test from "node:test";
 
 import worker, { automaticIssueWork, StatusStore, workerWorkKind } from "../dashboard/worker.ts";
+import {
+  TRIAGE_ROUTING_GROUPS,
+  triageRoutingGroupsForLabels,
+} from "../dashboard/triage-routing-groups.ts";
+
+test("triage routing groups classify impact labels without forcing one primary group", () => {
+  assert.deepEqual(
+    triageRoutingGroupsForLabels([
+      "impact:message-loss",
+      { name: "impact:security" },
+      "clawsweeper:queueable-fix",
+    ]).map((group) => group.id),
+    ["message-delivery", "security"],
+  );
+  assert.deepEqual(
+    triageRoutingGroupsForLabels(["impact:unknown"]).map((group) => group.id),
+    ["unclassified"],
+  );
+  assert.equal(TRIAGE_ROUTING_GROUPS.at(-1)?.id, "unclassified");
+});
+
+test("issue triage exposes impact-group controls without changing PR proof triage", async () => {
+  const issuePage = await worker.fetch(new Request("https://clawsweeper.openclaw.ai/triage"), {});
+  const proofPage = await worker.fetch(
+    new Request("https://clawsweeper.openclaw.ai/pr-proof-triage"),
+    {},
+  );
+  const issueHtml = await issuePage.text();
+  assert.match(issueHtml, /id="routing-group"/);
+  assert.match(issueHtml, /Impact group/);
+  assert.doesNotMatch(await proofPage.text(), /id="routing-group"/);
+});
 
 class MemoryKv {
   private values = new Map<string, string>();
@@ -2043,7 +2075,7 @@ test("triage focused views use direct search when broad snapshot is capped", asy
         return jsonResponse({
           total_count: 2,
           items: [
-            triageIssue(102, ["clawsweeper:queueable-fix"]),
+            triageIssue(102, ["clawsweeper:queueable-fix", "impact:message-loss"]),
             triageIssue(100, ["clawsweeper:queueable-fix"]),
           ],
         });
@@ -2088,6 +2120,17 @@ test("triage focused views use direct search when broad snapshot is capped", asy
       ready.items.map((item: { number: number }) => item.number),
       [102, 100],
     );
+    assert.deepEqual(
+      ready.items[0].routing_groups.map((group: { id: string }) => group.id),
+      ["message-delivery"],
+    );
+    assert.deepEqual(
+      ready.items[1].routing_groups.map((group: { id: string }) => group.id),
+      ["unclassified"],
+    );
+    assert.equal(ready.loaded_routing_group_counts["message-delivery"], 1);
+    assert.equal(ready.loaded_routing_group_counts.unclassified, 1);
+    assert.ok(snapshot.routing_groups.some((group: { id: string }) => group.id === "state-data"));
   } finally {
     globalThis.fetch = originalFetch;
     Object.defineProperty(globalThis, "caches", { configurable: true, value: originalCaches });

@@ -2,6 +2,7 @@ import {
   commandTextForClawSweeperFastAck,
   isClawSweeperReReviewCommandText,
 } from "../src/repair/comment-command-text.ts";
+import { TRIAGE_ROUTING_GROUPS, triageRoutingGroupsForLabels } from "./triage-routing-groups.ts";
 
 const ACTIVE_RUN_STATUSES = new Set(["queued", "in_progress", "waiting", "requested", "pending"]);
 const QUEUED_RUN_STATUSES = new Set(["queued", "waiting", "requested", "pending"]);
@@ -1278,6 +1279,7 @@ async function triageSnapshot(env) {
   }
   const views = mergeTriageRepoViews(repoSnapshots, itemLimit);
   await attachTriageLinkedPullRequests(env, views, errors);
+  attachTriageRoutingGroupCounts(views);
   const counts = Object.fromEntries(views.map((view) => [view.id, view.total_count]));
   return {
     schema_version: 1,
@@ -1289,6 +1291,7 @@ async function triageSnapshot(env) {
       search_request_budget_remaining: searchBudget.remaining,
     },
     counts,
+    routing_groups: TRIAGE_ROUTING_GROUPS,
     views,
     diagnostics: {
       errors: errors.slice(0, 20),
@@ -1320,6 +1323,19 @@ async function prProofTriageSnapshot(env) {
       errors: errors.slice(0, 20),
     },
   };
+}
+
+function attachTriageRoutingGroupCounts(views) {
+  for (const view of views) {
+    view.loaded_routing_group_counts = Object.fromEntries(
+      TRIAGE_ROUTING_GROUPS.map((group) => [
+        group.id,
+        (view.items || []).filter((item) =>
+          (item.routing_groups || []).some((candidate) => candidate.id === group.id),
+        ).length,
+      ]),
+    );
+  }
 }
 
 async function attachTriageLinkedPullRequests(env, views, errors) {
@@ -2021,6 +2037,12 @@ async function githubIssueSearchPage(env, query, perPage, page) {
 }
 
 function normalizeTriageIssue(repo, issue) {
+  const labels = Array.isArray(issue.labels)
+    ? issue.labels.map((label) => ({
+        name: String(label.name || ""),
+        color: String(label.color || ""),
+      }))
+    : [];
   return {
     repository: repo,
     number: issue.number,
@@ -2033,12 +2055,11 @@ function normalizeTriageIssue(repo, issue) {
     assignees: Array.isArray(issue.assignees)
       ? issue.assignees.map((assignee) => assignee.login).filter(Boolean)
       : [],
-    labels: Array.isArray(issue.labels)
-      ? issue.labels.map((label) => ({
-          name: String(label.name || ""),
-          color: String(label.color || ""),
-        }))
-      : [],
+    labels,
+    routing_groups: triageRoutingGroupsForLabels(labels).map((group) => ({
+      id: group.id,
+      title: group.title,
+    })),
   };
 }
 
@@ -3990,6 +4011,7 @@ function issueTriagePageConfig() {
     itemLabel: "Issue",
     emptySnapshotText: "No matching issues in the current snapshot.",
     emptyFilterText: "No issues match the current filter.",
+    routingGroups: true,
     highlightLabelPrefixes: ["clawsweeper:"],
     links: [
       { href: "/", label: "Live pipeline" },
@@ -3999,6 +4021,7 @@ function issueTriagePageConfig() {
       { key: "issue", label: "Issue", width: 420, min: 240 },
       { key: "assignees", label: "Assignees", width: 140, min: 100 },
       { key: "priority", label: "Priority", width: 92, min: 76 },
+      { key: "area", label: "Impact group", width: 180, min: 130 },
       { key: "prs", label: "Linked PRs", width: 180, min: 120 },
       { key: "labels", label: "Labels", width: 430, min: 220 },
       { key: "updated", label: "Updated", width: 130, min: 110 },
@@ -4036,6 +4059,7 @@ function prProofTriagePageConfig() {
     itemLabel: "Pull request",
     emptySnapshotText: "No matching pull requests in the current snapshot.",
     emptyFilterText: "No pull requests match the current filter.",
+    routingGroups: false,
     highlightLabelPrefixes: ["triage:", "proof:", "mantis:"],
     links: [
       { href: "/", label: "Live pipeline" },
@@ -4092,6 +4116,14 @@ function serializedPageConfig(config) {
 
 function triageHtml(config) {
   const pageConfig = serializedPageConfig(config);
+  const routingGroupControl = config.routingGroups
+    ? `<label class="field">
+        <span>Impact group</span>
+        <select id="routing-group">
+          <option value="">All impact groups</option>
+        </select>
+      </label>`
+    : "";
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -4404,6 +4436,7 @@ body.resizing-col {
         <input id="issue-filter" type="search" placeholder="${escapeHtml(config.filterPlaceholder)}">
       </label>
       <button class="secondary-button" id="clear-filter" type="button">Clear</button>
+      ${routingGroupControl}
       <label class="field">
         <span>Sort</span>
         <select id="issue-sort">
@@ -4454,6 +4487,9 @@ function storageSet(key, value) {
 }
 let state = null;
 let activeView = location.hash.replace(/^#/, "") || storageGet(PAGE.storagePrefix + ":view") || PAGE.defaultView;
+let activeGroup = PAGE.routingGroups
+  ? new URLSearchParams(location.search).get("group") || storageGet(PAGE.storagePrefix + ":group")
+  : "";
 let filterText = storageGet(PAGE.storagePrefix + ":filter");
 let sortMode = storageGet(PAGE.storagePrefix + ":sort") || "created-desc";
 let filterTimer = null;
@@ -4511,6 +4547,13 @@ function since(iso) {
 function compact(value) {
   return String(value ?? "").replace(/\\s+/g, " ").trim();
 }
+function updateLocation() {
+  const url = new URL(location.href);
+  if (PAGE.routingGroups && activeGroup) url.searchParams.set("group", activeGroup);
+  else url.searchParams.delete("group");
+  url.hash = activeView;
+  history.replaceState(null, "", url.pathname + url.search + url.hash);
+}
 function metric(label, count, detail) {
   return '<article class="metric"><span>' + esc(label) + '</span><strong>' + esc(fmt.format(count || 0)) + '</strong><div class="muted">' + esc(detail || "") + '</div></article>';
 }
@@ -4541,6 +4584,14 @@ function linkedPullRequestPills(row) {
 function priorityFor(row) {
   return (row.labels || []).map(label => label.name).find(name => /^P[0-3]$/.test(name || "")) || "";
 }
+function routingGroupPills(row) {
+  const groups = Array.isArray(row.routing_groups) ? row.routing_groups : [];
+  if (!groups.length) return '<span class="muted">Unclassified</span>';
+  return groups.map(group =>
+    '<button class="label-pill" type="button" data-group-value="' + esc(group.id) +
+    '" title="Show ' + esc(group.title) + '">' + esc(group.title) + '</button>'
+  ).join("");
+}
 function searchableText(row) {
   const assignees = row.assignees || [];
   return [
@@ -4558,14 +4609,18 @@ function searchableText(row) {
     ]),
     priorityFor(row),
     row.proof_state,
+    ...(row.routing_groups || []).flatMap(group => [group.id, group.title]),
     ...(row.labels || []).map(label => label.name)
   ].join(" ").toLowerCase();
 }
 function filteredRows(rows) {
   const terms = filterText.toLowerCase().split(/\\s+/).filter(Boolean);
-  const visible = terms.length
-    ? rows.filter(row => terms.every(term => searchableText(row).includes(term)))
+  const grouped = activeGroup
+    ? rows.filter(row => (row.routing_groups || []).some(group => group.id === activeGroup))
     : rows.slice();
+  const visible = terms.length
+    ? grouped.filter(row => terms.every(term => searchableText(row).includes(term)))
+    : grouped;
   return visible.sort(compareRows);
 }
 function compareRows(left, right) {
@@ -4587,7 +4642,7 @@ function renderTabs(views) {
     button.addEventListener("click", () => {
       activeView = button.dataset.view;
       storageSet(PAGE.storagePrefix + ":view", activeView);
-      history.replaceState(null, "", "#" + activeView);
+      updateLocation();
       render();
     });
   });
@@ -4602,9 +4657,19 @@ function renderTable(view) {
   document.getElementById("view-name").textContent = view.title + " (" + fmt.format(view.total_count || 0) + ")";
   document.getElementById("view-description").textContent = view.description || "";
   const query = document.getElementById("github-query");
-  query.href = view.github_url || "https://github.com/issues";
-  query.style.display = view.github_url ? "inline-flex" : "none";
+  const githubUrl = routingGroupGithubUrl(view);
+  query.href = githubUrl || "https://github.com/issues";
+  query.style.display = githubUrl ? "inline-flex" : "none";
   renderRows(view);
+}
+function routingGroupGithubUrl(view) {
+  if (!view.github_url || !activeGroup) return view.github_url || "";
+  const group = (state?.routing_groups || []).find(candidate => candidate.id === activeGroup);
+  if (!group || group.labels?.length !== 1) return "";
+  const url = new URL(view.github_url);
+  const query = url.searchParams.get("q") || "";
+  url.searchParams.set("q", query + ' label:"' + group.labels[0] + '"');
+  return url.toString();
 }
 function authorCell(row) {
   return row.author ? '<button class="label-pill" type="button" data-filter-value="' + esc(row.author) + '" title="Filter by ' + esc(row.author) + '">' + esc(row.author) + '</button>' : '<span class="muted">Unknown</span>';
@@ -4626,6 +4691,7 @@ function rowCellHtml(key, row) {
       : '<span class="muted">-</span>';
   }
   if (key === "proof") return proofStateCell(row);
+  if (key === "area") return '<div class="label-list">' + routingGroupPills(row) + '</div>';
   if (key === "prs") return '<div class="pr-list">' + linkedPullRequestPills(row) + '</div>';
   if (key === "labels") return '<div class="label-list">' + (row.labels || []).map(labelPill).join("") + '</div>';
   if (key === "updated") return '<span title="' + esc(row.updated_at || "") + '">' + esc(since(row.updated_at)) + '</span>';
@@ -4675,11 +4741,28 @@ function currentView() {
   const views = state?.views || [];
   return views.find(view => view.id === activeView) || views[0] || null;
 }
+function renderRoutingGroupControl(view) {
+  if (!PAGE.routingGroups) return;
+  const select = document.getElementById("routing-group");
+  const groups = state?.routing_groups || [];
+  if (activeGroup && !groups.some(group => group.id === activeGroup)) {
+    activeGroup = "";
+    storageSet(PAGE.storagePrefix + ":group", "");
+    updateLocation();
+  }
+  const counts = view?.loaded_routing_group_counts || {};
+  select.innerHTML = '<option value="">All impact groups</option>' + groups.map(group =>
+    '<option value="' + esc(group.id) + '">' + esc(group.title) +
+    ' (' + esc(fmt.format(counts[group.id] || 0)) + ')</option>'
+  ).join("");
+  select.value = activeGroup;
+}
 function initControls() {
   const input = document.getElementById("issue-filter");
   const sort = document.getElementById("issue-sort");
   input.value = filterText;
   sort.value = sortMode;
+  const routingGroup = document.getElementById("routing-group");
   input.addEventListener("input", () => {
     clearTimeout(filterTimer);
     filterTimer = setTimeout(() => {
@@ -4703,7 +4786,23 @@ function initControls() {
     const view = currentView();
     if (view) renderRows(view);
   });
+  if (routingGroup) {
+    routingGroup.addEventListener("change", event => {
+      activeGroup = event.target.value;
+      storageSet(PAGE.storagePrefix + ":group", activeGroup);
+      updateLocation();
+      render();
+    });
+  }
   document.getElementById("table").addEventListener("click", event => {
+    const groupTarget = event.target.closest("[data-group-value]");
+    if (groupTarget) {
+      activeGroup = groupTarget.getAttribute("data-group-value") || "";
+      storageSet(PAGE.storagePrefix + ":group", activeGroup);
+      updateLocation();
+      render();
+      return;
+    }
     const target = event.target.closest("[data-filter-value]");
     if (!target) return;
     filterText = target.getAttribute("data-filter-value") || "";
@@ -4752,7 +4851,9 @@ function render() {
   document.getElementById("updated").textContent = "Updated " + since(state.generated_at);
   renderMetrics(views);
   renderTabs(views);
-  renderTable(views.find(view => view.id === activeView) || views[0] || {});
+  const view = views.find(view => view.id === activeView) || views[0] || {};
+  renderRoutingGroupControl(view);
+  renderTable(view);
   renderDiagnostics(state);
 }
 async function load() {

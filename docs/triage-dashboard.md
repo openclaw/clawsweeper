@@ -61,9 +61,25 @@ The issue table includes assignees and, for issues carrying
 `clawsweeper:linked-pr-open`, linked pull requests from GitHub timeline data. It
 defaults to newest created issue first. Maintainers can filter the loaded
 snapshot by title, issue number, author, assignee, linked PR number or state,
-repository, priority, or label, and can switch the local sort between created
-time, issue number, update time, and comment count without changing GitHub
-state.
+repository, priority, impact group, or label, and can switch the local sort
+between created time, issue number, update time, and comment count without
+changing GitHub state.
+
+Impact groups are a read-only projection of existing `impact:*` labels:
+
+| Group            | Labels                                    |
+| ---------------- | ----------------------------------------- |
+| Message delivery | `impact:message-loss`                     |
+| Auth providers   | `impact:auth-provider`                    |
+| State and data   | `impact:session-state`, `impact:data-loss` |
+| Reliability      | `impact:crash-loop`                       |
+| Security         | `impact:security`                         |
+| Other impact     | `impact:other`                            |
+| Unclassified     | no recognized impact label                |
+
+An issue may appear in multiple groups. The dashboard does not pick a primary
+group, create labels, assign maintainers, or route work. Group filters operate
+on the loaded snapshot and persist in the URL plus browser-local storage.
 
 Priority values and label chips are clickable shortcuts. Clicking a chip writes
 that value into the filter box and narrows the current view in place.
@@ -111,7 +127,8 @@ maintainer-controlled flow rather than piggybacking on advisory labels.
 
 ## Future Ideas
 
-A later phase could add assignee suggestions or auto-assignment rules. For
+A later phase could refine these broad impact groups with repository-specific
+component labels, then add assignee suggestions or auto-assignment rules. For
 example, a `clawsweeper:needs-product-decision` issue mentioning Telegram could
 suggest or assign the maintainer who owns Telegram behavior. That should be
 designed separately from this read-only dashboard, with clear ownership rules,

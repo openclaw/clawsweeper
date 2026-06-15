@@ -279,7 +279,8 @@ The end-to-end session lifecycle is documented in
 [`docs/steerable-repair-automation.md`](docs/steerable-repair-automation.md).
 
 The optional triage dashboard page at `/triage` exposes ClawSweeper advisory
-issue labels as read-only maintainer views, backed by GitHub Search snapshots
+issue labels as read-only maintainer views, including local routing groups
+derived from existing `impact:*` labels. It is backed by GitHub Search snapshots
 instead of GitHub Project writes. See
 [`docs/triage-dashboard.md`](docs/triage-dashboard.md).
 
