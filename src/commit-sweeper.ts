@@ -2,6 +2,7 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
+import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import {
   changedFilesForCommit,
@@ -376,6 +377,97 @@ function reviewCommand(args: Args): void {
   );
   ensureDir(dirname(outputPath));
   writeFileSync(outputPath, markdown.endsWith("\n") ? markdown : `${markdown}\n`, "utf8");
+  console.log(outputPath);
+}
+
+// Local, offline pre-PR review of a whole branch: reviews the committed range
+// merge-base(base, HEAD)..HEAD as a single unit, reusing the Commit Sweeper engine.
+// Conforms to the #253 replacement spec: clean checkout, unique run dir, no GitHub
+// token, and reject unsupported repos (never fall back to a foreign profile).
+function localReviewCommand(args: Args): void {
+  const targetDir = resolve(argString(args, "target_dir", "."));
+  const baseBranch = argString(args, "base", "main");
+  const reportDir = resolve(
+    argString(args, "report_dir", join(homedir(), ".clawsweeper-local-reviews")),
+  );
+
+  // Spec: genuinely offline — withhold every GitHub credential from the review engine.
+  for (const tokenVar of [
+    "GH_TOKEN",
+    "GITHUB_TOKEN",
+    "GH_ENTERPRISE_TOKEN",
+    "COMMIT_SWEEPER_TARGET_GH_TOKEN",
+    "CLAWSWEEPER_PROOF_INSPECTION_TOKEN",
+  ]) {
+    delete process.env[tokenVar];
+  }
+
+  // Spec: committed-range review requires a clean checkout (no hidden staged/untracked work).
+  const dirtyTree = run("git", ["status", "--porcelain"], { cwd: targetDir }).trim();
+  if (dirtyTree) {
+    console.error(`[local-review] working tree not clean — commit or stash first:\n${dirtyTree}`);
+    process.exit(1);
+  }
+
+  const targetRepo =
+    argString(args, "target_repo", "") ||
+    run("git", ["remote", "get-url", "origin"], { cwd: targetDir })
+      .replace(/.*github\.com[:/]/, "")
+      .replace(/\.git\s*$/, "")
+      .trim();
+
+  // Spec: reject unsupported repos — never silently fall back to a foreign profile.
+  let profileSlug: string;
+  try {
+    profileSlug = repositoryProfileFor(targetRepo).slug;
+  } catch {
+    console.error(
+      `[local-review] no review profile for '${targetRepo}'. Add a repository profile (or generic fallback), or pass --target-repo <known-repo>.`,
+    );
+    process.exit(1);
+  }
+
+  // Range = merge-base(base, HEAD)..HEAD — the whole branch, reviewed as one unit.
+  const headSha = run("git", ["rev-parse", "HEAD"], { cwd: targetDir }).trim();
+  const baseSha = run("git", ["merge-base", baseBranch, "HEAD"], { cwd: targetDir }).trim();
+  if (!baseSha || baseSha === headSha) {
+    console.error(`[local-review] no commits on HEAD beyond ${baseBranch} — nothing to review.`);
+    process.exit(1);
+  }
+
+  const metadata = commitMetadata(targetDir, targetRepo, headSha);
+
+  // Spec: unique per-run dir so concurrent runs never collide on result paths.
+  const runDir = join(reportDir, `run-${headSha.slice(0, 8)}-${Date.now()}-${process.pid}`);
+  ensureDir(runDir);
+
+  const additionalPrompt = `This is a LOCAL pre-PR review of the COMMITTED range ${baseSha.slice(0, 8)}..${headSha.slice(0, 8)} (your branch vs ${baseBranch}) on a clean checkout — no staged or untracked changes. Review code correctness, bugs, and security; ignore PR metadata.`;
+
+  console.error(
+    `[local-review] repo=${targetRepo} profile=${profileSlug} base=${baseBranch} range=${baseSha.slice(0, 8)}..${headSha.slice(0, 8)}`,
+  );
+
+  const markdown = ensureCommitReportTimestamps(
+    runCodex({
+      targetDir,
+      targetRepo,
+      sha: headSha,
+      baseSha,
+      metadata,
+      model: argString(args, "codex_model", DEFAULT_CODEX_MODEL),
+      reasoningEffort: argString(args, "codex_reasoning_effort", DEFAULT_REASONING_EFFORT),
+      sandboxMode: argString(args, "codex_sandbox", "read-only"),
+      serviceTier: argString(args, "codex_service_tier", DEFAULT_SERVICE_TIER),
+      timeoutMs: argNumber(args, "codex_timeout_ms", 1_800_000),
+      workDir: runDir,
+      additionalPrompt,
+    }),
+    metadata,
+  );
+
+  const outputPath = join(runDir, "local-review.md");
+  writeFileSync(outputPath, markdown.endsWith("\n") ? markdown : `${markdown}\n`, "utf8");
+  console.error(`[local-review] report written to ${outputPath}`);
   console.log(outputPath);
 }
 
@@ -794,6 +886,7 @@ export function main(argv = process.argv.slice(2)): void {
   else if (command === "reports") reportsCommand(args);
   else if (command === "copy-artifacts") copyArtifactsCommand(args);
   else if (command === "dispatch-findings") dispatchFindingsCommand(args);
+  else if (command === "local-review") localReviewCommand(args);
   else {
     console.error(`Unknown command: ${command}`);
     process.exit(1);
