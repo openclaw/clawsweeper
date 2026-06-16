@@ -21,6 +21,7 @@ type Candidate = {
   headRefName?: string;
   mergeStateStatus?: string;
   reviewDecision?: string;
+  labels?: LooseRecord[];
   statusCheckRollup?: JsonValue[];
   comments?: LooseRecord[];
   reviews?: LooseRecord[];
@@ -64,8 +65,10 @@ if (!author.trim()) die("--author is required");
 const owner = repo.split("/")[0] ?? "unknown";
 const outDir = path.resolve(repoRoot(), outDirArg || `jobs/${owner}/inbox`);
 const prs = fetchOpenPullRequests({ repo, author, limit });
-const results = prs
-  .map((pr) => candidateResult(pr))
+const evaluated = prs.map((pr) => candidateResult(pr));
+const requiresHuman = evaluated.filter((result) => result.triage?.action === "requires_human");
+const results = evaluated
+  .filter((result) => result.triage?.action !== "requires_human")
   .filter((result) => result.signals.length >= minSignals);
 
 if (!dryRun) fs.mkdirSync(outDir, { recursive: true });
@@ -115,6 +118,13 @@ console.log(
       author,
       scanned: prs.length,
       candidates: results.length,
+      requires_human: requiresHuman.map((result) => ({
+        number: result.number,
+        url: result.url,
+        reason: result.triage?.reason,
+        repairable_signals: result.triage?.repairable_signals ?? [],
+        metadata_signals: result.triage?.metadata_signals ?? [],
+      })),
       dry_run: dryRun,
       jobs: written,
     },
@@ -152,6 +162,7 @@ function fetchOpenPullRequests({
       "headRefName",
       "mergeStateStatus",
       "reviewDecision",
+      "labels",
       "statusCheckRollup",
       "comments",
       "reviews",
@@ -171,6 +182,11 @@ function candidateResult(pr: Candidate) {
   const reviewDecision = String(pr.reviewDecision ?? "").toUpperCase();
   if (reviewDecision === "CHANGES_REQUESTED") {
     blockingSignals.push({ kind: "review_decision", detail: "reviewDecision=CHANGES_REQUESTED" });
+  }
+
+  for (const label of pr.labels ?? []) {
+    const signal = labelSignal(label);
+    if (signal) blockingSignals.push(signal);
   }
 
   for (const check of pr.statusCheckRollup ?? []) {
@@ -203,6 +219,11 @@ function candidateResult(pr: Candidate) {
     }
   }
 
+  const signals = dedupeSignals([
+    ...blockingSignals,
+    ...(blockingSignals.length > 0 || includeReviewOnly ? contextSignals : []),
+  ]).slice(0, 12);
+
   return {
     number: pr.number,
     title: pr.title,
@@ -210,11 +231,85 @@ function candidateResult(pr: Candidate) {
     baseRefName: pr.baseRefName ?? "main",
     headRefName: pr.headRefName ?? "",
     updatedAt: pr.updatedAt ?? "",
-    signals: dedupeSignals([
-      ...blockingSignals,
-      ...(blockingSignals.length > 0 || includeReviewOnly ? contextSignals : []),
-    ]).slice(0, 12),
+    triage: triageDecision(pr, signals),
+    signals,
   };
+}
+
+function triageDecision(pr: Candidate, signals: Signal[]) {
+  if (signals.length === 0) return null;
+
+  const repairable = signals.filter((signal) => isRepairableSignal(pr, signal, signals));
+  if (repairable.length > 0) return null;
+
+  const metadata = signals.filter((signal) => isHumanOrMetadataSignal(pr, signal, signals));
+  if (metadata.length === 0) return null;
+
+  return {
+    action: "requires_human",
+    reason:
+      "No repairable blocker was detected. Remaining signals look like human/review workflow or stale metadata, so do not create an automatic repair job.",
+    repairable_signals: repairable,
+    metadata_signals: metadata,
+  };
+}
+
+function isRepairableSignal(pr: Candidate, signal: Signal, allSignals: Signal[]) {
+  switch (signal.kind) {
+    case "check_failed":
+    case "review_decision":
+    case "review_thread_unresolved":
+    case "review_changes_requested":
+    case "review_actionable":
+      return true;
+    case "merge_state":
+      return /mergeStateStatus=(DIRTY|BLOCKED)/i.test(signal.detail);
+    case "comment_actionable":
+      return !hasProofSufficientLabel(pr) || hasHardRepairableSignal(allSignals);
+    default:
+      return false;
+  }
+}
+
+function hasHardRepairableSignal(signals: Signal[]) {
+  return signals.some((signal) => {
+    if (
+      [
+        "check_failed",
+        "review_decision",
+        "review_thread_unresolved",
+        "review_changes_requested",
+        "review_actionable",
+      ].includes(signal.kind)
+    ) {
+      return true;
+    }
+    if (signal.kind === "merge_state")
+      return /mergeStateStatus=(DIRTY|BLOCKED)/i.test(signal.detail);
+    return false;
+  });
+}
+
+function isHumanOrMetadataSignal(pr: Candidate, signal: Signal, allSignals: Signal[]) {
+  if (
+    ["clawsweeper_status", "clawsweeper_rating", "clawsweeper_merge_risk"].includes(signal.kind)
+  ) {
+    return true;
+  }
+  if (signal.kind === "merge_state" && !isRepairableSignal(pr, signal, allSignals)) {
+    return true;
+  }
+  if (signal.kind === "comment_actionable" && !isRepairableSignal(pr, signal, allSignals)) {
+    return true;
+  }
+  return false;
+}
+
+function hasProofSufficientLabel(pr: Candidate) {
+  return (pr.labels ?? []).some(
+    (label) =>
+      String(objectRecord(label).name ?? label ?? "").toLowerCase() === "proof: sufficient",
+  );
 }
 
 function unresolvedReviewThreadSignals(number: number): Signal[] {
@@ -254,6 +349,26 @@ function reviewThreadSignal(thread: LooseRecord): Signal | null {
     detail: compact(`unresolved review thread by ${loginOf(latest.author)}: ${latest.body ?? ""}`),
     source: String(latest.url ?? ""),
   };
+}
+
+function labelSignal(label: JsonValue): Signal | null {
+  const record = objectRecord(label);
+  const name = String(record.name ?? label ?? "");
+  const normalized = name.toLowerCase();
+  if (!normalized.trim()) return null;
+  if (normalized.startsWith("status:") && normalized.includes("needs proof")) {
+    return { kind: "clawsweeper_status", detail: "label=" + name };
+  }
+  if (normalized.startsWith("status:") && normalized.includes("waiting on author")) {
+    return { kind: "clawsweeper_status", detail: "label=" + name };
+  }
+  if (normalized.startsWith("rating:") && normalized.includes("unranked krab")) {
+    return { kind: "clawsweeper_rating", detail: "label=" + name };
+  }
+  if (normalized.startsWith("merge-risk:")) {
+    return { kind: "clawsweeper_merge_risk", detail: "label=" + name };
+  }
+  return null;
 }
 
 function checkSignal(check: JsonValue): Signal | null {
