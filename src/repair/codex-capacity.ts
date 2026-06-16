@@ -13,7 +13,6 @@ const DEFAULT_TIMEOUT_MS = 20 * 60 * 1000;
 
 export type CapacityRun = {
   databaseId: number;
-  workflowName: string;
   displayTitle: string;
   status: string;
   createdAt: string;
@@ -40,11 +39,7 @@ export function exactReviewAdmission({
   exactLimit?: number;
 }): ExactReviewAdmission {
   const exactRuns = snapshot.runs
-    .filter(
-      (run) =>
-        run.workflowName === "ClawSweeper" &&
-        run.displayTitle.startsWith(EXACT_REVIEW_TITLE_PREFIX),
-    )
+    .filter((run) => run.displayTitle.startsWith(EXACT_REVIEW_TITLE_PREFIX))
     .sort(compareRuns);
   if (!exactRuns.some((run) => run.databaseId === currentRunId)) {
     throw new Error(
@@ -139,16 +134,12 @@ export function fetchActiveExactReviewRuns(
         return [normalized.databaseId, normalized] as const;
       }),
     ).values(),
-  ].filter(
-    (run) =>
-      run.workflowName === "ClawSweeper" && run.displayTitle.startsWith(EXACT_REVIEW_TITLE_PREFIX),
-  );
+  ].filter((run) => run.displayTitle.startsWith(EXACT_REVIEW_TITLE_PREFIX));
 }
 
 function normalizeRun(run: LooseRecord): CapacityRun {
   return {
     databaseId: Number(run?.id ?? run?.databaseId ?? run?.database_id),
-    workflowName: String(run?.name ?? run?.workflowName ?? run?.workflow_name ?? ""),
     displayTitle: String(run?.display_title ?? run?.displayTitle ?? ""),
     status: String(run?.status ?? ""),
     createdAt: String(run?.created_at ?? run?.createdAt ?? ""),

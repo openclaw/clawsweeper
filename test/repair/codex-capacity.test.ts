@@ -68,6 +68,28 @@ test("cancelled or completed exact runs disappear without lease recovery", () =>
   );
 });
 
+test("workflow-scoped fetch accepts dynamic Actions run names", () => {
+  const runs = fetchActiveExactReviewRuns("openclaw/clawsweeper", (args) => {
+    const query = new URL(`https://github.test/${args[3]}`).searchParams;
+    if (query.get("status") !== "in_progress") return [];
+    return [
+      exactApiRun(500, "2026-06-15T12:00:00Z"),
+      {
+        id: 501,
+        name: "Review target repo openclaw/openclaw",
+        display_title: "Review target repo openclaw/openclaw",
+        status: "in_progress",
+        created_at: "2026-06-15T12:00:01Z",
+      },
+    ];
+  });
+
+  assert.deepEqual(
+    runs.map((run) => run.databaseId),
+    [500],
+  );
+});
+
 test("exact review run fetch paginates until the oldest active page", () => {
   const calls: { status: string; page: number }[] = [];
   const runs = fetchActiveExactReviewRuns("openclaw/clawsweeper", (args) => {
@@ -107,7 +129,7 @@ function capacitySnapshot(runs: CapacityRun[]): CodexCapacitySnapshot {
 function exactApiRun(databaseId: number, createdAt: string) {
   return {
     id: databaseId,
-    name: "ClawSweeper",
+    name: `Review event item openclaw/openclaw#${databaseId}`,
     display_title: `Review event item openclaw/openclaw#${databaseId}`,
     status: "in_progress",
     created_at: createdAt,
@@ -117,7 +139,6 @@ function exactApiRun(databaseId: number, createdAt: string) {
 function exactRun(databaseId: number, createdAt: string): CapacityRun {
   return {
     databaseId,
-    workflowName: "ClawSweeper",
     displayTitle: `Review event item openclaw/openclaw#${databaseId}`,
     status: "in_progress",
     createdAt,
