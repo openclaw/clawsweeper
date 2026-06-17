@@ -14245,6 +14245,7 @@ test("apply-decisions counts advisory label-only syncs against the processed lim
 
     const ghMock = `
 const { appendFileSync } = require("fs");
+const { readFileSync } = require("fs");
 const logPath = ${JSON.stringify(logPath)};
 const comments = ${JSON.stringify({ 321: first.comment, 322: second.comment })};
 const rawArgs = process.argv.slice(2);
@@ -14253,7 +14254,12 @@ appendFileSync(logPath, JSON.stringify(args) + "\\n");
 const path = args[1] || "";
 const commentMatch = path.match(/\\/issues\\/(\\d+)\\/comments(?:\\?|$)/);
 const issueMatch = path.match(/\\/issues\\/(\\d+)$/);
-if (args[0] === "api" && commentMatch) {
+if (args[0] === "api" && /\\/issues\\/comments\\/\\d+$/.test(path)) {
+  const inputPath = args[args.indexOf("--input") + 1];
+  const body = JSON.parse(readFileSync(inputPath, "utf8")).body;
+  appendFileSync(logPath, JSON.stringify(["comment-patch", body]) + "\\n");
+  console.log(JSON.stringify({ id: 9000 + 321, html_url: "https://github.com/openclaw/clawsweeper/issues/321#issuecomment-9321", updated_at: "2026-05-01T01:02:00Z", body }));
+} else if (args[0] === "api" && commentMatch) {
   const number = Number(commentMatch[1]);
   const body = comments[number];
   console.log(JSON.stringify([[{
@@ -14281,6 +14287,20 @@ if (args[0] === "api" && commentMatch) {
     labels: number === 321 ? ["stale"] : [],
     pull_request: null
   }));
+} else if (args[0] === "api" && /\\/pulls\\/87691$/.test(path)) {
+  console.log(JSON.stringify({
+    number: 87691,
+    title: "fix(auto-reply): preserve post-compaction failure context",
+    html_url: "https://github.com/openclaw/clawsweeper/pull/87691",
+    state: "open",
+    merged: false,
+    merged_at: null,
+    head: { ref: "fix/67750-compaction-embedded-timeout", sha: "head-sha" },
+    base: { ref: "main", sha: "base-sha" },
+    user: { login: "contributor" }
+  }));
+} else if (args[0] === "issue" && args[1] === "view" && args[2] === "321") {
+  console.log(JSON.stringify({ closedByPullRequestsReferences: [{ number: 87691 }] }));
 } else if (args[0] === "issue" && args[1] === "view") {
   console.log(JSON.stringify({ closedByPullRequestsReferences: [] }));
 } else if (args[0] === "label" && args[1] === "create") {
@@ -14309,6 +14329,16 @@ if (args[0] === "api" && commentMatch) {
     );
     assert.ok(editCalls.some((args) => args.includes("--add-label") && args.includes("no-stale")));
     assert.ok(
+      editCalls.some(
+        (args) => args.includes("--add-label") && args.includes("clawsweeper:linked-pr-open"),
+      ),
+    );
+    assert.ok(
+      editCalls.some(
+        (args) => args.includes("--add-label") && args.includes("clawsweeper:no-new-fix-pr"),
+      ),
+    );
+    assert.ok(
       editCalls.some((args) => args.includes("--remove-label") && args.includes("stale")),
       JSON.stringify(editCalls),
     );
@@ -14319,10 +14349,21 @@ if (args[0] === "api" && commentMatch) {
     assert.deepEqual(JSON.parse(readFileSync(reportPath, "utf8")), [
       {
         number: 321,
-        action: "kept_open",
-        reason: "synced advisory issue labels",
+        action: "review_comment_synced",
+        reason: "updated durable Codex review comment",
       },
     ]);
+    const patchedComment = calls.find((args) => args[0] === "comment-patch")?.[1] ?? "";
+    assert.match(
+      patchedComment,
+      /- add `clawsweeper:linked-pr-open`: Current issue advisory state selects this label\./,
+    );
+    assert.match(
+      patchedComment,
+      /- add `clawsweeper:no-new-fix-pr`: Current issue advisory state selects this label\./,
+    );
+    assert.doesNotMatch(patchedComment, /remove `clawsweeper:linked-pr-open`/);
+    assert.doesNotMatch(patchedComment, /remove `clawsweeper:no-new-fix-pr`/);
     assert.match(readFileSync(join(itemsDir, "321.md"), "utf8"), /^labels_synced_at: /m);
   } finally {
     rmSync(root, { recursive: true, force: true });

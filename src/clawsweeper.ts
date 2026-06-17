@@ -17089,12 +17089,14 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
     if (state === "open" && item.kind === "issue" && !isCloseProposal && isCurrentCompleteReport) {
       currentClosingPullRequests = closingPullRequestsForIssue(number);
       try {
+        const hasOpenLinkedPullRequest =
+          openClosingPullRequestApplyReason(currentClosingPullRequests) !== null;
+        renderOptions.hasOpenLinkedPullRequest = hasOpenLinkedPullRequest;
         const syncResult = syncIssueAdvisoryLabels({
           number,
           labels: item.labels,
           state: issueAdvisoryLabelStateFromReport(markdown, {
-            hasOpenLinkedPullRequest:
-              openClosingPullRequestApplyReason(currentClosingPullRequests) !== null,
+            hasOpenLinkedPullRequest,
           }),
           dryRun,
         });
@@ -17109,6 +17111,8 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
         continue;
       }
     }
+    reviewComment = renderReviewCommentFromReport(markdown, closeReason ?? "none", renderOptions);
+    markedReviewComment = markedReviewCommentBody(number, reviewComment);
     if (isCloseProposal && item.kind === "issue") {
       currentClosingPullRequests ??= closingPullRequestsForIssue(number);
       const openClosingPullRequestReason = openClosingPullRequestApplyReason(
