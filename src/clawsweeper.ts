@@ -16844,9 +16844,19 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
     }
     const updatedSinceReview = Boolean(storedUpdatedAt && item.updatedAt !== storedUpdatedAt);
     const reviewCommentOnlyUpdate = item.updatedAt === commentUpdatedAt(existingReviewComment);
-    const unchangedSinceReview = storedUpdatedAt
-      ? !updatedSinceReview || reviewCommentOnlyUpdate
-      : false;
+    const labelSyncFreshEnough = (): boolean => {
+      if (!storedUpdatedAt) return false;
+      if (!updatedSinceReview || reviewCommentOnlyUpdate) return true;
+      const existingReviewCommentUpdatedAtMs = timestampMs(commentUpdatedAt(existingReviewComment));
+      const itemUpdatedAtMs = timestampMs(item.updatedAt);
+      if (existingReviewCommentUpdatedAtMs === null || itemUpdatedAtMs === null) return false;
+      if (Math.abs(itemUpdatedAtMs - existingReviewCommentUpdatedAtMs) > 5 * 60 * 1000) {
+        return false;
+      }
+      const storedUpdatedAtMs = timestampMs(storedUpdatedAt);
+      if (storedUpdatedAtMs === null) return false;
+      return !contextHasNonAutomationActivityAfter(currentItemContext(), storedUpdatedAtMs);
+    };
     const markChangedSinceReview = (options: {
       reason: string;
       currentUpdatedAt?: string | undefined;
@@ -17043,7 +17053,7 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
       }
     }
     const isCurrentCompleteReport =
-      frontMatterValue(markdown, "review_status") === "complete" && unchangedSinceReview;
+      frontMatterValue(markdown, "review_status") === "complete" && labelSyncFreshEnough();
     if (state === "open" && isCurrentCompleteReport) {
       try {
         const syncResult = syncPriorityLabel({

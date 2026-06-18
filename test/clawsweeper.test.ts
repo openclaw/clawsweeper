@@ -14370,6 +14370,137 @@ if (args[0] === "api" && /\\/issues\\/comments\\/\\d+$/.test(path)) {
   }
 });
 
+test("apply-decisions syncs labels when first review placeholder advanced issue updated_at", () => {
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    const itemsDir = join(root, "items");
+    const closedDir = join(root, "closed");
+    const plansDir = join(root, "plans");
+    const reportPath = join(root, "apply-report.json");
+    const logPath = join(root, "gh.log");
+    mkdirSync(itemsDir, { recursive: true });
+    mkdirSync(plansDir, { recursive: true });
+
+    const report = workPlanCandidateReport({
+      number: 321,
+      reviewed_at: "2026-05-01T00:05:00Z",
+      item_snapshot_hash: "reviewed-snapshot-321",
+      item_updated_at: "2026-05-01T00:00:00Z",
+      triage_priority: "P1",
+      impact_labels: JSON.stringify(["impact:message-loss"]),
+      reproduction_status: "source_reproducible",
+      reproduction_confidence: "high",
+    });
+    writeFileSync(join(itemsDir, "321.md"), report, "utf8");
+    const placeholder = renderReviewStartStatusComment({
+      number: 321,
+      kind: "issue",
+      title: "Render work plans",
+    });
+
+    const ghMock = `
+const { appendFileSync, readFileSync } = require("fs");
+const logPath = ${JSON.stringify(logPath)};
+const placeholder = ${JSON.stringify(placeholder)};
+const rawArgs = process.argv.slice(2);
+const args = rawArgs[0] === "--repo" ? rawArgs.slice(2) : rawArgs;
+appendFileSync(logPath, JSON.stringify(args) + "\\n");
+const path = args.includes("-i") ? args[args.indexOf("-i") + 1] : args[1] || "";
+const commentMatch = path.match(/\\/issues\\/(\\d+)\\/comments(?:\\?|$)/);
+const issueMatch = path.match(/\\/issues\\/(\\d+)$/);
+if (args[0] === "api" && /\\/issues\\/comments\\/\\d+$/.test(path)) {
+  const inputPath = args[args.indexOf("--input") + 1];
+  const body = JSON.parse(readFileSync(inputPath, "utf8")).body;
+  appendFileSync(logPath, JSON.stringify(["comment-patch", body]) + "\\n");
+  console.log(JSON.stringify({
+    id: 9321,
+    html_url: "https://github.com/openclaw/clawsweeper/issues/321#issuecomment-9321",
+    created_at: "2026-05-01T00:01:00Z",
+    updated_at: "2026-05-01T00:06:00Z",
+    user: { login: "clawsweeper[bot]" },
+    body
+  }));
+} else if (args[0] === "api" && commentMatch) {
+  console.log(JSON.stringify([[{
+    id: 9321,
+    html_url: "https://github.com/openclaw/clawsweeper/issues/321#issuecomment-9321",
+    created_at: "2026-05-01T00:01:00Z",
+    updated_at: "2026-05-01T00:01:00Z",
+    user: { login: "clawsweeper[bot]" },
+    body: placeholder
+  }]]));
+} else if (args[0] === "api" && /\\/issues\\/321\\/timeline/.test(path)) {
+  console.log(JSON.stringify([{
+    id: 1,
+    event: "commented",
+    created_at: "2026-05-01T00:01:00Z",
+    actor: { login: "clawsweeper[bot]" }
+  }]));
+} else if (args[0] === "api" && issueMatch) {
+  console.log(JSON.stringify({
+    number: 321,
+    title: "Render work plans",
+    html_url: "https://github.com/openclaw/clawsweeper/issues/321",
+    created_at: "2026-05-01T00:00:00Z",
+    updated_at: "2026-05-01T00:01:01Z",
+    closed_at: null,
+    state: "open",
+    locked: false,
+    active_lock_reason: null,
+    author_association: "CONTRIBUTOR",
+    user: { login: "reporter" },
+    labels: [],
+    comments: 1,
+    pull_request: null
+  }));
+} else if (args[0] === "issue" && args[1] === "view") {
+  console.log(JSON.stringify({ closedByPullRequestsReferences: [] }));
+} else if (args[0] === "label" && args[1] === "create") {
+  console.log("");
+} else if (args[0] === "issue" && args[1] === "edit") {
+  console.log("");
+} else {
+  console.error("unexpected gh args", JSON.stringify(args));
+  process.exit(1);
+}
+`;
+    withMockGh(root, ghMock, () => {
+      runApplyDecisionsForTest({ itemsDir, closedDir, plansDir, reportPath });
+    });
+
+    const calls = readFileSync(logPath, "utf8")
+      .trim()
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as string[]);
+    const editCalls = calls.filter((args) => args[0] === "issue" && args[1] === "edit");
+    assert.ok(editCalls.some((args) => args.includes("--add-label") && args.includes("P1")));
+    assert.ok(
+      editCalls.some(
+        (args) => args.includes("--add-label") && args.includes("impact:message-loss"),
+      ),
+    );
+    assert.ok(
+      editCalls.some(
+        (args) => args.includes("--add-label") && args.includes("clawsweeper:source-repro"),
+      ),
+    );
+    assert.deepEqual(JSON.parse(readFileSync(reportPath, "utf8")), [
+      {
+        number: 321,
+        action: "review_comment_synced",
+        reason: "updated durable Codex review comment",
+      },
+    ]);
+    const updatedReport = readFileSync(join(itemsDir, "321.md"), "utf8");
+    assert.match(updatedReport, /^labels: .*"P1"/m);
+    assert.match(updatedReport, /^labels: .*"impact:message-loss"/m);
+    assert.match(updatedReport, /^labels_synced_at: /m);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("apply-decisions dry-run computes advisory labels without mutating GitHub labels", () => {
   const root = mkdtempSync(tmpPrefix);
   try {
