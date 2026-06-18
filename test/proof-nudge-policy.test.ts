@@ -202,7 +202,7 @@ test("bot proof handling skips overrides, stale heads, drafts, and non-ClawSweep
     }).action,
     "skipped_draft",
   );
-  for (const label of ["proof: override", "proof: supplied", "proof: sufficient"] as const) {
+  for (const label of ["proof: override", "proof: sufficient"] as const) {
     assert.equal(
       botProofEligibilityForTest({
         item: proofNudgeItem({
@@ -553,13 +553,13 @@ test("proof nudges skip stale report heads and proof-policy exemptions", () => {
   );
   assert.equal(
     proofNudgeEligibilityForTest({
-      item: proofNudgeItem({ labels: ["triage: needs-real-behavior-proof", "proof: supplied"] }),
+      item: proofNudgeItem({ labels: ["proof: supplied"] }),
       markdown: proofNudgeReport(),
       headSha: "abc123def456",
       headCommittedAt: "2026-01-01T00:00:00Z",
       now: Date.parse("2026-01-10T00:00:00Z"),
     }).action,
-    "skipped_policy_exempt",
+    "proof_nudge_planned",
   );
 });
 

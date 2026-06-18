@@ -133,7 +133,6 @@ const GITHUB_APP_TOKEN_DEFAULT_TTL_MS = 50 * 60_000;
 const PR_PROOF_LABEL_NAMES = [
   "triage: needs-real-behavior-proof",
   "triage: mock-only-proof",
-  "proof: supplied",
   "proof: sufficient",
   "proof: override",
   "mantis: telegram-visible-proof",
@@ -207,16 +206,9 @@ const PR_PROOF_VIEWS = [
   },
   {
     id: "missing-proof",
-    title: "No proof supplied",
-    description: "Proof is requested, but no supplied, sufficient, or override label is present.",
+    title: "Needs proof review",
+    description: "Proof is requested, but ClawSweeper has not marked it sufficient or overridden.",
     allLabels: ["triage: needs-real-behavior-proof"],
-    withoutLabels: ["proof: supplied", "proof: sufficient", "proof: override"],
-  },
-  {
-    id: "supplied-awaiting-review",
-    title: "Supplied, needs review",
-    description: "Proof has been supplied, but ClawSweeper has not marked it sufficient.",
-    allLabels: ["proof: supplied"],
     withoutLabels: ["proof: sufficient", "proof: override"],
   },
   {
@@ -2547,7 +2539,6 @@ function proofStateFromLabels(labels) {
     return "Sufficient + needs label";
   }
   if (has("proof: sufficient")) return "Sufficient";
-  if (has("proof: supplied")) return "Supplied, needs review";
   if (has("triage: mock-only-proof")) return "Mock-only proof";
   if (has("triage: needs-real-behavior-proof")) return "Needs proof";
   if (has("mantis: telegram-visible-proof")) return "Telegram proof";
@@ -4546,12 +4537,7 @@ function prProofTriagePageConfig() {
     metrics: [
       { label: "Proof triage PRs", view: "proof-triage", detail: "proof-related labels" },
       { label: "Needs proof", view: "needs-proof", detail: "real behavior proof requested" },
-      { label: "No proof supplied", view: "missing-proof", detail: "most stuck bucket" },
-      {
-        label: "Supplied, needs review",
-        view: "supplied-awaiting-review",
-        detail: "waiting on sufficiency decision",
-      },
+      { label: "Needs proof review", view: "missing-proof", detail: "most stuck bucket" },
       {
         label: "Proof sufficient",
         view: "sufficient-proof",

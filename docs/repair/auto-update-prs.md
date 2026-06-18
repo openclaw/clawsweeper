@@ -299,7 +299,7 @@ status contains `clawsweeper_self_rebase` or `conflict_self_heal`.
 Replacement PR labels must describe the replacement PR, not stale lifecycle
 state from a source PR. Replacement creation filters source labels so it does
 not copy `close:*`, `stale`, `rating:*`, `status:*`, `proof:*`,
-`triage: needs-real-behavior-proof`, `merge-risk:*`, `size:*`, or `P*`
+`triage: needs-real-behavior-proof`, `triage: needs-pr-context`, `merge-risk:*`, `size:*`, or `P*`
 priority labels.
 
 Use the cleanup command to inspect existing open ClawSweeper replacement PRs

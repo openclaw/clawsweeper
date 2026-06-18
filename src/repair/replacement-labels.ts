@@ -45,7 +45,9 @@ export function replacementSourceLabelCopyable(value: string): boolean {
   ) {
     return false;
   }
-  if (key === "triage: needs-real-behavior-proof") return false;
+  if (key === "triage: needs-real-behavior-proof" || key === "triage: needs-pr-context") {
+    return false;
+  }
   if (/^p[0-3]$/.test(key)) return false;
   return true;
 }

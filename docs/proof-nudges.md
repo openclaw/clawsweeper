@@ -4,7 +4,7 @@ Read when changing the ClawSweeper lane that reminds pull request authors to add
 
 ## Scope
 
-The proof-nudge lane is read-mostly triage hygiene. It can post a polite reminder comment on open pull requests that are stuck on `triage: needs-real-behavior-proof`, but it does not close pull requests, merge pull requests, change labels, request reviews, or modify review records.
+The proof-nudge lane is read-mostly triage hygiene. It can post a polite reminder comment when the latest ClawSweeper review still requires real behavior proof, but it does not close pull requests, merge pull requests, change labels, request reviews, or modify review records.
 
 The lane uses the latest ClawSweeper review report plus the live pull request state. It does not scrape the visible review comment for policy.
 
@@ -13,14 +13,13 @@ The lane uses the latest ClawSweeper review report plus the live pull request st
 A pull request is eligible only when all of these are true:
 
 - The live item is an open pull request.
-- The live pull request still has `triage: needs-real-behavior-proof`.
 - The latest report still says real behavior proof blocks merge.
 - The report head SHA matches the live pull request head SHA.
 - The pull request is past the first-nudge age gate, defaulting to 5 days.
 - The author has not commented recently and the head commit is not recent.
 - There is no same-head proof nudge inside the cooldown window, defaulting to 7 days.
 
-The lane skips maintainer-authored, bot-authored, security-sensitive, and release-style pull requests. It also skips pull requests with `proof: supplied`, `proof: sufficient`, or `proof: override`, because those need review or policy handling rather than another contributor reminder.
+The lane skips maintainer-authored, bot-authored, security-sensitive, and release-style pull requests. It also skips pull requests with `proof: sufficient` or `proof: override`, because those need review or policy handling rather than another contributor reminder. OpenClaw's `triage: needs-pr-context` label is separate contributor-body hygiene and does not decide real-proof sufficiency.
 
 ## Bot-Owned Proof Handling
 
@@ -33,8 +32,8 @@ The bot-owned lane is status-only unless an approved Mantis proof suggestion is
 available. It is eligible only when the live PR is open and not draft, the
 author is the ClawSweeper GitHub App, the latest
 ClawSweeper review says real behavior proof blocks merge, and that review head
-SHA still matches the live head SHA. It must skip PRs with `proof: supplied`,
-`proof: sufficient`, or `proof: override`.
+SHA still matches the live head SHA. It must skip PRs with `proof: sufficient`
+or `proof: override`.
 
 When the review includes an approved Mantis-style proof suggestion, the lane
 posts a durable Mantis proof request comment. Otherwise it updates one durable

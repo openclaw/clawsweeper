@@ -433,16 +433,13 @@ Reason: Maintainers should review the proof before merge.
 });
 
 test("ClawSweeper proof judgement controls the sufficient proof label", () => {
-  assert.deepEqual(realBehaviorProofSufficientLabelsForTest(["proof: supplied"], "sufficient"), [
-    "proof: supplied",
+  assert.deepEqual(realBehaviorProofSufficientLabelsForTest(["bug"], "sufficient"), [
+    "bug",
     "proof: sufficient",
   ]);
   assert.deepEqual(
-    realBehaviorProofSufficientLabelsForTest(
-      ["proof: supplied", "proof: sufficient"],
-      "insufficient",
-    ),
-    ["proof: supplied"],
+    realBehaviorProofSufficientLabelsForTest(["bug", "proof: sufficient"], "insufficient"),
+    ["bug"],
   );
   assert.deepEqual(realBehaviorProofSufficientLabelsForTest(["proof: sufficient"], "missing"), []);
 });

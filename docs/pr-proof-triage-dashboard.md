@@ -19,7 +19,6 @@ The worker reads a fixed set of proof-related labels from the target repository:
 
 - `triage: needs-real-behavior-proof`
 - `triage: mock-only-proof`
-- `proof: supplied`
 - `proof: sufficient`
 - `proof: override`
 - `mantis: telegram-visible-proof`
@@ -30,16 +29,15 @@ The focused views are derived from high-signal label combinations:
 | ------------------------ | -------------------------------------------------------------------------------------------------------- |
 | Proof triage             | any configured proof-related label                                                                       |
 | Needs proof              | `triage: needs-real-behavior-proof`                                                                      |
-| No proof supplied        | `triage: needs-real-behavior-proof` without `proof: supplied`, `proof: sufficient`, or `proof: override` |
-| Supplied, needs review   | `proof: supplied` without `proof: sufficient` or `proof: override`                                       |
+| Needs proof review       | `triage: needs-real-behavior-proof` without `proof: sufficient` or `proof: override`                     |
 | Proof sufficient         | `proof: sufficient`                                                                                      |
 | Mock-only proof          | `triage: mock-only-proof`                                                                                |
 | Telegram proof           | `mantis: telegram-visible-proof`                                                                         |
 | Sufficient + needs label | `triage: needs-real-behavior-proof` and `proof: sufficient`                                              |
 
 The API queries each proof view directly so the main stuck buckets are not
-undercounted by a broad first-page snapshot. The `No proof supplied` and
-`Supplied, needs review` views load up to `PR_PROOF_ITEMS_PER_VIEW`; the default
+undercounted by a broad first-page snapshot. The `Needs proof review` view loads
+up to `PR_PROOF_ITEMS_PER_VIEW`; the default
 is 500, with an upper bound of 1,000 because GitHub Search only exposes the
 first 1,000 results for a query. Broader summary views load fewer rows while
 still using GitHub's `total_count`, so the metric cards stay accurate without
@@ -80,6 +78,6 @@ Keep this dashboard read-only:
 - no repair dispatch
 
 A later phase could add contributor reminders for PRs that remain in the
-`No proof supplied` view for a maintainer-defined period, or route selected PRs
+`Needs proof review` view for a maintainer-defined period, or route selected PRs
 to maintainers who can validate behavior in Crabbox. That should be a separate
 opt-in workflow with clear wording, cooldowns, and maintainer control.

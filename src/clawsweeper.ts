@@ -829,7 +829,6 @@ type ProofNudgeAction =
   | "proof_nudge_planned"
   | "skipped_not_pull_request"
   | "skipped_not_open"
-  | "skipped_missing_label"
   | "skipped_policy_exempt"
   | "skipped_stale_report_head"
   | "skipped_recent_author_activity"
@@ -1099,8 +1098,6 @@ const UNCONFIRMED_PRODUCT_DIRECTION_EXEMPT_LABELS = new Set([
 ]);
 const PROOF_OVERRIDE_LABEL = "proof: override";
 const PROOF_SUFFICIENT_LABEL = "proof: sufficient";
-const PROOF_SUPPLIED_LABEL = "proof: supplied";
-const REAL_BEHAVIOR_PROOF_REQUIRED_LABEL = "triage: needs-real-behavior-proof";
 const PROOF_NUDGE_MARKER_PREFIX = "<!-- clawsweeper-proof-nudge";
 const PROOF_NUDGE_MARKER_VERSION = "1";
 const BOT_PROOF_DECISION_MARKER_PREFIX = "<!-- clawsweeper-bot-proof-decision";
@@ -11662,13 +11659,6 @@ function proofNudgeEligibility(options: ProofNudgeEligibilityOptions): ProofNudg
       reason: `type is ${options.item.kind}`,
     };
   }
-  if (!hasNormalizedLabel(options.item.labels, REAL_BEHAVIOR_PROOF_REQUIRED_LABEL)) {
-    return {
-      eligible: false,
-      action: "skipped_missing_label",
-      reason: `${REAL_BEHAVIOR_PROOF_REQUIRED_LABEL} is not present`,
-    };
-  }
   const lockedReason = lockedConversationApplyReason(options.item);
   if (lockedReason) {
     return {
@@ -11679,13 +11669,12 @@ function proofNudgeEligibility(options: ProofNudgeEligibilityOptions): ProofNudg
   }
   if (
     hasNormalizedLabel(options.item.labels, PROOF_OVERRIDE_LABEL) ||
-    hasNormalizedLabel(options.item.labels, PROOF_SUFFICIENT_LABEL) ||
-    hasNormalizedLabel(options.item.labels, PROOF_SUPPLIED_LABEL)
+    hasNormalizedLabel(options.item.labels, PROOF_SUFFICIENT_LABEL)
   ) {
     return {
       eligible: false,
       action: "skipped_policy_exempt",
-      reason: "proof is already supplied, sufficient, or overridden",
+      reason: "proof is already sufficient or overridden",
     };
   }
   if (isMaintainerAuthored(options.item)) {
@@ -11872,13 +11861,12 @@ function botProofEligibility(options: BotProofEligibilityOptions): BotProofEligi
   }
   if (
     hasNormalizedLabel(options.item.labels, PROOF_OVERRIDE_LABEL) ||
-    hasNormalizedLabel(options.item.labels, PROOF_SUFFICIENT_LABEL) ||
-    hasNormalizedLabel(options.item.labels, PROOF_SUPPLIED_LABEL)
+    hasNormalizedLabel(options.item.labels, PROOF_SUFFICIENT_LABEL)
   ) {
     return {
       eligible: false,
       action: "skipped_policy_exempt",
-      reason: "proof is already supplied, sufficient, or overridden",
+      reason: "proof is already sufficient or overridden",
     };
   }
   if (!realBehaviorProofBlocksBotOwnedMerge(options.markdown)) {
