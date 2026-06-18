@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -162,6 +163,120 @@ export function closeDecision(overrides = {}) {
     workLikelyFiles: [],
     ...overrides,
   };
+}
+
+export function reviewFinding(overrides = {}) {
+  return {
+    title: "Missing changelog entry",
+    body: "This user-facing fix needs a CHANGELOG.md entry.",
+    priority: 3,
+    confidenceScore: 0.9,
+    file: "src/runtime.ts",
+    lineStart: 12,
+    lineEnd: 12,
+    ...overrides,
+  };
+}
+
+export function changelogReviewDecision(overrides = {}) {
+  return closeDecision({
+    decision: "keep_open",
+    closeReason: "none",
+    confidence: "high",
+    bestSolution: "Add the required changelog entry before merge.",
+    reviewFindings: [reviewFinding({ title: "Add the required changelog entry" })],
+    overallCorrectness: "patch is incorrect",
+    workCandidate: "queue_fix_pr",
+    workConfidence: "high",
+    workPriority: "medium",
+    workReason: "Add the required changelog entry.",
+    workPrompt: "Add a CHANGELOG.md entry.",
+    workLikelyFiles: ["CHANGELOG.md"],
+    ...overrides,
+  });
+}
+
+export function reportFrontMatter(overrides = {}) {
+  const values = {
+    repository: "openclaw/openclaw",
+    type: "issue",
+    decision: "keep_open",
+    close_reason: "none",
+    confidence: "high",
+    action_taken: "kept_open",
+    ...overrides,
+  };
+  return `---
+${Object.entries(values)
+  .map(([key, value]) => `${key}: ${value}`)
+  .join("\n")}
+---
+`;
+}
+
+export function realBehaviorProofReportSection(overrides = {}) {
+  const values = {
+    status: "sufficient",
+    evidenceKind: "terminal",
+    needsContributorAction: false,
+    summary:
+      "The PR includes a terminal transcript from a real OpenClaw setup showing the fixed behavior after the patch.",
+    ...overrides,
+  };
+  return `## Real Behavior Proof
+
+Status: ${values.status}
+
+Evidence kind: ${values.evidenceKind}
+
+Needs contributor action: ${values.needsContributorAction}
+
+Summary: ${values.summary}
+`;
+}
+
+export function prRatingReportSection(overrides = {}) {
+  const values = {
+    overallTier: "B",
+    proofTier: "A",
+    patchTier: "B",
+    overallLabel: "🐚 platinum hermit",
+    proofLabel: "🦞 diamond lobster",
+    patchLabel: "🐚 platinum hermit",
+    summary: "This PR has strong proof and normal merge-ready implementation quality.",
+    nextSteps: "- none",
+    ...overrides,
+  };
+  return `## PR Rating
+
+Overall tier: ${values.overallTier}
+
+Proof tier: ${values.proofTier}
+
+Patch tier: ${values.patchTier}
+
+Overall label: ${values.overallLabel}
+
+Proof label: ${values.proofLabel}
+
+Patch label: ${values.patchLabel}
+
+Summary: ${values.summary}
+
+Next rank-up steps:
+
+${values.nextSteps}
+`;
+}
+
+export function detailsBody(markdown, summary) {
+  const marker = `<summary>${summary}</summary>`;
+  const markerIndex = markdown.indexOf(marker);
+  assert.notEqual(markerIndex, -1, `missing details summary ${summary}`);
+  const bodyStart = markerIndex + marker.length;
+  const bodyEnd = markdown.indexOf("</details>", bodyStart);
+  assert.notEqual(bodyEnd, -1, `missing details close for ${summary}`);
+  return markdown.slice(bodyStart, bodyEnd);
 }
 
 export const git = {
