@@ -389,8 +389,6 @@ jobs:
           }
           react "eyes"
 
-      - uses: ./.github/actions/setup-media-proof-tools
-
       - uses: actions/cache@v5
         with:
           path: ${{ steps.target.outputs.target_checkout_dir }}-cache.git
@@ -1218,8 +1216,6 @@ jobs:
           CLAWSWEEPER_INTERNAL_MODEL: ${{ secrets.CLAWSWEEPER_MODEL }}
         with:
           login-status: "true"
-
-      - uses: ./clawsweeper/.github/actions/setup-media-proof-tools
 
       - uses: actions/cache@v5
         with:
