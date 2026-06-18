@@ -22,6 +22,13 @@ async function main() {
   if (!Array.isArray(status.workers)) throw new Error("status response is missing worker details");
   if (!Array.isArray(status.pipeline)) throw new Error("status response is missing pipeline rows");
 
+  const exactReviewQueue = await fetchJson(`${baseUrl}/api/exact-review-queue`);
+  for (const field of ["pending", "dispatching", "leased"]) {
+    if (typeof exactReviewQueue[field] !== "number") {
+      throw new Error(`exact-review queue response is missing ${field}`);
+    }
+  }
+
   const html = await fetchText(`${baseUrl}/`);
   if (!html.includes("ClawSweeper Live")) throw new Error("dashboard HTML title missing");
   if (!html.includes("System Overview")) throw new Error("dashboard system overview missing");
@@ -36,6 +43,7 @@ async function main() {
         active_codex_jobs: status.fleet.active_codex_jobs,
         worker_details: status.workers.length,
         pipeline_rows: status.pipeline.length,
+        exact_review_queue: exactReviewQueue,
         cache_state: cacheState,
         status_fetch_ms: statusFetchMs,
         diagnostic_errors: status.diagnostics?.errors || [],

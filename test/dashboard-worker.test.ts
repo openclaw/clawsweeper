@@ -351,6 +351,87 @@ test("authenticated legacy exact-review intake enters the durable queue", async 
   assert.equal(denied.status, 401);
 });
 
+test("exact-review queue retries dispatch failures and reclaims an unclaimed lease", async () => {
+  const originalFetch = globalThis.fetch;
+  const storage = new MemoryDurableStorage();
+  const { privateKey } = generateKeyPairSync("rsa", {
+    modulusLength: 2048,
+    privateKeyEncoding: { type: "pkcs8", format: "pem" },
+    publicKeyEncoding: { type: "spki", format: "pem" },
+  });
+  let dispatchAttempts = 0;
+  globalThis.fetch = async (input) => {
+    const url = new URL(String(input));
+    if (url.pathname === "/repos/openclaw/clawsweeper/installation")
+      return jsonResponse({ id: 999 });
+    if (url.pathname === "/app/installations/999/access_tokens")
+      return jsonResponse({ token: "dispatch-token" });
+    if (url.pathname === "/repos/openclaw/clawsweeper/dispatches") {
+      dispatchAttempts += 1;
+      if (dispatchAttempts === 1) {
+        return new Response(JSON.stringify({ message: "rate limited" }), { status: 429 });
+      }
+      return new Response(null, { status: 204 });
+    }
+    throw new Error(`unexpected fetch ${url}`);
+  };
+
+  try {
+    const queue = new ExactReviewQueue(
+      { storage },
+      {
+        CLAWSWEEPER_APP_CLIENT_ID: "Iv23test",
+        CLAWSWEEPER_APP_PRIVATE_KEY: privateKey,
+        EXACT_REVIEW_DISPATCH_LEASE_MS: "60000",
+      },
+    );
+    assert.equal(
+      (await queue.fetch(buildExactReviewQueueRequest("delivery-1", 599, "opened"))).status,
+      202,
+    );
+
+    await queue.alarm();
+    let state = await (
+      await queue.fetch(new Request("https://clawsweeper-exact-review-queue/stats"))
+    ).json();
+    assert.deepEqual(
+      { pending: state.pending, dispatching: state.dispatching, leased: state.leased },
+      { pending: 1, dispatching: 0, leased: 0 },
+    );
+
+    const stored = (await storage.get("exact-review-queue")) as {
+      items: Record<string, { nextAttemptAt: number }>;
+    };
+    stored.items["openclaw/gogcli#599"].nextAttemptAt = Date.now() - 1;
+    await storage.put("exact-review-queue", stored);
+    await queue.alarm();
+    state = await (
+      await queue.fetch(new Request("https://clawsweeper-exact-review-queue/stats"))
+    ).json();
+    assert.deepEqual(
+      { pending: state.pending, dispatching: state.dispatching, leased: state.leased },
+      { pending: 0, dispatching: 1, leased: 0 },
+    );
+
+    const leased = (await storage.get("exact-review-queue")) as {
+      items: Record<string, { leaseExpiresAt: number }>;
+    };
+    leased.items["openclaw/gogcli#599"].leaseExpiresAt = Date.now() - 1;
+    await storage.put("exact-review-queue", leased);
+    await queue.alarm();
+    state = await (
+      await queue.fetch(new Request("https://clawsweeper-exact-review-queue/stats"))
+    ).json();
+    assert.deepEqual(
+      { pending: state.pending, dispatching: state.dispatching, leased: state.leased },
+      { pending: 0, dispatching: 1, leased: 0 },
+    );
+    assert.equal(dispatchAttempts, 3);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 function isoAgo(ms: number) {
   return new Date(Date.now() - ms).toISOString();
 }

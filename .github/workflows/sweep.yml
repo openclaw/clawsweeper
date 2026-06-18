@@ -225,15 +225,23 @@ jobs:
           test -n "$QUEUE_LEASE_ID"
           queue_url="${QUEUE_URL%/}"
           payload="$(node -e 'process.stdout.write(JSON.stringify({ lease_id: process.env.QUEUE_LEASE_ID, run_id: process.env.GITHUB_RUN_ID }))')"
-          response="$(curl --fail --silent --show-error --connect-timeout 5 --max-time 20 \
-            --request POST \
-            --header "content-type: application/json" \
-            --data "$payload" \
-            "$queue_url/internal/exact-review/claim")"
-          RESPONSE="$response" node -e '
-            const response = JSON.parse(process.env.RESPONSE || "{}");
-            if (response.claimed !== true) process.exit(1);
-          '
+          for attempt in 1 2 3; do
+            if response="$(curl --fail --silent --show-error --connect-timeout 5 --max-time 20 \
+              --request POST \
+              --header "content-type: application/json" \
+              --data "$payload" \
+              "$queue_url/internal/exact-review/claim")" &&
+              RESPONSE="$response" node -e '
+                const response = JSON.parse(process.env.RESPONSE || "{}");
+                if (response.claimed !== true) process.exit(1);
+              '; then
+              exit 0
+            fi
+            if [ "$attempt" -lt 3 ]; then
+              sleep "$((attempt * 5))"
+            fi
+          done
+          exit 1
 
       - uses: actions/checkout@v6
         with:
@@ -731,11 +739,19 @@ jobs:
           test -n "$QUEUE_LEASE_ID"
           queue_url="${QUEUE_URL%/}"
           payload="$(node -e 'process.stdout.write(JSON.stringify({ lease_id: process.env.QUEUE_LEASE_ID, run_id: process.env.GITHUB_RUN_ID }))')"
-          curl --fail --silent --show-error --connect-timeout 5 --max-time 20 \
-            --request POST \
-            --header "content-type: application/json" \
-            --data "$payload" \
-            "$queue_url/internal/exact-review/complete" >/dev/null
+          for attempt in 1 2 3; do
+            if curl --fail --silent --show-error --connect-timeout 5 --max-time 20 \
+              --request POST \
+              --header "content-type: application/json" \
+              --data "$payload" \
+              "$queue_url/internal/exact-review/complete" >/dev/null; then
+              exit 0
+            fi
+            if [ "$attempt" -lt 3 ]; then
+              sleep "$((attempt * 5))"
+            fi
+          done
+          exit 1
 
   target-fanout:
     name: Fan out target repository sweeps
