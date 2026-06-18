@@ -19832,6 +19832,7 @@ test("sweep workflow admits exact event reviews through an exact-review semaphor
   assert.match(eventReviewBlock, /pnpm run repair:codex-capacity/);
   assert.match(eventReviewBlock, /--run-id "\$\{\{ github\.run_id \}\}"/);
   assert.match(eventReviewBlock, /--poll-ms 120000/);
+  assert.match(eventReviewBlock, /--timeout-ms 2400000/);
   assert.match(eventReviewBlock, /--state "Waiting for Codex capacity"/);
   assert.match(eventReviewBlock, /exact-review semaphore admitted this run/);
   assert.match(eventReviewBlock, /CAPACITY_OUTCOME: \$\{\{ steps\.codex-capacity\.outcome \}\}/);

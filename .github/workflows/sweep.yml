@@ -395,7 +395,7 @@ jobs:
             --repo "${{ github.repository }}" \
             --run-id "${{ github.run_id }}" \
             --poll-ms 120000 \
-            --timeout-ms 1200000
+            --timeout-ms 2400000
 
       - name: Requeue capacity-blocked exact review
         id: capacity-requeue
