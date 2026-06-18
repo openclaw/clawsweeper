@@ -263,7 +263,7 @@ setInterval(() => {}, 1000);
         CODEX_TEST_PID_PATH: pidPath,
       },
       input: "",
-      timeoutMs: 1000,
+      timeoutMs: 5000,
     });
 
     assert.equal(codexProcessErrorCode(result.error), "ETIMEDOUT", JSON.stringify(result));
