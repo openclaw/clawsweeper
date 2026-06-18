@@ -15,7 +15,8 @@ checkpoint, and status-only commits are intentionally omitted.
 
 - Prevented contributor-branch repairs and changelog-free repair artifacts from adding release-owned changelog entries, keeping contributor credit and release-note context in PR bodies or commit history instead.
 - Added an explicit trusted ephemeral-runner fallback for repair planning when the host cannot start Codex's Linux read-only sandbox.
-- Prevented large exact-review bursts from dropping issues before review by retaining capacity-blocked items for 12 bounded retries by default.
+- Replaced runner-side exact-review capacity waiting and self-retries with a durable four-slot Worker queue that coalesces item deliveries, leases executors before checkout, and reclaims abandoned leases.
+- Stopped all issue and pull request label mutations, including human and third-party bot labels, from directly triggering exact reviews.
 
 ## 0.3.0 - 2026-06-15
 

@@ -140,7 +140,7 @@ env:
 
 concurrency:
   group: ${{ (github.event_name == 'schedule' && (github.event.schedule == '4/15 * * * *' || github.event.schedule == '41 * * * *' || github.event.schedule == '37 */6 * * *')) && format('clawsweeper-target-fanout-{0}', github.event.schedule || github.run_id) || github.event_name == 'repository_dispatch' && format('clawsweeper-event-{0}-{1}', github.event.client_payload.target_repo || 'openclaw/openclaw', github.event.client_payload.item_number || github.run_id) || format('{0}-{1}', (github.event_name == 'schedule' && github.event.schedule == '13 * * * *') && 'clawsweeper-failed-review-retry' || ((github.event_name == 'workflow_dispatch' && github.event.inputs.apply_existing == 'true' && github.event.inputs.apply_sync_comments_only == 'true') || (github.event_name == 'schedule' && github.event.schedule == '6,21,36,51 * * * *')) && 'clawsweeper-comment-sync' || ((github.event_name == 'workflow_dispatch' && github.event.inputs.apply_existing == 'true') || (github.event_name == 'schedule' && (github.event.schedule == '3 * * * *' || github.event.schedule == '18 * * * *' || github.event.schedule == '33 * * * *' || github.event.schedule == '48 * * * *' || github.event.schedule == '8,23,38,53 * * * *'))) && 'clawsweeper-apply' || (github.event_name == 'workflow_dispatch' && (github.event.inputs.item_number != '' || github.event.inputs.item_numbers != '')) && format('clawsweeper-intake-exact-{0}', github.event.inputs.item_number || github.event.inputs.item_numbers) || ((github.event_name == 'workflow_dispatch' && github.event.inputs.hot_intake == 'true') || (github.event_name == 'schedule' && (github.event.schedule == '*/5 * * * *' || github.event.schedule == '2/5 * * * *'))) && 'clawsweeper-intake-v2' || ((github.event_name == 'workflow_dispatch' && github.event.inputs.audit_dashboard == 'true') || (github.event_name == 'schedule' && (github.event.schedule == '7 */6 * * *' || github.event.schedule == '12 */6 * * *' || github.event.schedule == '17 */6 * * *'))) && 'clawsweeper-audit' || 'clawsweeper-review', github.event.inputs.target_repo || github.event.client_payload.target_repo || ((github.event.schedule == '17 */6 * * *') && 'openclaw/clawsweeper' || ((github.event.schedule == '2/5 * * * *' || github.event.schedule == '22 * * * *' || github.event.schedule == '8,23,38,53 * * * *' || github.event.schedule == '12 */6 * * *') && 'openclaw/clawhub' || 'openclaw/openclaw'))) }}
-  cancel-in-progress: ${{ github.event_name == 'repository_dispatch' }}
+  cancel-in-progress: ${{ github.event_name == 'repository_dispatch' && github.event.action == 'clawsweeper_target_sweep' }}
 
 jobs:
   event-disabled-target:
@@ -153,20 +153,88 @@ jobs:
           echo "Skipping ${{ github.event.client_payload.target_repo }}#${{ github.event.client_payload.item_number || '?' }}."
           echo "Set CLAWSWEEPER_ENABLE_CLAWHUB=1 after installing the ClawSweeper GitHub App on openclaw/clawhub."
 
+  legacy-event-queue-intake:
+    name: Queue legacy exact-review event
+    if: ${{ github.event_name == 'repository_dispatch' && github.event.action != 'clawsweeper_target_sweep' && github.event.client_payload.queue_lease_id == '' && !(github.event.client_payload.target_repo == 'openclaw/clawhub' && vars.CLAWSWEEPER_ENABLE_CLAWHUB != '1') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Enqueue legacy event through the durable control plane
+        env:
+          CLIENT_PAYLOAD: ${{ toJson(github.event.client_payload) }}
+          QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
+          CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
+        run: |
+          set -euo pipefail
+          test -n "$CLAWSWEEPER_WEBHOOK_SECRET"
+          queue_url="${QUEUE_URL%/}"
+          payload="$(node <<'NODE'
+          const payload = JSON.parse(process.env.CLIENT_PAYLOAD || "{}");
+          const itemKind = payload.item_kind === "pull_request" ? "pull_request" : "issue";
+          const sourceEvent = payload.source_event === "pull_request" ? "pull_request" : "issues";
+          process.stdout.write(
+            JSON.stringify({
+              delivery_id: `legacy:${process.env.GITHUB_RUN_ID}:${process.env.GITHUB_RUN_ATTEMPT}`,
+              decision: {
+                targetRepo: payload.target_repo || "openclaw/openclaw",
+                targetBranch: payload.target_branch || "main",
+                itemNumber: Number(payload.item_number),
+                itemKind,
+                sourceEvent,
+                sourceAction: payload.source_action || "legacy_dispatch",
+                supersedesInProgress: payload.supersedes_in_progress === true,
+                ...(Number.isFinite(Number(payload.codex_timeout_ms))
+                  ? { codexTimeoutMs: Number(payload.codex_timeout_ms) }
+                  : {}),
+                ...(Number.isFinite(Number(payload.media_proof_timeout_ms))
+                  ? { mediaProofTimeoutMs: Number(payload.media_proof_timeout_ms) }
+                  : {}),
+              },
+            }),
+          );
+          NODE
+          )"
+          signature="$(PAYLOAD="$payload" node -e 'const crypto=require("node:crypto"); process.stdout.write(`sha256=${crypto.createHmac("sha256", process.env.CLAWSWEEPER_WEBHOOK_SECRET).update(process.env.PAYLOAD).digest("hex")}`)')"
+          curl --fail --silent --show-error --connect-timeout 5 --max-time 20 \
+            --request POST \
+            --header "content-type: application/json" \
+            --header "x-clawsweeper-exact-review-signature: $signature" \
+            --data "$payload" \
+            "$queue_url/internal/exact-review/enqueue" >/dev/null
+
   event-review-apply:
     name: Review, comment, and apply event item
-    if: ${{ github.event_name == 'repository_dispatch' && github.event.action != 'clawsweeper_target_sweep' && !(github.event.client_payload.target_repo == 'openclaw/clawhub' && vars.CLAWSWEEPER_ENABLE_CLAWHUB != '1') }}
+    if: ${{ github.event_name == 'repository_dispatch' && github.event.action != 'clawsweeper_target_sweep' && github.event.client_payload.queue_lease_id != '' && !(github.event.client_payload.target_repo == 'openclaw/clawhub' && vars.CLAWSWEEPER_ENABLE_CLAWHUB != '1') }}
     runs-on: ubuntu-latest
     timeout-minutes: 120
     concurrency:
       group: clawsweeper-event-review-${{ github.event.client_payload.target_repo || 'openclaw/openclaw' }}-${{ github.event.client_payload.item_number || github.run_id }}
-      cancel-in-progress: true
+      cancel-in-progress: false
     permissions:
       actions: write
       contents: write
       issues: write
       pull-requests: write
     steps:
+      - name: Claim exact-review queue lease
+        env:
+          QUEUE_LEASE_ID: ${{ github.event.client_payload.queue_lease_id }}
+          QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
+        run: |
+          set -euo pipefail
+          test -n "$QUEUE_LEASE_ID"
+          queue_url="${QUEUE_URL%/}"
+          payload="$(node -e 'process.stdout.write(JSON.stringify({ lease_id: process.env.QUEUE_LEASE_ID, run_id: process.env.GITHUB_RUN_ID }))')"
+          response="$(curl --fail --silent --show-error --connect-timeout 5 --max-time 20 \
+            --request POST \
+            --header "content-type: application/json" \
+            --data "$payload" \
+            "$queue_url/internal/exact-review/claim")"
+          RESPONSE="$response" node -e '
+            const response = JSON.parse(process.env.RESPONSE || "{}");
+            if (response.claimed !== true) process.exit(1);
+          '
+
       - uses: actions/checkout@v6
         with:
           filter: blob:none
@@ -285,17 +353,6 @@ jobs:
           permission-issues: write
           permission-pull-requests: write
 
-      - name: Create ClawSweeper dispatch token
-        id: clawsweeper-dispatch-token
-        continue-on-error: true
-        uses: actions/create-github-app-token@1b10c78c7865c340bc4f6099eb2f838309f1e8c3 # v3.1.1
-        with:
-          client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
-          private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
-          owner: ${{ github.repository_owner }}
-          repositories: ${{ github.event.repository.name }}
-          permission-contents: write
-
       - name: React to target item review start
         continue-on-error: true
         env:
@@ -366,124 +423,6 @@ jobs:
           fi
           git -C "$checkout_dir" rev-parse --short HEAD
 
-      - name: Mark re-review waiting for capacity
-        continue-on-error: true
-        env:
-          GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
-          TARGET_REPO: ${{ steps.target.outputs.target_repo }}
-          ITEM_NUMBER: ${{ steps.target.outputs.item_number }}
-          COMMAND_STATUS_MARKER: ${{ github.event.client_payload.command_status_marker || '' }}
-          STATUS_COMMENT_ID: ${{ github.event.client_payload.status_comment_id || '' }}
-          RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: |
-          pnpm run repair:update-command-status -- \
-            --repo "$TARGET_REPO" \
-            --item-number "$ITEM_NUMBER" \
-            --marker "$COMMAND_STATUS_MARKER" \
-            --status-comment-id "$STATUS_COMMENT_ID" \
-            --state "Waiting for Codex capacity" \
-            --detail "Targeted re-review checkout is ready and waiting for an exact-review Codex slot." \
-            --run-url "$RUN_URL" \
-            --wait-ms 120000
-
-      - name: Wait for exact-review Codex capacity
-        id: codex-capacity
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          pnpm run repair:codex-capacity -- \
-            --repo "${{ github.repository }}" \
-            --run-id "${{ github.run_id }}" \
-            --poll-ms 120000 \
-            --timeout-ms 2400000
-
-      - name: Requeue capacity-blocked exact review
-        id: capacity-requeue
-        if: ${{ failure() && steps.codex-capacity.outcome == 'failure' }}
-        env:
-          DISPATCH_TOKEN: ${{ steps.clawsweeper-dispatch-token.outputs.token || github.token }}
-          STATUS_GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
-          CLIENT_PAYLOAD: ${{ toJson(github.event.client_payload) }}
-          TARGET_REPO: ${{ steps.target.outputs.target_repo }}
-          ITEM_NUMBER: ${{ steps.target.outputs.item_number }}
-          COMMAND_STATUS_MARKER: ${{ github.event.client_payload.command_status_marker || '' }}
-          STATUS_COMMENT_ID: ${{ github.event.client_payload.status_comment_id || '' }}
-          MAX_CAPACITY_RETRIES: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_CAPACITY_RETRIES || '12' }}
-          RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: |
-          set -euo pipefail
-          mkdir -p .artifacts
-          result_file=".artifacts/capacity-requeue.json"
-          dispatch_file=".artifacts/capacity-requeue-dispatch.json"
-          node <<'NODE' > "$result_file"
-          const payload = JSON.parse(process.env.CLIENT_PAYLOAD || "{}");
-          const existingRetry =
-            payload.capacity_retry && typeof payload.capacity_retry === "object"
-              ? payload.capacity_retry
-              : {};
-          const parsedMax = Number.parseInt(process.env.MAX_CAPACITY_RETRIES || "12", 10);
-          const max = Number.isFinite(parsedMax) && parsedMax >= 0 ? parsedMax : 12;
-          const parsedPrevious = Number.parseInt(
-            String(existingRetry.count ?? payload.capacity_retry_count ?? "0"),
-            10,
-          );
-          const previous = Number.isFinite(parsedPrevious) && parsedPrevious > 0 ? parsedPrevious : 0;
-          if (previous >= max) {
-            console.log(JSON.stringify({ status: "exhausted", attempt: previous, max }));
-          } else {
-            const attempt = previous + 1;
-            delete payload.capacity_retry_count;
-            delete payload.capacity_retry_source_run;
-            delete payload.capacity_retry_source_url;
-            delete payload.capacity_retry_reason;
-            payload.capacity_retry = {
-              ...existingRetry,
-              count: attempt,
-              source_run: process.env.GITHUB_RUN_ID,
-              source_url: process.env.RUN_URL,
-              reason: "exact-review-capacity-timeout",
-            };
-            console.log(
-              JSON.stringify({
-                status: "scheduled",
-                attempt,
-                max,
-                dispatch: { event_type: "clawsweeper_item", client_payload: payload },
-              }),
-            );
-          }
-          NODE
-          status="$(node -e 'const fs=require("fs"); const result=JSON.parse(fs.readFileSync(process.argv[1],"utf8")); console.log(result.status);' "$result_file")"
-          attempt="$(node -e 'const fs=require("fs"); const result=JSON.parse(fs.readFileSync(process.argv[1],"utf8")); console.log(result.attempt ?? 0);' "$result_file")"
-          max="$(node -e 'const fs=require("fs"); const result=JSON.parse(fs.readFileSync(process.argv[1],"utf8")); console.log(result.max ?? 0);' "$result_file")"
-          if [ "$status" = "scheduled" ]; then
-            if [ -n "$STATUS_GH_TOKEN" ]; then
-              GH_TOKEN="$STATUS_GH_TOKEN" pnpm run repair:update-command-status -- \
-                --repo "$TARGET_REPO" \
-                --item-number "$ITEM_NUMBER" \
-                --marker "$COMMAND_STATUS_MARKER" \
-                --status-comment-id "$STATUS_COMMENT_ID" \
-                --state "Retry scheduled" \
-                --detail "The targeted re-review timed out or was rate-limited while waiting for exact-review Codex capacity. ClawSweeper scheduled bounded retry ${attempt}/${max}." \
-                --run-url "$RUN_URL" \
-                --wait-ms 120000 || true
-            fi
-            node -e 'const fs=require("fs"); const result=JSON.parse(fs.readFileSync(process.argv[1],"utf8")); fs.writeFileSync(process.argv[2], JSON.stringify(result.dispatch));' "$result_file" "$dispatch_file"
-            if GH_TOKEN="$DISPATCH_TOKEN" gh api --method POST "repos/${GITHUB_REPOSITORY}/dispatches" --input "$dispatch_file"; then
-              echo "::notice::Scheduled exact-review capacity retry ${attempt}/${max}."
-            else
-              echo "::warning::Unable to schedule exact-review capacity retry ${attempt}/${max}."
-              status="dispatch_failed"
-            fi
-          else
-            echo "::warning::Exact-review capacity retry limit already exhausted (${attempt}/${max})."
-          fi
-          {
-            echo "status=$status"
-            echo "attempt=$attempt"
-            echo "max=$max"
-          } >> "$GITHUB_OUTPUT"
-
       - name: Mark re-review command in progress
         continue-on-error: true
         env:
@@ -500,7 +439,7 @@ jobs:
             --marker "$COMMAND_STATUS_MARKER" \
             --status-comment-id "$STATUS_COMMENT_ID" \
             --state "Review in progress" \
-            --detail "The exact-review semaphore admitted this run; Codex is reviewing the item." \
+            --detail "The exact-review queue leased this run; Codex is reviewing the item." \
             --run-url "$RUN_URL" \
             --wait-ms 120000
 
@@ -648,27 +587,12 @@ jobs:
           REVIEW_OUTCOME: ${{ steps.review-exact-event-item.outcome }}
           PUBLISH_OUTCOME: ${{ steps.publish-event-result.outcome }}
           ROUTE_OUTCOME: ${{ steps.route-synced-verdict.outcome }}
-          CAPACITY_OUTCOME: ${{ steps.codex-capacity.outcome }}
-          CAPACITY_REQUEUE_STATUS: ${{ steps.capacity-requeue.outputs.status }}
-          CAPACITY_REQUEUE_ATTEMPT: ${{ steps.capacity-requeue.outputs.attempt }}
-          CAPACITY_REQUEUE_MAX: ${{ steps.capacity-requeue.outputs.max }}
         run: |
           state="Failed"
           detail="The targeted re-review did not finish cleanly. Check the workflow run for details."
-          if [ "$CAPACITY_OUTCOME" = "failure" ]; then
-            detail="The targeted re-review timed out or failed while waiting for exact-review Codex capacity. Retry after capacity recovers."
-            if [ "$CAPACITY_REQUEUE_STATUS" = "scheduled" ]; then
-              state="Retry scheduled"
-              detail="The targeted re-review timed out or was rate-limited while waiting for exact-review Codex capacity. ClawSweeper scheduled bounded retry ${CAPACITY_REQUEUE_ATTEMPT}/${CAPACITY_REQUEUE_MAX}."
-            elif [ "$CAPACITY_REQUEUE_STATUS" = "exhausted" ]; then
-              detail="The targeted re-review timed out or was rate-limited while waiting for exact-review Codex capacity, and the bounded capacity retry limit is exhausted."
-            elif [ "$CAPACITY_REQUEUE_STATUS" = "dispatch_failed" ]; then
-              detail="The targeted re-review timed out or was rate-limited while waiting for exact-review Codex capacity, and ClawSweeper could not schedule the bounded retry."
-            fi
-          fi
           if [ "$REVIEW_OUTCOME" = "cancelled" ]; then
-            state="Superseded"
-            detail="A newer re-review for this item started before this run finished, so GitHub cancelled this older run. Check the latest ClawSweeper run for the current result."
+            state="Interrupted"
+            detail="The targeted re-review was interrupted. The exact-review queue will reconcile a newer pending item if one arrived."
           fi
           if [ "$REVIEW_OUTCOME" = "success" ] && [ "$PUBLISH_OUTCOME" = "success" ] && [ "$ROUTE_OUTCOME" = "success" ]; then
             state="Complete"
@@ -795,6 +719,23 @@ jobs:
           }
           add_completion_reaction
           remove_own_eyes_reactions
+
+      - name: Complete exact-review queue lease
+        if: ${{ always() }}
+        continue-on-error: true
+        env:
+          QUEUE_LEASE_ID: ${{ github.event.client_payload.queue_lease_id }}
+          QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
+        run: |
+          set -euo pipefail
+          test -n "$QUEUE_LEASE_ID"
+          queue_url="${QUEUE_URL%/}"
+          payload="$(node -e 'process.stdout.write(JSON.stringify({ lease_id: process.env.QUEUE_LEASE_ID, run_id: process.env.GITHUB_RUN_ID }))')"
+          curl --fail --silent --show-error --connect-timeout 5 --max-time 20 \
+            --request POST \
+            --header "content-type: application/json" \
+            --data "$payload" \
+            "$queue_url/internal/exact-review/complete" >/dev/null
 
   target-fanout:
     name: Fan out target repository sweeps

@@ -143,9 +143,10 @@ Do not move these into the dashboard:
 - maintainer authorization
 - PR branch writes
 - labels/comments/closes/merges
-- worker budget enforcement
 - final merge safety gates
 
-Cloudflare can later become the queue/dedupe/dispatch control plane, but phase
-one must stay an observer so the existing GitHub Actions safety model remains
-unchanged.
+The dashboard Worker owns durable exact-review admission only: it deduplicates
+webhook deliveries, coalesces each repository/item pair, and leases at most
+four Actions executors. It does not decide review outcomes or perform target
+repository mutations. GitHub Actions remains the executor and the existing
+review/apply safety model remains unchanged.

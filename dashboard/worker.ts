@@ -20,6 +20,40 @@ type WorkflowRunSummary = {
   created_at?: string;
   updated_at?: string;
 };
+type ExactReviewDecision = {
+  targetRepo: string;
+  targetBranch: string;
+  itemNumber: number;
+  itemKind: "issue" | "pull_request";
+  sourceEvent: "issues" | "pull_request";
+  sourceAction: string;
+  supersedesInProgress: boolean;
+  codexTimeoutMs?: number;
+  mediaProofTimeoutMs?: number;
+};
+type ExactReviewQueueItem = {
+  key: string;
+  decision: ExactReviewDecision;
+  state: "pending" | "dispatching" | "leased";
+  revision: number;
+  createdAt: number;
+  updatedAt: number;
+  nextAttemptAt: number;
+  attempts: number;
+  leaseId?: string;
+  leaseRevision?: number;
+  leaseExpiresAt?: number;
+  claimedRunId?: string;
+};
+type ExactReviewQueueState = {
+  deliveries: Record<string, number>;
+  items: Record<string, ExactReviewQueueItem>;
+};
+type DurableObjectStub = { fetch: (request: Request) => Promise<Response> };
+type DurableObjectNamespace = {
+  idFromName: (name: string) => unknown;
+  get: (id: unknown) => DurableObjectStub;
+};
 
 declare global {
   interface CacheStorage {
@@ -37,19 +71,20 @@ const CLOSED_STATS_PAGE_LIMIT = 10;
 const DEFAULT_CLAWSWEEPER_BOT_LOGINS = ["clawsweeper[bot]", "openclaw-clawsweeper[bot]"];
 const GITHUB_TIMEOUT_MS = 4500;
 const DEFAULT_STALE_QUEUED_WORKFLOW_MS = 6 * 60 * 60 * 1000;
+const DEFAULT_EXACT_REVIEW_QUEUE_MAX_CONCURRENT = 4;
+const DEFAULT_EXACT_REVIEW_DISPATCH_LEASE_MS = 10 * 60 * 1000;
+const DEFAULT_EXACT_REVIEW_EXECUTION_LEASE_MS = 130 * 60 * 1000;
+const DEFAULT_EXACT_REVIEW_RETRY_MS = 30_000;
+const EXACT_REVIEW_QUEUE_DELIVERY_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const EXACT_REVIEW_QUEUE_STATE_KEY = "exact-review-queue";
+const EXACT_REVIEW_QUEUE_NAME = "global";
 const CLAWSWEEPER_REVIEW_REPO = "openclaw/clawsweeper";
 const CLAWSWEEPER_STATE_REPO = "openclaw/clawsweeper-state";
 const CLAWSWEEPER_STATE_REF = "state";
 const DEFAULT_CRABFLEET_URL = "https://crabfleet.openclaw.ai";
 const CLUSTER_REPAIR_INTAKE_WORKFLOW = "repair-cluster-intake.yml";
 const CLAWSWEEPER_ALLOWED_ASSOCIATIONS = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
-const CLAWSWEEPER_ISSUE_ITEM_ACTIONS = new Set([
-  "opened",
-  "reopened",
-  "edited",
-  "labeled",
-  "unlabeled",
-]);
+const CLAWSWEEPER_ISSUE_ITEM_ACTIONS = new Set(["opened", "reopened", "edited"]);
 const CLAWSWEEPER_PULL_ITEM_ACTIONS = new Set([
   "opened",
   "reopened",
@@ -57,8 +92,6 @@ const CLAWSWEEPER_PULL_ITEM_ACTIONS = new Set([
   "ready_for_review",
   "converted_to_draft",
   "edited",
-  "labeled",
-  "unlabeled",
 ]);
 const DEFAULT_FAST_ACK_SETTLE_DELAYS_MS = [250, 1500, 10_000];
 const inFlightFastAcks = new Map();
@@ -295,6 +328,196 @@ export class StatusStore {
   }
 }
 
+export class ExactReviewQueue {
+  private storage;
+  private env;
+
+  constructor(state, env) {
+    this.storage = state.storage;
+    this.env = env;
+  }
+
+  async fetch(request: Request) {
+    const url = new URL(request.url);
+    if (request.method === "POST" && url.pathname === "/enqueue") {
+      const body = objectValue(await request.json().catch(() => null));
+      const deliveryId = String(body.delivery_id || "").trim();
+      const decision = exactReviewDecisionFrom(body.decision);
+      if (!deliveryId) return json({ error: "missing_delivery_id" }, 400);
+      if (!decision) return json({ error: "invalid_exact_review_item" }, 400);
+      if (!isExactReviewQueueTargetEnabled(decision, this.env)) {
+        return json({ ok: true, accepted: false, reason: "target not enabled" }, 202);
+      }
+
+      const now = Date.now();
+      const state = await this.readState();
+      pruneExactReviewDeliveries(state, now);
+      const existingDelivery = state.deliveries[deliveryId];
+      if (existingDelivery) {
+        return json({ ok: true, deduped: true, item_key: exactReviewItemKey(decision) }, 202);
+      }
+
+      state.deliveries[deliveryId] = now;
+      const key = exactReviewItemKey(decision);
+      const current = state.items[key];
+      if (current) {
+        current.decision = decision;
+        current.revision += 1;
+        current.updatedAt = now;
+        current.nextAttemptAt = now;
+        if (current.state === "pending") current.attempts = 0;
+      } else {
+        state.items[key] = {
+          key,
+          decision,
+          state: "pending",
+          revision: 1,
+          createdAt: now,
+          updatedAt: now,
+          nextAttemptAt: now,
+          attempts: 0,
+        };
+      }
+      await this.writeState(state);
+      await this.scheduleNext(state, now);
+      return json({ ok: true, queued: true, item_key: key }, 202);
+    }
+
+    if (request.method === "POST" && url.pathname === "/claim") {
+      const body = objectValue(await request.json().catch(() => null));
+      const leaseId = String(body.lease_id || "").trim();
+      const runId = String(body.run_id || "").trim();
+      if (!leaseId || !runId) return json({ error: "missing_lease_or_run" }, 400);
+
+      const now = Date.now();
+      const state = await this.readState();
+      const item = exactReviewItemForLease(state, leaseId);
+      if (!item || !isLiveExactReviewLease(item, now)) {
+        return json({ error: "lease_not_active" }, 409);
+      }
+      if (item.claimedRunId && item.claimedRunId !== runId) {
+        return json({ error: "lease_already_claimed" }, 409);
+      }
+
+      item.state = "leased";
+      item.claimedRunId = runId;
+      item.leaseExpiresAt = now + exactReviewExecutionLeaseMs(this.env);
+      await this.writeState(state);
+      await this.scheduleNext(state, now);
+      return json({
+        ok: true,
+        claimed: true,
+        item_key: item.key,
+        revision: item.leaseRevision,
+      });
+    }
+
+    if (request.method === "POST" && url.pathname === "/complete") {
+      const body = objectValue(await request.json().catch(() => null));
+      const leaseId = String(body.lease_id || "").trim();
+      const runId = String(body.run_id || "").trim();
+      if (!leaseId || !runId) return json({ error: "missing_lease_or_run" }, 400);
+
+      const now = Date.now();
+      const state = await this.readState();
+      const item = exactReviewItemForLease(state, leaseId);
+      if (!item || item.claimedRunId !== runId) return json({ error: "lease_not_claimed" }, 409);
+
+      const requeued = item.revision > Number(item.leaseRevision || 0);
+      if (requeued) {
+        clearExactReviewLease(item);
+        item.state = "pending";
+        item.nextAttemptAt = now;
+        item.attempts = 0;
+        item.updatedAt = now;
+      } else {
+        delete state.items[item.key];
+      }
+      await this.writeState(state);
+      await this.scheduleNext(state, now);
+      return json({ ok: true, requeued });
+    }
+
+    if (request.method === "GET" && url.pathname === "/stats") {
+      const state = await this.readState();
+      return json(exactReviewQueueStats(state));
+    }
+
+    return new Response("not found", { status: 404 });
+  }
+
+  async alarm() {
+    const now = Date.now();
+    const state = await this.readState();
+    let changed = reclaimExpiredExactReviewLeases(state, now);
+    const capacity = exactReviewQueueCapacity(this.env);
+    const slots = Math.max(0, capacity - exactReviewQueueActiveCount(state));
+    const admitted = Object.values(state.items)
+      .filter((item) => item.state === "pending" && item.nextAttemptAt <= now)
+      .sort((left, right) => left.createdAt - right.createdAt || left.key.localeCompare(right.key))
+      .slice(0, slots);
+
+    for (const item of admitted) {
+      item.state = "dispatching";
+      item.leaseId = crypto.randomUUID();
+      item.leaseRevision = item.revision;
+      item.leaseExpiresAt = now + exactReviewDispatchLeaseMs(this.env);
+      item.claimedRunId = undefined;
+      changed = true;
+    }
+    if (changed) await this.writeState(state);
+
+    if (admitted.length) {
+      let token: string | null = null;
+      try {
+        token = await exactReviewDispatchToken(this.env);
+      } catch {
+        token = null;
+      }
+      for (const item of admitted) {
+        try {
+          if (!token) throw new Error("exact review dispatch token unavailable");
+          await dispatchClawsweeperItem({ token, decision: item.decision, leaseId: item.leaseId });
+        } catch {
+          clearExactReviewLease(item);
+          item.state = "pending";
+          item.attempts += 1;
+          item.nextAttemptAt = now + exactReviewRetryDelayMs(item.attempts);
+          item.updatedAt = now;
+          changed = true;
+        }
+      }
+      if (changed) await this.writeState(state);
+    }
+
+    await this.scheduleNext(state, now);
+  }
+
+  private async readState(): Promise<ExactReviewQueueState> {
+    const stored = (await this.storage.get(EXACT_REVIEW_QUEUE_STATE_KEY)) as
+      | ExactReviewQueueState
+      | undefined;
+    return {
+      deliveries:
+        stored?.deliveries && typeof stored.deliveries === "object" ? stored.deliveries : {},
+      items: stored?.items && typeof stored.items === "object" ? stored.items : {},
+    };
+  }
+
+  private async writeState(state: ExactReviewQueueState) {
+    await this.storage.put(EXACT_REVIEW_QUEUE_STATE_KEY, state);
+  }
+
+  private async scheduleNext(state: ExactReviewQueueState, now: number) {
+    const next = exactReviewQueueNextWakeAt(state, now);
+    if (next === null) {
+      await this.storage.deleteAlarm();
+      return;
+    }
+    await this.storage.setAlarm(next);
+  }
+}
+
 export default {
   async fetch(request: Request, env: DashboardEnv = {}, ctx?: DashboardContext) {
     const url = new URL(request.url);
@@ -313,6 +536,14 @@ export default {
       return json({ ok: true, service: "clawsweeper-github-webhook" });
     if (url.pathname === "/github/webhook" && request.method === "POST")
       return githubWebhook(request, env, ctx);
+    if (url.pathname === "/internal/exact-review/enqueue" && request.method === "POST")
+      return authenticatedExactReviewEnqueue(request, env);
+    if (url.pathname === "/internal/exact-review/claim" && request.method === "POST")
+      return exactReviewQueueRequest(env, "/claim", request);
+    if (url.pathname === "/internal/exact-review/complete" && request.method === "POST")
+      return exactReviewQueueRequest(env, "/complete", request);
+    if (url.pathname === "/api/exact-review-queue" && request.method === "GET")
+      return exactReviewQueueRequest(env, "/stats");
     if (url.pathname === "/api/status") return statusJson(request, env, ctx);
     if (url.pathname === "/api/triage") return triageJson(request, env, ctx);
     if (url.pathname === "/api/pr-proof-triage") return prProofTriageJson(request, env, ctx);
@@ -578,6 +809,17 @@ async function githubWebhook(request, env, ctx) {
     return json({ ok: true, accepted: false, reason: decision.reason }, 202);
   }
 
+  if (decision.type === "item") {
+    const deliveryId = request.headers.get("x-github-delivery") || "";
+    const queued = await enqueueExactReview({
+      env,
+      deliveryId,
+      decision: decision as ExactReviewDecision,
+    });
+    if (!queued) return json({ error: "exact_review_queue_not_configured" }, 503);
+    return json({ ok: true, ...queued }, 202);
+  }
+
   const credentials = githubAppCredentials(env);
   if (!credentials) return json({ error: "github_app_not_configured" }, 503);
   const appJwt = await signGithubAppJwt(credentials.issuer, credentials.privateKey);
@@ -588,11 +830,6 @@ async function githubWebhook(request, env, ctx) {
     repositories: [repoName(CLAWSWEEPER_REVIEW_REPO)],
     permissions: { contents: "write" },
   });
-
-  if (decision.type === "item") {
-    await dispatchClawsweeperItem({ token: dispatchToken, decision });
-    return json({ ok: true, dispatched: "clawsweeper_item" }, 202);
-  }
 
   const commentDecision = decision as any;
   const targetToken = await createGithubAppTokenFor({
@@ -694,9 +931,6 @@ function classifyGithubItemWebhook({ event, payload }) {
   if (!isEligibleGithubWebhookRepository(repo)) {
     return { accepted: false, reason: "repository not eligible" };
   }
-  if (isIgnoredGithubWebhookLabelMutation({ action, payload })) {
-    return { accepted: false, reason: "routine ClawSweeper label mutation" };
-  }
   const targetRepo = String(repo.full_name || "");
   const targetBranch = targetDefaultBranch(repo);
   const installationId = Number(objectValue(payload.installation).id);
@@ -766,11 +1000,6 @@ function targetDefaultBranch(repo) {
   return /^[A-Za-z0-9_./-]+$/.test(branch) ? branch : "main";
 }
 
-function isIgnoredGithubWebhookLabelMutation({ action, payload }) {
-  if (action !== "labeled" && action !== "unlabeled") return false;
-  return isClawsweeperGithubWebhookSender(objectValue(payload.sender));
-}
-
 function isClawsweeperGithubWebhookSender(sender) {
   const login = normalizedLogin(sender.login);
   return login === "clawsweeper[bot]" || login === "openclaw-clawsweeper[bot]";
@@ -781,6 +1010,232 @@ function isAuthorReadOnlyGithubWebhookCommand({ comment, issue, commandText }) {
   const commentAuthor = normalizedLogin(objectValue(comment.user).login);
   const issueAuthor = normalizedLogin(objectValue(issue.user).login);
   return Boolean(commentAuthor && issueAuthor && commentAuthor === issueAuthor);
+}
+
+function exactReviewQueueNamespace(env): DurableObjectNamespace | null {
+  const namespace = env.EXACT_REVIEW_QUEUE as DurableObjectNamespace | undefined;
+  if (
+    !namespace ||
+    typeof namespace.idFromName !== "function" ||
+    typeof namespace.get !== "function"
+  ) {
+    return null;
+  }
+  return namespace;
+}
+
+function exactReviewQueueStub(env): DurableObjectStub | null {
+  const namespace = exactReviewQueueNamespace(env);
+  return namespace ? namespace.get(namespace.idFromName(EXACT_REVIEW_QUEUE_NAME)) : null;
+}
+
+async function exactReviewQueueRequest(env, path, request?: Request) {
+  const queue = exactReviewQueueStub(env);
+  if (!queue) return json({ error: "exact_review_queue_not_configured" }, 503);
+  const body = request ? await request.text() : undefined;
+  return queue.fetch(
+    new Request(`https://clawsweeper-exact-review-queue${path}`, {
+      method: request?.method || "GET",
+      headers: body ? { "content-type": "application/json" } : undefined,
+      body,
+    }),
+  );
+}
+
+async function authenticatedExactReviewEnqueue(request, env) {
+  const secret = stringEnv(env.CLAWSWEEPER_WEBHOOK_SECRET);
+  if (!secret) return json({ error: "webhook_not_configured" }, 503);
+  const body = await request.text();
+  const signature = request.headers.get("x-clawsweeper-exact-review-signature") || "";
+  if (!(await verifyGithubWebhookSignature({ secret, signature, bodyText: body }))) {
+    return json({ error: "invalid_signature" }, 401);
+  }
+  return exactReviewQueueRequest(
+    env,
+    "/enqueue",
+    new Request("https://clawsweeper-exact-review-queue/enqueue", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body,
+    }),
+  );
+}
+
+async function enqueueExactReview({
+  deliveryId,
+  decision,
+  env,
+}: {
+  deliveryId: string;
+  decision: ExactReviewDecision;
+  env: DashboardEnv;
+}) {
+  const queue = exactReviewQueueStub(env);
+  if (!queue) return null;
+  const response = await queue.fetch(
+    new Request("https://clawsweeper-exact-review-queue/enqueue", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ delivery_id: deliveryId, decision }),
+    }),
+  );
+  const body = objectValue(await response.json().catch(() => null));
+  if (!response.ok) throw new Error(String(body.error || "exact review queue rejected item"));
+  return body;
+}
+
+function exactReviewDecisionFrom(value): ExactReviewDecision | null {
+  const decision = objectValue(value);
+  const targetRepo = String(decision.targetRepo || "").trim();
+  const targetBranch = String(decision.targetBranch || "").trim();
+  const itemNumber = Number(decision.itemNumber);
+  const itemKind = String(decision.itemKind || "");
+  const sourceEvent = String(decision.sourceEvent || "");
+  const sourceAction = String(decision.sourceAction || "");
+  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(targetRepo)) return null;
+  if (!/^[A-Za-z0-9_./-]+$/.test(targetBranch)) return null;
+  if (!Number.isInteger(itemNumber) || itemNumber <= 0) return null;
+  if (itemKind !== "issue" && itemKind !== "pull_request") return null;
+  if (sourceEvent !== "issues" && sourceEvent !== "pull_request") return null;
+  if (!sourceAction) return null;
+  return {
+    targetRepo,
+    targetBranch,
+    itemNumber,
+    itemKind,
+    sourceEvent,
+    sourceAction,
+    supersedesInProgress: Boolean(decision.supersedesInProgress),
+    ...(Number.isFinite(Number(decision.codexTimeoutMs))
+      ? { codexTimeoutMs: Number(decision.codexTimeoutMs) }
+      : {}),
+    ...(Number.isFinite(Number(decision.mediaProofTimeoutMs))
+      ? { mediaProofTimeoutMs: Number(decision.mediaProofTimeoutMs) }
+      : {}),
+  };
+}
+
+function exactReviewItemKey(decision: ExactReviewDecision) {
+  return `${decision.targetRepo}#${decision.itemNumber}`;
+}
+
+function isExactReviewQueueTargetEnabled(decision: ExactReviewDecision, env) {
+  return (
+    decision.targetRepo !== "openclaw/clawhub" ||
+    String(env.CLAWSWEEPER_ENABLE_CLAWHUB || "") === "1"
+  );
+}
+
+function exactReviewItemForLease(state: ExactReviewQueueState, leaseId: string) {
+  return Object.values(state.items).find((item) => item.leaseId === leaseId) || null;
+}
+
+function clearExactReviewLease(item: ExactReviewQueueItem) {
+  item.leaseId = undefined;
+  item.leaseRevision = undefined;
+  item.leaseExpiresAt = undefined;
+  item.claimedRunId = undefined;
+}
+
+function isLiveExactReviewLease(item: ExactReviewQueueItem, now: number) {
+  return Boolean(item.leaseId && item.leaseExpiresAt && item.leaseExpiresAt > now);
+}
+
+function reclaimExpiredExactReviewLeases(state: ExactReviewQueueState, now: number) {
+  let changed = false;
+  for (const item of Object.values(state.items)) {
+    if (
+      (item.state === "dispatching" || item.state === "leased") &&
+      !isLiveExactReviewLease(item, now)
+    ) {
+      clearExactReviewLease(item);
+      item.state = "pending";
+      item.nextAttemptAt = now;
+      item.updatedAt = now;
+      changed = true;
+    }
+  }
+  return changed;
+}
+
+function exactReviewQueueActiveCount(state: ExactReviewQueueState) {
+  return Object.values(state.items).filter(
+    (item) => item.state === "dispatching" || item.state === "leased",
+  ).length;
+}
+
+function exactReviewQueueStats(state: ExactReviewQueueState) {
+  const items = Object.values(state.items);
+  const pending = items.filter((item) => item.state === "pending");
+  return {
+    pending: pending.length,
+    dispatching: items.filter((item) => item.state === "dispatching").length,
+    leased: items.filter((item) => item.state === "leased").length,
+    oldest_pending_at: pending.length
+      ? new Date(Math.min(...pending.map((item) => item.createdAt))).toISOString()
+      : null,
+  };
+}
+
+function exactReviewQueueNextWakeAt(state: ExactReviewQueueState, now: number) {
+  const items = Object.values(state.items);
+  if (!items.length) return null;
+  const times = items.flatMap((item) => {
+    if (item.state === "pending") return [item.nextAttemptAt];
+    return item.leaseExpiresAt ? [item.leaseExpiresAt] : [];
+  });
+  if (!times.length) return now + DEFAULT_EXACT_REVIEW_RETRY_MS;
+  return Math.max(now + 1_000, Math.min(...times));
+}
+
+function pruneExactReviewDeliveries(state: ExactReviewQueueState, now: number) {
+  for (const [deliveryId, receivedAt] of Object.entries(state.deliveries)) {
+    if (!Number.isFinite(receivedAt) || receivedAt + EXACT_REVIEW_QUEUE_DELIVERY_TTL_MS <= now) {
+      delete state.deliveries[deliveryId];
+    }
+  }
+}
+
+function exactReviewQueueCapacity(env) {
+  return Math.max(
+    1,
+    Math.min(
+      64,
+      numberFrom(env.EXACT_REVIEW_QUEUE_MAX_CONCURRENT, DEFAULT_EXACT_REVIEW_QUEUE_MAX_CONCURRENT),
+    ),
+  );
+}
+
+function exactReviewDispatchLeaseMs(env) {
+  return Math.max(
+    60_000,
+    numberFrom(env.EXACT_REVIEW_DISPATCH_LEASE_MS, DEFAULT_EXACT_REVIEW_DISPATCH_LEASE_MS),
+  );
+}
+
+function exactReviewExecutionLeaseMs(env) {
+  return Math.max(
+    60_000,
+    numberFrom(env.EXACT_REVIEW_EXECUTION_LEASE_MS, DEFAULT_EXACT_REVIEW_EXECUTION_LEASE_MS),
+  );
+}
+
+function exactReviewRetryDelayMs(attempt: number) {
+  return Math.min(5 * 60_000, DEFAULT_EXACT_REVIEW_RETRY_MS * 2 ** Math.min(attempt - 1, 4));
+}
+
+async function exactReviewDispatchToken(env) {
+  const credentials = githubAppCredentials(env);
+  if (!credentials) throw new Error("github app is not configured");
+  const appJwt = await signGithubAppJwt(credentials.issuer, credentials.privateKey);
+  const installationId = await githubAppInstallationId(appJwt, CLAWSWEEPER_REVIEW_REPO);
+  return createGithubAppTokenFor({
+    appJwt,
+    installationId,
+    label: CLAWSWEEPER_REVIEW_REPO,
+    repositories: [repoName(CLAWSWEEPER_REVIEW_REPO)],
+    permissions: { contents: "write" },
+  });
 }
 
 async function createGithubAppTokenFor({
@@ -985,7 +1440,15 @@ async function addIssueCommentReaction({ token, repo, commentId, content }) {
   });
 }
 
-async function dispatchClawsweeperItem({ token, decision }) {
+async function dispatchClawsweeperItem({
+  token,
+  decision,
+  leaseId,
+}: {
+  token: string;
+  decision: ExactReviewDecision;
+  leaseId?: string;
+}) {
   await githubTokenJson({
     token,
     path: `/repos/${CLAWSWEEPER_REVIEW_REPO}/dispatches`,
@@ -1000,6 +1463,11 @@ async function dispatchClawsweeperItem({ token, decision }) {
         source_event: decision.sourceEvent,
         source_action: decision.sourceAction,
         supersedes_in_progress: decision.supersedesInProgress,
+        ...(leaseId ? { queue_lease_id: leaseId } : {}),
+        ...(decision.codexTimeoutMs ? { codex_timeout_ms: decision.codexTimeoutMs } : {}),
+        ...(decision.mediaProofTimeoutMs
+          ? { media_proof_timeout_ms: decision.mediaProofTimeoutMs }
+          : {}),
       },
     },
     errorLabel: "ClawSweeper item dispatch",

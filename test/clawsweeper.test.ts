@@ -19234,7 +19234,7 @@ test("event review completion removes ClawSweeper eyes reaction", () => {
   assert.doesNotMatch(block, /issues\/comments\/\$ITEM_NUMBER\/reactions/);
 });
 
-test("event re-review status explains superseded cancellations", () => {
+test("event re-review status lets the durable queue reconcile interruptions", () => {
   const workflow = readFileSync(".github/workflows/sweep.yml", "utf8");
   const block = workflow.slice(
     workflow.indexOf("- name: Mark re-review complete"),
@@ -19242,13 +19242,10 @@ test("event re-review status explains superseded cancellations", () => {
   );
 
   assert.match(block, /\[ "\$REVIEW_OUTCOME" = "cancelled" \]/);
-  assert.match(block, /state="Superseded"/);
-  assert.match(block, /A newer re-review for this item started before this run finished/);
-  assert.match(block, /CAPACITY_OUTCOME/);
-  assert.ok(
-    block.indexOf('[ "$REVIEW_OUTCOME" = "cancelled" ]') >
-      block.indexOf('[ "$CAPACITY_OUTCOME" = "failure" ]'),
-  );
+  assert.match(block, /state="Interrupted"/);
+  assert.match(block, /The exact-review queue will reconcile a newer pending item if one arrived/);
+  assert.doesNotMatch(block, /CAPACITY_OUTCOME/);
+  assert.doesNotMatch(block, /state="Superseded"/);
 });
 
 test("event repair retries wait for active worker capacity", () => {
@@ -19522,6 +19519,10 @@ test("scheduled normal review keeps workers warm with multi-item shards", () => 
 
 test("sweep event reviews and target fanout avoid storm amplification", () => {
   const workflow = readFileSync(".github/workflows/sweep.yml", "utf8");
+  const legacyIntakeBlock = workflow.slice(
+    workflow.indexOf("legacy-event-queue-intake:"),
+    workflow.indexOf("event-review-apply:"),
+  );
   const eventBlock = workflow.slice(
     workflow.indexOf("event-review-apply:"),
     workflow.indexOf("target-fanout:"),
@@ -19534,7 +19535,10 @@ test("sweep event reviews and target fanout avoid storm amplification", () => {
     /clawsweeper-event-review-\$\{\{ github\.event\.client_payload\.target_repo/,
   );
   assert.match(eventBlock, /github\.event\.client_payload\.item_number/);
-  assert.match(eventBlock, /cancel-in-progress: true/);
+  assert.match(eventBlock, /queue_lease_id != ''/);
+  assert.match(eventBlock, /cancel-in-progress: false/);
+  assert.match(legacyIntakeBlock, /legacy-event-queue-intake:/);
+  assert.match(legacyIntakeBlock, /\/internal\/exact-review\/enqueue/);
   assert.match(
     fanoutBlock,
     /FANOUT_LIMIT: \$\{\{ github\.event\.schedule == '41 \* \* \* \*' && '6' \|\| \(github\.event\.schedule == '37 \*\/6 \* \* \*' && '12' \|\| '6'\) \}\}/,
@@ -19785,28 +19789,22 @@ test("reviewed viable issues dispatch generated PRs and backfill durable open re
   assert.equal(workflow.match(/vars\.CLAWSWEEPER_AUTO_IMPLEMENT_ISSUES == '1'/g)?.length, 4);
 });
 
-test("sweep workflow admits exact event reviews through an exact-review semaphore", () => {
+test("sweep workflow executes only durable queue leases without runner-side admission", () => {
   const workflow = readFileSync(".github/workflows/sweep.yml", "utf8").replace(/\r\n/g, "\n");
+  const legacyIntakeBlock = workflow.slice(
+    workflow.indexOf("\n  legacy-event-queue-intake:"),
+    workflow.indexOf("\n  event-review-apply:"),
+  );
   const eventReviewBlock = workflow.slice(
     workflow.indexOf("\n  event-review-apply:"),
     workflow.indexOf("\n  plan:"),
   );
+  const claimIndex = eventReviewBlock.indexOf("- name: Claim exact-review queue lease");
   const setupPnpmIndex = eventReviewBlock.indexOf("- uses: ./.github/actions/setup-pnpm");
-  const readTokenIndex = eventReviewBlock.indexOf("- name: Create target read token");
-  const writeTokenIndex = eventReviewBlock.indexOf("- name: Create target write token");
-  const dispatchTokenIndex = eventReviewBlock.indexOf("- name: Create ClawSweeper dispatch token");
-  const waitingStatusIndex = eventReviewBlock.indexOf(
-    "- name: Mark re-review waiting for capacity",
-  );
   const inProgressStatusIndex = eventReviewBlock.indexOf(
     "- name: Mark re-review command in progress",
   );
   const setupCodexIndex = eventReviewBlock.indexOf("- uses: ./.github/actions/setup-codex");
-  const checkoutIndex = eventReviewBlock.indexOf("- name: Check out target repository");
-  const capacityIndex = eventReviewBlock.indexOf("- name: Wait for exact-review Codex capacity");
-  const capacityRequeueIndex = eventReviewBlock.indexOf(
-    "- name: Requeue capacity-blocked exact review",
-  );
   const exactReviewIndex = eventReviewBlock.indexOf("- name: Review exact event item");
   const exactReviewStep = eventReviewBlock.slice(
     exactReviewIndex,
@@ -19817,52 +19815,24 @@ test("sweep workflow admits exact event reviews through an exact-review semaphor
     eventReviewBlock,
     /group: clawsweeper-event-review-\$\{\{ github\.event\.client_payload\.target_repo/,
   );
-  assert.match(eventReviewBlock, /cancel-in-progress: true/);
-  assert.ok(setupPnpmIndex >= 0);
-  assert.ok(readTokenIndex > setupPnpmIndex);
-  assert.ok(writeTokenIndex > readTokenIndex);
-  assert.ok(dispatchTokenIndex > writeTokenIndex);
-  assert.ok(checkoutIndex > dispatchTokenIndex);
-  assert.ok(waitingStatusIndex > checkoutIndex);
-  assert.ok(capacityIndex > waitingStatusIndex);
-  assert.ok(capacityRequeueIndex > capacityIndex);
-  assert.ok(inProgressStatusIndex > capacityRequeueIndex);
+  assert.match(eventReviewBlock, /github\.event\.client_payload\.queue_lease_id != ''/);
+  assert.match(legacyIntakeBlock, /Queue legacy exact-review event/);
+  assert.match(legacyIntakeBlock, /\/internal\/exact-review\/enqueue/);
+  assert.match(legacyIntakeBlock, /x-clawsweeper-exact-review-signature/);
+  assert.match(legacyIntakeBlock, /CLAWSWEEPER_WEBHOOK_SECRET/);
+  assert.match(eventReviewBlock, /cancel-in-progress: false/);
+  assert.ok(claimIndex >= 0);
+  assert.ok(setupPnpmIndex > claimIndex);
+  assert.ok(inProgressStatusIndex > setupPnpmIndex);
   assert.ok(setupCodexIndex > inProgressStatusIndex);
   assert.ok(exactReviewIndex > setupCodexIndex);
-  assert.match(eventReviewBlock, /pnpm run repair:codex-capacity/);
-  assert.match(eventReviewBlock, /--run-id "\$\{\{ github\.run_id \}\}"/);
-  assert.match(eventReviewBlock, /--poll-ms 120000/);
-  assert.match(eventReviewBlock, /--timeout-ms 2400000/);
-  assert.match(eventReviewBlock, /--state "Waiting for Codex capacity"/);
-  assert.match(eventReviewBlock, /exact-review semaphore admitted this run/);
-  assert.match(eventReviewBlock, /CAPACITY_OUTCOME: \$\{\{ steps\.codex-capacity\.outcome \}\}/);
-  assert.match(
-    eventReviewBlock,
-    /CAPACITY_REQUEUE_STATUS: \$\{\{ steps\.capacity-requeue\.outputs\.status \}\}/,
-  );
-  assert.match(eventReviewBlock, /CLAWSWEEPER_EXACT_REVIEW_CAPACITY_RETRIES/);
-  assert.match(
-    eventReviewBlock,
-    /MAX_CAPACITY_RETRIES: \$\{\{ vars\.CLAWSWEEPER_EXACT_REVIEW_CAPACITY_RETRIES \|\| '12' \}\}/,
-  );
-  assert.match(
-    eventReviewBlock,
-    /Number\.parseInt\(process\.env\.MAX_CAPACITY_RETRIES \|\| "12", 10\)/,
-  );
-  assert.match(eventReviewBlock, /parsedMax >= 0 \? parsedMax : 12/);
-  assert.match(eventReviewBlock, /permission-contents: write/);
-  assert.match(
-    eventReviewBlock,
-    /DISPATCH_TOKEN: \$\{\{ steps\.clawsweeper-dispatch-token\.outputs\.token \|\| github\.token \}\}/,
-  );
-  assert.match(eventReviewBlock, /payload\.capacity_retry = \{/);
-  assert.match(eventReviewBlock, /delete payload\.capacity_retry_count/);
-  assert.match(eventReviewBlock, /repos\/\$\{GITHUB_REPOSITORY\}\/dispatches/);
-  assert.match(eventReviewBlock, /state="Retry scheduled"/);
-  assert.match(
-    eventReviewBlock,
-    /timed out or failed while waiting for exact-review Codex capacity/,
-  );
+  assert.match(eventReviewBlock, /\/internal\/exact-review\/claim/);
+  assert.match(eventReviewBlock, /\/internal\/exact-review\/complete/);
+  assert.match(eventReviewBlock, /exact-review queue leased this run/);
+  assert.doesNotMatch(eventReviewBlock, /repair:codex-capacity/);
+  assert.doesNotMatch(eventReviewBlock, /capacity-requeue/);
+  assert.doesNotMatch(eventReviewBlock, /Waiting for Codex capacity/);
+  assert.doesNotMatch(eventReviewBlock, /CLAWSWEEPER_EXACT_REVIEW_CAPACITY_RETRIES/);
   assert.match(exactReviewStep, /--batch-size 1/);
   assert.match(exactReviewStep, /--shard-count 1/);
   assert.match(exactReviewStep, /media_preprocessing_reserve_seconds=480/);
@@ -19873,9 +19843,6 @@ test("sweep workflow admits exact event reviews through an exact-review semaphor
   assert.match(exactReviewStep, /detected media allowance \$\{media_proof_timeout_seconds\}s/);
   assert.match(exactReviewStep, /--codex-timeout-ms "\$codex_timeout_ms"/);
   assert.doesNotMatch(exactReviewStep, /--codex-timeout-ms 600000/);
-  assert.doesNotMatch(eventReviewBlock, /Wait for exact event review capacity/);
-  assert.doesNotMatch(eventReviewBlock, /wait-exact-event-capacity/);
-  assert.doesNotMatch(eventReviewBlock, /Waiting for review capacity/);
 });
 
 test("sweep workflow gives high-context Codex reviews twenty minutes by default", () => {

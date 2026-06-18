@@ -530,62 +530,46 @@ test("webhook rejects private and denied target repositories", () => {
   assert.deepEqual(deniedResult, { accepted: false, reason: "repository not eligible" });
 });
 
-test("webhook ignores ClawSweeper-owned label mutations", () => {
-  const result = classifyItemWebhook({
-    event: "pull_request",
-    payload: {
-      action: "labeled",
-      repository: {
-        full_name: "openclaw/openclaw",
-        private: false,
-        archived: false,
-        fork: false,
-        has_issues: true,
+test("webhook rejects all label mutations from exact-review intake", () => {
+  for (const [event, payload] of [
+    [
+      "pull_request",
+      {
+        action: "labeled",
+        repository: {
+          full_name: "openclaw/openclaw",
+          private: false,
+          archived: false,
+          fork: false,
+          has_issues: true,
+        },
+        pull_request: { number: 76992 },
+        installation: { id: 123 },
+        sender: { login: "openclaw-clawsweeper[bot]" },
       },
-      pull_request: { number: 76992 },
-      installation: { id: 123 },
-      label: { name: "status: 🚀 automerge armed" },
-      sender: { login: "openclaw-clawsweeper[bot]" },
-    },
-  });
-
-  assert.deepEqual(result, {
-    accepted: false,
-    reason: "routine ClawSweeper label mutation",
-  });
-});
-
-test("webhook preserves human ClawSweeper-owned label mutations", () => {
-  const result = classifyItemWebhook({
-    event: "issues",
-    payload: {
-      action: "labeled",
-      repository: {
-        full_name: "openclaw/gogcli",
-        private: false,
-        archived: false,
-        fork: false,
-        has_issues: true,
+    ],
+    [
+      "issues",
+      {
+        action: "unlabeled",
+        repository: {
+          full_name: "openclaw/gogcli",
+          private: false,
+          archived: false,
+          fork: false,
+          has_issues: true,
+        },
+        issue: { number: 597 },
+        installation: { id: 123 },
+        sender: { login: "steipete" },
       },
-      issue: { number: 597 },
-      installation: { id: 123 },
-      label: { name: "status: 👀 ready for maintainer look" },
-      sender: { login: "steipete" },
-    },
-  });
-
-  assert.deepEqual(result, {
-    accepted: true,
-    type: "item",
-    targetRepo: "openclaw/gogcli",
-    targetBranch: "main",
-    itemNumber: 597,
-    itemKind: "issue",
-    installationId: 123,
-    sourceEvent: "issues",
-    sourceAction: "labeled",
-    supersedesInProgress: false,
-  });
+    ],
+  ] as const) {
+    assert.deepEqual(classifyItemWebhook({ event, payload }), {
+      accepted: false,
+      reason: "unsupported action",
+    });
+  }
 });
 
 test("fast ack comment carries source comment marker", () => {

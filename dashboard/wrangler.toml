@@ -8,9 +8,17 @@ workers_dev = true
 name = "STATUS_STORE"
 class_name = "StatusStore"
 
+[[durable_objects.bindings]]
+name = "EXACT_REVIEW_QUEUE"
+class_name = "ExactReviewQueue"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["StatusStore"]
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["ExactReviewQueue"]
 
 [[routes]]
 pattern = "clawsweeper.openclaw.ai"
@@ -31,3 +39,6 @@ AUTOMERGE_CACHE_TTL_SECONDS = "300"
 RECENT_CLOSED_CACHE_TTL_SECONDS = "300"
 CACHE_TTL_SECONDS = "20"
 INCLUDE_CI_STATUS = "1"
+EXACT_REVIEW_QUEUE_MAX_CONCURRENT = "4"
+EXACT_REVIEW_DISPATCH_LEASE_MS = "600000"
+EXACT_REVIEW_EXECUTION_LEASE_MS = "7800000"

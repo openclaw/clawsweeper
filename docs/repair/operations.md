@@ -311,9 +311,11 @@ webhook receiver runs at `/github/webhook` on the dashboard Worker, with
 `CLAWSWEEPER_WEBHOOK_SECRET`, accepts eligible public `openclaw/*` and
 `steipete/*` `issue_comment`, `issues`, and `pull_request` events, posts the
 same queued status comment for maintainer commands, reacts with `eyes`, and
-dispatches exact `clawsweeper_comment` or `clawsweeper_item` runs. The target
-workflow remains the fallback when the webhook service is down or not installed
-for a repository.
+queues exact `clawsweeper_comment` or `clawsweeper_item` work. The durable
+Worker queue coalesces item revisions and leases the executor before checkout.
+The target workflow remains a compatibility fallback when the webhook service
+is down or not installed for a repository; its direct event is bridged into the
+same queue.
 
 Supported triggers:
 

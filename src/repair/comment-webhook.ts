@@ -16,7 +16,7 @@ const REVIEW_REPO = "openclaw/clawsweeper";
 const COMMAND_PATTERN =
   /(^|[ \t\r\n])@(?:clawsweeper|openclaw-clawsweeper)\b(?:\[bot\])?|(^|[ \t\r\n])\/(?:clawsweeper|review|re-review|rerun[ -]?review|status|explain|fix|build|implement|create[ -]?pr|fix[ -]?issue|autofix|auto[ -]?fix|automerge|auto[ -]?merge|approve|stop|autoclose)\b/i;
 const ALLOWED_ASSOCIATIONS = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
-const ISSUE_ITEM_ACTIONS = new Set(["opened", "reopened", "edited", "labeled", "unlabeled"]);
+const ISSUE_ITEM_ACTIONS = new Set(["opened", "reopened", "edited"]);
 const PULL_ITEM_ACTIONS = new Set([
   "opened",
   "reopened",
@@ -24,8 +24,6 @@ const PULL_ITEM_ACTIONS = new Set([
   "ready_for_review",
   "converted_to_draft",
   "edited",
-  "labeled",
-  "unlabeled",
 ]);
 const DEFAULT_FAST_ACK_SETTLE_DELAYS_MS = [250, 1500, 10_000];
 const inFlightFastAcks = new Map<string, Promise<number>>();
@@ -239,9 +237,6 @@ export function classifyItemWebhook({ event, payload }: { event: string; payload
   const repo = asRecord(payload.repository);
   if (!isEligibleRepositoryPayload(repo))
     return { accepted: false, reason: "repository not eligible" };
-  if (isIgnoredLabelMutation({ action, payload })) {
-    return { accepted: false, reason: "routine ClawSweeper label mutation" };
-  }
   const targetRepo = String(repo.full_name ?? "");
   const targetBranch = targetDefaultBranch(repo);
   const installationId = Number(asRecord(payload.installation).id);
@@ -317,11 +312,6 @@ function isEligibleRepositoryPayload(repo: LooseRecord) {
 function targetDefaultBranch(repo: LooseRecord) {
   const branch = String(repo.default_branch ?? "main").trim() || "main";
   return /^[A-Za-z0-9_./-]+$/.test(branch) ? branch : "main";
-}
-
-function isIgnoredLabelMutation({ action, payload }: { action: string; payload: LooseRecord }) {
-  if (action !== "labeled" && action !== "unlabeled") return false;
-  return isClawsweeperWebhookSender(asRecord(payload.sender));
 }
 
 function isClawsweeperWebhookSender(sender: LooseRecord) {

@@ -109,23 +109,18 @@ Priority lanes do not subtract the interactive reserve. They cap themselves at
 their derived lane ceiling and at the remaining global budget after other active
 priority work.
 
-Exact-item review runs use a deterministic live Actions semaphore before Codex
-starts. Running exact jobs are ordered by creation time and run ID; only the
-oldest `lanes.exact_review.max_concurrent` jobs proceed. Queued or pending
-Actions runs are not counted until their job starts, because they are not yet
-competing for Codex slots. Cancelled and completed runs disappear from the next
-poll.
+Exact-item webhooks are admitted by the dashboard Worker's durable
+`ExactReviewQueue`, not by a live Actions semaphore. The queue coalesces
+deliveries by repository and item number, so a new webhook updates the latest
+desired review rather than consuming another runner. Only
+`EXACT_REVIEW_QUEUE_MAX_CONCURRENT` leased items may dispatch an exact-review
+workflow at once; the default is four.
 
-Capacity waiters poll the Actions API at a low cadence. If a waiter times out
-or cannot verify capacity before Codex starts, the event workflow records a
-retry-scheduled status and re-dispatches the exact item with bounded retry
-metadata through a separate ClawSweeper App dispatch token instead of treating
-the overflow as a permanent review failure. The default budget is 12 retries;
-`CLAWSWEEPER_EXACT_REVIEW_CAPACITY_RETRIES` can override it. Combined with the
-40-minute admission wait, the default preserves an item for up to eight hours
-during large event bursts without exceeding the four-session Codex cap. This is
-an exact-review burst limit, not a hard distributed provider semaphore across
-every Codex workflow.
+Each dispatched workflow claims its opaque lease before checkout. Duplicate
+dispatches and stale workflows cannot claim the same lease, and a completion
+releases the lease or immediately schedules the newest revision. If a workflow
+never claims or completes, the Durable Object reclaims the expired lease. This
+keeps capacity waiting and retry state out of GitHub Actions runners.
 
 Examples with the current config:
 

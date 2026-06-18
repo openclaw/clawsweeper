@@ -197,13 +197,10 @@ Exact comment dispatches scan only that comment and use a per-comment receiver
 concurrency group, so one maintainer command does not wait behind an unrelated
 command on the same repository. The scheduled sweep remains a five-minute
 fallback. Bot-authored label churn is also ignored. Human
-label changes are debounced and may run after an active dispatcher, but they
-must not cancel a content-changing dispatch before it posts to ClawSweeper.
-Content-changing events such as issue edits and PR synchronizes cancel stale
-target-side dispatch jobs and mark their receiver dispatch as superseding. On
-the receiver, event-item runs are keyed by repository and item number and the
-newest event cancels any older receiver run for that same item, because the
-review always fetches the current live item state.
+Label changes never directly trigger an exact review. Content-changing events
+such as issue edits and PR synchronizes update the desired review revision. The
+receiver coalesces by repository and item number, then dispatches only a leased
+executor for the newest revision.
 
 For sub-5s acknowledgement, use the GitHub App webhook receiver instead of
 waiting for GitHub Actions to start the target dispatcher. The hosted Worker
@@ -212,9 +209,11 @@ endpoint is `/github/webhook`; the local equivalent is
 `CLAWSWEEPER_WEBHOOK_SECRET`, accepts eligible public `openclaw/*` and
 `steipete/*` `issue_comment`, `issues`, and `pull_request` events, mints a
 target installation token for acknowledgement/comment reactions, mints the
-`openclaw/clawsweeper` installation token for repository dispatch, and dispatches
-exact `clawsweeper_comment` or `clawsweeper_item` runs. Keep the Actions
-dispatcher installed as the fallback.
+`openclaw/clawsweeper` installation token for repository dispatch, and queues
+exact `clawsweeper_comment` or `clawsweeper_item` work. The durable Worker
+queue dispatches at most four leased exact-review executors. Keep the Actions
+dispatcher installed as a compatibility fallback; its legacy dispatch is
+bridged into the same queue before Codex starts.
 
 The receiver keeps the review lane proposal-only, then runs exact apply for the
 selected item with only immediate-safe close reasons enabled:
