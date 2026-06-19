@@ -18,11 +18,9 @@ Reports store the lane fields in frontmatter:
 - `work_cluster_refs`, `work_validation`, and `work_likely_files`
 
 The dashboard shows fresh `queue_fix_pr` reports whose `work_status` is
-`candidate`. For `openclaw/openclaw` and `openclaw/clawhub`, this remains a
-manual promotion queue. For other configured projects, complete
-high-confidence candidates automatically enter the existing issue
-implementation workflow after the safety gates below pass. For each fresh
-candidate, apply/reconcile also generates
+`candidate`. Complete high-confidence candidates automatically enter the
+existing issue implementation workflow after the safety gates below pass. For
+each fresh candidate, apply/reconcile also generates
 `records/<repo-slug>/plans/<number>.md` from the existing report fields. The
 dashboard links both the source report and the generated coding plan so
 maintainers can promote from a concise implementation view without editing the
@@ -80,10 +78,9 @@ them from the source report instead of editing them by hand.
 
 ## Automatic Issue Implementation
 
-The automatic issue implementation lane is disabled for `openclaw/openclaw`
-and `openclaw/clawhub`. In other eligible public `openclaw/*` and `steipete/*`
-projects, newly reviewed issues and existing open issue reports can enter the
-lane after a complete current review when
+The automatic issue implementation lane can queue repair PRs for eligible
+public `openclaw/*` and `steipete/*` projects, including core repositories,
+after a complete current review when
 `CLAWSWEEPER_AUTO_IMPLEMENT_ISSUES=1`.
 
 - open with a complete current report
@@ -104,7 +101,9 @@ pushes, validation, PR creation, review, and merge gates.
 Scheduled sweeps scan durable open issue reports and dispatch a bounded batch
 per target repository. Existing durable issue jobs, generated PRs, and intake
 receipts for the same report revision suppress duplicate intake. A newly
-published report revision can retry a previously rejected issue.
+published report revision can retry a previously rejected issue. If a queued
+candidate points at a stale or missing review report, intake records the issue
+as not eligible for that run instead of failing the workflow.
 
 The older strict bug lane remains available and can create a PR only for
 reviewed issues that are exactly:

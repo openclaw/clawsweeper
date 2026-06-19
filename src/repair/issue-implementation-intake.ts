@@ -70,22 +70,17 @@ function prepare() {
   const reportUrl =
     stringArg("report-url", stringArg("report_url", "")) ||
     `https://github.com/${reportRepo}/blob/${reportBranch(reportRepo)}/${reportPath}`;
-  const reportMarkdown = readReport({ reportRepo, reportPath });
+  const reportMarkdown = readReport({ reportRepo, reportPath, targetRepo, itemNumber });
   const report = parseReviewReport(reportMarkdown);
-  const live = truthy(enabled)
-    ? liveIssueContext({
-        repo: targetRepo,
-        number: itemNumber,
-        references: frontMatterStringArray(report.frontmatter.work_cluster_refs),
-      })
-    : {
-        issue: null,
-        comments: [],
-        existingPrs: [],
-        existingBranchPrs: [],
-        referencedPrs: [],
-        clusterExistingPrs: [],
-      };
+  const reportUnavailableReason = report.frontmatter.report_unavailable_reason;
+  const live =
+    truthy(enabled) && !reportUnavailableReason
+      ? liveIssueContext({
+          repo: targetRepo,
+          number: itemNumber,
+          references: frontMatterStringArray(report.frontmatter.work_cluster_refs),
+        })
+      : emptyLiveIssueContext();
   const jobPath = path.join(repoRoot(), issueImplementationJobPath(targetRepo, itemNumber));
   let decision = intakeDecision({
     enabled,
@@ -336,18 +331,9 @@ function eligibilityDecision({
     return decision("disabled", false, "issue implementation intake disabled");
   }
   const normalizedTargetRepo = targetRepo.trim().toLowerCase();
-  if (
-    candidateKind === "viable" &&
-    (normalizedTargetRepo === "openclaw/openclaw" || normalizedTargetRepo === "openclaw/clawhub")
-  ) {
-    return decision(
-      "not_eligible",
-      false,
-      `general viable implementation is disabled for ${targetRepo}`,
-    );
-  }
   const fm = report.frontmatter;
   const blockers: string[] = [];
+  if (fm.report_unavailable_reason) blockers.push(fm.report_unavailable_reason);
   if (Number(fm.number) !== itemNumber)
     blockers.push(`report item number is ${fm.number || "unknown"}`);
   if (
@@ -888,18 +874,92 @@ function inspectReferencedPullRequests({
   );
 }
 
-function readReport({ reportRepo, reportPath }: { reportRepo: string; reportPath: string }) {
+function emptyLiveIssueContext() {
+  return {
+    issue: null,
+    comments: [],
+    existingPrs: [],
+    existingBranchPrs: [],
+    referencedPrs: [],
+    clusterExistingPrs: [],
+  };
+}
+
+function readReport({
+  reportRepo,
+  reportPath,
+  targetRepo,
+  itemNumber,
+}: {
+  reportRepo: string;
+  reportPath: string;
+  targetRepo: string;
+  itemNumber: number;
+}) {
   const local = args["report-file"] ?? args.report_file;
-  if (typeof local === "string") return fs.readFileSync(path.resolve(local), "utf8");
-  const content = ghJsonWithRetry<{ content?: string }>([
-    "api",
-    `repos/${reportRepo}/contents/${reportPath}`,
-    "--method",
-    "GET",
-    "-f",
-    `ref=${reportBranch(reportRepo)}`,
-  ]);
-  return Buffer.from(String(content.content ?? "").replace(/\s+/g, ""), "base64").toString("utf8");
+  if (typeof local === "string") {
+    try {
+      return fs.readFileSync(path.resolve(local), "utf8");
+    } catch (error) {
+      if (!isMissingReportError(error)) throw error;
+      return missingReportMarkdown({
+        targetRepo,
+        itemNumber,
+        reason: `review report is unavailable at local path ${local}`,
+      });
+    }
+  }
+  try {
+    const content = ghJsonWithRetry<{ content?: string }>([
+      "api",
+      `repos/${reportRepo}/contents/${reportPath}`,
+      "--method",
+      "GET",
+      "-f",
+      `ref=${reportBranch(reportRepo)}`,
+    ]);
+    return Buffer.from(String(content.content ?? "").replace(/\s+/g, ""), "base64").toString(
+      "utf8",
+    );
+  } catch (error) {
+    if (!isMissingReportError(error)) throw error;
+    return missingReportMarkdown({
+      targetRepo,
+      itemNumber,
+      reason: `review report is unavailable at ${reportRepo}:${reportPath}`,
+    });
+  }
+}
+
+function isMissingReportError(error: unknown) {
+  const text = ghErrorText(error);
+  return /\b(?:ENOENT|Not Found|HTTP 404)\b/i.test(text);
+}
+
+function missingReportMarkdown({
+  targetRepo,
+  itemNumber,
+  reason,
+}: {
+  targetRepo: string;
+  itemNumber: number;
+  reason: string;
+}) {
+  return `---
+number: ${itemNumber}
+repository: ${targetRepo}
+type: issue
+state_at_review: unknown
+review_status: missing_report
+decision: keep_open
+close_reason: none
+report_unavailable_reason: ${reason}
+---
+
+## Repair Work Prompt
+
+The review report referenced by this automatic implementation intake is unavailable.
+`;
 }
 
 function findMarkdownFiles(dir: string): string[] {

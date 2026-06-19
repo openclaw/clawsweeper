@@ -174,7 +174,7 @@ test("vision-fit intake rejects broad or unaligned issue work", () => {
   }
 });
 
-test("viable reviews queue autonomous implementation outside protected repositories", () => {
+test("viable reviews queue autonomous implementation", () => {
   const markdown = report({
     number: "244",
     repository: "steipete/summarize",
@@ -185,6 +185,23 @@ test("viable reviews queue autonomous implementation outside protected repositor
   const decision = reportOnlyDecision({
     targetRepo: "steipete/summarize",
     itemNumber: 244,
+    report: parseReviewReport(markdown),
+    reportMarkdown: markdown,
+    candidateKind: "viable",
+  });
+
+  assert.equal(decision.shouldRepair, true);
+  assert.equal(decision.status, "queued_for_repair");
+});
+
+test("viable reviews queue autonomous implementation for core repositories", () => {
+  const markdown = report({
+    item_category: "feature",
+    reproduction_status: "not_applicable",
+    reproduction_confidence: "low",
+  });
+  const decision = reportOnlyDecision({
+    targetRepo: "openclaw/openclaw",
     report: parseReviewReport(markdown),
     reportMarkdown: markdown,
     candidateKind: "viable",
@@ -432,7 +449,7 @@ test("viable live intake allows auth-provider prose but blocks explicit security
   assert.match(credentialExposure.reason, /security-sensitive signal/);
 });
 
-test("viable review routing excludes protected repositories and invalid review identity", () => {
+test("viable review routing excludes invalid review identity", () => {
   const base = {
     number: "244",
     repository: "steipete/summarize",
@@ -441,8 +458,6 @@ test("viable review routing excludes protected repositories and invalid review i
     reproduction_confidence: "low",
   };
   const cases = [
-    { targetRepo: "openclaw/openclaw", overrides: { repository: "openclaw/openclaw" } },
-    { targetRepo: "openclaw/clawhub", overrides: { repository: "openclaw/clawhub" } },
     { targetRepo: "steipete/summarize", overrides: { review_status: "incomplete" } },
     { targetRepo: "steipete/summarize", overrides: { decision: "close" } },
     { targetRepo: "steipete/summarize", overrides: { number: "245" } },
@@ -459,6 +474,24 @@ test("viable review routing excludes protected repositories and invalid review i
     });
     assert.equal(decision.shouldRepair, false);
   }
+});
+
+test("missing review reports skip implementation intake without failing", () => {
+  const markdown = report({
+    state_at_review: "unknown",
+    review_status: "missing_report",
+    report_unavailable_reason:
+      "review report is unavailable at openclaw/clawsweeper-state:records/openclaw-openclaw/items/123.md",
+  });
+  const decision = reportOnlyDecision({
+    targetRepo: "openclaw/openclaw",
+    report: parseReviewReport(markdown),
+    reportMarkdown: markdown,
+    candidateKind: "viable",
+  });
+
+  assert.equal(decision.shouldRepair, false);
+  assert.match(decision.reason, /review report is unavailable/);
 });
 
 test("viable candidate discovery backfills durable open reports and skips queued jobs", () => {

@@ -141,8 +141,8 @@ Additional candidate gates select the permitted automatic lane:
 
 The viable path applies to newly reviewed issues and bounded backfill from
 existing open issue reports in eligible public `openclaw/*` and `steipete/*`
-repositories, excluding `openclaw/openclaw` and `openclaw/clawhub`. It requires
-a complete current kept-open review, but does not require that review to
+repositories, including core repositories. It requires a complete current
+kept-open review, but does not require that review to
 prescribe likely files, validation commands, a repair prompt, or high-confidence
 implementation metadata. Codex inspects the repository and owns that discovery.
 Deterministic intake still enforces live issue state, protected/security
