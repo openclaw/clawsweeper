@@ -13,6 +13,8 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Changed
 
+- Made ClawSweeper review reports and `proof: sufficient` or `proof: override` the proof-nudge authority, retiring `proof: supplied` and PR-context hygiene labels from proof state. Thanks @hannesrudolph.
+
 ### Fixed
 
 - Kept issue implementation intake and dispatch off the Codex worker runner by default so saturated repair capacity cannot stall eligible issue backfills before worker admission.
