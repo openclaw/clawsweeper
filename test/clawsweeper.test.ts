@@ -16091,7 +16091,25 @@ test("spam scanner exact dispatches publish only per-comment audit records", () 
 
 test("issue implementation workflow lets job intent choose dispatch capacity", () => {
   const workflow = readFileSync(".github/workflows/repair-issue-implementation-intake.yml", "utf8");
+  const dispatchInputs = workflow.slice(
+    workflow.indexOf("  workflow_dispatch:"),
+    workflow.indexOf("\npermissions:"),
+  );
 
+  assert.equal(dispatchInputs.match(/^      [a-z_]+:/gm)?.length, 10);
+  assert.doesNotMatch(workflow, /^\s+intake_runner:/m);
+  assert.match(
+    workflow,
+    /runs-on: \$\{\{ github\.event\.client_payload\.intake_runner \|\| vars\.CLAWSWEEPER_ISSUE_IMPLEMENTATION_INTAKE_RUNNER \|\| 'ubuntu-latest' \}\}/,
+  );
+  assert.match(
+    workflow,
+    /RUNNER: \$\{\{ github\.event\.inputs\.runner \|\| github\.event\.client_payload\.runner \|\| vars\.CLAWSWEEPER_WORKER_RUNNER/,
+  );
+  assert.match(
+    workflow,
+    /EXECUTION_RUNNER: \$\{\{ github\.event\.inputs\.execution_runner \|\| github\.event\.client_payload\.execution_runner \|\| vars\.CLAWSWEEPER_EXECUTION_RUNNER/,
+  );
   assert.match(workflow, /cap_args=\(\)/);
   assert.match(workflow, /--max-live-workers "\$MAX_LIVE_WORKERS"/);
   assert.match(workflow, /"\$\{cap_args\[@\]\}"/);

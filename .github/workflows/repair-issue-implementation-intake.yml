@@ -76,7 +76,7 @@ concurrency:
 
 jobs:
   intake:
-    runs-on: ${{ github.event.inputs.runner || vars.CLAWSWEEPER_ISSUE_IMPLEMENTATION_INTAKE_RUNNER || 'blacksmith-4vcpu-ubuntu-2404' }}
+    runs-on: ${{ github.event.client_payload.intake_runner || vars.CLAWSWEEPER_ISSUE_IMPLEMENTATION_INTAKE_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
@@ -230,8 +230,8 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.dispatch-token.outputs.token }}
           MAX_LIVE_WORKERS: ${{ vars.CLAWSWEEPER_AUTO_IMPLEMENT_MAX_LIVE_WORKERS || '' }}
-          RUNNER: ${{ github.event.inputs.runner || vars.CLAWSWEEPER_WORKER_RUNNER || 'blacksmith-4vcpu-ubuntu-2404' }}
-          EXECUTION_RUNNER: ${{ github.event.inputs.execution_runner || vars.CLAWSWEEPER_EXECUTION_RUNNER || 'blacksmith-16vcpu-ubuntu-2404' }}
+          RUNNER: ${{ github.event.inputs.runner || github.event.client_payload.runner || vars.CLAWSWEEPER_WORKER_RUNNER || 'blacksmith-4vcpu-ubuntu-2404' }}
+          EXECUTION_RUNNER: ${{ github.event.inputs.execution_runner || github.event.client_payload.execution_runner || vars.CLAWSWEEPER_EXECUTION_RUNNER || 'blacksmith-16vcpu-ubuntu-2404' }}
           MODEL: internal
         run: |
           set -euo pipefail

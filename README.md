@@ -440,6 +440,8 @@ appropriate repair job.
   implementation remains limited to public sibling repositories;
   `openclaw/openclaw` uses its separately gated strict-bug and vision-fit lanes,
   and `openclaw/clawhub` remains excluded.
+- Issue intake and dispatch use `ubuntu-latest` by default, independently of the
+  Blacksmith runner selected for Codex planning and repair execution.
 
 Repair internals are documented in
 [`docs/repair/README.md`](docs/repair/README.md), and the automerge state

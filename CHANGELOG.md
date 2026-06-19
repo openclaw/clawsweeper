@@ -15,6 +15,7 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Fixed
 
+- Kept issue implementation intake and dispatch off the Codex worker runner by default so saturated repair capacity cannot stall eligible issue backfills before worker admission.
 - Kept unresolved rebase conflicts inside the bounded Codex repair loop and reported exhausted conflicts as human-required with exact paths. Thanks @Jhacarreiro.
 - Restored the Codex spawn helper to spam workflow sparse checkouts so repair builds can start.
 - Removed unconditional ffmpeg provisioning from review startup so optional media proof cannot block exact-review leases; unavailable media tools remain per-item evidence failures.
