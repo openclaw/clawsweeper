@@ -6,6 +6,7 @@ import { ghJson } from "./github-cli.js";
 import { renderJobIntentFrontmatter } from "./job-intent.js";
 import { parseArgs, parseJob, repoRoot, validateJob } from "./lib.js";
 import { slug } from "./text-utils.js";
+import { repositoryProfileFor } from "../repository-profiles.js";
 
 type Signal = {
   kind: string;
@@ -27,9 +28,19 @@ type Candidate = {
   updatedAt?: string;
 };
 
+type AuthorSearchPullRequest = {
+  repository?: { nameWithOwner?: string };
+};
+
+type AuthorWideRepositoryDecision = {
+  repo?: string;
+  reason?: "private" | "metadata_unavailable" | "unsupported_profile";
+};
+
 const args = parseArgs(process.argv.slice(2));
-const repo = stringArg("repo", "");
+const requestedRepo = stringArg("repo", "");
 const author = stringArg("author", "");
+const allOpen = truthy(args["all-open"] ?? args.all_open);
 const limit = numberArg("limit", 50);
 const outDirArg = stringArg("out-dir", stringArg("out_dir", ""));
 const dryRun = truthy(args["dry-run"] ?? args.dry_run);
@@ -58,70 +69,164 @@ query($owner:String!, $name:String!, $number:Int!) {
 }
 `;
 
-if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo)) die("--repo owner/name is required");
 if (!author.trim()) die("--author is required");
 
-const owner = repo.split("/")[0] ?? "unknown";
-const outDir = path.resolve(repoRoot(), outDirArg || `jobs/${owner}/inbox`);
-const prs = fetchOpenPullRequests({ repo, author, limit });
-const results = prs
-  .map((pr) => candidateResult(pr))
-  .filter((result) => result.signals.length >= minSignals);
-
-if (!dryRun) fs.mkdirSync(outDir, { recursive: true });
-
-const written: LooseRecord[] = [];
-for (const result of results) {
-  const clusterId = slug(`repair-pr-${repo.replace("/", "-")}-${result.number}`);
-  const jobPath = path.join(outDir, `${clusterId}.md`);
-  const relativeJobPath = path.relative(repoRoot(), jobPath);
-  const branch = `clawsweeper/${clusterId}`;
-  const body = renderJob({ result, clusterId, branch });
-  if (dryRun) {
-    written.push({
-      status: "planned",
-      job: relativeJobPath,
-      number: result.number,
-      signals: result.signals,
-    });
-    continue;
-  }
-  if (fs.existsSync(jobPath) && !force) {
-    written.push({
-      status: "exists",
-      job: relativeJobPath,
-      number: result.number,
-      signals: result.signals,
-    });
-    continue;
-  }
-  fs.writeFileSync(jobPath, body, "utf8");
-  const parsed = parseJob(jobPath);
-  const errors = validateJob(parsed);
-  if (errors.length > 0) die(`generated invalid job ${relativeJobPath}:\n- ${errors.join("\n- ")}`);
-  written.push({
-    status: "written",
-    job: relativeJobPath,
-    number: result.number,
-    signals: result.signals,
-  });
+if (/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(requestedRepo)) {
+  console.log(JSON.stringify(runRepoIntake(requestedRepo, repoModeOutDir(requestedRepo)), null, 2));
+} else if (allOpen) {
+  console.log(JSON.stringify(runAuthorWideIntake(), null, 2));
+} else {
+  die("--repo owner/name is required unless --all-open is set");
 }
 
-console.log(
-  JSON.stringify(
-    {
-      status: "ok",
-      repo,
-      author,
-      scanned: prs.length,
-      candidates: results.length,
-      dry_run: dryRun,
-      jobs: written,
-    },
-    null,
-    2,
-  ),
-);
+function runAuthorWideIntake() {
+  const pullRequests = fetchAuthorOpenPullRequests({ author, limit });
+  const discoveredRepositories = Array.from(
+    new Set(pullRequests.map((pr) => repoNameWithOwner(pr)).filter(Boolean)),
+  ).sort();
+  const decisions = discoveredRepositories.map(authorWideRepositoryDecision);
+  const repositories = decisions.flatMap((decision) => (decision.repo ? [decision.repo] : []));
+  const summaries = repositories.map((targetRepo) =>
+    runRepoIntake(targetRepo, authorWideOutDir(targetRepo)),
+  );
+
+  return {
+    status: "ok",
+    mode: "author-wide",
+    author,
+    state: "open",
+    searched: pullRequests.length,
+    repos_discovered: discoveredRepositories.length,
+    repos_scanned: summaries.length,
+    skipped_repositories: skippedRepositoryCounts(decisions),
+    scanned: summaries.reduce((sum, summary) => sum + Number(summary.scanned ?? 0), 0),
+    candidates: summaries.reduce((sum, summary) => sum + Number(summary.candidates ?? 0), 0),
+    dry_run: dryRun,
+    jobs: summaries.flatMap((summary) => (Array.isArray(summary.jobs) ? summary.jobs : [])),
+    repositories: summaries,
+  };
+}
+
+function runRepoIntake(targetRepo: string, outDir: string): LooseRecord {
+  const prs = fetchOpenPullRequests({ repo: targetRepo, author, limit });
+  const results = prs
+    .map((pr) => candidateResult(targetRepo, pr))
+    .filter((result) => result.signals.length >= minSignals);
+
+  if (!dryRun) fs.mkdirSync(outDir, { recursive: true });
+
+  const written: LooseRecord[] = [];
+  for (const result of results) {
+    const clusterId = slug(`repair-pr-${targetRepo.replace("/", "-")}-${result.number}`);
+    const jobPath = path.join(outDir, `${clusterId}.md`);
+    const relativeJobPath = path.relative(repoRoot(), jobPath);
+    const branch = `clawsweeper/${clusterId}`;
+    const body = renderJob({ targetRepo, result, clusterId, branch });
+    if (dryRun) {
+      written.push({
+        status: "planned",
+        job: relativeJobPath,
+        number: result.number,
+        signals: result.signals,
+      });
+      continue;
+    }
+    if (fs.existsSync(jobPath) && !force) {
+      written.push({
+        status: "exists",
+        job: relativeJobPath,
+        number: result.number,
+        signals: result.signals,
+      });
+      continue;
+    }
+    fs.writeFileSync(jobPath, body, "utf8");
+    const parsed = parseJob(jobPath);
+    const errors = validateJob(parsed);
+    if (errors.length > 0)
+      die(`generated invalid job ${relativeJobPath}:\n- ${errors.join("\n- ")}`);
+    written.push({
+      status: "written",
+      job: relativeJobPath,
+      number: result.number,
+      signals: result.signals,
+    });
+  }
+
+  return {
+    status: "ok",
+    repo: targetRepo,
+    author,
+    scanned: prs.length,
+    candidates: results.length,
+    dry_run: dryRun,
+    jobs: written,
+  };
+}
+
+function repoModeOutDir(targetRepo: string): string {
+  const owner = targetRepo.split("/")[0] ?? "unknown";
+  return path.resolve(repoRoot(), outDirArg || `jobs/${owner}/inbox`);
+}
+
+function authorWideOutDir(targetRepo: string): string {
+  const root = outDirArg
+    ? path.resolve(repoRoot(), outDirArg)
+    : path.resolve(repoRoot(), "jobs", "author", slug(author));
+  return path.join(root, slug(targetRepo), "inbox");
+}
+
+function fetchAuthorOpenPullRequests({
+  author,
+  limit,
+}: {
+  author: string;
+  limit: number;
+}): AuthorSearchPullRequest[] {
+  return ghJson<AuthorSearchPullRequest[]>([
+    "search",
+    "prs",
+    "--author",
+    author,
+    "--state",
+    "open",
+    "--limit",
+    String(limit),
+    "--json",
+    "repository",
+  ]);
+}
+
+function repoNameWithOwner(pr: AuthorSearchPullRequest): string {
+  return String(pr.repository?.nameWithOwner ?? "");
+}
+
+function authorWideRepositoryDecision(targetRepo: string): AuthorWideRepositoryDecision {
+  try {
+    repositoryProfileFor(targetRepo);
+  } catch {
+    return { reason: "unsupported_profile" };
+  }
+  try {
+    const metadata = ghJson<LooseRecord>(["repo", "view", targetRepo, "--json", "isPrivate"]);
+    if (metadata.isPrivate === true) return { reason: "private" };
+    return metadata.isPrivate === false ? { repo: targetRepo } : { reason: "metadata_unavailable" };
+  } catch {
+    return { reason: "metadata_unavailable" };
+  }
+}
+
+function skippedRepositoryCounts(decisions: AuthorWideRepositoryDecision[]) {
+  const counts = {
+    private: 0,
+    metadata_unavailable: 0,
+    unsupported_profile: 0,
+  };
+  for (const decision of decisions) {
+    if (decision.reason) counts[decision.reason] += 1;
+  }
+  return counts;
+}
 
 function fetchOpenPullRequests({
   repo,
@@ -160,7 +265,7 @@ function fetchOpenPullRequests({
   ]);
 }
 
-function candidateResult(pr: Candidate) {
+function candidateResult(targetRepo: string, pr: Candidate) {
   const blockingSignals: Signal[] = [];
   const contextSignals: Signal[] = [];
   const mergeState = String(pr.mergeStateStatus ?? "").toUpperCase();
@@ -178,7 +283,7 @@ function candidateResult(pr: Candidate) {
     if (signal) blockingSignals.push(signal);
   }
 
-  const reviewThreadSignals = unresolvedReviewThreadSignals(pr.number);
+  const reviewThreadSignals = unresolvedReviewThreadSignals(targetRepo, pr.number);
   blockingSignals.push(...reviewThreadSignals);
 
   if (includeComments) {
@@ -217,15 +322,15 @@ function candidateResult(pr: Candidate) {
   };
 }
 
-function unresolvedReviewThreadSignals(number: number): Signal[] {
+function unresolvedReviewThreadSignals(targetRepo: string, number: number): Signal[] {
   try {
     const data = ghJson<LooseRecord>([
       "api",
       "graphql",
       "-f",
-      `owner=${repo.split("/")[0]}`,
+      `owner=${targetRepo.split("/")[0]}`,
       "-f",
-      `name=${repo.split("/")[1]}`,
+      `name=${targetRepo.split("/")[1]}`,
       "-F",
       `number=${number}`,
       "-f",
@@ -301,12 +406,12 @@ function actionableTextSignal(kind: string, entry: LooseRecord): Signal | null {
   };
 }
 
-function renderJob({ result, clusterId, branch }: LooseRecord) {
+function renderJob({ targetRepo, result, clusterId, branch }: LooseRecord) {
   const ref = `#${result.number}`;
   const sourcePr = String(result.url);
-  const prompt = renderPrompt(result);
+  const prompt = renderPrompt(targetRepo, result);
   return `---
-repo: ${repo}
+repo: ${targetRepo}
 cluster_id: ${clusterId}
 mode: autonomous
 ${renderJobIntentFrontmatter("pr_repair")}
@@ -338,7 +443,7 @@ target_branch: ${branch}
 source: pr-repair-intake
 ---
 
-# Repair-only PR intake for ${repo}${ref}
+# Repair-only PR intake for ${targetRepo}${ref}
 
 This job was created by deterministic repair-only intake. It does not represent a full ClawSweeper review verdict and must not close or merge the source PR.
 
@@ -369,9 +474,9 @@ ${prompt}
 `;
 }
 
-function renderPrompt(result: LooseRecord) {
+function renderPrompt(targetRepo: JsonValue, result: LooseRecord) {
   const lines = [
-    `Repair source PR ${result.url} (${repo}#${result.number}): ${result.title}`,
+    `Repair source PR ${result.url} (${targetRepo}#${result.number}): ${result.title}`,
     "",
     "The PR has objective repair signals and should be made merge-ready if possible.",
     "Use read-only GitHub inspection to review the PR diff, checks, comments, reviews, and latest head/base state before editing.",

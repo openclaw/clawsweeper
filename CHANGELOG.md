@@ -9,6 +9,8 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Added
 
+- Added author-wide PR repair intake across configured public repositories, with private and unsupported repositories excluded before job generation. Thanks @Jhacarreiro.
+
 ### Changed
 
 ### Fixed

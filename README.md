@@ -103,6 +103,13 @@ exact-head review, and run a bounded Codex review/fix loop. Codex handles the
 code repair and local validation loop; deterministic executor steps own every
 GitHub mutation, branch push, label update, and final merge gate.
 
+Operators can create repair-only jobs for one author's blocked pull requests in
+one repository with `pnpm repair:pr-intake -- --repo owner/name --author login`,
+or across all configured public repositories with
+`pnpm repair:pr-intake -- --author login --all-open`. Author-wide discovery
+skips private, unsupported, and unverifiable repositories without persisting
+their names. Generated jobs cannot close or merge their source pull requests.
+
 Automerge waits for exact-head review, required checks, mergeability, and policy
 gates. If repair was needed, the mutable status comment records each review,
 repair, re-review, and merge step with timing and links. The final merge result
