@@ -114,7 +114,12 @@ import {
   type TargetValidationOptions,
 } from "./target-validation.js";
 import { uniqueStrings } from "./validation-command-utils.js";
+import {
+  rebaseConflictEditDecision,
+  unresolvedRebaseConflictReason,
+} from "./rebase-conflict-policy.js";
 import { validateActivePrAreaCapacity } from "./execute-fix-area-capacity.js";
+import { issueImplementationTerminalOutcome } from "./issue-implementation-outcome.js";
 import {
   repairPauseLabel,
   validateAutonomousFixScope,
@@ -666,18 +671,26 @@ try {
       });
       throw error;
     }
+    const unresolvedRebaseConflicts = unresolvedRebaseConflictReason(error);
     outcome = {
-      action: "execute_fix",
+      action: unresolvedRebaseConflicts ? "needs_human" : "execute_fix",
       status: "blocked",
       repair_strategy: fixArtifact.repair_strategy,
       reason: error.message,
-      ...(isRetryableCodexFailure(error) ? { requeue_required: true } : {}),
+      ...(unresolvedRebaseConflicts
+        ? { needs_human: [unresolvedRebaseConflicts] }
+        : isRetryableCodexFailure(error)
+          ? { requeue_required: true }
+          : {}),
     };
   }
 }
 
-report.status = outcome.status;
+report.status = outcome.action === "needs_human" ? "needs_human" : outcome.status;
 if (outcome.reason && !report.reason) report.reason = outcome.reason;
+if (Array.isArray(outcome.needs_human) && outcome.needs_human.length > 0) {
+  report.needs_human = uniqueStrings([...(report.needs_human ?? []), ...outcome.needs_human]);
+}
 report.actions.push(outcome);
 writeReport(report, resultPath);
 if (outcome.requeue_required === true) process.exitCode = 1;
@@ -1982,7 +1995,10 @@ function editValidatePrepareMerge({
         repositoryContext,
         reconcileWithBase,
         sourceHead,
-        rebaseResult,
+        rebaseResult:
+          rebaseResult?.status === "conflicts"
+            ? { ...rebaseResult, unmerged_paths: unmergedPaths(targetDir) }
+            : rebaseResult,
         maxEditAttempts,
         validationCommands: validationPreflight.resolved_commands ?? [],
         isAutomergeRepair: isAutomergeRepairJob(),
@@ -2029,37 +2045,49 @@ function editValidatePrepareMerge({
           stderrPath: path.join(workRoot, `${mode}-codex-${attempt}.stderr.log`),
         },
       );
-      if ((codexResult.error as JsonValue)?.code === "ETIMEDOUT") {
-        throw new Error(`Codex fix worker timed out after ${workerTimeoutMs}ms`);
-      }
-      if (codexResult.error) {
-        const errorDetail = codexFailureDetail(
-          codexResult,
-          codexResult.error.message || String(codexResult.error),
-        );
-        if (attempt < maxEditAttempts && isRetryableCodexErrorMessage(errorDetail)) {
-          previousSummary = compactText(errorDetail, 360);
-          const retryDelayMs = codexRetryDelayMs(errorDetail, attempt);
-          logProgress("retrying Codex edit pass after transient transport error", {
-            mode,
+      const timedOut = (codexResult.error as JsonValue)?.code === "ETIMEDOUT";
+      const errorDetail = timedOut
+        ? `Codex fix worker timed out after ${workerTimeoutMs}ms`
+        : codexResult.error
+          ? codexFailureDetail(codexResult, codexResult.error.message || String(codexResult.error))
+          : codexResult.status !== 0
+            ? codexFailureDetail(codexResult, "Codex fix worker failed")
+            : "";
+      const remainingConflicts =
+        rebaseResult?.status === "conflicts" ? unmergedPaths(targetDir) : [];
+      // Worker failures keep their transport/terminal classification. Only a completed
+      // edit pass that leaves conflicts consumes the bounded conflict-repair budget.
+      const conflictDecision = errorDetail
+        ? { action: "proceed" as const }
+        : rebaseConflictEditDecision({
+            rebaseStatus: rebaseResult?.status,
+            unmergedPaths: remainingConflicts,
             attempt,
-            max_attempts: maxEditAttempts,
-            retry_delay_ms: retryDelayMs,
+            maxEditAttempts,
           });
-          updateAutomergeProgressStatus({
-            id: `codex-edit-${mode}-${attempt}`,
-            label: `Codex edit ${attempt}`,
-            status: "retrying",
-            details: "transient Codex transport error",
-            headSha: currentHead(targetDir),
-          });
-          sleepMs(retryDelayMs);
-          continue;
-        }
-        throw new Error(codexFailureMessage("Codex fix worker failed", errorDetail));
+      if (conflictDecision.action !== "proceed") {
+        previousSummary =
+          readTextIfExists(summaryPath).trim() ||
+          compactText(errorDetail, 360) ||
+          `Rebase conflicts remain unresolved after edit attempt ${attempt}: ${remainingConflicts.join(", ")}`;
+        logProgress("rebase conflicts remain after Codex edit pass", {
+          mode,
+          attempt,
+          max_attempts: maxEditAttempts,
+          unresolved: remainingConflicts,
+        });
+        updateAutomergeProgressStatus({
+          id: `codex-edit-${mode}-${attempt}`,
+          label: `Codex edit ${attempt}`,
+          status: conflictDecision.action === "retry" ? "retrying" : "blocked",
+          details: `unresolved rebase conflicts: ${remainingConflicts.join(", ")}`,
+          headSha: currentHead(targetDir),
+        });
+        if (conflictDecision.action === "retry") continue;
+        throw new Error(conflictDecision.reason);
       }
-      if (codexResult.status !== 0) {
-        const errorDetail = codexFailureDetail(codexResult, "Codex fix worker failed");
+      if (timedOut) throw new Error(errorDetail);
+      if (codexResult.error || codexResult.status !== 0) {
         if (attempt < maxEditAttempts && isRetryableCodexErrorMessage(errorDetail)) {
           previousSummary = compactText(errorDetail, 360);
           const retryDelayMs = codexRetryDelayMs(errorDetail, attempt);
@@ -3456,25 +3484,6 @@ function issueImplementationPrAction(report: LooseRecord) {
     if (action?.action !== "open_fix_pr") return false;
     return typeof action?.pr_url === "string" && action.pr_url.trim();
   });
-}
-
-function issueImplementationTerminalOutcome(report: LooseRecord) {
-  const actionOutcome = [...(report.actions ?? [])].reverse().find((action: JsonValue) => {
-    const status = String(action?.status ?? "").toLowerCase();
-    if (!["blocked", "skipped", "failed"].includes(status)) return false;
-    return ["execute_fix", "open_fix_pr", "repair_contributor_branch"].includes(
-      String(action?.action ?? ""),
-    );
-  });
-  if (actionOutcome) return actionOutcome;
-
-  const status = String(report.status ?? "").toLowerCase();
-  if (!["blocked", "skipped", "failed"].includes(status)) return null;
-  return {
-    action: "issue_implementation",
-    status,
-    reason: report.reason,
-  };
 }
 
 function issueImplementationTargetIssueNumber() {

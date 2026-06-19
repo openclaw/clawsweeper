@@ -144,6 +144,7 @@ test("fix prompt includes rebase and previous no-diff recovery details", () => {
       base_ref: "origin/main",
       base_sha: "def456",
       detail: "CONFLICT (content): CHANGELOG.md",
+      unmerged_paths: ["src/index.ts", "CHANGELOG.md"],
     },
     maxEditAttempts: 5,
   });
@@ -153,7 +154,9 @@ test("fix prompt includes rebase and previous no-diff recovery details", () => {
   assert.match(prompt, /Existing repair branch detected/);
   assert.match(prompt, /Source head before edit: abc123/);
   assert.match(prompt, /Deterministic pre-edit rebase: conflicts onto origin\/main \(def456\)/);
-  assert.match(prompt, /Resolve the active rebase conflicts/);
+  assert.match(prompt, /Conflict-first mode/);
+  assert.match(prompt, /resolve only the active rebase conflicts/);
+  assert.match(prompt, /Unmerged conflict paths: src\/index\.ts, CHANGELOG\.md/);
   assert.match(prompt, /Rebase output: CONFLICT \(content\): CHANGELOG\.md/);
   assert.match(prompt, /Previous attempt produced no target repo diff/);
   assert.match(prompt, /Previous no-diff summary: Analyzed without editing files/);

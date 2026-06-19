@@ -284,10 +284,23 @@ function renderRebaseResult(rebaseResult: LooseRecord) {
   const baseRef = String(rebaseResult.base_ref ?? "origin/main");
   const baseSha = String(rebaseResult.base_sha ?? "unknown");
   const detail = compactText(String(rebaseResult.detail ?? "").trim(), 800);
+  const unmergedPaths = Array.isArray(rebaseResult.unmerged_paths)
+    ? rebaseResult.unmerged_paths.map((entry: unknown) => String(entry)).filter(Boolean)
+    : [];
   return [
     `Deterministic pre-edit rebase: ${status} onto ${baseRef} (${baseSha}).`,
     status === "conflicts"
-      ? "Resolve the active rebase conflicts, continue or finish the rebase, and leave the checkout in a normal non-rebasing state before returning."
+      ? [
+          "Conflict-first mode:",
+          "- resolve only the active rebase conflicts before doing any feature repair;",
+          "- inspect `git status --short` and the conflicted files listed below;",
+          "- remove all conflict markers and stage the resolved files;",
+          "- run `git rebase --continue` until the checkout is no longer rebasing;",
+          "- do not broaden the patch while conflicts remain.",
+        ].join("\n")
+      : "",
+    status === "conflicts" && unmergedPaths.length > 0
+      ? `Unmerged conflict paths: ${unmergedPaths.join(", ")}`
       : "",
     detail ? `Rebase output: ${detail}` : "",
   ]

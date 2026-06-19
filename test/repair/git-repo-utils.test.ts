@@ -5,7 +5,11 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
 
-import { completeRebaseIfResolved, rebaseOntoBase } from "../../dist/repair/git-repo-utils.js";
+import {
+  completeRebaseIfResolved,
+  rebaseOntoBase,
+  unmergedPaths,
+} from "../../dist/repair/git-repo-utils.js";
 
 test("rebaseOntoBase rebases a repair branch onto latest origin main", () => {
   const { work } = fixtureRepo();
@@ -46,6 +50,7 @@ test("rebaseOntoBase leaves conflicts for Codex repair instead of aborting", () 
   const result = rebaseOntoBase({ targetDir: work, baseBranch: "main" });
 
   assert.equal(result.status, "conflicts");
+  assert.deepEqual(unmergedPaths(work), ["shared.txt"]);
   assert.match(fs.readFileSync(path.join(work, "shared.txt"), "utf8"), /<<<<<<< HEAD/);
 });
 

@@ -13,6 +13,7 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Fixed
 
+- Kept unresolved rebase conflicts inside the bounded Codex repair loop and reported exhausted conflicts as human-required with exact paths. Thanks @Jhacarreiro.
 - Restored the Codex spawn helper to spam workflow sparse checkouts so repair builds can start.
 - Removed unconditional ffmpeg provisioning from review startup so optional media proof cannot block exact-review leases; unavailable media tools remain per-item evidence failures.
 - Prevented contributor-branch repairs and changelog-free repair artifacts from adding release-owned changelog entries, keeping contributor credit and release-note context in PR bodies or commit history instead.
