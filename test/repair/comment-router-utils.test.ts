@@ -338,6 +338,21 @@ test("summarizeChecks still blocks cancelled required checks", () => {
   assert.deepEqual(checks.terminalBlockers, ["required-build:CANCELLED"]);
 });
 
+test("summarizeChecks waits for a cancelled real behavior proof replacement", () => {
+  const checks = summarizeChecks([
+    {
+      name: "Real behavior proof",
+      workflowName: "Real behavior proof",
+      status: "COMPLETED",
+      conclusion: "CANCELLED",
+    },
+  ]);
+
+  assert.deepEqual(checks.blockers, ["Real behavior proof:CANCELLED"]);
+  assert.deepEqual(checks.pending, ["Real behavior proof:CANCELLED"]);
+  assert.deepEqual(checks.terminalBlockers, []);
+});
+
 test("summarizeChecks separates pending checks from terminal blockers", () => {
   const checks = summarizeChecks([
     {

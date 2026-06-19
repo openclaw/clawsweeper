@@ -11,6 +11,7 @@ const DEFAULT_IGNORED_CHECKS = [
   "notify",
   "Stale",
 ];
+const TRANSIENT_CANCELLED_CHECKS = new Set(["real behavior proof"]);
 
 export function summarizeChecks(checks: LooseRecord[]) {
   const ignored = ignoredCheckNames();
@@ -43,6 +44,12 @@ export function summarizeChecks(checks: LooseRecord[]) {
       const blocker = `${name}:${status}`;
       blockers.push(blocker);
       pending.push(blocker);
+    }
+    if (conclusion === "CANCELLED" && TRANSIENT_CANCELLED_CHECKS.has(name.toLowerCase())) {
+      const blocker = `${name}:${conclusion}`;
+      blockers.push(blocker);
+      pending.push(blocker);
+      continue;
     }
     if (conclusion && !PASSING_CHECK_CONCLUSIONS.has(conclusion)) {
       const blocker = `${name}:${conclusion}`;
