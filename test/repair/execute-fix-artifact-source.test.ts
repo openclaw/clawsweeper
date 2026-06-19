@@ -148,3 +148,61 @@ test("issue implementation rechecks opt-out labels immediately before branch pus
   assert.match(source.slice(helperStart, helperEnd), /repairPauseLabel\(issue\.labels\)/);
   assert.match(source.slice(helperStart, helperEnd), /refusing to push or open a PR/);
 });
+
+test("repair contract checkpoints use one helper for every checkpoint path", () => {
+  const source = fs.readFileSync(
+    path.join(process.cwd(), "src/repair/execute-fix-artifact.ts"),
+    "utf8",
+  );
+  assert.equal(
+    [...source.matchAll(/commitCheckpointIfNeeded\(/g)].length,
+    0,
+    "legacy unguarded checkpoint helper must not remain",
+  );
+  assert.equal(
+    [...source.matchAll(/commitRepairCheckpointIfNeeded\(/g)].length,
+    5,
+    "four checkpoint call sites plus the helper definition should use the guarded helper",
+  );
+  assert.match(source, /phase: "initial"/);
+  assert.match(source, /phase: `review-fix-\$\{reviewAttempt\}`/);
+  assert.match(source, /phase: `base-sync-\$\{attempt\}`/);
+  assert.match(source, /phase: "finalize"/);
+});
+
+test("repair checkpoint contract is explicit must_touch and bypasses incomplete likely_files", () => {
+  const source = fs.readFileSync(
+    path.join(process.cwd(), "src/repair/execute-fix-artifact.ts"),
+    "utf8",
+  );
+  const helperStart = source.indexOf("function repairCheckpointMustTouchFiles(");
+  const helperEnd = source.indexOf("function changedFilesFromPorcelainStatus(", helperStart);
+  assert.notEqual(helperStart, -1);
+  assert.notEqual(helperEnd, -1);
+  const helper = source.slice(helperStart, helperEnd);
+  assert.match(helper, /fixArtifact\.must_touch/);
+  assert.match(helper, /fixArtifact\.must_touch_files/);
+  assert.doesNotMatch(helper, /likely_files/);
+
+  const enforceStart = source.indexOf("function enforceRepairCheckpointContract(");
+  const enforceEnd = source.indexOf("function repairCheckpointMustTouchFiles(", enforceStart);
+  assert.notEqual(enforceStart, -1);
+  const enforce = source.slice(enforceStart, enforceEnd);
+  assert.match(enforce, /if \(mustTouch\.length === 0\) return;/);
+  assert.match(enforce, /repair checkpoint contract rejected/);
+});
+
+test("repair contract parser preserves git porcelain path offsets", () => {
+  const source = fs.readFileSync(
+    path.join(process.cwd(), "src/repair/execute-fix-artifact.ts"),
+    "utf8",
+  );
+  const parserStart = source.indexOf("function porcelainChangedPaths(");
+  const parserEnd = source.indexOf("function changedFileMatchesContract(", parserStart);
+  assert.notEqual(parserStart, -1);
+  assert.notEqual(parserEnd, -1);
+  const parser = source.slice(parserStart, parserEnd);
+  assert.match(parser, /line\.slice\(3\)/);
+  assert.doesNotMatch(parser, /status\.slice\(3\)|text\.slice\(3\)/);
+  assert.match(parser, /body\.split\(" -> "\)/);
+});

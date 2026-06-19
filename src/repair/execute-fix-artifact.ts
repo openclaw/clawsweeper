@@ -2145,9 +2145,11 @@ function editValidatePrepareMerge({
     });
   }
 
-  const firstCheckpoint = commitCheckpointIfNeeded({
+  const firstCheckpoint = commitRepairCheckpointIfNeeded({
+    fixArtifact,
     targetDir,
     message: fixArtifact.pr_title,
+    phase: "initial",
     trailers: mode === "replacement" ? coAuthorTrailers(contributorCredits) : [],
   });
   if (firstCheckpoint) {
@@ -2176,9 +2178,11 @@ function editValidatePrepareMerge({
       baseBranch,
       sourceHead: repairDeltaBaseHead,
       onReviewFix: (reviewAttempt: JsonValue) => {
-        const checkpoint = commitCheckpointIfNeeded({
+        const checkpoint = commitRepairCheckpointIfNeeded({
+          fixArtifact,
           targetDir,
           message: `fix(clawsweeper): address review for ${result.cluster_id} (${reviewAttempt})`,
+          phase: `review-fix-${reviewAttempt}`,
           trailers: mode === "replacement" ? coAuthorTrailers(contributorCredits) : [],
         });
         if (checkpoint) {
@@ -2207,9 +2211,11 @@ function editValidatePrepareMerge({
       headSha: currentHead(targetDir),
     });
     if (sync.status === "already-current") break;
-    const checkpoint = commitCheckpointIfNeeded({
+    const checkpoint = commitRepairCheckpointIfNeeded({
+      fixArtifact,
       targetDir,
       message: `fix(clawsweeper): reconcile ${result.cluster_id} with main (${attempt})`,
+      phase: `base-sync-${attempt}`,
       trailers: mode === "replacement" ? coAuthorTrailers(contributorCredits) : [],
     });
     if (checkpoint) {
@@ -2227,9 +2233,11 @@ function editValidatePrepareMerge({
       break;
     }
   }
-  const finalCheckpoint = commitCheckpointIfNeeded({
+  const finalCheckpoint = commitRepairCheckpointIfNeeded({
+    fixArtifact,
     targetDir,
     message: `fix(clawsweeper): finalize ${result.cluster_id}`,
+    phase: "finalize",
     trailers: mode === "replacement" ? coAuthorTrailers(contributorCredits) : [],
   });
   if (finalCheckpoint) {
@@ -3300,13 +3308,85 @@ function checkoutRecoverableReplacementBranch({
   return { resumed: false, branch };
 }
 
-function commitCheckpointIfNeeded({ targetDir, message, trailers = [] }: LooseRecord) {
-  if (!run("git", ["status", "--porcelain"], { cwd: targetDir }).trim()) return "";
+function commitRepairCheckpointIfNeeded({
+  fixArtifact,
+  targetDir,
+  message,
+  phase,
+  trailers = [],
+}: LooseRecord) {
+  const status = run("git", ["status", "--porcelain"], { cwd: targetDir }).trim();
+  if (!status) return "";
+  enforceRepairCheckpointContract({ fixArtifact, phase, status });
   run("git", ["add", "--all"], { cwd: targetDir });
   const args = ["commit", "-m", message];
   for (const trailer of uniqueStrings(trailers)) args.push("-m", trailer);
   runGitNetwork(args, targetDir);
   return run("git", ["rev-parse", "HEAD"], { cwd: targetDir }).trim();
+}
+
+function enforceRepairCheckpointContract({ fixArtifact, phase, status }: LooseRecord) {
+  const mustTouch = repairCheckpointMustTouchFiles(fixArtifact);
+  if (mustTouch.length === 0) return;
+
+  const changedFiles = changedFilesFromPorcelainStatus(String(status));
+  if (
+    changedFiles.some((file) =>
+      mustTouch.some((expected) => changedFileMatchesContract(file, expected)),
+    )
+  ) {
+    return;
+  }
+
+  throw new Error(
+    [
+      `repair checkpoint contract rejected ${String(phase || "checkpoint")}: no must_touch file changed`,
+      `must_touch=${mustTouch.join(", ")}`,
+      `changed_files=${changedFiles.join(", ") || "none"}`,
+    ].join("; "),
+  );
+}
+
+function repairCheckpointMustTouchFiles(fixArtifact: LooseRecord): string[] {
+  const candidates = [
+    ...jsonStringArray(fixArtifact.must_touch),
+    ...jsonStringArray(fixArtifact.must_touch_files),
+  ];
+  return uniqueStrings(candidates.map(normalizeRepairContractPath).filter(Boolean));
+}
+
+function jsonStringArray(value: JsonValue): string[] {
+  return Array.isArray(value) ? value.map((entry) => String(entry)) : [];
+}
+
+function changedFilesFromPorcelainStatus(status: string): string[] {
+  return uniqueStrings(
+    status
+      .split(/\r?\n/)
+      .flatMap((line) => porcelainChangedPaths(line))
+      .map(normalizeRepairContractPath)
+      .filter(Boolean),
+  );
+}
+
+function porcelainChangedPaths(line: string): string[] {
+  if (line.length < 4) return [];
+  const body = line.slice(3).trim();
+  if (!body) return [];
+  const renamed = body.split(" -> ");
+  return renamed.length === 2 ? [renamed[1] ?? ""] : [body];
+}
+
+function changedFileMatchesContract(changedFile: string, expected: string) {
+  return changedFile === expected || changedFile.startsWith(`${expected.replace(/\/$/, "")}/`);
+}
+
+function normalizeRepairContractPath(value: JsonValue): string {
+  const pathValue = String(value ?? "").trim();
+  if (!pathValue || pathValue.startsWith("/") || pathValue.includes("\0")) return "";
+  if (/[`$;&|<>()[\]{}*?~]/.test(pathValue)) return "";
+  if (pathValue.split(/[\\/]/).includes("..")) return "";
+  return pathValue.replace(/^\.\//, "");
 }
 
 function pushRecoverableBranch({ targetDir, branch }: LooseRecord) {
