@@ -711,6 +711,17 @@ export function commandHasAction(command: LooseRecord, actionName: string): bool
   return (command.actions ?? []).some((action: JsonValue) => action.action === actionName);
 }
 
+export function isReadyHumanReviewPause(command: LooseRecord): boolean {
+  return (
+    command.intent === "clawsweeper_needs_human" &&
+    command.status === "ready" &&
+    (command.actions ?? []).some(
+      (action: JsonValue) =>
+        action.action === "label" && String(action.label ?? "") === HUMAN_REVIEW_LABEL,
+    )
+  );
+}
+
 export function existingCommandStatusBlocksReplay({
   hasExistingResponse,
   forceReprocess,

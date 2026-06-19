@@ -14,8 +14,8 @@ import {
   triageRoutingGroupsForLabels,
 } from "../dashboard/triage-routing-groups.ts";
 
-test("exact-review queue defaults to 32 of the 128 global workers", () => {
-  assert.equal(exactReviewQueueCapacity({}), 32);
+test("exact-review queue defaults to 40 of the 128 global workers", () => {
+  assert.equal(exactReviewQueueCapacity({}), 40);
   assert.equal(exactReviewQueueCapacity({ EXACT_REVIEW_QUEUE_MAX_CONCURRENT: "64" }), 64);
   assert.equal(exactReviewQueueCapacity({ EXACT_REVIEW_QUEUE_MAX_CONCURRENT: "100" }), 64);
 });

@@ -39,6 +39,7 @@ import {
   issueImplementationJobBranch,
   issueImplementationJobPath,
   isCanonicalLandingNeedsHumanText,
+  isReadyHumanReviewPause,
   latestRepairLoopResumeTime,
   isAuthorReadOnlyCommandAllowed,
   isMaintainerCommandAllowed,
@@ -1290,6 +1291,43 @@ test("repairLoopPauseLabels identifies pause labels for trusted pass resume", ()
   );
   assert.deepEqual(repairLoopPauseLabels(["clawsweeper:automerge"]), []);
   assert.deepEqual(repairLoopPauseLabels(null), []);
+});
+
+test("ready human-review commands block same-run label sweeps", () => {
+  assert.equal(
+    isReadyHumanReviewPause({
+      intent: "clawsweeper_needs_human",
+      status: "ready",
+      actions: [{ action: "label", label: "clawsweeper:human-review" }],
+    }),
+    true,
+  );
+  assert.equal(
+    isReadyHumanReviewPause({
+      intent: "clawsweeper_needs_human",
+      status: "skipped",
+      actions: [{ action: "label", label: "clawsweeper:human-review" }],
+    }),
+    false,
+  );
+  assert.equal(
+    isReadyHumanReviewPause({
+      intent: "clawsweeper_auto_merge",
+      status: "ready",
+      actions: [{ action: "merge" }],
+    }),
+    false,
+  );
+});
+
+test("router classifies fresh human-review pauses before label sweeps", () => {
+  const source = readFileSync("src/repair/comment-router.ts", "utf8");
+  const classifyComments = source.indexOf("const classifiedCommentCommands");
+  const repairLoopSweeps = source.indexOf("listRepairLoopSweepCommands(classifiedCommentCommands)");
+
+  assert.ok(classifyComments >= 0);
+  assert.ok(repairLoopSweeps > classifyComments);
+  assert.match(source, /\.filter\(isReadyHumanReviewPause\)/);
 });
 
 test("parseTrustedAutomation repairs trusted pass verdicts that still contain P findings", () => {

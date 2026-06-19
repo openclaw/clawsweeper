@@ -53,6 +53,7 @@ import {
   isIssueImplementationCommandAllowed,
   issueImplementationClusterId,
   issueImplementationJobPath,
+  isReadyHumanReviewPause,
   maintainerAutomergeOptInApprovesNeedsHuman as maintainerAutomergeOptInApprovesNeedsHumanReason,
   latestRepairLoopResumeTime,
   parseRoutedCommentCommand,
@@ -238,15 +239,24 @@ for (const comment of comments) {
   };
   rawCommands.push(command);
 }
-for (const command of listRepairLoopSweepCommands(rawCommands)) {
-  rawCommands.push(command);
-}
 const supersededReReviewVersions = supersededReReviewCommentVersions(rawCommands);
 
-await measureAsync("prehydrate_command_lookups", () => prehydrateCommandLookups(rawCommands));
-const commands = measure("classify_commands", () =>
+await measureAsync("prehydrate_comment_commands", () => prehydrateCommandLookups(rawCommands));
+const classifiedCommentCommands = measure("classify_comment_commands", () =>
   rawCommands.map((command) => classifyCommand(command)),
 );
+for (const command of listRepairLoopSweepCommands(classifiedCommentCommands)) {
+  rawCommands.push(command);
+}
+
+const sweepCommands = rawCommands.slice(classifiedCommentCommands.length);
+await measureAsync("prehydrate_repair_loop_sweeps", () => prehydrateCommandLookups(sweepCommands));
+const commands = [
+  ...classifiedCommentCommands,
+  ...measure("classify_repair_loop_sweeps", () =>
+    sweepCommands.map((command) => classifyCommand(command)),
+  ),
+];
 
 const actionable = commands.filter((command: JsonValue) => command.status === "ready");
 const report: LooseRecord = {
@@ -2906,6 +2916,12 @@ function listRepairLoopReviewComments() {
 
 function listRepairLoopSweepCommands(existingCommands: LooseRecord[]) {
   if (itemNumbers.size > 0 || commentIds.size > 0) return [];
+  const paused = new Set(
+    existingCommands
+      .filter(isReadyHumanReviewPause)
+      .map((command) => Number(command.issue_number))
+      .filter((number) => Number.isInteger(number) && number > 0),
+  );
   const seen = new Set(
     existingCommands
       .filter((command) => ["autofix", "automerge"].includes(String(command.intent ?? "")))
@@ -2918,7 +2934,7 @@ function listRepairLoopSweepCommands(existingCommands: LooseRecord[]) {
   ] as const) {
     for (const number of listOpenIssueNumbersWithLabel(label)) {
       const key = `${intent}:${number}`;
-      if (seen.has(key)) continue;
+      if (seen.has(key) || paused.has(number)) continue;
       seen.add(key);
       commands.push({
         idempotency_key: `repair-loop-label-sweep:${targetRepo}:${intent}:${number}`,
