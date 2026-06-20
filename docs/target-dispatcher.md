@@ -230,3 +230,45 @@ The event job creates only a target read token before Codex runs. The target
 write token and the repository push token are introduced after Codex exits, and
 the same `apply-decisions` guard path still re-fetches the item before any
 comment or close mutation.
+
+## Rate-limit-safe CI setup
+
+Install one dispatcher workflow per target repository. Keep the event fanout
+inside that workflow; do not add separate comment, spam, or generic-activity
+dispatch workflows in the target repository.
+
+The snippet below is only the trigger, permission, and concurrency fragment.
+It is not a complete workflow; use the full dispatcher example above as the
+copy-pasteable job definition.
+
+```yaml
+name: ClawSweeper Dispatch
+
+on:
+  issues:
+    types: [opened, reopened, edited, labeled, unlabeled]
+  issue_comment:
+    types: [created, edited]
+  pull_request_target:
+    types: [opened, reopened, synchronize, ready_for_review, edited, labeled, unlabeled]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: clawsweeper-dispatch-${{ github.repository }}-${{ github.event.issue.number || github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event.action == 'edited' || github.event.action == 'synchronize' || github.event.action == 'ready_for_review' }}
+```
+
+The job should mint one short-lived `clawsweeper` App token scoped to
+`openclaw/clawsweeper`, then send one `clawsweeper_item` or
+`clawsweeper_comment` `repository_dispatch`. For comments, check the command
+syntax before minting a target write token. Do not use a PAT or dispatch the
+same comment through both the exact router and a second spam/generic workflow.
+
+The ClawSweeper `github-activity` workflow performs spam-candidate
+classification in-process and only dispatches the scanner for an accepted
+candidate. This keeps ordinary comments to one activity run instead of an
+activity run plus a second intake workflow. Preserve the source delivery or
+comment id in every payload so receiver-side deduplication can collapse
+redeliveries.

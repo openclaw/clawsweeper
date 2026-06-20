@@ -202,8 +202,7 @@ jobs:
                 active_shards=0
               fi
               # Planning, publish, queued, and not-yet-expanded matrix runs have not
-              # created shard jobs yet. Reserve their quiet lane size so commit review
-              # does not over-allocate while a sweep matrix is still expanding.
+              # created shard jobs yet. Reserve their quiet lane size while they expand.
               if [ "$active_shards" -lt 1 ]; then
                 if [ "$title" = "Review hot ClawSweeper items" ]; then
                   active_shards="$(pnpm --dir clawsweeper run --silent workflow -- limit review_shards.hot_intake_default)"

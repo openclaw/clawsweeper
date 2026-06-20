@@ -30,6 +30,7 @@ import {
   fixedPullRequestFromCommitPullsForTest,
   formatRecentClosedRows,
   ghRetryKind,
+  ghRetryWaitMs,
   hotIntakeRecencyMs,
   isCodexReviewCommentBody,
   isInfrastructureFailedReviewForTest,
@@ -13754,6 +13755,7 @@ test("review capacity probes use REST actions run listing", () => {
     assert.match(block, /updatedAt:\.updated_at/);
     assert.match(block, /STALE_QUEUED_CUTOFF/);
     assert.doesNotMatch(block, /gh run list/);
+    assert.match(block, /gh run view/);
   }
 });
 
@@ -13949,20 +13951,10 @@ test("github activity workflow scopes cancellation to matching item activity", (
   assert.match(workflow, /Check core API budget/);
   assert.match(workflow, /CLAWSWEEPER_MIN_CORE_REMAINING/);
   assert.match(workflow, /contents: write/);
-  assert.match(workflow, /Dispatch spam comment intake candidates/);
-  assert.match(workflow, /clawsweeper_spam_comment_intake/);
-  assert.match(workflow, /\["issue_comment", "pull_request_review_comment"\]/);
-  assert.match(workflow, /\["created", "edited"\]/);
-  const dispatchStep = workflow.slice(
-    workflow.indexOf("- name: Dispatch spam comment intake candidates"),
-    workflow.indexOf("\n      - uses: actions/checkout@v6"),
-  );
-  const dispatchScript = dispatchStep
-    .slice(dispatchStep.indexOf("        run: |\n") + "        run: |\n".length)
-    .split("\n")
-    .map((line) => line.replace(/^ {10}/, ""))
-    .join("\n");
-  execFileSync("bash", ["-n"], { input: dispatchScript });
+  assert.doesNotMatch(workflow, /Dispatch spam comment intake candidates/);
+  assert.match(workflow, /Dispatch spam scan candidate/);
+  assert.match(workflow, /repair:spam-comment-intake -- --write-report/);
+  assert.doesNotMatch(workflow, /gh api "repos\/\$\{GITHUB_REPOSITORY\}\/dispatches"/);
   assert.match(concurrencyBlock, /cancel-in-progress: true/);
   assert.doesNotMatch(
     concurrencyBlock,
@@ -14802,6 +14794,10 @@ test("GitHub retry classifier distinguishes throttle and transient failures", ()
   const throttled = new Error("API rate limit exceeded for user ID 1");
   assert.equal(ghRetryKind(throttled), "throttle");
   assert.equal(shouldRetryGh(throttled), true);
+  assert.equal(ghRetryKind(new Error("gh: HTTP 429: Too Many Requests")), "throttle");
+  assert.equal(ghRetryWaitMs("throttle", 0), 30_000);
+  assert.equal(ghRetryWaitMs("throttle", 3), 60_000);
+  assert.equal(ghRetryWaitMs("transient", 0), 2_000);
 
   const eof = Object.assign(new Error("Command failed: gh api repos/openclaw/openclaw/issues"), {
     stderr: 'Get "https://api.github.com/repos/openclaw/openclaw/issues?page=54": unexpected EOF\n',
@@ -14813,6 +14809,7 @@ test("GitHub retry classifier distinguishes throttle and transient failures", ()
     "Post https://api.github.com/graphql: read: connection reset by peer",
   );
   assert.equal(ghRetryKind(connectionReset), "transient");
+  assert.equal(ghRetryKind(new Error("read: connection reset")), "transient");
 
   const badGateway = Object.assign(new Error("gh: HTTP 502: Bad Gateway"), { stderr: "" });
   assert.equal(ghRetryKind(badGateway), "transient");
@@ -14830,6 +14827,9 @@ test("GitHub retry classifier distinguishes throttle and transient failures", ()
     { stderr: "invalid character '<' looking for beginning of value\n" },
   );
   assert.equal(ghRetryKind(htmlInsteadOfJson), "transient");
+  assert.equal(ghRetryKind(new Error("dial tcp: connection refused")), "transient");
+  assert.equal(ghRetryKind(new Error("Could not resolve host: api.github.com")), "transient");
+  assert.equal(ghRetryKind(new Error("request timed out")), "transient");
 
   const authFailure = Object.assign(new Error("gh: HTTP 401: Bad credentials"), {
     stderr: "Bad credentials",

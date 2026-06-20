@@ -4,6 +4,7 @@ import { promisify } from "node:util";
 import { stripAnsi } from "./comment-router-utils.js";
 import { ghCliEnv } from "./process-env.js";
 import { repoRoot } from "./paths.js";
+import { ghRetryKind, ghRetryWaitMs } from "../github-retry.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -131,8 +132,9 @@ export function ghPagedLimitWithRetry<T = JsonValue>(
       return ghPagedLimit<T>(apiPath, limit, resolved);
     } catch (error) {
       lastError = error;
-      if (attempt >= attempts || !shouldRetryGh(error)) throw error;
-      sleepMs(Math.min(1000 * attempt, 5000));
+      const retryKind = ghRetryKind(error);
+      if (attempt >= attempts || retryKind === "none") throw error;
+      sleepMs(ghRetryWaitMs(retryKind, attempt - 1));
     }
   }
   throw lastError instanceof Error ? lastError : new Error(String(lastError));
@@ -159,8 +161,9 @@ export function ghTextWithRetry(ghArgs: string[], options: GhRetryOptions | numb
       return ghText(ghArgs, resolved);
     } catch (error) {
       lastError = error;
-      if (attempt >= attempts || !shouldRetryGh(error)) throw error;
-      sleepMs(Math.min(1000 * attempt, 5000));
+      const retryKind = ghRetryKind(error);
+      if (attempt >= attempts || retryKind === "none") throw error;
+      sleepMs(ghRetryWaitMs(retryKind, attempt - 1));
     }
   }
   throw lastError instanceof Error ? lastError : new Error(String(lastError));
@@ -178,8 +181,9 @@ export async function ghTextWithRetryAsync(
       return await ghTextAsync(ghArgs, resolved);
     } catch (error) {
       lastError = error;
-      if (attempt >= attempts || !shouldRetryGh(error)) throw error;
-      await sleepAsync(Math.min(1000 * attempt, 5000));
+      const retryKind = ghRetryKind(error);
+      if (attempt >= attempts || retryKind === "none") throw error;
+      await sleepAsync(ghRetryWaitMs(retryKind, attempt - 1));
     }
   }
   throw lastError instanceof Error ? lastError : new Error(String(lastError));
@@ -255,27 +259,6 @@ export function ghStdoutFromError(error: unknown): string {
   return stripAnsi(
     bufferLikeToString(commandError.stdout ?? commandError.output?.[1] ?? ""),
   ).trim();
-}
-
-export function shouldRetryGh(error: unknown): boolean {
-  const text = ghErrorText(error).toLowerCase();
-  return (
-    text.includes("http 502") ||
-    text.includes("http 503") ||
-    text.includes("http 504") ||
-    text.includes("bad gateway") ||
-    text.includes("gateway timeout") ||
-    text.includes("service unavailable") ||
-    text.includes("timed out") ||
-    text.includes("timeout") ||
-    text.includes("connection reset") ||
-    text.includes("connection refused") ||
-    text.includes("could not resolve host") ||
-    text.includes("temporary failure") ||
-    text.includes("try again later") ||
-    text.includes("secondary rate limit") ||
-    text.includes("rate limit")
-  );
 }
 
 function resolveRetryOptions(options: GhRetryOptions | number): GhRetryOptions {

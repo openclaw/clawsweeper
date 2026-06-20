@@ -91,53 +91,6 @@ jobs:
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Dispatch spam comment intake candidates
-        if: steps.core-budget.outputs.skip != 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          payload_path="$RUNNER_TEMP/spam-comment-intake-dispatch.json"
-          node <<'NODE' > "$payload_path"
-          const fs = require("fs");
-          const eventName = process.env.GITHUB_EVENT_NAME || "";
-          const root = JSON.parse(fs.readFileSync(process.env.GITHUB_EVENT_PATH, "utf8"));
-          const clientPayload = root.client_payload || {};
-          const activity = clientPayload.activity || clientPayload || {};
-          const type = activity.type || clientPayload.event_name || (eventName === "repository_dispatch" ? "" : eventName);
-          const action = activity.action || clientPayload.action || root.action || "";
-          if (!["issue_comment", "pull_request_review_comment"].includes(type)) process.exit(0);
-          if (!["created", "edited"].includes(action)) process.exit(0);
-          const repo =
-            activity.target_repo ||
-            activity.repo ||
-            (activity.repository && activity.repository.full_name) ||
-            (typeof activity.repository === "string" && activity.repository) ||
-            clientPayload.target_repo ||
-            clientPayload.repo ||
-            (clientPayload.repository && clientPayload.repository.full_name) ||
-            (typeof clientPayload.repository === "string" && clientPayload.repository) ||
-            (root.repository && root.repository.full_name) ||
-            process.env.GITHUB_REPOSITORY;
-          process.stdout.write(JSON.stringify({
-            event_type: "clawsweeper_spam_comment_intake",
-            client_payload: {
-              target_repo: repo,
-              event_name: type,
-              action,
-              activity: { ...activity, type, action, repo },
-            },
-          }));
-          NODE
-          if [ ! -s "$payload_path" ]; then
-            echo "No spam comment intake candidate for this activity."
-            exit 0
-          fi
-          gh api "repos/${GITHUB_REPOSITORY}/dispatches" \
-            --method POST \
-            --input "$payload_path"
-
       - uses: actions/checkout@v6
         if: steps.core-budget.outputs.skip != 'true'
         with:
@@ -194,6 +147,14 @@ jobs:
             sleep "$((attempt * 10))"
           done
           pnpm run build:repair
+
+      - name: Dispatch spam scan candidate
+        if: steps.core-budget.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          pnpm run repair:spam-comment-intake -- --write-report
 
       - name: Feed activity to OpenClaw
         if: steps.core-budget.outputs.skip != 'true'

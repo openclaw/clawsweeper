@@ -4,10 +4,12 @@ const GH_THROTTLE_PATTERNS = [
   /was submitted too quickly/i,
   /secondary rate/i,
   /API rate limit exceeded/i,
+  /rate limit/i,
 ];
 
 const GH_TRANSIENT_PATTERNS = [
   /unexpected EOF/i,
+  /connection reset/i,
   /connection reset by peer/i,
   /error connecting to api\.github\.com/i,
   /bad gateway/i,
@@ -20,12 +22,18 @@ const GH_TRANSIENT_PATTERNS = [
   /TLS handshake timeout/i,
   /\bi\/o timeout\b/i,
   /Client\.Timeout exceeded/i,
+  /connection refused/i,
+  /could not resolve host/i,
+  /timed out/i,
+  /\btimeout\b/i,
   /temporary failure/i,
+  /try again later/i,
 ];
 
 export function ghRetryKind(error: unknown): GhRetryKind {
   const message = ghErrorText(error);
   if (GH_THROTTLE_PATTERNS.some((pattern) => pattern.test(message))) return "throttle";
+  if (hasGitHubStatus(message, [429])) return "throttle";
   if (hasGitHubStatus(message, [500, 502, 503, 504])) return "transient";
   if (GH_TRANSIENT_PATTERNS.some((pattern) => pattern.test(message))) return "transient";
   return "none";
@@ -56,7 +64,7 @@ export function isGitHubRequiresAuthenticationError(error: unknown): boolean {
 }
 
 export function ghRetryWaitMs(kind: GhRetryKind, attempt: number): number {
-  if (kind === "throttle") return Math.min(600_000, 30_000 * 2 ** attempt);
+  if (kind === "throttle") return Math.min(60_000, 30_000 * 2 ** attempt);
   if (kind === "transient") return Math.min(60_000, 2_000 * 2 ** attempt);
   return 0;
 }

@@ -994,8 +994,7 @@ jobs:
                 active_shards=0
               fi
               # Planning, publish, queued, and not-yet-expanded matrix runs have not
-              # created shard jobs yet. Reserve their quiet lane size so a second
-              # planner cannot over-allocate before the first matrix expands.
+              # created shard jobs yet. Reserve their quiet lane size while they expand.
               if [ "$active_shards" -lt 1 ]; then
                 if [ "$title" = "Review hot ClawSweeper items" ] || [[ "$title" == Review\ hot\ target\ repo\ * ]]; then
                   active_shards="$(limit review_shards.hot_intake_default)"
