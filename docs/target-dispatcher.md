@@ -34,6 +34,16 @@ opened issues get stronger duplicate and adjacent-report context. Set repository
 variable `CLAWSWEEPER_RELATED_GITHUB_SEARCH=0` on `openclaw/clawsweeper` to turn
 that enrichment off without editing the target dispatcher.
 
+Before enabling the workflow:
+
+1. Install the `clawsweeper` GitHub App on the target repository.
+2. Add the App private key as the target repository Actions secret
+   `CLAWSWEEPER_APP_PRIVATE_KEY`.
+3. Install exactly one target dispatcher. Do not add separate comment, spam, and
+   generic-activity dispatch workflows that forward the same event twice.
+4. Keep the target write token limited to the comment acknowledgement path.
+   Issue/PR review dispatch only needs the ClawSweeper installation token.
+
 ```yaml
 name: ClawSweeper Dispatch
 
@@ -76,9 +86,27 @@ jobs:
           repositories: clawsweeper
           permission-contents: write
 
+      - name: Pre-filter ClawSweeper comment
+        id: comment_filter
+        if: ${{ github.event_name == 'issue_comment' }}
+        env:
+          COMMENT_BODY: ${{ github.event.comment.body }}
+        run: |
+          set -euo pipefail
+          if grep -Eiq '(^|[[:space:]])@(clawsweeper|openclaw-clawsweeper)\b(\[bot\])?|(^|[[:space:]])/(clawsweeper|review|re-review|rerun[ -]?review|status|explain|fix|build|implement|create[ -]?pr|fix[ -]?issue|autofix|auto[ -]?fix|automerge|auto[ -]?merge|approve|stop|autoclose)\b' <<< "$COMMENT_BODY"; then
+            echo "is_command=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "is_command=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Create target comment token
         id: target_token
-        if: ${{ github.event_name == 'issue_comment' && env.HAS_CLAWSWEEPER_APP_PRIVATE_KEY == 'true' }}
+        if: >-
+          ${{
+            github.event_name == 'issue_comment' &&
+            steps.comment_filter.outputs.is_command == 'true' &&
+            env.HAS_CLAWSWEEPER_APP_PRIVATE_KEY == 'true'
+          }}
         uses: actions/create-github-app-token@1b10c78c7865c340bc4f6099eb2f838309f1e8c3 # v3.1.1
         with:
           client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
@@ -115,7 +143,11 @@ jobs:
             --input - <<< "$payload"
 
       - name: Acknowledge and dispatch ClawSweeper comment
-        if: ${{ github.event_name == 'issue_comment' }}
+        if: >-
+          ${{
+            github.event_name == 'issue_comment' &&
+            steps.comment_filter.outputs.is_command == 'true'
+          }}
         env:
           DISPATCH_TOKEN: ${{ steps.token.outputs.token }}
           TARGET_TOKEN: ${{ steps.target_token.outputs.token }}
@@ -134,10 +166,6 @@ jobs:
           printf '%s\n' "$COMMENT_BODY" > "$body_file"
           if grep -Eiq '<!--[[:space:]]*clawsweeper-proof-nudge([[:space:]]|-->)' "$body_file"; then
             echo "Ignoring ClawSweeper proof-nudge comment."
-            exit 0
-          fi
-          if ! grep -Eiq '(^|[[:space:]])@clawsweeper\b|(^|[[:space:]])/(clawsweeper|review|re-review|rerun[ -]?review|status|explain|fix|build|implement|create[ -]?pr|fix[ -]?issue|autofix|auto[ -]?fix|automerge|auto[ -]?merge|approve|stop|autoclose)\b' "$body_file"; then
-            echo "No ClawSweeper command found in comment."
             exit 0
           fi
           if [ -n "$TARGET_TOKEN" ]; then
@@ -237,9 +265,8 @@ Install one dispatcher workflow per target repository. Keep the event fanout
 inside that workflow; do not add separate comment, spam, or generic-activity
 dispatch workflows in the target repository.
 
-The snippet below is only the trigger, permission, and concurrency fragment.
-It is not a complete workflow; use the full dispatcher example above as the
-copy-pasteable job definition.
+The full dispatcher example above is the copy-pasteable job definition. Its
+important rate-limit properties are:
 
 ```yaml
 name: ClawSweeper Dispatch
@@ -260,11 +287,20 @@ concurrency:
   cancel-in-progress: ${{ github.event.action == 'edited' || github.event.action == 'synchronize' || github.event.action == 'ready_for_review' }}
 ```
 
-The job should mint one short-lived `clawsweeper` App token scoped to
-`openclaw/clawsweeper`, then send one `clawsweeper_item` or
-`clawsweeper_comment` `repository_dispatch`. For comments, check the command
-syntax before minting a target write token. Do not use a PAT or dispatch the
-same comment through both the exact router and a second spam/generic workflow.
+The job mints one short-lived `clawsweeper` App token scoped to
+`openclaw/clawsweeper`, then sends one `clawsweeper_item` or
+`clawsweeper_comment` `repository_dispatch`. For comments, the
+`Pre-filter ClawSweeper comment` step runs before the target write token is
+minted, so ordinary comments consume neither a target installation token nor a
+dispatch. Do not use a PAT or dispatch the same comment through both the exact
+router and a second spam/generic workflow.
+
+To verify a target installation, open a pull request or issue and confirm one
+`ClawSweeper Dispatch` run. Add a maintainer comment containing `@clawsweeper`
+or a supported slash command and confirm one `clawsweeper_comment` dispatch.
+An ordinary comment should produce no ClawSweeper comment dispatch and no
+target-token step. If the target app secret is absent, the workflow should
+finish with a notice rather than fall back to a maintainer PAT.
 
 The ClawSweeper `github-activity` workflow performs spam-candidate
 classification in-process and only dispatches the scanner for an accepted
