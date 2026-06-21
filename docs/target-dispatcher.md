@@ -93,7 +93,7 @@ jobs:
           COMMENT_BODY: ${{ github.event.comment.body }}
         run: |
           set -euo pipefail
-          if grep -Eiq '(^|[[:space:]])@(clawsweeper|openclaw-clawsweeper)\b(\[bot\])?|(^|[[:space:]])/(clawsweeper|review|re-review|rerun[ -]?review|status|explain|fix|build|implement|create[ -]?pr|fix[ -]?issue|autofix|auto[ -]?fix|automerge|auto[ -]?merge|approve|stop|autoclose)\b' <<< "$COMMENT_BODY"; then
+          if grep -Eiq '(^|[[:space:]])@(clawsweeper|openclaw-clawsweeper)\b(\[bot\])?|(^|[[:space:]])/(clawsweeper|review|autoclose|auto([[:space:]]+|-)?merge)\b' <<< "$COMMENT_BODY"; then
             echo "is_command=true" >> "$GITHUB_OUTPUT"
           else
             echo "is_command=false" >> "$GITHUB_OUTPUT"
@@ -292,8 +292,11 @@ The job mints one short-lived `clawsweeper` App token scoped to
 `clawsweeper_comment` `repository_dispatch`. For comments, the
 `Pre-filter ClawSweeper comment` step runs before the target write token is
 minted, so ordinary comments consume neither a target installation token nor a
-dispatch. Do not use a PAT or dispatch the same comment through both the exact
-router and a second spam/generic workflow.
+dispatch. The prefilter is only an ingress guard: `/clawsweeper` may carry any
+supported subcommand, while `/review`, `/autoclose`, and `/auto-merge` (with
+spaces or tabs allowed between `auto` and `merge`) are the standalone aliases.
+The router remains authoritative. Do not use a PAT or dispatch the same comment
+through both the exact router and a second spam/generic workflow.
 
 To verify a target installation, open a pull request or issue and confirm one
 `ClawSweeper Dispatch` run. Add a maintainer comment containing `@clawsweeper`
