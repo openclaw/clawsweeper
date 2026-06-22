@@ -14034,7 +14034,12 @@ test("issue implementation workflow lets job intent choose dispatch capacity", (
 
 test("repair workers hydrate only durable jobs from generated state", () => {
   const workflow = readFileSync(".github/workflows/repair-cluster-worker.yml", "utf8");
+  const requeue = readFileSync("src/repair/requeue-job.ts", "utf8");
 
+  assert.match(workflow, /clawsweeper-repair-requeue-\{0\}-\{1\}.*clawsweeper-repair-\{0\}/);
+  assert.match(workflow, /cancel-in-progress: false/);
+  assert.match(workflow, /requeue:\n\s+description:/);
+  assert.match(requeue, /"requeue=true"/);
   assert.equal(
     workflow.match(/uses: \.\/\.github\/actions\/setup-state[\s\S]*?sparse-checkout: jobs/g)
       ?.length,
@@ -14048,6 +14053,14 @@ test("repair workers hydrate only durable jobs from generated state", () => {
   assert.match(workflow, /post_flight_report=.*post-flight-report\.json/);
   assert.match(workflow, /\.action == "finalize_fix_pr"/);
   assert.match(workflow, /\.status == "ready"/);
+  assert.match(
+    workflow,
+    /id: requeue_dispatch[\s\S]*if: \$\{\{ always\(\) && steps\.repair_requeue\.outputs\.count != '' && steps\.repair_requeue\.outputs\.count != '0' \}\}/,
+  );
+  assert.match(
+    workflow,
+    /if: \$\{\{ always\(\) && failure\(\) && steps\.crabfleet_session\.outcome == 'success' && \(steps\.repair_requeue\.outputs\.count == '' \|\| steps\.repair_requeue\.outputs\.count == '0' \|\| steps\.requeue_dispatch\.outcome != 'success'\) \}\}/,
+  );
   assert.equal(workflow.match(/id: crabfleet_session/g)?.length, 2);
   assert.equal(workflow.match(/steps\.crabfleet_session\.outcome == 'success'/g)?.length, 6);
   assert.doesNotMatch(workflow, /if: \$\{\{[^\n]*env\.CLAWSWEEPER_CRABFLEET_AGENT_TOKEN/);

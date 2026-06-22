@@ -51,6 +51,36 @@ test("repair source branch writability preflight runs before expensive repair pr
   );
 });
 
+test("repair branch pushes settle and re-check the exact source head", () => {
+  const sourcePath = path.join(process.cwd(), "src/repair/execute-fix-artifact.ts");
+  const source = fs.readFileSync(sourcePath, "utf8");
+  const pushStart = source.indexOf("function pushRepairBranchAndUpdateStatus(");
+  const pushEnd = source.indexOf("function repairPushSettleSeconds()", pushStart);
+  assert.notEqual(pushStart, -1);
+  assert.notEqual(pushEnd, -1);
+  const push = source.slice(pushStart, pushEnd);
+
+  assert.match(source, /DEFAULT_REPAIR_PUSH_SETTLE_SECONDS = 90/);
+  assert.match(source, /CLAWSWEEPER_BRANCH_PUSH_SETTLE_SECONDS/);
+  assert.match(push, /sleepMs\(settleSeconds \* 1000\)/);
+  assert.ok(
+    push.indexOf("sleepMs(settleSeconds * 1000)") <
+      push.indexOf("const livePull = fetchPullRequest"),
+    "the live head must be fetched after the settle window",
+  );
+  assert.ok(
+    push.indexOf("repairPushSettleBlock") < push.indexOf("runGitNetwork(pushArgs, targetDir)"),
+    "the exact-head guard must run before the branch push",
+  );
+
+  const settleStart = source.indexOf("function repairPushSettleBlock(");
+  const settle = source.slice(settleStart, source.indexOf("\n}\n", settleStart) + 2);
+  assert.match(settle, /initialPull\?\.head\?\.sha/);
+  assert.match(settle, /livePull\?\.head\?\.sha/);
+  assert.match(settle, /liveState !== "open"/);
+  assert.match(settle, /requeue_required: true/);
+});
+
 test("merged source replacement skip runs before publishing replacement PRs", () => {
   const sourcePath = path.join(process.cwd(), "src/repair/execute-fix-artifact.ts");
   const source = fs.readFileSync(sourcePath, "utf8");

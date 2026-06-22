@@ -140,6 +140,7 @@ import {
 const FIX_ACTIONS = new Set(["fix_needed", "build_fix_artifact", "open_fix_pr"]);
 const NON_EXECUTABLE_REPAIR_STRATEGIES = new Set(["already_fixed_on_main", "needs_human"]);
 const DEFAULT_BASE_BRANCH = "main";
+const DEFAULT_REPAIR_PUSH_SETTLE_SECONDS = 90;
 
 const args = parseArgs(process.argv.slice(2));
 const jobPath = args._[0];
@@ -982,6 +983,14 @@ function pushRepairBranchAndUpdateStatus({
   if (!sameRepoBranch) {
     assertRepairBranchWritable({ targetDir, pull, rewritten: branchUpdate.rewritten });
   }
+  const settleSeconds = repairPushSettleSeconds();
+  if (settleSeconds > 0) {
+    logProgress("settling repair before branch push", {
+      source_pr: sourcePr.url,
+      seconds: settleSeconds,
+    });
+    sleepMs(settleSeconds * 1000);
+  }
   const livePull = fetchPullRequest(result.repo, sourcePr.number);
   const livePauseBlock = liveRepairPauseBlock({
     pull: livePull,
@@ -991,6 +1000,15 @@ function pushRepairBranchAndUpdateStatus({
     branchUpdate,
   });
   if (livePauseBlock) return livePauseBlock;
+  const liveHeadBlock = repairPushSettleBlock({
+    initialPull: pull,
+    livePull,
+    number: sourcePr.number,
+    target: sourcePr.url,
+    commit: prep.commit,
+    branchUpdate,
+  });
+  if (liveHeadBlock) return liveHeadBlock;
   const pushArgs = repairBranchPushArgs({ pull, rewritten: branchUpdate.rewritten });
   try {
     runGitNetwork(pushArgs, targetDir);
@@ -1070,6 +1088,47 @@ function pushRepairBranchAndUpdateStatus({
     status_comment_updated: statusCommentUpdated,
     merge_preflight: prep.merge_preflight,
     review_threads: threadResolution,
+  };
+}
+
+function repairPushSettleSeconds() {
+  const configured = Number(
+    process.env.CLAWSWEEPER_BRANCH_PUSH_SETTLE_SECONDS ?? DEFAULT_REPAIR_PUSH_SETTLE_SECONDS,
+  );
+  if (!Number.isFinite(configured)) return DEFAULT_REPAIR_PUSH_SETTLE_SECONDS;
+  return Math.min(120, Math.max(0, Math.floor(configured)));
+}
+
+function repairPushSettleBlock({
+  initialPull,
+  livePull,
+  number,
+  target,
+  commit,
+  branchUpdate,
+}: LooseRecord) {
+  const liveState = String(livePull?.state ?? "").toLowerCase();
+  if (liveState !== "open") {
+    return {
+      action: "repair_contributor_branch",
+      status: "blocked",
+      target,
+      commit,
+      branch_rewritten: branchUpdate?.rewritten ?? null,
+      reason: `source PR #${number} is ${liveState || "no longer open"} after the repair settle window; refusing to push`,
+    };
+  }
+  const initialHead = String(initialPull?.head?.sha ?? "");
+  const liveHead = String(livePull?.head?.sha ?? "");
+  if (!initialHead || !liveHead || initialHead === liveHead) return null;
+  return {
+    action: "repair_contributor_branch",
+    status: "blocked",
+    target,
+    commit,
+    branch_rewritten: branchUpdate?.rewritten ?? null,
+    reason: `source PR #${number} changed during the repair settle window; requeue against the latest head`,
+    requeue_required: true,
   };
 }
 

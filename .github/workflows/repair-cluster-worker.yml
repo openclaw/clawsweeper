@@ -46,6 +46,11 @@ on:
         required: true
         default: false
         type: boolean
+      requeue:
+        description: "Run in a dedicated lane while replacing a stale-head worker"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -56,7 +61,9 @@ env:
   CLAWSWEEPER_MODEL: internal
 
 concurrency:
-  group: clawsweeper-repair-${{ inputs.job }}-${{ inputs.mode }}
+  group: ${{ inputs.requeue && format('clawsweeper-repair-requeue-{0}-{1}', inputs.job, github.run_id) || format('clawsweeper-repair-{0}', inputs.job) }}
+  # Keep an active execute run alive so its temporary gate cleanup can finish;
+  # GitHub still coalesces pending runs in this group to the newest dispatch.
   cancel-in-progress: false
 
 jobs:
@@ -664,7 +671,8 @@ jobs:
           echo "count=$count" >> "$GITHUB_OUTPUT"
 
       - name: Requeue source-head repair races
-        if: ${{ steps.repair_requeue.outputs.count != '' && steps.repair_requeue.outputs.count != '0' }}
+        id: requeue_dispatch
+        if: ${{ always() && steps.repair_requeue.outputs.count != '' && steps.repair_requeue.outputs.count != '0' }}
         env:
           GH_TOKEN: ${{ steps.requeue-token.outputs.token }}
           CLAWSWEEPER_MUTATION_TOKEN_SOURCE: clawsweeper-app
@@ -681,7 +689,7 @@ jobs:
             --model "${{ inputs.model }}"
 
       - name: Record requeued work
-        if: ${{ success() && steps.crabfleet_session.outcome == 'success' && steps.repair_requeue.outputs.count != '' && steps.repair_requeue.outputs.count != '0' }}
+        if: ${{ always() && steps.crabfleet_session.outcome == 'success' && steps.repair_requeue.outputs.count != '' && steps.repair_requeue.outputs.count != '0' && steps.requeue_dispatch.outcome == 'success' }}
         run: pnpm run repair:action-session -- update --state running --phase requeued --summary "Source head changed; replacement Action dispatched"
 
       - name: Record work completion
@@ -730,6 +738,6 @@ jobs:
           key: ${{ runner.os }}-clawsweeper-codex-thread-${{ steps.codex_session.outputs.key }}-${{ github.run_id }}-${{ github.run_attempt }}-execute
 
       - name: Record work failure
-        if: ${{ failure() && steps.crabfleet_session.outcome == 'success' }}
+        if: ${{ always() && failure() && steps.crabfleet_session.outcome == 'success' && (steps.repair_requeue.outputs.count == '' || steps.repair_requeue.outputs.count == '0' || steps.requeue_dispatch.outcome != 'success') }}
         continue-on-error: true
         run: pnpm run repair:action-session -- update --state blocked --phase action_failed --summary "Repair Action failed before all completion gates passed" --completion-reason action_failed

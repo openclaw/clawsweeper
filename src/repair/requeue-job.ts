@@ -175,6 +175,8 @@ function dispatchJob(jobPath: string, mode: string) {
       `execution_runner=${executionRunner}`,
       "-f",
       `model=${model}`,
+      "-f",
+      "requeue=true",
     ],
     { cwd: repoRoot(), encoding: "utf8", stdio: "pipe" },
   );
