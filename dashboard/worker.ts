@@ -71,7 +71,7 @@ const CLOSED_STATS_PAGE_LIMIT = 10;
 const DEFAULT_CLAWSWEEPER_BOT_LOGINS = ["clawsweeper[bot]", "openclaw-clawsweeper[bot]"];
 const GITHUB_TIMEOUT_MS = 4500;
 const DEFAULT_STALE_QUEUED_WORKFLOW_MS = 6 * 60 * 60 * 1000;
-const DEFAULT_EXACT_REVIEW_QUEUE_MAX_CONCURRENT = 40;
+const DEFAULT_EXACT_REVIEW_QUEUE_MAX_CONCURRENT = 8;
 const DEFAULT_EXACT_REVIEW_DISPATCH_LEASE_MS = 10 * 60 * 1000;
 const DEFAULT_EXACT_REVIEW_EXECUTION_LEASE_MS = 130 * 60 * 1000;
 const DEFAULT_EXACT_REVIEW_RETRY_MS = 30_000;
@@ -1585,7 +1585,7 @@ async function statusSnapshot(env) {
     .split(",")
     .map((value) => value.trim())
     .filter(Boolean);
-  const budget = numberFrom(env.WORKER_BUDGET, 128);
+  const budget = numberFrom(env.WORKER_BUDGET, 64);
   const [runs, completedRuns, filteredActiveRuns] = await Promise.all([
     githubJson(env, `/repos/${repo}/actions/runs?per_page=100`).catch((error) => {
       errors.push(`workflow runs: ${error.message}`);

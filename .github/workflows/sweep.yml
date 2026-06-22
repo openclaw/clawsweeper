@@ -74,7 +74,7 @@ on:
       shard_count:
         description: "Parallel shards (capped by config/automation-limits.json)"
         required: false
-        default: "89"
+        default: "44"
       item_number:
         description: "Optional single issue/PR number to review"
         required: false

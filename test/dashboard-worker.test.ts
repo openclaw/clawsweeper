@@ -14,8 +14,8 @@ import {
   triageRoutingGroupsForLabels,
 } from "../dashboard/triage-routing-groups.ts";
 
-test("exact-review queue defaults to 40 of the 128 global workers", () => {
-  assert.equal(exactReviewQueueCapacity({}), 40);
+test("exact-review queue defaults to 8 of the 64 global workers", () => {
+  assert.equal(exactReviewQueueCapacity({}), 8);
   assert.equal(exactReviewQueueCapacity({ EXACT_REVIEW_QUEUE_MAX_CONCURRENT: "64" }), 64);
   assert.equal(exactReviewQueueCapacity({ EXACT_REVIEW_QUEUE_MAX_CONCURRENT: "100" }), 64);
 });
@@ -1898,7 +1898,7 @@ test("dashboard counts active runs that are older than the latest unfiltered pag
     assert.equal(status.fleet.queued_workflow_runs, 1);
     assert.equal(status.fleet.support_workflow_runs, 3);
     assert.equal(status.fleet.support_queued_workflow_runs, 1);
-    assert.equal(status.fleet.worker_budget, 128);
+    assert.equal(status.fleet.worker_budget, 64);
     assert.deepEqual(
       status.pipeline.map((row: { id: number }) => row.id),
       [2, 4, 3],

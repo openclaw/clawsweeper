@@ -22,10 +22,11 @@ ClawSweeper has three issue/PR scheduler paths:
 
 The lanes share report storage and apply rules, but they intentionally do not
 share throughput. Event review and hot intake keep new maintainer-visible work
-fast. Normal backfill keeps older records moving with up to 89 concurrent Codex
-review shards when the system is quiet. Normal `openclaw/openclaw` review has an
-active floor of 38 shards for scheduled runs and workflow-dispatch
-continuations: due items win first, and if fewer than 38 items are due, the
+fast. Scheduled normal backfill keeps up to 24 concurrent Codex review shards
+when quiet; manual backfill can use up to 44 concurrent Codex review shards.
+Normal `openclaw/openclaw` review has an
+active floor of 19 shards for scheduled runs and workflow-dispatch
+continuations: due items win first, and if fewer than 19 items are due, the
 planner fills the floor with the stalest currently-reviewed eligible items so
 review capacity stays warm around the clock.
 
@@ -219,19 +220,19 @@ Current defaults:
 
 - exact event review: 1 shard, 1 item
 - exact manual hot intake: 1 shard, 1 item
-- broad hot intake: up to 44 shards when quiet, batch size 1, scans up to 10
+- broad hot intake: up to 22 shards when quiet, batch size 1, scans up to 10
   GitHub pages
-- scheduled normal backfill: up to 64 shards when quiet, batch size 3, scans up
+- scheduled normal backfill: up to 24 shards when quiet, batch size 3, scans up
   to 250 GitHub pages after reserving interactive and expansion capacity
-- normal active floor: 38 shards for `openclaw/openclaw` scheduled runs and
+- normal active floor: 19 shards for `openclaw/openclaw` scheduled runs and
   workflow-dispatch continuations; stale current-review backfill is eligible
   after 6 hours
-- manual normal backfill: defaults to 89 shards, batch size 3, scans up to 250
+- manual normal backfill: defaults to 44 shards, batch size 3, scans up to 250
   GitHub pages unless overridden, and stops early once scanned due candidates
   fill planned capacity
 
-The hard planner cap is 128 shards. The workflow clamps invalid or larger
-`shard_count` inputs to 128.
+The hard planner cap is 64 shards. The workflow clamps invalid or larger
+`shard_count` inputs to 64.
 
 Broad background review also clamps manual `shard_count` input to the current
 lane allowance from `worker-limit`. Pending or planning background sweeps reserve
@@ -243,7 +244,7 @@ Planning is also the runtime build point for matrix review. The plan job install
 with pinned Node 24 and `pnpm@10.33.2`, builds `dist/` once, and uploads that
 runtime artifact. Review shards download the built `dist/` and run
 `node dist/clawsweeper.js review` directly instead of running a per-shard pnpm
-install and build. This keeps 44-89 shard waves from stampeding the npm
+install and build. This keeps 22-44 shard waves from stampeding the npm
 registry or Corepack metadata endpoints.
 
 Each review shard also wraps the review command in a shell timeout derived from
@@ -261,7 +262,7 @@ because they may rebase and push generated records.
 Normal backfill now runs every 5 minutes for `openclaw/openclaw`. Because its
 concurrency group allows only one running normal backfill per target repo, the
 effect is a continuous drain loop: when due backlog exists, the active run can
-hold up to 64 Codex review shards with up to three items per shard, and the next
+hold up to 24 Codex review shards with up to three items per shard, and the next
 scheduled tick is available as the backstop or pending continuation. Manual
 normal reviews keep the larger default batch size for targeted catch-up runs.
 
@@ -273,16 +274,16 @@ allowance. Planning, publish, queued, and not-yet-expanded background runs
 reserve one worker slot instead of a whole quiet-system lane. If
 repair/automerge is busy, background sweep dispatches fewer shards and leaves
 capacity for the specific work that is closest to a merge or maintainer request.
-Background lanes also subtract a 32-worker expansion reserve so independently
+Background lanes also subtract a 24-worker expansion reserve so independently
 planned exact-item and commit-review runs have room to start without pushing the
 live Codex count past the global budget.
 
 The active floor is not a separate lane and does not change close/apply safety.
 It only changes normal planning when due backlog is below the desired floor:
-after selecting all due candidates, the planner fills up to 38 nonempty shards
+after selecting all due candidates, the planner fills up to 19 nonempty shards
 with eligible items whose latest complete review is at least 6 hours old.
 Capacity status reports this as `floor: due backlog below active floor`. If the
-central worker scheduler returns fewer than 38 allowed shards, the smaller
+central worker scheduler returns fewer than 19 allowed shards, the smaller
 worker allowance wins.
 
 On saturated queues, normal planning stops scanning as soon as it has enough due
