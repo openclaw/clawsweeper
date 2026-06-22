@@ -527,13 +527,13 @@ Current global and key lane limits:
 
 | Limit | Value |
 | --- | ---: |
-| Global Codex worker budget | 64 |
-| Interactive reserve | 16 |
-| Expansion reserve | 24 |
-| Existing repair, PR repair, and issue implementation default | 25 |
+| Global Codex worker budget | 32 |
+| Interactive reserve | 8 |
+| Expansion reserve | 12 |
+| Existing repair, PR repair, and issue implementation default | 12 |
 | Imported GitCrawl cluster repair | 2 |
-| Quiet normal-review ceiling | 44 |
-| Quiet hot-intake ceiling | 22 |
+| Quiet normal-review ceiling | 22 |
+| Quiet hot-intake ceiling | 11 |
 
 Important behavior:
 

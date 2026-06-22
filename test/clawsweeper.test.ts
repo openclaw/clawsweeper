@@ -13814,7 +13814,10 @@ test("sweep event reviews and target fanout avoid storm amplification", () => {
     eventBlock,
     /clawsweeper-event-review-\$\{\{ github\.event\.client_payload\.target_repo/,
   );
-  assert.match(eventBlock, /github\.event\.client_payload\.item_number/);
+  assert.match(
+    eventBlock,
+    /group: clawsweeper-event-review-\$\{\{ github\.event\.client_payload\.target_repo \|\| 'openclaw\/openclaw' \}\}-\$\{\{ github\.event\.client_payload\.item_number/,
+  );
   assert.match(eventBlock, /queue_lease_id != ''/);
   assert.match(eventBlock, /cancel-in-progress: false/);
   assert.match(legacyIntakeBlock, /legacy-event-queue-intake:/);

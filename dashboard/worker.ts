@@ -71,7 +71,8 @@ const CLOSED_STATS_PAGE_LIMIT = 10;
 const DEFAULT_CLAWSWEEPER_BOT_LOGINS = ["clawsweeper[bot]", "openclaw-clawsweeper[bot]"];
 const GITHUB_TIMEOUT_MS = 4500;
 const DEFAULT_STALE_QUEUED_WORKFLOW_MS = 6 * 60 * 60 * 1000;
-const DEFAULT_EXACT_REVIEW_QUEUE_MAX_CONCURRENT = 8;
+const DEFAULT_EXACT_REVIEW_QUEUE_MAX_CONCURRENT = 4;
+const DEFAULT_EXACT_REVIEW_TARGET_MAX_CONCURRENT = 1;
 const DEFAULT_EXACT_REVIEW_DISPATCH_LEASE_MS = 10 * 60 * 1000;
 const DEFAULT_EXACT_REVIEW_EXECUTION_LEASE_MS = 130 * 60 * 1000;
 const DEFAULT_EXACT_REVIEW_RETRY_MS = 30_000;
@@ -444,10 +445,24 @@ export class ExactReviewQueue {
     let changed = reclaimExpiredExactReviewLeases(state, now);
     const capacity = exactReviewQueueCapacity(this.env);
     const slots = Math.max(0, capacity - exactReviewQueueActiveCount(state));
-    const admitted = Object.values(state.items)
+    const activeTargets = new Map<string, number>();
+    for (const item of Object.values(state.items)) {
+      if (item.state !== "dispatching" && item.state !== "leased") continue;
+      const target = item.decision.targetRepo;
+      activeTargets.set(target, (activeTargets.get(target) || 0) + 1);
+    }
+    const admitted: ExactReviewQueueItem[] = [];
+    const pending = Object.values(state.items)
       .filter((item) => item.state === "pending" && item.nextAttemptAt <= now)
-      .sort((left, right) => left.createdAt - right.createdAt || left.key.localeCompare(right.key))
-      .slice(0, slots);
+      .sort((left, right) => left.createdAt - right.createdAt || left.key.localeCompare(right.key));
+    for (const item of pending) {
+      if (admitted.length >= slots) break;
+      const target = item.decision.targetRepo;
+      const active = activeTargets.get(target) || 0;
+      if (active >= DEFAULT_EXACT_REVIEW_TARGET_MAX_CONCURRENT) continue;
+      activeTargets.set(target, active + 1);
+      admitted.push(item);
+    }
 
     for (const item of admitted) {
       item.state = "dispatching";
@@ -501,7 +516,7 @@ export class ExactReviewQueue {
   }
 
   private async scheduleNext(state: ExactReviewQueueState, now: number) {
-    const next = exactReviewQueueNextWakeAt(state, now);
+    const next = exactReviewQueueNextWakeAt(state, now, exactReviewQueueCapacity(this.env));
     if (next === null) {
       await this.storage.deleteAlarm();
       return;
@@ -1169,11 +1184,44 @@ function exactReviewQueueStats(state: ExactReviewQueueState) {
   };
 }
 
-function exactReviewQueueNextWakeAt(state: ExactReviewQueueState, now: number) {
+function exactReviewQueueNextWakeAt(
+  state: ExactReviewQueueState,
+  now: number,
+  capacity = Number.POSITIVE_INFINITY,
+) {
   const items = Object.values(state.items);
   if (!items.length) return null;
+  const activeItems = items.filter(
+    (item) => item.state === "dispatching" || item.state === "leased",
+  );
+  const activeLeaseWakeAt = activeItems
+    .map((item) => item.leaseExpiresAt)
+    .filter((value): value is number => Boolean(value && value > now));
+  if (activeItems.some((item) => !item.leaseExpiresAt || item.leaseExpiresAt <= now)) {
+    return now + 1_000;
+  }
+  if (activeItems.length >= capacity && activeLeaseWakeAt.length) {
+    return Math.max(now + 1_000, Math.min(...activeLeaseWakeAt));
+  }
+  const activeTargetWakeAt = new Map<string, number>();
+  for (const item of items) {
+    if (
+      (item.state === "dispatching" || item.state === "leased") &&
+      item.leaseExpiresAt &&
+      item.leaseExpiresAt > now
+    ) {
+      const current = activeTargetWakeAt.get(item.decision.targetRepo);
+      activeTargetWakeAt.set(
+        item.decision.targetRepo,
+        current === undefined ? item.leaseExpiresAt : Math.min(current, item.leaseExpiresAt),
+      );
+    }
+  }
   const times = items.flatMap((item) => {
-    if (item.state === "pending") return [item.nextAttemptAt];
+    if (item.state === "pending") {
+      const blockedUntil = activeTargetWakeAt.get(item.decision.targetRepo);
+      return [blockedUntil ?? item.nextAttemptAt];
+    }
     return item.leaseExpiresAt ? [item.leaseExpiresAt] : [];
   });
   if (!times.length) return now + DEFAULT_EXACT_REVIEW_RETRY_MS;
@@ -1192,7 +1240,7 @@ export function exactReviewQueueCapacity(env) {
   return Math.max(
     1,
     Math.min(
-      64,
+      32,
       numberFrom(env.EXACT_REVIEW_QUEUE_MAX_CONCURRENT, DEFAULT_EXACT_REVIEW_QUEUE_MAX_CONCURRENT),
     ),
   );
@@ -1585,7 +1633,7 @@ async function statusSnapshot(env) {
     .split(",")
     .map((value) => value.trim())
     .filter(Boolean);
-  const budget = numberFrom(env.WORKER_BUDGET, 64);
+  const budget = numberFrom(env.WORKER_BUDGET, 32);
   const [runs, completedRuns, filteredActiveRuns] = await Promise.all([
     githubJson(env, `/repos/${repo}/actions/runs?per_page=100`).catch((error) => {
       errors.push(`workflow runs: ${error.message}`);

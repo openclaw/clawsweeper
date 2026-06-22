@@ -33,11 +33,11 @@ The mental model:
 
 | Name | Current | Meaning |
 | --- | ---: | --- |
-| `workers.max` | 64 | Maximum global Codex worker budget used to derive lane limits. |
-| `workers.reserve_for_interactive` | 16 | Worker slots background lanes leave open for exact/manual/urgent work. |
-| `workers.expansion_reserve` | 24 | Extra slots background lanes leave open for independently planned matrix expansion. |
-| `workers.minimum_background` | 8 | Target floor for background progress when enough global capacity is available. |
-| `lanes.exact_review.max_concurrent` | 8 | Maximum concurrent exact-item review workflow runs admitted to Codex. |
+| `workers.max` | 32 | Maximum global Codex worker budget used to derive lane limits. |
+| `workers.reserve_for_interactive` | 8 | Worker slots background lanes leave open for exact/manual/urgent work. |
+| `workers.expansion_reserve` | 12 | Extra slots background lanes leave open for independently planned matrix expansion. |
+| `workers.minimum_background` | 4 | Target floor for background progress when enough global capacity is available. |
+| `lanes.exact_review.max_concurrent` | 4 | Maximum concurrent exact-item review workflow runs admitted to Codex. |
 | `lanes.assist.max` | 10 | Maximum concurrent lightweight assist jobs. |
 | `lanes.repair.cluster_max_live_runs` | 2 | Default live repair workflow cap for imported gitcrawl cluster dispatches. |
 
@@ -45,28 +45,28 @@ The mental model:
 
 Review, commit, and existing repair limits are intentionally percentages of
 `workers.max`; imported cluster repair has its own lane knob. With
-`workers.max = 64`, normal review can use 44 workers, hot intake can use 22,
-commit review can use 3 commits per page, existing repair lanes dispatch 25
+`workers.max = 32`, normal review can use 22 workers, hot intake can use 11,
+commit review can use 1 commit per page, existing repair lanes dispatch 12
 live workers by default, and imported cluster repair dispatches two live workers
 by default.
 
 | Name | Current | Meaning |
 | --- | ---: | --- |
-| `exact_review.concurrent_max` | 8 | Exact-item review admission cap, clamped to `workers.max`. |
+| `exact_review.concurrent_max` | 4 | Exact-item review admission cap, clamped to `workers.max`. |
 | `assist.default` | 10 | Maintainer assist job cap. |
-| `review_shards.normal_default` | 44 | Quiet-system normal review shard ceiling. |
-| `review_shards.normal_active_floor` | 19 | Minimum active normal review shards to keep queued for `openclaw/openclaw`. |
-| `review_shards.hot_intake_default` | 22 | Quiet-system broad hot-intake review shard ceiling. |
+| `review_shards.normal_default` | 22 | Quiet-system normal review shard ceiling. |
+| `review_shards.normal_active_floor` | 9 | Minimum active normal review shards to keep queued for `openclaw/openclaw`. |
+| `review_shards.hot_intake_default` | 11 | Quiet-system broad hot-intake review shard ceiling. |
 | `review_shards.exact_item_default` | 1 | Exact-item hot-intake shard count. |
-| `review_shards.hard_cap` | 64 | Maximum accepted review shard count. |
-| `commit_review.page_size_default` | 3 | Commits selected per commit-review page. |
-| `commit_review.page_size_hard_cap` | 64 | Maximum commit-review page size. |
-| `repair_live_runs.default` | 25 | Default live repair workflow run cap for manual dispatch/requeue/self-heal. |
-| `repair_live_runs.hard_cap` | 64 | Absolute live repair run cap accepted by explicit CLI/env overrides with this config. |
-| `repair_live_runs.automerge_default` | 25 | Live repair run cap for automerge comment-router dispatches. |
-| `repair_live_runs.issue_implementation_default` | 25 | Live repair run cap for issue-to-PR implementation intake. |
+| `review_shards.hard_cap` | 32 | Maximum accepted review shard count. |
+| `commit_review.page_size_default` | 1 | Commits selected per commit-review page. |
+| `commit_review.page_size_hard_cap` | 32 | Maximum commit-review page size. |
+| `repair_live_runs.default` | 12 | Default live repair workflow run cap for manual dispatch/requeue/self-heal. |
+| `repair_live_runs.hard_cap` | 32 | Absolute live repair run cap accepted by explicit CLI/env overrides with this config. |
+| `repair_live_runs.automerge_default` | 12 | Live repair run cap for automerge comment-router dispatches. |
+| `repair_live_runs.issue_implementation_default` | 12 | Live repair run cap for issue-to-PR implementation intake. |
 | `repair_live_runs.cluster_default` | 2 | Live repair run cap for imported gitcrawl cluster dispatches. |
-| `issue_implementation.dispatches_per_sweep_default` | 2 | Maximum implementation intake jobs queued from one review publish run. |
+| `issue_implementation.dispatches_per_sweep_default` | 1 | Maximum implementation intake jobs queued from one review publish run. |
 
 Formula summary:
 
@@ -114,7 +114,7 @@ Exact-item webhooks are admitted by the dashboard Worker's durable
 deliveries by repository and item number, so a new webhook updates the latest
 desired review rather than consuming another runner. Only
 `EXACT_REVIEW_QUEUE_MAX_CONCURRENT` leased items may dispatch an exact-review
-workflow at once; the default is 8.
+workflow at once; the default is 4.
 
 Each dispatched workflow claims its opaque lease before checkout. Duplicate
 dispatches and stale workflows cannot claim the same lease, and a completion
@@ -124,13 +124,13 @@ keeps capacity waiting and retry state out of GitHub Actions runners.
 
 Examples with the current config:
 
-- Quiet system: manual normal review can request 44 shards; scheduled normal
-  review gets 24 after reserving 16 slots for exact/manual/urgent work and 24
+- Quiet system: manual normal review can request 22 shards; scheduled normal
+  review gets 12 after reserving 8 slots for exact/manual/urgent work and 12
   slots for in-flight matrix expansion.
-- 4 active repair workers and 20 active background workers: normal review gets
-  1 because `64 - 16 interactive reserve - 24 expansion reserve - 4 priority
-  - 20 background = 0`, and enabled background lanes keep one slow-progress worker.
-- 48 active priority workers: commit review gets 1, so commit review yields but
+- 4 active repair workers and 8 active background workers: normal review gets
+  1 because `32 - 8 interactive reserve - 12 expansion reserve - 4 priority
+  - 8 background = 0`, and enabled background lanes keep one slow-progress worker.
+- 24 active priority workers: commit review gets 1, so commit review yields but
   does not fully stall.
 
 Use these commands to inspect the effective values from a checkout:
@@ -143,8 +143,8 @@ pnpm run --silent workflow -- worker-limit commit_review --active-critical 88
 ```
 
 Change `workers.max` first when tuning review-side rate-limit pressure. For
-example, setting `workers.max` to `90` automatically makes normal review `63`,
-hot intake `31`, and commit review `4`. Existing repair lanes keep their
+example, setting `workers.max` to `40` automatically makes normal review `28`,
+hot intake `14`, and commit review `2`. Existing repair lanes keep their
 40% derived caps, while imported cluster repair remains separately bounded until
 `lanes.repair.cluster_max_live_runs` is raised.
 

@@ -14,10 +14,10 @@ import {
   triageRoutingGroupsForLabels,
 } from "../dashboard/triage-routing-groups.ts";
 
-test("exact-review queue defaults to 8 of the 64 global workers", () => {
-  assert.equal(exactReviewQueueCapacity({}), 8);
-  assert.equal(exactReviewQueueCapacity({ EXACT_REVIEW_QUEUE_MAX_CONCURRENT: "64" }), 64);
-  assert.equal(exactReviewQueueCapacity({ EXACT_REVIEW_QUEUE_MAX_CONCURRENT: "100" }), 64);
+test("exact-review queue defaults to 4 of the 32 global workers", () => {
+  assert.equal(exactReviewQueueCapacity({}), 4);
+  assert.equal(exactReviewQueueCapacity({ EXACT_REVIEW_QUEUE_MAX_CONCURRENT: "32" }), 32);
+  assert.equal(exactReviewQueueCapacity({ EXACT_REVIEW_QUEUE_MAX_CONCURRENT: "100" }), 32);
 });
 
 test("triage routing groups classify impact labels without forcing one primary group", () => {
@@ -255,6 +255,8 @@ test("exact-review queue coalesces deliveries, leases bounded work, and rejects 
 
     await queue.alarm();
     assert.equal(dispatched.length, 1);
+    const nextAlarm = await storage.getAlarm();
+    assert.ok(nextAlarm && nextAlarm > Date.now() + 60_000);
     const payload = dispatched[0].client_payload as Record<string, unknown>;
     assert.equal(payload.item_number, 597);
     assert.equal(payload.source_action, "edited");
@@ -302,6 +304,74 @@ test("exact-review queue coalesces deliveries, leases bounded work, and rejects 
     assert.equal(stats.dispatching, 0);
     assert.equal(stats.leased, 0);
     assert.match(String(stats.oldest_pending_at), /^\d{4}-\d{2}-\d{2}T/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("exact-review queue admits at most one active item per target repository", async () => {
+  const originalFetch = globalThis.fetch;
+  const storage = new MemoryDurableStorage();
+  const dispatched: Record<string, unknown>[] = [];
+  const { privateKey } = generateKeyPairSync("rsa", {
+    modulusLength: 2048,
+    privateKeyEncoding: { type: "pkcs8", format: "pem" },
+    publicKeyEncoding: { type: "spki", format: "pem" },
+  });
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(String(input));
+    if (url.pathname === "/repos/openclaw/clawsweeper/installation") {
+      return jsonResponse({ id: 999 });
+    }
+    if (url.pathname === "/app/installations/999/access_tokens") {
+      return jsonResponse({ token: "dispatch-token" });
+    }
+    if (url.pathname === "/repos/openclaw/clawsweeper/dispatches") {
+      dispatched.push(JSON.parse(String(init?.body)));
+      return new Response(null, { status: 204 });
+    }
+    throw new Error(`unexpected fetch ${url}`);
+  };
+
+  try {
+    const queue = new ExactReviewQueue(
+      { storage },
+      {
+        CLAWSWEEPER_APP_CLIENT_ID: "Iv23test",
+        CLAWSWEEPER_APP_PRIVATE_KEY: privateKey,
+        EXACT_REVIEW_QUEUE_MAX_CONCURRENT: "2",
+      },
+    );
+    await queue.fetch(buildExactReviewQueueRequest("delivery-target-a-1", 601, "opened"));
+    await queue.fetch(buildExactReviewQueueRequest("delivery-target-a-2", 602, "opened"));
+    await queue.fetch(
+      buildExactReviewQueueRequest(
+        "delivery-target-b-1",
+        603,
+        "opened",
+        "issue",
+        "openclaw/openclaw",
+      ),
+    );
+    await queue.fetch(
+      buildExactReviewQueueRequest(
+        "delivery-target-c-1",
+        604,
+        "opened",
+        "issue",
+        "openclaw/clawsweeper",
+      ),
+    );
+
+    await queue.alarm();
+    assert.equal(dispatched.length, 2);
+    const nextAlarm = await storage.getAlarm();
+    assert.ok(nextAlarm && nextAlarm > Date.now() + 60_000);
+    const targets = dispatched.map(
+      (payload) => (payload.client_payload as Record<string, unknown>).target_repo,
+    );
+    assert.equal(new Set(targets).size, 2);
+    assert.equal(targets.filter((target) => target === "openclaw/gogcli").length, 1);
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -1898,7 +1968,7 @@ test("dashboard counts active runs that are older than the latest unfiltered pag
     assert.equal(status.fleet.queued_workflow_runs, 1);
     assert.equal(status.fleet.support_workflow_runs, 3);
     assert.equal(status.fleet.support_queued_workflow_runs, 1);
-    assert.equal(status.fleet.worker_budget, 64);
+    assert.equal(status.fleet.worker_budget, 32);
     assert.deepEqual(
       status.pipeline.map((row: { id: number }) => row.id),
       [2, 4, 3],
@@ -3503,6 +3573,7 @@ function buildExactReviewQueueRequest(
   itemNumber: number,
   sourceAction: string,
   itemKind: "issue" | "pull_request" = "issue",
+  targetRepo = "openclaw/gogcli",
 ) {
   const sourceEvent = itemKind === "issue" ? "issues" : "pull_request";
   return new Request("https://clawsweeper-exact-review-queue/enqueue", {
@@ -3510,7 +3581,7 @@ function buildExactReviewQueueRequest(
     body: JSON.stringify({
       delivery_id: deliveryId,
       decision: {
-        targetRepo: "openclaw/gogcli",
+        targetRepo,
         targetBranch: "main",
         itemNumber,
         itemKind,
