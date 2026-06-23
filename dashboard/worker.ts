@@ -432,8 +432,14 @@ export class ExactReviewQueue {
     }
 
     if (request.method === "GET" && url.pathname === "/stats") {
+      const now = Date.now();
       const state = await this.readState();
-      return json(exactReviewQueueStats(state));
+      // Dashboard reads are also the operational heartbeat. Reclaim leases and
+      // restore the alarm here so a deploy or lost alarm cannot strand backlog.
+      const changed = reclaimExpiredExactReviewLeases(state, now);
+      if (changed) await this.writeState(state);
+      await this.scheduleNext(state, now);
+      return json(exactReviewQueueStats(state, now, exactReviewQueueCapacity(this.env)));
     }
 
     return new Response("not found", { status: 404 });
@@ -441,6 +447,7 @@ export class ExactReviewQueue {
 
   async alarm() {
     const now = Date.now();
+    await this.storage.deleteAlarm();
     const state = await this.readState();
     let changed = reclaimExpiredExactReviewLeases(state, now);
     const capacity = exactReviewQueueCapacity(this.env);
@@ -521,7 +528,8 @@ export class ExactReviewQueue {
       await this.storage.deleteAlarm();
       return;
     }
-    await this.storage.setAlarm(next);
+    const scheduled = await this.storage.getAlarm();
+    if (scheduled === null || next < scheduled) await this.storage.setAlarm(next);
   }
 }
 
@@ -1171,9 +1179,61 @@ function exactReviewQueueActiveCount(state: ExactReviewQueueState) {
   ).length;
 }
 
-function exactReviewQueueStats(state: ExactReviewQueueState) {
+function exactReviewQueueStats(
+  state: ExactReviewQueueState,
+  now = Date.now(),
+  capacity = Number.POSITIVE_INFINITY,
+) {
   const items = Object.values(state.items);
   const pending = items.filter((item) => item.state === "pending");
+  const targets = new Map<
+    string,
+    {
+      target_repo: string;
+      pending: number;
+      dispatching: number;
+      leased: number;
+      oldest_pending_at: number | null;
+    }
+  >();
+  for (const item of items) {
+    const targetRepo = item.decision.targetRepo;
+    const current = targets.get(targetRepo) ?? {
+      target_repo: targetRepo,
+      pending: 0,
+      dispatching: 0,
+      leased: 0,
+      oldest_pending_at: null,
+    };
+    if (item.state === "pending") {
+      current.pending += 1;
+      current.oldest_pending_at =
+        current.oldest_pending_at === null
+          ? item.createdAt
+          : Math.min(current.oldest_pending_at, item.createdAt);
+    } else if (item.state === "dispatching") {
+      current.dispatching += 1;
+    } else {
+      current.leased += 1;
+    }
+    targets.set(targetRepo, current);
+  }
+  const targetStats = [...targets.values()]
+    .map((target) => ({
+      target_repo: target.target_repo,
+      pending: target.pending,
+      dispatching: target.dispatching,
+      leased: target.leased,
+      oldest_pending_at:
+        target.oldest_pending_at === null ? null : new Date(target.oldest_pending_at).toISOString(),
+    }))
+    .sort(
+      (left, right) =>
+        right.pending - left.pending ||
+        right.dispatching + right.leased - (left.dispatching + left.leased) ||
+        left.target_repo.localeCompare(right.target_repo),
+    );
+  const nextWakeAt = exactReviewQueueNextWakeAt(state, now, capacity);
   return {
     pending: pending.length,
     dispatching: items.filter((item) => item.state === "dispatching").length,
@@ -1181,6 +1241,11 @@ function exactReviewQueueStats(state: ExactReviewQueueState) {
     oldest_pending_at: pending.length
       ? new Date(Math.min(...pending.map((item) => item.createdAt))).toISOString()
       : null,
+    oldest_pending_age_seconds: pending.length
+      ? Math.max(0, Math.floor((now - Math.min(...pending.map((item) => item.createdAt))) / 1000))
+      : null,
+    next_wake_at: nextWakeAt === null ? null : new Date(nextWakeAt).toISOString(),
+    target_stats: targetStats,
   };
 }
 

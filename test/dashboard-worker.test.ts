@@ -509,6 +509,90 @@ test("exact-review queue retries dispatch failures and reclaims an unclaimed lea
   }
 });
 
+test("exact-review stats heals a missing alarm and expired lease", async () => {
+  const storage = new MemoryDurableStorage();
+  const queue = new ExactReviewQueue({ storage }, {});
+  await storage.put("exact-review-queue", {
+    deliveries: {},
+    items: {
+      "openclaw/openclaw#700": {
+        key: "openclaw/openclaw#700",
+        decision: {
+          targetRepo: "openclaw/openclaw",
+          targetBranch: "main",
+          itemNumber: 700,
+          itemKind: "pull_request",
+          sourceEvent: "pull_request",
+          sourceAction: "synchronize",
+          supersedesInProgress: true,
+        },
+        state: "leased",
+        revision: 1,
+        createdAt: Date.now() - 120_000,
+        updatedAt: Date.now() - 120_000,
+        nextAttemptAt: Date.now() - 120_000,
+        attempts: 0,
+        leaseId: "expired-lease",
+        leaseRevision: 1,
+        leaseExpiresAt: Date.now() - 1,
+        claimedRunId: "run-700",
+      },
+    },
+  });
+
+  const response = await queue.fetch(new Request("https://clawsweeper-exact-review-queue/stats"));
+  assert.equal(response.status, 200);
+  const stats = await response.json();
+  assert.equal(stats.pending, 1);
+  assert.equal(stats.dispatching, 0);
+  assert.equal(stats.leased, 0);
+  assert.equal(stats.target_stats[0].target_repo, "openclaw/openclaw");
+  assert.equal(stats.target_stats[0].pending, 1);
+  assert.ok(stats.oldest_pending_age_seconds >= 120);
+  assert.ok(stats.next_wake_at);
+  assert.ok((await storage.getAlarm()) !== null);
+
+  const state = (await storage.get("exact-review-queue")) as {
+    deliveries: Record<string, number>;
+    items: Record<string, Record<string, unknown>>;
+  };
+  const activeLeaseExpiry = Date.now() + 60_000;
+  state.items["openclaw/openclaw#701"] = {
+    key: "openclaw/openclaw#701",
+    decision: state.items["openclaw/openclaw#700"].decision,
+    state: "leased",
+    revision: 1,
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+    nextAttemptAt: Date.now(),
+    attempts: 0,
+    leaseId: "active-lease",
+    leaseRevision: 1,
+    leaseExpiresAt: activeLeaseExpiry,
+    claimedRunId: "run-701",
+  };
+  state.items["openclaw/openclaw#702"] = {
+    key: "openclaw/openclaw#702",
+    decision: {
+      ...state.items["openclaw/openclaw#700"].decision,
+      itemNumber: 702,
+    },
+    state: "pending",
+    revision: 1,
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+    nextAttemptAt: Date.now(),
+    attempts: 0,
+  };
+  await storage.put("exact-review-queue", state);
+  await storage.setAlarm(Date.now() + 1_000);
+  const scheduledBeforePoll = await storage.getAlarm();
+  await queue.fetch(new Request("https://clawsweeper-exact-review-queue/stats"));
+  const scheduledAfterPoll = await storage.getAlarm();
+  assert.ok(scheduledBeforePoll !== null && scheduledAfterPoll !== null);
+  assert.ok(scheduledAfterPoll <= scheduledBeforePoll);
+});
+
 function isoAgo(ms: number) {
   return new Date(Date.now() - ms).toISOString();
 }
