@@ -18,6 +18,9 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Fixed
 
+- Bounded apply-existing checkpoints to five fresh closes, renewed the GitHub
+  App token between continuation runs, and stopped zero-progress scans from
+  chaining indefinitely.
 - Kept issue implementation intake and dispatch off the Codex worker runner by default so saturated repair capacity cannot stall eligible issue backfills before worker admission.
 - Kept unresolved rebase conflicts inside the bounded Codex repair loop and reported exhausted conflicts as human-required with exact paths. Thanks @Jhacarreiro.
 - Restored the Codex spawn helper to spam workflow sparse checkouts so repair builds can start.

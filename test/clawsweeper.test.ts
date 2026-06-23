@@ -13346,6 +13346,45 @@ test("apply workflow installs Codex only when proof-eligible apply work can run"
   assert.doesNotMatch(preselectBlock, /normalized_apply_close_reasons=/);
 });
 
+test("apply workflow bounds checkpoints and requeues with a fresh token", () => {
+  const workflow = readFileSync(".github/workflows/sweep.yml", "utf8").replace(/\r\n/g, "\n");
+  const inputBlock = workflow.slice(
+    workflow.indexOf("  workflow_dispatch:\n    inputs:"),
+    workflow.indexOf("\n  schedule:"),
+  );
+  const applyJob = workflow.slice(workflow.indexOf("\n  apply-existing:"));
+  const applyStep = applyJob.slice(
+    applyJob.indexOf("- name: Apply unchanged proposed decisions with checkpoints"),
+    applyJob.indexOf("- name: Commit apply results"),
+  );
+  const continueStep = applyJob.slice(
+    applyJob.indexOf("- name: Continue apply sweep"),
+    applyJob.indexOf("- name: Queue review backstops"),
+  );
+
+  assert.match(inputBlock, /apply_limit:[\s\S]*default: "5"/);
+  assert.match(inputBlock, /apply_checkpoint_size:[\s\S]*default: "5"/);
+  assert.match(applyStep, /Capping apply checkpoint size at 5/);
+  assert.match(applyStep, /close_processed_limit=300/);
+  assert.match(applyStep, /processed-limit "\$close_processed_limit"/);
+  assert.match(applyStep, /comment_sync_processed_limit=1000/);
+  assert.match(applyStep, /--processed-limit "\$comment_sync_processed_limit"/);
+  assert.match(applyStep, /reached its \$close_processed_limit-record budget/);
+  assert.match(applyStep, /apply_close_reasons="\$\(printf '%s\\n' "\$apply_close_reasons"/);
+  assert.match(applyStep, /No enabled close reasons remain after policy filtering/);
+  assert.match(applyStep, /true\|1\|yes\|on\) product_direction_enabled=true/);
+  assert.match(
+    applyStep,
+    /if \[ "\$result_count" -ge "\$close_processed_limit" \] && \[ "\$closed_in_chunk" -gt 0 \]/,
+  );
+  assert.match(applyStep, /sync_comments_only" != "true" .*apply_close_reasons/);
+  assert.match(applyStep, /continue_apply=true/);
+  assert.match(applyStep, /break\n\s+done/);
+  assert.match(applyStep, /echo "APPLY_CONTINUE=\$continue_apply"/);
+  assert.match(continueStep, /APPLY_CONTINUE:-false/);
+  assert.doesNotMatch(continueStep, /APPLY_CLOSED_TOTAL:-0.*APPLY_LIMIT:-0/);
+});
+
 test("apply workflow syncs source checkout before state hydration", () => {
   const workflow = readFileSync(".github/workflows/sweep.yml", "utf8").replace(/\r\n/g, "\n");
   const applyJobStart = workflow.indexOf("\n  apply-existing:");

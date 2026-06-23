@@ -386,9 +386,12 @@ still valid.
 Apply wakes every 15 minutes, no-ops when there are no unchanged
 high-confidence close proposals, and narrows scheduled runs to the currently
 eligible proposal list so idle runs do not scan unrelated keep-open records.
-It defaults to all item kinds, no age floor, a 2-second close delay, and 50
-fresh closes per checkpoint. If it reaches the requested limit, it queues
-another apply run with the same settings.
+It defaults to all item kinds, no age floor, a 2-second close delay, and 5
+fresh closes per checkpoint, with a hard cap of 5 to keep each GitHub App
+token within its lifetime. After a checkpoint closes at least one item, it
+queues another apply run with a fresh token; a saturated scan that closes
+nothing stops and waits for the next scheduled tick instead of self-dispatching
+indefinitely.
 
 Exact event runs skip the bulk planner, shard matrix, artifact upload, and
 separate publish job. They still use the same review and apply code paths, but

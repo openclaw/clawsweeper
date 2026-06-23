@@ -22,7 +22,7 @@ on:
       apply_limit:
         description: "Maximum existing proposed items to close in apply-existing mode"
         required: false
-        default: "20"
+        default: "5"
       apply_min_age_days:
         description: "Minimum item age in days before apply-existing can close it"
         required: false
@@ -62,7 +62,7 @@ on:
       apply_checkpoint_size:
         description: "Fresh closes per checkpoint commit in apply-existing mode"
         required: false
-        default: "50"
+        default: "5"
       batch_size:
         description: "Items per worker job"
         required: false
@@ -2077,6 +2077,8 @@ jobs:
     if: ${{ ((github.event_name == 'workflow_dispatch' && github.event.inputs.apply_existing == 'true') || (github.event_name == 'schedule' && (github.event.schedule == '3 * * * *' || github.event.schedule == '18 * * * *' || github.event.schedule == '33 * * * *' || github.event.schedule == '48 * * * *' || github.event.schedule == '8,23,38,53 * * * *' || github.event.schedule == '6,21,36,51 * * * *'))) && !(github.event_name == 'repository_dispatch' && github.event.client_payload.target_repo == 'openclaw/clawhub' && vars.CLAWSWEEPER_ENABLE_CLAWHUB != '1') && !(github.event_name == 'schedule' && github.event.schedule == '8,23,38,53 * * * *' && vars.CLAWSWEEPER_ENABLE_CLAWHUB != '1') }}
     runs-on: ubuntu-latest
     timeout-minutes: 360
+    env:
+      CLAWSWEEPER_UNCONFIRMED_PRODUCT_DIRECTION_CLOSE_ENABLED: ${{ vars.CLAWSWEEPER_UNCONFIRMED_PRODUCT_DIRECTION_CLOSE_ENABLED || 'false' }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -2170,6 +2172,18 @@ jobs:
             item_numbers=""
           fi
           sync_comments_only="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_sync_comments_only || 'false' }}"
+          product_direction_enabled=false
+          case "${CLAWSWEEPER_UNCONFIRMED_PRODUCT_DIRECTION_CLOSE_ENABLED,,}" in
+            true|1|yes|on) product_direction_enabled=true ;;
+          esac
+          if [ "$sync_comments_only" != "true" ] && [ "$product_direction_enabled" != "true" ] && [ "$apply_close_reasons" != "all" ]; then
+            apply_close_reasons="$(printf '%s\n' "$apply_close_reasons" | tr ',' '\n' | awk '$0 != "unconfirmed_product_direction" && NF' | paste -sd, -)"
+          fi
+          if [ "$sync_comments_only" != "true" ] && [ -z "$apply_close_reasons" ]; then
+            echo "No enabled close reasons remain after policy filtering; skipping apply."
+            echo "needs_codex=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           if [ "$sync_open_pr_batch" = "true" ]; then
             sync_comments_only="true"
             apply_kind="pull_request"
@@ -2224,10 +2238,10 @@ jobs:
           CLAWSWEEPER_RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
           CLAWSWEEPER_THROTTLE_STATUS_MIN_WAIT_MS: "60000"
           CLAWSWEEPER_THROTTLE_STATUS_MIN_INTERVAL_MS: "120000"
-          CLAWSWEEPER_UNCONFIRMED_PRODUCT_DIRECTION_CLOSE_ENABLED: ${{ vars.CLAWSWEEPER_UNCONFIRMED_PRODUCT_DIRECTION_CLOSE_ENABLED || 'false' }}
         run: |
+          set -euo pipefail
           test -n "$GH_TOKEN"
-          limit="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_limit || '20' }}"
+          limit="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_limit || '5' }}"
           min_age_days="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_min_age_days || '0' }}"
           min_age_minutes="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_min_age_minutes || '' }}"
           apply_kind="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_kind || 'all' }}"
@@ -2235,7 +2249,9 @@ jobs:
           stale_min_age_days="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_stale_min_age_days || '60' }}"
           close_delay_ms="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_close_delay_ms || '2000' }}"
           progress_every="10"
-          checkpoint_size="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_checkpoint_size || '50' }}"
+          checkpoint_size="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_checkpoint_size || '5' }}"
+          comment_sync_processed_limit=1000
+          close_processed_limit=300
           sync_batch_size="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_limit || '25' }}"
           item_numbers="${{ github.event_name == 'repository_dispatch' && github.event.client_payload.item_number || github.event.inputs.apply_item_numbers || '' }}"
           sync_open_pr_batch="${{ github.event_name == 'schedule' && github.event.schedule == '6,21,36,51 * * * *' && 'true' || 'false' }}"
@@ -2244,6 +2260,18 @@ jobs:
             item_numbers=""
           fi
           sync_comments_only="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_sync_comments_only || 'false' }}"
+          product_direction_enabled=false
+          case "${CLAWSWEEPER_UNCONFIRMED_PRODUCT_DIRECTION_CLOSE_ENABLED,,}" in
+            true|1|yes|on) product_direction_enabled=true ;;
+          esac
+          if [ "$sync_comments_only" != "true" ] && [ "$product_direction_enabled" != "true" ] && [ "$apply_close_reasons" != "all" ]; then
+            apply_close_reasons="$(printf '%s\n' "$apply_close_reasons" | tr ',' '\n' | awk '$0 != "unconfirmed_product_direction" && NF' | paste -sd, -)"
+          fi
+          if [ "$sync_comments_only" != "true" ] && [ -z "$apply_close_reasons" ]; then
+            echo "No enabled close reasons remain after policy filtering; skipping apply."
+            echo "APPLY_NOOP=true" >> "$GITHUB_ENV"
+            exit 0
+          fi
           comment_sync_min_age_days="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_comment_sync_min_age_days || '7' }}"
           target_slug="$TARGET_REPO"
           target_slug="${target_slug//\//-}"
@@ -2261,6 +2289,10 @@ jobs:
           min_age_minutes_arg=()
           if [ -n "$min_age_minutes" ]; then
             min_age_minutes_arg=(--min-age-minutes "$min_age_minutes")
+          fi
+          if [ "$checkpoint_size" -gt 5 ]; then
+            echo "Capping apply checkpoint size at 5 to keep each GitHub App token within its lifetime."
+            checkpoint_size=5
           fi
           mkdir -p .artifacts/apply-reports
           publish_changes() {
@@ -2374,6 +2406,7 @@ jobs:
             git restore results/sweep-status || true
           fi
           closed_total=0
+          continue_apply=false
           checkpoint=0
           if [ "$sync_comments_only" = "true" ]; then
             checkpoint=1
@@ -2390,7 +2423,7 @@ jobs:
               --stale-min-age-days "$stale_min_age_days" \
               --close-delay-ms "$close_delay_ms" \
               --progress-every "$progress_every" \
-              --processed-limit "$((checkpoint_size * 20))" \
+              --processed-limit "$comment_sync_processed_limit" \
               --comment-sync-min-age-days "$comment_sync_min_age_days" \
               "${item_numbers_arg[@]}" \
               "${sync_comments_arg[@]}"
@@ -2435,7 +2468,7 @@ jobs:
               --stale-min-age-days "$stale_min_age_days" \
               --close-delay-ms "$close_delay_ms" \
               --progress-every "$progress_every" \
-              --processed-limit "$((chunk_limit * 20))" \
+              --processed-limit "$close_processed_limit" \
               --comment-sync-min-age-days "$comment_sync_min_age_days" \
               "${item_numbers_arg[@]}" \
               "${sync_comments_arg[@]}"
@@ -2453,6 +2486,11 @@ jobs:
               --run-url "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
             publish_status "chore: update sweep apply checkpoint $checkpoint status"
             echo "::endgroup::"
+            if [ "$result_count" -ge "$close_processed_limit" ] && [ "$closed_in_chunk" -gt 0 ]; then
+              echo "Close scan reached its $close_processed_limit-record budget; queueing a fresh-token continuation."
+              continue_apply=true
+              break
+            fi
             if [ "$result_count" -eq 0 ]; then
               echo "No more applicable proposed closes found."
               break
@@ -2461,6 +2499,8 @@ jobs:
               echo "Checkpoint made no fresh closes; stopping to avoid a retry loop."
               break
             fi
+            continue_apply=true
+            break
           done
           pnpm run status -- \
             --target-repo "$TARGET_REPO" \
@@ -2471,6 +2511,7 @@ jobs:
           {
             echo "APPLY_CLOSED_TOTAL=$closed_total"
             echo "APPLY_LIMIT=$limit"
+            echo "APPLY_CONTINUE=$continue_apply"
             echo "APPLY_MIN_AGE_DAYS=$min_age_days"
             echo "APPLY_MIN_AGE_MINUTES=$min_age_minutes"
             echo "APPLY_KIND=$apply_kind"
@@ -2515,8 +2556,8 @@ jobs:
             echo "No proposed closes were ready; not queueing another apply run."
             exit 0
           fi
-          if [ "${APPLY_CLOSED_TOTAL:-0}" -lt "${APPLY_LIMIT:-0}" ]; then
-            echo "Apply closed ${APPLY_CLOSED_TOTAL:-0}/${APPLY_LIMIT:-0}; not queueing another apply run."
+          if [ "${APPLY_CONTINUE:-false}" != "true" ]; then
+            echo "Apply checkpoint has no continuation work; not queueing another apply run."
             exit 0
           fi
           if [ "${APPLY_SYNC_COMMENTS_ONLY:-false}" = "true" ]; then
