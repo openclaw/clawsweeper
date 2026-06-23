@@ -114,7 +114,9 @@ Exact-item webhooks are admitted by the dashboard Worker's durable
 deliveries by repository and item number, so a new webhook updates the latest
 desired review rather than consuming another runner. Only
 `EXACT_REVIEW_QUEUE_MAX_CONCURRENT` leased items may dispatch an exact-review
-workflow at once; the default is 4.
+workflow at once; the default is 4. `EXACT_REVIEW_TARGET_MAX_CONCURRENT` bounds
+how many of those slots one target repository may consume; production sets it
+to 4 so an OpenClaw backlog can drain without increasing the global queue cap.
 
 Each dispatched workflow claims its opaque lease before checkout. Duplicate
 dispatches and stale workflows cannot claim the same lease, and a completion

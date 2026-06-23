@@ -439,7 +439,14 @@ export class ExactReviewQueue {
       const changed = reclaimExpiredExactReviewLeases(state, now);
       if (changed) await this.writeState(state);
       await this.scheduleNext(state, now);
-      return json(exactReviewQueueStats(state, now, exactReviewQueueCapacity(this.env)));
+      return json(
+        exactReviewQueueStats(
+          state,
+          now,
+          exactReviewQueueCapacity(this.env),
+          exactReviewTargetCapacity(this.env),
+        ),
+      );
     }
 
     return new Response("not found", { status: 404 });
@@ -451,6 +458,7 @@ export class ExactReviewQueue {
     const state = await this.readState();
     let changed = reclaimExpiredExactReviewLeases(state, now);
     const capacity = exactReviewQueueCapacity(this.env);
+    const targetCapacity = exactReviewTargetCapacity(this.env);
     const slots = Math.max(0, capacity - exactReviewQueueActiveCount(state));
     const activeTargets = new Map<string, number>();
     for (const item of Object.values(state.items)) {
@@ -466,7 +474,7 @@ export class ExactReviewQueue {
       if (admitted.length >= slots) break;
       const target = item.decision.targetRepo;
       const active = activeTargets.get(target) || 0;
-      if (active >= DEFAULT_EXACT_REVIEW_TARGET_MAX_CONCURRENT) continue;
+      if (active >= targetCapacity) continue;
       activeTargets.set(target, active + 1);
       admitted.push(item);
     }
@@ -523,7 +531,12 @@ export class ExactReviewQueue {
   }
 
   private async scheduleNext(state: ExactReviewQueueState, now: number) {
-    const next = exactReviewQueueNextWakeAt(state, now, exactReviewQueueCapacity(this.env));
+    const next = exactReviewQueueNextWakeAt(
+      state,
+      now,
+      exactReviewQueueCapacity(this.env),
+      exactReviewTargetCapacity(this.env),
+    );
     if (next === null) {
       await this.storage.deleteAlarm();
       return;
@@ -1183,6 +1196,7 @@ function exactReviewQueueStats(
   state: ExactReviewQueueState,
   now = Date.now(),
   capacity = Number.POSITIVE_INFINITY,
+  targetCapacity = Number.POSITIVE_INFINITY,
 ) {
   const items = Object.values(state.items);
   const pending = items.filter((item) => item.state === "pending");
@@ -1233,7 +1247,7 @@ function exactReviewQueueStats(
         right.dispatching + right.leased - (left.dispatching + left.leased) ||
         left.target_repo.localeCompare(right.target_repo),
     );
-  const nextWakeAt = exactReviewQueueNextWakeAt(state, now, capacity);
+  const nextWakeAt = exactReviewQueueNextWakeAt(state, now, capacity, targetCapacity);
   return {
     pending: pending.length,
     dispatching: items.filter((item) => item.state === "dispatching").length,
@@ -1253,6 +1267,7 @@ function exactReviewQueueNextWakeAt(
   state: ExactReviewQueueState,
   now: number,
   capacity = Number.POSITIVE_INFINITY,
+  targetCapacity = Number.POSITIVE_INFINITY,
 ) {
   const items = Object.values(state.items);
   if (!items.length) return null;
@@ -1269,22 +1284,29 @@ function exactReviewQueueNextWakeAt(
     return Math.max(now + 1_000, Math.min(...activeLeaseWakeAt));
   }
   const activeTargetWakeAt = new Map<string, number>();
+  const activeTargetCounts = new Map<string, number>();
   for (const item of items) {
     if (
       (item.state === "dispatching" || item.state === "leased") &&
       item.leaseExpiresAt &&
       item.leaseExpiresAt > now
     ) {
+      const target = item.decision.targetRepo;
+      activeTargetCounts.set(target, (activeTargetCounts.get(target) || 0) + 1);
       const current = activeTargetWakeAt.get(item.decision.targetRepo);
       activeTargetWakeAt.set(
-        item.decision.targetRepo,
+        target,
         current === undefined ? item.leaseExpiresAt : Math.min(current, item.leaseExpiresAt),
       );
     }
   }
   const times = items.flatMap((item) => {
     if (item.state === "pending") {
-      const blockedUntil = activeTargetWakeAt.get(item.decision.targetRepo);
+      const target = item.decision.targetRepo;
+      const blockedUntil =
+        (activeTargetCounts.get(target) || 0) >= targetCapacity
+          ? activeTargetWakeAt.get(target)
+          : undefined;
       return [blockedUntil ?? item.nextAttemptAt];
     }
     return item.leaseExpiresAt ? [item.leaseExpiresAt] : [];
@@ -1307,6 +1329,19 @@ export function exactReviewQueueCapacity(env) {
     Math.min(
       32,
       numberFrom(env.EXACT_REVIEW_QUEUE_MAX_CONCURRENT, DEFAULT_EXACT_REVIEW_QUEUE_MAX_CONCURRENT),
+    ),
+  );
+}
+
+function exactReviewTargetCapacity(env) {
+  return Math.max(
+    1,
+    Math.min(
+      exactReviewQueueCapacity(env),
+      numberFrom(
+        env.EXACT_REVIEW_TARGET_MAX_CONCURRENT,
+        DEFAULT_EXACT_REVIEW_TARGET_MAX_CONCURRENT,
+      ),
     ),
   );
 }

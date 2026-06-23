@@ -377,6 +377,106 @@ test("exact-review queue admits at most one active item per target repository", 
   }
 });
 
+test("exact-review queue can use the global capacity for one target", async () => {
+  const originalFetch = globalThis.fetch;
+  const storage = new MemoryDurableStorage();
+  const dispatched: Record<string, unknown>[] = [];
+  const { privateKey } = generateKeyPairSync("rsa", {
+    modulusLength: 2048,
+    privateKeyEncoding: { type: "pkcs8", format: "pem" },
+    publicKeyEncoding: { type: "spki", format: "pem" },
+  });
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(String(input));
+    if (url.pathname === "/repos/openclaw/clawsweeper/installation")
+      return jsonResponse({ id: 999 });
+    if (url.pathname === "/app/installations/999/access_tokens")
+      return jsonResponse({ token: "dispatch-token" });
+    if (url.pathname === "/repos/openclaw/clawsweeper/dispatches") {
+      dispatched.push(JSON.parse(String(init?.body)));
+      return new Response(null, { status: 204 });
+    }
+    throw new Error(`unexpected fetch ${url}`);
+  };
+
+  try {
+    const queue = new ExactReviewQueue(
+      { storage },
+      {
+        CLAWSWEEPER_APP_CLIENT_ID: "Iv23test",
+        CLAWSWEEPER_APP_PRIVATE_KEY: privateKey,
+        EXACT_REVIEW_QUEUE_MAX_CONCURRENT: "4",
+        EXACT_REVIEW_TARGET_MAX_CONCURRENT: "4",
+      },
+    );
+    for (const itemNumber of [701, 702, 703, 704]) {
+      await queue.fetch(
+        buildExactReviewQueueRequest(`delivery-${itemNumber}`, itemNumber, "opened"),
+      );
+    }
+
+    await queue.alarm();
+
+    assert.equal(dispatched.length, 4);
+    assert.equal(
+      new Set(
+        dispatched.map(
+          (payload) => (payload.client_payload as Record<string, unknown>).target_repo,
+        ),
+      ).size,
+      1,
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("exact-review queue wakes while target capacity remains", async () => {
+  const originalFetch = globalThis.fetch;
+  const storage = new MemoryDurableStorage();
+  const dispatched: Record<string, unknown>[] = [];
+  const { privateKey } = generateKeyPairSync("rsa", {
+    modulusLength: 2048,
+    privateKeyEncoding: { type: "pkcs8", format: "pem" },
+    publicKeyEncoding: { type: "spki", format: "pem" },
+  });
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(String(input));
+    if (url.pathname === "/repos/openclaw/clawsweeper/installation")
+      return jsonResponse({ id: 999 });
+    if (url.pathname === "/app/installations/999/access_tokens")
+      return jsonResponse({ token: "dispatch-token" });
+    if (url.pathname === "/repos/openclaw/clawsweeper/dispatches") {
+      dispatched.push(JSON.parse(String(init?.body)));
+      return new Response(null, { status: 204 });
+    }
+    throw new Error(`unexpected fetch ${url}`);
+  };
+
+  try {
+    const queue = new ExactReviewQueue(
+      { storage },
+      {
+        CLAWSWEEPER_APP_CLIENT_ID: "Iv23test",
+        CLAWSWEEPER_APP_PRIVATE_KEY: privateKey,
+        EXACT_REVIEW_QUEUE_MAX_CONCURRENT: "4",
+        EXACT_REVIEW_TARGET_MAX_CONCURRENT: "2",
+      },
+    );
+    await queue.fetch(buildExactReviewQueueRequest("delivery-801", 801, "opened"));
+    await queue.alarm();
+    await queue.fetch(buildExactReviewQueueRequest("delivery-802", 802, "opened"));
+
+    const nextAlarm = await storage.getAlarm();
+    assert.ok(nextAlarm && nextAlarm <= Date.now() + 5_000);
+
+    await queue.alarm();
+    assert.equal(dispatched.length, 2);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("authenticated legacy exact-review intake enters the durable queue", async () => {
   const queue = new ExactReviewQueue({ storage: new MemoryDurableStorage() }, {});
   const payload = JSON.stringify({
