@@ -160,6 +160,6 @@ Do not move these into the dashboard:
 
 The dashboard Worker owns durable exact-review admission only: it deduplicates
 webhook deliveries, coalesces each repository/item pair, and leases at most
-eight Actions executors. It does not decide review outcomes or perform target
+twelve Actions executors. It does not decide review outcomes or perform target
 repository mutations. GitHub Actions remains the executor and the existing
 review/apply safety model remains unchanged.

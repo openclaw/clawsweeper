@@ -638,7 +638,7 @@ workers. Imported gitcrawl cluster repair allows 2 live workers by default.
 Exact-item review, repair, and issue implementation are priority work; normal
 review, hot intake, and commit review are background work and automatically
 yield when priority work is active. Exact-item runs use a durable Worker queue
-that coalesces item deliveries, leases at most 8 concurrent reviews, and admits
+that coalesces item deliveries, leases at most 12 concurrent reviews, and admits
 up to 8 active exact reviews per target repository. Other lanes retain the
 checked-in 32-worker scheduling model.
 Use `workers.max` first when turning total Codex usage up or down; use

@@ -239,7 +239,7 @@ endpoint is `/github/webhook`; the local equivalent is
 target installation token for acknowledgement/comment reactions, mints the
 `openclaw/clawsweeper` installation token for repository dispatch, and queues
 exact `clawsweeper_comment` or `clawsweeper_item` work. The durable Worker
-queue dispatches at most 8 leased exact-review executors, with up to 8 active
+queue dispatches at most 12 leased exact-review executors, with up to 8 active
 reviews per target repository. Keep the Actions
 dispatcher installed as a compatibility fallback; its legacy dispatch is
 bridged into the same queue before Codex starts.
