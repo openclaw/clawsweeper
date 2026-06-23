@@ -14,8 +14,8 @@ import {
   triageRoutingGroupsForLabels,
 } from "../dashboard/triage-routing-groups.ts";
 
-test("exact-review queue defaults to 4 of the 32 global workers", () => {
-  assert.equal(exactReviewQueueCapacity({}), 4);
+test("exact-review queue defaults to 8 of the 32 global workers", () => {
+  assert.equal(exactReviewQueueCapacity({}), 8);
   assert.equal(exactReviewQueueCapacity({ EXACT_REVIEW_QUEUE_MAX_CONCURRENT: "32" }), 32);
   assert.equal(exactReviewQueueCapacity({ EXACT_REVIEW_QUEUE_MAX_CONCURRENT: "100" }), 32);
 });
@@ -340,6 +340,7 @@ test("exact-review queue admits at most one active item per target repository", 
         CLAWSWEEPER_APP_CLIENT_ID: "Iv23test",
         CLAWSWEEPER_APP_PRIVATE_KEY: privateKey,
         EXACT_REVIEW_QUEUE_MAX_CONCURRENT: "2",
+        EXACT_REVIEW_TARGET_MAX_CONCURRENT: "1",
       },
     );
     await queue.fetch(buildExactReviewQueueRequest("delivery-target-a-1", 601, "opened"));
