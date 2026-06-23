@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   actionRunUrl,
+  actionSessionOwner,
   actionSourceUrl,
   actionWorkKey,
   actionWorkKind,
@@ -32,6 +33,14 @@ test("action session builds stable work and run identifiers", () => {
       GITHUB_RUN_ID: "456",
     }),
     "https://github.example/openclaw/clawsweeper/actions/runs/456",
+  );
+});
+
+test("action session reads the configured CrabFleet owner principal", () => {
+  assert.equal(actionSessionOwner({ CLAWSWEEPER_CRABFLEET_OWNER: "@steipete" }), "@steipete");
+  assert.throws(
+    () => actionSessionOwner({}),
+    /action session requires a configured CrabFleet owner/,
   );
 });
 

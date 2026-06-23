@@ -41,6 +41,12 @@ export function actionWorkKey(frontmatter: LooseRecord): string {
   return `${String(frontmatter.repo ?? "")}:${String(frontmatter.cluster_id ?? "")}`;
 }
 
+export function actionSessionOwner(env: NodeJS.ProcessEnv = process.env): string {
+  const owner = String(env.CLAWSWEEPER_CRABFLEET_OWNER ?? "").trim();
+  if (!owner) throw new Error("action session requires a configured CrabFleet owner");
+  return owner;
+}
+
 export function actionRunUrl(env: NodeJS.ProcessEnv = process.env): string {
   const server = String(env.GITHUB_SERVER_URL ?? "https://github.com").replace(/\/+$/, "");
   const repository = String(env.GITHUB_REPOSITORY ?? "");
@@ -86,6 +92,7 @@ async function registerActionSession(jobPath: string): Promise<void> {
     body: JSON.stringify({
       workKey: actionWorkKey(job.frontmatter),
       workKind: actionWorkKind(job.frontmatter),
+      owner: actionSessionOwner(),
       repo: String(job.frontmatter.repo ?? ""),
       branch: String(job.frontmatter.target_branch ?? process.env.GITHUB_REF_NAME ?? ""),
       sourceUrl,

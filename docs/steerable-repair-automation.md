@@ -503,6 +503,10 @@ commit, push, PR creation, label, comment, close, and merge operations.
 `CLAWSWEEPER_CRABFLEET_SERVICE_TOKEN` is used only to register or resume a
 logical action session.
 
+`CLAWSWEEPER_CRABFLEET_OWNER` identifies the active CrabFleet user principal
+that owns new action sessions. It must be configured as a repository variable;
+it is not the GitHub organization name.
+
 CrabFleet returns:
 
 - a rotated session-scoped agent token;
@@ -750,6 +754,7 @@ Core steerable-session configuration:
 | `CLAWSWEEPER_STEERABLE_CODEX` | Enables app-server threads, cache persistence, and CrabFleet steering. |
 | `CLAWSWEEPER_CRABFLEET_SERVICE_TOKEN` | Registers or resumes the logical action session. |
 | `CLAWSWEEPER_CRABFLEET_URL` | CrabFleet API and dashboard base URL. |
+| `CLAWSWEEPER_CRABFLEET_OWNER` | Active CrabFleet user principal for new action sessions. |
 | `CLAWSWEEPER_CODEX_TIMEOUT_MS` | Planning Codex call timeout. |
 | `CLAWSWEEPER_FIX_CODEX_TIMEOUT_MS` | Per-call execution Codex timeout. |
 | `CLAWSWEEPER_FIX_STEP_TIMEOUT_MS` | Overall fix executor step budget. |
