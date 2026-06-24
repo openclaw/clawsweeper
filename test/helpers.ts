@@ -283,6 +283,24 @@ export function detailsBody(markdown, summary) {
   return markdown.slice(bodyStart, bodyEnd);
 }
 
+export function auditRecord(number, overrides = {}) {
+  return {
+    repo: "openclaw/openclaw",
+    number,
+    location: "items",
+    path: `items/${number}.md`,
+    kind: "issue",
+    title: `Item ${number}`,
+    labels: [],
+    decision: "keep_open",
+    closeReason: "none",
+    action: "kept_open",
+    reviewStatus: "complete",
+    currentState: undefined,
+    ...overrides,
+  };
+}
+
 export function workPlanCandidateReport(overrides = {}) {
   const frontmatter = {
     number: 321,
