@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+
+import { renderReviewCommentFromReport } from "../dist/clawsweeper.js";
 
 export const tmpPrefix = join(tmpdir(), "clawsweeper-test-");
 
@@ -277,6 +281,430 @@ export function detailsBody(markdown, summary) {
   const bodyEnd = markdown.indexOf("</details>", bodyStart);
   assert.notEqual(bodyEnd, -1, `missing details close for ${summary}`);
   return markdown.slice(bodyStart, bodyEnd);
+}
+
+export function workPlanCandidateReport(overrides = {}) {
+  const frontmatter = {
+    number: 321,
+    repository: "openclaw/clawsweeper",
+    type: "issue",
+    title: "Render work plans",
+    reviewed_at: new Date().toISOString(),
+    review_status: "complete",
+    local_checkout_access: "verified",
+    decision: "keep_open",
+    action_taken: "kept_open",
+    work_candidate: "queue_fix_pr",
+    work_status: "candidate",
+    work_priority: "medium",
+    work_confidence: "high",
+    work_likely_files: JSON.stringify(["src/clawsweeper.ts", "test/clawsweeper.test.ts"]),
+    work_validation: JSON.stringify(["pnpm run check"]),
+    work_cluster_refs: JSON.stringify(["openclaw/clawsweeper#26"]),
+    ...overrides,
+  };
+  return `---
+${Object.entries(frontmatter)
+  .map(([key, value]) => `${key}: ${value}`)
+  .join("\n")}
+---
+
+# #321: Render work plans
+
+## Summary
+
+The dashboard has queue_fix_pr candidates but no generated coding plan.
+
+## Repair Work Prompt
+
+Render generated plan markdown from existing report fields.
+`;
+}
+
+export function implementedCloseReport(overrides = {}) {
+  return `${workPlanCandidateReport({
+    decision: "close",
+    action_taken: "proposed_close",
+    close_reason: "implemented_on_main",
+    confidence: "high",
+    work_candidate: "none",
+    work_status: "none",
+    item_snapshot_hash: "reviewed-snapshot",
+    item_created_at: "2026-05-01T00:00:00Z",
+    item_updated_at: "2026-05-01T00:00:00Z",
+    reproduction_status: "reproduced",
+    reproduction_confidence: "high",
+    fixed_sha: "1234567890abcdef1234567890abcdef12345678",
+    fixed_at: "2026-05-01T02:00:00Z",
+    ...overrides,
+  })}\n\n## Evidence\n\n- **main fix:** git show confirms current main has the replacement implementation and it is not in the latest release yet\n  - file: [src/clawsweeper.ts](https://github.com/openclaw/clawsweeper/blob/1234567890abcdef1234567890abcdef12345678/src/clawsweeper.ts)\n  - sha: [1234567890ab](https://github.com/openclaw/clawsweeper/commit/1234567890abcdef1234567890abcdef12345678)\n\n## Close Comment\n\nClosing this because the requested behavior is already on main.\n`;
+}
+
+export function lowSignalCloseReport(overrides = {}) {
+  return `${workPlanCandidateReport({
+    repository: "openclaw/openclaw",
+    type: "pull_request",
+    decision: "close",
+    action_taken: "proposed_close",
+    close_reason: "low_signal_unmergeable_pr",
+    confidence: "high",
+    work_candidate: "none",
+    work_status: "none",
+    item_snapshot_hash: "reviewed-snapshot",
+    item_created_at: "2026-05-01T00:00:00Z",
+    item_updated_at: "2026-05-01T00:00:00Z",
+    author_association: "CONTRIBUTOR",
+    ...overrides,
+  })}\n\n## Evidence\n\n- **branch shape:** PR diff is mostly unrelated provider churn around a tiny possible useful tweak\n\n## Close Comment\n\nClosing this PR because the branch is not a useful landing base.\n`;
+}
+
+export function promotionGhMock(options: {
+  number: number;
+  title?: string;
+  labels?: string[];
+  itemCreatedAt?: string;
+  itemUpdatedAt?: string;
+  itemUpdatedAtAfterLabelSync?: string;
+  itemUpdatedAtAfterLabelSyncLogPath?: string;
+  itemUpdatedAtAfterProof?: string;
+  itemUpdatedAtAfterProofLogPath?: string;
+  issueCommentCount?: number;
+  comment: string;
+  commentWriteLogPath?: string;
+  closeAppliedBodyLogPath?: string;
+  comments?: unknown[];
+  timeline?: unknown[];
+  linkedPulls?: Record<number, unknown>;
+  linkedPullsAfterProof?: Record<number, unknown>;
+  linkedIssues?: Record<number, unknown>;
+}) {
+  const title = options.title ?? "Stale F PR";
+  const itemCreatedAt = options.itemCreatedAt ?? "2026-02-01T00:00:00Z";
+  const itemUpdatedAt = options.itemUpdatedAt ?? "2026-05-01T00:00:00Z";
+  const comments = options.comments ?? [
+    {
+      id: 9000 + options.number,
+      html_url: `https://github.com/openclaw/openclaw/pull/${options.number}#issuecomment-${
+        9000 + options.number
+      }`,
+      created_at: "2026-05-01T01:00:00Z",
+      updated_at: "2026-05-01T01:00:00Z",
+      user: { login: "clawsweeper[bot]" },
+      body: options.comment,
+    },
+  ];
+  const issueCommentCount = options.issueCommentCount ?? comments.length;
+  const timeline = options.timeline ?? [];
+  const linkedPulls = options.linkedPulls ?? {};
+  const linkedIssues = options.linkedIssues ?? {};
+  return `
+	const { appendFileSync, existsSync } = require("fs");
+	const rawArgs = process.argv.slice(2);
+	const args = rawArgs[0] === "--repo" ? rawArgs.slice(2) : rawArgs;
+	const path = args[1] || "";
+	const slurp = args.includes("--slurp");
+	const jqIndex = args.indexOf("--jq");
+	const jq = jqIndex >= 0 ? args[jqIndex + 1] : "";
+	const comments = ${JSON.stringify(comments)};
+	const timeline = ${JSON.stringify(timeline)};
+	const linkedPulls = ${JSON.stringify(linkedPulls)};
+	const linkedPullsAfterProof = ${JSON.stringify(options.linkedPullsAfterProof ?? {})};
+	const linkedIssues = ${JSON.stringify(linkedIssues)};
+	const commentWriteLogPath = ${JSON.stringify(options.commentWriteLogPath ?? "")};
+	const closeAppliedBodyLogPath = ${JSON.stringify(options.closeAppliedBodyLogPath ?? "")};
+	const number = ${options.number};
+		const title = ${JSON.stringify(title)};
+		const labels = ${JSON.stringify(options.labels ?? ["status: 📣 needs proof"])};
+		const itemCreatedAt = ${JSON.stringify(itemCreatedAt)};
+		const itemUpdatedAt = ${JSON.stringify(itemUpdatedAt)};
+		const itemUpdatedAtAfterLabelSync = ${JSON.stringify(
+      options.itemUpdatedAtAfterLabelSync ?? "",
+    )};
+		const itemUpdatedAtAfterLabelSyncLogPath = ${JSON.stringify(
+      options.itemUpdatedAtAfterLabelSyncLogPath ?? "",
+    )};
+		const itemUpdatedAtAfterProof = ${JSON.stringify(options.itemUpdatedAtAfterProof ?? "")};
+		const itemUpdatedAtAfterProofLogPath = ${JSON.stringify(
+      options.itemUpdatedAtAfterProofLogPath ?? "",
+    )};
+		const proofHasRun = () =>
+		  itemUpdatedAtAfterProofLogPath &&
+		  existsSync(itemUpdatedAtAfterProofLogPath);
+		const liveLinkedPulls = proofHasRun()
+		  ? { ...linkedPulls, ...linkedPullsAfterProof }
+		  : linkedPulls;
+		const liveUpdatedAt =
+		  itemUpdatedAtAfterProof &&
+		  itemUpdatedAtAfterProofLogPath &&
+		  existsSync(itemUpdatedAtAfterProofLogPath)
+		    ? itemUpdatedAtAfterProof
+		    : itemUpdatedAtAfterLabelSync &&
+		        itemUpdatedAtAfterLabelSyncLogPath &&
+		        existsSync(itemUpdatedAtAfterLabelSyncLogPath)
+		      ? itemUpdatedAtAfterLabelSync
+		      : itemUpdatedAt;
+	const issueCommentCount = ${issueCommentCount};
+	if (args[0] === "api" && args[1] === "-i" && new RegExp("/issues/" + number + "/timeline(?:\\\\?|$)").test(args[2] || "")) {
+	  console.log("HTTP/2 200\\n\\n" + JSON.stringify(timeline));
+	} else if (args[0] === "api" && new RegExp("/issues/" + number + "/comments$").test(path) && args.includes("--method")) {
+	  if (commentWriteLogPath) appendFileSync(commentWriteLogPath, args.join(" ") + "\\n");
+	  if (closeAppliedBodyLogPath) {
+	    const input = args[args.indexOf("--input") + 1];
+	    appendFileSync(closeAppliedBodyLogPath, JSON.parse(require("fs").readFileSync(input, "utf8")).body + "\\n---body---\\n");
+	  }
+	  console.log("");
+	} else if (args[0] === "api" && new RegExp("/issues/comments/\\\\d+$").test(path) && args.includes("--method")) {
+	  if (commentWriteLogPath) appendFileSync(commentWriteLogPath, args.join(" ") + "\\n");
+	  console.log("");
+	} else if (args[0] === "api" && new RegExp("/issues/" + number + "/comments(?:\\\\?|$)").test(path)) {
+	  console.log(JSON.stringify(slurp ? [comments] : comments));
+	} else if (args[0] === "api" && new RegExp("/issues/" + number + "/timeline(?:\\\\?|$)").test(path)) {
+  console.log(JSON.stringify(slurp ? [timeline] : timeline));
+} else if (args[0] === "api" && new RegExp("/issues/" + number + "$").test(path)) {
+  console.log(JSON.stringify({
+    number,
+    title,
+    html_url: "https://github.com/openclaw/openclaw/pull/" + number,
+    body: "Stale PR body.",
+    created_at: itemCreatedAt,
+    updated_at: liveUpdatedAt,
+    closed_at: null,
+    state: "open",
+    locked: false,
+    active_lock_reason: null,
+    author_association: "CONTRIBUTOR",
+    user: { login: "reporter" },
+    labels,
+    comments: issueCommentCount,
+    pull_request: { url: "https://api.github.com/repos/openclaw/openclaw/pulls/" + number }
+  }));
+} else if (args[0] === "api" && new RegExp("/pulls/" + number + "$").test(path)) {
+  console.log(JSON.stringify({
+    number,
+    title,
+    html_url: "https://github.com/openclaw/openclaw/pull/" + number,
+    state: "open",
+    changed_files: 2,
+    commits: 1,
+    review_comments: 0,
+    body: "Stale PR body.",
+    head: { sha: "head-sha", ref: "branch", repo: { full_name: "fork/openclaw" } },
+    base: { sha: "base-sha", ref: "main", repo: { full_name: "openclaw/openclaw" } },
+    user: { login: "reporter" }
+  }));
+	} else if (args[0] === "api" && /\\/pulls\\/(\\d+)$/.test(path)) {
+	  const linkedNumber = Number((path.match(/\\/pulls\\/(\\d+)$/) || [])[1]);
+	  if (!liveLinkedPulls[linkedNumber]) {
+	    console.error("unexpected linked pull", linkedNumber);
+	    process.exit(1);
+	  }
+	  console.log(JSON.stringify(liveLinkedPulls[linkedNumber]));
+	} else if (args[0] === "api" && /\\/issues\\/(\\d+)\\/comments(?:\\?|$)/.test(path)) {
+	  const linkedNumber = Number((path.match(/\\/issues\\/(\\d+)\\/comments/) || [])[1]);
+	  const linkedIssue = liveLinkedPulls[linkedNumber] || linkedIssues[linkedNumber];
+  if (!linkedIssue) {
+    console.error("unexpected linked comments", linkedNumber);
+    process.exit(1);
+  }
+  if (linkedIssue.commentsError) {
+    console.error(linkedIssue.commentsError);
+    process.exit(1);
+  }
+  const linkedComments = Array.isArray(linkedIssue.comments)
+    ? linkedIssue.comments
+    : [];
+  console.log(JSON.stringify(slurp ? [linkedComments] : linkedComments));
+	} else if (args[0] === "api" && /\\/issues\\/(\\d+)$/.test(path)) {
+	  const linkedNumber = Number((path.match(/\\/issues\\/(\\d+)$/) || [])[1]);
+	  const linkedIssue = liveLinkedPulls[linkedNumber] || linkedIssues[linkedNumber];
+  if (!linkedIssue) {
+    console.error("unexpected linked issue", linkedNumber);
+    process.exit(1);
+  }
+  const labels = Array.isArray(linkedIssue.labels)
+    ? linkedIssue.labels.map((label) =>
+        typeof label === "string" ? label : label && label.name ? label.name : null,
+      ).filter(Boolean)
+    : [];
+  if (jq === "[.labels[].name]") {
+    console.log(JSON.stringify(labels));
+  } else {
+    console.log(JSON.stringify({
+      number: linkedNumber,
+      title: linkedIssue.title || ("PR #" + linkedNumber),
+      html_url: linkedIssue.html_url || ("https://github.com/openclaw/openclaw/pull/" + linkedNumber),
+      body: linkedIssue.body || "",
+      state: linkedIssue.state || "open",
+      labels: labels.map((name) => ({ name })),
+      comments: Array.isArray(linkedIssue.comments) ? linkedIssue.comments.length : 0,
+      pull_request: linkedIssue.pull_request || null,
+    }));
+  }
+	} else if (args[0] === "api" && /\\/pulls\\/(\\d+)\\/files(?:\\?|$)/.test(path)) {
+	  const linkedNumber = Number((path.match(/\\/pulls\\/(\\d+)\\/files/) || [])[1]);
+	  if (linkedNumber !== number && !liveLinkedPulls[linkedNumber]) {
+	    console.error("unexpected linked pull files", linkedNumber);
+	    process.exit(1);
+	  }
+	  const sourceFiles = [{ filename: "src/runtime.ts" }, { filename: "test/runtime.test.ts" }];
+	  const files = linkedNumber === number ? sourceFiles : liveLinkedPulls[linkedNumber].files || sourceFiles;
+  if (jq === "[.[].filename]") {
+    console.log(JSON.stringify(files.map((file) =>
+      typeof file === "string" ? file : file && file.filename ? file.filename : null,
+    ).filter(Boolean)));
+  } else {
+    console.log(JSON.stringify([files]));
+  }
+} else if (args[0] === "api" && new RegExp("/pulls/" + number + "/(files|commits|comments)(?:\\\\?|$)").test(path)) {
+  console.log(JSON.stringify([[]]));
+} else if (args[0] === "pr" && args[1] === "close" && args[2] === String(number)) {
+  console.log("");
+	} else if (args[0] === "issue" && args[1] === "edit") {
+	  if (itemUpdatedAtAfterLabelSyncLogPath) appendFileSync(itemUpdatedAtAfterLabelSyncLogPath, args.join(" ") + "\\n");
+	  console.log("");
+	} else if (args[0] === "label" || args[0] === "issue") {
+	  console.log("");
+	} else {
+  console.error("unexpected gh args", JSON.stringify(args));
+  process.exit(1);
+}
+`;
+}
+
+export function markedReviewCommentForTest(number: number, body: string): string {
+  return `${body.trimEnd()}\n\n<!-- clawsweeper-review item=${number} -->`;
+}
+
+function sha256ForTest(text: string): string {
+  return createHash("sha256").update(text).digest("hex");
+}
+
+export function reportWithSyncedReviewComment(
+  report: string,
+  number: number,
+  reason = "none",
+): {
+  report: string;
+  comment: string;
+} {
+  const comment = markedReviewCommentForTest(number, renderReviewCommentFromReport(report, reason));
+  return {
+    report: report.replace(
+      /^---\n/,
+      [
+        "---",
+        `review_comment_sha256: ${sha256ForTest(comment)}`,
+        `review_comment_id: ${9000 + number}`,
+        `review_comment_url: https://github.com/openclaw/clawsweeper/issues/${number}#issuecomment-${9000 + number}`,
+        "review_comment_synced_at: 2026-05-01T01:00:00Z",
+        "",
+      ].join("\n"),
+    ),
+    comment,
+  };
+}
+
+export function withMockCodexProof(
+  root: string,
+  result:
+    | {
+        type: "decision";
+        decision: "covered" | "keep_open";
+        reason: string;
+        invocationLogPath?: string;
+        expectedPromptIncludes?: string;
+        unexpectedPromptIncludes?: string;
+        coveredPromptIncludes?: string;
+        keepOpenPromptIncludes?: string;
+      }
+    | { type: "failure"; message: string; invocationLogPath?: string },
+  run: () => void,
+): void {
+  const originalPath = process.env.PATH;
+  const binDir = join(root, "bin");
+  mkdirSync(binDir, { recursive: true });
+  const codexPath = join(binDir, "codex");
+  const script =
+    result.type === "decision"
+      ? `#!/usr/bin/env node
+	const { appendFileSync, writeFileSync } = require("fs");
+	const args = process.argv.slice(2);
+	const outputPath = args[args.indexOf("--output-last-message") + 1];
+	const invocationLogPath = ${JSON.stringify(result.invocationLogPath ?? "")};
+	const prompt = require("fs").readFileSync(0, "utf8");
+	const expectedPrompt = ${JSON.stringify(result.expectedPromptIncludes ?? "")};
+	if (expectedPrompt && !prompt.includes(expectedPrompt)) {
+	  process.stderr.write("missing expected proof prompt text: " + expectedPrompt);
+	  process.exit(1);
+	}
+	const unexpectedPrompt = ${JSON.stringify(result.unexpectedPromptIncludes ?? "")};
+		if (unexpectedPrompt && prompt.includes(unexpectedPrompt)) {
+		  process.stderr.write("unexpected proof prompt text: " + unexpectedPrompt);
+		  process.exit(1);
+		}
+		const coveredPrompt = ${JSON.stringify(result.coveredPromptIncludes ?? "")};
+		const keepOpenPrompt = ${JSON.stringify(result.keepOpenPromptIncludes ?? "")};
+		const decision = coveredPrompt && prompt.includes(coveredPrompt)
+		  ? "covered"
+		  : keepOpenPrompt && prompt.includes(keepOpenPrompt)
+		    ? "keep_open"
+		    : ${JSON.stringify(result.decision)};
+		if (invocationLogPath) appendFileSync(invocationLogPath, "proof\\n");
+		writeFileSync(outputPath, JSON.stringify({
+	  sourceSummary: "PR A updates the provider route.",
+	  coveringSummary: "PR B updates a different provider path.",
+	  coveredWork: decision === "covered" ? ["PR B includes PR A's provider route update."] : [],
+	  uniqueSourceWork: decision === "covered" ? [] : ["PR A's provider route update is still unique."],
+	  decision,
+	  reason: ${JSON.stringify(result.reason)}
+	}));
+`
+      : `#!/usr/bin/env node
+const { appendFileSync } = require("fs");
+const invocationLogPath = ${JSON.stringify(result.invocationLogPath ?? "")};
+if (invocationLogPath) appendFileSync(invocationLogPath, "proof\\n");
+console.error(${JSON.stringify(result.message)});
+process.exit(1);
+`;
+  writeFileSync(codexPath, script, { mode: 0o755 });
+  try {
+    process.env.PATH = `${binDir}:${originalPath ?? ""}`;
+    run();
+  } finally {
+    if (originalPath === undefined) delete process.env.PATH;
+    else process.env.PATH = originalPath;
+  }
+}
+
+export function runApplyDecisionsForTest(options: {
+  targetRepo?: string;
+  itemsDir: string;
+  closedDir: string;
+  plansDir: string;
+  reportPath: string;
+  extraArgs?: string[];
+}): void {
+  execFileSync(process.execPath, [
+    "dist/clawsweeper.js",
+    "apply-decisions",
+    "--target-repo",
+    options.targetRepo ?? "openclaw/clawsweeper",
+    "--items-dir",
+    options.itemsDir,
+    "--closed-dir",
+    options.closedDir,
+    "--plans-dir",
+    options.plansDir,
+    "--report-path",
+    options.reportPath,
+    "--limit",
+    "10",
+    "--processed-limit",
+    "1",
+    "--close-delay-ms",
+    "0",
+    ...(options.extraArgs ?? []),
+  ]);
 }
 
 export const git = {
