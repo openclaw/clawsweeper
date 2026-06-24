@@ -133,14 +133,14 @@ for (const [limitPath, value] of Object.entries(flattenLimits(limits))) {
   expectations.push({
     file: "docs/limits.md",
     label: `${limitPath} documented current value`,
-    pattern: new RegExp(`\\| \`${escapeRegExp(limitPath)}\` \\| ${value} \\|`),
+    pattern: limitTableValuePattern(limitPath, value),
   });
 }
 for (const [limitPath, value] of Object.entries(flattenLimits(config))) {
   expectations.push({
     file: "docs/limits.md",
     label: `${limitPath} documented worker config value`,
-    pattern: new RegExp(`\\| \`${escapeRegExp(limitPath)}\` \\| ${value} \\|`),
+    pattern: limitTableValuePattern(limitPath, value),
   });
 }
 
@@ -216,4 +216,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function limitTableValuePattern(limitPath: string, value: number): RegExp {
+  return new RegExp(`\\|\\s+\`${escapeRegExp(limitPath)}\`\\s+\\|\\s+${value}\\s+\\|`);
 }
