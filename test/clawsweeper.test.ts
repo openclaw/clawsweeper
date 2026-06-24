@@ -14080,6 +14080,8 @@ test("github activity workflow scopes cancellation to matching item activity", (
   assert.match(workflow, /repair:spam-comment-intake -- --write-report/);
   assert.doesNotMatch(workflow, /gh api "repos\/\$\{GITHUB_REPOSITORY\}\/dispatches"/);
   assert.match(concurrencyBlock, /cancel-in-progress: true/);
+  assert.match(workflow, /runs-on: ubuntu-24\.04/);
+  assert.doesNotMatch(workflow, /runs-on: blacksmith-/);
   assert.doesNotMatch(
     concurrencyBlock,
     /group: github-activity-\$\{\{ github\.event_name \}\}-\$\{\{ github\.run_id \}\}/,
