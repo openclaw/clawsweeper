@@ -340,6 +340,40 @@ export function implementedCloseReport(overrides = {}) {
   })}\n\n## Evidence\n\n- **main fix:** git show confirms current main has the replacement implementation and it is not in the latest release yet\n  - file: [src/clawsweeper.ts](https://github.com/openclaw/clawsweeper/blob/1234567890abcdef1234567890abcdef12345678/src/clawsweeper.ts)\n  - sha: [1234567890ab](https://github.com/openclaw/clawsweeper/commit/1234567890abcdef1234567890abcdef12345678)\n\n## Close Comment\n\nClosing this because the requested behavior is already on main.\n`;
 }
 
+export function stalePullRequestReport(overrides = {}) {
+  return `${workPlanCandidateReport({
+    repository: "openclaw/openclaw",
+    number: 330,
+    type: "pull_request",
+    title: "Stale F PR",
+    url: "https://github.com/openclaw/openclaw/pull/330",
+    author: "reporter",
+    author_association: "CONTRIBUTOR",
+    decision: "keep_open",
+    close_reason: "none",
+    confidence: "high",
+    action_taken: "kept_open",
+    work_candidate: "manual_review",
+    work_status: "manual_review",
+    item_snapshot_hash: "reviewed-snapshot",
+    item_created_at: "2026-02-01T00:00:00Z",
+    item_updated_at: "2026-05-01T00:00:00Z",
+    reviewed_at: "2026-05-01T00:00:00Z",
+    labels: JSON.stringify(["status: 📣 needs proof"]),
+    pr_rating_overall: "F",
+    pr_rating_proof: "F",
+    pr_rating_patch: "F",
+    ...overrides,
+  })}\n\n## Real Behavior Proof\n\nStatus: missing\nEvidence kind: none\nNeeds contributor action: true\nSummary: No live proof was supplied.\n\n## PR Rating\n\nOverall tier: F\nProof tier: F\nPatch tier: F\nSummary: The PR is not merge-ready.\nNext rank-up steps:\n- Rebase and provide proof.\n`;
+}
+
+export function stripProofAndRatingFrontMatter(report: string): string {
+  return report.replace(
+    /\n(?:real_behavior_proof_status|pr_rating_overall|pr_rating_proof|pr_rating_patch):[^\n]*/g,
+    "",
+  );
+}
+
 export function lowSignalCloseReport(overrides = {}) {
   return `${workPlanCandidateReport({
     repository: "openclaw/openclaw",
