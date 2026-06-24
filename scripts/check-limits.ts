@@ -12,6 +12,7 @@ type WorkerConfig = {
   lanes: {
     exact_review: {
       max_concurrent: number;
+      target_max_concurrent: number;
     };
     assist: {
       max: number;
@@ -25,6 +26,7 @@ type WorkerConfig = {
 type AutomationLimits = {
   exact_review: {
     concurrent_max: number;
+    target_concurrent_max: number;
   };
   assist: {
     default: number;
@@ -70,6 +72,20 @@ const expectations: { file: string; label: string; pattern: RegExp }[] = [
     file: "dashboard/wrangler.toml",
     label: "dashboard worker budget",
     pattern: new RegExp(`WORKER_BUDGET = "${config.workers.max}"`),
+  },
+  {
+    file: "dashboard/wrangler.toml",
+    label: "exact review queue global cap",
+    pattern: new RegExp(
+      `EXACT_REVIEW_QUEUE_MAX_CONCURRENT = "${limits.exact_review.concurrent_max}"`,
+    ),
+  },
+  {
+    file: "dashboard/wrangler.toml",
+    label: "exact review queue target cap",
+    pattern: new RegExp(
+      `EXACT_REVIEW_TARGET_MAX_CONCURRENT = "${limits.exact_review.target_concurrent_max}"`,
+    ),
   },
   {
     file: "dashboard/worker.ts",
@@ -127,6 +143,46 @@ const expectations: { file: string; label: string; pattern: RegExp }[] = [
     label: "limits documentation references source file",
     pattern: /config\/automation-limits\.json/,
   },
+  {
+    file: "README.md",
+    label: "readme exact review global cap",
+    pattern: new RegExp(`leases at most ${limits.exact_review.concurrent_max} concurrent reviews`),
+  },
+  {
+    file: "README.md",
+    label: "readme exact review target cap",
+    pattern: new RegExp(
+      `up to ${limits.exact_review.target_concurrent_max} active exact reviews per target repository`,
+    ),
+  },
+  {
+    file: "docs/target-dispatcher.md",
+    label: "target dispatcher exact review global cap",
+    pattern: new RegExp(
+      `at most ${limits.exact_review.concurrent_max} leased exact-review executors`,
+    ),
+  },
+  {
+    file: "docs/target-dispatcher.md",
+    label: "target dispatcher exact review target cap",
+    pattern: new RegExp(
+      `up to ${limits.exact_review.target_concurrent_max} active\\s+reviews per target repository`,
+    ),
+  },
+  {
+    file: "docs/live-dashboard.md",
+    label: "dashboard exact review global cap",
+    pattern: new RegExp(
+      `leases at most\\s+${limits.exact_review.concurrent_max} Actions executors`,
+    ),
+  },
+  {
+    file: "docs/live-dashboard.md",
+    label: "dashboard exact review target cap",
+    pattern: new RegExp(
+      `with up to ${limits.exact_review.target_concurrent_max} active leases per target repository`,
+    ),
+  },
 ];
 
 for (const [limitPath, value] of Object.entries(flattenLimits(limits))) {
@@ -178,6 +234,11 @@ function deriveAutomationLimits(workerConfig: WorkerConfig): AutomationLimits {
   return {
     exact_review: {
       concurrent_max: Math.min(workerConfig.lanes.exact_review.max_concurrent, max),
+      target_concurrent_max: Math.min(
+        workerConfig.lanes.exact_review.target_max_concurrent,
+        workerConfig.lanes.exact_review.max_concurrent,
+        max,
+      ),
     },
     assist: {
       default: Math.min(workerConfig.lanes.assist.max, max),

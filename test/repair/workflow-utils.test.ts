@@ -141,6 +141,7 @@ test("worker config defaults imported cluster repair capacity for older configs"
   );
 
   assert.equal(readWorkerConfig(configPath).lanes.repair.cluster_max_live_runs, 1);
+  assert.equal(readWorkerConfig(configPath).lanes.exact_review.target_max_concurrent, 16);
 });
 
 test("workflow utilities derive artifact item numbers and action counts", () => {

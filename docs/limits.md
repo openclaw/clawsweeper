@@ -37,7 +37,8 @@ The mental model:
 | `workers.reserve_for_interactive`    |       8 | Worker slots background lanes leave open for exact/manual/urgent work.              |
 | `workers.expansion_reserve`          |      12 | Extra slots background lanes leave open for independently planned matrix expansion. |
 | `workers.minimum_background`         |       4 | Target floor for background progress when enough global capacity is available.      |
-| `lanes.exact_review.max_concurrent`  |      14 | Maximum concurrent exact-item review workflow runs admitted to Codex.               |
+| `lanes.exact_review.max_concurrent`  |      20 | Maximum concurrent exact-item review workflow runs admitted to Codex.               |
+| `lanes.exact_review.target_max_concurrent` |      16 | Maximum concurrent exact-item review workflow runs one target repository may consume. |
 | `lanes.assist.max`                   |      10 | Maximum concurrent lightweight assist jobs.                                         |
 | `lanes.repair.cluster_max_live_runs` |       2 | Default live repair workflow cap for imported gitcrawl cluster dispatches.          |
 
@@ -52,7 +53,8 @@ by default.
 
 | Name                                                | Current | Meaning                                                                               |
 | --------------------------------------------------- | ------: | ------------------------------------------------------------------------------------- |
-| `exact_review.concurrent_max`                       |      14 | Exact-item review admission cap, clamped to `workers.max`.                            |
+| `exact_review.concurrent_max`                       |      20 | Exact-item review admission cap, clamped to `workers.max`.                            |
+| `exact_review.target_concurrent_max`                |      16 | Exact-item per-target admission cap, clamped to global exact-review capacity.          |
 | `assist.default`                                    |      10 | Maintainer assist job cap.                                                            |
 | `review_shards.normal_default`                      |      22 | Quiet-system normal review shard ceiling.                                             |
 | `review_shards.normal_active_floor`                 |       9 | Minimum active normal review shards to keep queued for `openclaw/openclaw`.           |
@@ -114,9 +116,9 @@ Exact-item webhooks are admitted by the dashboard Worker's durable
 deliveries by repository and item number, so a new webhook updates the latest
 desired review rather than consuming another runner. Only
 `EXACT_REVIEW_QUEUE_MAX_CONCURRENT` leased items may dispatch an exact-review
-workflow at once; the default is 14. `EXACT_REVIEW_TARGET_MAX_CONCURRENT` bounds
+workflow at once; the default is 20. `EXACT_REVIEW_TARGET_MAX_CONCURRENT` bounds
 how many of those slots one target repository may consume; production sets it
-to 10 so other target repositories retain four global slots during an OpenClaw
+to 16 so other target repositories retain four global slots during an OpenClaw
 backlog drain.
 
 Each dispatched workflow claims its opaque lease before checkout. Duplicate
