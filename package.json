@@ -97,6 +97,9 @@
     "crabbox:warmup": "crabbox warmup",
     "repair:pr-intake": "node dist/repair/pr-repair-intake.js"
   },
+  "dependencies": {
+    "yaml": "^2.9.0"
+  },
   "devDependencies": {
     "@types/node": "^25.9.2",
     "@typescript/native-preview": "7.0.0-dev.20260609.1",

@@ -1085,6 +1085,11 @@ const DEFAULT_CODEX_FALLBACK_MIN_BUDGET_MS = 120_000;
 const REVIEW_POLICY_VERSION = "2026-06-15-policy-v22";
 const REVIEW_ITEM_PROMPT_PATH = join(ROOT, "prompts", "review-item.md");
 const CLAWSWEEPER_DECISION_SCHEMA_PATH = join(ROOT, "schema", "clawsweeper-decision.schema.json");
+const MATURITY_STABLE_SHORTLIST_SCRIPT_PATH = join(
+  ROOT,
+  "scripts",
+  "maturity-stable-shortlist.mjs",
+);
 const PR_CLOSE_COVERAGE_PROOF_PROMPT_PATH = join(ROOT, "prompts", "pr-close-coverage-proof.md");
 const PR_CLOSE_COVERAGE_PROOF_SCHEMA_PATH = join(
   ROOT,
@@ -6941,6 +6946,9 @@ function buildReviewPrompt(
   const contextJson = contextJsonForPrompt(context);
   const schema = reviewDecisionSchemaText();
   const proofScratchDir = runtimeHints.proofScratchDir?.trim();
+  const maturityHelperPath = proofScratchDir
+    ? `\`${proofScratchDir}/maturity-stable-shortlist.mjs\``
+    : "the scratch directory as `maturity-stable-shortlist.mjs`";
   const mediaProofPrompt = mediaProofRuntimePrompt(
     runtimeHints.mediaProofSummary,
     runtimeHints.mediaProofManifestPath,
@@ -6975,6 +6983,7 @@ ${additionalPrompt.trim()}
 - You may use the available network and read-only GitHub token to inspect PR body links, comments, screenshots, videos, logs, terminal output, and target-repo artifacts.
 - Download proof artifacts into ${proofScratchDir ? `\`${proofScratchDir}\`` : "a temporary scratch directory"} before inspecting them.
 - The target checkout is read-only for review. Do not modify repository files; use the scratch directory or /tmp for downloaded evidence and generated video stills/contact sheets.
+- A token-light maturity helper is available at ${maturityHelperPath}. For issue maturity labels, first run \`node "$CLAWSWEEPER_PROOF_SCRATCH_DIR/maturity-stable-shortlist.mjs"\` from the target checkout and compare the issue against that shortlist; read the full scorecard or taxonomy only if the shortlist is ambiguous.
 ${mediaProofPrompt}
 
 ## GitHub Context
@@ -6994,6 +7003,31 @@ ${extra}
       additionalPromptChars: additionalPrompt.trim().length,
     },
   };
+}
+
+function prepareMaturityStableShortlistScript(proofScratchDir: string, openclawDir: string): void {
+  const scorecardPath = join(openclawDir, "qa", "maturity-scores.yaml");
+  const shortlist = maturityStableShortlist(scorecardPath);
+  writeFileSync(
+    join(proofScratchDir, "maturity-stable-shortlist.mjs"),
+    `#!/usr/bin/env node\nconsole.log(${JSON.stringify(shortlist)});\n`,
+    "utf8",
+  );
+}
+
+function maturityStableShortlist(scorecardPath: string): string {
+  const result = spawnSync(
+    process.execPath,
+    [MATURITY_STABLE_SHORTLIST_SCRIPT_PATH, scorecardPath],
+    {
+      encoding: "utf8",
+      maxBuffer: 1024 * 1024,
+    },
+  );
+  if (result.status === 0) return result.stdout.trim();
+  const detail =
+    result.stderr?.trim() || result.error?.message || "maturity shortlist script failed";
+  return `Unable to read maturity shortlist: ${detail}`;
 }
 
 function reviewPromptTelemetry(
@@ -7378,6 +7412,7 @@ function runCodex(options: {
   const proofScratchDir =
     options.proofScratchDir ?? join(options.workDir, "proof-scratch", String(options.item.number));
   ensureDir(proofScratchDir);
+  prepareMaturityStableShortlistScript(proofScratchDir, options.openclawDir);
   const preparedMediaProof = options.prompt
     ? { manifestPath: null, summaryPath: null, artifacts: [] }
     : prepareMediaProofArtifacts(options.context, proofScratchDir);

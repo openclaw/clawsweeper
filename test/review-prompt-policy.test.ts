@@ -317,6 +317,28 @@ test("review prompt and schema describe positive-only feature showcase labels", 
   assert.deepEqual(featureShowcase.properties.status.enum, ["showcase", "none"]);
 });
 
+test("review prompt uses token-light maturity shortlist helper", () => {
+  const prompt = readFileSync("prompts/review-item.md", "utf8");
+  const runtimePrompt = reviewPromptForTest(
+    item({ kind: "issue" }),
+    { issue: {}, comments: [], timeline: [] },
+    { mainSha: "abc123", latestRelease: null },
+    "",
+    { proofScratchDir: "/tmp/proof" },
+  );
+
+  assert.match(prompt, /maturity-stable-shortlist\.mjs/);
+  assert.match(prompt, /compare the issue against the M4\+ shortlist/);
+  assert.match(
+    runtimePrompt,
+    /node "\$CLAWSWEEPER_PROOF_SCRATCH_DIR\/maturity-stable-shortlist\.mjs"/,
+  );
+  assert.match(
+    runtimePrompt,
+    /read the full scorecard or taxonomy only if the shortlist is ambiguous/,
+  );
+});
+
 test("review prompt classifies Telegram visible proof candidates", () => {
   const prompt = readFileSync("prompts/review-item.md", "utf8");
 

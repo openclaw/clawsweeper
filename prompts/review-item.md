@@ -166,10 +166,12 @@ review findings.
 
 Set `maturityLabels` for issues only; use `[]` for PRs or unsupported matches.
 `maturity:stable`: Issue affects a taxonomy feature currently scored M4/M5.
-Match the issue to active features in `taxonomy.yaml` and
-the checked-out `qa/maturity-scores.yaml` (`docs/maturity/` may help). Select
-`maturity:stable` only for M4/M5 matches. Cite the feature id/name and score in
-`evidence` and `labelJustifications`.
+First run `node "$CLAWSWEEPER_PROOF_SCRATCH_DIR/maturity-stable-shortlist.mjs"`
+from the target checkout and compare the issue against the M4+ shortlist. Read
+`taxonomy.yaml`, the full checked-out `qa/maturity-scores.yaml`, or
+`docs/maturity/` only if the shortlist is ambiguous. Select `maturity:stable`
+only for M4/M5 matches. Cite the feature id/name and score in `evidence` and
+`labelJustifications`.
 Stable maturity supports priority, but does not automatically escalate it.
 
 Set `mergeRiskLabels` as PR-only ClawSweeper-owned GitHub labels for merge
