@@ -136,8 +136,13 @@ type MergeRiskLabelName =
   | "merge-risk: 🚨 availability"
   | "merge-risk: 🚨 automation"
   | "merge-risk: 🚨 other";
+type MaturityLabelName = "maturity:stable";
 type MergeRiskOptionCategory = "fix_before_merge" | "accept_risk" | "pause_or_close";
-type ReviewLabelName = Exclude<TriagePriority, "none"> | ImpactLabelName | MergeRiskLabelName;
+type ReviewLabelName =
+  | Exclude<TriagePriority, "none">
+  | ImpactLabelName
+  | MergeRiskLabelName
+  | MaturityLabelName;
 type ItemCategory =
   | "bug"
   | "regression"
@@ -460,6 +465,7 @@ interface Decision {
   triagePriority: TriagePriority;
   impactLabels: ImpactLabelName[];
   mergeRiskLabels: MergeRiskLabelName[];
+  maturityLabels: MaturityLabelName[];
   mergeRiskOptions: MergeRiskOption[];
   reviewMetrics: ReviewMetric[];
   labelJustifications: LabelJustification[];
@@ -1371,6 +1377,20 @@ const MERGE_RISK_LABELS = [
 const MERGE_RISK_LABEL_NAMES: ReadonlySet<string> = new Set(
   MERGE_RISK_LABELS.map((label) => label.name),
 );
+const MATURITY_LABELS = [
+  {
+    name: "maturity:stable",
+    color: "1F883D",
+    description: "Issue affects a taxonomy feature currently scored M4/M5.",
+  },
+] as const satisfies readonly {
+  name: MaturityLabelName;
+  color: string;
+  description: string;
+}[];
+const MATURITY_LABEL_NAMES: ReadonlySet<string> = new Set(
+  MATURITY_LABELS.map((label) => label.name),
+);
 const ISSUE_ADVISORY_LABELS = [
   {
     name: "issue-rating: 🦀 challenger crab",
@@ -1566,6 +1586,9 @@ const IMPACT_LABEL_VALUES = new Set<ImpactLabelName>(IMPACT_LABELS.map((label) =
 const MERGE_RISK_LABEL_VALUES = new Set<MergeRiskLabelName>(
   MERGE_RISK_LABELS.map((label) => label.name),
 );
+const MATURITY_LABEL_VALUES = new Set<MaturityLabelName>(
+  MATURITY_LABELS.map((label) => label.name),
+);
 const REVIEW_LABEL_VALUES = new Set<ReviewLabelName>([
   "P0",
   "P1",
@@ -1573,6 +1596,7 @@ const REVIEW_LABEL_VALUES = new Set<ReviewLabelName>([
   "P3",
   ...IMPACT_LABELS.map((label) => label.name),
   ...MERGE_RISK_LABELS.map((label) => label.name),
+  ...MATURITY_LABELS.map((label) => label.name),
 ]);
 const REAL_BEHAVIOR_PROOF_STATUSES = new Set<RealBehaviorProofStatus>([
   "sufficient",
@@ -1656,6 +1680,7 @@ const DECISION_SCHEMA_KEYS = new Set([
   "triagePriority",
   "impactLabels",
   "mergeRiskLabels",
+  "maturityLabels",
   "mergeRiskOptions",
   "reviewMetrics",
   "labelJustifications",
@@ -2271,6 +2296,12 @@ function requireMergeRiskLabels(value: unknown): MergeRiskLabelName[] {
   return labels;
 }
 
+function requireMaturityLabels(value: unknown): MaturityLabelName[] {
+  const labels = requireEnumArray(value, MATURITY_LABEL_VALUES, "decision.maturityLabels");
+  if (labels.length > 1) throw new Error("decision.maturityLabels must contain at most 1 label");
+  return labels;
+}
+
 function parseMergeRiskOption(value: unknown, path: string): MergeRiskOption {
   const record = requireRecord(value, path);
   rejectUnexpectedKeys(record, MERGE_RISK_OPTION_SCHEMA_KEYS, path);
@@ -2370,19 +2401,23 @@ function requireLabelJustifications(value: unknown): LabelJustification[] {
 }
 
 function selectedReviewLabels(
-  decision: Pick<Decision, "triagePriority" | "impactLabels" | "mergeRiskLabels">,
+  decision: Pick<
+    Decision,
+    "triagePriority" | "impactLabels" | "mergeRiskLabels" | "maturityLabels"
+  >,
 ): ReviewLabelName[] {
   return [
     ...(decision.triagePriority === "none" ? [] : [decision.triagePriority]),
     ...decision.impactLabels,
     ...decision.mergeRiskLabels,
+    ...decision.maturityLabels,
   ];
 }
 
 function validateLabelJustifications(
   decision: Pick<
     Decision,
-    "triagePriority" | "impactLabels" | "mergeRiskLabels" | "labelJustifications"
+    "triagePriority" | "impactLabels" | "mergeRiskLabels" | "maturityLabels" | "labelJustifications"
   >,
 ): void {
   const selected = new Set<string>(selectedReviewLabels(decision));
@@ -2851,6 +2886,7 @@ export function parseDecision(value: unknown, item?: DecisionNormalizationItem):
     ),
     impactLabels: requireImpactLabels(record.impactLabels),
     mergeRiskLabels: requireMergeRiskLabels(record.mergeRiskLabels),
+    maturityLabels: requireMaturityLabels(record.maturityLabels),
     mergeRiskOptions: requireMergeRiskOptions(record.mergeRiskOptions),
     reviewMetrics: requireReviewMetrics(record.reviewMetrics),
     labelJustifications: requireLabelJustifications(record.labelJustifications),
@@ -7125,6 +7161,7 @@ function codexFailureDecision(
     triagePriority: "none",
     impactLabels: [],
     mergeRiskLabels: [],
+    maturityLabels: [],
     mergeRiskOptions: [],
     reviewMetrics: [],
     labelJustifications: [],
@@ -9162,6 +9199,12 @@ function mergeRiskLabelsFromReport(markdown: string): MergeRiskLabelName[] {
   );
 }
 
+function maturityLabelsFromReport(markdown: string): MaturityLabelName[] {
+  return frontMatterStringArray(markdown, "maturity_labels").filter(
+    (label): label is MaturityLabelName => MATURITY_LABEL_NAMES.has(label),
+  );
+}
+
 function mergeRiskOptionsFromReport(markdown: string): MergeRiskOption[] {
   return frontMatterJsonArray(markdown, "merge_risk_options")
     .map((entry, index) => {
@@ -9176,7 +9219,7 @@ function mergeRiskOptionsFromReport(markdown: string): MergeRiskOption[] {
 
 function labelJustificationsFromReport(
   markdown: string,
-  labels: Pick<Decision, "triagePriority" | "impactLabels" | "mergeRiskLabels">,
+  labels: Pick<Decision, "triagePriority" | "impactLabels" | "mergeRiskLabels" | "maturityLabels">,
 ): LabelJustification[] {
   const selected = new Set<string>(selectedReviewLabels(labels));
   const fromFrontMatter = frontMatterJsonArray(markdown, "label_justifications")
@@ -10798,6 +10841,36 @@ export function impactLabelsForTest(
   );
 }
 
+function nextMaturityLabels(
+  labels: readonly string[],
+  maturityLabels: readonly MaturityLabelName[],
+): string[] {
+  const nextLabels = labels.filter((label) => !MATURITY_LABEL_NAMES.has(label));
+  const uniqueMaturityLabels = new Set(maturityLabels);
+  for (const label of MATURITY_LABELS) {
+    if (uniqueMaturityLabels.has(label.name)) nextLabels.push(label.name);
+  }
+  return nextLabels;
+}
+
+export function maturityLabelSchemeForTest(): {
+  name: string;
+  color: string;
+  description: string;
+}[] {
+  return MATURITY_LABELS.map(({ name, color, description }) => ({ name, color, description }));
+}
+
+export function maturityLabelsForTest(
+  labels: readonly string[],
+  maturityLabels: readonly string[],
+): string[] {
+  return nextMaturityLabels(
+    labels,
+    maturityLabels.filter((label): label is MaturityLabelName => MATURITY_LABEL_NAMES.has(label)),
+  );
+}
+
 function nextMergeRiskLabels(
   labels: readonly string[],
   mergeRiskLabels: readonly MergeRiskLabelName[],
@@ -11102,6 +11175,28 @@ function ensureIssueAdvisorySyncLabel(name: string): void {
   }
 }
 
+function ensureMaturityLabel(name: MaturityLabelName): void {
+  const definition = MATURITY_LABELS.find((label) => label.name === name);
+  if (!definition) return;
+  try {
+    ghWithRetry(
+      [
+        "label",
+        "create",
+        definition.name,
+        "--color",
+        definition.color,
+        "--description",
+        definition.description,
+      ],
+      2,
+    );
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (!/already exists/i.test(message)) throw error;
+  }
+}
+
 function syncPriorityLabel(options: {
   number: number;
   labels: readonly string[];
@@ -11163,6 +11258,40 @@ function syncImpactLabels(options: {
   let added = false;
   for (const label of labelsToAdd) {
     ensureImpactLabel(label);
+    if (tryAddOptionalLabel({ number: options.number, label, currentLabels: syncedLabels })) {
+      syncedLabels.push(label);
+      added = true;
+    }
+  }
+  return { labels: syncedLabels, changed: labelsToRemove.length > 0 || added };
+}
+
+function syncMaturityLabels(options: {
+  number: number;
+  labels: readonly string[];
+  maturityLabels: readonly MaturityLabelName[];
+  dryRun: boolean;
+}): { labels: string[]; changed: boolean } {
+  const nextLabels = nextMaturityLabels(options.labels, options.maturityLabels);
+  const currentLabelKeys = new Set(options.labels.map((label) => label.toLowerCase()));
+  const nextLabelKeys = new Set(nextLabels.map((label) => label.toLowerCase()));
+  const labelsToAdd = nextLabels.filter(
+    (label): label is MaturityLabelName =>
+      MATURITY_LABEL_NAMES.has(label) && !currentLabelKeys.has(label.toLowerCase()),
+  );
+  const labelsToRemove = options.labels.filter(
+    (label) => MATURITY_LABEL_NAMES.has(label) && !nextLabelKeys.has(label.toLowerCase()),
+  );
+  const changed = labelsToAdd.length > 0 || labelsToRemove.length > 0;
+  if (!changed) return { labels: nextLabels, changed };
+  if (options.dryRun) return { labels: nextLabels, changed };
+  for (const label of labelsToRemove) {
+    ghWithRetry(["issue", "edit", String(options.number), "--remove-label", label]);
+  }
+  const syncedLabels = options.labels.filter((label) => !labelsToRemove.includes(label));
+  let added = false;
+  for (const label of labelsToAdd) {
+    ensureMaturityLabel(label);
     if (tryAddOptionalLabel({ number: options.number, label, currentLabels: syncedLabels })) {
       syncedLabels.push(label);
       added = true;
@@ -12378,6 +12507,7 @@ function reportDecision(markdown: string, closeReason: CloseReason): Decision {
   const triagePriority = triagePriorityFromReport(markdown);
   const impactLabels = kind === "pull_request" ? [] : impactLabelsFromReport(markdown);
   const mergeRiskLabels = mergeRiskLabelsFromReport(markdown);
+  const maturityLabels = kind === "pull_request" ? [] : maturityLabelsFromReport(markdown);
   const visionFit = reportVisionFit(markdown);
   return {
     decision: "close",
@@ -12392,12 +12522,14 @@ function reportDecision(markdown: string, closeReason: CloseReason): Decision {
     triagePriority,
     impactLabels,
     mergeRiskLabels,
+    maturityLabels,
     mergeRiskOptions: mergeRiskOptionsFromReport(markdown),
     reviewMetrics: reviewMetricsFromReport(markdown),
     labelJustifications: labelJustificationsFromReport(markdown, {
       triagePriority,
       impactLabels,
       mergeRiskLabels,
+      maturityLabels,
     }),
     itemCategory:
       (frontMatterValue(markdown, "item_category") as ItemCategory | undefined) ?? "unclear",
@@ -13456,6 +13588,7 @@ function isClawSweeperOwnedLabel(label: string): boolean {
     PRIORITY_LABEL_NAMES.has(label) ||
     IMPACT_LABEL_NAMES.has(label) ||
     MERGE_RISK_LABEL_NAMES.has(label) ||
+    MATURITY_LABEL_NAMES.has(label) ||
     PR_RATING_LABEL_NAMES.has(label) ||
     PR_STATUS_LABEL_NAMES.has(label) ||
     label === FEATURE_SHOWCASE_LABEL ||
@@ -13475,6 +13608,7 @@ function desiredClawSweeperLabelsFromPublicReport(
   const reviewFailed = frontMatterValue(markdown, "review_status") === "failed";
   let labels = nextPriorityLabels(currentLabels, triagePriorityFromReport(markdown));
   labels = nextImpactLabels(labels, isPullRequest ? [] : impactLabelsFromReport(markdown));
+  labels = nextMaturityLabels(labels, isPullRequest ? [] : maturityLabelsFromReport(markdown));
   if (isPullRequest) {
     const realBehaviorProof = reportRealBehaviorProof(markdown);
     labels = nextMergeRiskLabels(labels, mergeRiskLabelsFromReport(markdown));
@@ -13543,6 +13677,14 @@ function labelTransitionReason(
       : labels.length
         ? `Current PR review merge-risk labels are ${labels.map(inlineCode).join(", ")}.`
         : "Current PR review selected no merge-risk labels.";
+  }
+  if (MATURITY_LABEL_NAMES.has(label)) {
+    const labels = maturityLabelsFromReport(markdown);
+    return action === "add"
+      ? "Current issue review matched this item to a stable maturity scorecard feature."
+      : labels.length
+        ? `Current issue maturity labels are ${labels.map(inlineCode).join(", ")}.`
+        : "Current issue review selected no maturity labels.";
   }
   if (PR_RATING_LABEL_NAMES.has(label)) {
     if (frontMatterValue(markdown, "review_status") === "failed") {
@@ -13639,6 +13781,7 @@ function labelJustificationsFromPublicReport(
     triagePriority: triagePriorityFromReport(markdown),
     impactLabels: impactLabelsFromReport(markdown),
     mergeRiskLabels: mergeRiskLabelsFromReport(markdown),
+    maturityLabels: maturityLabelsFromReport(markdown),
   });
   const byLabel = new Map(justifications.map((entry) => [entry.label, entry]));
   const add = (label: string | null | undefined, reason: string): void => {
@@ -15754,6 +15897,7 @@ work_likely_files: ${jsonFrontMatterValue(options.decision.workLikelyFiles)}
 triage_priority: ${options.decision.triagePriority}
 impact_labels: ${jsonFrontMatterValue(options.decision.impactLabels)}
 merge_risk_labels: ${jsonFrontMatterValue(options.decision.mergeRiskLabels)}
+maturity_labels: ${jsonFrontMatterValue(options.decision.maturityLabels)}
 merge_risk_options: ${JSON.stringify(options.decision.mergeRiskOptions)}
 review_metrics: ${JSON.stringify(options.decision.reviewMetrics)}
 label_justifications: ${JSON.stringify(options.decision.labelJustifications)}
@@ -17409,6 +17553,15 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
         item.labels = impactSyncResult.labels;
         clawSweeperLabelsChanged ||= impactSyncResult.changed;
         markdown = replaceFrontMatterValue(markdown, "labels", JSON.stringify(item.labels));
+        const maturitySyncResult = syncMaturityLabels({
+          number,
+          labels: item.labels,
+          maturityLabels: item.kind === "pull_request" ? [] : maturityLabelsFromReport(markdown),
+          dryRun,
+        });
+        item.labels = maturitySyncResult.labels;
+        clawSweeperLabelsChanged ||= maturitySyncResult.changed;
+        markdown = replaceFrontMatterValue(markdown, "labels", JSON.stringify(item.labels));
         let mergeRiskLabelsChanged = false;
         if (item.kind === "pull_request") {
           const mergeRiskSyncResult = syncMergeRiskLabels({
@@ -17422,7 +17575,12 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
           clawSweeperLabelsChanged ||= mergeRiskSyncResult.changed;
           markdown = replaceFrontMatterValue(markdown, "labels", JSON.stringify(item.labels));
         }
-        if (syncResult.changed || impactSyncResult.changed || mergeRiskLabelsChanged) {
+        if (
+          syncResult.changed ||
+          impactSyncResult.changed ||
+          maturitySyncResult.changed ||
+          mergeRiskLabelsChanged
+        ) {
           rememberSelfMutationUpdatedAt();
         }
       } catch (error) {

@@ -88,6 +88,22 @@ test("decision parser enforces required schema-shaped evidence", () => {
     () =>
       parseDecision({
         ...closeDecision(),
+        maturityLabels: ["maturity:unknown"],
+      }),
+    /decision\.maturityLabels\[0\]/,
+  );
+  assert.throws(
+    () =>
+      parseDecision({
+        ...closeDecision(),
+        maturityLabels: ["maturity:stable", "maturity:stable"],
+      }),
+    /decision\.maturityLabels must contain at most 1 label/,
+  );
+  assert.throws(
+    () =>
+      parseDecision({
+        ...closeDecision(),
         mergeRiskLabels: ["merge-risk:unknown"],
       }),
     /decision\.mergeRiskLabels\[0\]/,
@@ -290,6 +306,7 @@ test("decision parser enforces required schema-shaped evidence", () => {
       parseDecision({
         ...closeDecision({
           impactLabels: ["impact:message-loss"],
+          maturityLabels: ["maturity:stable"],
           labelJustifications: [
             {
               label: "P2",
@@ -298,7 +315,7 @@ test("decision parser enforces required schema-shaped evidence", () => {
           ],
         }),
       }),
-    /decision\.labelJustifications missing selected labels: impact:message-loss/,
+    /decision\.labelJustifications missing selected labels: impact:message-loss, maturity:stable/,
   );
   assert.throws(
     () =>

@@ -9,6 +9,8 @@ import {
   labelJustificationsMarkdownForTest,
   mergeRiskLabelsForTest,
   mergeRiskLabelSchemeForTest,
+  maturityLabelSchemeForTest,
+  maturityLabelsForTest,
   parseDecision,
   prRatingLabelsForTest,
   prRatingLabelSchemeForTest,
@@ -639,10 +641,26 @@ test("ClawSweeper impact labels remove stale owned labels and preserve unrelated
   assert.deepEqual(impactLabelsForTest(["bug", "impact:auth-provider"], []), ["bug"]);
 });
 
+test("ClawSweeper maturity labels remove stale owned labels and preserve unrelated labels", () => {
+  assert.deepEqual(maturityLabelSchemeForTest(), [
+    {
+      name: "maturity:stable",
+      color: "1F883D",
+      description: "Issue affects a taxonomy feature currently scored M4/M5.",
+    },
+  ]);
+  assert.deepEqual(maturityLabelsForTest(["bug"], ["maturity:stable"]), ["bug", "maturity:stable"]);
+  assert.deepEqual(maturityLabelsForTest(["bug", "maturity:stable", "impact:security"], []), [
+    "bug",
+    "impact:security",
+  ]);
+});
+
 test("ClawSweeper impact labels do not alter PR review finding priorities", () => {
   const decision = parseDecision(
     closeDecision({
       impactLabels: ["impact:data-loss", "impact:security"],
+      maturityLabels: ["maturity:stable"],
       labelJustifications: [
         {
           label: "P2",
@@ -655,6 +673,10 @@ test("ClawSweeper impact labels do not alter PR review finding priorities", () =
         {
           label: "impact:security",
           reason: "The selected labels include a security impact classification.",
+        },
+        {
+          label: "maturity:stable",
+          reason: "taxonomy feature agent-session is currently scored M4.",
         },
       ],
       reviewFindings: [
@@ -671,6 +693,7 @@ test("ClawSweeper impact labels do not alter PR review finding priorities", () =
     }),
   );
   assert.deepEqual(decision.impactLabels, ["impact:data-loss", "impact:security"]);
+  assert.deepEqual(decision.maturityLabels, ["maturity:stable"]);
   assert.equal(decision.reviewFindings[0]?.priority, 1);
 });
 

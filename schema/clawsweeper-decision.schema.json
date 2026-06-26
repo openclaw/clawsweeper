@@ -15,6 +15,7 @@
     "triagePriority",
     "impactLabels",
     "mergeRiskLabels",
+    "maturityLabels",
     "mergeRiskOptions",
     "reviewMetrics",
     "labelJustifications",
@@ -209,6 +210,15 @@
       },
       "description": "PR-only ClawSweeper-owned GitHub labels for merge risks that green CI does not settle. These describe what could go wrong specifically because this PR is merged, not the affected or solved problem class. Use at most 3 for pull requests and [] for issues and when no meaningful owned merge-risk signal applies. Do not use merge-risk: 🚨 automation only because CI is red, pending, flaky, or absent; use it only when the PR diff changes automation behavior or plausibly causes CI, automerge, proof capture, label sync, or related automation to fail after merge. merge-risk: 🚨 other counts toward this max and means meaningful merge risk exists but no specific owned merge-risk label fits. Prefer a specific merge-risk label over merge-risk: 🚨 other. merge-risk: 🚨 compatibility: 🚨 Merging this PR could break existing users, config, migrations, defaults, or upgrades. merge-risk: 🚨 message-delivery: 🚨 Merging this PR could drop, duplicate, misroute, suppress, or wrongly target messages. merge-risk: 🚨 session-state: 🚨 Merging this PR could lose, corrupt, stale, or mis-associate session or agent state. merge-risk: 🚨 auth-provider: 🚨 Merging this PR could break OAuth, tokens, provider routing, model choice, or credentials. merge-risk: 🚨 security-boundary: 🚨 Merging this PR could weaken sandboxing, authorization, credentials, or sensitive data. merge-risk: 🚨 availability: 🚨 Merging this PR could cause crashes, hangs, restart loops, stalls, or process outages. merge-risk: 🚨 automation: 🚨 Merging this PR could break CI, automerge, proof capture, label sync, or automation. merge-risk: 🚨 other: 🚨 Merging this PR has meaningful risk outside the owned taxonomy."
     },
+    "maturityLabels": {
+      "type": "array",
+      "maxItems": 1,
+      "items": {
+        "type": "string",
+        "enum": ["maturity:stable"]
+      },
+      "description": "Issue-only labels for mature taxonomy matches. Use [] for PRs. Select maturity:stable only when an active matched feature is currently M4/M5 in qa/maturity-scores.yaml."
+    },
     "mergeRiskOptions": {
       "type": "array",
       "maxItems": 3,
@@ -285,6 +295,7 @@
               "impact:session-state",
               "impact:auth-provider",
               "impact:other",
+              "maturity:stable",
               "merge-risk: 🚨 compatibility",
               "merge-risk: 🚨 message-delivery",
               "merge-risk: 🚨 session-state",
@@ -301,7 +312,7 @@
           }
         }
       },
-      "description": "One justification for every selected ClawSweeper-managed triage, impact, and merge-risk label. Include the selected triagePriority unless it is none, every selected impactLabels entry, and every selected mergeRiskLabels entry. Do not include labels that were not selected."
+      "description": "One justification for every selected ClawSweeper-managed triage, impact, maturity, and merge-risk label. Include the selected triagePriority unless it is none, every selected impactLabels entry, every selected maturityLabels entry, and every selected mergeRiskLabels entry. Do not include labels that were not selected."
     },
     "itemCategory": {
       "type": "string",

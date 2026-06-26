@@ -164,6 +164,14 @@ labels are searchable GitHub labels only; they describe what the item is about,
 not the risk of merging a PR. They do not close, merge, block, or replace
 review findings.
 
+Set `maturityLabels` for issues only; use `[]` for PRs or unsupported matches.
+`maturity:stable`: Issue affects a taxonomy feature currently scored M4/M5.
+Match the issue to active features in `taxonomy.yaml` and
+the checked-out `qa/maturity-scores.yaml` (`docs/maturity/` may help). Select
+`maturity:stable` only for M4/M5 matches. Cite the feature id/name and score in
+`evidence` and `labelJustifications`.
+Stable maturity supports priority, but does not automatically escalate it.
+
 Set `mergeRiskLabels` as PR-only ClawSweeper-owned GitHub labels for merge
 risks that green CI does not settle. Use an empty array for issues. Keep these
 separate from `impactLabels`: impact labels are issue-only affected-problem
@@ -225,8 +233,8 @@ labels or values, and do not restate full `risks`, `bestSolution`,
 
 Fill `labelJustifications` with one object for every selected ClawSweeper-managed
 label. Include the selected `triagePriority` unless it is `none`, every selected
-`impactLabels` entry, and every selected `mergeRiskLabels` entry. Do not include
-labels that were not selected. Each `reason` should be one concise
+`impactLabels` entry, every selected `maturityLabels` entry, and every selected
+`mergeRiskLabels` entry. Do not include labels that were not selected. Each `reason` should be one concise
 maintainer-facing sentence grounded in the item, diff, current behavior, or
 discussion.
 

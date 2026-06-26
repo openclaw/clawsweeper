@@ -80,6 +80,7 @@ export function closeDecision(overrides = {}) {
     bestSolution: "Keep the implementation as-is.",
     triagePriority: "P2",
     impactLabels: [],
+    maturityLabels: [],
     mergeRiskLabels: [],
     mergeRiskOptions: [],
     reviewMetrics: [],
