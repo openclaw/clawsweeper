@@ -47,7 +47,10 @@ import {
   canUseAutomergeFastRebase,
 } from "./automerge-shepherd.js";
 import { automergeOutcomeReviewedShaFromResult } from "./automerge-outcome.js";
-import { isCanonicalLandingNeedsHumanText } from "./comment-router-core.js";
+import {
+  branchRepairCanContinueAutomerge,
+  isCanonicalLandingNeedsHumanText,
+} from "./comment-router-core.js";
 import { parsePullRequestUrl, pullRequestNumberFromUrl } from "./github-ref.js";
 import {
   clawsweeperGitUserEmail,
@@ -3754,10 +3757,23 @@ function updateAutomergeStatusCommentForBranchRepair({
   if (Number(target) !== Number(automergeOutcomeTargetPrNumber())) return false;
   const existingStatus = findAutomergeStatusComment(target);
   const runUrl = currentActionsRunUrl();
-  const reviewDispatch = dispatchAutomergeReviewAfterBranchRepair({ target, commit });
+  const automergeEnabled = canContinueAutomergeAfterBranchRepair();
+  const reviewDispatch = automergeEnabled
+    ? dispatchAutomergeReviewAfterBranchRepair({ target, commit })
+    : { status: "skipped", reason: "merge disabled for autofix" };
+  const actionLine = automergeEnabled
+    ? "Action: branch repair was pushed; continue merge only after checks and exact-head review are green."
+    : "Action: branch repair was pushed; leave final merge to a maintainer or explicit automerge opt-in.";
+  const currentStateLine = automergeEnabled
+    ? reviewDispatch.status === "executed"
+      ? "Current state: exact-head review queued immediately; GitHub checks and the review verdict gate final merge."
+      : "Current state: waiting for GitHub checks and the next router pass to continue automerge."
+    : "Current state: autofix applied for this head. Final merge remains disabled for this job.";
+  const reviewDispatchRecord = reviewDispatch as LooseRecord;
+  const reviewDispatchedAt = String(reviewDispatchRecord.dispatched_at ?? "");
   const body = [
-    "🦞🔧",
-    "ClawSweeper applied a repair to this PR branch.",
+    "ClawSweeper repair applied.",
+    actionLine,
     "",
     fastRepair?.status === "ready"
       ? "Repair: rebased this branch deterministically; Codex fix/edit was not needed."
@@ -3766,10 +3782,10 @@ function updateAutomergeStatusCommentForBranchRepair({
     `Updated head: ${markdownCommitLink(result.repo, commit)}`,
     ...(runUrl ? [`Run: ${runUrl}`] : []),
     "",
-    reviewDispatch.status === "executed"
-      ? "Current state: exact-head review queued immediately; GitHub checks and the review verdict gate final merge."
-      : "Current state: waiting for GitHub checks and the next router pass to continue automerge.",
-    ...(reviewDispatch.status === "failed" ? [`Review dispatch: ${reviewDispatch.reason}`] : []),
+    currentStateLine,
+    ...(automergeEnabled && reviewDispatch.status === "failed"
+      ? [`Review dispatch: ${reviewDispatch.reason}`]
+      : []),
   ].join("\n");
   const bodyWithTimeline = mergeAutomergeTimelineSection({
     body,
@@ -3787,12 +3803,12 @@ function updateAutomergeStatusCommentForBranchRepair({
         status: fastRepair?.status === "ready" ? "deterministic rebase" : "branch updated",
         details: fastRepair?.reason ?? null,
       },
-      ...(reviewDispatch.status === "executed"
+      ...(reviewDispatch.status === "executed" && reviewDispatchedAt
         ? [
             {
-              id: `review-queued:${commit}:${reviewDispatch.dispatched_at}`,
+              id: `review-queued:${commit}:${reviewDispatchedAt}`,
               label: "review queued",
-              at: reviewDispatch.dispatched_at,
+              at: reviewDispatchedAt,
               headSha: commit,
               repo: result.repo,
               status: "after repair",
@@ -3814,6 +3830,9 @@ function updateAutomergeStatusCommentForBranchRepair({
 
 function waitForAutomergeAfterBranchRepair({ target, commit }: LooseRecord) {
   if (!isAutomergeRepairJob()) return { status: "skipped", reason: "not automerge repair" };
+  if (!canContinueAutomergeAfterBranchRepair()) {
+    return { status: "skipped", reason: "merge disabled for autofix" };
+  }
   if (process.env.CLAWSWEEPER_AUTOMERGE_SHEPHERD_WAIT === "0") {
     return { status: "skipped", reason: "disabled by CLAWSWEEPER_AUTOMERGE_SHEPHERD_WAIT=0" };
   }
@@ -3998,6 +4017,15 @@ function isAutomergeRepairJob() {
     job.frontmatter.source === "pr_automerge" ||
     String(result.cluster_id ?? "").startsWith("automerge-")
   );
+}
+
+function canContinueAutomergeAfterBranchRepair() {
+  return branchRepairCanContinueAutomerge({
+    source: job.frontmatter.source,
+    clusterId: result.cluster_id,
+    allowMerge: job.frontmatter.allow_merge,
+    blockedActions: job.frontmatter.blocked_actions,
+  });
 }
 
 function isSelfHealRepairJob() {

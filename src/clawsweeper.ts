@@ -8915,93 +8915,6 @@ function publicRealBehaviorProofLine(proof: RealBehaviorProof): string {
   }
 }
 
-function publicRankDetailsBlock(): string {
-  return collapsedDetailsBlock("What the crustacean ranks mean", [
-    "- 🦀 challenger crab: rare, exceptional readiness with strong proof, clean implementation, and convincing validation.",
-    "- 🦞 diamond lobster: very strong readiness with only minor maintainer review expected.",
-    "- 🐚 platinum hermit: good normal PR, likely mergeable with ordinary maintainer review.",
-    "- 🦐 gold shrimp: useful signal, but proof or patch confidence is still limited.",
-    "- 🦪 silver shellfish: thin signal; proof, validation, or implementation needs work.",
-    "- 🧂 unranked krab: not merge-ready because proof is missing/unusable or there are serious correctness or safety concerns.",
-    "- 🌊 off-meta tidepool: rating does not apply to this item.",
-    "",
-    "Shiny media proof means a screenshot, video, or linked artifact directly shows the changed behavior. Runtime, network, CSP, and security claims still need visible diagnostics.",
-  ]);
-}
-
-function publicMergeReadinessResult(rating: PrRating, proof: RealBehaviorProof): string {
-  if (rating.overallTier === "NA") return "rating does not apply to this item.";
-  switch (proof.status) {
-    case "missing":
-      return "blocked until real behavior proof is added.";
-    case "mock_only":
-      return "blocked until real behavior proof from a real setup is added.";
-    case "insufficient":
-      return "blocked until stronger real behavior proof is added.";
-    case "sufficient":
-    case "override":
-      if (rating.patchTier === "F" || rating.patchTier === "D") {
-        return "blocked by patch quality or review findings.";
-      }
-      if (rating.overallTier === "S" || rating.overallTier === "A" || rating.overallTier === "B") {
-        return "ready for maintainer review.";
-      }
-      return "needs maintainer review before merge.";
-    case "not_applicable":
-      return rating.patchTier === "F" || rating.patchTier === "D"
-        ? "blocked by patch quality or review findings."
-        : "ready for maintainer review.";
-  }
-}
-
-function publicMergeReadinessBlock(rating: PrRating, proof: RealBehaviorProof): string {
-  const shiny = hasShinyProof(proof) ? " ✨ media proof bonus" : "";
-  const proofGuidance =
-    proof.status === "missing" || proof.status === "mock_only" || proof.status === "insufficient"
-      ? publicPriorityBullet("P1", publicRealBehaviorProofLine(proof))
-      : "";
-  const lines = [
-    `Overall: ${themedRatingName(rating.overallTier)}`,
-    `Proof: ${themedRatingName(rating.proofTier)}${shiny}`,
-    `Patch quality: ${themedRatingName(rating.patchTier)}`,
-    `Result: ${publicMergeReadinessResult(rating, proof)}`,
-    "",
-    "Overall follows the weaker of proof and patch quality, so missing proof can cap an otherwise strong patch.",
-  ];
-  if (rating.nextSteps.length) {
-    const nextSteps = rating.nextSteps
-      .slice(0, 3)
-      .filter((step) => !isReportNoneList(stripPriorityPrefix(step)));
-    lines.push(
-      "",
-      "Rank-up moves:",
-      ...(nextSteps.length
-        ? nextSteps.map((step) =>
-            publicPriorityBulletIfActionable(step, proofGuidance ? "P1" : "P2"),
-          )
-        : ["- none"]),
-    );
-  }
-  if (proofGuidance) {
-    lines.push("", "Proof guidance:", proofGuidance);
-  }
-  return lines.join("\n");
-}
-
-function publicFailedReviewReadinessBlock(markdown: string): string {
-  const reason =
-    reportEvidence(markdown)
-      .find((entry) => entry.label === "failure reason")
-      ?.detail.trim() || "Codex review failed before completion.";
-  return [
-    "Not assessed.",
-    `Failure reason: ${sentence(reason)}`,
-    "",
-    "This is a ClawSweeper/Codex infrastructure failure, not a PR readiness or patch-quality verdict.",
-    "Keep any merge decision on the normal maintainer review path until ClawSweeper can complete a fresh review.",
-  ].join("\n");
-}
-
 function prStatusLabelKindFromLabels(labels: readonly string[]): PrStatusLabelKind | null {
   for (const label of PR_STATUS_LABELS) {
     if (labels.includes(label.name)) return label.kind;
@@ -10781,15 +10694,6 @@ function reviewMetricsFromReport(markdown: string): ReviewMetric[] {
       return { label, value, reason };
     })
     .filter((entry): entry is ReviewMetric => Boolean(entry));
-}
-
-function renderReviewMetricsDigest(metrics: readonly ReviewMetric[]): string {
-  if (metrics.length === 0) return "**Review metrics:** none identified.";
-  const noun = metrics.length === 1 ? "metric" : "metrics";
-  return [
-    `**Review metrics:** ${metrics.length} noteworthy ${noun}.`,
-    ...metrics.map((metric) => `- **${metric.label}:** ${metric.value}. ${metric.reason}`),
-  ].join("\n");
 }
 
 function isDocsPath(file: string): boolean {
@@ -14551,19 +14455,7 @@ function mergeRiskOptionsLines(options: readonly MergeRiskOption[]): string[] {
 function mergeRiskAutomergeInstructionBlock(instruction: string): string {
   const specialInstructions = normalizeMergeRiskAutomergeInstruction(instruction);
   if (!specialInstructions) return "";
-  return [
-    "<details>",
-    "<summary>Copy recommended automerge instruction</summary>",
-    "",
-    "```text",
-    "@clawsweeper automerge",
-    "",
-    "Special instructions:",
-    specialInstructions,
-    "```",
-    "",
-    "</details>",
-  ].join("\n");
+  return ["**Repair target:**", publicPriorityBulletFromText(specialInstructions, "P1")].join("\n");
 }
 
 function normalizeMergeRiskAutomergeInstruction(instruction: string): string {
@@ -14638,25 +14530,43 @@ function appendReviewQuestionDetails(
   }
 }
 
-function reviewWorkflowCallout(): string[] {
-  return [
-    collapsedDetailsBlock("How this review workflow works", [
-      "- ClawSweeper keeps one durable marker-backed review comment per issue or PR.",
-      "- Re-runs edit this comment so the latest verdict, findings, and automation markers stay together instead of adding duplicate bot comments.",
-      "- A fresh review can be triggered by eligible `@clawsweeper re-review` comments, exact-item GitHub events, scheduled/background review runs, or manual workflow dispatch.",
-      "- PR/issue authors and users with repository write access can comment `@clawsweeper re-review` or `@clawsweeper re-run` on an open PR or issue to request a fresh review only.",
-      "- Maintainers can also comment `@clawsweeper review` to request a fresh review only.",
-      "- Fresh-review commands do not start repair, autofix, rebase, CI repair, or automerge.",
-      "- Maintainer-only repair and merge flows require explicit commands such as `@clawsweeper autofix`, `@clawsweeper automerge`, `@clawsweeper fix ci`, or `@clawsweeper address review`.",
-      "- Maintainers can comment `@clawsweeper explain` to ask for more context, or `@clawsweeper stop` to stop active automation.",
-    ]),
-    "",
-  ];
-}
-
 function reviewFreshnessText(markdown: string): string {
   const timestamp = formatReviewFreshnessTimestamp(frontMatterValue(markdown, "reviewed_at"));
   return timestamp ? ` _Reviewed ${timestamp}._` : "";
+}
+
+function publicReviewActionLine(options: {
+  markdown: string;
+  isPullRequest: boolean;
+  reviewFailed: boolean;
+  hasRealBehaviorProofBlocker: boolean;
+  securityReview: SecurityReview;
+  isRepairCandidate: boolean;
+  hasReviewFindings: boolean;
+  isRepairLoopPass: boolean;
+}): string {
+  if (!options.isPullRequest) {
+    return "Action: keep this issue open until the missing behavior is implemented or the maintainer closes it.";
+  }
+  if (options.reviewFailed) {
+    return "Action: rerun review; no repair was planned from this failed pass.";
+  }
+  if (options.hasRealBehaviorProofBlocker) {
+    return "Action: human/live proof required; Dita will not edit this head until that blocker is cleared.";
+  }
+  if (
+    options.securityReview.status === "needs_attention" &&
+    !securitySensitiveRepairAllowed(options.markdown)
+  ) {
+    return "Action: owner security review required; Dita will not edit this head from the review comment alone.";
+  }
+  if (options.isRepairLoopPass) {
+    return "Action: no repair needed; this head passed the ClawSweeper repair loop.";
+  }
+  if (options.isRepairCandidate || options.hasReviewFindings) {
+    return "Action: Dita should queue a fix-only repair for this exact head. Final merge remains separately gated.";
+  }
+  return "Action: maintainer review; Dita did not find a narrow code repair to make.";
 }
 
 function renderKeepOpenCommentFromReport(
@@ -14667,8 +14577,6 @@ function renderKeepOpenCommentFromReport(
   const likelyOwners = reportLikelyOwners(markdown).slice(0, 5).map(likelyOwnerLine);
   const reviewFindings = reportReviewFindings(markdown);
   const securityReview = reportSecurityReview(markdown);
-  const realBehaviorProof = reportRealBehaviorProof(markdown);
-  const prRating = reportPrRating(markdown);
   const mantisRecommendation = reportMantisRecommendation(markdown);
   const agentsPolicyStatus = reportAgentsPolicyStatus(markdown);
   const rootCauseCluster = reportRootCauseCluster(markdown);
@@ -14679,7 +14587,6 @@ function renderKeepOpenCommentFromReport(
   const solutionAssessment = reviewSectionValue(markdown, "solutionAssessment");
   const risks = reviewSectionValue(markdown, "risks");
   const mergeRiskOptions = mergeRiskOptionsFromReport(markdown);
-  const reviewMetrics = reviewMetricsFromReport(markdown);
   const workReason = reportWorkCandidateReason(markdown);
   const workCandidate = frontMatterValue(markdown, "work_candidate");
   const isPullRequest = frontMatterValue(markdown, "type") === "pull_request";
@@ -14727,14 +14634,27 @@ function renderKeepOpenCommentFromReport(
   const lines = [`${verdictLine}${reviewFreshnessText(markdown)}`, ""];
   const prSurface = renderOpenClawPrSurfaceFromReport(markdown);
   const prSurfaceSummary = prSurface.split("\n\n", 1)[0]?.trim() ?? "";
-  if (prSurface) evidenceDetails.push("PR surface:", "", prSurface);
+  if (prSurfaceSummary) evidenceDetails.push("PR surface:", "", prSurfaceSummary);
   if (isPullRequest) {
     appendPublicSection(
       lines,
       "Summary",
       publicPrSummaryBody(changeSummaryLine, reproductionAssessment, prSurfaceSummary),
     );
-    lines.push(renderReviewMetricsDigest(reviewMetrics), "");
+    appendPublicSection(
+      lines,
+      "Action",
+      publicReviewActionLine({
+        markdown,
+        isPullRequest,
+        reviewFailed,
+        hasRealBehaviorProofBlocker,
+        securityReview,
+        isRepairCandidate,
+        hasReviewFindings,
+        isRepairLoopPass,
+      }),
+    );
     const dataModelWarning = renderDataModelWarningFromReport(markdown);
     if (dataModelWarning) appendPublicSection(lines, "Stored data model", dataModelWarning);
   } else {
@@ -14753,15 +14673,6 @@ function renderKeepOpenCommentFromReport(
         reproductionHelp.map((suggestion) => `- ${suggestion}`).join("\n"),
       );
     }
-  }
-  if (isPullRequest) {
-    appendPublicSection(
-      lines,
-      "Merge readiness",
-      reviewFailed
-        ? publicFailedReviewReadinessBlock(markdown)
-        : publicMergeReadinessBlock(prRating, realBehaviorProof),
-    );
   }
   const mantisSuggestion = isPullRequest
     ? publicMantisRecommendationBlock(mantisRecommendation)
@@ -14865,14 +14776,12 @@ function renderKeepOpenCommentFromReport(
   }
   const reviewLine = closeReviewLineFromReport(markdown);
   if (reviewLine) reviewDetails.push(...(reviewDetails.length ? [""] : []), reviewLine);
-  const detailsBlock = collapsedDetailsBlock("Review details", reviewDetails);
-  if (detailsBlock) lines.push("", detailsBlock);
-  const labelDetailsBlock = collapsedDetailsBlock("Label changes", labelDetails);
-  if (labelDetailsBlock) lines.push("", labelDetailsBlock);
-  const evidenceDetailsBlock = collapsedDetailsBlock("Evidence reviewed", evidenceDetails);
-  if (evidenceDetailsBlock) lines.push("", evidenceDetailsBlock);
-  if (isPullRequest && !reviewFailed) lines.push("", publicRankDetailsBlock());
-  lines.push("", ...reviewWorkflowCallout());
+  if (reviewDetails.length || labelDetails.length || evidenceDetails.length) {
+    lines.push(
+      "",
+      "_Detailed review evidence is retained in the ClawSweeper artifact; this public comment is kept action-first._",
+    );
+  }
   return sanitizePublicSelfReferences(
     lines.join("\n"),
     Number(frontMatterValue(markdown, "number")),

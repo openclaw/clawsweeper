@@ -38,6 +38,7 @@ import {
   buildClawSweeperAssistDispatchPayload,
   buildAutomergeMergeArgs,
   buildAutomergeSquashMessage,
+  canRepairPullTarget,
   commandHasAction,
   commandStatusMarkerFromBody,
   createCachedIssueCommentsLookup,
@@ -76,6 +77,8 @@ import {
   sharedAutomergeStatusMarkerPrefix,
   staleClosedItemCommandReason,
   shouldClearMaintainerCommandReaction,
+  targetHasRepairLoopLabel,
+  trustedAutoRepairShouldOptInAutofix,
   trustedCloseBlockReason,
   usesSharedAutomergeStatus,
 } from "./comment-router-core.js";
@@ -770,20 +773,12 @@ function classifyCommand(command: LooseRecord): JsonValue {
   if (!pull) {
     return repairBlocked(next, "repair commands require a pull request");
   }
+  const trustedAutoRepair = command.intent === "clawsweeper_auto_repair" && command.trusted_bot;
   if (command.trusted_bot) {
     const stoppedReason = repairLoopStoppedReason(next);
     if (stoppedReason) return { ...next, status: "skipped", reason: stoppedReason };
   }
-  if (!canRepairPullTarget(target)) {
-    return repairBlocked(
-      next,
-      "repair commands require a ClawSweeper PR or a PR opted into ClawSweeper autofix or automerge",
-    );
-  }
-  if (command.trusted_bot && hasLabel(target, HUMAN_REVIEW_LABEL)) {
-    return { ...next, status: "skipped", reason: "PR is paused for human review" };
-  }
-  if (command.intent === "clawsweeper_auto_repair") {
+  if (trustedAutoRepair) {
     if (
       command.expected_head_sha &&
       command.expected_head_sha !== "unknown" &&
@@ -799,8 +794,25 @@ function classifyCommand(command: LooseRecord): JsonValue {
     const alreadyPlanned = autoRepairAlreadyPlanned(next);
     if (alreadyPlanned) return { ...next, status: "skipped", reason: alreadyPlanned };
   }
+  if (command.trusted_bot && pauseLabelsOn(target).length > 0) {
+    return { ...next, status: "skipped", reason: "PR is paused for human review" };
+  }
+  const autoOptInRepair = trustedAutoRepairShouldOptInAutofix(next, target);
+  if (!canRepairPullTarget(target) && !autoOptInRepair) {
+    return repairBlocked(
+      next,
+      "repair commands require a ClawSweeper PR or a PR opted into ClawSweeper autofix or automerge",
+    );
+  }
   const actions: LooseRecord[] = [];
   const repairJobPath = target.automerge_job_path;
+  if (autoOptInRepair) {
+    actions.push({
+      action: "label",
+      label: AUTOFIX_LABEL,
+      status: execute ? "pending" : "planned",
+    });
+  }
   if (!target.has_automerge_job) {
     actions.push({
       action: "ensure_automerge_job",
@@ -946,7 +958,7 @@ function classifyAutomergePass(
     return { ...command, status: "skipped", reason: "ClawSweeper pass marker is not on a PR" };
   const stoppedReason = repairLoopStoppedReason(command);
   if (stoppedReason) return { ...command, status: "skipped", reason: stoppedReason };
-  if (!hasRepairLoopLabel(command.target))
+  if (!targetHasRepairLoopLabel(command.target))
     return {
       ...command,
       status: "skipped",
@@ -1137,7 +1149,7 @@ function classifyNeedsHuman(
   if (String(issue.state ?? "").toLowerCase() !== "open")
     return { ...command, status: "skipped", reason: "target is not open" };
   if (!pull) return { ...command, status: "skipped", reason: "human-review marker is not on a PR" };
-  if (!hasRepairLoopLabel(command.target))
+  if (!targetHasRepairLoopLabel(command.target))
     return {
       ...command,
       status: "skipped",
@@ -1302,15 +1314,6 @@ function repairBlocked(command: LooseRecord, reason: string) {
   };
 }
 
-function canRepairPullTarget(target: LooseRecord) {
-  if (target?.kind !== "pull_request") return false;
-  return Boolean(target.job_path || target.is_clawsweeper_pr || hasRepairLoopLabel(target));
-}
-
-function hasRepairLoopLabel(target: LooseRecord) {
-  return hasLabel(target, AUTOFIX_LABEL) || hasLabel(target, AUTOMERGE_LABEL);
-}
-
 function autoRepairAlreadyPlanned(command: LooseRecord) {
   const resumeBoundary = latestAutomergeResumeAt(command);
   const block = autoRepairBlockReason({
@@ -1419,12 +1422,20 @@ function executeCommand(command: LooseRecord) {
     const shouldDispatchAssist = commandHasAction(command, "dispatch_assist");
     const shouldMerge = commandHasAction(command, "merge");
     const shouldApplyHumanReviewLabel = commandHasAction(command, "label");
+    const trustedAutoRepairOptIn =
+      command.intent === "clawsweeper_auto_repair" &&
+      command.trusted_bot &&
+      (command.actions ?? []).some(
+        (action: JsonValue) => action.action === "label" && action.label === AUTOFIX_LABEL,
+      );
     if (!command.trusted_bot) reactToComment(command, "eyes");
     if (
       shouldDispatchRepair &&
       (canRepairPullTarget(command.target) ||
-        ["autofix", "automerge", "implement_issue"].includes(command.intent))
+        ["autofix", "automerge", "implement_issue"].includes(command.intent) ||
+        trustedAutoRepairOptIn)
     ) {
+      if (trustedAutoRepairOptIn) applyLabelActions(command);
       if (["autofix", "automerge"].includes(command.intent)) {
         applyRepairLoopOptIn(command);
       }

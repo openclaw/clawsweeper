@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { readCommentRouterConfig } from "../../dist/repair/config.js";
+import { DEFAULT_TRUSTED_BOTS, readCommentRouterConfig } from "../../dist/repair/config.js";
 
 test("comment router config preserves target branch from dispatch args", () => {
   const config = readCommentRouterConfig({
@@ -34,4 +34,11 @@ test("comment router config omits target branch by default", () => {
       process.env.CLAWSWEEPER_TARGET_BRANCH = originalTargetBranch;
     }
   }
+});
+
+test("comment router defaults trust deployed ClawSweeper app identities", () => {
+  assert.ok(DEFAULT_TRUSTED_BOTS.includes("clawsweeper[bot]"));
+  assert.ok(DEFAULT_TRUSTED_BOTS.includes("openclaw-clawsweeper[bot]"));
+  assert.ok(DEFAULT_TRUSTED_BOTS.includes("dita-clawsweeper[bot]"));
+  assert.ok(DEFAULT_TRUSTED_BOTS.includes("nico-clawsweeper[bot]"));
 });

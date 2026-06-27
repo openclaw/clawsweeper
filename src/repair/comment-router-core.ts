@@ -153,6 +153,48 @@ export function selectPullRepairJob({
   };
 }
 
+export function canRepairPullTarget(target: LooseRecord) {
+  if (target?.kind !== "pull_request") return false;
+  return Boolean(target.job_path || target.is_clawsweeper_pr || targetHasRepairLoopLabel(target));
+}
+
+export function targetHasRepairLoopLabel(target: LooseRecord) {
+  return (
+    hasLabelName(target?.labels ?? [], AUTOFIX_LABEL) ||
+    hasLabelName(target?.labels ?? [], AUTOMERGE_LABEL)
+  );
+}
+
+function hasLabelName(labels: JsonValue[], name: string) {
+  return labels.some(
+    (labelName: JsonValue) => String(labelName).toLowerCase() === name.toLowerCase(),
+  );
+}
+
+export function trustedAutoRepairShouldOptInAutofix(command: LooseRecord, target: LooseRecord) {
+  return (
+    command?.intent === "clawsweeper_auto_repair" &&
+    Boolean(command?.trusted_bot) &&
+    !canRepairPullTarget(target)
+  );
+}
+
+export function branchRepairCanContinueAutomerge({
+  source = null,
+  clusterId = null,
+  allowMerge = false,
+  blockedActions = [],
+}: LooseRecord) {
+  const blocked = Array.isArray(blockedActions)
+    ? blockedActions.map((action: JsonValue) => String(action))
+    : [];
+  return (
+    (source === AUTOMERGE_JOB_SOURCE || String(clusterId ?? "").startsWith("automerge-")) &&
+    allowMerge === true &&
+    !blocked.includes("merge")
+  );
+}
+
 export function issueImplementationClusterId(repo: string, issueNumber: JsonValue) {
   return `issue-${repoSlug(repo)}-${Number(issueNumber)}`;
 }

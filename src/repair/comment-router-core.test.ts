@@ -4,6 +4,8 @@ import test from "node:test";
 import {
   automergeMergeFailureRepairReason,
   automergeRebaseRepairReason,
+  branchRepairCanContinueAutomerge,
+  trustedAutoRepairShouldOptInAutofix,
 } from "./comment-router-core.js";
 
 test("automerge rebase repair reason detects dirty merge state", () => {
@@ -42,5 +44,72 @@ test("automerge merge failure repair reason ignores unrelated merge failures", (
   assert.equal(
     automergeMergeFailureRepairReason("merge command failed: GraphQL: Head sha mismatch"),
     null,
+  );
+});
+
+test("trusted repair markers can auto-opt normal PRs into autofix", () => {
+  assert.equal(
+    trustedAutoRepairShouldOptInAutofix(
+      { intent: "clawsweeper_auto_repair", trusted_bot: true },
+      {
+        kind: "pull_request",
+        labels: [],
+      },
+    ),
+    true,
+  );
+
+  assert.equal(
+    trustedAutoRepairShouldOptInAutofix(
+      { intent: "clawsweeper_auto_repair", trusted_bot: false },
+      {
+        kind: "pull_request",
+        labels: [],
+      },
+    ),
+    false,
+  );
+
+  assert.equal(
+    trustedAutoRepairShouldOptInAutofix(
+      { intent: "clawsweeper_auto_repair", trusted_bot: true },
+      {
+        kind: "pull_request",
+        labels: ["clawsweeper:autofix"],
+      },
+    ),
+    false,
+  );
+});
+
+test("fix-only branch repairs do not continue automerge", () => {
+  assert.equal(
+    branchRepairCanContinueAutomerge({
+      source: "pr_automerge",
+      clusterId: "automerge-proxynico-example-17",
+      allowMerge: false,
+      blockedActions: ["merge"],
+    }),
+    false,
+  );
+
+  assert.equal(
+    branchRepairCanContinueAutomerge({
+      source: "pr_automerge",
+      clusterId: "automerge-proxynico-example-17",
+      allowMerge: true,
+      blockedActions: [],
+    }),
+    true,
+  );
+
+  assert.equal(
+    branchRepairCanContinueAutomerge({
+      source: "issue_implementation",
+      clusterId: "issue-proxynico-example-17",
+      allowMerge: true,
+      blockedActions: [],
+    }),
+    false,
   );
 });

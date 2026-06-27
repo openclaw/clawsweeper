@@ -12,7 +12,12 @@ import {
 export { DEFAULT_HEAD_PREFIX, DEFAULT_TARGET_REPO } from "./constants.js";
 
 const DEFAULT_ALLOWED_ASSOCIATIONS = ["OWNER", "MEMBER", "COLLABORATOR"];
-export const DEFAULT_TRUSTED_BOTS = ["clawsweeper[bot]", "openclaw-clawsweeper[bot]"];
+export const DEFAULT_TRUSTED_BOTS = [
+  "clawsweeper[bot]",
+  "openclaw-clawsweeper[bot]",
+  "dita-clawsweeper[bot]",
+  "nico-clawsweeper[bot]",
+];
 
 export type CommentRouterConfig = {
   targetRepo: string;
