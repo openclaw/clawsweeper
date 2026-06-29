@@ -104,7 +104,7 @@ function checkTimestamp(check: LooseRecord) {
 
 export function shouldSuppressProcessedCommentVersion(entry: LooseRecord) {
   const status = String(entry.status ?? "").toLowerCase();
-  if (!["executed", "skipped"].includes(status)) return false;
+  if (!["claimed", "executed", "skipped"].includes(status)) return false;
   const intent = String(entry.intent ?? "");
   if (
     status === "skipped" &&
@@ -244,7 +244,9 @@ export function readLedger(file: JsonValue) {
 
 export function appendLedger(current: LooseRecord, entries: LooseRecord[]) {
   const compact = entries
-    .filter((entry: JsonValue) => ["executed", "skipped", "waiting"].includes(entry.status))
+    .filter((entry: JsonValue) =>
+      ["claimed", "executed", "skipped", "waiting"].includes(entry.status),
+    )
     .filter((entry: JsonValue) => !isNoopSkip(entry))
     .map((entry: JsonValue) => {
       const actions = compactLedgerActions(entry.actions);

@@ -294,8 +294,6 @@ const report: LooseRecord = {
 if (execute) {
   await measureAsync("execute_commands", async () => {
     assertMutationActorIsClawsweeperBot();
-    for (const command of commands) convergePrecreatedCommandAckComments(command);
-    for (const command of commands) acknowledgeSkippedMaintainerCommand(command);
     const capacityRequests = workerCapacityRequests(actionable);
     if (capacityRequests.length > 0) {
       const capacities = capacityRequests.map((request) =>
@@ -304,6 +302,12 @@ if (execute) {
       report.live_worker_capacity_before_dispatch =
         capacities.length === 1 ? capacities[0] : capacities;
     }
+    report.ledger_claimed = measure("claim_dispatch_commands", () =>
+      claimDispatchCommands(actionable),
+    );
+    if (report.ledger_claimed) writeLedger(ledgerPath(), ledger);
+    for (const command of commands) convergePrecreatedCommandAckComments(command);
+    for (const command of commands) acknowledgeSkippedMaintainerCommand(command);
     for (const command of actionable) executeCommand(command);
   });
   report.ledger_changed = measure("append_ledger", () => appendLedger(ledger, commands));
@@ -333,6 +337,34 @@ async function measureAsync<T>(name: string, fn: () => Promise<T>): Promise<T> {
   } finally {
     timings.push({ name, ms: Date.now() - start });
   }
+}
+
+function claimDispatchCommands(commands: LooseRecord[]) {
+  const claims = commands.filter(commandNeedsDurableDispatchClaim).map((command) => ({
+    ...command,
+    status: "claimed",
+    actions: Array.isArray(command.actions)
+      ? command.actions.map((action: JsonValue) =>
+          actionNeedsDurableDispatchClaim(action) ? { ...action, status: "claimed" } : action,
+        )
+      : command.actions,
+  }));
+  return appendLedger(ledger, claims);
+}
+
+function commandNeedsDurableDispatchClaim(command: LooseRecord) {
+  return (
+    String(command.status ?? "") === "ready" &&
+    (commandHasAction(command, "dispatch_clawsweeper") ||
+      commandHasAction(command, "dispatch_repair") ||
+      commandHasAction(command, "dispatch_assist"))
+  );
+}
+
+function actionNeedsDurableDispatchClaim(action: JsonValue) {
+  return ["dispatch_clawsweeper", "dispatch_repair", "dispatch_assist"].includes(
+    String(action?.action ?? ""),
+  );
 }
 
 function assertMutationActorIsClawsweeperBot() {

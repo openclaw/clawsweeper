@@ -1378,6 +1378,29 @@ test("router classifies fresh human-review pauses before label sweeps", () => {
   assert.match(source, /\.filter\(isReadyHumanReviewPause\)/);
 });
 
+test("comment router durably claims dispatch commands before external execution", () => {
+  const source = readFileSync("src/repair/comment-router.ts", "utf8");
+  const executeBlock = source.slice(
+    source.indexOf('await measureAsync("execute_commands"'),
+    source.indexOf('report.ledger_changed = measure("append_ledger"'),
+  );
+  const claimIndex = executeBlock.indexOf("claimDispatchCommands(actionable)");
+  const ackIndex = executeBlock.indexOf("convergePrecreatedCommandAckComments(command)");
+  const executeIndex = executeBlock.indexOf("executeCommand(command)");
+  const claimFunction = source.slice(
+    source.indexOf("function claimDispatchCommands"),
+    source.indexOf("function assertMutationActorIsClawsweeperBot"),
+  );
+
+  assert.ok(claimIndex >= 0);
+  assert.ok(ackIndex > claimIndex);
+  assert.ok(executeIndex > claimIndex);
+  assert.match(claimFunction, /status:\s*"claimed"/);
+  assert.match(claimFunction, /commandHasAction\(command,\s*"dispatch_clawsweeper"\)/);
+  assert.match(claimFunction, /commandHasAction\(command,\s*"dispatch_repair"\)/);
+  assert.match(claimFunction, /commandHasAction\(command,\s*"dispatch_assist"\)/);
+});
+
 test("trusted autoclose markers are live close gated before close execution", () => {
   const source = readFileSync("src/repair/comment-router.ts", "utf8");
   const autocloseClassifier = source.slice(

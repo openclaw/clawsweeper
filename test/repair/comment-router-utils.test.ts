@@ -130,6 +130,85 @@ test("appendLedger records waiting commands without making them terminal", () =>
   assert.equal(shouldSuppressProcessedCommentVersion(ledger.commands[0]), false);
 });
 
+test("appendLedger records claimed dispatch commands as terminal idempotency claims", () => {
+  const ledger = { updated_at: null, commands: [] };
+
+  assert.equal(
+    appendLedger(ledger, [
+      {
+        idempotency_key: "claim-before-dispatch",
+        comment_id: "125",
+        comment_version_key: "125:2026-04-29T03:01:00Z",
+        comment_updated_at: "2026-04-29T03:01:00Z",
+        status: "claimed",
+        intent: "clawsweeper_re_review",
+        issue_number: 74499,
+        repo: "openclaw/openclaw",
+        actions: [{ action: "dispatch_clawsweeper", status: "claimed" }],
+      },
+    ]),
+    true,
+  );
+
+  assert.equal(ledger.commands.length, 1);
+  assert.equal(ledger.commands[0].status, "claimed");
+  assert.equal(shouldSuppressProcessedCommentVersion(ledger.commands[0]), true);
+  assert.deepEqual(ledger.commands[0].actions, [
+    {
+      action: "dispatch_clawsweeper",
+      status: "claimed",
+      label: null,
+      job_path: null,
+    },
+  ]);
+});
+
+test("appendLedger upgrades claimed dispatch commands after execution", () => {
+  const ledger = { updated_at: null, commands: [] };
+
+  appendLedger(ledger, [
+    {
+      idempotency_key: "claim-before-dispatch",
+      comment_id: "125",
+      comment_version_key: "125:2026-04-29T03:01:00Z",
+      comment_updated_at: "2026-04-29T03:01:00Z",
+      status: "claimed",
+      intent: "clawsweeper_re_review",
+      issue_number: 74499,
+      repo: "openclaw/openclaw",
+      actions: [{ action: "dispatch_clawsweeper", status: "claimed" }],
+    },
+  ]);
+
+  assert.equal(
+    appendLedger(ledger, [
+      {
+        idempotency_key: "claim-before-dispatch",
+        comment_id: "125",
+        comment_version_key: "125:2026-04-29T03:01:00Z",
+        comment_updated_at: "2026-04-29T03:01:00Z",
+        status: "executed",
+        intent: "clawsweeper_re_review",
+        issue_number: 74499,
+        repo: "openclaw/openclaw",
+        actions: [{ action: "dispatch_clawsweeper", status: "executed" }],
+      },
+    ]),
+    true,
+  );
+
+  assert.equal(ledger.commands.length, 1);
+  assert.equal(ledger.commands[0].status, "executed");
+  assert.deepEqual(ledger.commands[0].actions, [
+    {
+      action: "dispatch_clawsweeper",
+      status: "executed",
+      label: null,
+      job_path: null,
+    },
+  ]);
+});
+
 test("appendLedger ignores no-op skipped command versions", () => {
   const ledger = { updated_at: null, commands: [] };
 
