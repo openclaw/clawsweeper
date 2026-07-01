@@ -73,6 +73,7 @@ jobs:
           sparse-checkout: |
             .github/actions/setup-pnpm
             config
+            src/command.ts
             src
             package.json
             pnpm-lock.yaml

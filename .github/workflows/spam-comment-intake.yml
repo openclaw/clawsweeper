@@ -56,6 +56,7 @@ jobs:
             prompts/pr-close-coverage-proof.md
             schema/clawsweeper-pr-close-coverage-proof.schema.json
             src/clawsweeper-text.ts
+            src/command.ts
             src/codex-env.ts
             src/codex-output-capture.ts
             src/codex-process-worker.ts

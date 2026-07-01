@@ -79,6 +79,7 @@ jobs:
             schema/clawsweeper-pr-close-coverage-proof.schema.json
             scripts/hydrate-state.ts
             src/clawsweeper-text.ts
+            src/command.ts
             src/codex-env.ts
             src/codex-output-capture.ts
             src/codex-process-worker.ts
