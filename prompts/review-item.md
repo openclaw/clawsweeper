@@ -313,6 +313,24 @@ correct` when the PR has no blocking correctness finding, and `not a patch` for
 issues and other non-PR reviews. Set `overallConfidenceScore` to a 0-1 number
 matching your confidence in the overall verdict.
 
+For PRs, apply re-review continuity. When the review context includes
+`previousClawSweeperReview`, this is a follow-up review cycle, not a first
+look: `previousClawSweeperReview.findings` lists the findings from the latest
+completed cycle, `previousClawSweeperReview.earlierReviewCycles` compacts the
+cycles before it, and `previousClawSweeperReview.completedReviewCycles` counts
+the completed cycles. First check every prior finding against the current
+head: do not re-raise findings the author has already fixed, and raise
+still-unfixed prior blockers again instead of silently dropping them. Then
+report every remaining blocking concern you can support with evidence in this
+single review; never hold back a visible concern for a later cycle, because
+each extra cycle costs the contributor a full round trip. When you raise a new
+finding on code that is unchanged since an earlier reviewed head where the
+concern was equally visible, set `lateFinding: true` on that finding and
+briefly acknowledge the late discovery in its body; keep `lateFinding` omitted
+or false for findings introduced by new commits, a changed base, or newly
+available evidence. Repeatedly surfacing one new previously-visible concern
+per cycle is a review defect, not author churn.
+
 Use target `AGENTS.md` policy as review input, not as a standalone source of
 findings. For PRs, if the diff concretely violates an applicable `AGENTS.md`
 policy in a way the author can fix, report it through `reviewFindings` using

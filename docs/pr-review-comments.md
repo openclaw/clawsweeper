@@ -94,6 +94,31 @@ still read as `Codex review: passed.` in the durable review comment.
 Issues use `**Next step**` instead of the PR-specific `**Next step before
 merge**` heading. Non-PR comments are never repair triggers.
 
+## Review History Ledger
+
+Because ClawSweeper edits one durable comment in place, each sync would
+otherwise erase what earlier review cycles asked for. PR keep-open comments
+therefore carry a compact ledger of earlier cycles inside a collapsed
+`Review history` block, anchored by:
+
+```html
+<!-- clawsweeper-review-history v=1 -->
+```
+
+Each ledger line records one completed earlier cycle: reviewed-at timestamp,
+reviewed head sha, verdict, and finding titles. When the apply lane syncs a
+fresh review over an existing comment, it parses the existing ledger, appends
+the review it is replacing as the newest earlier cycle, and keeps the last
+eight cycles. Re-syncing the same review (same `reviewed_at`) does not add a
+cycle.
+
+The review lane feeds the parsed ledger back to the reviewer as
+`previousClawSweeperReview.earlierReviewCycles` plus a
+`completedReviewCycles` count, and the review prompt requires re-review
+continuity: verify prior findings first, report every remaining blocking
+concern in one pass, and mark findings on previously reviewed, unchanged code
+with `lateFinding: true` so review churn stays measurable.
+
 ## Repair Markers
 
 For an actionable PR repair request, ClawSweeper appends both markers:

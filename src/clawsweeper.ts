@@ -98,6 +98,13 @@ import {
   type Args,
 } from "./clawsweeper-args.js";
 import { escapeRegExp, safeOutputTail, trimMiddle, truncateText } from "./clawsweeper-text.js";
+import {
+  appendReviewHistoryCycle,
+  parseReviewHistory,
+  renderReviewHistorySection,
+  reviewHistoryCycleFromCommentBody,
+  type ReviewHistoryCycle,
+} from "./review-history.js";
 
 export {
   codexEnv,
@@ -368,6 +375,7 @@ interface ReviewFinding {
   file: string;
   lineStart: number;
   lineEnd: number;
+  lateFinding?: boolean;
 }
 
 interface SecurityConcern {
@@ -471,6 +479,7 @@ interface ReviewCommentRenderOptions {
   prStatusKind?: PrStatusLabelKind | null;
   previousLabels?: readonly string[];
   hasOpenLinkedPullRequest?: boolean;
+  previousReviewCommentBody?: string;
 }
 
 interface Decision {
@@ -1813,6 +1822,7 @@ const REVIEW_FINDING_SCHEMA_KEYS = new Set([
   "file",
   "lineStart",
   "lineEnd",
+  "lateFinding",
 ]);
 const LIKELY_OWNER_SCHEMA_KEYS = new Set([
   "person",
@@ -2560,7 +2570,7 @@ function parseReviewFinding(value: unknown, path: string): ReviewFinding {
   const lineEnd = requireInteger(record.lineEnd, `${path}.lineEnd`);
   if (lineStart <= 0) throw new Error(`${path}.lineStart must be positive`);
   if (lineEnd < lineStart) throw new Error(`${path}.lineEnd must be >= lineStart`);
-  return {
+  const finding: ReviewFinding = {
     title: requireString(record.title, `${path}.title`),
     body: requireString(record.body, `${path}.body`),
     priority: requirePriority(record.priority, `${path}.priority`),
@@ -2569,6 +2579,10 @@ function parseReviewFinding(value: unknown, path: string): ReviewFinding {
     lineStart,
     lineEnd,
   };
+  if (record.lateFinding !== undefined) {
+    finding.lateFinding = requireBoolean(record.lateFinding, `${path}.lateFinding`);
+  }
+  return finding;
 }
 
 type DecisionNormalizationItem = Pick<Item, "repo" | "number" | "kind" | "authorAssociation">;
@@ -3419,6 +3433,8 @@ interface PreviousClawSweeperReview {
   rating: string;
   nextStep: string;
   findings: Array<{ priority: string; title: string }>;
+  earlierReviewCycles: ReviewHistoryCycle[];
+  completedReviewCycles: number;
   commentId: unknown;
   commentUrl: unknown;
   commentUpdatedAt: unknown;
@@ -3642,6 +3658,7 @@ function extractLatestClawSweeperReview(
   const verdictMarker = htmlMarkerWithPrefix(body, "clawsweeper-verdict:");
   const actionMarker = htmlMarkerWithPrefix(body, "clawsweeper-action:");
   const reviewedSha = markerAttribute(verdictMarker, "sha") ?? markerAttribute(actionMarker, "sha");
+  const earlierReviewCycles = parseReviewHistory(body);
   return {
     status: previousReviewStatus(body),
     reviewedAt: previousReviewReviewedAt(body),
@@ -3655,6 +3672,8 @@ function extractLatestClawSweeperReview(
       firstNonEmptyLine(markdownSection(body, "Next step before merge")) ||
       firstNonEmptyLine(markdownSection(body, "Next step")),
     findings: previousReviewFindings(body),
+    earlierReviewCycles,
+    completedReviewCycles: earlierReviewCycles.length + 1,
     commentId: comment.id,
     commentUrl: comment.html_url,
     commentUpdatedAt: comment.updated_at,
@@ -8549,6 +8568,9 @@ function reviewFindingDetailedLine(finding: ReviewFinding): string {
     reviewFindingSummaryLine(finding),
     `  ${sentence(finding.body)}`,
     `  Confidence: ${confidenceText(finding.confidenceScore)}`,
+    ...(finding.lateFinding
+      ? ["  Late finding: first raised on code an earlier review cycle already covered."]
+      : []),
   ].join("\n");
 }
 
@@ -9078,6 +9100,11 @@ function reportReviewFindings(markdown: string): ReviewFinding[] {
     const body = line.match(/^\s+- body: (.*)$/);
     if (body?.[1]) {
       current.body = body[1];
+      continue;
+    }
+    const late = line.match(/^\s+- late: (true|false)$/);
+    if (late?.[1]) {
+      current.lateFinding = late[1] === "true";
       continue;
     }
     const confidence = line.match(/^\s+- confidence: ([0-9.]+)$/);
@@ -14379,6 +14406,21 @@ function reviewFreshnessText(markdown: string): string {
   return timestamp ? ` _Reviewed ${timestamp}._` : "";
 }
 
+function reviewHistoryForRender(
+  markdown: string,
+  previousReviewCommentBody: string | undefined,
+): ReviewHistoryCycle[] {
+  if (frontMatterValue(markdown, "type") !== "pull_request") return [];
+  const body = previousReviewCommentBody ?? "";
+  if (!body.trim()) return [];
+  const cycles = parseReviewHistory(body);
+  const previousCycle = reviewHistoryCycleFromCommentBody(body);
+  if (!previousCycle) return cycles;
+  const reviewedAt = frontMatterValue(markdown, "reviewed_at");
+  if (reviewedAt && previousCycle.reviewedAt === reviewedAt) return cycles;
+  return appendReviewHistoryCycle(cycles, previousCycle);
+}
+
 function renderKeepOpenCommentFromReport(
   markdown: string,
   options: ReviewCommentRenderOptions = {},
@@ -14591,6 +14633,10 @@ function renderKeepOpenCommentFromReport(
   if (labelDetailsBlock) lines.push("", labelDetailsBlock);
   const evidenceDetailsBlock = collapsedDetailsBlock("Evidence reviewed", evidenceDetails);
   if (evidenceDetailsBlock) lines.push("", evidenceDetailsBlock);
+  const reviewHistoryBlock = renderReviewHistorySection(
+    reviewHistoryForRender(markdown, options.previousReviewCommentBody),
+  );
+  if (reviewHistoryBlock) lines.push("", reviewHistoryBlock);
   if (isPullRequest && !reviewFailed) lines.push("", publicRankDetailsBlock());
   lines.push("", ...reviewWorkflowCallout());
   return sanitizePublicSelfReferences(
@@ -15655,6 +15701,7 @@ function renderReviewFindingsReportSection(decision: Decision): string {
             finding,
           )}\``,
           `  - body: ${sentence(finding.body)}`,
+          ...(finding.lateFinding ? ["  - late: true"] : []),
           `  - confidence: ${confidenceText(finding.confidenceScore)}`,
         ].join("\n"),
       )
@@ -17390,6 +17437,25 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
     let reviewComment = stalePrReviewHead
       ? stalePullRequestReviewComment({ number, stale: stalePrReviewHead })
       : renderReviewCommentFromReport(markdown, closeReason ?? "none", renderOptions);
+    const existingReviewComment = issueReviewComment(number, [
+      reviewComment,
+      reviewSectionValue(markdown, "closeComment"),
+    ]);
+    const existingReviewCommentUpdatedAt = commentUpdatedAt(existingReviewComment);
+    if (existingReviewCommentUpdatedAt) {
+      allowedSelfMutationUpdatedAts.add(existingReviewCommentUpdatedAt);
+    }
+    const existingReviewCommentBody = rawCommentBody(existingReviewComment);
+    if (existingReviewCommentBody.trim()) {
+      renderOptions.previousReviewCommentBody = existingReviewCommentBody;
+      if (!stalePrReviewHead) {
+        reviewComment = renderReviewCommentFromReport(
+          markdown,
+          closeReason ?? "none",
+          renderOptions,
+        );
+      }
+    }
     let markedReviewComment = markedReviewCommentBody(number, reviewComment);
     let proofBlockedForCommentSync: PrCloseCoverageProofGateBlock | null = null;
     const protectedApplyReason = applyProtectedLabelReason(item.labels, closeReason);
