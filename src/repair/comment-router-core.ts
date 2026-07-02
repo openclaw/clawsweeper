@@ -786,6 +786,18 @@ export function pausedModeStatusBlocksReplay({
   );
 }
 
+export function maintainerModeCommandCanResumePausedMode({
+  command,
+  entries = [],
+}: LooseRecord = {}) {
+  if (command?.trusted_bot) return false;
+  if (!["autofix", "automerge"].includes(String(command?.intent ?? ""))) return false;
+  const commandAt = repairLoopControlTime(command);
+  if (!commandAt) return false;
+  const pauseAt = latestRepairLoopPauseTime(entries, command);
+  return pauseAt > 0 && commandAt > pauseAt;
+}
+
 export function isMaintainerCommandAllowed({
   authorAssociation,
   repositoryPermission = null,
@@ -2391,6 +2403,28 @@ export function repairLoopStopPauseReason({ command, entries = [] }: LooseRecord
 
   if (stopAt <= resumeAt) return null;
   return "ClawSweeper automation was paused by a later /clawsweeper stop command";
+}
+
+function latestRepairLoopPauseTime(entries: JsonValue, command: LooseRecord) {
+  if (!Array.isArray(entries)) return 0;
+  let latest = 0;
+  for (const entry of entries) {
+    if (!entry || typeof entry !== "object") continue;
+    if (entry.repo !== command?.repo) continue;
+    if (Number(entry.issue_number) !== Number(command?.issue_number)) continue;
+    if (!isRepairLoopPauseEntry(entry)) continue;
+    latest = Math.max(latest, repairLoopControlTime(entry));
+  }
+  return latest;
+}
+
+function isRepairLoopPauseEntry(entry: LooseRecord) {
+  if (String(entry.intent ?? "") === "stop") return true;
+  if (String(entry.intent ?? "") !== "clawsweeper_needs_human") return false;
+  return (entry.actions ?? []).some(
+    (action: JsonValue) =>
+      action.action === "label" && String(action.label ?? "") === HUMAN_REVIEW_LABEL,
+  );
 }
 
 function latestRepairLoopControlTime(entries: JsonValue, command: LooseRecord, intents: string[]) {

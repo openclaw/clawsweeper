@@ -45,6 +45,7 @@ import {
   isMaintainerCommandAllowed,
   isIssueImplementationCommandAllowed,
   maintainerAutomergeOptInApprovesNeedsHuman,
+  maintainerModeCommandCanResumePausedMode,
   parseCommand,
   parseRoutedCommentCommand,
   planCommandAckConvergence,
@@ -712,6 +713,63 @@ test("later stop command pauses older automerge automation", () => {
       entries,
     }),
     null,
+  );
+});
+
+test("paused mode resume requires a maintainer command after the pause", () => {
+  const entries = [
+    {
+      repo: "openclaw/openclaw",
+      issue_number: 93209,
+      intent: "automerge",
+      status: "executed",
+      comment_updated_at: "2026-06-15T09:45:21Z",
+    },
+    {
+      repo: "openclaw/openclaw",
+      issue_number: 93209,
+      intent: "stop",
+      status: "executed",
+      comment_updated_at: "2026-06-15T09:45:57Z",
+    },
+  ];
+
+  assert.equal(
+    maintainerModeCommandCanResumePausedMode({
+      command: {
+        repo: "openclaw/openclaw",
+        issue_number: 93209,
+        intent: "automerge",
+        comment_updated_at: "2026-06-15T09:45:21Z",
+      },
+      entries,
+    }),
+    false,
+  );
+  assert.equal(
+    maintainerModeCommandCanResumePausedMode({
+      command: {
+        repo: "openclaw/openclaw",
+        issue_number: 93209,
+        intent: "automerge",
+        comment_updated_at: "2026-07-02T02:31:23Z",
+      },
+      entries,
+    }),
+    true,
+  );
+  assert.equal(
+    maintainerModeCommandCanResumePausedMode({
+      command: {
+        repo: "openclaw/openclaw",
+        issue_number: 93209,
+        intent: "automerge",
+        trusted_bot: true,
+        comment_updated_at: "2026-07-02T02:31:23Z",
+      },
+      entries,
+    }),
+    false,
   );
 });
 
