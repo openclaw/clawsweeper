@@ -101,12 +101,26 @@ export function appendReviewHistoryCycle(
 }
 
 function reviewMarkerAttribute(body: string, name: string): string | null {
-  const marker = body.match(/<!--\s*clawsweeper-(?:verdict|action):[^>]*?-->/);
-  if (!marker) return null;
-  for (const token of marker[0].slice(4, -3).trim().split(/\s+/)) {
-    const separator = token.indexOf("=");
-    if (separator <= 0) continue;
-    if (token.slice(0, separator).toLowerCase() === name) return token.slice(separator + 1) || null;
+  let searchFrom = 0;
+  while (searchFrom < body.length) {
+    const start = body.indexOf("<!--", searchFrom);
+    if (start < 0) return null;
+    const end = body.indexOf("-->", start + 4);
+    if (end < 0) return null;
+    searchFrom = end + 3;
+    const inner = body.slice(start + 4, end).trim();
+    const lower = inner.toLowerCase();
+    if (!lower.startsWith("clawsweeper-verdict:") && !lower.startsWith("clawsweeper-action:")) {
+      continue;
+    }
+    for (const token of inner.split(/\s+/)) {
+      const separator = token.indexOf("=");
+      if (separator <= 0) continue;
+      if (token.slice(0, separator).toLowerCase() === name) {
+        return token.slice(separator + 1) || null;
+      }
+    }
+    return null;
   }
   return null;
 }
