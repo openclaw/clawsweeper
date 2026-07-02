@@ -535,6 +535,26 @@ test("force reprocess bypasses existing command status guards", () => {
     pausedModeStatusBlocksReplay({
       hasPauseLabels: true,
       hasExistingModeStatusResponse: true,
+      allowNewMaintainerModeCommand: true,
+      forceReprocess: false,
+    }),
+    false,
+    "old shared automerge status plus human-review must not block a fresh maintainer automerge command",
+  );
+  assert.equal(
+    pausedModeStatusBlocksReplay({
+      hasPauseLabels: true,
+      hasExistingModeStatusResponse: true,
+      allowNewMaintainerModeCommand: false,
+      forceReprocess: false,
+    }),
+    true,
+    "bot replay and label-sweep mode status should stay paused until a maintainer asks again",
+  );
+  assert.equal(
+    pausedModeStatusBlocksReplay({
+      hasPauseLabels: true,
+      hasExistingModeStatusResponse: true,
       forceReprocess: true,
     }),
     false,

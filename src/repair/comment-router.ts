@@ -655,6 +655,7 @@ function classifyCommand(command: LooseRecord): JsonValue {
           command.issue_number,
           command.intent,
         ),
+        allowNewMaintainerModeCommand: !command.trusted_bot,
         forceReprocess,
       })
     ) {

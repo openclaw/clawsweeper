@@ -773,9 +773,17 @@ export function existingModeStatusBlocksReplay({
 export function pausedModeStatusBlocksReplay({
   hasPauseLabels,
   hasExistingModeStatusResponse,
+  allowNewMaintainerModeCommand,
   forceReprocess,
 }: LooseRecord = {}) {
-  return Boolean(hasPauseLabels) && Boolean(hasExistingModeStatusResponse) && !forceReprocess;
+  // A fresh maintainer mode command is the explicit resume path after `stop`;
+  // historical/replayed mode status must stay blocked by the pause label.
+  return (
+    Boolean(hasPauseLabels) &&
+    Boolean(hasExistingModeStatusResponse) &&
+    !allowNewMaintainerModeCommand &&
+    !forceReprocess
+  );
 }
 
 export function isMaintainerCommandAllowed({
