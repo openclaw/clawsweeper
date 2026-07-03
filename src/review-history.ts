@@ -125,6 +125,27 @@ function reviewMarkerAttribute(body: string, name: string): string | null {
   return null;
 }
 
+function hasReviewStatusMarker(body: string): boolean {
+  let searchFrom = 0;
+  while (searchFrom < body.length) {
+    const start = body.indexOf("<!--", searchFrom);
+    if (start < 0) return false;
+    const end = body.indexOf("-->", start + 4);
+    if (end < 0) return false;
+    searchFrom = end + 3;
+    if (
+      body
+        .slice(start + 4, end)
+        .trim()
+        .toLowerCase()
+        .startsWith("clawsweeper-review-status:")
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function commentBodyFindings(lines: readonly string[]): string[] {
   const detailed: string[] = [];
   const summary: string[] = [];
@@ -151,7 +172,9 @@ function commentBodyFindings(lines: readonly string[]): string[] {
 }
 
 export function reviewHistoryCycleFromCommentBody(body: string): ReviewHistoryCycle | null {
-  if (!body.trim() || body.includes(REVIEW_START_PLACEHOLDER)) return null;
+  if (!body.trim() || body.includes(REVIEW_START_PLACEHOLDER) || hasReviewStatusMarker(body)) {
+    return null;
+  }
   const lines = body.split(/\r?\n/);
   let verdict = "";
   for (const line of lines) {

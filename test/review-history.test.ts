@@ -49,6 +49,20 @@ function previousDurableComment(overrides: { reviewedAt?: string; sha?: string }
   ].join("\n");
 }
 
+function staleDurableComment(): string {
+  return [
+    "Codex review: stale review; fresh review needed.",
+    "",
+    "**Summary**",
+    "The latest durable ClawSweeper review was for head `oldsha`, but the PR head is now `newsha`.",
+    "",
+    "**Next step**",
+    "Run or wait for a fresh ClawSweeper review on the current PR head.",
+    "",
+    "<!-- clawsweeper-review-status:stale item=101 reviewed_sha=oldsha current_sha=newsha reason=stale_head -->",
+  ].join("\n");
+}
+
 function keepOpenPullReport(overrides = {}): string {
   return `${reportFrontMatter({
     type: "pull_request",
@@ -172,6 +186,18 @@ test("previous durable comment converts into a ledger cycle", () => {
     null,
   );
   assert.equal(reviewHistoryCycleFromCommentBody("Thanks for the report."), null);
+});
+
+test("stale durable status comments do not become review history cycles", () => {
+  assert.equal(reviewHistoryCycleFromCommentBody(staleDurableComment()), null);
+
+  const comment = renderReviewCommentFromReport(keepOpenPullReport(), "none", {
+    prStatusKind: "ready_for_maintainer_look",
+    previousReviewCommentBody: staleDurableComment(),
+  });
+
+  assert.doesNotMatch(comment, /clawsweeper-review-history/);
+  assert.equal(parseReviewHistory(comment).length, 0);
 });
 
 test("keep-open PR comment carries the previous review as an earlier cycle", () => {
