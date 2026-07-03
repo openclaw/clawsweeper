@@ -17567,6 +17567,7 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
       if (!storedUpdatedAt) return false;
       if (!updatedSinceReview || reviewCommentOnlyUpdate) return true;
       const completeFreshHeadReview =
+        !isCloseProposal &&
         item.kind === "pull_request" &&
         frontMatterValue(markdown, "review_status") === "complete" &&
         freshPullRequestReviewHead(markdown, currentItemContext());
