@@ -19,6 +19,7 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Fixed
 
+- Counted active sweep, commit-review, and repair runs by stable workflow path so overlapping planners cannot exceed the global Codex worker budget when GitHub exposes dynamic run names.
 - Bounded apply-existing checkpoints to five fresh closes, renewed the GitHub
   App token between continuation runs, and stopped zero-progress scans from
   chaining indefinitely.

@@ -961,7 +961,7 @@ jobs:
               for run_status in in_progress pending queued waiting requested; do
                 gh api "repos/${{ github.repository }}/actions/runs?per_page=100&status=${run_status}" \
                   --paginate \
-                  --jq '.workflow_runs[] | {databaseId:.id, workflowName:.name, displayTitle:.display_title, status:.status, createdAt:.created_at, updatedAt:.updated_at}' 2>/dev/null \
+                  --jq '.workflow_runs[] | {databaseId:.id, workflowPath:.path, displayTitle:.display_title, status:.status, createdAt:.created_at, updatedAt:.updated_at}' 2>/dev/null \
                   || true
               done
             } | jq -s 'unique_by(.databaseId)'
@@ -970,19 +970,19 @@ jobs:
           STALE_QUEUED_CUTOFF="$(date -u -d '6 hours ago' '+%Y-%m-%dT%H:%M:%SZ')"
           active_run_count() {
             printf '%s' "$ACTIVE_RUNS_JSON" \
-              | WORKFLOW_NAME="$1" STALE_QUEUED_CUTOFF="$STALE_QUEUED_CUTOFF" jq '[.[] | select(.workflowName == env.WORKFLOW_NAME) | select(.status == "in_progress" or ((.status == "pending" or .status == "queued" or .status == "waiting" or .status == "requested") and ((.updatedAt // .createdAt // "") >= env.STALE_QUEUED_CUTOFF)))] | length' 2>/dev/null \
+              | WORKFLOW_PATH="$1" STALE_QUEUED_CUTOFF="$STALE_QUEUED_CUTOFF" jq '[.[] | select(.workflowPath == env.WORKFLOW_PATH) | select(.status == "in_progress" or ((.status == "pending" or .status == "queued" or .status == "waiting" or .status == "requested") and ((.updatedAt // .createdAt // "") >= env.STALE_QUEUED_CUTOFF)))] | length' 2>/dev/null \
               || printf '0'
           }
           active_sweep_exact_count() {
             printf '%s' "$ACTIVE_RUNS_JSON" \
-              | STALE_QUEUED_CUTOFF="$STALE_QUEUED_CUTOFF" jq '[.[] | select(.workflowName == "ClawSweeper") | select((.status == "in_progress" or ((.status == "pending" or .status == "queued" or .status == "waiting" or .status == "requested") and ((.updatedAt // .createdAt // "") >= env.STALE_QUEUED_CUTOFF))) and (.displayTitle | startswith("Review event item ")))] | length' 2>/dev/null \
+              | STALE_QUEUED_CUTOFF="$STALE_QUEUED_CUTOFF" jq '[.[] | select(.workflowPath == ".github/workflows/sweep.yml") | select((.status == "in_progress" or ((.status == "pending" or .status == "queued" or .status == "waiting" or .status == "requested") and ((.updatedAt // .createdAt // "") >= env.STALE_QUEUED_CUTOFF))) and (.displayTitle | startswith("Review event item ")))] | length' 2>/dev/null \
               || printf '0'
           }
           active_sweep_background_workers() {
             local runs total id title status jobs_json active_shards total_shards
             total=0
             runs="$(printf '%s' "$ACTIVE_RUNS_JSON" \
-              | CURRENT_RUN_ID="${GITHUB_RUN_ID:-0}" STALE_QUEUED_CUTOFF="$STALE_QUEUED_CUTOFF" jq -r '.[] | select((.databaseId | tostring) != env.CURRENT_RUN_ID) | select(.workflowName == "ClawSweeper") | select(.status == "in_progress" or ((.status == "pending" or .status == "queued" or .status == "waiting" or .status == "requested") and ((.updatedAt // .createdAt // "") >= env.STALE_QUEUED_CUTOFF))) | select(.displayTitle == "Review ClawSweeper items" or .displayTitle == "Review hot ClawSweeper items" or (.displayTitle | startswith("Review target repo ")) or (.displayTitle | startswith("Review hot target repo "))) | [.databaseId, .displayTitle, .status] | @tsv' 2>/dev/null || true)"
+              | CURRENT_RUN_ID="${GITHUB_RUN_ID:-0}" STALE_QUEUED_CUTOFF="$STALE_QUEUED_CUTOFF" jq -r '.[] | select((.databaseId | tostring) != env.CURRENT_RUN_ID) | select(.workflowPath == ".github/workflows/sweep.yml") | select(.status == "in_progress" or ((.status == "pending" or .status == "queued" or .status == "waiting" or .status == "requested") and ((.updatedAt // .createdAt // "") >= env.STALE_QUEUED_CUTOFF))) | select(.displayTitle == "Review ClawSweeper items" or .displayTitle == "Review hot ClawSweeper items" or (.displayTitle | startswith("Review target repo ")) or (.displayTitle | startswith("Review hot target repo "))) | [.databaseId, .displayTitle, .status] | @tsv' 2>/dev/null || true)"
             while IFS=$'\t' read -r id title status; do
               if [ -z "$id" ]; then
                 continue
@@ -1022,8 +1022,8 @@ jobs:
           normal_active_floor="$(limit review_shards.normal_active_floor)"
           hard_shard_cap="$(limit review_shards.hard_cap)"
           commit_page_size="$(limit commit_review.page_size_default)"
-          active_critical_workers="$(( $(active_run_count "repair cluster worker") + $(active_sweep_exact_count) ))"
-          active_background_workers="$(( $(active_run_count "ClawSweeper Commit Review") * commit_page_size + $(active_sweep_background_workers) ))"
+          active_critical_workers="$(( $(active_run_count ".github/workflows/repair-cluster-worker.yml") + $(active_sweep_exact_count) ))"
+          active_background_workers="$(( $(active_run_count ".github/workflows/commit-review.yml") * commit_page_size + $(active_sweep_background_workers) ))"
           hot_intake_shards="$(worker_limit hot_intake --active-critical "$active_critical_workers" --active-background "$active_background_workers")"
           normal_shards="$(worker_limit normal_review --active-critical "$active_critical_workers" --active-background "$active_background_workers")"
           hot_intake="${{ ((github.event_name == 'repository_dispatch' && github.event.client_payload.hot_intake == 'true') || (github.event_name == 'workflow_dispatch' && github.event.inputs.hot_intake == 'true') || (github.event_name == 'schedule' && (github.event.schedule == '*/5 * * * *' || github.event.schedule == '2/5 * * * *'))) && 'true' || 'false' }}"
@@ -2645,7 +2645,11 @@ jobs:
           set -euo pipefail
           hot_intake_shards="$(pnpm run --silent workflow -- limit review_shards.hot_intake_default)"
           normal_shards="$(pnpm run --silent workflow -- limit review_shards.normal_default)"
-          runs_json="$(gh run list --repo "${{ github.repository }}" --limit 100 --json workflowName,displayTitle,status,createdAt,updatedAt)"
+          runs_json="$({
+            gh api "repos/${{ github.repository }}/actions/runs?per_page=100" \
+              --jq '.workflow_runs[] | {databaseId:.id, workflowPath:.path, displayTitle:.display_title, status:.status, createdAt:.created_at, updatedAt:.updated_at}' 2>/dev/null \
+              || true
+          } | jq -s 'unique_by(.databaseId)')"
           eval "$(
             RUNS_JSON="$runs_json" node <<'NODE'
           const runs = JSON.parse(process.env.RUNS_JSON || "[]");
@@ -2661,7 +2665,7 @@ jobs:
           }
           function recent(title, windowMs) {
             return runs.some((run) => {
-              if (run.workflowName !== "ClawSweeper") return false;
+              if (run.workflowPath !== ".github/workflows/sweep.yml") return false;
               if (run.displayTitle !== title) return false;
               if (activeRun(run)) return true;
               const createdAt = Date.parse(String(run.createdAt || ""));

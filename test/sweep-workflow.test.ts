@@ -608,7 +608,8 @@ test("review capacity probes use REST actions run listing", () => {
     assert.match(block, /actions\/runs\?per_page=100/);
     assert.match(block, /--paginate/);
     assert.match(block, /status=\$\{run_status\}/);
-    assert.match(block, /workflowName:\.name/);
+    assert.match(block, /workflowPath:\.path/);
+    assert.doesNotMatch(block, /workflowName:\.name/);
     assert.match(block, /displayTitle:\.display_title/);
     assert.match(block, /createdAt:\.created_at/);
     assert.match(block, /updatedAt:\.updated_at/);
@@ -634,6 +635,10 @@ test("background review capacity reserves expanding matrices and caps broad manu
   assert.match(modeBlock, /limit review_shards\.normal_default/);
   assert.match(modeBlock, /STALE_QUEUED_CUTOFF/);
   assert.match(modeBlock, /updatedAt:\.updated_at/);
+  assert.match(modeBlock, /workflowPath == "\.github\/workflows\/sweep\.yml"/);
+  assert.match(modeBlock, /WORKFLOW_PATH="\$1"/);
+  assert.doesNotMatch(modeBlock, /workflowName == "ClawSweeper"/);
+  assert.doesNotMatch(modeBlock, /WORKFLOW_NAME="\$1"/);
   assert.match(modeBlock, /total_shards/);
   assert.match(modeBlock, /completed shard jobs are publishing and consume no/);
   assert.match(modeBlock, /\[ "\$active_shards" -lt 1 \] && \[ "\$total_shards" -lt 1 \]/);
@@ -644,6 +649,21 @@ test("background review capacity reserves expanding matrices and caps broad manu
   assert.match(commitBlock, /limit review_shards\.normal_default/);
   assert.match(commitBlock, /STALE_QUEUED_CUTOFF/);
   assert.match(commitBlock, /updatedAt:\.updated_at/);
+  assert.match(commitBlock, /workflowPath == "\.github\/workflows\/sweep\.yml"/);
+  assert.match(commitBlock, /WORKFLOW_PATH="\$1"/);
+  assert.doesNotMatch(commitBlock, /workflowName == "ClawSweeper"/);
+  assert.doesNotMatch(commitBlock, /WORKFLOW_NAME="\$1"/);
+});
+
+test("review backstops identify sweep runs by stable workflow path", () => {
+  const workflow = readText(".github/workflows/sweep.yml");
+  const block = workflow.slice(workflow.indexOf("- name: Queue review backstops"));
+
+  assert.match(block, /actions\/runs\?per_page=100/);
+  assert.match(block, /workflowPath:\.path/);
+  assert.match(block, /run\.workflowPath !== "\.github\/workflows\/sweep\.yml"/);
+  assert.doesNotMatch(block, /gh run list/);
+  assert.doesNotMatch(block, /run\.workflowName/);
 });
 
 test("scheduled background reviews serialize planners and refill released capacity", () => {
