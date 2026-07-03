@@ -245,6 +245,7 @@ type ActionTaken =
   | "skipped_comment_auth"
   | "skipped_locked_conversation"
   | "skipped_changed_since_review"
+  | "skipped_stale_review_comment_sync"
   | "skipped_open_closing_pr"
   | "skipped_same_author_pair"
   | "skipped_already_closed"
@@ -15415,6 +15416,50 @@ function commentBody(comment: Record<string, unknown> | undefined): string | und
   return typeof body === "string" ? body : undefined;
 }
 
+function newestReviewMarkerReviewedAt(
+  comment: Record<string, unknown> | undefined,
+  number: number,
+): string | undefined {
+  if (!canPatchReviewComment(comment)) return undefined;
+  const body = commentBody(comment);
+  if (!body) return undefined;
+  const reviewMarker = reviewCommentMarker(number);
+  const reviewMarkerIndex = body.lastIndexOf(reviewMarker);
+  if (reviewMarkerIndex < 0) return undefined;
+  if (body.slice(reviewMarkerIndex + reviewMarker.length).trim() !== "") return undefined;
+  const markerBlock = body
+    .slice(0, reviewMarkerIndex)
+    .trimEnd()
+    .match(/(?:<!--[\s\S]*?-->\s*)+$/)?.[0];
+  if (!markerBlock) return undefined;
+  const markerPattern = /<!--\s+clawsweeper-verdict:[^\s>]+\b([^>]*)-->/g;
+  let lastReviewedAt: string | undefined;
+  for (const match of markerBlock.matchAll(markerPattern)) {
+    const attributes = match[1] ?? "";
+    if (!new RegExp(`\\bitem=${number}\\b`).test(attributes)) continue;
+    const reviewedAt = attributes.match(/\breviewed_at=([^\s>]+)/)?.[1];
+    if (!reviewedAt || reviewedAt === "unknown") continue;
+    lastReviewedAt = reviewedAt;
+  }
+  return lastReviewedAt;
+}
+
+function staleReviewCommentSyncReason(
+  markdown: string,
+  existingReviewComment: Record<string, unknown> | undefined,
+  number: number,
+): string | null {
+  if (frontMatterValue(markdown, "type") !== "pull_request") return null;
+  // Comment updated_at can move for command/status edits; only review markers prove verdict freshness.
+  const liveReviewedAt = newestReviewMarkerReviewedAt(existingReviewComment, number);
+  const reportReviewedAt = frontMatterValue(markdown, "reviewed_at");
+  const liveReviewedAtMs = timestampMs(liveReviewedAt);
+  const reportReviewedAtMs = timestampMs(reportReviewedAt);
+  if (liveReviewedAtMs === null || reportReviewedAtMs === null) return null;
+  if (liveReviewedAtMs <= reportReviewedAtMs) return null;
+  return `live durable review comment is newer than the local report: comment reviewed_at=${liveReviewedAt}, report reviewed_at=${reportReviewedAt}`;
+}
+
 const APPLY_SYNC_EQUIVALENT_CLOSE_MARKER_ACTIONS = new Set([
   "proposed_close",
   "kept_open",
@@ -18002,6 +18047,22 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
       ? `synced advisory issue labels #${number}`
       : `synced ClawSweeper labels #${number}`;
     if (needsReviewCommentSync) {
+      const staleSyncReason = needsReviewCommentBodySync
+        ? staleReviewCommentSyncReason(markdown, existingReviewComment, number)
+        : null;
+      if (staleSyncReason) {
+        markdown = replaceFrontMatterValue(markdown, "apply_checked_at", new Date().toISOString());
+        if (!dryRun) writeFileSync(path, markdown, "utf8");
+        results.push({
+          number,
+          action: "skipped_stale_review_comment_sync",
+          reason: staleSyncReason,
+        });
+        processedCount += 1;
+        maybeLogProgress(`skipped stale review comment sync #${number}`);
+        if (processedCount >= processedLimit) break;
+        continue;
+      }
       const lockedReason = needsReviewCommentBodySync ? lockedConversationApplyReason(item) : null;
       if (lockedReason) {
         if (markApplySkipped("skipped_locked_conversation", lockedReason)) break;
