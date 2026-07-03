@@ -89,13 +89,13 @@ by SHA/range rather than detaching the whole target repository at the commit.
 
 ## Scaling
 
-Commit Sweeper is background work. It defaults to 1 commit per workflow page
+Commit Sweeper is background work. It defaults to 6 commits per workflow page
 when the system is quiet, but the receiver asks the central worker scheduler for
 the effective page size before dispatching the matrix. Active repair,
 exact-item review, and sweep work can lower commit review to keep capacity
 available for maintainer-visible work. The checked-in default lives in
 `config/automation-limits.json`. The receiver clamps
-`CLAWSWEEPER_COMMIT_REVIEW_PAGE_SIZE` between 1 and 32, then pages large ranges:
+`CLAWSWEEPER_COMMIT_REVIEW_PAGE_SIZE` between 1 and 128, then pages large ranges:
 
 - select up to the configured page size
 - classify them cheaply

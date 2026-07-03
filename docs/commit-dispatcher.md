@@ -107,7 +107,7 @@ CLAWSWEEPER_COMMIT_REVIEW_SETTLE_SECONDS=60
 Use `0` for settled manual backfills or a larger value during GitHub event
 lag incidents.
 
-Commit review is a background lane. It defaults to 1 commit per workflow page
+Commit review is a background lane. It defaults to 6 commits per workflow page
 when the system is quiet, but the receiver asks the central worker scheduler for
 capacity before each page. Active repair, exact-item review, and sweep work can
 lower the page size so commit review does not consume capacity needed by
@@ -116,10 +116,10 @@ maintainer-visible work. The checked-in default comes from
 `openclaw/clawsweeper` only when the org has enough rate-limit headroom:
 
 ```text
-CLAWSWEEPER_COMMIT_REVIEW_PAGE_SIZE=1
+CLAWSWEEPER_COMMIT_REVIEW_PAGE_SIZE=6
 ```
 
-The receiver clamps this between 1 and 32. Setting the variable bypasses the
+The receiver clamps this between 1 and 128. Setting the variable bypasses the
 dynamic default for that run; leave it unset when the central scheduler should
 decide. Large push ranges continue in later workflow pages.
 

@@ -1,9 +1,9 @@
 {
   "workers": {
-    "max": 32,
-    "reserve_for_interactive": 8,
-    "expansion_reserve": 12,
-    "minimum_background": 4
+    "max": 128,
+    "reserve_for_interactive": 16,
+    "expansion_reserve": 8,
+    "minimum_background": 16
   },
   "lanes": {
     "exact_review": {

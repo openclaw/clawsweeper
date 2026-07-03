@@ -130,8 +130,8 @@ The Worker fetches job details only for the bounded active-run set, limits that
 GitHub fanout to 12 concurrent requests, and caches each run's jobs for 60
 seconds. It separately samples 20 recent completed worker runs with ten-way
 fanout and caches error/recovery telemetry for 120 seconds. This bounds
-telemetry pressure without exceeding the 32-worker fleet budget. Worker details
-paginate up to 300 jobs per workflow run so 22-shard runs remain fully visible,
+telemetry pressure without exceeding the 128-worker fleet budget. Worker details
+paginate up to 300 jobs per workflow run so 89-shard runs remain fully visible,
 then finish before optional pipeline CI and historical
 enrichment begin, so those secondary lookups do not compete with active worker
 telemetry. If GitHub job telemetry is unavailable, the API and UI retain the

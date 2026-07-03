@@ -531,20 +531,20 @@ Current global and key lane limits:
 
 | Limit | Value |
 | --- | ---: |
-| Global Codex worker budget | 32 |
-| Interactive reserve | 8 |
-| Expansion reserve | 12 |
-| Existing repair, PR repair, and issue implementation default | 12 |
+| Global Codex worker budget | 128 |
+| Interactive reserve | 16 |
+| Expansion reserve | 8 |
+| Existing repair, PR repair, and issue implementation default | 51 |
 | Imported GitCrawl cluster repair | 2 |
-| Quiet normal-review ceiling | 22 |
-| Quiet hot-intake ceiling | 11 |
+| Quiet normal-review ceiling | 89 |
+| Quiet hot-intake ceiling | 44 |
 
 Important behavior:
 
 - Priority work includes repair, issue implementation, and exact-item review.
 - Background review and commit lanes shrink as priority work consumes capacity.
-- Background planners reserve future matrix expansion capacity before all shard
-  jobs appear, preventing transient over-allocation.
+- Background planners serialize per target and reserve their quiet lane before
+  shard jobs appear; publish-only runs count as zero workers so capacity refills.
 - One review shard equals one parallel Codex session. `batch_size` does not
   multiply worker concurrency inside a shard.
 - Imported GitCrawl repair remains separately capped even when the global budget

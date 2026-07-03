@@ -634,6 +634,9 @@ test("background review capacity reserves expanding matrices and caps broad manu
   assert.match(modeBlock, /limit review_shards\.normal_default/);
   assert.match(modeBlock, /STALE_QUEUED_CUTOFF/);
   assert.match(modeBlock, /updatedAt:\.updated_at/);
+  assert.match(modeBlock, /total_shards/);
+  assert.match(modeBlock, /completed shard jobs are publishing and consume no/);
+  assert.match(modeBlock, /\[ "\$active_shards" -lt 1 \] && \[ "\$total_shards" -lt 1 \]/);
   assert.match(modeBlock, /lane_shard_cap="\$normal_shards"/);
   assert.match(modeBlock, /lane_shard_cap="\$hot_intake_shards"/);
   assert.match(modeBlock, /Capping broad background review shards/);
@@ -641,6 +644,24 @@ test("background review capacity reserves expanding matrices and caps broad manu
   assert.match(commitBlock, /limit review_shards\.normal_default/);
   assert.match(commitBlock, /STALE_QUEUED_CUTOFF/);
   assert.match(commitBlock, /updatedAt:\.updated_at/);
+});
+
+test("scheduled background reviews serialize planners and refill released capacity", () => {
+  const workflow = readText(".github/workflows/sweep.yml");
+  const concurrencyBlock = workflow.slice(
+    workflow.indexOf("concurrency:"),
+    workflow.indexOf("jobs:"),
+  );
+  const planHeader = workflow.slice(
+    workflow.indexOf("\n  plan:"),
+    workflow.indexOf("\n    outputs:", workflow.indexOf("\n  plan:")),
+  );
+
+  assert.match(concurrencyBlock, /format\('clawsweeper-intake-v2-\{0\}', github\.run_id\)/);
+  assert.match(concurrencyBlock, /format\('clawsweeper-review-\{0\}', github\.run_id\)/);
+  assert.match(planHeader, /group: \$\{\{ format\('clawsweeper-planner-\{0\}'/);
+  assert.match(planHeader, /\|\| github\.run_id/);
+  assert.match(planHeader, /cancel-in-progress: false/);
 });
 
 test("scheduled normal review keeps workers warm with multi-item shards", () => {

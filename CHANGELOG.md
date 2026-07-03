@@ -14,6 +14,7 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Changed
 
+- Restored the global Codex worker budget to 128, reserved 24 slots for interactive work and matrix expansion, and let serialized background planners refill capacity while older review waves finish publishing.
 - Made ClawSweeper review reports and `proof: sufficient` or `proof: override` the proof-nudge authority, retiring `proof: supplied` and PR-context hygiene labels from proof state. Thanks @hannesrudolph.
 
 ### Fixed

@@ -101,9 +101,15 @@ test("worker scheduler lets background lanes yield to active work", () => {
     workerLimit("normal_review"),
     Math.min(AUTOMATION_LIMITS.review_shards.normal_default, quietBackgroundCapacity),
   );
-  assert.equal(workerLimit("normal_review", { activeCritical: 42, activeBackground: 26 }), 1);
+  assert.equal(
+    workerLimit("normal_review", {
+      activeCritical: Math.floor(quietBackgroundCapacity / 2),
+      activeBackground: Math.ceil(quietBackgroundCapacity / 2),
+    }),
+    1,
+  );
   assert.equal(workerLimit("commit_review"), AUTOMATION_LIMITS.commit_review.page_size_default);
-  assert.equal(workerLimit("commit_review", { activeCritical: 65 }), 1);
+  assert.equal(workerLimit("commit_review", { activeCritical: quietBackgroundCapacity }), 1);
   assert.equal(workerLimit("repair"), AUTOMATION_LIMITS.repair_live_runs.default);
   assert.equal(
     workerLimit("automerge_repair"),
@@ -116,6 +122,15 @@ test("worker scheduler lets background lanes yield to active work", () => {
   assert.equal(workerLimit("cluster_repair"), AUTOMATION_LIMITS.repair_live_runs.cluster_default);
   assert.equal(workerLimit("assist"), AUTOMATION_LIMITS.assist.default);
   assert.equal(workerLimit("assist", { activeCritical: WORKER_CONFIG.workers.max - 2 }), 2);
+});
+
+test("worker scheduler keeps 104 slots available for steady background work", () => {
+  const quietBackgroundCapacity =
+    WORKER_CONFIG.workers.max -
+    WORKER_CONFIG.workers.reserve_for_interactive -
+    WORKER_CONFIG.workers.expansion_reserve;
+  assert.equal(quietBackgroundCapacity, 104);
+  assert.ok(quietBackgroundCapacity >= Math.floor(WORKER_CONFIG.workers.max * 0.8));
 });
 
 test("worker config defaults imported cluster repair capacity for older configs", () => {
