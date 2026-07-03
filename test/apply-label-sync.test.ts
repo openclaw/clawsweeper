@@ -444,6 +444,344 @@ if (args[0] === "api" && /\\/issues\\/74481$/.test(path)) {
   }
 });
 
+test("apply-decisions syncs fresh-head PR review labels when bot activity bumps updated_at", () => {
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    const itemsDir = join(root, "items");
+    const closedDir = join(root, "closed");
+    const plansDir = join(root, "plans");
+    const reportPath = join(root, "apply-report.json");
+    const logPath = join(root, "gh.log");
+    const itemPath = join(itemsDir, "74482.md");
+    mkdirSync(itemsDir, { recursive: true });
+    mkdirSync(plansDir, { recursive: true });
+    const sourceReport = `${reportFrontMatter({
+      repository: "openclaw/openclaw",
+      type: "pull_request",
+      number: "74482",
+      title: "Fresh head label restore",
+      url: "https://github.com/openclaw/openclaw/pull/74482",
+      decision: "keep_open",
+      close_reason: "none",
+      confidence: "high",
+      action_taken: "kept_open",
+      review_status: "complete",
+      local_checkout_access: "verified",
+      author: "contributor",
+      author_association: "CONTRIBUTOR",
+      labels: JSON.stringify([]),
+      item_snapshot_hash: "snapshot-a",
+      item_updated_at: "2026-07-03T21:42:48Z",
+      reviewed_at: "2026-07-03T21:42:48Z",
+      pull_head_sha: "bc60b889",
+    })}
+
+## Summary
+
+This fresh review must keep driving PR labels even after a bot ack edit bumps updated_at.
+
+${realBehaviorProofReportSection()}
+
+${prRatingReportSection({ overallTier: "A" })}
+
+## Review Findings
+
+Overall correctness: patch is correct
+
+Overall confidence: 0.9
+
+Full review comments:
+
+- none
+`;
+    const synced = reportWithSyncedReviewComment(sourceReport, 74482);
+    writeFileSync(itemPath, synced.report, "utf8");
+
+    const ghMock = `
+const { appendFileSync, readFileSync } = require("fs");
+const logPath = ${JSON.stringify(logPath)};
+const comment = ${JSON.stringify(synced.comment)};
+const rawArgs = process.argv.slice(2);
+const args = rawArgs[0] === "--repo" ? rawArgs.slice(2) : rawArgs;
+appendFileSync(logPath, JSON.stringify(args) + "\\n");
+const path = args[1] || "";
+if (args[0] === "api" && /\\/issues\\/74482$/.test(path)) {
+  console.log(JSON.stringify({
+    number: 74482,
+    title: "Fresh head label restore",
+    html_url: "https://github.com/openclaw/openclaw/pull/74482",
+    created_at: "2026-07-03T19:00:00Z",
+    updated_at: "2026-07-03T21:43:45Z",
+    closed_at: null,
+    state: "open",
+    locked: false,
+    active_lock_reason: null,
+    author_association: "CONTRIBUTOR",
+    user: { login: "contributor" },
+    labels: [],
+    pull_request: {}
+  }));
+} else if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/74482\\/timeline(?:\\?|$)/.test(args[2] || "")) {
+  console.log("HTTP/2 200\\n\\n[]");
+} else if (args[0] === "api" && /\\/issues\\/74482\\/timeline(?:\\?|$)/.test(path)) {
+  console.log(JSON.stringify([[]]));
+} else if (args[0] === "api" && /\\/pulls\\/74482$/.test(path)) {
+  console.log(JSON.stringify({
+    number: 74482,
+    html_url: "https://github.com/openclaw/openclaw/pull/74482",
+    state: "open",
+    changed_files: 1,
+    commits: 2,
+    review_comments: 0,
+    head: { sha: "bc60b889", ref: "branch", repo: { full_name: "fork/openclaw" } },
+    base: { sha: "base-sha", ref: "main", repo: { full_name: "openclaw/openclaw" } },
+    user: { login: "contributor" }
+  }));
+} else if (args[0] === "api" && /\\/pulls\\/74482\\/(files|commits|comments)(?:\\?|$)/.test(path)) {
+  console.log(JSON.stringify([[]]));
+} else if (args[0] === "api" && /\\/issues\\/74482\\/comments(?:\\?|$)/.test(path)) {
+  console.log(JSON.stringify([[
+    {
+      id: 987482,
+      html_url: "https://github.com/openclaw/openclaw/pull/74482#issuecomment-987482",
+      body: comment,
+      user: { login: "clawsweeper[bot]" },
+      created_at: "2026-07-03T21:33:21Z",
+      updated_at: "2026-07-03T21:33:21Z"
+    },
+    {
+      id: 987483,
+      html_url: "https://github.com/openclaw/openclaw/pull/74482#issuecomment-987483",
+      body: "Pushed a new head, please take another look.",
+      user: { login: "contributor" },
+      author_association: "CONTRIBUTOR",
+      created_at: "2026-07-03T21:42:28Z",
+      updated_at: "2026-07-03T21:42:28Z"
+    }
+  ]]));
+} else if (args[0] === "api" && /\\/issues\\/comments\\/987482$/.test(path)) {
+  const input = args[args.indexOf("--input") + 1];
+  appendFileSync(logPath, JSON.stringify(["patched-review-body", JSON.parse(readFileSync(input, "utf8")).body]) + "\\n");
+  console.log(JSON.stringify({
+    id: 987482,
+    html_url: "https://github.com/openclaw/openclaw/pull/74482#issuecomment-987482",
+    updated_at: "2026-07-03T21:48:00Z"
+  }));
+} else if (args[0] === "issue" && args[1] === "edit") {
+  console.log("");
+} else if (args[0] === "label" && args[1] === "create") {
+  console.log(JSON.stringify({ name: args[2] }));
+} else {
+  console.error("unexpected gh args", JSON.stringify(args));
+  process.exit(1);
+}
+`;
+    withMockGh(root, ghMock, () => {
+      runApplyDecisionsForTest({
+        targetRepo: "openclaw/openclaw",
+        itemsDir,
+        closedDir,
+        plansDir,
+        reportPath,
+        extraArgs: ["--sync-comments-only", "--item-numbers", "74482"],
+      });
+    });
+
+    const updatedReport = readFileSync(itemPath, "utf8");
+    assert.match(updatedReport, /^labels_synced_at: /m);
+    assert.match(updatedReport, /proof: sufficient/);
+    assert.match(updatedReport, /rating: 🦞 diamond lobster/);
+    const calls = readFileSync(logPath, "utf8")
+      .trim()
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as string[]);
+    assert(
+      calls.some(
+        (args) =>
+          args[0] === "issue" &&
+          args[1] === "edit" &&
+          args.includes("--add-label") &&
+          args.includes("rating: 🦞 diamond lobster"),
+      ),
+    );
+    assert(
+      calls.some(
+        (args) =>
+          args[0] === "issue" &&
+          args[1] === "edit" &&
+          args.includes("--add-label") &&
+          args.includes("proof: sufficient"),
+      ),
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("apply-decisions skips fresh-head PR label sync when humans act after the review snapshot", () => {
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    const itemsDir = join(root, "items");
+    const closedDir = join(root, "closed");
+    const plansDir = join(root, "plans");
+    const reportPath = join(root, "apply-report.json");
+    const logPath = join(root, "gh.log");
+    const itemPath = join(itemsDir, "74483.md");
+    mkdirSync(itemsDir, { recursive: true });
+    mkdirSync(plansDir, { recursive: true });
+    const sourceReport = `${reportFrontMatter({
+      repository: "openclaw/openclaw",
+      type: "pull_request",
+      number: "74483",
+      title: "Fresh head with human activity",
+      url: "https://github.com/openclaw/openclaw/pull/74483",
+      decision: "keep_open",
+      close_reason: "none",
+      confidence: "high",
+      action_taken: "kept_open",
+      review_status: "complete",
+      local_checkout_access: "verified",
+      author: "contributor",
+      author_association: "CONTRIBUTOR",
+      labels: JSON.stringify([]),
+      item_snapshot_hash: "snapshot-a",
+      item_updated_at: "2026-07-03T21:42:48Z",
+      reviewed_at: "2026-07-03T21:42:48Z",
+      pull_head_sha: "bc60b889",
+    })}
+
+## Summary
+
+Human activity after the review snapshot must still block label sync.
+
+${realBehaviorProofReportSection()}
+
+${prRatingReportSection({ overallTier: "A" })}
+
+## Review Findings
+
+Overall correctness: patch is correct
+
+Overall confidence: 0.9
+
+Full review comments:
+
+- none
+`;
+    const synced = reportWithSyncedReviewComment(sourceReport, 74483);
+    writeFileSync(itemPath, synced.report, "utf8");
+
+    const ghMock = `
+const { appendFileSync, readFileSync } = require("fs");
+const logPath = ${JSON.stringify(logPath)};
+const comment = ${JSON.stringify(synced.comment)};
+const rawArgs = process.argv.slice(2);
+const args = rawArgs[0] === "--repo" ? rawArgs.slice(2) : rawArgs;
+appendFileSync(logPath, JSON.stringify(args) + "\\n");
+const path = args[1] || "";
+if (args[0] === "api" && /\\/issues\\/74483$/.test(path)) {
+  console.log(JSON.stringify({
+    number: 74483,
+    title: "Fresh head with human activity",
+    html_url: "https://github.com/openclaw/openclaw/pull/74483",
+    created_at: "2026-07-03T19:00:00Z",
+    updated_at: "2026-07-03T21:43:45Z",
+    closed_at: null,
+    state: "open",
+    locked: false,
+    active_lock_reason: null,
+    author_association: "CONTRIBUTOR",
+    user: { login: "contributor" },
+    labels: [],
+    pull_request: {}
+  }));
+} else if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/74483\\/timeline(?:\\?|$)/.test(args[2] || "")) {
+  console.log("HTTP/2 200\\n\\n[]");
+} else if (args[0] === "api" && /\\/issues\\/74483\\/timeline(?:\\?|$)/.test(path)) {
+  console.log(JSON.stringify([[]]));
+} else if (args[0] === "api" && /\\/pulls\\/74483$/.test(path)) {
+  console.log(JSON.stringify({
+    number: 74483,
+    html_url: "https://github.com/openclaw/openclaw/pull/74483",
+    state: "open",
+    changed_files: 1,
+    commits: 2,
+    review_comments: 0,
+    head: { sha: "bc60b889", ref: "branch", repo: { full_name: "fork/openclaw" } },
+    base: { sha: "base-sha", ref: "main", repo: { full_name: "openclaw/openclaw" } },
+    user: { login: "contributor" }
+  }));
+} else if (args[0] === "api" && /\\/pulls\\/74483\\/(files|commits|comments)(?:\\?|$)/.test(path)) {
+  console.log(JSON.stringify([[]]));
+} else if (args[0] === "api" && /\\/issues\\/74483\\/comments(?:\\?|$)/.test(path)) {
+  console.log(JSON.stringify([[
+    {
+      id: 987484,
+      html_url: "https://github.com/openclaw/openclaw/pull/74483#issuecomment-987484",
+      body: comment,
+      user: { login: "clawsweeper[bot]" },
+      created_at: "2026-07-03T21:33:21Z",
+      updated_at: "2026-07-03T21:33:21Z"
+    },
+    {
+      id: 987485,
+      html_url: "https://github.com/openclaw/openclaw/pull/74483#issuecomment-987485",
+      body: "I already relabeled this myself, leave the labels alone.",
+      user: { login: "maintainer" },
+      author_association: "MEMBER",
+      created_at: "2026-07-03T21:44:00Z",
+      updated_at: "2026-07-03T21:44:00Z"
+    }
+  ]]));
+} else if (args[0] === "api" && /\\/issues\\/comments\\/987484$/.test(path)) {
+  const input = args[args.indexOf("--input") + 1];
+  appendFileSync(logPath, JSON.stringify(["patched-review-body", JSON.parse(readFileSync(input, "utf8")).body]) + "\\n");
+  console.log(JSON.stringify({
+    id: 987484,
+    html_url: "https://github.com/openclaw/openclaw/pull/74483#issuecomment-987484",
+    updated_at: "2026-07-03T21:48:00Z"
+  }));
+} else if (args[0] === "issue" && args[1] === "edit") {
+  console.log("");
+} else if (args[0] === "label" && args[1] === "create") {
+  console.log(JSON.stringify({ name: args[2] }));
+} else {
+  console.error("unexpected gh args", JSON.stringify(args));
+  process.exit(1);
+}
+`;
+    withMockGh(root, ghMock, () => {
+      runApplyDecisionsForTest({
+        targetRepo: "openclaw/openclaw",
+        itemsDir,
+        closedDir,
+        plansDir,
+        reportPath,
+        extraArgs: ["--sync-comments-only", "--item-numbers", "74483"],
+      });
+    });
+
+    const updatedReport = readFileSync(itemPath, "utf8");
+    assert.doesNotMatch(updatedReport, /^labels_synced_at: /m);
+    const calls = readFileSync(logPath, "utf8")
+      .trim()
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as string[]);
+    assert.equal(
+      calls.some((args) => args[0] === "issue" && args[1] === "edit"),
+      false,
+    );
+    assert.equal(
+      calls.some((args) => args[0] === "label" && args[1] === "create"),
+      false,
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("apply-decisions routes parsed security owner acceptance to maintainer review", () => {
   const root = mkdtempSync(tmpPrefix);
   try {

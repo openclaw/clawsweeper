@@ -15190,6 +15190,13 @@ function stalePullRequestReviewHead(
   };
 }
 
+function freshPullRequestReviewHead(markdown: string, context: ItemContext): boolean {
+  if (frontMatterValue(markdown, "type") !== "pull_request") return false;
+  const reportHeadSha = pullHeadShaFromReport(markdown);
+  const liveHeadSha = pullHeadShaFromContext(context);
+  return Boolean(reportHeadSha && liveHeadSha && reportHeadSha === liveHeadSha);
+}
+
 function isStalePullRequestReviewLabel(label: string): boolean {
   return (
     isClawSweeperOwnedLabel(label) &&
@@ -17559,11 +17566,19 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
     const labelSyncFreshEnough = (): boolean => {
       if (!storedUpdatedAt) return false;
       if (!updatedSinceReview || reviewCommentOnlyUpdate) return true;
-      const existingReviewCommentUpdatedAtMs = timestampMs(commentUpdatedAt(existingReviewComment));
-      const itemUpdatedAtMs = timestampMs(item.updatedAt);
-      if (existingReviewCommentUpdatedAtMs === null || itemUpdatedAtMs === null) return false;
-      if (Math.abs(itemUpdatedAtMs - existingReviewCommentUpdatedAtMs) > 5 * 60 * 1000) {
-        return false;
+      const completeFreshHeadReview =
+        item.kind === "pull_request" &&
+        frontMatterValue(markdown, "review_status") === "complete" &&
+        freshPullRequestReviewHead(markdown, currentItemContext());
+      if (!completeFreshHeadReview) {
+        const existingReviewCommentUpdatedAtMs = timestampMs(
+          commentUpdatedAt(existingReviewComment),
+        );
+        const itemUpdatedAtMs = timestampMs(item.updatedAt);
+        if (existingReviewCommentUpdatedAtMs === null || itemUpdatedAtMs === null) return false;
+        if (Math.abs(itemUpdatedAtMs - existingReviewCommentUpdatedAtMs) > 5 * 60 * 1000) {
+          return false;
+        }
       }
       const storedUpdatedAtMs = timestampMs(storedUpdatedAt);
       if (storedUpdatedAtMs === null) return false;
