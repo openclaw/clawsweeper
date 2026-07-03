@@ -266,6 +266,184 @@ if (args[0] === "api" && /\\/issues\\/74478$/.test(path)) {
   }
 });
 
+test("apply-decisions clears stale PR review labels when live head changed", () => {
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    const itemsDir = join(root, "items");
+    const closedDir = join(root, "closed");
+    const plansDir = join(root, "plans");
+    const reportPath = join(root, "apply-report.json");
+    const logPath = join(root, "gh.log");
+    const itemPath = join(itemsDir, "74481.md");
+    mkdirSync(itemsDir, { recursive: true });
+    mkdirSync(plansDir, { recursive: true });
+    const staleLabels = [
+      "P2",
+      "rating: 🧂 unranked krab",
+      "merge-risk: 🚨 session-state",
+      "status: 🔁 re-review loop",
+      "proof: sufficient",
+    ];
+    const sourceReport = `${reportFrontMatter({
+      repository: "openclaw/openclaw",
+      type: "pull_request",
+      number: "74481",
+      title: "Stale review label cleanup",
+      url: "https://github.com/openclaw/openclaw/pull/74481",
+      decision: "keep_open",
+      close_reason: "none",
+      confidence: "high",
+      action_taken: "kept_open",
+      review_status: "complete",
+      local_checkout_access: "verified",
+      author: "contributor",
+      author_association: "CONTRIBUTOR",
+      labels: JSON.stringify(staleLabels),
+      item_snapshot_hash: "snapshot-a",
+      item_updated_at: "2026-05-19T20:00:00Z",
+      reviewed_at: "2026-05-19T20:00:00Z",
+      pull_head_sha: "old-head",
+      merge_risk_labels: JSON.stringify(["merge-risk: 🚨 session-state"]),
+    })}
+
+## Summary
+
+This old report should not keep driving PR labels after the branch moves.
+
+${realBehaviorProofReportSection()}
+
+${prRatingReportSection({ overallTier: "F", proofTier: "F", patchTier: "F" })}
+
+## Review Findings
+
+Overall correctness: patch is incorrect
+
+Overall confidence: 0.87
+
+Full review comments:
+
+- [P1] Old finding — src/runtime.ts:10
+`;
+    const synced = reportWithSyncedReviewComment(sourceReport, 74481);
+    writeFileSync(itemPath, synced.report, "utf8");
+
+    const ghMock = `
+const { appendFileSync, readFileSync } = require("fs");
+const logPath = ${JSON.stringify(logPath)};
+const comment = ${JSON.stringify(synced.comment)};
+const rawArgs = process.argv.slice(2);
+const args = rawArgs[0] === "--repo" ? rawArgs.slice(2) : rawArgs;
+appendFileSync(logPath, JSON.stringify(args) + "\\n");
+const path = args[1] || "";
+const staleLabels = ${JSON.stringify(staleLabels)};
+if (args[0] === "api" && /\\/issues\\/74481$/.test(path)) {
+  console.log(JSON.stringify({
+    number: 74481,
+    title: "Stale review label cleanup",
+    html_url: "https://github.com/openclaw/openclaw/pull/74481",
+    created_at: "2026-05-19T19:00:00Z",
+    updated_at: "2026-05-19T20:10:00Z",
+    closed_at: null,
+    state: "open",
+    locked: false,
+    active_lock_reason: null,
+    author_association: "CONTRIBUTOR",
+    user: { login: "contributor" },
+    labels: staleLabels,
+    pull_request: {}
+  }));
+} else if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/74481\\/timeline(?:\\?|$)/.test(args[2] || "")) {
+  console.log("HTTP/2 200\\n\\n[]");
+} else if (args[0] === "api" && /\\/issues\\/74481\\/timeline(?:\\?|$)/.test(path)) {
+  console.log(JSON.stringify([[]]));
+} else if (args[0] === "api" && /\\/pulls\\/74481$/.test(path)) {
+  console.log(JSON.stringify({
+    number: 74481,
+    html_url: "https://github.com/openclaw/openclaw/pull/74481",
+    state: "open",
+    changed_files: 1,
+    commits: 2,
+    review_comments: 0,
+    head: { sha: "new-head", ref: "branch", repo: { full_name: "fork/openclaw" } },
+    base: { sha: "base-sha", ref: "main", repo: { full_name: "openclaw/openclaw" } },
+    user: { login: "contributor" }
+  }));
+} else if (args[0] === "api" && /\\/pulls\\/74481\\/(files|commits|comments)(?:\\?|$)/.test(path)) {
+  console.log(JSON.stringify([[]]));
+} else if (args[0] === "api" && /\\/issues\\/74481\\/comments(?:\\?|$)/.test(path)) {
+  console.log(JSON.stringify([[
+    {
+      id: 987481,
+      html_url: "https://github.com/openclaw/openclaw/pull/74481#issuecomment-987481",
+      body: comment,
+      user: { login: "clawsweeper[bot]" },
+      created_at: "2026-05-19T20:00:00Z",
+      updated_at: "2026-05-19T20:00:00Z"
+    }
+  ]]));
+} else if (args[0] === "api" && /\\/issues\\/comments\\/987481$/.test(path)) {
+  const input = args[args.indexOf("--input") + 1];
+  appendFileSync(logPath, JSON.stringify(["patched-review-body", JSON.parse(readFileSync(input, "utf8")).body]) + "\\n");
+  console.log(JSON.stringify({
+    id: 987481,
+    html_url: "https://github.com/openclaw/openclaw/pull/74481#issuecomment-987481",
+    updated_at: "2026-05-19T20:11:00Z"
+  }));
+} else if (args[0] === "issue" && args[1] === "edit") {
+  console.log("");
+} else if (args[0] === "label" && args[1] === "create") {
+  console.log(JSON.stringify({ name: args[2] }));
+} else {
+  console.error("unexpected gh args", JSON.stringify(args));
+  process.exit(1);
+}
+`;
+    withMockGh(root, ghMock, () => {
+      runApplyDecisionsForTest({
+        targetRepo: "openclaw/openclaw",
+        itemsDir,
+        closedDir,
+        plansDir,
+        reportPath,
+        extraArgs: ["--sync-comments-only", "--item-numbers", "74481"],
+      });
+    });
+
+    const calls = readFileSync(logPath, "utf8")
+      .trim()
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as string[]);
+    const removedLabels = calls
+      .filter((args) => args[0] === "issue" && args[1] === "edit")
+      .map((args) => args[args.indexOf("--remove-label") + 1])
+      .filter(Boolean)
+      .sort();
+    assert.deepEqual(removedLabels, [
+      "merge-risk: 🚨 session-state",
+      "proof: sufficient",
+      "rating: 🧂 unranked krab",
+      "status: 🔁 re-review loop",
+    ]);
+    const patchedBody = calls.find((args) => args[0] === "patched-review-body")?.[1] ?? "";
+    assert.match(patchedBody, /Codex review: stale review; fresh review needed/);
+    assert.match(patchedBody, /reviewed_sha=old-head current_sha=new-head/);
+    assert.doesNotMatch(patchedBody, /clawsweeper-verdict:/);
+    const updatedReport = readFileSync(itemPath, "utf8");
+    assert.match(updatedReport, /^current_pull_head_sha: new-head$/m);
+    assert.match(updatedReport, /^labels: \["P2"\]$/m);
+    assert.deepEqual(JSON.parse(readFileSync(reportPath, "utf8")), [
+      {
+        number: 74481,
+        action: "review_comment_synced",
+        reason: "updated durable Codex review comment",
+      },
+    ]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("apply-decisions routes parsed security owner acceptance to maintainer review", () => {
   const root = mkdtempSync(tmpPrefix);
   try {

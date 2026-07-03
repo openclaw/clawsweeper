@@ -15168,6 +15168,76 @@ function pullHeadShaFromReport(markdown: string): string | null {
   return value && value !== "unknown" ? value : null;
 }
 
+type StalePullRequestReviewHead = {
+  reportHeadSha: string;
+  liveHeadSha: string;
+  reason: string;
+};
+
+function stalePullRequestReviewHead(
+  markdown: string,
+  context: ItemContext,
+): StalePullRequestReviewHead | null {
+  if (frontMatterValue(markdown, "type") !== "pull_request") return null;
+  const reportHeadSha = pullHeadShaFromReport(markdown);
+  const liveHeadSha = pullHeadShaFromContext(context);
+  if (!reportHeadSha || !liveHeadSha || reportHeadSha === liveHeadSha) return null;
+  return {
+    reportHeadSha,
+    liveHeadSha,
+    reason: `live PR head ${liveHeadSha} differs from reviewed head ${reportHeadSha}`,
+  };
+}
+
+function isStalePullRequestReviewLabel(label: string): boolean {
+  return (
+    isClawSweeperOwnedLabel(label) &&
+    !PRIORITY_LABEL_NAMES.has(label) &&
+    !IMPACT_LABEL_NAMES.has(label) &&
+    !MATURITY_LABEL_NAMES.has(label) &&
+    !isIssueAdvisoryLabel(label)
+  );
+}
+
+function syncStalePullRequestReviewLabels(options: {
+  number: number;
+  labels: readonly string[];
+  dryRun: boolean;
+}): { labels: string[]; changed: boolean } {
+  const labelsToRemove = options.labels.filter(isStalePullRequestReviewLabel);
+  if (labelsToRemove.length === 0) return { labels: [...options.labels], changed: false };
+  const nextLabels = options.labels.filter((label) => !labelsToRemove.includes(label));
+  if (!options.dryRun) {
+    for (const label of labelsToRemove) {
+      ghWithRetry(["issue", "edit", String(options.number), "--remove-label", label]);
+    }
+  }
+  return { labels: nextLabels, changed: true };
+}
+
+function stalePullRequestReviewComment(options: {
+  number: number;
+  stale: StalePullRequestReviewHead;
+}): string {
+  const attrs = [
+    `item=${markerAttributeValue(String(options.number))}`,
+    `reviewed_sha=${markerAttributeValue(options.stale.reportHeadSha)}`,
+    `current_sha=${markerAttributeValue(options.stale.liveHeadSha)}`,
+    "reason=stale_head",
+  ].join(" ");
+  return [
+    "Codex review: stale review; fresh review needed.",
+    "",
+    "**Summary**",
+    `The latest durable ClawSweeper review was for head \`${options.stale.reportHeadSha}\`, but the PR head is now \`${options.stale.liveHeadSha}\`. Its old verdict and PR readiness labels are no longer current.`,
+    "",
+    "**Next step**",
+    "Run or wait for a fresh ClawSweeper review on the current PR head.",
+    "",
+    `<!-- clawsweeper-review-status:stale ${attrs} -->`,
+  ].join("\n");
+}
+
 function markerAttributeValue(value: string): string {
   return value.trim().replace(/[^\w./:@-]/g, "_") || "unknown";
 }
@@ -17431,68 +17501,110 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
         continue;
       }
     }
+    const existingReviewComment = issueReviewComment(number, [
+      renderReviewCommentFromReport(markdown, closeReason ?? "none", { previousLabels }),
+      reviewSectionValue(markdown, "closeComment"),
+    ]);
+    const existingReviewCommentUpdatedAt = commentUpdatedAt(existingReviewComment);
+    if (existingReviewCommentUpdatedAt) {
+      allowedSelfMutationUpdatedAts.add(existingReviewCommentUpdatedAt);
+    }
+    const updatedSinceReview = Boolean(storedUpdatedAt && item.updatedAt !== storedUpdatedAt);
+    const reviewCommentOnlyUpdate = item.updatedAt === commentUpdatedAt(existingReviewComment);
+    const labelSyncFreshEnough = (): boolean => {
+      if (!storedUpdatedAt) return false;
+      if (!updatedSinceReview || reviewCommentOnlyUpdate) return true;
+      const existingReviewCommentUpdatedAtMs = timestampMs(commentUpdatedAt(existingReviewComment));
+      const itemUpdatedAtMs = timestampMs(item.updatedAt);
+      if (existingReviewCommentUpdatedAtMs === null || itemUpdatedAtMs === null) return false;
+      if (Math.abs(itemUpdatedAtMs - existingReviewCommentUpdatedAtMs) > 5 * 60 * 1000) {
+        return false;
+      }
+      const storedUpdatedAtMs = timestampMs(storedUpdatedAt);
+      if (storedUpdatedAtMs === null) return false;
+      return !contextHasNonAutomationActivityAfter(currentItemContext(), storedUpdatedAtMs);
+    };
+    const stalePrReviewHead =
+      state === "open" && item.kind === "pull_request"
+        ? stalePullRequestReviewHead(markdown, currentItemContext())
+        : null;
     let currentPrStatusKind: PrStatusLabelKind | null = null;
     if (state === "open" && item.kind === "pull_request") {
-      const realBehaviorProof = reportRealBehaviorProof(markdown);
-      const proofSufficientSyncResult = syncRealBehaviorProofSufficientLabel({
-        number,
-        labels: item.labels,
-        proof: realBehaviorProof,
-        dryRun,
-      });
-      item.labels = proofSufficientSyncResult.labels;
-      clawSweeperLabelsChanged ||= proofSufficientSyncResult.changed;
-      const proofMediaSyncResult = syncRealBehaviorProofMediaLabels({
-        number,
-        labels: item.labels,
-        proof: realBehaviorProof,
-        dryRun,
-      });
-      item.labels = proofMediaSyncResult.labels;
-      clawSweeperLabelsChanged ||= proofMediaSyncResult.changed;
-      const prRatingSyncResult = syncPrRatingLabel({
-        number,
-        labels: item.labels,
-        rating: reportPrRating(markdown),
-        reviewFailed: frontMatterValue(markdown, "review_status") === "failed",
-        dryRun,
-      });
-      item.labels = prRatingSyncResult.labels;
-      clawSweeperLabelsChanged ||= prRatingSyncResult.changed;
-      const featureShowcaseSyncResult = syncFeatureShowcaseLabel({
-        number,
-        labels: item.labels,
-        isPullRequest: true,
-        itemCategory: frontMatterValue(markdown, "item_category"),
-        requiresNewFeature: frontMatterValue(markdown, "requires_new_feature") === "true",
-        showcase: reportFeatureShowcase(markdown),
-        securityReview: reportSecurityReview(markdown),
-        overallCorrectness: reportOverallCorrectness(markdown),
-        dryRun,
-      });
-      item.labels = featureShowcaseSyncResult.labels;
-      clawSweeperLabelsChanged ||= featureShowcaseSyncResult.changed;
-      currentPrStatusKind = prStatusLabelKindFromReport(
-        markdown,
-        currentItemContext(),
-        item.labels,
-      );
-      const prStatusSyncResult = syncPrStatusLabel({
-        number,
-        labels: item.labels,
-        statusKind: currentPrStatusKind,
-        dryRun,
-      });
-      item.labels = prStatusSyncResult.labels;
-      clawSweeperLabelsChanged ||= prStatusSyncResult.changed;
-      const telegramVisibleProofSyncResult = syncTelegramVisibleProofLabel({
-        number,
-        labels: item.labels,
-        proof: reportTelegramVisibleProof(markdown),
-        dryRun,
-      });
-      item.labels = telegramVisibleProofSyncResult.labels;
-      clawSweeperLabelsChanged ||= telegramVisibleProofSyncResult.changed;
+      if (stalePrReviewHead) {
+        const staleLabelSyncResult = syncStalePullRequestReviewLabels({
+          number,
+          labels: item.labels,
+          dryRun,
+        });
+        item.labels = staleLabelSyncResult.labels;
+        clawSweeperLabelsChanged ||= staleLabelSyncResult.changed;
+        markdown = replaceFrontMatterValue(
+          markdown,
+          "current_pull_head_sha",
+          stalePrReviewHead.liveHeadSha,
+        );
+      } else if (labelSyncFreshEnough()) {
+        const realBehaviorProof = reportRealBehaviorProof(markdown);
+        const proofSufficientSyncResult = syncRealBehaviorProofSufficientLabel({
+          number,
+          labels: item.labels,
+          proof: realBehaviorProof,
+          dryRun,
+        });
+        item.labels = proofSufficientSyncResult.labels;
+        clawSweeperLabelsChanged ||= proofSufficientSyncResult.changed;
+        const proofMediaSyncResult = syncRealBehaviorProofMediaLabels({
+          number,
+          labels: item.labels,
+          proof: realBehaviorProof,
+          dryRun,
+        });
+        item.labels = proofMediaSyncResult.labels;
+        clawSweeperLabelsChanged ||= proofMediaSyncResult.changed;
+        const prRatingSyncResult = syncPrRatingLabel({
+          number,
+          labels: item.labels,
+          rating: reportPrRating(markdown),
+          reviewFailed: frontMatterValue(markdown, "review_status") === "failed",
+          dryRun,
+        });
+        item.labels = prRatingSyncResult.labels;
+        clawSweeperLabelsChanged ||= prRatingSyncResult.changed;
+        const featureShowcaseSyncResult = syncFeatureShowcaseLabel({
+          number,
+          labels: item.labels,
+          isPullRequest: true,
+          itemCategory: frontMatterValue(markdown, "item_category"),
+          requiresNewFeature: frontMatterValue(markdown, "requires_new_feature") === "true",
+          showcase: reportFeatureShowcase(markdown),
+          securityReview: reportSecurityReview(markdown),
+          overallCorrectness: reportOverallCorrectness(markdown),
+          dryRun,
+        });
+        item.labels = featureShowcaseSyncResult.labels;
+        clawSweeperLabelsChanged ||= featureShowcaseSyncResult.changed;
+        currentPrStatusKind = prStatusLabelKindFromReport(
+          markdown,
+          currentItemContext(),
+          item.labels,
+        );
+        const prStatusSyncResult = syncPrStatusLabel({
+          number,
+          labels: item.labels,
+          statusKind: currentPrStatusKind,
+          dryRun,
+        });
+        item.labels = prStatusSyncResult.labels;
+        clawSweeperLabelsChanged ||= prStatusSyncResult.changed;
+        const telegramVisibleProofSyncResult = syncTelegramVisibleProofLabel({
+          number,
+          labels: item.labels,
+          proof: reportTelegramVisibleProof(markdown),
+          dryRun,
+        });
+        item.labels = telegramVisibleProofSyncResult.labels;
+        clawSweeperLabelsChanged ||= telegramVisibleProofSyncResult.changed;
+      }
     }
     markdown = replaceFrontMatterValue(markdown, "labels", JSON.stringify(item.labels));
     if (clawSweeperLabelsChanged && !dryRun) {
@@ -17506,19 +17618,9 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
       renderOptions.hasOpenLinkedPullRequest =
         openClosingPullRequestApplyReason(currentClosingPullRequests) !== null;
     }
-    let reviewComment = renderReviewCommentFromReport(
-      markdown,
-      closeReason ?? "none",
-      renderOptions,
-    );
-    const existingReviewComment = issueReviewComment(number, [
-      reviewComment,
-      reviewSectionValue(markdown, "closeComment"),
-    ]);
-    const existingReviewCommentUpdatedAt = commentUpdatedAt(existingReviewComment);
-    if (existingReviewCommentUpdatedAt) {
-      allowedSelfMutationUpdatedAts.add(existingReviewCommentUpdatedAt);
-    }
+    let reviewComment = stalePrReviewHead
+      ? stalePullRequestReviewComment({ number, stale: stalePrReviewHead })
+      : renderReviewCommentFromReport(markdown, closeReason ?? "none", renderOptions);
     let markedReviewComment = markedReviewCommentBody(number, reviewComment);
     let proofBlockedForCommentSync: PrCloseCoverageProofGateBlock | null = null;
     const protectedApplyReason = applyProtectedLabelReason(item.labels, closeReason);
@@ -17550,21 +17652,6 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
         break;
       continue;
     }
-    const updatedSinceReview = Boolean(storedUpdatedAt && item.updatedAt !== storedUpdatedAt);
-    const reviewCommentOnlyUpdate = item.updatedAt === commentUpdatedAt(existingReviewComment);
-    const labelSyncFreshEnough = (): boolean => {
-      if (!storedUpdatedAt) return false;
-      if (!updatedSinceReview || reviewCommentOnlyUpdate) return true;
-      const existingReviewCommentUpdatedAtMs = timestampMs(commentUpdatedAt(existingReviewComment));
-      const itemUpdatedAtMs = timestampMs(item.updatedAt);
-      if (existingReviewCommentUpdatedAtMs === null || itemUpdatedAtMs === null) return false;
-      if (Math.abs(itemUpdatedAtMs - existingReviewCommentUpdatedAtMs) > 5 * 60 * 1000) {
-        return false;
-      }
-      const storedUpdatedAtMs = timestampMs(storedUpdatedAt);
-      if (storedUpdatedAtMs === null) return false;
-      return !contextHasNonAutomationActivityAfter(currentItemContext(), storedUpdatedAtMs);
-    };
     const markChangedSinceReview = (options: {
       reason: string;
       currentUpdatedAt?: string | undefined;
@@ -17724,6 +17811,16 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
       if (processedCount >= processedLimit) break;
       continue;
     }
+    if (isCloseProposal && stalePrReviewHead) {
+      if (
+        markChangedSinceReview({
+          reason: stalePrReviewHead.reason,
+          currentUpdatedAt: item.updatedAt,
+        })
+      )
+        break;
+      continue;
+    }
     if (isCloseProposal && updatedSinceReview && !reviewCommentOnlyUpdate) {
       markdown = replaceFrontMatterValue(markdown, "action_taken", "skipped_changed_since_review");
       markdown = replaceFrontMatterValue(markdown, "current_item_updated_at", item.updatedAt);
@@ -17762,7 +17859,9 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
       }
     }
     const isCurrentCompleteReport =
-      frontMatterValue(markdown, "review_status") === "complete" && labelSyncFreshEnough();
+      frontMatterValue(markdown, "review_status") === "complete" &&
+      !stalePrReviewHead &&
+      labelSyncFreshEnough();
     if (state === "open" && isCurrentCompleteReport) {
       try {
         const syncResult = syncPriorityLabel({
@@ -17844,7 +17943,9 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
         continue;
       }
     }
-    reviewComment = renderReviewCommentFromReport(markdown, closeReason ?? "none", renderOptions);
+    reviewComment = stalePrReviewHead
+      ? stalePullRequestReviewComment({ number, stale: stalePrReviewHead })
+      : renderReviewCommentFromReport(markdown, closeReason ?? "none", renderOptions);
     markedReviewComment = markedReviewCommentBody(number, reviewComment);
     if (isCloseProposal && item.kind === "issue") {
       currentClosingPullRequests ??= closingPullRequestsForIssue(number);
