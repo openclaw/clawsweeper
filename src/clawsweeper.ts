@@ -341,7 +341,6 @@ interface ExistingReview {
   reviewPolicy: string | undefined;
   contentDigest: string | undefined;
   lastFullReviewAt: string | undefined;
-  mainSha: string | undefined;
 }
 
 interface LatestRelease {
@@ -5424,7 +5423,6 @@ function existingReview(
     reviewPolicy: frontMatterValue(markdown, "review_policy"),
     contentDigest: frontMatterValue(markdown, "review_content_digest"),
     lastFullReviewAt: frontMatterValue(markdown, "last_full_review_at"),
-    mainSha: frontMatterValue(markdown, "main_sha"),
   };
 }
 
@@ -5455,7 +5453,6 @@ function buildExistingReviewIndex(itemsDir: string): ExistingReviewIndex {
       reviewPolicy: frontMatterValue(markdown, "review_policy"),
       contentDigest: frontMatterValue(markdown, "review_content_digest"),
       lastFullReviewAt: frontMatterValue(markdown, "last_full_review_at"),
-      mainSha: frontMatterValue(markdown, "main_sha"),
     });
   }
   return { byKey };
@@ -16877,7 +16874,6 @@ function reviewCommand(args: Args): void {
           review: priorReview,
           reviewPolicy,
           contentDigest,
-          currentMainSha: git.mainSha,
           now: Date.now(),
           explicitDispatch,
           maintainerRequest,
