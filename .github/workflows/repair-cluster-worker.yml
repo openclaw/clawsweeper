@@ -77,9 +77,15 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       actions: read
+      contents: read
     outputs:
       proceed: ${{ steps.receipt.outputs.proceed }}
     steps:
+      - uses: actions/checkout@v5
+        with:
+          sparse-checkout: scripts/dispatch-receipt-owner.sh
+          sparse-checkout-cone-mode: false
+
       - id: receipt
         env:
           DISPATCH_KEY: ${{ inputs.dispatch_key }}
@@ -97,38 +103,11 @@ jobs:
             *) title="repair cluster $JOB_PATH" ;;
           esac
           expected_title="${title} [${DISPATCH_KEY}]"
-          duplicate_run_id="$(
-            gh api --method GET "repos/${GITHUB_REPOSITORY}/actions/workflows/repair-cluster-worker.yml/runs?per_page=100" \
-              | jq -r --arg title "$expected_title" --arg current "$GITHUB_RUN_ID" '
-                  .workflow_runs[]
-                  | select(.display_title == $title and .id < ($current | tonumber))
-                  | select(.status == "queued" or .status == "in_progress" or .status == "waiting" or .status == "pending" or .status == "requested")
-                  | .id
-                ' \
-              | head -n 1
-          )"
-          if [ -z "$duplicate_run_id" ]; then
-            while IFS= read -r run_id; do
-              if [ -z "$run_id" ]; then
-                continue
-              fi
-              if gh run view "$run_id" --repo "${GITHUB_REPOSITORY}" --json jobs \
-                | jq -e '.jobs[]? | select(.name == "Plan and review cluster" and .conclusion == "success")' >/dev/null; then
-                duplicate_run_id="$run_id"
-                break
-              fi
-            done < <(
-              gh api --method GET "repos/${GITHUB_REPOSITORY}/actions/workflows/repair-cluster-worker.yml/runs?per_page=100" \
-                | jq -r --arg title "$expected_title" --arg current "$GITHUB_RUN_ID" '
-                    .workflow_runs[]
-                    | select(.display_title == $title and .id < ($current | tonumber) and .conclusion == "success")
-                    | .id
-                  '
-            )
-          fi
-          if [ -n "$duplicate_run_id" ]; then
+          owner="$(bash scripts/dispatch-receipt-owner.sh \
+            repair-cluster-worker.yml "$expected_title" "$GITHUB_RUN_ID" "Plan and review cluster")"
+          if [ "$owner" = "owner" ]; then
             echo "proceed=false" >> "$GITHUB_OUTPUT"
-            echo "An older exact command dispatch receipt already exists; skipping duplicate repair."
+            echo "An older active or successfully executed command dispatch already exists; skipping duplicate repair."
             exit 0
           fi
           echo "proceed=true" >> "$GITHUB_OUTPUT"

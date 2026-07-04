@@ -182,6 +182,7 @@ const collaboratorPermissionCache = new Map();
 const activeRepairRunsByPrefix = new Map<string, LooseRecord[]>();
 const liveTargetCache = new Map<number, LooseRecord>();
 const issueCommentsCache = new Map<number, JsonValue[]>();
+const MAX_MEDIA_PREPROCESSING_TIMEOUT_MS = 480_000;
 const PROOF_OVERRIDE_DESCRIPTION_MARKER = "<!-- clawsweeper-proof-override-note -->";
 const cachedIssueComments = createCachedIssueCommentsLookup(
   (number) => ghPaged<JsonValue>(`repos/${targetRepo}/issues/${number}/comments?per_page=100`),
@@ -2378,6 +2379,11 @@ function dispatchClawSweeperReview(command: LooseRecord): LooseRecord {
     command.target?.kind === "pull_request"
       ? adaptiveReviewBudgetForPullRequest(command.target)
       : null;
+  // Comment-only media is hydrated after dispatch, so fallback must reserve the full bounded
+  // preprocessing budget even when the initial PR title/body did not expose media.
+  const fallbackCodexTimeoutMs = reviewBudget
+    ? reviewBudget.codexTimeoutMs + MAX_MEDIA_PREPROCESSING_TIMEOUT_MS
+    : null;
   const commandStatus = ["re_review", "autofix", "automerge"].includes(String(command.intent ?? ""))
     ? {
         command_status_marker: commandStatusMarker(command),
@@ -2412,11 +2418,45 @@ function dispatchClawSweeperReview(command: LooseRecord): LooseRecord {
     },
   );
   if (result.status !== 0) {
-    throw new Error(
-      `failed to dispatch ClawSweeper review for #${command.issue_number}: ${
-        result.stderr || result.stdout
-      }`,
+    const fallback = ghSpawn(
+      [
+        "workflow",
+        "run",
+        reviewWorkflow,
+        "--repo",
+        reviewRepo,
+        "-f",
+        `target_repo=${command.repo}`,
+        "-f",
+        ...(command.target_branch ? [`target_branch=${String(command.target_branch)}`, "-f"] : []),
+        `item_number=${command.issue_number}`,
+        "-f",
+        `item_numbers=${dispatchKey}`,
+        "-f",
+        `additional_prompt=${freeformReviewPrompt(command)}`,
+        "-f",
+        ...(fallbackCodexTimeoutMs ? [`codex_timeout_ms=${fallbackCodexTimeoutMs}`, "-f"] : []),
+        "batch_size=1",
+        "-f",
+        "shard_count=1",
+      ],
+      { env: dispatchTokenEnv() },
     );
+    if (fallback.status !== 0) {
+      throw new Error(
+        `failed to dispatch ClawSweeper review for #${command.issue_number}: repository_dispatch=${
+          result.stderr || result.stdout
+        }; workflow_dispatch=${fallback.stderr || fallback.stdout}`,
+      );
+    }
+    return {
+      workflow: reviewWorkflow,
+      event: "workflow_dispatch",
+      repo: reviewRepo,
+      item_number: command.issue_number,
+      dispatch_key: dispatchKey,
+      fallback_reason: stripAnsi(result.stderr || result.stdout).trim(),
+    };
   }
   return {
     workflow: reviewWorkflow,

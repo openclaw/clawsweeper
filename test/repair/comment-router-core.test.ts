@@ -1492,28 +1492,34 @@ test("comment router durably claims dispatch commands and recovers exact workflo
   assert.match(claimFunction, /dispatchClaimLookupKeys\(command\)/);
   assert.match(source, /\/runs\?per_page=100&page=\$\{page\}/);
   assert.match(source, /status:\s*"recovered"/);
-  assert.doesNotMatch(source, /fallbackCodexTimeoutMs/);
+  assert.match(source, /`item_numbers=\$\{dispatchKey\}`/);
+  assert.match(source, /event:\s*"workflow_dispatch"/);
+  assert.match(source, /workflow_dispatch=\$\{fallback\.stderr \|\| fallback\.stdout\}/);
   assert.match(sweepWorkflow, /Review event item \{0\}#\{1\} \[\{2\}\]/);
+  assert.match(sweepWorkflow, /startsWith\(github\.event\.inputs\.item_numbers, 'router-'\)/);
+  assert.match(
+    sweepWorkflow,
+    /ITEM_NUMBERS:.*startsWith\(github\.event\.inputs\.item_numbers, 'router-'\)/,
+  );
   assert.match(assistWorkflow, /Assist \{0\}#\{1\} \[\{2\}\]/);
   assert.match(sweepWorkflow, /delivery_id: dispatchKey/);
   assert.match(sweepWorkflow, /`router:\$\{dispatchKey\}`/);
-  assert.match(assistWorkflow, /older exact command dispatch receipt already exists/i);
-  assert.match(repairWorkflow, /older exact command dispatch receipt already exists/i);
+  assert.match(assistWorkflow, /dispatch-receipt-owner\.sh/);
+  assert.match(assistWorkflow, /assist\.yml.*assist/s);
+  assert.match(repairWorkflow, /dispatch-receipt-owner\.sh/);
+  assert.match(repairWorkflow, /repair-cluster-worker\.yml.*Plan and review cluster/s);
   assert.match(repairWorkflow, /dispatch_key:/);
 });
 
 test("command receipt gates let the oldest same-key run proceed when a newer duplicate is pending", () => {
-  const workflows = [
-    readFileSync(".github/workflows/assist.yml", "utf8"),
-    readFileSync(".github/workflows/repair-cluster-worker.yml", "utf8"),
-  ];
+  const receiptGate = readFileSync("scripts/dispatch-receipt-owner.sh", "utf8");
 
-  for (const workflow of workflows) {
-    assert.match(workflow, /\.display_title == \$title and \.id < \(\$current \| tonumber\)/);
-    assert.match(workflow, /\.status == "in_progress"/);
-    assert.match(workflow, /\.conclusion == "success"/);
-    assert.doesNotMatch(workflow, /\(\.id \| tostring\) != \$current/);
-  }
+  assert.match(receiptGate, /\.display_title == \$title and \.id < \(\$current \| tonumber\)/);
+  assert.match(receiptGate, /\.status == "in_progress"/);
+  assert.match(receiptGate, /\.conclusion == "success"/);
+  assert.match(receiptGate, /actions\/runs\/\$\{run_id\}\/jobs\?per_page=100/);
+  assert.match(receiptGate, /\.name == \$required and \.conclusion == "success"/);
+  assert.doesNotMatch(receiptGate, /\(\.id \| tostring\) != \$current/);
 });
 
 test("trusted autoclose markers are live close gated before close execution", () => {
