@@ -2372,6 +2372,7 @@ function itemContentDigest(item: Item, context: ItemContext, git?: GitInfo): str
       latestRelease: git?.latestRelease
         ? { tagName: git.latestRelease.tagName ?? null, sha: git.latestRelease.sha ?? null }
         : null,
+      targetMainSha: isPull ? null : (git?.mainSha ?? null),
       headSha: isPull ? pullHeadShaFromContext(context) : null,
       baseSha: isPull ? baseSha : null,
       pullState: isPull

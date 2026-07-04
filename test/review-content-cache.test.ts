@@ -170,6 +170,14 @@ test("content digest busts when the latest release changes", () => {
   assert.notEqual(a, b);
 });
 
+test("issue digest busts when target main changes", () => {
+  const issue = item({ kind: "issue", number: 300 });
+  const context = issueContext();
+  const a = itemContentDigestForTest(issue, context, { mainSha: "main-1" });
+  const b = itemContentDigestForTest(issue, context, { mainSha: "main-2" });
+  assert.notEqual(a, b);
+});
+
 test("content digest busts when a human adds a PR review comment", () => {
   const pull = item({ kind: "pull_request", number: 200 });
   const a = itemContentDigestForTest(pull, pullContext({ pullReviewComments: [] }));
