@@ -371,7 +371,7 @@ test("apply-decisions does not promote stale PRs from truncated activity", () =>
   }
 });
 
-test("apply-decisions does not promote stale PRs after human follow-up", () => {
+test("apply-decisions does not promote stale PRs after a command-only re-review request", () => {
   const root = mkdtempSync(tmpPrefix);
   try {
     const itemsDir = join(root, "items");
@@ -403,7 +403,15 @@ test("apply-decisions does not promote stale PRs after human follow-up", () => {
             created_at: "2026-05-01T02:00:00Z",
             updated_at: "2026-05-01T02:00:00Z",
             user: { login: "reporter" },
-            body: "I can still work on this.",
+            body: "@clawsweeper re-review",
+          },
+        ],
+        timeline: [
+          {
+            id: 9331,
+            event: "commented",
+            created_at: "2026-05-01T02:00:00Z",
+            actor: { login: "reporter" },
           },
         ],
       }),

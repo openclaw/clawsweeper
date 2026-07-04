@@ -449,7 +449,7 @@ if (args[0] === "api" && /\\/issues\\/74481$/.test(path)) {
   }
 });
 
-test("apply-decisions syncs fresh-head PR review labels when bot activity bumps updated_at", () => {
+test("apply-decisions syncs fresh-head PR labels after a command-only re-review comment", () => {
   const root = mkdtempSync(tmpPrefix);
   try {
     const itemsDir = join(root, "items");
@@ -464,7 +464,7 @@ test("apply-decisions syncs fresh-head PR review labels when bot activity bumps 
       repository: "openclaw/openclaw",
       type: "pull_request",
       number: "74482",
-      title: "Fresh head label restore",
+      title: "Fresh head label restore after re-review",
       url: "https://github.com/openclaw/openclaw/pull/74482",
       decision: "keep_open",
       close_reason: "none",
@@ -477,14 +477,14 @@ test("apply-decisions syncs fresh-head PR review labels when bot activity bumps 
       labels: JSON.stringify([]),
       item_snapshot_hash: "snapshot-a",
       item_updated_at: "2026-07-03T21:42:48Z",
-      reviewed_at: "2026-07-03T21:42:48Z",
+      reviewed_at: "2026-07-03T21:44:48Z",
       pull_head_sha: "bc60b889",
       merge_risk_labels: JSON.stringify(["merge-risk: 🚨 session-state"]),
     })}
 
 ## Summary
 
-This fresh review must keep driving PR labels even after a bot ack edit bumps updated_at.
+This fresh review must keep driving PR labels after its command-only re-review comment.
 
 ${realBehaviorProofReportSection()}
 
@@ -511,26 +511,32 @@ const rawArgs = process.argv.slice(2);
 const args = rawArgs[0] === "--repo" ? rawArgs.slice(2) : rawArgs;
 appendFileSync(logPath, JSON.stringify(args) + "\\n");
 const path = args[1] || "";
+const reReviewTimeline = [{
+  id: 987483,
+  event: "commented",
+  actor: { login: "contributor" },
+  created_at: "2026-07-03T21:43:00Z"
+}];
 if (args[0] === "api" && /\\/issues\\/74482$/.test(path)) {
   console.log(JSON.stringify({
     number: 74482,
-    title: "Fresh head label restore",
+    title: "Fresh head label restore after re-review",
     html_url: "https://github.com/openclaw/openclaw/pull/74482",
     created_at: "2026-07-03T19:00:00Z",
-    updated_at: "2026-07-03T21:43:45Z",
+    updated_at: "2026-07-03T21:45:00Z",
     closed_at: null,
     state: "open",
     locked: false,
     active_lock_reason: null,
     author_association: "CONTRIBUTOR",
     user: { login: "contributor" },
-    labels: [],
+    labels: ["status: 📣 needs proof", "rating: 🦪 silver shellfish"],
     pull_request: {}
   }));
 } else if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/74482\\/timeline(?:\\?|$)/.test(args[2] || "")) {
-  console.log("HTTP/2 200\\n\\n[]");
+  console.log("HTTP/2 200\\n\\n" + JSON.stringify(reReviewTimeline));
 } else if (args[0] === "api" && /\\/issues\\/74482\\/timeline(?:\\?|$)/.test(path)) {
-  console.log(JSON.stringify([[]]));
+  console.log(JSON.stringify([reReviewTimeline]));
 } else if (args[0] === "api" && /\\/pulls\\/74482$/.test(path)) {
   console.log(JSON.stringify({
     number: 74482,
@@ -563,6 +569,15 @@ if (args[0] === "api" && /\\/issues\\/74482$/.test(path)) {
       author_association: "CONTRIBUTOR",
       created_at: "2026-07-03T21:42:28Z",
       updated_at: "2026-07-03T21:42:28Z"
+    },
+    {
+      id: 987484,
+      html_url: "https://github.com/openclaw/openclaw/pull/74482#issuecomment-987484",
+      body: "@clawsweeper re-review",
+      user: { login: "contributor" },
+      author_association: "CONTRIBUTOR",
+      created_at: "2026-07-03T21:43:00Z",
+      updated_at: "2026-07-03T21:43:00Z"
     }
   ]]));
 } else if (args[0] === "api" && /\\/issues\\/comments\\/987482$/.test(path)) {
@@ -609,6 +624,24 @@ if (args[0] === "api" && /\\/issues\\/74482$/.test(path)) {
           args[1] === "edit" &&
           args.includes("--add-label") &&
           args.includes("rating: 🦞 diamond lobster"),
+      ),
+    );
+    assert(
+      calls.some(
+        (args) =>
+          args[0] === "issue" &&
+          args[1] === "edit" &&
+          args.includes("--remove-label") &&
+          args.includes("status: 📣 needs proof"),
+      ),
+    );
+    assert(
+      calls.some(
+        (args) =>
+          args[0] === "issue" &&
+          args[1] === "edit" &&
+          args.includes("--remove-label") &&
+          args.includes("rating: 🦪 silver shellfish"),
       ),
     );
     assert(

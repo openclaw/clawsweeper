@@ -29,6 +29,7 @@ checkpoint, and status-only commits are intentionally omitted.
 ### Fixed
 
 - Split apply workflow helpers out of the oversized inline expression so GitHub can validate and start sweep runs again.
+- Reconciled fresh-review PR labels after command-only re-review comments instead of treating their duplicate timeline events as new human activity. Thanks @joeVenner.
 - Bounded apply-existing checkpoints to five fresh closes, renewed the GitHub
   App token between continuation runs, and stopped zero-progress scans from
   chaining indefinitely.

@@ -12974,7 +12974,10 @@ function closePromotionHasNonAutomationActivityAfterReview(
 function contextHasNonAutomationActivityAfter(
   context: ItemContext,
   reviewedAtMs: number,
-  options: { truncationCountsAsActivity?: boolean } = {},
+  options: {
+    truncationCountsAsActivity?: boolean;
+    ignoreTimelineCommentDuplicates?: boolean;
+  } = {},
 ): boolean {
   const truncationCountsAsActivity = options.truncationCountsAsActivity ?? true;
   if (
@@ -12994,6 +12997,14 @@ function contextHasNonAutomationActivityAfter(
   };
   const hasNonAutomationEvent = (event: unknown): boolean => {
     const record = asRecord(event);
+    // Issue comments are checked above with their bodies. Ignore the timeline
+    // duplicate so filtered command-only comments do not become human activity.
+    if (
+      options.ignoreTimelineCommentDuplicates &&
+      stringOrUndefined(record.event) === "commented"
+    ) {
+      return false;
+    }
     return (
       isAfterReview(event, reviewedAtMs) &&
       !isAutomationReportAuthor(stringOrUndefined(record.actor))
@@ -18171,7 +18182,9 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
       }
       const storedUpdatedAtMs = timestampMs(storedUpdatedAt);
       if (storedUpdatedAtMs === null) return false;
-      return !contextHasNonAutomationActivityAfter(currentItemContext(), storedUpdatedAtMs);
+      return !contextHasNonAutomationActivityAfter(currentItemContext(), storedUpdatedAtMs, {
+        ignoreTimelineCommentDuplicates: true,
+      });
     };
     const stalePrReviewHead =
       state === "open" && item.kind === "pull_request"
