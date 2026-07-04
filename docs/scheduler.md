@@ -454,7 +454,7 @@ hold the planner concurrency group or delay the next 89-shard backfill
 wave. Exact issue/PR reviews and repository-dispatch item runs still sync their
 selected comments inline before finishing.
 
-Long apply runs commit checkpoints every 5 fresh closes and dispatch a
+Long apply runs commit checkpoints every 20 fresh closes and dispatch a
 continuation with a fresh GitHub App token after any checkpoint that closes at
 least one item. A saturated scan that closes nothing stops without chaining so
 the same records cannot create an unbounded runner loop.

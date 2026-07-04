@@ -79,7 +79,7 @@ on:
       apply_limit:
         description: "Maximum existing proposed items to close in apply-existing mode"
         required: false
-        default: "5"
+        default: "20"
       apply_min_age_days:
         description: "Minimum item age in days before apply-existing can close it"
         required: false
@@ -119,7 +119,7 @@ on:
       apply_checkpoint_size:
         description: "Fresh closes per checkpoint commit in apply-existing mode"
         required: false
-        default: "5"
+        default: "20"
       batch_size:
         description: "Items per worker job"
         required: false
@@ -2310,7 +2310,7 @@ jobs:
         run: |
           set -euo pipefail
           test -n "$GH_TOKEN"
-          limit="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_limit || '5' }}"
+          limit="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_limit || '20' }}"
           min_age_days="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_min_age_days || '0' }}"
           min_age_minutes="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_min_age_minutes || '' }}"
           apply_kind="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_kind || 'all' }}"
@@ -2318,7 +2318,7 @@ jobs:
           stale_min_age_days="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_stale_min_age_days || '60' }}"
           close_delay_ms="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_close_delay_ms || '2000' }}"
           progress_every="10"
-          checkpoint_size="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_checkpoint_size || '5' }}"
+          checkpoint_size="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_checkpoint_size || '20' }}"
           comment_sync_processed_limit=1000
           close_processed_limit=300
           sync_batch_size="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_limit || '25' }}"
@@ -2364,9 +2364,9 @@ jobs:
           if [ -n "$min_age_minutes" ]; then
             min_age_minutes_arg=(--min-age-minutes "$min_age_minutes")
           fi
-          if [ "$checkpoint_size" -gt 5 ]; then
-            echo "Capping apply checkpoint size at 5 to keep each GitHub App token within its lifetime."
-            checkpoint_size=5
+          if [ "$checkpoint_size" -gt 20 ]; then
+            echo "Capping apply checkpoint size at 20 to keep each GitHub App token within its lifetime."
+            checkpoint_size=20
           fi
           mkdir -p .artifacts/apply-reports
           publish_changes() {

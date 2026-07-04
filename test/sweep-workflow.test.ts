@@ -142,9 +142,9 @@ test("apply workflow bounds checkpoints and requeues with a fresh token", () => 
     workflow,
     /github\.event\.schedule == '8,23,38,53 \* \* \* \*'\) && 'openclaw\/clawhub'/,
   );
-  assert.match(inputBlock, /apply_limit:[\s\S]*default: "5"/);
-  assert.match(inputBlock, /apply_checkpoint_size:[\s\S]*default: "5"/);
-  assert.match(applyStep, /Capping apply checkpoint size at 5/);
+  assert.match(inputBlock, /apply_limit:[\s\S]*default: "20"/);
+  assert.match(inputBlock, /apply_checkpoint_size:[\s\S]*default: "20"/);
+  assert.match(applyStep, /Capping apply checkpoint size at 20/);
   assert.match(applyStep, /close_processed_limit=300/);
   assert.match(applyStep, /processed-limit "\$close_processed_limit"/);
   assert.match(applyStep, /comment_sync_processed_limit=1000/);
