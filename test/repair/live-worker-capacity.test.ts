@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   MAX_LIVE_WORKERS,
+  activeRepairWorkflowRunForJob,
   activeRepairWorkflowRunForJobAfterDispatchRecheck,
   fetchRecentWorkflowRuns,
   listActiveWorkflowRuns,
@@ -50,6 +51,26 @@ test("repair run names match workflow dispatch titles", () => {
       "automerge repair",
     ),
     "automerge repair jobs/openclaw/inbox/automerge-openclaw-openclaw-75363.md",
+  );
+});
+
+test("repair run names include command receipt keys without hiding active jobs", () => {
+  const job = "jobs/openclaw/inbox/automerge-openclaw-openclaw-75363.md";
+  assert.equal(
+    repairRunNameForJob(job, "automerge repair ", "router-abc123"),
+    `automerge repair ${job} [router-abc123]`,
+  );
+  assert.equal(
+    activeRepairWorkflowRunForJob({
+      jobPath: job,
+      activeRunsByPrefix: new Map([
+        [
+          "automerge repair ",
+          [{ displayTitle: `automerge repair ${job} [router-abc123]`, status: "in_progress" }],
+        ],
+      ]),
+    })?.status,
+    "in_progress",
   );
 });
 

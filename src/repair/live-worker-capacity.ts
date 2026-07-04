@@ -176,11 +176,14 @@ export function repairRunNamePrefixForJob(
 export function repairRunNameForJob(
   jobPath: JsonValue,
   automergeRunNamePrefix: JsonValue = DEFAULT_AUTOMERGE_REPAIR_RUN_NAME_PREFIX,
+  dispatchKey: JsonValue = null,
 ) {
-  return joinRepairRunNamePrefix(
+  const title = joinRepairRunNamePrefix(
     repairRunNamePrefixForJob(jobPath, automergeRunNamePrefix),
     String(jobPath ?? ""),
   );
+  const key = String(dispatchKey ?? "").trim();
+  return key ? `${title} [${key}]` : title;
 }
 
 export function activeRepairWorkflowRunForJob({
@@ -225,7 +228,10 @@ export function activeRepairWorkflowRunForJob({
           env,
         });
   return (
-    activeRuns?.find((run: JsonValue) => String(run.displayTitle ?? "") === expectedTitle) ?? null
+    activeRuns?.find((run: JsonValue) => {
+      const title = String(run.displayTitle ?? "");
+      return title === expectedTitle || title.startsWith(`${expectedTitle} [router-`);
+    }) ?? null
   );
 }
 

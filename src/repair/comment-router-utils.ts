@@ -115,6 +115,38 @@ export function shouldSuppressProcessedCommentVersion(entry: LooseRecord) {
   return true;
 }
 
+export function dispatchClaimDecision({
+  claim,
+  runs,
+  expectedTitle,
+  nowMs = Date.now(),
+  graceMs = 300_000,
+}: {
+  claim: LooseRecord | null;
+  runs: LooseRecord[];
+  expectedTitle: string;
+  nowMs?: number;
+  graceMs?: number;
+}) {
+  if (!claim) return { action: "dispatch", run: null };
+  const normalizedGraceMs = Number.isFinite(graceMs) ? Math.max(0, graceMs) : 300_000;
+  const claimedAtMs = Date.parse(String(claim.processed_at ?? ""));
+  const matchingRun = runs.find((run) => {
+    if (String(run.display_title ?? run.displayTitle ?? "") !== expectedTitle) return false;
+    const createdAtMs = Date.parse(String(run.created_at ?? run.createdAt ?? ""));
+    return (
+      Number.isFinite(claimedAtMs) &&
+      Number.isFinite(createdAtMs) &&
+      createdAtMs >= claimedAtMs - 5_000
+    );
+  });
+  if (matchingRun) return { action: "recover", run: matchingRun };
+  if (Number.isFinite(claimedAtMs) && nowMs - claimedAtMs >= normalizedGraceMs) {
+    return { action: "dispatch", run: null };
+  }
+  return { action: "wait", run: null };
+}
+
 export function sortCommentsForRouting(comments: LooseRecord[]) {
   return [...comments].sort((left: LooseRecord, right: LooseRecord) => {
     const leftTime = commentRoutingTime(left);
@@ -244,7 +276,9 @@ export function readLedger(file: JsonValue) {
 
 export function appendLedger(current: LooseRecord, entries: LooseRecord[]) {
   const compact = entries
-    .filter((entry: JsonValue) => ["executed", "skipped", "waiting"].includes(entry.status))
+    .filter((entry: JsonValue) =>
+      ["claimed", "executed", "skipped", "waiting"].includes(entry.status),
+    )
     .filter((entry: JsonValue) => !isNoopSkip(entry))
     .map((entry: JsonValue) => {
       const actions = compactLedgerActions(entry.actions);
@@ -271,7 +305,7 @@ export function appendLedger(current: LooseRecord, entries: LooseRecord[]) {
         expected_head_sha: entry.expected_head_sha ?? null,
         finding_id: entry.finding_id ?? null,
         status: entry.status,
-        processed_at: new Date().toISOString(),
+        processed_at: entry.processed_at ?? new Date().toISOString(),
         target: entry.target
           ? {
               kind: entry.target.kind,

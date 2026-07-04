@@ -495,15 +495,11 @@ test("comment commands keep the router-to-sweep dispatch contract", () => {
   assert.match(routerWorkflow, /--status-comment-id "\$status_comment_id"/);
   assert.match(routerSource, /event_type:\s*"clawsweeper_item"/);
   assert.match(routerSource, /adaptiveReviewBudgetForPullRequest\(command\.target\)/);
-  assert.match(routerSource, /const MAX_MEDIA_PREPROCESSING_TIMEOUT_MS = 480_000/);
   assert.match(routerSource, /media_proof_timeout_ms: reviewBudget\.mediaProofTimeoutMs/);
-  assert.match(routerSource, /reviewBudget\.codexTimeoutMs \+ MAX_MEDIA_PREPROCESSING_TIMEOUT_MS/);
-  assert.doesNotMatch(
-    routerSource,
-    /reviewBudget\.codexTimeoutMs \+ reviewBudget\.mediaProofTimeoutMs/,
-  );
-  assert.match(routerSource, /`codex_timeout_ms=\$\{fallbackCodexTimeoutMs\}`/);
+  assert.match(routerSource, /dispatch_key:\s*dispatchKey/);
+  assert.doesNotMatch(routerSource, /fallbackCodexTimeoutMs/);
   assert.match(sweepWorkflow, /types:\s*\[clawsweeper_item,\s*clawsweeper_target_sweep\]/);
+  assert.match(sweepWorkflow, /Review event item \{0\}#\{1\} \[\{2\}\]/);
   assert.doesNotMatch(sweepWorkflow, /types:\s*\[[^\]]*clawsweeper_comment/);
 });
 

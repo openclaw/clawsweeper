@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   SUPERSEDED_RE_REVIEW_REASON,
   appendLedger,
+  dispatchClaimDecision,
   isGitHubAppIntegrationAuthError,
   isAllowedMutationActor,
   normalizeGitHubActor,
@@ -128,6 +129,181 @@ test("appendLedger records waiting commands without making them terminal", () =>
   assert.equal(ledger.commands.length, 1);
   assert.equal(ledger.commands[0].status, "waiting");
   assert.equal(shouldSuppressProcessedCommentVersion(ledger.commands[0]), false);
+});
+
+test("appendLedger records claimed dispatch commands as recoverable idempotency claims", () => {
+  const ledger = { updated_at: null, commands: [] };
+
+  assert.equal(
+    appendLedger(ledger, [
+      {
+        idempotency_key: "claim-before-dispatch",
+        comment_id: "125",
+        comment_version_key: "125:2026-04-29T03:01:00Z",
+        comment_updated_at: "2026-04-29T03:01:00Z",
+        status: "claimed",
+        intent: "clawsweeper_re_review",
+        issue_number: 74499,
+        repo: "openclaw/openclaw",
+        actions: [{ action: "dispatch_clawsweeper", status: "claimed" }],
+      },
+    ]),
+    true,
+  );
+
+  assert.equal(ledger.commands.length, 1);
+  assert.equal(ledger.commands[0].status, "claimed");
+  assert.equal(shouldSuppressProcessedCommentVersion(ledger.commands[0]), false);
+  assert.deepEqual(ledger.commands[0].actions, [
+    {
+      action: "dispatch_clawsweeper",
+      status: "claimed",
+      label: null,
+      job_path: null,
+    },
+  ]);
+});
+
+test("fresh dispatch claims wait for the Actions receipt visibility window", () => {
+  const claim = { processed_at: "2026-04-29T03:01:00Z" };
+
+  assert.deepEqual(
+    dispatchClaimDecision({
+      claim,
+      runs: [],
+      expectedTitle: "Review event item openclaw/openclaw#74499 [router-abc]",
+      nowMs: Date.parse("2026-04-29T03:04:00Z"),
+    }),
+    { action: "wait", run: null },
+  );
+});
+
+test("dispatch claims recover the exact Actions receipt created after the claim", () => {
+  const claim = { processed_at: "2026-04-29T03:01:00Z" };
+  const matchingRun = {
+    id: 991,
+    display_title: "Review event item openclaw/openclaw#74499 [router-abc]",
+    created_at: "2026-04-29T03:01:02Z",
+  };
+
+  assert.deepEqual(
+    dispatchClaimDecision({
+      claim,
+      runs: [
+        {
+          id: 990,
+          display_title: matchingRun.display_title,
+          created_at: "2026-04-29T02:59:00Z",
+        },
+        matchingRun,
+      ],
+      expectedTitle: matchingRun.display_title,
+      nowMs: Date.parse("2026-04-29T03:10:00Z"),
+    }),
+    { action: "recover", run: matchingRun },
+  );
+});
+
+test("stale dispatch claims without an exact receipt become retryable", () => {
+  assert.deepEqual(
+    dispatchClaimDecision({
+      claim: { processed_at: "2026-04-29T03:01:00Z" },
+      runs: [
+        {
+          id: 990,
+          display_title: "Review event item openclaw/openclaw#74499 [router-other]",
+          created_at: "2026-04-29T03:01:02Z",
+        },
+      ],
+      expectedTitle: "Review event item openclaw/openclaw#74499 [router-abc]",
+      nowMs: Date.parse("2026-04-29T03:10:00Z"),
+      graceMs: Number.NaN,
+    }),
+    { action: "dispatch", run: null },
+  );
+});
+
+test("dispatch claims with malformed timestamps fail closed", () => {
+  assert.deepEqual(
+    dispatchClaimDecision({
+      claim: { processed_at: "not-a-timestamp" },
+      runs: [
+        {
+          id: 991,
+          display_title: "Review event item openclaw/openclaw#74499 [router-abc]",
+          created_at: "2026-04-29T03:01:02Z",
+        },
+      ],
+      expectedTitle: "Review event item openclaw/openclaw#74499 [router-abc]",
+      nowMs: Date.parse("2026-04-29T03:10:00Z"),
+    }),
+    { action: "wait", run: null },
+  );
+});
+
+test("appendLedger preserves the original timestamp while a claim waits", () => {
+  const ledger = { updated_at: null, commands: [] };
+  const processedAt = "2026-04-29T03:01:00Z";
+
+  appendLedger(ledger, [
+    {
+      idempotency_key: "claim-before-dispatch",
+      comment_id: "125",
+      comment_version_key: "125:2026-04-29T03:01:00Z",
+      status: "claimed",
+      intent: "clawsweeper_re_review",
+      processed_at: processedAt,
+      actions: [{ action: "dispatch_clawsweeper", status: "claimed" }],
+    },
+  ]);
+
+  assert.equal(ledger.commands[0].processed_at, processedAt);
+});
+
+test("appendLedger upgrades claimed dispatch commands after execution", () => {
+  const ledger = { updated_at: null, commands: [] };
+
+  appendLedger(ledger, [
+    {
+      idempotency_key: "claim-before-dispatch",
+      comment_id: "125",
+      comment_version_key: "125:2026-04-29T03:01:00Z",
+      comment_updated_at: "2026-04-29T03:01:00Z",
+      status: "claimed",
+      intent: "clawsweeper_re_review",
+      issue_number: 74499,
+      repo: "openclaw/openclaw",
+      actions: [{ action: "dispatch_clawsweeper", status: "claimed" }],
+    },
+  ]);
+
+  assert.equal(
+    appendLedger(ledger, [
+      {
+        idempotency_key: "claim-before-dispatch",
+        comment_id: "125",
+        comment_version_key: "125:2026-04-29T03:01:00Z",
+        comment_updated_at: "2026-04-29T03:01:00Z",
+        status: "executed",
+        intent: "clawsweeper_re_review",
+        issue_number: 74499,
+        repo: "openclaw/openclaw",
+        actions: [{ action: "dispatch_clawsweeper", status: "executed" }],
+      },
+    ]),
+    true,
+  );
+
+  assert.equal(ledger.commands.length, 1);
+  assert.equal(ledger.commands[0].status, "executed");
+  assert.deepEqual(ledger.commands[0].actions, [
+    {
+      action: "dispatch_clawsweeper",
+      status: "executed",
+      label: null,
+      job_path: null,
+    },
+  ]);
 });
 
 test("appendLedger ignores no-op skipped command versions", () => {
