@@ -17559,6 +17559,21 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
       liveItem = fetchItem(number);
     } catch (error) {
       if (!isGitHubNotFoundError(error)) throw error;
+      // A repository lookup can return the same 404 when the repo is missing or
+      // inaccessible. Confirm repo access before treating this as an item miss.
+      ghJson<unknown>(["api", `repos/${targetRepo()}`]);
+      if (syncCommentsOnly) {
+        markApplyChecked();
+        results.push({
+          number,
+          action: "skipped_already_closed",
+          reason: "item not found on GitHub",
+        });
+        processedCount += 1;
+        maybeLogProgress(`skipped comment sync #${number}: item not found on GitHub`);
+        if (processedCount >= processedLimit) break;
+        continue;
+      }
       // Items can be deleted after review but before apply. Treat that terminal
       // state like an already-closed item instead of failing the whole apply run.
       markdown = replaceFrontMatterValue(markdown, "action_taken", "skipped_already_closed");
