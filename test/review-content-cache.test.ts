@@ -31,11 +31,44 @@ test("content digest is stable across bot-only context churn", () => {
   const pull = item({ kind: "pull_request", number: 200 });
   const a = itemContentDigestForTest(
     pull,
-    pullContext({ timeline: [{ id: 1 }], counts: { comments: 3, timeline: 1 } }),
+    pullContext({
+      timeline: [{ id: 1, event: "labeled", actor: "ClawSweeper[bot]" }],
+      counts: { comments: 3, timeline: 1 },
+    }),
   );
   const b = itemContentDigestForTest(
     pull,
-    pullContext({ timeline: [{ id: 2 }, { id: 3 }], counts: { comments: 9, timeline: 2 } }),
+    pullContext({
+      timeline: [
+        { id: 2, event: "labeled", actor: "clawsweeper" },
+        { id: 3, event: "commented", actor: "openclaw-clawsweeper[bot]" },
+      ],
+      counts: { comments: 9, timeline: 2 },
+    }),
+  );
+  assert.equal(a, b);
+});
+
+test("content digest busts when a human timeline event appears", () => {
+  const pull = item({ kind: "pull_request", number: 200 });
+  const a = itemContentDigestForTest(pull, pullContext({ timeline: [] }));
+  const b = itemContentDigestForTest(
+    pull,
+    pullContext({
+      timeline: [{ id: 9, event: "reviewed", actor: "maintainer" }],
+    }),
+  );
+  assert.notEqual(a, b);
+});
+
+test("content digest ignores advisory-label timeline churn", () => {
+  const issue = item({ kind: "issue", number: 300 });
+  const a = itemContentDigestForTest(issue, issueContext({ timeline: [] }));
+  const b = itemContentDigestForTest(
+    issue,
+    issueContext({
+      timeline: [{ id: 10, event: "labeled", actor: "github-actions[bot]", label: "P2" }],
+    }),
   );
   assert.equal(a, b);
 });

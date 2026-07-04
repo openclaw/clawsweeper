@@ -2319,6 +2319,27 @@ function reviewCommentDigestParts(entries: unknown): unknown {
     }));
 }
 
+function reviewTimelineDigestParts(entries: unknown): unknown {
+  if (!Array.isArray(entries)) return null;
+  return entries
+    .map(asRecord)
+    .filter((entry) => {
+      const actor = typeof entry.actor === "string" ? entry.actor.toLowerCase() : "";
+      if (actor && CLAWSWEEPER_BOT_AUTHORS.has(actor)) return false;
+      const label = typeof entry.label === "string" ? normalizeLabelName(entry.label) : "";
+      return !label || !isIgnorableSourceRevisionLabel(label);
+    })
+    .map((entry) => ({
+      id: entry.id ?? null,
+      event: entry.event ?? null,
+      actor: entry.actor ?? null,
+      commitId: entry.commitId ?? null,
+      label: entry.label ?? null,
+      rename: entry.rename ?? null,
+      sourceIssue: entry.sourceIssue ?? null,
+    }));
+}
+
 function itemContentDigest(item: Item, context: ItemContext, git?: GitInfo): string {
   const isPull = item.kind === "pull_request";
   const pull = asRecord(context.pullRequest);
@@ -2328,6 +2349,7 @@ function itemContentDigest(item: Item, context: ItemContext, git?: GitInfo): str
     stableJson({
       kind: item.kind,
       source: context.sourceRevision ?? null,
+      timeline: reviewTimelineDigestParts(context.timeline),
       relations: {
         closingPullRequests: context.closingPullRequests ?? null,
         referencingMergedPullRequests: context.referencingMergedPullRequests ?? null,
