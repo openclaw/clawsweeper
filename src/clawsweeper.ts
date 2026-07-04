@@ -341,6 +341,7 @@ interface ExistingReview {
   reviewPolicy: string | undefined;
   contentDigest: string | undefined;
   lastFullReviewAt: string | undefined;
+  mainSha: string | undefined;
 }
 
 interface LatestRelease {
@@ -2318,24 +2319,44 @@ function reviewCommentDigestParts(entries: unknown): unknown {
     }));
 }
 
-function itemContentDigest(item: Item, context: ItemContext): string {
+function itemContentDigest(item: Item, context: ItemContext, git?: GitInfo): string {
   const isPull = item.kind === "pull_request";
-  const base = asRecord(asRecord(context.pullRequest).base);
+  const pull = asRecord(context.pullRequest);
+  const base = asRecord(pull.base);
   const baseSha = typeof base.sha === "string" ? base.sha : null;
   return sha256(
     stableJson({
       kind: item.kind,
       source: context.sourceRevision ?? null,
+      relations: {
+        closingPullRequests: context.closingPullRequests ?? null,
+        referencingMergedPullRequests: context.referencingMergedPullRequests ?? null,
+        relatedItems: context.relatedItems ?? null,
+      },
+      latestRelease: git?.latestRelease
+        ? { tagName: git.latestRelease.tagName ?? null, sha: git.latestRelease.sha ?? null }
+        : null,
       headSha: isPull ? pullHeadShaFromContext(context) : null,
       baseSha: isPull ? baseSha : null,
+      pullState: isPull
+        ? {
+            draft: pull.draft ?? null,
+            mergeable: pull.mergeable ?? null,
+            mergeableState: pull.mergeableState ?? null,
+            additions: pull.additions ?? null,
+            deletions: pull.deletions ?? null,
+            changedFiles: pull.changedFiles ?? null,
+          }
+        : null,
       diff: isPull ? (context.pullFiles ?? null) : null,
+      commits: isPull ? (context.pullCommits ?? null) : null,
       reviewComments: isPull ? reviewCommentDigestParts(context.pullReviewComments) : null,
     }),
   );
 }
 
-export function itemContentDigestForTest(item: Item, context: ItemContext): string {
-  return itemContentDigest(item, context);
+export function itemContentDigestForTest(item: Item, context: ItemContext, git?: GitInfo): string {
+  return itemContentDigest(item, context, git);
 }
 
 function reviewPolicyHash(options: {
@@ -5363,6 +5384,7 @@ function existingReview(
     reviewPolicy: frontMatterValue(markdown, "review_policy"),
     contentDigest: frontMatterValue(markdown, "review_content_digest"),
     lastFullReviewAt: frontMatterValue(markdown, "last_full_review_at"),
+    mainSha: frontMatterValue(markdown, "main_sha"),
   };
 }
 
@@ -5393,6 +5415,7 @@ function buildExistingReviewIndex(itemsDir: string): ExistingReviewIndex {
       reviewPolicy: frontMatterValue(markdown, "review_policy"),
       contentDigest: frontMatterValue(markdown, "review_content_digest"),
       lastFullReviewAt: frontMatterValue(markdown, "last_full_review_at"),
+      mainSha: frontMatterValue(markdown, "main_sha"),
     });
   }
   return { byKey };
@@ -16728,7 +16751,11 @@ function reviewCommand(args: Args): void {
     ? gitInfo(openclawDir, { targetBranch: checkout.gitTargetBranch })
     : gitInfo(openclawDir);
   const reviewPolicy = reviewPolicyHash({ model, reasoningEffort, sandboxMode, serviceTier });
-  const explicitDispatch = itemNumber !== undefined || itemNumbers !== undefined;
+  // Planned background shards receive exact item numbers from the planner, but they are not
+  // user-requested exact reviews. Only the workflow may opt those batches into cache reuse.
+  const plannedAutomaticReview = boolArg(args.planned_automatic_review);
+  const explicitDispatch =
+    !plannedAutomaticReview && (itemNumber !== undefined || itemNumbers !== undefined);
   const maintainerRequest = additionalPrompt.trim().length > 0;
   const readonlyModeSnapshots = readonlyOpenclaw ? makeTreeReadOnly(openclawDir) : [];
   try {
@@ -16779,7 +16806,7 @@ function reviewCommand(args: Args): void {
       const contextStartedAt = Date.now();
       const context = collectItemContext(item);
       const contextElapsedMs = Date.now() - contextStartedAt;
-      const contentDigest = itemContentDigest(item, context);
+      const contentDigest = itemContentDigest(item, context, git);
       const priorReview =
         explicitDispatch || maintainerRequest ? null : existingReview(item, itemsDir);
       if (
@@ -16787,6 +16814,7 @@ function reviewCommand(args: Args): void {
           review: priorReview,
           reviewPolicy,
           contentDigest,
+          currentMainSha: git.mainSha,
           now: Date.now(),
           explicitDispatch,
           maintainerRequest,

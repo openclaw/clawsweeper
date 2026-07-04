@@ -1374,6 +1374,7 @@ jobs:
             --codex-sandbox danger-full-access \
             --codex-timeout-ms ${{ needs.plan.outputs.codex_timeout_ms }} \
             --item-numbers "${{ matrix.item_numbers }}" \
+            --planned-automatic-review \
             "${hot_intake_arg[@]}" \
             --readonly-openclaw \
             --shard-index ${{ matrix.shard }} \

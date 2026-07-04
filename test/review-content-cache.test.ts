@@ -98,6 +98,42 @@ test("issue digest ignores pull-request-only fields", () => {
   assert.equal(a, b);
 });
 
+test("issue digest busts when closing pull request context changes", () => {
+  const issue = item({ kind: "issue", number: 300 });
+  const a = itemContentDigestForTest(issue, issueContext({ closingPullRequests: [] }));
+  const b = itemContentDigestForTest(
+    issue,
+    issueContext({
+      closingPullRequests: [{ number: 301, state: "open", head: { sha: "head-1" } }],
+    }),
+  );
+  assert.notEqual(a, b);
+});
+
+test("content digest busts when related item context changes", () => {
+  const pull = item({ kind: "pull_request", number: 200 });
+  const a = itemContentDigestForTest(pull, pullContext({ relatedItems: [] }));
+  const b = itemContentDigestForTest(
+    pull,
+    pullContext({ relatedItems: [{ issue: { number: 199, state: "closed" } }] }),
+  );
+  assert.notEqual(a, b);
+});
+
+test("content digest busts when the latest release changes", () => {
+  const issue = item({ kind: "issue", number: 300 });
+  const context = issueContext();
+  const a = itemContentDigestForTest(issue, context, {
+    mainSha: "main-1",
+    latestRelease: { tagName: "v1.0.0", sha: "release-1" },
+  });
+  const b = itemContentDigestForTest(issue, context, {
+    mainSha: "main-2",
+    latestRelease: { tagName: "v1.1.0", sha: "release-2" },
+  });
+  assert.notEqual(a, b);
+});
+
 test("content digest busts when a human adds a PR review comment", () => {
   const pull = item({ kind: "pull_request", number: 200 });
   const a = itemContentDigestForTest(pull, pullContext({ pullReviewComments: [] }));
@@ -160,6 +196,8 @@ function freshReview(overrides = {}) {
     reviewPolicy: "policy-1",
     contentDigest: "digest-1",
     lastFullReviewAt: new Date(NOW - DAY_MS).toISOString(),
+    decision: "keep_open",
+    mainSha: "main-sha-1",
     ...overrides,
   };
 }
@@ -169,6 +207,7 @@ function cacheHit(overrides = {}) {
     review: freshReview(),
     reviewPolicy: "policy-1",
     contentDigest: "digest-1",
+    currentMainSha: "main-sha-1",
     now: NOW,
     explicitDispatch: false,
     maintainerRequest: false,
@@ -215,4 +254,26 @@ test("cache misses on a first-ever review", () => {
 
 test("cache misses when the prior review predates the digest field", () => {
   assert.equal(cacheHit({ review: freshReview({ contentDigest: undefined }) }), false);
+});
+
+test("cache misses for a close decision after target main changes", () => {
+  assert.equal(
+    cacheHit({
+      review: freshReview({ decision: "close", mainSha: "main-sha-1" }),
+      currentMainSha: "main-sha-2",
+    }),
+    false,
+  );
+});
+
+test("cache misses for a close decision without recorded target main", () => {
+  assert.equal(cacheHit({ review: freshReview({ decision: "close", mainSha: undefined }) }), false);
+});
+
+test("cache hits for a close decision on the same target main", () => {
+  assert.equal(cacheHit({ review: freshReview({ decision: "close" }) }), true);
+});
+
+test("cache can carry a keep-open decision across target main changes", () => {
+  assert.equal(cacheHit({ currentMainSha: "main-sha-2" }), true);
 });
