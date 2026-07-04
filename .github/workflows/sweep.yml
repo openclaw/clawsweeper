@@ -2310,6 +2310,7 @@ jobs:
         run: |
           set -euo pipefail
           test -n "$GH_TOKEN"
+          source scripts/apply-workflow-helpers.sh
           limit="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_limit || '20' }}"
           min_age_days="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_min_age_days || '0' }}"
           min_age_minutes="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_min_age_minutes || '' }}"
@@ -2320,7 +2321,12 @@ jobs:
           progress_every="10"
           checkpoint_size="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_checkpoint_size || '20' }}"
           comment_sync_processed_limit=1000
-          close_processed_limit=300
+          base_close_processed_limit=300
+          # Consumed by the sourced workflow helpers.
+          # shellcheck disable=SC2034
+          max_close_processed_limit=900
+          close_processed_limit="$base_close_processed_limit"
+          adaptive_apply_scan_reason="base_window"
           sync_batch_size="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_limit || '25' }}"
           item_numbers="${{ github.event_name == 'repository_dispatch' && github.event.client_payload.item_number || github.event.inputs.apply_item_numbers || '' }}"
           sync_open_pr_batch="${{ github.event_name == 'schedule' && github.event.schedule == '6,21,36,51 * * * *' && 'true' || 'false' }}"
@@ -2368,84 +2374,14 @@ jobs:
             echo "Capping apply checkpoint size at 20 to keep each GitHub App token within its lifetime."
             checkpoint_size=20
           fi
-          candidate_quality_summary="not evaluated"
-          candidate_quality_detail=""
+          select_adaptive_apply_batch
           mkdir -p .artifacts/apply-reports
-          publish_changes() {
-            message="$1"
-            shift
-            publish_args=(--message "$message" --rebase-strategy apply-records)
-            for path in "$@"; do
-              publish_args+=(--path "$path")
-            done
-            pnpm run repair:publish-main -- "${publish_args[@]}"
-          }
-          publish_status() {
-            message="$1"
-            if ! publish_changes "$message" results/sweep-status; then
-              echo "Best-effort status update failed: $message"
-              git restore results/sweep-status || true
-            fi
-          }
-          write_apply_health() {
-            report_path="$1"
-            output_path="$2"
-            health_mode="$3"
-            health_processed_limit="$4"
-            health_cursor_path="${5:-}"
-            health_cursor_required="${6:-false}"
-            health_candidate_count="${7:-}"
-            health_scheduled_interval_minutes="${8:-}"
-            health_cursor_advance_count="${9:-}"
-            health_args=(
-              --target-repo "$TARGET_REPO"
-              --report "$report_path"
-              --mode "$health_mode"
-              --processed-limit "$health_processed_limit"
-              --close-limit "$limit"
-            )
-            if [ -n "$health_cursor_path" ]; then
-              health_args+=(--cursor-path "$health_cursor_path")
-            fi
-            if [ "$health_cursor_required" = "true" ]; then
-              health_args+=(--cursor-required true)
-            fi
-            if [ -n "$health_candidate_count" ]; then
-              health_args+=(--candidate-count "$health_candidate_count")
-            fi
-            if [ -n "$health_scheduled_interval_minutes" ]; then
-              health_args+=(--scheduled-interval-minutes "$health_scheduled_interval_minutes")
-            fi
-            if [ -n "$health_cursor_advance_count" ]; then
-              health_args+=(--cursor-advance-count "$health_cursor_advance_count")
-            fi
-            pnpm run --silent workflow -- summarize-apply-report "${health_args[@]}" > "$output_path"
-          }
           reconcile_args=(--target-repo "$TARGET_REPO" --skip-closed-at)
           if [ -n "$item_numbers" ]; then
             reconcile_args+=(--item-numbers "$item_numbers")
           fi
           pnpm run reconcile -- "${reconcile_args[@]}"
-          if [ "$sync_comments_only" != "true" ]; then
-            quality_args=(
-              --target-repo "$TARGET_REPO"
-              --apply-kind "$apply_kind"
-              --apply-close-reasons "$apply_close_reasons"
-              --stale-min-age-days "$stale_min_age_days"
-              --min-age-days "$min_age_days"
-              --min-age-minutes "$min_age_minutes"
-            )
-            if [ -n "$item_numbers" ]; then
-              quality_args+=(--item-numbers "$item_numbers")
-            else
-              quality_args+=(--batch-size "$close_processed_limit" --cursor-path "$apply_cursor_path")
-            fi
-            candidate_quality_env=".artifacts/apply-candidate-quality.env"
-            pnpm run --silent workflow -- proposed-item-quality-summary "${quality_args[@]}" > "$candidate_quality_env"
-            cat "$candidate_quality_env"
-            candidate_quality_summary="$(awk -F= '$1 == "candidate_quality_summary" { print $2 }' "$candidate_quality_env")"
-            candidate_quality_detail=" Close candidate mix: $candidate_quality_summary."
-          fi
+          summarize_apply_candidate_quality
           if [ "$sync_open_pr_batch" = "true" ] && [ -z "$item_numbers" ]; then
             batch_env=".artifacts/comment-sync-batch.env"
             pnpm run --silent workflow -- comment-sync-batch \
@@ -2509,7 +2445,7 @@ jobs:
               if [ "$proposed_count" -lt "$limit" ]; then
                 limit="$proposed_count"
               fi
-              echo "Auto-selected $proposed_count proposed close candidate(s) from apply cursor window: $item_numbers; apply-ready count: ${apply_ready_count:-unknown}"
+              echo "Auto-selected $proposed_count proposed close candidate(s) from $close_processed_limit-record apply cursor window ($adaptive_apply_scan_reason): $item_numbers; apply-ready count: ${apply_ready_count:-unknown}"
             fi
           fi
           item_numbers_arg=()
@@ -2545,7 +2481,7 @@ jobs:
           pnpm run status -- \
             --target-repo "$TARGET_REPO" \
             --state "Apply in progress" \
-            --detail "Starting apply/comment-sync run for up to $limit fresh $apply_kind closes. Close reasons: $apply_close_reasons.$candidate_quality_detail Existing Codex automated review comments are updated in place when closing or when comment-only sync is stale by ${comment_sync_min_age_days} day(s); checkpoints commit every $checkpoint_size fresh closes; close delay is ${close_delay_ms}ms; sync-comments-only=$sync_comments_only; item numbers=${item_numbers:-all}." \
+            --detail "Starting apply/comment-sync run for up to $limit fresh $apply_kind closes. Close reasons: $apply_close_reasons.$candidate_quality_detail Scan window: $close_processed_limit records ($adaptive_apply_scan_reason). Existing Codex automated review comments are updated in place when closing or when comment-only sync is stale by ${comment_sync_min_age_days} day(s); checkpoints commit every $checkpoint_size fresh closes; close delay is ${close_delay_ms}ms; sync-comments-only=$sync_comments_only; item numbers=${item_numbers:-all}." \
             --run-url "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           if ! publish_changes "chore: mark sweep apply in progress" records results/sweep-status; then
             echo "Best-effort apply start status update failed"
@@ -2738,6 +2674,8 @@ jobs:
             echo "APPLY_SYNC_OPEN_PR_BATCH=$sync_open_pr_batch"
             echo "APPLY_AUTO_SELECTED_BATCH=$auto_selected_apply_batch"
             echo "APPLY_COMMENT_SYNC_MIN_AGE_DAYS=$comment_sync_min_age_days"
+            echo "APPLY_CLOSE_PROCESSED_LIMIT=$close_processed_limit"
+            echo "APPLY_ADAPTIVE_SCAN_REASON=$adaptive_apply_scan_reason"
             echo "APPLY_CANDIDATE_QUALITY_SUMMARY=$candidate_quality_summary"
           } >> "$GITHUB_ENV"
 
