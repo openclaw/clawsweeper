@@ -17,7 +17,6 @@ export interface SchedulerExistingReview {
   reviewPolicy?: string | undefined;
   contentDigest?: string | undefined;
   lastFullReviewAt?: string | undefined;
-  decision?: string | undefined;
   mainSha?: string | undefined;
 }
 
@@ -159,12 +158,7 @@ export function reviewContentCacheHit(options: {
   if (!review || review.reviewStatus !== "complete") return false;
   if (hasReviewPolicyMismatch(review, options.reviewPolicy)) return false;
   if (!review.contentDigest || review.contentDigest !== options.contentDigest) return false;
-  if (
-    review.decision === "close" &&
-    (!review.mainSha || review.mainSha !== options.currentMainSha)
-  ) {
-    return false;
-  }
+  if (!review.mainSha || review.mainSha !== options.currentMainSha) return false;
   const lastFullReviewAt = timestampMs(review.lastFullReviewAt);
   if (lastFullReviewAt === null) return false;
   const now = options.now ?? Date.now();

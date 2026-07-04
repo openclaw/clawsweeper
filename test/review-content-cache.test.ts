@@ -289,17 +289,17 @@ test("cache misses when the prior review predates the digest field", () => {
   assert.equal(cacheHit({ review: freshReview({ contentDigest: undefined }) }), false);
 });
 
-test("cache misses for a close decision after target main changes", () => {
+test("cache misses after target main changes", () => {
   assert.equal(
     cacheHit({
-      review: freshReview({ decision: "close", mainSha: "main-sha-1" }),
+      review: freshReview({ mainSha: "main-sha-1" }),
       currentMainSha: "main-sha-2",
     }),
     false,
   );
 });
 
-test("cache misses for a close decision without recorded target main", () => {
+test("cache misses without recorded target main", () => {
   assert.equal(cacheHit({ review: freshReview({ decision: "close", mainSha: undefined }) }), false);
 });
 
@@ -307,6 +307,6 @@ test("cache hits for a close decision on the same target main", () => {
   assert.equal(cacheHit({ review: freshReview({ decision: "close" }) }), true);
 });
 
-test("cache can carry a keep-open decision across target main changes", () => {
-  assert.equal(cacheHit({ currentMainSha: "main-sha-2" }), true);
+test("cache does not carry a keep-open decision across target main changes", () => {
+  assert.equal(cacheHit({ currentMainSha: "main-sha-2" }), false);
 });
