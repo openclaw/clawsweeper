@@ -15,6 +15,8 @@ export interface SchedulerExistingReview {
   labelsSyncedAt?: string | undefined;
   reviewStatus?: string | undefined;
   reviewPolicy?: string | undefined;
+  contentDigest?: string | undefined;
+  lastFullReviewAt?: string | undefined;
 }
 
 export type SchedulerBucket =
@@ -137,6 +139,27 @@ export function shouldReviewItem(
   const reviewedAt = reviewedAtMs(review);
   if (reviewedAt === null) return true;
   return now - reviewedAt >= reviewCadenceMs(item, review, now);
+}
+
+export const REVIEW_CACHE_MAX_AGE_DAYS = 14;
+
+export function reviewContentCacheHit(options: {
+  review: SchedulerExistingReview | null;
+  reviewPolicy: string | undefined;
+  contentDigest: string;
+  now?: number;
+  explicitDispatch: boolean;
+  maintainerRequest: boolean;
+}): boolean {
+  if (options.explicitDispatch || options.maintainerRequest) return false;
+  const review = options.review;
+  if (!review || review.reviewStatus !== "complete") return false;
+  if (hasReviewPolicyMismatch(review, options.reviewPolicy)) return false;
+  if (!review.contentDigest || review.contentDigest !== options.contentDigest) return false;
+  const lastFullReviewAt = timestampMs(review.lastFullReviewAt);
+  if (lastFullReviewAt === null) return false;
+  const now = options.now ?? Date.now();
+  return now - lastFullReviewAt < REVIEW_CACHE_MAX_AGE_DAYS * DAY_MS;
 }
 
 export function reviewPriority(

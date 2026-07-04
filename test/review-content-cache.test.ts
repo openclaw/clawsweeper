@@ -1,0 +1,218 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+
+import { reviewContentCacheHit } from "../dist/scheduler-policy.js";
+import { itemContentDigestForTest } from "../dist/clawsweeper.js";
+import { item } from "./helpers.ts";
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+function pullContext(overrides = {}) {
+  return {
+    sourceRevision: "source-rev-1",
+    timeline: [],
+    counts: { comments: 0, timeline: 0 },
+    pullRequest: { head: { sha: "head-sha-1" }, base: { sha: "base-sha-1" } },
+    pullFiles: [{ filename: "src/a.ts", status: "modified", patch: "@@ -1 +1 @@\n-old\n+new" }],
+    ...overrides,
+  };
+}
+
+function issueContext(overrides = {}) {
+  return {
+    sourceRevision: "source-rev-1",
+    timeline: [],
+    counts: { comments: 0, timeline: 0 },
+    ...overrides,
+  };
+}
+
+test("content digest is stable across bot-only context churn", () => {
+  const pull = item({ kind: "pull_request", number: 200 });
+  const a = itemContentDigestForTest(
+    pull,
+    pullContext({ timeline: [{ id: 1 }], counts: { comments: 3, timeline: 1 } }),
+  );
+  const b = itemContentDigestForTest(
+    pull,
+    pullContext({ timeline: [{ id: 2 }, { id: 3 }], counts: { comments: 9, timeline: 2 } }),
+  );
+  assert.equal(a, b);
+});
+
+test("content digest busts when the source revision changes", () => {
+  const pull = item({ kind: "pull_request", number: 200 });
+  const a = itemContentDigestForTest(pull, pullContext());
+  const b = itemContentDigestForTest(pull, pullContext({ sourceRevision: "source-rev-2" }));
+  assert.notEqual(a, b);
+});
+
+test("content digest busts when a diff patch byte changes", () => {
+  const pull = item({ kind: "pull_request", number: 200 });
+  const a = itemContentDigestForTest(pull, pullContext());
+  const b = itemContentDigestForTest(
+    pull,
+    pullContext({
+      pullFiles: [{ filename: "src/a.ts", status: "modified", patch: "@@ -1 +1 @@\n-old\n+newer" }],
+    }),
+  );
+  assert.notEqual(a, b);
+});
+
+test("content digest busts when the PR head sha changes", () => {
+  const pull = item({ kind: "pull_request", number: 200 });
+  const a = itemContentDigestForTest(pull, pullContext());
+  const b = itemContentDigestForTest(
+    pull,
+    pullContext({ pullRequest: { head: { sha: "head-sha-2" }, base: { sha: "base-sha-1" } } }),
+  );
+  assert.notEqual(a, b);
+});
+
+test("content digest busts when the PR base sha changes", () => {
+  const pull = item({ kind: "pull_request", number: 200 });
+  const a = itemContentDigestForTest(pull, pullContext());
+  const b = itemContentDigestForTest(
+    pull,
+    pullContext({ pullRequest: { head: { sha: "head-sha-1" }, base: { sha: "base-sha-2" } } }),
+  );
+  assert.notEqual(a, b);
+});
+
+test("issue digest ignores pull-request-only fields", () => {
+  const issue = item({ kind: "issue", number: 300 });
+  const a = itemContentDigestForTest(
+    issue,
+    issueContext({
+      pullFiles: [{ filename: "x", patch: "one" }],
+      pullRequest: { head: { sha: "h1" } },
+    }),
+  );
+  const b = itemContentDigestForTest(
+    issue,
+    issueContext({
+      pullFiles: [{ filename: "y", patch: "two" }],
+      pullRequest: { head: { sha: "h2" } },
+    }),
+  );
+  assert.equal(a, b);
+});
+
+test("content digest busts when a human adds a PR review comment", () => {
+  const pull = item({ kind: "pull_request", number: 200 });
+  const a = itemContentDigestForTest(pull, pullContext({ pullReviewComments: [] }));
+  const b = itemContentDigestForTest(
+    pull,
+    pullContext({
+      pullReviewComments: [
+        {
+          author: "maintainer",
+          authorAssociation: "MEMBER",
+          body: "Please do not close; this still needs a fix.",
+        },
+      ],
+    }),
+  );
+  assert.notEqual(a, b);
+});
+
+test("content digest ignores ClawSweeper's own PR review comments", () => {
+  const pull = item({ kind: "pull_request", number: 200 });
+  const a = itemContentDigestForTest(pull, pullContext({ pullReviewComments: [] }));
+  const b = itemContentDigestForTest(
+    pull,
+    pullContext({
+      pullReviewComments: [
+        { author: "ClawSweeper[bot]", authorAssociation: "NONE", body: "Automated review note." },
+      ],
+    }),
+  );
+  assert.equal(a, b);
+});
+
+test("content digest ignores PR review comment timestamp churn", () => {
+  const pull = item({ kind: "pull_request", number: 200 });
+  const comment = { author: "maintainer", authorAssociation: "MEMBER", body: "Looks good to me." };
+  const a = itemContentDigestForTest(
+    pull,
+    pullContext({
+      pullReviewComments: [
+        { ...comment, createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:00:00Z" },
+      ],
+    }),
+  );
+  const b = itemContentDigestForTest(
+    pull,
+    pullContext({
+      pullReviewComments: [
+        { ...comment, createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-05-05T00:00:00Z" },
+      ],
+    }),
+  );
+  assert.equal(a, b);
+});
+
+const NOW = Date.parse("2026-07-01T00:00:00Z");
+
+function freshReview(overrides = {}) {
+  return {
+    reviewStatus: "complete",
+    reviewPolicy: "policy-1",
+    contentDigest: "digest-1",
+    lastFullReviewAt: new Date(NOW - DAY_MS).toISOString(),
+    ...overrides,
+  };
+}
+
+function cacheHit(overrides = {}) {
+  return reviewContentCacheHit({
+    review: freshReview(),
+    reviewPolicy: "policy-1",
+    contentDigest: "digest-1",
+    now: NOW,
+    explicitDispatch: false,
+    maintainerRequest: false,
+    ...overrides,
+  });
+}
+
+test("cache hits when content is unchanged, fresh, complete, and policy matches", () => {
+  assert.equal(cacheHit(), true);
+});
+
+test("cache misses when the content digest differs", () => {
+  assert.equal(cacheHit({ contentDigest: "digest-2" }), false);
+});
+
+test("cache misses when the review policy changed", () => {
+  assert.equal(cacheHit({ reviewPolicy: "policy-2" }), false);
+});
+
+test("cache misses past the staleness ceiling", () => {
+  assert.equal(
+    cacheHit({
+      review: freshReview({ lastFullReviewAt: new Date(NOW - 15 * DAY_MS).toISOString() }),
+    }),
+    false,
+  );
+});
+
+test("cache misses on an explicit re-review dispatch", () => {
+  assert.equal(cacheHit({ explicitDispatch: true }), false);
+});
+
+test("cache misses on a maintainer request", () => {
+  assert.equal(cacheHit({ maintainerRequest: true }), false);
+});
+
+test("cache misses when the prior review did not complete", () => {
+  assert.equal(cacheHit({ review: freshReview({ reviewStatus: "failed" }) }), false);
+});
+
+test("cache misses on a first-ever review", () => {
+  assert.equal(cacheHit({ review: null }), false);
+});
+
+test("cache misses when the prior review predates the digest field", () => {
+  assert.equal(cacheHit({ review: freshReview({ contentDigest: undefined }) }), false);
+});
