@@ -100,6 +100,7 @@ import {
 import { escapeRegExp, safeOutputTail, trimMiddle, truncateText } from "./clawsweeper-text.js";
 import {
   appendReviewHistoryCycle,
+  neutralizeReviewHistoryMarkers,
   parseReviewHistory,
   renderReviewHistorySection,
   reviewHistoryCycleFromCommentBody,
@@ -14090,28 +14091,30 @@ function renderCloseComment(options: {
 }
 
 function renderCloseCommentFromReport(markdown: string, reason: CloseReason): string {
-  return sanitizePublicSelfReferences(
-    renderCloseComment({
-      reason,
-      summary: reviewSectionValue(markdown, "summary"),
-      bestSolution: reviewSectionValue(markdown, "bestSolution"),
-      reproductionAssessment: reviewSectionValue(markdown, "reproductionAssessment"),
-      solutionAssessment: reviewSectionValue(markdown, "solutionAssessment"),
-      agentsPolicyStatus: reportAgentsPolicyStatus(markdown),
-      evidence: reportEvidence(markdown),
-      likelyOwners: reportLikelyOwners(markdown),
-      fixedPullRequest: fixedPullRequestFromReport(markdown),
-      securityReview: reportSecurityReview(markdown),
-      rootCauseCluster: reportRootCauseCluster(markdown),
-      reviewLine: closeReviewLineFromReport(markdown),
-      currentItem: {
-        repo: markdownRepository(markdown),
-        number: Number(frontMatterValue(markdown, "number")),
-        kind: (frontMatterValue(markdown, "type") as ItemKind | undefined) ?? "issue",
-      },
-    }),
-    Number(frontMatterValue(markdown, "number")),
-    (frontMatterValue(markdown, "type") as ItemKind | undefined) ?? "issue",
+  return neutralizeReviewHistoryMarkers(
+    sanitizePublicSelfReferences(
+      renderCloseComment({
+        reason,
+        summary: reviewSectionValue(markdown, "summary"),
+        bestSolution: reviewSectionValue(markdown, "bestSolution"),
+        reproductionAssessment: reviewSectionValue(markdown, "reproductionAssessment"),
+        solutionAssessment: reviewSectionValue(markdown, "solutionAssessment"),
+        agentsPolicyStatus: reportAgentsPolicyStatus(markdown),
+        evidence: reportEvidence(markdown),
+        likelyOwners: reportLikelyOwners(markdown),
+        fixedPullRequest: fixedPullRequestFromReport(markdown),
+        securityReview: reportSecurityReview(markdown),
+        rootCauseCluster: reportRootCauseCluster(markdown),
+        reviewLine: closeReviewLineFromReport(markdown),
+        currentItem: {
+          repo: markdownRepository(markdown),
+          number: Number(frontMatterValue(markdown, "number")),
+          kind: (frontMatterValue(markdown, "type") as ItemKind | undefined) ?? "issue",
+        },
+      }),
+      Number(frontMatterValue(markdown, "number")),
+      (frontMatterValue(markdown, "type") as ItemKind | undefined) ?? "issue",
+    ),
   );
 }
 
@@ -14665,14 +14668,16 @@ function renderKeepOpenCommentFromReport(
   const reviewHistoryBlock = renderReviewHistorySection(
     reviewHistoryForRender(markdown, options.previousReviewCommentBody),
   );
-  if (reviewHistoryBlock) lines.push("", reviewHistoryBlock);
   if (isPullRequest && !reviewFailed) lines.push("", publicRankDetailsBlock());
   lines.push("", ...reviewWorkflowCallout());
-  return sanitizePublicSelfReferences(
-    lines.join("\n"),
-    Number(frontMatterValue(markdown, "number")),
-    (frontMatterValue(markdown, "type") as ItemKind | undefined) ?? "issue",
+  const publicBody = neutralizeReviewHistoryMarkers(
+    sanitizePublicSelfReferences(
+      lines.join("\n"),
+      Number(frontMatterValue(markdown, "number")),
+      (frontMatterValue(markdown, "type") as ItemKind | undefined) ?? "issue",
+    ),
   );
+  return reviewHistoryBlock ? `${publicBody.trimEnd()}\n\n${reviewHistoryBlock}\n` : publicBody;
 }
 
 export function renderReviewCommentFromReport(

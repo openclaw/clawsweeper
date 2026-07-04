@@ -14,6 +14,7 @@ export const MAX_REVIEW_HISTORY_CYCLES = 8;
 const MAX_CYCLE_FINDINGS = 6;
 const MAX_HISTORY_FIELD_CHARS = 160;
 const REVIEW_HISTORY_MARKER_PREFIX = "<!-- clawsweeper-review-history ";
+const NEUTRALIZED_REVIEW_HISTORY_MARKER_PREFIX = "‹!-- clawsweeper-review-history ";
 const HISTORY_LINE_PREFIX = "- reviewed ";
 const HISTORY_FIELD_SEPARATOR = " :: ";
 const HISTORY_FINDING_SEPARATOR = " | ";
@@ -71,6 +72,12 @@ export function renderReviewHistorySection(ledger: ReviewHistoryLedger): string 
   ].join("\n");
 }
 
+export function neutralizeReviewHistoryMarkers(value: string): string {
+  // Model-authored review text shares the durable comment with this ledger.
+  // Keep lookalike markers inert so only the locally rendered block becomes state.
+  return value.replaceAll(REVIEW_HISTORY_MARKER_PREFIX, NEUTRALIZED_REVIEW_HISTORY_MARKER_PREFIX);
+}
+
 function parseReviewHistoryLine(line: string): ReviewHistoryCycle | null {
   const fields = line.slice(HISTORY_LINE_PREFIX.length).split(HISTORY_FIELD_SEPARATOR);
   if (fields.length !== 3) return null;
@@ -89,11 +96,9 @@ function parseReviewHistoryLine(line: string): ReviewHistoryCycle | null {
   return { reviewedAt: head[1].trim(), sha: head[2], verdict, findings };
 }
 
-export function parseReviewHistory(body: string): ReviewHistoryLedger {
-  const markerIndex = body.lastIndexOf(REVIEW_HISTORY_MARKER_PREFIX);
-  if (markerIndex < 0) return { cycles: [], totalCompletedCycles: 0 };
+function parseReviewHistoryAt(body: string, markerIndex: number): ReviewHistoryLedger | null {
   const markerEnd = body.indexOf("-->", markerIndex + REVIEW_HISTORY_MARKER_PREFIX.length);
-  if (markerEnd < 0) return { cycles: [], totalCompletedCycles: 0 };
+  if (markerEnd < 0) return null;
   const marker = body.slice(markerIndex + 4, markerEnd).trim();
   const attributes = new Map<string, string>();
   for (const token of marker.split(/\s+/).slice(1)) {
@@ -103,27 +108,55 @@ export function parseReviewHistory(body: string): ReviewHistoryLedger {
   }
   const totalValue = attributes.get("total") ?? "";
   if (attributes.get("v") !== "1" || !/^\d+$/.test(totalValue)) {
-    return { cycles: [], totalCompletedCycles: 0 };
+    return null;
   }
   const parsedTotal = Number(totalValue);
   if (!Number.isSafeInteger(parsedTotal)) {
-    return { cycles: [], totalCompletedCycles: 0 };
+    return null;
   }
-  const lines = body
-    .slice(markerEnd + 3)
-    .split(/\r?\n/)
-    .slice(1);
+
+  const detailsStart = body.lastIndexOf("<details>", markerIndex);
+  if (detailsStart < 0) return null;
+  const summary = body.slice(detailsStart, markerIndex);
+  const detailsEnd = body.indexOf("</details>", markerEnd + 3);
+  if (detailsEnd < 0) return null;
+  const historyBody = body.slice(markerEnd + 3, detailsEnd);
+  if (!/^\r?\n[\s\S]*\r?\n\r?\n$/.test(historyBody)) return null;
+  const lines = historyBody.split(/\r?\n/).slice(1, -2);
+  if (!lines.length || lines.length > MAX_REVIEW_HISTORY_CYCLES) return null;
   const cycles: ReviewHistoryCycle[] = [];
   for (const line of lines) {
-    if (!line.startsWith(HISTORY_LINE_PREFIX)) break;
+    if (!line.startsWith(HISTORY_LINE_PREFIX)) return null;
     const cycle = parseReviewHistoryLine(line);
-    if (cycle) cycles.push(cycle);
+    if (!cycle) return null;
+    cycles.push(cycle);
   }
-  const retained = cycles.slice(-MAX_REVIEW_HISTORY_CYCLES);
+  if (parsedTotal < cycles.length) return null;
+  const noun = parsedTotal === 1 ? "cycle" : "cycles";
+  const retainedSuffix = parsedTotal > cycles.length ? `; latest ${cycles.length} shown` : "";
+  const expectedSummary = [
+    "<details>",
+    `<summary>Review history (${parsedTotal} earlier review ${noun}${retainedSuffix})</summary>`,
+    "",
+    "",
+  ].join("\n");
+  if (summary.replaceAll("\r\n", "\n") !== expectedSummary) return null;
   return {
-    cycles: retained,
-    totalCompletedCycles: Math.max(parsedTotal, retained.length),
+    cycles,
+    totalCompletedCycles: parsedTotal,
   };
+}
+
+export function parseReviewHistory(body: string): ReviewHistoryLedger {
+  let searchFrom = body.length;
+  while (searchFrom > 0) {
+    const markerIndex = body.lastIndexOf(REVIEW_HISTORY_MARKER_PREFIX, searchFrom - 1);
+    if (markerIndex < 0) break;
+    const ledger = parseReviewHistoryAt(body, markerIndex);
+    if (ledger) return ledger;
+    searchFrom = markerIndex;
+  }
+  return { cycles: [], totalCompletedCycles: 0 };
 }
 
 function reviewHistoryCycleKey(cycle: ReviewHistoryCycle): string {
