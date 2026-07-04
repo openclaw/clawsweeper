@@ -100,7 +100,7 @@ import {
 import { escapeRegExp, safeOutputTail, trimMiddle, truncateText } from "./clawsweeper-text.js";
 import {
   appendReviewHistoryCycle,
-  neutralizeReviewHistoryMarkers,
+  neutralizeReviewControlMarkers,
   parseReviewHistory,
   renderReviewHistorySection,
   reviewHistoryCycleFromCommentBody,
@@ -14091,7 +14091,7 @@ function renderCloseComment(options: {
 }
 
 function renderCloseCommentFromReport(markdown: string, reason: CloseReason): string {
-  return neutralizeReviewHistoryMarkers(
+  return neutralizeReviewControlMarkers(
     sanitizePublicSelfReferences(
       renderCloseComment({
         reason,
@@ -14670,7 +14670,7 @@ function renderKeepOpenCommentFromReport(
   );
   if (isPullRequest && !reviewFailed) lines.push("", publicRankDetailsBlock());
   lines.push("", ...reviewWorkflowCallout());
-  const publicBody = neutralizeReviewHistoryMarkers(
+  const publicBody = neutralizeReviewControlMarkers(
     sanitizePublicSelfReferences(
       lines.join("\n"),
       Number(frontMatterValue(markdown, "number")),

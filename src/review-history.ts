@@ -13,8 +13,9 @@ export interface ReviewHistoryLedger {
 export const MAX_REVIEW_HISTORY_CYCLES = 8;
 const MAX_CYCLE_FINDINGS = 6;
 const MAX_HISTORY_FIELD_CHARS = 160;
-const REVIEW_HISTORY_MARKER_PREFIX = "<!-- clawsweeper-review-history ";
-const NEUTRALIZED_REVIEW_HISTORY_MARKER_PREFIX = "‹!-- clawsweeper-review-history ";
+const REVIEW_CONTROL_MARKER_PREFIX = "<!-- clawsweeper-";
+const REVIEW_CONTROL_MARKER_PATTERN = /<!--(?=\s*clawsweeper-)/gi;
+const REVIEW_HISTORY_MARKER_PREFIX = `${REVIEW_CONTROL_MARKER_PREFIX}review-history `;
 const HISTORY_LINE_PREFIX = "- reviewed ";
 const HISTORY_FIELD_SEPARATOR = " :: ";
 const HISTORY_FINDING_SEPARATOR = " | ";
@@ -72,10 +73,10 @@ export function renderReviewHistorySection(ledger: ReviewHistoryLedger): string 
   ].join("\n");
 }
 
-export function neutralizeReviewHistoryMarkers(value: string): string {
+export function neutralizeReviewControlMarkers(value: string): string {
   // Model-authored review text shares the durable comment with this ledger.
-  // Keep lookalike markers inert so only the locally rendered block becomes state.
-  return value.replaceAll(REVIEW_HISTORY_MARKER_PREFIX, NEUTRALIZED_REVIEW_HISTORY_MARKER_PREFIX);
+  // Keep lookalike markers inert so only locally rendered controls become state.
+  return value.replace(REVIEW_CONTROL_MARKER_PATTERN, "‹!--");
 }
 
 function parseReviewHistoryLine(line: string): ReviewHistoryCycle | null {
@@ -226,10 +227,26 @@ function hasReviewStatusMarker(body: string): boolean {
   return false;
 }
 
-function commentBodyFindings(lines: readonly string[]): string[] {
+function reviewFindingLines(lines: readonly string[]): readonly string[] {
+  const detailsStart = lines.findLastIndex((line) => line.trim() === "Full review comments:");
+  if (detailsStart >= 0) {
+    const detailsLines = lines.slice(detailsStart + 1);
+    const end = detailsLines.findIndex((line) =>
+      /^(?:Overall correctness:|<\/details>|<!--)/.test(line.trim()),
+    );
+    return end < 0 ? detailsLines : detailsLines.slice(0, end);
+  }
+  const summaryStart = lines.findIndex((line) => line.trim() === "**Review findings**");
+  if (summaryStart < 0) return [];
+  const summaryLines = lines.slice(summaryStart + 1);
+  const end = summaryLines.findIndex((line) => /^(?:\*\*|<details>|<!--)/.test(line.trim()));
+  return end < 0 ? summaryLines : summaryLines.slice(0, end);
+}
+
+function commentBodyFindings(body: string): string[] {
   const detailed: string[] = [];
   const summary: string[] = [];
-  for (const raw of lines) {
+  for (const raw of reviewFindingLines(body.split(/\r?\n/))) {
     const line = raw.trim();
     if (line.startsWith(HISTORY_LINE_PREFIX)) continue;
     const detailedMatch = line.match(DETAILED_FINDING_PATTERN);
@@ -271,5 +288,5 @@ export function reviewHistoryCycleFromCommentBody(body: string): ReviewHistoryCy
   const inlineReviewedAt = body.match(/_reviewed ([^_]+?)\.?_/i)?.[1]?.trim();
   const reviewedAt = reviewMarkerAttribute(body, "reviewed_at") ?? inlineReviewedAt ?? "unknown";
   const sha = reviewMarkerAttribute(body, "sha") ?? "unknown";
-  return { reviewedAt, sha, verdict, findings: commentBodyFindings(lines) };
+  return { reviewedAt, sha, verdict, findings: commentBodyFindings(body) };
 }
