@@ -560,6 +560,7 @@ interface ItemContext {
   comments: unknown[];
   timeline: unknown[];
   sourceRevision?: string;
+  timelineRevision?: string;
   previousClawSweeperReview?: unknown;
   closingPullRequests?: unknown[];
   referencingMergedPullRequests?: unknown[];
@@ -568,6 +569,7 @@ interface ItemContext {
   pullFiles?: unknown[];
   pullCommits?: unknown[];
   pullReviewComments?: unknown[];
+  pullReviewCommentsRevision?: string;
   counts?: {
     comments: number;
     commentsHydrated?: number;
@@ -2312,11 +2314,24 @@ function reviewCommentDigestParts(entries: unknown): unknown {
         typeof entry.author !== "string" ||
         !CLAWSWEEPER_BOT_AUTHORS.has(entry.author.toLowerCase()),
     )
-    .map((entry) => ({
-      author: entry.author ?? null,
-      authorAssociation: entry.authorAssociation ?? null,
-      body: entry.body ?? null,
-    }));
+    .map((entry) => {
+      const omitted = githubCount(entry.omitted);
+      if (omitted !== null) return { omitted };
+      return {
+        id: entry.id ?? null,
+        author: entry.author ?? null,
+        authorAssociation: entry.authorAssociation ?? null,
+        body: entry.body ?? null,
+      };
+    });
+}
+
+function reviewCommentContentRevision(entries: readonly unknown[]): string {
+  return sha256(stableJson(reviewCommentDigestParts(entries)));
+}
+
+export function reviewCommentContentRevisionForTest(entries: readonly unknown[]): string {
+  return reviewCommentContentRevision(entries);
 }
 
 function reviewTimelineDigestParts(entries: unknown): unknown {
@@ -2349,7 +2364,7 @@ function itemContentDigest(item: Item, context: ItemContext, git?: GitInfo): str
     stableJson({
       kind: item.kind,
       source: context.sourceRevision ?? null,
-      timeline: reviewTimelineDigestParts(context.timeline),
+      timeline: context.timelineRevision ?? reviewTimelineDigestParts(context.timeline),
       relations: {
         closingPullRequests: context.closingPullRequests ?? null,
         referencingMergedPullRequests: context.referencingMergedPullRequests ?? null,
@@ -2372,7 +2387,10 @@ function itemContentDigest(item: Item, context: ItemContext, git?: GitInfo): str
         : null,
       diff: isPull ? (context.pullFiles ?? null) : null,
       commits: isPull ? (context.pullCommits ?? null) : null,
-      reviewComments: isPull ? reviewCommentDigestParts(context.pullReviewComments) : null,
+      reviewComments: isPull
+        ? (context.pullReviewCommentsRevision ??
+          reviewCommentDigestParts(context.pullReviewComments))
+        : null,
     }),
   );
 }
@@ -6392,7 +6410,7 @@ function planCandidates(options: {
 
 function collectItemContext(
   item: Item,
-  options: { fullTimelineForRelations?: boolean } = {},
+  options: { fullTimelineForRelations?: boolean; reviewCacheDigest?: boolean } = {},
 ): ItemContext {
   const issue = ghJson<unknown>(["api", `repos/${targetRepo()}/issues/${item.number}`]);
   const issueRecord = asRecord(issue);
@@ -6412,6 +6430,10 @@ function collectItemContext(
     80,
   );
   const timeline = timelineWindow.items;
+  const fullTimeline =
+    timelineWindow.truncated && (options.fullTimelineForRelations || options.reviewCacheDigest)
+      ? ghPaged<unknown>(`repos/${targetRepo()}/issues/${item.number}/timeline`)
+      : null;
   const context: ItemContext = {
     issue: compactIssue(issue),
     sourceRevision: itemSourceRevisionSha256(issue, sourceRevisionComments),
@@ -6433,10 +6455,16 @@ function collectItemContext(
       timelineTruncated: timelineWindow.truncated,
     },
   };
+  if (options.reviewCacheDigest) {
+    context.timelineRevision = sha256(
+      stableJson(reviewTimelineDigestParts((fullTimeline ?? timeline).map(compactTimelineEvent))),
+    );
+  }
   if (previousClawSweeperReview) context.previousClawSweeperReview = previousClawSweeperReview;
   let pullRequest: unknown = null;
   let pullReviewComments: unknown[] | null = null;
   let filteredPullReviewComments: { included: unknown[]; filtered: number } | null = null;
+  let digestPullReviewComments: { included: unknown[]; filtered: number } | null = null;
   if (item.kind === "issue") {
     const closingPullRequests = closingPullRequestsForIssue(item.number);
     if (closingPullRequests.length > 0) {
@@ -6486,6 +6514,14 @@ function collectItemContext(
     );
     pullReviewComments = pullReviewCommentsWindow.items;
     filteredPullReviewComments = filterReviewContextComments(pullReviewComments, item.number);
+    const fullPullReviewComments =
+      options.reviewCacheDigest && pullReviewCommentsWindow.truncated
+        ? ghPaged<unknown>(`repos/${targetRepo()}/pulls/${item.number}/comments`)
+        : pullReviewComments;
+    digestPullReviewComments =
+      fullPullReviewComments === pullReviewComments
+        ? filteredPullReviewComments
+        : filterReviewContextComments(fullPullReviewComments, item.number);
     context.pullRequest = compactPullRequest(pullRequest);
     context.pullFiles = compactMappedWindow(pullFiles, pullFilesWindow.total, 80, compactPullFile);
     context.pullCommits = compactMappedWindow(
@@ -6500,6 +6536,11 @@ function collectItemContext(
       40,
       compactComment,
     );
+    if (options.reviewCacheDigest) {
+      context.pullReviewCommentsRevision = reviewCommentContentRevision(
+        digestPullReviewComments.included.map(compactComment),
+      );
+    }
     context.counts = {
       ...context.counts,
       comments: commentsWindow.total,
@@ -6523,10 +6564,7 @@ function collectItemContext(
       pullReviewCommentsFiltered: filteredPullReviewComments.filtered,
     };
   }
-  const relationTimeline =
-    options.fullTimelineForRelations && timelineWindow.truncated
-      ? ghPaged<unknown>(`repos/${targetRepo()}/issues/${item.number}/timeline`)
-      : timeline;
+  const relationTimeline = fullTimeline ?? timeline;
   const relatedOptions: Parameters<typeof relatedItemsContext>[0] = {
     item,
     issue,
@@ -6534,8 +6572,8 @@ function collectItemContext(
     timeline: relationTimeline,
   };
   if (pullRequest) relatedOptions.pullRequest = pullRequest;
-  if (filteredPullReviewComments)
-    relatedOptions.pullReviewComments = filteredPullReviewComments.included;
+  if (digestPullReviewComments)
+    relatedOptions.pullReviewComments = digestPullReviewComments.included;
   const relatedItems = relatedItemsContext(relatedOptions);
   if (relatedItems.length) {
     context.relatedItems = relatedItems;
@@ -16826,7 +16864,10 @@ function reviewCommand(args: Args): void {
         );
       }
       const contextStartedAt = Date.now();
-      const context = collectItemContext(item);
+      const context = collectItemContext(item, {
+        fullTimelineForRelations: true,
+        reviewCacheDigest: true,
+      });
       const contextElapsedMs = Date.now() - contextStartedAt;
       const contentDigest = itemContentDigest(item, context, git);
       const priorReview =

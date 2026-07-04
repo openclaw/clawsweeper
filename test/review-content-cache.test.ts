@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { reviewContentCacheHit } from "../dist/scheduler-policy.js";
-import { itemContentDigestForTest } from "../dist/clawsweeper.js";
+import {
+  itemContentDigestForTest,
+  reviewCommentContentRevisionForTest,
+} from "../dist/clawsweeper.js";
 import { item } from "./helpers.ts";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -219,6 +222,35 @@ test("content digest ignores PR review comment timestamp churn", () => {
     }),
   );
   assert.equal(a, b);
+});
+
+test("review comment revision covers comments outside the bounded prompt window", () => {
+  const comments = Array.from({ length: 81 }, (_, index) => ({
+    id: index + 1,
+    author: "maintainer",
+    authorAssociation: "MEMBER",
+    body: `comment ${index + 1}`,
+  }));
+  const changed = comments.map((comment, index) =>
+    index === 40 ? { ...comment, body: "middle comment edited" } : comment,
+  );
+  assert.notEqual(
+    reviewCommentContentRevisionForTest(comments),
+    reviewCommentContentRevisionForTest(changed),
+  );
+});
+
+test("content digest uses the full review-comment revision", () => {
+  const pull = item({ kind: "pull_request", number: 200 });
+  const a = itemContentDigestForTest(
+    pull,
+    pullContext({ pullReviewCommentsRevision: "review-comments-1" }),
+  );
+  const b = itemContentDigestForTest(
+    pull,
+    pullContext({ pullReviewCommentsRevision: "review-comments-2" }),
+  );
+  assert.notEqual(a, b);
 });
 
 const NOW = Date.parse("2026-07-01T00:00:00Z");
