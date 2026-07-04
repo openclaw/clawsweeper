@@ -790,7 +790,13 @@ test("planned background reviews allow safe content-cache reuse without weakenin
 
   assert.match(
     reviewJob,
-    /--item-numbers "\$\{\{ matrix\.item_numbers \}\}" \\\n+\s+--planned-automatic-review/,
+    /EXACT_ITEM: \$\{\{ github\.event\.client_payload\.item_number \|\| github\.event\.inputs\.item_number \|\| github\.event\.inputs\.item_numbers \|\| '' \}\}/,
+  );
+  assert.match(reviewJob, /if \[ -z "\$EXACT_ITEM" \]; then/);
+  assert.match(reviewJob, /planned_automatic_review_arg=\(--planned-automatic-review\)/);
+  assert.match(
+    reviewJob,
+    /--item-numbers "\$\{\{ matrix\.item_numbers \}\}" \\\n+\s+"\$\{planned_automatic_review_arg\[@\]\}"/,
   );
   assert.doesNotMatch(eventReviewJob, /--planned-automatic-review/);
 });
