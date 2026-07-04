@@ -349,6 +349,7 @@ interface ExistingReview {
   reviewPolicy: string | undefined;
   contentDigest: string | undefined;
   lastFullReviewAt: string | undefined;
+  lastFullReviewDecision: string | undefined;
 }
 
 interface LatestRelease {
@@ -5408,6 +5409,14 @@ function frontMatterBoolean(markdown: string, key: string): boolean {
   return /^true$/i.test(frontMatterValue(markdown, key) ?? "");
 }
 
+function reviewReportCanPromoteToClose(markdown: string): boolean {
+  return !frontMatterBoolean(markdown, "review_cache_hit");
+}
+
+export function reviewReportCanPromoteToCloseForTest(markdown: string): boolean {
+  return reviewReportCanPromoteToClose(markdown);
+}
+
 function existingReview(
   item: Pick<Item, "number" | "repo">,
   itemsDir: string,
@@ -5432,6 +5441,7 @@ function existingReview(
     reviewPolicy: frontMatterValue(markdown, "review_policy"),
     contentDigest: frontMatterValue(markdown, "review_content_digest"),
     lastFullReviewAt: frontMatterValue(markdown, "last_full_review_at"),
+    lastFullReviewDecision: frontMatterValue(markdown, "last_full_review_decision"),
   };
 }
 
@@ -5462,6 +5472,7 @@ function buildExistingReviewIndex(itemsDir: string): ExistingReviewIndex {
       reviewPolicy: frontMatterValue(markdown, "review_policy"),
       contentDigest: frontMatterValue(markdown, "review_content_digest"),
       lastFullReviewAt: frontMatterValue(markdown, "last_full_review_at"),
+      lastFullReviewDecision: frontMatterValue(markdown, "last_full_review_decision"),
     });
   }
   return { byKey };
@@ -13826,6 +13837,7 @@ function pullRequestClosePromotion(
   options: { reportDirs?: readonly string[] } = {},
 ): PullRequestClosePromotion | null {
   if (item.kind !== "pull_request") return null;
+  if (!reviewReportCanPromoteToClose(markdown)) return null;
   if (frontMatterValue(markdown, "decision") !== "keep_open") return null;
   if (frontMatterValue(markdown, "action_taken") !== "kept_open") return null;
   if (frontMatterValue(markdown, "review_status") !== "complete") return null;
@@ -16515,6 +16527,8 @@ local_checkout_access: verified
 item_snapshot_hash: ${options.snapshotHash}
 review_content_digest: ${options.contentDigest}
 last_full_review_at: ${reviewedAt}
+last_full_review_decision: ${options.decision.decision}
+review_cache_hit: false
 item_source_revision: ${options.context.sourceRevision ?? "unknown"}
 close_comment_sha256: ${options.action.closeComment ? sha256(options.action.closeComment) : "none"}
 review_comment_sha256: none
@@ -17078,6 +17092,7 @@ function reviewCommand(args: Args): void {
           "item_snapshot_hash",
           itemSnapshotHash(item, context),
         );
+        carried = replaceFrontMatterValue(carried, "review_cache_hit", "true");
         writeFileSync(reportPath, carried, "utf8");
         completed += 1;
         cacheHits += 1;
@@ -18045,7 +18060,8 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
       action === "kept_open" &&
       storedUpdatedAt &&
       item.updatedAt === storedUpdatedAt &&
-      livePullRequestHasNoDiff(currentItemContext())
+      livePullRequestHasNoDiff(currentItemContext()) &&
+      reviewReportCanPromoteToClose(markdown)
     ) {
       markdown = upgradeNoDiffPullRequestReport(markdown, item);
       closeReason = "duplicate_or_superseded";

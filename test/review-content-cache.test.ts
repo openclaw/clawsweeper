@@ -5,6 +5,7 @@ import { reviewContentCacheHit } from "../dist/scheduler-policy.js";
 import {
   itemContentDigestForTest,
   reviewCommentContentRevisionForTest,
+  reviewReportCanPromoteToCloseForTest,
 } from "../dist/clawsweeper.js";
 import { item } from "./helpers.ts";
 
@@ -270,6 +271,7 @@ function freshReview(overrides = {}) {
     decision: "keep_open",
     contentDigest: "digest-1",
     lastFullReviewAt: new Date(NOW - DAY_MS).toISOString(),
+    lastFullReviewDecision: "keep_open",
     ...overrides,
   };
 }
@@ -335,6 +337,28 @@ test("close verdict is never cached", () => {
   assert.equal(cacheHit({ review: freshReview({ decision: "close" }) }), false);
 });
 
+test("apply-rewritten close verdicts are never cached", () => {
+  assert.equal(
+    cacheHit({
+      review: freshReview({ decision: "keep_open", lastFullReviewDecision: "close" }),
+    }),
+    false,
+  );
+});
+
+test("reports without original-verdict provenance refresh once", () => {
+  assert.equal(cacheHit({ review: freshReview({ lastFullReviewDecision: undefined }) }), false);
+});
+
 test("verdict without a decision is never cached", () => {
   assert.equal(cacheHit({ review: freshReview({ decision: undefined }) }), false);
+});
+
+test("cache-carried reports cannot be promoted to close", () => {
+  assert.equal(reviewReportCanPromoteToCloseForTest("---\nreview_cache_hit: true\n---\n"), false);
+});
+
+test("fresh and legacy reports retain existing close promotion behavior", () => {
+  assert.equal(reviewReportCanPromoteToCloseForTest("---\nreview_cache_hit: false\n---\n"), true);
+  assert.equal(reviewReportCanPromoteToCloseForTest("---\ndecision: keep_open\n---\n"), true);
 });

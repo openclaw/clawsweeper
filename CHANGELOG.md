@@ -18,6 +18,7 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Changed
 
+- Reused unchanged scheduled keep-open reviews for up to 14 days while forcing fresh reviews after content, policy, target-head, or human-activity changes and before any close promotion. Thanks @yetval.
 - Expanded untargeted close-apply scans from 300 toward a capped 900 records after skip-heavy zero-close windows without changing close or worker limits. Thanks @brokemac79.
 - Made ClawHub diversion comments a practical self-serve handoff with package-shape, manifest, configuration, documentation, usage, and smoke-proof guidance. Thanks @brokemac79.
 - Reduced duplicate GitHub API reads in each live-dashboard status snapshot and batched recent automerge hydration into one GraphQL request with a REST fallback. Thanks @brokemac79.

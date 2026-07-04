@@ -18,6 +18,7 @@ export interface SchedulerExistingReview {
   decision?: string | undefined;
   contentDigest?: string | undefined;
   lastFullReviewAt?: string | undefined;
+  lastFullReviewDecision?: string | undefined;
 }
 
 export type SchedulerBucket =
@@ -156,6 +157,7 @@ export function reviewContentCacheHit(options: {
   const review = options.review;
   if (!review || review.reviewStatus !== "complete") return false;
   if (review.decision !== "keep_open") return false;
+  if (review.lastFullReviewDecision !== "keep_open") return false;
   if (hasReviewPolicyMismatch(review, options.reviewPolicy)) return false;
   if (!review.contentDigest || review.contentDigest !== options.contentDigest) return false;
   const lastFullReviewAt = timestampMs(review.lastFullReviewAt);
