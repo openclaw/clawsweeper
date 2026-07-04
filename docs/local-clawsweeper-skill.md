@@ -17,6 +17,11 @@ From a ClawSweeper checkout, ask Codex:
 Use $local-clawsweeper-review to run a local ClawSweeper review for PR <number>.
 ```
 
+For a full proof-aware review before a PR exists, ask it to review the current
+clean branch with `--local-range`. That path reviews committed work against a
+base ref without reading or writing GitHub; the Codex model call itself still
+uses its configured network service.
+
 To make the skill available outside this checkout, copy it into your Codex user
 skills directory.
 

@@ -598,6 +598,30 @@ pnpm run review -- --local-only \
   --target-dir ../target-checkout
 ```
 
+Pre-submission committed-range review uses the same full proof-aware review
+without requiring an open GitHub item. From the clean checkout containing the
+branch to review:
+
+```bash
+pnpm run review -- --local-range \
+  --target-repo openclaw/clawsweeper \
+  --base origin/main
+```
+
+Without `--target-dir`, `--local-range` reviews the checkout where the command
+was invoked. Pass `--target-dir <path>` when invoking ClawSweeper from a
+different checkout. The range is `merge-base(<base>, HEAD)..HEAD`, includes
+committed work only, and refuses a dirty working tree. `--body-file` can supply
+the proposed PR body and `--additional-policy` can layer an extra local policy.
+
+This mode withholds GitHub token variables, points `gh` at an empty config
+directory inside the run artifacts, disables Codex web search, skips host-side
+URL/media preprocessing, and makes no GitHub reads or writes. It is not
+air-gapped: the Codex model invocation still uses its configured network
+service. Reports use a unique
+`.git/clawsweeper/reviews/local-range-<time>-<pid>/` directory so the default
+run leaves the checkout clean. `--artifact-dir` overrides that location.
+
 Read the report at `artifacts/local-review-<number>/<number>.md`. Key fields are
 `review_status`, `main_sha`, `pull_head_sha`, `decision`, `confidence`, and
 `Review Findings`. Do not run `apply-artifacts` or `apply-decisions` unless you
