@@ -6569,8 +6569,9 @@ function collectItemContext(
     timeline: relationTimeline,
   };
   if (pullRequest) relatedOptions.pullRequest = pullRequest;
-  if (digestPullReviewComments)
-    relatedOptions.pullReviewComments = digestPullReviewComments.included;
+  const relatedPullReviewComments = digestPullReviewComments ?? filteredPullReviewComments;
+  if (relatedPullReviewComments)
+    relatedOptions.pullReviewComments = relatedPullReviewComments.included;
   const relatedItems = relatedItemsContext(relatedOptions);
   if (relatedItems.length) {
     context.relatedItems = relatedItems;
