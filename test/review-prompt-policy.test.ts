@@ -303,6 +303,13 @@ test("decision schema keeps draft and protected workflow state out of PR rank", 
   );
 });
 
+test("review finding schema requires every structured-output property", () => {
+  const schema = JSON.parse(readFileSync("schema/clawsweeper-decision.schema.json", "utf8"));
+  const finding = schema.properties.reviewFindings.items;
+
+  assert.deepEqual([...finding.required].sort(), Object.keys(finding.properties).sort());
+});
+
 test("review prompt and schema describe positive-only feature showcase labels", () => {
   const prompt = readFileSync("prompts/review-item.md", "utf8");
   const schema = JSON.parse(readFileSync("schema/clawsweeper-decision.schema.json", "utf8"));

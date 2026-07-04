@@ -509,7 +509,8 @@
           "confidenceScore",
           "file",
           "lineStart",
-          "lineEnd"
+          "lineEnd",
+          "lateFinding"
         ],
         "properties": {
           "title": {
@@ -544,7 +545,7 @@
           },
           "lateFinding": {
             "type": "boolean",
-            "description": "True when this finding targets code unchanged since an earlier reviewed head where the concern was equally visible but was not raised. Omit or use false for findings introduced by new commits or newly available evidence."
+            "description": "True when this finding targets code unchanged since an earlier reviewed head where the concern was equally visible but was not raised. Use false for findings introduced by new commits or newly available evidence."
           }
         }
       }
