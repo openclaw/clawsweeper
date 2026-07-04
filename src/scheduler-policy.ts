@@ -15,6 +15,8 @@ export interface SchedulerExistingReview {
   labelsSyncedAt?: string | undefined;
   reviewStatus?: string | undefined;
   reviewPolicy?: string | undefined;
+  decision?: string | undefined;
+  mainSha?: string | undefined;
   contentDigest?: string | undefined;
   lastFullReviewAt?: string | undefined;
 }
@@ -147,6 +149,7 @@ export function reviewContentCacheHit(options: {
   review: SchedulerExistingReview | null;
   reviewPolicy: string | undefined;
   contentDigest: string;
+  currentMainSha?: string | undefined;
   now?: number;
   explicitDispatch: boolean;
   maintainerRequest: boolean;
@@ -156,6 +159,12 @@ export function reviewContentCacheHit(options: {
   if (!review || review.reviewStatus !== "complete") return false;
   if (hasReviewPolicyMismatch(review, options.reviewPolicy)) return false;
   if (!review.contentDigest || review.contentDigest !== options.contentDigest) return false;
+  if (
+    review.decision === "close" &&
+    (!review.mainSha || review.mainSha !== options.currentMainSha)
+  ) {
+    return false;
+  }
   const lastFullReviewAt = timestampMs(review.lastFullReviewAt);
   if (lastFullReviewAt === null) return false;
   const now = options.now ?? Date.now();
