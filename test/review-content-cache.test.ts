@@ -158,6 +158,7 @@ function freshReview(overrides = {}) {
   return {
     reviewStatus: "complete",
     reviewPolicy: "policy-1",
+    decision: "keep_open",
     contentDigest: "digest-1",
     lastFullReviewAt: new Date(NOW - DAY_MS).toISOString(),
     ...overrides,
@@ -217,39 +218,14 @@ test("cache misses when the prior review predates the digest field", () => {
   assert.equal(cacheHit({ review: freshReview({ contentDigest: undefined }) }), false);
 });
 
-test("close verdict cache hits when target-branch state is unchanged", () => {
-  assert.equal(
-    cacheHit({
-      review: freshReview({ decision: "close", mainSha: "main-1" }),
-      currentMainSha: "main-1",
-    }),
-    true,
-  );
+test("keep-open verdict is cache eligible", () => {
+  assert.equal(cacheHit({ review: freshReview({ decision: "keep_open" }) }), true);
 });
 
-test("close verdict cache misses when the target branch moved", () => {
-  assert.equal(
-    cacheHit({
-      review: freshReview({ decision: "close", mainSha: "main-1" }),
-      currentMainSha: "main-2",
-    }),
-    false,
-  );
+test("close verdict is never cached", () => {
+  assert.equal(cacheHit({ review: freshReview({ decision: "close" }) }), false);
 });
 
-test("close verdict cache misses when the prior review has no target-branch sha", () => {
-  assert.equal(
-    cacheHit({ review: freshReview({ decision: "close" }), currentMainSha: "main-1" }),
-    false,
-  );
-});
-
-test("keep-open verdict cache hits despite target-branch movement", () => {
-  assert.equal(
-    cacheHit({
-      review: freshReview({ decision: "keep_open", mainSha: "main-1" }),
-      currentMainSha: "main-2",
-    }),
-    true,
-  );
+test("verdict without a decision is never cached", () => {
+  assert.equal(cacheHit({ review: freshReview({ decision: undefined }) }), false);
 });
