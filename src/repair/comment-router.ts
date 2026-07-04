@@ -89,6 +89,7 @@ import {
   dispatchClaimDecision,
   dispatchClaimLookupKeys,
   dispatchReceiptKeyMaterial,
+  hasSuccessfulDispatchExecutionJob,
   issueNumberFromUrl,
   isAllowedMutationActor,
   isGitHubAppIntegrationAuthError,
@@ -354,21 +355,29 @@ function claimDispatchCommands(commands: LooseRecord[]) {
   const claims = commands
     .filter(commandNeedsDurableDispatchClaim)
     .filter((command) => !priorDispatchClaim(command))
-    .map((command) => ({
-      ...command,
-      processed_at: command.processed_at ?? processedAt,
-      status: "claimed",
-      actions: Array.isArray(command.actions)
-        ? command.actions.map((action: JsonValue) =>
-            actionNeedsDurableDispatchClaim(action) ? { ...action, status: "claimed" } : action,
-          )
-        : command.actions,
-    }));
-  const changed = appendLedger(ledger, claims);
-  for (const claim of claims) {
-    for (const key of dispatchClaimLookupKeys(claim)) priorDispatchClaims.set(key, claim);
-  }
-  return changed;
+    .map((command) => dispatchClaimEntry(command, processedAt));
+  return appendLedger(ledger, claims);
+}
+
+function dispatchClaimEntry(command: LooseRecord, processedAt: string) {
+  command.processed_at = processedAt;
+  return {
+    ...command,
+    processed_at: processedAt,
+    status: "claimed",
+    actions: Array.isArray(command.actions)
+      ? command.actions.map((action: JsonValue) =>
+          actionNeedsDurableDispatchClaim(action) ? { ...action, status: "claimed" } : action,
+        )
+      : command.actions,
+  };
+}
+
+function refreshDispatchClaim(command: LooseRecord) {
+  const claim = dispatchClaimEntry(command, new Date().toISOString());
+  appendLedger(ledger, [claim]);
+  writeLedger(ledgerPath(), ledger);
+  for (const key of dispatchClaimLookupKeys(claim)) priorDispatchClaims.set(key, claim);
 }
 
 function commandNeedsDurableDispatchClaim(command: LooseRecord) {
@@ -437,13 +446,32 @@ function claimedDispatchState({
       reason: `waiting to verify the previous dispatch claim: ${compactText(ghErrorText(error), 300)}`,
     };
   }
+  let verifiedRuns: LooseRecord[];
+  try {
+    verifiedRuns = verifyDispatchExecutionRuns({
+      claim,
+      runs,
+      repo,
+      workflowName,
+      expectedTitle,
+    });
+  } catch (error) {
+    return {
+      status: "claimed",
+      dispatch_key: dispatchReceiptKey(command),
+      reason: `waiting to verify the previous dispatch execution: ${compactText(ghErrorText(error), 300)}`,
+    };
+  }
   const decision = dispatchClaimDecision({
     claim,
-    runs,
+    runs: verifiedRuns,
     expectedTitle,
     graceMs: dispatchClaimGraceMs(),
   });
-  if (decision.action === "dispatch") return null;
+  if (decision.action === "dispatch") {
+    refreshDispatchClaim(command);
+    return null;
+  }
   if (decision.action === "wait") {
     return {
       status: "claimed",
@@ -460,6 +488,54 @@ function claimedDispatchState({
     run_url: run.html_url ?? run.url ?? null,
     event: run.event ?? null,
   };
+}
+
+function verifyDispatchExecutionRuns({
+  claim,
+  runs,
+  repo,
+  workflowName,
+  expectedTitle,
+}: {
+  claim: LooseRecord;
+  runs: LooseRecord[];
+  repo: string;
+  workflowName: string;
+  expectedTitle: string;
+}) {
+  const requiredJobName =
+    workflowName === "assist.yml"
+      ? "assist"
+      : workflowName === "repair-cluster-worker.yml"
+        ? "Plan and review cluster"
+        : null;
+  if (!requiredJobName) return runs;
+  const claimedAtMs = Date.parse(String(claim.processed_at ?? ""));
+  return runs.map((run) => {
+    const createdAtMs = Date.parse(String(run.created_at ?? run.createdAt ?? ""));
+    if (
+      String(run.display_title ?? run.displayTitle ?? "") !== expectedTitle ||
+      String(run.conclusion ?? "").toLowerCase() !== "success" ||
+      !Number.isFinite(claimedAtMs) ||
+      !Number.isFinite(createdAtMs) ||
+      createdAtMs < claimedAtMs - 5_000
+    ) {
+      return run;
+    }
+    const runId = Number(run.id ?? run.databaseId ?? 0);
+    if (!Number.isInteger(runId) || runId <= 0) {
+      return { ...run, dispatch_execution_verified: false };
+    }
+    const response = ghJson<LooseRecord>(
+      ["api", "--method", "GET", `repos/${repo}/actions/runs/${runId}/jobs?per_page=100`],
+      { env: dispatchTokenEnv() },
+    );
+    const jobs = Array.isArray(response.jobs) ? response.jobs : [];
+    return {
+      ...run,
+      dispatch_execution_verified: hasSuccessfulDispatchExecutionJob(jobs, requiredJobName),
+    };
+  });
 }
 
 function dispatchClaimGraceMs() {
@@ -2288,7 +2364,7 @@ function repairJobModeForCommand(command: LooseRecord) {
 }
 
 function dispatchClawSweeperReview(command: LooseRecord): LooseRecord {
-  const dispatchKey = dispatchReceiptKey(command);
+  let dispatchKey = dispatchReceiptKey(command);
   const expectedTitle = `Review event item ${command.repo}#${command.issue_number} [${dispatchKey}]`;
   const claimed = claimedDispatchState({
     command,
@@ -2297,6 +2373,7 @@ function dispatchClawSweeperReview(command: LooseRecord): LooseRecord {
     expectedTitle,
   });
   if (claimed) return { ...claimed, workflow: reviewWorkflow, repo: reviewRepo };
+  dispatchKey = dispatchReceiptKey(command);
   const reviewBudget =
     command.target?.kind === "pull_request"
       ? adaptiveReviewBudgetForPullRequest(command.target)
@@ -2351,7 +2428,7 @@ function dispatchClawSweeperReview(command: LooseRecord): LooseRecord {
 }
 
 function dispatchClawSweeperAssist(command: LooseRecord): LooseRecord {
-  const dispatchKey = dispatchReceiptKey(command);
+  let dispatchKey = dispatchReceiptKey(command);
   const workflowName = "assist.yml";
   const expectedTitle = `Assist ${command.repo}#${command.issue_number} [${dispatchKey}]`;
   const claimed = claimedDispatchState({
@@ -2361,6 +2438,7 @@ function dispatchClawSweeperAssist(command: LooseRecord): LooseRecord {
     expectedTitle,
   });
   if (claimed) return { ...claimed, workflow: workflowName, repo: reviewRepo };
+  dispatchKey = dispatchReceiptKey(command);
   const baseDispatchPayload = buildClawSweeperAssistDispatchPayload(command);
   const dispatchPayload = {
     ...baseDispatchPayload,
@@ -2422,7 +2500,7 @@ function freeformReviewPrompt(command: LooseRecord): string {
 }
 
 function dispatchRepair(command: LooseRecord) {
-  const dispatchKey = dispatchReceiptKey(command);
+  let dispatchKey = dispatchReceiptKey(command);
   const expectedTitle = repairRunNameForJob(
     command.target.job_path,
     automergeRunNamePrefix,
@@ -2446,6 +2524,7 @@ function dispatchRepair(command: LooseRecord) {
       model,
     };
   }
+  dispatchKey = dispatchReceiptKey(command);
   const activeRun = activeRepairRunForCommand(command);
   if (activeRun) {
     return {

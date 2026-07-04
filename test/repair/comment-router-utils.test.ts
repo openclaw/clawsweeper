@@ -7,6 +7,7 @@ import {
   dispatchClaimDecision,
   dispatchClaimLookupKeys,
   dispatchReceiptKeyMaterial,
+  hasSuccessfulDispatchExecutionJob,
   isGitHubAppIntegrationAuthError,
   isAllowedMutationActor,
   normalizeGitHubActor,
@@ -344,6 +345,76 @@ test("dispatch claim recovery prefers an older success over a newer cancelled du
     }),
     { action: "recover", run: successfulRun },
   );
+});
+
+test("dispatch claims ignore receipt-only duplicate successes", () => {
+  const expectedTitle = "Assist openclaw/openclaw#74499 [router-abc]";
+  assert.deepEqual(
+    dispatchClaimDecision({
+      claim: { processed_at: "2026-04-29T03:01:00Z" },
+      runs: [
+        {
+          id: 991,
+          display_title: expectedTitle,
+          created_at: "2026-04-29T03:01:02Z",
+          status: "completed",
+          conclusion: "failure",
+        },
+        {
+          id: 992,
+          display_title: expectedTitle,
+          created_at: "2026-04-29T03:02:00Z",
+          status: "completed",
+          conclusion: "success",
+          dispatch_execution_verified: false,
+        },
+      ],
+      expectedTitle,
+      nowMs: Date.parse("2026-04-29T03:10:00Z"),
+      graceMs: 300_000,
+    }),
+    { action: "dispatch", run: null },
+  );
+});
+
+test("dispatch execution verification requires the real worker job to succeed", () => {
+  assert.equal(
+    hasSuccessfulDispatchExecutionJob(
+      [
+        { name: "Deduplicate command dispatch receipt", conclusion: "success" },
+        { name: "assist", conclusion: "skipped" },
+      ],
+      "assist",
+    ),
+    false,
+  );
+  assert.equal(
+    hasSuccessfulDispatchExecutionJob(
+      [
+        { name: "Deduplicate command dispatch receipt", conclusion: "success" },
+        { name: "assist", conclusion: "success" },
+      ],
+      "assist",
+    ),
+    true,
+  );
+});
+
+test("appendLedger refreshes a stale dispatch claim before retry", () => {
+  const ledger = { updated_at: null, commands: [] };
+  const base = {
+    idempotency_key: "claim-before-dispatch",
+    comment_id: "125",
+    comment_version_key: "125:2026-04-29T03:01:00Z",
+    status: "claimed",
+    intent: "clawsweeper_re_review",
+    actions: [{ action: "dispatch_clawsweeper", status: "claimed" }],
+  };
+  appendLedger(ledger, [{ ...base, processed_at: "2026-04-29T03:01:00Z" }]);
+  appendLedger(ledger, [{ ...base, processed_at: "2026-04-29T03:10:00Z" }]);
+
+  assert.equal(ledger.commands.length, 1);
+  assert.equal(ledger.commands[0]?.processed_at, "2026-04-29T03:10:00Z");
 });
 
 test("stale dispatch claims without an exact receipt become retryable", () => {

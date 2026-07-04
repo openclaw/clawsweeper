@@ -32,6 +32,14 @@ export function dispatchReceiptKeyMaterial(entry: LooseRecord, claim: LooseRecor
   return `${idempotencyKey}:${attempt}`;
 }
 
+export function hasSuccessfulDispatchExecutionJob(jobs: LooseRecord[], requiredJobName: string) {
+  return jobs.some(
+    (job) =>
+      String(job.name ?? "") === requiredJobName &&
+      String(job.conclusion ?? "").toLowerCase() === "success",
+  );
+}
+
 export function summarizeChecks(checks: LooseRecord[]) {
   const ignored = ignoredCheckNames();
   const latestChecks = latestCheckRuns(checks);
@@ -160,7 +168,9 @@ export function dispatchClaimDecision({
     );
   });
   const successfulRun = matchingRuns.find(
-    (run) => String(run.conclusion ?? "").toLowerCase() === "success",
+    (run) =>
+      String(run.conclusion ?? "").toLowerCase() === "success" &&
+      run.dispatch_execution_verified !== false,
   );
   if (successfulRun) return { action: "recover", run: successfulRun };
   const activeRun = matchingRuns.find((run) =>
@@ -375,7 +385,10 @@ function isNoopSkip(entry: LooseRecord) {
 }
 
 function stableLedgerEntry(entry: LooseRecord) {
-  return JSON.stringify({ ...entry, processed_at: null });
+  return JSON.stringify({
+    ...entry,
+    processed_at: entry.status === "claimed" ? entry.processed_at : null,
+  });
 }
 
 function ledgerEntryKey(entry: LooseRecord) {

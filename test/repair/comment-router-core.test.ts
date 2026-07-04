@@ -1481,6 +1481,12 @@ test("comment router durably claims dispatch commands and recovers exact workflo
   assert.match(claimFunction, /commandHasAction\(command,\s*"dispatch_repair"\)/);
   assert.match(claimFunction, /commandHasAction\(command,\s*"dispatch_assist"\)/);
   assert.match(source, /function claimedDispatchState/);
+  assert.match(source, /function refreshDispatchClaim/);
+  assert.match(source, /writeLedger\(ledgerPath\(\), ledger\)/);
+  assert.match(source, /function verifyDispatchExecutionRuns/);
+  assert.match(source, /actions\/runs\/\$\{runId\}\/jobs\?per_page=100/);
+  assert.match(source, /Plan and review cluster/);
+  assert.match(source, /dispatch_execution_verified/);
   assert.match(source, /dispatchClaimDecision\(\{/);
   assert.match(source, /dispatchClaimLookupKeys\(entry\)/);
   assert.match(claimFunction, /dispatchClaimLookupKeys\(command\)/);
