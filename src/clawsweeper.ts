@@ -3630,23 +3630,6 @@ function previousReviewProofStatus(body: string): string {
   return firstMergeReadinessLine(body, "Proof:");
 }
 
-function previousReviewFindings(body: string): Array<{ priority: string; title: string }> {
-  return body
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .flatMap((line) => {
-      if (!line.startsWith("- [P")) return [];
-      const close = line.indexOf("]");
-      if (close < 5) return [];
-      const priority = line.slice(3, close);
-      if (!/^P[0-3]$/.test(priority)) return [];
-      const rest = line.slice(close + 1).trim();
-      const dash = minNonNegative([rest.indexOf(" - "), rest.indexOf(" — ")]);
-      const title = (dash < 0 ? rest : rest.slice(0, dash)).trim();
-      return title ? [{ priority, title }] : [];
-    });
-}
-
 function reviewHistoryFindings(
   cycle: ReviewHistoryCycle | undefined,
 ): Array<{ priority: string; title: string }> {
@@ -3689,9 +3672,7 @@ function extractLatestClawSweeperReview(
     nextStep:
       firstNonEmptyLine(markdownSection(body, "Next step before merge")) ||
       firstNonEmptyLine(markdownSection(body, "Next step")),
-    findings: currentCycle
-      ? previousReviewFindings(body)
-      : reviewHistoryFindings(latestCompletedCycle),
+    findings: reviewHistoryFindings(latestCompletedCycle),
     earlierReviewCycles,
     completedReviewCycles: history.totalCompletedCycles + (currentCycle ? 1 : 0),
     commentId: comment.id,

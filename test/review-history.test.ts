@@ -445,7 +445,19 @@ test("latest review extraction exposes earlier cycles and a cycle count", () => 
     ],
     totalCompletedCycles: 1,
   });
-  const body = `${previousDurableComment()}\n\n${ledger}`;
+  const currentComment = previousDurableComment().replace(
+    "**Review findings**",
+    [
+      "**Risk before merge**",
+      "- [P1] Durable comments are compatibility-sensitive.",
+      "",
+      "**Next step before merge**",
+      "- [P2] Ask a maintainer to accept the ledger contract.",
+      "",
+      "**Review findings**",
+    ].join("\n"),
+  );
+  const body = `${currentComment}\n\n${ledger}`;
   const review = extractLatestClawSweeperReviewForTest(
     [
       {
@@ -464,6 +476,9 @@ test("latest review extraction exposes earlier cycles and a cycle count", () => 
   assert.equal(review?.completedReviewCycles, 2);
   assert.equal(review?.earlierReviewCycles.length, 1);
   assert.equal(review?.earlierReviewCycles[0]?.sha, "aaa111");
+  assert.deepEqual(review?.findings, [
+    { priority: "P1", title: "Drop the stale cache before rebuild" },
+  ]);
 });
 
 test("stale durable comments expose the latest completed cycle from preserved history", () => {
