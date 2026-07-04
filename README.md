@@ -155,6 +155,10 @@ ClawSweeper may propose a close only when the item is clearly one of these:
 - better suited for ClawHub skill/plugin work than core
 - duplicate or superseded by a canonical issue/PR
 - low-signal pull request whose branch is mostly unrelated or unmergeable churn
+- external low-rated pull request whose requested real-behavior proof never
+  arrived and whose branch has been idle for 14+ days
+- external pull request abandoned for 30+ days as a draft, waiting on its
+  author, or failing checks on its live head
 - concrete but not actionable in this source repo
 - incoherent enough that no action can be taken
 - stale issue older than 60 days with too little data to verify
@@ -386,8 +390,8 @@ still valid.
 Apply wakes every 15 minutes, no-ops when there are no unchanged
 high-confidence close proposals, and narrows scheduled runs to the currently
 eligible proposal list so idle runs do not scan unrelated keep-open records.
-It defaults to all item kinds, no age floor, a 2-second close delay, and 5
-fresh closes per checkpoint, with a hard cap of 5 to keep each GitHub App
+It defaults to all item kinds, no age floor, a 2-second close delay, and 20
+fresh closes per checkpoint, with a hard cap of 20 to keep each GitHub App
 token within its lifetime. After a checkpoint closes at least one item, it
 queues another apply run with a fresh token; a saturated scan that closes
 nothing stops and waits for the next scheduled tick instead of self-dispatching

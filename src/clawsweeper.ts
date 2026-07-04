@@ -255,6 +255,8 @@ type CloseReason =
   | "clawhub"
   | "duplicate_or_superseded"
   | "low_signal_unmergeable_pr"
+  | "stalled_unproven_pr"
+  | "abandoned_pr"
   | "unconfirmed_product_direction"
   | "not_actionable_in_repo"
   | "incoherent"
@@ -1099,6 +1101,10 @@ const WEEKLY_REVIEW_DAYS = 7;
 const STALE_INSUFFICIENT_INFO_MIN_AGE_DAYS = 60;
 const UNCONFIRMED_PRODUCT_DIRECTION_MIN_AGE_DAYS = 14;
 const UNCONFIRMED_PRODUCT_DIRECTION_MIN_INACTIVE_DAYS = 7;
+const STALLED_UNPROVEN_PR_MIN_AGE_DAYS = 14;
+const STALLED_UNPROVEN_PR_MIN_INACTIVE_DAYS = 14;
+const ABANDONED_PR_MIN_AGE_DAYS = 30;
+const ABANDONED_PR_MIN_INACTIVE_DAYS = 30;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const RECENT_MISSING_OPEN_MS = DAY_MS;
 const DEFAULT_CODEX_MODEL = PUBLIC_CODEX_MODEL;
@@ -1106,7 +1112,7 @@ const DEFAULT_REASONING_EFFORT = "high";
 const DEFAULT_SERVICE_TIER = "";
 const DEFAULT_REVIEW_CODEX_TIMEOUT_MS = 1_200_000;
 const DEFAULT_CODEX_FALLBACK_MIN_BUDGET_MS = 120_000;
-const REVIEW_POLICY_VERSION = "2026-06-15-policy-v22";
+const REVIEW_POLICY_VERSION = "2026-07-04-policy-v23";
 const REVIEW_ITEM_PROMPT_PATH = join(ROOT, "prompts", "review-item.md");
 const CLAWSWEEPER_DECISION_SCHEMA_PATH = join(ROOT, "schema", "clawsweeper-decision.schema.json");
 const MATURITY_STABLE_SHORTLIST_SCRIPT_PATH = join(
@@ -1126,12 +1132,13 @@ const AUTOMERGE_LABEL = "clawsweeper:automerge";
 const AUTOFIX_LABEL = "clawsweeper:autofix";
 const HUMAN_REVIEW_LABEL = "clawsweeper:human-review";
 const MANUAL_ONLY_LABEL = "clawsweeper:manual-only";
-const UNCONFIRMED_PRODUCT_DIRECTION_EXEMPT_LABELS = new Set([
+const PR_AUTO_CLOSE_EXEMPT_LABELS = new Set([
   HUMAN_REVIEW_LABEL,
   MANUAL_ONLY_LABEL,
   AUTOMERGE_LABEL,
   AUTOFIX_LABEL,
 ]);
+const WAITING_ON_AUTHOR_LABEL = "status: ⏳ waiting on author";
 const PROOF_OVERRIDE_LABEL = "proof: override";
 const PROOF_SUFFICIENT_LABEL = "proof: sufficient";
 const PROOF_NUDGE_MARKER_PREFIX = "<!-- clawsweeper-proof-nudge";
@@ -1551,6 +1558,8 @@ const ALLOWED_REASONS = new Set<CloseReason>([
   "clawhub",
   "duplicate_or_superseded",
   "low_signal_unmergeable_pr",
+  "stalled_unproven_pr",
+  "abandoned_pr",
   "unconfirmed_product_direction",
   "not_actionable_in_repo",
   "incoherent",
@@ -3289,7 +3298,7 @@ function unconfirmedProductDirectionApplyBlockReason(
   if (ageBlock) return ageBlock;
   const exemptLabel = item.labels
     .map(normalizeLabelName)
-    .find((label) => UNCONFIRMED_PRODUCT_DIRECTION_EXEMPT_LABELS.has(label));
+    .find((label) => PR_AUTO_CLOSE_EXEMPT_LABELS.has(label));
   if (exemptLabel) return `${exemptLabel} exempts this PR from product-direction auto-close`;
 
   const issue = ghJson<{ assignees?: unknown[] }>([
@@ -3339,6 +3348,251 @@ function unconfirmedProductDirectionApplyBlockReasonSafe(
     return unconfirmedProductDirectionApplyBlockReason(number, item, reviewedUpdatedAt, reviewedAt);
   } catch (error) {
     return `product-direction calibration check failed: ${
+      error instanceof Error ? error.message : String(error)
+    }`;
+  }
+}
+
+function pullRequestHumanEngagementBlockReason(number: number): string | null {
+  const issue = ghJson<{ assignees?: unknown[] }>([
+    "api",
+    `repos/${targetRepo()}/issues/${number}`,
+    "--jq",
+    "{assignees:[.assignees[]? | {login:.login}]}",
+  ]);
+  if ((issue.assignees ?? []).length > 0) return "assigned PR has active human signal";
+
+  const pull = ghJson<{ requested_reviewers?: unknown[]; requested_teams?: unknown[] }>([
+    "api",
+    `repos/${targetRepo()}/pulls/${number}`,
+    "--jq",
+    "{requested_reviewers:[.requested_reviewers[]? | {login:.login}],requested_teams:[.requested_teams[]? | {slug:.slug}]}",
+  ]);
+  if ((pull.requested_reviewers ?? []).length > 0 || (pull.requested_teams ?? []).length > 0) {
+    return "requested reviewers or teams indicate active review signal";
+  }
+
+  const maintainerComments = maintainerAssociatedEntries(
+    ghPaged<unknown>(`repos/${targetRepo()}/issues/${number}/comments`),
+  );
+  if (maintainerComments.length > 0) return "maintainer issue comment blocks inactivity auto-close";
+
+  const maintainerReviews = maintainerAssociatedEntries(
+    ghPaged<unknown>(`repos/${targetRepo()}/pulls/${number}/reviews`),
+  );
+  if (maintainerReviews.length > 0) return "maintainer PR review blocks inactivity auto-close";
+
+  const maintainerInlineComments = maintainerAssociatedEntries(
+    ghPaged<unknown>(`repos/${targetRepo()}/pulls/${number}/comments`),
+  );
+  if (maintainerInlineComments.length > 0) {
+    return "maintainer inline review comment blocks inactivity auto-close";
+  }
+  return null;
+}
+
+interface PullRequestLiveActivity {
+  draft: boolean;
+  headSha: string;
+  headActivityAtMs: number | null;
+  headChecksFailing: boolean;
+}
+
+const FAILING_CHECK_RUN_CONCLUSIONS = new Set(["failure", "timed_out"]);
+
+// Committer dates alone under-report activity: a contributor can push an old
+// commit, so the inactivity clock also observes status/check-run timestamps,
+// which CI refreshes on every push. Missing data keeps the PR open.
+function pullRequestLiveActivity(number: number): PullRequestLiveActivity {
+  const pull = ghJson<{ draft?: boolean; head?: { sha?: string } }>([
+    "api",
+    `repos/${targetRepo()}/pulls/${number}`,
+  ]);
+  const headSha = typeof pull.head?.sha === "string" ? pull.head.sha : "";
+  let headActivityAtMs: number | null = null;
+  let headChecksFailing = false;
+  const observe = (value: unknown): void => {
+    const ms = Date.parse(typeof value === "string" ? value : "");
+    if (Number.isFinite(ms) && (headActivityAtMs === null || ms > headActivityAtMs)) {
+      headActivityAtMs = ms;
+    }
+  };
+  if (headSha) {
+    const commit = ghJson<{ commit?: { committer?: { date?: string } } }>([
+      "api",
+      `repos/${targetRepo()}/commits/${headSha}`,
+    ]);
+    observe(commit.commit?.committer?.date);
+    const combined = ghJson<{ state?: string; statuses?: unknown[] }>([
+      "api",
+      `repos/${targetRepo()}/commits/${headSha}/status`,
+    ]);
+    if (combined.state === "failure" || combined.state === "error") headChecksFailing = true;
+    for (const status of combined.statuses ?? []) {
+      const record = asRecord(status);
+      observe(record.updated_at);
+      observe(record.created_at);
+    }
+    const checks = ghJson<{ check_runs?: unknown[] }>([
+      "api",
+      `repos/${targetRepo()}/commits/${headSha}/check-runs?per_page=100`,
+    ]);
+    for (const run of checks.check_runs ?? []) {
+      const record = asRecord(run);
+      if (
+        typeof record.conclusion === "string" &&
+        FAILING_CHECK_RUN_CONCLUSIONS.has(record.conclusion)
+      ) {
+        headChecksFailing = true;
+      }
+      observe(record.started_at);
+      observe(record.completed_at);
+    }
+  }
+  return { draft: pull.draft === true, headSha, headActivityAtMs, headChecksFailing };
+}
+
+function prAutoCloseExemptLabel(labels: readonly string[]): string | undefined {
+  return labels.map(normalizeLabelName).find((label) => PR_AUTO_CLOSE_EXEMPT_LABELS.has(label));
+}
+
+export function stalledUnprovenPrAgeSkipReason(
+  item: Pick<Item, "createdAt">,
+  now = Date.now(),
+): string | null {
+  if (!isOlderThanDays(item.createdAt, STALLED_UNPROVEN_PR_MIN_AGE_DAYS, now)) {
+    return `stalled_unproven_pr requires PR older than ${STALLED_UNPROVEN_PR_MIN_AGE_DAYS} days`;
+  }
+  return null;
+}
+
+const STALLED_PROOF_REQUEST_LABELS = new Set([
+  "triage: needs-real-behavior-proof",
+  "status: 📣 needs proof",
+]);
+
+// The durable review comment is edited in place, so its created_at cannot
+// date the proof ask. Only immutable signals count: needs-proof label
+// timeline events and proof-nudge comment creation times.
+export function stalledUnprovenProofRequestBlockReason(
+  number: number,
+  now = Date.now(),
+): string | null {
+  let earliestRequestAtMs: number | null = null;
+  const observe = (value: unknown): void => {
+    const ms = Date.parse(typeof value === "string" ? value : "");
+    if (Number.isFinite(ms) && (earliestRequestAtMs === null || ms < earliestRequestAtMs)) {
+      earliestRequestAtMs = ms;
+    }
+  };
+  for (const event of ghPaged<unknown>(`repos/${targetRepo()}/issues/${number}/timeline`)) {
+    const record = asRecord(event);
+    if (record.event !== "labeled") continue;
+    const labelName = asRecord(record.label).name;
+    if (typeof labelName !== "string") continue;
+    if (!STALLED_PROOF_REQUEST_LABELS.has(normalizeLabelName(labelName))) continue;
+    observe(record.created_at);
+  }
+  for (const comment of ghPaged<unknown>(`repos/${targetRepo()}/issues/${number}/comments`)) {
+    const record = asRecord(comment);
+    const body = typeof record.body === "string" ? record.body : "";
+    if (!body.includes(PROOF_NUDGE_MARKER_PREFIX)) continue;
+    observe(record.created_at);
+  }
+  if (earliestRequestAtMs === null) {
+    return "no visible dated proof request (needs-proof label event or proof nudge) on the live PR";
+  }
+  if (now - earliestRequestAtMs <= STALLED_UNPROVEN_PR_MIN_INACTIVE_DAYS * DAY_MS) {
+    return `stalled_unproven_pr requires the proof request to be visible for ${STALLED_UNPROVEN_PR_MIN_INACTIVE_DAYS} days`;
+  }
+  return null;
+}
+
+export function abandonedPrAgeSkipReason(
+  item: Pick<Item, "createdAt">,
+  now = Date.now(),
+): string | null {
+  if (!isOlderThanDays(item.createdAt, ABANDONED_PR_MIN_AGE_DAYS, now)) {
+    return `abandoned_pr requires PR older than ${ABANDONED_PR_MIN_AGE_DAYS} days`;
+  }
+  return null;
+}
+
+function stalledUnprovenPrApplyBlockReason(
+  number: number,
+  item: Pick<Item, "createdAt" | "labels">,
+): string | null {
+  const ageBlock = stalledUnprovenPrAgeSkipReason(item);
+  if (ageBlock) return ageBlock;
+  const exemptLabel = prAutoCloseExemptLabel(item.labels);
+  if (exemptLabel) return `${exemptLabel} exempts this PR from stalled-unproven auto-close`;
+  const proofLabel = item.labels
+    .map(normalizeLabelName)
+    .find(
+      (label) =>
+        label === normalizeLabelName(PROOF_SUFFICIENT_LABEL) ||
+        label === normalizeLabelName(PROOF_OVERRIDE_LABEL),
+    );
+  if (proofLabel) return `${proofLabel} marks the requested proof as resolved`;
+  const proofRequestBlock = stalledUnprovenProofRequestBlockReason(number);
+  if (proofRequestBlock) return proofRequestBlock;
+  const activity = pullRequestLiveActivity(number);
+  if (activity.draft) return "draft PR is handled by the abandoned-PR policy, not stalled-unproven";
+  if (
+    activity.headActivityAtMs === null ||
+    Date.now() - activity.headActivityAtMs <= STALLED_UNPROVEN_PR_MIN_INACTIVE_DAYS * DAY_MS
+  ) {
+    return `stalled_unproven_pr requires ${STALLED_UNPROVEN_PR_MIN_INACTIVE_DAYS} days without new head commit or check activity`;
+  }
+  return pullRequestHumanEngagementBlockReason(number);
+}
+
+function stalledUnprovenPrApplyBlockReasonSafe(
+  number: number,
+  item: Pick<Item, "createdAt" | "labels">,
+): string | null {
+  try {
+    return stalledUnprovenPrApplyBlockReason(number, item);
+  } catch (error) {
+    return `stalled-unproven liveness check failed: ${
+      error instanceof Error ? error.message : String(error)
+    }`;
+  }
+}
+
+function abandonedPrApplyBlockReason(
+  number: number,
+  item: Pick<Item, "createdAt" | "labels">,
+): string | null {
+  const ageBlock = abandonedPrAgeSkipReason(item);
+  if (ageBlock) return ageBlock;
+  const exemptLabel = prAutoCloseExemptLabel(item.labels);
+  if (exemptLabel) return `${exemptLabel} exempts this PR from abandoned-PR auto-close`;
+  const activity = pullRequestLiveActivity(number);
+  if (
+    activity.headActivityAtMs === null ||
+    Date.now() - activity.headActivityAtMs <= ABANDONED_PR_MIN_INACTIVE_DAYS * DAY_MS
+  ) {
+    return `abandoned_pr requires ${ABANDONED_PR_MIN_INACTIVE_DAYS} days without new head commit or check activity`;
+  }
+  const waitingOnAuthor = item.labels
+    .map(normalizeLabelName)
+    .includes(normalizeLabelName(WAITING_ON_AUTHOR_LABEL));
+  const stalledState = activity.draft || waitingOnAuthor || activity.headChecksFailing;
+  if (!stalledState) {
+    return "live PR is not draft, waiting-on-author, or failing checks; abandonment is not confirmed";
+  }
+  return pullRequestHumanEngagementBlockReason(number);
+}
+
+function abandonedPrApplyBlockReasonSafe(
+  number: number,
+  item: Pick<Item, "createdAt" | "labels">,
+): string | null {
+  try {
+    return abandonedPrApplyBlockReason(number, item);
+  } catch (error) {
+    return `abandoned-PR liveness check failed: ${
       error instanceof Error ? error.message : String(error)
     }`;
   }
@@ -7750,6 +8004,10 @@ function closeReasonText(reason: CloseReason): string {
       return "duplicate or superseded";
     case "low_signal_unmergeable_pr":
       return "low-signal unmergeable PR";
+    case "stalled_unproven_pr":
+      return "stalled PR without requested real-behavior proof";
+    case "abandoned_pr":
+      return "abandoned inactive PR";
     case "unconfirmed_product_direction":
       return "feature-like PR without confirmed product direction";
     case "not_actionable_in_repo":
@@ -8790,6 +9048,10 @@ function closeIntro(reason: CloseReason): string {
       return "Thanks for the context here. I swept through the related work, and this is now duplicate or superseded.";
     case "low_signal_unmergeable_pr":
       return "Thanks for the contribution. I reviewed the branch, and this PR is not a good landing base for OpenClaw.";
+    case "stalled_unproven_pr":
+      return "Thanks for the contribution. This PR still needs the requested real-behavior proof, and the branch has been idle since that ask.";
+    case "abandoned_pr":
+      return "Thanks for the contribution. This PR has been inactive for a while and still is not in a landable state.";
     case "unconfirmed_product_direction":
       return "Thanks for the contribution. ClawSweeper proposes closing this for now: the implementation may be reasonable, but passing review and proof does not establish that OpenClaw should add this product surface.";
     case "not_actionable_in_repo":
@@ -8817,6 +9079,10 @@ function closeOutro(reason: CloseReason, canonicalLinks: string[] = []): string 
         : "So I’m closing this here because the remaining work is already tracked in the canonical issue.";
     case "low_signal_unmergeable_pr":
       return "So I’m closing this PR rather than keeping an unmergeable branch open. A new narrow PR that carries only the useful part is welcome.";
+    case "stalled_unproven_pr":
+      return "So I’m closing this for now to keep the review queue honest. Please reopen or open a fresh PR with real-behavior proof (a live run, logs, or a reproducible validation transcript) and it will be reviewed again.";
+    case "abandoned_pr":
+      return "So I’m closing this as inactive for now. If you pick the work back up, push a rebased branch with green checks and reopen (or open a fresh PR) and it will be reviewed again.";
     case "unconfirmed_product_direction":
       return "This is a proposal only until the separate default-off apply policy is enabled and all live maintainer-signal checks pass. A maintainer can sponsor the direction, request a narrower version, or apply `clawsweeper:human-review` to keep it open.";
     case "not_actionable_in_repo":
@@ -14740,7 +15006,7 @@ function unconfirmedProductDirectionDecisionBlockReason(
   }
   const exemptLabel = item.labels
     .map(normalizeLabelName)
-    .find((label) => UNCONFIRMED_PRODUCT_DIRECTION_EXEMPT_LABELS.has(label));
+    .find((label) => PR_AUTO_CLOSE_EXEMPT_LABELS.has(label));
   if (exemptLabel) return `${exemptLabel} exempts this PR from product-direction auto-close`;
   if (decision.itemCategory !== "feature") {
     return "unconfirmed_product_direction requires feature item category";
@@ -14762,6 +15028,64 @@ function unconfirmedProductDirectionDecisionBlockReason(
   }
   if (!["S", "A", "B", "C"].includes(decision.prRating.overallTier)) {
     return "unconfirmed_product_direction requires a quality-ready PR rating";
+  }
+  return null;
+}
+
+const STALLED_UNPROVEN_PROOF_STATUSES = new Set(["missing", "mock_only", "insufficient"]);
+const STALLED_UNPROVEN_RATING_TIERS = new Set(["D", "F"]);
+
+function externalPrCloseDecisionBlockReason(
+  item: Pick<Item, "kind" | "labels"> & Partial<Pick<Item, "authorAssociation">>,
+  closeReason: CloseReason,
+  exemptText: string,
+): string | null {
+  if (item.kind !== "pull_request") {
+    return `${closeReason} is allowed only for pull requests`;
+  }
+  if (!item.authorAssociation) return `${closeReason} requires author association`;
+  if (isMaintainerAuthorAssociation(item.authorAssociation)) {
+    return `${closeReason} cannot close maintainer-authored pull requests`;
+  }
+  const exemptLabel = prAutoCloseExemptLabel(item.labels);
+  if (exemptLabel) return `${exemptLabel} exempts this PR from ${exemptText}`;
+  return null;
+}
+
+function stalledUnprovenPrDecisionBlockReason(
+  item: Pick<Item, "kind" | "labels"> & Partial<Pick<Item, "authorAssociation">>,
+  decision: Decision,
+): string | null {
+  const externalBlock = externalPrCloseDecisionBlockReason(
+    item,
+    "stalled_unproven_pr",
+    "stalled-unproven auto-close",
+  );
+  if (externalBlock) return externalBlock;
+  if (!STALLED_UNPROVEN_PROOF_STATUSES.has(decision.realBehaviorProof.status)) {
+    return "stalled_unproven_pr requires missing, mock-only, or insufficient real behavior proof";
+  }
+  if (!STALLED_UNPROVEN_RATING_TIERS.has(decision.prRating.overallTier)) {
+    return "stalled_unproven_pr requires a D or F overall PR rating";
+  }
+  return null;
+}
+
+function abandonedPrDecisionBlockReason(
+  item: Pick<Item, "kind" | "labels"> & Partial<Pick<Item, "authorAssociation">>,
+  decision: Decision,
+): string | null {
+  const externalBlock = externalPrCloseDecisionBlockReason(
+    item,
+    "abandoned_pr",
+    "abandoned-PR auto-close",
+  );
+  if (externalBlock) return externalBlock;
+  if (
+    ["S", "A", "B"].includes(decision.prRating.overallTier) &&
+    ["sufficient", "override"].includes(decision.realBehaviorProof.status)
+  ) {
+    return "abandoned_pr cannot close a high-quality proven pull request";
   }
   return null;
 }
@@ -14822,6 +15146,26 @@ export function validateCloseDecision(
         ok: false,
         actionTaken: "skipped_invalid_decision",
         reason: productDirectionBlock,
+      };
+    }
+  }
+  if (decision.closeReason === "stalled_unproven_pr") {
+    const stalledUnprovenBlock = stalledUnprovenPrDecisionBlockReason(item, decision);
+    if (stalledUnprovenBlock) {
+      return {
+        ok: false,
+        actionTaken: "skipped_invalid_decision",
+        reason: stalledUnprovenBlock,
+      };
+    }
+  }
+  if (decision.closeReason === "abandoned_pr") {
+    const abandonedBlock = abandonedPrDecisionBlockReason(item, decision);
+    if (abandonedBlock) {
+      return {
+        ok: false,
+        actionTaken: "skipped_invalid_decision",
+        reason: abandonedBlock,
       };
     }
   }
@@ -17083,6 +17427,15 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
       ) {
         return false;
       }
+      if (
+        closeReason === "stalled_unproven_pr" &&
+        stalledUnprovenPrApplyBlockReasonSafe(number, item)
+      ) {
+        return false;
+      }
+      if (closeReason === "abandoned_pr" && abandonedPrApplyBlockReasonSafe(number, item)) {
+        return false;
+      }
       if (currentPrCloseCoverageProofGateBlock()) return false;
       return true;
     };
@@ -17325,6 +17678,23 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
       );
       if (productDirectionBlockReason) {
         if (markApplySkipped("kept_open", productDirectionBlockReason)) break;
+        continue;
+      }
+    }
+    if (
+      state === "open" &&
+      isCloseProposal &&
+      (closeReason === "stalled_unproven_pr" || closeReason === "abandoned_pr") &&
+      !syncCommentsOnly &&
+      (applyKind === "all" || item.kind === applyKind) &&
+      closeReasonEnabled(closeReason, applyCloseReasons)
+    ) {
+      const inactivityBlockReason =
+        closeReason === "stalled_unproven_pr"
+          ? stalledUnprovenPrApplyBlockReasonSafe(number, item)
+          : abandonedPrApplyBlockReasonSafe(number, item);
+      if (inactivityBlockReason) {
+        if (markApplySkipped("kept_open", inactivityBlockReason)) break;
         continue;
       }
     }
@@ -18142,6 +18512,16 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
         : null;
     if (lowSignalBlockReason) {
       if (markApplySkipped("kept_open", lowSignalBlockReason)) break;
+      continue;
+    }
+    const inactivityCloseBlockReason =
+      closeReason === "stalled_unproven_pr"
+        ? stalledUnprovenPrApplyBlockReasonSafe(number, item)
+        : closeReason === "abandoned_pr"
+          ? abandonedPrApplyBlockReasonSafe(number, item)
+          : null;
+    if (inactivityCloseBlockReason) {
+      if (markApplySkipped("kept_open", inactivityCloseBlockReason)) break;
       continue;
     }
     logProgress(`closing #${number}`);

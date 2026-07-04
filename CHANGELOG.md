@@ -9,12 +9,15 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Added
 
+- Added the PR-only `stalled_unproven_pr` close reason: external D/F-rated pull requests whose requested real-behavior proof stayed missing, mock-only, or insufficient can close after 14 idle days, guarded by live checks that the proof request itself was visible for 14 days plus proof-label, draft, head-commit, and human-engagement gates.
+- Added the PR-only `abandoned_pr` close reason: external pull requests idle for 30 days that are still drafts, waiting on their author, or failing checks on the live head can close, while high-quality proven work stays open for repair/adopt paths. See `docs/stalled-pr-close-policies.md`.
 - Added apply-health telemetry and a quiet-by-default dashboard alert for stalled, cursorless, or fully blocked pruning windows. Thanks @brokemac79.
 - Added author-wide PR repair intake across configured public repositories, with private and unsupported repositories excluded before job generation. Thanks @Jhacarreiro.
 - Added a system, light, and dark theme switcher to the generated documentation site. Thanks @joshka.
 
 ### Changed
 
+- Raised the apply-existing close limit and checkpoint size from 5 to 20 fresh closes per run so continuation chains drain the proposal queue faster while each GitHub App token stays within its lifetime.
 - Restored the global Codex worker budget to 128, reserved 24 slots for interactive work and matrix expansion, and let serialized background planners refill capacity while older review waves finish publishing.
 - Made ClawSweeper review reports and `proof: sufficient` or `proof: override` the proof-nudge authority, retiring `proof: supplied` and PR-context hygiene labels from proof state. Thanks @hannesrudolph.
 

@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import test from "node:test";
 
 import {
+  abandonedPrAgeSkipReason,
   closeReasonApplyAgeSkipReason,
   closeReasonsArg,
   compactReferencingMergedPullRequestForTest,
@@ -13,6 +14,8 @@ import {
   reviewActionForDecision,
   sameAuthorCounterpartApplyReason,
   sanitizePublicSelfReferences,
+  stalledUnprovenPrAgeSkipReason,
+  stalledUnprovenProofRequestBlockReason,
   unconfirmedProductDirectionAgeSkipReason,
   unconfirmedProductDirectionCloseEnabled,
   validateCloseDecision,
@@ -1064,4 +1067,218 @@ test("public comments avoid self-referencing the current item number", () => {
     comment,
     "This issue is tracked by PR #69425, which says Fixes this issue. Close this issue later.",
   );
+});
+
+function stalledUnprovenDecision(overrides = {}) {
+  return closeDecision({
+    closeReason: "stalled_unproven_pr",
+    realBehaviorProof: {
+      status: "missing",
+      summary: "No real behavior proof was supplied after the review asked for it.",
+      evidenceKind: "not_applicable",
+      needsContributorAction: true,
+    },
+    prRating: {
+      proofTier: "F",
+      patchTier: "D",
+      overallTier: "F",
+      summary: "The patch is low quality and carries no real behavior proof.",
+      nextSteps: [],
+    },
+    ...overrides,
+  });
+}
+
+test("stalled_unproven_pr close decisions enforce proof, rating, and PR-only gates", () => {
+  const ok = validateCloseDecision(item({ kind: "pull_request" }), stalledUnprovenDecision());
+  assert.equal(ok.ok, true);
+
+  const issueKind = validateCloseDecision(item({ kind: "issue" }), stalledUnprovenDecision());
+  assert.equal(issueKind.ok, false);
+  assert.equal(issueKind.reason, "stalled_unproven_pr is allowed only for pull requests");
+
+  const maintainerAuthored = validateCloseDecision(
+    item({ kind: "pull_request", authorAssociation: "MEMBER" }),
+    stalledUnprovenDecision(),
+  );
+  assert.equal(maintainerAuthored.ok, false);
+  assert.equal(
+    maintainerAuthored.reason,
+    "stalled_unproven_pr cannot close maintainer-authored pull requests",
+  );
+
+  const exemptLabel = validateCloseDecision(
+    item({ kind: "pull_request", labels: ["clawsweeper:autofix"] }),
+    stalledUnprovenDecision(),
+  );
+  assert.equal(exemptLabel.ok, false);
+  assert.equal(
+    exemptLabel.reason,
+    "clawsweeper:autofix exempts this PR from stalled-unproven auto-close",
+  );
+
+  const sufficientProof = validateCloseDecision(
+    item({ kind: "pull_request" }),
+    stalledUnprovenDecision({
+      realBehaviorProof: {
+        status: "sufficient",
+        summary: "A live transcript demonstrates the change.",
+        evidenceKind: "terminal",
+        needsContributorAction: false,
+      },
+    }),
+  );
+  assert.equal(sufficientProof.ok, false);
+  assert.equal(
+    sufficientProof.reason,
+    "stalled_unproven_pr requires missing, mock-only, or insufficient real behavior proof",
+  );
+
+  const goodRating = validateCloseDecision(
+    item({ kind: "pull_request" }),
+    stalledUnprovenDecision({
+      prRating: {
+        proofTier: "C",
+        patchTier: "B",
+        overallTier: "B",
+        summary: "The patch itself is in decent shape.",
+        nextSteps: [],
+      },
+    }),
+  );
+  assert.equal(goodRating.ok, false);
+  assert.equal(goodRating.reason, "stalled_unproven_pr requires a D or F overall PR rating");
+});
+
+test("abandoned_pr close decisions protect high-quality proven work", () => {
+  const ok = validateCloseDecision(
+    item({ kind: "pull_request" }),
+    stalledUnprovenDecision({ closeReason: "abandoned_pr" }),
+  );
+  assert.equal(ok.ok, true);
+
+  const issueKind = validateCloseDecision(
+    item({ kind: "issue" }),
+    stalledUnprovenDecision({ closeReason: "abandoned_pr" }),
+  );
+  assert.equal(issueKind.ok, false);
+  assert.equal(issueKind.reason, "abandoned_pr is allowed only for pull requests");
+
+  const provenQuality = validateCloseDecision(
+    item({ kind: "pull_request" }),
+    stalledUnprovenDecision({
+      closeReason: "abandoned_pr",
+      realBehaviorProof: {
+        status: "sufficient",
+        summary: "A live transcript demonstrates the change.",
+        evidenceKind: "terminal",
+        needsContributorAction: false,
+      },
+      prRating: {
+        proofTier: "A",
+        patchTier: "A",
+        overallTier: "A",
+        summary: "This is strong work that deserves repair or adoption instead.",
+        nextSteps: [],
+      },
+    }),
+  );
+  assert.equal(provenQuality.ok, false);
+  assert.equal(
+    provenQuality.reason,
+    "abandoned_pr cannot close a high-quality proven pull request",
+  );
+
+  const provenButMediocre = validateCloseDecision(
+    item({ kind: "pull_request" }),
+    stalledUnprovenDecision({
+      closeReason: "abandoned_pr",
+      realBehaviorProof: {
+        status: "sufficient",
+        summary: "Proof exists but the patch is mediocre.",
+        evidenceKind: "terminal",
+        needsContributorAction: false,
+      },
+      prRating: {
+        proofTier: "B",
+        patchTier: "C",
+        overallTier: "C",
+        summary: "Sufficient proof but only a C-grade patch.",
+        nextSteps: [],
+      },
+    }),
+  );
+  assert.equal(provenButMediocre.ok, true);
+});
+
+test("stalled_unproven_pr apply requires an aged dated proof request", () => {
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    const proofScript = (timelinePage: string, commentsPage: string) => `
+const rawArgs = process.argv.slice(2);
+const args = rawArgs[0] === "--repo" ? rawArgs.slice(2) : rawArgs;
+if (args[0] === "api" && /\\/issues\\/321\\/timeline/.test(args[1] || "")) {
+  console.log(JSON.stringify([${timelinePage}]));
+} else if (args[0] === "api" && /\\/issues\\/321\\/comments/.test(args[1] || "")) {
+  console.log(JSON.stringify([${commentsPage}]));
+} else {
+  console.error("unexpected gh args", JSON.stringify(args));
+  process.exit(1);
+}
+`;
+    const now = Date.parse("2026-07-01T00:00:00Z");
+
+    withMockGh(root, proofScript("[]", "[]"), () => {
+      assert.equal(
+        stalledUnprovenProofRequestBlockReason(321, now),
+        "no visible dated proof request (needs-proof label event or proof nudge) on the live PR",
+      );
+    });
+
+    const agedLabelEvent = `[{ event: "labeled", label: { name: "triage: needs-real-behavior-proof" }, created_at: "2026-05-01T00:00:00Z" }]`;
+    withMockGh(root, proofScript(agedLabelEvent, "[]"), () => {
+      assert.equal(stalledUnprovenProofRequestBlockReason(321, now), null);
+    });
+
+    const freshLabelEvent = `[{ event: "labeled", label: { name: "status: 📣 needs proof" }, created_at: "2026-06-25T00:00:00Z" }]`;
+    withMockGh(root, proofScript(freshLabelEvent, "[]"), () => {
+      assert.match(
+        stalledUnprovenProofRequestBlockReason(321, now) ?? "",
+        /proof request to be visible for 14 days/,
+      );
+    });
+
+    const agedNudge = `[{ body: "<!-- clawsweeper-proof-nudge v1 -->\\nGentle proof reminder.", created_at: "2026-05-01T00:00:00Z" }]`;
+    withMockGh(root, proofScript("[]", agedNudge), () => {
+      assert.equal(stalledUnprovenProofRequestBlockReason(321, now), null);
+    });
+
+    const editedReviewCommentOnly = `[{ body: "<!-- clawsweeper-review v1 -->\\nPlease add real behavior proof.", created_at: "2026-05-01T00:00:00Z" }]`;
+    withMockGh(root, proofScript("[]", editedReviewCommentOnly), () => {
+      assert.match(
+        stalledUnprovenProofRequestBlockReason(321, now) ?? "",
+        /no visible dated proof request/,
+      );
+    });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("stalled PR close reasons gate apply on item age", () => {
+  const created = "2026-05-01T00:00:00Z";
+  const youngNow = Date.parse("2026-05-10T00:00:00Z");
+  const oldNow = Date.parse("2026-07-01T00:00:00Z");
+
+  assert.equal(
+    stalledUnprovenPrAgeSkipReason({ createdAt: created }, youngNow),
+    "stalled_unproven_pr requires PR older than 14 days",
+  );
+  assert.equal(stalledUnprovenPrAgeSkipReason({ createdAt: created }, oldNow), null);
+
+  assert.equal(
+    abandonedPrAgeSkipReason({ createdAt: created }, Date.parse("2026-05-20T00:00:00Z")),
+    "abandoned_pr requires PR older than 30 days",
+  );
+  assert.equal(abandonedPrAgeSkipReason({ createdAt: created }, oldNow), null);
 });
