@@ -17554,7 +17554,27 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
     if (decision === "close" && !isCloseProposal && !shouldProbeClosedState) {
       continue;
     }
-    const { item, state } = fetchItem(number);
+    let liveItem: ReturnType<typeof fetchItem>;
+    try {
+      liveItem = fetchItem(number);
+    } catch (error) {
+      if (!isGitHubNotFoundError(error)) throw error;
+      // Items can be deleted after review but before apply. Treat that terminal
+      // state like an already-closed item instead of failing the whole apply run.
+      markdown = replaceFrontMatterValue(markdown, "action_taken", "skipped_already_closed");
+      markdown = replaceFrontMatterValue(markdown, "apply_checked_at", new Date().toISOString());
+      archiveClosed(markdown);
+      results.push({
+        number,
+        action: "skipped_already_closed",
+        reason: "item not found on GitHub",
+      });
+      processedCount += 1;
+      maybeLogProgress(`archived #${number}: item not found on GitHub`);
+      if (processedCount >= processedLimit) break;
+      continue;
+    }
+    const { item, state } = liveItem;
     const previousLabels = [...item.labels];
     let currentContext: ItemContext | undefined;
     let currentClosingPullRequests: unknown[] | undefined;
