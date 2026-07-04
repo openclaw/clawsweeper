@@ -104,6 +104,7 @@ import {
   renderReviewHistorySection,
   reviewHistoryCycleFromCommentBody,
   type ReviewHistoryCycle,
+  type ReviewHistoryLedger,
 } from "./review-history.js";
 
 export {
@@ -3645,6 +3646,16 @@ function previousReviewFindings(body: string): Array<{ priority: string; title: 
     });
 }
 
+function reviewHistoryFindings(
+  cycle: ReviewHistoryCycle | undefined,
+): Array<{ priority: string; title: string }> {
+  if (!cycle) return [];
+  return cycle.findings.flatMap((finding) => {
+    const match = finding.match(/^\[(P[0-3])\]\s+(.+)$/);
+    return match?.[1] && match[2] ? [{ priority: match[1], title: match[2] }] : [];
+  });
+}
+
 function extractLatestClawSweeperReview(
   comments: readonly unknown[],
   number: number,
@@ -3657,12 +3668,18 @@ function extractLatestClawSweeperReview(
   const body = rawCommentBody(latest);
   const verdictMarker = htmlMarkerWithPrefix(body, "clawsweeper-verdict:");
   const actionMarker = htmlMarkerWithPrefix(body, "clawsweeper-action:");
-  const reviewedSha = markerAttribute(verdictMarker, "sha") ?? markerAttribute(actionMarker, "sha");
-  const earlierReviewCycles = parseReviewHistory(body);
+  const history = parseReviewHistory(body);
+  const currentCycle = reviewHistoryCycleFromCommentBody(body);
+  const latestCompletedCycle = currentCycle ?? history.cycles.at(-1);
+  const earlierReviewCycles = currentCycle ? history.cycles : history.cycles.slice(0, -1);
   return {
     status: previousReviewStatus(body),
-    reviewedAt: previousReviewReviewedAt(body),
-    reviewedSha,
+    reviewedAt: previousReviewReviewedAt(body) ?? latestCompletedCycle?.reviewedAt ?? null,
+    reviewedSha:
+      markerAttribute(verdictMarker, "sha") ??
+      markerAttribute(actionMarker, "sha") ??
+      latestCompletedCycle?.sha ??
+      null,
     verdictMarker,
     actionMarker,
     summary: firstNonEmptyLine(markdownSection(body, "Summary")),
@@ -3671,9 +3688,11 @@ function extractLatestClawSweeperReview(
     nextStep:
       firstNonEmptyLine(markdownSection(body, "Next step before merge")) ||
       firstNonEmptyLine(markdownSection(body, "Next step")),
-    findings: previousReviewFindings(body),
+    findings: currentCycle
+      ? previousReviewFindings(body)
+      : reviewHistoryFindings(latestCompletedCycle),
     earlierReviewCycles,
-    completedReviewCycles: earlierReviewCycles.length + 1,
+    completedReviewCycles: history.totalCompletedCycles + (currentCycle ? 1 : 0),
     commentId: comment.id,
     commentUrl: comment.html_url,
     commentUpdatedAt: comment.updated_at,
@@ -14409,16 +14428,26 @@ function reviewFreshnessText(markdown: string): string {
 function reviewHistoryForRender(
   markdown: string,
   previousReviewCommentBody: string | undefined,
-): ReviewHistoryCycle[] {
-  if (frontMatterValue(markdown, "type") !== "pull_request") return [];
+): ReviewHistoryLedger {
+  if (frontMatterValue(markdown, "type") !== "pull_request") {
+    return { cycles: [], totalCompletedCycles: 0 };
+  }
   const body = previousReviewCommentBody ?? "";
-  if (!body.trim()) return [];
-  const cycles = parseReviewHistory(body);
+  if (!body.trim()) return { cycles: [], totalCompletedCycles: 0 };
+  const history = parseReviewHistory(body);
   const previousCycle = reviewHistoryCycleFromCommentBody(body);
-  if (!previousCycle) return cycles;
+  if (!previousCycle) return history;
   const reviewedAt = frontMatterValue(markdown, "reviewed_at");
-  if (reviewedAt && previousCycle.reviewedAt === reviewedAt) return cycles;
-  return appendReviewHistoryCycle(cycles, previousCycle);
+  if (reviewedAt && previousCycle.reviewedAt === reviewedAt) return history;
+  return appendReviewHistoryCycle(history, previousCycle);
+}
+
+function reviewHistoryForStaleComment(
+  previousReviewCommentBody: string | undefined,
+): ReviewHistoryLedger {
+  const body = previousReviewCommentBody ?? "";
+  const history = parseReviewHistory(body);
+  return appendReviewHistoryCycle(history, reviewHistoryCycleFromCommentBody(body));
 }
 
 function renderKeepOpenCommentFromReport(
@@ -14980,6 +15009,7 @@ function syncStalePullRequestReviewLabels(options: {
 function stalePullRequestReviewComment(options: {
   number: number;
   stale: StalePullRequestReviewHead;
+  previousReviewCommentBody?: string;
 }): string {
   const attrs = [
     `item=${markerAttributeValue(String(options.number))}`,
@@ -14987,6 +15017,9 @@ function stalePullRequestReviewComment(options: {
     `current_sha=${markerAttributeValue(options.stale.liveHeadSha)}`,
     "reason=stale_head",
   ].join(" ");
+  const history = renderReviewHistorySection(
+    reviewHistoryForStaleComment(options.previousReviewCommentBody),
+  );
   return [
     "Codex review: stale review; fresh review needed.",
     "",
@@ -14995,6 +15028,7 @@ function stalePullRequestReviewComment(options: {
     "",
     "**Next step**",
     "Run or wait for a fresh ClawSweeper review on the current PR head.",
+    ...(history ? ["", history] : []),
     "",
     `<!-- clawsweeper-review-status:stale ${attrs} -->`,
   ].join("\n");
@@ -17434,27 +17468,21 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
       renderOptions.hasOpenLinkedPullRequest =
         openClosingPullRequestApplyReason(currentClosingPullRequests) !== null;
     }
-    let reviewComment = stalePrReviewHead
-      ? stalePullRequestReviewComment({ number, stale: stalePrReviewHead })
-      : renderReviewCommentFromReport(markdown, closeReason ?? "none", renderOptions);
-    const existingReviewComment = issueReviewComment(number, [
-      reviewComment,
-      reviewSectionValue(markdown, "closeComment"),
-    ]);
-    const existingReviewCommentUpdatedAt = commentUpdatedAt(existingReviewComment);
-    if (existingReviewCommentUpdatedAt) {
-      allowedSelfMutationUpdatedAts.add(existingReviewCommentUpdatedAt);
-    }
+    const renderCurrentReviewComment = (): string =>
+      stalePrReviewHead
+        ? stalePullRequestReviewComment({
+            number,
+            stale: stalePrReviewHead,
+            ...(renderOptions.previousReviewCommentBody
+              ? { previousReviewCommentBody: renderOptions.previousReviewCommentBody }
+              : {}),
+          })
+        : renderReviewCommentFromReport(markdown, closeReason ?? "none", renderOptions);
+    let reviewComment = renderCurrentReviewComment();
     const existingReviewCommentBody = rawCommentBody(existingReviewComment);
     if (existingReviewCommentBody.trim()) {
       renderOptions.previousReviewCommentBody = existingReviewCommentBody;
-      if (!stalePrReviewHead) {
-        reviewComment = renderReviewCommentFromReport(
-          markdown,
-          closeReason ?? "none",
-          renderOptions,
-        );
-      }
+      reviewComment = renderCurrentReviewComment();
     }
     let markedReviewComment = markedReviewCommentBody(number, reviewComment);
     let proofBlockedForCommentSync: PrCloseCoverageProofGateBlock | null = null;
@@ -17778,9 +17806,7 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
         continue;
       }
     }
-    reviewComment = stalePrReviewHead
-      ? stalePullRequestReviewComment({ number, stale: stalePrReviewHead })
-      : renderReviewCommentFromReport(markdown, closeReason ?? "none", renderOptions);
+    reviewComment = renderCurrentReviewComment();
     markedReviewComment = markedReviewCommentBody(number, reviewComment);
     if (isCloseProposal && item.kind === "issue") {
       currentClosingPullRequests ??= closingPullRequestsForIssue(number);

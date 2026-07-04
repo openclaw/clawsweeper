@@ -328,8 +328,13 @@ finding on code that is unchanged since an earlier reviewed head where the
 concern was equally visible, set `lateFinding: true` on that finding and
 briefly acknowledge the late discovery in its body; keep `lateFinding` omitted
 or false for findings introduced by new commits, a changed base, or newly
-available evidence. Repeatedly surfacing one new previously-visible concern
-per cycle is a review defect, not author churn.
+available evidence. Before setting `lateFinding: true`, verify the relevant
+file against at least one earlier reviewed SHA from the review context with
+repository history (for example, `git diff <earlier-sha>..HEAD -- <file>` and
+targeted blame or log inspection). Do not infer unchanged code from a similar
+title or line location. If the earlier SHA is unavailable or the comparison is
+inconclusive, leave `lateFinding` false or omitted. Repeatedly surfacing one
+new previously-visible concern per cycle is a review defect, not author churn.
 
 Use target `AGENTS.md` policy as review input, not as a standalone source of
 findings. For PRs, if the diff concretely violates an applicable `AGENTS.md`

@@ -5,21 +5,33 @@ export interface ReviewHistoryCycle {
   findings: string[];
 }
 
+export interface ReviewHistoryLedger {
+  cycles: ReviewHistoryCycle[];
+  totalCompletedCycles: number;
+}
+
 export const MAX_REVIEW_HISTORY_CYCLES = 8;
 const MAX_CYCLE_FINDINGS = 6;
 const MAX_HISTORY_FIELD_CHARS = 160;
-const REVIEW_HISTORY_MARKER = "<!-- clawsweeper-review-history v=1 -->";
+const REVIEW_HISTORY_MARKER_PREFIX = "<!-- clawsweeper-review-history ";
 const HISTORY_LINE_PREFIX = "- reviewed ";
 const HISTORY_FIELD_SEPARATOR = " :: ";
 const HISTORY_FINDING_SEPARATOR = " | ";
 const REVIEW_START_PLACEHOLDER = "ClawSweeper status: review started.";
+const FAILED_REVIEW_VERDICT = "did not complete due to Codex infrastructure failure.";
 const VERDICT_LINE_PATTERN = /^(?:Codex|ClawSweeper) review: (.+)$/;
 const DETAILED_FINDING_PATTERN = /^- \*\*\[(P[0-3])\] (.+?):\*\*/;
 const SUMMARY_FINDING_PATTERN = /^- \[(P[0-3])\] (.+)$/;
 const HISTORY_HEAD_PATTERN = /^(.+) sha (\S+)$/;
 
 function sanitizeHistoryField(value: string): string {
-  const collapsed = value.replace(/\s+/g, " ").replaceAll("::", ":").replaceAll("|", "/").trim();
+  const collapsed = value
+    .replace(/\s+/g, " ")
+    .replaceAll("::", ":")
+    .replaceAll("|", "/")
+    .replaceAll("<", "‹")
+    .replaceAll(">", "›")
+    .trim();
   return collapsed.length > MAX_HISTORY_FIELD_CHARS
     ? `${collapsed.slice(0, MAX_HISTORY_FIELD_CHARS - 3)}...`
     : collapsed;
@@ -41,14 +53,18 @@ function reviewHistoryLine(cycle: ReviewHistoryCycle): string {
   );
 }
 
-export function renderReviewHistorySection(cycles: readonly ReviewHistoryCycle[]): string {
-  if (!cycles.length) return "";
-  const noun = cycles.length === 1 ? "cycle" : "cycles";
+export function renderReviewHistorySection(ledger: ReviewHistoryLedger): string {
+  if (!ledger.cycles.length) return "";
+  const cycles = ledger.cycles.slice(-MAX_REVIEW_HISTORY_CYCLES);
+  const totalCompletedCycles = Math.max(ledger.totalCompletedCycles, cycles.length);
+  const noun = totalCompletedCycles === 1 ? "cycle" : "cycles";
+  const retainedSuffix =
+    totalCompletedCycles > cycles.length ? `; latest ${cycles.length} shown` : "";
   return [
     "<details>",
-    `<summary>Review history (${cycles.length} earlier review ${noun})</summary>`,
+    `<summary>Review history (${totalCompletedCycles} earlier review ${noun}${retainedSuffix})</summary>`,
     "",
-    REVIEW_HISTORY_MARKER,
+    `${REVIEW_HISTORY_MARKER_PREFIX}v=1 total=${totalCompletedCycles} -->`,
     ...cycles.map(reviewHistoryLine),
     "",
     "</details>",
@@ -73,17 +89,41 @@ function parseReviewHistoryLine(line: string): ReviewHistoryCycle | null {
   return { reviewedAt: head[1].trim(), sha: head[2], verdict, findings };
 }
 
-export function parseReviewHistory(body: string): ReviewHistoryCycle[] {
-  const markerIndex = body.indexOf(REVIEW_HISTORY_MARKER);
-  if (markerIndex < 0) return [];
-  const lines = body.slice(markerIndex).split(/\r?\n/).slice(1);
+export function parseReviewHistory(body: string): ReviewHistoryLedger {
+  const markerIndex = body.lastIndexOf(REVIEW_HISTORY_MARKER_PREFIX);
+  if (markerIndex < 0) return { cycles: [], totalCompletedCycles: 0 };
+  const markerEnd = body.indexOf("-->", markerIndex + REVIEW_HISTORY_MARKER_PREFIX.length);
+  if (markerEnd < 0) return { cycles: [], totalCompletedCycles: 0 };
+  const marker = body.slice(markerIndex + 4, markerEnd).trim();
+  const attributes = new Map<string, string>();
+  for (const token of marker.split(/\s+/).slice(1)) {
+    const separator = token.indexOf("=");
+    if (separator <= 0) continue;
+    attributes.set(token.slice(0, separator), token.slice(separator + 1));
+  }
+  const totalValue = attributes.get("total") ?? "";
+  if (attributes.get("v") !== "1" || !/^\d+$/.test(totalValue)) {
+    return { cycles: [], totalCompletedCycles: 0 };
+  }
+  const parsedTotal = Number(totalValue);
+  if (!Number.isSafeInteger(parsedTotal)) {
+    return { cycles: [], totalCompletedCycles: 0 };
+  }
+  const lines = body
+    .slice(markerEnd + 3)
+    .split(/\r?\n/)
+    .slice(1);
   const cycles: ReviewHistoryCycle[] = [];
   for (const line of lines) {
     if (!line.startsWith(HISTORY_LINE_PREFIX)) break;
     const cycle = parseReviewHistoryLine(line);
     if (cycle) cycles.push(cycle);
   }
-  return cycles.slice(-MAX_REVIEW_HISTORY_CYCLES);
+  const retained = cycles.slice(-MAX_REVIEW_HISTORY_CYCLES);
+  return {
+    cycles: retained,
+    totalCompletedCycles: Math.max(parsedTotal, retained.length),
+  };
 }
 
 function reviewHistoryCycleKey(cycle: ReviewHistoryCycle): string {
@@ -91,13 +131,20 @@ function reviewHistoryCycleKey(cycle: ReviewHistoryCycle): string {
 }
 
 export function appendReviewHistoryCycle(
-  cycles: readonly ReviewHistoryCycle[],
+  ledger: ReviewHistoryLedger,
   cycle: ReviewHistoryCycle | null,
-): ReviewHistoryCycle[] {
-  if (!cycle) return [...cycles];
+): ReviewHistoryLedger {
+  if (!cycle) {
+    return { cycles: [...ledger.cycles], totalCompletedCycles: ledger.totalCompletedCycles };
+  }
   const key = reviewHistoryCycleKey(cycle);
-  const kept = cycles.filter((entry) => reviewHistoryCycleKey(entry) !== key);
-  return [...kept, cycle].slice(-MAX_REVIEW_HISTORY_CYCLES);
+  if (ledger.cycles.some((entry) => reviewHistoryCycleKey(entry) === key)) {
+    return { cycles: [...ledger.cycles], totalCompletedCycles: ledger.totalCompletedCycles };
+  }
+  return {
+    cycles: [...ledger.cycles, cycle].slice(-MAX_REVIEW_HISTORY_CYCLES),
+    totalCompletedCycles: ledger.totalCompletedCycles + 1,
+  };
 }
 
 function reviewMarkerAttribute(body: string, name: string): string | null {
@@ -187,7 +234,7 @@ export function reviewHistoryCycleFromCommentBody(body: string): ReviewHistoryCy
   if (!verdict) return null;
   const freshnessIndex = verdict.toLowerCase().indexOf("_reviewed ");
   if (freshnessIndex >= 0) verdict = verdict.slice(0, freshnessIndex).trim();
-  if (!verdict) return null;
+  if (!verdict || verdict === FAILED_REVIEW_VERDICT) return null;
   const inlineReviewedAt = body.match(/_reviewed ([^_]+?)\.?_/i)?.[1]?.trim();
   const reviewedAt = reviewMarkerAttribute(body, "reviewed_at") ?? inlineReviewedAt ?? "unknown";
   const sha = reviewMarkerAttribute(body, "sha") ?? "unknown";

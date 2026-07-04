@@ -102,22 +102,26 @@ therefore carry a compact ledger of earlier cycles inside a collapsed
 `Review history` block, anchored by:
 
 ```html
-<!-- clawsweeper-review-history v=1 -->
+<!-- clawsweeper-review-history v=1 total=<completed-earlier-cycle-count> -->
 ```
 
 Each ledger line records one completed earlier cycle: reviewed-at timestamp,
-reviewed head sha, verdict, and finding titles. When the apply lane syncs a
-fresh review over an existing comment, it parses the existing ledger, appends
-the review it is replacing as the newest earlier cycle, and keeps the last
-eight cycles. Re-syncing the same review (same `reviewed_at`) does not add a
-cycle.
+reviewed head sha, verdict, and finding titles. The marker's `total` attribute
+keeps the lifetime count when the visible ledger is capped. When the apply lane
+syncs a fresh review over an existing comment, it parses the existing ledger,
+appends the review it is replacing as the newest earlier cycle, and keeps the
+last eight cycles. Re-syncing the same review (same `reviewed_at`) does not add
+a cycle. A stale-head warning keeps the displaced review in this ledger rather
+than erasing its findings before the fresh review runs.
 
 The review lane feeds the parsed ledger back to the reviewer as
 `previousClawSweeperReview.earlierReviewCycles` plus a
 `completedReviewCycles` count, and the review prompt requires re-review
 continuity: verify prior findings first, report every remaining blocking
 concern in one pass, and mark findings on previously reviewed, unchanged code
-with `lateFinding: true` so review churn stays measurable.
+with `lateFinding: true` only after comparing the current file with an earlier
+reviewed SHA, so review churn stays measurable without guessing from titles or
+line numbers.
 
 ## Repair Markers
 

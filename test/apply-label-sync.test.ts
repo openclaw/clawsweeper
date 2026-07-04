@@ -428,6 +428,11 @@ if (args[0] === "api" && /\\/issues\\/74481$/.test(path)) {
     const patchedBody = calls.find((args) => args[0] === "patched-review-body")?.[1] ?? "";
     assert.match(patchedBody, /Codex review: stale review; fresh review needed/);
     assert.match(patchedBody, /reviewed_sha=old-head current_sha=new-head/);
+    assert.match(patchedBody, /clawsweeper-review-history v=1 total=1/);
+    assert.match(
+      patchedBody,
+      /- reviewed 2026-05-19T20:00:00Z sha old-head :: needs maintainer review before merge\./,
+    );
     assert.doesNotMatch(patchedBody, /clawsweeper-verdict:/);
     const updatedReport = readFileSync(itemPath, "utf8");
     assert.match(updatedReport, /^current_pull_head_sha: new-head$/m);

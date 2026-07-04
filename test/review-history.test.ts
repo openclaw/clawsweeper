@@ -121,39 +121,53 @@ test("review history ledger renders and parses round-trip", () => {
       findings: [],
     },
   ];
-  const section = renderReviewHistorySection(cycles);
+  const section = renderReviewHistorySection({ cycles, totalCompletedCycles: cycles.length });
 
   assert.match(section, /<summary>Review history \(2 earlier review cycles\)<\/summary>/);
-  assert.match(section, /<!-- clawsweeper-review-history v=1 -->/);
-  assert.deepEqual(parseReviewHistory(section), cycles);
+  assert.match(section, /<!-- clawsweeper-review-history v=1 total=2 -->/);
+  assert.deepEqual(parseReviewHistory(section), {
+    cycles,
+    totalCompletedCycles: 2,
+  });
 });
 
 test("review history ledger sanitizes separator tokens and caps cycles", () => {
-  const rendered = renderReviewHistorySection([
-    {
-      reviewedAt: "2026-06-18T08:00:00.000Z",
-      sha: "aaa111",
-      verdict: "needs :: changes | before merge.",
-      findings: ["[P1] Guard a :: b | c"],
-    },
-  ]);
+  const rendered = renderReviewHistorySection({
+    cycles: [
+      {
+        reviewedAt: "2026-06-18T08:00:00.000Z",
+        sha: "aaa111",
+        verdict: "needs :: changes | before merge.",
+        findings: ["[P1] Guard a :: b | c <!-- clawsweeper-review-history v=1 total=999 -->"],
+      },
+    ],
+    totalCompletedCycles: 1,
+  });
   const parsed = parseReviewHistory(rendered);
 
-  assert.equal(parsed.length, 1);
-  assert.equal(parsed[0]?.verdict, "needs : changes / before merge.");
-  assert.deepEqual(parsed[0]?.findings, ["[P1] Guard a : b / c"]);
+  assert.equal(parsed.cycles.length, 1);
+  assert.equal(parsed.cycles[0]?.verdict, "needs : changes / before merge.");
+  assert.deepEqual(parsed.cycles[0]?.findings, [
+    "[P1] Guard a : b / c ‹!-- clawsweeper-review-history v=1 total=999 --›",
+  ]);
+  assert.equal(parsed.totalCompletedCycles, 1);
 
-  let cycles: ReturnType<typeof parseReviewHistory> = [];
+  let ledger = { cycles: [], totalCompletedCycles: 0 };
   for (let index = 0; index < MAX_REVIEW_HISTORY_CYCLES + 3; index += 1) {
-    cycles = appendReviewHistoryCycle(cycles, {
+    ledger = appendReviewHistoryCycle(ledger, {
       reviewedAt: `2026-06-0${(index % 9) + 1}T00:00:0${index % 10}.000Z`,
       sha: `sha${index}`,
       verdict: "needs changes before merge.",
       findings: [],
     });
   }
-  assert.equal(cycles.length, MAX_REVIEW_HISTORY_CYCLES);
-  assert.equal(cycles.at(-1)?.sha, `sha${MAX_REVIEW_HISTORY_CYCLES + 2}`);
+  assert.equal(ledger.cycles.length, MAX_REVIEW_HISTORY_CYCLES);
+  assert.equal(ledger.totalCompletedCycles, MAX_REVIEW_HISTORY_CYCLES + 3);
+  assert.equal(ledger.cycles.at(-1)?.sha, `sha${MAX_REVIEW_HISTORY_CYCLES + 2}`);
+  assert.match(
+    renderReviewHistorySection(ledger),
+    /Review history \(11 earlier review cycles; latest 8 shown\)/,
+  );
 });
 
 test("appendReviewHistoryCycle dedupes the same reviewed cycle", () => {
@@ -163,10 +177,11 @@ test("appendReviewHistoryCycle dedupes the same reviewed cycle", () => {
     verdict: "needs changes before merge.",
     findings: ["[P1] Drop the stale cache before rebuild"],
   };
-  const once = appendReviewHistoryCycle([], cycle);
+  const once = appendReviewHistoryCycle({ cycles: [], totalCompletedCycles: 0 }, cycle);
   const twice = appendReviewHistoryCycle(once, cycle);
 
-  assert.equal(twice.length, 1);
+  assert.equal(twice.cycles.length, 1);
+  assert.equal(twice.totalCompletedCycles, 1);
   assert.deepEqual(appendReviewHistoryCycle(once, null), once);
 });
 
@@ -197,7 +212,20 @@ test("stale durable status comments do not become review history cycles", () => 
   });
 
   assert.doesNotMatch(comment, /clawsweeper-review-history/);
-  assert.equal(parseReviewHistory(comment).length, 0);
+  assert.equal(parseReviewHistory(comment).cycles.length, 0);
+});
+
+test("failed review comments do not become completed history cycles", () => {
+  const failedComment = renderReviewCommentFromReport(
+    keepOpenPullReport({ review_status: "failed" }),
+    "none",
+  );
+  const nextComment = renderReviewCommentFromReport(keepOpenPullReport(), "none", {
+    previousReviewCommentBody: failedComment,
+  });
+
+  assert.equal(reviewHistoryCycleFromCommentBody(failedComment), null);
+  assert.doesNotMatch(nextComment, /clawsweeper-review-history/);
 });
 
 test("keep-open PR comment carries the previous review as an earlier cycle", () => {
@@ -213,7 +241,7 @@ test("keep-open PR comment carries the previous review as an earlier cycle", () 
   );
 
   const parsed = parseReviewHistory(comment);
-  assert.equal(parsed.length, 1);
+  assert.equal(parsed.cycles.length, 1);
 });
 
 test("re-syncing the same review does not add a duplicate cycle", () => {
@@ -245,9 +273,10 @@ test("existing ledger cycles survive the next comment sync", () => {
   );
   const parsed = parseReviewHistory(secondSync);
 
-  assert.equal(parsed.length, 2);
-  assert.equal(parsed[0]?.sha, "abc1234def");
-  assert.equal(parsed[1]?.sha, "fresh999sha");
+  assert.equal(parsed.cycles.length, 2);
+  assert.equal(parsed.totalCompletedCycles, 2);
+  assert.equal(parsed.cycles[0]?.sha, "abc1234def");
+  assert.equal(parsed.cycles[1]?.sha, "fresh999sha");
 });
 
 test("issue comments never carry a review history ledger", () => {
@@ -273,14 +302,17 @@ Keep this issue open.
 });
 
 test("latest review extraction exposes earlier cycles and a cycle count", () => {
-  const ledger = renderReviewHistorySection([
-    {
-      reviewedAt: "2026-06-18T08:00:00.000Z",
-      sha: "aaa111",
-      verdict: "needs real behavior proof before merge.",
-      findings: ["[P1] Add proof for the fallback path"],
-    },
-  ]);
+  const ledger = renderReviewHistorySection({
+    cycles: [
+      {
+        reviewedAt: "2026-06-18T08:00:00.000Z",
+        sha: "aaa111",
+        verdict: "needs real behavior proof before merge.",
+        findings: ["[P1] Add proof for the fallback path"],
+      },
+    ],
+    totalCompletedCycles: 1,
+  });
   const body = `${previousDurableComment()}\n\n${ledger}`;
   const review = extractLatestClawSweeperReviewForTest(
     [
@@ -300,6 +332,50 @@ test("latest review extraction exposes earlier cycles and a cycle count", () => 
   assert.equal(review?.completedReviewCycles, 2);
   assert.equal(review?.earlierReviewCycles.length, 1);
   assert.equal(review?.earlierReviewCycles[0]?.sha, "aaa111");
+});
+
+test("stale durable comments expose the latest completed cycle from preserved history", () => {
+  const ledger = renderReviewHistorySection({
+    cycles: [
+      {
+        reviewedAt: "2026-06-18T08:00:00.000Z",
+        sha: "aaa111",
+        verdict: "needs real behavior proof before merge.",
+        findings: ["[P1] Add proof for the fallback path"],
+      },
+      {
+        reviewedAt: "2026-06-20T10:00:00.000Z",
+        sha: "bbb222",
+        verdict: "needs changes before merge.",
+        findings: ["[P2] Clear the stale cache"],
+      },
+    ],
+    totalCompletedCycles: 10,
+  });
+  const body = `${staleDurableComment()}\n\n${ledger}\n\n<!-- clawsweeper-review item=101 -->`;
+  const review = extractLatestClawSweeperReviewForTest(
+    [
+      {
+        id: 10,
+        user: { login: "clawsweeper" },
+        body,
+        created_at: "2026-06-21T10:05:00Z",
+        updated_at: "2026-06-21T10:05:00Z",
+        html_url: "https://github.com/openclaw/openclaw/pull/101#issuecomment-10",
+      },
+    ],
+    101,
+  );
+
+  assert.ok(review);
+  assert.equal(review?.completedReviewCycles, 10);
+  assert.equal(review?.reviewedAt, "2026-06-20T10:00:00.000Z");
+  assert.equal(review?.reviewedSha, "bbb222");
+  assert.deepEqual(review?.findings, [{ priority: "P2", title: "Clear the stale cache" }]);
+  assert.deepEqual(
+    review?.earlierReviewCycles.map((cycle) => cycle.sha),
+    ["aaa111"],
+  );
 });
 
 test("late findings round-trip through decisions and comment rendering", () => {
@@ -342,5 +418,6 @@ test("review prompt and schema document re-review continuity", () => {
   assert.match(prompt, /re-review continuity/);
   assert.match(prompt, /never hold back a visible concern for a later cycle/);
   assert.match(prompt, /`lateFinding: true`/);
+  assert.match(prompt, /git diff <earlier-sha>\.\.HEAD -- <file>/);
   assert.match(schema, /"lateFinding"/);
 });
