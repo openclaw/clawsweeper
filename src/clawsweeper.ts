@@ -12976,7 +12976,7 @@ function contextHasNonAutomationActivityAfter(
   reviewedAtMs: number,
   options: {
     truncationCountsAsActivity?: boolean;
-    ignoreTimelineCommentDuplicates?: boolean;
+    ignoreTimelineCommentsThroughMs?: number;
   } = {},
 ): boolean {
   const truncationCountsAsActivity = options.truncationCountsAsActivity ?? true;
@@ -12997,13 +12997,15 @@ function contextHasNonAutomationActivityAfter(
   };
   const hasNonAutomationEvent = (event: unknown): boolean => {
     const record = asRecord(event);
-    // Issue comments are checked above with their bodies. Ignore the timeline
-    // duplicate so filtered command-only comments do not become human activity.
+    // Issue comments are checked above with their bodies. Ignore timeline
+    // duplicates only through the completed review; later commands are fresh
+    // activity and must keep stale labels from being restored.
     if (
-      options.ignoreTimelineCommentDuplicates &&
-      stringOrUndefined(record.event) === "commented"
+      stringOrUndefined(record.event) === "commented" &&
+      options.ignoreTimelineCommentsThroughMs !== undefined
     ) {
-      return false;
+      const eventMs = eventTimestampMs(event);
+      if (eventMs !== null && eventMs <= options.ignoreTimelineCommentsThroughMs) return false;
     }
     return (
       isAfterReview(event, reviewedAtMs) &&
@@ -13014,6 +13016,25 @@ function contextHasNonAutomationActivityAfter(
     context.comments.some(hasNonAutomationComment) ||
     (context.pullReviewComments ?? []).some(hasNonAutomationComment) ||
     context.timeline.some(hasNonAutomationEvent)
+  );
+}
+
+export function contextHasNonAutomationActivityAfterForTest(options: {
+  comments?: unknown[];
+  timeline?: unknown[];
+  activityAfterMs: number;
+  ignoreTimelineCommentsThroughMs?: number;
+}): boolean {
+  return contextHasNonAutomationActivityAfter(
+    {
+      issue: {},
+      comments: options.comments ?? [],
+      timeline: options.timeline ?? [],
+    },
+    options.activityAfterMs,
+    options.ignoreTimelineCommentsThroughMs === undefined
+      ? {}
+      : { ignoreTimelineCommentsThroughMs: options.ignoreTimelineCommentsThroughMs },
   );
 }
 
@@ -18182,9 +18203,12 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
       }
       const storedUpdatedAtMs = timestampMs(storedUpdatedAt);
       if (storedUpdatedAtMs === null) return false;
-      return !contextHasNonAutomationActivityAfter(currentItemContext(), storedUpdatedAtMs, {
-        ignoreTimelineCommentDuplicates: true,
-      });
+      const reviewedAtMs = timestampMs(frontMatterValue(markdown, "reviewed_at"));
+      return !contextHasNonAutomationActivityAfter(
+        currentItemContext(),
+        storedUpdatedAtMs,
+        reviewedAtMs === null ? {} : { ignoreTimelineCommentsThroughMs: reviewedAtMs },
+      );
     };
     const stalePrReviewHead =
       state === "open" && item.kind === "pull_request"

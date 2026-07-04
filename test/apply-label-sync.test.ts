@@ -3,6 +3,8 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { join } from "node:path";
 import test from "node:test";
 
+import { contextHasNonAutomationActivityAfterForTest } from "../dist/clawsweeper.js";
+
 import {
   lowSignalCloseReport,
   prRatingReportSection,
@@ -15,6 +17,33 @@ import {
   withMockGh,
   workPlanCandidateReport,
 } from "./helpers.ts";
+
+test("command-only timeline activity is ignored only through the completed review", () => {
+  const storedAtMs = Date.parse("2026-07-03T21:42:48Z");
+  const reviewedAtMs = Date.parse("2026-07-03T21:44:48Z");
+  const timelineEvent = (createdAt: string) => ({
+    event: "commented",
+    actor: "contributor",
+    createdAt,
+  });
+
+  assert.equal(
+    contextHasNonAutomationActivityAfterForTest({
+      timeline: [timelineEvent("2026-07-03T21:43:00Z")],
+      activityAfterMs: storedAtMs,
+      ignoreTimelineCommentsThroughMs: reviewedAtMs,
+    }),
+    false,
+  );
+  assert.equal(
+    contextHasNonAutomationActivityAfterForTest({
+      timeline: [timelineEvent("2026-07-03T21:45:00Z")],
+      activityAfterMs: storedAtMs,
+      ignoreTimelineCommentsThroughMs: reviewedAtMs,
+    }),
+    true,
+  );
+});
 
 test("apply-decisions skips advisory label sync when a close report changed since review", () => {
   const root = mkdtempSync(tmpPrefix);
