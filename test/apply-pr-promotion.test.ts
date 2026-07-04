@@ -371,6 +371,75 @@ test("apply-decisions does not promote stale PRs from truncated activity", () =>
   }
 });
 
+test("apply-decisions does not promote stale PRs after human follow-up", () => {
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    const itemsDir = join(root, "items");
+    const closedDir = join(root, "closed");
+    const plansDir = join(root, "plans");
+    const reportPath = join(root, "apply-report.json");
+    mkdirSync(itemsDir, { recursive: true });
+    mkdirSync(plansDir, { recursive: true });
+    const synced = reportWithSyncedReviewComment(stalePullRequestReport(), 330, "none");
+    writeFileSync(join(itemsDir, "330.md"), synced.report, "utf8");
+
+    withMockGh(
+      root,
+      promotionGhMock({
+        number: 330,
+        comment: synced.comment,
+        comments: [
+          {
+            id: 9330,
+            html_url: "https://github.com/openclaw/openclaw/pull/330#issuecomment-9330",
+            created_at: "2026-05-01T01:00:00Z",
+            updated_at: "2026-05-01T01:00:00Z",
+            user: { login: "clawsweeper[bot]" },
+            body: synced.comment,
+          },
+          {
+            id: 9331,
+            html_url: "https://github.com/openclaw/openclaw/pull/330#issuecomment-9331",
+            created_at: "2026-05-01T02:00:00Z",
+            updated_at: "2026-05-01T02:00:00Z",
+            user: { login: "reporter" },
+            body: "I can still work on this.",
+          },
+        ],
+      }),
+      () => {
+        withMockCodexProof(root, { type: "failure", message: "proof should not run" }, () => {
+          runApplyDecisionsForTest({
+            itemsDir,
+            closedDir,
+            plansDir,
+            reportPath,
+            extraArgs: [
+              "--target-repo",
+              "openclaw/openclaw",
+              "--dry-run",
+              "--apply-kind",
+              "all",
+              "--processed-limit",
+              "3",
+            ],
+          });
+        });
+      },
+    );
+
+    const report = JSON.parse(readFileSync(reportPath, "utf8")) as Array<{ action: string }>;
+    assert.equal(
+      report.some((entry) => entry.action === "closed"),
+      false,
+    );
+    assert.doesNotMatch(JSON.stringify(report), /proof should not run/);
+    assert.match(readFileSync(join(itemsDir, "330.md"), "utf8"), /^action_taken: kept_open$/m);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("apply-decisions does not promote stale PRs after a command-only re-review request", () => {
   const root = mkdtempSync(tmpPrefix);
   try {
