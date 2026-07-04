@@ -99,9 +99,9 @@ jobs:
           expected_title="${title} [${DISPATCH_KEY}]"
           if gh api --method GET "repos/${GITHUB_REPOSITORY}/actions/workflows/repair-cluster-worker.yml/runs?per_page=100" \
             | jq -e --arg title "$expected_title" --arg current "$GITHUB_RUN_ID" \
-              'any(.workflow_runs[]; .display_title == $title and (.id | tostring) != $current)' >/dev/null; then
+              'any(.workflow_runs[]; .display_title == $title and .id < ($current | tonumber))' >/dev/null; then
             echo "proceed=false" >> "$GITHUB_OUTPUT"
-            echo "Exact command dispatch receipt already exists; skipping duplicate repair."
+            echo "An older exact command dispatch receipt already exists; skipping duplicate repair."
             exit 0
           fi
           echo "proceed=true" >> "$GITHUB_OUTPUT"

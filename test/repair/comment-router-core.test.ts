@@ -1489,9 +1489,21 @@ test("comment router durably claims dispatch commands and recovers exact workflo
   assert.match(assistWorkflow, /Assist \{0\}#\{1\} \[\{2\}\]/);
   assert.match(sweepWorkflow, /delivery_id: dispatchKey/);
   assert.match(sweepWorkflow, /`router:\$\{dispatchKey\}`/);
-  assert.match(assistWorkflow, /Exact command dispatch receipt already exists/);
-  assert.match(repairWorkflow, /Exact command dispatch receipt already exists/);
+  assert.match(assistWorkflow, /older exact command dispatch receipt already exists/i);
+  assert.match(repairWorkflow, /older exact command dispatch receipt already exists/i);
   assert.match(repairWorkflow, /dispatch_key:/);
+});
+
+test("command receipt gates let the oldest same-key run proceed when a newer duplicate is pending", () => {
+  const workflows = [
+    readFileSync(".github/workflows/assist.yml", "utf8"),
+    readFileSync(".github/workflows/repair-cluster-worker.yml", "utf8"),
+  ];
+
+  for (const workflow of workflows) {
+    assert.match(workflow, /\.display_title == \$title and \.id < \(\$current \| tonumber\)/);
+    assert.doesNotMatch(workflow, /\(\.id \| tostring\) != \$current/);
+  }
 });
 
 test("trusted autoclose markers are live close gated before close execution", () => {
