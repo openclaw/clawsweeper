@@ -8,6 +8,7 @@ import test from "node:test";
 import {
   applyContinuationBlocker,
   applyCursorAdvanceCount,
+  adaptiveApplyBatchSize,
   artifactItemNumbers,
   automationLimit,
   commentSyncBatchOutput,
@@ -747,6 +748,136 @@ test("workflow utilities expose review capacity telemetry from plans", () => {
       oldest_unreviewed_at: "2026-01-01T00:00:00Z",
       capacity_reason: "under capacity: due backlog below planned capacity",
     },
+  );
+});
+
+test("workflow utilities expand automatic apply scan after a skip-heavy zero-close window", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-workflow-"));
+  const statusPath = path.join(root, "results/sweep-status/openclaw-openclaw.json");
+  write(
+    statusPath,
+    JSON.stringify({
+      apply_health: {
+        mode: "close",
+        cursor_required: true,
+        processed: 300,
+        processed_limit: 300,
+        closed: 0,
+        skipped: 285,
+        attention_reasons: ["skipped_changed_since_review"],
+      },
+    }),
+  );
+
+  const result = adaptiveApplyBatchSize({ statusPath, baseSize: 300, maxSize: 900 });
+
+  assert.equal(result.closeProcessedLimit, 600);
+  assert.equal(result.adaptive, true);
+  assert.equal(result.reason, "previous_full_zero_close_skip_window");
+  assert.equal(result.previousProcessed, 300);
+  assert.equal(result.previousSkipped, 285);
+});
+
+test("workflow utilities use preserved close health after comment-sync status updates", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-workflow-"));
+  const statusPath = path.join(root, "results/sweep-status/openclaw-openclaw.json");
+  write(
+    statusPath,
+    JSON.stringify({
+      apply_health: {
+        mode: "comment_sync",
+        cursor_required: true,
+        processed: 25,
+        processed_limit: 25,
+        closed: 0,
+        skipped: 0,
+        attention_reasons: [],
+      },
+      last_close_apply_health: {
+        mode: "close",
+        cursor_required: true,
+        processed: 300,
+        processed_limit: 300,
+        closed: 0,
+        skipped: 300,
+        attention_reasons: ["skipped_changed_since_review"],
+      },
+    }),
+  );
+
+  const result = adaptiveApplyBatchSize({ statusPath, baseSize: 300, maxSize: 900 });
+
+  assert.equal(result.closeProcessedLimit, 600);
+  assert.equal(result.adaptive, true);
+  assert.equal(result.previousProcessed, 300);
+});
+
+test("workflow utilities cap adaptive apply scan and reset on productive or unsafe windows", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-workflow-"));
+  const statusPath = path.join(root, "results/sweep-status/openclaw-openclaw.json");
+  const size = () => adaptiveApplyBatchSize({ statusPath, baseSize: 300, maxSize: 900 });
+
+  write(
+    statusPath,
+    JSON.stringify({
+      apply_health: {
+        mode: "close",
+        cursor_required: true,
+        processed: 600,
+        processed_limit: 600,
+        closed: 0,
+        skipped: 600,
+        attention_reasons: ["skipped_protected_label"],
+      },
+    }),
+  );
+  assert.equal(size().closeProcessedLimit, 900);
+
+  write(
+    statusPath,
+    JSON.stringify({
+      apply_health: {
+        mode: "close",
+        cursor_required: true,
+        processed: 300,
+        processed_limit: 300,
+        closed: 1,
+        skipped: 299,
+        attention_reasons: [],
+      },
+    }),
+  );
+  assert.deepEqual(
+    { limit: size().closeProcessedLimit, reason: size().reason, adaptive: size().adaptive },
+    { limit: 300, reason: "base_window", adaptive: false },
+  );
+
+  write(
+    statusPath,
+    JSON.stringify({
+      apply_health: {
+        mode: "close",
+        cursor_required: true,
+        processed: 300,
+        processed_limit: 300,
+        closed: 0,
+        skipped: 300,
+        attention_reasons: ["skipped_live_fetch_failed"],
+      },
+    }),
+  );
+  assert.deepEqual(
+    { limit: size().closeProcessedLimit, reason: size().reason, adaptive: size().adaptive },
+    { limit: 300, reason: "base_window", adaptive: false },
+  );
+
+  assert.equal(
+    adaptiveApplyBatchSize({
+      statusPath: path.join(root, "missing.json"),
+      baseSize: 300,
+      maxSize: 900,
+    }).closeProcessedLimit,
+    300,
   );
 });
 

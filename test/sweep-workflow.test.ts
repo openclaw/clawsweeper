@@ -122,6 +122,7 @@ test("apply workflow installs Codex only when proof-eligible apply work can run"
 
 test("apply workflow bounds checkpoints and requeues with a fresh token", () => {
   const workflow = readText(".github/workflows/sweep.yml");
+  const applyHelper = readText("scripts/apply-workflow-helpers.sh");
   const inputBlock = workflow.slice(
     workflow.indexOf("  workflow_dispatch:\n    inputs:"),
     workflow.indexOf("\n  schedule:"),
@@ -135,6 +136,14 @@ test("apply workflow bounds checkpoints and requeues with a fresh token", () => 
     applyJob.indexOf("- name: Continue apply sweep"),
     applyJob.indexOf("- name: Queue review backstops"),
   );
+  const runMarker = "        run: |\n";
+  const runBodyStart = applyStep.indexOf(runMarker);
+  assert.notEqual(runBodyStart, -1);
+  const runBody = applyStep
+    .slice(runBodyStart + runMarker.length)
+    .split("\n")
+    .map((line) => (line.startsWith("          ") ? line.slice(10) : line))
+    .join("\n");
 
   assert.match(workflow, /format\('Apply default ClawSweeper closures for \{0\}'/);
   assert.match(workflow, /format\('Apply custom ClawSweeper closures for \{0\}'/);
@@ -145,7 +154,17 @@ test("apply workflow bounds checkpoints and requeues with a fresh token", () => 
   assert.match(inputBlock, /apply_limit:[\s\S]*default: "20"/);
   assert.match(inputBlock, /apply_checkpoint_size:[\s\S]*default: "20"/);
   assert.match(applyStep, /Capping apply checkpoint size at 20/);
-  assert.match(applyStep, /close_processed_limit=300/);
+  assert.match(applyStep, /base_close_processed_limit=300/);
+  assert.match(applyStep, /max_close_processed_limit=900/);
+  assert.match(applyStep, /close_processed_limit="\$base_close_processed_limit"/);
+  assert.match(applyStep, /source scripts\/apply-workflow-helpers\.sh/);
+  assert.match(applyStep, /select_adaptive_apply_batch/);
+  assert.match(applyHelper, /adaptive-apply-batch-size/);
+  assert.match(applyHelper, /--status-path "results\/sweep-status\/\$\{target_slug\}\.json"/);
+  assert.ok(
+    runBody.length < 20_000,
+    `apply run expression is ${runBody.length} characters; keep margin below GitHub's 21,000-character limit`,
+  );
   assert.match(applyStep, /processed-limit "\$close_processed_limit"/);
   assert.match(applyStep, /comment_sync_processed_limit=1000/);
   assert.match(applyStep, /--processed-limit "\$comment_sync_processed_limit"/);
@@ -153,14 +172,14 @@ test("apply workflow bounds checkpoints and requeues with a fresh token", () => 
   assert.ok(applyFlagInit > applyStep.indexOf('item_numbers="${{'));
   assert.ok(applyFlagInit < applyStep.indexOf("auto_selected_apply_batch=true"));
   assert.match(applyStep, /apply_cursor_path="results\/apply-cursors\/\$\{target_slug\}\.json"/);
-  assert.match(applyStep, /write_apply_health\(\)/);
+  assert.match(applyHelper, /write_apply_health\(\)/);
   assert.match(applyStep, /proposed-item-count/);
   assert.match(applyStep, /apply-cursor-advance-count/);
-  assert.match(applyStep, /--candidate-count "\$health_candidate_count"/);
-  assert.match(applyStep, /--cursor-advance-count "\$health_cursor_advance_count"/);
-  assert.match(applyStep, /--scheduled-interval-minutes "\$health_scheduled_interval_minutes"/);
-  assert.match(applyStep, /pnpm run --silent workflow -- summarize-apply-report/);
-  assert.match(applyStep, /health_cursor_path="\$\{5:-\}"/);
+  assert.match(applyHelper, /--candidate-count "\$health_candidate_count"/);
+  assert.match(applyHelper, /--cursor-advance-count "\$health_cursor_advance_count"/);
+  assert.match(applyHelper, /--scheduled-interval-minutes "\$health_scheduled_interval_minutes"/);
+  assert.match(applyHelper, /pnpm run --silent workflow -- summarize-apply-report/);
+  assert.match(applyHelper, /health_cursor_path="\$\{5:-\}"/);
   assert.match(applyStep, /comment_sync_health_cursor_path="\$cursor_path"/);
   assert.match(applyStep, /comment_sync_health_cursor_required="true"/);
   assert.match(applyStep, /comment_sync_health_processed_limit="\$sync_batch_size"/);
@@ -168,21 +187,32 @@ test("apply workflow bounds checkpoints and requeues with a fresh token", () => 
   assert.match(applyStep, /--apply-health-file "\.artifacts\/apply-health-\$checkpoint\.json"/);
   assert.match(applyStep, /--apply-health-file "\.artifacts\/apply-health-final\.json"/);
   assert.match(applyStep, /--state "Apply idle"/);
-  assert.match(applyStep, /proposed-item-quality-summary/);
-  assert.match(applyStep, /candidate_quality_summary="\$\(awk -F=/);
+  assert.match(applyHelper, /proposed-item-quality-summary/);
+  assert.match(applyHelper, /candidate_quality_summary="\$\(awk -F=/);
   assert.match(
-    applyStep,
+    applyHelper,
     /candidate_quality_detail=" Close candidate mix: \$candidate_quality_summary\."/,
   );
   assert.match(applyStep, /awaiting apply\.\$candidate_quality_detail Scheduled apply/);
-  assert.match(applyStep, /\$apply_close_reasons\.\$candidate_quality_detail Existing Codex/);
+  assert.match(
+    applyStep,
+    /\$apply_close_reasons\.\$candidate_quality_detail Scan window: \$close_processed_limit/,
+  );
   const applyReconcileIndex = applyStep.indexOf('pnpm run reconcile -- "${reconcile_args[@]}"');
-  const qualitySummaryIndex = applyStep.indexOf("proposed-item-quality-summary");
+  const qualitySummaryIndex = applyStep.indexOf("summarize_apply_candidate_quality");
   const proposedNumbersIndex = applyStep.indexOf("proposed-item-numbers");
   assert.notEqual(applyReconcileIndex, -1);
   assert.ok(qualitySummaryIndex > applyReconcileIndex);
   assert.ok(proposedNumbersIndex > qualitySummaryIndex);
   assert.match(applyStep, /--batch-size "\$close_processed_limit"/);
+  assert.match(
+    applyStep,
+    /Scan window: \$close_processed_limit records \(\$adaptive_apply_scan_reason\)/,
+  );
+  assert.match(
+    applyStep,
+    /Auto-selected \$proposed_count proposed close candidate\(s\) from \$close_processed_limit-record apply cursor window/,
+  );
   assert.match(applyStep, /--cursor-path "\$apply_cursor_path"/);
   assert.match(applyStep, /write-apply-cursor/);
   assert.match(applyStep, /--item-numbers "\$item_numbers"/);

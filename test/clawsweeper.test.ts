@@ -1996,6 +1996,9 @@ test("sweep status writer preserves non-apply health and clears stale apply upda
     /state\.startsWith\("Apply "\)\s+\?\s+null\s+:\s+readSweepStatusSummary\(profile\)\?\.applyHealth/,
   );
   assert.match(source, /apply_health: applyHealth \?\? null/);
+  assert.match(source, /last_close_apply_health: lastCloseApplyHealth \?\? null/);
+  assert.match(source, /previousStatus\?\.lastCloseApplyHealth/);
+  assert.match(source, /previousStatus\?\.applyHealth\?\.mode === "close"/);
 });
 
 test("review parser strips environment access caveats from risks", () => {

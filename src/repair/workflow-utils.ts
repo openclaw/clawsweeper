@@ -113,6 +113,25 @@ type ApplyCycleSummary = {
   scheduled_interval_minutes: number | null;
   label: string;
 };
+
+type AdaptiveApplyBatchSizeOptions = {
+  statusPath: string;
+  baseSize: number;
+  maxSize: number;
+};
+
+type AdaptiveApplyBatchSize = {
+  closeProcessedLimit: number;
+  baseCloseProcessedLimit: number;
+  maxCloseProcessedLimit: number;
+  adaptive: boolean;
+  reason: string;
+  previousProcessed: number | null;
+  previousProcessedLimit: number | null;
+  previousClosed: number | null;
+  previousSkipped: number | null;
+};
+
 const args = parseArgs(process.argv.slice(2));
 
 function runCli(): void {
@@ -181,6 +200,25 @@ function runCli(): void {
         )}\n`,
       );
       break;
+    case "adaptive-apply-batch-size": {
+      const result = adaptiveApplyBatchSize({
+        statusPath: requiredString("status-path"),
+        baseSize: numberArg("base-size", 300),
+        maxSize: numberArg("max-size", 900),
+      });
+      printOutput({
+        close_processed_limit: String(result.closeProcessedLimit),
+        base_close_processed_limit: String(result.baseCloseProcessedLimit),
+        max_close_processed_limit: String(result.maxCloseProcessedLimit),
+        adaptive_apply_scan: result.adaptive ? "true" : "false",
+        adaptive_apply_scan_reason: result.reason,
+        previous_apply_processed: optionalNumberOutput(result.previousProcessed),
+        previous_apply_processed_limit: optionalNumberOutput(result.previousProcessedLimit),
+        previous_apply_closed: optionalNumberOutput(result.previousClosed),
+        previous_apply_skipped: optionalNumberOutput(result.previousSkipped),
+      });
+      break;
+    }
     case "count-command-actions":
       console.log(
         countCommandActions(
@@ -332,6 +370,89 @@ function defaultCapacityReason(
   if (selectedCount === 0) return "idle: no due candidates found";
   if (dueBacklog >= capacity) return "saturated: due backlog filled planned capacity";
   return "under capacity: due backlog below planned capacity";
+}
+
+export function adaptiveApplyBatchSize(
+  options: AdaptiveApplyBatchSizeOptions,
+): AdaptiveApplyBatchSize {
+  const baseSize = positiveInteger(options.baseSize, "baseSize");
+  const maxSize = Math.max(baseSize, positiveInteger(options.maxSize, "maxSize"));
+  const base: AdaptiveApplyBatchSize = {
+    closeProcessedLimit: baseSize,
+    baseCloseProcessedLimit: baseSize,
+    maxCloseProcessedLimit: maxSize,
+    adaptive: false,
+    reason: "base_window",
+    previousProcessed: null,
+    previousProcessedLimit: null,
+    previousClosed: null,
+    previousSkipped: null,
+  };
+  const status = readJsonObjectIfPresent(options.statusPath);
+  if (!status) return base;
+  const health = closeApplyHealthFromStatus(status);
+  if (!health) return base;
+  const previousProcessed = nonNegativeIntegerOrNull(health.processed);
+  const previousProcessedLimit = nonNegativeIntegerOrNull(health.processed_limit);
+  const previousClosed = nonNegativeIntegerOrNull(health.closed);
+  const previousSkipped = nonNegativeIntegerOrNull(health.skipped);
+  const withPrevious = {
+    ...base,
+    previousProcessed,
+    previousProcessedLimit,
+    previousClosed,
+    previousSkipped,
+  };
+  if (health.cursor_required !== true) return withPrevious;
+  if (
+    previousProcessed === null ||
+    previousProcessedLimit === null ||
+    previousClosed === null ||
+    previousSkipped === null
+  ) {
+    return withPrevious;
+  }
+
+  const fullWindow = previousProcessedLimit > 0 && previousProcessed >= previousProcessedLimit;
+  const zeroClose = previousClosed === 0;
+  const skipHeavy = previousProcessed > 0 && previousSkipped / previousProcessed >= 0.8;
+  const attentionReasons = new Set(stringArray(health.attention_reasons));
+  const unsafeAttention = [
+    "cursor_required_but_missing_after_full_window",
+    "skipped_live_fetch_failed",
+    "skipped_runtime_budget",
+  ].some((reason) => attentionReasons.has(reason));
+  if (!fullWindow || !zeroClose || !skipHeavy || unsafeAttention) return withPrevious;
+
+  const grown = Math.min(maxSize, Math.max(baseSize, previousProcessedLimit * 2));
+  if (grown <= baseSize) return withPrevious;
+  return {
+    ...withPrevious,
+    closeProcessedLimit: grown,
+    adaptive: true,
+    reason: "previous_full_zero_close_skip_window",
+  };
+}
+
+function closeApplyHealthFromStatus(status: LooseRecord): LooseRecord | null {
+  const current = recordOrNull(status.apply_health);
+  if (current?.mode === "close") return current;
+  const preserved = recordOrNull(status.last_close_apply_health);
+  return preserved?.mode === "close" ? preserved : null;
+}
+
+function optionalNumberOutput(value: number | null): string {
+  return value === null ? "" : String(value);
+}
+
+function positiveInteger(value: number, name: string): number {
+  if (!Number.isInteger(value) || value < 1) throw new Error(`${name} must be a positive integer`);
+  return value;
+}
+
+function nonNegativeIntegerOrNull(value: JsonValue | undefined): number | null {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed >= 0 ? parsed : null;
 }
 
 export function plannedItemNumberCsv(plan: LooseRecord): string {
@@ -1570,6 +1691,19 @@ function readJsonObject(filePath: string): LooseRecord {
   return parsed;
 }
 
+function readJsonObjectIfPresent(filePath: string): LooseRecord | null {
+  if (!filePath || !fs.existsSync(filePath)) return null;
+  try {
+    return readJsonObject(filePath);
+  } catch {
+    return null;
+  }
+}
+
+function recordOrNull(value: JsonValue | undefined): LooseRecord | null {
+  return isJsonObject(value) ? value : null;
+}
+
 function readJsonArray(filePath: string): unknown[] {
   const parsed: unknown = JSON.parse(fs.readFileSync(filePath, "utf8"));
   if (!Array.isArray(parsed)) throw new Error(`${filePath} must contain a JSON array`);
@@ -1633,7 +1767,7 @@ function positiveNumber(value: string, fallback: number): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
-function stringArray(value: JsonValue): string[] {
+function stringArray(value: JsonValue | undefined): string[] {
   return Array.isArray(value)
     ? value.filter((entry): entry is string => typeof entry === "string")
     : [];

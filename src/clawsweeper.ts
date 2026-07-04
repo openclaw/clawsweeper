@@ -788,6 +788,7 @@ interface WorkflowStatusSummary {
   detail: string;
   runUrl: string | undefined;
   applyHealth: Record<string, unknown> | undefined;
+  lastCloseApplyHealth: Record<string, unknown> | undefined;
   plannedCount: number | undefined;
   plannedCapacity: number | undefined;
   plannedShards: number | undefined;
@@ -1954,10 +1955,14 @@ function writeSweepStatus(options: {
 }): void {
   const profile = options.profile ?? targetProfile();
   const updatedAt = new Date().toISOString();
+  const previousStatus = readSweepStatusSummary(profile);
   const applyHealth =
-    options.applyHealth === undefined
-      ? readSweepStatusSummary(profile)?.applyHealth
-      : options.applyHealth;
+    options.applyHealth === undefined ? previousStatus?.applyHealth : options.applyHealth;
+  const previousCloseApplyHealth =
+    previousStatus?.lastCloseApplyHealth ??
+    (previousStatus?.applyHealth?.mode === "close" ? previousStatus.applyHealth : undefined);
+  const lastCloseApplyHealth =
+    applyHealth && applyHealth.mode === "close" ? applyHealth : previousCloseApplyHealth;
   const payload = {
     schema_version: 1,
     slug: profile.slug,
@@ -1980,6 +1985,7 @@ function writeSweepStatus(options: {
     bot_owned_proof_decisions_requested: options.botOwnedProofDecisionsRequested ?? null,
     bot_owned_proof_dispatches: options.botOwnedProofDispatches ?? null,
     apply_health: applyHealth ?? null,
+    last_close_apply_health: lastCloseApplyHealth ?? null,
     updated_at: updatedAt,
   };
   const outputPath = sweepStatusPath(profile);
@@ -8265,6 +8271,7 @@ function readSweepStatusSummary(profile = targetProfile()): WorkflowStatusSummar
       detail: stringOrUndefined(parsed.detail) ?? "No workflow status has been published yet.",
       runUrl: stringOrUndefined(parsed.run_url),
       applyHealth: recordOrUndefined(parsed.apply_health),
+      lastCloseApplyHealth: recordOrUndefined(parsed.last_close_apply_health),
       plannedCount: numberOrUndefined(parsed.planned_count),
       plannedCapacity: numberOrUndefined(parsed.planned_capacity),
       plannedShards: numberOrUndefined(parsed.planned_shards),
@@ -8359,6 +8366,7 @@ function workflowStatusSummary(block: string): WorkflowStatusSummary {
     detail,
     runUrl,
     applyHealth: undefined,
+    lastCloseApplyHealth: undefined,
     plannedCount: numberOrUndefined(planMatch?.[1]),
     plannedShards: numberOrUndefined(planMatch?.[2]),
     plannedCapacity: numberOrUndefined(planMatch?.[3]),

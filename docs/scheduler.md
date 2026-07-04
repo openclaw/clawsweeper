@@ -459,6 +459,15 @@ continuation with a fresh GitHub App token after any checkpoint that closes at
 least one item. A saturated scan that closes nothing stops without chaining so
 the same records cannot create an unbounded runner loop.
 
+Untargeted cursor-based close apply starts with a 300-record scan window. If
+the previous cursor window was a full close-mode scan, closed nothing, skipped
+at least 80% of processed records, and did not hit a live-fetch, runtime-budget,
+or missing-cursor failure, the next automatic window expands to inspect more
+records, capped at 900. This changes only the deterministic scan window:
+`apply_limit`, checkpoint size, close gates, live-state checks, and maintainer
+policy gates stay unchanged. The workflow logs and sweep status detail include
+the selected scan window and reason.
+
 Before a close-mode apply run starts, the workflow summarizes the selected close
 candidate mix by quality bucket in the status detail. Buckets such as
 implemented-on-main, duplicate/superseded, needs PR close proof,
