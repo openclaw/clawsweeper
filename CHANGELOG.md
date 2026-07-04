@@ -27,7 +27,6 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Fixed
 
-- Prevented comment-router retries from either duplicating or permanently losing dispatch-bearing commands by recovering exact Actions receipts and retrying only stale pre-dispatch claims. Thanks @ag-linden.
 - Split apply workflow helpers out of the oversized inline expression so GitHub can validate and start sweep runs again.
 - Bounded apply-existing checkpoints to five fresh closes, renewed the GitHub
   App token between continuation runs, and stopped zero-progress scans from

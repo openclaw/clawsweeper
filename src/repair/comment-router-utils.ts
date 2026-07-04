@@ -23,6 +23,15 @@ export function dispatchClaimLookupKeys(entry: LooseRecord) {
   return keys;
 }
 
+export function dispatchReceiptKeyMaterial(entry: LooseRecord, claim: LooseRecord | null) {
+  const idempotencyKey = String(entry.idempotency_key ?? entry.comment_version_key ?? "unknown");
+  if (entry.automation_source !== "repair_loop_label_sweep") return idempotencyKey;
+  const attempt = String(
+    claim?.processed_at ?? entry.processed_at ?? entry.comment_updated_at ?? "unknown-attempt",
+  );
+  return `${idempotencyKey}:${attempt}`;
+}
+
 export function summarizeChecks(checks: LooseRecord[]) {
   const ignored = ignoredCheckNames();
   const latestChecks = latestCheckRuns(checks);
@@ -370,6 +379,13 @@ function stableLedgerEntry(entry: LooseRecord) {
 }
 
 function ledgerEntryKey(entry: LooseRecord) {
+  if (
+    !entry.comment_version_key &&
+    entry.automation_source === "repair_loop_label_sweep" &&
+    entry.idempotency_key
+  ) {
+    return `idempotency:${entry.idempotency_key}`;
+  }
   return (
     entry.comment_version_key ??
     `${entry.comment_id ?? "unknown"}:${entry.comment_updated_at ?? "unknown"}`

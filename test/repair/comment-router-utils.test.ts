@@ -6,6 +6,7 @@ import {
   appendLedger,
   dispatchClaimDecision,
   dispatchClaimLookupKeys,
+  dispatchReceiptKeyMaterial,
   isGitHubAppIntegrationAuthError,
   isAllowedMutationActor,
   normalizeGitHubActor,
@@ -33,6 +34,64 @@ test("synthetic dispatch claims retain a stable idempotency lookup across router
     first.filter((key) => replay.includes(key)),
     [`idempotency:${idempotencyKey}`],
   );
+});
+
+test("synthetic dispatch receipt material is stable within an attempt and changes next attempt", () => {
+  const command = {
+    idempotency_key: "repair-loop-label-sweep:openclaw/openclaw:automerge:74499",
+    automation_source: "repair_loop_label_sweep",
+    comment_updated_at: "2026-04-29T03:01:00Z",
+  };
+  const firstClaim = { processed_at: "2026-04-29T03:01:01Z" };
+  const replayedClaim = { processed_at: "2026-04-29T03:01:01Z" };
+  const nextClaim = { processed_at: "2026-04-29T04:15:00Z" };
+
+  assert.equal(
+    dispatchReceiptKeyMaterial(command, firstClaim),
+    dispatchReceiptKeyMaterial(command, replayedClaim),
+  );
+  assert.notEqual(
+    dispatchReceiptKeyMaterial(command, firstClaim),
+    dispatchReceiptKeyMaterial(command, nextClaim),
+  );
+});
+
+test("synthetic dispatch attempt replaces its durable claim in the ledger", () => {
+  const ledger = { updated_at: null, commands: [] };
+  const base = {
+    idempotency_key: "repair-loop-label-sweep:openclaw/openclaw:automerge:74499",
+    comment_id: "repair-loop-label-sweep:automerge:74499",
+    comment_version_key: null,
+    automation_source: "repair_loop_label_sweep",
+    repo: "openclaw/openclaw",
+    issue_number: 74499,
+    intent: "automerge",
+  };
+
+  assert.equal(
+    appendLedger(ledger, [
+      {
+        ...base,
+        comment_updated_at: "2026-04-29T03:01:00Z",
+        processed_at: "2026-04-29T03:01:01Z",
+        status: "claimed",
+      },
+    ]),
+    true,
+  );
+  assert.equal(
+    appendLedger(ledger, [
+      {
+        ...base,
+        comment_updated_at: "2026-04-29T03:06:00Z",
+        processed_at: "2026-04-29T03:01:01Z",
+        status: "executed",
+      },
+    ]),
+    true,
+  );
+  assert.equal(ledger.commands.length, 1);
+  assert.equal(ledger.commands[0]?.status, "executed");
 });
 
 test("newer re-review commands supersede older retries from the same requester", () => {

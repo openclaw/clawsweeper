@@ -88,6 +88,7 @@ import {
   appendLedger,
   dispatchClaimDecision,
   dispatchClaimLookupKeys,
+  dispatchReceiptKeyMaterial,
   issueNumberFromUrl,
   isAllowedMutationActor,
   isGitHubAppIntegrationAuthError,
@@ -349,11 +350,13 @@ async function measureAsync<T>(name: string, fn: () => Promise<T>): Promise<T> {
 }
 
 function claimDispatchCommands(commands: LooseRecord[]) {
+  const processedAt = new Date().toISOString();
   const claims = commands
     .filter(commandNeedsDurableDispatchClaim)
     .filter((command) => !priorDispatchClaim(command))
     .map((command) => ({
       ...command,
+      processed_at: command.processed_at ?? processedAt,
       status: "claimed",
       actions: Array.isArray(command.actions)
         ? command.actions.map((action: JsonValue) =>
@@ -361,7 +364,11 @@ function claimDispatchCommands(commands: LooseRecord[]) {
           )
         : command.actions,
     }));
-  return appendLedger(ledger, claims);
+  const changed = appendLedger(ledger, claims);
+  for (const claim of claims) {
+    for (const key of dispatchClaimLookupKeys(claim)) priorDispatchClaims.set(key, claim);
+  }
+  return changed;
 }
 
 function commandNeedsDurableDispatchClaim(command: LooseRecord) {
@@ -389,7 +396,7 @@ function priorDispatchClaim(command: LooseRecord) {
 
 function dispatchReceiptKey(command: LooseRecord) {
   return `router-${createHash("sha256")
-    .update(String(command.idempotency_key ?? command.comment_version_key ?? "unknown"))
+    .update(dispatchReceiptKeyMaterial(command, priorDispatchClaim(command)))
     .digest("hex")
     .slice(0, 16)}`;
 }
