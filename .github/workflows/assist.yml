@@ -81,9 +81,36 @@ jobs:
             exit 0
           fi
           expected_title="Assist ${TARGET_REPO}#${ITEM_NUMBER} [${DISPATCH_KEY}]"
-          if gh api --method GET "repos/${GITHUB_REPOSITORY}/actions/workflows/assist.yml/runs?per_page=100" \
-            | jq -e --arg title "$expected_title" --arg current "$GITHUB_RUN_ID" \
-              'any(.workflow_runs[]; .display_title == $title and .id < ($current | tonumber) and (.status == "queued" or .status == "in_progress" or .status == "waiting" or .status == "pending" or .status == "requested" or .conclusion == "success"))' >/dev/null; then
+          duplicate_run_id="$(
+            gh api --method GET "repos/${GITHUB_REPOSITORY}/actions/workflows/assist.yml/runs?per_page=100" \
+              | jq -r --arg title "$expected_title" --arg current "$GITHUB_RUN_ID" '
+                  .workflow_runs[]
+                  | select(.display_title == $title and .id < ($current | tonumber))
+                  | select(.status == "queued" or .status == "in_progress" or .status == "waiting" or .status == "pending" or .status == "requested")
+                  | .id
+                ' \
+              | head -n 1
+          )"
+          if [ -z "$duplicate_run_id" ]; then
+            while IFS= read -r run_id; do
+              if [ -z "$run_id" ]; then
+                continue
+              fi
+              if gh run view "$run_id" --repo "${GITHUB_REPOSITORY}" --json jobs \
+                | jq -e '.jobs[]? | select(.name == "assist" and .conclusion == "success")' >/dev/null; then
+                duplicate_run_id="$run_id"
+                break
+              fi
+            done < <(
+              gh api --method GET "repos/${GITHUB_REPOSITORY}/actions/workflows/assist.yml/runs?per_page=100" \
+                | jq -r --arg title "$expected_title" --arg current "$GITHUB_RUN_ID" '
+                    .workflow_runs[]
+                    | select(.display_title == $title and .id < ($current | tonumber) and .conclusion == "success")
+                    | .id
+                  '
+            )
+          fi
+          if [ -n "$duplicate_run_id" ]; then
             echo "proceed=false" >> "$GITHUB_OUTPUT"
             echo "An older exact command dispatch receipt already exists; skipping duplicate assist."
             exit 0
