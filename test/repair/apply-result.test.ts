@@ -1244,7 +1244,9 @@ function runApplyResult(
       CLAWSWEEPER_ALLOW_EXECUTE: "1",
       CLAWSWEEPER_ALLOWED_OWNER: "openclaw",
       CLAWSWEEPER_MODEL: "model-test",
-      CLAWSWEEPER_PR_CLOSE_COVERAGE_PROOF_TIMEOUT_MS: "10000",
+      // Coverage instrumentation plus the parallel repair suite can delay this child process.
+      // Keep the bound short for a fake binary without making CI depend on a 10-second scheduler window.
+      CLAWSWEEPER_PR_CLOSE_COVERAGE_PROOF_TIMEOUT_MS: "30000",
       GH_TOKEN: "write-token",
       ...mockGhBinEnv(path.join(paths.binDir, "gh.js")),
       PATH: `${paths.binDir}${path.delimiter}${process.env.PATH ?? ""}`,

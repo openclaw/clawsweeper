@@ -87,6 +87,7 @@ import {
   SUPERSEDED_RE_REVIEW_REASON,
   appendLedger,
   dispatchClaimDecision,
+  dispatchClaimLookupKeys,
   issueNumberFromUrl,
   isAllowedMutationActor,
   isGitHubAppIntegrationAuthError,
@@ -154,8 +155,7 @@ const ledger = readLedger(ledgerPath());
 const priorDispatchClaims = new Map<string, LooseRecord>();
 for (const entry of ledger.commands ?? []) {
   if (entry.status !== "claimed") continue;
-  const key = commentVersionKey(entry);
-  if (key) priorDispatchClaims.set(key, entry);
+  for (const key of dispatchClaimLookupKeys(entry)) priorDispatchClaims.set(key, entry);
 }
 const TARGET_LOOKUP_RETRY_ATTEMPTS = 3;
 const processedCommentVersions = forceReprocess
@@ -380,7 +380,11 @@ function actionNeedsDurableDispatchClaim(action: JsonValue) {
 }
 
 function priorDispatchClaim(command: LooseRecord) {
-  return priorDispatchClaims.get(commentVersionKey(command) ?? "") ?? null;
+  for (const key of dispatchClaimLookupKeys(command)) {
+    const claim = priorDispatchClaims.get(key);
+    if (claim) return claim;
+  }
+  return null;
 }
 
 function dispatchReceiptKey(command: LooseRecord) {

@@ -1482,6 +1482,8 @@ test("comment router durably claims dispatch commands and recovers exact workflo
   assert.match(claimFunction, /commandHasAction\(command,\s*"dispatch_assist"\)/);
   assert.match(source, /function claimedDispatchState/);
   assert.match(source, /dispatchClaimDecision\(\{/);
+  assert.match(source, /dispatchClaimLookupKeys\(entry\)/);
+  assert.match(claimFunction, /dispatchClaimLookupKeys\(command\)/);
   assert.match(source, /\/runs\?per_page=100&page=\$\{page\}/);
   assert.match(source, /status:\s*"recovered"/);
   assert.doesNotMatch(source, /fallbackCodexTimeoutMs/);
@@ -1502,6 +1504,8 @@ test("command receipt gates let the oldest same-key run proceed when a newer dup
 
   for (const workflow of workflows) {
     assert.match(workflow, /\.display_title == \$title and \.id < \(\$current \| tonumber\)/);
+    assert.match(workflow, /\.status == "in_progress"/);
+    assert.match(workflow, /\.conclusion == "success"/);
     assert.doesNotMatch(workflow, /\(\.id \| tostring\) != \$current/);
   }
 });

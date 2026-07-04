@@ -8,6 +8,7 @@ import { sleepMs } from "./timing.js";
 const DEFAULT_MAX_LIVE_WORKERS = AUTOMATION_LIMITS.repair_live_runs.default;
 export const MAX_LIVE_WORKERS = AUTOMATION_LIMITS.repair_live_runs.hard_cap;
 export const DEFAULT_AUTOMERGE_REPAIR_RUN_NAME_PREFIX = "automerge repair ";
+export const DEFAULT_ISSUE_IMPLEMENTATION_RUN_NAME_PREFIX = "issue implementation ";
 export const DEFAULT_REPAIR_RUN_NAME_PREFIX = "repair cluster ";
 const DEFAULT_CAPACITY_POLL_MS = 30_000;
 const DEFAULT_CAPACITY_TIMEOUT_MS = 30 * 60 * 1000;
@@ -168,9 +169,12 @@ export function repairRunNamePrefixForJob(
   jobPath: JsonValue,
   automergeRunNamePrefix: JsonValue = DEFAULT_AUTOMERGE_REPAIR_RUN_NAME_PREFIX,
 ) {
-  return String(jobPath ?? "").includes("/inbox/automerge-")
-    ? String(automergeRunNamePrefix ?? DEFAULT_AUTOMERGE_REPAIR_RUN_NAME_PREFIX)
-    : DEFAULT_REPAIR_RUN_NAME_PREFIX;
+  const job = String(jobPath ?? "");
+  if (job.includes("/inbox/issue-")) return DEFAULT_ISSUE_IMPLEMENTATION_RUN_NAME_PREFIX;
+  if (job.includes("/inbox/automerge-")) {
+    return String(automergeRunNamePrefix ?? DEFAULT_AUTOMERGE_REPAIR_RUN_NAME_PREFIX);
+  }
+  return DEFAULT_REPAIR_RUN_NAME_PREFIX;
 }
 
 export function repairRunNameForJob(

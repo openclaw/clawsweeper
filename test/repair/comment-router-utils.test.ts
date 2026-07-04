@@ -5,6 +5,7 @@ import {
   SUPERSEDED_RE_REVIEW_REASON,
   appendLedger,
   dispatchClaimDecision,
+  dispatchClaimLookupKeys,
   isGitHubAppIntegrationAuthError,
   isAllowedMutationActor,
   normalizeGitHubActor,
@@ -14,6 +15,25 @@ import {
   supersededReReviewCommentVersions,
   summarizeChecks,
 } from "../../dist/repair/comment-router-utils.js";
+
+test("synthetic dispatch claims retain a stable idempotency lookup across router runs", () => {
+  const idempotencyKey = "repair-loop-label-sweep:openclaw/openclaw:automerge:74499";
+  const first = dispatchClaimLookupKeys({
+    idempotency_key: idempotencyKey,
+    comment_id: "repair-loop-label-sweep:automerge:74499",
+    comment_updated_at: "2026-04-29T03:01:00Z",
+  });
+  const replay = dispatchClaimLookupKeys({
+    idempotency_key: idempotencyKey,
+    comment_id: "repair-loop-label-sweep:automerge:74499",
+    comment_updated_at: "2026-04-29T03:06:00Z",
+  });
+
+  assert.deepEqual(
+    first.filter((key) => replay.includes(key)),
+    [`idempotency:${idempotencyKey}`],
+  );
+});
 
 test("newer re-review commands supersede older retries from the same requester", () => {
   const commands = [
@@ -184,6 +204,8 @@ test("dispatch claims recover the exact Actions receipt created after the claim"
     id: 991,
     display_title: "Review event item openclaw/openclaw#74499 [router-abc]",
     created_at: "2026-04-29T03:01:02Z",
+    status: "completed",
+    conclusion: "success",
   };
 
   assert.deepEqual(
@@ -201,6 +223,67 @@ test("dispatch claims recover the exact Actions receipt created after the claim"
       nowMs: Date.parse("2026-04-29T03:10:00Z"),
     }),
     { action: "recover", run: matchingRun },
+  );
+});
+
+test("dispatch claims wait for active receipts and retry terminal failures", () => {
+  const claim = { processed_at: "2026-04-29T03:01:00Z" };
+  const expectedTitle = "Review event item openclaw/openclaw#74499 [router-abc]";
+  const run = {
+    id: 991,
+    display_title: expectedTitle,
+    created_at: "2026-04-29T03:01:02Z",
+  };
+
+  assert.deepEqual(
+    dispatchClaimDecision({
+      claim,
+      runs: [{ ...run, status: "in_progress", conclusion: null }],
+      expectedTitle,
+      nowMs: Date.parse("2026-04-29T03:10:00Z"),
+    }),
+    { action: "wait", run: null },
+  );
+  for (const conclusion of ["cancelled", "failure", "skipped", "timed_out"]) {
+    assert.deepEqual(
+      dispatchClaimDecision({
+        claim,
+        runs: [{ ...run, status: "completed", conclusion }],
+        expectedTitle,
+        nowMs: Date.parse("2026-04-29T03:10:00Z"),
+      }),
+      { action: "dispatch", run: null },
+    );
+  }
+});
+
+test("dispatch claim recovery prefers an older success over a newer cancelled duplicate", () => {
+  const claim = { processed_at: "2026-04-29T03:01:00Z" };
+  const expectedTitle = "Review event item openclaw/openclaw#74499 [router-abc]";
+  const successfulRun = {
+    id: 991,
+    display_title: expectedTitle,
+    created_at: "2026-04-29T03:01:02Z",
+    status: "completed",
+    conclusion: "success",
+  };
+
+  assert.deepEqual(
+    dispatchClaimDecision({
+      claim,
+      runs: [
+        {
+          ...successfulRun,
+          id: 992,
+          created_at: "2026-04-29T03:02:00Z",
+          conclusion: "cancelled",
+        },
+        successfulRun,
+      ],
+      expectedTitle,
+      nowMs: Date.parse("2026-04-29T03:10:00Z"),
+    }),
+    { action: "recover", run: successfulRun },
   );
 });
 

@@ -13,6 +13,16 @@ const DEFAULT_IGNORED_CHECKS = [
 ];
 const TRANSIENT_CANCELLED_CHECKS = new Set(["real behavior proof"]);
 
+export function dispatchClaimLookupKeys(entry: LooseRecord) {
+  const keys: string[] = [];
+  const commentId = String(entry.comment_id ?? "").trim();
+  const commentUpdatedAt = String(entry.comment_updated_at ?? "").trim();
+  if (commentId && commentUpdatedAt) keys.push(`comment:${commentId}:${commentUpdatedAt}`);
+  const idempotencyKey = String(entry.idempotency_key ?? "").trim();
+  if (idempotencyKey) keys.push(`idempotency:${idempotencyKey}`);
+  return keys;
+}
+
 export function summarizeChecks(checks: LooseRecord[]) {
   const ignored = ignoredCheckNames();
   const latestChecks = latestCheckRuns(checks);
@@ -131,7 +141,7 @@ export function dispatchClaimDecision({
   if (!claim) return { action: "dispatch", run: null };
   const normalizedGraceMs = Number.isFinite(graceMs) ? Math.max(0, graceMs) : 300_000;
   const claimedAtMs = Date.parse(String(claim.processed_at ?? ""));
-  const matchingRun = runs.find((run) => {
+  const matchingRuns = runs.filter((run) => {
     if (String(run.display_title ?? run.displayTitle ?? "") !== expectedTitle) return false;
     const createdAtMs = Date.parse(String(run.created_at ?? run.createdAt ?? ""));
     return (
@@ -140,7 +150,16 @@ export function dispatchClaimDecision({
       createdAtMs >= claimedAtMs - 5_000
     );
   });
-  if (matchingRun) return { action: "recover", run: matchingRun };
+  const successfulRun = matchingRuns.find(
+    (run) => String(run.conclusion ?? "").toLowerCase() === "success",
+  );
+  if (successfulRun) return { action: "recover", run: successfulRun };
+  const activeRun = matchingRuns.find((run) =>
+    ["queued", "in_progress", "waiting", "pending", "requested"].includes(
+      String(run.status ?? "").toLowerCase(),
+    ),
+  );
+  if (activeRun) return { action: "wait", run: null };
   if (Number.isFinite(claimedAtMs) && nowMs - claimedAtMs >= normalizedGraceMs) {
     return { action: "dispatch", run: null };
   }

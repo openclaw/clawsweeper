@@ -36,6 +36,13 @@ test("live worker capacity accepts env default within the global Codex cap", () 
 });
 
 test("repair run names match workflow dispatch titles", () => {
+  const issueJob = "jobs/openclaw/inbox/issue-openclaw-openclaw-75364.md";
+  assert.equal(repairRunNamePrefixForJob(issueJob), "issue implementation ");
+  assert.equal(repairRunNameForJob(issueJob), `issue implementation ${issueJob}`);
+  assert.equal(
+    repairRunNameForJob(issueJob, "automerge repair ", "router-issue123"),
+    `issue implementation ${issueJob} [router-issue123]`,
+  );
   assert.equal(
     repairRunNameForJob("jobs/openclaw/inbox/automerge-openclaw-openclaw-75363.md"),
     "automerge repair jobs/openclaw/inbox/automerge-openclaw-openclaw-75363.md",

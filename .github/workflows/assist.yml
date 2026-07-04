@@ -83,7 +83,7 @@ jobs:
           expected_title="Assist ${TARGET_REPO}#${ITEM_NUMBER} [${DISPATCH_KEY}]"
           if gh api --method GET "repos/${GITHUB_REPOSITORY}/actions/workflows/assist.yml/runs?per_page=100" \
             | jq -e --arg title "$expected_title" --arg current "$GITHUB_RUN_ID" \
-              'any(.workflow_runs[]; .display_title == $title and .id < ($current | tonumber))' >/dev/null; then
+              'any(.workflow_runs[]; .display_title == $title and .id < ($current | tonumber) and (.status == "queued" or .status == "in_progress" or .status == "waiting" or .status == "pending" or .status == "requested" or .conclusion == "success"))' >/dev/null; then
             echo "proceed=false" >> "$GITHUB_OUTPUT"
             echo "An older exact command dispatch receipt already exists; skipping duplicate assist."
             exit 0
