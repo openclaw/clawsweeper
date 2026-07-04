@@ -1,6 +1,6 @@
 name: ClawSweeper assist
 
-run-name: ${{ format('Assist {0}#{1}', github.event.client_payload.target_repo || 'openclaw/openclaw', github.event.client_payload.item_number || '?') }}
+run-name: ${{ github.event.client_payload.dispatch_key && format('Assist {0}#{1} [{2}]', github.event.client_payload.target_repo || 'openclaw/openclaw', github.event.client_payload.item_number || '?', github.event.client_payload.dispatch_key) || format('Assist {0}#{1}', github.event.client_payload.target_repo || 'openclaw/openclaw', github.event.client_payload.item_number || '?') }}
 
 on:
   repository_dispatch:
@@ -47,6 +47,7 @@ on:
         type: string
 
 permissions:
+  actions: read
   contents: read
   issues: write
   pull-requests: read
@@ -61,7 +62,37 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  receipt:
+    name: Deduplicate command dispatch receipt
+    runs-on: ubuntu-latest
+    outputs:
+      proceed: ${{ steps.receipt.outputs.proceed }}
+    steps:
+      - id: receipt
+        env:
+          DISPATCH_KEY: ${{ github.event.client_payload.dispatch_key || '' }}
+          ITEM_NUMBER: ${{ github.event.client_payload.item_number || '?' }}
+          TARGET_REPO: ${{ github.event.client_payload.target_repo || 'openclaw/openclaw' }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [ -z "$DISPATCH_KEY" ]; then
+            echo "proceed=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          expected_title="Assist ${TARGET_REPO}#${ITEM_NUMBER} [${DISPATCH_KEY}]"
+          if gh api --method GET "repos/${GITHUB_REPOSITORY}/actions/workflows/assist.yml/runs?per_page=100" \
+            | jq -e --arg title "$expected_title" --arg current "$GITHUB_RUN_ID" \
+              'any(.workflow_runs[]; .display_title == $title and (.id | tostring) != $current)' >/dev/null; then
+            echo "proceed=false" >> "$GITHUB_OUTPUT"
+            echo "Exact command dispatch receipt already exists; skipping duplicate assist."
+            exit 0
+          fi
+          echo "proceed=true" >> "$GITHUB_OUTPUT"
+
   capacity:
+    needs: receipt
+    if: ${{ needs.receipt.outputs.proceed == 'true' }}
     runs-on: ubuntu-latest
     outputs:
       proceed: ${{ steps.limit.outputs.proceed }}

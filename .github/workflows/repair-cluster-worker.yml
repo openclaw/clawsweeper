@@ -1,6 +1,6 @@
 name: repair cluster worker
 
-run-name: ${{ contains(inputs.job, '/inbox/issue-') && format('issue implementation {0}', inputs.job) || contains(inputs.job, '/inbox/automerge-') && format('automerge repair {0}', inputs.job) || format('repair cluster {0}', inputs.job) }}
+run-name: ${{ inputs.dispatch_key && format('{0} [{1}]', contains(inputs.job, '/inbox/issue-') && format('issue implementation {0}', inputs.job) || contains(inputs.job, '/inbox/automerge-') && format('automerge repair {0}', inputs.job) || format('repair cluster {0}', inputs.job), inputs.dispatch_key) || contains(inputs.job, '/inbox/issue-') && format('issue implementation {0}', inputs.job) || contains(inputs.job, '/inbox/automerge-') && format('automerge repair {0}', inputs.job) || format('repair cluster {0}', inputs.job) }}
 
 on:
   workflow_dispatch:
@@ -8,6 +8,11 @@ on:
       job:
         description: "Job markdown path, for example jobs/openclaw/inbox/cluster-001.md"
         required: true
+        type: string
+      dispatch_key:
+        description: "Optional command-router idempotency key"
+        required: false
+        default: ""
         type: string
       mode:
         description: "Worker mode"
@@ -67,8 +72,44 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  receipt:
+    name: Deduplicate command dispatch receipt
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+    outputs:
+      proceed: ${{ steps.receipt.outputs.proceed }}
+    steps:
+      - id: receipt
+        env:
+          DISPATCH_KEY: ${{ inputs.dispatch_key }}
+          JOB_PATH: ${{ inputs.job }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [ -z "$DISPATCH_KEY" ]; then
+            echo "proceed=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          case "$JOB_PATH" in
+            */inbox/issue-*) title="issue implementation $JOB_PATH" ;;
+            */inbox/automerge-*) title="automerge repair $JOB_PATH" ;;
+            *) title="repair cluster $JOB_PATH" ;;
+          esac
+          expected_title="${title} [${DISPATCH_KEY}]"
+          if gh api --method GET "repos/${GITHUB_REPOSITORY}/actions/workflows/repair-cluster-worker.yml/runs?per_page=100" \
+            | jq -e --arg title "$expected_title" --arg current "$GITHUB_RUN_ID" \
+              'any(.workflow_runs[]; .display_title == $title and (.id | tostring) != $current)' >/dev/null; then
+            echo "proceed=false" >> "$GITHUB_OUTPUT"
+            echo "Exact command dispatch receipt already exists; skipping duplicate repair."
+            exit 0
+          fi
+          echo "proceed=true" >> "$GITHUB_OUTPUT"
+
   cluster:
     name: Plan and review cluster
+    needs: receipt
+    if: ${{ needs.receipt.outputs.proceed == 'true' }}
     runs-on: ${{ inputs.runner }}
     timeout-minutes: 90
     outputs:
