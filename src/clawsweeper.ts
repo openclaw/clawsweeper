@@ -18485,6 +18485,24 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
     if (existingReviewCommentUpdatedAt) {
       allowedSelfMutationUpdatedAts.add(existingReviewCommentUpdatedAt);
     }
+    const staleReviewCommentReason = staleReviewCommentSyncReason(
+      markdown,
+      existingReviewComment,
+      number,
+    );
+    if (state === "open" && isCloseProposal && staleReviewCommentReason) {
+      markdown = replaceFrontMatterValue(markdown, "apply_checked_at", new Date().toISOString());
+      if (!dryRun) writeReportMarkdown(path, markdown);
+      results.push({
+        number,
+        action: "skipped_stale_review_comment_sync",
+        reason: staleReviewCommentReason,
+      });
+      processedCount += 1;
+      maybeLogProgress(`skipped stale review comment sync #${number}`);
+      if (processedCount >= processedLimit) break;
+      continue;
+    }
     const updatedSinceReview = Boolean(storedUpdatedAt && item.updatedAt !== storedUpdatedAt);
     const reviewCommentOnlyUpdate = item.updatedAt === commentUpdatedAt(existingReviewComment);
     const labelSyncFreshEnough = (): boolean => {
@@ -19118,9 +19136,7 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
       ? `synced advisory issue labels #${number}`
       : `synced ClawSweeper labels #${number}`;
     if (needsReviewCommentSync) {
-      const staleSyncReason = needsReviewCommentBodySync
-        ? staleReviewCommentSyncReason(markdown, existingReviewComment, number)
-        : null;
+      const staleSyncReason = needsReviewCommentBodySync ? staleReviewCommentReason : null;
       if (staleSyncReason) {
         markdown = replaceFrontMatterValue(markdown, "apply_checked_at", new Date().toISOString());
         if (!dryRun) writeReportMarkdown(path, markdown);

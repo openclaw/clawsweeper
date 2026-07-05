@@ -5,6 +5,7 @@ import test from "node:test";
 
 import {
   lowSignalCloseReport,
+  markedReviewCommentForTest,
   promotionGhMock,
   reportWithSyncedReviewComment,
   runApplyDecisionsForTest,
@@ -12,6 +13,97 @@ import {
   withMockCodexProof,
   withMockGh,
 } from "./helpers.ts";
+
+test("apply-decisions skips stale close reports before duplicate PR coverage proof", () => {
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    const itemsDir = join(root, "items");
+    const closedDir = join(root, "closed");
+    const plansDir = join(root, "plans");
+    const reportPath = join(root, "apply-report.json");
+    const proofLogPath = join(root, "proof.log");
+    mkdirSync(itemsDir, { recursive: true });
+    mkdirSync(plansDir, { recursive: true });
+    const synced = reportWithSyncedReviewComment(
+      lowSignalCloseReport({
+        number: 353,
+        title: "Stale duplicate close report",
+        reviewed_at: "2026-05-01T00:00:00Z",
+        close_reason: "duplicate_or_superseded",
+        work_cluster_refs: JSON.stringify([
+          "Superseded by https://github.com/openclaw/openclaw/pull/400",
+        ]),
+      }).replace(
+        "Closing this PR because the branch is not a useful landing base.",
+        "Closing this PR as superseded by https://github.com/openclaw/openclaw/pull/400.",
+      ),
+      353,
+      "duplicate_or_superseded",
+    );
+    writeFileSync(join(itemsDir, "353.md"), synced.report, "utf8");
+    const newerComment = markedReviewCommentForTest(
+      353,
+      [
+        "Codex review: ready for maintainer look.",
+        "",
+        "<!-- clawsweeper-verdict:needs-human item=353 sha=head-sha confidence=high updated_at=2026-05-01T00:05:00Z reviewed_at=2026-05-01T00:10:00Z source_revision=new-source -->",
+      ].join("\n"),
+    );
+
+    withMockGh(
+      root,
+      promotionGhMock({
+        number: 353,
+        title: "Stale duplicate close report",
+        comment: newerComment,
+        linkedPulls: {
+          400: {
+            number: 400,
+            title: "Canonical replacement",
+            html_url: "https://github.com/openclaw/openclaw/pull/400",
+            state: "closed",
+            merged_at: "2026-05-02T00:00:00Z",
+            body: "Carries the replacement behavior.",
+            comments: [],
+            labels: [],
+          },
+        },
+      }),
+      () => {
+        withMockCodexProof(
+          root,
+          {
+            type: "decision",
+            decision: "covered",
+            reason: "The replacement carries the source behavior.",
+            invocationLogPath: proofLogPath,
+          },
+          () => {
+            runApplyDecisionsForTest({
+              itemsDir,
+              closedDir,
+              plansDir,
+              reportPath,
+              extraArgs: ["--target-repo", "openclaw/openclaw", "--apply-kind", "all"],
+            });
+          },
+        );
+      },
+    );
+
+    assert.equal(existsSync(proofLogPath), false);
+    assert.deepEqual(JSON.parse(readFileSync(reportPath, "utf8")), [
+      {
+        number: 353,
+        action: "skipped_stale_review_comment_sync",
+        reason:
+          "live durable review comment is newer than the local report: comment reviewed_at=2026-05-01T00:10:00Z, report reviewed_at=2026-05-01T00:00:00Z",
+      },
+    ]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 test("apply-decisions checks duplicate PR coverage proof before syncing corrected review comments", () => {
   const root = mkdtempSync(tmpPrefix);
