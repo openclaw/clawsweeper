@@ -1335,6 +1335,8 @@ test("workflow utilities summarize proposed close candidate quality buckets", ()
   );
   writeProposedRecord(root, 11, "pull_request", "proposed_close", "stalled_unproven_pr", oldDate);
   writeProposedRecord(root, 12, "pull_request", "proposed_close", "abandoned_pr", oldDate);
+  writeProposedRecord(root, 13, "issue", "proposed_close", "stalled_unproven_pr", oldDate);
+  writeProposedRecord(root, 14, "issue", "proposed_close", "abandoned_pr", oldDate);
 
   const summary = withCwd(root, () =>
     proposedItemQualitySummary({
@@ -1359,7 +1361,7 @@ test("workflow utilities summarize proposed close candidate quality buckets", ()
   );
 
   assert.equal(summary.total, 8);
-  assert.deepEqual(selected, [5, 6, 7, 8, 9, 10]);
+  assert.deepEqual(selected, [5, 6, 7, 8, 9, 10, 11, 12]);
   assert.equal(
     summary.summary,
     "1 implemented-on-main, 1 duplicate/superseded, 1 needs PR close proof, 3 aging/low-signal, 1 policy-sensitive, 1 retry after guard skip",

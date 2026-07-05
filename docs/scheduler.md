@@ -473,8 +473,10 @@ candidate mix by quality bucket in the status detail. Buckets such as
 implemented-on-main, duplicate/superseded, needs PR close proof,
 aging/low-signal (including stalled-unproven and abandoned PRs),
 policy-sensitive, and retry-after-guard-skip are
-operator-facing telemetry only; they do not change candidate eligibility, close
-limits, live-state checks, or policy gates.
+operator-facing telemetry only; the bucket classification does not change close
+limits, live-state checks, or policy gates. Stalled-unproven and abandoned PR
+proposals are eligible for apply selection, where the executor re-checks their
+PR-only age, activity, proof, status, and human-engagement gates before closing.
 
 Apply and comment-sync Actions run titles include the target repository. Before
 dispatching a default cursor-based apply continuation, the workflow checks

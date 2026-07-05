@@ -1091,6 +1091,7 @@ function selectedProposedItemCandidates(
   if (!fs.existsSync(itemsDir)) return [];
 
   const allowedReasons = new Set([
+    "abandoned_pr",
     "cannot_reproduce",
     "clawhub",
     "duplicate_or_superseded",
@@ -1099,10 +1100,10 @@ function selectedProposedItemCandidates(
     "low_signal_unmergeable_pr",
     "mostly_implemented_on_main",
     "not_actionable_in_repo",
+    "stalled_unproven_pr",
     "stale_insufficient_info",
     "unconfirmed_product_direction",
   ]);
-  const qualitySummaryOnlyReasons = new Set(["abandoned_pr", "stalled_unproven_pr"]);
   const allowedCloseReasons =
     options.applyCloseReasons === "all"
       ? null
@@ -1135,10 +1136,7 @@ function selectedProposedItemCandidates(
         decision === "close" &&
         confidence === "high" &&
         isSelectableCloseAction(action, reason) &&
-        (allowedForTarget(options.targetRepo, type, reason, allowedReasons) ||
-          (selection === "quality-summary" &&
-            type === "pull_request" &&
-            qualitySummaryOnlyReasons.has(reason))) &&
+        allowedForTarget(options.targetRepo, type, reason, allowedReasons) &&
         (!allowedCloseReasons || allowedCloseReasons.has(reason));
       const selectablePromotion =
         decision === "keep_open" &&
@@ -1871,6 +1869,8 @@ function allowedForTarget(
   if (type === "pull_request" && reason === "stale_insufficient_info") return false;
   if (type !== "pull_request" && reason === "mostly_implemented_on_main") return false;
   if (type !== "pull_request" && reason === "low_signal_unmergeable_pr") return false;
+  if (type !== "pull_request" && (reason === "abandoned_pr" || reason === "stalled_unproven_pr"))
+    return false;
   return allowedReasons.has(reason);
 }
 
