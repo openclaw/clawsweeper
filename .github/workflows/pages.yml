@@ -45,13 +45,13 @@ jobs:
         uses: actions/configure-pages@v6
 
       - name: Upload artifact
-        uses: actions/upload-pages-artifact@v4
+        uses: actions/upload-pages-artifact@v5
         with:
           name: ${{ env.PAGES_ARTIFACT_NAME }}
           path: dist/docs-site
 
       - name: Deploy
         id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5
         with:
           artifact_name: ${{ env.PAGES_ARTIFACT_NAME }}
