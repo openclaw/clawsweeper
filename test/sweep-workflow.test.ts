@@ -56,7 +56,7 @@ test("dashboard syncs Worker secrets with durable lifecycle storage", () => {
   assert.match(workflow, /workers\/scripts\/\$CLOUDFLARE_WORKER_NAME\/secrets-bulk/);
   assert.match(workflow, /Content-Type: application\/merge-patch\+json/);
   assert.match(workflow, /jq -e '\.success == true'/);
-  assert.doesNotMatch(workflow, /wrangler@4\.90\.0 secret bulk/);
+  assert.doesNotMatch(workflow, /wrangler@[^\s]+ secret bulk/);
 });
 
 test("publish workflow installs Codex from the root checkout path", () => {

@@ -86,7 +86,7 @@ jobs:
           fi
 
       - name: Deploy Worker
-        run: npx wrangler@4.90.0 deploy --config "${{ steps.dashboard-config.outputs.config }}"
+        run: npx wrangler@4.107.0 deploy --config "${{ steps.dashboard-config.outputs.config }}"
 
       - name: Smoke test live dashboard
         run: pnpm run dashboard:smoke -- "$CLAWSWEEPER_STATUS_URL"

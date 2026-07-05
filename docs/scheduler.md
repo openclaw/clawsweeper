@@ -242,7 +242,7 @@ scheduled dispatches cannot temporarily exceed the shared worker budget while
 GitHub is still expanding jobs.
 
 Planning is also the runtime build point for matrix review. The plan job installs
-with pinned Node 24 and `pnpm@10.33.2`, builds `dist/` once, and uploads that
+with pinned Node 24 and `pnpm@11.10.0`, builds `dist/` once, and uploads that
 runtime artifact. Review shards download the built `dist/` and run
 `node dist/clawsweeper.js review` directly instead of running a per-shard pnpm
 install and build. This keeps 44-89 shard waves from stampeding the npm

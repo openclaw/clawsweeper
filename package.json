@@ -67,8 +67,8 @@
     "repair:review-results": "node dist/repair/review-results.js",
     "repair:message-samples": "node dist/repair/render-message-samples.js",
     "target-fanout": "node dist/repair/target-fanout.js",
-    "dashboard:deploy": "npx wrangler@4.90.0 deploy --config dashboard/wrangler.toml",
-    "dashboard:dev": "npx wrangler@4.90.0 dev --config dashboard/wrangler.toml",
+    "dashboard:deploy": "npx wrangler@4.107.0 deploy --config dashboard/wrangler.toml",
+    "dashboard:dev": "npx wrangler@4.107.0 dev --config dashboard/wrangler.toml",
     "dashboard:refresh-ci": "node scripts/dashboard-refresh-ci.mjs",
     "dashboard:smoke": "node scripts/dashboard-smoke.mjs",
     "smoke:pr-close-coverage": "pnpm run build && node scripts/pr-close-coverage-smoke.mjs",
@@ -101,14 +101,14 @@
     "yaml": "^2.9.0"
   },
   "devDependencies": {
-    "@types/node": "^25.9.2",
-    "@typescript/native-preview": "7.0.0-dev.20260609.1",
-    "oxfmt": "^0.54.0",
-    "oxlint": "^1.69.0",
-    "oxlint-tsgolint": "0.23.0"
+    "@types/node": "^24.13.2",
+    "@typescript/native-preview": "7.0.0-dev.20260704.1",
+    "oxfmt": "^0.57.0",
+    "oxlint": "^1.72.0",
+    "oxlint-tsgolint": "0.24.0"
   },
   "engines": {
     "node": ">=24"
   },
-  "packageManager": "pnpm@10.33.2"
+  "packageManager": "pnpm@11.10.0"
 }

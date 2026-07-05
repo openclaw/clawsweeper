@@ -677,7 +677,7 @@ test("repair execution provisions pinned Bun before target validation can invoke
 
   const setupBunStep = workflow.slice(setupBunIndex, executeFixIndex);
   assert.match(setupBunStep, /uses: oven-sh\/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6/);
-  assert.match(setupBunStep, /bun-version: 1\.3\.10/);
+  assert.match(setupBunStep, /bun-version: 1\.3\.14/);
 });
 
 test("bun-based target toolchain installs deps and runs configured validation", () => {
