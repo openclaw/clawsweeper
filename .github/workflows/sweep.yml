@@ -2337,6 +2337,7 @@ jobs:
           checkpoint_size="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_checkpoint_size || '20' }}"
           comment_sync_processed_limit=1000
           base_close_processed_limit=300
+          coverage_proof_limit=1
           # Consumed by the sourced workflow helpers.
           # shellcheck disable=SC2034
           max_close_processed_limit=900
@@ -2372,6 +2373,7 @@ jobs:
           next_cursor=""
           apply_ready_count=""
           cursor_advance_count=""
+          coverage_proof_item_numbers=""
           if [ "$sync_open_pr_batch" = "true" ]; then
             sync_comments_only="true"
             apply_kind="pull_request"
@@ -2446,9 +2448,11 @@ jobs:
               --min-age-days "$min_age_days" \
               --min-age-minutes "$min_age_minutes" \
               --batch-size "$close_processed_limit" \
+              --coverage-proof-limit "$coverage_proof_limit" \
               --cursor-path "$apply_cursor_path")"
             if [ -n "$item_numbers" ]; then
               auto_selected_apply_batch=true
+              select_bounded_coverage_proof_tail
               proposed_count="$(pnpm run --silent workflow -- count-csv --items "$item_numbers")"
               apply_ready_count="$(pnpm run --silent workflow -- proposed-item-count \
                 --target-repo "$TARGET_REPO" \
@@ -2460,7 +2464,7 @@ jobs:
               if [ "$proposed_count" -lt "$limit" ]; then
                 limit="$proposed_count"
               fi
-              echo "Auto-selected $proposed_count proposed close candidate(s) from $close_processed_limit-record apply cursor window ($adaptive_apply_scan_reason): $item_numbers; apply-ready count: ${apply_ready_count:-unknown}"
+              echo "Auto-selected $proposed_count proposed close candidate(s) from $close_processed_limit-record apply cursor window ($adaptive_apply_scan_reason), including $coverage_proof_count/$coverage_proof_limit bounded PR coverage proof candidate(s): $item_numbers; apply-ready count: ${apply_ready_count:-unknown}"
             fi
           fi
           item_numbers_arg=()
@@ -2562,6 +2566,11 @@ jobs:
               chunk_limit="$remaining"
             fi
             checkpoint=$((checkpoint + 1))
+            cursor_trace_path=".artifacts/apply-cursor-trace-$checkpoint.json"
+            cursor_trace_arg=()
+            if [ "$auto_selected_apply_batch" = "true" ]; then
+              cursor_trace_arg=(--cursor-trace "$cursor_trace_path")
+            fi
             echo "::group::Apply checkpoint $checkpoint"
             echo "Applying up to $chunk_limit fresh closes; $closed_total/$limit already closed in this run"
             CLAWSWEEPER_APPLY_CHECKPOINT="$checkpoint" pnpm run apply-decisions -- \
@@ -2578,6 +2587,7 @@ jobs:
               --processed-limit "$close_processed_limit" \
               --comment-sync-min-age-days "$comment_sync_min_age_days" \
               "${item_numbers_arg[@]}" \
+              "${cursor_trace_arg[@]}" \
               "${sync_comments_arg[@]}"
             cp apply-report.json ".artifacts/apply-reports/apply-report-$checkpoint.json"
             pnpm run workflow -- merge-apply-reports --dir .artifacts/apply-reports --output apply-report.json
@@ -2591,10 +2601,13 @@ jobs:
                 --cursor-path "$apply_cursor_path" \
                 --report ".artifacts/apply-reports/apply-report-$checkpoint.json" \
                 --target-repo "$TARGET_REPO" \
-                --item-numbers "$item_numbers"
+                --item-numbers "$item_numbers" \
+                --coverage-proof-item-numbers "$coverage_proof_item_numbers" \
+                --cursor-trace "$cursor_trace_path"
               cursor_advance_count="$(pnpm run --silent workflow -- apply-cursor-advance-count \
                 --report ".artifacts/apply-reports/apply-report-$checkpoint.json" \
-                --item-numbers "$item_numbers")"
+                --item-numbers "$item_numbers" \
+                --cursor-trace "$cursor_trace_path")"
               apply_publish_paths+=(results/apply-cursors)
             fi
             publish_changes "chore: apply sweep decisions checkpoint $checkpoint" "${apply_publish_paths[@]}"
@@ -2611,6 +2624,7 @@ jobs:
               --apply-health-file ".artifacts/apply-health-$checkpoint.json"
             publish_status "chore: update sweep apply checkpoint $checkpoint status"
             echo "::endgroup::"
+            drop_bounded_coverage_proof_tail "$cursor_trace_path"
             if [ "$result_count" -ge "$close_processed_limit" ]; then
               if [ "$closed_in_chunk" -gt 0 ]; then
                 echo "Close scan reached its $close_processed_limit-record budget; queueing a fresh-token continuation."

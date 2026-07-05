@@ -73,6 +73,49 @@ select_adaptive_apply_batch() {
   adaptive_apply_scan_reason="$(awk -F= '$1 == "adaptive_apply_scan_reason" { print $2 }' "$adaptive_batch_env")"
 }
 
+select_bounded_coverage_proof_tail() {
+  local proof_args=(
+    --target-repo "$TARGET_REPO"
+    --apply-kind "$apply_kind"
+    --apply-close-reasons "$apply_close_reasons"
+    --stale-min-age-days "$stale_min_age_days"
+    --min-age-days "$min_age_days"
+    --min-age-minutes "$min_age_minutes"
+    --item-numbers "$item_numbers"
+  )
+  coverage_proof_item_numbers="$(pnpm run --silent workflow -- proposed-pr-close-coverage-item-numbers "${proof_args[@]}")"
+  coverage_proof_count="$(pnpm run --silent workflow -- count-csv --items "$coverage_proof_item_numbers")"
+}
+
+drop_bounded_coverage_proof_tail() {
+  if [ "$auto_selected_apply_batch" != "true" ] || [ -z "$coverage_proof_item_numbers" ]; then
+    return
+  fi
+  local cursor_trace_path="$1"
+  local examined_item_numbers
+  examined_item_numbers="$(pnpm run --silent workflow -- apply-cursor-trace-item-numbers --cursor-trace "$cursor_trace_path")"
+  if [ -z "$examined_item_numbers" ]; then
+    return
+  fi
+  local remaining=",${item_numbers},"
+  local remaining_proof=",${coverage_proof_item_numbers},"
+  local number
+  for number in ${coverage_proof_item_numbers//,/ }; do
+    if [[ ",${examined_item_numbers}," == *",${number},"* ]]; then
+      remaining="${remaining//,${number},/,}"
+      remaining_proof="${remaining_proof//,${number},/,}"
+    fi
+  done
+  item_numbers="${remaining#,}"
+  item_numbers="${item_numbers%,}"
+  item_numbers_arg=()
+  if [ -n "$item_numbers" ]; then
+    item_numbers_arg=(--item-numbers "$item_numbers")
+  fi
+  coverage_proof_item_numbers="${remaining_proof#,}"
+  coverage_proof_item_numbers="${coverage_proof_item_numbers%,}"
+}
+
 summarize_apply_candidate_quality() {
   candidate_quality_summary="not evaluated"
   candidate_quality_detail=""

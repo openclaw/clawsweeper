@@ -159,8 +159,15 @@ function runCli(): void {
       break;
     case "apply-cursor-advance-count":
       console.log(
-        applyCursorAdvanceCount(requiredString("report"), optionalString("item-numbers")),
+        applyCursorAdvanceCount(
+          requiredString("report"),
+          optionalString("item-numbers"),
+          optionalString("cursor-trace"),
+        ),
       );
+      break;
+    case "apply-cursor-trace-item-numbers":
+      process.stdout.write(readApplyCursorTrace(requiredString("cursor-trace")).join(","));
       break;
     case "apply-continuation-blocker": {
       const blocker = applyContinuationBlocker(readJsonArray(requiredString("runs")), {
@@ -275,6 +282,8 @@ function runCli(): void {
         requiredString("report"),
         requiredString("target-repo"),
         optionalString("item-numbers"),
+        optionalString("coverage-proof-item-numbers"),
+        optionalString("cursor-trace"),
       );
       break;
     case "merge-apply-reports":
@@ -1023,6 +1032,7 @@ type ProposedItemOptions = {
   minAgeMinutes: number | null;
   batchSize?: number | null;
   cursorPath?: string | null;
+  coverageProofLimit?: number | null;
   itemNumbers?: ReadonlySet<number> | null;
 };
 
@@ -1057,6 +1067,7 @@ type ProposedItemCandidate = {
   closeReason: string;
   action: string;
   stage: "confirmed_close" | "promotion_probe";
+  coverageProof: boolean;
   qualityBucket: ProposedItemQualityBucket;
 };
 
@@ -1176,6 +1187,7 @@ function selectedProposedItemCandidates(
           closeReason: candidateCloseReason,
           action,
           stage: selectablePromotion ? ("promotion_probe" as const) : ("confirmed_close" as const),
+          coverageProof: prCloseCoverageProofCanRun,
           qualityBucket: proposedItemQualityBucket({
             action,
             closeReason: candidateCloseReason,
@@ -1189,24 +1201,51 @@ function selectedProposedItemCandidates(
   const batchSize = options.batchSize ?? null;
   if (!batchSize || batchSize <= 0) return candidates;
   const cursor = options.cursorPath ? readApplyCursor(options.cursorPath) : null;
-  const rotate = (stage: ProposedItemCandidate["stage"]): ProposedItemCandidate[] => {
+  const rotate = (
+    stage: ProposedItemCandidate["stage"],
+    coverageProof: boolean | null,
+    position: ApplyCursorPosition | null,
+  ): ProposedItemCandidate[] => {
     const sorted = candidates
-      .filter((candidate) => candidate.stage === stage)
+      .filter(
+        (candidate) =>
+          candidate.stage === stage &&
+          (coverageProof === null || candidate.coverageProof === coverageProof),
+      )
       .sort(compareApplyCursorCandidate);
-    if (!cursor) return sorted;
+    if (!position) return sorted;
     const afterCursor = sorted.filter(
-      (candidate) => compareCandidateToApplyCursor(candidate, cursor) > 0,
+      (candidate) => compareCandidateToApplyCursor(candidate, position) > 0,
     );
     return [
       ...afterCursor,
-      ...sorted.filter((candidate) => compareCandidateToApplyCursor(candidate, cursor) <= 0),
+      ...sorted.filter((candidate) => compareCandidateToApplyCursor(candidate, position) <= 0),
     ];
   };
 
   // Confirmed close proposals have already passed review eligibility. Keep
   // speculative keep-open promotions as bounded backfill so their live graph
   // hydration cannot consume an entire apply window ahead of real proposals.
-  return [...rotate("confirmed_close"), ...rotate("promotion_probe")].slice(0, batchSize);
+  if (options.coverageProofLimit === null || options.coverageProofLimit === undefined) {
+    return [
+      ...rotate("confirmed_close", null, cursor),
+      ...rotate("promotion_probe", null, cursor),
+    ].slice(0, batchSize);
+  }
+
+  const proofLimit = Math.max(0, Math.min(options.coverageProofLimit, batchSize));
+  const fastCandidates = [
+    ...rotate("confirmed_close", false, cursor),
+    ...rotate("promotion_probe", false, cursor),
+  ];
+  const proofCursor = cursor?.coverageProof ?? cursor;
+  const proofCandidates = [
+    ...rotate("confirmed_close", true, proofCursor),
+    ...rotate("promotion_probe", true, proofCursor),
+  ];
+  const selectedProof = proofCandidates.slice(0, proofLimit);
+  const selectedFast = fastCandidates.slice(0, batchSize - selectedProof.length);
+  return [...selectedFast, ...selectedProof];
 }
 
 export function proposedItemQualitySummary(
@@ -1336,7 +1375,7 @@ function compareApplyCursorCandidate(
 
 function compareCandidateToApplyCursor(
   candidate: ProposedItemCandidate,
-  cursor: ApplyCursor,
+  cursor: ApplyCursorPosition,
 ): number {
   return (
     compareApplyCheckedAt(candidate.applyCheckedAt, cursor.applyCheckedAt) ||
@@ -1499,10 +1538,14 @@ export function writeCommentSyncCursor(
   );
 }
 
-type ApplyCursor = {
+type ApplyCursorPosition = {
   applyCheckedAt: string;
   number: number;
+};
+
+type ApplyCursor = ApplyCursorPosition & {
   updatedAt: string | null;
+  coverageProof: ApplyCursorPosition | null;
 };
 
 function readApplyCursor(cursorPath: string): ApplyCursor | null {
@@ -1516,7 +1559,17 @@ function readApplyCursor(cursorPath: string): ApplyCursor | null {
       ? parsed.next_after_apply_checked_at
       : "";
   const updatedAt = typeof parsed.updated_at === "string" ? parsed.updated_at : null;
-  return { number, applyCheckedAt, updatedAt };
+  const coverageProof = applyCursorPosition(parsed.coverage_proof_cursor);
+  return { number, applyCheckedAt, updatedAt, coverageProof };
+}
+
+function applyCursorPosition(value: unknown): ApplyCursorPosition | null {
+  if (!isJsonObject(value)) return null;
+  const number = Number(value.next_after_number);
+  if (!Number.isInteger(number) || number < 0) return null;
+  const applyCheckedAt =
+    typeof value.next_after_apply_checked_at === "string" ? value.next_after_apply_checked_at : "";
+  return { number, applyCheckedAt };
 }
 
 function readApplyCursorForSummary(cursorPath: string): ApplyReportSummary["cursor"] {
@@ -1536,17 +1589,45 @@ export function writeApplyCursor(
   reportPath: string,
   targetRepo: string,
   itemNumbers = "",
+  coverageProofItemNumbers = "",
+  cursorTracePath = "",
 ): void {
-  const { number } = applyCursorAdvance(reportPath, itemNumbers);
-  const applyCheckedAt = number > 0 ? applyCheckedAtForItem(targetRepo, number) : "";
+  const previous = readApplyCursor(cursorPath);
+  const selected = positiveCsvNumbers(itemNumbers);
+  const proofNumbers = new Set(positiveCsvNumbers(coverageProofItemNumbers));
+  const examined = cursorTracePath
+    ? readApplyCursorTrace(cursorTracePath)
+    : readApplyActions(reportPath).flatMap((action) =>
+        typeof action.number === "number" && action.number > 0 ? [action.number] : [],
+      );
+  const examinedSet = new Set(examined);
+  const fastSelected = selected.filter((number) => !proofNumbers.has(number));
+  const proofSelected = selected.filter((number) => proofNumbers.has(number));
+  const legacyAdvance = !coverageProofItemNumbers && !cursorTracePath;
+  const fastNumber = legacyAdvance
+    ? applyCursorAdvance(reportPath, itemNumbers).number
+    : (lastExaminedSelectedNumber(fastSelected, examinedSet) ?? previous?.number ?? 0);
+  const previousProof = previous?.coverageProof ?? previous;
+  const proofNumber =
+    lastExaminedSelectedNumber(proofSelected, examinedSet) ?? previousProof?.number ?? 0;
+  const applyCheckedAt = fastNumber > 0 ? applyCheckedAtForItem(targetRepo, fastNumber) : "";
+  const proofApplyCheckedAt = proofNumber > 0 ? applyCheckedAtForItem(targetRepo, proofNumber) : "";
   fs.mkdirSync(path.dirname(cursorPath), { recursive: true });
   fs.writeFileSync(
     cursorPath,
     `${JSON.stringify(
       {
         target_repo: targetRepo,
-        next_after_number: number,
+        next_after_number: fastNumber,
         next_after_apply_checked_at: applyCheckedAt,
+        ...(coverageProofItemNumbers || cursorTracePath
+          ? {
+              coverage_proof_cursor: {
+                next_after_number: proofNumber,
+                next_after_apply_checked_at: proofApplyCheckedAt,
+              },
+            }
+          : {}),
         updated_at: new Date().toISOString(),
       },
       null,
@@ -1555,7 +1636,12 @@ export function writeApplyCursor(
   );
 }
 
-export function applyCursorAdvanceCount(reportPath: string, itemNumbers = ""): number {
+export function applyCursorAdvanceCount(
+  reportPath: string,
+  itemNumbers = "",
+  cursorTracePath = "",
+): number {
+  if (cursorTracePath) return new Set(readApplyCursorTrace(cursorTracePath)).size;
   return applyCursorAdvance(reportPath, itemNumbers).count;
 }
 
@@ -1566,9 +1652,7 @@ function applyCursorAdvance(
   const processed = readApplyActions(reportPath).flatMap((action) =>
     typeof action.number === "number" ? [action.number] : [],
   );
-  const selected = csvItems(itemNumbers)
-    .map((item) => Number(item))
-    .filter((number) => Number.isInteger(number) && number > 0);
+  const selected = positiveCsvNumbers(itemNumbers);
   if (selected.length === 0) {
     return {
       number: processed.at(-1) ?? 0,
@@ -1582,6 +1666,29 @@ function applyCursorAdvance(
     number: selected[cursorIndex] ?? 0,
     count: cursorIndex + 1,
   };
+}
+
+function positiveCsvNumbers(value: string): number[] {
+  return csvItems(value)
+    .map((item) => Number(item))
+    .filter((number) => Number.isInteger(number) && number > 0);
+}
+
+function lastExaminedSelectedNumber(
+  selected: readonly number[],
+  examined: ReadonlySet<number>,
+): number | null {
+  const index = selected.findLastIndex((number) => examined.has(number));
+  return index >= 0 ? (selected[index] ?? null) : null;
+}
+
+function readApplyCursorTrace(tracePath: string): number[] {
+  if (!fs.existsSync(tracePath)) return [];
+  const parsed: unknown = JSON.parse(fs.readFileSync(tracePath, "utf8"));
+  if (!isJsonObject(parsed) || !Array.isArray(parsed.examined_item_numbers)) return [];
+  return parsed.examined_item_numbers
+    .map((number) => Number(number))
+    .filter((number) => Number.isInteger(number) && number > 0);
 }
 
 function applyCheckedAtForItem(targetRepo: string, itemNumber: number): string {
@@ -1600,6 +1707,7 @@ function applyCheckedAtForItem(targetRepo: string, itemNumber: number): string {
 
 function proposedItemOptions(): ProposedItemOptions {
   const batchSizeText = optionalString("batch-size");
+  const coverageProofLimitText = optionalString("coverage-proof-limit");
   return {
     targetRepo: requiredString("target-repo"),
     applyKind: optionalString("apply-kind") || "all",
@@ -1609,6 +1717,7 @@ function proposedItemOptions(): ProposedItemOptions {
     minAgeMinutes: optionalString("min-age-minutes") ? numberArg("min-age-minutes", 0) : null,
     batchSize: batchSizeText ? numberArg("batch-size", 0) : null,
     cursorPath: optionalString("cursor-path") || null,
+    coverageProofLimit: coverageProofLimitText ? numberArg("coverage-proof-limit", 0) : null,
     itemNumbers: itemNumberSet(optionalString("item-numbers")),
   };
 }

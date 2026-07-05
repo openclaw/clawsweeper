@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import {
   chmodSync,
   mkdirSync,
@@ -155,6 +156,7 @@ test("apply workflow bounds checkpoints and requeues with a fresh token", () => 
   assert.match(inputBlock, /apply_checkpoint_size:[\s\S]*default: "20"/);
   assert.match(applyStep, /Capping apply checkpoint size at 20/);
   assert.match(applyStep, /base_close_processed_limit=300/);
+  assert.match(applyStep, /coverage_proof_limit=1/);
   assert.match(applyStep, /max_close_processed_limit=900/);
   assert.match(applyStep, /close_processed_limit="\$base_close_processed_limit"/);
   assert.match(applyStep, /source scripts\/apply-workflow-helpers\.sh/);
@@ -205,6 +207,12 @@ test("apply workflow bounds checkpoints and requeues with a fresh token", () => 
   assert.ok(qualitySummaryIndex > applyReconcileIndex);
   assert.ok(proposedNumbersIndex > qualitySummaryIndex);
   assert.match(applyStep, /--batch-size "\$close_processed_limit"/);
+  assert.match(applyStep, /--coverage-proof-limit "\$coverage_proof_limit"/);
+  assert.match(applyStep, /select_bounded_coverage_proof_tail/);
+  assert.match(applyHelper, /select_bounded_coverage_proof_tail\(\)/);
+  assert.match(applyHelper, /proposed-pr-close-coverage-item-numbers/);
+  assert.match(applyHelper, /drop_bounded_coverage_proof_tail\(\)/);
+  assert.match(applyStep, /drop_bounded_coverage_proof_tail "\$cursor_trace_path"/);
   assert.match(
     applyStep,
     /Scan window: \$close_processed_limit records \(\$adaptive_apply_scan_reason\)/,
@@ -216,6 +224,9 @@ test("apply workflow bounds checkpoints and requeues with a fresh token", () => 
   assert.match(applyStep, /--cursor-path "\$apply_cursor_path"/);
   assert.match(applyStep, /write-apply-cursor/);
   assert.match(applyStep, /--item-numbers "\$item_numbers"/);
+  assert.match(applyStep, /--coverage-proof-item-numbers "\$coverage_proof_item_numbers"/);
+  assert.match(applyStep, /--cursor-trace "\$cursor_trace_path"/);
+  assert.match(applyStep, /cursor_trace_arg=\(--cursor-trace "\$cursor_trace_path"\)/);
   assert.match(applyStep, /results\/apply-cursors/);
   assert.match(applyStep, /reached its \$close_processed_limit-record budget/);
   assert.match(applyStep, /next scheduled apply run will advance the next window/);
@@ -256,6 +267,48 @@ test("apply workflow bounds checkpoints and requeues with a fresh token", () => 
   assert.match(continueStep, /already covered by \$/);
   assert.match(continueStep, /-f apply_item_numbers="\$APPLY_ITEM_NUMBERS"/);
   assert.doesNotMatch(continueStep, /APPLY_CLOSED_TOTAL:-0.*APPLY_LIMIT:-0/);
+});
+
+test("apply workflow drops a coverage-proof tail only after exact trace examination", () => {
+  const root = mkdtempSync(tmpPrefix);
+  const fastOnlyTrace = join(root, "fast-only.json");
+  const proofTrace = join(root, "proof.json");
+  writeFileSync(
+    fastOnlyTrace,
+    JSON.stringify({ schema_version: 1, examined_item_numbers: [10, 20] }),
+  );
+  writeFileSync(proofTrace, JSON.stringify({ schema_version: 1, examined_item_numbers: [30] }));
+
+  try {
+    const output = execFileSync(
+      "bash",
+      [
+        "-lc",
+        [
+          "source scripts/apply-workflow-helpers.sh",
+          "auto_selected_apply_batch=true",
+          "item_numbers=10,20,30",
+          "coverage_proof_item_numbers=30",
+          'item_numbers_arg=(--item-numbers "$item_numbers")',
+          'drop_bounded_coverage_proof_tail "$FAST_ONLY_TRACE"',
+          'printf \'%s|%s|%s\\n\' "$item_numbers" "$coverage_proof_item_numbers" "${item_numbers_arg[*]}"',
+          'drop_bounded_coverage_proof_tail "$PROOF_TRACE"',
+          'printf \'%s|%s|%s\\n\' "$item_numbers" "$coverage_proof_item_numbers" "${item_numbers_arg[*]}"',
+        ].join("\n"),
+      ],
+      {
+        cwd: process.cwd(),
+        encoding: "utf8",
+        env: { ...process.env, FAST_ONLY_TRACE: fastOnlyTrace, PROOF_TRACE: proofTrace },
+      },
+    );
+    assert.deepEqual(output.trim().split("\n"), [
+      "10,20,30|30|--item-numbers 10,20,30",
+      "10,20||--item-numbers 10,20",
+    ]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("apply workflow syncs source checkout before state hydration", () => {

@@ -17878,6 +17878,8 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
   const maxRuntimeMs = numberArg(args.max_runtime_ms, 0);
   const reportPath = resolve(stringArg(args.report_path, join(ROOT, "apply-report.json")));
   const artifactDir = resolve(stringArg(args.artifact_dir, join(ROOT, "artifacts", "apply")));
+  const cursorTraceArg = stringArg(args.cursor_trace, "").trim();
+  const cursorTracePath = cursorTraceArg ? resolve(cursorTraceArg) : null;
   const prCloseCoverageProofRuntime: PrCloseCoverageProofRuntime = {
     model: stringArg(args.codex_model, DEFAULT_CODEX_MODEL),
     reasoningEffort: stringArg(args.codex_reasoning_effort, DEFAULT_REASONING_EFFORT),
@@ -17895,7 +17897,12 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
   const startedAtMs = Date.now();
   const requestedItemNumbers = itemNumbersArg(args.item_numbers, args.item_number);
   const requestedItemNumberSet = new Set(requestedItemNumbers);
+  const requestedItemOrder = orderedApplyItemNumbers(args.item_numbers, args.item_number);
+  const requestedItemOrderIndex = new Map(
+    requestedItemOrder.map((number, index) => [number, index]),
+  );
   const results: ApplyResult[] = [];
+  const examinedItemNumbers: number[] = [];
   let closedCount = 0;
   let processedCount = 0;
   throttleHeartbeatContext = () =>
@@ -17965,19 +17972,38 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
     );
   };
   const fileEntries = applyReportEntriesForDir(itemsDir, "items").sort(
-    (left, right) =>
-      left.priority - right.priority ||
-      left.applyCheckedAt - right.applyCheckedAt ||
-      left.number - right.number,
+    cursorTracePath
+      ? (left, right) =>
+          (requestedItemOrderIndex.get(left.number) ?? Number.MAX_SAFE_INTEGER) -
+            (requestedItemOrderIndex.get(right.number) ?? Number.MAX_SAFE_INTEGER) ||
+          left.number - right.number
+      : (left, right) =>
+          left.priority - right.priority ||
+          left.applyCheckedAt - right.applyCheckedAt ||
+          left.number - right.number,
   );
   const files = fileEntries.map((entry) => entry.name);
   const allOpenFileEntries = applyReportEntriesForDir(itemsDir, "items", false);
   const openFileEntryByNumber = new Map(allOpenFileEntries.map((entry) => [entry.number, entry]));
   const closedThisRun = new Set<string>();
+  const writeCursorTrace = (): void => {
+    if (!cursorTracePath) return;
+    ensureDir(dirname(cursorTracePath));
+    writeFileSync(
+      cursorTracePath,
+      `${JSON.stringify(
+        { schema_version: 1, examined_item_numbers: examinedItemNumbers },
+        null,
+        2,
+      )}\n`,
+      "utf8",
+    );
+  };
   if (fileEntries.length === 0 && !existsSync(itemsDir)) {
     console.log("No items directory.");
     ensureDir(dirname(reportPath));
     writeFileSync(reportPath, JSON.stringify(results, null, 2), "utf8");
+    writeCursorTrace();
     return;
   }
   logProgress(
@@ -17998,6 +18024,7 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
     let markdown = entry.markdown;
     const repo = entry.repo;
     const number = entry.number;
+    examinedItemNumbers.push(number);
     const decision = frontMatterValue(markdown, "decision");
     let closeReason = frontMatterValue(markdown, "close_reason") as CloseReason | undefined;
     const action = frontMatterValue(markdown, "action_taken");
@@ -19423,8 +19450,28 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
   }
   ensureDir(dirname(reportPath));
   writeFileSync(reportPath, JSON.stringify(results, null, 2), "utf8");
+  writeCursorTrace();
   logProgress("finished apply");
   console.log(JSON.stringify(results, null, 2));
+}
+
+function orderedApplyItemNumbers(
+  itemNumbers: string | boolean | string[] | undefined,
+  itemNumber: string | boolean | string[] | undefined,
+): number[] {
+  const ordered: number[] = [];
+  const seen = new Set<number>();
+  const add = (value: string): void => {
+    for (const part of value.split(",")) {
+      const parsed = Number(part.trim());
+      if (!Number.isInteger(parsed) || parsed <= 0 || seen.has(parsed)) continue;
+      seen.add(parsed);
+      ordered.push(parsed);
+    }
+  };
+  if (typeof itemNumbers === "string") add(itemNumbers);
+  if (typeof itemNumber === "string") add(itemNumber);
+  return ordered;
 }
 
 function proofNudgeComments(number: number): ProofNudgeComment[] {
