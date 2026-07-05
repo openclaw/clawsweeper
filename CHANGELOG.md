@@ -29,7 +29,6 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Fixed
 
-- Included stalled-unproven and abandoned PR proposals in scheduled apply selection so their existing live safety gates can close eligible PRs.
 - Split apply workflow helpers out of the oversized inline expression so GitHub can validate and start sweep runs again.
 - Bounded apply-existing checkpoints to five fresh closes, renewed the GitHub
   App token between continuation runs, and stopped zero-progress scans from
