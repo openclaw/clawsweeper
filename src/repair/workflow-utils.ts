@@ -572,8 +572,13 @@ export function summarizeApplyReport(options: ApplyReportSummaryOptions): ApplyR
   ) {
     attentionReasons.push("cursor_required_but_missing_after_full_window");
   }
-  for (const reason of ["skipped_runtime_budget", "skipped_live_fetch_failed"]) {
-    if ((skipReasons[reason] || 0) > 0) attentionReasons.push(reason);
+  const resumableRuntimeBudget =
+    options.cursorRequired && Boolean(cursor) && (options.cursorAdvanceCount ?? 0) > 0;
+  if ((skipReasons.skipped_runtime_budget || 0) > 0 && !resumableRuntimeBudget) {
+    attentionReasons.push("skipped_runtime_budget");
+  }
+  if ((skipReasons.skipped_live_fetch_failed || 0) > 0) {
+    attentionReasons.push("skipped_live_fetch_failed");
   }
   if (actions.length > 0 && skipped === actions.length) {
     const benignSkipReasons = new Set([
@@ -581,6 +586,7 @@ export function summarizeApplyReport(options: ApplyReportSummaryOptions): ApplyR
       "skipped_closed",
       "skipped_not_open",
     ]);
+    if (resumableRuntimeBudget) benignSkipReasons.add("skipped_runtime_budget");
     for (const reason of Object.keys(skipReasons).sort()) {
       if (!benignSkipReasons.has(reason) && !attentionReasons.includes(reason)) {
         attentionReasons.push(reason);

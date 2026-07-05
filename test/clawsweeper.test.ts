@@ -12,6 +12,7 @@ import {
   codexEnv,
   codexLoginConfig,
   codexLoginMethod,
+  coverageProofRetryExhaustedRuntimeBudget,
   dashboardClosedAt,
   formatRecentClosedRows,
   ghRetryKind,
@@ -24,8 +25,10 @@ import {
   parseDecision,
   relatedGitHubIssueSearchQueryForTest,
   relatedTitleSearchTerms,
+  recordedLabelSyncCoversUpdate,
   renderReviewCommentFromReport,
   renderReviewStartStatusComment,
+  removeCurrentCursorTraceItem,
   reviewArtifactDestination,
   reviewCodexForcedLoginMethodForTest,
   runtimeBudgetExceeded,
@@ -33,6 +36,7 @@ import {
   shardItemNumbers,
   shouldSyncReviewComment,
   shouldRetryGh,
+  timeoutWithinRuntimeBudget,
 } from "../dist/clawsweeper.js";
 import { parseArgs as parseClawsweeperArgs } from "../dist/clawsweeper-args.js";
 import { AUTOMATION_LIMITS } from "../dist/limits.js";
@@ -1894,6 +1898,83 @@ test("runtime budget only trips after a positive elapsed limit", () => {
   assert.equal(runtimeBudgetExceeded(1000, 0, 100000), false);
   assert.equal(runtimeBudgetExceeded(1000, 5000, 5999), false);
   assert.equal(runtimeBudgetExceeded(1000, 5000, 6000), true);
+});
+
+test("coverage proof timeout cannot exceed the remaining apply runtime", () => {
+  assert.equal(timeoutWithinRuntimeBudget(1000, 0, 600_000, 900_000), 600_000);
+  assert.equal(timeoutWithinRuntimeBudget(1000, 600_000, 600_000, 301_000), 300_000);
+  assert.equal(timeoutWithinRuntimeBudget(1000, 600_000, 600_000, 601_000), null);
+});
+
+test("coverage proof refreshes its timeout after linked PR hydration", () => {
+  const source = readText("src/clawsweeper.ts");
+  const gateStart = source.indexOf("function prCloseCoverageProofGateResult");
+  const gateEnd = source.indexOf("function renderPrCloseCoverageProofReportSection", gateStart);
+  const gate = source.slice(gateStart, gateEnd);
+  const hydration = gate.indexOf("covering = coveringView(linkedNumber)");
+  const runtimeRefresh = gate.indexOf(
+    "const proofRuntime = prCloseCoverageRuntime(options.runtime, options.runtimeBudget)",
+  );
+  const modelRun = gate.indexOf("runPrCloseCoverageProofModel");
+
+  assert.ok(hydration >= 0);
+  assert.ok(runtimeRefresh > hydration);
+  assert.ok(modelRun > runtimeRefresh);
+  assert.match(gate, /runtime: proofRuntime/);
+});
+
+test("coverage proof retry becomes an exact cursor yield after exhausting runtime", () => {
+  assert.equal(
+    coverageProofRetryExhaustedRuntimeBudget(
+      1000,
+      600_000,
+      "retry_pr_close_coverage_proof",
+      601_000,
+    ),
+    true,
+  );
+  assert.equal(
+    coverageProofRetryExhaustedRuntimeBudget(
+      1000,
+      600_000,
+      "retry_pr_close_coverage_proof",
+      600_999,
+    ),
+    false,
+  );
+  assert.equal(
+    coverageProofRetryExhaustedRuntimeBudget(1000, 600_000, "kept_open", 601_000),
+    false,
+  );
+});
+
+test("recorded label sync covers only matching automation-owned updates", () => {
+  const base = {
+    itemUpdatedAt: "2026-07-05T18:00:00Z",
+    labelsSyncedAt: "2026-07-05T18:00:01Z",
+    liveLabels: ["status: ready", "proof: sufficient"],
+    recordedLabels: ["proof: sufficient", "status: ready"],
+    hasNonAutomationActivity: false,
+  };
+  assert.equal(recordedLabelSyncCoversUpdate(base), true);
+  assert.equal(recordedLabelSyncCoversUpdate({ ...base, liveLabels: ["status: ready"] }), false);
+  assert.equal(recordedLabelSyncCoversUpdate({ ...base, hasNonAutomationActivity: true }), false);
+  assert.equal(
+    recordedLabelSyncCoversUpdate({ ...base, itemUpdatedAt: "2026-07-05T18:00:02Z" }),
+    false,
+  );
+  assert.match(
+    readText("src/clawsweeper.ts"),
+    /recordedLabelSyncMatches[\s\S]*truncationCountsAsActivity: true/,
+  );
+});
+
+test("runtime yield keeps the unfinished item out of the apply cursor trace", () => {
+  const examined = [10, 20];
+  removeCurrentCursorTraceItem(examined, 20);
+  assert.deepEqual(examined, [10]);
+  removeCurrentCursorTraceItem(examined, 30);
+  assert.deepEqual(examined, [10]);
 });
 
 test("spam comment intake coalesces duplicate comment deliveries", () => {

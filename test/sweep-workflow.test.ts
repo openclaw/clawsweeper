@@ -156,8 +156,9 @@ test("apply workflow bounds checkpoints and requeues with a fresh token", () => 
   assert.match(inputBlock, /apply_checkpoint_size:[\s\S]*default: "20"/);
   assert.match(applyStep, /Capping apply checkpoint size at 20/);
   assert.match(applyStep, /base_close_processed_limit=300/);
-  assert.match(applyStep, /coverage_proof_limit=1/);
-  assert.match(applyStep, /max_close_processed_limit=900/);
+  assert.match(applyHelper, /coverage_proof_limit=1/);
+  assert.match(applyHelper, /max_runtime_arg=\(--max-runtime-ms 600000\)/);
+  assert.match(applyHelper, /max_close_processed_limit=900/);
   assert.match(applyStep, /close_processed_limit="\$base_close_processed_limit"/);
   assert.match(applyStep, /source scripts\/apply-workflow-helpers\.sh/);
   assert.match(applyStep, /select_adaptive_apply_batch/);
@@ -227,6 +228,8 @@ test("apply workflow bounds checkpoints and requeues with a fresh token", () => 
   assert.match(applyStep, /--coverage-proof-item-numbers "\$coverage_proof_item_numbers"/);
   assert.match(applyStep, /--cursor-trace "\$cursor_trace_path"/);
   assert.match(applyStep, /cursor_trace_arg=\(--cursor-trace "\$cursor_trace_path"\)/);
+  assert.match(applyStep, /select_automatic_apply_runtime/);
+  assert.match(applyStep, /"\$\{max_runtime_arg\[@\]\}"/);
   assert.match(applyStep, /results\/apply-cursors/);
   assert.match(applyStep, /reached its \$close_processed_limit-record budget/);
   assert.match(applyStep, /next scheduled apply run will advance the next window/);
@@ -234,6 +237,9 @@ test("apply workflow bounds checkpoints and requeues with a fresh token", () => 
   assert.match(applyStep, /No enabled close reasons remain after policy filtering/);
   assert.match(applyStep, /true\|1\|yes\|on\) product_direction_enabled=true/);
   assert.match(applyStep, /if \[ "\$result_count" -ge "\$close_processed_limit" \]; then/);
+  assert.match(applyHelper, /--action skipped_runtime_budget/);
+  assert.match(applyStep, /if automatic_apply_runtime_reached/);
+  assert.match(applyHelper, /fresh-token continuation will resume the lane/);
   assert.doesNotMatch(
     applyStep,
     /if \[ "\$result_count" -ge "\$close_processed_limit" \] && \[ "\$closed_in_chunk" -gt 0 \]/,

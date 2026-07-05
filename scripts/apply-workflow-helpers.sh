@@ -4,6 +4,10 @@
 # settings as shell variables before sourcing this file.
 # shellcheck disable=SC2034,SC2154
 
+max_close_processed_limit=900
+coverage_proof_limit=1
+progress_every=10
+
 publish_changes() {
   local message="$1"
   shift
@@ -56,6 +60,25 @@ write_apply_health() {
     health_args+=(--cursor-advance-count "$health_cursor_advance_count")
   fi
   pnpm run --silent workflow -- summarize-apply-report "${health_args[@]}" > "$output_path"
+}
+
+select_automatic_apply_runtime() {
+  max_runtime_arg=()
+  if [ "$auto_selected_apply_batch" = "true" ]; then
+    max_runtime_arg=(--max-runtime-ms 600000)
+  fi
+}
+
+automatic_apply_runtime_reached() {
+  local report_path="$1"
+  local runtime_budget_count
+  runtime_budget_count="$(pnpm run --silent workflow -- count-actions --report "$report_path" --action skipped_runtime_budget)"
+  if [ "$runtime_budget_count" -eq 0 ]; then
+    return 1
+  fi
+  echo "Automatic close checkpoint reached its 600000ms runtime budget; cursor is persisted and a fresh-token continuation will resume the lane."
+  continue_apply=true
+  return 0
 }
 
 select_adaptive_apply_batch() {

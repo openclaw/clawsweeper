@@ -13763,6 +13763,44 @@ type PrCloseCoverageProofGateResult =
   | { status: "blocked"; block: PrCloseCoverageProofGateBlock }
   | null;
 
+interface PrCloseCoverageRuntimeBudget {
+  startedAtMs: number;
+  maxRuntimeMs: number;
+}
+
+function prCloseCoverageRuntimeBudgetBlock(
+  runtimeBudget: PrCloseCoverageRuntimeBudget | undefined,
+  phase: string,
+): PrCloseCoverageProofGateResult {
+  if (
+    !runtimeBudget ||
+    !runtimeBudgetExceeded(runtimeBudget.startedAtMs, runtimeBudget.maxRuntimeMs, Date.now())
+  ) {
+    return null;
+  }
+  return {
+    status: "blocked",
+    block: {
+      actionTaken: "skipped_runtime_budget",
+      reason: `max runtime ${runtimeBudget.maxRuntimeMs}ms reached ${phase} PR close coverage proof`,
+    },
+  };
+}
+
+function prCloseCoverageRuntime(
+  runtime: PrCloseCoverageProofRuntime,
+  runtimeBudget: PrCloseCoverageRuntimeBudget | undefined,
+): PrCloseCoverageProofRuntime | null {
+  if (!runtimeBudget) return runtime;
+  const timeoutMs = timeoutWithinRuntimeBudget(
+    runtimeBudget.startedAtMs,
+    runtimeBudget.maxRuntimeMs,
+    runtime.timeoutMs,
+    Date.now(),
+  );
+  return timeoutMs === null ? null : { ...runtime, timeoutMs };
+}
+
 function sourcePrCloseCoveragePullRequestView(
   item: Item,
   context: ItemContext,
@@ -13846,8 +13884,19 @@ function prCloseCoverageProofGateResult(options: {
   item: Item;
   context: ItemContext;
   runtime: PrCloseCoverageProofRuntime;
+  runtimeBudget?: PrCloseCoverageRuntimeBudget;
 }): PrCloseCoverageProofGateResult {
+  const beforeCandidateResolution = prCloseCoverageRuntimeBudgetBlock(
+    options.runtimeBudget,
+    "before resolving",
+  );
+  if (beforeCandidateResolution) return beforeCandidateResolution;
   const candidateRefs = prCloseCoverageProofCandidateRefs(options.markdown, options.item);
+  const afterCandidateResolution = prCloseCoverageRuntimeBudgetBlock(
+    options.runtimeBudget,
+    "while resolving",
+  );
+  if (afterCandidateResolution) return afterCandidateResolution;
   if (candidateRefs.length === 0) return null;
 
   const source = sourcePrCloseCoveragePullRequestView(options.item, options.context);
@@ -13863,10 +13912,20 @@ function prCloseCoverageProofGateResult(options: {
   let checkedPullRequestCandidate = false;
   for (const candidateRef of candidateRefs) {
     const linkedNumber = candidateRef.number;
+    const beforeHydration = prCloseCoverageRuntimeBudgetBlock(
+      options.runtimeBudget,
+      "before hydrating",
+    );
+    if (beforeHydration) return beforeHydration;
     let covering: PrCloseCoverageProofPullRequestView;
     try {
       covering = coveringView(linkedNumber);
     } catch (error) {
+      const hydrationBudgetBlock = prCloseCoverageRuntimeBudgetBlock(
+        options.runtimeBudget,
+        "while hydrating",
+      );
+      if (hydrationBudgetBlock) return hydrationBudgetBlock;
       if (candidateRef.kind !== "pull_url" && shorthandRefIsIssue(linkedNumber)) continue;
       return {
         status: "blocked",
@@ -13878,6 +13937,11 @@ function prCloseCoverageProofGateResult(options: {
         },
       };
     }
+    const afterHydration = prCloseCoverageRuntimeBudgetBlock(
+      options.runtimeBudget,
+      "while hydrating",
+    );
+    if (afterHydration) return afterHydration;
     checkedPullRequestCandidate = true;
     if (!prCloseCoverageProofCandidateCanClose(covering)) {
       return {
@@ -13887,6 +13951,10 @@ function prCloseCoverageProofGateResult(options: {
           reason: `linked canonical PR #${linkedNumber} is ${covering.state || "not open"} and unmerged; refusing duplicate/superseded auto-close`,
         },
       };
+    }
+    const proofRuntime = prCloseCoverageRuntime(options.runtime, options.runtimeBudget);
+    if (!proofRuntime) {
+      return prCloseCoverageRuntimeBudgetBlock(options.runtimeBudget, "before running");
     }
     try {
       const proof = runPrCloseCoverageProofModel({
@@ -13898,7 +13966,7 @@ function prCloseCoverageProofGateResult(options: {
           options.item.number,
           linkedNumber,
         ),
-        runtime: options.runtime,
+        runtime: proofRuntime,
       });
       const closeDecision = prCloseCoverageProofCloseDecision(proof);
       if (closeDecision.close) {
@@ -13917,6 +13985,11 @@ function prCloseCoverageProofGateResult(options: {
         reason: `PR close coverage proof kept this PR open against ${covering.url}: ${closeDecision.reason}`,
       };
     } catch (error) {
+      const proofBudgetBlock = prCloseCoverageRuntimeBudgetBlock(
+        options.runtimeBudget,
+        "while running",
+      );
+      if (proofBudgetBlock) return proofBudgetBlock;
       return {
         status: "blocked",
         block: {
@@ -16207,6 +16280,61 @@ export function runtimeBudgetExceeded(
   return maxRuntimeMs > 0 && nowMs - startedAtMs >= maxRuntimeMs;
 }
 
+export function removeCurrentCursorTraceItem(
+  examinedItemNumbers: number[],
+  currentNumber: number,
+): void {
+  if (examinedItemNumbers.at(-1) === currentNumber) examinedItemNumbers.pop();
+}
+
+export function timeoutWithinRuntimeBudget(
+  startedAtMs: number,
+  maxRuntimeMs: number,
+  requestedTimeoutMs: number,
+  nowMs: number,
+): number | null {
+  if (maxRuntimeMs <= 0) return requestedTimeoutMs;
+  const remainingMs = maxRuntimeMs - (nowMs - startedAtMs);
+  return remainingMs > 0 ? Math.min(requestedTimeoutMs, remainingMs) : null;
+}
+
+export function coverageProofRetryExhaustedRuntimeBudget(
+  startedAtMs: number,
+  maxRuntimeMs: number,
+  actionTaken: string,
+  nowMs: number,
+): boolean {
+  return (
+    actionTaken === "retry_pr_close_coverage_proof" &&
+    runtimeBudgetExceeded(startedAtMs, maxRuntimeMs, nowMs)
+  );
+}
+
+export function recordedLabelSyncCoversUpdate(options: {
+  itemUpdatedAt: string;
+  labelsSyncedAt: string | undefined;
+  liveLabels: readonly string[];
+  recordedLabels: readonly string[];
+  hasNonAutomationActivity: boolean;
+}): boolean {
+  const itemUpdatedAtMs = timestampMs(options.itemUpdatedAt);
+  const labelsSyncedAtMs = timestampMs(options.labelsSyncedAt);
+  if (
+    itemUpdatedAtMs === null ||
+    labelsSyncedAtMs === null ||
+    itemUpdatedAtMs > labelsSyncedAtMs ||
+    options.hasNonAutomationActivity
+  ) {
+    return false;
+  }
+  const liveLabelSet = normalizedLabelSet(options.liveLabels);
+  const recordedLabelSet = normalizedLabelSet(options.recordedLabels);
+  return (
+    liveLabelSet.size === recordedLabelSet.size &&
+    [...liveLabelSet].every((label) => recordedLabelSet.has(label))
+  );
+}
+
 function updateReviewCommentMetadata(
   markdown: string,
   comment: Record<string, unknown> | undefined,
@@ -18169,6 +18297,13 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
     let cachedPrCloseCoverageProofGateResult: PrCloseCoverageProofGateResult | undefined;
     let prCloseCoverageProofGateChecked = false;
     let prCloseCoverageProofStartedAtMs: number | null = null;
+    const runtimeBudgetProofBlock = (phase = "before"): PrCloseCoverageProofGateResult => ({
+      status: "blocked",
+      block: {
+        actionTaken: "skipped_runtime_budget",
+        reason: `max runtime ${maxRuntimeMs}ms reached ${phase} PR close coverage proof`,
+      },
+    });
     const currentPrCloseCoverageProofGateBlock = (): PrCloseCoverageProofGateBlock | null => {
       if (cachedPrCloseCoverageProofGateResult === undefined) {
         prCloseCoverageProofGateChecked = true;
@@ -18176,13 +18311,45 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
           frontMatterValue(markdown, "decision") === "close" &&
           closeReason === "duplicate_or_superseded"
         ) {
-          prCloseCoverageProofStartedAtMs = Date.now();
-          cachedPrCloseCoverageProofGateResult = prCloseCoverageProofGateResult({
-            markdown,
-            item,
-            context: currentItemContext(),
-            runtime: prCloseCoverageProofRuntime,
-          });
+          let proofTimeoutMs = timeoutWithinRuntimeBudget(
+            startedAtMs,
+            maxRuntimeMs,
+            prCloseCoverageProofRuntime.timeoutMs,
+            Date.now(),
+          );
+          if (proofTimeoutMs === null) {
+            cachedPrCloseCoverageProofGateResult = runtimeBudgetProofBlock();
+          } else {
+            const context = currentItemContext();
+            proofTimeoutMs = timeoutWithinRuntimeBudget(
+              startedAtMs,
+              maxRuntimeMs,
+              prCloseCoverageProofRuntime.timeoutMs,
+              Date.now(),
+            );
+            if (proofTimeoutMs === null) {
+              cachedPrCloseCoverageProofGateResult = runtimeBudgetProofBlock();
+            } else {
+              prCloseCoverageProofStartedAtMs = Date.now();
+              const proofGateResult = prCloseCoverageProofGateResult({
+                markdown,
+                item,
+                context,
+                runtime: { ...prCloseCoverageProofRuntime, timeoutMs: proofTimeoutMs },
+                runtimeBudget: { startedAtMs, maxRuntimeMs },
+              });
+              cachedPrCloseCoverageProofGateResult =
+                proofGateResult?.status === "blocked" &&
+                coverageProofRetryExhaustedRuntimeBudget(
+                  startedAtMs,
+                  maxRuntimeMs,
+                  proofGateResult.block.actionTaken,
+                  Date.now(),
+                )
+                  ? runtimeBudgetProofBlock("during")
+                  : proofGateResult;
+            }
+          }
         } else {
           cachedPrCloseCoverageProofGateResult = null;
         }
@@ -18190,6 +18357,15 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
       return cachedPrCloseCoverageProofGateResult?.status === "blocked"
         ? cachedPrCloseCoverageProofGateResult.block
         : null;
+    };
+    const recordRuntimeBudgetYield = (reason: string): void => {
+      if (clawSweeperLabelsChanged && !dryRun) {
+        markdown = replaceFrontMatterValue(markdown, "labels_synced_at", new Date().toISOString());
+        writeReportMarkdown(path, markdown);
+      }
+      removeCurrentCursorTraceItem(examinedItemNumbers, number);
+      results.push({ number: 0, action: "skipped_runtime_budget", reason });
+      logProgress(`stopping apply: ${reason}`);
     };
     const sameAuthorPairStartCloseable = new Map<string, boolean>();
     const currentCloseGatesPassed = (): boolean => {
@@ -18547,9 +18723,27 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
     }
     const updatedSinceReview = Boolean(storedUpdatedAt && item.updatedAt !== storedUpdatedAt);
     const reviewCommentOnlyUpdate = item.updatedAt === commentUpdatedAt(existingReviewComment);
+    const storedUpdatedAtMs = timestampMs(storedUpdatedAt);
+    const recordedLabelSyncMatches =
+      updatedSinceReview &&
+      recordedLabelSyncCoversUpdate({
+        itemUpdatedAt: item.updatedAt,
+        labelsSyncedAt: frontMatterValue(markdown, "labels_synced_at"),
+        liveLabels: item.labels,
+        recordedLabels: reportLabelsBeforeApply,
+        hasNonAutomationActivity: false,
+      });
+    const labelSyncOnlyUpdate = Boolean(
+      recordedLabelSyncMatches &&
+      storedUpdatedAtMs !== null &&
+      !contextHasNonAutomationActivityAfter(currentItemContext(), storedUpdatedAtMs, {
+        truncationCountsAsActivity: true,
+      }),
+    );
+    const automationOnlyUpdate = reviewCommentOnlyUpdate || labelSyncOnlyUpdate;
     const labelSyncFreshEnough = (): boolean => {
       if (!storedUpdatedAt) return false;
-      if (!updatedSinceReview || reviewCommentOnlyUpdate) return true;
+      if (!updatedSinceReview || automationOnlyUpdate) return true;
       const completeFreshHeadReview =
         !isCloseProposal &&
         item.kind === "pull_request" &&
@@ -18884,7 +19078,7 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
         break;
       continue;
     }
-    if (isCloseProposal && updatedSinceReview && !reviewCommentOnlyUpdate) {
+    if (isCloseProposal && updatedSinceReview && !automationOnlyUpdate) {
       markdown = replaceFrontMatterValue(markdown, "action_taken", "skipped_changed_since_review");
       markdown = replaceFrontMatterValue(markdown, "current_item_updated_at", item.updatedAt);
       markdown = replaceFrontMatterValue(markdown, "apply_checked_at", new Date().toISOString());
@@ -19094,6 +19288,10 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
       ) {
         const prCloseCoverageBlock = currentPrCloseCoverageProofGateBlock();
         if (prCloseCoverageBlock) {
+          if (prCloseCoverageBlock.actionTaken === "skipped_runtime_budget") {
+            recordRuntimeBudgetYield(prCloseCoverageBlock.reason);
+            break;
+          }
           if (prCloseCoverageBlock.actionTaken !== "skipped_pr_close_coverage_proof") {
             if (markApplySkipped(prCloseCoverageBlock.actionTaken, prCloseCoverageBlock.reason))
               break;
@@ -19342,6 +19540,10 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
     const prCloseCoverageBlock =
       closeReason === "duplicate_or_superseded" ? currentPrCloseCoverageProofGateBlock() : null;
     if (prCloseCoverageBlock) {
+      if (prCloseCoverageBlock.actionTaken === "skipped_runtime_budget") {
+        recordRuntimeBudgetYield(prCloseCoverageBlock.reason);
+        break;
+      }
       if (markApplySkipped(prCloseCoverageBlock.actionTaken, prCloseCoverageBlock.reason)) break;
       continue;
     }

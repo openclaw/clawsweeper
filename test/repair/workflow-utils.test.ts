@@ -526,6 +526,61 @@ test("workflow utilities flag full-window close scans without the required curso
   assert.match(summary.summary, /Attention:/);
 });
 
+test("workflow utilities keep a resumable runtime yield healthy", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-workflow-"));
+  const reportPath = path.join(root, "apply-report.json");
+  const cursorPath = path.join(root, "apply-cursor.json");
+  write(
+    reportPath,
+    JSON.stringify([
+      { number: 10, action: "skipped_already_closed" },
+      { number: 0, action: "skipped_runtime_budget" },
+    ]),
+  );
+  write(
+    cursorPath,
+    JSON.stringify({
+      next_after_number: 10,
+      next_after_apply_checked_at: "2026-07-05T18:00:00Z",
+      updated_at: "2026-07-05T18:10:00Z",
+    }),
+  );
+
+  const summary = summarizeApplyReport({
+    reportPath,
+    targetRepo: "openclaw/openclaw",
+    mode: "close",
+    processedLimit: 300,
+    closeLimit: 20,
+    cursorPath,
+    cursorRequired: true,
+    cursorAdvanceCount: 1,
+  });
+
+  assert.equal(summary.status, "ok");
+  assert.deepEqual(summary.attention_reasons, []);
+  assert.equal(summary.next_action_buckets.run_budget, 1);
+});
+
+test("workflow utilities flag a runtime yield that made no cursor progress", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-workflow-"));
+  const reportPath = path.join(root, "apply-report.json");
+  write(reportPath, JSON.stringify([{ number: 0, action: "skipped_runtime_budget" }]));
+
+  const summary = summarizeApplyReport({
+    reportPath,
+    targetRepo: "openclaw/openclaw",
+    mode: "close",
+    processedLimit: 300,
+    closeLimit: 20,
+    cursorRequired: true,
+    cursorAdvanceCount: 0,
+  });
+
+  assert.equal(summary.status, "needs_attention");
+  assert.deepEqual(summary.attention_reasons, ["skipped_runtime_budget"]);
+});
+
 test("workflow utilities require the cursor after a full window that closed an item", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-workflow-"));
   const reportPath = path.join(root, "apply-report.json");

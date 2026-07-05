@@ -2333,14 +2333,9 @@ jobs:
           apply_close_reasons="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_close_reasons || 'all' }}"
           stale_min_age_days="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_stale_min_age_days || '60' }}"
           close_delay_ms="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_close_delay_ms || '2000' }}"
-          progress_every="10"
           checkpoint_size="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_checkpoint_size || '20' }}"
           comment_sync_processed_limit=1000
           base_close_processed_limit=300
-          coverage_proof_limit=1
-          # Consumed by the sourced workflow helpers.
-          # shellcheck disable=SC2034
-          max_close_processed_limit=900
           close_processed_limit="$base_close_processed_limit"
           adaptive_apply_scan_reason="base_window"
           sync_batch_size="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_limit || '25' }}"
@@ -2471,6 +2466,7 @@ jobs:
           if [ -n "$item_numbers" ]; then
             item_numbers_arg=(--item-numbers "$item_numbers")
           fi
+          select_automatic_apply_runtime
           if [ "$sync_comments_only" != "true" ] && [ -z "$item_numbers" ]; then
             echo "No unchanged high-confidence close proposals are awaiting apply. Scheduled apply wakes every 15 minutes and exits without scanning unrelated keep-open records when there is no close work."
             pnpm run status -- \
@@ -2587,6 +2583,7 @@ jobs:
               --processed-limit "$close_processed_limit" \
               --comment-sync-min-age-days "$comment_sync_min_age_days" \
               "${item_numbers_arg[@]}" \
+              "${max_runtime_arg[@]}" \
               "${cursor_trace_arg[@]}" \
               "${sync_comments_arg[@]}"
             cp apply-report.json ".artifacts/apply-reports/apply-report-$checkpoint.json"
@@ -2625,6 +2622,7 @@ jobs:
             publish_status "chore: update sweep apply checkpoint $checkpoint status"
             echo "::endgroup::"
             drop_bounded_coverage_proof_tail "$cursor_trace_path"
+            if automatic_apply_runtime_reached ".artifacts/apply-reports/apply-report-$checkpoint.json"; then break; fi
             if [ "$result_count" -ge "$close_processed_limit" ]; then
               if [ "$closed_in_chunk" -gt 0 ]; then
                 echo "Close scan reached its $close_processed_limit-record budget; queueing a fresh-token continuation."
