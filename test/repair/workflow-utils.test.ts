@@ -376,7 +376,7 @@ test("workflow utilities summarize apply health with skip buckets and cursor", (
     estimated_full_cycle_minutes: 45,
     scheduled_interval_minutes: 15,
     label:
-      "12 apply-ready close candidates at 4 records per latest cursor advance: about 3 windows; scheduled cadence alone would take roughly 45 min at 15-minute intervals, while successful windows can continue sooner.",
+      "12 close candidates (confirmed proposals plus live promotion probes) at 4 records per latest cursor advance: about 3 windows; scheduled cadence alone would take roughly 45 min at 15-minute intervals, while successful windows can continue sooner.",
   });
   assert.equal(summary.cursor?.next_after_number, 40);
 });
@@ -1602,6 +1602,65 @@ test("workflow utilities rotate bounded apply candidate batches by apply cursor"
   assert.deepEqual(
     withCwd(root, () => proposedItemNumbers(options)),
     [20, 30],
+  );
+});
+
+test("workflow utilities backfill promotion probes after confirmed close proposals", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-workflow-"));
+  const oldDate = "2024-01-01T00:00:00Z";
+  const cursorPath = path.join(root, "results/apply-cursors/openclaw-openclaw.json");
+  writeProposedRecord(root, 30, "issue", "proposed_close", "implemented_on_main", oldDate, {
+    applyCheckedAt: "2026-01-01T00:00:00Z",
+  });
+  for (const [number, applyCheckedAt] of [
+    [10, "2026-01-02T00:00:00Z"],
+    [20, "2026-01-04T00:00:00Z"],
+  ]) {
+    write(
+      path.join(root, `records/openclaw-openclaw/items/openclaw-openclaw-${number}.md`),
+      [
+        "---",
+        "repository: openclaw/openclaw",
+        "type: pull_request",
+        "decision: keep_open",
+        "review_status: complete",
+        "local_checkout_access: verified",
+        "action_taken: kept_open",
+        "close_reason: none",
+        `item_created_at: ${oldDate}`,
+        `apply_checked_at: ${applyCheckedAt}`,
+        `work_cluster_refs: ${JSON.stringify(["Superseded by #400"])}`,
+        "---",
+        "",
+      ].join("\n"),
+    );
+  }
+  write(
+    cursorPath,
+    JSON.stringify({ next_after_number: 10, next_after_apply_checked_at: "2026-01-02T00:00:00Z" }),
+  );
+  const options = {
+    targetRepo: "openclaw/openclaw",
+    applyKind: "all",
+    applyCloseReasons: "all",
+    staleMinAgeDays: 60,
+    minAgeDays: 0,
+    minAgeMinutes: null,
+    batchSize: 2,
+    cursorPath,
+  };
+
+  assert.deepEqual(
+    withCwd(root, () => proposedItemNumbers(options)),
+    [30, 20],
+  );
+  const summary = withCwd(root, () => proposedItemQualitySummary(options));
+  assert.deepEqual(
+    summary.buckets.map((bucket) => [bucket.bucket, bucket.count]),
+    [
+      ["ready_implemented", 1],
+      ["promotion_probe", 1],
+    ],
   );
 });
 

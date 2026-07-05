@@ -899,8 +899,7 @@ function applyCycleSummary(options: {
       estimated_full_cycle_windows: null,
       estimated_full_cycle_minutes: null,
       scheduled_interval_minutes: cadence,
-      label:
-        "Cycle estimate is unavailable because the apply-ready candidate count was not recorded.",
+      label: "Cycle estimate is unavailable because the close-candidate count was not recorded.",
     };
   }
   if (options.candidateCount === 0) {
@@ -911,7 +910,7 @@ function applyCycleSummary(options: {
       estimated_full_cycle_windows: 0,
       estimated_full_cycle_minutes: 0,
       scheduled_interval_minutes: cadence,
-      label: "No apply-ready close candidates are waiting in this lane.",
+      label: "No confirmed close proposals or live promotion probes are waiting in this lane.",
     };
   }
   if (!windowSize) {
@@ -945,7 +944,7 @@ function cycleLabel(
   minutes: number | null,
   cadence: number | null,
 ): string {
-  const base = `${candidateCount} apply-ready close candidates at ${windowSize} records per latest cursor advance: about ${windows} window${windows === 1 ? "" : "s"}`;
+  const base = `${candidateCount} close candidates (confirmed proposals plus live promotion probes) at ${windowSize} records per latest cursor advance: about ${windows} window${windows === 1 ? "" : "s"}`;
   if (!minutes || !cadence) return `${base}.`;
   return `${base}; scheduled cadence alone would take roughly ${durationLabel(minutes)} at ${cadence}-minute intervals, while successful windows can continue sooner.`;
 }
@@ -1057,6 +1056,7 @@ type ProposedItemCandidate = {
   kind: string;
   closeReason: string;
   action: string;
+  stage: "confirmed_close" | "promotion_probe";
   qualityBucket: ProposedItemQualityBucket;
 };
 
@@ -1064,6 +1064,7 @@ type ProposedItemQualityBucket =
   | "ready_implemented"
   | "duplicate_or_superseded"
   | "needs_pr_close_coverage"
+  | "promotion_probe"
   | "aging_or_low_signal"
   | "policy_sensitive"
   | "retry_after_guard_skip"
@@ -1118,7 +1119,7 @@ function selectedProposedItemCandidates(
       ? options.minAgeDays * 24 * 60 * 60 * 1000
       : options.minAgeMinutes * 60 * 1000;
 
-  const candidates = fs
+  const candidates: ProposedItemCandidate[] = fs
     .readdirSync(itemsDir)
     .filter((name) => /(?:^|[a-z0-9-]-)\d+\.md$/.test(name))
     .flatMap((name) => {
@@ -1174,10 +1175,12 @@ function selectedProposedItemCandidates(
           kind: type,
           closeReason: candidateCloseReason,
           action,
+          stage: selectablePromotion ? ("promotion_probe" as const) : ("confirmed_close" as const),
           qualityBucket: proposedItemQualityBucket({
             action,
             closeReason: candidateCloseReason,
             prCloseCoverageProofCanRun,
+            promotionProbe: selectablePromotion,
           }),
         },
       ];
@@ -1185,16 +1188,25 @@ function selectedProposedItemCandidates(
     .sort((left, right) => left.number - right.number);
   const batchSize = options.batchSize ?? null;
   if (!batchSize || batchSize <= 0) return candidates;
-  const sorted = [...candidates].sort(compareApplyCursorCandidate);
   const cursor = options.cursorPath ? readApplyCursor(options.cursorPath) : null;
-  if (!cursor) return sorted.slice(0, batchSize);
-  const afterCursor = sorted.filter(
-    (candidate) => compareCandidateToApplyCursor(candidate, cursor) > 0,
-  );
-  return [
-    ...afterCursor,
-    ...sorted.filter((candidate) => compareCandidateToApplyCursor(candidate, cursor) <= 0),
-  ].slice(0, batchSize);
+  const rotate = (stage: ProposedItemCandidate["stage"]): ProposedItemCandidate[] => {
+    const sorted = candidates
+      .filter((candidate) => candidate.stage === stage)
+      .sort(compareApplyCursorCandidate);
+    if (!cursor) return sorted;
+    const afterCursor = sorted.filter(
+      (candidate) => compareCandidateToApplyCursor(candidate, cursor) > 0,
+    );
+    return [
+      ...afterCursor,
+      ...sorted.filter((candidate) => compareCandidateToApplyCursor(candidate, cursor) <= 0),
+    ];
+  };
+
+  // Confirmed close proposals have already passed review eligibility. Keep
+  // speculative keep-open promotions as bounded backfill so their live graph
+  // hydration cannot consume an entire apply window ahead of real proposals.
+  return [...rotate("confirmed_close"), ...rotate("promotion_probe")].slice(0, batchSize);
 }
 
 export function proposedItemQualitySummary(
@@ -1232,6 +1244,7 @@ const QUALITY_BUCKET_ORDER: ProposedItemQualityBucket[] = [
   "ready_implemented",
   "duplicate_or_superseded",
   "needs_pr_close_coverage",
+  "promotion_probe",
   "aging_or_low_signal",
   "policy_sensitive",
   "retry_after_guard_skip",
@@ -1253,6 +1266,10 @@ const QUALITY_BUCKET_METADATA: Record<
   needs_pr_close_coverage: {
     label: "needs PR close proof",
     nextStep: "Run or reuse close-coverage proof before closing the PR.",
+  },
+  promotion_probe: {
+    label: "needs live promotion check",
+    nextStep: "Backfill after confirmed closes and promote only if live safety checks still pass.",
   },
   aging_or_low_signal: {
     label: "aging/low-signal",
@@ -1276,7 +1293,9 @@ function proposedItemQualityBucket(options: {
   action: string;
   closeReason: string;
   prCloseCoverageProofCanRun: boolean;
+  promotionProbe: boolean;
 }): ProposedItemQualityBucket {
+  if (options.promotionProbe) return "promotion_probe";
   if (options.prCloseCoverageProofCanRun) return "needs_pr_close_coverage";
   if (options.closeReason === "unconfirmed_product_direction") return "policy_sensitive";
   if (

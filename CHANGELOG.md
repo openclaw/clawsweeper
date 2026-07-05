@@ -31,6 +31,7 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Fixed
 
+- Prioritized confirmed close proposals ahead of speculative live promotion probes so expensive no-op promotion scans cannot starve ready OpenClaw closures.
 - Split apply workflow helpers out of the oversized inline expression so GitHub can validate and start sweep runs again.
 - Bounded apply-existing checkpoints to five fresh closes, renewed the GitHub
   App token between continuation runs, and stopped zero-progress scans from

@@ -1574,7 +1574,7 @@ test("dashboard exposes apply health from sweep status without broad scans", asy
         estimated_full_cycle_minutes: null,
         scheduled_interval_minutes: null,
         label:
-          "1200 apply-ready close candidates at 300 records per latest cursor advance: about 4 windows.",
+          "1200 close candidates (confirmed proposals plus live promotion probes) at 300 records per latest cursor advance: about 4 windows.",
       },
       attention_reasons: ["cursor_required_but_missing_after_full_window"],
       cursor: null,
