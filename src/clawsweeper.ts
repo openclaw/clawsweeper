@@ -126,6 +126,7 @@ import {
   type ReviewHistoryCycle,
   type ReviewHistoryLedger,
 } from "./review-history.js";
+import { trailingHtmlComments } from "./review-comment-markers.js";
 
 export {
   codexEnv,
@@ -16240,14 +16241,12 @@ function newestReviewMarkerAttribute(
   const reviewMarkerIndex = body.lastIndexOf(reviewMarker);
   if (reviewMarkerIndex < 0) return undefined;
   if (body.slice(reviewMarkerIndex + reviewMarker.length).trim() !== "") return undefined;
-  const markerBlock = body
-    .slice(0, reviewMarkerIndex)
-    .trimEnd()
-    .match(/(?:<!--[\s\S]*?-->\s*)+$/)?.[0];
-  if (!markerBlock) return undefined;
-  const markerPattern = /<!--\s+clawsweeper-verdict:[^\s>]+\b([^>]*)-->/g;
+  const markerComments = trailingHtmlComments(body.slice(0, reviewMarkerIndex));
+  const markerPattern = /^<!--\s+clawsweeper-verdict:[^\s>]+\b([^>]*)-->$/;
   let lastValue: string | undefined;
-  for (const match of markerBlock.matchAll(markerPattern)) {
+  for (const markerComment of markerComments) {
+    const match = markerComment.match(markerPattern);
+    if (!match) continue;
     const attributes = match[1] ?? "";
     if (!new RegExp(`\\bitem=${number}\\b`).test(attributes)) continue;
     const value = attributes.match(new RegExp(`\\b${attribute}=([^\\s>]+)`))?.[1];
