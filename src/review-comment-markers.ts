@@ -1,17 +1,17 @@
 export function trailingHtmlComments(value: string): string[] {
-  let cursor = 0;
-  let trailing: string[] = [];
+  let end = value.length;
+  const trailing: string[] = [];
 
-  while (cursor < value.length) {
-    const commentStart = value.indexOf("<!--", cursor);
+  while (end > 0) {
+    while (end > 0 && /\s/.test(value[end - 1] ?? "")) end -= 1;
+    if (end === 0) break;
+    if (!value.endsWith("-->", end)) break;
+
+    const commentStart = value.lastIndexOf("<!--", end - 3);
     if (commentStart < 0) break;
-    const commentEnd = value.indexOf("-->", commentStart + 4);
-    if (commentEnd < 0) break;
-
-    if (value.slice(cursor, commentStart).trim()) trailing = [];
-    trailing.push(value.slice(commentStart, commentEnd + 3));
-    cursor = commentEnd + 3;
+    trailing.push(value.slice(commentStart, end));
+    end = commentStart;
   }
 
-  return value.slice(cursor).trim() ? [] : trailing;
+  return trailing.reverse();
 }

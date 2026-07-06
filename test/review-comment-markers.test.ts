@@ -26,3 +26,19 @@ test("trailingHtmlComments rejects an unterminated adversarial suffix", () => {
   const value = `<!--${"--><!--".repeat(10_000)}unterminated`;
   assert.deepEqual(trailingHtmlComments(value), []);
 });
+
+test("trailingHtmlComments recovers when prose contains an unmatched opener", () => {
+  assert.deepEqual(
+    trailingHtmlComments(
+      [
+        "Codex review: mention the literal `<!--` delimiter in visible prose.",
+        "<!-- clawsweeper-verdict:needs-human item=321 sha=head -->",
+        "<!-- clawsweeper-review item=321 -->",
+      ].join("\n"),
+    ),
+    [
+      "<!-- clawsweeper-verdict:needs-human item=321 sha=head -->",
+      "<!-- clawsweeper-review item=321 -->",
+    ],
+  );
+});
