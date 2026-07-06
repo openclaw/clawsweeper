@@ -30,3 +30,16 @@ test("GitHub App token creation uses the approved immutable action pin everywher
     references.map(({ path, reference }) => `${path}: ${reference}`).join("\n"),
   );
 });
+
+test("cache actions use one runtime generation everywhere", () => {
+  const references = referenceRoots.flatMap(referenceFiles).flatMap((path) =>
+    readFileSync(path, "utf8")
+      .split("\n")
+      .flatMap((line) => line.match(/actions\/cache(?:\/(?:restore|save))?@v\d+/g) ?? []),
+  );
+
+  assert.deepEqual(
+    [...new Set(references)].sort(),
+    ["actions/cache@v6", "actions/cache/restore@v6", "actions/cache/save@v6"].sort(),
+  );
+});

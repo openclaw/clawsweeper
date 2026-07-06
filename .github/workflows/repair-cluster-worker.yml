@@ -242,7 +242,7 @@ jobs:
       - name: Restore Codex session
         id: restore_codex_session
         if: ${{ steps.check_job.outputs.job_exists == '1' && env.CLAWSWEEPER_STEERABLE_CODEX == '1' }}
-        uses: actions/cache/restore@v5
+        uses: actions/cache/restore@v6
         with:
           path: |
             ${{ steps.codex_session.outputs.codex_home }}/sessions
@@ -363,7 +363,7 @@ jobs:
 
       - name: Save Codex session
         if: ${{ always() && steps.check_job.outputs.job_exists == '1' && env.CLAWSWEEPER_STEERABLE_CODEX == '1' }}
-        uses: actions/cache/save@v5
+        uses: actions/cache/save@v6
         with:
           path: |
             ${{ steps.codex_session.outputs.codex_home }}/sessions
@@ -522,7 +522,7 @@ jobs:
 
       - name: Restore Codex session
         if: ${{ steps.check_job.outputs.job_exists == '1' && env.CLAWSWEEPER_STEERABLE_CODEX == '1' }}
-        uses: actions/cache/restore@v5
+        uses: actions/cache/restore@v6
         with:
           path: |
             ${{ steps.codex_session.outputs.codex_home }}/sessions
@@ -779,7 +779,7 @@ jobs:
 
       - name: Save Codex session
         if: ${{ always() && steps.check_job.outputs.job_exists == '1' && env.CLAWSWEEPER_STEERABLE_CODEX == '1' }}
-        uses: actions/cache/save@v5
+        uses: actions/cache/save@v6
         with:
           path: |
             ${{ steps.codex_session.outputs.codex_home }}/sessions

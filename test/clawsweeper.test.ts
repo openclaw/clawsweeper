@@ -2060,8 +2060,8 @@ test("repair workers hydrate only durable jobs from generated state", () => {
     2,
   );
   assert.match(workflow, /CLAWSWEEPER_STEERABLE_CODEX/);
-  assert.match(workflow, /actions\/cache\/restore@v5/);
-  assert.match(workflow, /actions\/cache\/save@v5/);
+  assert.match(workflow, /actions\/cache\/restore@v6/);
+  assert.match(workflow, /actions\/cache\/save@v6/);
   assert.match(workflow, /repair:action-session -- register/);
   assert.match(workflow, /completion-reason gates_passed/);
   assert.match(workflow, /post_flight_report=.*post-flight-report\.json/);
