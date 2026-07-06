@@ -58,7 +58,7 @@ jobs:
           permission-actions: write
           permission-contents: write
 
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           filter: blob:none
           fetch-depth: 0

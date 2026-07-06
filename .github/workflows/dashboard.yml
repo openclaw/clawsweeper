@@ -34,7 +34,7 @@ jobs:
       CLAWSWEEPER_APP_PRIVATE_KEY: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
       CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - uses: ./.github/actions/setup-pnpm
 

@@ -76,7 +76,7 @@ jobs:
       target_repo_name: ${{ steps.target.outputs.target_repo_name }}
       target_repo_owner: ${{ steps.target.outputs.target_repo_owner }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           path: clawsweeper
           filter: blob:none
@@ -334,7 +334,7 @@ jobs:
       matrix:
         include: ${{ fromJson(needs.plan.outputs.matrix) }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           path: clawsweeper
           filter: blob:none
@@ -467,7 +467,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           filter: blob:none
           fetch-depth: 0

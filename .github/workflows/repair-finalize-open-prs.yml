@@ -54,7 +54,7 @@ jobs:
           permission-issues: read
           permission-pull-requests: read
 
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           filter: blob:none
           fetch-depth: 0

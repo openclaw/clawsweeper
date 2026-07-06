@@ -68,7 +68,7 @@ jobs:
     outputs:
       proceed: ${{ steps.receipt.outputs.proceed }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           sparse-checkout: scripts/dispatch-receipt-owner.sh
           sparse-checkout-cone-mode: false
@@ -103,7 +103,7 @@ jobs:
       proceed: ${{ steps.limit.outputs.proceed }}
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           filter: blob:none
           sparse-checkout: |
@@ -165,7 +165,7 @@ jobs:
     runs-on: ${{ vars.CLAWSWEEPER_WORKER_RUNNER || 'blacksmith-4vcpu-ubuntu-2404' }}
     timeout-minutes: 8
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           filter: blob:none
 

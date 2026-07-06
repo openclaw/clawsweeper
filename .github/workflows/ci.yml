@@ -26,7 +26,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           sparse-checkout: |
             .github
@@ -59,7 +59,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - uses: ./.github/actions/setup-pnpm
 

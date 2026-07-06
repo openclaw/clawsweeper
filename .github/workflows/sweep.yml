@@ -307,7 +307,7 @@ jobs:
           done
           exit 1
 
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           filter: blob:none
           fetch-depth: 0
@@ -824,7 +824,7 @@ jobs:
       actions: write
       contents: write
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           filter: blob:none
           fetch-depth: 0
@@ -916,7 +916,7 @@ jobs:
       target_repo_name: ${{ steps.target.outputs.target_repo_name }}
       target_repo_owner: ${{ steps.target.outputs.target_repo_owner }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           path: clawsweeper
           filter: blob:none
@@ -1245,7 +1245,7 @@ jobs:
       matrix:
         include: ${{ fromJson(needs.plan.outputs.matrix) }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           path: clawsweeper
           filter: blob:none
@@ -1452,7 +1452,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           filter: blob:none
           fetch-depth: 0
@@ -1974,7 +1974,7 @@ jobs:
       issues: read
       pull-requests: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           filter: blob:none
           fetch-depth: 0
@@ -2043,7 +2043,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           filter: blob:none
           fetch-depth: 0
@@ -2164,7 +2164,7 @@ jobs:
     env:
       CLAWSWEEPER_UNCONFIRMED_PRODUCT_DIRECTION_CLOSE_ENABLED: ${{ vars.CLAWSWEEPER_UNCONFIRMED_PRODUCT_DIRECTION_CLOSE_ENABLED || 'false' }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           filter: blob:none
           fetch-depth: 0

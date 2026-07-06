@@ -45,7 +45,7 @@ jobs:
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         if: steps.core-budget.outputs.skip != 'true'
         with:
           filter: blob:none

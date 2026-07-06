@@ -44,12 +44,12 @@ jobs:
           repositories: maintainers
           permission-contents: read
 
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           filter: blob:none
           persist-credentials: false
 
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           repository: openclaw/maintainers
           path: maintainers
