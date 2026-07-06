@@ -20,6 +20,7 @@
     "audit": "node dist/clawsweeper.js audit",
     "reconcile": "node dist/clawsweeper.js reconcile",
     "status": "node dist/clawsweeper.js status",
+    "pr-radar": "node dist/pr-radar.js",
     "commit-review": "node dist/commit-sweeper.js",
     "commit-reports": "node dist/commit-sweeper.js reports",
     "local-review": "node dist/commit-sweeper.js local-review",

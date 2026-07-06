@@ -808,22 +808,31 @@ export const git = {
   latestRelease: null,
 };
 
-export function withMockGh(root: string, script: string, run: () => void): void {
+export function withMockGh<T>(root: string, script: string, run: () => T): T {
   const originalGhBin = process.env.GH_BIN;
   const originalGhBinArgs = process.env.GH_BIN_ARGS;
   const binDir = join(root, "bin");
   mkdirSync(binDir, { recursive: true });
   const ghPath = join(binDir, "gh.js");
   writeFileSync(ghPath, script, { mode: 0o755 });
-  try {
-    process.env.GH_BIN = process.execPath;
-    process.env.GH_BIN_ARGS = JSON.stringify([ghPath]);
-    run();
-  } finally {
+  const restore = () => {
     if (originalGhBin === undefined) delete process.env.GH_BIN;
     else process.env.GH_BIN = originalGhBin;
     if (originalGhBinArgs === undefined) delete process.env.GH_BIN_ARGS;
     else process.env.GH_BIN_ARGS = originalGhBinArgs;
+  };
+  try {
+    process.env.GH_BIN = process.execPath;
+    process.env.GH_BIN_ARGS = JSON.stringify([ghPath]);
+    const result = run();
+    if (result && typeof (result as PromiseLike<unknown>).then === "function") {
+      return Promise.resolve(result).finally(restore) as T;
+    }
+    restore();
+    return result;
+  } catch (error) {
+    restore();
+    throw error;
   }
 }
 

@@ -1,0 +1,123 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "target_repo",
+    "prs_scanned",
+    "limits",
+    "truncated",
+    "pairs",
+    "digest",
+    "updated_at"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "target_repo": {
+      "type": "string",
+      "description": "owner/repo whose open pull requests were scanned."
+    },
+    "prs_scanned": {
+      "type": "integer",
+      "description": "Number of open pull requests included in the scan."
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["max_prs", "max_file_pages_per_pr", "max_pairs"],
+      "properties": {
+        "max_prs": { "type": "integer" },
+        "max_file_pages_per_pr": { "type": "integer" },
+        "max_pairs": { "type": "integer" }
+      }
+    },
+    "truncated": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["prs", "pairs"],
+      "properties": {
+        "prs": { "type": "boolean" },
+        "pairs": { "type": "boolean" }
+      }
+    },
+    "pairs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["pr_a", "pr_b", "severity", "containment", "overlapping_line_total", "files"],
+        "properties": {
+          "pr_a": { "$ref": "#/$defs/pairSide" },
+          "pr_b": { "$ref": "#/$defs/pairSide" },
+          "severity": {
+            "type": "string",
+            "enum": ["lines", "file"]
+          },
+          "containment": {
+            "type": "string",
+            "enum": ["a_within_b", "b_within_a", "equal", "none"]
+          },
+          "overlapping_line_total": {
+            "type": "integer",
+            "description": "Total count of base-branch lines edited by both pull requests."
+          },
+          "files": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["base_path", "severity", "overlapping_lines"],
+              "properties": {
+                "base_path": {
+                  "type": "string",
+                  "description": "Path in base-branch coordinates as of each pull request's merge base."
+                },
+                "severity": {
+                  "type": "string",
+                  "enum": ["lines", "file"]
+                },
+                "overlapping_lines": {
+                  "type": "array",
+                  "items": {
+                    "type": "array",
+                    "items": { "type": "integer" },
+                    "minItems": 2,
+                    "maxItems": 2
+                  },
+                  "description": "Inclusive base-line ranges edited by both sides; empty for file-level overlap."
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "digest": {
+      "type": "string",
+      "description": "sha256 over the stable JSON of the report without digest and updated_at."
+    },
+    "updated_at": {
+      "type": "string",
+      "description": "ISO timestamp of the scan."
+    }
+  },
+  "$defs": {
+    "pairSide": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["number", "title", "url", "author", "draft", "head_sha"],
+      "properties": {
+        "number": { "type": "integer" },
+        "title": { "type": "string" },
+        "url": { "type": "string" },
+        "author": { "type": "string" },
+        "draft": { "type": "boolean" },
+        "head_sha": { "type": "string" }
+      }
+    }
+  }
+}
