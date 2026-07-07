@@ -1101,7 +1101,11 @@ function validatePrCloseCoverageCoveringSafety({
   }
 
   const labels = labelNames(coveringIssue.labels).map(normalizeLabelName);
-  const proofPassed = labels.some((label) => /^proof:\s*(sufficient|override)\b/i.test(label));
+  const overrideProofPassed = labels.some((label) => /^proof:\s*override\b/i.test(label));
+  const sufficientProofLabel = labels.some((label) => /^proof:\s*sufficient\b/i.test(label));
+  const proofPassed =
+    overrideProofPassed ||
+    (sufficientProofLabel && coveringReviewReportAtHead(result.repo, coveringRef, pullRequest));
   const needsProof = labels.some(
     (label) =>
       label === "triage: needs-real-behavior-proof" ||
@@ -1114,9 +1118,35 @@ function validatePrCloseCoverageCoveringSafety({
     return `linked canonical PR #${coveringRef} is still waiting for real behavior proof`;
   }
   if (!proofPassed) {
-    return `linked canonical PR #${coveringRef} has no positive real behavior proof`;
+    return sufficientProofLabel
+      ? `linked canonical PR #${coveringRef} real behavior proof is not verified at its current head`
+      : `linked canonical PR #${coveringRef} has no positive real behavior proof`;
   }
   return "";
+}
+
+function coveringReviewReportAtHead(
+  repo: JsonValue,
+  coveringRef: JsonValue,
+  pullRequest: LooseRecord,
+): boolean {
+  const headSha = stringFromUnknown(pullRequest.head?.sha);
+  if (!headSha) return false;
+  const recordsRoot = process.env.CLAWSWEEPER_RECORDS_ROOT || path.join(repoRoot(), "records");
+  const slug = String(repo).replace(/[^A-Za-z0-9_.-]+/g, "-");
+  for (const dir of ["items", "closed"]) {
+    const file = path.join(recordsRoot, slug, dir, `${coveringRef}.md`);
+    if (!fs.existsSync(file)) continue;
+    const report = fs.readFileSync(file, "utf8");
+    const headMatch = /^pull_head_sha:\s*(\S+)\s*$/m.exec(report);
+    return Boolean(
+      headMatch &&
+      headMatch[1] !== "unknown" &&
+      headMatch[1] === headSha &&
+      /^real_behavior_proof_status:\s*(sufficient|override)\s*$/m.test(report),
+    );
+  }
+  return false;
 }
 
 function formatCoveringPullRequestBlock(coveringRef: JsonValue, reason: string): string {

@@ -207,7 +207,10 @@ test("apply-decisions promotes old F-rated stale PRs to duplicate closes", () =>
       () => {
         withMockCodexProof(
           root,
-          { type: "failure", message: "proof should not run for stale promotion incidental ref" },
+          {
+            type: "failure",
+            message: "proof should not run for stale promotion incidental ref",
+          },
           () => {
             runApplyDecisionsForTest({
               itemsDir,
@@ -300,7 +303,9 @@ test("apply-decisions promotes stale PRs after automation-only drift", () => {
       },
     );
 
-    const report = JSON.parse(readFileSync(reportPath, "utf8")) as Array<{ action: string }>;
+    const report = JSON.parse(readFileSync(reportPath, "utf8")) as Array<{
+      action: string;
+    }>;
     assert.equal(
       report.some((entry) => entry.action === "closed"),
       true,
@@ -360,7 +365,9 @@ test("apply-decisions does not promote stale PRs from truncated activity", () =>
       },
     );
 
-    const report = JSON.parse(readFileSync(reportPath, "utf8")) as Array<{ action: string }>;
+    const report = JSON.parse(readFileSync(reportPath, "utf8")) as Array<{
+      action: string;
+    }>;
     assert.equal(
       report.some((entry) => entry.action === "closed"),
       false,
@@ -428,7 +435,9 @@ test("apply-decisions does not promote stale PRs after human follow-up", () => {
       },
     );
 
-    const report = JSON.parse(readFileSync(reportPath, "utf8")) as Array<{ action: string }>;
+    const report = JSON.parse(readFileSync(reportPath, "utf8")) as Array<{
+      action: string;
+    }>;
     assert.equal(
       report.some((entry) => entry.action === "closed"),
       false,
@@ -505,7 +514,9 @@ test("apply-decisions does not promote stale PRs after a command-only re-review 
       },
     );
 
-    const report = JSON.parse(readFileSync(reportPath, "utf8")) as Array<{ action: string }>;
+    const report = JSON.parse(readFileSync(reportPath, "utf8")) as Array<{
+      action: string;
+    }>;
     assert.equal(
       report.some((entry) => entry.action === "closed"),
       false,
@@ -549,7 +560,11 @@ test("apply-decisions promotes recommended pause-or-close PRs", () => {
 
     withMockGh(
       root,
-      promotionGhMock({ number: 331, title: "Superseded prompt PR", comment: synced.comment }),
+      promotionGhMock({
+        number: 331,
+        title: "Superseded prompt PR",
+        comment: synced.comment,
+      }),
       () => {
         runApplyDecisionsForTest({
           itemsDir,
@@ -569,7 +584,9 @@ test("apply-decisions promotes recommended pause-or-close PRs", () => {
       },
     );
 
-    const report = JSON.parse(readFileSync(reportPath, "utf8")) as Array<{ action: string }>;
+    const report = JSON.parse(readFileSync(reportPath, "utf8")) as Array<{
+      action: string;
+    }>;
     assert.equal(
       report.some((entry) => entry.action === "closed"),
       true,
@@ -604,6 +621,24 @@ test("apply-decisions promotes PRs superseded by linked pull requests", () => {
       .replace("Patch tier: F", "Patch tier: D");
     const synced = reportWithSyncedReviewComment(linkedMarkdownLabelReport, 332, "none");
     writeFileSync(join(itemsDir, "332.md"), synced.report, "utf8");
+    writeFileSync(
+      join(itemsDir, "400.md"),
+      stalePullRequestReport({
+        number: 400,
+        title: "Canonical activity PR",
+        labels: JSON.stringify(["proof: sufficient"]),
+        pull_head_sha: "canonical-head-400",
+        pr_rating_overall: "D",
+        pr_rating_proof: "D",
+        pr_rating_patch: "D",
+      })
+        .replace("Status: missing", "Status: sufficient")
+        .replace(
+          "Overall tier: F\nProof tier: F\nPatch tier: F",
+          "Overall tier: D\nProof tier: D\nPatch tier: D",
+        ),
+      "utf8",
+    );
 
     withMockGh(
       root,
@@ -619,6 +654,7 @@ test("apply-decisions promotes PRs superseded by linked pull requests", () => {
             state: "open",
             merged_at: null,
             mergeable_state: "clean",
+            head: { sha: "canonical-head-400" },
             labels: ["proof: sufficient"],
           },
         },
@@ -644,6 +680,8 @@ test("apply-decisions promotes PRs superseded by linked pull requests", () => {
                 "--dry-run",
                 "--apply-kind",
                 "all",
+                "--item-numbers",
+                "332",
                 "--processed-limit",
                 "3",
               ],
@@ -740,7 +778,9 @@ test("apply-decisions does not promote docs-only PRs superseded by code-only pul
       },
     );
 
-    const report = JSON.parse(readFileSync(reportPath, "utf8")) as Array<{ action: string }>;
+    const report = JSON.parse(readFileSync(reportPath, "utf8")) as Array<{
+      action: string;
+    }>;
     assert.equal(
       report.some((entry) => entry.action === "closed"),
       false,

@@ -8,6 +8,7 @@ import {
   lowSignalCloseReport,
   reportWithSyncedReviewComment,
   runApplyDecisionsForTest,
+  stalePullRequestReport,
   tmpPrefix,
   withMockCodexProof,
   withMockGh,
@@ -354,6 +355,24 @@ test("apply-decisions records PR coverage proof retry before same-author pair sk
       "duplicate_or_superseded",
     );
     writeFileSync(join(itemsDir, "321.md"), pullSynced.report, "utf8");
+    writeFileSync(
+      join(itemsDir, "400.md"),
+      stalePullRequestReport({
+        number: 400,
+        title: "Canonical provider cleanup",
+        labels: JSON.stringify(["proof: sufficient"]),
+        pull_head_sha: "canonical-head-400",
+        pr_rating_overall: "D",
+        pr_rating_proof: "D",
+        pr_rating_patch: "D",
+      })
+        .replace("Status: missing", "Status: sufficient")
+        .replace(
+          "Overall tier: F\nProof tier: F\nPatch tier: F",
+          "Overall tier: D\nProof tier: D\nPatch tier: D",
+        ),
+      "utf8",
+    );
 
     const ghMock = `
 const comments = {
@@ -436,6 +455,7 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$
     merged_at: null,
     mergeable_state: "clean",
     draft: false,
+    head: { sha: "canonical-head-400" },
     labels: [{ name: "proof: sufficient" }],
     body: "Carries the provider cleanup."
   }));
@@ -473,6 +493,8 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$
             "openclaw/openclaw",
             "--apply-kind",
             "all",
+            "--item-numbers",
+            "321",
             "--processed-limit",
             "3",
           ],

@@ -13230,6 +13230,7 @@ interface LinkedPullRequestSupersession {
   state: string;
   mergedAt: string | null;
   mergeableState: string | null;
+  headSha: string | null;
   draft: boolean;
   labels: string[];
   files: string[];
@@ -13628,6 +13629,7 @@ function linkedPullRequestSupersession(
         state,
         mergedAt,
         mergeableState: stringOrUndefined(pull.mergeable_state)?.toLowerCase() ?? null,
+        headSha: stringOrUndefined(asRecord(pull.head).sha) ?? null,
         draft: pull.draft === true,
         labels: linkedPullRequestLabels(number, pull),
         files: linkedFiles.files,
@@ -13727,14 +13729,19 @@ function unsafeCanonicalPullRequestReason(
 
   const report = linkedPullRequestReportMarkdown(linkedPull.number, options.reportDirs);
   const labels = linkedPull.labels.map(normalizeLabelName);
-  const labelProofPassed = proofPassedInLabels(linkedPull.labels);
+  const overrideProofPassed = labels.some((label) => /^proof:\s*override\b/i.test(label));
   const liveNeedsProof = labels.some(
     (label) =>
       label === "triage: needs-real-behavior-proof" ||
       (label.startsWith("status:") && label.includes("needs proof")),
   );
-  const reportProofPassed = proofPassedInReport(report);
-  const proofPassed = reportProofPassed || labelProofPassed;
+  const reportAtLiveHead = Boolean(
+    report && linkedPull.headSha && pullHeadShaFromReport(report) === linkedPull.headSha,
+  );
+  const reportProofPassed = reportAtLiveHead && proofPassedInReport(report);
+  const labelProofPassed =
+    overrideProofPassed || (proofPassedInLabels(linkedPull.labels) && reportProofPassed);
+  const proofPassed = reportProofPassed || overrideProofPassed;
 
   if (labels.some((label) => label.startsWith("rating:") && label.includes("unranked"))) {
     return `linked canonical PR #${linkedPull.number} is F-rated`;
@@ -13765,6 +13772,9 @@ function unsafeCanonicalPullRequestReason(
     }
   }
   if (!proofPassed) {
+    if (proofPassedInLabels(linkedPull.labels) || proofPassedInReport(report)) {
+      return `linked canonical PR #${linkedPull.number} real behavior proof is not verified at its current head`;
+    }
     return `linked canonical PR #${linkedPull.number} has no positive real behavior proof`;
   }
 
@@ -13789,6 +13799,7 @@ function duplicateCanonicalPullRequestBlockReason(
         state: stringOrUndefined(pull.state)?.toLowerCase() ?? "",
         mergedAt: stringOrUndefined(pull.merged_at) ?? null,
         mergeableState: stringOrUndefined(pull.mergeable_state)?.toLowerCase() ?? null,
+        headSha: stringOrUndefined(asRecord(pull.head).sha) ?? null,
         draft: pull.draft === true,
         labels: linkedPullRequestLabels(number, pull),
         files: linkedFiles.files,

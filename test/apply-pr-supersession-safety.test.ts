@@ -37,6 +37,24 @@ test("apply-decisions keeps promoted PR close proposals open when coverage proof
       "none",
     );
     writeFileSync(join(itemsDir, "352.md"), synced.report, "utf8");
+    writeFileSync(
+      join(itemsDir, "400.md"),
+      stalePullRequestReport({
+        number: 400,
+        title: "Canonical activity PR",
+        labels: JSON.stringify(["proof: sufficient"]),
+        pull_head_sha: "canonical-head-400",
+        pr_rating_overall: "D",
+        pr_rating_proof: "D",
+        pr_rating_patch: "D",
+      })
+        .replace("Status: missing", "Status: sufficient")
+        .replace(
+          "Overall tier: F\nProof tier: F\nPatch tier: F",
+          "Overall tier: D\nProof tier: D\nPatch tier: D",
+        ),
+      "utf8",
+    );
 
     withMockGh(
       root,
@@ -52,6 +70,7 @@ test("apply-decisions keeps promoted PR close proposals open when coverage proof
             state: "open",
             merged_at: null,
             mergeable_state: "clean",
+            head: { sha: "canonical-head-400" },
             labels: ["proof: sufficient"],
           },
         },
@@ -69,6 +88,8 @@ test("apply-decisions keeps promoted PR close proposals open when coverage proof
               "--dry-run",
               "--apply-kind",
               "all",
+              "--item-numbers",
+              "352",
               "--processed-limit",
               "3",
             ],
@@ -244,7 +265,9 @@ test("apply-decisions does not promote PRs superseded by no-proof linked pull re
       },
     );
 
-    const report = JSON.parse(readFileSync(reportPath, "utf8")) as Array<{ action: string }>;
+    const report = JSON.parse(readFileSync(reportPath, "utf8")) as Array<{
+      action: string;
+    }>;
     assert.equal(
       report.some((entry) => entry.action === "closed"),
       false,
@@ -318,7 +341,9 @@ test("apply-decisions does not promote PRs superseded by unsafe linked pull requ
       },
     );
 
-    const report = JSON.parse(readFileSync(reportPath, "utf8")) as Array<{ action: string }>;
+    const report = JSON.parse(readFileSync(reportPath, "utf8")) as Array<{
+      action: string;
+    }>;
     assert.equal(
       report.some((entry) => entry.action === "closed"),
       false,
@@ -396,7 +421,9 @@ test("apply-decisions does not promote PRs superseded by F-rated linked pull req
       },
     );
 
-    const report = JSON.parse(readFileSync(reportPath, "utf8")) as Array<{ action: string }>;
+    const report = JSON.parse(readFileSync(reportPath, "utf8")) as Array<{
+      action: string;
+    }>;
     assert.equal(
       report.some((entry) => entry.action === "closed"),
       false,
@@ -487,7 +514,9 @@ test("apply-decisions does not promote PRs superseded by section-only unsafe lin
       },
     );
 
-    const report = JSON.parse(readFileSync(reportPath, "utf8")) as Array<{ action: string }>;
+    const report = JSON.parse(readFileSync(reportPath, "utf8")) as Array<{
+      action: string;
+    }>;
     assert.equal(
       report.some((entry) => entry.action === "closed"),
       false,
@@ -498,7 +527,7 @@ test("apply-decisions does not promote PRs superseded by section-only unsafe lin
   }
 });
 
-test("apply-decisions promotes PRs when live proof labels supersede stale linked reports", () => {
+test("apply-decisions does not promote PRs when live proof labels lack a head-fresh linked report", () => {
   const root = mkdtempSync(tmpPrefix);
   try {
     const itemsDir = join(root, "items");
@@ -529,15 +558,18 @@ test("apply-decisions promotes PRs when live proof labels supersede stale linked
       join(itemsDir, "400.md"),
       stalePullRequestReport({
         number: 400,
-        title: "Canonical PR with stale proof report",
-        labels: JSON.stringify(["status: needs proof"]),
+        title: "Canonical PR with proof reviewed at an old head",
+        labels: JSON.stringify(["proof: sufficient"]),
+        pull_head_sha: "canonical-old-head",
         pr_rating_overall: "D",
         pr_rating_proof: "D",
         pr_rating_patch: "D",
-      }).replace(
-        "Overall tier: F\nProof tier: F\nPatch tier: F",
-        "Overall tier: D\nProof tier: D\nPatch tier: D",
-      ),
+      })
+        .replace("Status: missing", "Status: sufficient")
+        .replace(
+          "Overall tier: F\nProof tier: F\nPatch tier: F",
+          "Overall tier: D\nProof tier: D\nPatch tier: D",
+        ),
       "utf8",
     );
 
@@ -555,6 +587,7 @@ test("apply-decisions promotes PRs when live proof labels supersede stale linked
             state: "open",
             merged_at: null,
             mergeable_state: "clean",
+            head: { sha: "canonical-new-head" },
             labels: ["proof: sufficient"],
           },
         },
@@ -590,10 +623,300 @@ test("apply-decisions promotes PRs when live proof labels supersede stale linked
       },
     );
 
-    const report = JSON.parse(readFileSync(reportPath, "utf8")) as Array<{ action: string }>;
+    const report = JSON.parse(readFileSync(reportPath, "utf8")) as Array<{
+      action: string;
+    }>;
+    assert.equal(
+      report.some((entry) => entry.action === "closed"),
+      false,
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("apply-decisions promotes PRs when the linked proof report matches the live head", () => {
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    const itemsDir = join(root, "items");
+    const closedDir = join(root, "closed");
+    const plansDir = join(root, "plans");
+    const reportPath = join(root, "apply-report.json");
+    mkdirSync(itemsDir, { recursive: true });
+    mkdirSync(plansDir, { recursive: true });
+    const sourceReport = stalePullRequestReport({
+      number: 345,
+      title: "Old activity PR",
+      labels: JSON.stringify([]),
+      pr_rating_overall: "D",
+      pr_rating_proof: "D",
+      pr_rating_patch: "D",
+      work_cluster_refs: JSON.stringify([
+        "Superseded by https://github.com/openclaw/openclaw/pull/400",
+      ]),
+    })
+      .replace("Status: missing", "Status: sufficient")
+      .replace(
+        "Overall tier: F\nProof tier: F\nPatch tier: F",
+        "Overall tier: D\nProof tier: D\nPatch tier: D",
+      );
+    const synced = reportWithSyncedReviewComment(sourceReport, 345, "none");
+    writeFileSync(join(itemsDir, "345.md"), synced.report, "utf8");
+    writeFileSync(
+      join(itemsDir, "400.md"),
+      stalePullRequestReport({
+        number: 400,
+        title: "Canonical PR with proof reviewed at the live head",
+        labels: JSON.stringify(["proof: sufficient"]),
+        pull_head_sha: "canonical-live-head",
+        pr_rating_overall: "D",
+        pr_rating_proof: "D",
+        pr_rating_patch: "D",
+      })
+        .replace("Status: missing", "Status: sufficient")
+        .replace(
+          "Overall tier: F\nProof tier: F\nPatch tier: F",
+          "Overall tier: D\nProof tier: D\nPatch tier: D",
+        ),
+      "utf8",
+    );
+
+    withMockGh(
+      root,
+      promotionGhMock({
+        number: 345,
+        title: "Old activity PR",
+        comment: synced.comment,
+        linkedPulls: {
+          400: {
+            number: 400,
+            title: "Canonical PR with live proof label",
+            html_url: "https://github.com/openclaw/openclaw/pull/400",
+            state: "open",
+            merged_at: null,
+            mergeable_state: "clean",
+            head: { sha: "canonical-live-head" },
+            labels: ["proof: sufficient"],
+          },
+        },
+      }),
+      () => {
+        withMockCodexProof(
+          root,
+          {
+            type: "decision",
+            decision: "covered",
+            reason: "PR B is the live proof-backed canonical PR covering PR A.",
+          },
+          () => {
+            runApplyDecisionsForTest({
+              itemsDir,
+              closedDir,
+              plansDir,
+              reportPath,
+              extraArgs: [
+                "--target-repo",
+                "openclaw/openclaw",
+                "--dry-run",
+                "--apply-kind",
+                "all",
+                "--item-numbers",
+                "345",
+                "--processed-limit",
+                "3",
+              ],
+            });
+          },
+        );
+      },
+    );
+
+    const report = JSON.parse(readFileSync(reportPath, "utf8")) as Array<{
+      action: string;
+    }>;
     assert.equal(
       report.some((entry) => entry.action === "closed"),
       true,
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("apply-decisions promotes PRs when the linked PR carries a human proof override", () => {
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    const itemsDir = join(root, "items");
+    const closedDir = join(root, "closed");
+    const plansDir = join(root, "plans");
+    const reportPath = join(root, "apply-report.json");
+    mkdirSync(itemsDir, { recursive: true });
+    mkdirSync(plansDir, { recursive: true });
+    const sourceReport = stalePullRequestReport({
+      number: 346,
+      title: "Old activity PR",
+      labels: JSON.stringify([]),
+      pr_rating_overall: "D",
+      pr_rating_proof: "D",
+      pr_rating_patch: "D",
+      work_cluster_refs: JSON.stringify([
+        "Superseded by https://github.com/openclaw/openclaw/pull/400",
+      ]),
+    })
+      .replace("Status: missing", "Status: sufficient")
+      .replace(
+        "Overall tier: F\nProof tier: F\nPatch tier: F",
+        "Overall tier: D\nProof tier: D\nPatch tier: D",
+      );
+    const synced = reportWithSyncedReviewComment(sourceReport, 346, "none");
+    writeFileSync(join(itemsDir, "346.md"), synced.report, "utf8");
+
+    withMockGh(
+      root,
+      promotionGhMock({
+        number: 346,
+        title: "Old activity PR",
+        comment: synced.comment,
+        linkedPulls: {
+          400: {
+            number: 400,
+            title: "Canonical PR with human proof override",
+            html_url: "https://github.com/openclaw/openclaw/pull/400",
+            state: "open",
+            merged_at: null,
+            mergeable_state: "clean",
+            head: { sha: "canonical-new-head" },
+            labels: ["proof: override"],
+          },
+        },
+      }),
+      () => {
+        withMockCodexProof(
+          root,
+          {
+            type: "decision",
+            decision: "covered",
+            reason: "PR B is the human-overridden canonical PR covering PR A.",
+          },
+          () => {
+            runApplyDecisionsForTest({
+              itemsDir,
+              closedDir,
+              plansDir,
+              reportPath,
+              extraArgs: [
+                "--target-repo",
+                "openclaw/openclaw",
+                "--dry-run",
+                "--apply-kind",
+                "all",
+                "--item-numbers",
+                "346",
+                "--processed-limit",
+                "3",
+              ],
+            });
+          },
+        );
+      },
+    );
+
+    const report = JSON.parse(readFileSync(reportPath, "utf8")) as Array<{
+      action: string;
+    }>;
+    assert.equal(
+      report.some((entry) => entry.action === "closed"),
+      true,
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("apply-decisions does not promote PRs when live proof labels have no linked report", () => {
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    const itemsDir = join(root, "items");
+    const closedDir = join(root, "closed");
+    const plansDir = join(root, "plans");
+    const reportPath = join(root, "apply-report.json");
+    mkdirSync(itemsDir, { recursive: true });
+    mkdirSync(plansDir, { recursive: true });
+    const sourceReport = stalePullRequestReport({
+      number: 347,
+      title: "Old activity PR",
+      labels: JSON.stringify([]),
+      pr_rating_overall: "D",
+      pr_rating_proof: "D",
+      pr_rating_patch: "D",
+      work_cluster_refs: JSON.stringify([
+        "Superseded by https://github.com/openclaw/openclaw/pull/400",
+      ]),
+    })
+      .replace("Status: missing", "Status: sufficient")
+      .replace(
+        "Overall tier: F\nProof tier: F\nPatch tier: F",
+        "Overall tier: D\nProof tier: D\nPatch tier: D",
+      );
+    const synced = reportWithSyncedReviewComment(sourceReport, 347, "none");
+    writeFileSync(join(itemsDir, "347.md"), synced.report, "utf8");
+
+    withMockGh(
+      root,
+      promotionGhMock({
+        number: 347,
+        title: "Old activity PR",
+        comment: synced.comment,
+        linkedPulls: {
+          400: {
+            number: 400,
+            title: "Canonical PR with live proof label and no report",
+            html_url: "https://github.com/openclaw/openclaw/pull/400",
+            state: "open",
+            merged_at: null,
+            mergeable_state: "clean",
+            head: { sha: "canonical-new-head" },
+            labels: ["proof: sufficient"],
+          },
+        },
+      }),
+      () => {
+        withMockCodexProof(
+          root,
+          {
+            type: "decision",
+            decision: "covered",
+            reason: "PR B is the live proof-backed canonical PR covering PR A.",
+          },
+          () => {
+            runApplyDecisionsForTest({
+              itemsDir,
+              closedDir,
+              plansDir,
+              reportPath,
+              extraArgs: [
+                "--target-repo",
+                "openclaw/openclaw",
+                "--dry-run",
+                "--apply-kind",
+                "all",
+                "--item-numbers",
+                "347",
+                "--processed-limit",
+                "3",
+              ],
+            });
+          },
+        );
+      },
+    );
+
+    const report = JSON.parse(readFileSync(reportPath, "utf8")) as Array<{
+      action: string;
+    }>;
+    assert.equal(
+      report.some((entry) => entry.action === "closed"),
+      false,
     );
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -684,7 +1007,9 @@ test("apply-decisions does not promote PRs when live labels supersede stale proo
       },
     );
 
-    const report = JSON.parse(readFileSync(reportPath, "utf8")) as Array<{ action: string }>;
+    const report = JSON.parse(readFileSync(reportPath, "utf8")) as Array<{
+      action: string;
+    }>;
     assert.equal(
       report.some((entry) => entry.action === "closed"),
       false,
@@ -759,7 +1084,9 @@ test("apply-decisions does not promote PRs superseded by unknown-mergeability PR
       },
     );
 
-    const report = JSON.parse(readFileSync(reportPath, "utf8")) as Array<{ action: string }>;
+    const report = JSON.parse(readFileSync(reportPath, "utf8")) as Array<{
+      action: string;
+    }>;
     assert.equal(
       report.some((entry) => entry.action === "closed"),
       false,
@@ -834,7 +1161,9 @@ test("apply-decisions does not promote PRs superseded by non-clean linked pull r
       },
     );
 
-    const report = JSON.parse(readFileSync(reportPath, "utf8")) as Array<{ action: string }>;
+    const report = JSON.parse(readFileSync(reportPath, "utf8")) as Array<{
+      action: string;
+    }>;
     assert.equal(
       report.some((entry) => entry.action === "closed"),
       false,

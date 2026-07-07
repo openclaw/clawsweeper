@@ -19,7 +19,11 @@ test("repair apply blocks PR duplicate close when coverage proof keeps the sourc
     });
     writeFakeGh(paths.binDir, {
       issues: {
-        101: issue({ number: 101, title: "Add config validation", pullRequest: true }),
+        101: issue({
+          number: 101,
+          title: "Add config validation",
+          pullRequest: true,
+        }),
         202: issue({
           number: 202,
           title: "Rewrite config validation",
@@ -29,7 +33,11 @@ test("repair apply blocks PR duplicate close when coverage proof keeps the sourc
       },
       pulls: {
         101: pull({ number: 101, title: "Add config validation" }),
-        202: pull({ number: 202, title: "Rewrite config validation" }),
+        202: pull({
+          number: 202,
+          title: "Rewrite config validation",
+          headSha: "covering-head-202",
+        }),
       },
       comments: {
         101: [comment("alice", "PR A keeps legacy config behavior intact.")],
@@ -38,6 +46,7 @@ test("repair apply blocks PR duplicate close when coverage proof keeps the sourc
       logPath: paths.ghLogPath,
     });
     writeFakeCodex(paths.binDir);
+    writeCoveringReport(paths, 202, "covering-head-202");
 
     runApplyResult(paths, { proofDecision: "keep_open" });
 
@@ -63,7 +72,11 @@ test("repair apply blocks stale covering PR refs instead of crashing", () => {
     });
     writeFakeGh(paths.binDir, {
       issues: {
-        101: issue({ number: 101, title: "Add config validation", pullRequest: true }),
+        101: issue({
+          number: 101,
+          title: "Add config validation",
+          pullRequest: true,
+        }),
       },
       pulls: {
         101: pull({ number: 101, title: "Add config validation" }),
@@ -74,6 +87,7 @@ test("repair apply blocks stale covering PR refs instead of crashing", () => {
       logPath: paths.ghLogPath,
     });
     writeFakeCodex(paths.binDir);
+    writeCoveringReport(paths, 202, "covering-head-202");
 
     runApplyResult(paths, { proofDecision: "covered", failIfProofRuns: true });
 
@@ -100,7 +114,11 @@ test("repair apply requeues transient coverage proof setup failures", () => {
     });
     writeFakeGh(paths.binDir, {
       issues: {
-        101: issue({ number: 101, title: "Add config validation", pullRequest: true }),
+        101: issue({
+          number: 101,
+          title: "Add config validation",
+          pullRequest: true,
+        }),
         202: issue({
           number: 202,
           title: "Rewrite config validation",
@@ -110,7 +128,11 @@ test("repair apply requeues transient coverage proof setup failures", () => {
       },
       pulls: {
         101: pull({ number: 101, title: "Add config validation" }),
-        202: pull({ number: 202, title: "Rewrite config validation" }),
+        202: pull({
+          number: 202,
+          title: "Rewrite config validation",
+          headSha: "covering-head-202",
+        }),
       },
       comments: {
         101: [comment("alice", "PR A keeps legacy config behavior intact.")],
@@ -120,6 +142,7 @@ test("repair apply requeues transient coverage proof setup failures", () => {
       logPath: paths.ghLogPath,
     });
     writeFakeCodex(paths.binDir);
+    writeCoveringReport(paths, 202, "covering-head-202");
 
     runApplyResult(paths, { proofDecision: "covered", failIfProofRuns: true });
 
@@ -143,7 +166,11 @@ test("repair apply blocks proof subprocess failures after hydrating valid coveri
     });
     writeFakeGh(paths.binDir, {
       issues: {
-        101: issue({ number: 101, title: "Add config validation", pullRequest: true }),
+        101: issue({
+          number: 101,
+          title: "Add config validation",
+          pullRequest: true,
+        }),
         202: issue({
           number: 202,
           title: "Rewrite config validation",
@@ -153,7 +180,11 @@ test("repair apply blocks proof subprocess failures after hydrating valid coveri
       },
       pulls: {
         101: pull({ number: 101, title: "Add config validation" }),
-        202: pull({ number: 202, title: "Rewrite config validation" }),
+        202: pull({
+          number: 202,
+          title: "Rewrite config validation",
+          headSha: "covering-head-202",
+        }),
       },
       comments: {
         101: [comment("alice", "PR A keeps legacy config behavior intact.")],
@@ -162,6 +193,7 @@ test("repair apply blocks proof subprocess failures after hydrating valid coveri
       logPath: paths.ghLogPath,
     });
     writeFakeCodex(paths.binDir);
+    writeCoveringReport(paths, 202, "covering-head-202");
 
     runApplyResult(paths, {
       proofDecision: "covered",
@@ -191,7 +223,11 @@ test("repair apply blocks F-rated covering PRs before coverage proof", () => {
     });
     writeFakeGh(paths.binDir, {
       issues: {
-        101: issue({ number: 101, title: "Add config validation", pullRequest: true }),
+        101: issue({
+          number: 101,
+          title: "Add config validation",
+          pullRequest: true,
+        }),
         202: issue({
           number: 202,
           title: "Rewrite config validation",
@@ -201,7 +237,11 @@ test("repair apply blocks F-rated covering PRs before coverage proof", () => {
       },
       pulls: {
         101: pull({ number: 101, title: "Add config validation" }),
-        202: pull({ number: 202, title: "Rewrite config validation" }),
+        202: pull({
+          number: 202,
+          title: "Rewrite config validation",
+          headSha: "covering-head-202",
+        }),
       },
       comments: {
         101: [comment("alice", "PR A keeps legacy config behavior intact.")],
@@ -210,6 +250,7 @@ test("repair apply blocks F-rated covering PRs before coverage proof", () => {
       logPath: paths.ghLogPath,
     });
     writeFakeCodex(paths.binDir);
+    writeCoveringReport(paths, 202, "covering-head-202");
 
     runApplyResult(paths, { proofDecision: "covered", failIfProofRuns: true });
 
@@ -235,7 +276,11 @@ test("repair apply compacts PR bodies in coverage proof prompts", () => {
     const longBody = `${"legacy config ".repeat(30)}${unboundedTail}`;
     writeFakeGh(paths.binDir, {
       issues: {
-        101: issue({ number: 101, title: "Add config validation", pullRequest: true }),
+        101: issue({
+          number: 101,
+          title: "Add config validation",
+          pullRequest: true,
+        }),
         202: issue({
           number: 202,
           title: "Rewrite config validation",
@@ -244,8 +289,18 @@ test("repair apply compacts PR bodies in coverage proof prompts", () => {
         }),
       },
       pulls: {
-        101: { ...pull({ number: 101, title: "Add config validation" }), body: longBody },
-        202: { ...pull({ number: 202, title: "Rewrite config validation" }), body: longBody },
+        101: {
+          ...pull({ number: 101, title: "Add config validation" }),
+          body: longBody,
+        },
+        202: {
+          ...pull({
+            number: 202,
+            title: "Rewrite config validation",
+            headSha: "covering-head-202",
+          }),
+          body: longBody,
+        },
       },
       comments: {
         101: [comment("alice", "PR A keeps legacy config behavior intact.")],
@@ -254,6 +309,7 @@ test("repair apply compacts PR bodies in coverage proof prompts", () => {
       logPath: paths.ghLogPath,
     });
     writeFakeCodex(paths.binDir);
+    writeCoveringReport(paths, 202, "covering-head-202");
 
     runApplyResult(paths, {
       proofDecision: "covered",
@@ -278,7 +334,11 @@ test("repair apply filters automation comments from coverage proof prompts", () 
     });
     writeFakeGh(paths.binDir, {
       issues: {
-        101: issue({ number: 101, title: "Add config validation", pullRequest: true }),
+        101: issue({
+          number: 101,
+          title: "Add config validation",
+          pullRequest: true,
+        }),
         202: issue({
           number: 202,
           title: "Rewrite config validation",
@@ -288,7 +348,11 @@ test("repair apply filters automation comments from coverage proof prompts", () 
       },
       pulls: {
         101: pull({ number: 101, title: "Add config validation" }),
-        202: pull({ number: 202, title: "Rewrite config validation" }),
+        202: pull({
+          number: 202,
+          title: "Rewrite config validation",
+          headSha: "covering-head-202",
+        }),
       },
       comments: {
         101: [
@@ -317,6 +381,7 @@ test("repair apply filters automation comments from coverage proof prompts", () 
       logPath: paths.ghLogPath,
     });
     writeFakeCodex(paths.binDir);
+    writeCoveringReport(paths, 202, "covering-head-202");
 
     runApplyResult(paths, {
       proofDecision: "covered",
@@ -398,7 +463,11 @@ for (const scenario of [
       const paths = writeApplyFixture(tmp, scenario.action);
       writeFakeGh(paths.binDir, {
         issues: {
-          101: issue({ number: 101, title: "Add config validation", pullRequest: true }),
+          101: issue({
+            number: 101,
+            title: "Add config validation",
+            pullRequest: true,
+          }),
           202: issue({
             number: 202,
             title: "Rewrite config validation",
@@ -412,6 +481,7 @@ for (const scenario of [
             number: 202,
             title: "Rewrite config validation",
             mergedAt: scenario.mergedCandidate ? "2026-05-26T00:00:00Z" : undefined,
+            headSha: "covering-head-202",
           }),
         },
         comments: {
@@ -421,6 +491,7 @@ for (const scenario of [
         logPath: paths.ghLogPath,
       });
       writeFakeCodex(paths.binDir);
+      writeCoveringReport(paths, 202, "covering-head-202");
 
       runApplyResult(paths, { proofDecision: "keep_open" });
 
@@ -448,18 +519,30 @@ test("repair apply checks superseded candidate PR coverage before canonical issu
     });
     writeFakeGh(paths.binDir, {
       issues: {
-        101: issue({ number: 101, title: "Add config validation", pullRequest: true }),
+        101: issue({
+          number: 101,
+          title: "Add config validation",
+          pullRequest: true,
+        }),
         202: issue({
           number: 202,
           title: "Rewrite config validation",
           pullRequest: true,
           labels: ["proof: sufficient"],
         }),
-        303: issue({ number: 303, title: "Tracking issue", pullRequest: false }),
+        303: issue({
+          number: 303,
+          title: "Tracking issue",
+          pullRequest: false,
+        }),
       },
       pulls: {
         101: pull({ number: 101, title: "Add config validation" }),
-        202: pull({ number: 202, title: "Rewrite config validation" }),
+        202: pull({
+          number: 202,
+          title: "Rewrite config validation",
+          headSha: "covering-head-202",
+        }),
       },
       comments: {
         101: [comment("alice", "PR A keeps legacy config behavior intact.")],
@@ -469,6 +552,7 @@ test("repair apply checks superseded candidate PR coverage before canonical issu
       logPath: paths.ghLogPath,
     });
     writeFakeCodex(paths.binDir);
+    writeCoveringReport(paths, 202, "covering-head-202");
 
     runApplyResult(paths, { proofDecision: "keep_open" });
 
@@ -494,7 +578,11 @@ test("repair apply bounds covering PR comments when issue comment count is absen
     });
     writeFakeGh(paths.binDir, {
       issues: {
-        101: issue({ number: 101, title: "Add config validation", pullRequest: true }),
+        101: issue({
+          number: 101,
+          title: "Add config validation",
+          pullRequest: true,
+        }),
         202: issue({
           number: 202,
           title: "Rewrite config validation",
@@ -504,7 +592,11 @@ test("repair apply bounds covering PR comments when issue comment count is absen
       },
       pulls: {
         101: pull({ number: 101, title: "Add config validation" }),
-        202: pull({ number: 202, title: "Rewrite config validation" }),
+        202: pull({
+          number: 202,
+          title: "Rewrite config validation",
+          headSha: "covering-head-202",
+        }),
       },
       comments: {
         101: [comment("alice", "PR A keeps legacy config behavior intact.")],
@@ -521,6 +613,7 @@ test("repair apply bounds covering PR comments when issue comment count is absen
       logPath: paths.ghLogPath,
     });
     writeFakeCodex(paths.binDir);
+    writeCoveringReport(paths, 202, "covering-head-202");
 
     runApplyResult(paths, {
       proofDecision: "covered",
@@ -562,7 +655,11 @@ test("repair apply blocks PR close when open covering PR lacks positive proof", 
     });
     writeFakeGh(paths.binDir, {
       issues: {
-        101: issue({ number: 101, title: "Add config validation", pullRequest: true }),
+        101: issue({
+          number: 101,
+          title: "Add config validation",
+          pullRequest: true,
+        }),
         202: issue({
           number: 202,
           title: "Rewrite config validation",
@@ -572,7 +669,11 @@ test("repair apply blocks PR close when open covering PR lacks positive proof", 
       },
       pulls: {
         101: pull({ number: 101, title: "Add config validation" }),
-        202: pull({ number: 202, title: "Rewrite config validation" }),
+        202: pull({
+          number: 202,
+          title: "Rewrite config validation",
+          headSha: "covering-head-202",
+        }),
       },
       comments: {
         101: [comment("alice", "PR A keeps legacy config behavior intact.")],
@@ -581,6 +682,7 @@ test("repair apply blocks PR close when open covering PR lacks positive proof", 
       logPath: paths.ghLogPath,
     });
     writeFakeCodex(paths.binDir);
+    writeCoveringReport(paths, 202, "covering-head-202");
 
     runApplyResult(paths, { proofDecision: "covered", failIfProofRuns: true });
 
@@ -599,7 +701,153 @@ test("repair apply blocks PR close when open covering PR lacks positive proof", 
   }
 });
 
-test("repair apply executes PR duplicate close when coverage proof says covered", () => {
+test("repair apply blocks PR close when covering proof label lacks a head-fresh report", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-apply-result-"));
+  try {
+    const paths = writeApplyFixture(tmp, {
+      action: "close_duplicate",
+      classification: "duplicate",
+      canonical: "#202",
+    });
+    writeFakeGh(paths.binDir, {
+      issues: {
+        101: issue({ number: 101, title: "Add config validation", pullRequest: true }),
+        202: issue({
+          number: 202,
+          title: "Rewrite config validation",
+          pullRequest: true,
+          labels: ["proof: sufficient"],
+        }),
+      },
+      pulls: {
+        101: pull({ number: 101, title: "Add config validation" }),
+        202: pull({
+          number: 202,
+          title: "Rewrite config validation",
+          headSha: "covering-head-202",
+        }),
+      },
+      comments: {
+        101: [comment("alice", "PR A keeps legacy config behavior intact.")],
+        202: [comment("bob", "PR B carries forward the legacy config behavior.")],
+      },
+      logPath: paths.ghLogPath,
+    });
+    writeFakeCodex(paths.binDir);
+    writeCoveringReport(paths, 202, "covering-old-head-202");
+
+    runApplyResult(paths, { proofDecision: "covered", failIfProofRuns: true });
+
+    const report = JSON.parse(fs.readFileSync(paths.reportPath, "utf8"));
+    assert.equal(report.actions[0].status, "blocked");
+    assert.equal(
+      report.actions[0].reason,
+      "linked canonical PR #202 real behavior proof is not verified at its current head",
+    );
+    assert.equal(hasPrCloseCall(paths.ghLogPath), false);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("repair apply blocks PR close when the head-fresh report does not confirm proof", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-apply-result-"));
+  try {
+    const paths = writeApplyFixture(tmp, {
+      action: "close_duplicate",
+      classification: "duplicate",
+      canonical: "#202",
+    });
+    writeFakeGh(paths.binDir, {
+      issues: {
+        101: issue({ number: 101, title: "Add config validation", pullRequest: true }),
+        202: issue({
+          number: 202,
+          title: "Rewrite config validation",
+          pullRequest: true,
+          labels: ["proof: sufficient"],
+        }),
+      },
+      pulls: {
+        101: pull({ number: 101, title: "Add config validation" }),
+        202: pull({
+          number: 202,
+          title: "Rewrite config validation",
+          headSha: "covering-head-202",
+        }),
+      },
+      comments: {
+        101: [comment("alice", "PR A keeps legacy config behavior intact.")],
+        202: [comment("bob", "PR B carries forward the legacy config behavior.")],
+      },
+      logPath: paths.ghLogPath,
+    });
+    writeFakeCodex(paths.binDir);
+    writeCoveringReport(paths, 202, "covering-head-202", "insufficient");
+
+    runApplyResult(paths, { proofDecision: "covered", failIfProofRuns: true });
+
+    const report = JSON.parse(fs.readFileSync(paths.reportPath, "utf8"));
+    assert.equal(report.actions[0].status, "blocked");
+    assert.equal(
+      report.actions[0].reason,
+      "linked canonical PR #202 real behavior proof is not verified at its current head",
+    );
+    assert.equal(hasPrCloseCall(paths.ghLogPath), false);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("repair apply blocks PR close when covering proof label has no report at all", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-apply-result-"));
+  try {
+    const paths = writeApplyFixture(tmp, {
+      action: "close_duplicate",
+      classification: "duplicate",
+      canonical: "#202",
+    });
+    writeFakeGh(paths.binDir, {
+      issues: {
+        101: issue({ number: 101, title: "Add config validation", pullRequest: true }),
+        202: issue({
+          number: 202,
+          title: "Rewrite config validation",
+          pullRequest: true,
+          labels: ["proof: sufficient"],
+        }),
+      },
+      pulls: {
+        101: pull({ number: 101, title: "Add config validation" }),
+        202: pull({
+          number: 202,
+          title: "Rewrite config validation",
+          headSha: "covering-head-202",
+        }),
+      },
+      comments: {
+        101: [comment("alice", "PR A keeps legacy config behavior intact.")],
+        202: [comment("bob", "PR B carries forward the legacy config behavior.")],
+      },
+      logPath: paths.ghLogPath,
+    });
+    writeFakeCodex(paths.binDir);
+
+    runApplyResult(paths, { proofDecision: "covered", failIfProofRuns: true });
+
+    const report = JSON.parse(fs.readFileSync(paths.reportPath, "utf8"));
+    assert.equal(report.actions[0].status, "blocked");
+    assert.equal(
+      report.actions[0].reason,
+      "linked canonical PR #202 real behavior proof is not verified at its current head",
+    );
+    assert.equal(hasPrCloseCall(paths.ghLogPath), false);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("repair apply blocks PR close when the covering PR head is unknown", () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-apply-result-"));
   try {
     const paths = writeApplyFixture(tmp, {
@@ -628,6 +876,104 @@ test("repair apply executes PR duplicate close when coverage proof says covered"
       logPath: paths.ghLogPath,
     });
     writeFakeCodex(paths.binDir);
+    writeCoveringReport(paths, 202, "covering-head-202");
+
+    runApplyResult(paths, { proofDecision: "covered", failIfProofRuns: true });
+
+    const report = JSON.parse(fs.readFileSync(paths.reportPath, "utf8"));
+    assert.equal(report.actions[0].status, "blocked");
+    assert.equal(
+      report.actions[0].reason,
+      "linked canonical PR #202 real behavior proof is not verified at its current head",
+    );
+    assert.equal(hasPrCloseCall(paths.ghLogPath), false);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("repair apply executes PR duplicate close when the covering PR has a human proof override", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-apply-result-"));
+  try {
+    const paths = writeApplyFixture(tmp, {
+      action: "close_duplicate",
+      classification: "duplicate",
+      canonical: "#202",
+    });
+    writeFakeGh(paths.binDir, {
+      issues: {
+        101: issue({ number: 101, title: "Add config validation", pullRequest: true }),
+        202: issue({
+          number: 202,
+          title: "Rewrite config validation",
+          pullRequest: true,
+          labels: ["proof: override"],
+        }),
+      },
+      pulls: {
+        101: pull({ number: 101, title: "Add config validation" }),
+        202: pull({
+          number: 202,
+          title: "Rewrite config validation",
+          headSha: "covering-head-202",
+        }),
+      },
+      comments: {
+        101: [comment("alice", "PR A keeps legacy config behavior intact.")],
+        202: [comment("bob", "PR B carries forward the legacy config behavior.")],
+      },
+      logPath: paths.ghLogPath,
+    });
+    writeFakeCodex(paths.binDir);
+
+    runApplyResult(paths, { proofDecision: "covered" });
+
+    const report = JSON.parse(fs.readFileSync(paths.reportPath, "utf8"));
+    assert.equal(report.actions[0].status, "executed");
+    assert.equal(hasPrCloseCall(paths.ghLogPath), true);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("repair apply executes PR duplicate close when coverage proof says covered", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-apply-result-"));
+  try {
+    const paths = writeApplyFixture(tmp, {
+      action: "close_duplicate",
+      classification: "duplicate",
+      canonical: "#202",
+    });
+    writeFakeGh(paths.binDir, {
+      issues: {
+        101: issue({
+          number: 101,
+          title: "Add config validation",
+          pullRequest: true,
+        }),
+        202: issue({
+          number: 202,
+          title: "Rewrite config validation",
+          pullRequest: true,
+          labels: ["proof: sufficient"],
+        }),
+      },
+      pulls: {
+        101: pull({ number: 101, title: "Add config validation" }),
+        202: pull({
+          number: 202,
+          title: "Rewrite config validation",
+          headSha: "covering-head-202",
+        }),
+      },
+      comments: {
+        101: [comment("alice", "PR A keeps legacy config behavior intact.")],
+        202: [comment("bob", "PR B carries forward the legacy config behavior.")],
+      },
+      logPath: paths.ghLogPath,
+    });
+    writeFakeCodex(paths.binDir);
+    writeCoveringReport(paths, 202, "covering-head-202");
 
     runApplyResult(paths, { proofDecision: "covered" });
 
@@ -705,7 +1051,11 @@ for (const scenario of [
       const paths = writeApplyFixture(tmp, scenario.action);
       writeFakeGh(paths.binDir, {
         issues: {
-          101: issue({ number: 101, title: "Add config validation", pullRequest: true }),
+          101: issue({
+            number: 101,
+            title: "Add config validation",
+            pullRequest: true,
+          }),
           202: issue({
             number: 202,
             title: "Rewrite config validation",
@@ -719,6 +1069,7 @@ for (const scenario of [
             number: 202,
             title: "Rewrite config validation",
             mergedAt: scenario.mergedCandidate ? "2026-05-26T00:00:00Z" : undefined,
+            headSha: "covering-head-202",
           }),
         },
         comments: {
@@ -728,6 +1079,7 @@ for (const scenario of [
         logPath: paths.ghLogPath,
       });
       writeFakeCodex(paths.binDir);
+      writeCoveringReport(paths, 202, "covering-head-202");
 
       runApplyResult(paths, { proofDecision: "covered" });
 
@@ -755,7 +1107,11 @@ test("repair apply rechecks target freshness after coverage proof passes", () =>
     const afterProofPath = path.join(tmp, "proof-ran");
     writeFakeGh(paths.binDir, {
       issues: {
-        101: issue({ number: 101, title: "Add config validation", pullRequest: true }),
+        101: issue({
+          number: 101,
+          title: "Add config validation",
+          pullRequest: true,
+        }),
         202: issue({
           number: 202,
           title: "Rewrite config validation",
@@ -765,7 +1121,11 @@ test("repair apply rechecks target freshness after coverage proof passes", () =>
       },
       pulls: {
         101: pull({ number: 101, title: "Add config validation" }),
-        202: pull({ number: 202, title: "Rewrite config validation" }),
+        202: pull({
+          number: 202,
+          title: "Rewrite config validation",
+          headSha: "covering-head-202",
+        }),
       },
       comments: {
         101: [comment("alice", "PR A keeps legacy config behavior intact.")],
@@ -778,6 +1138,7 @@ test("repair apply rechecks target freshness after coverage proof passes", () =>
       logPath: paths.ghLogPath,
     });
     writeFakeCodex(paths.binDir);
+    writeCoveringReport(paths, 202, "covering-head-202");
 
     runApplyResult(paths, { proofDecision: "covered", afterProofPath });
 
@@ -803,7 +1164,11 @@ test("repair apply rechecks covering PR safety after coverage proof passes", () 
     const afterProofPath = path.join(tmp, "proof-ran");
     writeFakeGh(paths.binDir, {
       issues: {
-        101: issue({ number: 101, title: "Add config validation", pullRequest: true }),
+        101: issue({
+          number: 101,
+          title: "Add config validation",
+          pullRequest: true,
+        }),
         202: issue({
           number: 202,
           title: "Rewrite config validation",
@@ -813,7 +1178,11 @@ test("repair apply rechecks covering PR safety after coverage proof passes", () 
       },
       pulls: {
         101: pull({ number: 101, title: "Add config validation" }),
-        202: pull({ number: 202, title: "Rewrite config validation" }),
+        202: pull({
+          number: 202,
+          title: "Rewrite config validation",
+          headSha: "covering-head-202",
+        }),
       },
       comments: {
         101: [comment("alice", "PR A keeps legacy config behavior intact.")],
@@ -831,6 +1200,7 @@ test("repair apply rechecks covering PR safety after coverage proof passes", () 
       logPath: paths.ghLogPath,
     });
     writeFakeCodex(paths.binDir);
+    writeCoveringReport(paths, 202, "covering-head-202");
 
     runApplyResult(paths, { proofDecision: "covered", afterProofPath });
 
@@ -857,7 +1227,11 @@ test("repair apply rechecks covering PR freshness after coverage proof passes", 
     const afterProofPath = path.join(tmp, "proof-ran");
     writeFakeGh(paths.binDir, {
       issues: {
-        101: issue({ number: 101, title: "Add config validation", pullRequest: true }),
+        101: issue({
+          number: 101,
+          title: "Add config validation",
+          pullRequest: true,
+        }),
         202: issue({
           number: 202,
           title: "Rewrite config validation",
@@ -867,7 +1241,11 @@ test("repair apply rechecks covering PR freshness after coverage proof passes", 
       },
       pulls: {
         101: pull({ number: 101, title: "Add config validation" }),
-        202: pull({ number: 202, title: "Rewrite config validation" }),
+        202: pull({
+          number: 202,
+          title: "Rewrite config validation",
+          headSha: "covering-head-202",
+        }),
       },
       comments: {
         101: [comment("alice", "PR A keeps legacy config behavior intact.")],
@@ -883,6 +1261,7 @@ test("repair apply rechecks covering PR freshness after coverage proof passes", 
       logPath: paths.ghLogPath,
     });
     writeFakeCodex(paths.binDir);
+    writeCoveringReport(paths, 202, "covering-head-202");
 
     runApplyResult(paths, { proofDecision: "covered", afterProofPath });
 
@@ -907,7 +1286,11 @@ test("repair apply requeues transient post-proof covering PR safety failures", (
     const afterProofPath = path.join(tmp, "proof-ran");
     writeFakeGh(paths.binDir, {
       issues: {
-        101: issue({ number: 101, title: "Add config validation", pullRequest: true }),
+        101: issue({
+          number: 101,
+          title: "Add config validation",
+          pullRequest: true,
+        }),
         202: issue({
           number: 202,
           title: "Rewrite config validation",
@@ -917,7 +1300,11 @@ test("repair apply requeues transient post-proof covering PR safety failures", (
       },
       pulls: {
         101: pull({ number: 101, title: "Add config validation" }),
-        202: pull({ number: 202, title: "Rewrite config validation" }),
+        202: pull({
+          number: 202,
+          title: "Rewrite config validation",
+          headSha: "covering-head-202",
+        }),
       },
       comments: {
         101: [comment("alice", "PR A keeps legacy config behavior intact.")],
@@ -928,6 +1315,7 @@ test("repair apply requeues transient post-proof covering PR safety failures", (
       logPath: paths.ghLogPath,
     });
     writeFakeCodex(paths.binDir);
+    writeCoveringReport(paths, 202, "covering-head-202");
 
     runApplyResult(paths, { proofDecision: "covered", afterProofPath });
 
@@ -953,7 +1341,11 @@ test("repair apply skips target closed after proof when updated_at is missing", 
     const afterProofPath = path.join(tmp, "proof-ran");
     writeFakeGh(paths.binDir, {
       issues: {
-        101: issue({ number: 101, title: "Add config validation", pullRequest: true }),
+        101: issue({
+          number: 101,
+          title: "Add config validation",
+          pullRequest: true,
+        }),
         202: issue({
           number: 202,
           title: "Rewrite config validation",
@@ -963,7 +1355,11 @@ test("repair apply skips target closed after proof when updated_at is missing", 
       },
       pulls: {
         101: pull({ number: 101, title: "Add config validation" }),
-        202: pull({ number: 202, title: "Rewrite config validation" }),
+        202: pull({
+          number: 202,
+          title: "Rewrite config validation",
+          headSha: "covering-head-202",
+        }),
       },
       comments: {
         101: [comment("alice", "PR A keeps legacy config behavior intact.")],
@@ -981,6 +1377,7 @@ test("repair apply skips target closed after proof when updated_at is missing", 
       logPath: paths.ghLogPath,
     });
     writeFakeCodex(paths.binDir);
+    writeCoveringReport(paths, 202, "covering-head-202");
 
     runApplyResult(paths, {
       proofDecision: "covered",
@@ -1013,11 +1410,19 @@ test("repair apply treats already-closed PR duplicate close as idempotent before
           pullRequest: true,
           state: "closed",
         }),
-        202: issue({ number: 202, title: "Rewrite config validation", pullRequest: true }),
+        202: issue({
+          number: 202,
+          title: "Rewrite config validation",
+          pullRequest: true,
+        }),
       },
       pulls: {
         101: pull({ number: 101, title: "Add config validation" }),
-        202: pull({ number: 202, title: "Rewrite config validation" }),
+        202: pull({
+          number: 202,
+          title: "Rewrite config validation",
+          headSha: "covering-head-202",
+        }),
       },
       comments: {
         101: [
@@ -1035,8 +1440,12 @@ test("repair apply treats already-closed PR duplicate close as idempotent before
       logPath: paths.ghLogPath,
     });
     writeFakeCodex(paths.binDir);
+    writeCoveringReport(paths, 202, "covering-head-202");
 
-    runApplyResult(paths, { proofDecision: "keep_open", failIfProofRuns: true });
+    runApplyResult(paths, {
+      proofDecision: "keep_open",
+      failIfProofRuns: true,
+    });
 
     const report = JSON.parse(fs.readFileSync(paths.reportPath, "utf8"));
     assert.equal(report.actions[0].status, "executed");
@@ -1060,11 +1469,23 @@ test("repair apply leaves issue duplicate close behavior unchanged", () => {
     });
     writeFakeGh(paths.binDir, {
       issues: {
-        101: issue({ number: 101, title: "Add config validation", pullRequest: false }),
-        202: issue({ number: 202, title: "Rewrite config validation", pullRequest: true }),
+        101: issue({
+          number: 101,
+          title: "Add config validation",
+          pullRequest: false,
+        }),
+        202: issue({
+          number: 202,
+          title: "Rewrite config validation",
+          pullRequest: true,
+        }),
       },
       pulls: {
-        202: pull({ number: 202, title: "Rewrite config validation" }),
+        202: pull({
+          number: 202,
+          title: "Rewrite config validation",
+          headSha: "covering-head-202",
+        }),
       },
       comments: {
         101: [comment("alice", "Issue A is duplicated by PR B.")],
@@ -1073,6 +1494,7 @@ test("repair apply leaves issue duplicate close behavior unchanged", () => {
       logPath: paths.ghLogPath,
     });
     writeFakeCodex(paths.binDir);
+    writeCoveringReport(paths, 202, "covering-head-202");
 
     runApplyResult(paths, { proofDecision: "keep_open" });
 
@@ -1097,7 +1519,11 @@ test("repair apply leaves current-main fixed closeout outside coverage proof", (
     });
     writeFakeGh(paths.binDir, {
       issues: {
-        101: issue({ number: 101, title: "Add config validation", pullRequest: true }),
+        101: issue({
+          number: 101,
+          title: "Add config validation",
+          pullRequest: true,
+        }),
       },
       pulls: {
         101: pull({ number: 101, title: "Add config validation" }),
@@ -1108,6 +1534,7 @@ test("repair apply leaves current-main fixed closeout outside coverage proof", (
       logPath: paths.ghLogPath,
     });
     writeFakeCodex(paths.binDir);
+    writeCoveringReport(paths, 202, "covering-head-202");
 
     runApplyResult(paths, { proofDecision: "covered", failIfProofRuns: true });
 
@@ -1126,6 +1553,7 @@ type ApplyFixturePaths = {
   resultPath: string;
   reportPath: string;
   ghLogPath: string;
+  recordsRoot: string;
 };
 
 type ApplyFixtureAction = {
@@ -1161,8 +1589,10 @@ function writeApplyFixture(tmp: string, action: ApplyFixtureAction): ApplyFixtur
   const resultPath = path.join(runDir, "result.json");
   const reportPath = path.join(runDir, "apply-report.json");
   const ghLogPath = path.join(tmp, "gh.log");
+  const recordsRoot = path.join(tmp, "records");
   fs.mkdirSync(binDir, { recursive: true });
   fs.mkdirSync(runDir, { recursive: true });
+  fs.mkdirSync(recordsRoot, { recursive: true });
   fs.writeFileSync(
     jobPath,
     [
@@ -1220,7 +1650,30 @@ function writeApplyFixture(tmp: string, action: ApplyFixtureAction): ApplyFixtur
       2,
     ),
   );
-  return { binDir, jobPath, resultPath, reportPath, ghLogPath };
+  return { binDir, jobPath, resultPath, reportPath, ghLogPath, recordsRoot };
+}
+
+function writeCoveringReport(
+  paths: ApplyFixturePaths,
+  number: number,
+  headSha: string,
+  proofStatus = "sufficient",
+) {
+  const itemsDir = path.join(paths.recordsRoot, "openclaw-openclaw", "items");
+  fs.mkdirSync(itemsDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(itemsDir, `${number}.md`),
+    [
+      "---",
+      `number: ${number}`,
+      `pull_head_sha: ${headSha}`,
+      `real_behavior_proof_status: ${proofStatus}`,
+      "---",
+      "",
+      "Report body.",
+      "",
+    ].join("\n"),
+  );
 }
 
 function runApplyResult(
@@ -1244,6 +1697,7 @@ function runApplyResult(
       CLAWSWEEPER_ALLOW_EXECUTE: "1",
       CLAWSWEEPER_ALLOWED_OWNER: "openclaw",
       CLAWSWEEPER_MODEL: "model-test",
+      CLAWSWEEPER_RECORDS_ROOT: paths.recordsRoot,
       // Coverage instrumentation plus the parallel repair suite can delay this child process.
       // Keep the bound short for a fake binary without making CI depend on a 10-second scheduler window.
       CLAWSWEEPER_PR_CLOSE_COVERAGE_PROOF_TIMEOUT_MS: "30000",
@@ -1493,7 +1947,7 @@ function issue(options: {
   };
 }
 
-function pull(options: { number: number; title: string; mergedAt?: string }) {
+function pull(options: { number: number; title: string; mergedAt?: string; headSha?: string }) {
   return {
     number: options.number,
     title: options.title,
@@ -1503,6 +1957,7 @@ function pull(options: { number: number; title: string; mergedAt?: string }) {
     merged_at: options.mergedAt ?? null,
     body: `${options.title} body.`,
     updated_at: "2026-05-25T00:00:00Z",
+    ...(options.headSha ? { head: { sha: options.headSha } } : {}),
   };
 }
 
