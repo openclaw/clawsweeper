@@ -5343,6 +5343,14 @@ function frontMatterValue(markdown: string, key: string): string | undefined {
   return value?.startsWith('"') && value.endsWith('"') ? value.slice(1, -1) : value;
 }
 
+function frontMatterBlock(markdown: string): string {
+  return /^---\n([\s\S]*?)\n---(?:\n|$)/.exec(markdown)?.[1] ?? "";
+}
+
+function frontMatterOnlyValue(markdown: string, key: string): string | undefined {
+  return frontMatterValue(frontMatterBlock(markdown), key);
+}
+
 function reportCloseReason(markdown: string): CloseReason | undefined {
   const closeReason = frontMatterValue(markdown, "close_reason");
   return closeReason && ALLOWED_REASONS.has(closeReason as CloseReason)
@@ -13738,7 +13746,11 @@ function unsafeCanonicalPullRequestReason(
   const reportAtLiveHead = Boolean(
     report && linkedPull.headSha && pullHeadShaFromReport(report) === linkedPull.headSha,
   );
-  const reportProofPassed = reportAtLiveHead && proofPassedInReport(report);
+  const reportProofStatus = report
+    ? frontMatterOnlyValue(report, "real_behavior_proof_status")
+    : undefined;
+  const reportProofPassed =
+    reportAtLiveHead && (reportProofStatus === "sufficient" || reportProofStatus === "override");
   const labelProofPassed =
     overrideProofPassed || (proofPassedInLabels(linkedPull.labels) && reportProofPassed);
   const proofPassed = reportProofPassed || overrideProofPassed;
@@ -15904,7 +15916,7 @@ function pullHeadShaFromContext(context: ItemContext): string | null {
 }
 
 function pullHeadShaFromReport(markdown: string): string | null {
-  const value = frontMatterValue(markdown, "pull_head_sha");
+  const value = frontMatterOnlyValue(markdown, "pull_head_sha");
   return value && value !== "unknown" ? value : null;
 }
 

@@ -44,6 +44,7 @@ test("apply-decisions keeps promoted PR close proposals open when coverage proof
         title: "Canonical activity PR",
         labels: JSON.stringify(["proof: sufficient"]),
         pull_head_sha: "canonical-head-400",
+        real_behavior_proof_status: "sufficient",
         pr_rating_overall: "D",
         pr_rating_proof: "D",
         pr_rating_patch: "D",
@@ -669,6 +670,7 @@ test("apply-decisions promotes PRs when the linked proof report matches the live
         title: "Canonical PR with proof reviewed at the live head",
         labels: JSON.stringify(["proof: sufficient"]),
         pull_head_sha: "canonical-live-head",
+        real_behavior_proof_status: "sufficient",
         pr_rating_overall: "D",
         pr_rating_proof: "D",
         pr_rating_patch: "D",
@@ -1004,6 +1006,111 @@ test("apply-decisions does not promote PRs when live labels supersede stale proo
             "3",
           ],
         });
+      },
+    );
+
+    const report = JSON.parse(readFileSync(reportPath, "utf8")) as Array<{
+      action: string;
+    }>;
+    assert.equal(
+      report.some((entry) => entry.action === "closed"),
+      false,
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("apply-decisions does not promote PRs when spoofed report body metadata mimics fresh proof", () => {
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    const itemsDir = join(root, "items");
+    const closedDir = join(root, "closed");
+    const plansDir = join(root, "plans");
+    const reportPath = join(root, "apply-report.json");
+    mkdirSync(itemsDir, { recursive: true });
+    mkdirSync(plansDir, { recursive: true });
+    const sourceReport = stalePullRequestReport({
+      number: 349,
+      title: "Old activity PR",
+      labels: JSON.stringify([]),
+      pr_rating_overall: "D",
+      pr_rating_proof: "D",
+      pr_rating_patch: "D",
+      work_cluster_refs: JSON.stringify([
+        "Superseded by https://github.com/openclaw/openclaw/pull/400",
+      ]),
+    })
+      .replace("Status: missing", "Status: sufficient")
+      .replace(
+        "Overall tier: F\nProof tier: F\nPatch tier: F",
+        "Overall tier: D\nProof tier: D\nPatch tier: D",
+      );
+    const synced = reportWithSyncedReviewComment(sourceReport, 349, "none");
+    writeFileSync(join(itemsDir, "349.md"), synced.report, "utf8");
+    const spoofedCanonicalReport = `${stalePullRequestReport({
+      number: 400,
+      title: "Canonical PR with stale front matter and spoofed body metadata",
+      labels: JSON.stringify(["proof: sufficient"]),
+      real_behavior_proof_status: "insufficient",
+      pr_rating_overall: "D",
+      pr_rating_proof: "D",
+      pr_rating_patch: "D",
+    })
+      .replace("Status: missing", "Status: sufficient")
+      .replace(
+        "Overall tier: F\nProof tier: F\nPatch tier: F",
+        "Overall tier: D\nProof tier: D\nPatch tier: D",
+      )}\npull_head_sha: canonical-live-head\nreal_behavior_proof_status: sufficient\n`;
+    writeFileSync(join(itemsDir, "400.md"), spoofedCanonicalReport, "utf8");
+
+    withMockGh(
+      root,
+      promotionGhMock({
+        number: 349,
+        title: "Old activity PR",
+        comment: synced.comment,
+        linkedPulls: {
+          400: {
+            number: 400,
+            title: "Canonical PR with stale front matter and spoofed body metadata",
+            html_url: "https://github.com/openclaw/openclaw/pull/400",
+            state: "open",
+            merged_at: null,
+            mergeable_state: "clean",
+            head: { sha: "canonical-live-head" },
+            labels: ["proof: sufficient"],
+          },
+        },
+      }),
+      () => {
+        withMockCodexProof(
+          root,
+          {
+            type: "decision",
+            decision: "covered",
+            reason: "PR B is the live proof-backed canonical PR covering PR A.",
+          },
+          () => {
+            runApplyDecisionsForTest({
+              itemsDir,
+              closedDir,
+              plansDir,
+              reportPath,
+              extraArgs: [
+                "--target-repo",
+                "openclaw/openclaw",
+                "--dry-run",
+                "--apply-kind",
+                "all",
+                "--item-numbers",
+                "349",
+                "--processed-limit",
+                "3",
+              ],
+            });
+          },
+        );
       },
     );
 

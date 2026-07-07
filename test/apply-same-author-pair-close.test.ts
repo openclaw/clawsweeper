@@ -362,6 +362,7 @@ test("apply-decisions records PR coverage proof retry before same-author pair sk
         title: "Canonical provider cleanup",
         labels: JSON.stringify(["proof: sufficient"]),
         pull_head_sha: "canonical-head-400",
+        real_behavior_proof_status: "sufficient",
         pr_rating_overall: "D",
         pr_rating_proof: "D",
         pr_rating_patch: "D",

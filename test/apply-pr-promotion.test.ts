@@ -628,6 +628,7 @@ test("apply-decisions promotes PRs superseded by linked pull requests", () => {
         title: "Canonical activity PR",
         labels: JSON.stringify(["proof: sufficient"]),
         pull_head_sha: "canonical-head-400",
+        real_behavior_proof_status: "sufficient",
         pr_rating_overall: "D",
         pr_rating_proof: "D",
         pr_rating_patch: "D",

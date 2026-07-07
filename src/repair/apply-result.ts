@@ -1138,12 +1138,13 @@ function coveringReviewReportAtHead(
     const file = path.join(recordsRoot, slug, dir, `${coveringRef}.md`);
     if (!fs.existsSync(file)) continue;
     const report = fs.readFileSync(file, "utf8");
-    const headMatch = /^pull_head_sha:\s*(\S+)\s*$/m.exec(report);
+    const frontMatter = /^---\n([\s\S]*?)\n---(?:\n|$)/.exec(report)?.[1] ?? "";
+    const headMatch = /^pull_head_sha:\s*(\S+)\s*$/m.exec(frontMatter);
     return Boolean(
       headMatch &&
       headMatch[1] !== "unknown" &&
       headMatch[1] === headSha &&
-      /^real_behavior_proof_status:\s*(sufficient|override)\s*$/m.test(report),
+      /^real_behavior_proof_status:\s*(sufficient|override)\s*$/m.test(frontMatter),
     );
   }
   return false;
