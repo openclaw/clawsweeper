@@ -936,6 +936,71 @@ test("repair apply executes PR duplicate close when the covering PR has a human 
   }
 });
 
+test("repair apply reads covering reports from the default records root", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-apply-result-"));
+  const defaultRecordsRoot = path.join(repoRoot, "records");
+  const recordsRootExisted = fs.existsSync(defaultRecordsRoot);
+  const defaultReportPath = path.join(defaultRecordsRoot, "openclaw-openclaw", "items", "202.md");
+  const priorReport = fs.existsSync(defaultReportPath) ? fs.readFileSync(defaultReportPath) : null;
+  try {
+    const paths = writeApplyFixture(tmp, {
+      action: "close_duplicate",
+      classification: "duplicate",
+      canonical: "#202",
+    });
+    writeFakeGh(paths.binDir, {
+      issues: {
+        101: issue({ number: 101, title: "Add config validation", pullRequest: true }),
+        202: issue({
+          number: 202,
+          title: "Rewrite config validation",
+          pullRequest: true,
+          labels: ["proof: sufficient"],
+        }),
+      },
+      pulls: {
+        101: pull({ number: 101, title: "Add config validation" }),
+        202: pull({
+          number: 202,
+          title: "Rewrite config validation",
+          headSha: "covering-head-202",
+        }),
+      },
+      comments: {
+        101: [comment("alice", "PR A keeps legacy config behavior intact.")],
+        202: [comment("bob", "PR B carries forward the legacy config behavior.")],
+      },
+      logPath: paths.ghLogPath,
+    });
+    writeFakeCodex(paths.binDir);
+    fs.mkdirSync(path.dirname(defaultReportPath), { recursive: true });
+    fs.writeFileSync(
+      defaultReportPath,
+      [
+        "---",
+        "number: 202",
+        "pull_head_sha: covering-head-202",
+        "real_behavior_proof_status: sufficient",
+        "---",
+        "",
+        "Report body.",
+        "",
+      ].join("\n"),
+    );
+
+    runApplyResult(paths, { proofDecision: "covered", useDefaultRecordsRoot: true });
+
+    const report = JSON.parse(fs.readFileSync(paths.reportPath, "utf8"));
+    assert.equal(report.actions[0].status, "executed");
+    assert.equal(hasPrCloseCall(paths.ghLogPath), true);
+  } finally {
+    if (!recordsRootExisted) fs.rmSync(defaultRecordsRoot, { recursive: true, force: true });
+    else if (priorReport === null) fs.rmSync(defaultReportPath, { force: true });
+    else fs.writeFileSync(defaultReportPath, priorReport);
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 test("repair apply executes PR duplicate close when coverage proof says covered", () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-apply-result-"));
   try {
@@ -1686,6 +1751,7 @@ function runApplyResult(
     proofFailureMessage?: string;
     afterProofPath?: string;
     allowMissingUpdatedAt?: boolean;
+    useDefaultRecordsRoot?: boolean;
   },
 ) {
   const args = ["dist/repair/apply-result.js", paths.jobPath, paths.resultPath];
@@ -1697,7 +1763,7 @@ function runApplyResult(
       CLAWSWEEPER_ALLOW_EXECUTE: "1",
       CLAWSWEEPER_ALLOWED_OWNER: "openclaw",
       CLAWSWEEPER_MODEL: "model-test",
-      CLAWSWEEPER_RECORDS_ROOT: paths.recordsRoot,
+      ...(options.useDefaultRecordsRoot ? {} : { CLAWSWEEPER_RECORDS_ROOT: paths.recordsRoot }),
       // Coverage instrumentation plus the parallel repair suite can delay this child process.
       // Keep the bound short for a fake binary without making CI depend on a 10-second scheduler window.
       CLAWSWEEPER_PR_CLOSE_COVERAGE_PROOF_TIMEOUT_MS: "30000",

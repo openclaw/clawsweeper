@@ -2046,7 +2046,7 @@ test("issue implementation workflow lets job intent choose dispatch capacity", (
   );
 });
 
-test("repair workers hydrate only durable jobs from generated state", () => {
+test("repair workers hydrate durable jobs and execute-lane review records from generated state", () => {
   const workflow = readText(".github/workflows/repair-cluster-worker.yml");
   const requeue = readText("src/repair/requeue-job.ts");
 
@@ -2055,10 +2055,11 @@ test("repair workers hydrate only durable jobs from generated state", () => {
   assert.match(workflow, /requeue:\n\s+description:/);
   assert.match(requeue, /"requeue=true"/);
   assert.equal(
-    workflow.match(/uses: \.\/\.github\/actions\/setup-state[\s\S]*?sparse-checkout: jobs/g)
+    workflow.match(/uses: \.\/\.github\/actions\/setup-state[\s\S]*?sparse-checkout: jobs\n/g)
       ?.length,
-    2,
+    1,
   );
+  assert.match(workflow, /sparse-checkout: \|\n\s+jobs\n\s+records/);
   assert.match(workflow, /CLAWSWEEPER_STEERABLE_CODEX/);
   assert.match(workflow, /actions\/cache\/restore@v6/);
   assert.match(workflow, /actions\/cache\/save@v6/);

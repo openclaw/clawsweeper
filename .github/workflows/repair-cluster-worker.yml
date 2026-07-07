@@ -479,7 +479,9 @@ jobs:
         with:
           token: ${{ steps.state-token.outputs.token }}
           fetch-depth: 1
-          sparse-checkout: jobs
+          sparse-checkout: |
+            jobs
+            records
 
       - name: Check job file
         id: check_job
