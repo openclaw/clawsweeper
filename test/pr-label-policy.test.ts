@@ -197,12 +197,46 @@ test("ClawSweeper PR status labels preserve other label families", () => {
 });
 
 test("ClawSweeper PR status labels respect priority ordering", () => {
+  const automergeArmedLabel = prStatusLabelSchemeForTest().find(
+    (label) => label.kind === "automerge_armed",
+  )?.name;
+  assert.ok(automergeArmedLabel);
   assert.deepEqual(
     prStatusLabelsForTest(["clawsweeper:automerge"], {
       proofStatus: "missing",
       hasRecentReReviewRequest: true,
     }),
-    ["clawsweeper:automerge", "status: 🚀 automerge armed"],
+    ["clawsweeper:automerge", automergeArmedLabel],
+  );
+  assert.deepEqual(
+    prStatusLabelsForTest(
+      ["clawsweeper:automerge", "clawsweeper:human-review", automergeArmedLabel],
+      {
+        proofStatus: "missing",
+        hasRecentReReviewRequest: true,
+      },
+    ),
+    ["clawsweeper:automerge", "clawsweeper:human-review"],
+  );
+  assert.deepEqual(
+    prStatusLabelsForTest(
+      ["clawsweeper:automerge", "clawsweeper:merge-ready", automergeArmedLabel],
+      {
+        proofStatus: "missing",
+        hasRecentReReviewRequest: true,
+      },
+    ),
+    ["clawsweeper:automerge", "clawsweeper:merge-ready"],
+  );
+  assert.deepEqual(
+    prStatusLabelsForTest(
+      ["clawsweeper:automerge", "clawsweeper:manual-only", automergeArmedLabel],
+      {
+        proofStatus: "missing",
+        hasRecentReReviewRequest: true,
+      },
+    ),
+    ["clawsweeper:automerge", "clawsweeper:manual-only"],
   );
   assert.deepEqual(
     prStatusLabelsForTest([], {

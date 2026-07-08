@@ -1166,6 +1166,7 @@ const REVIEW_START_STATUS_MARKER_PREFIX = "<!-- clawsweeper-review-status";
 const AUTOMERGE_LABEL = "clawsweeper:automerge";
 const AUTOFIX_LABEL = "clawsweeper:autofix";
 const HUMAN_REVIEW_LABEL = "clawsweeper:human-review";
+const MERGE_READY_LABEL = "clawsweeper:merge-ready";
 const MANUAL_ONLY_LABEL = "clawsweeper:manual-only";
 const PR_AUTO_CLOSE_EXEMPT_LABELS = new Set([
   HUMAN_REVIEW_LABEL,
@@ -9309,10 +9310,17 @@ function prStatusLabelKindFromLabels(labels: readonly string[]): PrStatusLabelKi
 
 function prStatusLabelKindFromReportLabels(markdown: string): PrStatusLabelKind | null {
   const parsedLabels = frontMatterStringArray(markdown, "labels");
+  if (hasRepairLoopPauseLabel(parsedLabels)) return null;
   const fromParsedLabels = prStatusLabelKindFromLabels(parsedLabels);
   if (fromParsedLabels) return fromParsedLabels;
   if (parsedLabels.includes(AUTOMERGE_LABEL)) return "automerge_armed";
   const rawLabels = frontMatterValue(markdown, "labels") ?? "";
+  if (
+    rawLabels.includes(HUMAN_REVIEW_LABEL) ||
+    rawLabels.includes(MANUAL_ONLY_LABEL) ||
+    rawLabels.includes(MERGE_READY_LABEL)
+  )
+    return null;
   if (rawLabels.includes(AUTOMERGE_LABEL)) return "automerge_armed";
   return PR_STATUS_LABELS.find((label) => rawLabels.includes(label.name))?.kind ?? null;
 }
@@ -10422,10 +10430,12 @@ function prStatusLabelKind(options: {
   mergeRiskOptions: readonly Pick<MergeRiskOption, "category" | "recommended">[];
   overallCorrectness: OverallCorrectness;
   hasAutomergeLabel: boolean;
+  hasRepairLoopPauseLabel: boolean;
   hasRecentReReviewRequest: boolean;
   hasRecentAuthorActivity: boolean;
 }): PrStatusLabelKind | null {
   const unresolvedWork = hasUnresolvedContributorWork(options);
+  if (options.hasRepairLoopPauseLabel) return null;
   if (options.hasAutomergeLabel) return "automerge_armed";
   if (options.hasRecentReReviewRequest) return "re_review_loop";
   if (options.hasRecentAuthorActivity && unresolvedWork) return "actively_grinding";
@@ -10448,6 +10458,15 @@ function nextPrStatusLabels(
   const nextLabels = labels.filter((label) => !PR_STATUS_LABEL_NAMES.has(label));
   if (statusKind) nextLabels.push(prStatusLabelForKind(statusKind).name);
   return nextLabels;
+}
+
+function hasRepairLoopPauseLabel(labels: readonly string[]): boolean {
+  const normalized = new Set(labels.map((label) => label.toLowerCase()));
+  return (
+    normalized.has(HUMAN_REVIEW_LABEL) ||
+    normalized.has(MANUAL_ONLY_LABEL) ||
+    normalized.has(MERGE_READY_LABEL)
+  );
 }
 
 function eventTimestampMs(value: unknown): number | null {
@@ -10527,6 +10546,7 @@ function prStatusLabelKindFromReport(
     mergeRiskOptions: mergeRiskOptionsFromReport(markdown),
     overallCorrectness: reportOverallCorrectness(markdown),
     hasAutomergeLabel: currentLabels.includes(AUTOMERGE_LABEL),
+    hasRepairLoopPauseLabel: hasRepairLoopPauseLabel(currentLabels),
     hasRecentReReviewRequest: hasRecentReReviewRequest(
       context,
       frontMatterValue(markdown, "reviewed_at"),
@@ -10588,6 +10608,7 @@ export function prStatusLabelsForTest(
       ? (options.overallCorrectness as OverallCorrectness)
       : "patch is correct",
     hasAutomergeLabel: options.hasAutomergeLabel ?? labels.includes(AUTOMERGE_LABEL),
+    hasRepairLoopPauseLabel: hasRepairLoopPauseLabel(labels),
     hasRecentReReviewRequest: hasRecentReReviewRequestValue,
     hasRecentAuthorActivity: options.hasRecentAuthorActivity === true,
   });
