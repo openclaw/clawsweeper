@@ -6,7 +6,9 @@ import test from "node:test";
 
 import {
   failedReviewRetryEligibilityForTest,
+  itemSourceRevisionSha256ForTest,
   isInfrastructureFailedReviewForTest,
+  preserveFailedReviewRetryMetadataForTest,
 } from "../dist/clawsweeper.js";
 import { tmpPrefix, withMockGh, workPlanCandidateReport } from "./helpers.ts";
 
@@ -17,6 +19,7 @@ function failedReviewReport(overrides = {}) {
     type: "pull_request",
     review_status: "failed",
     pull_head_sha: "abc123def456",
+    item_source_revision: "issue-source-revision",
     decision: "keep_open",
     confidence: "low",
     action_taken: "kept_open",
@@ -55,6 +58,8 @@ test("failed review retry eligibility requires infrastructure failure and matchi
       action: "planned_failed_review_retry",
       reason: "eligible infrastructure failed review at head abc123def456",
       headSha: "abc123def456",
+      revisionKind: "pull_head_sha",
+      revision: "abc123def456",
       attempts: 0,
     },
   );
@@ -79,6 +84,80 @@ test("failed review retry eligibility requires infrastructure failure and matchi
       cooldownMs: 45 * 60 * 1000,
     }).action,
     "skipped_not_failed_review",
+  );
+});
+
+test("failed issue reviews retry at a matching live source revision", () => {
+  const markdown = failedReviewReport({
+    type: "issue",
+    pull_head_sha: "unknown",
+    item_source_revision: "issue-source-revision",
+  });
+  const options = {
+    markdown,
+    liveState: "open",
+    liveSourceRevision: "issue-source-revision",
+    now: Date.parse("2026-06-05T20:00:00Z"),
+    maxAttempts: 2,
+    cooldownMs: 45 * 60 * 1000,
+  };
+
+  assert.deepEqual(failedReviewRetryEligibilityForTest(options), {
+    repo: "openclaw/openclaw",
+    number: 4242,
+    action: "planned_failed_review_retry",
+    reason: "eligible infrastructure failed review at source revision issue-source-revision",
+    revisionKind: "item_source_revision",
+    revision: "issue-source-revision",
+    attempts: 0,
+  });
+  assert.equal(
+    failedReviewRetryEligibilityForTest({
+      ...options,
+      liveSourceRevision: "new-source-revision",
+    }).action,
+    "skipped_stale_revision",
+  );
+  assert.equal(
+    failedReviewRetryEligibilityForTest({
+      ...options,
+      markdown: failedReviewReport({
+        type: "issue",
+        pull_head_sha: "unknown",
+        item_source_revision: "unknown",
+      }),
+    }).action,
+    "skipped_missing_report_revision",
+  );
+  assert.equal(
+    failedReviewRetryEligibilityForTest({
+      ...options,
+      markdown: failedReviewReport({
+        type: "issue",
+        pull_head_sha: "unknown",
+        item_source_revision: "issue-source-revision",
+        failed_review_retry_revision_kind: "item_source_revision",
+        failed_review_retry_revision: "issue-source-revision",
+        failed_review_retry_count: 1,
+        failed_review_retry_last_at: "2026-06-05T19:30:00Z",
+      }),
+    }).action,
+    "skipped_retry_cooldown",
+  );
+  assert.equal(
+    failedReviewRetryEligibilityForTest({
+      ...options,
+      markdown: failedReviewReport({
+        type: "issue",
+        pull_head_sha: "unknown",
+        item_source_revision: "issue-source-revision",
+        failed_review_retry_revision_kind: "item_source_revision",
+        failed_review_retry_revision: "issue-source-revision",
+        failed_review_retry_count: 2,
+        failed_review_retry_last_at: "2026-06-05T18:00:00Z",
+      }),
+    }).action,
+    "skipped_retry_exhausted",
   );
 });
 
@@ -187,6 +266,141 @@ test("failed review retry eligibility enforces cooldown and max attempts per hea
   );
 });
 
+test("failed issue retry command plans an exact-item retry without a pull request head", () => {
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    const itemsDir = join(root, "items");
+    const reportPath = join(root, "failed-review-retry-report.json");
+    const issue = {
+      number: 4343,
+      title: "Failed issue review retry sample",
+      body: "Issue body",
+      html_url: "https://github.com/openclaw/openclaw/issues/4343",
+      created_at: "2026-06-01T00:00:00Z",
+      updated_at: "2026-06-01T01:00:00Z",
+      closed_at: null,
+      state: "open",
+      locked: false,
+      active_lock_reason: null,
+      author_association: "CONTRIBUTOR",
+      user: { login: "contributor" },
+      labels: [],
+      comments: 0,
+      pull_request: null,
+    };
+    const sourceRevision = itemSourceRevisionSha256ForTest(issue, []);
+    mkdirSync(itemsDir, { recursive: true });
+    writeFileSync(
+      join(itemsDir, "4343.md"),
+      failedReviewReport({
+        number: 4343,
+        type: "issue",
+        pull_head_sha: "unknown",
+        item_source_revision: sourceRevision,
+      }),
+      "utf8",
+    );
+
+    const ghMock = `#!/usr/bin/env node
+const args = process.argv.slice(2);
+const path = args.find((arg) => arg.startsWith("repos/")) || "";
+if (/\\/issues\\/4343\\/comments(?:\\?|$)/.test(path)) {
+  console.log(JSON.stringify(args.includes("--slurp") ? [[]] : []));
+  process.exit(0);
+}
+if (path.endsWith("/issues/4343")) {
+  console.log(${JSON.stringify(JSON.stringify(issue))});
+  process.exit(0);
+}
+console.error("unexpected gh args: " + args.join(" "));
+process.exit(1);
+`;
+
+    withMockGh(root, ghMock, () => {
+      execFileSync(process.execPath, [
+        "dist/clawsweeper.js",
+        "retry-failed-reviews",
+        "--target-repo",
+        "openclaw/openclaw",
+        "--items-dir",
+        itemsDir,
+        "--item-number",
+        "4343",
+        "--dry-run",
+        "--report-path",
+        reportPath,
+      ]);
+    });
+
+    const report = JSON.parse(readFileSync(reportPath, "utf8")) as Array<{
+      action: string;
+      revisionKind?: string;
+      revision?: string;
+    }>;
+    assert.equal(report.length, 1);
+    assert.equal(report[0]?.action, "planned_failed_review_retry");
+    assert.equal(report[0]?.revisionKind, "item_source_revision");
+    assert.equal(report[0]?.revision, sourceRevision);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("failed retry metadata survives a repeated failure at the same revision", () => {
+  const previous = `${failedReviewReport({
+    type: "issue",
+    pull_head_sha: "unknown",
+    item_source_revision: "issue-source-revision",
+    failed_review_retry_status: "dispatched",
+    failed_review_retry_count: 1,
+    failed_review_retry_last_at: "2026-06-05T19:30:00Z",
+    failed_review_retry_revision_kind: "item_source_revision",
+    failed_review_retry_revision: "issue-source-revision",
+    failed_review_retry_reason: JSON.stringify("timeout"),
+  })}
+
+## Failed Review Retry
+
+- status: dispatched
+- attempts: 1/2
+`;
+  const repeatedFailure = failedReviewReport({
+    type: "issue",
+    pull_head_sha: "unknown",
+    item_source_revision: "issue-source-revision",
+  });
+  const preserved = preserveFailedReviewRetryMetadataForTest(previous, repeatedFailure);
+
+  assert.match(preserved, /^failed_review_retry_status: dispatched$/m);
+  assert.match(preserved, /^failed_review_retry_count: 1$/m);
+  assert.match(preserved, /^failed_review_retry_revision_kind: item_source_revision$/m);
+  assert.match(preserved, /^failed_review_retry_revision: issue-source-revision$/m);
+  assert.match(preserved, /^## Failed Review Retry$/m);
+  assert.doesNotMatch(
+    preserveFailedReviewRetryMetadataForTest(
+      previous,
+      failedReviewReport({
+        type: "issue",
+        pull_head_sha: "unknown",
+        item_source_revision: "changed-source-revision",
+      }),
+    ),
+    /^failed_review_retry_status:/m,
+  );
+  assert.doesNotMatch(
+    preserveFailedReviewRetryMetadataForTest(
+      previous,
+      failedReviewReport({
+        type: "issue",
+        pull_head_sha: "unknown",
+        item_source_revision: "issue-source-revision",
+        review_status: "complete",
+      }),
+    ),
+    /^failed_review_retry_status:/m,
+  );
+});
+
 test("failed review retry exhaustion is idempotent for the same head", () => {
   const root = mkdtempSync(tmpPrefix);
   try {
@@ -274,6 +488,8 @@ process.exit(1);
         action: "skipped_retry_already_exhausted",
         reason: "retry attempts exhausted for head abc123def456: 2/2",
         headSha: "abc123def456",
+        revisionKind: "pull_head_sha",
+        revision: "abc123def456",
         attempts: 2,
         reportPath: itemPath,
       },
