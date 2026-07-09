@@ -14,6 +14,7 @@ const REPAIR_RUNTIME_PATHS = [
   "src/codex-process.ts",
   "src/codex-spawn.ts",
   "src/codex-transient.ts",
+  "src/github-json.ts",
   "src/pr-close-coverage-proof.ts",
 ] as const;
 
