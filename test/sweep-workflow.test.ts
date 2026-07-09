@@ -121,6 +121,17 @@ test("apply workflow installs Codex only when proof-eligible apply work can run"
   assert.doesNotMatch(preselectBlock, /normalized_apply_close_reasons=/);
 });
 
+test("apply workflow target token can inspect source workflow runs", () => {
+  const workflow = readText(".github/workflows/sweep.yml");
+  const applyJob = workflow.slice(workflow.indexOf("\n  apply-existing:"));
+  const tokenStart = applyJob.indexOf("- name: Create target write token");
+  const stateTokenStart = applyJob.indexOf("- name: Create state token", tokenStart);
+
+  assert.ok(tokenStart !== -1);
+  assert.ok(stateTokenStart > tokenStart);
+  assert.match(applyJob.slice(tokenStart, stateTokenStart), /permission-actions: read/);
+});
+
 test("apply workflow bounds checkpoints and requeues with a fresh token", () => {
   const workflow = readText(".github/workflows/sweep.yml");
   const applyHelper = readText("scripts/apply-workflow-helpers.sh");
@@ -210,6 +221,10 @@ test("apply workflow bounds checkpoints and requeues with a fresh token", () => 
   assert.ok(qualitySummaryIndex > applyReconcileIndex);
   assert.ok(proposedNumbersIndex > qualitySummaryIndex);
   assert.match(applyStep, /--batch-size "\$close_processed_limit"/);
+  assert.match(
+    applyStep,
+    /--close-limit "\$\(\(limit < checkpoint_size \? limit : checkpoint_size\)\)"/,
+  );
   assert.match(applyStep, /--coverage-proof-limit "\$coverage_proof_limit"/);
   assert.match(applyStep, /select_bounded_coverage_proof_tail/);
   assert.match(applyHelper, /select_bounded_coverage_proof_tail\(\)/);
@@ -220,10 +235,7 @@ test("apply workflow bounds checkpoints and requeues with a fresh token", () => 
     applyStep,
     /Scan window: \$close_processed_limit records \(\$adaptive_apply_scan_reason\)/,
   );
-  assert.match(
-    applyStep,
-    /Auto-selected \$proposed_count proposed close candidate\(s\) from \$close_processed_limit-record apply cursor window/,
-  );
+  assert.match(applyStep, /Selected \$proposed_count from \$close_processed_limit/);
   assert.match(applyStep, /--cursor-path "\$apply_cursor_path"/);
   assert.match(applyStep, /write-apply-cursor/);
   assert.match(applyStep, /--item-numbers "\$item_numbers"/);

@@ -3617,14 +3617,16 @@ interface PullRequestLiveActivity {
 
 const FAILING_CHECK_RUN_CONCLUSIONS = new Set(["failure", "timed_out"]);
 
-// Committer dates alone under-report activity: a contributor can push an old
-// commit, so the inactivity clock also observes status/check-run timestamps,
-// which CI refreshes on every push. Missing data keeps the PR open.
+// Commit dates are author-controlled and a force-push can reuse an old SHA.
+// A pull_request workflow run associated with this PR is tied to source
+// activity, while rerunning its checks leaves created_at unchanged. Missing
+// source-run data keeps the PR open.
 function pullRequestLiveActivity(number: number): PullRequestLiveActivity {
-  const pull = ghJson<{ draft?: boolean; head?: { sha?: string } }>([
-    "api",
-    `repos/${targetRepo()}/pulls/${number}`,
-  ]);
+  const pull = ghJson<{
+    created_at?: string;
+    draft?: boolean;
+    head?: { ref?: string; repo?: { full_name?: string; id?: unknown }; sha?: string };
+  }>(["api", `repos/${targetRepo()}/pulls/${number}`]);
   const headSha = typeof pull.head?.sha === "string" ? pull.head.sha : "";
   let headActivityAtMs: number | null = null;
   let headChecksFailing = false;
@@ -3635,21 +3637,45 @@ function pullRequestLiveActivity(number: number): PullRequestLiveActivity {
     }
   };
   if (headSha) {
-    const commit = ghJson<{ commit?: { committer?: { date?: string } } }>([
+    const sourceRuns = ghJson<{ workflow_runs?: unknown[] }>([
       "api",
-      `repos/${targetRepo()}/commits/${headSha}`,
+      `repos/${targetRepo()}/actions/runs?head_sha=${encodeURIComponent(headSha)}&event=pull_request&per_page=100`,
     ]);
-    observe(commit.commit?.committer?.date);
-    const combined = ghJson<{ state?: string; statuses?: unknown[] }>([
+    for (const run of sourceRuns.workflow_runs ?? []) {
+      const record = asRecord(run);
+      const directlyAssociated = Array.isArray(record.pull_requests)
+        ? record.pull_requests.some((pull) => Number(asRecord(pull).number) === number)
+        : false;
+      const runRepo = asRecord(record.head_repository);
+      const pullCreatedAtMs = Date.parse(pull.created_at ?? "");
+      const runCreatedAtMs = Date.parse(
+        typeof record.created_at === "string" ? record.created_at : "",
+      );
+      const sameSourceBranch =
+        typeof pull.head?.ref === "string" &&
+        record.head_branch === pull.head.ref &&
+        ((Number.isFinite(Number(pull.head.repo?.id)) &&
+          Number(pull.head.repo?.id) === Number(runRepo.id)) ||
+          (typeof pull.head.repo?.full_name === "string" &&
+            runRepo.full_name === pull.head.repo.full_name)) &&
+        Number.isFinite(pullCreatedAtMs) &&
+        Number.isFinite(runCreatedAtMs) &&
+        runCreatedAtMs >= pullCreatedAtMs;
+      if (record.event === "pull_request" && (directlyAssociated || sameSourceBranch)) {
+        observe(record.created_at);
+      }
+    }
+    for (const event of ghPaged<unknown>(`repos/${targetRepo()}/issues/${number}/timeline`)) {
+      const record = asRecord(event);
+      if (record.event === "head_ref_force_pushed" && record.commit_id === headSha) {
+        observe(record.created_at);
+      }
+    }
+    const combined = ghJson<{ state?: string }>([
       "api",
       `repos/${targetRepo()}/commits/${headSha}/status`,
     ]);
     if (combined.state === "failure" || combined.state === "error") headChecksFailing = true;
-    for (const status of combined.statuses ?? []) {
-      const record = asRecord(status);
-      observe(record.updated_at);
-      observe(record.created_at);
-    }
     const checks = ghJson<{ check_runs?: unknown[] }>([
       "api",
       `repos/${targetRepo()}/commits/${headSha}/check-runs?per_page=100`,
@@ -3662,8 +3688,6 @@ function pullRequestLiveActivity(number: number): PullRequestLiveActivity {
       ) {
         headChecksFailing = true;
       }
-      observe(record.started_at);
-      observe(record.completed_at);
     }
   }
   return { draft: pull.draft === true, headSha, headActivityAtMs, headChecksFailing };
@@ -3759,7 +3783,7 @@ function stalledUnprovenPrApplyBlockReason(
     activity.headActivityAtMs === null ||
     Date.now() - activity.headActivityAtMs <= STALLED_UNPROVEN_PR_MIN_INACTIVE_DAYS * DAY_MS
   ) {
-    return `stalled_unproven_pr requires ${STALLED_UNPROVEN_PR_MIN_INACTIVE_DAYS} days without new head commit or check activity`;
+    return `stalled_unproven_pr requires ${STALLED_UNPROVEN_PR_MIN_INACTIVE_DAYS} days without source activity on the current head`;
   }
   return pullRequestHumanEngagementBlockReason(number);
 }
@@ -3790,7 +3814,7 @@ function abandonedPrApplyBlockReason(
     activity.headActivityAtMs === null ||
     Date.now() - activity.headActivityAtMs <= ABANDONED_PR_MIN_INACTIVE_DAYS * DAY_MS
   ) {
-    return `abandoned_pr requires ${ABANDONED_PR_MIN_INACTIVE_DAYS} days without new head commit or check activity`;
+    return `abandoned_pr requires ${ABANDONED_PR_MIN_INACTIVE_DAYS} days without source activity on the current head`;
   }
   const waitingOnAuthor = item.labels
     .map(normalizeLabelName)

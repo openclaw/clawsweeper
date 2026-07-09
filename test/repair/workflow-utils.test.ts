@@ -1660,7 +1660,7 @@ test("workflow utilities rotate bounded apply candidate batches by apply cursor"
   );
 });
 
-test("workflow utilities prioritize ready and duplicate closes ahead of policy candidates", () => {
+test("workflow utilities run a bounded confirmed prefix before proof and defer promotion probes", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-workflow-"));
   const oldDate = "2024-01-01T00:00:00Z";
   writeProposedRecord(
@@ -1675,7 +1675,32 @@ test("workflow utilities prioritize ready and duplicate closes ahead of policy c
     applyCheckedAt: "2026-01-01T00:00:00Z",
   });
   writeProposedRecord(root, 30, "issue", "proposed_close", "duplicate_or_superseded", oldDate);
+  writeProposedRecord(
+    root,
+    35,
+    "pull_request",
+    "proposed_close",
+    "duplicate_or_superseded",
+    oldDate,
+  );
   writeProposedRecord(root, 40, "pull_request", "proposed_close", "stalled_unproven_pr", oldDate);
+  write(
+    path.join(root, "records/openclaw-openclaw/items/openclaw-openclaw-50.md"),
+    [
+      "---",
+      "repository: openclaw/openclaw",
+      "type: pull_request",
+      "decision: keep_open",
+      "review_status: complete",
+      "local_checkout_access: verified",
+      "action_taken: kept_open",
+      "close_reason: none",
+      `item_created_at: ${oldDate}`,
+      "pr_rating_overall: F",
+      "---",
+      "",
+    ].join("\n"),
+  );
 
   assert.deepEqual(
     withCwd(root, () =>
@@ -1686,11 +1711,27 @@ test("workflow utilities prioritize ready and duplicate closes ahead of policy c
         staleMinAgeDays: 60,
         minAgeDays: 0,
         minAgeMinutes: null,
-        batchSize: 4,
+        batchSize: 5,
         coverageProofLimit: 1,
       }),
     ),
-    [20, 30, 40, 10],
+    [20, 30, 35, 40, 10],
+  );
+  assert.deepEqual(
+    withCwd(root, () =>
+      proposedItemNumbers({
+        targetRepo: "openclaw/openclaw",
+        applyKind: "all",
+        applyCloseReasons: "all",
+        staleMinAgeDays: 60,
+        minAgeDays: 0,
+        minAgeMinutes: null,
+        batchSize: 6,
+        closeLimit: 4,
+        coverageProofLimit: 1,
+      }),
+    ),
+    [20, 35, 30, 40, 10, 50],
   );
 });
 
@@ -1798,7 +1839,7 @@ test("workflow utilities bound coverage proofs with an independent cursor", () =
 
   assert.deepEqual(
     withCwd(root, () => proposedItemNumbers(options)),
-    [40, 10, 20, 30],
+    [10, 40, 20, 30],
   );
   write(
     cursorPath,
@@ -1813,7 +1854,7 @@ test("workflow utilities bound coverage proofs with an independent cursor", () =
   );
   assert.deepEqual(
     withCwd(root, () => proposedItemNumbers(options)),
-    [50, 30, 10, 20],
+    [30, 50, 10, 20],
   );
 });
 

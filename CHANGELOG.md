@@ -32,6 +32,7 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Fixed
 
+- Stopped later CI reruns from resetting PR inactivity clocks by anchoring head activity to the latest source-triggered workflow run associated with that pull request.
 - Prioritized ready close decisions and bounded PR close-coverage proofs before slow policy-gated candidates, kept default 20-item continuations shareable, and retried malformed successful GitHub JSON responses.
 - Removed exponential backtracking from durable review-marker parsing so adversarial comment bodies cannot stall apply or comment synchronization.
 - Scoped Mantis recommendations to supported proof capture and kept code changes, PR repair, and GitHub mutations in ClawSweeper's deterministic lanes. Thanks @brokemac79.

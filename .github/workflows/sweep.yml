@@ -2204,6 +2204,7 @@ jobs:
           owner: ${{ steps.target.outputs.target_repo_owner }}
           repositories: ${{ steps.target.outputs.target_repo_name }}
           permission-contents: write
+          permission-actions: read
           permission-issues: write
           permission-pull-requests: write
 
@@ -2383,7 +2384,7 @@ jobs:
             min_age_minutes_arg=(--min-age-minutes "$min_age_minutes")
           fi
           if [ "$checkpoint_size" -gt 20 ]; then
-            echo "Capping apply checkpoint size at 20 to keep each GitHub App token within its lifetime."
+            echo "Capping apply checkpoint size at 20"
             checkpoint_size=20
           fi
           select_adaptive_apply_batch
@@ -2443,6 +2444,7 @@ jobs:
               --min-age-days "$min_age_days" \
               --min-age-minutes "$min_age_minutes" \
               --batch-size "$close_processed_limit" \
+              --close-limit "$((limit < checkpoint_size ? limit : checkpoint_size))" \
               --coverage-proof-limit "$coverage_proof_limit" \
               --cursor-path "$apply_cursor_path")"
             if [ -n "$item_numbers" ]; then
@@ -2459,7 +2461,7 @@ jobs:
               if [ "$proposed_count" -lt "$limit" ]; then
                 limit="$proposed_count"
               fi
-              echo "Auto-selected $proposed_count proposed close candidate(s) from $close_processed_limit-record apply cursor window ($adaptive_apply_scan_reason), including $coverage_proof_count/$coverage_proof_limit bounded PR coverage proof candidate(s): $item_numbers; apply-ready count: ${apply_ready_count:-unknown}"
+              echo "Selected $proposed_count from $close_processed_limit ($adaptive_apply_scan_reason); proof $coverage_proof_count/$coverage_proof_limit: $item_numbers; ready: ${apply_ready_count:-unknown}"
             fi
           fi
           item_numbers_arg=()

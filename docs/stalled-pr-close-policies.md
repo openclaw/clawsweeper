@@ -24,10 +24,12 @@ Review may propose it only when all of these hold:
 
 Apply additionally verifies live state:
 
-- the PR is older than 14 days and its head shows no new commit or check
-  activity for 14 days (the inactivity clock takes the newest of the head
-  committer date and status/check-run timestamps, so pushing an old commit
-  still counts as fresh activity);
+- the PR is older than 14 days and its current head has no source-triggered
+  workflow run associated with that pull request created in the last 14 days.
+  This immutable run creation time counts a push of an old commit as fresh
+  activity without letting later CI reruns reset the clock. A force-push event
+  targeting the current head also resets the clock; missing source-activity
+  data keeps the PR open;
 - a dated proof request is visible on the PR — a needs-proof label timeline
   event or a proof-nudge comment — and that request is at least 14 days old,
   so the contributor had a real window to respond. The durable review comment
@@ -52,8 +54,9 @@ blocks the reason because that work belongs in repair/adopt paths.
 
 Apply additionally verifies live state:
 
-- the PR is older than 30 days and its head shows no new commit or check
-  activity for 30 days, using the same push-safe inactivity clock as
+- the PR is older than 30 days and its current head has no source-triggered
+  workflow run associated with that pull request created in the last 30 days,
+  using the same push-safe, rerun-stable inactivity clock as
   `stalled_unproven_pr`;
 - the live PR is still stalled: a draft, labeled
   `status: ⏳ waiting on author`, or failing checks
