@@ -19541,6 +19541,7 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
       storedUpdatedAt &&
       item.updatedAt === storedUpdatedAt &&
       livePullRequestHasNoDiff(currentItemContext()) &&
+      closeReasonEnabled("duplicate_or_superseded", applyCloseReasons) &&
       reviewReportCanPromoteToClose(markdown)
     ) {
       markdown = upgradeNoDiffPullRequestReport(markdown, item);
@@ -19563,7 +19564,7 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
         staleMinAgeDays,
         { reportDirs: [itemsDir, closedDir] },
       );
-      if (promotion) {
+      if (promotion && closeReasonEnabled(promotion.closeReason, applyCloseReasons)) {
         markdown = upgradePullRequestClosePromotionReport(
           markdown,
           item,

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 
@@ -13,6 +13,110 @@ import {
   withMockGh,
   workPlanCandidateReport,
 } from "./helpers.ts";
+
+function assertResolvedPromotionRespectsCloseReasonFilter(options: {
+  number: number;
+  applyCloseReason: "duplicate_or_superseded" | "low_signal_unmergeable_pr";
+  sourceFiles: string[];
+  linkedFiles: string[];
+}): void {
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    const itemsDir = join(root, "items");
+    const closedDir = join(root, "closed");
+    const plansDir = join(root, "plans");
+    const reportPath = join(root, "apply-report.json");
+    const proofLogPath = join(root, "proof.log");
+    mkdirSync(itemsDir, { recursive: true });
+    mkdirSync(plansDir, { recursive: true });
+    const keepOpenSummary =
+      "Keep open: live promotion must first resolve to an enabled close reason.";
+    const sourceReport = stalePullRequestReport({
+      number: options.number,
+      title: "Ambiguous stale promotion",
+      pull_files: JSON.stringify(options.sourceFiles),
+      pull_files_truncated: false,
+      work_cluster_refs: JSON.stringify(["Superseded by #400"]),
+    }).replace(
+      "## Summary\n\nThe dashboard has queue_fix_pr candidates but no generated coding plan.",
+      `## Summary\n\n${keepOpenSummary}`,
+    );
+    const synced = reportWithSyncedReviewComment(sourceReport, options.number, "none");
+    const itemPath = join(itemsDir, `${options.number}.md`);
+    writeFileSync(itemPath, synced.report, "utf8");
+
+    withMockGh(
+      root,
+      promotionGhMock({
+        number: options.number,
+        title: "Ambiguous stale promotion",
+        comment: synced.comment,
+        linkedPulls: {
+          400: {
+            number: 400,
+            title: "Merged canonical replacement",
+            html_url: "https://github.com/openclaw/openclaw/pull/400",
+            state: "closed",
+            merged_at: "2026-05-02T00:00:00Z",
+            mergeable_state: "clean",
+            labels: ["proof: sufficient"],
+            files: options.linkedFiles,
+          },
+        },
+      }),
+      () => {
+        withMockCodexProof(
+          root,
+          {
+            type: "failure",
+            message: "proof must not run for a resolved disallowed promotion",
+            invocationLogPath: proofLogPath,
+          },
+          () => {
+            runApplyDecisionsForTest({
+              itemsDir,
+              closedDir,
+              plansDir,
+              reportPath,
+              extraArgs: [
+                "--target-repo",
+                "openclaw/openclaw",
+                "--apply-kind",
+                "all",
+                "--apply-close-reasons",
+                options.applyCloseReason,
+                "--processed-limit",
+                "3",
+              ],
+            });
+          },
+        );
+      },
+    );
+
+    const results = JSON.parse(readFileSync(reportPath, "utf8")) as Array<{ action: string }>;
+    assert.equal(
+      results.some((entry) => entry.action === "closed"),
+      false,
+    );
+    assert.equal(existsSync(join(closedDir, `${options.number}.md`)), false);
+    const stored = readFileSync(itemPath, "utf8");
+    assert.match(stored, /^decision: keep_open$/m);
+    assert.match(stored, /^close_reason: none$/m);
+    assert.match(
+      stored,
+      new RegExp(`## Summary\\n\\n${keepOpenSummary.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`),
+    );
+    const commentStatePath = join(root, `comment-state-${options.number}.json`);
+    const liveComment = existsSync(commentStatePath)
+      ? (JSON.parse(readFileSync(commentStatePath, "utf8")) as { body: string }).body
+      : synced.comment;
+    assert.doesNotMatch(liveComment, /clawsweeper-(?:verdict:close|action:close-required)/);
+    assert.equal(existsSync(proofLogPath), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
 
 test("apply-decisions upgrades live no-diff kept-open PRs to duplicate closes", () => {
   const root = mkdtempSync(tmpPrefix);
@@ -261,6 +365,24 @@ test("apply-decisions promotes old F-rated stale PRs with low-signal close seman
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("apply-decisions does not persist duplicate promotion when only low-signal closes are enabled", () => {
+  assertResolvedPromotionRespectsCloseReasonFilter({
+    number: 338,
+    applyCloseReason: "low_signal_unmergeable_pr",
+    sourceFiles: ["src/runtime.ts"],
+    linkedFiles: ["src/runtime.ts"],
+  });
+});
+
+test("apply-decisions does not persist low-signal fallback when only duplicate closes are enabled", () => {
+  assertResolvedPromotionRespectsCloseReasonFilter({
+    number: 339,
+    applyCloseReason: "duplicate_or_superseded",
+    sourceFiles: ["docs/gateway/troubleshooting.md"],
+    linkedFiles: ["src/runtime.ts"],
+  });
 });
 
 test("apply-decisions promotes stale PRs after automation-only drift", () => {
