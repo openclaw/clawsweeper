@@ -18585,7 +18585,7 @@ async function applyDecisionsCommandInner(
   const dryRun = boolArg(args.dry_run);
   const syncCommentsOnly = boolArg(args.sync_comments_only);
   const commentSyncMinAgeDays = numberArg(args.comment_sync_min_age_days, 0);
-  const maxRuntimeMs = runtimeBudget.maxRuntimeMs;
+  const maxRuntimeMs = numberArg(args.max_runtime_ms, 0);
   const reportPath = resolve(stringArg(args.report_path, join(ROOT, "apply-report.json")));
   const artifactDir = resolve(stringArg(args.artifact_dir, join(ROOT, "artifacts", "apply")));
   const cursorTraceArg = stringArg(args.cursor_trace, "").trim();
@@ -18604,7 +18604,7 @@ async function applyDecisionsCommandInner(
       ? { ghToken: process.env.CLAWSWEEPER_PROOF_INSPECTION_TOKEN }
       : {}),
   };
-  const startedAtMs = runtimeBudget.startedAtMs;
+  const startedAtMs = Date.now();
   const requestedItemNumbers = itemNumbersArg(args.item_numbers, args.item_number);
   const requestedItemNumberSet = new Set(requestedItemNumbers);
   const requestedItemOrder = orderedApplyItemNumbers(args.item_numbers, args.item_number);
