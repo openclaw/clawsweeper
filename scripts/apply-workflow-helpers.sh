@@ -5,7 +5,7 @@
 # shellcheck disable=SC2034,SC2154
 
 max_close_processed_limit=900
-coverage_proof_limit=1
+coverage_proof_limit=2
 progress_every=10
 
 publish_changes() {

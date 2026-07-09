@@ -2042,7 +2042,7 @@ test("workflow utilities cool down recently examined promotion probes", () => {
   );
 });
 
-test("workflow utilities bound coverage proofs with an independent cursor", () => {
+test("workflow utilities use spare proof capacity to rotate promotion probes", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-workflow-"));
   const oldDate = "2024-01-01T00:00:00Z";
   const cursorPath = path.join(root, "results/apply-cursors/openclaw-openclaw.json");
@@ -2064,15 +2064,30 @@ test("workflow utilities bound coverage proofs with an independent cursor", () =
     oldDate,
     { applyCheckedAt: "2026-01-01T00:00:00Z" },
   );
-  writeProposedRecord(
-    root,
-    50,
-    "pull_request",
-    "proposed_close",
-    "duplicate_or_superseded",
-    oldDate,
-    { applyCheckedAt: "2026-01-02T00:00:00Z" },
-  );
+  for (const [number, applyCheckedAt] of [
+    [50, "2026-01-02T00:00:00Z"],
+    [60, "2026-01-03T00:00:00Z"],
+    [70, "2026-01-04T00:00:00Z"],
+  ]) {
+    write(
+      path.join(root, `records/openclaw-openclaw/items/openclaw-openclaw-${number}.md`),
+      [
+        "---",
+        "repository: openclaw/openclaw",
+        "type: pull_request",
+        "decision: keep_open",
+        "review_status: complete",
+        "local_checkout_access: verified",
+        "action_taken: kept_open",
+        "close_reason: none",
+        `item_created_at: ${oldDate}`,
+        `apply_checked_at: ${applyCheckedAt}`,
+        `work_cluster_refs: ${JSON.stringify(["Superseded by #400"])}`,
+        "---",
+        "",
+      ].join("\n"),
+    );
+  }
   const options = {
     targetRepo: "openclaw/openclaw",
     applyKind: "all",
@@ -2081,13 +2096,17 @@ test("workflow utilities bound coverage proofs with an independent cursor", () =
     minAgeDays: 0,
     minAgeMinutes: null,
     batchSize: 4,
-    coverageProofLimit: 1,
+    coverageProofLimit: 2,
     cursorPath,
   };
 
   assert.deepEqual(
     withCwd(root, () => proposedItemNumbers(options)),
-    [10, 40, 20, 30],
+    [40, 50, 10, 20],
+  );
+  assert.deepEqual(
+    withCwd(root, () => proposedItemNumbers({ ...options, closeLimit: 1 })),
+    [40, 10, 20, 30],
   );
   write(
     cursorPath,
@@ -2095,14 +2114,28 @@ test("workflow utilities bound coverage proofs with an independent cursor", () =
       next_after_number: 20,
       next_after_apply_checked_at: "2026-01-02T00:00:00Z",
       coverage_proof_cursor: {
-        next_after_number: 40,
-        next_after_apply_checked_at: "2026-01-01T00:00:00Z",
+        next_after_number: 50,
+        next_after_apply_checked_at: "2026-01-02T00:00:00Z",
       },
     }),
   );
   assert.deepEqual(
     withCwd(root, () => proposedItemNumbers(options)),
-    [30, 50, 10, 20],
+    [40, 60, 30, 10],
+  );
+
+  writeProposedRecord(
+    root,
+    45,
+    "pull_request",
+    "proposed_close",
+    "duplicate_or_superseded",
+    oldDate,
+    { applyCheckedAt: "2026-01-01T12:00:00Z" },
+  );
+  assert.deepEqual(
+    withCwd(root, () => proposedItemNumbers(options)),
+    [40, 45, 30, 10],
   );
 });
 
@@ -2171,7 +2204,14 @@ test("workflow utilities advance fast and coverage-proof cursors from the exact 
   write(tracePath, JSON.stringify({ schema_version: 1, examined_item_numbers: [10, 30] }));
 
   withCwd(root, () =>
-    writeApplyCursor(cursorPath, reportPath, "openclaw/openclaw", "10,20,30", "30", tracePath),
+    writeApplyCursor(
+      cursorPath,
+      reportPath,
+      "openclaw/openclaw",
+      "10,20,30,40",
+      "30,40",
+      tracePath,
+    ),
   );
   let cursor = JSON.parse(fs.readFileSync(cursorPath, "utf8"));
   assert.deepEqual(
@@ -2183,7 +2223,7 @@ test("workflow utilities advance fast and coverage-proof cursors from the exact 
     ],
     [10, "2026-01-01T00:00:00Z", 30, "2026-01-03T00:00:00Z"],
   );
-  assert.equal(applyCursorAdvanceCount(reportPath, "10,20,30", tracePath), 2);
+  assert.equal(applyCursorAdvanceCount(reportPath, "10,20,30,40", tracePath), 2);
 
   write(tracePath, JSON.stringify({ schema_version: 1, examined_item_numbers: [20] }));
   withCwd(root, () =>
@@ -2192,6 +2232,14 @@ test("workflow utilities advance fast and coverage-proof cursors from the exact 
   cursor = JSON.parse(fs.readFileSync(cursorPath, "utf8"));
   assert.equal(cursor.next_after_number, 20);
   assert.equal(cursor.coverage_proof_cursor.next_after_number, 30);
+
+  write(tracePath, JSON.stringify({ schema_version: 1, examined_item_numbers: [40] }));
+  withCwd(root, () =>
+    writeApplyCursor(cursorPath, reportPath, "openclaw/openclaw", "40", "40", tracePath),
+  );
+  cursor = JSON.parse(fs.readFileSync(cursorPath, "utf8"));
+  assert.equal(cursor.next_after_number, 20);
+  assert.equal(cursor.coverage_proof_cursor.next_after_number, 40);
 });
 
 test("workflow utilities count records advanced by the apply cursor", () => {

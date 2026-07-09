@@ -1307,18 +1307,20 @@ function selectedProposedItemCandidates(
     ].slice(0, batchSize);
   }
 
-  const proofLimit = Math.max(0, Math.min(options.coverageProofLimit, batchSize));
+  const closeLimit = Math.max(1, Math.min(options.closeLimit ?? batchSize, batchSize));
+  const proofLimit = Math.max(0, Math.min(options.coverageProofLimit, batchSize, closeLimit));
   const fastConfirmedCandidates = prioritizeFastCloseCandidates(
     rotate("confirmed_close", false, cursor),
   );
   const proofCursor = cursor?.coverageProof ?? cursor;
+  // Preserve confirmed proof work ahead of speculative promotions. Any reserve
+  // left after confirmed proofs lets the promotion-proof pool rotate independently.
   const proofCandidates = [
     ...rotate("confirmed_close", true, proofCursor),
     ...rotate("promotion_probe", true, proofCursor),
   ];
   const selectedProof = proofCandidates.slice(0, proofLimit);
   const selectedFast = fastConfirmedCandidates.slice(0, batchSize - selectedProof.length);
-  const closeLimit = Math.max(1, Math.min(options.closeLimit ?? batchSize, batchSize));
   // Let ready closes run first, but place every reserved proof before those
   // closes could hit the mutation limit and stop the checkpoint. A candidate
   // can close both a PR and its same-author issue counterpart.

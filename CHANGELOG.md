@@ -42,7 +42,7 @@ checkpoint, and status-only commits are intentionally omitted.
 - Bounded automatic close-apply checkpoints to ten minutes, persisted exact cursor progress before immediate continuation, and limited close-coverage proofs to the time remaining in the checkpoint.
 - Kept close-limit apply checkpoints from advancing their resumable cursor past an unexecuted close candidate. Thanks @brokemac79.
 - Stopped zero-progress automatic apply runtime yields from queueing immediate continuations, leaving the scheduled apply run as the retry backstop. Thanks @brokemac79.
-- Kept automatic apply windows responsive by running at most one PR close-coverage proof after fast candidates and advancing independent fast/proof cursors only through records actually examined.
+- Kept automatic apply windows responsive by reserving up to two PR close-coverage proofs, capped by the effective close budget, and advancing independent fast/proof cursors only through records actually examined.
 - Prevented malformed `maintainer_decision` records from repeatedly consuming apply queue slots by recording their deterministic apply bookkeeping. Thanks @brokemac79.
 - Preserved ready-for-maintainer labels when a newer durable review matches the current PR head, while still removing readiness from stale-head reviews. Thanks @brokemac79.
 - Surfaced apply-health `needs_attention` state in the dashboard hero and added explicit System, Light, and Dark theme controls. Thanks @brokemac79.

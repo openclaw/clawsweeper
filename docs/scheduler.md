@@ -468,13 +468,16 @@ records, capped at 900. This changes only the deterministic scan window:
 policy gates stay unchanged. The workflow logs and sweep status detail include
 the selected scan window and reason.
 
-Automatic windows reserve a one-candidate tail for PR close-coverage proof.
-Fast deterministic candidates run first; the proof candidate runs last and has
-an independent cursor. An executor trace advances each cursor only through
-records actually examined, so a partial window neither repeats completed proof
-work nor skips unexamined candidates. Coverage proof, live-state refresh,
-freshness checks, and close gates remain unchanged. Explicit targeted apply
-runs keep their requested item set and ordering policy.
+Automatic windows reserve up to two candidates for PR close-coverage proof,
+capped by the effective close budget. Confirmed proof-gated close proposals stay
+ahead of speculative promotion proofs; spare proof capacity rotates promotions
+on the same independent proof cursor. Reserved proofs run before deterministic
+closes could exhaust the checkpoint's mutation limit. An executor trace advances
+each cursor only through records actually examined, so a partial window preserves
+unexamined candidates and each pool resumes from its exact last-examined
+position. Coverage proof, live-state refresh, freshness checks, and close gates
+remain unchanged. Explicit targeted apply runs keep their requested item set and
+ordering policy.
 
 Before a close-mode apply run starts, the workflow summarizes the selected close
 candidate mix by quality bucket in the status detail. Buckets such as

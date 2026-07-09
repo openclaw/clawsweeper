@@ -181,7 +181,7 @@ test("apply workflow bounds checkpoints and requeues with a fresh token", () => 
   assert.match(workflow, /github\.event\.inputs\.apply_checkpoint_size != '20'/);
   assert.match(applyStep, /Capping apply checkpoint size at 20/);
   assert.match(applyStep, /base_close_processed_limit=300/);
-  assert.match(applyHelper, /coverage_proof_limit=1/);
+  assert.match(applyHelper, /coverage_proof_limit=2/);
   assert.match(applyHelper, /max_runtime_arg=\(--max-runtime-ms 600000\)/);
   assert.match(applyHelper, /max_close_processed_limit=900/);
   assert.match(applyStep, /close_processed_limit="\$base_close_processed_limit"/);
@@ -357,12 +357,20 @@ test("apply workflow does not queue runtime-yield continuation without cursor pr
 test("apply workflow drops a coverage-proof tail only after exact trace examination", () => {
   const root = mkdtempSync(tmpPrefix);
   const fastOnlyTrace = join(root, "fast-only.json");
-  const proofTrace = join(root, "proof.json");
+  const firstProofTrace = join(root, "proof-first.json");
+  const secondProofTrace = join(root, "proof-second.json");
   writeFileSync(
     fastOnlyTrace,
     JSON.stringify({ schema_version: 1, examined_item_numbers: [10, 20] }),
   );
-  writeFileSync(proofTrace, JSON.stringify({ schema_version: 1, examined_item_numbers: [30] }));
+  writeFileSync(
+    firstProofTrace,
+    JSON.stringify({ schema_version: 1, examined_item_numbers: [30] }),
+  );
+  writeFileSync(
+    secondProofTrace,
+    JSON.stringify({ schema_version: 1, examined_item_numbers: [40] }),
+  );
 
   try {
     const output = execFileSync(
@@ -372,23 +380,31 @@ test("apply workflow drops a coverage-proof tail only after exact trace examinat
         [
           "source scripts/apply-workflow-helpers.sh",
           "auto_selected_apply_batch=true",
-          "item_numbers=10,20,30",
-          "coverage_proof_item_numbers=30",
+          "item_numbers=10,20,30,40",
+          "coverage_proof_item_numbers=30,40",
           'item_numbers_arg=(--item-numbers "$item_numbers")',
           'drop_bounded_coverage_proof_tail "$FAST_ONLY_TRACE"',
           'printf \'%s|%s|%s\\n\' "$item_numbers" "$coverage_proof_item_numbers" "${item_numbers_arg[*]}"',
-          'drop_bounded_coverage_proof_tail "$PROOF_TRACE"',
+          'drop_bounded_coverage_proof_tail "$FIRST_PROOF_TRACE"',
+          'printf \'%s|%s|%s\\n\' "$item_numbers" "$coverage_proof_item_numbers" "${item_numbers_arg[*]}"',
+          'drop_bounded_coverage_proof_tail "$SECOND_PROOF_TRACE"',
           'printf \'%s|%s|%s\\n\' "$item_numbers" "$coverage_proof_item_numbers" "${item_numbers_arg[*]}"',
         ].join("\n"),
       ],
       {
         cwd: process.cwd(),
         encoding: "utf8",
-        env: { ...process.env, FAST_ONLY_TRACE: fastOnlyTrace, PROOF_TRACE: proofTrace },
+        env: {
+          ...process.env,
+          FAST_ONLY_TRACE: fastOnlyTrace,
+          FIRST_PROOF_TRACE: firstProofTrace,
+          SECOND_PROOF_TRACE: secondProofTrace,
+        },
       },
     );
     assert.deepEqual(output.trim().split("\n"), [
-      "10,20,30|30|--item-numbers 10,20,30",
+      "10,20,30,40|30,40|--item-numbers 10,20,30,40",
+      "10,20,40|40|--item-numbers 10,20,40",
       "10,20||--item-numbers 10,20",
     ]);
   } finally {
