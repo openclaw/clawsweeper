@@ -1482,7 +1482,8 @@ function hasPullRequestClosePromotionSignal(
 ): boolean {
   return (
     hasLinkedPullRequestSupersessionSignal(markdown, targetRepo) ||
-    ((hasRecommendedPauseOrCloseOption(markdown) || hasStaleFRatedPullRequestSignal(markdown)) &&
+    ((hasRecommendedPauseOrCloseOption(markdown) ||
+      hasLowSignalPullRequestPromotionSignal(markdown)) &&
       olderThan(frontMatterValue(markdown, "item_created_at"), options.staleMinAgeMs))
   );
 }
@@ -1501,7 +1502,7 @@ function pullRequestClosePromotionReasons(
   // to the low-signal promotion when that linked candidate does not cover it.
   if (
     !recommendedPauseOrClose &&
-    hasStaleFRatedPullRequestSignal(markdown) &&
+    hasLowSignalPullRequestPromotionSignal(markdown) &&
     olderThan(frontMatterValue(markdown, "item_created_at"), options.staleMinAgeMs)
   ) {
     reasons.push("low_signal_unmergeable_pr");
@@ -1560,12 +1561,20 @@ function hasRecommendedPauseOrCloseOption(markdown: string): boolean {
   });
 }
 
-function hasStaleFRatedPullRequestSignal(markdown: string): boolean {
+function hasLowSignalPullRequestPromotionSignal(markdown: string): boolean {
+  const ratingSection = sectionValue(markdown, "PR Rating");
+  const proofSection = sectionValue(markdown, "Real Behavior Proof");
+  const overallTier =
+    sectionLineValue(ratingSection, "Overall tier") ||
+    frontMatterValue(markdown, "pr_rating_overall");
+  const proofTier =
+    sectionLineValue(ratingSection, "Proof tier") || frontMatterValue(markdown, "pr_rating_proof");
+  const proofStatus =
+    sectionLineValue(proofSection, "Status") ||
+    frontMatterValue(markdown, "real_behavior_proof_status");
   return (
-    frontMatterValue(markdown, "pr_rating_overall") === "F" ||
-    frontMatterValue(markdown, "pr_rating_proof") === "F" ||
-    sectionLineValue(markdown, "Overall tier") === "F" ||
-    sectionLineValue(markdown, "Proof tier") === "F"
+    overallTier === "F" &&
+    (proofTier === "F" || ["missing", "mock_only", "insufficient"].includes(proofStatus))
   );
 }
 

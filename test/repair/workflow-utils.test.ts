@@ -1134,6 +1134,7 @@ test("workflow utilities select eligible proposed close records", () => {
       "action_taken: kept_open",
       "close_reason: none",
       "pr_rating_overall: F",
+      "pr_rating_proof: F",
       `item_created_at: ${oldDate}`,
       "---",
       "",
@@ -1292,8 +1293,66 @@ test("workflow utilities select eligible proposed close records", () => {
       "action_taken: kept_open",
       "close_reason: none",
       "pr_rating_overall: F",
+      "pr_rating_proof: F",
       `item_created_at: ${oldDate}`,
       `work_cluster_refs: ${JSON.stringify(["Superseded by #400"])}`,
+      "---",
+      "",
+    ].join("\n"),
+  );
+  write(
+    path.join(root, "records/openclaw-openclaw/items/openclaw-openclaw-33.md"),
+    [
+      "---",
+      "repository: openclaw/openclaw",
+      "type: pull_request",
+      "decision: keep_open",
+      "review_status: complete",
+      "local_checkout_access: verified",
+      "action_taken: kept_open",
+      "close_reason: none",
+      "pr_rating_overall: B",
+      "pr_rating_proof: F",
+      "real_behavior_proof_status: missing",
+      `item_created_at: ${oldDate}`,
+      "---",
+      "",
+    ].join("\n"),
+  );
+  write(
+    path.join(root, "records/openclaw-openclaw/items/openclaw-openclaw-34.md"),
+    [
+      "---",
+      "repository: openclaw/openclaw",
+      "type: pull_request",
+      "decision: keep_open",
+      "review_status: complete",
+      "local_checkout_access: verified",
+      "action_taken: kept_open",
+      "close_reason: none",
+      "pr_rating_overall: F",
+      "pr_rating_proof: A",
+      "real_behavior_proof_status: sufficient",
+      `item_created_at: ${oldDate}`,
+      "---",
+      "",
+    ].join("\n"),
+  );
+  write(
+    path.join(root, "records/openclaw-openclaw/items/openclaw-openclaw-35.md"),
+    [
+      "---",
+      "repository: openclaw/openclaw",
+      "type: pull_request",
+      "decision: keep_open",
+      "review_status: complete",
+      "local_checkout_access: verified",
+      "action_taken: kept_open",
+      "close_reason: none",
+      "pr_rating_overall: F",
+      "pr_rating_proof: A",
+      "real_behavior_proof_status: insufficient",
+      `item_created_at: ${oldDate}`,
       "---",
       "",
     ].join("\n"),
@@ -1310,7 +1369,7 @@ test("workflow utilities select eligible proposed close records", () => {
     }),
   );
 
-  assert.deepEqual(selected, [5, 12, 15, 17, 18, 21, 22, 24, 25, 26, 27, 30, 31, 32]);
+  assert.deepEqual(selected, [5, 12, 15, 17, 18, 21, 22, 24, 25, 26, 27, 30, 31, 32, 35]);
   assert.deepEqual(
     withCwd(root, () =>
       proposedItemNumbers({
@@ -1322,7 +1381,7 @@ test("workflow utilities select eligible proposed close records", () => {
         minAgeMinutes: null,
       }),
     ),
-    [15, 22, 32],
+    [15, 22, 32, 35],
   );
   assert.deepEqual(
     withCwd(root, () =>
@@ -1592,6 +1651,7 @@ test("workflow utilities select proposed PR closes that can need coverage proof"
       "close_reason: none",
       `item_created_at: ${oldDate}`,
       "pr_rating_overall: F",
+      "pr_rating_proof: F",
       "---",
       "",
     ].join("\n"),
@@ -1754,6 +1814,7 @@ test("workflow utilities run a bounded confirmed prefix before proof and defer p
       "close_reason: none",
       `item_created_at: ${oldDate}`,
       "pr_rating_overall: F",
+      "pr_rating_proof: F",
       "---",
       "",
     ].join("\n"),
