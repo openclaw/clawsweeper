@@ -2691,6 +2691,7 @@ jobs:
                 --cursor-trace "$cursor_trace_path")"
               apply_publish_paths+=(results/apply-cursors)
             fi
+            examined_count="$(apply_checkpoint_examined_count)"
             publish_changes "chore: apply sweep decisions checkpoint $checkpoint" "${apply_publish_paths[@]}"
             close_health_cursor_path=""
             if [ "$auto_selected_apply_batch" = "true" ]; then
@@ -2700,7 +2701,7 @@ jobs:
             pnpm run status -- \
               --target-repo "$TARGET_REPO" \
               --state "Apply in progress" \
-              --detail "Checkpoint $checkpoint finished. Fresh closes in checkpoint: $closed_in_chunk. Total fresh closes in this run: $closed_total/$limit. Result records in checkpoint: $result_count, including durable review comment syncs." \
+              --detail "Checkpoint $checkpoint finished. Fresh closes in checkpoint: $closed_in_chunk. Total fresh closes in this run: $closed_total/$limit. Candidates examined: $examined_count. Action records: $result_count, including durable review comment syncs." \
               --run-url "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
               --apply-health-file ".artifacts/apply-health-$checkpoint.json"
             publish_status "chore: update sweep apply checkpoint $checkpoint status"

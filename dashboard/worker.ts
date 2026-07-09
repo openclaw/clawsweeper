@@ -3679,6 +3679,8 @@ async function readApplyHealthMarker(
       mode: nullableString(health.mode),
       status: nullableString(health.status) || "unavailable",
       summary: nullableString(health.summary),
+      examined: optionalNumber(health.examined),
+      action_records: numberOrNull(health.action_records),
       processed: numberOrNull(health.processed),
       processed_limit: numberOrNull(health.processed_limit),
       close_limit: numberOrNull(health.close_limit),
@@ -7282,11 +7284,21 @@ function renderApplyHealth(data) {
     const cursorPill = showCursor
       ? '<span class="pill" title="' + esc(cursorTitle) + '">' + esc(cursor) + '</span>'
       : "";
-    const processed = Number.isFinite(item.processed) ? fmt.format(item.processed) : "unknown";
+    const actionRecords = Number.isFinite(item.action_records)
+      ? fmt.format(item.action_records)
+      : Number.isFinite(item.processed)
+        ? fmt.format(item.processed)
+        : "unknown";
+    const hasExamined = Number.isFinite(item.examined);
+    const examined = hasExamined ? fmt.format(item.examined) : null;
+    const activityLabel = hasExamined ? examined + " examined" : actionRecords + " actions";
+    const activityTitle = hasExamined
+      ? examined + " candidates examined; " + actionRecords + " produced action records."
+      : actionRecords + " action records; candidate examined count unavailable for this lane.";
     const closed = Number.isFinite(item.closed) ? fmt.format(item.closed) : "unknown";
     const synced = Number.isFinite(item.comment_synced) ? fmt.format(item.comment_synced) : "unknown";
-    const closureProcessed = Number.isFinite(item.lanes?.closure?.processed) ? fmt.format(item.lanes.closure.processed) : processed;
-    const syncProcessed = Number.isFinite(item.lanes?.comment_sync?.processed) ? fmt.format(item.lanes.comment_sync.processed) : processed;
+    const closureProcessed = Number.isFinite(item.lanes?.closure?.processed) ? fmt.format(item.lanes.closure.processed) : actionRecords;
+    const syncProcessed = Number.isFinite(item.lanes?.comment_sync?.processed) ? fmt.format(item.lanes.comment_sync.processed) : actionRecords;
     const closureSynced = Number.isFinite(item.lanes?.closure?.comment_synced) ? fmt.format(item.lanes.closure.comment_synced) : "0";
     const syncLaneSynced = Number.isFinite(item.lanes?.comment_sync?.comment_synced) ? fmt.format(item.lanes.comment_sync.comment_synced) : "0";
     const cycle = applyHealthCyclePill(item.cycle);
@@ -7295,7 +7307,7 @@ function renderApplyHealth(data) {
       '<p>' + esc(applyHealthOperatorSummary(item, topInfo)) + '</p>' +
       '<p class="apply-health-next"><strong>Next check:</strong> ' + esc(topInfo.action) + '</p>' +
       applyHealthActionHtml(action) +
-      '<div class="apply-health-meta"><span class="pill" title="Records checked in this pruning window.">' + esc(processed) + ' processed</span><span class="pill" title="' + esc("Closure lane: " + closureProcessed + " records processed; " + closed + " closed.") + '">' + esc(closed) + ' closed</span><span class="pill" title="' + esc("Durable review comments refreshed across lanes: " + synced + ". Closure lane refreshed " + closureSynced + "; comment-sync lane refreshed " + syncLaneSynced + " from " + syncProcessed + " records.") + '">' + esc(synced) + ' comments synced</span>' + cycle + cursorPill + reasons + buckets + linkClass(item.run_url, "workflow run", "pill run-link") + '</div></div>';
+      '<div class="apply-health-meta"><span class="pill" title="' + esc(activityTitle) + '">' + esc(activityLabel) + '</span><span class="pill" title="' + esc("Closure lane: " + closureProcessed + " action records; " + closed + " closed.") + '">' + esc(closed) + ' closed</span><span class="pill" title="' + esc("Durable review comments refreshed across lanes: " + synced + ". Closure lane refreshed " + closureSynced + "; comment-sync lane refreshed " + syncLaneSynced + " from " + syncProcessed + " action records.") + '">' + esc(synced) + ' comments synced</span>' + cycle + cursorPill + reasons + buckets + linkClass(item.run_url, "workflow run", "pill run-link") + '</div></div>';
   }).join("");
 }
 function applyHealthCyclePill(cycle) {

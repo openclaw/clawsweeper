@@ -191,6 +191,10 @@ test("apply workflow bounds checkpoints and requeues with a fresh token", () => 
   assert.match(applyHelper, /write_apply_health\(\)/);
   assert.match(applyStep, /proposed-item-count/);
   assert.match(applyStep, /apply-cursor-advance-count/);
+  assert.match(applyStep, /examined_count="\$\(apply_checkpoint_examined_count\)"/);
+  assert.match(applyHelper, /apply_checkpoint_examined_count\(\)/);
+  assert.match(applyHelper, /printf '%s\\n' "unavailable"/);
+  assert.match(applyStep, /Candidates examined: \$examined_count\. Action records: \$result_count/);
   assert.match(applyHelper, /--candidate-count "\$health_candidate_count"/);
   assert.match(applyHelper, /--cursor-advance-count "\$health_cursor_advance_count"/);
   assert.match(applyHelper, /--scheduled-interval-minutes "\$health_scheduled_interval_minutes"/);

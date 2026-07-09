@@ -44,6 +44,8 @@ type ApplyReportSummary = {
   mode: string;
   status: "ok" | "idle" | "needs_attention";
   summary: string;
+  examined: number | null;
+  action_records: number;
   processed: number;
   processed_limit: number | null;
   close_limit: number | null;
@@ -540,6 +542,12 @@ export function applyContinuationBlocker(
 
 export function summarizeApplyReport(options: ApplyReportSummaryOptions): ApplyReportSummary {
   const actions = readApplyActions(options.reportPath);
+  const examined =
+    options.cursorRequired &&
+    options.cursorAdvanceCount !== null &&
+    options.cursorAdvanceCount !== undefined
+      ? options.cursorAdvanceCount
+      : null;
   const lanes = summarizeApplyLanes(actions, options.mode);
   const skipReasons: Record<string, number> = {};
   let closed = 0;
@@ -567,7 +575,7 @@ export function summarizeApplyReport(options: ApplyReportSummaryOptions): ApplyR
   if (
     options.cursorRequired &&
     processedLimit !== null &&
-    actions.length >= processedLimit &&
+    (actions.length >= processedLimit || (examined !== null && examined >= processedLimit)) &&
     !cursor
   ) {
     attentionReasons.push("cursor_required_but_missing_after_full_window");
@@ -596,10 +604,15 @@ export function summarizeApplyReport(options: ApplyReportSummaryOptions): ApplyR
   const nextActions = applySkipNextActions(skipReasons);
 
   const status =
-    actions.length === 0 ? "idle" : attentionReasons.length > 0 ? "needs_attention" : "ok";
+    attentionReasons.length > 0
+      ? "needs_attention"
+      : actions.length === 0 && (examined === null || examined === 0)
+        ? "idle"
+        : "ok";
   const summary = applyReportHealthSummary({
     status,
-    processed: actions.length,
+    examined,
+    actionRecords: actions.length,
     processedLimit,
     closed,
     commentSynced,
@@ -615,6 +628,8 @@ export function summarizeApplyReport(options: ApplyReportSummaryOptions): ApplyR
     mode: options.mode,
     status,
     summary,
+    examined,
+    action_records: actions.length,
     processed: actions.length,
     processed_limit: processedLimit,
     close_limit: options.closeLimit,
@@ -972,7 +987,8 @@ function durationLabel(minutes: number): string {
 }
 function applyReportHealthSummary(options: {
   status: ApplyReportSummary["status"];
-  processed: number;
+  examined: number | null;
+  actionRecords: number;
   processedLimit: number | null;
   closed: number;
   commentSynced: number;
@@ -980,15 +996,19 @@ function applyReportHealthSummary(options: {
   cursor: ApplyReportSummary["cursor"];
   attentionReasons: string[];
 }): string {
-  if (options.status === "idle") return "Apply processed no records in this run.";
-  const budget =
+  const actionRecords =
     options.processedLimit === null
-      ? `${options.processed} processed`
-      : `${options.processed}/${options.processedLimit} processed`;
+      ? `${options.actionRecords} action records`
+      : `${options.actionRecords}/${options.processedLimit} action records`;
+  const examined =
+    options.examined === null ? "examined count unavailable" : `${options.examined} examined`;
+  if (options.status === "idle") {
+    return `Apply produced no action records in this run; ${examined}.`;
+  }
   const cursorText = options.cursor
     ? `cursor at #${options.cursor.next_after_number}`
     : "no cursor recorded";
-  const base = `${budget}; ${options.closed} closed, ${options.commentSynced} comments synced, ${options.skipped} skipped; ${cursorText}.`;
+  const base = `${examined}; ${actionRecords}; ${options.closed} closed, ${options.commentSynced} comments synced, ${options.skipped} skipped; ${cursorText}.`;
   if (options.attentionReasons.length === 0) return base;
   return `${base} Attention: ${options.attentionReasons.join(", ")}.`;
 }

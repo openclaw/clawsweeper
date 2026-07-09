@@ -758,6 +758,7 @@ test("dashboard HTML preserves UTF-8 emoji labels", async () => {
   assert.match(html, /System Overview/);
   assert.match(html, /id="apply-health"/);
   assert.match(html, /function renderApplyHealth/);
+  assert.match(html, /candidate examined count unavailable for this lane/);
   assert.match(html, /Pruning sweep/);
   assert.match(html, /Copy command/);
   assert.match(html, /applyHealthRecommendedAction/);
@@ -1695,7 +1696,10 @@ test("dashboard exposes apply health from sweep status without broad scans", asy
     apply_health: {
       mode: "close",
       status: "needs_attention",
-      summary: "2/2 processed; 0 closed, 0 comments synced, 2 skipped; no cursor recorded.",
+      summary:
+        "4 examined; 2/2 action records; 0 closed, 0 comments synced, 2 skipped; no cursor recorded.",
+      examined: 4,
+      action_records: 2,
       processed: 2,
       processed_limit: 2,
       close_limit: 5,
@@ -1789,6 +1793,8 @@ test("dashboard exposes apply health from sweep status without broad scans", asy
     const status = await response.json();
     assert.equal(status.recent.apply_health.attention_count, 1);
     assert.equal(status.recent.apply_health.items[0].status, "needs_attention");
+    assert.equal(status.recent.apply_health.items[0].examined, 4);
+    assert.equal(status.recent.apply_health.items[0].action_records, 2);
     assert.equal(status.recent.apply_health.items[0].processed, 2);
     assert.equal(status.recent.apply_health.items[0].cursor_required, true);
     assert.deepEqual(status.recent.apply_health.items[0].skip_reasons, {

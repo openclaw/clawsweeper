@@ -334,7 +334,10 @@ test("workflow utilities summarize apply health with skip buckets and cursor", (
   });
 
   assert.equal(summary.status, "ok");
+  assert.equal(summary.examined, 4);
+  assert.equal(summary.action_records, 6);
   assert.equal(summary.processed, 6);
+  assert.match(summary.summary, /4 examined; 6\/300 action records/);
   assert.equal(summary.closed, 1);
   assert.equal(summary.comment_synced, 1);
   assert.deepEqual(summary.skip_reasons, {
@@ -381,6 +384,42 @@ test("workflow utilities summarize apply health with skip buckets and cursor", (
   assert.equal(summary.cursor?.next_after_number, 40);
 });
 
+test("workflow utilities distinguish examined promotion probes from action records", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-workflow-"));
+  const reportPath = path.join(root, "apply-report.json");
+  const cursorPath = path.join(root, "results/apply-cursors/openclaw-openclaw.json");
+  write(reportPath, JSON.stringify([]));
+  write(
+    cursorPath,
+    JSON.stringify({
+      next_after_number: 79148,
+      next_after_apply_checked_at: "2026-06-18T00:00:00Z",
+      updated_at: "2026-07-09T00:03:00Z",
+    }),
+  );
+
+  const summary = summarizeApplyReport({
+    reportPath,
+    targetRepo: "openclaw/openclaw",
+    mode: "close",
+    processedLimit: 300,
+    closeLimit: 20,
+    cursorPath,
+    cursorRequired: true,
+    candidateCount: 565,
+    cursorAdvanceCount: 40,
+    scheduledIntervalMinutes: 15,
+  });
+
+  assert.equal(summary.status, "ok");
+  assert.equal(summary.examined, 40);
+  assert.equal(summary.action_records, 0);
+  assert.equal(summary.processed, 0);
+  assert.match(summary.summary, /^40 examined; 0\/300 action records;/);
+  assert.equal(summary.cycle.window_size, 40);
+  assert.equal(summary.cursor?.next_after_number, 79148);
+});
+
 test("workflow utilities summarize comment-sync apply reports separately from closure", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-workflow-"));
   const reportPath = path.join(root, "apply-report.json");
@@ -404,6 +443,9 @@ test("workflow utilities summarize comment-sync apply reports separately from cl
   });
 
   assert.equal(summary.mode, "comment_sync");
+  assert.equal(summary.examined, null);
+  assert.equal(summary.action_records, 3);
+  assert.match(summary.summary, /examined count unavailable; 3\/25 action records/);
   assert.equal(summary.closed, 0);
   assert.equal(summary.comment_synced, 1);
   assert.deepEqual(summary.lanes.closure, {
@@ -519,11 +561,34 @@ test("workflow utilities flag full-window close scans without the required curso
   });
 
   assert.equal(summary.status, "needs_attention");
+  assert.equal(summary.examined, null);
   assert.deepEqual(summary.attention_reasons, [
     "cursor_required_but_missing_after_full_window",
     "skipped_changed_since_review",
   ]);
   assert.match(summary.summary, /Attention:/);
+});
+
+test("workflow utilities flag a missing cursor after a no-action full window", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-workflow-"));
+  const reportPath = path.join(root, "apply-report.json");
+  write(reportPath, JSON.stringify([]));
+
+  const summary = summarizeApplyReport({
+    reportPath,
+    targetRepo: "openclaw/openclaw",
+    mode: "close",
+    processedLimit: 2,
+    closeLimit: 5,
+    cursorPath: path.join(root, "missing-cursor.json"),
+    cursorRequired: true,
+    cursorAdvanceCount: 2,
+  });
+
+  assert.equal(summary.status, "needs_attention");
+  assert.equal(summary.examined, 2);
+  assert.equal(summary.action_records, 0);
+  assert.deepEqual(summary.attention_reasons, ["cursor_required_but_missing_after_full_window"]);
 });
 
 test("workflow utilities keep a resumable runtime yield healthy", () => {

@@ -62,6 +62,14 @@ write_apply_health() {
   pnpm run --silent workflow -- summarize-apply-report "${health_args[@]}" > "$output_path"
 }
 
+apply_checkpoint_examined_count() {
+  if [ "$auto_selected_apply_batch" = "true" ] && [ -n "$cursor_advance_count" ]; then
+    printf '%s\n' "$cursor_advance_count"
+  else
+    printf '%s\n' "unavailable"
+  fi
+}
+
 select_automatic_apply_runtime() {
   max_runtime_arg=()
   if [ "$auto_selected_apply_batch" = "true" ]; then
