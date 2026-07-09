@@ -13624,6 +13624,11 @@ interface LinkedPullRequestSupersession {
   filesKnown: boolean;
 }
 
+interface LinkedPullRequestSupersessionResolution {
+  candidate: LinkedPullRequestSupersession | null;
+  unsafeReason: string | null;
+}
+
 function upgradePullRequestClosePromotionReport(
   markdown: string,
   item: Item,
@@ -13997,7 +14002,8 @@ function linkedPullRequestSupersession(
   markdown: string,
   item: Item,
   options: { reportDirs?: readonly string[] } = {},
-): LinkedPullRequestSupersession | null {
+): LinkedPullRequestSupersessionResolution {
+  let unsafeReason: string | null = null;
   for (const number of linkedPullRequestNumbersFromReport(markdown, item.number)) {
     try {
       const hasSupersessionSignal = linkedPullRequestHasSupersessionSignal(
@@ -14023,13 +14029,17 @@ function linkedPullRequestSupersession(
         filesKnown: linkedFiles.known,
       };
       if (linkedPullCannotSupersedeDocsOnlySource(markdown, linkedPull)) continue;
-      if (unsafeCanonicalPullRequestReason(linkedPull, options) !== null) continue;
-      return linkedPull;
+      const candidateUnsafeReason = unsafeCanonicalPullRequestReason(linkedPull, options);
+      if (candidateUnsafeReason !== null) {
+        unsafeReason ??= candidateUnsafeReason;
+        continue;
+      }
+      return { candidate: linkedPull, unsafeReason: null };
     } catch {
       // Missing or cross-repo stale references are not close evidence.
     }
   }
-  return null;
+  return { candidate: null, unsafeReason };
 }
 
 function linkedPullRequestLabels(number: number, pull: Record<string, unknown>): string[] {
@@ -14616,12 +14626,8 @@ function pauseOrClosePromotion(
 }
 
 function linkedPullRequestSupersessionPromotion(
-  markdown: string,
-  item: Item,
-  options: { reportDirs?: readonly string[] } = {},
-): PullRequestClosePromotion | null {
-  const linkedPull = linkedPullRequestSupersession(markdown, item, options);
-  if (!linkedPull) return null;
+  linkedPull: LinkedPullRequestSupersession,
+): PullRequestClosePromotion {
   const stateText = linkedPull.mergedAt
     ? `merged at ${linkedPull.mergedAt}`
     : "still open as the canonical replacement";
@@ -14652,11 +14658,16 @@ function pullRequestClosePromotion(
   if (frontMatterValue(markdown, "action_taken") !== "kept_open") return null;
   if (frontMatterValue(markdown, "review_status") !== "complete") return null;
   if (closePromotionHasNonAutomationActivityAfterReview(markdown, context)) return null;
-  return (
-    linkedPullRequestSupersessionPromotion(markdown, item, options) ??
-    pauseOrClosePromotion(markdown, item, staleMinAgeDays) ??
-    staleFRatedPullRequestPromotion(markdown, item, staleMinAgeDays)
-  );
+  const linkedSupersession = linkedPullRequestSupersession(markdown, item, options);
+  if (linkedSupersession.candidate) {
+    return linkedPullRequestSupersessionPromotion(linkedSupersession.candidate);
+  }
+  const pauseOrClose = pauseOrClosePromotion(markdown, item, staleMinAgeDays);
+  if (pauseOrClose) return pauseOrClose;
+  // A live canonical candidate that is itself unsafe cannot justify treating the
+  // source as generic low-signal work. Missing or non-covering references can.
+  if (linkedSupersession.unsafeReason) return null;
+  return staleFRatedPullRequestPromotion(markdown, item, staleMinAgeDays);
 }
 
 function workPlanPathForReport(file: string, plansDir = defaultPlansDir()): string {

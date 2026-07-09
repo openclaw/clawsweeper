@@ -236,6 +236,8 @@ test("apply-decisions does not promote PRs superseded by no-proof linked pull re
               "--dry-run",
               "--apply-kind",
               "all",
+              "--apply-close-reasons",
+              "low_signal_unmergeable_pr",
               "--processed-limit",
               "3",
             ],
@@ -248,6 +250,10 @@ test("apply-decisions does not promote PRs superseded by no-proof linked pull re
     assert.equal(
       report.some((entry) => entry.action === "closed"),
       false,
+    );
+    assert.equal(
+      report.some((entry) => entry.action === "kept_open"),
+      true,
     );
     assert.doesNotMatch(JSON.stringify(report), /proof should not run/);
   } finally {
