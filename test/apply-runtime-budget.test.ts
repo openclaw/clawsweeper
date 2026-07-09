@@ -223,3 +223,82 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/724\\/timeline(?:\\?|$
     rmSync(fixture.root, { recursive: true, force: true });
   }
 });
+
+test("apply-decisions yields instead of starting a post-close delay that cannot fit", () => {
+  const fixture = runtimeBudgetFixture(725);
+  const maxRuntimeMs = 5_000;
+  const proofLogPath = join(fixture.root, "proof.log");
+  const synced = reportWithSyncedReviewComment(
+    lowSignalCloseReport({
+      number: 725,
+      title: "Provider route fallback",
+      close_reason: "duplicate_or_superseded",
+      work_cluster_refs: JSON.stringify([
+        "Superseded by https://github.com/openclaw/openclaw/pull/400",
+      ]),
+    }).replace(
+      "Closing this PR because the branch is not a useful landing base.",
+      "Closing this PR as superseded by https://github.com/openclaw/openclaw/pull/400.",
+    ),
+    725,
+    "duplicate_or_superseded",
+  );
+  writeFileSync(join(fixture.itemsDir, "725.md"), synced.report, "utf8");
+  try {
+    const startedAt = Date.now();
+    withMockGh(
+      fixture.root,
+      promotionGhMock({
+        number: 725,
+        title: "Provider route fallback",
+        comment: synced.comment,
+        itemUpdatedAtAfterProofLogPath: proofLogPath,
+        linkedPulls: {
+          400: {
+            number: 400,
+            title: "Provider cleanup",
+            html_url: "https://github.com/openclaw/openclaw/pull/400",
+            state: "closed",
+            merged_at: "2026-05-02T00:00:00Z",
+            updated_at: "2026-05-01T00:00:00Z",
+            body: "Includes the fallback route behavior from PR 725.",
+            comments: [],
+            labels: [],
+          },
+        },
+      }),
+      () => {
+        withMockCodexProof(
+          fixture.root,
+          {
+            type: "decision",
+            decision: "covered",
+            reason: "PR B carries forward PR A's fallback route behavior.",
+            invocationLogPath: proofLogPath,
+          },
+          () => {
+            runApplyDecisionsForTest({
+              ...fixture,
+              targetRepo: "openclaw/openclaw",
+              extraArgs: [
+                "--apply-kind",
+                "all",
+                "--max-runtime-ms",
+                String(maxRuntimeMs),
+                "--close-delay-ms",
+                "10000",
+                "--cursor-trace",
+                fixture.cursorTracePath,
+              ],
+            });
+          },
+        );
+      },
+    );
+
+    assert.ok(Date.now() - startedAt < 3_000, "post-close delay ignored the remaining runtime");
+    assertRuntimeYield(fixture, maxRuntimeMs);
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});

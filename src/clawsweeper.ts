@@ -2224,13 +2224,17 @@ function ensureApplyGitHubRuntimeAvailable(phase: string): void {
   if (remainingMs !== null && remainingMs <= 0) throw applyRuntimeBudgetError(phase);
 }
 
-function ensureApplyGitHubRetryFits(waitMs: number): void {
+function ensureApplyRuntimeDelayFits(waitMs: number, phase: string): void {
   const pendingError = pendingApplyRuntimeBudgetError();
   if (pendingError) throw pendingError;
   const remainingMs = applyGitHubRuntimeRemainingMs();
   if (remainingMs !== null && remainingMs <= waitMs) {
-    throw applyRuntimeBudgetError("before GitHub retry");
+    throw applyRuntimeBudgetError(phase);
   }
+}
+
+function ensureApplyGitHubRetryFits(waitMs: number): void {
+  ensureApplyRuntimeDelayFits(waitMs, "before GitHub retry");
 }
 
 function sleepBeforeGitHubRetry(waitMs: number): void {
@@ -20260,6 +20264,7 @@ async function applyDecisionsCommandInner(
           })
         : null;
     closeItem({ number, kind: item.kind, reason: closeReason });
+    ensureApplyRuntimeDelayFits(closeDelayMs, "before close delay");
     sleepMs(closeDelayMs);
     markdown = replaceSectionValue(markdown, REVIEW_SECTIONS.closeComment, reviewComment);
     markdown = replaceFrontMatterValue(markdown, "close_comment_sha256", sha256(reviewComment));
