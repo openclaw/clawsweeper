@@ -387,45 +387,84 @@ test("publishMainCommit fails closed when a racing sweep status is malformed", (
   assert.equal(run("git", ["--git-dir", origin, "show", `main:${statusFile}`], root), "{broken\n");
 });
 
-test("publishMainCommit rebuilds a reopened record after a concurrent closed update", () => {
+test("reconciliation preserves newer remote tuples and publishes independent tuples", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-publish-"));
   const origin = path.join(root, "origin.git");
   const work = path.join(root, "work");
+  const state = path.join(root, "state");
   const other = path.join(root, "other");
-  const itemPath = "records/openclaw-openclaw/items/1.md";
-  const closedPath = "records/openclaw-openclaw/closed/1.md";
+  const itemOne = "records/openclaw-openclaw/items/1.md";
+  const closedOne = "records/openclaw-openclaw/closed/1.md";
+  const planOne = "records/openclaw-openclaw/plans/1.md";
+  const packetOne = "records/openclaw-openclaw/decision-packets/1.json";
+  const itemTwo = "records/openclaw-openclaw/items/2.md";
+  const closedTwo = "records/openclaw-openclaw/closed/2.md";
+  const planTwo = "records/openclaw-openclaw/plans/2.md";
+  const packetTwo = "records/openclaw-openclaw/decision-packets/2.json";
   run("git", ["init", "--bare", origin], root);
-  run("git", ["clone", origin, work], root);
-  configureUser(work);
-  write(path.join(work, closedPath), "closed old\n");
-  run("git", ["add", "."], work);
-  run("git", ["commit", "-m", "initial"], work);
-  run("git", ["push", "origin", "HEAD:main"], work);
-  run("git", ["--git-dir", origin, "symbolic-ref", "HEAD", "refs/heads/main"], root);
-  run("git", ["checkout", "-B", "main", "origin/main"], work);
+  run("git", ["clone", origin, state], root);
+  configureUser(state);
+  write(path.join(state, closedOne), "closed one base\n");
+  write(path.join(state, planOne), "stale plan one\n");
+  write(path.join(state, packetOne), '{"decision":"base"}\n');
+  write(path.join(state, closedTwo), "closed two base\n");
+  run("git", ["add", "."], state);
+  run("git", ["commit", "-m", "initial state"], state);
+  run("git", ["push", "origin", "HEAD:state"], state);
+  run("git", ["--git-dir", origin, "symbolic-ref", "HEAD", "refs/heads/state"], root);
+  run("git", ["checkout", "-B", "state", "origin/state"], state);
+
+  fs.mkdirSync(work);
+  fs.cpSync(path.join(state, "records"), path.join(work, "records"), { recursive: true });
 
   run("git", ["clone", origin, other], root);
   configureUser(other);
-  write(path.join(other, closedPath), "closed remote update\n");
-  run("git", ["commit", "-am", "remote closed update"], other);
-  run("git", ["push", "origin", "HEAD:main"], other);
+  write(path.join(other, closedOne), "closed one concurrent\n");
+  write(path.join(other, packetOne), '{"decision":"concurrent"}\n');
+  run("git", ["commit", "-am", "concurrent tuple update"], other);
+  run("git", ["push", "origin", "HEAD:state"], other);
 
-  fs.rmSync(path.join(work, closedPath));
-  write(path.join(work, itemPath), "reopened\n");
+  fs.rmSync(path.join(work, closedOne));
+  fs.rmSync(path.join(work, planOne));
+  fs.rmSync(path.join(work, packetOne));
+  write(path.join(work, itemOne), "stale reopen one\n");
+  fs.rmSync(path.join(work, closedTwo));
+  write(path.join(work, itemTwo), "reopened two\n");
 
-  const result = withCwd(work, () =>
-    publishMainCommit({
-      message: "chore: persist sweep reconciliation",
-      paths: [itemPath, closedPath],
-      maxAttempts: 1,
-      pushAttempts: 1,
-      rebaseStrategy: "normal",
-    }),
+  const result = withEnv({ CLAWSWEEPER_STATE_DIR: state }, () =>
+    withCwd(work, () =>
+      publishMainCommit({
+        message: "chore: persist sweep reconciliation",
+        paths: [itemOne, closedOne, planOne, packetOne, itemTwo, closedTwo, planTwo, packetTwo],
+        maxAttempts: 1,
+        pushAttempts: 1,
+        rebaseStrategy: "reconcile-records",
+      }),
+    ),
   );
 
   assert.equal(result, "committed");
-  assert.equal(run("git", ["--git-dir", origin, "show", `main:${itemPath}`], root), "reopened\n");
-  assert.throws(() => run("git", ["--git-dir", origin, "show", `main:${closedPath}`], root));
+  assert.throws(() => run("git", ["--git-dir", origin, "show", `state:${itemOne}`], root));
+  assert.equal(
+    run("git", ["--git-dir", origin, "show", `state:${closedOne}`], root),
+    "closed one concurrent\n",
+  );
+  assert.equal(
+    run("git", ["--git-dir", origin, "show", `state:${planOne}`], root),
+    "stale plan one\n",
+  );
+  assert.equal(
+    run("git", ["--git-dir", origin, "show", `state:${packetOne}`], root),
+    '{"decision":"concurrent"}\n',
+  );
+  assert.equal(
+    run("git", ["--git-dir", origin, "show", `state:${itemTwo}`], root),
+    "reopened two\n",
+  );
+  assert.throws(() => run("git", ["--git-dir", origin, "show", `state:${closedTwo}`], root));
+  assert.equal(fs.readFileSync(path.join(work, closedOne), "utf8"), "closed one concurrent\n");
+  assert.equal(fs.readFileSync(path.join(work, packetOne), "utf8"), '{"decision":"concurrent"}\n');
+  assert.equal(fs.readFileSync(path.join(work, itemTwo), "utf8"), "reopened two\n");
 });
 
 test("publishMainCommit rebuilds generated state commits without deleting concurrent records", () => {
@@ -1144,6 +1183,8 @@ test("publish-main CLI accepts package-manager double dash separators", () => {
       "chore: publish cli ledger",
       "--path",
       "results",
+      "--rebase-strategy",
+      "reconcile-records",
       "--max-attempts",
       "1",
       "--push-attempts",

@@ -32,7 +32,7 @@ export type GitPublishOptions = {
   rebaseStrategy?: RebaseStrategy | undefined;
 };
 
-export type RebaseStrategy = "normal" | "theirs" | "apply-records";
+export type RebaseStrategy = "normal" | "theirs" | "apply-records" | "reconcile-records";
 
 export type GitRunOptions = {
   allowFailure?: boolean;
@@ -193,6 +193,11 @@ export function publishMainCommit(options: GitPublishOptions): PublishResult {
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     if (pushCommit({ remote, branch, pushAttempts, rebaseStrategy })) {
       return completeStatePublish("committed", options.paths, stateBaseCommit);
+    }
+    if (rebaseStrategy === "reconcile-records") {
+      throw new Error(
+        "Failed to publish reconciliation without overwriting concurrent record tuples",
+      );
     }
     const rebuildResult = rebuildPublishCommit({
       remote,
@@ -525,6 +530,10 @@ export function pushCommit(options: {
     const localCommit = runGit(["rev-parse", "HEAD"], { quiet: true }).trim();
     const localCommitMessage = runGit(["log", "-1", "--format=%B"], { quiet: true });
     runGit(["fetch", remote, branch], { allowFailure: true });
+    if (rebaseStrategy === "reconcile-records") {
+      if (!rebuildReconciliationCommit(`${remote}/${branch}`)) return false;
+      continue;
+    }
     const remoteCommit = runGit(["rev-parse", `${remote}/${branch}`], { quiet: true }).trim();
     const statusMerges = planSweepStatusMerges({ localCommit, remoteCommit });
     const rebaseArgs =
@@ -544,6 +553,77 @@ export function pushCommit(options: {
     }
   }
   return spawnGit(["push", remote, `HEAD:${branch}`]).status === 0;
+}
+
+function rebuildReconciliationCommit(remoteRef: string): boolean {
+  const sourceCommit = runGit(["rev-parse", "HEAD"]).trim();
+  const baseCommit = runGit(["merge-base", sourceCommit, remoteRef]).trim();
+  const localPaths = changedPathsBetween(baseCommit, sourceCommit);
+  const localTupleKeys = new Map<string, string>();
+
+  for (const path of localPaths) {
+    const tupleKey = reconciliationTupleKey(path);
+    if (!tupleKey) {
+      console.log(`Unsupported reconciliation publish path: ${path}`);
+      return false;
+    }
+    localTupleKeys.set(path, tupleKey);
+  }
+
+  const remoteTupleKeys = new Set(
+    changedPathsBetween(baseCommit, remoteRef)
+      .map(reconciliationTupleKey)
+      .filter((key): key is string => Boolean(key)),
+  );
+  const selectedPaths = localPaths.filter(
+    (path) => !remoteTupleKeys.has(localTupleKeys.get(path) ?? ""),
+  );
+  const deferredTupleKeys = new Set(
+    localPaths
+      .map((path) => localTupleKeys.get(path))
+      .filter((key): key is string => key !== undefined && remoteTupleKeys.has(key)),
+  );
+
+  if (deferredTupleKeys.size > 0) {
+    console.log(
+      `Deferring reconciliation for ${deferredTupleKeys.size} concurrently updated record tuple(s)`,
+    );
+  }
+
+  runGit(["reset", "--hard", remoteRef]);
+  for (const path of selectedPaths) {
+    runGit(["rm", "-r", "--ignore-unmatch", "--", path], { allowFailure: true });
+    if (commitHasPath(sourceCommit, path)) runGit(["checkout", sourceCommit, "--", path]);
+  }
+
+  if (selectedPaths.length > 0) stagePaths(selectedPaths);
+  if (!hasStagedChanges()) {
+    console.log("No reconciliation changes remain after preserving concurrent record tuples");
+    return true;
+  }
+
+  runGit(["commit", "-C", sourceCommit]);
+  return true;
+}
+
+function changedPathsBetween(from: string, to: string): string[] {
+  return runGit(["diff", "--no-renames", "--name-only", "-z", from, to])
+    .split("\0")
+    .filter(Boolean);
+}
+
+function reconciliationTupleKey(path: string): string | undefined {
+  const markdownMatch = /^records\/([^/]+)\/(?:items|closed|plans)\/([^/]+\.md)$/.exec(path);
+  if (markdownMatch) {
+    const repository = markdownMatch[1];
+    const filename = markdownMatch[2];
+    const number = filename ? /(?:^|-)(\d+)\.md$/.exec(filename)?.[1] : undefined;
+    return repository && number ? `${repository}/${number}` : undefined;
+  }
+  const packetMatch = /^records\/([^/]+)\/decision-packets\/(\d+)\.json$/.exec(path);
+  const repository = packetMatch?.[1];
+  const number = packetMatch?.[2];
+  return repository && number ? `${repository}/${number}` : undefined;
 }
 
 function rebuildPublishCommit(options: {

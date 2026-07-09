@@ -177,7 +177,7 @@ test("reconcile publication expands only exact changed record tuples", () => {
     { encoding: "utf8", env: { ...process.env, RECONCILE_JSON: reconcileJson } },
   );
   assert.deepEqual(output.trim().split("\n"), [
-    "normal",
+    "reconcile-records",
     "persist reconciliation",
     "records/openclaw-openclaw/items/7.md",
     "records/openclaw-openclaw/closed/7.md",

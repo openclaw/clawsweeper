@@ -68,10 +68,10 @@ publish_reconciled_records() {
     echo "Reconcile changed no durable record tuples."
     return 0
   fi
-  # Reconciliation can move records in either direction. A normal rebase falls
-  # back to rebuilding these exact tuples when a concurrent state write
-  # conflicts, instead of applying the close-biased apply-records resolver.
-  publish_changes_with_strategy normal "$message" "${publish_paths[@]}"
+  # Reconciliation can move records in either direction. Preserve the newer
+  # remote tuple when another publisher changes the same item, while applying
+  # non-conflicting tuples independently.
+  publish_changes_with_strategy reconcile-records "$message" "${publish_paths[@]}"
 }
 
 persist_reconciliation() {

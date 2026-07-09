@@ -55,6 +55,12 @@ function parsePositiveInt(value: string, flag: string): number {
 }
 
 function parseRebaseStrategy(value: string): RebaseStrategy {
-  if (value === "normal" || value === "theirs" || value === "apply-records") return value;
-  throw new Error("--rebase-strategy must be normal, theirs, or apply-records");
+  if (
+    value === "normal" ||
+    value === "theirs" ||
+    value === "apply-records" ||
+    value === "reconcile-records"
+  )
+    return value;
+  throw new Error("--rebase-strategy must be normal, theirs, apply-records, or reconcile-records");
 }

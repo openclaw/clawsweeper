@@ -452,6 +452,9 @@ execution. Each pass immediately publishes only the item, closed, plan, and
 decision-packet paths for record numbers it changed. This keeps folder moves
 and closed-item sidecar cleanup durable even when policy filtering, an empty
 comment-sync batch, or an empty close queue makes the rest of the run a no-op.
+If another publisher updates the same tuple first, its newer tuple wins and
+reconciliation defers that item instead of rebuilding stale report or sidecar
+content.
 
 Broad normal review publishes records first, then dispatches durable review
 comment sync into the separate apply/comment-sync lane. This includes scheduled
