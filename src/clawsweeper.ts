@@ -2248,15 +2248,22 @@ function ghOnce(args: string[], timeoutMs: number): string {
   const resolvedArgs = args[0] === "api" ? args : ["--repo", targetRepo(), ...args];
   const env = { ...process.env, GIT_OPTIONAL_LOCKS: "0" };
   const command = resolveCommand("gh", resolvedArgs, env);
+  const commandTimeoutMs = applyGitHubCommandTimeoutMs(timeoutMs) ?? timeoutMs;
+  const runtimeLimitedTimeout = commandTimeoutMs < timeoutMs;
   const result = spawnSync(command.command, command.args, {
     cwd: ROOT,
     encoding: "utf8",
     env,
     maxBuffer: 8 * 1024 * 1024,
     stdio: ["ignore", "pipe", "pipe"],
-    timeout: applyGitHubCommandTimeoutMs(timeoutMs),
+    timeout: commandTimeoutMs,
   });
-  if (result.error) throw result.error;
+  if (result.error) {
+    if (runtimeLimitedTimeout && (result.error as NodeJS.ErrnoException).code === "ETIMEDOUT") {
+      throw applyRuntimeBudgetError("during GitHub operation");
+    }
+    throw result.error;
+  }
   if (result.status !== 0) {
     const stderr = typeof result.stderr === "string" ? result.stderr.trim() : "";
     throw new Error(
@@ -2319,11 +2326,13 @@ function maybePublishThrottleHeartbeat(options: {
     try {
       run("git", ["push"], { timeoutMs: applyGitHubCommandTimeoutMs() });
     } catch (error) {
+      if (error instanceof ApplyRuntimeBudgetError) throw error;
       console.error(
         `Best-effort throttle status push failed: ${error instanceof Error ? error.message : String(error)}`,
       );
     }
   } catch (error) {
+    if (error instanceof ApplyRuntimeBudgetError) throw error;
     console.error(
       `Best-effort throttle status update failed: ${error instanceof Error ? error.message : String(error)}`,
     );
@@ -4644,6 +4653,7 @@ function referencingMergedPullRequestsForIssue(number: number): unknown[] {
     const items = Array.isArray(response.items) ? response.items : [];
     return referencingMergedPullRequestCandidates(items);
   } catch (error) {
+    if (error instanceof ApplyRuntimeBudgetError) throw error;
     console.error(
       `[referencingMergedPullRequestsForIssue] number=${number} status=failed reason=${
         error instanceof Error ? error.message : String(error)
@@ -4847,6 +4857,7 @@ function compactRelatedGitHubIssueSearchItems(item: Item, seen: ReadonlySet<numb
         commentCount: candidate.comments,
       }));
   } catch (error) {
+    if (error instanceof ApplyRuntimeBudgetError) throw error;
     console.error(
       `Best-effort related issue GitHub search failed for #${item.number}: ${
         error instanceof Error ? error.message : String(error)

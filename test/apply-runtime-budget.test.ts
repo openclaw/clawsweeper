@@ -167,3 +167,59 @@ test("apply-decisions preserves a runtime yield through post-proof freshness han
     rmSync(fixture.root, { recursive: true, force: true });
   }
 });
+
+test("apply-decisions preserves a runtime yield from a bounded one-shot GitHub search", () => {
+  const fixture = runtimeBudgetFixture(724);
+  const maxRuntimeMs = 3_000;
+  const ghMock = `
+const rawArgs = process.argv.slice(2);
+const args = rawArgs[0] === "--repo" ? rawArgs.slice(2) : rawArgs;
+const path = args[1] === "-i" ? args[2] || "" : args[1] || "";
+if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/724\\/timeline(?:\\?|$)/.test(path)) {
+  console.log("HTTP/2 200\\n\\n[]");
+} else if (args[0] === "api" && /\\/issues\\/724\\/comments(?:\\?|$)/.test(path)) {
+  console.log(JSON.stringify([[]]));
+} else if (args[0] === "api" && /\\/issues\\/724$/.test(path)) {
+  console.log(JSON.stringify({
+    number: 724,
+    title: "Bound one-shot search",
+    html_url: "https://github.com/openclaw/clawsweeper/issues/724",
+    created_at: "2026-05-01T00:00:00Z",
+    updated_at: "2026-05-01T00:00:00Z",
+    closed_at: null,
+    state: "open",
+    locked: false,
+    active_lock_reason: null,
+    author_association: "CONTRIBUTOR",
+    user: { login: "reporter" },
+    labels: [],
+    comments: 0,
+    pull_request: null
+  }));
+} else if (args[0] === "api" && path.startsWith("search/issues?")) {
+  setTimeout(() => {}, 60_000);
+} else if (args[0] === "issue" && args[1] === "view") {
+  console.log(JSON.stringify({ closedByPullRequestsReferences: [] }));
+} else {
+  console.error("unexpected gh args", JSON.stringify(args));
+  process.exit(1);
+}
+`;
+  try {
+    withMockGh(fixture.root, ghMock, () => {
+      runApplyDecisionsForTest({
+        ...fixture,
+        extraArgs: [
+          "--max-runtime-ms",
+          String(maxRuntimeMs),
+          "--cursor-trace",
+          fixture.cursorTracePath,
+        ],
+      });
+    });
+
+    assertRuntimeYield(fixture, maxRuntimeMs);
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
