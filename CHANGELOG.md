@@ -35,6 +35,7 @@ checkpoint, and status-only commits are intentionally omitted.
 - Refreshed generated source paths after each state publish so later checkpoints cannot overwrite concurrent record, cursor, or report updates learned during a push rebase.
 - Preserved bounded command status and prompt context through durable exact-review queue leases so successful re-reviews advance their original acknowledgement instead of remaining queued.
 - Preserved independently updated sweep status and nested apply-health snapshots across concurrent state publication retries with timestamp-safe three-way merging.
+- Prevented completed apply and comment-sync runs from republishing stale hydrated records after their checkpoint commits, preserving concurrent apply bookkeeping while retaining a narrow final-status retry.
 - Retried infrastructure-failed issue reviews against their exact source revision through bounded one-shot asynchronous dispatch, requeued source drift once, and preserved retry attempts in separate durable state so ambiguous timeouts cannot overwrite completed reviews.
 - Stopped later CI reruns from resetting PR inactivity clocks by anchoring head activity to the latest source-triggered workflow run associated with that pull request.
 - Prioritized ready close decisions and bounded PR close-coverage proofs before slow policy-gated candidates, kept default 20-item continuations shareable, and retried malformed successful GitHub JSON responses.

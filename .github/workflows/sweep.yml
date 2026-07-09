@@ -2800,28 +2800,18 @@ jobs:
             echo "APPLY_CANDIDATE_QUALITY_SUMMARY=$candidate_quality_summary"
           } >> "$GITHUB_ENV"
 
-      - name: Commit apply results
+      - name: Retry final apply status publication
         run: |
           if [ "${APPLY_NOOP:-false}" = "true" ]; then
-            echo "No proposed closes were ready; no apply results to commit."
+            echo "No proposed closes were ready; no final apply status to retry."
             exit 0
           fi
           target_slug="$APPLY_TARGET_REPO"
           target_slug="${target_slug//\//-}"
-          publish_args=(
-            --message "chore: apply sweep decisions"
-            --path "records/${target_slug}"
-            --path apply-report.json
-            --path "results/sweep-status/${target_slug}.json"
+          pnpm run repair:publish-main -- \
+            --message "chore: mark sweep apply finished" \
+            --path "results/sweep-status/${target_slug}.json" \
             --rebase-strategy apply-records
-          )
-          if [ "${APPLY_SYNC_OPEN_PR_BATCH:-false}" = "true" ]; then
-            publish_args+=(--path results/comment-sync-cursors)
-          fi
-          if [ "${APPLY_AUTO_SELECTED_BATCH:-false}" = "true" ]; then
-            publish_args+=(--path results/apply-cursors)
-          fi
-          pnpm run repair:publish-main -- "${publish_args[@]}"
 
       - name: Continue apply sweep
         if: ${{ success() }}

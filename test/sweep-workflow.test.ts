@@ -154,7 +154,7 @@ test("apply workflow bounds checkpoints and requeues with a fresh token", () => 
   const applyJob = workflow.slice(workflow.indexOf("\n  apply-existing:"));
   const applyStep = applyJob.slice(
     applyJob.indexOf("- name: Apply unchanged proposed decisions with checkpoints"),
-    applyJob.indexOf("- name: Commit apply results"),
+    applyJob.indexOf("- name: Retry final apply status publication"),
   );
   const continueStep = applyJob.slice(
     applyJob.indexOf("- name: Continue apply sweep"),
@@ -306,6 +306,54 @@ test("apply workflow bounds checkpoints and requeues with a fresh token", () => 
   assert.match(continueStep, /already covered by \$/);
   assert.match(continueStep, /-f apply_item_numbers="\$APPLY_ITEM_NUMBERS"/);
   assert.doesNotMatch(continueStep, /APPLY_CLOSED_TOTAL:-0.*APPLY_LIMIT:-0/);
+});
+
+test("apply workflow finalization retries only target status after checkpointed state", () => {
+  const workflow = readText(".github/workflows/sweep.yml");
+  const applyJob = workflow.slice(workflow.indexOf("\n  apply-existing:"));
+  const applyStart = applyJob.indexOf(
+    "- name: Apply unchanged proposed decisions with checkpoints",
+  );
+  const finalStatusStart = applyJob.indexOf("- name: Retry final apply status publication");
+  const continueStart = applyJob.indexOf("- name: Continue apply sweep");
+  assert.ok(applyStart !== -1);
+  assert.ok(finalStatusStart > applyStart);
+  assert.ok(continueStart > finalStatusStart);
+  const applyStep = applyJob.slice(applyStart, finalStatusStart);
+  const finalStatusStep = applyJob.slice(finalStatusStart, continueStart);
+
+  const commentCheckpoint = applyStep.indexOf(
+    'publish_changes "chore: sync sweep review comments checkpoint $checkpoint" records apply-report.json results/comment-sync-cursors',
+  );
+  const closePaths = applyStep.indexOf("apply_publish_paths=(records apply-report.json)");
+  const cursorPath = applyStep.indexOf("apply_publish_paths+=(results/apply-cursors)");
+  const closeCheckpoint = applyStep.indexOf(
+    'publish_changes "chore: apply sweep decisions checkpoint $checkpoint" "${apply_publish_paths[@]}"',
+  );
+  assert.ok(commentCheckpoint !== -1);
+  assert.ok(closePaths !== -1);
+  assert.ok(cursorPath > closePaths);
+  assert.ok(closeCheckpoint > cursorPath);
+  for (const laterBranch of [
+    'if automatic_apply_runtime_reached ".artifacts/apply-reports/apply-report-$checkpoint.json"',
+    'if [ "$result_count" -ge "$close_processed_limit" ]; then',
+    'if [ "$result_count" -eq 0 ]; then',
+    'if [ "$closed_in_chunk" -eq 0 ]; then',
+  ]) {
+    assert.ok(applyStep.indexOf(laterBranch) > closeCheckpoint);
+  }
+  assert.match(applyStep, /publish_status "chore: mark sweep apply finished"/);
+
+  assert.match(finalStatusStep, /APPLY_NOOP:-false/);
+  assert.match(finalStatusStep, /--message "chore: mark sweep apply finished"/);
+  assert.deepEqual(
+    [...finalStatusStep.matchAll(/--path\s+("?[^\\\s]+"?)/g)].map((match) => match[1]),
+    ['"results/sweep-status/${target_slug}.json"'],
+  );
+  assert.match(finalStatusStep, /--rebase-strategy apply-records/);
+  assert.doesNotMatch(finalStatusStep, /--path\s+"?records(?:\/|\s)/);
+  assert.doesNotMatch(finalStatusStep, /apply-report\.json/);
+  assert.doesNotMatch(finalStatusStep, /results\/(?:apply|comment-sync)-cursors/);
 });
 
 test("apply workflow does not queue runtime-yield continuation without cursor progress", () => {
