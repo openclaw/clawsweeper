@@ -1090,6 +1090,7 @@ type ProposedItemSelection = "all" | "pr-close-coverage-proof" | "quality-summar
 type ProposedItemCandidate = {
   number: number;
   applyCheckedAt: string;
+  reviewedAt: string;
   kind: string;
   closeReason: string;
   action: string;
@@ -1132,6 +1133,9 @@ const FAST_CLOSE_BUCKET_ORDER: ProposedItemQualityBucket[] = [
   "needs_pr_close_coverage",
   "promotion_probe",
 ];
+
+// Promotion probes hydrate related live graphs; a fresh review bypasses this daily backoff.
+const APPLY_PROMOTION_PROBE_COOLDOWN_MS = 24 * 60 * 60 * 1000;
 
 function prioritizeFastCloseCandidates(
   candidates: ProposedItemCandidate[],
@@ -1245,6 +1249,7 @@ function selectedProposedItemCandidates(
         {
           number,
           applyCheckedAt: frontMatterValue(markdown, "apply_checked_at"),
+          reviewedAt: frontMatterValue(markdown, "reviewed_at"),
           kind: type,
           closeReason: candidateCloseReason,
           action,
@@ -1262,13 +1267,20 @@ function selectedProposedItemCandidates(
     .sort((left, right) => left.number - right.number);
   const batchSize = options.batchSize ?? null;
   if (!batchSize || batchSize <= 0) return candidates;
+  const coolDownPromotionProbes = !options.itemNumbers || options.itemNumbers.size === 0;
+  const readyCandidates = candidates.filter(
+    (candidate) =>
+      candidate.stage !== "promotion_probe" ||
+      !coolDownPromotionProbes ||
+      !promotionProbeCoolingDown(candidate),
+  );
   const cursor = options.cursorPath ? readApplyCursor(options.cursorPath) : null;
   const rotate = (
     stage: ProposedItemCandidate["stage"],
     coverageProof: boolean | null,
     position: ApplyCursorPosition | null,
   ): ProposedItemCandidate[] => {
-    const sorted = candidates
+    const sorted = readyCandidates
       .filter(
         (candidate) =>
           candidate.stage === stage &&
@@ -1328,6 +1340,12 @@ function selectedProposedItemCandidates(
     ...selectedFast.slice(preProofFastCount),
     ...selectedPromotions,
   ];
+}
+
+function promotionProbeCoolingDown(candidate: ProposedItemCandidate, nowMs = Date.now()): boolean {
+  const checkedAtMs = timestampValue(candidate.applyCheckedAt);
+  if (checkedAtMs === 0 || timestampValue(candidate.reviewedAt) > checkedAtMs) return false;
+  return nowMs - checkedAtMs < APPLY_PROMOTION_PROBE_COOLDOWN_MS;
 }
 
 export function proposedItemQualitySummary(

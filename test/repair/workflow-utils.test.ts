@@ -1942,7 +1942,8 @@ test("workflow utilities backfill promotion probes after confirmed close proposa
         "close_reason: none",
         `item_created_at: ${oldDate}`,
         `apply_checked_at: ${applyCheckedAt}`,
-        `work_cluster_refs: ${JSON.stringify(["Superseded by #400"])}`,
+        "pr_rating_overall: F",
+        "pr_rating_proof: F",
         "---",
         "",
       ].join("\n"),
@@ -1974,6 +1975,70 @@ test("workflow utilities backfill promotion probes after confirmed close proposa
       ["ready_implemented", 1],
       ["promotion_probe", 1],
     ],
+  );
+});
+
+test("workflow utilities cool down recently examined promotion probes", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-workflow-"));
+  const oldDate = "2024-01-01T00:00:00Z";
+  const promotionRecord = (number, applyCheckedAt, coverageProof = false, reviewedAt = "") =>
+    write(
+      path.join(root, `records/openclaw-openclaw/items/openclaw-openclaw-${number}.md`),
+      [
+        "---",
+        "repository: openclaw/openclaw",
+        "type: pull_request",
+        "decision: keep_open",
+        "review_status: complete",
+        "local_checkout_access: verified",
+        "action_taken: kept_open",
+        "close_reason: none",
+        `item_created_at: ${oldDate}`,
+        `apply_checked_at: ${applyCheckedAt}`,
+        ...(reviewedAt ? [`reviewed_at: ${reviewedAt}`] : []),
+        ...(coverageProof
+          ? [`work_cluster_refs: ${JSON.stringify(["Superseded by #400"])}`]
+          : ["pr_rating_overall: F", "pr_rating_proof: F"]),
+        "---",
+        "",
+      ].join("\n"),
+    );
+  promotionRecord(10, new Date(Date.now() - 60 * 60 * 1000).toISOString());
+  promotionRecord(20, new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString());
+  promotionRecord(30, new Date(Date.now() - 60 * 60 * 1000).toISOString(), true);
+  promotionRecord(40, new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString(), true);
+  promotionRecord(
+    50,
+    new Date(Date.now() - 60 * 60 * 1000).toISOString(),
+    false,
+    new Date().toISOString(),
+  );
+
+  const options = {
+    targetRepo: "openclaw/openclaw",
+    applyKind: "all",
+    applyCloseReasons: "all",
+    staleMinAgeDays: 60,
+    minAgeDays: 0,
+    minAgeMinutes: null,
+    batchSize: 10,
+    coverageProofLimit: 1,
+  };
+
+  assert.deepEqual(
+    withCwd(root, () => proposedItemNumbers(options)),
+    [40, 20, 50],
+  );
+  assert.deepEqual(
+    withCwd(root, () => proposedItemNumbers({ ...options, itemNumbers: new Set([10]) })),
+    [10],
+  );
+  assert.deepEqual(
+    withCwd(root, () => proposedItemQualitySummary(options)).buckets.map((bucket) => [
+      bucket.bucket,
+      bucket.count,
+    ]),
+    [["promotion_probe", 3]],
   );
 });
 

@@ -108,6 +108,7 @@ function assertResolvedPromotionRespectsCloseReasonFilter(options: {
     const stored = readFileSync(itemPath, "utf8");
     assert.match(stored, /^decision: keep_open$/m);
     assert.match(stored, /^close_reason: none$/m);
+    assert.match(stored, /^apply_checked_at: /m);
     assert.match(
       stored,
       new RegExp(`## Summary\\n\\n${keepOpenSummary.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`),
@@ -122,6 +123,61 @@ function assertResolvedPromotionRespectsCloseReasonFilter(options: {
     rmSync(root, { recursive: true, force: true });
   }
 }
+
+test("apply-decisions checkpoints a valid promotion probe with no action record", () => {
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    const itemsDir = join(root, "items");
+    const closedDir = join(root, "closed");
+    const plansDir = join(root, "plans");
+    const reportPath = join(root, "apply-report.json");
+    const itemPath = join(itemsDir, "333.md");
+    const now = new Date().toISOString();
+    mkdirSync(itemsDir, { recursive: true });
+    mkdirSync(plansDir, { recursive: true });
+    const sourceReport = stalePullRequestReport({
+      number: 333,
+      title: "Recent incomplete PR",
+      item_created_at: now,
+      item_updated_at: now,
+      reviewed_at: now,
+      labels: JSON.stringify([]),
+    });
+    const synced = reportWithSyncedReviewComment(sourceReport, 333, "none");
+    writeFileSync(itemPath, synced.report, "utf8");
+
+    const ghOptions = {
+      number: 333,
+      title: "Recent incomplete PR",
+      itemCreatedAt: now,
+      itemUpdatedAt: now,
+      comment: synced.comment,
+    };
+    let liveLabels = [];
+    let actions = [{ action: "not-run" }];
+    for (let attempt = 0; attempt < 5 && actions.length > 0; attempt += 1) {
+      withMockGh(root, promotionGhMock({ ...ghOptions, labels: liveLabels }), () => {
+        runApplyDecisionsForTest({
+          itemsDir,
+          closedDir,
+          plansDir,
+          reportPath,
+          extraArgs: ["--target-repo", "openclaw/openclaw", "--processed-limit", "3"],
+        });
+      });
+      actions = JSON.parse(readFileSync(reportPath, "utf8"));
+      if (actions.length === 0) break;
+      const stored = readFileSync(itemPath, "utf8");
+      liveLabels = JSON.parse(stored.match(/^labels: (.+)$/m)?.[1] ?? "[]");
+      writeFileSync(itemPath, stored.replace(/^apply_checked_at: .*\n/m, ""), "utf8");
+    }
+
+    assert.deepEqual(actions, []);
+    assert.match(readFileSync(itemPath, "utf8"), /^apply_checked_at: /m);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 test("apply-decisions upgrades live no-diff kept-open PRs to duplicate closes", () => {
   const root = mkdtempSync(tmpPrefix);

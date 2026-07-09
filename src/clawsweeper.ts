@@ -19562,6 +19562,7 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
       isCloseProposal = true;
       cachedPrCloseCoverageProofGateResult = undefined;
     }
+    let attemptedPullRequestClosePromotion = hasLiveNoDiffPullRequestPromotion;
     if (
       state === "open" &&
       !isCloseProposal &&
@@ -19570,6 +19571,7 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
       decision === "keep_open" &&
       action === "kept_open"
     ) {
+      attemptedPullRequestClosePromotion = true;
       const promotionContext = currentItemContext();
       const promotion = pullRequestClosePromotion(
         markdown,
@@ -20421,6 +20423,7 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
     }
     if (syncCommentsOnly) continue;
     if (!isCloseProposal || !closeReason) {
+      if (!isCloseProposal && attemptedPullRequestClosePromotion) markApplyChecked();
       continue;
     }
     if (requiredMaintainerDecision?.required) {
