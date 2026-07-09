@@ -2156,20 +2156,77 @@ function evidenceEntry(options: Partial<Evidence> & Pick<Evidence, "label" | "de
 function run(
   command: string,
   args: string[],
-  options: { cwd?: string; env?: NodeJS.ProcessEnv } = {},
+  options: { cwd?: string; env?: NodeJS.ProcessEnv; timeoutMs?: number | undefined } = {},
 ): string {
   return runText(command, args, {
     cwd: options.cwd ?? ROOT,
     env: options.env,
     maxBuffer: 128 * 1024 * 1024,
     stdio: ["ignore", "pipe", "pipe"],
+    timeoutMs: options.timeoutMs,
     trim: "both",
   });
 }
 
+const APPLY_RUNTIME_REPORT_FLUSH_RESERVE_MS = 1_000;
+
+interface ApplyGitHubRuntimeBudget {
+  startedAtMs: number;
+  maxRuntimeMs: number;
+  onYield?: (reason: string) => void;
+}
+
+class ApplyRuntimeBudgetError extends Error {
+  constructor(readonly reason: string) {
+    super(reason);
+    this.name = "ApplyRuntimeBudgetError";
+  }
+}
+
+let activeApplyGitHubRuntimeBudget: ApplyGitHubRuntimeBudget | null = null;
+
+function applyGitHubRuntimeRemainingMs(nowMs = Date.now()): number | null {
+  const budget = activeApplyGitHubRuntimeBudget;
+  if (!budget || budget.maxRuntimeMs <= 0) return null;
+  return budget.maxRuntimeMs - (nowMs - budget.startedAtMs) - APPLY_RUNTIME_REPORT_FLUSH_RESERVE_MS;
+}
+
+function applyRuntimeBudgetError(phase: string): ApplyRuntimeBudgetError {
+  const maxRuntimeMs = activeApplyGitHubRuntimeBudget?.maxRuntimeMs ?? 0;
+  return new ApplyRuntimeBudgetError(`max runtime ${maxRuntimeMs}ms reached ${phase}`);
+}
+
+function applyGitHubCommandTimeoutMs(requestedTimeoutMs?: number): number | undefined {
+  const remainingMs = applyGitHubRuntimeRemainingMs();
+  if (remainingMs === null) return requestedTimeoutMs;
+  if (remainingMs <= 0) throw applyRuntimeBudgetError("before GitHub operation");
+  return Math.max(
+    1,
+    requestedTimeoutMs === undefined ? remainingMs : Math.min(requestedTimeoutMs, remainingMs),
+  );
+}
+
+function ensureApplyGitHubRuntimeAvailable(phase: string): void {
+  const remainingMs = applyGitHubRuntimeRemainingMs();
+  if (remainingMs !== null && remainingMs <= 0) throw applyRuntimeBudgetError(phase);
+}
+
+function ensureApplyGitHubRetryFits(waitMs: number): void {
+  const remainingMs = applyGitHubRuntimeRemainingMs();
+  if (remainingMs !== null && remainingMs <= waitMs) {
+    throw applyRuntimeBudgetError("before GitHub retry");
+  }
+}
+
+function sleepBeforeGitHubRetry(waitMs: number): void {
+  ensureApplyGitHubRetryFits(waitMs);
+  sleepMs(waitMs);
+}
+
 function gh(args: string[]): string {
-  if (args[0] === "api") return run("gh", args);
-  return run("gh", ["--repo", targetRepo(), ...args]);
+  const timeoutMs = applyGitHubCommandTimeoutMs();
+  if (args[0] === "api") return run("gh", args, { timeoutMs });
+  return run("gh", ["--repo", targetRepo(), ...args], { timeoutMs });
 }
 
 function ghOnce(args: string[], timeoutMs: number): string {
@@ -2182,7 +2239,7 @@ function ghOnce(args: string[], timeoutMs: number): string {
     env,
     maxBuffer: 8 * 1024 * 1024,
     stdio: ["ignore", "pipe", "pipe"],
-    timeout: timeoutMs,
+    timeout: applyGitHubCommandTimeoutMs(timeoutMs),
   });
   if (result.error) throw result.error;
   if (result.status !== 0) {
@@ -2245,7 +2302,7 @@ function maybePublishThrottleHeartbeat(options: {
     if (diff.status === 0) return;
     run("git", ["commit", "-m", "chore: update sweep apply throttle status"]);
     try {
-      run("git", ["push"]);
+      run("git", ["push"], { timeoutMs: applyGitHubCommandTimeoutMs() });
     } catch (error) {
       console.error(
         `Best-effort throttle status push failed: ${error instanceof Error ? error.message : String(error)}`,
@@ -2264,10 +2321,13 @@ function ghWithRetry(args: string[], attempts = 12): string {
     try {
       return gh(args);
     } catch (error) {
+      if (error instanceof ApplyRuntimeBudgetError) throw error;
       lastError = error;
+      ensureApplyGitHubRuntimeAvailable("after GitHub operation");
       const retryKind = ghRetryKind(error);
       if (retryKind === "none" || attempt === attempts - 1) throw error;
       const waitMs = ghRetryWaitMs(retryKind, attempt);
+      ensureApplyGitHubRetryFits(waitMs);
       const retryLabel =
         retryKind === "throttle" ? "GitHub throttled" : "Transient GitHub API failure";
       console.error(
@@ -2276,7 +2336,7 @@ function ghWithRetry(args: string[], attempts = 12): string {
       if (retryKind === "throttle") {
         maybePublishThrottleHeartbeat({ args, attempt, attempts, waitMs });
       }
-      sleepMs(waitMs);
+      sleepBeforeGitHubRetry(waitMs);
     }
   }
   throw lastError;
@@ -2286,16 +2346,19 @@ function ghRawWithRetry(args: string[], attempts = 12): string {
   let lastError: unknown;
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     try {
-      return run("gh", args);
+      return run("gh", args, { timeoutMs: applyGitHubCommandTimeoutMs() });
     } catch (error) {
+      if (error instanceof ApplyRuntimeBudgetError) throw error;
       lastError = error;
+      ensureApplyGitHubRuntimeAvailable("after GitHub operation");
       const retryKind = ghRetryKind(error);
       if (retryKind === "none" || attempt === attempts - 1) throw error;
       const waitMs = ghRetryWaitMs(retryKind, attempt);
+      ensureApplyGitHubRetryFits(waitMs);
       console.error(
         `Transient GitHub workflow dispatch failure; retrying ${summarizeGhArgs(args)} in ${Math.round(waitMs / 1000)}s`,
       );
-      sleepMs(waitMs);
+      sleepBeforeGitHubRetry(waitMs);
     }
   }
   throw lastError;
@@ -18482,6 +18545,26 @@ function retryFailedReviewsCommand(args: Args): void {
 }
 
 async function applyDecisionsCommand(args: Args): Promise<void> {
+  const runtimeBudget: ApplyGitHubRuntimeBudget = {
+    startedAtMs: Date.now(),
+    maxRuntimeMs: numberArg(args.max_runtime_ms, 0),
+  };
+  const previousRuntimeBudget = activeApplyGitHubRuntimeBudget;
+  activeApplyGitHubRuntimeBudget = runtimeBudget;
+  try {
+    await applyDecisionsCommandInner(args, runtimeBudget);
+  } catch (error) {
+    if (!(error instanceof ApplyRuntimeBudgetError) || !runtimeBudget.onYield) throw error;
+    runtimeBudget.onYield(error.reason);
+  } finally {
+    activeApplyGitHubRuntimeBudget = previousRuntimeBudget;
+  }
+}
+
+async function applyDecisionsCommandInner(
+  args: Args,
+  runtimeBudget: ApplyGitHubRuntimeBudget,
+): Promise<void> {
   repoFromArgs(args);
   const itemsDir = resolve(stringArg(args.items_dir, defaultItemsDir()));
   const closedDir = resolve(stringArg(args.closed_dir, defaultClosedDir()));
@@ -18502,7 +18585,7 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
   const dryRun = boolArg(args.dry_run);
   const syncCommentsOnly = boolArg(args.sync_comments_only);
   const commentSyncMinAgeDays = numberArg(args.comment_sync_min_age_days, 0);
-  const maxRuntimeMs = numberArg(args.max_runtime_ms, 0);
+  const maxRuntimeMs = runtimeBudget.maxRuntimeMs;
   const reportPath = resolve(stringArg(args.report_path, join(ROOT, "apply-report.json")));
   const artifactDir = resolve(stringArg(args.artifact_dir, join(ROOT, "artifacts", "apply")));
   const cursorTraceArg = stringArg(args.cursor_trace, "").trim();
@@ -18521,7 +18604,7 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
       ? { ghToken: process.env.CLAWSWEEPER_PROOF_INSPECTION_TOKEN }
       : {}),
   };
-  const startedAtMs = Date.now();
+  const startedAtMs = runtimeBudget.startedAtMs;
   const requestedItemNumbers = itemNumbersArg(args.item_numbers, args.item_number);
   const requestedItemNumberSet = new Set(requestedItemNumbers);
   const requestedItemOrder = orderedApplyItemNumbers(args.item_numbers, args.item_number);
@@ -18625,6 +18708,22 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
       )}\n`,
       "utf8",
     );
+  };
+  const finishApply = (): void => {
+    ensureDir(dirname(reportPath));
+    writeFileSync(reportPath, JSON.stringify(results, null, 2), "utf8");
+    writeCursorTrace();
+    logProgress("finished apply");
+    console.log(JSON.stringify(results, null, 2));
+  };
+  runtimeBudget.onYield = (reason: string): void => {
+    const currentNumber = examinedItemNumbers.at(-1);
+    if (currentNumber !== undefined) {
+      removeCurrentCursorTraceItem(examinedItemNumbers, currentNumber);
+    }
+    results.push({ number: 0, action: "skipped_runtime_budget", reason });
+    logProgress(`stopping apply: ${reason}`);
+    finishApply();
   };
   if (fileEntries.length === 0 && !existsSync(itemsDir)) {
     console.log("No items directory.");
@@ -20152,11 +20251,7 @@ async function applyDecisionsCommand(args: Args): Promise<void> {
     closedThisRun.add(pairCloseKey(repo, number));
     if (processedCount >= processedLimit) break;
   }
-  ensureDir(dirname(reportPath));
-  writeFileSync(reportPath, JSON.stringify(results, null, 2), "utf8");
-  writeCursorTrace();
-  logProgress("finished apply");
-  console.log(JSON.stringify(results, null, 2));
+  finishApply();
 }
 
 function orderedApplyItemNumbers(

@@ -7,6 +7,7 @@ export type RunTextOptions = {
   env?: NodeJS.ProcessEnv | undefined;
   maxBuffer?: number;
   stdio?: ["ignore", "pipe", "pipe"] | ["ignore", "pipe", "ignore"];
+  timeoutMs?: number | undefined;
   trim?: "both" | "end" | "none";
 };
 
@@ -46,6 +47,7 @@ export function runText(
     env,
     maxBuffer = 64 * 1024 * 1024,
     stdio = ["ignore", "pipe", "pipe"],
+    timeoutMs,
     trim = "end",
   }: RunTextOptions = {},
 ): string {
@@ -59,6 +61,7 @@ export function runText(
       env: childEnv,
       maxBuffer,
       stdio,
+      timeout: timeoutMs,
     });
   } catch (error) {
     throw explainSpawnFailure(error, resolved.command, cwd);
