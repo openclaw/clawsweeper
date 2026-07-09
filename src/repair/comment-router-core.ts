@@ -1731,6 +1731,7 @@ export function freshExactHeadReviewStartLease({
   if (!Number.isInteger(itemNumber) || itemNumber <= 0 || !/^[0-9a-f]{40}$/.test(normalizedHead)) {
     return null;
   }
+  let newest: { startedAt: string; expiresAt: string; startedAtMs: number } | null = null;
   for (const comment of comments) {
     const author = String(comment?.user?.login ?? "")
       .trim()
@@ -1755,9 +1756,41 @@ export function freshExactHeadReviewStartLease({
     if (durationMs <= 0 || durationMs > REVIEW_START_LEASE_MAX_MS) continue;
     if (startedAtMs > nowMs + REVIEW_START_LEASE_CLOCK_SKEW_MS) continue;
     if (expiresAtMs < nowMs) continue;
-    return { startedAt, expiresAt };
+    if (!newest || startedAtMs > newest.startedAtMs) {
+      newest = { startedAt, expiresAt, startedAtMs };
+    }
   }
-  return null;
+  return newest && { startedAt: newest.startedAt, expiresAt: newest.expiresAt };
+}
+
+export function trustedAutomationPredatesReviewStartLease({
+  command,
+  currentHeadSha,
+  lease,
+}: {
+  command: LooseRecord;
+  currentHeadSha: string;
+  lease: { startedAt: string; expiresAt: string } | null;
+}): boolean {
+  if (!lease || command.trusted_bot !== true || command.automation_source !== "clawsweeper") {
+    return false;
+  }
+  const expectedHeadSha = String(command.expected_head_sha ?? "")
+    .trim()
+    .toLowerCase();
+  const normalizedCurrentHeadSha = String(currentHeadSha ?? "")
+    .trim()
+    .toLowerCase();
+  if (
+    !/^[0-9a-f]{40}$/.test(normalizedCurrentHeadSha) ||
+    expectedHeadSha !== normalizedCurrentHeadSha
+  ) {
+    return false;
+  }
+  const leaseStartedAtMs = Date.parse(lease.startedAt);
+  if (!Number.isFinite(leaseStartedAtMs)) return false;
+  const reviewedAtMs = Date.parse(String(command.reviewed_at ?? ""));
+  return !Number.isFinite(reviewedAtMs) || reviewedAtMs < leaseStartedAtMs;
 }
 
 export function trustedExactHeadReviewCompletionSince({
@@ -2604,6 +2637,7 @@ function trustedRepair({ author, reason, marker = null }: LooseRecord) {
     automation_source: "clawsweeper",
     repair_reason: reason,
     expected_head_sha: marker?.attrs?.sha ?? null,
+    reviewed_at: marker?.attrs?.reviewed_at ?? null,
     finding_id: marker?.attrs?.finding ?? null,
   };
 }
@@ -2618,6 +2652,7 @@ function trustedMerge({ author, reason, marker = null }: LooseRecord) {
     automation_source: "clawsweeper",
     repair_reason: reason,
     expected_head_sha: marker?.attrs?.sha ?? null,
+    reviewed_at: marker?.attrs?.reviewed_at ?? null,
     finding_id: marker?.attrs?.finding ?? null,
   };
 }
@@ -2653,6 +2688,7 @@ function trustedHumanReview({ author, reason, marker = null }: LooseRecord) {
     automation_source: "clawsweeper",
     repair_reason: reason,
     expected_head_sha: marker?.attrs?.sha ?? null,
+    reviewed_at: marker?.attrs?.reviewed_at ?? null,
     finding_id: marker?.attrs?.finding ?? null,
   };
 }

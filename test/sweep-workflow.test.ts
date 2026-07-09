@@ -44,6 +44,29 @@ test("review workflow gives Codex a read-only inspection token", () => {
   assert.doesNotMatch(reviewJob, /uses: \.\/\.github\/actions\/setup-codex/);
 });
 
+test("exact event publish and routing require a successful fresh review artifact", () => {
+  const workflow = readText(".github/workflows/sweep.yml");
+  const eventReviewJobStart = workflow.indexOf("\n  event-review-apply:");
+  const planJobStart = workflow.indexOf("\n  plan:", eventReviewJobStart);
+  const eventReviewJob = workflow.slice(eventReviewJobStart, planJobStart);
+  const publishStart = eventReviewJob.indexOf("- name: Publish event result and apply safe close");
+  const implementationStart = eventReviewJob.indexOf(
+    "- name: Dispatch viable issue implementation",
+    publishStart,
+  );
+  const routeStart = eventReviewJob.indexOf("- name: Route synced ClawSweeper verdict");
+  const completeStart = eventReviewJob.indexOf("- name: Mark re-review complete", routeStart);
+  const publishStep = eventReviewJob.slice(publishStart, implementationStart);
+  const routeStep = eventReviewJob.slice(routeStart, completeStart);
+
+  assert.match(publishStep, /if: \$\{\{ steps\.review-exact-event-item\.outcome == 'success' \}\}/);
+  assert.match(publishStep, /test -f "artifacts\/event\/\$ITEM_NUMBER\.md"/);
+  assert.match(
+    routeStep,
+    /if: \$\{\{ steps\.review-exact-event-item\.outcome == 'success' && steps\.publish-event-result\.outcome == 'success' \}\}/,
+  );
+});
+
 test("dashboard syncs Worker secrets with durable lifecycle storage", () => {
   const workflow = readText(".github/workflows/dashboard.yml");
   const config = readText("dashboard/wrangler.toml");

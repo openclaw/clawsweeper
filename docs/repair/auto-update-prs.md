@@ -239,6 +239,11 @@ ClawSweeper has three layers of duplicate protection:
   leases longer than two hours do not block the next sweep;
 - apply workers preserve that lease during durable-comment sync and defer old
   report actions until a final review for the same head supersedes the start;
+- comment routing suppresses an older same-head verdict while a later lease is
+  active, then admits the replacement verdict whose review timestamp
+  supersedes that lease;
+- exact-event review results are published, applied, and routed only after the
+  review succeeds and writes the expected fresh item artifact;
 - trusted ClawSweeper repairs are capped per PR and per PR head SHA.
 
 The default caps are ten automatic repair iterations per PR and two

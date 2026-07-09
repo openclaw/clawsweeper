@@ -80,6 +80,7 @@ import {
   sharedAutomergeStatusMarkerPrefix,
   staleClosedItemCommandReason,
   shouldClearMaintainerCommandReaction,
+  trustedAutomationPredatesReviewStartLease,
   trustedExactHeadReviewCompletionSince,
   trustedCloseBlockReason,
   usesSharedAutomergeStatus,
@@ -262,7 +263,9 @@ for (const comment of comments) {
 }
 const supersededReReviewVersions = supersededReReviewCommentVersions(rawCommands);
 
-await measureAsync("prehydrate_comment_commands", () => prehydrateCommandLookups(rawCommands));
+await measureAsync("prehydrate_comment_commands", () =>
+  prehydrateCommandLookups(rawCommands, { refreshIssueComments: true }),
+);
 const classifiedCommentCommands = measure("classify_comment_commands", () =>
   rawCommands.map((command) => classifyCommand(command)),
 );
@@ -668,6 +671,29 @@ function classifyCommand(command: LooseRecord): JsonValue {
       reason: authorization.reason,
     };
   }
+  if (command.trusted_bot && pull) {
+    const activeReviewLease = freshExactHeadReviewStartLease({
+      comments: issueCommentsFor(command.issue_number) as LooseRecord[],
+      itemNumber: Number(command.issue_number),
+      headSha: String(target.head_sha ?? ""),
+      trustedAuthors: trustedBots,
+      nowMs: Date.now(),
+    });
+    const activeLeaseBlocksCommand =
+      command.automation_source === "repair_loop_label_sweep" ||
+      trustedAutomationPredatesReviewStartLease({
+        command,
+        currentHeadSha: String(target.head_sha ?? ""),
+        lease: activeReviewLease,
+      });
+    if (activeReviewLease && activeLeaseBlocksCommand) {
+      return {
+        ...next,
+        status: "skipped",
+        reason: `same-head ClawSweeper review is active until ${activeReviewLease?.expiresAt}`,
+      };
+    }
+  }
 
   if (
     existingCommandStatusBlocksReplay({
@@ -838,22 +864,6 @@ function classifyCommand(command: LooseRecord): JsonValue {
     }
     const stoppedReason = repairLoopStoppedReason(next);
     if (stoppedReason) return { ...next, status: "skipped", reason: stoppedReason };
-    if (command.trusted_bot && command.automation_source === "repair_loop_label_sweep") {
-      const activeReviewLease = freshExactHeadReviewStartLease({
-        comments: issueCommentsFor(command.issue_number) as LooseRecord[],
-        itemNumber: Number(command.issue_number),
-        headSha: String(target.head_sha ?? ""),
-        trustedAuthors: trustedBots,
-        nowMs: Date.now(),
-      });
-      if (activeReviewLease) {
-        return {
-          ...next,
-          status: "skipped",
-          reason: `same-head ClawSweeper review is active until ${activeReviewLease.expiresAt}`,
-        };
-      }
-    }
     const pauseLabels = pauseLabelsOn(target);
     const failedChecksRepairReason = automergeFailedChecksRepairReason(target.checks);
     const rebaseRepairReason = automergeRebaseRepairReason(target);
@@ -1668,6 +1678,17 @@ function isRepairLoopControlIntent(command: LooseRecord) {
 
 function executeCommand(command: LooseRecord) {
   try {
+    const trustedAutomationLeaseBlock = trustedAutomationReviewLeaseBlockReason(command);
+    if (trustedAutomationLeaseBlock) {
+      command.status = "skipped";
+      command.reason = trustedAutomationLeaseBlock;
+      command.actions = command.actions.map((action: JsonValue) => ({
+        ...action,
+        status: "skipped",
+        reason: trustedAutomationLeaseBlock,
+      }));
+      return;
+    }
     let dispatched = null;
     const shouldDispatchRepair = command.actions?.some(
       (action: JsonValue) => action.action === "dispatch_repair",
@@ -2459,6 +2480,47 @@ function repairLoopReviewDispatchBlockReason(command: LooseRecord): string | nul
     return null;
   } catch (error) {
     return `dispatch-time review lease check failed; next sweep will retry: ${compactGhError(error)}`;
+  }
+}
+
+function trustedAutomationReviewLeaseBlockReason(command: LooseRecord): string | null {
+  if (command.trusted_bot !== true || command.automation_source !== "clawsweeper") return null;
+  const number = Number(command.issue_number);
+  if (!Number.isInteger(number) || number <= 0) return "trusted review target is invalid";
+  try {
+    const before = fetchPullRequestView(number);
+    const headBefore = String(before.headRefOid ?? "")
+      .trim()
+      .toLowerCase();
+    const comments = ghPaged<JsonValue>(
+      `repos/${targetRepo}/issues/${number}/comments?per_page=100`,
+    );
+    const after = fetchPullRequestView(number);
+    const headAfter = String(after.headRefOid ?? "")
+      .trim()
+      .toLowerCase();
+    if (!headBefore || headBefore !== headAfter) {
+      return "PR head changed during the execution-time review lease check; next router pass will retry";
+    }
+    const activeReviewLease = freshExactHeadReviewStartLease({
+      comments: comments as LooseRecord[],
+      itemNumber: number,
+      headSha: headAfter,
+      trustedAuthors: trustedBots,
+      nowMs: Date.now(),
+    });
+    if (
+      trustedAutomationPredatesReviewStartLease({
+        command,
+        currentHeadSha: headAfter,
+        lease: activeReviewLease,
+      })
+    ) {
+      return `same-head ClawSweeper review is active until ${activeReviewLease?.expiresAt}`;
+    }
+    return null;
+  } catch (error) {
+    return `execution-time review lease check failed; next router pass will retry: ${compactGhError(error)}`;
   }
 }
 

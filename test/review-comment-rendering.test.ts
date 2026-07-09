@@ -315,6 +315,14 @@ test("completed reports only retire dedicated leases they supersede", () => {
   );
 });
 
+test("apply records dedicated lease cleanup as its own GitHub mutation", () => {
+  const source = readFileSync("src/clawsweeper.ts", "utf8");
+  assert.match(
+    source,
+    /if \(\s*deleteSupersededDedicatedReviewStartLeases\([\s\S]*?\) \{\s*rememberSelfMutationUpdatedAt\(\);\s*\}/,
+  );
+});
+
 test("review item source revision ignores advisory labels but tracks protected labels", () => {
   const item = {
     title: "Close duplicate PR",

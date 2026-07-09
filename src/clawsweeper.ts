@@ -17196,7 +17196,8 @@ function deleteSupersededDedicatedReviewStartLeases(options: {
   comments: Record<string, unknown>[];
   itemNumber: number;
   markdown: string;
-}): void {
+}): boolean {
+  let deleted = false;
   for (const id of supersededDedicatedReviewStartLeaseCommentIds({
     comments: options.comments,
     itemNumber: options.itemNumber,
@@ -17205,6 +17206,7 @@ function deleteSupersededDedicatedReviewStartLeases(options: {
   })) {
     try {
       ghWithRetry(["api", `repos/${targetRepo()}/issues/comments/${id}`, "--method", "DELETE"]);
+      deleted = true;
     } catch (error) {
       console.error(
         `[review] could not delete superseded review lease comment ${id}: ${
@@ -17213,6 +17215,7 @@ function deleteSupersededDedicatedReviewStartLeases(options: {
       );
     }
   }
+  return deleted;
 }
 
 function freshDedicatedReviewStartLeases(options: {
@@ -20895,11 +20898,15 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
             if (syncedCommentUpdatedAt) {
               allowedSelfMutationUpdatedAts.add(syncedCommentUpdatedAt);
             }
-            deleteSupersededDedicatedReviewStartLeases({
-              comments: latestLeaseState.leaseComments,
-              itemNumber: number,
-              markdown,
-            });
+            if (
+              deleteSupersededDedicatedReviewStartLeases({
+                comments: latestLeaseState.leaseComments,
+                itemNumber: number,
+                markdown,
+              })
+            ) {
+              rememberSelfMutationUpdatedAt();
+            }
             syncReasons.push("updated durable Codex review comment");
           } catch (error) {
             const commentAuthError = isGitHubRequiresAuthenticationError(error);
