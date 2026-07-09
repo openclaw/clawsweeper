@@ -52,6 +52,13 @@ type ExactReviewQueueItem = {
 type ExactReviewQueueState = {
   deliveries: Record<string, number>;
   items: Record<string, ExactReviewQueueItem>;
+  dispatcher?: {
+    state: "active" | "paused" | "blocked" | "unknown";
+    reason?: "workflow_not_active" | "workflow_status_unavailable";
+    workflowState?: string;
+    checkedAt: number;
+    retryAt?: number;
+  };
 };
 type DurableObjectStub = { fetch: (request: Request) => Promise<Response> };
 type DurableObjectNamespace = {
@@ -80,6 +87,7 @@ const DEFAULT_EXACT_REVIEW_TARGET_MAX_CONCURRENT = 24;
 const DEFAULT_EXACT_REVIEW_DISPATCH_LEASE_MS = 10 * 60 * 1000;
 const DEFAULT_EXACT_REVIEW_EXECUTION_LEASE_MS = 130 * 60 * 1000;
 const DEFAULT_EXACT_REVIEW_RETRY_MS = 30_000;
+const DEFAULT_EXACT_REVIEW_WORKFLOW_PAUSED_RETRY_MS = 60_000;
 const EXACT_REVIEW_QUEUE_DELIVERY_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const EXACT_REVIEW_QUEUE_STATE_KEY = "exact-review-queue";
 const EXACT_REVIEW_QUEUE_NAME = "global";
@@ -360,6 +368,7 @@ export class ExactReviewQueue {
       state.deliveries[deliveryId] = now;
       const key = exactReviewItemKey(decision);
       const current = state.items[key];
+      const nextAttemptAt = exactReviewQueueEnqueueAttemptAt(state, now);
       if (current) {
         // A pending command has no executor yet, so an ordinary item event must not erase its
         // acknowledgement context. Once dispatched, that lease already owns the context and a
@@ -370,7 +379,7 @@ export class ExactReviewQueue {
             : decision;
         current.revision += 1;
         current.updatedAt = now;
-        current.nextAttemptAt = now;
+        current.nextAttemptAt = nextAttemptAt;
         if (current.state === "pending") current.attempts = 0;
       } else {
         state.items[key] = {
@@ -380,7 +389,7 @@ export class ExactReviewQueue {
           revision: 1,
           createdAt: now,
           updatedAt: now,
-          nextAttemptAt: now,
+          nextAttemptAt,
           attempts: 0,
         };
       }
@@ -466,66 +475,124 @@ export class ExactReviewQueue {
   }
 
   async alarm() {
-    const now = Date.now();
+    const startedAt = Date.now();
     await this.storage.deleteAlarm();
-    const state = await this.readState();
-    let changed = reclaimExpiredExactReviewLeases(state, now);
+    const snapshot = await this.readState();
+    const snapshotChanged = reclaimExpiredExactReviewLeases(snapshot, startedAt);
     const capacity = exactReviewQueueCapacity(this.env);
     const targetCapacity = exactReviewTargetCapacity(this.env);
-    const slots = Math.max(0, capacity - exactReviewQueueActiveCount(state));
-    const activeTargets = new Map<string, number>();
-    for (const item of Object.values(state.items)) {
-      if (item.state !== "dispatching" && item.state !== "leased") continue;
-      const target = item.decision.targetRepo;
-      activeTargets.set(target, (activeTargets.get(target) || 0) + 1);
-    }
-    const admitted: ExactReviewQueueItem[] = [];
-    const pending = Object.values(state.items)
-      .filter((item) => item.state === "pending" && item.nextAttemptAt <= now)
-      .sort((left, right) => left.createdAt - right.createdAt || left.key.localeCompare(right.key));
-    for (const item of pending) {
-      if (admitted.length >= slots) break;
-      const target = item.decision.targetRepo;
-      const active = activeTargets.get(target) || 0;
-      if (active >= targetCapacity) continue;
-      activeTargets.set(target, active + 1);
-      admitted.push(item);
+    const snapshotAdmission = exactReviewQueueAdmittedItems(
+      snapshot,
+      startedAt,
+      capacity,
+      targetCapacity,
+    );
+    if (!snapshotAdmission.length) {
+      if (snapshotChanged) await this.writeState(snapshot);
+      await this.scheduleNext(snapshot, startedAt);
+      return;
     }
 
+    let preflight: { ok: true; token: string; workflowState: string } | { ok: false } = {
+      ok: false,
+    };
+    try {
+      const token = await exactReviewDispatchToken(this.env);
+      preflight = { ok: true, token, workflowState: await exactReviewWorkflowState(token) };
+    } catch {
+      preflight = { ok: false };
+    }
+
+    // External fetches release the Durable Object input gate. Re-read before any
+    // write so concurrent enqueue, claim, or complete requests cannot be lost.
+    const now = Date.now();
+    const state = await this.readState();
+    reclaimExpiredExactReviewLeases(state, now);
+    const admitted = exactReviewQueueAdmittedItems(state, now, capacity, targetCapacity);
+    if (!preflight.ok) {
+      const retryAt = now + exactReviewWorkflowPausedRetryMs(this.env);
+      state.dispatcher = {
+        state: "blocked",
+        reason: "workflow_status_unavailable",
+        checkedAt: now,
+        retryAt,
+      };
+      deferPausedExactReviewQueue(state, now, retryAt);
+      await this.writeState(state);
+      await this.scheduleNext(state, now);
+      return;
+    }
+    if (preflight.workflowState !== "active") {
+      const retryAt = now + exactReviewWorkflowPausedRetryMs(this.env);
+      state.dispatcher = {
+        state: "paused",
+        reason: "workflow_not_active",
+        workflowState: preflight.workflowState,
+        checkedAt: now,
+        retryAt,
+      };
+      deferPausedExactReviewQueue(state, now, retryAt);
+      await this.writeState(state);
+      await this.scheduleNext(state, now);
+      return;
+    }
+
+    state.dispatcher = {
+      state: "active",
+      workflowState: preflight.workflowState,
+      checkedAt: now,
+    };
     for (const item of admitted) {
       item.state = "dispatching";
       item.leaseId = crypto.randomUUID();
       item.leaseRevision = item.revision;
       item.leaseExpiresAt = now + exactReviewDispatchLeaseMs(this.env);
       item.claimedRunId = undefined;
-      changed = true;
     }
-    if (changed) await this.writeState(state);
+    await this.writeState(state);
+    if (!admitted.length) {
+      await this.scheduleNext(state, now);
+      return;
+    }
 
-    if (admitted.length) {
-      let token: string | null = null;
+    const failures: Array<{ key: string; leaseId: string }> = [];
+    for (const item of admitted) {
       try {
-        token = await exactReviewDispatchToken(this.env);
+        await dispatchClawsweeperItem({
+          token: preflight.token,
+          decision: item.decision,
+          leaseId: item.leaseId,
+        });
       } catch {
-        token = null;
+        failures.push({ key: item.key, leaseId: String(item.leaseId || "") });
       }
-      for (const item of admitted) {
-        try {
-          if (!token) throw new Error("exact review dispatch token unavailable");
-          await dispatchClawsweeperItem({ token, decision: item.decision, leaseId: item.leaseId });
-        } catch {
-          clearExactReviewLease(item);
-          item.state = "pending";
-          item.attempts += 1;
-          item.nextAttemptAt = now + exactReviewRetryDelayMs(item.attempts);
-          item.updatedAt = now;
-          changed = true;
-        }
-      }
-      if (changed) await this.writeState(state);
     }
 
-    await this.scheduleNext(state, now);
+    // Dispatch calls also release the input gate. Merge failures into current
+    // state only when the exact lease still owns the item.
+    const completedAt = Date.now();
+    const current = await this.readState();
+    let currentChanged = false;
+    for (const failure of failures) {
+      const item = current.items[failure.key];
+      if (
+        !item ||
+        !failure.leaseId ||
+        item.leaseId !== failure.leaseId ||
+        item.state !== "dispatching" ||
+        item.claimedRunId
+      ) {
+        continue;
+      }
+      clearExactReviewLease(item);
+      item.state = "pending";
+      item.attempts += 1;
+      item.nextAttemptAt = completedAt + exactReviewRetryDelayMs(item.attempts);
+      item.updatedAt = completedAt;
+      currentChanged = true;
+    }
+    if (currentChanged) await this.writeState(current);
+    await this.scheduleNext(current, completedAt);
   }
 
   private async readState(): Promise<ExactReviewQueueState> {
@@ -536,6 +603,8 @@ export class ExactReviewQueue {
       deliveries:
         stored?.deliveries && typeof stored.deliveries === "object" ? stored.deliveries : {},
       items: stored?.items && typeof stored.items === "object" ? stored.items : {},
+      dispatcher:
+        stored?.dispatcher && typeof stored.dispatcher === "object" ? stored.dispatcher : undefined,
     };
   }
 
@@ -1244,10 +1313,54 @@ function reclaimExpiredExactReviewLeases(state: ExactReviewQueueState, now: numb
   return changed;
 }
 
+function exactReviewQueueEnqueueAttemptAt(state: ExactReviewQueueState, now: number) {
+  const retryAt = Number(state.dispatcher?.retryAt || 0);
+  return (state.dispatcher?.state === "paused" || state.dispatcher?.state === "blocked") &&
+    retryAt > now
+    ? retryAt
+    : now;
+}
+
+function deferPausedExactReviewQueue(state: ExactReviewQueueState, now: number, retryAt: number) {
+  for (const item of Object.values(state.items)) {
+    if (item.state !== "pending" || item.nextAttemptAt >= retryAt) continue;
+    item.nextAttemptAt = retryAt;
+    item.updatedAt = now;
+  }
+}
+
 function exactReviewQueueActiveCount(state: ExactReviewQueueState) {
   return Object.values(state.items).filter(
     (item) => item.state === "dispatching" || item.state === "leased",
   ).length;
+}
+
+function exactReviewQueueAdmittedItems(
+  state: ExactReviewQueueState,
+  now: number,
+  capacity: number,
+  targetCapacity: number,
+) {
+  const slots = Math.max(0, capacity - exactReviewQueueActiveCount(state));
+  const activeTargets = new Map<string, number>();
+  for (const item of Object.values(state.items)) {
+    if (item.state !== "dispatching" && item.state !== "leased") continue;
+    const target = item.decision.targetRepo;
+    activeTargets.set(target, (activeTargets.get(target) || 0) + 1);
+  }
+  const admitted: ExactReviewQueueItem[] = [];
+  const pending = Object.values(state.items)
+    .filter((item) => item.state === "pending" && item.nextAttemptAt <= now)
+    .sort((left, right) => left.createdAt - right.createdAt || left.key.localeCompare(right.key));
+  for (const item of pending) {
+    if (admitted.length >= slots) break;
+    const target = item.decision.targetRepo;
+    const active = activeTargets.get(target) || 0;
+    if (active >= targetCapacity) continue;
+    activeTargets.set(target, active + 1);
+    admitted.push(item);
+  }
+  return admitted;
 }
 
 function exactReviewQueueStats(
@@ -1317,6 +1430,15 @@ function exactReviewQueueStats(
       ? Math.max(0, Math.floor((now - Math.min(...pending.map((item) => item.createdAt))) / 1000))
       : null,
     next_wake_at: nextWakeAt === null ? null : new Date(nextWakeAt).toISOString(),
+    dispatcher: {
+      state: state.dispatcher?.state || "unknown",
+      reason: state.dispatcher?.reason || null,
+      workflow_state: state.dispatcher?.workflowState || null,
+      checked_at: state.dispatcher?.checkedAt
+        ? new Date(state.dispatcher.checkedAt).toISOString()
+        : null,
+      retry_at: state.dispatcher?.retryAt ? new Date(state.dispatcher.retryAt).toISOString() : null,
+    },
     target_stats: targetStats,
   };
 }
@@ -1422,6 +1544,19 @@ function exactReviewRetryDelayMs(attempt: number) {
   return Math.min(5 * 60_000, DEFAULT_EXACT_REVIEW_RETRY_MS * 2 ** Math.min(attempt - 1, 4));
 }
 
+function exactReviewWorkflowPausedRetryMs(env) {
+  return Math.max(
+    30_000,
+    Math.min(
+      15 * 60_000,
+      numberFrom(
+        env.EXACT_REVIEW_WORKFLOW_PAUSED_RETRY_MS,
+        DEFAULT_EXACT_REVIEW_WORKFLOW_PAUSED_RETRY_MS,
+      ),
+    ),
+  );
+}
+
 async function exactReviewDispatchToken(env) {
   const credentials = githubAppCredentials(env);
   if (!credentials) throw new Error("github app is not configured");
@@ -1432,8 +1567,21 @@ async function exactReviewDispatchToken(env) {
     installationId,
     label: CLAWSWEEPER_REVIEW_REPO,
     repositories: [repoName(CLAWSWEEPER_REVIEW_REPO)],
-    permissions: { contents: "write" },
+    permissions: { actions: "read", contents: "write" },
   });
+}
+
+async function exactReviewWorkflowState(token: string) {
+  const payload = await githubTokenJson({
+    token,
+    path: `/repos/${CLAWSWEEPER_REVIEW_REPO}/actions/workflows/sweep.yml`,
+    method: "GET",
+    body: undefined,
+    errorLabel: "ClawSweeper workflow status",
+  });
+  const state = String(payload.state || "").trim();
+  if (!state) throw new Error("ClawSweeper workflow status response missing state");
+  return state;
 }
 
 async function createGithubAppTokenFor({

@@ -179,3 +179,11 @@ command-triggered reviews, the queue retains the bounded review prompt and
 command-status identifiers so the leased GitHub Actions executor can update the
 original acknowledgement through completion. GitHub Actions remains the
 executor and the existing review/apply safety model remains unchanged.
+
+Before each dispatch batch, the queue reads the `sweep.yml` workflow state once.
+If the workflow is disabled, or GitHub cannot confirm its state, due items stay
+pending and retry after `EXACT_REVIEW_WORKFLOW_PAUSED_RETRY_MS` (60 seconds by
+default). `/api/exact-review-queue` exposes the bounded dispatcher state, reason,
+workflow state, check time, and retry time so an intentional pause cannot look
+like occupied executor capacity. Re-enabling the workflow does not require a
+queue mutation; the next status check resumes normal admission.
