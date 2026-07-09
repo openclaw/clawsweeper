@@ -1346,6 +1346,7 @@ jobs:
           CLAWSWEEPER_PROOF_INSPECTION_TOKEN: ${{ steps.codex-inspection-token.outputs.token || github.token }}
           ADDITIONAL_PROMPT: ${{ github.event.inputs.additional_prompt || github.event.client_payload.additional_prompt || '' }}
           EXACT_ITEM: ${{ github.event.client_payload.item_number || github.event.inputs.item_number || github.event.inputs.item_numbers || '' }}
+          EXPECTED_SOURCE_REVISION: ${{ github.event.client_payload.expected_source_revision || '' }}
         run: |
           hot_intake_arg=()
           if [ "${{ needs.plan.outputs.hot_intake }}" = "true" ]; then
@@ -1354,6 +1355,10 @@ jobs:
           additional_prompt_arg=()
           if [ -n "$ADDITIONAL_PROMPT" ]; then
             additional_prompt_arg=(--additional-prompt "$ADDITIONAL_PROMPT")
+          fi
+          expected_source_revision_arg=()
+          if [ -n "$EXPECTED_SOURCE_REVISION" ]; then
+            expected_source_revision_arg=(--expected-source-revision "$EXPECTED_SOURCE_REVISION")
           fi
           planned_automatic_review_arg=()
           if [ -z "$EXACT_ITEM" ]; then
@@ -1384,7 +1389,8 @@ jobs:
             --readonly-openclaw \
             --shard-index ${{ matrix.shard }} \
             --shard-count ${{ needs.plan.outputs.planned_shards }} \
-            "${additional_prompt_arg[@]}"
+            "${additional_prompt_arg[@]}" \
+            "${expected_source_revision_arg[@]}"
 
       - name: Record shard metrics
         if: always()
@@ -1444,6 +1450,78 @@ jobs:
           name: review-metrics-${{ matrix.shard }}
           path: review-artifacts/metrics/shard-${{ matrix.shard }}.json
           if-no-files-found: ignore
+
+      - uses: actions/upload-artifact@v7
+        if: ${{ always() && github.event_name == 'repository_dispatch' && github.event.client_payload.expected_source_revision != '' }}
+        with:
+          name: review-source-revision-mismatch-${{ matrix.shard }}
+          path: review-artifacts/shard-${{ matrix.shard }}/source-revision-mismatch.json
+          if-no-files-found: ignore
+
+  requeue-source-revision-drift:
+    name: Requeue source-revision drift
+    needs: [plan, review]
+    if: ${{ always() && needs.plan.result == 'success' && needs.review.result != 'cancelled' && github.event_name == 'repository_dispatch' && github.event.action == 'clawsweeper_target_sweep' && github.event.client_payload.expected_source_revision != '' }}
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        continue-on-error: true
+        with:
+          pattern: review-source-revision-mismatch-*
+          path: source-revision-mismatches
+          merge-multiple: true
+
+      - name: Dispatch exact review at current revision
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_SOURCE_REVISION: ${{ github.event.client_payload.expected_source_revision || '' }}
+          REQUEUE_COUNT: ${{ github.event.client_payload.source_revision_requeue_count || '0' }}
+          TARGET_REPO: ${{ needs.plan.outputs.target_repo }}
+          TARGET_BRANCH: ${{ needs.plan.outputs.target_branch }}
+          CODEX_TIMEOUT_MS: ${{ needs.plan.outputs.codex_timeout_ms }}
+        run: |
+          set -euo pipefail
+          marker="source-revision-mismatches/source-revision-mismatch.json"
+          if [ ! -f "$marker" ]; then
+            exit 0
+          fi
+          if ! [[ "$REQUEUE_COUNT" =~ ^[0-9]+$ ]] || [ "$REQUEUE_COUNT" -ge 1 ]; then
+            echo "::warning::Source revision changed again; leaving the normal scheduler to pick up the latest revision."
+            exit 0
+          fi
+          marker_expected="$(jq -r '.expected_source_revision // empty' "$marker")"
+          actual_revision="$(jq -r '.actual_source_revision // empty' "$marker")"
+          item_number="$(jq -r '.item_number // empty' "$marker")"
+          if [ "$marker_expected" != "$EXPECTED_SOURCE_REVISION" ] || \
+             ! [[ "$actual_revision" =~ ^[0-9a-f]{64}$ ]] || \
+             ! [[ "$item_number" =~ ^[0-9]+$ ]]; then
+            echo "::warning::Ignoring invalid source-revision mismatch marker."
+            exit 0
+          fi
+          jq -n \
+            --arg target_repo "$TARGET_REPO" \
+            --arg target_branch "$TARGET_BRANCH" \
+            --arg item_number "$item_number" \
+            --arg codex_timeout_ms "$CODEX_TIMEOUT_MS" \
+            --arg expected_source_revision "$actual_revision" \
+            '{
+              event_type: "clawsweeper_target_sweep",
+              client_payload: {
+                target_repo: $target_repo,
+                target_branch: $target_branch,
+                item_number: $item_number,
+                batch_size: "1",
+                shard_count: "1",
+                hot_intake: "false",
+                codex_timeout_ms: $codex_timeout_ms,
+                expected_source_revision: $expected_source_revision,
+                source_revision_requeue_count: "1"
+              }
+            }' | gh api --method POST "repos/$GITHUB_REPOSITORY/dispatches" --input -
+          echo "::notice::Requeued $TARGET_REPO#$item_number at source revision $actual_revision."
 
   publish:
     name: Publish review artifacts

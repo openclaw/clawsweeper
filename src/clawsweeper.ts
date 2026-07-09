@@ -17698,6 +17698,12 @@ function reviewCommand(args: Args): void {
   const sandboxMode = stringArg(args.codex_sandbox, "read-only");
   const serviceTier = stringArg(args.codex_service_tier, localOnly ? "fast" : DEFAULT_SERVICE_TIER);
   const timeoutMs = numberArg(args.codex_timeout_ms, DEFAULT_REVIEW_CODEX_TIMEOUT_MS);
+  const expectedSourceRevision = stringArg(args.expected_source_revision, "").trim();
+  if (expectedSourceRevision && !/^[0-9a-f]{64}$/.test(expectedSourceRevision)) {
+    throw new UserFacingCommandError(
+      "--expected-source-revision must be a lowercase SHA-256 digest.",
+    );
+  }
   let additionalPrompt = stringArg(
     args.additional_prompt,
     process.env.CLAWSWEEPER_ADDITIONAL_PROMPT ?? "",
@@ -17779,6 +17785,11 @@ function reviewCommand(args: Args): void {
     const { candidates, scannedPages } = localRangeData
       ? { candidates: [localRangeData.item], scannedPages: 0 }
       : selectCandidates(selectionOptions);
+    if (expectedSourceRevision && candidates.length !== 1) {
+      throw new UserFacingCommandError(
+        `--expected-source-revision requires exactly one selected issue; selected ${candidates.length}.`,
+      );
+    }
     if (humanLocalReview) {
       if (candidates.length === 0) throw exactLocalReviewNoCandidateError(itemNumber, shardIndex);
       const item = candidates[0]!;
@@ -17815,6 +17826,16 @@ function reviewCommand(args: Args): void {
             reviewCacheDigest: true,
           });
       const contextElapsedMs = Date.now() - contextStartedAt;
+      if (expectedSourceRevision) {
+        enforceExpectedIssueSourceRevision({
+          expectedSourceRevision,
+          itemKind: item.kind,
+          repo: item.repo,
+          number: item.number,
+          sourceRevision: context.sourceRevision,
+          artifactDir,
+        });
+      }
       const contentDigest = itemContentDigest(item, context, git);
       const priorReview =
         explicitDispatch || maintainerRequest ? null : existingReview(item, itemsDir);
@@ -18016,6 +18037,58 @@ function reviewCommand(args: Args): void {
   }
 }
 
+const SOURCE_REVISION_MISMATCH_MARKER = "source-revision-mismatch.json";
+
+interface ExpectedIssueSourceRevisionOptions {
+  expectedSourceRevision: string;
+  itemKind: "issue" | "pull_request";
+  repo: string;
+  number: number;
+  sourceRevision: string | undefined;
+  artifactDir: string;
+}
+
+function enforceExpectedIssueSourceRevision(options: ExpectedIssueSourceRevisionOptions): void {
+  if (options.itemKind !== "issue") {
+    throw new UserFacingCommandError(
+      "--expected-source-revision can only bind an exact issue review.",
+    );
+  }
+  const actualSourceRevision = options.sourceRevision ?? "";
+  if (!/^[0-9a-f]{64}$/.test(actualSourceRevision)) {
+    throw new UserFacingCommandError(
+      `Could not compute the live source revision for ${options.repo}#${options.number}.`,
+    );
+  }
+  if (actualSourceRevision === options.expectedSourceRevision) return;
+
+  writeFileSync(
+    join(options.artifactDir, SOURCE_REVISION_MISMATCH_MARKER),
+    `${JSON.stringify(
+      {
+        schema_version: 1,
+        target_repo: options.repo,
+        item_number: options.number,
+        expected_source_revision: options.expectedSourceRevision,
+        actual_source_revision: actualSourceRevision,
+        detected_at: new Date().toISOString(),
+      },
+      null,
+      2,
+    )}\n`,
+    "utf8",
+  );
+  throw new UserFacingCommandError(
+    `${options.repo}#${options.number} changed before review: expected source revision ${options.expectedSourceRevision}, found ${actualSourceRevision}.`,
+  );
+}
+
+export function enforceExpectedIssueSourceRevisionForTest(
+  options: ExpectedIssueSourceRevisionOptions,
+): void {
+  enforceExpectedIssueSourceRevision(options);
+}
+
 function livePullHeadSha(number: number): string | null {
   const sha = ghWithRetry([
     "api",
@@ -18173,6 +18246,53 @@ function dispatchFailedReviewRetry(options: {
     attempts: options.attempts,
     maxAttempts: options.maxAttempts,
   });
+  if (options.revision.kind === "item_source_revision") {
+    const workflowDefaultBranch = ghWithRetry([
+      "api",
+      `repos/${options.workflowRepo}`,
+      "--jq",
+      ".default_branch // empty",
+    ]).trim();
+    if (!workflowDefaultBranch) {
+      throw new UserFacingCommandError(
+        `Could not resolve the default branch for ${options.workflowRepo}.`,
+      );
+    }
+    if (options.workflowRef !== workflowDefaultBranch) {
+      throw new UserFacingCommandError(
+        `Issue retry repository dispatch requires the workflow repository default branch (${workflowDefaultBranch}); got --workflow-ref ${options.workflowRef}.`,
+      );
+    }
+    ghRawWithRetry([
+      "api",
+      "--method",
+      "POST",
+      `repos/${options.workflowRepo}/dispatches`,
+      "-f",
+      "event_type=clawsweeper_target_sweep",
+      "-f",
+      `client_payload[target_repo]=${options.targetRepo}`,
+      "-f",
+      "client_payload[target_branch]=main",
+      "-f",
+      "client_payload[batch_size]=1",
+      "-f",
+      "client_payload[shard_count]=1",
+      "-f",
+      "client_payload[hot_intake]=false",
+      "-f",
+      `client_payload[codex_timeout_ms]=${options.codexTimeoutMs}`,
+      "-f",
+      `client_payload[item_number]=${options.number}`,
+      "-f",
+      `client_payload[additional_prompt]=${prompt}`,
+      "-f",
+      `client_payload[expected_source_revision]=${options.revision.value}`,
+      "-f",
+      "client_payload[source_revision_requeue_count]=0",
+    ]);
+    return `https://github.com/${options.workflowRepo}/actions/workflows/sweep.yml`;
+  }
   ghRawWithRetry([
     "workflow",
     "run",

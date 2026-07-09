@@ -5,6 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import {
+  enforceExpectedIssueSourceRevisionForTest,
   failedReviewRetryEligibilityForTest,
   itemSourceRevisionSha256ForTest,
   isInfrastructureFailedReviewForTest,
@@ -266,11 +267,12 @@ test("failed review retry eligibility enforces cooldown and max attempts per hea
   );
 });
 
-test("failed issue retry command plans an exact-item retry without a pull request head", () => {
+test("failed issue retry dispatch binds the expected source revision", () => {
   const root = mkdtempSync(tmpPrefix);
   try {
     const itemsDir = join(root, "items");
     const reportPath = join(root, "failed-review-retry-report.json");
+    const dispatchPath = join(root, "dispatch.json");
     const issue = {
       number: 4343,
       title: "Failed issue review retry sample",
@@ -312,6 +314,14 @@ if (path.endsWith("/issues/4343")) {
   console.log(${JSON.stringify(JSON.stringify(issue))});
   process.exit(0);
 }
+if (path === "repos/openclaw/clawsweeper") {
+  console.log("main");
+  process.exit(0);
+}
+if (path.endsWith("/dispatches") && args.includes("POST")) {
+  require("node:fs").writeFileSync(${JSON.stringify(dispatchPath)}, JSON.stringify(args));
+  process.exit(0);
+}
 console.error("unexpected gh args: " + args.join(" "));
 process.exit(1);
 `;
@@ -326,7 +336,29 @@ process.exit(1);
         itemsDir,
         "--item-number",
         "4343",
-        "--dry-run",
+        "--workflow-ref",
+        "test-branch",
+        "--report-path",
+        reportPath,
+      ]);
+      const rejected = JSON.parse(readFileSync(reportPath, "utf8")) as Array<{
+        action: string;
+        reason: string;
+      }>;
+      assert.equal(rejected[0]?.action, "skipped_dispatch_failed");
+      assert.match(rejected[0]?.reason ?? "", /default branch \(main\).*test-branch/);
+
+      execFileSync(process.execPath, [
+        "dist/clawsweeper.js",
+        "retry-failed-reviews",
+        "--target-repo",
+        "openclaw/openclaw",
+        "--items-dir",
+        itemsDir,
+        "--item-number",
+        "4343",
+        "--workflow-ref",
+        "main",
         "--report-path",
         reportPath,
       ]);
@@ -338,12 +370,70 @@ process.exit(1);
       revision?: string;
     }>;
     assert.equal(report.length, 1);
-    assert.equal(report[0]?.action, "planned_failed_review_retry");
+    assert.equal(report[0]?.action, "dispatched_failed_review_retry");
     assert.equal(report[0]?.revisionKind, "item_source_revision");
     assert.equal(report[0]?.revision, sourceRevision);
+    const dispatch = JSON.parse(readFileSync(dispatchPath, "utf8")) as string[];
+    assert.ok(dispatch.includes("repos/openclaw/clawsweeper/dispatches"));
+    assert.ok(dispatch.includes("event_type=clawsweeper_target_sweep"));
+    assert.ok(dispatch.includes(`client_payload[expected_source_revision]=${sourceRevision}`));
+    assert.ok(dispatch.includes("client_payload[source_revision_requeue_count]=0"));
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("expected issue source revision aborts drift and writes a requeue marker", () => {
+  const root = mkdtempSync(tmpPrefix);
+  const expectedSourceRevision = "a".repeat(64);
+  const actualSourceRevision = "b".repeat(64);
+  try {
+    assert.doesNotThrow(() =>
+      enforceExpectedIssueSourceRevisionForTest({
+        expectedSourceRevision,
+        itemKind: "issue",
+        repo: "openclaw/openclaw",
+        number: 4343,
+        sourceRevision: expectedSourceRevision,
+        artifactDir: root,
+      }),
+    );
+    assert.throws(
+      () =>
+        enforceExpectedIssueSourceRevisionForTest({
+          expectedSourceRevision,
+          itemKind: "issue",
+          repo: "openclaw/openclaw",
+          number: 4343,
+          sourceRevision: actualSourceRevision,
+          artifactDir: root,
+        }),
+      /changed before review/,
+    );
+    const marker = JSON.parse(
+      readFileSync(join(root, "source-revision-mismatch.json"), "utf8"),
+    ) as Record<string, unknown>;
+    assert.equal(marker.target_repo, "openclaw/openclaw");
+    assert.equal(marker.item_number, 4343);
+    assert.equal(marker.expected_source_revision, expectedSourceRevision);
+    assert.equal(marker.actual_source_revision, actualSourceRevision);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("sweep workflow forwards source revision and bounds drift requeue", () => {
+  const workflow = readFileSync(".github/workflows/sweep.yml", "utf8");
+
+  assert.match(workflow, /EXPECTED_SOURCE_REVISION:.*client_payload\.expected_source_revision/);
+  assert.match(workflow, /--expected-source-revision "\$EXPECTED_SOURCE_REVISION"/);
+  assert.match(workflow, /requeue-source-revision-drift:\n\s+name: Requeue source-revision drift/);
+  assert.match(workflow, /name: review-source-revision-mismatch-\$\{\{ matrix\.shard \}\}/);
+  assert.match(workflow, /requeue-source-revision-drift:[\s\S]*?contents: write/);
+  assert.match(workflow, /review:[\s\S]*?permissions:\n\s+contents: read/);
+  assert.match(workflow, /\[ "\$REQUEUE_COUNT" -ge 1 \]/);
+  assert.match(workflow, /expected_source_revision: \$expected_source_revision/);
+  assert.match(workflow, /source_revision_requeue_count: "1"/);
 });
 
 test("failed retry metadata survives a repeated failure at the same revision", () => {
