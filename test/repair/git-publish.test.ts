@@ -139,15 +139,268 @@ test("publishMainCommit resolves apply record delete conflicts during rebase", (
   );
 });
 
+test("publishMainCommit preserves status and health across apply and theirs publish races", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-publish-"));
+  const origin = path.join(root, "origin.git");
+  const work = path.join(root, "work");
+  const other = path.join(root, "other");
+  const statusFile = "results/sweep-status/openclaw-openclaw.json";
+  const initialHealth = sweepHealth("2026-07-09T20:00:00Z", "comment_sync", 1);
+  const firstCloseHealth = sweepHealth("2026-07-09T20:02:00Z", "close", 2);
+  const secondCloseHealth = sweepHealth("2026-07-09T20:04:00Z", "close", 3);
+
+  run("git", ["init", "--bare", origin], root);
+  run("git", ["clone", origin, work], root);
+  configureUser(work);
+  writeJson(
+    path.join(work, statusFile),
+    sweepStatus("2026-07-09T20:00:01Z", "Initial", initialHealth, initialHealth),
+  );
+  run("git", ["add", "."], work);
+  run("git", ["commit", "-m", "initial"], work);
+  run("git", ["push", "origin", "HEAD:main"], work);
+  run("git", ["--git-dir", origin, "symbolic-ref", "HEAD", "refs/heads/main"], root);
+  run("git", ["checkout", "-B", "main", "origin/main"], work);
+
+  run("git", ["clone", origin, other], root);
+  configureUser(other);
+  writeJson(
+    path.join(other, statusFile),
+    sweepStatus("2026-07-09T20:02:01Z", "Remote close one", firstCloseHealth, firstCloseHealth),
+  );
+  run("git", ["commit", "-am", "remote close health one"], other);
+  run("git", ["push", "origin", "HEAD:main"], other);
+
+  writeJson(
+    path.join(work, statusFile),
+    sweepStatus("2026-07-09T20:03:00Z", "Local event one", initialHealth, initialHealth),
+  );
+  assert.equal(
+    withCwd(work, () =>
+      publishMainCommit({
+        message: "chore: publish event status one",
+        paths: [statusFile],
+        maxAttempts: 1,
+        pushAttempts: 1,
+        rebaseStrategy: "theirs",
+      }),
+    ),
+    "committed",
+  );
+  const first = readOriginJson(origin, `main:${statusFile}`, root);
+  assert.equal(first.state, "Local event one");
+  assert.deepEqual(first.apply_health, firstCloseHealth);
+  assert.deepEqual(first.last_close_apply_health, firstCloseHealth);
+
+  run("git", ["pull", "--ff-only"], other);
+  writeJson(
+    path.join(other, statusFile),
+    sweepStatus("2026-07-09T20:04:01Z", "Remote close two", secondCloseHealth, secondCloseHealth),
+  );
+  run("git", ["commit", "-am", "remote close health two"], other);
+  run("git", ["push", "origin", "HEAD:main"], other);
+
+  writeJson(
+    path.join(work, statusFile),
+    sweepStatus("2026-07-09T20:05:00Z", "Local event two", firstCloseHealth, firstCloseHealth),
+  );
+  assert.equal(
+    withCwd(work, () =>
+      publishMainCommit({
+        message: "chore: publish event status two",
+        paths: [statusFile],
+        maxAttempts: 1,
+        pushAttempts: 1,
+        rebaseStrategy: "apply-records",
+      }),
+    ),
+    "committed",
+  );
+  const second = readOriginJson(origin, `main:${statusFile}`, root);
+  assert.equal(second.state, "Local event two");
+  assert.deepEqual(second.apply_health, secondCloseHealth);
+  assert.deepEqual(second.last_close_apply_health, secondCloseHealth);
+});
+
+test("publishMainCommit drops a status commit fully superseded by the remote", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-publish-"));
+  const origin = path.join(root, "origin.git");
+  const work = path.join(root, "work");
+  const other = path.join(root, "other");
+  const statusFile = "results/sweep-status/openclaw-openclaw.json";
+  const initialHealth = sweepHealth("2026-07-09T20:00:00Z", "close", 1);
+  const localHealth = sweepHealth("2026-07-09T20:02:00Z", "close", 2);
+  const remoteHealth = sweepHealth("2026-07-09T20:03:00Z", "close", 3);
+
+  run("git", ["init", "--bare", origin], root);
+  run("git", ["clone", origin, work], root);
+  configureUser(work);
+  writeJson(
+    path.join(work, statusFile),
+    sweepStatus("2026-07-09T20:00:01Z", "Initial", initialHealth, initialHealth),
+  );
+  run("git", ["add", "."], work);
+  run("git", ["commit", "-m", "initial"], work);
+  run("git", ["push", "origin", "HEAD:main"], work);
+  run("git", ["--git-dir", origin, "symbolic-ref", "HEAD", "refs/heads/main"], root);
+  run("git", ["checkout", "-B", "main", "origin/main"], work);
+
+  run("git", ["clone", origin, other], root);
+  configureUser(other);
+  writeJson(
+    path.join(other, statusFile),
+    sweepStatus("2026-07-09T20:03:01Z", "Remote newest", remoteHealth, remoteHealth),
+  );
+  run("git", ["commit", "-am", "newer remote status"], other);
+  run("git", ["push", "origin", "HEAD:main"], other);
+  const remoteHead = run("git", ["--git-dir", origin, "rev-parse", "main"], root).trim();
+
+  writeJson(
+    path.join(work, statusFile),
+    sweepStatus("2026-07-09T20:02:01Z", "Local older", localHealth, localHealth),
+  );
+  assert.equal(
+    withCwd(work, () =>
+      publishMainCommit({
+        message: "chore: publish superseded status",
+        paths: [statusFile],
+        maxAttempts: 1,
+        pushAttempts: 1,
+        rebaseStrategy: "apply-records",
+      }),
+    ),
+    "committed",
+  );
+
+  assert.equal(run("git", ["--git-dir", origin, "rev-parse", "main"], root).trim(), remoteHead);
+  assert.equal(run("git", ["rev-parse", "HEAD"], work).trim(), remoteHead);
+  const merged = readOriginJson(origin, `main:${statusFile}`, root);
+  assert.equal(merged.state, "Remote newest");
+  assert.deepEqual(merged.apply_health, remoteHealth);
+});
+
+test("publishMainCommit preserves latest health when a second race forces commit rebuild", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-publish-"));
+  const origin = path.join(root, "origin.git");
+  const work = path.join(root, "work");
+  const other = path.join(root, "other");
+  const statusFile = "results/sweep-status/openclaw-openclaw.json";
+  const initialHealth = sweepHealth("2026-07-09T20:00:00Z", "comment_sync", 1);
+  const firstCloseHealth = sweepHealth("2026-07-09T20:02:00Z", "close", 2);
+  const secondCloseHealth = sweepHealth("2026-07-09T20:02:30Z", "close", 3);
+
+  run("git", ["init", "--bare", origin], root);
+  run("git", ["clone", origin, work], root);
+  configureUser(work);
+  writeJson(
+    path.join(work, statusFile),
+    sweepStatus("2026-07-09T20:00:01Z", "Initial", initialHealth, initialHealth),
+  );
+  run("git", ["add", "."], work);
+  run("git", ["commit", "-m", "initial"], work);
+  run("git", ["push", "origin", "HEAD:main"], work);
+  run("git", ["--git-dir", origin, "symbolic-ref", "HEAD", "refs/heads/main"], root);
+  run("git", ["checkout", "-B", "main", "origin/main"], work);
+
+  run("git", ["clone", origin, other], root);
+  configureUser(other);
+  writeJson(
+    path.join(other, statusFile),
+    sweepStatus("2026-07-09T20:02:01Z", "Remote close one", firstCloseHealth, firstCloseHealth),
+  );
+  run("git", ["commit", "-am", "remote close health one"], other);
+  run("git", ["push", "origin", "HEAD:main"], other);
+  writeJson(
+    path.join(other, statusFile),
+    sweepStatus("2026-07-09T20:02:31Z", "Remote close two", secondCloseHealth, secondCloseHealth),
+  );
+  run("git", ["commit", "-am", "remote close health two"], other);
+  installSecondPushRaceHook(work, other);
+
+  writeJson(
+    path.join(work, statusFile),
+    sweepStatus("2026-07-09T20:03:00Z", "Local event", initialHealth, initialHealth),
+  );
+  assert.equal(
+    withCwd(work, () =>
+      publishMainCommit({
+        message: "chore: publish event status",
+        paths: [statusFile],
+        maxAttempts: 1,
+        pushAttempts: 1,
+        rebaseStrategy: "apply-records",
+      }),
+    ),
+    "committed",
+  );
+
+  const merged = readOriginJson(origin, `main:${statusFile}`, root);
+  assert.equal(merged.state, "Local event");
+  assert.deepEqual(merged.apply_health, secondCloseHealth);
+  assert.deepEqual(merged.last_close_apply_health, secondCloseHealth);
+});
+
+test("publishMainCommit fails closed when a racing sweep status is malformed", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-publish-"));
+  const origin = path.join(root, "origin.git");
+  const work = path.join(root, "work");
+  const other = path.join(root, "other");
+  const statusFile = "results/sweep-status/openclaw-openclaw.json";
+  const initialHealth = sweepHealth("2026-07-09T20:00:00Z", "close", 1);
+
+  run("git", ["init", "--bare", origin], root);
+  run("git", ["clone", origin, work], root);
+  configureUser(work);
+  writeJson(
+    path.join(work, statusFile),
+    sweepStatus("2026-07-09T20:00:01Z", "Initial", initialHealth, initialHealth),
+  );
+  run("git", ["add", "."], work);
+  run("git", ["commit", "-m", "initial"], work);
+  run("git", ["push", "origin", "HEAD:main"], work);
+  run("git", ["--git-dir", origin, "symbolic-ref", "HEAD", "refs/heads/main"], root);
+  run("git", ["checkout", "-B", "main", "origin/main"], work);
+
+  run("git", ["clone", origin, other], root);
+  configureUser(other);
+  write(path.join(other, statusFile), "{broken\n");
+  run("git", ["commit", "-am", "malformed remote status"], other);
+  run("git", ["push", "origin", "HEAD:main"], other);
+
+  writeJson(
+    path.join(work, statusFile),
+    sweepStatus("2026-07-09T20:02:00Z", "Local event", initialHealth, initialHealth),
+  );
+  assert.throws(
+    () =>
+      withCwd(work, () =>
+        publishMainCommit({
+          message: "chore: publish valid status",
+          paths: [statusFile],
+          maxAttempts: 1,
+          pushAttempts: 1,
+          rebaseStrategy: "apply-records",
+        }),
+      ),
+    /malformed sweep status JSON/,
+  );
+  assert.equal(run("git", ["--git-dir", origin, "show", `main:${statusFile}`], root), "{broken\n");
+});
+
 test("publishMainCommit rebuilds generated state commits without deleting concurrent records", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-publish-"));
   const origin = path.join(root, "origin.git");
   const work = path.join(root, "work");
   const other = path.join(root, "other");
+  const statusFile = "results/sweep-status/openclaw-openclaw.json";
+  const initialHealth = sweepHealth("2026-07-09T20:00:00Z", "comment_sync", 1);
   run("git", ["init", "--bare", origin], root);
   run("git", ["clone", origin, work], root);
   configureUser(work);
-  write(path.join(work, "results/sweep-status/openclaw-openclaw.json"), "{}\n");
+  writeJson(
+    path.join(work, statusFile),
+    sweepStatus("2026-07-09T20:00:01Z", "Initial", initialHealth, initialHealth),
+  );
   write(path.join(work, "records/openclaw-openclaw/items/1.md"), "record old\n");
   write(path.join(work, "keep.txt"), "keep old\n");
   run("git", ["add", "."], work);
@@ -158,7 +411,10 @@ test("publishMainCommit rebuilds generated state commits without deleting concur
 
   run("git", ["clone", origin, other], root);
   configureUser(other);
-  write(path.join(other, "results/sweep-status/openclaw-openclaw.json"), '{"state":"remote"}\n');
+  writeJson(
+    path.join(other, statusFile),
+    sweepStatus("2026-07-09T20:01:00Z", "Remote", initialHealth, initialHealth),
+  );
   write(path.join(other, "records/openclaw-openclaw/items/1.md"), "record remote\n");
   write(path.join(other, "records/openclaw-openclaw/items/2.md"), "remote only\n");
   write(path.join(other, "keep.txt"), "keep remote\n");
@@ -166,7 +422,10 @@ test("publishMainCommit rebuilds generated state commits without deleting concur
   run("git", ["commit", "-m", "remote generated state update"], other);
   run("git", ["push", "origin", "HEAD:main"], other);
 
-  write(path.join(work, "results/sweep-status/openclaw-openclaw.json"), '{"state":"local"}\n');
+  writeJson(
+    path.join(work, statusFile),
+    sweepStatus("2026-07-09T20:02:00Z", "Local", initialHealth, initialHealth),
+  );
   write(path.join(work, "records/openclaw-openclaw/items/1.md"), "record local\n");
 
   const result = withCwd(work, () =>
@@ -179,14 +438,7 @@ test("publishMainCommit rebuilds generated state commits without deleting concur
   );
 
   assert.equal(result, "committed");
-  assert.equal(
-    run(
-      "git",
-      ["--git-dir", origin, "show", "main:results/sweep-status/openclaw-openclaw.json"],
-      root,
-    ),
-    '{"state":"local"}\n',
-  );
+  assert.equal(readOriginJson(origin, `main:${statusFile}`, root).state, "Local");
   assert.equal(
     run("git", ["--git-dir", origin, "show", "main:records/openclaw-openclaw/items/1.md"], root),
     "record local\n",
@@ -233,6 +485,82 @@ test("publishMainCommit publishes generated paths to state branch when state roo
     "ledger\n",
   );
   assert.throws(() => run("git", ["--git-dir", origin, "show", "main:results/ledger.txt"], root));
+});
+
+test("publishMainCommit refreshes merged health before the next state-root status publish", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-publish-"));
+  const origin = path.join(root, "origin.git");
+  const work = path.join(root, "work");
+  const state = path.join(root, "state");
+  const other = path.join(root, "other");
+  const statusFile = "results/sweep-status/openclaw-openclaw.json";
+  const initialHealth = sweepHealth("2026-07-09T20:00:00Z", "comment_sync", 1);
+  const closeHealth = sweepHealth("2026-07-09T20:02:00Z", "close", 2);
+
+  run("git", ["init", "--bare", origin], root);
+  run("git", ["clone", origin, state], root);
+  configureUser(state);
+  writeJson(
+    path.join(state, statusFile),
+    sweepStatus("2026-07-09T20:00:01Z", "Initial", initialHealth, initialHealth),
+  );
+  run("git", ["add", "."], state);
+  run("git", ["commit", "-m", "initial state"], state);
+  run("git", ["push", "origin", "HEAD:state"], state);
+  run("git", ["--git-dir", origin, "symbolic-ref", "HEAD", "refs/heads/state"], root);
+  run("git", ["checkout", "-B", "state", "origin/state"], state);
+
+  fs.mkdirSync(work);
+  fs.cpSync(path.join(state, "results"), path.join(work, "results"), { recursive: true });
+  run("git", ["clone", origin, other], root);
+  configureUser(other);
+  writeJson(
+    path.join(other, statusFile),
+    sweepStatus("2026-07-09T20:02:01Z", "Remote close", closeHealth, closeHealth),
+  );
+  run("git", ["commit", "-am", "remote close health"], other);
+  run("git", ["push", "origin", "HEAD:state"], other);
+
+  writeJson(
+    path.join(work, statusFile),
+    sweepStatus("2026-07-09T20:03:00Z", "Local checkpoint", initialHealth, initialHealth),
+  );
+  const results = withEnv({ CLAWSWEEPER_STATE_DIR: state }, () =>
+    withCwd(work, () => {
+      const first = publishMainCommit({
+        message: "chore: publish checkpoint status",
+        paths: [statusFile],
+        maxAttempts: 1,
+        pushAttempts: 1,
+        rebaseStrategy: "theirs",
+      });
+      const learned = JSON.parse(fs.readFileSync(path.join(work, statusFile), "utf8"));
+      assert.equal(learned.state, "Local checkpoint");
+      assert.deepEqual(learned.apply_health, closeHealth);
+      assert.deepEqual(learned.last_close_apply_health, closeHealth);
+
+      writeJson(path.join(work, statusFile), {
+        ...learned,
+        state: "Local final",
+        detail: "Local final detail",
+        updated_at: "2026-07-09T20:04:00Z",
+      });
+      const second = publishMainCommit({
+        message: "chore: publish final status",
+        paths: [statusFile],
+        maxAttempts: 1,
+        pushAttempts: 1,
+        rebaseStrategy: "theirs",
+      });
+      return [first, second];
+    }),
+  );
+
+  assert.deepEqual(results, ["committed", "committed"]);
+  const published = readOriginJson(origin, `state:${statusFile}`, root);
+  assert.equal(published.state, "Local final");
+  assert.deepEqual(published.apply_health, closeHealth);
+  assert.deepEqual(published.last_close_apply_health, closeHealth);
 });
 
 test("state refresh reconciles retried direct publisher resets before broad publishes", () => {
@@ -819,6 +1147,55 @@ function configureUser(cwd) {
 function write(file, content) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, content);
+}
+
+function writeJson(file, value) {
+  write(file, `${JSON.stringify(value, null, 2)}\n`);
+}
+
+function readOriginJson(origin, revision, cwd) {
+  return JSON.parse(run("git", ["--git-dir", origin, "show", revision], cwd));
+}
+
+function sweepStatus(updatedAt, state, applyHealth, lastCloseApplyHealth) {
+  return {
+    schema_version: 1,
+    slug: "openclaw-openclaw",
+    display_name: "OpenClaw",
+    target_repo: "openclaw/openclaw",
+    state,
+    detail: `${state} detail`,
+    run_url: "https://github.com/openclaw/clawsweeper/actions/runs/1",
+    apply_health: applyHealth,
+    last_close_apply_health: lastCloseApplyHealth,
+    updated_at: updatedAt,
+  };
+}
+
+function sweepHealth(generatedAt, mode, processed) {
+  return {
+    schema_version: 1,
+    generated_at: generatedAt,
+    target_repo: "openclaw/openclaw",
+    mode,
+    processed,
+  };
+}
+
+function installSecondPushRaceHook(work, other) {
+  const hook = path.join(work, ".git/hooks/pre-push");
+  const counter = path.join(work, ".git/hooks/pre-push-count");
+  fs.writeFileSync(
+    hook,
+    `#!/bin/sh
+count=0
+if test -f "${counter}"; then count=$(cat "${counter}"); fi
+count=$((count + 1))
+printf '%s\\n' "$count" > "${counter}"
+if test "$count" -eq 2; then git -C "${other}" push origin HEAD:main; fi
+`,
+  );
+  fs.chmodSync(hook, 0o755);
 }
 
 function captureConsoleLog(callback) {

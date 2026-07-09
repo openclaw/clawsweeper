@@ -1,10 +1,19 @@
 import { spawnSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, readdirSync, rmSync, statSync } from "node:fs";
+import {
+  cpSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 
 import { clawsweeperGitUserEmail, clawsweeperGitUserName } from "./process-env.js";
+import { mergeSweepStatusJson } from "./sweep-status-merge.js";
 
 export type GitRunResult = {
   status: number;
@@ -28,6 +37,7 @@ export type RebaseStrategy = "normal" | "theirs" | "apply-records";
 export type GitRunOptions = {
   allowFailure?: boolean;
   displayArgs?: readonly string[];
+  quiet?: boolean;
 };
 
 export type PublishResult = "committed" | "unchanged";
@@ -84,8 +94,8 @@ export function spawnGit(args: readonly string[], options: GitRunOptions = {}): 
     env: process.env,
     encoding: "utf8",
   });
-  if (child.stdout) process.stdout.write(child.stdout);
-  if (child.stderr) process.stderr.write(child.stderr);
+  if (!options.quiet && child.stdout) process.stdout.write(child.stdout);
+  if (!options.quiet && child.stderr) process.stderr.write(child.stderr);
   return {
     status: child.status ?? 1,
     stdout: child.stdout ?? "",
@@ -502,13 +512,23 @@ export function pushCommit(options: {
   for (let pushAttempt = 1; pushAttempt <= pushAttempts; pushAttempt += 1) {
     if (spawnGit(["push", remote, `HEAD:${branch}`]).status === 0) return true;
     console.log(`Push attempt ${pushAttempt} lost the ${branch} race; rebasing`);
+    const localCommit = runGit(["rev-parse", "HEAD"], { quiet: true }).trim();
+    const localCommitMessage = runGit(["log", "-1", "--format=%B"], { quiet: true });
     runGit(["fetch", remote, branch], { allowFailure: true });
+    const remoteCommit = runGit(["rev-parse", `${remote}/${branch}`], { quiet: true }).trim();
+    const statusMerges = planSweepStatusMerges({ localCommit, remoteCommit });
     const rebaseArgs =
       rebaseStrategy === "theirs" || rebaseStrategy === "apply-records"
         ? ["rebase", "-X", "theirs", `${remote}/${branch}`]
         : ["rebase", `${remote}/${branch}`];
-    if (spawnGit(rebaseArgs).status !== 0) {
-      if (rebaseStrategy === "apply-records" && resolveApplyRecordConflicts()) continue;
+    if (spawnGit(rebaseArgs).status === 0) {
+      applySweepStatusMerges({ statusMerges, remoteCommit, localCommitMessage });
+      continue;
+    }
+    if (rebaseStrategy === "apply-records" && resolveApplyRecordConflicts(statusMerges)) {
+      applySweepStatusMerges({ statusMerges, remoteCommit, localCommitMessage });
+      continue;
+    } else {
       runGit(["rebase", "--abort"], { allowFailure: true });
       return false;
     }
@@ -525,7 +545,17 @@ function rebuildPublishCommit(options: {
 }): PublishResult {
   console.log(`Rebuilding publish commit on ${options.remote}/${options.branch}`);
   runGit(["fetch", options.remote, options.branch]);
-  runGit(["reset", "--hard", `${options.remote}/${options.branch}`]);
+  const remoteCommit = runGit(["rev-parse", `${options.remote}/${options.branch}`], {
+    quiet: true,
+  }).trim();
+  const statusMerges = planSweepStatusMerges({
+    baseCommit: runGit(["rev-parse", `${options.sourceCommit}^`], { quiet: true }).trim(),
+    localCommit: options.sourceCommit,
+    remoteCommit,
+    includeIndependent: true,
+    pathspecs: options.paths,
+  });
+  runGit(["reset", "--hard", remoteCommit]);
 
   for (const path of uniqueNonEmpty(options.paths)) {
     const preserved = preserveStateOnlyCommitFiles({ path, sourceCommit: options.sourceCommit });
@@ -540,6 +570,7 @@ function rebuildPublishCommit(options: {
     }
   }
 
+  applySweepStatusMergeFiles(statusMerges);
   stagePaths(options.paths);
   if (!hasStagedChanges()) {
     console.log("No publish changes after syncing remote");
@@ -590,17 +621,117 @@ function positiveInt(value: number | undefined, fallback: number): number {
   return value !== undefined && Number.isInteger(value) && value > 0 ? value : fallback;
 }
 
-function resolveApplyRecordConflicts(): boolean {
+type SweepStatusMerge = {
+  path: string;
+  content: string;
+};
+
+function planSweepStatusMerges(options: {
+  baseCommit?: string;
+  localCommit: string;
+  remoteCommit: string;
+  includeIndependent?: boolean;
+  pathspecs?: readonly string[];
+}): SweepStatusMerge[] {
+  const baseCommit =
+    options.baseCommit ??
+    runGit(["merge-base", options.localCommit, options.remoteCommit], { quiet: true }).trim();
+  if (!baseCommit) {
+    throw new Error("Refusing sweep status merge without a common Git base");
+  }
+  const localPaths = changedSweepStatusPaths(baseCommit, options.localCommit);
+  const remotePaths = changedSweepStatusPaths(baseCommit, options.remoteCommit);
+  const changedPaths = options.includeIndependent
+    ? new Set([...localPaths, ...remotePaths])
+    : new Set([...localPaths].filter((path) => remotePaths.has(path)));
+  const mergePaths = [...changedPaths].filter(
+    (path) =>
+      !options.pathspecs ||
+      options.pathspecs.some(
+        (pathspec) => path === pathspec || path.startsWith(`${pathspec.replace(/\/+$/, "")}/`),
+      ),
+  );
+  return mergePaths.sort().map((path) => ({
+    path,
+    content: mergeSweepStatusJson({
+      path,
+      baseText: readGitPath(baseCommit, path),
+      localText: readGitPath(options.localCommit, path),
+      remoteText: readGitPath(options.remoteCommit, path),
+    }),
+  }));
+}
+
+function changedSweepStatusPaths(baseCommit: string, commit: string): Set<string> {
+  const output = runGit(
+    ["diff", "--no-renames", "--name-only", "-z", baseCommit, commit, "--", "results/sweep-status"],
+    { quiet: true },
+  );
+  return new Set(
+    output.split("\0").filter((path) => /^results\/sweep-status\/[^/]+\.json$/.test(path)),
+  );
+}
+
+function readGitPath(commit: string, path: string): string | null {
+  const result = spawnGit(["show", `${commit}:${path}`], {
+    allowFailure: true,
+    displayArgs: ["show", "<commit>:<sweep-status-path>"],
+    quiet: true,
+  });
+  return result.status === 0 ? result.stdout : null;
+}
+
+function applySweepStatusMergeFiles(statusMerges: readonly SweepStatusMerge[]): void {
+  const root = publishRoot() ?? resolve(".");
+  for (const statusMerge of statusMerges) {
+    const destination = resolve(root, statusMerge.path);
+    if (!isPathInsideOrEqual(root, destination)) {
+      throw new Error(`Refusing to merge sweep status outside publish root: ${statusMerge.path}`);
+    }
+    mkdirSync(dirname(destination), { recursive: true });
+    writeFileSync(destination, statusMerge.content, "utf8");
+    runGit(["add", "--", statusMerge.path]);
+  }
+}
+
+function applySweepStatusMerges(options: {
+  statusMerges: readonly SweepStatusMerge[];
+  remoteCommit: string;
+  localCommitMessage: string;
+}): void {
+  if (options.statusMerges.length === 0) return;
+  applySweepStatusMergeFiles(options.statusMerges);
+  if (!hasStagedChanges()) return;
+  if (spawnGit(["diff", "--cached", "--quiet", options.remoteCommit]).status === 0) {
+    runGit(["reset", "--hard", options.remoteCommit]);
+    return;
+  }
+  const commitsAhead = Number(
+    runGit(["rev-list", "--count", `${options.remoteCommit}..HEAD`], { quiet: true }).trim(),
+  );
+  if (Number.isInteger(commitsAhead) && commitsAhead > 0) {
+    runGit(["commit", "--amend", "--no-edit"]);
+  } else {
+    runGit(["commit", "-m", options.localCommitMessage]);
+  }
+}
+
+function resolveApplyRecordConflicts(statusMerges: readonly SweepStatusMerge[]): boolean {
   const conflicts = runGit(["diff", "--name-only", "--diff-filter=U"], { allowFailure: true })
     .split(/\r?\n/)
     .map((path) => path.trim())
     .filter(Boolean);
   if (conflicts.length === 0) return false;
 
+  const statusMergePaths = new Set(statusMerges.map((entry) => entry.path));
+  applySweepStatusMergeFiles(statusMerges);
+
   for (const path of conflicts) {
     if (/^records\/[^/]+\/items\/[^/]+\.md$/.test(path)) {
       runGit(["rm", "-f", "--", path], { allowFailure: true });
     } else if (/^records\/[^/]+\/closed\/[^/]+\.md$/.test(path) || path === "apply-report.json") {
+      runGit(["add", "--", path]);
+    } else if (statusMergePaths.has(path)) {
       runGit(["add", "--", path]);
     } else {
       console.log(`Unsupported apply rebase conflict path: ${path}`);
