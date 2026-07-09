@@ -2173,7 +2173,7 @@ const APPLY_RUNTIME_REPORT_FLUSH_RESERVE_MS = 1_000;
 interface ApplyGitHubRuntimeBudget {
   startedAtMs: number;
   maxRuntimeMs: number;
-  onYield?: (reason: string) => void;
+  onYield?: (reason: string, resumeCurrent?: boolean) => void;
   yieldReason?: string;
 }
 
@@ -18746,9 +18746,9 @@ async function applyDecisionsCommandInner(
     logProgress("finished apply");
     console.log(JSON.stringify(results, null, 2));
   };
-  runtimeBudget.onYield = (reason: string): void => {
+  runtimeBudget.onYield = (reason: string, resumeCurrent = true): void => {
     const currentNumber = examinedItemNumbers.at(-1);
-    if (currentNumber !== undefined) {
+    if (resumeCurrent && currentNumber !== undefined) {
       removeCurrentCursorTraceItem(examinedItemNumbers, currentNumber);
     }
     results.push({ number: 0, action: "skipped_runtime_budget", reason });
@@ -20263,9 +20263,16 @@ async function applyDecisionsCommandInner(
             dryRun,
           })
         : null;
+    ensureApplyRuntimeDelayFits(closeDelayMs, "before close");
     closeItem({ number, kind: item.kind, reason: closeReason });
-    ensureApplyRuntimeDelayFits(closeDelayMs, "before close delay");
-    sleepMs(closeDelayMs);
+    let postCloseRuntimeYieldReason: string | null = null;
+    try {
+      ensureApplyRuntimeDelayFits(closeDelayMs, "before close delay");
+      sleepMs(closeDelayMs);
+    } catch (error) {
+      if (!(error instanceof ApplyRuntimeBudgetError)) throw error;
+      postCloseRuntimeYieldReason = error.reason;
+    }
     markdown = replaceSectionValue(markdown, REVIEW_SECTIONS.closeComment, reviewComment);
     markdown = replaceFrontMatterValue(markdown, "close_comment_sha256", sha256(reviewComment));
     markdown = replaceFrontMatterValue(markdown, "action_taken", "closed");
@@ -20281,6 +20288,10 @@ async function applyDecisionsCommandInner(
     });
     logProgress(`closed #${number}`);
     closedThisRun.add(pairCloseKey(repo, number));
+    if (postCloseRuntimeYieldReason) {
+      runtimeBudget.onYield?.(postCloseRuntimeYieldReason, false);
+      return;
+    }
     if (processedCount >= processedLimit) break;
   }
   if (runtimeBudget.yieldReason) {

@@ -437,6 +437,7 @@ export function promotionGhMock(options: {
   comment: string;
   commentWriteLogPath?: string;
   closeAppliedBodyLogPath?: string;
+  closeCommandDelayMs?: number;
   comments?: unknown[];
   timeline?: unknown[];
   linkedPulls?: Record<number, unknown>;
@@ -480,6 +481,7 @@ export function promotionGhMock(options: {
 	const linkedIssues = ${JSON.stringify(linkedIssues)};
 	const commentWriteLogPath = ${JSON.stringify(options.commentWriteLogPath ?? "")};
 	const closeAppliedBodyLogPath = ${JSON.stringify(options.closeAppliedBodyLogPath ?? "")};
+	const closeCommandDelayMs = ${JSON.stringify(options.closeCommandDelayMs ?? 0)};
 	const number = ${options.number};
 	const commentStatePath = join(__dirname, "..", "comment-state-" + number + ".json");
 	const mutationComment = (id, body) => ({
@@ -656,7 +658,8 @@ export function promotionGhMock(options: {
 } else if (args[0] === "api" && new RegExp("/pulls/" + number + "/(files|commits|comments)(?:\\\\?|$)").test(path)) {
   console.log(JSON.stringify([[]]));
 } else if (args[0] === "pr" && args[1] === "close" && args[2] === String(number)) {
-  console.log("");
+  if (closeCommandDelayMs > 0) setTimeout(() => console.log(""), closeCommandDelayMs);
+  else console.log("");
 	} else if (args[0] === "issue" && args[1] === "edit") {
 	  if (itemUpdatedAtAfterLabelSyncLogPath) appendFileSync(itemUpdatedAtAfterLabelSyncLogPath, args.join(" ") + "\\n");
 	  console.log("");

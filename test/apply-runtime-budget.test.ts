@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 
@@ -322,6 +322,94 @@ test("apply-decisions yields instead of starting a post-close delay that cannot 
 
     assert.ok(Date.now() - startedAt < 3_000, "post-close delay ignored the remaining runtime");
     assertRuntimeYield(fixture, maxRuntimeMs);
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("apply-decisions records a successful close before yielding after it", () => {
+  const fixture = runtimeBudgetFixture(727);
+  const maxRuntimeMs = 12_000;
+  const proofLogPath = join(fixture.root, "proof.log");
+  const synced = reportWithSyncedReviewComment(
+    lowSignalCloseReport({
+      number: 727,
+      title: "Provider route fallback",
+      close_reason: "duplicate_or_superseded",
+      work_cluster_refs: JSON.stringify([
+        "Superseded by https://github.com/openclaw/openclaw/pull/400",
+      ]),
+    }).replace(
+      "Closing this PR because the branch is not a useful landing base.",
+      "Closing this PR as superseded by https://github.com/openclaw/openclaw/pull/400.",
+    ),
+    727,
+    "duplicate_or_superseded",
+  );
+  writeFileSync(join(fixture.itemsDir, "727.md"), synced.report, "utf8");
+  try {
+    withMockGh(
+      fixture.root,
+      promotionGhMock({
+        number: 727,
+        title: "Provider route fallback",
+        comment: synced.comment,
+        closeCommandDelayMs: 3_000,
+        itemUpdatedAtAfterProofLogPath: proofLogPath,
+        linkedPulls: {
+          400: {
+            number: 400,
+            title: "Provider cleanup",
+            html_url: "https://github.com/openclaw/openclaw/pull/400",
+            state: "closed",
+            merged_at: "2026-05-02T00:00:00Z",
+            updated_at: "2026-05-01T00:00:00Z",
+            body: "Includes the fallback route behavior from PR 727.",
+            comments: [],
+            labels: [],
+          },
+        },
+      }),
+      () => {
+        withMockCodexProof(
+          fixture.root,
+          {
+            type: "decision",
+            decision: "covered",
+            reason: "PR B carries forward PR A's fallback route behavior.",
+            invocationLogPath: proofLogPath,
+          },
+          () => {
+            runApplyDecisionsForTest({
+              ...fixture,
+              targetRepo: "openclaw/openclaw",
+              extraArgs: [
+                "--apply-kind",
+                "all",
+                "--max-runtime-ms",
+                String(maxRuntimeMs),
+                "--close-delay-ms",
+                "8000",
+                "--cursor-trace",
+                fixture.cursorTracePath,
+              ],
+            });
+          },
+        );
+      },
+    );
+
+    const report = JSON.parse(readFileSync(fixture.reportPath, "utf8"));
+    const cursorTrace = JSON.parse(readFileSync(fixture.cursorTracePath, "utf8"));
+    assert.deepEqual(
+      report.map((entry: { number: number; action: string }) => [entry.number, entry.action]),
+      [
+        [727, "closed"],
+        [0, "skipped_runtime_budget"],
+      ],
+    );
+    assert.deepEqual(cursorTrace, { schema_version: 1, examined_item_numbers: [727] });
+    assert.equal(existsSync(join(fixture.closedDir, "727.md")), true);
   } finally {
     rmSync(fixture.root, { recursive: true, force: true });
   }
