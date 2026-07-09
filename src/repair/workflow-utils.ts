@@ -1101,6 +1101,32 @@ type ProposedItemQualitySummary = {
   buckets: ProposedItemQualityBucketSummary[];
 };
 
+const FAST_CLOSE_BUCKET_ORDER: ProposedItemQualityBucket[] = [
+  "ready_implemented",
+  "other",
+  "aging_or_low_signal",
+  "policy_sensitive",
+  "retry_after_guard_skip",
+  "duplicate_or_superseded",
+  "needs_pr_close_coverage",
+  "promotion_probe",
+];
+
+function prioritizeFastCloseCandidates(
+  candidates: ProposedItemCandidate[],
+): ProposedItemCandidate[] {
+  const rank = new Map(FAST_CLOSE_BUCKET_ORDER.map((bucket, index) => [bucket, index]));
+  return candidates
+    .map((candidate, index) => ({ candidate, index }))
+    .sort(
+      (left, right) =>
+        (rank.get(left.candidate.qualityBucket) ?? Number.MAX_SAFE_INTEGER) -
+          (rank.get(right.candidate.qualityBucket) ?? Number.MAX_SAFE_INTEGER) ||
+        left.index - right.index,
+    )
+    .map(({ candidate }) => candidate);
+}
+
 function selectedProposedItemCandidates(
   options: ProposedItemOptions,
   selection: ProposedItemSelection,
@@ -1234,14 +1260,14 @@ function selectedProposedItemCandidates(
   // hydration cannot consume an entire apply window ahead of real proposals.
   if (options.coverageProofLimit === null || options.coverageProofLimit === undefined) {
     return [
-      ...rotate("confirmed_close", null, cursor),
+      ...prioritizeFastCloseCandidates(rotate("confirmed_close", null, cursor)),
       ...rotate("promotion_probe", null, cursor),
     ].slice(0, batchSize);
   }
 
   const proofLimit = Math.max(0, Math.min(options.coverageProofLimit, batchSize));
   const fastCandidates = [
-    ...rotate("confirmed_close", false, cursor),
+    ...prioritizeFastCloseCandidates(rotate("confirmed_close", false, cursor)),
     ...rotate("promotion_probe", false, cursor),
   ];
   const proofCursor = cursor?.coverageProof ?? cursor;
@@ -1251,7 +1277,7 @@ function selectedProposedItemCandidates(
   ];
   const selectedProof = proofCandidates.slice(0, proofLimit);
   const selectedFast = fastCandidates.slice(0, batchSize - selectedProof.length);
-  return [...selectedFast, ...selectedProof];
+  return [...selectedProof, ...selectedFast];
 }
 
 export function proposedItemQualitySummary(

@@ -48,7 +48,7 @@ import {
   isLockedConversationCommentError,
   summarizeGhArgs,
 } from "./github-retry.js";
-import { parseGhJson, parseGhJsonLines } from "./github-json.js";
+import { parseGhJson, parseGhJsonLines, parseGhJsonWithRetry } from "./github-json.js";
 import { stableJson } from "./stable-json.js";
 import {
   appendFloorBackfillCandidates,
@@ -134,7 +134,12 @@ export {
   codexLoginMethod,
   redactInternalCodexModel,
 } from "./codex-env.js";
-export { parseGhJson, parseGhJsonLines } from "./github-json.js";
+export {
+  parseGhJson,
+  parseGhJsonLines,
+  parseGhJsonWithRetry,
+  parseGhJsonWithRetryAsync,
+} from "./github-json.js";
 export { itemNumbersArg } from "./clawsweeper-args.js";
 export {
   buildDecisionPacketFromReport,
@@ -2287,7 +2292,15 @@ function ghRawWithRetry(args: string[], attempts = 12): string {
 }
 
 function ghJson<T>(args: string[]): T {
-  return parseGhJson<T>(ghWithRetry(args), args);
+  return parseGhJsonWithRetry<T>(() => ghWithRetry(args), args, {
+    onRetry: (_error, attempt) => {
+      const waitMs = ghRetryWaitMs("transient", attempt - 1);
+      console.error(
+        `Malformed GitHub JSON response; retrying ${summarizeGhArgs(args)} in ${Math.round(waitMs / 1000)}s`,
+      );
+      sleepMs(waitMs);
+    },
+  });
 }
 
 function ghJsonOnce<T>(args: string[], timeoutMs: number): T {

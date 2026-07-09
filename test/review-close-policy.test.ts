@@ -6,6 +6,7 @@ import {
   isProtectedItem,
   parseGhJson,
   parseGhJsonLines,
+  parseGhJsonWithRetry,
   protectedLabels,
   renderReviewCommentFromReport,
   reviewActionForDecision,
@@ -47,6 +48,19 @@ test("parseGhJsonLines adds line number and command context to malformed JSONL e
     () => parseGhJsonLines('{"ok":true}\nnot-json\n', ["issue", "list", "--json", "number"]),
     /Failed to parse JSON line 2 from gh issue list --json:/,
   );
+});
+
+test("parseGhJsonWithRetry reloads malformed successful responses", () => {
+  const responses = ['{"items":', '{"items":[1]}'];
+  const retries: number[] = [];
+  const parsed = parseGhJsonWithRetry<{ items: number[] }>(
+    () => responses.shift() ?? "",
+    ["api", "repos/openclaw/openclaw/pulls/42/files"],
+    { onRetry: (_error, attempt) => retries.push(attempt) },
+  );
+
+  assert.deepEqual(parsed, { items: [1] });
+  assert.deepEqual(retries, [1]);
 });
 
 test("commit review reports use one canonical path per commit", () => {

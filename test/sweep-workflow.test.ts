@@ -154,6 +154,8 @@ test("apply workflow bounds checkpoints and requeues with a fresh token", () => 
   );
   assert.match(inputBlock, /apply_limit:[\s\S]*default: "20"/);
   assert.match(inputBlock, /apply_checkpoint_size:[\s\S]*default: "20"/);
+  assert.match(workflow, /github\.event\.inputs\.apply_limit != '20'/);
+  assert.match(workflow, /github\.event\.inputs\.apply_checkpoint_size != '20'/);
   assert.match(applyStep, /Capping apply checkpoint size at 20/);
   assert.match(applyStep, /base_close_processed_limit=300/);
   assert.match(applyHelper, /coverage_proof_limit=1/);
@@ -257,6 +259,8 @@ test("apply workflow bounds checkpoints and requeues with a fresh token", () => 
   assert.match(continueStep, /can_share_apply_continuation=false/);
   assert.match(continueStep, /\[ "\$\{APPLY_AUTO_SELECTED_BATCH:-false\}" = "true" \]/);
   assert.match(continueStep, /\[ -z "\$\{APPLY_ITEM_NUMBERS:-\}" \]/);
+  assert.match(continueStep, /\[ "\$\{APPLY_LIMIT:-20\}" = "20" \]/);
+  assert.match(continueStep, /\[ "\$\{APPLY_CHECKPOINT_SIZE:-20\}" = "20" \]/);
   assert.match(continueStep, /\[ "\$\{APPLY_COMMENT_SYNC_MIN_AGE_DAYS:-7\}" = "7" \]/);
   assert.match(continueStep, /preserving exact continuation dispatch/);
   assert.match(

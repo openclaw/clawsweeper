@@ -5,6 +5,7 @@ import { stripAnsi } from "./comment-router-utils.js";
 import { ghCliEnv } from "./process-env.js";
 import { repoRoot } from "./paths.js";
 import { ghRetryKind, ghRetryWaitMs } from "../github-retry.js";
+import { parseGhJsonWithRetry, parseGhJsonWithRetryAsync } from "../github-json.js";
 import { resolveCommand } from "../command.js";
 
 const execFileAsync = promisify(execFile);
@@ -27,14 +28,22 @@ export function ghJsonWithRetry<T = JsonValue>(
   ghArgs: string[],
   options: GhRetryOptions | number = {},
 ): T {
-  return JSON.parse(ghTextWithRetry(ghArgs, options) || "null") as T;
+  return parseGhJsonWithRetry<T>(() => ghTextWithRetry(ghArgs, options) || "null", ghArgs, {
+    onRetry: (_error, attempt) => sleepMs(ghRetryWaitMs("transient", attempt - 1)),
+  });
 }
 
 export async function ghJsonWithRetryAsync<T = JsonValue>(
   ghArgs: string[],
   options: GhRetryOptions | number = {},
 ): Promise<T> {
-  return JSON.parse((await ghTextWithRetryAsync(ghArgs, options)) || "null") as T;
+  return parseGhJsonWithRetryAsync<T>(
+    async () => (await ghTextWithRetryAsync(ghArgs, options)) || "null",
+    ghArgs,
+    {
+      onRetry: (_error, attempt) => sleepAsync(ghRetryWaitMs("transient", attempt - 1)),
+    },
+  );
 }
 
 export function ghJsonBestEffort<T = JsonValue>(

@@ -31,14 +31,14 @@ run-name: >-
       github.event.inputs.apply_existing == 'true' &&
       github.event.inputs.apply_sync_comments_only != 'true' &&
       (github.event.inputs.apply_item_numbers != '' ||
-        github.event.inputs.apply_limit != '5' ||
+        github.event.inputs.apply_limit != '20' ||
         github.event.inputs.apply_min_age_days != '0' ||
         github.event.inputs.apply_min_age_minutes != '' ||
         github.event.inputs.apply_kind != 'all' ||
         github.event.inputs.apply_close_reasons != 'all' ||
         github.event.inputs.apply_stale_min_age_days != '60' ||
         github.event.inputs.apply_close_delay_ms != '2000' ||
-        github.event.inputs.apply_checkpoint_size != '5' ||
+        github.event.inputs.apply_checkpoint_size != '20' ||
         github.event.inputs.apply_comment_sync_min_age_days != '7')) &&
       format('Apply custom ClawSweeper closures for {0}', github.event.inputs.target_repo || 'openclaw/openclaw') ||
     ((github.event_name == 'workflow_dispatch' && github.event.inputs.apply_existing == 'true') ||
@@ -2750,14 +2750,14 @@ jobs:
           can_share_apply_continuation=false
           if [ "${APPLY_AUTO_SELECTED_BATCH:-false}" = "true" ] &&
             [ -z "${APPLY_ITEM_NUMBERS:-}" ] &&
-            [ "${APPLY_LIMIT:-5}" = "5" ] &&
+            [ "${APPLY_LIMIT:-20}" = "20" ] &&
             [ "${APPLY_MIN_AGE_DAYS:-0}" = "0" ] &&
             [ -z "${APPLY_MIN_AGE_MINUTES:-}" ] &&
             [ "${APPLY_KIND:-all}" = "all" ] &&
             [ "${APPLY_CLOSE_REASONS:-all}" = "all" ] &&
             [ "${APPLY_STALE_MIN_AGE_DAYS:-60}" = "60" ] &&
             [ "${APPLY_CLOSE_DELAY_MS:-2000}" = "2000" ] &&
-            [ "${APPLY_CHECKPOINT_SIZE:-5}" = "5" ] &&
+            [ "${APPLY_CHECKPOINT_SIZE:-20}" = "20" ] &&
             [ "${APPLY_COMMENT_SYNC_MIN_AGE_DAYS:-7}" = "7" ]; then
             can_share_apply_continuation=true
           fi
