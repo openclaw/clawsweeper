@@ -1280,6 +1280,24 @@ test("workflow utilities select eligible proposed close records", () => {
       "",
     ].join("\n"),
   );
+  write(
+    path.join(root, "records/openclaw-openclaw/items/openclaw-openclaw-32.md"),
+    [
+      "---",
+      "repository: openclaw/openclaw",
+      "type: pull_request",
+      "decision: keep_open",
+      "review_status: complete",
+      "local_checkout_access: verified",
+      "action_taken: kept_open",
+      "close_reason: none",
+      "pr_rating_overall: F",
+      `item_created_at: ${oldDate}`,
+      `work_cluster_refs: ${JSON.stringify(["Superseded by #400"])}`,
+      "---",
+      "",
+    ].join("\n"),
+  );
 
   const selected = withCwd(root, () =>
     proposedItemNumbers({
@@ -1292,7 +1310,46 @@ test("workflow utilities select eligible proposed close records", () => {
     }),
   );
 
-  assert.deepEqual(selected, [5, 12, 15, 17, 18, 21, 22, 24, 25, 26, 27, 30, 31]);
+  assert.deepEqual(selected, [5, 12, 15, 17, 18, 21, 22, 24, 25, 26, 27, 30, 31, 32]);
+  assert.deepEqual(
+    withCwd(root, () =>
+      proposedItemNumbers({
+        targetRepo: "openclaw/openclaw",
+        applyKind: "all",
+        applyCloseReasons: "low_signal_unmergeable_pr",
+        staleMinAgeDays: 60,
+        minAgeDays: 0,
+        minAgeMinutes: null,
+      }),
+    ),
+    [15, 22, 32],
+  );
+  assert.deepEqual(
+    withCwd(root, () =>
+      proposedItemNumbers({
+        targetRepo: "openclaw/openclaw",
+        applyKind: "all",
+        applyCloseReasons: "duplicate_or_superseded",
+        staleMinAgeDays: 60,
+        minAgeDays: 0,
+        minAgeMinutes: null,
+      }),
+    ),
+    [17, 18, 21, 24, 25, 26, 32],
+  );
+  assert.deepEqual(
+    withCwd(root, () =>
+      proposedPrCloseCoverageItemNumbers({
+        targetRepo: "openclaw/openclaw",
+        applyKind: "all",
+        applyCloseReasons: "low_signal_unmergeable_pr",
+        staleMinAgeDays: 60,
+        minAgeDays: 0,
+        minAgeMinutes: null,
+      }),
+    ),
+    [],
+  );
 });
 
 test("workflow utilities allow ClawHub implemented-on-main issue proposals", () => {

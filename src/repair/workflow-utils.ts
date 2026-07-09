@@ -1183,6 +1183,14 @@ function selectedProposedItemCandidates(
         isSelectableCloseAction(action, reason) &&
         allowedForTarget(options.targetRepo, type, reason, allowedReasons) &&
         (!allowedCloseReasons || allowedCloseReasons.has(reason));
+      const promotionCloseReasons = pullRequestClosePromotionReasons(markdown, options.targetRepo, {
+        staleMinAgeMs: options.staleMinAgeDays * 24 * 60 * 60 * 1000,
+      });
+      const selectedPromotionCloseReasons = promotionCloseReasons.filter(
+        (promotionReason) =>
+          allowedForTarget(options.targetRepo, type, promotionReason, allowedReasons) &&
+          (!allowedCloseReasons || allowedCloseReasons.has(promotionReason)),
+      );
       const selectablePromotion =
         decision === "keep_open" &&
         action === "kept_open" &&
@@ -1192,10 +1200,11 @@ function selectedProposedItemCandidates(
         hasPullRequestClosePromotionSignal(markdown, options.targetRepo, {
           staleMinAgeMs: options.staleMinAgeDays * 24 * 60 * 60 * 1000,
         }) &&
-        allowedForTarget(options.targetRepo, type, "duplicate_or_superseded", allowedReasons) &&
-        (!allowedCloseReasons || allowedCloseReasons.has("duplicate_or_superseded"));
+        selectedPromotionCloseReasons.length > 0;
       const selectableProofPromotion =
-        selectablePromotion && hasLinkedPullRequestSupersessionSignal(markdown, options.targetRepo);
+        selectablePromotion &&
+        selectedPromotionCloseReasons.includes("duplicate_or_superseded") &&
+        hasLinkedPullRequestSupersessionSignal(markdown, options.targetRepo);
       if (!selectableClose && !selectablePromotion) return [];
       const prCloseCoverageProofCanRun =
         type === "pull_request" &&
@@ -1211,7 +1220,7 @@ function selectedProposedItemCandidates(
         return [];
       }
       if (!olderThan(frontMatterValue(markdown, "item_created_at"), minAgeMs)) return [];
-      const candidateCloseReason = selectablePromotion ? "duplicate_or_superseded" : reason;
+      const candidateCloseReason = selectablePromotion ? selectedPromotionCloseReasons[0]! : reason;
       return [
         {
           number,
@@ -1476,6 +1485,28 @@ function hasPullRequestClosePromotionSignal(
     ((hasRecommendedPauseOrCloseOption(markdown) || hasStaleFRatedPullRequestSignal(markdown)) &&
       olderThan(frontMatterValue(markdown, "item_created_at"), options.staleMinAgeMs))
   );
+}
+
+function pullRequestClosePromotionReasons(
+  markdown: string,
+  targetRepo: string,
+  options: { staleMinAgeMs: number },
+): Array<"duplicate_or_superseded" | "low_signal_unmergeable_pr"> {
+  const linkedSupersession = hasLinkedPullRequestSupersessionSignal(markdown, targetRepo);
+  const recommendedPauseOrClose = hasRecommendedPauseOrCloseOption(markdown);
+  const reasons: Array<"duplicate_or_superseded" | "low_signal_unmergeable_pr"> = [];
+  if (linkedSupersession || recommendedPauseOrClose) reasons.push("duplicate_or_superseded");
+  // Pause-or-close is a deterministic duplicate promotion. A linked PR is only
+  // speculative until live hydration, so an F-rated report can still fall back
+  // to the low-signal promotion when that linked candidate does not cover it.
+  if (
+    !recommendedPauseOrClose &&
+    hasStaleFRatedPullRequestSignal(markdown) &&
+    olderThan(frontMatterValue(markdown, "item_created_at"), options.staleMinAgeMs)
+  ) {
+    reasons.push("low_signal_unmergeable_pr");
+  }
+  return reasons;
 }
 
 function hasLinkedPullRequestSupersessionSignal(markdown: string, targetRepo: string): boolean {

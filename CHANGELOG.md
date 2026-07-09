@@ -36,6 +36,7 @@ checkpoint, and status-only commits are intentionally omitted.
 - Stopped later CI reruns from resetting PR inactivity clocks by anchoring head activity to the latest source-triggered workflow run associated with that pull request.
 - Prioritized ready close decisions and bounded PR close-coverage proofs before slow policy-gated candidates, kept default 20-item continuations shareable, and retried malformed successful GitHub JSON responses.
 - Kept automatic close-apply checkpoints within their runtime budget by bounding GitHub commands and retry waits while preserving resumable report and cursor output.
+- Kept stale F-rated PR promotions semantically consistent by recording them as low-signal unmergeable closes and replacing contradictory keep-open summaries.
 - Removed exponential backtracking from durable review-marker parsing so adversarial comment bodies cannot stall apply or comment synchronization.
 - Scoped Mantis recommendations to supported proof capture and kept code changes, PR repair, and GitHub mutations in ClawSweeper's deterministic lanes. Thanks @brokemac79.
 - Bounded automatic close-apply checkpoints to ten minutes, persisted exact cursor progress before immediate continuation, and limited close-coverage proofs to the time remaining in the checkpoint.

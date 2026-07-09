@@ -13581,6 +13581,11 @@ function upgradeNoDiffPullRequestReport(markdown: string, item: Item): string {
   upgraded = replaceFrontMatterValue(upgraded, "work_status", "none");
   upgraded = replaceSectionValue(
     upgraded,
+    REVIEW_SECTIONS.summary,
+    "Close this PR: GitHub reports no changed files against the current base branch.",
+  );
+  upgraded = replaceSectionValue(
+    upgraded,
     REVIEW_SECTIONS.bestSolution,
     "Close this PR: GitHub reports no changed files against the current base branch, so the branch is already empty or superseded by `main`.",
   );
@@ -13598,6 +13603,8 @@ function upgradeNoDiffPullRequestReport(markdown: string, item: Item): string {
 }
 
 interface PullRequestClosePromotion {
+  closeReason: CloseReason;
+  summary: string;
   bestSolution: string;
   evidence: string;
   closeComment: string;
@@ -13625,7 +13632,7 @@ function upgradePullRequestClosePromotionReport(
 ): string {
   let upgraded = markdown;
   upgraded = replaceFrontMatterValue(upgraded, "decision", "close");
-  upgraded = replaceFrontMatterValue(upgraded, "close_reason", "duplicate_or_superseded");
+  upgraded = replaceFrontMatterValue(upgraded, "close_reason", promotion.closeReason);
   upgraded = replaceFrontMatterValue(upgraded, "confidence", "high");
   upgraded = replaceFrontMatterValue(upgraded, "action_taken", "proposed_close");
   upgraded = replaceFrontMatterValue(
@@ -13646,6 +13653,7 @@ function upgradePullRequestClosePromotionReport(
     "item_source_revision",
     context.sourceRevision ?? "unknown",
   );
+  upgraded = replaceSectionValue(upgraded, REVIEW_SECTIONS.summary, promotion.summary);
   upgraded = replaceSectionValue(upgraded, REVIEW_SECTIONS.bestSolution, promotion.bestSolution);
   upgraded = replaceSectionValue(upgraded, REVIEW_SECTIONS.evidence, promotion.evidence);
   upgraded = replaceSectionValue(upgraded, REVIEW_SECTIONS.closeComment, promotion.closeComment);
@@ -14570,6 +14578,9 @@ function staleFRatedPullRequestPromotion(
     return null;
   }
   return {
+    closeReason: "low_signal_unmergeable_pr",
+    summary:
+      "Close this stale PR: the latest review rated it F, it still lacks merge-ready proof, and there has been no human follow-up after the durable review.",
     coverageProofFallbackRefs: false,
     bestSolution:
       "Close this stale PR. The latest review rated it F, the branch still lacks merge-ready proof, and there has been no human follow-up after the durable review.",
@@ -14591,6 +14602,8 @@ function pauseOrClosePromotion(
   const option = recommendedPauseOrCloseOption(markdown);
   if (!option || !isOlderThanDays(item.createdAt, staleMinAgeDays)) return null;
   return {
+    closeReason: "duplicate_or_superseded",
+    summary: `Close this stale PR as superseded: ${option.title}.`,
     coverageProofFallbackRefs: false,
     bestSolution: `Close this stale PR as superseded: ${option.title}. ${option.body}`,
     evidence: [
@@ -14613,6 +14626,8 @@ function linkedPullRequestSupersessionPromotion(
     ? `merged at ${linkedPull.mergedAt}`
     : "still open as the canonical replacement";
   return {
+    closeReason: "duplicate_or_superseded",
+    summary: `Close this PR as superseded by ${linkedPull.url}.`,
     coverageProofFallbackRefs: true,
     bestSolution: `Close this PR as superseded by ${linkedPull.url}.`,
     evidence: [
@@ -19557,7 +19572,7 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
         );
         storedUpdatedAt = item.updatedAt;
         storedHash = itemSnapshotHash(item, promotionContext);
-        closeReason = "duplicate_or_superseded";
+        closeReason = promotion.closeReason;
         isCloseProposal = true;
         cachedPrCloseCoverageProofGateResult = undefined;
       }

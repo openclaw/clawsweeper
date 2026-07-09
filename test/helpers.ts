@@ -439,6 +439,7 @@ export function promotionGhMock(options: {
   closeAppliedBodyLogPath?: string;
   closeCommandDelayMs?: number;
   comments?: unknown[];
+  reviews?: unknown[];
   timeline?: unknown[];
   linkedPulls?: Record<number, unknown>;
   linkedPullsAfterProof?: Record<number, unknown>;
@@ -474,6 +475,7 @@ export function promotionGhMock(options: {
 	const jqIndex = args.indexOf("--jq");
 	const jq = jqIndex >= 0 ? args[jqIndex + 1] : "";
 	const comments = ${JSON.stringify(comments)};
+	const reviews = ${JSON.stringify(options.reviews ?? [])};
 	const timeline = ${JSON.stringify(timeline)};
 	const linkedPulls = ${JSON.stringify(linkedPulls)};
 	const linkedPullsAfterProof = ${JSON.stringify(options.linkedPullsAfterProof ?? {})};
@@ -554,8 +556,10 @@ export function promotionGhMock(options: {
 	} else if (args[0] === "api" && new RegExp("/issues/" + number + "/comments(?:\\\\?|$)").test(path)) {
 	  const currentComments = liveComments();
 	  console.log(JSON.stringify(slurp ? [currentComments] : currentComments));
-	} else if (args[0] === "api" && new RegExp("/issues/" + number + "/timeline(?:\\\\?|$)").test(path)) {
+} else if (args[0] === "api" && new RegExp("/issues/" + number + "/timeline(?:\\\\?|$)").test(path)) {
   console.log(JSON.stringify(slurp ? [timeline] : timeline));
+} else if (args[0] === "api" && new RegExp("/pulls/" + number + "/reviews(?:\\\\?|$)").test(path)) {
+  console.log(JSON.stringify(slurp ? [reviews] : reviews));
 } else if (args[0] === "api" && new RegExp("/issues/" + number + "$").test(path)) {
   console.log(JSON.stringify({
     number,

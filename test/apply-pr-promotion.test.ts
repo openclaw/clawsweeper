@@ -168,22 +168,23 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/322\\/timeline(?:\\?|$
   }
 });
 
-test("apply-decisions promotes old F-rated stale PRs to duplicate closes", () => {
+test("apply-decisions promotes old F-rated stale PRs with low-signal close semantics", () => {
   const root = mkdtempSync(tmpPrefix);
   try {
     const itemsDir = join(root, "items");
     const closedDir = join(root, "closed");
     const plansDir = join(root, "plans");
     const reportPath = join(root, "apply-report.json");
+    const closeAppliedBodyLogPath = join(root, "close-applied-body.log");
     mkdirSync(itemsDir, { recursive: true });
     mkdirSync(plansDir, { recursive: true });
-    const synced = reportWithSyncedReviewComment(
-      stalePullRequestReport({
-        work_cluster_refs: JSON.stringify(["Related discussion in #400"]),
-      }),
-      330,
-      "none",
+    const staleReport = stalePullRequestReport({
+      work_cluster_refs: JSON.stringify(["Related discussion in #400"]),
+    }).replace(
+      "## Summary\n\nThe dashboard has queue_fix_pr candidates but no generated coding plan.",
+      "## Summary\n\nKeep open: this branch needs contributor follow-up before any close decision.",
     );
+    const synced = reportWithSyncedReviewComment(staleReport, 330, "none");
     writeFileSync(join(itemsDir, "330.md"), synced.report, "utf8");
 
     withMockGh(
@@ -191,6 +192,7 @@ test("apply-decisions promotes old F-rated stale PRs to duplicate closes", () =>
       promotionGhMock({
         number: 330,
         comment: synced.comment,
+        closeAppliedBodyLogPath,
         linkedPulls: {
           400: {
             number: 400,
@@ -217,7 +219,6 @@ test("apply-decisions promotes old F-rated stale PRs to duplicate closes", () =>
               extraArgs: [
                 "--target-repo",
                 "openclaw/openclaw",
-                "--dry-run",
                 "--apply-kind",
                 "all",
                 "--processed-limit",
@@ -244,9 +245,19 @@ test("apply-decisions promotes old F-rated stale PRs to duplicate closes", () =>
     );
     assert.match(
       report.find((entry) => entry.action === "closed")?.reason ?? "",
-      /duplicate or superseded/,
+      /low-signal unmergeable PR/,
     );
     assert.doesNotMatch(JSON.stringify(report), /proof should not run/);
+    const promoted = readFileSync(join(closedDir, "330.md"), "utf8");
+    assert.match(promoted, /^close_reason: low_signal_unmergeable_pr$/m);
+    assert.match(
+      promoted,
+      /## Summary\n\nClose this stale PR: the latest review rated it F, it still lacks merge-ready proof, and there has been no human follow-up after the durable review\./,
+    );
+    assert.doesNotMatch(promoted, /## Summary\n\nKeep open:/);
+    const closeAppliedBody = readFileSync(closeAppliedBodyLogPath, "utf8");
+    assert.match(closeAppliedBody, /Close reason: low-signal unmergeable PR\./);
+    assert.doesNotMatch(closeAppliedBody, /Keep open:/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -681,22 +692,22 @@ test("apply-decisions does not promote docs-only PRs superseded by code-only pul
     const reportPath = join(root, "apply-report.json");
     mkdirSync(itemsDir, { recursive: true });
     mkdirSync(plansDir, { recursive: true });
-    const synced = reportWithSyncedReviewComment(
-      stalePullRequestReport({
-        number: 337,
-        title: "ENETDOWN docs companion",
-        pr_rating_overall: "D",
-        pr_rating_proof: "D",
-        pr_rating_patch: "D",
-        pull_files: JSON.stringify(["docs/gateway/troubleshooting.md", "docs/platforms/macos.md"]),
-        pull_files_truncated: false,
-        work_cluster_refs: JSON.stringify([
-          "Superseded by https://github.com/openclaw/openclaw/pull/400",
-        ]),
-      }),
-      337,
-      "none",
-    );
+    const docsOnlyReport = stalePullRequestReport({
+      number: 337,
+      title: "ENETDOWN docs companion",
+      pr_rating_overall: "D",
+      pr_rating_proof: "D",
+      pr_rating_patch: "D",
+      pull_files: JSON.stringify(["docs/gateway/troubleshooting.md", "docs/platforms/macos.md"]),
+      pull_files_truncated: false,
+      work_cluster_refs: JSON.stringify([
+        "Superseded by https://github.com/openclaw/openclaw/pull/400",
+      ]),
+    })
+      .replace("Overall tier: F", "Overall tier: D")
+      .replace("Proof tier: F", "Proof tier: D")
+      .replace("Patch tier: F", "Patch tier: D");
+    const synced = reportWithSyncedReviewComment(docsOnlyReport, 337, "none");
     writeFileSync(join(itemsDir, "337.md"), synced.report, "utf8");
 
     withMockGh(
