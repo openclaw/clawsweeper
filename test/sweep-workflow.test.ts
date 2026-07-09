@@ -109,7 +109,8 @@ test("apply workflow installs Codex only when proof-eligible apply work can run"
   assert.ok(applyStart > setupCodexStart);
   const reconcileBlock = applyJob.slice(reconcileStart, preselectStart);
   assert.match(reconcileBlock, /GH_TOKEN: \$\{\{ steps\.target-write-token\.outputs\.token \}\}/);
-  assert.match(reconcileBlock, /pnpm run reconcile -- "\$\{reconcile_args\[@\]\}"/);
+  assert.match(reconcileBlock, /source scripts\/apply-workflow-helpers\.sh/);
+  assert.match(reconcileBlock, /persist_reconciliation "\$\{reconcile_args\[@\]\}"/);
   assert.match(
     applyJob.slice(setupCodexStart, applyStart),
     /if: \$\{\{ steps\.apply-preselect\.outputs\.needs_codex == 'true' \}\}/,
@@ -131,6 +132,77 @@ test("apply workflow installs Codex only when proof-eligible apply work can run"
   assert.match(preselectBlock, /if \[ -n "\$selected" \]; then\s+needs_codex=true/);
   assert.doesNotMatch(preselectBlock, /if \[ -n "\$item_numbers" \]; then\s+needs_codex=true/);
   assert.doesNotMatch(preselectBlock, /normalized_apply_close_reasons=/);
+});
+
+test("apply workflow durably publishes each reconciliation before no-op exits", () => {
+  const workflow = readText(".github/workflows/sweep.yml");
+  const applyJob = workflow.slice(workflow.indexOf("\n  apply-existing:"));
+  const preselectReconcile = applyJob.indexOf('persist_reconciliation "${reconcile_args[@]}"');
+  const preselectStart = applyJob.indexOf("- name: Preselect apply work that can need Codex");
+  const applyStart = applyJob.indexOf(
+    "- name: Apply unchanged proposed decisions with checkpoints",
+  );
+  const policyNoop = applyJob.indexOf("APPLY_NOOP=true", applyStart);
+  const applyReconcile = applyJob.indexOf(
+    'persist_reconciliation "${reconcile_args[@]}"',
+    applyStart,
+  );
+  const commentIdle = applyJob.indexOf('--state "Apply comments idle"', applyStart);
+  const closeIdle = applyJob.indexOf('--state "Apply idle"', applyStart);
+
+  assert.ok(preselectReconcile !== -1);
+  assert.ok(preselectReconcile < preselectStart);
+  assert.ok(policyNoop > preselectReconcile);
+  assert.ok(applyReconcile > policyNoop);
+  assert.ok(commentIdle > applyReconcile);
+  assert.ok(closeIdle > applyReconcile);
+});
+
+test("reconcile publication expands only exact changed record tuples", () => {
+  const reconcileJson = JSON.stringify({
+    changedItemNumbers: [7, 42],
+    changedRecordFiles: ["7.md", "openclaw-openclaw-42.md"],
+  });
+  const output = execFileSync(
+    "bash",
+    [
+      "-lc",
+      [
+        "source scripts/apply-workflow-helpers.sh",
+        'publish_changes_with_strategy() { printf "%s\\n" "$@"; }',
+        'TARGET_REPO="OpenClaw/OpenClaw"',
+        'publish_reconciled_records "persist reconciliation" "$RECONCILE_JSON"',
+      ].join("\n"),
+    ],
+    { encoding: "utf8", env: { ...process.env, RECONCILE_JSON: reconcileJson } },
+  );
+  assert.deepEqual(output.trim().split("\n"), [
+    "normal",
+    "persist reconciliation",
+    "records/openclaw-openclaw/items/7.md",
+    "records/openclaw-openclaw/closed/7.md",
+    "records/openclaw-openclaw/plans/7.md",
+    "records/openclaw-openclaw/decision-packets/7.json",
+    "records/openclaw-openclaw/items/openclaw-openclaw-42.md",
+    "records/openclaw-openclaw/closed/openclaw-openclaw-42.md",
+    "records/openclaw-openclaw/plans/openclaw-openclaw-42.md",
+    "records/openclaw-openclaw/decision-packets/42.json",
+  ]);
+
+  const emptyOutput = execFileSync(
+    "bash",
+    [
+      "-lc",
+      [
+        "source scripts/apply-workflow-helpers.sh",
+        'publish_changes_with_strategy() { printf "unexpected publish\\n"; return 1; }',
+        'TARGET_REPO="openclaw/openclaw"',
+        'publish_reconciled_records "persist reconciliation" \'{"changedItemNumbers":[],"changedRecordFiles":[]}\'',
+      ].join("\n"),
+    ],
+    { encoding: "utf8" },
+  );
+  assert.equal(emptyOutput.trim(), "Reconcile changed no durable record tuples.");
 });
 
 test("apply workflow target token can inspect source workflow runs", () => {
@@ -230,7 +302,7 @@ test("apply workflow bounds checkpoints and requeues with a fresh token", () => 
     applyStep,
     /\$apply_close_reasons\.\$candidate_quality_detail Scan window: \$close_processed_limit/,
   );
-  const applyReconcileIndex = applyStep.indexOf('pnpm run reconcile -- "${reconcile_args[@]}"');
+  const applyReconcileIndex = applyStep.indexOf('persist_reconciliation "${reconcile_args[@]}"');
   const qualitySummaryIndex = applyStep.indexOf("summarize_apply_candidate_quality");
   const proposedNumbersIndex = applyStep.indexOf("proposed-item-numbers");
   assert.notEqual(applyReconcileIndex, -1);

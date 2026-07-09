@@ -135,8 +135,14 @@ export function stagePaths(paths: readonly string[]): void {
   const uniquePaths = uniqueNonEmpty(paths);
   if (uniquePaths.length === 0) throw new Error("No paths were provided for publishing");
   for (const path of uniquePaths) {
-    if (hasWorktreePath(path) || spawnGit(["status", "--porcelain", "--", path]).stdout.trim()) {
+    const status = spawnGit(["status", "--porcelain", "--", path]).stdout.trim();
+    const worktreePath = resolve(publishRoot() ?? process.cwd(), path);
+    if (hasWorktreePath(path) || existsSync(worktreePath)) {
       runGit(["add", "-A", "--", path]);
+    } else if (status) {
+      // Rebuilds remove exact missing paths with git rm, so their deletion is
+      // already staged and there is no pathspec left for git add to match.
+      console.log(`Publish path deletion already staged: ${path}`);
     } else {
       console.log(`Skipping untracked missing publish path: ${path}`);
     }
@@ -394,6 +400,10 @@ function preserveStateOnlyFiles({
 }): { root: string; files: string[] } {
   const root = mkdtempSync(join(tmpdir(), "clawsweeper-state-preserve-"));
   if (!existsSync(destination)) return { root, files: [] };
+  if (!existsSync(source) && statSync(destination).isFile()) {
+    // An exact-file publish with no source file is an intentional deletion.
+    return { root, files: [] };
+  }
 
   const files: string[] = [];
   for (const file of listFiles(destination)) {

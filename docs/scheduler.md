@@ -447,6 +447,12 @@ association, paired issue/PR state, snapshot drift, and repository profile
 rules. It closes only unchanged high-confidence proposals and otherwise updates
 or syncs the durable ClawSweeper review comment.
 
+Apply reconciles hydrated records before both candidate preselection and
+execution. Each pass immediately publishes only the item, closed, plan, and
+decision-packet paths for record numbers it changed. This keeps folder moves
+and closed-item sidecar cleanup durable even when policy filtering, an empty
+comment-sync batch, or an empty close queue makes the rest of the run a no-op.
+
 Broad normal review publishes records first, then dispatches durable review
 comment sync into the separate apply/comment-sync lane. This includes scheduled
 runs and workflow-dispatch continuations, so slow GitHub comment writes do not

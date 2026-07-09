@@ -8,15 +8,22 @@ max_close_processed_limit=900
 coverage_proof_limit=2
 progress_every=10
 
-publish_changes() {
-  local message="$1"
-  shift
-  local publish_args=(--message "$message" --rebase-strategy apply-records)
+publish_changes_with_strategy() {
+  local rebase_strategy="$1"
+  local message="$2"
+  shift 2
+  local publish_args=(--message "$message" --rebase-strategy "$rebase_strategy")
   local path
   for path in "$@"; do
     publish_args+=(--path "$path")
   done
   pnpm run repair:publish-main -- "${publish_args[@]}"
+}
+
+publish_changes() {
+  local message="$1"
+  shift
+  publish_changes_with_strategy apply-records "$message" "$@"
 }
 
 publish_status() {
@@ -25,6 +32,53 @@ publish_status() {
     echo "Best-effort status update failed: $message"
     git restore results/sweep-status || true
   fi
+}
+
+publish_reconciled_records() {
+  local message="$1"
+  local reconcile_json="$2"
+  local target_slug="${TARGET_REPO,,}"
+  target_slug="${target_slug//\//-}"
+  local publish_paths=()
+  local record_file
+  local number
+
+  if ! jq -e '
+    .changedRecordFiles
+    | type == "array"
+      and all(.[]; type == "string" and test("^[a-z0-9][a-z0-9-]*-[0-9]+\\.md$|^[0-9]+\\.md$"))
+  ' >/dev/null <<<"$reconcile_json"; then
+    echo "Reconcile output has invalid changedRecordFiles" >&2
+    return 1
+  fi
+
+  while IFS= read -r record_file; do
+    [ -n "$record_file" ] || continue
+    number="${record_file%.md}"
+    number="${number##*-}"
+    publish_paths+=(
+      "records/${target_slug}/items/${record_file}"
+      "records/${target_slug}/closed/${record_file}"
+      "records/${target_slug}/plans/${record_file}"
+      "records/${target_slug}/decision-packets/${number}.json"
+    )
+  done < <(jq -r '.changedRecordFiles[]' <<<"$reconcile_json")
+
+  if [ "${#publish_paths[@]}" -eq 0 ]; then
+    echo "Reconcile changed no durable record tuples."
+    return 0
+  fi
+  # Reconciliation can move records in either direction. A normal rebase falls
+  # back to rebuilding these exact tuples when a concurrent state write
+  # conflicts, instead of applying the close-biased apply-records resolver.
+  publish_changes_with_strategy normal "$message" "${publish_paths[@]}"
+}
+
+persist_reconciliation() {
+  local reconcile_json
+  reconcile_json="$(pnpm run --silent reconcile -- "$@")"
+  echo "$reconcile_json"
+  publish_reconciled_records "chore: persist sweep reconciliation" "$reconcile_json"
 }
 
 write_apply_health() {

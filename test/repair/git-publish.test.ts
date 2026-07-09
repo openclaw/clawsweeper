@@ -387,6 +387,47 @@ test("publishMainCommit fails closed when a racing sweep status is malformed", (
   assert.equal(run("git", ["--git-dir", origin, "show", `main:${statusFile}`], root), "{broken\n");
 });
 
+test("publishMainCommit rebuilds a reopened record after a concurrent closed update", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-publish-"));
+  const origin = path.join(root, "origin.git");
+  const work = path.join(root, "work");
+  const other = path.join(root, "other");
+  const itemPath = "records/openclaw-openclaw/items/1.md";
+  const closedPath = "records/openclaw-openclaw/closed/1.md";
+  run("git", ["init", "--bare", origin], root);
+  run("git", ["clone", origin, work], root);
+  configureUser(work);
+  write(path.join(work, closedPath), "closed old\n");
+  run("git", ["add", "."], work);
+  run("git", ["commit", "-m", "initial"], work);
+  run("git", ["push", "origin", "HEAD:main"], work);
+  run("git", ["--git-dir", origin, "symbolic-ref", "HEAD", "refs/heads/main"], root);
+  run("git", ["checkout", "-B", "main", "origin/main"], work);
+
+  run("git", ["clone", origin, other], root);
+  configureUser(other);
+  write(path.join(other, closedPath), "closed remote update\n");
+  run("git", ["commit", "-am", "remote closed update"], other);
+  run("git", ["push", "origin", "HEAD:main"], other);
+
+  fs.rmSync(path.join(work, closedPath));
+  write(path.join(work, itemPath), "reopened\n");
+
+  const result = withCwd(work, () =>
+    publishMainCommit({
+      message: "chore: persist sweep reconciliation",
+      paths: [itemPath, closedPath],
+      maxAttempts: 1,
+      pushAttempts: 1,
+      rebaseStrategy: "normal",
+    }),
+  );
+
+  assert.equal(result, "committed");
+  assert.equal(run("git", ["--git-dir", origin, "show", `main:${itemPath}`], root), "reopened\n");
+  assert.throws(() => run("git", ["--git-dir", origin, "show", `main:${closedPath}`], root));
+});
+
 test("publishMainCommit rebuilds generated state commits without deleting concurrent records", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-publish-"));
   const origin = path.join(root, "origin.git");
@@ -857,6 +898,38 @@ test("publishMainCommit refreshes published source paths after a state rebase", 
     run("git", ["--git-dir", origin, "show", "state:apply-report.json"], root),
     '[{"report":"concurrent-again"}]\n',
   );
+});
+
+test("publishMainCommit deletes an exact missing decision packet from state", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-publish-"));
+  const origin = path.join(root, "origin.git");
+  const work = path.join(root, "work");
+  const state = path.join(root, "state");
+  const packet = "records/openclaw-openclaw/decision-packets/5.json";
+  run("git", ["init", "--bare", origin], root);
+  run("git", ["clone", origin, state], root);
+  configureUser(state);
+  write(path.join(state, packet), '{"subject":{"state":"open"}}\n');
+  run("git", ["add", "."], state);
+  run("git", ["commit", "-m", "initial state"], state);
+  run("git", ["push", "origin", "HEAD:state"], state);
+  run("git", ["--git-dir", origin, "symbolic-ref", "HEAD", "refs/heads/state"], root);
+  run("git", ["checkout", "-B", "state", "origin/state"], state);
+  fs.mkdirSync(work);
+
+  const result = withEnv({ CLAWSWEEPER_STATE_DIR: state }, () =>
+    withCwd(work, () =>
+      publishMainCommit({
+        message: "chore: remove stale decision packet",
+        paths: [packet],
+        maxAttempts: 1,
+        pushAttempts: 1,
+      }),
+    ),
+  );
+
+  assert.equal(result, "committed");
+  assert.throws(() => run("git", ["--git-dir", origin, "show", `state:${packet}`], root));
 });
 
 test("publishMainCommit preserves concurrent records from a newer state snapshot", () => {

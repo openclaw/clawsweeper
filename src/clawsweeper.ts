@@ -1074,6 +1074,8 @@ interface ReconcileResult {
   movedToItems: number;
   removedStaleClosedCopies: number;
   fetchedClosedAt: number;
+  changedItemNumbers: number[];
+  changedRecordFiles: string[];
 }
 
 type AuditRecordLocation = "items" | "closed";
@@ -21822,6 +21824,50 @@ function reconcileFolders(options: {
   let movedToItems = 0;
   let removedStaleClosedCopies = 0;
   let fetchedClosedAt = 0;
+  const changedItemNumbers = new Set<number>();
+  const changedRecordFiles = new Set<string>();
+  const markRecordChanged = (number: number, file: string): void => {
+    changedItemNumbers.add(number);
+    changedRecordFiles.add(file);
+  };
+
+  const cleanAlreadyClosedSidecars = (
+    number: number,
+    file: string,
+    reportPath: string,
+    markdown: string,
+  ): void => {
+    const planPath = workPlanPathForReport(reportPath, plansDir);
+    let changed = existsSync(planPath);
+    if (!dryRun && existsSync(planPath)) unlinkSync(planPath);
+
+    const packetPath = options.decisionPacketsDir
+      ? join(options.decisionPacketsDir, `${number}.json`)
+      : undefined;
+    const packetReference = frontMatterValue(markdown, "decision_packet_path");
+    const packetSha = frontMatterValue(markdown, "decision_packet_sha256");
+    const hasPacketReference = (value: string | undefined): boolean =>
+      Boolean(value && value !== "none" && value !== "unknown");
+    const shouldSyncPacket = Boolean(
+      packetPath &&
+      (existsSync(packetPath) ||
+        hasPacketReference(packetReference) ||
+        hasPacketReference(packetSha)),
+    );
+    if (shouldSyncPacket && packetPath) {
+      if (dryRun) {
+        changed = true;
+      } else {
+        const packetBefore = existsSync(packetPath) ? readFileSync(packetPath, "utf8") : null;
+        const syncedMarkdown = syncReconciledDecisionPacket(markdown, reportPath, "closed");
+        const packetAfter = existsSync(packetPath) ? readFileSync(packetPath, "utf8") : null;
+        if (syncedMarkdown !== markdown) writeFileSync(reportPath, syncedMarkdown, "utf8");
+        changed ||= syncedMarkdown !== markdown || packetAfter !== packetBefore;
+      }
+    }
+
+    if (changed) markRecordChanged(number, file);
+  };
 
   for (const file of markdownFiles(options.itemsDir)) {
     const number = numberForMarkdownFile(file);
@@ -21854,6 +21900,7 @@ function reconcileFolders(options: {
       const planPath = workPlanPathForReport(sourcePath, plansDir);
       if (existsSync(planPath)) unlinkSync(planPath);
     }
+    markRecordChanged(number, file);
     movedToClosed += 1;
   }
 
@@ -21862,7 +21909,10 @@ function reconcileFolders(options: {
     const sourcePath = join(options.closedDir, file);
     const sourceMarkdown = readFileSync(sourcePath, "utf8");
     if (!isMarkdownForActiveRepo(sourceMarkdown, file)) continue;
-    if (!openNumbers.has(number)) continue;
+    if (!openNumbers.has(number)) {
+      cleanAlreadyClosedSidecars(number, file, sourcePath, sourceMarkdown);
+      continue;
+    }
     const destinationPath = join(options.itemsDir, file);
     if (existsSync(destinationPath)) {
       if (!dryRun) {
@@ -21877,6 +21927,7 @@ function reconcileFolders(options: {
         }
         unlinkSync(sourcePath);
       }
+      markRecordChanged(number, file);
       removedStaleClosedCopies += 1;
       continue;
     }
@@ -21887,6 +21938,7 @@ function reconcileFolders(options: {
     );
     moveMarkdownFile({ sourcePath, destinationPath, markdown, dryRun });
     syncWorkPlanFromReport({ markdown, reportPath: destinationPath, plansDir, dryRun });
+    markRecordChanged(number, file);
     movedToItems += 1;
   }
 
@@ -21897,6 +21949,8 @@ function reconcileFolders(options: {
     movedToItems,
     removedStaleClosedCopies,
     fetchedClosedAt,
+    changedItemNumbers: [...changedItemNumbers].sort((left, right) => left - right),
+    changedRecordFiles: [...changedRecordFiles].sort(),
   };
 }
 

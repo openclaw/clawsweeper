@@ -2320,6 +2320,7 @@ jobs:
           TARGET_REPO: ${{ steps.target.outputs.target_repo }}
         run: |
           set -euo pipefail
+          source scripts/apply-workflow-helpers.sh
           item_numbers="${{ github.event_name == 'repository_dispatch' && github.event.client_payload.item_number || github.event.inputs.apply_item_numbers || '' }}"
           if [ "$item_numbers" = "__cursor__" ]; then
             item_numbers=""
@@ -2328,7 +2329,7 @@ jobs:
           if [ -n "$item_numbers" ]; then
             reconcile_args+=(--item-numbers "$item_numbers")
           fi
-          pnpm run reconcile -- "${reconcile_args[@]}"
+          persist_reconciliation "${reconcile_args[@]}"
 
       - name: Preselect apply work that can need Codex
         id: apply-preselect
@@ -2484,7 +2485,7 @@ jobs:
           if [ -n "$item_numbers" ]; then
             reconcile_args+=(--item-numbers "$item_numbers")
           fi
-          pnpm run reconcile -- "${reconcile_args[@]}"
+          persist_reconciliation "${reconcile_args[@]}"
           summarize_apply_candidate_quality
           if [ "$sync_open_pr_batch" = "true" ] && [ -z "$item_numbers" ]; then
             batch_env=".artifacts/comment-sync-batch.env"
