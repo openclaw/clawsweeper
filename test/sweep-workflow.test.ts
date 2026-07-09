@@ -59,6 +59,18 @@ test("dashboard syncs Worker secrets with durable lifecycle storage", () => {
   assert.doesNotMatch(workflow, /wrangler@[^\s]+ secret bulk/);
 });
 
+test("dashboard CI refreshes on cadence without completion-trigger storms", () => {
+  const workflow = readText(".github/workflows/dashboard-ci.yml");
+  const triggers = workflow.slice(workflow.indexOf("on:"), workflow.indexOf("\npermissions:"));
+  const concurrency = workflow.slice(workflow.indexOf("concurrency:"), workflow.indexOf("\njobs:"));
+
+  assert.match(triggers, /workflow_dispatch:/);
+  assert.match(triggers, /schedule:\s+- cron: "\*\/5 \* \* \* \*"/);
+  assert.doesNotMatch(triggers, /workflow_run:/);
+  assert.match(concurrency, /group: clawsweeper-live-dashboard-ci/);
+  assert.match(concurrency, /cancel-in-progress: true/);
+});
+
 test("publish workflow installs Codex from the root checkout path", () => {
   const workflow = readText(".github/workflows/sweep.yml");
   const publishJobStart = workflow.indexOf("\n  publish:");
