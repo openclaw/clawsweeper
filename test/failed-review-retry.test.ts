@@ -39,6 +39,92 @@ Codex review failed: timeout.
 `;
 }
 
+function failedIssueRetryFixture(root: string, number: number) {
+  const itemsDir = join(root, "items");
+  const reportPath = join(root, "failed-review-retry-report.json");
+  const itemPath = join(itemsDir, `${number}.md`);
+  const statePath = join(root, "failed-review-retry-state", `${number}.json`);
+  const issue = {
+    number,
+    title: "Failed issue review retry sample",
+    body: "Issue body",
+    html_url: `https://github.com/openclaw/openclaw/issues/${number}`,
+    created_at: "2026-06-01T00:00:00Z",
+    updated_at: "2026-06-01T01:00:00Z",
+    closed_at: null,
+    state: "open",
+    locked: false,
+    active_lock_reason: null,
+    author_association: "CONTRIBUTOR",
+    user: { login: "contributor" },
+    labels: [],
+    comments: 0,
+    pull_request: null,
+  };
+  const sourceRevision = itemSourceRevisionSha256ForTest(issue, []);
+  mkdirSync(itemsDir, { recursive: true });
+  writeFileSync(
+    itemPath,
+    failedReviewReport({
+      number,
+      type: "issue",
+      pull_head_sha: "unknown",
+      item_source_revision: sourceRevision,
+    }),
+    "utf8",
+  );
+  return { itemsDir, reportPath, itemPath, statePath, issue, sourceRevision, number };
+}
+
+function issueRetryGhMock(
+  issue: ReturnType<typeof failedIssueRetryFixture>["issue"],
+  dispatchBody: string,
+): string {
+  return `#!/usr/bin/env node
+const args = process.argv.slice(2);
+const path = args.find((arg) => arg.startsWith("repos/")) || "";
+if (/\\/issues\\/${issue.number}\\/comments(?:\\?|$)/.test(path)) {
+  console.log(JSON.stringify(args.includes("--slurp") ? [[]] : []));
+  process.exit(0);
+}
+if (path.endsWith("/issues/${issue.number}")) {
+  console.log(${JSON.stringify(JSON.stringify(issue))});
+  process.exit(0);
+}
+if (path === "repos/openclaw/clawsweeper") {
+  console.log("main");
+  process.exit(0);
+}
+if (path.endsWith("/dispatches") && args.includes("POST")) {
+  ${dispatchBody}
+} else {
+  console.error("unexpected gh args: " + args.join(" "));
+  process.exit(1);
+}
+`;
+}
+
+function runFailedIssueRetry(
+  fixture: ReturnType<typeof failedIssueRetryFixture>,
+  extraArgs: string[] = [],
+): void {
+  execFileSync(process.execPath, [
+    "dist/clawsweeper.js",
+    "retry-failed-reviews",
+    "--target-repo",
+    "openclaw/openclaw",
+    "--items-dir",
+    fixture.itemsDir,
+    "--item-number",
+    String(fixture.number),
+    "--workflow-ref",
+    "main",
+    "--report-path",
+    fixture.reportPath,
+    ...extraArgs,
+  ]);
+}
+
 test("failed review retry eligibility requires infrastructure failure and matching live head", () => {
   const markdown = failedReviewReport();
   const now = Date.parse("2026-06-05T20:00:00Z");
@@ -347,6 +433,10 @@ process.exit(1);
       }>;
       assert.equal(rejected[0]?.action, "skipped_dispatch_failed");
       assert.match(rejected[0]?.reason ?? "", /default branch \(main\).*test-branch/);
+      assert.doesNotMatch(
+        readFileSync(join(itemsDir, "4343.md"), "utf8"),
+        /^failed_review_retry_count:/m,
+      );
 
       execFileSync(process.execPath, [
         "dist/clawsweeper.js",
@@ -378,6 +468,229 @@ process.exit(1);
     assert.ok(dispatch.includes("event_type=clawsweeper_target_sweep"));
     assert.ok(dispatch.includes(`client_payload[expected_source_revision]=${sourceRevision}`));
     assert.ok(dispatch.includes("client_payload[source_revision_requeue_count]=0"));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("failed issue retry bounds a hung GitHub fetch and flushes its report", () => {
+  const root = mkdtempSync(tmpPrefix);
+  const fixture = failedIssueRetryFixture(root, 4344);
+  const maxRuntimeMs = 2_200;
+  try {
+    const startedAt = Date.now();
+    withMockGh(root, "setTimeout(() => {}, 10_000);", () => {
+      runFailedIssueRetry(fixture, ["--max-runtime-ms", String(maxRuntimeMs)]);
+    });
+    assert.ok(Date.now() - startedAt < 4_000, "hung gh exceeded the retry runtime bound");
+    const report = JSON.parse(readFileSync(fixture.reportPath, "utf8")) as Array<{
+      number: number;
+      action: string;
+      reason: string;
+    }>;
+    assert.deepEqual(report, [
+      {
+        number: 0,
+        action: "skipped_runtime_budget",
+        reason: report[0]?.reason,
+      },
+    ]);
+    assert.match(report[0]?.reason ?? "", new RegExp(`max runtime ${maxRuntimeMs}ms reached`));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("failed issue retry checkpoints an ambiguous dispatch and prevents an immediate duplicate", () => {
+  const root = mkdtempSync(tmpPrefix);
+  const fixture = failedIssueRetryFixture(root, 4345);
+  const originalMarkdown = readFileSync(fixture.itemPath, "utf8");
+  const dispatchCountPath = join(root, "dispatch-count.txt");
+  const incrementDispatchCount = `
+const fs = require("node:fs");
+const counter = ${JSON.stringify(dispatchCountPath)};
+const count = fs.existsSync(counter) ? Number(fs.readFileSync(counter, "utf8")) : 0;
+fs.writeFileSync(counter, String(count + 1));
+`;
+  try {
+    withMockGh(
+      root,
+      issueRetryGhMock(fixture.issue, `${incrementDispatchCount}\nsetTimeout(() => {}, 10_000);`),
+      () => runFailedIssueRetry(fixture, ["--max-runtime-ms", "2200"]),
+    );
+
+    const firstReport = JSON.parse(readFileSync(fixture.reportPath, "utf8")) as Array<{
+      action: string;
+      reason?: string;
+    }>;
+    assert.equal(firstReport.at(-1)?.action, "skipped_runtime_budget", JSON.stringify(firstReport));
+    const checkpointed = readFileSync(fixture.itemPath, "utf8");
+    assert.match(checkpointed, /^failed_review_retry_status: dispatch_failed$/m);
+    assert.match(checkpointed, /^failed_review_retry_count: 1$/m);
+    assert.match(checkpointed, /^failed_review_retry_revision_kind: item_source_revision$/m);
+    assert.match(
+      checkpointed,
+      new RegExp(`^failed_review_retry_revision: ${fixture.sourceRevision}$`, "m"),
+    );
+    assert.equal((checkpointed.match(/^## Failed Review Retry$/gm) ?? []).length, 1);
+    assert.equal(readFileSync(dispatchCountPath, "utf8"), "1");
+    const retryState = JSON.parse(readFileSync(fixture.statePath, "utf8")) as {
+      status: string;
+      attempts: number;
+      revision: string;
+    };
+    assert.deepEqual(
+      {
+        status: retryState.status,
+        attempts: retryState.attempts,
+        revision: retryState.revision,
+      },
+      { status: "dispatch_failed", attempts: 1, revision: fixture.sourceRevision },
+    );
+
+    // The generated sidecar is authoritative; review records are not published by this lane.
+    writeFileSync(fixture.itemPath, originalMarkdown, "utf8");
+
+    withMockGh(
+      root,
+      issueRetryGhMock(fixture.issue, `${incrementDispatchCount}\nprocess.exit(0);`),
+      () => runFailedIssueRetry(fixture),
+    );
+    const secondReport = JSON.parse(readFileSync(fixture.reportPath, "utf8")) as Array<{
+      action: string;
+      attempts?: number;
+    }>;
+    assert.equal(secondReport[0]?.action, "skipped_retry_cooldown");
+    assert.equal(secondReport[0]?.attempts, 1);
+    assert.equal(readFileSync(dispatchCountPath, "utf8"), "1");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("failed issue retry records a near-deadline success before later eligibility checks", () => {
+  const root = mkdtempSync(tmpPrefix);
+  const fixture = failedIssueRetryFixture(root, 4346);
+  const originalMarkdown = readFileSync(fixture.itemPath, "utf8");
+  const dispatchCountPath = join(root, "dispatch-count.txt");
+  const incrementDispatchCount = `
+const fs = require("node:fs");
+const counter = ${JSON.stringify(dispatchCountPath)};
+const count = fs.existsSync(counter) ? Number(fs.readFileSync(counter, "utf8")) : 0;
+fs.writeFileSync(counter, String(count + 1));
+`;
+  try {
+    withMockGh(
+      root,
+      issueRetryGhMock(
+        fixture.issue,
+        `${incrementDispatchCount}\nsetTimeout(() => process.exit(0), 1300);`,
+      ),
+      () => runFailedIssueRetry(fixture, ["--max-runtime-ms", "2800"]),
+    );
+    const firstReport = JSON.parse(readFileSync(fixture.reportPath, "utf8")) as Array<{
+      action: string;
+      reason?: string;
+    }>;
+    assert.equal(
+      firstReport[0]?.action,
+      "dispatched_failed_review_retry",
+      JSON.stringify(firstReport),
+    );
+    const dispatched = readFileSync(fixture.itemPath, "utf8");
+    assert.match(dispatched, /^failed_review_retry_status: dispatched$/m);
+    assert.match(dispatched, /^failed_review_retry_count: 1$/m);
+    assert.equal((dispatched.match(/^## Failed Review Retry$/gm) ?? []).length, 1);
+    const retryState = JSON.parse(readFileSync(fixture.statePath, "utf8")) as {
+      status: string;
+      attempts: number;
+    };
+    assert.equal(retryState.status, "dispatched");
+    assert.equal(retryState.attempts, 1);
+
+    writeFileSync(fixture.itemPath, originalMarkdown, "utf8");
+
+    withMockGh(
+      root,
+      issueRetryGhMock(fixture.issue, `${incrementDispatchCount}\nprocess.exit(0);`),
+      () => runFailedIssueRetry(fixture),
+    );
+    const secondReport = JSON.parse(readFileSync(fixture.reportPath, "utf8")) as Array<{
+      action: string;
+      attempts?: number;
+    }>;
+    assert.equal(secondReport[0]?.action, "skipped_retry_cooldown");
+    assert.equal(secondReport[0]?.attempts, 1);
+    assert.equal(readFileSync(dispatchCountPath, "utf8"), "1");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("failed issue retry limit counts checkpointed ambiguous dispatches", () => {
+  const root = mkdtempSync(tmpPrefix);
+  const first = failedIssueRetryFixture(root, 4347);
+  const second = failedIssueRetryFixture(root, 4348);
+  const dispatchCountPath = join(root, "dispatch-count.txt");
+  const issues = JSON.stringify({ [first.number]: first.issue, [second.number]: second.issue });
+  const ghMock = `#!/usr/bin/env node
+const fs = require("node:fs");
+const args = process.argv.slice(2);
+const path = args.find((arg) => arg.startsWith("repos/")) || "";
+const issues = ${issues};
+const issueMatch = path.match(/\\/issues\\/(\\d+)$/);
+if (/\\/issues\\/\\d+\\/comments(?:\\?|$)/.test(path)) {
+  console.log(JSON.stringify(args.includes("--slurp") ? [[]] : []));
+  process.exit(0);
+}
+if (issueMatch && issues[issueMatch[1]]) {
+  console.log(JSON.stringify(issues[issueMatch[1]]));
+  process.exit(0);
+}
+if (path === "repos/openclaw/clawsweeper") {
+  console.log("main");
+  process.exit(0);
+}
+if (path.endsWith("/dispatches") && args.includes("POST")) {
+  const counter = ${JSON.stringify(dispatchCountPath)};
+  const count = fs.existsSync(counter) ? Number(fs.readFileSync(counter, "utf8")) : 0;
+  fs.writeFileSync(counter, String(count + 1));
+  console.error("dispatch response lost after acceptance");
+  process.exit(1);
+}
+console.error("unexpected gh args: " + args.join(" "));
+process.exit(1);
+`;
+  try {
+    withMockGh(root, ghMock, () => {
+      execFileSync(process.execPath, [
+        "dist/clawsweeper.js",
+        "retry-failed-reviews",
+        "--target-repo",
+        "openclaw/openclaw",
+        "--items-dir",
+        first.itemsDir,
+        "--limit",
+        "1",
+        "--workflow-ref",
+        "main",
+        "--report-path",
+        first.reportPath,
+      ]);
+    });
+
+    const report = JSON.parse(readFileSync(first.reportPath, "utf8")) as Array<{
+      number: number;
+      action: string;
+      attempts?: number;
+    }>;
+    assert.deepEqual(
+      report.map(({ number, action, attempts }) => ({ number, action, attempts })),
+      [{ number: 4347, action: "skipped_dispatch_failed", attempts: 1 }],
+    );
+    assert.equal(readFileSync(dispatchCountPath, "utf8"), "1");
+    assert.match(readFileSync(first.itemPath, "utf8"), /^failed_review_retry_count: 1$/m);
+    assert.doesNotMatch(readFileSync(second.itemPath, "utf8"), /^failed_review_retry_count:/m);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

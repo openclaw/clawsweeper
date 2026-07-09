@@ -2460,7 +2460,11 @@ test("sweep failed-review retry lane defaults to dry-run exact-item dispatch", (
   assert.match(retryBlock, /--dry-run/);
   assert.match(retryBlock, /--workflow-repo "\$GITHUB_REPOSITORY"/);
   assert.match(retryBlock, /--target-repo "\$TARGET_REPO"/);
-  assert.match(retryBlock, /--path records\/openclaw-openclaw/);
+  assert.match(retryBlock, /RETRY_MAX_RUNTIME_MS:.*'600000'/);
+  assert.match(retryBlock, /--max-runtime-ms "\$RETRY_MAX_RUNTIME_MS"/);
+  assert.match(retryBlock, /--state-dir results\/failed-review-retries\/openclaw-openclaw/);
+  assert.match(retryBlock, /--path results\/failed-review-retries\/openclaw-openclaw/);
+  assert.doesNotMatch(retryBlock, /--path records\/openclaw-openclaw/);
 });
 
 test("sweep dashboard status writes are scoped to the target repository", () => {

@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { join } from "node:path";
 import test from "node:test";
 
+import { main, referencingMergedPullRequestsForIssueForTest } from "../dist/clawsweeper.js";
 import {
   implementedCloseReport,
   lowSignalCloseReport,
@@ -65,6 +66,56 @@ test("apply-decisions bounds a hung GitHub command and writes a resumable runtim
     assertRuntimeYield(fixture, maxRuntimeMs);
   } finally {
     rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("concurrent apply invocations do not leak a runtime budget", async () => {
+  const root = mkdtempSync(tmpPrefix);
+  const binDir = join(root, "bin");
+  const ghMock = join(binDir, "gh.js");
+  mkdirSync(binDir, { recursive: true });
+  writeFileSync(ghMock, "process.stdout.write(JSON.stringify({ items: [] }));\n", "utf8");
+  const originalGhBin = process.env.GH_BIN;
+  const originalGhBinArgs = process.env.GH_BIN_ARGS;
+  const originalSearch = process.env.CLAWSWEEPER_REFERENCING_PR_SEARCH;
+  process.env.GH_BIN = process.execPath;
+  process.env.GH_BIN_ARGS = JSON.stringify([ghMock]);
+  process.env.CLAWSWEEPER_REFERENCING_PR_SEARCH = "true";
+  try {
+    const base = [
+      "apply-decisions",
+      "--target-repo",
+      "openclaw/openclaw",
+      "--max-runtime-ms",
+      "1",
+      "--limit",
+      "1",
+    ];
+    await Promise.all([
+      main([
+        ...base,
+        "--items-dir",
+        join(root, "missing-a"),
+        "--report-path",
+        join(root, "a.json"),
+      ]),
+      main([
+        ...base,
+        "--items-dir",
+        join(root, "missing-b"),
+        "--report-path",
+        join(root, "b.json"),
+      ]),
+    ]);
+    assert.deepEqual(referencingMergedPullRequestsForIssueForTest(1), []);
+  } finally {
+    if (originalGhBin === undefined) delete process.env.GH_BIN;
+    else process.env.GH_BIN = originalGhBin;
+    if (originalGhBinArgs === undefined) delete process.env.GH_BIN_ARGS;
+    else process.env.GH_BIN_ARGS = originalGhBinArgs;
+    if (originalSearch === undefined) delete process.env.CLAWSWEEPER_REFERENCING_PR_SEARCH;
+    else process.env.CLAWSWEEPER_REFERENCING_PR_SEARCH = originalSearch;
+    rmSync(root, { recursive: true, force: true });
   }
 });
 

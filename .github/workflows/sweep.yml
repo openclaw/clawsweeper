@@ -2080,6 +2080,7 @@ jobs:
           RETRY_LIMIT: ${{ vars.CLAWSWEEPER_FAILED_REVIEW_RETRY_LIMIT || '3' }}
           RETRY_MAX_ATTEMPTS: ${{ vars.CLAWSWEEPER_FAILED_REVIEW_RETRY_MAX_ATTEMPTS || '2' }}
           RETRY_COOLDOWN_MINUTES: ${{ vars.CLAWSWEEPER_FAILED_REVIEW_RETRY_COOLDOWN_MINUTES || '45' }}
+          RETRY_MAX_RUNTIME_MS: ${{ vars.CLAWSWEEPER_FAILED_REVIEW_RETRY_MAX_RUNTIME_MS || '600000' }}
           CODEX_TIMEOUT_MS: ${{ vars.CLAWSWEEPER_FAILED_REVIEW_RETRY_CODEX_TIMEOUT_MS || vars.CLAWSWEEPER_CODEX_TIMEOUT_MS || '1200000' }}
         run: |
           set -euo pipefail
@@ -2094,9 +2095,11 @@ jobs:
             --limit "$RETRY_LIMIT" \
             --max-attempts "$RETRY_MAX_ATTEMPTS" \
             --cooldown-minutes "$RETRY_COOLDOWN_MINUTES" \
+            --max-runtime-ms "$RETRY_MAX_RUNTIME_MS" \
             --codex-timeout-ms "$CODEX_TIMEOUT_MS" \
             --workflow-repo "$GITHUB_REPOSITORY" \
             --workflow-ref main \
+            --state-dir results/failed-review-retries/openclaw-openclaw \
             --report-path artifacts/failed-review-retry-report.json \
             "${dry_run_arg[@]}"
 
@@ -2112,7 +2115,7 @@ jobs:
         run: |
           pnpm run repair:publish-main -- \
             --message "chore: update failed review retry state" \
-            --path records/openclaw-openclaw \
+            --path results/failed-review-retries/openclaw-openclaw \
             --rebase-strategy theirs
 
   audit-dashboard:
