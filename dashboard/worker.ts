@@ -31,6 +31,9 @@ type ExactReviewDecision = {
   supersedesInProgress: boolean;
   codexTimeoutMs?: number;
   mediaProofTimeoutMs?: number;
+  commandStatusMarker?: string;
+  statusCommentId?: number;
+  additionalPrompt?: string;
 };
 type ExactReviewQueueItem = {
   key: string;
@@ -80,6 +83,9 @@ const DEFAULT_EXACT_REVIEW_RETRY_MS = 30_000;
 const EXACT_REVIEW_QUEUE_DELIVERY_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const EXACT_REVIEW_QUEUE_STATE_KEY = "exact-review-queue";
 const EXACT_REVIEW_QUEUE_NAME = "global";
+const EXACT_REVIEW_COMMAND_STATUS_MARKER_PATTERN =
+  /^<!-- clawsweeper-command-status:[^<>\r\n]{1,200} -->$/;
+const EXACT_REVIEW_ADDITIONAL_PROMPT_MAX_CHARS = 5000;
 const CLAWSWEEPER_REVIEW_REPO = "openclaw/clawsweeper";
 const CLAWSWEEPER_STATE_REPO = "openclaw/clawsweeper-state";
 const CLAWSWEEPER_STATE_REF = "state";
@@ -355,7 +361,13 @@ export class ExactReviewQueue {
       const key = exactReviewItemKey(decision);
       const current = state.items[key];
       if (current) {
-        current.decision = decision;
+        // A pending command has no executor yet, so an ordinary item event must not erase its
+        // acknowledgement context. Once dispatched, that lease already owns the context and a
+        // newer revision should start clean unless it carries its own command fields.
+        current.decision =
+          current.state === "pending"
+            ? mergePendingExactReviewDecision(current.decision, decision)
+            : decision;
         current.revision += 1;
         current.updatedAt = now;
         current.nextAttemptAt = now;
@@ -1121,12 +1133,39 @@ function exactReviewDecisionFrom(value): ExactReviewDecision | null {
   const itemKind = String(decision.itemKind || "");
   const sourceEvent = String(decision.sourceEvent || "");
   const sourceAction = String(decision.sourceAction || "");
+  const hasCommandStatusMarker = Object.hasOwn(decision, "commandStatusMarker");
+  const commandStatusMarker = hasCommandStatusMarker ? decision.commandStatusMarker : undefined;
+  const hasStatusCommentId = Object.hasOwn(decision, "statusCommentId");
+  const statusCommentId = hasStatusCommentId ? Number(decision.statusCommentId) : undefined;
+  const hasAdditionalPrompt = Object.hasOwn(decision, "additionalPrompt");
+  const additionalPrompt = hasAdditionalPrompt ? decision.additionalPrompt : undefined;
   if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(targetRepo)) return null;
   if (!/^[A-Za-z0-9_./-]+$/.test(targetBranch)) return null;
   if (!Number.isInteger(itemNumber) || itemNumber <= 0) return null;
   if (itemKind !== "issue" && itemKind !== "pull_request") return null;
   if (sourceEvent !== "issues" && sourceEvent !== "pull_request") return null;
   if (!sourceAction) return null;
+  if (
+    hasCommandStatusMarker &&
+    (typeof commandStatusMarker !== "string" ||
+      !EXACT_REVIEW_COMMAND_STATUS_MARKER_PATTERN.test(commandStatusMarker))
+  ) {
+    return null;
+  }
+  if (
+    hasStatusCommentId &&
+    (!Number.isSafeInteger(statusCommentId) || Number(statusCommentId) <= 0)
+  ) {
+    return null;
+  }
+  if (
+    hasAdditionalPrompt &&
+    (typeof additionalPrompt !== "string" ||
+      additionalPrompt.length > EXACT_REVIEW_ADDITIONAL_PROMPT_MAX_CHARS ||
+      additionalPrompt.includes("\0"))
+  ) {
+    return null;
+  }
   return {
     targetRepo,
     targetBranch,
@@ -1141,7 +1180,25 @@ function exactReviewDecisionFrom(value): ExactReviewDecision | null {
     ...(Number.isFinite(Number(decision.mediaProofTimeoutMs))
       ? { mediaProofTimeoutMs: Number(decision.mediaProofTimeoutMs) }
       : {}),
+    ...(hasCommandStatusMarker ? { commandStatusMarker } : {}),
+    ...(hasStatusCommentId ? { statusCommentId } : {}),
+    ...(hasAdditionalPrompt ? { additionalPrompt } : {}),
   };
+}
+
+function mergePendingExactReviewDecision(
+  current: ExactReviewDecision,
+  next: ExactReviewDecision,
+): ExactReviewDecision {
+  const merged = { ...current, ...next };
+  if (
+    Object.hasOwn(next, "commandStatusMarker") &&
+    next.commandStatusMarker !== current.commandStatusMarker &&
+    !Object.hasOwn(next, "statusCommentId")
+  ) {
+    delete merged.statusCommentId;
+  }
+  return merged;
 }
 
 function exactReviewItemKey(decision: ExactReviewDecision) {
@@ -1590,6 +1647,17 @@ async function dispatchClawsweeperItem({
   decision: ExactReviewDecision;
   leaseId?: string;
 }) {
+  const reviewOptions = {
+    ...(decision.codexTimeoutMs ? { codex_timeout_ms: decision.codexTimeoutMs } : {}),
+    ...(decision.mediaProofTimeoutMs
+      ? { media_proof_timeout_ms: decision.mediaProofTimeoutMs }
+      : {}),
+    ...(decision.commandStatusMarker
+      ? { command_status_marker: decision.commandStatusMarker }
+      : {}),
+    ...(decision.statusCommentId ? { status_comment_id: decision.statusCommentId } : {}),
+    ...(decision.additionalPrompt ? { additional_prompt: decision.additionalPrompt } : {}),
+  };
   await githubTokenJson({
     token,
     path: `/repos/${CLAWSWEEPER_REVIEW_REPO}/dispatches`,
@@ -1605,10 +1673,7 @@ async function dispatchClawsweeperItem({
         source_action: decision.sourceAction,
         supersedes_in_progress: decision.supersedesInProgress,
         ...(leaseId ? { queue_lease_id: leaseId } : {}),
-        ...(decision.codexTimeoutMs ? { codex_timeout_ms: decision.codexTimeoutMs } : {}),
-        ...(decision.mediaProofTimeoutMs
-          ? { media_proof_timeout_ms: decision.mediaProofTimeoutMs }
-          : {}),
+        ...(Object.keys(reviewOptions).length > 0 ? { review_options: reviewOptions } : {}),
       },
     },
     errorLabel: "ClawSweeper item dispatch",

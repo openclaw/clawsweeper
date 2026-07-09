@@ -251,13 +251,19 @@ test("exact-review queue coalesces deliveries, leases bounded work, and rejects 
         EXACT_REVIEW_QUEUE_MAX_CONCURRENT: "1",
       },
     );
-    const first = buildExactReviewQueueRequest("delivery-1", 597, "opened");
+    const commandStatusMarker =
+      "<!-- clawsweeper-command-status:597:re_review:0123456789abcdef0123456789abcdef01234567 -->";
+    const first = buildExactReviewQueueRequest("delivery-1", 597, "opened", "issue", undefined, {
+      commandStatusMarker,
+      statusCommentId: 9001,
+      additionalPrompt: "Check the maintainer-requested regression path.",
+      codexTimeoutMs: 1_200_000,
+      mediaProofTimeoutMs: 480_000,
+    });
+    const duplicate = first.clone();
     const latest = buildExactReviewQueueRequest("delivery-2", 597, "edited");
     const second = buildExactReviewQueueRequest("delivery-3", 598, "opened");
-    assert.equal(
-      (await queue.fetch(buildExactReviewQueueRequest("delivery-1", 597, "opened"))).status,
-      202,
-    );
+    assert.equal((await queue.fetch(duplicate)).status, 202);
     assert.equal((await queue.fetch(latest)).status, 202);
     assert.equal((await queue.fetch(second)).status, 202);
     assert.equal((await queue.fetch(first)).status, 202);
@@ -269,6 +275,14 @@ test("exact-review queue coalesces deliveries, leases bounded work, and rejects 
     const payload = dispatched[0].client_payload as Record<string, unknown>;
     assert.equal(payload.item_number, 597);
     assert.equal(payload.source_action, "edited");
+    assert.ok(Object.keys(payload).length <= 10);
+    assert.deepEqual(payload.review_options, {
+      codex_timeout_ms: 1_200_000,
+      media_proof_timeout_ms: 480_000,
+      command_status_marker: commandStatusMarker,
+      status_comment_id: 9001,
+      additional_prompt: "Check the maintainer-requested regression path.",
+    });
     const leaseId = String(payload.queue_lease_id || "");
     assert.match(leaseId, /^[0-9a-f-]{36}$/);
 
@@ -306,6 +320,12 @@ test("exact-review queue coalesces deliveries, leases bounded work, and rejects 
       }),
     );
     assert.deepEqual(await completed.json(), { ok: true, requeued: true });
+    const requeued = (await storage.get("exact-review-queue")) as {
+      items: Record<string, { decision: Record<string, unknown> }>;
+    };
+    assert.equal(requeued.items["openclaw/gogcli#597"].decision.commandStatusMarker, undefined);
+    assert.equal(requeued.items["openclaw/gogcli#597"].decision.statusCommentId, undefined);
+    assert.equal(requeued.items["openclaw/gogcli#597"].decision.additionalPrompt, undefined);
     const stats = await (
       await queue.fetch(new Request("https://clawsweeper-exact-review-queue/stats"))
     ).json();
@@ -488,7 +508,10 @@ test("exact-review queue wakes while target capacity remains", async () => {
 });
 
 test("authenticated legacy exact-review intake enters the durable queue", async () => {
-  const queue = new ExactReviewQueue({ storage: new MemoryDurableStorage() }, {});
+  const storage = new MemoryDurableStorage();
+  const queue = new ExactReviewQueue({ storage }, {});
+  const commandStatusMarker =
+    "<!-- clawsweeper-command-status:597:re_review:0123456789abcdef0123456789abcdef01234567 -->";
   const payload = JSON.stringify({
     delivery_id: "legacy:100:1",
     decision: {
@@ -499,6 +522,9 @@ test("authenticated legacy exact-review intake enters the durable queue", async 
       sourceEvent: "issues",
       sourceAction: "legacy_dispatch",
       supersedesInProgress: false,
+      commandStatusMarker,
+      statusCommentId: "9001",
+      additionalPrompt: "Check the maintainer-requested regression path.",
     },
   });
   const signature = `sha256=${createHmac("sha256", "test-secret").update(payload).digest("hex")}`;
@@ -523,6 +549,21 @@ test("authenticated legacy exact-review intake enters the durable queue", async 
     queued: true,
     item_key: "openclaw/gogcli#597",
   });
+  const stored = (await storage.get("exact-review-queue")) as {
+    items: Record<string, { decision: Record<string, unknown> }>;
+  };
+  assert.deepEqual(
+    {
+      commandStatusMarker: stored.items["openclaw/gogcli#597"].decision.commandStatusMarker,
+      statusCommentId: stored.items["openclaw/gogcli#597"].decision.statusCommentId,
+      additionalPrompt: stored.items["openclaw/gogcli#597"].decision.additionalPrompt,
+    },
+    {
+      commandStatusMarker,
+      statusCommentId: 9001,
+      additionalPrompt: "Check the maintainer-requested regression path.",
+    },
+  );
 
   const denied = await worker.fetch(
     new Request("https://clawsweeper.openclaw.ai/internal/exact-review/enqueue", {
@@ -536,6 +577,33 @@ test("authenticated legacy exact-review intake enters the durable queue", async 
     },
   );
   assert.equal(denied.status, 401);
+});
+
+test("exact-review queue rejects unbounded or unsafe command context", async () => {
+  const queue = new ExactReviewQueue({ storage: new MemoryDurableStorage() }, {});
+  const invalidDecisions = [
+    {
+      commandStatusMarker: "<!-- clawsweeper-command-status:597:re_review:na -->\nextra",
+    },
+    { statusCommentId: Number.MAX_SAFE_INTEGER + 1 },
+    { additionalPrompt: "x".repeat(5001) },
+    { additionalPrompt: "unsafe\0prompt" },
+  ];
+
+  for (const [index, decision] of invalidDecisions.entries()) {
+    const response = await queue.fetch(
+      buildExactReviewQueueRequest(
+        `invalid-command-context-${index}`,
+        597,
+        "legacy_dispatch",
+        "issue",
+        undefined,
+        decision,
+      ),
+    );
+    assert.equal(response.status, 400);
+    assert.deepEqual(await response.json(), { error: "invalid_exact_review_item" });
+  }
 });
 
 test("exact-review queue retries dispatch failures and reclaims an unclaimed lease", async () => {
@@ -4323,6 +4391,7 @@ function buildExactReviewQueueRequest(
   sourceAction: string,
   itemKind: "issue" | "pull_request" = "issue",
   targetRepo = "openclaw/gogcli",
+  decisionOverrides: Record<string, unknown> = {},
 ) {
   const sourceEvent = itemKind === "issue" ? "issues" : "pull_request";
   return new Request("https://clawsweeper-exact-review-queue/enqueue", {
@@ -4337,6 +4406,7 @@ function buildExactReviewQueueRequest(
         sourceEvent,
         sourceAction,
         supersedesInProgress: sourceAction === "edited" || sourceAction === "synchronize",
+        ...decisionOverrides,
       },
     }),
   });

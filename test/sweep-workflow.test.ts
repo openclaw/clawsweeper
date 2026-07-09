@@ -980,6 +980,9 @@ test("sweep event reviews and target fanout avoid storm amplification", () => {
   assert.match(eventBlock, /cancel-in-progress: false/);
   assert.match(legacyIntakeBlock, /legacy-event-queue-intake:/);
   assert.match(legacyIntakeBlock, /\/internal\/exact-review\/enqueue/);
+  assert.match(legacyIntakeBlock, /commandStatusMarker: payload\.command_status_marker/);
+  assert.match(legacyIntakeBlock, /statusCommentId: payload\.status_comment_id/);
+  assert.match(legacyIntakeBlock, /additionalPrompt: payload\.additional_prompt/);
   assert.match(
     fanoutBlock,
     /FANOUT_LIMIT: \$\{\{ github\.event\.schedule == '41 \* \* \* \*' && '6' \|\| \(github\.event\.schedule == '37 \*\/6 \* \* \*' && '12' \|\| '6'\) \}\}/,
@@ -1017,7 +1020,7 @@ test("sweep exact event reviews consume adaptive Codex timeout payload", () => {
 
   assert.match(
     resolveBlock,
-    /ADAPTIVE_CODEX_TIMEOUT_MS: \$\{\{ github\.event\.client_payload\.codex_timeout_ms \|\| '' \}\}/,
+    /ADAPTIVE_CODEX_TIMEOUT_MS: \$\{\{ github\.event\.client_payload\.review_options\.codex_timeout_ms \|\| github\.event\.client_payload\.codex_timeout_ms \|\| '' \}\}/,
   );
   assert.match(
     resolveBlock,
@@ -1025,7 +1028,7 @@ test("sweep exact event reviews consume adaptive Codex timeout payload", () => {
   );
   assert.match(
     resolveBlock,
-    /MEDIA_PROOF_TIMEOUT_MS: \$\{\{ github\.event\.client_payload\.media_proof_timeout_ms \|\| '0' \}\}/,
+    /MEDIA_PROOF_TIMEOUT_MS: \$\{\{ github\.event\.client_payload\.review_options\.media_proof_timeout_ms \|\| github\.event\.client_payload\.media_proof_timeout_ms \|\| '0' \}\}/,
   );
   assert.match(resolveBlock, /Ignoring invalid adaptive codex_timeout_ms payload/);
   assert.match(

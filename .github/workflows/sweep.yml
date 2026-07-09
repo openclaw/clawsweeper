@@ -253,6 +253,15 @@ jobs:
                 ...(Number.isFinite(Number(payload.media_proof_timeout_ms))
                   ? { mediaProofTimeoutMs: Number(payload.media_proof_timeout_ms) }
                   : {}),
+                ...(Object.hasOwn(payload, "command_status_marker")
+                  ? { commandStatusMarker: payload.command_status_marker }
+                  : {}),
+                ...(Object.hasOwn(payload, "status_comment_id")
+                  ? { statusCommentId: payload.status_comment_id }
+                  : {}),
+                ...(Object.hasOwn(payload, "additional_prompt")
+                  ? { additionalPrompt: payload.additional_prompt }
+                  : {}),
               },
             }),
           );
@@ -316,9 +325,9 @@ jobs:
       - name: Resolve event payload
         id: target
         env:
-          ADAPTIVE_CODEX_TIMEOUT_MS: ${{ github.event.client_payload.codex_timeout_ms || '' }}
+          ADAPTIVE_CODEX_TIMEOUT_MS: ${{ github.event.client_payload.review_options.codex_timeout_ms || github.event.client_payload.codex_timeout_ms || '' }}
           CONFIGURED_CODEX_TIMEOUT_MS: ${{ vars.CLAWSWEEPER_CODEX_TIMEOUT_MS || '1200000' }}
-          MEDIA_PROOF_TIMEOUT_MS: ${{ github.event.client_payload.media_proof_timeout_ms || '0' }}
+          MEDIA_PROOF_TIMEOUT_MS: ${{ github.event.client_payload.review_options.media_proof_timeout_ms || github.event.client_payload.media_proof_timeout_ms || '0' }}
         run: |
           set -euo pipefail
           target_repo="${{ github.event.client_payload.target_repo || 'openclaw/openclaw' }}"
@@ -499,8 +508,8 @@ jobs:
           GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
           TARGET_REPO: ${{ steps.target.outputs.target_repo }}
           ITEM_NUMBER: ${{ steps.target.outputs.item_number }}
-          COMMAND_STATUS_MARKER: ${{ github.event.client_payload.command_status_marker || '' }}
-          STATUS_COMMENT_ID: ${{ github.event.client_payload.status_comment_id || '' }}
+          COMMAND_STATUS_MARKER: ${{ github.event.client_payload.review_options.command_status_marker || github.event.client_payload.command_status_marker || '' }}
+          STATUS_COMMENT_ID: ${{ github.event.client_payload.review_options.status_comment_id || github.event.client_payload.status_comment_id || '' }}
           RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           pnpm run repair:update-command-status -- \
@@ -526,7 +535,7 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
           CLAWSWEEPER_PROOF_INSPECTION_TOKEN: ${{ steps.target-read-token.outputs.token || github.token }}
-          ADDITIONAL_PROMPT: ${{ github.event.client_payload.additional_prompt || '' }}
+          ADDITIONAL_PROMPT: ${{ github.event.client_payload.review_options.additional_prompt || github.event.client_payload.additional_prompt || '' }}
           CLAWSWEEPER_RELATED_GITHUB_SEARCH: ${{ vars.CLAWSWEEPER_RELATED_GITHUB_SEARCH || '1' }}
         run: |
           set -euo pipefail
@@ -651,8 +660,8 @@ jobs:
           GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
           TARGET_REPO: ${{ steps.target.outputs.target_repo }}
           ITEM_NUMBER: ${{ steps.target.outputs.item_number }}
-          COMMAND_STATUS_MARKER: ${{ github.event.client_payload.command_status_marker || '' }}
-          STATUS_COMMENT_ID: ${{ github.event.client_payload.status_comment_id || '' }}
+          COMMAND_STATUS_MARKER: ${{ github.event.client_payload.review_options.command_status_marker || github.event.client_payload.command_status_marker || '' }}
+          STATUS_COMMENT_ID: ${{ github.event.client_payload.review_options.status_comment_id || github.event.client_payload.status_comment_id || '' }}
           RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
           REVIEW_OUTCOME: ${{ steps.review-exact-event-item.outcome }}
           PUBLISH_OUTCOME: ${{ steps.publish-event-result.outcome }}
@@ -1149,7 +1158,7 @@ jobs:
           fi
           {
             echo "batch_size=$batch_size"
-            echo "codex_timeout_ms=${{ github.event.client_payload.codex_timeout_ms || github.event.inputs.codex_timeout_ms || vars.CLAWSWEEPER_CODEX_TIMEOUT_MS || '1200000' }}"
+            echo "codex_timeout_ms=${{ github.event.client_payload.review_options.codex_timeout_ms || github.event.client_payload.codex_timeout_ms || github.event.inputs.codex_timeout_ms || vars.CLAWSWEEPER_CODEX_TIMEOUT_MS || '1200000' }}"
             echo "hot_intake=$hot_intake"
             echo "max_pages=$max_pages"
             echo "min_active_shards=$min_active_shards"
@@ -1344,7 +1353,7 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.target-read-token.outputs.token || github.token }}
           CLAWSWEEPER_PROOF_INSPECTION_TOKEN: ${{ steps.codex-inspection-token.outputs.token || github.token }}
-          ADDITIONAL_PROMPT: ${{ github.event.inputs.additional_prompt || github.event.client_payload.additional_prompt || '' }}
+          ADDITIONAL_PROMPT: ${{ github.event.inputs.additional_prompt || github.event.client_payload.review_options.additional_prompt || github.event.client_payload.additional_prompt || '' }}
           EXACT_ITEM: ${{ github.event.client_payload.item_number || github.event.inputs.item_number || github.event.inputs.item_numbers || '' }}
           EXPECTED_SOURCE_REVISION: ${{ github.event.client_payload.expected_source_revision || '' }}
         run: |
