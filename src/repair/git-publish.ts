@@ -156,13 +156,17 @@ export function publishMainCommit(options: GitPublishOptions): PublishResult {
   const maxAttempts = positiveInt(options.maxAttempts, 8);
   const pushAttempts = positiveInt(options.pushAttempts, 3);
   const rebaseStrategy = options.rebaseStrategy ?? "normal";
+  const stateBaseCommit = captureStatePublishBaseline();
 
   syncPublishPaths(options.paths);
   configureGitUser();
   stagePaths(options.paths);
   if (!hasStagedChanges()) {
     console.log("No publish changes");
-    return "unchanged";
+    if (stateBaseCommit && !pushCommit({ remote, branch, pushAttempts, rebaseStrategy })) {
+      throw new Error(`Failed to synchronize unchanged publish with ${remote}/${branch}`);
+    }
+    return completeStatePublish("unchanged", options.paths, stateBaseCommit);
   }
 
   const commitMessage = commitMessageForPublishedPaths(options.message, options.paths);
@@ -171,7 +175,9 @@ export function publishMainCommit(options: GitPublishOptions): PublishResult {
   restoreWorktree(options.restorePaths ?? []);
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    if (pushCommit({ remote, branch, pushAttempts, rebaseStrategy })) return "committed";
+    if (pushCommit({ remote, branch, pushAttempts, rebaseStrategy })) {
+      return completeStatePublish("committed", options.paths, stateBaseCommit);
+    }
     const rebuildResult = rebuildPublishCommit({
       remote,
       branch,
@@ -179,7 +185,9 @@ export function publishMainCommit(options: GitPublishOptions): PublishResult {
       paths: options.paths,
       sourceCommit,
     });
-    if (rebuildResult === "unchanged") return "unchanged";
+    if (rebuildResult === "unchanged") {
+      return completeStatePublish("unchanged", options.paths, stateBaseCommit);
+    }
     if (attempt === maxAttempts) break;
     const delaySeconds = attempt * 3 + Math.floor(Math.random() * 11);
     console.log(
@@ -188,8 +196,146 @@ export function publishMainCommit(options: GitPublishOptions): PublishResult {
     sleep(delaySeconds * 1000);
   }
 
-  if (pushCommit({ remote, branch, pushAttempts, rebaseStrategy })) return "committed";
+  if (pushCommit({ remote, branch, pushAttempts, rebaseStrategy })) {
+    return completeStatePublish("committed", options.paths, stateBaseCommit);
+  }
   throw new Error(`Failed to publish commit after ${maxAttempts} attempts`);
+}
+
+function completeStatePublish(
+  result: PublishResult,
+  paths: readonly string[],
+  stateBaseCommit: string | null,
+): PublishResult {
+  refreshSourceAfterStatePublish(paths, stateBaseCommit);
+  return result;
+}
+
+export function captureStatePublishBaseline(): string | null {
+  return publishRoot() ? runGit(["rev-parse", "HEAD"]).trim() : null;
+}
+
+export function refreshSourceAfterStatePublish(
+  paths: readonly string[],
+  stateBaseCommit: string | null,
+): void {
+  const stateRoot = publishRoot();
+  if (!stateRoot) return;
+
+  for (const path of uniqueNonEmpty(paths)) {
+    refreshSourcePathFromState(path, stateRoot);
+  }
+
+  if (stateBaseCommit) {
+    const publishedPaths = uniqueNonEmpty(paths).map(normalizedPublishPath);
+    const changedPaths = runGit([
+      "diff",
+      "--no-renames",
+      "--name-only",
+      "-z",
+      stateBaseCommit,
+      "HEAD",
+    ])
+      .split("\0")
+      .filter(Boolean);
+    const authoritativeRecordPaths = learnedClosedRecordPaths(changedPaths, stateBaseCommit);
+    for (const path of authoritativeRecordPaths) {
+      if (!publishedPaths.some((root) => pathIsWithin(root, path))) {
+        refreshSourcePathFromState(path, stateRoot);
+      }
+    }
+    for (const path of changedPaths) {
+      if (
+        !isGeneratedPublishPath(path) ||
+        publishedPaths.some((root) => pathIsWithin(root, path)) ||
+        authoritativeRecordPaths.has(path)
+      ) {
+        continue;
+      }
+      // A narrow status publish can rebase over concurrent generated-state
+      // changes. Import only files that still match the pre-rebase snapshot so
+      // in-flight local work outside this publish remains authoritative.
+      if (!sourcePathMatchesStateCommit(path, stateBaseCommit)) continue;
+      refreshSourcePathFromState(path, stateRoot);
+    }
+  }
+}
+
+function learnedClosedRecordPaths(
+  changedPaths: readonly string[],
+  stateBaseCommit: string,
+): Set<string> {
+  const recordKeys = new Set<string>();
+  for (const path of changedPaths) {
+    const match = /^records\/([^/]+)\/(?:items|closed)\/([^/]+\.md)$/.exec(path);
+    if (match) recordKeys.add(`${match[1]}/${match[2]}`);
+  }
+
+  const authoritative = new Set<string>();
+  for (const key of recordKeys) {
+    const separator = key.indexOf("/");
+    const repository = key.slice(0, separator);
+    const file = key.slice(separator + 1);
+    const item = `records/${repository}/items/${file}`;
+    const closed = `records/${repository}/closed/${file}`;
+    if (
+      !commitHasPath("HEAD", item) &&
+      commitHasPath("HEAD", closed) &&
+      (commitHasPath(stateBaseCommit, item) || !commitHasPath(stateBaseCommit, closed))
+    ) {
+      // A concurrent close is an authoritative state transition, matching the
+      // delete-wins behavior of an apply-records rebase. Refresh the full
+      // record tuple so pending open-item or plan edits cannot resurrect it.
+      authoritative.add(item);
+      authoritative.add(closed);
+      authoritative.add(`records/${repository}/plans/${file}`);
+      authoritative.add(`records/${repository}/decision-packets/${file.replace(/\.md$/, ".json")}`);
+    }
+  }
+  return authoritative;
+}
+
+function refreshSourcePathFromState(path: string, stateRoot: string): void {
+  const sourceRoot = resolve(".");
+  const source = resolve(path);
+  const published = resolve(stateRoot, path);
+  if (!isPathInsideOrEqual(sourceRoot, source)) {
+    throw new Error(`Refusing to refresh outside source root: ${path}`);
+  }
+  if (!isPathInsideOrEqual(stateRoot, published)) {
+    throw new Error(`Refusing to refresh source from outside state root: ${path}`);
+  }
+  if (source === published) return;
+  if (isPathInsideOrEqual(source, stateRoot)) {
+    throw new Error(`Refusing to refresh a source path that contains the state root: ${path}`);
+  }
+  rmSync(source, { force: true, recursive: true });
+  if (!existsSync(published)) return;
+  mkdirSync(dirname(source), { recursive: true });
+  cpSync(published, source, { recursive: true });
+}
+
+function sourcePathMatchesStateCommit(path: string, commit: string): boolean {
+  const source = resolve(path);
+  const committed = spawnGit(["rev-parse", "--verify", `${commit}:${path}`], {
+    allowFailure: true,
+  });
+  if (committed.status !== 0) return !existsSync(source);
+  if (!existsSync(source) || !statSync(source).isFile()) return false;
+  const current = spawnGit(["hash-object", `--path=${path}`, source], { allowFailure: true });
+  return current.status === 0 && current.stdout.trim() === committed.stdout.trim();
+}
+
+function normalizedPublishPath(path: string): string {
+  return toPosixPath(path).replace(/^\.\//, "").replace(/\/+$/, "");
+}
+
+function pathIsWithin(root: string, path: string): boolean {
+  return root === path || path.startsWith(`${root}/`);
+}
+
+function isGeneratedPublishPath(path: string): boolean {
+  return GENERATED_PUBLISH_PATHS.some((root) => pathIsWithin(root, path));
 }
 
 export function publishRoot(): string | undefined {

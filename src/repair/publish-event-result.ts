@@ -8,12 +8,14 @@ import {
   resetEventSnapshot,
 } from "./event-record-store.js";
 import {
+  captureStatePublishBaseline,
   commitMessageForPublishedPaths,
   configureGitUser,
   hardResetToRemoteMain,
   hasStagedChanges,
   publishRoot,
   pushCommit,
+  refreshSourceAfterStatePublish,
   runGit,
   setTokenOrigin,
   stagePaths,
@@ -110,16 +112,17 @@ async function publishEventResult(options: EventOptions): Promise<void> {
       closedCount,
       closeReasons: options.closeReasons,
     });
+  const stateBaseCommit = captureStatePublishBaseline();
 
   for (let attempt = 1; attempt <= 20; attempt += 1) {
-    if (publishSnapshot({ paths: recordPaths, options, summary })) return;
+    if (publishSnapshot({ paths: recordPaths, options, summary, stateBaseCommit })) return;
     const delaySeconds = attempt * 3 + Math.floor(Math.random() * 11);
     console.log(
       `Event publish attempt ${attempt} failed; retrying from origin/main in ${delaySeconds}s`,
     );
     await sleep(delaySeconds * 1000);
   }
-  if (!publishSnapshot({ paths: recordPaths, options, summary })) {
+  if (!publishSnapshot({ paths: recordPaths, options, summary, stateBaseCommit })) {
     throw new Error(
       `Failed to publish event result for ${options.targetRepo}#${options.itemNumber}`,
     );
@@ -130,12 +133,20 @@ function publishSnapshot({
   paths,
   options,
   summary,
+  stateBaseCommit,
 }: {
   paths: EventRecordPaths;
   options: EventOptions;
   summary: () => void;
+  stateBaseCommit: string | null;
 }): boolean {
+  const commitPaths = [paths.itemRecord, paths.closedRecord];
   try {
+    const complete = (): true => {
+      refreshSourceAfterStatePublish(commitPaths, stateBaseCommit);
+      summary();
+      return true;
+    };
     hardResetToRemoteMain();
     const stateRoot = publishRoot();
     if (
@@ -147,30 +158,25 @@ function publishSnapshot({
       console.log(
         `Remote already has closed record for ${paths.targetSlug}#${options.itemNumber}; skipping open-record publish`,
       );
-      summary();
-      return true;
+      return complete();
     }
     const snapshotResult = applyEventSnapshot(paths);
     if (snapshotResult === "remote-closed") {
       console.log(
         `Remote already has closed record for ${paths.targetSlug}#${options.itemNumber}; skipping open-record publish`,
       );
-      summary();
-      return true;
+      return complete();
     }
     if (snapshotResult === "missing") {
       console.log(`No event record snapshot for ${paths.targetSlug}#${options.itemNumber}`);
-      summary();
-      return true;
+      return complete();
     }
 
-    const commitPaths = [paths.itemRecord, paths.closedRecord];
     syncPublishPaths(commitPaths);
     stagePaths(commitPaths);
     if (!hasStagedChanges()) {
       console.log("No event result changes");
-      summary();
-      return true;
+      return complete();
     }
 
     runGit([
@@ -182,8 +188,7 @@ function publishSnapshot({
       ),
     ]);
     if (!pushCommit({ pushAttempts: 3 })) return false;
-    summary();
-    return true;
+    return complete();
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error));
     return false;
