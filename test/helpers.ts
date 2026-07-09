@@ -441,6 +441,7 @@ export function promotionGhMock(options: {
   timeline?: unknown[];
   linkedPulls?: Record<number, unknown>;
   linkedPullsAfterProof?: Record<number, unknown>;
+  linkedPullHangAfterProof?: boolean;
   linkedIssues?: Record<number, unknown>;
 }) {
   const title = options.title ?? "Stale F PR";
@@ -475,6 +476,7 @@ export function promotionGhMock(options: {
 	const timeline = ${JSON.stringify(timeline)};
 	const linkedPulls = ${JSON.stringify(linkedPulls)};
 	const linkedPullsAfterProof = ${JSON.stringify(options.linkedPullsAfterProof ?? {})};
+	const linkedPullHangAfterProof = ${JSON.stringify(options.linkedPullHangAfterProof ?? false)};
 	const linkedIssues = ${JSON.stringify(linkedIssues)};
 	const commentWriteLogPath = ${JSON.stringify(options.commentWriteLogPath ?? "")};
 	const closeAppliedBodyLogPath = ${JSON.stringify(options.closeAppliedBodyLogPath ?? "")};
@@ -586,11 +588,15 @@ export function promotionGhMock(options: {
   }));
 	} else if (args[0] === "api" && /\\/pulls\\/(\\d+)$/.test(path)) {
 	  const linkedNumber = Number((path.match(/\\/pulls\\/(\\d+)$/) || [])[1]);
-	  if (!liveLinkedPulls[linkedNumber]) {
-	    console.error("unexpected linked pull", linkedNumber);
-	    process.exit(1);
+	  if (proofHasRun() && linkedPullHangAfterProof) {
+	    setTimeout(() => {}, 60_000);
+	  } else {
+	    if (!liveLinkedPulls[linkedNumber]) {
+	      console.error("unexpected linked pull", linkedNumber);
+	      process.exit(1);
+	    }
+	    console.log(JSON.stringify(liveLinkedPulls[linkedNumber]));
 	  }
-	  console.log(JSON.stringify(liveLinkedPulls[linkedNumber]));
 	} else if (args[0] === "api" && /\\/issues\\/(\\d+)\\/comments(?:\\?|$)/.test(path)) {
 	  const linkedNumber = Number((path.match(/\\/issues\\/(\\d+)\\/comments/) || [])[1]);
 	  const linkedIssue = liveLinkedPulls[linkedNumber] || linkedIssues[linkedNumber];

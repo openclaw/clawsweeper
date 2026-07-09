@@ -2174,6 +2174,7 @@ interface ApplyGitHubRuntimeBudget {
   startedAtMs: number;
   maxRuntimeMs: number;
   onYield?: (reason: string) => void;
+  yieldReason?: string;
 }
 
 class ApplyRuntimeBudgetError extends Error {
@@ -2192,11 +2193,21 @@ function applyGitHubRuntimeRemainingMs(nowMs = Date.now()): number | null {
 }
 
 function applyRuntimeBudgetError(phase: string): ApplyRuntimeBudgetError {
-  const maxRuntimeMs = activeApplyGitHubRuntimeBudget?.maxRuntimeMs ?? 0;
-  return new ApplyRuntimeBudgetError(`max runtime ${maxRuntimeMs}ms reached ${phase}`);
+  const budget = activeApplyGitHubRuntimeBudget;
+  const reason =
+    budget?.yieldReason ?? `max runtime ${budget?.maxRuntimeMs ?? 0}ms reached ${phase}`;
+  if (budget) budget.yieldReason = reason;
+  return new ApplyRuntimeBudgetError(reason);
+}
+
+function pendingApplyRuntimeBudgetError(): ApplyRuntimeBudgetError | null {
+  const reason = activeApplyGitHubRuntimeBudget?.yieldReason;
+  return reason ? new ApplyRuntimeBudgetError(reason) : null;
 }
 
 function applyGitHubCommandTimeoutMs(requestedTimeoutMs?: number): number | undefined {
+  const pendingError = pendingApplyRuntimeBudgetError();
+  if (pendingError) throw pendingError;
   const remainingMs = applyGitHubRuntimeRemainingMs();
   if (remainingMs === null) return requestedTimeoutMs;
   if (remainingMs <= 0) throw applyRuntimeBudgetError("before GitHub operation");
@@ -2207,11 +2218,15 @@ function applyGitHubCommandTimeoutMs(requestedTimeoutMs?: number): number | unde
 }
 
 function ensureApplyGitHubRuntimeAvailable(phase: string): void {
+  const pendingError = pendingApplyRuntimeBudgetError();
+  if (pendingError) throw pendingError;
   const remainingMs = applyGitHubRuntimeRemainingMs();
   if (remainingMs !== null && remainingMs <= 0) throw applyRuntimeBudgetError(phase);
 }
 
 function ensureApplyGitHubRetryFits(waitMs: number): void {
+  const pendingError = pendingApplyRuntimeBudgetError();
+  if (pendingError) throw pendingError;
   const remainingMs = applyGitHubRuntimeRemainingMs();
   if (remainingMs !== null && remainingMs <= waitMs) {
     throw applyRuntimeBudgetError("before GitHub retry");
@@ -19620,6 +19635,7 @@ async function applyDecisionsCommandInner(
           reason: `linked canonical PR #${covering.number} changed after coverage proof`,
         };
       } catch (error) {
+        if (error instanceof ApplyRuntimeBudgetError) throw error;
         return {
           actionTaken: "retry_pr_close_coverage_proof",
           reason: `PR close coverage proof could not recheck linked canonical PR #${covering.number}: ${
@@ -20250,6 +20266,10 @@ async function applyDecisionsCommandInner(
     logProgress(`closed #${number}`);
     closedThisRun.add(pairCloseKey(repo, number));
     if (processedCount >= processedLimit) break;
+  }
+  if (runtimeBudget.yieldReason) {
+    runtimeBudget.onYield?.(runtimeBudget.yieldReason);
+    return;
   }
   finishApply();
 }
