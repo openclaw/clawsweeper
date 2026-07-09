@@ -347,6 +347,25 @@ test("stale durable status comments do not become review history cycles", () => 
   assert.equal(parseReviewHistory(comment).cycles.length, 0);
 });
 
+test("an active start lease preserves the prior completed review cycle", () => {
+  const previous = previousDurableComment();
+  const reviewMarker = "<!-- clawsweeper-review item=101 -->";
+  const leased = previous.replace(
+    reviewMarker,
+    [
+      "<!-- clawsweeper-review-status:started item=101 sha=abc1234def started_at=2026-07-09T21:01:47.000Z lease_expires_at=2026-07-09T21:31:47.000Z v=1 -->",
+      reviewMarker,
+    ].join("\n\n"),
+  );
+
+  assert.deepEqual(reviewHistoryCycleFromCommentBody(leased), {
+    reviewedAt: "2026-06-20T10:00:00.000Z",
+    sha: "abc1234def",
+    verdict: "needs changes before merge.",
+    findings: ["[P1] Drop the stale cache before rebuild"],
+  });
+});
+
 test("failed review comments do not become completed history cycles", () => {
   const failedComment = renderReviewCommentFromReport(
     keepOpenPullReport({ review_status: "failed" }),

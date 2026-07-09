@@ -1499,6 +1499,303 @@ if (args[0] === "api" && /\\/issues\\/74479$/.test(path)) {
   }
 });
 
+test("apply preserves an in-flight exact-head review lease and defers old report actions", () => {
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    const itemsDir = join(root, "items");
+    const closedDir = join(root, "closed");
+    const plansDir = join(root, "plans");
+    const reportPath = join(root, "apply-report.json");
+    const number = 74486;
+    const headSha = "0123456789abcdef0123456789abcdef01234567";
+    const startedAt = new Date(Date.now() - 60_000).toISOString();
+    const expiresAt = new Date(Date.now() + 30 * 60_000).toISOString();
+    mkdirSync(itemsDir, { recursive: true });
+    mkdirSync(plansDir, { recursive: true });
+
+    const closeReport = lowSignalCloseReport({
+      number,
+      title: "Do not apply an old verdict during re-review",
+      pull_head_sha: headSha,
+      reviewed_at: "2026-05-01T00:00:00Z",
+      labels: JSON.stringify(["clawsweeper:autofix"]),
+    });
+    const synced = reportWithSyncedReviewComment(closeReport, number, "low_signal_unmergeable_pr");
+    writeFileSync(join(itemsDir, `${number}.md`), synced.report, "utf8");
+
+    const activeComment = [
+      "ClawSweeper status: review started.",
+      "",
+      `<!-- clawsweeper-review-status:started item=${number} sha=${headSha} started_at=${startedAt} lease_expires_at=${expiresAt} v=1 -->`,
+      "",
+      `<!-- clawsweeper-review-lease item=${number} -->`,
+    ].join("\n");
+    const commentRecord = (id: number, body: string) => ({
+      id,
+      html_url: `https://github.com/openclaw/openclaw/pull/${number}#issuecomment-${id}`,
+      created_at: startedAt,
+      updated_at: startedAt,
+      user: { login: "clawsweeper[bot]" },
+      body,
+    });
+    const ghMock = promotionGhMock({
+      number,
+      title: "Do not apply an old verdict during re-review",
+      headSha,
+      labels: ["clawsweeper:autofix"],
+      comment: synced.comment,
+      comments: [
+        commentRecord(9000 + number, synced.comment),
+        commentRecord(10000 + number, activeComment),
+      ],
+    });
+
+    withMockGh(root, ghMock, () => {
+      runApplyDecisionsForTest({
+        targetRepo: "openclaw/openclaw",
+        itemsDir,
+        closedDir,
+        plansDir,
+        reportPath,
+        extraArgs: [
+          "--apply-kind",
+          "all",
+          "--apply-close-reasons",
+          "low_signal_unmergeable_pr",
+          "--item-numbers",
+          String(number),
+        ],
+      });
+    });
+
+    assert.deepEqual(JSON.parse(readFileSync(reportPath, "utf8")), [
+      {
+        number,
+        action: "kept_open",
+        reason: `same-head ClawSweeper review is active until ${expiresAt}`,
+      },
+    ]);
+    assert.equal(existsSync(join(closedDir, `${number}.md`)), false);
+    assert.equal(existsSync(join(root, `comment-state-${number}.json`)), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a lease published during durable comment sync survives the write and blocks close", () => {
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    const itemsDir = join(root, "items");
+    const closedDir = join(root, "closed");
+    const plansDir = join(root, "plans");
+    const reportPath = join(root, "apply-report.json");
+    const number = 74489;
+    const headSha = "0123456789abcdef0123456789abcdef01234567";
+    const startedAt = new Date(Date.now() - 30_000).toISOString();
+    const expiresAt = new Date(Date.now() + 30 * 60_000).toISOString();
+    mkdirSync(itemsDir, { recursive: true });
+    mkdirSync(plansDir, { recursive: true });
+
+    const closeReport = lowSignalCloseReport({
+      number,
+      title: "Do not erase a lease while syncing the old verdict",
+      pull_head_sha: headSha,
+      reviewed_at: "2026-05-01T00:00:00Z",
+    });
+    const synced = reportWithSyncedReviewComment(closeReport, number, "low_signal_unmergeable_pr");
+    writeFileSync(join(itemsDir, `${number}.md`), synced.report, "utf8");
+
+    const staleDurableComment = [
+      "Codex review: stale body that apply will replace.",
+      "",
+      `<!-- clawsweeper-review item=${number} -->`,
+    ].join("\n");
+    const activeLeaseComment = [
+      "ClawSweeper status: review started.",
+      "",
+      `<!-- clawsweeper-review-status:started item=${number} sha=${headSha} started_at=${startedAt} lease_expires_at=${expiresAt} v=1 -->`,
+      "",
+      `<!-- clawsweeper-review-lease item=${number} -->`,
+    ].join("\n");
+    const commentRecord = (id: number, body: string) => ({
+      id,
+      html_url: `https://github.com/openclaw/openclaw/pull/${number}#issuecomment-${id}`,
+      created_at: startedAt,
+      updated_at: startedAt,
+      user: { login: "clawsweeper[bot]" },
+      body,
+    });
+    const durable = commentRecord(9000 + number, staleDurableComment);
+    const lease = commentRecord(10000 + number, activeLeaseComment);
+
+    withMockGh(
+      root,
+      promotionGhMock({
+        number,
+        title: "Do not erase a lease while syncing the old verdict",
+        headSha,
+        comment: staleDurableComment,
+        comments: [durable],
+        commentsAfterCommentWrite: [durable, lease],
+      }),
+      () => {
+        runApplyDecisionsForTest({
+          targetRepo: "openclaw/openclaw",
+          itemsDir,
+          closedDir,
+          plansDir,
+          reportPath,
+          extraArgs: [
+            "--apply-kind",
+            "all",
+            "--apply-close-reasons",
+            "low_signal_unmergeable_pr",
+            "--item-numbers",
+            String(number),
+          ],
+        });
+      },
+    );
+
+    assert.deepEqual(JSON.parse(readFileSync(reportPath, "utf8")), [
+      {
+        number,
+        action: "review_comment_synced",
+        reason: "updated durable Codex review comment",
+      },
+    ]);
+    const writtenDurable = JSON.parse(
+      readFileSync(join(root, `comment-state-${number}.json`), "utf8"),
+    );
+    assert.doesNotMatch(writtenDurable.body, /clawsweeper-review-status:started/);
+
+    withMockGh(
+      root,
+      promotionGhMock({
+        number,
+        title: "Do not erase a lease while syncing the old verdict",
+        headSha,
+        comment: staleDurableComment,
+        comments: [durable],
+        commentsAfterCommentWrite: [durable, lease],
+      }),
+      () => {
+        runApplyDecisionsForTest({
+          targetRepo: "openclaw/openclaw",
+          itemsDir,
+          closedDir,
+          plansDir,
+          reportPath,
+          extraArgs: [
+            "--apply-kind",
+            "all",
+            "--apply-close-reasons",
+            "low_signal_unmergeable_pr",
+            "--item-numbers",
+            String(number),
+          ],
+        });
+      },
+    );
+
+    assert.deepEqual(JSON.parse(readFileSync(reportPath, "utf8")), [
+      {
+        number,
+        action: "kept_open",
+        reason: `same-head ClawSweeper review is active until ${expiresAt}`,
+      },
+    ]);
+    assert.equal(existsSync(join(closedDir, `${number}.md`)), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("apply defers incomplete old report actions when a same-head review finishes mid-run", () => {
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    const itemsDir = join(root, "items");
+    const closedDir = join(root, "closed");
+    const plansDir = join(root, "plans");
+    const reportPath = join(root, "apply-report.json");
+    const number = 74488;
+    const headSha = "0123456789abcdef0123456789abcdef01234567";
+    const oldReviewedAt = "2026-05-01T00:00:00Z";
+    const newReviewedAt = new Date().toISOString();
+    mkdirSync(itemsDir, { recursive: true });
+    mkdirSync(plansDir, { recursive: true });
+
+    const closeReport = lowSignalCloseReport({
+      number,
+      title: "Do not apply an old verdict after re-review finishes",
+      pull_head_sha: headSha,
+      reviewed_at: oldReviewedAt,
+    });
+    const synced = reportWithSyncedReviewComment(closeReport, number, "low_signal_unmergeable_pr");
+    const newerComment = synced.comment.replace(
+      `reviewed_at=${oldReviewedAt}`,
+      `reviewed_at=${newReviewedAt}`,
+    );
+    assert.notEqual(newerComment, synced.comment);
+    const commentRecord = (body: string) => ({
+      id: 9000 + number,
+      html_url: `https://github.com/openclaw/openclaw/pull/${number}#issuecomment-${9000 + number}`,
+      created_at: oldReviewedAt,
+      updated_at: newReviewedAt,
+      user: { login: "clawsweeper[bot]" },
+      body,
+    });
+    const itemPath = join(itemsDir, `${number}.md`);
+    const incompleteReport = synced.report
+      .replace(/^reviewed_at:.*\n/m, "")
+      .replace(/^pull_head_sha:.*\n/m, "");
+    assert.notEqual(incompleteReport, synced.report);
+    writeFileSync(itemPath, incompleteReport, "utf8");
+
+    withMockGh(
+      root,
+      promotionGhMock({
+        number,
+        title: "Do not apply an old verdict after re-review finishes",
+        headSha,
+        comment: synced.comment,
+        comments: [commentRecord(synced.comment)],
+        commentsAfterFirstRead: [commentRecord(newerComment)],
+      }),
+      () => {
+        runApplyDecisionsForTest({
+          targetRepo: "openclaw/openclaw",
+          itemsDir,
+          closedDir,
+          plansDir,
+          reportPath,
+          extraArgs: [
+            "--apply-kind",
+            "all",
+            "--apply-close-reasons",
+            "low_signal_unmergeable_pr",
+            "--item-numbers",
+            String(number),
+          ],
+        });
+      },
+    );
+
+    assert.deepEqual(JSON.parse(readFileSync(reportPath, "utf8")), [
+      {
+        number,
+        action: "skipped_stale_review_comment_sync",
+        reason: `live durable review comment is newer than the local report: comment reviewed_at=${newReviewedAt}, report reviewed_at=missing; comment head=${headSha}, report head=missing`,
+      },
+    ]);
+    assert.equal(existsSync(join(closedDir, `${number}.md`)), false);
+    assert.equal(existsSync(join(root, `comment-state-${number}.json`)), false);
+    assert.match(readFileSync(itemPath, "utf8"), /^action_taken: proposed_close$/m);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("apply-decisions does not advisory-label close proposals before close gates finish", () => {
   const root = mkdtempSync(tmpPrefix);
   try {

@@ -206,7 +206,7 @@ function reviewMarkerAttribute(body: string, name: string): string | null {
   return null;
 }
 
-function hasReviewStatusMarker(body: string): boolean {
+function hasNonStartedReviewStatusMarker(body: string): boolean {
   let searchFrom = 0;
   while (searchFrom < body.length) {
     const start = body.indexOf("<!--", searchFrom);
@@ -214,12 +214,13 @@ function hasReviewStatusMarker(body: string): boolean {
     const end = body.indexOf("-->", start + 4);
     if (end < 0) return false;
     searchFrom = end + 3;
+    const marker = body
+      .slice(start + 4, end)
+      .trim()
+      .toLowerCase();
     if (
-      body
-        .slice(start + 4, end)
-        .trim()
-        .toLowerCase()
-        .startsWith("clawsweeper-review-status:")
+      marker.startsWith("clawsweeper-review-status:") &&
+      !marker.startsWith("clawsweeper-review-status:started")
     ) {
       return true;
     }
@@ -269,7 +270,11 @@ function commentBodyFindings(body: string): string[] {
 }
 
 export function reviewHistoryCycleFromCommentBody(body: string): ReviewHistoryCycle | null {
-  if (!body.trim() || body.includes(REVIEW_START_PLACEHOLDER) || hasReviewStatusMarker(body)) {
+  if (
+    !body.trim() ||
+    body.includes(REVIEW_START_PLACEHOLDER) ||
+    hasNonStartedReviewStatusMarker(body)
+  ) {
     return null;
   }
   const lines = body.split(/\r?\n/);

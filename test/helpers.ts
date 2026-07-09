@@ -433,6 +433,7 @@ export function promotionGhMock(options: {
   itemUpdatedAtAfterLabelSyncLogPath?: string;
   itemUpdatedAtAfterProof?: string;
   itemUpdatedAtAfterProofLogPath?: string;
+  headSha?: string;
   changedFiles?: number;
   sourceFiles?: string[];
   issueCommentCount?: number;
@@ -441,6 +442,8 @@ export function promotionGhMock(options: {
   closeAppliedBodyLogPath?: string;
   closeCommandDelayMs?: number;
   comments?: unknown[];
+  commentsAfterFirstRead?: unknown[];
+  commentsAfterCommentWrite?: unknown[];
   reviews?: unknown[];
   timeline?: unknown[];
   linkedPulls?: Record<number, unknown>;
@@ -477,6 +480,8 @@ export function promotionGhMock(options: {
 	const jqIndex = args.indexOf("--jq");
 	const jq = jqIndex >= 0 ? args[jqIndex + 1] : "";
 	const comments = ${JSON.stringify(comments)};
+	const commentsAfterFirstRead = ${JSON.stringify(options.commentsAfterFirstRead ?? null)};
+	const commentsAfterCommentWrite = ${JSON.stringify(options.commentsAfterCommentWrite ?? null)};
 	const reviews = ${JSON.stringify(options.reviews ?? [])};
 	const timeline = ${JSON.stringify(timeline)};
 	const linkedPulls = ${JSON.stringify(linkedPulls)};
@@ -488,6 +493,7 @@ export function promotionGhMock(options: {
 	const closeCommandDelayMs = ${JSON.stringify(options.closeCommandDelayMs ?? 0)};
 	const number = ${options.number};
 	const commentStatePath = join(__dirname, "..", "comment-state-" + number + ".json");
+	const commentReadStatePath = join(__dirname, "..", "comment-read-" + number);
 	const mutationComment = (id, body) => ({
 	  id,
 	  html_url: "https://github.com/openclaw/openclaw/pull/" + number + "#issuecomment-" + id,
@@ -506,11 +512,16 @@ export function promotionGhMock(options: {
 	  return comment;
 	};
 	const liveComments = () => {
-	  if (!existsSync(commentStatePath)) return comments;
+	  const sourceComments = commentsAfterCommentWrite && existsSync(commentStatePath)
+	    ? commentsAfterCommentWrite
+	    : commentsAfterFirstRead && existsSync(commentReadStatePath)
+	      ? commentsAfterFirstRead
+	      : comments;
+	  if (!existsSync(commentStatePath)) return sourceComments;
 	  const written = JSON.parse(readFileSync(commentStatePath, "utf8"));
-	  const existingIndex = comments.findIndex((comment) => comment && comment.id === written.id);
-	  if (existingIndex < 0) return [...comments, written];
-	  return comments.map((comment, index) => index === existingIndex ? { ...comment, ...written } : comment);
+	  const existingIndex = sourceComments.findIndex((comment) => comment && comment.id === written.id);
+	  if (existingIndex < 0) return [...sourceComments, written];
+	  return sourceComments.map((comment, index) => index === existingIndex ? { ...comment, ...written } : comment);
 	};
 		const title = ${JSON.stringify(title)};
 		const labels = ${JSON.stringify(options.labels ?? ["status: 📣 needs proof"])};
@@ -558,11 +569,15 @@ export function promotionGhMock(options: {
 	    appendFileSync(closeAppliedBodyLogPath, JSON.parse(readFileSync(input, "utf8")).body + "\\n---body---\\n");
 	  }
 	  console.log(JSON.stringify(writeMutationComment()));
+	} else if (args[0] === "api" && new RegExp("/issues/comments/\\\\d+$").test(path) && args[args.indexOf("--method") + 1] === "DELETE") {
+	  if (commentWriteLogPath) appendFileSync(commentWriteLogPath, args.join(" ") + "\\n");
+	  console.log("");
 	} else if (args[0] === "api" && new RegExp("/issues/comments/\\\\d+$").test(path) && args.includes("--method")) {
 	  if (commentWriteLogPath) appendFileSync(commentWriteLogPath, args.join(" ") + "\\n");
 	  console.log(JSON.stringify(writeMutationComment()));
 	} else if (args[0] === "api" && new RegExp("/issues/" + number + "/comments(?:\\\\?|$)").test(path)) {
 	  const currentComments = liveComments();
+	  if (commentsAfterFirstRead && !existsSync(commentReadStatePath)) writeFileSync(commentReadStatePath, "read");
 	  console.log(JSON.stringify(slurp ? [currentComments] : currentComments));
 } else if (args[0] === "api" && new RegExp("/issues/" + number + "/timeline(?:\\\\?|$)").test(path)) {
   console.log(JSON.stringify(slurp ? [timeline] : timeline));
@@ -596,7 +611,7 @@ export function promotionGhMock(options: {
     commits: 1,
     review_comments: 0,
     body: "Stale PR body.",
-    head: { sha: "head-sha", ref: "branch", repo: { full_name: "fork/openclaw" } },
+    head: { sha: ${JSON.stringify(options.headSha ?? "head-sha")}, ref: "branch", repo: { full_name: "fork/openclaw" } },
     base: { sha: "base-sha", ref: "main", repo: { full_name: "openclaw/openclaw" } },
     user: { login: "reporter" }
   }));

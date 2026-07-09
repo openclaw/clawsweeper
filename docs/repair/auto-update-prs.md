@@ -233,6 +233,12 @@ ClawSweeper has three layers of duplicate protection:
 - scheduled router scans synthesize an internal repair-loop command for open
   PRs that still carry `clawsweeper:autofix` or `clawsweeper:automerge`, so
   stale labelled PRs can be repaired or re-reviewed without a fresh comment;
+- a trusted review-start marker leases its exact PR head until the worker's
+  bounded timeout plus a ten-minute grace period. Scheduled label sweeps skip
+  that head while the lease is fresh, but moved heads, expired leases, and
+  leases longer than two hours do not block the next sweep;
+- apply workers preserve that lease during durable-comment sync and defer old
+  report actions until a final review for the same head supersedes the start;
 - trusted ClawSweeper repairs are capped per PR and per PR head SHA.
 
 The default caps are ten automatic repair iterations per PR and two

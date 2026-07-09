@@ -1592,6 +1592,7 @@ export function parseTrustedAutomation(
   if (!trustedAuthors.has(author)) return null;
 
   const body = String(comment?.body ?? "");
+  if (canonicalReviewStartStatusMarker(body)) return null;
   if (isProofNudgeCommentBody(body)) return null;
   const verdict = clawsweeperMarker(body, "verdict");
   const actionMarker = clawsweeperMarker(body, "action");
@@ -1677,10 +1678,148 @@ export function parseTrustedAutomation(
   return null;
 }
 
+const REVIEW_START_LEASE_MAX_MS = 2 * 60 * 60 * 1000;
+const REVIEW_START_LEASE_CLOCK_SKEW_MS = 5 * 60 * 1000;
+
+function canonicalReviewStartStatusMarker(body: string) {
+  const identity = String(body ?? "").match(
+    /<!--\s*clawsweeper-review(?:-lease)?\s+item=(\d+)\s*-->\s*$/i,
+  );
+  const itemNumber = Number(identity?.[1]);
+  if (!identity || !Number.isInteger(itemNumber) || itemNumber <= 0) return null;
+  const prefix = body.slice(0, identity.index).trimEnd();
+  const markerStart = prefix.lastIndexOf("<!--");
+  if (markerStart < 0) return null;
+  const markerBody = prefix.slice(markerStart);
+  if (!/^<!--\s*clawsweeper-review-status:started\b[^>]*-->$/i.test(markerBody)) return null;
+  const marker = clawsweeperMarker(markerBody, "review-status");
+  if (marker?.action !== "started" || Number(marker.attrs.item) !== itemNumber) return null;
+  return { itemNumber, marker };
+}
+
+export function isTrustedReviewStartStatusComment({
+  comment,
+  trustedAuthors = new Set<string>(),
+}: {
+  comment: LooseRecord;
+  trustedAuthors?: ReadonlySet<string>;
+}) {
+  const author = String(comment?.user?.login ?? "")
+    .trim()
+    .toLowerCase();
+  return Boolean(
+    author && trustedAuthors.has(author) && canonicalReviewStartStatusMarker(comment.body),
+  );
+}
+
+export function freshExactHeadReviewStartLease({
+  comments,
+  itemNumber,
+  headSha,
+  trustedAuthors = new Set<string>(),
+  nowMs = Date.now(),
+}: {
+  comments: LooseRecord[];
+  itemNumber: number;
+  headSha: string;
+  trustedAuthors?: ReadonlySet<string>;
+  nowMs?: number;
+}): { startedAt: string; expiresAt: string } | null {
+  const normalizedHead = String(headSha ?? "")
+    .trim()
+    .toLowerCase();
+  if (!Number.isInteger(itemNumber) || itemNumber <= 0 || !/^[0-9a-f]{40}$/.test(normalizedHead)) {
+    return null;
+  }
+  for (const comment of comments) {
+    const author = String(comment?.user?.login ?? "")
+      .trim()
+      .toLowerCase();
+    if (!author || !trustedAuthors.has(author)) continue;
+    const canonical = canonicalReviewStartStatusMarker(String(comment?.body ?? ""));
+    if (!canonical || canonical.itemNumber !== itemNumber) continue;
+    const { marker } = canonical;
+    if (
+      String(marker.attrs.sha ?? "")
+        .trim()
+        .toLowerCase() !== normalizedHead
+    )
+      continue;
+    if (String(marker.attrs.v ?? "") !== "1") continue;
+    const startedAt = String(marker.attrs.started_at ?? "");
+    const expiresAt = String(marker.attrs.lease_expires_at ?? "");
+    const startedAtMs = Date.parse(startedAt);
+    const expiresAtMs = Date.parse(expiresAt);
+    if (!Number.isFinite(startedAtMs) || !Number.isFinite(expiresAtMs)) continue;
+    const durationMs = expiresAtMs - startedAtMs;
+    if (durationMs <= 0 || durationMs > REVIEW_START_LEASE_MAX_MS) continue;
+    if (startedAtMs > nowMs + REVIEW_START_LEASE_CLOCK_SKEW_MS) continue;
+    if (expiresAtMs < nowMs) continue;
+    return { startedAt, expiresAt };
+  }
+  return null;
+}
+
+export function trustedExactHeadReviewCompletionSince({
+  comments,
+  headSha,
+  trustedAuthors = new Set<string>(),
+  sinceMs,
+}: {
+  comments: LooseRecord[];
+  headSha: string;
+  trustedAuthors?: ReadonlySet<string>;
+  sinceMs: number;
+}): { reviewedAt: string | null; publishedAt: string | null } | null {
+  const normalizedHead = String(headSha ?? "")
+    .trim()
+    .toLowerCase();
+  if (!normalizedHead || !Number.isFinite(sinceMs)) return null;
+
+  let newest: {
+    observedAtMs: number;
+    reviewedAt: string | null;
+    publishedAt: string | null;
+  } | null = null;
+  for (const comment of comments) {
+    const completed = parseTrustedAutomation(comment, { trustedAuthors });
+    if (!completed) continue;
+    if (
+      String(completed.expected_head_sha ?? "")
+        .trim()
+        .toLowerCase() !== normalizedHead
+    )
+      continue;
+
+    const body = String(comment?.body ?? "");
+    const reviewMarker = [
+      clawsweeperMarker(body, "verdict"),
+      clawsweeperMarker(body, "action"),
+    ].find(
+      (marker) =>
+        String(marker?.attrs?.sha ?? "")
+          .trim()
+          .toLowerCase() === normalizedHead,
+    );
+    const reviewedAt = String(reviewMarker?.attrs?.reviewed_at ?? "").trim() || null;
+    const publishedAt = String(comment?.updated_at ?? comment?.created_at ?? "").trim() || null;
+    const observedAtMs = Math.max(
+      Number.isFinite(Date.parse(reviewedAt ?? "")) ? Date.parse(reviewedAt ?? "") : 0,
+      Number.isFinite(Date.parse(publishedAt ?? "")) ? Date.parse(publishedAt ?? "") : 0,
+    );
+    if (observedAtMs < sinceMs || observedAtMs <= 0) continue;
+    if (!newest || observedAtMs > newest.observedAtMs) {
+      newest = { observedAtMs, reviewedAt, publishedAt };
+    }
+  }
+  return newest && { reviewedAt: newest.reviewedAt, publishedAt: newest.publishedAt };
+}
+
 export function parseRoutedCommentCommand(
   comment: LooseRecord,
   { trustedAuthors = new Set() }: LooseRecord = {},
 ) {
+  if (isTrustedReviewStartStatusComment({ comment, trustedAuthors })) return null;
   const trusted = parseTrustedAutomation(comment, { trustedAuthors });
   if (trusted) return trusted;
   return parseCommand(String(comment?.body ?? ""));

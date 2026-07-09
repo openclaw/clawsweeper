@@ -50,6 +50,7 @@ import {
   commandStatusMarkerPrefix,
   existingCommandStatusBlocksReplay,
   existingModeStatusBlocksReplay,
+  freshExactHeadReviewStartLease,
   isAuthorReadOnlyCommandAllowed,
   isMaintainerCommandAllowed,
   isIssueImplementationCommandAllowed,
@@ -79,6 +80,7 @@ import {
   sharedAutomergeStatusMarkerPrefix,
   staleClosedItemCommandReason,
   shouldClearMaintainerCommandReaction,
+  trustedExactHeadReviewCompletionSince,
   trustedCloseBlockReason,
   usesSharedAutomergeStatus,
 } from "./comment-router-core.js";
@@ -269,7 +271,9 @@ for (const command of listRepairLoopSweepCommands(classifiedCommentCommands)) {
 }
 
 const sweepCommands = rawCommands.slice(classifiedCommentCommands.length);
-await measureAsync("prehydrate_repair_loop_sweeps", () => prehydrateCommandLookups(sweepCommands));
+await measureAsync("prehydrate_repair_loop_sweeps", () =>
+  prehydrateCommandLookups(sweepCommands, { refreshIssueComments: true }),
+);
 const commands = [
   ...classifiedCommentCommands,
   ...measure("classify_repair_loop_sweeps", () =>
@@ -583,7 +587,10 @@ function isExpectedGitHubAppIntegrationToken(error: unknown) {
   );
 }
 
-async function prehydrateCommandLookups(commands: LooseRecord[]) {
+async function prehydrateCommandLookups(
+  commands: LooseRecord[],
+  options: { refreshIssueComments?: boolean } = {},
+) {
   const pending = commands.filter(
     (command) =>
       command.issue_number &&
@@ -611,6 +618,7 @@ async function prehydrateCommandLookups(commands: LooseRecord[]) {
       liveTargetCache.set(number, await fetchLiveTargetAsync(number));
     }),
     mapLimit(issueNumbers, lookupConcurrency, async (number) => {
+      if (options.refreshIssueComments) issueCommentsCache.delete(number);
       await cachedIssueCommentsAsync(number);
     }),
   ]);
@@ -830,6 +838,22 @@ function classifyCommand(command: LooseRecord): JsonValue {
     }
     const stoppedReason = repairLoopStoppedReason(next);
     if (stoppedReason) return { ...next, status: "skipped", reason: stoppedReason };
+    if (command.trusted_bot && command.automation_source === "repair_loop_label_sweep") {
+      const activeReviewLease = freshExactHeadReviewStartLease({
+        comments: issueCommentsFor(command.issue_number) as LooseRecord[],
+        itemNumber: Number(command.issue_number),
+        headSha: String(target.head_sha ?? ""),
+        trustedAuthors: trustedBots,
+        nowMs: Date.now(),
+      });
+      if (activeReviewLease) {
+        return {
+          ...next,
+          status: "skipped",
+          reason: `same-head ClawSweeper review is active until ${activeReviewLease.expiresAt}`,
+        };
+      }
+    }
     const pauseLabels = pauseLabelsOn(target);
     const failedChecksRepairReason = automergeFailedChecksRepairReason(target.checks);
     const rebaseRepairReason = automergeRebaseRepairReason(target);
@@ -1749,6 +1773,17 @@ function executeCommand(command: LooseRecord) {
     ) {
       const modeLabel = command.intent === "autofix" ? AUTOFIX_LABEL : AUTOMERGE_LABEL;
       const oppositeModeLabel = command.intent === "autofix" ? AUTOMERGE_LABEL : AUTOFIX_LABEL;
+      const preMutationBlockReason = repairLoopReviewDispatchBlockReason(command);
+      if (preMutationBlockReason) {
+        command.status = "skipped";
+        command.reason = preMutationBlockReason;
+        command.actions = command.actions.map((action: JsonValue) => ({
+          ...action,
+          status: "skipped",
+          reason: preMutationBlockReason,
+        }));
+        return;
+      }
       const job = ensureAutomergeJob(command);
       ensureRepairLoopLabel(command.repo, modeLabel);
       for (const pausedLabel of pauseLabelsOn(command.target)) {
@@ -1782,6 +1817,17 @@ function executeCommand(command: LooseRecord) {
         "--add-label",
         modeLabel,
       ]);
+      const dispatchBlockReason = repairLoopReviewDispatchBlockReason(command);
+      if (dispatchBlockReason) {
+        command.status = "skipped";
+        command.reason = dispatchBlockReason;
+        command.actions = command.actions.map((action: JsonValue) => ({
+          ...action,
+          status: "skipped",
+          reason: dispatchBlockReason,
+        }));
+        return;
+      }
       const clawsweeper = dispatchClawSweeperReview(command);
       dispatched = { ...dispatched, clawsweeper };
       command.actions = command.actions.map((action: JsonValue) => {
@@ -2362,6 +2408,58 @@ function issueImplementationSecuritySignal(text: string) {
 function repairJobModeForCommand(command: LooseRecord) {
   if (command.intent === "autofix" || hasLabel(command.target, AUTOFIX_LABEL)) return "autofix";
   return "automerge";
+}
+
+function repairLoopReviewDispatchBlockReason(command: LooseRecord): string | null {
+  if (command.automation_source !== "repair_loop_label_sweep") return null;
+  const number = Number(command.issue_number);
+  if (!Number.isInteger(number) || number <= 0) return "label sweep target is invalid";
+  try {
+    const before = fetchPullRequestView(number);
+    const headBefore = String(before.headRefOid ?? "")
+      .trim()
+      .toLowerCase();
+    if (String(before.state ?? "").toUpperCase() !== "OPEN") {
+      return "label sweep target is no longer an open PR";
+    }
+    const comments = ghPaged<JsonValue>(
+      `repos/${targetRepo}/issues/${number}/comments?per_page=100`,
+    );
+    const after = fetchPullRequestView(number);
+    const headAfter = String(after.headRefOid ?? "")
+      .trim()
+      .toLowerCase();
+    if (String(after.state ?? "").toUpperCase() !== "OPEN") {
+      return "label sweep target is no longer an open PR";
+    }
+    if (!headBefore || headBefore !== headAfter) {
+      return "PR head changed during the dispatch-time review lease check; next sweep will retry";
+    }
+    const activeReviewLease = freshExactHeadReviewStartLease({
+      comments: comments as LooseRecord[],
+      itemNumber: number,
+      headSha: headAfter,
+      trustedAuthors: trustedBots,
+      nowMs: Date.now(),
+    });
+    if (activeReviewLease) {
+      return `same-head ClawSweeper review is active until ${activeReviewLease.expiresAt}`;
+    }
+    const sweepStartedAtMs = Date.parse(String(command.comment_created_at ?? ""));
+    const completedReview = trustedExactHeadReviewCompletionSince({
+      comments: comments as LooseRecord[],
+      headSha: headAfter,
+      trustedAuthors: trustedBots,
+      sinceMs: sweepStartedAtMs,
+    });
+    if (completedReview) {
+      const completedAt = completedReview.publishedAt ?? completedReview.reviewedAt ?? "recently";
+      return `same-head ClawSweeper review completed at ${completedAt}; next router pass will route it`;
+    }
+    return null;
+  } catch (error) {
+    return `dispatch-time review lease check failed; next sweep will retry: ${compactGhError(error)}`;
+  }
 }
 
 function dispatchClawSweeperReview(command: LooseRecord): LooseRecord {

@@ -33,6 +33,7 @@ import {
   createCachedLabelNumberLookup,
   existingCommandStatusBlocksReplay,
   existingModeStatusBlocksReplay,
+  freshExactHeadReviewStartLease,
   hasCommandResponseMarker,
   issueImplementationClusterId,
   issueImplementationBlockerClass,
@@ -68,6 +69,7 @@ import {
   staleAutomergeActivationReason,
   staleClosedItemCommandReason,
   shouldClearMaintainerCommandReaction,
+  trustedExactHeadReviewCompletionSince,
   trustedCloseBlockReason,
   usesSharedAutomergeStatus,
 } from "../../dist/repair/comment-router-core.js";
@@ -1454,6 +1456,202 @@ test("router classifies fresh human-review pauses before label sweeps", () => {
   assert.ok(classifyComments >= 0);
   assert.ok(repairLoopSweeps > classifyComments);
   assert.match(source, /\.filter\(isReadyHumanReviewPause\)/);
+});
+
+test("label sweeps honor fresh trusted exact-head review start leases", () => {
+  const headSha = "0123456789abcdef0123456789abcdef01234567";
+  const comment = {
+    user: { login: "clawsweeper[bot]" },
+    body: [
+      "ClawSweeper status: review started.",
+      `<!-- clawsweeper-review-status:started item=103109 sha=${headSha} started_at=2026-07-09T21:01:47.000Z lease_expires_at=2026-07-09T21:31:47.000Z v=1 -->`,
+      "<!-- clawsweeper-review-lease item=103109 -->",
+    ].join("\n"),
+  };
+  const options = {
+    comments: [comment],
+    itemNumber: 103109,
+    headSha,
+    trustedAuthors: new Set(["clawsweeper[bot]"]),
+    nowMs: Date.parse("2026-07-09T21:07:21.000Z"),
+  };
+
+  assert.deepEqual(freshExactHeadReviewStartLease(options), {
+    startedAt: "2026-07-09T21:01:47.000Z",
+    expiresAt: "2026-07-09T21:31:47.000Z",
+  });
+  assert.equal(
+    freshExactHeadReviewStartLease({
+      ...options,
+      headSha: "fedcba9876543210fedcba9876543210fedcba98",
+    }),
+    null,
+  );
+  assert.equal(
+    freshExactHeadReviewStartLease({ ...options, nowMs: Date.parse("2026-07-09T21:31:47.001Z") }),
+    null,
+  );
+  assert.equal(
+    freshExactHeadReviewStartLease({
+      ...options,
+      trustedAuthors: new Set(["other-bot[bot]"]),
+    }),
+    null,
+  );
+});
+
+test("review start leases reject malformed, future, and overlong markers", () => {
+  const headSha = "0123456789abcdef0123456789abcdef01234567";
+  const lease = (attributes: string) =>
+    freshExactHeadReviewStartLease({
+      comments: [
+        {
+          user: { login: "clawsweeper[bot]" },
+          body: [
+            `<!-- clawsweeper-review-status:started item=103109 sha=${headSha} ${attributes} v=1 -->`,
+            "<!-- clawsweeper-review-lease item=103109 -->",
+          ].join("\n"),
+        },
+      ],
+      itemNumber: 103109,
+      headSha,
+      trustedAuthors: new Set(["clawsweeper[bot]"]),
+      nowMs: Date.parse("2026-07-09T21:07:21.000Z"),
+    });
+
+  assert.equal(lease("started_at=invalid lease_expires_at=2026-07-09T21:31:47.000Z"), null);
+  assert.equal(
+    lease("started_at=2026-07-09T21:13:00.000Z lease_expires_at=2026-07-09T21:31:47.000Z"),
+    null,
+  );
+  assert.equal(
+    lease("started_at=2026-07-09T21:01:47.000Z lease_expires_at=2026-07-09T23:01:47.001Z"),
+    null,
+  );
+});
+
+test("same-head completion freshness uses durable publication time", () => {
+  const headSha = "0123456789abcdef0123456789abcdef01234567";
+  const comment = {
+    user: { login: "clawsweeper[bot]" },
+    created_at: "2026-07-09T21:00:00.000Z",
+    updated_at: "2026-07-09T21:05:30.000Z",
+    body: `<!-- clawsweeper-verdict:pass item=103109 sha=${headSha} reviewed_at=2026-07-09T21:04:30.000Z -->`,
+  };
+
+  assert.deepEqual(
+    trustedExactHeadReviewCompletionSince({
+      comments: [comment],
+      headSha,
+      trustedAuthors: new Set(["clawsweeper[bot]"]),
+      sinceMs: Date.parse("2026-07-09T21:05:00.000Z"),
+    }),
+    {
+      reviewedAt: "2026-07-09T21:04:30.000Z",
+      publishedAt: "2026-07-09T21:05:30.000Z",
+    },
+  );
+  assert.equal(
+    trustedExactHeadReviewCompletionSince({
+      comments: [comment],
+      headSha,
+      trustedAuthors: new Set(["clawsweeper[bot]"]),
+      sinceMs: Date.parse("2026-07-09T21:06:00.000Z"),
+    }),
+    null,
+  );
+});
+
+test("review start leases parse only the canonical marker beside the durable identity", () => {
+  const headSha = "0123456789abcdef0123456789abcdef01234567";
+  const comment = {
+    user: { login: "clawsweeper[bot]" },
+    body: [
+      `Echoed title <!-- clawsweeper-review-status:started item=103109 sha=${headSha} started_at=2026-07-09T21:01:47.000Z lease_expires_at=2026-07-09T22:01:47.000Z v=1 -->`,
+      `<!-- clawsweeper-review-status:started item=103109 sha=${headSha} started_at=2026-07-09T20:31:47.000Z lease_expires_at=2026-07-09T21:00:00.000Z v=1 -->`,
+      "<!-- clawsweeper-review item=103109 -->",
+    ].join("\n\n"),
+  };
+
+  assert.equal(
+    freshExactHeadReviewStartLease({
+      comments: [comment],
+      itemNumber: 103109,
+      headSha,
+      trustedAuthors: new Set(["clawsweeper[bot]"]),
+      nowMs: Date.parse("2026-07-09T21:07:21.000Z"),
+    }),
+    null,
+  );
+});
+
+test("active review comments cannot replay their previous trusted verdict", () => {
+  const headSha = "0123456789abcdef0123456789abcdef01234567";
+  const comment = {
+    user: { login: "clawsweeper[bot]" },
+    body: [
+      `<!-- clawsweeper-verdict:pass item=103109 sha=${headSha} -->`,
+      `<!-- clawsweeper-review-status:started item=103109 sha=${headSha} started_at=2026-07-09T21:01:47.000Z lease_expires_at=2026-07-09T21:31:47.000Z v=1 -->`,
+      "<!-- clawsweeper-review item=103109 -->",
+    ].join("\n\n"),
+  };
+
+  assert.equal(
+    parseRoutedCommentCommand(comment, {
+      trustedAuthors: new Set(["clawsweeper[bot]"]),
+    }),
+    null,
+  );
+});
+
+test("label-sweep classification checks the exact-head review lease before dispatch planning", () => {
+  const source = readFileSync("src/repair/comment-router.ts", "utf8");
+  const activeLease = source.indexOf("freshExactHeadReviewStartLease({");
+  const repairPlanning = source.indexOf("const failedChecksRepairReason", activeLease);
+
+  assert.ok(activeLease >= 0);
+  assert.ok(repairPlanning > activeLease);
+  assert.match(source, /same-head ClawSweeper review is active until/);
+  assert.match(
+    source,
+    /prehydrate_repair_loop_sweeps[\s\S]*?prehydrateCommandLookups\(sweepCommands,\s*\{\s*refreshIssueComments:\s*true\s*\}\)/,
+  );
+  const prehydrate = source.slice(
+    source.indexOf("async function prehydrateCommandLookups"),
+    source.indexOf("function classifyCommand"),
+  );
+  assert.ok(prehydrate.indexOf("issueCommentsCache.delete(number)") >= 0);
+  assert.ok(
+    prehydrate.indexOf("issueCommentsCache.delete(number)") <
+      prehydrate.indexOf("cachedIssueCommentsAsync(number)"),
+  );
+
+  const executeCommand = source.slice(
+    source.indexOf("function executeCommand"),
+    source.indexOf("function applyRemoveLabelActions"),
+  );
+  const preMutationCheck = executeCommand.indexOf("repairLoopReviewDispatchBlockReason(command)");
+  const firstMutation = executeCommand.indexOf("ensureAutomergeJob(command)", preMutationCheck);
+  const dispatchRecheck = executeCommand.indexOf(
+    "repairLoopReviewDispatchBlockReason(command)",
+    preMutationCheck + 1,
+  );
+  const dispatch = executeCommand.indexOf("dispatchClawSweeperReview(command)", dispatchRecheck);
+  assert.ok(preMutationCheck >= 0);
+  assert.ok(firstMutation > preMutationCheck);
+  assert.ok(dispatchRecheck > firstMutation);
+  assert.ok(dispatch > dispatchRecheck);
+
+  const dispatchGuard = source.slice(
+    source.indexOf("function repairLoopReviewDispatchBlockReason"),
+    source.indexOf("function dispatchClawSweeperReview"),
+  );
+  assert.equal(dispatchGuard.match(/fetchPullRequestView\(number\)/g)?.length, 2);
+  assert.match(dispatchGuard, /issues\/\$\{number\}\/comments\?per_page=100/);
+  assert.match(dispatchGuard, /nowMs:\s*Date\.now\(\)/);
+  assert.match(dispatchGuard, /trustedExactHeadReviewCompletionSince\(\{/);
+  assert.match(dispatchGuard, /sinceMs:\s*sweepStartedAtMs/);
+  assert.match(dispatchGuard, /next router pass will route it/);
 });
 
 test("comment router durably claims dispatch commands and recovers exact workflow receipts", () => {

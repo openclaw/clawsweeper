@@ -179,6 +179,87 @@ test("apply-decisions checkpoints a valid promotion probe with no action record"
   }
 });
 
+test("apply leaves a promotable old report unchanged while exact-head review is active", () => {
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    const itemsDir = join(root, "items");
+    const closedDir = join(root, "closed");
+    const plansDir = join(root, "plans");
+    const reportPath = join(root, "apply-report.json");
+    const number = 74487;
+    const headSha = "0123456789abcdef0123456789abcdef01234567";
+    const startedAt = new Date(Date.now() - 60_000).toISOString();
+    const expiresAt = new Date(Date.now() + 30 * 60_000).toISOString();
+    mkdirSync(itemsDir, { recursive: true });
+    mkdirSync(plansDir, { recursive: true });
+
+    const sourceReport = workPlanCandidateReport({
+      number,
+      repository: "openclaw/openclaw",
+      type: "pull_request",
+      title: "Empty PR under active re-review",
+      url: `https://github.com/openclaw/openclaw/pull/${number}`,
+      decision: "keep_open",
+      close_reason: "none",
+      action_taken: "kept_open",
+      item_snapshot_hash: "reviewed-snapshot",
+      item_created_at: "2026-05-01T00:00:00Z",
+      item_updated_at: "2026-05-01T00:00:00Z",
+      reviewed_at: "2026-05-01T00:00:00Z",
+      pull_head_sha: headSha,
+      work_cluster_refs: JSON.stringify([]),
+    });
+    const synced = reportWithSyncedReviewComment(sourceReport, number, "none");
+    const activeComment = synced.comment.replace(
+      `<!-- clawsweeper-review item=${number} -->`,
+      [
+        `<!-- clawsweeper-review-status:started item=${number} sha=${headSha} started_at=${startedAt} lease_expires_at=${expiresAt} v=1 -->`,
+        `<!-- clawsweeper-review item=${number} -->`,
+      ].join("\n\n"),
+    );
+    const itemPath = join(itemsDir, `${number}.md`);
+    writeFileSync(itemPath, synced.report, "utf8");
+
+    withMockGh(
+      root,
+      promotionGhMock({
+        number,
+        title: "Empty PR under active re-review",
+        headSha,
+        changedFiles: 0,
+        sourceFiles: [],
+        comment: activeComment,
+      }),
+      () => {
+        runApplyDecisionsForTest({
+          targetRepo: "openclaw/openclaw",
+          itemsDir,
+          closedDir,
+          plansDir,
+          reportPath,
+          extraArgs: ["--apply-kind", "all", "--item-numbers", String(number)],
+        });
+      },
+    );
+
+    assert.deepEqual(JSON.parse(readFileSync(reportPath, "utf8")), [
+      {
+        number,
+        action: "kept_open",
+        reason: `same-head ClawSweeper review is active until ${expiresAt}`,
+      },
+    ]);
+    const stored = readFileSync(itemPath, "utf8");
+    assert.match(stored, /^decision: keep_open$/m);
+    assert.match(stored, /^action_taken: kept_open$/m);
+    assert.match(stored, /^close_reason: none$/m);
+    assert.doesNotMatch(stored, /^original_(?:action_taken|close_reason):/m);
+    assert.equal(existsSync(join(closedDir, `${number}.md`)), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("apply-decisions upgrades live no-diff kept-open PRs to duplicate closes", () => {
   const root = mkdtempSync(tmpPrefix);
   try {
