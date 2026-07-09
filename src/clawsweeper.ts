@@ -2399,7 +2399,7 @@ function ghJson<T>(args: string[]): T {
       console.error(
         `Malformed GitHub JSON response; retrying ${summarizeGhArgs(args)} in ${Math.round(waitMs / 1000)}s`,
       );
-      sleepMs(waitMs);
+      sleepBeforeGitHubRetry(waitMs);
     },
   });
 }

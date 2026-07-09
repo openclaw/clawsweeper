@@ -92,6 +92,30 @@ test("apply-decisions yields instead of starting a GitHub retry that cannot fit"
   }
 });
 
+test("apply-decisions yields instead of retrying malformed GitHub JSON past the deadline", () => {
+  const fixture = runtimeBudgetFixture(726);
+  const maxRuntimeMs = 2_500;
+  try {
+    const startedAt = Date.now();
+    withMockGh(fixture.root, 'process.stdout.write("{");', () => {
+      runApplyDecisionsForTest({
+        ...fixture,
+        extraArgs: [
+          "--max-runtime-ms",
+          String(maxRuntimeMs),
+          "--cursor-trace",
+          fixture.cursorTracePath,
+        ],
+      });
+    });
+
+    assert.ok(Date.now() - startedAt < 2_000, "malformed JSON retry ignored the runtime bound");
+    assertRuntimeYield(fixture, maxRuntimeMs);
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
 test("apply-decisions preserves a runtime yield through post-proof freshness handling", () => {
   const fixture = runtimeBudgetFixture(723);
   const maxRuntimeMs = 3_000;
