@@ -2103,20 +2103,21 @@ jobs:
             --report-path artifacts/failed-review-retry-report.json \
             "${dry_run_arg[@]}"
 
-      - uses: actions/upload-artifact@v7
-        with:
-          name: failed-review-retry-report
-          path: artifacts/failed-review-retry-report.json
-          if-no-files-found: error
-          retention-days: 14
-
       - name: Publish failed-review retry state
-        if: ${{ vars.CLAWSWEEPER_FAILED_REVIEW_RETRY_ENABLED == '1' }}
+        if: ${{ always() && vars.CLAWSWEEPER_FAILED_REVIEW_RETRY_ENABLED == '1' && hashFiles('results/failed-review-retries/openclaw-openclaw/*.json') != '' }}
         run: |
           pnpm run repair:publish-main -- \
             --message "chore: update failed review retry state" \
             --path results/failed-review-retries/openclaw-openclaw \
             --rebase-strategy theirs
+
+      - uses: actions/upload-artifact@v7
+        if: ${{ always() }}
+        with:
+          name: failed-review-retry-report
+          path: artifacts/failed-review-retry-report.json
+          if-no-files-found: error
+          retention-days: 14
 
   audit-dashboard:
     name: Audit state

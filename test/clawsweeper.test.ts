@@ -13,6 +13,7 @@ import {
   codexLoginConfig,
   codexLoginMethod,
   coverageProofRetryExhaustedRuntimeBudget,
+  dashboardFailedReviewRetryActivityForTest,
   dashboardClosedAt,
   formatRecentClosedRows,
   ghRetryKind,
@@ -2465,6 +2466,112 @@ test("sweep failed-review retry lane defaults to dry-run exact-item dispatch", (
   assert.match(retryBlock, /--state-dir results\/failed-review-retries\/openclaw-openclaw/);
   assert.match(retryBlock, /--path results\/failed-review-retries\/openclaw-openclaw/);
   assert.doesNotMatch(retryBlock, /--path records\/openclaw-openclaw/);
+  const publishIndex = retryBlock.indexOf("- name: Publish failed-review retry state");
+  const uploadIndex = retryBlock.indexOf("- uses: actions/upload-artifact@v7");
+  assert.ok(publishIndex > 0);
+  assert.ok(uploadIndex > publishIndex);
+  assert.match(
+    retryBlock.slice(publishIndex, uploadIndex),
+    /if: \$\{\{ always\(\) && vars\.CLAWSWEEPER_FAILED_REVIEW_RETRY_ENABLED == '1' && hashFiles\('results\/failed-review-retries\/openclaw-openclaw\/\*\.json'\) != '' \}\}/,
+  );
+  assert.match(
+    retryBlock.slice(uploadIndex, retryBlock.indexOf("\n\n", uploadIndex)),
+    /if: \$\{\{ always\(\) \}\}/,
+  );
+});
+
+test("dashboard operation counters include persisted failed-review retry sidecars", () => {
+  const dir = mkdtempSync(tmpPrefix);
+  try {
+    const number = 42;
+    const revision = "a".repeat(64);
+    const at = "2026-07-09T12:00:00.000Z";
+    writeFileSync(
+      join(dir, `${number}.json`),
+      `${JSON.stringify({
+        schema_version: 1,
+        repo: "openclaw/openclaw",
+        number,
+        status: "exhausted",
+        revision_kind: "item_source_revision",
+        revision,
+        attempts: 2,
+        max_attempts: 2,
+        last_at: at,
+        reason: "retry budget exhausted",
+      })}\n`,
+      "utf8",
+    );
+    const activity = dashboardFailedReviewRetryActivityForTest({
+      markdown: reportFrontMatter({
+        number: String(number),
+        repository: "openclaw/openclaw",
+        type: "issue",
+        item_source_revision: revision,
+        review_status: "failed",
+        action_taken: "kept_open",
+      }),
+      number,
+      stateDir: dir,
+      now: Date.parse("2026-07-09T12:01:00.000Z"),
+    });
+
+    assert.equal(activity.last15Minutes.failedReviewRetries, 0);
+    assert.equal(activity.last15Minutes.failedReviewRetryExhaustions, 1);
+    assert.equal(activity.lastHour.failedReviewRetryExhaustions, 1);
+    assert.equal(activity.last24Hours.failedReviewRetryExhaustions, 1);
+
+    writeFileSync(
+      join(dir, `${number}.json`),
+      `${JSON.stringify({
+        schema_version: 1,
+        repo: "openclaw/openclaw",
+        number,
+        status: "dispatched",
+        revision_kind: "item_source_revision",
+        revision,
+        attempts: 1,
+        max_attempts: 2,
+        last_at: at,
+        reason: "retry dispatched",
+      })}\n`,
+      "utf8",
+    );
+    const dispatchedActivity = dashboardFailedReviewRetryActivityForTest({
+      markdown: reportFrontMatter({
+        number: String(number),
+        repository: "openclaw/openclaw",
+        type: "issue",
+        item_source_revision: revision,
+        review_status: "failed",
+        action_taken: "kept_open",
+      }),
+      number,
+      stateDir: dir,
+      now: Date.parse("2026-07-09T12:01:00.000Z"),
+    });
+    assert.equal(dispatchedActivity.last15Minutes.failedReviewRetries, 1);
+    assert.equal(dispatchedActivity.last15Minutes.failedReviewRetryExhaustions, 0);
+
+    writeFileSync(join(dir, `${number}.json`), "{\n", "utf8");
+    const malformedActivity = dashboardFailedReviewRetryActivityForTest({
+      markdown: reportFrontMatter({
+        number: String(number),
+        repository: "openclaw/openclaw",
+        type: "issue",
+        item_source_revision: revision,
+        review_status: "failed",
+        action_taken: "kept_open",
+      }),
+      number,
+      stateDir: dir,
+      now: Date.parse("2026-07-09T12:01:00.000Z"),
+    });
+    assert.equal(malformedActivity.last15Minutes.failedReviewRetries, 0);
+    assert.equal(malformedActivity.last15Minutes.failedReviewRetryExhaustions, 0);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("sweep dashboard status writes are scoped to the target repository", () => {

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   chmodSync,
   existsSync,
@@ -2082,6 +2082,10 @@ function defaultClosedDir(profile = targetProfile()): string {
 
 function defaultPlansDir(profile = targetProfile()): string {
   return join(repoRecordsDir(profile), "plans");
+}
+
+function defaultFailedReviewRetryStateDir(profile = targetProfile()): string {
+  return join(ROOT, "results", "failed-review-retries", profile.slug);
 }
 
 function defaultDecisionPacketsDir(profile = targetProfile()): string {
@@ -6390,6 +6394,39 @@ function recordDashboardActivity(
       recordFailedReviewRetryStatus(failedReviewRetryStatus, bucket);
     }
   }
+}
+
+function dashboardMarkdownWithFailedReviewRetryState(
+  markdown: string,
+  number: number,
+  stateDir: string,
+): string {
+  const statePath = failedReviewRetryStatePath(stateDir, number);
+  let state: FailedReviewRetryState | null;
+  try {
+    state = readFailedReviewRetryState(statePath);
+  } catch (error) {
+    console.error(
+      `[dashboard] ignoring invalid failed-review retry state ${repoRelativePath(statePath)}: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    state = null;
+  }
+  return failedReviewRetryMarkdownWithState(markdown, state);
+}
+
+export function dashboardFailedReviewRetryActivityForTest(options: {
+  markdown: string;
+  number: number;
+  stateDir: string;
+  now: number;
+}): DashboardActivityStats {
+  const activity = emptyDashboardActivityStats();
+  recordDashboardActivity(
+    dashboardMarkdownWithFailedReviewRetryState(options.markdown, options.number, options.stateDir),
+    activity,
+    options.now,
+  );
+  return activity;
 }
 
 function formatActivityRow(label: string, bucket: DashboardActivityBucket): string {
@@ -18410,7 +18447,16 @@ function writeFailedReviewRetryState(
     ...(options.dispatchUrl ? { dispatch_url: options.dispatchUrl } : {}),
   };
   ensureDir(dirname(path));
-  writeFileSync(path, `${JSON.stringify(state, null, 2)}\n`, "utf8");
+  const temporaryPath = join(
+    dirname(path),
+    `.${basename(path)}.${process.pid}.${randomUUID()}.tmp`,
+  );
+  try {
+    writeFileSync(temporaryPath, `${JSON.stringify(state, null, 2)}\n`, "utf8");
+    renameSync(temporaryPath, path);
+  } finally {
+    if (existsSync(temporaryPath)) unlinkSync(temporaryPath);
+  }
 }
 
 const FAILED_REVIEW_RETRY_METADATA_KEYS = [
@@ -21924,8 +21970,13 @@ function dashboardStats(
   const recent: DashboardItem[] = [];
   const workQueue: DashboardItem[] = [];
   const recentClosed: DashboardClosedItem[] = [];
+  const failedReviewRetryStateDir = defaultFailedReviewRetryStateDir(profile);
   for (const entry of entries) {
-    const markdown = entry.markdown;
+    const markdown = dashboardMarkdownWithFailedReviewRetryState(
+      entry.markdown,
+      entry.number,
+      failedReviewRetryStateDir,
+    );
     const repo = entry.repo;
     const number = entry.number;
     const reviewedAt = frontMatterValue(markdown, "reviewed_at");
@@ -21987,7 +22038,11 @@ function dashboardStats(
     }
   }
   for (const entry of closedEntries) {
-    const markdown = entry.markdown;
+    const markdown = dashboardMarkdownWithFailedReviewRetryState(
+      entry.markdown,
+      entry.number,
+      failedReviewRetryStateDir,
+    );
     const repo = entry.repo;
     const action = frontMatterValue(markdown, "action_taken") ?? "unknown";
     const closedAt = dashboardClosedAt(markdown);
