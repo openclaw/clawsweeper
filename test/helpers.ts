@@ -433,6 +433,8 @@ export function promotionGhMock(options: {
   itemUpdatedAtAfterLabelSyncLogPath?: string;
   itemUpdatedAtAfterProof?: string;
   itemUpdatedAtAfterProofLogPath?: string;
+  changedFiles?: number;
+  sourceFiles?: string[];
   issueCommentCount?: number;
   comment: string;
   commentWriteLogPath?: string;
@@ -514,6 +516,12 @@ export function promotionGhMock(options: {
 		const labels = ${JSON.stringify(options.labels ?? ["status: 📣 needs proof"])};
 		const itemCreatedAt = ${JSON.stringify(itemCreatedAt)};
 		const itemUpdatedAt = ${JSON.stringify(itemUpdatedAt)};
+		const changedFiles = ${options.changedFiles ?? 2};
+		const sourceFiles = ${JSON.stringify(
+      (options.sourceFiles ?? ["src/runtime.ts", "test/runtime.test.ts"]).map((filename) => ({
+        filename,
+      })),
+    )};
 		const itemUpdatedAtAfterLabelSync = ${JSON.stringify(
       options.itemUpdatedAtAfterLabelSync ?? "",
     )};
@@ -584,7 +592,7 @@ export function promotionGhMock(options: {
     title,
     html_url: "https://github.com/openclaw/openclaw/pull/" + number,
     state: "open",
-    changed_files: 2,
+    changed_files: changedFiles,
     commits: 1,
     review_comments: 0,
     body: "Stale PR body.",
@@ -650,7 +658,6 @@ export function promotionGhMock(options: {
 	    console.error("unexpected linked pull files", linkedNumber);
 	    process.exit(1);
 	  }
-	  const sourceFiles = [{ filename: "src/runtime.ts" }, { filename: "test/runtime.test.ts" }];
 	  const files = linkedNumber === number ? sourceFiles : liveLinkedPulls[linkedNumber].files || sourceFiles;
   if (jq === "[.[].filename]") {
     console.log(JSON.stringify(files.map((file) =>

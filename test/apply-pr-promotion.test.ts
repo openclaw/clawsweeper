@@ -18,7 +18,8 @@ function assertResolvedPromotionRespectsCloseReasonFilter(options: {
   number: number;
   applyCloseReason: "duplicate_or_superseded" | "low_signal_unmergeable_pr";
   sourceFiles: string[];
-  linkedFiles: string[];
+  linkedFiles?: string[];
+  noDiff?: boolean;
 }): void {
   const root = mkdtempSync(tmpPrefix);
   try {
@@ -36,7 +37,7 @@ function assertResolvedPromotionRespectsCloseReasonFilter(options: {
       title: "Ambiguous stale promotion",
       pull_files: JSON.stringify(options.sourceFiles),
       pull_files_truncated: false,
-      work_cluster_refs: JSON.stringify(["Superseded by #400"]),
+      work_cluster_refs: JSON.stringify(options.linkedFiles ? ["Superseded by #400"] : []),
     }).replace(
       "## Summary\n\nThe dashboard has queue_fix_pr candidates but no generated coding plan.",
       `## Summary\n\n${keepOpenSummary}`,
@@ -51,18 +52,22 @@ function assertResolvedPromotionRespectsCloseReasonFilter(options: {
         number: options.number,
         title: "Ambiguous stale promotion",
         comment: synced.comment,
-        linkedPulls: {
-          400: {
-            number: 400,
-            title: "Merged canonical replacement",
-            html_url: "https://github.com/openclaw/openclaw/pull/400",
-            state: "closed",
-            merged_at: "2026-05-02T00:00:00Z",
-            mergeable_state: "clean",
-            labels: ["proof: sufficient"],
-            files: options.linkedFiles,
-          },
-        },
+        changedFiles: options.noDiff ? 0 : options.sourceFiles.length,
+        sourceFiles: options.sourceFiles,
+        linkedPulls: options.linkedFiles
+          ? {
+              400: {
+                number: 400,
+                title: "Merged canonical replacement",
+                html_url: "https://github.com/openclaw/openclaw/pull/400",
+                state: "closed",
+                merged_at: "2026-05-02T00:00:00Z",
+                mergeable_state: "clean",
+                labels: ["proof: sufficient"],
+                files: options.linkedFiles,
+              },
+            }
+          : {},
       }),
       () => {
         withMockCodexProof(
@@ -382,6 +387,15 @@ test("apply-decisions does not persist low-signal fallback when only duplicate c
     applyCloseReason: "duplicate_or_superseded",
     sourceFiles: ["docs/gateway/troubleshooting.md"],
     linkedFiles: ["src/runtime.ts"],
+  });
+});
+
+test("apply-decisions does not fall through from filtered no-diff to low-signal promotion", () => {
+  assertResolvedPromotionRespectsCloseReasonFilter({
+    number: 340,
+    applyCloseReason: "low_signal_unmergeable_pr",
+    sourceFiles: [],
+    noDiff: true,
   });
 });
 

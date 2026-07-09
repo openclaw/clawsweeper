@@ -19532,7 +19532,7 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
     if (isUpgradedCloseCandidate) {
       markdown = replaceFrontMatterValue(markdown, "action_taken", "proposed_close");
     }
-    if (
+    const hasLiveNoDiffPullRequestPromotion =
       state === "open" &&
       !isCloseProposal &&
       item.kind === "pull_request" &&
@@ -19541,8 +19541,10 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
       storedUpdatedAt &&
       item.updatedAt === storedUpdatedAt &&
       livePullRequestHasNoDiff(currentItemContext()) &&
-      closeReasonEnabled("duplicate_or_superseded", applyCloseReasons) &&
-      reviewReportCanPromoteToClose(markdown)
+      reviewReportCanPromoteToClose(markdown);
+    if (
+      hasLiveNoDiffPullRequestPromotion &&
+      closeReasonEnabled("duplicate_or_superseded", applyCloseReasons)
     ) {
       markdown = upgradeNoDiffPullRequestReport(markdown, item);
       closeReason = "duplicate_or_superseded";
@@ -19552,6 +19554,7 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
     if (
       state === "open" &&
       !isCloseProposal &&
+      !hasLiveNoDiffPullRequestPromotion &&
       item.kind === "pull_request" &&
       decision === "keep_open" &&
       action === "kept_open"
