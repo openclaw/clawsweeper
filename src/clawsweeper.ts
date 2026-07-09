@@ -8782,8 +8782,17 @@ function fixedPullRequestFromContext(
 function fixedPullRequestFromCommitPulls(
   pulls: readonly unknown[],
   source: string,
+  issueNumber: number,
+  commitMessage = "",
+  defaultBranch = "main",
 ): FixedPullRequest | null {
+  const commitClosesIssue = textExplicitlyClosesIssue(commitMessage, issueNumber);
   const candidates = pulls
+    .filter(
+      (pull) =>
+        pullTargetsBranch(pull, defaultBranch) &&
+        (commitClosesIssue || pullExplicitlyClosesIssue(pull, issueNumber)),
+    )
     .map((pull) => fixedPullRequestFromUnknown(pull, source))
     .filter((pull): pull is FixedPullRequest => pull !== null)
     .sort((left, right) => {
@@ -8796,11 +8805,44 @@ function fixedPullRequestFromCommitPulls(
 
 export function fixedPullRequestFromCommitPullsForTest(
   pulls: readonly unknown[],
+  issueNumber: number,
+  commitMessage = "",
+  defaultBranch = "main",
 ): FixedPullRequest | null {
-  return fixedPullRequestFromCommitPulls(pulls, "GitHub commit PR lookup");
+  return fixedPullRequestFromCommitPulls(
+    pulls,
+    "GitHub commit PR lookup",
+    issueNumber,
+    commitMessage,
+    defaultBranch,
+  );
 }
 
-function fixedPullRequestFromCommitSha(decision: Decision): FixedPullRequest | null {
+function pullTargetsBranch(value: unknown, branch: string): boolean {
+  return asRecord(asRecord(value).base).ref === branch;
+}
+
+function pullExplicitlyClosesIssue(value: unknown, issueNumber: number): boolean {
+  const body = asRecord(value).body;
+  if (typeof body !== "string" || !body.trim()) return false;
+  return textExplicitlyClosesIssue(body, issueNumber);
+}
+
+function textExplicitlyClosesIssue(text: string, issueNumber: number): boolean {
+  const issue = escapeRegExp(String(issueNumber));
+  const repo = escapeRegExp(targetRepo());
+  const closingReference = new RegExp(
+    `\\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\\b[\\t ]*(?::[\\t ]*)?` +
+      `(?:#${issue}\\b|${repo}#${issue}\\b|https?:\\/\\/github\\.com\\/${repo}\\/issues\\/${issue}\\b)`,
+    "i",
+  );
+  return text.split(/\r?\n/).some((line) => closingReference.test(line));
+}
+
+function fixedPullRequestFromCommitSha(
+  decision: Decision,
+  issueNumber: number,
+): FixedPullRequest | null {
   if (decision.decision !== "close" || decision.confidence !== "high") return null;
   const fixedSha = decision.fixedSha?.trim();
   if (!fixedSha || fixedSha === "unknown") return null;
@@ -8811,7 +8853,26 @@ function fixedPullRequestFromCommitSha(decision: Decision): FixedPullRequest | n
       "-H",
       "Accept: application/vnd.github+json",
     ]);
-    return fixedPullRequestFromCommitPulls(pulls, "GitHub commit PR lookup");
+    const repository = asRecord(ghJson<unknown>(["api", `repos/${targetRepo()}`]));
+    const defaultBranch = repository.default_branch;
+    if (typeof defaultBranch !== "string" || !defaultBranch.trim()) return null;
+    const bodyMatch = fixedPullRequestFromCommitPulls(
+      pulls,
+      "GitHub commit PR lookup",
+      issueNumber,
+      "",
+      defaultBranch,
+    );
+    if (bodyMatch) return bodyMatch;
+    const commit = asRecord(ghJson<unknown>(["api", `repos/${targetRepo()}/commits/${fixedSha}`]));
+    const commitMessage = asRecord(commit.commit).message;
+    return fixedPullRequestFromCommitPulls(
+      pulls,
+      "GitHub commit PR lookup",
+      issueNumber,
+      typeof commitMessage === "string" ? commitMessage : "",
+      defaultBranch,
+    );
   } catch (error) {
     if (isGitHubNotFoundError(error)) return null;
     throw error;
@@ -8822,7 +8883,7 @@ function attachFixedPullRequest(decision: Decision, item: Item, context: ItemCon
   if (decision.fixedPullRequest) return decision;
   const fixedPullRequest =
     fixedPullRequestFromContext(item, context, decision) ??
-    (item.kind === "issue" ? fixedPullRequestFromCommitSha(decision) : null);
+    (item.kind === "issue" ? fixedPullRequestFromCommitSha(decision, item.number) : null);
   return fixedPullRequest ? { ...decision, fixedPullRequest } : decision;
 }
 

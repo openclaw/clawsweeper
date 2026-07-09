@@ -276,29 +276,38 @@ test("close comments reference high-confidence merged fixing PRs", () => {
 });
 
 test("commit PR lookup selects the newest merged pull request", () => {
-  const fixedPullRequest = fixedPullRequestFromCommitPullsForTest([
-    {
-      number: 455,
-      html_url: "https://github.com/openclaw/openclaw/pull/455",
-      title: "fix: older candidate",
-      merged: true,
-      merged_at: "2026-04-27T12:00:00Z",
-      merge_commit_sha: "1111111111111111",
-    },
-    {
-      number: 456,
-      html_url: "https://github.com/openclaw/openclaw/pull/456",
-      title: "fix: wire the shell check",
-      merged_at: "2026-04-28T12:00:00Z",
-      merge_commit_sha: "fedcba9876543210",
-    },
-    {
-      number: 457,
-      html_url: "https://github.com/openclaw/openclaw/pull/457",
-      title: "open follow-up",
-      merged: false,
-    },
-  ]);
+  const fixedPullRequest = fixedPullRequestFromCommitPullsForTest(
+    [
+      {
+        number: 455,
+        html_url: "https://github.com/openclaw/openclaw/pull/455",
+        title: "fix: older candidate",
+        merged: true,
+        merged_at: "2026-04-27T12:00:00Z",
+        merge_commit_sha: "1111111111111111",
+        body: "Fixes openclaw/openclaw#123",
+        base: { ref: "main" },
+      },
+      {
+        number: 456,
+        html_url: "https://github.com/openclaw/openclaw/pull/456",
+        title: "fix: wire the shell check",
+        merged_at: "2026-04-28T12:00:00Z",
+        merge_commit_sha: "fedcba9876543210",
+        body: "Resolves https://github.com/openclaw/openclaw/issues/123",
+        base: { ref: "main" },
+      },
+      {
+        number: 457,
+        html_url: "https://github.com/openclaw/openclaw/pull/457",
+        title: "open follow-up",
+        merged: false,
+        body: "Closes #123",
+        base: { ref: "main" },
+      },
+    ],
+    123,
+  );
 
   assert.deepEqual(fixedPullRequest, {
     repo: "openclaw/openclaw",
@@ -310,6 +319,77 @@ test("commit PR lookup selects the newest merged pull request", () => {
     confidence: "high",
     source: "GitHub commit PR lookup",
   });
+});
+
+test("commit PR lookup rejects unrelated closing references at the claimed fixed SHA", () => {
+  const fixedPullRequest = fixedPullRequestFromCommitPullsForTest(
+    [
+      {
+        number: 456,
+        html_url: "https://github.com/openclaw/openclaw/pull/456",
+        title: "fix: unrelated main-head change",
+        merged_at: "2026-04-28T12:00:00Z",
+        merge_commit_sha: "fedcba9876543210",
+        body: "Fixes #999",
+      },
+      {
+        number: 457,
+        html_url: "https://github.com/openclaw/openclaw/pull/457",
+        title: "fix: mentions the issue without closing it",
+        merged_at: "2026-04-29T12:00:00Z",
+        merge_commit_sha: "abcdef9876543210",
+        body: "Fixes #999; related to #123",
+      },
+      {
+        number: 458,
+        html_url: "https://github.com/openclaw/openclaw/pull/458",
+        title: "fix: closes the same number in another repository",
+        merged_at: "2026-04-30T12:00:00Z",
+        merge_commit_sha: "1234567890abcdef",
+        body: "Fixes other/repository#123",
+      },
+    ],
+    123,
+  );
+
+  assert.equal(fixedPullRequest, null);
+});
+
+test("commit PR lookup accepts an exact closing reference in the fixed commit message", () => {
+  const pull = {
+    number: 456,
+    html_url: "https://github.com/openclaw/openclaw/pull/456",
+    title: "fix: wire the shell check",
+    merged_at: "2026-04-28T12:00:00Z",
+    merge_commit_sha: "fedcba9876543210",
+    body: "Related to #123",
+    base: { ref: "main" },
+  };
+
+  assert.equal(
+    fixedPullRequestFromCommitPullsForTest([pull], 123, "Fixes other/repository#123"),
+    null,
+  );
+  assert.equal(fixedPullRequestFromCommitPullsForTest([pull], 123, "Fixes #999; see #123"), null);
+  assert.equal(
+    fixedPullRequestFromCommitPullsForTest([pull], 123, "Fixes openclaw/openclaw#123")?.number,
+    456,
+  );
+});
+
+test("commit PR lookup rejects closing references on a non-default branch", () => {
+  const pull = {
+    number: 456,
+    html_url: "https://github.com/openclaw/openclaw/pull/456",
+    title: "fix: backport the shell check",
+    merged_at: "2026-04-28T12:00:00Z",
+    merge_commit_sha: "fedcba9876543210",
+    body: "Fixes #123",
+    base: { ref: "release" },
+  };
+
+  assert.equal(fixedPullRequestFromCommitPullsForTest([pull], 123), null);
+  assert.equal(fixedPullRequestFromCommitPullsForTest([pull], 123, "Fixes #123"), null);
 });
 
 test("report-rendered close comments keep merged fixing PR provenance", () => {

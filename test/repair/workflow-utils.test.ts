@@ -1660,7 +1660,7 @@ test("workflow utilities rotate bounded apply candidate batches by apply cursor"
   );
 });
 
-test("workflow utilities prioritize ready closes ahead of policy-gated candidates", () => {
+test("workflow utilities prioritize ready and duplicate closes ahead of policy candidates", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-workflow-"));
   const oldDate = "2024-01-01T00:00:00Z";
   writeProposedRecord(
@@ -1674,6 +1674,8 @@ test("workflow utilities prioritize ready closes ahead of policy-gated candidate
   writeProposedRecord(root, 20, "issue", "proposed_close", "implemented_on_main", oldDate, {
     applyCheckedAt: "2026-01-01T00:00:00Z",
   });
+  writeProposedRecord(root, 30, "issue", "proposed_close", "duplicate_or_superseded", oldDate);
+  writeProposedRecord(root, 40, "pull_request", "proposed_close", "stalled_unproven_pr", oldDate);
 
   assert.deepEqual(
     withCwd(root, () =>
@@ -1684,11 +1686,11 @@ test("workflow utilities prioritize ready closes ahead of policy-gated candidate
         staleMinAgeDays: 60,
         minAgeDays: 0,
         minAgeMinutes: null,
-        batchSize: 2,
+        batchSize: 4,
         coverageProofLimit: 1,
       }),
     ),
-    [20, 10],
+    [20, 30, 40, 10],
   );
 });
 

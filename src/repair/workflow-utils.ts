@@ -1103,11 +1103,11 @@ type ProposedItemQualitySummary = {
 
 const FAST_CLOSE_BUCKET_ORDER: ProposedItemQualityBucket[] = [
   "ready_implemented",
+  "duplicate_or_superseded",
   "other",
   "aging_or_low_signal",
   "policy_sensitive",
   "retry_after_guard_skip",
-  "duplicate_or_superseded",
   "needs_pr_close_coverage",
   "promotion_probe",
 ];
