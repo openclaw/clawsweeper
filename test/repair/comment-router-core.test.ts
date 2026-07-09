@@ -1747,6 +1747,10 @@ test("label-sweep classification checks the exact-head review lease before dispa
     source.indexOf("function dispatchClawSweeperReview"),
   );
   assert.equal(trustedVerdictGuard.match(/fetchPullRequestView\(number\)/g)?.length, 2);
+  assert.ok(
+    trustedVerdictGuard.indexOf('command.target?.kind !== "pull_request"') <
+      trustedVerdictGuard.indexOf("fetchPullRequestView(number)"),
+  );
   assert.match(trustedVerdictGuard, /trustedAutomationPredatesReviewStartLease\(\{/);
 });
 

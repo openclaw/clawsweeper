@@ -2485,6 +2485,7 @@ function repairLoopReviewDispatchBlockReason(command: LooseRecord): string | nul
 
 function trustedAutomationReviewLeaseBlockReason(command: LooseRecord): string | null {
   if (command.trusted_bot !== true || command.automation_source !== "clawsweeper") return null;
+  if (command.target?.kind !== "pull_request") return null;
   const number = Number(command.issue_number);
   if (!Number.isInteger(number) || number <= 0) return "trusted review target is invalid";
   try {
