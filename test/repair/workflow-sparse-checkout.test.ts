@@ -35,6 +35,13 @@ test("sparse repair build workflows include runtime dependencies", () => {
   }
 });
 
+test("sparse CI checkout includes pnpm workspace policy", () => {
+  const workflow = readText(".github/workflows/ci.yml");
+  const entries = sparseCheckoutEntries(workflow);
+
+  assert.ok(entries.has("pnpm-workspace.yaml"));
+});
+
 test("repair build emits the bounded Codex process worker", () => {
   const config = JSON.parse(fs.readFileSync("tsconfig.repair.json", "utf8")) as {
     include?: string[];
