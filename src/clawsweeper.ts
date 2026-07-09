@@ -8432,7 +8432,7 @@ function formatReviewFreshnessTimestamp(iso: string | undefined): string {
   if (!iso) return "";
   const date = new Date(iso);
   if (Number.isNaN(date.getTime())) return iso;
-  const utc = date.toISOString().slice(11, 16);
+  const utcTime = date.toISOString().slice(11, 16);
   const eastern = new Intl.DateTimeFormat("en-US", {
     year: "numeric",
     month: "long",
@@ -8444,6 +8444,19 @@ function formatReviewFreshnessTimestamp(iso: string | undefined): string {
   })
     .format(date)
     .replace(" at ", ", ");
+  const easternDate = new Intl.DateTimeFormat("en-US", {
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+    timeZone: "America/New_York",
+  }).format(date);
+  const utcDate = new Intl.DateTimeFormat("en-US", {
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+    timeZone: "UTC",
+  }).format(date);
+  const utc = easternDate === utcDate ? utcTime : `${utcDate}, ${utcTime}`;
   return `${eastern} ET / ${utc} UTC`;
 }
 

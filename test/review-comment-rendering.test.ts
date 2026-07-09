@@ -303,6 +303,39 @@ Reason: Maintainers should review the tests after the targeted lane is green.
   assert.match(comment, /<!-- clawsweeper-verdict:needs-human item=74265 sha=abc123def456/);
 });
 
+test("review comments include the UTC date when ET and UTC calendar dates differ", () => {
+  const comment = renderReviewCommentFromReport(
+    `${reportFrontMatter({
+      type: "pull_request",
+      number: "74266",
+      decision: "keep_open",
+      close_reason: "none",
+      work_candidate: "none",
+      pull_head_sha: "abc123def456",
+      reviewed_at: "2026-07-09T03:00:00.000Z",
+    })}
+
+## Summary
+
+Keep this PR open for maintainer review.
+
+## What This Changes
+
+Updates review timestamp formatting.
+
+## Best Possible Solution
+
+Land the timestamp fix after targeted validation is green.
+`,
+    "none",
+  );
+
+  assert.match(
+    comment,
+    /Codex review: needs maintainer review before merge\. _Reviewed July 8, 2026, 11:00 PM ET \/ July 9, 2026, 03:00 UTC\._/,
+  );
+});
+
 test("issue keep-open review comments surface reproducibility in the summary", () => {
   const comment = renderReviewCommentFromReport(
     `${reportFrontMatter({
