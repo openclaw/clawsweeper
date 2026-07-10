@@ -20,6 +20,7 @@ const GUARDED_OPEN_ACTIONS = new Set([
   "skipped_maintainer_authored",
   "skipped_open_closing_pr",
   "skipped_protected_label",
+  "skipped_close_exempt_label",
   "skipped_same_author_pair",
 ]);
 

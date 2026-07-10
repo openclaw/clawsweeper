@@ -17,6 +17,7 @@ test("event apply proof marks only live deterministic remain-open guards", () =>
     "skipped_same_author_pair",
     "skipped_open_closing_pr",
     "skipped_protected_label",
+    "skipped_close_exempt_label",
     "skipped_maintainer_authored",
     "skipped_locked_conversation",
   ];
@@ -272,6 +273,109 @@ if (args[0] === "api" && /\\/issues\\/321\\/comments(?:\\?|$)/.test(path)) {
                 number: 321,
                 action: "skipped_protected_label",
                 reason: "protected label: security",
+                guardedOpenStateVerified: true,
+              },
+            ]
+          : [],
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+});
+
+test("event apply emits proof only while a captured PR close-exemption guard remains live", () => {
+  for (const labels of [["clawsweeper:human-review"], []]) {
+    const root = mkdtempSync(tmpPrefix);
+    try {
+      const itemsDir = join(root, "items");
+      const closedDir = join(root, "closed");
+      const plansDir = join(root, "plans");
+      const reportPath = join(root, "apply-report.json");
+      mkdirSync(itemsDir, { recursive: true });
+      mkdirSync(plansDir, { recursive: true });
+      writeFileSync(
+        join(itemsDir, "321.md"),
+        implementedCloseReport({
+          type: "pull_request",
+          action_taken: "skipped_close_exempt_label",
+          close_reason: "stalled_unproven_pr",
+          labels: JSON.stringify(["clawsweeper:human-review"]),
+        }),
+        "utf8",
+      );
+
+      const ghMock = `
+const rawArgs = process.argv.slice(2);
+const args = rawArgs[0] === "--repo" ? rawArgs.slice(2) : rawArgs;
+const path = args[1] || "";
+if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$)/.test(args[2] || "")) {
+  console.log("HTTP/2 200\\n\\n[]");
+} else if (args[0] === "api" && /\\/issues\\/321\\/comments(?:\\?|$)/.test(path)) {
+  console.log(JSON.stringify([[]]));
+} else if (args[0] === "api" && /\\/issues\\/321\\/timeline(?:\\?|$)/.test(path)) {
+  console.log(JSON.stringify([[]]));
+} else if (args[0] === "api" && /\\/issues\\/321$/.test(path)) {
+  console.log(JSON.stringify({
+    number: 321,
+    title: "Exempt PR",
+    html_url: "https://github.com/openclaw/openclaw/pull/321",
+    body: "",
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T00:00:00Z",
+    closed_at: null,
+    state: "open",
+    locked: false,
+    active_lock_reason: null,
+    author_association: "CONTRIBUTOR",
+    user: { login: "reporter" },
+    labels: ${JSON.stringify(labels)},
+    comments: 0,
+    pull_request: { url: "https://api.github.com/repos/openclaw/openclaw/pulls/321" }
+  }));
+} else if (args[0] === "api" && /\\/pulls\\/321$/.test(path)) {
+  console.log(JSON.stringify({
+    number: 321,
+    title: "Exempt PR",
+    html_url: "https://github.com/openclaw/openclaw/pull/321",
+    state: "open",
+    draft: false,
+    created_at: "2026-01-01T00:00:00Z",
+    changed_files: 1,
+    commits: 1,
+    review_comments: 0,
+    requested_reviewers: [],
+    requested_teams: [],
+    body: "",
+    head: { sha: "head-sha", ref: "branch", repo: { full_name: "fork/openclaw" } },
+    base: { sha: "base-sha", ref: "main", repo: { full_name: "openclaw/openclaw" } },
+    user: { login: "reporter" }
+  }));
+} else if (args[0] === "api" && /\\/pulls\\/321\\/(files|commits|comments|reviews)(?:\\?|$)/.test(path)) {
+  console.log(JSON.stringify([[]]));
+} else {
+  console.error("unexpected gh args", JSON.stringify(args));
+  process.exit(1);
+}
+`;
+      withMockGh(root, ghMock, () => {
+        runApplyDecisionsForTest({
+          itemsDir,
+          closedDir,
+          plansDir,
+          reportPath,
+          extraArgs: ["--event-apply-proof"],
+        });
+      });
+
+      assert.deepEqual(
+        JSON.parse(readText(reportPath)),
+        labels.length > 0
+          ? [
+              {
+                number: 321,
+                action: "skipped_close_exempt_label",
+                reason: "clawsweeper:human-review exempts this PR from stalled-unproven auto-close",
                 guardedOpenStateVerified: true,
               },
             ]

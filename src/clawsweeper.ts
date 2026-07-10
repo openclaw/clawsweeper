@@ -333,6 +333,7 @@ type ActionTaken =
   | "skipped_already_closed"
   | "skipped_maintainer_authored"
   | "skipped_protected_label"
+  | "skipped_close_exempt_label"
   | "skipped_pr_close_coverage_proof"
   | "retry_pr_close_coverage_proof"
   | "retry_stale_canonical_comment_sync"
@@ -1715,6 +1716,7 @@ const CLOSED_STATE_PROBE_ACTIONS = new Set<string>([
   "skipped_changed_since_review",
   "skipped_maintainer_authored",
   "skipped_protected_label",
+  "skipped_close_exempt_label",
   "skipped_pr_close_coverage_proof",
   "skipped_invalid_decision",
   "skipped_open_closing_pr",
@@ -1727,6 +1729,7 @@ const EVENT_GUARDED_OPEN_ACTIONS = new Set<string>([
   "skipped_maintainer_authored",
   "skipped_open_closing_pr",
   "skipped_protected_label",
+  "skipped_close_exempt_label",
   "skipped_same_author_pair",
 ]);
 
@@ -4059,6 +4062,25 @@ function pullRequestLiveActivity(number: number): PullRequestLiveActivity {
 
 function prAutoCloseExemptLabel(labels: readonly string[]): string | undefined {
   return labels.map(normalizeLabelName).find((label) => PR_AUTO_CLOSE_EXEMPT_LABELS.has(label));
+}
+
+function prAutoCloseExemptDecisionReason(
+  item: Pick<Item, "kind" | "labels">,
+  closeReason: CloseReason | undefined,
+): string | null {
+  if (item.kind !== "pull_request") return null;
+  const exemptLabel = prAutoCloseExemptLabel(item.labels);
+  if (!exemptLabel) return null;
+  if (closeReason === "unconfirmed_product_direction") {
+    return `${exemptLabel} exempts this PR from product-direction auto-close`;
+  }
+  if (closeReason === "stalled_unproven_pr") {
+    return `${exemptLabel} exempts this PR from stalled-unproven auto-close`;
+  }
+  if (closeReason === "abandoned_pr") {
+    return `${exemptLabel} exempts this PR from abandoned-PR auto-close`;
+  }
+  return null;
 }
 
 export function stalledUnprovenPrAgeSkipReason(
@@ -16623,6 +16645,14 @@ export function validateCloseDecision(
       reason: "low_signal_unmergeable_pr is allowed only for pull requests",
     };
   }
+  const closeExemptReason = prAutoCloseExemptDecisionReason(item, decision.closeReason);
+  if (closeExemptReason) {
+    return {
+      ok: false,
+      actionTaken: "skipped_close_exempt_label",
+      reason: closeExemptReason,
+    };
+  }
   if (decision.closeReason === "unconfirmed_product_direction") {
     const productDirectionBlock = unconfirmedProductDirectionDecisionBlockReason(item, decision);
     if (productDirectionBlock) {
@@ -20997,6 +21027,10 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
         applyBlockingProtectedLabels(item.labels, closeReason).length > 0
           ? applyProtectedLabelReason(item.labels, closeReason)
           : null;
+      const closeExemptReason =
+        action === "skipped_close_exempt_label"
+          ? prAutoCloseExemptDecisionReason(item, closeReason)
+          : null;
       const currentAuthorAssociation = normalizeAuthorAssociation(item.authorAssociation);
       const reviewedAuthorAssociation = normalizeAuthorAssociation(storedAuthorAssociation);
       const maintainerReason =
@@ -21014,11 +21048,13 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
         action === "skipped_locked_conversation" ? lockedConversationApplyReason(item) : null;
       const guardedOpenProof: { action: ActionTaken; reason: string } | null = protectedReason
         ? { action: "skipped_protected_label", reason: protectedReason }
-        : maintainerReason
-          ? { action: "skipped_maintainer_authored", reason: maintainerReason }
-          : lockedReason
-            ? { action: "skipped_locked_conversation", reason: lockedReason }
-            : null;
+        : closeExemptReason
+          ? { action: "skipped_close_exempt_label", reason: closeExemptReason }
+          : maintainerReason
+            ? { action: "skipped_maintainer_authored", reason: maintainerReason }
+            : lockedReason
+              ? { action: "skipped_locked_conversation", reason: lockedReason }
+              : null;
       if (emitEventApplyProof && guardedOpenProof) {
         if (recordApplySkipped(guardedOpenProof.action, guardedOpenProof.reason, true)) break;
       }

@@ -794,6 +794,7 @@ const APPLY_SKIP_NEXT_ACTION_DETAILS: Record<string, ApplySkipNextActionDetail> 
     next_step: "Retry durable comment sync until the conservative keep-open correction succeeds.",
   },
   skipped_protected_label: maintainerDecisionAction(),
+  skipped_close_exempt_label: maintainerDecisionAction(),
   skipped_policy_exempt: maintainerDecisionAction(),
   skipped_maintainer_authored: {
     bucket: "maintainer_review",

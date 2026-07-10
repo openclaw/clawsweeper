@@ -165,6 +165,35 @@ test("protected labels block close proposals even for otherwise valid decisions"
   assert.equal(action.closeComment, "");
 });
 
+test("PR close-exemption labels produce a distinct guarded-open action", () => {
+  const cases = [
+    ["clawsweeper:human-review", "unconfirmed_product_direction", "product-direction"],
+    ["clawsweeper:manual-only", "stalled_unproven_pr", "stalled-unproven"],
+    ["clawsweeper:automerge", "abandoned_pr", "abandoned-PR"],
+    ["clawsweeper:autofix", "stalled_unproven_pr", "stalled-unproven"],
+  ] as const;
+
+  for (const [label, closeReason, reasonText] of cases) {
+    const pr = item({
+      kind: "pull_request",
+      url: "https://github.com/openclaw/openclaw/pull/123",
+      labels: [label],
+    });
+    const validation = validateCloseDecision(pr, closeDecision({ closeReason }));
+    assert.equal(validation.ok, false, label);
+    assert.equal(validation.actionTaken, "skipped_close_exempt_label", label);
+    assert.match(validation.reason, new RegExp(`${label} exempts this PR from ${reasonText}`));
+
+    const action = reviewActionForDecision({
+      item: pr,
+      decision: closeDecision({ closeReason }),
+      git,
+    });
+    assert.equal(action.actionTaken, "skipped_close_exempt_label", label);
+    assert.equal(action.closeComment, "", label);
+  }
+});
+
 test("verified fixed maintainer items can become close proposals", () => {
   const validation = validateCloseDecision(item({ labels: ["maintainer"] }), closeDecision());
   assert.deepEqual(validation, { ok: true });

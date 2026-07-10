@@ -490,6 +490,7 @@ test("workflow utilities classify common apply skip reasons into next actions", 
       { number: 60, action: "skipped_maintainer_authored" },
       { number: 70, action: "retry_pr_close_coverage_proof" },
       { number: 80, action: "skipped_missing_record" },
+      { number: 90, action: "skipped_close_exempt_label" },
     ]),
   );
 
@@ -506,7 +507,7 @@ test("workflow utilities classify common apply skip reasons into next actions", 
   assert.deepEqual(summary.next_action_buckets, {
     close_coverage_proof: 2,
     defer_until_closing_pr: 1,
-    maintainer_review: 2,
+    maintainer_review: 3,
     report_quality_repair: 2,
     stable_skip: 1,
   });

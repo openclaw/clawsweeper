@@ -147,6 +147,7 @@ test("exact event proof completes live-shaped deterministic guarded-open results
     "skipped_same_author_pair",
     "skipped_open_closing_pr",
     "skipped_protected_label",
+    "skipped_close_exempt_label",
     "skipped_maintainer_authored",
     "skipped_locked_conversation",
   ]) {
