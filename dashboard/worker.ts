@@ -97,6 +97,7 @@ const DEFAULT_EXACT_REVIEW_EXECUTION_LEASE_MS = 130 * 60 * 1000;
 const DEFAULT_EXACT_REVIEW_RETRY_MS = 30_000;
 const DEFAULT_EXACT_REVIEW_WORKFLOW_PAUSED_RETRY_MS = 60_000;
 const EXACT_REVIEW_RECONCILE_RUN_LIMIT = 32;
+const EXACT_REVIEW_RECONCILE_CLAIM_MATCH_LIMIT = EXACT_REVIEW_RECONCILE_RUN_LIMIT * 2;
 const EXACT_REVIEW_RECONCILE_CONCURRENCY = 4;
 const EXACT_REVIEW_QUEUE_DELIVERY_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const EXACT_REVIEW_QUEUE_STATE_KEY = "exact-review-queue";
@@ -481,16 +482,37 @@ export class ExactReviewQueue {
       return json({ ok: true, requeued });
     }
 
-    if (request.method === "GET" && url.pathname === "/claimed-runs") {
+    if (request.method === "POST" && url.pathname === "/claimed-runs") {
+      const body = objectValue(await request.json().catch(() => null));
+      const requestedRuns = exactReviewRequestedRuns(body.runs);
+      if (!requestedRuns) return json({ error: "invalid_requested_runs" }, 400);
+
+      // The workflow_run hook names the exact terminal run. Return at most two matches for
+      // each requested id so a corrupt duplicate remains ambiguous without sampling the first
+      // N unrelated leases. This keeps the response bounded while allowing any live claim in
+      // the durable queue to be reconciled.
+      const requestedRunIds = new Set(requestedRuns.map((run) => run.runId));
+      const matchesByRunId = new Map<string, ExactReviewQueueItem[]>();
       const state = await this.readState();
-      const runs = Object.values(state.items)
-        .filter((item) => item.state === "leased" && item.claimedRunId)
-        .slice(0, EXACT_REVIEW_RECONCILE_RUN_LIMIT)
-        .map((item) => ({
+      for (const item of Object.values(state.items)) {
+        if (
+          item.state !== "leased" ||
+          !item.claimedRunId ||
+          !requestedRunIds.has(item.claimedRunId)
+        ) {
+          continue;
+        }
+        const matches = matchesByRunId.get(item.claimedRunId) || [];
+        if (matches.length < 2) matches.push(item);
+        matchesByRunId.set(item.claimedRunId, matches);
+      }
+      const runs = [...matchesByRunId.values()].flatMap((matches) =>
+        matches.map((item) => ({
           run_id: String(item.claimedRunId),
           run_attempt: item.claimedRunAttempt ?? null,
           claim_generation: exactReviewClaimGeneration(item.claimGeneration),
-        }));
+        })),
+      );
       return json({ runs });
     }
 
@@ -1259,7 +1281,20 @@ async function authenticatedExactReviewReconcile(request, env) {
   const requestedRuns = exactReviewRequestedRuns(body.runs ?? body.run_ids);
   if (!requestedRuns) return json({ error: "invalid_runs" }, 400);
 
-  const claimedResponse = await exactReviewQueueRequest(env, "/claimed-runs");
+  const claimedResponse = await exactReviewQueueRequest(
+    env,
+    "/claimed-runs",
+    new Request("https://clawsweeper-exact-review-queue/claimed-runs", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        runs: requestedRuns.map((run) => ({
+          run_id: run.runId,
+          ...(run.runAttempt ? { run_attempt: run.runAttempt } : {}),
+        })),
+      }),
+    }),
+  );
   if (!claimedResponse.ok) return json({ error: "exact_review_queue_unavailable" }, 503);
   const claimedBody = objectValue(await claimedResponse.json().catch(() => null));
   const claimedRuns = exactReviewClaimedRuns(claimedBody.runs);
@@ -1543,7 +1578,9 @@ function exactReviewRequestedRuns(value) {
 }
 
 function exactReviewClaimedRuns(value): ExactReviewClaimedRun[] | null {
-  if (!Array.isArray(value) || value.length > EXACT_REVIEW_RECONCILE_RUN_LIMIT) return null;
+  if (!Array.isArray(value) || value.length > EXACT_REVIEW_RECONCILE_CLAIM_MATCH_LIMIT) {
+    return null;
+  }
   const runs: ExactReviewClaimedRun[] = [];
   for (const entry of value) {
     const record = objectValue(entry);
