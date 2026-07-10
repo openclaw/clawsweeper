@@ -77,6 +77,28 @@ export function parseGhJsonLines<T>(text: string, args: readonly string[]): T[] 
     });
 }
 
+export function parseGhJsonLinesWithRetry<T>(
+  load: () => string,
+  args: readonly string[],
+  options: {
+    attempts?: number;
+    onRetry?: (error: GhJsonParseError, attempt: number, attempts: number) => void;
+  } = {},
+): T[] {
+  const attempts = Math.max(1, options.attempts ?? 3);
+  let lastError: GhJsonParseError | undefined;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      return parseGhJsonLines<T>(load(), args);
+    } catch (error) {
+      if (!(error instanceof GhJsonParseError) || attempt === attempts) throw error;
+      lastError = error;
+      options.onRetry?.(error, attempt, attempts);
+    }
+  }
+  throw lastError;
+}
+
 function formatParseError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }

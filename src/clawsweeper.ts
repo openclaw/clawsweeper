@@ -48,7 +48,7 @@ import {
   isLockedConversationCommentError,
   summarizeGhArgs,
 } from "./github-retry.js";
-import { parseGhJson, parseGhJsonLines, parseGhJsonWithRetry } from "./github-json.js";
+import { parseGhJson, parseGhJsonLinesWithRetry, parseGhJsonWithRetry } from "./github-json.js";
 import { stableJson } from "./stable-json.js";
 import {
   appendFloorBackfillCandidates,
@@ -143,6 +143,7 @@ export {
 export {
   parseGhJson,
   parseGhJsonLines,
+  parseGhJsonLinesWithRetry,
   parseGhJsonWithRetry,
   parseGhJsonWithRetryAsync,
 } from "./github-json.js";
@@ -2473,7 +2474,15 @@ function ghJsonOnce<T>(args: string[], timeoutMs: number): T {
 }
 
 function ghJsonLines<T>(args: string[]): T[] {
-  return parseGhJsonLines<T>(ghWithRetry(args), args);
+  return parseGhJsonLinesWithRetry<T>(() => ghWithRetry(args), args, {
+    onRetry: (_error, attempt) => {
+      const waitMs = ghRetryWaitMs("transient", attempt - 1);
+      console.error(
+        `Malformed GitHub JSON-lines response; retrying ${summarizeGhArgs(args)} in ${Math.round(waitMs / 1000)}s`,
+      );
+      sleepBeforeGitHubRetry(waitMs);
+    },
+  });
 }
 
 function sha256(text: string): string {
