@@ -52,6 +52,7 @@ type ExactReviewQueueItem = {
   claimedRunId?: string;
   claimedRunAttempt?: number;
   claimGeneration?: number;
+  claimProtocolVersion?: 1 | 2;
 };
 type ExactReviewCompletionOutcome = "success" | "failure" | "cancelled";
 type ExactReviewClaimedRun = {
@@ -426,13 +427,13 @@ export class ExactReviewQueue {
       const itemKey = String(body.item_key || "").trim();
       const leaseRevision = Number(body.lease_revision);
       const runId = String(body.run_id || "").trim();
-      if (!leaseId || !itemKey || !runId) {
-        return json({ error: "missing_lease_item_or_run" }, 400);
-      }
+      if (!leaseId || !runId) return json({ error: "missing_lease_or_run" }, 400);
       if (!/^\d+$/.test(runId)) return json({ error: "invalid_run_id" }, 400);
-      if (!Number.isInteger(leaseRevision) || leaseRevision < 1) {
+      const tupleClaim = Boolean(itemKey) || body.lease_revision !== undefined;
+      if (tupleClaim && (!itemKey || !Number.isInteger(leaseRevision) || leaseRevision < 1)) {
         return json({ error: "invalid_lease_revision" }, 400);
       }
+      const claimProtocolVersion: 1 | 2 = tupleClaim ? 2 : 1;
       const runAttempt = exactReviewRunAttempt(body.run_attempt);
       if (body.run_attempt !== undefined && runAttempt === null) {
         return json({ error: "invalid_run_attempt" }, 400);
@@ -440,11 +441,11 @@ export class ExactReviewQueue {
 
       const now = Date.now();
       const state = await this.readState();
-      const item = state.items[itemKey];
+      const item = tupleClaim ? state.items[itemKey] : exactReviewItemForLease(state, leaseId);
       if (
         !item ||
         item.leaseId !== leaseId ||
-        item.leaseRevision !== leaseRevision ||
+        (tupleClaim && item.leaseRevision !== leaseRevision) ||
         !isLiveExactReviewLease(item, now)
       ) {
         return json({ error: "lease_not_active" }, 409);
@@ -469,51 +470,51 @@ export class ExactReviewQueue {
           return json({ error: "stale_run_attempt" }, 409);
         }
         if (runAttempt === claimedRunAttempt) {
+          if (
+            item.claimProtocolVersion !== undefined &&
+            item.claimProtocolVersion !== claimProtocolVersion
+          ) {
+            return json({ error: "claim_protocol_mismatch" }, 409);
+          }
           const claimGeneration = Math.max(1, exactReviewClaimGeneration(item.claimGeneration));
-          if (item.claimGeneration !== claimGeneration) {
+          if (
+            item.claimGeneration !== claimGeneration ||
+            item.claimProtocolVersion !== claimProtocolVersion
+          ) {
             item.claimGeneration = claimGeneration;
+            item.claimProtocolVersion = claimProtocolVersion;
             await this.writeState(state);
           }
-          return json({
-            ok: true,
-            claimed: true,
-            item_key: item.key,
-            lease_revision: item.leaseRevision,
-            claim_generation: claimGeneration,
-            decision: item.leaseDecision,
-          });
+          return json(exactReviewClaimResponse(item, claimProtocolVersion, claimGeneration));
         }
       } else if (item.claimedRunId && runAttempt === null) {
+        if (
+          item.claimProtocolVersion !== undefined &&
+          item.claimProtocolVersion !== claimProtocolVersion
+        ) {
+          return json({ error: "claim_protocol_mismatch" }, 409);
+        }
         const claimGeneration = Math.max(1, exactReviewClaimGeneration(item.claimGeneration));
-        if (item.claimGeneration !== claimGeneration) {
+        if (
+          item.claimGeneration !== claimGeneration ||
+          item.claimProtocolVersion !== claimProtocolVersion
+        ) {
           item.claimGeneration = claimGeneration;
+          item.claimProtocolVersion = claimProtocolVersion;
           await this.writeState(state);
         }
-        return json({
-          ok: true,
-          claimed: true,
-          item_key: item.key,
-          lease_revision: item.leaseRevision,
-          claim_generation: claimGeneration,
-          decision: item.leaseDecision,
-        });
+        return json(exactReviewClaimResponse(item, claimProtocolVersion, claimGeneration));
       }
 
       item.state = "leased";
       item.claimedRunId = runId;
       item.claimedRunAttempt = runAttempt ?? undefined;
       item.claimGeneration = exactReviewClaimGeneration(item.claimGeneration) + 1;
+      item.claimProtocolVersion = claimProtocolVersion;
       item.leaseExpiresAt = now + exactReviewExecutionLeaseMs(this.env);
       await this.writeState(state);
       await this.scheduleNext(state, now);
-      return json({
-        ok: true,
-        claimed: true,
-        item_key: item.key,
-        lease_revision: item.leaseRevision,
-        claim_generation: item.claimGeneration,
-        decision: item.leaseDecision,
-      });
+      return json(exactReviewClaimResponse(item, claimProtocolVersion, item.claimGeneration));
     }
 
     if (request.method === "POST" && url.pathname === "/complete") {
@@ -523,16 +524,21 @@ export class ExactReviewQueue {
       const leaseRevision = Number(body.lease_revision);
       const claimGeneration = Number(body.claim_generation);
       const runId = String(body.run_id || "").trim();
-      if (!leaseId || !itemKey || !runId) {
-        return json({ error: "missing_lease_item_or_run" }, 400);
-      }
+      if (!leaseId || !runId) return json({ error: "missing_lease_or_run" }, 400);
       if (!/^\d+$/.test(runId)) return json({ error: "invalid_run_id" }, 400);
-      if (!Number.isInteger(leaseRevision) || leaseRevision < 1) {
-        return json({ error: "invalid_lease_revision" }, 400);
+      const tupleCompletion =
+        Boolean(itemKey) ||
+        body.lease_revision !== undefined ||
+        body.claim_generation !== undefined;
+      if (tupleCompletion) {
+        if (!itemKey || !Number.isInteger(leaseRevision) || leaseRevision < 1) {
+          return json({ error: "invalid_lease_revision" }, 400);
+        }
+        if (!Number.isInteger(claimGeneration) || claimGeneration < 1) {
+          return json({ error: "invalid_claim_generation" }, 400);
+        }
       }
-      if (!Number.isInteger(claimGeneration) || claimGeneration < 1) {
-        return json({ error: "invalid_claim_generation" }, 400);
-      }
+      const completionProtocolVersion: 1 | 2 = tupleCompletion ? 2 : 1;
       const runAttempt = exactReviewRunAttempt(body.run_attempt);
       if (body.run_attempt !== undefined && runAttempt === null) {
         return json({ error: "invalid_run_attempt" }, 400);
@@ -553,15 +559,18 @@ export class ExactReviewQueue {
         return json({ error: "invalid_retry_at" }, 400);
       }
       const state = await this.readState();
-      const item = state.items[itemKey];
+      const item = tupleCompletion ? state.items[itemKey] : exactReviewItemForLease(state, leaseId);
       if (
         !item ||
         item.leaseId !== leaseId ||
-        item.leaseRevision !== leaseRevision ||
-        exactReviewClaimGeneration(item.claimGeneration) !== claimGeneration ||
+        (tupleCompletion && item.leaseRevision !== leaseRevision) ||
+        (tupleCompletion && exactReviewClaimGeneration(item.claimGeneration) !== claimGeneration) ||
         item.claimedRunId !== runId
       ) {
         return json({ error: "lease_not_claimed" }, 409);
+      }
+      if ((item.claimProtocolVersion ?? 1) !== completionProtocolVersion) {
+        return json({ error: "lease_protocol_not_claimed" }, 409);
       }
       if (
         item.claimedRunAttempt !== undefined &&
@@ -772,6 +781,7 @@ export class ExactReviewQueue {
       try {
         await dispatchClawsweeperItem({
           token: preflight.token,
+          decision: item.leaseDecision || item.decision,
           itemKey: item.key,
           leaseId: item.leaseId,
           leaseRevision: item.leaseRevision,
@@ -1626,6 +1636,27 @@ function isExactReviewQueueTargetEnabled(decision: ExactReviewDecision, env) {
   );
 }
 
+function exactReviewItemForLease(state: ExactReviewQueueState, leaseId: string) {
+  return Object.values(state.items).find((item) => item.leaseId === leaseId) || null;
+}
+
+function exactReviewClaimResponse(
+  item: ExactReviewQueueItem,
+  protocolVersion: 1 | 2,
+  claimGeneration: number,
+) {
+  return {
+    ok: true,
+    claimed: true,
+    protocol_version: protocolVersion,
+    item_key: item.key,
+    ...(protocolVersion === 1 ? { revision: item.leaseRevision } : {}),
+    lease_revision: item.leaseRevision,
+    claim_generation: claimGeneration,
+    decision: item.leaseDecision,
+  };
+}
+
 function exactReviewCompletionOutcome(
   value,
   fallback?: ExactReviewCompletionOutcome,
@@ -1784,6 +1815,7 @@ function clearExactReviewLease(item: ExactReviewQueueItem) {
   item.claimedRunId = undefined;
   item.claimedRunAttempt = undefined;
   item.claimGeneration = undefined;
+  item.claimProtocolVersion = undefined;
 }
 
 function isLiveExactReviewLease(item: ExactReviewQueueItem, now: number) {
@@ -2344,15 +2376,31 @@ async function addIssueCommentReaction({ token, repo, commentId, content }) {
 
 async function dispatchClawsweeperItem({
   token,
+  decision,
   itemKey,
   leaseId,
   leaseRevision,
 }: {
   token: string;
+  decision: ExactReviewDecision;
   itemKey: string;
   leaseId: string;
   leaseRevision: number;
 }) {
+  // Keep the v1 fields during the rolling-upgrade window. Old workflows consume
+  // this immutable dispatch snapshot, while v2 workflows ignore it after claim
+  // and consume the Worker's leaseDecision response instead.
+  const reviewOptions = {
+    ...(decision.codexTimeoutMs ? { codex_timeout_ms: decision.codexTimeoutMs } : {}),
+    ...(decision.mediaProofTimeoutMs
+      ? { media_proof_timeout_ms: decision.mediaProofTimeoutMs }
+      : {}),
+    ...(decision.commandStatusMarker
+      ? { command_status_marker: decision.commandStatusMarker }
+      : {}),
+    ...(decision.statusCommentId ? { status_comment_id: decision.statusCommentId } : {}),
+    ...(decision.additionalPrompt ? { additional_prompt: decision.additionalPrompt } : {}),
+  };
   await githubTokenJson({
     token,
     path: `/repos/${CLAWSWEEPER_REVIEW_REPO}/dispatches`,
@@ -2360,9 +2408,18 @@ async function dispatchClawsweeperItem({
     body: {
       event_type: "clawsweeper_item",
       client_payload: {
+        queue_protocol_version: 2,
         queue_lease_id: leaseId,
         item_key: itemKey,
         lease_revision: leaseRevision,
+        target_repo: decision.targetRepo,
+        target_branch: decision.targetBranch,
+        item_number: decision.itemNumber,
+        item_kind: decision.itemKind,
+        source_event: decision.sourceEvent,
+        source_action: decision.sourceAction,
+        supersedes_in_progress: decision.supersedesInProgress,
+        ...(Object.keys(reviewOptions).length > 0 ? { review_options: reviewOptions } : {}),
       },
     },
     errorLabel: "ClawSweeper item dispatch",

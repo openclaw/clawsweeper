@@ -2204,8 +2204,12 @@ test("sweep workflow executes only durable queue leases without runner-side admi
   assert.match(eventReviewBlock, /\/internal\/exact-review\/claim/);
   assert.match(eventReviewBlock, /\/internal\/exact-review\/complete/);
   assert.match(claimStep, /RUN_ATTEMPT: \$\{\{ github\.run_attempt \}\}/);
-  assert.match(claimStep, /item_key: process\.env\.ITEM_KEY/);
-  assert.match(claimStep, /lease_revision: leaseRevision/);
+  assert.match(
+    claimStep,
+    /hasTuple \? \{ item_key: itemKey, lease_revision: leaseRevision \} : \{\}/,
+  );
+  assert.match(claimStep, /response\.protocol_version \|\| 1/);
+  assert.match(claimStep, /const legacyDecision = \{/);
   assert.match(claimStep, /run_attempt: runAttempt/);
   assert.match(
     eventReviewBlock.slice(failReviewIndex, completeLeaseIndex),
@@ -2223,6 +2227,10 @@ test("sweep workflow executes only durable queue leases without runner-side admi
   assert.match(completeLeaseStep, /if: \$\{\{ always\(\) \}\}/);
   assert.match(completeLeaseStep, /continue-on-error: true/);
   assert.match(completeLeaseStep, /RUN_ATTEMPT: \$\{\{ github\.run_attempt \}\}/);
+  assert.match(
+    completeLeaseStep,
+    /PROTOCOL_VERSION: \$\{\{ steps\.claim-exact-review-queue\.outputs\.protocol_version \}\}/,
+  );
   assert.match(completeLeaseStep, /process\.env\.JOB_STATUS === "cancelled"/);
   assert.match(completeLeaseStep, /claim_generation: claimGeneration/);
   assert.match(completeLeaseStep, /item_key: process\.env\.ITEM_KEY/);

@@ -330,12 +330,15 @@ test("exact event workflow binds all work to the canonical queue claim", () => {
     claimStep,
     /QUEUE_LEASE_REVISION: \$\{\{ github\.event\.client_payload\.lease_revision \}\}/,
   );
-  assert.match(claimStep, /item_key: process\.env\.ITEM_KEY/);
-  assert.match(claimStep, /lease_revision: leaseRevision/);
-  assert.match(claimStep, /response\.item_key !== itemKey/);
-  assert.match(claimStep, /response\.lease_revision !== leaseRevision/);
-  assert.match(claimStep, /`\$\{targetRepo\}#\$\{itemNumber\}` !== itemKey/);
-  assert.match(claimStep, /claim_generation=\$\{claimGeneration\}/);
+  assert.match(
+    claimStep,
+    /hasTuple \? \{ item_key: itemKey, lease_revision: leaseRevision \} : \{\}/,
+  );
+  assert.match(claimStep, /response\.item_key !== requestedItemKey/);
+  assert.match(claimStep, /response\.lease_revision !== requestedLeaseRevision/);
+  assert.match(claimStep, /const itemKey = `\$\{targetRepo\}#\$\{itemNumber\}`/);
+  assert.match(claimStep, /claim_generation=\$\{responseProtocol === 2 \? claimGeneration : ""\}/);
+  assert.match(claimStep, /protocol_version=\$\{responseProtocol\}/);
   assert.match(claimStep, /decision=\$\{JSON\.stringify\(decision\)\}/);
   assert.doesNotMatch(claimedWork, /github\.event\.client_payload/);
   assert.match(claimedWork, /gh api "repos\/\$TARGET_REPO" --jq \.default_branch/);
@@ -349,9 +352,36 @@ test("exact event workflow binds all work to the canonical queue claim", () => {
     claimedWork,
     /CLAIM_GENERATION: \$\{\{ steps\.claim-exact-review-queue\.outputs\.claim_generation \}\}/,
   );
+  assert.match(
+    claimedWork,
+    /PROTOCOL_VERSION: \$\{\{ steps\.claim-exact-review-queue\.outputs\.protocol_version \}\}/,
+  );
   assert.match(claimedWork, /item_key: process\.env\.ITEM_KEY/);
   assert.match(claimedWork, /lease_revision: leaseRevision/);
   assert.match(claimedWork, /claim_generation: claimGeneration/);
+});
+
+test("exact event workflow keeps both queue protocol versions live during rolling deploys", () => {
+  const workflow = readText(".github/workflows/sweep.yml");
+  const eventStart = workflow.indexOf("\n  event-review-apply:");
+  const eventEnd = workflow.indexOf("\n  target-fanout:", eventStart);
+  const eventJob = workflow.slice(eventStart, eventEnd);
+  const claimStart = eventJob.indexOf("- name: Claim exact-review queue lease");
+  const checkoutStart = eventJob.indexOf("- uses: actions/checkout@v7", claimStart);
+  const claimStep = eventJob.slice(claimStart, checkoutStart);
+  const completeStart = eventJob.indexOf("- name: Complete exact-review queue lease");
+  const completeEnd = eventJob.indexOf("\n      - ", completeStart + 1);
+  const completeStep = eventJob.slice(completeStart, completeEnd);
+
+  assert.match(claimStep, /DISPATCH_PAYLOAD: \$\{\{ toJSON\(github\.event\.client_payload\) \}\}/);
+  assert.match(claimStep, /const responseProtocol = Number\(response\.protocol_version \|\| 1\)/);
+  assert.match(claimStep, /const legacyDecision = \{/);
+  assert.match(claimStep, /response\.decision && typeof response\.decision === "object"/);
+  assert.match(claimStep, /reviewOptions\.command_status_marker/);
+  assert.match(claimStep, /responseProtocol === 2/);
+  assert.match(completeStep, /protocolVersion !== 1 && protocolVersion !== 2/);
+  assert.match(completeStep, /protocolVersion === 2/);
+  assert.match(completeStep, /: \{\}\),/);
 });
 
 test("dashboard syncs Worker secrets with durable lifecycle storage", () => {

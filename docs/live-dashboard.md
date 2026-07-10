@@ -46,10 +46,12 @@ GitHub secret into a temporary Wrangler config as the Worker `INGEST_TOKEN`.
 Its smoke test also verifies the durable exact-review queue binding, not only
 the dashboard response.
 
-When a change updates both the Worker and a GitHub Actions workflow that calls
-a new Worker route, deploy the reviewed Worker branch first and wait for the
-dashboard workflow to pass. Then merge the workflow change. This avoids a
-window where Actions sends events to a route that production has not deployed:
+When a change updates both the Worker and a GitHub Actions workflow, keep the
+cross-component protocol compatible in both deployment orders. The exact-review
+v2 rollout dispatches the immutable lease tuple plus a bounded v1 snapshot; the
+Worker accepts v1 claims/finalizers while the workflow can consume either v1 or
+v2 claim responses. Deploying the reviewed Worker first remains the preferred
+order, but this rollout does not require disabling or draining ClawSweeper:
 
 ```bash
 gh workflow run dashboard.yml --repo openclaw/clawsweeper --ref <reviewed-branch>
@@ -203,10 +205,12 @@ is `{ "runs": [{ "run_id": "<run-id>", "run_attempt": 1 }] }`, signed over the
 exact bytes with `CLAWSWEEPER_WEBHOOK_SECRET` in
 `x-clawsweeper-exact-review-signature: sha256=<hmac>`.
 
-Keep the sweep workflow disabled and wait for `/api/exact-review-queue` to show
-both `dispatching: 0` and `leased: 0` before deploying this Worker revision.
-Deploy the Worker route from the reviewed revision before merging or enabling
-any workflow that calls the reconciliation endpoint. The dashboard deployment
-smoke test must observe HTTP 401 from an unsigned reconciliation request; HTTP
-404 means the old Worker is still serving. This order keeps legacy finalizers
-from creating provisional successes before the terminal-run backstop exists.
+Do not disable or drain the sweep workflow for this protocol rollout. A v2
+Worker sends both the strict tuple and the immutable v1 event snapshot, accepts
+legacy lease-id claims/finalizers only for claims recorded as protocol v1, and
+keeps tuple/generation CAS mandatory for protocol v2. A v2 workflow falls back
+to the v1 event snapshot only when the claim response identifies or implies a
+v1 Worker. Keep this mixed-version coverage until every in-flight v1 dispatch
+has drained naturally. The dashboard deployment smoke test must still observe
+HTTP 401 from an unsigned reconciliation request; HTTP 404 means the old Worker
+is serving that route.

@@ -305,6 +305,7 @@ jobs:
       - name: Claim exact-review queue lease
         id: claim-exact-review-queue
         env:
+          DISPATCH_PAYLOAD: ${{ toJSON(github.event.client_payload) }}
           ITEM_KEY: ${{ github.event.client_payload.item_key }}
           QUEUE_LEASE_ID: ${{ github.event.client_payload.queue_lease_id }}
           QUEUE_LEASE_REVISION: ${{ github.event.client_payload.lease_revision }}
@@ -312,17 +313,21 @@ jobs:
           RUN_ATTEMPT: ${{ github.run_attempt }}
         run: |
           set -euo pipefail
-          test -n "$QUEUE_LEASE_ID" && test -n "$ITEM_KEY"
+          test -n "$QUEUE_LEASE_ID"
           queue_url="${QUEUE_URL%/}"
           payload="$(node -e '
             const runAttempt = Number(process.env.RUN_ATTEMPT);
-            const leaseRevision = Number(process.env.QUEUE_LEASE_REVISION);
             if (!Number.isInteger(runAttempt) || runAttempt < 1) process.exit(1);
-            if (!Number.isInteger(leaseRevision) || leaseRevision < 1) process.exit(1);
+            const itemKey = String(process.env.ITEM_KEY || "").trim();
+            const rawLeaseRevision = String(process.env.QUEUE_LEASE_REVISION || "").trim();
+            const hasTuple = Boolean(itemKey || rawLeaseRevision);
+            const leaseRevision = Number(rawLeaseRevision);
+            if (hasTuple && (!itemKey || !Number.isInteger(leaseRevision) || leaseRevision < 1)) {
+              process.exit(1);
+            }
             process.stdout.write(JSON.stringify({
               lease_id: process.env.QUEUE_LEASE_ID,
-              item_key: process.env.ITEM_KEY,
-              lease_revision: leaseRevision,
+              ...(hasTuple ? { item_key: itemKey, lease_revision: leaseRevision } : {}),
               run_id: process.env.GITHUB_RUN_ID,
               run_attempt: runAttempt,
             }));
@@ -336,22 +341,61 @@ jobs:
               RESPONSE="$response" node <<'NODE'
                 const fs = require("node:fs");
                 const response = JSON.parse(process.env.RESPONSE || "{}");
-                const decision = response.decision;
-                const leaseRevision = Number(process.env.QUEUE_LEASE_REVISION);
-                const claimGeneration = Number(response.claim_generation);
-                const itemKey = String(process.env.ITEM_KEY || "");
+                const dispatch = JSON.parse(process.env.DISPATCH_PAYLOAD || "{}");
+                const requestedItemKey = String(process.env.ITEM_KEY || "").trim();
+                const requestedLeaseRevision = Number(process.env.QUEUE_LEASE_REVISION);
+                const responseProtocol = Number(response.protocol_version || 1);
+                if (responseProtocol !== 1 && responseProtocol !== 2) process.exit(1);
+                if (response.claimed !== true) process.exit(1);
+
+                const reviewOptions =
+                  dispatch.review_options && typeof dispatch.review_options === "object"
+                    ? dispatch.review_options
+                    : {};
+                const legacyDecision = {
+                  targetRepo: String(dispatch.target_repo || ""),
+                  targetBranch: String(dispatch.target_branch || "main"),
+                  itemNumber: Number(dispatch.item_number),
+                  itemKind: String(dispatch.item_kind || ""),
+                  sourceEvent: String(dispatch.source_event || ""),
+                  sourceAction: String(dispatch.source_action || "legacy_dispatch"),
+                  supersedesInProgress: dispatch.supersedes_in_progress === true,
+                  ...(Number.isFinite(Number(reviewOptions.codex_timeout_ms))
+                    ? { codexTimeoutMs: Number(reviewOptions.codex_timeout_ms) }
+                    : {}),
+                  ...(Number.isFinite(Number(reviewOptions.media_proof_timeout_ms))
+                    ? { mediaProofTimeoutMs: Number(reviewOptions.media_proof_timeout_ms) }
+                    : {}),
+                  ...(Object.hasOwn(reviewOptions, "command_status_marker")
+                    ? { commandStatusMarker: reviewOptions.command_status_marker }
+                    : {}),
+                  ...(Object.hasOwn(reviewOptions, "status_comment_id")
+                    ? { statusCommentId: reviewOptions.status_comment_id }
+                    : {}),
+                  ...(Object.hasOwn(reviewOptions, "additional_prompt")
+                    ? { additionalPrompt: reviewOptions.additional_prompt }
+                    : {}),
+                };
+                const decision =
+                  response.decision && typeof response.decision === "object"
+                    ? response.decision
+                    : legacyDecision;
                 const targetRepo = String(decision?.targetRepo || "");
                 const itemNumber = Number(decision?.itemNumber);
+                const itemKey = `${targetRepo}#${itemNumber}`;
+                const leaseRevision =
+                  responseProtocol === 2
+                    ? Number(response.lease_revision)
+                    : Number(
+                        response.revision ||
+                          response.lease_revision ||
+                          process.env.QUEUE_LEASE_REVISION,
+                      );
+                const claimGeneration = Number(response.claim_generation);
                 if (
-                  response.claimed !== true ||
-                  response.item_key !== itemKey ||
-                  response.lease_revision !== leaseRevision ||
-                  !Number.isInteger(claimGeneration) ||
-                  claimGeneration < 1 ||
                   !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(targetRepo) ||
                   !Number.isInteger(itemNumber) ||
                   itemNumber < 1 ||
-                  `${targetRepo}#${itemNumber}` !== itemKey ||
                   (decision.itemKind !== "issue" && decision.itemKind !== "pull_request") ||
                   (decision.sourceEvent !== "issues" && decision.sourceEvent !== "pull_request") ||
                   typeof decision.sourceAction !== "string" ||
@@ -359,11 +403,25 @@ jobs:
                 ) {
                   process.exit(1);
                 }
+                if (response.item_key && response.item_key !== itemKey) process.exit(1);
+                if (requestedItemKey && requestedItemKey !== itemKey) process.exit(1);
+                if (
+                  responseProtocol === 2 &&
+                  (!response.decision ||
+                    typeof response.decision !== "object" ||
+                    response.item_key !== requestedItemKey ||
+                    response.lease_revision !== requestedLeaseRevision ||
+                    !Number.isInteger(claimGeneration) ||
+                    claimGeneration < 1)
+                ) {
+                  process.exit(1);
+                }
                 const output = [
                   `lease_id=${process.env.QUEUE_LEASE_ID}`,
                   `item_key=${itemKey}`,
-                  `lease_revision=${leaseRevision}`,
-                  `claim_generation=${claimGeneration}`,
+                  `lease_revision=${Number.isInteger(leaseRevision) ? leaseRevision : ""}`,
+                  `claim_generation=${responseProtocol === 2 ? claimGeneration : ""}`,
+                  `protocol_version=${responseProtocol}`,
                   `decision=${JSON.stringify(decision)}`,
                 ];
                 fs.appendFileSync(process.env.GITHUB_OUTPUT, `${output.join("\n")}\n`);
@@ -1069,6 +1127,7 @@ jobs:
           JOB_STATUS: ${{ job.status }}
           CLAIM_GENERATION: ${{ steps.claim-exact-review-queue.outputs.claim_generation }}
           ITEM_KEY: ${{ steps.claim-exact-review-queue.outputs.item_key }}
+          PROTOCOL_VERSION: ${{ steps.claim-exact-review-queue.outputs.protocol_version }}
           QUEUE_LEASE_ID: ${{ steps.claim-exact-review-queue.outputs.lease_id }}
           QUEUE_LEASE_REVISION: ${{ steps.claim-exact-review-queue.outputs.lease_revision }}
           QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
@@ -1077,15 +1136,23 @@ jobs:
           RUN_ATTEMPT: ${{ github.run_attempt }}
         run: |
           set -euo pipefail
-          test -n "$QUEUE_LEASE_ID" && test -n "$ITEM_KEY"
+          test -n "$QUEUE_LEASE_ID"
           queue_url="${QUEUE_URL%/}"
           payload="$(node -e '
             const runAttempt = Number(process.env.RUN_ATTEMPT);
+            const protocolVersion = Number(process.env.PROTOCOL_VERSION);
             const leaseRevision = Number(process.env.QUEUE_LEASE_REVISION);
             const claimGeneration = Number(process.env.CLAIM_GENERATION);
             if (!Number.isInteger(runAttempt) || runAttempt < 1) process.exit(1);
-            if (!Number.isInteger(leaseRevision) || leaseRevision < 1) process.exit(1);
-            if (!Number.isInteger(claimGeneration) || claimGeneration < 1) process.exit(1);
+            if (protocolVersion !== 1 && protocolVersion !== 2) process.exit(1);
+            if (
+              protocolVersion === 2 &&
+              (!process.env.ITEM_KEY ||
+                !Number.isInteger(leaseRevision) ||
+                leaseRevision < 1 ||
+                !Number.isInteger(claimGeneration) ||
+                claimGeneration < 1)
+            ) process.exit(1);
             const outcome = process.env.JOB_STATUS === "success"
               ? "success"
               : process.env.JOB_STATUS === "cancelled"
@@ -1095,9 +1162,13 @@ jobs:
             const requeueLatest = process.env.REQUEUE_LATEST === "true";
             process.stdout.write(JSON.stringify({
               lease_id: process.env.QUEUE_LEASE_ID,
-              item_key: process.env.ITEM_KEY,
-              lease_revision: leaseRevision,
-              claim_generation: claimGeneration,
+              ...(protocolVersion === 2
+                ? {
+                    item_key: process.env.ITEM_KEY,
+                    lease_revision: leaseRevision,
+                    claim_generation: claimGeneration,
+                  }
+                : {}),
               run_id: process.env.GITHUB_RUN_ID,
               run_attempt: runAttempt,
               outcome,

@@ -122,7 +122,11 @@ how many of those slots one target repository may consume; production sets it
 to 24 so other target repositories retain four global slots during an OpenClaw
 backlog drain.
 
-Each dispatched workflow claims its opaque lease before checkout. Duplicate
+Each dispatched workflow claims its opaque lease before checkout. Protocol v2
+binds claim and completion to the item key, lease revision, run attempt, claim
+generation, and an immutable decision snapshot. During the rolling-upgrade
+window, dispatches also carry the immutable v1 snapshot and the Worker accepts
+lease-id-only finalization only for claims recorded as protocol v1. Duplicate
 dispatches and stale workflows cannot claim the same lease, and a completion
 immediately schedules a known newer revision. Failed and cancelled executors
 requeue their item with bounded retry backoff. Successful finalizer reports stay
