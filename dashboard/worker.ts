@@ -111,7 +111,19 @@ const CLAWSWEEPER_STATE_REF = "state";
 const DEFAULT_CRABFLEET_URL = "https://crabfleet.openclaw.ai";
 const CLUSTER_REPAIR_INTAKE_WORKFLOW = "repair-cluster-intake.yml";
 const CLAWSWEEPER_ALLOWED_ASSOCIATIONS = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
-const CLAWSWEEPER_ISSUE_ITEM_ACTIONS = new Set(["opened", "reopened", "edited", "unlocked"]);
+const CLAWSWEEPER_CLOSE_PROTECTED_LABELS = new Set([
+  "security",
+  "beta-blocker",
+  "release-blocker",
+  "maintainer",
+]);
+const CLAWSWEEPER_ISSUE_ITEM_ACTIONS = new Set([
+  "opened",
+  "reopened",
+  "edited",
+  "unlocked",
+  "unlabeled",
+]);
 const CLAWSWEEPER_PULL_ITEM_ACTIONS = new Set([
   "opened",
   "reopened",
@@ -120,6 +132,7 @@ const CLAWSWEEPER_PULL_ITEM_ACTIONS = new Set([
   "converted_to_draft",
   "edited",
   "unlocked",
+  "unlabeled",
 ]);
 const DEFAULT_FAST_ACK_SETTLE_DELAYS_MS = [250, 1500, 10_000];
 const inFlightFastAcks = new Map();
@@ -1150,6 +1163,9 @@ function classifyGithubItemWebhook({ event, payload }) {
     if (!CLAWSWEEPER_ISSUE_ITEM_ACTIONS.has(action)) {
       return { accepted: false, reason: "unsupported action" };
     }
+    if (action === "unlabeled" && !isCloseProtectedLabel(payload.label)) {
+      return { accepted: false, reason: "unsupported action" };
+    }
     const itemNumber = Number(objectValue(payload.issue).number);
     if (!Number.isInteger(itemNumber) || itemNumber <= 0) {
       return { accepted: false, reason: "missing issue number" };
@@ -1164,12 +1180,15 @@ function classifyGithubItemWebhook({ event, payload }) {
       installationId,
       sourceEvent: "issues",
       sourceAction: action,
-      supersedesInProgress: ["edited", "unlocked"].includes(action),
+      supersedesInProgress: ["edited", "unlocked", "unlabeled"].includes(action),
     };
   }
 
   if (event === "pull_request") {
     if (!CLAWSWEEPER_PULL_ITEM_ACTIONS.has(action)) {
+      return { accepted: false, reason: "unsupported action" };
+    }
+    if (action === "unlabeled" && !isCloseProtectedLabel(payload.label)) {
       return { accepted: false, reason: "unsupported action" };
     }
     const itemNumber = Number(objectValue(payload.pull_request).number);
@@ -1186,13 +1205,24 @@ function classifyGithubItemWebhook({ event, payload }) {
       installationId,
       sourceEvent: "pull_request",
       sourceAction: action,
-      supersedesInProgress: ["edited", "synchronize", "ready_for_review", "unlocked"].includes(
-        action,
-      ),
+      supersedesInProgress: [
+        "edited",
+        "synchronize",
+        "ready_for_review",
+        "unlocked",
+        "unlabeled",
+      ].includes(action),
     };
   }
 
   return { accepted: false, reason: "unsupported event" };
+}
+
+function isCloseProtectedLabel(value) {
+  const label = String(objectValue(value).name || "")
+    .trim()
+    .toLowerCase();
+  return CLAWSWEEPER_CLOSE_PROTECTED_LABELS.has(label);
 }
 
 function isEligibleGithubWebhookRepository(repo) {
