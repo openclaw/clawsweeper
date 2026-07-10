@@ -2037,6 +2037,28 @@ function auditStatePath(profile = targetProfile()): string {
   return join(ROOT, "results", "audit", `${profile.slug}.json`);
 }
 
+function sweepStatusApplyHealth(options: {
+  previousApplyHealth?: Record<string, unknown> | undefined;
+  requestedApplyHealth?: Record<string, unknown> | null | undefined;
+  runUrl?: string | undefined;
+}): Record<string, unknown> | null | undefined {
+  const applyHealth =
+    options.requestedApplyHealth === undefined
+      ? options.previousApplyHealth
+      : options.requestedApplyHealth;
+  return options.requestedApplyHealth !== undefined && applyHealth && options.runUrl
+    ? { ...applyHealth, run_url: options.runUrl }
+    : applyHealth;
+}
+
+export function sweepStatusApplyHealthForTest(options: {
+  previousApplyHealth?: Record<string, unknown> | undefined;
+  requestedApplyHealth?: Record<string, unknown> | null | undefined;
+  runUrl?: string | undefined;
+}): Record<string, unknown> | null | undefined {
+  return sweepStatusApplyHealth(options);
+}
+
 function writeSweepStatus(options: {
   state: string;
   detail: string;
@@ -2060,12 +2082,11 @@ function writeSweepStatus(options: {
   const profile = options.profile ?? targetProfile();
   const updatedAt = new Date().toISOString();
   const previousStatus = readSweepStatusSummary(profile);
-  const baseApplyHealth =
-    options.applyHealth === undefined ? previousStatus?.applyHealth : options.applyHealth;
-  const applyHealth =
-    options.applyHealth !== undefined && baseApplyHealth && options.runUrl
-      ? { ...baseApplyHealth, run_url: options.runUrl }
-      : baseApplyHealth;
+  const applyHealth = sweepStatusApplyHealth({
+    previousApplyHealth: previousStatus?.applyHealth,
+    requestedApplyHealth: options.applyHealth,
+    runUrl: options.runUrl,
+  });
   const previousCloseApplyHealth =
     previousStatus?.lastCloseApplyHealth ??
     (previousStatus?.applyHealth?.mode === "close" ? previousStatus.applyHealth : undefined);
@@ -24137,11 +24158,7 @@ function statusCommand(args: Args): void {
   const botOwnedProofDispatches = optionalNumberArg(args.bot_owned_proof_dispatches);
   const applyHealthArg = applyHealthStatusArg(args);
   const applyHealth =
-    applyHealthArg === undefined
-      ? state.startsWith("Apply ")
-        ? null
-        : readSweepStatusSummary(profile)?.applyHealth
-      : applyHealthArg;
+    applyHealthArg === undefined && state.startsWith("Apply ") ? null : applyHealthArg;
   const statusOptions: Parameters<typeof writeSweepStatus>[0] = {
     state,
     detail,
