@@ -1038,6 +1038,13 @@ test("manual exact-item review dispatches reserve their live shard capacity", ()
   );
   assert.match(exactCapacityBlock, /\.displayTitle \| startswith\("Review event item "\)/);
   assert.match(exactCapacityBlock, /\.displayTitle \| startswith\("Review event items "\)/);
+  const singularFastPath = exactCapacityBlock.slice(
+    exactCapacityBlock.indexOf('if [[ "$title" == Review\\ event\\ item\\ * ]]'),
+    exactCapacityBlock.indexOf('if [ "$status" = "in_progress" ]'),
+  );
+  assert.match(singularFastPath, /active_shards=1/);
+  assert.match(singularFastPath, /continue/);
+  assert.doesNotMatch(singularFastPath, /gh run view/);
   assert.match(exactCapacityBlock, /gh run view "\$id".*--json jobs/);
   assert.match(exactCapacityBlock, /limit review_shards\.hard_cap/);
   assert.match(exactCapacityBlock, /reserved_shards="\$requested_shards"/);

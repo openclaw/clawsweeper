@@ -1201,6 +1201,11 @@ jobs:
               fi
               active_shards=0
               total_shards=0
+              if [[ "$title" == Review\ event\ item\ * ]]; then
+                active_shards=1
+                total=$((total + active_shards))
+                continue
+              fi
               if [ "$status" = "in_progress" ]; then
                 jobs_json="$(gh run view "$id" --repo "${{ github.repository }}" --json jobs 2>/dev/null || printf '{"jobs":[]}')"
                 active_shards="$(printf '%s' "$jobs_json" \
