@@ -33,7 +33,6 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Fixed
 
-- Kept apply-health dashboard alerts linked to the originating apply run after later review or status updates, instead of pointing operators at an unrelated sweep.
 - Retried successful GitHub CLI JSON-lines responses when their output is truncated, preventing transient list-page corruption from aborting close-apply runs.
 - Allowed conflict-free canonical PRs that only need a base update to back duplicate or superseded closures while retaining proof, review, check, draft, and conflict guards.
 - Bounded broad reconciliation with batched Git I/O and tuple checkpoints that report progress and resume safely under concurrent state writers.
