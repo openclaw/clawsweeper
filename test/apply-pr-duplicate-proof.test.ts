@@ -3,7 +3,10 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { join } from "node:path";
 import test from "node:test";
 
-import { renderReviewCommentFromReport } from "../dist/clawsweeper.js";
+import {
+  renderReviewCommentFromReport,
+  renderReviewStartStatusComment,
+} from "../dist/clawsweeper.js";
 import {
   lowSignalCloseReport,
   markedReviewCommentForTest,
@@ -526,6 +529,9 @@ test("apply-decisions corrects stale close comments when the canonical PR closed
     const proofLogPath = join(root, "proof.log");
     const commentWriteLogPath = join(root, "comment-write.log");
     const canonicalUrl = "https://github.com/openclaw/openclaw/pull/400";
+    const headSha = "a".repeat(40);
+    const reviewLeaseOwner = "stale-canonical-review";
+    const reviewLeaseCommentId = 9351;
     mkdirSync(itemsDir, { recursive: true });
     mkdirSync(plansDir, { recursive: true });
     const rootCauseCluster = {
@@ -564,6 +570,9 @@ test("apply-decisions corrects stale close comments when the canonical PR closed
       review_metrics: JSON.stringify([
         { label: "Canonical status", value: "open", reason: canonicalUrl },
       ]),
+      pull_head_sha: headSha,
+      review_lease_owner: reviewLeaseOwner,
+      review_lease_comment_id: String(reviewLeaseCommentId),
     })
       .replace(
         "The dashboard has queue_fix_pr candidates but no generated coding plan.",
@@ -654,11 +663,45 @@ Reason: No work is needed because ${canonicalUrl} is the canonical landing path.
       canonicalUrl,
       "https://github.com/openclaw/openclaw/pull/401",
     );
+    const leaseStartedAt = new Date().toISOString();
+    const leaseExpiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+    const reviewLeaseComment = renderReviewStartStatusComment({
+      number: 350,
+      kind: "pull_request",
+      title: "Provider route fallback",
+      headSha,
+      startedAt: leaseStartedAt,
+      leaseExpiresAt,
+      leaseOwner: reviewLeaseOwner,
+    });
+    const leasedPromotionGhMock = (options: Parameters<typeof promotionGhMock>[0]): string =>
+      promotionGhMock({
+        ...options,
+        headSha,
+        comments: [
+          {
+            id: 9350,
+            html_url: "https://github.com/openclaw/openclaw/pull/350#issuecomment-9350",
+            created_at: "2026-05-01T01:00:00Z",
+            updated_at: "2099-01-01T00:00:00.000Z",
+            user: { login: "clawsweeper[bot]" },
+            body: options.comment,
+          },
+          {
+            id: reviewLeaseCommentId,
+            html_url: `https://github.com/openclaw/openclaw/pull/350#issuecomment-${reviewLeaseCommentId}`,
+            created_at: leaseStartedAt,
+            updated_at: leaseStartedAt,
+            user: { login: "clawsweeper[bot]" },
+            body: reviewLeaseComment,
+          },
+        ],
+      });
     writeFileSync(join(itemsDir, "350.md"), recentlySyncedReport, "utf8");
 
     withMockGh(
       root,
-      promotionGhMock({
+      leasedPromotionGhMock({
         number: 350,
         title: "Provider route fallback",
         itemUpdatedAt: "2026-05-02T00:00:00Z",
@@ -724,7 +767,7 @@ Reason: No work is needed because ${canonicalUrl} is the canonical landing path.
     const runPendingRetry = (comment: string, linkedPull: Record<string, unknown>): void => {
       withMockGh(
         root,
-        promotionGhMock({
+        leasedPromotionGhMock({
           number: 350,
           title: "Provider route fallback",
           itemUpdatedAt: "2026-05-02T00:00:00Z",
@@ -802,7 +845,7 @@ Reason: No work is needed because ${canonicalUrl} is the canonical landing path.
 
     withMockGh(
       root,
-      promotionGhMock({
+      leasedPromotionGhMock({
         number: 350,
         title: "Provider route fallback",
         itemUpdatedAt: "2026-05-02T00:00:00Z",
