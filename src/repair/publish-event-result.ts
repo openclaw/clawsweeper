@@ -3,6 +3,8 @@ import fs from "node:fs";
 import { spawnSync } from "node:child_process";
 import {
   applyEventSnapshot,
+  applyEventSnapshotIfCurrent,
+  captureEventBaseSnapshot,
   captureEventSnapshot,
   type EventRecordPaths,
   resetEventSnapshot,
@@ -22,6 +24,7 @@ import {
   syncPublishPaths,
 } from "./git-publish.js";
 import { isJsonObject } from "./json-types.js";
+import { RecordTupleError } from "./record-tuple.js";
 
 type ApplyAction = {
   action: string;
@@ -54,6 +57,7 @@ async function publishEventResult(options: EventOptions): Promise<void> {
   };
 
   resetEventSnapshot(recordStore);
+  captureEventBaseSnapshot(recordStore);
   fs.rmSync(options.reportPath, { force: true });
 
   runStreaming("pnpm", [
@@ -68,6 +72,81 @@ async function publishEventResult(options: EventOptions): Promise<void> {
     "--skip-dashboard",
     "--replay-closed-artifacts",
   ]);
+
+  // Preserve the exact artifact candidate before refreshing the state checkout.
+  // A stale event must be rejected before apply-decisions can comment, label,
+  // or close anything on GitHub.
+  const recordPaths = captureEventSnapshot(recordStore);
+  hardResetToRemoteMain();
+  const stateBaseCommit = captureStatePublishBaseline();
+  const stateRoot = publishRoot();
+  const preflightResult = applyEventSnapshotIfCurrent(
+    recordPaths,
+    stateRoot ? { remoteRoot: stateRoot } : {},
+    () => runApplyDecisions(options),
+  );
+  if (
+    preflightResult === "remote-closed" ||
+    preflightResult === "remote-newer" ||
+    preflightResult === "missing"
+  ) {
+    const detail =
+      preflightResult === "remote-closed"
+        ? "current state is already closed"
+        : preflightResult === "remote-newer"
+          ? "current state has a newer tuple"
+          : "the event produced no record tuple";
+    console.log(
+      `Skipping stale event apply for ${options.targetRepo}#${options.itemNumber}: ${detail}`,
+    );
+    refreshSourceAfterStatePublish(
+      [
+        recordPaths.itemRecord,
+        recordPaths.closedRecord,
+        recordPaths.planRecord,
+        recordPaths.decisionPacket,
+      ],
+      stateBaseCommit,
+    );
+    writeSummary({
+      targetRepo: options.targetRepo,
+      itemNumber: options.itemNumber,
+      syncedCount: 0,
+      closedCount: 0,
+      closeReasons: options.closeReasons,
+    });
+    return;
+  }
+
+  const actions = readApplyActions(options.reportPath);
+  const syncedCount = actions.filter((entry) => entry.action === "review_comment_synced").length;
+  const closedCount = actions.filter((entry) => entry.action === "closed").length;
+  captureEventSnapshot(recordStore);
+
+  const summary = () =>
+    writeSummary({
+      targetRepo: options.targetRepo,
+      itemNumber: options.itemNumber,
+      syncedCount,
+      closedCount,
+      closeReasons: options.closeReasons,
+    });
+  for (let attempt = 1; attempt <= 20; attempt += 1) {
+    if (publishSnapshot({ paths: recordPaths, options, summary, stateBaseCommit })) return;
+    const delaySeconds = attempt * 3 + Math.floor(Math.random() * 11);
+    console.log(
+      `Event publish attempt ${attempt} failed; retrying from origin/main in ${delaySeconds}s`,
+    );
+    await sleep(delaySeconds * 1000);
+  }
+  if (!publishSnapshot({ paths: recordPaths, options, summary, stateBaseCommit })) {
+    throw new Error(
+      `Failed to publish event result for ${options.targetRepo}#${options.itemNumber}`,
+    );
+  }
+}
+
+function runApplyDecisions(options: EventOptions): void {
   runStreaming("pnpm", [
     "run",
     "apply-decisions",
@@ -98,35 +177,6 @@ async function publishEventResult(options: EventOptions): Promise<void> {
     "--report-path",
     options.reportPath,
   ]);
-
-  const actions = readApplyActions(options.reportPath);
-  const syncedCount = actions.filter((entry) => entry.action === "review_comment_synced").length;
-  const closedCount = actions.filter((entry) => entry.action === "closed").length;
-  const recordPaths = captureEventSnapshot(recordStore);
-
-  const summary = () =>
-    writeSummary({
-      targetRepo: options.targetRepo,
-      itemNumber: options.itemNumber,
-      syncedCount,
-      closedCount,
-      closeReasons: options.closeReasons,
-    });
-  const stateBaseCommit = captureStatePublishBaseline();
-
-  for (let attempt = 1; attempt <= 20; attempt += 1) {
-    if (publishSnapshot({ paths: recordPaths, options, summary, stateBaseCommit })) return;
-    const delaySeconds = attempt * 3 + Math.floor(Math.random() * 11);
-    console.log(
-      `Event publish attempt ${attempt} failed; retrying from origin/main in ${delaySeconds}s`,
-    );
-    await sleep(delaySeconds * 1000);
-  }
-  if (!publishSnapshot({ paths: recordPaths, options, summary, stateBaseCommit })) {
-    throw new Error(
-      `Failed to publish event result for ${options.targetRepo}#${options.itemNumber}`,
-    );
-  }
 }
 
 function publishSnapshot({
@@ -140,7 +190,12 @@ function publishSnapshot({
   summary: () => void;
   stateBaseCommit: string | null;
 }): boolean {
-  const commitPaths = [paths.itemRecord, paths.closedRecord];
+  const commitPaths = [
+    paths.itemRecord,
+    paths.closedRecord,
+    paths.planRecord,
+    paths.decisionPacket,
+  ];
   try {
     const complete = (): true => {
       refreshSourceAfterStatePublish(commitPaths, stateBaseCommit);
@@ -149,21 +204,16 @@ function publishSnapshot({
     };
     hardResetToRemoteMain();
     const stateRoot = publishRoot();
-    if (
-      stateRoot &&
-      fs.existsSync(paths.snapshotItem) &&
-      !fs.existsSync(paths.snapshotClosed) &&
-      fs.existsSync(`${stateRoot}/${paths.closedRecord}`)
-    ) {
+    const snapshotResult = applyEventSnapshot(paths, stateRoot ? { remoteRoot: stateRoot } : {});
+    if (snapshotResult === "remote-closed") {
       console.log(
         `Remote already has closed record for ${paths.targetSlug}#${options.itemNumber}; skipping open-record publish`,
       );
       return complete();
     }
-    const snapshotResult = applyEventSnapshot(paths);
-    if (snapshotResult === "remote-closed") {
+    if (snapshotResult === "remote-newer") {
       console.log(
-        `Remote already has closed record for ${paths.targetSlug}#${options.itemNumber}; skipping open-record publish`,
+        `Remote has newer record tuple for ${paths.targetSlug}#${options.itemNumber}; skipping stale event publish`,
       );
       return complete();
     }
@@ -187,9 +237,10 @@ function publishSnapshot({
         commitPaths,
       ),
     ]);
-    if (!pushCommit({ pushAttempts: 3 })) return false;
+    if (!pushCommit({ pushAttempts: 3, rebaseStrategy: "reconcile-records" })) return false;
     return complete();
   } catch (error) {
+    if (error instanceof RecordTupleError) throw error;
     console.error(error instanceof Error ? error.message : String(error));
     return false;
   }

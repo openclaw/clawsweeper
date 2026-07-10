@@ -3,6 +3,7 @@ import {
   cpSync,
   existsSync,
   mkdirSync,
+  readFileSync,
   readdirSync,
   rmSync,
   statSync,
@@ -13,6 +14,16 @@ import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 
 import { clawsweeperGitUserEmail, clawsweeperGitUserName } from "./process-env.js";
+import {
+  chooseRecordTupleWinner,
+  recordTupleIdentityForPath,
+  recordTupleMarkdownFileForPath,
+  recordTuplePathList,
+  recordTuplePaths,
+  type RecordTupleContents,
+  type RecordTupleIdentity,
+  type RecordTuplePaths,
+} from "./record-tuple.js";
 import { mergeSweepStatusJson } from "./sweep-status-merge.js";
 
 export type GitRunResult = {
@@ -93,6 +104,7 @@ export function spawnGit(args: readonly string[], options: GitRunOptions = {}): 
     cwd: publishRoot(),
     env: process.env,
     encoding: "utf8",
+    maxBuffer: 16 * 1024 * 1024,
   });
   if (!options.quiet && child.stdout) process.stdout.write(child.stdout);
   if (!options.quiet && child.stderr) process.stderr.write(child.stderr);
@@ -174,7 +186,7 @@ export function publishMainCommit(options: GitPublishOptions): PublishResult {
   const rebaseStrategy = options.rebaseStrategy ?? "normal";
   const stateBaseCommit = captureStatePublishBaseline();
 
-  syncPublishPaths(options.paths);
+  syncPublishPaths(options.paths, { rebaseStrategy });
   configureGitUser();
   stagePaths(options.paths);
   if (!hasStagedChanges()) {
@@ -187,11 +199,40 @@ export function publishMainCommit(options: GitPublishOptions): PublishResult {
 
   const commitMessage = commitMessageForPublishedPaths(options.message, options.paths);
   runGit(["commit", "-m", commitMessage]);
-  const sourceCommit = runGit(["rev-parse", "HEAD"]).trim();
+  let sourceCommit = runGit(["rev-parse", "HEAD"]).trim();
+  const reconciliationSourceCommit =
+    rebaseStrategy === "reconcile-records" ? sourceCommit : undefined;
+  if (rebaseStrategy === "reconcile-records") {
+    const normalized = normalizeReconciliationCommit(sourceCommit);
+    sourceCommit = normalized.commit;
+    if (!normalized.changed) {
+      restoreWorktree(options.restorePaths ?? []);
+      if (
+        !pushCommit({
+          remote,
+          branch,
+          pushAttempts,
+          rebaseStrategy,
+          ...(reconciliationSourceCommit ? { reconciliationSourceCommit } : {}),
+        })
+      ) {
+        throw new Error(`Failed to synchronize unchanged publish with ${remote}/${branch}`);
+      }
+      return completeStatePublish("unchanged", options.paths, stateBaseCommit);
+    }
+  }
   restoreWorktree(options.restorePaths ?? []);
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    if (pushCommit({ remote, branch, pushAttempts, rebaseStrategy })) {
+    if (
+      pushCommit({
+        remote,
+        branch,
+        pushAttempts,
+        rebaseStrategy,
+        ...(reconciliationSourceCommit ? { reconciliationSourceCommit } : {}),
+      })
+    ) {
       return completeStatePublish("committed", options.paths, stateBaseCommit);
     }
     if (rebaseStrategy === "reconcile-records") {
@@ -217,7 +258,15 @@ export function publishMainCommit(options: GitPublishOptions): PublishResult {
     sleep(delaySeconds * 1000);
   }
 
-  if (pushCommit({ remote, branch, pushAttempts, rebaseStrategy })) {
+  if (
+    pushCommit({
+      remote,
+      branch,
+      pushAttempts,
+      rebaseStrategy,
+      ...(reconciliationSourceCommit ? { reconciliationSourceCommit } : {}),
+    })
+  ) {
     return completeStatePublish("committed", options.paths, stateBaseCommit);
   }
   throw new Error(`Failed to publish commit after ${maxAttempts} attempts`);
@@ -368,19 +417,27 @@ function publishDefaultBranch(): string {
   return process.env.CLAWSWEEPER_PUBLISH_BRANCH || (publishRoot() ? "state" : "main");
 }
 
-export function syncPublishPaths(paths: readonly string[]): void {
+export function syncPublishPaths(
+  paths: readonly string[],
+  options: { rebaseStrategy?: RebaseStrategy } = {},
+): void {
   const stateRoot = publishRoot();
-  if (stateRoot) syncStatePublishPaths(paths, stateRoot);
+  if (stateRoot) syncStatePublishPaths(paths, stateRoot, options.rebaseStrategy ?? "normal");
 }
 
-function syncStatePublishPaths(paths: readonly string[], stateRoot: string): void {
+function syncStatePublishPaths(
+  paths: readonly string[],
+  stateRoot: string,
+  rebaseStrategy: RebaseStrategy,
+): void {
   for (const path of uniqueNonEmpty(paths)) {
     const source = resolve(path);
     const destination = resolve(stateRoot, path);
     if (!isPathInsideOrEqual(stateRoot, destination)) {
       throw new Error(`Refusing to publish outside state root: ${path}`);
     }
-    const preserved = preserveStateOnlyFiles({ path, source, destination });
+    const statusMerges = planStateSweepStatusSyncs({ path, source, destination });
+    const preserved = preserveStateOnlyFiles({ path, source, destination, rebaseStrategy });
     try {
       rmSync(destination, { force: true, recursive: true });
       if (existsSync(source)) {
@@ -388,13 +445,14 @@ function syncStatePublishPaths(paths: readonly string[], stateRoot: string): voi
         cpSync(source, destination, { recursive: true });
       }
       restorePreservedFiles(preserved, destination);
+      applyStateSweepStatusSyncs(statusMerges, destination);
     } finally {
       rmSync(preserved.root, { force: true, recursive: true });
     }
   }
 }
 
-function preserveStateOnlyFiles({
+function planStateSweepStatusSyncs({
   path,
   source,
   destination,
@@ -402,6 +460,52 @@ function preserveStateOnlyFiles({
   path: string;
   source: string;
   destination: string;
+}): { rel: string; content: string }[] {
+  if (!existsSync(source) || !existsSync(destination)) return [];
+  const destinationFiles = listFiles(destination);
+  const syncs: { rel: string; content: string }[] = [];
+  for (const destinationFile of destinationFiles) {
+    const rel = statSync(destination).isFile()
+      ? ""
+      : toPosixPath(relative(destination, destinationFile));
+    const publishedPath = joinedPublishPath(path, rel);
+    if (!/^results\/sweep-status\/[^/]+\.json$/.test(publishedPath)) continue;
+    const sourceFile = rel ? resolve(source, rel) : source;
+    if (!existsSync(sourceFile) || !statSync(sourceFile).isFile()) continue;
+    syncs.push({
+      rel,
+      content: mergeSweepStatusJson({
+        path: publishedPath,
+        baseText: null,
+        localText: readFileSync(sourceFile, "utf8"),
+        remoteText: readFileSync(destinationFile, "utf8"),
+      }),
+    });
+  }
+  return syncs;
+}
+
+function applyStateSweepStatusSyncs(
+  syncs: readonly { rel: string; content: string }[],
+  destination: string,
+): void {
+  for (const sync of syncs) {
+    const target = sync.rel ? resolve(destination, sync.rel) : destination;
+    mkdirSync(dirname(target), { recursive: true });
+    writeFileSync(target, sync.content, "utf8");
+  }
+}
+
+function preserveStateOnlyFiles({
+  path,
+  source,
+  destination,
+  rebaseStrategy,
+}: {
+  path: string;
+  source: string;
+  destination: string;
+  rebaseStrategy: RebaseStrategy;
 }): { root: string; files: string[] } {
   const root = mkdtempSync(join(tmpdir(), "clawsweeper-state-preserve-"));
   if (!existsSync(destination)) return { root, files: [] };
@@ -414,7 +518,14 @@ function preserveStateOnlyFiles({
   for (const file of listFiles(destination)) {
     const rel = toPosixPath(relative(destination, file));
     if (existsSync(resolve(source, rel))) continue;
-    if (!shouldPreserveStateOnlyFile(path, rel, (candidate) => existsSync(resolve(candidate)))) {
+    if (
+      !shouldPreserveStateOnlyFile(
+        path,
+        rel,
+        (candidate) => existsSync(resolve(candidate)),
+        rebaseStrategy,
+      )
+    ) {
       continue;
     }
     const target = resolve(root, rel);
@@ -429,13 +540,37 @@ function shouldPreserveStateOnlyFile(
   path: string,
   rel: string,
   sourceHasPath: (path: string) => boolean,
+  rebaseStrategy: RebaseStrategy = "normal",
 ): boolean {
   if (path === "jobs")
     return /^[^/]+\/inbox\/(?:automerge|issue|self-heal|repair-pr)-.+\.md$/.test(rel);
   const publishedPath = joinedPublishPath(path, rel);
   if (!publishedPath.startsWith("records/")) return false;
+  if (rebaseStrategy === "reconcile-records") {
+    // Copy the candidate snapshot exactly. The base-aware tuple normalizer runs
+    // before the first push and restores any semantically newer base tuple.
+    // Preserving individual destination files here would hide intentional
+    // whole-tuple and sidecar deletions from that atomic comparison.
+    return false;
+  }
+  if (recordPrimaryCandidatesForSidecar(publishedPath).some(sourceHasPath)) {
+    return false;
+  }
   const counterpart = recordCounterpartPath(publishedPath);
   return !counterpart || !sourceHasPath(counterpart);
+}
+
+function recordPrimaryCandidatesForSidecar(path: string): string[] {
+  const planMatch = /^records\/([^/]+)\/plans\/([^/]+\.md)$/.exec(path);
+  if (planMatch?.[1] && planMatch[2]) {
+    const root = `records/${planMatch[1]}`;
+    return [`${root}/items/${planMatch[2]}`, `${root}/closed/${planMatch[2]}`];
+  }
+  const packetMatch = /^records\/([^/]+)\/decision-packets\/(\d+)\.json$/.exec(path);
+  if (!packetMatch?.[1] || !packetMatch[2]) return [];
+  const root = `records/${packetMatch[1]}`;
+  const files = [`${packetMatch[2]}.md`, `${packetMatch[1]}-${packetMatch[2]}.md`];
+  return files.flatMap((file) => [`${root}/items/${file}`, `${root}/closed/${file}`]);
 }
 
 function joinedPublishPath(path: string, rel: string): string {
@@ -518,6 +653,7 @@ export function pushCommit(options: {
   branch?: string;
   pushAttempts?: number;
   rebaseStrategy?: RebaseStrategy;
+  reconciliationSourceCommit?: string;
 }): boolean {
   const remote = options.remote ?? "origin";
   const branch = options.branch ?? publishDefaultBranch();
@@ -531,7 +667,9 @@ export function pushCommit(options: {
     const localCommitMessage = runGit(["log", "-1", "--format=%B"], { quiet: true });
     runGit(["fetch", remote, branch], { allowFailure: true });
     if (rebaseStrategy === "reconcile-records") {
-      if (!rebuildReconciliationCommit(`${remote}/${branch}`)) return false;
+      if (!rebuildReconciliationCommit(`${remote}/${branch}`, options.reconciliationSourceCommit)) {
+        return false;
+      }
       continue;
     }
     const remoteCommit = runGit(["rev-parse", `${remote}/${branch}`], { quiet: true }).trim();
@@ -555,34 +693,50 @@ export function pushCommit(options: {
   return spawnGit(["push", remote, `HEAD:${branch}`]).status === 0;
 }
 
-function rebuildReconciliationCommit(remoteRef: string): boolean {
-  const sourceCommit = runGit(["rev-parse", "HEAD"]).trim();
+function rebuildReconciliationCommit(
+  remoteRef: string,
+  reconciliationSourceCommit?: string,
+): boolean {
+  const sourceCommit = reconciliationSourceCommit ?? runGit(["rev-parse", "HEAD"]).trim();
   const baseCommit = runGit(["merge-base", sourceCommit, remoteRef]).trim();
   const localPaths = changedPathsBetween(baseCommit, sourceCommit);
-  const localTupleKeys = new Map<string, string>();
+  const remotePaths = changedPathsBetween(baseCommit, remoteRef);
+  const localTupleKeys = new Map<string, RecordTupleIdentity>();
 
   for (const path of localPaths) {
-    const tupleKey = reconciliationTupleKey(path);
-    if (!tupleKey) {
+    const identity = recordTupleIdentityForPath(path);
+    if (!identity) {
       console.log(`Unsupported reconciliation publish path: ${path}`);
       return false;
     }
-    localTupleKeys.set(path, tupleKey);
+    localTupleKeys.set(path, identity);
   }
 
-  const remoteTupleKeys = new Set(
-    changedPathsBetween(baseCommit, remoteRef)
-      .map(reconciliationTupleKey)
-      .filter((key): key is string => Boolean(key)),
+  const changedPaths = [...localPaths, ...remotePaths];
+  const localIdentities = new Map<string, RecordTupleIdentity>();
+  for (const identity of localTupleKeys.values()) {
+    localIdentities.set(recordTupleIdentityKey(identity), identity);
+  }
+  const knownTuplePaths = indexRecordTupleMarkdownPaths(
+    [baseCommit, sourceCommit, remoteRef],
+    new Set([...localIdentities.values()].map((identity) => identity.repository)),
   );
-  const selectedPaths = localPaths.filter(
-    (path) => !remoteTupleKeys.has(localTupleKeys.get(path) ?? ""),
-  );
-  const deferredTupleKeys = new Set(
-    localPaths
-      .map((path) => localTupleKeys.get(path))
-      .filter((key): key is string => key !== undefined && remoteTupleKeys.has(key)),
-  );
+  const selectedTuples: { paths: RecordTuplePaths; commit: string }[] = [];
+  const deferredTupleKeys = new Set<string>();
+  for (const [key, identity] of localIdentities) {
+    const tuplePaths = resolveRecordTuplePaths({
+      identity,
+      changedPaths: [...changedPaths, ...(knownTuplePaths.get(key) ?? [])],
+    });
+    const winner = chooseRecordTupleWinner({
+      base: readRecordTupleAtCommit(baseCommit, tuplePaths),
+      local: readRecordTupleAtCommit(sourceCommit, tuplePaths),
+      remote: readRecordTupleAtCommit(remoteRef, tuplePaths),
+    });
+    if (winner === "local") selectedTuples.push({ paths: tuplePaths, commit: sourceCommit });
+    else if (winner === "base") selectedTuples.push({ paths: tuplePaths, commit: baseCommit });
+    else deferredTupleKeys.add(key);
+  }
 
   if (deferredTupleKeys.size > 0) {
     console.log(
@@ -591,9 +745,14 @@ function rebuildReconciliationCommit(remoteRef: string): boolean {
   }
 
   runGit(["reset", "--hard", remoteRef]);
-  for (const path of selectedPaths) {
-    runGit(["rm", "-r", "--ignore-unmatch", "--", path], { allowFailure: true });
-    if (commitHasPath(sourceCommit, path)) runGit(["checkout", sourceCommit, "--", path]);
+  const selectedPaths = selectedTuples.flatMap((selection) => recordTuplePathList(selection.paths));
+  for (const selection of selectedTuples) {
+    for (const path of recordTuplePathList(selection.paths)) {
+      runGit(["rm", "-r", "--ignore-unmatch", "--", path], { allowFailure: true });
+      if (commitHasPath(selection.commit, path)) {
+        runGit(["checkout", selection.commit, "--", path]);
+      }
+    }
   }
 
   if (selectedPaths.length > 0) stagePaths(selectedPaths);
@@ -606,24 +765,154 @@ function rebuildReconciliationCommit(remoteRef: string): boolean {
   return true;
 }
 
+function normalizeReconciliationCommit(sourceCommit: string): {
+  commit: string;
+  changed: boolean;
+} {
+  const baseCommit = runGit(["rev-parse", `${sourceCommit}^`], { quiet: true }).trim();
+  const localPaths = changedPathsBetween(baseCommit, sourceCommit);
+  const identities = new Map<string, RecordTupleIdentity>();
+  for (const path of localPaths) {
+    const identity = recordTupleIdentityForPath(path);
+    if (!identity) throw new Error(`Unsupported reconciliation publish path: ${path}`);
+    identities.set(recordTupleIdentityKey(identity), identity);
+  }
+  const knownTuplePaths = indexRecordTupleMarkdownPaths(
+    [baseCommit, sourceCommit],
+    new Set([...identities.values()].map((identity) => identity.repository)),
+  );
+  const selectedTuples: RecordTuplePaths[] = [];
+  for (const [key, identity] of identities) {
+    const paths = resolveRecordTuplePaths({
+      identity,
+      changedPaths: [...localPaths, ...(knownTuplePaths.get(key) ?? [])],
+    });
+    const base = readRecordTupleAtCommit(baseCommit, paths);
+    const local = readRecordTupleAtCommit(sourceCommit, paths);
+    const winner = chooseRecordTupleWinner({ base, local, remote: base });
+    if (winner === "local") selectedTuples.push(paths);
+  }
+
+  if (selectedTuples.length === identities.size) {
+    return { commit: sourceCommit, changed: true };
+  }
+
+  const discarded = identities.size - selectedTuples.length;
+  console.log(`Discarding ${discarded} stale or ambiguous local record tuple(s) before push`);
+  runGit(["reset", "--hard", baseCommit]);
+  const selectedPaths = selectedTuples.flatMap(recordTuplePathList);
+  for (const paths of selectedTuples) {
+    for (const path of recordTuplePathList(paths)) {
+      runGit(["rm", "-r", "--ignore-unmatch", "--", path], { allowFailure: true });
+      if (commitHasPath(sourceCommit, path)) runGit(["checkout", sourceCommit, "--", path]);
+    }
+  }
+  if (selectedPaths.length > 0) stagePaths(selectedPaths);
+  if (!hasStagedChanges()) return { commit: baseCommit, changed: false };
+  runGit(["commit", "-C", sourceCommit]);
+  return { commit: runGit(["rev-parse", "HEAD"]).trim(), changed: true };
+}
+
 function changedPathsBetween(from: string, to: string): string[] {
   return runGit(["diff", "--no-renames", "--name-only", "-z", from, to])
     .split("\0")
     .filter(Boolean);
 }
 
-function reconciliationTupleKey(path: string): string | undefined {
-  const markdownMatch = /^records\/([^/]+)\/(?:items|closed|plans)\/([^/]+\.md)$/.exec(path);
-  if (markdownMatch) {
-    const repository = markdownMatch[1];
-    const filename = markdownMatch[2];
-    const number = filename ? /(?:^|-)(\d+)\.md$/.exec(filename)?.[1] : undefined;
-    return repository && number ? `${repository}/${number}` : undefined;
+function resolveRecordTuplePaths(options: {
+  identity: RecordTupleIdentity;
+  changedPaths: readonly string[];
+}): RecordTuplePaths {
+  const markdownFiles = {
+    items: new Set<string>(),
+    closed: new Set<string>(),
+    plans: new Set<string>(),
+  };
+  const collect = (path: string): void => {
+    const identity = recordTupleIdentityForPath(path);
+    if (
+      !identity ||
+      recordTupleIdentityKey(identity) !== recordTupleIdentityKey(options.identity)
+    ) {
+      return;
+    }
+    const section = /^records\/[^/]+\/(items|closed|plans)\//.exec(path)?.[1] as
+      | keyof typeof markdownFiles
+      | undefined;
+    const markdownFile = recordTupleMarkdownFileForPath(path);
+    if (section && markdownFile) markdownFiles[section].add(markdownFile);
+  };
+  for (const path of options.changedPaths) {
+    collect(path);
   }
-  const packetMatch = /^records\/([^/]+)\/decision-packets\/(\d+)\.json$/.exec(path);
-  const repository = packetMatch?.[1];
-  const number = packetMatch?.[2];
-  return repository && number ? `${repository}/${number}` : undefined;
+  for (const [section, files] of Object.entries(markdownFiles)) {
+    if (files.size > 1) {
+      throw new Error(
+        `Invalid record tuple ${recordTupleIdentityKey(options.identity)}: ambiguous ${section} filenames ${[
+          ...files,
+        ].join(", ")}`,
+      );
+    }
+  }
+  const resolved: { item?: string; closed?: string; plan?: string } = {};
+  const item = [...markdownFiles.items][0];
+  const closed = [...markdownFiles.closed][0];
+  const plan = [...markdownFiles.plans][0];
+  if (item) resolved.item = item;
+  if (closed) resolved.closed = closed;
+  if (plan) resolved.plan = plan;
+  return recordTuplePaths(options.identity, resolved);
+}
+
+function indexRecordTupleMarkdownPaths(
+  commits: readonly string[],
+  repositories: ReadonlySet<string>,
+): Map<string, string[]> {
+  const indexed = new Map<string, Set<string>>();
+  for (const commit of commits) {
+    for (const repository of repositories) {
+      const root = `records/${repository}`;
+      const paths = runGit(
+        [
+          "ls-tree",
+          "-r",
+          "--name-only",
+          "-z",
+          commit,
+          "--",
+          `${root}/items`,
+          `${root}/closed`,
+          `${root}/plans`,
+        ],
+        { quiet: true },
+      )
+        .split("\0")
+        .filter(Boolean);
+      for (const path of paths) {
+        const identity = recordTupleIdentityForPath(path);
+        if (!identity) continue;
+        const key = recordTupleIdentityKey(identity);
+        const existing = indexed.get(key) ?? new Set<string>();
+        existing.add(path);
+        indexed.set(key, existing);
+      }
+    }
+  }
+  return new Map([...indexed].map(([key, paths]) => [key, [...paths]]));
+}
+
+function readRecordTupleAtCommit(commit: string, paths: RecordTuplePaths): RecordTupleContents {
+  return {
+    paths,
+    item: readGitPath(commit, paths.item),
+    closed: readGitPath(commit, paths.closed),
+    plan: readGitPath(commit, paths.plan),
+    packet: readGitPath(commit, paths.packet),
+  };
+}
+
+function recordTupleIdentityKey(identity: RecordTupleIdentity): string {
+  return `${identity.repository}/${identity.number}`;
 }
 
 function rebuildPublishCommit(options: {

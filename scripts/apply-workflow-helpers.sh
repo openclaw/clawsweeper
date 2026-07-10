@@ -23,7 +23,26 @@ publish_changes_with_strategy() {
 publish_changes() {
   local message="$1"
   shift
-  publish_changes_with_strategy apply-records "$message" "$@"
+  local target_slug="${TARGET_REPO,,}"
+  target_slug="${target_slug//\//-}"
+  local record_paths=()
+  local other_paths=()
+  local path
+  for path in "$@"; do
+    if [ "$path" = "records" ]; then
+      record_paths+=("records/${target_slug}")
+    elif [[ "$path" = records/* ]]; then
+      record_paths+=("$path")
+    else
+      other_paths+=("$path")
+    fi
+  done
+  if [ "${#record_paths[@]}" -gt 0 ]; then
+    publish_changes_with_strategy reconcile-records "$message" "${record_paths[@]}" || return 1
+  fi
+  if [ "${#other_paths[@]}" -gt 0 ]; then
+    publish_changes_with_strategy apply-records "$message" "${other_paths[@]}" || return 1
+  fi
 }
 
 publish_status() {

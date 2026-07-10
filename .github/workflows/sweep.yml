@@ -1638,6 +1638,9 @@ jobs:
           pnpm run repair:publish-main -- \
             --message "chore: update sweep records" \
             --path "records/${target_slug}" \
+            --rebase-strategy reconcile-records
+          pnpm run repair:publish-main -- \
+            --message "chore: update sweep status" \
             --path "results/sweep-status/${target_slug}.json" \
             --rebase-strategy theirs
 
@@ -1870,6 +1873,9 @@ jobs:
           pnpm run repair:publish-main -- \
             --message "chore: sync selected review comments" \
             --path "records/${target_slug}" \
+            --rebase-strategy reconcile-records
+          pnpm run repair:publish-main -- \
+            --message "chore: publish selected review comment status" \
             --path apply-report.json \
             --path "results/sweep-status/${target_slug}.json" \
             --rebase-strategy theirs
@@ -1930,6 +1936,9 @@ jobs:
           pnpm run repair:publish-main -- \
             --message "chore: apply selected sweep decisions" \
             --path "records/${target_slug}" \
+            --rebase-strategy reconcile-records
+          pnpm run repair:publish-main -- \
+            --message "chore: publish selected sweep decision status" \
             --path apply-report.json \
             --path "results/sweep-status/${target_slug}.json" \
             --rebase-strategy theirs
@@ -2233,8 +2242,11 @@ jobs:
           target_slug="${target_slug//\//-}"
           pnpm run repair:publish-main -- \
             --message "chore: update sweep audit state" \
-            --path README.md \
             --path "records/${target_slug}" \
+            --rebase-strategy reconcile-records
+          pnpm run repair:publish-main -- \
+            --message "chore: publish sweep audit status" \
+            --path README.md \
             --path "results/audit/${target_slug}.json" \
             --path "results/sweep-status/${target_slug}.json" \
             --rebase-strategy theirs

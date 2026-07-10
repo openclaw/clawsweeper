@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -387,27 +388,51 @@ test("publishMainCommit fails closed when a racing sweep status is malformed", (
   assert.equal(run("git", ["--git-dir", origin, "show", `main:${statusFile}`], root), "{broken\n");
 });
 
-test("reconciliation preserves newer remote tuples and publishes independent tuples", () => {
+test("broad reconciliation preserves the newer exact tuple and replays independent tuples", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-publish-"));
   const origin = path.join(root, "origin.git");
   const work = path.join(root, "work");
   const state = path.join(root, "state");
   const other = path.join(root, "other");
-  const itemOne = "records/openclaw-openclaw/items/1.md";
-  const closedOne = "records/openclaw-openclaw/closed/1.md";
-  const planOne = "records/openclaw-openclaw/plans/1.md";
-  const packetOne = "records/openclaw-openclaw/decision-packets/1.json";
-  const itemTwo = "records/openclaw-openclaw/items/2.md";
-  const closedTwo = "records/openclaw-openclaw/closed/2.md";
-  const planTwo = "records/openclaw-openclaw/plans/2.md";
-  const packetTwo = "records/openclaw-openclaw/decision-packets/2.json";
+  const recordsRoot = "records/openclaw-openclaw";
+  const statusFile = "results/sweep-status/openclaw-openclaw.json";
+  const baseHealth = sweepHealth("2026-07-09T23:00:00Z", "comment_sync", 1);
+  const remoteHealth = sweepHealth("2026-07-09T23:20:22Z", "close", 2);
   run("git", ["init", "--bare", origin], root);
   run("git", ["clone", origin, state], root);
   configureUser(state);
-  write(path.join(state, closedOne), "closed one base\n");
-  write(path.join(state, planOne), "stale plan one\n");
-  write(path.join(state, packetOne), '{"decision":"base"}\n');
-  write(path.join(state, closedTwo), "closed two base\n");
+  for (const number of [100960, 100961, 100962, 100963]) {
+    writeRecordTuple(state, {
+      number,
+      marker: `base ${number}`,
+      reviewedAt: "2026-07-09T23:00:00.000Z",
+      itemUpdatedAt: "2026-07-09T22:59:00Z",
+    });
+  }
+  writeRecordTuple(state, {
+    number: 100965,
+    marker: "legacy per-kind paths base",
+    reviewedAt: "2026-07-09T23:00:00.000Z",
+    itemUpdatedAt: "2026-07-09T22:59:00Z",
+    recordFile: "openclaw-openclaw-100965.md",
+    planFile: "repair-openclaw-openclaw-100965.md",
+  });
+  writeRecordTuple(state, {
+    number: 100966,
+    marker: "plan deletion base",
+    reviewedAt: "2026-07-09T23:00:00.000Z",
+    itemUpdatedAt: "2026-07-09T22:59:00Z",
+  });
+  const strictPlanCleanupTuple = writeRecordTuple(state, {
+    number: 100967,
+    marker: "byte-identical primary plan cleanup",
+    reviewedAt: "2026-07-09T23:00:00.000Z",
+    itemUpdatedAt: "2026-07-09T22:59:00Z",
+  });
+  writeJson(
+    path.join(state, statusFile),
+    sweepStatus("2026-07-09T23:00:01Z", "Initial", baseHealth, baseHealth),
+  );
   run("git", ["add", "."], state);
   run("git", ["commit", "-m", "initial state"], state);
   run("git", ["push", "origin", "HEAD:state"], state);
@@ -416,55 +441,354 @@ test("reconciliation preserves newer remote tuples and publishes independent tup
 
   fs.mkdirSync(work);
   fs.cpSync(path.join(state, "records"), path.join(work, "records"), { recursive: true });
+  fs.cpSync(path.join(state, "results"), path.join(work, "results"), { recursive: true });
 
   run("git", ["clone", origin, other], root);
   configureUser(other);
-  write(path.join(other, closedOne), "closed one concurrent\n");
-  write(path.join(other, packetOne), '{"decision":"concurrent"}\n');
-  run("git", ["commit", "-am", "concurrent tuple update"], other);
+  const exactTuple = writeRecordTuple(other, {
+    number: 100960,
+    marker: "exact event 5731116d2efa",
+    reviewedAt: "2026-07-09T23:19:10.353Z",
+    itemUpdatedAt: "2026-07-09T23:10:43Z",
+    extraFrontMatter: [
+      "apply_checked_at: 2026-07-09T23:20:21.470Z",
+      "review_comment_synced_at: 2026-07-09T23:20:21.464Z",
+      "last_full_review_at: 2026-07-09T23:19:10.353Z",
+    ],
+  });
+  writeRecordTuple(other, {
+    number: 100962,
+    marker: "remote close",
+    reviewedAt: "2026-07-09T23:18:00.000Z",
+    itemUpdatedAt: "2026-07-09T23:12:00Z",
+    location: "closed",
+    packet: false,
+    plan: false,
+    extraFrontMatter: ["reconciled_at: 2026-07-09T23:20:20.000Z"],
+  });
+  writeJson(
+    path.join(other, statusFile),
+    sweepStatus("2026-07-09T23:20:23Z", "Exact event", remoteHealth, remoteHealth),
+  );
+  run("git", ["add", "-A"], other);
+  run("git", ["commit", "-m", "exact event tuple and close"], other);
   run("git", ["push", "origin", "HEAD:state"], other);
 
-  fs.rmSync(path.join(work, closedOne));
-  fs.rmSync(path.join(work, planOne));
-  fs.rmSync(path.join(work, packetOne));
-  write(path.join(work, itemOne), "stale reopen one\n");
-  fs.rmSync(path.join(work, closedTwo));
-  write(path.join(work, itemTwo), "reopened two\n");
+  writeRecordTuple(work, {
+    number: 100960,
+    marker: "stale broad 150adb4adaaf",
+    reviewedAt: "2026-07-09T23:13:13.035Z",
+    itemUpdatedAt: "2026-07-09T23:06:04Z",
+  });
+  const independentTuple = writeRecordTuple(work, {
+    number: 100961,
+    marker: "independent broad tuple",
+    reviewedAt: "2026-07-09T23:14:00.000Z",
+    itemUpdatedAt: "2026-07-09T23:07:00Z",
+  });
+  writeRecordTuple(work, {
+    number: 100962,
+    marker: "stale broad reopen",
+    reviewedAt: "2026-07-09T23:13:00.000Z",
+    itemUpdatedAt: "2026-07-09T23:06:00Z",
+  });
+  const localClose = writeRecordTuple(work, {
+    number: 100963,
+    marker: "independent broad close",
+    reviewedAt: "2026-07-09T23:15:00.000Z",
+    itemUpdatedAt: "2026-07-09T23:08:00Z",
+    location: "closed",
+    packet: false,
+    plan: false,
+    extraFrontMatter: ["reconciled_at: 2026-07-09T23:15:30.000Z"],
+  });
+  const legacyTuple = writeRecordTuple(work, {
+    number: 100965,
+    marker: "legacy per-kind paths updated",
+    reviewedAt: "2026-07-09T23:16:00.000Z",
+    itemUpdatedAt: "2026-07-09T23:09:00Z",
+    recordFile: "openclaw-openclaw-100965.md",
+    planFile: "repair-openclaw-openclaw-100965.md",
+  });
+  const planDeletionTuple = writeRecordTuple(work, {
+    number: 100966,
+    marker: "open tuple without obsolete repair plan",
+    reviewedAt: "2026-07-09T23:17:00.000Z",
+    itemUpdatedAt: "2026-07-09T23:09:30Z",
+    plan: false,
+  });
+  fs.rmSync(path.join(work, `${recordsRoot}/plans/100967.md`));
+  writeJson(
+    path.join(work, statusFile),
+    sweepStatus("2026-07-09T23:21:00Z", "Broad publish", baseHealth, baseHealth),
+  );
 
-  const result = withEnv({ CLAWSWEEPER_STATE_DIR: state }, () =>
-    withCwd(work, () =>
-      publishMainCommit({
+  const results = withEnv({ CLAWSWEEPER_STATE_DIR: state }, () =>
+    withCwd(work, () => {
+      const recordsResult = publishMainCommit({
         message: "chore: persist sweep reconciliation",
-        paths: [itemOne, closedOne, planOne, packetOne, itemTwo, closedTwo, planTwo, packetTwo],
+        paths: [recordsRoot],
         maxAttempts: 1,
         pushAttempts: 1,
         rebaseStrategy: "reconcile-records",
-      }),
-    ),
+      });
+      const statusResult = publishMainCommit({
+        message: "chore: update sweep status",
+        paths: [statusFile],
+        maxAttempts: 1,
+        pushAttempts: 1,
+        rebaseStrategy: "theirs",
+      });
+      return [recordsResult, statusResult];
+    }),
   );
 
-  assert.equal(result, "committed");
-  assert.throws(() => run("git", ["--git-dir", origin, "show", `state:${itemOne}`], root));
+  assert.deepEqual(results, ["committed", "committed"]);
   assert.equal(
-    run("git", ["--git-dir", origin, "show", `state:${closedOne}`], root),
-    "closed one concurrent\n",
+    run("git", ["--git-dir", origin, "show", `state:${recordsRoot}/items/100960.md`], root),
+    exactTuple.primary,
   );
   assert.equal(
-    run("git", ["--git-dir", origin, "show", `state:${planOne}`], root),
-    "stale plan one\n",
+    run(
+      "git",
+      ["--git-dir", origin, "show", `state:${recordsRoot}/decision-packets/100960.json`],
+      root,
+    ),
+    exactTuple.packet,
   );
   assert.equal(
-    run("git", ["--git-dir", origin, "show", `state:${packetOne}`], root),
-    '{"decision":"concurrent"}\n',
+    run("git", ["--git-dir", origin, "show", `state:${recordsRoot}/plans/100960.md`], root),
+    exactTuple.plan,
   );
   assert.equal(
-    run("git", ["--git-dir", origin, "show", `state:${itemTwo}`], root),
-    "reopened two\n",
+    run("git", ["--git-dir", origin, "show", `state:${recordsRoot}/items/100961.md`], root),
+    independentTuple.primary,
   );
-  assert.throws(() => run("git", ["--git-dir", origin, "show", `state:${closedTwo}`], root));
-  assert.equal(fs.readFileSync(path.join(work, closedOne), "utf8"), "closed one concurrent\n");
-  assert.equal(fs.readFileSync(path.join(work, packetOne), "utf8"), '{"decision":"concurrent"}\n');
-  assert.equal(fs.readFileSync(path.join(work, itemTwo), "utf8"), "reopened two\n");
+  assert.throws(() =>
+    run("git", ["--git-dir", origin, "show", `state:${recordsRoot}/items/100962.md`], root),
+  );
+  assert.match(
+    run("git", ["--git-dir", origin, "show", `state:${recordsRoot}/closed/100962.md`], root),
+    /remote close/,
+  );
+  for (const sidecar of ["plans/100962.md", "decision-packets/100962.json"]) {
+    assert.throws(() =>
+      run("git", ["--git-dir", origin, "show", `state:${recordsRoot}/${sidecar}`], root),
+    );
+  }
+  assert.equal(
+    run("git", ["--git-dir", origin, "show", `state:${recordsRoot}/closed/100963.md`], root),
+    localClose.primary,
+  );
+  for (const sidecar of ["items/100963.md", "plans/100963.md", "decision-packets/100963.json"]) {
+    assert.throws(() =>
+      run("git", ["--git-dir", origin, "show", `state:${recordsRoot}/${sidecar}`], root),
+    );
+  }
+  assert.equal(
+    fs.readFileSync(path.join(work, `${recordsRoot}/items/100960.md`), "utf8"),
+    exactTuple.primary,
+  );
+  assert.equal(
+    fs.readFileSync(path.join(work, `${recordsRoot}/decision-packets/100960.json`), "utf8"),
+    exactTuple.packet,
+  );
+  assert.equal(
+    run(
+      "git",
+      ["--git-dir", origin, "show", `state:${recordsRoot}/items/openclaw-openclaw-100965.md`],
+      root,
+    ),
+    legacyTuple.primary,
+  );
+  assert.equal(
+    run(
+      "git",
+      [
+        "--git-dir",
+        origin,
+        "show",
+        `state:${recordsRoot}/plans/repair-openclaw-openclaw-100965.md`,
+      ],
+      root,
+    ),
+    legacyTuple.plan,
+  );
+  assert.equal(
+    run("git", ["--git-dir", origin, "show", `state:${recordsRoot}/items/100966.md`], root),
+    planDeletionTuple.primary,
+  );
+  assert.throws(() =>
+    run("git", ["--git-dir", origin, "show", `state:${recordsRoot}/plans/100966.md`], root),
+  );
+  assert.equal(
+    run("git", ["--git-dir", origin, "show", `state:${recordsRoot}/items/100967.md`], root),
+    strictPlanCleanupTuple.primary,
+  );
+  assert.throws(() =>
+    run("git", ["--git-dir", origin, "show", `state:${recordsRoot}/plans/100967.md`], root),
+  );
+  const mergedStatus = readOriginJson(origin, `state:${statusFile}`, root);
+  assert.equal(mergedStatus.state, "Broad publish");
+  assert.deepEqual(mergedStatus.last_close_apply_health, remoteHealth);
+});
+
+test("broad reconciliation rejects stale hydrated state before its first push", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-publish-"));
+  const origin = path.join(root, "origin.git");
+  const state = path.join(root, "state");
+  const work = path.join(root, "work");
+  const recordsRoot = "records/openclaw-openclaw";
+  run("git", ["init", "--bare", origin], root);
+  run("git", ["clone", origin, state], root);
+  configureUser(state);
+  const exactTuple = writeRecordTuple(state, {
+    number: 100960,
+    marker: "newer hydrated exact state",
+    reviewedAt: "2026-07-09T23:19:10.353Z",
+    itemUpdatedAt: "2026-07-09T23:10:43Z",
+  });
+  writeRecordTuple(state, {
+    number: 100961,
+    marker: "tuple intentionally deleted by broad reconcile",
+    reviewedAt: "2026-07-09T23:18:10.353Z",
+    itemUpdatedAt: "2026-07-09T23:09:43Z",
+  });
+  run("git", ["add", "."], state);
+  run("git", ["commit", "-m", "newer state base"], state);
+  run("git", ["push", "origin", "HEAD:state"], state);
+  run("git", ["--git-dir", origin, "symbolic-ref", "HEAD", "refs/heads/state"], root);
+  run("git", ["checkout", "-B", "state", "origin/state"], state);
+
+  fs.mkdirSync(work);
+  fs.cpSync(path.join(state, "records"), path.join(work, "records"), { recursive: true });
+  writeRecordTuple(work, {
+    number: 100960,
+    marker: "stale broad state",
+    reviewedAt: "2026-07-09T23:13:13.035Z",
+    itemUpdatedAt: "2026-07-09T23:06:04Z",
+  });
+  for (const relative of [
+    "items/100961.md",
+    "closed/100961.md",
+    "plans/100961.md",
+    "decision-packets/100961.json",
+  ]) {
+    fs.rmSync(path.join(work, recordsRoot, relative), { force: true });
+  }
+
+  assert.equal(
+    withEnv({ CLAWSWEEPER_STATE_DIR: state }, () =>
+      withCwd(work, () =>
+        publishMainCommit({
+          message: "chore: reconcile stale broad state",
+          paths: [recordsRoot],
+          maxAttempts: 1,
+          pushAttempts: 1,
+          rebaseStrategy: "reconcile-records",
+        }),
+      ),
+    ),
+    "committed",
+  );
+  assert.equal(
+    run("git", ["--git-dir", origin, "show", `state:${recordsRoot}/items/100960.md`], root),
+    exactTuple.primary,
+  );
+  assert.equal(
+    fs.readFileSync(path.join(work, `${recordsRoot}/items/100960.md`), "utf8"),
+    exactTuple.primary,
+  );
+  for (const relative of [
+    "items/100961.md",
+    "closed/100961.md",
+    "plans/100961.md",
+    "decision-packets/100961.json",
+  ]) {
+    assert.throws(() =>
+      run("git", ["--git-dir", origin, "show", `state:${recordsRoot}/${relative}`], root),
+    );
+  }
+
+  const other = path.join(root, "other");
+  run("git", ["clone", origin, other], root);
+  configureUser(other);
+  writeRecordTuple(other, {
+    number: 100960,
+    marker: "remote stale relative to merge base",
+    reviewedAt: "2026-07-09T23:14:13.035Z",
+    itemUpdatedAt: "2026-07-09T23:07:04Z",
+  });
+  run("git", ["add", "-A"], other);
+  run("git", ["commit", "-m", "remote stale tuple"], other);
+  run("git", ["push", "origin", "HEAD:state"], other);
+  writeRecordTuple(work, {
+    number: 100960,
+    marker: "local even staler than merge base",
+    reviewedAt: "2026-07-09T23:13:13.035Z",
+    itemUpdatedAt: "2026-07-09T23:06:04Z",
+  });
+  assert.equal(
+    withEnv({ CLAWSWEEPER_STATE_DIR: state }, () =>
+      withCwd(work, () =>
+        publishMainCommit({
+          message: "chore: reject two stale branches",
+          paths: [recordsRoot],
+          maxAttempts: 1,
+          pushAttempts: 1,
+          rebaseStrategy: "reconcile-records",
+        }),
+      ),
+    ),
+    "unchanged",
+  );
+  assert.equal(
+    run("git", ["--git-dir", origin, "show", `state:${recordsRoot}/items/100960.md`], root),
+    exactTuple.primary,
+  );
+});
+
+test("reconcile-records rejects a malformed tuple before an uncontended push", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-publish-"));
+  const origin = path.join(root, "origin.git");
+  const work = path.join(root, "work");
+  run("git", ["init", "--bare", origin], root);
+  run("git", ["clone", origin, work], root);
+  configureUser(work);
+  const tuple = writeRecordTuple(work, {
+    number: 42,
+    marker: "valid base",
+    reviewedAt: "2026-07-09T23:00:00.000Z",
+    itemUpdatedAt: "2026-07-09T22:59:00Z",
+  });
+  run("git", ["add", "."], work);
+  run("git", ["commit", "-m", "initial"], work);
+  run("git", ["push", "origin", "HEAD:main"], work);
+  run("git", ["--git-dir", origin, "symbolic-ref", "HEAD", "refs/heads/main"], root);
+  run("git", ["checkout", "-B", "main", "origin/main"], work);
+
+  fs.appendFileSync(path.join(work, "records/openclaw-openclaw/decision-packets/42.json"), " ");
+  assert.throws(
+    () =>
+      withCwd(work, () =>
+        publishMainCommit({
+          message: "chore: publish malformed tuple",
+          paths: ["records/openclaw-openclaw"],
+          maxAttempts: 1,
+          pushAttempts: 1,
+          rebaseStrategy: "reconcile-records",
+        }),
+      ),
+    /decision packet digest mismatch/,
+  );
+  assert.equal(
+    run(
+      "git",
+      ["--git-dir", origin, "show", "main:records/openclaw-openclaw/decision-packets/42.json"],
+      root,
+    ),
+    tuple.packet,
+  );
 });
 
 test("publishMainCommit rebuilds generated state commits without deleting concurrent records", () => {
@@ -724,7 +1048,8 @@ test("publishMainCommit refreshes published source paths after a state rebase", 
   const craftedPath = "results/..\\config\\new.json";
   const openclawCursor = "results/apply-cursors/openclaw-openclaw.json";
   const clawhubCursor = "results/apply-cursors/openclaw-clawhub.json";
-  const sweepStatus = "results/sweep-status/openclaw-openclaw.json";
+  const sweepStatusPath = "results/sweep-status/openclaw-openclaw.json";
+  const refreshHealth = sweepHealth("2026-07-09T20:00:00Z", "comment_sync", 1);
   run("git", ["init", "--bare", origin], root);
   run("git", ["clone", origin, state], root);
   configureUser(state);
@@ -736,7 +1061,10 @@ test("publishMainCommit refreshes published source paths after a state rebase", 
   write(path.join(state, packetFour), '{"decision":"base"}\n');
   write(path.join(state, openclawCursor), '{"cursor":"openclaw-base"}\n');
   write(path.join(state, clawhubCursor), '{"cursor":"clawhub-base"}\n');
-  write(path.join(state, sweepStatus), '{"status":"base"}\n');
+  writeJson(
+    path.join(state, sweepStatusPath),
+    sweepStatus("2026-07-09T20:00:01Z", "Base", refreshHealth, refreshHealth),
+  );
   write(path.join(state, "apply-report.json"), '[{"report":"base"}]\n');
   write(path.join(state, configPath), "config base\n");
   run("git", ["add", "."], state);
@@ -777,7 +1105,10 @@ test("publishMainCommit refreshes published source paths after a state rebase", 
   write(path.join(work, recordFive), "record five pending local\n");
   write(path.join(work, planFive), "plan five pending local\n");
   write(path.join(work, packetFive), '{"decision":"pending-local"}\n');
-  write(path.join(work, sweepStatus), '{"status":"checkpoint"}\n');
+  writeJson(
+    path.join(work, sweepStatusPath),
+    sweepStatus("2026-07-09T20:01:00Z", "Checkpoint", refreshHealth, refreshHealth),
+  );
   const results = withEnv({ CLAWSWEEPER_STATE_DIR: state }, () =>
     withCwd(work, () => {
       const first = publishMainCommit({
@@ -839,7 +1170,10 @@ test("publishMainCommit refreshes published source paths after a state rebase", 
       run("git", ["commit", "-am", "second concurrent state update"], other);
       run("git", ["push", "origin", "HEAD:state"], other);
 
-      write(path.join(work, sweepStatus), '{"status":"checkpoint-again"}\n');
+      writeJson(
+        path.join(work, sweepStatusPath),
+        sweepStatus("2026-07-09T20:02:00Z", "Checkpoint again", refreshHealth, refreshHealth),
+      );
       const third = publishMainCommit({
         message: "chore: update checkpoint status again",
         paths: ["results/sweep-status"],
@@ -1184,7 +1518,7 @@ test("publish-main CLI accepts package-manager double dash separators", () => {
       "--path",
       "results",
       "--rebase-strategy",
-      "reconcile-records",
+      "theirs",
       "--max-attempts",
       "1",
       "--push-attempts",
@@ -1265,6 +1599,83 @@ function write(file, content) {
 
 function writeJson(file, value) {
   write(file, `${JSON.stringify(value, null, 2)}\n`);
+}
+
+function writeRecordTuple(
+  root,
+  {
+    number,
+    marker,
+    reviewedAt,
+    itemUpdatedAt,
+    location = "items",
+    packet = true,
+    plan = true,
+    recordFile = `${number}.md`,
+    planFile = recordFile,
+    extraFrontMatter = [],
+  },
+) {
+  const recordRoot = path.join(root, "records/openclaw-openclaw");
+  const itemPath = path.join(recordRoot, "items", recordFile);
+  const closedPath = path.join(recordRoot, "closed", recordFile);
+  const planPath = path.join(recordRoot, "plans", planFile);
+  const packetPath = path.join(recordRoot, "decision-packets", `${number}.json`);
+  const packetContent = packet
+    ? `${JSON.stringify(
+        {
+          version: 1,
+          generatedAt: reviewedAt,
+          updatedAt: itemUpdatedAt,
+          subject: { repo: "openclaw/openclaw", number },
+          source: {
+            reportPath: `records/openclaw-openclaw/${location}/${recordFile}`,
+            reviewedAt,
+          },
+          marker,
+        },
+        null,
+        2,
+      )}\n`
+    : null;
+  const digest = packetContent ? createHash("sha256").update(packetContent).digest("hex") : "none";
+  const pointer = packetContent
+    ? `records/openclaw-openclaw/decision-packets/${number}.json`
+    : "none";
+  const primary = [
+    "---",
+    `decision_packet_sha256: ${digest}`,
+    `decision_packet_path: ${pointer}`,
+    `number: ${number}`,
+    "repository: openclaw/openclaw",
+    `item_updated_at: ${itemUpdatedAt}`,
+    `reviewed_at: ${reviewedAt}`,
+    ...extraFrontMatter,
+    "---",
+    "",
+    `# ${marker}`,
+    "",
+  ].join("\n");
+  const planContent = plan
+    ? [
+        "---",
+        `number: ${number}`,
+        "repository: openclaw/openclaw",
+        `reviewed_at: ${reviewedAt}`,
+        "---",
+        "",
+        `# Plan ${marker}`,
+        "",
+      ].join("\n")
+    : null;
+
+  fs.rmSync(location === "items" ? closedPath : itemPath, { force: true });
+  write(location === "items" ? itemPath : closedPath, primary);
+  if (planContent) write(planPath, planContent);
+  else fs.rmSync(planPath, { force: true });
+  if (packetContent) write(packetPath, packetContent);
+  else fs.rmSync(packetPath, { force: true });
+  return { primary, plan: planContent, packet: packetContent };
 }
 
 function readOriginJson(origin, revision, cwd) {

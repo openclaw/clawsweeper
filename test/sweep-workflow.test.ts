@@ -90,6 +90,42 @@ test("publish workflow installs Codex from the root checkout path", () => {
   );
 });
 
+test("broad record publishers isolate tuple reconciliation from status and auxiliary state", () => {
+  const workflow = readText(".github/workflows/sweep.yml");
+  for (const stepName of [
+    "Commit review records",
+    "Sync selected review comments",
+    "Apply selected safe close proposals",
+    "Commit Audit Health",
+  ]) {
+    const start = workflow.indexOf(`- name: ${stepName}`);
+    assert.notEqual(start, -1, stepName);
+    const nextStep = workflow.indexOf("\n      - ", start + 1);
+    const block = workflow.slice(start, nextStep === -1 ? undefined : nextStep);
+    const recordsPath = block.indexOf('--path "records/${target_slug}"');
+    const tupleStrategy = block.indexOf("--rebase-strategy reconcile-records", recordsPath);
+    const secondPublish = block.indexOf("pnpm run repair:publish-main", tupleStrategy);
+    const statusPath = block.indexOf("results/sweep-status/${target_slug}.json", secondPublish);
+    const statusStrategy = block.indexOf("--rebase-strategy theirs", statusPath);
+
+    assert.ok(recordsPath !== -1, `${stepName} records path`);
+    assert.ok(tupleStrategy > recordsPath, `${stepName} tuple strategy`);
+    assert.ok(secondPublish > tupleStrategy, `${stepName} split publish`);
+    assert.equal(
+      block.slice(recordsPath, tupleStrategy).includes("results/sweep-status"),
+      false,
+      `${stepName} must not mix status into tuple reconciliation`,
+    );
+    assert.ok(statusPath > secondPublish, `${stepName} status path`);
+    assert.ok(statusStrategy > statusPath, `${stepName} status strategy`);
+    assert.equal(
+      block.slice(secondPublish).includes('--path "records/${target_slug}"'),
+      false,
+      `${stepName} auxiliary publish must not replay records`,
+    );
+  }
+});
+
 test("apply workflow installs Codex only when proof-eligible apply work can run", () => {
   const workflow = readText(".github/workflows/sweep.yml");
   const applyJobStart = workflow.indexOf("\n  apply-existing:");
@@ -203,6 +239,47 @@ test("reconcile publication expands only exact changed record tuples", () => {
     { encoding: "utf8" },
   );
   assert.equal(emptyOutput.trim(), "Reconcile changed no durable record tuples.");
+});
+
+test("apply checkpoints split record tuples from auxiliary state", () => {
+  const output = execFileSync(
+    "bash",
+    [
+      "-lc",
+      [
+        "source scripts/apply-workflow-helpers.sh",
+        'publish_changes_with_strategy() { printf "%s\\n" "$@"; }',
+        'TARGET_REPO="OpenClaw/OpenClaw"',
+        'publish_changes "apply checkpoint" records apply-report.json results/sweep-status results/apply-cursors',
+      ].join("\n"),
+    ],
+    { encoding: "utf8" },
+  );
+  assert.deepEqual(output.trim().split("\n"), [
+    "reconcile-records",
+    "apply checkpoint",
+    "records/openclaw-openclaw",
+    "apply-records",
+    "apply checkpoint",
+    "apply-report.json",
+    "results/sweep-status",
+    "results/apply-cursors",
+  ]);
+
+  const failedOutput = execFileSync(
+    "bash",
+    [
+      "-lc",
+      [
+        "source scripts/apply-workflow-helpers.sh",
+        'publish_changes_with_strategy() { printf "%s\\n" "$1"; [ "$1" != reconcile-records ]; }',
+        'TARGET_REPO="openclaw/openclaw"',
+        'publish_changes "apply checkpoint" records apply-report.json || true',
+      ].join("\n"),
+    ],
+    { encoding: "utf8" },
+  );
+  assert.equal(failedOutput.trim(), "reconcile-records");
 });
 
 test("apply workflow target token can inspect source workflow runs", () => {
