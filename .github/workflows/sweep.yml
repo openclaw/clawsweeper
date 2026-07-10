@@ -23,8 +23,11 @@ run-name: >-
     (github.event_name == 'workflow_dispatch' && startsWith(github.event.inputs.item_numbers, 'router-')) &&
       format('Review event item {0}#{1} [{2}]', github.event.inputs.target_repo || 'openclaw/openclaw', github.event.inputs.item_number || '?', github.event.inputs.item_numbers) ||
     (github.event_name == 'workflow_dispatch' &&
-      (github.event.inputs.item_number != '' || github.event.inputs.item_numbers != '')) &&
-      format('Review event item {0}#{1}', github.event.inputs.target_repo || 'openclaw/openclaw', github.event.inputs.item_number || github.event.inputs.item_numbers) ||
+      github.event.inputs.item_number != '' &&
+      github.event.inputs.item_numbers == '') &&
+      format('Review event item {0}#{1}', github.event.inputs.target_repo || 'openclaw/openclaw', github.event.inputs.item_number) ||
+    (github.event_name == 'workflow_dispatch' && github.event.inputs.item_numbers != '') &&
+      format('Review event items {0}#{1} [shards={2}]', github.event.inputs.target_repo || 'openclaw/openclaw', github.event.inputs.item_numbers, github.event.inputs.shard_count || '89') ||
     ((github.event_name == 'workflow_dispatch' &&
       github.event.inputs.apply_existing == 'true' &&
       github.event.inputs.apply_sync_comments_only == 'true') ||
@@ -1035,6 +1038,7 @@ jobs:
     timeout-minutes: 30
     concurrency:
       group: ${{ format('clawsweeper-planner-{0}', (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && (github.event.inputs.target_repo || ((github.event.schedule == '2/5 * * * *' || github.event.schedule == '22 * * * *') && 'openclaw/clawhub' || 'openclaw/openclaw')) || github.run_id) }}
+      queue: max
       cancel-in-progress: false
     outputs:
       batch_size: ${{ steps.mode.outputs.batch_size }}
@@ -1180,10 +1184,63 @@ jobs:
               | WORKFLOW_PATH="$1" STALE_QUEUED_CUTOFF="$STALE_QUEUED_CUTOFF" jq '[.[] | select(.workflowPath == env.WORKFLOW_PATH) | select(.status == "in_progress" or ((.status == "pending" or .status == "queued" or .status == "waiting" or .status == "requested") and ((.updatedAt // .createdAt // "") >= env.STALE_QUEUED_CUTOFF)))] | length' 2>/dev/null \
               || printf '0'
           }
-          active_sweep_exact_count() {
-            printf '%s' "$ACTIVE_RUNS_JSON" \
-              | STALE_QUEUED_CUTOFF="$STALE_QUEUED_CUTOFF" jq '[.[] | select(.workflowPath == ".github/workflows/sweep.yml") | select((.status == "in_progress" or ((.status == "pending" or .status == "queued" or .status == "waiting" or .status == "requested") and ((.updatedAt // .createdAt // "") >= env.STALE_QUEUED_CUTOFF))) and (.displayTitle | startswith("Review event item ")))] | length' 2>/dev/null \
-              || printf '0'
+          active_sweep_exact_workers() {
+            local runs total id title status jobs_json active_shards total_shards
+            local reserved_shards hard_cap requested_shards item_numbers commas item_count
+            total=0
+            hard_cap="$(limit review_shards.hard_cap)"
+            runs="$(printf '%s' "$ACTIVE_RUNS_JSON" \
+              | STALE_QUEUED_CUTOFF="$STALE_QUEUED_CUTOFF" jq -r '.[] | select(.workflowPath == ".github/workflows/sweep.yml") | select(.status == "in_progress" or ((.status == "pending" or .status == "queued" or .status == "waiting" or .status == "requested") and ((.updatedAt // .createdAt // "") >= env.STALE_QUEUED_CUTOFF))) | select((.displayTitle | startswith("Review event item ")) or (.displayTitle | startswith("Review event items "))) | [.databaseId, .displayTitle, .status] | @tsv' 2>/dev/null || true)"
+            while IFS=$'\t' read -r id title status; do
+              if [ -z "$id" ]; then
+                continue
+              fi
+              active_shards=0
+              total_shards=0
+              if [ "$status" = "in_progress" ]; then
+                jobs_json="$(gh run view "$id" --repo "${{ github.repository }}" --json jobs 2>/dev/null || printf '{"jobs":[]}')"
+                active_shards="$(printf '%s' "$jobs_json" \
+                  | jq '[.jobs[]? | select(.name | startswith("Review shard ")) | select(.status == "in_progress" or .status == "pending" or .status == "queued" or .status == "waiting" or .status == "requested")] | length' 2>/dev/null \
+                  || printf '0')"
+                total_shards="$(printf '%s' "$jobs_json" \
+                  | jq '[.jobs[]? | select(.name | startswith("Review shard "))] | length' 2>/dev/null \
+                  || printf '0')"
+              fi
+              if ! [[ "$active_shards" =~ ^[0-9]+$ ]]; then
+                active_shards=0
+              fi
+              if ! [[ "$total_shards" =~ ^[0-9]+$ ]]; then
+                total_shards=0
+              fi
+              # Single-item event reviews reserve one worker. Explicit batches carry
+              # enough run-name metadata to reserve their maximum possible matrix until
+              # live shard jobs exist; after expansion, only live shard jobs consume slots.
+              if [ "$active_shards" -lt 1 ] && [ "$total_shards" -lt 1 ]; then
+                reserved_shards="$(limit review_shards.exact_item_default)"
+                if [[ "$title" == Review\ event\ items\ * ]]; then
+                  reserved_shards="$hard_cap"
+                  if [[ "$title" =~ \[shards=([0-9]+)\]$ ]]; then
+                    requested_shards="${BASH_REMATCH[1]}"
+                    item_numbers="${title#*#}"
+                    item_numbers="${item_numbers%% *}"
+                    if [[ "$item_numbers" =~ ^[0-9]+(,[0-9]+)*$ ]] && [ "$requested_shards" -gt 0 ]; then
+                      commas="${item_numbers//[^,]/}"
+                      item_count=$((${#commas} + 1))
+                      reserved_shards="$requested_shards"
+                      if [ "$reserved_shards" -gt "$item_count" ]; then
+                        reserved_shards="$item_count"
+                      fi
+                      if [ "$reserved_shards" -gt "$hard_cap" ]; then
+                        reserved_shards="$hard_cap"
+                      fi
+                    fi
+                  fi
+                fi
+                active_shards="$reserved_shards"
+              fi
+              total=$((total + active_shards))
+            done <<< "$runs"
+            printf '%s' "$total"
           }
           active_sweep_background_workers() {
             local runs total id title status jobs_json active_shards total_shards
@@ -1229,7 +1286,7 @@ jobs:
           normal_active_floor="$(limit review_shards.normal_active_floor)"
           hard_shard_cap="$(limit review_shards.hard_cap)"
           commit_page_size="$(limit commit_review.page_size_default)"
-          active_critical_workers="$(( $(active_run_count ".github/workflows/repair-cluster-worker.yml") + $(active_sweep_exact_count) ))"
+          active_critical_workers="$(( $(active_run_count ".github/workflows/repair-cluster-worker.yml") + $(active_sweep_exact_workers) ))"
           active_background_workers="$(( $(active_run_count ".github/workflows/commit-review.yml") * commit_page_size + $(active_sweep_background_workers) ))"
           hot_intake_shards="$(worker_limit hot_intake --active-critical "$active_critical_workers" --active-background "$active_background_workers")"
           normal_shards="$(worker_limit normal_review --active-critical "$active_critical_workers" --active-background "$active_background_workers")"

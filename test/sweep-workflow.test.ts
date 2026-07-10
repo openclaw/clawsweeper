@@ -975,11 +975,11 @@ test("comment router prunes bare ack comments after updating shared automerge st
   assert.match(postComment, /pruned_ack_comment_id: String\(precreatedId\)/);
 });
 
-test("manual exact-item review dispatches avoid broad review concurrency", () => {
+test("manual exact-item review dispatches reserve their live shard capacity", () => {
   const workflow = readText(".github/workflows/sweep.yml");
   const runName = workflow.slice(workflow.indexOf("run-name:"), workflow.indexOf("\non:"));
   const exactCapacityBlock = workflow.slice(
-    workflow.indexOf("active_sweep_exact_count()"),
+    workflow.indexOf("active_sweep_exact_workers()"),
     workflow.indexOf("active_sweep_background_workers()"),
   );
   const modeBlock = workflow.slice(
@@ -997,14 +997,23 @@ test("manual exact-item review dispatches avoid broad review concurrency", () =>
   );
   assert.match(
     runName,
-    /github\.event_name == 'workflow_dispatch' &&\s+\(github\.event\.inputs\.item_number != '' \|\| github\.event\.inputs\.item_numbers != ''\)\) &&\s+format\('Review event item \{0\}#\{1\}', github\.event\.inputs\.target_repo \|\| 'openclaw\/openclaw', github\.event\.inputs\.item_number \|\| github\.event\.inputs\.item_numbers\)/,
+    /github\.event_name == 'workflow_dispatch' &&\s+github\.event\.inputs\.item_number != '' &&\s+github\.event\.inputs\.item_numbers == ''\) &&\s+format\('Review event item \{0\}#\{1\}', github\.event\.inputs\.target_repo \|\| 'openclaw\/openclaw', github\.event\.inputs\.item_number\)/,
+  );
+  assert.match(
+    runName,
+    /format\('Review event items \{0\}#\{1\} \[shards=\{2\}\]', github\.event\.inputs\.target_repo \|\| 'openclaw\/openclaw', github\.event\.inputs\.item_numbers, github\.event\.inputs\.shard_count \|\| '89'\)/,
   );
   assert.ok(
     runName.indexOf("format('Review event item {0}#{1}'") <
       runName.lastIndexOf("'Review ClawSweeper items'"),
   );
   assert.match(exactCapacityBlock, /\.displayTitle \| startswith\("Review event item "\)/);
-  assert.match(modeBlock, /active_run_count .* \+ \$\(active_sweep_exact_count\)/);
+  assert.match(exactCapacityBlock, /\.displayTitle \| startswith\("Review event items "\)/);
+  assert.match(exactCapacityBlock, /gh run view "\$id".*--json jobs/);
+  assert.match(exactCapacityBlock, /limit review_shards\.hard_cap/);
+  assert.match(exactCapacityBlock, /reserved_shards="\$requested_shards"/);
+  assert.match(exactCapacityBlock, /reserved_shards="\$item_count"/);
+  assert.match(modeBlock, /active_run_count .* \+ \$\(active_sweep_exact_workers\)/);
 });
 
 test("sweep workflow publishes target-scoped state paths", () => {
@@ -1239,6 +1248,7 @@ test("target review planners serialize exact and broad workflow dispatches", () 
   assert.doesNotMatch(planHeader, /github\.event\.inputs\.item_number == ''/);
   assert.doesNotMatch(planHeader, /github\.event\.inputs\.item_numbers == ''/);
   assert.match(planHeader, /\|\| github\.run_id/);
+  assert.match(planHeader, /queue: max/);
   assert.match(planHeader, /cancel-in-progress: false/);
 });
 
