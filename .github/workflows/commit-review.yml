@@ -184,28 +184,60 @@ jobs:
               || printf '0'
           }
           active_sweep_background_workers() {
-            local runs total id title status active_shards
+            local runs total id title status jobs_json active_shards total_shards
+            local reserved_shards hard_cap requested_shards item_numbers commas item_count
             total=0
+            hard_cap="$(pnpm --dir clawsweeper run --silent workflow -- limit review_shards.hard_cap)"
             runs="$(printf '%s' "$ACTIVE_RUNS_JSON" \
-              | STALE_QUEUED_CUTOFF="$STALE_QUEUED_CUTOFF" jq -r '.[] | select(.workflowPath == ".github/workflows/sweep.yml") | select(.status == "in_progress" or ((.status == "pending" or .status == "queued" or .status == "waiting" or .status == "requested") and ((.updatedAt // .createdAt // "") >= env.STALE_QUEUED_CUTOFF))) | select(.displayTitle == "Review ClawSweeper items" or .displayTitle == "Review hot ClawSweeper items") | [.databaseId, .displayTitle, .status] | @tsv' 2>/dev/null || true)"
+              | STALE_QUEUED_CUTOFF="$STALE_QUEUED_CUTOFF" jq -r '.[] | select(.workflowPath == ".github/workflows/sweep.yml") | select(.status == "in_progress" or ((.status == "pending" or .status == "queued" or .status == "waiting" or .status == "requested") and ((.updatedAt // .createdAt // "") >= env.STALE_QUEUED_CUTOFF))) | select(.displayTitle == "Review ClawSweeper items" or .displayTitle == "Review hot ClawSweeper items" or (.displayTitle | startswith("Review event items "))) | [.databaseId, .displayTitle, .status] | @tsv' 2>/dev/null || true)"
             while IFS=$'\t' read -r id title status; do
               if [ -z "$id" ]; then
                 continue
               fi
               active_shards=0
+              total_shards=0
               if [ "$status" = "in_progress" ]; then
-                active_shards="$(gh run view "$id" --repo "${{ github.repository }}" --json jobs 2>/dev/null \
+                jobs_json="$(gh run view "$id" --repo "${{ github.repository }}" --json jobs 2>/dev/null || printf '{"jobs":[]}')"
+                active_shards="$(printf '%s' "$jobs_json" \
                   | jq '[.jobs[]? | select(.name | startswith("Review shard ")) | select(.status == "in_progress" or .status == "pending" or .status == "queued" or .status == "waiting" or .status == "requested")] | length' 2>/dev/null \
+                  || printf '0')"
+                total_shards="$(printf '%s' "$jobs_json" \
+                  | jq '[.jobs[]? | select(.name | startswith("Review shard "))] | length' 2>/dev/null \
                   || printf '0')"
               fi
               if ! [[ "$active_shards" =~ ^[0-9]+$ ]]; then
                 active_shards=0
               fi
-              # Planning, publish, queued, and not-yet-expanded matrix runs have not
-              # created shard jobs yet. Reserve their quiet lane size while they expand.
-              if [ "$active_shards" -lt 1 ]; then
+              if ! [[ "$total_shards" =~ ^[0-9]+$ ]]; then
+                total_shards=0
+              fi
+              # Planning, queued, and not-yet-expanded matrix runs reserve their lane
+              # size. Completed matrices are publishing and consume no Codex slots.
+              if [ "$active_shards" -lt 1 ] && [ "$total_shards" -lt 1 ]; then
                 if [ "$title" = "Review hot ClawSweeper items" ]; then
                   active_shards="$(pnpm --dir clawsweeper run --silent workflow -- limit review_shards.hot_intake_default)"
+                elif [[ "$title" == Review\ event\ items\ * ]]; then
+                  reserved_shards="$hard_cap"
+                  if [[ "$title" =~ \[shards=([0-9]+)\]$ ]]; then
+                    requested_shards="${BASH_REMATCH[1]}"
+                    item_numbers="${title#*#}"
+                    item_numbers="${item_numbers%% *}"
+                    if [[ "$item_numbers" =~ ^[0-9]+(,[0-9]+)*$ ]]; then
+                      if [ "$requested_shards" -lt 1 ]; then
+                        requested_shards=1
+                      fi
+                      commas="${item_numbers//[^,]/}"
+                      item_count=$((${#commas} + 1))
+                      reserved_shards="$requested_shards"
+                      if [ "$reserved_shards" -gt "$item_count" ]; then
+                        reserved_shards="$item_count"
+                      fi
+                      if [ "$reserved_shards" -gt "$hard_cap" ]; then
+                        reserved_shards="$hard_cap"
+                      fi
+                    fi
+                  fi
+                  active_shards="$reserved_shards"
                 else
                   active_shards="$(pnpm --dir clawsweeper run --silent workflow -- limit review_shards.normal_default)"
                 fi

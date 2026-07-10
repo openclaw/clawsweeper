@@ -1001,7 +1001,7 @@ test("manual exact-item review dispatches reserve their live shard capacity", ()
   );
   assert.match(
     runName,
-    /format\('Review event items \{0\}#\{1\} \[shards=\{2\}\]', github\.event\.inputs\.target_repo \|\| 'openclaw\/openclaw', github\.event\.inputs\.item_numbers, github\.event\.inputs\.shard_count \|\| '89'\)/,
+    /format\('Review event items \{0\}#\{1\} \[shards=\{2\}\]', github\.event\.inputs\.target_repo \|\| 'openclaw\/openclaw', github\.event\.inputs\.item_numbers, \(github\.event\.inputs\.hot_intake == 'true' && '1' \|\| github\.event\.inputs\.shard_count \|\| '89'\)\)/,
   );
   assert.ok(
     runName.indexOf("format('Review event item {0}#{1}'") <
@@ -1211,9 +1211,14 @@ test("background review capacity reserves expanding matrices and caps broad manu
   assert.match(commitBlock, /STALE_QUEUED_CUTOFF/);
   assert.match(commitBlock, /updatedAt:\.updated_at/);
   assert.match(commitBlock, /workflowPath == "\.github\/workflows\/sweep\.yml"/);
+  assert.match(commitBlock, /\.displayTitle \| startswith\("Review event items "\)/);
   assert.match(commitBlock, /WORKFLOW_PATH="\$1"/);
   assert.doesNotMatch(commitBlock, /workflowName == "ClawSweeper"/);
   assert.doesNotMatch(commitBlock, /WORKFLOW_NAME="\$1"/);
+  assert.match(commitBlock, /total_shards/);
+  assert.match(commitBlock, /limit review_shards\.hard_cap/);
+  assert.match(commitBlock, /reserved_shards="\$requested_shards"/);
+  assert.match(commitBlock, /reserved_shards="\$item_count"/);
 });
 
 test("review backstops identify sweep runs by stable workflow path", () => {

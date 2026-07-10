@@ -27,7 +27,7 @@ run-name: >-
       github.event.inputs.item_numbers == '') &&
       format('Review event item {0}#{1}', github.event.inputs.target_repo || 'openclaw/openclaw', github.event.inputs.item_number) ||
     (github.event_name == 'workflow_dispatch' && github.event.inputs.item_numbers != '') &&
-      format('Review event items {0}#{1} [shards={2}]', github.event.inputs.target_repo || 'openclaw/openclaw', github.event.inputs.item_numbers, github.event.inputs.shard_count || '89') ||
+      format('Review event items {0}#{1} [shards={2}]', github.event.inputs.target_repo || 'openclaw/openclaw', github.event.inputs.item_numbers, (github.event.inputs.hot_intake == 'true' && '1' || github.event.inputs.shard_count || '89')) ||
     ((github.event_name == 'workflow_dispatch' &&
       github.event.inputs.apply_existing == 'true' &&
       github.event.inputs.apply_sync_comments_only == 'true') ||
@@ -1223,7 +1223,10 @@ jobs:
                     requested_shards="${BASH_REMATCH[1]}"
                     item_numbers="${title#*#}"
                     item_numbers="${item_numbers%% *}"
-                    if [[ "$item_numbers" =~ ^[0-9]+(,[0-9]+)*$ ]] && [ "$requested_shards" -gt 0 ]; then
+                    if [[ "$item_numbers" =~ ^[0-9]+(,[0-9]+)*$ ]]; then
+                      if [ "$requested_shards" -lt 1 ]; then
+                        requested_shards=1
+                      fi
                       commas="${item_numbers//[^,]/}"
                       item_count=$((${#commas} + 1))
                       reserved_shards="$requested_shards"
