@@ -111,7 +111,7 @@ const CLAWSWEEPER_STATE_REF = "state";
 const DEFAULT_CRABFLEET_URL = "https://crabfleet.openclaw.ai";
 const CLUSTER_REPAIR_INTAKE_WORKFLOW = "repair-cluster-intake.yml";
 const CLAWSWEEPER_ALLOWED_ASSOCIATIONS = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
-const CLAWSWEEPER_ISSUE_ITEM_ACTIONS = new Set(["opened", "reopened", "edited"]);
+const CLAWSWEEPER_ISSUE_ITEM_ACTIONS = new Set(["opened", "reopened", "edited", "unlocked"]);
 const CLAWSWEEPER_PULL_ITEM_ACTIONS = new Set([
   "opened",
   "reopened",
@@ -119,6 +119,7 @@ const CLAWSWEEPER_PULL_ITEM_ACTIONS = new Set([
   "ready_for_review",
   "converted_to_draft",
   "edited",
+  "unlocked",
 ]);
 const DEFAULT_FAST_ACK_SETTLE_DELAYS_MS = [250, 1500, 10_000];
 const inFlightFastAcks = new Map();
@@ -1163,7 +1164,7 @@ function classifyGithubItemWebhook({ event, payload }) {
       installationId,
       sourceEvent: "issues",
       sourceAction: action,
-      supersedesInProgress: action === "edited",
+      supersedesInProgress: ["edited", "unlocked"].includes(action),
     };
   }
 
@@ -1185,7 +1186,9 @@ function classifyGithubItemWebhook({ event, payload }) {
       installationId,
       sourceEvent: "pull_request",
       sourceAction: action,
-      supersedesInProgress: ["edited", "synchronize", "ready_for_review"].includes(action),
+      supersedesInProgress: ["edited", "synchronize", "ready_for_review", "unlocked"].includes(
+        action,
+      ),
     };
   }
 

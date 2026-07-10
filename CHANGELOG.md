@@ -39,6 +39,7 @@ checkpoint, and status-only commits are intentionally omitted.
 - Completed exact-item reviews whose captured record matches a deterministic remain-open guard instead of requeueing them indefinitely, and carried tuple-verified terminal closes through cleanup without routing a stale verdict, while preserving latest-revision retries for review drift.
 - Requeued stale exact-event preflights instead of letting a successful no-disposition publisher route an older verdict.
 - Completed locked exact-event intake as a guarded-open result before setup or Codex, preventing review-start comment failures from retrying indefinitely.
+- Requeued exact reviews when locked issues or pull requests are unlocked so a guarded-open completion does not delay the next eligible review until unrelated activity.
 - Bounded broad reconciliation with batched Git I/O and tuple checkpoints that report progress and resume safely under concurrent state writers.
 - Retried tuple-safe broad reconciliation after full push batches lose continuous exact-state races, including candidates that normalize to no changes.
 - Serialized explicit workflow-dispatch planners through a non-dropping target queue and accounted for recovery runs by their requested or live shards, preventing overlapping target planning and false 89-shard reservations without undercounting multi-shard retries.

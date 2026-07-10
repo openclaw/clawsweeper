@@ -4428,6 +4428,43 @@ test("hosted webhook enqueues item events with the repository default branch", a
   });
 });
 
+test("hosted webhook requeues unlocked issues and pull requests", async () => {
+  for (const [index, event] of ["issues", "pull_request"].entries()) {
+    const number = 598 + index;
+    const queue = new ExactReviewQueue({ storage: new MemoryDurableStorage() }, {});
+    const response = await worker.fetch(
+      signedGithubWebhookRequest({
+        event,
+        secret: "test-secret",
+        payload: {
+          action: "unlocked",
+          repository: {
+            full_name: "openclaw/gogcli",
+            default_branch: "trunk",
+            private: false,
+            archived: false,
+            fork: false,
+            has_issues: true,
+          },
+          ...(event === "issues" ? { issue: { number } } : { pull_request: { number } }),
+          installation: { id: 123 },
+        },
+      }),
+      {
+        CLAWSWEEPER_WEBHOOK_SECRET: "test-secret",
+        EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queue),
+      },
+    );
+
+    assert.equal(response.status, 202);
+    assert.deepEqual(await response.json(), {
+      ok: true,
+      queued: true,
+      item_key: `openclaw/gogcli#${number}`,
+    });
+  }
+});
+
 test("hosted webhook reuses existing fast ack comments on redelivery", async () => {
   const originalFetch = globalThis.fetch;
   const { privateKey } = generateKeyPairSync("rsa", {

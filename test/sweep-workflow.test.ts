@@ -98,7 +98,7 @@ test("exact event publish and routing require a successful fresh review artifact
   assert.match(liveItemStep, /without Codex because the open conversation is locked/);
   assert.match(
     eventReviewJob,
-    /- uses: \.\/\.github\/actions\/setup-pnpm\s+id: setup-pnpm\s+if: \$\{\{ steps\.live-item\.outputs\.proceed == 'true' \|\| \(steps\.live-item\.outputs\.terminal_noop == 'true'/,
+    /- uses: \.\/\.github\/actions\/setup-pnpm\s+id: setup-pnpm\s+if: \$\{\{ steps\.live-item\.outputs\.proceed == 'true' \|\| \(\(steps\.live-item\.outputs\.terminal_noop == 'true' \|\| steps\.live-item\.outputs\.guarded_open == 'true'\)/,
   );
   assert.match(setupCodexStep, /if: \$\{\{ steps\.live-item\.outputs\.proceed == 'true' \}\}/);
   assert.match(exactReviewStep, /if: \$\{\{ steps\.live-item\.outputs\.proceed == 'true' \}\}/);
@@ -138,10 +138,19 @@ test("exact event publish and routing require a successful fresh review artifact
   );
   assert.match(
     eventReviewJob,
+    /INTAKE_GUARDED_OPEN: \$\{\{ steps\.live-item\.outputs\.guarded_open \}\}/,
+  );
+  assert.match(
+    eventReviewJob,
     /GUARDED_OPEN: \$\{\{ steps\.publish-event-result\.outputs\.guarded_open \}\}/,
   );
   assert.match(eventReviewJob, /deterministic remain-open guard/);
   assert.match(eventReviewJob, /verified terminal close/);
+  assert.match(eventReviewJob, /finished before Codex because the open conversation is locked/);
+  assert.match(
+    eventReviewJob,
+    /steps\.live-item\.outputs\.proceed == 'true' \|\| steps\.live-item\.outputs\.guarded_open == 'true' \|\| steps\.confirm-terminal-item\.outputs\.confirmed == 'true'/,
+  );
   assert.match(
     eventReviewJob,
     /\[ "\$TERMINAL_CLOSED" = "true" \] && \[ "\$\{\{ steps\.confirm-terminal-item\.outputs\.confirmed \}\}" = "true" \]/,
