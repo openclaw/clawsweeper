@@ -160,6 +160,7 @@ test("exact event publish and routing require a successful fresh review artifact
   assert.match(publisher, /routing_deferred=/);
   assert.match(publisher, /class GuardedOpenPublishRaceError extends Error/);
   assert.match(publisher, /class RoutableSyncPublishRaceError extends Error/);
+  assert.match(publisher, /class SourceDriftPublishRaceError extends Error/);
   assert.match(publisher, /class TerminalClosedPublishRaceError extends Error/);
   assert.match(publisher, /class TerminalMissingPublishRaceError extends Error/);
   assert.match(publisher, /terminalClosedExpected: closedCount > 0/);
@@ -174,9 +175,12 @@ test("exact event publish and routing require a successful fresh review artifact
   assert.match(publisher, /guardedOpenAction !== null/);
   assert.match(publisher, /error instanceof GuardedOpenPublishRaceError/);
   assert.match(publisher, /error instanceof RoutableSyncPublishRaceError/);
+  assert.match(publisher, /error instanceof SourceDriftPublishRaceError/);
   assert.match(publisher, /error instanceof TerminalClosedPublishRaceError/);
   assert.match(publisher, /error instanceof TerminalMissingPublishRaceError/);
   assert.match(publisher, /Event state .* was not applied because .*requeue/);
+  assert.match(publisher, /policy_noop=/);
+  assert.match(publisher, /requeue_latest=/);
   assert.doesNotMatch(publisher, /entry\.action === "review_comment_synced"/);
   assert.ok(authoritativeReset > publisherCompleteStart);
   assert.ok(authoritativeRefresh > authoritativeReset);
@@ -188,6 +192,8 @@ test("exact event publish and routing require a successful fresh review artifact
   assert.match(routeStep, /steps\.publish-event-result\.outputs\.guarded_open != 'true'/);
   assert.match(routeStep, /steps\.publish-event-result\.outputs\.remote_tuple_verified == 'true'/);
   assert.match(routeStep, /steps\.publish-event-result\.outputs\.routing_deferred == 'false'/);
+  assert.match(routeStep, /steps\.publish-event-result\.outputs\.policy_noop != 'true'/);
+  assert.match(routeStep, /steps\.publish-event-result\.outputs\.requeue_latest != 'true'/);
   assert.doesNotMatch(routeStep, /outputs\.routing_deferred != 'true'/);
   assert.match(
     deferredRouteStep,
@@ -278,11 +284,32 @@ test("exact event publish and routing require a successful fresh review artifact
   assert.match(failStep, /steps\.publish-event-result\.outputs\.guarded_open != 'true'/);
   assert.match(failStep, /steps\.route-synced-verdict\.outcome != 'success'/);
   assert.match(failStep, /steps\.queue-deferred-verdict-router\.outcome != 'success'/);
+  assert.match(failStep, /steps\.publish-event-result\.outputs\.policy_noop != 'true'/);
+  assert.match(failStep, /steps\.publish-event-result\.outputs\.requeue_latest != 'true'/);
   assert.match(
     eventReviewJob,
     /RETRY_AT: \$\{\{ steps\.review-exact-event-item\.outputs\.retry_at \}\}/,
   );
   assert.match(eventReviewJob, /\.\.\.\(retryAt \? \{ retry_at: retryAt \} : \{\}\)/);
+  assert.match(
+    eventReviewJob,
+    /REQUEUE_LATEST: \$\{\{ steps\.publish-event-result\.outputs\.requeue_latest \}\}/,
+  );
+  assert.match(eventReviewJob, /\.\.\.\(requeueLatest \? \{ requeue_latest: true \} : \{\}\)/);
+  assert.match(eventReviewJob, /id: complete-exact-review-queue/);
+  assert.match(
+    eventReviewJob,
+    /Fail unacknowledged source-drift requeue[\s\S]*steps\.complete-exact-review-queue\.outcome != 'success'/,
+  );
+  const reReviewStatus = eventReviewJob.indexOf("- name: Mark re-review complete");
+  const completeQueue = eventReviewJob.indexOf("- name: Complete exact-review queue lease");
+  assert.ok(reReviewStatus > 0 && completeQueue > reReviewStatus);
+  assert.match(eventReviewJob, /This run is returning it to the exact-review queue/);
+  assert.match(
+    eventReviewJob,
+    /React to target item completion[\s\S]*steps\.publish-event-result\.outputs\.policy_noop == 'true'/,
+  );
+  assert.match(eventReviewJob, /if \[ "\$POLICY_NOOP" != "true" \]; then/);
 });
 
 test("dashboard syncs Worker secrets with durable lifecycle storage", () => {

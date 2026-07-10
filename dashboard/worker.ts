@@ -465,6 +465,13 @@ export class ExactReviewQueue {
       }
       const outcome = exactReviewCompletionOutcome(body.outcome, "success");
       if (!outcome) return json({ error: "invalid_outcome" }, 400);
+      const requeueLatest = body.requeue_latest === true;
+      if (body.requeue_latest !== undefined && typeof body.requeue_latest !== "boolean") {
+        return json({ error: "invalid_requeue_latest" }, 400);
+      }
+      if (requeueLatest && outcome !== "success") {
+        return json({ error: "invalid_requeue_latest_outcome" }, 400);
+      }
 
       const now = Date.now();
       const requestedRetryAt = exactReviewCompletionRetryAt(body.retry_at, now);
@@ -485,7 +492,11 @@ export class ExactReviewQueue {
       // Keep the claim until the signed workflow_run backstop verifies that exact attempt as
       // terminal, otherwise cancellation or a failing post-action could be acknowledged as
       // success. A newer revision is already known to need another review and can requeue now.
-      if (outcome === "success" && item.revision <= Number(item.leaseRevision || 0)) {
+      if (
+        outcome === "success" &&
+        !requeueLatest &&
+        item.revision <= Number(item.leaseRevision || 0)
+      ) {
         await this.scheduleNext(state, now);
         return json({ ok: true, requeued: false, deferred: true });
       }
@@ -496,6 +507,7 @@ export class ExactReviewQueue {
         now,
         outcome,
         requestedRetryAt ?? undefined,
+        requeueLatest,
       );
       await this.writeState(state);
       await this.scheduleNext(state, now);
@@ -1648,10 +1660,11 @@ function finishExactReviewQueueItem(
   now: number,
   outcome: ExactReviewCompletionOutcome,
   requestedRetryAt = 0,
+  requeueLatest = false,
 ) {
   const retryingFailure = outcome !== "success";
   const hasNewerRevision = item.revision > Number(item.leaseRevision || 0);
-  const requeued = retryingFailure || hasNewerRevision;
+  const requeued = retryingFailure || hasNewerRevision || requeueLatest;
   if (requeued) {
     clearExactReviewLease(item);
     item.state = "pending";

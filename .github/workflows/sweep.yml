@@ -760,7 +760,7 @@ jobs:
           done <<< "$lease_ids"
       - name: Route synced ClawSweeper verdict
         id: route-synced-verdict
-        if: ${{ steps.review-exact-event-item.outcome == 'success' && steps.publish-event-result.outcome == 'success' && steps.publish-event-result.outputs.terminal_noop != 'true' && steps.publish-event-result.outputs.terminal_missing != 'true' && steps.publish-event-result.outputs.terminal_closed != 'true' && steps.publish-event-result.outputs.guarded_open != 'true' && steps.publish-event-result.outputs.remote_tuple_verified == 'true' && steps.publish-event-result.outputs.routing_deferred == 'false' }}
+        if: ${{ steps.review-exact-event-item.outcome == 'success' && steps.publish-event-result.outcome == 'success' && steps.publish-event-result.outputs.terminal_noop != 'true' && steps.publish-event-result.outputs.terminal_missing != 'true' && steps.publish-event-result.outputs.terminal_closed != 'true' && steps.publish-event-result.outputs.guarded_open != 'true' && steps.publish-event-result.outputs.policy_noop != 'true' && steps.publish-event-result.outputs.requeue_latest != 'true' && steps.publish-event-result.outputs.remote_tuple_verified == 'true' && steps.publish-event-result.outputs.routing_deferred == 'false' }}
         timeout-minutes: 4
         env:
           GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
@@ -871,12 +871,22 @@ jobs:
           GUARDED_OPEN: ${{ steps.publish-event-result.outputs.guarded_open }}
           REMOTE_TUPLE_VERIFIED: ${{ steps.publish-event-result.outputs.remote_tuple_verified }}
           ROUTING_DEFERRED: ${{ steps.publish-event-result.outputs.routing_deferred }}
+          POLICY_NOOP: ${{ steps.publish-event-result.outputs.policy_noop }}
+          REQUEUE_LATEST: ${{ steps.publish-event-result.outputs.requeue_latest }}
         run: |
           state="Failed"
           detail="The targeted re-review did not finish cleanly. Check the workflow run for details."
           if [ "$REVIEW_OUTCOME" = "cancelled" ]; then
             state="Interrupted"
             detail="The targeted re-review was interrupted. The exact-review queue will reconcile a newer pending item if one arrived."
+          fi
+          if [ "$POLICY_NOOP" = "true" ]; then
+            state="Complete"
+            detail="The exact review reached a deterministic same-author pair policy veto; no action was taken and the queue item is terminal."
+          fi
+          if [ "$REQUEUE_LATEST" = "true" ]; then
+            state="Interrupted"
+            detail="The item changed after review. This run is returning it to the exact-review queue; the workflow will fail if that handoff is not acknowledged."
           fi
           if [ "${{ steps.confirm-terminal-item.outputs.confirmed }}" = "true" ]; then
             state="Complete"
@@ -970,12 +980,13 @@ jobs:
             --rebase-strategy theirs
 
       - name: React to target item completion
-        if: ${{ steps.live-item.outputs.guarded_open == 'true' || (steps.review-exact-event-item.outcome == 'success' && steps.publish-event-result.outcome == 'success' && (steps.publish-event-result.outputs.terminal_closed == 'true' || steps.publish-event-result.outputs.guarded_open == 'true' || steps.queue-deferred-verdict-router.outcome == 'success' || steps.route-synced-verdict.outcome == 'success')) }}
+        if: ${{ steps.live-item.outputs.guarded_open == 'true' || (steps.review-exact-event-item.outcome == 'success' && steps.publish-event-result.outcome == 'success' && (steps.publish-event-result.outputs.terminal_closed == 'true' || steps.publish-event-result.outputs.guarded_open == 'true' || steps.publish-event-result.outputs.policy_noop == 'true' || steps.queue-deferred-verdict-router.outcome == 'success' || steps.route-synced-verdict.outcome == 'success')) }}
         continue-on-error: true
         env:
           GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
           TARGET_REPO: ${{ steps.target.outputs.target_repo }}
           ITEM_NUMBER: ${{ steps.target.outputs.item_number }}
+          POLICY_NOOP: ${{ steps.publish-event-result.outputs.policy_noop }}
         run: |
           set -euo pipefail
           test -n "$GH_TOKEN"
@@ -1025,14 +1036,17 @@ jobs:
               rm -f "$err"
             done <<< "$ids"
           }
-          add_completion_reaction
+          if [ "$POLICY_NOOP" != "true" ]; then
+            add_completion_reaction
+          fi
           remove_own_eyes_reactions
 
       - name: Fail unsuccessful exact review
-        if: ${{ always() && steps.live-item.outputs.proceed != 'false' && steps.publish-event-result.outputs.terminal_noop != 'true' && (steps.review-exact-event-item.outcome != 'success' || steps.publish-event-result.outcome != 'success' || (steps.publish-event-result.outputs.terminal_missing != 'true' && steps.publish-event-result.outputs.terminal_closed != 'true' && steps.publish-event-result.outputs.guarded_open != 'true' && steps.route-synced-verdict.outcome != 'success' && steps.queue-deferred-verdict-router.outcome != 'success')) }}
+        if: ${{ always() && steps.live-item.outputs.proceed != 'false' && steps.publish-event-result.outputs.terminal_noop != 'true' && steps.publish-event-result.outputs.policy_noop != 'true' && steps.publish-event-result.outputs.requeue_latest != 'true' && (steps.review-exact-event-item.outcome != 'success' || steps.publish-event-result.outcome != 'success' || (steps.publish-event-result.outputs.terminal_missing != 'true' && steps.publish-event-result.outputs.terminal_closed != 'true' && steps.publish-event-result.outputs.guarded_open != 'true' && steps.route-synced-verdict.outcome != 'success' && steps.queue-deferred-verdict-router.outcome != 'success')) }}
         run: exit 1
 
       - name: Complete exact-review queue lease
+        id: complete-exact-review-queue
         if: ${{ always() }}
         continue-on-error: true
         env:
@@ -1040,6 +1054,7 @@ jobs:
           QUEUE_LEASE_ID: ${{ github.event.client_payload.queue_lease_id }}
           QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           RETRY_AT: ${{ steps.review-exact-event-item.outputs.retry_at }}
+          REQUEUE_LATEST: ${{ steps.publish-event-result.outputs.requeue_latest }}
           RUN_ATTEMPT: ${{ github.run_attempt }}
         run: |
           set -euo pipefail
@@ -1054,12 +1069,14 @@ jobs:
                 ? "cancelled"
                 : "failure";
             const retryAt = String(process.env.RETRY_AT || "").trim();
+            const requeueLatest = process.env.REQUEUE_LATEST === "true";
             process.stdout.write(JSON.stringify({
               lease_id: process.env.QUEUE_LEASE_ID,
               run_id: process.env.GITHUB_RUN_ID,
               run_attempt: runAttempt,
               outcome,
               ...(retryAt ? { retry_at: retryAt } : {}),
+              ...(requeueLatest ? { requeue_latest: true } : {}),
             }));
           ')"
           for attempt in 1 2 3; do
@@ -1075,6 +1092,10 @@ jobs:
             fi
           done
           exit 1
+
+      - name: Fail unacknowledged source-drift requeue
+        if: ${{ always() && steps.publish-event-result.outputs.requeue_latest == 'true' && steps.complete-exact-review-queue.outcome != 'success' }}
+        run: exit 1
 
   target-fanout:
     name: Fan out target repository sweeps

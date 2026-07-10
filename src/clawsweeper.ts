@@ -926,6 +926,8 @@ interface ApplyResult {
   terminalMissingVerified?: boolean;
   terminalStateVerified?: boolean;
   guardedOpenStateVerified?: boolean;
+  terminalPolicyNoopVerified?: boolean;
+  sourceDriftVerified?: boolean;
 }
 
 interface FailedReviewRetryResult {
@@ -2554,6 +2556,28 @@ function itemSnapshotHash(item: Item, context: ItemContext): string {
     labels: item.labels,
   };
   return sha256(stableJson({ item: snapshotItem, context }));
+}
+
+function isApplyAutomationOnlyUpdate(options: {
+  itemUpdatedAt: string;
+  reviewCommentUpdatedAt?: string | null | undefined;
+  ownedReviewLeaseUpdatedAts?: readonly string[];
+  labelSyncOnlyUpdate?: boolean;
+}): boolean {
+  return (
+    options.itemUpdatedAt === options.reviewCommentUpdatedAt ||
+    (options.ownedReviewLeaseUpdatedAts ?? []).includes(options.itemUpdatedAt) ||
+    options.labelSyncOnlyUpdate === true
+  );
+}
+
+export function isApplyAutomationOnlyUpdateForTest(options: {
+  itemUpdatedAt: string;
+  reviewCommentUpdatedAt?: string | null | undefined;
+  ownedReviewLeaseUpdatedAts?: readonly string[];
+  labelSyncOnlyUpdate?: boolean;
+}): boolean {
+  return isApplyAutomationOnlyUpdate(options);
 }
 
 function itemSourceRevisionSha256(issue: unknown, comments: unknown[] = []): string {
@@ -20304,6 +20328,16 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
       markdown = replaceFrontMatterValue(markdown, "apply_checked_at", new Date().toISOString());
       if (!dryRun) writeReportMarkdown(path, markdown, subjectState);
     };
+    const eventApplyDispositionProof = (actionTaken: ActionTaken): Partial<ApplyResult> => {
+      if (!emitEventApplyProof) return {};
+      if (actionTaken === "skipped_same_author_pair") {
+        return { terminalPolicyNoopVerified: true };
+      }
+      if (actionTaken === "skipped_changed_since_review") {
+        return { sourceDriftVerified: true };
+      }
+      return {};
+    };
     const recordApplySkipped = (
       actionTaken: ActionTaken,
       reason: string,
@@ -20318,6 +20352,7 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
           emitEventApplyProof,
           liveGuardVerified,
         }),
+        ...eventApplyDispositionProof(actionTaken),
       });
       processedCount += 1;
       maybeLogProgress(`skipped #${number}: ${reason}`);
@@ -21269,6 +21304,12 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
             reviewStartLeaseOwner(leaseComment) === reportReviewLeaseOwner,
         )
       : [];
+    const reportOwnedLeaseUpdatedAts = reportOwnedLeaseComments
+      .map(commentUpdatedAt)
+      .filter((updatedAt): updatedAt is string => timestampMs(updatedAt) !== null);
+    for (const updatedAt of reportOwnedLeaseUpdatedAts) {
+      allowedSelfMutationUpdatedAts.add(updatedAt);
+    }
     const latestLabelFreshnessAutomationUpdatedAt = [
       existingReviewComment,
       ...reportOwnedLeaseComments,
@@ -21556,6 +21597,7 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
         number,
         action: "skipped_changed_since_review",
         reason: options.reason,
+        ...eventApplyDispositionProof("skipped_changed_since_review"),
       });
       processedCount += 1;
       maybeLogProgress(`skipped #${number}: ${options.reason}`);
@@ -21717,6 +21759,7 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
         number,
         action: "skipped_changed_since_review",
         reason: "updated_at changed",
+        ...eventApplyDispositionProof("skipped_changed_since_review"),
       });
       processedCount += 1;
       maybeLogProgress(`skipped #${number}: changed since review`);
@@ -21738,6 +21781,7 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
           number,
           action: "skipped_changed_since_review",
           reason: "snapshot changed",
+          ...eventApplyDispositionProof("skipped_changed_since_review"),
         });
         processedCount += 1;
         maybeLogProgress(`skipped #${number}: snapshot changed`);

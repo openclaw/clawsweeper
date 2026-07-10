@@ -151,6 +151,7 @@ test("exact event proof accepts durable sync independently of the apply action n
   assert.equal(proof.syncedCount, 1);
   assert.equal(proof.terminalMissingCount, 0);
   assert.equal(proof.terminalCount, 0);
+  assert.equal(proof.disposition, "applied");
 });
 
 test("ordinary kept-open sync cannot route after its live tuple changes", () => {
@@ -224,6 +225,38 @@ test("exact event proof accepts verified terminal state and rejects action names
   assert.equal(proof.syncedCount, 0);
   assert.equal(proof.terminalCount, 1);
   assert.equal(proof.exactActions.length, 2);
+  assert.equal(proof.disposition, "applied");
+});
+
+test("exact event proof accepts only explicit trusted no-action dispositions", () => {
+  const terminalPolicy = exactEventApplyProof(
+    [
+      eventApplyAction({
+        number: 42,
+        action: "skipped_same_author_pair",
+        terminalPolicyNoopVerified: true,
+      }),
+    ],
+    42,
+  );
+  const sourceDrift = exactEventApplyProof(
+    [
+      eventApplyAction({
+        number: 42,
+        action: "skipped_changed_since_review",
+        sourceDriftVerified: true,
+      }),
+    ],
+    42,
+  );
+  const unproven = exactEventApplyProof(
+    [eventApplyAction({ number: 42, action: "skipped_same_author_pair" })],
+    42,
+  );
+
+  assert.equal(terminalPolicy.disposition, "terminal_policy_noop");
+  assert.equal(sourceDrift.disposition, "source_drift");
+  assert.equal(unproven.disposition, "unproven");
 });
 
 test("exact event proof completes live-shaped deterministic guarded-open results", () => {

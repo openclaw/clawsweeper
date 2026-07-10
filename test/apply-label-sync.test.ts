@@ -640,7 +640,13 @@ if (args[0] === "api" && /\\/issues\\/321\\/comments(?:\\?|$)/.test(path)) {
 }
 `;
     withMockGh(root, ghMock, () => {
-      runApplyDecisionsForTest({ itemsDir, closedDir, plansDir, reportPath });
+      runApplyDecisionsForTest({
+        itemsDir,
+        closedDir,
+        plansDir,
+        reportPath,
+        extraArgs: ["--event-apply-proof"],
+      });
     });
 
     const calls = readFileSync(logPath, "utf8")
@@ -661,6 +667,7 @@ if (args[0] === "api" && /\\/issues\\/321\\/comments(?:\\?|$)/.test(path)) {
         number: 321,
         action: "skipped_changed_since_review",
         reason: "updated_at changed",
+        sourceDriftVerified: true,
       },
     ]);
   } finally {

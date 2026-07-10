@@ -45,6 +45,8 @@ type EventOptions = {
 
 type PublishedEventSnapshot = {
   guardedOpenAction: string | null;
+  policyNoop: boolean;
+  requeueLatest: boolean;
   remoteTupleVerified: boolean;
   routableSyncVerified: boolean;
   routingDeferred: boolean;
@@ -54,6 +56,7 @@ type PublishedEventSnapshot = {
 
 class GuardedOpenPublishRaceError extends Error {}
 class RoutableSyncPublishRaceError extends Error {}
+class SourceDriftPublishRaceError extends Error {}
 class TerminalClosedPublishRaceError extends Error {}
 class TerminalMissingPublishRaceError extends Error {}
 
@@ -153,8 +156,15 @@ async function publishEventResult(options: EventOptions): Promise<void> {
     terminalCount: closedCount,
     guardedOpenAction,
     latestRevisionRequeueRequired,
+    disposition: applyDisposition,
   } = exactEventApplyProof(actions, Number(options.itemNumber), snapshotActionTaken);
-  if (syncedCount + closedCount + missingCount === 0 && guardedOpenAction === null) {
+  const requeueLatestExpected =
+    latestRevisionRequeueRequired && applyDisposition === "source_drift";
+  if (
+    syncedCount + closedCount + missingCount === 0 &&
+    guardedOpenAction === null &&
+    !requeueLatestExpected
+  ) {
     const observed =
       exactActions
         .map((entry) => entry.action)
@@ -176,7 +186,11 @@ async function publishEventResult(options: EventOptions): Promise<void> {
       closeReasons: options.closeReasons,
     });
   const routableSyncExpected =
-    syncedCount > 0 && closedCount === 0 && missingCount === 0 && guardedOpenAction === null;
+    syncedCount > 0 &&
+    closedCount === 0 &&
+    missingCount === 0 &&
+    guardedOpenAction === null &&
+    !requeueLatestExpected;
   for (let attempt = 1; attempt <= 20; attempt += 1) {
     const published = publishSnapshot({
       paths: recordPaths,
@@ -184,6 +198,7 @@ async function publishEventResult(options: EventOptions): Promise<void> {
       summary,
       stateBaseCommit,
       guardedOpenAction,
+      requeueLatestExpected,
       routableSyncExpected,
       terminalClosedExpected: closedCount > 0,
       terminalMissingExpected: missingCount > 0,
@@ -204,6 +219,7 @@ async function publishEventResult(options: EventOptions): Promise<void> {
     summary,
     stateBaseCommit,
     guardedOpenAction,
+    requeueLatestExpected,
     routableSyncExpected,
     terminalClosedExpected: closedCount > 0,
     terminalMissingExpected: missingCount > 0,
@@ -256,6 +272,7 @@ function publishSnapshot({
   summary,
   stateBaseCommit,
   guardedOpenAction,
+  requeueLatestExpected,
   routableSyncExpected,
   terminalClosedExpected,
   terminalMissingExpected,
@@ -265,6 +282,7 @@ function publishSnapshot({
   summary: () => void;
   stateBaseCommit: string | null;
   guardedOpenAction: string | null;
+  requeueLatestExpected: boolean;
   routableSyncExpected: boolean;
   terminalClosedExpected: boolean;
   terminalMissingExpected: boolean;
@@ -284,9 +302,10 @@ function publishSnapshot({
       hardResetToRemoteMain();
       refreshSourceAfterStatePublish(commitPaths, stateBaseCommit);
       const candidateMatchesCurrentTuple = candidateApplied && eventSnapshotMatchesCurrent(paths);
+      const candidateTupleState = candidateEventTupleState(paths);
       const disposition = exactEventPublishDisposition({
         candidateMatchesCurrentTuple,
-        candidateTupleState: candidateEventTupleState(paths),
+        candidateTupleState,
         terminalClosedExpected,
         terminalMissingExpected,
         guardedOpenAction,
@@ -294,6 +313,11 @@ function publishSnapshot({
       });
       const published = {
         ...disposition,
+        policyNoop: disposition.guardedOpenAction === "skipped_same_author_pair",
+        requeueLatest:
+          requeueLatestExpected &&
+          candidateMatchesCurrentTuple &&
+          candidateTupleState === "open",
         remoteTupleVerified: candidateMatchesCurrentTuple,
         routingDeferred: disposition.routableSyncVerified,
       };
@@ -310,6 +334,11 @@ function publishSnapshot({
       if (terminalClosedExpected && !published.terminalClosed) {
         throw new TerminalClosedPublishRaceError(
           `Verified terminal close for ${paths.targetSlug}#${options.itemNumber} lost the publish race; requeue against the latest item revision`,
+        );
+      }
+      if (requeueLatestExpected && !published.requeueLatest) {
+        throw new SourceDriftPublishRaceError(
+          `Verified source drift for ${paths.targetSlug}#${options.itemNumber} lost the publish race; requeue against the latest item revision`,
         );
       }
       if (
@@ -367,6 +396,7 @@ function publishSnapshot({
       error instanceof RecordTupleError ||
       error instanceof GuardedOpenPublishRaceError ||
       error instanceof RoutableSyncPublishRaceError ||
+      error instanceof SourceDriftPublishRaceError ||
       error instanceof TerminalClosedPublishRaceError ||
       error instanceof TerminalMissingPublishRaceError
     )
@@ -448,6 +478,8 @@ function writeEventDispositionOutputs(published: PublishedEventSnapshot): void {
       `terminal_closed=${published.terminalClosed ? "true" : "false"}`,
       `guarded_open=${published.guardedOpenAction === null ? "false" : "true"}`,
       `guarded_open_action=${published.guardedOpenAction ?? ""}`,
+      `policy_noop=${published.policyNoop ? "true" : "false"}`,
+      `requeue_latest=${published.requeueLatest ? "true" : "false"}`,
       `routing_deferred=${published.routingDeferred ? "true" : "false"}`,
       "",
     ].join("\n"),

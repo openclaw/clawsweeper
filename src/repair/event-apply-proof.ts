@@ -7,6 +7,8 @@ export type EventApplyAction = {
   terminalMissingVerified: boolean;
   terminalStateVerified: boolean;
   guardedOpenStateVerified: boolean;
+  terminalPolicyNoopVerified: boolean;
+  sourceDriftVerified: boolean;
 };
 
 export type ExactEventPublishDisposition = {
@@ -58,6 +60,12 @@ export function exactEventPublishDisposition({
   };
 }
 
+export type ExactEventApplyDisposition =
+  | "applied"
+  | "terminal_policy_noop"
+  | "source_drift"
+  | "unproven";
+
 export function exactEventApplyProof(
   actions: readonly EventApplyAction[],
   itemNumber: number,
@@ -69,16 +77,37 @@ export function exactEventApplyProof(
   terminalCount: number;
   guardedOpenAction: string | null;
   latestRevisionRequeueRequired: boolean;
+  disposition: ExactEventApplyDisposition;
 } {
   const exactActions = actions.filter((entry) => entry.number === itemNumber);
   const soleExactResult =
     actions.length === 1 && exactActions.length === 1 ? (exactActions[0] ?? null) : null;
   const soleExactAction = soleExactResult?.action ?? "";
+  const syncedCount = exactActions.filter((entry) => entry.durableReviewSynced).length;
+  const terminalCount = exactActions.filter((entry) => entry.terminalStateVerified).length;
+  const terminalPolicyNoop =
+    exactActions.length > 0 &&
+    exactActions.every(
+      (entry) => entry.action === "skipped_same_author_pair" && entry.terminalPolicyNoopVerified,
+    );
+  const sourceDriftActions = exactActions.filter(
+    (entry) => entry.action === "skipped_changed_since_review",
+  );
+  const sourceDrift =
+    sourceDriftActions.length > 0 &&
+    sourceDriftActions.every((entry) => entry.sourceDriftVerified) &&
+    exactActions.every(
+      (entry) =>
+        entry.action === "skipped_changed_since_review" ||
+        entry.durableReviewSynced ||
+        entry.terminalStateVerified,
+    );
+  const hasSourceDrift = sourceDriftActions.length > 0;
   return {
     exactActions,
-    syncedCount: exactActions.filter((entry) => entry.durableReviewSynced).length,
+    syncedCount,
     terminalMissingCount: exactActions.filter((entry) => entry.terminalMissingVerified).length,
-    terminalCount: exactActions.filter((entry) => entry.terminalStateVerified).length,
+    terminalCount,
     guardedOpenAction:
       snapshotActionTaken === soleExactAction &&
       soleExactResult?.guardedOpenStateVerified === true &&
@@ -88,6 +117,15 @@ export function exactEventApplyProof(
     latestRevisionRequeueRequired:
       snapshotActionTaken === "skipped_changed_since_review" &&
       soleExactAction === "skipped_changed_since_review",
+    disposition: hasSourceDrift
+      ? sourceDrift
+        ? "source_drift"
+        : "unproven"
+      : terminalPolicyNoop
+        ? "terminal_policy_noop"
+        : syncedCount + terminalCount > 0
+          ? "applied"
+          : "unproven",
   };
 }
 
@@ -112,5 +150,7 @@ export function eventApplyAction(value: LooseRecord): EventApplyAction {
     terminalMissingVerified: value.terminalMissingVerified === true,
     terminalStateVerified: value.terminalStateVerified === true,
     guardedOpenStateVerified: value.guardedOpenStateVerified === true,
+    terminalPolicyNoopVerified: value.terminalPolicyNoopVerified === true,
+    sourceDriftVerified: value.sourceDriftVerified === true,
   };
 }

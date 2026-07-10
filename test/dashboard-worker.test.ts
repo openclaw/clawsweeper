@@ -997,6 +997,102 @@ test("exact-review queue rejects invalid coordination retry deadlines", async ()
   }
 });
 
+test("exact-review queue requeues a verified source drift exactly once without failure backoff", async () => {
+  const storage = new MemoryDurableStorage();
+  await storage.put("exact-review-queue", {
+    deliveries: {},
+    items: {
+      "openclaw/openclaw#713": leasedExactReviewQueueItem(713, "drift-run"),
+    },
+  });
+  const queue = new ExactReviewQueue({ storage }, {});
+  const complete = () =>
+    queue.fetch(
+      new Request("https://clawsweeper-exact-review-queue/complete", {
+        method: "POST",
+        body: JSON.stringify({
+          lease_id: "lease-713",
+          run_id: "drift-run",
+          run_attempt: 1,
+          outcome: "success",
+          requeue_latest: true,
+        }),
+      }),
+    );
+
+  const response = await complete();
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { ok: true, requeued: true });
+  const state = (await storage.get("exact-review-queue")) as {
+    items: Record<string, Record<string, unknown>>;
+  };
+  assert.equal(state.items["openclaw/openclaw#713"].state, "pending");
+  assert.equal(state.items["openclaw/openclaw#713"].attempts, 0);
+  assert.equal(state.items["openclaw/openclaw#713"].revision, 1);
+  assert.equal(state.items["openclaw/openclaw#713"].leaseId, undefined);
+  assert.equal((await complete()).status, 409);
+  const replayedState = (await storage.get("exact-review-queue")) as {
+    items: Record<string, Record<string, unknown>>;
+  };
+  assert.equal(Object.keys(replayedState.items).length, 1);
+  assert.equal(replayedState.items["openclaw/openclaw#713"].state, "pending");
+});
+
+test("exact-review source-drift requeue preserves an already-enqueued latest decision", async () => {
+  const storage = new MemoryDurableStorage();
+  const item = leasedExactReviewQueueItem(714, "drift-run");
+  item.revision = 2;
+  item.decision.sourceAction = "edited";
+  await storage.put("exact-review-queue", {
+    deliveries: {},
+    items: { "openclaw/openclaw#714": item },
+  });
+  const queue = new ExactReviewQueue({ storage }, {});
+
+  const response = await queue.fetch(
+    new Request("https://clawsweeper-exact-review-queue/complete", {
+      method: "POST",
+      body: JSON.stringify({
+        lease_id: "lease-714",
+        run_id: "drift-run",
+        run_attempt: 1,
+        outcome: "success",
+        requeue_latest: true,
+      }),
+    }),
+  );
+
+  assert.equal(response.status, 200);
+  const state = (await storage.get("exact-review-queue")) as {
+    items: Record<string, { state: string; revision: number; decision: { sourceAction: string } }>;
+  };
+  assert.equal(Object.keys(state.items).length, 1);
+  assert.equal(state.items["openclaw/openclaw#714"].state, "pending");
+  assert.equal(state.items["openclaw/openclaw#714"].revision, 2);
+  assert.equal(state.items["openclaw/openclaw#714"].decision.sourceAction, "edited");
+});
+
+test("exact-review queue rejects invalid source-drift requeue requests", async () => {
+  const queue = new ExactReviewQueue({ storage: new MemoryDurableStorage() }, {});
+  for (const body of [
+    { outcome: "success", requeue_latest: "true" },
+    { outcome: "failure", requeue_latest: true },
+  ]) {
+    const response = await queue.fetch(
+      new Request("https://clawsweeper-exact-review-queue/complete", {
+        method: "POST",
+        body: JSON.stringify({
+          lease_id: "lease-715",
+          run_id: "drift-run",
+          run_attempt: 1,
+          ...body,
+        }),
+      }),
+    );
+    assert.equal(response.status, 400);
+  }
+});
+
 test("exact-review completion rejects stale owners and is race-idempotent", async () => {
   const storage = new MemoryDurableStorage();
   await storage.put("exact-review-queue", {

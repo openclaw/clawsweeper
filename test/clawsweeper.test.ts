@@ -20,6 +20,7 @@ import {
   ghRetryWaitMs,
   isGitHubNotFoundError,
   isGitHubRequiresAuthenticationError,
+  isApplyAutomationOnlyUpdateForTest,
   isLockedConversationCommentError,
   itemSourceRevisionSha256ForTest,
   itemNumbersArg,
@@ -846,6 +847,27 @@ if (args[0] === "api" && /\\/issues\\/comments\\/\\d+$/.test(path)) {
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("apply treats its exact review lease timestamp as automation-only churn", () => {
+  assert.equal(
+    isApplyAutomationOnlyUpdateForTest({
+      itemUpdatedAt: "2026-05-01T00:01:00Z",
+      reviewCommentUpdatedAt: null,
+      ownedReviewLeaseUpdatedAts: ["2026-05-01T00:01:00Z"],
+      labelSyncOnlyUpdate: false,
+    }),
+    true,
+  );
+  assert.equal(
+    isApplyAutomationOnlyUpdateForTest({
+      itemUpdatedAt: "2026-05-01T00:02:00Z",
+      reviewCommentUpdatedAt: null,
+      ownedReviewLeaseUpdatedAts: ["2026-05-01T00:01:00Z"],
+      labelSyncOnlyUpdate: false,
+    }),
+    false,
+  );
 });
 
 test("apply-decisions syncs labels when first review placeholder advanced issue updated_at", () => {
