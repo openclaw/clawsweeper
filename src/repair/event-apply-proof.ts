@@ -11,6 +11,7 @@ export type EventApplyAction = {
 
 export type ExactEventPublishDisposition = {
   guardedOpenAction: string | null;
+  routableSyncVerified: boolean;
   terminalClosed: boolean;
   terminalMissing: boolean;
 };
@@ -30,12 +31,14 @@ export function exactEventPublishDisposition({
   terminalClosedExpected,
   terminalMissingExpected,
   guardedOpenAction,
+  routableSyncExpected = false,
 }: {
   candidateMatchesCurrentTuple: boolean;
   candidateTupleState: "closed" | "open" | "invalid";
   terminalClosedExpected: boolean;
   terminalMissingExpected: boolean;
   guardedOpenAction: string | null;
+  routableSyncExpected?: boolean;
 }): ExactEventPublishDisposition {
   const terminalTupleMatches = candidateMatchesCurrentTuple && candidateTupleState === "closed";
   const terminalMissing = terminalMissingExpected && terminalTupleMatches;
@@ -43,6 +46,8 @@ export function exactEventPublishDisposition({
   return {
     terminalClosed,
     terminalMissing,
+    routableSyncVerified:
+      routableSyncExpected && candidateMatchesCurrentTuple && candidateTupleState === "open",
     guardedOpenAction:
       !terminalClosed &&
       !terminalMissing &&

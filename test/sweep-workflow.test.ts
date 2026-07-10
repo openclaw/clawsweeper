@@ -121,10 +121,13 @@ test("exact event publish and routing require a successful fresh review artifact
   assert.match(publisher, /terminal_closed=/);
   assert.match(publisher, /guarded_open=/);
   assert.match(publisher, /class GuardedOpenPublishRaceError extends Error/);
+  assert.match(publisher, /class RoutableSyncPublishRaceError extends Error/);
   assert.match(publisher, /class TerminalClosedPublishRaceError extends Error/);
   assert.match(publisher, /class TerminalMissingPublishRaceError extends Error/);
   assert.match(publisher, /terminalClosedExpected: closedCount > 0/);
   assert.match(publisher, /terminalMissingExpected: missingCount > 0/);
+  assert.match(publisher, /syncedCount > 0/);
+  assert.match(publisher, /routableSyncExpected && !published\.routableSyncVerified/);
   assert.match(publisher, /eventSnapshotMatchesCurrent\(paths\)/);
   assert.match(publisher, /candidateEventTupleState\(paths\)/);
   assert.match(publisher, /fs\.existsSync\(paths\.snapshotClosed\)/);
@@ -132,6 +135,7 @@ test("exact event publish and routing require a successful fresh review artifact
   assert.match(publisher, /terminalClosedExpected && !published\.terminalClosed/);
   assert.match(publisher, /guardedOpenAction !== null/);
   assert.match(publisher, /error instanceof GuardedOpenPublishRaceError/);
+  assert.match(publisher, /error instanceof RoutableSyncPublishRaceError/);
   assert.match(publisher, /error instanceof TerminalClosedPublishRaceError/);
   assert.match(publisher, /error instanceof TerminalMissingPublishRaceError/);
   assert.match(publisher, /Event state .* was not applied because .*requeue/);

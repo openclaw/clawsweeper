@@ -45,11 +45,13 @@ type EventOptions = {
 
 type PublishedEventSnapshot = {
   guardedOpenAction: string | null;
+  routableSyncVerified: boolean;
   terminalClosed: boolean;
   terminalMissing: boolean;
 };
 
 class GuardedOpenPublishRaceError extends Error {}
+class RoutableSyncPublishRaceError extends Error {}
 class TerminalClosedPublishRaceError extends Error {}
 class TerminalMissingPublishRaceError extends Error {}
 
@@ -171,6 +173,8 @@ async function publishEventResult(options: EventOptions): Promise<void> {
       missingCount,
       closeReasons: options.closeReasons,
     });
+  const routableSyncExpected =
+    syncedCount > 0 && closedCount === 0 && missingCount === 0 && guardedOpenAction === null;
   for (let attempt = 1; attempt <= 20; attempt += 1) {
     const published = publishSnapshot({
       paths: recordPaths,
@@ -178,6 +182,7 @@ async function publishEventResult(options: EventOptions): Promise<void> {
       summary,
       stateBaseCommit,
       guardedOpenAction,
+      routableSyncExpected,
       terminalClosedExpected: closedCount > 0,
       terminalMissingExpected: missingCount > 0,
     });
@@ -197,6 +202,7 @@ async function publishEventResult(options: EventOptions): Promise<void> {
     summary,
     stateBaseCommit,
     guardedOpenAction,
+    routableSyncExpected,
     terminalClosedExpected: closedCount > 0,
     terminalMissingExpected: missingCount > 0,
   });
@@ -248,6 +254,7 @@ function publishSnapshot({
   summary,
   stateBaseCommit,
   guardedOpenAction,
+  routableSyncExpected,
   terminalClosedExpected,
   terminalMissingExpected,
 }: {
@@ -256,6 +263,7 @@ function publishSnapshot({
   summary: () => void;
   stateBaseCommit: string | null;
   guardedOpenAction: string | null;
+  routableSyncExpected: boolean;
   terminalClosedExpected: boolean;
   terminalMissingExpected: boolean;
 }): PublishedEventSnapshot | null {
@@ -268,17 +276,20 @@ function publishSnapshot({
   try {
     const complete = (candidateApplied: boolean): PublishedEventSnapshot => {
       refreshSourceAfterStatePublish(commitPaths, stateBaseCommit);
-      const dispositionCandidateIsCurrent =
-        candidateApplied &&
-        (terminalClosedExpected || terminalMissingExpected || guardedOpenAction !== null) &&
-        eventSnapshotMatchesCurrent(paths);
+      const candidateMatchesCurrentTuple = candidateApplied && eventSnapshotMatchesCurrent(paths);
       const published = exactEventPublishDisposition({
-        candidateMatchesCurrentTuple: dispositionCandidateIsCurrent,
+        candidateMatchesCurrentTuple,
         candidateTupleState: candidateEventTupleState(paths),
         terminalClosedExpected,
         terminalMissingExpected,
         guardedOpenAction,
+        routableSyncExpected,
       });
+      if (routableSyncExpected && !published.routableSyncVerified) {
+        throw new RoutableSyncPublishRaceError(
+          `Durable review sync for ${paths.targetSlug}#${options.itemNumber} lost the publish race; requeue against the latest item revision`,
+        );
+      }
       if (terminalMissingExpected && !published.terminalMissing) {
         throw new TerminalMissingPublishRaceError(
           `Verified missing item ${paths.targetSlug}#${options.itemNumber} lost the publish race; requeue against the latest item revision`,
@@ -343,6 +354,7 @@ function publishSnapshot({
     if (
       error instanceof RecordTupleError ||
       error instanceof GuardedOpenPublishRaceError ||
+      error instanceof RoutableSyncPublishRaceError ||
       error instanceof TerminalClosedPublishRaceError ||
       error instanceof TerminalMissingPublishRaceError
     )

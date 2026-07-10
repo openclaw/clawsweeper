@@ -17,7 +17,12 @@ test("exact event publish dispositions require the current tuple and preserve te
       terminalMissingExpected: false,
       guardedOpenAction: "skipped_protected_label",
     }),
-    { terminalClosed: true, terminalMissing: false, guardedOpenAction: null },
+    {
+      terminalClosed: true,
+      terminalMissing: false,
+      routableSyncVerified: false,
+      guardedOpenAction: null,
+    },
   );
   assert.deepEqual(
     exactEventPublishDisposition({
@@ -27,7 +32,12 @@ test("exact event publish dispositions require the current tuple and preserve te
       terminalMissingExpected: false,
       guardedOpenAction: null,
     }),
-    { terminalClosed: false, terminalMissing: false, guardedOpenAction: null },
+    {
+      terminalClosed: false,
+      terminalMissing: false,
+      routableSyncVerified: false,
+      guardedOpenAction: null,
+    },
   );
   assert.deepEqual(
     exactEventPublishDisposition({
@@ -40,6 +50,7 @@ test("exact event publish dispositions require the current tuple and preserve te
     {
       terminalClosed: false,
       terminalMissing: false,
+      routableSyncVerified: false,
       guardedOpenAction: "skipped_locked_conversation",
     },
   );
@@ -51,7 +62,12 @@ test("exact event publish dispositions require the current tuple and preserve te
       terminalMissingExpected: false,
       guardedOpenAction: null,
     }),
-    { terminalClosed: false, terminalMissing: false, guardedOpenAction: null },
+    {
+      terminalClosed: false,
+      terminalMissing: false,
+      routableSyncVerified: false,
+      guardedOpenAction: null,
+    },
   );
   assert.deepEqual(
     exactEventPublishDisposition({
@@ -61,7 +77,12 @@ test("exact event publish dispositions require the current tuple and preserve te
       terminalMissingExpected: true,
       guardedOpenAction: "skipped_locked_conversation",
     }),
-    { terminalClosed: false, terminalMissing: true, guardedOpenAction: null },
+    {
+      terminalClosed: false,
+      terminalMissing: true,
+      routableSyncVerified: false,
+      guardedOpenAction: null,
+    },
   );
   for (const candidate of [
     { candidateMatchesCurrentTuple: false, candidateTupleState: "closed" as const },
@@ -74,7 +95,42 @@ test("exact event publish dispositions require the current tuple and preserve te
         terminalMissingExpected: true,
         guardedOpenAction: null,
       }),
-      { terminalClosed: false, terminalMissing: false, guardedOpenAction: null },
+      {
+        terminalClosed: false,
+        terminalMissing: false,
+        routableSyncVerified: false,
+        guardedOpenAction: null,
+      },
+    );
+  }
+});
+
+test("exact event publish dispositions reject stale routable sync tuples", () => {
+  assert.equal(
+    exactEventPublishDisposition({
+      candidateMatchesCurrentTuple: true,
+      candidateTupleState: "open",
+      terminalClosedExpected: false,
+      terminalMissingExpected: false,
+      guardedOpenAction: null,
+      routableSyncExpected: true,
+    }).routableSyncVerified,
+    true,
+  );
+  for (const candidate of [
+    { candidateMatchesCurrentTuple: false, candidateTupleState: "open" as const },
+    { candidateMatchesCurrentTuple: false, candidateTupleState: "closed" as const },
+    { candidateMatchesCurrentTuple: true, candidateTupleState: "invalid" as const },
+  ]) {
+    assert.equal(
+      exactEventPublishDisposition({
+        ...candidate,
+        terminalClosedExpected: false,
+        terminalMissingExpected: false,
+        guardedOpenAction: null,
+        routableSyncExpected: true,
+      }).routableSyncVerified,
+      false,
     );
   }
 });
