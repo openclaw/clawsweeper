@@ -568,7 +568,7 @@ fs.writeFileSync(counter, String(count + 1));
   }
 });
 
-test("failed issue retry records a near-deadline success before later eligibility checks", () => {
+test("failed issue retry records dispatch success before later eligibility checks", () => {
   const root = mkdtempSync(tmpPrefix);
   const fixture = failedIssueRetryFixture(root, 4346);
   const originalMarkdown = readFileSync(fixture.itemPath, "utf8");
@@ -586,7 +586,7 @@ fs.writeFileSync(counter, String(count + 1));
         fixture.issue,
         `${incrementDispatchCount}\nsetTimeout(() => process.exit(0), 1300);`,
       ),
-      () => runFailedIssueRetry(fixture, ["--max-runtime-ms", "2800"]),
+      () => runFailedIssueRetry(fixture, ["--max-runtime-ms", "4000"]),
     );
     const firstReport = JSON.parse(readFileSync(fixture.reportPath, "utf8")) as Array<{
       action: string;

@@ -237,9 +237,12 @@ ClawSweeper has three layers of duplicate protection:
   issue source revision until the worker's bounded timeout plus a ten-minute
   grace period. Scheduled label sweeps skip leased PR heads, while broad and
   event apply workers defer every leased item;
-- apply workers compare the live durable review tuple immediately before label,
-  comment, and close mutations, preserve leases they do not own, and retire
-  only the exact lease recorded by the report they publish;
+- current reports carrying an item revision plus the review lease owner and
+  server comment ID acquire or reuse an owned mutation lease, revalidate the
+  live revision and durable tuple before label, comment, and close phases, and
+  release only that exact report-owned or transient apply lease after the item
+  action. Legacy backlog reports without a complete tuple keep the prior apply
+  path but still defer to active leases and newer durable verdicts;
 - comment routing suppresses an older same-head verdict while a later lease is
   active, then admits only the replacement verdict carrying that lease's exact
   owner and comment identity;

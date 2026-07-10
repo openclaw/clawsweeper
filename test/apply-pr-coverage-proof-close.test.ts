@@ -97,7 +97,7 @@ test("apply-decisions skips stale close reports before duplicate PR coverage pro
         number: 353,
         action: "skipped_stale_review_comment_sync",
         reason:
-          "live durable review comment is newer than the local report: comment reviewed_at=2026-05-01T00:10:00Z, report reviewed_at=2026-05-01T00:00:00Z",
+          "live durable review comment is newer than the local report: comment reviewed_at=2026-05-01T00:10:00Z, report reviewed_at=2026-05-01T00:00:00Z; comment head=head-sha, report head=missing",
       },
     ]);
   } finally {

@@ -421,7 +421,7 @@ if (args[0] === "api" && new RegExp("/issues/${number}/comments(?:\\\\?|$)").tes
   }
 });
 
-test("apply-decisions skips advisory label sync when a close report changed since review", () => {
+test("apply-decisions rejects a changed close report even when an expired lease is newest", () => {
   const root = mkdtempSync(tmpPrefix);
   try {
     const itemsDir = join(root, "items");
@@ -454,7 +454,28 @@ const args = rawArgs[0] === "--repo" ? rawArgs.slice(2) : rawArgs;
 appendFileSync(logPath, JSON.stringify(args) + "\\n");
 const path = args[1] || "";
 if (args[0] === "api" && /\\/issues\\/321\\/comments(?:\\?|$)/.test(path)) {
-  console.log(JSON.stringify([[]]));
+  console.log(JSON.stringify([[
+    {
+      id: 9001,
+      created_at: "2026-05-02T00:00:00Z",
+      updated_at: "2026-05-02T00:00:00Z",
+      user: { login: "contributor" },
+      body: "This changed the issue after the reviewed close decision."
+    },
+    {
+      id: 9002,
+      created_at: "2026-05-03T00:00:00Z",
+      updated_at: "2026-05-03T00:00:00Z",
+      user: { login: "clawsweeper[bot]" },
+      body: [
+        "ClawSweeper status: review started.",
+        "",
+        "<!-- clawsweeper-review-status:started item=321 sha=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa started_at=2026-05-02T00:00:00Z lease_expires_at=2026-05-02T01:00:00Z owner=abandoned-review v=1 -->",
+        "",
+        "<!-- clawsweeper-review-lease item=321 -->"
+      ].join("\\n")
+    }
+  ]]));
 } else if (args[0] === "api" && /\\/issues\\/321$/.test(path)) {
   console.log(JSON.stringify({
     number: 321,

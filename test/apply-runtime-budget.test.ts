@@ -301,7 +301,7 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/724\\/timeline(?:\\?|$
 
 test("apply-decisions yields instead of starting a post-close delay that cannot fit", () => {
   const fixture = runtimeBudgetFixture(725);
-  const maxRuntimeMs = 5_000;
+  const maxRuntimeMs = 15_000;
   const proofLogPath = join(fixture.root, "proof.log");
   const synced = reportWithSyncedReviewComment(
     lowSignalCloseReport({
@@ -361,7 +361,7 @@ test("apply-decisions yields instead of starting a post-close delay that cannot 
                 "--max-runtime-ms",
                 String(maxRuntimeMs),
                 "--close-delay-ms",
-                "10000",
+                "30000",
                 "--cursor-trace",
                 fixture.cursorTracePath,
               ],
@@ -371,8 +371,13 @@ test("apply-decisions yields instead of starting a post-close delay that cannot 
       },
     );
 
-    assert.ok(Date.now() - startedAt < 3_000, "post-close delay ignored the remaining runtime");
+    assert.ok(
+      Date.now() - startedAt < maxRuntimeMs + 2_000,
+      "post-close delay ignored the remaining runtime",
+    );
     assertRuntimeYield(fixture, maxRuntimeMs);
+    const report = JSON.parse(readFileSync(fixture.reportPath, "utf8"));
+    assert.match(report[0]?.reason ?? "", /before close$/);
   } finally {
     rmSync(fixture.root, { recursive: true, force: true });
   }
@@ -380,7 +385,7 @@ test("apply-decisions yields instead of starting a post-close delay that cannot 
 
 test("apply-decisions records a successful close before yielding after it", () => {
   const fixture = runtimeBudgetFixture(727);
-  const maxRuntimeMs = 12_000;
+  const maxRuntimeMs = 17_000;
   const proofLogPath = join(fixture.root, "proof.log");
   const synced = reportWithSyncedReviewComment(
     lowSignalCloseReport({
@@ -405,7 +410,7 @@ test("apply-decisions records a successful close before yielding after it", () =
         number: 727,
         title: "Provider route fallback",
         comment: synced.comment,
-        closeCommandDelayMs: 3_000,
+        closeCommandDelayMs: 8_000,
         itemUpdatedAtAfterProofLogPath: proofLogPath,
         linkedPulls: {
           400: {

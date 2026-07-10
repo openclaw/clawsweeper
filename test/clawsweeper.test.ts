@@ -21,6 +21,7 @@ import {
   isGitHubNotFoundError,
   isGitHubRequiresAuthenticationError,
   isLockedConversationCommentError,
+  itemSourceRevisionSha256ForTest,
   itemNumbersArg,
   lockedConversationApplyReason,
   parseDecision,
@@ -810,13 +811,17 @@ if (args[0] === "api" && /\\/issues\\/comments\\/\\d+$/.test(path)) {
       calls.some((args) => args.some((arg) => arg.includes("/issues/322"))),
       false,
     );
-    const reviewCommentListFetches = calls.filter(
-      (args) =>
-        args[0] === "api" &&
-        (args[1] ?? "").includes("/issues/321/comments") &&
-        args.includes("--paginate"),
-    );
-    assert.equal(reviewCommentListFetches.length, 1);
+    const commentMutationIndex = calls.findIndex((args) => args[0] === "comment-patch");
+    assert.ok(commentMutationIndex >= 0);
+    const postMutationReviewCommentFetches = calls
+      .slice(commentMutationIndex + 1)
+      .filter(
+        (args) =>
+          args[0] === "api" &&
+          (args[1] ?? "").includes("/issues/321/comments") &&
+          args.includes("--paginate"),
+      );
+    assert.equal(postMutationReviewCommentFetches.length, 0);
     assert.deepEqual(JSON.parse(readFileSync(reportPath, "utf8")), [
       {
         number: 321,
@@ -854,11 +859,32 @@ test("apply-decisions syncs labels when first review placeholder advanced issue 
     mkdirSync(itemsDir, { recursive: true });
     mkdirSync(plansDir, { recursive: true });
 
+    const issue = {
+      number: 321,
+      title: "Render work plans",
+      body: null,
+      html_url: "https://github.com/openclaw/clawsweeper/issues/321",
+      created_at: "2026-05-01T00:00:00Z",
+      updated_at: "2026-05-01T00:01:01Z",
+      closed_at: null,
+      state: "open",
+      locked: false,
+      active_lock_reason: null,
+      author_association: "CONTRIBUTOR",
+      user: { login: "reporter" },
+      labels: [],
+      comments: 1,
+      pull_request: null,
+    };
+    const sourceRevision = itemSourceRevisionSha256ForTest(issue, []);
     const report = workPlanCandidateReport({
       number: 321,
       reviewed_at: "2026-05-01T00:05:00Z",
       item_snapshot_hash: "reviewed-snapshot-321",
       item_updated_at: "2026-05-01T00:00:00Z",
+      item_source_revision: sourceRevision,
+      review_lease_owner: "review-owner",
+      review_lease_comment_id: "9321",
       triage_priority: "P1",
       impact_labels: JSON.stringify(["impact:message-loss"]),
       item_category: "bug",
@@ -875,19 +901,25 @@ test("apply-decisions syncs labels when first review placeholder advanced issue 
       number: 321,
       kind: "issue",
       title: "Render work plans",
+      headSha: sourceRevision,
+      leaseOwner: "review-owner",
     });
 
     const ghMock = `
 const { appendFileSync, readFileSync } = require("fs");
 const logPath = ${JSON.stringify(logPath)};
 const placeholder = ${JSON.stringify(placeholder)};
+const issue = ${JSON.stringify(issue)};
 const rawArgs = process.argv.slice(2);
 const args = rawArgs[0] === "--repo" ? rawArgs.slice(2) : rawArgs;
 appendFileSync(logPath, JSON.stringify(args) + "\\n");
 const path = args.includes("-i") ? args[args.indexOf("-i") + 1] : args[1] || "";
 const commentMatch = path.match(/\\/issues\\/(\\d+)\\/comments(?:\\?|$)/);
 const issueMatch = path.match(/\\/issues\\/(\\d+)$/);
-if (args[0] === "api" && /\\/issues\\/comments\\/\\d+$/.test(path)) {
+if (args[0] === "api" && /\\/issues\\/comments\\/\\d+$/.test(path) && args.includes("DELETE")) {
+  appendFileSync(logPath, JSON.stringify(["lease-delete", path]) + "\\n");
+  console.log("");
+} else if (args[0] === "api" && /\\/issues\\/comments\\/\\d+$/.test(path)) {
   const inputPath = args[args.indexOf("--input") + 1];
   const body = JSON.parse(readFileSync(inputPath, "utf8")).body;
   appendFileSync(logPath, JSON.stringify(["comment-patch", body]) + "\\n");
@@ -895,6 +927,18 @@ if (args[0] === "api" && /\\/issues\\/comments\\/\\d+$/.test(path)) {
     id: 9321,
     html_url: "https://github.com/openclaw/clawsweeper/issues/321#issuecomment-9321",
     created_at: "2026-05-01T00:01:00Z",
+    updated_at: "2026-05-01T00:06:00Z",
+    user: { login: "clawsweeper[bot]" },
+    body
+  }));
+} else if (args[0] === "api" && commentMatch && args.includes("--method") && args.includes("POST")) {
+  const inputPath = args[args.indexOf("--input") + 1];
+  const body = JSON.parse(readFileSync(inputPath, "utf8")).body;
+  appendFileSync(logPath, JSON.stringify(["comment-post", body]) + "\\n");
+  console.log(JSON.stringify({
+    id: 9322,
+    html_url: "https://github.com/openclaw/clawsweeper/issues/321#issuecomment-9322",
+    created_at: "2026-05-01T00:06:00Z",
     updated_at: "2026-05-01T00:06:00Z",
     user: { login: "clawsweeper[bot]" },
     body
@@ -916,22 +960,7 @@ if (args[0] === "api" && /\\/issues\\/comments\\/\\d+$/.test(path)) {
     actor: { login: "clawsweeper[bot]" }
   }]));
 } else if (args[0] === "api" && issueMatch) {
-  console.log(JSON.stringify({
-    number: 321,
-    title: "Render work plans",
-    html_url: "https://github.com/openclaw/clawsweeper/issues/321",
-    created_at: "2026-05-01T00:00:00Z",
-    updated_at: "2026-05-01T00:01:01Z",
-    closed_at: null,
-    state: "open",
-    locked: false,
-    active_lock_reason: null,
-    author_association: "CONTRIBUTOR",
-    user: { login: "reporter" },
-    labels: [],
-    comments: 1,
-    pull_request: null
-  }));
+  console.log(JSON.stringify(issue));
 } else if (args[0] === "issue" && args[1] === "view") {
   console.log(JSON.stringify({ closedByPullRequestsReferences: [] }));
 } else if (args[0] === "api" && path.startsWith("search/issues?")) {

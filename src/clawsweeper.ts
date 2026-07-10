@@ -16901,11 +16901,17 @@ function staleReviewCommentSyncReason(
 ): string | null {
   // Comment updated_at can move for command/status edits; only review markers prove verdict freshness.
   const liveVersion = durableReviewVersion(existingReviewComment, number);
+  const itemKind = frontMatterValue(markdown, "type");
   const liveReviewedAt =
     liveVersion?.reviewedAt ??
-    newestReviewMarkerAttribute(existingReviewComment, number, "reviewed_at");
+    (itemKind === "pull_request"
+      ? newestReviewMarkerAttribute(existingReviewComment, number, "reviewed_at")
+      : undefined);
   const liveReviewedSha =
-    liveVersion?.headSha ?? newestReviewMarkerAttribute(existingReviewComment, number, "sha");
+    liveVersion?.headSha ??
+    (itemKind === "pull_request"
+      ? newestReviewMarkerAttribute(existingReviewComment, number, "sha")
+      : undefined);
   const reportReviewedAt = frontMatterValue(markdown, "reviewed_at");
   const liveReviewedAtMs = timestampMs(liveReviewedAt);
   const reportReviewedAtMs = timestampMs(reportReviewedAt);
@@ -16922,7 +16928,6 @@ function staleReviewCommentSyncReason(
   }
   const liveLeaseCommentId = Number(liveVersion?.leaseCommentId);
   const reportLeaseCommentIdNumber = Number(reportLeaseCommentId);
-  const itemKind = frontMatterValue(markdown, "type");
   const reportRevision = reviewLeaseRevisionFromReport(markdown);
   const liveRevision =
     itemKind === "pull_request" ? liveVersion?.headSha : liveVersion?.sourceRevision;
@@ -17292,50 +17297,6 @@ function reviewStartLeaseOwner(comment: Record<string, unknown> | undefined): st
   const body = commentBody(comment) ?? "";
   const match = body.match(/<!--\s*clawsweeper-review-status:started\b([^>]*)-->/i);
   return match?.[1]?.match(/\bowner=([^\s>]+)/i)?.[1] ?? null;
-}
-
-function supersededDedicatedReviewStartLeaseCommentIds(options: {
-  comments: Record<string, unknown>[];
-  itemNumber: number;
-  reportHeadSha: string | null;
-  reportLeaseOwner: string | undefined;
-  reportLeaseCommentId: string | undefined;
-}): number[] {
-  const reportHeadSha = options.reportHeadSha?.trim().toLowerCase();
-  const reportLeaseOwner = options.reportLeaseOwner?.trim();
-  const reportLeaseCommentId = Number(options.reportLeaseCommentId);
-  if (
-    !reportHeadSha ||
-    !reportLeaseOwner ||
-    !Number.isInteger(reportLeaseCommentId) ||
-    reportLeaseCommentId <= 0
-  ) {
-    return [];
-  }
-  const identity = reviewStartLeaseCommentMarker(options.itemNumber);
-  return options.comments.flatMap((comment) => {
-    if (!canPatchReviewComment(comment)) return [];
-    const body = commentBody(comment) ?? "";
-    if (!body.trimEnd().endsWith(identity)) return [];
-    const marker = body.match(/<!--\s*clawsweeper-review-status:started\b([^>]*)-->/i)?.[1];
-    if (!marker) return [];
-    const attribute = (name: string) =>
-      marker.match(new RegExp(`\\b${name}=([^\\s>]+)`, "i"))?.[1] ?? null;
-    if (Number(attribute("item")) !== options.itemNumber) return [];
-    if (attribute("sha")?.trim().toLowerCase() !== reportHeadSha) return [];
-    const id = commentId(comment);
-    return attribute("owner") === reportLeaseOwner && id === reportLeaseCommentId ? [id] : [];
-  });
-}
-
-export function supersededDedicatedReviewStartLeaseCommentIdsForTest(options: {
-  comments: Record<string, unknown>[];
-  itemNumber: number;
-  reportHeadSha: string | null;
-  reportLeaseOwner: string | undefined;
-  reportLeaseCommentId: string | undefined;
-}): number[] {
-  return supersededDedicatedReviewStartLeaseCommentIds(options);
 }
 
 function freshDedicatedReviewStartLeases(options: {
@@ -19836,6 +19797,8 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
     const reportReviewLeaseCommentId = Number(
       frontMatterValue(markdownBeforeApplyDecisionMutations, "review_lease_comment_id"),
     );
+    // Current reviews carry this complete tuple. Tuple-less backlog reports keep their legacy
+    // apply path, while the active-lease and newer-verdict guards still fail them closed.
     const requiresApplyMutationLease = Boolean(
       reportReviewRevision &&
       reportReviewLeaseOwner &&
@@ -20483,31 +20446,27 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
       renderReviewCommentFromReport(markdown, closeReason ?? "none", { previousLabels }),
       reviewSectionValue(markdown, "closeComment"),
     ]);
-    const initialReviewStartLeaseState = reviewStartLeaseStateForComments(
-      [],
-      existingReviewComment,
-      initialReviewHeadSha,
-    );
-    const markedReviewCommentForApply = (
-      body: string,
-      leaseState = initialReviewStartLeaseState,
-    ): string => {
-      const markedBody = markedReviewCommentBody(number, body);
-      if (!leaseState.lease || !leaseState.preserve) return markedBody;
-      return withReviewStartStatusLease(markedBody, {
-        number,
-        kind: item.kind,
-        title: item.title,
-        headSha: leaseState.headSha,
-        startedAt: leaseState.lease.startedAt,
-        leaseExpiresAt: leaseState.lease.expiresAt,
-        ...(leaseState.lease.owner ? { leaseOwner: leaseState.lease.owner } : {}),
-      });
-    };
+    const markedReviewCommentForApply = (body: string): string =>
+      markedReviewCommentBody(number, body);
     const existingReviewCommentUpdatedAt = commentUpdatedAt(existingReviewComment);
     if (existingReviewCommentUpdatedAt) {
       allowedSelfMutationUpdatedAts.add(existingReviewCommentUpdatedAt);
     }
+    const reportOwnedLeaseComments = requiresApplyMutationLease
+      ? earlyLeaseState.leaseComments.filter(
+          (leaseComment) =>
+            commentId(leaseComment) === reportReviewLeaseCommentId &&
+            reviewStartLeaseOwner(leaseComment) === reportReviewLeaseOwner,
+        )
+      : [];
+    const latestLabelFreshnessAutomationUpdatedAt = [
+      existingReviewComment,
+      ...reportOwnedLeaseComments,
+    ]
+      .map(commentUpdatedAt)
+      .filter((updatedAt): updatedAt is string => timestampMs(updatedAt) !== null)
+      .sort((left, right) => (timestampMs(left) ?? 0) - (timestampMs(right) ?? 0))
+      .at(-1);
     const staleReviewCommentReason = staleReviewCommentSyncReason(
       markdown,
       existingReviewComment,
@@ -20528,7 +20487,7 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
       continue;
     }
     const updatedSinceReview = Boolean(storedUpdatedAt && item.updatedAt !== storedUpdatedAt);
-    const reviewCommentOnlyUpdate = item.updatedAt === commentUpdatedAt(existingReviewComment);
+    const reviewCommentOnlyUpdate = item.updatedAt === existingReviewCommentUpdatedAt;
     const storedUpdatedAtMs = timestampMs(storedUpdatedAt);
     const recordedLabelSyncMatches =
       updatedSinceReview &&
@@ -20557,7 +20516,7 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
         freshPullRequestReviewHead(markdown, currentItemContext());
       if (!completeFreshHeadReview) {
         const existingReviewCommentUpdatedAtMs = timestampMs(
-          commentUpdatedAt(existingReviewComment),
+          latestLabelFreshnessAutomationUpdatedAt,
         );
         const itemUpdatedAtMs = timestampMs(item.updatedAt);
         if (existingReviewCommentUpdatedAtMs === null || itemUpdatedAtMs === null) return false;

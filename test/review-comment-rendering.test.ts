@@ -11,7 +11,6 @@ import {
   reviewAutomationMarkersFromReport,
   reviewStartLeaseWinnerCommentIdForTest,
   shouldPreserveReviewStartLease,
-  supersededDedicatedReviewStartLeaseCommentIdsForTest,
   withReviewStartStatusLease,
 } from "../dist/clawsweeper.js";
 import { detailsBody, reportFrontMatter } from "./helpers.ts";
@@ -280,39 +279,6 @@ test("concurrent review lease election uses server comment order, not client tim
       nowMs: Date.parse("2026-07-09T21:02:00.000Z"),
     }),
     100,
-  );
-});
-
-test("completed reports retire only their exact dedicated lease", () => {
-  const itemNumber = 74453;
-  const headSha = "0123456789abcdef0123456789abcdef01234567";
-  const leaseComment = (id: number, sha: string, startedAt: string) => ({
-    id,
-    user: { login: "clawsweeper[bot]" },
-    body: [
-      `<!-- clawsweeper-review-status:started item=${itemNumber} sha=${sha} started_at=${startedAt} lease_expires_at=2026-07-09T22:31:47.000Z owner=worker-${id} v=1 -->`,
-      "",
-      `<!-- clawsweeper-review-lease item=${itemNumber} -->`,
-    ].join("\n"),
-  });
-
-  assert.deepEqual(
-    supersededDedicatedReviewStartLeaseCommentIdsForTest({
-      comments: [
-        leaseComment(100, headSha, "2026-07-09T21:00:00.000Z"),
-        leaseComment(200, headSha, "2026-07-09T21:10:00.000Z"),
-        leaseComment(300, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "2026-07-09T21:00:00.000Z"),
-        {
-          ...leaseComment(400, headSha, "2026-07-09T21:00:00.000Z"),
-          user: { login: "contributor" },
-        },
-      ],
-      itemNumber,
-      reportHeadSha: headSha,
-      reportLeaseOwner: "worker-100",
-      reportLeaseCommentId: "100",
-    }),
-    [100],
   );
 });
 
