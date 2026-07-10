@@ -33,7 +33,6 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Fixed
 
-- Prevented repair Codex workers from repeatedly chasing a moving `main` after green validation by pinning one base snapshot per edit pass and leaving the existing deterministic final base sync to reconcile later movement.
 - Required a live `DIRTY` merge conflict and at least 30 days without contributor comments or head activity before publishing or applying low-signal pull-request close verdicts, honoring longer configured stale thresholds and applying the same fail-closed policy to stale-review promotion and trusted close routing.
 - Retried successful GitHub CLI JSON-lines responses when their output is truncated, preventing transient list-page corruption from aborting close-apply runs.
 - Allowed conflict-free canonical PRs that only need a base update to back duplicate or superseded closures while retaining proof, review, check, draft, and conflict guards.
