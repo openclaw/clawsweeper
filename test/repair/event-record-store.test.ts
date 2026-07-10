@@ -11,8 +11,52 @@ import {
   captureEventBaseSnapshot,
   captureEventSnapshot,
   eventRecordPaths,
+  eventSnapshotMatchesCurrent,
   resetEventSnapshot,
 } from "../../dist/repair/event-record-store.js";
+
+test("event snapshot match follows the final tuple winner, not only its action", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-event-records-"));
+  const store = {
+    targetRepo: "openclaw/openclaw",
+    itemNumber: "91668",
+    snapshotDir: path.join(root, "snapshot"),
+  };
+
+  withCwd(root, () => {
+    const paths = eventRecordPaths(store);
+    resetEventSnapshot(store);
+    writeEventTuple(paths, {
+      marker: "base open",
+      reviewedAt: "2026-07-09T23:00:00.000Z",
+      itemUpdatedAt: "2026-07-09T22:59:00Z",
+      extraFrontMatter: ["action_taken: proposed_close"],
+    });
+    captureEventBaseSnapshot(store);
+    writeEventTuple(paths, {
+      marker: "candidate guarded open",
+      reviewedAt: "2026-07-09T23:10:00.000Z",
+      itemUpdatedAt: "2026-07-09T22:59:00Z",
+      extraFrontMatter: [
+        "action_taken: skipped_same_author_pair",
+        "apply_checked_at: 2026-07-09T23:11:00.000Z",
+      ],
+    });
+    captureEventSnapshot(store);
+    assert.equal(eventSnapshotMatchesCurrent(paths), true);
+
+    writeEventTuple(paths, {
+      marker: "newer remote guarded open",
+      reviewedAt: "2026-07-09T23:20:00.000Z",
+      itemUpdatedAt: "2026-07-09T22:59:00Z",
+      extraFrontMatter: [
+        "action_taken: skipped_same_author_pair",
+        "apply_checked_at: 2026-07-09T23:21:00.000Z",
+      ],
+    });
+    assert.equal(eventSnapshotMatchesCurrent(paths), false);
+  });
+});
 
 test("event record snapshots prefer closed records and remove open records", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-event-records-"));

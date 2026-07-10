@@ -3,6 +3,7 @@ import path from "node:path";
 
 import {
   chooseRecordTupleWinner,
+  recordTupleContentsEqual,
   recordTuplePaths,
   type RecordTupleContents,
   type RecordTuplePaths,
@@ -129,6 +130,13 @@ export function applyEventSnapshotIfCurrent(
   const result = applyEventSnapshot(paths, options);
   if (result === "open" || result === "closed") applyCurrent();
   return result;
+}
+
+export function eventSnapshotMatchesCurrent(paths: EventRecordPaths): boolean {
+  return recordTupleContentsEqual(
+    snapshotTuple(paths, "candidate"),
+    recordTupleFromRoot(paths, "."),
+  );
 }
 
 function snapshotTuple(

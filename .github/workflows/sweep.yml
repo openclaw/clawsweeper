@@ -663,7 +663,7 @@ jobs:
           pnpm run repair:publish-event-result
 
       - name: Dispatch viable issue implementation
-        if: ${{ steps.review-exact-event-item.outcome == 'success' && steps.publish-event-result.outcome == 'success' && steps.publish-event-result.outputs.terminal_noop != 'true' && vars.CLAWSWEEPER_AUTO_IMPLEMENT_ISSUES == '1' && steps.target-write-token.outputs.token != '' && steps.target.outputs.target_repo != 'openclaw/openclaw' && steps.target.outputs.target_repo != 'openclaw/clawhub' && github.event.client_payload.item_kind == 'issue' && (github.event.client_payload.source_action == 'opened' || github.event.client_payload.source_action == 'reopened') }}
+        if: ${{ steps.review-exact-event-item.outcome == 'success' && steps.publish-event-result.outcome == 'success' && steps.publish-event-result.outputs.terminal_noop != 'true' && steps.publish-event-result.outputs.guarded_open != 'true' && vars.CLAWSWEEPER_AUTO_IMPLEMENT_ISSUES == '1' && steps.target-write-token.outputs.token != '' && steps.target.outputs.target_repo != 'openclaw/openclaw' && steps.target.outputs.target_repo != 'openclaw/clawhub' && github.event.client_payload.item_kind == 'issue' && (github.event.client_payload.source_action == 'opened' || github.event.client_payload.source_action == 'reopened') }}
         env:
           GH_TOKEN: ${{ github.token }}
           TARGET_REPO: ${{ steps.target.outputs.target_repo }}
@@ -701,7 +701,7 @@ jobs:
 
       - name: Route synced ClawSweeper verdict
         id: route-synced-verdict
-        if: ${{ steps.review-exact-event-item.outcome == 'success' && steps.publish-event-result.outcome == 'success' && steps.publish-event-result.outputs.terminal_noop != 'true' }}
+        if: ${{ steps.review-exact-event-item.outcome == 'success' && steps.publish-event-result.outcome == 'success' && steps.publish-event-result.outputs.terminal_noop != 'true' && steps.publish-event-result.outputs.guarded_open != 'true' }}
         timeout-minutes: 4
         env:
           GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
@@ -784,6 +784,7 @@ jobs:
           REVIEW_OUTCOME: ${{ steps.review-exact-event-item.outcome }}
           PUBLISH_OUTCOME: ${{ steps.publish-event-result.outcome }}
           ROUTE_OUTCOME: ${{ steps.route-synced-verdict.outcome }}
+          GUARDED_OPEN: ${{ steps.publish-event-result.outputs.guarded_open }}
         run: |
           state="Failed"
           detail="The targeted re-review did not finish cleanly. Check the workflow run for details."
@@ -798,6 +799,10 @@ jobs:
           if [ "$REVIEW_OUTCOME" = "success" ] && [ "$PUBLISH_OUTCOME" = "success" ] && [ "$ROUTE_OUTCOME" = "success" ]; then
             state="Complete"
             detail="The targeted re-review finished, the durable review comment was updated, and the synced verdict was routed."
+          fi
+          if [ "$REVIEW_OUTCOME" = "success" ] && [ "$PUBLISH_OUTCOME" = "success" ] && [ "$GUARDED_OPEN" = "true" ]; then
+            state="Complete"
+            detail="The targeted re-review finished with a deterministic remain-open guard; durable state was published without routing an older close verdict."
           fi
           pnpm run repair:update-command-status -- \
             --repo "$TARGET_REPO" \
@@ -863,7 +868,7 @@ jobs:
             --rebase-strategy theirs
 
       - name: React to target item completion
-        if: ${{ steps.review-exact-event-item.outcome == 'success' && steps.publish-event-result.outcome == 'success' && steps.route-synced-verdict.outcome == 'success' }}
+        if: ${{ steps.review-exact-event-item.outcome == 'success' && steps.publish-event-result.outcome == 'success' && (steps.publish-event-result.outputs.guarded_open == 'true' || steps.route-synced-verdict.outcome == 'success') }}
         continue-on-error: true
         env:
           GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
@@ -922,7 +927,7 @@ jobs:
           remove_own_eyes_reactions
 
       - name: Fail unsuccessful exact review
-        if: ${{ always() && steps.live-item.outputs.proceed != 'false' && steps.publish-event-result.outputs.terminal_noop != 'true' && (steps.review-exact-event-item.outcome != 'success' || steps.publish-event-result.outcome != 'success' || steps.route-synced-verdict.outcome != 'success') }}
+        if: ${{ always() && steps.live-item.outputs.proceed != 'false' && steps.publish-event-result.outputs.terminal_noop != 'true' && (steps.review-exact-event-item.outcome != 'success' || steps.publish-event-result.outcome != 'success' || (steps.publish-event-result.outputs.guarded_open != 'true' && steps.route-synced-verdict.outcome != 'success')) }}
         run: exit 1
 
       - name: Complete exact-review queue lease

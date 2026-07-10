@@ -6,10 +6,12 @@ import {
   applyEventSnapshotIfCurrent,
   captureEventBaseSnapshot,
   captureEventSnapshot,
+  eventSnapshotMatchesCurrent,
   type EventRecordPaths,
   resetEventSnapshot,
 } from "./event-record-store.js";
 import {
+  eventRecordActionTaken,
   eventApplyAction,
   exactEventApplyProof,
   type EventApplyAction,
@@ -39,6 +41,12 @@ type EventOptions = {
   reportPath: string;
   snapshotDir: string;
 };
+
+type PublishedEventSnapshot = {
+  guardedOpenAction: string | null;
+};
+
+class GuardedOpenPublishRaceError extends Error {}
 
 const options = eventOptionsFromEnv();
 await publishEventResult(options);
@@ -120,23 +128,31 @@ async function publishEventResult(options: EventOptions): Promise<void> {
   }
 
   const actions = readApplyActions(options.reportPath);
+  captureEventSnapshot(recordStore);
+  const snapshotActionTaken = eventRecordActionTaken(
+    fs.existsSync(recordPaths.snapshotItem)
+      ? fs.readFileSync(recordPaths.snapshotItem, "utf8")
+      : null,
+  );
   const {
     exactActions,
     syncedCount,
     terminalCount: closedCount,
-  } = exactEventApplyProof(actions, Number(options.itemNumber));
-  if (syncedCount + closedCount === 0) {
+    guardedOpenAction,
+    latestRevisionRequeueRequired,
+  } = exactEventApplyProof(actions, Number(options.itemNumber), snapshotActionTaken);
+  if (syncedCount + closedCount === 0 && guardedOpenAction === null) {
     const observed =
       exactActions
         .map((entry) => entry.action)
         .filter(Boolean)
         .join(", ") || "none";
     throw new Error(
-      `Event review for ${options.targetRepo}#${options.itemNumber} was not applied; actions: ${observed}`,
+      latestRevisionRequeueRequired
+        ? `Event review for ${options.targetRepo}#${options.itemNumber} changed since review; requeue against the latest item revision`
+        : `Event review for ${options.targetRepo}#${options.itemNumber} was not applied; actions: ${observed}`,
     );
   }
-  captureEventSnapshot(recordStore);
-
   const summary = () =>
     writeSummary({
       targetRepo: options.targetRepo,
@@ -146,18 +162,36 @@ async function publishEventResult(options: EventOptions): Promise<void> {
       closeReasons: options.closeReasons,
     });
   for (let attempt = 1; attempt <= 20; attempt += 1) {
-    if (publishSnapshot({ paths: recordPaths, options, summary, stateBaseCommit })) return;
+    const published = publishSnapshot({
+      paths: recordPaths,
+      options,
+      summary,
+      stateBaseCommit,
+      guardedOpenAction,
+    });
+    if (published) {
+      writeGuardedOpenOutput(published.guardedOpenAction);
+      return;
+    }
     const delaySeconds = attempt * 3 + Math.floor(Math.random() * 11);
     console.log(
       `Event publish attempt ${attempt} failed; retrying from origin/main in ${delaySeconds}s`,
     );
     await sleep(delaySeconds * 1000);
   }
-  if (!publishSnapshot({ paths: recordPaths, options, summary, stateBaseCommit })) {
+  const published = publishSnapshot({
+    paths: recordPaths,
+    options,
+    summary,
+    stateBaseCommit,
+    guardedOpenAction,
+  });
+  if (!published) {
     throw new Error(
       `Failed to publish event result for ${options.targetRepo}#${options.itemNumber}`,
     );
   }
+  writeGuardedOpenOutput(published.guardedOpenAction);
 }
 
 function runApplyDecisions(options: EventOptions): void {
@@ -199,12 +233,14 @@ function publishSnapshot({
   options,
   summary,
   stateBaseCommit,
+  guardedOpenAction,
 }: {
   paths: EventRecordPaths;
   options: EventOptions;
   summary: () => void;
   stateBaseCommit: string | null;
-}): boolean {
+  guardedOpenAction: string | null;
+}): PublishedEventSnapshot | null {
   const commitPaths = [
     paths.itemRecord,
     paths.closedRecord,
@@ -212,10 +248,19 @@ function publishSnapshot({
     paths.decisionPacket,
   ];
   try {
-    const complete = (): true => {
+    const complete = (candidateApplied: boolean): PublishedEventSnapshot => {
       refreshSourceAfterStatePublish(commitPaths, stateBaseCommit);
+      const publishedGuardedOpenAction =
+        candidateApplied && guardedOpenAction !== null && eventSnapshotMatchesCurrent(paths)
+          ? guardedOpenAction
+          : null;
+      if (guardedOpenAction !== null && publishedGuardedOpenAction === null) {
+        throw new GuardedOpenPublishRaceError(
+          `Deterministic remain-open guard for ${paths.targetSlug}#${options.itemNumber} lost the publish race; requeue against the latest item revision`,
+        );
+      }
       summary();
-      return true;
+      return { guardedOpenAction: publishedGuardedOpenAction };
     };
     hardResetToRemoteMain();
     const stateRoot = publishRoot();
@@ -224,24 +269,24 @@ function publishSnapshot({
       console.log(
         `Remote already has closed record for ${paths.targetSlug}#${options.itemNumber}; skipping open-record publish`,
       );
-      return complete();
+      return complete(false);
     }
     if (snapshotResult === "remote-newer") {
       console.log(
         `Remote has newer record tuple for ${paths.targetSlug}#${options.itemNumber}; skipping stale event publish`,
       );
-      return complete();
+      return complete(false);
     }
     if (snapshotResult === "missing") {
       console.log(`No event record snapshot for ${paths.targetSlug}#${options.itemNumber}`);
-      return complete();
+      return complete(false);
     }
 
     syncPublishPaths(commitPaths);
     stagePaths(commitPaths);
     if (!hasStagedChanges()) {
       console.log("No event result changes");
-      return complete();
+      return complete(true);
     }
 
     runGit([
@@ -252,12 +297,13 @@ function publishSnapshot({
         commitPaths,
       ),
     ]);
-    if (!pushCommit({ pushAttempts: 3, rebaseStrategy: "reconcile-records" })) return false;
-    return complete();
+    if (!pushCommit({ pushAttempts: 3, rebaseStrategy: "reconcile-records" })) return null;
+    return complete(true);
   } catch (error) {
-    if (error instanceof RecordTupleError) throw error;
+    if (error instanceof RecordTupleError || error instanceof GuardedOpenPublishRaceError)
+      throw error;
     console.error(error instanceof Error ? error.message : String(error));
-    return false;
+    return null;
   }
 }
 
@@ -305,6 +351,20 @@ function writeSummary({
       `- Synced durable comments: ${syncedCount}`,
       `- Closed safe proposals: ${closedCount}`,
       `- Close reasons enabled: ${closeReasons}`,
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+}
+
+function writeGuardedOpenOutput(action: string | null): void {
+  const outputPath = process.env.GITHUB_OUTPUT;
+  if (!outputPath) return;
+  fs.appendFileSync(
+    outputPath,
+    [
+      `guarded_open=${action === null ? "false" : "true"}`,
+      `guarded_open_action=${action ?? ""}`,
       "",
     ].join("\n"),
     "utf8",

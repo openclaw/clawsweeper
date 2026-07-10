@@ -58,6 +58,7 @@ test("exact event publish and routing require a successful fresh review artifact
     publishStart,
   );
   const routeStart = eventReviewJob.indexOf("- name: Route synced ClawSweeper verdict");
+  const reactStart = eventReviewJob.indexOf("- name: React to target item completion");
   const releaseLeaseStart = eventReviewJob.indexOf("- name: Release terminal review leases");
   const confirmTerminalStart = eventReviewJob.indexOf(
     "- name: Confirm terminal item remains closed",
@@ -70,7 +71,9 @@ test("exact event publish and routing require a successful fresh review artifact
   );
   const liveItemStep = eventReviewJob.slice(liveItemStart, setupPnpmStart);
   const publishStep = eventReviewJob.slice(publishStart, implementationStart);
+  const implementationStep = eventReviewJob.slice(implementationStart, routeStart);
   const routeStep = eventReviewJob.slice(routeStart, completeStart);
+  const reactStep = eventReviewJob.slice(reactStart, failStart);
   const releaseLeaseStep = eventReviewJob.slice(releaseLeaseStart, confirmTerminalStart);
   const confirmTerminalStep = eventReviewJob.slice(confirmTerminalStart, completeStart);
   const failStep = eventReviewJob.slice(failStart, leaseCompleteStart);
@@ -93,8 +96,20 @@ test("exact event publish and routing require a successful fresh review artifact
   assert.match(publishStep, /Exact review produced no artifact for open item/);
   assert.match(publisher, /"--event-apply-proof"/);
   assert.match(publisher, /exactEventApplyProof\(/);
+  assert.match(publisher, /guarded_open=/);
+  assert.match(publisher, /class GuardedOpenPublishRaceError extends Error/);
+  assert.match(publisher, /guardedOpenAction !== null && publishedGuardedOpenAction === null/);
+  assert.match(publisher, /error instanceof GuardedOpenPublishRaceError/);
   assert.doesNotMatch(publisher, /entry\.action === "review_comment_synced"/);
+  assert.match(implementationStep, /steps\.publish-event-result\.outputs\.guarded_open != 'true'/);
   assert.match(routeStep, /steps\.publish-event-result\.outputs\.terminal_noop != 'true'/);
+  assert.match(routeStep, /steps\.publish-event-result\.outputs\.guarded_open != 'true'/);
+  assert.match(
+    eventReviewJob,
+    /GUARDED_OPEN: \$\{\{ steps\.publish-event-result\.outputs\.guarded_open \}\}/,
+  );
+  assert.match(eventReviewJob, /deterministic remain-open guard/);
+  assert.match(reactStep, /steps\.publish-event-result\.outputs\.guarded_open == 'true'/);
   assert.match(releaseLeaseStep, /steps\.publish-event-result\.outputs\.terminal_noop == 'true'/);
   assert.match(releaseLeaseStep, /clawsweeper-review-lease item=\$ITEM_NUMBER/);
   assert.match(releaseLeaseStep, /--method DELETE/);
@@ -107,6 +122,7 @@ test("exact event publish and routing require a successful fresh review artifact
   assert.match(eventReviewJob, /terminal review leases were released/);
   assert.match(failStep, /steps\.live-item\.outputs\.proceed != 'false'/);
   assert.match(failStep, /steps\.publish-event-result\.outputs\.terminal_noop != 'true'/);
+  assert.match(failStep, /steps\.publish-event-result\.outputs\.guarded_open != 'true'/);
 });
 
 test("dashboard syncs Worker secrets with durable lifecycle storage", () => {

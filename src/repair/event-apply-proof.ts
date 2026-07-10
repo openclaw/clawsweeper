@@ -7,20 +7,53 @@ export type EventApplyAction = {
   terminalStateVerified: boolean;
 };
 
+const GUARDED_OPEN_ACTIONS = new Set([
+  "skipped_locked_conversation",
+  "skipped_maintainer_authored",
+  "skipped_open_closing_pr",
+  "skipped_protected_label",
+  "skipped_same_author_pair",
+]);
+
 export function exactEventApplyProof(
   actions: readonly EventApplyAction[],
   itemNumber: number,
+  snapshotActionTaken: string | null,
 ): {
   exactActions: EventApplyAction[];
   syncedCount: number;
   terminalCount: number;
+  guardedOpenAction: string | null;
+  latestRevisionRequeueRequired: boolean;
 } {
   const exactActions = actions.filter((entry) => entry.number === itemNumber);
+  const soleExactAction =
+    actions.length === 1 && exactActions.length === 1 ? (exactActions[0]?.action ?? "") : "";
   return {
     exactActions,
     syncedCount: exactActions.filter((entry) => entry.durableReviewSynced).length,
     terminalCount: exactActions.filter((entry) => entry.terminalStateVerified).length,
+    guardedOpenAction:
+      snapshotActionTaken === soleExactAction && GUARDED_OPEN_ACTIONS.has(soleExactAction)
+        ? soleExactAction
+        : null,
+    latestRevisionRequeueRequired:
+      snapshotActionTaken === "skipped_changed_since_review" &&
+      soleExactAction === "skipped_changed_since_review",
   };
+}
+
+export function eventRecordActionTaken(markdown: string | null): string | null {
+  if (markdown === null) return null;
+  const normalized = markdown.replace(/\r\n/g, "\n");
+  if (!normalized.startsWith("---\n")) return null;
+  const end = normalized.indexOf("\n---", 4);
+  if (end === -1) return null;
+  for (const line of normalized.slice(4, end).split("\n")) {
+    const match = /^action_taken:\s*([a-z0-9_]+)\s*$/.exec(line);
+    if (match?.[1]) return match[1];
+  }
+  return null;
 }
 
 export function eventApplyAction(value: LooseRecord): EventApplyAction {
