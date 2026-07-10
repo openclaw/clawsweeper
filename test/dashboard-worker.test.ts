@@ -1002,7 +1002,7 @@ test("exact-review queue requeues a verified source drift exactly once without f
   await storage.put("exact-review-queue", {
     deliveries: {},
     items: {
-      "openclaw/openclaw#713": leasedExactReviewQueueItem(713, "drift-run"),
+      "openclaw/openclaw#713": leasedExactReviewQueueItem(713, "9113"),
     },
   });
   const queue = new ExactReviewQueue({ storage }, {});
@@ -1012,7 +1012,7 @@ test("exact-review queue requeues a verified source drift exactly once without f
         method: "POST",
         body: JSON.stringify({
           lease_id: "lease-713",
-          run_id: "drift-run",
+          run_id: "9113",
           run_attempt: 1,
           outcome: "success",
           requeue_latest: true,
@@ -1036,6 +1036,32 @@ test("exact-review queue requeues a verified source drift exactly once without f
   };
   assert.equal(Object.keys(replayedState.items).length, 1);
   assert.equal(replayedState.items["openclaw/openclaw#713"].state, "pending");
+  const reconciled = await queue.fetch(
+    new Request("https://clawsweeper-exact-review-queue/reconcile", {
+      method: "POST",
+      body: JSON.stringify({
+        runs: [
+          {
+            run_id: "9113",
+            run_attempt: 1,
+            claimed_run_attempt: 1,
+            claim_generation: 1,
+            outcome: "success",
+          },
+        ],
+      }),
+    }),
+  );
+  assert.deepEqual(await reconciled.json(), {
+    ok: true,
+    reconciled: 0,
+    requeued: 0,
+    completed: 0,
+  });
+  const reconciledState = (await storage.get("exact-review-queue")) as {
+    items: Record<string, Record<string, unknown>>;
+  };
+  assert.equal(reconciledState.items["openclaw/openclaw#713"].state, "pending");
 });
 
 test("exact-review source-drift requeue preserves an already-enqueued latest decision", async () => {

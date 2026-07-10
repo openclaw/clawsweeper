@@ -851,7 +851,7 @@ jobs:
           echo "confirmed=true" >> "$GITHUB_OUTPUT"
 
       - name: Mark re-review complete
-        if: ${{ always() && steps.setup-pnpm.outcome == 'success' && (steps.live-item.outputs.proceed == 'true' || steps.live-item.outputs.terminal_missing == 'true' || steps.live-item.outputs.guarded_open == 'true' || steps.confirm-terminal-item.outputs.confirmed == 'true') }}
+        if: ${{ always() && steps.setup-pnpm.outcome == 'success' && steps.publish-event-result.outputs.requeue_latest != 'true' && (steps.live-item.outputs.proceed == 'true' || steps.live-item.outputs.terminal_missing == 'true' || steps.live-item.outputs.guarded_open == 'true' || steps.confirm-terminal-item.outputs.confirmed == 'true') }}
         continue-on-error: true
         env:
           GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
@@ -1092,6 +1092,26 @@ jobs:
             fi
           done
           exit 1
+
+      - name: Mark source-drift re-review queued
+        if: ${{ always() && steps.setup-pnpm.outcome == 'success' && steps.publish-event-result.outputs.requeue_latest == 'true' && steps.complete-exact-review-queue.outcome == 'success' }}
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
+          TARGET_REPO: ${{ steps.target.outputs.target_repo }}
+          ITEM_NUMBER: ${{ steps.target.outputs.item_number }}
+          COMMAND_STATUS_MARKER: ${{ github.event.client_payload.review_options.command_status_marker || github.event.client_payload.command_status_marker || '' }}
+          STATUS_COMMENT_ID: ${{ github.event.client_payload.review_options.status_comment_id || github.event.client_payload.status_comment_id || '' }}
+          RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          pnpm run repair:update-command-status -- \
+            --repo "$TARGET_REPO" \
+            --item-number "$ITEM_NUMBER" \
+            --marker "$COMMAND_STATUS_MARKER" \
+            --status-comment-id "$STATUS_COMMENT_ID" \
+            --state "Complete" \
+            --detail "The item changed after review; the queue acknowledged one fresh review of the latest state." \
+            --run-url "$RUN_URL"
 
       - name: Fail unacknowledged source-drift requeue
         if: ${{ always() && steps.publish-event-result.outputs.requeue_latest == 'true' && steps.complete-exact-review-queue.outcome != 'success' }}

@@ -301,10 +301,13 @@ test("exact event publish and routing require a successful fresh review artifact
     eventReviewJob,
     /Fail unacknowledged source-drift requeue[\s\S]*steps\.complete-exact-review-queue\.outcome != 'success'/,
   );
-  const reReviewStatus = eventReviewJob.indexOf("- name: Mark re-review complete");
+  const reReviewStatus = eventReviewJob.indexOf("- name: Mark source-drift re-review queued");
   const completeQueue = eventReviewJob.indexOf("- name: Complete exact-review queue lease");
-  assert.ok(reReviewStatus > 0 && completeQueue > reReviewStatus);
-  assert.match(eventReviewJob, /This run is returning it to the exact-review queue/);
+  assert.ok(completeQueue > 0 && reReviewStatus > completeQueue);
+  assert.match(
+    eventReviewJob,
+    /Mark source-drift re-review queued[\s\S]*steps\.complete-exact-review-queue\.outcome == 'success'/,
+  );
   assert.match(
     eventReviewJob,
     /React to target item completion[\s\S]*steps\.publish-event-result\.outputs\.policy_noop == 'true'/,
