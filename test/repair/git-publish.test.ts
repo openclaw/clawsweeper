@@ -832,6 +832,152 @@ test("reconcile-records quarantines an ambiguous valid tuple without blocking in
   );
 });
 
+test("reconcile-records retries after a full push batch loses continuous state races", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-publish-"));
+  const origin = path.join(root, "origin.git");
+  const work = path.join(root, "work");
+  const other = path.join(root, "other");
+  const recordsRoot = "records/openclaw-openclaw";
+  run("git", ["init", "--bare", origin], root);
+  run("git", ["clone", origin, work], root);
+  configureUser(work);
+  writeRecordTuple(work, {
+    number: 41,
+    marker: "base local tuple",
+    reviewedAt: "2026-07-09T23:00:00.000Z",
+    itemUpdatedAt: "2026-07-09T22:59:00Z",
+  });
+  run("git", ["add", "."], work);
+  run("git", ["commit", "-m", "initial"], work);
+  run("git", ["push", "origin", "HEAD:main"], work);
+  run("git", ["--git-dir", origin, "symbolic-ref", "HEAD", "refs/heads/main"], root);
+  run("git", ["checkout", "-B", "main", "origin/main"], work);
+
+  run("git", ["clone", origin, other], root);
+  configureUser(other);
+  const firstRemoteTuple = writeRecordTuple(other, {
+    number: 42,
+    marker: "first exact event race",
+    reviewedAt: "2026-07-09T23:01:00.000Z",
+    itemUpdatedAt: "2026-07-09T23:00:00Z",
+  });
+  run("git", ["add", "."], other);
+  run("git", ["commit", "-m", "first exact event"], other);
+  const firstRemoteCommit = run("git", ["rev-parse", "HEAD"], other).trim();
+  const secondRemoteTuple = writeRecordTuple(other, {
+    number: 43,
+    marker: "second exact event race",
+    reviewedAt: "2026-07-09T23:02:00.000Z",
+    itemUpdatedAt: "2026-07-09T23:01:00Z",
+  });
+  run("git", ["add", "."], other);
+  run("git", ["commit", "-m", "second exact event"], other);
+  run("git", ["push", "origin", `${firstRemoteCommit}:main`], other);
+  installSecondPushRaceHook(work, other);
+
+  const localTuple = writeRecordTuple(work, {
+    number: 41,
+    marker: "broad reconciliation",
+    reviewedAt: "2026-07-09T23:03:00.000Z",
+    itemUpdatedAt: "2026-07-09T23:02:00Z",
+  });
+  const result = withCwd(work, () =>
+    publishMainCommit({
+      message: "chore: publish broad reconciliation",
+      paths: [recordsRoot],
+      maxAttempts: 1,
+      pushAttempts: 1,
+      rebaseStrategy: "reconcile-records",
+    }),
+  );
+
+  assert.equal(result, "committed");
+  assert.equal(
+    run("git", ["--git-dir", origin, "show", `main:${recordsRoot}/items/41.md`], root),
+    localTuple.primary,
+  );
+  assert.equal(
+    run("git", ["--git-dir", origin, "show", `main:${recordsRoot}/items/42.md`], root),
+    firstRemoteTuple.primary,
+  );
+  assert.equal(
+    run("git", ["--git-dir", origin, "show", `main:${recordsRoot}/items/43.md`], root),
+    secondRemoteTuple.primary,
+  );
+});
+
+test("reconcile-records retries unchanged normalization through continuous state races", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-publish-"));
+  const origin = path.join(root, "origin.git");
+  const work = path.join(root, "work");
+  const other = path.join(root, "other");
+  const recordsRoot = "records/openclaw-openclaw";
+  run("git", ["init", "--bare", origin], root);
+  run("git", ["clone", origin, work], root);
+  configureUser(work);
+  const baseTuple = writeRecordTuple(work, {
+    number: 41,
+    marker: "newer base tuple",
+    reviewedAt: "2026-07-09T23:03:00.000Z",
+    itemUpdatedAt: "2026-07-09T23:02:00Z",
+  });
+  run("git", ["add", "."], work);
+  run("git", ["commit", "-m", "initial"], work);
+  run("git", ["push", "origin", "HEAD:main"], work);
+  run("git", ["--git-dir", origin, "symbolic-ref", "HEAD", "refs/heads/main"], root);
+  run("git", ["checkout", "-B", "main", "origin/main"], work);
+
+  run("git", ["clone", origin, other], root);
+  configureUser(other);
+  const firstRemoteTuple = writeRecordTuple(other, {
+    number: 42,
+    marker: "first exact event race",
+    reviewedAt: "2026-07-09T23:04:00.000Z",
+    itemUpdatedAt: "2026-07-09T23:03:00Z",
+  });
+  run("git", ["add", "."], other);
+  run("git", ["commit", "-m", "first exact event"], other);
+  const firstRemoteCommit = run("git", ["rev-parse", "HEAD"], other).trim();
+  const secondRemoteTuple = writeRecordTuple(other, {
+    number: 43,
+    marker: "second exact event race",
+    reviewedAt: "2026-07-09T23:05:00.000Z",
+    itemUpdatedAt: "2026-07-09T23:04:00Z",
+  });
+  run("git", ["add", "."], other);
+  run("git", ["commit", "-m", "second exact event"], other);
+  run("git", ["push", "origin", `${firstRemoteCommit}:main`], other);
+  installSecondPushRaceHook(work, other);
+
+  writeRecordTuple(work, {
+    number: 41,
+    marker: "stale broad reconciliation",
+    reviewedAt: "2026-07-09T23:00:00.000Z",
+    itemUpdatedAt: "2026-07-09T22:59:00Z",
+  });
+  const result = withCwd(work, () =>
+    publishMainCommit({
+      message: "chore: discard stale broad reconciliation",
+      paths: [recordsRoot],
+      maxAttempts: 1,
+      pushAttempts: 1,
+      rebaseStrategy: "reconcile-records",
+    }),
+  );
+
+  assert.equal(result, "unchanged");
+  for (const [number, tuple] of [
+    [41, baseTuple],
+    [42, firstRemoteTuple],
+    [43, secondRemoteTuple],
+  ]) {
+    assert.equal(
+      run("git", ["--git-dir", origin, "show", `main:${recordsRoot}/items/${number}.md`], root),
+      tuple.primary,
+    );
+  }
+});
+
 test("reconcile-records rejects a malformed tuple before an uncontended push", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-publish-"));
   const origin = path.join(root, "origin.git");

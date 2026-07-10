@@ -34,6 +34,7 @@ checkpoint, and status-only commits are intentionally omitted.
 ### Fixed
 
 - Bounded broad reconciliation with batched Git I/O and tuple checkpoints that report progress and resume safely under concurrent state writers.
+- Retried tuple-safe broad reconciliation after full push batches lose continuous exact-state races, including candidates that normalize to no changes.
 - Serialized explicit workflow-dispatch planners through a non-dropping target queue and accounted for recovery runs by their requested or live shards, preventing overlapping target planning and false 89-shard reservations without undercounting multi-shard retries.
 - Reconciled terminal exact-review runs by requested run instead of sampling the first 32 claimed leases, while preserving attempt and claim-generation guards across larger worker waves.
 - Dequeued already-closed exact-review events before setup and treated items closed during review as terminal no-ops, preventing permanent retry churn from consuming live worker capacity.
