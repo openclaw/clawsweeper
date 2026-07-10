@@ -280,9 +280,10 @@ export function ghStdoutFromError(error: unknown): string {
 function resolveRetryOptions(options: GhRetryOptions | number): GhRetryOptions {
   if (typeof options === "number") return { attempts: options };
   if (options.attempts !== undefined) return options;
-  const configuredAttempts = Number(
-    options.env?.CLAWSWEEPER_GH_RETRY_ATTEMPTS ?? process.env.CLAWSWEEPER_GH_RETRY_ATTEMPTS,
-  );
+  const configuredValue =
+    options.env?.CLAWSWEEPER_GH_RETRY_ATTEMPTS ?? process.env.CLAWSWEEPER_GH_RETRY_ATTEMPTS;
+  if (configuredValue == null || configuredValue.trim() === "") return options;
+  const configuredAttempts = Number(configuredValue);
   if (!Number.isFinite(configuredAttempts)) return options;
   return { ...options, attempts: Math.max(1, Math.floor(configuredAttempts)) };
 }
