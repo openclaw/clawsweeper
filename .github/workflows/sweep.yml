@@ -818,7 +818,8 @@ jobs:
         run: exit 1
 
       - name: Complete exact-review queue lease
-        if: ${{ success() && steps.review-exact-event-item.outcome == 'success' && steps.publish-event-result.outcome == 'success' && steps.route-synced-verdict.outcome == 'success' }}
+        if: ${{ always() }}
+        continue-on-error: true
         env:
           JOB_STATUS: ${{ job.status }}
           QUEUE_LEASE_ID: ${{ github.event.client_payload.queue_lease_id }}
@@ -856,10 +857,6 @@ jobs:
             fi
           done
           exit 1
-
-      - name: Fail unsuccessful exact review
-        if: ${{ always() && (steps.review-exact-event-item.outcome != 'success' || steps.publish-event-result.outcome != 'success' || steps.route-synced-verdict.outcome != 'success') }}
-        run: exit 1
 
   target-fanout:
     name: Fan out target repository sweeps

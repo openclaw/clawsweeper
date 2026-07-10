@@ -2184,6 +2184,7 @@ test("sweep workflow executes only durable queue leases without runner-side admi
   assert.ok(inProgressStatusIndex > setupPnpmIndex);
   assert.ok(setupCodexIndex > inProgressStatusIndex);
   assert.ok(exactReviewIndex > setupCodexIndex);
+  assert.equal(eventReviewBlock.match(/- name: Fail unsuccessful exact review/g)?.length, 1);
   assert.ok(failReviewIndex > exactReviewIndex);
   assert.ok(completeLeaseIndex > failReviewIndex);
   assert.match(eventReviewBlock, /\/internal\/exact-review\/claim/);
@@ -2203,6 +2204,8 @@ test("sweep workflow executes only durable queue leases without runner-side admi
     /steps\.route-synced-verdict\.outcome != 'success'/,
   );
   assert.match(completeLeaseStep, /JOB_STATUS: \$\{\{ job\.status \}\}/);
+  assert.match(completeLeaseStep, /if: \$\{\{ always\(\) \}\}/);
+  assert.match(completeLeaseStep, /continue-on-error: true/);
   assert.match(completeLeaseStep, /RUN_ATTEMPT: \$\{\{ github\.run_attempt \}\}/);
   assert.match(completeLeaseStep, /process\.env\.JOB_STATUS === "cancelled"/);
   assert.match(completeLeaseStep, /run_attempt: runAttempt/);

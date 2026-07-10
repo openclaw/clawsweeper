@@ -203,6 +203,10 @@ is `{ "runs": [{ "run_id": "<run-id>", "run_attempt": 1 }] }`, signed over the
 exact bytes with `CLAWSWEEPER_WEBHOOK_SECRET` in
 `x-clawsweeper-exact-review-signature: sha256=<hmac>`.
 
+Keep the sweep workflow disabled and wait for `/api/exact-review-queue` to show
+both `dispatching: 0` and `leased: 0` before deploying this Worker revision.
 Deploy the Worker route from the reviewed revision before merging or enabling
-any workflow that calls the reconciliation endpoint. This keeps workflow
-finalizers compatible throughout a staged rollout.
+any workflow that calls the reconciliation endpoint. The dashboard deployment
+smoke test must observe HTTP 401 from an unsigned reconciliation request; HTTP
+404 means the old Worker is still serving. This order keeps legacy finalizers
+from creating provisional successes before the terminal-run backstop exists.

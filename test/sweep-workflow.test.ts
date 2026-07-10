@@ -73,6 +73,7 @@ test("exact event publish and routing require a successful fresh review artifact
 
 test("dashboard syncs Worker secrets with durable lifecycle storage", () => {
   const workflow = readText(".github/workflows/dashboard.yml");
+  const smoke = readText("scripts/dashboard-smoke.mjs");
   const config = readText("dashboard/wrangler.toml");
 
   assert.doesNotMatch(workflow, /storage\/kv\/namespaces/);
@@ -84,6 +85,9 @@ test("dashboard syncs Worker secrets with durable lifecycle storage", () => {
   assert.match(workflow, /Content-Type: application\/merge-patch\+json/);
   assert.match(workflow, /jq -e '\.success == true'/);
   assert.doesNotMatch(workflow, /wrangler@[^\s]+ secret bulk/);
+  assert.match(smoke, /\/internal\/exact-review\/reconcile/);
+  assert.match(smoke, /method: "POST"/);
+  assert.match(smoke, /reconcileResponse\.status !== 401/);
 });
 
 test("dashboard CI refreshes on cadence without completion-trigger storms", () => {

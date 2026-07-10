@@ -29,6 +29,17 @@ async function main() {
     }
   }
 
+  const reconcileResponse = await fetch(`${baseUrl}/internal/exact-review/reconcile`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: "{}",
+  });
+  if (reconcileResponse.status !== 401) {
+    throw new Error(
+      `${baseUrl}/internal/exact-review/reconcile returned ${reconcileResponse.status}, expected 401`,
+    );
+  }
+
   const html = await fetchText(`${baseUrl}/`);
   if (!html.includes("ClawSweeper Live")) throw new Error("dashboard HTML title missing");
   if (!html.includes("System Overview")) throw new Error("dashboard system overview missing");
@@ -44,6 +55,7 @@ async function main() {
         worker_details: status.workers.length,
         pipeline_rows: status.pipeline.length,
         exact_review_queue: exactReviewQueue,
+        exact_review_reconcile_status: reconcileResponse.status,
         cache_state: cacheState,
         status_fetch_ms: statusFetchMs,
         diagnostic_errors: status.diagnostics?.errors || [],
