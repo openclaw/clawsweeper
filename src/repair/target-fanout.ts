@@ -328,8 +328,8 @@ function fanoutMode(value: string): FanoutMode {
   throw new Error(`unsupported fanout mode: ${value}`);
 }
 
-function defaultLimit(mode: FanoutMode): string {
-  if (mode === "hot-intake") return "6";
+export function defaultLimit(mode: FanoutMode): string {
+  if (mode === "hot-intake") return "10";
   if (mode === "normal-review") return "6";
   return "12";
 }

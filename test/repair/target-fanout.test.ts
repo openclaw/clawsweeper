@@ -6,6 +6,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import {
+  defaultLimit,
   filterEligibleRepositories,
   selectRepositories,
   type InventoryConfig,
@@ -21,6 +22,12 @@ const config: InventoryConfig = {
   includeForks: false,
   requireIssues: true,
 };
+
+test("target fanout defaults match the scheduled cursor batch sizes", () => {
+  assert.equal(defaultLimit("hot-intake"), "10");
+  assert.equal(defaultLimit("normal-review"), "6");
+  assert.equal(defaultLimit("audit"), "12");
+});
 
 test("target fanout filters eligible repositories conservatively", () => {
   const repositories: ListedRepository[] = [
