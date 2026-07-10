@@ -90,7 +90,15 @@ test("fix prompt makes Codex own the validation loop", () => {
   });
 
   assert.match(prompt, /Validation loop:/);
-  assert.match(prompt, /use one repair loop: rebase to latest main/);
+  assert.match(prompt, /establish one base snapshot for this Codex edit pass/);
+  assert.match(prompt, /pin that base SHA while editing and validating/);
+  assert.match(
+    prompt,
+    /do not refetch, rebase, or rerun validation solely because origin\/main advances/,
+  );
+  assert.match(prompt, /ClawSweeper performs one deterministic final base sync/);
+  assert.match(prompt, /use one repair loop against the pinned base/);
+  assert.doesNotMatch(prompt, /always fetch latest origin\/main/);
   assert.match(prompt, /run the changed-surface validation in this checkout before returning/);
   assert.match(prompt, /expected validation commands: pnpm check:changed ; pnpm test:repair/);
   assert.match(prompt, /fix the failure and rerun until it passes/);
@@ -116,7 +124,8 @@ test("automerge fix prompt makes Codex own PR repair, rebase, and CI discovery",
 
   assert.match(prompt, /automerge repair loop: treat this as direct PR repair work/);
   assert.match(prompt, /read-only `gh` commands are allowed/);
-  assert.match(prompt, /rebase this branch onto latest origin\/main yourself/);
+  assert.match(prompt, /if no successful deterministic pre-edit rebase was supplied/);
+  assert.match(prompt, /fetch origin\/main and rebase this branch once/);
   assert.match(prompt, /fix failing CI\/checks for this PR/);
   assert.match(prompt, /failed exact-head checks are repair scope for automerge/);
   assert.match(prompt, /outside likely_files/);
@@ -150,7 +159,9 @@ test("fix prompt includes rebase and previous no-diff recovery details", () => {
   });
 
   assert.match(prompt, /Edit attempt: 1 of 5/);
-  assert.match(prompt, /always fetch latest origin\/main and rebase or otherwise sync/);
+  assert.match(prompt, /use the supplied deterministic pre-edit rebase when it already succeeded/);
+  assert.match(prompt, /otherwise fetch origin\/main once and rebase or otherwise sync once/);
+  assert.doesNotMatch(prompt, /always fetch latest origin\/main/);
   assert.match(prompt, /Existing repair branch detected/);
   assert.match(prompt, /Source head before edit: abc123/);
   assert.match(prompt, /Deterministic pre-edit rebase: conflicts onto origin\/main \(def456\)/);
