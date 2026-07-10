@@ -22,6 +22,11 @@ import {
 } from "./external-messages.js";
 import { runCommand as run } from "./command-runner.js";
 import {
+  remainingRepairBudgetMs,
+  repairTimeoutBudgetFromEnv,
+  repairWorkerTimeoutMs,
+} from "./execute-fix-timeout-budget.js";
+import {
   codexJsonlFailureDetail,
   codexRetryDelayMs,
   isCodexContextLimitError,
@@ -154,16 +159,8 @@ const latest = Boolean(args.latest);
 const dryRun = Boolean(args["dry-run"] || process.env.CLAWSWEEPER_FIX_DRY_RUN === "1");
 const model = String(args.model ?? process.env.CLAWSWEEPER_MODEL ?? "internal");
 const executionModelArgs = codexModelArgs(model);
-const requestedCodexTimeoutMs = Number(
-  process.env.CLAWSWEEPER_FIX_CODEX_TIMEOUT_MS ?? 25 * 60 * 1000,
-);
-const fixStepTimeoutMs = Number(process.env.CLAWSWEEPER_FIX_STEP_TIMEOUT_MS ?? 40 * 60 * 1000);
-const fixTimeoutReserveMs = Number(
-  process.env.CLAWSWEEPER_FIX_TIMEOUT_RESERVE_MS ?? 10 * 60 * 1000,
-);
-const codexTimeoutMs = Math.min(
-  requestedCodexTimeoutMs,
-  Math.max(60 * 1000, fixStepTimeoutMs - fixTimeoutReserveMs),
+const { codexTimeoutMs, fixStepTimeoutMs, lateWorkerReserveMs } = repairTimeoutBudgetFromEnv(
+  process.env,
 );
 const codexPreflightTimeoutMs = Number(
   process.env.CLAWSWEEPER_FIX_PREFLIGHT_TIMEOUT_MS ?? 2 * 60 * 1000,
@@ -327,8 +324,13 @@ function runGitNetwork(args: string[], cwd: string = targetDir) {
   });
 }
 
-function currentCodexTimeoutMs() {
-  return boundedTimeout(codexTimeoutMs, remainingFixStepBudgetMs());
+function currentCodexTimeoutMs(preserveLateWorkerBudget = false) {
+  return repairWorkerTimeoutMs({
+    requestedTimeoutMs: codexTimeoutMs,
+    remainingBudgetMs: remainingFixStepBudgetMs(),
+    minimumTimeoutMs: minTargetCommandTimeoutMs,
+    preserveMs: preserveLateWorkerBudget ? lateWorkerReserveMs : 0,
+  });
 }
 
 function spawnCodexSyncWithHeartbeat(
@@ -385,8 +387,12 @@ function stopCodexHeartbeat(child: ChildProcess) {
 
 function remainingFixStepBudgetMs() {
   const elapsedMs = Date.now() - scriptStartedAt.getTime();
-  const remainingMs = fixStepTimeoutMs - elapsedMs - reportReserveMs;
-  return Math.max(minTargetCommandTimeoutMs, remainingMs);
+  return remainingRepairBudgetMs({
+    elapsedMs,
+    fixStepTimeoutMs,
+    reportReserveMs,
+    minimumTimeoutMs: minTargetCommandTimeoutMs,
+  });
 }
 
 function defaultFixWorkRoot(resultPath: string) {
@@ -2070,7 +2076,7 @@ function editValidatePrepareMerge({
         isAutomergeRepair: isAutomergeRepairJob(),
       });
       const summaryPath = path.join(workRoot, `${mode}-codex-summary-${attempt}.md`);
-      const workerTimeoutMs = currentCodexTimeoutMs();
+      const workerTimeoutMs = currentCodexTimeoutMs(true);
       logProgress("starting Codex edit pass", {
         mode,
         attempt,
@@ -2468,7 +2474,7 @@ function runCodexBaseReconcile({
       workRoot,
       `${mode}-final-base-reconcile-summary-${attempt}-${codexAttempt}.md`,
     );
-    const reconcileTimeoutMs = currentCodexTimeoutMs();
+    const reconcileTimeoutMs = currentCodexTimeoutMs(true);
     const codexResult = spawnCodexSyncWithHeartbeat(
       `Codex final rebase worker ${mode} attempt ${attempt}.${codexAttempt}`,
       [

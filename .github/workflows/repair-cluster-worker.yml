@@ -396,7 +396,7 @@ jobs:
     needs: cluster
     if: ${{ needs.cluster.result == 'success' && needs.cluster.outputs.job_exists == '1' && (inputs.mode == 'execute' || inputs.mode == 'autonomous') && !inputs.dry_run }}
     runs-on: ${{ inputs.execution_runner }}
-    timeout-minutes: 45
+    timeout-minutes: 75
     env:
       CLAWSWEEPER_ALLOWED_OWNER: ${{ vars.CLAWSWEEPER_ALLOWED_OWNER || 'openclaw' }}
       CLAWSWEEPER_ALLOW_EXECUTE: ${{ needs.cluster.outputs.allow_execute == '1' && '1' || '0' }}
@@ -404,9 +404,9 @@ jobs:
       CLAWSWEEPER_ALLOW_MERGE: ${{ needs.cluster.outputs.allow_merge || '0' }}
       CLAWSWEEPER_CODEX_REASONING_EFFORT: ${{ vars.CLAWSWEEPER_CODEX_REASONING_EFFORT || 'high' }}
       CLAWSWEEPER_CODEX_REVIEW_ATTEMPTS: ${{ vars.CLAWSWEEPER_CODEX_REVIEW_ATTEMPTS || '4' }}
-      CLAWSWEEPER_FIX_CODEX_TIMEOUT_MS: ${{ vars.CLAWSWEEPER_FIX_CODEX_TIMEOUT_MS || '1200000' }}
-      CLAWSWEEPER_FIX_STEP_TIMEOUT_MS: "2400000"
-      CLAWSWEEPER_FIX_TIMEOUT_RESERVE_MS: ${{ vars.CLAWSWEEPER_FIX_TIMEOUT_RESERVE_MS || '300000' }}
+      CLAWSWEEPER_FIX_CODEX_TIMEOUT_MS: ${{ vars.CLAWSWEEPER_FIX_CODEX_TIMEOUT_MS || '1800000' }}
+      CLAWSWEEPER_FIX_STEP_TIMEOUT_MS: ${{ vars.CLAWSWEEPER_FIX_STEP_TIMEOUT_MS || '4200000' }}
+      CLAWSWEEPER_FIX_TIMEOUT_RESERVE_MS: ${{ vars.CLAWSWEEPER_FIX_TIMEOUT_RESERVE_MS || '1800000' }}
       CLAWSWEEPER_FIX_PREFLIGHT_TIMEOUT_MS: ${{ vars.CLAWSWEEPER_FIX_PREFLIGHT_TIMEOUT_MS || '120000' }}
       CLAWSWEEPER_RESOLVE_REVIEW_THREADS: ${{ vars.CLAWSWEEPER_RESOLVE_REVIEW_THREADS || '1' }}
       CLAWSWEEPER_TARGET_VALIDATION_MODE: ${{ vars.CLAWSWEEPER_TARGET_VALIDATION_MODE || 'changed-only' }}
@@ -576,7 +576,7 @@ jobs:
       - name: Execute credited fix artifact
         id: execute_fix
         if: ${{ steps.check_job.outputs.job_exists == '1' && steps.self_heal_head.outputs.matched != 'false' && env.CLAWSWEEPER_ALLOW_EXECUTE == '1' && env.CLAWSWEEPER_ALLOW_FIX_PR == '1' }}
-        timeout-minutes: 40
+        timeout-minutes: 70
         env:
           GH_TOKEN: ${{ steps.target_write_token.outputs.token }}
           CLAWSWEEPER_ALLOWED_OWNER: ${{ steps.target.outputs.target_owner }}

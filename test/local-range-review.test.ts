@@ -37,7 +37,7 @@ test("buildLocalRangeReview synthesizes a PR item + offline diff from the local 
   try {
     writeFileSync(join(dir, "keep.txt"), "base\n");
     git(dir, "add", "keep.txt");
-    git(dir, "commit", "-q", "-m", "init");
+    git(dir, "commit", "-q", "--author", "Range Tester <test@example.com>", "-m", "init");
     // a ref at the base commit, so HEAD is one commit ahead of it
     git(dir, "branch", "base-ref");
 
@@ -46,7 +46,15 @@ test("buildLocalRangeReview synthesizes a PR item + offline diff from the local 
     writeFileSync(join(dir, "feature.txt"), "hello world\n");
     writeFileSync(join(dir, "keep.txt"), "base\nmore\n");
     git(dir, "add", "feature.txt", "keep.txt");
-    git(dir, "commit", "-q", "-m", "feat: add a feature\n\nthis is the body line");
+    git(
+      dir,
+      "commit",
+      "-q",
+      "--author",
+      "Range Tester <test@example.com>",
+      "-m",
+      "feat: add a feature\n\nthis is the body line",
+    );
 
     const headSha = git(dir, "rev-parse", "HEAD");
     const committedAt = git(dir, "log", "-1", "--format=%cI", "HEAD");

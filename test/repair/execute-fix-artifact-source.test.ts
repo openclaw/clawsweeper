@@ -4,6 +4,30 @@ import test from "node:test";
 
 import { readText } from "../helpers.ts";
 
+test("repair workflow and executor share coherent production timeout defaults", () => {
+  const source = readText(path.join(process.cwd(), "src/repair/execute-fix-artifact.ts"));
+  const workflow = readText(
+    path.join(process.cwd(), ".github/workflows/repair-cluster-worker.yml"),
+  );
+
+  assert.match(source, /repairTimeoutBudgetFromEnv\(\s*process\.env,?\s*\)/);
+  assert.match(source, /currentCodexTimeoutMs\(true\)/);
+  assert.match(workflow, /timeout-minutes: 75/);
+  assert.match(
+    workflow,
+    /CLAWSWEEPER_FIX_CODEX_TIMEOUT_MS: \$\{\{ vars\.CLAWSWEEPER_FIX_CODEX_TIMEOUT_MS \|\| '1800000' \}\}/,
+  );
+  assert.match(
+    workflow,
+    /CLAWSWEEPER_FIX_STEP_TIMEOUT_MS: \$\{\{ vars\.CLAWSWEEPER_FIX_STEP_TIMEOUT_MS \|\| '4200000' \}\}/,
+  );
+  assert.match(
+    workflow,
+    /CLAWSWEEPER_FIX_TIMEOUT_RESERVE_MS: \$\{\{ vars\.CLAWSWEEPER_FIX_TIMEOUT_RESERVE_MS \|\| '1800000' \}\}/,
+  );
+  assert.match(workflow, /name: Execute credited fix artifact[\s\S]*timeout-minutes: 70/);
+});
+
 test("no-op automerge repair updates outcome and re-enters router before exit", () => {
   const sourcePath = path.join(process.cwd(), "src/repair/execute-fix-artifact.ts");
   const source = readText(sourcePath);

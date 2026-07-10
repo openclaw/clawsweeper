@@ -28,7 +28,7 @@ function initRepo(): string {
   git(dir, "config", "commit.gpgsign", "false");
   writeFileSync(join(dir, "a.txt"), "1\n");
   git(dir, "add", "a.txt");
-  git(dir, "commit", "-q", "-m", "init");
+  git(dir, "commit", "-q", "--author", "Test Author <test@example.com>", "-m", "init");
   return dir;
 }
 

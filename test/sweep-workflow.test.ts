@@ -9,7 +9,7 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import test from "node:test";
 
 import { makeTreeReadOnlyForTest, restoreTreeModesForTest } from "../dist/clawsweeper.js";
@@ -929,6 +929,8 @@ test("apply workflow drops a coverage-proof tail only after exact trace examinat
       [
         "-lc",
         [
+          'export PATH="$NODE_BIN_DIR:$PATH"',
+          'pnpm() { corepack pnpm "$@"; }',
           "source scripts/apply-workflow-helpers.sh",
           "auto_selected_apply_batch=true",
           "item_numbers=10,20,30,40",
@@ -950,6 +952,7 @@ test("apply workflow drops a coverage-proof tail only after exact trace examinat
           FAST_ONLY_TRACE: fastOnlyTrace,
           FIRST_PROOF_TRACE: firstProofTrace,
           SECOND_PROOF_TRACE: secondProofTrace,
+          NODE_BIN_DIR: dirname(process.execPath),
         },
       },
     );
