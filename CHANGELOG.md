@@ -33,6 +33,7 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Fixed
 
+- Allowed conflict-free canonical PRs that only need a base update to back duplicate or superseded closures while retaining proof, review, check, draft, and conflict guards.
 - Bounded broad reconciliation with batched Git I/O and tuple checkpoints that report progress and resume safely under concurrent state writers.
 - Retried tuple-safe broad reconciliation after full push batches lose continuous exact-state races, including candidates that normalize to no changes.
 - Serialized explicit workflow-dispatch planners through a non-dropping target queue and accounted for recovery runs by their requested or live shards, preventing overlapping target planning and false 89-shard reservations without undercounting multi-shard retries.

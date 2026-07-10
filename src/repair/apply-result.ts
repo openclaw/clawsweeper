@@ -60,6 +60,8 @@ const CLOSE_CLASSIFICATIONS = new Set([
 ]);
 const PASSING_CHECK_CONCLUSIONS = new Set(["SUCCESS", "SKIPPED", "NEUTRAL"]);
 const CLEAN_MERGE_STATES = new Set(["CLEAN"]);
+// A covering PR may need a base update, but actual merge actions remain CLEAN-only.
+const VIABLE_COVERING_PR_MERGE_STATES = new Set(["CLEAN", "BEHIND"]);
 const PR_CLOSE_COVERAGE_PROOF_COMMENT_LIMIT = 50;
 const GITHUB_MAX_PAGE_SIZE = 100;
 const CLAWSWEEPER_COMMAND_ONLY_PATTERN = /^@clawsweeper\s+(?:re-review|re-run|review)\s*$/i;
@@ -1094,7 +1096,11 @@ function validatePrCloseCoverageCoveringSafety({
   if (covering.mergedAt) return "";
   const pullRequest = fetchPullRequest(result.repo, coveringRef);
   const view = fetchPullRequestView(result.repo, coveringRef);
-  const mergeBlock = validateMergeablePullRequest({ pullRequest, view });
+  const mergeBlock = validateMergeablePullRequest({
+    pullRequest,
+    view,
+    allowedMergeStates: VIABLE_COVERING_PR_MERGE_STATES,
+  });
   if (mergeBlock) return formatCoveringPullRequestBlock(coveringRef, mergeBlock);
   if (resultHasPlannedCloseForTarget(result, coveringRef)) {
     return `linked canonical PR #${coveringRef} is itself proposed for close`;
@@ -1480,13 +1486,17 @@ function prCloseCoverageProofRuntime() {
   return ghToken ? { ...runtime, ghToken } : runtime;
 }
 
-function validateMergeablePullRequest({ pullRequest, view }: LooseRecord) {
+function validateMergeablePullRequest({
+  pullRequest,
+  view,
+  allowedMergeStates = CLEAN_MERGE_STATES,
+}: LooseRecord) {
   if (pullRequest.state !== "open") return `pull request is ${pullRequest.state}`;
   if (pullRequest.draft || view.isDraft) return "pull request is draft";
   if (String(view.baseRefName ?? pullRequest.base?.ref ?? "") !== "main")
     return "pull request base is not main";
   if (view.mergeable !== "MERGEABLE") return `mergeable state is ${view.mergeable || "unknown"}`;
-  if (!CLEAN_MERGE_STATES.has(String(view.mergeStateStatus ?? ""))) {
+  if (!allowedMergeStates.has(String(view.mergeStateStatus ?? ""))) {
     return `merge state status is ${view.mergeStateStatus || "unknown"}`;
   }
   if (["CHANGES_REQUESTED", "REVIEW_REQUIRED"].includes(String(view.reviewDecision ?? ""))) {

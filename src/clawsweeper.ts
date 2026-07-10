@@ -14096,7 +14096,8 @@ function unsafeCanonicalPullRequestReason(
   if (linkedPull.mergeableState === "dirty") {
     return `linked canonical PR #${linkedPull.number} has merge conflicts`;
   }
-  if (linkedPull.mergeableState !== "clean") {
+  // GitHub reports "behind" for a conflict-free PR that only needs a base update.
+  if (linkedPull.mergeableState !== "clean" && linkedPull.mergeableState !== "behind") {
     return `linked canonical PR #${linkedPull.number} is not cleanly mergeable (${linkedPull.mergeableState})`;
   }
 
