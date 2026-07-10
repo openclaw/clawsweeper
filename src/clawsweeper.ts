@@ -2060,8 +2060,12 @@ function writeSweepStatus(options: {
   const profile = options.profile ?? targetProfile();
   const updatedAt = new Date().toISOString();
   const previousStatus = readSweepStatusSummary(profile);
-  const applyHealth =
+  const baseApplyHealth =
     options.applyHealth === undefined ? previousStatus?.applyHealth : options.applyHealth;
+  const applyHealth =
+    options.applyHealth !== undefined && baseApplyHealth && options.runUrl
+      ? { ...baseApplyHealth, run_url: options.runUrl }
+      : baseApplyHealth;
   const previousCloseApplyHealth =
     previousStatus?.lastCloseApplyHealth ??
     (previousStatus?.applyHealth?.mode === "close" ? previousStatus.applyHealth : undefined);

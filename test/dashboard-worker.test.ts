@@ -2440,6 +2440,7 @@ test("dashboard exposes apply health from sweep status without broad scans", asy
     run_url: "https://github.com/openclaw/clawsweeper/actions/runs/99",
     updated_at: "2026-07-03T10:15:00Z",
     apply_health: {
+      run_url: "https://github.com/openclaw/clawsweeper/actions/runs/98",
       mode: "close",
       status: "needs_attention",
       summary:
@@ -2539,6 +2540,10 @@ test("dashboard exposes apply health from sweep status without broad scans", asy
     const status = await response.json();
     assert.equal(status.recent.apply_health.attention_count, 1);
     assert.equal(status.recent.apply_health.items[0].status, "needs_attention");
+    assert.equal(
+      status.recent.apply_health.items[0].run_url,
+      "https://github.com/openclaw/clawsweeper/actions/runs/98",
+    );
     assert.equal(status.recent.apply_health.items[0].examined, 4);
     assert.equal(status.recent.apply_health.items[0].action_records, 2);
     assert.equal(status.recent.apply_health.items[0].processed, 2);

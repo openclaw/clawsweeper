@@ -4297,7 +4297,7 @@ async function readApplyHealthMarker(
       status_path: statusPath,
       state: nullableString(status.state),
       detail: nullableString(status.detail),
-      run_url: nullableString(status.run_url),
+      run_url: nullableString(health.run_url) || nullableString(status.run_url),
       updated_at: nullableString(health.generated_at) || nullableString(status.updated_at),
       mode: nullableString(health.mode),
       status: nullableString(health.status) || "unavailable",
