@@ -414,6 +414,14 @@ separate publish job. They still use the same review and apply code paths, but
 only for the selected item number and only with immediate-safe reasons enabled
 by default: `implemented_on_main`, `duplicate_or_superseded`, and
 `low_signal_unmergeable_pr`.
+Deterministic terminal and remain-open outcomes complete in that exact run.
+Ordinary synced verdicts publish their exact durable comment immediately, then
+queue an executing target-wide comment-router scan. Target-wide serialization
+coalesces concurrent handoffs without losing older durable verdicts, while the
+review and publication work remains parallel. Direct exact-event viable-issue
+implementation dispatch stays disabled; the bounded broad publish/backfill lane
+owns that separately revalidated intake. The exact run does not claim an atomic
+state-publish-and-route boundary.
 `stale_insufficient_info` issue reports and `mostly_implemented_on_main` PR
 reports are never applied to young items; apply requires those reports to be at
 least 60 days old unless a manual run explicitly changes the threshold.

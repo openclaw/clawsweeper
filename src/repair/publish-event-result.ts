@@ -45,7 +45,9 @@ type EventOptions = {
 
 type PublishedEventSnapshot = {
   guardedOpenAction: string | null;
+  remoteTupleVerified: boolean;
   routableSyncVerified: boolean;
+  routingDeferred: boolean;
   terminalClosed: boolean;
   terminalMissing: boolean;
 };
@@ -275,9 +277,14 @@ function publishSnapshot({
   ];
   try {
     const complete = (candidateApplied: boolean): PublishedEventSnapshot => {
+      // The reconciliation push can succeed just before another publisher
+      // advances the same tuple. Refresh from the authoritative remote before
+      // emitting any completion output; the workflow never routes an ordinary
+      // synced verdict inline, so no read-then-route atomicity is implied here.
+      hardResetToRemoteMain();
       refreshSourceAfterStatePublish(commitPaths, stateBaseCommit);
       const candidateMatchesCurrentTuple = candidateApplied && eventSnapshotMatchesCurrent(paths);
-      const published = exactEventPublishDisposition({
+      const disposition = exactEventPublishDisposition({
         candidateMatchesCurrentTuple,
         candidateTupleState: candidateEventTupleState(paths),
         terminalClosedExpected,
@@ -285,6 +292,11 @@ function publishSnapshot({
         guardedOpenAction,
         routableSyncExpected,
       });
+      const published = {
+        ...disposition,
+        remoteTupleVerified: candidateMatchesCurrentTuple,
+        routingDeferred: disposition.routableSyncVerified,
+      };
       if (routableSyncExpected && !published.routableSyncVerified) {
         throw new RoutableSyncPublishRaceError(
           `Durable review sync for ${paths.targetSlug}#${options.itemNumber} lost the publish race; requeue against the latest item revision`,
@@ -431,10 +443,12 @@ function writeEventDispositionOutputs(published: PublishedEventSnapshot): void {
   fs.appendFileSync(
     outputPath,
     [
+      `remote_tuple_verified=${published.remoteTupleVerified ? "true" : "false"}`,
       `terminal_missing=${published.terminalMissing ? "true" : "false"}`,
       `terminal_closed=${published.terminalClosed ? "true" : "false"}`,
       `guarded_open=${published.guardedOpenAction === null ? "false" : "true"}`,
       `guarded_open_action=${published.guardedOpenAction ?? ""}`,
+      `routing_deferred=${published.routingDeferred ? "true" : "false"}`,
       "",
     ].join("\n"),
     "utf8",

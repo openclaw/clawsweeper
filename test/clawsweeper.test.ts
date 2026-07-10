@@ -2112,28 +2112,18 @@ test("repair workers hydrate only durable jobs from generated state", () => {
   assert.doesNotMatch(workflow, /if: \$\{\{[^\n]*env\.CLAWSWEEPER_CRABFLEET_AGENT_TOKEN/);
 });
 
-test("reviewed viable issues dispatch generated PRs and backfill durable open reports", () => {
+test("viable issue implementation stays in the broad durable backfill lane", () => {
   const workflow = readText(".github/workflows/sweep.yml");
-  const eventDispatchStart = workflow.indexOf("- name: Dispatch viable issue implementation");
-  const eventDispatch = workflow.slice(
-    eventDispatchStart,
-    workflow.indexOf("\n  plan:", eventDispatchStart),
-  );
+  const eventReviewStart = workflow.indexOf("\n  event-review-apply:");
+  const planStart = workflow.indexOf("\n  plan:", eventReviewStart);
+  const eventReview = workflow.slice(eventReviewStart, planStart);
 
-  assert.ok(eventDispatchStart >= 0);
-  assert.match(eventDispatch, /--candidate-kind viable/);
-  assert.match(eventDispatch, /\/tmp\/viable-event-candidate\.tsv/);
-  assert.match(eventDispatch, /repair-issue-implementation-intake\.yml/);
-  assert.match(eventDispatch, /-f candidate_kind=viable/);
-  assert.match(eventDispatch, /-f report_repo=openclaw\/clawsweeper-state/);
-  assert.match(eventDispatch, /steps\.target\.outputs\.target_repo != 'openclaw\/openclaw'/);
-  assert.match(eventDispatch, /steps\.target\.outputs\.target_repo != 'openclaw\/clawhub'/);
-  assert.doesNotMatch(eventDispatch, /vision-fit-implementation-candidates/);
+  assert.doesNotMatch(eventReview, /Dispatch viable issue implementation/);
   assert.match(workflow, /- name: Backfill viable open issue implementation candidates/);
   assert.match(workflow, /--report-dir "records\/\$target_slug\/items"/);
   assert.equal(workflow.match(/--report-dir "records\/\$target_slug\/items"/g)?.length, 3);
   assert.doesNotMatch(workflow, /CLAWSWEEPER_AUTO_IMPLEMENT_BACKFILL/);
-  assert.equal(workflow.match(/vars\.CLAWSWEEPER_AUTO_IMPLEMENT_ISSUES == '1'/g)?.length, 4);
+  assert.equal(workflow.match(/vars\.CLAWSWEEPER_AUTO_IMPLEMENT_ISSUES == '1'/g)?.length, 3);
 });
 
 test("sweep workflow executes only durable queue leases without runner-side admission", () => {
