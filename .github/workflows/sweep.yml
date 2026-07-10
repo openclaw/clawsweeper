@@ -509,7 +509,7 @@ jobs:
 
       - uses: ./.github/actions/setup-pnpm
         id: setup-pnpm
-        if: ${{ steps.live-item.outputs.proceed == 'true' || ((steps.live-item.outputs.terminal_noop == 'true' || steps.live-item.outputs.guarded_open == 'true') && (github.event.client_payload.review_options.command_status_marker != '' || github.event.client_payload.review_options.status_comment_id != '' || github.event.client_payload.command_status_marker != '' || github.event.client_payload.status_comment_id != '')) }}
+        if: ${{ steps.live-item.outputs.proceed == 'true' || ((steps.live-item.outputs.terminal_noop == 'true' || steps.live-item.outputs.terminal_missing == 'true' || steps.live-item.outputs.guarded_open == 'true') && (github.event.client_payload.review_options.command_status_marker != '' || github.event.client_payload.review_options.status_comment_id != '' || github.event.client_payload.command_status_marker != '' || github.event.client_payload.status_comment_id != '')) }}
         with:
           build-script: ${{ steps.live-item.outputs.proceed == 'true' && 'build:all' || 'build:repair' }}
 
@@ -808,7 +808,7 @@ jobs:
           echo "confirmed=true" >> "$GITHUB_OUTPUT"
 
       - name: Mark re-review complete
-        if: ${{ always() && steps.setup-pnpm.outcome == 'success' && (steps.live-item.outputs.proceed == 'true' || steps.live-item.outputs.guarded_open == 'true' || steps.confirm-terminal-item.outputs.confirmed == 'true') }}
+        if: ${{ always() && steps.setup-pnpm.outcome == 'success' && (steps.live-item.outputs.proceed == 'true' || steps.live-item.outputs.terminal_missing == 'true' || steps.live-item.outputs.guarded_open == 'true' || steps.confirm-terminal-item.outputs.confirmed == 'true') }}
         continue-on-error: true
         env:
           GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
