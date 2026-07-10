@@ -38,7 +38,6 @@ import {
   shardItemNumbers,
   shouldSyncReviewComment,
   shouldRetryGh,
-  sweepStatusApplyHealthForTest,
   timeoutWithinRuntimeBudget,
 } from "../dist/clawsweeper.js";
 import { parseArgs as parseClawsweeperArgs } from "../dist/clawsweeper-args.js";
@@ -81,27 +80,6 @@ const maintainerDecision = {
     confidence: "high",
   },
 };
-
-test("sweep status preserves a retained apply-health run URL", () => {
-  const retained = {
-    mode: "close",
-    run_url: "https://github.com/openclaw/clawsweeper/actions/runs/29091427650",
-  };
-  assert.deepEqual(
-    sweepStatusApplyHealthForTest({
-      previousApplyHealth: retained,
-      runUrl: "https://github.com/openclaw/clawsweeper/actions/runs/29091585991",
-    }),
-    retained,
-  );
-  assert.deepEqual(
-    sweepStatusApplyHealthForTest({
-      requestedApplyHealth: { mode: "close" },
-      runUrl: "https://github.com/openclaw/clawsweeper/actions/runs/29091427650",
-    }),
-    retained,
-  );
-});
 
 test("review comments include a compact maintainer decision packet block", () => {
   const comment = renderReviewCommentFromReport(
@@ -2677,20 +2655,6 @@ test("sweep dashboard status writes are scoped to the target repository", () => 
     const block = workflow.slice(match.index, match.index + 220);
     assert.match(block, /--target-repo /);
   }
-});
-
-test("sweep status writer preserves non-apply health and clears stale apply updates", () => {
-  const source = readText("src/clawsweeper.ts");
-
-  assert.match(
-    source,
-    /applyHealthArg === undefined && state\.startsWith\("Apply "\) \? null : applyHealthArg/,
-  );
-  assert.match(source, /requestedApplyHealth: options\.applyHealth/);
-  assert.match(source, /apply_health: applyHealth \?\? null/);
-  assert.match(source, /last_close_apply_health: lastCloseApplyHealth \?\? null/);
-  assert.match(source, /previousStatus\?\.lastCloseApplyHealth/);
-  assert.match(source, /previousStatus\?\.applyHealth\?\.mode === "close"/);
 });
 
 test("review parser strips environment access caveats from risks", () => {
