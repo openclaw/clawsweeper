@@ -129,6 +129,8 @@ test("automerge fix prompt makes Codex own PR repair, rebase, and CI discovery",
   assert.match(prompt, /fix failing CI\/checks for this PR/);
   assert.match(prompt, /failed exact-head checks are repair scope for automerge/);
   assert.match(prompt, /outside likely_files/);
+  assert.match(prompt, /fix the narrow failure against the pinned base/);
+  assert.doesNotMatch(prompt, /first rebase to latest main/);
   assert.match(prompt, /validation command hints: pnpm check:changed ; pnpm build/);
   assert.match(prompt, /treat artifact validation commands as hints/);
   assert.doesNotMatch(prompt, /do not push, open PRs, close PRs, or call gh/);

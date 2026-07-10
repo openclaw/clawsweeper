@@ -213,7 +213,7 @@ function renderAutomergeRepairGuidance() {
     "- if no successful deterministic pre-edit rebase was supplied, fetch origin/main and rebase this branch once, then resolve conflicts;",
     "- address actionable PR comments and review findings;",
     "- fix failing CI/checks for this PR;",
-    "- failed exact-head checks are repair scope for automerge even when the failing file is outside likely_files; first rebase to latest main, then fix the narrow failure or prove it is an external blocker on current main;",
+    "- failed exact-head checks are repair scope for automerge even when the failing file is outside likely_files; fix the narrow failure against the pinned base or prove it is an external blocker there, leaving later origin/main movement to ClawSweeper's deterministic final base sync;",
     "- run the tests/checks needed to prove the PR should go green, then keep iterating until the checkout is merge-ready or a concrete external blocker is proven;",
   ].join("\n");
 }
