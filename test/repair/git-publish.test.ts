@@ -748,6 +748,74 @@ test("broad reconciliation rejects stale hydrated state before its first push", 
   );
 });
 
+test("reconcile-records quarantines an ambiguous valid tuple without blocking independent repairs", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-publish-"));
+  const origin = path.join(root, "origin.git");
+  const work = path.join(root, "work");
+  run("git", ["init", "--bare", origin], root);
+  run("git", ["clone", origin, work], root);
+  configureUser(work);
+  const baseAmbiguous = writeRecordTuple(work, {
+    number: 41,
+    marker: "base tuple",
+    reviewedAt: "2026-07-09T23:00:00.000Z",
+    itemUpdatedAt: "2026-07-09T22:59:00Z",
+  });
+  writeRecordTuple(work, {
+    number: 42,
+    marker: "older independent tuple",
+    reviewedAt: "2026-07-09T23:00:00.000Z",
+    itemUpdatedAt: "2026-07-09T22:59:00Z",
+  });
+  run("git", ["add", "."], work);
+  run("git", ["commit", "-m", "initial"], work);
+  run("git", ["push", "origin", "HEAD:main"], work);
+  run("git", ["--git-dir", origin, "symbolic-ref", "HEAD", "refs/heads/main"], root);
+  run("git", ["checkout", "-B", "main", "origin/main"], work);
+
+  writeRecordTuple(work, {
+    number: 41,
+    marker: "same-vector ambiguous tuple",
+    reviewedAt: "2026-07-09T23:00:00.000Z",
+    itemUpdatedAt: "2026-07-09T22:59:00Z",
+  });
+  const independentRepair = writeRecordTuple(work, {
+    number: 42,
+    marker: "newer independent tuple",
+    reviewedAt: "2026-07-09T23:02:00.000Z",
+    itemUpdatedAt: "2026-07-09T23:01:00Z",
+  });
+
+  let result;
+  const lines = captureConsoleLog(() => {
+    result = withCwd(work, () =>
+      publishMainCommit({
+        message: "chore: reconcile independent tuples",
+        paths: ["records/openclaw-openclaw"],
+        maxAttempts: 1,
+        pushAttempts: 1,
+        rebaseStrategy: "reconcile-records",
+      }),
+    );
+  });
+
+  assert.equal(result, "committed");
+  assert.equal(
+    run("git", ["--git-dir", origin, "show", "main:records/openclaw-openclaw/items/41.md"], root),
+    baseAmbiguous.primary,
+  );
+  assert.equal(
+    run("git", ["--git-dir", origin, "show", "main:records/openclaw-openclaw/items/42.md"], root),
+    independentRepair.primary,
+  );
+  assert.equal(
+    lines.some((line) =>
+      line.includes("Deferring ambiguous reconciliation for openclaw-openclaw/41"),
+    ),
+    true,
+  );
+});
+
 test("reconcile-records rejects a malformed tuple before an uncontended push", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-publish-"));
   const origin = path.join(root, "origin.git");

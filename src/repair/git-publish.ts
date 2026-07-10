@@ -16,13 +16,16 @@ import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { clawsweeperGitUserEmail, clawsweeperGitUserName } from "./process-env.js";
 import {
   chooseRecordTupleWinner,
+  RecordTupleError,
   recordTupleIdentityForPath,
   recordTupleMarkdownFileForPath,
   recordTuplePathList,
   recordTuplePaths,
+  validateRecordTuple,
   type RecordTupleContents,
   type RecordTupleIdentity,
   type RecordTuplePaths,
+  type RecordTupleWinner,
 } from "./record-tuple.js";
 import { mergeSweepStatusJson } from "./sweep-status-merge.js";
 
@@ -728,7 +731,7 @@ function rebuildReconciliationCommit(
       identity,
       changedPaths: [...changedPaths, ...(knownTuplePaths.get(key) ?? [])],
     });
-    const winner = chooseRecordTupleWinner({
+    const winner = chooseReconciliationTupleWinner({
       base: readRecordTupleAtCommit(baseCommit, tuplePaths),
       local: readRecordTupleAtCommit(sourceCommit, tuplePaths),
       remote: readRecordTupleAtCommit(remoteRef, tuplePaths),
@@ -789,7 +792,7 @@ function normalizeReconciliationCommit(sourceCommit: string): {
     });
     const base = readRecordTupleAtCommit(baseCommit, paths);
     const local = readRecordTupleAtCommit(sourceCommit, paths);
-    const winner = chooseRecordTupleWinner({ base, local, remote: base });
+    const winner = chooseReconciliationTupleWinner({ base, local, remote: base });
     if (winner === "local") selectedTuples.push(paths);
   }
 
@@ -811,6 +814,27 @@ function normalizeReconciliationCommit(sourceCommit: string): {
   if (!hasStagedChanges()) return { commit: baseCommit, changed: false };
   runGit(["commit", "-C", sourceCommit]);
   return { commit: runGit(["rev-parse", "HEAD"]).trim(), changed: true };
+}
+
+function chooseReconciliationTupleWinner(options: {
+  base: RecordTupleContents;
+  local: RecordTupleContents;
+  remote: RecordTupleContents;
+}): RecordTupleWinner | undefined {
+  // A malformed local tuple must still fail the publish. Once the candidate is
+  // structurally valid, however, an unorderable legacy/base conflict can be
+  // quarantined to this tuple instead of blocking every independent repair in
+  // a broad reconciliation batch.
+  validateRecordTuple(options.local, "local reconciliation");
+  try {
+    return chooseRecordTupleWinner(options);
+  } catch (error) {
+    if (!(error instanceof RecordTupleError)) throw error;
+    console.log(
+      `Deferring ambiguous reconciliation for ${options.local.paths.key}: ${error.message}`,
+    );
+    return undefined;
+  }
 }
 
 function changedPathsBetween(from: string, to: string): string[] {

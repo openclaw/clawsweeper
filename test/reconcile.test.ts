@@ -31,11 +31,13 @@ test("reconcile reports every changed record tuple and cleans already-closed sid
   writeFileSync(join(closedDir, "2.md"), report(2, "closed"));
   writeFileSync(join(itemsDir, "3.md"), report(3, "open"));
   writeFileSync(join(closedDir, "3.md"), report(3, "closed"));
-  writeFileSync(join(closedDir, "4.md"), report(4, "closed"));
+  const staleReconciledAt = "2026-07-01T00:00:00.000Z";
+  writeFileSync(join(closedDir, "4.md"), report(4, "closed", { reconciled_at: staleReconciledAt }));
   writeFileSync(join(plansDir, "4.md"), "stale plan for closed item\n");
   writeFileSync(
     join(closedDir, "5.md"),
     report(5, "closed", {
+      reconciled_at: staleReconciledAt,
       decision_packet_path: "records/openclaw-openclaw/decision-packets/5.json",
       decision_packet_sha256: "stale",
     }),
@@ -108,6 +110,14 @@ if (args[0] === "api" && args[1]?.includes("/issues?state=open")) {
     assert.equal(existsSync(join(plansDir, "1.md")), false);
     assert.equal(existsSync(join(plansDir, "4.md")), false);
     assert.equal(existsSync(join(packetsDir, "5.json")), false);
+    for (const number of [4, 5]) {
+      const reconciledMarkdown = readFileSync(join(closedDir, `${number}.md`), "utf8");
+      assert.doesNotMatch(
+        reconciledMarkdown,
+        new RegExp(`^reconciled_at: ${staleReconciledAt}$`, "m"),
+      );
+      assert.match(reconciledMarkdown, /^current_state: closed$/m);
+    }
     assert.match(readFileSync(join(closedDir, "5.md"), "utf8"), /^decision_packet_path: none$/m);
     assert.equal(existsSync(join(closedDir, "6.md")), true);
     assert.equal(existsSync(join(closedDir, "openclaw-openclaw-7.md")), true);

@@ -23213,6 +23213,7 @@ function reconcileFolders(options: {
   ): void => {
     const planPath = workPlanPathForReport(reportPath, plansDir);
     let changed = existsSync(planPath);
+    let nextMarkdown = markdown;
     if (!dryRun && existsSync(planPath)) unlinkSync(planPath);
 
     const packetPath = options.decisionPacketsDir
@@ -23233,14 +23234,21 @@ function reconcileFolders(options: {
         changed = true;
       } else {
         const packetBefore = existsSync(packetPath) ? readFileSync(packetPath, "utf8") : null;
-        const syncedMarkdown = syncReconciledDecisionPacket(markdown, reportPath, "closed");
+        nextMarkdown = syncReconciledDecisionPacket(markdown, reportPath, "closed");
         const packetAfter = existsSync(packetPath) ? readFileSync(packetPath, "utf8") : null;
-        if (syncedMarkdown !== markdown) writeFileSync(reportPath, syncedMarkdown, "utf8");
-        changed ||= syncedMarkdown !== markdown || packetAfter !== packetBefore;
+        changed ||= nextMarkdown !== markdown || packetAfter !== packetBefore;
       }
     }
 
-    if (changed) markRecordChanged(number, file);
+    if (changed) {
+      if (!dryRun) {
+        // Sidecar cleanup is an atomic tuple mutation. Stamp the primary so
+        // tuple publication can order this deterministic repair against the
+        // hydrated state instead of rejecting equal version vectors.
+        writeFileSync(reportPath, markReconciledState(nextMarkdown, "closed"), "utf8");
+      }
+      markRecordChanged(number, file);
+    }
   };
 
   for (const file of markdownFiles(options.itemsDir)) {
