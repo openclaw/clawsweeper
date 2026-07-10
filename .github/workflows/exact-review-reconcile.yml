@@ -1,0 +1,55 @@
+name: Reconcile exact-review leases
+
+on:
+  workflow_run:
+    workflows: [ClawSweeper]
+    types: [completed]
+
+permissions: {}
+
+concurrency:
+  group: exact-review-reconcile-${{ github.event.workflow_run.id }}
+  cancel-in-progress: false
+
+jobs:
+  reconcile:
+    name: Reconcile terminal exact-review run
+    if: ${{ github.event.workflow_run.event == 'repository_dispatch' && startsWith(github.event.workflow_run.display_title, 'Review event item ') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Reconcile terminal run
+        env:
+          CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
+          QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
+          SOURCE_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+          SOURCE_RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          set -euo pipefail
+          test -n "$CLAWSWEEPER_WEBHOOK_SECRET"
+          queue_url="${QUEUE_URL%/}"
+          payload="$(node -e '
+            const runAttempt = Number(process.env.SOURCE_RUN_ATTEMPT);
+            if (!Number.isInteger(runAttempt) || runAttempt < 1) process.exit(1);
+            process.stdout.write(JSON.stringify({
+              runs: [{
+                run_id: process.env.SOURCE_RUN_ID,
+                run_attempt: runAttempt,
+              }],
+            }));
+          ')"
+          signature="$(PAYLOAD="$payload" node -e 'const crypto=require("node:crypto"); process.stdout.write(`sha256=${crypto.createHmac("sha256", process.env.CLAWSWEEPER_WEBHOOK_SECRET).update(process.env.PAYLOAD).digest("hex")}`)')"
+          for attempt in 1 2 3; do
+            if curl --fail --silent --show-error --connect-timeout 5 --max-time 20 \
+              --request POST \
+              --header "content-type: application/json" \
+              --header "x-clawsweeper-exact-review-signature: $signature" \
+              --data-binary "$payload" \
+              "$queue_url/internal/exact-review/reconcile" >/dev/null; then
+              exit 0
+            fi
+            if [ "$attempt" -lt 3 ]; then
+              sleep "$((attempt * 5))"
+            fi
+          done
+          exit 1

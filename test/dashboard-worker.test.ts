@@ -374,11 +374,16 @@ test("exact-review queue coalesces deliveries, leases bounded work, and rejects 
     );
     assert.deepEqual(await completed.json(), { ok: true, requeued: true });
     const requeued = (await storage.get("exact-review-queue")) as {
-      items: Record<string, { decision: Record<string, unknown> }>;
+      items: Record<
+        string,
+        { attempts: number; nextAttemptAt: number; decision: Record<string, unknown> }
+      >;
     };
     assert.equal(requeued.items["openclaw/gogcli#597"].decision.commandStatusMarker, undefined);
     assert.equal(requeued.items["openclaw/gogcli#597"].decision.statusCommentId, undefined);
     assert.equal(requeued.items["openclaw/gogcli#597"].decision.additionalPrompt, undefined);
+    assert.equal(requeued.items["openclaw/gogcli#597"].attempts, 0);
+    assert.ok(requeued.items["openclaw/gogcli#597"].nextAttemptAt <= Date.now());
     stats = await (
       await queue.fetch(new Request("https://clawsweeper-exact-review-queue/stats"))
     ).json();
@@ -852,7 +857,386 @@ test("exact-review queue preserves a claimed lease after an ambiguous dispatch f
         body: JSON.stringify({ lease_id: leaseId, run_id: "ambiguous-run" }),
       }),
     );
-    assert.deepEqual(await completed.json(), { ok: true, requeued: false });
+    assert.deepEqual(await completed.json(), { ok: true, requeued: false, deferred: true });
+    const retained = await (
+      await queue.fetch(new Request("https://clawsweeper-exact-review-queue/stats"))
+    ).json();
+    assert.equal(retained.leased, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("exact-review queue requeues a cancelled claimed lease", async () => {
+  const storage = new MemoryDurableStorage();
+  const completedAfter = Date.now();
+  const retryAt = completedAfter + 10_000;
+  await storage.put("exact-review-queue", {
+    deliveries: {},
+    dispatcher: {
+      state: "paused",
+      reason: "workflow_not_active",
+      workflowState: "disabled_manually",
+      checkedAt: Date.now(),
+      retryAt,
+    },
+    items: {
+      "openclaw/openclaw#710": leasedExactReviewQueueItem(710, "cancelled-run"),
+    },
+  });
+  const queue = new ExactReviewQueue({ storage }, {});
+
+  const response = await queue.fetch(
+    new Request("https://clawsweeper-exact-review-queue/complete", {
+      method: "POST",
+      body: JSON.stringify({
+        lease_id: "lease-710",
+        run_id: "cancelled-run",
+        run_attempt: 1,
+        outcome: "cancelled",
+      }),
+    }),
+  );
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { ok: true, requeued: true });
+  const state = (await storage.get("exact-review-queue")) as {
+    items: Record<string, Record<string, unknown>>;
+  };
+  assert.equal(state.items["openclaw/openclaw#710"].state, "pending");
+  assert.ok(Number(state.items["openclaw/openclaw#710"].nextAttemptAt) >= completedAfter + 30_000);
+  assert.ok(Number(state.items["openclaw/openclaw#710"].nextAttemptAt) > retryAt);
+  assert.equal(state.items["openclaw/openclaw#710"].attempts, 1);
+  assert.equal(state.items["openclaw/openclaw#710"].leaseId, undefined);
+  assert.equal(state.items["openclaw/openclaw#710"].claimedRunId, undefined);
+  assert.equal(state.items["openclaw/openclaw#710"].claimedRunAttempt, undefined);
+  assert.equal(state.items["openclaw/openclaw#710"].claimGeneration, undefined);
+});
+
+test("exact-review completion rejects stale owners and is race-idempotent", async () => {
+  const storage = new MemoryDurableStorage();
+  await storage.put("exact-review-queue", {
+    deliveries: {},
+    items: {
+      "openclaw/openclaw#716": leasedExactReviewQueueItem(716, "9100", 2),
+      "openclaw/openclaw#717": leasedExactReviewQueueItem(717, "9101", 1),
+    },
+  });
+  const queue = new ExactReviewQueue({ storage }, {});
+  const complete = (leaseId: string, runId: string, runAttempt: number, outcome: string) =>
+    queue.fetch(
+      new Request("https://clawsweeper-exact-review-queue/complete", {
+        method: "POST",
+        body: JSON.stringify({
+          lease_id: leaseId,
+          run_id: runId,
+          run_attempt: runAttempt,
+          outcome,
+        }),
+      }),
+    );
+
+  assert.equal((await complete("lease-716", "9100", 1, "failure")).status, 409);
+  assert.equal((await complete("lease-716", "wrong-run", 2, "failure")).status, 409);
+  const failed = await complete("lease-716", "9100", 2, "failure");
+  assert.equal(failed.status, 200);
+  assert.deepEqual(await failed.json(), { ok: true, requeued: true });
+  assert.equal((await complete("lease-716", "9100", 2, "success")).status, 409);
+
+  const completed = await complete("lease-717", "9101", 1, "success");
+  assert.equal(completed.status, 200);
+  assert.deepEqual(await completed.json(), { ok: true, requeued: false, deferred: true });
+  const failedAfterProvisionalSuccess = await complete("lease-717", "9101", 1, "failure");
+  assert.equal(failedAfterProvisionalSuccess.status, 200);
+  assert.deepEqual(await failedAfterProvisionalSuccess.json(), { ok: true, requeued: true });
+
+  const state = (await storage.get("exact-review-queue")) as {
+    items: Record<string, Record<string, unknown>>;
+  };
+  assert.equal(state.items["openclaw/openclaw#716"].state, "pending");
+  assert.equal(state.items["openclaw/openclaw#716"].attempts, 1);
+  assert.equal(state.items["openclaw/openclaw#716"].leaseId, undefined);
+  assert.equal(state.items["openclaw/openclaw#717"].state, "pending");
+  assert.equal(state.items["openclaw/openclaw#717"].attempts, 1);
+  assert.equal(state.items["openclaw/openclaw#717"].leaseId, undefined);
+});
+
+test("signed exact-review reconciliation releases only immutable terminal runs", async () => {
+  const originalFetch = globalThis.fetch;
+  const storage = new MemoryDurableStorage();
+  await storage.put("exact-review-queue", {
+    deliveries: {},
+    items: {
+      "openclaw/openclaw#711": leasedExactReviewQueueItem(711, "9001"),
+      "openclaw/openclaw#712": leasedExactReviewQueueItem(712, "9002"),
+      "openclaw/openclaw#719": leasedExactReviewQueueItem(719, "9003"),
+    },
+  });
+  const queue = new ExactReviewQueue({ storage }, {});
+  const { privateKey } = generateKeyPairSync("rsa", {
+    modulusLength: 2048,
+    privateKeyEncoding: { type: "pkcs8", format: "pem" },
+    publicKeyEncoding: { type: "spki", format: "pem" },
+  });
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(String(input));
+    if (url.pathname === "/repos/openclaw/clawsweeper/installation") {
+      return jsonResponse({ id: 999 });
+    }
+    if (url.pathname === "/app/installations/999/access_tokens") {
+      assert.deepEqual(JSON.parse(String(init?.body)).permissions, { actions: "read" });
+      return jsonResponse({ token: "t" });
+    }
+    if (url.pathname === "/repos/openclaw/clawsweeper/actions/runs/9001") {
+      return jsonResponse({ id: 9001, run_attempt: 1, status: "completed" });
+    }
+    if (url.pathname === "/repos/openclaw/clawsweeper/actions/runs/9001/attempts/1") {
+      return jsonResponse({
+        id: 9001,
+        run_attempt: 1,
+        status: "completed",
+        conclusion: "cancelled",
+      });
+    }
+    if (url.pathname === "/repos/openclaw/clawsweeper/actions/runs/9002") {
+      return jsonResponse({ id: 9002, run_attempt: 1, status: "in_progress", conclusion: null });
+    }
+    if (url.pathname === "/repos/openclaw/clawsweeper/actions/runs/9003") {
+      return jsonResponse({ id: 9003, run_attempt: 1, status: "completed" });
+    }
+    if (url.pathname === "/repos/openclaw/clawsweeper/actions/runs/9003/attempts/1") {
+      return jsonResponse({
+        id: 9003,
+        run_attempt: 1,
+        status: "completed",
+        conclusion: "success",
+      });
+    }
+    throw new Error(`unexpected fetch ${url}`);
+  };
+
+  try {
+    const env = {
+      CLAWSWEEPER_APP_CLIENT_ID: "Iv23test",
+      CLAWSWEEPER_APP_PRIVATE_KEY: privateKey,
+      CLAWSWEEPER_WEBHOOK_SECRET: "test-secret",
+      EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queue),
+    };
+    const body = JSON.stringify({
+      runs: [
+        { run_id: "9001", run_attempt: 1 },
+        { run_id: "9002", run_attempt: 1 },
+        { run_id: "9003", run_attempt: 1 },
+      ],
+    });
+    const unsigned = await worker.fetch(
+      new Request("https://clawsweeper.openclaw.ai/internal/exact-review/reconcile", {
+        method: "POST",
+        body,
+      }),
+      env,
+    );
+    assert.equal(unsigned.status, 401);
+
+    const oversizedBody = JSON.stringify({
+      run_ids: Array.from({ length: 33 }, (_, index) => String(index + 1)),
+    });
+    const oversizedSignature = `sha256=${createHmac("sha256", "test-secret").update(oversizedBody).digest("hex")}`;
+    const oversized = await worker.fetch(
+      new Request("https://clawsweeper.openclaw.ai/internal/exact-review/reconcile", {
+        method: "POST",
+        headers: { "x-clawsweeper-exact-review-signature": oversizedSignature },
+        body: oversizedBody,
+      }),
+      env,
+    );
+    assert.equal(oversized.status, 400);
+    assert.deepEqual(await oversized.json(), { error: "invalid_runs" });
+
+    const signature = `sha256=${createHmac("sha256", "test-secret").update(body).digest("hex")}`;
+    const response = await worker.fetch(
+      new Request("https://clawsweeper.openclaw.ai/internal/exact-review/reconcile", {
+        method: "POST",
+        headers: { "x-clawsweeper-exact-review-signature": signature },
+        body,
+      }),
+      env,
+    );
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), {
+      ok: true,
+      requested: 3,
+      claimed: 3,
+      terminal: 2,
+      unavailable: 0,
+      reconciled: 2,
+      requeued: 1,
+      completed: 1,
+    });
+    const state = (await storage.get("exact-review-queue")) as {
+      items: Record<string, Record<string, unknown>>;
+    };
+    assert.equal(state.items["openclaw/openclaw#711"].state, "pending");
+    assert.equal(state.items["openclaw/openclaw#711"].claimedRunId, undefined);
+    assert.equal(state.items["openclaw/openclaw#712"].state, "leased");
+    assert.equal(state.items["openclaw/openclaw#712"].claimedRunId, "9002");
+    assert.equal(state.items["openclaw/openclaw#719"], undefined);
+    const staleFailure = await queue.fetch(
+      new Request("https://clawsweeper-exact-review-queue/complete", {
+        method: "POST",
+        body: JSON.stringify({
+          lease_id: "lease-719",
+          run_id: "9003",
+          run_attempt: 1,
+          outcome: "failure",
+        }),
+      }),
+    );
+    assert.equal(staleFailure.status, 409);
+
+    const replayBody = JSON.stringify({ runs: [{ run_id: "9001", run_attempt: 1 }] });
+    const replaySignature = `sha256=${createHmac("sha256", "test-secret").update(replayBody).digest("hex")}`;
+    const replay = await worker.fetch(
+      new Request("https://clawsweeper.openclaw.ai/internal/exact-review/reconcile", {
+        method: "POST",
+        headers: { "x-clawsweeper-exact-review-signature": replaySignature },
+        body: replayBody,
+      }),
+      env,
+    );
+    assert.equal(replay.status, 200);
+    assert.deepEqual(await replay.json(), {
+      ok: true,
+      requested: 1,
+      claimed: 0,
+      terminal: 0,
+      unavailable: 0,
+      reconciled: 0,
+      requeued: 0,
+      completed: 0,
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("exact-review reconciliation cannot release a later attempt with the same run id", async () => {
+  const originalFetch = globalThis.fetch;
+  const storage = new MemoryDurableStorage();
+  await storage.put("exact-review-queue", {
+    deliveries: {},
+    items: {
+      "openclaw/openclaw#713": leasedExactReviewQueueItem(713, "9010"),
+      "openclaw/openclaw#714": {
+        ...leasedExactReviewQueueItem(714, "9011"),
+        claimedRunAttempt: undefined,
+        claimGeneration: 2,
+      },
+      "openclaw/openclaw#715": leasedExactReviewQueueItem(715, "9012"),
+      "openclaw/openclaw#718": leasedExactReviewQueueItem(718, "9013"),
+    },
+  });
+  const queue = new ExactReviewQueue({ storage }, {});
+  const { privateKey } = generateKeyPairSync("rsa", {
+    modulusLength: 2048,
+    privateKeyEncoding: { type: "pkcs8", format: "pem" },
+    publicKeyEncoding: { type: "spki", format: "pem" },
+  });
+  globalThis.fetch = async (input) => {
+    const url = new URL(String(input));
+    if (url.pathname === "/repos/openclaw/clawsweeper/installation") {
+      return jsonResponse({ id: 999 });
+    }
+    if (url.pathname === "/app/installations/999/access_tokens") {
+      return jsonResponse({ token: "t" });
+    }
+    if (url.pathname === "/repos/openclaw/clawsweeper/actions/runs/9010") {
+      return jsonResponse({ id: 9010, run_attempt: 1, status: "completed" });
+    }
+    if (url.pathname === "/repos/openclaw/clawsweeper/actions/runs/9010/attempts/1") {
+      const claim = await queue.fetch(
+        new Request("https://clawsweeper-exact-review-queue/claim", {
+          method: "POST",
+          body: JSON.stringify({ lease_id: "lease-713", run_id: "9010", run_attempt: 2 }),
+        }),
+      );
+      assert.equal(claim.status, 200);
+      return jsonResponse({
+        id: 9010,
+        run_attempt: 1,
+        status: "completed",
+        conclusion: "cancelled",
+      });
+    }
+    if (url.pathname === "/repos/openclaw/clawsweeper/actions/runs/9011") {
+      return jsonResponse({ id: 9011, run_attempt: 2, status: "in_progress", conclusion: null });
+    }
+    if (url.pathname === "/repos/openclaw/clawsweeper/actions/runs/9012") {
+      return jsonResponse({ id: 9012, run_attempt: 2, status: "queued", conclusion: null });
+    }
+    if (url.pathname === "/repos/openclaw/clawsweeper/actions/runs/9013") {
+      return jsonResponse({ id: 9013, run_attempt: 2, status: "completed" });
+    }
+    if (url.pathname === "/repos/openclaw/clawsweeper/actions/runs/9013/attempts/2") {
+      return jsonResponse({ id: 9013, run_attempt: 2, status: "completed", conclusion: "failure" });
+    }
+    throw new Error(`unexpected fetch ${url}`);
+  };
+
+  try {
+    const env = {
+      CLAWSWEEPER_APP_CLIENT_ID: "Iv23test",
+      CLAWSWEEPER_APP_PRIVATE_KEY: privateKey,
+      CLAWSWEEPER_WEBHOOK_SECRET: "test-secret",
+      EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queue),
+    };
+    const body = JSON.stringify({
+      runs: [
+        { run_id: "9010", run_attempt: 1 },
+        { run_id: "9011", run_attempt: 1 },
+        { run_id: "9012", run_attempt: 1 },
+        { run_id: "9013", run_attempt: 2 },
+      ],
+    });
+    const signature = `sha256=${createHmac("sha256", "test-secret").update(body).digest("hex")}`;
+    const response = await worker.fetch(
+      new Request("https://clawsweeper.openclaw.ai/internal/exact-review/reconcile", {
+        method: "POST",
+        headers: { "x-clawsweeper-exact-review-signature": signature },
+        body,
+      }),
+      env,
+    );
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), {
+      ok: true,
+      requested: 4,
+      claimed: 4,
+      terminal: 2,
+      unavailable: 0,
+      reconciled: 1,
+      requeued: 1,
+      completed: 0,
+    });
+    const state = (await storage.get("exact-review-queue")) as {
+      items: Record<string, Record<string, unknown>>;
+    };
+    assert.equal(state.items["openclaw/openclaw#713"].state, "leased");
+    assert.equal(state.items["openclaw/openclaw#713"].claimedRunId, "9010");
+    assert.equal(state.items["openclaw/openclaw#713"].claimedRunAttempt, 2);
+    assert.equal(state.items["openclaw/openclaw#713"].claimGeneration, 2);
+    assert.equal(state.items["openclaw/openclaw#714"].state, "leased");
+    assert.equal(state.items["openclaw/openclaw#714"].claimedRunId, "9011");
+    assert.equal(state.items["openclaw/openclaw#714"].claimedRunAttempt, undefined);
+    assert.equal(state.items["openclaw/openclaw#714"].claimGeneration, 2);
+    assert.equal(state.items["openclaw/openclaw#715"].state, "leased");
+    assert.equal(state.items["openclaw/openclaw#715"].claimedRunId, "9012");
+    assert.equal(state.items["openclaw/openclaw#715"].claimedRunAttempt, 1);
+    assert.equal(state.items["openclaw/openclaw#715"].claimGeneration, 1);
+    assert.equal(state.items["openclaw/openclaw#718"].state, "pending");
+    assert.equal(state.items["openclaw/openclaw#718"].attempts, 1);
+    assert.equal(state.items["openclaw/openclaw#718"].claimedRunId, undefined);
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -4581,4 +4965,32 @@ function buildExactReviewQueueRequest(
       },
     }),
   });
+}
+
+function leasedExactReviewQueueItem(itemNumber: number, runId: string, runAttempt = 1) {
+  const now = Date.now();
+  return {
+    key: `openclaw/openclaw#${itemNumber}`,
+    decision: {
+      targetRepo: "openclaw/openclaw",
+      targetBranch: "main",
+      itemNumber,
+      itemKind: "issue",
+      sourceEvent: "issues",
+      sourceAction: "opened",
+      supersedesInProgress: false,
+    },
+    state: "leased",
+    revision: 1,
+    createdAt: now - 60_000,
+    updatedAt: now - 60_000,
+    nextAttemptAt: now - 60_000,
+    attempts: 0,
+    leaseId: `lease-${itemNumber}`,
+    leaseRevision: 1,
+    leaseExpiresAt: now + 60 * 60_000,
+    claimedRunId: runId,
+    claimedRunAttempt: runAttempt,
+    claimGeneration: 1,
+  };
 }

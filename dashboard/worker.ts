@@ -48,6 +48,14 @@ type ExactReviewQueueItem = {
   leaseRevision?: number;
   leaseExpiresAt?: number;
   claimedRunId?: string;
+  claimedRunAttempt?: number;
+  claimGeneration?: number;
+};
+type ExactReviewCompletionOutcome = "success" | "failure" | "cancelled";
+type ExactReviewClaimedRun = {
+  runId: string;
+  runAttempt?: number;
+  claimGeneration: number;
 };
 type ExactReviewQueueState = {
   deliveries: Record<string, number>;
@@ -88,6 +96,8 @@ const DEFAULT_EXACT_REVIEW_DISPATCH_LEASE_MS = 10 * 60 * 1000;
 const DEFAULT_EXACT_REVIEW_EXECUTION_LEASE_MS = 130 * 60 * 1000;
 const DEFAULT_EXACT_REVIEW_RETRY_MS = 30_000;
 const DEFAULT_EXACT_REVIEW_WORKFLOW_PAUSED_RETRY_MS = 60_000;
+const EXACT_REVIEW_RECONCILE_RUN_LIMIT = 32;
+const EXACT_REVIEW_RECONCILE_CONCURRENCY = 4;
 const EXACT_REVIEW_QUEUE_DELIVERY_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const EXACT_REVIEW_QUEUE_STATE_KEY = "exact-review-queue";
 const EXACT_REVIEW_QUEUE_NAME = "global";
@@ -403,6 +413,10 @@ export class ExactReviewQueue {
       const leaseId = String(body.lease_id || "").trim();
       const runId = String(body.run_id || "").trim();
       if (!leaseId || !runId) return json({ error: "missing_lease_or_run" }, 400);
+      const runAttempt = exactReviewRunAttempt(body.run_attempt);
+      if (body.run_attempt !== undefined && runAttempt === null) {
+        return json({ error: "invalid_run_attempt" }, 400);
+      }
 
       const now = Date.now();
       const state = await this.readState();
@@ -416,6 +430,8 @@ export class ExactReviewQueue {
 
       item.state = "leased";
       item.claimedRunId = runId;
+      item.claimedRunAttempt = runAttempt ?? undefined;
+      item.claimGeneration = exactReviewClaimGeneration(item.claimGeneration) + 1;
       item.leaseExpiresAt = now + exactReviewExecutionLeaseMs(this.env);
       await this.writeState(state);
       await this.scheduleNext(state, now);
@@ -432,25 +448,82 @@ export class ExactReviewQueue {
       const leaseId = String(body.lease_id || "").trim();
       const runId = String(body.run_id || "").trim();
       if (!leaseId || !runId) return json({ error: "missing_lease_or_run" }, 400);
+      const runAttempt = exactReviewRunAttempt(body.run_attempt);
+      if (body.run_attempt !== undefined && runAttempt === null) {
+        return json({ error: "invalid_run_attempt" }, 400);
+      }
+      const outcome = exactReviewCompletionOutcome(body.outcome, "success");
+      if (!outcome) return json({ error: "invalid_outcome" }, 400);
 
       const now = Date.now();
       const state = await this.readState();
       const item = exactReviewItemForLease(state, leaseId);
       if (!item || item.claimedRunId !== runId) return json({ error: "lease_not_claimed" }, 409);
-
-      const requeued = item.revision > Number(item.leaseRevision || 0);
-      if (requeued) {
-        clearExactReviewLease(item);
-        item.state = "pending";
-        item.nextAttemptAt = now;
-        item.attempts = 0;
-        item.updatedAt = now;
-      } else {
-        delete state.items[item.key];
+      if (
+        item.claimedRunAttempt !== undefined &&
+        (runAttempt === null || runAttempt !== item.claimedRunAttempt)
+      ) {
+        return json({ error: "lease_attempt_not_claimed" }, 409);
       }
+
+      // A successful finalizer still runs before GitHub records the workflow-run conclusion.
+      // Keep the claim until the signed workflow_run backstop verifies that exact attempt as
+      // terminal, otherwise cancellation or a failing post-action could be acknowledged as
+      // success. A newer revision is already known to need another review and can requeue now.
+      if (outcome === "success" && item.revision <= Number(item.leaseRevision || 0)) {
+        await this.scheduleNext(state, now);
+        return json({ ok: true, requeued: false, deferred: true });
+      }
+
+      const requeued = finishExactReviewQueueItem(state, item, now, outcome);
       await this.writeState(state);
       await this.scheduleNext(state, now);
       return json({ ok: true, requeued });
+    }
+
+    if (request.method === "GET" && url.pathname === "/claimed-runs") {
+      const state = await this.readState();
+      const runs = Object.values(state.items)
+        .filter((item) => item.state === "leased" && item.claimedRunId)
+        .slice(0, EXACT_REVIEW_RECONCILE_RUN_LIMIT)
+        .map((item) => ({
+          run_id: String(item.claimedRunId),
+          run_attempt: item.claimedRunAttempt ?? null,
+          claim_generation: exactReviewClaimGeneration(item.claimGeneration),
+        }));
+      return json({ runs });
+    }
+
+    if (request.method === "POST" && url.pathname === "/reconcile") {
+      const body = objectValue(await request.json().catch(() => null));
+      const runs = exactReviewTerminalRuns(body.runs);
+      if (!runs) return json({ error: "invalid_terminal_runs" }, 400);
+
+      const now = Date.now();
+      const state = await this.readState();
+      let reconciled = 0;
+      let requeued = 0;
+      let completed = 0;
+      for (const run of runs) {
+        const matches = Object.values(state.items).filter(
+          (item) =>
+            item.state === "leased" &&
+            item.claimedRunId === run.runId &&
+            exactReviewClaimGeneration(item.claimGeneration) === run.claimGeneration &&
+            (item.claimedRunAttempt ?? null) === (run.claimedRunAttempt ?? null),
+        );
+        if (matches.length !== 1) continue;
+        const item = matches[0];
+        const didRequeue = finishExactReviewQueueItem(state, item, now, run.outcome);
+        reconciled += 1;
+        if (didRequeue) requeued += 1;
+        else completed += 1;
+      }
+      if (reconciled) {
+        await this.writeState(state);
+        await this.scheduleNext(state, now);
+      }
+      return json({ ok: true, reconciled, requeued, completed });
     }
 
     if (request.method === "GET" && url.pathname === "/stats") {
@@ -652,6 +725,8 @@ export default {
       return exactReviewQueueRequest(env, "/claim", request);
     if (url.pathname === "/internal/exact-review/complete" && request.method === "POST")
       return exactReviewQueueRequest(env, "/complete", request);
+    if (url.pathname === "/internal/exact-review/reconcile" && request.method === "POST")
+      return authenticatedExactReviewReconcile(request, env);
     if (url.pathname === "/api/exact-review-queue" && request.method === "GET")
       return exactReviewQueueRequest(env, "/stats");
     if (url.pathname === "/api/status") return statusJson(request, env, ctx);
@@ -1171,6 +1246,104 @@ async function authenticatedExactReviewEnqueue(request, env) {
   );
 }
 
+async function authenticatedExactReviewReconcile(request, env) {
+  const secret = stringEnv(env.CLAWSWEEPER_WEBHOOK_SECRET);
+  if (!secret) return json({ error: "webhook_not_configured" }, 503);
+  const bodyText = await request.text();
+  const signature = request.headers.get("x-clawsweeper-exact-review-signature") || "";
+  if (!(await verifyGithubWebhookSignature({ secret, signature, bodyText }))) {
+    return json({ error: "invalid_signature" }, 401);
+  }
+  const body = parseJsonObject(bodyText);
+  if (!body) return json({ error: "invalid_json" }, 400);
+  const requestedRuns = exactReviewRequestedRuns(body.runs ?? body.run_ids);
+  if (!requestedRuns) return json({ error: "invalid_runs" }, 400);
+
+  const claimedResponse = await exactReviewQueueRequest(env, "/claimed-runs");
+  if (!claimedResponse.ok) return json({ error: "exact_review_queue_unavailable" }, 503);
+  const claimedBody = objectValue(await claimedResponse.json().catch(() => null));
+  const claimedRuns = exactReviewClaimedRuns(claimedBody.runs);
+  if (!claimedRuns) return json({ error: "exact_review_queue_unavailable" }, 503);
+  const candidates: Array<ExactReviewClaimedRun & { requestedRunAttempt?: number }> = [];
+  for (const requested of requestedRuns) {
+    const matches = claimedRuns.filter((claimed) => claimed.runId === requested.runId);
+    if (matches.length !== 1) continue;
+    candidates.push({ ...matches[0], requestedRunAttempt: requested.runAttempt });
+  }
+  if (!candidates.length) {
+    return json({
+      ok: true,
+      requested: requestedRuns.length,
+      claimed: 0,
+      terminal: 0,
+      unavailable: 0,
+      reconciled: 0,
+      requeued: 0,
+      completed: 0,
+    });
+  }
+
+  let token: string;
+  try {
+    token = await exactReviewActionsReadToken(env);
+  } catch {
+    return json({ error: "github_run_status_unavailable" }, 502);
+  }
+  const checked = await mapWithConcurrency(
+    candidates,
+    EXACT_REVIEW_RECONCILE_CONCURRENCY,
+    async (candidate) => {
+      try {
+        return await exactReviewTerminalRun(token, candidate);
+      } catch {
+        return undefined;
+      }
+    },
+  );
+  const unavailable = checked.filter((result) => result === undefined).length;
+  const terminalRuns = checked.filter(
+    (
+      result,
+    ): result is {
+      run_id: string;
+      run_attempt: number;
+      claimed_run_attempt: number | null;
+      claim_generation: number;
+      outcome: ExactReviewCompletionOutcome;
+    } => Boolean(result),
+  );
+  let reconciliation = { reconciled: 0, requeued: 0, completed: 0 };
+  if (terminalRuns.length) {
+    const response = await exactReviewQueueRequest(
+      env,
+      "/reconcile",
+      new Request("https://clawsweeper-exact-review-queue/reconcile", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ runs: terminalRuns }),
+      }),
+    );
+    if (!response.ok) return json({ error: "exact_review_reconcile_failed" }, 502);
+    const result = objectValue(await response.json().catch(() => null));
+    reconciliation = {
+      reconciled: Number(result.reconciled) || 0,
+      requeued: Number(result.requeued) || 0,
+      completed: Number(result.completed) || 0,
+    };
+  }
+  return json(
+    {
+      ok: unavailable === 0,
+      requested: requestedRuns.length,
+      claimed: candidates.length,
+      terminal: terminalRuns.length,
+      unavailable,
+      ...reconciliation,
+    },
+    unavailable ? 502 : 200,
+  );
+}
+
 async function enqueueExactReview({
   deliveryId,
   decision,
@@ -1285,11 +1458,149 @@ function exactReviewItemForLease(state: ExactReviewQueueState, leaseId: string) 
   return Object.values(state.items).find((item) => item.leaseId === leaseId) || null;
 }
 
+function exactReviewCompletionOutcome(
+  value,
+  fallback?: ExactReviewCompletionOutcome,
+): ExactReviewCompletionOutcome | null {
+  const normalized =
+    value === undefined || value === null || value === "" ? fallback : String(value);
+  return normalized === "success" || normalized === "failure" || normalized === "cancelled"
+    ? normalized
+    : null;
+}
+
+function exactReviewRunAttempt(value): number | null {
+  const runAttempt = Number(value);
+  return Number.isInteger(runAttempt) && runAttempt > 0 ? runAttempt : null;
+}
+
+function exactReviewClaimGeneration(value) {
+  const generation = Number(value);
+  return Number.isInteger(generation) && generation >= 0 ? generation : 0;
+}
+
+function exactReviewTerminalRuns(value) {
+  if (!Array.isArray(value) || value.length > EXACT_REVIEW_RECONCILE_RUN_LIMIT) return null;
+  const runs: Array<
+    ExactReviewClaimedRun & {
+      runAttempt: number;
+      claimedRunAttempt?: number;
+      outcome: ExactReviewCompletionOutcome;
+    }
+  > = [];
+  const seen = new Set<string>();
+  for (const entry of value) {
+    const record = objectValue(entry);
+    const runId = String(record.run_id || "").trim();
+    const runAttempt = exactReviewRunAttempt(record.run_attempt);
+    const claimedRunAttempt =
+      record.claimed_run_attempt === null || record.claimed_run_attempt === undefined
+        ? undefined
+        : exactReviewRunAttempt(record.claimed_run_attempt);
+    const claimGeneration = Number(record.claim_generation);
+    const outcome = exactReviewCompletionOutcome(record.outcome);
+    if (
+      !/^\d+$/.test(runId) ||
+      !runAttempt ||
+      claimedRunAttempt === null ||
+      !Number.isInteger(claimGeneration) ||
+      claimGeneration < 0 ||
+      !outcome
+    ) {
+      return null;
+    }
+    const key = `${runId}:${runAttempt}:${claimGeneration}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    runs.push({ runId, runAttempt, claimedRunAttempt, claimGeneration, outcome });
+  }
+  return runs;
+}
+
+function exactReviewRequestedRuns(value) {
+  if (
+    !Array.isArray(value) ||
+    value.length < 1 ||
+    value.length > EXACT_REVIEW_RECONCILE_RUN_LIMIT
+  ) {
+    return null;
+  }
+  const runs: Array<{ runId: string; runAttempt?: number }> = [];
+  const seen = new Set<string>();
+  for (const entry of value) {
+    const record = objectValue(entry);
+    const runId = String(record.run_id || (typeof entry !== "object" ? entry : "")).trim();
+    if (!/^\d+$/.test(runId)) return null;
+    const hasRunAttempt = Object.hasOwn(record, "run_attempt");
+    const runAttempt = hasRunAttempt ? exactReviewRunAttempt(record.run_attempt) : null;
+    if (hasRunAttempt && !runAttempt) return null;
+    const key = `${runId}:${runAttempt || "latest"}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    runs.push({ runId, ...(runAttempt ? { runAttempt } : {}) });
+  }
+  return runs;
+}
+
+function exactReviewClaimedRuns(value): ExactReviewClaimedRun[] | null {
+  if (!Array.isArray(value) || value.length > EXACT_REVIEW_RECONCILE_RUN_LIMIT) return null;
+  const runs: ExactReviewClaimedRun[] = [];
+  for (const entry of value) {
+    const record = objectValue(entry);
+    const runId = String(record.run_id || "").trim();
+    const runAttempt =
+      record.run_attempt === null || record.run_attempt === undefined
+        ? undefined
+        : exactReviewRunAttempt(record.run_attempt);
+    const claimGeneration = Number(record.claim_generation);
+    if (
+      !/^\d+$/.test(runId) ||
+      runAttempt === null ||
+      !Number.isInteger(claimGeneration) ||
+      claimGeneration < 0
+    ) {
+      return null;
+    }
+    runs.push({ runId, runAttempt, claimGeneration });
+  }
+  return runs;
+}
+
+function finishExactReviewQueueItem(
+  state: ExactReviewQueueState,
+  item: ExactReviewQueueItem,
+  now: number,
+  outcome: ExactReviewCompletionOutcome,
+) {
+  const retryingFailure = outcome !== "success";
+  const requeued = retryingFailure || item.revision > Number(item.leaseRevision || 0);
+  if (requeued) {
+    clearExactReviewLease(item);
+    item.state = "pending";
+    if (retryingFailure) {
+      item.attempts += 1;
+      item.nextAttemptAt = Math.max(
+        exactReviewQueueEnqueueAttemptAt(state, now),
+        now + exactReviewRetryDelayMs(item.attempts),
+      );
+    } else {
+      item.nextAttemptAt = exactReviewQueueEnqueueAttemptAt(state, now);
+      item.attempts = 0;
+    }
+    item.updatedAt = now;
+  } else {
+    delete state.items[item.key];
+  }
+  return requeued;
+}
+
 function clearExactReviewLease(item: ExactReviewQueueItem) {
   item.leaseId = undefined;
   item.leaseRevision = undefined;
   item.leaseExpiresAt = undefined;
   item.claimedRunId = undefined;
+  item.claimedRunAttempt = undefined;
+  item.claimGeneration = undefined;
 }
 
 function isLiveExactReviewLease(item: ExactReviewQueueItem, now: number) {
@@ -1558,6 +1869,14 @@ function exactReviewWorkflowPausedRetryMs(env) {
 }
 
 async function exactReviewDispatchToken(env) {
+  return exactReviewRepositoryToken(env, { actions: "read", contents: "write" });
+}
+
+async function exactReviewActionsReadToken(env) {
+  return exactReviewRepositoryToken(env, { actions: "read" });
+}
+
+async function exactReviewRepositoryToken(env, permissions) {
   const credentials = githubAppCredentials(env);
   if (!credentials) throw new Error("github app is not configured");
   const appJwt = await signGithubAppJwt(credentials.issuer, credentials.privateKey);
@@ -1567,7 +1886,7 @@ async function exactReviewDispatchToken(env) {
     installationId,
     label: CLAWSWEEPER_REVIEW_REPO,
     repositories: [repoName(CLAWSWEEPER_REVIEW_REPO)],
-    permissions: { actions: "read", contents: "write" },
+    permissions,
   });
 }
 
@@ -1582,6 +1901,60 @@ async function exactReviewWorkflowState(token: string) {
   const state = String(payload.state || "").trim();
   if (!state) throw new Error("ClawSweeper workflow status response missing state");
   return state;
+}
+
+async function exactReviewTerminalRun(
+  token: string,
+  candidate: ExactReviewClaimedRun & { requestedRunAttempt?: number },
+) {
+  const expectedRunAttempt = candidate.requestedRunAttempt ?? candidate.runAttempt;
+  const latest = await githubTokenJson({
+    token,
+    path: `/repos/${CLAWSWEEPER_REVIEW_REPO}/actions/runs/${candidate.runId}`,
+    method: "GET",
+    body: undefined,
+    errorLabel: "ClawSweeper run status",
+  });
+  if (String(latest.id || "") !== candidate.runId) {
+    throw new Error("ClawSweeper run status response id mismatch");
+  }
+  const latestRunAttempt = exactReviewRunAttempt(latest.run_attempt);
+  if (!latestRunAttempt) {
+    throw new Error("ClawSweeper run status response attempt mismatch");
+  }
+  if (expectedRunAttempt && latestRunAttempt !== expectedRunAttempt) return null;
+  if (String(latest.status || "") !== "completed") return null;
+
+  const payload = await githubTokenJson({
+    token,
+    path: `/repos/${CLAWSWEEPER_REVIEW_REPO}/actions/runs/${candidate.runId}/attempts/${latestRunAttempt}`,
+    method: "GET",
+    body: undefined,
+    errorLabel: "ClawSweeper run attempt status",
+  });
+  if (
+    String(payload.id || "") !== candidate.runId ||
+    exactReviewRunAttempt(payload.run_attempt) !== latestRunAttempt ||
+    String(payload.status || "") !== "completed"
+  ) {
+    throw new Error("ClawSweeper run attempt status response mismatch");
+  }
+  const conclusion = String(payload.conclusion || "").trim();
+  if (!conclusion) throw new Error("ClawSweeper completed run missing conclusion");
+  return {
+    run_id: candidate.runId,
+    run_attempt: latestRunAttempt,
+    claimed_run_attempt: candidate.runAttempt ?? null,
+    claim_generation: candidate.claimGeneration,
+    outcome:
+      conclusion === "success" ? "success" : conclusion === "cancelled" ? "cancelled" : "failure",
+  } satisfies {
+    run_id: string;
+    run_attempt: number;
+    claimed_run_attempt: number | null;
+    claim_generation: number;
+    outcome: ExactReviewCompletionOutcome;
+  };
 }
 
 async function createGithubAppTokenFor({

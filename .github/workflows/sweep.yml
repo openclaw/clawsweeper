@@ -293,11 +293,20 @@ jobs:
         env:
           QUEUE_LEASE_ID: ${{ github.event.client_payload.queue_lease_id }}
           QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
         run: |
           set -euo pipefail
           test -n "$QUEUE_LEASE_ID"
           queue_url="${QUEUE_URL%/}"
-          payload="$(node -e 'process.stdout.write(JSON.stringify({ lease_id: process.env.QUEUE_LEASE_ID, run_id: process.env.GITHUB_RUN_ID }))')"
+          payload="$(node -e '
+            const runAttempt = Number(process.env.RUN_ATTEMPT);
+            if (!Number.isInteger(runAttempt) || runAttempt < 1) process.exit(1);
+            process.stdout.write(JSON.stringify({
+              lease_id: process.env.QUEUE_LEASE_ID,
+              run_id: process.env.GITHUB_RUN_ID,
+              run_attempt: runAttempt,
+            }));
+          ')"
           for attempt in 1 2 3; do
             if response="$(curl --fail --silent --show-error --connect-timeout 5 --max-time 20 \
               --request POST \
@@ -804,16 +813,36 @@ jobs:
           add_completion_reaction
           remove_own_eyes_reactions
 
+      - name: Fail unsuccessful exact review
+        if: ${{ always() && (steps.review-exact-event-item.outcome != 'success' || steps.publish-event-result.outcome != 'success' || steps.route-synced-verdict.outcome != 'success') }}
+        run: exit 1
+
       - name: Complete exact-review queue lease
         if: ${{ success() && steps.review-exact-event-item.outcome == 'success' && steps.publish-event-result.outcome == 'success' && steps.route-synced-verdict.outcome == 'success' }}
         env:
+          JOB_STATUS: ${{ job.status }}
           QUEUE_LEASE_ID: ${{ github.event.client_payload.queue_lease_id }}
           QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
         run: |
           set -euo pipefail
           test -n "$QUEUE_LEASE_ID"
           queue_url="${QUEUE_URL%/}"
-          payload="$(node -e 'process.stdout.write(JSON.stringify({ lease_id: process.env.QUEUE_LEASE_ID, run_id: process.env.GITHUB_RUN_ID }))')"
+          payload="$(node -e '
+            const runAttempt = Number(process.env.RUN_ATTEMPT);
+            if (!Number.isInteger(runAttempt) || runAttempt < 1) process.exit(1);
+            const outcome = process.env.JOB_STATUS === "success"
+              ? "success"
+              : process.env.JOB_STATUS === "cancelled"
+                ? "cancelled"
+                : "failure";
+            process.stdout.write(JSON.stringify({
+              lease_id: process.env.QUEUE_LEASE_ID,
+              run_id: process.env.GITHUB_RUN_ID,
+              run_attempt: runAttempt,
+              outcome,
+            }));
+          ')"
           for attempt in 1 2 3; do
             if curl --fail --silent --show-error --connect-timeout 5 --max-time 20 \
               --request POST \

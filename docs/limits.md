@@ -124,9 +124,16 @@ backlog drain.
 
 Each dispatched workflow claims its opaque lease before checkout. Duplicate
 dispatches and stale workflows cannot claim the same lease, and a completion
-releases the lease or immediately schedules the newest revision. If a workflow
-never claims or completes, the Durable Object reclaims the expired lease. This
-keeps capacity waiting and retry state out of GitHub Actions runners.
+immediately schedules a known newer revision. Failed and cancelled executors
+requeue their item with bounded retry backoff. Successful finalizer reports stay
+leased until a signed terminal-run reconciliation backstop confirms that exact
+GitHub attempt completed successfully; this backstop can also recover terminal
+failed or cancelled runs before lease expiry.
+Run-attempt binding and a per-claim generation check keep delayed terminal
+decisions from releasing a later rerun; queued and in-progress runs are never
+released. If a workflow never claims or completes, the Durable Object reclaims
+the expired lease. This keeps capacity waiting and retry state out of GitHub
+Actions runners.
 
 Examples with the current config:
 

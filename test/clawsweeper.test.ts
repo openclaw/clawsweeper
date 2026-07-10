@@ -2151,6 +2151,16 @@ test("sweep workflow executes only durable queue leases without runner-side admi
   );
   const setupCodexIndex = eventReviewBlock.indexOf("- uses: ./.github/actions/setup-codex");
   const exactReviewIndex = eventReviewBlock.indexOf("- name: Review exact event item");
+  const failReviewIndex = eventReviewBlock.indexOf("- name: Fail unsuccessful exact review");
+  const completeLeaseIndex = eventReviewBlock.indexOf("- name: Complete exact-review queue lease");
+  const claimStep = eventReviewBlock.slice(
+    claimIndex,
+    eventReviewBlock.indexOf("\n      - ", claimIndex + 1),
+  );
+  const completeLeaseStep = eventReviewBlock.slice(
+    completeLeaseIndex,
+    eventReviewBlock.indexOf("\n      - ", completeLeaseIndex + 1),
+  );
   const exactReviewStep = eventReviewBlock.slice(
     exactReviewIndex,
     eventReviewBlock.indexOf("- name: Create state token", exactReviewIndex),
@@ -2174,8 +2184,29 @@ test("sweep workflow executes only durable queue leases without runner-side admi
   assert.ok(inProgressStatusIndex > setupPnpmIndex);
   assert.ok(setupCodexIndex > inProgressStatusIndex);
   assert.ok(exactReviewIndex > setupCodexIndex);
+  assert.ok(failReviewIndex > exactReviewIndex);
+  assert.ok(completeLeaseIndex > failReviewIndex);
   assert.match(eventReviewBlock, /\/internal\/exact-review\/claim/);
   assert.match(eventReviewBlock, /\/internal\/exact-review\/complete/);
+  assert.match(claimStep, /RUN_ATTEMPT: \$\{\{ github\.run_attempt \}\}/);
+  assert.match(claimStep, /run_attempt: runAttempt/);
+  assert.match(
+    eventReviewBlock.slice(failReviewIndex, completeLeaseIndex),
+    /steps\.review-exact-event-item\.outcome != 'success'/,
+  );
+  assert.match(
+    eventReviewBlock.slice(failReviewIndex, completeLeaseIndex),
+    /steps\.publish-event-result\.outcome != 'success'/,
+  );
+  assert.match(
+    eventReviewBlock.slice(failReviewIndex, completeLeaseIndex),
+    /steps\.route-synced-verdict\.outcome != 'success'/,
+  );
+  assert.match(completeLeaseStep, /JOB_STATUS: \$\{\{ job\.status \}\}/);
+  assert.match(completeLeaseStep, /RUN_ATTEMPT: \$\{\{ github\.run_attempt \}\}/);
+  assert.match(completeLeaseStep, /process\.env\.JOB_STATUS === "cancelled"/);
+  assert.match(completeLeaseStep, /run_attempt: runAttempt/);
+  assert.match(completeLeaseStep, /outcome,/);
   assert.match(eventReviewBlock, /exact-review queue leased this run/);
   assert.doesNotMatch(eventReviewBlock, /repair:codex-capacity/);
   assert.doesNotMatch(eventReviewBlock, /capacity-requeue/);
