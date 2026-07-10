@@ -7,7 +7,7 @@ export const DEFAULT_FIX_LATE_WORKER_RESERVE_MS = 30 * MINUTE_MS;
 const MIN_CODEX_TIMEOUT_MS = 5 * MINUTE_MS;
 const MAX_CODEX_TIMEOUT_MS = 60 * MINUTE_MS;
 const MIN_FIX_STEP_TIMEOUT_MS = 15 * MINUTE_MS;
-const MAX_FIX_STEP_TIMEOUT_MS = 120 * MINUTE_MS;
+const MAX_FIX_STEP_TIMEOUT_MS = 70 * MINUTE_MS;
 
 type RepairTimeoutEnvironment = Record<string, string | undefined>;
 

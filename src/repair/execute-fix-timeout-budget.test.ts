@@ -44,6 +44,19 @@ test("repair timeout budget falls back or clamps unsafe repository variables", (
       lateWorkerReserveMs: 10 * 60_000,
     },
   );
+
+  assert.deepEqual(
+    repairTimeoutBudgetFromEnv({
+      CLAWSWEEPER_FIX_CODEX_TIMEOUT_MS: "999999999",
+      CLAWSWEEPER_FIX_STEP_TIMEOUT_MS: "999999999",
+      CLAWSWEEPER_FIX_TIMEOUT_RESERVE_MS: "999999999",
+    }),
+    {
+      codexTimeoutMs: 60 * 60_000,
+      fixStepTimeoutMs: 70 * 60_000,
+      lateWorkerReserveMs: 60 * 60_000,
+    },
+  );
 });
 
 test("repair timeout budget preserves one full later worker after a long edit", () => {
