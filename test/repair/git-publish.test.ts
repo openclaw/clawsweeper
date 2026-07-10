@@ -13,6 +13,7 @@ import {
   publishMainCommit,
   refreshSourceAfterStatePublish,
   setTokenOrigin,
+  stagePaths,
   uniqueNonEmpty,
 } from "../../dist/repair/git-publish.js";
 
@@ -47,6 +48,21 @@ test("commitMessageForPublishedPaths skips CI for generated-only publishes", () 
     commitMessageForPublishedPaths("fix: update scheduler", ["src/repair/git-publish.ts"]),
     "fix: update scheduler",
   );
+});
+
+test("stagePaths normalizes tracked deletion pathspecs", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-stage-paths-"));
+  const file = "records/openclaw-openclaw/items/42.md";
+  run("git", ["init"], root);
+  configureUser(root);
+  write(path.join(root, file), "tracked\n");
+  run("git", ["add", "."], root);
+  run("git", ["commit", "-m", "initial"], root);
+  fs.rmSync(path.join(root, file));
+
+  withCwd(root, () => stagePaths(["./records/openclaw-openclaw/items/"]));
+
+  assert.equal(run("git", ["diff", "--cached", "--name-only"], root), `${file}\n`);
 });
 
 test("publishMainCommit commits selected paths and restores volatile tracked files", () => {
@@ -856,6 +872,384 @@ test("reconcile-records rejects a malformed tuple before an uncontended push", (
       root,
     ),
     tuple.packet,
+  );
+});
+
+test("reconcile-records fails closed on a concurrent tuple filename alias", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-publish-alias-"));
+  const origin = path.join(root, "origin.git");
+  const work = path.join(root, "work");
+  const other = path.join(root, "other");
+  const recordsRoot = "records/openclaw-openclaw";
+  run("git", ["init", "--bare", origin], root);
+  run("git", ["clone", origin, work], root);
+  configureUser(work);
+  writeRecordTuple(work, {
+    number: 42,
+    marker: "base exact filename",
+    reviewedAt: "2026-07-09T23:00:00.000Z",
+    itemUpdatedAt: "2026-07-09T22:59:00Z",
+  });
+  run("git", ["add", "."], work);
+  run("git", ["commit", "-m", "initial state"], work);
+  run("git", ["push", "origin", "HEAD:main"], work);
+  run("git", ["--git-dir", origin, "symbolic-ref", "HEAD", "refs/heads/main"], root);
+  run("git", ["checkout", "-B", "main", "origin/main"], work);
+  run("git", ["clone", origin, other], root);
+  configureUser(other);
+
+  fs.rmSync(path.join(other, recordsRoot, "items/42.md"));
+  fs.rmSync(path.join(other, recordsRoot, "plans/42.md"));
+  const remoteAlias = writeRecordTuple(other, {
+    number: 42,
+    marker: "newer remote alias",
+    reviewedAt: "2026-07-09T23:04:00.000Z",
+    itemUpdatedAt: "2026-07-09T23:03:00Z",
+    recordFile: "openclaw-openclaw-42.md",
+    planFile: "repair-openclaw-openclaw-42.md",
+  });
+  run("git", ["add", "-A"], other);
+  run("git", ["commit", "-m", "rename tuple to legacy alias"], other);
+  installFirstPushRaceHook(work, other);
+  writeRecordTuple(work, {
+    number: 42,
+    marker: "local exact update",
+    reviewedAt: "2026-07-09T23:02:00.000Z",
+    itemUpdatedAt: "2026-07-09T23:01:00Z",
+  });
+
+  const lines = [];
+  assert.throws(
+    () =>
+      captureConsoleLog(
+        () =>
+          withCwd(work, () =>
+            publishMainCommit({
+              message: "chore: reconcile filename alias",
+              paths: [recordsRoot],
+              maxAttempts: 1,
+              pushAttempts: 1,
+              rebaseStrategy: "reconcile-records",
+            }),
+          ),
+        lines,
+      ),
+    /ambiguous items filenames/,
+  );
+  assert.equal(
+    lines.some((line) => line.includes("Git publish failure: phase=push")),
+    true,
+  );
+  assert.equal(
+    run(
+      "git",
+      ["--git-dir", origin, "show", `main:${recordsRoot}/items/openclaw-openclaw-42.md`],
+      root,
+    ),
+    remoteAlias.primary,
+  );
+  assert.throws(() =>
+    run("git", ["--git-dir", origin, "show", `main:${recordsRoot}/items/42.md`], root),
+  );
+});
+
+test("reconcile-records fails closed when state and remote have no common base", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-publish-unrelated-"));
+  const origin = path.join(root, "origin.git");
+  const state = path.join(root, "state");
+  const work = path.join(root, "work");
+  const recordsRoot = "records/openclaw-openclaw";
+  run("git", ["init", "--bare", origin], root);
+  run("git", ["clone", origin, state], root);
+  configureUser(state);
+  const baseTuple = writeRecordTuple(state, {
+    number: 42,
+    marker: "remote base",
+    reviewedAt: "2026-07-09T23:00:00.000Z",
+    itemUpdatedAt: "2026-07-09T22:59:00Z",
+  });
+  run("git", ["add", "."], state);
+  run("git", ["commit", "-m", "remote base"], state);
+  run("git", ["push", "origin", "HEAD:state"], state);
+  run("git", ["--git-dir", origin, "symbolic-ref", "HEAD", "refs/heads/state"], root);
+  fs.mkdirSync(work);
+  fs.cpSync(path.join(state, "records"), path.join(work, "records"), { recursive: true });
+  writeRecordTuple(work, {
+    number: 42,
+    marker: "candidate update",
+    reviewedAt: "2026-07-09T23:02:00.000Z",
+    itemUpdatedAt: "2026-07-09T23:01:00Z",
+  });
+
+  run("git", ["checkout", "--orphan", "unrelated"], state);
+  run("git", ["read-tree", "--empty"], state);
+  fs.rmSync(path.join(state, "records"), { force: true, recursive: true });
+  fs.writeFileSync(path.join(state, "unrelated.txt"), "unrelated history\n");
+  run("git", ["add", "-A"], state);
+  run("git", ["commit", "-m", "unrelated local history"], state);
+
+  const lines = [];
+  assert.throws(
+    () =>
+      captureConsoleLog(
+        () =>
+          withEnv({ CLAWSWEEPER_STATE_DIR: state }, () =>
+            withCwd(work, () =>
+              publishMainCommit({
+                message: "chore: reject unrelated state",
+                paths: [recordsRoot],
+                maxAttempts: 1,
+                pushAttempts: 1,
+                rebaseStrategy: "reconcile-records",
+              }),
+            ),
+          ),
+        lines,
+      ),
+    /git command <redacted-args> exited 1/,
+  );
+  assert.equal(
+    lines.some((line) => line.includes("Git publish failure: phase=prepare")),
+    true,
+  );
+  assert.equal(
+    run("git", ["--git-dir", origin, "show", `state:${recordsRoot}/items/42.md`], root),
+    baseTuple.primary,
+  );
+});
+
+test("reconcile-records bounds git subprocesses for a 516-tuple publish", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-publish-scale-"));
+  const origin = path.join(root, "origin.git");
+  const state = path.join(root, "state");
+  const work = path.join(root, "work");
+  const other = path.join(root, "other");
+  const recordsRoot = "records/openclaw-openclaw";
+  const numbers = Array.from({ length: 516 }, (_, index) => 110_000 + index);
+  run("git", ["init", "--bare", origin], root);
+  run("git", ["clone", origin, state], root);
+  configureUser(state);
+  for (const number of numbers) {
+    writeRecordTuple(state, {
+      number,
+      marker: `base ${number}`,
+      reviewedAt: "2026-07-09T23:00:00.000Z",
+      itemUpdatedAt: "2026-07-09T22:59:00Z",
+    });
+  }
+  run("git", ["add", "."], state);
+  run("git", ["commit", "-m", "initial state"], state);
+  run("git", ["push", "origin", "HEAD:state"], state);
+  run("git", ["--git-dir", origin, "symbolic-ref", "HEAD", "refs/heads/state"], root);
+  run("git", ["checkout", "-B", "state", "origin/state"], state);
+
+  fs.mkdirSync(work);
+  fs.cpSync(path.join(state, "records"), path.join(work, "records"), { recursive: true });
+  for (const number of numbers) {
+    writeRecordTuple(work, {
+      number,
+      marker: `closed ${number}`,
+      reviewedAt: "2026-07-09T23:01:00.000Z",
+      itemUpdatedAt: "2026-07-09T23:00:00Z",
+      location: "closed",
+      packet: false,
+      plan: false,
+      extraFrontMatter: ["reconciled_at: 2026-07-09T23:02:00.000Z"],
+    });
+  }
+  run("git", ["clone", origin, other], root);
+  configureUser(other);
+  const remoteWinner = writeRecordTuple(other, {
+    number: numbers.at(-1),
+    marker: "newer remote tuple during checkpoint publish",
+    reviewedAt: "2026-07-09T23:10:00.000Z",
+    itemUpdatedAt: "2026-07-09T23:09:00Z",
+  });
+  run("git", ["add", "-A"], other);
+  run("git", ["commit", "-m", "newer remote checkpoint tuple"], other);
+  installCheckpointFailureHook(state, other, "state");
+  const paths = numbers.flatMap((number) => [
+    `${recordsRoot}/items/${number}.md`,
+    `${recordsRoot}/closed/${number}.md`,
+    `${recordsRoot}/plans/${number}.md`,
+    `${recordsRoot}/decision-packets/${number}.json`,
+  ]);
+
+  const publish = () =>
+    withEnv({ CLAWSWEEPER_STATE_DIR: state }, () =>
+      withCwd(work, () =>
+        publishMainCommit({
+          message: "chore: publish 516 reconciled tuples",
+          paths,
+          maxAttempts: 1,
+          pushAttempts: 1,
+          rebaseStrategy: "reconcile-records",
+        }),
+      ),
+    );
+  const failedLines = [];
+  assert.throws(
+    () => captureConsoleLog(() => captureProcessWrites(publish), failedLines),
+    /Failed to publish reconciliation checkpoint 2\/5/,
+  );
+  assert.equal(
+    failedLines.some((line) => line.includes("Git publish failure: phase=checkpoint")),
+    true,
+  );
+  assert.match(
+    run("git", ["--git-dir", origin, "show", `state:${recordsRoot}/closed/${numbers[0]}.md`], root),
+    new RegExp(`# closed ${numbers[0]}`),
+  );
+  assert.match(
+    run(
+      "git",
+      ["--git-dir", origin, "show", `state:${recordsRoot}/items/${numbers[128]}.md`],
+      root,
+    ),
+    new RegExp(`# base ${numbers[128]}`),
+  );
+  run("git", ["fetch", "origin", "state"], other);
+  run("git", ["rebase", "origin/state"], other);
+  const divergentRemote = writeRecordTuple(other, {
+    number: 130_000,
+    marker: "divergent remote tuple before retry",
+    reviewedAt: "2026-07-09T23:11:00.000Z",
+    itemUpdatedAt: "2026-07-09T23:10:00Z",
+  });
+  run("git", ["add", "-A"], other);
+  run("git", ["commit", "-m", "divergent remote tuple"], other);
+  run("git", ["push", "origin", "HEAD:state"], other);
+
+  let result;
+  const lines = captureConsoleLog(() =>
+    captureProcessWrites(() => {
+      result = publish();
+    }),
+  );
+
+  assert.equal(result, "committed");
+  const metrics = lines.find((line) => line.startsWith("Git publish metrics:"));
+  assert.ok(metrics, "publish emits bounded git subprocess metrics");
+  console.log(`516-tuple ${metrics}`);
+  const processCount = Number(/processes=(\d+)/.exec(metrics)?.[1]);
+  assert.ok(
+    Number.isInteger(processCount) && processCount <= 192,
+    `516-tuple checkpoint publish used ${processCount} git subprocesses; expected at most 192`,
+  );
+  assert.match(
+    run("git", ["--git-dir", origin, "show", `state:${recordsRoot}/closed/${numbers[0]}.md`], root),
+    new RegExp(`# closed ${numbers[0]}`),
+  );
+  assert.throws(() =>
+    run("git", ["--git-dir", origin, "show", `state:${recordsRoot}/items/${numbers[0]}.md`], root),
+  );
+  assert.equal(
+    run(
+      "git",
+      ["--git-dir", origin, "show", `state:${recordsRoot}/items/${numbers.at(-1)}.md`],
+      root,
+    ),
+    remoteWinner.primary,
+  );
+  assert.equal(
+    run("git", ["--git-dir", origin, "show", `state:${recordsRoot}/items/130000.md`], root),
+    divergentRemote.primary,
+  );
+});
+
+test("reconcile-records lands one local tuple through a disjoint remote update storm", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-publish-storm-"));
+  const origin = path.join(root, "origin.git");
+  const work = path.join(root, "work");
+  const other = path.join(root, "other");
+  const recordsRoot = "records/openclaw-openclaw";
+  const remoteNumbers = Array.from({ length: 300 }, (_, index) => 120_000 + index);
+  run("git", ["init", "--bare", origin], root);
+  run("git", ["clone", origin, work], root);
+  configureUser(work);
+  writeRecordTuple(work, {
+    number: 42,
+    marker: "local base",
+    reviewedAt: "2026-07-09T23:00:00.000Z",
+    itemUpdatedAt: "2026-07-09T22:59:00Z",
+  });
+  for (const number of remoteNumbers) {
+    writeRecordTuple(work, {
+      number,
+      marker: `remote base ${number}`,
+      reviewedAt: "2026-07-09T23:00:00.000Z",
+      itemUpdatedAt: "2026-07-09T22:59:00Z",
+    });
+  }
+  run("git", ["add", "."], work);
+  run("git", ["commit", "-m", "initial state"], work);
+  run("git", ["push", "origin", "HEAD:main"], work);
+  run("git", ["--git-dir", origin, "symbolic-ref", "HEAD", "refs/heads/main"], root);
+  run("git", ["checkout", "-B", "main", "origin/main"], work);
+  run("git", ["clone", origin, other], root);
+  configureUser(other);
+
+  const remoteTuples = new Map();
+  for (const number of remoteNumbers) {
+    remoteTuples.set(
+      number,
+      writeRecordTuple(other, {
+        number,
+        marker: `remote update ${number}`,
+        reviewedAt: "2026-07-09T23:02:00.000Z",
+        itemUpdatedAt: "2026-07-09T23:01:00Z",
+      }),
+    );
+  }
+  run("git", ["add", "-A"], other);
+  run("git", ["commit", "-m", "remote tuple update storm"], other);
+  installFirstPushRaceHook(work, other);
+
+  const localTuple = writeRecordTuple(work, {
+    number: 42,
+    marker: "local close through storm",
+    reviewedAt: "2026-07-09T23:03:00.000Z",
+    itemUpdatedAt: "2026-07-09T23:02:00Z",
+    location: "closed",
+    packet: false,
+    plan: false,
+    extraFrontMatter: ["reconciled_at: 2026-07-09T23:04:00.000Z"],
+  });
+
+  let result;
+  const lines = captureConsoleLog(() => {
+    result = withCwd(work, () =>
+      publishMainCommit({
+        message: "chore: reconcile through remote storm",
+        paths: [recordsRoot],
+        maxAttempts: 1,
+        pushAttempts: 2,
+        rebaseStrategy: "reconcile-records",
+      }),
+    );
+  });
+
+  assert.equal(result, "committed");
+  assert.equal(
+    run("git", ["--git-dir", origin, "show", `main:${recordsRoot}/closed/42.md`], root),
+    localTuple.primary,
+  );
+  for (const number of [remoteNumbers[0], remoteNumbers.at(-1)]) {
+    assert.equal(
+      run("git", ["--git-dir", origin, "show", `main:${recordsRoot}/items/${number}.md`], root),
+      remoteTuples.get(number).primary,
+    );
+  }
+  assert.equal(
+    lines.some((line) => line === "Rebased reconciliation over disjoint remote tuple changes"),
+    true,
+  );
+  const metrics = lines.find((line) => line.startsWith("Git publish metrics:"));
+  assert.ok(metrics, "storm publish emits metrics");
+  const processCount = Number(/processes=(\d+)/.exec(metrics)?.[1]);
+  assert.ok(
+    Number.isInteger(processCount) && processCount <= 48,
+    `storm publish used ${processCount} git subprocesses; expected at most 48`,
   );
 });
 
@@ -1791,9 +2185,41 @@ if test "$count" -eq 2; then git -C "${other}" push origin HEAD:main; fi
   fs.chmodSync(hook, 0o755);
 }
 
-function captureConsoleLog(callback) {
+function installFirstPushRaceHook(work, other, branch = "main") {
+  const hook = path.join(work, ".git/hooks/pre-push");
+  const counter = path.join(work, ".git/hooks/pre-push-count");
+  fs.writeFileSync(
+    hook,
+    `#!/bin/sh
+count=0
+if test -f "${counter}"; then count=$(cat "${counter}"); fi
+count=$((count + 1))
+printf '%s\\n' "$count" > "${counter}"
+if test "$count" -eq 1; then git -C "${other}" push origin HEAD:${branch}; fi
+`,
+  );
+  fs.chmodSync(hook, 0o755);
+}
+
+function installCheckpointFailureHook(work, other, branch) {
+  const hook = path.join(work, ".git/hooks/pre-push");
+  const counter = path.join(work, ".git/hooks/pre-push-count");
+  fs.writeFileSync(
+    hook,
+    `#!/bin/sh
+count=0
+if test -f "${counter}"; then count=$(cat "${counter}"); fi
+count=$((count + 1))
+printf '%s\\n' "$count" > "${counter}"
+if test "$count" -eq 1; then git -C "${other}" push origin HEAD:${branch}; fi
+if test "$count" -eq 3 || test "$count" -eq 4; then exit 1; fi
+`,
+  );
+  fs.chmodSync(hook, 0o755);
+}
+
+function captureConsoleLog(callback, lines = []) {
   const original = console.log;
-  const lines = [];
   console.log = (message) => {
     lines.push(String(message));
   };
@@ -1802,5 +2228,18 @@ function captureConsoleLog(callback) {
     return lines;
   } finally {
     console.log = original;
+  }
+}
+
+function captureProcessWrites(callback) {
+  const stdoutWrite = process.stdout.write;
+  const stderrWrite = process.stderr.write;
+  process.stdout.write = () => true;
+  process.stderr.write = () => true;
+  try {
+    return callback();
+  } finally {
+    process.stdout.write = stdoutWrite;
+    process.stderr.write = stderrWrite;
   }
 }
