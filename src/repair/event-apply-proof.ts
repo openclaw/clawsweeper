@@ -5,6 +5,12 @@ export type EventApplyAction = {
   action: string;
   durableReviewSynced: boolean;
   terminalStateVerified: boolean;
+  guardedOpenStateVerified: boolean;
+};
+
+export type ExactEventPublishDisposition = {
+  guardedOpenAction: string | null;
+  terminalClosed: boolean;
 };
 
 const GUARDED_OPEN_ACTIONS = new Set([
@@ -14,6 +20,28 @@ const GUARDED_OPEN_ACTIONS = new Set([
   "skipped_protected_label",
   "skipped_same_author_pair",
 ]);
+
+export function exactEventPublishDisposition({
+  candidateMatchesCurrentTuple,
+  candidateTupleState,
+  terminalClosedExpected,
+  guardedOpenAction,
+}: {
+  candidateMatchesCurrentTuple: boolean;
+  candidateTupleState: "closed" | "open" | "invalid";
+  terminalClosedExpected: boolean;
+  guardedOpenAction: string | null;
+}): ExactEventPublishDisposition {
+  const terminalClosed =
+    terminalClosedExpected && candidateMatchesCurrentTuple && candidateTupleState === "closed";
+  return {
+    terminalClosed,
+    guardedOpenAction:
+      !terminalClosed && candidateMatchesCurrentTuple && candidateTupleState === "open"
+        ? guardedOpenAction
+        : null,
+  };
+}
 
 export function exactEventApplyProof(
   actions: readonly EventApplyAction[],
@@ -27,14 +55,17 @@ export function exactEventApplyProof(
   latestRevisionRequeueRequired: boolean;
 } {
   const exactActions = actions.filter((entry) => entry.number === itemNumber);
-  const soleExactAction =
-    actions.length === 1 && exactActions.length === 1 ? (exactActions[0]?.action ?? "") : "";
+  const soleExactResult =
+    actions.length === 1 && exactActions.length === 1 ? (exactActions[0] ?? null) : null;
+  const soleExactAction = soleExactResult?.action ?? "";
   return {
     exactActions,
     syncedCount: exactActions.filter((entry) => entry.durableReviewSynced).length,
     terminalCount: exactActions.filter((entry) => entry.terminalStateVerified).length,
     guardedOpenAction:
-      snapshotActionTaken === soleExactAction && GUARDED_OPEN_ACTIONS.has(soleExactAction)
+      snapshotActionTaken === soleExactAction &&
+      soleExactResult?.guardedOpenStateVerified === true &&
+      GUARDED_OPEN_ACTIONS.has(soleExactAction)
         ? soleExactAction
         : null,
     latestRevisionRequeueRequired:
@@ -62,5 +93,6 @@ export function eventApplyAction(value: LooseRecord): EventApplyAction {
     action: typeof value.action === "string" ? value.action : "",
     durableReviewSynced: value.durableReviewSynced === true,
     terminalStateVerified: value.terminalStateVerified === true,
+    guardedOpenStateVerified: value.guardedOpenStateVerified === true,
   };
 }

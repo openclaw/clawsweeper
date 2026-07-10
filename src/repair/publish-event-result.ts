@@ -14,6 +14,7 @@ import {
   eventRecordActionTaken,
   eventApplyAction,
   exactEventApplyProof,
+  exactEventPublishDisposition,
   type EventApplyAction,
 } from "./event-apply-proof.js";
 import {
@@ -44,9 +45,11 @@ type EventOptions = {
 
 type PublishedEventSnapshot = {
   guardedOpenAction: string | null;
+  terminalClosed: boolean;
 };
 
 class GuardedOpenPublishRaceError extends Error {}
+class TerminalClosedPublishRaceError extends Error {}
 
 const options = eventOptionsFromEnv();
 await publishEventResult(options);
@@ -124,7 +127,9 @@ async function publishEventResult(options: EventOptions): Promise<void> {
       closedCount: 0,
       closeReasons: options.closeReasons,
     });
-    return;
+    throw new Error(
+      `Event state for ${options.targetRepo}#${options.itemNumber} was not applied because ${detail}; requeue against the latest item revision`,
+    );
   }
 
   const actions = readApplyActions(options.reportPath);
@@ -168,9 +173,10 @@ async function publishEventResult(options: EventOptions): Promise<void> {
       summary,
       stateBaseCommit,
       guardedOpenAction,
+      terminalClosedExpected: closedCount > 0,
     });
     if (published) {
-      writeGuardedOpenOutput(published.guardedOpenAction);
+      writeEventDispositionOutputs(published);
       return;
     }
     const delaySeconds = attempt * 3 + Math.floor(Math.random() * 11);
@@ -185,13 +191,14 @@ async function publishEventResult(options: EventOptions): Promise<void> {
     summary,
     stateBaseCommit,
     guardedOpenAction,
+    terminalClosedExpected: closedCount > 0,
   });
   if (!published) {
     throw new Error(
       `Failed to publish event result for ${options.targetRepo}#${options.itemNumber}`,
     );
   }
-  writeGuardedOpenOutput(published.guardedOpenAction);
+  writeEventDispositionOutputs(published);
 }
 
 function runApplyDecisions(options: EventOptions): void {
@@ -234,12 +241,14 @@ function publishSnapshot({
   summary,
   stateBaseCommit,
   guardedOpenAction,
+  terminalClosedExpected,
 }: {
   paths: EventRecordPaths;
   options: EventOptions;
   summary: () => void;
   stateBaseCommit: string | null;
   guardedOpenAction: string | null;
+  terminalClosedExpected: boolean;
 }): PublishedEventSnapshot | null {
   const commitPaths = [
     paths.itemRecord,
@@ -250,17 +259,32 @@ function publishSnapshot({
   try {
     const complete = (candidateApplied: boolean): PublishedEventSnapshot => {
       refreshSourceAfterStatePublish(commitPaths, stateBaseCommit);
-      const publishedGuardedOpenAction =
-        candidateApplied && guardedOpenAction !== null && eventSnapshotMatchesCurrent(paths)
-          ? guardedOpenAction
-          : null;
-      if (guardedOpenAction !== null && publishedGuardedOpenAction === null) {
+      const dispositionCandidateIsCurrent =
+        candidateApplied &&
+        (terminalClosedExpected || guardedOpenAction !== null) &&
+        eventSnapshotMatchesCurrent(paths);
+      const published = exactEventPublishDisposition({
+        candidateMatchesCurrentTuple: dispositionCandidateIsCurrent,
+        candidateTupleState: candidateEventTupleState(paths),
+        terminalClosedExpected,
+        guardedOpenAction,
+      });
+      if (terminalClosedExpected && !published.terminalClosed) {
+        throw new TerminalClosedPublishRaceError(
+          `Verified terminal close for ${paths.targetSlug}#${options.itemNumber} lost the publish race; requeue against the latest item revision`,
+        );
+      }
+      if (
+        guardedOpenAction !== null &&
+        !published.terminalClosed &&
+        published.guardedOpenAction === null
+      ) {
         throw new GuardedOpenPublishRaceError(
           `Deterministic remain-open guard for ${paths.targetSlug}#${options.itemNumber} lost the publish race; requeue against the latest item revision`,
         );
       }
       summary();
-      return { guardedOpenAction: publishedGuardedOpenAction };
+      return published;
     };
     hardResetToRemoteMain();
     const stateRoot = publishRoot();
@@ -300,11 +324,23 @@ function publishSnapshot({
     if (!pushCommit({ pushAttempts: 3, rebaseStrategy: "reconcile-records" })) return null;
     return complete(true);
   } catch (error) {
-    if (error instanceof RecordTupleError || error instanceof GuardedOpenPublishRaceError)
+    if (
+      error instanceof RecordTupleError ||
+      error instanceof GuardedOpenPublishRaceError ||
+      error instanceof TerminalClosedPublishRaceError
+    )
       throw error;
     console.error(error instanceof Error ? error.message : String(error));
     return null;
   }
+}
+
+function candidateEventTupleState(paths: EventRecordPaths): "closed" | "open" | "invalid" {
+  const hasOpenRecord = fs.existsSync(paths.snapshotItem);
+  const hasClosedRecord = fs.existsSync(paths.snapshotClosed);
+  if (hasClosedRecord && !hasOpenRecord) return "closed";
+  if (hasOpenRecord && !hasClosedRecord) return "open";
+  return "invalid";
 }
 
 function eventOptionsFromEnv(): EventOptions {
@@ -357,14 +393,15 @@ function writeSummary({
   );
 }
 
-function writeGuardedOpenOutput(action: string | null): void {
+function writeEventDispositionOutputs(published: PublishedEventSnapshot): void {
   const outputPath = process.env.GITHUB_OUTPUT;
   if (!outputPath) return;
   fs.appendFileSync(
     outputPath,
     [
-      `guarded_open=${action === null ? "false" : "true"}`,
-      `guarded_open_action=${action ?? ""}`,
+      `terminal_closed=${published.terminalClosed ? "true" : "false"}`,
+      `guarded_open=${published.guardedOpenAction === null ? "false" : "true"}`,
+      `guarded_open_action=${published.guardedOpenAction ?? ""}`,
       "",
     ].join("\n"),
     "utf8",

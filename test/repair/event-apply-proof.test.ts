@@ -5,7 +5,47 @@ import {
   eventApplyAction,
   eventRecordActionTaken,
   exactEventApplyProof,
+  exactEventPublishDisposition,
 } from "../../src/repair/event-apply-proof.ts";
+
+test("exact event publish dispositions require the current tuple and prefer terminal closure", () => {
+  assert.deepEqual(
+    exactEventPublishDisposition({
+      candidateMatchesCurrentTuple: true,
+      candidateTupleState: "closed",
+      terminalClosedExpected: true,
+      guardedOpenAction: "skipped_protected_label",
+    }),
+    { terminalClosed: true, guardedOpenAction: null },
+  );
+  assert.deepEqual(
+    exactEventPublishDisposition({
+      candidateMatchesCurrentTuple: false,
+      candidateTupleState: "closed",
+      terminalClosedExpected: true,
+      guardedOpenAction: null,
+    }),
+    { terminalClosed: false, guardedOpenAction: null },
+  );
+  assert.deepEqual(
+    exactEventPublishDisposition({
+      candidateMatchesCurrentTuple: true,
+      candidateTupleState: "open",
+      terminalClosedExpected: false,
+      guardedOpenAction: "skipped_locked_conversation",
+    }),
+    { terminalClosed: false, guardedOpenAction: "skipped_locked_conversation" },
+  );
+  assert.deepEqual(
+    exactEventPublishDisposition({
+      candidateMatchesCurrentTuple: true,
+      candidateTupleState: "open",
+      terminalClosedExpected: true,
+      guardedOpenAction: null,
+    }),
+    { terminalClosed: false, guardedOpenAction: null },
+  );
+});
 
 test("exact event proof accepts durable sync independently of the apply action name", () => {
   const proof = exactEventApplyProof(
@@ -54,7 +94,7 @@ test("exact event proof completes live-shaped deterministic guarded-open results
   ]) {
     const snapshot = `---\nrepository: openclaw/openclaw\nnumber: 91668\naction_taken: ${action}\n---\n`;
     const proof = exactEventApplyProof(
-      [eventApplyAction({ number: 91668, action })],
+      [eventApplyAction({ number: 91668, action, guardedOpenStateVerified: true })],
       91668,
       eventRecordActionTaken(snapshot),
     );
@@ -99,6 +139,14 @@ test("guarded-open proof rejects mismatches, extra results, and transient skips"
   assert.equal(
     exactEventApplyProof(
       [eventApplyAction({ number: 43, action: snapshotAction })],
+      42,
+      snapshotAction,
+    ).guardedOpenAction,
+    null,
+  );
+  assert.equal(
+    exactEventApplyProof(
+      [eventApplyAction({ number: 42, action: snapshotAction })],
       42,
       snapshotAction,
     ).guardedOpenAction,

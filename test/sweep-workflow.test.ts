@@ -52,6 +52,8 @@ test("exact event publish and routing require a successful fresh review artifact
   const eventReviewJob = workflow.slice(eventReviewJobStart, planJobStart);
   const liveItemStart = eventReviewJob.indexOf("- name: Check live target item state");
   const setupPnpmStart = eventReviewJob.indexOf("- uses: ./.github/actions/setup-pnpm");
+  const setupCodexStart = eventReviewJob.indexOf("- uses: ./.github/actions/setup-codex");
+  const exactReviewStart = eventReviewJob.indexOf("- name: Review exact event item");
   const publishStart = eventReviewJob.indexOf("- name: Publish event result and apply safe close");
   const implementationStart = eventReviewJob.indexOf(
     "- name: Dispatch viable issue implementation",
@@ -70,6 +72,8 @@ test("exact event publish and routing require a successful fresh review artifact
     failStart,
   );
   const liveItemStep = eventReviewJob.slice(liveItemStart, setupPnpmStart);
+  const setupCodexStep = eventReviewJob.slice(setupCodexStart, exactReviewStart);
+  const exactReviewStep = eventReviewJob.slice(exactReviewStart, publishStart);
   const publishStep = eventReviewJob.slice(publishStart, implementationStart);
   const implementationStep = eventReviewJob.slice(implementationStart, routeStart);
   const routeStep = eventReviewJob.slice(routeStart, completeStart);
@@ -85,10 +89,19 @@ test("exact event publish and routing require a successful fresh review artifact
   assert.match(liveItemStep, /id: live-item/);
   assert.match(liveItemStep, /repos\/\$TARGET_REPO\/issues\/\$ITEM_NUMBER/);
   assert.match(liveItemStep, /echo "proceed=false" >> "\$GITHUB_OUTPUT"/);
+  assert.match(liveItemStep, /live_locked=.*\.locked == true/);
+  assert.match(liveItemStep, /echo "guarded_open=true" >> "\$GITHUB_OUTPUT"/);
+  assert.match(
+    liveItemStep,
+    /echo "guarded_open_action=skipped_locked_conversation" >> "\$GITHUB_OUTPUT"/,
+  );
+  assert.match(liveItemStep, /without Codex because the open conversation is locked/);
   assert.match(
     eventReviewJob,
-    /- uses: \.\/\.github\/actions\/setup-pnpm\s+id: setup-pnpm\s+if: \$\{\{ steps\.live-item\.outputs\.proceed == 'true' \|\|/,
+    /- uses: \.\/\.github\/actions\/setup-pnpm\s+id: setup-pnpm\s+if: \$\{\{ steps\.live-item\.outputs\.proceed == 'true' \|\| \(steps\.live-item\.outputs\.terminal_noop == 'true'/,
   );
+  assert.match(setupCodexStep, /if: \$\{\{ steps\.live-item\.outputs\.proceed == 'true' \}\}/);
+  assert.match(exactReviewStep, /if: \$\{\{ steps\.live-item\.outputs\.proceed == 'true' \}\}/);
   assert.match(publishStep, /if: \$\{\{ steps\.review-exact-event-item\.outcome == 'success' \}\}/);
   assert.match(publishStep, /if \[ ! -f "artifacts\/event\/\$ITEM_NUMBER\.md" \]/);
   assert.match(publishStep, /live_state="\$\(gh api/);
@@ -96,21 +109,46 @@ test("exact event publish and routing require a successful fresh review artifact
   assert.match(publishStep, /Exact review produced no artifact for open item/);
   assert.match(publisher, /"--event-apply-proof"/);
   assert.match(publisher, /exactEventApplyProof\(/);
+  assert.match(publisher, /terminal_closed=/);
   assert.match(publisher, /guarded_open=/);
   assert.match(publisher, /class GuardedOpenPublishRaceError extends Error/);
-  assert.match(publisher, /guardedOpenAction !== null && publishedGuardedOpenAction === null/);
+  assert.match(publisher, /class TerminalClosedPublishRaceError extends Error/);
+  assert.match(publisher, /terminalClosedExpected: closedCount > 0/);
+  assert.match(publisher, /eventSnapshotMatchesCurrent\(paths\)/);
+  assert.match(publisher, /candidateEventTupleState\(paths\)/);
+  assert.match(publisher, /fs\.existsSync\(paths\.snapshotClosed\)/);
+  assert.match(publisher, /fs\.existsSync\(paths\.snapshotItem\)/);
+  assert.match(publisher, /terminalClosedExpected && !published\.terminalClosed/);
+  assert.match(publisher, /guardedOpenAction !== null/);
   assert.match(publisher, /error instanceof GuardedOpenPublishRaceError/);
+  assert.match(publisher, /error instanceof TerminalClosedPublishRaceError/);
+  assert.match(publisher, /Event state .* was not applied because .*requeue/);
   assert.doesNotMatch(publisher, /entry\.action === "review_comment_synced"/);
+  assert.match(
+    implementationStep,
+    /steps\.publish-event-result\.outputs\.terminal_closed != 'true'/,
+  );
   assert.match(implementationStep, /steps\.publish-event-result\.outputs\.guarded_open != 'true'/);
   assert.match(routeStep, /steps\.publish-event-result\.outputs\.terminal_noop != 'true'/);
+  assert.match(routeStep, /steps\.publish-event-result\.outputs\.terminal_closed != 'true'/);
   assert.match(routeStep, /steps\.publish-event-result\.outputs\.guarded_open != 'true'/);
+  assert.match(
+    eventReviewJob,
+    /TERMINAL_CLOSED: \$\{\{ steps\.publish-event-result\.outputs\.terminal_closed \}\}/,
+  );
   assert.match(
     eventReviewJob,
     /GUARDED_OPEN: \$\{\{ steps\.publish-event-result\.outputs\.guarded_open \}\}/,
   );
   assert.match(eventReviewJob, /deterministic remain-open guard/);
+  assert.match(eventReviewJob, /verified terminal close/);
+  assert.match(reactStep, /steps\.publish-event-result\.outputs\.terminal_closed == 'true'/);
   assert.match(reactStep, /steps\.publish-event-result\.outputs\.guarded_open == 'true'/);
+  assert.match(reactStep, /steps\.live-item\.outputs\.guarded_open == 'true'/);
+  assert.match(releaseLeaseStep, /steps\.live-item\.outputs\.terminal_noop == 'true'/);
   assert.match(releaseLeaseStep, /steps\.publish-event-result\.outputs\.terminal_noop == 'true'/);
+  assert.match(releaseLeaseStep, /steps\.publish-event-result\.outputs\.terminal_closed == 'true'/);
+  assert.doesNotMatch(releaseLeaseStep, /steps\.live-item\.outputs\.proceed == 'false'/);
   assert.match(releaseLeaseStep, /clawsweeper-review-lease item=\$ITEM_NUMBER/);
   assert.match(releaseLeaseStep, /--method DELETE/);
   assert.match(releaseLeaseStep, /reactions\?content=eyes/);
@@ -122,6 +160,7 @@ test("exact event publish and routing require a successful fresh review artifact
   assert.match(eventReviewJob, /terminal review leases were released/);
   assert.match(failStep, /steps\.live-item\.outputs\.proceed != 'false'/);
   assert.match(failStep, /steps\.publish-event-result\.outputs\.terminal_noop != 'true'/);
+  assert.match(failStep, /steps\.publish-event-result\.outputs\.terminal_closed != 'true'/);
   assert.match(failStep, /steps\.publish-event-result\.outputs\.guarded_open != 'true'/);
 });
 
