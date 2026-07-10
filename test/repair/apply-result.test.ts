@@ -1243,6 +1243,7 @@ function runApplyResult(
       ...process.env,
       CLAWSWEEPER_ALLOW_EXECUTE: "1",
       CLAWSWEEPER_ALLOWED_OWNER: "openclaw",
+      CLAWSWEEPER_GH_RETRY_ATTEMPTS: "1",
       CLAWSWEEPER_MODEL: "model-test",
       // Coverage instrumentation plus the parallel repair suite can delay this child process.
       // Keep the bound short for a fake binary without making CI depend on a 10-second scheduler window.
