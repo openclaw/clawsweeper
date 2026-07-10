@@ -21075,6 +21075,18 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
         continue;
       }
     }
+    if (state === "open" && isCloseProposal && closeReason === "low_signal_unmergeable_pr") {
+      // Reject stale low-signal verdicts before they can become durable public comments. The
+      // final close gate repeats this live check to catch activity arriving after comment sync.
+      const lowSignalBlockReason = lowSignalUnmergeablePrApplyBlockReasonSafe(
+        number,
+        staleMinAgeDays,
+      );
+      if (lowSignalBlockReason) {
+        if (markApplySkipped("kept_open", lowSignalBlockReason)) break;
+        continue;
+      }
+    }
     existingReviewComment ??= issueReviewComment(number, [
       renderReviewCommentFromReport(markdown, closeReason ?? "none", { previousLabels }),
       reviewSectionValue(markdown, "closeComment"),
@@ -21936,6 +21948,14 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
             processedCount += 1;
             maybeLogProgress(`skipped stale review comment sync #${number}`);
             if (processedCount >= processedLimit) break;
+            continue;
+          }
+          const lowSignalCommentSyncBlockReason =
+            closeReason === "low_signal_unmergeable_pr"
+              ? lowSignalUnmergeablePrApplyBlockReasonSafe(number, staleMinAgeDays)
+              : null;
+          if (lowSignalCommentSyncBlockReason) {
+            if (markApplySkipped("kept_open", lowSignalCommentSyncBlockReason)) break;
             continue;
           }
           try {

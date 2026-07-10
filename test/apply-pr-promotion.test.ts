@@ -612,6 +612,101 @@ test("apply-decisions keeps MERGEABLE UNSTABLE low-signal proposals open", () =>
   );
 });
 
+test("apply-decisions rechecks low-signal liveness before writing an unsynced close comment", () => {
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    const number = 371;
+    const itemsDir = join(root, "items");
+    const closedDir = join(root, "closed");
+    const plansDir = join(root, "plans");
+    const reportPath = join(root, "apply-report.json");
+    const commentWriteLogPath = join(root, "comment-writes.log");
+    const authorActivityAt = new Date().toISOString();
+    mkdirSync(itemsDir, { recursive: true });
+    mkdirSync(plansDir, { recursive: true });
+    const sourceReport = lowSignalCloseReport({
+      number,
+      title: "Unsynced low-signal close guard fixture",
+      item_created_at: "2026-02-01T00:00:00Z",
+      item_updated_at: "2026-05-01T00:00:00Z",
+      reviewed_at: "2026-05-01T00:00:00Z",
+      pull_head_sha: "head-sha",
+    });
+    const rendered = reportWithSyncedReviewComment(
+      sourceReport,
+      number,
+      "low_signal_unmergeable_pr",
+    );
+    writeFileSync(join(itemsDir, `${number}.md`), sourceReport, "utf8");
+
+    withMockGh(
+      root,
+      promotionGhMock({
+        number,
+        title: "Unsynced low-signal close guard fixture",
+        comment: rendered.comment,
+        commentWriteLogPath,
+        comments: [],
+        commentsAfterFirstRead: [
+          {
+            id: 9371,
+            created_at: authorActivityAt,
+            updated_at: authorActivityAt,
+            user: { login: "reporter" },
+            body: "I am still working on this PR.",
+          },
+        ],
+        itemCreatedAt: "2026-02-01T00:00:00Z",
+        itemUpdatedAt: "2026-05-01T00:00:00Z",
+        mergeable: false,
+        mergeableState: "dirty",
+        headActivityAt: "2026-02-01T01:00:00Z",
+      }),
+      () => {
+        runApplyDecisionsForTest({
+          targetRepo: "openclaw/openclaw",
+          itemsDir,
+          closedDir,
+          plansDir,
+          reportPath,
+          extraArgs: [
+            "--apply-close-reasons",
+            "duplicate_or_superseded",
+            "--stale-min-age-days",
+            "30",
+            "--processed-limit",
+            "1",
+            "--item-numbers",
+            String(number),
+          ],
+        });
+      },
+    );
+
+    const report = JSON.parse(readFileSync(reportPath, "utf8")) as Array<{
+      number: number;
+      action: string;
+      reason: string;
+    }>;
+    assert.deepEqual(report, [
+      {
+        number,
+        action: "kept_open",
+        reason:
+          "low_signal_unmergeable_pr requires 30 days without author comments or head activity",
+      },
+    ]);
+    assert.equal(existsSync(commentWriteLogPath), false);
+    assert.equal(existsSync(join(root, `comment-state-${number}.json`)), false);
+    assert.match(
+      readFileSync(join(itemsDir, `${number}.md`), "utf8"),
+      /^action_taken: kept_open$/m,
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("apply-decisions keeps recently updated DIRTY low-signal proposals open", () => {
   const number = 342;
   const headSha = "3423423423423423423423423423423423423423";

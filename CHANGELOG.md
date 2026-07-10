@@ -33,7 +33,7 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Fixed
 
-- Required a live `DIRTY` merge conflict and at least 30 days without contributor comments or head activity before closing low-signal pull requests, honoring longer configured stale thresholds and applying the same fail-closed policy to stale-review promotion and trusted close routing.
+- Required a live `DIRTY` merge conflict and at least 30 days without contributor comments or head activity before publishing or applying low-signal pull-request close verdicts, honoring longer configured stale thresholds and applying the same fail-closed policy to stale-review promotion and trusted close routing.
 - Retried successful GitHub CLI JSON-lines responses when their output is truncated, preventing transient list-page corruption from aborting close-apply runs.
 - Allowed conflict-free canonical PRs that only need a base update to back duplicate or superseded closures while retaining proof, review, check, draft, and conflict guards.
 - Bounded broad reconciliation with batched Git I/O and tuple checkpoints that report progress and resume safely under concurrent state writers.
