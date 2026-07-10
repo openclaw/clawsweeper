@@ -153,6 +153,34 @@ test("exact event proof accepts durable sync independently of the apply action n
   assert.equal(proof.terminalCount, 0);
 });
 
+test("ordinary kept-open sync cannot route after its live tuple changes", () => {
+  const proof = exactEventApplyProof(
+    [
+      eventApplyAction({
+        number: 42,
+        action: "kept_open",
+        durableReviewSynced: true,
+      }),
+    ],
+    42,
+    null,
+  );
+  assert.equal(proof.syncedCount, 1);
+  assert.equal(proof.terminalCount, 0);
+  assert.equal(proof.terminalMissingCount, 0);
+  assert.equal(proof.guardedOpenAction, null);
+
+  const disposition = exactEventPublishDisposition({
+    candidateMatchesCurrentTuple: false,
+    candidateTupleState: "open",
+    terminalClosedExpected: false,
+    terminalMissingExpected: false,
+    guardedOpenAction: proof.guardedOpenAction,
+    routableSyncExpected: proof.syncedCount > 0,
+  });
+  assert.equal(disposition.routableSyncVerified, false);
+});
+
 test("exact event proof distinguishes confirmed missing items from closed state", () => {
   const proof = exactEventApplyProof(
     [

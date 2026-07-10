@@ -58,6 +58,36 @@ test("event snapshot match follows the final tuple winner, not only its action",
   });
 });
 
+test("event snapshot match rejects live close-guard label drift after kept-open sync", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-event-records-"));
+  const store = {
+    targetRepo: "openclaw/openclaw",
+    itemNumber: "91271",
+    snapshotDir: path.join(root, "snapshot"),
+  };
+
+  withCwd(root, () => {
+    const paths = eventRecordPaths(store);
+    resetEventSnapshot(store);
+    writeEventTuple(paths, {
+      marker: "kept-open sync",
+      reviewedAt: "2026-07-10T13:29:00.000Z",
+      itemUpdatedAt: "2026-07-10T13:28:00Z",
+      extraFrontMatter: ["action_taken: kept_open", 'labels: ["clawsweeper:human-review"]'],
+    });
+    captureEventSnapshot(store);
+    assert.equal(eventSnapshotMatchesCurrent(paths), true);
+
+    writeEventTuple(paths, {
+      marker: "kept-open sync",
+      reviewedAt: "2026-07-10T13:29:00.000Z",
+      itemUpdatedAt: "2026-07-10T13:28:00Z",
+      extraFrontMatter: ["action_taken: kept_open", "labels: []"],
+    });
+    assert.equal(eventSnapshotMatchesCurrent(paths), false);
+  });
+});
+
 test("event record snapshots prefer closed records and remove open records", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-event-records-"));
   const store = {
