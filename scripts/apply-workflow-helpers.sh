@@ -152,6 +152,7 @@ write_apply_health() {
   local health_candidate_count="${7:-}"
   local health_scheduled_interval_minutes="${8:-}"
   local health_cursor_advance_count="${9:-}"
+  local health_candidate_counts_json="${10:-}"
   local health_args=(
     --target-repo "$TARGET_REPO"
     --report "$report_path"
@@ -167,6 +168,9 @@ write_apply_health() {
   fi
   if [ -n "$health_candidate_count" ]; then
     health_args+=(--candidate-count "$health_candidate_count")
+  fi
+  if [ -n "$health_candidate_counts_json" ]; then
+    health_args+=(--candidate-counts-json "$health_candidate_counts_json")
   fi
   if [ -n "$health_scheduled_interval_minutes" ]; then
     health_args+=(--scheduled-interval-minutes "$health_scheduled_interval_minutes")
@@ -224,6 +228,57 @@ select_adaptive_apply_batch() {
   cat "$adaptive_batch_env"
   close_processed_limit="$(awk -F= '$1 == "close_processed_limit" { print $2 }' "$adaptive_batch_env")"
   adaptive_apply_scan_reason="$(awk -F= '$1 == "adaptive_apply_scan_reason" { print $2 }' "$adaptive_batch_env")"
+}
+
+select_apply_candidate_inventory() {
+  local update_item_numbers="${1:-true}"
+  local candidate_inventory_env=".artifacts/apply-candidate-inventory.env"
+  pnpm run --silent workflow -- proposed-item-inventory \
+    --target-repo "$TARGET_REPO" \
+    --apply-kind "$apply_kind" \
+    --apply-close-reasons "$apply_close_reasons" \
+    --stale-min-age-days "$stale_min_age_days" \
+    --min-age-days "$min_age_days" \
+    --min-age-minutes "$min_age_minutes" \
+    --batch-size "$close_processed_limit" \
+    --close-limit "$((limit < checkpoint_size ? limit : checkpoint_size))" \
+    --coverage-proof-limit "$coverage_proof_limit" \
+    --cursor-path "$apply_cursor_path" > "$candidate_inventory_env"
+  cat "$candidate_inventory_env"
+  if [ "$update_item_numbers" = "true" ]; then
+    item_numbers="$(awk -F= '$1 == "item_numbers" { print $2 }' "$candidate_inventory_env")"
+  fi
+  apply_ready_count="$(awk -F= '$1 == "apply_ready_count" { print $2 }' "$candidate_inventory_env")"
+  candidate_counts_json="$(awk -F= '$1 == "candidate_counts_json" { sub(/^[^=]*=/, ""); print }' "$candidate_inventory_env")"
+}
+
+publish_automatic_apply_idle() {
+  echo "No unchanged high-confidence close proposals are awaiting apply. Scheduled apply wakes every 15 minutes and exits without scanning unrelated keep-open records when there is no close work."
+  printf '[]\n' > .artifacts/apply-reports/apply-report-idle.json
+  write_apply_health ".artifacts/apply-reports/apply-report-idle.json" ".artifacts/apply-health-idle.json" "close" "$close_processed_limit" "$apply_cursor_path" "true" "$apply_ready_count" "15" "0" "$candidate_counts_json"
+  pnpm run status -- \
+    --target-repo "$TARGET_REPO" \
+    --state "Apply idle" \
+    --detail "No unchanged high-confidence close proposals are awaiting apply.$candidate_quality_detail Scheduled apply wakes every 15 minutes and exits without scanning unrelated keep-open records when there is no close work." \
+    --run-url "https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+    --apply-health-file ".artifacts/apply-health-idle.json"
+  publish_status "chore: update idle sweep apply status"
+  {
+    echo "APPLY_CLOSED_TOTAL=0"
+    echo "APPLY_LIMIT=1"
+    echo "APPLY_MIN_AGE_DAYS=$min_age_days"
+    echo "APPLY_MIN_AGE_MINUTES=$min_age_minutes"
+    echo "APPLY_KIND=$apply_kind"
+    echo "APPLY_CLOSE_REASONS=$apply_close_reasons"
+    echo "APPLY_STALE_MIN_AGE_DAYS=$stale_min_age_days"
+    echo "APPLY_CLOSE_DELAY_MS=$close_delay_ms"
+    echo "APPLY_PROGRESS_EVERY=$progress_every"
+    echo "APPLY_CHECKPOINT_SIZE=$checkpoint_size"
+    echo "APPLY_ITEM_NUMBERS="
+    echo "APPLY_SYNC_COMMENTS_ONLY=false"
+    echo "APPLY_COMMENT_SYNC_MIN_AGE_DAYS=$comment_sync_min_age_days"
+    echo "APPLY_NOOP=true"
+  } >> "$GITHUB_ENV"
 }
 
 select_bounded_coverage_proof_tail() {

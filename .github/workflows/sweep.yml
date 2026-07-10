@@ -2826,6 +2826,7 @@ jobs:
           apply_cursor_path="results/apply-cursors/${target_slug}.json"
           next_cursor=""
           apply_ready_count=""
+          candidate_counts_json=""
           cursor_advance_count=""
           coverage_proof_item_numbers=""
           if [ "$sync_open_pr_batch" = "true" ]; then
@@ -2894,32 +2895,15 @@ jobs:
             echo "Selected cursor-based comment sync batch: $item_numbers"
           fi
           if [ "$sync_comments_only" != "true" ] && [ -z "$item_numbers" ]; then
-            item_numbers="$(pnpm run --silent workflow -- proposed-item-numbers \
-              --target-repo "$TARGET_REPO" \
-              --apply-kind "$apply_kind" \
-              --apply-close-reasons "$apply_close_reasons" \
-              --stale-min-age-days "$stale_min_age_days" \
-              --min-age-days "$min_age_days" \
-              --min-age-minutes "$min_age_minutes" \
-              --batch-size "$close_processed_limit" \
-              --close-limit "$((limit < checkpoint_size ? limit : checkpoint_size))" \
-              --coverage-proof-limit "$coverage_proof_limit" \
-              --cursor-path "$apply_cursor_path")"
+            auto_selected_apply_batch=true
+            select_apply_candidate_inventory
             if [ -n "$item_numbers" ]; then
-              auto_selected_apply_batch=true
               select_bounded_coverage_proof_tail
               proposed_count="$(pnpm run --silent workflow -- count-csv --items "$item_numbers")"
-              apply_ready_count="$(pnpm run --silent workflow -- proposed-item-count \
-                --target-repo "$TARGET_REPO" \
-                --apply-kind "$apply_kind" \
-                --apply-close-reasons "$apply_close_reasons" \
-                --stale-min-age-days "$stale_min_age_days" \
-                --min-age-days "$min_age_days" \
-                --min-age-minutes "$min_age_minutes")"
               if [ "$proposed_count" -lt "$limit" ]; then
                 limit="$proposed_count"
               fi
-              echo "Selected $proposed_count from $close_processed_limit ($adaptive_apply_scan_reason); proof $coverage_proof_count/$coverage_proof_limit: $item_numbers; ready: ${apply_ready_count:-unknown}"
+              echo "Selected $proposed_count from $close_processed_limit ($adaptive_apply_scan_reason); proof $coverage_proof_count/$coverage_proof_limit: $item_numbers; currently eligible: ${apply_ready_count:-unknown}; inventory: ${candidate_counts_json:-unknown}"
             fi
           fi
           item_numbers_arg=()
@@ -2928,29 +2912,7 @@ jobs:
           fi
           select_automatic_apply_runtime
           if [ "$sync_comments_only" != "true" ] && [ -z "$item_numbers" ]; then
-            echo "No unchanged high-confidence close proposals are awaiting apply. Scheduled apply wakes every 15 minutes and exits without scanning unrelated keep-open records when there is no close work."
-            pnpm run status -- \
-              --target-repo "$TARGET_REPO" \
-              --state "Apply idle" \
-              --detail "No unchanged high-confidence close proposals are awaiting apply.$candidate_quality_detail Scheduled apply wakes every 15 minutes and exits without scanning unrelated keep-open records when there is no close work." \
-              --run-url "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-            publish_status "chore: update idle sweep apply status"
-            {
-              echo "APPLY_CLOSED_TOTAL=0"
-              echo "APPLY_LIMIT=1"
-              echo "APPLY_MIN_AGE_DAYS=$min_age_days"
-              echo "APPLY_MIN_AGE_MINUTES=$min_age_minutes"
-              echo "APPLY_KIND=$apply_kind"
-              echo "APPLY_CLOSE_REASONS=$apply_close_reasons"
-              echo "APPLY_STALE_MIN_AGE_DAYS=$stale_min_age_days"
-              echo "APPLY_CLOSE_DELAY_MS=$close_delay_ms"
-              echo "APPLY_PROGRESS_EVERY=$progress_every"
-              echo "APPLY_CHECKPOINT_SIZE=$checkpoint_size"
-              echo "APPLY_ITEM_NUMBERS="
-              echo "APPLY_SYNC_COMMENTS_ONLY=false"
-              echo "APPLY_COMMENT_SYNC_MIN_AGE_DAYS=$comment_sync_min_age_days"
-              echo "APPLY_NOOP=true"
-            } >> "$GITHUB_ENV"
+            publish_automatic_apply_idle
             exit 0
           fi
           pnpm run status -- \
@@ -3070,11 +3032,14 @@ jobs:
             fi
             examined_count="$(apply_checkpoint_examined_count)"
             publish_changes "chore: apply sweep decisions checkpoint $checkpoint" "${apply_publish_paths[@]}"
+            if [ "$auto_selected_apply_batch" = "true" ]; then
+              select_apply_candidate_inventory false
+            fi
             close_health_cursor_path=""
             if [ "$auto_selected_apply_batch" = "true" ]; then
               close_health_cursor_path="$apply_cursor_path"
             fi
-            write_apply_health ".artifacts/apply-reports/apply-report-$checkpoint.json" ".artifacts/apply-health-$checkpoint.json" "close" "$close_processed_limit" "$close_health_cursor_path" "$auto_selected_apply_batch" "$apply_ready_count" "15" "$cursor_advance_count"
+            write_apply_health ".artifacts/apply-reports/apply-report-$checkpoint.json" ".artifacts/apply-health-$checkpoint.json" "close" "$close_processed_limit" "$close_health_cursor_path" "$auto_selected_apply_batch" "$apply_ready_count" "15" "$cursor_advance_count" "$candidate_counts_json"
             pnpm run status -- \
               --target-repo "$TARGET_REPO" \
               --state "Apply in progress" \
@@ -3114,11 +3079,13 @@ jobs:
           final_health_candidate_count=""
           final_health_scheduled_interval_minutes=""
           final_health_cursor_advance_count=""
+          final_health_candidate_counts_json=""
           if [ "$auto_selected_apply_batch" = "true" ]; then
             final_health_cursor_path="$apply_cursor_path"
             final_health_candidate_count="$apply_ready_count"
             final_health_scheduled_interval_minutes="15"
             final_health_cursor_advance_count="$cursor_advance_count"
+            final_health_candidate_counts_json="$candidate_counts_json"
           fi
           if [ "$sync_comments_only" = "true" ]; then
             final_health_mode="comment_sync"
@@ -3127,13 +3094,14 @@ jobs:
             final_health_candidate_count=""
             final_health_scheduled_interval_minutes=""
             final_health_cursor_advance_count=""
+            final_health_candidate_counts_json=""
             if [ "$sync_open_pr_batch" = "true" ]; then
               final_health_cursor_path="$cursor_path"
               final_health_cursor_required="true"
               final_health_processed_limit="$sync_batch_size"
             fi
           fi
-          write_apply_health "apply-report.json" ".artifacts/apply-health-final.json" "$final_health_mode" "$final_health_processed_limit" "$final_health_cursor_path" "$final_health_cursor_required" "$final_health_candidate_count" "$final_health_scheduled_interval_minutes" "$final_health_cursor_advance_count"
+          write_apply_health "apply-report.json" ".artifacts/apply-health-final.json" "$final_health_mode" "$final_health_processed_limit" "$final_health_cursor_path" "$final_health_cursor_required" "$final_health_candidate_count" "$final_health_scheduled_interval_minutes" "$final_health_cursor_advance_count" "$final_health_candidate_counts_json"
           pnpm run status -- \
             --target-repo "$TARGET_REPO" \
             --state "Apply finished" \

@@ -18,6 +18,8 @@ import {
   mergeApplyReports,
   planOutputFields,
   plannedItemNumberCsv,
+  proposedItemCount,
+  proposedItemInventory,
   proposedItemQualitySummary,
   proposedItemNumbers,
   proposedPrCloseCoverageItemNumbers,
@@ -328,7 +330,17 @@ test("workflow utilities summarize apply health with skip buckets and cursor", (
     closeLimit: 5,
     cursorPath,
     cursorRequired: true,
-    candidateCount: 12,
+    candidateCount: 7,
+    candidateCounts: {
+      confirmed_proposal: 4,
+      guarded_retry: 2,
+      proof_required: 3,
+      promotion_total: 538,
+      promotion_eligible: 1,
+      promotion_cooldown_eligible: 420,
+      cooldown_eligible_total: 427,
+      inconsistent_or_stale: 1,
+    },
     cursorAdvanceCount: 4,
     scheduledIntervalMinutes: 15,
   });
@@ -373,13 +385,23 @@ test("workflow utilities summarize apply health with skip buckets and cursor", (
   );
   assert.deepEqual(summary.cycle, {
     basis: "scheduled_close_cursor",
-    apply_ready_count: 12,
+    apply_ready_count: 7,
+    candidate_counts: {
+      confirmed_proposal: 4,
+      guarded_retry: 2,
+      proof_required: 3,
+      promotion_total: 538,
+      promotion_eligible: 1,
+      promotion_cooldown_eligible: 420,
+      cooldown_eligible_total: 427,
+      inconsistent_or_stale: 1,
+    },
     window_size: 4,
-    estimated_full_cycle_windows: 3,
-    estimated_full_cycle_minutes: 45,
+    estimated_full_cycle_windows: 2,
+    estimated_full_cycle_minutes: 30,
     scheduled_interval_minutes: 15,
     label:
-      "12 close candidates (confirmed proposals plus live promotion probes) at 4 records per latest cursor advance: about 3 windows; scheduled cadence alone would take roughly 45 min at 15-minute intervals, while successful windows can continue sooner.",
+      "7 currently actionable close candidates (4 confirmed proposals, 2 guarded retries, 1/538 promotion probes admitted; 3 require proof; 427 cooldown-eligible backlog (420 promotions); 1 inconsistent or stale record excluded) at 4 records per latest cursor advance: about 2 windows; scheduled cadence alone would take roughly 30 min at 15-minute intervals, while successful windows can continue sooner.",
   });
   assert.equal(summary.cursor?.next_after_number, 40);
 });
@@ -418,6 +440,39 @@ test("workflow utilities distinguish examined promotion probes from action recor
   assert.match(summary.summary, /^40 examined; 0\/300 action records;/);
   assert.equal(summary.cycle.window_size, 40);
   assert.equal(summary.cursor?.next_after_number, 79148);
+});
+
+test("workflow utilities preserve a zero-action inventory for cooling promotion backlogs", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-workflow-"));
+  const reportPath = path.join(root, "apply-report.json");
+  write(reportPath, "[]\n");
+  const summary = summarizeApplyReport({
+    reportPath,
+    targetRepo: "openclaw/openclaw",
+    mode: "close",
+    processedLimit: 300,
+    closeLimit: 20,
+    cursorPath: path.join(root, "results/apply-cursors/openclaw-openclaw.json"),
+    cursorRequired: true,
+    candidateCount: 0,
+    candidateCounts: {
+      confirmed_proposal: 0,
+      guarded_retry: 0,
+      proof_required: 0,
+      promotion_total: 5,
+      promotion_eligible: 0,
+      promotion_cooldown_eligible: 0,
+      cooldown_eligible_total: 0,
+      inconsistent_or_stale: 1,
+    },
+    cursorAdvanceCount: 0,
+    scheduledIntervalMinutes: 15,
+  });
+
+  assert.equal(summary.status, "idle");
+  assert.equal(summary.cycle.basis, "no_apply_ready_candidates");
+  assert.equal(summary.cycle.apply_ready_count, 0);
+  assert.match(summary.cycle.label, /5 promotion probes are cooling down/);
 });
 
 test("workflow utilities summarize comment-sync apply reports separately from closure", () => {
@@ -2041,6 +2096,162 @@ test("workflow utilities cool down recently examined promotion probes", () => {
     ]),
     [["promotion_probe", 3]],
   );
+});
+
+test("workflow utilities report truthful eligible inventory across cursor and promotion cooldown", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-workflow-"));
+  const oldDate = "2024-01-01T00:00:00Z";
+  const cursorPath = path.join(root, "results/apply-cursors/openclaw-openclaw.json");
+  writeProposedRecord(root, 10, "issue", "proposed_close", "implemented_on_main", oldDate);
+  writeProposedRecord(root, 20, "issue", "skipped_open_closing_pr", "implemented_on_main", oldDate);
+  writeProposedRecord(
+    root,
+    30,
+    "pull_request",
+    "proposed_close",
+    "duplicate_or_superseded",
+    oldDate,
+  );
+  const writePromotion = (number, applyCheckedAt) =>
+    write(
+      path.join(root, `records/openclaw-openclaw/items/openclaw-openclaw-${number}.md`),
+      [
+        "---",
+        "repository: openclaw/openclaw",
+        "type: pull_request",
+        "decision: keep_open",
+        "review_status: complete",
+        "local_checkout_access: verified",
+        "action_taken: kept_open",
+        "close_reason: none",
+        `item_created_at: ${oldDate}`,
+        `apply_checked_at: ${applyCheckedAt}`,
+        "pr_rating_overall: F",
+        "pr_rating_proof: F",
+        "---",
+        "",
+      ].join("\n"),
+    );
+  writePromotion(40, new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString());
+  writePromotion(50, new Date(Date.now() - 60 * 60 * 1000).toISOString());
+  write(
+    path.join(root, "records/openclaw-openclaw/items/openclaw-openclaw-60.md"),
+    [
+      "---",
+      "repository: openclaw/openclaw",
+      "type: issue",
+      "decision: keep_open",
+      "confidence: high",
+      "action_taken: proposed_close",
+      "close_reason: none",
+      `item_created_at: ${oldDate}`,
+      "---",
+      "",
+    ].join("\n"),
+  );
+  write(
+    cursorPath,
+    JSON.stringify({
+      next_after_number: 30,
+      next_after_apply_checked_at: "2026-01-01T00:00:00Z",
+    }),
+  );
+  const options = {
+    targetRepo: "openclaw/openclaw",
+    applyKind: "all",
+    applyCloseReasons: "all",
+    staleMinAgeDays: 60,
+    minAgeDays: 0,
+    minAgeMinutes: null,
+    batchSize: 10,
+    closeLimit: 4,
+    coverageProofLimit: 1,
+    cursorPath,
+  };
+
+  const inventory = withCwd(root, () => proposedItemInventory(options));
+  assert.deepEqual(inventory, {
+    eligible_total: 4,
+    confirmed_proposal: 2,
+    guarded_retry: 1,
+    proof_required: 1,
+    promotion_total: 2,
+    promotion_eligible: 1,
+    promotion_cooldown_eligible: 1,
+    cooldown_eligible_total: 4,
+    inconsistent_or_stale: 1,
+  });
+  assert.equal(
+    withCwd(root, () => proposedItemCount(options)),
+    4,
+  );
+  assert.deepEqual(
+    withCwd(root, () => proposedItemNumbers(options)),
+    [10, 30, 20, 40],
+  );
+  write(
+    cursorPath,
+    JSON.stringify({
+      next_after_number: 50,
+      next_after_apply_checked_at: new Date().toISOString(),
+    }),
+  );
+  assert.deepEqual(
+    withCwd(root, () => proposedItemInventory(options)),
+    inventory,
+    "cursor rotation changes ordering, not truthful eligible counts",
+  );
+});
+
+test("workflow utilities do not call policy- or age-excluded proposals inconsistent", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-workflow-"));
+  const oldDate = "2024-01-01T00:00:00Z";
+  const youngDate = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000).toISOString();
+  const staleGateDate = new Date(Date.now() - 45 * 24 * 60 * 60 * 1000).toISOString();
+  writeProposedRecord(root, 10, "issue", "proposed_close", "implemented_on_main", oldDate);
+  writeProposedRecord(root, 20, "issue", "proposed_close", "duplicate_or_superseded", oldDate);
+  writeProposedRecord(root, 30, "issue", "proposed_close", "implemented_on_main", youngDate);
+  writeProposedRecord(
+    root,
+    40,
+    "issue",
+    "proposed_close",
+    "stale_insufficient_info",
+    staleGateDate,
+  );
+  write(
+    path.join(root, "records/openclaw-openclaw/items/openclaw-openclaw-50.md"),
+    [
+      "---",
+      "repository: openclaw/openclaw",
+      "type: issue",
+      "decision: keep_open",
+      "confidence: high",
+      "action_taken: proposed_close",
+      "close_reason: implemented_on_main",
+      `item_created_at: ${oldDate}`,
+      "---",
+      "",
+    ].join("\n"),
+  );
+
+  const inventory = withCwd(root, () =>
+    proposedItemInventory({
+      targetRepo: "openclaw/openclaw",
+      applyKind: "all",
+      applyCloseReasons: "implemented_on_main,stale_insufficient_info",
+      staleMinAgeDays: 60,
+      minAgeDays: 30,
+      minAgeMinutes: null,
+      batchSize: 20,
+      closeLimit: 20,
+      coverageProofLimit: 2,
+    }),
+  );
+
+  assert.equal(inventory.eligible_total, 1);
+  assert.equal(inventory.confirmed_proposal, 1);
+  assert.equal(inventory.inconsistent_or_stale, 1);
 });
 
 test("workflow utilities use spare proof capacity to rotate promotion probes", () => {

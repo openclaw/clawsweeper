@@ -33,8 +33,24 @@ type ApplyReportSummaryOptions = {
   cursorPath: string;
   cursorRequired: boolean;
   candidateCount?: number | null;
+  candidateCounts?: ApplyCandidateCounts | null;
   cursorAdvanceCount?: number | null;
   scheduledIntervalMinutes?: number | null;
+};
+
+export type ApplyCandidateCounts = {
+  confirmed_proposal: number;
+  guarded_retry: number;
+  proof_required: number;
+  promotion_total: number;
+  promotion_eligible: number;
+  promotion_cooldown_eligible: number;
+  cooldown_eligible_total: number;
+  inconsistent_or_stale: number;
+};
+
+export type ProposedItemInventory = ApplyCandidateCounts & {
+  eligible_total: number;
 };
 
 type ApplyReportSummary = {
@@ -109,6 +125,7 @@ type ApplyCycleSummary = {
     | "missing_window_size"
     | "no_apply_ready_candidates";
   apply_ready_count: number | null;
+  candidate_counts: ApplyCandidateCounts | null;
   window_size: number | null;
   estimated_full_cycle_windows: number | null;
   estimated_full_cycle_minutes: number | null;
@@ -197,6 +214,7 @@ function runCli(): void {
             candidateCount: optionalString("candidate-count")
               ? nonNegativeIntegerArg("candidate-count")
               : null,
+            candidateCounts: applyCandidateCounts(optionalString("candidate-counts-json")),
             cursorAdvanceCount: optionalString("cursor-advance-count")
               ? nonNegativeIntegerArg("cursor-advance-count")
               : null,
@@ -261,6 +279,9 @@ function runCli(): void {
       break;
     case "proposed-item-count":
       process.stdout.write(String(proposedItemCount(proposedItemOptions())));
+      break;
+    case "proposed-item-inventory":
+      printProposedItemInventory(proposedItemOptions());
       break;
     case "proposed-item-quality-summary":
       printProposedItemQualitySummary(proposedItemOptions());
@@ -568,6 +589,7 @@ export function summarizeApplyReport(options: ApplyReportSummaryOptions): ApplyR
     mode: options.mode,
     cursorRequired: options.cursorRequired,
     candidateCount: options.candidateCount ?? null,
+    candidateCounts: options.candidateCounts ?? null,
     cursorAdvanceCount: options.cursorAdvanceCount ?? null,
     scheduledIntervalMinutes: options.scheduledIntervalMinutes ?? null,
   });
@@ -909,6 +931,7 @@ function applyCycleSummary(options: {
   mode: string;
   cursorRequired: boolean;
   candidateCount: number | null;
+  candidateCounts: ApplyCandidateCounts | null;
   cursorAdvanceCount: number | null;
   scheduledIntervalMinutes: number | null;
 }): ApplyCycleSummary {
@@ -923,6 +946,7 @@ function applyCycleSummary(options: {
     return {
       basis: "not_close_cursor",
       apply_ready_count: options.candidateCount,
+      candidate_counts: options.candidateCounts,
       window_size: windowSize,
       estimated_full_cycle_windows: null,
       estimated_full_cycle_minutes: null,
@@ -934,6 +958,7 @@ function applyCycleSummary(options: {
     return {
       basis: "missing_candidate_count",
       apply_ready_count: null,
+      candidate_counts: options.candidateCounts,
       window_size: windowSize,
       estimated_full_cycle_windows: null,
       estimated_full_cycle_minutes: null,
@@ -945,17 +970,19 @@ function applyCycleSummary(options: {
     return {
       basis: "no_apply_ready_candidates",
       apply_ready_count: 0,
+      candidate_counts: options.candidateCounts,
       window_size: windowSize,
       estimated_full_cycle_windows: 0,
       estimated_full_cycle_minutes: 0,
       scheduled_interval_minutes: cadence,
-      label: "No confirmed close proposals or live promotion probes are waiting in this lane.",
+      label: zeroCandidateCycleLabel(options.candidateCounts),
     };
   }
   if (!windowSize) {
     return {
       basis: "missing_window_size",
       apply_ready_count: options.candidateCount,
+      candidate_counts: options.candidateCounts,
       window_size: null,
       estimated_full_cycle_windows: null,
       estimated_full_cycle_minutes: null,
@@ -968,11 +995,19 @@ function applyCycleSummary(options: {
   return {
     basis: "scheduled_close_cursor",
     apply_ready_count: options.candidateCount,
+    candidate_counts: options.candidateCounts,
     window_size: windowSize,
     estimated_full_cycle_windows: windows,
     estimated_full_cycle_minutes: minutes,
     scheduled_interval_minutes: cadence,
-    label: cycleLabel(options.candidateCount, windowSize, windows, minutes, cadence),
+    label: cycleLabel(
+      options.candidateCount,
+      windowSize,
+      windows,
+      minutes,
+      cadence,
+      options.candidateCounts,
+    ),
   };
 }
 
@@ -982,10 +1017,37 @@ function cycleLabel(
   windows: number,
   minutes: number | null,
   cadence: number | null,
+  counts: ApplyCandidateCounts | null,
 ): string {
-  const base = `${candidateCount} close candidates (confirmed proposals plus live promotion probes) at ${windowSize} records per latest cursor advance: about ${windows} window${windows === 1 ? "" : "s"}`;
+  const base = `${candidateCount} currently actionable close candidates${candidateCountBreakdown(counts)} at ${windowSize} records per latest cursor advance: about ${windows} window${windows === 1 ? "" : "s"}`;
   if (!minutes || !cadence) return `${base}.`;
   return `${base}; scheduled cadence alone would take roughly ${durationLabel(minutes)} at ${cadence}-minute intervals, while successful windows can continue sooner.`;
+}
+
+function zeroCandidateCycleLabel(counts: ApplyCandidateCounts | null): string {
+  if (!counts) return "No currently actionable close candidates are waiting in this lane.";
+  const coolingPromotions = Math.max(
+    0,
+    counts.promotion_total - counts.promotion_cooldown_eligible,
+  );
+  const eligibleBacklog = counts.cooldown_eligible_total
+    ? ` ${counts.cooldown_eligible_total} candidate${counts.cooldown_eligible_total === 1 ? " meets" : "s meet"} cooldown rules but none were admitted by this scheduler window.`
+    : "";
+  const suffix = coolingPromotions
+    ? ` ${coolingPromotions} promotion probe${coolingPromotions === 1 ? " is" : "s are"} cooling down.`
+    : "";
+  return `No currently actionable close candidates are waiting in this lane.${eligibleBacklog}${suffix}`;
+}
+
+function candidateCountBreakdown(counts: ApplyCandidateCounts | null): string {
+  if (!counts) return "";
+  const confirmed = `${counts.confirmed_proposal} confirmed proposal${counts.confirmed_proposal === 1 ? "" : "s"}`;
+  const guarded = `${counts.guarded_retry} guarded ${counts.guarded_retry === 1 ? "retry" : "retries"}`;
+  const promotions = `${counts.promotion_eligible}/${counts.promotion_total} promotion probe${counts.promotion_total === 1 ? "" : "s"} admitted`;
+  const proof = `${counts.proof_required} ${counts.proof_required === 1 ? "requires" : "require"} proof`;
+  const inconsistent = `${counts.inconsistent_or_stale} inconsistent or stale record${counts.inconsistent_or_stale === 1 ? "" : "s"} excluded`;
+  const cooldownBacklog = `${counts.cooldown_eligible_total} cooldown-eligible backlog (${counts.promotion_cooldown_eligible} promotions)`;
+  return ` (${confirmed}, ${guarded}, ${promotions}; ${proof}; ${cooldownBacklog}; ${inconsistent})`;
 }
 
 function durationLabel(minutes: number): string {
@@ -1084,8 +1146,84 @@ export function proposedItemNumbers(options: ProposedItemOptions): number[] {
 }
 
 export function proposedItemCount(options: ProposedItemOptions): number {
-  return selectedProposedItemCandidates({ ...options, batchSize: null, cursorPath: null }, "all")
-    .length;
+  return proposedItemInventory(options).eligible_total;
+}
+
+export function proposedItemInventory(options: ProposedItemOptions): ProposedItemInventory {
+  return proposedItemInventorySelection(options).inventory;
+}
+
+function proposedItemInventorySelection(options: ProposedItemOptions): {
+  inventory: ProposedItemInventory;
+  itemNumbers: number[];
+} {
+  const nowMs = Date.now();
+  const allCandidates = selectedProposedItemCandidates(
+    { ...options, batchSize: null, cursorPath: null },
+    "all",
+  );
+  const cooldownEligibleCandidates = allCandidates.filter(
+    (candidate) =>
+      candidate.stage !== "promotion_probe" || !promotionProbeCoolingDown(candidate, nowMs),
+  );
+  const eligibleCandidates =
+    options.batchSize && options.batchSize > 0
+      ? selectedProposedItemCandidates(options, "all", allCandidates, nowMs)
+      : cooldownEligibleCandidates;
+  const candidateNumbers = new Set(allCandidates.map((candidate) => candidate.number));
+  const confirmedCandidates = eligibleCandidates.filter(
+    (candidate) => candidate.stage === "confirmed_close",
+  );
+  return {
+    itemNumbers: eligibleCandidates.map((candidate) => candidate.number),
+    inventory: {
+      eligible_total: eligibleCandidates.length,
+      confirmed_proposal: confirmedCandidates.filter(
+        (candidate) => candidate.action === "proposed_close",
+      ).length,
+      guarded_retry: confirmedCandidates.filter(
+        (candidate) => candidate.action !== "proposed_close",
+      ).length,
+      proof_required: eligibleCandidates.filter((candidate) => candidate.coverageProof).length,
+      promotion_total: allCandidates.filter((candidate) => candidate.stage === "promotion_probe")
+        .length,
+      promotion_eligible: eligibleCandidates.filter(
+        (candidate) => candidate.stage === "promotion_probe",
+      ).length,
+      promotion_cooldown_eligible: cooldownEligibleCandidates.filter(
+        (candidate) => candidate.stage === "promotion_probe",
+      ).length,
+      cooldown_eligible_total: cooldownEligibleCandidates.length,
+      inconsistent_or_stale: inconsistentOrStaleProposedItemCount(options, candidateNumbers),
+    },
+  };
+}
+
+function printProposedItemInventory(options: ProposedItemOptions): void {
+  const { inventory, itemNumbers } = proposedItemInventorySelection(options);
+  const candidateCounts: ApplyCandidateCounts = {
+    confirmed_proposal: inventory.confirmed_proposal,
+    guarded_retry: inventory.guarded_retry,
+    proof_required: inventory.proof_required,
+    promotion_total: inventory.promotion_total,
+    promotion_eligible: inventory.promotion_eligible,
+    promotion_cooldown_eligible: inventory.promotion_cooldown_eligible,
+    cooldown_eligible_total: inventory.cooldown_eligible_total,
+    inconsistent_or_stale: inventory.inconsistent_or_stale,
+  };
+  printOutput({
+    item_numbers: itemNumbers.join(","),
+    apply_ready_count: String(inventory.eligible_total),
+    confirmed_proposal: String(inventory.confirmed_proposal),
+    guarded_retry: String(inventory.guarded_retry),
+    proof_required: String(inventory.proof_required),
+    promotion_total: String(inventory.promotion_total),
+    promotion_eligible: String(inventory.promotion_eligible),
+    promotion_cooldown_eligible: String(inventory.promotion_cooldown_eligible),
+    cooldown_eligible_total: String(inventory.cooldown_eligible_total),
+    inconsistent_or_stale: String(inventory.inconsistent_or_stale),
+    candidate_counts_json: JSON.stringify(candidateCounts),
+  });
 }
 
 export function proposedPrCloseCoverageItemNumbers(options: ProposedItemOptions): number[] {
@@ -1146,6 +1284,21 @@ const FAST_CLOSE_BUCKET_ORDER: ProposedItemQualityBucket[] = [
 // Promotion probes hydrate related live graphs; a fresh review bypasses this daily backoff.
 const APPLY_PROMOTION_PROBE_COOLDOWN_MS = 24 * 60 * 60 * 1000;
 
+const ALLOWED_CLOSE_REASONS = new Set([
+  "abandoned_pr",
+  "cannot_reproduce",
+  "clawhub",
+  "duplicate_or_superseded",
+  "incoherent",
+  "implemented_on_main",
+  "low_signal_unmergeable_pr",
+  "mostly_implemented_on_main",
+  "not_actionable_in_repo",
+  "stalled_unproven_pr",
+  "stale_insufficient_info",
+  "unconfirmed_product_direction",
+]);
+
 function prioritizeFastCloseCandidates(
   candidates: ProposedItemCandidate[],
 ): ProposedItemCandidate[] {
@@ -1164,24 +1317,12 @@ function prioritizeFastCloseCandidates(
 function selectedProposedItemCandidates(
   options: ProposedItemOptions,
   selection: ProposedItemSelection,
+  candidateSnapshot?: readonly ProposedItemCandidate[],
+  nowMs = Date.now(),
 ): ProposedItemCandidate[] {
   const itemsDir = path.join("records", targetSlug(options.targetRepo), "items");
-  if (!fs.existsSync(itemsDir)) return [];
+  if (!candidateSnapshot && !fs.existsSync(itemsDir)) return [];
 
-  const allowedReasons = new Set([
-    "abandoned_pr",
-    "cannot_reproduce",
-    "clawhub",
-    "duplicate_or_superseded",
-    "incoherent",
-    "implemented_on_main",
-    "low_signal_unmergeable_pr",
-    "mostly_implemented_on_main",
-    "not_actionable_in_repo",
-    "stalled_unproven_pr",
-    "stale_insufficient_info",
-    "unconfirmed_product_direction",
-  ]);
   const allowedCloseReasons =
     options.applyCloseReasons === "all"
       ? null
@@ -1196,84 +1337,94 @@ function selectedProposedItemCandidates(
       ? options.minAgeDays * 24 * 60 * 60 * 1000
       : options.minAgeMinutes * 60 * 1000;
 
-  const candidates: ProposedItemCandidate[] = fs
-    .readdirSync(itemsDir)
-    .filter((name) => /(?:^|[a-z0-9-]-)\d+\.md$/.test(name))
-    .flatMap((name) => {
-      const number = numberFor(name);
-      if (options.itemNumbers && !options.itemNumbers.has(number)) return [];
-      const markdown = fs.readFileSync(path.join(itemsDir, name), "utf8");
-      if (repoFor(markdown, name) !== options.targetRepo) return [];
-      const type = frontMatterValue(markdown, "type");
-      if (options.applyKind !== "all" && type && type !== options.applyKind) return [];
-      const decision = frontMatterValue(markdown, "decision");
-      const action = frontMatterValue(markdown, "action_taken");
-      const confidence = frontMatterValue(markdown, "confidence");
-      const reason = frontMatterValue(markdown, "close_reason");
-      const selectableClose =
-        decision === "close" &&
-        confidence === "high" &&
-        isSelectableCloseAction(action, reason) &&
-        allowedForTarget(options.targetRepo, type, reason, allowedReasons) &&
-        (!allowedCloseReasons || allowedCloseReasons.has(reason));
-      const promotionCloseReasons = pullRequestClosePromotionReasons(markdown, options.targetRepo, {
-        staleMinAgeMs: options.staleMinAgeDays * 24 * 60 * 60 * 1000,
-      });
-      const selectedPromotionCloseReasons = promotionCloseReasons.filter(
-        (promotionReason) =>
-          allowedForTarget(options.targetRepo, type, promotionReason, allowedReasons) &&
-          (!allowedCloseReasons || allowedCloseReasons.has(promotionReason)),
-      );
-      const selectablePromotion =
-        decision === "keep_open" &&
-        action === "kept_open" &&
-        type === "pull_request" &&
-        frontMatterValue(markdown, "review_status") === "complete" &&
-        frontMatterValue(markdown, "local_checkout_access") === "verified" &&
-        hasPullRequestClosePromotionSignal(markdown, options.targetRepo, {
-          staleMinAgeMs: options.staleMinAgeDays * 24 * 60 * 60 * 1000,
-        }) &&
-        selectedPromotionCloseReasons.length > 0;
-      const selectableProofPromotion =
-        selectablePromotion &&
-        selectedPromotionCloseReasons.includes("duplicate_or_superseded") &&
-        hasLinkedPullRequestSupersessionSignal(markdown, options.targetRepo);
-      if (!selectableClose && !selectablePromotion) return [];
-      const prCloseCoverageProofCanRun =
-        type === "pull_request" &&
-        ((selectableClose && reason === "duplicate_or_superseded") || selectableProofPromotion);
-      if (selection === "pr-close-coverage-proof" && !prCloseCoverageProofCanRun) return [];
-      if (
-        (reason === "stale_insufficient_info" || reason === "mostly_implemented_on_main") &&
-        !olderThan(
-          frontMatterValue(markdown, "item_created_at"),
-          options.staleMinAgeDays * 24 * 60 * 60 * 1000,
-        )
-      ) {
-        return [];
-      }
-      if (!olderThan(frontMatterValue(markdown, "item_created_at"), minAgeMs)) return [];
-      const candidateCloseReason = selectablePromotion ? selectedPromotionCloseReasons[0]! : reason;
-      return [
-        {
-          number,
-          applyCheckedAt: frontMatterValue(markdown, "apply_checked_at"),
-          reviewedAt: frontMatterValue(markdown, "reviewed_at"),
-          kind: type,
-          closeReason: candidateCloseReason,
-          action,
-          stage: selectablePromotion ? ("promotion_probe" as const) : ("confirmed_close" as const),
-          coverageProof: prCloseCoverageProofCanRun,
-          qualityBucket: proposedItemQualityBucket({
-            action,
-            closeReason: candidateCloseReason,
-            prCloseCoverageProofCanRun,
-            promotionProbe: selectablePromotion,
-          }),
-        },
-      ];
-    })
-    .sort((left, right) => left.number - right.number);
+  const candidates: ProposedItemCandidate[] = candidateSnapshot
+    ? [...candidateSnapshot]
+    : fs
+        .readdirSync(itemsDir)
+        .filter((name) => /(?:^|[a-z0-9-]-)\d+\.md$/.test(name))
+        .flatMap((name) => {
+          const number = numberFor(name);
+          if (options.itemNumbers && !options.itemNumbers.has(number)) return [];
+          const markdown = fs.readFileSync(path.join(itemsDir, name), "utf8");
+          if (repoFor(markdown, name) !== options.targetRepo) return [];
+          const type = frontMatterValue(markdown, "type");
+          if (options.applyKind !== "all" && type && type !== options.applyKind) return [];
+          const decision = frontMatterValue(markdown, "decision");
+          const action = frontMatterValue(markdown, "action_taken");
+          const confidence = frontMatterValue(markdown, "confidence");
+          const reason = frontMatterValue(markdown, "close_reason");
+          const selectableClose =
+            decision === "close" &&
+            confidence === "high" &&
+            isSelectableCloseAction(action, reason) &&
+            allowedForTarget(options.targetRepo, type, reason, ALLOWED_CLOSE_REASONS) &&
+            (!allowedCloseReasons || allowedCloseReasons.has(reason));
+          const promotionCloseReasons = pullRequestClosePromotionReasons(
+            markdown,
+            options.targetRepo,
+            {
+              staleMinAgeMs: options.staleMinAgeDays * 24 * 60 * 60 * 1000,
+            },
+          );
+          const selectedPromotionCloseReasons = promotionCloseReasons.filter(
+            (promotionReason) =>
+              allowedForTarget(options.targetRepo, type, promotionReason, ALLOWED_CLOSE_REASONS) &&
+              (!allowedCloseReasons || allowedCloseReasons.has(promotionReason)),
+          );
+          const selectablePromotion =
+            decision === "keep_open" &&
+            action === "kept_open" &&
+            type === "pull_request" &&
+            frontMatterValue(markdown, "review_status") === "complete" &&
+            frontMatterValue(markdown, "local_checkout_access") === "verified" &&
+            hasPullRequestClosePromotionSignal(markdown, options.targetRepo, {
+              staleMinAgeMs: options.staleMinAgeDays * 24 * 60 * 60 * 1000,
+            }) &&
+            selectedPromotionCloseReasons.length > 0;
+          const selectableProofPromotion =
+            selectablePromotion &&
+            selectedPromotionCloseReasons.includes("duplicate_or_superseded") &&
+            hasLinkedPullRequestSupersessionSignal(markdown, options.targetRepo);
+          if (!selectableClose && !selectablePromotion) return [];
+          const prCloseCoverageProofCanRun =
+            type === "pull_request" &&
+            ((selectableClose && reason === "duplicate_or_superseded") || selectableProofPromotion);
+          if (selection === "pr-close-coverage-proof" && !prCloseCoverageProofCanRun) return [];
+          if (
+            (reason === "stale_insufficient_info" || reason === "mostly_implemented_on_main") &&
+            !olderThan(
+              frontMatterValue(markdown, "item_created_at"),
+              options.staleMinAgeDays * 24 * 60 * 60 * 1000,
+            )
+          ) {
+            return [];
+          }
+          if (!olderThan(frontMatterValue(markdown, "item_created_at"), minAgeMs)) return [];
+          const candidateCloseReason = selectablePromotion
+            ? selectedPromotionCloseReasons[0]!
+            : reason;
+          return [
+            {
+              number,
+              applyCheckedAt: frontMatterValue(markdown, "apply_checked_at"),
+              reviewedAt: frontMatterValue(markdown, "reviewed_at"),
+              kind: type,
+              closeReason: candidateCloseReason,
+              action,
+              stage: selectablePromotion
+                ? ("promotion_probe" as const)
+                : ("confirmed_close" as const),
+              coverageProof: prCloseCoverageProofCanRun,
+              qualityBucket: proposedItemQualityBucket({
+                action,
+                closeReason: candidateCloseReason,
+                prCloseCoverageProofCanRun,
+                promotionProbe: selectablePromotion,
+              }),
+            },
+          ];
+        })
+        .sort((left, right) => left.number - right.number);
   const batchSize = options.batchSize ?? null;
   if (!batchSize || batchSize <= 0) return candidates;
   const coolDownPromotionProbes = !options.itemNumbers || options.itemNumbers.size === 0;
@@ -1281,7 +1432,7 @@ function selectedProposedItemCandidates(
     (candidate) =>
       candidate.stage !== "promotion_probe" ||
       !coolDownPromotionProbes ||
-      !promotionProbeCoolingDown(candidate),
+      !promotionProbeCoolingDown(candidate, nowMs),
   );
   const cursor = options.cursorPath ? readApplyCursor(options.cursorPath) : null;
   const rotate = (
@@ -1351,6 +1502,57 @@ function selectedProposedItemCandidates(
     ...selectedFast.slice(preProofFastCount),
     ...selectedPromotions,
   ];
+}
+
+function inconsistentOrStaleProposedItemCount(
+  options: ProposedItemOptions,
+  candidateNumbers: ReadonlySet<number>,
+): number {
+  const itemsDir = path.join("records", targetSlug(options.targetRepo), "items");
+  if (!fs.existsSync(itemsDir)) return 0;
+  const allowedCloseReasons =
+    options.applyCloseReasons === "all"
+      ? null
+      : new Set(
+          options.applyCloseReasons
+            .split(",")
+            .map((reason) => reason.trim())
+            .filter(Boolean),
+        );
+  const minAgeMs =
+    options.minAgeMinutes === null
+      ? options.minAgeDays * 24 * 60 * 60 * 1000
+      : options.minAgeMinutes * 60 * 1000;
+  return fs
+    .readdirSync(itemsDir)
+    .filter((name) => /(?:^|[a-z0-9-]-)\d+\.md$/.test(name))
+    .filter((name) => {
+      const number = numberFor(name);
+      if (candidateNumbers.has(number)) return false;
+      if (options.itemNumbers && !options.itemNumbers.has(number)) return false;
+      const markdown = fs.readFileSync(path.join(itemsDir, name), "utf8");
+      if (repoFor(markdown, name) !== options.targetRepo) return false;
+      const type = frontMatterValue(markdown, "type");
+      if (options.applyKind !== "all" && type && type !== options.applyKind) return false;
+      const action = frontMatterValue(markdown, "action_taken");
+      if (action !== "proposed_close" && action !== "retry_pr_close_coverage_proof") return false;
+      const reason = frontMatterValue(markdown, "close_reason");
+      if (allowedCloseReasons && !allowedCloseReasons.has(reason)) return false;
+      if (
+        ALLOWED_CLOSE_REASONS.has(reason) &&
+        !allowedForTarget(options.targetRepo, type, reason, ALLOWED_CLOSE_REASONS)
+      ) {
+        return false;
+      }
+      const createdAt = frontMatterValue(markdown, "item_created_at");
+      if (
+        (reason === "stale_insufficient_info" || reason === "mostly_implemented_on_main") &&
+        !olderThan(createdAt, options.staleMinAgeDays * 24 * 60 * 60 * 1000)
+      ) {
+        return false;
+      }
+      return olderThan(createdAt, minAgeMs);
+    }).length;
 }
 
 function promotionProbeCoolingDown(candidate: ProposedItemCandidate, nowMs = Date.now()): boolean {
@@ -1845,6 +2047,49 @@ function applyCheckedAtForItem(targetRepo: string, itemNumber: number): string {
     return frontMatterValue(fs.readFileSync(path.join(dir, name), "utf8"), "apply_checked_at");
   }
   return "";
+}
+
+function applyCandidateCounts(value: string): ApplyCandidateCounts | null {
+  if (!value) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    throw new Error("candidate-counts-json must be valid JSON");
+  }
+  if (!isJsonObject(parsed)) throw new Error("candidate-counts-json must be an object");
+  const keys: Array<keyof ApplyCandidateCounts> = [
+    "confirmed_proposal",
+    "guarded_retry",
+    "proof_required",
+    "promotion_total",
+    "promotion_eligible",
+    "promotion_cooldown_eligible",
+    "cooldown_eligible_total",
+    "inconsistent_or_stale",
+  ];
+  const counts = {} as ApplyCandidateCounts;
+  for (const key of keys) {
+    const count = Number(parsed[key]);
+    if (!Number.isInteger(count) || count < 0) {
+      throw new Error(`candidate-counts-json.${key} must be a non-negative integer`);
+    }
+    counts[key] = count;
+  }
+  if (counts.promotion_eligible > counts.promotion_total) {
+    throw new Error("candidate-counts-json.promotion_eligible cannot exceed promotion_total");
+  }
+  if (counts.promotion_cooldown_eligible > counts.promotion_total) {
+    throw new Error(
+      "candidate-counts-json.promotion_cooldown_eligible cannot exceed promotion_total",
+    );
+  }
+  if (counts.promotion_eligible > counts.promotion_cooldown_eligible) {
+    throw new Error(
+      "candidate-counts-json.promotion_eligible cannot exceed promotion_cooldown_eligible",
+    );
+  }
+  return counts;
 }
 
 function proposedItemOptions(): ProposedItemOptions {

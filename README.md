@@ -393,7 +393,9 @@ still valid.
 
 - Updates the single marker-backed Codex automated review comment in place.
 - Closes only unchanged high-confidence proposals.
-- Reuses the review comment when closing; no duplicate close comment.
+- Keeps the durable review comment. Applied PR closes also post one idempotent,
+  marker-backed close receipt; issue closes currently leave the durable review
+  as ClawSweeper's sole comment.
 - Moves closed or already-closed reports to
   `records/<repo-slug>/closed/<number>.md`.
 - Moves reopened archived reports back to the repo’s `items/` folder as stale.
@@ -408,6 +410,12 @@ token within its lifetime. After a checkpoint closes at least one item, it
 queues another apply run with a fresh token; a saturated scan that closes
 nothing stops and waits for the next scheduled tick instead of self-dispatching
 indefinitely.
+
+Apply health keeps the scheduler-admitted `apply_ready_count` separate from the
+full promotion backlog, cooldown-eligible probes, proof-required work, guarded
+retries, and inconsistent records. Its cycle estimate covers work actionable in
+the current scheduler window rather than presenting every probe as immediately
+closable.
 
 Exact event runs skip the bulk planner, shard matrix, artifact upload, and
 separate publish job. They still use the same review and apply code paths, but

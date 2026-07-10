@@ -2492,6 +2492,16 @@ test("dashboard exposes apply health from sweep status without broad scans", asy
       cycle: {
         basis: "scheduled_close_cursor",
         apply_ready_count: 1200,
+        candidate_counts: {
+          confirmed_proposal: 4,
+          guarded_retry: 2,
+          proof_required: 3,
+          promotion_total: 1194,
+          promotion_eligible: 1,
+          promotion_cooldown_eligible: 420,
+          cooldown_eligible_total: 427,
+          inconsistent_or_stale: 1,
+        },
         window_size: 300,
         estimated_full_cycle_windows: 4,
         estimated_full_cycle_minutes: null,
@@ -2565,6 +2575,16 @@ test("dashboard exposes apply health from sweep status without broad scans", asy
     );
     assert.equal(status.recent.apply_health.items[0].cycle.estimated_full_cycle_minutes, null);
     assert.equal(status.recent.apply_health.items[0].cycle.apply_ready_count, 1200);
+    assert.deepEqual(status.recent.apply_health.items[0].cycle.candidate_counts, {
+      confirmed_proposal: 4,
+      guarded_retry: 2,
+      proof_required: 3,
+      promotion_total: 1194,
+      promotion_eligible: 1,
+      promotion_cooldown_eligible: 420,
+      cooldown_eligible_total: 427,
+      inconsistent_or_stale: 1,
+    });
     assert.equal(status.recent.apply_health.items[0].cursor, null);
   } finally {
     globalThis.fetch = originalFetch;

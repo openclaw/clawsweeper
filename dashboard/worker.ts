@@ -4467,6 +4467,7 @@ function applyHealthCycle(value) {
   return {
     basis: nullableString(source.basis),
     apply_ready_count: optionalNumber(source.apply_ready_count),
+    candidate_counts: applyHealthCandidateCounts(source.candidate_counts),
     window_size: optionalNumber(source.window_size),
     estimated_full_cycle_windows: optionalNumber(source.estimated_full_cycle_windows),
     estimated_full_cycle_minutes: optionalNumber(source.estimated_full_cycle_minutes),
@@ -4479,12 +4480,28 @@ function emptyApplyHealthCycle() {
   return {
     basis: null,
     apply_ready_count: null,
+    candidate_counts: null,
     window_size: null,
     estimated_full_cycle_windows: null,
     estimated_full_cycle_minutes: null,
     scheduled_interval_minutes: null,
     label: null,
   };
+}
+function applyHealthCandidateCounts(value) {
+  const source = objectValue(value);
+  const keys = [
+    "confirmed_proposal",
+    "guarded_retry",
+    "proof_required",
+    "promotion_total",
+    "promotion_eligible",
+    "promotion_cooldown_eligible",
+    "cooldown_eligible_total",
+    "inconsistent_or_stale",
+  ];
+  if (!keys.some((key) => Number.isFinite(Number(source[key])))) return null;
+  return Object.fromEntries(keys.map((key) => [key, numberOrNull(source[key]) || 0]));
 }
 function latestIso(values) {
   const timestamps = values
@@ -7953,12 +7970,13 @@ function renderApplyHealth(data) {
     const closureSynced = Number.isFinite(item.lanes?.closure?.comment_synced) ? fmt.format(item.lanes.closure.comment_synced) : "0";
     const syncLaneSynced = Number.isFinite(item.lanes?.comment_sync?.comment_synced) ? fmt.format(item.lanes.comment_sync.comment_synced) : "0";
     const cycle = applyHealthCyclePill(item.cycle);
+    const candidateMix = applyHealthCandidateMixPill(item.cycle);
     return '<div class="apply-health-alert" role="status" title="' + esc(topInfo.summary + " Next: " + topInfo.action) + '">' +
       '<div class="apply-health-heading"><strong>Pruning sweep ' + esc(applyHealthStatusLabel(item.status)) + " - " + esc(item.target_repo || "target repo") + '</strong><span class="pill" title="' + esc("Latest " + applyHealthModeLabel(item.mode) + " status from the sweep-status marker.") + '">' + esc(applyHealthModeLabel(item.mode)) + '</span></div>' +
       '<p>' + esc(applyHealthOperatorSummary(item, topInfo)) + '</p>' +
       '<p class="apply-health-next"><strong>Next check:</strong> ' + esc(topInfo.action) + '</p>' +
       applyHealthActionHtml(action) +
-      '<div class="apply-health-meta"><span class="pill" title="' + esc(activityTitle) + '">' + esc(activityLabel) + '</span><span class="pill" title="' + esc("Closure lane: " + closureProcessed + " action records; " + closed + " closed.") + '">' + esc(closed) + ' closed</span><span class="pill" title="' + esc("Durable review comments refreshed across lanes: " + synced + ". Closure lane refreshed " + closureSynced + "; comment-sync lane refreshed " + syncLaneSynced + " from " + syncProcessed + " action records.") + '">' + esc(synced) + ' comments synced</span>' + cycle + cursorPill + reasons + buckets + linkClass(item.run_url, "workflow run", "pill run-link") + '</div></div>';
+      '<div class="apply-health-meta"><span class="pill" title="' + esc(activityTitle) + '">' + esc(activityLabel) + '</span><span class="pill" title="' + esc("Closure lane: " + closureProcessed + " action records; " + closed + " closed.") + '">' + esc(closed) + ' closed</span><span class="pill" title="' + esc("Durable review comments refreshed across lanes: " + synced + ". Closure lane refreshed " + closureSynced + "; comment-sync lane refreshed " + syncLaneSynced + " from " + syncProcessed + " action records.") + '">' + esc(synced) + ' comments synced</span>' + cycle + candidateMix + cursorPill + reasons + buckets + linkClass(item.run_url, "workflow run", "pill run-link") + '</div></div>';
   }).join("");
 }
 function applyHealthCyclePill(cycle) {
@@ -7968,6 +7986,21 @@ function applyHealthCyclePill(cycle) {
     ? "revisit ~" + fmt.format(windows) + " window" + (windows === 1 ? "" : "s")
     : "revisit estimate";
   return '<span class="pill" title="' + esc(cycle.label || "Estimated time to revisit the current apply-ready close queue.") + '">' + esc(label) + '</span>';
+}
+function applyHealthCandidateMixPill(cycle) {
+  const counts = cycle?.candidate_counts;
+  if (!counts) return "";
+  const confirmed = Number(counts.confirmed_proposal) || 0;
+  const guarded = Number(counts.guarded_retry) || 0;
+  const proof = Number(counts.proof_required) || 0;
+  const promotions = Number(counts.promotion_total) || 0;
+  const eligiblePromotions = Number(counts.promotion_eligible) || 0;
+  const cooldownEligiblePromotions = Number(counts.promotion_cooldown_eligible) || 0;
+  const cooldownEligibleTotal = Number(counts.cooldown_eligible_total) || 0;
+  const inconsistent = Number(counts.inconsistent_or_stale) || 0;
+  const label = fmt.format(confirmed) + " proposals · " + fmt.format(guarded) + " retries · " + fmt.format(eligiblePromotions) + "/" + fmt.format(promotions) + " promotions admitted";
+  const title = fmt.format(confirmed) + " confirmed proposals; " + fmt.format(guarded) + " guarded retries; " + fmt.format(eligiblePromotions) + " of " + fmt.format(promotions) + " promotion probes scheduler-admitted; " + fmt.format(cooldownEligiblePromotions) + " promotion probes and " + fmt.format(cooldownEligibleTotal) + " total candidates meet cooldown rules; " + fmt.format(proof) + " admitted candidates require close proof; " + fmt.format(inconsistent) + " inconsistent or stale records excluded.";
+  return '<span class="pill" title="' + esc(title) + '">' + esc(label) + '</span>';
 }
 function applyHealthNeedsAttention(status) {
   return ["attention", "blocked", "degraded", "failed", "needs_attention", "warning"].includes(String(status || "").toLowerCase());

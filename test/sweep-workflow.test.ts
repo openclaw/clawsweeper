@@ -446,7 +446,7 @@ test("apply workflow durably publishes each reconciliation before no-op exits", 
     applyStart,
   );
   const commentIdle = applyJob.indexOf('--state "Apply comments idle"', applyStart);
-  const closeIdle = applyJob.indexOf('--state "Apply idle"', applyStart);
+  const closeIdle = applyJob.indexOf("publish_automatic_apply_idle", applyStart);
 
   assert.ok(preselectReconcile !== -1);
   assert.ok(preselectReconcile < applyStart);
@@ -672,13 +672,26 @@ test("apply workflow bounds checkpoints and requeues with a fresh token", () => 
   assert.ok(applyFlagInit < applyStep.indexOf("auto_selected_apply_batch=true"));
   assert.match(applyStep, /apply_cursor_path="results\/apply-cursors\/\$\{target_slug\}\.json"/);
   assert.match(applyHelper, /write_apply_health\(\)/);
-  assert.match(applyStep, /proposed-item-count/);
+  assert.match(applyStep, /select_apply_candidate_inventory/);
+  assert.match(applyHelper, /proposed-item-inventory/);
+  assert.match(
+    applyHelper,
+    /candidate_inventory_env="\.artifacts\/apply-candidate-inventory\.env"/,
+  );
+  assert.match(applyHelper, /update_item_numbers="\$\{1:-true\}"/);
+  assert.match(applyHelper, /item_numbers="\$\(awk -F=/);
+  assert.match(applyHelper, /apply_ready_count="\$\(awk -F=/);
+  assert.match(applyHelper, /candidate_counts_json="\$\(awk -F=/);
+  assert.match(applyHelper, /--batch-size "\$close_processed_limit"/);
+  assert.match(applyHelper, /--coverage-proof-limit "\$coverage_proof_limit"/);
+  assert.match(applyHelper, /--cursor-path "\$apply_cursor_path"/);
   assert.match(applyStep, /apply-cursor-advance-count/);
   assert.match(applyStep, /examined_count="\$\(apply_checkpoint_examined_count\)"/);
   assert.match(applyHelper, /apply_checkpoint_examined_count\(\)/);
   assert.match(applyHelper, /printf '%s\\n' "unavailable"/);
   assert.match(applyStep, /Candidates examined: \$examined_count\. Action records: \$result_count/);
   assert.match(applyHelper, /--candidate-count "\$health_candidate_count"/);
+  assert.match(applyHelper, /--candidate-counts-json "\$health_candidate_counts_json"/);
   assert.match(applyHelper, /--cursor-advance-count "\$health_cursor_advance_count"/);
   assert.match(applyHelper, /--scheduled-interval-minutes "\$health_scheduled_interval_minutes"/);
   assert.match(applyHelper, /pnpm run --silent workflow -- summarize-apply-report/);
@@ -689,30 +702,48 @@ test("apply workflow bounds checkpoints and requeues with a fresh token", () => 
   assert.match(applyStep, /close_health_cursor_path="\$apply_cursor_path"/);
   assert.match(applyStep, /--apply-health-file "\.artifacts\/apply-health-\$checkpoint\.json"/);
   assert.match(applyStep, /--apply-health-file "\.artifacts\/apply-health-final\.json"/);
-  assert.match(applyStep, /--state "Apply idle"/);
+  assert.match(applyStep, /publish_automatic_apply_idle/);
+  assert.match(applyHelper, /--apply-health-file "\.artifacts\/apply-health-idle\.json"/);
+  assert.match(applyHelper, /apply-report-idle\.json/);
+  assert.match(applyHelper, /--state "Apply idle"/);
   assert.match(applyHelper, /proposed-item-quality-summary/);
   assert.match(applyHelper, /candidate_quality_summary="\$\(awk -F=/);
   assert.match(
     applyHelper,
     /candidate_quality_detail=" Close candidate mix: \$candidate_quality_summary\."/,
   );
-  assert.match(applyStep, /awaiting apply\.\$candidate_quality_detail Scheduled apply/);
+  assert.match(applyHelper, /awaiting apply\.\$candidate_quality_detail Scheduled apply/);
   assert.match(
     applyStep,
     /\$apply_close_reasons\.\$candidate_quality_detail Scan window: \$close_processed_limit/,
   );
   const applyReconcileIndex = applyStep.indexOf('persist_reconciliation "${reconcile_args[@]}"');
   const qualitySummaryIndex = applyStep.indexOf("summarize_apply_candidate_quality");
-  const proposedNumbersIndex = applyStep.indexOf("proposed-item-numbers");
+  const candidateInventoryIndex = applyStep.indexOf("select_apply_candidate_inventory");
+  const selectedItemsBranchIndex = applyStep.indexOf(
+    'if [ -n "$item_numbers" ]',
+    candidateInventoryIndex,
+  );
+  const checkpointPublishIndex = applyStep.indexOf(
+    'publish_changes "chore: apply sweep decisions checkpoint $checkpoint"',
+  );
+  const refreshedInventoryIndex = applyStep.indexOf(
+    "select_apply_candidate_inventory",
+    candidateInventoryIndex + 1,
+  );
   assert.notEqual(applyReconcileIndex, -1);
   assert.ok(qualitySummaryIndex > applyReconcileIndex);
-  assert.ok(proposedNumbersIndex > qualitySummaryIndex);
-  assert.match(applyStep, /--batch-size "\$close_processed_limit"/);
+  assert.ok(candidateInventoryIndex > qualitySummaryIndex);
+  assert.ok(selectedItemsBranchIndex > candidateInventoryIndex);
+  assert.ok(refreshedInventoryIndex > checkpointPublishIndex);
+  assert.match(applyStep, /select_apply_candidate_inventory false/);
+  assert.doesNotMatch(applyStep, /proposed-item-numbers/);
+  assert.match(applyHelper, /--batch-size "\$close_processed_limit"/);
   assert.match(
-    applyStep,
+    applyHelper,
     /--close-limit "\$\(\(limit < checkpoint_size \? limit : checkpoint_size\)\)"/,
   );
-  assert.match(applyStep, /--coverage-proof-limit "\$coverage_proof_limit"/);
+  assert.match(applyHelper, /--coverage-proof-limit "\$coverage_proof_limit"/);
   assert.match(applyStep, /select_bounded_coverage_proof_tail/);
   assert.match(applyHelper, /select_bounded_coverage_proof_tail\(\)/);
   assert.match(applyHelper, /proposed-pr-close-coverage-item-numbers/);
