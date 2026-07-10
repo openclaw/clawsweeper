@@ -682,7 +682,7 @@ test("apply-decisions preserves full PR URL evidence over later bare refs", () =
       false,
     );
     assert.match(
-      report.find((entry) => entry.action === "kept_open")?.reason ?? "",
+      report.find((entry) => entry.action === "retry_pr_close_coverage_proof")?.reason ?? "",
       /linked canonical PR #400 could not be read/,
     );
     assert.equal(existsSync(proofLogPath), false);

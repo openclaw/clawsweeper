@@ -516,6 +516,515 @@ test("apply-decisions skips duplicate PR coverage proof during stale comment-onl
   }
 });
 
+test("apply-decisions corrects stale close comments when the canonical PR closed unmerged", () => {
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    const itemsDir = join(root, "items");
+    const closedDir = join(root, "closed");
+    const plansDir = join(root, "plans");
+    const reportPath = join(root, "apply-report.json");
+    const proofLogPath = join(root, "proof.log");
+    const commentWriteLogPath = join(root, "comment-write.log");
+    const canonicalUrl = "https://github.com/openclaw/openclaw/pull/400";
+    mkdirSync(itemsDir, { recursive: true });
+    mkdirSync(plansDir, { recursive: true });
+    const rootCauseCluster = {
+      confidence: "high",
+      canonicalRef: canonicalUrl,
+      currentItemRelationship: "superseded",
+      summary: "This PR is superseded by an open, mergeable canonical PR.",
+      members: [
+        {
+          ref: canonicalUrl,
+          relationship: "canonical",
+          reason: "This was the open canonical landing path.",
+        },
+      ],
+    };
+    const mergeRiskOptions = [
+      {
+        title: "Close in favor of the canonical PR",
+        body: `Use ${canonicalUrl} as the single landing path.`,
+        category: "pause_or_close",
+        recommended: true,
+        automergeInstruction: "",
+      },
+    ];
+    const reportMarkdown = `${lowSignalCloseReport({
+      number: 350,
+      title: "Provider route fallback",
+      action_taken: "skipped_changed_since_review",
+      close_reason: "duplicate_or_superseded",
+      work_cluster_refs: JSON.stringify([`Superseded by ${canonicalUrl}`]),
+      root_cause_cluster: JSON.stringify(rootCauseCluster),
+      merge_risk_options: JSON.stringify(mergeRiskOptions),
+      label_justifications: JSON.stringify([
+        { label: "P2", reason: `The canonical landing path is ${canonicalUrl}.` },
+      ]),
+      review_metrics: JSON.stringify([
+        { label: "Canonical status", value: "open", reason: canonicalUrl },
+      ]),
+    })
+      .replace(
+        "The dashboard has queue_fix_pr candidates but no generated coding plan.",
+        `Close this PR because ${canonicalUrl} is open and canonical.`,
+      )
+      .replace(
+        "- **branch shape:** PR diff is mostly unrelated provider churn around a tiny possible useful tweak",
+        `- **Canonical PR status:** ${canonicalUrl} is open, mergeable, and proof-positive.`,
+      )
+      .replace(
+        "Closing this PR because the branch is not a useful landing base.",
+        `Closing this PR as superseded by ${canonicalUrl}.`,
+      )}
+
+## Best Possible Solution
+
+Close this branch and land ${canonicalUrl}.
+
+## Solution Assessment
+
+This branch is superseded by the open canonical PR at ${canonicalUrl}.
+
+## Root-Cause Cluster
+
+Current item relationship: superseded
+
+Confidence: high
+
+Canonical ref: ${canonicalUrl}
+
+Summary: This PR is superseded by an open, mergeable canonical PR.
+
+Members:
+- **canonical:** ${canonicalUrl}
+  - reason: This was the open canonical landing path.
+
+## PR Rating
+
+Overall tier: F
+
+Proof tier: D
+
+Patch tier: F
+
+Summary: This branch is superseded by the canonical PR.
+
+Next rank-up steps:
+
+- Close this PR in favor of ${canonicalUrl}.
+
+## Work Candidate
+
+Candidate: none
+
+Confidence: high
+
+Priority: low
+
+Status: none
+
+Reason: No work is needed because ${canonicalUrl} is the canonical landing path.
+
+## Likely Related People
+
+- **contributor:** canonical candidate author
+  - reason: They authored the open canonical PR at ${canonicalUrl}.
+  - confidence: medium
+
+## Risks / Open Questions
+
+- The proof is already available on ${canonicalUrl}.
+`;
+    const synced = reportWithSyncedReviewComment(reportMarkdown, 350, "duplicate_or_superseded");
+    const recentlySyncedReport = synced.report.replace(
+      /^review_comment_synced_at: .*$/m,
+      `review_comment_synced_at: ${new Date().toISOString()}`,
+    );
+    writeFileSync(join(itemsDir, "350.md"), recentlySyncedReport, "utf8");
+
+    withMockGh(
+      root,
+      promotionGhMock({
+        number: 350,
+        title: "Provider route fallback",
+        itemUpdatedAt: "2026-05-02T00:00:00Z",
+        comment: markedReviewCommentForTest(350, "Stale durable review comment."),
+        commentWriteLogPath,
+        commentWriteError: "gh: Requires authentication (HTTP 401)",
+        linkedPulls: {
+          400: {
+            number: 400,
+            title: "Closed canonical PR",
+            html_url: canonicalUrl,
+            state: "closed",
+            merged_at: null,
+            labels: [],
+          },
+        },
+      }),
+      () => {
+        withMockCodexProof(
+          root,
+          { type: "failure", message: "proof should not run", invocationLogPath: proofLogPath },
+          () => {
+            runApplyDecisionsForTest({
+              itemsDir,
+              closedDir,
+              plansDir,
+              reportPath,
+              extraArgs: [
+                "--target-repo",
+                "openclaw/openclaw",
+                "--apply-kind",
+                "all",
+                "--sync-comments-only",
+                "--comment-sync-min-age-days",
+                "30",
+                "--processed-limit",
+                "1",
+              ],
+            });
+          },
+        );
+      },
+    );
+
+    assert.equal(existsSync(proofLogPath), false);
+    assert.deepEqual(JSON.parse(readFileSync(reportPath, "utf8")), [
+      {
+        number: 350,
+        action: "retry_stale_canonical_comment_sync",
+        reason:
+          "GitHub rejected durable review comment write with Requires authentication; stale canonical comment correction remains pending",
+      },
+    ]);
+    const pendingReport = readFileSync(join(itemsDir, "350.md"), "utf8");
+    assert.match(pendingReport, /^decision: keep_open$/m);
+    assert.match(pendingReport, /^action_taken: retry_stale_canonical_comment_sync$/m);
+    assert.equal(existsSync(join(root, "comment-state-350.json")), false);
+
+    withMockGh(
+      root,
+      promotionGhMock({
+        number: 350,
+        title: "Provider route fallback",
+        itemUpdatedAt: "2026-05-02T00:00:00Z",
+        comment: markedReviewCommentForTest(350, "Stale durable review comment."),
+        commentWriteLogPath,
+        linkedPulls: {
+          400: {
+            number: 400,
+            title: "Closed canonical PR",
+            html_url: canonicalUrl,
+            state: "closed",
+            merged_at: null,
+            labels: [],
+          },
+        },
+      }),
+      () => {
+        withMockCodexProof(
+          root,
+          { type: "failure", message: "proof should not run", invocationLogPath: proofLogPath },
+          () => {
+            runApplyDecisionsForTest({
+              itemsDir,
+              closedDir,
+              plansDir,
+              reportPath,
+              extraArgs: [
+                "--target-repo",
+                "openclaw/openclaw",
+                "--apply-kind",
+                "all",
+                "--sync-comments-only",
+                "--comment-sync-min-age-days",
+                "30",
+                "--processed-limit",
+                "1",
+              ],
+            });
+          },
+        );
+      },
+    );
+
+    assert.equal(existsSync(proofLogPath), false);
+    assert.match(readFileSync(commentWriteLogPath, "utf8"), /issues\/comments\/9350/);
+    assert.deepEqual(JSON.parse(readFileSync(reportPath, "utf8")), [
+      {
+        number: 350,
+        action: "kept_open",
+        reason:
+          "linked canonical PR #400 is closed and unmerged; refusing duplicate/superseded auto-close; updated durable Codex review comment",
+      },
+    ]);
+    const storedReport = readFileSync(join(itemsDir, "350.md"), "utf8");
+    assert.match(storedReport, /^decision: keep_open$/m);
+    assert.match(storedReport, /^close_reason: none$/m);
+    assert.match(storedReport, /^confidence: low$/m);
+    assert.match(storedReport, /^action_taken: corrected_stale_canonical_comment$/m);
+    assert.match(storedReport, /^merge_risk_options: \[\]$/m);
+    assert.match(storedReport, /"canonicalRef":null/);
+    assert.doesNotMatch(storedReport, new RegExp(canonicalUrl));
+    const liveComment = (
+      JSON.parse(readFileSync(join(root, "comment-state-350.json"), "utf8")) as { body: string }
+    ).body;
+    assert.match(liveComment, /closed and unmerged/);
+    assert.doesNotMatch(liveComment, new RegExp(canonicalUrl));
+    assert.doesNotMatch(liveComment, /clawsweeper-(?:verdict:close|action:close-required)/);
+    assert.equal(existsSync(join(closedDir, "350.md")), false);
+
+    const followupReportPath = join(root, "followup-apply-report.json");
+    withMockGh(
+      root,
+      promotionGhMock({
+        number: 350,
+        title: "Provider route fallback",
+        itemUpdatedAt: "2026-05-02T00:00:00Z",
+        comment: markedReviewCommentForTest(350, "Stale durable review comment."),
+      }),
+      () => {
+        withMockCodexProof(
+          root,
+          { type: "failure", message: "corrected report must not be promoted" },
+          () => {
+            runApplyDecisionsForTest({
+              itemsDir,
+              closedDir,
+              plansDir,
+              reportPath: followupReportPath,
+              extraArgs: [
+                "--target-repo",
+                "openclaw/openclaw",
+                "--apply-kind",
+                "all",
+                "--dry-run",
+                "--processed-limit",
+                "1",
+              ],
+            });
+          },
+        );
+      },
+    );
+    assert.deepEqual(JSON.parse(readFileSync(followupReportPath, "utf8")), []);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("apply-decisions rechecks a structured canonical ref at the comment mutation boundary", () => {
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    const itemsDir = join(root, "items");
+    const closedDir = join(root, "closed");
+    const plansDir = join(root, "plans");
+    const reportPath = join(root, "apply-report.json");
+    const proofLogPath = join(root, "proof.log");
+    const commentWriteLogPath = join(root, "comment-write.log");
+    const canonicalUrl = "https://github.com/openclaw/openclaw/pull/400";
+    mkdirSync(itemsDir, { recursive: true });
+    mkdirSync(plansDir, { recursive: true });
+    const rootCauseCluster = {
+      confidence: "high",
+      canonicalRef: canonicalUrl,
+      currentItemRelationship: "superseded",
+      summary: "The structured review identified one canonical landing path.",
+      members: [
+        {
+          ref: canonicalUrl,
+          relationship: "canonical",
+          reason: "This was the canonical landing path at review time.",
+        },
+      ],
+    };
+    const synced = reportWithSyncedReviewComment(
+      lowSignalCloseReport({
+        number: 352,
+        title: "Provider route fallback",
+        action_taken: "skipped_changed_since_review",
+        close_reason: "duplicate_or_superseded",
+        work_cluster_refs: "[]",
+        root_cause_cluster: JSON.stringify(rootCauseCluster),
+      }),
+      352,
+      "duplicate_or_superseded",
+    );
+    writeFileSync(join(itemsDir, "352.md"), synced.report, "utf8");
+
+    withMockGh(
+      root,
+      promotionGhMock({
+        number: 352,
+        title: "Provider route fallback",
+        comment: markedReviewCommentForTest(352, "Stale durable review comment."),
+        commentWriteLogPath,
+        linkedPulls: {
+          400: {
+            number: 400,
+            title: "Canonical provider fix",
+            html_url: canonicalUrl,
+            state: "open",
+            merged_at: null,
+            labels: [],
+          },
+        },
+        linkedPullsAfterCommentRead: {
+          400: {
+            number: 400,
+            title: "Canonical provider fix",
+            html_url: canonicalUrl,
+            state: "closed",
+            merged_at: null,
+            labels: [],
+          },
+        },
+      }),
+      () => {
+        withMockCodexProof(
+          root,
+          { type: "failure", message: "proof should not run", invocationLogPath: proofLogPath },
+          () => {
+            runApplyDecisionsForTest({
+              itemsDir,
+              closedDir,
+              plansDir,
+              reportPath,
+              extraArgs: [
+                "--target-repo",
+                "openclaw/openclaw",
+                "--apply-kind",
+                "all",
+                "--sync-comments-only",
+                "--processed-limit",
+                "1",
+              ],
+            });
+          },
+        );
+      },
+    );
+
+    assert.equal(existsSync(proofLogPath), false);
+    assert.match(readFileSync(commentWriteLogPath, "utf8"), /issues\/comments\/9352/);
+    assert.deepEqual(JSON.parse(readFileSync(reportPath, "utf8")), [
+      {
+        number: 352,
+        action: "kept_open",
+        reason:
+          "linked canonical PR #400 is closed and unmerged; refusing duplicate/superseded auto-close; updated durable Codex review comment",
+      },
+    ]);
+    const storedReport = readFileSync(join(itemsDir, "352.md"), "utf8");
+    assert.match(storedReport, /^action_taken: corrected_stale_canonical_comment$/m);
+    assert.doesNotMatch(storedReport, new RegExp(canonicalUrl));
+    const liveComment = (
+      JSON.parse(readFileSync(join(root, "comment-state-352.json"), "utf8")) as { body: string }
+    ).body;
+    assert.match(liveComment, /closed and unmerged/);
+    assert.doesNotMatch(liveComment, /clawsweeper-(?:verdict:close|action:close-required)/);
+    assert.equal(existsSync(join(closedDir, "352.md")), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("apply-decisions finds an unreadable canonical PR beside an unrelated issue ref", () => {
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    const itemsDir = join(root, "items");
+    const closedDir = join(root, "closed");
+    const plansDir = join(root, "plans");
+    const reportPath = join(root, "apply-report.json");
+    const proofLogPath = join(root, "proof.log");
+    const commentWriteLogPath = join(root, "comment-write.log");
+    mkdirSync(itemsDir, { recursive: true });
+    mkdirSync(plansDir, { recursive: true });
+    const canonicalUrl = "https://github.com/openclaw/openclaw/pull/400";
+    const synced = reportWithSyncedReviewComment(
+      lowSignalCloseReport({
+        number: 351,
+        title: "Provider route fallback",
+        close_reason: "duplicate_or_superseded",
+        work_cluster_refs: JSON.stringify([
+          `Related pull request: ${canonicalUrl}`,
+          "Background issue: #500",
+        ]),
+      }).replace(
+        "Closing this PR because the branch is not a useful landing base.",
+        `Closing this PR as superseded by ${canonicalUrl}.`,
+      ),
+      351,
+      "duplicate_or_superseded",
+    );
+    writeFileSync(join(itemsDir, "351.md"), synced.report, "utf8");
+
+    withMockGh(
+      root,
+      promotionGhMock({
+        number: 351,
+        title: "Provider route fallback",
+        comment: markedReviewCommentForTest(351, "Stale durable review comment."),
+        commentWriteLogPath,
+        linkedIssues: {
+          500: {
+            number: 500,
+            title: "Related provider issue",
+            html_url: "https://github.com/openclaw/openclaw/issues/500",
+            state: "open",
+            labels: [],
+          },
+        },
+      }),
+      () => {
+        withMockCodexProof(
+          root,
+          { type: "failure", message: "proof should not run", invocationLogPath: proofLogPath },
+          () => {
+            runApplyDecisionsForTest({
+              itemsDir,
+              closedDir,
+              plansDir,
+              reportPath,
+              extraArgs: [
+                "--target-repo",
+                "openclaw/openclaw",
+                "--apply-kind",
+                "all",
+                "--sync-comments-only",
+                "--processed-limit",
+                "1",
+              ],
+            });
+          },
+        );
+      },
+    );
+
+    assert.equal(existsSync(proofLogPath), false);
+    assert.equal(existsSync(commentWriteLogPath), false);
+    assert.deepEqual(JSON.parse(readFileSync(reportPath, "utf8")), [
+      {
+        number: 351,
+        action: "retry_pr_close_coverage_proof",
+        reason:
+          "linked canonical PR #400 could not be read; refusing duplicate/superseded comment sync",
+      },
+    ]);
+    const storedReport = readFileSync(join(itemsDir, "351.md"), "utf8");
+    assert.match(storedReport, /^decision: close$/m);
+    assert.match(storedReport, /^close_reason: duplicate_or_superseded$/m);
+    assert.match(storedReport, /^action_taken: retry_pr_close_coverage_proof$/m);
+    assert.match(storedReport, new RegExp(canonicalUrl));
+    assert.equal(existsSync(join(root, "comment-state-351.json")), false);
+    assert.equal(existsSync(join(closedDir, "351.md")), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("apply-decisions gates duplicate PR closes with shorthand canonical refs", () => {
   const root = mkdtempSync(tmpPrefix);
   try {

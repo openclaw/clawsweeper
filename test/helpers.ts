@@ -439,6 +439,7 @@ export function promotionGhMock(options: {
   issueCommentCount?: number;
   comment: string;
   commentWriteLogPath?: string;
+  commentWriteError?: string;
   closeAppliedBodyLogPath?: string;
   closeCommandDelayMs?: number;
   comments?: unknown[];
@@ -448,6 +449,7 @@ export function promotionGhMock(options: {
   timeline?: unknown[];
   linkedPulls?: Record<number, unknown>;
   linkedPullsAfterProof?: Record<number, unknown>;
+  linkedPullsAfterCommentRead?: Record<number, unknown>;
   linkedPullHangAfterProof?: boolean;
   linkedIssues?: Record<number, unknown>;
 }) {
@@ -486,9 +488,11 @@ export function promotionGhMock(options: {
 	const timeline = ${JSON.stringify(timeline)};
 	const linkedPulls = ${JSON.stringify(linkedPulls)};
 	const linkedPullsAfterProof = ${JSON.stringify(options.linkedPullsAfterProof ?? {})};
+	const linkedPullsAfterCommentRead = ${JSON.stringify(options.linkedPullsAfterCommentRead ?? {})};
 	const linkedPullHangAfterProof = ${JSON.stringify(options.linkedPullHangAfterProof ?? false)};
 	const linkedIssues = ${JSON.stringify(linkedIssues)};
 	const commentWriteLogPath = ${JSON.stringify(options.commentWriteLogPath ?? "")};
+	const commentWriteError = ${JSON.stringify(options.commentWriteError ?? "")};
 	const closeAppliedBodyLogPath = ${JSON.stringify(options.closeAppliedBodyLogPath ?? "")};
 	const closeCommandDelayMs = ${JSON.stringify(options.closeCommandDelayMs ?? 0)};
 	const number = ${options.number};
@@ -546,9 +550,11 @@ export function promotionGhMock(options: {
 		const proofHasRun = () =>
 		  itemUpdatedAtAfterProofLogPath &&
 		  existsSync(itemUpdatedAtAfterProofLogPath);
-		const liveLinkedPulls = proofHasRun()
-		  ? { ...linkedPulls, ...linkedPullsAfterProof }
-		  : linkedPulls;
+		const liveLinkedPulls = {
+		  ...linkedPulls,
+		  ...(proofHasRun() ? linkedPullsAfterProof : {}),
+		  ...(existsSync(commentReadStatePath) ? linkedPullsAfterCommentRead : {})
+		};
 		const liveUpdatedAt =
 		  itemUpdatedAtAfterProof &&
 		  itemUpdatedAtAfterProofLogPath &&
@@ -564,6 +570,10 @@ export function promotionGhMock(options: {
 	  console.log("HTTP/2 200\\n\\n" + JSON.stringify(timeline));
 	} else if (args[0] === "api" && new RegExp("/issues/" + number + "/comments$").test(path) && args.includes("--method")) {
 	  if (commentWriteLogPath) appendFileSync(commentWriteLogPath, args.join(" ") + "\\n");
+	  if (commentWriteError) {
+	    console.error(commentWriteError);
+	    process.exit(1);
+	  }
 	  if (closeAppliedBodyLogPath) {
 	    const input = args[args.indexOf("--input") + 1];
 	    appendFileSync(closeAppliedBodyLogPath, JSON.parse(readFileSync(input, "utf8")).body + "\\n---body---\\n");
@@ -574,10 +584,14 @@ export function promotionGhMock(options: {
 	  console.log("");
 	} else if (args[0] === "api" && new RegExp("/issues/comments/\\\\d+$").test(path) && args.includes("--method")) {
 	  if (commentWriteLogPath) appendFileSync(commentWriteLogPath, args.join(" ") + "\\n");
+	  if (commentWriteError) {
+	    console.error(commentWriteError);
+	    process.exit(1);
+	  }
 	  console.log(JSON.stringify(writeMutationComment()));
 	} else if (args[0] === "api" && new RegExp("/issues/" + number + "/comments(?:\\\\?|$)").test(path)) {
 	  const currentComments = liveComments();
-	  if (commentsAfterFirstRead && !existsSync(commentReadStatePath)) writeFileSync(commentReadStatePath, "read");
+	  if (!existsSync(commentReadStatePath)) writeFileSync(commentReadStatePath, "read", "utf8");
 	  console.log(JSON.stringify(slurp ? [currentComments] : currentComments));
 } else if (args[0] === "api" && new RegExp("/issues/" + number + "/timeline(?:\\\\?|$)").test(path)) {
   console.log(JSON.stringify(slurp ? [timeline] : timeline));

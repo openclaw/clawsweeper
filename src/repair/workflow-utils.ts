@@ -785,6 +785,14 @@ const APPLY_SKIP_NEXT_ACTION_DETAILS: Record<string, ApplySkipNextActionDetail> 
     summary: "The close-coverage proof check failed transiently before reaching a decision.",
     next_step: "Inspect the proof failure, then retry after model and GitHub access recover.",
   },
+  retry_stale_canonical_comment_sync: {
+    bucket: "review_refresh",
+    owner: "clawsweeper",
+    retryable: true,
+    label: "Retry comment correction",
+    summary: "A stale canonical close verdict still needs to be replaced on GitHub.",
+    next_step: "Retry durable comment sync until the conservative keep-open correction succeeds.",
+  },
   skipped_protected_label: maintainerDecisionAction(),
   skipped_policy_exempt: maintainerDecisionAction(),
   skipped_maintainer_authored: {
@@ -1885,10 +1893,16 @@ function commentSyncCandidates(targetRepo: string, applyKind: string): number[] 
       if (frontMatterValue(markdown, "review_status") !== "complete") return [];
       if (!frontMatterValue(markdown, "item_snapshot_hash")) return [];
       const actionTaken = frontMatterValue(markdown, "action_taken");
+      const changedDuplicateClose =
+        actionTaken === "skipped_changed_since_review" &&
+        frontMatterValue(markdown, "decision") === "close" &&
+        frontMatterValue(markdown, "close_reason") === "duplicate_or_superseded";
       if (
         actionTaken !== "kept_open" &&
         actionTaken !== "proposed_close" &&
-        actionTaken !== "skipped_pr_close_coverage_proof"
+        actionTaken !== "skipped_pr_close_coverage_proof" &&
+        actionTaken !== "retry_stale_canonical_comment_sync" &&
+        !changedDuplicateClose
       ) {
         return [];
       }

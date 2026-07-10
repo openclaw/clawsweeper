@@ -2266,6 +2266,16 @@ test("workflow utilities select cursor-based PR comment sync batches", () => {
   writeCommentSyncRecord(root, 10, "pull_request", "kept_open");
   writeCommentSyncRecord(root, 20, "pull_request", "proposed_close");
   writeCommentSyncRecord(root, 30, "pull_request", "skipped_pr_close_coverage_proof");
+  writeCommentSyncRecord(root, 34, "pull_request", "skipped_changed_since_review", {
+    decision: "close",
+    closeReason: "duplicate_or_superseded",
+  });
+  writeCommentSyncRecord(root, 35, "pull_request", "retry_stale_canonical_comment_sync");
+  writeCommentSyncRecord(root, 36, "pull_request", "corrected_stale_canonical_comment");
+  writeCommentSyncRecord(root, 37, "pull_request", "skipped_changed_since_review", {
+    decision: "close",
+    closeReason: "low_signal_unmergeable_pr",
+  });
   writeCommentSyncRecord(root, 40, "issue", "kept_open");
   writeCommentSyncRecord(root, 50, "pull_request", "reviewed");
 
@@ -2294,15 +2304,15 @@ test("workflow utilities select cursor-based PR comment sync batches", () => {
       commentSyncBatchOutput({
         targetRepo: "openclaw/openclaw",
         applyKind: "pull_request",
-        batchSize: 2,
+        batchSize: 3,
         cursorPath,
       }),
     ),
     {
-      item_numbers: "30",
-      count: "1",
+      item_numbers: "30,34,35",
+      count: "3",
       cursor: "20",
-      next_cursor: "30",
+      next_cursor: "35",
       wrapped: "false",
     },
   );
@@ -2370,18 +2380,20 @@ function writeProposedRecord(
   );
 }
 
-function writeCommentSyncRecord(root, number, type, actionTaken) {
+function writeCommentSyncRecord(root, number, type, actionTaken, options = {}) {
+  const lines = [
+    "---",
+    "repository: openclaw/openclaw",
+    `type: ${type}`,
+    "review_status: complete",
+    "item_snapshot_hash: abc123",
+    `action_taken: ${actionTaken}`,
+  ];
+  if (options.decision) lines.push(`decision: ${options.decision}`);
+  if (options.closeReason) lines.push(`close_reason: ${options.closeReason}`);
+  lines.push("---", "");
   write(
     path.join(root, `records/openclaw-openclaw/items/openclaw-openclaw-${number}.md`),
-    [
-      "---",
-      "repository: openclaw/openclaw",
-      `type: ${type}`,
-      "review_status: complete",
-      "item_snapshot_hash: abc123",
-      `action_taken: ${actionTaken}`,
-      "---",
-      "",
-    ].join("\n"),
+    lines.join("\n"),
   );
 }
