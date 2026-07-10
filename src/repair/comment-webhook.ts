@@ -10,13 +10,14 @@ import {
   staleClosedItemCommandReason,
 } from "./comment-router-core.js";
 import { adaptiveReviewBudgetForPullRequest } from "./adaptive-review-budget.js";
+import { isExactReviewCloseGuardLabel } from "./exact-review-guard-labels.js";
 
 const DEFAULT_PORT = 8787;
 const REVIEW_REPO = "openclaw/clawsweeper";
 const COMMAND_PATTERN =
   /(^|[ \t\r\n])@(?:clawsweeper|openclaw-clawsweeper)\b(?:\[bot\])?|(^|[ \t\r\n])\/(?:clawsweeper|review|re-review|rerun[ -]?review|status|explain|fix|build|implement|create[ -]?pr|fix[ -]?issue|autofix|auto[ -]?fix|automerge|auto[ -]?merge|approve|stop|autoclose)\b/i;
 const ALLOWED_ASSOCIATIONS = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
-const ISSUE_ITEM_ACTIONS = new Set(["opened", "reopened", "edited"]);
+const ISSUE_ITEM_ACTIONS = new Set(["opened", "reopened", "edited", "unlocked", "unlabeled"]);
 const PULL_ITEM_ACTIONS = new Set([
   "opened",
   "reopened",
@@ -24,6 +25,8 @@ const PULL_ITEM_ACTIONS = new Set([
   "ready_for_review",
   "converted_to_draft",
   "edited",
+  "unlocked",
+  "unlabeled",
 ]);
 const DEFAULT_FAST_ACK_SETTLE_DELAYS_MS = [250, 1500, 10_000];
 const inFlightFastAcks = new Map<string, Promise<number>>();
@@ -246,6 +249,9 @@ export function classifyItemWebhook({ event, payload }: { event: string; payload
 
   if (event === "issues") {
     if (!ISSUE_ITEM_ACTIONS.has(action)) return { accepted: false, reason: "unsupported action" };
+    if (action === "unlabeled" && !isCloseGuardLabel(payload.label)) {
+      return { accepted: false, reason: "unsupported action" };
+    }
     const issue = asRecord(payload.issue);
     const itemNumber = Number(issue.number);
     if (!Number.isInteger(itemNumber) || itemNumber <= 0) {
@@ -261,12 +267,15 @@ export function classifyItemWebhook({ event, payload }: { event: string; payload
       installationId,
       sourceEvent: "issues",
       sourceAction: action,
-      supersedesInProgress: action === "edited",
+      supersedesInProgress: ["edited", "unlocked", "unlabeled"].includes(action),
     };
   }
 
   if (event === "pull_request") {
     if (!PULL_ITEM_ACTIONS.has(action)) return { accepted: false, reason: "unsupported action" };
+    if (action === "unlabeled" && !isCloseGuardLabel(payload.label)) {
+      return { accepted: false, reason: "unsupported action" };
+    }
     const pull = asRecord(payload.pull_request);
     const itemNumber = Number(pull.number);
     if (!Number.isInteger(itemNumber) || itemNumber <= 0) {
@@ -283,13 +292,26 @@ export function classifyItemWebhook({ event, payload }: { event: string; payload
       installationId,
       sourceEvent: "pull_request",
       sourceAction: action,
-      supersedesInProgress: ["edited", "synchronize", "ready_for_review"].includes(action),
+      supersedesInProgress: [
+        "edited",
+        "synchronize",
+        "ready_for_review",
+        "unlocked",
+        "unlabeled",
+      ].includes(action),
       codexTimeoutMs: reviewBudget.codexTimeoutMs,
       mediaProofTimeoutMs: reviewBudget.mediaProofTimeoutMs,
     };
   }
 
   return { accepted: false, reason: "unsupported event" };
+}
+
+function isCloseGuardLabel(value: JsonValue) {
+  const label = String(asRecord(value).name ?? "")
+    .trim()
+    .toLowerCase();
+  return isExactReviewCloseGuardLabel(label);
 }
 
 export function adaptiveCodexTimeoutMsForTest(pull: LooseRecord) {

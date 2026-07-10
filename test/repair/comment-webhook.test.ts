@@ -530,7 +530,53 @@ test("webhook rejects private and denied target repositories", () => {
   assert.deepEqual(deniedResult, { accepted: false, reason: "repository not eligible" });
 });
 
-test("webhook rejects all label mutations from exact-review intake", () => {
+test("webhook requeues unlocked and close-guard removal events", () => {
+  const closeGuardLabels = [
+    "security",
+    "beta-blocker",
+    "release-blocker",
+    "maintainer",
+    "clawsweeper:human-review",
+    "clawsweeper:manual-only",
+    "clawsweeper:automerge",
+    "clawsweeper:autofix",
+  ];
+  const cases = [
+    { event: "issues", action: "unlocked" },
+    { event: "pull_request", action: "unlocked" },
+    ...closeGuardLabels.flatMap((name) => [
+      { event: "issues", action: "unlabeled", label: { name } },
+      { event: "pull_request", action: "unlabeled", label: { name } },
+    ]),
+  ];
+  for (const [index, { event, action, label }] of cases.entries()) {
+    const itemNumber = 76990 + index;
+    const result = classifyItemWebhook({
+      event,
+      payload: {
+        action,
+        repository: {
+          full_name: "openclaw/gogcli",
+          private: false,
+          archived: false,
+          fork: false,
+          has_issues: true,
+        },
+        ...(event === "issues"
+          ? { issue: { number: itemNumber } }
+          : { pull_request: { number: itemNumber } }),
+        ...(label ? { label } : {}),
+        installation: { id: 123 },
+      },
+    });
+
+    assert.equal(result.accepted, true);
+    assert.equal(result.sourceAction, action);
+    assert.equal(result.supersedesInProgress, true);
+  }
+});
+
+test("webhook rejects label additions and unrelated removals from exact-review intake", () => {
   for (const [event, payload] of [
     [
       "pull_request",
@@ -560,6 +606,7 @@ test("webhook rejects all label mutations from exact-review intake", () => {
           has_issues: true,
         },
         issue: { number: 597 },
+        label: { name: "clawsweeper:queueable-fix" },
         installation: { id: 123 },
         sender: { login: "steipete" },
       },

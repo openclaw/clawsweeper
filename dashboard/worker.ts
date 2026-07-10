@@ -2,6 +2,7 @@ import {
   commandTextForClawSweeperFastAck,
   isClawSweeperReReviewCommandText,
 } from "../src/repair/comment-command-text.ts";
+import { isExactReviewCloseGuardLabel } from "../src/repair/exact-review-guard-labels.ts";
 import { TRIAGE_ROUTING_GROUPS, triageRoutingGroupsForLabels } from "./triage-routing-groups.ts";
 
 const ACTIVE_RUN_STATUSES = new Set(["queued", "in_progress", "waiting", "requested", "pending"]);
@@ -111,12 +112,6 @@ const CLAWSWEEPER_STATE_REF = "state";
 const DEFAULT_CRABFLEET_URL = "https://crabfleet.openclaw.ai";
 const CLUSTER_REPAIR_INTAKE_WORKFLOW = "repair-cluster-intake.yml";
 const CLAWSWEEPER_ALLOWED_ASSOCIATIONS = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
-const CLAWSWEEPER_CLOSE_PROTECTED_LABELS = new Set([
-  "security",
-  "beta-blocker",
-  "release-blocker",
-  "maintainer",
-]);
 const CLAWSWEEPER_ISSUE_ITEM_ACTIONS = new Set([
   "opened",
   "reopened",
@@ -1163,7 +1158,7 @@ function classifyGithubItemWebhook({ event, payload }) {
     if (!CLAWSWEEPER_ISSUE_ITEM_ACTIONS.has(action)) {
       return { accepted: false, reason: "unsupported action" };
     }
-    if (action === "unlabeled" && !isCloseProtectedLabel(payload.label)) {
+    if (action === "unlabeled" && !isCloseGuardLabel(payload.label)) {
       return { accepted: false, reason: "unsupported action" };
     }
     const itemNumber = Number(objectValue(payload.issue).number);
@@ -1188,7 +1183,7 @@ function classifyGithubItemWebhook({ event, payload }) {
     if (!CLAWSWEEPER_PULL_ITEM_ACTIONS.has(action)) {
       return { accepted: false, reason: "unsupported action" };
     }
-    if (action === "unlabeled" && !isCloseProtectedLabel(payload.label)) {
+    if (action === "unlabeled" && !isCloseGuardLabel(payload.label)) {
       return { accepted: false, reason: "unsupported action" };
     }
     const itemNumber = Number(objectValue(payload.pull_request).number);
@@ -1218,11 +1213,11 @@ function classifyGithubItemWebhook({ event, payload }) {
   return { accepted: false, reason: "unsupported event" };
 }
 
-function isCloseProtectedLabel(value) {
+function isCloseGuardLabel(value) {
   const label = String(objectValue(value).name || "")
     .trim()
     .toLowerCase();
-  return CLAWSWEEPER_CLOSE_PROTECTED_LABELS.has(label);
+  return isExactReviewCloseGuardLabel(label);
 }
 
 function isEligibleGithubWebhookRepository(repo) {

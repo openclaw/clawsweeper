@@ -4428,12 +4428,24 @@ test("hosted webhook enqueues item events with the repository default branch", a
   });
 });
 
-test("hosted webhook requeues unlocked and protected-label removal events", async () => {
+test("hosted webhook requeues unlocked and close-guard removal events", async () => {
+  const closeGuardLabels = [
+    "security",
+    "beta-blocker",
+    "release-blocker",
+    "maintainer",
+    "clawsweeper:human-review",
+    "clawsweeper:manual-only",
+    "clawsweeper:automerge",
+    "clawsweeper:autofix",
+  ];
   const cases = [
     { event: "issues", action: "unlocked" },
     { event: "pull_request", action: "unlocked" },
-    { event: "issues", action: "unlabeled", label: { name: "Security" } },
-    { event: "pull_request", action: "unlabeled", label: { name: "release-blocker" } },
+    ...closeGuardLabels.flatMap((name) => [
+      { event: "issues", action: "unlabeled", label: { name } },
+      { event: "pull_request", action: "unlabeled", label: { name } },
+    ]),
   ];
   for (const [index, { event, action, label }] of cases.entries()) {
     const number = 598 + index;
@@ -4478,7 +4490,7 @@ test("hosted webhook requeues unlocked and protected-label removal events", asyn
   }
 });
 
-test("hosted webhook ignores removal of non-protected labels", async () => {
+test("hosted webhook ignores removal of non-close-guard labels", async () => {
   const response = await worker.fetch(
     signedGithubWebhookRequest({
       event: "issues",

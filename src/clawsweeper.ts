@@ -82,6 +82,14 @@ import {
 import { AUTOMATION_LIMITS } from "./limits.js";
 import { freshExactHeadReviewStartLease } from "./repair/comment-router-core.js";
 import {
+  AUTOMERGE_LABEL,
+  AUTOFIX_LABEL,
+  CLOSE_PROTECTED_LABEL_NAMES,
+  HUMAN_REVIEW_LABEL,
+  MANUAL_ONLY_LABEL,
+  PR_AUTO_CLOSE_EXEMPT_LABEL_NAMES,
+} from "./repair/exact-review-guard-labels.js";
+import {
   buildOpenClawPrSurfaceStats,
   renderOpenClawPrSurfaceSummary,
   renderOpenClawPrSurfaceTable,
@@ -1225,17 +1233,8 @@ const PR_CLOSE_COVERAGE_PROOF_SCHEMA_PATH = join(
 );
 const REVIEW_COMMENT_MARKER_PREFIX = "<!-- clawsweeper-review";
 const REVIEW_START_STATUS_MARKER_PREFIX = "<!-- clawsweeper-review-status";
-const AUTOMERGE_LABEL = "clawsweeper:automerge";
-const AUTOFIX_LABEL = "clawsweeper:autofix";
-const HUMAN_REVIEW_LABEL = "clawsweeper:human-review";
 const MERGE_READY_LABEL = "clawsweeper:merge-ready";
-const MANUAL_ONLY_LABEL = "clawsweeper:manual-only";
-const PR_AUTO_CLOSE_EXEMPT_LABELS = new Set([
-  HUMAN_REVIEW_LABEL,
-  MANUAL_ONLY_LABEL,
-  AUTOMERGE_LABEL,
-  AUTOFIX_LABEL,
-]);
+const PR_AUTO_CLOSE_EXEMPT_LABELS = new Set<string>(PR_AUTO_CLOSE_EXEMPT_LABEL_NAMES);
 const WAITING_ON_AUTHOR_LABEL = "status: ⏳ waiting on author";
 const PROOF_OVERRIDE_LABEL = "proof: override";
 const PROOF_SUFFICIENT_LABEL = "proof: sufficient";
@@ -1654,7 +1653,7 @@ const ISSUE_STALE_PROTECTION_LABEL = {
   color: "6E7781",
   description: "Exempts this issue from stale automation.",
 } as const;
-const PROTECTED_LABELS = new Set(["security", "beta-blocker", "release-blocker", "maintainer"]);
+const PROTECTED_LABELS = new Set<string>(CLOSE_PROTECTED_LABEL_NAMES);
 const ALLOWED_REASONS = new Set<CloseReason>([
   "implemented_on_main",
   "mostly_implemented_on_main",
