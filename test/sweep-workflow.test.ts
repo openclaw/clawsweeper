@@ -997,6 +997,10 @@ test("manual exact-item review dispatches reserve their live shard capacity", ()
   );
   assert.match(
     runName,
+    /format\('Review event items \{0\}#\{1\},\{2\} \[shards=\{3\}\]', github\.event\.inputs\.target_repo \|\| 'openclaw\/openclaw', github\.event\.inputs\.item_number, github\.event\.inputs\.item_numbers, \(github\.event\.inputs\.hot_intake == 'true' && '1' \|\| github\.event\.inputs\.shard_count \|\| '89'\)\)/,
+  );
+  assert.match(
+    runName,
     /github\.event_name == 'workflow_dispatch' &&\s+github\.event\.inputs\.item_number != '' &&\s+github\.event\.inputs\.item_numbers == ''\) &&\s+format\('Review event item \{0\}#\{1\}', github\.event\.inputs\.target_repo \|\| 'openclaw\/openclaw', github\.event\.inputs\.item_number\)/,
   );
   assert.match(
