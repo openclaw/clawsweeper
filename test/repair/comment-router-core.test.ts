@@ -2083,9 +2083,9 @@ test("trusted close gates block protected labels, source drift, and unsupported 
         originalProductDirectionPolicy;
     }
   }
-  assert.equal(
+  assert.match(
     trustedCloseBlockReason({ ...base, closeReason: "low_signal_unmergeable_pr" }),
-    null,
+    /require apply-decisions live conflict and author-activity proof/,
   );
   assert.match(
     trustedCloseBlockReason({

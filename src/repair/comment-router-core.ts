@@ -1235,6 +1235,7 @@ function trustedCloseReasonSpecificBlockReason({
       productDirection: false,
     });
     if (humanSignal) return humanSignal;
+    return "low_signal_unmergeable_pr closes require apply-decisions live conflict and author-activity proof";
   }
   return null;
 }

@@ -4,6 +4,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import {
+  lowSignalCloseReport,
   promotionGhMock,
   reportWithSyncedReviewComment,
   runApplyDecisionsForTest,
@@ -13,6 +14,81 @@ import {
   withMockGh,
   workPlanCandidateReport,
 } from "./helpers.ts";
+
+function runLowSignalApplyFixture(options: {
+  number: number;
+  reportOverrides?: Record<string, unknown>;
+  itemCreatedAt?: string;
+  itemUpdatedAt?: string;
+  headSha?: string;
+  headActivityAt?: string | null;
+  mergeable?: boolean | null;
+  mergeableState?: string | null;
+  comments?: (reviewComment: string) => unknown[];
+  timeline?: unknown[];
+}): Array<{ number: number; action: string; reason: string }> {
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    const itemsDir = join(root, "items");
+    const closedDir = join(root, "closed");
+    const plansDir = join(root, "plans");
+    const reportPath = join(root, "apply-report.json");
+    mkdirSync(itemsDir, { recursive: true });
+    mkdirSync(plansDir, { recursive: true });
+    const sourceReport = lowSignalCloseReport({
+      number: options.number,
+      title: "Low-signal close guard fixture",
+      ...options.reportOverrides,
+    });
+    const synced = reportWithSyncedReviewComment(
+      sourceReport,
+      options.number,
+      "low_signal_unmergeable_pr",
+    );
+    writeFileSync(join(itemsDir, `${options.number}.md`), synced.report, "utf8");
+
+    withMockGh(
+      root,
+      promotionGhMock({
+        number: options.number,
+        title: "Low-signal close guard fixture",
+        comment: synced.comment,
+        ...(options.itemCreatedAt ? { itemCreatedAt: options.itemCreatedAt } : {}),
+        ...(options.itemUpdatedAt ? { itemUpdatedAt: options.itemUpdatedAt } : {}),
+        ...(options.headSha ? { headSha: options.headSha } : {}),
+        ...(options.headActivityAt !== undefined ? { headActivityAt: options.headActivityAt } : {}),
+        ...(options.mergeable !== undefined ? { mergeable: options.mergeable } : {}),
+        ...(options.mergeableState !== undefined ? { mergeableState: options.mergeableState } : {}),
+        ...(options.comments ? { comments: options.comments(synced.comment) } : {}),
+        ...(options.timeline ? { timeline: options.timeline } : {}),
+      }),
+      () => {
+        runApplyDecisionsForTest({
+          targetRepo: "openclaw/openclaw",
+          itemsDir,
+          closedDir,
+          plansDir,
+          reportPath,
+          extraArgs: [
+            "--dry-run",
+            "--apply-kind",
+            "all",
+            "--apply-close-reasons",
+            "low_signal_unmergeable_pr",
+            "--stale-min-age-days",
+            "30",
+            "--item-numbers",
+            String(options.number),
+          ],
+        });
+      },
+    );
+
+    return JSON.parse(readFileSync(reportPath, "utf8"));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
 
 function assertResolvedPromotionRespectsCloseReasonFilter(options: {
   number: number;
@@ -438,6 +514,7 @@ test("apply-decisions promotes old F-rated stale PRs with low-signal close seman
       promotionGhMock({
         number: 330,
         comment: synced.comment,
+        headRunPullRequests: [],
         closeAppliedBodyLogPath,
         linkedPulls: {
           400: {
@@ -504,6 +581,228 @@ test("apply-decisions promotes old F-rated stale PRs with low-signal close seman
     const closeAppliedBody = readFileSync(closeAppliedBodyLogPath, "utf8");
     assert.match(closeAppliedBody, /Close reason: low-signal unmergeable PR\./);
     assert.doesNotMatch(closeAppliedBody, /Keep open:/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("apply-decisions keeps MERGEABLE UNSTABLE low-signal proposals open", () => {
+  const report = runLowSignalApplyFixture({
+    number: 341,
+    reportOverrides: {
+      item_created_at: "2026-02-01T00:00:00Z",
+      item_updated_at: "2026-05-01T00:00:00Z",
+      reviewed_at: "2026-05-01T00:00:00Z",
+      pull_head_sha: "head-sha",
+    },
+    itemCreatedAt: "2026-02-01T00:00:00Z",
+    itemUpdatedAt: "2026-05-01T00:00:00Z",
+    mergeable: true,
+    mergeableState: "unstable",
+    headActivityAt: "2026-02-01T01:00:00Z",
+  });
+
+  assert.match(
+    report.find((entry) => entry.action === "kept_open")?.reason ?? "",
+    /requires a live merge conflict; GitHub reports mergeable=true, mergeable_state=unstable/,
+  );
+  assert.equal(
+    report.some((entry) => entry.action === "closed"),
+    false,
+  );
+});
+
+test("apply-decisions keeps recently updated DIRTY low-signal proposals open", () => {
+  const number = 342;
+  const headSha = "3423423423423423423423423423423423423423";
+  const now = Date.now();
+  const createdAt = new Date(now - 45 * 24 * 60 * 60 * 1000).toISOString();
+  const authorActivityAt = new Date(now - 4.5 * 60 * 60 * 1000).toISOString();
+  const reviewedAt = new Date(now - 4 * 60 * 60 * 1000).toISOString();
+  const report = runLowSignalApplyFixture({
+    number,
+    reportOverrides: {
+      author: "reporter",
+      item_created_at: createdAt,
+      item_updated_at: reviewedAt,
+      reviewed_at: reviewedAt,
+      pull_head_sha: headSha,
+    },
+    itemCreatedAt: createdAt,
+    itemUpdatedAt: reviewedAt,
+    headSha,
+    mergeable: false,
+    mergeableState: "dirty",
+    headActivityAt: authorActivityAt,
+    comments: (reviewComment) => [
+      {
+        id: 9342,
+        created_at: reviewedAt,
+        updated_at: reviewedAt,
+        user: { login: "clawsweeper[bot]" },
+        body: reviewComment,
+      },
+      {
+        id: 9343,
+        created_at: authorActivityAt,
+        updated_at: authorActivityAt,
+        user: { login: "reporter" },
+        body: "Rebased and force-pushed the requested changes.",
+      },
+    ],
+    timeline: [
+      {
+        event: "head_ref_force_pushed",
+        created_at: authorActivityAt,
+        actor: { login: "reporter" },
+        commit_id: headSha,
+      },
+    ],
+  });
+
+  assert.match(
+    report.find((entry) => entry.action === "kept_open")?.reason ?? "",
+    /requires 30 days without author comments or head activity/,
+  );
+  assert.equal(
+    report.some((entry) => entry.action === "closed"),
+    false,
+  );
+});
+
+test("apply-decisions still closes old DIRTY low-signal proposals", () => {
+  const report = runLowSignalApplyFixture({
+    number: 343,
+    reportOverrides: {
+      item_created_at: "2026-02-01T00:00:00Z",
+      item_updated_at: "2026-05-01T00:00:00Z",
+      reviewed_at: "2026-05-01T00:00:00Z",
+      pull_head_sha: "head-sha",
+    },
+    itemCreatedAt: "2026-02-01T00:00:00Z",
+    itemUpdatedAt: "2026-05-01T00:00:00Z",
+    mergeable: false,
+    mergeableState: "dirty",
+    headActivityAt: "2026-02-01T01:00:00Z",
+  });
+
+  assert.match(
+    report.find((entry) => entry.action === "closed")?.reason ?? "",
+    /dry-run: would close as low-signal unmergeable PR/,
+  );
+});
+
+test("apply-decisions fails closed without current-head activity evidence", () => {
+  const report = runLowSignalApplyFixture({
+    number: 345,
+    reportOverrides: {
+      item_created_at: "2026-02-01T00:00:00Z",
+      item_updated_at: "2026-05-01T00:00:00Z",
+      reviewed_at: "2026-05-01T00:00:00Z",
+      pull_head_sha: "head-sha",
+    },
+    itemCreatedAt: "2026-02-01T00:00:00Z",
+    itemUpdatedAt: "2026-05-01T00:00:00Z",
+    mergeable: false,
+    mergeableState: "dirty",
+    headActivityAt: null,
+  });
+
+  assert.match(
+    report.find((entry) => entry.action === "kept_open")?.reason ?? "",
+    /requires dated activity evidence for the current head/,
+  );
+});
+
+test("stale F promotion ignores recent pre-review author reviews", () => {
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    const itemsDir = join(root, "items");
+    const closedDir = join(root, "closed");
+    const plansDir = join(root, "plans");
+    const reportPath = join(root, "apply-report.json");
+    const number = 344;
+    const headSha = "3443443443443443443443443443443443443443";
+    const now = Date.now();
+    const createdAt = new Date(now - 45 * 24 * 60 * 60 * 1000).toISOString();
+    const authorActivityAt = new Date(now - 4.5 * 60 * 60 * 1000).toISOString();
+    const oldHeadActivityAt = new Date(now - 44 * 24 * 60 * 60 * 1000).toISOString();
+    const reviewedAt = new Date(now - 4 * 60 * 60 * 1000).toISOString();
+    mkdirSync(itemsDir, { recursive: true });
+    mkdirSync(plansDir, { recursive: true });
+    const sourceReport = stalePullRequestReport({
+      number,
+      title: "Recent contributor activity before review",
+      author: "reporter",
+      item_created_at: createdAt,
+      item_updated_at: reviewedAt,
+      reviewed_at: reviewedAt,
+      pull_head_sha: headSha,
+    });
+    const synced = reportWithSyncedReviewComment(sourceReport, number, "none");
+    writeFileSync(join(itemsDir, `${number}.md`), synced.report, "utf8");
+
+    withMockGh(
+      root,
+      promotionGhMock({
+        number,
+        title: "Recent contributor activity before review",
+        comment: synced.comment,
+        itemCreatedAt: createdAt,
+        itemUpdatedAt: reviewedAt,
+        headSha,
+        headActivityAt: oldHeadActivityAt,
+        mergeable: false,
+        mergeableState: "dirty",
+        comments: [
+          {
+            id: 9344,
+            created_at: reviewedAt,
+            updated_at: reviewedAt,
+            user: { login: "clawsweeper[bot]" },
+            body: synced.comment,
+          },
+        ],
+        reviews: [
+          {
+            id: 9345,
+            submitted_at: authorActivityAt,
+            user: { login: "reporter" },
+            state: "COMMENTED",
+          },
+        ],
+      }),
+      () => {
+        runApplyDecisionsForTest({
+          targetRepo: "openclaw/openclaw",
+          itemsDir,
+          closedDir,
+          plansDir,
+          reportPath,
+          extraArgs: [
+            "--dry-run",
+            "--apply-kind",
+            "all",
+            "--apply-close-reasons",
+            "low_signal_unmergeable_pr",
+            "--stale-min-age-days",
+            "30",
+            "--item-numbers",
+            String(number),
+          ],
+        });
+      },
+    );
+
+    const report = JSON.parse(readFileSync(reportPath, "utf8")) as Array<{
+      action: string;
+      reason: string;
+    }>;
+    assert.equal(
+      report.some((entry) => entry.action === "closed"),
+      false,
+    );
+    assert.match(readFileSync(join(itemsDir, `${number}.md`), "utf8"), /^close_reason: none$/m);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

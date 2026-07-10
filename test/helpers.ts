@@ -446,7 +446,13 @@ export function promotionGhMock(options: {
   commentsAfterFirstRead?: unknown[];
   commentsAfterCommentWrite?: unknown[];
   reviews?: unknown[];
+  pullReviewComments?: unknown[];
   timeline?: unknown[];
+  mergeable?: boolean | null;
+  mergeableState?: string | null;
+  headActivityAt?: string | null;
+  headRunPullRequests?: unknown[];
+  authorLogin?: string;
   linkedPulls?: Record<number, unknown>;
   linkedPullsAfterProof?: Record<number, unknown>;
   linkedPullsAfterCommentRead?: Record<number, unknown>;
@@ -485,6 +491,7 @@ export function promotionGhMock(options: {
 	const commentsAfterFirstRead = ${JSON.stringify(options.commentsAfterFirstRead ?? null)};
 	const commentsAfterCommentWrite = ${JSON.stringify(options.commentsAfterCommentWrite ?? null)};
 	const reviews = ${JSON.stringify(options.reviews ?? [])};
+	const pullReviewComments = ${JSON.stringify(options.pullReviewComments ?? [])};
 	const timeline = ${JSON.stringify(timeline)};
 	const linkedPulls = ${JSON.stringify(linkedPulls)};
 	const linkedPullsAfterProof = ${JSON.stringify(options.linkedPullsAfterProof ?? {})};
@@ -532,6 +539,12 @@ export function promotionGhMock(options: {
 		const itemCreatedAt = ${JSON.stringify(itemCreatedAt)};
 		const itemUpdatedAt = ${JSON.stringify(itemUpdatedAt)};
 		const changedFiles = ${options.changedFiles ?? 2};
+		const mergeable = ${JSON.stringify(options.mergeable ?? false)};
+		const mergeableState = ${JSON.stringify(options.mergeableState ?? "dirty")};
+		const headActivityAt = ${JSON.stringify(
+      options.headActivityAt === undefined ? "2026-02-01T01:00:00Z" : options.headActivityAt,
+    )};
+		const authorLogin = ${JSON.stringify(options.authorLogin ?? "reporter")};
 		const sourceFiles = ${JSON.stringify(
       (options.sourceFiles ?? ["src/runtime.ts", "test/runtime.test.ts"]).map((filename) => ({
         filename,
@@ -610,7 +623,7 @@ export function promotionGhMock(options: {
     locked: false,
     active_lock_reason: null,
     author_association: "CONTRIBUTOR",
-    user: { login: "reporter" },
+    user: { login: authorLogin },
     labels,
     comments: issueCommentCount,
     pull_request: { url: "https://api.github.com/repos/openclaw/openclaw/pulls/" + number }
@@ -621,14 +634,29 @@ export function promotionGhMock(options: {
     title,
     html_url: "https://github.com/openclaw/openclaw/pull/" + number,
     state: "open",
+    created_at: itemCreatedAt,
+    mergeable,
+    mergeable_state: mergeableState,
     changed_files: changedFiles,
     commits: 1,
     review_comments: 0,
     body: "Stale PR body.",
-    head: { sha: ${JSON.stringify(options.headSha ?? "head-sha")}, ref: "branch", repo: { full_name: "fork/openclaw" } },
+    requested_reviewers: [],
+    requested_teams: [],
+    head: { sha: ${JSON.stringify(options.headSha ?? "head-sha")}, ref: "branch", repo: { id: 123, full_name: "fork/openclaw" } },
     base: { sha: "base-sha", ref: "main", repo: { full_name: "openclaw/openclaw" } },
-    user: { login: "reporter" }
+    user: { login: authorLogin }
   }));
+	} else if (args[0] === "api" && /\\/actions\\/runs\\?/.test(path)) {
+	  console.log(JSON.stringify({
+	    workflow_runs: headActivityAt ? [{
+	      event: "pull_request",
+	      created_at: headActivityAt,
+	      head_branch: "branch",
+	      head_repository: { id: 123, full_name: "fork/openclaw" },
+	      pull_requests: ${JSON.stringify(options.headRunPullRequests ?? [{ number: options.number }])}
+	    }] : []
+	  }));
 	} else if (args[0] === "api" && /\\/pulls\\/(\\d+)$/.test(path)) {
 	  const linkedNumber = Number((path.match(/\\/pulls\\/(\\d+)$/) || [])[1]);
 	  if (proofHasRun() && linkedPullHangAfterProof) {
@@ -695,7 +723,9 @@ export function promotionGhMock(options: {
   } else {
     console.log(JSON.stringify([files]));
   }
-} else if (args[0] === "api" && new RegExp("/pulls/" + number + "/(files|commits|comments)(?:\\\\?|$)").test(path)) {
+} else if (args[0] === "api" && new RegExp("/pulls/" + number + "/comments(?:\\\\?|$)").test(path)) {
+  console.log(JSON.stringify(slurp ? [pullReviewComments] : pullReviewComments));
+} else if (args[0] === "api" && new RegExp("/pulls/" + number + "/(files|commits)(?:\\\\?|$)").test(path)) {
   console.log(JSON.stringify([[]]));
 } else if (args[0] === "pr" && args[1] === "close" && args[2] === String(number)) {
   if (closeCommandDelayMs > 0) setTimeout(() => console.log(""), closeCommandDelayMs);

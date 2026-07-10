@@ -1199,6 +1199,7 @@ const STALLED_UNPROVEN_PR_MIN_AGE_DAYS = 14;
 const STALLED_UNPROVEN_PR_MIN_INACTIVE_DAYS = 14;
 const ABANDONED_PR_MIN_AGE_DAYS = 30;
 const ABANDONED_PR_MIN_INACTIVE_DAYS = 30;
+const LOW_SIGNAL_UNMERGEABLE_PR_MIN_INACTIVE_DAYS = 30;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const RECENT_MISSING_OPEN_MS = DAY_MS;
 const DEFAULT_CODEX_MODEL = PUBLIC_CODEX_MODEL;
@@ -3644,7 +3645,127 @@ function maintainerAssociatedEntries(entries: readonly unknown[]): unknown[] {
   );
 }
 
-function lowSignalUnmergeablePrApplyBlockReason(number: number): string | null {
+function lowSignalUnmergeablePrConflictBlockReason(pullValue: unknown): string | null {
+  const pull = asRecord(pullValue);
+  const mergeableState = (
+    stringOrUndefined(pull.mergeableState) ??
+    stringOrUndefined(pull.mergeable_state) ??
+    "unknown"
+  ).toLowerCase();
+  if (pull.mergeable === false && mergeableState === "dirty") return null;
+  const mergeable = typeof pull.mergeable === "boolean" ? String(pull.mergeable) : "unknown";
+  return `low_signal_unmergeable_pr requires a live merge conflict; GitHub reports mergeable=${mergeable}, mergeable_state=${mergeableState}`;
+}
+
+function githubActivityTimestampMs(value: unknown): number | null {
+  const record = asRecord(value);
+  for (const candidate of [
+    record.updatedAt,
+    record.updated_at,
+    record.submitted_at,
+    record.createdAt,
+    record.created_at,
+  ]) {
+    const timestamp = Date.parse(typeof candidate === "string" ? candidate : "");
+    if (Number.isFinite(timestamp)) return timestamp;
+  }
+  return null;
+}
+
+function githubActivityLogin(value: unknown): string {
+  const record = asRecord(value);
+  return (
+    stringOrUndefined(record.author) ??
+    login(record.user) ??
+    stringOrUndefined(record.actor) ??
+    login(record.actor) ??
+    ""
+  )
+    .trim()
+    .toLowerCase();
+}
+
+function latestPullRequestAuthorActivityAtMs(options: {
+  author: string;
+  createdAt: string;
+  comments?: readonly unknown[];
+  reviews?: readonly unknown[];
+  inlineComments?: readonly unknown[];
+  timeline?: readonly unknown[];
+  headActivityAtMs?: number | null;
+}): number | null {
+  const author = options.author.trim().toLowerCase();
+  if (!author) return null;
+  let latest = Date.parse(options.createdAt);
+  if (!Number.isFinite(latest)) latest = Number.NEGATIVE_INFINITY;
+  const observe = (value: unknown): void => {
+    if (githubActivityLogin(value) !== author) return;
+    const timestamp = githubActivityTimestampMs(value);
+    if (timestamp !== null && timestamp > latest) latest = timestamp;
+  };
+  options.comments?.forEach(observe);
+  options.reviews?.forEach(observe);
+  options.inlineComments?.forEach(observe);
+  for (const event of options.timeline ?? []) {
+    const record = asRecord(event);
+    const eventName = stringOrUndefined(record.event) ?? "";
+    const commitId = stringOrUndefined(record.commitId) ?? stringOrUndefined(record.commit_id);
+    if (
+      eventName === "commented" ||
+      eventName === "committed" ||
+      eventName === "head_ref_force_pushed" ||
+      eventName === "head_ref_restored" ||
+      Boolean(commitId)
+    ) {
+      observe(event);
+    }
+  }
+  if (options.headActivityAtMs !== null && options.headActivityAtMs !== undefined) {
+    latest = Math.max(latest, options.headActivityAtMs);
+  }
+  return Number.isFinite(latest) ? latest : null;
+}
+
+function lowSignalUnmergeablePrAuthorActivityBlockReason(options: {
+  author: string;
+  createdAt: string;
+  comments?: readonly unknown[];
+  reviews?: readonly unknown[];
+  inlineComments?: readonly unknown[];
+  timeline?: readonly unknown[];
+  headActivityAtMs?: number | null;
+  staleMinAgeDays: number;
+  requireHeadActivityEvidence?: boolean;
+  now?: number;
+}): string | null {
+  if (
+    options.requireHeadActivityEvidence &&
+    (options.headActivityAtMs === null || options.headActivityAtMs === undefined)
+  ) {
+    return "low_signal_unmergeable_pr requires dated activity evidence for the current head";
+  }
+  const latestActivityAtMs = latestPullRequestAuthorActivityAtMs(options);
+  if (latestActivityAtMs === null) {
+    return "low_signal_unmergeable_pr requires dated author and current-head activity evidence";
+  }
+  const now = options.now ?? Date.now();
+  const configuredInactiveDays = Number.isFinite(options.staleMinAgeDays)
+    ? Math.max(0, options.staleMinAgeDays)
+    : LOW_SIGNAL_UNMERGEABLE_PR_MIN_INACTIVE_DAYS;
+  const minimumInactiveDays = Math.max(
+    LOW_SIGNAL_UNMERGEABLE_PR_MIN_INACTIVE_DAYS,
+    configuredInactiveDays,
+  );
+  if (now - latestActivityAtMs <= minimumInactiveDays * DAY_MS) {
+    return `low_signal_unmergeable_pr requires ${minimumInactiveDays} days without author comments or head activity`;
+  }
+  return null;
+}
+
+function lowSignalUnmergeablePrApplyBlockReason(
+  number: number,
+  staleMinAgeDays: number,
+): string | null {
   const issue = ghJson<{ assignees?: unknown[] }>([
     "api",
     `repos/${targetRepo()}/issues/${number}`,
@@ -3653,27 +3774,62 @@ function lowSignalUnmergeablePrApplyBlockReason(number: number): string | null {
   ]);
   if ((issue.assignees ?? []).length > 0) return "assigned PR has maintainer/human signal";
 
-  const pull = ghJson<{ requested_reviewers?: unknown[]; requested_teams?: unknown[] }>([
-    "api",
-    `repos/${targetRepo()}/pulls/${number}`,
-    "--jq",
-    "{requested_reviewers:[.requested_reviewers[]? | {login:.login}],requested_teams:[.requested_teams[]? | {slug:.slug}]}",
-  ]);
+  const pull = ghJson<{
+    created_at?: string;
+    mergeable?: boolean | null;
+    mergeable_state?: string | null;
+    requested_reviewers?: unknown[];
+    requested_teams?: unknown[];
+    user?: GitHubUser;
+    head?: { ref?: string; repo?: { full_name?: string; id?: unknown }; sha?: string };
+  }>(["api", `repos/${targetRepo()}/pulls/${number}`]);
   if ((pull.requested_reviewers ?? []).length > 0 || (pull.requested_teams ?? []).length > 0) {
     return "requested reviewers or teams indicate active review signal";
   }
 
-  const maintainerComments = maintainerAssociatedEntries(
-    ghPaged<unknown>(`repos/${targetRepo()}/issues/${number}/comments`),
-  );
+  const comments = ghPaged<unknown>(`repos/${targetRepo()}/issues/${number}/comments`);
+  const maintainerComments = maintainerAssociatedEntries(comments);
   if (maintainerComments.length > 0) return "maintainer issue comment blocks low-signal auto-close";
 
-  const maintainerReviews = maintainerAssociatedEntries(
-    ghPaged<unknown>(`repos/${targetRepo()}/pulls/${number}/reviews`),
-  );
+  const reviews = ghPaged<unknown>(`repos/${targetRepo()}/pulls/${number}/reviews`);
+  const maintainerReviews = maintainerAssociatedEntries(reviews);
   if (maintainerReviews.length > 0) return "maintainer PR review blocks low-signal auto-close";
 
-  return null;
+  const inlineComments = ghPaged<unknown>(`repos/${targetRepo()}/pulls/${number}/comments`);
+  const maintainerInlineComments = maintainerAssociatedEntries(inlineComments);
+  if (maintainerInlineComments.length > 0) {
+    return "maintainer inline review comment blocks low-signal auto-close";
+  }
+
+  const conflictBlock = lowSignalUnmergeablePrConflictBlockReason(pull);
+  if (conflictBlock) return conflictBlock;
+
+  const timeline = ghPaged<unknown>(`repos/${targetRepo()}/issues/${number}/timeline`);
+  const headActivity = pullRequestHeadActivity(number, pull, timeline);
+  return lowSignalUnmergeablePrAuthorActivityBlockReason({
+    author: pull.user?.login ?? "",
+    createdAt: pull.created_at ?? "",
+    comments,
+    reviews,
+    inlineComments,
+    timeline,
+    headActivityAtMs: headActivity.headActivityAtMs,
+    staleMinAgeDays,
+    requireHeadActivityEvidence: true,
+  });
+}
+
+function lowSignalUnmergeablePrApplyBlockReasonSafe(
+  number: number,
+  staleMinAgeDays: number,
+): string | null {
+  try {
+    return lowSignalUnmergeablePrApplyBlockReason(number, staleMinAgeDays);
+  } catch (error) {
+    return `low-signal conflict/activity check failed: ${
+      error instanceof Error ? error.message : String(error)
+    }`;
+  }
 }
 
 function unconfirmedProductDirectionApplyBlockReason(
@@ -3795,15 +3951,16 @@ const FAILING_CHECK_RUN_CONCLUSIONS = new Set(["failure", "timed_out"]);
 // A pull_request workflow run associated with this PR is tied to source
 // activity, while rerunning its checks leaves created_at unchanged. Missing
 // source-run data keeps the PR open.
-function pullRequestLiveActivity(number: number): PullRequestLiveActivity {
-  const pull = ghJson<{
+function pullRequestHeadActivity(
+  number: number,
+  pull: {
     created_at?: string;
-    draft?: boolean;
     head?: { ref?: string; repo?: { full_name?: string; id?: unknown }; sha?: string };
-  }>(["api", `repos/${targetRepo()}/pulls/${number}`]);
+  },
+  timeline = ghPaged<unknown>(`repos/${targetRepo()}/issues/${number}/timeline`),
+): Pick<PullRequestLiveActivity, "headSha" | "headActivityAtMs"> {
   const headSha = typeof pull.head?.sha === "string" ? pull.head.sha : "";
   let headActivityAtMs: number | null = null;
-  let headChecksFailing = false;
   const observe = (value: unknown): void => {
     const ms = Date.parse(typeof value === "string" ? value : "");
     if (Number.isFinite(ms) && (headActivityAtMs === null || ms > headActivityAtMs)) {
@@ -3839,12 +3996,26 @@ function pullRequestLiveActivity(number: number): PullRequestLiveActivity {
         observe(record.created_at);
       }
     }
-    for (const event of ghPaged<unknown>(`repos/${targetRepo()}/issues/${number}/timeline`)) {
+    for (const event of timeline) {
       const record = asRecord(event);
-      if (record.event === "head_ref_force_pushed" && record.commit_id === headSha) {
-        observe(record.created_at);
+      const commitId = stringOrUndefined(record.commitId) ?? stringOrUndefined(record.commit_id);
+      if (record.event === "head_ref_force_pushed" && commitId === headSha) {
+        observe(stringOrUndefined(record.createdAt) ?? record.created_at);
       }
     }
+  }
+  return { headSha, headActivityAtMs };
+}
+
+function pullRequestLiveActivity(number: number): PullRequestLiveActivity {
+  const pull = ghJson<{
+    created_at?: string;
+    draft?: boolean;
+    head?: { ref?: string; repo?: { full_name?: string; id?: unknown }; sha?: string };
+  }>(["api", `repos/${targetRepo()}/pulls/${number}`]);
+  const { headSha, headActivityAtMs } = pullRequestHeadActivity(number, pull);
+  let headChecksFailing = false;
+  if (headSha) {
     const combined = ghJson<{ state?: string }>([
       "api",
       `repos/${targetRepo()}/commits/${headSha}/status`,
@@ -14799,6 +14970,7 @@ function recommendedPauseOrCloseOption(markdown: string): MergeRiskOption | null
 function staleFRatedPullRequestPromotion(
   markdown: string,
   item: Item,
+  context: ItemContext,
   staleMinAgeDays: number,
 ): PullRequestClosePromotion | null {
   const proof = reportRealBehaviorProof(markdown);
@@ -14810,6 +14982,49 @@ function staleFRatedPullRequestPromotion(
     proof.status !== "mock_only" &&
     proof.status !== "insufficient" &&
     rating.proofTier !== "F"
+  ) {
+    return null;
+  }
+  if (
+    context.counts?.commentsTruncated ||
+    context.counts?.timelineTruncated ||
+    context.counts?.pullReviewCommentsTruncated
+  ) {
+    return null;
+  }
+  let livePull: {
+    created_at?: string;
+    mergeable?: boolean | null;
+    mergeable_state?: string | null;
+    user?: GitHubUser;
+    head?: { ref?: string; repo?: { full_name?: string; id?: unknown }; sha?: string };
+  };
+  let reviews: unknown[];
+  let headActivityAtMs: number | null;
+  try {
+    livePull = ghJson(["api", `repos/${targetRepo()}/pulls/${item.number}`]);
+    if (lowSignalUnmergeablePrConflictBlockReason(livePull)) return null;
+    reviews = ghPaged<unknown>(`repos/${targetRepo()}/pulls/${item.number}/reviews`);
+    headActivityAtMs = pullRequestHeadActivity(
+      item.number,
+      livePull,
+      context.timeline,
+    ).headActivityAtMs;
+  } catch {
+    return null;
+  }
+  if (
+    lowSignalUnmergeablePrAuthorActivityBlockReason({
+      author: livePull.user?.login ?? item.author,
+      createdAt: livePull.created_at ?? item.createdAt,
+      comments: context.comments,
+      reviews,
+      inlineComments: context.pullReviewComments ?? [],
+      timeline: context.timeline,
+      headActivityAtMs,
+      staleMinAgeDays,
+      requireHeadActivityEvidence: true,
+    })
   ) {
     return null;
   }
@@ -14893,7 +15108,7 @@ function pullRequestClosePromotion(
   // A live canonical candidate that is itself unsafe cannot justify treating the
   // source as generic low-signal work. Missing or non-covering references can.
   if (linkedSupersession.unsafeReason) return null;
-  return staleFRatedPullRequestPromotion(markdown, item, staleMinAgeDays);
+  return staleFRatedPullRequestPromotion(markdown, item, context, staleMinAgeDays);
 }
 
 function workPlanPathForReport(file: string, plansDir = defaultPlansDir()): string {
@@ -21911,7 +22126,7 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
     }
     const lowSignalBlockReason =
       closeReason === "low_signal_unmergeable_pr"
-        ? lowSignalUnmergeablePrApplyBlockReason(number)
+        ? lowSignalUnmergeablePrApplyBlockReasonSafe(number, staleMinAgeDays)
         : null;
     if (lowSignalBlockReason) {
       if (markApplySkipped("kept_open", lowSignalBlockReason)) break;
