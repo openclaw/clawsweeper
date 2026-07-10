@@ -740,10 +740,10 @@ test("sweep workflow forwards source revision and bounds drift requeue", () => {
 
   assert.match(workflow, /EXPECTED_SOURCE_REVISION:.*client_payload\.expected_source_revision/);
   assert.match(workflow, /--expected-source-revision "\$EXPECTED_SOURCE_REVISION"/);
-  assert.match(workflow, /requeue-source-revision-drift:\n\s+name: Requeue source-revision drift/);
+  assert.match(workflow, /requeue-source-revision-drift:\r?\n\s+name: Requeue source-revision drift/);
   assert.match(workflow, /name: review-source-revision-mismatch-\$\{\{ matrix\.shard \}\}/);
   assert.match(workflow, /requeue-source-revision-drift:[\s\S]*?contents: write/);
-  assert.match(workflow, /review:[\s\S]*?permissions:\n\s+contents: read/);
+  assert.match(workflow, /review:[\s\S]*?permissions:\r?\n\s+contents: read/);
   assert.match(workflow, /\[ "\$REQUEUE_COUNT" -ge 1 \]/);
   assert.match(workflow, /expected_source_revision: \$expected_source_revision/);
   assert.match(workflow, /source_revision_requeue_count: "1"/);
