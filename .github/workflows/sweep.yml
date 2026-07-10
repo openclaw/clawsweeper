@@ -412,11 +412,6 @@ jobs:
             echo "media_proof_timeout_ms=$media_proof_timeout_ms"
           } >> "$GITHUB_OUTPUT"
 
-      - uses: ./.github/actions/setup-pnpm
-        id: setup-pnpm
-        with:
-          build-script: build:all
-
       - name: Create target read token
         id: target-read-token
         continue-on-error: true
@@ -430,7 +425,32 @@ jobs:
           permission-issues: read
           permission-pull-requests: read
 
+      - name: Check live target item state
+        id: live-item
+        env:
+          GH_TOKEN: ${{ steps.target-read-token.outputs.token }}
+          TARGET_REPO: ${{ steps.target.outputs.target_repo }}
+          ITEM_NUMBER: ${{ steps.target.outputs.item_number }}
+        run: |
+          set -euo pipefail
+          test -n "$GH_TOKEN"
+          live_state="$(gh api "repos/$TARGET_REPO/issues/$ITEM_NUMBER" --jq .state)"
+          case "$live_state" in
+            open)
+              echo "proceed=true" >> "$GITHUB_OUTPUT"
+              ;;
+            closed)
+              echo "proceed=false" >> "$GITHUB_OUTPUT"
+              echo "::notice::Skipping terminal $TARGET_REPO#$ITEM_NUMBER because it is already closed."
+              ;;
+            *)
+              echo "Unexpected live state for $TARGET_REPO#$ITEM_NUMBER: $live_state" >&2
+              exit 1
+              ;;
+          esac
+
       - name: Create target write token
+        if: ${{ steps.live-item.outcome == 'success' }}
         id: target-write-token
         continue-on-error: true
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
@@ -443,7 +463,14 @@ jobs:
           permission-issues: write
           permission-pull-requests: write
 
+      - uses: ./.github/actions/setup-pnpm
+        id: setup-pnpm
+        if: ${{ steps.live-item.outputs.proceed == 'true' || (steps.live-item.outputs.proceed == 'false' && (github.event.client_payload.review_options.command_status_marker != '' || github.event.client_payload.review_options.status_comment_id != '' || github.event.client_payload.command_status_marker != '' || github.event.client_payload.status_comment_id != '')) }}
+        with:
+          build-script: ${{ steps.live-item.outputs.proceed == 'true' && 'build:all' || 'build:repair' }}
+
       - name: React to target item review start
+        if: ${{ steps.live-item.outputs.proceed == 'true' }}
         continue-on-error: true
         env:
           GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
@@ -472,6 +499,7 @@ jobs:
           react "eyes"
 
       - uses: actions/cache@v6
+        if: ${{ steps.live-item.outputs.proceed == 'true' }}
         with:
           path: ${{ steps.target.outputs.target_checkout_dir }}-cache.git
           key: ${{ steps.target.outputs.target_repo_name }}-event-git-${{ runner.os }}-${{ github.run_id }}
@@ -480,6 +508,7 @@ jobs:
             ${{ steps.target.outputs.target_repo_name }}-git-${{ runner.os }}-
 
       - name: Check out target repository
+        if: ${{ steps.live-item.outputs.proceed == 'true' }}
         run: |
           set -euo pipefail
           url="https://github.com/${{ steps.target.outputs.target_repo }}.git"
@@ -512,6 +541,7 @@ jobs:
           git -C "$checkout_dir" rev-parse --short HEAD
 
       - name: Mark re-review command in progress
+        if: ${{ steps.live-item.outputs.proceed == 'true' }}
         continue-on-error: true
         env:
           GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
@@ -532,6 +562,7 @@ jobs:
             --wait-ms 120000
 
       - uses: ./.github/actions/setup-codex
+        if: ${{ steps.live-item.outputs.proceed == 'true' }}
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           CLAWSWEEPER_INTERNAL_MODEL: ${{ secrets.CLAWSWEEPER_MODEL }}
@@ -540,6 +571,7 @@ jobs:
 
       - name: Review exact event item
         id: review-exact-event-item
+        if: ${{ steps.live-item.outputs.proceed == 'true' }}
         continue-on-error: true
         env:
           GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
@@ -582,12 +614,14 @@ jobs:
 
       - name: Create state token
         id: state-token
+        if: ${{ steps.live-item.outputs.proceed == 'true' }}
         uses: ./.github/actions/create-state-token
         with:
           client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
           private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
 
       - uses: ./.github/actions/setup-state
+        if: ${{ steps.live-item.outputs.proceed == 'true' }}
         with:
           token: ${{ steps.state-token.outputs.token }}
           fetch-depth: 1
@@ -604,11 +638,21 @@ jobs:
           MIN_AGE_MINUTES: ${{ github.event.client_payload.apply_min_age_minutes || '0' }}
         run: |
           set -euo pipefail
-          test -f "artifacts/event/$ITEM_NUMBER.md"
+          live_state="$(gh api "repos/$TARGET_REPO/issues/$ITEM_NUMBER" --jq .state)"
+          if [ "$live_state" = "closed" ]; then
+            echo "terminal_noop=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::Treating $TARGET_REPO#$ITEM_NUMBER as terminal because it closed during review."
+            exit 0
+          fi
+          if [ ! -f "artifacts/event/$ITEM_NUMBER.md" ]; then
+            echo "Exact review produced no artifact for open item $TARGET_REPO#$ITEM_NUMBER." >&2
+            exit 1
+          fi
+          echo "terminal_noop=false" >> "$GITHUB_OUTPUT"
           pnpm run repair:publish-event-result
 
       - name: Dispatch viable issue implementation
-        if: ${{ steps.review-exact-event-item.outcome == 'success' && steps.publish-event-result.outcome == 'success' && vars.CLAWSWEEPER_AUTO_IMPLEMENT_ISSUES == '1' && steps.target-write-token.outputs.token != '' && steps.target.outputs.target_repo != 'openclaw/openclaw' && steps.target.outputs.target_repo != 'openclaw/clawhub' && github.event.client_payload.item_kind == 'issue' && (github.event.client_payload.source_action == 'opened' || github.event.client_payload.source_action == 'reopened') }}
+        if: ${{ steps.review-exact-event-item.outcome == 'success' && steps.publish-event-result.outcome == 'success' && steps.publish-event-result.outputs.terminal_noop != 'true' && vars.CLAWSWEEPER_AUTO_IMPLEMENT_ISSUES == '1' && steps.target-write-token.outputs.token != '' && steps.target.outputs.target_repo != 'openclaw/openclaw' && steps.target.outputs.target_repo != 'openclaw/clawhub' && github.event.client_payload.item_kind == 'issue' && (github.event.client_payload.source_action == 'opened' || github.event.client_payload.source_action == 'reopened') }}
         env:
           GH_TOKEN: ${{ github.token }}
           TARGET_REPO: ${{ steps.target.outputs.target_repo }}
@@ -646,7 +690,7 @@ jobs:
 
       - name: Route synced ClawSweeper verdict
         id: route-synced-verdict
-        if: ${{ steps.review-exact-event-item.outcome == 'success' && steps.publish-event-result.outcome == 'success' }}
+        if: ${{ steps.review-exact-event-item.outcome == 'success' && steps.publish-event-result.outcome == 'success' && steps.publish-event-result.outputs.terminal_noop != 'true' }}
         timeout-minutes: 4
         env:
           GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
@@ -667,8 +711,57 @@ jobs:
             --max-comments "$CLAWSWEEPER_COMMENT_MAX_COMMENTS" \
             --execute
 
+      - name: Release terminal review leases
+        id: release-terminal-review-leases
+        if: ${{ always() && (steps.live-item.outputs.proceed == 'false' || steps.publish-event-result.outputs.terminal_noop == 'true') }}
+        env:
+          GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
+          TARGET_REPO: ${{ steps.target.outputs.target_repo }}
+          ITEM_NUMBER: ${{ steps.target.outputs.item_number }}
+        run: |
+          set -euo pipefail
+          test -n "$GH_TOKEN"
+          lease_ids="$(
+            gh api "repos/$TARGET_REPO/issues/$ITEM_NUMBER/comments?per_page=100" \
+              --paginate \
+              --jq ".[] | select(.user.login == \"clawsweeper[bot]\" or .user.login == \"openclaw-clawsweeper[bot]\") | select(.body | contains(\"<!-- clawsweeper-review-lease item=$ITEM_NUMBER -->\")) | .id"
+          )"
+          reaction_ids="$(
+            gh api "repos/$TARGET_REPO/issues/$ITEM_NUMBER/reactions?content=eyes&per_page=100" \
+              --paginate \
+              --jq '.[] | select(.content == "eyes") | select(.user.login == "clawsweeper" or .user.login == "clawsweeper[bot]" or .user.login == "openclaw-clawsweeper[bot]") | .id'
+          )"
+          test "$(gh api "repos/$TARGET_REPO/issues/$ITEM_NUMBER" --jq .state)" = "closed"
+          while IFS= read -r lease_id; do
+            [ -n "$lease_id" ] || continue
+            gh api "repos/$TARGET_REPO/issues/comments/$lease_id" --method DELETE
+            echo "Released terminal review lease comment $lease_id for $TARGET_REPO#$ITEM_NUMBER."
+          done <<< "$lease_ids"
+          while IFS= read -r reaction_id; do
+            [ -n "$reaction_id" ] || continue
+            gh api "repos/$TARGET_REPO/issues/$ITEM_NUMBER/reactions/$reaction_id" --method DELETE
+            echo "Removed terminal eyes reaction $reaction_id from $TARGET_REPO#$ITEM_NUMBER."
+          done <<< "$reaction_ids"
+
+      - name: Confirm terminal item remains closed
+        id: confirm-terminal-item
+        if: ${{ always() && steps.release-terminal-review-leases.outcome == 'success' }}
+        env:
+          GH_TOKEN: ${{ steps.target-read-token.outputs.token }}
+          TARGET_REPO: ${{ steps.target.outputs.target_repo }}
+          ITEM_NUMBER: ${{ steps.target.outputs.item_number }}
+        run: |
+          set -euo pipefail
+          test -n "$GH_TOKEN"
+          live_state="$(gh api "repos/$TARGET_REPO/issues/$ITEM_NUMBER" --jq .state)"
+          if [ "$live_state" != "closed" ]; then
+            echo "$TARGET_REPO#$ITEM_NUMBER is $live_state after terminal cleanup; requeueing exact review." >&2
+            exit 1
+          fi
+          echo "confirmed=true" >> "$GITHUB_OUTPUT"
+
       - name: Mark re-review complete
-        if: ${{ always() && steps.setup-pnpm.outcome == 'success' }}
+        if: ${{ always() && steps.setup-pnpm.outcome == 'success' && (steps.live-item.outputs.proceed == 'true' || steps.confirm-terminal-item.outputs.confirmed == 'true') }}
         continue-on-error: true
         env:
           GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
@@ -686,6 +779,10 @@ jobs:
           if [ "$REVIEW_OUTCOME" = "cancelled" ]; then
             state="Interrupted"
             detail="The targeted re-review was interrupted. The exact-review queue will reconcile a newer pending item if one arrived."
+          fi
+          if [ "${{ steps.confirm-terminal-item.outputs.confirmed }}" = "true" ]; then
+            state="Complete"
+            detail="The item is closed, terminal review leases were released, and no stale verdict was published or routed."
           fi
           if [ "$REVIEW_OUTCOME" = "success" ] && [ "$PUBLISH_OUTCOME" = "success" ] && [ "$ROUTE_OUTCOME" = "success" ]; then
             state="Complete"
@@ -814,7 +911,7 @@ jobs:
           remove_own_eyes_reactions
 
       - name: Fail unsuccessful exact review
-        if: ${{ always() && (steps.review-exact-event-item.outcome != 'success' || steps.publish-event-result.outcome != 'success' || steps.route-synced-verdict.outcome != 'success') }}
+        if: ${{ always() && steps.live-item.outputs.proceed != 'false' && steps.publish-event-result.outputs.terminal_noop != 'true' && (steps.review-exact-event-item.outcome != 'success' || steps.publish-event-result.outcome != 'success' || steps.route-synced-verdict.outcome != 'success') }}
         run: exit 1
 
       - name: Complete exact-review queue lease

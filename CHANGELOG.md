@@ -34,6 +34,7 @@ checkpoint, and status-only commits are intentionally omitted.
 ### Fixed
 
 - Reconciled terminal exact-review runs by requested run instead of sampling the first 32 claimed leases, while preserving attempt and claim-generation guards across larger worker waves.
+- Dequeued already-closed exact-review events before setup and treated items closed during review as terminal no-ops, preventing permanent retry churn from consuming live worker capacity.
 - Published exact-review records, plans, and decision packets as one validated tuple, and made broad sweep publishers preserve the semantically newer tuple and independently merged status health instead of replaying stale review state.
 - Requeued cancelled and failed exact-review leases, kept pre-terminal success provisional, and added signed exact-attempt reconciliation with claim-generation guards that releases only GitHub-confirmed terminal runs while preserving live workers.
 - Kept exact-review work pending with an explicit bounded retry when GitHub Actions cannot confirm that the executor workflow is active, instead of reporting silent repository dispatches to a disabled workflow as occupied capacity.

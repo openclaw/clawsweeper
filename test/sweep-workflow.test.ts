@@ -50,25 +50,63 @@ test("exact event publish and routing require a successful fresh review artifact
   const eventReviewJobStart = workflow.indexOf("\n  event-review-apply:");
   const planJobStart = workflow.indexOf("\n  plan:", eventReviewJobStart);
   const eventReviewJob = workflow.slice(eventReviewJobStart, planJobStart);
+  const liveItemStart = eventReviewJob.indexOf("- name: Check live target item state");
+  const setupPnpmStart = eventReviewJob.indexOf("- uses: ./.github/actions/setup-pnpm");
   const publishStart = eventReviewJob.indexOf("- name: Publish event result and apply safe close");
   const implementationStart = eventReviewJob.indexOf(
     "- name: Dispatch viable issue implementation",
     publishStart,
   );
   const routeStart = eventReviewJob.indexOf("- name: Route synced ClawSweeper verdict");
+  const releaseLeaseStart = eventReviewJob.indexOf("- name: Release terminal review leases");
+  const confirmTerminalStart = eventReviewJob.indexOf(
+    "- name: Confirm terminal item remains closed",
+  );
   const completeStart = eventReviewJob.indexOf("- name: Mark re-review complete", routeStart);
+  const failStart = eventReviewJob.indexOf("- name: Fail unsuccessful exact review");
+  const leaseCompleteStart = eventReviewJob.indexOf(
+    "- name: Complete exact-review queue lease",
+    failStart,
+  );
+  const liveItemStep = eventReviewJob.slice(liveItemStart, setupPnpmStart);
   const publishStep = eventReviewJob.slice(publishStart, implementationStart);
   const routeStep = eventReviewJob.slice(routeStart, completeStart);
+  const releaseLeaseStep = eventReviewJob.slice(releaseLeaseStart, confirmTerminalStart);
+  const confirmTerminalStep = eventReviewJob.slice(confirmTerminalStart, completeStart);
+  const failStep = eventReviewJob.slice(failStart, leaseCompleteStart);
 
+  assert.ok(liveItemStart > 0);
+  assert.ok(setupPnpmStart > liveItemStart);
+  assert.ok(releaseLeaseStart > routeStart);
+  assert.ok(confirmTerminalStart > releaseLeaseStart);
+  assert.match(liveItemStep, /id: live-item/);
+  assert.match(liveItemStep, /repos\/\$TARGET_REPO\/issues\/\$ITEM_NUMBER/);
+  assert.match(liveItemStep, /echo "proceed=false" >> "\$GITHUB_OUTPUT"/);
+  assert.match(
+    eventReviewJob,
+    /- uses: \.\/\.github\/actions\/setup-pnpm\s+id: setup-pnpm\s+if: \$\{\{ steps\.live-item\.outputs\.proceed == 'true' \|\|/,
+  );
   assert.match(publishStep, /if: \$\{\{ steps\.review-exact-event-item\.outcome == 'success' \}\}/);
-  assert.match(publishStep, /test -f "artifacts\/event\/\$ITEM_NUMBER\.md"/);
+  assert.match(publishStep, /if \[ ! -f "artifacts\/event\/\$ITEM_NUMBER\.md" \]/);
+  assert.match(publishStep, /live_state="\$\(gh api/);
+  assert.match(publishStep, /echo "terminal_noop=true" >> "\$GITHUB_OUTPUT"/);
+  assert.match(publishStep, /Exact review produced no artifact for open item/);
   assert.match(publisher, /"--event-apply-proof"/);
   assert.match(publisher, /exactEventApplyProof\(/);
   assert.doesNotMatch(publisher, /entry\.action === "review_comment_synced"/);
-  assert.match(
-    routeStep,
-    /if: \$\{\{ steps\.review-exact-event-item\.outcome == 'success' && steps\.publish-event-result\.outcome == 'success' \}\}/,
-  );
+  assert.match(routeStep, /steps\.publish-event-result\.outputs\.terminal_noop != 'true'/);
+  assert.match(releaseLeaseStep, /steps\.publish-event-result\.outputs\.terminal_noop == 'true'/);
+  assert.match(releaseLeaseStep, /clawsweeper-review-lease item=\$ITEM_NUMBER/);
+  assert.match(releaseLeaseStep, /--method DELETE/);
+  assert.match(releaseLeaseStep, /reactions\?content=eyes/);
+  assert.match(releaseLeaseStep, /Removed terminal eyes reaction/);
+  assert.ok(releaseLeaseStep.indexOf("lease_ids=") < releaseLeaseStep.indexOf('test "$(gh api'));
+  assert.match(confirmTerminalStep, /steps\.release-terminal-review-leases\.outcome == 'success'/);
+  assert.match(confirmTerminalStep, /live_state.*gh api/);
+  assert.match(confirmTerminalStep, /echo "confirmed=true" >> "\$GITHUB_OUTPUT"/);
+  assert.match(eventReviewJob, /terminal review leases were released/);
+  assert.match(failStep, /steps\.live-item\.outputs\.proceed != 'false'/);
+  assert.match(failStep, /steps\.publish-event-result\.outputs\.terminal_noop != 'true'/);
 });
 
 test("dashboard syncs Worker secrets with durable lifecycle storage", () => {
