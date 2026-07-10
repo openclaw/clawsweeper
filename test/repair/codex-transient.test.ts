@@ -29,7 +29,7 @@ test("ordinary Codex failures are not classified as transient transport", () => 
 
 test("Codex TPM rate-limit errors are retryable transport failures", () => {
   const message =
-    "stream disconnected before completion: Rate limit reached for gpt-5.5 on tokens per min (TPM): Limit 40000000, Used 40000000, Requested 126092. Please try again in 189ms.";
+    "stream disconnected before completion: Rate limit reached for gpt-5.6-sol on tokens per min (TPM): Limit 40000000, Used 40000000, Requested 126092. Please try again in 189ms.";
   assert.equal(isRetryableCodexTransportError(message), true);
   assert.equal(isCodexContextLimitError(message), false);
 });

@@ -2176,6 +2176,7 @@ test("sweep workflow gives high-context Codex reviews twenty minutes by default"
 
 test("Codex workflows install pinned CLI releases and keep the model secret", () => {
   const action = readText(".github/actions/setup-codex/action.yml");
+  const localCheck = readText("scripts/check-local-codex.mjs");
   const workflows = [
     ".github/workflows/assist.yml",
     ".github/workflows/commit-review.yml",
@@ -2190,6 +2191,8 @@ test("Codex workflows install pinned CLI releases and keep the model secret", ()
   assert.match(action, /@openai\/codex@\$\{\{ inputs\['codex-version'\] \}\}/);
   assert.match(action, /@openai\/codex-responses-api-proxy@\$\{\{ inputs\['proxy-version'\] \}\}/);
   assert.doesNotMatch(action, /@latest/);
+  assert.match(localCheck, /CLAWSWEEPER_LOCAL_CODEX_MODEL \?\? "gpt-5\.6-sol"/);
+  assert.doesNotMatch(localCheck, /gpt-5\.5/);
   assert.match(action, /env -u OPENAI_API_KEY[\s\S]*-u CLAWSWEEPER_INTERNAL_MODEL/);
   assert.equal(action.match(/--ignore-scripts/g)?.length, 2);
   for (const workflow of workflows) {

@@ -200,7 +200,7 @@ test("review actions only propose valid closes and never apply directly", () => 
     item: item(),
     decision: closeDecision(),
     git,
-    runtime: { model: "gpt-5.5", reasoningEffort: "high" },
+    runtime: { model: "gpt-5.6-sol", reasoningEffort: "high" },
   });
   assert.equal(action.actionTaken, "proposed_close");
   assert.match(action.closeComment, /Thanks for the context here/);
@@ -224,7 +224,7 @@ test("review actions only propose valid closes and never apply directly", () => 
   assert.match(action.closeComment, /@bob/);
   assert.doesNotMatch(action.closeComment, /role: recent maintainer/);
   assert.match(action.closeComment, /role: recent area contributor/);
-  assert.match(action.closeComment, /Codex review notes: model gpt-5\.5, reasoning high;/);
+  assert.match(action.closeComment, /Codex review notes: model gpt-5\.6-sol, reasoning high;/);
 });
 
 test("review actions render deterministic close comments when model close comment is empty", () => {
@@ -233,7 +233,7 @@ test("review actions render deterministic close comments when model close commen
     item: item(),
     decision,
     git,
-    runtime: { model: "gpt-5.5", reasoningEffort: "high" },
+    runtime: { model: "gpt-5.6-sol", reasoningEffort: "high" },
   });
 
   assert.equal(action.actionTaken, "proposed_close");
@@ -261,7 +261,7 @@ test("close comments reference high-confidence merged fixing PRs", () => {
       },
     }),
     git,
-    runtime: { model: "gpt-5.5", reasoningEffort: "high" },
+    runtime: { model: "gpt-5.6-sol", reasoningEffort: "high" },
   });
 
   assert.equal(action.actionTaken, "proposed_close");
@@ -411,7 +411,7 @@ test("report-rendered close comments keep merged fixing PR provenance", () => {
       fixed_sha: "abcdef1234567890",
       fixed_at: "2026-04-28T12:00:00Z",
       main_sha: "abcdef1234567890",
-      review_model: "gpt-5.5",
+      review_model: "gpt-5.6-sol",
       review_reasoning_effort: "high",
     })}
 
