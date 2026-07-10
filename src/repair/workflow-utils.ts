@@ -1893,10 +1893,16 @@ function commentSyncCandidates(targetRepo: string, applyKind: string): number[] 
       if (frontMatterValue(markdown, "review_status") !== "complete") return [];
       if (!frontMatterValue(markdown, "item_snapshot_hash")) return [];
       const actionTaken = frontMatterValue(markdown, "action_taken");
+      const storedReviewCommentId = frontMatterValue(markdown, "review_comment_id");
+      const storedReviewCommentUrl = frontMatterValue(markdown, "review_comment_url");
+      const hasStoredReviewComment =
+        Boolean(storedReviewCommentId && !["none", "unknown"].includes(storedReviewCommentId)) &&
+        Boolean(storedReviewCommentUrl && !["none", "unknown"].includes(storedReviewCommentUrl));
       const changedDuplicateClose =
         actionTaken === "skipped_changed_since_review" &&
         frontMatterValue(markdown, "decision") === "close" &&
-        frontMatterValue(markdown, "close_reason") === "duplicate_or_superseded";
+        frontMatterValue(markdown, "close_reason") === "duplicate_or_superseded" &&
+        hasStoredReviewComment;
       if (
         actionTaken !== "kept_open" &&
         actionTaken !== "proposed_close" &&

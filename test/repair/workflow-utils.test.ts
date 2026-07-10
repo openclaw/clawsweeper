@@ -2269,12 +2269,18 @@ test("workflow utilities select cursor-based PR comment sync batches", () => {
   writeCommentSyncRecord(root, 34, "pull_request", "skipped_changed_since_review", {
     decision: "close",
     closeReason: "duplicate_or_superseded",
+    reviewCommentId: "9034",
+    reviewCommentUrl: "https://github.com/openclaw/openclaw/pull/34#issuecomment-9034",
   });
   writeCommentSyncRecord(root, 35, "pull_request", "retry_stale_canonical_comment_sync");
   writeCommentSyncRecord(root, 36, "pull_request", "corrected_stale_canonical_comment");
   writeCommentSyncRecord(root, 37, "pull_request", "skipped_changed_since_review", {
     decision: "close",
     closeReason: "low_signal_unmergeable_pr",
+  });
+  writeCommentSyncRecord(root, 38, "pull_request", "skipped_changed_since_review", {
+    decision: "close",
+    closeReason: "duplicate_or_superseded",
   });
   writeCommentSyncRecord(root, 40, "issue", "kept_open");
   writeCommentSyncRecord(root, 50, "pull_request", "reviewed");
@@ -2304,7 +2310,7 @@ test("workflow utilities select cursor-based PR comment sync batches", () => {
       commentSyncBatchOutput({
         targetRepo: "openclaw/openclaw",
         applyKind: "pull_request",
-        batchSize: 3,
+        batchSize: 10,
         cursorPath,
       }),
     ),
@@ -2391,6 +2397,8 @@ function writeCommentSyncRecord(root, number, type, actionTaken, options = {}) {
   ];
   if (options.decision) lines.push(`decision: ${options.decision}`);
   if (options.closeReason) lines.push(`close_reason: ${options.closeReason}`);
+  if (options.reviewCommentId) lines.push(`review_comment_id: ${options.reviewCommentId}`);
+  if (options.reviewCommentUrl) lines.push(`review_comment_url: ${options.reviewCommentUrl}`);
   lines.push("---", "");
   write(
     path.join(root, `records/openclaw-openclaw/items/openclaw-openclaw-${number}.md`),
