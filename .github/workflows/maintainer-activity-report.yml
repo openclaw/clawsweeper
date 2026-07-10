@@ -49,20 +49,23 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  report:
-    name: Generate and publish maintainer reports
+  generate:
+    name: Generate maintainer reports
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.generate }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    outputs:
+      maintainers_sha: ${{ steps.maintainers-base.outputs.sha }}
     steps:
-      - name: Create maintainer repo token
-        id: maintainers_token
+      - name: Create maintainer repo read token
+        id: maintainers_read_token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
           client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
           private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
           owner: openclaw
           repositories: maintainers
-          permission-contents: write
+          permission-contents: read
 
       - name: Create OpenClaw read token
         id: openclaw_read_token
@@ -80,8 +83,14 @@ jobs:
         with:
           repository: openclaw/maintainers
           path: maintainers
-          token: ${{ steps.maintainers_token.outputs.token }}
+          token: ${{ steps.maintainers_read_token.outputs.token }}
           fetch-depth: 0
+          persist-credentials: false
+
+      - name: Record maintainer base
+        id: maintainers-base
+        working-directory: maintainers
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Set up Node
         uses: actions/setup-node@v6
@@ -100,25 +109,7 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           CLAWSWEEPER_INTERNAL_MODEL: ${{ secrets.CLAWSWEEPER_MODEL }}
 
-      - name: Configure Cloudflare Access
-        working-directory: maintainers
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.OPENCLAW_CLOUDFLARE_CONFIG_API_TOKEN || secrets.OPENCLAW_CLOUDFLARE_ACCESS_API_TOKEN }}
-          CF_API_TOKEN: ${{ secrets.OPENCLAW_CLOUDFLARE_CONFIG_API_TOKEN || secrets.OPENCLAW_CLOUDFLARE_ACCESS_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ env.CLOUDFLARE_ACCOUNT_ID }}
-        run: |
-          set -euo pipefail
-          if [ -z "${CLOUDFLARE_API_TOKEN:-}" ]; then
-            echo "::notice title=Cloudflare Access not configured::Set OPENCLAW_CLOUDFLARE_CONFIG_API_TOKEN with Pages, DNS, and Zero Trust Access write scope to enforce GitHub org login for reports.openclaw.ai."
-            exit 0
-          fi
-          node scripts/ensure-cloudflare-maintainer-reports.mjs \
-            --domain "$REPORTS_DOMAIN" \
-            --project "$REPORTS_PROJECT" \
-            --github-org openclaw
-
       - name: Generate reports
-        if: ${{ github.event_name != 'workflow_dispatch' || inputs.generate }}
         working-directory: maintainers
         env:
           GH_TOKEN: ${{ steps.openclaw_read_token.outputs.token }}
@@ -143,9 +134,73 @@ jobs:
           fi
           node .agents/skills/openclaw-maintainer-activity/scripts/generate-maintainer-activity-history.mjs "${args[@]}"
 
+      - name: Upload generated reports
+        uses: actions/upload-artifact@v7
+        with:
+          name: maintainer-reports-${{ github.run_id }}-${{ github.run_attempt }}
+          path: maintainers/reports
+          if-no-files-found: error
+          include-hidden-files: true
+          retention-days: 1
+
+  publish:
+    name: Publish maintainer reports
+    needs: generate
+    if: ${{ always() && needs.generate.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Create maintainer repo write token
+        id: maintainers_write_token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
+          owner: openclaw
+          repositories: maintainers
+          permission-contents: write
+
+      - name: Check out maintainer base
+        uses: actions/checkout@v7
+        with:
+          repository: openclaw/maintainers
+          path: maintainers
+          ref: ${{ needs.generate.outputs.maintainers_sha }}
+          token: ${{ steps.maintainers_write_token.outputs.token }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Download generated reports
+        uses: actions/download-artifact@v8
+        with:
+          name: maintainer-reports-${{ github.run_id }}-${{ github.run_attempt }}
+          path: generated-reports
+
+      - name: Validate generated report tree
+        run: |
+          set -euo pipefail
+          test -n "${{ needs.generate.outputs.maintainers_sha }}"
+          test "$(git -C maintainers rev-parse HEAD)" = "${{ needs.generate.outputs.maintainers_sha }}"
+          if find generated-reports \( -name .git -o -name .gitattributes -o -name .gitmodules \) -print -quit | grep -q .; then
+            echo "Generated reports must not contain Git control files." >&2
+            exit 1
+          fi
+          if find generated-reports ! -type f ! -type d -print -quit | grep -q .; then
+            echo "Generated reports must contain only regular files and directories." >&2
+            exit 1
+          fi
+          file_count="$(find generated-reports -type f | wc -l | tr -d ' ')"
+          size_kib="$(du -sk generated-reports | cut -f1)"
+          if [ "$file_count" -gt 2000 ] || [ "$size_kib" -gt 262144 ]; then
+            echo "Generated report artifact exceeds its bounded file-count or size limit." >&2
+            exit 1
+          fi
+          rsync --archive --delete generated-reports/ maintainers/reports/
+
       - name: Commit report history
-        if: ${{ github.event_name != 'workflow_dispatch' || inputs.generate }}
         working-directory: maintainers
+        env:
+          GH_TOKEN: ${{ steps.maintainers_write_token.outputs.token }}
         run: |
           set -euo pipefail
           if git diff --quiet -- reports; then
@@ -156,11 +211,55 @@ jobs:
           git config user.email "openclaw-clawsweeper[bot]@users.noreply.github.com"
           git add reports
           git commit -m "chore: publish maintainer activity report"
+          gh auth setup-git
           git pull --rebase origin main
           git push origin HEAD:main
 
+  deploy:
+    name: Deploy maintainer reports
+    needs: [generate, publish]
+    if: >-
+      ${{
+        always() &&
+        (github.event_name != 'workflow_dispatch' || inputs.deploy) &&
+        (
+          (needs.generate.result == 'success' && needs.publish.result == 'success') ||
+          needs.generate.result == 'skipped'
+        )
+      }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out maintainers
+        uses: actions/checkout@v7
+        with:
+          repository: openclaw/maintainers
+          path: maintainers
+          fetch-depth: 1
+          persist-credentials: false
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      - name: Configure Cloudflare Access
+        working-directory: maintainers
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.OPENCLAW_CLOUDFLARE_CONFIG_API_TOKEN || secrets.OPENCLAW_CLOUDFLARE_ACCESS_API_TOKEN }}
+          CF_API_TOKEN: ${{ secrets.OPENCLAW_CLOUDFLARE_CONFIG_API_TOKEN || secrets.OPENCLAW_CLOUDFLARE_ACCESS_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ env.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          if [ -z "${CLOUDFLARE_API_TOKEN:-}" ]; then
+            echo "::notice title=Cloudflare Access not configured::Set OPENCLAW_CLOUDFLARE_CONFIG_API_TOKEN with Pages, DNS, and Zero Trust Access write scope to enforce GitHub org login for reports.openclaw.ai."
+            exit 0
+          fi
+          node scripts/ensure-cloudflare-maintainer-reports.mjs \
+            --domain "$REPORTS_DOMAIN" \
+            --project "$REPORTS_PROJECT" \
+            --github-org openclaw
+
       - name: Deploy reports.openclaw.ai
-        if: ${{ github.event_name != 'workflow_dispatch' || inputs.deploy }}
         working-directory: maintainers
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.OPENCLAW_CLOUDFLARE_PAGES_API_TOKEN }}

@@ -2276,6 +2276,33 @@ test("Codex workflows install pinned CLI releases and keep the model secret", ()
   }
 });
 
+test("maintainer report generation cannot access publish or deploy credentials", () => {
+  const workflow = readText(".github/workflows/maintainer-activity-report.yml");
+  const generateStart = workflow.indexOf("\n  generate:");
+  const publishStart = workflow.indexOf("\n  publish:", generateStart);
+  const deployStart = workflow.indexOf("\n  deploy:", publishStart);
+
+  assert.ok(generateStart >= 0);
+  assert.ok(publishStart > generateStart);
+  assert.ok(deployStart > publishStart);
+
+  const generate = workflow.slice(generateStart, publishStart);
+  const publish = workflow.slice(publishStart, deployStart);
+  const deploy = workflow.slice(deployStart);
+
+  assert.match(generate, /permission-contents: read/);
+  assert.doesNotMatch(generate, /permission-contents: write/);
+  assert.doesNotMatch(generate, /maintainers_write_token|git push|CLOUDFLARE_API_TOKEN/);
+  assert.equal(generate.match(/persist-credentials: false/g)?.length, 2);
+
+  assert.match(publish, /permission-contents: write/);
+  assert.match(publish, /persist-credentials: false/);
+  assert.doesNotMatch(publish, /setup-codex|OPENAI_API_KEY|CLOUDFLARE_API_TOKEN/);
+
+  assert.match(deploy, /persist-credentials: false/);
+  assert.doesNotMatch(deploy, /create-github-app-token|setup-codex|OPENAI_API_KEY/);
+});
+
 test("background review fanout keeps per-review transient recovery", () => {
   const workflow = readText(".github/workflows/sweep.yml");
   const reviewStart = workflow.indexOf("\n  review:");
