@@ -10,6 +10,11 @@ import {
   resetEventSnapshot,
 } from "./event-record-store.js";
 import {
+  eventApplyAction,
+  exactEventApplyProof,
+  type EventApplyAction,
+} from "./event-apply-proof.js";
+import {
   captureStatePublishBaseline,
   commitMessageForPublishedPaths,
   configureGitUser,
@@ -25,10 +30,6 @@ import {
 } from "./git-publish.js";
 import { isJsonObject } from "./json-types.js";
 import { RecordTupleError } from "./record-tuple.js";
-
-type ApplyAction = {
-  action: string;
-};
 
 type EventOptions = {
   targetRepo: string;
@@ -119,8 +120,21 @@ async function publishEventResult(options: EventOptions): Promise<void> {
   }
 
   const actions = readApplyActions(options.reportPath);
-  const syncedCount = actions.filter((entry) => entry.action === "review_comment_synced").length;
-  const closedCount = actions.filter((entry) => entry.action === "closed").length;
+  const {
+    exactActions,
+    syncedCount,
+    terminalCount: closedCount,
+  } = exactEventApplyProof(actions, Number(options.itemNumber));
+  if (syncedCount + closedCount === 0) {
+    const observed =
+      exactActions
+        .map((entry) => entry.action)
+        .filter(Boolean)
+        .join(", ") || "none";
+    throw new Error(
+      `Event review for ${options.targetRepo}#${options.itemNumber} was not applied; actions: ${observed}`,
+    );
+  }
   captureEventSnapshot(recordStore);
 
   const summary = () =>
@@ -173,6 +187,7 @@ function runApplyDecisions(options: EventOptions): void {
     "0",
     "--progress-every",
     "1",
+    "--event-apply-proof",
     "--skip-dashboard",
     "--report-path",
     options.reportPath,
@@ -259,12 +274,11 @@ function eventOptionsFromEnv(): EventOptions {
   };
 }
 
-function readApplyActions(reportPath: string): ApplyAction[] {
+function readApplyActions(reportPath: string): EventApplyAction[] {
   const parsed: unknown = JSON.parse(fs.readFileSync(reportPath, "utf8"));
   if (!Array.isArray(parsed)) throw new Error(`${reportPath} must contain an array`);
   return parsed.map((entry) => {
-    if (!isJsonObject(entry) || typeof entry.action !== "string") return { action: "" };
-    return { action: entry.action };
+    return eventApplyAction(isJsonObject(entry) ? entry : {});
   });
 }
 

@@ -1338,7 +1338,7 @@ test("parseRoutedCommentCommand prefers trusted verdict markers over copyable co
         "</details>",
         "",
         "<!-- clawsweeper-verdict:needs-changes item=87540 sha=380baaba8f4490cbb64ae36ba8cb0b78912c45f1 confidence=high -->",
-        "<!-- clawsweeper-action:fix-required item=87540 sha=380baaba8f4490cbb64ae36ba8cb0b78912c45f1 confidence=high finding=review-feedback -->",
+        "<!-- clawsweeper-action:fix-required item=87540 sha=380baaba8f4490cbb64ae36ba8cb0b78912c45f1 source_revision=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef confidence=high finding=review-feedback -->",
       ].join("\n"),
     },
     { trustedAuthors },
@@ -1346,6 +1346,10 @@ test("parseRoutedCommentCommand prefers trusted verdict markers over copyable co
 
   assert.equal(parsed.intent, "clawsweeper_auto_repair");
   assert.equal(parsed.expected_head_sha, "380baaba8f4490cbb64ae36ba8cb0b78912c45f1");
+  assert.equal(
+    parsed.expected_source_revision,
+    "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  );
   assert.match(parsed.repair_reason, /fix-required/);
 });
 
@@ -1354,7 +1358,7 @@ test("parseTrustedAutomation accepts trusted ClawSweeper pass verdicts for autom
   const parsed = parseTrustedAutomation(
     {
       user: { login: "clawsweeper[bot]" },
-      body: "ClawSweeper review passed.\n<!-- clawsweeper-verdict:pass sha=abc123 reviewed_at=2026-07-09T21:00:00.000Z -->",
+      body: "ClawSweeper review passed.\n<!-- clawsweeper-verdict:pass sha=abc123 source_revision=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef reviewed_at=2026-07-09T21:00:00.000Z -->",
     },
     { trustedAuthors },
   );
@@ -1362,6 +1366,10 @@ test("parseTrustedAutomation accepts trusted ClawSweeper pass verdicts for autom
   assert.equal(parsed.intent, "clawsweeper_auto_merge");
   assert.equal(parsed.expected_head_sha, "abc123");
   assert.equal(parsed.reviewed_at, "2026-07-09T21:00:00.000Z");
+  assert.equal(
+    parsed.expected_source_revision,
+    "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  );
   assert.match(parsed.repair_reason, /verdict: pass/);
 });
 
@@ -1482,6 +1490,8 @@ test("label sweeps honor fresh trusted exact-head review start leases", () => {
   assert.deepEqual(freshExactHeadReviewStartLease(options), {
     startedAt: "2026-07-09T21:01:47.000Z",
     expiresAt: "2026-07-09T21:31:47.000Z",
+    owner: null,
+    commentId: null,
   });
   assert.equal(
     freshExactHeadReviewStartLease({
@@ -1503,20 +1513,27 @@ test("label sweeps honor fresh trusted exact-head review start leases", () => {
   );
 });
 
-test("newest same-head review lease suppresses only older trusted verdicts", () => {
+test("first server-created same-head review lease suppresses verdicts without its exact identity", () => {
   const itemNumber = 103109;
   const headSha = "0123456789abcdef0123456789abcdef01234567";
-  const leaseComment = (startedAt: string, expiresAt: string, login = "clawsweeper[bot]") => ({
+  const leaseComment = (
+    id: number,
+    owner: string,
+    startedAt: string,
+    expiresAt: string,
+    login = "clawsweeper[bot]",
+  ) => ({
+    id,
     user: { login },
     body: [
-      `<!-- clawsweeper-review-status:started item=${itemNumber} sha=${headSha} started_at=${startedAt} lease_expires_at=${expiresAt} v=1 -->`,
+      `<!-- clawsweeper-review-status:started item=${itemNumber} sha=${headSha} started_at=${startedAt} lease_expires_at=${expiresAt} owner=${owner} v=1 -->`,
       `<!-- clawsweeper-review-lease item=${itemNumber} -->`,
     ].join("\n"),
   });
   const lease = freshExactHeadReviewStartLease({
     comments: [
-      leaseComment("2026-07-09T21:00:00.000Z", "2026-07-09T21:30:00.000Z"),
-      leaseComment("2026-07-09T21:10:00.000Z", "2026-07-09T21:40:00.000Z"),
+      leaseComment(100, "worker-old", "2026-07-09T21:00:00.000Z", "2026-07-09T21:30:00.000Z"),
+      leaseComment(200, "worker-new", "2026-07-09T21:10:00.000Z", "2026-07-09T21:40:00.000Z"),
     ],
     itemNumber,
     headSha,
@@ -1524,8 +1541,10 @@ test("newest same-head review lease suppresses only older trusted verdicts", () 
     nowMs: Date.parse("2026-07-09T21:15:00.000Z"),
   });
   assert.deepEqual(lease, {
-    startedAt: "2026-07-09T21:10:00.000Z",
-    expiresAt: "2026-07-09T21:40:00.000Z",
+    startedAt: "2026-07-09T21:00:00.000Z",
+    expiresAt: "2026-07-09T21:30:00.000Z",
+    owner: "worker-old",
+    commentId: 100,
   });
 
   const command = parseRoutedCommentCommand(
@@ -1550,7 +1569,12 @@ test("newest same-head review lease suppresses only older trusted verdicts", () 
   );
   assert.equal(
     trustedAutomationPredatesReviewStartLease({
-      command: { ...command, reviewed_at: "2026-07-09T21:10:00.000Z" },
+      command: {
+        ...command,
+        reviewed_at: "2026-07-09T21:10:00.000Z",
+        review_lease_owner: "worker-old",
+        review_lease_comment_id: "100",
+      },
       currentHeadSha: headSha,
       lease,
     }),
@@ -1558,11 +1582,16 @@ test("newest same-head review lease suppresses only older trusted verdicts", () 
   );
   assert.equal(
     trustedAutomationPredatesReviewStartLease({
-      command: { ...command, reviewed_at: "2026-07-09T21:11:00.000Z" },
+      command: {
+        ...command,
+        reviewed_at: "2026-07-09T21:11:00.000Z",
+        review_lease_owner: "other-worker",
+        review_lease_comment_id: "100",
+      },
       currentHeadSha: headSha,
       lease,
     }),
-    false,
+    true,
   );
   assert.equal(
     trustedAutomationPredatesReviewStartLease({
@@ -1573,7 +1602,7 @@ test("newest same-head review lease suppresses only older trusted verdicts", () 
       currentHeadSha: headSha,
       lease,
     }),
-    false,
+    true,
   );
   assert.equal(
     trustedAutomationPredatesReviewStartLease({ command, currentHeadSha: headSha, lease: null }),
@@ -1742,6 +1771,30 @@ test("label-sweep classification checks the exact-head review lease before dispa
   assert.match(dispatchGuard, /trustedExactHeadReviewCompletionSince\(\{/);
   assert.match(dispatchGuard, /sinceMs:\s*sweepStartedAtMs/);
   assert.match(dispatchGuard, /next router pass will route it/);
+  const sourceRevisionGuard = source.slice(
+    source.indexOf("function trustedAutomationSourceRevisionBlockReason"),
+    source.indexOf("function trustedAutomationReviewLeaseBlockReason"),
+  );
+  const issueBefore = sourceRevisionGuard.indexOf("const before = fetchIssue(number)");
+  const commentsBetween = sourceRevisionGuard.indexOf(
+    "issues/${number}/comments?per_page=100",
+    issueBefore,
+  );
+  const issueAfter = sourceRevisionGuard.indexOf("const after = fetchIssue(number)");
+  assert.ok(issueBefore >= 0);
+  assert.ok(commentsBetween > issueBefore);
+  assert.ok(issueAfter > commentsBetween);
+  assert.match(sourceRevisionGuard, /revisionBefore !== revisionAfter/);
+  assert.match(sourceRevisionGuard, /revisionAfter !== expectedRevision/);
+  assert.match(sourceRevisionGuard, /same-revision ClawSweeper review is active until/);
+  const classify = source.slice(
+    source.indexOf("function classifyCommand"),
+    source.indexOf("function classifyAutoclose"),
+  );
+  assert.ok(
+    classify.indexOf("trustedAutomationSourceRevisionBlockReason") <
+      classify.indexOf("if (command.trusted_bot && pull)"),
+  );
   const trustedVerdictGuard = source.slice(
     source.indexOf("function trustedAutomationReviewLeaseBlockReason"),
     source.indexOf("function dispatchClawSweeperReview"),
@@ -2177,12 +2230,16 @@ test("parseTrustedAutomation treats trusted ClawSweeper needs-human as a pause",
   const parsed = parseTrustedAutomation(
     {
       user: { login: "clawsweeper[bot]" },
-      body: "ClawSweeper needs maintainer judgment.\n<!-- clawsweeper-verdict:needs-human sha=abc123 reviewed_at=2026-07-09T21:00:00.000Z -->",
+      body: "ClawSweeper needs maintainer judgment.\n<!-- clawsweeper-verdict:needs-human sha=abc123 source_revision=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef reviewed_at=2026-07-09T21:00:00.000Z -->",
     },
     { trustedAuthors },
   );
 
   assert.equal(parsed.intent, "clawsweeper_needs_human");
+  assert.equal(
+    parsed.expected_source_revision,
+    "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  );
   assert.equal(parsed.expected_head_sha, "abc123");
   assert.equal(parsed.reviewed_at, "2026-07-09T21:00:00.000Z");
   assert.match(parsed.repair_reason, /needs-human/);

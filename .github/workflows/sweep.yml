@@ -692,7 +692,7 @@ jobs:
             --run-url "$RUN_URL"
 
       - name: Commit event comment router ledger
-        if: ${{ !cancelled() && steps.setup-pnpm.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.setup-pnpm.outcome == 'success' && steps.review-exact-event-item.outcome == 'success' && steps.publish-event-result.outcome == 'success' && steps.route-synced-verdict.outcome == 'success' }}
         run: |
           pnpm run repair:publish-main -- \
             --message "chore: record ClawSweeper event comment routing" \
@@ -703,7 +703,7 @@ jobs:
 
       - name: Detect waiting event repair dispatches
         id: waiting-event-repair-dispatches
-        if: ${{ success() }}
+        if: ${{ success() && steps.review-exact-event-item.outcome == 'success' && steps.publish-event-result.outcome == 'success' && steps.route-synced-verdict.outcome == 'success' }}
         run: |
           set -euo pipefail
           count="0"
@@ -713,7 +713,7 @@ jobs:
           echo "count=$count" >> "$GITHUB_OUTPUT"
 
       - name: Retry waiting event repair dispatches
-        if: ${{ steps.waiting-event-repair-dispatches.outputs.count != '' && steps.waiting-event-repair-dispatches.outputs.count != '0' }}
+        if: ${{ success() && steps.review-exact-event-item.outcome == 'success' && steps.publish-event-result.outcome == 'success' && steps.route-synced-verdict.outcome == 'success' && steps.waiting-event-repair-dispatches.outputs.count != '' && steps.waiting-event-repair-dispatches.outputs.count != '0' }}
         env:
           GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
           CLAWSWEEPER_DISPATCH_TOKEN: ${{ github.token }}
@@ -736,7 +736,7 @@ jobs:
             --execute
 
       - name: Commit event comment router retry ledger
-        if: ${{ !cancelled() && steps.setup-pnpm.outcome == 'success' && steps.waiting-event-repair-dispatches.outputs.count != '' && steps.waiting-event-repair-dispatches.outputs.count != '0' }}
+        if: ${{ !cancelled() && steps.setup-pnpm.outcome == 'success' && steps.review-exact-event-item.outcome == 'success' && steps.publish-event-result.outcome == 'success' && steps.route-synced-verdict.outcome == 'success' && steps.waiting-event-repair-dispatches.outputs.count != '' && steps.waiting-event-repair-dispatches.outputs.count != '0' }}
         run: |
           pnpm run repair:publish-main -- \
             --message "chore: record ClawSweeper event repair dispatch retry" \
@@ -805,8 +805,7 @@ jobs:
           remove_own_eyes_reactions
 
       - name: Complete exact-review queue lease
-        if: ${{ always() }}
-        continue-on-error: true
+        if: ${{ success() && steps.review-exact-event-item.outcome == 'success' && steps.publish-event-result.outcome == 'success' && steps.route-synced-verdict.outcome == 'success' }}
         env:
           QUEUE_LEASE_ID: ${{ github.event.client_payload.queue_lease_id }}
           QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
@@ -828,6 +827,10 @@ jobs:
             fi
           done
           exit 1
+
+      - name: Fail unsuccessful exact review
+        if: ${{ always() && (steps.review-exact-event-item.outcome != 'success' || steps.publish-event-result.outcome != 'success' || steps.route-synced-verdict.outcome != 'success') }}
+        run: exit 1
 
   target-fanout:
     name: Fan out target repository sweeps
@@ -1122,7 +1125,7 @@ jobs:
             min_backfill_review_age_minutes="360"
           else
             if [ "${{ github.event_name }}" = "schedule" ]; then
-              batch_size="3"
+              batch_size="1"
             else
               batch_size="${{ github.event.client_payload.batch_size || github.event.inputs.batch_size || '3' }}"
             fi

@@ -233,15 +233,16 @@ ClawSweeper has three layers of duplicate protection:
 - scheduled router scans synthesize an internal repair-loop command for open
   PRs that still carry `clawsweeper:autofix` or `clawsweeper:automerge`, so
   stale labelled PRs can be repaired or re-reviewed without a fresh comment;
-- a trusted review-start marker leases its exact PR head until the worker's
-  bounded timeout plus a ten-minute grace period. Scheduled label sweeps skip
-  that head while the lease is fresh, but moved heads, expired leases, and
-  leases longer than two hours do not block the next sweep;
-- apply workers preserve that lease during durable-comment sync and defer old
-  report actions until a final review for the same head supersedes the start;
+- a trusted, uniquely owned review-start marker leases an exact PR head or
+  issue source revision until the worker's bounded timeout plus a ten-minute
+  grace period. Scheduled label sweeps skip leased PR heads, while broad and
+  event apply workers defer every leased item;
+- apply workers compare the live durable review tuple immediately before label,
+  comment, and close mutations, preserve leases they do not own, and retire
+  only the exact lease recorded by the report they publish;
 - comment routing suppresses an older same-head verdict while a later lease is
-  active, then admits the replacement verdict whose review timestamp
-  supersedes that lease;
+  active, then admits only the replacement verdict carrying that lease's exact
+  owner and comment identity;
 - exact-event review results are published, applied, and routed only after the
   review succeeds and writes the expected fresh item artifact;
 - trusted ClawSweeper repairs are capped per PR and per PR head SHA.

@@ -1724,15 +1724,30 @@ export function freshExactHeadReviewStartLease({
   headSha: string;
   trustedAuthors?: ReadonlySet<string>;
   nowMs?: number;
-}): { startedAt: string; expiresAt: string } | null {
+}): {
+  startedAt: string;
+  expiresAt: string;
+  owner: string | null;
+  commentId: number | null;
+} | null {
   const normalizedHead = String(headSha ?? "")
     .trim()
     .toLowerCase();
-  if (!Number.isInteger(itemNumber) || itemNumber <= 0 || !/^[0-9a-f]{40}$/.test(normalizedHead)) {
+  if (
+    !Number.isInteger(itemNumber) ||
+    itemNumber <= 0 ||
+    !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(normalizedHead)
+  ) {
     return null;
   }
-  let newest: { startedAt: string; expiresAt: string; startedAtMs: number } | null = null;
-  for (const comment of comments) {
+  const candidates: Array<{
+    startedAt: string;
+    expiresAt: string;
+    owner: string | null;
+    commentId: number | null;
+    serverOrder: number;
+  }> = [];
+  for (const [serverOrder, comment] of comments.entries()) {
     const author = String(comment?.user?.login ?? "")
       .trim()
       .toLowerCase();
@@ -1749,6 +1764,9 @@ export function freshExactHeadReviewStartLease({
     if (String(marker.attrs.v ?? "") !== "1") continue;
     const startedAt = String(marker.attrs.started_at ?? "");
     const expiresAt = String(marker.attrs.lease_expires_at ?? "");
+    const owner = String(marker.attrs.owner ?? "").trim() || null;
+    const rawCommentId = Number(comment?.id);
+    const commentId = Number.isInteger(rawCommentId) && rawCommentId > 0 ? rawCommentId : null;
     const startedAtMs = Date.parse(startedAt);
     const expiresAtMs = Date.parse(expiresAt);
     if (!Number.isFinite(startedAtMs) || !Number.isFinite(expiresAtMs)) continue;
@@ -1756,11 +1774,27 @@ export function freshExactHeadReviewStartLease({
     if (durationMs <= 0 || durationMs > REVIEW_START_LEASE_MAX_MS) continue;
     if (startedAtMs > nowMs + REVIEW_START_LEASE_CLOCK_SKEW_MS) continue;
     if (expiresAtMs < nowMs) continue;
-    if (!newest || startedAtMs > newest.startedAtMs) {
-      newest = { startedAt, expiresAt, startedAtMs };
-    }
+    candidates.push({ startedAt, expiresAt, owner, commentId, serverOrder });
   }
-  return newest && { startedAt: newest.startedAt, expiresAt: newest.expiresAt };
+  // GitHub comment ids are server-assigned and monotonic. Elect the first server-created lease;
+  // client clocks only validate the TTL and never choose the winner. Legacy id-less comments
+  // cannot displace a server-identified lease; if every candidate is legacy, preserve API order.
+  const selected = candidates.sort((left, right) => {
+    if (left.commentId !== null && right.commentId !== null) {
+      return left.commentId - right.commentId;
+    }
+    if (left.commentId !== null) return -1;
+    if (right.commentId !== null) return 1;
+    return left.serverOrder - right.serverOrder;
+  })[0];
+  return selected
+    ? {
+        startedAt: selected.startedAt,
+        expiresAt: selected.expiresAt,
+        owner: selected.owner,
+        commentId: selected.commentId,
+      }
+    : null;
 }
 
 export function trustedAutomationPredatesReviewStartLease({
@@ -1770,7 +1804,12 @@ export function trustedAutomationPredatesReviewStartLease({
 }: {
   command: LooseRecord;
   currentHeadSha: string;
-  lease: { startedAt: string; expiresAt: string } | null;
+  lease: {
+    startedAt: string;
+    expiresAt: string;
+    owner: string | null;
+    commentId: number | null;
+  } | null;
 }): boolean {
   if (!lease || command.trusted_bot !== true || command.automation_source !== "clawsweeper") {
     return false;
@@ -1782,15 +1821,19 @@ export function trustedAutomationPredatesReviewStartLease({
     .trim()
     .toLowerCase();
   if (
-    !/^[0-9a-f]{40}$/.test(normalizedCurrentHeadSha) ||
+    !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(normalizedCurrentHeadSha) ||
     expectedHeadSha !== normalizedCurrentHeadSha
   ) {
-    return false;
+    return true;
   }
-  const leaseStartedAtMs = Date.parse(lease.startedAt);
-  if (!Number.isFinite(leaseStartedAtMs)) return false;
-  const reviewedAtMs = Date.parse(String(command.reviewed_at ?? ""));
-  return !Number.isFinite(reviewedAtMs) || reviewedAtMs < leaseStartedAtMs;
+  const commandOwner = String(command.review_lease_owner ?? "").trim();
+  const commandCommentId = Number(command.review_lease_comment_id);
+  if (!lease.owner || commandOwner !== lease.owner) return true;
+  if (lease.commentId !== null) {
+    return !Number.isInteger(commandCommentId) || commandCommentId !== lease.commentId;
+  }
+  // Legacy owner-only and ownerless leases cannot be safely superseded using client clocks.
+  return true;
 }
 
 export function trustedExactHeadReviewCompletionSince({
@@ -2638,6 +2681,9 @@ function trustedRepair({ author, reason, marker = null }: LooseRecord) {
     repair_reason: reason,
     expected_head_sha: marker?.attrs?.sha ?? null,
     reviewed_at: marker?.attrs?.reviewed_at ?? null,
+    review_lease_owner: marker?.attrs?.lease_owner ?? null,
+    review_lease_comment_id: marker?.attrs?.lease_comment_id ?? null,
+    expected_source_revision: marker?.attrs?.source_revision ?? null,
     finding_id: marker?.attrs?.finding ?? null,
   };
 }
@@ -2653,6 +2699,9 @@ function trustedMerge({ author, reason, marker = null }: LooseRecord) {
     repair_reason: reason,
     expected_head_sha: marker?.attrs?.sha ?? null,
     reviewed_at: marker?.attrs?.reviewed_at ?? null,
+    review_lease_owner: marker?.attrs?.lease_owner ?? null,
+    review_lease_comment_id: marker?.attrs?.lease_comment_id ?? null,
+    expected_source_revision: marker?.attrs?.source_revision ?? null,
     finding_id: marker?.attrs?.finding ?? null,
   };
 }
@@ -2672,6 +2721,8 @@ function trustedClose({ author, reason, marker = null }: LooseRecord) {
     close_confidence: marker?.attrs?.confidence ?? null,
     close_action_taken: marker?.attrs?.action_taken ?? null,
     reviewed_at: marker?.attrs?.reviewed_at ?? null,
+    review_lease_owner: marker?.attrs?.lease_owner ?? null,
+    review_lease_comment_id: marker?.attrs?.lease_comment_id ?? null,
     expected_item_updated_at: marker?.attrs?.updated_at ?? null,
     expected_source_revision: marker?.attrs?.source_revision ?? null,
     finding_id: marker?.attrs?.finding ?? null,
@@ -2689,6 +2740,9 @@ function trustedHumanReview({ author, reason, marker = null }: LooseRecord) {
     repair_reason: reason,
     expected_head_sha: marker?.attrs?.sha ?? null,
     reviewed_at: marker?.attrs?.reviewed_at ?? null,
+    review_lease_owner: marker?.attrs?.lease_owner ?? null,
+    review_lease_comment_id: marker?.attrs?.lease_comment_id ?? null,
+    expected_source_revision: marker?.attrs?.source_revision ?? null,
     finding_id: marker?.attrs?.finding ?? null,
   };
 }

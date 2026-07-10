@@ -3,7 +3,11 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { join } from "node:path";
 import test from "node:test";
 
-import { contextHasNonAutomationActivityAfterForTest } from "../dist/clawsweeper.js";
+import {
+  contextHasNonAutomationActivityAfterForTest,
+  itemSourceRevisionSha256ForTest,
+  renderReviewStartStatusComment,
+} from "../dist/clawsweeper.js";
 
 import {
   lowSignalCloseReport,
@@ -43,6 +47,378 @@ test("command-only timeline activity is ignored only through the completed revie
     }),
     true,
   );
+});
+
+test("issue apply CAS blocks a newer durable review tuple published after preflight", () => {
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    const itemsDir = join(root, "items");
+    const closedDir = join(root, "closed");
+    const plansDir = join(root, "plans");
+    const reportPath = join(root, "apply-report.json");
+    const logPath = join(root, "gh.log");
+    const commentReadCountPath = join(root, "comment-read-count");
+    const number = 74490;
+    const reviewedAt = "2026-05-01T00:00:00Z";
+    const newerReviewedAt = "2026-05-01T00:10:00Z";
+    const issue = {
+      number,
+      title: "Do not apply a stale issue review",
+      body: "Issue body remains unchanged while a newer exact review publishes.",
+      html_url: `https://github.com/openclaw/clawsweeper/issues/${number}`,
+      created_at: "2026-04-01T00:00:00Z",
+      updated_at: reviewedAt,
+      closed_at: null,
+      state: "open",
+      locked: false,
+      active_lock_reason: null,
+      author_association: "CONTRIBUTOR",
+      user: { login: "reporter" },
+      labels: [],
+      comments: 1,
+      pull_request: null,
+    };
+    const sourceRevision = itemSourceRevisionSha256ForTest(issue, []);
+    mkdirSync(itemsDir, { recursive: true });
+    mkdirSync(plansDir, { recursive: true });
+
+    const oldReport = workPlanCandidateReport({
+      number,
+      title: issue.title,
+      reviewed_at: reviewedAt,
+      item_updated_at: reviewedAt,
+      item_snapshot_hash: "reviewed-snapshot",
+      item_source_revision: sourceRevision,
+      review_lease_owner: "old-review-owner",
+      review_lease_comment_id: "9100",
+      labels: JSON.stringify([]),
+    });
+    const oldSynced = reportWithSyncedReviewComment(oldReport, number);
+    writeFileSync(join(itemsDir, `${number}.md`), oldSynced.report, "utf8");
+
+    const newerReport = workPlanCandidateReport({
+      number,
+      title: issue.title,
+      reviewed_at: newerReviewedAt,
+      item_updated_at: reviewedAt,
+      item_snapshot_hash: "newer-snapshot",
+      item_source_revision: sourceRevision,
+      review_lease_owner: "new-review-owner",
+      review_lease_comment_id: "9200",
+      labels: JSON.stringify([]),
+    });
+    const newerComment = reportWithSyncedReviewComment(newerReport, number).comment;
+    const oldLiveComment = [
+      "Codex review: stale body that would be patched without the final apply CAS.",
+      "",
+      `<!-- clawsweeper-review item=${number} -->`,
+    ].join("\n");
+
+    const ghMock = `
+const { appendFileSync, existsSync, readFileSync, writeFileSync } = require("fs");
+const logPath = ${JSON.stringify(logPath)};
+const countPath = ${JSON.stringify(commentReadCountPath)};
+const issue = ${JSON.stringify(issue)};
+const oldBody = ${JSON.stringify(oldLiveComment)};
+const newerBody = ${JSON.stringify(newerComment)};
+const rawArgs = process.argv.slice(2);
+const args = rawArgs[0] === "--repo" ? rawArgs.slice(2) : rawArgs;
+const path = args[1] || "";
+appendFileSync(logPath, JSON.stringify(args) + "\\n");
+if (args[0] === "api" && new RegExp("/issues/${number}/comments(?:\\\\?|$)").test(path) && !args.includes("--method")) {
+  const count = (existsSync(countPath) ? Number(readFileSync(countPath, "utf8")) : 0) + 1;
+  writeFileSync(countPath, String(count));
+  const body = count >= 6 ? newerBody : oldBody;
+  const comment = {
+    id: ${9000 + number},
+    html_url: "https://github.com/openclaw/clawsweeper/issues/${number}#issuecomment-${
+      9000 + number
+    }",
+    created_at: ${JSON.stringify(reviewedAt)},
+    updated_at: count >= 6 ? ${JSON.stringify(newerReviewedAt)} : ${JSON.stringify(reviewedAt)},
+    user: { login: "clawsweeper[bot]" },
+    body,
+  };
+  console.log(JSON.stringify(args.includes("--slurp") ? [[comment]] : [comment]));
+} else if (args[0] === "api" && new RegExp("/issues/${number}$").test(path) && !args.includes("--method")) {
+  console.log(JSON.stringify(issue));
+} else if (args[0] === "api" && new RegExp("/issues/${number}/timeline(?:\\\\?|$)").test(path)) {
+  console.log(JSON.stringify(args.includes("--slurp") ? [[]] : []));
+} else if (args[0] === "api" && new RegExp("/issues/comments/\\\\d+$").test(path) && args.includes("--method")) {
+  appendFileSync(logPath, JSON.stringify(["external-mutation", ...args]) + "\\n");
+  console.log(JSON.stringify({}));
+} else if (args[0] === "api" && new RegExp("/issues/${number}").test(path) && args.includes("--method")) {
+  appendFileSync(logPath, JSON.stringify(["external-mutation", ...args]) + "\\n");
+  console.log(JSON.stringify({}));
+} else if (args[0] === "label" || args[0] === "issue" || args[0] === "pr") {
+  appendFileSync(logPath, JSON.stringify(["external-mutation", ...args]) + "\\n");
+  console.log("");
+} else {
+  console.error("unexpected gh args", JSON.stringify(args));
+  process.exit(1);
+}
+`;
+    withMockGh(root, ghMock, () => {
+      runApplyDecisionsForTest({
+        itemsDir,
+        closedDir,
+        plansDir,
+        reportPath,
+        extraArgs: ["--item-numbers", String(number), "--comment-sync-min-age-days", "0"],
+      });
+    });
+
+    const calls = readFileSync(logPath, "utf8")
+      .trim()
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as string[]);
+    assert.ok(Number(readFileSync(commentReadCountPath, "utf8")) >= 6);
+    assert.equal(
+      calls.some((args) => args[0] === "external-mutation"),
+      false,
+    );
+    assert.equal(existsSync(join(closedDir, `${number}.md`)), false);
+    assert.deepEqual(JSON.parse(readFileSync(reportPath, "utf8")), [
+      {
+        number,
+        action: "skipped_stale_review_comment_sync",
+        reason:
+          "live durable review tuple is newer than the local report: comment lease=9200, report lease=9100",
+      },
+    ]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("issue apply rejects a stable live source revision that differs from the report", () => {
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    const itemsDir = join(root, "items");
+    const closedDir = join(root, "closed");
+    const plansDir = join(root, "plans");
+    const reportPath = join(root, "apply-report.json");
+    const logPath = join(root, "gh.log");
+    const number = 74492;
+    const reviewedAt = "2026-05-01T00:00:00Z";
+    const liveIssue = {
+      number,
+      title: "Changed after review",
+      body: "Live body edited after the report was created.",
+      html_url: `https://github.com/openclaw/clawsweeper/issues/${number}`,
+      created_at: "2026-04-01T00:00:00Z",
+      updated_at: "2026-05-01T00:10:00Z",
+      closed_at: null,
+      state: "open",
+      locked: false,
+      active_lock_reason: null,
+      author_association: "CONTRIBUTOR",
+      user: { login: "reporter" },
+      labels: [],
+      comments: 0,
+      pull_request: null,
+    };
+    const reviewedIssue = { ...liveIssue, body: "Body at review time.", updated_at: reviewedAt };
+    const reviewedRevision = itemSourceRevisionSha256ForTest(reviewedIssue, []);
+    const liveRevision = itemSourceRevisionSha256ForTest(liveIssue, []);
+    mkdirSync(itemsDir, { recursive: true });
+    mkdirSync(plansDir, { recursive: true });
+    writeFileSync(
+      join(itemsDir, `${number}.md`),
+      workPlanCandidateReport({
+        number,
+        title: liveIssue.title,
+        reviewed_at: reviewedAt,
+        item_updated_at: reviewedAt,
+        item_snapshot_hash: "reviewed-snapshot",
+        item_source_revision: reviewedRevision,
+        review_lease_owner: "review-owner",
+        review_lease_comment_id: "9100",
+        labels: JSON.stringify([]),
+      }),
+      "utf8",
+    );
+
+    const ghMock = `
+const { appendFileSync } = require("fs");
+const logPath = ${JSON.stringify(logPath)};
+const issue = ${JSON.stringify(liveIssue)};
+const rawArgs = process.argv.slice(2);
+const args = rawArgs[0] === "--repo" ? rawArgs.slice(2) : rawArgs;
+const path = args[1] || "";
+appendFileSync(logPath, JSON.stringify(args) + "\\n");
+if (args[0] === "api" && new RegExp("/issues/${number}/comments(?:\\\\?|$)").test(path) && !args.includes("--method")) {
+  console.log(JSON.stringify(args.includes("--slurp") ? [[]] : []));
+} else if (args[0] === "api" && new RegExp("/issues/${number}$").test(path) && !args.includes("--method")) {
+  console.log(JSON.stringify(issue));
+} else if (args[0] === "api" && new RegExp("/issues/${number}/timeline(?:\\\\?|$)").test(path)) {
+  console.log(JSON.stringify(args.includes("--slurp") ? [[]] : []));
+} else if (args.includes("--method") || ["issue", "pr", "label"].includes(args[0])) {
+  appendFileSync(logPath, JSON.stringify(["external-mutation", ...args]) + "\\n");
+  console.log(JSON.stringify({}));
+} else {
+  console.error("unexpected gh args", JSON.stringify(args));
+  process.exit(1);
+}
+`;
+    withMockGh(root, ghMock, () => {
+      runApplyDecisionsForTest({
+        itemsDir,
+        closedDir,
+        plansDir,
+        reportPath,
+        extraArgs: ["--item-numbers", String(number)],
+      });
+    });
+
+    const calls = readFileSync(logPath, "utf8")
+      .trim()
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as string[]);
+    assert.equal(
+      calls.some((args) => args[0] === "external-mutation"),
+      false,
+    );
+    assert.deepEqual(JSON.parse(readFileSync(reportPath, "utf8")), [
+      {
+        number,
+        action: "kept_open",
+        reason: `live issue source revision ${liveRevision} differs from reviewed revision ${reviewedRevision}`,
+      },
+    ]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("issue apply preserves an owned active review lease for the live source revision", () => {
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    const itemsDir = join(root, "items");
+    const closedDir = join(root, "closed");
+    const plansDir = join(root, "plans");
+    const reportPath = join(root, "apply-report.json");
+    const logPath = join(root, "gh.log");
+    const number = 74491;
+    const reviewedAt = "2026-05-01T00:00:00Z";
+    const startedAt = new Date(Date.now() - 60_000).toISOString();
+    const expiresAt = new Date(Date.now() + 30 * 60_000).toISOString();
+    const issue = {
+      number,
+      title: "Keep broad apply out of an exact issue review",
+      body: "Issue source remains stable during review.",
+      html_url: `https://github.com/openclaw/clawsweeper/issues/${number}`,
+      created_at: "2026-04-01T00:00:00Z",
+      updated_at: reviewedAt,
+      closed_at: null,
+      state: "open",
+      locked: false,
+      active_lock_reason: null,
+      author_association: "CONTRIBUTOR",
+      user: { login: "reporter" },
+      labels: [],
+      comments: 2,
+      pull_request: null,
+    };
+    const sourceRevision = itemSourceRevisionSha256ForTest(issue, []);
+    mkdirSync(itemsDir, { recursive: true });
+    mkdirSync(plansDir, { recursive: true });
+    const report = workPlanCandidateReport({
+      number,
+      title: issue.title,
+      reviewed_at: reviewedAt,
+      item_updated_at: reviewedAt,
+      item_snapshot_hash: "reviewed-snapshot",
+      item_source_revision: sourceRevision,
+      review_lease_owner: "previous-review-owner",
+      review_lease_comment_id: "9100",
+      labels: JSON.stringify([]),
+    });
+    const synced = reportWithSyncedReviewComment(report, number);
+    writeFileSync(join(itemsDir, `${number}.md`), synced.report, "utf8");
+    const activeLease = renderReviewStartStatusComment({
+      number,
+      kind: "issue",
+      title: issue.title,
+      headSha: sourceRevision,
+      startedAt,
+      leaseExpiresAt: expiresAt,
+      leaseOwner: "active-issue-review-owner",
+    });
+    const comments = [
+      {
+        id: 9000 + number,
+        html_url: `https://github.com/openclaw/clawsweeper/issues/${number}#issuecomment-${
+          9000 + number
+        }`,
+        created_at: reviewedAt,
+        updated_at: reviewedAt,
+        user: { login: "clawsweeper[bot]" },
+        body: synced.comment,
+      },
+      {
+        id: 9300,
+        html_url: `https://github.com/openclaw/clawsweeper/issues/${number}#issuecomment-9300`,
+        created_at: startedAt,
+        updated_at: startedAt,
+        user: { login: "clawsweeper[bot]" },
+        body: activeLease,
+      },
+    ];
+    const ghMock = `
+const { appendFileSync } = require("fs");
+const logPath = ${JSON.stringify(logPath)};
+const issue = ${JSON.stringify(issue)};
+const comments = ${JSON.stringify(comments)};
+const rawArgs = process.argv.slice(2);
+const args = rawArgs[0] === "--repo" ? rawArgs.slice(2) : rawArgs;
+const path = args[1] || "";
+appendFileSync(logPath, JSON.stringify(args) + "\\n");
+if (args[0] === "api" && new RegExp("/issues/${number}/comments(?:\\\\?|$)").test(path) && !args.includes("--method")) {
+  console.log(JSON.stringify(args.includes("--slurp") ? [comments] : comments));
+} else if (args[0] === "api" && new RegExp("/issues/${number}$").test(path) && !args.includes("--method")) {
+  console.log(JSON.stringify(issue));
+} else if (args[0] === "api" && args.includes("--method")) {
+  appendFileSync(logPath, JSON.stringify(["external-mutation", ...args]) + "\\n");
+  console.log(JSON.stringify({}));
+} else if (args[0] === "label" || args[0] === "issue" || args[0] === "pr") {
+  appendFileSync(logPath, JSON.stringify(["external-mutation", ...args]) + "\\n");
+  console.log("");
+} else {
+  console.error("unexpected gh args", JSON.stringify(args));
+  process.exit(1);
+}
+`;
+    withMockGh(root, ghMock, () => {
+      runApplyDecisionsForTest({
+        itemsDir,
+        closedDir,
+        plansDir,
+        reportPath,
+        extraArgs: ["--item-numbers", String(number), "--comment-sync-min-age-days", "0"],
+      });
+    });
+    const calls = readFileSync(logPath, "utf8")
+      .trim()
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as string[]);
+    assert.equal(
+      calls.some((args) => args[0] === "external-mutation"),
+      false,
+    );
+    assert.deepEqual(JSON.parse(readFileSync(reportPath, "utf8")), [
+      {
+        number,
+        action: "kept_open",
+        reason: `same-revision ClawSweeper review is active until ${expiresAt}`,
+      },
+    ]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("apply-decisions skips advisory label sync when a close report changed since review", () => {
@@ -1732,7 +2108,7 @@ test("apply defers incomplete old report actions when a same-head review finishe
       reviewed_at: oldReviewedAt,
     });
     const synced = reportWithSyncedReviewComment(closeReport, number, "low_signal_unmergeable_pr");
-    const newerComment = synced.comment.replace(
+    const newerComment = synced.comment.replaceAll(
       `reviewed_at=${oldReviewedAt}`,
       `reviewed_at=${newReviewedAt}`,
     );
