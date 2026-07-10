@@ -13,6 +13,28 @@ import {
   withMockGh,
 } from "./helpers.ts";
 
+function boundDuplicateCloseComment(number: number, canonicalUrl: string): string {
+  const markerFields = [
+    `item=${number}`,
+    "sha=head-sha",
+    "confidence=high",
+    "updated_at=2026-05-01T00:00:00.000Z",
+    "reviewed_at=2026-05-01T00:00:00.000Z",
+    "source_revision=reviewed-source",
+    "action_taken=proposed_close",
+    "reason=duplicate_or_superseded",
+  ].join(" ");
+  return [
+    "Codex review: close this as superseded.",
+    "",
+    `Canonical: ${canonicalUrl}`,
+    "",
+    `<!-- clawsweeper-verdict:close ${markerFields} -->`,
+    `<!-- clawsweeper-action:close-required ${markerFields} -->`,
+    `<!-- clawsweeper-review item=${number} -->`,
+  ].join("\n");
+}
+
 test("apply-decisions allows self-synced labels after proof with truncated context", () => {
   const root = mkdtempSync(tmpPrefix);
   try {
@@ -652,7 +674,7 @@ test("apply-decisions blocks duplicate close when canonical PR is a bare cluster
       promotionGhMock({
         number: 341,
         title: "Already proposed duplicate close",
-        comment: synced.comment,
+        comment: boundDuplicateCloseComment(341, "https://github.com/openclaw/openclaw/pull/400"),
         linkedPulls: {
           400: {
             number: 400,
