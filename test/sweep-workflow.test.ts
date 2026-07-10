@@ -393,6 +393,30 @@ test("apply workflow target token can inspect source workflow runs", () => {
   assert.match(applyJob.slice(tokenStart, stateTokenStart), /permission-actions: read/);
 });
 
+test("targeted apply dispatches keep apply names ahead of exact-review names", () => {
+  const workflow = readText(".github/workflows/sweep.yml");
+  const runName = workflow.slice(workflow.indexOf("run-name:"), workflow.indexOf("\non:"));
+  const firstExactDispatchName = runName.indexOf(
+    "(github.event_name == 'workflow_dispatch' && startsWith(github.event.inputs.item_numbers, 'router-'))",
+  );
+
+  assert.ok(firstExactDispatchName > -1);
+  for (const applyName of [
+    "format('Sync Codex review comments for {0}'",
+    "format('Apply custom ClawSweeper closures for {0}'",
+    "format('Apply default ClawSweeper closures for {0}'",
+  ]) {
+    assert.ok(
+      runName.indexOf(applyName) < firstExactDispatchName,
+      `${applyName} must win when apply_existing also carries item_number or item_numbers`,
+    );
+  }
+  assert.match(
+    workflow,
+    /item_numbers="\$\{\{ github\.event_name == 'repository_dispatch' && github\.event\.client_payload\.item_number \|\| github\.event\.inputs\.apply_item_numbers \|\| '' \}\}"/,
+  );
+});
+
 test("apply workflow bounds checkpoints and requeues with a fresh token", () => {
   const workflow = readText(".github/workflows/sweep.yml");
   const applyHelper = readText("scripts/apply-workflow-helpers.sh");
@@ -554,6 +578,7 @@ test("apply workflow bounds checkpoints and requeues with a fresh token", () => 
   assert.match(continueStep, /existing default cursor run will continue the lane/);
   assert.match(continueStep, /already covered by \$/);
   assert.match(continueStep, /-f apply_item_numbers="\$APPLY_ITEM_NUMBERS"/);
+  assert.doesNotMatch(continueStep, /-f item_numbers=/);
   assert.doesNotMatch(continueStep, /APPLY_CLOSED_TOTAL:-0.*APPLY_LIMIT:-0/);
 });
 
