@@ -445,12 +445,29 @@ jobs:
         run: |
           set -euo pipefail
           test -n "$GH_TOKEN"
-          live_item="$(gh api "repos/$TARGET_REPO/issues/$ITEM_NUMBER")"
+          live_item_error="$(mktemp)"
+          if ! live_item="$(gh api "repos/$TARGET_REPO/issues/$ITEM_NUMBER" 2>"$live_item_error")"; then
+            if grep -Eqi 'HTTP 404|Not Found' "$live_item_error" && gh api "repos/$TARGET_REPO" >/dev/null; then
+              rm -f "$live_item_error"
+              echo "proceed=false" >> "$GITHUB_OUTPUT"
+              echo "terminal_noop=false" >> "$GITHUB_OUTPUT"
+              echo "terminal_missing=true" >> "$GITHUB_OUTPUT"
+              echo "guarded_open=false" >> "$GITHUB_OUTPUT"
+              echo "guarded_open_action=" >> "$GITHUB_OUTPUT"
+              echo "::notice::Completing $TARGET_REPO#$ITEM_NUMBER because the repository is accessible but the item is missing."
+              exit 0
+            fi
+            cat "$live_item_error" >&2
+            rm -f "$live_item_error"
+            exit 1
+          fi
+          rm -f "$live_item_error"
           live_state="$(jq -r '.state' <<< "$live_item")"
           live_locked="$(jq -r '.locked == true' <<< "$live_item")"
           case "$live_state" in
             open)
               echo "terminal_noop=false" >> "$GITHUB_OUTPUT"
+              echo "terminal_missing=false" >> "$GITHUB_OUTPUT"
               if [ "$live_locked" = "true" ]; then
                 echo "proceed=false" >> "$GITHUB_OUTPUT"
                 echo "guarded_open=true" >> "$GITHUB_OUTPUT"
@@ -465,6 +482,7 @@ jobs:
             closed)
               echo "proceed=false" >> "$GITHUB_OUTPUT"
               echo "terminal_noop=true" >> "$GITHUB_OUTPUT"
+              echo "terminal_missing=false" >> "$GITHUB_OUTPUT"
               echo "guarded_open=false" >> "$GITHUB_OUTPUT"
               echo "guarded_open_action=" >> "$GITHUB_OUTPUT"
               echo "::notice::Skipping terminal $TARGET_REPO#$ITEM_NUMBER because it is already closed."
@@ -664,7 +682,23 @@ jobs:
           MIN_AGE_MINUTES: ${{ github.event.client_payload.apply_min_age_minutes || '0' }}
         run: |
           set -euo pipefail
-          live_state="$(gh api "repos/$TARGET_REPO/issues/$ITEM_NUMBER" --jq .state)"
+          live_item_error="$(mktemp)"
+          if ! live_state="$(gh api "repos/$TARGET_REPO/issues/$ITEM_NUMBER" --jq .state 2>"$live_item_error")"; then
+            if grep -Eqi 'HTTP 404|Not Found' "$live_item_error" && gh api "repos/$TARGET_REPO" >/dev/null; then
+              rm -f "$live_item_error"
+              echo "terminal_noop=false" >> "$GITHUB_OUTPUT"
+              echo "terminal_missing=true" >> "$GITHUB_OUTPUT"
+              echo "terminal_closed=false" >> "$GITHUB_OUTPUT"
+              echo "guarded_open=false" >> "$GITHUB_OUTPUT"
+              echo "guarded_open_action=" >> "$GITHUB_OUTPUT"
+              echo "::notice::Treating $TARGET_REPO#$ITEM_NUMBER as terminal because the repository is accessible but the item is missing."
+              exit 0
+            fi
+            cat "$live_item_error" >&2
+            rm -f "$live_item_error"
+            exit 1
+          fi
+          rm -f "$live_item_error"
           if [ "$live_state" = "closed" ]; then
             echo "terminal_noop=true" >> "$GITHUB_OUTPUT"
             echo "::notice::Treating $TARGET_REPO#$ITEM_NUMBER as terminal because it closed during review."
@@ -678,7 +712,7 @@ jobs:
           pnpm run repair:publish-event-result
 
       - name: Dispatch viable issue implementation
-        if: ${{ steps.review-exact-event-item.outcome == 'success' && steps.publish-event-result.outcome == 'success' && steps.publish-event-result.outputs.terminal_noop != 'true' && steps.publish-event-result.outputs.terminal_closed != 'true' && steps.publish-event-result.outputs.guarded_open != 'true' && vars.CLAWSWEEPER_AUTO_IMPLEMENT_ISSUES == '1' && steps.target-write-token.outputs.token != '' && steps.target.outputs.target_repo != 'openclaw/openclaw' && steps.target.outputs.target_repo != 'openclaw/clawhub' && github.event.client_payload.item_kind == 'issue' && (github.event.client_payload.source_action == 'opened' || github.event.client_payload.source_action == 'reopened') }}
+        if: ${{ steps.review-exact-event-item.outcome == 'success' && steps.publish-event-result.outcome == 'success' && steps.publish-event-result.outputs.terminal_noop != 'true' && steps.publish-event-result.outputs.terminal_missing != 'true' && steps.publish-event-result.outputs.terminal_closed != 'true' && steps.publish-event-result.outputs.guarded_open != 'true' && vars.CLAWSWEEPER_AUTO_IMPLEMENT_ISSUES == '1' && steps.target-write-token.outputs.token != '' && steps.target.outputs.target_repo != 'openclaw/openclaw' && steps.target.outputs.target_repo != 'openclaw/clawhub' && github.event.client_payload.item_kind == 'issue' && (github.event.client_payload.source_action == 'opened' || github.event.client_payload.source_action == 'reopened') }}
         env:
           GH_TOKEN: ${{ github.token }}
           TARGET_REPO: ${{ steps.target.outputs.target_repo }}
@@ -716,7 +750,7 @@ jobs:
 
       - name: Route synced ClawSweeper verdict
         id: route-synced-verdict
-        if: ${{ steps.review-exact-event-item.outcome == 'success' && steps.publish-event-result.outcome == 'success' && steps.publish-event-result.outputs.terminal_noop != 'true' && steps.publish-event-result.outputs.terminal_closed != 'true' && steps.publish-event-result.outputs.guarded_open != 'true' }}
+        if: ${{ steps.review-exact-event-item.outcome == 'success' && steps.publish-event-result.outcome == 'success' && steps.publish-event-result.outputs.terminal_noop != 'true' && steps.publish-event-result.outputs.terminal_missing != 'true' && steps.publish-event-result.outputs.terminal_closed != 'true' && steps.publish-event-result.outputs.guarded_open != 'true' }}
         timeout-minutes: 4
         env:
           GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
@@ -800,6 +834,8 @@ jobs:
           PUBLISH_OUTCOME: ${{ steps.publish-event-result.outcome }}
           ROUTE_OUTCOME: ${{ steps.route-synced-verdict.outcome }}
           INTAKE_GUARDED_OPEN: ${{ steps.live-item.outputs.guarded_open }}
+          INTAKE_TERMINAL_MISSING: ${{ steps.live-item.outputs.terminal_missing }}
+          TERMINAL_MISSING: ${{ steps.publish-event-result.outputs.terminal_missing }}
           TERMINAL_CLOSED: ${{ steps.publish-event-result.outputs.terminal_closed }}
           GUARDED_OPEN: ${{ steps.publish-event-result.outputs.guarded_open }}
         run: |
@@ -820,6 +856,10 @@ jobs:
           if [ "$REVIEW_OUTCOME" = "success" ] && [ "$PUBLISH_OUTCOME" = "success" ] && [ "$TERMINAL_CLOSED" = "true" ] && [ "${{ steps.confirm-terminal-item.outputs.confirmed }}" = "true" ]; then
             state="Complete"
             detail="The targeted re-review applied a verified terminal close, published the authoritative record tuple, and suppressed stale verdict routing."
+          fi
+          if [ "$INTAKE_TERMINAL_MISSING" = "true" ] || [ "$TERMINAL_MISSING" = "true" ]; then
+            state="Complete"
+            detail="The targeted re-review confirmed that the repository is accessible but the item is missing; no stale verdict was published or routed."
           fi
           if [ "$REVIEW_OUTCOME" = "success" ] && [ "$PUBLISH_OUTCOME" = "success" ] && [ "$GUARDED_OPEN" = "true" ]; then
             state="Complete"
@@ -952,7 +992,7 @@ jobs:
           remove_own_eyes_reactions
 
       - name: Fail unsuccessful exact review
-        if: ${{ always() && steps.live-item.outputs.proceed != 'false' && steps.publish-event-result.outputs.terminal_noop != 'true' && (steps.review-exact-event-item.outcome != 'success' || steps.publish-event-result.outcome != 'success' || (steps.publish-event-result.outputs.terminal_closed != 'true' && steps.publish-event-result.outputs.guarded_open != 'true' && steps.route-synced-verdict.outcome != 'success')) }}
+        if: ${{ always() && steps.live-item.outputs.proceed != 'false' && steps.publish-event-result.outputs.terminal_noop != 'true' && (steps.review-exact-event-item.outcome != 'success' || steps.publish-event-result.outcome != 'success' || (steps.publish-event-result.outputs.terminal_missing != 'true' && steps.publish-event-result.outputs.terminal_closed != 'true' && steps.publish-event-result.outputs.guarded_open != 'true' && steps.route-synced-verdict.outcome != 'success')) }}
         run: exit 1
 
       - name: Complete exact-review queue lease

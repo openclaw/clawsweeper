@@ -8,43 +8,75 @@ import {
   exactEventPublishDisposition,
 } from "../../src/repair/event-apply-proof.ts";
 
-test("exact event publish dispositions require the current tuple and prefer terminal closure", () => {
+test("exact event publish dispositions require the current tuple and preserve terminal precedence", () => {
   assert.deepEqual(
     exactEventPublishDisposition({
       candidateMatchesCurrentTuple: true,
       candidateTupleState: "closed",
       terminalClosedExpected: true,
+      terminalMissingExpected: false,
       guardedOpenAction: "skipped_protected_label",
     }),
-    { terminalClosed: true, guardedOpenAction: null },
+    { terminalClosed: true, terminalMissing: false, guardedOpenAction: null },
   );
   assert.deepEqual(
     exactEventPublishDisposition({
       candidateMatchesCurrentTuple: false,
       candidateTupleState: "closed",
       terminalClosedExpected: true,
+      terminalMissingExpected: false,
       guardedOpenAction: null,
     }),
-    { terminalClosed: false, guardedOpenAction: null },
+    { terminalClosed: false, terminalMissing: false, guardedOpenAction: null },
   );
   assert.deepEqual(
     exactEventPublishDisposition({
       candidateMatchesCurrentTuple: true,
       candidateTupleState: "open",
       terminalClosedExpected: false,
+      terminalMissingExpected: false,
       guardedOpenAction: "skipped_locked_conversation",
     }),
-    { terminalClosed: false, guardedOpenAction: "skipped_locked_conversation" },
+    {
+      terminalClosed: false,
+      terminalMissing: false,
+      guardedOpenAction: "skipped_locked_conversation",
+    },
   );
   assert.deepEqual(
     exactEventPublishDisposition({
       candidateMatchesCurrentTuple: true,
       candidateTupleState: "open",
       terminalClosedExpected: true,
+      terminalMissingExpected: false,
       guardedOpenAction: null,
     }),
-    { terminalClosed: false, guardedOpenAction: null },
+    { terminalClosed: false, terminalMissing: false, guardedOpenAction: null },
   );
+  assert.deepEqual(
+    exactEventPublishDisposition({
+      candidateMatchesCurrentTuple: true,
+      candidateTupleState: "closed",
+      terminalClosedExpected: false,
+      terminalMissingExpected: true,
+      guardedOpenAction: "skipped_locked_conversation",
+    }),
+    { terminalClosed: false, terminalMissing: true, guardedOpenAction: null },
+  );
+  for (const candidate of [
+    { candidateMatchesCurrentTuple: false, candidateTupleState: "closed" as const },
+    { candidateMatchesCurrentTuple: true, candidateTupleState: "open" as const },
+  ]) {
+    assert.deepEqual(
+      exactEventPublishDisposition({
+        ...candidate,
+        terminalClosedExpected: false,
+        terminalMissingExpected: true,
+        guardedOpenAction: null,
+      }),
+      { terminalClosed: false, terminalMissing: false, guardedOpenAction: null },
+    );
+  }
 });
 
 test("exact event proof accepts durable sync independently of the apply action name", () => {
@@ -61,7 +93,33 @@ test("exact event proof accepts durable sync independently of the apply action n
   );
 
   assert.equal(proof.syncedCount, 1);
+  assert.equal(proof.terminalMissingCount, 0);
   assert.equal(proof.terminalCount, 0);
+});
+
+test("exact event proof distinguishes confirmed missing items from closed state", () => {
+  const proof = exactEventApplyProof(
+    [
+      eventApplyAction({
+        number: 42,
+        action: "skipped_already_closed",
+        terminalMissingVerified: true,
+      }),
+    ],
+    42,
+    null,
+  );
+
+  assert.equal(proof.terminalMissingCount, 1);
+  assert.equal(proof.terminalCount, 0);
+  assert.equal(
+    exactEventApplyProof(
+      [eventApplyAction({ number: 42, action: "skipped_already_closed" })],
+      42,
+      null,
+    ).terminalMissingCount,
+    0,
+  );
 });
 
 test("exact event proof accepts verified terminal state and rejects action names alone", () => {

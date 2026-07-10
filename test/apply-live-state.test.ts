@@ -91,7 +91,13 @@ console.error("unexpected gh args", JSON.stringify(args));
 process.exit(1);
 `;
     withMockGh(root, ghMock, () => {
-      runApplyDecisionsForTest({ itemsDir, closedDir, plansDir, reportPath });
+      runApplyDecisionsForTest({
+        itemsDir,
+        closedDir,
+        plansDir,
+        reportPath,
+        extraArgs: ["--event-apply-proof"],
+      });
     });
 
     assert.equal(existsSync(join(itemsDir, "321.md")), false);
@@ -102,6 +108,7 @@ process.exit(1);
         number: 321,
         action: "skipped_already_closed",
         reason: "item not found on GitHub",
+        terminalMissingVerified: true,
       },
     ]);
   } finally {

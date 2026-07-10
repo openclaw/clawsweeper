@@ -46,10 +46,12 @@ type EventOptions = {
 type PublishedEventSnapshot = {
   guardedOpenAction: string | null;
   terminalClosed: boolean;
+  terminalMissing: boolean;
 };
 
 class GuardedOpenPublishRaceError extends Error {}
 class TerminalClosedPublishRaceError extends Error {}
+class TerminalMissingPublishRaceError extends Error {}
 
 const options = eventOptionsFromEnv();
 await publishEventResult(options);
@@ -125,6 +127,7 @@ async function publishEventResult(options: EventOptions): Promise<void> {
       itemNumber: options.itemNumber,
       syncedCount: 0,
       closedCount: 0,
+      missingCount: 0,
       closeReasons: options.closeReasons,
     });
     throw new Error(
@@ -142,11 +145,12 @@ async function publishEventResult(options: EventOptions): Promise<void> {
   const {
     exactActions,
     syncedCount,
+    terminalMissingCount: missingCount,
     terminalCount: closedCount,
     guardedOpenAction,
     latestRevisionRequeueRequired,
   } = exactEventApplyProof(actions, Number(options.itemNumber), snapshotActionTaken);
-  if (syncedCount + closedCount === 0 && guardedOpenAction === null) {
+  if (syncedCount + closedCount + missingCount === 0 && guardedOpenAction === null) {
     const observed =
       exactActions
         .map((entry) => entry.action)
@@ -164,6 +168,7 @@ async function publishEventResult(options: EventOptions): Promise<void> {
       itemNumber: options.itemNumber,
       syncedCount,
       closedCount,
+      missingCount,
       closeReasons: options.closeReasons,
     });
   for (let attempt = 1; attempt <= 20; attempt += 1) {
@@ -174,6 +179,7 @@ async function publishEventResult(options: EventOptions): Promise<void> {
       stateBaseCommit,
       guardedOpenAction,
       terminalClosedExpected: closedCount > 0,
+      terminalMissingExpected: missingCount > 0,
     });
     if (published) {
       writeEventDispositionOutputs(published);
@@ -192,6 +198,7 @@ async function publishEventResult(options: EventOptions): Promise<void> {
     stateBaseCommit,
     guardedOpenAction,
     terminalClosedExpected: closedCount > 0,
+    terminalMissingExpected: missingCount > 0,
   });
   if (!published) {
     throw new Error(
@@ -242,6 +249,7 @@ function publishSnapshot({
   stateBaseCommit,
   guardedOpenAction,
   terminalClosedExpected,
+  terminalMissingExpected,
 }: {
   paths: EventRecordPaths;
   options: EventOptions;
@@ -249,6 +257,7 @@ function publishSnapshot({
   stateBaseCommit: string | null;
   guardedOpenAction: string | null;
   terminalClosedExpected: boolean;
+  terminalMissingExpected: boolean;
 }): PublishedEventSnapshot | null {
   const commitPaths = [
     paths.itemRecord,
@@ -261,14 +270,20 @@ function publishSnapshot({
       refreshSourceAfterStatePublish(commitPaths, stateBaseCommit);
       const dispositionCandidateIsCurrent =
         candidateApplied &&
-        (terminalClosedExpected || guardedOpenAction !== null) &&
+        (terminalClosedExpected || terminalMissingExpected || guardedOpenAction !== null) &&
         eventSnapshotMatchesCurrent(paths);
       const published = exactEventPublishDisposition({
         candidateMatchesCurrentTuple: dispositionCandidateIsCurrent,
         candidateTupleState: candidateEventTupleState(paths),
         terminalClosedExpected,
+        terminalMissingExpected,
         guardedOpenAction,
       });
+      if (terminalMissingExpected && !published.terminalMissing) {
+        throw new TerminalMissingPublishRaceError(
+          `Verified missing item ${paths.targetSlug}#${options.itemNumber} lost the publish race; requeue against the latest item revision`,
+        );
+      }
       if (terminalClosedExpected && !published.terminalClosed) {
         throw new TerminalClosedPublishRaceError(
           `Verified terminal close for ${paths.targetSlug}#${options.itemNumber} lost the publish race; requeue against the latest item revision`,
@@ -277,6 +292,7 @@ function publishSnapshot({
       if (
         guardedOpenAction !== null &&
         !published.terminalClosed &&
+        !published.terminalMissing &&
         published.guardedOpenAction === null
       ) {
         throw new GuardedOpenPublishRaceError(
@@ -327,7 +343,8 @@ function publishSnapshot({
     if (
       error instanceof RecordTupleError ||
       error instanceof GuardedOpenPublishRaceError ||
-      error instanceof TerminalClosedPublishRaceError
+      error instanceof TerminalClosedPublishRaceError ||
+      error instanceof TerminalMissingPublishRaceError
     )
       throw error;
     console.error(error instanceof Error ? error.message : String(error));
@@ -369,12 +386,14 @@ function writeSummary({
   itemNumber,
   syncedCount,
   closedCount,
+  missingCount,
   closeReasons,
 }: {
   targetRepo: string;
   itemNumber: string;
   syncedCount: number;
   closedCount: number;
+  missingCount: number;
   closeReasons: string;
 }): void {
   const summaryPath = process.env.GITHUB_STEP_SUMMARY;
@@ -386,6 +405,7 @@ function writeSummary({
       `- Item: ${targetRepo}#${itemNumber}`,
       `- Synced durable comments: ${syncedCount}`,
       `- Closed safe proposals: ${closedCount}`,
+      `- Confirmed missing items: ${missingCount}`,
       `- Close reasons enabled: ${closeReasons}`,
       "",
     ].join("\n"),
@@ -399,6 +419,7 @@ function writeEventDispositionOutputs(published: PublishedEventSnapshot): void {
   fs.appendFileSync(
     outputPath,
     [
+      `terminal_missing=${published.terminalMissing ? "true" : "false"}`,
       `terminal_closed=${published.terminalClosed ? "true" : "false"}`,
       `guarded_open=${published.guardedOpenAction === null ? "false" : "true"}`,
       `guarded_open_action=${published.guardedOpenAction ?? ""}`,

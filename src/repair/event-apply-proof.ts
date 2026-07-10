@@ -4,6 +4,7 @@ export type EventApplyAction = {
   number: number | null;
   action: string;
   durableReviewSynced: boolean;
+  terminalMissingVerified: boolean;
   terminalStateVerified: boolean;
   guardedOpenStateVerified: boolean;
 };
@@ -11,6 +12,7 @@ export type EventApplyAction = {
 export type ExactEventPublishDisposition = {
   guardedOpenAction: string | null;
   terminalClosed: boolean;
+  terminalMissing: boolean;
 };
 
 const GUARDED_OPEN_ACTIONS = new Set([
@@ -25,19 +27,26 @@ export function exactEventPublishDisposition({
   candidateMatchesCurrentTuple,
   candidateTupleState,
   terminalClosedExpected,
+  terminalMissingExpected,
   guardedOpenAction,
 }: {
   candidateMatchesCurrentTuple: boolean;
   candidateTupleState: "closed" | "open" | "invalid";
   terminalClosedExpected: boolean;
+  terminalMissingExpected: boolean;
   guardedOpenAction: string | null;
 }): ExactEventPublishDisposition {
-  const terminalClosed =
-    terminalClosedExpected && candidateMatchesCurrentTuple && candidateTupleState === "closed";
+  const terminalTupleMatches = candidateMatchesCurrentTuple && candidateTupleState === "closed";
+  const terminalMissing = terminalMissingExpected && terminalTupleMatches;
+  const terminalClosed = !terminalMissing && terminalClosedExpected && terminalTupleMatches;
   return {
     terminalClosed,
+    terminalMissing,
     guardedOpenAction:
-      !terminalClosed && candidateMatchesCurrentTuple && candidateTupleState === "open"
+      !terminalClosed &&
+      !terminalMissing &&
+      candidateMatchesCurrentTuple &&
+      candidateTupleState === "open"
         ? guardedOpenAction
         : null,
   };
@@ -50,6 +59,7 @@ export function exactEventApplyProof(
 ): {
   exactActions: EventApplyAction[];
   syncedCount: number;
+  terminalMissingCount: number;
   terminalCount: number;
   guardedOpenAction: string | null;
   latestRevisionRequeueRequired: boolean;
@@ -61,6 +71,7 @@ export function exactEventApplyProof(
   return {
     exactActions,
     syncedCount: exactActions.filter((entry) => entry.durableReviewSynced).length,
+    terminalMissingCount: exactActions.filter((entry) => entry.terminalMissingVerified).length,
     terminalCount: exactActions.filter((entry) => entry.terminalStateVerified).length,
     guardedOpenAction:
       snapshotActionTaken === soleExactAction &&
@@ -92,6 +103,7 @@ export function eventApplyAction(value: LooseRecord): EventApplyAction {
     number: typeof value.number === "number" ? value.number : null,
     action: typeof value.action === "string" ? value.action : "",
     durableReviewSynced: value.durableReviewSynced === true,
+    terminalMissingVerified: value.terminalMissingVerified === true,
     terminalStateVerified: value.terminalStateVerified === true,
     guardedOpenStateVerified: value.guardedOpenStateVerified === true,
   };

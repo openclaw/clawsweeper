@@ -89,6 +89,11 @@ test("exact event publish and routing require a successful fresh review artifact
   assert.match(liveItemStep, /id: live-item/);
   assert.match(liveItemStep, /repos\/\$TARGET_REPO\/issues\/\$ITEM_NUMBER/);
   assert.match(liveItemStep, /echo "proceed=false" >> "\$GITHUB_OUTPUT"/);
+  assert.match(liveItemStep, /grep -Eqi 'HTTP 404\|Not Found'/);
+  assert.match(liveItemStep, /gh api "repos\/\$TARGET_REPO" >\/dev\/null/);
+  assert.match(liveItemStep, /echo "terminal_missing=true" >> "\$GITHUB_OUTPUT"/);
+  assert.match(liveItemStep, /repository is accessible but the item is missing/);
+  assert.match(liveItemStep, /cat "\$live_item_error" >&2/);
   assert.match(liveItemStep, /live_locked=.*\.locked == true/);
   assert.match(liveItemStep, /echo "guarded_open=true" >> "\$GITHUB_OUTPUT"/);
   assert.match(
@@ -106,14 +111,20 @@ test("exact event publish and routing require a successful fresh review artifact
   assert.match(publishStep, /if \[ ! -f "artifacts\/event\/\$ITEM_NUMBER\.md" \]/);
   assert.match(publishStep, /live_state="\$\(gh api/);
   assert.match(publishStep, /echo "terminal_noop=true" >> "\$GITHUB_OUTPUT"/);
+  assert.match(publishStep, /echo "terminal_missing=true" >> "\$GITHUB_OUTPUT"/);
+  assert.match(publishStep, /gh api "repos\/\$TARGET_REPO" >\/dev\/null/);
+  assert.match(publishStep, /cat "\$live_item_error" >&2/);
   assert.match(publishStep, /Exact review produced no artifact for open item/);
   assert.match(publisher, /"--event-apply-proof"/);
   assert.match(publisher, /exactEventApplyProof\(/);
+  assert.match(publisher, /terminal_missing=/);
   assert.match(publisher, /terminal_closed=/);
   assert.match(publisher, /guarded_open=/);
   assert.match(publisher, /class GuardedOpenPublishRaceError extends Error/);
   assert.match(publisher, /class TerminalClosedPublishRaceError extends Error/);
+  assert.match(publisher, /class TerminalMissingPublishRaceError extends Error/);
   assert.match(publisher, /terminalClosedExpected: closedCount > 0/);
+  assert.match(publisher, /terminalMissingExpected: missingCount > 0/);
   assert.match(publisher, /eventSnapshotMatchesCurrent\(paths\)/);
   assert.match(publisher, /candidateEventTupleState\(paths\)/);
   assert.match(publisher, /fs\.existsSync\(paths\.snapshotClosed\)/);
@@ -122,16 +133,30 @@ test("exact event publish and routing require a successful fresh review artifact
   assert.match(publisher, /guardedOpenAction !== null/);
   assert.match(publisher, /error instanceof GuardedOpenPublishRaceError/);
   assert.match(publisher, /error instanceof TerminalClosedPublishRaceError/);
+  assert.match(publisher, /error instanceof TerminalMissingPublishRaceError/);
   assert.match(publisher, /Event state .* was not applied because .*requeue/);
   assert.doesNotMatch(publisher, /entry\.action === "review_comment_synced"/);
+  assert.match(
+    implementationStep,
+    /steps\.publish-event-result\.outputs\.terminal_missing != 'true'/,
+  );
   assert.match(
     implementationStep,
     /steps\.publish-event-result\.outputs\.terminal_closed != 'true'/,
   );
   assert.match(implementationStep, /steps\.publish-event-result\.outputs\.guarded_open != 'true'/);
   assert.match(routeStep, /steps\.publish-event-result\.outputs\.terminal_noop != 'true'/);
+  assert.match(routeStep, /steps\.publish-event-result\.outputs\.terminal_missing != 'true'/);
   assert.match(routeStep, /steps\.publish-event-result\.outputs\.terminal_closed != 'true'/);
   assert.match(routeStep, /steps\.publish-event-result\.outputs\.guarded_open != 'true'/);
+  assert.match(
+    eventReviewJob,
+    /INTAKE_TERMINAL_MISSING: \$\{\{ steps\.live-item\.outputs\.terminal_missing \}\}/,
+  );
+  assert.match(
+    eventReviewJob,
+    /TERMINAL_MISSING: \$\{\{ steps\.publish-event-result\.outputs\.terminal_missing \}\}/,
+  );
   assert.match(
     eventReviewJob,
     /TERMINAL_CLOSED: \$\{\{ steps\.publish-event-result\.outputs\.terminal_closed \}\}/,
@@ -146,6 +171,7 @@ test("exact event publish and routing require a successful fresh review artifact
   );
   assert.match(eventReviewJob, /deterministic remain-open guard/);
   assert.match(eventReviewJob, /verified terminal close/);
+  assert.match(eventReviewJob, /repository is accessible but the item is missing/);
   assert.match(eventReviewJob, /finished before Codex because the open conversation is locked/);
   assert.match(
     eventReviewJob,
@@ -158,9 +184,11 @@ test("exact event publish and routing require a successful fresh review artifact
   assert.match(reactStep, /steps\.publish-event-result\.outputs\.terminal_closed == 'true'/);
   assert.match(reactStep, /steps\.publish-event-result\.outputs\.guarded_open == 'true'/);
   assert.match(reactStep, /steps\.live-item\.outputs\.guarded_open == 'true'/);
+  assert.doesNotMatch(reactStep, /terminal_missing/);
   assert.match(releaseLeaseStep, /steps\.live-item\.outputs\.terminal_noop == 'true'/);
   assert.match(releaseLeaseStep, /steps\.publish-event-result\.outputs\.terminal_noop == 'true'/);
   assert.match(releaseLeaseStep, /steps\.publish-event-result\.outputs\.terminal_closed == 'true'/);
+  assert.doesNotMatch(releaseLeaseStep, /terminal_missing/);
   assert.doesNotMatch(releaseLeaseStep, /steps\.live-item\.outputs\.proceed == 'false'/);
   assert.match(releaseLeaseStep, /clawsweeper-review-lease item=\$ITEM_NUMBER/);
   assert.match(releaseLeaseStep, /--method DELETE/);
@@ -173,6 +201,7 @@ test("exact event publish and routing require a successful fresh review artifact
   assert.match(eventReviewJob, /terminal review leases were released/);
   assert.match(failStep, /steps\.live-item\.outputs\.proceed != 'false'/);
   assert.match(failStep, /steps\.publish-event-result\.outputs\.terminal_noop != 'true'/);
+  assert.match(failStep, /steps\.publish-event-result\.outputs\.terminal_missing != 'true'/);
   assert.match(failStep, /steps\.publish-event-result\.outputs\.terminal_closed != 'true'/);
   assert.match(failStep, /steps\.publish-event-result\.outputs\.guarded_open != 'true'/);
 });

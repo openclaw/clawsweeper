@@ -914,6 +914,7 @@ interface ApplyResult {
   action: ActionTaken;
   reason: string;
   durableReviewSynced?: boolean;
+  terminalMissingVerified?: boolean;
   terminalStateVerified?: boolean;
   guardedOpenStateVerified?: boolean;
 }
@@ -20298,7 +20299,7 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
           number,
           action: "skipped_already_closed",
           reason: "item not found on GitHub",
-          ...(emitEventApplyProof ? { terminalStateVerified: true } : {}),
+          ...(emitEventApplyProof ? { terminalMissingVerified: true } : {}),
         });
         processedCount += 1;
         maybeLogProgress(`skipped comment sync #${number}: item not found on GitHub`);
@@ -20314,7 +20315,7 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
         number,
         action: "skipped_already_closed",
         reason: "item not found on GitHub",
-        ...(emitEventApplyProof ? { terminalStateVerified: true } : {}),
+        ...(emitEventApplyProof ? { terminalMissingVerified: true } : {}),
       });
       processedCount += 1;
       maybeLogProgress(`archived #${number}: item not found on GitHub`);
