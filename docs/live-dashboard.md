@@ -48,7 +48,7 @@ the dashboard response.
 
 When a change updates both the Worker and a GitHub Actions workflow, keep the
 cross-component protocol compatible in both deployment orders. The exact-review
-v2 rollout dispatches the immutable lease tuple plus a bounded v1 snapshot; the
+v2 rollout dispatches the immutable lease tuple under `queue_claim` plus a bounded v1 snapshot; the
 Worker accepts v1 claims/finalizers while the workflow can consume either v1 or
 v2 claim responses. Deploying the reviewed Worker first remains the preferred
 order, but this rollout does not require disabling or draining ClawSweeper:
@@ -206,7 +206,7 @@ exact bytes with `CLAWSWEEPER_WEBHOOK_SECRET` in
 `x-clawsweeper-exact-review-signature: sha256=<hmac>`.
 
 Do not disable or drain the sweep workflow for this protocol rollout. A v2
-Worker sends both the strict tuple and the immutable v1 event snapshot, accepts
+Worker sends the strict tuple under `queue_claim` plus the immutable v1 event snapshot, accepts
 legacy lease-id claims/finalizers only for claims recorded as protocol v1, and
 keeps tuple/generation CAS mandatory for protocol v2. A v2 workflow falls back
 to the v1 event snapshot only when the claim response identifies or implies a

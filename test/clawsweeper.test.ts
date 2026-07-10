@@ -2182,7 +2182,7 @@ test("sweep workflow executes only durable queue leases without runner-side admi
 
   assert.match(
     eventReviewBlock,
-    /group: clawsweeper-event-review-\$\{\{ github\.event\.client_payload\.item_key \|\| github\.run_id \}\}/,
+    /group: clawsweeper-event-review-\$\{\{ github\.event\.client_payload\.queue_claim\.item_key \|\| github\.event\.client_payload\.item_key \|\| github\.run_id \}\}/,
   );
   assert.match(eventReviewBlock, /github\.event\.client_payload\.queue_lease_id != ''/);
   assert.match(legacyIntakeBlock, /Queue legacy exact-review event/);

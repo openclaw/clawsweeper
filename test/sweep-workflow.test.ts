@@ -325,10 +325,13 @@ test("exact event workflow binds all work to the canonical queue claim", () => {
   const claimStep = eventJob.slice(claimStart, checkoutStart);
   const claimedWork = eventJob.slice(checkoutStart);
 
-  assert.match(claimStep, /ITEM_KEY: \$\{\{ github\.event\.client_payload\.item_key \}\}/);
   assert.match(
     claimStep,
-    /QUEUE_LEASE_REVISION: \$\{\{ github\.event\.client_payload\.lease_revision \}\}/,
+    /ITEM_KEY: \$\{\{ github\.event\.client_payload\.queue_claim\.item_key \|\| github\.event\.client_payload\.item_key \}\}/,
+  );
+  assert.match(
+    claimStep,
+    /QUEUE_LEASE_REVISION: \$\{\{ github\.event\.client_payload\.queue_claim\.lease_revision \|\| github\.event\.client_payload\.lease_revision \}\}/,
   );
   assert.match(
     claimStep,
@@ -1701,7 +1704,7 @@ test("sweep event reviews and target fanout avoid storm amplification", () => {
   assert.match(eventBlock, /concurrency:/);
   assert.match(
     eventBlock,
-    /group: clawsweeper-event-review-\$\{\{ github\.event\.client_payload\.item_key \|\| github\.run_id \}\}/,
+    /group: clawsweeper-event-review-\$\{\{ github\.event\.client_payload\.queue_claim\.item_key \|\| github\.event\.client_payload\.item_key \|\| github\.run_id \}\}/,
   );
   assert.match(eventBlock, /queue_lease_id != ''/);
   assert.match(eventBlock, /item_key: process\.env\.ITEM_KEY/);

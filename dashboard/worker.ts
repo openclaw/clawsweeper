@@ -2408,10 +2408,12 @@ async function dispatchClawsweeperItem({
     body: {
       event_type: "clawsweeper_item",
       client_payload: {
-        queue_protocol_version: 2,
         queue_lease_id: leaseId,
-        item_key: itemKey,
-        lease_revision: leaseRevision,
+        queue_claim: {
+          protocol_version: 2,
+          item_key: itemKey,
+          lease_revision: leaseRevision,
+        },
         target_repo: decision.targetRepo,
         target_branch: decision.targetBranch,
         item_number: decision.itemNumber,

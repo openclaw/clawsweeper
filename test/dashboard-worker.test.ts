@@ -329,10 +329,12 @@ test("exact-review queue coalesces deliveries, dispatches a bound rollout snapsh
     const leaseId = String(payload.queue_lease_id || "");
     assert.match(leaseId, /^[0-9a-f-]{36}$/);
     assert.deepEqual(payload, {
-      queue_protocol_version: 2,
       queue_lease_id: leaseId,
-      item_key: "openclaw/gogcli#597",
-      lease_revision: 2,
+      queue_claim: {
+        protocol_version: 2,
+        item_key: "openclaw/gogcli#597",
+        lease_revision: 2,
+      },
       target_repo: "openclaw/gogcli",
       target_branch: "main",
       item_number: 597,
@@ -348,6 +350,7 @@ test("exact-review queue coalesces deliveries, dispatches a bound rollout snapsh
         additional_prompt: "Check the maintainer-requested regression path.",
       },
     });
+    assert.equal(Object.keys(payload).length, 10);
 
     const newer = buildExactReviewQueueRequest("delivery-4", 597, "synchronize", "pull_request");
     assert.equal((await queue.fetch(newer)).status, 202);
@@ -859,9 +862,8 @@ test("exact-review queue admits at most one active item per target repository", 
     assert.equal(dispatched.length, 2);
     const nextAlarm = await storage.getAlarm();
     assert.ok(nextAlarm && nextAlarm > Date.now() + 60_000);
-    const targets = dispatched.map(
-      (payload) =>
-        String((payload.client_payload as Record<string, unknown>).item_key).split("#", 1)[0],
+    const targets = dispatched.map((payload) =>
+      String((payload.client_payload as Record<string, unknown>).target_repo),
     );
     assert.equal(new Set(targets).size, 2);
     assert.equal(targets.filter((target) => target === "openclaw/gogcli").length, 1);

@@ -17,7 +17,7 @@ run-name: >-
       github.event.action == 'clawsweeper_target_sweep') &&
       format('Review target repo {0}', github.event.client_payload.target_repo || 'openclaw/openclaw') ||
     (github.event_name == 'repository_dispatch' && github.event.client_payload.queue_lease_id != '') &&
-      format('Review event item {0}', github.event.client_payload.item_key || '?') ||
+      format('Review event item {0}', github.event.client_payload.queue_claim.item_key || github.event.client_payload.item_key || '?') ||
     (github.event_name == 'repository_dispatch' && github.event.client_payload.dispatch_key != '') &&
       format('Review event item {0}#{1} [{2}]', github.event.client_payload.target_repo || 'openclaw/openclaw', github.event.client_payload.item_number || '?', github.event.client_payload.dispatch_key) ||
     github.event_name == 'repository_dispatch' &&
@@ -294,7 +294,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 120
     concurrency:
-      group: clawsweeper-event-review-${{ github.event.client_payload.item_key || github.run_id }}
+      group: clawsweeper-event-review-${{ github.event.client_payload.queue_claim.item_key || github.event.client_payload.item_key || github.run_id }}
       cancel-in-progress: false
     permissions:
       actions: write
@@ -306,9 +306,9 @@ jobs:
         id: claim-exact-review-queue
         env:
           DISPATCH_PAYLOAD: ${{ toJSON(github.event.client_payload) }}
-          ITEM_KEY: ${{ github.event.client_payload.item_key }}
+          ITEM_KEY: ${{ github.event.client_payload.queue_claim.item_key || github.event.client_payload.item_key }}
           QUEUE_LEASE_ID: ${{ github.event.client_payload.queue_lease_id }}
-          QUEUE_LEASE_REVISION: ${{ github.event.client_payload.lease_revision }}
+          QUEUE_LEASE_REVISION: ${{ github.event.client_payload.queue_claim.lease_revision || github.event.client_payload.lease_revision }}
           QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           RUN_ATTEMPT: ${{ github.run_attempt }}
         run: |
