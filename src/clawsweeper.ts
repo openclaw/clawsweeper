@@ -93,7 +93,12 @@ import {
   formatPrCloseCoverageProofDetailList,
   prCloseCoverageProofCandidateCanClose,
   prCloseCoverageProofCloseDecision,
+  prCloseCoverageProofEnvelopePath,
+  prCloseCoverageProofPromptSha256,
+  readPrCloseCoverageProofEnvelope,
   runPrCloseCoverageProofModel,
+  validatePrCloseCoverageProofEnvelopeBinding,
+  writePrCloseCoverageProofEnvelope,
   type PrCloseCoverageProofModelResult,
   type PrCloseCoverageProofPullRequestView,
   type PrCloseCoverageProofRuntime,
@@ -14196,13 +14201,17 @@ function linkedRefCanBePullRequest(ref: PullRequestRef): boolean {
   }
 }
 
+const PR_CLOSE_COVERAGE_PROOF_MAX_CANDIDATES_PER_ITEM = 4;
+
 function prCloseCoverageProofCandidateRefs(markdown: string, item: Item): PullRequestRef[] {
   if (item.kind !== "pull_request") return [];
   const linkedRefs = linkedPullRequestRefsFromReport(markdown, item.number);
   const canonicalRefs = linkedRefs
     .filter((ref) => linkedPullRequestHasSupersessionSignal(markdown, item.number, ref.number))
     .filter(linkedRefCanBePullRequest);
-  if (canonicalRefs.length > 0) return canonicalRefs;
+  if (canonicalRefs.length > 0) {
+    return canonicalRefs.slice(0, PR_CLOSE_COVERAGE_PROOF_MAX_CANDIDATES_PER_ITEM);
+  }
   if (frontMatterValue(markdown, "pr_close_coverage_proof_fallback_refs") === "false") return [];
   const possiblePullRequestRefs = linkedRefs.filter(linkedRefCanBePullRequest);
   return possiblePullRequestRefs.length === 1 ? possiblePullRequestRefs : [];
@@ -14277,6 +14286,7 @@ interface PrCloseCoverageProofGateBlock {
 
 interface PrCloseCoverageProofCoveringWitness {
   number: number;
+  provedAtMs: number;
   updatedAt: string | null;
   url: string;
   proof: PrCloseCoverageProofModelResult;
@@ -14341,6 +14351,7 @@ function sourcePrCloseCoveragePullRequestView(
       stringOrUndefined(pull.body) ?? stringOrUndefined(issue.body) ?? "",
     ),
     updatedAt: item.updatedAt,
+    headSha: pullHeadShaFromContext(context) ?? null,
     comments: (context.comments ?? []).map(compactPrCloseCoverageProofComment),
     commentsTruncated: Boolean(context.counts?.commentsTruncated),
   };
@@ -14371,6 +14382,7 @@ function coveringPrCloseCoveragePullRequestView(
       stringOrUndefined(pull.body) ?? stringOrUndefined(issue.body) ?? "",
     ),
     updatedAt: stringOrUndefined(pull.updated_at) ?? stringOrUndefined(issue.updated_at) ?? null,
+    headSha: stringOrUndefined(asRecord(pull.head).sha) ?? null,
     comments: filteredComments.included.map(compactPrCloseCoverageProofComment),
     commentsTruncated: commentsWindow.truncated,
   };
@@ -14408,8 +14420,12 @@ function prCloseCoverageProofGateResult(options: {
   item: Item;
   context: ItemContext;
   runtime: PrCloseCoverageProofRuntime;
+  requirePrecomputedProof?: boolean;
   runtimeBudget?: PrCloseCoverageRuntimeBudget;
 }): PrCloseCoverageProofGateResult {
+  // This trusted timestamp precedes mutation-side hydration and validation. The
+  // proof artifact's own timestamp is audit metadata, not a freshness authority.
+  const proofBindingStartedAtMs = Date.now();
   const beforeCandidateResolution = prCloseCoverageRuntimeBudgetBlock(
     options.runtimeBudget,
     "before resolving",
@@ -14476,28 +14492,64 @@ function prCloseCoverageProofGateResult(options: {
         },
       };
     }
-    const proofRuntime = prCloseCoverageRuntime(options.runtime, options.runtimeBudget);
-    if (!proofRuntime) {
-      return prCloseCoverageRuntimeBudgetBlock(options.runtimeBudget, "before running");
-    }
     try {
-      const proof = runPrCloseCoverageProofModel({
+      const relationshipSignalSnippets = prCloseCoverageProofSignalSnippets(
+        options.markdown,
+        options.item.number,
+        linkedNumber,
+      );
+      const promptSha256 = prCloseCoverageProofPromptSha256({
         source,
         covering,
-        markdown: options.markdown,
-        relationshipSignalSnippets: prCloseCoverageProofSignalSnippets(
-          options.markdown,
-          options.item.number,
-          linkedNumber,
-        ),
-        runtime: proofRuntime,
+        reportMarkdown: options.markdown,
+        relationshipSignalSnippets,
+        promptTemplate: options.runtime.promptTemplate,
       });
+      let proofStartedAtMs = proofBindingStartedAtMs;
+      const envelope = options.requirePrecomputedProof
+        ? readPrCloseCoverageProofEnvelope(
+            prCloseCoverageProofEnvelopePath(
+              options.runtime.workDir,
+              source.number,
+              covering.number,
+            ),
+          )
+        : (() => {
+            const proofRuntime = prCloseCoverageRuntime(options.runtime, options.runtimeBudget);
+            if (!proofRuntime) {
+              throw new Error("runtime budget reached before running PR close coverage proof");
+            }
+            proofStartedAtMs = Date.now();
+            const proof = runPrCloseCoverageProofModel({
+              source,
+              covering,
+              markdown: options.markdown,
+              relationshipSignalSnippets,
+              runtime: proofRuntime,
+            });
+            return writePrCloseCoverageProofEnvelope({
+              workDir: options.runtime.workDir,
+              targetRepo: targetRepo(),
+              promptSha256,
+              source,
+              covering,
+              proof,
+            });
+          })();
+      validatePrCloseCoverageProofEnvelopeBinding(envelope, {
+        targetRepo: targetRepo(),
+        promptSha256,
+        source,
+        covering,
+      });
+      const proof = envelope.proof;
       const closeDecision = prCloseCoverageProofCloseDecision(proof);
       if (closeDecision.close) {
         return {
           status: "allowed",
           covering: {
             number: covering.number,
+            provedAtMs: proofStartedAtMs,
             updatedAt: covering.updatedAt,
             url: covering.url,
             proof: closeDecision.proof,
@@ -14518,7 +14570,9 @@ function prCloseCoverageProofGateResult(options: {
         status: "blocked",
         block: {
           actionTaken: "retry_pr_close_coverage_proof",
-          reason: `PR close coverage proof failed for linked canonical PR #${linkedNumber}: ${
+          reason: `PR close coverage proof ${
+            options.requirePrecomputedProof ? "artifact validation" : "generation"
+          } failed for linked canonical PR #${linkedNumber}: ${
             error instanceof Error ? error.message : String(error)
           }`,
         },
@@ -19687,6 +19741,9 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
   const closeDelayMs = numberArg(args.close_delay_ms, 2_000);
   const progressEvery = Math.max(1, numberArg(args.progress_every, 10));
   const dryRun = boolArg(args.dry_run);
+  const requirePrecomputedPrCloseCoverageProof = boolArg(
+    args.require_precomputed_pr_close_coverage_proof,
+  );
   const syncCommentsOnly = boolArg(args.sync_comments_only);
   const emitEventApplyProof = boolArg(args.event_apply_proof);
   const commentSyncMinAgeDays = numberArg(args.comment_sync_min_age_days, 0);
@@ -20393,12 +20450,12 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
             if (proofTimeoutMs === null) {
               cachedPrCloseCoverageProofGateResult = runtimeBudgetProofBlock();
             } else {
-              prCloseCoverageProofStartedAtMs = Date.now();
               const proofGateResult = prCloseCoverageProofGateResult({
                 markdown,
                 item,
                 context,
                 runtime: { ...prCloseCoverageProofRuntime, timeoutMs: proofTimeoutMs },
+                requirePrecomputedProof: requirePrecomputedPrCloseCoverageProof,
                 runtimeBudget: { startedAtMs, maxRuntimeMs },
               });
               cachedPrCloseCoverageProofGateResult =
@@ -20411,6 +20468,10 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
                 )
                   ? runtimeBudgetProofBlock("during")
                   : proofGateResult;
+              if (cachedPrCloseCoverageProofGateResult?.status === "allowed") {
+                prCloseCoverageProofStartedAtMs =
+                  cachedPrCloseCoverageProofGateResult.covering.provedAtMs;
+              }
             }
           }
         } else {

@@ -28,6 +28,10 @@ inputs:
     description: Optional newline-separated state paths to hydrate.
     required: false
     default: ""
+  persist-credentials:
+    description: Persist the checkout token in local git config for later state publication.
+    required: false
+    default: "true"
 runs:
   using: composite
   steps:
@@ -40,6 +44,7 @@ runs:
         filter: ${{ inputs.filter }}
         fetch-depth: ${{ inputs.fetch-depth }}
         sparse-checkout: ${{ inputs.sparse-checkout }}
+        persist-credentials: ${{ inputs.persist-credentials }}
 
     - name: Export state root
       shell: bash

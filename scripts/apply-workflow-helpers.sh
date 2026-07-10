@@ -6,6 +6,48 @@
 
 max_close_processed_limit=900
 coverage_proof_limit=2
+
+validate_coverage_proof_tree() {
+  local proof_dir="$1"
+  local max_files="${2:-2}"
+  local max_file_bytes="${3:-262144}"
+  local max_total_bytes="${4:-524288}"
+  mkdir -p "$proof_dir"
+  local unexpected
+  unexpected="$(find "$proof_dir" -mindepth 1 -maxdepth 1 ! -type f -print -quit)"
+  if [ -n "$unexpected" ]; then
+    echo "Unexpected non-file coverage proof artifact: $unexpected" >&2
+    return 1
+  fi
+  local proof_files=()
+  local proof_file
+  while IFS= read -r -d '' proof_file; do
+    proof_files+=("$proof_file")
+  done < <(find "$proof_dir" -mindepth 1 -maxdepth 1 -type f -print0)
+  if [ "${#proof_files[@]}" -gt "$max_files" ]; then
+    echo "Coverage proof artifact contains ${#proof_files[@]} files; maximum is $max_files." >&2
+    return 1
+  fi
+  local total_bytes=0
+  local proof_name proof_bytes
+  for proof_file in "${proof_files[@]}"; do
+    proof_name="$(basename "$proof_file")"
+    if ! [[ "$proof_name" =~ ^[1-9][0-9]*-[1-9][0-9]*\.proof\.json$ ]]; then
+      echo "Unexpected coverage proof filename: $proof_name" >&2
+      return 1
+    fi
+    proof_bytes="$(wc -c < "$proof_file" | tr -d ' ')"
+    if [ "$proof_bytes" -gt "$max_file_bytes" ]; then
+      echo "Coverage proof artifact exceeds $max_file_bytes bytes: $proof_name" >&2
+      return 1
+    fi
+    total_bytes=$((total_bytes + proof_bytes))
+  done
+  if [ "$total_bytes" -gt "$max_total_bytes" ]; then
+    echo "Coverage proof artifacts exceed the $max_total_bytes-byte total limit." >&2
+    return 1
+  fi
+}
 progress_every=10
 
 publish_changes_with_strategy() {

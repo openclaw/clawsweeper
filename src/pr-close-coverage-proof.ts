@@ -1,5 +1,6 @@
 import { codexLoginConfig, codexModelArgs } from "./codex-env.js";
-import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, lstatSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { codexEnv } from "./codex-env.js";
 import { runCodexProcess } from "./codex-process.js";
@@ -30,6 +31,7 @@ export interface PrCloseCoverageProofPullRequestView {
   mergedAt: string | null;
   body: string;
   updatedAt: string | null;
+  headSha?: string | null;
   comments: unknown[];
   commentsTruncated: boolean;
 }
@@ -47,6 +49,22 @@ export interface PrCloseCoverageProofRuntime {
   ghToken?: string;
 }
 
+export interface PrCloseCoverageProofEnvelope {
+  schemaVersion: 1;
+  targetRepo: string;
+  generatedAt: string;
+  promptSha256: string;
+  source: {
+    number: number;
+    snapshotSha256: string;
+  };
+  covering: {
+    number: number;
+    snapshotSha256: string;
+  };
+  proof: PrCloseCoverageProofModelResult;
+}
+
 const PR_CLOSE_COVERAGE_PROOF_DECISIONS = new Set<PrCloseCoverageProofModelDecision>([
   "covered",
   "keep_open",
@@ -60,6 +78,16 @@ const PR_CLOSE_COVERAGE_PROOF_SCHEMA_KEYS = new Set([
   "decision",
   "reason",
 ]);
+const PR_CLOSE_COVERAGE_PROOF_ENVELOPE_KEYS = new Set([
+  "schemaVersion",
+  "targetRepo",
+  "generatedAt",
+  "promptSha256",
+  "source",
+  "covering",
+  "proof",
+]);
+const PR_CLOSE_COVERAGE_PROOF_SNAPSHOT_KEYS = new Set(["number", "snapshotSha256"]);
 const PR_CLOSE_COVERAGE_PROOF_GENERIC_WORDS = new Set([
   "a",
   "an",
@@ -232,6 +260,12 @@ export function buildPrCloseCoverageProofPrompt(options: {
   ].join("\n");
 }
 
+export function prCloseCoverageProofPromptSha256(
+  options: Parameters<typeof buildPrCloseCoverageProofPrompt>[0],
+): string {
+  return createHash("sha256").update(buildPrCloseCoverageProofPrompt(options)).digest("hex");
+}
+
 export function runPrCloseCoverageProofModel(options: {
   source: PrCloseCoverageProofPullRequestView;
   covering: PrCloseCoverageProofPullRequestView;
@@ -241,7 +275,7 @@ export function runPrCloseCoverageProofModel(options: {
 }): PrCloseCoverageProofModelResult {
   mkdirSync(options.runtime.workDir, { recursive: true });
   const prefix = `${options.source.number}-${options.covering.number}`;
-  const outputPath = join(options.runtime.workDir, `${prefix}.json`);
+  const outputPath = join(options.runtime.workDir, `${prefix}.model.json`);
   const prompt = buildPrCloseCoverageProofPrompt({
     source: options.source,
     covering: options.covering,
@@ -312,6 +346,170 @@ export function runPrCloseCoverageProofModel(options: {
   return readPrCloseCoverageProofModelOutput(outputPath);
 }
 
+export function prCloseCoverageProofEnvelopePath(
+  workDir: string,
+  sourceNumber: number,
+  coveringNumber: number,
+): string {
+  if (!Number.isInteger(sourceNumber) || sourceNumber <= 0) {
+    throw new Error("sourceNumber must be a positive integer");
+  }
+  if (!Number.isInteger(coveringNumber) || coveringNumber <= 0) {
+    throw new Error("coveringNumber must be a positive integer");
+  }
+  return join(workDir, `${sourceNumber}-${coveringNumber}.proof.json`);
+}
+
+export function prCloseCoverageProofSnapshotSha256(
+  pullRequest: PrCloseCoverageProofPullRequestView,
+): string {
+  return createHash("sha256").update(JSON.stringify(pullRequest)).digest("hex");
+}
+
+export function createPrCloseCoverageProofEnvelope(options: {
+  targetRepo: string;
+  generatedAt?: string;
+  promptSha256: string;
+  source: PrCloseCoverageProofPullRequestView;
+  covering: PrCloseCoverageProofPullRequestView;
+  proof: PrCloseCoverageProofModelResult;
+}): PrCloseCoverageProofEnvelope {
+  const targetRepo = normalizedProofTargetRepo(options.targetRepo);
+  const generatedAt = options.generatedAt ?? new Date().toISOString();
+  requireTimestamp(generatedAt, "prCloseCoverageProofEnvelope.generatedAt");
+  const promptSha256 = requireSha256(
+    options.promptSha256,
+    "prCloseCoverageProofEnvelope.promptSha256",
+  );
+  return {
+    schemaVersion: 1,
+    targetRepo,
+    generatedAt,
+    promptSha256,
+    source: {
+      number: options.source.number,
+      snapshotSha256: prCloseCoverageProofSnapshotSha256(options.source),
+    },
+    covering: {
+      number: options.covering.number,
+      snapshotSha256: prCloseCoverageProofSnapshotSha256(options.covering),
+    },
+    proof: normalizedPrCloseCoverageProofModelResult(options.proof),
+  };
+}
+
+export function writePrCloseCoverageProofEnvelope(options: {
+  workDir: string;
+  targetRepo: string;
+  generatedAt?: string;
+  promptSha256: string;
+  source: PrCloseCoverageProofPullRequestView;
+  covering: PrCloseCoverageProofPullRequestView;
+  proof: PrCloseCoverageProofModelResult;
+}): PrCloseCoverageProofEnvelope {
+  const envelope = createPrCloseCoverageProofEnvelope(options);
+  mkdirSync(options.workDir, { recursive: true });
+  writeFileSync(
+    prCloseCoverageProofEnvelopePath(
+      options.workDir,
+      envelope.source.number,
+      envelope.covering.number,
+    ),
+    `${JSON.stringify(envelope, null, 2)}\n`,
+    "utf8",
+  );
+  return envelope;
+}
+
+export function parsePrCloseCoverageProofEnvelope(value: unknown): PrCloseCoverageProofEnvelope {
+  const parsed = requireRecord(value, "prCloseCoverageProofEnvelope");
+  rejectUnexpectedKeys(
+    parsed,
+    PR_CLOSE_COVERAGE_PROOF_ENVELOPE_KEYS,
+    "prCloseCoverageProofEnvelope",
+  );
+  if (parsed.schemaVersion !== 1) {
+    throw new Error("prCloseCoverageProofEnvelope.schemaVersion must be 1");
+  }
+  const source = parseProofSnapshotBinding(parsed.source, "prCloseCoverageProofEnvelope.source");
+  const covering = parseProofSnapshotBinding(
+    parsed.covering,
+    "prCloseCoverageProofEnvelope.covering",
+  );
+  const generatedAt = requireString(parsed.generatedAt, "prCloseCoverageProofEnvelope.generatedAt");
+  requireTimestamp(generatedAt, "prCloseCoverageProofEnvelope.generatedAt");
+  return {
+    schemaVersion: 1,
+    targetRepo: normalizedProofTargetRepo(
+      requireString(parsed.targetRepo, "prCloseCoverageProofEnvelope.targetRepo"),
+    ),
+    generatedAt,
+    promptSha256: requireSha256(parsed.promptSha256, "prCloseCoverageProofEnvelope.promptSha256"),
+    source,
+    covering,
+    proof: normalizedPrCloseCoverageProofModelResult(
+      parsePrCloseCoverageProofModelResult(parsed.proof),
+    ),
+  };
+}
+
+export function readPrCloseCoverageProofEnvelope(path: string): PrCloseCoverageProofEnvelope {
+  const stat = lstatSync(path);
+  if (!stat.isFile()) throw new Error("coverage proof artifact must be a regular file");
+  if (stat.size > 256 * 1024) {
+    throw new Error("coverage proof artifact exceeds the 256 KiB size limit");
+  }
+  return parsePrCloseCoverageProofEnvelope(JSON.parse(readFileSync(path, "utf8").trim()));
+}
+
+export function validatePrCloseCoverageProofEnvelopeBinding(
+  envelope: PrCloseCoverageProofEnvelope,
+  options: {
+    targetRepo: string;
+    promptSha256: string;
+    source: PrCloseCoverageProofPullRequestView;
+    covering: PrCloseCoverageProofPullRequestView;
+  },
+): void {
+  const targetRepo = normalizedProofTargetRepo(options.targetRepo);
+  const generatedAtMs = Date.parse(envelope.generatedAt);
+  if (generatedAtMs > Date.now() + 5 * 60 * 1000) {
+    throw new Error("proof generation timestamp is in the future");
+  }
+  if (envelope.targetRepo !== targetRepo) {
+    throw new Error(
+      `proof target repo ${envelope.targetRepo} did not match expected ${targetRepo}`,
+    );
+  }
+  const promptSha256 = requireSha256(
+    options.promptSha256,
+    "expectedPrCloseCoverageProof.promptSha256",
+  );
+  if (envelope.promptSha256 !== promptSha256) {
+    throw new Error("proof prompt snapshot is stale or mismatched");
+  }
+  if (envelope.source.number !== options.source.number) {
+    throw new Error(
+      `proof source #${envelope.source.number} did not match expected #${options.source.number}`,
+    );
+  }
+  if (envelope.covering.number !== options.covering.number) {
+    throw new Error(
+      `proof covering PR #${envelope.covering.number} did not match expected #${options.covering.number}`,
+    );
+  }
+  const sourceSnapshotSha256 = prCloseCoverageProofSnapshotSha256(options.source);
+  if (envelope.source.snapshotSha256 !== sourceSnapshotSha256) {
+    throw new Error(`proof source snapshot for #${options.source.number} is stale or mismatched`);
+  }
+  const coveringSnapshotSha256 = prCloseCoverageProofSnapshotSha256(options.covering);
+  if (envelope.covering.snapshotSha256 !== coveringSnapshotSha256) {
+    throw new Error(
+      `proof covering snapshot for #${options.covering.number} is stale or mismatched`,
+    );
+  }
+}
+
 export function readPrCloseCoverageProofModelOutput(
   outputPath: string,
 ): PrCloseCoverageProofModelResult {
@@ -359,6 +557,44 @@ function requireRecord(value: unknown, path: string): Record<string, unknown> {
     throw new Error(`${path} must be an object`);
   }
   return value as Record<string, unknown>;
+}
+
+function parseProofSnapshotBinding(
+  value: unknown,
+  path: string,
+): PrCloseCoverageProofEnvelope["source"] {
+  const parsed = requireRecord(value, path);
+  rejectUnexpectedKeys(parsed, PR_CLOSE_COVERAGE_PROOF_SNAPSHOT_KEYS, path);
+  if (typeof parsed.number !== "number") throw new Error(`${path}.number must be a number`);
+  const number = parsed.number;
+  if (!Number.isInteger(number) || number <= 0) throw new Error(`${path}.number must be positive`);
+  const snapshotSha256 = requireString(parsed.snapshotSha256, `${path}.snapshotSha256`);
+  if (!/^[a-f0-9]{64}$/.test(snapshotSha256)) {
+    throw new Error(`${path}.snapshotSha256 must be a lowercase SHA-256 digest`);
+  }
+  return { number, snapshotSha256 };
+}
+
+function normalizedProofTargetRepo(value: string): string {
+  const normalized = value.trim().toLowerCase();
+  if (!/^[a-z0-9_.-]+\/[a-z0-9_.-]+$/.test(normalized)) {
+    throw new Error("prCloseCoverageProofEnvelope.targetRepo must be an owner/repo slug");
+  }
+  return normalized;
+}
+
+function requireTimestamp(value: string, path: string): void {
+  if (!value.trim() || !Number.isFinite(Date.parse(value))) {
+    throw new Error(`${path} must be an ISO timestamp`);
+  }
+}
+
+function requireSha256(value: unknown, path: string): string {
+  const digest = requireString(value, path);
+  if (!/^[a-f0-9]{64}$/.test(digest)) {
+    throw new Error(`${path} must be a lowercase SHA-256 digest`);
+  }
+  return digest;
 }
 
 function rejectUnexpectedKeys(

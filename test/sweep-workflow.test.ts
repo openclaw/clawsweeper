@@ -171,23 +171,29 @@ test("terminal exact-review runs reconcile through a signed isolated backstop", 
   assert.doesNotMatch(workflow, /(?:GH_TOKEN|GITHUB_TOKEN|github\.token)/);
 });
 
-test("publish workflow installs Codex from the root checkout path", () => {
+test("publish workflow dispatches immediate apply through the isolated lane", () => {
   const workflow = readText(".github/workflows/sweep.yml");
   const publishJobStart = workflow.indexOf("\n  publish:");
   const recoverJobStart = workflow.indexOf("\n  recover-review-failures:", publishJobStart);
   const publishJob = workflow.slice(publishJobStart, recoverJobStart);
-
-  assert.match(publishJob, /uses: \.\/\.github\/actions\/setup-codex/);
-  assert.doesNotMatch(publishJob, /uses: \.\/clawsweeper\/\.github\/actions\/setup-codex/);
-  const setupCodexStart = publishJob.indexOf("- uses: ./.github/actions/setup-codex");
-  const syncCommentsStart = publishJob.indexOf("- name: Sync selected review comments");
-  const applySelectedStart = publishJob.indexOf("- name: Apply selected safe close proposals");
-  assert.ok(setupCodexStart > syncCommentsStart);
-  assert.ok(applySelectedStart > setupCodexStart);
-  assert.match(
-    publishJob.slice(setupCodexStart, applySelectedStart),
-    /if: \$\{\{ success\(\) && steps\.target-write-token\.outputs\.token != '' && github\.event\.inputs\.apply_after_review == 'true' \}\}/,
+  const dispatchStart = publishJob.indexOf(
+    "- name: Dispatch selected safe close proposals to isolated apply",
   );
+  const dispatchEnd = publishJob.indexOf("\n      - ", dispatchStart + 1);
+  const dispatchStep = publishJob.slice(dispatchStart, dispatchEnd);
+
+  assert.doesNotMatch(publishJob, /setup-codex/);
+  assert.match(publishJob, /name: Dispatch selected safe close proposals to isolated apply/);
+  assert.doesNotMatch(dispatchStep, /pnpm run apply-decisions/);
+  assert.match(dispatchStep, /gh workflow run sweep\.yml/);
+  assert.match(dispatchStep, /-f apply_existing=true/);
+  assert.match(dispatchStep, /-f apply_item_numbers="\$item_numbers"/);
+  assert.match(
+    publishJob,
+    /group: clawsweeper-target-publish-\$\{\{ needs\.plan\.outputs\.target_repo \}\}/,
+  );
+  assert.match(publishJob, /cancel-in-progress: false/);
+  assert.match(publishJob, /queue: max/);
 });
 
 test("broad record publishers isolate tuple reconciliation from status and auxiliary state", () => {
@@ -195,7 +201,6 @@ test("broad record publishers isolate tuple reconciliation from status and auxil
   for (const stepName of [
     "Commit review records",
     "Sync selected review comments",
-    "Apply selected safe close proposals",
     "Commit Audit Health",
   ]) {
     const start = workflow.indexOf(`- name: ${stepName}`);
@@ -226,55 +231,63 @@ test("broad record publishers isolate tuple reconciliation from status and auxil
   }
 });
 
-test("apply workflow installs Codex only when proof-eligible apply work can run", () => {
+test("apply workflow isolates Codex proof from the credentialed mutation runner", () => {
   const workflow = readText(".github/workflows/sweep.yml");
+  const workflowConcurrency = workflow.slice(
+    workflow.indexOf("\nconcurrency:"),
+    workflow.indexOf("\njobs:"),
+  );
+  const proofJobStart = workflow.indexOf("\n  apply-proof:");
   const applyJobStart = workflow.indexOf("\n  apply-existing:");
+  assert.notEqual(proofJobStart, -1);
   assert.notEqual(applyJobStart, -1);
+  assert.match(workflowConcurrency, /queue: max/);
+  assert.match(workflowConcurrency, /cancel-in-progress: false/);
+  const proofJob = workflow.slice(proofJobStart, applyJobStart);
   const applyJob = workflow.slice(applyJobStart);
-  const reconcileStart = applyJob.indexOf("- name: Reconcile before apply preselect");
-  const preselectStart = applyJob.indexOf("- name: Preselect apply work that can need Codex");
-  const setupCodexStart = applyJob.indexOf("- uses: ./.github/actions/setup-codex", preselectStart);
-  const applyStart = applyJob.indexOf(
-    "- name: Apply unchanged proposed decisions with checkpoints",
-  );
 
-  assert.ok(reconcileStart !== -1);
-  assert.ok(preselectStart !== -1);
-  assert.ok(preselectStart > reconcileStart);
-  assert.ok(setupCodexStart > preselectStart);
-  assert.ok(applyStart > setupCodexStart);
-  const reconcileBlock = applyJob.slice(reconcileStart, preselectStart);
-  assert.match(reconcileBlock, /GH_TOKEN: \$\{\{ steps\.target-write-token\.outputs\.token \}\}/);
-  assert.match(reconcileBlock, /source scripts\/apply-workflow-helpers\.sh/);
-  assert.match(reconcileBlock, /persist_reconciliation "\$\{reconcile_args\[@\]\}"/);
+  assert.match(proofJob, /permissions:\s+contents: read\s+issues: read\s+pull-requests: read/);
+  assert.match(proofJob, /persist-credentials: false/);
+  assert.match(proofJob, /persist-credentials: "false"/);
+  assert.doesNotMatch(proofJob, /Create target write token|Create state token/);
+  assert.match(proofJob, /proposed-pr-close-coverage-item-numbers/);
+  assert.match(proofJob, /--batch-size 2/);
+  assert.match(proofJob, /--coverage-proof-limit 2/);
+  assert.match(proofJob, /uses: \.\/\.github\/actions\/setup-codex/);
+  assert.match(proofJob, /--dry-run/);
+  assert.match(proofJob, /--codex-model internal/);
+  assert.match(proofJob, /--codex-reasoning-effort high/);
+  assert.match(proofJob, /\*\.proof\.json/);
+  assert.match(proofJob, /artifact_name: \$\{\{ steps\.proof-artifact\.outputs\.name \}\}/);
   assert.match(
-    applyJob.slice(setupCodexStart, applyStart),
-    /if: \$\{\{ steps\.apply-preselect\.outputs\.needs_codex == 'true' \}\}/,
+    proofJob,
+    /name=apply-coverage-proofs-\$\{\{ github\.run_id \}\}-\$\{\{ github\.run_attempt \}\}/,
   );
-  const preselectBlock = applyJob.slice(preselectStart, setupCodexStart);
-  assert.match(preselectBlock, /\[ "\$sync_comments_only" = "true" \]/);
-  assert.match(preselectBlock, /comment-sync-batch/);
-  assert.match(preselectBlock, /batch_count="\$\(awk -F=/);
-  const syncOnlyStart = preselectBlock.indexOf('if [ "$sync_comments_only" = "true" ]; then');
-  assert.ok(syncOnlyStart !== -1);
-  const nonSyncMatch = /\n\s+else\n\s+proof_args=\(/.exec(preselectBlock.slice(syncOnlyStart));
-  assert.ok(nonSyncMatch);
-  const nonSyncStart = syncOnlyStart + nonSyncMatch.index;
-  assert.ok(nonSyncStart > syncOnlyStart);
-  assert.doesNotMatch(preselectBlock.slice(syncOnlyStart, nonSyncStart), /needs_codex=true/);
-  assert.match(preselectBlock, /\[ -n "\$item_numbers" \]/);
-  assert.match(preselectBlock, /proposed-pr-close-coverage-item-numbers/);
-  assert.match(preselectBlock, /proof_args\+=\(--item-numbers "\$item_numbers"\)/);
-  assert.match(preselectBlock, /if \[ -n "\$selected" \]; then\s+needs_codex=true/);
-  assert.doesNotMatch(preselectBlock, /if \[ -n "\$item_numbers" \]; then\s+needs_codex=true/);
-  assert.doesNotMatch(preselectBlock, /normalized_apply_close_reasons=/);
+  assert.match(proofJob, /name: \$\{\{ steps\.proof-artifact\.outputs\.name \}\}/);
+
+  assert.match(applyJob, /needs: apply-proof/);
+  assert.doesNotMatch(applyJob, /setup-codex|OPENAI_API_KEY|CLAWSWEEPER_INTERNAL_MODEL/);
+  assert.match(applyJob, /Create target write token/);
+  assert.match(applyJob, /Create state token/);
+  assert.match(applyJob, /actions\/download-artifact@v8/);
+  assert.match(applyJob, /name: \$\{\{ needs\.apply-proof\.outputs\.artifact_name \}\}/);
+  assert.match(applyJob, /validate_coverage_proof_tree .* 8 262144 2097152/);
+  assert.doesNotMatch(applyJob, /COVERAGE_PROOF_TRUSTED_STARTED_AT|proof-trust/);
+  assert.match(applyJob, /target_repo.*PROOF_TARGET_REPO/);
+  assert.match(applyJob, /--require-precomputed-pr-close-coverage-proof/);
+  assert.match(applyJob, /--artifact-dir \.artifacts\/apply-proof/);
+  assert.match(
+    applyJob,
+    /group: clawsweeper-target-publish-\$\{\{ needs\.apply-proof\.outputs\.target_repo \}\}/,
+  );
+  assert.match(applyJob, /cancel-in-progress: false/);
+  assert.match(applyJob, /queue: max/);
 });
 
 test("apply workflow durably publishes each reconciliation before no-op exits", () => {
   const workflow = readText(".github/workflows/sweep.yml");
   const applyJob = workflow.slice(workflow.indexOf("\n  apply-existing:"));
   const preselectReconcile = applyJob.indexOf('persist_reconciliation "${reconcile_args[@]}"');
-  const preselectStart = applyJob.indexOf("- name: Preselect apply work that can need Codex");
   const applyStart = applyJob.indexOf(
     "- name: Apply unchanged proposed decisions with checkpoints",
   );
@@ -287,7 +300,7 @@ test("apply workflow durably publishes each reconciliation before no-op exits", 
   const closeIdle = applyJob.indexOf('--state "Apply idle"', applyStart);
 
   assert.ok(preselectReconcile !== -1);
-  assert.ok(preselectReconcile < preselectStart);
+  assert.ok(preselectReconcile < applyStart);
   assert.ok(policyNoop > preselectReconcile);
   assert.ok(applyReconcile > policyNoop);
   assert.ok(commentIdle > applyReconcile);
@@ -380,6 +393,42 @@ test("apply checkpoints split record tuples from auxiliary state", () => {
     { encoding: "utf8" },
   );
   assert.equal(failedOutput.trim(), "reconcile-records");
+});
+
+test("apply workflow rejects malformed or oversized coverage proof artifact trees", () => {
+  const root = mkdtempSync(tmpPrefix);
+  const validate = (maxFiles = 2, maxFileBytes = 64, maxTotalBytes = 128) =>
+    execFileSync(
+      "bash",
+      [
+        "-lc",
+        `source scripts/apply-workflow-helpers.sh\nvalidate_coverage_proof_tree "$PROOF_DIR" ${maxFiles} ${maxFileBytes} ${maxTotalBytes}`,
+      ],
+      { encoding: "utf8", env: { ...process.env, PROOF_DIR: root } },
+    );
+
+  try {
+    writeFileSync(join(root, "10-20.proof.json"), "{}\n");
+    writeFileSync(join(root, "30-40.proof.json"), "{}\n");
+    assert.equal(validate(), "");
+
+    writeFileSync(join(root, "50-60.proof.json"), "{}\n");
+    assert.throws(() => validate(), /maximum is 2/);
+    rmSync(join(root, "50-60.proof.json"));
+
+    writeFileSync(join(root, "unexpected.json"), "{}\n");
+    assert.throws(() => validate(3), /Unexpected coverage proof filename/);
+    rmSync(join(root, "unexpected.json"));
+
+    mkdirSync(join(root, "nested"));
+    assert.throws(() => validate(), /Unexpected non-file coverage proof artifact/);
+    rmSync(join(root, "nested"), { recursive: true });
+
+    writeFileSync(join(root, "10-20.proof.json"), "x".repeat(65));
+    assert.throws(() => validate(), /exceeds 64 bytes/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("apply workflow target token can inspect source workflow runs", () => {
@@ -734,23 +783,23 @@ test("apply workflow drops a coverage-proof tail only after exact trace examinat
   }
 });
 
-test("apply workflow syncs source checkout before state hydration", () => {
+test("apply proof and mutation start from fresh non-persisted source checkouts", () => {
   const workflow = readText(".github/workflows/sweep.yml");
+  const proofJobStart = workflow.indexOf("\n  apply-proof:");
   const applyJobStart = workflow.indexOf("\n  apply-existing:");
+  assert.notEqual(proofJobStart, -1);
   assert.notEqual(applyJobStart, -1);
+  const proofJob = workflow.slice(proofJobStart, applyJobStart);
   const applyJob = workflow.slice(applyJobStart);
-  const resolveTargetStart = applyJob.indexOf("- name: Resolve target repository");
-  const syncStart = applyJob.indexOf("- name: Sync source checkout before state hydration");
-  const setupStateStart = applyJob.indexOf("- uses: ./.github/actions/setup-state");
-  const reconcileStart = applyJob.indexOf("- name: Reconcile before apply preselect");
 
-  assert.ok(resolveTargetStart !== -1);
-  assert.ok(syncStart > resolveTargetStart);
-  assert.ok(setupStateStart > syncStart);
-  assert.ok(reconcileStart > setupStateStart);
-  assert.equal(applyJob.indexOf("- name: Sync before applying decisions"), -1);
-  assert.match(applyJob.slice(syncStart, setupStateStart), /run: git pull --rebase/);
-  assert.doesNotMatch(applyJob.slice(setupStateStart, reconcileStart), /git pull --rebase/);
+  assert.match(proofJob, /actions\/checkout@v7[\s\S]*?persist-credentials: false/);
+  assert.match(
+    proofJob,
+    /uses: \.\/\.github\/actions\/setup-state[\s\S]*?persist-credentials: "false"/,
+  );
+  assert.match(applyJob, /actions\/checkout@v7[\s\S]*?persist-credentials: false/);
+  assert.doesNotMatch(proofJob, /git pull --rebase/);
+  assert.doesNotMatch(applyJob, /git pull --rebase/);
 });
 
 test("sweep target tokens fall back when an org app installation is missing", () => {

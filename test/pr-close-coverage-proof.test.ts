@@ -4,9 +4,35 @@ import test from "node:test";
 
 import {
   buildPrCloseCoverageProofPrompt,
+  createPrCloseCoverageProofEnvelope,
+  parsePrCloseCoverageProofEnvelope,
+  prCloseCoverageProofEnvelopePath,
   parsePrCloseCoverageProofModelResult,
   prCloseCoverageProofCloseDecision,
+  validatePrCloseCoverageProofEnvelopeBinding,
 } from "../dist/pr-close-coverage-proof.js";
+
+const concreteCoverageProof = {
+  sourceSummary: "PR A fixes the auth route.",
+  coveringSummary: "PR B fixes the same auth route.",
+  coveredWork: ["PR B includes the auth route fix that PR A proposed."],
+  uniqueSourceWork: [] as string[],
+  decision: "covered" as const,
+  reason: "PR B covers PR A's auth behavior and PR A has no unique remaining work.",
+};
+const proofPromptSha256 = "a".repeat(64);
+
+const proofPullRequest = (number: number) => ({
+  number,
+  title: `Auth route ${number}`,
+  url: `https://github.com/openclaw/openclaw/pull/${number}`,
+  state: "open",
+  mergedAt: null,
+  body: `Auth route body ${number}`,
+  updatedAt: "2026-07-10T00:00:00Z",
+  comments: [{ author: "octocat", body: `Auth route comment ${number}` }],
+  commentsTruncated: false,
+});
 
 test("PR close coverage proof rejects blank covered work before closing", () => {
   const decision = prCloseCoverageProofCloseDecision({
@@ -68,17 +94,132 @@ for (const scenario of [
 }
 
 test("PR close coverage proof can close when coverage is concrete", () => {
-  const decision = prCloseCoverageProofCloseDecision({
-    sourceSummary: "PR A fixes the auth route.",
-    coveringSummary: "PR B fixes the same auth route.",
-    coveredWork: ["PR B includes the auth route fix that PR A proposed."],
-    uniqueSourceWork: [],
-    decision: "covered",
-    reason: "PR B covers PR A's auth behavior and PR A has no unique remaining work.",
-  });
+  const decision = prCloseCoverageProofCloseDecision(concreteCoverageProof);
 
   assert.equal(decision.close, true);
   assert.equal(decision.proof.decision, "covered");
+});
+
+test("PR close coverage proof envelope binds repo and exact pull request snapshots", () => {
+  const source = proofPullRequest(10);
+  const covering = proofPullRequest(20);
+  const envelope = createPrCloseCoverageProofEnvelope({
+    targetRepo: "OpenClaw/OpenClaw",
+    generatedAt: "2026-07-10T01:02:03.000Z",
+    promptSha256: proofPromptSha256,
+    source,
+    covering,
+    proof: concreteCoverageProof,
+  });
+
+  assert.equal(envelope.targetRepo, "openclaw/openclaw");
+  assert.equal(envelope.source.number, 10);
+  assert.equal(envelope.covering.number, 20);
+  validatePrCloseCoverageProofEnvelopeBinding(envelope, {
+    targetRepo: "openclaw/openclaw",
+    promptSha256: proofPromptSha256,
+    source,
+    covering,
+  });
+  assert.match(prCloseCoverageProofEnvelopePath("proofs", 10, 20), /10-20\.proof\.json$/);
+});
+
+for (const scenario of [
+  {
+    name: "different repository",
+    mutate: (value: ReturnType<typeof createPrCloseCoverageProofEnvelope>) => ({
+      ...value,
+      targetRepo: "openclaw/clawhub",
+    }),
+    expected: /target repo/,
+  },
+  {
+    name: "stale prompt snapshot",
+    mutate: (value: ReturnType<typeof createPrCloseCoverageProofEnvelope>) => ({
+      ...value,
+      promptSha256: "0".repeat(64),
+    }),
+    expected: /prompt snapshot/,
+  },
+  {
+    name: "different source item",
+    mutate: (value: ReturnType<typeof createPrCloseCoverageProofEnvelope>) => ({
+      ...value,
+      source: { ...value.source, number: 11 },
+    }),
+    expected: /proof source #11/,
+  },
+  {
+    name: "stale source snapshot",
+    mutate: (value: ReturnType<typeof createPrCloseCoverageProofEnvelope>) => ({
+      ...value,
+      source: { ...value.source, snapshotSha256: "0".repeat(64) },
+    }),
+    expected: /source snapshot/,
+  },
+  {
+    name: "stale covering snapshot",
+    mutate: (value: ReturnType<typeof createPrCloseCoverageProofEnvelope>) => ({
+      ...value,
+      covering: { ...value.covering, snapshotSha256: "0".repeat(64) },
+    }),
+    expected: /covering snapshot/,
+  },
+  {
+    name: "future generation timestamp",
+    mutate: (value: ReturnType<typeof createPrCloseCoverageProofEnvelope>) => ({
+      ...value,
+      generatedAt: "2099-01-01T00:00:00.000Z",
+    }),
+    expected: /timestamp is in the future/,
+  },
+]) {
+  test(`PR close coverage proof envelope rejects ${scenario.name}`, () => {
+    const source = proofPullRequest(10);
+    const covering = proofPullRequest(20);
+    const envelope = createPrCloseCoverageProofEnvelope({
+      targetRepo: "openclaw/openclaw",
+      promptSha256: proofPromptSha256,
+      source,
+      covering,
+      proof: concreteCoverageProof,
+    });
+
+    assert.throws(
+      () =>
+        validatePrCloseCoverageProofEnvelopeBinding(scenario.mutate(envelope), {
+          targetRepo: "openclaw/openclaw",
+          promptSha256: proofPromptSha256,
+          source,
+          covering,
+        }),
+      scenario.expected,
+    );
+  });
+}
+
+test("PR close coverage proof envelope parser is strict", () => {
+  const envelope = createPrCloseCoverageProofEnvelope({
+    targetRepo: "openclaw/openclaw",
+    promptSha256: proofPromptSha256,
+    source: proofPullRequest(10),
+    covering: proofPullRequest(20),
+    proof: concreteCoverageProof,
+  });
+
+  assert.throws(
+    () => parsePrCloseCoverageProofEnvelope({ ...envelope, artifactPath: "../../forged.json" }),
+    /unexpected keys: artifactPath/,
+  );
+  assert.throws(
+    () =>
+      parsePrCloseCoverageProofEnvelope({
+        ...envelope,
+        source: { ...envelope.source, number: "10" },
+      }),
+    /source\.number must be a number/,
+  );
+  assert.throws(() => prCloseCoverageProofEnvelopePath("proofs", -1, 20), /positive integer/);
 });
 
 test("PR close coverage proof can close concrete loopback embeddings bypass work", () => {
