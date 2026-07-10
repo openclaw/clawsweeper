@@ -304,6 +304,7 @@ function publishMainCommitInternal(options: GitPublishOptions): PublishResult {
         remote,
         branch,
         pushAttempts,
+        maxAttempts,
         sourceCommit: reconciliationSourceCommit ?? sourceCommit,
         tupleKeys,
       });
@@ -478,6 +479,7 @@ function publishReconciliationChunks(options: {
   remote: string;
   branch: string;
   pushAttempts: number;
+  maxAttempts: number;
   sourceCommit: string;
   tupleKeys: readonly string[];
 }): PublishResult {
@@ -502,11 +504,11 @@ function publishReconciliationChunks(options: {
     }
     committed = true;
     if (
-      !pushCommit({
+      !pushReconciliationCommit({
         remote: options.remote,
         branch: options.branch,
         pushAttempts: options.pushAttempts,
-        rebaseStrategy: "reconcile-records",
+        maxAttempts: options.maxAttempts,
         reconciliationSourceCommit: options.sourceCommit,
         reconciliationTupleKeys: allowedTupleKeys,
       })

@@ -1236,7 +1236,7 @@ test("reconcile-records bounds git subprocesses for a 516-tuple publish", () => 
   const failedLines = [];
   assert.throws(
     () => captureConsoleLog(() => captureProcessWrites(publish), failedLines),
-    /Failed to publish reconciliation checkpoint 2\/5/,
+    /Failed to publish reconciliation checkpoint 3\/5/,
   );
   assert.equal(
     failedLines.some((line) => line.includes("Git publish failure: phase=checkpoint")),
@@ -1249,10 +1249,18 @@ test("reconcile-records bounds git subprocesses for a 516-tuple publish", () => 
   assert.match(
     run(
       "git",
-      ["--git-dir", origin, "show", `state:${recordsRoot}/items/${numbers[128]}.md`],
+      ["--git-dir", origin, "show", `state:${recordsRoot}/closed/${numbers[128]}.md`],
       root,
     ),
-    new RegExp(`# base ${numbers[128]}`),
+    new RegExp(`# closed ${numbers[128]}`),
+  );
+  assert.match(
+    run(
+      "git",
+      ["--git-dir", origin, "show", `state:${recordsRoot}/items/${numbers[256]}.md`],
+      root,
+    ),
+    new RegExp(`# base ${numbers[256]}`),
   );
   run("git", ["fetch", "origin", "state"], other);
   run("git", ["rebase", "origin/state"], other);
@@ -2358,7 +2366,9 @@ if test -f "${counter}"; then count=$(cat "${counter}"); fi
 count=$((count + 1))
 printf '%s\\n' "$count" > "${counter}"
 if test "$count" -eq 1; then git -C "${other}" push origin HEAD:${branch}; fi
-if test "$count" -eq 3 || test "$count" -eq 4; then exit 1; fi
+case "$count" in
+  3|4|6|7|8|9) exit 1 ;;
+esac
 `,
   );
   fs.chmodSync(hook, 0o755);
