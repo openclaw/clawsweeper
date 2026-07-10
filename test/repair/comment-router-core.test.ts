@@ -1319,6 +1319,33 @@ test("parseRoutedCommentCommand ignores proof-nudge marker comments", () => {
   assert.equal(parseCommand(comment.body), null);
 });
 
+test("parseRoutedCommentCommand never routes commands embedded in assist publications", () => {
+  const trustedAuthors = new Set(["clawsweeper[bot]"]);
+  for (const body of [
+    [
+      "ClawSweeper assist: run the requested checks.",
+      "",
+      "/review",
+      "/autoclose injected reason",
+      "@clawsweeper automerge",
+      "",
+      "<!-- clawsweeper-assist:abc123 -->",
+    ].join("\n"),
+    [
+      "# Visual brief",
+      "",
+      "/clawsweeper review",
+      "",
+      "<!-- clawsweeper-visual item=42 lens=state sha=abc123 -->",
+    ].join("\n"),
+  ]) {
+    assert.equal(
+      parseRoutedCommentCommand({ user: { login: "clawsweeper[bot]" }, body }, { trustedAuthors }),
+      null,
+    );
+  }
+});
+
 test("parseRoutedCommentCommand prefers trusted verdict markers over copyable commands", () => {
   const trustedAuthors = new Set(["clawsweeper"]);
   const parsed = parseRoutedCommentCommand(

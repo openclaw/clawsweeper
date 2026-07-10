@@ -49,7 +49,7 @@ on:
 permissions:
   actions: read
   contents: read
-  issues: write
+  issues: read
   pull-requests: read
 
 env:
@@ -58,7 +58,7 @@ env:
   CLAWSWEEPER_MODEL: internal
 
 concurrency:
-  group: ${{ format('clawsweeper-assist-{0}-{1}-{2}', github.event.client_payload.target_repo || inputs.target_repo || 'openclaw/openclaw', github.event.client_payload.item_number || inputs.item_number || github.run_id, github.event.client_payload.comment_id || inputs.comment_id || github.run_id) }}
+  group: ${{ format('clawsweeper-assist-{0}-{1}-{2}', github.event.client_payload.target_repo || inputs.target_repo || 'openclaw/openclaw', github.event.client_payload.item_number || inputs.item_number || 'unknown', github.event.client_payload.comment_id || inputs.comment_id || 'manual') }}
   cancel-in-progress: false
 
 jobs:
@@ -72,6 +72,7 @@ jobs:
         with:
           sparse-checkout: scripts/dispatch-receipt-owner.sh
           sparse-checkout-cone-mode: false
+          persist-credentials: false
 
       - id: receipt
         env:
@@ -117,6 +118,7 @@ jobs:
             tsconfig.json
             tsconfig.repair.json
           sparse-checkout-cone-mode: false
+          persist-credentials: false
 
       - uses: ./.github/actions/setup-pnpm
         with:
@@ -147,7 +149,7 @@ jobs:
             printf '%s' "$total"
           }
 
-          for attempt in $(seq 1 80); do
+          for _ in $(seq 1 80); do
             active="$(active_assist_jobs)"
             if [ "$active" -lt "$cap" ]; then
               echo "proceed=true" >> "$GITHUB_OUTPUT"
@@ -165,34 +167,53 @@ jobs:
     if: ${{ needs.capacity.outputs.proceed == 'true' }}
     runs-on: ${{ vars.CLAWSWEEPER_WORKER_RUNNER || 'blacksmith-4vcpu-ubuntu-2404' }}
     timeout-minutes: 8
+    outputs:
+      generation_attempt: ${{ steps.generate.outputs.generation_attempt }}
     steps:
       - uses: actions/checkout@v7
         with:
+          ref: ${{ github.sha }}
           filter: blob:none
-
-      - name: Create GitHub App token
-        id: app_token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
-        with:
-          client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
-          private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
-          owner: ${{ vars.CLAWSWEEPER_ALLOWED_OWNER || github.repository_owner }}
-          permission-issues: write
-          permission-pull-requests: write
+          persist-credentials: false
 
       - uses: ./.github/actions/setup-pnpm
         with:
           build-script: build
+
+      - name: Resolve validated target repository
+        id: target
+        env:
+          TARGET_REPO: ${{ github.event.client_payload.target_repo || inputs.target_repo }}
+        run: |
+          set -euo pipefail
+          resolved="$(node dist/clawsweeper.js assist-target --target-repo "$TARGET_REPO")"
+          {
+            echo "target_repo=$(jq -er '.repo' <<< "$resolved")"
+            echo "target_repo_owner=$(jq -er '.owner' <<< "$resolved")"
+            echo "target_repo_name=$(jq -er '.repository' <<< "$resolved")"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Create read-only GitHub App token
+        id: read_token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
+          owner: ${{ steps.target.outputs.target_repo_owner }}
+          repositories: ${{ steps.target.outputs.target_repo_name }}
+          permission-issues: read
+          permission-pull-requests: read
 
       - uses: ./.github/actions/setup-codex
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           CLAWSWEEPER_INTERNAL_MODEL: ${{ secrets.CLAWSWEEPER_MODEL }}
 
-      - name: Answer maintainer question
+      - name: Generate bounded assist artifact
+        id: generate
         env:
-          GH_TOKEN: ${{ steps.app_token.outputs.token }}
-          TARGET_REPO: ${{ github.event.client_payload.target_repo || inputs.target_repo }}
+          GH_TOKEN: ${{ steps.read_token.outputs.token }}
+          TARGET_REPO: ${{ steps.target.outputs.target_repo }}
           ITEM_NUMBER: ${{ github.event.client_payload.item_number || inputs.item_number }}
           QUESTION: ${{ github.event.client_payload.question || inputs.question }}
           MODE: ${{ github.event.client_payload.assist.mode || github.event.client_payload.mode || inputs.mode || 'assist' }}
@@ -205,7 +226,8 @@ jobs:
           TIMEOUT_MS: ${{ github.event.client_payload.assist.timeout_ms || github.event.client_payload.timeout_ms || '120000' }}
         run: |
           set -euo pipefail
-          node dist/clawsweeper.js assist \
+          test -n "$GH_TOKEN"
+          node dist/clawsweeper.js assist-generate \
             --target-repo "$TARGET_REPO" \
             --item-number "$ITEM_NUMBER" \
             --question "$QUESTION" \
@@ -217,4 +239,125 @@ jobs:
             --codex-model "$MODEL" \
             --codex-reasoning-effort "$REASONING_EFFORT" \
             --codex-sandbox read-only \
-            --codex-timeout-ms "$TIMEOUT_MS"
+            --codex-timeout-ms "$TIMEOUT_MS" \
+            --run-id "$GITHUB_RUN_ID" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --artifact .artifacts/assist-result.json
+          echo "generation_attempt=$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
+
+      - name: Upload assist artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: clawsweeper-assist-${{ github.run_id }}-${{ steps.generate.outputs.generation_attempt }}
+          path: .artifacts/assist-result.json
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    name: Publish trusted assist comment
+    needs: assist
+    if: ${{ needs.assist.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          filter: blob:none
+          persist-credentials: false
+
+      - uses: ./.github/actions/setup-pnpm
+        with:
+          build-script: build
+
+      - name: Verify exact workflow source
+        run: test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+
+      - name: Resolve validated target repository
+        id: target
+        env:
+          TARGET_REPO: ${{ github.event.client_payload.target_repo || inputs.target_repo }}
+        run: |
+          set -euo pipefail
+          resolved="$(node dist/clawsweeper.js assist-target --target-repo "$TARGET_REPO")"
+          {
+            echo "target_repo=$(jq -er '.repo' <<< "$resolved")"
+            echo "target_repo_owner=$(jq -er '.owner' <<< "$resolved")"
+            echo "target_repo_name=$(jq -er '.repository' <<< "$resolved")"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Download assist artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: clawsweeper-assist-${{ github.run_id }}-${{ needs.assist.outputs.generation_attempt }}
+          path: .artifacts/publish
+
+      - name: Validate untrusted assist artifact
+        env:
+          TARGET_REPO: ${{ steps.target.outputs.target_repo }}
+          ITEM_NUMBER: ${{ github.event.client_payload.item_number || inputs.item_number }}
+          QUESTION: ${{ github.event.client_payload.question || inputs.question }}
+          MODE: ${{ github.event.client_payload.assist.mode || github.event.client_payload.mode || inputs.mode || 'assist' }}
+          LENS: ${{ github.event.client_payload.assist.lens || github.event.client_payload.lens || inputs.lens || 'auto' }}
+          COMMENT_ID: ${{ github.event.client_payload.comment_id || inputs.comment_id || '' }}
+          COMMENT_URL: ${{ github.event.client_payload.comment_url || inputs.comment_url || '' }}
+          AUTHOR: ${{ github.event.client_payload.author || inputs.author || '' }}
+          REASONING_EFFORT: high
+          GENERATION_ATTEMPT: ${{ needs.assist.outputs.generation_attempt }}
+        run: |
+          set -euo pipefail
+          node dist/clawsweeper.js assist-validate \
+            --artifact .artifacts/publish/assist-result.json \
+            --target-repo "$TARGET_REPO" \
+            --item-number "$ITEM_NUMBER" \
+            --question "$QUESTION" \
+            --mode "$MODE" \
+            --lens "$LENS" \
+            --comment-id "$COMMENT_ID" \
+            --comment-url "$COMMENT_URL" \
+            --author "$AUTHOR" \
+            --codex-reasoning-effort "$REASONING_EFFORT" \
+            --run-id "$GITHUB_RUN_ID" \
+            --run-attempt "$GENERATION_ATTEMPT"
+
+      - name: Create narrow GitHub App write token
+        id: write_token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
+          owner: ${{ steps.target.outputs.target_repo_owner }}
+          repositories: ${{ steps.target.outputs.target_repo_name }}
+          permission-issues: write
+          permission-pull-requests: read
+
+      - name: Revalidate and publish assist comment
+        env:
+          GH_TOKEN: ${{ steps.write_token.outputs.token }}
+          TARGET_REPO: ${{ steps.target.outputs.target_repo }}
+          ITEM_NUMBER: ${{ github.event.client_payload.item_number || inputs.item_number }}
+          QUESTION: ${{ github.event.client_payload.question || inputs.question }}
+          MODE: ${{ github.event.client_payload.assist.mode || github.event.client_payload.mode || inputs.mode || 'assist' }}
+          LENS: ${{ github.event.client_payload.assist.lens || github.event.client_payload.lens || inputs.lens || 'auto' }}
+          COMMENT_ID: ${{ github.event.client_payload.comment_id || inputs.comment_id || '' }}
+          COMMENT_URL: ${{ github.event.client_payload.comment_url || inputs.comment_url || '' }}
+          AUTHOR: ${{ github.event.client_payload.author || inputs.author || '' }}
+          REASONING_EFFORT: high
+          GENERATION_ATTEMPT: ${{ needs.assist.outputs.generation_attempt }}
+        run: |
+          set -euo pipefail
+          test -n "$GH_TOKEN"
+          node dist/clawsweeper.js assist-publish \
+            --artifact .artifacts/publish/assist-result.json \
+            --target-repo "$TARGET_REPO" \
+            --item-number "$ITEM_NUMBER" \
+            --question "$QUESTION" \
+            --mode "$MODE" \
+            --lens "$LENS" \
+            --comment-id "$COMMENT_ID" \
+            --comment-url "$COMMENT_URL" \
+            --author "$AUTHOR" \
+            --codex-reasoning-effort "$REASONING_EFFORT" \
+            --run-id "$GITHUB_RUN_ID" \
+            --run-attempt "$GENERATION_ATTEMPT"

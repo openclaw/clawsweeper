@@ -1,0 +1,90 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://clawsweeper.openclaw.ai/schema/assist-artifact.schema.json",
+  "title": "ClawSweeper assist generation artifact",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "generated_at",
+    "workflow",
+    "target",
+    "source",
+    "request",
+    "output",
+    "idempotency_key"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "generated_at": { "type": "string", "format": "date-time", "maxLength": 64 },
+    "workflow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["run_id", "run_attempt"],
+      "properties": {
+        "run_id": { "type": "string", "pattern": "^[0-9]{1,30}$" },
+        "run_attempt": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "repo",
+        "item_number",
+        "item_kind",
+        "source_revision",
+        "context_digest",
+        "pull_head_sha"
+      ],
+      "properties": {
+        "repo": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$"
+        },
+        "item_number": { "type": "integer", "minimum": 1 },
+        "item_kind": { "enum": ["issue", "pull_request"] },
+        "source_revision": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "context_digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "pull_head_sha": {
+          "oneOf": [{ "type": "null" }, { "type": "string", "pattern": "^[0-9a-f]{40}$" }]
+        }
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["comment_id", "comment_url", "author", "digest"],
+      "properties": {
+        "comment_id": { "type": "string", "pattern": "^(?:|[0-9]{1,30})$" },
+        "comment_url": { "type": "string", "maxLength": 1000 },
+        "author": { "type": "string", "maxLength": 100 },
+        "digest": {
+          "oneOf": [{ "type": "null" }, { "type": "string", "pattern": "^[0-9a-f]{64}$" }]
+        }
+      }
+    },
+    "request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sha256", "mode", "lens", "reasoning_effort"],
+      "properties": {
+        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "mode": { "enum": ["assist", "visual"] },
+        "lens": {
+          "enum": ["auto", "ux", "flow", "state", "data", "proof", "risk", "maintainer"]
+        },
+        "reasoning_effort": { "enum": ["low", "medium", "high", "xhigh"] }
+      }
+    },
+    "output": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["answer"],
+      "properties": {
+        "answer": { "type": "string", "minLength": 1, "maxLength": 60000 }
+      }
+    },
+    "idempotency_key": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+  }
+}

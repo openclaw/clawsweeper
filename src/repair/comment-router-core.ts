@@ -1993,10 +1993,15 @@ export function parseRoutedCommentCommand(
   comment: LooseRecord,
   { trustedAuthors = new Set() }: LooseRecord = {},
 ) {
+  if (isAssistPublicationCommentBody(String(comment?.body ?? ""))) return null;
   if (isTrustedReviewStartStatusComment({ comment, trustedAuthors })) return null;
   const trusted = parseTrustedAutomation(comment, { trustedAuthors });
   if (trusted) return trusted;
   return parseCommand(String(comment?.body ?? ""));
+}
+
+export function isAssistPublicationCommentBody(body: string) {
+  return /<!--\s*clawsweeper-(?:assist:|visual(?:\s|-->))/i.test(String(body ?? ""));
 }
 
 export function isProofNudgeCommentBody(body: string) {

@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  assistIssueUrlMatchesForTest,
+  assistPromptContextForTest,
   compactMappedSlice,
   compactMappedWindow,
   extractLatestClawSweeperReviewForTest,
@@ -13,6 +15,25 @@ import {
   githubPaginatedPath,
   stripEmptyMaintainerRulingFieldsForTest,
 } from "../dist/clawsweeper.js";
+
+test("assist source comment URL matching preserves canonical repository casing", () => {
+  assert.equal(
+    assistIssueUrlMatchesForTest(
+      "https://api.github.com/repos/OpenClaw/ExampleRepo/issues/42",
+      "openclaw/examplerepo",
+      42,
+    ),
+    true,
+  );
+  assert.equal(
+    assistIssueUrlMatchesForTest(
+      "https://api.github.com/repos/OpenClaw/ExampleRepo/issues/420",
+      "openclaw/examplerepo",
+      42,
+    ),
+    false,
+  );
+});
 
 test("githubPaginatedPath requests maximum REST page size by default", () => {
   assert.equal(
@@ -126,6 +147,11 @@ test("review context comment filter removes ClawSweeper self-noise and command-o
       "<!-- clawsweeper-visual item=123 lens=state sha=abc -->\n# Visual brief",
       "clawsweeper",
     ),
+    issueComment(
+      8,
+      "ClawSweeper assist: prior answer.\n\n<!-- clawsweeper-assist:abc -->",
+      "clawsweeper[bot]",
+    ),
     issueComment(4, "@clawsweeper re-review", "author"),
     issueComment(5, "Here is real behavior proof from my terminal.", "author"),
     issueComment(6, "Actionable file/line review feedback.", "chatgpt-codex-connector[bot]"),
@@ -133,10 +159,66 @@ test("review context comment filter removes ClawSweeper self-noise and command-o
 
   const result = filterReviewContextCommentsForTest(comments, 123);
 
-  assert.equal(result.filtered, 5);
+  assert.equal(result.filtered, 6);
   assert.deepEqual(
     result.included.map((comment) => (comment as { id: number }).id),
     [5, 6],
+  );
+});
+
+test("assist prompt context excludes transient API state but preserves material review inputs", () => {
+  const base = {
+    issue: {
+      number: 42,
+      title: "Stable title",
+      state: "open",
+      comments: 3,
+      updatedAt: "2026-07-10T01:00:00Z",
+      body: "Stable body",
+    },
+    comments: [{ id: 1, author: "maintainer", body: "Please verify this." }],
+    timeline: [{ id: 9, event: "commented", actor: "clawsweeper[bot]" }],
+    sourceRevision: "a".repeat(64),
+    relatedItems: [{ issue: { number: 99, title: "Local search result" } }],
+    counts: { comments: 3, timeline: 9, pullFiles: 2 },
+    pullRequest: {
+      number: 42,
+      state: "open",
+      draft: false,
+      mergeable: null,
+      mergeableState: "unknown",
+      updatedAt: "2026-07-10T01:00:00Z",
+      head: { sha: "b".repeat(40) },
+      base: { sha: "c".repeat(40) },
+    },
+    pullFiles: [{ filename: "src/example.ts", patch: "+fixed" }],
+    pullCommits: [{ sha: "b".repeat(40), message: "fix: example" }],
+    pullReviewComments: [{ id: 2, author: "reviewer", body: "Needs a test." }],
+  };
+  const transientlyChanged = structuredClone(base);
+  transientlyChanged.issue.comments = 4;
+  transientlyChanged.issue.updatedAt = "2026-07-10T01:01:00Z";
+  transientlyChanged.counts.comments = 4;
+  transientlyChanged.pullRequest.mergeable = true;
+  transientlyChanged.pullRequest.mergeableState = "clean";
+  transientlyChanged.pullRequest.updatedAt = "2026-07-10T01:01:00Z";
+
+  assert.deepEqual(
+    assistPromptContextForTest(base),
+    assistPromptContextForTest(transientlyChanged),
+  );
+  const projected = assistPromptContextForTest(base);
+  assert.equal(projected.timeline, undefined);
+  assert.equal(projected.relatedItems, undefined);
+  assert.equal(projected.counts, undefined);
+  assert.equal((projected.issue as Record<string, unknown>).updatedAt, undefined);
+  assert.equal((projected.pullRequest as Record<string, unknown>).mergeableState, undefined);
+
+  const materiallyChanged = structuredClone(base);
+  materiallyChanged.pullRequest.draft = true;
+  assert.notDeepEqual(
+    assistPromptContextForTest(base),
+    assistPromptContextForTest(materiallyChanged),
   );
 });
 

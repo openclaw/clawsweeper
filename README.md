@@ -233,7 +233,9 @@ Common commands:
   a 120-second per-item timeout, and its own five-job cap. It posts a separate
   non-durable answer comment and never edits the durable ClawSweeper review
   comment, closes, merges, labels, pushes, repairs, or emits review/apply
-  markers.
+  markers. The model job has read-only GitHub access and emits a bounded artifact;
+  a fresh trusted publisher validates its workflow request, target revision, PR
+  head, and source comment before minting a narrow comment-write token.
 - `visualize [lens]` dispatches the read-only visual assist lane and posts or
   updates a marker-backed visual brief comment for the requested lens.
 - `fix ci`, `address review`, and `rebase` dispatch the repair worker only for

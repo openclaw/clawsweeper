@@ -3,8 +3,12 @@ import { spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import {
   chmodSync,
+  closeSync,
   existsSync,
+  fstatSync,
   mkdirSync,
+  openSync,
+  readSync,
   readFileSync,
   readdirSync,
   renameSync,
@@ -50,6 +54,16 @@ import {
 } from "./github-retry.js";
 import { parseGhJson, parseGhJsonLinesWithRetry, parseGhJsonWithRetry } from "./github-json.js";
 import { stableJson } from "./stable-json.js";
+import {
+  ASSIST_ANSWER_MAX_BYTES,
+  ASSIST_ARTIFACT_MAX_BYTES,
+  assertAssistArtifactLiveRevision,
+  assistSourceCommentSha256,
+  createAssistArtifact,
+  parseAssistArtifact,
+  type AssistArtifact,
+  type AssistRequestBinding,
+} from "./assist-artifact.js";
 import {
   appendFloorBackfillCandidates,
   compareDueCandidates,
@@ -4493,6 +4507,7 @@ function isClawSweeperNoiseComment(value: unknown, number: number): boolean {
   if (!body.trim() || !isClawSweeperComment(value)) return false;
   if (isClawSweeperDurableReviewComment(value, number)) return true;
   if (/clawsweeper-pr-egg-hatch:/i.test(body)) return true;
+  if (/clawsweeper-assist:/i.test(body)) return true;
   if (/clawsweeper-visual\s+item=/i.test(body)) return true;
   if (/clawsweeper-command(?:-status|-ack)?:/i.test(body)) return true;
   if (/clawsweeper-review-status:/i.test(body)) return true;
@@ -8607,6 +8622,51 @@ function stripTextFence(markdown: string): string {
   return match ? (match[1]?.trim() ?? trimmed) : trimmed;
 }
 
+const ASSIST_ISSUE_VOLATILE_PROMPT_FIELDS = new Set(["comments", "updatedAt"]);
+const ASSIST_PULL_VOLATILE_PROMPT_FIELDS = new Set(["mergeable", "mergeableState", "updatedAt"]);
+
+function omitRecordFields(value: unknown, omitted: ReadonlySet<string>): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(asRecord(value)).filter(([key]) => !omitted.has(key)));
+}
+
+function assistPromptContext(context: ItemContext): Record<string, unknown> {
+  const projected: Record<string, unknown> = {
+    issue: omitRecordFields(context.issue, ASSIST_ISSUE_VOLATILE_PROMPT_FIELDS),
+    comments: context.comments,
+    sourceRevision: context.sourceRevision ?? null,
+  };
+  if (context.goodFirstIssueHumanLabelState !== undefined) {
+    projected.goodFirstIssueHumanLabelState = context.goodFirstIssueHumanLabelState;
+  }
+  if (context.previousClawSweeperReview !== undefined) {
+    projected.previousClawSweeperReview = context.previousClawSweeperReview;
+  }
+  if (context.closingPullRequests !== undefined) {
+    projected.closingPullRequests = context.closingPullRequests.map((pull) =>
+      omitRecordFields(pull, ASSIST_PULL_VOLATILE_PROMPT_FIELDS),
+    );
+  }
+  if (context.referencingMergedPullRequests !== undefined) {
+    projected.referencingMergedPullRequests = context.referencingMergedPullRequests;
+  }
+  if (context.pullRequest !== undefined) {
+    projected.pullRequest = omitRecordFields(
+      context.pullRequest,
+      ASSIST_PULL_VOLATILE_PROMPT_FIELDS,
+    );
+  }
+  if (context.pullFiles !== undefined) projected.pullFiles = context.pullFiles;
+  if (context.pullCommits !== undefined) projected.pullCommits = context.pullCommits;
+  if (context.pullReviewComments !== undefined) {
+    projected.pullReviewComments = context.pullReviewComments;
+  }
+  return projected;
+}
+
+export function assistPromptContextForTest(context: unknown): Record<string, unknown> {
+  return assistPromptContext(context as ItemContext);
+}
+
 function buildAssistPrompt(options: {
   item: Item;
   context: ItemContext;
@@ -8655,7 +8715,7 @@ function buildAssistPrompt(options: {
     "",
     "GitHub context JSON:",
     "```json",
-    JSON.stringify(options.context, null, 2),
+    JSON.stringify(assistPromptContext(options.context), null, 2),
     "```",
   ].join("\n");
 }
@@ -8720,7 +8780,7 @@ function buildVisualPrompt(options: {
     "",
     "GitHub context JSON:",
     "```json",
-    JSON.stringify(options.context, null, 2),
+    JSON.stringify(assistPromptContext(options.context), null, 2),
     "```",
   ].join("\n");
 }
@@ -8757,6 +8817,8 @@ function runCodexAssist(options: {
     codexLoginConfig(),
     'approval_policy="never"',
   ];
+  const emptyGitHubConfigDir = join(options.workDir, ".gh-empty");
+  ensureDir(emptyGitHubConfigDir);
   const result = runCodexProcess({
     args: [
       "exec",
@@ -8769,7 +8831,7 @@ function runCodexAssist(options: {
       "-",
     ],
     cwd: ROOT,
-    env: codexEnv(),
+    env: { ...codexEnv(), GH_CONFIG_DIR: emptyGitHubConfigDir },
     input: prompt,
     timeoutMs: options.timeoutMs,
   });
@@ -8782,11 +8844,37 @@ function runCodexAssist(options: {
           }`;
     throw new Error(`Codex assist failed for #${options.item.number}: ${detail}`);
   }
-  return stripTextFence(readFileSync(outputPath, "utf8"));
+  return stripTextFence(
+    readBoundedUtf8File(outputPath, ASSIST_ANSWER_MAX_BYTES + 4_096, "Codex assist output"),
+  );
 }
 
-function assistCommentMarker(commentId: string): string {
-  return `<!-- clawsweeper-assist:${commentId || "unknown"} -->`;
+function readBoundedUtf8File(path: string, maxBytes: number, label: string): string {
+  const fd = openSync(path, "r");
+  try {
+    const size = fstatSync(fd).size;
+    if (!Number.isSafeInteger(size) || size < 0 || size > maxBytes) {
+      throw new Error(`${label} exceeds ${maxBytes} bytes`);
+    }
+    const buffer = Buffer.alloc(size);
+    let offset = 0;
+    while (offset < size) {
+      const bytesRead = readSync(fd, buffer, offset, size - offset, null);
+      if (bytesRead === 0) break;
+      offset += bytesRead;
+    }
+    const extra = Buffer.alloc(1);
+    if (readSync(fd, extra, 0, 1, null) > 0) {
+      throw new Error(`${label} changed while being read`);
+    }
+    return buffer.subarray(0, offset).toString("utf8");
+  } finally {
+    closeSync(fd);
+  }
+}
+
+function assistCommentMarker(idempotencyKey: string): string {
+  return `<!-- clawsweeper-assist:${idempotencyKey} -->`;
 }
 
 const VISUAL_LENSES = new Set(["ux", "flow", "state", "data", "proof", "risk", "maintainer"]);
@@ -8841,6 +8929,7 @@ function renderAssistComment(options: {
   reasoningEffort: string;
   sourceCommentUrl: string;
   sourceCommentId: string;
+  idempotencyKey: string;
 }): string {
   const body = options.body.trim() || "ClawSweeper assist: I could not produce an answer.";
   const sourceLine = options.sourceCommentUrl
@@ -8852,7 +8941,7 @@ function renderAssistComment(options: {
     "---",
     `${sourceLine}`,
     `Assist reasoning: ${options.reasoningEffort}.`,
-    assistCommentMarker(options.sourceCommentId),
+    assistCommentMarker(options.idempotencyKey),
   ].join("\n");
 }
 
@@ -8882,18 +8971,6 @@ function renderVisualComment(options: {
   ].join("\n");
 }
 
-function postAssistComment(number: number, body: string): void {
-  const payload = writeCommentPayload(number, body);
-  ghWithRetry([
-    "api",
-    `repos/${targetRepo()}/issues/${number}/comments`,
-    "--method",
-    "POST",
-    "--input",
-    payload,
-  ]);
-}
-
 function itemHeadSha(item: Item, context: ItemContext): string {
   if (item.kind !== "pull_request") return "na";
   const pull = asRecord(context.pullRequest);
@@ -8901,16 +8978,24 @@ function itemHeadSha(item: Item, context: ItemContext): string {
   return typeof head.sha === "string" ? head.sha.trim() || "na" : "na";
 }
 
-function postOrUpdateVisualComment(
-  number: number,
-  lens: string,
-  headSha: string,
-  body: string,
-): void {
-  const marker = visualCommentMarker(number, lens, headSha);
-  const existing = ghPaged<unknown>(`repos/${targetRepo()}/issues/${number}/comments?per_page=100`)
+function findOwnedCommentByMarker(number: number, marker: string): Record<string, unknown> | null {
+  const owned = ghPaged<unknown>(`repos/${targetRepo()}/issues/${number}/comments?per_page=100`)
     .map(asRecord)
-    .find((comment) => typeof comment.body === "string" && comment.body.includes(marker));
+    .filter(
+      (comment) =>
+        typeof comment.body === "string" &&
+        comment.body.includes(marker) &&
+        canPatchReviewComment(comment),
+    );
+  return owned.at(-1) ?? null;
+}
+
+function publishIdempotentAssistComment(
+  number: number,
+  existing: Record<string, unknown> | null,
+  body: string,
+): "posted" | "updated" | "unchanged" {
+  if (existing && existing.body === body) return "unchanged";
   const payload = writeCommentPayload(number, body);
   const existingId =
     typeof existing?.id === "number" || typeof existing?.id === "string" ? existing.id : null;
@@ -8923,7 +9008,7 @@ function postOrUpdateVisualComment(
       "--input",
       payload,
     ]);
-    return;
+    return "updated";
   }
   ghWithRetry([
     "api",
@@ -8933,6 +9018,7 @@ function postOrUpdateVisualComment(
     "--input",
     payload,
   ]);
+  return "posted";
 }
 
 function closeReasonText(reason: CloseReason): string {
@@ -24924,80 +25010,328 @@ function applyHealthStatusArg(args: Args): Record<string, unknown> | undefined {
   return parsed as Record<string, unknown>;
 }
 
-function assistCommand(args: Args): void {
-  repoFromArgs(args);
+interface AssistSourceCommentSnapshot {
+  id: string;
+  issueUrl: string;
+  htmlUrl: string;
+  author: string;
+  body: string;
+  updatedAt: string;
+}
+
+interface LiveAssistBinding {
+  item: Item;
+  context: ItemContext;
+  sourceComment: AssistSourceCommentSnapshot | null;
+}
+
+function assistResolveTargetCommand(args: Args): void {
+  const profile = repoFromArgs(args);
+  const [owner, repository, ...extra] = profile.targetRepo.split("/");
+  if (!owner || !repository || extra.length > 0) {
+    throw new Error("assist target repository must be an owner/repository slug");
+  }
+  console.log(JSON.stringify({ repo: profile.targetRepo, owner, repository }));
+}
+
+function assistRequestFromArgs(args: Args): AssistRequestBinding {
   const itemNumber = numberArg(args.item_number, 0);
-  if (!itemNumber) throw new Error("--item-number is required for assist");
+  if (!Number.isSafeInteger(itemNumber) || itemNumber <= 0) {
+    throw new Error("--item-number is required for assist");
+  }
   const question = stringArg(args.question, "").trim();
   if (!question) throw new Error("--question is required for assist");
+  if (Buffer.byteLength(question, "utf8") > 10_000) {
+    throw new Error("--question exceeds the 10000-byte assist limit");
+  }
+  const mode = stringArg(args.mode, "assist").trim();
+  if (mode !== "assist" && mode !== "visual") {
+    throw new Error("--mode must be assist or visual");
+  }
+  const requestedLens = stringArg(args.lens, "auto").trim().toLowerCase();
+  if (requestedLens !== "auto" && !VISUAL_LENSES.has(requestedLens)) {
+    throw new Error("--lens is invalid for assist");
+  }
+  const request: AssistRequestBinding = {
+    targetRepo: targetRepo(),
+    itemNumber,
+    question,
+    mode,
+    lens: requestedLens,
+    sourceCommentId: stringArg(args.comment_id, "").trim(),
+    sourceCommentUrl: stringArg(args.comment_url, "").trim(),
+    author: stringArg(args.author, "").trim(),
+    reasoningEffort: stringArg(args.codex_reasoning_effort, "high").trim(),
+  };
+  if (Buffer.byteLength(request.sourceCommentUrl, "utf8") > 1_000) {
+    throw new Error("--comment-url exceeds the 1000-byte assist limit");
+  }
+  if (Buffer.byteLength(request.author, "utf8") > 100) {
+    throw new Error("--author exceeds the 100-byte assist limit");
+  }
+  if (!/^(?:low|medium|high|xhigh)$/.test(request.reasoningEffort)) {
+    throw new Error("--codex-reasoning-effort is invalid for assist");
+  }
+  return request;
+}
+
+function assistWorkflowIdentity(args: Args): { runId: string; runAttempt: number } {
+  const runId = stringArg(args.run_id, process.env.GITHUB_RUN_ID ?? "").trim();
+  const runAttempt = numberArg(
+    args.run_attempt,
+    Number.parseInt(process.env.GITHUB_RUN_ATTEMPT ?? "", 10),
+  );
+  if (!/^\d{1,30}$/.test(runId)) throw new Error("--run-id is required for assist artifacts");
+  if (!Number.isSafeInteger(runAttempt) || runAttempt <= 0) {
+    throw new Error("--run-attempt is required for assist artifacts");
+  }
+  return { runId, runAttempt };
+}
+
+function assistArtifactPath(args: Args): string {
+  const value = stringArg(args.artifact, "").trim();
+  if (!value) throw new Error("--artifact is required for assist generation and publishing");
+  return resolve(value);
+}
+
+function fetchAssistSourceComment(
+  request: AssistRequestBinding,
+): AssistSourceCommentSnapshot | null {
+  if (!request.sourceCommentId) return null;
+  if (!/^\d{1,30}$/.test(request.sourceCommentId)) {
+    throw new Error("assist source comment id is invalid");
+  }
+  const comment = ghJson<Record<string, unknown>>([
+    "api",
+    `repos/${targetRepo()}/issues/comments/${request.sourceCommentId}`,
+  ]);
+  const user = asRecord(comment.user);
+  const id = comment.id;
+  const snapshot: AssistSourceCommentSnapshot = {
+    id: typeof id === "string" || typeof id === "number" ? String(id) : "",
+    issueUrl: typeof comment.issue_url === "string" ? comment.issue_url : "",
+    htmlUrl: typeof comment.html_url === "string" ? comment.html_url : "",
+    author: typeof user.login === "string" ? user.login : "",
+    body: typeof comment.body === "string" ? comment.body : "",
+    updatedAt:
+      typeof comment.updated_at === "string"
+        ? comment.updated_at
+        : typeof comment.created_at === "string"
+          ? comment.created_at
+          : "",
+  };
+  if (
+    snapshot.id !== request.sourceCommentId ||
+    !assistIssueUrlMatches(snapshot.issueUrl, targetRepo(), request.itemNumber) ||
+    !snapshot.htmlUrl
+  ) {
+    throw new Error("assist source comment does not belong to the requested repository and item");
+  }
+  if (request.author && snapshot.author.toLowerCase() !== request.author.toLowerCase()) {
+    throw new Error("assist source comment author changed or does not match the request");
+  }
+  if (request.sourceCommentUrl && snapshot.htmlUrl !== request.sourceCommentUrl) {
+    throw new Error("assist source comment URL does not match the request");
+  }
+  return snapshot;
+}
+
+function assistIssueUrlMatches(issueUrl: string, repo: string, itemNumber: number): boolean {
+  const expectedIssuePath = `/repos/${repo}/issues/${itemNumber}`.toLowerCase();
+  return issueUrl.toLowerCase().endsWith(expectedIssuePath);
+}
+
+export function assistIssueUrlMatchesForTest(
+  issueUrl: string,
+  repo: string,
+  itemNumber: number,
+): boolean {
+  return assistIssueUrlMatches(issueUrl, repo, itemNumber);
+}
+
+function assistSourceDigest(source: AssistSourceCommentSnapshot | null): string | null {
+  return source ? assistSourceCommentSha256(source) : null;
+}
+
+function assistPromptContextDigest(item: Item, context: ItemContext): string {
+  return sha256(
+    stableJson({
+      item: {
+        repo: item.repo,
+        number: item.number,
+        kind: item.kind,
+        title: item.title,
+        url: item.url,
+      },
+      context: assistPromptContext(context),
+    }),
+  );
+}
+
+function captureLiveAssistBinding(request: AssistRequestBinding): LiveAssistBinding {
+  const { item, state } = fetchItem(request.itemNumber);
+  if (state.toLowerCase() !== "open") {
+    throw new Error(`assist requires an open issue or PR; #${request.itemNumber} is ${state}`);
+  }
+  const context = collectItemContext(item);
+  if (!/^[0-9a-f]{64}$/.test(String(context.sourceRevision ?? ""))) {
+    throw new Error("assist could not compute the live item source revision");
+  }
+  return {
+    item,
+    context,
+    sourceComment: fetchAssistSourceComment(request),
+  };
+}
+
+function validateLiveAssistArtifact(
+  artifact: AssistArtifact,
+  request: AssistRequestBinding,
+): LiveAssistBinding {
+  const live = captureLiveAssistBinding(request);
+  const liveHead = live.item.kind === "pull_request" ? itemHeadSha(live.item, live.context) : null;
+  assertAssistArtifactLiveRevision(artifact, {
+    itemKind: live.item.kind,
+    sourceRevision: live.context.sourceRevision!,
+    contextDigest: assistPromptContextDigest(live.item, live.context),
+    pullHeadSha: liveHead,
+    sourceDigest: assistSourceDigest(live.sourceComment),
+  });
+  return live;
+}
+
+function assistGenerateCommand(args: Args): void {
+  repoFromArgs(args);
+  const request = assistRequestFromArgs(args);
+  const workflow = assistWorkflowIdentity(args);
+  const artifactPath = assistArtifactPath(args);
   const model = stringArg(args.codex_model, PUBLIC_CODEX_MODEL);
-  const reasoningEffort = stringArg(args.codex_reasoning_effort, "high");
   const sandboxMode = stringArg(args.codex_sandbox, "read-only");
   const timeoutMs = numberArg(args.codex_timeout_ms, 120_000);
   const workDir = resolve(stringArg(args.work_dir, join(ROOT, ".artifacts", "assist-codex")));
-  const sourceCommentId = stringArg(args.comment_id, "");
-  const sourceCommentUrl = stringArg(args.comment_url, "");
-  const author = stringArg(args.author, "");
-  const mode = stringArg(args.mode, "assist") === "visual" ? "visual" : "assist";
-  const lens = normalizeVisualLens(stringArg(args.lens, "auto"));
-  const { item, state } = fetchItem(itemNumber);
-  if (state.toLowerCase() !== "open") {
-    throw new Error(`assist requires an open issue or PR; #${itemNumber} is ${state}`);
-  }
-  const context = collectItemContext(item);
+  const live = captureLiveAssistBinding(request);
   const answer = runCodexAssist({
-    item,
-    context,
-    question,
-    sourceCommentUrl,
-    author,
+    item: live.item,
+    context: live.context,
+    question: request.question,
+    sourceCommentUrl: live.sourceComment?.htmlUrl ?? request.sourceCommentUrl,
+    author: live.sourceComment?.author ?? request.author,
     model,
-    reasoningEffort,
+    reasoningEffort: request.reasoningEffort,
     sandboxMode,
     timeoutMs,
     workDir,
-    mode,
-    lens,
+    mode: request.mode,
+    lens: request.lens,
   });
-  if (mode === "visual") {
-    const comment = renderVisualComment({
-      body: answer,
-      item,
-      context,
-      lens,
-      model: PUBLIC_CODEX_MODEL,
-      reasoningEffort,
-      sourceCommentUrl,
-      sourceCommentId,
-    });
-    postOrUpdateVisualComment(item.number, lens, itemHeadSha(item, context), comment);
-    console.log(
-      JSON.stringify({
-        posted: true,
-        mode,
-        item: item.number,
-        lens,
-        model: PUBLIC_CODEX_MODEL,
-        reasoningEffort,
-      }),
-    );
-    return;
-  }
-  const comment = renderAssistComment({
-    body: answer,
-    model: PUBLIC_CODEX_MODEL,
-    reasoningEffort,
-    sourceCommentUrl,
-    sourceCommentId,
+  const pullHeadSha =
+    live.item.kind === "pull_request" ? itemHeadSha(live.item, live.context) : null;
+  const artifact = createAssistArtifact({
+    generatedAt: new Date().toISOString(),
+    runId: workflow.runId,
+    runAttempt: workflow.runAttempt,
+    itemKind: live.item.kind,
+    sourceRevision: live.context.sourceRevision!,
+    contextDigest: assistPromptContextDigest(live.item, live.context),
+    pullHeadSha,
+    sourceDigest: assistSourceDigest(live.sourceComment),
+    request,
+    answer,
   });
-  postAssistComment(item.number, comment);
+  ensureDir(dirname(artifactPath));
+  writeFileSync(artifactPath, `${JSON.stringify(artifact, null, 2)}\n`, "utf8");
   console.log(
     JSON.stringify({
-      posted: true,
-      mode,
-      item: item.number,
+      generated: true,
+      posted: false,
+      artifact: artifactPath,
+      idempotency_key: artifact.idempotency_key,
+      mode: request.mode,
+      item: request.itemNumber,
       model: PUBLIC_CODEX_MODEL,
-      reasoningEffort,
+      reasoningEffort: request.reasoningEffort,
+    }),
+  );
+}
+
+function assistPublishCommand(args: Args): void {
+  repoFromArgs(args);
+  const request = assistRequestFromArgs(args);
+  const workflow = assistWorkflowIdentity(args);
+  const artifact = parseAssistArtifact(
+    readBoundedUtf8File(assistArtifactPath(args), ASSIST_ARTIFACT_MAX_BYTES, "assist artifact"),
+    {
+      runId: workflow.runId,
+      runAttempt: workflow.runAttempt,
+      request,
+    },
+  );
+
+  const initialLive = validateLiveAssistArtifact(artifact, request);
+  const initialHead =
+    initialLive.item.kind === "pull_request"
+      ? itemHeadSha(initialLive.item, initialLive.context)
+      : "na";
+  const marker =
+    request.mode === "visual"
+      ? visualCommentMarker(request.itemNumber, request.lens, initialHead)
+      : assistCommentMarker(artifact.idempotency_key);
+  const existing = findOwnedCommentByMarker(request.itemNumber, marker);
+
+  // Re-fetch after idempotency discovery so target/source drift during artifact handling wins
+  // immediately before the only GitHub mutation in this process.
+  const live = validateLiveAssistArtifact(artifact, request);
+  const sourceCommentUrl = live.sourceComment?.htmlUrl ?? request.sourceCommentUrl;
+  const body =
+    request.mode === "visual"
+      ? renderVisualComment({
+          body: artifact.output.answer,
+          item: live.item,
+          context: live.context,
+          lens: request.lens,
+          model: PUBLIC_CODEX_MODEL,
+          reasoningEffort: request.reasoningEffort,
+          sourceCommentUrl,
+          sourceCommentId: request.sourceCommentId,
+        })
+      : renderAssistComment({
+          body: artifact.output.answer,
+          model: PUBLIC_CODEX_MODEL,
+          reasoningEffort: request.reasoningEffort,
+          sourceCommentUrl,
+          sourceCommentId: request.sourceCommentId,
+          idempotencyKey: artifact.idempotency_key,
+        });
+  const action = publishIdempotentAssistComment(request.itemNumber, existing, body);
+  console.log(
+    JSON.stringify({
+      posted: action === "posted",
+      action,
+      mode: request.mode,
+      item: request.itemNumber,
+      idempotency_key: artifact.idempotency_key,
+    }),
+  );
+}
+
+function assistValidateArtifactCommand(args: Args): void {
+  repoFromArgs(args);
+  const request = assistRequestFromArgs(args);
+  const workflow = assistWorkflowIdentity(args);
+  const artifact = parseAssistArtifact(
+    readBoundedUtf8File(assistArtifactPath(args), ASSIST_ARTIFACT_MAX_BYTES, "assist artifact"),
+    {
+      runId: workflow.runId,
+      runAttempt: workflow.runAttempt,
+      request,
+    },
+  );
+  console.log(
+    JSON.stringify({
+      valid: true,
+      item: artifact.target.item_number,
+      mode: artifact.request.mode,
+      idempotency_key: artifact.idempotency_key,
     }),
   );
 }
@@ -25028,7 +25362,10 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
       resolve(stringArg(args.closed_dir, defaultClosedDir())),
     );
   } else if (command === "status") statusCommand(args);
-  else if (command === "assist") assistCommand(args);
+  else if (command === "assist-target") assistResolveTargetCommand(args);
+  else if (command === "assist" || command === "assist-generate") assistGenerateCommand(args);
+  else if (command === "assist-validate") assistValidateArtifactCommand(args);
+  else if (command === "assist-publish") assistPublishCommand(args);
   else if (command === "check") checkCommand();
   else {
     console.error(`Unknown command: ${command}`);
