@@ -69,7 +69,7 @@ export type ExactEventApplyDisposition =
 export function exactEventApplyProof(
   actions: readonly EventApplyAction[],
   itemNumber: number,
-  snapshotActionTaken: string | null,
+  snapshotActionTaken: string | null = null,
 ): {
   exactActions: EventApplyAction[];
   syncedCount: number;
@@ -93,8 +93,9 @@ export function exactEventApplyProof(
   const sourceDriftActions = exactActions.filter(
     (entry) => entry.action === "skipped_changed_since_review",
   );
+  const hasSourceDrift = sourceDriftActions.length > 0;
   const sourceDrift =
-    sourceDriftActions.length > 0 &&
+    hasSourceDrift &&
     sourceDriftActions.every((entry) => entry.sourceDriftVerified) &&
     exactActions.every(
       (entry) =>
@@ -102,7 +103,6 @@ export function exactEventApplyProof(
         entry.durableReviewSynced ||
         entry.terminalStateVerified,
     );
-  const hasSourceDrift = sourceDriftActions.length > 0;
   return {
     exactActions,
     syncedCount,

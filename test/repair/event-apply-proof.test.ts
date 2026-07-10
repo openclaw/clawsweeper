@@ -258,7 +258,6 @@ test("exact event proof accepts only explicit trusted no-action dispositions", (
   assert.equal(sourceDrift.disposition, "source_drift");
   assert.equal(unproven.disposition, "unproven");
 });
-
 test("exact event proof completes live-shaped deterministic guarded-open results", () => {
   for (const action of [
     "skipped_same_author_pair",
@@ -357,4 +356,36 @@ test("event record action parsing ignores body lookalikes", () => {
     ),
     null,
   );
+});
+
+test("verified source drift overrides an earlier durable sync", () => {
+  const verified = exactEventApplyProof(
+    [
+      eventApplyAction({
+        number: 42,
+        action: "review_comment_synced",
+        durableReviewSynced: true,
+      }),
+      eventApplyAction({
+        number: 42,
+        action: "skipped_changed_since_review",
+        sourceDriftVerified: true,
+      }),
+    ],
+    42,
+  );
+  const unverified = exactEventApplyProof(
+    [
+      eventApplyAction({
+        number: 42,
+        action: "review_comment_synced",
+        durableReviewSynced: true,
+      }),
+      eventApplyAction({ number: 42, action: "skipped_changed_since_review" }),
+    ],
+    42,
+  );
+
+  assert.equal(verified.disposition, "source_drift");
+  assert.equal(unverified.disposition, "unproven");
 });
