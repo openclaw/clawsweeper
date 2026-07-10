@@ -21,7 +21,7 @@ test("collectCodexDebug copies recent Codex session logs and excludes auth files
   );
   fs.writeFileSync(logPath, "GH_TOKEN=ghp_abcdefghijklmnopqrstuvwxyz123456\n");
   fs.writeFileSync(path.join(codexHome, "auth.json"), '{"OPENAI_API_KEY":"sk-secret"}\n');
-  fs.writeFileSync(path.join(codexHome, "config.toml"), "model = 'gpt-5.5'\n");
+  fs.writeFileSync(path.join(codexHome, "config.toml"), "model = 'gpt-5.6-sol'\n");
 
   try {
     const result = collectCodexDebug({
