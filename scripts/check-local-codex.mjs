@@ -30,6 +30,8 @@ const smoke = runCodex(
     "-c",
     'service_tier="fast"',
     "-c",
+    'model_reasoning_effort="high"',
+    "-c",
     'approval_policy="never"',
     "--sandbox",
     "read-only",

@@ -2027,6 +2027,7 @@ test("spam comment intake coalesces duplicate comment deliveries", () => {
 
 test("spam scanner exact dispatches publish only per-comment audit records", () => {
   const workflow = readText(".github/workflows/spam-scanner.yml");
+  const scanner = readText("src/repair/spam-scanner.ts");
 
   assert.match(workflow, /format\('spam-scanner-\{0\}-issue-comment-\{1\}'/);
   assert.match(workflow, /format\('spam-scanner-\{0\}-review-comment-\{1\}'/);
@@ -2037,6 +2038,7 @@ test("spam scanner exact dispatches publish only per-comment audit records", () 
   );
   assert.match(workflow, /--path results\/spam-scanner\.json/);
   assert.match(workflow, /cancel-in-progress: false/);
+  assert.match(scanner, /reasoning: \{ effort: "high" \}/);
 });
 
 test("issue implementation workflow lets job intent choose dispatch capacity", () => {
@@ -2255,6 +2257,7 @@ test("Codex workflows install pinned CLI releases and keep the model secret", ()
   assert.match(action, /@openai\/codex-responses-api-proxy@\$\{\{ inputs\['proxy-version'\] \}\}/);
   assert.doesNotMatch(action, /@latest/);
   assert.match(localCheck, /CLAWSWEEPER_LOCAL_CODEX_MODEL \?\? "gpt-5\.6-sol"/);
+  assert.match(localCheck, /model_reasoning_effort="high"/);
   assert.doesNotMatch(localCheck, /gpt-5\.5/);
   assert.match(action, /env -u OPENAI_API_KEY[\s\S]*-u CLAWSWEEPER_INTERNAL_MODEL/);
   assert.equal(action.match(/--ignore-scripts/g)?.length, 2);

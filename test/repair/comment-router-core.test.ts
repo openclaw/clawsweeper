@@ -3013,7 +3013,7 @@ test("visualize assist dispatch payload stays within repository_dispatch key lim
   assert.equal(clientPayload.assist.mode, "visual");
   assert.equal(clientPayload.assist.lens, "state");
   assert.equal(clientPayload.assist.model, "internal");
-  assert.equal(clientPayload.assist.reasoning_effort, "low");
+  assert.equal(clientPayload.assist.reasoning_effort, "high");
   assert.equal(clientPayload.assist.timeout_ms, "120000");
   assert.equal("mode" in clientPayload, false);
   assert.equal("lens" in clientPayload, false);
@@ -3061,10 +3061,8 @@ test("assist workflow preserves flat field fallbacks after nested dispatch field
   );
   assert.match(workflow, /MODEL: internal/);
   assert.match(workflow, /CLAWSWEEPER_INTERNAL_MODEL: \$\{\{ secrets\.CLAWSWEEPER_MODEL \}\}/);
-  assert.match(
-    workflow,
-    /REASONING_EFFORT: \$\{\{ github\.event\.client_payload\.assist\.reasoning_effort \|\| github\.event\.client_payload\.reasoning_effort \|\| 'low' \}\}/,
-  );
+  assert.match(workflow, /REASONING_EFFORT: high/);
+  assert.doesNotMatch(workflow, /client_payload\.(?:assist\.)?reasoning_effort/);
   assert.match(
     workflow,
     /TIMEOUT_MS: \$\{\{ github\.event\.client_payload\.assist\.timeout_ms \|\| github\.event\.client_payload\.timeout_ms \|\| '120000' \}\}/,

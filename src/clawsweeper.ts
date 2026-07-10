@@ -7743,54 +7743,6 @@ function codexFallbackMinBudgetMs(): number {
     : DEFAULT_CODEX_FALLBACK_MIN_BUDGET_MS;
 }
 
-export function lowerCodexReasoningEffort(effort: string): string | null {
-  switch (effort.trim().toLowerCase()) {
-    case "high":
-    case "medium":
-      return "low";
-    case "low":
-      return "minimal";
-    default:
-      return null;
-  }
-}
-
-function annotateDegradedReview(
-  decision: Decision,
-  options: { item: Item; fromEffort: string; toEffort: string; transportError: CodexReviewError },
-): Decision {
-  const reason = codexFailureReason(
-    `${options.transportError.message}\n${options.transportError.stderr}\n${options.transportError.stdout}`,
-  );
-  const disclosure =
-    `Degraded review: Codex hit a ${reason} at ${options.fromEffort} reasoning effort, so ClawSweeper ` +
-    `completed this review with a single lower-effort (${options.toEffort}) fallback pass. ` +
-    `Treat the verdict as best-effort and re-run for a full-fidelity review once transport recovers.`;
-  const transportDetail =
-    trimMiddle(
-      redactInternalCodexModel(
-        `${options.transportError.message}\n${options.transportError.stderr}`.trim(),
-      ),
-      2000,
-    ) || "No transport detail captured.";
-  return {
-    ...decision,
-    confidence: decision.confidence === "high" ? "medium" : decision.confidence,
-    summary: `${disclosure}\n\n${decision.summary}`,
-    evidence: [
-      evidenceEntry({
-        label: "degraded review mode",
-        detail: `${options.fromEffort} → ${options.toEffort} reasoning effort fallback after ${reason}.`,
-      }),
-      evidenceEntry({
-        label: "original codex transport failure",
-        detail: transportDetail,
-      }),
-      ...decision.evidence,
-    ],
-  };
-}
-
 function codexFailureDecision(
   status: number | null,
   detail: string,
@@ -8239,31 +8191,27 @@ function runCodex(options: {
     return runReviewPass(options.reasoningEffort, maxAttempts);
   } catch (error) {
     if (!(error instanceof CodexReviewError) || !error.retryable) throw error;
-    const fallbackEffort = lowerCodexReasoningEffort(options.reasoningEffort);
+    const retryDetail = [error.message, error.stderr, error.stdout].filter(Boolean).join("\n");
+    const delayMs = codexRetryDelayMs(retryDetail, maxAttempts);
     const remainingMs = options.timeoutMs - (Date.now() - startedAt);
-    if (fallbackEffort === null || remainingMs < codexFallbackMinBudgetMs()) throw error;
+    if (remainingMs < delayMs + codexFallbackMinBudgetMs()) throw error;
     if (!options.quietLogs) {
       console.error(
-        `[review] ${new Date().toISOString()} codex-fallback #${options.item.number} reason=transient_transport from_effort=${options.reasoningEffort} to_effort=${fallbackEffort} remaining_ms=${remainingMs}`,
+        `[review] ${new Date().toISOString()} codex-final-retry #${options.item.number} reason=transient_transport reasoning_effort=${options.reasoningEffort} delay_ms=${delayMs} remaining_ms=${remainingMs}`,
       );
     }
+    sleepMs(delayMs);
     try {
-      const decision = runReviewPass(fallbackEffort, 1);
-      return annotateDegradedReview(decision, {
-        item: options.item,
-        fromEffort: options.reasoningEffort,
-        toEffort: fallbackEffort,
-        transportError: error,
-      });
-    } catch (fallbackError) {
-      if (!(fallbackError instanceof CodexReviewError)) throw fallbackError;
+      return runReviewPass(options.reasoningEffort, 1);
+    } catch (retryError) {
+      if (!(retryError instanceof CodexReviewError)) throw retryError;
       throw new CodexReviewError({
-        message: `${error.message}\nLower-effort (${fallbackEffort}) fallback also failed: ${fallbackError.message}`,
-        status: fallbackError.status ?? error.status,
-        stdout: fallbackError.stdout || error.stdout,
-        stderr: error.stderr || fallbackError.stderr,
-        errorCode: error.errorCode ?? fallbackError.errorCode,
-        signal: error.signal ?? fallbackError.signal,
+        message: `${error.message}\nFinal ${options.reasoningEffort}-reasoning retry also failed: ${retryError.message}`,
+        status: retryError.status ?? error.status,
+        stdout: retryError.stdout || error.stdout,
+        stderr: error.stderr || retryError.stderr,
+        errorCode: error.errorCode ?? retryError.errorCode,
+        signal: error.signal ?? retryError.signal,
         retryable: error.retryable,
       });
     }
@@ -24170,7 +24118,7 @@ function assistCommand(args: Args): void {
   const question = stringArg(args.question, "").trim();
   if (!question) throw new Error("--question is required for assist");
   const model = stringArg(args.codex_model, PUBLIC_CODEX_MODEL);
-  const reasoningEffort = stringArg(args.codex_reasoning_effort, "low");
+  const reasoningEffort = stringArg(args.codex_reasoning_effort, "high");
   const sandboxMode = stringArg(args.codex_sandbox, "read-only");
   const timeoutMs = numberArg(args.codex_timeout_ms, 120_000);
   const workDir = resolve(stringArg(args.work_dir, join(ROOT, ".artifacts", "assist-codex")));

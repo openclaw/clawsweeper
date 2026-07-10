@@ -229,8 +229,8 @@ Common commands:
   current state: `👀` for acknowledgement, `🧹` for review, `🔧` for repair, and
   `✅` for completed/paused work.
 - Freeform `@clawsweeper ...` mentions and explicit `ask ...` questions dispatch
-  the maintainer-only assist lane. Assist runs the internal model with low reasoning, a
-  120-second per-item timeout, and its own five-job cap. It posts a separate
+  the maintainer-only assist lane. Assist runs the internal model with high reasoning,
+  a 120-second per-item timeout, and its own five-job cap. It posts a separate
   non-durable answer comment and never edits the durable ClawSweeper review
   comment, closes, merges, labels, pushes, repairs, or emits review/apply
   markers.

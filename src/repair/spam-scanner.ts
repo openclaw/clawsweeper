@@ -70,7 +70,7 @@ let modelError: string | null = null;
 let modelResults = new Map<string, SpamModelResult>();
 if (candidates.length > 0) {
   try {
-    modelResults = await scanWithCheapModel(candidates, model);
+    modelResults = await scanWithModel(candidates, model);
   } catch (error) {
     modelError = compactText(error instanceof Error ? error.message : String(error), 500);
     console.warn(
@@ -210,7 +210,7 @@ function hydrateMinimization(comments: SpamScanComment[]) {
   }
 }
 
-async function scanWithCheapModel(comments: SpamScanComment[], scanModel: string) {
+async function scanWithModel(comments: SpamScanComment[], scanModel: string) {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) {
     console.warn("[spam-scanner] OPENAI_API_KEY missing; writing deterministic audit only.");
@@ -218,6 +218,7 @@ async function scanWithCheapModel(comments: SpamScanComment[], scanModel: string
   }
   const payload = {
     model: internalCodexModel(scanModel),
+    reasoning: { effort: "high" },
     input: [
       {
         role: "system",

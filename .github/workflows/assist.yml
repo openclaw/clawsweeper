@@ -201,7 +201,7 @@ jobs:
           COMMENT_URL: ${{ github.event.client_payload.comment_url || inputs.comment_url || '' }}
           AUTHOR: ${{ github.event.client_payload.author || inputs.author || '' }}
           MODEL: internal
-          REASONING_EFFORT: ${{ github.event.client_payload.assist.reasoning_effort || github.event.client_payload.reasoning_effort || 'low' }}
+          REASONING_EFFORT: high
           TIMEOUT_MS: ${{ github.event.client_payload.assist.timeout_ms || github.event.client_payload.timeout_ms || '120000' }}
         run: |
           set -euo pipefail
