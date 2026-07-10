@@ -39,6 +39,7 @@ type ExactReviewDecision = {
 type ExactReviewQueueItem = {
   key: string;
   decision: ExactReviewDecision;
+  leaseDecision?: ExactReviewDecision;
   state: "pending" | "dispatching" | "leased";
   revision: number;
   createdAt: number;
@@ -422,8 +423,16 @@ export class ExactReviewQueue {
     if (request.method === "POST" && url.pathname === "/claim") {
       const body = objectValue(await request.json().catch(() => null));
       const leaseId = String(body.lease_id || "").trim();
+      const itemKey = String(body.item_key || "").trim();
+      const leaseRevision = Number(body.lease_revision);
       const runId = String(body.run_id || "").trim();
-      if (!leaseId || !runId) return json({ error: "missing_lease_or_run" }, 400);
+      if (!leaseId || !itemKey || !runId) {
+        return json({ error: "missing_lease_item_or_run" }, 400);
+      }
+      if (!/^\d+$/.test(runId)) return json({ error: "invalid_run_id" }, 400);
+      if (!Number.isInteger(leaseRevision) || leaseRevision < 1) {
+        return json({ error: "invalid_lease_revision" }, 400);
+      }
       const runAttempt = exactReviewRunAttempt(body.run_attempt);
       if (body.run_attempt !== undefined && runAttempt === null) {
         return json({ error: "invalid_run_attempt" }, 400);
@@ -431,12 +440,63 @@ export class ExactReviewQueue {
 
       const now = Date.now();
       const state = await this.readState();
-      const item = exactReviewItemForLease(state, leaseId);
-      if (!item || !isLiveExactReviewLease(item, now)) {
+      const item = state.items[itemKey];
+      if (
+        !item ||
+        item.leaseId !== leaseId ||
+        item.leaseRevision !== leaseRevision ||
+        !isLiveExactReviewLease(item, now)
+      ) {
         return json({ error: "lease_not_active" }, 409);
       }
       if (item.claimedRunId && item.claimedRunId !== runId) {
         return json({ error: "lease_already_claimed" }, 409);
+      }
+
+      // Deploys can observe a pre-snapshot lease. Recover it only when no newer
+      // enqueue has replaced the decision that was dispatched for this revision.
+      if (!item.leaseDecision) {
+        if (item.revision !== item.leaseRevision) {
+          return json({ error: "lease_decision_unavailable" }, 409);
+        }
+        item.leaseDecision = { ...item.decision };
+      }
+
+      const claimedRunAttempt = item.claimedRunAttempt;
+      if (item.claimedRunId && claimedRunAttempt !== undefined) {
+        if (runAttempt === null) return json({ error: "missing_run_attempt" }, 409);
+        if (runAttempt < claimedRunAttempt) {
+          return json({ error: "stale_run_attempt" }, 409);
+        }
+        if (runAttempt === claimedRunAttempt) {
+          const claimGeneration = Math.max(1, exactReviewClaimGeneration(item.claimGeneration));
+          if (item.claimGeneration !== claimGeneration) {
+            item.claimGeneration = claimGeneration;
+            await this.writeState(state);
+          }
+          return json({
+            ok: true,
+            claimed: true,
+            item_key: item.key,
+            lease_revision: item.leaseRevision,
+            claim_generation: claimGeneration,
+            decision: item.leaseDecision,
+          });
+        }
+      } else if (item.claimedRunId && runAttempt === null) {
+        const claimGeneration = Math.max(1, exactReviewClaimGeneration(item.claimGeneration));
+        if (item.claimGeneration !== claimGeneration) {
+          item.claimGeneration = claimGeneration;
+          await this.writeState(state);
+        }
+        return json({
+          ok: true,
+          claimed: true,
+          item_key: item.key,
+          lease_revision: item.leaseRevision,
+          claim_generation: claimGeneration,
+          decision: item.leaseDecision,
+        });
       }
 
       item.state = "leased";
@@ -450,15 +510,29 @@ export class ExactReviewQueue {
         ok: true,
         claimed: true,
         item_key: item.key,
-        revision: item.leaseRevision,
+        lease_revision: item.leaseRevision,
+        claim_generation: item.claimGeneration,
+        decision: item.leaseDecision,
       });
     }
 
     if (request.method === "POST" && url.pathname === "/complete") {
       const body = objectValue(await request.json().catch(() => null));
       const leaseId = String(body.lease_id || "").trim();
+      const itemKey = String(body.item_key || "").trim();
+      const leaseRevision = Number(body.lease_revision);
+      const claimGeneration = Number(body.claim_generation);
       const runId = String(body.run_id || "").trim();
-      if (!leaseId || !runId) return json({ error: "missing_lease_or_run" }, 400);
+      if (!leaseId || !itemKey || !runId) {
+        return json({ error: "missing_lease_item_or_run" }, 400);
+      }
+      if (!/^\d+$/.test(runId)) return json({ error: "invalid_run_id" }, 400);
+      if (!Number.isInteger(leaseRevision) || leaseRevision < 1) {
+        return json({ error: "invalid_lease_revision" }, 400);
+      }
+      if (!Number.isInteger(claimGeneration) || claimGeneration < 1) {
+        return json({ error: "invalid_claim_generation" }, 400);
+      }
       const runAttempt = exactReviewRunAttempt(body.run_attempt);
       if (body.run_attempt !== undefined && runAttempt === null) {
         return json({ error: "invalid_run_attempt" }, 400);
@@ -479,8 +553,16 @@ export class ExactReviewQueue {
         return json({ error: "invalid_retry_at" }, 400);
       }
       const state = await this.readState();
-      const item = exactReviewItemForLease(state, leaseId);
-      if (!item || item.claimedRunId !== runId) return json({ error: "lease_not_claimed" }, 409);
+      const item = state.items[itemKey];
+      if (
+        !item ||
+        item.leaseId !== leaseId ||
+        item.leaseRevision !== leaseRevision ||
+        exactReviewClaimGeneration(item.claimGeneration) !== claimGeneration ||
+        item.claimedRunId !== runId
+      ) {
+        return json({ error: "lease_not_claimed" }, 409);
+      }
       if (
         item.claimedRunAttempt !== undefined &&
         (runAttempt === null || runAttempt !== item.claimedRunAttempt)
@@ -673,8 +755,11 @@ export class ExactReviewQueue {
       item.state = "dispatching";
       item.leaseId = crypto.randomUUID();
       item.leaseRevision = item.revision;
+      item.leaseDecision = { ...item.decision };
       item.leaseExpiresAt = now + exactReviewDispatchLeaseMs(this.env);
       item.claimedRunId = undefined;
+      item.claimedRunAttempt = undefined;
+      item.claimGeneration = undefined;
     }
     await this.writeState(state);
     if (!admitted.length) {
@@ -687,8 +772,9 @@ export class ExactReviewQueue {
       try {
         await dispatchClawsweeperItem({
           token: preflight.token,
-          decision: item.decision,
+          itemKey: item.key,
           leaseId: item.leaseId,
+          leaseRevision: item.leaseRevision,
         });
       } catch {
         failures.push({ key: item.key, leaseId: String(item.leaseId || "") });
@@ -1540,10 +1626,6 @@ function isExactReviewQueueTargetEnabled(decision: ExactReviewDecision, env) {
   );
 }
 
-function exactReviewItemForLease(state: ExactReviewQueueState, leaseId: string) {
-  return Object.values(state.items).find((item) => item.leaseId === leaseId) || null;
-}
-
 function exactReviewCompletionOutcome(
   value,
   fallback?: ExactReviewCompletionOutcome,
@@ -1697,6 +1779,7 @@ function exactReviewCompletionRetryAt(value, now: number): number | null {
 function clearExactReviewLease(item: ExactReviewQueueItem) {
   item.leaseId = undefined;
   item.leaseRevision = undefined;
+  item.leaseDecision = undefined;
   item.leaseExpiresAt = undefined;
   item.claimedRunId = undefined;
   item.claimedRunAttempt = undefined;
@@ -2261,24 +2344,15 @@ async function addIssueCommentReaction({ token, repo, commentId, content }) {
 
 async function dispatchClawsweeperItem({
   token,
-  decision,
+  itemKey,
   leaseId,
+  leaseRevision,
 }: {
   token: string;
-  decision: ExactReviewDecision;
-  leaseId?: string;
+  itemKey: string;
+  leaseId: string;
+  leaseRevision: number;
 }) {
-  const reviewOptions = {
-    ...(decision.codexTimeoutMs ? { codex_timeout_ms: decision.codexTimeoutMs } : {}),
-    ...(decision.mediaProofTimeoutMs
-      ? { media_proof_timeout_ms: decision.mediaProofTimeoutMs }
-      : {}),
-    ...(decision.commandStatusMarker
-      ? { command_status_marker: decision.commandStatusMarker }
-      : {}),
-    ...(decision.statusCommentId ? { status_comment_id: decision.statusCommentId } : {}),
-    ...(decision.additionalPrompt ? { additional_prompt: decision.additionalPrompt } : {}),
-  };
   await githubTokenJson({
     token,
     path: `/repos/${CLAWSWEEPER_REVIEW_REPO}/dispatches`,
@@ -2286,15 +2360,9 @@ async function dispatchClawsweeperItem({
     body: {
       event_type: "clawsweeper_item",
       client_payload: {
-        target_repo: decision.targetRepo,
-        target_branch: decision.targetBranch,
-        item_number: decision.itemNumber,
-        item_kind: decision.itemKind,
-        source_event: decision.sourceEvent,
-        source_action: decision.sourceAction,
-        supersedes_in_progress: decision.supersedesInProgress,
-        ...(leaseId ? { queue_lease_id: leaseId } : {}),
-        ...(Object.keys(reviewOptions).length > 0 ? { review_options: reviewOptions } : {}),
+        queue_lease_id: leaseId,
+        item_key: itemKey,
+        lease_revision: leaseRevision,
       },
     },
     errorLabel: "ClawSweeper item dispatch",

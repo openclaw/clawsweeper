@@ -315,6 +315,45 @@ test("exact event publish and routing require a successful fresh review artifact
   assert.match(eventReviewJob, /if \[ "\$POLICY_NOOP" != "true" \]; then/);
 });
 
+test("exact event workflow binds all work to the canonical queue claim", () => {
+  const workflow = readText(".github/workflows/sweep.yml");
+  const eventStart = workflow.indexOf("\n  event-review-apply:");
+  const eventEnd = workflow.indexOf("\n  target-fanout:", eventStart);
+  const eventJob = workflow.slice(eventStart, eventEnd);
+  const claimStart = eventJob.indexOf("- name: Claim exact-review queue lease");
+  const checkoutStart = eventJob.indexOf("- uses: actions/checkout@v7", claimStart);
+  const claimStep = eventJob.slice(claimStart, checkoutStart);
+  const claimedWork = eventJob.slice(checkoutStart);
+
+  assert.match(claimStep, /ITEM_KEY: \$\{\{ github\.event\.client_payload\.item_key \}\}/);
+  assert.match(
+    claimStep,
+    /QUEUE_LEASE_REVISION: \$\{\{ github\.event\.client_payload\.lease_revision \}\}/,
+  );
+  assert.match(claimStep, /item_key: process\.env\.ITEM_KEY/);
+  assert.match(claimStep, /lease_revision: leaseRevision/);
+  assert.match(claimStep, /response\.item_key !== itemKey/);
+  assert.match(claimStep, /response\.lease_revision !== leaseRevision/);
+  assert.match(claimStep, /`\$\{targetRepo\}#\$\{itemNumber\}` !== itemKey/);
+  assert.match(claimStep, /claim_generation=\$\{claimGeneration\}/);
+  assert.match(claimStep, /decision=\$\{JSON\.stringify\(decision\)\}/);
+  assert.doesNotMatch(claimedWork, /github\.event\.client_payload/);
+  assert.match(claimedWork, /gh api "repos\/\$TARGET_REPO" --jq \.default_branch/);
+  assert.match(claimedWork, /if \.pull_request then "pull_request" else "issue" end/);
+  assert.match(claimedWork, /steps\.live-item\.outputs\.target_branch/);
+  assert.match(
+    claimedWork,
+    /fromJSON\(steps\.claim-exact-review-queue\.outputs\.decision\)\.sourceAction/,
+  );
+  assert.match(
+    claimedWork,
+    /CLAIM_GENERATION: \$\{\{ steps\.claim-exact-review-queue\.outputs\.claim_generation \}\}/,
+  );
+  assert.match(claimedWork, /item_key: process\.env\.ITEM_KEY/);
+  assert.match(claimedWork, /lease_revision: leaseRevision/);
+  assert.match(claimedWork, /claim_generation: claimGeneration/);
+});
+
 test("dashboard syncs Worker secrets with durable lifecycle storage", () => {
   const workflow = readText(".github/workflows/dashboard.yml");
   const smoke = readText("scripts/dashboard-smoke.mjs");
@@ -1632,13 +1671,13 @@ test("sweep event reviews and target fanout avoid storm amplification", () => {
   assert.match(eventBlock, /concurrency:/);
   assert.match(
     eventBlock,
-    /clawsweeper-event-review-\$\{\{ github\.event\.client_payload\.target_repo/,
-  );
-  assert.match(
-    eventBlock,
-    /group: clawsweeper-event-review-\$\{\{ github\.event\.client_payload\.target_repo \|\| 'openclaw\/openclaw' \}\}-\$\{\{ github\.event\.client_payload\.item_number/,
+    /group: clawsweeper-event-review-\$\{\{ github\.event\.client_payload\.item_key \|\| github\.run_id \}\}/,
   );
   assert.match(eventBlock, /queue_lease_id != ''/);
+  assert.match(eventBlock, /item_key: process\.env\.ITEM_KEY/);
+  assert.match(eventBlock, /lease_revision: leaseRevision/);
+  assert.match(eventBlock, /claim_generation: claimGeneration/);
+  assert.match(eventBlock, /decision=\$\{JSON\.stringify\(decision\)\}/);
   assert.match(eventBlock, /cancel-in-progress: false/);
   assert.match(legacyIntakeBlock, /legacy-event-queue-intake:/);
   assert.match(legacyIntakeBlock, /\/internal\/exact-review\/enqueue/);
@@ -1669,7 +1708,7 @@ test("setup-state defaults to an auth-safe shallow checkout", () => {
   assert.match(action, /ref: state/);
 });
 
-test("sweep exact event reviews consume adaptive Codex timeout payload", () => {
+test("sweep exact event reviews consume only the immutable claimed decision", () => {
   const workflow = readText(".github/workflows/sweep.yml");
   const resolveBlock = workflow.slice(
     workflow.indexOf("- name: Resolve event payload"),
@@ -1682,32 +1721,18 @@ test("sweep exact event reviews consume adaptive Codex timeout payload", () => {
 
   assert.match(
     resolveBlock,
-    /ADAPTIVE_CODEX_TIMEOUT_MS: \$\{\{ github\.event\.client_payload\.review_options\.codex_timeout_ms \|\| github\.event\.client_payload\.codex_timeout_ms \|\| '' \}\}/,
+    /CLAIM_DECISION: \$\{\{ steps\.claim-exact-review-queue\.outputs\.decision \}\}/,
   );
   assert.match(
     resolveBlock,
     /CONFIGURED_CODEX_TIMEOUT_MS: \$\{\{ vars\.CLAWSWEEPER_CODEX_TIMEOUT_MS \|\| '1200000' \}\}/,
   );
-  assert.match(
-    resolveBlock,
-    /MEDIA_PROOF_TIMEOUT_MS: \$\{\{ github\.event\.client_payload\.review_options\.media_proof_timeout_ms \|\| github\.event\.client_payload\.media_proof_timeout_ms \|\| '0' \}\}/,
-  );
-  assert.match(resolveBlock, /Ignoring invalid adaptive codex_timeout_ms payload/);
-  assert.match(
-    resolveBlock,
-    /configured_codex_timeout_ms="\$\(\(10#\$configured_codex_timeout_ms\)\)"/,
-  );
-  assert.match(
-    resolveBlock,
-    /adaptive_codex_timeout_ms="\$\(\(10#\$adaptive_codex_timeout_ms\)\)"/,
-  );
-  assert.match(resolveBlock, /media_proof_timeout_ms="\$\(\(10#\$media_proof_timeout_ms\)\)"/);
-  assert.match(resolveBlock, /\[ "\$media_proof_timeout_ms" -gt 480000 \]/);
-  assert.match(resolveBlock, /\[ "\$adaptive_codex_timeout_ms" -lt 600000 \]/);
-  assert.match(resolveBlock, /\[ "\$adaptive_codex_timeout_ms" -gt 1800000 \]/);
-  assert.match(resolveBlock, /\[ "\$adaptive_codex_timeout_ms" -gt "\$codex_timeout_ms" \]/);
-  assert.match(resolveBlock, /echo "codex_timeout_ms=\$codex_timeout_ms"/);
-  assert.match(resolveBlock, /echo "media_proof_timeout_ms=\$media_proof_timeout_ms"/);
+  assert.match(resolveBlock, /const decision = JSON\.parse\(process\.env\.CLAIM_DECISION/);
+  assert.match(resolveBlock, /Math\.min\(1_800_000, Math\.max\(600_000, adaptiveValue\)\)/);
+  assert.match(resolveBlock, /Math\.min\(480_000, mediaValue\)/);
+  assert.match(resolveBlock, /codex_timeout_ms: Math\.max\(configuredTimeout, adaptiveTimeout\)/);
+  assert.match(resolveBlock, /media_proof_timeout_ms: mediaTimeout/);
+  assert.doesNotMatch(resolveBlock, /github\.event\.client_payload/);
   assert.match(
     reviewBlock,
     /codex_timeout_ms="\$\{\{ steps\.target\.outputs\.codex_timeout_ms \}\}"/,
@@ -1736,8 +1761,8 @@ test("sweep exact event reviews preserve the configured fallback without an adap
     resolveBlock,
     /CONFIGURED_CODEX_TIMEOUT_MS: \$\{\{ vars\.CLAWSWEEPER_CODEX_TIMEOUT_MS \|\| '1200000' \}\}/,
   );
-  assert.match(resolveBlock, /codex_timeout_ms="\$configured_codex_timeout_ms"/);
-  assert.match(resolveBlock, /\[ "\$adaptive_codex_timeout_ms" -gt "\$codex_timeout_ms" \]/);
+  assert.match(resolveBlock, /configuredValue > 0 \? configuredValue : 1_200_000/);
+  assert.match(resolveBlock, /codex_timeout_ms: Math\.max\(configuredTimeout, adaptiveTimeout\)/);
 });
 
 test("github activity workflow scopes cancellation to matching item activity", () => {

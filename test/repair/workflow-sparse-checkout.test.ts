@@ -69,7 +69,7 @@ test("repair comment router workflow preserves repository dispatch target branch
   );
 });
 
-test("sweep workflow preserves workflow dispatch target branch", () => {
+test("sweep workflow preserves manual target branches and hydrates exact branches live", () => {
   const workflow = readText(".github/workflows/sweep.yml");
   const dispatchTargetBranchResolver =
     /target_branch="\$\{\{ github\.event_name == 'workflow_dispatch' && github\.event\.inputs\.target_branch \|\| github\.event\.client_payload\.target_branch \|\| 'main' \}\}"/g;
@@ -77,8 +77,13 @@ test("sweep workflow preserves workflow dispatch target branch", () => {
     /-f target_branch="\$\{\{ needs\.plan\.outputs\.target_branch \}\}"/g;
 
   assert.match(workflow, /target_branch:\n\s+description: "Target repository branch to review"/);
-  assert.equal([...workflow.matchAll(dispatchTargetBranchResolver)].length, 2);
+  assert.equal([...workflow.matchAll(dispatchTargetBranchResolver)].length, 1);
   assert.equal([...workflow.matchAll(continuationTargetBranch)].length, 2);
+  assert.match(
+    workflow,
+    /target_branch="\$\(gh api "repos\/\$TARGET_REPO" --jq \.default_branch\)"/,
+  );
+  assert.match(workflow, /target_branch="\$\{\{ steps\.live-item\.outputs\.target_branch \}\}"/);
 });
 
 function sparseCheckoutEntries(workflow: string): Set<string> {

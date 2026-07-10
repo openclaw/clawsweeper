@@ -16,6 +16,8 @@ run-name: >-
     (github.event_name == 'repository_dispatch' &&
       github.event.action == 'clawsweeper_target_sweep') &&
       format('Review target repo {0}', github.event.client_payload.target_repo || 'openclaw/openclaw') ||
+    (github.event_name == 'repository_dispatch' && github.event.client_payload.queue_lease_id != '') &&
+      format('Review event item {0}', github.event.client_payload.item_key || '?') ||
     (github.event_name == 'repository_dispatch' && github.event.client_payload.dispatch_key != '') &&
       format('Review event item {0}#{1} [{2}]', github.event.client_payload.target_repo || 'openclaw/openclaw', github.event.client_payload.item_number || '?', github.event.client_payload.dispatch_key) ||
     github.event_name == 'repository_dispatch' &&
@@ -288,11 +290,11 @@ jobs:
 
   event-review-apply:
     name: Review, comment, and apply event item
-    if: ${{ github.event_name == 'repository_dispatch' && github.event.action != 'clawsweeper_target_sweep' && github.event.client_payload.queue_lease_id != '' && !(github.event.client_payload.target_repo == 'openclaw/clawhub' && vars.CLAWSWEEPER_ENABLE_CLAWHUB != '1') }}
+    if: ${{ github.event_name == 'repository_dispatch' && github.event.action != 'clawsweeper_target_sweep' && github.event.client_payload.queue_lease_id != '' }}
     runs-on: ubuntu-latest
     timeout-minutes: 120
     concurrency:
-      group: clawsweeper-event-review-${{ github.event.client_payload.target_repo || 'openclaw/openclaw' }}-${{ github.event.client_payload.item_number || github.run_id }}
+      group: clawsweeper-event-review-${{ github.event.client_payload.item_key || github.run_id }}
       cancel-in-progress: false
     permissions:
       actions: write
@@ -301,19 +303,26 @@ jobs:
       pull-requests: write
     steps:
       - name: Claim exact-review queue lease
+        id: claim-exact-review-queue
         env:
+          ITEM_KEY: ${{ github.event.client_payload.item_key }}
           QUEUE_LEASE_ID: ${{ github.event.client_payload.queue_lease_id }}
+          QUEUE_LEASE_REVISION: ${{ github.event.client_payload.lease_revision }}
           QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           RUN_ATTEMPT: ${{ github.run_attempt }}
         run: |
           set -euo pipefail
-          test -n "$QUEUE_LEASE_ID"
+          test -n "$QUEUE_LEASE_ID" && test -n "$ITEM_KEY"
           queue_url="${QUEUE_URL%/}"
           payload="$(node -e '
             const runAttempt = Number(process.env.RUN_ATTEMPT);
+            const leaseRevision = Number(process.env.QUEUE_LEASE_REVISION);
             if (!Number.isInteger(runAttempt) || runAttempt < 1) process.exit(1);
+            if (!Number.isInteger(leaseRevision) || leaseRevision < 1) process.exit(1);
             process.stdout.write(JSON.stringify({
               lease_id: process.env.QUEUE_LEASE_ID,
+              item_key: process.env.ITEM_KEY,
+              lease_revision: leaseRevision,
               run_id: process.env.GITHUB_RUN_ID,
               run_attempt: runAttempt,
             }));
@@ -324,10 +333,42 @@ jobs:
               --header "content-type: application/json" \
               --data "$payload" \
               "$queue_url/internal/exact-review/claim")" &&
-              RESPONSE="$response" node -e '
+              RESPONSE="$response" node <<'NODE'
+                const fs = require("node:fs");
                 const response = JSON.parse(process.env.RESPONSE || "{}");
-                if (response.claimed !== true) process.exit(1);
-              '; then
+                const decision = response.decision;
+                const leaseRevision = Number(process.env.QUEUE_LEASE_REVISION);
+                const claimGeneration = Number(response.claim_generation);
+                const itemKey = String(process.env.ITEM_KEY || "");
+                const targetRepo = String(decision?.targetRepo || "");
+                const itemNumber = Number(decision?.itemNumber);
+                if (
+                  response.claimed !== true ||
+                  response.item_key !== itemKey ||
+                  response.lease_revision !== leaseRevision ||
+                  !Number.isInteger(claimGeneration) ||
+                  claimGeneration < 1 ||
+                  !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(targetRepo) ||
+                  !Number.isInteger(itemNumber) ||
+                  itemNumber < 1 ||
+                  `${targetRepo}#${itemNumber}` !== itemKey ||
+                  (decision.itemKind !== "issue" && decision.itemKind !== "pull_request") ||
+                  (decision.sourceEvent !== "issues" && decision.sourceEvent !== "pull_request") ||
+                  typeof decision.sourceAction !== "string" ||
+                  !decision.sourceAction
+                ) {
+                  process.exit(1);
+                }
+                const output = [
+                  `lease_id=${process.env.QUEUE_LEASE_ID}`,
+                  `item_key=${itemKey}`,
+                  `lease_revision=${leaseRevision}`,
+                  `claim_generation=${claimGeneration}`,
+                  `decision=${JSON.stringify(decision)}`,
+                ];
+                fs.appendFileSync(process.env.GITHUB_OUTPUT, `${output.join("\n")}\n`);
+          NODE
+            then
               exit 0
             fi
             if [ "$attempt" -lt 3 ]; then
@@ -345,83 +386,49 @@ jobs:
       - name: Resolve event payload
         id: target
         env:
-          ADAPTIVE_CODEX_TIMEOUT_MS: ${{ github.event.client_payload.review_options.codex_timeout_ms || github.event.client_payload.codex_timeout_ms || '' }}
+          CLAIM_DECISION: ${{ steps.claim-exact-review-queue.outputs.decision }}
           CONFIGURED_CODEX_TIMEOUT_MS: ${{ vars.CLAWSWEEPER_CODEX_TIMEOUT_MS || '1200000' }}
-          MEDIA_PROOF_TIMEOUT_MS: ${{ github.event.client_payload.review_options.media_proof_timeout_ms || github.event.client_payload.media_proof_timeout_ms || '0' }}
         run: |
           set -euo pipefail
-          target_repo="${{ github.event.client_payload.target_repo || 'openclaw/openclaw' }}"
-          target_branch="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.target_branch || github.event.client_payload.target_branch || 'main' }}"
-          item_number="${{ github.event.client_payload.item_number || '' }}"
-          item_kind="${{ github.event.client_payload.item_kind || '' }}"
-          if ! printf '%s' "$target_repo" | grep -Eq '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$'; then
-            echo "Invalid target_repo: $target_repo" >&2
-            exit 1
-          fi
-          if ! printf '%s' "$target_branch" | grep -Eq '^[A-Za-z0-9_.\/-]+$'; then
-            echo "Invalid target_branch: $target_branch" >&2
-            exit 1
-          fi
-          if ! printf '%s' "$item_number" | grep -Eq '^[0-9]+$'; then
-            echo "Invalid item_number: $item_number" >&2
-            exit 1
-          fi
-          case "$item_kind" in
-            ""|"issue"|"pull_request") ;;
-            *)
-              echo "Invalid item_kind: $item_kind" >&2
-              exit 1
-              ;;
-          esac
-          configured_codex_timeout_ms="$CONFIGURED_CODEX_TIMEOUT_MS"
-          if ! printf '%s' "$configured_codex_timeout_ms" | grep -Eq '^[0-9]{1,10}$' || [ "$configured_codex_timeout_ms" -lt 1 ]; then
-            echo "::warning::Invalid configured Codex timeout; using 1200000."
-            configured_codex_timeout_ms="1200000"
-          fi
-          configured_codex_timeout_ms="$((10#$configured_codex_timeout_ms))"
-          codex_timeout_ms="$configured_codex_timeout_ms"
-          if [ -n "$ADAPTIVE_CODEX_TIMEOUT_MS" ]; then
-            adaptive_codex_timeout_ms="$ADAPTIVE_CODEX_TIMEOUT_MS"
-            if ! printf '%s' "$adaptive_codex_timeout_ms" | grep -Eq '^[0-9]{1,10}$' || [ "$adaptive_codex_timeout_ms" -lt 1 ]; then
-              echo "::warning::Ignoring invalid adaptive codex_timeout_ms payload."
-            else
-              adaptive_codex_timeout_ms="$((10#$adaptive_codex_timeout_ms))"
-              if [ "$adaptive_codex_timeout_ms" -lt 600000 ]; then
-                adaptive_codex_timeout_ms="600000"
-              fi
-              if [ "$adaptive_codex_timeout_ms" -gt 1800000 ]; then
-                adaptive_codex_timeout_ms="1800000"
-              fi
-              if [ "$adaptive_codex_timeout_ms" -gt "$codex_timeout_ms" ]; then
-                codex_timeout_ms="$adaptive_codex_timeout_ms"
-              fi
-            fi
-          fi
-          media_proof_timeout_ms="$MEDIA_PROOF_TIMEOUT_MS"
-          if ! printf '%s' "$media_proof_timeout_ms" | grep -Eq '^[0-9]{1,6}$'; then
-            echo "::warning::Ignoring invalid media_proof_timeout_ms payload."
-            media_proof_timeout_ms="0"
-          fi
-          media_proof_timeout_ms="$((10#$media_proof_timeout_ms))"
-          if [ "$media_proof_timeout_ms" -gt 480000 ]; then
-            media_proof_timeout_ms="480000"
-          fi
-          target_owner="${target_repo%%/*}"
-          target_name="${target_repo#*/}"
-          target_checkout_dir="$target_name"
-          if [ "$target_repo" = "${{ github.repository }}" ]; then
-            target_checkout_dir="${target_name}-target"
-          fi
-          {
-            echo "target_repo=$target_repo"
-            echo "target_repo_owner=$target_owner"
-            echo "target_repo_name=$target_name"
-            echo "target_branch=$target_branch"
-            echo "target_checkout_dir=$target_checkout_dir"
-            echo "item_number=$item_number"
-            echo "codex_timeout_ms=$codex_timeout_ms"
-            echo "media_proof_timeout_ms=$media_proof_timeout_ms"
-          } >> "$GITHUB_OUTPUT"
+          node <<'NODE'
+          const fs = require("node:fs");
+          const decision = JSON.parse(process.env.CLAIM_DECISION || "{}");
+          const targetRepo = String(decision.targetRepo || "");
+          const itemNumber = Number(decision.itemNumber);
+          if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(targetRepo)) process.exit(1);
+          if (!Number.isInteger(itemNumber) || itemNumber < 1) process.exit(1);
+
+          const configuredValue = Number(process.env.CONFIGURED_CODEX_TIMEOUT_MS);
+          const configuredTimeout =
+            Number.isInteger(configuredValue) && configuredValue > 0 ? configuredValue : 1_200_000;
+          const adaptiveValue = Number(decision.codexTimeoutMs);
+          const adaptiveTimeout =
+            Number.isInteger(adaptiveValue) && adaptiveValue > 0
+              ? Math.min(1_800_000, Math.max(600_000, adaptiveValue))
+              : 0;
+          const mediaValue = Number(decision.mediaProofTimeoutMs);
+          const mediaTimeout =
+            Number.isInteger(mediaValue) && mediaValue > 0 ? Math.min(480_000, mediaValue) : 0;
+          const [owner, name] = targetRepo.split("/");
+          const checkoutDir = targetRepo === process.env.GITHUB_REPOSITORY ? `${name}-target` : name;
+          const hasCommandContext = Boolean(decision.commandStatusMarker || decision.statusCommentId);
+          const output = {
+            target_repo: targetRepo,
+            target_repo_owner: owner,
+            target_repo_name: name,
+            target_checkout_dir: checkoutDir,
+            item_number: itemNumber,
+            codex_timeout_ms: Math.max(configuredTimeout, adaptiveTimeout),
+            media_proof_timeout_ms: mediaTimeout,
+            has_command_context: hasCommandContext,
+          };
+          fs.appendFileSync(
+            process.env.GITHUB_OUTPUT,
+            `${Object.entries(output)
+              .map(([key, value]) => `${key}=${value}`)
+              .join("\n")}\n`,
+          );
+          NODE
 
       - name: Create target read token
         id: target-read-token
@@ -445,6 +452,12 @@ jobs:
         run: |
           set -euo pipefail
           test -n "$GH_TOKEN"
+          target_branch="$(gh api "repos/$TARGET_REPO" --jq .default_branch)"
+          if ! printf '%s' "$target_branch" | grep -Eq '^[A-Za-z0-9_.\/-]+$'; then
+            echo "Invalid live default branch for $TARGET_REPO: $target_branch" >&2
+            exit 1
+          fi
+          echo "target_branch=$target_branch" >> "$GITHUB_OUTPUT"
           live_item_error="$(mktemp)"
           if ! live_item="$(gh api "repos/$TARGET_REPO/issues/$ITEM_NUMBER" 2>"$live_item_error")"; then
             if grep -Eqi 'HTTP 404|Not Found' "$live_item_error" && gh api "repos/$TARGET_REPO" >/dev/null; then
@@ -464,6 +477,8 @@ jobs:
           rm -f "$live_item_error"
           live_state="$(jq -r '.state' <<< "$live_item")"
           live_locked="$(jq -r '.locked == true' <<< "$live_item")"
+          item_kind="$(jq -r 'if .pull_request then "pull_request" else "issue" end' <<< "$live_item")"
+          echo "item_kind=$item_kind" >> "$GITHUB_OUTPUT"
           case "$live_state" in
             open)
               echo "terminal_noop=false" >> "$GITHUB_OUTPUT"
@@ -509,7 +524,7 @@ jobs:
 
       - uses: ./.github/actions/setup-pnpm
         id: setup-pnpm
-        if: ${{ steps.live-item.outputs.proceed == 'true' || ((steps.live-item.outputs.terminal_noop == 'true' || steps.live-item.outputs.terminal_missing == 'true' || steps.live-item.outputs.guarded_open == 'true') && (github.event.client_payload.review_options.command_status_marker != '' || github.event.client_payload.review_options.status_comment_id != '' || github.event.client_payload.command_status_marker != '' || github.event.client_payload.status_comment_id != '')) }}
+        if: ${{ steps.live-item.outputs.proceed == 'true' || ((steps.live-item.outputs.terminal_noop == 'true' || steps.live-item.outputs.terminal_missing == 'true' || steps.live-item.outputs.guarded_open == 'true') && steps.target.outputs.has_command_context == 'true') }}
         with:
           build-script: ${{ steps.live-item.outputs.proceed == 'true' && 'build:all' || 'build:repair' }}
 
@@ -558,7 +573,7 @@ jobs:
           url="https://github.com/${{ steps.target.outputs.target_repo }}.git"
           cache_dir="${{ steps.target.outputs.target_checkout_dir }}-cache.git"
           checkout_dir="${{ steps.target.outputs.target_checkout_dir }}"
-          target_branch="${{ steps.target.outputs.target_branch }}"
+          target_branch="${{ steps.live-item.outputs.target_branch }}"
           if [ -d "$cache_dir" ]; then
             git -C "$cache_dir" remote set-url origin "$url"
             git -C "$cache_dir" config remote.origin.promisor true
@@ -591,8 +606,8 @@ jobs:
           GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
           TARGET_REPO: ${{ steps.target.outputs.target_repo }}
           ITEM_NUMBER: ${{ steps.target.outputs.item_number }}
-          COMMAND_STATUS_MARKER: ${{ github.event.client_payload.review_options.command_status_marker || github.event.client_payload.command_status_marker || '' }}
-          STATUS_COMMENT_ID: ${{ github.event.client_payload.review_options.status_comment_id || github.event.client_payload.status_comment_id || '' }}
+          COMMAND_STATUS_MARKER: ${{ fromJSON(steps.claim-exact-review-queue.outputs.decision).commandStatusMarker || '' }}
+          STATUS_COMMENT_ID: ${{ fromJSON(steps.claim-exact-review-queue.outputs.decision).statusCommentId || '' }}
           RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           pnpm run repair:update-command-status -- \
@@ -620,7 +635,7 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
           CLAWSWEEPER_PROOF_INSPECTION_TOKEN: ${{ steps.target-read-token.outputs.token || github.token }}
-          ADDITIONAL_PROMPT: ${{ github.event.client_payload.review_options.additional_prompt || github.event.client_payload.additional_prompt || '' }}
+          ADDITIONAL_PROMPT: ${{ fromJSON(steps.claim-exact-review-queue.outputs.decision).additionalPrompt || '' }}
           CLAWSWEEPER_RELATED_GITHUB_SEARCH: ${{ vars.CLAWSWEEPER_RELATED_GITHUB_SEARCH || '1' }}
         run: |
           set -euo pipefail
@@ -701,8 +716,8 @@ jobs:
           REPO_TOKEN: ${{ github.token }}
           TARGET_REPO: ${{ steps.target.outputs.target_repo }}
           ITEM_NUMBER: ${{ steps.target.outputs.item_number }}
-          CLOSE_REASONS: ${{ github.event.client_payload.apply_close_reasons || 'implemented_on_main,duplicate_or_superseded,low_signal_unmergeable_pr' }}
-          MIN_AGE_MINUTES: ${{ github.event.client_payload.apply_min_age_minutes || '0' }}
+          CLOSE_REASONS: implemented_on_main,duplicate_or_superseded,low_signal_unmergeable_pr
+          MIN_AGE_MINUTES: "0"
         run: |
           set -euo pipefail
           live_item_error="$(mktemp)"
@@ -758,6 +773,7 @@ jobs:
             gh api "repos/$TARGET_REPO/issues/comments/$lease_id" --method DELETE
             echo "Released unsuccessful review lease comment $lease_id owned by $LEASE_OWNER."
           done <<< "$lease_ids"
+
       - name: Route synced ClawSweeper verdict
         id: route-synced-verdict
         if: ${{ steps.review-exact-event-item.outcome == 'success' && steps.publish-event-result.outcome == 'success' && steps.publish-event-result.outputs.terminal_noop != 'true' && steps.publish-event-result.outputs.terminal_missing != 'true' && steps.publish-event-result.outputs.terminal_closed != 'true' && steps.publish-event-result.outputs.guarded_open != 'true' && steps.publish-event-result.outputs.policy_noop != 'true' && steps.publish-event-result.outputs.requeue_latest != 'true' && steps.publish-event-result.outputs.remote_tuple_verified == 'true' && steps.publish-event-result.outputs.routing_deferred == 'false' }}
@@ -787,7 +803,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TARGET_REPO: ${{ steps.target.outputs.target_repo }}
-          TARGET_BRANCH: ${{ steps.target.outputs.target_branch }}
+          TARGET_BRANCH: ${{ steps.live-item.outputs.target_branch }}
           CLAWSWEEPER_COMMENT_LOOKBACK_MINUTES: ${{ vars.CLAWSWEEPER_COMMENT_LOOKBACK_MINUTES || '180' }}
           CLAWSWEEPER_COMMENT_MAX_COMMENTS: ${{ vars.CLAWSWEEPER_COMMENT_MAX_COMMENTS || '1000' }}
         run: |
@@ -857,8 +873,8 @@ jobs:
           GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
           TARGET_REPO: ${{ steps.target.outputs.target_repo }}
           ITEM_NUMBER: ${{ steps.target.outputs.item_number }}
-          COMMAND_STATUS_MARKER: ${{ github.event.client_payload.review_options.command_status_marker || github.event.client_payload.command_status_marker || '' }}
-          STATUS_COMMENT_ID: ${{ github.event.client_payload.review_options.status_comment_id || github.event.client_payload.status_comment_id || '' }}
+          COMMAND_STATUS_MARKER: ${{ fromJSON(steps.claim-exact-review-queue.outputs.decision).commandStatusMarker || '' }}
+          STATUS_COMMENT_ID: ${{ fromJSON(steps.claim-exact-review-queue.outputs.decision).statusCommentId || '' }}
           RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
           REVIEW_OUTCOME: ${{ steps.review-exact-event-item.outcome }}
           PUBLISH_OUTCOME: ${{ steps.publish-event-result.outcome }}
@@ -1051,18 +1067,25 @@ jobs:
         continue-on-error: true
         env:
           JOB_STATUS: ${{ job.status }}
-          QUEUE_LEASE_ID: ${{ github.event.client_payload.queue_lease_id }}
+          CLAIM_GENERATION: ${{ steps.claim-exact-review-queue.outputs.claim_generation }}
+          ITEM_KEY: ${{ steps.claim-exact-review-queue.outputs.item_key }}
+          QUEUE_LEASE_ID: ${{ steps.claim-exact-review-queue.outputs.lease_id }}
+          QUEUE_LEASE_REVISION: ${{ steps.claim-exact-review-queue.outputs.lease_revision }}
           QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           RETRY_AT: ${{ steps.review-exact-event-item.outputs.retry_at }}
           REQUEUE_LATEST: ${{ steps.publish-event-result.outputs.requeue_latest }}
           RUN_ATTEMPT: ${{ github.run_attempt }}
         run: |
           set -euo pipefail
-          test -n "$QUEUE_LEASE_ID"
+          test -n "$QUEUE_LEASE_ID" && test -n "$ITEM_KEY"
           queue_url="${QUEUE_URL%/}"
           payload="$(node -e '
             const runAttempt = Number(process.env.RUN_ATTEMPT);
+            const leaseRevision = Number(process.env.QUEUE_LEASE_REVISION);
+            const claimGeneration = Number(process.env.CLAIM_GENERATION);
             if (!Number.isInteger(runAttempt) || runAttempt < 1) process.exit(1);
+            if (!Number.isInteger(leaseRevision) || leaseRevision < 1) process.exit(1);
+            if (!Number.isInteger(claimGeneration) || claimGeneration < 1) process.exit(1);
             const outcome = process.env.JOB_STATUS === "success"
               ? "success"
               : process.env.JOB_STATUS === "cancelled"
@@ -1072,6 +1095,9 @@ jobs:
             const requeueLatest = process.env.REQUEUE_LATEST === "true";
             process.stdout.write(JSON.stringify({
               lease_id: process.env.QUEUE_LEASE_ID,
+              item_key: process.env.ITEM_KEY,
+              lease_revision: leaseRevision,
+              claim_generation: claimGeneration,
               run_id: process.env.GITHUB_RUN_ID,
               run_attempt: runAttempt,
               outcome,
@@ -1100,8 +1126,8 @@ jobs:
           GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
           TARGET_REPO: ${{ steps.target.outputs.target_repo }}
           ITEM_NUMBER: ${{ steps.target.outputs.item_number }}
-          COMMAND_STATUS_MARKER: ${{ github.event.client_payload.review_options.command_status_marker || github.event.client_payload.command_status_marker || '' }}
-          STATUS_COMMENT_ID: ${{ github.event.client_payload.review_options.status_comment_id || github.event.client_payload.status_comment_id || '' }}
+          COMMAND_STATUS_MARKER: ${{ fromJSON(steps.claim-exact-review-queue.outputs.decision).commandStatusMarker || '' }}
+          STATUS_COMMENT_ID: ${{ fromJSON(steps.claim-exact-review-queue.outputs.decision).statusCommentId || '' }}
           RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           pnpm run repair:update-command-status -- \
