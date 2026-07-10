@@ -289,7 +289,7 @@ function publishMainCommitInternal(options: GitPublishOptions): PublishResult {
           branch,
           pushAttempts,
           maxAttempts,
-          reconciliationSourceCommit,
+          ...(reconciliationSourceCommit ? { reconciliationSourceCommit } : {}),
         })
       ) {
         throw new Error(`Failed to synchronize unchanged publish with ${remote}/${branch}`);
@@ -320,8 +320,8 @@ function publishMainCommitInternal(options: GitPublishOptions): PublishResult {
         branch,
         pushAttempts,
         maxAttempts,
-        reconciliationSourceCommit,
-        reconciliationTupleKeys,
+        ...(reconciliationSourceCommit ? { reconciliationSourceCommit } : {}),
+        ...(reconciliationTupleKeys ? { reconciliationTupleKeys } : {}),
       })
     ) {
       throw new Error(
