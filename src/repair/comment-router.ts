@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { adaptiveReviewBudgetForPullRequest } from "./adaptive-review-budget.js";
+import { CLOSE_PROTECTED_LABEL_NAMES } from "./exact-review-guard-labels.js";
 import {
   activeRepairWorkflowRunForJobAfterDispatchRecheck,
   assertLiveWorkerCapacity,
@@ -2446,10 +2447,10 @@ function issueImplementationLinkedPrSignal(target: LooseRecord) {
   return candidates.some((value) => Array.isArray(value) && value.length > 0);
 }
 
+const ISSUE_IMPLEMENTATION_PROTECTED_LABELS = new Set<string>(CLOSE_PROTECTED_LABEL_NAMES);
+
 function isIssueImplementationProtectedLabel(label: string) {
-  return ["security", "beta-blocker", "release-blocker", "maintainer"].includes(
-    label.trim().toLowerCase(),
-  );
+  return ISSUE_IMPLEMENTATION_PROTECTED_LABELS.has(label.trim().toLowerCase());
 }
 
 function issueImplementationSecuritySignal(text: string) {

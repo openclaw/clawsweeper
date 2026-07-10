@@ -18,6 +18,11 @@ import {
 } from "./comment-router-core.js";
 import { issueSourceRevisionSha256 } from "./issue-source-guard.js";
 import { hasSecuritySignal } from "./security-signals.js";
+import {
+  CLOSE_PROTECTED_LABEL_NAMES,
+  HUMAN_REVIEW_LABEL,
+  MANUAL_ONLY_LABEL,
+} from "./exact-review-guard-labels.js";
 
 type CandidateKind = "strict_bug" | "vision_fit" | "viable";
 
@@ -955,15 +960,14 @@ function writeStepOutputs(values: Record<string, JsonValue>) {
   fs.appendFileSync(output, `${lines.join("\n")}\n`);
 }
 
+const ISSUE_IMPLEMENTATION_PROTECTED_LABELS = new Set<string>([
+  ...CLOSE_PROTECTED_LABEL_NAMES,
+  HUMAN_REVIEW_LABEL,
+  MANUAL_ONLY_LABEL,
+]);
+
 function isProtectedLabel(label: string): boolean {
-  return [
-    "security",
-    "beta-blocker",
-    "release-blocker",
-    "maintainer",
-    "clawsweeper:human-review",
-    "clawsweeper:manual-only",
-  ].includes(label.trim().toLowerCase());
+  return ISSUE_IMPLEMENTATION_PROTECTED_LABELS.has(label.trim().toLowerCase());
 }
 
 function isAutomaticImplementationPauseLabel(label: string): boolean {
