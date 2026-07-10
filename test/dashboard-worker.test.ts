@@ -913,6 +913,90 @@ test("exact-review queue requeues a cancelled claimed lease", async () => {
   assert.equal(state.items["openclaw/openclaw#710"].claimGeneration, undefined);
 });
 
+test("exact-review queue defers a coordination-held failure until the lease expires", async () => {
+  const storage = new MemoryDurableStorage();
+  const retryAt = Date.now() + 45 * 60_000;
+  await storage.put("exact-review-queue", {
+    deliveries: {},
+    items: {
+      "openclaw/openclaw#711": leasedExactReviewQueueItem(711, "held-run"),
+    },
+  });
+  const queue = new ExactReviewQueue({ storage }, {});
+
+  const response = await queue.fetch(
+    new Request("https://clawsweeper-exact-review-queue/complete", {
+      method: "POST",
+      body: JSON.stringify({
+        lease_id: "lease-711",
+        run_id: "held-run",
+        run_attempt: 1,
+        outcome: "failure",
+        retry_at: new Date(retryAt).toISOString(),
+      }),
+    }),
+  );
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { ok: true, requeued: true });
+  const state = (await storage.get("exact-review-queue")) as {
+    items: Record<string, Record<string, unknown>>;
+  };
+  assert.ok(Number(state.items["openclaw/openclaw#711"].nextAttemptAt) >= retryAt);
+  assert.equal(state.items["openclaw/openclaw#711"].attempts, 1);
+});
+
+test("exact-review queue does not carry an old coordination deadline to a newer revision", async () => {
+  const storage = new MemoryDurableStorage();
+  const retryAt = Date.now() + 45 * 60_000;
+  const item = leasedExactReviewQueueItem(712, "held-run");
+  item.revision = Number(item.leaseRevision) + 1;
+  await storage.put("exact-review-queue", {
+    deliveries: {},
+    items: { "openclaw/openclaw#712": item },
+  });
+  const queue = new ExactReviewQueue({ storage }, {});
+
+  const response = await queue.fetch(
+    new Request("https://clawsweeper-exact-review-queue/complete", {
+      method: "POST",
+      body: JSON.stringify({
+        lease_id: "lease-712",
+        run_id: "held-run",
+        run_attempt: 1,
+        outcome: "failure",
+        retry_at: new Date(retryAt).toISOString(),
+      }),
+    }),
+  );
+
+  assert.equal(response.status, 200);
+  const state = (await storage.get("exact-review-queue")) as {
+    items: Record<string, Record<string, unknown>>;
+  };
+  assert.ok(Number(state.items["openclaw/openclaw#712"].nextAttemptAt) < retryAt);
+});
+
+test("exact-review queue rejects invalid coordination retry deadlines", async () => {
+  const queue = new ExactReviewQueue({ storage: new MemoryDurableStorage() }, {});
+  for (const retryAt of ["not-a-timestamp", new Date(Date.now() + 3 * 60 * 60_000).toISOString()]) {
+    const response = await queue.fetch(
+      new Request("https://clawsweeper-exact-review-queue/complete", {
+        method: "POST",
+        body: JSON.stringify({
+          lease_id: "lease-712",
+          run_id: "held-run",
+          run_attempt: 1,
+          outcome: "failure",
+          retry_at: retryAt,
+        }),
+      }),
+    );
+    assert.equal(response.status, 400);
+    assert.deepEqual(await response.json(), { error: "invalid_retry_at" });
+  }
+});
+
 test("exact-review completion rejects stale owners and is race-idempotent", async () => {
   const storage = new MemoryDurableStorage();
   await storage.put("exact-review-queue", {

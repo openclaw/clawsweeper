@@ -97,6 +97,7 @@ const DEFAULT_EXACT_REVIEW_DISPATCH_LEASE_MS = 10 * 60 * 1000;
 const DEFAULT_EXACT_REVIEW_EXECUTION_LEASE_MS = 130 * 60 * 1000;
 const DEFAULT_EXACT_REVIEW_RETRY_MS = 30_000;
 const DEFAULT_EXACT_REVIEW_WORKFLOW_PAUSED_RETRY_MS = 60_000;
+const EXACT_REVIEW_COMPLETION_RETRY_MAX_MS = 2 * 60 * 60 * 1000;
 const EXACT_REVIEW_RECONCILE_RUN_LIMIT = 32;
 const EXACT_REVIEW_RECONCILE_CLAIM_MATCH_LIMIT = EXACT_REVIEW_RECONCILE_RUN_LIMIT * 2;
 const EXACT_REVIEW_RECONCILE_CONCURRENCY = 4;
@@ -466,6 +467,10 @@ export class ExactReviewQueue {
       if (!outcome) return json({ error: "invalid_outcome" }, 400);
 
       const now = Date.now();
+      const requestedRetryAt = exactReviewCompletionRetryAt(body.retry_at, now);
+      if (body.retry_at !== undefined && requestedRetryAt === null) {
+        return json({ error: "invalid_retry_at" }, 400);
+      }
       const state = await this.readState();
       const item = exactReviewItemForLease(state, leaseId);
       if (!item || item.claimedRunId !== runId) return json({ error: "lease_not_claimed" }, 409);
@@ -485,7 +490,13 @@ export class ExactReviewQueue {
         return json({ ok: true, requeued: false, deferred: true });
       }
 
-      const requeued = finishExactReviewQueueItem(state, item, now, outcome);
+      const requeued = finishExactReviewQueueItem(
+        state,
+        item,
+        now,
+        outcome,
+        requestedRetryAt ?? undefined,
+      );
       await this.writeState(state);
       await this.scheduleNext(state, now);
       return json({ ok: true, requeued });
@@ -1636,9 +1647,11 @@ function finishExactReviewQueueItem(
   item: ExactReviewQueueItem,
   now: number,
   outcome: ExactReviewCompletionOutcome,
+  requestedRetryAt = 0,
 ) {
   const retryingFailure = outcome !== "success";
-  const requeued = retryingFailure || item.revision > Number(item.leaseRevision || 0);
+  const hasNewerRevision = item.revision > Number(item.leaseRevision || 0);
+  const requeued = retryingFailure || hasNewerRevision;
   if (requeued) {
     clearExactReviewLease(item);
     item.state = "pending";
@@ -1647,6 +1660,7 @@ function finishExactReviewQueueItem(
       item.nextAttemptAt = Math.max(
         exactReviewQueueEnqueueAttemptAt(state, now),
         now + exactReviewRetryDelayMs(item.attempts),
+        hasNewerRevision ? 0 : requestedRetryAt,
       );
     } else {
       item.nextAttemptAt = exactReviewQueueEnqueueAttemptAt(state, now);
@@ -1657,6 +1671,14 @@ function finishExactReviewQueueItem(
     delete state.items[item.key];
   }
   return requeued;
+}
+
+function exactReviewCompletionRetryAt(value, now: number): number | null {
+  if (value === undefined || value === null || value === "") return null;
+  const retryAt = Date.parse(String(value));
+  if (!Number.isFinite(retryAt)) return null;
+  if (retryAt > now + EXACT_REVIEW_COMPLETION_RETRY_MAX_MS) return null;
+  return Math.max(now, retryAt);
 }
 
 function clearExactReviewLease(item: ExactReviewQueueItem) {

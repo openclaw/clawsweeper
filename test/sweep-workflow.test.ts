@@ -40,6 +40,13 @@ test("review workflow gives Codex a read-only inspection token", () => {
     exactReviewStep,
     /CLAWSWEEPER_PROOF_INSPECTION_TOKEN: \$\{\{ steps\.target-read-token\.outputs\.token \|\| github\.token \}\}/,
   );
+  assert.match(
+    exactReviewStep,
+    /report_path="artifacts\/event\/\$\{\{ steps\.target\.outputs\.item_number \}\}\.md"/,
+  );
+  assert.match(exactReviewStep, /coordination-held\.json/);
+  assert.match(exactReviewStep, /echo "retry_at=\$retry_at" >> "\$GITHUB_OUTPUT"/);
+  assert.match(exactReviewStep, /Exact review produced no artifact for open item/);
   assert.match(reviewJob, /uses: \.\/clawsweeper\/\.github\/actions\/setup-codex/);
   assert.doesNotMatch(reviewJob, /uses: \.\/\.github\/actions\/setup-codex/);
 });
@@ -56,6 +63,10 @@ test("exact event publish and routing require a successful fresh review artifact
   const setupCodexStart = eventReviewJob.indexOf("- uses: ./.github/actions/setup-codex");
   const exactReviewStart = eventReviewJob.indexOf("- name: Review exact event item");
   const publishStart = eventReviewJob.indexOf("- name: Publish event result and apply safe close");
+  const releaseUnsuccessfulStart = eventReviewJob.indexOf(
+    "- name: Release unsuccessful workflow-owned review lease",
+    publishStart,
+  );
   const routeStart = eventReviewJob.indexOf("- name: Route synced ClawSweeper verdict");
   const deferredRouteStart = eventReviewJob.indexOf(
     "- name: Queue deferred exact verdict router",
@@ -75,7 +86,8 @@ test("exact event publish and routing require a successful fresh review artifact
   const liveItemStep = eventReviewJob.slice(liveItemStart, setupPnpmStart);
   const setupCodexStep = eventReviewJob.slice(setupCodexStart, exactReviewStart);
   const exactReviewStep = eventReviewJob.slice(exactReviewStart, publishStart);
-  const publishStep = eventReviewJob.slice(publishStart, routeStart);
+  const publishStep = eventReviewJob.slice(publishStart, releaseUnsuccessfulStart);
+  const releaseUnsuccessfulStep = eventReviewJob.slice(releaseUnsuccessfulStart, routeStart);
   const routeStep = eventReviewJob.slice(routeStart, deferredRouteStart);
   const deferredRouteStep = eventReviewJob.slice(deferredRouteStart, releaseLeaseStart);
   const reactStep = eventReviewJob.slice(reactStart, failStart);
@@ -129,6 +141,16 @@ test("exact event publish and routing require a successful fresh review artifact
   assert.match(publishStep, /gh api "repos\/\$TARGET_REPO" >\/dev\/null/);
   assert.match(publishStep, /cat "\$live_item_error" >&2/);
   assert.match(publishStep, /Exact review produced no artifact for open item/);
+  assert.ok(releaseUnsuccessfulStart > publishStart);
+  assert.match(releaseUnsuccessfulStep, /always\(\)/);
+  assert.match(
+    releaseUnsuccessfulStep,
+    /github-run-\$\{\{ github\.run_id \}\}-\$\{\{ github\.run_attempt \}\}/,
+  );
+  assert.match(releaseUnsuccessfulStep, /clawsweeper-review-lease item=\$ITEM_NUMBER/);
+  assert.match(releaseUnsuccessfulStep, /owner=\$LEASE_OWNER/);
+  assert.match(releaseUnsuccessfulStep, /issues\/comments\/\$lease_id/);
+  assert.match(releaseUnsuccessfulStep, /--method DELETE/);
   assert.match(publisher, /"--event-apply-proof"/);
   assert.match(publisher, /exactEventApplyProof\(/);
   assert.match(publisher, /terminal_missing=/);
@@ -256,6 +278,11 @@ test("exact event publish and routing require a successful fresh review artifact
   assert.match(failStep, /steps\.publish-event-result\.outputs\.guarded_open != 'true'/);
   assert.match(failStep, /steps\.route-synced-verdict\.outcome != 'success'/);
   assert.match(failStep, /steps\.queue-deferred-verdict-router\.outcome != 'success'/);
+  assert.match(
+    eventReviewJob,
+    /RETRY_AT: \$\{\{ steps\.review-exact-event-item\.outputs\.retry_at \}\}/,
+  );
+  assert.match(eventReviewJob, /\.\.\.\(retryAt \? \{ retry_at: retryAt \} : \{\}\)/);
 });
 
 test("dashboard syncs Worker secrets with durable lifecycle storage", () => {

@@ -399,7 +399,7 @@ type AcquiredReviewStartLease = {
 
 type ReviewStartStatusCommentResult =
   | { status: "posted"; lease: AcquiredReviewStartLease }
-  | { status: "held"; lease: null };
+  | { status: "held"; lease: null; retryAt: string };
 
 interface ExistingReview {
   path: string;
@@ -17860,6 +17860,25 @@ function reviewStartLeaseOwner(comment: Record<string, unknown> | undefined): st
   return match?.[1]?.match(/\bowner=([^\s>]+)/i)?.[1] ?? null;
 }
 
+function newReviewStartLeaseOwner(
+  env: NodeJS.ProcessEnv = process.env,
+  fallback: () => string = randomUUID,
+): string {
+  const runId = String(env.GITHUB_RUN_ID ?? "").trim();
+  const runAttempt = String(env.GITHUB_RUN_ATTEMPT ?? "").trim();
+  if (/^[1-9]\d*$/.test(runId) && /^[1-9]\d*$/.test(runAttempt)) {
+    return `github-run-${runId}-${runAttempt}`;
+  }
+  return fallback();
+}
+
+export function newReviewStartLeaseOwnerForTest(
+  env: NodeJS.ProcessEnv,
+  fallback: () => string,
+): string {
+  return newReviewStartLeaseOwner(env, fallback);
+}
+
 function freshDedicatedReviewStartLeases(options: {
   comments: Record<string, unknown>[];
   itemNumber: number;
@@ -17919,7 +17938,7 @@ function postReviewStartStatusComment(options: {
   purpose?: "review" | "apply";
 }): ReviewStartStatusCommentResult {
   const startedAtMs = Date.now();
-  const leaseOwner = randomUUID();
+  const leaseOwner = newReviewStartLeaseOwner();
   const leaseOptions: ReviewStartStatusCommentOptions = {
     number: options.item.number,
     kind: options.item.kind,
@@ -17943,15 +17962,14 @@ function postReviewStartStatusComment(options: {
       `cannot acquire a review lease without the current item revision for #${options.item.number}`,
     );
   }
-  if (
-    freshDedicatedReviewStartLeases({
-      comments: initialState.leaseComments,
-      itemNumber: options.item.number,
-      headSha: normalizedHead,
-      nowMs: startedAtMs,
-    }).length > 0
-  ) {
-    return { status: "held", lease: null };
+  const initialLease = freshDedicatedReviewStartLeases({
+    comments: initialState.leaseComments,
+    itemNumber: options.item.number,
+    headSha: normalizedHead,
+    nowMs: startedAtMs,
+  })[0];
+  if (initialLease) {
+    return { status: "held", lease: null, retryAt: initialLease.expiresAt };
   }
   const body = renderReviewStartStatusComment(leaseOptions);
   const payload = writeCommentPayload(options.item.number, body);
@@ -17989,7 +18007,12 @@ function postReviewStartStatusComment(options: {
     reviewStartLeaseOwner(winner?.comment) !== leaseOwner
   ) {
     deleteOwnedDedicatedReviewStartLease(options.item.number, acquired);
-    return { status: "held", lease: null };
+    if (!winner) {
+      throw new Error(
+        `could not identify the winning review lease for #${options.item.number}; retry required`,
+      );
+    }
+    return { status: "held", lease: null, retryAt: winner.expiresAt };
   }
   return { status: "posted", lease: acquired };
 }
@@ -18934,6 +18957,8 @@ function reviewCommand(args: Args): void {
     ? buildLocalRangeReview(openclawDir, targetRepo(), stringArg(args.base, ""))
     : undefined;
   ensureDir(artifactDir);
+  const coordinationHeldPath = join(artifactDir, "coordination-held.json");
+  if (existsSync(coordinationHeldPath)) unlinkSync(coordinationHeldPath);
   if (localRangeData) {
     // Reuse #298's FULL offline envelope (not just token-scrub): withhold every GitHub
     // credential AND point gh at an empty config dir — token deletion alone can't stop
@@ -19013,6 +19038,7 @@ function reviewCommand(args: Args): void {
       JSON.stringify({ shardIndex, shardCount, scannedPages, candidates, reviewPolicy }, null, 2),
     );
     let completed = 0;
+    let coordinationHeldRetryAt: string | null = null;
     let codexFailures = 0;
     let leaseAcquisitionFailures = 0;
     let cacheHits = 0;
@@ -19042,7 +19068,10 @@ function reviewCommand(args: Args): void {
           console.error(
             `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} start-comment=${startComment.status} #${item.number}`,
           );
-          if (startComment.status === "held") continue;
+          if (startComment.status === "held") {
+            coordinationHeldRetryAt = startComment.retryAt;
+            continue;
+          }
           acquiredReviewLease = startComment.lease;
           if (!acquiredReviewLease) {
             throw new Error(`review lease acquisition returned no identity for PR #${item.number}`);
@@ -19114,7 +19143,10 @@ function reviewCommand(args: Args): void {
           console.error(
             `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} start-comment=${startComment.status} #${item.number}`,
           );
-          if (startComment.status === "held") continue;
+          if (startComment.status === "held") {
+            coordinationHeldRetryAt = startComment.retryAt;
+            continue;
+          }
           acquiredReviewLease = startComment.lease;
           if (!acquiredReviewLease) {
             throw new Error(
@@ -19302,6 +19334,13 @@ function reviewCommand(args: Args): void {
           `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} done #${item.number} (${completed}/${candidates.length}) decision=${decision.decision} confidence=${decision.confidence} action=${action.actionTaken}`,
         );
       }
+    }
+    if (coordinationHeldRetryAt) {
+      writeFileSync(
+        coordinationHeldPath,
+        JSON.stringify({ retry_at: coordinationHeldRetryAt }, null, 2) + "\n",
+        "utf8",
+      );
     }
     if (!humanLocalReview) {
       console.error(

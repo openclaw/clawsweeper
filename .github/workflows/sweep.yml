@@ -656,16 +656,39 @@ jobs:
             --shard-count 1 \
             "${additional_prompt_arg[@]}"
 
+          coordination_held_path="artifacts/event/coordination-held.json"
+          if [ -f "$coordination_held_path" ]; then
+            retry_at="$(node -e '
+              const data = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"));
+              const value = String(data.retry_at || "").trim();
+              const timestamp = Date.parse(value);
+              if (!value || !Number.isFinite(timestamp)) process.exit(1);
+              process.stdout.write(new Date(timestamp).toISOString());
+            ' "$coordination_held_path")"
+            echo "retry_at=$retry_at" >> "$GITHUB_OUTPUT"
+            echo "::notice::Review coordination is held until $retry_at."
+          fi
+
+          report_path="artifacts/event/${{ steps.target.outputs.item_number }}.md"
+          if [ ! -f "$report_path" ]; then
+            live_state="$(gh api "repos/${{ steps.target.outputs.target_repo }}/issues/${{ steps.target.outputs.item_number }}" --jq .state)"
+            if [ "$live_state" != "closed" ]; then
+              echo "Exact review produced no artifact for open item ${{ steps.target.outputs.target_repo }}#${{ steps.target.outputs.item_number }}." >&2
+              exit 1
+            fi
+            echo "::notice::Exact review produced no artifact because the item closed during review."
+          fi
+
       - name: Create state token
         id: state-token
-        if: ${{ steps.live-item.outputs.proceed == 'true' }}
+        if: ${{ steps.live-item.outputs.proceed == 'true' && steps.review-exact-event-item.outcome == 'success' }}
         uses: ./.github/actions/create-state-token
         with:
           client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
           private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
 
       - uses: ./.github/actions/setup-state
-        if: ${{ steps.live-item.outputs.proceed == 'true' }}
+        if: ${{ steps.live-item.outputs.proceed == 'true' && steps.review-exact-event-item.outcome == 'success' }}
         with:
           token: ${{ steps.state-token.outputs.token }}
           fetch-depth: 1
@@ -715,6 +738,26 @@ jobs:
           echo "terminal_noop=false" >> "$GITHUB_OUTPUT"
           pnpm run repair:publish-event-result
 
+      - name: Release unsuccessful workflow-owned review lease
+        if: ${{ always() && steps.live-item.outputs.proceed == 'true' && (steps.review-exact-event-item.outcome != 'success' || steps.publish-event-result.outcome != 'success') }}
+        env:
+          GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
+          TARGET_REPO: ${{ steps.target.outputs.target_repo }}
+          ITEM_NUMBER: ${{ steps.target.outputs.item_number }}
+          LEASE_OWNER: github-run-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          test -n "$GH_TOKEN"
+          lease_ids="$(
+            gh api "repos/$TARGET_REPO/issues/$ITEM_NUMBER/comments?per_page=100" \
+              --paginate \
+              --jq ".[] | select(.user.login == \"clawsweeper[bot]\" or .user.login == \"openclaw-clawsweeper[bot]\") | select(.body | contains(\"<!-- clawsweeper-review-lease item=$ITEM_NUMBER -->\")) | select(.body | contains(\"owner=$LEASE_OWNER \")) | .id"
+          )"
+          while IFS= read -r lease_id; do
+            [ -n "$lease_id" ] || continue
+            gh api "repos/$TARGET_REPO/issues/comments/$lease_id" --method DELETE
+            echo "Released unsuccessful review lease comment $lease_id owned by $LEASE_OWNER."
+          done <<< "$lease_ids"
       - name: Route synced ClawSweeper verdict
         id: route-synced-verdict
         if: ${{ steps.review-exact-event-item.outcome == 'success' && steps.publish-event-result.outcome == 'success' && steps.publish-event-result.outputs.terminal_noop != 'true' && steps.publish-event-result.outputs.terminal_missing != 'true' && steps.publish-event-result.outputs.terminal_closed != 'true' && steps.publish-event-result.outputs.guarded_open != 'true' && steps.publish-event-result.outputs.remote_tuple_verified == 'true' && steps.publish-event-result.outputs.routing_deferred == 'false' }}
@@ -996,6 +1039,7 @@ jobs:
           JOB_STATUS: ${{ job.status }}
           QUEUE_LEASE_ID: ${{ github.event.client_payload.queue_lease_id }}
           QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
+          RETRY_AT: ${{ steps.review-exact-event-item.outputs.retry_at }}
           RUN_ATTEMPT: ${{ github.run_attempt }}
         run: |
           set -euo pipefail
@@ -1009,11 +1053,13 @@ jobs:
               : process.env.JOB_STATUS === "cancelled"
                 ? "cancelled"
                 : "failure";
+            const retryAt = String(process.env.RETRY_AT || "").trim();
             process.stdout.write(JSON.stringify({
               lease_id: process.env.QUEUE_LEASE_ID,
               run_id: process.env.GITHUB_RUN_ID,
               run_attempt: runAttempt,
               outcome,
+              ...(retryAt ? { retry_at: retryAt } : {}),
             }));
           ')"
           for attempt in 1 2 3; do

@@ -6,6 +6,7 @@ import {
   canPatchReviewComment,
   itemSourceRevisionSha256ForTest,
   isCodexReviewCommentBody,
+  newReviewStartLeaseOwnerForTest,
   renderReviewCommentFromReport,
   renderReviewStartStatusComment,
   reviewAutomationMarkersFromReport,
@@ -58,6 +59,23 @@ function implementedCloseReport(overrides = {}) {
   ].join("\n");
 }
 
+test("GitHub workflow review leases use a recoverable run identity", () => {
+  assert.equal(
+    newReviewStartLeaseOwnerForTest(
+      { GITHUB_RUN_ID: "29083888985", GITHUB_RUN_ATTEMPT: "2" },
+      () => "random-owner",
+    ),
+    "github-run-29083888985-2",
+  );
+  assert.equal(
+    newReviewStartLeaseOwnerForTest(
+      { GITHUB_RUN_ID: "29083888985", GITHUB_RUN_ATTEMPT: "invalid" },
+      () => "random-owner",
+    ),
+    "random-owner",
+  );
+});
+
 test("comment matcher recognizes old and new Codex review comments", () => {
   assert.equal(
     isCodexReviewCommentBody(
@@ -99,6 +117,8 @@ test("review start lease is acquired before cache reuse and slow media preproces
   assert.ok(startLease >= 0);
   assert.ok(cacheHit > startLease);
   assert.ok(mediaPrep > cacheHit);
+  assert.match(source, /coordination-held\.json/);
+  assert.match(source, /coordinationHeldRetryAt = startComment\.retryAt/);
 });
 
 test("review comment patching only targets ClawSweeper-owned comments", () => {
@@ -124,7 +144,7 @@ test("spoofed durable markers cannot suppress a bot-owned start lease", () => {
   );
   assert.match(postStart, /issueReviewCommentState\(options\.item\.number\)/);
   assert.match(postStart, /freshDedicatedReviewStartLeases\(\{/);
-  assert.match(postStart, /return \{ status: "held", lease: null \}/);
+  assert.match(postStart, /return \{ status: "held", lease: null, retryAt: [^}]+\.expiresAt \}/);
   assert.match(postStart, /issues\/\$\{options\.item\.number\}\/comments/);
 });
 
