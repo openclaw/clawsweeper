@@ -22,6 +22,9 @@ run-name: >-
       format('Review event item {0}#{1}', github.event.client_payload.target_repo || 'openclaw/openclaw', github.event.client_payload.item_number || '?') ||
     (github.event_name == 'workflow_dispatch' && startsWith(github.event.inputs.item_numbers, 'router-')) &&
       format('Review event item {0}#{1} [{2}]', github.event.inputs.target_repo || 'openclaw/openclaw', github.event.inputs.item_number || '?', github.event.inputs.item_numbers) ||
+    (github.event_name == 'workflow_dispatch' &&
+      (github.event.inputs.item_number != '' || github.event.inputs.item_numbers != '')) &&
+      format('Review event item {0}#{1}', github.event.inputs.target_repo || 'openclaw/openclaw', github.event.inputs.item_number || github.event.inputs.item_numbers) ||
     ((github.event_name == 'workflow_dispatch' &&
       github.event.inputs.apply_existing == 'true' &&
       github.event.inputs.apply_sync_comments_only == 'true') ||
@@ -1031,7 +1034,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     concurrency:
-      group: ${{ format('clawsweeper-planner-{0}', (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.item_number == '' && github.event.inputs.item_numbers == '')) && (github.event.inputs.target_repo || ((github.event.schedule == '2/5 * * * *' || github.event.schedule == '22 * * * *') && 'openclaw/clawhub' || 'openclaw/openclaw')) || github.run_id) }}
+      group: ${{ format('clawsweeper-planner-{0}', (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && (github.event.inputs.target_repo || ((github.event.schedule == '2/5 * * * *' || github.event.schedule == '22 * * * *') && 'openclaw/clawhub' || 'openclaw/openclaw')) || github.run_id) }}
       cancel-in-progress: false
     outputs:
       batch_size: ${{ steps.mode.outputs.batch_size }}

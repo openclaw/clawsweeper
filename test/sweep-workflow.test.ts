@@ -977,6 +977,15 @@ test("comment router prunes bare ack comments after updating shared automerge st
 
 test("manual exact-item review dispatches avoid broad review concurrency", () => {
   const workflow = readText(".github/workflows/sweep.yml");
+  const runName = workflow.slice(workflow.indexOf("run-name:"), workflow.indexOf("\non:"));
+  const exactCapacityBlock = workflow.slice(
+    workflow.indexOf("active_sweep_exact_count()"),
+    workflow.indexOf("active_sweep_background_workers()"),
+  );
+  const modeBlock = workflow.slice(
+    workflow.indexOf("- id: mode"),
+    workflow.indexOf("- id: select"),
+  );
 
   assert.match(
     workflow,
@@ -986,6 +995,16 @@ test("manual exact-item review dispatches avoid broad review concurrency", () =>
     workflow,
     /github\.event_name == 'workflow_dispatch' && github\.event\.inputs\.hot_intake == 'true' && \(github\.event\.inputs\.item_number != '' \|\| github\.event\.inputs\.item_numbers != ''\)\) && format\('clawsweeper-intake-exact-\{0\}'/,
   );
+  assert.match(
+    runName,
+    /github\.event_name == 'workflow_dispatch' &&\s+\(github\.event\.inputs\.item_number != '' \|\| github\.event\.inputs\.item_numbers != ''\)\) &&\s+format\('Review event item \{0\}#\{1\}', github\.event\.inputs\.target_repo \|\| 'openclaw\/openclaw', github\.event\.inputs\.item_number \|\| github\.event\.inputs\.item_numbers\)/,
+  );
+  assert.ok(
+    runName.indexOf("format('Review event item {0}#{1}'") <
+      runName.lastIndexOf("'Review ClawSweeper items'"),
+  );
+  assert.match(exactCapacityBlock, /\.displayTitle \| startswith\("Review event item "\)/);
+  assert.match(modeBlock, /active_run_count .* \+ \$\(active_sweep_exact_count\)/);
 });
 
 test("sweep workflow publishes target-scoped state paths", () => {
@@ -1199,7 +1218,7 @@ test("review backstops identify sweep runs by stable workflow path", () => {
   assert.doesNotMatch(block, /run\.workflowName/);
 });
 
-test("scheduled background reviews serialize planners and refill released capacity", () => {
+test("target review planners serialize exact and broad workflow dispatches", () => {
   const workflow = readText(".github/workflows/sweep.yml");
   const concurrencyBlock = workflow.slice(
     workflow.indexOf("concurrency:"),
@@ -1213,6 +1232,12 @@ test("scheduled background reviews serialize planners and refill released capaci
   assert.match(concurrencyBlock, /format\('clawsweeper-intake-v2-\{0\}', github\.run_id\)/);
   assert.match(concurrencyBlock, /format\('clawsweeper-review-\{0\}', github\.run_id\)/);
   assert.match(planHeader, /group: \$\{\{ format\('clawsweeper-planner-\{0\}'/);
+  assert.match(
+    planHeader,
+    /github\.event_name == 'schedule' \|\| github\.event_name == 'workflow_dispatch'/,
+  );
+  assert.doesNotMatch(planHeader, /github\.event\.inputs\.item_number == ''/);
+  assert.doesNotMatch(planHeader, /github\.event\.inputs\.item_numbers == ''/);
   assert.match(planHeader, /\|\| github\.run_id/);
   assert.match(planHeader, /cancel-in-progress: false/);
 });
