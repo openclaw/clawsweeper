@@ -142,6 +142,10 @@ test("exact event publish and routing require a successful fresh review artifact
   );
   assert.match(eventReviewJob, /deterministic remain-open guard/);
   assert.match(eventReviewJob, /verified terminal close/);
+  assert.match(
+    eventReviewJob,
+    /\[ "\$TERMINAL_CLOSED" = "true" \] && \[ "\$\{\{ steps\.confirm-terminal-item\.outputs\.confirmed \}\}" = "true" \]/,
+  );
   assert.match(reactStep, /steps\.publish-event-result\.outputs\.terminal_closed == 'true'/);
   assert.match(reactStep, /steps\.publish-event-result\.outputs\.guarded_open == 'true'/);
   assert.match(reactStep, /steps\.live-item\.outputs\.guarded_open == 'true'/);

@@ -816,7 +816,7 @@ jobs:
             state="Complete"
             detail="The targeted re-review finished, the durable review comment was updated, and the synced verdict was routed."
           fi
-          if [ "$REVIEW_OUTCOME" = "success" ] && [ "$PUBLISH_OUTCOME" = "success" ] && [ "$TERMINAL_CLOSED" = "true" ]; then
+          if [ "$REVIEW_OUTCOME" = "success" ] && [ "$PUBLISH_OUTCOME" = "success" ] && [ "$TERMINAL_CLOSED" = "true" ] && [ "${{ steps.confirm-terminal-item.outputs.confirmed }}" = "true" ]; then
             state="Complete"
             detail="The targeted re-review applied a verified terminal close, published the authoritative record tuple, and suppressed stale verdict routing."
           fi
