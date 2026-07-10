@@ -650,6 +650,8 @@ Reason: No work is needed because ${canonicalUrl} is the canonical landing path.
       /^review_comment_synced_at: .*$/m,
       `review_comment_synced_at: ${new Date().toISOString()}`,
     );
+    const reportReviewedAt = recentlySyncedReport.match(/^reviewed_at: (.+)$/m)?.[1];
+    assert.ok(reportReviewedAt);
     const newerStaleCloseComment = [
       "Codex review: close this as superseded.",
       "",
@@ -663,6 +665,27 @@ Reason: No work is needed because ${canonicalUrl} is the canonical landing path.
       canonicalUrl,
       "https://github.com/openclaw/openclaw/pull/401",
     );
+    const multiMemberCloseComment = newerStaleCloseComment.replace(
+      `Canonical landing path: ${canonicalUrl}.`,
+      [
+        "**Root-cause cluster**",
+        `Canonical: ${canonicalUrl}`,
+        "Members:",
+        `- \`canonical\`: ${canonicalUrl} - This is the canonical landing path.`,
+        "- `superseded`: https://github.com/openclaw/openclaw/pull/402 - This related branch is also superseded.",
+      ].join("\n"),
+    );
+    const issueCanonicalCloseComment = newerStaleCloseComment
+      .replace(
+        `Canonical landing path: ${canonicalUrl}.`,
+        [
+          "**Root-cause cluster**",
+          "Canonical: https://github.com/openclaw/openclaw/issues/500",
+          "Members:",
+          `- \`superseded\`: ${canonicalUrl} - This PR is the unique superseding landing path.`,
+        ].join("\n"),
+      )
+      .replaceAll("reviewed_at=2099-01-01T00:00:00.000Z", `reviewed_at=${reportReviewedAt}`);
     const leaseStartedAt = new Date().toISOString();
     const leaseExpiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
     const reviewLeaseComment = renderReviewStartStatusComment({
@@ -843,13 +866,36 @@ Reason: No work is needed because ${canonicalUrl} is the canonical landing path.
     );
     assert.equal(commentWriteCount(), writesAfterAuthFailure);
 
+    const writesBeforeIssueCanonical = commentWriteCount();
+    runPendingRetry(issueCanonicalCloseComment, {
+      number: 400,
+      title: "Closed canonical PR",
+      html_url: canonicalUrl,
+      state: "closed",
+      merged_at: null,
+      labels: [],
+    });
+    const issueCanonicalResult = JSON.parse(readFileSync(reportPath, "utf8")) as Array<{
+      number: number;
+      action: string;
+      reason: string;
+    }>;
+    assert.equal(issueCanonicalResult[0]?.number, 350);
+    assert.equal(issueCanonicalResult[0]?.action, "retry_stale_canonical_comment_sync");
+    assert.match(issueCanonicalResult[0]?.reason ?? "", /not bound to stored canonical PR #400/);
+    assert.match(
+      issueCanonicalResult[0]?.reason ?? "",
+      /stale canonical comment correction remains pending/,
+    );
+    assert.equal(commentWriteCount(), writesBeforeIssueCanonical);
+
     withMockGh(
       root,
       leasedPromotionGhMock({
         number: 350,
         title: "Provider route fallback",
         itemUpdatedAt: "2026-05-02T00:00:00Z",
-        comment: newerStaleCloseComment,
+        comment: multiMemberCloseComment,
         commentWriteLogPath,
         linkedPulls: {
           400: {
@@ -1172,7 +1218,7 @@ test("apply-decisions rechecks a structured canonical ref at the comment mutatio
   }
 });
 
-test("apply-decisions finds an unreadable canonical PR beside an unrelated issue ref", () => {
+test("apply-decisions keeps an unreadable canonical PR in the comment-sync queue", () => {
   const root = mkdtempSync(tmpPrefix);
   try {
     const itemsDir = join(root, "items");
@@ -1257,7 +1303,7 @@ test("apply-decisions finds an unreadable canonical PR beside an unrelated issue
     const storedReport = readFileSync(join(itemsDir, "351.md"), "utf8");
     assert.match(storedReport, /^decision: close$/m);
     assert.match(storedReport, /^close_reason: duplicate_or_superseded$/m);
-    assert.match(storedReport, /^action_taken: retry_pr_close_coverage_proof$/m);
+    assert.match(storedReport, /^action_taken: proposed_close$/m);
     assert.match(storedReport, new RegExp(canonicalUrl));
     assert.equal(existsSync(join(root, "comment-state-351.json")), false);
     assert.equal(existsSync(join(closedDir, "351.md")), false);

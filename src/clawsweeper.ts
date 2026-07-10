@@ -17120,11 +17120,36 @@ function reviewCommentHasCloseVerdictForCanonical(
       supersessionSignal.test(context),
     ),
   );
+  const explicitCanonicalRefs = [...body.matchAll(/^Canonical:\s+(\S+)\s*$/gm)];
+  let commentCanonicalNumber: number | undefined;
+  if (explicitCanonicalRefs.length > 0) {
+    const canonicalNumbers = new Set<number>();
+    for (const match of explicitCanonicalRefs) {
+      try {
+        const parsed = parseGitHubItemRef(
+          match[1] ?? "",
+          "durable review comment root-cause canonical",
+        );
+        // The explicit public canonical is authoritative; never reinterpret a member PR as it.
+        if (parsed.kind !== "pull_request") return false;
+        if (normalizeRepo(parsed.repo) !== normalizeRepo(targetRepo())) return false;
+        canonicalNumbers.add(parsed.number);
+      } catch {
+        return false;
+      }
+    }
+    if (canonicalNumbers.size !== 1) return false;
+    commentCanonicalNumber = [...canonicalNumbers][0];
+  }
+  if (explicitCanonicalRefs.length === 0) {
+    const signaledCanonicalNumbers = new Set(signaledRefs.map((ref) => ref.number));
+    if (signaledCanonicalNumbers.size !== 1) return false;
+    commentCanonicalNumber = [...signaledCanonicalNumbers][0];
+  }
   return (
     latestVerdict?.verdict === "close" &&
     latestVerdict.reason === reason &&
-    signaledRefs.length === 1 &&
-    signaledRefs[0]?.number === canonicalNumber
+    commentCanonicalNumber === canonicalNumber
   );
 }
 
@@ -20312,7 +20337,9 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
           : "retry_pr_close_coverage_proof";
         return {
           skipCurrentItem: true,
-          stopApply: markApplySkipped(actionTaken, block.reason),
+          stopApply: staleCanonicalCommentSyncPending
+            ? markApplySkipped(actionTaken, block.reason)
+            : recordApplySkipped(actionTaken, block.reason),
         };
       }
       if (block?.kind === "closed_unmerged") {
@@ -20352,16 +20379,23 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
         item.kind === "pull_request" ? currentItemContext() : undefined,
       );
       const pendingCanonicalNumber = staleCanonicalPullRequestNumber(markdown);
-      return staleCanonicalClosedUnmergedValidated &&
-        pendingCanonicalNumber !== null &&
-        reviewCommentHasCloseVerdictForCanonical(
-          comment,
-          number,
-          "duplicate_or_superseded",
-          pendingCanonicalNumber,
-        )
-        ? null
-        : staleReason;
+      if (staleCanonicalClosedUnmergedValidated && pendingCanonicalNumber !== null) {
+        if (
+          reviewCommentHasCloseVerdictForCanonical(
+            comment,
+            number,
+            "duplicate_or_superseded",
+            pendingCanonicalNumber,
+          )
+        ) {
+          return null;
+        }
+        return (
+          staleReason ??
+          `live durable review comment is not bound to stored canonical PR #${pendingCanonicalNumber}; fresh review required before stale comment correction`
+        );
+      }
+      return staleReason;
     };
     const refreshedReviewStaleReason = (comment: Record<string, unknown> | undefined) =>
       canonicalBoundStaleReviewReason(markdownBeforeApplyDecisionMutations, comment);
