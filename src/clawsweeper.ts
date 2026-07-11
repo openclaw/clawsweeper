@@ -21285,7 +21285,23 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
         truncationCountsAsActivity: true,
       }),
     );
-    const automationOnlyUpdate = reviewCommentOnlyUpdate || labelSyncOnlyUpdate;
+    // Exact issue reviews acquire their same-revision lease after context capture. GitHub then
+    // advances issue.updated_at to the bot-owned lease comment even though the reviewed source is
+    // unchanged. The lease/source CAS above already proved this exact report tuple is still live;
+    // only admit its server timestamp when no human activity followed the reviewed timestamp.
+    const ownedIssueReviewLeaseOnlyUpdate = Boolean(
+      item.kind === "issue" &&
+      updatedSinceReview &&
+      storedUpdatedAtMs !== null &&
+      reportOwnedLeaseComments.some(
+        (leaseComment) => commentUpdatedAt(leaseComment) === item.updatedAt,
+      ) &&
+      !contextHasNonAutomationActivityAfter(currentItemContext(), storedUpdatedAtMs, {
+        truncationCountsAsActivity: true,
+      }),
+    );
+    const automationOnlyUpdate =
+      reviewCommentOnlyUpdate || labelSyncOnlyUpdate || ownedIssueReviewLeaseOnlyUpdate;
     const labelSyncFreshEnough = (): boolean => {
       if (!storedUpdatedAt) return false;
       if (!updatedSinceReview || automationOnlyUpdate) return true;
