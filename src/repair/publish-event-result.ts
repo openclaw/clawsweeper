@@ -315,9 +315,7 @@ function publishSnapshot({
         ...disposition,
         policyNoop: disposition.guardedOpenAction === "skipped_same_author_pair",
         requeueLatest:
-          requeueLatestExpected &&
-          candidateMatchesCurrentTuple &&
-          candidateTupleState === "open",
+          requeueLatestExpected && candidateMatchesCurrentTuple && candidateTupleState === "open",
         remoteTupleVerified: candidateMatchesCurrentTuple,
         routingDeferred: disposition.routableSyncVerified,
       };

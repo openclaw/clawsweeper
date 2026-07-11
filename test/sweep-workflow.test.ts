@@ -351,7 +351,10 @@ test("exact event workflow binds all work to the canonical queue claim", () => {
     claimedWork,
     /CLAIM_DECISION: \$\{\{ steps\.claim-exact-review-queue\.outputs\.decision \}\}/,
   );
-  assert.match(claimedWork, /const decision = JSON\.parse\(process\.env\.CLAIM_DECISION \|\| "\{\}"\)/);
+  assert.match(
+    claimedWork,
+    /const decision = JSON\.parse\(process\.env\.CLAIM_DECISION \|\| "\{\}"\)/,
+  );
   assert.match(
     claimedWork,
     /CLAIM_GENERATION: \$\{\{ steps\.claim-exact-review-queue\.outputs\.claim_generation \}\}/,
