@@ -88,6 +88,7 @@ import {
 } from "./fix-prompt-builder.js";
 import { canTreatRebaseAsCompleteRepair } from "./fix-edit-policy.js";
 import { applyMechanicalChangelogFix } from "./mechanical-changelog.js";
+import { persistBeforePublication, reviewAfterFinalBaseSync } from "./execution-finalization.js";
 import { tryResolveMechanicalRebaseConflicts } from "./mechanical-rebase-conflicts.js";
 import { compactGeneratedBranchHistory } from "./compact-generated-branch.js";
 import { compactText, escapeRegExp } from "./text-utils.js";
@@ -441,7 +442,6 @@ updateAutomergeProgressStatus({
 if (plannedFixActions.length === 0) {
   report.status = "skipped";
   report.reason = "no planned fix actions";
-  appendAutomergeRepairOutcomeComment(report, resultPath);
   writeReport(report, resultPath);
   process.exit(0);
 }
@@ -2238,7 +2238,7 @@ function editValidatePrepareMerge({
     details: mode,
     headSha: currentHead(targetDir),
   });
-  const codexReview = validateAndReviewLoop({
+  let codexReview = validateAndReviewLoop({
     fixArtifact,
     targetDir,
     mode,
@@ -2277,21 +2277,40 @@ function editValidatePrepareMerge({
     headSha: currentHead(targetDir),
   });
   if (sync.status !== "already-current") {
-    const checkpoint = commitCheckpointIfNeeded({
-      targetDir,
-      message: `fix(clawsweeper): reconcile ${result.cluster_id} with main (1)`,
-      trailers: mode === "replacement" ? coAuthorTrailers(contributorCredits) : [],
+    const synchronizedBaseSha = run("git", ["rev-parse", `origin/${baseBranch}`], {
+      cwd: targetDir,
+    }).trim();
+    codexReview = reviewAfterFinalBaseSync({
+      syncChanged: true,
+      currentReview: codexReview,
+      reviewSynchronizedTree: () =>
+        validateAndReviewSynchronizedTree({
+          fixArtifact,
+          targetDir,
+          mode,
+          baseBranch,
+          targetBaseSha: synchronizedBaseSha,
+          sourceHead: repairDeltaBaseHead,
+        }),
+      checkpointSynchronizedTree: () => {
+        const checkpoint = commitCheckpointIfNeeded({
+          targetDir,
+          message: `fix(clawsweeper): reconcile ${result.cluster_id} with main (1)`,
+          trailers: mode === "replacement" ? coAuthorTrailers(contributorCredits) : [],
+        });
+        if (checkpoint) {
+          checkpointCommits.push(checkpoint);
+          pushIntermediateCheckpoint?.();
+        }
+      },
     });
-    if (checkpoint) {
-      checkpointCommits.push(checkpoint);
-      pushIntermediateCheckpoint?.();
-    }
     codexReview.final_base_sync = {
       status: "accepted_after_final_sync",
       reason:
-        "origin/main moved after pinned-base validation; pushed the deterministically synced branch and left exact-head review and GitHub checks to gate the final head",
+        "origin/main moved after pinned-base validation; the deterministically synchronized tree passed one bounded validation and Codex review before push",
       attempts: 1,
       sync,
+      target_base_sha: synchronizedBaseSha,
     };
   }
   const finalCheckpoint = commitCheckpointIfNeeded({
@@ -2843,6 +2862,48 @@ function validateAndReviewLoop({
   }
   const summary = codexReviewFailureSummary(lastReview);
   throw new Error(`Codex /review did not pass after ${maxReviewAttempts} attempt(s): ${summary}`);
+}
+
+function validateAndReviewSynchronizedTree({
+  fixArtifact,
+  targetDir,
+  mode,
+  baseBranch,
+  targetBaseSha,
+  sourceHead,
+}: LooseRecord) {
+  const validationOptions = {
+    ...currentTargetValidationOptions(),
+    pinnedBaseRef: targetBaseSha,
+  };
+  const validationPlan = repairDeltaValidationPlan(
+    { fixArtifact, targetDir, sourceHead },
+    validationOptions,
+  );
+  const validationCommands = runAllowedValidationCommands(
+    validationPlan.commands,
+    targetDir,
+    validationPlan.options,
+    baseBranch,
+  );
+  runDiffCheck({ targetDir, baseRef: targetBaseSha });
+  const review = runCodexReview({
+    fixArtifact,
+    targetDir,
+    mode,
+    attempt: "final-sync",
+    baseBranch,
+    targetBaseSha,
+    validationCommands,
+    validationPlan,
+  });
+  review.validation_commands_run = validationCommands;
+  if (!isCleanCodexReview(review)) {
+    throw new Error(
+      `Codex /review did not pass after final base synchronization: ${codexReviewFailureSummary(review)}`,
+    );
+  }
+  return review;
 }
 
 function codexReviewFailureSummary(review: LooseRecord | null): string {
@@ -3513,8 +3574,6 @@ function findLatestResultPath() {
 }
 
 function writeReport(report: LooseRecord, resultPath: string) {
-  appendIssueImplementationStatusComment(report);
-  appendAutomergeRepairOutcomeComment(report, resultPath);
   const reportPath =
     typeof args.report === "string"
       ? path.resolve(args.report)
@@ -3523,7 +3582,14 @@ function writeReport(report: LooseRecord, resultPath: string) {
   if (debugDir) {
     report.debug_artifacts = path.relative(repoRoot(), debugDir);
   }
-  fs.writeFileSync(reportPath, `${JSON.stringify(report, null, 2)}\n`);
+  persistBeforePublication({
+    reportPath,
+    serialize: () => `${JSON.stringify(report, null, 2)}\n`,
+    publish: () => {
+      appendIssueImplementationStatusComment(report);
+      appendAutomergeRepairOutcomeComment(report, resultPath);
+    },
+  });
   console.log("Wrote fix execution report.");
 }
 

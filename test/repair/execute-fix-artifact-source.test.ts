@@ -38,18 +38,14 @@ test("no-op automerge repair updates outcome and re-enters router before exit", 
   assert.ok(noPlannedBranch, "expected no planned fix actions branch");
   assert.match(noPlannedBranch, /report\.reason = "no planned fix actions";/);
 
-  const continuationIndex = noPlannedBranch.indexOf(
-    "appendAutomergeRepairOutcomeComment(report, resultPath);",
-  );
   const writeReportIndex = noPlannedBranch.indexOf("writeReport(report, resultPath);");
   const exitIndex = noPlannedBranch.indexOf("process.exit(0);");
 
-  assert.notEqual(continuationIndex, -1);
   assert.notEqual(writeReportIndex, -1);
   assert.notEqual(exitIndex, -1);
   assert.ok(
-    continuationIndex < writeReportIndex && writeReportIndex < exitIndex,
-    "no-op repair must update automerge continuation before writing the terminal report and exiting",
+    writeReportIndex < exitIndex,
+    "no-op repair must durably write the terminal report before exiting",
   );
 });
 
@@ -252,6 +248,15 @@ test("contributor repair review loop stays on one pinned target base", () => {
   assert.match(validation, /pinnedBaseRef\?: string/);
   assert.match(validation, /if \(!options\.pinnedBaseRef\) \{[\s\S]*ensureMergeBaseAvailable/);
   assert.match(promptBuilder, /Pinned target base SHA: \$\{targetBaseSha\}/);
+});
+
+test("final synchronized tree is reviewed and reports persist before publication", () => {
+  const source = readText(path.join(process.cwd(), "src/repair/execute-fix-artifact.ts"));
+
+  assert.match(source, /reviewAfterFinalBaseSync\(\{/);
+  assert.match(source, /validateAndReviewSynchronizedTree\(\{/);
+  assert.match(source, /attempt: "final-sync"/);
+  assert.match(source, /persistBeforePublication\(\{/);
 });
 
 test("repair workflow renews target credentials after the long execute step", () => {
