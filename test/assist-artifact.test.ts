@@ -130,6 +130,36 @@ test("assist artifact validation rejects stale or redirected publication", () =>
   );
 });
 
+test("assist retry identity stays stable across live context revisions", () => {
+  const first = artifact();
+  const later = createAssistArtifact({
+    generatedAt: "2026-07-10T01:02:00Z",
+    runId: "987654322",
+    runAttempt: 1,
+    itemKind: "pull_request",
+    sourceRevision: "c".repeat(64),
+    contextDigest: "f".repeat(64),
+    pullHeadSha: "d".repeat(40),
+    sourceDigest: "9".repeat(64),
+    request,
+    answer: "ClawSweeper assist: refreshed answer.",
+  });
+
+  assert.equal(later.idempotency_key, first.idempotency_key);
+  assert.notEqual(later.target.context_digest, first.target.context_digest);
+  assert.throws(
+    () =>
+      assertAssistArtifactLiveRevision(first, {
+        itemKind: later.target.item_kind,
+        sourceRevision: later.target.source_revision,
+        contextDigest: later.target.context_digest,
+        pullHeadSha: later.target.pull_head_sha,
+        sourceDigest: later.source.digest,
+      }),
+    /target source changed/,
+  );
+});
+
 test("assist artifact validation rejects hostile shape, markers, and oversized output", () => {
   const extra = { ...artifact(), executable: "./payload.sh" };
   assert.throws(

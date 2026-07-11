@@ -133,10 +133,6 @@ export function createAssistArtifact(options: CreateAssistArtifactOptions): Assi
     lens: options.request.lens,
     reasoningEffort: options.request.reasoningEffort,
     requestSha,
-    sourceRevision: options.sourceRevision,
-    contextDigest: options.contextDigest,
-    pullHeadSha: options.pullHeadSha,
-    sourceDigest: options.sourceDigest,
   });
   return validateAssistArtifact({
     schema_version: ASSIST_ARTIFACT_SCHEMA_VERSION,
@@ -321,10 +317,6 @@ export function validateAssistArtifact(value: unknown): AssistArtifact {
     lens,
     reasoningEffort,
     requestSha,
-    sourceRevision,
-    contextDigest,
-    pullHeadSha,
-    sourceDigest,
   });
   if (idempotencyKey !== expectedIdempotencyKey) {
     throw new Error("assist artifact idempotency key does not match its bound inputs");
@@ -403,10 +395,6 @@ function assistIdempotencyKey(options: {
   lens: string;
   reasoningEffort: string;
   requestSha: string;
-  sourceRevision: string;
-  contextDigest: string;
-  pullHeadSha: string | null;
-  sourceDigest: string | null;
 }): string {
   return sha256(
     JSON.stringify({
@@ -420,10 +408,6 @@ function assistIdempotencyKey(options: {
       lens: options.lens,
       reasoning_effort: options.reasoningEffort,
       request_sha256: options.requestSha,
-      source_revision: options.sourceRevision,
-      context_digest: options.contextDigest,
-      pull_head_sha: options.pullHeadSha,
-      source_digest: options.sourceDigest,
     }),
   );
 }
