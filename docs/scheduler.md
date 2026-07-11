@@ -57,10 +57,13 @@ Broad normal and hot review workflows use run-scoped concurrency groups, so a
 new wave can overlap an older wave that has reached its long-tail or publish
 phase. Their plan jobs use a separate concurrency group per target repository
 with `cancel-in-progress: false`, serializing capacity decisions before each
-matrix expands. Exact-item planners keep a run-scoped group and do not wait for
-broad background planning.
+matrix expands. The default single-pending policy coalesces superseded planner
+ticks instead of retaining an unbounded history. Exact-item planners keep a
+run-scoped group and do not wait for broad background planning.
 Manual exact-item `workflow_dispatch` reviews use an exact-item concurrency
-group, so targeted maintainer checks do not wait behind broad normal backfill.
+group with the same single-pending policy, so newer revisions replace stale
+pending work instead of building a duplicate queue. Durable exact-review leases
+use lease-scoped workflow groups and remain owned by the Worker admission lane.
 
 ## Schedules
 

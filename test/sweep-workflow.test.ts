@@ -540,7 +540,7 @@ test("apply workflow isolates Codex proof from the credentialed mutation runner"
   const applyJobStart = workflow.indexOf("\n  apply-existing:");
   assert.notEqual(proofJobStart, -1);
   assert.notEqual(applyJobStart, -1);
-  assert.match(workflowConcurrency, /queue: max/);
+  assert.doesNotMatch(workflowConcurrency, /queue: max/);
   assert.match(workflowConcurrency, /cancel-in-progress: false/);
   const proofJob = workflow.slice(proofJobStart, applyJobStart);
   const applyJob = workflow.slice(applyJobStart);
@@ -1650,7 +1650,7 @@ test("review backstops identify sweep runs by stable workflow path", () => {
   assert.doesNotMatch(block, /run\.workflowName/);
 });
 
-test("target review planners serialize exact and broad workflow dispatches", () => {
+test("target review queues coalesce background work without delaying exact planners", () => {
   const workflow = readText(".github/workflows/sweep.yml");
   const concurrencyBlock = workflow.slice(
     workflow.indexOf("concurrency:"),
@@ -1663,15 +1663,22 @@ test("target review planners serialize exact and broad workflow dispatches", () 
 
   assert.match(concurrencyBlock, /format\('clawsweeper-intake-v2-\{0\}', github\.run_id\)/);
   assert.match(concurrencyBlock, /format\('clawsweeper-review-\{0\}', github\.run_id\)/);
+  assert.match(
+    concurrencyBlock,
+    /github\.event\.client_payload\.queue_lease_id \|\| github\.event\.client_payload\.item_number/,
+  );
+  assert.match(concurrencyBlock, /format\('clawsweeper-comment-sync-\{0\}', github\.run_id\)/);
+  assert.match(concurrencyBlock, /format\('clawsweeper-apply-\{0\}', github\.run_id\)/);
+  assert.doesNotMatch(concurrencyBlock, /queue: max/);
   assert.match(planHeader, /group: \$\{\{ format\('clawsweeper-planner-\{0\}'/);
   assert.match(
     planHeader,
-    /github\.event_name == 'schedule' \|\| github\.event_name == 'workflow_dispatch'/,
+    /github\.event_name == 'schedule' \|\| \(github\.event_name == 'workflow_dispatch'/,
   );
-  assert.doesNotMatch(planHeader, /github\.event\.inputs\.item_number == ''/);
-  assert.doesNotMatch(planHeader, /github\.event\.inputs\.item_numbers == ''/);
+  assert.match(planHeader, /github\.event\.inputs\.item_number == ''/);
+  assert.match(planHeader, /github\.event\.inputs\.item_numbers == ''/);
   assert.match(planHeader, /\|\| github\.run_id/);
-  assert.match(planHeader, /queue: max/);
+  assert.doesNotMatch(planHeader, /queue: max/);
   assert.match(planHeader, /cancel-in-progress: false/);
 });
 
