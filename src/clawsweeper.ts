@@ -186,6 +186,7 @@ type FailedReviewRetryAction =
   | "skipped_retry_already_exhausted"
   | "skipped_not_failed_review"
   | "skipped_not_open"
+  | "skipped_locked_conversation"
   | "skipped_not_pull_request"
   | "skipped_missing_report_head"
   | "skipped_missing_live_head"
@@ -6217,6 +6218,8 @@ function isInfrastructureFailedReview(markdown: string): boolean {
 export function failedReviewRetryEligibilityForTest(options: {
   markdown: string;
   liveState: string;
+  liveLocked?: boolean;
+  liveActiveLockReason?: string | null;
   liveHeadSha?: string | null;
   liveSourceRevision?: string | null;
   now: number;
@@ -6229,6 +6232,8 @@ export function failedReviewRetryEligibilityForTest(options: {
 function failedReviewRetryEligibility(options: {
   markdown: string;
   liveState: string;
+  liveLocked?: boolean;
+  liveActiveLockReason?: string | null;
   liveHeadSha?: string | null;
   liveSourceRevision?: string | null;
   now: number;
@@ -6242,6 +6247,13 @@ function failedReviewRetryEligibility(options: {
   }
   if (options.liveState !== "open") {
     return { repo, number, action: "skipped_not_open", reason: `state is ${options.liveState}` };
+  }
+  const lockedReason = lockedConversationApplyReason({
+    locked: options.liveLocked === true,
+    activeLockReason: options.liveActiveLockReason ?? null,
+  });
+  if (lockedReason) {
+    return { repo, number, action: "skipped_locked_conversation", reason: lockedReason };
   }
   const itemKind = frontMatterValue(options.markdown, "type");
   if (itemKind !== "pull_request" && itemKind !== "issue") {
@@ -19872,8 +19884,10 @@ function retryFailedReviewsCommandInner(args: Args): void {
       let liveSourceRevision: string | null = null;
       try {
         ({ item, state } = fetchItem(number));
-        if (item.kind === "pull_request") liveHeadSha = livePullHeadSha(number);
-        else liveSourceRevision = liveIssueSourceRevision(number);
+        if (state === "open" && !lockedConversationApplyReason(item)) {
+          if (item.kind === "pull_request") liveHeadSha = livePullHeadSha(number);
+          else liveSourceRevision = liveIssueSourceRevision(number);
+        }
       } catch (error) {
         if (error instanceof GitHubRuntimeBudgetError) throw error;
         results.push({
@@ -19888,6 +19902,8 @@ function retryFailedReviewsCommandInner(args: Args): void {
       const eligibility = failedReviewRetryEligibility({
         markdown,
         liveState: state,
+        liveLocked: item.locked === true,
+        liveActiveLockReason: item.activeLockReason ?? null,
         liveHeadSha,
         liveSourceRevision,
         now,

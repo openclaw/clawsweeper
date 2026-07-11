@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 
@@ -174,6 +174,44 @@ test("failed review retry eligibility requires infrastructure failure and matchi
   );
 });
 
+test("failed review retry does not redispatch locked or closed no-action items", () => {
+  const now = Date.parse("2026-07-10T16:00:00Z");
+  const locked = failedReviewRetryEligibilityForTest({
+    markdown: failedReviewReport({
+      number: 64319,
+      type: "issue",
+      pull_head_sha: "unknown",
+      item_source_revision: "unknown",
+    }),
+    liveState: "open",
+    liveLocked: true,
+    liveActiveLockReason: "resolved",
+    now,
+    maxAttempts: 2,
+    cooldownMs: 45 * 60 * 1000,
+  });
+  assert.deepEqual(
+    { number: locked.number, action: locked.action, reason: locked.reason },
+    {
+      number: 64319,
+      action: "skipped_locked_conversation",
+      reason: "conversation is locked (resolved)",
+    },
+  );
+
+  const closed = failedReviewRetryEligibilityForTest({
+    markdown: failedReviewReport({ number: 3050 }),
+    liveState: "closed",
+    now,
+    maxAttempts: 2,
+    cooldownMs: 45 * 60 * 1000,
+  });
+  assert.deepEqual(
+    { number: closed.number, action: closed.action, reason: closed.reason },
+    { number: 3050, action: "skipped_not_open", reason: "state is closed" },
+  );
+});
+
 test("failed issue reviews retry at a matching live source revision", () => {
   const markdown = failedReviewReport({
     type: "issue",
@@ -246,6 +284,44 @@ test("failed issue reviews retry at a matching live source revision", () => {
     }).action,
     "skipped_retry_exhausted",
   );
+});
+
+test("failed issue retry never dispatches a locked live item", () => {
+  const root = mkdtempSync(tmpPrefix);
+  const fixture = failedIssueRetryFixture(root, 64319);
+  const dispatchPath = join(root, "dispatch.json");
+  fixture.issue.locked = true;
+  fixture.issue.active_lock_reason = "resolved";
+  try {
+    withMockGh(
+      root,
+      issueRetryGhMock(
+        fixture.issue,
+        `require("node:fs").writeFileSync(${JSON.stringify(dispatchPath)}, "dispatched"); process.exit(0);`,
+      ),
+      () => runFailedIssueRetry(fixture),
+    );
+
+    const report = JSON.parse(readFileSync(fixture.reportPath, "utf8")) as Array<{
+      number: number;
+      action: string;
+      reason: string;
+    }>;
+    assert.deepEqual(
+      report.map(({ number, action, reason }) => ({ number, action, reason })),
+      [
+        {
+          number: 64319,
+          action: "skipped_locked_conversation",
+          reason: "conversation is locked (resolved)",
+        },
+      ],
+    );
+    assert.equal(existsSync(dispatchPath), false);
+    assert.equal(existsSync(fixture.statePath), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("failed review retry eligibility treats Codex rate limits as infrastructure failures", () => {
