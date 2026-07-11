@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -6,9 +7,35 @@ import test from "node:test";
 
 import {
   finalizeExecutionReport,
+  pinRepairBase,
   persistBeforePublication,
   reviewAfterFinalBaseSync,
 } from "./execution-finalization.js";
+
+test("moving main cannot change the base used by four inner review attempts", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-moving-main-"));
+  const git = (...args: string[]) =>
+    execFileSync("git", args, { cwd: directory, encoding: "utf8" }).trim();
+  git("init", "-b", "main");
+  git("config", "user.email", "clawsweeper@example.invalid");
+  git("config", "user.name", "ClawSweeper Test");
+  fs.writeFileSync(path.join(directory, "moving.txt"), "base\n");
+  git("add", "moving.txt");
+  git("commit", "-m", "base");
+
+  const pinnedBase = pinRepairBase(() => git("rev-parse", "main"));
+  const reviewedBases: string[] = [];
+
+  for (let attempt = 1; attempt <= 4; attempt += 1) {
+    fs.appendFileSync(path.join(directory, "moving.txt"), `${attempt}\n`);
+    git("add", "moving.txt");
+    git("commit", "-m", `advance main ${attempt}`);
+    reviewedBases.push(pinnedBase.sha);
+  }
+
+  assert.deepEqual(reviewedBases, Array(4).fill(pinnedBase.sha));
+  assert.notEqual(git("rev-parse", "main"), pinnedBase.sha);
+});
 
 test("changed final base sync runs exactly one review against the synchronized tree", () => {
   const events: string[] = [];

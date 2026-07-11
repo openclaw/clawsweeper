@@ -7,9 +7,11 @@ import test from "node:test";
 
 import {
   canSkipInternalCodexReviewForRepairDelta,
+  classifyExternalBaseValidationFailure,
   preflightTargetValidationPlan,
   prepareTargetToolchain,
   repairDeltaValidationPlan,
+  reproduceValidationFailureAtPinnedBase,
   requiredValidationCommands,
   runAllowedValidationCommands,
 } from "../../dist/repair/target-validation.js";
@@ -601,6 +603,107 @@ test("adopted OpenClaw PR repairs keep full changed gate for code repair deltas"
     "pnpm check:changed",
   ]);
   assert.equal(canSkipInternalCodexReviewForRepairDelta(plan), false);
+});
+
+test("base-identical validation failures outside the repair delta are external blockers", () => {
+  const cwd = gitPackageFixture({ "check:changed": "node check.js" });
+  fs.mkdirSync(path.join(cwd, "src"));
+  fs.writeFileSync(path.join(cwd, "src/base.ts"), "export const base = true;\n");
+  fs.writeFileSync(path.join(cwd, "src/repair.ts"), "export const value = 1;\n");
+  git(cwd, "add", ".");
+  git(cwd, "commit", "-m", "base");
+  const pinnedBaseRef = git(cwd, "rev-parse", "HEAD");
+
+  fs.writeFileSync(path.join(cwd, "src/repair.ts"), "export const value = 2;\n");
+  git(cwd, "add", "src/repair.ts");
+  git(cwd, "commit", "-m", "source change");
+  const repairBaseRef = git(cwd, "rev-parse", "HEAD");
+  fs.writeFileSync(path.join(cwd, "src/repair.ts"), "export const value = 3;\n");
+  git(cwd, "add", "src/repair.ts");
+  git(cwd, "commit", "-m", "repair change");
+
+  assert.deepEqual(
+    classifyExternalBaseValidationFailure({
+      targetDir: cwd,
+      pinnedBaseRef,
+      repairBaseRef,
+      error: new Error(`${path.join(cwd, "src/base.ts")}:1: lint failed`),
+      baseError: new Error(`${path.join(cwd, "src/base.ts")}:1: lint failed`),
+    }),
+    {
+      paths: ["src/base.ts"],
+      reason: "validation failed only in base-identical files outside the repair delta",
+    },
+  );
+  assert.deepEqual(
+    classifyExternalBaseValidationFailure({
+      targetDir: cwd,
+      pinnedBaseRef,
+      repairBaseRef,
+      error: new Error("package.json:1: configuration lint failed"),
+      baseError: new Error("package.json:1: configuration lint failed"),
+    })?.paths,
+    ["package.json"],
+  );
+  assert.equal(
+    classifyExternalBaseValidationFailure({
+      targetDir: cwd,
+      pinnedBaseRef,
+      repairBaseRef,
+      error: new Error("src/base.ts:1: newly introduced type error"),
+      baseError: new Error("src/base.ts:1: pre-existing lint error"),
+    }),
+    null,
+  );
+});
+
+test("validation failures in repair-changed files remain repair scope", () => {
+  const cwd = gitPackageFixture({ "check:changed": "node check.js" });
+  fs.mkdirSync(path.join(cwd, "src"));
+  fs.writeFileSync(path.join(cwd, "src/repair.ts"), "export const value = 1;\n");
+  git(cwd, "add", ".");
+  git(cwd, "commit", "-m", "base");
+  const pinnedBaseRef = git(cwd, "rev-parse", "HEAD");
+  const repairBaseRef = pinnedBaseRef;
+  fs.writeFileSync(path.join(cwd, "src/repair.ts"), "export const value = 2;\n");
+  git(cwd, "add", "src/repair.ts");
+  git(cwd, "commit", "-m", "repair change");
+
+  assert.equal(
+    classifyExternalBaseValidationFailure({
+      targetDir: cwd,
+      pinnedBaseRef,
+      repairBaseRef,
+      error: new Error("src/repair.ts:1: lint failed"),
+      baseError: new Error("src/repair.ts:1: lint failed"),
+    }),
+    null,
+  );
+});
+
+test("pinned-base validation reproduction proves the same base failure", () => {
+  const cwd = gitPackageFixture({ "check:changed": "node check.js" });
+  fs.mkdirSync(path.join(cwd, "src"));
+  fs.writeFileSync(
+    path.join(cwd, "check.js"),
+    "console.error('src/base.ts:1: lint failed'); process.exit(1);\n",
+  );
+  fs.writeFileSync(path.join(cwd, "src/base.ts"), "export const base = true;\n");
+  fs.writeFileSync(path.join(cwd, "src/repair.ts"), "export const value = 1;\n");
+  git(cwd, "add", ".");
+  git(cwd, "commit", "-m", "base");
+  const pinnedBaseRef = git(cwd, "rev-parse", "HEAD");
+  fs.writeFileSync(path.join(cwd, "src/repair.ts"), "export const value = 2;\n");
+  git(cwd, "add", "src/repair.ts");
+  git(cwd, "commit", "-m", "repair change");
+
+  const baseError = reproduceValidationFailureAtPinnedBase({
+    commands: ["pnpm check:changed"],
+    targetDir: cwd,
+    options: validationOptions("openclaw/openclaw", { pinnedBaseRef }),
+  });
+
+  assert.match(String(baseError), /src\/base\.ts:1: lint failed/);
 });
 
 test("bun-based target repos do not get pnpm check:changed injected", () => {

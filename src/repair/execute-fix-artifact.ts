@@ -88,7 +88,11 @@ import {
 } from "./fix-prompt-builder.js";
 import { canTreatRebaseAsCompleteRepair } from "./fix-edit-policy.js";
 import { applyMechanicalChangelogFix } from "./mechanical-changelog.js";
-import { finalizeExecutionReport, reviewAfterFinalBaseSync } from "./execution-finalization.js";
+import {
+  finalizeExecutionReport,
+  pinRepairBase,
+  reviewAfterFinalBaseSync,
+} from "./execution-finalization.js";
 import { tryResolveMechanicalRebaseConflicts } from "./mechanical-rebase-conflicts.js";
 import { compactGeneratedBranchHistory } from "./compact-generated-branch.js";
 import { compactText, escapeRegExp } from "./text-utils.js";
@@ -113,9 +117,11 @@ import {
 } from "./repair-branch-push-errors.js";
 import {
   canSkipInternalCodexReviewForRepairDelta,
+  classifyExternalBaseValidationFailure,
   prepareTargetToolchain,
   preflightTargetValidationPlan,
   repairDeltaValidationPlan,
+  reproduceValidationFailureAtPinnedBase,
   runAllowedValidationCommands,
   type TargetValidationOptions,
 } from "./target-validation.js";
@@ -736,7 +742,7 @@ function isBlockedFixError(error: JsonValue) {
   if (isRepairBranchPushBlocked(error)) return true;
   if (isRetryableCodexErrorMessage(String(error?.message ?? error))) return true;
   if (isCodexContextLimitError(String(error?.message ?? error))) return true;
-  return /Codex produced no target repo changes|Codex \/review did not pass|Codex (?:fix worker|review-fix worker|\/review) timed out|Codex (?:fix worker|review-fix worker|\/review) failed|validation command failed|command timed out after \d+ms: git (?:fetch|push)|rebase (?:conflicts remain unresolved|produced additional conflicts)/i.test(
+  return /external base blocker|Codex produced no target repo changes|Codex \/review did not pass|Codex (?:fix worker|review-fix worker|\/review) timed out|Codex (?:fix worker|review-fix worker|\/review) failed|validation command failed|command timed out after \d+ms: git (?:fetch|push)|rebase (?:conflicts remain unresolved|produced additional conflicts)/i.test(
     String(error?.message ?? error),
   );
 }
@@ -2057,9 +2063,9 @@ function editValidatePrepareMerge({
     if (producedChanges) logProgress("applied mechanical changelog fix");
   }
   const repositoryContext = buildRepositoryContext({ fixArtifact, targetDir });
-  const targetBaseSha = run("git", ["rev-parse", `origin/${baseBranch}`], {
-    cwd: targetDir,
-  }).trim();
+  const targetBaseSha = pinRepairBase(() =>
+    run("git", ["rev-parse", `origin/${baseBranch}`], { cwd: targetDir }),
+  ).sha;
   const shouldRunCodexEdit = !producedChanges || reconcileWithBase;
   const repairDeltaBaseHead =
     rebaseResult?.status === "conflicts" ? sourceHead : currentHead(targetDir);
@@ -2766,6 +2772,25 @@ function validateAndReviewLoop({
         };
       }
     } catch (error) {
+      const baseError = reproduceValidationFailureAtPinnedBase({
+        commands: validationPlan.commands,
+        targetDir,
+        options: validationPlan.options,
+        baseBranch,
+      });
+      const externalBaseBlocker = classifyExternalBaseValidationFailure({
+        targetDir,
+        pinnedBaseRef: targetBaseSha,
+        repairBaseRef: sourceHead,
+        error,
+        baseError,
+      });
+      if (externalBaseBlocker) {
+        throw new Error(
+          `external base blocker: ${externalBaseBlocker.reason}: ${externalBaseBlocker.paths.join(", ")}`,
+          { cause: error },
+        );
+      }
       if (attempt < maxReviewAttempts && isFixableValidationError(error)) {
         lastReview = {
           status: "validation_failed",
@@ -2887,12 +2912,36 @@ function validateAndReviewSynchronizedTree({
     { fixArtifact, targetDir, sourceHead },
     validationOptions,
   );
-  const validationCommands = runAllowedValidationCommands(
-    validationPlan.commands,
-    targetDir,
-    validationPlan.options,
-    baseBranch,
-  );
+  let validationCommands;
+  try {
+    validationCommands = runAllowedValidationCommands(
+      validationPlan.commands,
+      targetDir,
+      validationPlan.options,
+      baseBranch,
+    );
+  } catch (error) {
+    const baseError = reproduceValidationFailureAtPinnedBase({
+      commands: validationPlan.commands,
+      targetDir,
+      options: validationPlan.options,
+      baseBranch,
+    });
+    const externalBaseBlocker = classifyExternalBaseValidationFailure({
+      targetDir,
+      pinnedBaseRef: targetBaseSha,
+      repairBaseRef: sourceHead,
+      error,
+      baseError,
+    });
+    if (externalBaseBlocker) {
+      throw new Error(
+        `external base blocker: ${externalBaseBlocker.reason}: ${externalBaseBlocker.paths.join(", ")}`,
+        { cause: error },
+      );
+    }
+    throw error;
+  }
   runDiffCheck({ targetDir, baseRef: targetBaseSha });
   const review = runCodexReview({
     fixArtifact,

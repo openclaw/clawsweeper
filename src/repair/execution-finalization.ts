@@ -1,5 +1,13 @@
 import fs from "node:fs";
 
+export function pinRepairBase(resolveBaseSha: () => string): Readonly<{ sha: string }> {
+  const sha = resolveBaseSha().trim();
+  if (!/^[0-9a-f]{40}$/i.test(sha)) {
+    throw new Error("repair target base did not resolve to a full commit SHA");
+  }
+  return Object.freeze({ sha });
+}
+
 export function reviewAfterFinalBaseSync<T>({
   syncChanged,
   currentReview,

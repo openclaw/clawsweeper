@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
 import { runCommand as run } from "./command-runner.js";
@@ -59,6 +60,107 @@ export type RepairDeltaValidationPlan = {
   changed_files: string[];
   reason: string;
 };
+
+export type ExternalBaseValidationBlocker = {
+  paths: string[];
+  reason: string;
+};
+
+export function classifyExternalBaseValidationFailure({
+  targetDir,
+  pinnedBaseRef,
+  repairBaseRef,
+  error,
+  baseError,
+}: {
+  targetDir: string;
+  pinnedBaseRef: string;
+  repairBaseRef: string | null;
+  error: unknown;
+  baseError: unknown;
+}): ExternalBaseValidationBlocker | null {
+  if (!repairBaseRef || !baseError) return null;
+  const trackedAtBase = new Set(
+    splitGitLines(run("git", ["ls-tree", "-r", "--name-only", pinnedBaseRef], { cwd: targetDir })),
+  );
+  const referencedPaths = referencedTrackedPaths(String((error as Error)?.message ?? error), {
+    targetDir,
+    trackedAtBase,
+  });
+  if (referencedPaths.length === 0) return null;
+  const baseReferencedPaths = referencedTrackedPaths(
+    String((baseError as Error)?.message ?? baseError),
+    { targetDir, trackedAtBase },
+  );
+  if (
+    baseReferencedPaths.length !== referencedPaths.length ||
+    referencedPaths.some((file) => !baseReferencedPaths.includes(file))
+  ) {
+    return null;
+  }
+  if (
+    normalizedValidationFailure(String((error as Error)?.message ?? error), trackedAtBase) !==
+    normalizedValidationFailure(String((baseError as Error)?.message ?? baseError), trackedAtBase)
+  ) {
+    return null;
+  }
+
+  const changedFromBase = new Set(
+    splitGitLines(
+      run("git", ["diff", "--name-only", `${pinnedBaseRef}..HEAD`], { cwd: targetDir }),
+    ),
+  );
+  const repairDelta = new Set(
+    splitGitLines(
+      run("git", ["diff", "--name-only", `${repairBaseRef}..HEAD`], { cwd: targetDir }),
+    ),
+  );
+  if (referencedPaths.some((file) => changedFromBase.has(file) || repairDelta.has(file))) {
+    return null;
+  }
+
+  return {
+    paths: referencedPaths,
+    reason: "validation failed only in base-identical files outside the repair delta",
+  };
+}
+
+export function reproduceValidationFailureAtPinnedBase({
+  commands,
+  targetDir,
+  options,
+  baseBranch = DEFAULT_BASE_BRANCH,
+}: {
+  commands: LooseRecord[];
+  targetDir: string;
+  options: TargetValidationOptions;
+  baseBranch?: string;
+}): unknown | null {
+  if (!options.pinnedBaseRef) return null;
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-base-validation-"));
+  const checkout = path.join(root, "target");
+  try {
+    run("git", ["clone", "--shared", "--no-checkout", targetDir, checkout]);
+    run("git", ["checkout", "--detach", options.pinnedBaseRef], { cwd: checkout });
+    const targetNodeModules = path.join(targetDir, "node_modules");
+    if (fs.existsSync(targetNodeModules)) {
+      fs.symlinkSync(targetNodeModules, path.join(checkout, "node_modules"), "junction");
+    }
+    try {
+      runAllowedValidationCommands(
+        commands,
+        checkout,
+        { ...options, installTargetDeps: false },
+        baseBranch,
+      );
+      return null;
+    } catch (error) {
+      return error;
+    }
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
 
 export function prepareTargetToolchain(cwd: string, options: TargetValidationOptions) {
   if (!options.installTargetDeps) return;
@@ -704,6 +806,49 @@ function gitChangedFilesFromRef(cwd: string, baseRef: string) {
     .map((line) => line.split(" -> ").pop())
     .filter((line): line is string => Boolean(line));
   return uniqueStrings([...committed, ...uncommitted]);
+}
+
+function referencedTrackedPaths(
+  message: string,
+  { targetDir, trackedAtBase }: { targetDir: string; trackedAtBase: ReadonlySet<string> },
+) {
+  const normalized = message.split(`${path.resolve(targetDir)}${path.sep}`).join("");
+  const candidates = normalized.match(/[A-Za-z0-9_.@+-]+(?:\/[A-Za-z0-9_.@+-]+)*/g) ?? [];
+  const paths: string[] = [];
+  for (const rawCandidate of uniqueStrings(candidates)) {
+    const candidate = rawCandidate.replace(/^\.\//, "");
+    if (trackedAtBase.has(candidate)) {
+      paths.push(candidate);
+      continue;
+    }
+    for (const trackedPath of trackedAtBase) {
+      if (candidate.endsWith(`/${trackedPath}`)) paths.push(trackedPath);
+    }
+  }
+  return uniqueStrings(paths);
+}
+
+function normalizedValidationFailure(message: string, trackedAtBase: ReadonlySet<string>) {
+  const ansiCsi = new RegExp(`${String.fromCharCode(27)}\\[[0-?]*[ -/]*[@-~]`, "g");
+  let normalized = message.replace(ansiCsi, "").replace(/\r\n/g, "\n");
+  const candidates = normalized.match(/\/?[A-Za-z0-9_.@+-]+(?:\/[A-Za-z0-9_.@+-]+)*/g) ?? [];
+  for (const candidate of uniqueStrings(candidates).sort(
+    (left, right) => right.length - left.length,
+  )) {
+    const withoutLeadingSlash = candidate.replace(/^\//, "");
+    const trackedPath = trackedAtBase.has(withoutLeadingSlash)
+      ? withoutLeadingSlash
+      : [...trackedAtBase].find((tracked) => withoutLeadingSlash.endsWith(`/${tracked}`));
+    if (trackedPath) normalized = normalized.split(candidate).join(trackedPath);
+  }
+  return normalized.trim();
+}
+
+function splitGitLines(value: string) {
+  return value
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
 }
 
 function readPackageScriptSet(cwd: string) {

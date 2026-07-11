@@ -239,13 +239,14 @@ test("contributor repair review loop stays on one pinned target base", () => {
 
   assert.match(
     source,
-    /const targetBaseSha = run\("git", \["rev-parse", `origin\/\$\{baseBranch\}`\]/,
+    /const targetBaseSha = pinRepairBase\(\(\) =>[\s\S]*?run\("git", \["rev-parse", `origin\/\$\{baseBranch\}`\]/,
   );
   assert.match(source, /validateAndReviewLoop\(\{[\s\S]*targetBaseSha/);
   assert.match(source, /pinnedBaseRef: targetBaseSha/);
   assert.match(source, /runDiffCheck\(\{ targetDir, baseRef: targetBaseSha \}\)/);
   assert.match(source, /pinned target base \$\{targetBaseSha\}/);
   assert.match(validation, /pinnedBaseRef\?: string/);
+  assert.match(source, /classifyExternalBaseValidationFailure\(\{/);
   assert.match(validation, /if \(!options\.pinnedBaseRef\) \{[\s\S]*ensureMergeBaseAvailable/);
   assert.match(promptBuilder, /Pinned target base SHA: \$\{targetBaseSha\}/);
 });
