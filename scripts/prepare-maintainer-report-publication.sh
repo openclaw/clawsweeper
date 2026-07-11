@@ -16,7 +16,7 @@ if [ "$actual_sha" != "$expected_sha" ]; then
   exit 1
 fi
 
-if find "$generated_dir" \( -name .git -o -name .gitattributes -o -name .gitmodules \) -print -quit | grep -q .; then
+if find "$generated_dir" \( -name .git -o -name .gitattributes -o -name .gitignore -o -name .gitmodules \) -print -quit | grep -q .; then
   echo "Generated reports must not contain Git control files." >&2
   exit 1
 fi

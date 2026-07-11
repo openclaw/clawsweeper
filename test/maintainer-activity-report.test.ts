@@ -105,7 +105,7 @@ test("maintainer report publication stages new paths and retries idempotently", 
   }
 });
 
-test("maintainer report publication rejects empty artifacts", () => {
+test("maintainer report publication rejects empty artifacts and Git control files", () => {
   const root = mkdtempSync(join(tmpdir(), "clawsweeper-maintainer-report-empty-"));
   const maintainers = join(root, "maintainers");
   const generated = join(root, "generated");
@@ -122,6 +122,12 @@ test("maintainer report publication rejects empty artifacts", () => {
     assert.throws(
       () => prepare(generated, maintainers, baseSha),
       /Command failed|empty or exceeds/,
+    );
+
+    writeFileSync(join(generated, ".gitignore"), "*\n");
+    assert.throws(
+      () => prepare(generated, maintainers, baseSha),
+      /Command failed|Git control files/,
     );
   } finally {
     rmSync(root, { recursive: true, force: true });
