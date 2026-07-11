@@ -706,6 +706,65 @@ test("pinned-base validation reproduction proves the same base failure", () => {
   assert.match(String(baseError), /src\/base\.ts:1: lint failed/);
 });
 
+test("pinned-base reproduction fails closed when dependency inputs changed", () => {
+  const cwd = gitPackageFixture({ "check:changed": "node check.js" });
+  fs.writeFileSync(
+    path.join(cwd, "check.js"),
+    "console.error('src/base.ts:1: lint failed'); process.exit(1);\n",
+  );
+  fs.mkdirSync(path.join(cwd, "src"));
+  fs.writeFileSync(path.join(cwd, "src/base.ts"), "export const base = true;\n");
+  git(cwd, "add", ".");
+  git(cwd, "commit", "-m", "base");
+  const pinnedBaseRef = git(cwd, "rev-parse", "HEAD");
+  const packageJson = JSON.parse(fs.readFileSync(path.join(cwd, "package.json"), "utf8"));
+  packageJson.dependencies = { "fixture-dependency": "1.0.0" };
+  fs.writeFileSync(path.join(cwd, "package.json"), `${JSON.stringify(packageJson, null, 2)}\n`);
+
+  assert.equal(
+    reproduceValidationFailureAtPinnedBase({
+      commands: ["pnpm check:changed"],
+      targetDir: cwd,
+      options: validationOptions("openclaw/openclaw", { pinnedBaseRef }),
+    }),
+    null,
+  );
+  git(cwd, "add", "package.json");
+  assert.equal(
+    reproduceValidationFailureAtPinnedBase({
+      commands: ["pnpm check:changed"],
+      targetDir: cwd,
+      options: validationOptions("openclaw/openclaw", { pinnedBaseRef }),
+    }),
+    null,
+  );
+  git(cwd, "commit", "-m", "change dependency inputs");
+  assert.equal(
+    reproduceValidationFailureAtPinnedBase({
+      commands: ["pnpm check:changed"],
+      targetDir: cwd,
+      options: validationOptions("openclaw/openclaw", { pinnedBaseRef }),
+    }),
+    null,
+  );
+});
+
+test("pinned-base reproduction fails closed when the pinned ref is unavailable", () => {
+  const cwd = gitPackageFixture({ "check:changed": "node check.js" });
+  fs.writeFileSync(path.join(cwd, "check.js"), "process.exit(1);\n");
+  git(cwd, "add", ".");
+  git(cwd, "commit", "-m", "base");
+
+  assert.equal(
+    reproduceValidationFailureAtPinnedBase({
+      commands: ["pnpm check:changed"],
+      targetDir: cwd,
+      options: validationOptions("openclaw/openclaw", { pinnedBaseRef: "f".repeat(40) }),
+    }),
+    null,
+  );
+});
+
 test("bun-based target repos do not get pnpm check:changed injected", () => {
   const cwd = bunPackageFixture({ check: "bun x tsc --noEmit" });
 

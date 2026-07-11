@@ -137,6 +137,13 @@ export function reproduceValidationFailureAtPinnedBase({
   baseBranch?: string;
 }): unknown | null {
   if (!options.pinnedBaseRef) return null;
+  let changedFromPinnedBase: string[];
+  try {
+    changedFromPinnedBase = gitChangedFilesFromRef(targetDir, options.pinnedBaseRef);
+  } catch {
+    return null;
+  }
+  if (changedFromPinnedBase.some(isDependencyOrToolchainInputPath)) return null;
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-base-validation-"));
   const checkout = path.join(root, "target");
   try {
@@ -160,6 +167,15 @@ export function reproduceValidationFailureAtPinnedBase({
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
+}
+
+function isDependencyOrToolchainInputPath(filePath: string) {
+  const name = path.posix.basename(filePath);
+  return (
+    /^(?:package\.json|pnpm-lock\.yaml|pnpm-workspace\.yaml|package-lock\.json|npm-shrinkwrap\.json|yarn\.lock|bun\.lockb?|deno\.lock|Cargo\.toml|Cargo\.lock|go\.mod|go\.sum|pyproject\.toml|poetry\.lock|uv\.lock|Pipfile(?:\.lock)?|Gemfile(?:\.lock)?|composer\.(?:json|lock)|requirements(?:-[^.]+)?\.txt)$/i.test(
+      name,
+    ) || /^(?:\.nvmrc|\.node-version|\.tool-versions|mise\.toml)$/i.test(name)
+  );
 }
 
 export function prepareTargetToolchain(cwd: string, options: TargetValidationOptions) {
@@ -802,7 +818,7 @@ function gitChangedFilesFromRef(cwd: string, baseRef: string) {
     .filter(Boolean);
   const uncommitted = run("git", ["status", "--porcelain"], { cwd })
     .split("\n")
-    .map((line) => line.trim().replace(/^.. /, ""))
+    .map((line) => line.replace(/\r$/, "").slice(3))
     .map((line) => line.split(" -> ").pop())
     .filter((line): line is string => Boolean(line));
   return uniqueStrings([...committed, ...uncommitted]);
