@@ -72,6 +72,7 @@ test("maintainer report publication stages new paths and retries idempotently", 
     git(seed, "commit", "-m", "seed reports");
     git(seed, "remote", "add", "origin", remote);
     git(seed, "push", "-u", "origin", "main");
+    git(remote, "symbolic-ref", "HEAD", "refs/heads/main");
     const baseSha = git(seed, "rev-parse", "HEAD");
 
     mkdirSync(join(generated, "day"), { recursive: true });
