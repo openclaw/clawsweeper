@@ -251,7 +251,7 @@ test("assist workflow isolates Codex generation from the fresh write-token publi
   );
   assert.equal(publish.match(/--run-attempt "\$GENERATION_ATTEMPT"/g)?.length, 2);
   assert.match(publish, /permission-issues: write/);
-  assert.match(publish, /permission-pull-requests: read/);
+  assert.match(publish, /permission-pull-requests: write/);
   assert.match(publish, /repositories: \$\{\{ steps\.target\.outputs\.target_repo_name \}\}/);
   assert.match(publish, /GH_TOKEN: \$\{\{ steps\.write_token\.outputs\.token \}\}/);
   assert.match(publish, /assist-validate/);

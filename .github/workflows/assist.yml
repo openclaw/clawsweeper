@@ -330,7 +330,7 @@ jobs:
           owner: ${{ steps.target.outputs.target_repo_owner }}
           repositories: ${{ steps.target.outputs.target_repo_name }}
           permission-issues: write
-          permission-pull-requests: read
+          permission-pull-requests: write
 
       - name: Revalidate and publish assist comment
         env:
