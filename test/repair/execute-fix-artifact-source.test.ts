@@ -235,3 +235,36 @@ test("final repair contract compares the repaired tree with the latest base", ()
   assert.match(helper, /enforceRepairContract\(\{ fixArtifact, changedFiles \}\)/);
   assert.doesNotMatch(helper, /--porcelain=v1|phase|checkpoint/);
 });
+
+test("contributor repair review loop stays on one pinned target base", () => {
+  const source = readText(path.join(process.cwd(), "src/repair/execute-fix-artifact.ts"));
+  const validation = readText(path.join(process.cwd(), "src/repair/target-validation.ts"));
+  const promptBuilder = readText(path.join(process.cwd(), "src/repair/fix-prompt-builder.ts"));
+
+  assert.match(
+    source,
+    /const targetBaseSha = run\("git", \["rev-parse", `origin\/\$\{baseBranch\}`\]/,
+  );
+  assert.match(source, /validateAndReviewLoop\(\{[\s\S]*targetBaseSha/);
+  assert.match(source, /pinnedBaseRef: targetBaseSha/);
+  assert.match(source, /runDiffCheck\(\{ targetDir, baseRef: targetBaseSha \}\)/);
+  assert.match(source, /pinned target base \$\{targetBaseSha\}/);
+  assert.match(validation, /pinnedBaseRef\?: string/);
+  assert.match(validation, /if \(!options\.pinnedBaseRef\) \{[\s\S]*ensureMergeBaseAvailable/);
+  assert.match(promptBuilder, /Pinned target base SHA: \$\{targetBaseSha\}/);
+});
+
+test("repair workflow renews target credentials after the long execute step", () => {
+  const workflow = readText(
+    path.join(process.cwd(), ".github/workflows/repair-cluster-worker.yml"),
+  );
+  const executeIndex = workflow.indexOf("- name: Execute credited fix artifact");
+  const renewIndex = workflow.indexOf("- name: Renew target write token for post-flight");
+  const postFlightIndex = workflow.indexOf("- name: Post-flight finalize fix PRs");
+
+  assert.ok(executeIndex < renewIndex && renewIndex < postFlightIndex);
+  assert.match(
+    workflow.slice(renewIndex, postFlightIndex + 500),
+    /GH_TOKEN: \$\{\{ steps\.target_post_flight_token\.outputs\.token \}\}/,
+  );
+});

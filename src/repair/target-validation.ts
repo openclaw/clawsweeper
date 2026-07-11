@@ -42,6 +42,7 @@ export type TargetValidationOptions = {
   targetRepo: string;
   setupTimeoutMs?: number;
   validationTimeoutMs?: number;
+  pinnedBaseRef?: string;
   /**
    * Optional override of the per-repo toolchain (package manager, base validation
    * commands, changed gate). If omitted, it is resolved from
@@ -234,7 +235,7 @@ export function runAllowedValidationCommands(
   options: TargetValidationOptions,
   baseBranch: string = DEFAULT_BASE_BRANCH,
 ) {
-  ensureMergeBaseAvailable({ targetDir: cwd, baseBranch });
+  const baseRef = validationBaseRef(cwd, baseBranch, options);
   const validationEnv = targetValidationEnv();
   const validationTimeoutMs = targetValidationTimeoutMs(
     "CLAWSWEEPER_TARGET_VALIDATION_TIMEOUT_MS",
@@ -270,6 +271,7 @@ export function runAllowedValidationCommands(
             error,
             cwd,
             baseBranch,
+            baseRef,
             options,
           });
           if (fallbackCommands.length > 0) {
@@ -469,17 +471,24 @@ function restoreTargetLockfile(cwd: string, lockfile: string) {
   run("git", ["checkout", "--", lockfile], { cwd });
 }
 
-function validationFallbackCommands({ parts, error, cwd, baseBranch, options }: LooseRecord) {
+function validationFallbackCommands({
+  parts,
+  error,
+  cwd,
+  baseBranch,
+  baseRef,
+  options,
+}: LooseRecord) {
   if (options.strictTargetValidation) return [];
   if (!isChangedGateCommand(parts, options)) return [];
   if (/no merge base/i.test(String(error?.message ?? ""))) {
-    ensureMergeBaseAvailable({ targetDir: cwd, baseBranch });
+    validationBaseRef(cwd, baseBranch, options);
     return [parts];
   }
   if (!isChangedGateStall(error)) return [];
-  const changedTests = changedTestFiles(cwd, baseBranch);
+  const changedTests = changedTestFiles(cwd, baseBranch, options);
   return [
-    ["git", "diff", "--check", `origin/${baseBranch}...HEAD`],
+    ["git", "diff", "--check", `${baseRef}...HEAD`],
     ...(changedTests.length > 0 ? [["pnpm", "test:serial", ...changedTests]] : []),
   ];
 }
@@ -577,6 +586,7 @@ function resolveAllowedValidationCommands(
           baseBranch,
           4,
           new Set(pathIndexes),
+          options,
         ),
       );
     }
@@ -587,6 +597,9 @@ function resolveAllowedValidationCommands(
           ["pnpm", pnpmScript, ...commandParts.slice(commandStart + 1)],
           cwd,
           baseBranch,
+          2,
+          undefined,
+          options,
         ),
       );
     }
@@ -605,6 +618,7 @@ function normalizePathValidationCommand(
   baseBranch: string = DEFAULT_BASE_BRANCH,
   pathArgStart: number = 2,
   testPathIndexes?: ReadonlySet<number>,
+  options?: TargetValidationOptions,
 ) {
   const args = parts.slice(pathArgStart);
   const shouldNormalize = (arg: string, index: number) =>
@@ -627,7 +641,7 @@ function normalizePathValidationCommand(
     return [[...parts.slice(0, pathArgStart), ...normalizedArgs]];
   }
 
-  const changedTests = changedTestFiles(cwd, baseBranch);
+  const changedTests = changedTestFiles(cwd, baseBranch, options);
   if (changedTests.length > 0) {
     return [[...parts.slice(0, pathArgStart), ...normalizedArgs, ...changedTests]];
   }
@@ -659,10 +673,37 @@ function candidateRepoPaths(filePath: string, cwd: string): string[] {
   return uniqueStrings(out);
 }
 
-function changedTestFiles(cwd: string, baseBranch: string = DEFAULT_BASE_BRANCH) {
-  return gitChangedFiles(cwd, baseBranch).filter(
-    (file) => isTestFile(file) && fs.existsSync(path.join(cwd, file)),
-  );
+function changedTestFiles(
+  cwd: string,
+  baseBranch: string = DEFAULT_BASE_BRANCH,
+  options?: TargetValidationOptions,
+) {
+  const changedFiles = options?.pinnedBaseRef
+    ? gitChangedFilesFromRef(cwd, validationBaseRef(cwd, baseBranch, options))
+    : gitChangedFiles(cwd, baseBranch);
+  return changedFiles.filter((file) => isTestFile(file) && fs.existsSync(path.join(cwd, file)));
+}
+
+function validationBaseRef(cwd: string, baseBranch: string, options: TargetValidationOptions) {
+  if (!options.pinnedBaseRef) {
+    ensureMergeBaseAvailable({ targetDir: cwd, baseBranch });
+    return `origin/${baseBranch}`;
+  }
+  run("git", ["merge-base", options.pinnedBaseRef, "HEAD"], { cwd });
+  return options.pinnedBaseRef;
+}
+
+function gitChangedFilesFromRef(cwd: string, baseRef: string) {
+  const committed = run("git", ["diff", "--name-only", `${baseRef}...HEAD`], { cwd })
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const uncommitted = run("git", ["status", "--porcelain"], { cwd })
+    .split("\n")
+    .map((line) => line.trim().replace(/^.. /, ""))
+    .map((line) => line.split(" -> ").pop())
+    .filter((line): line is string => Boolean(line));
+  return uniqueStrings([...committed, ...uncommitted]);
 }
 
 function readPackageScriptSet(cwd: string) {

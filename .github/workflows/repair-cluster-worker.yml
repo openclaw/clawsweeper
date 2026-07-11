@@ -582,6 +582,20 @@ jobs:
           CLAWSWEEPER_ALLOWED_OWNER: ${{ steps.target.outputs.target_owner }}
         run: pnpm run repair:execute-fix -- "${{ inputs.job }}" --latest
 
+      - name: Renew target write token for post-flight
+        id: target_post_flight_token
+        if: ${{ always() && steps.check_job.outputs.job_exists == '1' && steps.self_heal_head.outputs.matched != 'false' }}
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
+          owner: ${{ steps.target.outputs.target_owner }}
+          permission-actions: write
+          permission-contents: write
+          permission-issues: write
+          permission-pull-requests: write
+          permission-workflows: write
+
       - name: Record deterministic validation phase
         if: ${{ success() && steps.crabfleet_session.outcome == 'success' }}
         run: pnpm run repair:action-session -- update --state running --phase post_flight --summary "Codex changes validated; applying GitHub post-flight gates"
@@ -589,7 +603,7 @@ jobs:
       - name: Apply safe closure actions
         if: ${{ steps.check_job.outputs.job_exists == '1' && steps.self_heal_head.outputs.matched != 'false' && env.CLAWSWEEPER_ALLOW_EXECUTE == '1' }}
         env:
-          GH_TOKEN: ${{ steps.target_write_token.outputs.token }}
+          GH_TOKEN: ${{ steps.target_post_flight_token.outputs.token }}
           CLAWSWEEPER_ALLOWED_OWNER: ${{ steps.target.outputs.target_owner }}
         run: pnpm run repair:apply-result -- "${{ inputs.job }}" --latest
 
@@ -597,14 +611,14 @@ jobs:
         id: post_flight
         if: ${{ steps.check_job.outputs.job_exists == '1' && steps.self_heal_head.outputs.matched != 'false' && env.CLAWSWEEPER_ALLOW_EXECUTE == '1' && env.CLAWSWEEPER_ALLOW_FIX_PR == '1' }}
         env:
-          GH_TOKEN: ${{ steps.target_write_token.outputs.token }}
+          GH_TOKEN: ${{ steps.target_post_flight_token.outputs.token }}
           CLAWSWEEPER_ALLOWED_OWNER: ${{ steps.target.outputs.target_owner }}
         run: pnpm run repair:post-flight -- "${{ inputs.job }}" --latest
 
       - name: Apply post-flight closeouts
         if: ${{ steps.check_job.outputs.job_exists == '1' && steps.self_heal_head.outputs.matched != 'false' && env.CLAWSWEEPER_ALLOW_EXECUTE == '1' }}
         env:
-          GH_TOKEN: ${{ steps.target_write_token.outputs.token }}
+          GH_TOKEN: ${{ steps.target_post_flight_token.outputs.token }}
           CLAWSWEEPER_ALLOWED_OWNER: ${{ steps.target.outputs.target_owner }}
         run: pnpm run repair:apply-result -- "${{ inputs.job }}" --latest
 
@@ -612,7 +626,7 @@ jobs:
         if: ${{ always() && steps.check_job.outputs.job_exists == '1' && steps.self_heal_head.outputs.matched != 'false' && env.CLAWSWEEPER_ALLOW_EXECUTE == '1' }}
         continue-on-error: true
         env:
-          GH_TOKEN: ${{ steps.target_write_token.outputs.token }}
+          GH_TOKEN: ${{ steps.target_post_flight_token.outputs.token }}
           CLAWSWEEPER_ALLOWED_OWNER: ${{ steps.target.outputs.target_owner }}
         run: pnpm run repair:tag-clawsweeper -- .clawsweeper-repair/runs --apply --live --open-branches false --report .clawsweeper-repair/runs/clawsweeper-label-report.json
 
@@ -620,7 +634,7 @@ jobs:
         if: ${{ always() && steps.check_job.outputs.job_exists == '1' }}
         continue-on-error: true
         env:
-          GH_TOKEN: ${{ steps.target_write_token.outputs.token }}
+          GH_TOKEN: ${{ steps.target_post_flight_token.outputs.token }}
           CLAWSWEEPER_STATUS_INGEST_TOKEN: ${{ secrets.CLAWSWEEPER_STATUS_INGEST_TOKEN }}
           EXECUTE_OUTCOME: ${{ steps.execute_fix.outcome }}
           POST_FLIGHT_OUTCOME: ${{ steps.post_flight.outcome }}

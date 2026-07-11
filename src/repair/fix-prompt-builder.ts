@@ -25,6 +25,7 @@ export function buildFixPrompt({
   rebaseResult,
   maxEditAttempts,
   validationCommands,
+  targetBaseSha,
   isAutomergeRepair = false,
 }: LooseRecord) {
   return [
@@ -61,6 +62,7 @@ export function buildFixPrompt({
     "",
     `Mode: ${mode}`,
     `Branch: ${branch}`,
+    targetBaseSha ? `Pinned target base SHA: ${targetBaseSha}` : "",
     `Edit attempt: ${attempt ?? 1} of ${maxEditAttempts}`,
     reconcileWithBase
       ? "Existing repair branch detected. Reconcile the existing branch diff with the deterministic pre-edit rebase result before touching new code."

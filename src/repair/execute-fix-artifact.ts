@@ -2050,6 +2050,9 @@ function editValidatePrepareMerge({
     if (producedChanges) logProgress("applied mechanical changelog fix");
   }
   const repositoryContext = buildRepositoryContext({ fixArtifact, targetDir });
+  const targetBaseSha = run("git", ["rev-parse", `origin/${baseBranch}`], {
+    cwd: targetDir,
+  }).trim();
   const shouldRunCodexEdit = !producedChanges || reconcileWithBase;
   const repairDeltaBaseHead =
     rebaseResult?.status === "conflicts" ? sourceHead : currentHead(targetDir);
@@ -2073,6 +2076,7 @@ function editValidatePrepareMerge({
             : rebaseResult,
         maxEditAttempts,
         validationCommands: validationPreflight.resolved_commands ?? [],
+        targetBaseSha,
         isAutomergeRepair: isAutomergeRepairJob(),
       });
       const summaryPath = path.join(workRoot, `${mode}-codex-summary-${attempt}.md`);
@@ -2226,77 +2230,69 @@ function editValidatePrepareMerge({
     pushIntermediateCheckpoint?.();
   }
 
-  let codexReview = null;
-  const maxFinalBaseSyncAttempts = Math.max(
-    1,
-    Number(process.env.CLAWSWEEPER_FINAL_BASE_SYNC_ATTEMPTS ?? 1),
-  );
-  for (let attempt = 1; attempt <= maxFinalBaseSyncAttempts; attempt += 1) {
-    logProgress("starting validation/review loop", { mode, attempt });
-    updateAutomergeProgressStatus({
-      id: `validation-review-${mode}-${attempt}`,
-      label: `validation and review ${attempt}`,
-      status: "running",
-      details: mode,
-      headSha: currentHead(targetDir),
-    });
-    codexReview = validateAndReviewLoop({
-      fixArtifact,
-      targetDir,
-      mode,
-      baseBranch,
-      sourceHead: repairDeltaBaseHead,
-      onReviewFix: (reviewAttempt: JsonValue) => {
-        const checkpoint = commitCheckpointIfNeeded({
-          targetDir,
-          message: `fix(clawsweeper): address review for ${result.cluster_id} (${reviewAttempt})`,
-          trailers: mode === "replacement" ? coAuthorTrailers(contributorCredits) : [],
-        });
-        if (checkpoint) {
-          checkpointCommits.push(checkpoint);
-          pushIntermediateCheckpoint?.();
-        }
-      },
-    });
-    const sync = reconcileLatestBaseBeforePush({
-      fixArtifact,
-      targetDir,
-      branch,
-      mode,
-      baseBranch,
-      contributorCredits,
-      attempt,
-      repositoryContext,
-      sourceHead,
-    });
-    logProgress("final base sync result", { mode, attempt, status: sync.status });
-    updateAutomergeProgressStatus({
-      id: `validation-review-${mode}-${attempt}`,
-      label: `validation and review ${attempt}`,
-      status: sync.status === "already-current" ? "complete" : "base moved",
-      details: sync.status,
-      headSha: currentHead(targetDir),
-    });
-    if (sync.status === "already-current") break;
+  logProgress("starting validation/review loop", { mode, attempt: 1 });
+  updateAutomergeProgressStatus({
+    id: `validation-review-${mode}-1`,
+    label: "validation and review 1",
+    status: "running",
+    details: mode,
+    headSha: currentHead(targetDir),
+  });
+  const codexReview = validateAndReviewLoop({
+    fixArtifact,
+    targetDir,
+    mode,
+    baseBranch,
+    targetBaseSha,
+    sourceHead: repairDeltaBaseHead,
+    onReviewFix: (reviewAttempt: JsonValue) => {
+      const checkpoint = commitCheckpointIfNeeded({
+        targetDir,
+        message: `fix(clawsweeper): address review for ${result.cluster_id} (${reviewAttempt})`,
+        trailers: mode === "replacement" ? coAuthorTrailers(contributorCredits) : [],
+      });
+      if (checkpoint) {
+        checkpointCommits.push(checkpoint);
+        pushIntermediateCheckpoint?.();
+      }
+    },
+  });
+  const sync = reconcileLatestBaseBeforePush({
+    fixArtifact,
+    targetDir,
+    branch,
+    mode,
+    baseBranch,
+    contributorCredits,
+    attempt: 1,
+    repositoryContext,
+    sourceHead,
+  });
+  logProgress("final base sync result", { mode, attempt: 1, status: sync.status });
+  updateAutomergeProgressStatus({
+    id: `validation-review-${mode}-1`,
+    label: "validation and review 1",
+    status: "complete",
+    details: sync.status,
+    headSha: currentHead(targetDir),
+  });
+  if (sync.status !== "already-current") {
     const checkpoint = commitCheckpointIfNeeded({
       targetDir,
-      message: `fix(clawsweeper): reconcile ${result.cluster_id} with main (${attempt})`,
+      message: `fix(clawsweeper): reconcile ${result.cluster_id} with main (1)`,
       trailers: mode === "replacement" ? coAuthorTrailers(contributorCredits) : [],
     });
     if (checkpoint) {
       checkpointCommits.push(checkpoint);
       pushIntermediateCheckpoint?.();
     }
-    if (attempt === maxFinalBaseSyncAttempts) {
-      codexReview.final_base_sync = {
-        status: "accepted_after_final_sync",
-        reason:
-          "origin/main moved during final validation; pushed the branch after the last successful final-base sync and left review/CI/automerge to gate the exact head",
-        attempts: maxFinalBaseSyncAttempts,
-        sync,
-      };
-      break;
-    }
+    codexReview.final_base_sync = {
+      status: "accepted_after_final_sync",
+      reason:
+        "origin/main moved after pinned-base validation; pushed the deterministically synced branch and left exact-head review and GitHub checks to gate the final head",
+      attempts: 1,
+      sync,
+    };
   }
   const finalCheckpoint = commitCheckpointIfNeeded({
     targetDir,
@@ -2705,15 +2701,20 @@ function validateAndReviewLoop({
   targetDir,
   mode,
   baseBranch = DEFAULT_BASE_BRANCH,
+  targetBaseSha,
   onReviewFix = null,
   sourceHead = null,
 }: LooseRecord) {
   let lastReview = null;
   let validationCommands: LooseRecord[] = [];
   for (let attempt = 1; attempt <= maxReviewAttempts; attempt += 1) {
+    const validationOptions = {
+      ...currentTargetValidationOptions(),
+      pinnedBaseRef: targetBaseSha,
+    };
     const validationPlan = repairDeltaValidationPlan(
       { fixArtifact, targetDir, sourceHead },
-      currentTargetValidationOptions(),
+      validationOptions,
     );
     try {
       validationCommands = runAllowedValidationCommands(
@@ -2722,7 +2723,7 @@ function validateAndReviewLoop({
         validationPlan.options,
         baseBranch,
       );
-      runDiffCheck({ targetDir, baseBranch });
+      runDiffCheck({ targetDir, baseRef: targetBaseSha });
       if (canSkipInternalCodexReviewForRepairDelta(validationPlan)) {
         return {
           status: "passed_repair_delta_validation",
@@ -2756,6 +2757,7 @@ function validateAndReviewLoop({
           attempt,
           validationPlan,
           validationCommands,
+          targetBaseSha,
         });
         onReviewFix?.(`validation-${attempt}`);
         continue;
@@ -2769,6 +2771,7 @@ function validateAndReviewLoop({
         mode,
         attempt,
         baseBranch,
+        targetBaseSha,
         validationCommands,
         validationPlan,
       });
@@ -2796,11 +2799,12 @@ function validateAndReviewLoop({
         mode,
         review: lastReview,
         attempt: `${attempt}-final`,
+        targetBaseSha,
       });
       onReviewFix?.(`${attempt}-final`);
       const finalValidationPlan = repairDeltaValidationPlan(
         { fixArtifact, targetDir, sourceHead },
-        currentTargetValidationOptions(),
+        validationOptions,
       );
       validationCommands = runAllowedValidationCommands(
         finalValidationPlan.commands,
@@ -2808,7 +2812,7 @@ function validateAndReviewLoop({
         finalValidationPlan.options,
         baseBranch,
       );
-      runDiffCheck({ targetDir, baseBranch });
+      runDiffCheck({ targetDir, baseRef: targetBaseSha });
       return {
         status: "passed_after_final_review_fix",
         summary:
@@ -2827,7 +2831,14 @@ function validateAndReviewLoop({
         },
       };
     }
-    runCodexReviewFix({ fixArtifact, targetDir, mode, review: lastReview, attempt });
+    runCodexReviewFix({
+      fixArtifact,
+      targetDir,
+      mode,
+      review: lastReview,
+      attempt,
+      targetBaseSha,
+    });
     onReviewFix?.(attempt);
   }
   const summary = codexReviewFailureSummary(lastReview);
@@ -2855,9 +2866,9 @@ function isRetryableCodexReviewError(error: JsonValue) {
   );
 }
 
-function runDiffCheck({ targetDir, baseBranch }: LooseRecord) {
-  ensureMergeBaseAvailable({ targetDir, baseBranch });
-  run("git", ["diff", "--check", `origin/${baseBranch}...HEAD`], { cwd: targetDir });
+function runDiffCheck({ targetDir, baseRef }: LooseRecord) {
+  run("git", ["merge-base", baseRef, "HEAD"], { cwd: targetDir });
+  run("git", ["diff", "--check", `${baseRef}...HEAD`], { cwd: targetDir });
   run("git", ["diff", "--check"], { cwd: targetDir });
 }
 
@@ -2867,6 +2878,7 @@ function runCodexReview({
   mode,
   attempt,
   baseBranch = DEFAULT_BASE_BRANCH,
+  targetBaseSha,
   validationCommands = [],
   validationPlan = null,
 }: LooseRecord) {
@@ -2875,7 +2887,7 @@ function runCodexReview({
   const prompt = [
     "/review",
     "",
-    `Review the current ClawSweeper Repair fix branch diff against origin/${baseBranch} before it can be merged.`,
+    `Review the current ClawSweeper Repair fix branch diff against pinned target base ${targetBaseSha} (${baseBranch}) before it can be merged.`,
     "",
     "Required checks:",
     "- security-sensitive issues are resolved or absent;",
@@ -2993,11 +3005,19 @@ function isCodexReview(value: JsonValue) {
   );
 }
 
-function runCodexReviewFix({ fixArtifact, targetDir, mode, review, attempt }: LooseRecord) {
+function runCodexReviewFix({
+  fixArtifact,
+  targetDir,
+  mode,
+  review,
+  attempt,
+  targetBaseSha,
+}: LooseRecord) {
   const prompt = [
     "Address every actionable finding from Codex /review.",
     "",
     "Rules:",
+    `- keep all inspection and validation anchored to pinned target base ${targetBaseSha};`,
     "- keep the patch narrow;",
     "- keep shell output bounded; inspect targeted files and avoid broad repo-wide dumps;",
     "- do not commit, push, open PRs, close PRs, or call gh;",
@@ -3059,6 +3079,7 @@ function runCodexValidationFix({
   attempt,
   validationPlan,
   validationCommands = [],
+  targetBaseSha,
 }: LooseRecord) {
   const validationError = compactText(String(error?.message ?? error), 8000);
   const changedFiles = run("git", ["diff", "--name-only"], { cwd: targetDir })
@@ -3069,6 +3090,7 @@ function runCodexValidationFix({
     "Fix the current repair patch so the changed-surface validation gate passes.",
     "",
     "Rules:",
+    `- keep all inspection and validation anchored to pinned target base ${targetBaseSha};`,
     "- keep the patch narrow;",
     "- fix only issues introduced by the current repair branch or required to make its changed gate pass;",
     "- keep shell output bounded; inspect targeted files and avoid broad repo-wide dumps;",
