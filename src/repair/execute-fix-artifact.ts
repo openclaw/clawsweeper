@@ -88,7 +88,7 @@ import {
 } from "./fix-prompt-builder.js";
 import { canTreatRebaseAsCompleteRepair } from "./fix-edit-policy.js";
 import { applyMechanicalChangelogFix } from "./mechanical-changelog.js";
-import { persistBeforePublication, reviewAfterFinalBaseSync } from "./execution-finalization.js";
+import { finalizeExecutionReport, reviewAfterFinalBaseSync } from "./execution-finalization.js";
 import { tryResolveMechanicalRebaseConflicts } from "./mechanical-rebase-conflicts.js";
 import { compactGeneratedBranchHistory } from "./compact-generated-branch.js";
 import { compactText, escapeRegExp } from "./text-utils.js";
@@ -3586,11 +3586,12 @@ function writeReport(report: LooseRecord, resultPath: string) {
   if (debugDir) {
     report.debug_artifacts = path.relative(repoRoot(), debugDir);
   }
-  if (deferPublication) {
-    fs.writeFileSync(reportPath, `${JSON.stringify(report, null, 2)}\n`);
-  } else {
-    persistReportAndPublish(report, resultPath, reportPath);
-  }
+  finalizeExecutionReport({
+    deferPublication,
+    reportPath,
+    serialize: () => `${JSON.stringify(report, null, 2)}\n`,
+    publish: () => publishReportOutcome(report, resultPath),
+  });
   console.log("Wrote fix execution report.");
 }
 
@@ -3601,19 +3602,18 @@ function publishPersistedReport(resultPath: string) {
     return;
   }
   const persistedReport = JSON.parse(fs.readFileSync(reportPath, "utf8"));
-  persistReportAndPublish(persistedReport, resultPath, reportPath);
+  finalizeExecutionReport({
+    deferPublication: false,
+    reportPath,
+    serialize: () => `${JSON.stringify(persistedReport, null, 2)}\n`,
+    publish: () => publishReportOutcome(persistedReport, resultPath),
+  });
   console.log("Published deferred fix execution outcome.");
 }
 
-function persistReportAndPublish(report: LooseRecord, resultPath: string, reportPath: string) {
-  persistBeforePublication({
-    reportPath,
-    serialize: () => `${JSON.stringify(report, null, 2)}\n`,
-    publish: () => {
-      appendIssueImplementationStatusComment(report);
-      appendAutomergeRepairOutcomeComment(report, resultPath);
-    },
-  });
+function publishReportOutcome(report: LooseRecord, resultPath: string) {
+  appendIssueImplementationStatusComment(report);
+  appendAutomergeRepairOutcomeComment(report, resultPath);
 }
 
 function fixExecutionReportPath(resultPath: string) {

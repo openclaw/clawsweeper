@@ -4,7 +4,11 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { persistBeforePublication, reviewAfterFinalBaseSync } from "./execution-finalization.js";
+import {
+  finalizeExecutionReport,
+  persistBeforePublication,
+  reviewAfterFinalBaseSync,
+} from "./execution-finalization.js";
 
 test("changed final base sync runs exactly one review against the synchronized tree", () => {
   const events: string[] = [];
@@ -55,5 +59,35 @@ test("publication failure cannot prevent durable report persistence", () => {
       }),
     /forced publication failure/,
   );
+  assert.deepEqual(JSON.parse(fs.readFileSync(reportPath, "utf8")), report);
+});
+
+test("deferred report publication hands off from expired to fresh credentials", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-handoff-"));
+  const reportPath = path.join(directory, "report.json");
+  const report = { status: "completed", actions: [] as string[] };
+  const publishers: string[] = [];
+
+  finalizeExecutionReport({
+    deferPublication: true,
+    reportPath,
+    serialize: () => `${JSON.stringify(report)}\n`,
+    publish: () => {
+      publishers.push("expired");
+      throw new Error("expired credential should not publish");
+    },
+  });
+
+  assert.equal(publishers.length, 0);
+  assert.deepEqual(JSON.parse(fs.readFileSync(reportPath, "utf8")), report);
+
+  finalizeExecutionReport({
+    deferPublication: false,
+    reportPath,
+    serialize: () => `${JSON.stringify(report)}\n`,
+    publish: () => publishers.push("fresh"),
+  });
+
+  assert.deepEqual(publishers, ["fresh"]);
   assert.deepEqual(JSON.parse(fs.readFileSync(reportPath, "utf8")), report);
 });

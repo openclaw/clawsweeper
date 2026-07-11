@@ -33,3 +33,21 @@ export function persistBeforePublication({
     fs.writeFileSync(reportPath, serialize());
   }
 }
+
+export function finalizeExecutionReport({
+  deferPublication,
+  reportPath,
+  serialize,
+  publish,
+}: {
+  deferPublication: boolean;
+  reportPath: string;
+  serialize: () => string;
+  publish: () => void;
+}): void {
+  if (deferPublication) {
+    fs.writeFileSync(reportPath, serialize());
+    return;
+  }
+  persistBeforePublication({ reportPath, serialize, publish });
+}

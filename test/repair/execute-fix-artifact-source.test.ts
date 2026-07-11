@@ -256,7 +256,7 @@ test("final synchronized tree is reviewed and reports persist before publication
   assert.match(source, /reviewAfterFinalBaseSync\(\{/);
   assert.match(source, /validateAndReviewSynchronizedTree\(\{/);
   assert.match(source, /attempt: "final-sync"/);
-  assert.match(source, /persistBeforePublication\(\{/);
+  assert.match(source, /finalizeExecutionReport\(\{/);
 });
 
 test("repair workflow renews target credentials before deferred outcome publication", () => {
