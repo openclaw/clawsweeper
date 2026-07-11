@@ -247,6 +247,10 @@ test("contributor repair review loop stays on one pinned target base", () => {
   assert.match(source, /pinned target base \$\{targetBaseSha\}/);
   assert.match(validation, /pinnedBaseRef\?: string/);
   assert.match(source, /classifyExternalBaseValidationFailure\(\{/);
+  assert.match(
+    source,
+    /rebaseResult\?\.status === "conflicts" \? \(sourceHead \?\? targetBaseSha\) : currentHead\(targetDir\)/,
+  );
   assert.match(validation, /if \(!options\.pinnedBaseRef\) \{[\s\S]*ensureMergeBaseAvailable/);
   assert.match(promptBuilder, /Pinned target base SHA: \$\{targetBaseSha\}/);
 });

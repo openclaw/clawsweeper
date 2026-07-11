@@ -2068,7 +2068,7 @@ function editValidatePrepareMerge({
   ).sha;
   const shouldRunCodexEdit = !producedChanges || reconcileWithBase;
   const repairDeltaBaseHead =
-    rebaseResult?.status === "conflicts" ? sourceHead : currentHead(targetDir);
+    rebaseResult?.status === "conflicts" ? (sourceHead ?? targetBaseSha) : currentHead(targetDir);
   if (shouldRunCodexEdit) {
     for (let attempt = 1; attempt <= maxEditAttempts; attempt += 1) {
       const headBeforeAttempt = currentHead(targetDir);
