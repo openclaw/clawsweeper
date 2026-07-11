@@ -749,11 +749,11 @@ test("pinned-base reproduction fails closed when dependency inputs changed", () 
   );
 });
 
-test("pinned-base reproduction fails closed for a mutable dependency runtime", () => {
+test("pinned-base reproduction does not reuse a mutable dependency runtime", () => {
   const cwd = gitPackageFixture({ "check:changed": "node check.js" });
   fs.writeFileSync(
     path.join(cwd, "check.js"),
-    "console.error('src/base.ts:1: lint failed'); process.exit(1);\n",
+    "const fs = require('node:fs'); if (fs.existsSync('node_modules/fixture-dependency/state.js')) { console.error('src/base.ts:1: lint failed'); process.exit(1); }\n",
   );
   git(cwd, "add", ".");
   git(cwd, "commit", "-m", "base");
@@ -769,6 +769,32 @@ test("pinned-base reproduction fails closed for a mutable dependency runtime", (
     }),
     null,
   );
+});
+
+test("pinned-base reproduction prepares an independent runtime after normal setup", () => {
+  const cwd = gitBunPackageFixture({ check: "bun run check" });
+  git(cwd, "add", ".");
+  git(cwd, "commit", "-m", "base");
+  const pinnedBaseRef = git(cwd, "rev-parse", "HEAD");
+  const { binDir } = fakeBunFixture(cwd, { failRun: true });
+  const options = validationOptions("openclaw/clawhub", {
+    ...clawhubToolchain(),
+    pinnedBaseRef,
+    installTargetDeps: true,
+    installTimeoutMs: FAKE_TOOLCHAIN_TIMEOUT_MS,
+    setupTimeoutMs: FAKE_TOOLCHAIN_TIMEOUT_MS,
+  });
+
+  withPathPrefix(binDir, () => {
+    prepareTargetToolchain(cwd, options);
+    assert.equal(fs.existsSync(path.join(cwd, "node_modules")), true);
+    const baseError = reproduceValidationFailureAtPinnedBase({
+      commands: ["bun run check"],
+      targetDir: cwd,
+      options,
+    });
+    assert.match(String(baseError), /src\/base\.ts:1: lint failed/);
+  });
 });
 
 test("pinned-base reproduction fails closed when the pinned ref is unavailable", () => {
@@ -1224,7 +1250,7 @@ function gitBunPackageFixture(scripts) {
   return cwd;
 }
 
-function fakeBunFixture(cwd) {
+function fakeBunFixture(cwd, { failRun = false } = {}) {
   const binDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-fake-bun-bin-"));
   const logPath = path.join(cwd, "fake-bun.log");
   writeNodeCommandShim(
@@ -1234,6 +1260,8 @@ function fakeBunFixture(cwd) {
 const fs = require("node:fs");
 fs.appendFileSync(${JSON.stringify(logPath)}, process.argv.slice(2).join(" ") + "\\n");
 if (process.argv[2] === "--version") console.log("1.3.10");
+if (process.argv[2] === "install") fs.mkdirSync("node_modules", { recursive: true });
+if (${JSON.stringify(failRun)} && process.argv[2] === "run") { console.error("src/base.ts:1: lint failed"); process.exit(1); }
 `,
   );
   return { binDir, logPath };
