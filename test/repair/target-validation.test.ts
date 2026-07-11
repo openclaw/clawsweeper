@@ -749,6 +749,28 @@ test("pinned-base reproduction fails closed when dependency inputs changed", () 
   );
 });
 
+test("pinned-base reproduction fails closed for a mutable dependency runtime", () => {
+  const cwd = gitPackageFixture({ "check:changed": "node check.js" });
+  fs.writeFileSync(
+    path.join(cwd, "check.js"),
+    "console.error('src/base.ts:1: lint failed'); process.exit(1);\n",
+  );
+  git(cwd, "add", ".");
+  git(cwd, "commit", "-m", "base");
+  const pinnedBaseRef = git(cwd, "rev-parse", "HEAD");
+  fs.mkdirSync(path.join(cwd, "node_modules", "fixture-dependency"), { recursive: true });
+  fs.writeFileSync(path.join(cwd, "node_modules", "fixture-dependency", "state.js"), "mutated\n");
+
+  assert.equal(
+    reproduceValidationFailureAtPinnedBase({
+      commands: ["pnpm check:changed"],
+      targetDir: cwd,
+      options: validationOptions("openclaw/openclaw", { pinnedBaseRef }),
+    }),
+    null,
+  );
+});
+
 test("pinned-base reproduction fails closed when the pinned ref is unavailable", () => {
   const cwd = gitPackageFixture({ "check:changed": "node check.js" });
   fs.writeFileSync(path.join(cwd, "check.js"), "process.exit(1);\n");

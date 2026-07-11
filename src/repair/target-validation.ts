@@ -144,15 +144,14 @@ export function reproduceValidationFailureAtPinnedBase({
     return null;
   }
   if (changedFromPinnedBase.some(isDependencyOrToolchainInputPath)) return null;
+  // A reused dependency tree can contain ignored or generated mutations that
+  // make a repair-induced failure look intrinsic to the pinned base.
+  if (fs.existsSync(path.join(targetDir, "node_modules"))) return null;
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-base-validation-"));
   const checkout = path.join(root, "target");
   try {
     run("git", ["clone", "--shared", "--no-checkout", targetDir, checkout]);
     run("git", ["checkout", "--detach", options.pinnedBaseRef], { cwd: checkout });
-    const targetNodeModules = path.join(targetDir, "node_modules");
-    if (fs.existsSync(targetNodeModules)) {
-      fs.symlinkSync(targetNodeModules, path.join(checkout, "node_modules"), "junction");
-    }
     try {
       runAllowedValidationCommands(
         commands,
