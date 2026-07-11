@@ -445,6 +445,7 @@ jobs:
         id: target
         env:
           CLAIM_DECISION: ${{ steps.claim-exact-review-queue.outputs.decision }}
+          CLAWHUB_ENABLED: ${{ vars.CLAWSWEEPER_ENABLE_CLAWHUB }}
           CONFIGURED_CODEX_TIMEOUT_MS: ${{ vars.CLAWSWEEPER_CODEX_TIMEOUT_MS || '1200000' }}
         run: |
           set -euo pipefail
@@ -470,6 +471,8 @@ jobs:
           const [owner, name] = targetRepo.split("/");
           const checkoutDir = targetRepo === process.env.GITHUB_REPOSITORY ? `${name}-target` : name;
           const hasCommandContext = Boolean(decision.commandStatusMarker || decision.statusCommentId);
+          const targetEnabled =
+            targetRepo !== "openclaw/clawhub" || process.env.CLAWHUB_ENABLED === "1";
           const output = {
             target_repo: targetRepo,
             target_repo_owner: owner,
@@ -479,6 +482,7 @@ jobs:
             codex_timeout_ms: Math.max(configuredTimeout, adaptiveTimeout),
             media_proof_timeout_ms: mediaTimeout,
             has_command_context: hasCommandContext,
+            target_enabled: targetEnabled,
           };
           fs.appendFileSync(
             process.env.GITHUB_OUTPUT,
@@ -488,7 +492,12 @@ jobs:
           );
           NODE
 
+      - name: Skip disabled claimed target
+        if: ${{ steps.target.outputs.target_enabled == 'false' }}
+        run: echo "Completing the claimed exact-review lease without target access because this target is disabled."
+
       - name: Create target read token
+        if: ${{ steps.target.outputs.target_enabled == 'true' }}
         id: target-read-token
         continue-on-error: true
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
@@ -502,6 +511,7 @@ jobs:
           permission-pull-requests: read
 
       - name: Check live target item state
+        if: ${{ steps.target.outputs.target_enabled == 'true' }}
         id: live-item
         env:
           GH_TOKEN: ${{ steps.target-read-token.outputs.token }}
@@ -1116,7 +1126,7 @@ jobs:
           remove_own_eyes_reactions
 
       - name: Fail unsuccessful exact review
-        if: ${{ always() && steps.live-item.outputs.proceed != 'false' && steps.publish-event-result.outputs.terminal_noop != 'true' && steps.publish-event-result.outputs.policy_noop != 'true' && steps.publish-event-result.outputs.requeue_latest != 'true' && (steps.review-exact-event-item.outcome != 'success' || steps.publish-event-result.outcome != 'success' || (steps.publish-event-result.outputs.terminal_missing != 'true' && steps.publish-event-result.outputs.terminal_closed != 'true' && steps.publish-event-result.outputs.guarded_open != 'true' && steps.route-synced-verdict.outcome != 'success' && steps.queue-deferred-verdict-router.outcome != 'success')) }}
+        if: ${{ always() && steps.target.outputs.target_enabled != 'false' && steps.live-item.outputs.proceed != 'false' && steps.publish-event-result.outputs.terminal_noop != 'true' && steps.publish-event-result.outputs.policy_noop != 'true' && steps.publish-event-result.outputs.requeue_latest != 'true' && (steps.review-exact-event-item.outcome != 'success' || steps.publish-event-result.outcome != 'success' || (steps.publish-event-result.outputs.terminal_missing != 'true' && steps.publish-event-result.outputs.terminal_closed != 'true' && steps.publish-event-result.outputs.guarded_open != 'true' && steps.route-synced-verdict.outcome != 'success' && steps.queue-deferred-verdict-router.outcome != 'success')) }}
         run: exit 1
 
       - name: Complete exact-review queue lease

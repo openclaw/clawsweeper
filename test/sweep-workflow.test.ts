@@ -153,6 +153,7 @@ test("exact event publish and routing require a successful fresh review artifact
   assert.match(releaseUnsuccessfulStep, /--method DELETE/);
   assert.match(publisher, /"--event-apply-proof"/);
   assert.match(publisher, /exactEventApplyProof\(/);
+  assert.match(publisher, /const requeueLatestExpected = applyDisposition === "source_drift"/);
   assert.match(publisher, /terminal_missing=/);
   assert.match(publisher, /terminal_closed=/);
   assert.match(publisher, /guarded_open=/);
@@ -354,6 +355,22 @@ test("exact event workflow binds all work to the canonical queue claim", () => {
   assert.match(
     claimedWork,
     /const decision = JSON\.parse\(process\.env\.CLAIM_DECISION \|\| "\{\}"\)/,
+  );
+  assert.match(
+    claimedWork,
+    /targetRepo !== "openclaw\/clawhub" \|\| process\.env\.CLAWHUB_ENABLED === "1"/,
+  );
+  assert.match(
+    claimedWork,
+    /Create target read token[\s\S]*steps\.target\.outputs\.target_enabled == 'true'/,
+  );
+  assert.match(
+    claimedWork,
+    /Check live target item state[\s\S]*steps\.target\.outputs\.target_enabled == 'true'/,
+  );
+  assert.match(
+    claimedWork,
+    /Fail unsuccessful exact review[\s\S]*steps\.target\.outputs\.target_enabled != 'false'/,
   );
   assert.match(
     claimedWork,

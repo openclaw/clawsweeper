@@ -155,11 +155,9 @@ async function publishEventResult(options: EventOptions): Promise<void> {
     terminalMissingCount: missingCount,
     terminalCount: closedCount,
     guardedOpenAction,
-    latestRevisionRequeueRequired,
     disposition: applyDisposition,
   } = exactEventApplyProof(actions, Number(options.itemNumber), snapshotActionTaken);
-  const requeueLatestExpected =
-    latestRevisionRequeueRequired && applyDisposition === "source_drift";
+  const requeueLatestExpected = applyDisposition === "source_drift";
   if (
     syncedCount + closedCount + missingCount === 0 &&
     guardedOpenAction === null &&
@@ -171,9 +169,7 @@ async function publishEventResult(options: EventOptions): Promise<void> {
         .filter(Boolean)
         .join(", ") || "none";
     throw new Error(
-      latestRevisionRequeueRequired
-        ? `Event review for ${options.targetRepo}#${options.itemNumber} changed since review; requeue against the latest item revision`
-        : `Event review for ${options.targetRepo}#${options.itemNumber} was not applied; actions: ${observed}`,
+      `Event review for ${options.targetRepo}#${options.itemNumber} was not applied; actions: ${observed}`,
     );
   }
   const summary = () =>
