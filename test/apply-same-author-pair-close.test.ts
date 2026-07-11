@@ -646,6 +646,7 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/(320|321)\\/timeline(?
         number: 321,
         action: "skipped_same_author_pair",
         reason: "open issue #320 (Paired issue) by the same author is paired with this PR",
+        guardedOpenStateVerified: true,
         terminalPolicyNoopVerified: true,
       },
     ]);
