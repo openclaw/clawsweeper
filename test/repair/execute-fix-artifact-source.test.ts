@@ -259,17 +259,22 @@ test("final synchronized tree is reviewed and reports persist before publication
   assert.match(source, /persistBeforePublication\(\{/);
 });
 
-test("repair workflow renews target credentials after the long execute step", () => {
+test("repair workflow renews target credentials before deferred outcome publication", () => {
   const workflow = readText(
     path.join(process.cwd(), ".github/workflows/repair-cluster-worker.yml"),
   );
   const executeIndex = workflow.indexOf("- name: Execute credited fix artifact");
   const renewIndex = workflow.indexOf("- name: Renew target write token for post-flight");
+  const publishIndex = workflow.indexOf("- name: Publish deferred fix outcome");
   const postFlightIndex = workflow.indexOf("- name: Post-flight finalize fix PRs");
 
-  assert.ok(executeIndex < renewIndex && renewIndex < postFlightIndex);
-  assert.match(
-    workflow.slice(renewIndex, postFlightIndex + 500),
-    /GH_TOKEN: \$\{\{ steps\.target_post_flight_token\.outputs\.token \}\}/,
+  assert.ok(
+    executeIndex < renewIndex && renewIndex < publishIndex && publishIndex < postFlightIndex,
   );
+  assert.match(workflow.slice(executeIndex, renewIndex), /--latest --defer-publication/);
+  assert.match(
+    workflow.slice(publishIndex, postFlightIndex),
+    /GH_TOKEN: \${{ steps\.target_post_flight_token\.outputs\.token }}/,
+  );
+  assert.match(workflow.slice(publishIndex, postFlightIndex), /--latest --publish-report-only/);
 });

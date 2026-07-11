@@ -580,7 +580,7 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.target_write_token.outputs.token }}
           CLAWSWEEPER_ALLOWED_OWNER: ${{ steps.target.outputs.target_owner }}
-        run: pnpm run repair:execute-fix -- "${{ inputs.job }}" --latest
+        run: pnpm run repair:execute-fix -- "${{ inputs.job }}" --latest --defer-publication
 
       - name: Renew target write token for post-flight
         id: target_post_flight_token
@@ -595,6 +595,13 @@ jobs:
           permission-issues: write
           permission-pull-requests: write
           permission-workflows: write
+
+      - name: Publish deferred fix outcome
+        if: ${{ always() && steps.check_job.outputs.job_exists == '1' && steps.self_heal_head.outputs.matched != 'false' && env.CLAWSWEEPER_ALLOW_EXECUTE == '1' }}
+        env:
+          GH_TOKEN: ${{ steps.target_post_flight_token.outputs.token }}
+          CLAWSWEEPER_ALLOWED_OWNER: ${{ steps.target.outputs.target_owner }}
+        run: pnpm run repair:execute-fix -- "${{ inputs.job }}" --latest --publish-report-only
 
       - name: Record deterministic validation phase
         if: ${{ success() && steps.crabfleet_session.outcome == 'success' }}

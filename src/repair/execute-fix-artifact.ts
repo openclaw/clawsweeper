@@ -158,6 +158,8 @@ const jobPath = args._[0];
 const resultPathArg = args._[1];
 const latest = Boolean(args.latest);
 const dryRun = Boolean(args["dry-run"] || process.env.CLAWSWEEPER_FIX_DRY_RUN === "1");
+const deferPublication = Boolean(args["defer-publication"]);
+const publishReportOnly = Boolean(args["publish-report-only"]);
 const model = String(args.model ?? process.env.CLAWSWEEPER_MODEL ?? "internal");
 const executionModelArgs = codexModelArgs(model);
 const { codexTimeoutMs, fixStepTimeoutMs, lateWorkerReserveMs } = repairTimeoutBudgetFromEnv(
@@ -424,6 +426,11 @@ const report: LooseRecord = {
     : null,
   actions: [],
 };
+
+if (publishReportOnly) {
+  publishPersistedReport(resultPath);
+  process.exit(0);
+}
 
 logProgress("starting fix execution", {
   repo: result.repo,
@@ -3574,14 +3581,31 @@ function findLatestResultPath() {
 }
 
 function writeReport(report: LooseRecord, resultPath: string) {
-  const reportPath =
-    typeof args.report === "string"
-      ? path.resolve(args.report)
-      : path.join(path.dirname(resultPath), "fix-execution-report.json");
+  const reportPath = fixExecutionReportPath(resultPath);
   const debugDir = copyFixDebugArtifacts(path.dirname(reportPath));
   if (debugDir) {
     report.debug_artifacts = path.relative(repoRoot(), debugDir);
   }
+  if (deferPublication) {
+    fs.writeFileSync(reportPath, `${JSON.stringify(report, null, 2)}\n`);
+  } else {
+    persistReportAndPublish(report, resultPath, reportPath);
+  }
+  console.log("Wrote fix execution report.");
+}
+
+function publishPersistedReport(resultPath: string) {
+  const reportPath = fixExecutionReportPath(resultPath);
+  if (!fs.existsSync(reportPath)) {
+    console.warn(`No deferred fix execution report exists at ${reportPath}; skipping publication.`);
+    return;
+  }
+  const persistedReport = JSON.parse(fs.readFileSync(reportPath, "utf8"));
+  persistReportAndPublish(persistedReport, resultPath, reportPath);
+  console.log("Published deferred fix execution outcome.");
+}
+
+function persistReportAndPublish(report: LooseRecord, resultPath: string, reportPath: string) {
   persistBeforePublication({
     reportPath,
     serialize: () => `${JSON.stringify(report, null, 2)}\n`,
@@ -3590,7 +3614,12 @@ function writeReport(report: LooseRecord, resultPath: string) {
       appendAutomergeRepairOutcomeComment(report, resultPath);
     },
   });
-  console.log("Wrote fix execution report.");
+}
+
+function fixExecutionReportPath(resultPath: string) {
+  return typeof args.report === "string"
+    ? path.resolve(args.report)
+    : path.join(path.dirname(resultPath), "fix-execution-report.json");
 }
 
 function appendIssueImplementationStatusComment(report: LooseRecord) {
