@@ -5,6 +5,7 @@ import http from "node:http";
 import { repositoryProfileFor } from "../repository-profiles.js";
 import type { JsonValue, LooseRecord } from "./json-types.js";
 import {
+  isAssistPublicationCommentBody,
   isProofNudgeCommentBody,
   parseCommand,
   staleClosedItemCommandReason,
@@ -179,6 +180,9 @@ export function classifyIssueCommentWebhook({
   const issue = asRecord(payload.issue);
   const repo = asRecord(payload.repository);
   const association = String(comment.author_association ?? "").toUpperCase();
+  if (isAssistPublicationCommentBody(String(comment.body ?? ""))) {
+    return { accepted: false, reason: "assist publication comment" };
+  }
   if (isProofNudgeCommentBody(String(comment.body ?? ""))) {
     return { accepted: false, reason: "proof nudge comment" };
   }

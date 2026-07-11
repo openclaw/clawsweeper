@@ -66,6 +66,46 @@ test("comment webhook ignores ClawSweeper proof-nudge comments", () => {
   assert.deepEqual(result, { accepted: false, reason: "proof nudge comment" });
 });
 
+test("comment webhook ignores command-bearing assist and visual publications before ack or dispatch", async () => {
+  const originalFetch = globalThis.fetch;
+  let requests = 0;
+  globalThis.fetch = async () => {
+    requests += 1;
+    throw new Error("generated publications must not reach GitHub");
+  };
+
+  try {
+    for (const body of [
+      "@clawsweeper automerge\n<!-- clawsweeper-assist:stable-request -->",
+      "/autoclose\n<!-- clawsweeper-visual -->",
+    ]) {
+      const result = await handleGitHubWebhook({
+        event: "issue_comment",
+        payload: {
+          action: "created",
+          repository: { full_name: "openclaw/openclaw", default_branch: "main" },
+          issue: { number: 86422 },
+          installation: { id: 123 },
+          comment: {
+            id: 456,
+            body,
+            author_association: "MEMBER",
+            user: { login: "clawsweeper[bot]" },
+          },
+        },
+      });
+
+      assert.deepEqual(result, {
+        statusCode: 202,
+        body: { accepted: false, reason: "assist publication comment" },
+      });
+    }
+    assert.equal(requests, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("comment webhook rejects inline ClawSweeper mentions before visible ack", () => {
   const result = classifyIssueCommentWebhook({
     event: "issue_comment",
