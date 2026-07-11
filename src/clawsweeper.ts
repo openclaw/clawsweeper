@@ -2559,28 +2559,6 @@ function itemSnapshotHash(item: Item, context: ItemContext): string {
   return sha256(stableJson({ item: snapshotItem, context }));
 }
 
-function isApplyAutomationOnlyUpdate(options: {
-  itemUpdatedAt: string;
-  reviewCommentUpdatedAt?: string | null | undefined;
-  ownedReviewLeaseUpdatedAts?: readonly string[];
-  labelSyncOnlyUpdate?: boolean;
-}): boolean {
-  return (
-    options.itemUpdatedAt === options.reviewCommentUpdatedAt ||
-    (options.ownedReviewLeaseUpdatedAts ?? []).includes(options.itemUpdatedAt) ||
-    options.labelSyncOnlyUpdate === true
-  );
-}
-
-export function isApplyAutomationOnlyUpdateForTest(options: {
-  itemUpdatedAt: string;
-  reviewCommentUpdatedAt?: string | null | undefined;
-  ownedReviewLeaseUpdatedAts?: readonly string[];
-  labelSyncOnlyUpdate?: boolean;
-}): boolean {
-  return isApplyAutomationOnlyUpdate(options);
-}
-
 function itemSourceRevisionSha256(issue: unknown, comments: unknown[] = []): string {
   const source = asRecord(issue);
   const snapshot = {
