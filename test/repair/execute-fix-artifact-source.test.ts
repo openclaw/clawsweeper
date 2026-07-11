@@ -256,6 +256,7 @@ test("final synchronized tree is reviewed and reports persist before publication
 
   assert.match(source, /reviewAfterFinalBaseSync\(\{/);
   assert.match(source, /validateAndReviewSynchronizedTree\(\{/);
+  assert.match(source, /repairDeltaPaths: finalSyncRepairDeltaPaths/);
   assert.match(source, /attempt: "final-sync"/);
   assert.match(source, /finalizeExecutionReport\(\{/);
 });

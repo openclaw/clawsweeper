@@ -2270,6 +2270,13 @@ function editValidatePrepareMerge({
       }
     },
   });
+  const finalSyncRepairDeltaPaths = run(
+    "git",
+    ["diff", "--name-only", `${repairDeltaBaseHead}..HEAD`],
+    { cwd: targetDir },
+  )
+    .split(/\r?\n/)
+    .filter(Boolean);
   const sync = reconcileLatestBaseBeforePush({
     fixArtifact,
     targetDir,
@@ -2304,6 +2311,7 @@ function editValidatePrepareMerge({
           baseBranch,
           targetBaseSha: synchronizedBaseSha,
           sourceHead: repairDeltaBaseHead,
+          repairDeltaPaths: finalSyncRepairDeltaPaths,
         }),
       checkpointSynchronizedTree: () => {
         const checkpoint = commitCheckpointIfNeeded({
@@ -2903,6 +2911,7 @@ function validateAndReviewSynchronizedTree({
   baseBranch,
   targetBaseSha,
   sourceHead,
+  repairDeltaPaths,
 }: LooseRecord) {
   const validationOptions = {
     ...currentTargetValidationOptions(),
@@ -2931,6 +2940,7 @@ function validateAndReviewSynchronizedTree({
       targetDir,
       pinnedBaseRef: targetBaseSha,
       repairBaseRef: sourceHead,
+      repairDeltaPaths,
       error,
       baseError,
     });

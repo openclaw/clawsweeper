@@ -681,6 +681,57 @@ test("validation failures in repair-changed files remain repair scope", () => {
   );
 });
 
+test("final-sync classification excludes files changed only by advanced main", () => {
+  const cwd = gitPackageFixture({ "check:changed": "node check.js" });
+  fs.mkdirSync(path.join(cwd, "src"));
+  fs.writeFileSync(path.join(cwd, "src/base.ts"), "export const base = 1;\n");
+  fs.writeFileSync(path.join(cwd, "src/repair.ts"), "export const repair = 1;\n");
+  git(cwd, "add", ".");
+  git(cwd, "commit", "-m", "base");
+  const preSyncBaseRef = git(cwd, "rev-parse", "HEAD");
+  git(cwd, "checkout", "-b", "repair");
+  fs.writeFileSync(path.join(cwd, "src/repair.ts"), "export const repair = 2;\n");
+  git(cwd, "add", "src/repair.ts");
+  git(cwd, "commit", "-m", "repair delta");
+  const repairDeltaPaths = git(cwd, "diff", "--name-only", `${preSyncBaseRef}..HEAD`).split(
+    /\r?\n/,
+  );
+
+  git(cwd, "checkout", "main");
+  fs.writeFileSync(path.join(cwd, "src/base.ts"), "export const base = 2;\n");
+  git(cwd, "add", "src/base.ts");
+  git(cwd, "commit", "-m", "advanced main");
+  const synchronizedBaseRef = git(cwd, "rev-parse", "HEAD");
+  git(cwd, "checkout", "repair");
+  git(cwd, "rebase", "main");
+
+  const diagnostic = new Error("src/base.ts:1: lint failed");
+  assert.equal(
+    classifyExternalBaseValidationFailure({
+      targetDir: cwd,
+      pinnedBaseRef: synchronizedBaseRef,
+      repairBaseRef: preSyncBaseRef,
+      error: diagnostic,
+      baseError: diagnostic,
+    }),
+    null,
+  );
+  assert.deepEqual(
+    classifyExternalBaseValidationFailure({
+      targetDir: cwd,
+      pinnedBaseRef: synchronizedBaseRef,
+      repairBaseRef: preSyncBaseRef,
+      repairDeltaPaths,
+      error: diagnostic,
+      baseError: diagnostic,
+    }),
+    {
+      paths: ["src/base.ts"],
+      reason: "validation failed only in base-identical files outside the repair delta",
+    },
+  );
+});
+
 test("pinned-base validation reproduction proves the same base failure", () => {
   const cwd = gitPackageFixture({ "check:changed": "node check.js" });
   fs.mkdirSync(path.join(cwd, "src"));

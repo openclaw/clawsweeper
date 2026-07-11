@@ -70,12 +70,14 @@ export function classifyExternalBaseValidationFailure({
   targetDir,
   pinnedBaseRef,
   repairBaseRef,
+  repairDeltaPaths,
   error,
   baseError,
 }: {
   targetDir: string;
   pinnedBaseRef: string;
   repairBaseRef: string | null;
+  repairDeltaPaths?: string[];
   error: unknown;
   baseError: unknown;
 }): ExternalBaseValidationBlocker | null {
@@ -111,9 +113,10 @@ export function classifyExternalBaseValidationFailure({
     ),
   );
   const repairDelta = new Set(
-    splitGitLines(
-      run("git", ["diff", "--name-only", `${repairBaseRef}..HEAD`], { cwd: targetDir }),
-    ),
+    repairDeltaPaths ??
+      splitGitLines(
+        run("git", ["diff", "--name-only", `${repairBaseRef}..HEAD`], { cwd: targetDir }),
+      ),
   );
   if (referencedPaths.some((file) => changedFromBase.has(file) || repairDelta.has(file))) {
     return null;
