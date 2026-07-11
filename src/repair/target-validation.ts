@@ -144,7 +144,8 @@ export function reproduceValidationFailureAtPinnedBase({
     return null;
   }
   if (changedFromPinnedBase.some(isDependencyOrToolchainInputPath)) return null;
-  if (fs.existsSync(path.join(targetDir, "node_modules")) && !options.installTargetDeps) return null;
+  if (fs.existsSync(path.join(targetDir, "node_modules")) && !options.installTargetDeps)
+    return null;
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-base-validation-"));
   const checkout = path.join(root, "target");
   try {
