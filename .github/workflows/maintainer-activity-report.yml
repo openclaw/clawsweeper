@@ -150,6 +150,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
+      - name: Check out ClawSweeper
+        uses: actions/checkout@v7
+        with:
+          path: clawsweeper
+          filter: blob:none
+          persist-credentials: false
+
       - name: Create maintainer repo write token
         id: maintainers_write_token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
@@ -176,40 +183,23 @@ jobs:
           name: maintainer-reports-${{ github.run_id }}-${{ github.run_attempt }}
           path: generated-reports
 
-      - name: Validate generated report tree
-        run: |
-          set -euo pipefail
-          test -n "${{ needs.generate.outputs.maintainers_sha }}"
-          test "$(git -C maintainers rev-parse HEAD)" = "${{ needs.generate.outputs.maintainers_sha }}"
-          if find generated-reports \( -name .git -o -name .gitattributes -o -name .gitmodules \) -print -quit | grep -q .; then
-            echo "Generated reports must not contain Git control files." >&2
-            exit 1
-          fi
-          if find generated-reports ! -type f ! -type d -print -quit | grep -q .; then
-            echo "Generated reports must contain only regular files and directories." >&2
-            exit 1
-          fi
-          file_count="$(find generated-reports -type f | wc -l | tr -d ' ')"
-          size_kib="$(du -sk generated-reports | cut -f1)"
-          if [ "$file_count" -gt 2000 ] || [ "$size_kib" -gt 262144 ]; then
-            echo "Generated report artifact exceeds its bounded file-count or size limit." >&2
-            exit 1
-          fi
-          rsync --archive --delete generated-reports/ maintainers/reports/
+      - name: Prepare generated report publication
+        id: prepare
+        run: >-
+          bash clawsweeper/scripts/prepare-maintainer-report-publication.sh
+          generated-reports
+          maintainers
+          "${{ needs.generate.outputs.maintainers_sha }}"
 
       - name: Commit report history
+        if: ${{ steps.prepare.outputs.changed == 'true' }}
         working-directory: maintainers
         env:
           GH_TOKEN: ${{ steps.maintainers_write_token.outputs.token }}
         run: |
           set -euo pipefail
-          if git diff --quiet -- reports; then
-            echo "No report changes."
-            exit 0
-          fi
           git config user.name "openclaw-clawsweeper[bot]"
           git config user.email "openclaw-clawsweeper[bot]@users.noreply.github.com"
-          git add reports
           git commit -m "chore: publish maintainer activity report"
           gh auth setup-git
           git pull --rebase origin main
@@ -230,11 +220,22 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
+      - name: Create maintainer repo read token
+        id: maintainers_read_token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
+          owner: openclaw
+          repositories: maintainers
+          permission-contents: read
+
       - name: Check out maintainers
         uses: actions/checkout@v7
         with:
           repository: openclaw/maintainers
           path: maintainers
+          token: ${{ steps.maintainers_read_token.outputs.token }}
           fetch-depth: 1
           persist-credentials: false
 
