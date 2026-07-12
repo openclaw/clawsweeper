@@ -127,11 +127,13 @@ hosts, or email addresses. Credential detection covers GitHub token families,
 JWT-shaped values, Basic credentials, whitespace or separator-delimited
 bearer/API/Cloudflare credential forms, credential field aliases, POSIX and
 Windows absolute paths, case-insensitive private paths, private IPv4 and IPv6
-addresses, and internal hostname suffixes. Percent-encoded octets are rejected
-from durable identifiers and paths rather than decoded into potentially
-confidential forms. Host checks normalize case, trailing-dot FQDNs, compressed
-IPv6 loopback forms, URL userinfo, and file URLs while all durable text remains
-restricted to field-specific machine vocabularies.
+addresses, and internal hostname suffixes. Form-style `+` credential separators
+are rejected when followed by a credential-shaped value. Percent-encoded octets
+are rejected from durable identifiers and paths rather than decoded into
+potentially confidential forms. URL checks normalize scheme-specific paths,
+userinfo, and file URLs; host checks normalize case, trailing-dot FQDNs, and
+compressed IPv6 loopback forms while all durable text remains restricted to
+field-specific machine vocabularies.
 
 Every event records a privacy classification, redaction version, and fields
 dropped. The checked-in JSON schema is

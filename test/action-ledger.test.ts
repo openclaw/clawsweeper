@@ -473,7 +473,13 @@ test("event-key scopes reject raw identities and confidential identifiers", () =
   const safeKey = actionEventKey("review.completed", { number: 42 });
   assert.equal(schemaNodeAccepts(schema, eventKeySchema, safeKey), true);
 
-  for (const scope of [`ghp_${"A".repeat(20)}`, `Bearer-${"A".repeat(20)}`, "service.internal"]) {
+  for (const scope of [
+    `ghp_${"A".repeat(20)}`,
+    `Bearer-${"A".repeat(20)}`,
+    `Bearer+${"A".repeat(20)}`,
+    "Basic+dXNlcjpwYXNz",
+    "service.internal",
+  ]) {
     const forgedKey = `${scope}:${"a".repeat(64)}`;
     assert.throws(() => actionEventKey(scope, { number: 42 }), /confidential identifier/, scope);
     assert.throws(
@@ -671,7 +677,11 @@ test("runtime and schema apply the same machine-text privacy boundary", () => {
     `github_pat_${"A".repeat(24)}`,
     `eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.${"A".repeat(32)}`,
     `Bearer:${"A".repeat(32)}`,
+    `Bearer+${"A".repeat(32)}`,
+    `bEaReR+${"A".repeat(32)}`,
     "Basic:dXNlcjpwYXNz",
+    "Basic+dXNlcjpwYXNz",
+    "bAsIc+dXNlcjpwYXNz",
     "alice%40example.com",
     "%2FUsers%2Falice%2Fsecret",
     "https%3A%2F%2Fservice.internal%2Fapi",
@@ -686,7 +696,11 @@ test("runtime and schema apply the same machine-text privacy boundary", () => {
     "LOCALHOST:443",
     "user@LOCALHOST",
     "file:/etc/passwd",
+    "file:etc/passwd",
+    "FILE:etc/passwd",
     "https://user@host/path",
+    "https:user@host/path",
+    "HTTPS:user@host/path",
     "internal.example.com",
     "https://host.docker.internal/api",
     "https://10.0.0.1/api",
@@ -720,9 +734,12 @@ test("privacy normalization preserves public machine identifiers", () => {
   ) as TestJsonSchema;
   for (const status of [
     "basic-authentication",
+    "basic+authentication",
+    "bearer+status",
     "localhost-check",
     "user-at-localhost",
     "file-cache",
+    "file+cache",
     "public.example",
     "https://github.com/openclaw/clawsweeper/actions/runs/100",
   ]) {
