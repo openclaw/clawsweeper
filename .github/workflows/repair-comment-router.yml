@@ -198,9 +198,21 @@ jobs:
             item_numbers="${{ github.event.client_payload.item_number || '' }}"
             comment_ids="${{ github.event.client_payload.comment_id || '' }}"
             status_comment_id="${{ github.event.client_payload.status_comment_id || '' }}"
+            source_event="${{ github.event.client_payload.source_event || '' }}"
+            source_action="${{ github.event.client_payload.source_action || '' }}"
+            dispatch_actor="${{ github.actor }}"
+            comment_event_auth="${{ github.event.client_payload.comment_event_auth || '' }}"
+            comment_updated_at="${{ github.event.client_payload.comment_updated_at || '' }}"
+            comment_body_sha256="${{ github.event.client_payload.comment_body_sha256 || '' }}"
             force_reprocess="${{ github.event.client_payload.force_reprocess || 'false' }}"
           else
             status_comment_id=""
+            source_event=""
+            source_action=""
+            dispatch_actor=""
+            comment_event_auth=""
+            comment_updated_at=""
+            comment_body_sha256=""
           fi
 
           args=(
@@ -227,6 +239,24 @@ jobs:
           if [ -n "$status_comment_id" ]; then
             args+=(--status-comment-id "$status_comment_id")
           fi
+          if [ -n "$source_event" ]; then
+            args+=(--source-event "$source_event")
+          fi
+          if [ -n "$source_action" ]; then
+            args+=(--source-action "$source_action")
+          fi
+          if [ -n "$dispatch_actor" ]; then
+            args+=(--dispatch-actor "$dispatch_actor")
+          fi
+          if [ -n "$comment_event_auth" ]; then
+            args+=(--comment-event-auth "$comment_event_auth")
+          fi
+          if [ -n "$comment_updated_at" ]; then
+            args+=(--comment-updated-at "$comment_updated_at")
+          fi
+          if [ -n "$comment_body_sha256" ]; then
+            args+=(--comment-body-sha256 "$comment_body_sha256")
+          fi
           if [ "$force_reprocess" = "true" ]; then
             args+=(--force-reprocess)
           fi
@@ -240,6 +270,10 @@ jobs:
       - name: Commit comment router ledger
         if: always()
         run: |
+          if jq -e '.short_circuited == true' results/comment-router-latest.json >/dev/null 2>&1; then
+            echo "Exact terminal comment version already recorded; skipping state publication."
+            exit 0
+          fi
           pnpm run repair:publish-main -- \
             --message "chore: record ClawSweeper comment routing" \
             --path results/comment-router.json \
@@ -286,9 +320,21 @@ jobs:
             item_numbers="${{ github.event.client_payload.item_number || '' }}"
             comment_ids="${{ github.event.client_payload.comment_id || '' }}"
             status_comment_id="${{ github.event.client_payload.status_comment_id || '' }}"
+            source_event="${{ github.event.client_payload.source_event || '' }}"
+            source_action="${{ github.event.client_payload.source_action || '' }}"
+            dispatch_actor="${{ github.actor }}"
+            comment_event_auth="${{ github.event.client_payload.comment_event_auth || '' }}"
+            comment_updated_at="${{ github.event.client_payload.comment_updated_at || '' }}"
+            comment_body_sha256="${{ github.event.client_payload.comment_body_sha256 || '' }}"
             force_reprocess="${{ github.event.client_payload.force_reprocess || 'false' }}"
           else
             status_comment_id=""
+            source_event=""
+            source_action=""
+            dispatch_actor=""
+            comment_event_auth=""
+            comment_updated_at=""
+            comment_body_sha256=""
           fi
 
           args=(
@@ -314,6 +360,24 @@ jobs:
           fi
           if [ -n "$status_comment_id" ]; then
             args+=(--status-comment-id "$status_comment_id")
+          fi
+          if [ -n "$source_event" ]; then
+            args+=(--source-event "$source_event")
+          fi
+          if [ -n "$source_action" ]; then
+            args+=(--source-action "$source_action")
+          fi
+          if [ -n "$dispatch_actor" ]; then
+            args+=(--dispatch-actor "$dispatch_actor")
+          fi
+          if [ -n "$comment_event_auth" ]; then
+            args+=(--comment-event-auth "$comment_event_auth")
+          fi
+          if [ -n "$comment_updated_at" ]; then
+            args+=(--comment-updated-at "$comment_updated_at")
+          fi
+          if [ -n "$comment_body_sha256" ]; then
+            args+=(--comment-body-sha256 "$comment_body_sha256")
           fi
           if [ "$force_reprocess" = "true" ]; then
             args+=(--force-reprocess)

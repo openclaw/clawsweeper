@@ -21,6 +21,9 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Changed
 
+- Short-circuited authenticated duplicate comment deliveries when their exact
+  body version is already terminal in the durable router ledger, while edited,
+  retryable, and state-drifted commands retain the full routing path.
 - Expanded stale-insufficient-info issue handling to materially outdated reports with no current-version confirmation for 60 days, and counted live merge conflicts as an abandoned-PR stalled state.
 - Upgraded Codex review and repair workers to GPT-5.6 Sol with high reasoning, invalidating cached reviews from the prior model policy.
 - Raised durable exact-review admission from 20 to 28 global leases and from 16 to 24 leases per target while preserving four slots for other repositories.
