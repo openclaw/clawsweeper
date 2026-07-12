@@ -889,6 +889,32 @@ test("exact-review queue coalesces deliveries, dispatches a bound rollout snapsh
   }
 });
 
+test("exact-review queue retains delivery dedupe records for five days", async () => {
+  const storage = new MemoryDurableStorage();
+  const fiveDaysMs = 5 * 24 * 60 * 60 * 1000;
+  await storage.put("exact-review-queue", {
+    deliveries: {
+      "delivery-expired": Date.now() - fiveDaysMs - 60_000,
+      "delivery-within-window": Date.now() - fiveDaysMs + 60_000,
+    },
+    items: {},
+  });
+  const queue = new ExactReviewQueue({ storage }, {});
+
+  assert.equal(
+    (await queue.fetch(buildExactReviewQueueRequest("delivery-fresh", 619, "opened"))).status,
+    202,
+  );
+
+  const state = (await storage.get("exact-review-queue")) as {
+    deliveries: Record<string, number>;
+  };
+  assert.deepEqual(Object.keys(state.deliveries).sort(), [
+    "delivery-fresh",
+    "delivery-within-window",
+  ]);
+});
+
 test("exact-review claim preserves its immutable decision across a newer enqueue", async () => {
   const storage = new MemoryDurableStorage();
   const item = unclaimedExactReviewQueueItem(620);

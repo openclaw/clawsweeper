@@ -110,7 +110,9 @@ const EXACT_REVIEW_COMPLETION_RETRY_MAX_MS = 2 * 60 * 60 * 1000;
 const EXACT_REVIEW_RECONCILE_RUN_LIMIT = 32;
 const EXACT_REVIEW_RECONCILE_CLAIM_MATCH_LIMIT = EXACT_REVIEW_RECONCILE_RUN_LIMIT * 2;
 const EXACT_REVIEW_RECONCILE_CONCURRENCY = 4;
-const EXACT_REVIEW_QUEUE_DELIVERY_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+// Keep a multi-day idempotency window for delayed GitHub/Actions retries while
+// limiting the singleton queue record until delivery receipts move to bounded storage.
+const EXACT_REVIEW_QUEUE_DELIVERY_TTL_MS = 5 * 24 * 60 * 60 * 1000;
 const EXACT_REVIEW_QUEUE_STATE_KEY = "exact-review-queue";
 const EXACT_REVIEW_QUEUE_NAME = "global";
 const EXACT_REVIEW_COMMAND_STATUS_MARKER_PATTERN =
