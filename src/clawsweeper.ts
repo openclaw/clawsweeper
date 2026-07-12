@@ -20844,10 +20844,43 @@ function reviewCommand(args: Args): void {
           ...context,
           pullChecks: revalidatedChecks,
         };
-        const revalidatedPreviousReview = extractLatestClawSweeperReview(
-          fetchIssueReviewComments(item.number),
-          item.number,
-        );
+        let revalidatedPreviousReview: PreviousClawSweeperReview | null;
+        try {
+          revalidatedPreviousReview = extractLatestClawSweeperReview(
+            fetchIssueReviewComments(item.number),
+            item.number,
+          );
+        } catch (error) {
+          const revalidationReason = "durable_review_refresh_failed";
+          semanticCacheRevalidationFailures += 1;
+          semanticCacheRevalidationMs += Date.now() - semanticRevalidationStartedAt;
+          semanticCacheRevalidationReasons.set(
+            revalidationReason,
+            (semanticCacheRevalidationReasons.get(revalidationReason) ?? 0) + 1,
+          );
+          const leaseToRelease = acquiredReviewLease!;
+          if (!deleteOwnedDedicatedReviewStartLease(item.number, leaseToRelease)) {
+            leaseAcquisitionFailures += 1;
+            leaseAcquisitionFailureDetails.push(
+              `#${item.number}: could not release semantic cache lease after ${revalidationReason}`,
+            );
+            continue;
+          }
+          const acquiredIndex = acquiredReviewLeases.findIndex(
+            (entry) =>
+              entry.itemNumber === item.number &&
+              entry.lease.commentId === leaseToRelease.commentId &&
+              entry.lease.owner === leaseToRelease.owner,
+          );
+          if (acquiredIndex >= 0) acquiredReviewLeases.splice(acquiredIndex, 1);
+          acquiredReviewLease = null;
+          console.error(
+            `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} semantic-cache=revalidation-failed reason=${revalidationReason} defer #${item.number}: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+          continue;
+        }
         if (revalidatedPreviousReview) {
           revalidatedContext.previousClawSweeperReview = revalidatedPreviousReview;
         } else {

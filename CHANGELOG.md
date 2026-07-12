@@ -43,8 +43,9 @@ checkpoint, and status-only commits are intentionally omitted.
 - Bound structural, semantic, and content review reuse to the complete live
   durable verdict under the acquired lease, excluding only validated review
   history and comment transport metadata; versioned security scanner directive
-  hashing, rejected malformed eligibility records, and skipped unreachable
-  compiler work for local-range reviews.
+  hashing, isolated durable-comment refresh failures to the affected item,
+  rejected malformed eligibility records, and skipped unreachable compiler
+  work for local-range reviews.
 - Packaged only planned prior review reports into scheduled shard runtimes and
   rebound structural cache probes to the explicit latest release state,
   restoring safe cache reuse without broad generated-state artifacts.

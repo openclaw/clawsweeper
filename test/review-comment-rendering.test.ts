@@ -252,6 +252,10 @@ test("semantic cache runs after hydration and revalidates under the acquired lea
     /reviewSemanticPriorReviewDigest\(\s*revalidatedContext\.previousClawSweeperReview/,
   );
   assert.match(
+    reviewLoop.slice(priorReviewRevalidation, relationRevalidation),
+    /catch \(error\)[\s\S]*durable_review_refresh_failed[\s\S]*deleteOwnedDedicatedReviewStartLease[\s\S]*acquiredReviewLeases\.splice[\s\S]*continue/,
+  );
+  assert.match(
     reviewLoop.slice(semanticRevalidation, semanticWrite),
     /updateReviewSemanticFrontMatter\(carried, semanticRecord, true\)/,
   );
