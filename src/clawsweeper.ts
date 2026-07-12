@@ -56,6 +56,9 @@ import { parseGhJson, parseGhJsonLinesWithRetry, parseGhJsonWithRetry } from "./
 import { stableJson } from "./stable-json.js";
 import {
   REVIEW_STRUCTURAL_CACHE_VERSION,
+  reviewStructuralRecordAtLeastAsFresh,
+  reviewStructuralRecordMatchesObservedUpdate,
+  reviewStructuralRecordsDescribeSameVerdictInput,
   reviewStructuralQuery,
   reviewStructuralRecordFromGraphql,
   reviewStructuralCacheDecision,
@@ -19577,6 +19580,7 @@ function reviewCommand(args: Args): void {
       const priorReview = localRangeData ? null : existingReview(item, itemsDir);
       let acquiredReviewLease: AcquiredReviewStartLease | null = null;
       let structuralRecord: ReviewStructuralRecord | null = null;
+      let hydratedStructuralAnchor: ReviewStructuralRecord | null = null;
       if (!localRangeData) {
         structuralCacheChecks += 1;
         const structuralProbeStartedAt = Date.now();
@@ -19587,6 +19591,9 @@ function reviewCommand(args: Args): void {
             reviewPolicy,
             reviewModel: PUBLIC_CODEX_MODEL,
           });
+          if (!reviewStructuralRecordAtLeastAsFresh(structuralRecord, item.updatedAt)) {
+            structuralRecord = null;
+          }
         } catch (error) {
           structuralCacheProbeFailures += 1;
           console.error(
@@ -19664,6 +19671,11 @@ function reviewCommand(args: Args): void {
               reviewPolicy,
               reviewModel: PUBLIC_CODEX_MODEL,
             });
+            if (
+              !reviewStructuralRecordAtLeastAsFresh(revalidatedStructuralRecord, item.updatedAt)
+            ) {
+              revalidatedStructuralRecord = null;
+            }
           } catch (error) {
             structuralCacheRevalidationFailures += 1;
             console.error(
@@ -19799,6 +19811,74 @@ function reviewCommand(args: Args): void {
       const contextElapsedMs = Date.now() - contextStartedAt;
       const contextItemUpdatedAt = stringOrUndefined(asRecord(context.issue).updatedAt);
       if (contextItemUpdatedAt) item.updatedAt = contextItemUpdatedAt;
+      if (!localRangeData && contextItemUpdatedAt) {
+        structuralCacheRevalidations += 1;
+        const structuralRevalidationStartedAt = Date.now();
+        try {
+          const candidate = fetchReviewStructuralRecord({
+            item,
+            git,
+            reviewPolicy,
+            reviewModel: PUBLIC_CODEX_MODEL,
+          });
+          const contextPullHeadSha = pullHeadShaFromContext(context)?.trim().toLowerCase() ?? null;
+          if (
+            reviewStructuralRecordMatchesObservedUpdate(candidate, contextItemUpdatedAt) &&
+            (item.kind !== "pull_request" || candidate.pullHeadSha === contextPullHeadSha)
+          ) {
+            hydratedStructuralAnchor = candidate;
+          }
+        } catch (error) {
+          structuralCacheRevalidationFailures += 1;
+          console.error(
+            `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} structural-cache=hydrated-anchor-probe-failed #${item.number}: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+        } finally {
+          structuralCacheRevalidationMs += Date.now() - structuralRevalidationStartedAt;
+        }
+        const anchorReason = hydratedStructuralAnchor
+          ? "hydrated_anchor_match"
+          : "hydrated_anchor_miss";
+        structuralCacheRevalidationReasons.set(
+          anchorReason,
+          (structuralCacheRevalidationReasons.get(anchorReason) ?? 0) + 1,
+        );
+      }
+      const refreshStructuralRecordForVerdict = (): ReviewStructuralRecord | null => {
+        if (!hydratedStructuralAnchor) return null;
+        structuralCacheRevalidations += 1;
+        const structuralRevalidationStartedAt = Date.now();
+        let candidate: ReviewStructuralRecord | null = null;
+        try {
+          candidate = fetchReviewStructuralRecord({
+            item,
+            git,
+            reviewPolicy,
+            reviewModel: PUBLIC_CODEX_MODEL,
+          });
+        } catch (error) {
+          structuralCacheRevalidationFailures += 1;
+          console.error(
+            `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} structural-cache=verdict-probe-failed #${item.number}: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+        } finally {
+          structuralCacheRevalidationMs += Date.now() - structuralRevalidationStartedAt;
+        }
+        const matched = reviewStructuralRecordsDescribeSameVerdictInput(
+          hydratedStructuralAnchor,
+          candidate,
+        );
+        const reason = matched ? "verdict_input_match" : "verdict_input_changed";
+        structuralCacheRevalidationReasons.set(
+          reason,
+          (structuralCacheRevalidationReasons.get(reason) ?? 0) + 1,
+        );
+        return matched ? candidate : null;
+      };
       if (
         acquiredReviewLease &&
         pullHeadShaFromContext(context)?.trim().toLowerCase() !== acquiredReviewLease.headSha
@@ -19868,16 +19948,16 @@ function reviewCommand(args: Args): void {
       }
       const contentDigest = itemContentDigest(item, context, git);
       const contentCacheReview = explicitDispatch || maintainerRequest ? null : priorReview;
-      if (
-        reviewContentCacheHit({
-          review: contentCacheReview,
-          reviewPolicy,
-          contentDigest,
-          now: Date.now(),
-          explicitDispatch,
-          maintainerRequest,
-        })
-      ) {
+      const contentCacheHit = reviewContentCacheHit({
+        review: contentCacheReview,
+        reviewPolicy,
+        contentDigest,
+        now: Date.now(),
+        explicitDispatch,
+        maintainerRequest,
+      });
+      if (contentCacheHit) {
+        structuralRecord = refreshStructuralRecordForVerdict();
         const reportPath = join(artifactDir, reportFileName(item.repo, item.number));
         let carried = priorReview!.markdown;
         carried = replaceFrontMatterValue(carried, "reviewed_at", new Date().toISOString());
@@ -19998,6 +20078,7 @@ function reviewCommand(args: Args): void {
         codexElapsedMs,
       };
       const action = reviewActionForDecision({ item, decision, git, runtime });
+      structuralRecord = refreshStructuralRecordForVerdict();
       const reportPath = join(artifactDir, reportFileName(item.repo, item.number));
       writeFileSync(
         reportPath,

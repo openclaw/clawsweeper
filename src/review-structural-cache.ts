@@ -888,6 +888,51 @@ export function validReviewStructuralRecord(
   return fingerprintMatches(recordFingerprint(recordWithoutFingerprint), record.fingerprint);
 }
 
+export function reviewStructuralRecordAtLeastAsFresh(
+  record: ReviewStructuralRecord | null,
+  observedUpdatedAt: string | undefined,
+): record is ReviewStructuralRecord {
+  const recordUpdatedAtMs = timestampMs(record?.activityUpdatedAt);
+  const observedUpdatedAtMs = timestampMs(observedUpdatedAt);
+  return (
+    validReviewStructuralRecord(record) &&
+    recordUpdatedAtMs !== null &&
+    observedUpdatedAtMs !== null &&
+    recordUpdatedAtMs >= observedUpdatedAtMs
+  );
+}
+
+export function reviewStructuralRecordMatchesObservedUpdate(
+  record: ReviewStructuralRecord | null,
+  observedUpdatedAt: string | undefined,
+): record is ReviewStructuralRecord {
+  const recordUpdatedAtMs = timestampMs(record?.activityUpdatedAt);
+  const observedUpdatedAtMs = timestampMs(observedUpdatedAt);
+  return (
+    validReviewStructuralRecord(record) &&
+    recordUpdatedAtMs !== null &&
+    observedUpdatedAtMs !== null &&
+    recordUpdatedAtMs === observedUpdatedAtMs
+  );
+}
+
+export function reviewStructuralRecordsDescribeSameVerdictInput(
+  anchor: ReviewStructuralRecord | null,
+  current: ReviewStructuralRecord | null,
+): current is ReviewStructuralRecord {
+  return (
+    validReviewStructuralRecord(anchor) &&
+    reviewStructuralRecordAtLeastAsFresh(current, anchor.activityUpdatedAt) &&
+    anchor.kind === current.kind &&
+    anchor.sourceRevision === current.sourceRevision &&
+    anchor.relationSensitive === current.relationSensitive &&
+    anchor.targetHeadSha === current.targetHeadSha &&
+    anchor.pullHeadSha === current.pullHeadSha &&
+    anchor.reviewPolicy === current.reviewPolicy &&
+    anchor.reviewModel === current.reviewModel
+  );
+}
+
 function fingerprintMatches(expected: string, actual: string): boolean {
   return expected === actual;
 }

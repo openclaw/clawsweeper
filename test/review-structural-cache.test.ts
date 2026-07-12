@@ -7,7 +7,10 @@ import {
   reviewStructuralActivitiesForTest,
   reviewStructuralCacheDecision,
   reviewStructuralQuery,
+  reviewStructuralRecordAtLeastAsFresh,
   reviewStructuralRecordFromGraphql,
+  reviewStructuralRecordMatchesObservedUpdate,
+  reviewStructuralRecordsDescribeSameVerdictInput,
   type ReviewStructuralRecord,
   type ReviewStructuralSnapshot,
 } from "../dist/review-structural-cache.js";
@@ -267,6 +270,31 @@ function graphqlRecord(kind: "issue" | "pull_request", node = graphqlNode(kind))
 
 test("unchanged completed keep-open issue hits the structural cache", () => {
   assert.deepEqual(decision(), { hit: true, reason: "hit" });
+});
+
+test("structural probes cannot undercut a newer observed item generation", () => {
+  const current = record();
+  assert.equal(reviewStructuralRecordAtLeastAsFresh(current, "2026-07-10T10:00:00Z"), true);
+  assert.equal(reviewStructuralRecordAtLeastAsFresh(current, "2026-07-10T10:00:01Z"), false);
+  assert.equal(reviewStructuralRecordMatchesObservedUpdate(current, "2026-07-10T10:00:00Z"), true);
+  assert.equal(reviewStructuralRecordMatchesObservedUpdate(current, "2026-07-10T09:59:59Z"), false);
+});
+
+test("verdict fingerprints may advance owned activity but not semantic input", () => {
+  const anchor = record();
+  const ownedActivityAdvance = record(issueSnapshot({ activityUpdatedAt: "2026-07-10T10:01:00Z" }));
+  assert.equal(reviewStructuralRecordsDescribeSameVerdictInput(anchor, ownedActivityAdvance), true);
+  const changedInput = record(
+    issueSnapshot({
+      activityUpdatedAt: "2026-07-10T10:02:00Z",
+      titleDigest: digest("changed title"),
+    }),
+  );
+  assert.equal(reviewStructuralRecordsDescribeSameVerdictInput(anchor, changedInput), false);
+  assert.equal(
+    reviewStructuralRecordsDescribeSameVerdictInput(ownedActivityAdvance, anchor),
+    false,
+  );
 });
 
 test("GraphQL decoder builds bounded issue and PR records", () => {
