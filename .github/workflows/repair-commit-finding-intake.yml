@@ -35,7 +35,12 @@ on:
         default: ""
         type: string
       runner:
-        description: "Runner label for commit finding intake"
+        description: "Runner label for repair planning/review work"
+        required: false
+        default: blacksmith-4vcpu-ubuntu-2404
+        type: string
+      execution_runner:
+        description: "Runner label for fix/apply execution work"
         required: false
         default: blacksmith-16vcpu-ubuntu-2404
         type: string
@@ -83,8 +88,8 @@ jobs:
 
   intake:
     if: ${{ !(github.event_name == 'repository_dispatch' && github.event.client_payload.target_repo == 'openclaw/clawhub' && vars.CLAWSWEEPER_ENABLE_CLAWHUB != '1') }}
-    runs-on: ${{ github.event.inputs.runner || vars.CLAWSWEEPER_COMMIT_FINDING_RUNNER || 'blacksmith-16vcpu-ubuntu-2404' }}
-    timeout-minutes: 75
+    runs-on: ${{ github.event.client_payload.intake_runner || vars.CLAWSWEEPER_COMMIT_FINDING_INTAKE_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
         with:
@@ -95,18 +100,25 @@ jobs:
         with:
           build-script: build:repair
 
-      - name: Create GitHub App token
-        id: app_token
+      - name: Create read-only intake token
+        id: intake-token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
           client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
           private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
           owner: ${{ vars.CLAWSWEEPER_ALLOWED_OWNER || github.repository_owner }}
+          permission-contents: read
+
+      - name: Create central dispatch token
+        id: dispatch-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
+          owner: openclaw
+          repositories: clawsweeper
+          permission-actions: write
           permission-contents: write
-          permission-issues: write
-          permission-pull-requests: write
-          permission-workflows: write
-          permission-actions: read
 
       - name: Create state token
         id: state-token
@@ -123,7 +135,7 @@ jobs:
       - name: Prepare commit finding intake
         id: prepare
         env:
-          GH_TOKEN: ${{ steps.app_token.outputs.token }}
+          GH_TOKEN: ${{ steps.intake-token.outputs.token }}
           ENABLED: ${{ github.event.inputs.enabled || github.event.client_payload.enabled || vars.CLAWSWEEPER_COMMIT_FINDING_INTAKE_ENABLED || 'true' }}
           TARGET_REPO: ${{ github.event.inputs.target_repo || github.event.client_payload.target_repo || 'openclaw/openclaw' }}
           COMMIT_SHA: ${{ github.event.inputs.commit_sha || github.event.client_payload.commit_sha }}
@@ -147,47 +159,6 @@ jobs:
           fi
           pnpm run repair:commit-finding-intake -- "${args[@]}"
 
-      - uses: ./.github/actions/setup-codex
-        if: ${{ steps.prepare.outputs.should_repair == 'true' }}
-        with:
-          cache-suffix: target-pnpm
-        env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          CLAWSWEEPER_INTERNAL_MODEL: ${{ secrets.CLAWSWEEPER_MODEL }}
-
-      - name: Review synthetic result
-        if: ${{ steps.prepare.outputs.should_repair == 'true' }}
-        run: pnpm run repair:review-results -- "${{ steps.prepare.outputs.result_path }}"
-
-      - name: Execute credited fix artifact
-        id: execute
-        if: ${{ steps.prepare.outputs.should_repair == 'true' && env.CLAWSWEEPER_ALLOW_EXECUTE == '1' && env.CLAWSWEEPER_ALLOW_FIX_PR == '1' }}
-        continue-on-error: true
-        timeout-minutes: 40
-        env:
-          GH_TOKEN: ${{ steps.app_token.outputs.token }}
-        run: pnpm run repair:execute-fix -- "${{ steps.prepare.outputs.job_path }}" "${{ steps.prepare.outputs.result_path }}"
-
-      - name: Post-flight finalize fix PRs
-        if: ${{ steps.prepare.outputs.should_repair == 'true' && steps.execute.outcome == 'success' && env.CLAWSWEEPER_ALLOW_EXECUTE == '1' && env.CLAWSWEEPER_ALLOW_FIX_PR == '1' }}
-        env:
-          GH_TOKEN: ${{ steps.app_token.outputs.token }}
-          CLAWSWEEPER_AUTHENTICATED_APP_SLUG: ${{ steps.app_token.outputs.app-slug }}
-        run: pnpm run repair:post-flight -- "${{ steps.prepare.outputs.job_path }}" "${{ steps.prepare.outputs.result_path }}"
-
-      - name: Publish local result ledger
-        if: ${{ always() && steps.prepare.outputs.should_repair == 'true' }}
-        env:
-          GH_TOKEN: ${{ steps.app_token.outputs.token }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: |
-          pnpm run repair:publish-result -- "${{ steps.prepare.outputs.run_dir }}" \
-            --skip-dashboard \
-            --run-id "${{ github.run_id }}" \
-            --run-url "$RUN_URL" \
-            --head-sha "${{ github.sha }}" \
-            --conclusion "${{ steps.execute.outcome == 'success' && 'success' || steps.execute.outcome == 'failure' && 'failure' || 'skipped' }}"
-
       - name: Finalize commit finding audit
         if: always()
         run: |
@@ -195,7 +166,7 @@ jobs:
             pnpm run repair:commit-finding-intake -- finalize \
               --audit-path "${{ steps.prepare.outputs.audit_path }}" \
               --run-dir "${{ steps.prepare.outputs.run_dir }}" \
-              --status "${{ steps.prepare.outputs.should_repair == 'true' && (steps.execute.outcome || 'skipped') || steps.prepare.outputs.status }}"
+              --status "${{ steps.prepare.outputs.should_repair == 'true' && 'queued_for_sealed_repair' || steps.prepare.outputs.status }}"
           fi
 
       - name: Commit intake ledger
@@ -210,6 +181,25 @@ jobs:
             --max-attempts 12 \
             --push-attempts 4
 
-      - name: Fail on repair failure
-        if: ${{ steps.prepare.outputs.should_repair == 'true' && steps.execute.outcome == 'failure' }}
-        run: exit 1
+      - name: Dispatch sealed repair worker
+        if: ${{ steps.prepare.outputs.should_repair == 'true' }}
+        env:
+          GH_TOKEN: ${{ steps.dispatch-token.outputs.token }}
+          MAX_LIVE_WORKERS: ${{ vars.CLAWSWEEPER_COMMIT_FINDING_MAX_LIVE_WORKERS || '' }}
+          RUNNER: ${{ github.event.inputs.runner || github.event.client_payload.runner || vars.CLAWSWEEPER_WORKER_RUNNER || 'blacksmith-4vcpu-ubuntu-2404' }}
+          EXECUTION_RUNNER: ${{ github.event.inputs.execution_runner || github.event.client_payload.execution_runner || vars.CLAWSWEEPER_EXECUTION_RUNNER || 'blacksmith-16vcpu-ubuntu-2404' }}
+        run: |
+          set -euo pipefail
+          cap_args=()
+          if [ -n "$MAX_LIVE_WORKERS" ]; then
+            cap_args=(--max-live-workers "$MAX_LIVE_WORKERS")
+          fi
+          git pull --rebase --autostash
+          pnpm run repair:dispatch -- "${{ steps.prepare.outputs.job_path }}" \
+            --mode autonomous \
+            --wait-for-capacity \
+            "${cap_args[@]}" \
+            --runner "$RUNNER" \
+            --execution-runner "$EXECUTION_RUNNER" \
+            --model internal \
+            --ref main

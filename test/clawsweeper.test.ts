@@ -2264,7 +2264,6 @@ test("Codex workflows install pinned CLI releases and keep the model secret", ()
     ".github/workflows/commit-review.yml",
     ".github/workflows/maintainer-activity-report.yml",
     ".github/workflows/repair-cluster-worker.yml",
-    ".github/workflows/repair-commit-finding-intake.yml",
     ".github/workflows/sweep.yml",
   ].map((file) => readText(file));
 

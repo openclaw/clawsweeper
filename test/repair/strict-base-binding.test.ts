@@ -631,6 +631,21 @@ test("commit finding intake is merge-disabled and carries no verifier credential
   const workflow = readWorkflow(file);
 
   assert.equal(workflow.env?.CLAWSWEEPER_ALLOW_MERGE, "0");
+  assert.match(source, /Create read-only intake token[\s\S]*permission-contents: read/);
+  assert.doesNotMatch(
+    source.slice(
+      source.indexOf("- name: Create read-only intake token"),
+      source.indexOf("- name: Create central dispatch token"),
+    ),
+    /permission-(?:contents|issues|pull-requests|workflows): write/,
+  );
+  assert.match(
+    source,
+    /Create central dispatch token[\s\S]*repositories: clawsweeper[\s\S]*permission-actions: write/,
+  );
+  assert.match(source, /pnpm run repair:dispatch --/);
+  assert.match(source, /--mode autonomous[\s\S]*--execution-runner "\$EXECUTION_RUNNER"/);
+  assert.doesNotMatch(source, /repair:execute-fix|repair:post-flight|setup-codex/);
   assert.doesNotMatch(source, /ruleset-verifier-token/);
   assert.doesNotMatch(source, /CLAWSWEEPER_RULESET_GH_TOKEN/);
   assert.doesNotMatch(source, /permission-administration/);
