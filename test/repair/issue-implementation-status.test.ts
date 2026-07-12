@@ -3,6 +3,7 @@ import fs from "node:fs";
 import test from "node:test";
 
 import {
+  isTerminalMutationState,
   issueImplementationStatusMarker,
   renderIssueImplementationStatusComment,
 } from "../../dist/repair/issue-implementation-status.js";
@@ -35,6 +36,15 @@ test("issue implementation status includes a generated pull request", () => {
   });
 
   assert.match(body, /PR: https:\/\/github\.com\/steipete\/example\/pull\/51/);
+});
+
+test("blocked and failed status comments require the terminal mutation guard", () => {
+  for (const state of ["Complete", "PR Opened", "Blocked", "Failed"]) {
+    assert.equal(isTerminalMutationState(state), true, state);
+  }
+  for (const state of ["Queued", "Planning", "Building"]) {
+    assert.equal(isTerminalMutationState(state), false, state);
+  }
 });
 
 test("issue implementation status updates progress without replacing worker results", () => {

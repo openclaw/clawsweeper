@@ -134,7 +134,7 @@ async function main() {
     ]);
     commentId = Number(created.id ?? 0);
   };
-  if (isCompletionState(state)) {
+  if (isTerminalMutationState(state)) {
     runVerifiedPublishedPullMutation({
       root: requiredArg(args, "handoff-root"),
       publicationReceiptPath: requiredArg(args, "publication-receipt"),
@@ -148,10 +148,10 @@ async function main() {
           intent.source.repo !== repo ||
           intent.source.number !== itemNumber
         ) {
-          throw new Error("completion status target differs from the sealed source issue");
+          throw new Error("terminal status target differs from the sealed source issue");
         }
         if (receipt.target_pr_url !== prUrl) {
-          throw new Error("completion status pull request differs from the publication receipt");
+          throw new Error("terminal status pull request differs from the publication receipt");
         }
         mutateComment();
       },
@@ -313,13 +313,18 @@ function stringArg(value: JsonValue) {
 
 function requiredArg(args: LooseRecord, name: string) {
   const value = stringArg(args[name]);
-  if (!value) throw new Error(`--${name} is required for completion status publication`);
+  if (!value) throw new Error(`--${name} is required for terminal status publication`);
   return value;
 }
 
-function isCompletionState(state: string) {
+export function isTerminalMutationState(state: string) {
   const normalized = state.trim().toLowerCase();
-  return normalized.includes("complete") || normalized.includes("open");
+  return (
+    normalized.includes("complete") ||
+    normalized.includes("open") ||
+    normalized.includes("block") ||
+    normalized.includes("fail")
+  );
 }
 
 function positiveInteger(value: JsonValue) {
