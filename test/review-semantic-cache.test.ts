@@ -445,9 +445,38 @@ test("global declarations and formatter controls remain semantic", () => {
       ],
     },
   });
+  const oxlintControl = record({
+    context: {
+      pullFiles: [
+        {
+          filename: "src/cache.ts",
+          status: "modified",
+          additions: 2,
+          deletions: 1,
+          patch:
+            "@@ -1 +1,2 @@\n-const value = Cache;\n+// oxlint-disable-next-line no-undef\n+const value = Cache;",
+        },
+      ],
+    },
+  });
+  const oxfmtControl = record({
+    context: {
+      pullFiles: [
+        {
+          filename: "src/cache.ts",
+          status: "modified",
+          additions: 2,
+          deletions: 1,
+          patch: "@@ -1 +1,2 @@\n-const value = Cache;\n+// oxfmt-ignore\n+const value = Cache;",
+        },
+      ],
+    },
+  });
 
   assert.notEqual(ordinary.codeDigest, globalDeclaration.codeDigest);
   assert.notEqual(ordinary.codeDigest, denoFormatter.codeDigest);
+  assert.notEqual(ordinary.codeDigest, oxlintControl.codeDigest);
+  assert.notEqual(ordinary.codeDigest, oxfmtControl.codeDigest);
 });
 
 test("structured JSON ignores formatting but preserves object order", () => {
