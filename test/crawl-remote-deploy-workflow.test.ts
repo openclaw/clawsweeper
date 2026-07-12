@@ -120,19 +120,15 @@ test("crawl-remote release is maintainer-bound across two fresh runners", () => 
     name: "crawl-remote-production",
     url: "https://crawl-remote.services-91b.workers.dev",
   });
-  assert.equal(deploy.env.DEPLOY_AUTHORITY, "${{ vars.CRAWL_REMOTE_DEPLOY_AUTHORITY }}");
-  assert.equal(
-    deploy.env.CLOUDFLARE_TOKEN_SHA256,
-    "${{ vars.CRAWL_REMOTE_CLOUDFLARE_TOKEN_SHA256 }}",
-  );
-  assert.equal(
-    deploy.env.CUSTOM_ROUTE_PROOF,
-    "${{ vars.CRAWL_REMOTE_CUSTOM_ROUTE_PROOF || 'disabled' }}",
-  );
+  assert.equal(deploy.env.DEPLOY_AUTHORITY, undefined);
+  assert.equal(deploy.env.CLOUDFLARE_TOKEN_SHA256, undefined);
+  assert.equal(deploy.env.CUSTOM_ROUTE_PROOF, undefined);
   assert.equal(deploy.env.WORKERS_DEV_URL, "https://crawl-remote.services-91b.workers.dev");
   assert.equal(deploy.env.PRODUCTION_ROUTE_URL, "https://reports.openclaw.ai/crawl-remote");
   const authority = step(deploy, "Verify central deployment authority");
   assert.equal(steps(deploy).indexOf(authority), 0);
+  assert.equal(authority.env?.DEPLOY_AUTHORITY, "${{ vars.CRAWL_REMOTE_DEPLOY_AUTHORITY }}");
+  assert.equal(authority.env?.CUSTOM_ROUTE_PROOF, "${{ vars.CRAWL_REMOTE_CUSTOM_ROUTE_PROOF }}");
   assert.match(authority.run ?? "", /DEPLOY_AUTHORITY.*clawsweeper-v1/s);
   assert.match(authority.run ?? "", /disabled.*access-service-token/s);
   assert.equal(preflight["timeout-minutes"], 25);
@@ -156,6 +152,7 @@ test("protected environment must explicitly own the deployment authority", () =>
   assert.equal(verify("clawsweeper-v1", "access-service-token").status, 0);
   assert.notEqual(verify("", "disabled").status, 0);
   assert.notEqual(verify("crawl-remote-v1", "disabled").status, 0);
+  assert.notEqual(verify("clawsweeper-v1", "").status, 0);
   assert.notEqual(verify("clawsweeper-v1", "public").status, 0);
 });
 
@@ -351,7 +348,20 @@ test("release artifact is immutable, bounded, canonical, and hash verified", () 
     packaging,
     /Wrangler dry-run output must contain index\.js and only known metadata files/,
   );
-  assert.match(packaging, /not backward-compatible with Worker rollback/);
+  assert.match(packaging, /approvedMigrations/);
+  assert.match(packaging, /migration \$\{entry\.name\} differs from its reviewed content/);
+  assert.match(packaging, /release artifact migrations do not match the reviewed migration set/);
+  for (const sha256 of [
+    "bfb2ee56d01c7547a644f48b5c493cb9d971646ce331acc10c6bfd78d9b7d066",
+    "f984199bef0406ce91724e9ac83a97f41928b1560a51974deb841596f1e403e2",
+    "5daa6e14364f7bd4eba3cc5f61ec266b0559962e7345a65080cc9ef26b084e46",
+    "e6c4a8edb300ebbf93a2e2449d180408f23be7eac1ef05733045b6ed496eb396",
+    "5964adcb0807448d937fed38ac9588a1063bf4f490a82b54f15f0e700374ae0c",
+    "a0ebfbb5c40c85df5eaba6772a01a68910fa5f1327d4701d25c5dfde16f77d1a",
+    "7965e0350ca569972eae3c82e7e9a8281b9130a7917c8ea9b2822fca1975194b",
+  ]) {
+    assert.match(packaging, new RegExp(sha256));
+  }
 
   const upload = step(preflight, "Upload immutable release artifact");
   assert.equal(upload.uses, "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a");
@@ -403,8 +413,28 @@ test("release packaging accepts Wrangler metadata and rejects unsupported output
   const artifactName = `crawl-remote-release-${runId}-${runAttempt}-${targetSha}-${state}`;
   const receiptName = `crawl-remote-release-receipt-${runId}-${runAttempt}-${targetSha}-${state}.json`;
 
+  const fixtureMigrations = [
+    ["0001_remote_archives.sql", "create table one(id integer);\n"],
+    ["0002_gitcrawl_enrichment_snapshots.sql", "create table two(id integer);\n"],
+    ["0003_gitcrawl_snapshot_hardening.sql", "alter table two add column name text;\n"],
+    ["0004_gitcrawl_snapshot_cutover.sql", "create table four(id integer);\n"],
+    ["0005_discrawl_cursor_state.sql", "create table five(id integer);\n"],
+    ["0006_gitcrawl_observation_order.sql", "insert into five(id) values (1);\n"],
+  ] as const;
+  const fixtureApprovals = fixtureMigrations.map(([name, contents]) => ({
+    name,
+    sha256: createHash("sha256").update(contents).digest("hex"),
+  }));
+  const executablePackager = packager.replace(
+    /const approvedMigrations = \[[\s\S]*?\n\];\nconst migrationEntries/,
+    `const approvedMigrations = ${JSON.stringify(fixtureApprovals)};\nconst migrationEntries`,
+  );
+  assert.notEqual(executablePackager, packager, "failed to replace migration approvals");
+
   mkdirSync(join(directory, "migrations"), { recursive: true });
-  writeFileSync(join(directory, "migrations", "0001_test.sql"), "select 1;\n");
+  for (const [name, contents] of fixtureMigrations) {
+    writeFileSync(join(directory, "migrations", name), contents);
+  }
   writeFileSync(
     join(directory, "wrangler.jsonc"),
     JSON.stringify({
@@ -447,7 +477,7 @@ test("release packaging accepts Wrangler metadata and rejects unsupported output
     mutate?.();
     return spawnSync(process.execPath, ["--input-type=module"], {
       cwd: directory,
-      input: packager,
+      input: executablePackager,
       encoding: "utf8",
       env: {
         ...process.env,
@@ -485,12 +515,23 @@ test("release packaging accepts Wrangler metadata and rejects unsupported output
       /Wrangler dry-run output must contain index\.js and only known metadata files/,
     );
 
-    writeFileSync(join(directory, "migrations", "0001_test.sql"), "drop table production;\n");
-    const destructiveMigration = packageBundle();
-    assert.notEqual(destructiveMigration.status, 0);
+    writeFileSync(
+      join(directory, "migrations", "0003_gitcrawl_snapshot_hardening.sql"),
+      "DELETE/**/FROM production;\n",
+    );
+    const alteredMigration = packageBundle();
+    assert.notEqual(alteredMigration.status, 0);
     assert.match(
-      destructiveMigration.stdout + destructiveMigration.stderr,
-      /not backward-compatible with Worker rollback/,
+      alteredMigration.stdout + alteredMigration.stderr,
+      /differs from its reviewed content/,
+    );
+
+    writeFileSync(join(directory, "migrations", "0007_unreviewed.sql"), "select 7;\n");
+    const unreviewedMigration = packageBundle();
+    assert.notEqual(unreviewedMigration.status, 0);
+    assert.match(
+      unreviewedMigration.stdout + unreviewedMigration.stderr,
+      /release artifact migrations do not match the reviewed migration set/,
     );
   } finally {
     rmSync(directory, { recursive: true, force: true });
@@ -784,11 +825,16 @@ test("deploy executes the committed exact Node and Wrangler toolchain install be
       credentialStep.env?.CLOUDFLARE_API_TOKEN,
       "${{ secrets.CRAWL_REMOTE_PRODUCTION_CLOUDFLARE_API_TOKEN }}",
     );
+    assert.equal(
+      credentialStep.env?.CLOUDFLARE_TOKEN_SHA256,
+      "${{ vars.CRAWL_REMOTE_CLOUDFLARE_TOKEN_SHA256 }}",
+    );
     assert.match(credentialStep.run ?? "", /CLOUDFLARE_TOKEN_SHA256.*sha256sum/s);
   }
   assert.doesNotMatch(source, /OPENCLAW_CLOUDFLARE_WORKERS_API_TOKEN/);
   assert.doesNotMatch(source, /secrets\.CRAWL_REMOTE_CLOUDFLARE_API_TOKEN/);
   assert.doesNotMatch(source, /\|\|\s*secrets\./);
+  assert.doesNotMatch(source, /CRAWL_REMOTE_CUSTOM_ROUTE_PROOF\s*\|\|/);
   assert.equal(source.match(/CRAWL_REMOTE_PRODUCTION_CLOUDFLARE_API_TOKEN/g)?.length, 3);
 });
 
@@ -1082,6 +1128,7 @@ test("production proof polls semantic state and binds both responses to the rele
   const verify = step(deploy, "Poll exact production release");
   const run = verify.run ?? "";
   assert.equal(verify.env?.CLOUDFLARE_API_TOKEN, undefined);
+  assert.equal(verify.env?.CUSTOM_ROUTE_PROOF, "${{ vars.CRAWL_REMOTE_CUSTOM_ROUTE_PROOF }}");
   assert.match(run, /while \(\( SECONDS < deadline \)\)/);
   assert.match(run, /fetch_endpoint\(\)/);
   assert.match(run, /timeout="\$remaining"/);
