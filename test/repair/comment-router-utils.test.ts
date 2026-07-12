@@ -4,9 +4,11 @@ import test from "node:test";
 import {
   SUPERSEDED_RE_REVIEW_REASON,
   appendLedger,
+  commentBodySha256,
   dispatchClaimDecision,
   dispatchClaimLookupKeys,
   dispatchReceiptKeyMaterial,
+  exactCommentVersionFastPathDecision,
   hasSuccessfulDispatchExecutionJob,
   isGitHubAppIntegrationAuthError,
   isAllowedMutationActor,
@@ -17,6 +19,171 @@ import {
   supersededReReviewCommentVersions,
   summarizeChecks,
 } from "../../dist/repair/comment-router-utils.js";
+
+test("exact terminal comment versions short-circuit duplicate created deliveries", () => {
+  const body = "@clawsweeper re-review";
+  const ledger = exactVersionLedger({
+    status: "executed",
+    body,
+  });
+
+  assert.deepEqual(
+    exactCommentVersionFastPathDecision({
+      authenticated: true,
+      sourceAction: "created",
+      targetRepo: "openclaw/openclaw",
+      commentId: 456,
+      commentUpdatedAt: "2026-07-12T20:00:00Z",
+      commentBodyDigest: commentBodySha256(body),
+      forceReprocess: false,
+      ledger,
+      verificationLedgers: [structuredClone(ledger), structuredClone(ledger)],
+    }),
+    {
+      suppress: true,
+      reason: "exact_terminal_comment_version",
+      commentVersionKey: "456:2026-07-12T20:00:00Z",
+      status: "executed",
+    },
+  );
+});
+
+test("edited comments and changed body bytes always use the full router path", () => {
+  const ledger = exactVersionLedger({
+    status: "executed",
+    body: "@clawsweeper re-review",
+  });
+
+  assert.deepEqual(
+    exactCommentVersionFastPathDecision({
+      authenticated: true,
+      sourceAction: "edited",
+      targetRepo: "openclaw/openclaw",
+      commentId: 456,
+      commentUpdatedAt: "2026-07-12T20:01:00Z",
+      commentBodyDigest: commentBodySha256("@clawsweeper re-review with new context"),
+      forceReprocess: false,
+      ledger,
+      verificationLedgers: [structuredClone(ledger), structuredClone(ledger)],
+    }),
+    { suppress: false, reason: "edited_or_unknown_action" },
+  );
+  assert.deepEqual(
+    exactCommentVersionFastPathDecision({
+      authenticated: true,
+      sourceAction: "created",
+      targetRepo: "openclaw/openclaw",
+      commentId: 456,
+      commentUpdatedAt: "2026-07-12T20:00:00Z",
+      commentBodyDigest: commentBodySha256("@clawsweeper re-review with changed bytes"),
+      forceReprocess: false,
+      ledger,
+      verificationLedgers: [structuredClone(ledger), structuredClone(ledger)],
+    }),
+    { suppress: false, reason: "body_digest_mismatch" },
+  );
+});
+
+test("missing timestamps or authenticated provenance use the full router path", () => {
+  const ledger = exactVersionLedger({
+    status: "executed",
+    body: "@clawsweeper re-review",
+  });
+  const base = {
+    sourceAction: "created",
+    targetRepo: "openclaw/openclaw",
+    commentId: 456,
+    commentUpdatedAt: "2026-07-12T20:00:00Z",
+    commentBodyDigest: commentBodySha256("@clawsweeper re-review"),
+    forceReprocess: false,
+    ledger,
+    verificationLedgers: [structuredClone(ledger), structuredClone(ledger)],
+  };
+
+  assert.deepEqual(
+    exactCommentVersionFastPathDecision({
+      ...base,
+      authenticated: true,
+      commentUpdatedAt: null,
+    }),
+    { suppress: false, reason: "incomplete_exact_version" },
+  );
+  assert.deepEqual(
+    exactCommentVersionFastPathDecision({
+      ...base,
+      authenticated: false,
+    }),
+    { suppress: false, reason: "auth_uncertain" },
+  );
+});
+
+test("retryable claims and failed action leases are never short-circuited", () => {
+  for (const status of ["waiting", "claimed"]) {
+    const ledger = exactVersionLedger({
+      status,
+      body: "@clawsweeper re-review",
+      actions: [{ action: "dispatch_clawsweeper", status }],
+    });
+    assert.deepEqual(
+      exactCommentVersionFastPathDecision({
+        authenticated: true,
+        sourceAction: "created",
+        targetRepo: "openclaw/openclaw",
+        commentId: 456,
+        commentUpdatedAt: "2026-07-12T20:00:00Z",
+        commentBodyDigest: commentBodySha256("@clawsweeper re-review"),
+        forceReprocess: false,
+        ledger,
+        verificationLedgers: [structuredClone(ledger), structuredClone(ledger)],
+      }),
+      { suppress: false, reason: "version_retryable" },
+    );
+  }
+
+  const failedLedger = exactVersionLedger({
+    status: "executed",
+    body: "@clawsweeper re-review",
+    actions: [{ action: "dispatch_clawsweeper", status: "failed" }],
+  });
+  assert.deepEqual(
+    exactCommentVersionFastPathDecision({
+      authenticated: true,
+      sourceAction: "created",
+      targetRepo: "openclaw/openclaw",
+      commentId: 456,
+      commentUpdatedAt: "2026-07-12T20:00:00Z",
+      commentBodyDigest: commentBodySha256("@clawsweeper re-review"),
+      forceReprocess: false,
+      ledger: failedLedger,
+      verificationLedgers: [structuredClone(failedLedger), structuredClone(failedLedger)],
+    }),
+    { suppress: false, reason: "lease_uncertain" },
+  );
+});
+
+test("concurrent ledger changes fail closed to the full router path", () => {
+  const ledger = exactVersionLedger({
+    status: "executed",
+    body: "@clawsweeper re-review",
+  });
+  const changedLedger = structuredClone(ledger);
+  changedLedger.updated_at = "2026-07-12T20:01:00Z";
+
+  assert.deepEqual(
+    exactCommentVersionFastPathDecision({
+      authenticated: true,
+      sourceAction: "created",
+      targetRepo: "openclaw/openclaw",
+      commentId: 456,
+      commentUpdatedAt: "2026-07-12T20:00:00Z",
+      commentBodyDigest: commentBodySha256("@clawsweeper re-review"),
+      forceReprocess: false,
+      ledger,
+      verificationLedgers: [structuredClone(ledger), changedLedger],
+    }),
+    { suppress: false, reason: "state_drift" },
+  );
+});
 
 test("synthetic dispatch claims retain a stable idempotency lookup across router runs", () => {
   const idempotencyKey = "repair-loop-label-sweep:openclaw/openclaw:automerge:74499";
@@ -552,6 +719,7 @@ test("appendLedger reports compact executed writes", () => {
         comment_id: "125",
         comment_version_key: "125:2026-04-29T03:01:00Z",
         comment_updated_at: "2026-04-29T03:01:00Z",
+        comment_body_sha256: commentBodySha256("@clawsweeper re-review"),
         status: "executed",
         intent: "clawsweeper_re_review",
         issue_number: 74499,
@@ -562,6 +730,7 @@ test("appendLedger reports compact executed writes", () => {
   );
 
   assert.equal(ledger.commands.length, 1);
+  assert.equal(ledger.commands[0].comment_body_sha256, commentBodySha256("@clawsweeper re-review"));
 });
 
 test("appendLedger preserves maintainer identity fields for automerge attribution", () => {
@@ -622,6 +791,32 @@ test("appendLedger preserves compact executed actions for repair caps", () => {
     },
   ]);
 });
+
+function exactVersionLedger({
+  status,
+  body,
+  actions = [],
+}: {
+  status: string;
+  body: string;
+  actions?: Array<Record<string, string>>;
+}) {
+  return {
+    updated_at: "2026-07-12T20:00:01Z",
+    commands: [
+      {
+        repo: "openclaw/openclaw",
+        comment_id: "456",
+        comment_version_key: "456:2026-07-12T20:00:00Z",
+        comment_updated_at: "2026-07-12T20:00:00Z",
+        comment_body_sha256: commentBodySha256(body),
+        status,
+        intent: "re_review",
+        actions,
+      },
+    ],
+  };
+}
 
 test("sortCommentsForRouting prioritizes edited durable review comments", () => {
   const sorted = sortCommentsForRouting([

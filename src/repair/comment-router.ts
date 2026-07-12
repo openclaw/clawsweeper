@@ -90,9 +90,11 @@ import { mergeAutomergeTimelineSection } from "./automerge-status-timeline.js";
 import {
   SUPERSEDED_RE_REVIEW_REASON,
   appendLedger,
+  commentBodySha256,
   dispatchClaimDecision,
   dispatchClaimLookupKeys,
   dispatchReceiptKeyMaterial,
+  exactCommentVersionFastPathDecision,
   hasSuccessfulDispatchExecutionJob,
   issueNumberFromUrl,
   isAllowedMutationActor,
@@ -158,6 +160,20 @@ const {
 const startedAtMs = Date.now();
 const timings: LooseRecord[] = [];
 const ledger = readLedger(ledgerPath());
+const exactCommentVersionFastPath = exactCommentVersionFastPathDecision({
+  authenticated:
+    args["comment-event-auth"] === "github_webhook_v1" &&
+    args["source-event"] === "issue_comment" &&
+    isAllowedMutationActor(args["dispatch-actor"], trustedBots),
+  sourceAction: args["source-action"],
+  targetRepo,
+  commentId: commentIds.size === 1 ? [...commentIds][0] : null,
+  commentUpdatedAt: args["comment-updated-at"],
+  commentBodyDigest: args["comment-body-sha256"],
+  forceReprocess,
+  ledger,
+  verificationLedgers: exactCommentVersionVerificationLedgers(),
+});
 const priorDispatchClaims = new Map<string, LooseRecord>();
 for (const entry of ledger.commands ?? []) {
   if (entry.status !== "claimed") continue;
@@ -201,7 +217,9 @@ const openIssueNumbersByLabel = createCachedLabelNumberLookup((label) =>
     `repos/${targetRepo}/issues?state=open&labels=${encodeURIComponent(label)}&per_page=100`,
   ).map((issue: JsonValue) => issue.number),
 );
-const comments = measure("list_candidate_comments", () => listCandidateComments());
+const comments = measure("list_candidate_comments", () =>
+  exactCommentVersionFastPath.suppress ? [] : listCandidateComments(),
+);
 const rawCommands: LooseRecord[] = [];
 
 for (const comment of comments) {
@@ -224,6 +242,7 @@ for (const comment of comments) {
     author_association: String(comment.author_association ?? "").toUpperCase(),
     comment_created_at: comment.created_at,
     comment_updated_at: comment.updated_at,
+    comment_body_sha256: commentBodySha256(comment.body),
     status_comment_id:
       statusCommentId &&
       commentIds.size <= 1 &&
@@ -311,9 +330,11 @@ const report: LooseRecord = {
   max_auto_repairs_per_pr: maxAutoRepairsPerPr,
   lookup_concurrency: lookupConcurrency,
   commands,
+  exact_comment_version_fast_path: exactCommentVersionFastPath,
+  short_circuited: exactCommentVersionFastPath.suppress,
 };
 
-if (execute) {
+if (execute && !exactCommentVersionFastPath.suppress) {
   await measureAsync("execute_commands", async () => {
     assertMutationActorIsClawsweeperBot();
     const capacityRequests = workerCapacityRequests(actionable);
@@ -4486,6 +4507,14 @@ async function mapLimit<T, R>(
 
 function ledgerPath() {
   return path.join(repoRoot(), "results", "comment-router.json");
+}
+
+function exactCommentVersionVerificationLedgers() {
+  const stateDir = String(process.env.CLAWSWEEPER_STATE_DIR ?? "").trim();
+  if (!stateDir) return [];
+  const stateLedgerPath = path.join(path.resolve(stateDir), "results", "comment-router.json");
+  if (!fs.existsSync(stateLedgerPath)) return [];
+  return [readLedger(stateLedgerPath), readLedger(ledgerPath())];
 }
 
 function idempotencyKey(

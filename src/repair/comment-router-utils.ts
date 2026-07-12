@@ -1,6 +1,8 @@
-import type { JsonValue, LooseRecord } from "./json-types.js";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+
+import type { JsonValue, LooseRecord } from "./json-types.js";
 
 const PASSING_CHECK_CONCLUSIONS = new Set(["SUCCESS", "SKIPPED", "NEUTRAL"]);
 const DEFAULT_IGNORED_CHECKS = [
@@ -140,6 +142,122 @@ export function shouldSuppressProcessedCommentVersion(entry: LooseRecord) {
     return false;
   }
   return true;
+}
+
+export function commentBodySha256(body: JsonValue) {
+  return createHash("sha256")
+    .update(String(body ?? ""), "utf8")
+    .digest("hex");
+}
+
+export function exactCommentVersionFastPathDecision({
+  authenticated,
+  sourceAction,
+  targetRepo,
+  commentId,
+  commentUpdatedAt,
+  commentBodyDigest,
+  forceReprocess,
+  ledger,
+  verificationLedgers,
+}: {
+  authenticated: boolean;
+  sourceAction: JsonValue;
+  targetRepo: JsonValue;
+  commentId: JsonValue;
+  commentUpdatedAt: JsonValue;
+  commentBodyDigest: JsonValue;
+  forceReprocess: boolean;
+  ledger: LooseRecord;
+  verificationLedgers: LooseRecord[];
+}) {
+  if (forceReprocess) return { suppress: false, reason: "force_reprocess" };
+  if (!authenticated) return { suppress: false, reason: "auth_uncertain" };
+  if (String(sourceAction ?? "") !== "created") {
+    return { suppress: false, reason: "edited_or_unknown_action" };
+  }
+
+  const normalizedRepo = String(targetRepo ?? "")
+    .trim()
+    .toLowerCase();
+  const normalizedCommentId = String(commentId ?? "").trim();
+  const normalizedUpdatedAt = normalizeExactTimestamp(commentUpdatedAt);
+  const normalizedBodyDigest = String(commentBodyDigest ?? "")
+    .trim()
+    .toLowerCase();
+  if (
+    !normalizedRepo ||
+    !/^[1-9]\d*$/.test(normalizedCommentId) ||
+    !normalizedUpdatedAt ||
+    !/^[0-9a-f]{64}$/.test(normalizedBodyDigest)
+  ) {
+    return { suppress: false, reason: "incomplete_exact_version" };
+  }
+
+  if (
+    verificationLedgers.length < 2 ||
+    verificationLedgers.some(
+      (verificationLedger) =>
+        stableLedgerSnapshot(verificationLedger) !== stableLedgerSnapshot(ledger),
+    )
+  ) {
+    return { suppress: false, reason: "state_drift" };
+  }
+
+  const matches = (Array.isArray(ledger.commands) ? ledger.commands : []).filter(
+    (entry: JsonValue) =>
+      String(entry?.repo ?? "")
+        .trim()
+        .toLowerCase() === normalizedRepo &&
+      String(entry?.comment_id ?? "").trim() === normalizedCommentId &&
+      normalizeExactTimestamp(entry?.comment_updated_at) === normalizedUpdatedAt,
+  );
+  if (matches.length !== 1) {
+    return {
+      suppress: false,
+      reason: matches.length === 0 ? "version_not_terminal" : "ambiguous_ledger_version",
+    };
+  }
+
+  const entry = matches[0] as LooseRecord;
+  if (
+    String(entry.comment_body_sha256 ?? "")
+      .trim()
+      .toLowerCase() !== normalizedBodyDigest
+  ) {
+    return { suppress: false, reason: "body_digest_mismatch" };
+  }
+  if (!shouldSuppressProcessedCommentVersion(entry)) {
+    return { suppress: false, reason: "version_retryable" };
+  }
+  if (
+    (Array.isArray(entry.actions) ? entry.actions : []).some((action: JsonValue) =>
+      ["claimed", "failed", "pending", "waiting"].includes(
+        String(action?.status ?? "").toLowerCase(),
+      ),
+    )
+  ) {
+    return { suppress: false, reason: "lease_uncertain" };
+  }
+  return {
+    suppress: true,
+    reason: "exact_terminal_comment_version",
+    commentVersionKey: `${normalizedCommentId}:${String(entry.comment_updated_at)}`,
+    status: String(entry.status ?? "").toLowerCase(),
+  };
+}
+
+function normalizeExactTimestamp(value: JsonValue) {
+  const text = String(value ?? "").trim();
+  const parsed = Date.parse(text);
+  return text && Number.isFinite(parsed) ? new Date(parsed).toISOString() : null;
+}
+
+function stableLedgerSnapshot(ledger: LooseRecord) {
+  return JSON.stringify({
+    updated_at: ledger.updated_at ?? null,
+    commands: Array.isArray(ledger.commands) ? ledger.commands : [],
+  });
 }
 
 export function dispatchClaimDecision({
@@ -327,6 +445,7 @@ export function appendLedger(current: LooseRecord, entries: LooseRecord[]) {
         comment_url: entry.comment_url,
         comment_created_at: entry.comment_created_at ?? null,
         comment_updated_at: entry.comment_updated_at ?? null,
+        ...(entry.comment_body_sha256 ? { comment_body_sha256: entry.comment_body_sha256 } : {}),
         repo: entry.repo,
         issue_number: entry.issue_number,
         author: entry.author,
