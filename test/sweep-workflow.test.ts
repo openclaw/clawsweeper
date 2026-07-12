@@ -118,8 +118,8 @@ test("exact event publish and routing require a successful fresh review artifact
   const routerWorkflow = readText(".github/workflows/repair-comment-router.yml");
   const publisher = readText("src/repair/publish-event-result.ts");
   const eventReviewJobStart = workflow.indexOf("\n  event-review-apply:");
-  const planJobStart = workflow.indexOf("\n  plan:", eventReviewJobStart);
-  const eventReviewJob = workflow.slice(eventReviewJobStart, planJobStart);
+  const eventReviewJobEnd = workflow.indexOf("\n  target-fanout:", eventReviewJobStart);
+  const eventReviewJob = workflow.slice(eventReviewJobStart, eventReviewJobEnd);
   const liveItemStart = eventReviewJob.indexOf("- name: Check live target item state");
   const setupPnpmStart = eventReviewJob.indexOf("- uses: ./.github/actions/setup-pnpm");
   const setupCodexStart = eventReviewJob.indexOf("- uses: ./.github/actions/setup-codex");
@@ -129,11 +129,7 @@ test("exact event publish and routing require a successful fresh review artifact
     "- name: Release unsuccessful workflow-owned review lease",
     publishStart,
   );
-  const routeStart = eventReviewJob.indexOf("- name: Route synced ClawSweeper verdict");
-  const deferredRouteStart = eventReviewJob.indexOf(
-    "- name: Queue deferred exact verdict router",
-    routeStart,
-  );
+  const routeStart = eventReviewJob.indexOf("- name: Queue exact verdict router");
   const reactStart = eventReviewJob.indexOf("- name: React to target item completion");
   const releaseLeaseStart = eventReviewJob.indexOf("- name: Release terminal review leases");
   const confirmTerminalStart = eventReviewJob.indexOf(
@@ -150,8 +146,7 @@ test("exact event publish and routing require a successful fresh review artifact
   const exactReviewStep = eventReviewJob.slice(exactReviewStart, publishStart);
   const publishStep = eventReviewJob.slice(publishStart, releaseUnsuccessfulStart);
   const releaseUnsuccessfulStep = eventReviewJob.slice(releaseUnsuccessfulStart, routeStart);
-  const routeStep = eventReviewJob.slice(routeStart, deferredRouteStart);
-  const deferredRouteStep = eventReviewJob.slice(deferredRouteStart, releaseLeaseStart);
+  const routeStep = eventReviewJob.slice(routeStart, releaseLeaseStart);
   const reactStep = eventReviewJob.slice(reactStart, failStart);
   const releaseLeaseStep = eventReviewJob.slice(releaseLeaseStart, confirmTerminalStart);
   const confirmTerminalStep = eventReviewJob.slice(confirmTerminalStart, completeStart);
@@ -169,7 +164,6 @@ test("exact event publish and routing require a successful fresh review artifact
 
   assert.ok(liveItemStart > 0);
   assert.ok(setupPnpmStart > liveItemStart);
-  assert.ok(deferredRouteStart > routeStart);
   assert.ok(releaseLeaseStart > routeStart);
   assert.ok(confirmTerminalStart > releaseLeaseStart);
   assert.match(liveItemStep, /id: live-item/);
@@ -249,28 +243,27 @@ test("exact event publish and routing require a successful fresh review artifact
   assert.ok(authoritativeRefresh > authoritativeReset);
   assert.ok(finalTupleMatch > authoritativeRefresh);
   assert.doesNotMatch(eventReviewJob, /- name: Dispatch viable issue implementation/);
+  assert.doesNotMatch(eventReviewJob, /ruleset-verifier-token/);
+  assert.doesNotMatch(eventReviewJob, /CLAWSWEEPER_RULESET_GH_TOKEN/);
+  assert.doesNotMatch(eventReviewJob, /permission-administration/);
+  assert.doesNotMatch(eventReviewJob, /pnpm run repair:comment-router/);
+  assert.doesNotMatch(eventReviewJob, /Commit event comment router/);
+  assert.doesNotMatch(eventReviewJob, /waiting event repair dispatches/i);
   assert.match(routeStep, /steps\.publish-event-result\.outputs\.terminal_noop != 'true'/);
   assert.match(routeStep, /steps\.publish-event-result\.outputs\.terminal_missing != 'true'/);
   assert.match(routeStep, /steps\.publish-event-result\.outputs\.terminal_closed != 'true'/);
   assert.match(routeStep, /steps\.publish-event-result\.outputs\.guarded_open != 'true'/);
   assert.match(routeStep, /steps\.publish-event-result\.outputs\.remote_tuple_verified == 'true'/);
-  assert.match(routeStep, /steps\.publish-event-result\.outputs\.routing_deferred == 'false'/);
   assert.match(routeStep, /steps\.publish-event-result\.outputs\.policy_noop != 'true'/);
   assert.match(routeStep, /steps\.publish-event-result\.outputs\.requeue_latest != 'true'/);
-  assert.doesNotMatch(routeStep, /outputs\.routing_deferred != 'true'/);
-  assert.match(
-    deferredRouteStep,
-    /steps\.publish-event-result\.outputs\.remote_tuple_verified == 'true'/,
-  );
-  assert.match(
-    deferredRouteStep,
-    /steps\.publish-event-result\.outputs\.routing_deferred == 'true'/,
-  );
-  assert.match(deferredRouteStep, /gh workflow run repair-comment-router\.yml/);
-  assert.match(deferredRouteStep, /-f execute=true/);
-  assert.match(deferredRouteStep, /-f target_repo="\$TARGET_REPO"/);
-  assert.match(deferredRouteStep, /-f target_branch="\$TARGET_BRANCH"/);
-  assert.doesNotMatch(deferredRouteStep, /-f item_numbers=/);
+  assert.doesNotMatch(routeStep, /routing_deferred/);
+  assert.match(routeStep, /gh workflow run repair-comment-router\.yml/);
+  assert.match(routeStep, /--repo "\$GITHUB_REPOSITORY"/);
+  assert.match(routeStep, /--ref main/);
+  assert.match(routeStep, /-f execute=true/);
+  assert.match(routeStep, /-f target_repo="\$TARGET_REPO"/);
+  assert.match(routeStep, /-f target_branch="\$TARGET_BRANCH"/);
+  assert.match(routeStep, /-f item_numbers="\$ITEM_NUMBER"/);
   assert.match(
     routerWorkflow,
     /format\('repair-comment-router-\{0\}', github\.event\.inputs\.target_repo \|\| github\.event\.client_payload\.target_repo \|\| 'openclaw\/openclaw'\)/,
@@ -296,19 +289,16 @@ test("exact event publish and routing require a successful fresh review artifact
     eventReviewJob,
     /GUARDED_OPEN: \$\{\{ steps\.publish-event-result\.outputs\.guarded_open \}\}/,
   );
-  assert.match(
-    eventReviewJob,
-    /ROUTING_DEFERRED: \$\{\{ steps\.publish-event-result\.outputs\.routing_deferred \}\}/,
-  );
+  assert.doesNotMatch(eventReviewJob, /ROUTING_DEFERRED:/);
   assert.match(
     eventReviewJob,
     /REMOTE_TUPLE_VERIFIED: \$\{\{ steps\.publish-event-result\.outputs\.remote_tuple_verified \}\}/,
   );
   assert.match(
     eventReviewJob,
-    /ROUTE_HANDOFF_OUTCOME: \$\{\{ steps\.queue-deferred-verdict-router\.outcome \}\}/,
+    /ROUTE_HANDOFF_OUTCOME: \$\{\{ steps\.queue-exact-verdict-router\.outcome \}\}/,
   );
-  assert.match(eventReviewJob, /queued an executing target-wide serialized router scan/);
+  assert.match(eventReviewJob, /queued an exact-item serialized router run/);
   assert.match(eventReviewJob, /deterministic remain-open guard/);
   assert.match(eventReviewJob, /verified terminal close/);
   assert.match(eventReviewJob, /repository is accessible but the item is missing/);
@@ -323,7 +313,7 @@ test("exact event publish and routing require a successful fresh review artifact
   );
   assert.match(reactStep, /steps\.publish-event-result\.outputs\.terminal_closed == 'true'/);
   assert.match(reactStep, /steps\.publish-event-result\.outputs\.guarded_open == 'true'/);
-  assert.match(reactStep, /steps\.queue-deferred-verdict-router\.outcome == 'success'/);
+  assert.match(reactStep, /steps\.queue-exact-verdict-router\.outcome == 'success'/);
   assert.match(reactStep, /steps\.live-item\.outputs\.guarded_open == 'true'/);
   assert.doesNotMatch(reactStep, /terminal_missing/);
   assert.match(releaseLeaseStep, /steps\.live-item\.outputs\.terminal_noop == 'true'/);
@@ -345,8 +335,8 @@ test("exact event publish and routing require a successful fresh review artifact
   assert.match(failStep, /steps\.publish-event-result\.outputs\.terminal_missing != 'true'/);
   assert.match(failStep, /steps\.publish-event-result\.outputs\.terminal_closed != 'true'/);
   assert.match(failStep, /steps\.publish-event-result\.outputs\.guarded_open != 'true'/);
-  assert.match(failStep, /steps\.route-synced-verdict\.outcome != 'success'/);
-  assert.match(failStep, /steps\.queue-deferred-verdict-router\.outcome != 'success'/);
+  assert.match(failStep, /steps\.queue-exact-verdict-router\.outcome != 'success'/);
+  assert.doesNotMatch(failStep, /route-synced-verdict/);
   assert.match(failStep, /steps\.publish-event-result\.outputs\.policy_noop != 'true'/);
   assert.match(failStep, /steps\.publish-event-result\.outputs\.requeue_latest != 'true'/);
   assert.match(
@@ -1378,9 +1368,10 @@ test("event review completion removes ClawSweeper eyes reaction", () => {
 
 test("event re-review status lets the durable queue reconcile interruptions", () => {
   const workflow = readText(".github/workflows/sweep.yml");
+  const start = workflow.indexOf("- name: Mark re-review complete");
   const block = workflow.slice(
-    workflow.indexOf("- name: Mark re-review complete"),
-    workflow.indexOf("- name: Commit event comment router ledger"),
+    start,
+    workflow.indexOf("- name: React to target item completion", start),
   );
 
   assert.match(block, /\[ "\$REVIEW_OUTCOME" = "cancelled" \]/);
@@ -1390,15 +1381,20 @@ test("event re-review status lets the durable queue reconcile interruptions", ()
   assert.doesNotMatch(block, /state="Superseded"/);
 });
 
-test("event repair retries wait for active worker capacity", () => {
-  const workflow = readText(".github/workflows/sweep.yml");
-  const block = workflow.slice(
-    workflow.indexOf("- name: Detect waiting event repair dispatches"),
-    workflow.indexOf("- name: Commit event comment router retry ledger"),
-  );
+test("trusted comment router owns event ledger publication and capacity retries", () => {
+  const sweepWorkflow = readText(".github/workflows/sweep.yml");
+  const routerWorkflow = readText(".github/workflows/repair-comment-router.yml");
+  const eventStart = sweepWorkflow.indexOf("\n  event-review-apply:");
+  const eventEnd = sweepWorkflow.indexOf("\n  target-fanout:", eventStart);
+  const eventJob = sweepWorkflow.slice(eventStart, eventEnd);
 
-  assert.match(block, /--status waiting,active/);
-  assert.match(block, /--wait-for-capacity/);
+  assert.doesNotMatch(eventJob, /repair:publish-main/);
+  assert.doesNotMatch(eventJob, /count-command-actions/);
+  assert.doesNotMatch(eventJob, /--wait-for-capacity/);
+  assert.match(routerWorkflow, /Commit comment router ledger/);
+  assert.match(routerWorkflow, /Detect waiting repair dispatches/);
+  assert.match(routerWorkflow, /--status waiting,active/);
+  assert.match(routerWorkflow, /--wait-for-capacity/);
 });
 
 test("comment commands keep the router-to-sweep dispatch contract", () => {
