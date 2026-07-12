@@ -59,6 +59,10 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Changed
 
+- Dual-write review batches, items, retries, Codex log publications, durable
+  review comments, apply actions, apply batches, and apply reports into the
+  immutable action ledger, including partial, interrupted, timeout, and failed
+  executions.
 - Short-circuited authenticated duplicate comment deliveries when their exact
   body version is already terminal in the durable router ledger, while edited,
   retryable, and state-drifted commands retain the full routing path.
