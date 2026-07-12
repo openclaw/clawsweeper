@@ -383,7 +383,7 @@ jobs:
     timeout-minutes: 25
     environment:
       name: crawl-remote-production
-      url: https://crawl-remote.services-91b.workers.dev
+      url: https://reports.openclaw.ai/crawl-remote
     defaults:
       run:
         shell: bash --noprofile --norc -euo pipefail {0}
@@ -399,10 +399,11 @@ jobs:
       NPM_CONFIG_IGNORE_SCRIPTS: "true"
       NPM_CONFIG_USERCONFIG: /dev/null
       OBSERVATION_ORDER_STATE: ${{ needs.preflight.outputs.observation_order_state }}
-      PRODUCTION_URL: https://crawl-remote.services-91b.workers.dev
+      PRODUCTION_ROUTE_URL: https://reports.openclaw.ai/crawl-remote
       RECEIPT_NAME: ${{ needs.preflight.outputs.receipt_name }}
       TARGET_REPOSITORY: openclaw/crawl-remote
       TOOLCHAIN_ROOT: ${{ github.workspace }}/.github/deploy/crawl-remote-toolchain
+      WORKERS_DEV_URL: https://crawl-remote.services-91b.workers.dev
       WRANGLER_VERSION: 4.107.1
     steps:
       - name: Checkout trusted deployment toolchain
@@ -987,8 +988,10 @@ jobs:
 
       - name: Poll exact production release
         env:
-          CONTRACT_RESPONSE: ${{ runner.temp }}/crawl-remote-contract.json
-          HEALTH_RESPONSE: ${{ runner.temp }}/crawl-remote-health.json
+          PRODUCTION_ROUTE_CONTRACT_RESPONSE: ${{ runner.temp }}/crawl-remote-production-route-contract.json
+          PRODUCTION_ROUTE_HEALTH_RESPONSE: ${{ runner.temp }}/crawl-remote-production-route-health.json
+          WORKERS_DEV_CONTRACT_RESPONSE: ${{ runner.temp }}/crawl-remote-workers-dev-contract.json
+          WORKERS_DEV_HEALTH_RESPONSE: ${{ runner.temp }}/crawl-remote-workers-dev-health.json
         run: |
           unset BASH_ENV ENV CDPATH GLOBIGNORE NODE_OPTIONS
           deadline=$((SECONDS + 180))
@@ -1019,77 +1022,99 @@ jobs:
 
           while (( SECONDS < deadline )); do
             attempt=$((attempt + 1))
-            rm -f "$HEALTH_RESPONSE" "$CONTRACT_RESPONSE"
-            if fetch_endpoint "$PRODUCTION_URL/health" "$HEALTH_RESPONSE" &&
-              fetch_endpoint "$PRODUCTION_URL/v1/contract" "$CONTRACT_RESPONSE" &&
+            rm -f \
+              "$WORKERS_DEV_HEALTH_RESPONSE" \
+              "$WORKERS_DEV_CONTRACT_RESPONSE" \
+              "$PRODUCTION_ROUTE_HEALTH_RESPONSE" \
+              "$PRODUCTION_ROUTE_CONTRACT_RESPONSE"
+            if fetch_endpoint "$WORKERS_DEV_URL/health" "$WORKERS_DEV_HEALTH_RESPONSE" &&
+              fetch_endpoint "$WORKERS_DEV_URL/v1/contract" "$WORKERS_DEV_CONTRACT_RESPONSE" &&
+              fetch_endpoint "$PRODUCTION_ROUTE_URL/health" "$PRODUCTION_ROUTE_HEALTH_RESPONSE" &&
+              fetch_endpoint "$PRODUCTION_ROUTE_URL/v1/contract" "$PRODUCTION_ROUTE_CONTRACT_RESPONSE" &&
               node --input-type=module <<'NODE'
           import { readFileSync } from 'node:fs';
 
           try {
             const expectedSha = process.env.DEPLOY_SHA;
             const expectedObservationOrderState = process.env.OBSERVATION_ORDER_STATE;
-            const health = JSON.parse(readFileSync(process.env.HEALTH_RESPONSE, 'utf8'));
-            if (health.ok !== true || health.release_sha !== expectedSha) {
-              throw new Error('health response does not identify the approved release');
-            }
-
-            const contract = JSON.parse(readFileSync(process.env.CONTRACT_RESPONSE, 'utf8'));
-            if (
-              contract.service !== 'crawl-remote' ||
-              contract.protocol_version !== 'v1' ||
-              contract.release_sha !== expectedSha
-            ) {
-              throw new Error('contract response does not identify the approved release');
-            }
-
             const observationFenceNote =
               'Gitcrawl observation ordering requires the D1 migration, explicit publisher capability, and operator cutover fence before it is advertised or activated.';
-            const notes = Array.isArray(contract.notes) ? contract.notes : [];
-            if (!notes.includes(observationFenceNote)) {
-              throw new Error('production contract does not identify the observation-order fence');
-            }
+            const endpoints = [
+              {
+                label: 'workers.dev',
+                healthPath: process.env.WORKERS_DEV_HEALTH_RESPONSE,
+                contractPath: process.env.WORKERS_DEV_CONTRACT_RESPONSE,
+              },
+              {
+                label: 'production route',
+                healthPath: process.env.PRODUCTION_ROUTE_HEALTH_RESPONSE,
+                contractPath: process.env.PRODUCTION_ROUTE_CONTRACT_RESPONSE,
+              },
+            ];
 
-            const apps = Array.isArray(contract.apps) ? contract.apps : [];
-            const gitcrawl = apps.find((app) => app?.app === 'gitcrawl');
-            if (!gitcrawl) {
-              throw new Error('production contract is missing the Gitcrawl app');
-            }
-            if (!Array.isArray(gitcrawl.capabilities)) {
-              throw new Error('production Gitcrawl capabilities are malformed');
-            }
-            const capabilities = gitcrawl.capabilities;
-            const observationOrderActive = capabilities.includes(
-              'gitcrawl.observation-order.v1',
-            );
-            if (
-              !['dormant', 'active'].includes(expectedObservationOrderState) ||
-              (
-                expectedObservationOrderState === 'active' &&
-                !observationOrderActive
-              ) ||
-              (
-                expectedObservationOrderState === 'dormant' &&
-                observationOrderActive
-              )
-            ) {
-              throw new Error(
-                `production contract does not match expected ${expectedObservationOrderState} observation-order state`,
+            function validateEndpoint({ label, healthPath, contractPath }) {
+              const health = JSON.parse(readFileSync(healthPath, 'utf8'));
+              if (health.ok !== true || health.release_sha !== expectedSha) {
+                throw new Error(`${label} health response does not identify the approved release`);
+              }
+
+              const contract = JSON.parse(readFileSync(contractPath, 'utf8'));
+              if (
+                contract.service !== 'crawl-remote' ||
+                contract.protocol_version !== 'v1' ||
+                contract.release_sha !== expectedSha
+              ) {
+                throw new Error(`${label} contract does not identify the approved release`);
+              }
+
+              const notes = Array.isArray(contract.notes) ? contract.notes : [];
+              if (!notes.includes(observationFenceNote)) {
+                throw new Error(`${label} contract does not identify the observation-order fence`);
+              }
+
+              const apps = Array.isArray(contract.apps) ? contract.apps : [];
+              const gitcrawl = apps.find((app) => app?.app === 'gitcrawl');
+              if (!gitcrawl) {
+                throw new Error(`${label} contract is missing the Gitcrawl app`);
+              }
+              if (!Array.isArray(gitcrawl.capabilities)) {
+                throw new Error(`${label} Gitcrawl capabilities are malformed`);
+              }
+              const observationOrderActive = gitcrawl.capabilities.includes(
+                'gitcrawl.observation-order.v1',
               );
-            }
+              if (
+                !['dormant', 'active'].includes(expectedObservationOrderState) ||
+                (
+                  expectedObservationOrderState === 'active' &&
+                  !observationOrderActive
+                ) ||
+                (
+                  expectedObservationOrderState === 'dormant' &&
+                  observationOrderActive
+                )
+              ) {
+                throw new Error(
+                  `${label} contract does not match expected ${expectedObservationOrderState} observation-order state`,
+                );
+              }
 
-            const routes = Array.isArray(contract.routes) ? contract.routes : [];
-            for (const path of ['/health', '/v1/contract']) {
-              if (!routes.some((route) => route?.method === 'GET' && route?.path === path)) {
-                throw new Error(`production contract is missing GET ${path}`);
+              const routes = Array.isArray(contract.routes) ? contract.routes : [];
+              for (const path of ['/health', '/v1/contract']) {
+                if (!routes.some((route) => route?.method === 'GET' && route?.path === path)) {
+                  throw new Error(`${label} contract is missing GET ${path}`);
+                }
               }
             }
+
+            for (const endpoint of endpoints) validateEndpoint(endpoint);
           } catch (error) {
             console.error(error instanceof Error ? error.message : String(error));
             process.exit(1);
           }
           NODE
             then
-              echo "Production release $DEPLOY_SHA verified after $attempt attempt(s)."
+              echo "Both production endpoints advertise release $DEPLOY_SHA after $attempt attempt(s)."
               exit 0
             fi
 
@@ -1105,5 +1130,5 @@ jobs:
             sleep "$sleep_for"
           done
 
-          echo "::error::production did not converge to release $DEPLOY_SHA before the deadline."
+          echo "::error::production endpoints did not converge to release $DEPLOY_SHA before the deadline."
           exit 1

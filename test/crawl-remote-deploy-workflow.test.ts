@@ -108,8 +108,10 @@ test("crawl-remote release is maintainer-bound across two fresh runners", () => 
   );
   assert.deepEqual(deploy.environment, {
     name: "crawl-remote-production",
-    url: "https://crawl-remote.services-91b.workers.dev",
+    url: "https://reports.openclaw.ai/crawl-remote",
   });
+  assert.equal(deploy.env.WORKERS_DEV_URL, "https://crawl-remote.services-91b.workers.dev");
+  assert.equal(deploy.env.PRODUCTION_ROUTE_URL, "https://reports.openclaw.ai/crawl-remote");
   assert.equal(preflight["timeout-minutes"], 25);
   assert.equal(deploy["timeout-minutes"], 25);
 });
@@ -936,8 +938,13 @@ test("production proof polls semantic state and binds both responses to the rele
   assert.match(run, /timeout="\$remaining"/);
   assert.match(run, /--max-filesize 1048576/);
   assert.match(run, /sleep "\$sleep_for"/);
-  assert.match(run, /\$PRODUCTION_URL\/health/);
-  assert.match(run, /\$PRODUCTION_URL\/v1\/contract/);
+  assert.match(run, /\$WORKERS_DEV_URL\/health/);
+  assert.match(run, /\$WORKERS_DEV_URL\/v1\/contract/);
+  assert.match(run, /\$PRODUCTION_ROUTE_URL\/health/);
+  assert.match(run, /\$PRODUCTION_ROUTE_URL\/v1\/contract/);
+  assert.match(run, /label: 'workers\.dev'/);
+  assert.match(run, /label: 'production route'/);
+  assert.match(run, /for \(const endpoint of endpoints\) validateEndpoint\(endpoint\)/);
   assert.match(run, /health\.release_sha !== expectedSha/);
   assert.match(run, /contract\.release_sha !== expectedSha/);
   assert.match(
@@ -946,65 +953,90 @@ test("production proof polls semantic state and binds both responses to the rele
   );
   assert.match(run, /notes\.includes\(observationFenceNote\)/);
   assert.match(run, /expectedObservationOrderState/);
-  assert.match(run, /production Gitcrawl capabilities are malformed/);
-  assert.match(run, /capabilities\.includes\(\s*'gitcrawl\.observation-order\.v1'/);
+  assert.match(run, /\$\{label\} Gitcrawl capabilities are malformed/);
+  assert.match(run, /gitcrawl\.capabilities\.includes\(\s*'gitcrawl\.observation-order\.v1'/);
   assert.match(run, /expectedObservationOrderState === 'active'.*!observationOrderActive/s);
   assert.match(run, /expectedObservationOrderState === 'dormant'.*observationOrderActive/s);
   assert.match(run, /process\.exit\(1\)/);
-  assert.match(run, /did not converge to release \$DEPLOY_SHA/);
+  assert.match(run, /production endpoints did not converge to release \$DEPLOY_SHA/);
   assert.doesNotMatch(run, /curl .*--retry/s);
 });
 
-test("production semantic validator accepts only the selected observation-order state", () => {
+test("production semantic validator requires both origins to advertise the selected release", () => {
   const run = step(deploy, "Poll exact production release").run ?? "";
   const validator = run.match(/node --input-type=module <<'NODE'\n([\s\S]*?)\nNODE/)?.[1];
   assert.ok(validator, "missing inline production semantic validator");
 
   const directory = mkdtempSync(join(tmpdir(), "crawl-remote-production-proof-"));
-  const healthPath = join(directory, "health.json");
-  const contractPath = join(directory, "contract.json");
+  const workersDevHealthPath = join(directory, "workers-dev-health.json");
+  const workersDevContractPath = join(directory, "workers-dev-contract.json");
+  const productionRouteHealthPath = join(directory, "production-route-health.json");
+  const productionRouteContractPath = join(directory, "production-route-contract.json");
   const releaseSha = mergedCrawlRemoteMain;
   const observationCapability = "gitcrawl.observation-order.v1";
   const observationFenceNote =
     "Gitcrawl observation ordering requires the D1 migration, explicit publisher capability, and operator cutover fence before it is advertised or activated.";
 
-  function validate(state: "dormant" | "active", capabilities: unknown, responseSha = releaseSha) {
-    writeFileSync(healthPath, JSON.stringify({ ok: true, release_sha: responseSha }));
-    writeFileSync(
-      contractPath,
-      JSON.stringify({
-        service: "crawl-remote",
-        protocol_version: "v1",
-        release_sha: responseSha,
-        notes: [observationFenceNote],
-        routes: [
-          { method: "GET", path: "/health" },
-          { method: "GET", path: "/v1/contract" },
-        ],
-        apps: [{ app: "gitcrawl", capabilities }],
-      }),
-    );
+  interface EndpointResponse {
+    healthSha?: string;
+    contractSha?: string;
+    capabilities?: unknown;
+  }
+
+  function validate(
+    state: "dormant" | "active",
+    workersDev: EndpointResponse = {},
+    productionRoute: EndpointResponse = {},
+  ) {
+    const defaultCapabilities = state === "active" ? [observationCapability] : [];
+    function writeEndpoint(healthPath: string, contractPath: string, response: EndpointResponse) {
+      const capabilities = Object.hasOwn(response, "capabilities")
+        ? response.capabilities
+        : defaultCapabilities;
+      writeFileSync(
+        healthPath,
+        JSON.stringify({ ok: true, release_sha: response.healthSha ?? releaseSha }),
+      );
+      writeFileSync(
+        contractPath,
+        JSON.stringify({
+          service: "crawl-remote",
+          protocol_version: "v1",
+          release_sha: response.contractSha ?? releaseSha,
+          notes: [observationFenceNote],
+          routes: [
+            { method: "GET", path: "/health" },
+            { method: "GET", path: "/v1/contract" },
+          ],
+          apps: [{ app: "gitcrawl", capabilities }],
+        }),
+      );
+    }
+    writeEndpoint(workersDevHealthPath, workersDevContractPath, workersDev);
+    writeEndpoint(productionRouteHealthPath, productionRouteContractPath, productionRoute);
     return spawnSync(process.execPath, ["--input-type=module"], {
       input: validator,
       encoding: "utf8",
       env: {
         ...process.env,
-        CONTRACT_RESPONSE: contractPath,
         DEPLOY_SHA: releaseSha,
-        HEALTH_RESPONSE: healthPath,
         OBSERVATION_ORDER_STATE: state,
+        PRODUCTION_ROUTE_CONTRACT_RESPONSE: productionRouteContractPath,
+        PRODUCTION_ROUTE_HEALTH_RESPONSE: productionRouteHealthPath,
+        WORKERS_DEV_CONTRACT_RESPONSE: workersDevContractPath,
+        WORKERS_DEV_HEALTH_RESPONSE: workersDevHealthPath,
       },
     });
   }
 
   try {
-    assert.equal(validate("dormant", []).status, 0);
-    assert.equal(validate("active", [observationCapability]).status, 0);
-    assert.notEqual(validate("dormant", [observationCapability]).status, 0);
-    assert.notEqual(validate("active", []).status, 0);
-    assert.notEqual(validate("dormant", [], "b".repeat(40)).status, 0);
-    assert.notEqual(validate("dormant", null).status, 0);
-    assert.notEqual(validate("dormant", "gitcrawl.observation-order.v1").status, 0);
+    assert.equal(validate("dormant").status, 0);
+    assert.equal(validate("active").status, 0);
+    assert.notEqual(validate("dormant", { healthSha: "b".repeat(40) }).status, 0);
+    assert.notEqual(validate("dormant", {}, { contractSha: "b".repeat(40) }).status, 0);
+    assert.notEqual(validate("active", { capabilities: [] }).status, 0);
+    assert.notEqual(validate("dormant", {}, { capabilities: [observationCapability] }).status, 0);
+    assert.notEqual(validate("dormant", {}, { capabilities: null }).status, 0);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
