@@ -52,6 +52,8 @@ import {
 import { issueSourceRevisionSha256 } from "../../dist/repair/issue-source-guard.js";
 import {
   buildStagedProofPlan,
+  executeStagedProofPlan,
+  stagedProofBundle,
   stagedProofPlanArtifact,
 } from "../../dist/repair/staged-proof-gates.js";
 
@@ -89,7 +91,7 @@ test("execution authorization selects one explicit run and seals its immutable i
   }
 });
 
-test("full reruns restore the exact checkpoint authorization without live source intake", () => {
+test("full reruns restore the exact checkpoint proof bundle without live source intake", () => {
   const fixture = handoffFixture();
   try {
     const authorization = prepareAuthorization(fixture);
@@ -116,8 +118,71 @@ test("full reruns restore the exact checkpoint authorization without live source
       preparedHeadSha: git(target, "rev-parse", "HEAD"),
       preparedTreeSha: git(target, "rev-parse", "HEAD^{tree}"),
     });
+    fs.writeFileSync(
+      path.join(fixture.outputRoot, "run", "fix-execution-report.json"),
+      `${JSON.stringify({
+        actions: [{ action: "open_fix_pr", status: "prepared" }],
+      })}\n`,
+    );
+    const manifest = sealExecutionHandoff({
+      root: fixture.outputRoot,
+      expectedAuthorizationSha256: authorization.identity_sha256,
+      executeOutcome: "success",
+    });
+    const proofPlan = buildStagedProofPlan({
+      commands: [
+        {
+          parts: ["git", "diff", "--check"],
+          source: "configured",
+          canonical: true,
+          required: true,
+          originalIndex: 0,
+        },
+      ],
+      changedFiles: ["fixture.txt"],
+    });
+    const proofPlanArtifact = stagedProofPlanArtifact(proofPlan);
+    const validationTrace = executeStagedProofPlan(proofPlan, {
+      commandTimeoutMs: 1_000,
+      budgetMs: 5_000,
+      validatedHeadSha: publication.prepared_head_sha,
+      validatedBaseSha: publication.target_base_sha,
+      nowMs: () => 10,
+      runCommand: (entry) => ({
+        executedCommands: [entry.parts.join(" ")],
+        reason: "passed",
+      }),
+    }).trace;
+    const validationIdentity = {
+      schema_version: 3,
+      authorization_sha256: authorization.identity_sha256,
+      execution_manifest_sha256: manifest.identity_sha256,
+      execution_intent_sha256: intent.identity_sha256,
+      action_identity_sha256: intent.action_identity_sha256,
+      prepared_publication_sha256: publication.identity_sha256,
+      target_repo: authorization.target_repo,
+      operation: intent.operation,
+      output_repo: intent.output_repo,
+      output_branch: intent.output_branch,
+      source: intent.source,
+      repair_delta_base_sha: publication.repair_delta_base_sha,
+      validated_head_sha: publication.prepared_head_sha,
+      validated_tree_sha: publication.prepared_tree_sha,
+      validated_base_sha: publication.target_base_sha,
+      validation_proof_plan: proofPlanArtifact,
+      validation_proof: stagedProofBundle([validationTrace]),
+    };
+    const validationReceipt = {
+      ...validationIdentity,
+      identity_sha256: digestJson(validationIdentity),
+    };
+    const validationReceiptPath = path.join(
+      path.dirname(fixture.outputRoot),
+      "validation-receipt.json",
+    );
+    fs.writeFileSync(validationReceiptPath, `${JSON.stringify(validationReceipt, null, 2)}\n`);
     const receipt = publicationReceipt({
-      validationReceiptSha256: "c".repeat(64),
+      validationReceiptSha256: validationReceipt.identity_sha256,
       publication,
       targetPrNumber: 99,
       mutations: [],
@@ -129,6 +194,7 @@ test("full reruns restore the exact checkpoint authorization without live source
       sourceRoot: immutableRoot,
       publicationRoot: fixture.outputRoot,
       publicationReceiptPath: receiptPath,
+      validationReceiptPath,
       outputRoot: restoredRoot,
       workflowRunId: "123456",
       workflowRunAttempt: "3",
@@ -138,6 +204,8 @@ test("full reruns restore the exact checkpoint authorization without live source
       allowedOwner: "openclaw",
     });
     assert.equal(restored.identity_sha256, authorization.identity_sha256);
+    assert.equal(restored.checkpoint_producer_attempt, "2");
+    assert.equal(restored.checkpoint_validation_receipt_sha256, validationReceipt.identity_sha256);
     assert.equal(fs.existsSync(path.join(restoredRoot, "run", "publication-intent.json")), false);
     assert.throws(
       () =>
@@ -145,6 +213,7 @@ test("full reruns restore the exact checkpoint authorization without live source
           sourceRoot: immutableRoot,
           publicationRoot: fixture.outputRoot,
           publicationReceiptPath: receiptPath,
+          validationReceiptPath,
           outputRoot: restoredRoot,
           workflowRunId: "123456",
           workflowRunAttempt: "2",

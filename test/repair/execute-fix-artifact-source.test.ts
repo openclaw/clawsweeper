@@ -364,10 +364,26 @@ test("repair workflow binds one run through no-credential proof and token-only m
         /--expected-producer-attempt "\$\{\{ steps\.authorization_publication_artifact\.outputs\.producer_attempt \}\}"/g,
       ),
     ].length,
-    2,
+    3,
+  );
+  assert.match(
+    authorize,
+    /Resolve prior checkpoint validation receipt[\s\S]*--prefix clawsweeper-repair-validation[\s\S]*Restore checkpoint authorization before live source intake[\s\S]*--validation-receipt \.clawsweeper-repair\/recovery-validation\/receipt\.json/,
+  );
+  assert.match(
+    authorize,
+    /artifact_id: \$\{\{ steps\.prior_authorized_artifact\.outputs\.artifact_id \|\| steps\.upload\.outputs\.artifact-id \}\}/,
   );
   assert.match(authorize, /persist-credentials: "false"/);
   assert.match(execute, /repair:execution-handoff -- verify/);
+  assert.match(
+    execute,
+    /Reuse exact checkpointed execution handoff[\s\S]*repair:execution-handoff -- verify-execution/,
+  );
+  assert.match(
+    execute,
+    /needs\.authorize\.outputs\.checkpoint_recovered != '1'[\s\S]*Execute credited fix artifact/,
+  );
   assert.match(execute, /repair:execution-handoff -- seal/);
   assert.match(execute, /GH_TOKEN: ""/);
   assert.match(execute, /GITHUB_TOKEN: ""/);
@@ -381,6 +397,11 @@ test("repair workflow binds one run through no-credential proof and token-only m
   assert.match(validate, /GH_TOKEN: ""/);
   assert.match(validate, /GITHUB_TOKEN: ""/);
   assert.match(validate, /repair:execution-handoff -- validate/);
+  assert.match(
+    validate,
+    /Reuse exact checkpointed validation receipt[\s\S]*repair:execution-handoff -- verify-receipt/,
+  );
+  assert.match(validate, /Upload validation receipt[\s\S]*retention-days: 90/);
   assert.doesNotMatch(validate, /create-github-app-token|setup-codex|OPENAI_API_KEY/);
   assert.match(report, /count-requeue-required/);
   assert.match(report, /--dashboard-only/);

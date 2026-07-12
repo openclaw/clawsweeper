@@ -131,6 +131,11 @@ export type ExecutionAuthorization = {
   identity_sha256: string;
 };
 
+export type RestoredExecutionAuthorization = ExecutionAuthorization & {
+  checkpoint_producer_attempt: string;
+  checkpoint_validation_receipt_sha256: string;
+};
+
 export type ExecutionManifest = {
   schema_version: number;
   authorization_sha256: string;
@@ -261,6 +266,7 @@ export function restoreCheckpointedExecutionAuthorization({
   sourceRoot,
   publicationRoot,
   publicationReceiptPath,
+  validationReceiptPath,
   outputRoot,
   workflowRunId,
   workflowRunAttempt,
@@ -272,6 +278,7 @@ export function restoreCheckpointedExecutionAuthorization({
   sourceRoot: string;
   publicationRoot: string;
   publicationReceiptPath: string;
+  validationReceiptPath: string;
   outputRoot: string;
   workflowRunId: string;
   workflowRunAttempt: string;
@@ -279,7 +286,7 @@ export function restoreCheckpointedExecutionAuthorization({
   workflowSha: string;
   sourceJobPath: string;
   allowedOwner: string;
-}): ExecutionAuthorization {
+}): RestoredExecutionAuthorization {
   const candidate = readJsonObject(
     path.join(sourceRoot, "authorization.json"),
     "checkpoint authorization",
@@ -326,13 +333,26 @@ export function restoreCheckpointedExecutionAuthorization({
       "checkpoint validation receipt digest",
     ),
   });
+  const validationReceipt = verifyValidationReceipt({
+    root: publicationRoot,
+    receiptPath: validationReceiptPath,
+    expectedAuthorizationSha256: authorization.identity_sha256,
+    expectedReceiptSha256: requiredDigest(
+      receipt.validation_receipt_sha256,
+      "checkpoint validation receipt digest",
+    ),
+  });
   const intent = readExecutionIntent(publicationRoot);
   sourceClosureReceiptState(publication, receipt, intent);
 
   fs.rmSync(outputRoot, { recursive: true, force: true });
   fs.mkdirSync(outputRoot, { recursive: true });
   copyTree(sourceRoot, outputRoot);
-  return verifyExecutionAuthorization(outputRoot, authorization.identity_sha256);
+  return {
+    ...verifyExecutionAuthorization(outputRoot, authorization.identity_sha256),
+    checkpoint_producer_attempt: authorization.workflow_run_attempt,
+    checkpoint_validation_receipt_sha256: validationReceipt.identity_sha256,
+  };
 }
 
 function assertExecutionIntentBindings(

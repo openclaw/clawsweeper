@@ -49,6 +49,7 @@ switch (command) {
       sourceRoot: requiredArg(args, "source-root"),
       publicationRoot: requiredArg(args, "publication-root"),
       publicationReceiptPath: requiredArg(args, "publication-receipt"),
+      validationReceiptPath: requiredArg(args, "validation-receipt"),
       outputRoot: requiredArg(args, "out"),
       workflowRunId: requiredArg(args, "run-id"),
       workflowRunAttempt: requiredArg(args, "run-attempt"),
@@ -67,6 +68,9 @@ switch (command) {
       target_repo: authorization.target_repo,
       target_owner: authorization.target_owner,
       target_name: authorization.target_name,
+      checkpoint_recovered: "1",
+      checkpoint_producer_attempt: authorization.checkpoint_producer_attempt,
+      checkpoint_validation_receipt_sha256: authorization.checkpoint_validation_receipt_sha256,
     });
     break;
   }
@@ -128,6 +132,7 @@ switch (command) {
       expectedReceiptSha256: requiredArg(args, "receipt-sha256"),
     });
     writeOutputs({
+      receipt_sha256: receipt.identity_sha256,
       target_repo: receipt.target_repo,
       validated_head_sha: receipt.validated_head_sha,
       validated_base_sha: receipt.validated_base_sha,

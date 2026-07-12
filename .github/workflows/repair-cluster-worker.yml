@@ -413,9 +413,15 @@ jobs:
       target_repo: ${{ steps.restore_authorization.outputs.target_repo || steps.authorize.outputs.target_repo }}
       target_owner: ${{ steps.restore_authorization.outputs.target_owner || steps.authorize.outputs.target_owner }}
       target_name: ${{ steps.restore_authorization.outputs.target_name || steps.authorize.outputs.target_name }}
-      artifact_id: ${{ steps.upload.outputs.artifact-id }}
-      artifact_digest: ${{ steps.upload.outputs.artifact-digest }}
-      producer_attempt: ${{ steps.producer_attempt.outputs.value }}
+      checkpoint_recovered: ${{ steps.restore_authorization.outputs.checkpoint_recovered }}
+      checkpoint_validation_receipt_sha256: ${{ steps.restore_authorization.outputs.checkpoint_validation_receipt_sha256 }}
+      recovery_execution_artifact_id: ${{ steps.prior_execution_artifact.outputs.artifact_id }}
+      recovery_execution_artifact_digest: ${{ steps.prior_execution_artifact.outputs.artifact_digest }}
+      recovery_validation_artifact_id: ${{ steps.prior_validation_artifact.outputs.artifact_id }}
+      recovery_validation_artifact_digest: ${{ steps.prior_validation_artifact.outputs.artifact_digest }}
+      artifact_id: ${{ steps.prior_authorized_artifact.outputs.artifact_id || steps.upload.outputs.artifact-id }}
+      artifact_digest: ${{ steps.prior_authorized_artifact.outputs.artifact_digest || steps.upload.outputs.artifact-digest }}
+      producer_attempt: ${{ steps.restore_authorization.outputs.checkpoint_producer_attempt || steps.producer_attempt.outputs.value }}
     env:
       CLAWSWEEPER_ALLOWED_OWNER: ${{ vars.CLAWSWEEPER_ALLOWED_OWNER || 'openclaw' }}
     steps:
@@ -560,6 +566,30 @@ jobs:
           repository: ${{ github.repository }}
           run-id: ${{ github.run_id }}
 
+      - name: Resolve prior checkpoint validation receipt
+        id: prior_validation_artifact
+        if: ${{ steps.authorization_publication_artifact.outcome == 'success' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CLAWSWEEPER_ALLOW_PRIOR_ARTIFACT: "1"
+        run: |
+          pnpm run repair:resolve-run-artifact -- \
+            --repository "${{ github.repository }}" \
+            --run-id "${{ github.run_id }}" \
+            --current-attempt "${{ github.run_attempt }}" \
+            --expected-producer-attempt "${{ steps.authorization_publication_artifact.outputs.producer_attempt }}" \
+            --prefix clawsweeper-repair-validation
+
+      - name: Download prior checkpoint validation receipt
+        if: ${{ steps.authorization_publication_artifact.outcome == 'success' }}
+        uses: actions/download-artifact@v8
+        with:
+          artifact-ids: ${{ steps.prior_validation_artifact.outputs.artifact_id }}
+          path: .clawsweeper-repair/recovery-validation
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ github.run_id }}
+
       - name: Restore checkpoint authorization before live source intake
         id: restore_authorization
         if: ${{ steps.authorization_publication_artifact.outcome == 'success' }}
@@ -568,6 +598,7 @@ jobs:
             --source-root .clawsweeper-repair/recovery-authorized \
             --publication-root .clawsweeper-repair/recovery-execution \
             --publication-receipt .clawsweeper-repair/recovery-publication/receipt.json \
+            --validation-receipt .clawsweeper-repair/recovery-validation/receipt.json \
             --out .clawsweeper-repair/authorized \
             --run-id "${{ github.run_id }}" \
             --run-attempt "${{ github.run_attempt }}" \
@@ -620,6 +651,7 @@ jobs:
 
       - name: Upload immutable execution handoff
         id: upload
+        if: ${{ steps.authorization_publication_artifact.outcome != 'success' }}
         uses: actions/upload-artifact@v7
         with:
           name: clawsweeper-repair-authorized-${{ github.run_id }}-${{ github.run_attempt }}
@@ -640,12 +672,12 @@ jobs:
       contents: read
     outputs:
       job_exists: ${{ steps.check_job.outputs.job_exists }}
-      execute_fix_outcome: ${{ steps.execute_fix.outcome }}
-      mutation_ready: ${{ steps.seal.outputs.mutation_ready }}
-      execution_manifest_sha256: ${{ steps.seal.outputs.execution_manifest_sha256 }}
-      artifact_id: ${{ steps.upload_execution.outputs.artifact-id }}
-      artifact_digest: ${{ steps.upload_execution.outputs.artifact-digest }}
-      producer_attempt: ${{ steps.producer_attempt.outputs.value }}
+      execute_fix_outcome: ${{ steps.recover_execution.outputs.execute_outcome || steps.execute_fix.outcome }}
+      mutation_ready: ${{ steps.recover_execution.outputs.mutation_ready || steps.seal.outputs.mutation_ready }}
+      execution_manifest_sha256: ${{ steps.recover_execution.outputs.execution_manifest_sha256 || steps.seal.outputs.execution_manifest_sha256 }}
+      artifact_id: ${{ needs.authorize.outputs.recovery_execution_artifact_id || steps.upload_execution.outputs.artifact-id }}
+      artifact_digest: ${{ needs.authorize.outputs.recovery_execution_artifact_digest || steps.upload_execution.outputs.artifact-digest }}
+      producer_attempt: ${{ needs.authorize.outputs.checkpoint_recovered == '1' && needs.authorize.outputs.producer_attempt || steps.producer_attempt.outputs.value }}
     env:
       CLAWSWEEPER_ALLOWED_OWNER: ${{ needs.authorize.outputs.target_owner }}
       CLAWSWEEPER_ALLOW_EXECUTE: ${{ needs.cluster.outputs.allow_execute == '1' && '1' || '0' }}
@@ -711,9 +743,42 @@ jobs:
             --root .clawsweeper-repair/authorized \
             --authorization-sha256 "${{ needs.authorize.outputs.authorization_sha256 }}"
 
+      - name: Resolve checkpointed execution handoff
+        id: recovered_execution_artifact
+        if: ${{ needs.authorize.outputs.checkpoint_recovered == '1' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CLAWSWEEPER_ALLOW_PRIOR_ARTIFACT: "1"
+        run: |
+          pnpm run repair:resolve-run-artifact -- \
+            --repository "${{ github.repository }}" \
+            --run-id "${{ github.run_id }}" \
+            --current-attempt "${{ github.run_attempt }}" \
+            --prefix clawsweeper-repair-execution \
+            --expected-artifact-id "${{ needs.authorize.outputs.recovery_execution_artifact_id }}" \
+            --expected-artifact-digest "${{ needs.authorize.outputs.recovery_execution_artifact_digest }}"
+
+      - name: Download checkpointed execution handoff
+        if: ${{ needs.authorize.outputs.checkpoint_recovered == '1' }}
+        uses: actions/download-artifact@v8
+        with:
+          artifact-ids: ${{ steps.recovered_execution_artifact.outputs.artifact_id }}
+          path: .clawsweeper-repair/recovered-execution
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ github.run_id }}
+
+      - name: Reuse exact checkpointed execution handoff
+        id: recover_execution
+        if: ${{ needs.authorize.outputs.checkpoint_recovered == '1' }}
+        run: |
+          pnpm run repair:execution-handoff -- verify-execution \
+            --root .clawsweeper-repair/recovered-execution \
+            --authorization-sha256 "${{ needs.authorize.outputs.authorization_sha256 }}"
+
       - name: Resolve Codex session cache
         id: codex_session
-        if: ${{ steps.check_job.outputs.job_exists == '1' && env.CLAWSWEEPER_STEERABLE_CODEX == '1' }}
+        if: ${{ needs.authorize.outputs.checkpoint_recovered != '1' && steps.check_job.outputs.job_exists == '1' && env.CLAWSWEEPER_STEERABLE_CODEX == '1' }}
         env:
           JOB_PATH: ${{ inputs.job }}
         run: |
@@ -725,13 +790,13 @@ jobs:
           echo "CLAWSWEEPER_CODEX_THREAD_STATE=$codex_home/clawsweeper-thread-state.json" >> "$GITHUB_ENV"
 
       - name: Setup pinned Bun for target validation
-        if: ${{ steps.check_job.outputs.job_exists == '1' }}
+        if: ${{ needs.authorize.outputs.checkpoint_recovered != '1' && steps.check_job.outputs.job_exists == '1' }}
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
         with:
           bun-version: 1.3.14
 
       - uses: ./.github/actions/setup-codex
-        if: ${{ steps.check_job.outputs.job_exists == '1' }}
+        if: ${{ needs.authorize.outputs.checkpoint_recovered != '1' && steps.check_job.outputs.job_exists == '1' }}
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           CLAWSWEEPER_INTERNAL_MODEL: ${{ secrets.CLAWSWEEPER_MODEL }}
@@ -740,7 +805,7 @@ jobs:
           codex-home: ${{ steps.codex_session.outputs.codex_home }}
 
       - name: Restore Codex session
-        if: ${{ steps.check_job.outputs.job_exists == '1' && env.CLAWSWEEPER_STEERABLE_CODEX == '1' }}
+        if: ${{ needs.authorize.outputs.checkpoint_recovered != '1' && steps.check_job.outputs.job_exists == '1' && env.CLAWSWEEPER_STEERABLE_CODEX == '1' }}
         uses: actions/cache/restore@v6
         with:
           path: |
@@ -751,14 +816,14 @@ jobs:
             ${{ runner.os }}-clawsweeper-codex-thread-${{ steps.codex_session.outputs.key }}-
 
       - name: Validate job
-        if: ${{ steps.check_job.outputs.job_exists == '1' }}
+        if: ${{ needs.authorize.outputs.checkpoint_recovered != '1' && steps.check_job.outputs.job_exists == '1' }}
         env:
           CLAWSWEEPER_ALLOWED_OWNER: ${{ needs.authorize.outputs.target_owner }}
         run: pnpm run repair:validate-job -- "${{ needs.authorize.outputs.job_path }}"
 
       - name: Execute credited fix artifact
         id: execute_fix
-        if: ${{ steps.check_job.outputs.job_exists == '1' && env.CLAWSWEEPER_ALLOW_EXECUTE == '1' && env.CLAWSWEEPER_ALLOW_FIX_PR == '1' }}
+        if: ${{ needs.authorize.outputs.checkpoint_recovered != '1' && steps.check_job.outputs.job_exists == '1' && env.CLAWSWEEPER_ALLOW_EXECUTE == '1' && env.CLAWSWEEPER_ALLOW_FIX_PR == '1' }}
         timeout-minutes: 70
         env:
           GH_TOKEN: ""
@@ -774,7 +839,7 @@ jobs:
 
       - name: Seal execution handoff
         id: seal
-        if: ${{ always() && steps.check_job.outputs.job_exists == '1' }}
+        if: ${{ always() && needs.authorize.outputs.checkpoint_recovered != '1' && steps.check_job.outputs.job_exists == '1' }}
         run: |
           pnpm run repair:execution-handoff -- seal \
             --root .clawsweeper-repair/authorized \
@@ -783,7 +848,7 @@ jobs:
 
       - name: Upload sealed execution handoff
         id: upload_execution
-        if: ${{ always() && steps.seal.outcome == 'success' }}
+        if: ${{ always() && needs.authorize.outputs.checkpoint_recovered != '1' && steps.seal.outcome == 'success' }}
         uses: actions/upload-artifact@v7
         with:
           name: clawsweeper-repair-execution-${{ github.run_id }}-${{ github.run_attempt }}
@@ -792,7 +857,7 @@ jobs:
           retention-days: 90
 
       - name: Collect Codex debug logs
-        if: ${{ always() && steps.check_job.outputs.job_exists == '1' }}
+        if: ${{ always() && needs.authorize.outputs.checkpoint_recovered != '1' && steps.check_job.outputs.job_exists == '1' }}
         env:
           CLAWSWEEPER_CODEX_DEBUG_SINCE_MINUTES: ${{ vars.CLAWSWEEPER_CODEX_DEBUG_SINCE_MINUTES || '240' }}
         run: |
@@ -806,7 +871,7 @@ jobs:
           fi
 
       - name: Upload Codex debug logs
-        if: ${{ always() && steps.check_job.outputs.job_exists == '1' }}
+        if: ${{ always() && needs.authorize.outputs.checkpoint_recovered != '1' && steps.check_job.outputs.job_exists == '1' }}
         uses: actions/upload-artifact@v7
         with:
           name: clawsweeper-codex-debug-execute-${{ github.run_id }}-${{ github.run_attempt }}
@@ -815,7 +880,7 @@ jobs:
           retention-days: 7
 
       - name: Save Codex session
-        if: ${{ always() && steps.check_job.outputs.job_exists == '1' && env.CLAWSWEEPER_STEERABLE_CODEX == '1' }}
+        if: ${{ always() && needs.authorize.outputs.checkpoint_recovered != '1' && steps.check_job.outputs.job_exists == '1' && env.CLAWSWEEPER_STEERABLE_CODEX == '1' }}
         uses: actions/cache/save@v6
         with:
           path: |
@@ -835,10 +900,10 @@ jobs:
       actions: read
       contents: read
     outputs:
-      receipt_sha256: ${{ steps.validate.outputs.receipt_sha256 }}
-      artifact_id: ${{ steps.upload.outputs.artifact-id }}
-      artifact_digest: ${{ steps.upload.outputs.artifact-digest }}
-      producer_attempt: ${{ steps.producer_attempt.outputs.value }}
+      receipt_sha256: ${{ steps.recover_validation.outputs.receipt_sha256 || steps.validate.outputs.receipt_sha256 }}
+      artifact_id: ${{ needs.authorize.outputs.recovery_validation_artifact_id || steps.upload.outputs.artifact-id }}
+      artifact_digest: ${{ needs.authorize.outputs.recovery_validation_artifact_digest || steps.upload.outputs.artifact-digest }}
+      producer_attempt: ${{ needs.authorize.outputs.checkpoint_recovered == '1' && needs.authorize.outputs.producer_attempt || steps.producer_attempt.outputs.value }}
     env:
       OPENCLAW_LOCAL_CHECK: "0"
     steps:
@@ -859,6 +924,7 @@ jobs:
           build-script: build:repair
 
       - name: Setup pinned Bun for target validation
+        if: ${{ needs.authorize.outputs.checkpoint_recovered != '1' }}
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
         with:
           bun-version: 1.3.14
@@ -888,6 +954,7 @@ jobs:
 
       - name: Independently replay exact repair proof
         id: validate
+        if: ${{ needs.authorize.outputs.checkpoint_recovered != '1' }}
         env:
           GH_TOKEN: ""
           GITHUB_TOKEN: ""
@@ -897,14 +964,50 @@ jobs:
             --authorization-sha256 "${{ needs.authorize.outputs.authorization_sha256 }}" \
             --receipt .clawsweeper-repair/validation/receipt.json
 
+      - name: Resolve checkpointed validation receipt
+        id: recovered_validation_artifact
+        if: ${{ needs.authorize.outputs.checkpoint_recovered == '1' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CLAWSWEEPER_ALLOW_PRIOR_ARTIFACT: "1"
+        run: |
+          pnpm run repair:resolve-run-artifact -- \
+            --repository "${{ github.repository }}" \
+            --run-id "${{ github.run_id }}" \
+            --current-attempt "${{ github.run_attempt }}" \
+            --prefix clawsweeper-repair-validation \
+            --expected-artifact-id "${{ needs.authorize.outputs.recovery_validation_artifact_id }}" \
+            --expected-artifact-digest "${{ needs.authorize.outputs.recovery_validation_artifact_digest }}"
+
+      - name: Download checkpointed validation receipt
+        if: ${{ needs.authorize.outputs.checkpoint_recovered == '1' }}
+        uses: actions/download-artifact@v8
+        with:
+          artifact-ids: ${{ steps.recovered_validation_artifact.outputs.artifact_id }}
+          path: .clawsweeper-repair/validation
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ github.run_id }}
+
+      - name: Reuse exact checkpointed validation receipt
+        id: recover_validation
+        if: ${{ needs.authorize.outputs.checkpoint_recovered == '1' }}
+        run: |
+          pnpm run repair:execution-handoff -- verify-receipt \
+            --root .clawsweeper-repair/execution \
+            --authorization-sha256 "${{ needs.authorize.outputs.authorization_sha256 }}" \
+            --receipt .clawsweeper-repair/validation/receipt.json \
+            --receipt-sha256 "${{ needs.authorize.outputs.checkpoint_validation_receipt_sha256 }}"
+
       - name: Upload validation receipt
         id: upload
+        if: ${{ needs.authorize.outputs.checkpoint_recovered != '1' }}
         uses: actions/upload-artifact@v7
         with:
           name: clawsweeper-repair-validation-${{ github.run_id }}-${{ github.run_attempt }}
           path: .clawsweeper-repair/validation/receipt.json
           if-no-files-found: error
-          retention-days: 7
+          retention-days: 90
 
   report:
     name: Report and requeue without target credentials
