@@ -462,6 +462,7 @@ jobs:
       CI: "true"
       CLAWSWEEPER_APP_CLIENT_ID: Iv23liOECG0slfuhz093
       CLOUDFLARE_ACCOUNT_ID: 91b59577e757131d68d55a471fe32aca
+      D1_MUTATION_MIN_REMAINING_SECONDS: "1260"
       DEPLOYMENT_STATUS_ATTEMPTS: "60"
       DEPLOYMENT_STATUS_DELAY_SECONDS: "5"
       DEPLOYMENT_STATUS_TIMEOUT_SECONDS: "120"
@@ -480,12 +481,24 @@ jobs:
       TARGET_REPOSITORY: openclaw/crawl-remote
       TOOLCHAIN_ROOT: ${{ github.workspace }}/.github/deploy/crawl-remote-toolchain
       WORKFLOW_SHA: ${{ github.sha }}
+      WORKER_MUTATION_MIN_REMAINING_SECONDS: "900"
       WORKERS_DEV_URL: https://crawl-remote.services-91b.workers.dev
       WRANGLER_DEPLOY_TIMEOUT_SECONDS: "180"
       WRANGLER_READ_TIMEOUT_SECONDS: "30"
       WRANGLER_ROLLBACK_TIMEOUT_SECONDS: "180"
       WRANGLER_VERSION: 4.107.1
     steps:
+      - name: Record protected deployment deadline
+        run: |
+          unset BASH_ENV ENV CDPATH GLOBIGNORE NODE_OPTIONS
+          started_at="$(date +%s)"
+          if [[ ! "$started_at" =~ ^[0-9]+$ ]]; then
+            echo "::error::could not resolve the protected deployment start time."
+            exit 1
+          fi
+          deadline="$((started_at + 25 * 60))"
+          printf 'DEPLOY_JOB_DEADLINE_EPOCH=%s\n' "$deadline" >> "$GITHUB_ENV"
+
       - name: Create protected-environment audit token
         id: source-admin-token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
@@ -1315,6 +1328,8 @@ jobs:
           test -f "$RECEIPT_PATH"
           current_source_main_sha="$(
             GH_TOKEN="$SOURCE_GH_TOKEN" \
+              timeout --foreground --signal=TERM --kill-after=5s \
+              "${WRANGLER_READ_TIMEOUT_SECONDS}s" \
               gh api "repos/$SOURCE_REPOSITORY/commits/main" --jq '.sha'
           )"
           if [[ ! "$current_source_main_sha" =~ ^[0-9a-f]{40}$ ]]; then
@@ -1326,7 +1341,9 @@ jobs:
             exit 1
           fi
           current_main_sha="$(
-            gh api "repos/$TARGET_REPOSITORY/commits/main" --jq '.sha'
+            timeout --foreground --signal=TERM --kill-after=5s \
+              "${WRANGLER_READ_TIMEOUT_SECONDS}s" \
+              gh api "repos/$TARGET_REPOSITORY/commits/main" --jq '.sha'
           )"
           if [[ ! "$current_main_sha" =~ ^[0-9a-f]{40}$ ]]; then
             echo "::error::crawl-remote main did not resolve to a full lowercase commit SHA."
@@ -1806,6 +1823,13 @@ jobs:
           console.log('Capability fences match the selected pre-migration states.');
           PRE_FENCE_NODE
 
+          now="$(date +%s)"
+          remaining="$((DEPLOY_JOB_DEADLINE_EPOCH - now))"
+          if (( remaining < D1_MUTATION_MIN_REMAINING_SECONDS )); then
+            echo "::error::refusing D1 migration because the protected job no longer has the complete deploy, proof, and rollback window."
+            exit 1
+          fi
+
           timeout --foreground --signal=TERM --kill-after=5s \
             "${WRANGLER_DEPLOY_TIMEOUT_SECONDS}s" \
             "$wrangler" d1 migrations apply crawl-remote \
@@ -2013,6 +2037,8 @@ jobs:
           test -f "$PREVIOUS_WORKER_PROBE_PATH"
           current_source_main_sha="$(
             GH_TOKEN="$SOURCE_GH_TOKEN" \
+              timeout --foreground --signal=TERM --kill-after=5s \
+              "${WRANGLER_READ_TIMEOUT_SECONDS}s" \
               gh api "repos/$SOURCE_REPOSITORY/commits/main" --jq '.sha'
           )"
           if [[ ! "$current_source_main_sha" =~ ^[0-9a-f]{40}$ ]]; then
@@ -2024,7 +2050,9 @@ jobs:
             exit 1
           fi
           current_main_sha="$(
-            gh api "repos/$TARGET_REPOSITORY/commits/main" --jq '.sha'
+            timeout --foreground --signal=TERM --kill-after=5s \
+              "${WRANGLER_READ_TIMEOUT_SECONDS}s" \
+              gh api "repos/$TARGET_REPOSITORY/commits/main" --jq '.sha'
           )"
           if [[ ! "$current_main_sha" =~ ^[0-9a-f]{40}$ ]]; then
             echo "::error::crawl-remote main did not resolve to a full lowercase commit SHA."
@@ -2097,6 +2125,13 @@ jobs:
             );
           }
           PRE_DEPLOYMENT_NODE
+
+          now="$(date +%s)"
+          remaining="$((DEPLOY_JOB_DEADLINE_EPOCH - now))"
+          if (( remaining < WORKER_MUTATION_MIN_REMAINING_SECONDS )); then
+            echo "::error::refusing Worker deployment because the protected job no longer has the complete ownership, proof, and rollback window."
+            exit 1
+          fi
 
           WRANGLER_OUTPUT_FILE_PATH="$DEPLOY_OUTPUT_PATH" \
             timeout --foreground --signal=TERM --kill-after=5s \
@@ -2337,6 +2372,8 @@ jobs:
           unset BASH_ENV ENV CDPATH GLOBIGNORE NODE_OPTIONS
           current_source_main_sha="$(
             GH_TOKEN="$SOURCE_GH_TOKEN" \
+              timeout --foreground --signal=TERM --kill-after=5s \
+              "${WRANGLER_READ_TIMEOUT_SECONDS}s" \
               gh api "repos/$SOURCE_REPOSITORY/commits/main" --jq '.sha'
           )"
           if [[ ! "$current_source_main_sha" =~ ^[0-9a-f]{40}$ ]]; then
@@ -2348,7 +2385,9 @@ jobs:
             exit 1
           fi
           current_main_sha="$(
-            gh api "repos/$TARGET_REPOSITORY/commits/main" --jq '.sha'
+            timeout --foreground --signal=TERM --kill-after=5s \
+              "${WRANGLER_READ_TIMEOUT_SECONDS}s" \
+              gh api "repos/$TARGET_REPOSITORY/commits/main" --jq '.sha'
           )"
           if [[ ! "$current_main_sha" =~ ^[0-9a-f]{40}$ ]]; then
             echo "::error::crawl-remote main did not resolve to a full lowercase commit SHA."

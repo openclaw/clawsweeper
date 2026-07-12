@@ -152,6 +152,8 @@ test("crawl-remote release is maintainer-bound across two fresh runners", () => 
   assert.equal(deploy.env.DEPLOYMENT_STATUS_ATTEMPTS, "60");
   assert.equal(deploy.env.DEPLOYMENT_STATUS_DELAY_SECONDS, "5");
   assert.equal(deploy.env.DEPLOYMENT_STATUS_TIMEOUT_SECONDS, "120");
+  assert.equal(deploy.env.D1_MUTATION_MIN_REMAINING_SECONDS, "1260");
+  assert.equal(deploy.env.WORKER_MUTATION_MIN_REMAINING_SECONDS, "900");
   assert.equal(deploy.env.WRANGLER_DEPLOY_TIMEOUT_SECONDS, "180");
   assert.equal(deploy.env.WRANGLER_READ_TIMEOUT_SECONDS, "30");
   assert.equal(deploy.env.WRANGLER_ROLLBACK_TIMEOUT_SECONDS, "180");
@@ -171,6 +173,7 @@ test("crawl-remote release is maintainer-bound across two fresh runners", () => 
     "privileged command budgets must reserve at least five minutes for setup and cleanup",
   );
   assert.equal(deploy.env.PRODUCTION_ENVIRONMENT, "crawl-remote-production");
+  const deadline = step(deploy, "Record protected deployment deadline");
   const environmentToken = step(deploy, "Create protected-environment audit token");
   const environmentAudit = step(deploy, "Audit protected production environment");
   const sourceAuthorization = step(deploy, "Reauthorize current ClawSweeper workflow");
@@ -179,14 +182,17 @@ test("crawl-remote release is maintainer-bound across two fresh runners", () => 
   const token = step(deploy, "Create exact-repository reauthorization token");
   const canonicalAuthority = step(deploy, "Verify canonical crawl-remote mutator is retired");
   const checkout = step(deploy, "Checkout trusted deployment toolchain");
-  assert.equal(steps(deploy).indexOf(environmentToken), 0);
-  assert.equal(steps(deploy).indexOf(environmentAudit), 1);
-  assert.equal(steps(deploy).indexOf(sourceAuthorization), 2);
-  assert.equal(steps(deploy).indexOf(authority), 3);
-  assert.equal(steps(deploy).indexOf(proofCredentials), 4);
-  assert.equal(steps(deploy).indexOf(token), 5);
-  assert.equal(steps(deploy).indexOf(canonicalAuthority), 6);
-  assert.equal(steps(deploy).indexOf(checkout), 7);
+  assert.equal(steps(deploy).indexOf(deadline), 0);
+  assert.equal(steps(deploy).indexOf(environmentToken), 1);
+  assert.equal(steps(deploy).indexOf(environmentAudit), 2);
+  assert.equal(steps(deploy).indexOf(sourceAuthorization), 3);
+  assert.equal(steps(deploy).indexOf(authority), 4);
+  assert.equal(steps(deploy).indexOf(proofCredentials), 5);
+  assert.equal(steps(deploy).indexOf(token), 6);
+  assert.equal(steps(deploy).indexOf(canonicalAuthority), 7);
+  assert.equal(steps(deploy).indexOf(checkout), 8);
+  assert.match(deadline.run ?? "", /started_at \+ 25 \* 60/);
+  assert.match(deadline.run ?? "", /DEPLOY_JOB_DEADLINE_EPOCH/);
   assert.equal(
     environmentToken.uses,
     "actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1",
@@ -769,6 +775,7 @@ esac
         SOURCE_REPOSITORY: "openclaw/clawsweeper",
         TARGET_REPOSITORY: "openclaw/crawl-remote",
         WORKFLOW_SHA: "c".repeat(40),
+        WRANGLER_READ_TIMEOUT_SECONDS: "5",
         ...(authorize ? {} : { GH_TOKEN: "test" }),
       },
     });
@@ -847,6 +854,7 @@ printf '%s\\n' "$((count + 1))" > "$GH_COUNTER"
         SOURCE_REPOSITORY: "openclaw/clawsweeper",
         TARGET_REPOSITORY: "openclaw/crawl-remote",
         WORKFLOW_SHA: "c".repeat(40),
+        WRANGLER_READ_TIMEOUT_SECONDS: "5",
       },
     });
   }
@@ -1530,6 +1538,9 @@ test("privileged mutations use only verified files and prove the selected D1 fen
   assert.match(workerDeploy, /versions\[0\]\?\.percentage !== 100/);
   assert.match(workerDeploy, /versions\[0\]\?\.version_id !== previousVersion/);
   assert.match(workerDeploy, /current Worker version changed after migration proof/);
+  assert.match(workerDeploy, /DEPLOY_JOB_DEADLINE_EPOCH - now/);
+  assert.match(workerDeploy, /WORKER_MUTATION_MIN_REMAINING_SECONDS/);
+  assert.match(workerDeploy, /complete ownership, proof, and rollback window/);
   assert.match(deploy.env.DEPLOY_MESSAGE ?? "", /github\.run_id.*github\.run_attempt.*deploy_sha/);
   assert.ok(
     workerDeploy.indexOf("deployments status") < workerDeploy.indexOf("WRANGLER_OUTPUT_FILE_PATH"),
@@ -1544,6 +1555,10 @@ test("privileged mutations use only verified files and prove the selected D1 fen
   assert.ok(preQueryIndex >= 0);
   assert.ok(preQueryIndex < migrationIndex);
   assert.ok(migrationIndex < postQueryIndex);
+  assert.match(migration, /DEPLOY_JOB_DEADLINE_EPOCH - now/);
+  assert.match(migration, /D1_MUTATION_MIN_REMAINING_SECONDS/);
+  assert.match(migration, /complete deploy, proof, and rollback window/);
+  assert.ok(migration.indexOf("D1_MUTATION_MIN_REMAINING_SECONDS") < migrationIndex);
 });
 
 test("failed Worker release rolls back only the exact previously stable Worker version", () => {
@@ -1583,6 +1598,8 @@ test("failed Worker release rolls back only the exact previously stable Worker v
   assert.match(deployReceipt.run ?? "", /entry\?\.type === 'deploy'/);
   assert.match(deployReceipt.run ?? "", /deployments\[0\]\?\.version !== 1/);
   assert.match(deployReceipt.run ?? "", /version_id !== deployedVersion/);
+  assert.equal(postDeployMain.run?.match(/timeout --foreground/g)?.length, 2);
+  assert.match(postDeployMain.run ?? "", /WRANGLER_READ_TIMEOUT_SECONDS/);
   assert.match(run, /refusing rollback because this run no longer owns the current Worker version/);
   assert.match(run, /versions\[0\]\?\.version_id !== process\.env\.DEPLOYED_VERSION/);
   assert.match(run, /wrangler" rollback "\$previous_version"/);

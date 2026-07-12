@@ -34,7 +34,9 @@ checkpoint, and status-only commits are intentionally omitted.
   the Worker to the exact prior stable version; D1 migrations remain applied.
   The former crawl-remote deployment workflow must be deleted, not merely
   disabled, and all Wrangler reads, mutations, ownership probes, and rollback
-  commands have explicit deadlines that preserve rollback headroom.
+  commands have explicit deadlines. Absolute pre-mutation cutoffs refuse D1 or
+  Worker changes once the protected job can no longer preserve the complete
+  proof and rollback window.
   Environment variables resolve only
   inside protected steps, route-proof mode is mandatory, and D1 packaging
   accepts only the exact reviewed migration sequence and content hashes.
