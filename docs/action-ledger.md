@@ -61,7 +61,9 @@ and hash their inputs. Identity inputs must be plain canonical JSON trees:
 non-finite, negative-zero, or unsafe-integer numbers, dates, class instances,
 sparse or decorated arrays, accessors, `undefined`, functions, symbols,
 bigints, cycles, and credential-bearing field aliases are rejected before
-hashing. Ledger object keys and evidence use locale-independent UTF-8 byte
+hashing. Canonical JSON validation is iterative and rejects inputs deeper than
+64 levels, larger than 10000 nodes, or larger than a 1 MiB UTF-8 input budget
+before recursive normalization or hashing. Ledger object keys and evidence use locale-independent UTF-8 byte
 ordering without changing the older shared `stableJson` contract. Integer-like
 keys retain byte ordering rather than JavaScript property enumeration order,
 and unpaired-surrogate keys are rejected. Large identifiers must be strings.
@@ -77,6 +79,9 @@ confidential-identifier checks as every other durable machine-text field.
   status and failure reason never define side-effect identity.
 - Repository, producer SHA, workflow, job, run, attempt, and component all bind
   shard identity. They do not define the logical operation.
+- Workflow, step, invocation, and component identifiers keep a readable prefix
+  plus a digest of the original value whenever sanitization or truncation loses
+  information, so distinct producer identities cannot collapse.
 - `recorded_at` is first-writer metadata and is excluded from event and shard
   replay equality. When equivalent fresh-root reconstructions reach an existing
   shard or import destination, the existing first-writer bytes win.
@@ -99,7 +104,9 @@ confidential-identifier checks as every other durable machine-text field.
   the current flush environment, and event ordering are never used, so delayed
   or fresh-root reconstruction cannot move a run to another path. Timestamp
   metadata must round-trip through a real calendar date; impossible dates are
-  rejected rather than normalized into another partition.
+  rejected rather than normalized into another partition. Four-digit years
+  `0001` through `0099` remain valid and are not remapped by JavaScript's
+  legacy `Date.UTC` year handling.
 - Reusing one run/job shard identity for a different event set is a hard
   conflict.
 - Shard path components remain below portable 255-byte filename limits.

@@ -373,6 +373,11 @@ export const ACTION_EVENT_ATTRIBUTE_KEYS = [
 ] as const;
 
 export const ACTION_EVENT_MACHINE_TEXT_PATTERN_SOURCE = "^[A-Za-z0-9][A-Za-z0-9_.:/@+\\-]*$";
+export const ACTION_LEDGER_CANONICAL_JSON_LIMITS = {
+  maxDepth: 64,
+  maxNodes: 10_000,
+  maxBytes: 1024 * 1024,
+} as const;
 export const ACTION_EVENT_CONFIDENTIAL_IDENTIFIER_PATTERN_SOURCES = [
   "/(?:[Uu][Ss][Ee][Rr][Ss]|[Hh][Oo][Mm][Ee]|[Pp][Rr][Ii][Vv][Aa][Tt][Ee]|[Tt][Mm][Pp])/",
   "\\\\[Uu][Ss][Ee][Rr][Ss]\\\\",
@@ -1793,7 +1798,7 @@ function requiredTimestamp(value: string, label: string): string {
   const hour = Number(hourText);
   const minute = Number(minuteText);
   const second = Number(secondText);
-  const calendar = new Date(Date.UTC(year, month - 1, day));
+  const calendar = strictUtcCalendarDate(year, month, day);
   const validCalendar =
     year >= 1 &&
     calendar.getUTCFullYear() === year &&
@@ -1819,7 +1824,7 @@ function requiredCalendarDate(value: string, label: string): string {
   const year = Number(yearText);
   const month = Number(monthText);
   const day = Number(dayText);
-  const calendar = new Date(Date.UTC(year, month - 1, day));
+  const calendar = strictUtcCalendarDate(year, month, day);
   if (
     year < 1 ||
     calendar.getUTCFullYear() !== year ||
@@ -1871,14 +1876,19 @@ function boundedPathSegment(value: string, maxLength: number): string {
 }
 
 function canonicalIdentityJson(value: unknown): string {
-  return serializeCanonicalJson(canonicalJsonValue(value, new Set<object>(), "$", true));
+  return serializeCanonicalJson(canonicalJsonValue(value, true));
 }
 
-function canonicalJsonValue(
+function canonicalJsonValue(value: unknown, rejectCredentialFields = false): unknown {
+  validateCanonicalJsonComplexity(value);
+  return canonicalizeJsonValue(value, new Set<object>(), "$", rejectCredentialFields);
+}
+
+function canonicalizeJsonValue(
   value: unknown,
-  ancestors: Set<object> = new Set<object>(),
-  location = "$",
-  rejectCredentialFields = false,
+  ancestors: Set<object>,
+  location: string,
+  rejectCredentialFields: boolean,
 ): unknown {
   if (value === null || typeof value === "string" || typeof value === "boolean") return value;
   if (typeof value === "number") {
@@ -1925,7 +1935,7 @@ function canonicalJsonValue(
         if (!descriptor?.enumerable || !("value" in descriptor)) {
           throw new Error(`action event data contains a non-data array item at ${location}`);
         }
-        return canonicalJsonValue(
+        return canonicalizeJsonValue(
           descriptor.value,
           ancestors,
           `${location}[${index}]`,
@@ -1961,7 +1971,7 @@ function canonicalJsonValue(
       Object.defineProperty(normalized, key, {
         configurable: true,
         enumerable: true,
-        value: canonicalJsonValue(
+        value: canonicalizeJsonValue(
           descriptor.value,
           ancestors,
           `${location}.${key}`,
@@ -1973,6 +1983,117 @@ function canonicalJsonValue(
     return normalized;
   } finally {
     ancestors.delete(value);
+  }
+}
+
+function validateCanonicalJsonComplexity(root: unknown): void {
+  type Frame =
+    | { kind: "value"; value: unknown; location: string; depth: number }
+    | { kind: "exit"; value: object };
+
+  const stack: Frame[] = [{ kind: "value", value: root, location: "$", depth: 0 }];
+  const ancestors = new Set<object>();
+  let nodes = 0;
+  let bytes = 0;
+
+  const addBytes = (amount: number, location: string): void => {
+    bytes += amount;
+    if (bytes > ACTION_LEDGER_CANONICAL_JSON_LIMITS.maxBytes) {
+      throw new Error(
+        `action event data exceeds canonical JSON size limit ${ACTION_LEDGER_CANONICAL_JSON_LIMITS.maxBytes} bytes at ${location}`,
+      );
+    }
+  };
+
+  while (stack.length > 0) {
+    const frame = stack.pop()!;
+    if (frame.kind === "exit") {
+      ancestors.delete(frame.value);
+      continue;
+    }
+
+    nodes += 1;
+    if (nodes > ACTION_LEDGER_CANONICAL_JSON_LIMITS.maxNodes) {
+      throw new Error(
+        `action event data exceeds canonical JSON node limit ${ACTION_LEDGER_CANONICAL_JSON_LIMITS.maxNodes} at ${frame.location}`,
+      );
+    }
+    if (frame.depth > ACTION_LEDGER_CANONICAL_JSON_LIMITS.maxDepth) {
+      throw new Error(
+        `action event data exceeds canonical JSON depth limit ${ACTION_LEDGER_CANONICAL_JSON_LIMITS.maxDepth} at ${frame.location}`,
+      );
+    }
+
+    const value = frame.value;
+    if (value === null) {
+      addBytes(4, frame.location);
+      continue;
+    }
+    if (typeof value === "string") {
+      addBytes(Buffer.byteLength(value, "utf8") + 2, frame.location);
+      continue;
+    }
+    if (typeof value === "number") {
+      addBytes(24, frame.location);
+      continue;
+    }
+    if (typeof value === "boolean") {
+      addBytes(5, frame.location);
+      continue;
+    }
+    if (!value || typeof value !== "object") {
+      addBytes(8, frame.location);
+      continue;
+    }
+    if (ancestors.has(value)) {
+      continue;
+    }
+
+    ancestors.add(value);
+    stack.push({ kind: "exit", value });
+    addBytes(2, frame.location);
+
+    if (Array.isArray(value)) {
+      if (value.length > 0) addBytes(value.length - 1, frame.location);
+      if (nodes + value.length > ACTION_LEDGER_CANONICAL_JSON_LIMITS.maxNodes) {
+        throw new Error(
+          `action event data exceeds canonical JSON node limit ${ACTION_LEDGER_CANONICAL_JSON_LIMITS.maxNodes} at ${frame.location}`,
+        );
+      }
+      for (let index = value.length - 1; index >= 0; index -= 1) {
+        const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+        if (descriptor && "value" in descriptor) {
+          stack.push({
+            kind: "value",
+            value: descriptor.value,
+            location: `${frame.location}[${index}]`,
+            depth: frame.depth + 1,
+          });
+        }
+      }
+      continue;
+    }
+
+    const ownKeys = Reflect.ownKeys(value);
+    if (nodes + ownKeys.length > ACTION_LEDGER_CANONICAL_JSON_LIMITS.maxNodes) {
+      throw new Error(
+        `action event data exceeds canonical JSON node limit ${ACTION_LEDGER_CANONICAL_JSON_LIMITS.maxNodes} at ${frame.location}`,
+      );
+    }
+    for (let index = ownKeys.length - 1; index >= 0; index -= 1) {
+      const key = ownKeys[index];
+      if (typeof key !== "string") continue;
+      addBytes(Buffer.byteLength(key, "utf8") + 4, `${frame.location}.${key}`);
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (descriptor && "value" in descriptor) {
+        stack.push({
+          kind: "value",
+          value: descriptor.value,
+          location: `${frame.location}.${key}`,
+          depth: frame.depth + 1,
+        });
+      }
+    }
   }
 }
 
@@ -2020,6 +2141,13 @@ function hasUnpairedSurrogate(value: string): boolean {
     }
   }
   return false;
+}
+
+function strictUtcCalendarDate(year: number, month: number, day: number): Date {
+  const calendar = new Date(0);
+  calendar.setUTCHours(0, 0, 0, 0);
+  calendar.setUTCFullYear(year, month - 1, day);
+  return calendar;
 }
 
 function highRiskCredentialField(value: string): boolean {

@@ -127,7 +127,7 @@ export function workflowActionProducer(
   }
   const workflowRef = String(env.GITHUB_WORKFLOW_REF ?? "").trim();
   const workflow = workflowRef
-    ? path.posix.basename(workflowRef.split("@", 1)[0] ?? workflowRef)
+    ? machineIdentifier(path.posix.basename(workflowRef.split("@", 1)[0] ?? workflowRef), 128)
     : machineIdentifier(requiredEnv(env, "GITHUB_WORKFLOW"), 128);
   const step = machineIdentifier(String(env.GITHUB_ACTION ?? "process"), 64);
   const invocation = machineIdentifier(
@@ -748,7 +748,7 @@ function workflowPartitionCalendarDate(value: string, label: string): string {
   const year = Number(yearText);
   const month = Number(monthText);
   const day = Number(dayText);
-  const date = new Date(Date.UTC(year, month - 1, day));
+  const date = strictUtcCalendarDate(year, month, day);
   if (
     year < 1 ||
     date.getUTCFullYear() !== year ||
@@ -782,7 +782,7 @@ function workflowPartitionTimestampDate(value: string): string {
   const year = Number(yearText);
   const month = Number(monthText);
   const day = Number(dayText);
-  const calendar = new Date(Date.UTC(year, month - 1, day));
+  const calendar = strictUtcCalendarDate(year, month, day);
   const validCalendar =
     year >= 1 &&
     calendar.getUTCFullYear() === year &&
@@ -809,13 +809,22 @@ function actionEventMessage(event: ActionEvent): string {
 }
 
 function machineIdentifier(value: string, maxLength: number): string {
-  const normalized = value
-    .trim()
-    .replace(/[^A-Za-z0-9_.:/@+-]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, maxLength);
-  if (!normalized) throw new Error("workflow action identifier is required");
-  return normalized;
+  const source = value.trim();
+  const readable = source.replace(/[^A-Za-z0-9_.:/@+-]+/g, "-").replace(/^-+|-+$/g, "");
+  if (!readable) throw new Error("workflow action identifier is required");
+  if (readable === source && readable.length <= maxLength) return readable;
+  const digest = createHash("sha256").update(source).digest("hex").slice(0, 12);
+  const prefixLength = maxLength - digest.length - 1;
+  if (prefixLength < 1) throw new Error("workflow action identifier limit is too small");
+  const prefix = readable.slice(0, prefixLength).replace(/-+$/g, "") || "id";
+  return `${prefix}-${digest}`;
+}
+
+function strictUtcCalendarDate(year: number, month: number, day: number): Date {
+  const calendar = new Date(0);
+  calendar.setUTCHours(0, 0, 0, 0);
+  calendar.setUTCFullYear(year, month - 1, day);
+  return calendar;
 }
 
 function requiredEnv(env: NodeJS.ProcessEnv, name: string): string {

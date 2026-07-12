@@ -8,6 +8,7 @@ import test from "node:test";
 import { pathToFileURL } from "node:url";
 
 import {
+  ACTION_LEDGER_CANONICAL_JSON_LIMITS,
   ACTION_EVENT_ATTRIBUTE_KEYS,
   ACTION_EVENT_CONFIDENTIAL_IDENTIFIER_PATTERN_SOURCES,
   ACTION_EVENT_FAMILIES,
@@ -387,6 +388,33 @@ test("identity hashing rejects values outside the canonical JSON domain", () => 
     cycle.self = cycle;
     actionEventKey("review.completed", cycle);
   }, /contains a cycle/);
+});
+
+test("canonical identity hashing rejects excessive depth, nodes, and input size deterministically", () => {
+  let deep: unknown = "leaf";
+  for (let depth = 0; depth <= ACTION_LEDGER_CANONICAL_JSON_LIMITS.maxDepth; depth += 1) {
+    deep = { child: deep };
+  }
+  assert.throws(
+    () => actionIdempotencyKey(deep),
+    new RegExp(`canonical JSON depth limit ${ACTION_LEDGER_CANONICAL_JSON_LIMITS.maxDepth}`),
+  );
+
+  assert.throws(
+    () =>
+      actionIdempotencyKey(
+        Array.from({ length: ACTION_LEDGER_CANONICAL_JSON_LIMITS.maxNodes }, (_, index) => index),
+      ),
+    new RegExp(`canonical JSON node limit ${ACTION_LEDGER_CANONICAL_JSON_LIMITS.maxNodes}`),
+  );
+
+  assert.throws(
+    () =>
+      actionIdempotencyKey({
+        value: "x".repeat(ACTION_LEDGER_CANONICAL_JSON_LIMITS.maxBytes),
+      }),
+    new RegExp(`canonical JSON size limit ${ACTION_LEDGER_CANONICAL_JSON_LIMITS.maxBytes} bytes`),
+  );
 });
 
 test("ledger ordering is binary and locale independent without changing shared stable JSON", () => {
@@ -2029,6 +2057,9 @@ test("runtime normalization enforces checked-in schema bounds", () => {
     () => createActionEvent(reviewInput({ occurredAt: "2026-02-31T10:00:00Z" })),
     /ISO date-time/,
   );
+  for (const occurredAt of ["0001-01-01T00:00:00Z", "0099-12-31T23:59:59Z"]) {
+    assert.equal(createActionEvent(reviewInput({ occurredAt })).occurred_at, occurredAt);
+  }
   assert.throws(
     () =>
       createActionEvent(
@@ -2092,6 +2123,22 @@ test("runtime normalization enforces checked-in schema bounds", () => {
         [createActionEvent(reviewInput())],
       ),
     /ISO calendar date/,
+  );
+  assert.match(
+    actionEventShardRelativePath(
+      {
+        repository: producer.repository,
+        sha: producer.sha,
+        producer: "review",
+        workflow: "sweep",
+        job: "review-3",
+        runId: "100",
+        runAttempt: 2,
+        partitionDate: "0001-01-01",
+      },
+      [createActionEvent(reviewInput({ occurredAt: "0001-01-01T00:00:00Z" }))],
+    ),
+    /^ledger\/v1\/events\/0001\/01\/01\//,
   );
 });
 

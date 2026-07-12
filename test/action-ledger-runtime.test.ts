@@ -456,6 +456,69 @@ test("workflow producer identity uses stable workflow and step identifiers", () 
   });
 });
 
+test("workflow producer normalization preserves distinct original identities", () => {
+  const readable = workflowActionProducer("review-lane", workflowEnv());
+  const sanitized = workflowActionProducer("review lane", workflowEnv());
+  assert.notEqual(sanitized.component, readable.component);
+  assert.match(sanitized.component, /^review-lane-[a-f0-9]{12}\./);
+
+  const sharedPrefix = "review-".repeat(30);
+  const first = workflowActionProducer(`${sharedPrefix}first`, workflowEnv());
+  const second = workflowActionProducer(`${sharedPrefix}second`, workflowEnv());
+  assert.notEqual(first.component, second.component);
+  assert.ok(first.component.length <= 120 + 1 + 64 + 1 + 64);
+  assert.match(first.component, /-[a-f0-9]{12}\.__run_5\.review-0$/);
+
+  const root = tempRoot();
+  const firstEvent = recordWorkflowActionEvent(
+    root,
+    {
+      scope: "review.completed",
+      identity: { number: 42 },
+      type: ACTION_EVENT_TYPES.reviewCompleted,
+      component: "review lane",
+      subject: {
+        repository: "openclaw/openclaw",
+        kind: "pull_request",
+        number: 42,
+      },
+      action: {
+        name: "review",
+        status: "completed",
+        retryable: false,
+        mutation: false,
+      },
+    },
+    { env: workflowEnv() },
+  );
+  const secondEvent = recordWorkflowActionEvent(
+    root,
+    {
+      scope: "review.completed",
+      identity: { number: 42 },
+      type: ACTION_EVENT_TYPES.reviewCompleted,
+      component: "review-lane",
+      subject: {
+        repository: "openclaw/openclaw",
+        kind: "pull_request",
+        number: 42,
+      },
+      action: {
+        name: "review",
+        status: "completed",
+        retryable: false,
+        mutation: false,
+      },
+    },
+    { env: workflowEnv() },
+  );
+  assert.ok(firstEvent);
+  assert.ok(secondEvent);
+  assert.notEqual(firstEvent.producer.component, secondEvent.producer.component);
+  assert.notEqual(firstEvent.event_key, secondEvent.event_key);
+  assert.notEqual(firstEvent.event_id, secondEvent.event_id);
+});
+
 test("workflow events finalize into one replay-stable per-step shard", async () => {
   const root = tempRoot();
   const outputRoot = trustedChildRoot(root, "state");
@@ -573,6 +636,23 @@ test("workflow partition timestamps require real calendar dates", async () => {
   recordReview(root, env);
   const [relativePath] = await flushWorkflowActionEvents(root, { env, outputRoot });
   assert.match(relativePath ?? "", /^ledger\/v1\/events\/2024\/03\/01\//);
+
+  for (const runStartedAt of ["0001-01-01T00:00:00Z", "0099-12-31T23:59:59Z"]) {
+    const earlyRoot = tempRoot();
+    const earlyOutputRoot = trustedChildRoot(earlyRoot, "state");
+    const earlyEnv = workflowEnv({
+      CLAWSWEEPER_ACTION_LEDGER_PARTITION_DATE: undefined,
+      GITHUB_RUN_STARTED_AT: runStartedAt,
+    });
+    recordReview(earlyRoot, earlyEnv, new Date("2026-07-12T10:01:00.000Z"), {
+      occurredAt: runStartedAt,
+    });
+    const [earlyPath] = await flushWorkflowActionEvents(earlyRoot, {
+      env: earlyEnv,
+      outputRoot: earlyOutputRoot,
+    });
+    assert.match(earlyPath ?? "", new RegExp(`^ledger/v1/events/${runStartedAt.slice(0, 4)}/`));
+  }
 });
 
 test("fresh-root shard replay preserves the first recorded-at metadata", async () => {
