@@ -1141,8 +1141,8 @@ function parseActionEventShardImportReservation(
     ? reservation.shards.map((entry) => {
         const shard = entry as { path?: unknown; replay_sha256?: unknown };
         return {
-          path: String(shard.path ?? ""),
-          replay_sha256: String(shard.replay_sha256 ?? ""),
+          path: typeof shard.path === "string" ? shard.path : "",
+          replay_sha256: typeof shard.replay_sha256 === "string" ? shard.replay_sha256 : "",
         };
       })
     : [];

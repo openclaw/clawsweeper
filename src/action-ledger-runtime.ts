@@ -762,7 +762,7 @@ function actionEventShardImportBindings(
   }
 
   const bindings = [...producerRuns.values(), ...eventIdentities.values()];
-  for (const [shardSetKey, group] of shardSets) {
+  for (const group of shardSets.values()) {
     const ordered = [...group].sort((left, right) =>
       left.relativePath < right.relativePath ? -1 : left.relativePath > right.relativePath ? 1 : 0,
     );
