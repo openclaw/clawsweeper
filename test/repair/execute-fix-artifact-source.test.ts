@@ -345,6 +345,19 @@ test("repair workflow binds one run through no-credential proof and token-only m
   const mutate = workflow.slice(mutateIndex);
 
   assert.match(authorize, /repair:execution-handoff -- authorize/);
+  assert.match(authorize, /repair:execution-handoff -- restore-authorization/);
+  assert.ok(
+    authorize.indexOf("Restore checkpoint authorization before live source intake") <
+      authorize.indexOf("Authorize exact job and run"),
+  );
+  assert.match(
+    authorize,
+    /authorization_sha256: \$\{\{ steps\.restore_authorization\.outputs\.authorization_sha256 \|\| steps\.authorize\.outputs\.authorization_sha256 \}\}/,
+  );
+  assert.match(
+    authorize,
+    /Restore checkpoint authorization before live source intake[\s\S]*--source-root \.clawsweeper-repair\/recovery-authorized[\s\S]*--publication-root \.clawsweeper-repair\/recovery-execution[\s\S]*--publication-receipt \.clawsweeper-repair\/recovery-publication\/receipt\.json[\s\S]*--source-job-path "\$\{\{ inputs\.job \}\}"/,
+  );
   assert.match(authorize, /persist-credentials: "false"/);
   assert.match(execute, /repair:execution-handoff -- verify/);
   assert.match(execute, /repair:execution-handoff -- seal/);
@@ -399,7 +412,19 @@ test("repair workflow binds one run through no-credential proof and token-only m
   );
   assert.match(
     mutate,
+    /Upload durable pre-close checkpoint[\s\S]*retention-days: 90[\s\S]*Upload completed publication checkpoint[\s\S]*retention-days: 90/,
+  );
+  assert.match(
+    mutate,
     /checkpoint-source-closes[\s\S]*id: upload_source_close_checkpoint[\s\S]*close-sources[\s\S]*steps\.checkpoint_sources\.outputs\.publication_receipt_sha256/,
+  );
+  assert.equal(
+    [
+      ...mutate.matchAll(
+        /--close-actor "\$\{\{ steps\.target_post_flight_token\.outputs\.app-slug \}\}\[bot\]"/g,
+      ),
+    ].length,
+    2,
   );
   assert.match(
     mutate,
@@ -409,6 +434,10 @@ test("repair workflow binds one run through no-credential proof and token-only m
   assert.match(mutate, /needs\.execute\.outputs\.execute_fix_outcome == 'success'/);
   assert.match(mutate, /needs\.execute\.outputs\.mutation_ready == 'true'/);
   assert.match(mutate, /needs\.validate\.result == 'success'/);
+  assert.match(
+    mutate,
+    /Write final publication provenance[\s\S]*source_close_mutations[\s\S]*Upload final worker artifacts[\s\S]*\.clawsweeper-repair\/publication\/receipt\.json[\s\S]*\.clawsweeper-repair\/provenance\/publication\.json[\s\S]*retention-days: 90/,
+  );
   assert.doesNotMatch(mutate, /setup-codex|--latest|create-state-token|setup-state/);
   assert.match(mutate, /npm_config_ignore_scripts: "true"/);
   assert.doesNotMatch(mutate, /repair:apply-result|repair:tag-clawsweeper/);

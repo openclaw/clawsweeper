@@ -193,7 +193,7 @@ test("repair workflow resolves producer artifacts by trusted id across rerun att
       /uses: actions\/download-artifact@v8\n\s+with:\n([\s\S]*?)(?=\n\s{6}- (?:name|uses):|\n\n)/g,
     ),
   ];
-  assert.equal(downloadBlocks.length, 7);
+  assert.equal(downloadBlocks.length, 10);
   for (const block of downloadBlocks) {
     assert.match(block[1]!, /artifact-ids: \$\{\{ steps\.[^.]+\.outputs\.artifact_id \}\}/);
     assert.match(block[1]!, /github-token: \$\{\{ github\.token \}\}/);
@@ -232,6 +232,10 @@ test("repair workflow resolves producer artifacts by trusted id across rerun att
   assert.match(
     workflow,
     /Resolve prior durable publication checkpoint[\s\S]*?--prefix clawsweeper-repair-publication[\s\S]*?--fallback-prefix clawsweeper-repair-publication-close[\s\S]*?Download prior durable publication checkpoint[\s\S]*?Publish exact independently validated repair/,
+  );
+  assert.match(
+    workflow,
+    /Resolve prior publication checkpoint for authorization recovery[\s\S]*?Resolve prior checkpoint authorization[\s\S]*?Resolve prior checkpoint execution handoff[\s\S]*?Restore checkpoint authorization before live source intake[\s\S]*?Authorize exact job and run/,
   );
 });
 

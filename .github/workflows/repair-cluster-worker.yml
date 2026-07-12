@@ -404,15 +404,15 @@ jobs:
       actions: read
       contents: read
     outputs:
-      authorization_sha256: ${{ steps.authorize.outputs.authorization_sha256 }}
-      job_path: ${{ steps.authorize.outputs.job_path }}
-      result_path: ${{ steps.authorize.outputs.result_path }}
-      run_dir: ${{ steps.authorize.outputs.run_dir }}
-      execution_intent_path: ${{ steps.authorize.outputs.execution_intent_path }}
-      source_job_path: ${{ steps.authorize.outputs.source_job_path }}
-      target_repo: ${{ steps.authorize.outputs.target_repo }}
-      target_owner: ${{ steps.authorize.outputs.target_owner }}
-      target_name: ${{ steps.authorize.outputs.target_name }}
+      authorization_sha256: ${{ steps.restore_authorization.outputs.authorization_sha256 || steps.authorize.outputs.authorization_sha256 }}
+      job_path: ${{ steps.restore_authorization.outputs.job_path || steps.authorize.outputs.job_path }}
+      result_path: ${{ steps.restore_authorization.outputs.result_path || steps.authorize.outputs.result_path }}
+      run_dir: ${{ steps.restore_authorization.outputs.run_dir || steps.authorize.outputs.run_dir }}
+      execution_intent_path: ${{ steps.restore_authorization.outputs.execution_intent_path || steps.authorize.outputs.execution_intent_path }}
+      source_job_path: ${{ steps.restore_authorization.outputs.source_job_path || steps.authorize.outputs.source_job_path }}
+      target_repo: ${{ steps.restore_authorization.outputs.target_repo || steps.authorize.outputs.target_repo }}
+      target_owner: ${{ steps.restore_authorization.outputs.target_owner || steps.authorize.outputs.target_owner }}
+      target_name: ${{ steps.restore_authorization.outputs.target_name || steps.authorize.outputs.target_name }}
       artifact_id: ${{ steps.upload.outputs.artifact-id }}
       artifact_digest: ${{ steps.upload.outputs.artifact-digest }}
       producer_attempt: ${{ steps.producer_attempt.outputs.value }}
@@ -488,8 +488,95 @@ jobs:
         with:
           build-script: build:repair
 
+      - name: Resolve prior publication checkpoint for authorization recovery
+        id: authorization_publication_artifact
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CLAWSWEEPER_ALLOW_PRIOR_ARTIFACT: "1"
+        run: |
+          pnpm run repair:resolve-run-artifact -- \
+            --repository "${{ github.repository }}" \
+            --run-id "${{ github.run_id }}" \
+            --current-attempt "${{ github.run_attempt }}" \
+            --prefix clawsweeper-repair-publication \
+            --fallback-prefix clawsweeper-repair-publication-close
+
+      - name: Download prior publication checkpoint for authorization recovery
+        if: ${{ steps.authorization_publication_artifact.outcome == 'success' }}
+        uses: actions/download-artifact@v8
+        with:
+          artifact-ids: ${{ steps.authorization_publication_artifact.outputs.artifact_id }}
+          path: .clawsweeper-repair/recovery-publication
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ github.run_id }}
+
+      - name: Resolve prior checkpoint authorization
+        id: prior_authorized_artifact
+        if: ${{ steps.authorization_publication_artifact.outcome == 'success' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CLAWSWEEPER_ALLOW_PRIOR_ARTIFACT: "1"
+        run: |
+          pnpm run repair:resolve-run-artifact -- \
+            --repository "${{ github.repository }}" \
+            --run-id "${{ github.run_id }}" \
+            --current-attempt "${{ github.run_attempt }}" \
+            --prefix clawsweeper-repair-authorized
+
+      - name: Download prior checkpoint authorization
+        if: ${{ steps.authorization_publication_artifact.outcome == 'success' }}
+        uses: actions/download-artifact@v8
+        with:
+          artifact-ids: ${{ steps.prior_authorized_artifact.outputs.artifact_id }}
+          path: .clawsweeper-repair/recovery-authorized
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ github.run_id }}
+
+      - name: Resolve prior checkpoint execution handoff
+        id: prior_execution_artifact
+        if: ${{ steps.authorization_publication_artifact.outcome == 'success' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CLAWSWEEPER_ALLOW_PRIOR_ARTIFACT: "1"
+        run: |
+          pnpm run repair:resolve-run-artifact -- \
+            --repository "${{ github.repository }}" \
+            --run-id "${{ github.run_id }}" \
+            --current-attempt "${{ github.run_attempt }}" \
+            --prefix clawsweeper-repair-execution
+
+      - name: Download prior checkpoint execution handoff
+        if: ${{ steps.authorization_publication_artifact.outcome == 'success' }}
+        uses: actions/download-artifact@v8
+        with:
+          artifact-ids: ${{ steps.prior_execution_artifact.outputs.artifact_id }}
+          path: .clawsweeper-repair/recovery-execution
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ github.run_id }}
+
+      - name: Restore checkpoint authorization before live source intake
+        id: restore_authorization
+        if: ${{ steps.authorization_publication_artifact.outcome == 'success' }}
+        run: |
+          pnpm run repair:execution-handoff -- restore-authorization \
+            --source-root .clawsweeper-repair/recovery-authorized \
+            --publication-root .clawsweeper-repair/recovery-execution \
+            --publication-receipt .clawsweeper-repair/recovery-publication/receipt.json \
+            --out .clawsweeper-repair/authorized \
+            --run-id "${{ github.run_id }}" \
+            --run-attempt "${{ github.run_attempt }}" \
+            --workflow-repository "${{ github.repository }}" \
+            --workflow-sha "${{ github.sha }}" \
+            --source-job-path "${{ inputs.job }}" \
+            --allowed-owner "${CLAWSWEEPER_ALLOWED_OWNER}"
+
       - name: Resolve worker artifact producer
         id: worker_artifact
+        if: ${{ steps.authorization_publication_artifact.outcome != 'success' }}
         env:
           GH_TOKEN: ${{ github.token }}
           CLAWSWEEPER_ALLOW_PRIOR_ARTIFACT: ${{ needs.cluster.outputs.producer_attempt != '' && needs.cluster.outputs.producer_attempt != github.run_attempt && '1' || '0' }}
@@ -503,6 +590,7 @@ jobs:
             --expected-artifact-digest "${{ needs.cluster.outputs.worker_artifact_digest }}"
 
       - name: Download worker artifact
+        if: ${{ steps.authorization_publication_artifact.outcome != 'success' }}
         uses: actions/download-artifact@v8
         with:
           artifact-ids: ${{ steps.worker_artifact.outputs.artifact_id }}
@@ -513,6 +601,7 @@ jobs:
 
       - name: Authorize exact job and run
         id: authorize
+        if: ${{ steps.authorization_publication_artifact.outcome != 'success' }}
         env:
           GH_TOKEN: ${{ steps.target_read_token.outputs.token }}
         run: |
@@ -534,7 +623,7 @@ jobs:
           name: clawsweeper-repair-authorized-${{ github.run_id }}-${{ github.run_attempt }}
           path: .clawsweeper-repair/authorized
           if-no-files-found: error
-          retention-days: 7
+          retention-days: 90
 
   execute:
     name: Prepare repair artifact without credentials
@@ -698,7 +787,7 @@ jobs:
           name: clawsweeper-repair-execution-${{ github.run_id }}-${{ github.run_attempt }}
           path: .clawsweeper-repair/authorized
           if-no-files-found: error
-          retention-days: 7
+          retention-days: 90
 
       - name: Collect Codex debug logs
         if: ${{ always() && steps.check_job.outputs.job_exists == '1' }}
@@ -1141,7 +1230,8 @@ jobs:
             --validation-receipt .clawsweeper-repair/validation/receipt.json \
             --validation-receipt-sha256 "${{ needs.validate.outputs.receipt_sha256 }}" \
             --publication-receipt .clawsweeper-repair/publication/receipt.json \
-            --publication-receipt-sha256 "${{ steps.publish.outputs.publication_receipt_sha256 }}"
+            --publication-receipt-sha256 "${{ steps.publish.outputs.publication_receipt_sha256 }}" \
+            --close-actor "${{ steps.target_post_flight_token.outputs.app-slug }}[bot]"
 
       - name: Upload durable pre-close checkpoint
         id: upload_source_close_checkpoint
@@ -1150,7 +1240,7 @@ jobs:
           name: clawsweeper-repair-publication-close-${{ github.run_id }}-${{ github.run_attempt }}
           path: .clawsweeper-repair/publication/receipt.json
           if-no-files-found: error
-          retention-days: 7
+          retention-days: 90
 
       - name: Close superseded sources from publication checkpoint
         id: close_sources
@@ -1164,16 +1254,18 @@ jobs:
             --validation-receipt .clawsweeper-repair/validation/receipt.json \
             --validation-receipt-sha256 "${{ needs.validate.outputs.receipt_sha256 }}" \
             --publication-receipt .clawsweeper-repair/publication/receipt.json \
-            --publication-receipt-sha256 "${{ steps.checkpoint_sources.outputs.publication_receipt_sha256 }}"
+            --publication-receipt-sha256 "${{ steps.checkpoint_sources.outputs.publication_receipt_sha256 }}" \
+            --close-actor "${{ steps.target_post_flight_token.outputs.app-slug }}[bot]"
 
       - name: Upload completed publication checkpoint
+        id: upload_publication_checkpoint
         if: always()
         uses: actions/upload-artifact@v7
         with:
           name: clawsweeper-repair-publication-${{ github.run_id }}-${{ github.run_attempt }}
           path: .clawsweeper-repair/publication/receipt.json
           if-no-files-found: error
-          retention-days: 7
+          retention-days: 90
 
       - name: Post-flight finalize fix PRs
         id: post_flight
@@ -1256,13 +1348,88 @@ jobs:
         if: ${{ success() && steps.post_flight.outputs.report_outcome == 'success' && steps.crabfleet_session.outcome == 'success' }}
         run: pnpm run repair:action-session -- update --state completed --phase "done" --summary "Repair, validation, review, push, and post-flight gates completed" --completion-reason gates_passed
 
+      - name: Write final publication provenance
+        if: always()
+        env:
+          AUTHORIZATION_SHA256: ${{ needs.authorize.outputs.authorization_sha256 }}
+          AUTHORIZATION_ARTIFACT_ID: ${{ needs.authorize.outputs.artifact_id }}
+          AUTHORIZATION_ARTIFACT_DIGEST: ${{ needs.authorize.outputs.artifact_digest }}
+          EXECUTION_ARTIFACT_ID: ${{ needs.execute.outputs.artifact_id }}
+          EXECUTION_ARTIFACT_DIGEST: ${{ needs.execute.outputs.artifact_digest }}
+          VALIDATION_ARTIFACT_ID: ${{ needs.validate.outputs.artifact_id }}
+          VALIDATION_ARTIFACT_DIGEST: ${{ needs.validate.outputs.artifact_digest }}
+          PRE_CLOSE_ARTIFACT_ID: ${{ steps.upload_source_close_checkpoint.outputs.artifact-id }}
+          PRE_CLOSE_ARTIFACT_DIGEST: ${{ steps.upload_source_close_checkpoint.outputs.artifact-digest }}
+          PUBLICATION_ARTIFACT_ID: ${{ steps.upload_publication_checkpoint.outputs.artifact-id }}
+          PUBLICATION_ARTIFACT_DIGEST: ${{ steps.upload_publication_checkpoint.outputs.artifact-digest }}
+          CLOSE_ACTOR: ${{ steps.target_post_flight_token.outputs.app-slug }}[bot]
+        run: |
+          node <<'NODE'
+          const fs = require("node:fs");
+          const path = require("node:path");
+          const receiptPath = ".clawsweeper-repair/publication/receipt.json";
+          const receipt = fs.existsSync(receiptPath)
+            ? JSON.parse(fs.readFileSync(receiptPath, "utf8"))
+            : null;
+          const provenance = {
+            schema_version: 1,
+            workflow_repository: process.env.GITHUB_REPOSITORY,
+            workflow_sha: process.env.GITHUB_SHA,
+            workflow_run_id: process.env.GITHUB_RUN_ID,
+            workflow_run_attempt: process.env.GITHUB_RUN_ATTEMPT,
+            authorization_sha256: process.env.AUTHORIZATION_SHA256 || null,
+            publication_receipt_sha256: receipt?.identity_sha256 || null,
+            target_pr_url: receipt?.target_pr_url || null,
+            close_actor: process.env.CLOSE_ACTOR || null,
+            source_close_mutations: Array.isArray(receipt?.mutations)
+              ? receipt.mutations.filter((mutation) =>
+                  [
+                    "begin_close_source_pull_request",
+                    "close_source_pull_request",
+                    "preserve_reopened_source_pull_request",
+                  ].includes(String(mutation?.operation || "")),
+                )
+              : [],
+            artifacts: {
+              authorization: {
+                id: process.env.AUTHORIZATION_ARTIFACT_ID || null,
+                digest: process.env.AUTHORIZATION_ARTIFACT_DIGEST || null,
+              },
+              execution: {
+                id: process.env.EXECUTION_ARTIFACT_ID || null,
+                digest: process.env.EXECUTION_ARTIFACT_DIGEST || null,
+              },
+              validation: {
+                id: process.env.VALIDATION_ARTIFACT_ID || null,
+                digest: process.env.VALIDATION_ARTIFACT_DIGEST || null,
+              },
+              pre_close: {
+                id: process.env.PRE_CLOSE_ARTIFACT_ID || null,
+                digest: process.env.PRE_CLOSE_ARTIFACT_DIGEST || null,
+              },
+              publication: {
+                id: process.env.PUBLICATION_ARTIFACT_ID || null,
+                digest: process.env.PUBLICATION_ARTIFACT_DIGEST || null,
+              },
+            },
+          };
+          const output = ".clawsweeper-repair/provenance/publication.json";
+          fs.mkdirSync(path.dirname(output), { recursive: true });
+          fs.writeFileSync(output, `${JSON.stringify(provenance, null, 2)}\n`);
+          NODE
+
       - name: Upload final worker artifacts
         if: always()
         uses: actions/upload-artifact@v7
         with:
           name: clawsweeper-repair-${{ github.run_id }}-${{ github.run_attempt }}
-          path: .clawsweeper-repair/execution/run/**
+          path: |
+            .clawsweeper-repair/execution/**
+            .clawsweeper-repair/validation/receipt.json
+            .clawsweeper-repair/publication/receipt.json
+            .clawsweeper-repair/provenance/publication.json
           if-no-files-found: warn
+          retention-days: 90
 
       - name: Record work failure
         if: ${{ always() && (failure() || steps.post_flight.outcome == 'failure' || steps.post_flight.outputs.report_outcome == 'blocked' || steps.post_flight.outputs.report_outcome == 'requeue') && steps.crabfleet_session.outcome == 'success' }}
