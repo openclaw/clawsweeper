@@ -884,7 +884,9 @@ export class ExactReviewQueue {
       return;
     }
     const scheduled = await this.storage.getAlarm();
-    if (scheduled === null || next < scheduled) await this.storage.setAlarm(next);
+    if (scheduled === null || scheduled <= now || next < scheduled) {
+      await this.storage.setAlarm(next);
+    }
   }
 }
 

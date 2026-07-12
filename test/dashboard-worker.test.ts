@@ -2478,7 +2478,7 @@ test("exact-review reconciliation cannot release a later attempt with the same r
   }
 });
 
-test("exact-review stats heals a missing alarm and expired lease", async () => {
+test("exact-review stats heals a missing or stale alarm and expired lease", async () => {
   const storage = new MemoryDurableStorage();
   const queue = new ExactReviewQueue({ storage }, {});
   await storage.put("exact-review-queue", {
@@ -2560,6 +2560,12 @@ test("exact-review stats heals a missing alarm and expired lease", async () => {
   const scheduledAfterPoll = await storage.getAlarm();
   assert.ok(scheduledBeforePoll !== null && scheduledAfterPoll !== null);
   assert.ok(scheduledAfterPoll <= scheduledBeforePoll);
+
+  await storage.setAlarm(Date.now() - 1_000);
+  const staleAlarmPollStartedAt = Date.now();
+  await queue.fetch(new Request("https://clawsweeper-exact-review-queue/stats"));
+  const rescheduledAlarm = await storage.getAlarm();
+  assert.ok(rescheduledAlarm !== null && rescheduledAlarm > staleAlarmPollStartedAt);
 });
 
 function isoAgo(ms: number) {
