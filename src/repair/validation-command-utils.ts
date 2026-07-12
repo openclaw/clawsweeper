@@ -498,21 +498,14 @@ function hasMutatingValidationFlag(parts: readonly string[]) {
   ]);
   const commandParts = stripEnvPrefix(parts);
   if (commandParts.some((part) => denied.has(part.split("=", 1)[0] ?? ""))) return true;
-  if (!commandParts.includes("-u")) return false;
-
-  const packageScript = packageScriptRequirement(commandParts)?.name ?? "";
-  if (/^(?:test|test:serial)(?::|$)/.test(packageScript)) return true;
-  const executable = snapshotRunnerExecutable(commandParts);
-  return executable === "jest" || executable === "vitest";
-}
-
-function snapshotRunnerExecutable(parts: readonly string[]): string {
-  const commandParts = stripEnvPrefix(parts);
-  const packageInvocation = packageManagerInvocation(commandParts);
-  if (packageInvocation?.executable === "pnpm" && packageInvocation.command === "exec") {
-    return packageInvocation.args[0] ?? "";
-  }
-  return commandParts[0] ?? "";
+  const shortUpdateFlags = commandParts.filter((part) => (part.split("=", 1)[0] ?? "") === "-u");
+  if (shortUpdateFlags.length === 0) return false;
+  return !(
+    shortUpdateFlags.length === 1 &&
+    shortUpdateFlags[0] === "-u" &&
+    ["python", "python3"].includes(commandParts[0] ?? "") &&
+    commandParts[1] === "-u"
+  );
 }
 
 function isReadOnlyFormatterScript(script: string): boolean {
