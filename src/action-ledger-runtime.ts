@@ -550,13 +550,13 @@ export function interruptOpenWorkflowActionEvents(
             (left, right) =>
               left.phase_seq - right.phase_seq || left.event_id.localeCompare(right.event_id),
           );
-        const lifecycleMutation = lifecycleEvents
+        const lifecycleMutations = lifecycleEvents
           .filter((event) => event.action.mutation)
           .sort(
             (left, right) =>
               left.phase_seq - right.phase_seq || left.event_id.localeCompare(right.event_id),
-          )
-          .at(-1);
+          );
+        const lifecycleMutation = lifecycleMutations.at(-1);
         const lifecycleOutcome = lifecycleEvents
           .filter(workflowActionEventIsMutationOutcome)
           .sort(
@@ -576,13 +576,21 @@ export function interruptOpenWorkflowActionEvents(
         const openUncertainMutation =
           workflowActionEventIsUncertainMutationStart(start) ||
           openUncertainMutationStarts.length > 0;
-        const uncertainMutation =
-          openUncertainMutation ||
-          lifecycleMutation?.attributes?.completion_reason === "mutation_outcome_unknown";
         const aggregatesChildMutations =
           start.event_type === ACTION_EVENT_TYPES.applyBatch ||
           (start.event_type === ACTION_EVENT_TYPES.reviewRetry &&
             start.subject.kind === "workflow");
+        const relevantMutationEvents = aggregatesChildMutations
+          ? mutationEvents
+          : lifecycleMutations;
+        const unknownMutationOutcome = relevantMutationEvents
+          .filter(
+            (event) =>
+              event.attributes?.completion_reason === "mutation_outcome_unknown" ||
+              event.attributes?.completion_reason === "dispatch_outcome_unknown",
+          )
+          .at(-1);
+        const uncertainMutation = openUncertainMutation || unknownMutationOutcome !== undefined;
         const mutationOccurred =
           workflowActionEventIsUncertainMutationStart(start) ||
           (aggregatesChildMutations
@@ -593,9 +601,11 @@ export function interruptOpenWorkflowActionEvents(
           : openUncertainMutationStarts.at(-1);
         const parentEventId =
           openReceipt?.event_id ??
-          (start.event_type === ACTION_EVENT_TYPES.applyAction && lifecycleMutation
-            ? lifecycleMutation.event_id
-            : (lifecycleOutcome?.event_id ?? start.event_id));
+          (unknownMutationOutcome
+            ? unknownMutationOutcome.event_id
+            : start.event_type === ACTION_EVENT_TYPES.applyAction && lifecycleMutation
+              ? lifecycleMutation.event_id
+              : (lifecycleOutcome?.event_id ?? start.event_id));
         const eventInput: ActionEventInput = {
           eventKey: actionEventKey("workflow.interrupted", {
             startEventId: start.event_id,
@@ -627,7 +637,10 @@ export function interruptOpenWorkflowActionEvents(
           subject: workflowActionSubjectInput(start.subject),
           action: {
             name: start.event_type,
-            status: ACTION_EVENT_STATUSES.failed,
+            status:
+              reasonCode === ACTION_EVENT_REASON_CODES.cancelled
+                ? ACTION_EVENT_STATUSES.cancelled
+                : ACTION_EVENT_STATUSES.failed,
             reasonCode,
             retryable: !uncertainMutation,
             mutation: mutationOccurred,

@@ -1116,6 +1116,163 @@ test("timeout recovery binds an open mutation receipt after an accepted attempt 
   assert.equal(interruptOpenWorkflowActionEvents(root, { env }), 0);
 });
 
+test("interruption recovery preserves any earlier unknown mutation outcome", () => {
+  const root = tempRoot();
+  const env = workflowEnv({
+    CLAWSWEEPER_ACTION_LEDGER_INVOCATION: "apply-unknown-then-accepted",
+    GITHUB_ACTION: "__apply",
+    GITHUB_JOB: "apply-existing",
+  });
+  const operationIdentity = {
+    repository: "openclaw/openclaw",
+    candidateRevisions: [{ number: 54, sourceRevision: "revision-54" }],
+  };
+  const batch = recordWorkflowPhaseEvent(
+    root,
+    {
+      phase: ACTION_EVENT_TYPES.applyBatch,
+      status: ACTION_EVENT_STATUSES.started,
+      reasonCode: ACTION_EVENT_REASON_CODES.selected,
+      retryable: false,
+      mutation: false,
+      identity: { slot: "apply_batch_start" },
+      operation: "apply",
+      operationIdentity,
+      phaseSeq: 1,
+      idempotencyIdentity: { operationIdentity, slot: "apply_batch_start" },
+      component: "apply_decisions",
+      subject: { repository: "openclaw/openclaw", kind: "workflow" },
+    },
+    { env },
+  );
+  assert.ok(batch);
+  const item = recordWorkflowPhaseEvent(
+    root,
+    {
+      phase: ACTION_EVENT_TYPES.applyAction,
+      status: ACTION_EVENT_STATUSES.started,
+      reasonCode: ACTION_EVENT_REASON_CODES.selected,
+      retryable: false,
+      mutation: false,
+      identity: { slot: "apply_item_start", number: 54 },
+      operation: "apply",
+      operationIdentity,
+      parentEventId: batch.event_id,
+      phaseSeq: 10,
+      idempotencyIdentity: {
+        operation: "apply",
+        slot: "apply_item",
+        repository: "openclaw/openclaw",
+        number: 54,
+        sourceRevision: "revision-54",
+      },
+      component: "apply_decisions",
+      subject: {
+        repository: "openclaw/openclaw",
+        kind: "pull_request",
+        number: 54,
+        sourceRevision: "revision-54",
+      },
+    },
+    { env },
+  );
+  assert.ok(item);
+
+  const recordAttempt = (
+    mutationIdentitySha256: string,
+    outcome: "unknown" | "accepted",
+    phaseSeq: number,
+  ): ActionEvent => {
+    const idempotencyIdentity = {
+      operation: "apply",
+      slot: "apply_mutation",
+      repository: "openclaw/openclaw",
+      number: 54,
+      sourceRevision: "revision-54",
+      mutationIdentitySha256,
+    };
+    const attempt = recordWorkflowPhaseEvent(
+      root,
+      {
+        phase: ACTION_EVENT_TYPES.applyAction,
+        status: ACTION_EVENT_STATUSES.started,
+        reasonCode: ACTION_EVENT_REASON_CODES.selected,
+        retryable: true,
+        mutation: false,
+        identity: { slot: "apply_mutation_attempt", mutationIdentitySha256 },
+        operation: "apply",
+        operationIdentity,
+        parentEventId: item.event_id,
+        phaseSeq,
+        idempotencyIdentity,
+        component: "apply_decisions",
+        subject: {
+          repository: "openclaw/openclaw",
+          kind: "pull_request",
+          number: 54,
+          sourceRevision: "revision-54",
+        },
+        attributes: { completion_reason: "mutation_attempted" },
+      },
+      { env },
+    );
+    assert.ok(attempt);
+    const terminal = recordWorkflowPhaseEvent(
+      root,
+      {
+        phase: ACTION_EVENT_TYPES.applyAction,
+        status:
+          outcome === "accepted" ? ACTION_EVENT_STATUSES.executed : ACTION_EVENT_STATUSES.failed,
+        reasonCode:
+          outcome === "accepted"
+            ? ACTION_EVENT_REASON_CODES.completed
+            : ACTION_EVENT_REASON_CODES.unavailable,
+        retryable: outcome === "unknown",
+        mutation: true,
+        identity: { slot: "apply_mutation_outcome", mutationIdentitySha256, outcome },
+        operation: "apply",
+        operationIdentity,
+        parentEventId: attempt.event_id,
+        phaseSeq: phaseSeq + 1,
+        idempotencyIdentity,
+        component: "apply_decisions",
+        subject: {
+          repository: "openclaw/openclaw",
+          kind: "pull_request",
+          number: 54,
+          sourceRevision: "revision-54",
+        },
+        attributes: {
+          completion_reason:
+            outcome === "accepted" ? "mutation_accepted" : "mutation_outcome_unknown",
+        },
+      },
+      { env },
+    );
+    assert.ok(terminal);
+    return terminal;
+  };
+
+  const unknown = recordAttempt("a".repeat(64), "unknown", 11);
+  recordAttempt("b".repeat(64), "accepted", 21);
+
+  assert.equal(interruptOpenWorkflowActionEvents(root, { env }), 2);
+  const allEvents = readAllSpooledActionEvents(root);
+  const recovered = allEvents.filter(
+    (event) =>
+      event.attributes?.completion_reason === "mutation_outcome_unknown" &&
+      event.attributes.partial === true,
+  );
+  assert.equal(recovered.length, 2);
+  assert.ok(recovered.every((event) => event.action.mutation));
+  assert.ok(recovered.every((event) => event.action.retryable === false));
+  const itemTerminal = recovered.find((event) => event.subject.number === 54);
+  assert.equal(itemTerminal?.parent_event_id, unknown.event_id);
+  const batchTerminal = recovered.find((event) => event.subject.kind === "workflow");
+  assert.equal(batchTerminal?.parent_event_id, unknown.event_id);
+  assert.equal(interruptOpenWorkflowActionEvents(root, { env }), 0);
+});
+
 test("interruption recovery closes the exact retry dispatch and aggregates it into the batch", () => {
   const root = tempRoot();
   const env = workflowEnv({
@@ -1239,7 +1396,7 @@ test("interruption recovery preserves cancellation instead of rewriting it as ti
     1,
   );
   const terminal = readAllSpooledActionEvents(root).find(
-    (event) => event.action.status === ACTION_EVENT_STATUSES.failed,
+    (event) => event.action.status === ACTION_EVENT_STATUSES.cancelled,
   );
   assert.equal(terminal?.action.reason_code, ACTION_EVENT_REASON_CODES.cancelled);
   assert.equal(terminal?.attributes?.completion_reason, "cancelled");

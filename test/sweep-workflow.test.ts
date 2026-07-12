@@ -592,6 +592,62 @@ test("publish workflow dispatches immediate apply through the isolated lane", ()
   assert.match(publishJob, /queue: max/);
 });
 
+test("selected comment sync finalizes interrupted receipts before publication", () => {
+  const workflow = readText(".github/workflows/sweep.yml");
+  const publishJobStart = workflow.indexOf("\n  publish:");
+  const recoverJobStart = workflow.indexOf("\n  recover-review-failures:", publishJobStart);
+  const publishJob = workflow.slice(publishJobStart, recoverJobStart);
+  const syncStart = publishJob.indexOf("- name: Sync selected review comments");
+  const finalizerStart = publishJob.indexOf(
+    "- name: Finalize selected review comment action ledger",
+  );
+  const publicationStart = publishJob.indexOf(
+    "- name: Publish selected review comment action ledger",
+  );
+
+  assert.ok(syncStart >= 0);
+  assert.ok(finalizerStart > syncStart);
+  assert.ok(publicationStart > finalizerStart);
+  assert.match(
+    publishJob.slice(syncStart, finalizerStart),
+    /timeout --kill-after=30s 840s pnpm run apply-decisions[\s\S]*echo "exit_code=\$selected_comment_exit_code" >> "\$GITHUB_OUTPUT"[\s\S]*exit "\$selected_comment_exit_code"/,
+  );
+  assert.match(
+    publishJob.slice(finalizerStart, publicationStart),
+    /if: \$\{\{ always\(\)[\s\S]*SELECTED_COMMENT_EXIT_CODE:[\s\S]*--interrupt-open-attempts --reason cancelled[\s\S]*--interrupt-open-attempts --reason timeout[\s\S]*--interrupt-open-attempts --reason workflow_failed[\s\S]*finalize-action-events/,
+  );
+  assert.match(
+    publishJob.slice(publicationStart, publicationStart + 400),
+    /steps\.finalize-selected-review-comment-action-ledger\.outcome == 'success'/,
+  );
+});
+
+test("failed-review retry cleanup restores the captured command failure", () => {
+  const workflow = readText(".github/workflows/sweep.yml");
+  const retryJobStart = workflow.indexOf("\n  retry-failed-reviews:");
+  const auditJobStart = workflow.indexOf("\n  audit-dashboard:", retryJobStart);
+  const retryJob = workflow.slice(retryJobStart, auditJobStart);
+  const commandStart = retryJob.indexOf("- name: Plan or dispatch failed-review retries");
+  const finalizerStart = retryJob.indexOf("- name: Finalize failed-review retry action ledger");
+  const publicationStart = retryJob.indexOf("- name: Publish failed-review retry action ledger");
+  const artifactStart = retryJob.indexOf("uses: actions/upload-artifact@v7", publicationStart);
+  const restoreStart = retryJob.indexOf("- name: Restore failed-review retry outcome");
+
+  assert.ok(commandStart >= 0);
+  assert.ok(finalizerStart > commandStart);
+  assert.ok(publicationStart > finalizerStart);
+  assert.ok(artifactStart > publicationStart);
+  assert.ok(restoreStart > artifactStart);
+  assert.match(
+    retryJob.slice(commandStart, finalizerStart),
+    /continue-on-error: true[\s\S]*echo "exit_code=\$retry_exit_code" >> "\$GITHUB_OUTPUT"[\s\S]*exit "\$retry_exit_code"/,
+  );
+  assert.match(
+    retryJob.slice(restoreStart),
+    /steps\.retry-failed-reviews-run\.outcome != 'success'[\s\S]*RETRY_EXIT_CODE:[\s\S]*exit "\$retry_exit_code"/,
+  );
+});
+
 test("broad record publishers isolate tuple reconciliation from status and auxiliary state", () => {
   const workflow = readText(".github/workflows/sweep.yml");
   for (const stepName of [

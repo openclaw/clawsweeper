@@ -2454,10 +2454,13 @@ function sleepBeforeGitHubRetry(waitMs: number): void {
   sleepMs(waitMs);
 }
 
-function gh(args: string[]): string {
-  const timeoutMs = githubCommandTimeoutMs();
+function ghWithPreparedTimeout(args: string[], timeoutMs: number | undefined): string {
   if (args[0] === "api") return run("gh", args, { timeoutMs });
   return run("gh", ["--repo", targetRepo(), ...args], { timeoutMs });
+}
+
+function gh(args: string[]): string {
+  return ghWithPreparedTimeout(args, githubCommandTimeoutMs());
 }
 
 function ghOnce(args: string[], timeoutMs: number): string {
@@ -2658,23 +2661,35 @@ function ghObservedMutationCommand(options: {
   didMutate?: ((result: string) => boolean) | undefined;
   knownNoMutation?: ((error: unknown) => boolean) | undefined;
   request?: ((args: string[], attempt: number) => string) | undefined;
+  prepareRequest?: ((args: string[], attempt: number) => () => string) | undefined;
   sleepBeforeRetry?: ((waitMs: number) => void) | undefined;
 }): string {
   return ghWithRetry(options.args, options.attempts ?? 12, {
-    request: (args, attempt) =>
-      runObservedApplyMutation({
+    request: (args, attempt) => {
+      let operation: () => string;
+      if (options.prepareRequest) {
+        operation = options.prepareRequest(args, attempt);
+      } else if (options.request) {
+        const request = options.request;
+        operation = () => request(args, attempt);
+      } else {
+        const timeoutMs = githubCommandTimeoutMs();
+        operation = () => ghWithPreparedTimeout(args, timeoutMs);
+      }
+      return runObservedApplyMutation({
         identity: `${options.identity}:request_attempt:${attempt + 1}`,
-        operation: () => (options.request ? options.request(args, attempt) : gh(args)),
+        operation,
         ...(options.onMutation ? { onMutation: options.onMutation } : {}),
         ...(options.didMutate ? { didMutate: options.didMutate } : {}),
         ...(options.knownNoMutation ? { knownNoMutation: options.knownNoMutation } : {}),
-      }),
+      });
+    },
     ...(options.sleepBeforeRetry ? { sleepBeforeRetry: options.sleepBeforeRetry } : {}),
   });
 }
 
 export function observedGitHubMutationAttemptsForTest(
-  outcomes: readonly ("transient" | "accepted" | "already_exists")[],
+  outcomes: readonly ("not_started" | "transient" | "accepted" | "already_exists")[],
 ): Array<{ identity: string; outcome: "accepted" | "rejected" | "unknown" }> {
   const receipts: Array<{
     identity: string;
@@ -2708,11 +2723,16 @@ export function observedGitHubMutationAttemptsForTest(
       args: ["api", "test"],
       attempts: outcomes.length,
       knownNoMutation: labelAlreadyExistsError,
-      request: (_args, attempt) => {
+      prepareRequest: (_args, attempt) => {
         const outcome = outcomes[attempt];
-        if (outcome === "accepted") return "ok";
-        if (outcome === "already_exists") throw new Error("label already exists");
-        throw new Error("HTTP 502: transient upstream failure");
+        if (outcome === "not_started") {
+          throw new GitHubRuntimeBudgetError("max runtime reached before GitHub operation");
+        }
+        return () => {
+          if (outcome === "accepted") return "ok";
+          if (outcome === "already_exists") throw new Error("label already exists");
+          throw new Error("HTTP 502: transient upstream failure");
+        };
       },
       sleepBeforeRetry: () => {},
     });
@@ -9246,6 +9266,20 @@ class CodexReviewError extends Error {
     this.signal = options.signal ?? null;
     this.retryable = options.retryable ?? false;
   }
+}
+
+function codexReviewFailureRetryable(error: unknown): boolean {
+  return error instanceof CodexReviewError ? error.retryable : true;
+}
+
+export function codexReviewFailureRetryableForTest(retryable: boolean): boolean {
+  return codexReviewFailureRetryable(
+    new CodexReviewError({
+      message: "test Codex failure",
+      status: 1,
+      retryable,
+    }),
+  );
 }
 
 function openclawDirtyStatus(openclawDir: string): string {
@@ -22004,6 +22038,7 @@ function reviewCommand(args: Args): void {
       let decision: Decision;
       let codexElapsedMs = 0;
       let codexFailed = false;
+      let codexFailureRetryable = false;
       let codexFailureDisposition: ReturnType<typeof actionLedgerFailureDisposition> | null =
         null;
       const codexStartedAt = Date.now();
@@ -22042,6 +22077,7 @@ function reviewCommand(args: Args): void {
       } catch (error) {
         codexFailures += 1;
         codexFailed = true;
+        codexFailureRetryable = codexReviewFailureRetryable(error);
         codexFailureDisposition = actionLedgerFailureDisposition(error);
         if (error instanceof CodexReviewError) {
           decision = codexFailureDecision(
@@ -22112,7 +22148,7 @@ function reviewCommand(args: Args): void {
         item,
         status: codexFailureDisposition?.status ?? ACTION_EVENT_STATUSES.completed,
         reasonCode: codexFailureDisposition?.reasonCode ?? ACTION_EVENT_REASON_CODES.completed,
-        retryable: codexFailed,
+        retryable: codexFailed && codexFailureRetryable,
         cached: false,
         startedAtMs: contextStartedAt,
         ...(context.sourceRevision ? { sourceRevision: context.sourceRevision } : {}),
@@ -22768,7 +22804,8 @@ function startFailedReviewRetryDispatchAttempt(options: {
   if (options.ledger.dispatchAttempts.has(key)) return;
   const phaseSeq = options.ledger.nextDispatchPhaseSeq;
   options.ledger.nextDispatchPhaseSeq += 10;
-  const kind = reportItemKind(readFileSync(options.reportPath, "utf8"));
+  const reportMarkdown = readFileSync(options.reportPath, "utf8");
+  const kind = reportItemKind(reportMarkdown);
   if (!kind) {
     throw new Error(
       `retry dispatch receipt for ${repository}#${options.number} is missing its item kind`,
@@ -22795,6 +22832,8 @@ function startFailedReviewRetryDispatchAttempt(options: {
       number: options.number,
       revisionKind: options.revision.kind,
       sourceRevision: options.revision.value,
+      reviewContentDigest: frontMatterValue(reportMarkdown, "review_content_digest") ?? "unknown",
+      decisionPacketSha256: frontMatterValue(reportMarkdown, "decision_packet_sha256") ?? "none",
       slot: "retry_dispatch",
     }),
     component: "retry_failed_reviews",
@@ -23224,6 +23263,8 @@ export function reviewRetryBusinessIdempotencyIdentityForTest(options: {
   number: number;
   revisionKind: FailedReviewRetryRevisionKind;
   sourceRevision: string;
+  reviewContentDigest: string;
+  decisionPacketSha256: string;
   slot: "retry_dispatch" | "retry_exhaustion" | "retry_observation";
 }) {
   return {
@@ -23233,6 +23274,8 @@ export function reviewRetryBusinessIdempotencyIdentityForTest(options: {
     number: options.number,
     revisionKind: options.revisionKind,
     sourceRevision: options.sourceRevision,
+    reviewContentDigest: options.reviewContentDigest,
+    decisionPacketSha256: options.decisionPacketSha256,
   };
 }
 
@@ -23312,6 +23355,14 @@ function recordFailedReviewRetryEvents(options: {
             number: result.number,
             revisionKind,
             sourceRevision,
+            reviewContentDigest:
+              (reportMarkdown
+                ? frontMatterValue(reportMarkdown, "review_content_digest")
+                : undefined) ?? "unknown",
+            decisionPacketSha256:
+              (reportMarkdown
+                ? frontMatterValue(reportMarkdown, "decision_packet_sha256")
+                : undefined) ?? "none",
             slot: retrySlot,
           })
         : {
@@ -23843,7 +23894,7 @@ export function applyActionEventDisposition(
       status: ACTION_EVENT_STATUSES.yielded,
       reasonCode: ACTION_EVENT_REASON_CODES.runtimeBudget,
       retryable: true,
-      mutation: false,
+      mutation: mutationOccurred,
       completionReason: "runtime_budget",
     };
   }
@@ -23928,6 +23979,28 @@ export function applyActionEventDisposition(
     mutation: mutationOccurred,
     completionReason: "completed",
   };
+}
+
+function applyRuntimeBudgetYieldResults(number: number, reason: string): ApplyResult[] {
+  return [
+    {
+      number,
+      action: "skipped_runtime_budget",
+      reason,
+    },
+    {
+      number: 0,
+      action: "skipped_runtime_budget",
+      reason,
+    },
+  ];
+}
+
+export function applyRuntimeBudgetYieldResultsForTest(
+  number: number,
+  reason: string,
+): ApplyResult[] {
+  return applyRuntimeBudgetYieldResults(number, reason);
 }
 
 export function reviewCommentPublicationEventDisposition(
@@ -25266,7 +25339,7 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
         writeReportMarkdown(path, markdown);
       }
       removeCurrentCursorTraceItem(examinedItemNumbers, number);
-      results.push({ number: 0, action: "skipped_runtime_budget", reason });
+      results.push(...applyRuntimeBudgetYieldResults(number, reason));
       logProgress(`stopping apply: ${reason}`);
     };
     const sameAuthorPairStartCloseable = new Map<string, boolean>();

@@ -6,7 +6,9 @@ import {
   actionLedgerFailureDisposition,
   applyActionEventDisposition,
   applyItemBusinessIdempotencyIdentityForTest,
+  applyRuntimeBudgetYieldResultsForTest,
   classifyGitHubDispatchResultForTest,
+  codexReviewFailureRetryableForTest,
   heldReviewStartStatusCommentResultForTest,
   isGitHubLabelAlreadyExistsErrorForTest,
   observedGitHubMutationAttemptsForTest,
@@ -54,6 +56,13 @@ test("review and apply outcome classifiers cover terminal and resumable states",
     reasonCode: "runtime_budget",
     retryable: true,
     mutation: false,
+    completionReason: "runtime_budget",
+  });
+  assert.deepEqual(applyActionEventDisposition("skipped_runtime_budget", true, false), {
+    status: "yielded",
+    reasonCode: "runtime_budget",
+    retryable: true,
+    mutation: true,
     completionReason: "runtime_budget",
   });
   assert.deepEqual(applyActionEventDisposition("skipped_changed_since_review", false, false), {
@@ -174,6 +183,8 @@ test("apply and retry business idempotency ignore batch order but bind source re
     number: 512,
     revisionKind: "pull_head_sha" as const,
     sourceRevision: "e".repeat(40),
+    reviewContentDigest: "f".repeat(64),
+    decisionPacketSha256: "1".repeat(64),
     slot: "retry_dispatch" as const,
   };
   const retryKey = actionIdempotencyKey(
@@ -191,7 +202,25 @@ test("apply and retry business idempotency ignore batch order but bind source re
     actionIdempotencyKey(
       reviewRetryBusinessIdempotencyIdentityForTest({
         ...retryIdentity,
-        sourceRevision: "f".repeat(40),
+        sourceRevision: "2".repeat(40),
+      }),
+    ),
+    retryKey,
+  );
+  assert.notEqual(
+    actionIdempotencyKey(
+      reviewRetryBusinessIdempotencyIdentityForTest({
+        ...retryIdentity,
+        reviewContentDigest: "3".repeat(64),
+      }),
+    ),
+    retryKey,
+  );
+  assert.notEqual(
+    actionIdempotencyKey(
+      reviewRetryBusinessIdempotencyIdentityForTest({
+        ...retryIdentity,
+        decisionPacketSha256: "4".repeat(64),
       }),
     ),
     retryKey,
@@ -337,6 +366,7 @@ test("apply mutation receipts bind every GitHub request attempt and preserve no-
   assert.deepEqual(observedGitHubMutationAttemptsForTest(["already_exists"]), [
     { identity: "test_mutation:request_attempt:1", outcome: "rejected" },
   ]);
+  assert.deepEqual(observedGitHubMutationAttemptsForTest(["not_started"]), []);
   assert.deepEqual(heldReviewStartStatusCommentResultForTest("2026-07-12T12:00:00Z", false), {
     status: "held",
     lease: null,
@@ -360,6 +390,26 @@ test("apply mutation receipts bind every GitHub request attempt and preserve no-
   assert.match(source, /identity: `review_lease_delete:/);
   assert.doesNotMatch(source, /identity: `apply_lease_acquire:/);
   assert.match(source, /return \{ status: "posted", lease: acquired, didMutate: true \}/);
+});
+
+test("runtime yields bind the active item and terminal Codex failures preserve retryability", () => {
+  assert.deepEqual(
+    applyRuntimeBudgetYieldResultsForTest(512, "max runtime reached during coverage proof"),
+    [
+      {
+        number: 512,
+        action: "skipped_runtime_budget",
+        reason: "max runtime reached during coverage proof",
+      },
+      {
+        number: 0,
+        action: "skipped_runtime_budget",
+        reason: "max runtime reached during coverage proof",
+      },
+    ],
+  );
+  assert.equal(codexReviewFailureRetryableForTest(false), false);
+  assert.equal(codexReviewFailureRetryableForTest(true), true);
 });
 
 test("retry dispatch outcomes distinguish definite rejection, ambiguity, and acceptance", () => {

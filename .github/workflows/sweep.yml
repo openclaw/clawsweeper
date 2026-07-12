@@ -2434,7 +2434,8 @@ jobs:
             exit 0
           fi
           git pull --rebase --autostash
-          pnpm run apply-decisions -- \
+          set +e
+          timeout --kill-after=30s 840s pnpm run apply-decisions -- \
             --target-repo "$TARGET_REPO" \
             --skip-dashboard \
             --item-numbers "$item_numbers" \
@@ -2445,6 +2446,12 @@ jobs:
             --max-runtime-ms 720000 \
             --comment-sync-min-age-days 7 \
             --progress-every 25
+          selected_comment_exit_code=$?
+          set -e
+          echo "exit_code=$selected_comment_exit_code" >> "$GITHUB_OUTPUT"
+          if [ "$selected_comment_exit_code" -ne 0 ]; then
+            exit "$selected_comment_exit_code"
+          fi
           synced_count="$(pnpm run --silent workflow -- count-actions --report apply-report.json --action review_comment_synced)"
           pnpm run status -- \
             --target-repo "$TARGET_REPO" \
@@ -2468,8 +2475,25 @@ jobs:
             --path "results/sweep-status/${target_slug}.json" \
             --rebase-strategy theirs
 
-      - name: Publish selected review comment action ledger
+      - name: Finalize selected review comment action ledger
+        id: finalize-selected-review-comment-action-ledger
         if: ${{ always() && steps.sync-selected-review-comments.outcome != 'skipped' }}
+        env:
+          SELECTED_COMMENT_EXIT_CODE: ${{ steps.sync-selected-review-comments.outputs.exit_code || '' }}
+          SELECTED_COMMENT_OUTCOME: ${{ steps.sync-selected-review-comments.outcome || 'not_started' }}
+        run: |
+          args=()
+          if [ "$SELECTED_COMMENT_OUTCOME" = "cancelled" ] || [ "$SELECTED_COMMENT_EXIT_CODE" = "130" ] || [ "$SELECTED_COMMENT_EXIT_CODE" = "143" ]; then
+            args=(--interrupt-open-attempts --reason cancelled)
+          elif [ "$SELECTED_COMMENT_EXIT_CODE" = "124" ] || [ "$SELECTED_COMMENT_EXIT_CODE" = "137" ]; then
+            args=(--interrupt-open-attempts --reason timeout)
+          elif [ "$SELECTED_COMMENT_OUTCOME" != "success" ]; then
+            args=(--interrupt-open-attempts --reason workflow_failed)
+          fi
+          pnpm run --silent finalize-action-events -- "${args[@]}"
+
+      - name: Publish selected review comment action ledger
+        if: ${{ always() && steps.sync-selected-review-comments.outcome != 'skipped' && steps.finalize-selected-review-comment-action-ledger.outcome == 'success' }}
         run: |
           set -euo pipefail
           test -n "${CLAWSWEEPER_STATE_DIR:-}"
@@ -2785,6 +2809,18 @@ jobs:
           path: artifacts/failed-review-retry-report.json
           if-no-files-found: error
           retention-days: 14
+
+      - name: Restore failed-review retry outcome
+        if: ${{ always() && steps.retry-failed-reviews-run.outcome != 'success' && steps.retry-failed-reviews-run.outcome != 'skipped' }}
+        env:
+          RETRY_EXIT_CODE: ${{ steps.retry-failed-reviews-run.outputs.exit_code || '1' }}
+        run: |
+          retry_exit_code="$RETRY_EXIT_CODE"
+          if ! [[ "$retry_exit_code" =~ ^[1-9][0-9]*$ ]] || [ "$retry_exit_code" -gt 255 ]; then
+            retry_exit_code=1
+          fi
+          echo "Restoring failed-review retry exit code $retry_exit_code after ledger cleanup."
+          exit "$retry_exit_code"
 
   audit-dashboard:
     name: Audit state

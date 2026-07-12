@@ -106,9 +106,11 @@ confidential-identifier checks as every other durable machine-text field.
   synthesizing a normal kept-open result.
 - Failed-review dispatch writes the same pre-dispatch boundary, keeps the
   durable retry count unchanged until `gh` returns success, and leaves an
-  ambiguous dispatch fail-closed for that exact source revision. Operators must
-  reconcile the workflow run before another launch; automatic retry never
-  duplicates an outcome-unknown dispatch.
+  ambiguous dispatch fail-closed for that exact source revision. Its business
+  identity also binds the durable review-content and decision-packet digests,
+  so a changed failed-review record cannot reuse an earlier dispatch receipt.
+  Operators must reconcile the workflow run before another launch; automatic
+  retry never duplicates an outcome-unknown dispatch.
 - Repository, producer SHA, workflow, job, run, attempt, and component all bind
   shard identity. They do not define the logical operation.
 - Workflow, step, invocation, and component identifiers keep a readable prefix
