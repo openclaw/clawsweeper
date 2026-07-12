@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import fs, { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -551,6 +551,147 @@ test("forced replay claims survive ledger interruption without cross-attempt ali
   );
   assert.equal(restored.commands.length, 1);
   assert.equal(restored.commands[0]?.attempt_id, "forced-replay-41002");
+});
+
+test("refreshed forced replay claims survive bounded ledger trimming and restart", (t) => {
+  const directory = mkdtempSync(path.join(tmpdir(), "clawsweeper-comment-router-ledger-"));
+  const ledgerPath = path.join(directory, "comment-router.json");
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+
+  const commentUpdatedAt = "2026-07-12T20:00:00Z";
+  const commands = Array.from({ length: 1000 }, (_, index) => ({
+    idempotency_key: `command-${index}`,
+    comment_id: String(index),
+    comment_version_key: `${index}:${commentUpdatedAt}`,
+    comment_updated_at: commentUpdatedAt,
+    repo: "openclaw/openclaw",
+    issue_number: 74000 + index,
+    status: "executed",
+    processed_at: "2026-07-12T20:01:00Z",
+  }));
+  const forcedClaim = {
+    ...commands[0],
+    status: "claimed",
+    processed_at: "2026-07-12T20:05:00Z",
+    forced_replay: true,
+    attempt_id: "forced-replay-41001",
+    actions: [{ action: "dispatch_clawsweeper", status: "claimed" }],
+  };
+  const freshClaim = {
+    idempotency_key: "command-1000",
+    comment_id: "1000",
+    comment_version_key: `1000:${commentUpdatedAt}`,
+    comment_updated_at: commentUpdatedAt,
+    repo: "openclaw/openclaw",
+    issue_number: 75000,
+    status: "claimed",
+    processed_at: "2026-07-12T20:05:00Z",
+    actions: [{ action: "dispatch_clawsweeper", status: "claimed" }],
+  };
+  const ledger = { updated_at: null, commands };
+
+  assert.equal(appendLedger(ledger, [forcedClaim, freshClaim]), true);
+  assert.equal(ledger.commands.length, 1000);
+  assert.equal(
+    ledger.commands.some((entry) => entry.comment_id === "1"),
+    false,
+  );
+  assert.deepEqual(
+    ledger.commands.slice(-2).map((entry) => entry.comment_id),
+    ["0", "1000"],
+  );
+  writeLedger(ledgerPath, ledger);
+
+  const restored = readLedger(ledgerPath);
+  const forcedKeys = new Set(dispatchClaimLookupKeys(forcedClaim));
+  const recoveredClaim =
+    restored.commands.find((entry) =>
+      dispatchClaimLookupKeys(entry).some((key) => forcedKeys.has(key)),
+    ) ?? null;
+  assert.equal(recoveredClaim?.attempt_id, forcedClaim.attempt_id);
+  assert.deepEqual(
+    dispatchClaimDecision({
+      claim: recoveredClaim,
+      runs: [],
+      expectedTitle: `Review event item openclaw/openclaw#74000 [${routerDispatchReceiptKey(
+        forcedClaim,
+        recoveredClaim,
+      )}]`,
+      nowMs: Date.parse("2026-07-12T20:06:00Z"),
+    }),
+    { action: "wait", run: null },
+  );
+});
+
+test("atomic ledger writes preserve the previous forced claim across interruption", (t) => {
+  const directory = mkdtempSync(path.join(tmpdir(), "clawsweeper-comment-router-ledger-"));
+  const ledgerPath = path.join(directory, "comment-router.json");
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+
+  const forcedClaim = {
+    idempotency_key: "claim-before-dispatch",
+    comment_id: "125",
+    comment_version_key: "125:2026-07-12T20:00:00Z",
+    comment_updated_at: "2026-07-12T20:00:00Z",
+    repo: "openclaw/openclaw",
+    issue_number: 74499,
+    status: "claimed",
+    processed_at: "2026-07-12T20:05:00Z",
+    forced_replay: true,
+    attempt_id: "forced-replay-41001",
+    actions: [{ action: "dispatch_clawsweeper", status: "claimed" }],
+  };
+  writeLedger(ledgerPath, { updated_at: forcedClaim.processed_at, commands: [forcedClaim] });
+
+  const originalFsyncSync = fs.fsyncSync;
+  fs.fsyncSync = (() => {
+    throw new Error("simulated interrupted ledger write");
+  }) as typeof fs.fsyncSync;
+  try {
+    assert.throws(
+      () => writeLedger(ledgerPath, { updated_at: null, commands: [] }),
+      /simulated interrupted ledger write/,
+    );
+  } finally {
+    fs.fsyncSync = originalFsyncSync;
+  }
+  fs.writeFileSync(
+    path.join(directory, ".comment-router.json.interrupted.tmp"),
+    '{"updated_at":null,"commands":[',
+  );
+
+  const restored = readLedger(ledgerPath);
+  assert.equal(restored.commands.length, 1);
+  assert.equal(restored.commands[0]?.attempt_id, forcedClaim.attempt_id);
+  assert.deepEqual(
+    dispatchClaimDecision({
+      claim: restored.commands[0],
+      runs: [],
+      expectedTitle: `Review event item openclaw/openclaw#74499 [${routerDispatchReceiptKey(
+        forcedClaim,
+        restored.commands[0],
+      )}]`,
+      nowMs: Date.parse("2026-07-12T20:06:00Z"),
+    }),
+    { action: "wait", run: null },
+  );
+});
+
+test("readLedger initializes only missing files and fails closed on torn state", (t) => {
+  const directory = mkdtempSync(path.join(tmpdir(), "clawsweeper-comment-router-ledger-"));
+  const ledgerPath = path.join(directory, "comment-router.json");
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+
+  assert.deepEqual(readLedger(ledgerPath), { updated_at: null, commands: [] });
+
+  fs.writeFileSync(ledgerPath, '{"updated_at":null,"commands":[');
+  assert.throws(() => readLedger(ledgerPath), /failed to parse comment router ledger/);
+
+  fs.writeFileSync(ledgerPath, "[]");
+  assert.throws(() => readLedger(ledgerPath), /ledger must be an object/);
+
+  fs.writeFileSync(ledgerPath, '{"updated_at":null}');
+  assert.throws(() => readLedger(ledgerPath), /ledger commands must be an array/);
 });
 
 test("readLedger rejects malformed forced replay identity", (t) => {

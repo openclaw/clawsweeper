@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -456,19 +456,30 @@ function ignoredCheckNames() {
 }
 
 export function readLedger(file: JsonValue) {
-  if (!fs.existsSync(file)) return { updated_at: null, commands: [] };
+  let contents: string;
+  try {
+    contents = fs.readFileSync(file, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return { updated_at: null, commands: [] };
+    }
+    throw error;
+  }
   let data: LooseRecord;
   try {
-    const parsed = JSON.parse(fs.readFileSync(file, "utf8"));
-    data = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
-  } catch {
-    return { updated_at: null, commands: [] };
+    data = JSON.parse(contents);
+  } catch (error) {
+    throw new Error(`failed to parse comment router ledger: ${String(file)}`, { cause: error });
+  }
+  if (!data || typeof data !== "object" || Array.isArray(data)) {
+    throw new Error("comment router ledger must be an object");
+  }
+  if (!Array.isArray(data.commands)) {
+    throw new Error("comment router ledger commands must be an array");
   }
   return {
     updated_at: data.updated_at ?? null,
-    commands: Array.isArray(data.commands)
-      ? data.commands.map((entry: JsonValue) => validatedLedgerCommand(entry))
-      : [],
+    commands: data.commands.map((entry: JsonValue) => validatedLedgerCommand(entry)),
   };
 }
 
@@ -527,6 +538,7 @@ export function appendLedger(current: LooseRecord, entries: LooseRecord[]) {
     const key = ledgerEntryKey(entry);
     const previous = byCommentVersion.get(key);
     if (previous && stableLedgerEntry(previous) === stableLedgerEntry(entry)) continue;
+    if (previous) byCommentVersion.delete(key);
     byCommentVersion.set(key, entry);
     changed = true;
   }
@@ -613,8 +625,44 @@ function compactLedgerActions(actions: JsonValue) {
 }
 
 export function writeLedger(file: JsonValue, current: LooseRecord) {
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, `${JSON.stringify(current, null, 2)}\n`);
+  const ledgerPath = String(file);
+  const directory = path.dirname(ledgerPath);
+  const temporaryPath = path.join(
+    directory,
+    `.${path.basename(ledgerPath)}.${process.pid}.${randomUUID()}.tmp`,
+  );
+  const contents = `${JSON.stringify(current, null, 2)}\n`;
+  fs.mkdirSync(directory, { recursive: true });
+  try {
+    const descriptor = fs.openSync(
+      temporaryPath,
+      fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL,
+      0o600,
+    );
+    try {
+      fs.writeFileSync(descriptor, contents, "utf8");
+      fs.fsyncSync(descriptor);
+    } finally {
+      fs.closeSync(descriptor);
+    }
+    fs.renameSync(temporaryPath, ledgerPath);
+    fsyncDirectory(directory);
+  } finally {
+    fs.rmSync(temporaryPath, { force: true });
+  }
+}
+
+function fsyncDirectory(directory: string) {
+  if (process.platform === "win32") return;
+  const descriptor = fs.openSync(
+    directory,
+    fs.constants.O_RDONLY | (fs.constants.O_DIRECTORY ?? 0),
+  );
+  try {
+    fs.fsyncSync(descriptor);
+  } finally {
+    fs.closeSync(descriptor);
+  }
 }
 
 export function writeReportFile(root: string, data: LooseRecord) {

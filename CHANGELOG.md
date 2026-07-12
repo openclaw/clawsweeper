@@ -100,6 +100,9 @@ checkpoint, and status-only commits are intentionally omitted.
 ### Fixed
 
 - Restored exact-review intake by deriving cancellation from `job.status`, avoiding an unsupported status-check function in step environment expressions that made GitHub reject the sweep workflow, and added checksum-pinned workflow-semantic linting to CI.
+- Made comment-router ledger updates retain refreshed claims at the bounded
+  history limit, publish through fsynced atomic replacement, and fail closed on
+  malformed existing state so interrupted forced replays cannot dispatch twice.
 - Completed exact-review events when a fresh low-signal close guard keeps the
   item open, instead of retrying the same safely rejected close forever.
 - Coalesced self-continuing hot and normal review runs per target so scheduled
