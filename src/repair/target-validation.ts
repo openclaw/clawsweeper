@@ -32,6 +32,7 @@ import {
   looksLikePathArgument,
   packageScriptRequirement,
   parseAllowedValidationCommand,
+  requireWorkspaceMatchFailure,
   resolveValidationCommandEnvironment,
   stripEnvPrefix,
   uniqueStrings,
@@ -1122,16 +1123,19 @@ function resolvedRequiredValidationCommandEntries(
   return requiredValidationCommandEntries(commands, cwd, options).flatMap(
     (command, originalIndex) =>
       resolveAllowedValidationCommands(command.command, cwd, baseBranch, options).map((parts) => {
-        const concreteParts = validateAllowedValidationCommandParts(
-          resolveValidationCommandEnvironment(parts, validationEnv),
-          command.command,
+        const displayParts = requireWorkspaceMatchFailure(parts);
+        const concreteParts = requireWorkspaceMatchFailure(
+          validateAllowedValidationCommandParts(
+            resolveValidationCommandEnvironment(parts, validationEnv),
+            command.command,
+          ),
         );
         const canonical =
           command.canonical ||
           changedGateCommandParts(toolchain.changedGate, concreteParts) !== null;
         return {
           parts: concreteParts,
-          displayParts: parts,
+          displayParts,
           source:
             canonical && command.source === "artifact" ? ("changed_gate" as const) : command.source,
           canonical,

@@ -26,6 +26,7 @@ const PACKAGE_MANAGER_GLOBAL_OPTIONS: Record<
       "-r",
       "-s",
       "-w",
+      "--fail-if-no-match",
       "--frozen-lockfile",
       "--ignore-scripts",
       "--offline",
@@ -229,6 +230,26 @@ export function packageScriptArguments(parts: readonly string[]): string[] {
   if (!invocation || !requirement) return [];
   const args = invocation.command === "run" ? invocation.args.slice(1) : invocation.args;
   return args[0] === "--" ? args.slice(1) : args;
+}
+
+export function requireWorkspaceMatchFailure(parts: readonly string[]): string[] {
+  const commandParts = stripEnvPrefix(parts);
+  const invocation = packageManagerInvocation(commandParts);
+  if (
+    invocation?.executable !== "pnpm" ||
+    !invocation.globalOptions.some(
+      (option) => option.name === "-F" || option.name === "--filter",
+    ) ||
+    invocation.globalOptions.some((option) => option.name === "--fail-if-no-match")
+  ) {
+    return [...parts];
+  }
+  const envPrefixLength = parts.length - commandParts.length;
+  return [
+    ...parts.slice(0, envPrefixLength + 1),
+    "--fail-if-no-match",
+    ...parts.slice(envPrefixLength + 1),
+  ];
 }
 
 export function packageManagerInvocation(
