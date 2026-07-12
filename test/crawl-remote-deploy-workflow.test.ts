@@ -137,18 +137,25 @@ test("crawl-remote release is maintainer-bound across two fresh runners", () => 
   assert.equal(deploy.env.DEPLOY_AUTHORITY, undefined);
   assert.equal(deploy.env.CLOUDFLARE_TOKEN_SHA256, undefined);
   assert.equal(deploy.env.CUSTOM_ROUTE_PROOF, undefined);
+  assert.equal(deploy.env.SOURCE_REPOSITORY, "${{ github.repository }}");
+  assert.equal(deploy.env.WORKFLOW_SHA, "${{ github.sha }}");
   assert.equal(deploy.env.WORKERS_DEV_URL, "https://crawl-remote.services-91b.workers.dev");
   assert.equal(deploy.env.PRODUCTION_ROUTE_URL, "https://reports.openclaw.ai/crawl-remote");
+  const sourceAuthorization = step(deploy, "Reauthorize current ClawSweeper workflow");
   const authority = step(deploy, "Verify central deployment authority");
   const proofCredentials = step(deploy, "Validate protected production proof credentials");
   const token = step(deploy, "Create exact-repository reauthorization token");
   const canonicalAuthority = step(deploy, "Verify canonical crawl-remote mutator is retired");
   const checkout = step(deploy, "Checkout trusted deployment toolchain");
-  assert.equal(steps(deploy).indexOf(authority), 0);
-  assert.equal(steps(deploy).indexOf(proofCredentials), 1);
-  assert.equal(steps(deploy).indexOf(token), 2);
-  assert.equal(steps(deploy).indexOf(canonicalAuthority), 3);
-  assert.equal(steps(deploy).indexOf(checkout), 4);
+  assert.equal(steps(deploy).indexOf(sourceAuthorization), 0);
+  assert.equal(steps(deploy).indexOf(authority), 1);
+  assert.equal(steps(deploy).indexOf(proofCredentials), 2);
+  assert.equal(steps(deploy).indexOf(token), 3);
+  assert.equal(steps(deploy).indexOf(canonicalAuthority), 4);
+  assert.equal(steps(deploy).indexOf(checkout), 5);
+  assert.equal(sourceAuthorization.env?.GH_TOKEN, "${{ github.token }}");
+  assert.match(sourceAuthorization.run ?? "", /repos\/\$SOURCE_REPOSITORY\/commits\/main/);
+  assert.match(sourceAuthorization.run ?? "", /\[\[ "\$WORKFLOW_SHA" != "\$current_main_sha" \]\]/);
   assert.equal(authority.env?.DEPLOY_AUTHORITY, "${{ vars.CRAWL_REMOTE_DEPLOY_AUTHORITY }}");
   assert.equal(authority.env?.CUSTOM_ROUTE_PROOF, "${{ vars.CRAWL_REMOTE_CUSTOM_ROUTE_PROOF }}");
   assert.match(authority.run ?? "", /DEPLOY_AUTHORITY.*clawsweeper-v1/s);
@@ -312,6 +319,11 @@ test("canonical crawl-remote production authority must be removed or disabled", 
   const run = retirement.run ?? "";
   assert.match(run, /repos\/\$TARGET_REPOSITORY\/contents\/\.github\/workflows\?ref=\$DEPLOY_SHA/);
   assert.match(run, /repos\/\$TARGET_REPOSITORY\/actions\/workflows\?per_page=100/);
+  assert.match(run, /--paginate --slurp/);
+  assert.match(run, /actions\/workflows\/\$workflow_id\/runs\?per_page=100&status=\$status/);
+  assert.match(run, /action_required in_progress pending queued requested waiting/);
+  assert.match(run, /workflow authority response is truncated/);
+  assert.match(run, /workflow still has \$\{status\} runs/);
   assert.match(run, /disabled_inactivity/);
   assert.match(run, /disabled_manually/);
   assert.match(run, /'deleted'/);
@@ -322,7 +334,9 @@ test("canonical crawl-remote production authority must be removed or disabled", 
 
   const directory = mkdtempSync(join(tmpdir(), "crawl-remote-authority-retirement-"));
   const contentsPath = join(directory, "contents.json");
+  const workflowIdPath = join(directory, "workflow-id.txt");
   const registryPath = join(directory, "registry.json");
+  const runsRoot = join(directory, "runs");
   const ghPath = join(directory, "gh");
   writeFileSync(
     ghPath,
@@ -330,6 +344,12 @@ test("canonical crawl-remote production authority must be removed or disabled", 
 case "$*" in
   *"contents/.github/workflows?ref="*)
     printf '%s\\n' "$WORKFLOW_CONTENTS_JSON"
+    ;;
+  *"status=waiting"*)
+    printf '%s\\n' "$WAITING_RUNS_JSON"
+    ;;
+  *"/runs?per_page=100"*)
+    printf '%s\\n' "$EMPTY_RUNS_JSON"
     ;;
   *"actions/workflows?per_page=100"*)
     printf '%s\\n' "$WORKFLOW_REGISTRY_JSON"
@@ -345,9 +365,13 @@ esac
   function verify({
     contentPresent,
     registryState,
+    registryTruncated = false,
+    waitingRun = false,
   }: {
     contentPresent: boolean;
     registryState?: string;
+    registryTruncated?: boolean;
+    waitingRun?: boolean;
   }) {
     const canonicalPath = ".github/workflows/deploy.yml";
     const contents = contentPresent
@@ -361,36 +385,69 @@ esac
         ]
       : [{ name: "ci.yml", path: ".github/workflows/ci.yml", sha: "b".repeat(40), type: "file" }];
     const workflows = registryState
-      ? [{ name: "deploy production", path: canonicalPath, state: registryState }]
+      ? [{ id: 123, name: "deploy production", path: canonicalPath, state: registryState }]
       : [];
+    const registryPages = [
+      {
+        total_count: workflows.length + (registryTruncated ? 1 : 0),
+        workflows,
+      },
+    ];
+    const emptyRuns = [{ total_count: 0, workflow_runs: [] }];
+    const waitingRuns = waitingRun
+      ? [{ total_count: 1, workflow_runs: [{ id: 456, status: "waiting" }] }]
+      : emptyRuns;
+    rmSync(workflowIdPath, { force: true });
+    rmSync(runsRoot, { recursive: true, force: true });
     return spawnSync("bash", ["--noprofile", "--norc", "-euo", "pipefail", "-c", run], {
       encoding: "utf8",
       env: {
         ...process.env,
         CANONICAL_WORKFLOW_PATH: canonicalPath,
         DEPLOY_SHA: mergedCrawlRemoteMain,
+        EMPTY_RUNS_JSON: JSON.stringify(emptyRuns),
         GH_TOKEN: "test",
         PATH: `${directory}:${process.env.PATH}`,
         TARGET_REPOSITORY: "openclaw/crawl-remote",
         WORKFLOW_CONTENTS_JSON: JSON.stringify(contents),
         WORKFLOW_CONTENTS_RESPONSE: contentsPath,
-        WORKFLOW_REGISTRY_JSON: JSON.stringify({
-          total_count: workflows.length,
-          workflows,
-        }),
+        WAITING_RUNS_JSON: JSON.stringify(waitingRuns),
+        WORKFLOW_ID_PATH: workflowIdPath,
+        WORKFLOW_REGISTRY_JSON: JSON.stringify(registryPages),
         WORKFLOW_REGISTRY_RESPONSE: registryPath,
+        WORKFLOW_RUNS_ROOT: runsRoot,
       },
     });
   }
 
+  function assertSucceeds(result: ReturnType<typeof verify>) {
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+  }
+
   try {
-    assert.equal(verify({ contentPresent: true, registryState: "disabled_manually" }).status, 0);
-    assert.equal(verify({ contentPresent: true, registryState: "disabled_inactivity" }).status, 0);
-    assert.equal(verify({ contentPresent: false, registryState: "deleted" }).status, 0);
-    assert.equal(verify({ contentPresent: false }).status, 0);
+    assertSucceeds(verify({ contentPresent: true, registryState: "disabled_manually" }));
+    assertSucceeds(verify({ contentPresent: true, registryState: "disabled_inactivity" }));
+    assertSucceeds(verify({ contentPresent: false, registryState: "deleted" }));
+    assertSucceeds(verify({ contentPresent: false }));
     assert.notEqual(verify({ contentPresent: true, registryState: "active" }).status, 0);
     assert.notEqual(verify({ contentPresent: true }).status, 0);
     assert.notEqual(verify({ contentPresent: false, registryState: "active" }).status, 0);
+    assert.notEqual(
+      verify({
+        contentPresent: true,
+        registryState: "disabled_manually",
+        registryTruncated: true,
+      }).status,
+      0,
+    );
+    assert.notEqual(
+      verify({
+        contentPresent: true,
+        registryState: "disabled_manually",
+        waitingRun: true,
+      }).status,
+      0,
+    );
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
@@ -467,7 +524,19 @@ test("authorization scripts reject every SHA except the current crawl-remote mai
   const previousWorkerProbePath = join(directory, "previous-worker-proof.txt");
   const receiptPath = join(directory, "receipt.json");
   const consumedReceiptPath = `${receiptPath}.consumed`;
-  writeFileSync(ghPath, '#!/bin/sh\nprintf "%s\\n" "$CURRENT_MAIN_SHA"\n');
+  writeFileSync(
+    ghPath,
+    `#!/bin/sh
+case "$*" in
+  *"repos/$SOURCE_REPOSITORY/commits/main"*)
+    printf '%s\\n' "$CURRENT_SOURCE_MAIN_SHA"
+    ;;
+  *)
+    printf '%s\\n' "$CURRENT_MAIN_SHA"
+    ;;
+esac
+`,
+  );
   chmodSync(ghPath, 0o755);
   writeFileSync(receiptPath, "{}\n");
   writeFileSync(consumedReceiptPath, "{}\n");
@@ -482,6 +551,7 @@ test("authorization scripts reject every SHA except the current crawl-remote mai
         ...process.env,
         CONSUMED_RECEIPT_PATH: consumedReceiptPath,
         CURRENT_MAIN_SHA: mergedCrawlRemoteMain,
+        CURRENT_SOURCE_MAIN_SHA: "c".repeat(40),
         DEPLOY_SHA: deploySha,
         GITHUB_OUTPUT: outputPath,
         GITHUB_RUN_ATTEMPT: "1",
@@ -493,7 +563,10 @@ test("authorization scripts reject every SHA except the current crawl-remote mai
         RECEIPT_PATH: receiptPath,
         REQUESTED_SHA: deploySha,
         SNAPSHOT_PROVENANCE_STATE: "dormant",
+        SOURCE_GH_TOKEN: "test",
+        SOURCE_REPOSITORY: "openclaw/clawsweeper",
         TARGET_REPOSITORY: "openclaw/crawl-remote",
+        WORKFLOW_SHA: "c".repeat(40),
         ...(authorize ? {} : { GH_TOKEN: "test" }),
       },
     });
@@ -531,6 +604,12 @@ test("Worker deploy reauthorization rejects main moving after D1 migrations", ()
   writeFileSync(
     ghPath,
     `#!/bin/sh
+case "$*" in
+  *"repos/$SOURCE_REPOSITORY/commits/main"*)
+    printf '%s\\n' "$WORKFLOW_SHA"
+    exit 0
+    ;;
+esac
 count=0
 if test -f "$GH_COUNTER"; then
   count="$(cat "$GH_COUNTER")"
@@ -562,7 +641,10 @@ printf '%s\\n' "$((count + 1))" > "$GH_COUNTER"
         PENDING_MIGRATIONS_PATH: pendingMigrationsPath,
         PREVIOUS_WORKER_PROBE_PATH: previousWorkerProbePath,
         RECEIPT_PATH: receiptPath,
+        SOURCE_GH_TOKEN: "test",
+        SOURCE_REPOSITORY: "openclaw/clawsweeper",
         TARGET_REPOSITORY: "openclaw/crawl-remote",
+        WORKFLOW_SHA: "c".repeat(40),
       },
     });
   }
@@ -1132,6 +1214,11 @@ test("deploy reauthorizes exact current main before and after privileged mutatio
     reauthorizeAfterWorker,
   ]) {
     assert.match(reauthorize.run ?? "", /\[\[ "\$DEPLOY_SHA" != "\$current_main_sha" \]\]/);
+    assert.match(
+      reauthorize.run ?? "",
+      /\[\[ "\$WORKFLOW_SHA" != "\$current_source_main_sha" \]\]/,
+    );
+    assert.equal(reauthorize.env?.SOURCE_GH_TOKEN, "${{ github.token }}");
     assert.doesNotMatch(reauthorize.run ?? "", /compare\/|comparison_status|ancestor|"ahead"/);
     assert.equal(reauthorize.env?.CLOUDFLARE_API_TOKEN, undefined);
   }
@@ -1245,9 +1332,15 @@ test("failed Worker release rolls back only the exact previously stable Worker v
   assert.equal(proof.id, "production-proof");
   assert.equal(proof["continue-on-error"], true);
   assert.match(rollback.if ?? "", /always\(\)/);
-  assert.match(rollback.if ?? "", /steps\.worker-deploy\.outcome != 'success'/);
+  assert.match(rollback.if ?? "", /steps\.worker-deploy\.outcome == 'success'/);
+  assert.doesNotMatch(rollback.if ?? "", /steps\.worker-deploy\.outcome != 'success'/);
   assert.match(rollback.if ?? "", /steps\.post-deploy-main\.outcome != 'success'/);
   assert.match(rollback.if ?? "", /steps\.production-proof\.outcome != 'success'/);
+  assert.match(workerDeploy.run ?? "", /WRANGLER_OUTPUT_FILE_PATH="\$DEPLOY_OUTPUT_PATH"/);
+  assert.match(workerDeploy.run ?? "", /entry\?\.type === 'deploy'/);
+  assert.match(workerDeploy.run ?? "", /DEPLOYED_VERSION_PATH/);
+  assert.match(run, /refusing rollback because this run no longer owns the current Worker version/);
+  assert.match(run, /versions\[0\]\?\.version_id !== process\.env\.DEPLOYED_VERSION/);
   assert.match(run, /wrangler" rollback "\$previous_version"/);
   assert.match(run, /--yes/);
   assert.match(run, /deployments status/);
