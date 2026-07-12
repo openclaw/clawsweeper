@@ -287,19 +287,47 @@ test("final synchronized tree is reviewed and reports persist before publication
   assert.match(source, /finalizeExecutionReport\(\{/);
 });
 
-test("repair workflow renews target credentials before deferred outcome publication", () => {
+test("repair workflow hands execution artifacts to a trusted post-flight finalizer", () => {
   const workflow = readText(
     path.join(process.cwd(), ".github/workflows/repair-cluster-worker.yml"),
   );
   const executeIndex = workflow.indexOf("- name: Execute credited fix artifact");
-  const renewIndex = workflow.indexOf("- name: Renew target write token for post-flight");
+  const handoffIndex = workflow.indexOf("- name: Upload trusted finalizer handoff");
+  const finalizerIndex = workflow.indexOf("\n  finalize:");
+  const resolveIndex = workflow.indexOf("- name: Resolve exact target repository", finalizerIndex);
+  const mutationTokenIndex = workflow.indexOf(
+    "- name: Create exact-repository mutation token",
+    resolveIndex,
+  );
+  const verifierTokenIndex = workflow.indexOf(
+    "- name: Create exact-repository ruleset verifier token",
+    mutationTokenIndex,
+  );
   const publishIndex = workflow.indexOf("- name: Publish deferred fix outcome");
   const postFlightIndex = workflow.indexOf("- name: Post-flight finalize fix PRs");
 
   assert.ok(
-    executeIndex < renewIndex && renewIndex < publishIndex && publishIndex < postFlightIndex,
+    executeIndex < handoffIndex &&
+      handoffIndex < finalizerIndex &&
+      finalizerIndex < resolveIndex &&
+      resolveIndex < mutationTokenIndex &&
+      mutationTokenIndex < verifierTokenIndex &&
+      verifierTokenIndex < publishIndex &&
+      publishIndex < postFlightIndex,
   );
-  assert.match(workflow.slice(executeIndex, renewIndex), /--latest --defer-publication/);
+  assert.match(workflow.slice(executeIndex, handoffIndex), /--latest --defer-publication/);
+  assert.match(
+    workflow.slice(handoffIndex, finalizerIndex),
+    /clawsweeper-repair-execution-\$\{\{ github\.run_id \}\}-\$\{\{ github\.run_attempt \}\}/,
+  );
+  const finalizer = workflow.slice(finalizerIndex);
+  assert.match(finalizer, /runs-on: ubuntu-latest/);
+  assert.match(finalizer, /ref: \$\{\{ github\.sha \}\}/);
+  assert.match(finalizer, /persist-credentials: false/);
+  assert.match(finalizer, /parseJob\(jobPath\)/);
+  assert.match(finalizer, /validateJob\(job\)/);
+  assert.match(finalizer, /repositories: \$\{\{ steps\.target\.outputs\.target_name \}\}/);
+  assert.doesNotMatch(finalizer, /setup-codex|repair:execute-fix -- .*--defer-publication/);
   assert.match(
     workflow.slice(publishIndex, postFlightIndex),
     /GH_TOKEN: \${{ steps\.target_post_flight_token\.outputs\.token }}/,

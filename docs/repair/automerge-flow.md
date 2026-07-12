@@ -156,6 +156,11 @@ Every automerge decision is bound to a concrete PR head SHA.
   effective base-branch rules that enforce strict required status checks. The
   app must not be a ruleset bypass actor. Ruleset and classic branch-protection
   forms are supported; when neither can be verified, automerge remains blocked.
+- Administration-backed ruleset verification runs only in a fresh trusted job
+  with no Codex setup or target code execution. It validates the job
+  frontmatter first, scopes both credentials to the exact repository, and
+  supports repository rulesets or classic protection; inherited organization
+  or enterprise rulesets fail closed until a separately scoped verifier exists.
 
 This is why repair workers dispatch an immediate exact-head review after a
 branch push instead of waiting for the normal scheduled sweep.
