@@ -99,13 +99,20 @@ test("review and apply outcome classifiers cover terminal and resumable states",
   assert.deepEqual(
     reviewCommentPublicationEventDisposition("review_comment_synced", false, false),
     {
-      status: "published",
-      reasonCode: "published",
+      status: "unchanged",
+      reasonCode: "content_unchanged",
       retryable: false,
       mutation: false,
-      completionReason: "comment_published",
+      completionReason: "comment_unchanged",
     },
   );
+  assert.deepEqual(applyActionEventDisposition("review_comment_synced", true, false, false), {
+    status: "unchanged",
+    reasonCode: "content_unchanged",
+    retryable: false,
+    mutation: true,
+    completionReason: "comment_unchanged",
+  });
   assert.deepEqual(reviewCommentPublicationEventDisposition("skipped_comment_auth", true, false), {
     status: "blocked",
     reasonCode: "authorization_failed",
@@ -369,7 +376,7 @@ test("apply receipts start per item and persist mutation observation before fina
   assert.match(applyLoop, /commentMutationOccurred: !dryRun && needsReviewCommentBodySync/);
   assert.match(
     source,
-    /reviewCommentPublicationEventDisposition\(\s*result\.action,\s*result\.commentMutationOccurred === true,/,
+    /const commentMutationOccurred = result\.commentMutationOccurred === true;[\s\S]*applyActionEventDisposition\([\s\S]*commentMutationOccurred,[\s\S]*reviewCommentPublicationEventDisposition\([\s\S]*commentMutationOccurred,/,
   );
   assert.match(applyLoop, /closeItem\(\{ number, kind: item\.kind/);
   const mutationAttemptStart = source.indexOf("function startApplyMutationAttempt(");

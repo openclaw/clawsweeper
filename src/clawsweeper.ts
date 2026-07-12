@@ -23988,6 +23988,7 @@ export function applyActionEventDisposition(
   action: ActionTaken,
   mutationOccurred: boolean,
   dryRun: boolean,
+  commentMutationOccurred = mutationOccurred,
 ): {
   status: ActionEventStatus;
   reasonCode: ActionEventReasonCode;
@@ -24023,6 +24024,15 @@ export function applyActionEventDisposition(
     };
   }
   if (action === "review_comment_synced" || action === "corrected_stale_canonical_comment") {
+    if (!commentMutationOccurred) {
+      return {
+        status: ACTION_EVENT_STATUSES.unchanged,
+        reasonCode: ACTION_EVENT_REASON_CODES.contentUnchanged,
+        retryable: false,
+        mutation: mutationOccurred,
+        completionReason: "comment_unchanged",
+      };
+    }
     return {
       status: ACTION_EVENT_STATUSES.completed,
       reasonCode: ACTION_EVENT_REASON_CODES.published,
@@ -24119,6 +24129,15 @@ export function reviewCommentPublicationEventDisposition(
   completionReason: string;
 } | null {
   if (action === "review_comment_synced" || action === "corrected_stale_canonical_comment") {
+    if (!dryRun && !commentMutationOccurred) {
+      return {
+        status: ACTION_EVENT_STATUSES.unchanged,
+        reasonCode: ACTION_EVENT_REASON_CODES.contentUnchanged,
+        retryable: false,
+        mutation: false,
+        completionReason: "comment_unchanged",
+      };
+    }
     return {
       status: dryRun ? ACTION_EVENT_STATUSES.planned : ACTION_EVENT_STATUSES.published,
       reasonCode: dryRun ? ACTION_EVENT_REASON_CODES.dryRun : ACTION_EVENT_REASON_CODES.published,
@@ -24189,14 +24208,16 @@ function recordApplyActionLedgerItemResults(options: {
           },
         ];
   for (const [resultIndex, result] of results.entries()) {
+    const commentMutationOccurred = result.commentMutationOccurred === true;
     const disposition = applyActionEventDisposition(
       result.action,
       options.mutationOccurred,
       options.dryRun,
+      commentMutationOccurred,
     );
     const commentDisposition = reviewCommentPublicationEventDisposition(
       result.action,
-      result.commentMutationOccurred === true,
+      commentMutationOccurred,
       options.dryRun,
     );
     const actionPhaseSeq = nextApplyPhaseSeq(options.ledger);
