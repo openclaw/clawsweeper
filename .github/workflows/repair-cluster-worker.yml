@@ -1311,6 +1311,7 @@ jobs:
             --authorization-sha256 "${{ needs.authorize.outputs.authorization_sha256 }}" \
             --validation-receipt .clawsweeper-repair/validation/receipt.json \
             --validation-receipt-sha256 "${{ needs.validate.outputs.receipt_sha256 }}" \
+            --mutation-actor "${{ steps.target_post_flight_token.outputs.app-slug }}[bot]" \
             --publication-receipt .clawsweeper-repair/publication/receipt.json
 
       - name: Verify publication receipt

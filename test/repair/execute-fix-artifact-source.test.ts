@@ -412,6 +412,10 @@ test("repair workflow binds one run through no-credential proof and token-only m
   );
   assert.match(mutate, /repair:execution-handoff -- verify-receipt/);
   assert.match(mutate, /repair:execution-handoff -- publish/);
+  assert.match(
+    mutate,
+    /repair:execution-handoff -- publish[\s\S]*--mutation-actor "\$\{\{ steps\.target_post_flight_token\.outputs\.app-slug \}\}\[bot\]"/,
+  );
   assert.match(mutate, /repair:execution-handoff -- verify-publication/);
   assert.match(mutate, /repair:execution-handoff -- checkpoint-source-closes/);
   assert.match(mutate, /repair:execution-handoff -- close-sources/);

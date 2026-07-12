@@ -145,6 +145,7 @@ switch (command) {
       validationReceiptPath: requiredArg(args, "validation-receipt"),
       expectedAuthorizationSha256: requiredArg(args, "authorization-sha256"),
       expectedValidationReceiptSha256: requiredArg(args, "validation-receipt-sha256"),
+      expectedMutationActor: requiredArg(args, "mutation-actor"),
       outputPath: requiredArg(args, "publication-receipt"),
     });
     writeOutputs({

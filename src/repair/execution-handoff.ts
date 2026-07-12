@@ -756,12 +756,14 @@ export function publishValidatedExecution({
   validationReceiptPath,
   expectedAuthorizationSha256,
   expectedValidationReceiptSha256,
+  expectedMutationActor,
   outputPath,
 }: {
   root: string;
   validationReceiptPath: string;
   expectedAuthorizationSha256: string;
   expectedValidationReceiptSha256: string;
+  expectedMutationActor: string;
   outputPath: string;
 }): PublicationReceipt {
   const validationReceipt = verifyValidationReceipt({
@@ -814,6 +816,7 @@ export function publishValidatedExecution({
             publicationCheckpoint: priorCheckpoint,
             mutations,
             checkpointedClosures: authorizedSourceClosures,
+            expectedMutationActor,
           });
     const receipt = publicationReceipt({
       validationReceiptSha256: validationReceipt.identity_sha256,
@@ -1093,6 +1096,7 @@ function sourceClosureCheckpointMutations(
       "begin_reopen_source_pull_request",
       "close_source_pull_request",
       "preserve_reopened_source_pull_request",
+      "preserve_human_reopened_source_pull_request",
     ].includes(String(mutation.operation ?? "")),
   );
 }
@@ -1126,7 +1130,8 @@ function sourceClosureReceiptState(
       mutation.operation !== "begin_close_source_pull_request" &&
       mutation.operation !== "begin_reopen_source_pull_request" &&
       mutation.operation !== "close_source_pull_request" &&
-      mutation.operation !== "preserve_reopened_source_pull_request"
+      mutation.operation !== "preserve_reopened_source_pull_request" &&
+      mutation.operation !== "preserve_human_reopened_source_pull_request"
     ) {
       continue;
     }
@@ -1170,6 +1175,9 @@ function sourceClosureReceiptState(
     if (mutation.operation === "close_source_pull_request") {
       assertCloseEvidenceMatchesAttempt(mutation, attempt);
       completed.push(mutation);
+    } else if (mutation.operation === "preserve_human_reopened_source_pull_request") {
+      assertHumanReopenEvidenceMatchesAttempt(mutation, attempt);
+      reopened.push(mutation);
     } else {
       assertReopenEvidenceMatchesAttempt(mutation, attempt);
       reopened.push(mutation);
@@ -1360,6 +1368,41 @@ export function preservePendingSourceReopenReceipt({
   });
 }
 
+export function preservePendingHumanReopenReceipt({
+  publication,
+  receipt,
+  intent,
+  revision,
+  evidence,
+}: {
+  publication: PreparedPublication;
+  receipt: PublicationReceipt;
+  intent: ExecutionIntent;
+  revision: SourcePullRevision;
+  evidence: SourceReopenEvidence;
+}): PublicationReceipt {
+  if (!pendingSourceClosures(publication, receipt, intent).has(revision.url)) {
+    throw new Error("human source reopen preservation lacks its durable pre-close checkpoint");
+  }
+  return publicationReceipt({
+    validationReceiptSha256: receipt.validation_receipt_sha256,
+    publication,
+    targetPrNumber: receipt.target_pr_number,
+    mutations: [
+      ...receipt.mutations,
+      {
+        operation: "preserve_human_reopened_source_pull_request",
+        source: revision.url,
+        repo: revision.repo,
+        pull_number: revision.number,
+        expected_head_sha: revision.expected_head_sha,
+        expected_base_sha: revision.expected_base_sha,
+        ...evidence,
+      },
+    ],
+  });
+}
+
 function sourceClosureExpectedActor(mutation: LooseRecord): string {
   return requiredCloseActor(mutation.expected_close_actor);
 }
@@ -1395,6 +1438,24 @@ function assertReopenEvidenceMatchesAttempt(evidence: LooseRecord, attempt: Loos
     !validEventTimestamp(evidence.reopened_at)
   ) {
     throw new Error("source reopen preservation evidence is invalid");
+  }
+}
+
+function assertHumanReopenEvidenceMatchesAttempt(evidence: LooseRecord, attempt: LooseRecord) {
+  const expectedActor = sourceClosureExpectedActor(attempt);
+  const marker = sourceClosureCheckpointEventId(attempt) ?? 0;
+  const closeEventId = requiredEventId(evidence.close_event_id, "source close event id");
+  const reopenEventId = requiredEventId(evidence.reopen_event_id, "source reopen event id");
+  if (
+    closeEventId <= marker ||
+    normalizeActor(evidence.close_actor) === normalizeActor(expectedActor) ||
+    !normalizeActor(evidence.close_actor) ||
+    !validEventTimestamp(evidence.closed_at) ||
+    reopenEventId <= closeEventId ||
+    !normalizeActor(evidence.reopen_actor) ||
+    !validEventTimestamp(evidence.reopened_at)
+  ) {
+    throw new Error("human source reopen preservation evidence is invalid");
   }
 }
 
@@ -1435,7 +1496,8 @@ export function sourceCloseRecovery({
   | { status: "retry" }
   | { status: "awaiting_reopen" }
   | { status: "closed"; evidence: SourceCloseEvidence }
-  | { status: "reopened"; evidence: SourceReopenEvidence } {
+  | { status: "reopened"; evidence: SourceReopenEvidence }
+  | { status: "human_reopened"; evidence: SourceReopenEvidence } {
   const expectedActor = sourceClosureExpectedActor(attempt);
   const marker = sourceClosureCheckpointEventId(attempt) ?? 0;
   const afterCheckpoint = [...events]
@@ -1448,17 +1510,14 @@ export function sourceCloseRecovery({
   }
 
   const latest = afterCheckpoint.at(-1)!;
-  const trustedClose = [...afterCheckpoint]
+  const latestClose = [...afterCheckpoint]
     .reverse()
-    .find(
-      (event) =>
-        event.event === "closed" &&
-        normalizeActor(event.actor) === normalizeActor(expectedActor) &&
-        event.id <= latest.id,
-    );
+    .find((event) => event.event === "closed" && event.id < latest.id);
   if (latest.event === "closed") {
     if (normalizedState === "open") {
-      return trustedClose ? { status: "awaiting_reopen" } : { status: "retry" };
+      return normalizeActor(latest.actor) === normalizeActor(expectedActor)
+        ? { status: "awaiting_reopen" }
+        : { status: "retry" };
     }
     if (
       normalizedState !== "closed" ||
@@ -1478,18 +1537,62 @@ export function sourceCloseRecovery({
   if (normalizedState !== "open") {
     throw new Error("pending source reopen is not backed by a ClawSweeper close");
   }
-  if (!trustedClose) return { status: "retry" };
-  return {
-    status: "reopened",
-    evidence: {
-      close_event_id: trustedClose.id,
-      close_actor: trustedClose.actor,
-      closed_at: trustedClose.created_at,
-      reopen_event_id: latest.id,
-      reopen_actor: latest.actor,
-      reopened_at: latest.created_at,
-    },
+  if (!latestClose) return { status: "retry" };
+  const evidence = {
+    close_event_id: latestClose.id,
+    close_actor: latestClose.actor,
+    closed_at: latestClose.created_at,
+    reopen_event_id: latest.id,
+    reopen_actor: latest.actor,
+    reopened_at: latest.created_at,
   };
+  return normalizeActor(latestClose.actor) === normalizeActor(expectedActor)
+    ? { status: "reopened", evidence }
+    : { status: "human_reopened", evidence };
+}
+
+export function finalizePendingSourceClosureReceipt({
+  publication,
+  receipt,
+  intent,
+  revision,
+  readRecovery,
+}: {
+  publication: PreparedPublication;
+  receipt: PublicationReceipt;
+  intent: ExecutionIntent;
+  revision: SourcePullRevision;
+  readRecovery: () => ReturnType<typeof sourceCloseRecovery>;
+}): PublicationReceipt {
+  const recovery = readRecovery();
+  if (recovery.status === "closed") {
+    return completePendingSourceClosureReceipt({
+      publication,
+      receipt,
+      intent,
+      revision,
+      evidence: recovery.evidence,
+    });
+  }
+  if (recovery.status === "reopened") {
+    return preservePendingSourceReopenReceipt({
+      publication,
+      receipt,
+      intent,
+      revision,
+      evidence: recovery.evidence,
+    });
+  }
+  if (recovery.status === "human_reopened") {
+    return preservePendingHumanReopenReceipt({
+      publication,
+      receipt,
+      intent,
+      revision,
+      evidence: recovery.evidence,
+    });
+  }
+  throw new Error("source closeout is not durably terminal at receipt commit");
 }
 
 export function checkpointPublishedReplacementSourceClosures({
@@ -1536,6 +1639,7 @@ export function checkpointPublishedReplacementSourceClosures({
     publicationCheckpoint: receipt,
     targetPrNumber: receipt.target_pr_number,
     checkpointedClosures: authorizedClosedSources,
+    expectedCloseActor,
   });
   const sourceStateEvents = new Map(
     preparedSourceClosureActions(publication, intent)
@@ -2373,6 +2477,7 @@ function publishReplacementRepair({
   publicationCheckpoint,
   mutations,
   checkpointedClosures,
+  expectedMutationActor,
 }: {
   checkout: string;
   intent: ExecutionIntent;
@@ -2380,12 +2485,24 @@ function publishReplacementRepair({
   publicationCheckpoint: PublicationReceipt | null;
   mutations: LooseRecord[];
   checkpointedClosures: ReadonlySet<string>;
+  expectedMutationActor: string;
 }): number {
+  const pulls = pullsForBranch(
+    intent.target_repo,
+    intent.output_branch,
+    intent.target_base_ref,
+    "all",
+  );
   const recovery = selectAuthorizedReplacementPull({
-    pulls: pullsForBranch(intent.target_repo, intent.output_branch, intent.target_base_ref, "all"),
+    pulls,
     publication,
     intent,
     publicationCheckpoint,
+    trustedCloseEvidenceByNumber: trustedPullCloseEvidenceByNumber(
+      intent.target_repo,
+      pulls,
+      expectedMutationActor,
+    ),
   });
   const liveTargetPr = recovery?.number ?? null;
   if (
@@ -2428,6 +2545,8 @@ function publishReplacementRepair({
             publication,
             intent,
             publicationCheckpoint,
+            readStateEvents: () => readSourcePullStateEvents(intent.target_repo, liveTargetPr),
+            expectedCloseActor: expectedMutationActor,
             mutation: () =>
               run("gh", ["pr", "reopen", String(liveTargetPr), "--repo", intent.target_repo], {
                 cwd: checkout,
@@ -2457,6 +2576,9 @@ function publishReplacementRepair({
             publication,
             intent,
             publicationCheckpoint,
+            readStateEvents: () =>
+              readSourcePullStateEvents(intent.target_repo, expectedTargetPrNumber),
+            expectedCloseActor: expectedMutationActor,
             mutation: () =>
               run(
                 "gh",
@@ -2544,11 +2666,13 @@ export function selectAuthorizedReplacementPull({
   publication,
   intent,
   publicationCheckpoint = null,
+  trustedCloseEvidenceByNumber = new Map(),
 }: {
   pulls: LooseRecord[];
   publication: PreparedPublication;
   intent: ExecutionIntent;
   publicationCheckpoint?: PublicationReceipt | null;
+  trustedCloseEvidenceByNumber?: ReadonlyMap<number, SourceCloseEvidence>;
 }): { number: number; state: "open" | "reopen" } | null {
   const allowedHeadShas = new Set(
     [intent.expected_output_sha, publication.prepared_head_sha].filter((sha): sha is string =>
@@ -2599,6 +2723,9 @@ export function selectAuthorizedReplacementPull({
     ) {
       throw new Error("publication checkpoint does not authorize reopening this replacement");
     }
+    if (!trustedCloseEvidenceByNumber.has(number)) {
+      throw new Error("closed replacement pull request lacks trusted ClawSweeper close provenance");
+    }
     return { number, state: "reopen" };
   }
   throw new Error(`authorized replacement pull request is ${state || "unknown"}`);
@@ -2610,6 +2737,8 @@ export function runExactReplacementReopenMutation<T>({
   publication,
   intent,
   publicationCheckpoint,
+  readStateEvents,
+  expectedCloseActor,
   mutation,
 }: {
   readPull: () => LooseRecord;
@@ -2617,18 +2746,75 @@ export function runExactReplacementReopenMutation<T>({
   publication: PreparedPublication;
   intent: ExecutionIntent;
   publicationCheckpoint: PublicationReceipt | null;
+  readStateEvents: () => readonly SourcePullStateEvent[];
+  expectedCloseActor: string;
   mutation: () => T;
 }): T {
+  const pull = readPull();
+  const closeEvidence = trustedPullCloseEvidence({
+    events: readStateEvents(),
+    expectedCloseActor,
+  });
   const selection = selectAuthorizedReplacementPull({
-    pulls: [readPull()],
+    pulls: [pull],
     publication,
     intent,
     publicationCheckpoint,
+    trustedCloseEvidenceByNumber: closeEvidence
+      ? new Map([[expectedNumber, closeEvidence]])
+      : new Map(),
   });
   if (!selection || selection.number !== expectedNumber || selection.state !== "reopen") {
     throw new Error("replacement pull request is no longer the exact closed authorized target");
   }
   return mutation();
+}
+
+export function trustedPullCloseEvidence({
+  events,
+  expectedCloseActor,
+}: {
+  events: readonly SourcePullStateEvent[];
+  expectedCloseActor: string;
+}): SourceCloseEvidence | null {
+  const expectedActor = requiredCloseActor(expectedCloseActor);
+  const ordered = [...events].sort((left, right) => left.id - right.id);
+  if (new Set(ordered.map((event) => event.id)).size !== ordered.length) {
+    throw new Error("pull request state events contain duplicate ids");
+  }
+  const latest = ordered.at(-1);
+  if (
+    !latest ||
+    latest.event !== "closed" ||
+    normalizeActor(latest.actor) !== normalizeActor(expectedActor) ||
+    !validEventTimestamp(latest.created_at)
+  ) {
+    return null;
+  }
+  return {
+    close_event_id: requiredEventId(latest.id, "pull request close event id"),
+    close_actor: latest.actor,
+    closed_at: latest.created_at,
+  };
+}
+
+function trustedPullCloseEvidenceByNumber(
+  repo: string,
+  pulls: readonly LooseRecord[],
+  expectedCloseActor: string,
+): Map<number, SourceCloseEvidence> {
+  const evidence = new Map<number, SourceCloseEvidence>();
+  for (const pull of pulls) {
+    if (String(pull.state ?? "").toLowerCase() !== "closed") continue;
+    const number = Number(pull.number);
+    if (!Number.isSafeInteger(number) || number <= 0) continue;
+    const trusted = trustedPullCloseEvidence({
+      events: readSourcePullStateEvents(repo, number),
+      expectedCloseActor,
+    });
+    if (trusted) evidence.set(number, trusted);
+  }
+  return evidence;
 }
 
 export function sourceCloseoutStateBlock({
@@ -2664,6 +2850,7 @@ function ensurePublishedReplacementAvailable({
   publicationCheckpoint,
   targetPrNumber,
   checkpointedClosures,
+  expectedCloseActor,
 }: {
   cwd: string;
   intent: ExecutionIntent;
@@ -2671,12 +2858,21 @@ function ensurePublishedReplacementAvailable({
   publicationCheckpoint: PublicationReceipt;
   targetPrNumber: number;
   checkpointedClosures: ReadonlySet<string>;
+  expectedCloseActor: string;
 }) {
+  const pull = ghObject(`repos/${intent.target_repo}/pulls/${targetPrNumber}`);
+  const closeEvidence = trustedPullCloseEvidence({
+    events: readSourcePullStateEvents(intent.target_repo, targetPrNumber),
+    expectedCloseActor,
+  });
   const selection = selectAuthorizedReplacementPull({
-    pulls: [ghObject(`repos/${intent.target_repo}/pulls/${targetPrNumber}`)],
+    pulls: [pull],
     publication,
     intent,
     publicationCheckpoint,
+    trustedCloseEvidenceByNumber: closeEvidence
+      ? new Map([[targetPrNumber, closeEvidence]])
+      : new Map(),
   });
   if (!selection || selection.number !== targetPrNumber) {
     throw new Error("publication checkpoint target no longer matches the authorized replacement");
@@ -2694,6 +2890,8 @@ function ensurePublishedReplacementAvailable({
           publication,
           intent,
           publicationCheckpoint,
+          readStateEvents: () => readSourcePullStateEvents(intent.target_repo, targetPrNumber),
+          expectedCloseActor,
           mutation: () =>
             run("gh", ["pr", "reopen", String(targetPrNumber), "--repo", intent.target_repo], {
               cwd,
@@ -2729,12 +2927,9 @@ function assertExactPublishedReplacementAvailable({
 }
 
 class SourceCloseCompensationFailure extends Error {
-  readonly closeEvidence: SourceCloseEvidence;
-
-  constructor(message: string, closeEvidence: SourceCloseEvidence) {
+  constructor(message: string) {
     super(message);
     this.name = "SourceCloseCompensationFailure";
-    this.closeEvidence = closeEvidence;
   }
 }
 
@@ -2788,7 +2983,6 @@ export function runReplacementBoundSourceClose({
       `replacement changed after source close and compensation failed: ${String(
         (compensationError as Error)?.message ?? compensationError,
       )}`,
-      recovery.evidence,
     );
   }
   try {
@@ -2845,6 +3039,14 @@ function closeSupersededReplacementSources({
     sourcePullRevisions(intent).map((revision) => [revision.url, revision]),
   );
   const actions = preparedSourceClosureActions(publication, intent);
+  const readLiveRecovery = (revision: SourcePullRevision, attempt: LooseRecord) => {
+    const sourcePull = revalidateSourcePullRevision(revision, { allowClosed: true });
+    return sourceCloseRecovery({
+      attempt,
+      state: String(sourcePull.state ?? "").toLowerCase(),
+      events: readSourcePullStateEvents(revision.repo, revision.number),
+    });
+  };
 
   for (const source of pendingAttempts) {
     if (completedClosures.has(source)) continue;
@@ -2864,13 +3066,7 @@ function closeSupersededReplacementSources({
     ) {
       throw new Error("pending source closeout actor changed across workflow attempts");
     }
-    const sourcePull = revalidateSourcePullRevision(revision, { allowClosed: true });
-    const state = String(sourcePull.state ?? "").toLowerCase();
-    const recovery = sourceCloseRecovery({
-      attempt,
-      state,
-      events: readSourcePullStateEvents(revision.repo, revision.number),
-    });
+    const recovery = readLiveRecovery(revision, attempt);
     if (pendingReopenAttempts.has(source)) {
       if (recovery.status === "awaiting_reopen" || recovery.status === "retry") {
         throw new Error("source reopen compensation is waiting for durable actor evidence");
@@ -2901,19 +3097,18 @@ function closeSupersededReplacementSources({
                   `checkpointed source reopen compensation failed: ${String(
                     (error as Error)?.message ?? error,
                   )}`,
-                  liveRecovery.evidence,
                 );
               }
             },
           });
         } catch (error) {
           if (error instanceof SourceCloseCompensationFailure) {
-            currentReceipt = completePendingSourceClosureReceipt({
+            currentReceipt = finalizePendingSourceClosureReceipt({
               publication,
               receipt: currentReceipt,
               intent,
               revision,
-              evidence: error.closeEvidence,
+              readRecovery: () => readLiveRecovery(revision, attempt),
             });
             writeJson(publicationReceiptPath, currentReceipt);
           }
@@ -2934,25 +3129,25 @@ function closeSupersededReplacementSources({
             )}`,
           );
         }
-        if (compensated.status !== "reopened") {
+        if (compensated.status !== "reopened" && compensated.status !== "human_reopened") {
           throw new SourceCloseCompensationUnverified(
             "checkpointed source reopen completed but durable reopen evidence is pending",
           );
         }
-        currentReceipt = preservePendingSourceReopenReceipt({
+        currentReceipt = finalizePendingSourceClosureReceipt({
           publication,
           receipt: currentReceipt,
           intent,
           revision,
-          evidence: compensated.evidence,
+          readRecovery: () => readLiveRecovery(revision, attempt),
         });
       } else {
-        currentReceipt = preservePendingSourceReopenReceipt({
+        currentReceipt = finalizePendingSourceClosureReceipt({
           publication,
           receipt: currentReceipt,
           intent,
           revision,
-          evidence: recovery.evidence,
+          readRecovery: () => readLiveRecovery(revision, attempt),
         });
       }
       writeJson(publicationReceiptPath, currentReceipt);
@@ -2966,22 +3161,13 @@ function closeSupersededReplacementSources({
       throw new Error("source reopen is visible before its durable event evidence");
     }
     if (recovery.status === "retry") continue;
-    currentReceipt =
-      recovery.status === "closed"
-        ? completePendingSourceClosureReceipt({
-            publication,
-            receipt: currentReceipt,
-            intent,
-            revision,
-            evidence: recovery.evidence,
-          })
-        : preservePendingSourceReopenReceipt({
-            publication,
-            receipt: currentReceipt,
-            intent,
-            revision,
-            evidence: recovery.evidence,
-          });
+    currentReceipt = finalizePendingSourceClosureReceipt({
+      publication,
+      receipt: currentReceipt,
+      intent,
+      revision,
+      readRecovery: () => readLiveRecovery(revision, attempt),
+    });
     writeJson(publicationReceiptPath, currentReceipt);
     completedClosures = checkpointedSourceClosures(publication, currentReceipt, intent);
     preservedReopens = preservedReopenedSourceClosures(publication, currentReceipt, intent);
@@ -3020,6 +3206,7 @@ function closeSupersededReplacementSources({
     publicationCheckpoint: currentReceipt,
     targetPrNumber,
     checkpointedClosures: completedClosures,
+    expectedCloseActor,
   });
 
   for (const action of actions) {
@@ -3054,6 +3241,7 @@ function closeSupersededReplacementSources({
       publicationCheckpoint: currentReceipt,
       targetPrNumber,
       checkpointedClosures: completedClosures,
+      expectedCloseActor,
     });
     const replacementUrl = `https://github.com/${intent.target_repo}/pull/${targetPrNumber}`;
     const comment = [
@@ -3165,12 +3353,12 @@ function closeSupersededReplacementSources({
       });
     } catch (error) {
       if (error instanceof SourceCloseCompensationFailure) {
-        currentReceipt = completePendingSourceClosureReceipt({
+        currentReceipt = finalizePendingSourceClosureReceipt({
           publication,
           receipt: currentReceipt,
           intent,
           revision: action.revision,
-          evidence: error.closeEvidence,
+          readRecovery: () => readLiveRecovery(action.revision, attempt),
         });
         writeJson(publicationReceiptPath, currentReceipt);
       }
@@ -3178,24 +3366,24 @@ function closeSupersededReplacementSources({
     }
     if (!result) throw new Error("source close mutation returned no result");
     if (result.status === "compensated") {
-      currentReceipt = preservePendingSourceReopenReceipt({
+      currentReceipt = finalizePendingSourceClosureReceipt({
         publication,
         receipt: currentReceipt,
         intent,
         revision: action.revision,
-        evidence: result.evidence,
+        readRecovery: () => readLiveRecovery(action.revision, attempt),
       });
       writeJson(publicationReceiptPath, currentReceipt);
       throw new Error(
         `replacement changed after source close; source reopen compensation persisted: ${result.replacement_error}`,
       );
     }
-    currentReceipt = completePendingSourceClosureReceipt({
+    currentReceipt = finalizePendingSourceClosureReceipt({
       publication,
       receipt: currentReceipt,
       intent,
       revision: action.revision,
-      evidence: result.evidence,
+      readRecovery: () => readLiveRecovery(action.revision, attempt),
     });
     writeJson(publicationReceiptPath, currentReceipt);
     completedClosures = checkpointedSourceClosures(publication, currentReceipt, intent);

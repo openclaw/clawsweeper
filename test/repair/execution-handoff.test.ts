@@ -16,6 +16,7 @@ import {
   checkpointSourceClosureReceipt,
   checkpointedSourceClosures,
   completePendingSourceClosureReceipt,
+  finalizePendingSourceClosureReceipt,
   missingRequiredPublicationLabels,
   pendingSourceReopenClosures,
   pendingSourceClosures,
@@ -23,6 +24,7 @@ import {
   preservedReopenedSourceClosures,
   prepareExecutionAuthorization,
   preparedRefPublicationState,
+  preservePendingHumanReopenReceipt,
   publicationPauseItems,
   replacementPublicationLabels,
   restoreCheckpointedExecutionAuthorization,
@@ -34,6 +36,7 @@ import {
   sealExecutionHandoff,
   sourceCloseRecovery,
   sourceCloseoutStateBlock,
+  trustedPullCloseEvidence,
   type SourcePullStateEvent,
   type SourcePullRevision,
   verifyExecutionHandoff,
@@ -561,6 +564,14 @@ test("replacement retry reopens only the exact closed authorized pull request", 
     targetPrNumber: 99,
     mutations: [],
   });
+  const closeActor = "openclaw-clawsweeper[bot]";
+  const closeEvents = [sourceStateEvent(10, "closed", closeActor)];
+  const closeEvidence = trustedPullCloseEvidence({
+    events: closeEvents,
+    expectedCloseActor: closeActor,
+  });
+  assert.ok(closeEvidence);
+  const trustedCloseEvidenceByNumber = new Map([[99, closeEvidence]]);
 
   assert.deepEqual(
     selectAuthorizedReplacementPull({
@@ -575,6 +586,7 @@ test("replacement retry reopens only the exact closed authorized pull request", 
       publication,
       intent,
       publicationCheckpoint: checkpoint,
+      trustedCloseEvidenceByNumber,
     }),
     { number: 99, state: "reopen" },
   );
@@ -599,6 +611,7 @@ test("replacement retry reopens only the exact closed authorized pull request", 
           targetPrNumber: 100,
           mutations: [],
         }),
+        trustedCloseEvidenceByNumber,
       }),
     /does not authorize reopening/,
   );
@@ -639,6 +652,8 @@ test("replacement retry reopens only the exact closed authorized pull request", 
       publication,
       intent,
       publicationCheckpoint: checkpoint,
+      readStateEvents: () => closeEvents,
+      expectedCloseActor: closeActor,
       mutation: () => ++reopenCount,
     }),
     1,
@@ -652,9 +667,27 @@ test("replacement retry reopens only the exact closed authorized pull request", 
         publication,
         intent,
         publicationCheckpoint: checkpoint,
+        readStateEvents: () => closeEvents,
+        expectedCloseActor: closeActor,
         mutation: () => ++reopenCount,
       }),
     /no longer the exact closed authorized target/,
+  );
+  assert.equal(reopenCount, 1);
+  liveReplacement = exactClosed;
+  assert.throws(
+    () =>
+      runExactReplacementReopenMutation({
+        readPull: () => liveReplacement,
+        expectedNumber: 99,
+        publication,
+        intent,
+        publicationCheckpoint: checkpoint,
+        readStateEvents: () => [sourceStateEvent(11, "closed", "maintainer")],
+        expectedCloseActor: closeActor,
+        mutation: () => ++reopenCount,
+      }),
+    /lacks trusted ClawSweeper close provenance/,
   );
   assert.equal(reopenCount, 1);
 });
@@ -929,16 +962,27 @@ test("pending source recovery requires the ClawSweeper close actor and preserves
   assert.deepEqual(sourceCloseRecovery({ attempt, state: "open", events: [] }), {
     status: "retry",
   });
+  const humanRecovery = sourceCloseRecovery({
+    attempt,
+    state: "open",
+    events: [
+      sourceStateEvent(11, "closed", "maintainer"),
+      sourceStateEvent(12, "reopened", "maintainer"),
+    ],
+  });
+  assert.equal(humanRecovery.status, "human_reopened");
+  if (humanRecovery.status !== "human_reopened") return;
+  const humanPreserved = preservePendingHumanReopenReceipt({
+    publication,
+    receipt,
+    intent,
+    revision,
+    evidence: humanRecovery.evidence,
+  });
+  assert.deepEqual([...pendingSourceClosures(publication, humanPreserved, intent)], []);
   assert.deepEqual(
-    sourceCloseRecovery({
-      attempt,
-      state: "open",
-      events: [
-        sourceStateEvent(11, "closed", "maintainer"),
-        sourceStateEvent(12, "reopened", "maintainer"),
-      ],
-    }),
-    { status: "retry" },
+    [...preservedReopenedSourceClosures(publication, humanPreserved, intent)],
+    [revision.url],
   );
   assert.deepEqual(
     sourceCloseRecovery({
@@ -978,6 +1022,61 @@ test("pending source recovery requires the ClawSweeper close actor and preserves
       expectedCloseActor: closeActor,
     }).identity_sha256,
     preserved.identity_sha256,
+  );
+});
+
+test("source close completion rechecks live state before recording a terminal receipt", () => {
+  const revision = sourcePullRevision(42);
+  const intent = revisionBoundIntent(revision, "open_pull_request");
+  const publication = checkpointPublication([{ source: revision.url, operation: "close" }]);
+  const closeActor = "openclaw-clawsweeper[bot]";
+  const receipt = checkpointSourceClosureReceipt({
+    publication,
+    receipt: publicationReceipt({
+      validationReceiptSha256: "c".repeat(64),
+      publication,
+      targetPrNumber: 99,
+      mutations: [],
+    }),
+    intent,
+    expectedCloseActor: closeActor,
+  });
+  const attempt = receipt.mutations.find(
+    (mutation) => mutation.operation === "begin_close_source_pull_request",
+  )!;
+  assert.equal(
+    sourceCloseRecovery({
+      attempt,
+      state: "closed",
+      events: [sourceStateEvent(11, "closed", closeActor)],
+    }).status,
+    "closed",
+  );
+
+  const finalized = finalizePendingSourceClosureReceipt({
+    publication,
+    receipt,
+    intent,
+    revision,
+    readRecovery: () =>
+      sourceCloseRecovery({
+        attempt,
+        state: "open",
+        events: [
+          sourceStateEvent(11, "closed", "maintainer"),
+          sourceStateEvent(12, "reopened", "maintainer"),
+        ],
+      }),
+  });
+  assert.equal(
+    finalized.mutations.some((mutation) => mutation.operation === "close_source_pull_request"),
+    false,
+  );
+  assert.equal(
+    finalized.mutations.some(
+      (mutation) => mutation.operation === "preserve_human_reopened_source_pull_request",
+    ),
+    true,
   );
 });
 
@@ -1208,7 +1307,7 @@ test("publication checkpoint binds source closeout and every mutation rechecks l
   assert.doesNotMatch(closeout, /sourceClosureAttemptReceiptMutation/);
   assert.match(
     closeout,
-    /"pr", "close"[\s\S]*completePendingSourceClosureReceipt\(\{[\s\S]*revision: action\.revision,[\s\S]*writeJson\(publicationReceiptPath, currentReceipt\)/,
+    /"pr", "close"[\s\S]*finalizePendingSourceClosureReceipt\(\{[\s\S]*revision: action\.revision,[\s\S]*readRecovery:[\s\S]*writeJson\(publicationReceiptPath, currentReceipt\)/,
   );
   assert.ok(
     closeout.indexOf("checkpointPendingSourceReopenReceipt") <
@@ -1216,9 +1315,12 @@ test("publication checkpoint binds source closeout and every mutation rechecks l
   );
   assert.match(
     closeout,
-    /for \(const source of pendingAttempts\)[\s\S]*sourceCloseRecovery\(\{[\s\S]*completePendingSourceClosureReceipt\(\{[\s\S]*preservePendingSourceReopenReceipt\(\{[\s\S]*writeJson\(publicationReceiptPath, currentReceipt\)/,
+    /for \(const source of pendingAttempts\)[\s\S]*readLiveRecovery\([\s\S]*finalizePendingSourceClosureReceipt\(\{[\s\S]*writeJson\(publicationReceiptPath, currentReceipt\)/,
   );
-  assert.match(closeout, /SourceCloseCompensationFailure[\s\S]*error\.closeEvidence/);
+  assert.match(
+    closeout,
+    /SourceCloseCompensationFailure[\s\S]*finalizePendingSourceClosureReceipt\(\{/,
+  );
   assert.match(closeout, /preservedReopens\.has\(action\.source\.url\)\) continue/);
   assert.ok(closeout.indexOf("sourceCloseoutStateBlock") < closeout.indexOf('["pr", "close"'));
   const resolver = source.slice(
