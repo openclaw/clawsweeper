@@ -237,18 +237,19 @@ export function requireWorkspaceMatchFailure(parts: readonly string[]): string[]
   const invocation = packageManagerInvocation(commandParts);
   if (
     invocation?.executable !== "pnpm" ||
-    !invocation.globalOptions.some(
-      (option) => option.name === "-F" || option.name === "--filter",
-    ) ||
-    invocation.globalOptions.some((option) => option.name === "--fail-if-no-match")
+    !invocation.globalOptions.some((option) => option.name === "-F" || option.name === "--filter")
   ) {
     return [...parts];
   }
   const envPrefixLength = parts.length - commandParts.length;
+  const normalizedGlobalOptions = commandParts
+    .slice(1, invocation.commandIndex)
+    .filter((token) => token.split("=", 1)[0] !== "--fail-if-no-match");
   return [
     ...parts.slice(0, envPrefixLength + 1),
     "--fail-if-no-match",
-    ...parts.slice(envPrefixLength + 1),
+    ...normalizedGlobalOptions,
+    ...commandParts.slice(invocation.commandIndex),
   ];
 }
 

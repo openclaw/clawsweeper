@@ -531,6 +531,21 @@ test("validation preflight defers workspace-scoped scripts to the package manage
     "pnpm --fail-if-no-match --filter __clawsweeper_no_such_workspace__ run test",
   ]);
 
+  const disabledNoMatchFailure = preflightTargetValidationPlan(
+    {
+      fixArtifact: {
+        validation_commands: [
+          "pnpm --filter __clawsweeper_no_such_workspace__ --fail-if-no-match=false run test",
+        ],
+      },
+      targetDir: cwd,
+    },
+    options,
+  );
+  assert.deepEqual(disabledNoMatchFailure.resolved_commands, [
+    "pnpm --fail-if-no-match --filter __clawsweeper_no_such_workspace__ run test",
+  ]);
+
   const disabledWorkspaceResult = preflightTargetValidationPlan(
     {
       fixArtifact: { validation_commands: ["npm --workspaces=false run test"] },
@@ -553,6 +568,35 @@ test("staged target proof fails when a pnpm filter matches no workspace", () => 
     () =>
       runStagedValidationProof(
         ["pnpm --filter __clawsweeper_no_such_workspace__ run test"],
+        cwd,
+        validationOptions("openclaw/example", {
+          toolchain: {
+            packageManager: "pnpm",
+            baseValidationCommands: [],
+            changedGate: null,
+          },
+        }),
+      ),
+    (error) => {
+      assert.match(error.message, /validation command failed/);
+      assert.match(error.message, /No projects matched the filters/);
+      assert.equal(error.trace.status, "failed");
+      return true;
+    },
+  );
+});
+
+test("staged target proof overrides a disabled pnpm no-match failure", () => {
+  const cwd = gitPackageFixture({});
+  fs.writeFileSync(path.join(cwd, "pnpm-workspace.yaml"), "packages:\n  - packages/*\n");
+  git(cwd, "add", ".");
+  git(cwd, "commit", "-m", "initial");
+  attachOrigin(cwd);
+
+  assert.throws(
+    () =>
+      runStagedValidationProof(
+        ["pnpm --filter __clawsweeper_no_such_workspace__ --fail-if-no-match=false run test"],
         cwd,
         validationOptions("openclaw/example", {
           toolchain: {
