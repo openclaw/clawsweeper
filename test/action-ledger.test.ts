@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { pathToFileURL } from "node:url";
 
 import {
   ACTION_EVENT_ATTRIBUTE_KEYS,
@@ -28,12 +30,14 @@ import {
   isActionEventReasonCode,
   isActionEventStatus,
   readActionEventShard,
+  readAllSpooledActionEvents,
   readSpooledActionEvents,
   writeActionEvent,
   writeActionEventShard,
   type ActionEventInput,
   type ActionEventProducer,
 } from "../dist/action-ledger.js";
+import { stableJson } from "../dist/stable-json.js";
 
 const producer: ActionEventProducer = {
   repository: "openclaw/clawsweeper",
@@ -117,6 +121,7 @@ function schemaNodeAccepts(root: TestJsonSchema, node: TestJsonSchema, value: un
   }
 
   if (Array.isArray(value)) {
+    if (typeof node.minItems === "number" && value.length < node.minItems) return false;
     if (typeof node.maxItems === "number" && value.length > node.maxItems) return false;
     if (
       node.uniqueItems === true &&
@@ -270,6 +275,10 @@ test("operation, attempt, and idempotency identities are canonical and separatel
     actionIdempotencyKey({ sourceRevision: "abc123", number: 42 }),
     actionIdempotencyKey({ number: 42, sourceRevision: "abc123" }),
   );
+  assert.notEqual(
+    actionIdempotencyKey(JSON.parse('{"__proto__":"bound"}')),
+    actionIdempotencyKey({}),
+  );
 });
 
 test("identity hashing rejects values outside the canonical JSON domain", () => {
@@ -316,8 +325,11 @@ test("identity hashing rejects values outside the canonical JSON domain", () => 
     { api_key: "opaque" },
     { clientSecret: "opaque" },
     { authToken: "opaque" },
+    { authorizationHeader: "opaque" },
+    { bearerToken: "opaque" },
     { githubToken: "opaque" },
     { refresh_token: "opaque" },
+    { secretAccessToken: "opaque" },
     { cloudflareApiToken: "opaque" },
   ]) {
     assert.throws(
@@ -334,6 +346,34 @@ test("identity hashing rejects values outside the canonical JSON domain", () => 
     cycle.self = cycle;
     actionEventKey("review.completed", cycle);
   }, /contains a cycle/);
+});
+
+test("canonical ordering is binary and locale independent", () => {
+  assert.equal(stableJson({ "\u00e4": 1, z: 2 }), '{"z":2,"\u00e4":1}');
+  const event = createActionEvent(
+    reviewInput({
+      evidence: [
+        { kind: "report", reportPath: "records/\u00e4.md" },
+        { kind: "report", reportPath: "records/z.md" },
+      ],
+    }),
+  );
+  assert.deepEqual(
+    event.evidence?.map((entry) => entry.report_path),
+    ["records/z.md", "records/\u00e4.md"],
+  );
+  const moduleUrl = pathToFileURL(path.join(process.cwd(), "dist", "stable-json.js")).href;
+  const script = `import { stableJson } from ${JSON.stringify(moduleUrl)};
+process.stdout.write(stableJson({ "\\u00e4": 1, z: 2 }));`;
+  const outputs = ["en_US.UTF-8", "sv_SE.UTF-8"].map((locale) => {
+    const child = spawnSync(process.execPath, ["--input-type=module", "-e", script], {
+      encoding: "utf8",
+      env: { ...process.env, LANG: locale, LC_ALL: locale },
+    });
+    assert.equal(child.status, 0, child.stderr);
+    return child.stdout;
+  });
+  assert.deepEqual(outputs, ['{"z":2,"\u00e4":1}', '{"z":2,"\u00e4":1}']);
 });
 
 test("every event persists the required correlation envelope", () => {
@@ -663,6 +703,118 @@ test(
     for (const filePath of leaked) assert.equal(fs.statSync(filePath).size, 0);
   },
 );
+
+test(
+  "create-only publication never cleans up through a swapped parent",
+  {
+    skip:
+      process.platform === "win32"
+        ? "requires POSIX directory rename and symlink semantics"
+        : false,
+  },
+  () => {
+    const root = tempRoot();
+    const outside = tempRoot();
+    const event = createActionEvent(reviewInput());
+    const relativePath = actionEventSpoolRelativePath(event.subject.repository, event.event_id);
+    const eventParent = path.dirname(path.join(root, relativePath));
+    const savedParent = `${eventParent}.saved`;
+    const originalUnlinkSync = fs.unlinkSync;
+    let cleanupAttempted = false;
+
+    fs.unlinkSync = ((filePath) => {
+      if (
+        !cleanupAttempted &&
+        typeof filePath === "string" &&
+        path.dirname(filePath) === eventParent &&
+        filePath.endsWith(".tmp")
+      ) {
+        cleanupAttempted = true;
+        const outsideVictim = path.join(outside, path.basename(filePath));
+        fs.writeFileSync(outsideVictim, "outside-sentinel\n");
+        fs.renameSync(eventParent, savedParent);
+        createDirectoryLink(outside, eventParent);
+        try {
+          originalUnlinkSync(filePath);
+        } finally {
+          originalUnlinkSync(eventParent);
+          fs.renameSync(savedParent, eventParent);
+        }
+        return;
+      }
+      originalUnlinkSync(filePath);
+    }) as typeof fs.unlinkSync;
+    try {
+      assert.equal(writeActionEvent(root, reviewInput()).status, "created");
+    } finally {
+      fs.unlinkSync = originalUnlinkSync;
+    }
+
+    assert.equal(cleanupAttempted, false);
+    assert.deepEqual(fs.readdirSync(outside), []);
+  },
+);
+
+test(
+  "event reads reject a parent swap between validation and open",
+  {
+    skip:
+      process.platform === "win32"
+        ? "requires POSIX directory rename and symlink semantics"
+        : false,
+  },
+  () => {
+    const root = tempRoot();
+    const outside = tempRoot();
+    const written = writeActionEvent(root, reviewInput());
+    const eventParent = path.dirname(written.path);
+    const savedParent = `${eventParent}.saved`;
+    fs.writeFileSync(
+      path.join(outside, path.basename(written.path)),
+      fs.readFileSync(written.path),
+    );
+    const originalOpenSync = fs.openSync;
+    let swapped = false;
+
+    fs.openSync = ((filePath, flags, mode) => {
+      if (!swapped && filePath === written.path) {
+        swapped = true;
+        fs.renameSync(eventParent, savedParent);
+        createDirectoryLink(outside, eventParent);
+        try {
+          return originalOpenSync(filePath, flags, mode);
+        } finally {
+          fs.unlinkSync(eventParent);
+          fs.renameSync(savedParent, eventParent);
+        }
+      }
+      return originalOpenSync(filePath, flags, mode);
+    }) as typeof fs.openSync;
+    try {
+      assert.throws(
+        () => readSpooledActionEvents(root, "openclaw/openclaw"),
+        /changed action event spool entry file/,
+      );
+    } finally {
+      fs.openSync = originalOpenSync;
+    }
+    assert.equal(swapped, true);
+  },
+);
+
+test("spool readers reject unsafe entry types instead of skipping them", () => {
+  const root = tempRoot();
+  const written = writeActionEvent(root, reviewInput());
+  fs.mkdirSync(path.join(path.dirname(written.path), "poison.json"));
+  assert.throws(
+    () => readSpooledActionEvents(root, "openclaw/openclaw"),
+    /refusing unsafe action event spool entry/,
+  );
+
+  fs.rmSync(path.join(path.dirname(written.path), "poison.json"), { recursive: true });
+  fs.writeFileSync(path.join(root, ".clawsweeper-repair", "action-events", "poison"), "data");
+  assert.throws(() => readAllSpooledActionEvents(root), /refusing unsafe action event spool entry/);
+});
 
 test("an event key cannot be reused for different semantic content", () => {
   const root = tempRoot();
@@ -1072,7 +1224,10 @@ test("durable privacy guards reject raw text, local paths, secrets, and invalid 
     `eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.${"A".repeat(32)}`,
     `Bearer:${"A".repeat(32)}`,
     `bEaReR ${"A".repeat(32)}`,
+    `Bearer%20${"A".repeat(32)}`,
+    `Basic ${Buffer.from("user:password").toString("base64")}`,
     `cloudflare_api_token:${"A".repeat(32)}`,
+    "C:/build/runner/worktree",
     "service.internal",
     "internal.example.com",
   ]) {
@@ -1253,6 +1408,20 @@ test("checked-in schema rejects values rejected by runtime normalization", () =>
         event.phase_seq = Number.MAX_SAFE_INTEGER + 1;
       },
       runtime: () => createActionEvent(reviewInput({ phaseSeq: Number.MAX_SAFE_INTEGER + 1 })),
+    },
+    {
+      label: "empty evidence",
+      mutate: (event) => {
+        event.evidence = [];
+      },
+      runtime: () => {
+        const root = tempRoot();
+        const written = writeActionEvent(root, reviewInput());
+        const event = JSON.parse(fs.readFileSync(written.path, "utf8"));
+        event.evidence = [];
+        fs.writeFileSync(written.path, `${JSON.stringify(event)}\n`);
+        return readSpooledActionEvents(root, "openclaw/openclaw");
+      },
     },
   ];
 

@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { pathToFileURL } from "node:url";
 
 import {
   flushWorkflowActionEvents,
@@ -286,6 +288,36 @@ test("mutation retries require explicit outcome-independent idempotency identity
   assert.notEqual(completed.event_id, failed.event_id);
 });
 
+test("invalid workflow events do not create partition markers", () => {
+  const root = tempRoot();
+  assert.throws(
+    () =>
+      recordWorkflowActionEvent(
+        root,
+        {
+          scope: "review.completed",
+          identity: { number: 42 },
+          type: ACTION_EVENT_TYPES.reviewCompleted,
+          component: "review",
+          subject: {
+            repository: "openclaw/openclaw",
+            kind: "pull_request",
+            number: 42,
+          },
+          action: {
+            name: "review",
+            status: `Bearer ${"A".repeat(32)}`,
+            retryable: false,
+            mutation: false,
+          },
+        },
+        { env: workflowEnv() },
+      ),
+    /confidential identifier/,
+  );
+  assert.equal(fs.existsSync(path.join(root, ".clawsweeper-repair")), false);
+});
+
 test("phase event helpers reject noncanonical phase, status, and reason strings", () => {
   const base = {
     phase: ACTION_EVENT_PHASE_TYPES.reviewItem,
@@ -378,21 +410,46 @@ test("fresh roots reconstruct shard partitions from immutable run metadata", asy
   assert.match(paths[0] ?? "", /^ledger\/v1\/events\/2026\/07\/11\//);
 
   const missingMetadataRoot = tempRoot();
-  recordReview(
-    missingMetadataRoot,
-    workflowEnv({
-      CLAWSWEEPER_ACTION_LEDGER_PARTITION_DATE: undefined,
-    }),
-  );
-  await assert.rejects(
+  assert.throws(
     () =>
-      flushWorkflowActionEvents(missingMetadataRoot, {
-        env: workflowEnv({
+      recordReview(
+        missingMetadataRoot,
+        workflowEnv({
           CLAWSWEEPER_ACTION_LEDGER_PARTITION_DATE: undefined,
         }),
-      }),
+      ),
     /requires CLAWSWEEPER_ACTION_LEDGER_PARTITION_DATE or GITHUB_RUN_STARTED_AT/,
   );
+});
+
+test("historical producer partitions survive later-run flush environments", async () => {
+  const root = tempRoot();
+  const outputRoot = path.join(root, "state");
+  recordReview(
+    root,
+    workflowEnv({
+      CLAWSWEEPER_ACTION_LEDGER_PARTITION_DATE: "2026-07-10",
+      GITHUB_RUN_ID: "100",
+    }),
+  );
+  recordReview(
+    root,
+    workflowEnv({
+      CLAWSWEEPER_ACTION_LEDGER_PARTITION_DATE: "2026-07-12",
+      GITHUB_RUN_ID: "200",
+    }),
+  );
+
+  const paths = await flushWorkflowActionEvents(root, {
+    env: workflowEnv({
+      CLAWSWEEPER_ACTION_LEDGER_PARTITION_DATE: "2026-07-12",
+      GITHUB_RUN_ID: "200",
+    }),
+    outputRoot,
+  });
+  assert.equal(paths.length, 2);
+  assert.ok(paths.some((entry) => entry.startsWith("ledger/v1/events/2026/07/10/")));
+  assert.ok(paths.some((entry) => entry.startsWith("ledger/v1/events/2026/07/12/")));
 });
 
 test("concurrent flushes converge on one immutable shard", async () => {
@@ -499,6 +556,29 @@ test("CrabFleet projection sends the validated ledger event and bearer token", a
   assert.deepEqual(body.payload, { version: 1, event });
 });
 
+test("CrabFleet projection cancels successful response bodies", async () => {
+  const event = recordReview(tempRoot());
+  assert.ok(event);
+  let cancelled = 0;
+  await postActionEventToCrabFleet(
+    event,
+    workflowEnv({
+      CLAWSWEEPER_CRABFLEET_AGENT_TOKEN: "agent-token",
+      CLAWSWEEPER_CRABFLEET_SESSION_ID: "session-1",
+    }),
+    (async () =>
+      new Response(
+        new ReadableStream({
+          cancel() {
+            cancelled += 1;
+          },
+        }),
+        { status: 200 },
+      )) as typeof fetch,
+  );
+  assert.equal(cancelled, 1);
+});
+
 test("CrabFleet projection failures remain durable and retryable", async () => {
   const root = tempRoot();
   const outputRoot = path.join(root, "state");
@@ -574,6 +654,116 @@ test("CrabFleet projection failures remain durable and retryable", async () => {
   assert.doesNotMatch(errors[0] ?? "", /sensitive upstream detail/);
 });
 
+test("CrabFleet timeouts preserve canonical events and record projection failure", async () => {
+  const root = tempRoot();
+  const outputRoot = path.join(root, "state");
+  const errors: string[] = [];
+  const originalError = console.error;
+  let aborted = false;
+  const env = workflowEnv({
+    CLAWSWEEPER_CRABFLEET_AGENT_TOKEN: "agent-token",
+    CLAWSWEEPER_CRABFLEET_SESSION_ID: "session-1",
+    CLAWSWEEPER_CRABFLEET_TIMEOUT_MS: "20",
+  });
+  console.error = (...args: unknown[]) => errors.push(args.map(String).join(" "));
+  try {
+    const event = recordWorkflowActionEvent(
+      root,
+      {
+        scope: "review.completed",
+        identity: { number: 42 },
+        type: ACTION_EVENT_TYPES.reviewCompleted,
+        component: "review",
+        subject: {
+          repository: "openclaw/openclaw",
+          kind: "pull_request",
+          number: 42,
+        },
+        action: {
+          name: "review",
+          status: "completed",
+          retryable: false,
+          mutation: false,
+        },
+      },
+      {
+        env,
+        fetchImpl: ((_url, init) =>
+          new Promise<Response>(() => {
+            init?.signal?.addEventListener("abort", () => {
+              aborted = true;
+            });
+          })) as typeof fetch,
+      },
+    );
+    assert.ok(event);
+    const [relativePath] = await flushWorkflowActionEvents(root, { env, outputRoot });
+    assert.ok(relativePath);
+    const events = fs
+      .readFileSync(path.join(outputRoot, relativePath), "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    assert.deepEqual(
+      events.map((entry) => entry.event_type),
+      [ACTION_EVENT_TYPES.reviewCompleted, ACTION_EVENT_TYPES.projectionFailed],
+    );
+  } finally {
+    console.error = originalError;
+  }
+  assert.equal(aborted, true);
+  assert.equal(errors.length, 1);
+  assert.match(errors[0] ?? "", /timed out after 20ms/);
+});
+
+test("projection failure recording remains valid at max-safe phase sequence", async () => {
+  const root = tempRoot();
+  const outputRoot = path.join(root, "state");
+  const env = workflowEnv({
+    CLAWSWEEPER_CRABFLEET_AGENT_TOKEN: "agent-token",
+    CLAWSWEEPER_CRABFLEET_SESSION_ID: "session-1",
+  });
+  const originalError = console.error;
+  console.error = () => undefined;
+  try {
+    recordWorkflowActionEvent(
+      root,
+      {
+        scope: "review.completed",
+        identity: { number: 42 },
+        phaseSeq: Number.MAX_SAFE_INTEGER,
+        type: ACTION_EVENT_TYPES.reviewCompleted,
+        component: "review",
+        subject: {
+          repository: "openclaw/openclaw",
+          kind: "pull_request",
+          number: 42,
+        },
+        action: {
+          name: "review",
+          status: "completed",
+          retryable: false,
+          mutation: false,
+        },
+      },
+      {
+        env,
+        fetchImpl: async () => new Response(null, { status: 503 }),
+      },
+    );
+    const [relativePath] = await flushWorkflowActionEvents(root, { env, outputRoot });
+    assert.ok(relativePath);
+    const phaseSequences = fs
+      .readFileSync(path.join(outputRoot, relativePath), "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line).phase_seq);
+    assert.deepEqual(phaseSequences, [Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER]);
+  } finally {
+    console.error = originalError;
+  }
+});
+
 test("state shard imports are validated, create-only, and conflict detecting", async () => {
   const root = tempRoot();
   const source = path.join(root, "source");
@@ -585,9 +775,17 @@ test("state shard imports are validated, create-only, and conflict detecting", a
   });
 
   const created = importActionEventShards(source, destination);
+  const destinationDirectory = path.dirname(path.join(destination, created.paths[0]!));
+  const stagingCount = fs
+    .readdirSync(destinationDirectory)
+    .filter((entry) => entry.endsWith(".tmp")).length;
   const replayed = importActionEventShards(source, destination);
   assert.equal(created.created, 1);
   assert.equal(replayed.unchanged, 1);
+  assert.equal(
+    fs.readdirSync(destinationDirectory).filter((entry) => entry.endsWith(".tmp")).length,
+    stagingCount,
+  );
 
   const shard = path.join(source, created.paths[0]!);
   fs.appendFileSync(shard, "\n", "utf8");
@@ -761,23 +959,125 @@ test("state shard imports reject symbolic links", () => {
   );
 });
 
+test(
+  "state shard imports bind file reads to the enumerated source root",
+  {
+    skip:
+      process.platform === "win32"
+        ? "requires POSIX directory rename and symlink semantics"
+        : false,
+  },
+  async () => {
+    const root = tempRoot();
+    const source = path.join(root, "source");
+    const outside = path.join(root, "outside");
+    const destination = path.join(root, "destination");
+    recordReview(root);
+    const [relativePath] = await flushWorkflowActionEvents(root, {
+      env: workflowEnv(),
+      outputRoot: source,
+    });
+    assert.ok(relativePath);
+    fs.mkdirSync(path.dirname(path.join(outside, relativePath)), { recursive: true });
+    fs.copyFileSync(path.join(source, relativePath), path.join(outside, relativePath));
+    const savedSource = `${source}.saved`;
+    const originalOpenSync = fs.openSync;
+    let swapped = false;
+
+    fs.openSync = ((filePath, flags, mode) => {
+      if (!swapped && filePath === path.join(source, relativePath)) {
+        swapped = true;
+        fs.renameSync(source, savedSource);
+        createDirectoryLink(outside, source);
+        try {
+          return originalOpenSync(filePath, flags, mode);
+        } finally {
+          fs.unlinkSync(source);
+          fs.renameSync(savedSource, source);
+        }
+      }
+      return originalOpenSync(filePath, flags, mode);
+    }) as typeof fs.openSync;
+    try {
+      assert.throws(
+        () => importActionEventShards(source, destination),
+        /changed action event shard file/,
+      );
+    } finally {
+      fs.openSync = originalOpenSync;
+    }
+    assert.equal(swapped, true);
+    assert.equal(fs.existsSync(path.join(destination, relativePath)), false);
+  },
+);
+
+test(
+  "interrupted shard imports leave no partial final and recover on replay",
+  {
+    skip: process.platform === "win32" ? "uses SIGKILL process termination" : false,
+  },
+  async () => {
+    const root = tempRoot();
+    const source = path.join(root, "source");
+    const destination = path.join(root, "destination");
+    recordReview(root);
+    const [relativePath] = await flushWorkflowActionEvents(root, {
+      env: workflowEnv(),
+      outputRoot: source,
+    });
+    assert.ok(relativePath);
+    const moduleUrl = pathToFileURL(
+      path.join(process.cwd(), "dist", "action-ledger-runtime.js"),
+    ).href;
+    const script = `import fs from "node:fs";
+const originalWrite = fs.writeFileSync;
+let interrupted = false;
+fs.writeFileSync = (target, data, options) => {
+  if (!interrupted && typeof target === "number") {
+    interrupted = true;
+    const partial = typeof data === "string" ? data.slice(0, 64) : data.subarray(0, 64);
+    originalWrite(target, partial, options);
+    fs.fsyncSync(target);
+    process.kill(process.pid, "SIGKILL");
+  }
+  return originalWrite(target, data, options);
+};
+const { importActionEventShards } = await import(${JSON.stringify(moduleUrl)});
+importActionEventShards(process.argv[1], process.argv[2]);`;
+    const child = spawnSync(
+      process.execPath,
+      ["--input-type=module", "-e", script, source, destination],
+      { encoding: "utf8" },
+    );
+    assert.equal(child.signal, "SIGKILL", child.stderr);
+    assert.equal(fs.existsSync(path.join(destination, relativePath)), false);
+    const destinationDirectory = path.dirname(path.join(destination, relativePath));
+    assert.ok(fs.readdirSync(destinationDirectory).some((entry) => entry.endsWith(".tmp")));
+
+    const replay = importActionEventShards(source, destination);
+    assert.equal(replay.created, 1);
+    assert.equal(
+      fs.readFileSync(path.join(destination, relativePath), "utf8"),
+      fs.readFileSync(path.join(source, relativePath), "utf8"),
+    );
+  },
+);
+
 test("partition markers and import destinations reject symlinked parents", async () => {
   const root = tempRoot();
   const source = path.join(root, "source");
   const outsidePartitions = path.join(root, "outside-partitions");
   fs.mkdirSync(outsidePartitions);
-  recordReview(root);
+  fs.mkdirSync(path.join(root, ".clawsweeper-repair", "action-events"), { recursive: true });
   createDirectoryLink(
     outsidePartitions,
     path.join(root, ".clawsweeper-repair", "action-events", "_partitions"),
   );
-  await assert.rejects(
-    () => flushWorkflowActionEvents(root, { env: workflowEnv(), outputRoot: source }),
-    /symbolic link or junction/,
-  );
+  assert.throws(() => recordReview(root), /symbolic link or junction/);
   assert.deepEqual(fs.readdirSync(outsidePartitions), []);
 
   fs.rmSync(path.join(root, ".clawsweeper-repair", "action-events", "_partitions"));
+  recordReview(root);
   const [relativePath] = await flushWorkflowActionEvents(root, {
     env: workflowEnv(),
     outputRoot: source,
