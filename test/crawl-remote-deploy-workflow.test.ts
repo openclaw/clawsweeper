@@ -1338,6 +1338,7 @@ test("failed Worker release rolls back only the exact previously stable Worker v
   assert.match(rollback.if ?? "", /steps\.production-proof\.outcome != 'success'/);
   assert.match(workerDeploy.run ?? "", /WRANGLER_OUTPUT_FILE_PATH="\$DEPLOY_OUTPUT_PATH"/);
   assert.match(workerDeploy.run ?? "", /entry\?\.type === 'deploy'/);
+  assert.match(workerDeploy.run ?? "", /deployments\[0\]\?\.version !== 1/);
   assert.match(workerDeploy.run ?? "", /DEPLOYED_VERSION_PATH/);
   assert.match(run, /refusing rollback because this run no longer owns the current Worker version/);
   assert.match(run, /versions\[0\]\?\.version_id !== process\.env\.DEPLOYED_VERSION/);
