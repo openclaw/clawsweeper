@@ -444,6 +444,7 @@ jobs:
           persist-credentials: false
 
       - uses: ./.github/actions/setup-action-ledger
+        continue-on-error: true
 
       - name: Resolve event payload
         id: target
@@ -779,6 +780,7 @@ jobs:
 
       - name: Finalize exact event action ledger
         if: ${{ always() && steps.live-item.outputs.proceed == 'true' }}
+        continue-on-error: true
         env:
           REVIEW_EXIT_CODE: ${{ steps.review-exact-event-item.outputs.exit_code || '' }}
           REVIEW_OUTCOME: ${{ steps.review-exact-event-item.outcome || 'not_started' }}
@@ -810,7 +812,7 @@ jobs:
 
       - name: Publish event result and apply safe close
         id: publish-event-result
-        if: ${{ steps.review-exact-event-item.outcome == 'success' }}
+        if: ${{ always() && !cancelled() && steps.review-exact-event-item.outcome == 'success' && steps.setup-state.outcome == 'success' }}
         env:
           GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
           REPO_TOKEN: ${{ github.token }}
@@ -1076,6 +1078,50 @@ jobs:
           fi
           remove_own_eyes_reactions
 
+      - name: Export exact review primary result
+        id: exact-review-primary-result
+        if: ${{ always() }}
+        env:
+          JOB_CANCELLED: ${{ cancelled() }}
+          PRIMARY_JOB_STATUS: ${{ job.status }}
+          TARGET_ENABLED: ${{ steps.target.outputs.target_enabled }}
+          LIVE_PROCEED: ${{ steps.live-item.outputs.proceed }}
+          LIVE_TERMINAL_NOOP: ${{ steps.live-item.outputs.terminal_noop }}
+          LIVE_TERMINAL_MISSING: ${{ steps.live-item.outputs.terminal_missing }}
+          LIVE_GUARDED_OPEN: ${{ steps.live-item.outputs.guarded_open }}
+          REVIEW_OUTCOME: ${{ steps.review-exact-event-item.outcome }}
+          PUBLISH_OUTCOME: ${{ steps.publish-event-result.outcome }}
+          TERMINAL_NOOP: ${{ steps.publish-event-result.outputs.terminal_noop }}
+          TERMINAL_MISSING: ${{ steps.publish-event-result.outputs.terminal_missing }}
+          TERMINAL_CLOSED: ${{ steps.publish-event-result.outputs.terminal_closed }}
+          GUARDED_OPEN: ${{ steps.publish-event-result.outputs.guarded_open }}
+          POLICY_NOOP: ${{ steps.publish-event-result.outputs.policy_noop }}
+          REQUEUE_LATEST: ${{ steps.publish-event-result.outputs.requeue_latest }}
+          ROUTE_OUTCOME: ${{ steps.queue-exact-verdict-router.outcome }}
+        run: |
+          outcome=failure
+          if [ "$JOB_CANCELLED" = "true" ] || [ "$REVIEW_OUTCOME" = "cancelled" ]; then
+            outcome=cancelled
+          elif [ "$PRIMARY_JOB_STATUS" != "success" ]; then
+            outcome=failure
+          elif [ "$TARGET_ENABLED" = "false" ] ||
+            [ "$LIVE_PROCEED" = "false" ] ||
+            [ "$LIVE_TERMINAL_NOOP" = "true" ] ||
+            [ "$LIVE_TERMINAL_MISSING" = "true" ] ||
+            [ "$LIVE_GUARDED_OPEN" = "true" ] ||
+            [ "$TERMINAL_NOOP" = "true" ] ||
+            [ "$POLICY_NOOP" = "true" ] ||
+            [ "$REQUEUE_LATEST" = "true" ]; then
+            outcome=success
+          elif [ "$REVIEW_OUTCOME" = "success" ] && [ "$PUBLISH_OUTCOME" = "success" ] &&
+            { [ "$TERMINAL_MISSING" = "true" ] ||
+              [ "$TERMINAL_CLOSED" = "true" ] ||
+              [ "$GUARDED_OPEN" = "true" ] ||
+              [ "$ROUTE_OUTCOME" = "success" ]; }; then
+            outcome=success
+          fi
+          echo "outcome=$outcome" >> "$GITHUB_OUTPUT"
+
       - name: Fail unsuccessful exact review
         if: ${{ always() && steps.target.outputs.target_enabled != 'false' && steps.live-item.outputs.proceed != 'false' && steps.publish-event-result.outputs.terminal_noop != 'true' && steps.publish-event-result.outputs.policy_noop != 'true' && steps.publish-event-result.outputs.requeue_latest != 'true' && (steps.review-exact-event-item.outcome != 'success' || steps.publish-event-result.outcome != 'success' || (steps.publish-event-result.outputs.terminal_missing != 'true' && steps.publish-event-result.outputs.terminal_closed != 'true' && steps.publish-event-result.outputs.guarded_open != 'true' && steps.queue-exact-verdict-router.outcome != 'success')) }}
         run: exit 1
@@ -1116,7 +1162,7 @@ jobs:
         if: ${{ always() }}
         continue-on-error: true
         env:
-          JOB_STATUS: ${{ job.status }}
+          PRIMARY_OUTCOME: ${{ steps.exact-review-primary-result.outputs.outcome || 'failure' }}
           CLAIM_GENERATION: ${{ steps.claim-exact-review-queue.outputs.claim_generation }}
           ITEM_KEY: ${{ steps.claim-exact-review-queue.outputs.item_key }}
           PROTOCOL_VERSION: ${{ steps.claim-exact-review-queue.outputs.protocol_version }}
@@ -1145,11 +1191,10 @@ jobs:
                 !Number.isInteger(claimGeneration) ||
                 claimGeneration < 1)
             ) process.exit(1);
-            const outcome = process.env.JOB_STATUS === "success"
-              ? "success"
-              : process.env.JOB_STATUS === "cancelled"
-                ? "cancelled"
-                : "failure";
+            const primaryOutcome = String(process.env.PRIMARY_OUTCOME || "");
+            const outcome = ["success", "cancelled", "failure"].includes(primaryOutcome)
+              ? primaryOutcome
+              : "failure";
             const retryAt = String(process.env.RETRY_AT || "").trim();
             const requeueLatest = process.env.REQUEUE_LATEST === "true";
             process.stdout.write(JSON.stringify({
@@ -1722,6 +1767,7 @@ jobs:
           persist-credentials: false
 
       - uses: ./clawsweeper/.github/actions/setup-action-ledger
+        continue-on-error: true
         with:
           worktree-path: clawsweeper
 
@@ -1884,6 +1930,7 @@ jobs:
 
       - name: Finalize review action ledger
         if: always()
+        continue-on-error: true
         working-directory: clawsweeper
         env:
           REVIEW_EXIT_CODE: ${{ steps.review-shard.outputs.exit_code || '' }}
@@ -2057,6 +2104,7 @@ jobs:
           persist-credentials: false
 
       - uses: ./.github/actions/setup-action-ledger
+        continue-on-error: true
 
       - name: Create target write token
         id: target-write-token
@@ -2079,20 +2127,24 @@ jobs:
           private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
 
       - uses: ./.github/actions/setup-state
+        id: setup-publish-state
         with:
           token: ${{ steps.state-token.outputs.token }}
 
       - uses: ./.github/actions/setup-pnpm
+        id: setup-publish-pnpm
         with:
           build-script: build:all
 
       - uses: actions/download-artifact@v8
+        id: download-review-artifacts
         with:
           pattern: review-shard-*
           path: artifacts
           merge-multiple: true
 
       - uses: actions/download-artifact@v8
+        id: download-review-metrics
         continue-on-error: true
         with:
           pattern: review-metrics-*
@@ -2100,12 +2152,17 @@ jobs:
           merge-multiple: true
 
       - uses: actions/download-artifact@v8
+        id: download-review-action-ledger
+        continue-on-error: true
         with:
           pattern: action-ledger-review-*
           path: .clawsweeper-repair/action-ledger-download
           merge-multiple: true
 
       - name: Import immutable review action events
+        id: import-review-action-ledger
+        if: ${{ always() && steps.setup-publish-state.outcome == 'success' && steps.setup-publish-pnpm.outcome == 'success' && steps.download-review-action-ledger.outcome == 'success' }}
+        continue-on-error: true
         run: |
           set -euo pipefail
           test -n "${CLAWSWEEPER_STATE_DIR:-}"
@@ -2130,6 +2187,8 @@ jobs:
           done < .artifacts/action-ledger-paths.txt
 
       - name: Publish immutable review action ledger
+        if: ${{ always() && steps.import-review-action-ledger.outcome == 'success' }}
+        continue-on-error: true
         run: |
           if [ ! -s .artifacts/action-ledger-paths.txt ]; then
             echo "No immutable review action events to publish."
@@ -2140,22 +2199,35 @@ jobs:
             --message "chore: append review action ledger"
 
       - name: Sync before applying artifacts
+        id: sync-review-artifacts
+        if: ${{ always() && !cancelled() && steps.setup-publish-state.outcome == 'success' && steps.setup-publish-pnpm.outcome == 'success' && steps.download-review-artifacts.outcome == 'success' }}
         run: git pull --rebase --autostash
 
       - name: Apply review artifacts
         id: apply-review-artifacts
+        if: ${{ always() && !cancelled() && steps.sync-review-artifacts.outcome == 'success' }}
         env:
           GH_TOKEN: ${{ github.token }}
           EXACT_ITEM: ${{ github.event.client_payload.item_number || github.event.inputs.item_number || github.event.inputs.item_numbers || '' }}
+          EXPECTED_METRIC_COUNT: ${{ needs.plan.outputs.planned_shards }}
           HOT_INTAKE: ${{ needs.plan.outputs.hot_intake }}
           MAX_PAGES: ${{ needs.plan.outputs.max_pages }}
           TARGET_REPO: ${{ needs.plan.outputs.target_repo }}
         run: |
+          set -euo pipefail
           apply_artifacts_args=(--target-repo "$TARGET_REPO" --artifact-dir artifacts --skip-dashboard --skip-reconcile)
           publish_state="Review publish complete"
+          mkdir -p review-metrics
           reviewed_count="$(find artifacts -type f -name '*.md' | wc -l | tr -d ' ')"
-          metric_count="$(find review-metrics -type f -name '*.json' 2>/dev/null | wc -l | tr -d ' ')"
-          non_success_metric_count="$(find review-metrics -type f -name '*.json' -print0 2>/dev/null | xargs -0 -r jq -r 'select(.review_outcome != "success") | .shard' | wc -l | tr -d ' ')"
+          metric_count="$(find review-metrics -type f -name '*.json' | wc -l | tr -d ' ')"
+          non_success_metric_count="$(find review-metrics -type f -name '*.json' -print0 | xargs -0 -r jq -r 'select(.review_outcome != "success") | .shard' | wc -l | tr -d ' ')"
+          review_batch_succeeded=false
+          if [[ "$EXPECTED_METRIC_COUNT" =~ ^[1-9][0-9]*$ ]] &&
+            [ "$metric_count" -eq "$EXPECTED_METRIC_COUNT" ] &&
+            [ "$non_success_metric_count" -eq 0 ]; then
+            review_batch_succeeded=true
+          fi
+          echo "review_batch_succeeded=$review_batch_succeeded" >> "$GITHUB_OUTPUT"
           publish_detail="Merged ${reviewed_count} review artifacts for run ${{ github.run_id }}. Captured ${metric_count} shard metrics; ${non_success_metric_count} shards reported non-success review status. Folder reconciliation moved tracked files to match current GitHub open/closed state."
           if [ "$HOT_INTAKE" = "true" ] && [ -z "$EXACT_ITEM" ]; then
             apply_artifacts_args+=(--max-pages "$MAX_PAGES" --skip-reconcile)
@@ -2163,6 +2235,7 @@ jobs:
             publish_detail="Merged ${reviewed_count} hot intake artifacts for run ${{ github.run_id }} without full folder reconciliation. Captured ${metric_count} shard metrics; ${non_success_metric_count} shards reported non-success review status."
           fi
           pnpm run apply-artifacts -- "${apply_artifacts_args[@]}"
+          echo "artifacts_applied=true" >> "$GITHUB_OUTPUT"
           pnpm run status -- \
             --target-repo "$TARGET_REPO" \
             --state "$publish_state" \
@@ -2177,7 +2250,7 @@ jobs:
             --capacity-reason "${{ needs.plan.outputs.capacity_reason }}"
 
       - name: Publish review artifact action ledger
-        if: ${{ always() && steps.apply-review-artifacts.outcome != 'skipped' }}
+        if: ${{ always() && steps.apply-review-artifacts.outputs.artifacts_applied == 'true' }}
         run: |
           set -euo pipefail
           test -n "${CLAWSWEEPER_STATE_DIR:-}"
@@ -2209,6 +2282,8 @@ jobs:
             --message "chore: append review artifact action ledger"
 
       - name: Commit review records
+        id: commit-review-records
+        if: ${{ always() && !cancelled() && steps.apply-review-artifacts.outputs.artifacts_applied == 'true' }}
         env:
           EXACT_ITEM: ${{ github.event.client_payload.item_number || github.event.inputs.item_number || github.event.inputs.item_numbers || '' }}
           GH_TOKEN: ${{ github.token }}
@@ -2226,13 +2301,14 @@ jobs:
             --message "chore: update sweep records" \
             --path "records/${target_slug}" \
             --rebase-strategy reconcile-records
+          echo "records_published=true" >> "$GITHUB_OUTPUT"
           pnpm run repair:publish-main -- \
             --message "chore: update sweep status" \
             --path "results/sweep-status/${target_slug}.json" \
             --rebase-strategy theirs
 
       - name: Dispatch reproducible bug implementation candidates
-        if: ${{ success() && vars.CLAWSWEEPER_AUTO_IMPLEMENT_ISSUES == '1' && needs.plan.outputs.target_repo == 'openclaw/openclaw' && vars.CLAWSWEEPER_AUTO_IMPLEMENT_REPRO_BUGS == '1' }}
+        if: ${{ always() && !cancelled() && steps.commit-review-records.outputs.records_published == 'true' && vars.CLAWSWEEPER_AUTO_IMPLEMENT_ISSUES == '1' && needs.plan.outputs.target_repo == 'openclaw/openclaw' && vars.CLAWSWEEPER_AUTO_IMPLEMENT_REPRO_BUGS == '1' }}
         env:
           GH_TOKEN: ${{ github.token }}
           TARGET_REPO: ${{ needs.plan.outputs.target_repo }}
@@ -2288,7 +2364,7 @@ jobs:
           done < /tmp/issue-implementation-candidates.tsv
 
       - name: Dispatch vision-fit implementation candidates
-        if: ${{ success() && vars.CLAWSWEEPER_AUTO_IMPLEMENT_ISSUES == '1' && needs.plan.outputs.target_repo == 'openclaw/openclaw' && vars.CLAWSWEEPER_AUTO_IMPLEMENT_VISION_FIT == '1' }}
+        if: ${{ always() && !cancelled() && steps.commit-review-records.outputs.records_published == 'true' && vars.CLAWSWEEPER_AUTO_IMPLEMENT_ISSUES == '1' && needs.plan.outputs.target_repo == 'openclaw/openclaw' && vars.CLAWSWEEPER_AUTO_IMPLEMENT_VISION_FIT == '1' }}
         env:
           GH_TOKEN: ${{ github.token }}
           TARGET_REPO: ${{ needs.plan.outputs.target_repo }}
@@ -2344,7 +2420,7 @@ jobs:
           done < /tmp/vision-fit-implementation-candidates.tsv
 
       - name: Backfill viable open issue implementation candidates
-        if: ${{ success() && vars.CLAWSWEEPER_AUTO_IMPLEMENT_ISSUES == '1' && steps.target-write-token.outputs.token != '' && needs.plan.outputs.target_repo != 'openclaw/openclaw' && needs.plan.outputs.target_repo != 'openclaw/clawhub' }}
+        if: ${{ always() && !cancelled() && steps.commit-review-records.outputs.records_published == 'true' && vars.CLAWSWEEPER_AUTO_IMPLEMENT_ISSUES == '1' && steps.target-write-token.outputs.token != '' && needs.plan.outputs.target_repo != 'openclaw/openclaw' && needs.plan.outputs.target_repo != 'openclaw/clawhub' }}
         env:
           GH_TOKEN: ${{ github.token }}
           TARGET_REPO: ${{ needs.plan.outputs.target_repo }}
@@ -2389,7 +2465,7 @@ jobs:
           done < /tmp/viable-implementation-candidates.tsv
 
       - name: Dispatch background review comment sync
-        if: ${{ success() && steps.target-write-token.outputs.token != '' && needs.plan.outputs.hot_intake != 'true' && (github.event_name != 'repository_dispatch' || github.event.action == 'clawsweeper_target_sweep') && (github.event_name != 'workflow_dispatch' || (github.event.inputs.item_number == '' && github.event.inputs.item_numbers == '')) }}
+        if: ${{ always() && !cancelled() && steps.commit-review-records.outputs.records_published == 'true' && steps.target-write-token.outputs.token != '' && needs.plan.outputs.hot_intake != 'true' && (github.event_name != 'repository_dispatch' || github.event.action == 'clawsweeper_target_sweep') && (github.event_name != 'workflow_dispatch' || (github.event.inputs.item_number == '' && github.event.inputs.item_numbers == '')) }}
         env:
           GH_TOKEN: ${{ github.token }}
           TARGET_REPO: ${{ needs.plan.outputs.target_repo }}
@@ -2418,7 +2494,7 @@ jobs:
 
       - name: Sync selected review comments
         id: sync-selected-review-comments
-        if: ${{ success() && steps.target-write-token.outputs.token != '' && ((github.event_name == 'repository_dispatch' && github.event.action != 'clawsweeper_target_sweep') || github.event.inputs.item_number != '' || github.event.inputs.item_numbers != '') }}
+        if: ${{ always() && !cancelled() && steps.commit-review-records.outputs.records_published == 'true' && steps.target-write-token.outputs.token != '' && ((github.event_name == 'repository_dispatch' && github.event.action != 'clawsweeper_target_sweep') || github.event.inputs.item_number != '' || github.event.inputs.item_numbers != '') }}
         timeout-minutes: 15
         env:
           GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
@@ -2561,7 +2637,7 @@ jobs:
           exit 1
 
       - name: Continue sweep
-        if: ${{ success() && needs.plan.outputs.planned_count == needs.plan.outputs.planned_capacity && github.event_name != 'repository_dispatch' && (github.event_name != 'workflow_dispatch' || (github.event.inputs.item_number == '' && github.event.inputs.item_numbers == '')) }}
+        if: ${{ always() && !cancelled() && steps.apply-review-artifacts.outputs.review_batch_succeeded == 'true' && steps.commit-review-records.outputs.records_published == 'true' && needs.plan.outputs.planned_count == needs.plan.outputs.planned_capacity && github.event_name != 'repository_dispatch' && (github.event_name != 'workflow_dispatch' || (github.event.inputs.item_number == '' && github.event.inputs.item_numbers == '')) }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -2693,6 +2769,7 @@ jobs:
           fetch-depth: 0
 
       - uses: ./.github/actions/setup-action-ledger
+        continue-on-error: true
 
       - name: Create state token
         id: state-token
@@ -2971,6 +3048,7 @@ jobs:
           persist-credentials: false
 
       - uses: ./.github/actions/setup-action-ledger
+        continue-on-error: true
 
       - name: Resolve proof target repository
         id: target
@@ -3116,7 +3194,7 @@ jobs:
 
       - name: Export primary apply proof result
         id: primary-proof-result
-        if: ${{ success() && (steps.proof-select.outputs.item_numbers == '' || steps.generate-apply-proofs.outcome == 'success') }}
+        if: ${{ always() && !cancelled() && steps.proof-select.outcome == 'success' && (steps.proof-select.outputs.item_numbers == '' || steps.generate-apply-proofs.outcome == 'success') }}
         run: echo "ready=true" >> "$GITHUB_OUTPUT"
 
       - name: Finalize apply proof action ledger
@@ -3249,6 +3327,7 @@ jobs:
           persist-credentials: false
 
       - uses: ./.github/actions/setup-action-ledger
+        continue-on-error: true
 
       - name: Resolve target repository
         id: target
@@ -3709,6 +3788,11 @@ jobs:
             echo "APPLY_CANDIDATE_QUALITY_SUMMARY=$candidate_quality_summary"
           } >> "$GITHUB_ENV"
 
+      - name: Export primary apply result
+        id: primary-apply-result
+        if: ${{ always() && !cancelled() && steps.apply-existing-run.outcome == 'success' }}
+        run: echo "succeeded=true" >> "$GITHUB_OUTPUT"
+
       - name: Finalize apply action ledger
         if: ${{ always() }}
         env:
@@ -3723,6 +3807,7 @@ jobs:
           pnpm run --silent finalize-action-events -- "${args[@]}"
 
       - name: Retry final apply status publication
+        if: ${{ always() && !cancelled() && steps.primary-apply-result.outputs.succeeded == 'true' }}
         run: |
           if [ "${APPLY_NOOP:-false}" = "true" ]; then
             echo "No proposed closes were ready; no final apply status to retry."
@@ -3768,7 +3853,7 @@ jobs:
             --message "chore: append apply action ledger"
 
       - name: Continue apply sweep
-        if: ${{ success() }}
+        if: ${{ always() && !cancelled() && steps.primary-apply-result.outputs.succeeded == 'true' }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -3859,7 +3944,7 @@ jobs:
             -f apply_checkpoint_size="$APPLY_CHECKPOINT_SIZE"
 
       - name: Queue review backstops
-        if: ${{ success() && steps.target.outputs.target_repo == 'openclaw/openclaw' }}
+        if: ${{ always() && !cancelled() && steps.primary-apply-result.outputs.succeeded == 'true' && steps.target.outputs.target_repo == 'openclaw/openclaw' }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |

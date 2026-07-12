@@ -11,6 +11,7 @@ import {
 } from "node:fs";
 import { dirname, join } from "node:path";
 import test from "node:test";
+import YAML from "yaml";
 
 import { makeTreeReadOnlyForTest, restoreTreeModesForTest } from "../dist/clawsweeper.js";
 import { readText, tmpPrefix } from "./helpers.ts";
@@ -54,6 +55,164 @@ test("ledger-producing jobs initialize immutable workflow context", () => {
   assert.match(action, /CLAWSWEEPER_ACTION_LEDGER_FORCE=1/);
   assert.match(action, /CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT=\$output_root/);
   assert.match(action, /GITHUB_RUN_STARTED_AT=\$run_started_at/);
+});
+
+test("review and apply primary boundaries ignore ledger-only failures", () => {
+  type WorkflowStep = {
+    name?: string;
+    uses?: string;
+    id?: string;
+    if?: string;
+    run?: string;
+    env?: Record<string, string>;
+    "continue-on-error"?: boolean;
+  };
+  type WorkflowJob = {
+    if?: string;
+    steps: WorkflowStep[];
+  };
+
+  const workflow = YAML.parse(readText(".github/workflows/sweep.yml")) as {
+    jobs: Record<string, WorkflowJob>;
+  };
+  const job = (name: string): WorkflowJob => {
+    const value = workflow.jobs[name];
+    assert.ok(value, `missing ${name} job`);
+    return value;
+  };
+  const step = (jobName: string, name: string): WorkflowStep => {
+    const value = job(jobName).steps.find((candidate) => candidate.name === name);
+    assert.ok(value, `missing ${jobName} step ${name}`);
+    return value;
+  };
+  const setupLedger = (jobName: string): WorkflowStep => {
+    const value = job(jobName).steps.find((candidate) =>
+      candidate.uses?.endsWith("/setup-action-ledger"),
+    );
+    assert.ok(value, `missing ${jobName} ledger setup`);
+    return value;
+  };
+
+  for (const jobName of [
+    "event-review-apply",
+    "review",
+    "publish",
+    "retry-failed-reviews",
+    "apply-proof",
+    "apply-existing",
+  ]) {
+    assert.equal(
+      setupLedger(jobName)["continue-on-error"],
+      true,
+      `${jobName} ledger setup must fail open`,
+    );
+  }
+  for (const [jobName, stepName] of [
+    ["event-review-apply", "Finalize exact event action ledger"],
+    ["review", "Finalize review action ledger"],
+  ] as const) {
+    assert.equal(
+      step(jobName, stepName)["continue-on-error"],
+      true,
+      `${stepName} must not poison primary review publication`,
+    );
+  }
+
+  const exactPublish = step("event-review-apply", "Publish event result and apply safe close");
+  assert.match(exactPublish.if ?? "", /always\(\) && !cancelled\(\)/);
+  assert.match(exactPublish.if ?? "", /review-exact-event-item\.outcome == 'success'/);
+  assert.match(exactPublish.if ?? "", /setup-state\.outcome == 'success'/);
+  assert.doesNotMatch(exactPublish.if ?? "", /action-ledger/);
+  const exactPrimary = step("event-review-apply", "Export exact review primary result");
+  const exactQueue = step("event-review-apply", "Complete exact-review queue lease");
+  assert.equal(exactPrimary.env?.PRIMARY_JOB_STATUS, "${{ job.status }}");
+  assert.match(exactPrimary.run ?? "", /outcome=(?:failure|cancelled|success)/);
+  assert.match(exactPrimary.run ?? "", /PRIMARY_JOB_STATUS.*success/);
+  assert.match(exactQueue.env?.PRIMARY_OUTCOME ?? "", /exact-review-primary-result/);
+  assert.doesNotMatch(exactQueue.run ?? "", /JOB_STATUS|job\.status/);
+
+  const ledgerDownload = job("publish").steps.find(
+    (candidate) => candidate.id === "download-review-action-ledger",
+  );
+  assert.ok(ledgerDownload);
+  assert.equal(ledgerDownload["continue-on-error"], true);
+  for (const name of [
+    "Import immutable review action events",
+    "Publish immutable review action ledger",
+  ]) {
+    assert.equal(step("publish", name)["continue-on-error"], true, `${name} must fail open`);
+  }
+  const artifactSync = step("publish", "Sync before applying artifacts");
+  assert.match(artifactSync.if ?? "", /setup-publish-state\.outcome == 'success'/);
+  assert.match(artifactSync.if ?? "", /setup-publish-pnpm\.outcome == 'success'/);
+  assert.match(artifactSync.if ?? "", /download-review-artifacts\.outcome == 'success'/);
+  assert.doesNotMatch(artifactSync.if ?? "", /action-ledger/);
+  const artifactApply = step("publish", "Apply review artifacts");
+  assert.match(artifactApply.if ?? "", /sync-review-artifacts\.outcome == 'success'/);
+  assert.match(artifactApply.run ?? "", /review_batch_succeeded=/);
+  assert.match(artifactApply.run ?? "", /artifacts_applied=true/);
+  const artifactLedger = step("publish", "Publish review artifact action ledger");
+  assert.match(artifactLedger.if ?? "", /apply-review-artifacts\.outputs\.artifacts_applied/);
+  const recordPublish = step("publish", "Commit review records");
+  assert.match(recordPublish.if ?? "", /always\(\) && !cancelled\(\)/);
+  assert.match(recordPublish.if ?? "", /apply-review-artifacts\.outputs\.artifacts_applied/);
+  assert.match(recordPublish.run ?? "", /records_published=true/);
+
+  for (const name of [
+    "Dispatch reproducible bug implementation candidates",
+    "Dispatch vision-fit implementation candidates",
+    "Backfill viable open issue implementation candidates",
+    "Dispatch background review comment sync",
+    "Sync selected review comments",
+  ]) {
+    const condition = step("publish", name).if ?? "";
+    assert.match(condition, /always\(\) && !cancelled\(\)/, name);
+    assert.match(condition, /commit-review-records\.outputs\.records_published == 'true'/, name);
+    assert.doesNotMatch(condition, /success\(\)|action-ledger/, name);
+  }
+  const selectedApply = step("publish", "Dispatch selected safe close proposals to isolated apply");
+  assert.match(selectedApply.if ?? "", /sync-selected-review-comments\.outputs\.sync_succeeded/);
+  assert.doesNotMatch(selectedApply.if ?? "", /success\(\)|action-ledger/);
+  const reviewContinuation = step("publish", "Continue sweep");
+  assert.match(
+    reviewContinuation.if ?? "",
+    /apply-review-artifacts\.outputs\.review_batch_succeeded/,
+  );
+  assert.match(reviewContinuation.if ?? "", /commit-review-records\.outputs\.records_published/);
+  assert.doesNotMatch(reviewContinuation.if ?? "", /success\(\)|action-ledger/);
+
+  const proofMarker = step("apply-proof", "Export primary apply proof result");
+  assert.match(proofMarker.if ?? "", /always\(\) && !cancelled\(\)/);
+  assert.match(proofMarker.if ?? "", /proof-select\.outcome == 'success'/);
+  assert.match(proofMarker.if ?? "", /generate-apply-proofs\.outcome == 'success'/);
+  assert.doesNotMatch(proofMarker.if ?? "", /success\(\)|action-ledger/);
+  assert.match(job("apply-existing").if ?? "", /needs\.apply-proof\.outputs\.proof_ready/);
+  assert.doesNotMatch(
+    job("apply-existing").if ?? "",
+    /needs\.apply-proof\.result|publish-apply-proof-action-ledger/,
+  );
+
+  const applySteps = job("apply-existing").steps;
+  const applyMarkerIndex = applySteps.findIndex(
+    (candidate) => candidate.name === "Export primary apply result",
+  );
+  const applyFinalizerIndex = applySteps.findIndex(
+    (candidate) => candidate.name === "Finalize apply action ledger",
+  );
+  assert.ok(applyMarkerIndex >= 0);
+  assert.ok(applyFinalizerIndex > applyMarkerIndex);
+  const applyMarker = applySteps[applyMarkerIndex]!;
+  assert.match(applyMarker.if ?? "", /apply-existing-run\.outcome == 'success'/);
+  for (const name of [
+    "Retry final apply status publication",
+    "Continue apply sweep",
+    "Queue review backstops",
+  ]) {
+    const condition = step("apply-existing", name).if ?? "";
+    assert.match(condition, /always\(\) && !cancelled\(\)/, name);
+    assert.match(condition, /primary-apply-result\.outputs\.succeeded == 'true'/, name);
+    assert.doesNotMatch(condition, /success\(\)|action-ledger/, name);
+  }
 });
 
 test("review workflow gives Codex a read-only inspection token", () => {
@@ -169,6 +328,7 @@ test("exact event publish and routing require a successful fresh review artifact
   );
   const routeStart = eventReviewJob.indexOf("- name: Queue exact verdict router");
   const reactStart = eventReviewJob.indexOf("- name: React to target item completion");
+  const primaryResultStart = eventReviewJob.indexOf("- name: Export exact review primary result");
   const releaseLeaseStart = eventReviewJob.indexOf("- name: Release terminal review leases");
   const confirmTerminalStart = eventReviewJob.indexOf(
     "- name: Confirm terminal item remains closed",
@@ -185,7 +345,7 @@ test("exact event publish and routing require a successful fresh review artifact
   const publishStep = eventReviewJob.slice(publishStart, releaseUnsuccessfulStart);
   const releaseUnsuccessfulStep = eventReviewJob.slice(releaseUnsuccessfulStart, routeStart);
   const routeStep = eventReviewJob.slice(routeStart, releaseLeaseStart);
-  const reactStep = eventReviewJob.slice(reactStart, failStart);
+  const reactStep = eventReviewJob.slice(reactStart, primaryResultStart);
   const releaseLeaseStep = eventReviewJob.slice(releaseLeaseStart, confirmTerminalStart);
   const confirmTerminalStep = eventReviewJob.slice(confirmTerminalStart, completeStart);
   const failStep = eventReviewJob.slice(failStart, leaseCompleteStart);
@@ -225,7 +385,10 @@ test("exact event publish and routing require a successful fresh review artifact
   );
   assert.match(setupCodexStep, /if: \$\{\{ steps\.live-item\.outputs\.proceed == 'true' \}\}/);
   assert.match(exactReviewStep, /if: \$\{\{ steps\.live-item\.outputs\.proceed == 'true' \}\}/);
-  assert.match(publishStep, /if: \$\{\{ steps\.review-exact-event-item\.outcome == 'success' \}\}/);
+  assert.match(
+    publishStep,
+    /if: \$\{\{ always\(\) && !cancelled\(\) && steps\.review-exact-event-item\.outcome == 'success' && steps\.setup-state\.outcome == 'success' \}\}/,
+  );
   assert.match(publishStep, /if \[ ! -f "artifacts\/event\/\$ITEM_NUMBER\.md" \]/);
   assert.match(publishStep, /live_state="\$\(gh api/);
   assert.match(publishStep, /echo "terminal_noop=true" >> "\$GITHUB_OUTPUT"/);
@@ -763,7 +926,7 @@ test("apply workflow isolates Codex proof from the credentialed mutation runner"
   assert.ok(proofFinalizerStart > primaryProofResultStart);
   assert.match(
     proofJob,
-    /id: primary-proof-result[\s\S]*if: \$\{\{ success\(\) && \(steps\.proof-select\.outputs\.item_numbers == '' \|\| steps\.generate-apply-proofs\.outcome == 'success'\) \}\}[\s\S]*echo "ready=true" >> "\$GITHUB_OUTPUT"/,
+    /id: primary-proof-result[\s\S]*if: \$\{\{ always\(\) && !cancelled\(\) && steps\.proof-select\.outcome == 'success' && \(steps\.proof-select\.outputs\.item_numbers == '' \|\| steps\.generate-apply-proofs\.outcome == 'success'\) \}\}[\s\S]*echo "ready=true" >> "\$GITHUB_OUTPUT"/,
   );
   assert.match(
     proofJob,
@@ -1415,12 +1578,12 @@ test("sweep target tokens fall back when an org app installation is missing", ()
   );
   assert.ok(
     workflow.includes(
-      "if: ${{ success() && steps.target-write-token.outputs.token != '' && needs.plan.outputs.hot_intake != 'true'",
+      "if: ${{ always() && !cancelled() && steps.commit-review-records.outputs.records_published == 'true' && steps.target-write-token.outputs.token != '' && needs.plan.outputs.hot_intake != 'true'",
     ),
   );
   assert.ok(
     workflow.includes(
-      "if: ${{ success() && steps.target-write-token.outputs.token != '' && ((github.event_name == 'repository_dispatch'",
+      "if: ${{ always() && !cancelled() && steps.commit-review-records.outputs.records_published == 'true' && steps.target-write-token.outputs.token != '' && ((github.event_name == 'repository_dispatch'",
     ),
   );
   assert.ok(

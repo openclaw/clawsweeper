@@ -95,6 +95,11 @@ checkpoint, and status-only commits are intentionally omitted.
   backstops cannot create permanent parallel continuation chains that overwhelm
   serialized review publication, while exact-item, apply, and comment-sync
   lanes remain independent.
+- Gated review artifact application, record publication, exact-review queue
+  completion, apply dispatch, and review/apply continuations on explicit
+  primary success markers so action-ledger setup, import, finalization, upload,
+  or publication failures remain visible but fail open, while real review,
+  sync, proof, and apply failures still block dependent mutations.
 - Bound apply receipts to each actual GitHub request attempt while preserving
   stable business idempotency across transient retries, recorded review lease
   creation and cleanup independently, bound retry dispatches to review and
