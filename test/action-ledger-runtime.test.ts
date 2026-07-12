@@ -1084,6 +1084,27 @@ test("state shard imports are validated, create-only, and conflict detecting", a
   );
 });
 
+test("state shard imports reject noncanonical trusted root spellings", async () => {
+  const root = tempRoot();
+  const source = trustedChildRoot(root, "source");
+  const destination = trustedChildRoot(root, "destination");
+  fs.mkdirSync(path.join(destination, "child"));
+  recordReview(root);
+  await flushWorkflowActionEvents(root, {
+    env: workflowEnv(),
+    outputRoot: source,
+  });
+
+  assert.throws(
+    () => importActionEventShards(`${source}${path.sep}.`, destination),
+    /noncanonical action event shard import source root/,
+  );
+  assert.throws(
+    () => importActionEventShards(source, `${destination}${path.sep}child${path.sep}..`),
+    /noncanonical action event shard import root/,
+  );
+});
+
 test("state shard imports preserve chronological ordering across timestamp offsets", async () => {
   const root = tempRoot();
   const source = trustedChildRoot(root, "source");

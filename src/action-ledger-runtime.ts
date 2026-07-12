@@ -367,11 +367,9 @@ export function importActionEventShards(
   sourceRoot: string,
   destinationRoot: string,
 ): ActionEventShardImportResult {
-  const source = path.resolve(sourceRoot);
-  const destination = path.resolve(destinationRoot);
   let safeSource: SafeReadRoot;
   try {
-    safeSource = prepareSafeReadRoot(source, "action event shard import source");
+    safeSource = prepareSafeReadRoot(sourceRoot, "action event shard import source");
   } catch (error) {
     if (isNotFoundError(error)) return { created: 0, unchanged: 0, paths: [] };
     throw error;
@@ -403,7 +401,11 @@ export function importActionEventShards(
       throw new Error(`action event shard must end with a newline: ${relativePath}`);
     }
     validateCanonicalImportedShard(relativePath, events, content);
-    const target = prepareSafeWriteTarget(destination, relativePath, "action event shard import");
+    const target = prepareSafeWriteTarget(
+      destinationRoot,
+      relativePath,
+      "action event shard import",
+    );
     const existing = readUtf8FileIfExistsNoFollow(target);
     if (existing !== null) {
       if (
