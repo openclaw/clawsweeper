@@ -77,6 +77,7 @@ jobs:
           echo "deploy_sha=$REQUESTED_SHA" >> "$GITHUB_OUTPUT"
 
       - name: Checkout approved crawl-remote main
+        # YAML \u0040 is "@"; the parsed action is the immutable checkout v7 pin.
         uses: "actions/checkout\u00409c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0" # v7
         with:
           repository: openclaw/crawl-remote
@@ -130,11 +131,50 @@ jobs:
       - name: Apply remote D1 migrations
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.OPENCLAW_CLOUDFLARE_WORKERS_API_TOKEN }}
+          FENCE_RESPONSE: ${{ runner.temp }}/crawl-remote-observation-fence.json
         shell: bash
         run: |
           set -euo pipefail
           test -n "$CLOUDFLARE_API_TOKEN"
           npm run db:migrate:remote
+
+          npx wrangler d1 execute crawl-remote \
+            --remote \
+            --json \
+            --command \
+            "select capability, migration_ready, cutover_enabled from remote_capability_fences where capability = 'gitcrawl.observation-order.v1'" \
+            > "$FENCE_RESPONSE"
+
+          node --input-type=module <<'NODE'
+          import { readFileSync } from 'node:fs';
+
+          const executions = JSON.parse(
+            readFileSync(process.env.FENCE_RESPONSE, 'utf8'),
+          );
+          if (
+            !Array.isArray(executions) ||
+            executions.length !== 1 ||
+            executions[0]?.success !== true
+          ) {
+            throw new Error('observation-order fence query did not succeed exactly once');
+          }
+
+          const rows = executions[0].results;
+          if (!Array.isArray(rows) || rows.length !== 1) {
+            throw new Error('observation-order fence query did not return exactly one row');
+          }
+
+          const fence = rows[0];
+          if (
+            fence?.capability !== 'gitcrawl.observation-order.v1' ||
+            Number(fence?.migration_ready) !== 1 ||
+            Number(fence?.cutover_enabled) !== 0
+          ) {
+            throw new Error('observation-order migration is not ready and dormant');
+          }
+
+          console.log('Observation-order migration is ready with cutover disabled.');
+          NODE
 
       - name: Deploy Worker
         env:
@@ -174,6 +214,13 @@ jobs:
           const contract = JSON.parse(readFileSync(process.env.CONTRACT_RESPONSE, 'utf8'));
           if (contract.service !== 'crawl-remote' || contract.protocol_version !== 'v1') {
             throw new Error('production /v1/contract response is not the crawl-remote v1 contract');
+          }
+
+          const observationFenceNote =
+            'Gitcrawl observation ordering requires the D1 migration, explicit publisher capability, and operator cutover fence before it is advertised or activated.';
+          const notes = Array.isArray(contract.notes) ? contract.notes : [];
+          if (!notes.includes(observationFenceNote)) {
+            throw new Error('production contract does not identify the observation-order fence');
           }
 
           const routes = Array.isArray(contract.routes) ? contract.routes : [];

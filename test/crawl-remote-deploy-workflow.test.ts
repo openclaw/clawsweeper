@@ -87,7 +87,24 @@ test("crawl-remote deployment preflights before the immutable mutation pair", ()
     step("Validate Worker bundle").run,
     "npm run deploy -- --dry-run --outdir .wrangler/deploy-dry-run",
   );
-  assert.match(step("Apply remote D1 migrations").run ?? "", /npm run db:migrate:remote/);
+  const migration = step("Apply remote D1 migrations");
+  assert.match(migration.run ?? "", /npm run db:migrate:remote/);
+  assert.match(migration.run ?? "", /wrangler d1 execute crawl-remote/);
+  assert.match(migration.run ?? "", /--remote/);
+  assert.match(migration.run ?? "", /--json/);
+  assert.match(
+    migration.run ?? "",
+    /select capability, migration_ready, cutover_enabled from remote_capability_fences/,
+  );
+  assert.match(migration.run ?? "", /capability = 'gitcrawl\.observation-order\.v1'/);
+  assert.match(migration.run ?? "", /executions\.length !== 1/);
+  assert.match(migration.run ?? "", /rows\.length !== 1/);
+  assert.match(migration.run ?? "", /Number\(fence\?\.migration_ready\) !== 1/);
+  assert.match(migration.run ?? "", /Number\(fence\?\.cutover_enabled\) !== 0/);
+  assert.equal(
+    migration.env?.FENCE_RESPONSE,
+    "${{ runner.temp }}/crawl-remote-observation-fence.json",
+  );
   assert.match(step("Deploy Worker").run ?? "", /npm run deploy -- --message/);
 });
 
@@ -119,5 +136,10 @@ test("crawl-remote deployment proves health and contract after release", () => {
   assert.match(verify.run ?? "", /health\.ok !== true/);
   assert.match(verify.run ?? "", /contract\.service !== 'crawl-remote'/);
   assert.match(verify.run ?? "", /contract\.protocol_version !== 'v1'/);
+  assert.match(
+    verify.run ?? "",
+    /Gitcrawl observation ordering requires the D1 migration, explicit publisher capability, and operator cutover fence before it is advertised or activated\./,
+  );
+  assert.match(verify.run ?? "", /notes\.includes\(observationFenceNote\)/);
   assert.equal(verify.env?.CLOUDFLARE_API_TOKEN, undefined);
 });
