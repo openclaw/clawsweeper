@@ -52,11 +52,11 @@ identity fields are not:
 
 `actionOperationId`, `actionAttemptId`, and `actionIdempotencyKey` canonicalize
 and hash their inputs. Identity inputs must be plain canonical JSON trees:
-non-finite or negative-zero numbers, dates, class instances, sparse or
-decorated arrays, accessors, `undefined`, functions, symbols, bigints, cycles,
-and credential-bearing field names are rejected before hashing. `event_id` is
-the SHA-256 of normalized repository plus `event_key`. Callers cannot supply a
-raw event key.
+non-finite, negative-zero, or unsafe-integer numbers, dates, class instances,
+sparse or decorated arrays, accessors, `undefined`, functions, symbols,
+bigints, cycles, and credential-bearing field aliases are rejected before
+hashing. Large identifiers must be strings. `event_id` is the SHA-256 of
+normalized repository plus `event_key`. Callers cannot supply a raw event key.
 
 - Replaying the same key and semantic payload is idempotent.
 - Reusing a key for different semantic content is a hard conflict.
@@ -78,8 +78,10 @@ raw event key.
 - Reusing one run/job shard identity for a different event set is a hard
   conflict.
 - Spool, shard, partition-marker, and import writes create parent directories
-  one component at a time, reject symlinks and junctions, and use no-follow
-  file access where the platform supports it.
+  one component at a time, reject symlinks and junctions, snapshot every parent
+  inode and device immediately around pathname mutations, verify opened
+  descriptors against their final paths, and use no-follow file access where
+  the platform supports it. Any parent-chain change fails the write.
 
 ## Privacy Boundary
 
@@ -88,9 +90,10 @@ bounded subject IDs, relative report paths, public run URLs, and snapshot IDs.
 It does not store prompts, bodies, comments, diffs, patches, raw logs, raw
 payloads, arbitrary model text, local absolute paths, credentials, private
 hosts, or email addresses. Credential detection covers GitHub token families,
-JWT-shaped values, bearer/API/Cloudflare credential forms, private network
-addresses, and internal hostname suffixes while all durable text remains
-restricted to field-specific machine vocabularies.
+JWT-shaped values, whitespace or separator-delimited bearer/API/Cloudflare
+credential forms, credential field aliases, case-insensitive private paths,
+private IPv4 and IPv6 addresses, and internal hostname suffixes while all
+durable text remains restricted to field-specific machine vocabularies.
 
 Every event records a privacy classification, redaction version, and fields
 dropped. The checked-in JSON schema is
