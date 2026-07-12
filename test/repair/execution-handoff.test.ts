@@ -13,7 +13,9 @@ import {
   assertRepairDeltaBaseBinding,
   assertSourcePullRevision,
   checkpointedSourceClosures,
+  completePendingSourceClosureReceipt,
   missingRequiredPublicationLabels,
+  pendingSourceClosures,
   prepareExecutionAuthorization,
   preparedRefPublicationState,
   publicationPauseItems,
@@ -570,6 +572,52 @@ test("planned source closure is not checkpointed until an exact publication rece
   });
   const receiptWithoutClose = checkpointedSourceClosures(publication, receipt, intent);
   assert.equal(receiptWithoutClose.size, 0);
+  const pendingReceipt = publicationReceipt({
+    validationReceiptSha256: "c".repeat(64),
+    publication,
+    targetPrNumber: 99,
+    mutations: [
+      {
+        operation: "begin_close_source_pull_request",
+        source: revision.url,
+        repo: revision.repo,
+        pull_number: revision.number,
+        expected_head_sha: revision.expected_head_sha,
+        expected_base_sha: revision.expected_base_sha,
+      },
+    ],
+  });
+  assert.equal(checkpointedSourceClosures(publication, pendingReceipt, intent).size, 0);
+  assert.deepEqual([...pendingSourceClosures(publication, pendingReceipt, intent)], [revision.url]);
+  const recoveredReceipt = completePendingSourceClosureReceipt({
+    publication,
+    receipt: pendingReceipt,
+    intent,
+    revision,
+  });
+  assert.deepEqual(
+    [...checkpointedSourceClosures(publication, recoveredReceipt, intent)],
+    [revision.url],
+  );
+  assert.equal(
+    completePendingSourceClosureReceipt({
+      publication,
+      receipt: recoveredReceipt,
+      intent,
+      revision,
+    }).identity_sha256,
+    recoveredReceipt.identity_sha256,
+  );
+  assert.throws(
+    () =>
+      completePendingSourceClosureReceipt({
+        publication,
+        receipt,
+        intent,
+        revision,
+      }),
+    /lacks its durable pre-close checkpoint/,
+  );
   const completedReceipt = publicationReceipt({
     validationReceiptSha256: "c".repeat(64),
     publication,
@@ -648,6 +696,10 @@ test("completed source closeout distinguishes a later human reopen", () => {
     /closed without a completed ClawSweeper receipt/,
   );
   assert.equal(sourceCloseoutStateBlock({ source, state: "open", completed: false }), "");
+  assert.equal(
+    sourceCloseoutStateBlock({ source, state: "closed", completed: false, pending: true }),
+    "",
+  );
 });
 
 test("every source closeout remains bound to its exact head and base revisions", () => {
@@ -742,7 +794,11 @@ test("publication checkpoint binds source closeout and every mutation rechecks l
   );
   assert.match(
     closeout,
-    /"pr", "close"[\s\S]*sourceClosureReceiptMutation\(action\.revision\)[\s\S]*writeJson\(publicationReceiptPath, currentReceipt\)/,
+    /sourceClosureAttemptReceiptMutation\(action\.revision\)[\s\S]*writeJson\(publicationReceiptPath, currentReceipt\)[\s\S]*"pr", "close"[\s\S]*completePendingSourceClosureReceipt\(\{[\s\S]*revision: action\.revision,[\s\S]*writeJson\(publicationReceiptPath, currentReceipt\)/,
+  );
+  assert.match(
+    closeout,
+    /for \(const source of pendingAttempts\)[\s\S]*state !== "closed"[\s\S]*completePendingSourceClosureReceipt\(\{[\s\S]*revision,[\s\S]*writeJson\(publicationReceiptPath, currentReceipt\)/,
   );
   assert.ok(closeout.indexOf("sourceCloseoutStateBlock") < closeout.indexOf('["pr", "close"'));
   const resolver = source.slice(
