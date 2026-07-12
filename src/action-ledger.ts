@@ -1,0 +1,1664 @@
+import { createHash, randomUUID } from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
+
+import { normalizeRepo, slugForRepo } from "./repository-profiles.js";
+import { sortStable, stableJson } from "./stable-json.js";
+
+export const ACTION_EVENT_SCHEMA = "clawsweeper.state-ledger-event.v1";
+
+export const ACTION_EVENT_TYPES = {
+  // Compatibility types already emitted by v1 writers.
+  reviewStarted: "review.started",
+  reviewCompleted: "review.completed",
+  reviewFailed: "review.failed",
+  reviewPublished: "review.published",
+  commandClaimed: "command.claimed",
+  commandDispatched: "command.dispatched",
+  commandCompleted: "command.completed",
+  commandFailed: "command.failed",
+  commandSkipped: "command.skipped",
+  repairPlanned: "repair.planned",
+  repairExecuted: "repair.executed",
+  repairValidated: "repair.validated",
+  repairReviewed: "repair.reviewed",
+  repairPublished: "repair.published",
+  applyPlanned: "apply.planned",
+  applyExecuted: "apply.executed",
+  applyBlocked: "apply.blocked",
+  applyFailed: "apply.failed",
+  notificationSent: "notification.sent",
+  notificationFailed: "notification.failed",
+  sessionRegistered: "session.registered",
+  sessionPhaseChanged: "session.phase_changed",
+  sessionCompleted: "session.completed",
+  sessionBlocked: "session.blocked",
+  projectionFailed: "projection.failed",
+  gitcrawlEvidenceBound: "evidence.gitcrawl_bound",
+  proofStageCompleted: "evidence.proof_stage_completed",
+
+  // Canonical phase-oriented types for new writers.
+  reviewBatch: "review.batch",
+  reviewItem: "review.item",
+  reviewRetry: "review.retry",
+  reviewLogPublication: "review.log_publication",
+  reviewCommentPublication: "review.comment_publication",
+  commandReceived: "command.received",
+  commandClassified: "command.classified",
+  commandClaimRefreshed: "command.claim_refreshed",
+  commandProgress: "command.progress",
+  commandWait: "command.wait",
+  commandRequeue: "command.requeue",
+  commandRecover: "command.recover",
+  repairIntake: "repair.intake",
+  repairDispatch: "repair.dispatch",
+  repairPlan: "repair.plan",
+  repairExecute: "repair.execute",
+  repairValidate: "repair.validate",
+  repairReview: "repair.review",
+  repairPublish: "repair.publish",
+  repairPostflight: "repair.postflight",
+  repairRequeue: "repair.requeue",
+  repairRecover: "repair.recover",
+  repairQueue: "repair.queue",
+  repairBlocked: "repair.blocked",
+  repairFailed: "repair.failed",
+  applyAction: "apply.action",
+  applyBatch: "apply.batch",
+  applyPublish: "apply.publish",
+  workflowAttempt: "workflow.attempt",
+  dispatchLifecycle: "dispatch.lifecycle",
+  retryLifecycle: "retry.lifecycle",
+  queueLifecycle: "queue.lifecycle",
+  notificationDelivery: "notification.delivery",
+  notificationPlanned: "notification.planned",
+  notificationSkipped: "notification.skipped",
+  notificationRetried: "notification.retried",
+  publicationLifecycle: "publication.lifecycle",
+  statusLifecycle: "status.lifecycle",
+  dashboardLifecycle: "dashboard.lifecycle",
+  sessionLifecycle: "session.lifecycle",
+  sessionCancelled: "session.cancelled",
+  gitcrawlSnapshot: "gitcrawl.snapshot",
+  gitcrawlQuery: "gitcrawl.query",
+  gitcrawlBinding: "gitcrawl.binding",
+  proofStage: "proof.stage",
+  proofBinding: "proof.binding",
+} as const;
+
+export const ACTION_EVENT_FAMILIES = {
+  review: [
+    ACTION_EVENT_TYPES.reviewStarted,
+    ACTION_EVENT_TYPES.reviewCompleted,
+    ACTION_EVENT_TYPES.reviewFailed,
+    ACTION_EVENT_TYPES.reviewPublished,
+    ACTION_EVENT_TYPES.reviewBatch,
+    ACTION_EVENT_TYPES.reviewItem,
+    ACTION_EVENT_TYPES.reviewRetry,
+    ACTION_EVENT_TYPES.reviewLogPublication,
+    ACTION_EVENT_TYPES.reviewCommentPublication,
+  ],
+  command: [
+    ACTION_EVENT_TYPES.commandClaimed,
+    ACTION_EVENT_TYPES.commandDispatched,
+    ACTION_EVENT_TYPES.commandCompleted,
+    ACTION_EVENT_TYPES.commandFailed,
+    ACTION_EVENT_TYPES.commandSkipped,
+    ACTION_EVENT_TYPES.commandReceived,
+    ACTION_EVENT_TYPES.commandClassified,
+    ACTION_EVENT_TYPES.commandClaimRefreshed,
+    ACTION_EVENT_TYPES.commandProgress,
+    ACTION_EVENT_TYPES.commandWait,
+    ACTION_EVENT_TYPES.commandRequeue,
+    ACTION_EVENT_TYPES.commandRecover,
+  ],
+  repair: [
+    ACTION_EVENT_TYPES.repairPlanned,
+    ACTION_EVENT_TYPES.repairExecuted,
+    ACTION_EVENT_TYPES.repairValidated,
+    ACTION_EVENT_TYPES.repairReviewed,
+    ACTION_EVENT_TYPES.repairPublished,
+    ACTION_EVENT_TYPES.repairIntake,
+    ACTION_EVENT_TYPES.repairDispatch,
+    ACTION_EVENT_TYPES.repairPlan,
+    ACTION_EVENT_TYPES.repairExecute,
+    ACTION_EVENT_TYPES.repairValidate,
+    ACTION_EVENT_TYPES.repairReview,
+    ACTION_EVENT_TYPES.repairPublish,
+    ACTION_EVENT_TYPES.repairPostflight,
+    ACTION_EVENT_TYPES.repairRequeue,
+    ACTION_EVENT_TYPES.repairRecover,
+    ACTION_EVENT_TYPES.repairQueue,
+    ACTION_EVENT_TYPES.repairBlocked,
+    ACTION_EVENT_TYPES.repairFailed,
+  ],
+  apply: [
+    ACTION_EVENT_TYPES.applyPlanned,
+    ACTION_EVENT_TYPES.applyExecuted,
+    ACTION_EVENT_TYPES.applyBlocked,
+    ACTION_EVENT_TYPES.applyFailed,
+    ACTION_EVENT_TYPES.applyAction,
+    ACTION_EVENT_TYPES.applyBatch,
+    ACTION_EVENT_TYPES.applyPublish,
+  ],
+  operations: [
+    ACTION_EVENT_TYPES.workflowAttempt,
+    ACTION_EVENT_TYPES.dispatchLifecycle,
+    ACTION_EVENT_TYPES.retryLifecycle,
+    ACTION_EVENT_TYPES.queueLifecycle,
+    ACTION_EVENT_TYPES.notificationDelivery,
+    ACTION_EVENT_TYPES.notificationPlanned,
+    ACTION_EVENT_TYPES.notificationSkipped,
+    ACTION_EVENT_TYPES.notificationRetried,
+    ACTION_EVENT_TYPES.notificationSent,
+    ACTION_EVENT_TYPES.notificationFailed,
+    ACTION_EVENT_TYPES.publicationLifecycle,
+    ACTION_EVENT_TYPES.statusLifecycle,
+    ACTION_EVENT_TYPES.dashboardLifecycle,
+    ACTION_EVENT_TYPES.sessionLifecycle,
+    ACTION_EVENT_TYPES.sessionRegistered,
+    ACTION_EVENT_TYPES.sessionPhaseChanged,
+    ACTION_EVENT_TYPES.sessionCompleted,
+    ACTION_EVENT_TYPES.sessionBlocked,
+    ACTION_EVENT_TYPES.sessionCancelled,
+    ACTION_EVENT_TYPES.projectionFailed,
+  ],
+  evidence: [
+    ACTION_EVENT_TYPES.gitcrawlSnapshot,
+    ACTION_EVENT_TYPES.gitcrawlQuery,
+    ACTION_EVENT_TYPES.gitcrawlBinding,
+    ACTION_EVENT_TYPES.proofStage,
+    ACTION_EVENT_TYPES.proofBinding,
+    ACTION_EVENT_TYPES.gitcrawlEvidenceBound,
+    ACTION_EVENT_TYPES.proofStageCompleted,
+  ],
+} as const;
+
+export const ACTION_EVENT_PHASE_TYPES = {
+  reviewBatch: ACTION_EVENT_TYPES.reviewBatch,
+  reviewItem: ACTION_EVENT_TYPES.reviewItem,
+  reviewRetry: ACTION_EVENT_TYPES.reviewRetry,
+  reviewLogPublication: ACTION_EVENT_TYPES.reviewLogPublication,
+  reviewCommentPublication: ACTION_EVENT_TYPES.reviewCommentPublication,
+  commandReceived: ACTION_EVENT_TYPES.commandReceived,
+  commandClassified: ACTION_EVENT_TYPES.commandClassified,
+  commandClaimRefreshed: ACTION_EVENT_TYPES.commandClaimRefreshed,
+  commandProgress: ACTION_EVENT_TYPES.commandProgress,
+  commandWait: ACTION_EVENT_TYPES.commandWait,
+  commandRequeue: ACTION_EVENT_TYPES.commandRequeue,
+  commandRecover: ACTION_EVENT_TYPES.commandRecover,
+  repairIntake: ACTION_EVENT_TYPES.repairIntake,
+  repairDispatch: ACTION_EVENT_TYPES.repairDispatch,
+  repairPlan: ACTION_EVENT_TYPES.repairPlan,
+  repairExecute: ACTION_EVENT_TYPES.repairExecute,
+  repairValidate: ACTION_EVENT_TYPES.repairValidate,
+  repairReview: ACTION_EVENT_TYPES.repairReview,
+  repairPublish: ACTION_EVENT_TYPES.repairPublish,
+  repairPostflight: ACTION_EVENT_TYPES.repairPostflight,
+  repairRequeue: ACTION_EVENT_TYPES.repairRequeue,
+  repairRecover: ACTION_EVENT_TYPES.repairRecover,
+  repairQueue: ACTION_EVENT_TYPES.repairQueue,
+  repairBlocked: ACTION_EVENT_TYPES.repairBlocked,
+  repairFailed: ACTION_EVENT_TYPES.repairFailed,
+  applyAction: ACTION_EVENT_TYPES.applyAction,
+  applyBatch: ACTION_EVENT_TYPES.applyBatch,
+  applyPublish: ACTION_EVENT_TYPES.applyPublish,
+  workflowAttempt: ACTION_EVENT_TYPES.workflowAttempt,
+  dispatchLifecycle: ACTION_EVENT_TYPES.dispatchLifecycle,
+  retryLifecycle: ACTION_EVENT_TYPES.retryLifecycle,
+  queueLifecycle: ACTION_EVENT_TYPES.queueLifecycle,
+  notificationDelivery: ACTION_EVENT_TYPES.notificationDelivery,
+  notificationPlanned: ACTION_EVENT_TYPES.notificationPlanned,
+  notificationSkipped: ACTION_EVENT_TYPES.notificationSkipped,
+  notificationRetried: ACTION_EVENT_TYPES.notificationRetried,
+  publicationLifecycle: ACTION_EVENT_TYPES.publicationLifecycle,
+  statusLifecycle: ACTION_EVENT_TYPES.statusLifecycle,
+  dashboardLifecycle: ACTION_EVENT_TYPES.dashboardLifecycle,
+  sessionLifecycle: ACTION_EVENT_TYPES.sessionLifecycle,
+  sessionCancelled: ACTION_EVENT_TYPES.sessionCancelled,
+  gitcrawlSnapshot: ACTION_EVENT_TYPES.gitcrawlSnapshot,
+  gitcrawlQuery: ACTION_EVENT_TYPES.gitcrawlQuery,
+  gitcrawlBinding: ACTION_EVENT_TYPES.gitcrawlBinding,
+  proofStage: ACTION_EVENT_TYPES.proofStage,
+  proofBinding: ACTION_EVENT_TYPES.proofBinding,
+} as const;
+
+export const ACTION_EVENT_STATUSES = {
+  blocked: "blocked",
+  cached: "cached",
+  cancelled: "cancelled",
+  claimed: "claimed",
+  classified: "classified",
+  completed: "completed",
+  dispatched: "dispatched",
+  executed: "executed",
+  failed: "failed",
+  inProgress: "in_progress",
+  planned: "planned",
+  published: "published",
+  queued: "queued",
+  received: "received",
+  recovered: "recovered",
+  refreshed: "refreshed",
+  registered: "registered",
+  released: "released",
+  requeued: "requeued",
+  retried: "retried",
+  scheduled: "scheduled",
+  sent: "sent",
+  skipped: "skipped",
+  started: "started",
+  unchanged: "unchanged",
+  validated: "validated",
+  waiting: "waiting",
+  yielded: "yielded",
+} as const;
+
+export const ACTION_EVENT_REASON_CODES = {
+  accepted: "accepted",
+  alreadyComplete: "already_complete",
+  alreadyExists: "already_exists",
+  alreadyProcessed: "already_processed",
+  appendFailed: "append_failed",
+  authorizationFailed: "authorization_failed",
+  cancelled: "cancelled",
+  capacityExhausted: "capacity_exhausted",
+  completed: "completed",
+  contentUnchanged: "content_unchanged",
+  dependencyPending: "dependency_pending",
+  dryRun: "dry_run",
+  duplicate: "duplicate",
+  exception: "exception",
+  invalidInput: "invalid_input",
+  leaseActive: "lease_active",
+  manual: "manual",
+  mutationGuard: "mutation_guard",
+  noChanges: "no_changes",
+  notApplicable: "not_applicable",
+  notFound: "not_found",
+  policyBlocked: "policy_blocked",
+  published: "published",
+  rateLimited: "rate_limited",
+  recoveredStaleClaim: "recovered_stale_claim",
+  retryExhausted: "retry_exhausted",
+  retryScheduled: "retry_scheduled",
+  runtimeBudget: "runtime_budget",
+  selected: "selected",
+  sourceChanged: "source_changed",
+  stale: "stale",
+  stateChanged: "state_changed",
+  superseded: "superseded",
+  timeout: "timeout",
+  unavailable: "unavailable",
+  validationFailed: "validation_failed",
+  workerLost: "worker_lost",
+  workflowFailed: "workflow_failed",
+} as const;
+
+export const ACTION_EVENT_SUBJECT_KINDS = [
+  "issue",
+  "pull_request",
+  "cluster",
+  "command",
+  "workflow",
+  "repository",
+  "notification",
+  "commit",
+  "queue_item",
+  "deployment",
+  "publication",
+] as const;
+
+export const ACTION_EVENT_ATTRIBUTE_KEYS = [
+  "action_count",
+  "attempt",
+  "batch_index",
+  "batch_size",
+  "cache_mode",
+  "cached",
+  "candidate_count",
+  "closed_count",
+  "comment_count",
+  "completion_reason",
+  "cost_usd_micros",
+  "coverage_complete",
+  "coverage_ratio",
+  "delivery_kind",
+  "dispatch_kind",
+  "duration_ms",
+  "failed_count",
+  "final_attempt",
+  "finding_count",
+  "input_tokens",
+  "item_count",
+  "lease_duration_ms",
+  "log_count",
+  "log_kind",
+  "model",
+  "output_tokens",
+  "partial",
+  "phase",
+  "processed_count",
+  "publication_kind",
+  "published_count",
+  "queue_depth",
+  "queue_kind",
+  "query_version",
+  "reasoning_effort",
+  "result_count",
+  "retry_count",
+  "retry_delay_ms",
+  "review_mode",
+  "shard_count",
+  "shard_index",
+  "skipped_count",
+  "state",
+  "status_kind",
+  "validation_count",
+  "validation_kind",
+  "wait_duration_ms",
+  "warning_count",
+  "work_kind",
+  "workflow_phase",
+] as const;
+
+const POSITIVE_INTEGER_ATTRIBUTE_KEYS = new Set<ActionEventAttributeKey>([
+  "attempt",
+  "batch_size",
+  "shard_count",
+]);
+const NON_NEGATIVE_INTEGER_ATTRIBUTE_KEYS = new Set<ActionEventAttributeKey>([
+  "action_count",
+  "batch_index",
+  "candidate_count",
+  "closed_count",
+  "comment_count",
+  "cost_usd_micros",
+  "duration_ms",
+  "failed_count",
+  "finding_count",
+  "input_tokens",
+  "item_count",
+  "lease_duration_ms",
+  "log_count",
+  "output_tokens",
+  "processed_count",
+  "published_count",
+  "queue_depth",
+  "result_count",
+  "retry_count",
+  "retry_delay_ms",
+  "shard_index",
+  "skipped_count",
+  "validation_count",
+  "wait_duration_ms",
+  "warning_count",
+]);
+const BOOLEAN_ATTRIBUTE_KEYS = new Set<ActionEventAttributeKey>([
+  "cached",
+  "coverage_complete",
+  "final_attempt",
+  "partial",
+]);
+const UNIT_INTERVAL_ATTRIBUTE_KEYS = new Set<ActionEventAttributeKey>(["coverage_ratio"]);
+const MACHINE_TEXT_ATTRIBUTE_KEYS = new Set<ActionEventAttributeKey>([
+  "cache_mode",
+  "completion_reason",
+  "delivery_kind",
+  "dispatch_kind",
+  "log_kind",
+  "model",
+  "phase",
+  "publication_kind",
+  "queue_kind",
+  "query_version",
+  "reasoning_effort",
+  "review_mode",
+  "state",
+  "status_kind",
+  "validation_kind",
+  "work_kind",
+  "workflow_phase",
+]);
+const MAX_EVENT_COLLECTION_ITEMS = 64;
+
+export type ActionEventAttributeKey = (typeof ACTION_EVENT_ATTRIBUTE_KEYS)[number];
+export type ActionEventType = (typeof ACTION_EVENT_TYPES)[keyof typeof ACTION_EVENT_TYPES];
+export type ActionEventFamily = keyof typeof ACTION_EVENT_FAMILIES;
+export type ActionEventPhaseType =
+  (typeof ACTION_EVENT_PHASE_TYPES)[keyof typeof ACTION_EVENT_PHASE_TYPES];
+export type ActionEventStatus = (typeof ACTION_EVENT_STATUSES)[keyof typeof ACTION_EVENT_STATUSES];
+export type ActionEventReasonCode =
+  (typeof ACTION_EVENT_REASON_CODES)[keyof typeof ACTION_EVENT_REASON_CODES];
+export type ActionEventSubjectKind = (typeof ACTION_EVENT_SUBJECT_KINDS)[number];
+export type ActionEventScalar = string | number | boolean;
+export type ActionEventAttributes = Partial<
+  Record<ActionEventAttributeKey, ActionEventScalar | readonly ActionEventScalar[]>
+>;
+
+export type ActionEventProducer = {
+  repository: string;
+  sha: string;
+  workflow: string;
+  job: string;
+  runId: string;
+  runAttempt: number;
+  component: string;
+};
+
+export type ActionEventSubject = {
+  repository: string;
+  kind: ActionEventSubjectKind;
+  subjectId?: string;
+  number?: number;
+  clusterId?: string;
+  sourceRevision?: string;
+  recordPath?: string;
+};
+
+export type ActionEventAction = {
+  name: string;
+  status: string;
+  reasonCode?: string;
+  retryable: boolean;
+  mutation: boolean;
+};
+
+export type ActionEventLearning = {
+  category: string;
+  signal: string;
+  ruleId?: string;
+  confidence?: number;
+};
+
+export type ActionEventEvidence = {
+  kind: string;
+  sha256?: string;
+  reportPath?: string;
+  runUrl?: string;
+  snapshotId?: string;
+};
+
+export type ActionEventPrivacy = {
+  classification: "public" | "internal";
+  redactionVersion: string;
+  fieldsDropped: readonly string[];
+};
+
+export type ActionEventInput = {
+  eventKey: string;
+  operationId: string;
+  attemptId: string;
+  parentEventId?: string | null;
+  phaseSeq: number;
+  idempotencyKeySha256: string;
+  type: string;
+  producer: ActionEventProducer;
+  subject: ActionEventSubject;
+  action: ActionEventAction;
+  learning?: ActionEventLearning;
+  evidence?: readonly ActionEventEvidence[];
+  attributes?: ActionEventAttributes;
+  privacy?: ActionEventPrivacy;
+  occurredAt?: string;
+};
+
+export type ActionEvent = {
+  schema: typeof ACTION_EVENT_SCHEMA;
+  schema_version: 1;
+  event_id: string;
+  event_key: string;
+  operation_id: string;
+  attempt_id: string;
+  parent_event_id: string | null;
+  phase_seq: number;
+  idempotency_key_sha256: string;
+  semantic_sha256: string;
+  occurred_at: string;
+  recorded_at: string;
+  event_type: string;
+  producer: {
+    repository: string;
+    sha: string;
+    workflow: string;
+    job: string;
+    run_id: string;
+    run_attempt: number;
+    component: string;
+  };
+  subject: {
+    repository: string;
+    kind: ActionEventSubject["kind"];
+    subject_id?: string;
+    number?: number;
+    cluster_id?: string;
+    source_revision?: string;
+    record_path?: string;
+  };
+  action: {
+    name: string;
+    status: string;
+    reason_code?: string;
+    retryable: boolean;
+    mutation: boolean;
+  };
+  learning?: {
+    category: string;
+    signal: string;
+    rule_id?: string;
+    confidence?: number;
+  };
+  evidence?: Array<{
+    kind: string;
+    sha256?: string;
+    report_path?: string;
+    run_url?: string;
+    snapshot_id?: string;
+  }>;
+  attributes?: Record<string, ActionEventScalar | ActionEventScalar[]>;
+  privacy: {
+    classification: "public" | "internal";
+    redaction_version: string;
+    fields_dropped: string[];
+  };
+};
+
+export type ActionEventWriteResult = {
+  status: "created" | "unchanged";
+  event: ActionEvent;
+  path: string;
+  relativePath: string;
+};
+
+export type ActionEventShardIdentity = {
+  producer: string;
+  workflow: string;
+  job: string;
+  runId: string;
+  runAttempt: number;
+  partitionDate: string;
+};
+
+export type ActionEventShardWriteResult = {
+  status: "created" | "unchanged";
+  path: string;
+  relativePath: string;
+  sha256: string;
+  eventCount: number;
+};
+
+export class ActionEventConflictError extends Error {
+  readonly eventPath: string;
+  readonly expectedSemanticSha256: string;
+  readonly actualSemanticSha256: string;
+
+  constructor({
+    eventPath,
+    expectedSemanticSha256,
+    actualSemanticSha256,
+  }: {
+    eventPath: string;
+    expectedSemanticSha256: string;
+    actualSemanticSha256: string;
+  }) {
+    super(
+      `action event conflict at ${eventPath}: ${expectedSemanticSha256} != ${actualSemanticSha256}`,
+    );
+    this.name = "ActionEventConflictError";
+    this.eventPath = eventPath;
+    this.expectedSemanticSha256 = expectedSemanticSha256;
+    this.actualSemanticSha256 = actualSemanticSha256;
+  }
+}
+
+export class ActionEventShardConflictError extends Error {
+  readonly shardPath: string;
+  readonly expectedSha256: string;
+  readonly actualSha256: string;
+
+  constructor({
+    shardPath,
+    expectedSha256,
+    actualSha256,
+  }: {
+    shardPath: string;
+    expectedSha256: string;
+    actualSha256: string;
+  }) {
+    super(`action event shard conflict at ${shardPath}: ${expectedSha256} != ${actualSha256}`);
+    this.name = "ActionEventShardConflictError";
+    this.shardPath = shardPath;
+    this.expectedSha256 = expectedSha256;
+    this.actualSha256 = actualSha256;
+  }
+}
+
+const ACTION_EVENT_PHASE_TYPE_VALUES = new Set<string>(Object.values(ACTION_EVENT_PHASE_TYPES));
+const ACTION_EVENT_STATUS_VALUES = new Set<string>(Object.values(ACTION_EVENT_STATUSES));
+const ACTION_EVENT_REASON_CODE_VALUES = new Set<string>(Object.values(ACTION_EVENT_REASON_CODES));
+
+export function isActionEventPhaseType(value: string): value is ActionEventPhaseType {
+  return ACTION_EVENT_PHASE_TYPE_VALUES.has(value);
+}
+
+export function isActionEventStatus(value: string): value is ActionEventStatus {
+  return ACTION_EVENT_STATUS_VALUES.has(value);
+}
+
+export function isActionEventReasonCode(value: string): value is ActionEventReasonCode {
+  return ACTION_EVENT_REASON_CODE_VALUES.has(value);
+}
+
+export function actionEventKey(scope: string, identity: unknown): string {
+  const normalizedScope = eventScope(scope);
+  return `${normalizedScope}:${sha256(stableJson(canonicalJsonValue(identity)))}`;
+}
+
+export function actionOperationId(
+  repository: string,
+  operation: string,
+  identity: unknown,
+): string {
+  return sha256(
+    stableJson({
+      repository: requiredRepo(repository),
+      operation: eventScope(operation),
+      identity: canonicalJsonValue(identity),
+    }),
+  );
+}
+
+export function actionAttemptId(operationId: string, identity: unknown): string {
+  return sha256(
+    stableJson({
+      operation_id: requiredSha256(operationId, "action operation id"),
+      identity: canonicalJsonValue(identity),
+    }),
+  );
+}
+
+export function actionIdempotencyKey(identity: unknown): string {
+  return sha256(stableJson(canonicalJsonValue(identity)));
+}
+
+export function actionEventId(repository: string, eventKey: string): string {
+  return sha256(`${requiredRepo(repository)}\n${requiredEventKey(eventKey)}`);
+}
+
+export function actionEventSpoolRelativePath(repository: string, eventId: string): string {
+  const normalizedRepo = requiredRepo(repository);
+  requiredSha256(eventId, "action event id");
+  return path.join(
+    ".clawsweeper-repair",
+    "action-events",
+    slugForRepo(normalizedRepo),
+    `${eventId}.json`,
+  );
+}
+
+export function actionEventShardRelativePath(
+  identity: ActionEventShardIdentity,
+  events: readonly ActionEvent[],
+): string {
+  const normalizedIdentity = normalizeShardIdentity(identity);
+  const normalizedEvents = normalizeShardEvents(events);
+  if (normalizedEvents.length === 0) throw new Error("action event shard requires events");
+  const [year, month, date] = normalizedIdentity.partitionDate.split("-");
+  const identityDigest = sha256(stableJson(normalizedIdentity)).slice(0, 12);
+  const filename = [
+    safePathSegment(normalizedIdentity.runId),
+    String(normalizedIdentity.runAttempt),
+    safePathSegment(normalizedIdentity.job),
+    identityDigest,
+  ].join("-");
+  return path.join(
+    "ledger",
+    "v1",
+    "events",
+    String(year),
+    String(month),
+    String(date),
+    safePathSegment(normalizedIdentity.producer),
+    `${filename}.jsonl`,
+  );
+}
+
+export function createActionEvent(
+  input: ActionEventInput,
+  options: { now?: () => Date } = {},
+): ActionEvent {
+  const semantic = actionEventSemanticValue(input);
+  const semanticSha256 = sha256(stableJson(semantic));
+  const recordedAt = (options.now ?? (() => new Date()))().toISOString();
+  const occurredAt = input.occurredAt
+    ? requiredTimestamp(input.occurredAt, "action event occurredAt")
+    : recordedAt;
+  const eventId = actionEventId(semantic.subject.repository, input.eventKey);
+  if (semantic.parent_event_id === eventId) {
+    throw new Error("action event cannot reference itself as its parent");
+  }
+  return canonicalJsonValue({
+    schema: ACTION_EVENT_SCHEMA,
+    schema_version: 1,
+    event_id: eventId,
+    event_key: requiredEventKey(input.eventKey),
+    semantic_sha256: semanticSha256,
+    occurred_at: occurredAt,
+    recorded_at: recordedAt,
+    ...semantic,
+  }) as ActionEvent;
+}
+
+export function writeActionEvent(
+  root: string,
+  input: ActionEventInput,
+  options: { now?: () => Date } = {},
+): ActionEventWriteResult {
+  const candidate = createActionEvent(input, options);
+  const occurredAtWasGenerated = !input.occurredAt;
+  const relativePath = actionEventSpoolRelativePath(
+    candidate.subject.repository,
+    candidate.event_id,
+  );
+  const eventPath = resolveInsideRoot(root, relativePath, "action event");
+  fs.mkdirSync(path.dirname(eventPath), { recursive: true });
+
+  const existing = readActionEventIfExists(eventPath);
+  if (existing) {
+    return compareExistingActionEvent(
+      eventPath,
+      relativePath,
+      existing,
+      candidate,
+      occurredAtWasGenerated,
+    );
+  }
+
+  const content = `${JSON.stringify(sortStable(candidate), null, 2)}\n`;
+  const status = writeCreateOnlyFile(eventPath, content, () => {
+    const raced = readActionEventIfExists(eventPath);
+    if (!raced) throw new Error(`action event appeared without readable content: ${eventPath}`);
+    compareExistingActionEvent(eventPath, relativePath, raced, candidate, occurredAtWasGenerated);
+  });
+  return {
+    status,
+    event: status === "unchanged" ? readActionEvent(eventPath) : candidate,
+    path: eventPath,
+    relativePath,
+  };
+}
+
+export function writeActionEventShard(
+  root: string,
+  identity: ActionEventShardIdentity,
+  events: readonly ActionEvent[],
+): ActionEventShardWriteResult {
+  const normalizedEvents = normalizeShardEvents(events);
+  if (normalizedEvents.length === 0) throw new Error("action event shard requires events");
+  validateShardProducer(identity, normalizedEvents);
+  const relativePath = actionEventShardRelativePath(identity, normalizedEvents);
+  const shardPath = resolveInsideRoot(root, relativePath, "action event shard");
+  const content = normalizedEvents.map((event) => stableJson(event)).join("\n") + "\n";
+  const digest = sha256(content);
+  fs.mkdirSync(path.dirname(shardPath), { recursive: true });
+  const existing = fs.existsSync(shardPath) ? fs.readFileSync(shardPath, "utf8") : null;
+  if (existing !== null) {
+    return compareExistingShard(shardPath, relativePath, existing, digest, normalizedEvents.length);
+  }
+  const status = writeCreateOnlyFile(shardPath, content, () => {
+    if (!fs.existsSync(shardPath)) {
+      throw new Error(`action event shard appeared without readable content: ${shardPath}`);
+    }
+    compareExistingShard(
+      shardPath,
+      relativePath,
+      fs.readFileSync(shardPath, "utf8"),
+      digest,
+      normalizedEvents.length,
+    );
+  });
+  return {
+    status,
+    path: shardPath,
+    relativePath,
+    sha256: digest,
+    eventCount: normalizedEvents.length,
+  };
+}
+
+export function readActionEvent(filePath: string): ActionEvent {
+  const parsed = JSON.parse(fs.readFileSync(filePath, "utf8")) as unknown;
+  return validateActionEvent(parsed, filePath);
+}
+
+export function readActionEventShard(filePath: string): ActionEvent[] {
+  return fs
+    .readFileSync(filePath, "utf8")
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .map((line, index) =>
+      validateActionEvent(JSON.parse(line) as unknown, `${filePath}:${index + 1}`),
+    );
+}
+
+export function readSpooledActionEvents(root: string, repository: string): ActionEvent[] {
+  const directory = path.resolve(
+    root,
+    ".clawsweeper-repair",
+    "action-events",
+    slugForRepo(requiredRepo(repository)),
+  );
+  if (!fs.existsSync(directory)) return [];
+  return fs
+    .readdirSync(directory)
+    .filter((entry) => entry.endsWith(".json"))
+    .map((entry) => readActionEvent(path.join(directory, entry)))
+    .sort(compareEvents);
+}
+
+export function readAllSpooledActionEvents(root: string): ActionEvent[] {
+  const directory = path.resolve(root, ".clawsweeper-repair", "action-events");
+  if (!fs.existsSync(directory)) return [];
+  return fs
+    .readdirSync(directory, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory() && !entry.name.startsWith("_"))
+    .flatMap((entry) =>
+      fs
+        .readdirSync(path.join(directory, entry.name), { withFileTypes: true })
+        .filter((file) => file.isFile() && file.name.endsWith(".json"))
+        .map((file) => readActionEvent(path.join(directory, entry.name, file.name))),
+    )
+    .sort(compareEvents);
+}
+
+function actionEventSemanticValue(input: ActionEventInput) {
+  const producerRepository = requiredRepo(input.producer.repository);
+  const subjectRepository = requiredRepo(input.subject.repository);
+  const value = {
+    operation_id: requiredSha256(input.operationId, "action event operation id"),
+    attempt_id: requiredSha256(input.attemptId, "action event attempt id"),
+    parent_event_id:
+      input.parentEventId === undefined || input.parentEventId === null
+        ? null
+        : requiredSha256(input.parentEventId, "action event parent id"),
+    phase_seq: positiveInteger(input.phaseSeq, "action event phase sequence"),
+    idempotency_key_sha256: requiredSha256(
+      input.idempotencyKeySha256,
+      "action event idempotency key",
+    ),
+    event_type: machineText(input.type, "action event type"),
+    producer: {
+      repository: producerRepository,
+      sha: machineText(input.producer.sha, "action event producer sha"),
+      workflow: machineText(input.producer.workflow, "action event producer workflow", 128),
+      job: machineText(input.producer.job, "action event producer job", 128),
+      run_id: machineText(input.producer.runId, "action event producer run id"),
+      run_attempt: positiveInteger(input.producer.runAttempt, "action event producer run attempt"),
+      component: machineText(input.producer.component, "action event producer component"),
+    },
+    subject: normalizeSubject(input.subject, subjectRepository),
+    action: normalizeAction(input.action),
+    ...(input.learning ? { learning: normalizeLearning(input.learning) } : {}),
+    ...(input.evidence?.length
+      ? {
+          evidence: boundedEvidence(input.evidence).map(normalizeEvidence).sort(compareEvidence),
+        }
+      : {}),
+    ...(input.attributes ? { attributes: normalizeAttributes(input.attributes) } : {}),
+    privacy: normalizePrivacy(input.privacy),
+  };
+  return canonicalJsonValue(value) as Omit<
+    ActionEvent,
+    | "schema"
+    | "schema_version"
+    | "event_id"
+    | "event_key"
+    | "semantic_sha256"
+    | "occurred_at"
+    | "recorded_at"
+  >;
+}
+
+function normalizeSubject(subject: ActionEventSubject, repository: string) {
+  const kinds = new Set<ActionEventSubject["kind"]>(ACTION_EVENT_SUBJECT_KINDS);
+  if (!kinds.has(subject.kind))
+    throw new Error(`invalid action event subject kind: ${subject.kind}`);
+  const number =
+    subject.number === undefined
+      ? undefined
+      : positiveInteger(subject.number, "action event subject number");
+  return {
+    repository,
+    kind: subject.kind,
+    ...(subject.subjectId
+      ? {
+          subject_id: machineText(subject.subjectId, "action event subject id"),
+        }
+      : {}),
+    ...(number !== undefined ? { number } : {}),
+    ...(subject.clusterId
+      ? {
+          cluster_id: machineText(subject.clusterId, "action event subject cluster id"),
+        }
+      : {}),
+    ...(subject.sourceRevision
+      ? {
+          source_revision: machineText(
+            subject.sourceRevision,
+            "action event subject source revision",
+          ),
+        }
+      : {}),
+    ...(subject.recordPath
+      ? {
+          record_path: relativeDataPath(subject.recordPath, "action event subject record path"),
+        }
+      : {}),
+  };
+}
+
+function normalizeAction(action: ActionEventAction) {
+  return {
+    name: machineText(action.name, "action event action name"),
+    status: machineText(action.status, "action event action status"),
+    ...(action.reasonCode
+      ? { reason_code: machineText(action.reasonCode, "action event action reason code") }
+      : {}),
+    retryable: Boolean(action.retryable),
+    mutation: Boolean(action.mutation),
+  };
+}
+
+function normalizeLearning(learning: ActionEventLearning) {
+  if (
+    learning.confidence !== undefined &&
+    (!Number.isFinite(learning.confidence) || learning.confidence < 0 || learning.confidence > 1)
+  ) {
+    throw new Error("action event learning confidence must be between 0 and 1");
+  }
+  return {
+    category: machineText(learning.category, "action event learning category"),
+    signal: machineText(learning.signal, "action event learning signal"),
+    ...(learning.ruleId
+      ? { rule_id: machineText(learning.ruleId, "action event learning rule id") }
+      : {}),
+    ...(learning.confidence !== undefined ? { confidence: learning.confidence } : {}),
+  };
+}
+
+function normalizeEvidence(evidence: ActionEventEvidence) {
+  const digest = evidence.sha256
+    ? requiredSha256(evidence.sha256, "action event evidence sha256")
+    : undefined;
+  return {
+    kind: machineText(evidence.kind, "action event evidence kind"),
+    ...(digest ? { sha256: digest } : {}),
+    ...(evidence.reportPath
+      ? {
+          report_path: relativeDataPath(evidence.reportPath, "action event evidence report path"),
+        }
+      : {}),
+    ...(evidence.runUrl
+      ? { run_url: publicUrl(evidence.runUrl, "action event evidence run URL") }
+      : {}),
+    ...(evidence.snapshotId
+      ? {
+          snapshot_id: machineText(evidence.snapshotId, "action event evidence snapshot id"),
+        }
+      : {}),
+  };
+}
+
+function boundedEvidence(evidence: readonly ActionEventEvidence[]): readonly ActionEventEvidence[] {
+  if (evidence.length > MAX_EVENT_COLLECTION_ITEMS) {
+    throw new Error(`action event evidence exceeds ${MAX_EVENT_COLLECTION_ITEMS} entries`);
+  }
+  return evidence;
+}
+
+function compareEvidence(
+  left: ReturnType<typeof normalizeEvidence>,
+  right: ReturnType<typeof normalizeEvidence>,
+): number {
+  return stableJson(left).localeCompare(stableJson(right));
+}
+
+function normalizeAttributes(attributes: ActionEventAttributes) {
+  const normalized: Record<string, ActionEventScalar | ActionEventScalar[]> = {};
+  const allowedKeys = new Set<string>(ACTION_EVENT_ATTRIBUTE_KEYS);
+  for (const [key, raw] of Object.entries(attributes).sort(([left], [right]) =>
+    left.localeCompare(right),
+  )) {
+    const normalizedKey = machineText(key, "action event attribute key");
+    if (!allowedKeys.has(normalizedKey)) {
+      throw new Error(`action event attribute is not allowlisted: ${normalizedKey}`);
+    }
+    const values = Array.isArray(raw) ? raw : [raw];
+    if (values.length > MAX_EVENT_COLLECTION_ITEMS) {
+      throw new Error(
+        `action event attribute ${normalizedKey} exceeds ${MAX_EVENT_COLLECTION_ITEMS} values`,
+      );
+    }
+    const normalizedValues = values.map((value) =>
+      normalizeAttributeScalar(normalizedKey as ActionEventAttributeKey, value),
+    );
+    normalized[normalizedKey] = Array.isArray(raw) ? normalizedValues : normalizedValues[0]!;
+  }
+  return normalized;
+}
+
+function normalizeAttributeScalar(
+  key: ActionEventAttributeKey,
+  value: ActionEventScalar,
+): ActionEventScalar {
+  if (typeof value !== "string" && typeof value !== "number" && typeof value !== "boolean") {
+    throw new Error(`action event attribute ${key} must be a scalar`);
+  }
+  if (POSITIVE_INTEGER_ATTRIBUTE_KEYS.has(key)) {
+    return positiveIntegerValue(value, `action event attribute ${key}`);
+  }
+  if (NON_NEGATIVE_INTEGER_ATTRIBUTE_KEYS.has(key)) {
+    return nonNegativeIntegerValue(value, `action event attribute ${key}`);
+  }
+  if (BOOLEAN_ATTRIBUTE_KEYS.has(key)) {
+    if (typeof value !== "boolean") {
+      throw new Error(`action event attribute ${key} must be a boolean`);
+    }
+    return value;
+  }
+  if (UNIT_INTERVAL_ATTRIBUTE_KEYS.has(key)) {
+    if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > 1) {
+      throw new Error(`action event attribute ${key} must be between 0 and 1`);
+    }
+    return value;
+  }
+  if (MACHINE_TEXT_ATTRIBUTE_KEYS.has(key)) {
+    if (typeof value !== "string") {
+      throw new Error(`action event attribute ${key} must be machine-readable text`);
+    }
+    const normalized = machineText(value, `action event attribute ${key}`);
+    if (containsConfidentialIdentifier(normalized)) {
+      throw new Error(`action event attribute ${key} contains a confidential identifier`);
+    }
+    return normalized;
+  }
+  throw new Error(`action event attribute has no value contract: ${key}`);
+}
+
+function normalizePrivacy(privacy: ActionEventPrivacy | undefined) {
+  const value = privacy ?? {
+    classification: "internal" as const,
+    redactionVersion: "v1",
+    fieldsDropped: [],
+  };
+  const classification = String(value.classification);
+  if (classification !== "public" && classification !== "internal") {
+    throw new Error(`invalid action event privacy classification: ${classification}`);
+  }
+  if (value.fieldsDropped.length > MAX_EVENT_COLLECTION_ITEMS) {
+    throw new Error(
+      `action event privacy fieldsDropped exceeds ${MAX_EVENT_COLLECTION_ITEMS} entries`,
+    );
+  }
+  return {
+    classification,
+    redaction_version: machineText(
+      value.redactionVersion,
+      "action event privacy redaction version",
+    ),
+    fields_dropped: [
+      ...new Set(value.fieldsDropped.map((field) => machineText(field, "field"))),
+    ].sort(),
+  };
+}
+
+function normalizeShardEvents(events: readonly ActionEvent[]): ActionEvent[] {
+  const byId = new Map<string, ActionEvent>();
+  for (const event of events) {
+    const validated = validateActionEvent(event, `event:${event.event_id}`);
+    const existing = byId.get(validated.event_id);
+    if (existing && existing.semantic_sha256 !== validated.semantic_sha256) {
+      throw new ActionEventConflictError({
+        eventPath: validated.event_id,
+        expectedSemanticSha256: existing.semantic_sha256,
+        actualSemanticSha256: validated.semantic_sha256,
+      });
+    }
+    if (
+      existing &&
+      (existing.occurred_at !== validated.occurred_at ||
+        existing.recorded_at !== validated.recorded_at ||
+        stableJson(existing) !== stableJson(validated))
+    ) {
+      throw new Error(`action event ${validated.event_id} has conflicting duplicate metadata`);
+    }
+    byId.set(validated.event_id, existing ?? validated);
+  }
+  return [...byId.values()].sort(compareEvents);
+}
+
+function normalizeShardIdentity(identity: ActionEventShardIdentity) {
+  return {
+    producer: machineText(identity.producer, "action event shard producer"),
+    workflow: machineText(identity.workflow, "action event shard workflow", 128),
+    job: machineText(identity.job, "action event shard job", 128),
+    runId: machineText(identity.runId, "action event shard run id"),
+    runAttempt: positiveInteger(identity.runAttempt, "action event shard run attempt"),
+    partitionDate: requiredCalendarDate(
+      identity.partitionDate,
+      "action event shard partition date",
+    ),
+  };
+}
+
+function validateShardProducer(
+  identity: ActionEventShardIdentity,
+  events: readonly ActionEvent[],
+): void {
+  const normalized = normalizeShardIdentity(identity);
+  for (const event of events) {
+    if (
+      event.producer.component !== normalized.producer ||
+      event.producer.workflow !== normalized.workflow ||
+      event.producer.job !== normalized.job ||
+      event.producer.run_id !== normalized.runId ||
+      event.producer.run_attempt !== normalized.runAttempt
+    ) {
+      throw new Error(`action event ${event.event_id} does not match shard producer identity`);
+    }
+  }
+}
+
+function compareEvents(left: ActionEvent, right: ActionEvent): number {
+  return (
+    compareActionEventTimestamps(left.occurred_at, right.occurred_at) ||
+    left.event_id.localeCompare(right.event_id)
+  );
+}
+
+export function compareActionEventTimestamps(left: string, right: string): number {
+  const leftInstant = actionEventTimestampInstant(left);
+  const rightInstant = actionEventTimestampInstant(right);
+  if (leftInstant.epochSecond !== rightInstant.epochSecond) {
+    return leftInstant.epochSecond < rightInstant.epochSecond ? -1 : 1;
+  }
+  const length = Math.max(leftInstant.fraction.length, rightInstant.fraction.length);
+  for (let index = 0; index < length; index += 1) {
+    const leftDigit = leftInstant.fraction.charCodeAt(index) || 48;
+    const rightDigit = rightInstant.fraction.charCodeAt(index) || 48;
+    if (leftDigit !== rightDigit) return leftDigit < rightDigit ? -1 : 1;
+  }
+  return 0;
+}
+
+function actionEventTimestampInstant(value: string): {
+  epochSecond: bigint;
+  fraction: string;
+} {
+  const match = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d+))?(Z|[+-]\d{2}:\d{2})$/.exec(
+    value,
+  );
+  if (!match) throw new Error(`invalid action event timestamp: ${value}`);
+  const epochMilliseconds = Date.parse(`${match[1]}${match[3]}`);
+  if (!Number.isFinite(epochMilliseconds)) {
+    throw new Error(`invalid action event timestamp: ${value}`);
+  }
+  return {
+    epochSecond: BigInt(epochMilliseconds / 1000),
+    fraction: match[2] ?? "",
+  };
+}
+
+function compareExistingActionEvent(
+  eventPath: string,
+  relativePath: string,
+  existing: ActionEvent,
+  candidate: ActionEvent,
+  occurredAtWasGenerated = false,
+): ActionEventWriteResult {
+  if (
+    existing.event_id === candidate.event_id &&
+    existing.event_key === candidate.event_key &&
+    existing.semantic_sha256 === candidate.semantic_sha256 &&
+    (occurredAtWasGenerated || existing.occurred_at === candidate.occurred_at)
+  ) {
+    return { status: "unchanged", event: existing, path: eventPath, relativePath };
+  }
+  throw new ActionEventConflictError({
+    eventPath,
+    expectedSemanticSha256: existing.semantic_sha256,
+    actualSemanticSha256: candidate.semantic_sha256,
+  });
+}
+
+function compareExistingShard(
+  shardPath: string,
+  relativePath: string,
+  existing: string,
+  candidateSha256: string,
+  eventCount: number,
+): ActionEventShardWriteResult {
+  const existingSha256 = sha256(existing);
+  if (existingSha256 !== candidateSha256) {
+    throw new ActionEventShardConflictError({
+      shardPath,
+      expectedSha256: existingSha256,
+      actualSha256: candidateSha256,
+    });
+  }
+  return {
+    status: "unchanged",
+    path: shardPath,
+    relativePath,
+    sha256: existingSha256,
+    eventCount,
+  };
+}
+
+function readActionEventIfExists(filePath: string): ActionEvent | null {
+  return fs.existsSync(filePath) ? readActionEvent(filePath) : null;
+}
+
+function validateActionEvent(value: unknown, filePath: string): ActionEvent {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`invalid action event object: ${filePath}`);
+  }
+  const event = value as Partial<ActionEvent>;
+  if (
+    event.schema !== ACTION_EVENT_SCHEMA ||
+    event.schema_version !== 1 ||
+    typeof event.event_id !== "string" ||
+    typeof event.event_key !== "string" ||
+    typeof event.operation_id !== "string" ||
+    typeof event.attempt_id !== "string" ||
+    (event.parent_event_id !== null && typeof event.parent_event_id !== "string") ||
+    typeof event.phase_seq !== "number" ||
+    typeof event.idempotency_key_sha256 !== "string" ||
+    typeof event.semantic_sha256 !== "string" ||
+    !event.producer ||
+    !event.subject ||
+    !event.action ||
+    !event.privacy
+  ) {
+    throw new Error(`invalid action event schema: ${filePath}`);
+  }
+  const semantic = actionEventSemanticValue({
+    eventKey: event.event_key,
+    operationId: event.operation_id,
+    attemptId: event.attempt_id,
+    parentEventId: event.parent_event_id,
+    phaseSeq: event.phase_seq,
+    idempotencyKeySha256: event.idempotency_key_sha256,
+    type: String(event.event_type ?? ""),
+    producer: {
+      repository: String(event.producer.repository ?? ""),
+      sha: String(event.producer.sha ?? ""),
+      workflow: String(event.producer.workflow ?? ""),
+      job: String(event.producer.job ?? ""),
+      runId: String(event.producer.run_id ?? ""),
+      runAttempt: Number(event.producer.run_attempt ?? 0),
+      component: String(event.producer.component ?? ""),
+    },
+    subject: {
+      repository: String(event.subject.repository ?? ""),
+      kind: event.subject.kind,
+      ...(event.subject.subject_id ? { subjectId: event.subject.subject_id } : {}),
+      ...(event.subject.number !== undefined ? { number: event.subject.number } : {}),
+      ...(event.subject.cluster_id ? { clusterId: event.subject.cluster_id } : {}),
+      ...(event.subject.source_revision ? { sourceRevision: event.subject.source_revision } : {}),
+      ...(event.subject.record_path ? { recordPath: event.subject.record_path } : {}),
+    },
+    action: {
+      name: String(event.action.name ?? ""),
+      status: String(event.action.status ?? ""),
+      ...(event.action.reason_code ? { reasonCode: event.action.reason_code } : {}),
+      retryable: Boolean(event.action.retryable),
+      mutation: Boolean(event.action.mutation),
+    },
+    ...(event.learning
+      ? {
+          learning: {
+            category: String(event.learning.category ?? ""),
+            signal: String(event.learning.signal ?? ""),
+            ...(event.learning.rule_id ? { ruleId: event.learning.rule_id } : {}),
+            ...(event.learning.confidence !== undefined
+              ? { confidence: event.learning.confidence }
+              : {}),
+          },
+        }
+      : {}),
+    ...(event.evidence
+      ? {
+          evidence: event.evidence.map((entry) => ({
+            kind: entry.kind,
+            ...(entry.sha256 ? { sha256: entry.sha256 } : {}),
+            ...(entry.report_path ? { reportPath: entry.report_path } : {}),
+            ...(entry.run_url ? { runUrl: entry.run_url } : {}),
+            ...(entry.snapshot_id ? { snapshotId: entry.snapshot_id } : {}),
+          })),
+        }
+      : {}),
+    ...(event.attributes ? { attributes: event.attributes } : {}),
+    privacy: {
+      classification: event.privacy.classification,
+      redactionVersion: event.privacy.redaction_version,
+      fieldsDropped: event.privacy.fields_dropped,
+    },
+  });
+  if (actionEventId(semantic.subject.repository, event.event_key) !== event.event_id) {
+    throw new Error(`invalid action event identity: ${filePath}`);
+  }
+  if (sha256(stableJson(semantic)) !== event.semantic_sha256) {
+    throw new Error(`invalid action event semantic digest: ${filePath}`);
+  }
+  const canonical = canonicalJsonValue({
+    schema: ACTION_EVENT_SCHEMA,
+    schema_version: 1,
+    event_id: event.event_id,
+    event_key: event.event_key,
+    semantic_sha256: event.semantic_sha256,
+    occurred_at: requiredTimestamp(String(event.occurred_at ?? ""), "action event occurred_at"),
+    recorded_at: requiredTimestamp(String(event.recorded_at ?? ""), "action event recorded_at"),
+    ...semantic,
+  }) as ActionEvent;
+  if (stableJson(canonical) !== stableJson(value)) {
+    throw new Error(`action event contains unknown or non-canonical fields: ${filePath}`);
+  }
+  return canonical;
+}
+
+function writeCreateOnlyFile(
+  destination: string,
+  content: string,
+  handleRace: () => void,
+): "created" | "unchanged" {
+  const temporaryPath = `${destination}.${process.pid}.${randomUUID()}.tmp`;
+  try {
+    fs.writeFileSync(temporaryPath, content, { encoding: "utf8", flag: "wx" });
+    try {
+      fs.linkSync(temporaryPath, destination);
+      return "created";
+    } catch (error) {
+      if (!isAlreadyExistsError(error)) throw error;
+      handleRace();
+      return "unchanged";
+    }
+  } finally {
+    fs.rmSync(temporaryPath, { force: true });
+  }
+}
+
+function resolveInsideRoot(root: string, relativePath: string, label: string): string {
+  const rootPath = path.resolve(root);
+  const destination = path.resolve(rootPath, relativePath);
+  if (destination !== rootPath && !destination.startsWith(`${rootPath}${path.sep}`)) {
+    throw new Error(`refusing to write ${label} outside root: ${relativePath}`);
+  }
+  return destination;
+}
+
+function relativeDataPath(value: string, label: string): string {
+  const normalized = boundedText(value, label, 512).replaceAll("\\", "/").replace(/^\.\//, "");
+  if (
+    !normalized ||
+    path.posix.isAbsolute(normalized) ||
+    /^[A-Za-z]:\//.test(normalized) ||
+    normalized.split("/").includes("..")
+  ) {
+    throw new Error(`${label} must be a repository-relative path`);
+  }
+  return normalized;
+}
+
+function publicUrl(value: string, label: string): string {
+  const normalized = requiredText(value, label);
+  const parsed = new URL(normalized);
+  if (
+    parsed.protocol !== "https:" ||
+    parsed.username ||
+    parsed.password ||
+    parsed.port ||
+    parsed.search ||
+    parsed.hash
+  ) {
+    throw new Error(`${label} must be a credential-free HTTPS URL`);
+  }
+  if (
+    parsed.hostname !== "github.com" ||
+    !/^\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/actions\/runs\/[0-9]+$/.test(parsed.pathname)
+  ) {
+    throw new Error(`${label} must identify a public github.com Actions run`);
+  }
+  return parsed.toString();
+}
+
+function requiredRepo(value: string): string {
+  const repository = normalizeRepo(requiredText(value, "action event repository"));
+  if (!/^[a-z0-9_][a-z0-9_.-]*\/[a-z0-9_][a-z0-9_.-]*$/.test(repository)) {
+    throw new Error(`invalid action event repository: ${value}`);
+  }
+  return repository;
+}
+
+function machineText(value: string, label: string, maxLength = 256): string {
+  const normalized = boundedText(value, label, maxLength);
+  if (!/^[A-Za-z0-9][A-Za-z0-9_.:/@+-]*$/.test(normalized)) {
+    throw new Error(`${label} must be machine-readable text`);
+  }
+  if (containsConfidentialIdentifier(normalized)) {
+    throw new Error(`${label} contains a confidential identifier`);
+  }
+  return normalized;
+}
+
+function eventScope(value: string): string {
+  const normalized = boundedText(value, "action event scope", 128);
+  if (!/^[A-Za-z0-9][A-Za-z0-9_.+-]*$/.test(normalized)) {
+    throw new Error("action event scope must be machine-readable text");
+  }
+  return normalized;
+}
+
+function requiredEventKey(value: string): string {
+  const normalized = boundedText(value, "action event key", 193);
+  if (!/^[A-Za-z0-9][A-Za-z0-9_.+-]{0,127}:[a-f0-9]{64}$/.test(normalized)) {
+    throw new Error("action event key must be generated from a machine-readable scope and digest");
+  }
+  return normalized;
+}
+
+function requiredText(value: string, label: string): string {
+  const normalized = value.trim();
+  if (!normalized) throw new Error(`${label} is required`);
+  for (let index = 0; index < normalized.length; index += 1) {
+    const code = normalized.charCodeAt(index);
+    if (code <= 31 || code === 127) {
+      throw new Error(`${label} contains control characters`);
+    }
+  }
+  return normalized;
+}
+
+function boundedText(value: string, label: string, maxLength: number): string {
+  const normalized = requiredText(value, label);
+  if (normalized.length > maxLength) {
+    throw new Error(`${label} exceeds ${maxLength} characters`);
+  }
+  return normalized;
+}
+
+function requiredTimestamp(value: string, label: string): string {
+  const normalized = requiredText(value, label);
+  const match =
+    /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(Z|[+-](\d{2}):(\d{2}))$/.exec(
+      normalized,
+    );
+  if (!match) {
+    throw new Error(`${label} must be an ISO date-time timestamp`);
+  }
+  const [
+    ,
+    yearText,
+    monthText,
+    dayText,
+    hourText,
+    minuteText,
+    secondText,
+    ,
+    offsetHour,
+    offsetMinute,
+  ] = match;
+  const year = Number(yearText);
+  const month = Number(monthText);
+  const day = Number(dayText);
+  const hour = Number(hourText);
+  const minute = Number(minuteText);
+  const second = Number(secondText);
+  const calendar = new Date(Date.UTC(year, month - 1, day));
+  const validCalendar =
+    year >= 1 &&
+    calendar.getUTCFullYear() === year &&
+    calendar.getUTCMonth() === month - 1 &&
+    calendar.getUTCDate() === day;
+  const validClock =
+    hour <= 23 &&
+    minute <= 59 &&
+    second <= 59 &&
+    (offsetHour === undefined || Number(offsetHour) <= 23) &&
+    (offsetMinute === undefined || Number(offsetMinute) <= 59);
+  if (!validCalendar || !validClock || !Number.isFinite(Date.parse(normalized))) {
+    throw new Error(`${label} must be an ISO date-time timestamp`);
+  }
+  return normalized;
+}
+
+function requiredCalendarDate(value: string, label: string): string {
+  const normalized = requiredText(value, label);
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(normalized);
+  if (!match) throw new Error(`${label} must be an ISO calendar date`);
+  const [, yearText, monthText, dayText] = match;
+  const year = Number(yearText);
+  const month = Number(monthText);
+  const day = Number(dayText);
+  const calendar = new Date(Date.UTC(year, month - 1, day));
+  if (
+    year < 1 ||
+    calendar.getUTCFullYear() !== year ||
+    calendar.getUTCMonth() !== month - 1 ||
+    calendar.getUTCDate() !== day
+  ) {
+    throw new Error(`${label} must be an ISO calendar date`);
+  }
+  return normalized;
+}
+
+function positiveInteger(value: number, label: string): number {
+  if (!Number.isSafeInteger(value) || value < 1) {
+    throw new Error(`${label} must be a positive integer`);
+  }
+  return value;
+}
+
+function positiveIntegerValue(value: ActionEventScalar, label: string): number {
+  if (typeof value !== "number") throw new Error(`${label} must be a positive integer`);
+  return positiveInteger(value, label);
+}
+
+function nonNegativeIntegerValue(value: ActionEventScalar, label: string): number {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
+    throw new Error(`${label} must be a non-negative integer`);
+  }
+  return value;
+}
+
+function requiredSha256(value: string, label: string): string {
+  const normalized = value.trim().toLowerCase();
+  if (!/^[a-f0-9]{64}$/.test(normalized)) {
+    throw new Error(`${label} must be a lowercase SHA-256 digest`);
+  }
+  return normalized;
+}
+
+function safePathSegment(value: string): string {
+  const safe = value.replace(/[^A-Za-z0-9_.-]+/g, "-").replace(/^-+|-+$/g, "");
+  return safe || "unknown";
+}
+
+function canonicalJsonValue(value: unknown): unknown {
+  const json = stableJson(value);
+  if (typeof json !== "string") throw new Error("action event data must be JSON serializable");
+  return JSON.parse(json) as unknown;
+}
+
+function sha256(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function containsConfidentialIdentifier(value: string): boolean {
+  if (
+    [
+      /\/(?:Users|home|private|tmp)\//,
+      /\\Users\\/,
+      /BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY/,
+      /(?:ghp_|github_pat_|sk-)[A-Za-z0-9_-]{16,}/,
+      /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/i,
+    ].some((pattern) => pattern.test(value))
+  ) {
+    return true;
+  }
+  if (privateHost(value)) return true;
+  const privateAddressCandidates = [
+    ...(value.match(/\b(?:\d{1,3}\.){3}\d{1,3}\b/g) ?? []),
+    ...(value.match(/\[[0-9a-f:]+\]/gi) ?? []),
+  ];
+  if (privateAddressCandidates.some(privateHost)) return true;
+  const embeddedUrls = value.match(/\b[A-Za-z][A-Za-z0-9+.-]*:\/\/[^\s"'<>]+/g) ?? [];
+  return embeddedUrls.some(privateUrl);
+}
+
+function privateUrl(value: string): boolean {
+  try {
+    const parsed = new URL(value);
+    return Boolean(
+      parsed.protocol === "file:" ||
+      parsed.username ||
+      parsed.password ||
+      privateHost(parsed.hostname),
+    );
+  } catch {
+    return false;
+  }
+}
+
+function privateHost(value: string): boolean {
+  const host = value
+    .trim()
+    .replace(/^\[|\]$/g, "")
+    .toLowerCase();
+  if (!host) return false;
+  if (host === "localhost" || host.endsWith(".local")) return true;
+  if (host === "::1" || /^(?:fc|fd)[0-9a-f]{2}:/.test(host) || /^fe[89ab][0-9a-f]:/.test(host)) {
+    return true;
+  }
+  const octets = host.split(".").map(Number);
+  if (
+    octets.length !== 4 ||
+    octets.some((part) => !Number.isInteger(part) || part < 0 || part > 255)
+  ) {
+    return false;
+  }
+  const [first, second] = octets as [number, number, number, number];
+  return (
+    first === 10 ||
+    first === 127 ||
+    (first === 169 && second === 254) ||
+    (first === 192 && second === 168) ||
+    (first === 172 && second >= 16 && second <= 31)
+  );
+}
+
+function isAlreadyExistsError(error: unknown): boolean {
+  return (
+    error instanceof Error && "code" in error && (error as NodeJS.ErrnoException).code === "EEXIST"
+  );
+}

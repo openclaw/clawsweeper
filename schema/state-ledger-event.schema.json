@@ -1,0 +1,696 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/openclaw/clawsweeper/blob/main/schema/state-ledger-event.schema.json",
+  "title": "ClawSweeper state ledger event",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "schema_version",
+    "event_id",
+    "event_key",
+    "operation_id",
+    "attempt_id",
+    "parent_event_id",
+    "phase_seq",
+    "idempotency_key_sha256",
+    "semantic_sha256",
+    "occurred_at",
+    "recorded_at",
+    "event_type",
+    "producer",
+    "subject",
+    "action",
+    "privacy"
+  ],
+  "properties": {
+    "schema": {
+      "const": "clawsweeper.state-ledger-event.v1"
+    },
+    "schema_version": {
+      "const": 1
+    },
+    "event_id": {
+      "$ref": "#/$defs/sha256"
+    },
+    "event_key": {
+      "$ref": "#/$defs/eventKey"
+    },
+    "operation_id": {
+      "$ref": "#/$defs/sha256",
+      "description": "Stable identity for one logical ClawSweeper operation across retries and workflow reruns."
+    },
+    "attempt_id": {
+      "$ref": "#/$defs/sha256",
+      "description": "Identity for one execution attempt within an operation."
+    },
+    "parent_event_id": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/sha256"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Causal parent event, or null for an operation or attempt root."
+    },
+    "phase_seq": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Caller-assigned phase ordinal within an attempt; parallel branches may share an ordinal."
+    },
+    "idempotency_key_sha256": {
+      "$ref": "#/$defs/sha256",
+      "description": "Stable side-effect identity that remains constant across retries of the same mutation."
+    },
+    "semantic_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "occurred_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "recorded_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "event_type": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/standardEventType"
+        },
+        {
+          "$ref": "#/$defs/machineText"
+        }
+      ],
+      "description": "A canonical phase type exported by src/action-ledger.ts, or a compatibility type already emitted by a v1 writer."
+    },
+    "producer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "sha", "workflow", "job", "run_id", "run_attempt", "component"],
+      "properties": {
+        "repository": {
+          "$ref": "#/$defs/repository"
+        },
+        "sha": {
+          "$ref": "#/$defs/machineText"
+        },
+        "workflow": {
+          "$ref": "#/$defs/machineText128"
+        },
+        "job": {
+          "$ref": "#/$defs/machineText128"
+        },
+        "run_id": {
+          "$ref": "#/$defs/machineText"
+        },
+        "run_attempt": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "component": {
+          "$ref": "#/$defs/machineText"
+        }
+      }
+    },
+    "subject": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "kind"],
+      "properties": {
+        "repository": {
+          "$ref": "#/$defs/repository"
+        },
+        "kind": {
+          "enum": [
+            "issue",
+            "pull_request",
+            "cluster",
+            "command",
+            "workflow",
+            "repository",
+            "notification",
+            "commit",
+            "queue_item",
+            "deployment",
+            "publication"
+          ]
+        },
+        "subject_id": {
+          "$ref": "#/$defs/machineText"
+        },
+        "number": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "cluster_id": {
+          "$ref": "#/$defs/machineText"
+        },
+        "source_revision": {
+          "$ref": "#/$defs/machineText"
+        },
+        "record_path": {
+          "$ref": "#/$defs/relativePath"
+        }
+      }
+    },
+    "action": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "status", "retryable", "mutation"],
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/machineText"
+        },
+        "status": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/canonicalActionStatus"
+            },
+            {
+              "$ref": "#/$defs/machineText"
+            }
+          ],
+          "description": "New phase writers use ACTION_EVENT_STATUSES. Compatibility readers accept prior v1 machine values."
+        },
+        "reason_code": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/canonicalReasonCode"
+            },
+            {
+              "$ref": "#/$defs/machineText"
+            }
+          ],
+          "description": "New phase writers use ACTION_EVENT_REASON_CODES. Compatibility readers accept prior v1 machine values."
+        },
+        "retryable": {
+          "type": "boolean"
+        },
+        "mutation": {
+          "type": "boolean"
+        }
+      }
+    },
+    "learning": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["category", "signal"],
+      "properties": {
+        "category": {
+          "$ref": "#/$defs/machineText"
+        },
+        "signal": {
+          "$ref": "#/$defs/machineText"
+        },
+        "rule_id": {
+          "$ref": "#/$defs/machineText"
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      }
+    },
+    "evidence": {
+      "type": "array",
+      "maxItems": 64,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind"],
+        "properties": {
+          "kind": {
+            "$ref": "#/$defs/machineText"
+          },
+          "sha256": {
+            "$ref": "#/$defs/sha256"
+          },
+          "report_path": {
+            "$ref": "#/$defs/relativePath"
+          },
+          "run_url": {
+            "type": "string",
+            "format": "uri",
+            "pattern": "^https://github\\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/actions/runs/[0-9]+$"
+          },
+          "snapshot_id": {
+            "$ref": "#/$defs/machineText"
+          }
+        }
+      }
+    },
+    "attributes": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "action_count": {
+          "$ref": "#/$defs/nonNegativeIntegerOrArray"
+        },
+        "attempt": {
+          "$ref": "#/$defs/positiveIntegerOrArray"
+        },
+        "batch_index": {
+          "$ref": "#/$defs/nonNegativeIntegerOrArray"
+        },
+        "batch_size": {
+          "$ref": "#/$defs/positiveIntegerOrArray"
+        },
+        "cache_mode": {
+          "$ref": "#/$defs/machineTextOrArray"
+        },
+        "cached": {
+          "$ref": "#/$defs/booleanOrArray"
+        },
+        "candidate_count": {
+          "$ref": "#/$defs/nonNegativeIntegerOrArray"
+        },
+        "closed_count": {
+          "$ref": "#/$defs/nonNegativeIntegerOrArray"
+        },
+        "comment_count": {
+          "$ref": "#/$defs/nonNegativeIntegerOrArray"
+        },
+        "completion_reason": {
+          "$ref": "#/$defs/machineTextOrArray"
+        },
+        "cost_usd_micros": {
+          "$ref": "#/$defs/nonNegativeIntegerOrArray"
+        },
+        "coverage_complete": {
+          "$ref": "#/$defs/booleanOrArray"
+        },
+        "coverage_ratio": {
+          "$ref": "#/$defs/unitIntervalOrArray"
+        },
+        "delivery_kind": {
+          "$ref": "#/$defs/machineTextOrArray"
+        },
+        "dispatch_kind": {
+          "$ref": "#/$defs/machineTextOrArray"
+        },
+        "duration_ms": {
+          "$ref": "#/$defs/nonNegativeIntegerOrArray"
+        },
+        "failed_count": {
+          "$ref": "#/$defs/nonNegativeIntegerOrArray"
+        },
+        "final_attempt": {
+          "$ref": "#/$defs/booleanOrArray"
+        },
+        "finding_count": {
+          "$ref": "#/$defs/nonNegativeIntegerOrArray"
+        },
+        "input_tokens": {
+          "$ref": "#/$defs/nonNegativeIntegerOrArray"
+        },
+        "item_count": {
+          "$ref": "#/$defs/nonNegativeIntegerOrArray"
+        },
+        "lease_duration_ms": {
+          "$ref": "#/$defs/nonNegativeIntegerOrArray"
+        },
+        "log_count": {
+          "$ref": "#/$defs/nonNegativeIntegerOrArray"
+        },
+        "log_kind": {
+          "$ref": "#/$defs/machineTextOrArray"
+        },
+        "model": {
+          "$ref": "#/$defs/machineTextOrArray"
+        },
+        "output_tokens": {
+          "$ref": "#/$defs/nonNegativeIntegerOrArray"
+        },
+        "partial": {
+          "$ref": "#/$defs/booleanOrArray"
+        },
+        "phase": {
+          "$ref": "#/$defs/machineTextOrArray"
+        },
+        "processed_count": {
+          "$ref": "#/$defs/nonNegativeIntegerOrArray"
+        },
+        "publication_kind": {
+          "$ref": "#/$defs/machineTextOrArray"
+        },
+        "published_count": {
+          "$ref": "#/$defs/nonNegativeIntegerOrArray"
+        },
+        "queue_depth": {
+          "$ref": "#/$defs/nonNegativeIntegerOrArray"
+        },
+        "queue_kind": {
+          "$ref": "#/$defs/machineTextOrArray"
+        },
+        "query_version": {
+          "$ref": "#/$defs/machineTextOrArray"
+        },
+        "reasoning_effort": {
+          "$ref": "#/$defs/machineTextOrArray"
+        },
+        "result_count": {
+          "$ref": "#/$defs/nonNegativeIntegerOrArray"
+        },
+        "retry_count": {
+          "$ref": "#/$defs/nonNegativeIntegerOrArray"
+        },
+        "retry_delay_ms": {
+          "$ref": "#/$defs/nonNegativeIntegerOrArray"
+        },
+        "review_mode": {
+          "$ref": "#/$defs/machineTextOrArray"
+        },
+        "shard_count": {
+          "$ref": "#/$defs/positiveIntegerOrArray"
+        },
+        "shard_index": {
+          "$ref": "#/$defs/nonNegativeIntegerOrArray"
+        },
+        "skipped_count": {
+          "$ref": "#/$defs/nonNegativeIntegerOrArray"
+        },
+        "state": {
+          "$ref": "#/$defs/machineTextOrArray"
+        },
+        "status_kind": {
+          "$ref": "#/$defs/machineTextOrArray"
+        },
+        "validation_count": {
+          "$ref": "#/$defs/nonNegativeIntegerOrArray"
+        },
+        "validation_kind": {
+          "$ref": "#/$defs/machineTextOrArray"
+        },
+        "wait_duration_ms": {
+          "$ref": "#/$defs/nonNegativeIntegerOrArray"
+        },
+        "warning_count": {
+          "$ref": "#/$defs/nonNegativeIntegerOrArray"
+        },
+        "work_kind": {
+          "$ref": "#/$defs/machineTextOrArray"
+        },
+        "workflow_phase": {
+          "$ref": "#/$defs/machineTextOrArray"
+        }
+      }
+    },
+    "privacy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["classification", "redaction_version", "fields_dropped"],
+      "properties": {
+        "classification": {
+          "enum": ["public", "internal"]
+        },
+        "redaction_version": {
+          "$ref": "#/$defs/machineText"
+        },
+        "fields_dropped": {
+          "type": "array",
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/machineText"
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "standardEventType": {
+      "enum": [
+        "review.started",
+        "review.completed",
+        "review.failed",
+        "review.published",
+        "command.claimed",
+        "command.dispatched",
+        "command.completed",
+        "command.failed",
+        "command.skipped",
+        "repair.planned",
+        "repair.executed",
+        "repair.validated",
+        "repair.reviewed",
+        "repair.published",
+        "apply.planned",
+        "apply.executed",
+        "apply.blocked",
+        "apply.failed",
+        "notification.sent",
+        "notification.failed",
+        "session.registered",
+        "session.phase_changed",
+        "session.completed",
+        "session.blocked",
+        "projection.failed",
+        "evidence.gitcrawl_bound",
+        "evidence.proof_stage_completed",
+        "review.batch",
+        "review.item",
+        "review.retry",
+        "review.log_publication",
+        "review.comment_publication",
+        "command.received",
+        "command.classified",
+        "command.claim_refreshed",
+        "command.progress",
+        "command.wait",
+        "command.requeue",
+        "command.recover",
+        "repair.intake",
+        "repair.dispatch",
+        "repair.plan",
+        "repair.execute",
+        "repair.validate",
+        "repair.review",
+        "repair.publish",
+        "repair.postflight",
+        "repair.requeue",
+        "repair.recover",
+        "repair.queue",
+        "repair.blocked",
+        "repair.failed",
+        "apply.action",
+        "apply.batch",
+        "apply.publish",
+        "workflow.attempt",
+        "dispatch.lifecycle",
+        "retry.lifecycle",
+        "queue.lifecycle",
+        "notification.delivery",
+        "notification.planned",
+        "notification.skipped",
+        "notification.retried",
+        "publication.lifecycle",
+        "status.lifecycle",
+        "dashboard.lifecycle",
+        "session.lifecycle",
+        "session.cancelled",
+        "gitcrawl.snapshot",
+        "gitcrawl.query",
+        "gitcrawl.binding",
+        "proof.stage",
+        "proof.binding"
+      ]
+    },
+    "canonicalActionStatus": {
+      "enum": [
+        "blocked",
+        "cached",
+        "cancelled",
+        "claimed",
+        "classified",
+        "completed",
+        "dispatched",
+        "executed",
+        "failed",
+        "in_progress",
+        "planned",
+        "published",
+        "queued",
+        "received",
+        "recovered",
+        "refreshed",
+        "registered",
+        "released",
+        "requeued",
+        "retried",
+        "scheduled",
+        "sent",
+        "skipped",
+        "started",
+        "unchanged",
+        "validated",
+        "waiting",
+        "yielded"
+      ]
+    },
+    "canonicalReasonCode": {
+      "enum": [
+        "accepted",
+        "already_complete",
+        "already_exists",
+        "already_processed",
+        "append_failed",
+        "authorization_failed",
+        "cancelled",
+        "capacity_exhausted",
+        "completed",
+        "content_unchanged",
+        "dependency_pending",
+        "dry_run",
+        "duplicate",
+        "exception",
+        "invalid_input",
+        "lease_active",
+        "manual",
+        "mutation_guard",
+        "no_changes",
+        "not_applicable",
+        "not_found",
+        "policy_blocked",
+        "published",
+        "rate_limited",
+        "recovered_stale_claim",
+        "retry_exhausted",
+        "retry_scheduled",
+        "runtime_budget",
+        "selected",
+        "source_changed",
+        "stale",
+        "state_changed",
+        "superseded",
+        "timeout",
+        "unavailable",
+        "validation_failed",
+        "worker_lost",
+        "workflow_failed"
+      ]
+    },
+    "machineText": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:/@+\\-]*$"
+    },
+    "machineText128": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:/@+\\-]*$"
+    },
+    "eventKey": {
+      "type": "string",
+      "minLength": 66,
+      "maxLength": 193,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.+\\-]{0,127}:[a-f0-9]{64}$"
+    },
+    "repository": {
+      "type": "string",
+      "pattern": "^[a-z0-9_][a-z0-9_.-]*/[a-z0-9_][a-z0-9_.-]*$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "relativePath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "not": {
+        "anyOf": [
+          {
+            "pattern": "^(?:/|[A-Za-z]:[\\\\/])"
+          },
+          {
+            "pattern": "(?:^|[\\\\/])\\.\\.(?:[\\\\/]|$)"
+          }
+        ]
+      }
+    },
+    "machineTextOrArray": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/machineText"
+        },
+        {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "$ref": "#/$defs/machineText"
+          }
+        }
+      ]
+    },
+    "positiveIntegerOrArray": {
+      "oneOf": [
+        {
+          "type": "integer",
+          "minimum": 1
+        },
+        {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "type": "integer",
+            "minimum": 1
+          }
+        }
+      ]
+    },
+    "nonNegativeIntegerOrArray": {
+      "oneOf": [
+        {
+          "type": "integer",
+          "minimum": 0
+        },
+        {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      ]
+    },
+    "booleanOrArray": {
+      "oneOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "type": "boolean"
+          }
+        }
+      ]
+    },
+    "unitIntervalOrArray": {
+      "oneOf": [
+        {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          }
+        }
+      ]
+    }
+  }
+}
