@@ -27,7 +27,7 @@ checkpoint, and status-only commits are intentionally omitted.
   capabilities, or notes after migration and before Worker deployment. The
   protected
   environment must explicitly own the deployment authority and bind the
-  production token fingerprint; optional custom-route proof uses Cloudflare
+  production token fingerprint; mandatory custom-route proof uses Cloudflare
   Access service-token headers, and failed or stale deployments roll back only
   the Worker to the exact prior stable version; D1 migrations remain applied.
   Environment variables resolve only

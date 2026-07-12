@@ -198,7 +198,8 @@ test("crawl-remote release is maintainer-bound across two fresh runners", () => 
   assert.equal(authority.env?.DEPLOY_AUTHORITY, "${{ vars.CRAWL_REMOTE_DEPLOY_AUTHORITY }}");
   assert.equal(authority.env?.CUSTOM_ROUTE_PROOF, "${{ vars.CRAWL_REMOTE_CUSTOM_ROUTE_PROOF }}");
   assert.match(authority.run ?? "", /DEPLOY_AUTHORITY.*clawsweeper-v1/s);
-  assert.match(authority.run ?? "", /disabled.*access-service-token/s);
+  assert.match(authority.run ?? "", /CUSTOM_ROUTE_PROOF.*access-service-token/s);
+  assert.doesNotMatch(authority.run ?? "", /disabled/);
   assert.equal(
     proofCredentials.env?.CF_ACCESS_CLIENT_ID,
     "${{ secrets.CRAWL_REMOTE_ACCESS_CLIENT_ID }}",
@@ -370,10 +371,10 @@ test("protected environment must explicitly own the deployment authority", () =>
     });
   }
 
-  assert.equal(verify("clawsweeper-v1", "disabled").status, 0);
   assert.equal(verify("clawsweeper-v1", "access-service-token").status, 0);
-  assert.notEqual(verify("", "disabled").status, 0);
-  assert.notEqual(verify("crawl-remote-v1", "disabled").status, 0);
+  assert.notEqual(verify("clawsweeper-v1", "disabled").status, 0);
+  assert.notEqual(verify("", "access-service-token").status, 0);
+  assert.notEqual(verify("crawl-remote-v1", "access-service-token").status, 0);
   assert.notEqual(verify("clawsweeper-v1", "").status, 0);
   assert.notEqual(verify("clawsweeper-v1", "public").status, 0);
 });
@@ -453,9 +454,9 @@ esac
   }
 
   try {
-    assert.equal(verify("disabled").status, 0);
     const validCredentials = verify("access-service-token", "client-id", "client-secret");
     assert.equal(validCredentials.status, 0, validCredentials.stdout + validCredentials.stderr);
+    assert.notEqual(verify("disabled", "client-id", "client-secret").status, 0);
     assert.notEqual(verify("access-service-token", "", "client-secret").status, 0);
     assert.notEqual(verify("access-service-token", "client-id", "").status, 0);
     assert.notEqual(verify("access-service-token", "client-id", "wrong-secret").status, 0);
@@ -2243,7 +2244,7 @@ test("production proof polls semantic state and binds both responses to the rele
   assert.doesNotMatch(run, /curl .*--retry/s);
 });
 
-test("production semantic validator always requires workers.dev and gates the Access route", () => {
+test("production semantic validator requires workers.dev and the Access route", () => {
   const run = step(deploy, "Poll exact production release").run ?? "";
   const validator = run.match(/node --input-type=module <<'NODE'\n([\s\S]*?)\nNODE/)?.[1];
   assert.ok(validator, "missing inline production semantic validator");
@@ -2272,7 +2273,7 @@ test("production semantic validator always requires workers.dev and gates the Ac
     snapshotState: "dormant" | "active",
     workersDev: EndpointResponse = {},
     productionRoute: EndpointResponse = {},
-    customRouteProof: "disabled" | "access-service-token" = "disabled",
+    customRouteProof: "access-service-token" = "access-service-token",
   ) {
     const defaultCapabilities = [
       ...(observationState === "active" ? [observationCapability] : []),
@@ -2325,29 +2326,15 @@ test("production semantic validator always requires workers.dev and gates the Ac
     assert.equal(validate("active", "active").status, 0);
     assert.equal(validate("active", "dormant").status, 0);
     assert.notEqual(validate("dormant", "dormant", { healthSha: "b".repeat(40) }).status, 0);
-    assert.equal(validate("dormant", "dormant", {}, { contractSha: "b".repeat(40) }).status, 0);
-    assert.notEqual(
-      validate("dormant", "dormant", {}, { contractSha: "b".repeat(40) }, "access-service-token")
-        .status,
-      0,
-    );
-    assert.equal(validate("dormant", "dormant", {}, {}, "access-service-token").status, 0);
+    assert.notEqual(validate("dormant", "dormant", {}, { contractSha: "b".repeat(40) }).status, 0);
+    assert.equal(validate("dormant", "dormant", {}, {}).status, 0);
     assert.notEqual(validate("active", "dormant", { capabilities: [] }).status, 0);
     assert.notEqual(validate("dormant", "active", { capabilities: [] }).status, 0);
     assert.notEqual(
-      validate(
-        "dormant",
-        "dormant",
-        {},
-        { capabilities: [observationCapability] },
-        "access-service-token",
-      ).status,
+      validate("dormant", "dormant", {}, { capabilities: [observationCapability] }).status,
       0,
     );
-    assert.notEqual(
-      validate("dormant", "dormant", {}, { capabilities: null }, "access-service-token").status,
-      0,
-    );
+    assert.notEqual(validate("dormant", "dormant", {}, { capabilities: null }).status, 0);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }

@@ -647,8 +647,8 @@ jobs:
             echo "::error::crawl-remote production authority is not assigned to ClawSweeper."
             exit 1
           fi
-          if [[ "$CUSTOM_ROUTE_PROOF" != "disabled" && "$CUSTOM_ROUTE_PROOF" != "access-service-token" ]]; then
-            echo "::error::CRAWL_REMOTE_CUSTOM_ROUTE_PROOF must be disabled or access-service-token."
+          if [[ "$CUSTOM_ROUTE_PROOF" != "access-service-token" ]]; then
+            echo "::error::CRAWL_REMOTE_CUSTOM_ROUTE_PROOF must be access-service-token."
             exit 1
           fi
 
@@ -661,39 +661,42 @@ jobs:
           CUSTOM_ROUTE_PROOF: ${{ vars.CRAWL_REMOTE_CUSTOM_ROUTE_PROOF }}
         run: |
           unset BASH_ENV ENV CDPATH GLOBIGNORE NODE_OPTIONS
-          if [[ "$CUSTOM_ROUTE_PROOF" == "access-service-token" ]]; then
-            if [[ -z "$CF_ACCESS_CLIENT_ID" ]]; then
-              echo "::error::access-service-token proof requires CRAWL_REMOTE_ACCESS_CLIENT_ID."
-              exit 1
-            fi
-            if [[ -z "$CF_ACCESS_CLIENT_SECRET" ]]; then
-              echo "::error::access-service-token proof requires CRAWL_REMOTE_ACCESS_CLIENT_SECRET."
-              exit 1
-            fi
+          if [[ "$CUSTOM_ROUTE_PROOF" != "access-service-token" ]]; then
+            echo "::error::CRAWL_REMOTE_CUSTOM_ROUTE_PROOF must be access-service-token."
+            exit 1
+          fi
+          if [[ -z "$CF_ACCESS_CLIENT_ID" ]]; then
+            echo "::error::access-service-token proof requires CRAWL_REMOTE_ACCESS_CLIENT_ID."
+            exit 1
+          fi
+          if [[ -z "$CF_ACCESS_CLIENT_SECRET" ]]; then
+            echo "::error::access-service-token proof requires CRAWL_REMOTE_ACCESS_CLIENT_SECRET."
+            exit 1
+          fi
 
-            rm -f \
-              "$ACCESS_PREFLIGHT_HEALTH_RESPONSE" \
-              "$ACCESS_PREFLIGHT_CONTRACT_RESPONSE"
-            curl --fail-with-body --silent --show-error \
-              --connect-timeout 10 \
-              --max-time 20 \
-              --max-filesize 1048576 \
-              --header "accept: application/json" \
-              --header "cache-control: no-cache" \
-              --header "CF-Access-Client-Id: $CF_ACCESS_CLIENT_ID" \
-              --header "CF-Access-Client-Secret: $CF_ACCESS_CLIENT_SECRET" \
-              --output "$ACCESS_PREFLIGHT_HEALTH_RESPONSE" \
-              "$PRODUCTION_ROUTE_URL/health?access_preflight=${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-            curl --fail-with-body --silent --show-error \
-              --connect-timeout 10 \
-              --max-time 20 \
-              --max-filesize 1048576 \
-              --header "accept: application/json" \
-              --header "cache-control: no-cache" \
-              --header "CF-Access-Client-Id: $CF_ACCESS_CLIENT_ID" \
-              --header "CF-Access-Client-Secret: $CF_ACCESS_CLIENT_SECRET" \
-              --output "$ACCESS_PREFLIGHT_CONTRACT_RESPONSE" \
-              "$PRODUCTION_ROUTE_URL/v1/contract?access_preflight=${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          rm -f \
+            "$ACCESS_PREFLIGHT_HEALTH_RESPONSE" \
+            "$ACCESS_PREFLIGHT_CONTRACT_RESPONSE"
+          curl --fail-with-body --silent --show-error \
+            --connect-timeout 10 \
+            --max-time 20 \
+            --max-filesize 1048576 \
+            --header "accept: application/json" \
+            --header "cache-control: no-cache" \
+            --header "CF-Access-Client-Id: $CF_ACCESS_CLIENT_ID" \
+            --header "CF-Access-Client-Secret: $CF_ACCESS_CLIENT_SECRET" \
+            --output "$ACCESS_PREFLIGHT_HEALTH_RESPONSE" \
+            "$PRODUCTION_ROUTE_URL/health?access_preflight=${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          curl --fail-with-body --silent --show-error \
+            --connect-timeout 10 \
+            --max-time 20 \
+            --max-filesize 1048576 \
+            --header "accept: application/json" \
+            --header "cache-control: no-cache" \
+            --header "CF-Access-Client-Id: $CF_ACCESS_CLIENT_ID" \
+            --header "CF-Access-Client-Secret: $CF_ACCESS_CLIENT_SECRET" \
+            --output "$ACCESS_PREFLIGHT_CONTRACT_RESPONSE" \
+            "$PRODUCTION_ROUTE_URL/v1/contract?access_preflight=${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
 
           node --input-type=module <<'ACCESS_PREFLIGHT_NODE'
           import { readFileSync } from 'node:fs';
@@ -734,10 +737,6 @@ jobs:
           }
           console.log('Cloudflare Access service-token proof credentials are valid.');
           ACCESS_PREFLIGHT_NODE
-          elif [[ "$CUSTOM_ROUTE_PROOF" != "disabled" ]]; then
-            echo "::error::CRAWL_REMOTE_CUSTOM_ROUTE_PROOF must be disabled or access-service-token."
-            exit 1
-          fi
 
       - name: Create exact-repository reauthorization token
         id: target-token
@@ -2330,10 +2329,9 @@ jobs:
               "$url"
           }
 
-          if [[ "$CUSTOM_ROUTE_PROOF" == "access-service-token" ]]; then
-            test -n "$CF_ACCESS_CLIENT_ID"
-            test -n "$CF_ACCESS_CLIENT_SECRET"
-          fi
+          test "$CUSTOM_ROUTE_PROOF" = "access-service-token"
+          test -n "$CF_ACCESS_CLIENT_ID"
+          test -n "$CF_ACCESS_CLIENT_SECRET"
 
           while (( SECONDS < deadline )); do
             attempt=$((attempt + 1))
@@ -2344,13 +2342,8 @@ jobs:
               "$PRODUCTION_ROUTE_CONTRACT_RESPONSE"
             if fetch_endpoint "$WORKERS_DEV_URL/health" "$WORKERS_DEV_HEALTH_RESPONSE" &&
               fetch_endpoint "$WORKERS_DEV_URL/v1/contract" "$WORKERS_DEV_CONTRACT_RESPONSE" &&
-              (
-                [[ "$CUSTOM_ROUTE_PROOF" == "disabled" ]] ||
-                (
-                  fetch_endpoint "$PRODUCTION_ROUTE_URL/health" "$PRODUCTION_ROUTE_HEALTH_RESPONSE" "access-service-token" &&
-                  fetch_endpoint "$PRODUCTION_ROUTE_URL/v1/contract" "$PRODUCTION_ROUTE_CONTRACT_RESPONSE" "access-service-token"
-                )
-              ) &&
+              fetch_endpoint "$PRODUCTION_ROUTE_URL/health" "$PRODUCTION_ROUTE_HEALTH_RESPONSE" "access-service-token" &&
+              fetch_endpoint "$PRODUCTION_ROUTE_URL/v1/contract" "$PRODUCTION_ROUTE_CONTRACT_RESPONSE" "access-service-token" &&
               node --input-type=module <<'NODE'
           import { readFileSync } from 'node:fs';
 
@@ -2369,14 +2362,13 @@ jobs:
                 healthPath: process.env.WORKERS_DEV_HEALTH_RESPONSE,
                 contractPath: process.env.WORKERS_DEV_CONTRACT_RESPONSE,
               },
-            ];
-            if (process.env.CUSTOM_ROUTE_PROOF === 'access-service-token') {
-              endpoints.push({
+              {
                 label: 'production route',
                 healthPath: process.env.PRODUCTION_ROUTE_HEALTH_RESPONSE,
                 contractPath: process.env.PRODUCTION_ROUTE_CONTRACT_RESPONSE,
-              });
-            } else if (process.env.CUSTOM_ROUTE_PROOF !== 'disabled') {
+              },
+            ];
+            if (process.env.CUSTOM_ROUTE_PROOF !== 'access-service-token') {
               throw new Error('custom-route proof mode is invalid');
             }
 
