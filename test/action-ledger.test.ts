@@ -166,6 +166,50 @@ test("operation, attempt, and idempotency identities are canonical and separatel
   );
 });
 
+test("identity hashing rejects values outside the canonical JSON domain", () => {
+  class IdentityClass {
+    value = 1;
+  }
+  const accessor = Object.defineProperty({}, "value", {
+    enumerable: true,
+    get: () => 1,
+  });
+  const hidden = Object.defineProperty({}, "value", {
+    value: 1,
+  });
+  const decorated = Object.assign([1], { extra: 2 });
+  const invalidIdentities: unknown[] = [
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+    Number.NEGATIVE_INFINITY,
+    -0,
+    new Date("2026-07-12T00:00:00Z"),
+    new IdentityClass(),
+    undefined,
+    () => 1,
+    Symbol("identity"),
+    1n,
+    Array(1),
+    [undefined],
+    decorated,
+    { value: undefined },
+    { value: () => 1 },
+    { value: Symbol("identity") },
+    { value: 1n },
+    accessor,
+    hidden,
+  ];
+
+  for (const identity of invalidIdentities) {
+    assert.throws(() => actionIdempotencyKey(identity), /action event data contains/);
+  }
+  assert.throws(() => {
+    const cycle: { self?: unknown } = {};
+    cycle.self = cycle;
+    actionEventKey("review.completed", cycle);
+  }, /contains a cycle/);
+});
+
 test("every event persists the required correlation envelope", () => {
   const event = createActionEvent(reviewInput());
   assert.equal(event.operation_id, operationId);

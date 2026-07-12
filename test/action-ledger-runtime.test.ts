@@ -217,6 +217,71 @@ test("workflow retries preserve operation and idempotency identity but change at
   assert.notEqual(retry.event_id, first.event_id);
 });
 
+test("mutation retries require explicit outcome-independent idempotency identity", () => {
+  const root = tempRoot();
+  const base = {
+    phase: ACTION_EVENT_PHASE_TYPES.repairExecute,
+    operation: "repair",
+    operationIdentity: { queueItem: "repair_42" },
+    identity: { queueItem: "repair_42", mutation: "push_branch" },
+    component: "repair_execute",
+    subject: {
+      repository: "openclaw/openclaw",
+      kind: "queue_item" as const,
+      subjectId: "repair_42",
+    },
+    retryable: true,
+    mutation: true,
+  };
+
+  assert.throws(
+    () =>
+      recordWorkflowPhaseEvent(
+        root,
+        {
+          ...base,
+          status: ACTION_EVENT_STATUSES.failed,
+          reasonCode: ACTION_EVENT_REASON_CODES.exception,
+        },
+        { env: workflowEnv() },
+      ),
+    /require an explicit idempotencyIdentity/,
+  );
+
+  const idempotencyIdentity = {
+    queueItem: "repair_42",
+    mutation: "push_branch",
+    targetBranch: "repair/42",
+  };
+  const failed = recordWorkflowPhaseEvent(
+    root,
+    {
+      ...base,
+      status: ACTION_EVENT_STATUSES.failed,
+      reasonCode: ACTION_EVENT_REASON_CODES.exception,
+      idempotencyIdentity,
+    },
+    { env: workflowEnv({ GITHUB_RUN_ATTEMPT: "2" }) },
+  );
+  const completed = recordWorkflowPhaseEvent(
+    root,
+    {
+      ...base,
+      status: ACTION_EVENT_STATUSES.completed,
+      reasonCode: ACTION_EVENT_REASON_CODES.completed,
+      idempotencyIdentity,
+    },
+    { env: workflowEnv({ GITHUB_RUN_ATTEMPT: "3" }) },
+  );
+
+  assert.ok(failed);
+  assert.ok(completed);
+  assert.equal(completed.operation_id, failed.operation_id);
+  assert.equal(completed.idempotency_key_sha256, failed.idempotency_key_sha256);
+  assert.notEqual(completed.attempt_id, failed.attempt_id);
+  assert.notEqual(completed.event_id, failed.event_id);
+});
+
 test("phase event helpers reject noncanonical phase, status, and reason strings", () => {
   const base = {
     phase: ACTION_EVENT_PHASE_TYPES.reviewItem,

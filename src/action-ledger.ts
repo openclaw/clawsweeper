@@ -651,7 +651,7 @@ export function isActionEventReasonCode(value: string): value is ActionEventReas
 
 export function actionEventKey(scope: string, identity: unknown): string {
   const normalizedScope = eventScope(scope);
-  return `${normalizedScope}:${sha256(stableJson(canonicalJsonValue(identity)))}`;
+  return `${normalizedScope}:${sha256(canonicalJson(identity))}`;
 }
 
 export function actionOperationId(
@@ -660,25 +660,25 @@ export function actionOperationId(
   identity: unknown,
 ): string {
   return sha256(
-    stableJson({
+    canonicalJson({
       repository: requiredRepo(repository),
       operation: eventScope(operation),
-      identity: canonicalJsonValue(identity),
+      identity,
     }),
   );
 }
 
 export function actionAttemptId(operationId: string, identity: unknown): string {
   return sha256(
-    stableJson({
+    canonicalJson({
       operation_id: requiredSha256(operationId, "action operation id"),
-      identity: canonicalJsonValue(identity),
+      identity,
     }),
   );
 }
 
 export function actionIdempotencyKey(identity: unknown): string {
-  return sha256(stableJson(canonicalJsonValue(identity)));
+  return sha256(canonicalJson(identity));
 }
 
 export function actionEventId(repository: string, eventKey: string): string {
@@ -1584,10 +1584,84 @@ function safePathSegment(value: string): string {
   return safe || "unknown";
 }
 
-function canonicalJsonValue(value: unknown): unknown {
-  const json = stableJson(value);
-  if (typeof json !== "string") throw new Error("action event data must be JSON serializable");
-  return JSON.parse(json) as unknown;
+function canonicalJson(value: unknown): string {
+  return JSON.stringify(canonicalJsonValue(value));
+}
+
+function canonicalJsonValue(
+  value: unknown,
+  ancestors: Set<object> = new Set<object>(),
+  location = "$",
+): unknown {
+  if (value === null || typeof value === "string" || typeof value === "boolean") return value;
+  if (typeof value === "number") {
+    if (!Number.isFinite(value) || Object.is(value, -0)) {
+      throw new Error(`action event data contains a lossy number at ${location}`);
+    }
+    return value;
+  }
+  if (
+    value === undefined ||
+    typeof value === "function" ||
+    typeof value === "symbol" ||
+    typeof value === "bigint"
+  ) {
+    throw new Error(`action event data contains a non-JSON value at ${location}`);
+  }
+  if (ancestors.has(value)) {
+    throw new Error(`action event data contains a cycle at ${location}`);
+  }
+
+  ancestors.add(value);
+  try {
+    if (Array.isArray(value)) {
+      if (Object.getPrototypeOf(value) !== Array.prototype) {
+        throw new Error(`action event data contains an array class instance at ${location}`);
+      }
+      const ownKeys = Reflect.ownKeys(value);
+      const expectedKeys = new Set([
+        "length",
+        ...Array.from({ length: value.length }, (_, index) => String(index)),
+      ]);
+      if (
+        ownKeys.some((key) => typeof key !== "string" || !expectedKeys.has(key)) ||
+        ownKeys.length !== expectedKeys.size
+      ) {
+        throw new Error(`action event data contains a sparse or decorated array at ${location}`);
+      }
+      return Array.from({ length: value.length }, (_, index) => {
+        const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+        if (!descriptor?.enumerable || !("value" in descriptor)) {
+          throw new Error(`action event data contains a non-data array item at ${location}`);
+        }
+        return canonicalJsonValue(descriptor.value, ancestors, `${location}[${index}]`);
+      });
+    }
+
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== null) {
+      throw new Error(`action event data contains a class instance at ${location}`);
+    }
+    const ownKeys = Reflect.ownKeys(value);
+    if (ownKeys.some((key) => typeof key !== "string")) {
+      throw new Error(`action event data contains a symbol key at ${location}`);
+    }
+    const normalized: Record<string, unknown> = {};
+    for (const key of (ownKeys as string[]).sort(compareCanonicalKeys)) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (!descriptor?.enumerable || !("value" in descriptor)) {
+        throw new Error(`action event data contains a non-data property at ${location}.${key}`);
+      }
+      normalized[key] = canonicalJsonValue(descriptor.value, ancestors, `${location}.${key}`);
+    }
+    return normalized;
+  } finally {
+    ancestors.delete(value);
+  }
+}
+
+function compareCanonicalKeys(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 function sha256(value: string): string {

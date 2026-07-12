@@ -114,6 +114,9 @@ export function recordWorkflowActionEvent(
 ): ActionEvent | null {
   const env = options.env ?? process.env;
   if (!workflowActionEventsEnabled(env)) return null;
+  if (input.action.mutation && input.idempotencyIdentity === undefined) {
+    throw new Error("mutation action events require an explicit idempotencyIdentity");
+  }
   const producer = workflowActionProducer(input.component, env);
   const operation = input.operation ?? input.scope.split(".", 1)[0] ?? input.scope;
   const operationId = actionOperationId(
