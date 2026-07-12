@@ -6,6 +6,7 @@ import {
   actionLedgerFailureDisposition,
   applyActionEventDisposition,
   applyItemBusinessIdempotencyIdentityForTest,
+  applyMutationBusinessIdempotencyIdentityForTest,
   applyPhaseSequenceForTest,
   applyRuntimeBudgetYieldResultsForTest,
   classifyGitHubDispatchResultForTest,
@@ -225,6 +226,30 @@ test("apply and retry business idempotency ignore batch order but bind source re
     ),
     applyKey,
   );
+  const mutationIdentity = {
+    repository: applyIdentity.repository,
+    number: applyIdentity.number,
+    sourceRevision: applyIdentity.sourceRevision,
+    reviewContentDigest: applyIdentity.reviewContentDigest,
+    decisionPacketSha256: applyIdentity.decisionPacketSha256,
+    mutationIdentity: "review_comment_post:512",
+  };
+  const mutationKey = actionIdempotencyKey(
+    applyMutationBusinessIdempotencyIdentityForTest(mutationIdentity),
+  );
+  assert.equal(
+    actionIdempotencyKey(applyMutationBusinessIdempotencyIdentityForTest(mutationIdentity)),
+    mutationKey,
+  );
+  assert.notEqual(
+    actionIdempotencyKey(
+      applyMutationBusinessIdempotencyIdentityForTest({
+        ...mutationIdentity,
+        mutationIdentity: "review_comment_delete:512",
+      }),
+    ),
+    mutationKey,
+  );
 
   const retryIdentity = {
     repository: "openclaw/openclaw",
@@ -292,14 +317,13 @@ test("lane instrumentation uses stable slots with explicit parent and phase orde
   }
 
   assert.match(source, /parentEventId: ledger\.batchStartEventId/);
-  assert.match(source, /parentEventId: state\.startEventId/);
+  assert.match(source, /parentEventId: state\.lastEventId \?\? state\.startEventId/);
   assert.match(
     source,
     /parentEventId: options\.state\.lastEventId \?\? options\.state\.startEventId/,
   );
-  assert.match(source, /phaseSeq: 10 \+ state\.index \* 10/);
-  assert.match(source, /phaseSeq: 11 \+ state\.index \* 10/);
-  assert.match(source, /phaseSeq: 12 \+ state\.index \* 10/);
+  assert.match(source, /function nextReviewPhaseSeq\(/);
+  assert.match(source, /phaseSeq: nextReviewPhaseSeq\(options\.ledger\)/);
   assert.match(source, /phaseSeq: 1_000_000/);
   assert.match(source, /if \(!state\.logPublication\) \{\s*recordReviewLogPublication\(/);
 
@@ -348,11 +372,50 @@ test("review candidates start lazily and deferred items cannot remain active", (
     reviewLoop,
     /activeReviewItem = item;[\s\S]*startReviewActionLedgerItem\(reviewLedger, item\)/,
   );
+  assert.match(
+    reviewLoop,
+    /activeReviewMutationRunner = reviewMutationRunner\(reviewLedger, item\)/,
+  );
   assert.match(reviewLoop, /catch \(error\) \{\s*reviewItemFailed = true;\s*throw error;/);
   assert.match(
     reviewLoop,
     /finally \{[\s\S]*!reviewItemFailed[\s\S]*finishReviewActionLedgerItem\(\{[\s\S]*completionReason: "coordination_deferred"[\s\S]*activeReviewItem = null;/,
   );
+  const reviewMutationAttempt = source.slice(
+    source.indexOf("function startReviewMutationAttempt("),
+    source.indexOf("function recordReviewLogPublication("),
+  );
+  assert.match(reviewMutationAttempt, /completion_reason: "mutation_attempted"/);
+  assert.match(reviewMutationAttempt, /"mutation_accepted"/);
+  assert.match(reviewMutationAttempt, /"mutation_rejected"/);
+  assert.match(reviewMutationAttempt, /"mutation_outcome_unknown"/);
+  assert.match(reviewMutationAttempt, /mutationIdentitySha256: sha256\(idempotencyIdentity\)/);
+  const reviewItemTerminal = source.slice(
+    source.indexOf("function finishReviewActionLedgerItem("),
+    source.indexOf("export function actionLedgerFailureDisposition("),
+  );
+  assert.match(reviewItemTerminal, /mutation: state\.mutationObserved/);
+  const reviewBatchTerminal = source.slice(
+    source.indexOf("function finishReviewActionLedger(options:"),
+    source.indexOf("function reviewCommand(args:"),
+  );
+  assert.match(reviewBatchTerminal, /mutation: options\.ledger\.mutationObserved/);
+
+  const reviewCommandStart = source.indexOf("function reviewCommand(args:");
+  const reviewCatchStart = source.indexOf(
+    "  } catch (error) {\n    if (reviewLedger) {",
+    reviewCommandStart,
+  );
+  const reviewCatch = source.slice(
+    reviewCatchStart,
+    source.indexOf("restoreTreeModes(readonlyModeSnapshots)", reviewCatchStart),
+  );
+  const cleanup = reviewCatch.indexOf(
+    "deleteOwnedDedicatedReviewStartLease(acquired.itemNumber, acquired.lease)",
+  );
+  const finalization = reviewCatch.indexOf("finishReviewActionLedger({");
+  assert.ok(cleanup >= 0);
+  assert.ok(finalization > cleanup);
 });
 
 test("apply receipts start per item and persist mutation observation before finalization", () => {
@@ -381,16 +444,17 @@ test("apply receipts start per item and persist mutation observation before fina
   assert.match(applyLoop, /closeItem\(\{ number, kind: item\.kind/);
   const mutationAttemptStart = source.indexOf("function startApplyMutationAttempt(");
   const mutationIdentityStart = source.indexOf(
-    "const idempotencyIdentity = {",
+    "const businessIdempotencyIdentity = applyMutationBusinessIdempotencyIdentityForTest({",
     mutationAttemptStart,
   );
   const mutationIdentity = source.slice(
     mutationIdentityStart,
-    source.indexOf("const phaseSeq =", mutationIdentityStart),
+    source.indexOf("const receiptIdentitySha256 =", mutationIdentityStart),
   );
-  assert.match(mutationIdentity, /mutationIdentitySha256: sha256\(identity\)/);
+  assert.match(mutationIdentity, /mutationIdentity: idempotencyIdentity/);
   assert.doesNotMatch(mutationIdentity, /mutationIndex/);
   assert.match(source, /identity: `\$\{options\.identity\}:request_attempt:\$\{attempt \+ 1\}`/);
+  assert.match(source, /idempotencyIdentity: options\.identity/);
   assert.match(
     applyLoop,
     /finally \{[\s\S]*recordApplyActionLedgerItemResults\(\{[\s\S]*activeApplyItem = null;/,
@@ -415,12 +479,27 @@ test("apply mutation receipts bind every GitHub request attempt and preserve no-
     true,
   );
   assert.equal(isGitHubLabelAlreadyExistsErrorForTest("HTTP 500: unavailable"), false);
-  assert.deepEqual(observedGitHubMutationAttemptsForTest(["transient", "accepted"]), [
-    { identity: "test_mutation:request_attempt:1", outcome: "unknown" },
-    { identity: "test_mutation:request_attempt:2", outcome: "accepted" },
+  const retriedMutation = observedGitHubMutationAttemptsForTest(["transient", "accepted"]);
+  assert.deepEqual(retriedMutation, [
+    {
+      identity: "test_mutation:request_attempt:1",
+      idempotencyIdentity: "test_mutation",
+      outcome: "unknown",
+    },
+    {
+      identity: "test_mutation:request_attempt:2",
+      idempotencyIdentity: "test_mutation",
+      outcome: "accepted",
+    },
   ]);
+  assert.notEqual(retriedMutation[0]?.identity, retriedMutation[1]?.identity);
+  assert.equal(retriedMutation[0]?.idempotencyIdentity, retriedMutation[1]?.idempotencyIdentity);
   assert.deepEqual(observedGitHubMutationAttemptsForTest(["already_exists"]), [
-    { identity: "test_mutation:request_attempt:1", outcome: "rejected" },
+    {
+      identity: "test_mutation:request_attempt:1",
+      idempotencyIdentity: "test_mutation",
+      outcome: "rejected",
+    },
   ]);
   assert.deepEqual(observedGitHubMutationAttemptsForTest(["not_started"]), []);
   assert.deepEqual(heldReviewStartStatusCommentResultForTest("2026-07-12T12:00:00Z", false), {

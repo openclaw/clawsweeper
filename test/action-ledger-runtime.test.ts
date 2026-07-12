@@ -1113,6 +1113,19 @@ test("timeout recovery binds an open mutation receipt after an accepted attempt 
   assert.ok(rejectedRecovery);
   assert.equal(rejectedRecovery.action.mutation, false);
   assert.equal(rejectedRecovery.parent_event_id, rejectedOutcome.event_id);
+  const recoveredTerminals = events.filter(
+    (event) =>
+      event.action.status === ACTION_EVENT_STATUSES.failed && event.attributes?.partial === true,
+  );
+  assert.equal(recoveredTerminals.length, 4);
+  const eventsById = new Map(events.map((event) => [event.event_id, event]));
+  for (const terminal of recoveredTerminals) {
+    const parent = terminal.parent_event_id ? eventsById.get(terminal.parent_event_id) : null;
+    assert.ok(parent);
+    assert.ok(terminal.phase_seq > parent.phase_seq);
+  }
+  const phaseSeqs = events.map((event) => event.phase_seq);
+  assert.equal(new Set(phaseSeqs).size, phaseSeqs.length);
   assert.equal(interruptOpenWorkflowActionEvents(root, { env }), 0);
 });
 
@@ -1255,8 +1268,159 @@ test("interruption recovery follows the latest accepted mutation ordinal", () =>
   );
   assert.ok(recoveredItem);
   assert.equal(recoveredItem.parent_event_id, latestOutcome.event_id);
+  assert.ok(recoveredItem.phase_seq > latestOutcome.phase_seq);
+  const attemptPhases = readAllSpooledActionEvents(root)
+    .filter(
+      (event) =>
+        event.operation_id === recoveredItem.operation_id &&
+        event.attempt_id === recoveredItem.attempt_id,
+    )
+    .map((event) => event.phase_seq);
+  assert.equal(new Set(attemptPhases).size, attemptPhases.length);
   assert.equal(recoveredItem.action.mutation, true);
   assert.equal(recoveredItem.action.retryable, true);
+});
+
+test("review interruption recovery aggregates coordination comment mutations", () => {
+  const root = tempRoot();
+  const env = workflowEnv({
+    CLAWSWEEPER_ACTION_LEDGER_INVOCATION: "review-coordination-mutation",
+    GITHUB_ACTION: "__review",
+    GITHUB_JOB: "review",
+  });
+  const operationIdentity = {
+    repository: "openclaw/openclaw",
+    candidateSnapshots: [
+      {
+        repository: "openclaw/openclaw",
+        kind: "pull_request",
+        number: 54,
+        updatedAt: "2026-07-12T12:00:00Z",
+      },
+    ],
+  };
+  const batch = recordWorkflowPhaseEvent(
+    root,
+    {
+      phase: ACTION_EVENT_TYPES.reviewBatch,
+      status: ACTION_EVENT_STATUSES.started,
+      reasonCode: ACTION_EVENT_REASON_CODES.selected,
+      retryable: false,
+      mutation: false,
+      identity: { slot: "review_batch_start" },
+      operation: "review",
+      operationIdentity,
+      phaseSeq: 1,
+      idempotencyIdentity: { operationIdentity, slot: "review_batch_start" },
+      component: "review",
+      subject: { repository: "openclaw/openclaw", kind: "workflow" },
+    },
+    { env },
+  );
+  assert.ok(batch);
+  const item = recordWorkflowPhaseEvent(
+    root,
+    {
+      phase: ACTION_EVENT_TYPES.reviewItem,
+      status: ACTION_EVENT_STATUSES.started,
+      reasonCode: ACTION_EVENT_REASON_CODES.selected,
+      retryable: false,
+      mutation: false,
+      identity: { slot: "review_item_start", number: 54 },
+      operation: "review",
+      operationIdentity,
+      parentEventId: batch.event_id,
+      phaseSeq: 2,
+      idempotencyIdentity: {
+        operation: "review",
+        slot: "review_item",
+        repository: "openclaw/openclaw",
+        number: 54,
+      },
+      component: "review",
+      subject: {
+        repository: "openclaw/openclaw",
+        kind: "pull_request",
+        number: 54,
+        sourceRevision: "a".repeat(40),
+      },
+    },
+    { env },
+  );
+  assert.ok(item);
+  const mutationIdentity = {
+    operation: "review",
+    slot: "coordination_mutation",
+    repository: "openclaw/openclaw",
+    number: 54,
+    mutationIdentitySha256: "b".repeat(64),
+  };
+  const attempt = recordWorkflowPhaseEvent(
+    root,
+    {
+      phase: ACTION_EVENT_TYPES.reviewItem,
+      status: ACTION_EVENT_STATUSES.started,
+      reasonCode: ACTION_EVENT_REASON_CODES.selected,
+      retryable: true,
+      mutation: false,
+      identity: { slot: "review_coordination_mutation_attempt", number: 54 },
+      operation: "review",
+      operationIdentity,
+      parentEventId: item.event_id,
+      phaseSeq: 3,
+      idempotencyIdentity: mutationIdentity,
+      component: "review",
+      subject: {
+        repository: "openclaw/openclaw",
+        kind: "pull_request",
+        number: 54,
+        sourceRevision: "a".repeat(40),
+      },
+      attributes: { completion_reason: "mutation_attempted" },
+    },
+    { env },
+  );
+  assert.ok(attempt);
+  const outcome = recordWorkflowPhaseEvent(
+    root,
+    {
+      phase: ACTION_EVENT_TYPES.reviewItem,
+      status: ACTION_EVENT_STATUSES.executed,
+      reasonCode: ACTION_EVENT_REASON_CODES.completed,
+      retryable: false,
+      mutation: true,
+      identity: { slot: "review_coordination_mutation_outcome", number: 54 },
+      operation: "review",
+      operationIdentity,
+      parentEventId: attempt.event_id,
+      phaseSeq: 4,
+      idempotencyIdentity: mutationIdentity,
+      component: "review",
+      subject: {
+        repository: "openclaw/openclaw",
+        kind: "pull_request",
+        number: 54,
+        sourceRevision: "a".repeat(40),
+      },
+      attributes: { completion_reason: "mutation_accepted" },
+    },
+    { env },
+  );
+  assert.ok(outcome);
+
+  assert.equal(interruptOpenWorkflowActionEvents(root, { env }), 2);
+  const recovered = readAllSpooledActionEvents(root).filter(
+    (event) =>
+      event.attributes?.completion_reason === "timeout" && event.action.status === "failed",
+  );
+  const recoveredItem = recovered.find((event) => event.subject.number === 54);
+  const recoveredBatch = recovered.find((event) => event.subject.kind === "workflow");
+  assert.ok(recoveredItem);
+  assert.ok(recoveredBatch);
+  assert.equal(recoveredItem.parent_event_id, outcome.event_id);
+  assert.ok(recoveredItem.phase_seq > outcome.phase_seq);
+  assert.equal(recoveredItem.action.mutation, true);
+  assert.equal(recoveredBatch.action.mutation, true);
 });
 
 test("interruption recovery preserves any earlier unknown mutation outcome", () => {

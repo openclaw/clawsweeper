@@ -462,7 +462,8 @@ function workflowActionEventClosesLifecycle(start: ActionEvent, event: ActionEve
     );
   }
   if (
-    start.event_type === ACTION_EVENT_TYPES.applyAction &&
+    (start.event_type === ACTION_EVENT_TYPES.applyAction ||
+      start.event_type === ACTION_EVENT_TYPES.reviewItem) &&
     workflowActionEventIsMutationOutcome(event) &&
     event.idempotency_key_sha256 !== start.idempotency_key_sha256
   ) {
@@ -473,6 +474,40 @@ function workflowActionEventClosesLifecycle(start: ActionEvent, event: ActionEve
     event.action.status === ACTION_EVENT_STATUSES.executed &&
     !workflowActionEventIsUncertainMutationStart(start)
   );
+}
+
+function interruptedWorkflowPhaseSeq(
+  current: readonly ActionEvent[],
+  start: ActionEvent,
+  parentEventId: string,
+): number {
+  const parent = current.find((event) => event.event_id === parentEventId);
+  const reservedTerminalPhase =
+    start.event_type === ACTION_EVENT_TYPES.reviewBatch ||
+    start.event_type === ACTION_EVENT_TYPES.applyBatch ||
+    (start.event_type === ACTION_EVENT_TYPES.reviewRetry && start.subject.kind === "workflow")
+      ? 1_000_000
+      : 0;
+  let phaseSeq = Math.max(
+    reservedTerminalPhase,
+    start.phase_seq + 1,
+    (parent?.phase_seq ?? start.phase_seq) + 1,
+  );
+  const occupied = new Set(
+    current
+      .filter(
+        (event) =>
+          event.operation_id === start.operation_id && event.attempt_id === start.attempt_id,
+      )
+      .map((event) => event.phase_seq),
+  );
+  while (occupied.has(phaseSeq)) {
+    if (phaseSeq === Number.MAX_SAFE_INTEGER) {
+      throw new Error("action event phase sequence exhausted during interruption recovery");
+    }
+    phaseSeq += 1;
+  }
+  return phaseSeq;
 }
 
 export function interruptOpenWorkflowActionEvents(
@@ -577,6 +612,7 @@ export function interruptOpenWorkflowActionEvents(
           workflowActionEventIsUncertainMutationStart(start) ||
           openUncertainMutationStarts.length > 0;
         const aggregatesChildMutations =
+          start.event_type === ACTION_EVENT_TYPES.reviewBatch ||
           start.event_type === ACTION_EVENT_TYPES.applyBatch ||
           (start.event_type === ACTION_EVENT_TYPES.reviewRetry &&
             start.subject.kind === "workflow");
@@ -615,13 +651,7 @@ export function interruptOpenWorkflowActionEvents(
           operationId: start.operation_id,
           attemptId: start.attempt_id,
           parentEventId,
-          phaseSeq:
-            start.event_type === ACTION_EVENT_TYPES.reviewBatch ||
-            start.event_type === ACTION_EVENT_TYPES.applyBatch ||
-            (start.event_type === ACTION_EVENT_TYPES.reviewRetry &&
-              start.subject.kind === "workflow")
-              ? 1_000_000
-              : start.phase_seq + 2,
+          phaseSeq: interruptedWorkflowPhaseSeq(current, start, parentEventId),
           idempotencyKeySha256:
             workflowActionEventIsUncertainMutationStart(start) ||
             start.event_type === ACTION_EVENT_TYPES.applyAction
