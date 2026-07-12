@@ -22,7 +22,9 @@ Per-job shards avoid a shared append hotspot while preventing one Git commit per
 event. CrabFleet receives live structured events; the state ledger receives the
 canonical finalized shard. A failed live CrabFleet projection records a
 retryable `projection.failed` event in that shard, so delivery outages cannot
-erase or block the authoritative action history.
+erase or block the authoritative action history. Projection requests have a
+bounded deadline, abort on timeout, and cancel response bodies after every HTTP
+response.
 
 ## Identity And Replay
 
@@ -55,8 +57,9 @@ and hash their inputs. Identity inputs must be plain canonical JSON trees:
 non-finite, negative-zero, or unsafe-integer numbers, dates, class instances,
 sparse or decorated arrays, accessors, `undefined`, functions, symbols,
 bigints, cycles, and credential-bearing field aliases are rejected before
-hashing. Large identifiers must be strings. `event_id` is the SHA-256 of
-normalized repository plus `event_key`. Callers cannot supply a raw event key.
+hashing. Object keys and evidence use locale-independent UTF-8 byte ordering;
+large identifiers must be strings. `event_id` is the SHA-256 of normalized
+repository plus `event_key`. Callers cannot supply a raw event key.
 
 - Replaying the same key and semantic payload is idempotent.
 - Reusing a key for different semantic content is a hard conflict.
@@ -73,15 +76,26 @@ normalized repository plus `event_key`. Callers cannot supply a raw event key.
   source timestamp and event ID as stable tie-breakers.
 - Shard partition dates come from
   `CLAWSWEEPER_ACTION_LEDGER_PARTITION_DATE` or immutable
-  `GITHUB_RUN_STARTED_AT` metadata. Wall clock and event ordering are never
-  used, so fresh-root reconstruction cannot move a run to another path.
+  `GITHUB_RUN_STARTED_AT` metadata. The producer-specific marker is persisted
+  before its first event, and finalization only reads that marker. Wall clock,
+  the current flush environment, and event ordering are never used, so delayed
+  or fresh-root reconstruction cannot move a run to another path.
 - Reusing one run/job shard identity for a different event set is a hard
   conflict.
 - Spool, shard, partition-marker, and import writes create parent directories
   one component at a time, reject symlinks and junctions, snapshot every parent
   inode and device immediately around pathname mutations, verify opened
   descriptors against their final paths, and use no-follow file access where
-  the platform supports it. Any parent-chain change fails the write.
+  the platform supports it. Final files are hard-linked create-only from a
+  fully written and fsynced sibling staging file, then the destination directory
+  is fsynced where supported. A crash can leave a regular `.tmp` staging file
+  but never a partial final shard; replay safely publishes the canonical file.
+  Staging names are ignored by readers, while symlinks, directories, and special
+  entries fail closed. Staging files are not removed through mutable pathnames.
+- Multi-step readers retain one validated root identity from enumeration through
+  file parsing. Root, parent-chain, descriptor, and final-path identities are
+  rechecked around reads, so directory replacement cannot silently redirect
+  spool or import data.
 
 ## Privacy Boundary
 
@@ -90,10 +104,11 @@ bounded subject IDs, relative report paths, public run URLs, and snapshot IDs.
 It does not store prompts, bodies, comments, diffs, patches, raw logs, raw
 payloads, arbitrary model text, local absolute paths, credentials, private
 hosts, or email addresses. Credential detection covers GitHub token families,
-JWT-shaped values, whitespace or separator-delimited bearer/API/Cloudflare
-credential forms, credential field aliases, case-insensitive private paths,
-private IPv4 and IPv6 addresses, and internal hostname suffixes while all
-durable text remains restricted to field-specific machine vocabularies.
+JWT-shaped values, Basic credentials, whitespace, URL-encoded, or
+separator-delimited bearer/API/Cloudflare credential forms, credential field
+aliases, POSIX and Windows absolute paths, case-insensitive private paths,
+private IPv4 and IPv6 addresses, and internal hostname suffixes while all durable
+text remains restricted to field-specific machine vocabularies.
 
 Every event records a privacy classification, redaction version, and fields
 dropped. The checked-in JSON schema is
@@ -117,9 +132,8 @@ The shared taxonomy defines six families:
    and binding phases.
 
 This taxonomy is a schema foundation, not a claim that every lane already emits
-every phase. Current emitters cover the existing review, apply, session, and
-projection events. Command, repair, notification, operational, and evidence
-lanes can migrate independently without changing the v1 shard format.
+every phase. Lanes can migrate independently without changing the v1 shard
+format.
 
 New writers should prefer phase-oriented types from
 `ACTION_EVENT_PHASE_TYPES`, statuses from `ACTION_EVENT_STATUSES`, and optional
@@ -175,6 +189,11 @@ Consumers fold immutable events into purpose-specific views:
 - the ClawSweeper dashboard shows current status and timing;
 - notification ledgers track external delivery;
 - evidence graphs bind review and apply claims to GitHub and Gitcrawl sources.
+
+`CLAWSWEEPER_CRABFLEET_TIMEOUT_MS` sets the live projection deadline in
+milliseconds. It defaults to 10000 and must be between 1 and 60000. Timeout,
+HTTP, and response-cleanup failures remain projection failures; canonical local
+writes are completed first.
 
 Projection rebuilds must be deterministic. Truncating a projection never
 deletes source events. State-side compactors may replace hot shards with
