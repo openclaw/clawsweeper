@@ -350,9 +350,24 @@ test("tooling and bundler magic comments remain semantic", () => {
       ],
     },
   });
+  const legal = record({
+    context: {
+      pullFiles: [
+        {
+          filename: "src/cache.ts",
+          status: "modified",
+          additions: 2,
+          deletions: 1,
+          patch:
+            "@@ -1 +1,2 @@\n-const value = buildCache();\n+/*! required attribution */\n+const value = buildCache();",
+        },
+      ],
+    },
+  });
 
   assert.notEqual(ordinary.codeDigest, webpack.codeDigest);
   assert.notEqual(ordinary.codeDigest, pure.codeDigest);
+  assert.notEqual(ordinary.codeDigest, legal.codeDigest);
 });
 
 test("structured JSON ignores formatting but preserves object order", () => {
@@ -431,6 +446,27 @@ test("compiler AST distinguishes regex, template, JSX, and shift semantics", () 
       before: "const value = input;",
       after: "const value = input >> 1;",
       changed: "const value = input > > 1;",
+    },
+    {
+      name: "prefix unary operator",
+      filename: "src/cache.ts",
+      before: "const value = input;",
+      after: "const value = +input;",
+      changed: "const value = -input;",
+    },
+    {
+      name: "type-only import",
+      filename: "src/cache.ts",
+      before: 'import type { Cache } from "./cache.js";',
+      after: 'import type { Cache } from "./cache.js";',
+      changed: 'import { Cache } from "./cache.js";',
+    },
+    {
+      name: "auto accessor",
+      filename: "src/cache.ts",
+      before: "class Cache { value = 1; }",
+      after: "class Cache { accessor value = 1; }",
+      changed: "class Cache { value = 1; }",
     },
   ];
 
@@ -531,6 +567,25 @@ test("ASI-significant line terminators remain semantic", () => {
   assert.equal(newline.eligible, true);
   assert.equal(inline.eligible, true);
   assert.notEqual(newline.codeDigest, inline.codeDigest);
+});
+
+test("unary source lines are counted inside parsed hunks", () => {
+  const result = record({
+    context: {
+      pullFiles: [
+        {
+          filename: "src/cache.ts",
+          status: "modified",
+          additions: 1,
+          deletions: 1,
+          patch: "@@ -1 +1 @@\n---value;\n+++value;",
+        },
+      ],
+    },
+  });
+
+  assert.equal(result.eligible, true);
+  assert.equal(result.eligibilityReason, "eligible");
 });
 
 test("ambiguous, truncated, binary, unsupported, deleted, renamed, and missing patches fail closed", () => {

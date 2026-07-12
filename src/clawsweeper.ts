@@ -2694,6 +2694,7 @@ function revisionLabels(labels: unknown): string[] {
 }
 
 function isIgnorableSourceRevisionLabel(label: string) {
+  if (label === normalizeLabelName(PROOF_OVERRIDE_LABEL)) return false;
   return (
     isClawSweeperAdvisorySourceRevisionLabel(label) ||
     (label.startsWith("clawsweeper:") &&

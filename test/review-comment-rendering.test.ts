@@ -457,6 +457,13 @@ test("review item source revision ignores advisory labels but tracks protected l
     ),
     revision,
   );
+  assert.notEqual(
+    itemSourceRevisionSha256ForTest(
+      { ...item, labels: [...item.labels, { name: "proof: override" }] },
+      [],
+    ),
+    revision,
+  );
 });
 
 test("pull request keep-open review comments label the change summary", () => {

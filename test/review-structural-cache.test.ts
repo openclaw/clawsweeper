@@ -808,6 +808,16 @@ test("changed PR check state forces hydration", () => {
   assert.equal(decision({ priorRecord, currentRecord }).reason, "source_changed");
 });
 
+test("changed maintainer proof override forces hydration", () => {
+  const priorRecord = record(pullSnapshot());
+  const currentRecord = record(
+    pullSnapshot({
+      labels: [...pullSnapshot().labels, "proof: override"],
+    }),
+  );
+  assert.equal(decision({ priorRecord, currentRecord }).reason, "source_changed");
+});
+
 test("semantic context revision excludes code-volume and commit-count churn", () => {
   const prior = record(pullSnapshot());
   const reformatted = record(

@@ -8,7 +8,7 @@ import { API } from "typescript/unstable/sync";
 import { REVIEW_CACHE_MAX_AGE_DAYS } from "./scheduler-policy.js";
 import { stableJson } from "./stable-json.js";
 
-export const REVIEW_SEMANTIC_CACHE_VERSION = 2;
+export const REVIEW_SEMANTIC_CACHE_VERSION = 3;
 export const REVIEW_SEMANTIC_CACHE_MAX_AGE_DAYS = REVIEW_CACHE_MAX_AGE_DAYS;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -16,7 +16,7 @@ const DIGEST_PATTERN = /^[0-9a-f]{64}$/;
 const MAX_PATCH_CHARS = 512 * 1024;
 const MAX_FILES = 80;
 const DIRECTIVE_COMMENT_PATTERN =
-  /[@#]|\/\/\/\s*<(?:reference|amd-module|amd-dependency)\b|\b(?:babel|biome|c8|coverage|deno-lint|eslint|esbuild|flow|gql|graphql|istanbul|prettier|rollup|swc|vite|webpack)[\w-]*/i;
+  /^\/[/*]!|[@#]|\/\/\/\s*<(?:reference|amd-module|amd-dependency)\b|\b(?:babel|biome|c8|coverage|deno-lint|eslint|esbuild|flow|gql|graphql|istanbul|prettier|rollup|swc|vite|webpack)[\w-]*/i;
 const TYPESCRIPT_EXTENSIONS = new Set([
   ".cjs",
   ".cts",
@@ -159,6 +159,8 @@ export interface ReviewSemanticInput {
 interface ParsedHunk {
   oldStart: number;
   newStart: number;
+  additions: number;
+  deletions: number;
   oldText: string;
   newText: string;
 }
@@ -250,6 +252,8 @@ function parseUnifiedPatch(patch: string): ParsedHunk[] | null {
     index += 1;
     let oldSeen = 0;
     let newSeen = 0;
+    let additions = 0;
+    let deletions = 0;
     const oldLines: string[] = [];
     const newLines: string[] = [];
     while (index < lines.length && !parseHunkHeader(lines[index] ?? "")) {
@@ -267,9 +271,11 @@ function parseUnifiedPatch(patch: string): ParsedHunk[] | null {
         newLines.push(text);
       } else if (marker === "-") {
         oldSeen += 1;
+        deletions += 1;
         oldLines.push(text);
       } else if (marker === "+") {
         newSeen += 1;
+        additions += 1;
         newLines.push(text);
       } else if (line.length > 0) {
         return null;
@@ -282,6 +288,8 @@ function parseUnifiedPatch(patch: string): ParsedHunk[] | null {
     hunks.push({
       oldStart: header.oldStart,
       newStart: header.newStart,
+      additions,
+      deletions,
       oldText: oldLines.join("\n"),
       newText: newLines.join("\n"),
     });
@@ -293,14 +301,46 @@ function isDirectiveComment(value: string): boolean {
   return DIRECTIVE_COMMENT_PATTERN.test(value);
 }
 
+function canonicalSyntaxGap(text: string): string {
+  let canonical = "";
+  for (let index = 0; index < text.length; index += 1) {
+    const character = text[index]!;
+    if (/\s/.test(character)) continue;
+    if (text.startsWith("//", index)) {
+      const lineEnd = text.indexOf("\n", index + 2);
+      if (lineEnd < 0) break;
+      index = lineEnd - 1;
+      continue;
+    }
+    if (text.startsWith("/*", index)) {
+      const blockEnd = text.indexOf("*/", index + 2);
+      if (blockEnd < 0) return "";
+      index = blockEnd + 1;
+      continue;
+    }
+    canonical += character;
+  }
+  return canonical;
+}
+
 function canonicalAstNode(node: Node, sourceFile: SourceFile): unknown {
-  const children: unknown[] = [];
+  const children: Node[] = [];
   node.forEachChild((child) => {
-    children.push(canonicalAstNode(child, sourceFile));
+    children.push(child);
   });
-  return children.length > 0
-    ? [node.kind, node.flags, children]
-    : [node.kind, node.flags, node.getText(sourceFile)];
+  if (children.length === 0) return [node.kind, node.flags, node.getText(sourceFile)];
+  const parts: unknown[] = [];
+  let cursor = node.getStart(sourceFile);
+  for (const child of children) {
+    const childStart = child.getStart(sourceFile);
+    const gap = canonicalSyntaxGap(sourceFile.text.slice(cursor, childStart));
+    if (gap) parts.push(["syntax", gap]);
+    parts.push(canonicalAstNode(child, sourceFile));
+    cursor = child.getEnd();
+  }
+  const trailingGap = canonicalSyntaxGap(sourceFile.text.slice(cursor, node.getEnd()));
+  if (trailingGap) parts.push(["syntax", trailingGap]);
+  return [node.kind, node.flags, parts];
 }
 
 function semanticDirectiveComments(sourceFile: SourceFile): unknown[] {
@@ -527,13 +567,8 @@ function semanticFile(value: unknown, compiler: SemanticCompilerSession): FileSe
   const additions = finiteCount(file.additions);
   const deletions = finiteCount(file.deletions);
   if (additions !== null || deletions !== null) {
-    const changed = patch.replace(/\r\n?/g, "\n").split("\n");
-    const countedAdditions = changed.filter(
-      (line) => line.startsWith("+") && !line.startsWith("+++"),
-    ).length;
-    const countedDeletions = changed.filter(
-      (line) => line.startsWith("-") && !line.startsWith("---"),
-    ).length;
+    const countedAdditions = hunks.reduce((total, hunk) => total + hunk.additions, 0);
+    const countedDeletions = hunks.reduce((total, hunk) => total + hunk.deletions, 0);
     if (
       (additions !== null && additions !== countedAdditions) ||
       (deletions !== null && deletions !== countedDeletions)
