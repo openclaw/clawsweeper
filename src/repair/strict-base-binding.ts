@@ -94,21 +94,14 @@ function authenticatedInstallationAppId(
   const authenticatedAppSlug = String(appSlug ?? "").trim();
   if (!/^[a-z0-9][a-z0-9-]*$/i.test(authenticatedAppSlug)) return null;
   try {
-    const installation = readJson(["api", "installation/repositories?per_page=1"]);
+    const installation = readJson(["api", "installation"]);
     const candidate = installation as LooseRecord;
-    if (
-      !Number.isSafeInteger(Number(candidate?.total_count)) ||
-      !Array.isArray(candidate?.repositories)
-    ) {
+    if (Number(candidate?.app_id) !== configuredAppId) {
       return null;
     }
-    const app = readJson([
-      "api",
-      `apps/${encodeURIComponent(authenticatedAppSlug)}`,
-    ]) as LooseRecord;
     if (
-      Number(app?.id) !== configuredAppId ||
-      String(app?.slug ?? "").toLowerCase() !== authenticatedAppSlug.toLowerCase()
+      typeof candidate?.app_slug === "string" &&
+      candidate.app_slug.toLowerCase() !== authenticatedAppSlug.toLowerCase()
     ) {
       return null;
     }
@@ -139,12 +132,8 @@ function fetchRuleset(
   if (!Number.isSafeInteger(id) || id <= 0) return null;
   const source = String(candidate.ruleset_source ?? repo);
   const sourceType = String(candidate.ruleset_source_type ?? "Repository");
-  const endpoint =
-    sourceType === "Organization"
-      ? `orgs/${source}/rulesets/${id}`
-      : sourceType === "Enterprise"
-        ? `enterprises/${source}/rulesets/${id}`
-        : `repos/${source}/rulesets/${id}`;
+  if (sourceType !== "Repository") return null;
+  const endpoint = `repos/${source}/rulesets/${id}`;
   try {
     const ruleset = readJson(["api", endpoint]);
     return ruleset && typeof ruleset === "object" && !Array.isArray(ruleset)
