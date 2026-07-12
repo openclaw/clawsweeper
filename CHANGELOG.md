@@ -11,9 +11,6 @@ checkpoint, and status-only commits are intentionally omitted.
 
 - Added versioned staged repair proof plans with deterministic cheap-to-expensive validation, behavioral profile-command staging, concrete-argv environment resolution and revalidation, structured package-manager option parsing, checkout immutability checks, retention of every allowlisted required command, exact-command deduplication, explicit-only non-live subsumption with digest provenance, fail-closed canonical-gate stalls and runtime budgets, topology-stable retry traces, and bounded machine-readable proof bound to the exact validated head/base after final or fallback history compaction. Thanks @vincentkoc.
 - Required every repair merge owner to verify a non-bypass GitHub App credential and server-enforced strict base-branch status checks from repository rulesets or classic protection before merging, using a fresh trusted finalizer with exact-repository mutation and administration verifier tokens while keeping Codex credentials administration-free.
-- Added a maintainer-only manual workflow that projects ClawSweeper's existing
-  Cloudflare Workers credential into crawl-remote's protected, main-only
-  production environment without exposing the token in workflow output.
 - Added a maintainer-only two-runner workflow that builds a hash-bound
   crawl-remote release artifact without production credentials, then requires
   that exact SHA to remain the current main tip on a fresh protected runner
