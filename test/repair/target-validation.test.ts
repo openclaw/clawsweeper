@@ -357,11 +357,15 @@ test("validation parser rejects snapshot-writing and formatter mutation flags", 
     "pnpm vitest run --update tests/browser/pageActions.test.ts",
     "pnpm exec vitest run -u tests/browser/pageActions.test.ts",
     "pnpm exec vitest run -u=true tests/browser/pageActions.test.ts",
+    "pnpm --filter app vitest run -u tests/browser/pageActions.test.ts",
+    "pnpm jest -u tests/example.test.ts",
     "pnpm exec jest --updateSnapshot tests/example.test.ts",
     "pnpm test:serial --update-snapshots tests/example.test.ts",
     "pnpm unit -u",
     "npm test -- -u",
     "bun test -u",
+    "bun run vitest -u",
+    "uv run vitest -u tests/browser/pageActions.test.ts",
     "python -u=true -m pytest tests/unit",
     "python -B -u -m pytest tests/unit",
     "pnpm lint --fix",
@@ -409,6 +413,20 @@ test("validation parser rejects snapshot-writing and formatter mutation flags", 
     "pytest",
     "tests/unit",
   ]);
+  assert.deepEqual(parseAllowedValidationCommand("uv run python -u -m pytest tests/unit"), [
+    "uv",
+    "run",
+    "python",
+    "-u",
+    "-m",
+    "pytest",
+    "tests/unit",
+  ]);
+  assert.deepEqual(
+    parseAllowedValidationCommand("ansible-playbook -u deploy playbook.yml --syntax-check"),
+    ["ansible-playbook", "-u", "deploy", "playbook.yml", "--syntax-check"],
+  );
+  assert.deepEqual(parseAllowedValidationCommand("gradle -u test"), ["gradle", "-u", "test"]);
   assert.deepEqual(parseAllowedValidationCommand("go mod verify"), ["go", "mod", "verify"]);
   assert.deepEqual(parseAllowedValidationCommand("go mod graph"), ["go", "mod", "graph"]);
   assert.deepEqual(parseAllowedValidationCommand("go mod why ./..."), [

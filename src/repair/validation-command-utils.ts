@@ -498,12 +498,33 @@ function hasMutatingValidationFlag(parts: readonly string[]) {
   ]);
   const commandParts = stripEnvPrefix(parts);
   if (commandParts.some((part) => denied.has(part.split("=", 1)[0] ?? ""))) return true;
-  const shortUpdateFlags = commandParts.filter((part) => (part.split("=", 1)[0] ?? "") === "-u");
+  return hasSnapshotUpdateShortFlag(commandParts);
+}
+
+function hasSnapshotUpdateShortFlag(parts: readonly string[]): boolean {
+  const commandParts = stripEnvPrefix(parts);
+  const executable = commandParts[0] ?? "";
+  const packageInvocation = packageManagerInvocation(commandParts);
+  if (packageInvocation?.executable === "pnpm" && packageInvocation.command === "exec") {
+    return hasSnapshotUpdateShortFlag(commandParts.slice(packageInvocation.commandIndex + 1));
+  }
+  if (
+    (executable === "uv" && commandParts[1] === "run") ||
+    (["bundle", "composer"].includes(executable) && commandParts[1] === "exec")
+  ) {
+    return hasSnapshotUpdateShortFlag(commandParts.slice(2));
+  }
+
+  const shortUpdateFlags = commandParts
+    .slice(1)
+    .filter((part) => (part.split("=", 1)[0] ?? "") === "-u");
   if (shortUpdateFlags.length === 0) return false;
+  if (packageInvocation) return true;
+  if (["jest", "vitest"].includes(executable)) return true;
+  if (!["python", "python3"].includes(executable)) return false;
   return !(
     shortUpdateFlags.length === 1 &&
     shortUpdateFlags[0] === "-u" &&
-    ["python", "python3"].includes(commandParts[0] ?? "") &&
     commandParts[1] === "-u"
   );
 }
