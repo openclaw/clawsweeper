@@ -19,7 +19,7 @@ At job finalization, the spool is sorted, deduplicated, and published as one or
 more immutable JSONL shards:
 
 ```text
-ledger/v1/events/YYYY/MM/DD/<producer-repo>/<producer>/<run-id>-<attempt>-<job>-<digest>-part-<index>.jsonl
+ledger/v1/events/YYYY/MM/DD/<producer-repo>/<producer>/<run-id>-<attempt>-<job>-<digest>-part-<index>-of-<count>.jsonl
 ```
 
 Per-job shards avoid a shared append hotspot while preventing one Git commit per
@@ -151,7 +151,10 @@ confidential-identifier checks as every other durable machine-text field.
   batch, so duplicates and cycles cannot hide across files. Numbered parts are
   grouped by their full producer/run identity, flattened in part order, and
   required to reproduce the exact deterministic packing, paths, and bytes that
-  the canonical writer would emit.
+  the canonical writer would emit. Immutable destination bindings retain each
+  producer run's partition date and complete shard-set manifest across later
+  import batches, so sequential imports cannot move a run or replace a complete
+  numbered set with a different part count.
 
 ## Privacy Boundary
 
