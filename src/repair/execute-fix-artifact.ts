@@ -3058,7 +3058,7 @@ function codexReviewFailureSummary(review: LooseRecord | null): string {
 function isFixableValidationError(error: JsonValue) {
   const message = String(error?.message ?? error);
   if (
-    /no merge base|validation_script_missing|mutated checkout|proof identity|clean validation checkout/i.test(
+    /no merge base|validation_script_missing|mutated checkout|proof identity|clean validation checkout|staged proof runtime budget exhausted|validation command runtime budget exhausted/i.test(
       message,
     )
   ) {

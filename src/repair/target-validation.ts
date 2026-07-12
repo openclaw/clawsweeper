@@ -44,6 +44,7 @@ const DEFAULT_BASE_BRANCH = "main";
 const DEFAULT_TARGET_SETUP_TIMEOUT_MS = 2 * 60 * 1000;
 const DEFAULT_TARGET_INSTALL_TIMEOUT_MS = 12 * 60 * 1000;
 const DEFAULT_TARGET_VALIDATION_TIMEOUT_MS = 12 * 60 * 1000;
+const MIN_VALIDATION_RETRY_BUDGET_MS = 1_000;
 
 export type TargetValidationOptions = {
   additionalValidationCommands?: string[];
@@ -539,11 +540,15 @@ function runValidationPlanCommand({
   }
   const startedAt = Date.now();
   while (true) {
+    const remainingBudgetMs = remainingCommandBudget(timeoutMs, startedAt);
+    if (remainingBudgetMs <= 0) {
+      throw validationCommandBudgetError(rendered);
+    }
     try {
       run(parts[0]!, parts.slice(1), {
         cwd,
         env: validationEnv,
-        timeoutMs: remainingCommandBudget(timeoutMs, startedAt),
+        timeoutMs: remainingBudgetMs,
       });
       assertValidationCheckoutIdentity(cwd, baseRef, checkoutIdentity);
       executed.add(commandIdentity);
@@ -556,7 +561,9 @@ function runValidationPlanCommand({
       };
     } catch (error) {
       assertValidationCheckoutIdentity(cwd, baseRef, checkoutIdentity);
+      const remainingBudgetMs = remainingCommandBudget(timeoutMs, startedAt);
       if (
+        remainingBudgetMs >= MIN_VALIDATION_RETRY_BUDGET_MS &&
         shouldRetryValidationCommand({
           parts,
           error,
@@ -566,6 +573,9 @@ function runValidationPlanCommand({
         })
       ) {
         continue;
+      }
+      if (remainingBudgetMs <= 0) {
+        throw validationCommandBudgetError(rendered, error);
       }
       throw new Error(
         `validation command failed (${rendered}): ${compactText(error.message, 12000)}`,
@@ -605,7 +615,14 @@ function assertValidationCheckoutIdentity(
 }
 
 function remainingCommandBudget(timeoutMs: number, startedAt: number) {
-  return Math.max(1, timeoutMs - Math.max(0, Date.now() - startedAt));
+  return Math.max(0, timeoutMs - Math.max(0, Date.now() - startedAt));
+}
+
+function validationCommandBudgetError(rendered: string, cause?: unknown) {
+  return new Error(
+    `validation command failed (${rendered}): validation command runtime budget exhausted`,
+    cause === undefined ? undefined : { cause },
+  );
 }
 
 export function preflightTargetValidationPlan(
@@ -856,6 +873,14 @@ function targetValidationEnv() {
   delete env.CODEX_HOME;
   delete env.GH_TOKEN;
   delete env.GITHUB_TOKEN;
+  delete env.GITHUB_ENV;
+  delete env.GITHUB_OUTPUT;
+  delete env.GITHUB_PATH;
+  delete env.GITHUB_STEP_SUMMARY;
+  delete env.ACTIONS_ID_TOKEN_REQUEST_TOKEN;
+  delete env.ACTIONS_ID_TOKEN_REQUEST_URL;
+  delete env.ACTIONS_RUNTIME_TOKEN;
+  delete env.ACTIONS_RUNTIME_URL;
   for (const key of Object.keys(env)) {
     if (/^CLAWSWEEPER_.*GH_TOKEN$/.test(key)) delete env[key];
   }

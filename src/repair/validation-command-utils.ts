@@ -78,6 +78,97 @@ const UNSAFE_PACKAGE_MANAGER_PATH_OPTIONS: Record<PackageManagerExecutable, Read
   bun: new Set(["-C", "--cwd"]),
 };
 
+const PACKAGE_COMMAND_ALIASES = new Map([
+  ["cit", "install-ci-test"],
+  ["i", "install"],
+  ["in", "install"],
+  ["ins", "install"],
+  ["inst", "install"],
+  ["insta", "install"],
+  ["instal", "install"],
+  ["isnt", "install"],
+  ["isnta", "install"],
+  ["isntal", "install"],
+  ["isntall", "install"],
+  ["ic", "clean-install"],
+  ["install-clean", "clean-install"],
+  ["isntall-clean", "clean-install"],
+  ["it", "install-test"],
+  ["rm", "remove"],
+  ["r", "remove"],
+  ["un", "uninstall"],
+  ["unlink", "uninstall"],
+  ["up", "update"],
+  ["upgrade", "update"],
+  ["run-script", "run"],
+  ["rum", "run"],
+  ["urn", "run"],
+  ["x", "exec"],
+]);
+
+const MUTATING_PACKAGE_COMMANDS = new Set([
+  "add",
+  "cache",
+  "ci",
+  "clean-install",
+  "config",
+  "create",
+  "dedupe",
+  "deploy",
+  "dist-tag",
+  "env",
+  "fetch",
+  "hook",
+  "import",
+  "init",
+  "install",
+  "install-ci-test",
+  "install-test",
+  "link",
+  "owner",
+  "pack",
+  "patch",
+  "patch-commit",
+  "pkg",
+  "profile",
+  "prune",
+  "publish",
+  "rebuild",
+  "remove",
+  "set",
+  "shrinkwrap",
+  "star",
+  "store",
+  "team",
+  "token",
+  "uninstall",
+  "unlink",
+  "unpublish",
+  "unstar",
+  "update",
+  "version",
+]);
+
+const MUTATING_PACKAGE_LIFECYCLE_SCRIPTS = new Set([
+  "dependencies",
+  "install",
+  "pack",
+  "postinstall",
+  "postpack",
+  "postprepare",
+  "postpublish",
+  "postuninstall",
+  "preinstall",
+  "prepack",
+  "preprepare",
+  "prepare",
+  "prepublish",
+  "prepublishonly",
+  "preuninstall",
+  "publish",
+  "uninstall",
+]);
+
 const UNSAFE_VALIDATION_ENV_NAMES = new Set([
   "AR",
   "AS",
@@ -208,9 +299,10 @@ export function packageScriptRequirement(
   const commandParts = stripEnvPrefix(parts);
   const invocation = packageManagerInvocation(commandParts);
   if (!invocation) return null;
-  const usesRunCommand = invocation.command === "run";
+  const normalizedCommand = normalizedPackageCommand(invocation.command);
+  const usesRunCommand = normalizedCommand === "run";
   if (invocation.executable !== "pnpm" && !usesRunCommand) return null;
-  const script = usesRunCommand ? invocation.args[0] : invocation.command;
+  const script = usesRunCommand ? invocation.args[0] : normalizedCommand;
   if (!script || ["exec", "dlx", "install", "add", "remove"].includes(script)) return null;
   const scriptIndex = usesRunCommand ? invocation.commandIndex + 1 : invocation.commandIndex;
   return {
@@ -228,7 +320,10 @@ export function packageScriptArguments(parts: readonly string[]): string[] {
   const invocation = packageManagerInvocation(parts);
   const requirement = packageScriptRequirement(parts);
   if (!invocation || !requirement) return [];
-  const args = invocation.command === "run" ? invocation.args.slice(1) : invocation.args;
+  const args =
+    normalizedPackageCommand(invocation.command) === "run"
+      ? invocation.args.slice(1)
+      : invocation.args;
   return args[0] === "--" ? args.slice(1) : args;
 }
 
@@ -563,18 +658,21 @@ function hasUnsafePackageRunner(parts: readonly string[]) {
   const executable = commandParts[0];
   if (!executable) return false;
   const packageInvocation = packageManagerInvocation(commandParts);
+  const packageCommand = packageInvocation
+    ? normalizedPackageCommand(packageInvocation.command)
+    : "";
 
-  if (packageInvocation?.executable === "npm" && packageInvocation.command === "exec") return true;
+  if (packageInvocation?.executable === "npm" && packageCommand === "exec") return true;
   if (
     executable === "bunx" ||
-    (packageInvocation?.executable === "bun" && packageInvocation.command === "x")
+    (packageInvocation?.executable === "bun" && packageCommand === "exec")
   ) {
     return true;
   }
-  if (packageInvocation?.executable === "pnpm" && packageInvocation.command === "dlx") return true;
+  if (packageInvocation?.executable === "pnpm" && packageCommand === "dlx") return true;
 
   const wrapper =
-    packageInvocation?.executable === "pnpm" && packageInvocation.command === "exec"
+    packageInvocation?.executable === "pnpm" && packageCommand === "exec"
       ? packageInvocation.args[0]
       : executable === "uv" && commandParts[1] === "run"
         ? commandParts[2]
@@ -647,7 +745,10 @@ function hasSnapshotUpdateShortFlag(parts: readonly string[]): boolean {
   const commandParts = stripEnvPrefix(parts);
   const executable = commandParts[0] ?? "";
   const packageInvocation = packageManagerInvocation(commandParts);
-  if (packageInvocation?.executable === "pnpm" && packageInvocation.command === "exec") {
+  if (
+    packageInvocation?.executable === "pnpm" &&
+    normalizedPackageCommand(packageInvocation.command) === "exec"
+  ) {
     return hasSnapshotUpdateShortFlag(commandParts.slice(packageInvocation.commandIndex + 1));
   }
   if (
@@ -725,10 +826,13 @@ function hasMutatingValidationCommand(parts: readonly string[]) {
   const commandParts = stripEnvPrefix(parts);
   const executable = commandParts[0] ?? "";
   const packageInvocation = packageManagerInvocation(commandParts);
-  const subcommand = packageInvocation?.command ?? commandParts[1] ?? "";
+  const subcommand = packageInvocation
+    ? normalizedPackageCommand(packageInvocation.command)
+    : (commandParts[1] ?? "");
   const packageScript = packageScriptRequirement(commandParts)?.name ?? "";
   const wrappedCommandStart =
-    packageInvocation?.executable === "pnpm" && packageInvocation.command === "exec"
+    packageInvocation?.executable === "pnpm" &&
+    normalizedPackageCommand(packageInvocation.command) === "exec"
       ? packageInvocation.commandIndex + 1
       : executable === "uv" && subcommand === "run"
         ? 2
@@ -751,20 +855,11 @@ function hasMutatingValidationCommand(parts: readonly string[]) {
     return !["diff", "fsck", "status"].includes(subcommand);
   }
   if (["pnpm", "npm", "bun"].includes(executable)) {
-    return [
-      "add",
-      "ci",
-      "clean-install",
-      "install",
-      "link",
-      "prune",
-      "publish",
-      "rebuild",
-      "remove",
-      "uninstall",
-      "unlink",
-      "update",
-    ].includes(subcommand);
+    if (MUTATING_PACKAGE_COMMANDS.has(subcommand)) return true;
+    if (subcommand === "run") {
+      const lifecycle = String(packageInvocation?.args[0] ?? "").toLowerCase();
+      return MUTATING_PACKAGE_LIFECYCLE_SCRIPTS.has(lifecycle);
+    }
   }
   if (executable === "go") {
     if (subcommand === "env") {
@@ -853,6 +948,11 @@ function hasMutatingValidationCommand(parts: readonly string[]) {
     return commandParts.some((part) => ["archive", "-exportArchive"].includes(part));
   }
   return false;
+}
+
+function normalizedPackageCommand(command: string): string {
+  const normalized = command.toLowerCase();
+  return PACKAGE_COMMAND_ALIASES.get(normalized) ?? normalized;
 }
 
 const SAFE_WRAPPED_VALIDATION_EXECUTABLES = new Set([

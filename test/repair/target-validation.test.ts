@@ -414,6 +414,23 @@ test("validation parser rejects snapshot-writing and formatter mutation flags", 
     "pnpm --config-dir . test",
     "pnpm --store-dir .pnpm-store test",
     "pnpm --config.ignore-scripts=false test",
+    "npm i",
+    "npm insta",
+    "npm cit",
+    "npm rm left-pad",
+    "npm rum install",
+    "npm x prettier",
+    "pnpm i",
+    "pnpm --filter app i",
+    "pnpm --filter app deploy",
+    "pnpm pack",
+    "pnpm run install",
+    "pnpm run postinstall",
+    "pnpm run-script postprepare",
+    "npm run install",
+    "npm run postinstall",
+    "bun run install",
+    "bun run postinstall",
     "npm --prefix . run test",
     "npm --userconfig .npmrc run test",
     "bun --cwd . test",
@@ -2059,6 +2076,44 @@ test("changed validation retries one transient check:changed failure", () => {
   }
 });
 
+test("changed validation does not retry after its command budget is exhausted", () => {
+  const marker = path.join(
+    os.tmpdir(),
+    `clawsweeper-validation-budget-attempt-${process.pid}-${Date.now()}.txt`,
+  );
+  const cwd = gitPackageFixture({
+    "check:changed":
+      "node -e \"const fs=require('fs'); const file=process.env.CLAWSWEEPER_TEST_ATTEMPT_FILE; const count=fs.existsSync(file)?Number(fs.readFileSync(file,'utf8')):0; fs.writeFileSync(file, String(count+1)); setTimeout(() => {}, 5000)\"",
+  });
+  git(cwd, "add", ".");
+  git(cwd, "commit", "-m", "initial");
+  attachOrigin(cwd);
+
+  const previousRetries = process.env.CLAWSWEEPER_VALIDATION_RETRIES;
+  const previousMarker = process.env.CLAWSWEEPER_TEST_ATTEMPT_FILE;
+  process.env.CLAWSWEEPER_VALIDATION_RETRIES = "1";
+  process.env.CLAWSWEEPER_TEST_ATTEMPT_FILE = marker;
+  try {
+    assert.throws(
+      () =>
+        runAllowedValidationCommands(
+          ["pnpm check:changed"],
+          cwd,
+          validationOptions("openclaw/openclaw", {
+            validationTimeoutMs: 1_500,
+            proofBudgetMs: 10_000,
+          }),
+        ),
+      /validation command runtime budget exhausted/,
+    );
+    assert.equal(fs.readFileSync(marker, "utf8"), "1");
+  } finally {
+    restoreEnv("CLAWSWEEPER_VALIDATION_RETRIES", previousRetries);
+    restoreEnv("CLAWSWEEPER_TEST_ATTEMPT_FILE", previousMarker);
+    fs.rmSync(marker, { force: true });
+  }
+});
+
 test("target validation strips Codex, model, and GitHub write credentials", () => {
   const secretNames = [
     "OPENAI_API_KEY",
@@ -2067,6 +2122,12 @@ test("target validation strips Codex, model, and GitHub write credentials", () =
     "CODEX_HOME",
     "GH_TOKEN",
     "GITHUB_TOKEN",
+    "GITHUB_ENV",
+    "GITHUB_OUTPUT",
+    "GITHUB_PATH",
+    "GITHUB_STEP_SUMMARY",
+    "ACTIONS_ID_TOKEN_REQUEST_TOKEN",
+    "ACTIONS_RUNTIME_TOKEN",
     "CLAWSWEEPER_RULESET_GH_TOKEN",
   ];
   const secretNameArray = `[${secretNames.map((name) => `'${name}'`).join(",")}]`;
