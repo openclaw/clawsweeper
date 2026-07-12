@@ -975,6 +975,7 @@ jobs:
       - name: Post-flight finalize fix PRs
         id: post_flight
         if: ${{ success() && steps.check_job.outputs.job_exists == '1' && env.CLAWSWEEPER_ALLOW_EXECUTE == '1' && env.CLAWSWEEPER_ALLOW_FIX_PR == '1' }}
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ steps.target_post_flight_token.outputs.token }}
           CLAWSWEEPER_AUTHENTICATED_APP_ID: ${{ steps.mutation_app.outputs.app_id }}
@@ -1044,6 +1045,15 @@ jobs:
           if-no-files-found: warn
 
       - name: Record work failure
-        if: ${{ always() && (failure() || steps.post_flight.outputs.report_outcome == 'blocked' || steps.post_flight.outputs.report_outcome == 'requeue') && steps.crabfleet_session.outcome == 'success' }}
+        if: ${{ always() && (failure() || steps.post_flight.outcome == 'failure' || steps.post_flight.outputs.report_outcome == 'blocked' || steps.post_flight.outputs.report_outcome == 'requeue') && steps.crabfleet_session.outcome == 'success' }}
         continue-on-error: true
         run: pnpm run repair:action-session -- update --state blocked --phase action_failed --summary "Repair Action failed before all completion gates passed" --completion-reason action_failed
+
+      - name: Fail incomplete post-flight result
+        if: ${{ always() && (steps.post_flight.outcome == 'failure' || steps.post_flight.outputs.report_outcome != 'success') }}
+        env:
+          POST_FLIGHT_OUTCOME: ${{ steps.post_flight.outputs.report_outcome }}
+          POST_FLIGHT_DETAIL: ${{ steps.post_flight.outputs.report_detail }}
+        run: |
+          echo "post-flight did not complete: ${POST_FLIGHT_OUTCOME:-missing}: ${POST_FLIGHT_DETAIL:-no report detail}" >&2
+          exit 1

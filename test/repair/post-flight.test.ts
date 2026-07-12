@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -332,6 +332,10 @@ test("merge post-flight requires exact proof and server-enforced strict base bin
       "  process.exit(0);",
       "}",
       "if (args[0] === 'pr' && args[1] === 'merge') {",
+      "  if (process.env.FAKE_GH_MERGE_RACE === '1') {",
+      "    process.stderr.write('base branch was modified; review and try the merge again\\n');",
+      "    process.exit(1);",
+      "  }",
       "  fs.writeFileSync(process.env.FAKE_GH_MERGED_FILE, '1');",
       "  process.exit(0);",
       "}",
@@ -382,11 +386,7 @@ test("merge post-flight requires exact proof and server-enforced strict base bin
     const alreadyMergedReport = JSON.parse(fs.readFileSync(alreadyMergedPath, "utf8"));
     alreadyMergedReport.actions[0].commit = "d".repeat(40);
     fs.writeFileSync(alreadyMergedPath, JSON.stringify(alreadyMergedReport, null, 2));
-    execFileSync(process.execPath, ["dist/repair/post-flight.js", jobPath, resultPath], {
-      cwd: repoRoot,
-      env,
-      stdio: "pipe",
-    });
+    runPostFlight(jobPath, resultPath, env, 1);
     const alreadyMerged = JSON.parse(fs.readFileSync(reportPath, "utf8"));
     assert.equal(alreadyMerged.actions[0]?.status, "blocked");
     assert.equal(
@@ -405,11 +405,7 @@ test("merge post-flight requires exact proof and server-enforced strict base bin
     staleAfterMerged.actions[0].merge_preflight.validated_head_sha = staleHead;
     fs.writeFileSync(fixReportPath, JSON.stringify(staleAfterMerged, null, 2));
 
-    execFileSync(process.execPath, ["dist/repair/post-flight.js", jobPath, resultPath], {
-      cwd: repoRoot,
-      env,
-      stdio: "pipe",
-    });
+    runPostFlight(jobPath, resultPath, env, 1);
     const stalePostFlight = JSON.parse(fs.readFileSync(reportPath, "utf8"));
     assert.equal(stalePostFlight.actions[0]?.status, "blocked");
     assert.equal(
@@ -429,11 +425,7 @@ test("merge post-flight requires exact proof and server-enforced strict base bin
     fs.writeFileSync(fixReportPath, JSON.stringify(staleBaseReport, null, 2));
     fs.rmSync(reportPath, { force: true });
     fs.rmSync(viewCountPath, { force: true });
-    execFileSync(process.execPath, ["dist/repair/post-flight.js", jobPath, resultPath], {
-      cwd: repoRoot,
-      env,
-      stdio: "pipe",
-    });
+    runPostFlight(jobPath, resultPath, env, 1);
     const staleBasePostFlight = JSON.parse(fs.readFileSync(reportPath, "utf8"));
     assert.equal(staleBasePostFlight.actions[0]?.status, "blocked");
     assert.equal(
@@ -445,11 +437,7 @@ test("merge post-flight requires exact proof and server-enforced strict base bin
     writeMergeReports(runDir, resultPath);
     fs.rmSync(reportPath, { force: true });
     fs.rmSync(viewCountPath, { force: true });
-    execFileSync(process.execPath, ["dist/repair/post-flight.js", jobPath, resultPath], {
-      cwd: repoRoot,
-      env,
-      stdio: "pipe",
-    });
+    runPostFlight(jobPath, resultPath, env, 1);
     const unboundReport = JSON.parse(fs.readFileSync(reportPath, "utf8"));
     assert.equal(unboundReport.actions[0]?.status, "blocked");
     assert.equal(
@@ -462,17 +450,35 @@ test("merge post-flight requires exact proof and server-enforced strict base bin
     fs.rmSync(reportPath, { force: true });
     fs.rmSync(viewCountPath, { force: true });
     fs.rmSync(commentsCountPath, { force: true });
-    execFileSync(process.execPath, ["dist/repair/post-flight.js", jobPath, resultPath], {
-      cwd: repoRoot,
-      env: { ...env, FAKE_GH_STRICT_BASE: "1", FAKE_GH_LATE_SECURITY: "1" },
-      stdio: "pipe",
-    });
+    runPostFlight(
+      jobPath,
+      resultPath,
+      { ...env, FAKE_GH_STRICT_BASE: "1", FAKE_GH_LATE_SECURITY: "1" },
+      1,
+    );
     const lateSecurityReport = JSON.parse(fs.readFileSync(reportPath, "utf8"));
     assert.equal(lateSecurityReport.actions[0]?.status, "blocked");
     assert.equal(
       lateSecurityReport.actions[0]?.reason,
       "security-sensitive target requires central security triage",
     );
+    assert.equal(fs.existsSync(mergeFlagPath), false);
+
+    writeMergeReports(runDir, resultPath);
+    fs.rmSync(reportPath, { force: true });
+    fs.rmSync(viewCountPath, { force: true });
+    fs.rmSync(commentsCountPath, { force: true });
+    runPostFlight(
+      jobPath,
+      resultPath,
+      { ...env, FAKE_GH_STRICT_BASE: "1", FAKE_GH_MERGE_RACE: "1" },
+      1,
+    );
+    const mergeRaceReport = JSON.parse(fs.readFileSync(reportPath, "utf8"));
+    assert.equal(mergeRaceReport.outcome, "requeue");
+    assert.equal(mergeRaceReport.actions[0]?.status, "blocked");
+    assert.equal(mergeRaceReport.actions[0]?.retry_recommended, true);
+    assert.match(mergeRaceReport.actions[0]?.reason, /merge attempt needs branch refresh/);
     assert.equal(fs.existsSync(mergeFlagPath), false);
 
     writeMergeReports(runDir, resultPath);
@@ -595,7 +601,7 @@ test("post-flight keeps no-timestamp pending duplicate checks visible", () => {
   }
 });
 
-test("post-flight exports a blocked report even when the command exits successfully", () => {
+test("post-flight exports a blocked report before exiting unsuccessfully", () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-post-flight-"));
   const jobPath = path.join(tmp, "job.md");
   const runDir = path.join(tmp, "run");
@@ -620,16 +626,17 @@ test("post-flight exports a blocked report even when the command exits successfu
   );
 
   try {
-    execFileSync(process.execPath, ["dist/repair/post-flight.js", jobPath, resultPath], {
-      cwd: repoRoot,
-      env: {
+    runPostFlight(
+      jobPath,
+      resultPath,
+      {
         ...process.env,
         CLAWSWEEPER_ALLOW_EXECUTE: "1",
         CLAWSWEEPER_ALLOWED_OWNER: "openclaw",
         GITHUB_OUTPUT: outputPath,
       },
-      stdio: "pipe",
-    });
+      1,
+    );
 
     const report = JSON.parse(fs.readFileSync(reportPath, "utf8"));
     assert.equal(report.outcome, "blocked");
@@ -639,6 +646,22 @@ test("post-flight exports a blocked report even when the command exits successfu
     fs.rmSync(tmp, { recursive: true, force: true });
   }
 });
+
+function runPostFlight(
+  jobPath: string,
+  resultPath: string,
+  env: NodeJS.ProcessEnv,
+  expectedStatus: number,
+) {
+  const child = spawnSync(process.execPath, ["dist/repair/post-flight.js", jobPath, resultPath], {
+    cwd: repoRoot,
+    env,
+    encoding: "utf8",
+    stdio: "pipe",
+  });
+  assert.equal(child.status, expectedStatus, child.stderr || child.stdout);
+  return child;
+}
 
 function writeIssueImplementationJob(jobPath: string) {
   fs.writeFileSync(

@@ -81,6 +81,14 @@ test("issue build workflow reports an opened PR without calling pending CI block
     workflow,
     /steps\.post_flight\.outputs\.report_outcome == 'success'[\s\S]*completion-reason gates_passed/,
   );
+  assert.match(
+    workflow,
+    /name: Post-flight finalize fix PRs[\s\S]*continue-on-error: true[\s\S]*name: Fail incomplete post-flight result/,
+  );
+  assert.match(
+    workflow,
+    /steps\.post_flight\.outcome == 'failure' \|\| steps\.post_flight\.outputs\.report_outcome != 'success'/,
+  );
   assert.match(workflow, /The exact independently validated repair was published at/);
   assert.doesNotMatch(
     workflow,

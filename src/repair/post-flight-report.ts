@@ -103,6 +103,10 @@ export function summarizePostFlightReport(report: LooseRecord): PostFlightReport
   };
 }
 
+export function postFlightOutcomeExitCode(outcome: PostFlightReportOutcome): number {
+  return outcome === "success" ? 0 : 1;
+}
+
 function actionDetail(action: JsonValue, fallback: string): string {
   const reason = compactOutput(String(action?.reason ?? ""));
   const name = compactOutput(String(action?.action ?? ""));

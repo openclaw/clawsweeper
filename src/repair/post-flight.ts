@@ -36,6 +36,7 @@ import { serverStrictBaseBindingBlock } from "./strict-base-binding.js";
 import { compactText as compactPlainText } from "./text-utils.js";
 import { verifyPublishedReceipt } from "./execution-handoff.js";
 import {
+  postFlightOutcomeExitCode,
   publicationOnlyPostFlightAction,
   shouldFinalizePublicationOnlyPostFlight,
   summarizePostFlightReport,
@@ -126,8 +127,7 @@ if (!fixReport) {
     status: "skipped",
     reason: "no fix-execution-report.json",
   });
-  writeReport(report, resultPath);
-  process.exit(0);
+  process.exit(postFlightOutcomeExitCode(writeReport(report, resultPath).outcome));
 }
 
 const fixActions = publicationReceipt
@@ -150,7 +150,7 @@ if (report.actions.length === 0) {
   });
 }
 
-writeReport(report, resultPath);
+process.exitCode = postFlightOutcomeExitCode(writeReport(report, resultPath).outcome);
 
 function finalizeFixPr(action: LooseRecord) {
   const base = {
@@ -981,6 +981,7 @@ function writeReport(report: LooseRecord, resultPath: string) {
     );
   }
   console.log(JSON.stringify(finalReport, null, 2));
+  return summary;
 }
 
 function normalizeIssueRef(value: JsonValue) {

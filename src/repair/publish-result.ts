@@ -106,6 +106,8 @@ function publishResult(resultPath: string) {
     head_sha: headSha || null,
     workflow_conclusion: workflowConclusion || null,
     workflow_status: workflowStatus || null,
+    post_flight_outcome: postFlightReport.outcome ?? null,
+    post_flight_detail: postFlightReport.detail ?? null,
     workflow_created_at:
       metadata?.createdAt ?? metadata?.created_at ?? previousRecord?.workflow_created_at ?? null,
     workflow_updated_at:

@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   isPublicationOnlyPostFlightJob,
+  postFlightOutcomeExitCode,
   publicationOnlyPostFlightAction,
   shouldFinalizePublicationOnlyPostFlight,
   summarizePostFlightReport,
@@ -136,4 +137,10 @@ test("post-flight report requests requeue only when every incomplete action is r
     }).outcome,
     "blocked",
   );
+});
+
+test("post-flight exits nonzero for blocked and requeue reports", () => {
+  assert.equal(postFlightOutcomeExitCode("success"), 0);
+  assert.equal(postFlightOutcomeExitCode("blocked"), 1);
+  assert.equal(postFlightOutcomeExitCode("requeue"), 1);
 });
