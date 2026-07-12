@@ -1,0 +1,187 @@
+name: Deploy crawl-remote production
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: Type "deploy crawl-remote production" to confirm
+        required: true
+        type: string
+      main_sha:
+        description: Full 40-character SHA at the tip of crawl-remote main
+        required: true
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: deploy-crawl-remote-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Migrate and deploy immutable crawl-remote main
+    if: >-
+      ${{
+        github.actor == 'vincentkoc' &&
+        github.actor_id == '25068' &&
+        github.triggering_actor == 'vincentkoc' &&
+        github.run_attempt == 1 &&
+        github.ref == 'refs/heads/main' &&
+        inputs.confirmation == 'deploy crawl-remote production'
+      }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    environment:
+      name: crawl-remote-production
+      url: https://crawl-remote.services-91b.workers.dev
+    env:
+      CI: "true"
+      CLAWSWEEPER_APP_CLIENT_ID: Iv23liOECG0slfuhz093
+      CLOUDFLARE_ACCOUNT_ID: 91b59577e757131d68d55a471fe32aca
+      PRODUCTION_URL: https://crawl-remote.services-91b.workers.dev
+      TARGET_REPOSITORY: openclaw/crawl-remote
+    steps:
+      - name: Create exact-repository read token
+        id: target-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
+          owner: openclaw
+          repositories: crawl-remote
+          permission-contents: read
+
+      - name: Authorize immutable main release
+        id: authorize
+        env:
+          GH_TOKEN: ${{ steps.target-token.outputs.token }}
+          REQUESTED_SHA: ${{ inputs.main_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ ! "$REQUESTED_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::main_sha must be a full lowercase 40-character commit SHA."
+            exit 1
+          fi
+
+          CURRENT_MAIN_SHA="$(
+            gh api "repos/$TARGET_REPOSITORY/commits/main" --jq '.sha'
+          )"
+          if [[ "$REQUESTED_SHA" != "$CURRENT_MAIN_SHA" ]]; then
+            echo "::error::main_sha does not match the current crawl-remote main tip."
+            exit 1
+          fi
+
+          echo "deploy_sha=$REQUESTED_SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout approved crawl-remote main
+        uses: "actions/checkout\u00409c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0" # v7
+        with:
+          repository: openclaw/crawl-remote
+          ref: ${{ steps.authorize.outputs.deploy_sha }}
+          token: ${{ steps.target-token.outputs.token }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify checked-out release SHA
+        env:
+          DEPLOY_SHA: ${{ steps.authorize.outputs.deploy_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$DEPLOY_SHA"
+
+      - name: Setup Node
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version-file: .node-version
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      - name: Validate Worker bundle
+        run: npm run deploy -- --dry-run --outdir .wrangler/deploy-dry-run
+
+      - name: Freeze current main as the release unit
+        env:
+          DEPLOY_SHA: ${{ steps.authorize.outputs.deploy_sha }}
+          GH_TOKEN: ${{ steps.target-token.outputs.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          CURRENT_MAIN_SHA="$(
+            gh api "repos/$TARGET_REPOSITORY/commits/main" --jq '.sha'
+          )"
+          if [[ "$CURRENT_MAIN_SHA" != "$DEPLOY_SHA" ]]; then
+            echo "::error::crawl-remote main advanced; dispatch a new deployment."
+            exit 1
+          fi
+
+      - name: Apply remote D1 migrations
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.OPENCLAW_CLOUDFLARE_WORKERS_API_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$CLOUDFLARE_API_TOKEN"
+          npm run db:migrate:remote
+
+      - name: Deploy Worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.OPENCLAW_CLOUDFLARE_WORKERS_API_TOKEN }}
+          DEPLOY_SHA: ${{ steps.authorize.outputs.deploy_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$CLOUDFLARE_API_TOKEN"
+          npm run deploy -- --message "main ${DEPLOY_SHA}"
+
+      - name: Verify production endpoints
+        env:
+          CONTRACT_RESPONSE: ${{ runner.temp }}/crawl-remote-contract.json
+          HEALTH_RESPONSE: ${{ runner.temp }}/crawl-remote-health.json
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          curl --fail-with-body --silent --show-error \
+            --retry 6 --retry-all-errors --retry-delay 5 \
+            --output "$HEALTH_RESPONSE" \
+            "$PRODUCTION_URL/health"
+          curl --fail-with-body --silent --show-error \
+            --retry 6 --retry-all-errors --retry-delay 5 \
+            --output "$CONTRACT_RESPONSE" \
+            "$PRODUCTION_URL/v1/contract"
+
+          node --input-type=module <<'NODE'
+          import { readFileSync } from 'node:fs';
+
+          const health = JSON.parse(readFileSync(process.env.HEALTH_RESPONSE, 'utf8'));
+          if (health.ok !== true) {
+            throw new Error('production /health response is not healthy');
+          }
+
+          const contract = JSON.parse(readFileSync(process.env.CONTRACT_RESPONSE, 'utf8'));
+          if (contract.service !== 'crawl-remote' || contract.protocol_version !== 'v1') {
+            throw new Error('production /v1/contract response is not the crawl-remote v1 contract');
+          }
+
+          const routes = Array.isArray(contract.routes) ? contract.routes : [];
+          for (const path of ['/health', '/v1/contract']) {
+            if (!routes.some((route) => route?.method === 'GET' && route?.path === path)) {
+              throw new Error(`production contract is missing GET ${path}`);
+            }
+          }
+
+          console.log('Production health and contract verified.');
+          NODE
