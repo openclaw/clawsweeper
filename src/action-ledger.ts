@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { isIP } from "node:net";
 import path from "node:path";
 
 import {
@@ -13,7 +14,6 @@ import {
   type SafeReadRoot,
 } from "./action-ledger-files.js";
 import { normalizeRepo, slugForRepo } from "./repository-profiles.js";
-import { compareStableText, sortStable, stableJson } from "./stable-json.js";
 
 export const ACTION_EVENT_SCHEMA = "clawsweeper.state-ledger-event.v1";
 
@@ -377,15 +377,16 @@ export const ACTION_EVENT_CONFIDENTIAL_IDENTIFIER_PATTERN_SOURCES = [
   "/(?:[Uu][Ss][Ee][Rr][Ss]|[Hh][Oo][Mm][Ee]|[Pp][Rr][Ii][Vv][Aa][Tt][Ee]|[Tt][Mm][Pp])/",
   "\\\\[Uu][Ss][Ee][Rr][Ss]\\\\",
   "(?:^|[\\\\/])[A-Za-z]:[\\\\/]",
+  "%[0-9A-Fa-f]{2}",
   "BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY",
   "(?:[Gg][Hh][PpOoUuSsRr]_[A-Za-z0-9]{16,}|[Gg][Ii][Tt][Hh][Uu][Bb]_[Pp][Aa][Tt]_[A-Za-z0-9_]{16,}|[Ss][Kk]-[A-Za-z0-9_-]{16,})",
   "eyJ[A-Za-z0-9_-]{5,}\\.eyJ[A-Za-z0-9_-]{5,}\\.[A-Za-z0-9_-]{16,}",
   "(?:[Bb][Ee][Aa][Rr][Ee][Rr]|[Aa][Uu][Tt][Hh][Oo][Rr][Ii][Zz][Aa][Tt][Ii][Oo][Nn]|[Aa][Pp][Ii][_-]?(?:[Kk][Ee][Yy]|[Tt][Oo][Kk][Ee][Nn])|[Aa][Cc][Cc][Ee][Ss][Ss][_-]?[Tt][Oo][Kk][Ee][Nn]|[Cc][Ll][Ii][Ee][Nn][Tt][_-]?[Ss][Ee][Cc][Rr][Ee][Tt]|[Cc][Ll][Oo][Uu][Dd][Ff][Ll][Aa][Rr][Ee][_-]?(?:[Aa][Pp][Ii][_-]?)?(?:[Kk][Ee][Yy]|[Tt][Oo][Kk][Ee][Nn]))(?:\\s+|%20|\\s*[:=_-]\\s*)[A-Za-z0-9._~+\\/-]{16,}={0,2}",
   "[Bb][Aa][Ss][Ii][Cc](?:\\s+|%20)[A-Za-z0-9+/]{8,}={0,2}",
   "[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}",
-  "(?:^|[/:@])(?:localhost|(?:[A-Za-z0-9-]+\\.)+(?:local|localhost|internal|corp|lan|home(?:\\.arpa)?)|(?:internal|intranet)\\.(?:[A-Za-z0-9-]+\\.)*[A-Za-z0-9-]+)(?:$|[/:])",
-  "(?:^|[/:@])(?:10(?:\\.[0-9]{1,3}){3}|127(?:\\.[0-9]{1,3}){3}|169\\.254(?:\\.[0-9]{1,3}){2}|192\\.168(?:\\.[0-9]{1,3}){2}|172\\.(?:1[6-9]|2[0-9]|3[01])(?:\\.[0-9]{1,3}){2})(?:$|[/:])",
-  "(?:^|[\\[/:@])(?:(?:::1)|(?:[Ff][CcDd][0-9A-Fa-f]{2}|[Ff][Ee][89AaBb][0-9A-Fa-f]):[0-9A-Fa-f:]+)(?:\\]|$|[/:])",
+  "(?:^|[/:@])(?:localhost|(?:[A-Za-z0-9-]+\\.)+(?:local|localhost|internal|corp|lan|home(?:\\.arpa)?)|(?:internal|intranet)\\.(?:[A-Za-z0-9-]+\\.)*[A-Za-z0-9-]+)\\.?(?:$|[/:])",
+  "(?:^|[^0-9])(?:10(?:\\.[0-9]{1,3}){3}|127(?:\\.[0-9]{1,3}){3}|169\\.254(?:\\.[0-9]{1,3}){2}|192\\.168(?:\\.[0-9]{1,3}){2}|172\\.(?:1[6-9]|2[0-9]|3[01])(?:\\.[0-9]{1,3}){2})(?:$|[^0-9])",
+  "(?:^|[\\[/:@])(?:(?:::1)|(?:0{1,4}:){7}0*1|(?:(?:::)(?:[Ff]{4}:)?|(?:0{1,4}:){5}[Ff]{4}:|(?:0{1,4}:){6})7[fF][0-9A-Fa-f]{2}:[0-9A-Fa-f]{1,4}|(?:[Ff][CcDd][0-9A-Fa-f]{2}|[Ff][Ee][89AaBb][0-9A-Fa-f]):[0-9A-Fa-f:]+)(?:\\]|$|[/:])",
 ] as const;
 
 const POSITIVE_INTEGER_ATTRIBUTE_KEYS = new Set<ActionEventAttributeKey>([
@@ -700,6 +701,10 @@ export function isActionEventReasonCode(value: string): value is ActionEventReas
   return ACTION_EVENT_REASON_CODE_VALUES.has(value);
 }
 
+export function actionLedgerJson(value: unknown): string {
+  return serializeCanonicalJson(canonicalJsonValue(value));
+}
+
 export function actionEventKey(scope: string, identity: unknown): string {
   const normalizedScope = eventScope(scope);
   return `${normalizedScope}:${sha256(canonicalIdentityJson(identity))}`;
@@ -742,9 +747,13 @@ export function actionEventSpoolRelativePath(repository: string, eventId: string
   return path.join(
     ".clawsweeper-repair",
     "action-events",
-    slugForRepo(normalizedRepo),
+    actionEventSpoolRepositoryDirectory(normalizedRepo),
     `${eventId}.json`,
   );
+}
+
+function actionEventSpoolRepositoryDirectory(repository: string): string {
+  return `${slugForRepo(repository)}-${sha256(repository).slice(0, 12)}`;
 }
 
 export function actionEventShardRelativePath(
@@ -755,7 +764,7 @@ export function actionEventShardRelativePath(
   const normalizedEvents = normalizeShardEvents(events);
   if (normalizedEvents.length === 0) throw new Error("action event shard requires events");
   const [year, month, date] = normalizedIdentity.partitionDate.split("-");
-  const identityDigest = sha256(stableJson(normalizedIdentity)).slice(0, 12);
+  const identityDigest = sha256(actionLedgerJson(normalizedIdentity)).slice(0, 12);
   const filename = [
     safePathSegment(normalizedIdentity.runId),
     String(normalizedIdentity.runAttempt),
@@ -780,7 +789,7 @@ export function createActionEvent(
   options: { now?: () => Date } = {},
 ): ActionEvent {
   const semantic = actionEventSemanticValue(input);
-  const semanticSha256 = sha256(stableJson(semantic));
+  const semanticSha256 = sha256(actionLedgerJson(semantic));
   const recordedAt = (options.now ?? (() => new Date()))().toISOString();
   const occurredAt = input.occurredAt
     ? requiredTimestamp(input.occurredAt, "action event occurredAt")
@@ -826,7 +835,7 @@ export function writeActionEvent(
     );
   }
 
-  const content = `${JSON.stringify(sortStable(candidate), null, 2)}\n`;
+  const content = `${actionLedgerJson(candidate)}\n`;
   const status = writeCreateOnlyFile(target, content, () => {
     const raced = readActionEventIfExists(target);
     if (!raced) throw new Error(`action event appeared without readable content: ${eventPath}`);
@@ -851,18 +860,18 @@ export function writeActionEventShard(
   const relativePath = actionEventShardRelativePath(identity, normalizedEvents);
   const target = prepareSafeWriteTarget(root, relativePath, "action event shard");
   const shardPath = target.path;
-  const content = normalizedEvents.map((event) => stableJson(event)).join("\n") + "\n";
+  const content = normalizedEvents.map((event) => actionLedgerJson(event)).join("\n") + "\n";
   const digest = sha256(content);
   const existing = readUtf8FileIfExistsNoFollow(target);
   if (existing !== null) {
-    return compareExistingShard(shardPath, relativePath, existing, digest, normalizedEvents.length);
+    return compareExistingShard(shardPath, relativePath, existing, digest, normalizedEvents);
   }
   const status = writeCreateOnlyFile(target, content, () => {
     const raced = readUtf8FileIfExistsNoFollow(target);
     if (raced === null) {
       throw new Error(`action event shard appeared without readable content: ${shardPath}`);
     }
-    compareExistingShard(shardPath, relativePath, raced, digest, normalizedEvents.length);
+    compareExistingShard(shardPath, relativePath, raced, digest, normalizedEvents);
   });
   return {
     status,
@@ -895,12 +904,7 @@ export function readActionEventShardAt(
 }
 
 function readActionEventShardTarget(target: SafeWriteTarget): ActionEvent[] {
-  return readUtf8FileNoFollow(target)
-    .split(/\r?\n/)
-    .filter(Boolean)
-    .map((line, index) =>
-      validateActionEvent(JSON.parse(line) as unknown, `${target.path}:${index + 1}`),
-    );
+  return parseActionEventShardContent(readUtf8FileNoFollow(target), target.path);
 }
 
 export function readSpooledActionEvents(
@@ -909,10 +913,11 @@ export function readSpooledActionEvents(
 ): ActionEvent[] {
   const safeRoot =
     typeof root === "string" ? prepareSafeReadRoot(root, "action event spool") : root;
+  const normalizedRepository = requiredRepo(repository);
   const relativeDirectory = path.join(
     ".clawsweeper-repair",
     "action-events",
-    slugForRepo(requiredRepo(repository)),
+    actionEventSpoolRepositoryDirectory(normalizedRepository),
   );
   let entries;
   try {
@@ -930,15 +935,14 @@ export function readSpooledActionEvents(
       }
       return entry.name.endsWith(".json");
     })
-    .map((entry) =>
-      readActionEventTarget(
-        prepareSafeReadTarget(
-          safeRoot,
-          path.join(relativeDirectory, entry.name),
-          "action event spool entry",
-        ),
-      ),
-    )
+    .map((entry) => {
+      const relativePath = path.join(relativeDirectory, entry.name);
+      const event = readActionEventTarget(
+        prepareSafeReadTarget(safeRoot, relativePath, "action event spool entry"),
+      );
+      assertCanonicalSpooledEventPath(event, relativePath, normalizedRepository);
+      return event;
+    })
     .sort(compareEvents);
 }
 
@@ -973,18 +977,31 @@ export function readAllSpooledActionEvents(root: string | SafeReadRoot): ActionE
         );
       }
       if (!file.name.endsWith(".json")) continue;
-      events.push(
-        readActionEventTarget(
-          prepareSafeReadTarget(
-            safeRoot,
-            path.join(relativeDirectory, file.name),
-            "action event spool entry",
-          ),
-        ),
+      const relativePath = path.join(relativeDirectory, file.name);
+      const event = readActionEventTarget(
+        prepareSafeReadTarget(safeRoot, relativePath, "action event spool entry"),
       );
+      assertCanonicalSpooledEventPath(event, relativePath);
+      events.push(event);
     }
   }
   return events.sort(compareEvents);
+}
+
+function assertCanonicalSpooledEventPath(
+  event: ActionEvent,
+  relativePath: string,
+  expectedRepository?: string,
+): void {
+  if (expectedRepository && event.subject.repository !== expectedRepository) {
+    throw new Error(
+      `action event spool repository mismatch: ${event.subject.repository} != ${expectedRepository}`,
+    );
+  }
+  const canonicalPath = actionEventSpoolRelativePath(event.subject.repository, event.event_id);
+  if (path.normalize(relativePath) !== path.normalize(canonicalPath)) {
+    throw new Error(`action event spool path is not canonical: ${relativePath}`);
+  }
 }
 
 function actionEventSemanticValue(input: ActionEventInput) {
@@ -1136,14 +1153,14 @@ function compareEvidence(
   left: ReturnType<typeof normalizeEvidence>,
   right: ReturnType<typeof normalizeEvidence>,
 ): number {
-  return compareStableText(stableJson(left), stableJson(right));
+  return compareLedgerText(actionLedgerJson(left), actionLedgerJson(right));
 }
 
 function normalizeAttributes(attributes: ActionEventAttributes) {
   const normalized: Record<string, ActionEventScalar | ActionEventScalar[]> = {};
   const allowedKeys = new Set<string>(ACTION_EVENT_ATTRIBUTE_KEYS);
   for (const [key, raw] of Object.entries(attributes).sort(([left], [right]) =>
-    compareStableText(left, right),
+    compareLedgerText(left, right),
   )) {
     const normalizedKey = machineText(key, "action event attribute key");
     if (!allowedKeys.has(normalizedKey)) {
@@ -1224,7 +1241,7 @@ function normalizePrivacy(privacy: ActionEventPrivacy | undefined) {
     ),
     fields_dropped: [
       ...new Set(value.fieldsDropped.map((field) => machineText(field, "field"))),
-    ].sort(compareStableText),
+    ].sort(compareLedgerText),
   };
 }
 
@@ -1240,12 +1257,7 @@ function normalizeShardEvents(events: readonly ActionEvent[]): ActionEvent[] {
         actualSemanticSha256: validated.semantic_sha256,
       });
     }
-    if (
-      existing &&
-      (existing.occurred_at !== validated.occurred_at ||
-        existing.recorded_at !== validated.recorded_at ||
-        stableJson(existing) !== stableJson(validated))
-    ) {
+    if (existing && actionEventReplayJson(existing) !== actionEventReplayJson(validated)) {
       throw new Error(`action event ${validated.event_id} has conflicting duplicate metadata`);
     }
     byId.set(validated.event_id, existing ?? validated);
@@ -1292,7 +1304,7 @@ function validateShardProducer(
 function compareEvents(left: ActionEvent, right: ActionEvent): number {
   return (
     compareActionEventTimestamps(left.occurred_at, right.occurred_at) ||
-    compareStableText(left.event_id, right.event_id)
+    compareLedgerText(left.event_id, right.event_id)
   );
 }
 
@@ -1427,23 +1439,64 @@ function compareExistingShard(
   relativePath: string,
   existing: string,
   candidateSha256: string,
-  eventCount: number,
+  candidateEvents: readonly ActionEvent[],
 ): ActionEventShardWriteResult {
   const existingSha256 = sha256(existing);
   if (existingSha256 !== candidateSha256) {
-    throw new ActionEventShardConflictError({
-      shardPath,
-      expectedSha256: existingSha256,
-      actualSha256: candidateSha256,
-    });
+    if (!actionEventShardContentReplayEquivalent(existing, candidateEvents, shardPath)) {
+      throw new ActionEventShardConflictError({
+        shardPath,
+        expectedSha256: existingSha256,
+        actualSha256: candidateSha256,
+      });
+    }
   }
   return {
     status: "unchanged",
     path: shardPath,
     relativePath,
     sha256: existingSha256,
-    eventCount,
+    eventCount: candidateEvents.length,
   };
+}
+
+export function actionEventReplayJson(event: ActionEvent): string {
+  const { recorded_at: _recordedAt, ...replayValue } = event;
+  return actionLedgerJson(replayValue);
+}
+
+export function actionEventShardsReplayEquivalent(
+  left: readonly ActionEvent[],
+  right: readonly ActionEvent[],
+): boolean {
+  return (
+    left.length === right.length &&
+    left.every(
+      (event, index) => actionEventReplayJson(event) === actionEventReplayJson(right[index]!),
+    )
+  );
+}
+
+export function actionEventShardContentReplayEquivalent(
+  content: string,
+  events: readonly ActionEvent[],
+  filePath = "action event shard",
+): boolean {
+  const parsed = parseActionEventShardContent(content, filePath);
+  const canonical = `${parsed.map((event) => actionLedgerJson(event)).join("\n")}\n`;
+  if (content !== canonical) {
+    throw new Error(`action event shard content is not canonical: ${filePath}`);
+  }
+  return actionEventShardsReplayEquivalent(parsed, events);
+}
+
+function parseActionEventShardContent(content: string, filePath: string): ActionEvent[] {
+  return content
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .map((line, index) =>
+      validateActionEvent(JSON.parse(line) as unknown, `${filePath}:${index + 1}`),
+    );
 }
 
 function readActionEventTarget(target: SafeWriteTarget): ActionEvent {
@@ -1544,7 +1597,7 @@ function validateActionEvent(value: unknown, filePath: string): ActionEvent {
   if (actionEventId(semantic.subject.repository, event.event_key) !== event.event_id) {
     throw new Error(`invalid action event identity: ${filePath}`);
   }
-  if (sha256(stableJson(semantic)) !== event.semantic_sha256) {
+  if (sha256(actionLedgerJson(semantic)) !== event.semantic_sha256) {
     throw new Error(`invalid action event semantic digest: ${filePath}`);
   }
   const canonical = canonicalJsonValue({
@@ -1557,7 +1610,7 @@ function validateActionEvent(value: unknown, filePath: string): ActionEvent {
     recorded_at: requiredTimestamp(String(event.recorded_at ?? ""), "action event recorded_at"),
     ...semantic,
   }) as ActionEvent;
-  if (stableJson(canonical) !== stableJson(value)) {
+  if (actionLedgerJson(canonical) !== actionLedgerJson(value)) {
     throw new Error(`action event contains unknown or non-canonical fields: ${filePath}`);
   }
   return canonical;
@@ -1769,7 +1822,7 @@ function safePathSegment(value: string): string {
 }
 
 function canonicalIdentityJson(value: unknown): string {
-  return JSON.stringify(canonicalJsonValue(value, new Set<object>(), "$", true));
+  return serializeCanonicalJson(canonicalJsonValue(value, new Set<object>(), "$", true));
 }
 
 function canonicalJsonValue(
@@ -1840,6 +1893,11 @@ function canonicalJsonValue(
     if (ownKeys.some((key) => typeof key !== "string")) {
       throw new Error(`action event data contains a symbol key at ${location}`);
     }
+    for (const key of ownKeys as string[]) {
+      if (hasUnpairedSurrogate(key)) {
+        throw new Error(`action event data contains an unsupported object key at ${location}`);
+      }
+    }
     const normalized: Record<string, unknown> = {};
     for (const key of (ownKeys as string[]).sort(compareCanonicalKeys)) {
       if (rejectCredentialFields && highRiskCredentialField(key)) {
@@ -1870,7 +1928,49 @@ function canonicalJsonValue(
 }
 
 function compareCanonicalKeys(left: string, right: string): number {
-  return left < right ? -1 : left > right ? 1 : 0;
+  return compareLedgerText(left, right);
+}
+
+function compareLedgerText(left: string, right: string): number {
+  return Buffer.compare(Buffer.from(left, "utf8"), Buffer.from(right, "utf8"));
+}
+
+function serializeCanonicalJson(value: unknown): string {
+  if (
+    value === null ||
+    typeof value === "string" ||
+    typeof value === "number" ||
+    typeof value === "boolean"
+  ) {
+    return JSON.stringify(value)!;
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map((entry) => serializeCanonicalJson(entry)).join(",")}]`;
+  }
+  if (!value || typeof value !== "object") {
+    throw new Error("action event data contains a non-JSON value");
+  }
+  const entries = Object.keys(value)
+    .sort(compareCanonicalKeys)
+    .map(
+      (key) =>
+        `${JSON.stringify(key)}:${serializeCanonicalJson((value as Record<string, unknown>)[key])}`,
+    );
+  return `{${entries.join(",")}}`;
+}
+
+function hasUnpairedSurrogate(value: string): boolean {
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code >= 0xd800 && code <= 0xdbff) {
+      const next = value.charCodeAt(index + 1);
+      if (!Number.isInteger(next) || next < 0xdc00 || next > 0xdfff) return true;
+      index += 1;
+    } else if (code >= 0xdc00 && code <= 0xdfff) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function highRiskCredentialField(value: string): boolean {
@@ -1916,11 +2016,16 @@ function privateUrl(value: string): boolean {
 }
 
 function privateHost(value: string): boolean {
-  const host = value
+  let host = value
     .trim()
     .replace(/^\[|\]$/g, "")
+    .replace(/\.+$/, "")
     .toLowerCase();
   if (!host) return false;
+  if (isIP(host) === 6) {
+    const normalized = new URL(`http://[${host}]/`).hostname;
+    host = normalized.slice(1, -1);
+  }
   if (
     host === "localhost" ||
     [".local", ".localhost", ".internal", ".corp", ".lan", ".home", ".home.arpa"].some((suffix) =>
@@ -1932,6 +2037,13 @@ function privateHost(value: string): boolean {
   }
   if (host === "::1" || /^(?:fc|fd)[0-9a-f]{2}:/.test(host) || /^fe[89ab][0-9a-f]:/.test(host)) {
     return true;
+  }
+  const mapped = /^::(?:ffff:)?([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(host);
+  if (mapped) {
+    const high = Number.parseInt(mapped[1]!, 16);
+    const low = Number.parseInt(mapped[2]!, 16);
+    const embedded = [(high >>> 8) & 0xff, high & 0xff, (low >>> 8) & 0xff, low & 0xff].join(".");
+    if (privateHost(embedded)) return true;
   }
   const octets = host.split(".").map(Number);
   if (

@@ -13,10 +13,12 @@ import {
 } from "./action-ledger-files.js";
 import {
   ACTION_EVENT_TYPES,
+  actionEventShardContentReplayEquivalent,
   actionAttemptId,
   actionEventShardRelativePath,
   actionEventKey,
   actionIdempotencyKey,
+  actionLedgerJson,
   actionOperationId,
   createActionEvent,
   isActionEventPhaseType,
@@ -40,7 +42,6 @@ import {
   type ActionEventSubject,
 } from "./action-ledger.js";
 import { normalizeRepo } from "./repository-profiles.js";
-import { stableJson } from "./stable-json.js";
 
 const DEFAULT_EVENT_OUTPUT_DIR = path.join(".clawsweeper-repair", "action-ledger-state");
 const DEFAULT_CRABFLEET_TIMEOUT_MS = 10_000;
@@ -261,7 +262,7 @@ export async function flushWorkflowActionEvents(
   const events = readAllSpooledActionEvents(safeRoot);
   const groups = new Map<string, ActionEvent[]>();
   for (const event of events) {
-    const key = stableJson(event.producer);
+    const key = actionLedgerJson(event.producer);
     const group = groups.get(key) ?? [];
     group.push(event);
     groups.set(key, group);
@@ -344,12 +345,10 @@ export async function postActionEventToCrabFleet(
       signal: controller.signal,
     }),
   );
-  void request.then(
-    (response) => {
-      if (timedOut) void cancelResponseBody(response);
-    },
-    () => undefined,
-  );
+  const lateCleanup = request.then(async (response) => {
+    if (timedOut) await cancelResponseBody(response);
+  });
+  void lateCleanup.catch(() => undefined);
   try {
     const response = await Promise.race([request, deadline]);
     const status = response.status;
@@ -375,9 +374,15 @@ export function importActionEventShards(
     if (isNotFoundError(error)) return { created: 0, unchanged: 0, paths: [] };
     throw error;
   }
-  const relativePaths = recursiveFiles(safeSource)
-    .filter((file) => /^ledger\/v1\/events\/.+\.jsonl$/.test(file))
-    .sort();
+  let relativePaths: string[];
+  try {
+    relativePaths = recursiveFiles(safeSource, path.join("ledger", "v1", "events"))
+      .filter((file) => /^ledger\/v1\/events\/.+\.jsonl$/.test(file))
+      .sort();
+  } catch (error) {
+    if (isNotFoundError(error)) return { created: 0, unchanged: 0, paths: [] };
+    throw error;
+  }
   let created = 0;
   let unchanged = 0;
   for (const relativePath of relativePaths) {
@@ -399,7 +404,10 @@ export function importActionEventShards(
     const target = prepareSafeWriteTarget(destination, relativePath, "action event shard import");
     const existing = readUtf8FileIfExistsNoFollow(target);
     if (existing !== null) {
-      if (existing !== content) {
+      if (
+        existing !== content &&
+        !actionEventShardContentReplayEquivalent(existing, events, target.path)
+      ) {
         throw new Error(`action event shard import conflict: ${relativePath}`);
       }
       unchanged += 1;
@@ -410,7 +418,8 @@ export function importActionEventShards(
       created += 1;
       continue;
     }
-    if (readUtf8FileNoFollow(target) !== content) {
+    const raced = readUtf8FileNoFollow(target);
+    if (raced !== content && !actionEventShardContentReplayEquivalent(raced, events, target.path)) {
       throw new Error(`action event shard import conflict: ${relativePath}`);
     }
     unchanged += 1;
@@ -432,18 +441,18 @@ function validateCanonicalImportedShard(
     throw new Error(`action event shard is empty or has an invalid path: ${relativePath}`);
   }
   const seen = new Set<string>();
-  const firstProducer = stableJson(first.producer);
+  const firstProducer = actionLedgerJson(first.producer);
   for (const event of events) {
     if (seen.has(event.event_id)) {
       throw new Error(`action event shard contains duplicate events: ${relativePath}`);
     }
     seen.add(event.event_id);
-    if (stableJson(event.producer) !== firstProducer) {
+    if (actionLedgerJson(event.producer) !== firstProducer) {
       throw new Error(`action event shard mixes producer identities: ${relativePath}`);
     }
   }
   const sorted = sortActionEventsCausally(events);
-  const canonicalContent = `${sorted.map((event) => stableJson(event)).join("\n")}\n`;
+  const canonicalContent = `${sorted.map((event) => actionLedgerJson(event)).join("\n")}\n`;
   if (content !== canonicalContent) {
     throw new Error(`action event shard content is not canonical: ${relativePath}`);
   }
@@ -604,7 +613,7 @@ function readWorkflowPartitionDate(root: SafeReadRoot, producer: ActionEvent["pr
 }
 
 function workflowPartitionRelativePath(producer: ActionEvent["producer"]): string {
-  const identity = createHash("sha256").update(stableJson(producer)).digest("hex");
+  const identity = createHash("sha256").update(actionLedgerJson(producer)).digest("hex");
   return path.join(".clawsweeper-repair", "action-events", "_partitions", `${identity}.txt`);
 }
 

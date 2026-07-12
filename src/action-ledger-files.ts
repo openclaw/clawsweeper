@@ -4,6 +4,7 @@ import path from "node:path";
 
 const NO_FOLLOW = fs.constants.O_NOFOLLOW ?? 0;
 const DIRECTORY = fs.constants.O_DIRECTORY ?? 0;
+const NON_BLOCKING = fs.constants.O_NONBLOCK ?? 0;
 
 export type SafeWriteTarget = {
   path: string;
@@ -170,14 +171,38 @@ export function writeUtf8FileCreateOnlyNoFollow(
     target,
     `${path.basename(target.path)}.${process.pid}.${randomUUID()}.tmp`,
   );
-  writeUtf8FileExclusiveNoFollow(temporary, content);
+  let result: "created" | "exists" | undefined;
+  let failure: unknown;
+  let temporaryIdentity: FileIdentity | undefined;
   try {
-    linkFileExclusiveNoFollow(temporary, target);
-    return "created";
+    writeUtf8FileExclusiveNoFollow(temporary, content);
+    temporaryIdentity = fileIdentity(temporary.path, `${temporary.label} staging`);
+    try {
+      linkFileExclusiveNoFollow(temporary, target);
+      result = "created";
+    } catch (error) {
+      if (!isAlreadyExistsError(error)) throw error;
+      result = "exists";
+    }
   } catch (error) {
-    if (isAlreadyExistsError(error)) return "exists";
-    throw error;
+    failure = error;
   }
+  if (!temporaryIdentity) {
+    try {
+      temporaryIdentity = fileIdentity(temporary.path, `${temporary.label} staging`);
+    } catch (error) {
+      if (!isNotFoundError(error) && failure === undefined) failure = error;
+    }
+  }
+  if (temporaryIdentity) {
+    try {
+      removeFileNoFollow(temporary, temporaryIdentity);
+    } catch (error) {
+      if (failure === undefined) failure = error;
+    }
+  }
+  if (failure !== undefined) throw failure;
+  return result!;
 }
 
 export function linkFileExclusiveNoFollow(
@@ -374,7 +399,7 @@ function readUtf8FileWithParentChain(
   assertStableParentChain(target, parentChain);
   const expectedIdentity = fileIdentity(target.path, target.label);
   assertStableParentChain(target, parentChain);
-  const descriptor = fs.openSync(target.path, fs.constants.O_RDONLY | NO_FOLLOW);
+  const descriptor = fs.openSync(target.path, fs.constants.O_RDONLY | NO_FOLLOW | NON_BLOCKING);
   try {
     const openedIdentity = descriptorIdentity(descriptor, target.label);
     if (
@@ -392,6 +417,22 @@ function readUtf8FileWithParentChain(
   } finally {
     fs.closeSync(descriptor);
   }
+}
+
+function removeFileNoFollow(target: SafeWriteTarget, expectedIdentity: FileIdentity): void {
+  const parentChain = captureSafeParentChain(target, false);
+  assertStableParentChain(target, parentChain);
+  assertPathMatchesIdentity(target.path, expectedIdentity, `${target.label} staging`);
+  fs.unlinkSync(target.path);
+  assertStableParentChain(target, parentChain);
+  try {
+    fileIdentity(target.path, `${target.label} staging`);
+    throw new Error(`refusing replaced ${target.label} staging file: ${target.path}`);
+  } catch (error) {
+    if (!isNotFoundError(error)) throw error;
+  }
+  fsyncDirectory(target.parentPath, target.label);
+  assertStableParentChain(target, parentChain);
 }
 
 function prepareSafeDirectoryReadTarget(
