@@ -36,6 +36,7 @@ import {
 } from "../dist/action-ledger.js";
 import {
   prepareSafeWriteTarget,
+  processIncarnationIdentitySha256,
   tryAcquireUtf8FileLockNoFollow,
 } from "../dist/action-ledger-files.js";
 
@@ -1037,6 +1038,7 @@ test("producer locks reclaim fresh dead owners and never evict a live holder by 
     schema: "clawsweeper.action-ledger-producer-lock",
     schema_version: 1,
     pid: 2_147_483_647,
+    process_incarnation_sha256: "0".repeat(64),
     acquired_at_ms: Date.now(),
     nonce: "00000000-0000-4000-8000-000000000000",
   })}\n`;
@@ -1046,6 +1048,32 @@ test("producer locks reclaim fresh dead owners and never evict a live holder by 
   assert.ok(recordReviewNumber(deadRoot, 42));
   assert.ok(Date.now() - deadStartedAt < 1_000);
   assert.doesNotThrow(releaseDead);
+
+  const reusedRoot = tempRoot();
+  const reusedEvent = recordReviewNumber(reusedRoot, 45);
+  assert.ok(reusedEvent);
+  const reusedTarget = prepareSafeWriteTarget(
+    reusedRoot,
+    producerLockRelativePath(reusedEvent),
+    "test reused producer lock",
+  );
+  const currentIncarnation = processIncarnationIdentitySha256();
+  assert.ok(currentIncarnation);
+  const reusedContent = `${actionLedgerJson({
+    schema: "clawsweeper.action-ledger-producer-lock",
+    schema_version: 1,
+    pid: process.pid,
+    process_incarnation_sha256:
+      currentIncarnation === "0".repeat(64) ? "1".repeat(64) : "0".repeat(64),
+    acquired_at_ms: Date.now(),
+    nonce: "00000000-0000-4000-8000-000000000002",
+  })}\n`;
+  const releaseReused = tryAcquireUtf8FileLockNoFollow(reusedTarget, reusedContent);
+  assert.ok(releaseReused);
+  const reusedStartedAt = Date.now();
+  assert.ok(recordReviewNumber(reusedRoot, 46));
+  assert.ok(Date.now() - reusedStartedAt < 1_000);
+  assert.doesNotThrow(releaseReused);
 
   const liveRoot = tempRoot();
   const outputRoot = trustedChildRoot(liveRoot, "state");
@@ -1058,15 +1086,20 @@ test("producer locks reclaim fresh dead owners and never evict a live holder by 
   const ledgerModuleUrl = pathToFileURL(path.join(process.cwd(), "dist", "action-ledger.js")).href;
   const holderScript = `
 import fs from "node:fs";
-const { prepareSafeWriteTarget, tryAcquireUtf8FileLockNoFollow } = await import(${JSON.stringify(
-    filesModuleUrl,
-  )});
+const {
+  prepareSafeWriteTarget,
+  processIncarnationIdentitySha256,
+  tryAcquireUtf8FileLockNoFollow
+} = await import(${JSON.stringify(filesModuleUrl)});
 const { actionLedgerJson } = await import(${JSON.stringify(ledgerModuleUrl)});
 const target = prepareSafeWriteTarget(process.argv[1], process.argv[2], "live producer lock");
+const processIncarnation = processIncarnationIdentitySha256();
+if (!processIncarnation) process.exit(2);
 const content = actionLedgerJson({
   schema: "clawsweeper.action-ledger-producer-lock",
   schema_version: 1,
   pid: process.pid,
+  process_incarnation_sha256: processIncarnation,
   acquired_at_ms: Date.now() - 5 * 60_000 + 75,
   nonce: "00000000-0000-4000-8000-000000000001"
 }) + "\\n";
@@ -1387,6 +1420,60 @@ test("CrabFleet projection bounds active fetches and queued work", async () => {
   );
 });
 
+test("CrabFleet projection admission is fair across spool roots", async () => {
+  const saturatedRoot = tempRoot();
+  const independentRoot = tempRoot();
+  const env = workflowEnv({
+    CLAWSWEEPER_CRABFLEET_AGENT_TOKEN: "agent-token",
+    CLAWSWEEPER_CRABFLEET_SESSION_ID: "session-1",
+    CLAWSWEEPER_CRABFLEET_TIMEOUT_MS: "60000",
+  });
+  const firstWaveResolvers: Array<(response: Response) => void> = [];
+  const startOrder: string[] = [];
+  let saturatedStarted = 0;
+  const saturatedFetch = (() => {
+    saturatedStarted += 1;
+    startOrder.push("saturated");
+    if (saturatedStarted <= CRABFLEET_PROJECTION_LIMITS.maxConcurrent) {
+      return new Promise<Response>((resolve) => firstWaveResolvers.push(resolve));
+    }
+    return Promise.resolve(new Response(null, { status: 204 }));
+  }) as typeof fetch;
+  const saturatedTotal =
+    CRABFLEET_PROJECTION_LIMITS.maxConcurrent + CRABFLEET_PROJECTION_LIMITS.maxQueued;
+  for (let index = 0; index < saturatedTotal; index += 1) {
+    assert.ok(recordReviewNumber(saturatedRoot, 100 + index, env, saturatedFetch));
+  }
+  assert.ok(
+    recordReviewNumber(independentRoot, 999, env, (async () => {
+      startOrder.push("independent");
+      return new Response(null, { status: 204 });
+    }) as typeof fetch),
+  );
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(startOrder, Array(CRABFLEET_PROJECTION_LIMITS.maxConcurrent).fill("saturated"));
+
+  firstWaveResolvers.shift()!(new Response(null, { status: 204 }));
+  const fairnessDeadline = Date.now() + 500;
+  while (!startOrder.includes("independent")) {
+    if (Date.now() >= fairnessDeadline) {
+      throw new Error("independent root did not receive the next projection slot");
+    }
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  assert.deepEqual(startOrder.slice(0, 5), [
+    "saturated",
+    "saturated",
+    "saturated",
+    "saturated",
+    "independent",
+  ]);
+
+  for (const resolve of firstWaveResolvers) resolve(new Response(null, { status: 204 }));
+  await flushPendingCrabFleetPosts();
+  assert.equal(startOrder.filter((entry) => entry === "saturated").length, saturatedTotal);
+});
+
 test("exported CrabFleet posts share the four-request admission bound", async () => {
   const event = recordReview(tempRoot());
   assert.ok(event);
@@ -1661,6 +1748,65 @@ test("queued direct CrabFleet posts terminate when every active cleanup is stuck
   for (const resolve of cleanupResolvers) resolve();
   await new Promise((resolve) => setImmediate(resolve));
   await new Promise((resolve) => setImmediate(resolve));
+});
+
+test("cleanup-stuck projection rejection is scoped to the affected spool root", async () => {
+  const blockedRoot = tempRoot();
+  const independentRoot = tempRoot();
+  const blockedEnv = workflowEnv({
+    CLAWSWEEPER_CRABFLEET_AGENT_TOKEN: "agent-token",
+    CLAWSWEEPER_CRABFLEET_SESSION_ID: "session-1",
+    CLAWSWEEPER_CRABFLEET_TIMEOUT_MS: "10",
+  });
+  const independentEnv = workflowEnv({
+    CLAWSWEEPER_CRABFLEET_AGENT_TOKEN: "agent-token",
+    CLAWSWEEPER_CRABFLEET_SESSION_ID: "session-1",
+    CLAWSWEEPER_CRABFLEET_TIMEOUT_MS: "1000",
+  });
+  const cleanupResolvers: Array<() => void> = [];
+  const blockedFetch = (async () =>
+    ({
+      ok: true,
+      status: 204,
+      body: {
+        cancel: () =>
+          new Promise<void>((resolve) => {
+            cleanupResolvers.push(resolve);
+          }),
+      },
+    }) as unknown as Response) as typeof fetch;
+  for (let index = 0; index < CRABFLEET_PROJECTION_LIMITS.maxConcurrent + 1; index += 1) {
+    assert.ok(recordReviewNumber(blockedRoot, 300 + index, blockedEnv, blockedFetch));
+  }
+  let independentStarted = 0;
+  assert.ok(
+    recordReviewNumber(independentRoot, 400, independentEnv, (async () => {
+      independentStarted += 1;
+      return new Response(null, { status: 204 });
+    }) as typeof fetch),
+  );
+
+  const blockedDeadline = Date.now() + 500;
+  while (cleanupResolvers.length < CRABFLEET_PROJECTION_LIMITS.maxConcurrent) {
+    if (Date.now() >= blockedDeadline) {
+      throw new Error("blocked root did not enter response cleanup");
+    }
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(independentStarted, 0);
+
+  cleanupResolvers.shift()!();
+  const independentDeadline = Date.now() + 500;
+  while (independentStarted === 0) {
+    if (Date.now() >= independentDeadline) {
+      throw new Error("independent root did not start after a projection slot recovered");
+    }
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  for (const resolve of cleanupResolvers) resolve();
+  await flushPendingCrabFleetPosts();
+  assert.equal(independentStarted, 1);
 });
 
 test("CrabFleet timeouts hold slots until response cleanup settles", async () => {
@@ -2381,6 +2527,82 @@ test("state shard imports retain global event identity and causal acyclicity", (
   assert.equal(fs.existsSync(path.join(cycleDestination, secondShard.relativePath)), false);
 });
 
+test("destination import transactions prevent concurrent opposing parent edges", async () => {
+  const root = tempRoot();
+  const base = recordReview(root);
+  assert.ok(base);
+  const destination = trustedChildRoot(root, "cycle-race-destination");
+  const firstKey = actionEventKey("review.concurrent-cycle", { node: "first" });
+  const secondKey = actionEventKey("review.concurrent-cycle", { node: "second" });
+  const firstId = actionEventId(base.subject.repository, firstKey);
+  const secondId = actionEventId(base.subject.repository, secondKey);
+  const first = recreateActionEvent(base, {
+    eventKey: firstKey,
+    parentEventId: secondId,
+  });
+  const second = recreateActionEvent(base, {
+    eventKey: secondKey,
+    parentEventId: firstId,
+    producer: {
+      ...base.producer,
+      component: `${base.producer.component}.concurrent-cycle`,
+    },
+  });
+  const firstSource = trustedChildRoot(root, "cycle-race-first-source");
+  const secondSource = trustedChildRoot(root, "cycle-race-second-source");
+  const firstShard = writeActionEventShard(firstSource, shardIdentity(first), [first]);
+  const secondShard = writeActionEventShard(secondSource, shardIdentity(second), [second]);
+  const readyPath = path.join(root, "cycle-race-ready");
+  const releasePath = path.join(root, "cycle-race-release");
+  const moduleUrl = pathToFileURL(
+    path.join(process.cwd(), "dist", "action-ledger-runtime.js"),
+  ).href;
+  const firstScript = `import fs from "node:fs";
+const originalLink = fs.linkSync;
+const wait = new Int32Array(new SharedArrayBuffer(4));
+let paused = false;
+fs.linkSync = (sourcePath, targetPath) => {
+  if (
+    !paused &&
+    String(targetPath).includes("import-bindings") &&
+    String(targetPath).includes("events")
+  ) {
+    paused = true;
+    fs.writeFileSync(process.argv[3], "ready\\n");
+    while (!fs.existsSync(process.argv[4])) Atomics.wait(wait, 0, 0, 5);
+  }
+  return originalLink(sourcePath, targetPath);
+};
+const { importActionEventShards } = await import(${JSON.stringify(moduleUrl)});
+importActionEventShards(process.argv[1], process.argv[2]);`;
+  const importScript = `const { importActionEventShards } = await import(${JSON.stringify(
+    moduleUrl,
+  )});
+importActionEventShards(process.argv[1], process.argv[2]);`;
+  const firstChild = spawn(
+    process.execPath,
+    ["--input-type=module", "-e", firstScript, firstSource, destination, readyPath, releasePath],
+    { stdio: ["ignore", "pipe", "pipe"] },
+  );
+  const firstDone = childResult(firstChild);
+  await waitForPath(readyPath);
+  const secondChild = spawn(
+    process.execPath,
+    ["--input-type=module", "-e", importScript, secondSource, destination],
+    { stdio: ["ignore", "pipe", "pipe"] },
+  );
+  const secondDone = childResult(secondChild);
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  fs.writeFileSync(releasePath, "release\n");
+
+  const [firstResult, secondResult] = await Promise.all([firstDone, secondDone]);
+  assert.equal(firstResult.code, 0, firstResult.stderr || firstResult.stdout);
+  assert.notEqual(secondResult.code, 0, secondResult.stdout);
+  assert.match(secondResult.stderr, /causal cycle/);
+  assert.equal(fs.existsSync(path.join(destination, firstShard.relativePath)), true);
+  assert.equal(fs.existsSync(path.join(destination, secondShard.relativePath)), false);
+});
+
 test("state shard imports reject noncanonical trusted root spellings", async () => {
   const root = tempRoot();
   const source = trustedChildRoot(root, "source");
@@ -2792,7 +3014,8 @@ test(
     const source = trustedChildRoot(root, "source");
     const outside = path.join(root, "outside");
     const destination = trustedChildRoot(root, "destination");
-    recordReview(root);
+    const base = recordReview(root);
+    assert.ok(base);
     const [relativePath] = await flushWorkflowActionEvents(root, {
       env: workflowEnv(),
       outputRoot: source,
@@ -2840,7 +3063,8 @@ test(
     const root = tempRoot();
     const source = trustedChildRoot(root, "source");
     const destination = trustedChildRoot(root, "destination");
-    recordReview(root);
+    const base = recordReview(root);
+    assert.ok(base);
     const [relativePath] = await flushWorkflowActionEvents(root, {
       env: workflowEnv(),
       outputRoot: source,
@@ -2868,8 +3092,30 @@ importActionEventShards(process.argv[1], process.argv[2]);`;
     );
     assert.equal(child.signal, "SIGKILL", child.stderr);
     assert.equal(fs.existsSync(path.join(destination, relativePath)), true);
-    const completionRoot = path.join(destination, "ledger", "v1", "import-bindings", "shard-sets");
+    const reservationRoot = path.join(destination, "ledger", "v1", "import-bindings", "shard-sets");
+    const completionRoot = path.join(
+      destination,
+      "ledger",
+      "v1",
+      "import-bindings",
+      "completed-shard-sets",
+    );
+    assert.equal(fs.readdirSync(reservationRoot).length, 1);
     assert.deepEqual(fs.existsSync(completionRoot) ? fs.readdirSync(completionRoot) : [], []);
+
+    const replacementSource = trustedChildRoot(root, "replacement-source");
+    const replacement = recreateActionEvent(base, {
+      eventKey: actionEventKey("review.replacement-after-interruption", { number: 43 }),
+      parentEventId: null,
+    });
+    const replacementShard = writeActionEventShard(replacementSource, shardIdentity(replacement), [
+      replacement,
+    ]);
+    assert.throws(
+      () => importActionEventShards(replacementSource, destination),
+      /producer shard-set binding conflict/,
+    );
+    assert.equal(fs.existsSync(path.join(destination, replacementShard.relativePath)), false);
 
     const replay = importActionEventShards(source, destination);
     assert.equal(replay.created, 0);

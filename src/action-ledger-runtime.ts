@@ -5,6 +5,7 @@ import {
   prepareSafeReadRoot,
   prepareSafeReadTarget,
   prepareSafeWriteTarget,
+  processIncarnationIdentitySha256,
   readDirectoryEntriesNoFollow,
   readUtf8FileIfExistsNoFollow,
   readUtf8FileNoFollow,
@@ -69,12 +70,18 @@ const pendingCrabFleetPosts = new Set<Promise<void>>();
 const pendingWorkflowCrabFleetPosts = new Map<string, Set<Promise<void>>>();
 const workflowCrabFleetRequests = new Map<string, Set<CrabFleetProjectionRequest>>();
 const activeCrabFleetRequests = new Set<CrabFleetProjectionRequest>();
-const queuedCrabFleetPosts: CrabFleetProjectionRequest[] = [];
+const queuedCrabFleetPosts = new Map<string, CrabFleetProjectionRequest[]>();
+const queuedCrabFleetAdmissionOrder: string[] = [];
+const DIRECT_CRABFLEET_ADMISSION_KEY = "\0direct";
+let queuedCrabFleetPostCount = 0;
+let nextCrabFleetAdmissionIndex = 0;
 const producerLockWaitArray = new Int32Array(new SharedArrayBuffer(4));
 
 export const CRABFLEET_PROJECTION_LIMITS = {
   maxConcurrent: 4,
   maxQueued: 64,
+  maxTotalQueued: 256,
+  maxQueuedRoots: 64,
   defaultFlushTimeoutMs: DEFAULT_CRABFLEET_FLUSH_TIMEOUT_MS,
   maxFlushTimeoutMs: MAX_CRABFLEET_FLUSH_TIMEOUT_MS,
 } as const;
@@ -163,6 +170,7 @@ type CrabFleetProjectionRequest = {
   event: ActionEvent;
   config: CrabFleetProjectionConfig;
   fetchImpl: typeof fetch;
+  admissionKey: string;
   rootKey?: string;
   promise: Promise<void>;
   resolve: () => void;
@@ -194,10 +202,11 @@ type WorkflowProducerFinalization = {
   replay_sha256: string;
 };
 
-type WorkflowProducerLock = {
-  schema: "clawsweeper.action-ledger-producer-lock";
+type ActionEventLock = {
+  schema: "clawsweeper.action-ledger-producer-lock" | "clawsweeper.action-ledger-import-lock";
   schema_version: 1;
   pid: number;
+  process_incarnation_sha256: string;
   acquired_at_ms: number;
   nonce: string;
 };
@@ -604,67 +613,78 @@ export function importActionEventShards(
   }
   const shards = readImportedActionEventShards(safeSource, relativePaths);
   const safeDestination = prepareSafeReadRoot(destinationRoot, "action event shard import");
-  validateImportedActionEventHistory(safeDestination, shards);
-  const bindings = prepareActionEventShardImportBindings(safeDestination, shards);
-  const prepared = shards.map((shard) => {
-    const target = prepareSafeWriteTarget(
-      safeDestination.path,
-      shard.relativePath,
-      "action event shard import",
-    );
-    const existing = readUtf8FileIfExistsNoFollow(
-      target,
-      ACTION_EVENT_SHARD_IMPORT_LIMITS.maxFileBytes,
-    );
-    if (
-      existing !== null &&
-      existing !== shard.content &&
-      !importedShardReplayEquivalent(existing, shard, target.path)
-    ) {
-      throw new Error(`action event shard import conflict: ${shard.relativePath}`);
-    }
-    return { ...shard, target, existing };
-  });
-  for (const binding of bindings.reservations) {
-    publishActionEventShardImportBinding(binding);
-  }
-  let created = 0;
-  let unchanged = 0;
-  for (const shard of prepared) {
-    if (shard.existing !== null) {
-      unchanged += 1;
-      continue;
-    }
-    const status = writeUtf8FileCreateOnlyNoFollow(shard.target, shard.content);
-    if (status === "created") {
-      created += 1;
-      continue;
-    }
-    const raced = readUtf8FileNoFollow(shard.target, ACTION_EVENT_SHARD_IMPORT_LIMITS.maxFileBytes);
-    if (
-      raced !== shard.content &&
-      !importedShardReplayEquivalent(raced, shard, shard.target.path)
-    ) {
-      throw new Error(`action event shard import conflict: ${shard.relativePath}`);
-    }
-    unchanged += 1;
-  }
-  for (const shard of prepared) {
-    const durable = readUtf8FileNoFollow(
-      shard.target,
-      ACTION_EVENT_SHARD_IMPORT_LIMITS.maxFileBytes,
-    );
-    if (
-      durable !== shard.content &&
-      !importedShardReplayEquivalent(durable, shard, shard.target.path)
-    ) {
-      throw new Error(`action event shard import conflict: ${shard.relativePath}`);
-    }
-  }
-  for (const binding of bindings.completions) {
-    publishActionEventShardImportBinding(binding);
-  }
-  return { created, unchanged, paths: relativePaths };
+  return withActionEventLock(
+    safeDestination.path,
+    ".action-ledger-import.lock",
+    "action event shard import lock",
+    "clawsweeper.action-ledger-import-lock",
+    () => {
+      validateImportedActionEventHistory(safeDestination, shards);
+      const bindings = prepareActionEventShardImportBindings(safeDestination, shards);
+      const prepared = shards.map((shard) => {
+        const target = prepareSafeWriteTarget(
+          safeDestination.path,
+          shard.relativePath,
+          "action event shard import",
+        );
+        const existing = readUtf8FileIfExistsNoFollow(
+          target,
+          ACTION_EVENT_SHARD_IMPORT_LIMITS.maxFileBytes,
+        );
+        if (
+          existing !== null &&
+          existing !== shard.content &&
+          !importedShardReplayEquivalent(existing, shard, target.path)
+        ) {
+          throw new Error(`action event shard import conflict: ${shard.relativePath}`);
+        }
+        return { ...shard, target, existing };
+      });
+      for (const binding of bindings.reservations) {
+        publishActionEventShardImportBinding(binding);
+      }
+      let created = 0;
+      let unchanged = 0;
+      for (const shard of prepared) {
+        if (shard.existing !== null) {
+          unchanged += 1;
+          continue;
+        }
+        const status = writeUtf8FileCreateOnlyNoFollow(shard.target, shard.content);
+        if (status === "created") {
+          created += 1;
+          continue;
+        }
+        const raced = readUtf8FileNoFollow(
+          shard.target,
+          ACTION_EVENT_SHARD_IMPORT_LIMITS.maxFileBytes,
+        );
+        if (
+          raced !== shard.content &&
+          !importedShardReplayEquivalent(raced, shard, shard.target.path)
+        ) {
+          throw new Error(`action event shard import conflict: ${shard.relativePath}`);
+        }
+        unchanged += 1;
+      }
+      for (const shard of prepared) {
+        const durable = readUtf8FileNoFollow(
+          shard.target,
+          ACTION_EVENT_SHARD_IMPORT_LIMITS.maxFileBytes,
+        );
+        if (
+          durable !== shard.content &&
+          !importedShardReplayEquivalent(durable, shard, shard.target.path)
+        ) {
+          throw new Error(`action event shard import conflict: ${shard.relativePath}`);
+        }
+      }
+      for (const binding of bindings.completions) {
+        publishActionEventShardImportBinding(binding);
+      }
+      return { created, unchanged, paths: relativePaths };
+    },
+  );
 }
 
 function prepareActionEventShardImportBindings(
@@ -744,6 +764,18 @@ function actionEventShardImportBindings(
     const ordered = [...group].sort((left, right) =>
       left.relativePath < right.relativePath ? -1 : left.relativePath > right.relativePath ? 1 : 0,
     );
+    const reservation = {
+      schema: "clawsweeper.action-ledger-import-shard-set",
+      schema_version: 1,
+      producer: ordered[0]!.identity,
+      shards: ordered.map((shard) => ({
+        path: shard.relativePath,
+        replay_sha256: createHash("sha256")
+          .update(`${shard.events.map((event) => actionEventReplayJson(event)).join("\n")}\n`)
+          .digest("hex"),
+      })),
+    };
+    const reservationContent = `${actionLedgerJson(reservation)}\n`;
     bindings.push({
       relativePath: path.join(
         "ledger",
@@ -752,24 +784,36 @@ function actionEventShardImportBindings(
         "shard-sets",
         `${shardSetDigest}.json`,
       ),
+      content: reservationContent,
+      label: "action event shard import producer shard-set binding",
+      kind: "reservation",
+    });
+    bindings.push({
+      relativePath: path.join(
+        "ledger",
+        "v1",
+        "import-bindings",
+        "completed-shard-sets",
+        `${shardSetDigest}.json`,
+      ),
       content: `${actionLedgerJson({
-        schema: "clawsweeper.action-ledger-import-shard-set",
+        schema: "clawsweeper.action-ledger-import-shard-set-completion",
         schema_version: 1,
         producer: ordered[0]!.identity,
-        shards: ordered.map((shard) => ({
-          path: shard.relativePath,
-          replay_sha256: createHash("sha256")
-            .update(`${shard.events.map((event) => actionEventReplayJson(event)).join("\n")}\n`)
-            .digest("hex"),
-        })),
+        reservation_sha256: createHash("sha256").update(reservationContent).digest("hex"),
       })}\n`,
-      label: "action event shard import producer shard-set binding",
+      label: "action event shard import producer shard-set completion binding",
       kind: "completion",
     });
   }
-  return bindings.sort((left, right) =>
-    left.relativePath < right.relativePath ? -1 : left.relativePath > right.relativePath ? 1 : 0,
-  );
+  return bindings.sort((left, right) => {
+    if (left.kind !== right.kind) return left.kind === "reservation" ? -1 : 1;
+    return left.relativePath < right.relativePath
+      ? -1
+      : left.relativePath > right.relativePath
+        ? 1
+        : 0;
+  });
 }
 
 function publishActionEventShardImportBinding(
@@ -1203,6 +1247,7 @@ function createCrabFleetProjectionRequest(
     event: validatedEvent,
     config,
     fetchImpl,
+    admissionKey: rootKey ?? DIRECT_CRABFLEET_ADMISSION_KEY,
     ...(rootKey === undefined ? {} : { rootKey }),
     promise,
     resolve,
@@ -1216,12 +1261,21 @@ function admitCrabFleetProjection(request: CrabFleetProjectionRequest): void {
     startCrabFleetProjection(request);
     return;
   }
-  if (queuedCrabFleetPosts.length < CRABFLEET_PROJECTION_LIMITS.maxQueued) {
-    queuedCrabFleetPosts.push(request);
+  const queue = queuedCrabFleetPosts.get(request.admissionKey);
+  if (
+    (queue?.length ?? 0) < CRABFLEET_PROJECTION_LIMITS.maxQueued &&
+    queuedCrabFleetPostCount < CRABFLEET_PROJECTION_LIMITS.maxTotalQueued &&
+    (queue !== undefined || queuedCrabFleetPosts.size < CRABFLEET_PROJECTION_LIMITS.maxQueuedRoots)
+  ) {
+    if (queue) {
+      queue.push(request);
+    } else {
+      queuedCrabFleetPosts.set(request.admissionKey, [request]);
+      queuedCrabFleetAdmissionOrder.push(request.admissionKey);
+    }
+    queuedCrabFleetPostCount += 1;
     request.queueTimer = setTimeout(() => {
-      const queuedIndex = queuedCrabFleetPosts.indexOf(request);
-      if (queuedIndex === -1 || request.done) return;
-      queuedCrabFleetPosts.splice(queuedIndex, 1);
+      if (!removeQueuedCrabFleetProjection(request) || request.done) return;
       settleCrabFleetProjection(
         request,
         new Error(`CrabFleet projection queue timed out after ${request.config.timeoutMs}ms`),
@@ -1231,10 +1285,11 @@ function admitCrabFleetProjection(request: CrabFleetProjectionRequest): void {
     drainCrabFleetProjectionQueue();
     return;
   }
-  settleCrabFleetProjection(
-    request,
-    new Error(`queue limit ${CRABFLEET_PROJECTION_LIMITS.maxQueued} reached`),
-  );
+  const limit =
+    (queue?.length ?? 0) >= CRABFLEET_PROJECTION_LIMITS.maxQueued
+      ? CRABFLEET_PROJECTION_LIMITS.maxQueued
+      : CRABFLEET_PROJECTION_LIMITS.maxTotalQueued;
+  settleCrabFleetProjection(request, new Error(`queue limit ${limit} reached`));
 }
 
 function startCrabFleetProjection(request: CrabFleetProjectionRequest): void {
@@ -1270,8 +1325,7 @@ function settleCrabFleetProjection(request: CrabFleetProjectionRequest, error?: 
     clearTimeout(request.queueTimer);
     delete request.queueTimer;
   }
-  const queuedIndex = queuedCrabFleetPosts.indexOf(request);
-  if (queuedIndex !== -1) queuedCrabFleetPosts.splice(queuedIndex, 1);
+  removeQueuedCrabFleetProjection(request);
   if (error === undefined) request.resolve();
   else request.reject(error);
 }
@@ -1279,22 +1333,87 @@ function settleCrabFleetProjection(request: CrabFleetProjectionRequest, error?: 
 function drainCrabFleetProjectionQueue(): void {
   while (
     activeCrabFleetRequests.size < CRABFLEET_PROJECTION_LIMITS.maxConcurrent &&
-    queuedCrabFleetPosts.length > 0
+    queuedCrabFleetPostCount > 0
   ) {
-    startCrabFleetProjection(queuedCrabFleetPosts.shift()!);
+    const next = shiftNextCrabFleetProjection();
+    if (!next) break;
+    startCrabFleetProjection(next);
   }
   if (
-    queuedCrabFleetPosts.length > 0 &&
+    queuedCrabFleetPostCount > 0 &&
     activeCrabFleetRequests.size >= CRABFLEET_PROJECTION_LIMITS.maxConcurrent &&
     [...activeCrabFleetRequests].every((request) => request.done)
   ) {
-    const blocked = queuedCrabFleetPosts.splice(0);
-    for (const request of blocked) {
-      settleCrabFleetProjection(
-        request,
-        new Error(`blocked by ${activeCrabFleetRequests.size} unresolved CrabFleet requests`),
-      );
+    const blockedAdmissionKeys = new Set(
+      [...activeCrabFleetRequests].map((request) => request.admissionKey),
+    );
+    for (const admissionKey of blockedAdmissionKeys) {
+      const blocked = [...(queuedCrabFleetPosts.get(admissionKey) ?? [])];
+      for (const request of blocked) {
+        settleCrabFleetProjection(
+          request,
+          new Error(`blocked by ${activeCrabFleetRequests.size} unresolved CrabFleet requests`),
+        );
+      }
     }
+  }
+}
+
+function shiftNextCrabFleetProjection(): CrabFleetProjectionRequest | undefined {
+  if (queuedCrabFleetAdmissionOrder.length === 0) return undefined;
+  const activeByAdmissionKey = new Map<string, number>();
+  for (const request of activeCrabFleetRequests) {
+    activeByAdmissionKey.set(
+      request.admissionKey,
+      (activeByAdmissionKey.get(request.admissionKey) ?? 0) + 1,
+    );
+  }
+  let selectedIndex = -1;
+  let selectedActiveCount = Number.POSITIVE_INFINITY;
+  for (let offset = 0; offset < queuedCrabFleetAdmissionOrder.length; offset += 1) {
+    const index = (nextCrabFleetAdmissionIndex + offset) % queuedCrabFleetAdmissionOrder.length;
+    const admissionKey = queuedCrabFleetAdmissionOrder[index]!;
+    const activeCount = activeByAdmissionKey.get(admissionKey) ?? 0;
+    if (activeCount < selectedActiveCount) {
+      selectedIndex = index;
+      selectedActiveCount = activeCount;
+    }
+  }
+  if (selectedIndex === -1) return undefined;
+  const admissionKey = queuedCrabFleetAdmissionOrder[selectedIndex]!;
+  const queue = queuedCrabFleetPosts.get(admissionKey)!;
+  const request = queue.shift()!;
+  queuedCrabFleetPostCount -= 1;
+  if (queue.length === 0) {
+    removeCrabFleetAdmissionQueue(admissionKey);
+  } else {
+    nextCrabFleetAdmissionIndex = (selectedIndex + 1) % queuedCrabFleetAdmissionOrder.length;
+  }
+  return request;
+}
+
+function removeQueuedCrabFleetProjection(request: CrabFleetProjectionRequest): boolean {
+  const queue = queuedCrabFleetPosts.get(request.admissionKey);
+  if (!queue) return false;
+  const index = queue.indexOf(request);
+  if (index === -1) return false;
+  queue.splice(index, 1);
+  queuedCrabFleetPostCount -= 1;
+  if (queue.length === 0) removeCrabFleetAdmissionQueue(request.admissionKey);
+  return true;
+}
+
+function removeCrabFleetAdmissionQueue(admissionKey: string): void {
+  queuedCrabFleetPosts.delete(admissionKey);
+  const index = queuedCrabFleetAdmissionOrder.indexOf(admissionKey);
+  if (index === -1) return;
+  queuedCrabFleetAdmissionOrder.splice(index, 1);
+  if (queuedCrabFleetAdmissionOrder.length === 0) {
+    nextCrabFleetAdmissionIndex = 0;
+  } else if (index < nextCrabFleetAdmissionIndex) {
+    nextCrabFleetAdmissionIndex -= 1;
+  } else if (nextCrabFleetAdmissionIndex >= queuedCrabFleetAdmissionOrder.length) {
+    nextCrabFleetAdmissionIndex = 0;
   }
 }
 
@@ -1484,15 +1603,32 @@ function withWorkflowProducerLock<T>(
   producer: ActionEvent["producer"],
   callback: () => T,
 ): T {
-  const target = prepareSafeWriteTarget(
+  return withActionEventLock(
     root,
     workflowProducerLockRelativePath(producer),
     "action event producer lock",
+    "clawsweeper.action-ledger-producer-lock",
+    callback,
   );
-  const lock: WorkflowProducerLock = {
-    schema: "clawsweeper.action-ledger-producer-lock",
+}
+
+function withActionEventLock<T>(
+  root: string,
+  relativePath: string,
+  label: string,
+  schema: ActionEventLock["schema"],
+  callback: () => T,
+): T {
+  const target = prepareSafeWriteTarget(root, relativePath, label);
+  const processIncarnation = processIncarnationIdentitySha256();
+  if (processIncarnation === null) {
+    throw new Error(`unable to determine ${label} process incarnation`);
+  }
+  const lock: ActionEventLock = {
+    schema,
     schema_version: 1,
     pid: process.pid,
+    process_incarnation_sha256: processIncarnation,
     acquired_at_ms: Date.now(),
     nonce: randomUUID(),
   };
@@ -1509,45 +1645,55 @@ function withWorkflowProducerLock<T>(
     }
     const existing = readUtf8FileIfExistsNoFollow(target, ACTION_EVENT_PRODUCER_LOCK_MAX_BYTES);
     if (existing === null) continue;
-    const owner = parseWorkflowProducerLock(existing);
-    if (!processIsAlive(owner.pid)) {
+    const owner = parseActionEventLock(existing, schema, label);
+    if (actionEventLockOwnerIsStale(owner)) {
       removeUtf8FileIfContentNoFollow(target, existing);
       continue;
     }
     if (Date.now() >= deadline) {
-      throw new Error(
-        `action event producer lock timed out after ${ACTION_EVENT_PRODUCER_LOCK_WAIT_MS}ms`,
-      );
+      throw new Error(`${label} timed out after ${ACTION_EVENT_PRODUCER_LOCK_WAIT_MS}ms`);
     }
     Atomics.wait(producerLockWaitArray, 0, 0, 5);
   }
 }
 
-function parseWorkflowProducerLock(content: string): WorkflowProducerLock {
+function parseActionEventLock(
+  content: string,
+  schema: ActionEventLock["schema"],
+  label: string,
+): ActionEventLock {
   let value: unknown;
   try {
     value = JSON.parse(content);
   } catch {
-    throw new Error("invalid action event producer lock");
+    throw new Error(`invalid ${label}`);
   }
-  const lock = value as Partial<WorkflowProducerLock>;
+  const lock = value as Partial<ActionEventLock>;
   if (
     !value ||
     typeof value !== "object" ||
     Array.isArray(value) ||
-    lock.schema !== "clawsweeper.action-ledger-producer-lock" ||
+    lock.schema !== schema ||
     lock.schema_version !== 1 ||
     !Number.isSafeInteger(lock.pid) ||
     Number(lock.pid) < 1 ||
+    typeof lock.process_incarnation_sha256 !== "string" ||
+    !/^[a-f0-9]{64}$/.test(lock.process_incarnation_sha256) ||
     !Number.isSafeInteger(lock.acquired_at_ms) ||
     Number(lock.acquired_at_ms) < 0 ||
     typeof lock.nonce !== "string" ||
     !/^[a-f0-9-]{36}$/.test(lock.nonce) ||
     `${actionLedgerJson(value)}\n` !== content
   ) {
-    throw new Error("invalid action event producer lock");
+    throw new Error(`invalid ${label}`);
   }
-  return value as WorkflowProducerLock;
+  return value as ActionEventLock;
+}
+
+function actionEventLockOwnerIsStale(owner: ActionEventLock): boolean {
+  if (!processIsAlive(owner.pid)) return true;
+  const currentIncarnation = processIncarnationIdentitySha256(owner.pid);
+  return currentIncarnation !== null && currentIncarnation !== owner.process_incarnation_sha256;
 }
 
 function processIsAlive(pid: number): boolean {

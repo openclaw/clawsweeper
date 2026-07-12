@@ -1,11 +1,14 @@
-import { randomUUID } from "node:crypto";
 import { constants as bufferConstants, isUtf8 } from "node:buffer";
+import { spawnSync } from "node:child_process";
+import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
 const NO_FOLLOW = fs.constants.O_NOFOLLOW ?? 0;
 const DIRECTORY = fs.constants.O_DIRECTORY ?? 0;
 const NON_BLOCKING = fs.constants.O_NONBLOCK ?? 0;
+const PROCESS_IDENTITY_CACHE_MS = 100;
+const processIdentityCache = new Map<number, { expiresAt: number; identity: string | null }>();
 
 export type SafeWriteTarget = {
   path: string;
@@ -34,6 +37,8 @@ type ParentChainEntry = FileIdentity & {
 type ParentChainSnapshot = {
   entries: ParentChainEntry[];
 };
+
+class FileIdentityMismatchError extends Error {}
 
 export function prepareSafeWriteTarget(
   root: string,
@@ -196,13 +201,68 @@ export function tryAcquireUtf8FileLockNoFollow(
   target: SafeWriteTarget,
   content: string,
 ): (() => void) | null {
-  let identity: FileIdentity;
+  const temporary = safeSiblingWriteTarget(
+    target,
+    `${path.basename(target.path)}.${process.pid}.${randomUUID()}.lock`,
+  );
+  let identity: FileIdentity | undefined;
+  let published = false;
+  let result: "created" | "exists" | undefined;
+  let failure: unknown;
   try {
-    identity = writeUtf8FileExclusiveNoFollowWithIdentity(target, content, true);
+    writeUtf8FileExclusiveNoFollow(temporary, content);
+    identity = fileIdentity(temporary.path, `${temporary.label} staging`);
+    try {
+      linkFileExclusiveNoFollow(temporary, target);
+      published = true;
+      result = "created";
+    } catch (error) {
+      if (isAlreadyExistsError(error)) {
+        result = "exists";
+      } else {
+        try {
+          published = pathMatchesFileIdentity(target.path, identity, target.label);
+        } catch (identityError) {
+          throw new AggregateError(
+            [error, identityError],
+            `failed to determine whether ${target.label} lock was published`,
+          );
+        }
+        throw error;
+      }
+    }
   } catch (error) {
-    if (isAlreadyExistsError(error)) return null;
-    throw error;
+    failure = error;
   }
+  if (!identity) {
+    try {
+      identity = fileIdentity(temporary.path, `${temporary.label} staging`);
+    } catch (error) {
+      if (!isNotFoundError(error) && failure === undefined) failure = error;
+    }
+  }
+  if (identity) {
+    try {
+      removeFileNoFollow(temporary, identity);
+    } catch (error) {
+      if (!isNotFoundError(error) && failure === undefined) failure = error;
+    }
+  }
+  if (failure !== undefined && published && identity) {
+    try {
+      removeFileNoFollow(target, identity);
+    } catch (cleanupError) {
+      if (!isNotFoundError(cleanupError)) {
+        failure = new AggregateError(
+          [failure, cleanupError],
+          `failed to clean up ${target.label} after lock creation failure`,
+        );
+      }
+    }
+  }
+  if (failure !== undefined) throw failure;
+  if (result === "exists") return null;
+  const publishedIdentity = identity!;
   let released = false;
   return () => {
     if (released) return;
@@ -215,9 +275,9 @@ export function tryAcquireUtf8FileLockNoFollow(
       throw new Error(`refusing changed ${target.label} lock file: ${target.path}`);
     }
     try {
-      removeFileNoFollow(target, identity);
+      removeFileNoFollow(target, publishedIdentity);
     } catch (error) {
-      if (!isNotFoundError(error)) throw error;
+      if (!isNotFoundError(error) && !(error instanceof FileIdentityMismatchError)) throw error;
     }
     released = true;
   };
@@ -246,13 +306,32 @@ export function removeUtf8FileIfContentNoFollow(
   }
   if (current === null) return false;
   if (current !== expectedContent) return false;
+  if (!pathMatchesFileIdentity(target.path, identity, `${target.label} stale lock`)) return false;
   try {
     removeFileNoFollow(target, identity);
   } catch (error) {
     if (isNotFoundError(error)) return false;
+    if (error instanceof FileIdentityMismatchError) return false;
     throw error;
   }
   return true;
+}
+
+export function processIncarnationIdentitySha256(pid = process.pid): string | null {
+  if (!Number.isSafeInteger(pid) || pid < 1) return null;
+  const now = Date.now();
+  const cached = processIdentityCache.get(pid);
+  if (cached && cached.expiresAt > now) return cached.identity;
+  const rawIdentity = processIncarnationIdentity(pid);
+  const identity =
+    rawIdentity === null
+      ? null
+      : createHash("sha256").update(`${process.platform}\0${rawIdentity}`).digest("hex");
+  processIdentityCache.set(pid, {
+    expiresAt: now + PROCESS_IDENTITY_CACHE_MS,
+    identity,
+  });
+  return identity;
 }
 
 export function writeUtf8FileCreateOnlyNoFollow(
@@ -461,7 +540,17 @@ function fileIdentity(filePath: string, label: string): FileIdentity {
 function assertPathMatchesIdentity(filePath: string, expected: FileIdentity, label: string): void {
   const actual = fileIdentity(filePath, label);
   if (actual.dev !== expected.dev || actual.ino !== expected.ino) {
-    throw new Error(`refusing changed ${label} file: ${filePath}`);
+    throw new FileIdentityMismatchError(`refusing changed ${label} file: ${filePath}`);
+  }
+}
+
+function pathMatchesFileIdentity(filePath: string, expected: FileIdentity, label: string): boolean {
+  try {
+    const actual = fileIdentity(filePath, label);
+    return actual.dev === expected.dev && actual.ino === expected.ino;
+  } catch (error) {
+    if (isNotFoundError(error)) return false;
+    throw error;
   }
 }
 
@@ -540,12 +629,61 @@ function removeFileNoFollow(target: SafeWriteTarget, expectedIdentity: FileIdent
   assertStableParentChain(target, parentChain);
   try {
     fileIdentity(target.path, `${target.label} staging`);
-    throw new Error(`refusing replaced ${target.label} staging file: ${target.path}`);
+    throw new FileIdentityMismatchError(
+      `refusing replaced ${target.label} staging file: ${target.path}`,
+    );
   } catch (error) {
     if (!isNotFoundError(error)) throw error;
   }
   fsyncDirectory(target.parentPath, target.label);
   assertStableParentChain(target, parentChain);
+}
+
+function processIncarnationIdentity(pid: number): string | null {
+  if (process.platform === "linux") {
+    try {
+      const bootId = fs.readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
+      const stat = fs.readFileSync(`/proc/${pid}/stat`, "utf8");
+      const commandEnd = stat.lastIndexOf(")");
+      if (!bootId || commandEnd < 0) return null;
+      const fields = stat
+        .slice(commandEnd + 1)
+        .trim()
+        .split(/\s+/);
+      const startTime = fields[19];
+      return startTime && /^\d+$/.test(startTime) ? `${bootId}\0${startTime}` : null;
+    } catch {
+      return null;
+    }
+  }
+  if (process.platform === "win32") {
+    const startTime = commandOutput("powershell.exe", [
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      `(Get-Process -Id ${pid} -ErrorAction Stop).StartTime.ToUniversalTime().Ticks`,
+    ]);
+    return startTime ? `windows\0${startTime}` : null;
+  }
+  const startTime = commandOutput("/bin/ps", ["-p", String(pid), "-o", "lstart="]);
+  if (!startTime) return null;
+  const bootTime =
+    process.platform === "darwin"
+      ? commandOutput("/usr/sbin/sysctl", ["-n", "kern.boottime"])
+      : null;
+  return `${bootTime ?? "unknown-boot"}\0${startTime}`;
+}
+
+function commandOutput(command: string, args: readonly string[]): string | null {
+  const result = spawnSync(command, args, {
+    encoding: "utf8",
+    timeout: 2_000,
+    maxBuffer: 16 * 1024,
+    windowsHide: true,
+  });
+  if (result.status !== 0 || result.error) return null;
+  const output = result.stdout.trim();
+  return output || null;
 }
 
 function prepareSafeDirectoryReadTarget(
