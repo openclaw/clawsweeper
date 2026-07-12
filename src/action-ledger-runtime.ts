@@ -1,13 +1,15 @@
 import { createHash } from "node:crypto";
-import fs from "node:fs";
 import path from "node:path";
 
 import {
-  assertDirectoryNoLinks,
+  prepareSafeReadRoot,
+  prepareSafeReadTarget,
   prepareSafeWriteTarget,
+  readDirectoryEntriesNoFollow,
   readUtf8FileIfExistsNoFollow,
   readUtf8FileNoFollow,
-  writeUtf8FileExclusiveNoFollow,
+  writeUtf8FileCreateOnlyNoFollow,
+  type SafeReadRoot,
 } from "./action-ledger-files.js";
 import {
   ACTION_EVENT_TYPES,
@@ -16,10 +18,11 @@ import {
   actionEventKey,
   actionIdempotencyKey,
   actionOperationId,
+  createActionEvent,
   isActionEventPhaseType,
   isActionEventReasonCode,
   isActionEventStatus,
-  readActionEventShard,
+  readActionEventShardAt,
   readAllSpooledActionEvents,
   sortActionEventsCausally,
   writeActionEvent,
@@ -36,9 +39,12 @@ import {
   type ActionEventStatus,
   type ActionEventSubject,
 } from "./action-ledger.js";
+import { normalizeRepo } from "./repository-profiles.js";
 import { stableJson } from "./stable-json.js";
 
 const DEFAULT_EVENT_OUTPUT_DIR = path.join(".clawsweeper-repair", "action-ledger-state");
+const DEFAULT_CRABFLEET_TIMEOUT_MS = 10_000;
+const MAX_CRABFLEET_TIMEOUT_MS = 60_000;
 const pendingCrabFleetPosts = new Set<Promise<void>>();
 
 export type WorkflowActionEventInput = {
@@ -93,7 +99,10 @@ export function workflowActionProducer(
   component: string,
   env: NodeJS.ProcessEnv = process.env,
 ): ActionEventProducer {
-  const repository = requiredEnv(env, "GITHUB_REPOSITORY");
+  const repository = normalizeRepo(requiredEnv(env, "GITHUB_REPOSITORY"));
+  if (!/^[a-z0-9_][a-z0-9_.-]*\/[a-z0-9_][a-z0-9_.-]*$/.test(repository)) {
+    throw new Error(`invalid GITHUB_REPOSITORY for action event telemetry: ${repository}`);
+  }
   const workflowRef = String(env.GITHUB_WORKFLOW_REF ?? "").trim();
   const workflow = workflowRef
     ? path.posix.basename(workflowRef.split("@", 1)[0] ?? workflowRef)
@@ -141,41 +150,42 @@ export function recordWorkflowActionEvent(
     },
   );
   const phaseSeq = input.phaseSeq ?? 1;
-  const event = writeActionEvent(
-    root,
-    {
-      eventKey: actionEventKey(input.scope, {
-        attemptId,
-        phaseSeq,
-        producer: {
-          job: producer.job,
-          component: producer.component,
-        },
-        identity: input.identity,
-      }),
-      operationId,
+  const eventInput = {
+    eventKey: actionEventKey(input.scope, {
       attemptId,
-      parentEventId: input.parentEventId ?? null,
       phaseSeq,
-      idempotencyKeySha256: actionIdempotencyKey(
-        input.idempotencyIdentity ?? {
-          operationId,
-          scope: input.scope,
-          identity: input.identity,
-        },
-      ),
-      type: input.type,
-      producer,
-      subject: input.subject,
-      action: input.action,
-      ...(input.learning ? { learning: input.learning } : {}),
-      ...(input.evidence ? { evidence: input.evidence } : {}),
-      ...(input.attributes ? { attributes: input.attributes } : {}),
-      ...(input.privacy ? { privacy: input.privacy } : {}),
-      ...(input.occurredAt ? { occurredAt: input.occurredAt } : {}),
-    },
-    options.now ? { now: options.now } : {},
-  ).event;
+      producer: {
+        job: producer.job,
+        component: producer.component,
+      },
+      identity: input.identity,
+    }),
+    operationId,
+    attemptId,
+    parentEventId: input.parentEventId ?? null,
+    phaseSeq,
+    idempotencyKeySha256: actionIdempotencyKey(
+      input.idempotencyIdentity ?? {
+        operationId,
+        scope: input.scope,
+        identity: input.identity,
+      },
+    ),
+    type: input.type,
+    producer,
+    subject: input.subject,
+    action: input.action,
+    ...(input.learning ? { learning: input.learning } : {}),
+    ...(input.evidence ? { evidence: input.evidence } : {}),
+    ...(input.attributes ? { attributes: input.attributes } : {}),
+    ...(input.privacy ? { privacy: input.privacy } : {}),
+    ...(input.occurredAt ? { occurredAt: input.occurredAt } : {}),
+  };
+  const recordedAt = options.now ? options.now() : new Date();
+  const writeOptions = { now: () => recordedAt };
+  createActionEvent(eventInput, writeOptions);
+  ensureWorkflowPartitionDate(root, persistedWorkflowProducer(producer), env);
+  const event = writeActionEvent(root, eventInput, writeOptions).event;
   queueCrabFleetEvent(root, event, env, options.fetchImpl ?? fetch);
   return event;
 }
@@ -247,7 +257,8 @@ export async function flushWorkflowActionEvents(
   await flushPendingCrabFleetPosts();
   const env = options.env ?? process.env;
   if (!workflowActionEventsEnabled(env)) return [];
-  const events = readAllSpooledActionEvents(root);
+  const safeRoot = prepareSafeReadRoot(root, "action event spool");
+  const events = readAllSpooledActionEvents(safeRoot);
   const groups = new Map<string, ActionEvent[]>();
   for (const event of events) {
     const key = stableJson(event.producer);
@@ -264,7 +275,7 @@ export async function flushWorkflowActionEvents(
   for (const group of groups.values()) {
     const first = group[0];
     if (!first) continue;
-    const partitionDate = workflowPartitionDate(root, first.producer, env);
+    const partitionDate = readWorkflowPartitionDate(safeRoot, first.producer);
     const result = writeActionEventShard(
       outputRoot,
       {
@@ -285,9 +296,9 @@ export async function flushWorkflowActionEvents(
 }
 
 export async function flushPendingCrabFleetPosts(): Promise<void> {
-  const posts = [...pendingCrabFleetPosts];
-  if (posts.length === 0) return;
-  await Promise.all(posts);
+  while (pendingCrabFleetPosts.size > 0) {
+    await Promise.all(pendingCrabFleetPosts);
+  }
 }
 
 export async function postActionEventToCrabFleet(
@@ -302,9 +313,20 @@ export async function postActionEventToCrabFleet(
     /\/+$/,
     "",
   );
-  const response = await fetchImpl(
-    `${baseUrl}/api/agent/interactive-sessions/${encodeURIComponent(sessionId)}/events`,
-    {
+  const timeoutMs = crabFleetTimeoutMs(env);
+  const controller = new AbortController();
+  let timedOut = false;
+  let timeout: NodeJS.Timeout | undefined;
+  const timeoutError = new Error(`CrabFleet action event append timed out after ${timeoutMs}ms`);
+  const deadline = new Promise<never>((_resolve, reject) => {
+    timeout = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+      reject(timeoutError);
+    }, timeoutMs);
+  });
+  const request = Promise.resolve().then(() =>
+    fetchImpl(`${baseUrl}/api/agent/interactive-sessions/${encodeURIComponent(sessionId)}/events`, {
       method: "POST",
       headers: {
         authorization: `Bearer ${token}`,
@@ -319,11 +341,24 @@ export async function postActionEventToCrabFleet(
           event,
         },
       }),
-    },
+      signal: controller.signal,
+    }),
   );
-  if (!response.ok) {
-    await response.body?.cancel();
-    throw new Error(`CrabFleet action event append failed (${response.status})`);
+  void request.then(
+    (response) => {
+      if (timedOut) void cancelResponseBody(response);
+    },
+    () => undefined,
+  );
+  try {
+    const response = await Promise.race([request, deadline]);
+    const status = response.status;
+    await Promise.race([cancelResponseBody(response), deadline]);
+    if (!response.ok) {
+      throw new Error(`CrabFleet action event append failed (${status})`);
+    }
+  } finally {
+    if (timeout) clearTimeout(timeout);
   }
 }
 
@@ -333,9 +368,14 @@ export function importActionEventShards(
 ): ActionEventShardImportResult {
   const source = path.resolve(sourceRoot);
   const destination = path.resolve(destinationRoot);
-  if (!fs.existsSync(source)) return { created: 0, unchanged: 0, paths: [] };
-  const relativePaths = recursiveFiles(source)
-    .map((file) => path.relative(source, file).replaceAll(path.sep, "/"))
+  let safeSource: SafeReadRoot;
+  try {
+    safeSource = prepareSafeReadRoot(source, "action event shard import source");
+  } catch (error) {
+    if (isNotFoundError(error)) return { created: 0, unchanged: 0, paths: [] };
+    throw error;
+  }
+  const relativePaths = recursiveFiles(safeSource)
     .filter((file) => /^ledger\/v1\/events\/.+\.jsonl$/.test(file))
     .sort();
   let created = 0;
@@ -348,24 +388,32 @@ export function importActionEventShards(
     ) {
       throw new Error(`invalid action event shard path: ${relativePath}`);
     }
-    const sourcePath = path.join(source, relativePath);
-    const events = readActionEventShard(sourcePath);
-    const content = readUtf8FileNoFollow(sourcePath, "action event shard import source");
+    const events = readActionEventShardAt(safeSource, relativePath);
+    const content = readUtf8FileNoFollow(
+      prepareSafeReadTarget(safeSource, relativePath, "action event shard import source"),
+    );
     if (!content.endsWith("\n")) {
       throw new Error(`action event shard must end with a newline: ${relativePath}`);
     }
     validateCanonicalImportedShard(relativePath, events, content);
     const target = prepareSafeWriteTarget(destination, relativePath, "action event shard import");
-    try {
-      writeUtf8FileExclusiveNoFollow(target, content);
-      created += 1;
-    } catch (error) {
-      if (!isAlreadyExistsError(error)) throw error;
-      if (readUtf8FileNoFollow(target.path, "action event shard import") !== content) {
+    const existing = readUtf8FileIfExistsNoFollow(target);
+    if (existing !== null) {
+      if (existing !== content) {
         throw new Error(`action event shard import conflict: ${relativePath}`);
       }
       unchanged += 1;
+      continue;
     }
+    const status = writeUtf8FileCreateOnlyNoFollow(target, content);
+    if (status === "created") {
+      created += 1;
+      continue;
+    }
+    if (readUtf8FileNoFollow(target) !== content) {
+      throw new Error(`action event shard import conflict: ${relativePath}`);
+    }
+    unchanged += 1;
   }
   return { created, unchanged, paths: relativePaths };
 }
@@ -448,7 +496,7 @@ function recordCrabFleetProjectionFailure(root: string, event: ActionEvent): voi
       operationId: event.operation_id,
       attemptId: event.attempt_id,
       parentEventId: event.event_id,
-      phaseSeq: event.phase_seq + 1,
+      phaseSeq: event.phase_seq === Number.MAX_SAFE_INTEGER ? event.phase_seq : event.phase_seq + 1,
       idempotencyKeySha256: actionIdempotencyKey({
         sourceEventId: event.event_id,
         destination: "crabfleet",
@@ -508,7 +556,7 @@ function recordCrabFleetProjectionFailure(root: string, event: ActionEvent): voi
   }
 }
 
-function workflowPartitionDate(
+function ensureWorkflowPartitionDate(
   root: string,
   producer: ActionEvent["producer"],
   env: NodeJS.ProcessEnv,
@@ -528,28 +576,48 @@ function workflowPartitionDate(
       "action event partitioning requires CLAWSWEEPER_ACTION_LEDGER_PARTITION_DATE or GITHUB_RUN_STARTED_AT",
     );
   }
-  const identity = createHash("sha256").update(stableJson(producer)).digest("hex");
-  const partitionPath = path.join(
-    ".clawsweeper-repair",
-    "action-events",
-    "_partitions",
-    `${identity}.txt`,
+  const target = prepareSafeWriteTarget(
+    root,
+    workflowPartitionRelativePath(producer),
+    "action event partition marker",
   );
-  const target = prepareSafeWriteTarget(root, partitionPath, "action event partition marker");
-  const existing = readUtf8FileIfExistsNoFollow(target.path, "action event partition marker");
+  const existing = readUtf8FileIfExistsNoFollow(target);
   if (existing !== null) {
     return validateWorkflowPartitionMarker(existing, partitionDate);
   }
-  try {
-    writeUtf8FileExclusiveNoFollow(target, `${partitionDate}\n`);
-  } catch (error) {
-    if (!isAlreadyExistsError(error)) throw error;
-    return validateWorkflowPartitionMarker(
-      readUtf8FileNoFollow(target.path, "action event partition marker"),
-      partitionDate,
-    );
+  if (writeUtf8FileCreateOnlyNoFollow(target, `${partitionDate}\n`) === "exists") {
+    return validateWorkflowPartitionMarker(readUtf8FileNoFollow(target), partitionDate);
   }
   return partitionDate;
+}
+
+function readWorkflowPartitionDate(root: SafeReadRoot, producer: ActionEvent["producer"]): string {
+  const target = prepareSafeReadTarget(
+    root,
+    workflowPartitionRelativePath(producer),
+    "action event partition marker",
+  );
+  return workflowPartitionCalendarDate(
+    readUtf8FileNoFollow(target).trim(),
+    "action event partition marker",
+  );
+}
+
+function workflowPartitionRelativePath(producer: ActionEvent["producer"]): string {
+  const identity = createHash("sha256").update(stableJson(producer)).digest("hex");
+  return path.join(".clawsweeper-repair", "action-events", "_partitions", `${identity}.txt`);
+}
+
+function persistedWorkflowProducer(producer: ActionEventProducer): ActionEvent["producer"] {
+  return {
+    repository: producer.repository,
+    sha: producer.sha,
+    workflow: producer.workflow,
+    job: producer.job,
+    run_id: producer.runId,
+    run_attempt: producer.runAttempt,
+    component: producer.component,
+  };
 }
 
 function validateWorkflowPartitionMarker(content: string, expected: string): string {
@@ -621,20 +689,48 @@ function positiveIntegerEnv(env: NodeJS.ProcessEnv, name: string): number {
   return value;
 }
 
-function recursiveFiles(root: string): string[] {
-  assertDirectoryNoLinks(root, "action event shard import source");
-  return fs.readdirSync(root, { withFileTypes: true }).flatMap((entry) => {
-    const resolved = path.join(root, entry.name);
+function recursiveFiles(root: SafeReadRoot, relativeDirectory = "."): string[] {
+  const entries = readDirectoryEntriesNoFollow(
+    root,
+    relativeDirectory,
+    "action event shard import source",
+  );
+  return entries.flatMap((entry) => {
+    const relativePath =
+      relativeDirectory === "."
+        ? entry.name
+        : path.posix.join(relativeDirectory.replaceAll(path.sep, "/"), entry.name);
+    if (entry.isDirectory()) return recursiveFiles(root, relativePath);
+    if (entry.isFile()) return [relativePath];
     if (entry.isSymbolicLink()) {
-      throw new Error(`refusing symbolic link in action event shard import: ${resolved}`);
+      throw new Error(`refusing symbolic link in action event shard import: ${relativePath}`);
     }
-    if (entry.isDirectory()) return recursiveFiles(resolved);
-    return entry.isFile() ? [resolved] : [];
+    throw new Error(`refusing unsafe action event shard import entry: ${relativePath}`);
   });
 }
 
-function isAlreadyExistsError(error: unknown): boolean {
+function crabFleetTimeoutMs(env: NodeJS.ProcessEnv): number {
+  const raw = String(env.CLAWSWEEPER_CRABFLEET_TIMEOUT_MS ?? "").trim();
+  if (!raw) return DEFAULT_CRABFLEET_TIMEOUT_MS;
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value) || value < 1 || value > MAX_CRABFLEET_TIMEOUT_MS) {
+    throw new Error(
+      `CLAWSWEEPER_CRABFLEET_TIMEOUT_MS must be an integer between 1 and ${MAX_CRABFLEET_TIMEOUT_MS}`,
+    );
+  }
+  return value;
+}
+
+async function cancelResponseBody(response: Response): Promise<void> {
+  try {
+    await response.body?.cancel();
+  } catch {
+    throw new Error("CrabFleet action event response cleanup failed");
+  }
+}
+
+function isNotFoundError(error: unknown): boolean {
   return (
-    error instanceof Error && "code" in error && (error as NodeJS.ErrnoException).code === "EEXIST"
+    error instanceof Error && "code" in error && (error as NodeJS.ErrnoException).code === "ENOENT"
   );
 }

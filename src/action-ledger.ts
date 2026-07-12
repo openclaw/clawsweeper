@@ -1,20 +1,19 @@
-import { createHash, randomUUID } from "node:crypto";
-import fs from "node:fs";
+import { createHash } from "node:crypto";
 import path from "node:path";
 
 import {
-  assertDirectoryNoLinks,
-  linkFileExclusiveNoFollow,
+  prepareSafeReadTarget,
+  prepareSafeReadRoot,
   prepareSafeWriteTarget,
+  readDirectoryEntriesNoFollow,
   readUtf8FileIfExistsNoFollow,
   readUtf8FileNoFollow,
-  removeFileNoFollow,
-  safeSiblingWriteTarget,
-  writeUtf8FileExclusiveNoFollow,
+  writeUtf8FileCreateOnlyNoFollow,
   type SafeWriteTarget,
+  type SafeReadRoot,
 } from "./action-ledger-files.js";
 import { normalizeRepo, slugForRepo } from "./repository-profiles.js";
-import { sortStable, stableJson } from "./stable-json.js";
+import { compareStableText, sortStable, stableJson } from "./stable-json.js";
 
 export const ACTION_EVENT_SCHEMA = "clawsweeper.state-ledger-event.v1";
 
@@ -377,10 +376,12 @@ export const ACTION_EVENT_MACHINE_TEXT_PATTERN_SOURCE = "^[A-Za-z0-9][A-Za-z0-9_
 export const ACTION_EVENT_CONFIDENTIAL_IDENTIFIER_PATTERN_SOURCES = [
   "/(?:[Uu][Ss][Ee][Rr][Ss]|[Hh][Oo][Mm][Ee]|[Pp][Rr][Ii][Vv][Aa][Tt][Ee]|[Tt][Mm][Pp])/",
   "\\\\[Uu][Ss][Ee][Rr][Ss]\\\\",
+  "(?:^|[\\\\/])[A-Za-z]:[\\\\/]",
   "BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY",
   "(?:[Gg][Hh][PpOoUuSsRr]_[A-Za-z0-9]{16,}|[Gg][Ii][Tt][Hh][Uu][Bb]_[Pp][Aa][Tt]_[A-Za-z0-9_]{16,}|[Ss][Kk]-[A-Za-z0-9_-]{16,})",
   "eyJ[A-Za-z0-9_-]{5,}\\.eyJ[A-Za-z0-9_-]{5,}\\.[A-Za-z0-9_-]{16,}",
-  "(?:[Bb][Ee][Aa][Rr][Ee][Rr]|[Aa][Uu][Tt][Hh][Oo][Rr][Ii][Zz][Aa][Tt][Ii][Oo][Nn]|[Aa][Pp][Ii][_-]?(?:[Kk][Ee][Yy]|[Tt][Oo][Kk][Ee][Nn])|[Aa][Cc][Cc][Ee][Ss][Ss][_-]?[Tt][Oo][Kk][Ee][Nn]|[Cc][Ll][Ii][Ee][Nn][Tt][_-]?[Ss][Ee][Cc][Rr][Ee][Tt]|[Cc][Ll][Oo][Uu][Dd][Ff][Ll][Aa][Rr][Ee][_-]?(?:[Aa][Pp][Ii][_-]?)?(?:[Kk][Ee][Yy]|[Tt][Oo][Kk][Ee][Nn]))(?:\\s+|\\s*[:=_-]\\s*)[A-Za-z0-9._~-]{16,}",
+  "(?:[Bb][Ee][Aa][Rr][Ee][Rr]|[Aa][Uu][Tt][Hh][Oo][Rr][Ii][Zz][Aa][Tt][Ii][Oo][Nn]|[Aa][Pp][Ii][_-]?(?:[Kk][Ee][Yy]|[Tt][Oo][Kk][Ee][Nn])|[Aa][Cc][Cc][Ee][Ss][Ss][_-]?[Tt][Oo][Kk][Ee][Nn]|[Cc][Ll][Ii][Ee][Nn][Tt][_-]?[Ss][Ee][Cc][Rr][Ee][Tt]|[Cc][Ll][Oo][Uu][Dd][Ff][Ll][Aa][Rr][Ee][_-]?(?:[Aa][Pp][Ii][_-]?)?(?:[Kk][Ee][Yy]|[Tt][Oo][Kk][Ee][Nn]))(?:\\s+|%20|\\s*[:=_-]\\s*)[A-Za-z0-9._~+\\/-]{16,}={0,2}",
+  "[Bb][Aa][Ss][Ii][Cc](?:\\s+|%20)[A-Za-z0-9+/]{8,}={0,2}",
   "[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}",
   "(?:^|[/:@])(?:localhost|(?:[A-Za-z0-9-]+\\.)+(?:local|localhost|internal|corp|lan|home(?:\\.arpa)?)|(?:internal|intranet)\\.(?:[A-Za-z0-9-]+\\.)*[A-Za-z0-9-]+)(?:$|[/:])",
   "(?:^|[/:@])(?:10(?:\\.[0-9]{1,3}){3}|127(?:\\.[0-9]{1,3}){3}|169\\.254(?:\\.[0-9]{1,3}){2}|192\\.168(?:\\.[0-9]{1,3}){2}|172\\.(?:1[6-9]|2[0-9]|3[01])(?:\\.[0-9]{1,3}){2})(?:$|[/:])",
@@ -814,7 +815,7 @@ export function writeActionEvent(
   const target = prepareSafeWriteTarget(root, relativePath, "action event");
   const eventPath = target.path;
 
-  const existing = readActionEventIfExists(eventPath);
+  const existing = readActionEventIfExists(target);
   if (existing) {
     return compareExistingActionEvent(
       eventPath,
@@ -827,13 +828,13 @@ export function writeActionEvent(
 
   const content = `${JSON.stringify(sortStable(candidate), null, 2)}\n`;
   const status = writeCreateOnlyFile(target, content, () => {
-    const raced = readActionEventIfExists(eventPath);
+    const raced = readActionEventIfExists(target);
     if (!raced) throw new Error(`action event appeared without readable content: ${eventPath}`);
     compareExistingActionEvent(eventPath, relativePath, raced, candidate, occurredAtWasGenerated);
   });
   return {
     status,
-    event: status === "unchanged" ? readActionEvent(eventPath) : candidate,
+    event: status === "unchanged" ? readActionEventTarget(target) : candidate,
     path: eventPath,
     relativePath,
   };
@@ -852,12 +853,12 @@ export function writeActionEventShard(
   const shardPath = target.path;
   const content = normalizedEvents.map((event) => stableJson(event)).join("\n") + "\n";
   const digest = sha256(content);
-  const existing = readUtf8FileIfExistsNoFollow(shardPath, "action event shard");
+  const existing = readUtf8FileIfExistsNoFollow(target);
   if (existing !== null) {
     return compareExistingShard(shardPath, relativePath, existing, digest, normalizedEvents.length);
   }
   const status = writeCreateOnlyFile(target, content, () => {
-    const raced = readUtf8FileIfExistsNoFollow(shardPath, "action event shard");
+    const raced = readUtf8FileIfExistsNoFollow(target);
     if (raced === null) {
       throw new Error(`action event shard appeared without readable content: ${shardPath}`);
     }
@@ -873,49 +874,117 @@ export function writeActionEventShard(
 }
 
 export function readActionEvent(filePath: string): ActionEvent {
-  const parsed = JSON.parse(readUtf8FileNoFollow(filePath, "action event")) as unknown;
-  return validateActionEvent(parsed, filePath);
+  return readActionEventTarget(
+    prepareSafeReadTarget(path.dirname(filePath), path.basename(filePath), "action event"),
+  );
 }
 
 export function readActionEventShard(filePath: string): ActionEvent[] {
-  return readUtf8FileNoFollow(filePath, "action event shard")
+  return readActionEventShardTarget(
+    prepareSafeReadTarget(path.dirname(filePath), path.basename(filePath), "action event shard"),
+  );
+}
+
+export function readActionEventShardAt(
+  root: string | SafeReadRoot,
+  relativePath: string,
+): ActionEvent[] {
+  return readActionEventShardTarget(
+    prepareSafeReadTarget(root, relativePath, "action event shard"),
+  );
+}
+
+function readActionEventShardTarget(target: SafeWriteTarget): ActionEvent[] {
+  return readUtf8FileNoFollow(target)
     .split(/\r?\n/)
     .filter(Boolean)
     .map((line, index) =>
-      validateActionEvent(JSON.parse(line) as unknown, `${filePath}:${index + 1}`),
+      validateActionEvent(JSON.parse(line) as unknown, `${target.path}:${index + 1}`),
     );
 }
 
-export function readSpooledActionEvents(root: string, repository: string): ActionEvent[] {
-  const directory = path.resolve(
-    root,
+export function readSpooledActionEvents(
+  root: string | SafeReadRoot,
+  repository: string,
+): ActionEvent[] {
+  const safeRoot =
+    typeof root === "string" ? prepareSafeReadRoot(root, "action event spool") : root;
+  const relativeDirectory = path.join(
     ".clawsweeper-repair",
     "action-events",
     slugForRepo(requiredRepo(repository)),
   );
-  if (!fs.existsSync(directory)) return [];
-  assertDirectoryNoLinks(directory, "action event spool");
-  return fs
-    .readdirSync(directory)
-    .filter((entry) => entry.endsWith(".json"))
-    .map((entry) => readActionEvent(path.join(directory, entry)))
+  let entries;
+  try {
+    entries = readDirectoryEntriesNoFollow(safeRoot, relativeDirectory, "action event spool");
+  } catch (error) {
+    if (isNotFoundError(error)) return [];
+    throw error;
+  }
+  return entries
+    .filter((entry) => {
+      if (!entry.isFile()) {
+        throw new Error(
+          `refusing unsafe action event spool entry: ${path.join(relativeDirectory, entry.name)}`,
+        );
+      }
+      return entry.name.endsWith(".json");
+    })
+    .map((entry) =>
+      readActionEventTarget(
+        prepareSafeReadTarget(
+          safeRoot,
+          path.join(relativeDirectory, entry.name),
+          "action event spool entry",
+        ),
+      ),
+    )
     .sort(compareEvents);
 }
 
-export function readAllSpooledActionEvents(root: string): ActionEvent[] {
-  const directory = path.resolve(root, ".clawsweeper-repair", "action-events");
-  if (!fs.existsSync(directory)) return [];
-  assertDirectoryNoLinks(directory, "action event spool");
-  return fs
-    .readdirSync(directory, { withFileTypes: true })
-    .filter((entry) => entry.isDirectory() && !entry.name.startsWith("_"))
-    .flatMap((entry) =>
-      fs
-        .readdirSync(path.join(directory, entry.name), { withFileTypes: true })
-        .filter((file) => file.isFile() && file.name.endsWith(".json"))
-        .map((file) => readActionEvent(path.join(directory, entry.name, file.name))),
-    )
-    .sort(compareEvents);
+export function readAllSpooledActionEvents(root: string | SafeReadRoot): ActionEvent[] {
+  const safeRoot =
+    typeof root === "string" ? prepareSafeReadRoot(root, "action event spool") : root;
+  const relativeRoot = path.join(".clawsweeper-repair", "action-events");
+  let repositoryEntries;
+  try {
+    repositoryEntries = readDirectoryEntriesNoFollow(safeRoot, relativeRoot, "action event spool");
+  } catch (error) {
+    if (isNotFoundError(error)) return [];
+    throw error;
+  }
+  const events: ActionEvent[] = [];
+  for (const repositoryEntry of repositoryEntries) {
+    if (repositoryEntry.name === "_partitions") {
+      if (!repositoryEntry.isDirectory()) {
+        throw new Error(`refusing unsafe action event spool entry: ${repositoryEntry.name}`);
+      }
+      continue;
+    }
+    if (!repositoryEntry.isDirectory()) {
+      throw new Error(`refusing unsafe action event spool entry: ${repositoryEntry.name}`);
+    }
+    const relativeDirectory = path.join(relativeRoot, repositoryEntry.name);
+    const files = readDirectoryEntriesNoFollow(safeRoot, relativeDirectory, "action event spool");
+    for (const file of files) {
+      if (!file.isFile()) {
+        throw new Error(
+          `refusing unsafe action event spool entry: ${path.join(relativeDirectory, file.name)}`,
+        );
+      }
+      if (!file.name.endsWith(".json")) continue;
+      events.push(
+        readActionEventTarget(
+          prepareSafeReadTarget(
+            safeRoot,
+            path.join(relativeDirectory, file.name),
+            "action event spool entry",
+          ),
+        ),
+      );
+    }
+  }
+  return events.sort(compareEvents);
 }
 
 function actionEventSemanticValue(input: ActionEventInput) {
@@ -1067,14 +1136,14 @@ function compareEvidence(
   left: ReturnType<typeof normalizeEvidence>,
   right: ReturnType<typeof normalizeEvidence>,
 ): number {
-  return stableJson(left).localeCompare(stableJson(right));
+  return compareStableText(stableJson(left), stableJson(right));
 }
 
 function normalizeAttributes(attributes: ActionEventAttributes) {
   const normalized: Record<string, ActionEventScalar | ActionEventScalar[]> = {};
   const allowedKeys = new Set<string>(ACTION_EVENT_ATTRIBUTE_KEYS);
   for (const [key, raw] of Object.entries(attributes).sort(([left], [right]) =>
-    left.localeCompare(right),
+    compareStableText(left, right),
   )) {
     const normalizedKey = machineText(key, "action event attribute key");
     if (!allowedKeys.has(normalizedKey)) {
@@ -1155,7 +1224,7 @@ function normalizePrivacy(privacy: ActionEventPrivacy | undefined) {
     ),
     fields_dropped: [
       ...new Set(value.fieldsDropped.map((field) => machineText(field, "field"))),
-    ].sort(),
+    ].sort(compareStableText),
   };
 }
 
@@ -1223,7 +1292,7 @@ function validateShardProducer(
 function compareEvents(left: ActionEvent, right: ActionEvent): number {
   return (
     compareActionEventTimestamps(left.occurred_at, right.occurred_at) ||
-    left.event_id.localeCompare(right.event_id)
+    compareStableText(left.event_id, right.event_id)
   );
 }
 
@@ -1377,9 +1446,13 @@ function compareExistingShard(
   };
 }
 
-function readActionEventIfExists(filePath: string): ActionEvent | null {
-  const content = readUtf8FileIfExistsNoFollow(filePath, "action event");
-  return content === null ? null : validateActionEvent(JSON.parse(content) as unknown, filePath);
+function readActionEventTarget(target: SafeWriteTarget): ActionEvent {
+  return validateActionEvent(JSON.parse(readUtf8FileNoFollow(target)) as unknown, target.path);
+}
+
+function readActionEventIfExists(target: SafeWriteTarget): ActionEvent | null {
+  const content = readUtf8FileIfExistsNoFollow(target);
+  return content === null ? null : validateActionEvent(JSON.parse(content) as unknown, target.path);
 }
 
 function validateActionEvent(value: unknown, filePath: string): ActionEvent {
@@ -1495,23 +1568,10 @@ function writeCreateOnlyFile(
   content: string,
   handleRace: () => void,
 ): "created" | "unchanged" {
-  const temporary = safeSiblingWriteTarget(
-    destination,
-    `${path.basename(destination.path)}.${process.pid}.${randomUUID()}.tmp`,
-  );
-  try {
-    writeUtf8FileExclusiveNoFollow(temporary, content);
-    try {
-      linkFileExclusiveNoFollow(temporary, destination);
-      return "created";
-    } catch (error) {
-      if (!isAlreadyExistsError(error)) throw error;
-      handleRace();
-      return "unchanged";
-    }
-  } finally {
-    removeFileNoFollow(temporary);
-  }
+  const status = writeUtf8FileCreateOnlyNoFollow(destination, content);
+  if (status === "created") return "created";
+  handleRace();
+  return "unchanged";
 }
 
 function relativeDataPath(value: string, label: string): string {
@@ -1791,12 +1851,17 @@ function canonicalJsonValue(
       if (!descriptor?.enumerable || !("value" in descriptor)) {
         throw new Error(`action event data contains a non-data property at ${location}.${key}`);
       }
-      normalized[key] = canonicalJsonValue(
-        descriptor.value,
-        ancestors,
-        `${location}.${key}`,
-        rejectCredentialFields,
-      );
+      Object.defineProperty(normalized, key, {
+        configurable: true,
+        enumerable: true,
+        value: canonicalJsonValue(
+          descriptor.value,
+          ancestors,
+          `${location}.${key}`,
+          rejectCredentialFields,
+        ),
+        writable: true,
+      });
     }
     return normalized;
   } finally {
@@ -1809,7 +1874,13 @@ function compareCanonicalKeys(left: string, right: string): number {
 }
 
 function highRiskCredentialField(value: string): boolean {
-  return HIGH_RISK_CREDENTIAL_FIELD_NAMES.has(value.replace(/[^A-Za-z0-9]/g, "").toLowerCase());
+  const normalized = value.replace(/[^A-Za-z0-9]/g, "").toLowerCase();
+  return (
+    HIGH_RISK_CREDENTIAL_FIELD_NAMES.has(normalized) ||
+    /(?:authorization(?:header)?|authheader|bearertoken|credential|credentials|password|passwd|privatekey|secret|token)$/.test(
+      normalized,
+    )
+  );
 }
 
 function sha256(value: string): string {
@@ -1879,8 +1950,8 @@ function privateHost(value: string): boolean {
   );
 }
 
-function isAlreadyExistsError(error: unknown): boolean {
+function isNotFoundError(error: unknown): boolean {
   return (
-    error instanceof Error && "code" in error && (error as NodeJS.ErrnoException).code === "EEXIST"
+    error instanceof Error && "code" in error && (error as NodeJS.ErrnoException).code === "ENOENT"
   );
 }
