@@ -129,6 +129,7 @@ function review(overrides = {}) {
     lastFullReviewDecision: "keep_open",
     reviewPolicy: "policy-1",
     reviewModel: "gpt-5.6",
+    itemSourceRevision: digest("full item source"),
     reviewCommentSyncedAt: "2026-07-10T10:01:00Z",
     labelsSyncedAt: "2026-07-10T10:02:00Z",
     ...overrides,
@@ -145,6 +146,7 @@ function decision(overrides = {}) {
     reviewModel: "gpt-5.6",
     explicitDispatch: false,
     maintainerRequest: false,
+    coordinationEnabled: true,
     now: NOW,
     ...overrides,
   });
@@ -411,6 +413,14 @@ test("changed review policy or model forces hydration", () => {
 test("explicit dispatch and maintainer requests always hydrate", () => {
   assert.equal(decision({ explicitDispatch: true }).reason, "explicit_dispatch");
   assert.equal(decision({ maintainerRequest: true }).reason, "maintainer_request");
+});
+
+test("disabled coordination and missing lease revisions force hydration", () => {
+  assert.equal(decision({ coordinationEnabled: false }).reason, "coordination_disabled");
+  assert.equal(
+    decision({ review: review({ itemSourceRevision: undefined }) }).reason,
+    "missing_lease_revision",
+  );
 });
 
 test("stale completed reviews force hydration", () => {

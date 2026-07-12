@@ -439,6 +439,7 @@ interface ExistingReview {
   reviewStatus: string | undefined;
   reviewPolicy: string | undefined;
   reviewModel: string | undefined;
+  itemSourceRevision: string | undefined;
   contentDigest: string | undefined;
   lastFullReviewAt: string | undefined;
   lastFullReviewDecision: string | undefined;
@@ -6186,6 +6187,7 @@ function existingReview(
     reviewStatus: effectiveReviewStatus(markdown),
     reviewPolicy: frontMatterValue(markdown, "review_policy"),
     reviewModel: frontMatterValue(markdown, "review_model"),
+    itemSourceRevision: frontMatterValue(markdown, "item_source_revision"),
     contentDigest: frontMatterValue(markdown, "review_content_digest"),
     lastFullReviewAt: frontMatterValue(markdown, "last_full_review_at"),
     lastFullReviewDecision: frontMatterValue(markdown, "last_full_review_decision"),
@@ -6219,6 +6221,7 @@ function buildExistingReviewIndex(itemsDir: string): ExistingReviewIndex {
       reviewStatus: effectiveReviewStatus(markdown),
       reviewPolicy: frontMatterValue(markdown, "review_policy"),
       reviewModel: frontMatterValue(markdown, "review_model"),
+      itemSourceRevision: frontMatterValue(markdown, "item_source_revision"),
       contentDigest: frontMatterValue(markdown, "review_content_digest"),
       lastFullReviewAt: frontMatterValue(markdown, "last_full_review_at"),
       lastFullReviewDecision: frontMatterValue(markdown, "last_full_review_decision"),
@@ -19501,6 +19504,7 @@ function reviewCommand(args: Args): void {
         );
       }
       const priorReview = localRangeData ? null : existingReview(item, itemsDir);
+      let acquiredReviewLease: AcquiredReviewStartLease | null = null;
       let structuralRecord: ReviewStructuralRecord | null = null;
       if (!localRangeData) {
         structuralCacheChecks += 1;
@@ -19531,18 +19535,67 @@ function reviewCommand(args: Args): void {
           reviewModel: PUBLIC_CODEX_MODEL,
           explicitDispatch,
           maintainerRequest,
+          coordinationEnabled: !skipStartComment,
         });
         structuralCacheReasons.set(
           structuralDecision.reason,
           (structuralCacheReasons.get(structuralDecision.reason) ?? 0) + 1,
         );
         if (structuralDecision.hit) {
+          try {
+            const leaseRevision =
+              item.kind === "pull_request"
+                ? structuralRecord?.pullHeadSha
+                : priorReview?.itemSourceRevision;
+            const startComment = postReviewStartStatusComment({
+              item,
+              headSha: leaseRevision ?? "",
+              reviewTimeoutMs: timeoutMs,
+              position: completed + 1,
+              total: candidates.length,
+              shardIndex,
+              shardCount,
+            });
+            console.error(
+              `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} structural-cache-start-comment=${startComment.status} #${item.number}`,
+            );
+            if (startComment.status === "held") {
+              coordinationHeldRetryAt = startComment.retryAt;
+              continue;
+            }
+            acquiredReviewLease = startComment.lease;
+            if (!acquiredReviewLease) {
+              throw new Error(
+                `structural cache lease acquisition returned no identity for #${item.number}`,
+              );
+            }
+            acquiredReviewLeases.push({ itemNumber: item.number, lease: acquiredReviewLease });
+          } catch (error) {
+            leaseAcquisitionFailures += 1;
+            leaseAcquisitionFailureDetails.push(
+              `#${item.number}: ${error instanceof Error ? error.message : String(error)}`,
+            );
+            console.error(
+              `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} structural-cache-start-comment=failed #${item.number}: ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+            );
+            continue;
+          }
           const reportPath = join(artifactDir, reportFileName(item.repo, item.number));
           let carried = priorReview!.markdown;
           carried = replaceFrontMatterValue(carried, "reviewed_at", new Date().toISOString());
           carried = replaceFrontMatterValue(carried, "item_updated_at", item.updatedAt);
-          carried = replaceFrontMatterValue(carried, "review_lease_owner", "unknown");
-          carried = replaceFrontMatterValue(carried, "review_lease_comment_id", "unknown");
+          carried = replaceFrontMatterValue(
+            carried,
+            "review_lease_owner",
+            acquiredReviewLease.owner,
+          );
+          carried = replaceFrontMatterValue(
+            carried,
+            "review_lease_comment_id",
+            String(acquiredReviewLease.commentId),
+          );
           carried = replaceFrontMatterValue(carried, "review_cache_hit", "true");
           carried = updateReviewStructuralFrontMatter(carried, structuralRecord, true);
           writeFileSync(reportPath, carried, "utf8");
@@ -19561,7 +19614,6 @@ function reviewCommand(args: Args): void {
           continue;
         }
       }
-      let acquiredReviewLease: AcquiredReviewStartLease | null = null;
       if (!skipStartComment && item.kind === "pull_request") {
         try {
           const startComment = postReviewStartStatusComment({

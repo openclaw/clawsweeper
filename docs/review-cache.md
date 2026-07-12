@@ -4,10 +4,9 @@ Scheduled keep-open reviews use two independent cache stages.
 
 ## Structural Stage
 
-Before ClawSweeper creates a review lease or hydrates full GitHub context, it
-loads bounded metadata for the selected item. The metadata record contains only
-digests, timestamps, item identifiers, and commit SHAs. Bodies and comment text
-are never persisted.
+Before ClawSweeper hydrates full GitHub context, it loads bounded metadata for
+the selected item. The metadata record contains only digests, timestamps, item
+identifiers, and commit SHAs. Bodies and comment text are never persisted.
 
 A structural hit requires all of the following:
 
@@ -25,6 +24,10 @@ A structural hit requires all of the following:
 Explicit reviews, maintainer prompts, close verdicts, failed reviews, legacy
 records, truncated metadata, malformed API responses, and probe failures always
 continue to full hydration.
+
+Before carrying a structural hit, ClawSweeper acquires the normal durable review
+lease for the unchanged PR head or issue source revision. Missing coordination,
+an incomplete lease tuple, or a concurrent review always disables reuse.
 
 ## Content Stage
 

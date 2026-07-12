@@ -104,24 +104,36 @@ test("comment matcher recognizes old and new Codex review comments", () => {
   assert.equal(isCodexReviewCommentBody("Thanks for the report, I can reproduce this."), false);
 });
 
-test("structural cache runs before leases while content cache remains lease-coordinated", () => {
+test("structural cache probes before hydration but acquires a lease before carrying a hit", () => {
   const source = readFileSync("src/clawsweeper.ts", "utf8");
   const reviewLoop = source.slice(
     source.indexOf("for (const item of candidates)"),
     source.indexOf("let decision: Decision", source.indexOf("for (const item of candidates)")),
   );
   const structuralCache = reviewLoop.indexOf("reviewStructuralCacheDecision({");
+  const structuralHit = reviewLoop.indexOf("if (structuralDecision.hit)");
+  const structuralLease = reviewLoop.indexOf("postReviewStartStatusComment({", structuralHit);
+  const structuralWrite = reviewLoop.indexOf("writeFileSync(reportPath, carried", structuralLease);
   const contentCache = reviewLoop.indexOf("reviewContentCacheHit({");
-  const startLease = reviewLoop.indexOf("postReviewStartStatusComment({");
   const hydration = reviewLoop.indexOf("collectItemContext(item");
   const mediaPrep = reviewLoop.indexOf("prepareMediaProofArtifacts(context", contentCache);
 
   assert.ok(structuralCache >= 0);
-  assert.ok(startLease >= 0);
-  assert.ok(structuralCache < startLease);
   assert.ok(structuralCache < hydration);
-  assert.ok(contentCache > startLease);
+  assert.ok(structuralHit > structuralCache);
+  assert.ok(structuralLease > structuralHit);
+  assert.ok(structuralWrite > structuralLease);
+  assert.ok(structuralWrite < hydration);
+  assert.ok(contentCache > structuralLease);
   assert.ok(mediaPrep > contentCache);
+  assert.match(
+    reviewLoop.slice(structuralHit, structuralWrite),
+    /review_lease_owner[\s\S]*acquiredReviewLease\.owner/,
+  );
+  assert.match(
+    reviewLoop.slice(structuralHit, structuralWrite),
+    /review_lease_comment_id[\s\S]*acquiredReviewLease\.commentId/,
+  );
   assert.match(source, /coordination-held\.json/);
   assert.match(source, /coordinationHeldRetryAt = startComment\.retryAt/);
   assert.match(source, /review-cache-metrics\.json/);

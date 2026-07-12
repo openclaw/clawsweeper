@@ -88,6 +88,7 @@ export interface ReviewStructuralPriorReview {
   lastFullReviewDecision?: string | undefined;
   reviewPolicy?: string | undefined;
   reviewModel?: string | undefined;
+  itemSourceRevision?: string | undefined;
   reviewCommentSyncedAt?: string | undefined;
   labelsSyncedAt?: string | undefined;
 }
@@ -96,8 +97,10 @@ export type ReviewStructuralCacheReason =
   | "hit"
   | "explicit_dispatch"
   | "maintainer_request"
+  | "coordination_disabled"
   | "missing_review"
   | "incomplete_review"
+  | "missing_lease_revision"
   | "non_keep_open_verdict"
   | "policy_changed"
   | "model_changed"
@@ -829,13 +832,18 @@ export function reviewStructuralCacheDecision(options: {
   reviewModel: string;
   explicitDispatch: boolean;
   maintainerRequest: boolean;
+  coordinationEnabled: boolean;
   now?: number;
 }): ReviewStructuralCacheDecision {
   if (options.explicitDispatch) return { hit: false, reason: "explicit_dispatch" };
   if (options.maintainerRequest) return { hit: false, reason: "maintainer_request" };
+  if (!options.coordinationEnabled) return { hit: false, reason: "coordination_disabled" };
   const review = options.review;
   if (!review) return { hit: false, reason: "missing_review" };
   if (review.reviewStatus !== "complete") return { hit: false, reason: "incomplete_review" };
+  if (!review.itemSourceRevision || !DIGEST_PATTERN.test(review.itemSourceRevision)) {
+    return { hit: false, reason: "missing_lease_revision" };
+  }
   if (review.decision !== "keep_open" || review.lastFullReviewDecision !== "keep_open") {
     return { hit: false, reason: "non_keep_open_verdict" };
   }
