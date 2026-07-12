@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { spawnSync } from "node:child_process";
+import { spawnSync, type SpawnSyncReturns } from "node:child_process";
 import { runCommand as run } from "./command-runner.js";
 import { uniqueStrings } from "./validation-command-utils.js";
 
@@ -12,6 +12,7 @@ const gitNetworkTimeoutMs = Math.max(
       5 * 60 * 1000,
   ),
 );
+const DEFAULT_GIT_TIMEOUT_MS = 10 * 60 * 1000;
 
 type TargetDir = {
   targetDir: string;
@@ -45,16 +46,35 @@ export function currentHead(targetDir: string): string {
   return run("git", ["rev-parse", "HEAD"], { cwd: targetDir }).trim();
 }
 
+function runGit(
+  args: string[],
+  { targetDir, timeoutMs = DEFAULT_GIT_TIMEOUT_MS }: TargetDir & { timeoutMs?: number },
+): SpawnSyncReturns<string> {
+  const child = spawnSync("git", args, {
+    cwd: targetDir,
+    env: process.env,
+    encoding: "utf8",
+    timeout: timeoutMs,
+  });
+  if ((child.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT") {
+    const rendered = ["git", ...args].join(" ");
+    const detail = [child.stderr, child.stdout].filter(Boolean).join("\n").trim();
+    const message = `git command timed out after ${timeoutMs}ms: ${rendered}`;
+    throw new Error(detail ? `${message}\n${detail}` : message);
+  }
+  if (child.error) {
+    const detail = [child.stderr, child.stdout].filter(Boolean).join("\n").trim();
+    throw new Error(detail ? `${child.error.message}\n${detail}` : child.error.message);
+  }
+  return child;
+}
+
 export function isAncestor({
   targetDir,
   ancestor,
   descendant,
 }: TargetDir & { ancestor: string; descendant: string }): boolean {
-  const child = spawnSync("git", ["merge-base", "--is-ancestor", ancestor, descendant], {
-    cwd: targetDir,
-    env: process.env,
-    encoding: "utf8",
-  });
+  const child = runGit(["merge-base", "--is-ancestor", ancestor, descendant], { targetDir });
   return child.status === 0;
 }
 
@@ -63,11 +83,9 @@ export function remoteBranchExists(options: TargetBranch): boolean {
 }
 
 export function remoteBranchSha({ targetDir, branch }: TargetBranch): string {
-  const child = spawnSync("git", ["ls-remote", "--heads", "origin", branch], {
-    cwd: targetDir,
-    env: process.env,
-    encoding: "utf8",
-    timeout: gitNetworkTimeoutMs,
+  const child = runGit(["ls-remote", "--heads", "origin", branch], {
+    targetDir,
+    timeoutMs: gitNetworkTimeoutMs,
   });
   if (child.status !== 0) return "";
   const sha = child.stdout.trim().split(/\s+/)[0] ?? "";
@@ -76,21 +94,13 @@ export function remoteBranchSha({ targetDir, branch }: TargetBranch): string {
 
 export function branchHasBaseDiff({ targetDir, baseBranch }: TargetBaseBranch): boolean {
   const range = `origin/${baseBranch}...HEAD`;
-  const first = spawnSync("git", ["diff", "--name-only", range], {
-    cwd: targetDir,
-    env: process.env,
-    encoding: "utf8",
-  });
+  const first = runGit(["diff", "--name-only", range], { targetDir });
   if (first.status === 0) return Boolean(first.stdout.trim());
   const detail = `${first.stderr ?? ""}\n${first.stdout ?? ""}`;
   if (!/no merge base/i.test(detail)) throw new Error(detail.trim());
 
   fetchDeeperHistory({ targetDir, baseBranch });
-  const retry = spawnSync("git", ["diff", "--name-only", range], {
-    cwd: targetDir,
-    env: process.env,
-    encoding: "utf8",
-  });
+  const retry = runGit(["diff", "--name-only", range], { targetDir });
   if (retry.status === 0) return Boolean(retry.stdout.trim());
   const retryDetail = `${retry.stderr ?? ""}\n${retry.stdout ?? ""}`;
   if (/no merge base/i.test(retryDetail)) return true;
@@ -100,19 +110,11 @@ export function branchHasBaseDiff({ targetDir, baseBranch }: TargetBaseBranch): 
 export function ensureMergeBaseAvailable({ targetDir, baseBranch }: TargetBaseBranch): string {
   gitFetch(targetDir, ["origin", `${baseBranch}:refs/remotes/origin/${baseBranch}`]);
   const baseRef = `origin/${baseBranch}`;
-  const first = spawnSync("git", ["merge-base", baseRef, "HEAD"], {
-    cwd: targetDir,
-    env: process.env,
-    encoding: "utf8",
-  });
+  const first = runGit(["merge-base", baseRef, "HEAD"], { targetDir });
   if (first.status === 0 && first.stdout.trim()) return first.stdout.trim();
 
   fetchDeeperHistory({ targetDir, baseBranch });
-  const retry = spawnSync("git", ["merge-base", baseRef, "HEAD"], {
-    cwd: targetDir,
-    env: process.env,
-    encoding: "utf8",
-  });
+  const retry = runGit(["merge-base", baseRef, "HEAD"], { targetDir });
   if (retry.status === 0 && retry.stdout.trim()) return retry.stdout.trim();
 
   const detail = `${retry.stderr ?? ""}\n${retry.stdout ?? ""}`.trim();
@@ -134,11 +136,7 @@ export function rebaseOntoBase({ targetDir, baseBranch }: TargetBaseBranch): Reb
     };
   }
 
-  const child = spawnSync("git", ["rebase", baseRef], {
-    cwd: targetDir,
-    env: process.env,
-    encoding: "utf8",
-  });
+  const child = runGit(["rebase", baseRef], { targetDir });
   const detail = `${child.stderr ?? ""}\n${child.stdout ?? ""}`.trim();
   if (child.status === 0) {
     return {
@@ -181,11 +179,7 @@ export function completeRebaseIfResolved({ targetDir }: TargetDir): CompleteReba
   }
   let detail = "";
   while (hasRebaseInProgress(targetDir)) {
-    const child = spawnSync("git", ["-c", "core.editor=true", "rebase", "--continue"], {
-      cwd: targetDir,
-      env: process.env,
-      encoding: "utf8",
-    });
+    const child = runGit(["-c", "core.editor=true", "rebase", "--continue"], { targetDir });
     detail = `${detail}\n${child.stderr ?? ""}\n${child.stdout ?? ""}`.trim();
     if (child.status !== 0) {
       const remaining = unmergedPaths(targetDir);
@@ -226,11 +220,7 @@ export function hasRebaseInProgress(targetDir: string): boolean {
 }
 
 export function unmergedPaths(targetDir: string): string[] {
-  const child = spawnSync("git", ["diff", "--name-only", "--diff-filter=U"], {
-    cwd: targetDir,
-    env: process.env,
-    encoding: "utf8",
-  });
+  const child = runGit(["diff", "--name-only", "--diff-filter=U"], { targetDir });
   if (child.status !== 0) return [];
   return child.stdout
     .split("\n")
@@ -239,11 +229,7 @@ export function unmergedPaths(targetDir: string): string[] {
 }
 
 function fetchDeeperHistory({ targetDir, baseBranch }: TargetBaseBranch): void {
-  const shallow = spawnSync("git", ["rev-parse", "--is-shallow-repository"], {
-    cwd: targetDir,
-    env: process.env,
-    encoding: "utf8",
-  }).stdout.trim();
+  const shallow = runGit(["rev-parse", "--is-shallow-repository"], { targetDir }).stdout.trim();
   if (shallow === "true" || fs.existsSync(path.join(targetDir, ".git", "shallow"))) {
     gitFetch(targetDir, ["--unshallow", "origin"]);
   } else {
