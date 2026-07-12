@@ -320,7 +320,7 @@ test("strict base binding fails closed for non-repository rulesets without fetch
   }
 });
 
-test("all repair merge owners invoke the shared strict base guard before merge", () => {
+test("all repair merge owners repeat the shared strict base guard immediately before merge", () => {
   for (const [file, functionName, mergeCall] of [
     ["src/repair/apply-result.ts", "function applyMergeAction(", "ghWithRetry(mergeArgs)"],
     ["src/repair/comment-router.ts", "function executeAutomerge(", "const result = ghSpawn("],
@@ -330,35 +330,33 @@ test("all repair merge owners invoke the shared strict base guard before merge",
     const start = source.indexOf(functionName);
     const end = source.indexOf("\nfunction ", start + functionName.length);
     const owner = source.slice(start, end < 0 ? undefined : end);
-    const guard = owner.indexOf("serverStrictBaseBindingBlock({");
-    const configuredSlug = owner.indexOf("configuredAppSlug: process.env.CLAWSWEEPER_APP_SLUG");
-    const appIdentity = owner.indexOf(
-      "authenticatedAppId: process.env.CLAWSWEEPER_AUTHENTICATED_APP_ID",
+    const guards = [...owner.matchAll(/runtimeStrictBaseBindingBlock\(\{/g)].map(
+      (match) => match.index,
     );
-    const appSlug = owner.indexOf("appSlug: process.env.CLAWSWEEPER_AUTHENTICATED_APP_SLUG");
-    const installationId = owner.indexOf(
-      "installationId: process.env.CLAWSWEEPER_AUTHENTICATED_INSTALLATION_ID",
-    );
-    const policyAppId = owner.indexOf("policyAppId: process.env.CLAWSWEEPER_RULESET_APP_ID");
-    const policySlug = owner.indexOf("policyAppSlug: process.env.CLAWSWEEPER_RULESET_APP_SLUG");
-    const policyInstallationId = owner.indexOf(
-      "policyInstallationId: process.env.CLAWSWEEPER_RULESET_INSTALLATION_ID",
-    );
-    const policyReader = owner.indexOf("policyReadJson: rulesetPolicyReader()");
     const merge = owner.indexOf(mergeCall);
-    assert.ok(guard >= 0, `${file} is missing the strict base guard`);
-    assert.ok(configuredSlug > guard, `${file} does not bind the configured App slug`);
-    assert.ok(appIdentity > configuredSlug, `${file} does not bind the authenticated App id`);
-    assert.ok(appSlug > appIdentity, `${file} does not bind the authenticated App slug`);
-    assert.ok(installationId > appSlug, `${file} does not bind the mutation installation`);
-    assert.ok(policyAppId > installationId, `${file} does not bind the verifier App id`);
-    assert.ok(policySlug > policyAppId, `${file} does not bind the verifier App slug`);
-    assert.ok(policyInstallationId > policySlug, `${file} does not bind the verifier installation`);
-    assert.ok(
-      policyReader > policyInstallationId,
-      `${file} does not use the isolated ruleset verifier`,
-    );
-    assert.ok(merge > guard, `${file} does not guard the merge call`);
+    assert.equal(guards.length, 2, `${file} must check strict base binding twice`);
+    assert.ok(merge > guards[1]!, `${file} does not guard the final merge call`);
+    const finalGuard = owner.slice(guards[1]!, merge);
+    assert.match(finalGuard, /policyReadJson: rulesetPolicyReader\(\)/);
+    assert.doesNotMatch(finalGuard, /gh(?:Json|Text|Spawn|WithRetry)\(/);
+  }
+});
+
+test("runtime strict base binding binds every configured credential identity", () => {
+  const source = fs.readFileSync("src/repair/strict-base-binding.ts", "utf8");
+  const start = source.indexOf("export function runtimeStrictBaseBindingBlock");
+  const end = source.indexOf("\nexport function serverStrictBaseBindingBlock", start);
+  const helper = source.slice(start, end);
+  for (const name of [
+    "CLAWSWEEPER_APP_SLUG",
+    "CLAWSWEEPER_AUTHENTICATED_APP_ID",
+    "CLAWSWEEPER_AUTHENTICATED_APP_SLUG",
+    "CLAWSWEEPER_AUTHENTICATED_INSTALLATION_ID",
+    "CLAWSWEEPER_RULESET_APP_ID",
+    "CLAWSWEEPER_RULESET_APP_SLUG",
+    "CLAWSWEEPER_RULESET_INSTALLATION_ID",
+  ]) {
+    assert.match(helper, new RegExp(`env\\.${name}`));
   }
 });
 

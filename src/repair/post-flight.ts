@@ -32,7 +32,7 @@ import {
   writeRepairSquashMergeBody,
 } from "./repair-merge-message.js";
 import { isPassedStagedProofBundle } from "./staged-proof-gates.js";
-import { serverStrictBaseBindingBlock } from "./strict-base-binding.js";
+import { runtimeStrictBaseBindingBlock } from "./strict-base-binding.js";
 import { compactText as compactPlainText } from "./text-utils.js";
 import {
   runVerifiedPublishedPullMutation,
@@ -296,16 +296,9 @@ function finalizeFixPr(action: LooseRecord) {
     };
   }
 
-  const strictBaseBindingBlock = serverStrictBaseBindingBlock({
+  const strictBaseBindingBlock = runtimeStrictBaseBindingBlock({
     repo: result.repo,
     baseBranch: String(view.baseRefName ?? pull.base?.ref ?? ""),
-    configuredAppSlug: process.env.CLAWSWEEPER_APP_SLUG,
-    authenticatedAppId: process.env.CLAWSWEEPER_AUTHENTICATED_APP_ID,
-    appSlug: process.env.CLAWSWEEPER_AUTHENTICATED_APP_SLUG,
-    installationId: process.env.CLAWSWEEPER_AUTHENTICATED_INSTALLATION_ID,
-    policyAppId: process.env.CLAWSWEEPER_RULESET_APP_ID,
-    policyAppSlug: process.env.CLAWSWEEPER_RULESET_APP_SLUG,
-    policyInstallationId: process.env.CLAWSWEEPER_RULESET_INSTALLATION_ID,
     policyReadJson: rulesetPolicyReader(),
   });
   if (strictBaseBindingBlock) {
@@ -347,7 +340,26 @@ function finalizeFixPr(action: LooseRecord) {
   const mutationBlock = postFlightPullMutationBlock(parsed.number);
   if (mutationBlock) return { ...prBase, status: "blocked", reason: mutationBlock };
   try {
-    runVerifiedPostFlightPullMutation(parsed.number, () => ghWithRetry(mergeArgs));
+    const mergeAttempt = runVerifiedPostFlightPullMutation(parsed.number, () => {
+      const finalView = fetchPullRequestView(result.repo, parsed.number);
+      const finalStrictBaseBindingBlock = runtimeStrictBaseBindingBlock({
+        repo: result.repo,
+        baseBranch: String(finalView.baseRefName ?? ""),
+        policyReadJson: rulesetPolicyReader(),
+      });
+      if (finalStrictBaseBindingBlock) return { policyBlock: finalStrictBaseBindingBlock };
+      ghWithRetry(mergeArgs);
+      return { policyBlock: "" };
+    });
+    if (mergeAttempt.policyBlock) {
+      return {
+        ...prBase,
+        status: "blocked",
+        reason: mergeAttempt.policyBlock,
+        merge_method: "squash",
+        waited_ms: waitedMs,
+      };
+    }
   } catch (error) {
     const detail = ghErrorText(error);
     if (isRecoverableMergeRace(detail)) {

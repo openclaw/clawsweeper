@@ -32,7 +32,7 @@ import {
   buildRepairSquashMergeMessage,
   writeRepairSquashMergeBody,
 } from "./repair-merge-message.js";
-import { serverStrictBaseBindingBlock } from "./strict-base-binding.js";
+import { runtimeStrictBaseBindingBlock } from "./strict-base-binding.js";
 import {
   compactPrCloseCoverageProofComment,
   compactPrCloseCoverageProofText,
@@ -649,16 +649,9 @@ function applyMergeAction({
     };
   }
 
-  const strictBaseBindingBlock = serverStrictBaseBindingBlock({
+  const strictBaseBindingBlock = runtimeStrictBaseBindingBlock({
     repo: result.repo,
     baseBranch: String(view.baseRefName ?? pullRequest.base?.ref ?? ""),
-    configuredAppSlug: process.env.CLAWSWEEPER_APP_SLUG,
-    authenticatedAppId: process.env.CLAWSWEEPER_AUTHENTICATED_APP_ID,
-    appSlug: process.env.CLAWSWEEPER_AUTHENTICATED_APP_SLUG,
-    installationId: process.env.CLAWSWEEPER_AUTHENTICATED_INSTALLATION_ID,
-    policyAppId: process.env.CLAWSWEEPER_RULESET_APP_ID,
-    policyAppSlug: process.env.CLAWSWEEPER_RULESET_APP_SLUG,
-    policyInstallationId: process.env.CLAWSWEEPER_RULESET_INSTALLATION_ID,
     policyReadJson: rulesetPolicyReader(),
   });
   if (strictBaseBindingBlock) {
@@ -694,6 +687,22 @@ function applyMergeAction({
   ];
   if (pullRequest.head?.sha) mergeArgs.push("--match-head-commit", String(pullRequest.head.sha));
   try {
+    const finalView = fetchPullRequestView(result.repo, target);
+    const finalStrictBaseBindingBlock = runtimeStrictBaseBindingBlock({
+      repo: result.repo,
+      baseBranch: String(finalView.baseRefName ?? ""),
+      policyReadJson: rulesetPolicyReader(),
+    });
+    if (finalStrictBaseBindingBlock) {
+      return {
+        ...base,
+        status: "blocked",
+        reason: finalStrictBaseBindingBlock,
+        live_state: live.state,
+        live_updated_at: live.updated_at,
+        merge_method: "squash",
+      };
+    }
     ghWithRetry(mergeArgs);
   } catch (error) {
     if (isLockedConversationCommentError(error)) {

@@ -2,6 +2,31 @@ import type { JsonValue, LooseRecord } from "./json-types.js";
 
 type GithubJsonReader = (args: string[]) => JsonValue;
 
+export function runtimeStrictBaseBindingBlock({
+  repo,
+  baseBranch,
+  policyReadJson,
+  env = process.env,
+}: {
+  repo: string;
+  baseBranch: string;
+  policyReadJson?: GithubJsonReader | undefined;
+  env?: NodeJS.ProcessEnv;
+}): string {
+  return serverStrictBaseBindingBlock({
+    repo,
+    baseBranch,
+    configuredAppSlug: env.CLAWSWEEPER_APP_SLUG,
+    authenticatedAppId: env.CLAWSWEEPER_AUTHENTICATED_APP_ID,
+    appSlug: env.CLAWSWEEPER_AUTHENTICATED_APP_SLUG,
+    installationId: env.CLAWSWEEPER_AUTHENTICATED_INSTALLATION_ID,
+    policyAppId: env.CLAWSWEEPER_RULESET_APP_ID,
+    policyAppSlug: env.CLAWSWEEPER_RULESET_APP_SLUG,
+    policyInstallationId: env.CLAWSWEEPER_RULESET_INSTALLATION_ID,
+    policyReadJson,
+  });
+}
+
 export function serverStrictBaseBindingBlock({
   repo,
   baseBranch,

@@ -123,7 +123,7 @@ import {
   ghTextWithRetry as ghText,
 } from "./github-cli.js";
 import { issueSourceRevisionSha256 } from "./issue-source-guard.js";
-import { serverStrictBaseBindingBlock } from "./strict-base-binding.js";
+import { runtimeStrictBaseBindingBlock } from "./strict-base-binding.js";
 import { compactText, escapeRegExp } from "./text-utils.js";
 
 const args = parseArgs(process.argv.slice(2));
@@ -3474,16 +3474,9 @@ function executeAutomerge(command: LooseRecord) {
       merge_method: "squash",
     };
   }
-  const strictBaseBindingBlock = serverStrictBaseBindingBlock({
+  const strictBaseBindingBlock = runtimeStrictBaseBindingBlock({
     repo: command.repo,
     baseBranch: String(view.baseRefName ?? latestTarget.base_ref ?? targetBranch ?? "main"),
-    configuredAppSlug: process.env.CLAWSWEEPER_APP_SLUG,
-    authenticatedAppId: process.env.CLAWSWEEPER_AUTHENTICATED_APP_ID,
-    appSlug: process.env.CLAWSWEEPER_AUTHENTICATED_APP_SLUG,
-    installationId: process.env.CLAWSWEEPER_AUTHENTICATED_INSTALLATION_ID,
-    policyAppId: process.env.CLAWSWEEPER_RULESET_APP_ID,
-    policyAppSlug: process.env.CLAWSWEEPER_RULESET_APP_SLUG,
-    policyInstallationId: process.env.CLAWSWEEPER_RULESET_INSTALLATION_ID,
     policyReadJson: rulesetPolicyReader(),
   });
   if (strictBaseBindingBlock) {
@@ -3491,6 +3484,21 @@ function executeAutomerge(command: LooseRecord) {
       action: "merge",
       status: "blocked",
       reason: strictBaseBindingBlock,
+      merge_method: "squash",
+    };
+  }
+  const finalView = fetchPullRequestView(command.issue_number);
+  const finalTarget = latestAutomergeTarget(command, finalView);
+  const finalStrictBaseBindingBlock = runtimeStrictBaseBindingBlock({
+    repo: command.repo,
+    baseBranch: String(finalView.baseRefName ?? finalTarget.base_ref ?? targetBranch ?? "main"),
+    policyReadJson: rulesetPolicyReader(),
+  });
+  if (finalStrictBaseBindingBlock) {
+    return {
+      action: "merge",
+      status: "blocked",
+      reason: finalStrictBaseBindingBlock,
       merge_method: "squash",
     };
   }
