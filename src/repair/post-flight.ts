@@ -35,6 +35,7 @@ import { isPassedStagedProofBundle } from "./staged-proof-gates.js";
 import { serverStrictBaseBindingBlock } from "./strict-base-binding.js";
 import { compactText as compactPlainText } from "./text-utils.js";
 import { verifyPublishedReceipt } from "./execution-handoff.js";
+import { summarizePostFlightReport } from "./post-flight-report.js";
 
 const PASSING_CHECK_CONCLUSIONS = new Set(["SUCCESS", "SKIPPED", "NEUTRAL"]);
 const FIX_PR_MERGE_STATES = new Set(["CLEAN", "HAS_HOOKS", "UNSTABLE"]);
@@ -910,9 +911,20 @@ function readSiblingJson(resultPath: string, name: string) {
 }
 
 function writeReport(report: LooseRecord, resultPath: string) {
+  const summary = summarizePostFlightReport(report);
+  const finalReport = {
+    ...report,
+    ...summary,
+  };
   const reportPath = path.join(path.dirname(resultPath), "post-flight-report.json");
-  fs.writeFileSync(reportPath, `${JSON.stringify(report, null, 2)}\n`);
-  console.log(JSON.stringify(report, null, 2));
+  fs.writeFileSync(reportPath, `${JSON.stringify(finalReport, null, 2)}\n`);
+  if (process.env.GITHUB_OUTPUT) {
+    fs.appendFileSync(
+      process.env.GITHUB_OUTPUT,
+      `report_outcome=${summary.outcome}\nreport_detail=${summary.detail}\n`,
+    );
+  }
+  console.log(JSON.stringify(finalReport, null, 2));
 }
 
 function normalizeIssueRef(value: JsonValue) {

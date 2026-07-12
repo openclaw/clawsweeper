@@ -913,6 +913,7 @@ jobs:
 
       - name: Bind authenticated mutation App identity
         id: mutation_app
+        if: ${{ steps.check_job.outputs.job_exists == '1' && env.CLAWSWEEPER_ALLOW_MERGE == '1' }}
         env:
           GH_TOKEN: ${{ steps.target_post_flight_token.outputs.token }}
           APP_SLUG: ${{ steps.target_post_flight_token.outputs.app-slug }}
@@ -1002,19 +1003,27 @@ jobs:
           GH_TOKEN: ${{ steps.target_post_flight_token.outputs.token }}
           CLAWSWEEPER_STATUS_INGEST_TOKEN: ${{ secrets.CLAWSWEEPER_STATUS_INGEST_TOKEN }}
           EXECUTE_OUTCOME: ${{ needs.execute.outputs.execute_fix_outcome }}
-          POST_FLIGHT_OUTCOME: ${{ steps.post_flight.outcome }}
+          POST_FLIGHT_OUTCOME: ${{ steps.post_flight.outputs.report_outcome }}
+          POST_FLIGHT_DETAIL: ${{ steps.post_flight.outputs.report_detail }}
           TRUSTED_PR_URL: ${{ steps.publish.outputs.target_pr_url }}
         run: |
           set -euo pipefail
           state="Blocked"
           detail="The automatic implementation worker stopped before all deterministic gates completed. Open the workflow run for the exact blocker."
-          if [ "$EXECUTE_OUTCOME" = "success" ] && [ -n "$TRUSTED_PR_URL" ]; then
-            state="PR Opened"
-            detail="The exact independently validated repair was published at $TRUSTED_PR_URL."
-            if [ "$POST_FLIGHT_OUTCOME" = "success" ]; then
-              detail="The implementation passed execution, independent validation, publication, and post-flight gates."
-            fi
-          fi
+          case "$POST_FLIGHT_OUTCOME" in
+            success)
+              if [ "$EXECUTE_OUTCOME" = "success" ] && [ -n "$TRUSTED_PR_URL" ]; then
+                state="PR Opened"
+                detail="The exact independently validated repair was published at $TRUSTED_PR_URL and passed all post-flight gates."
+              fi
+              ;;
+            requeue)
+              detail="Post-flight requested a retry: ${POST_FLIGHT_DETAIL:-retryable publication state}."
+              ;;
+            blocked)
+              detail="Post-flight blocked publication completion: ${POST_FLIGHT_DETAIL:-terminal policy gate}."
+              ;;
+          esac
           pnpm run repair:issue-implementation-status -- \
             --job .clawsweeper-repair/execution/job.md \
             --state "$state" \
@@ -1023,7 +1032,7 @@ jobs:
             --pr-url "$TRUSTED_PR_URL"
 
       - name: Record work completion
-        if: ${{ success() && steps.crabfleet_session.outcome == 'success' }}
+        if: ${{ success() && steps.post_flight.outputs.report_outcome == 'success' && steps.crabfleet_session.outcome == 'success' }}
         run: pnpm run repair:action-session -- update --state completed --phase "done" --summary "Repair, validation, review, push, and post-flight gates completed" --completion-reason gates_passed
 
       - name: Upload final worker artifacts
@@ -1035,6 +1044,6 @@ jobs:
           if-no-files-found: warn
 
       - name: Record work failure
-        if: ${{ always() && failure() && steps.crabfleet_session.outcome == 'success' }}
+        if: ${{ always() && (failure() || steps.post_flight.outputs.report_outcome == 'blocked' || steps.post_flight.outputs.report_outcome == 'requeue') && steps.crabfleet_session.outcome == 'success' }}
         continue-on-error: true
         run: pnpm run repair:action-session -- update --state blocked --phase action_failed --summary "Repair Action failed before all completion gates passed" --completion-reason action_failed

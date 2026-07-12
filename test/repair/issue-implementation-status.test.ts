@@ -72,6 +72,15 @@ test("issue build workflow reports an opened PR without calling pending CI block
 
   assert.match(workflow, /state="PR Opened"/);
   assert.match(workflow, /TRUSTED_PR_URL: \$\{\{ steps\.publish\.outputs\.target_pr_url \}\}/);
+  assert.match(
+    workflow,
+    /POST_FLIGHT_OUTCOME: \$\{\{ steps\.post_flight\.outputs\.report_outcome \}\}/,
+  );
+  assert.doesNotMatch(workflow, /POST_FLIGHT_OUTCOME: \$\{\{ steps\.post_flight\.outcome \}\}/);
+  assert.match(
+    workflow,
+    /steps\.post_flight\.outputs\.report_outcome == 'success'[\s\S]*completion-reason gates_passed/,
+  );
   assert.match(workflow, /The exact independently validated repair was published at/);
   assert.doesNotMatch(
     workflow,

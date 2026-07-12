@@ -186,6 +186,7 @@ jobs:
 
       - name: Bind authenticated mutation App identity
         id: mutation-app
+        if: ${{ vars.CLAWSWEEPER_ALLOW_MERGE == '1' }}
         env:
           GH_TOKEN: ${{ steps.app_token.outputs.token }}
           APP_SLUG: ${{ steps.app_token.outputs.app-slug }}

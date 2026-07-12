@@ -495,6 +495,35 @@ test("workflow App identity is derived from authenticated tokens, never a config
   }
 });
 
+test("merge-disabled workflows skip merge App identity lookup without blocking publication", () => {
+  for (const [file, jobName, identityStepId, mergeFlag] of [
+    [
+      ".github/workflows/repair-cluster-worker.yml",
+      "mutate",
+      "mutation_app",
+      "env.CLAWSWEEPER_ALLOW_MERGE",
+    ],
+    [
+      ".github/workflows/repair-comment-router.yml",
+      "route-comments",
+      "mutation-app",
+      "vars.CLAWSWEEPER_ALLOW_MERGE",
+    ],
+  ] as const) {
+    const workflow = readWorkflow(file);
+    const steps = workflow.jobs?.[jobName]?.steps ?? [];
+    const identityStep = steps.find((step) => step.id === identityStepId);
+    assert.ok(identityStep, `${file} is missing its mutation App identity step`);
+    assert.match(String(identityStep.if ?? ""), new RegExp(`${escapeRegex(mergeFlag)} == '1'`));
+
+    const mutationToken = steps.find((step) =>
+      ["app_token", "target_post_flight_token"].includes(String(step.id ?? "")),
+    );
+    assert.ok(mutationToken, `${file} is missing its ordinary publication token`);
+    assert.doesNotMatch(String(mutationToken.if ?? ""), /ALLOW_MERGE/);
+  }
+});
+
 test("event review delegates routing without verifier or local router access", () => {
   const workflow = fs.readFileSync(".github/workflows/sweep.yml", "utf8");
   const eventStart = workflow.indexOf("\n  event-review-apply:");
@@ -557,6 +586,10 @@ function appIdentity(
     policyInstallationId: INSTALLATION_ID,
     ...overrides,
   };
+}
+
+function escapeRegex(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 type WorkflowStep = {

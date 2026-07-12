@@ -537,6 +537,51 @@ test("post-flight keeps no-timestamp pending duplicate checks visible", () => {
   }
 });
 
+test("post-flight exports a blocked report even when the command exits successfully", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-post-flight-"));
+  const jobPath = path.join(tmp, "job.md");
+  const runDir = path.join(tmp, "run");
+  const resultPath = path.join(runDir, "result.json");
+  const reportPath = path.join(runDir, "post-flight-report.json");
+  const outputPath = path.join(tmp, "github-output.txt");
+
+  fs.mkdirSync(runDir, { recursive: true });
+  writeIssueImplementationJob(jobPath);
+  fs.writeFileSync(
+    resultPath,
+    JSON.stringify(
+      {
+        repo: "openclaw/openclaw",
+        cluster_id: "issue-openclaw-openclaw-85831",
+        mode: "autonomous",
+        actions: [],
+      },
+      null,
+      2,
+    ),
+  );
+
+  try {
+    execFileSync(process.execPath, ["dist/repair/post-flight.js", jobPath, resultPath], {
+      cwd: repoRoot,
+      env: {
+        ...process.env,
+        CLAWSWEEPER_ALLOW_EXECUTE: "1",
+        CLAWSWEEPER_ALLOWED_OWNER: "openclaw",
+        GITHUB_OUTPUT: outputPath,
+      },
+      stdio: "pipe",
+    });
+
+    const report = JSON.parse(fs.readFileSync(reportPath, "utf8"));
+    assert.equal(report.outcome, "blocked");
+    assert.match(report.detail, /no fix-execution-report/);
+    assert.match(fs.readFileSync(outputPath, "utf8"), /^report_outcome=blocked$/m);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 function writeIssueImplementationJob(jobPath: string) {
   fs.writeFileSync(
     jobPath,
