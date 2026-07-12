@@ -2029,6 +2029,23 @@ test("checked-in schema rejects values rejected by runtime normalization", () =>
         ),
     },
     {
+      label: "expanded IPv4-mapped CGNAT IPv6",
+      mutate: (event) => {
+        (event.action as Record<string, unknown>).status = "0:0:0:0:0:ffff:6440:1";
+      },
+      runtime: () =>
+        createActionEvent(
+          reviewInput({
+            action: {
+              name: "review",
+              status: "0:0:0:0:0:ffff:6440:1",
+              retryable: false,
+              mutation: false,
+            },
+          }),
+        ),
+    },
+    {
       label: "embedded private IPv4",
       mutate: (event) => {
         (event.action as Record<string, unknown>).status = "host-10.0.0.1";
