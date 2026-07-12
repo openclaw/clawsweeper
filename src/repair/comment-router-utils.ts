@@ -54,10 +54,8 @@ export function routerDispatchReceiptKey(entry: LooseRecord, claim: LooseRecord 
 }
 
 function forcedReplayAttemptId(entry: LooseRecord): string | null {
-  if (entry.forced_replay !== true) return null;
-  const attemptId = String(entry.attempt_id ?? "").trim();
-  if (!attemptId) throw new Error("forced replay dispatch identity requires attempt_id");
-  return attemptId;
+  const identity = forcedReplayIdentityFields(entry);
+  return identity.attempt_id ? String(identity.attempt_id) : null;
 }
 
 function scopedDispatchLookupKey(key: string, attemptId: string | null): string {
@@ -459,15 +457,19 @@ function ignoredCheckNames() {
 
 export function readLedger(file: JsonValue) {
   if (!fs.existsSync(file)) return { updated_at: null, commands: [] };
+  let data: LooseRecord;
   try {
-    const data = JSON.parse(fs.readFileSync(file, "utf8"));
-    return {
-      updated_at: data.updated_at ?? null,
-      commands: Array.isArray(data.commands) ? data.commands : [],
-    };
+    const parsed = JSON.parse(fs.readFileSync(file, "utf8"));
+    data = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
   } catch {
     return { updated_at: null, commands: [] };
   }
+  return {
+    updated_at: data.updated_at ?? null,
+    commands: Array.isArray(data.commands)
+      ? data.commands.map((entry: JsonValue) => validatedLedgerCommand(entry))
+      : [],
+  };
 }
 
 export function appendLedger(current: LooseRecord, entries: LooseRecord[]) {
@@ -499,6 +501,7 @@ export function appendLedger(current: LooseRecord, entries: LooseRecord[]) {
         trusted_bot_author: entry.trusted_bot_author ?? null,
         automation_source: entry.automation_source ?? null,
         repair_reason: entry.repair_reason ?? null,
+        ...forcedReplayIdentityFields(entry),
         expected_head_sha: entry.expected_head_sha ?? null,
         finding_id: entry.finding_id ?? null,
         status: entry.status,
@@ -531,6 +534,39 @@ export function appendLedger(current: LooseRecord, entries: LooseRecord[]) {
   current.updated_at = new Date().toISOString();
   current.commands = [...byCommentVersion.values()].slice(-1000);
   return true;
+}
+
+function validatedLedgerCommand(entry: JsonValue): LooseRecord {
+  if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+    throw new Error("comment router ledger commands must be objects");
+  }
+  return { ...entry, ...forcedReplayIdentityFields(entry) };
+}
+
+function forcedReplayIdentityFields(entry: LooseRecord): LooseRecord {
+  const forcedReplay = entry.forced_replay;
+  const hasAttemptId = entry.attempt_id !== undefined && entry.attempt_id !== null;
+  const attemptId = String(entry.attempt_id ?? "").trim();
+  if (
+    (forcedReplay === undefined || forcedReplay === null || forcedReplay === false) &&
+    !hasAttemptId
+  ) {
+    return {};
+  }
+  if (forcedReplay !== true) {
+    throw new Error("forced replay dispatch identity requires forced_replay=true");
+  }
+  if (
+    !attemptId ||
+    attemptId.length > 128 ||
+    /\s/.test(attemptId) ||
+    attemptId.includes(String.fromCharCode(0))
+  ) {
+    throw new Error(
+      "forced replay dispatch attempt_id must be a non-empty token of at most 128 characters",
+    );
+  }
+  return { forced_replay: true, attempt_id: attemptId };
 }
 
 function isNoopSkip(entry: LooseRecord) {
