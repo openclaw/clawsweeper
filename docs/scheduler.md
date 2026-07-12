@@ -64,6 +64,10 @@ Manual exact-item `workflow_dispatch` reviews use an exact-item concurrency
 group with the same single-pending policy, so newer revisions replace stale
 pending work instead of building a duplicate queue. Durable exact-review leases
 use lease-scoped workflow groups and remain owned by the Worker admission lane.
+Review publication and apply/comment sync use separate non-dropping per-target
+job queues. Each lane stays serialized, while tuple-aware state reconciliation
+allows one review publisher and one apply runner to make progress concurrently
+without stale review snapshots reviving closed records.
 
 ## Schedules
 

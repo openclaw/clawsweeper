@@ -9,6 +9,7 @@ const GH_THROTTLE_PATTERNS = [
 
 const GH_TRANSIENT_PATTERNS = [
   /unexpected EOF/i,
+  /unexpected end of JSON input/i,
   /connection reset/i,
   /connection reset by peer/i,
   /error connecting to api\.github\.com/i,

@@ -3026,6 +3026,13 @@ test("GitHub retry classifier distinguishes throttle and transient failures", ()
   assert.equal(ghRetryKind(eof), "transient");
   assert.equal(shouldRetryGh(eof), true);
 
+  const truncatedJq = Object.assign(
+    new Error("Command failed: gh api repos/openclaw/openclaw/issues --jq .[]"),
+    { stderr: "unexpected end of JSON input\n" },
+  );
+  assert.equal(ghRetryKind(truncatedJq), "transient");
+  assert.equal(shouldRetryGh(truncatedJq), true);
+
   const connectionReset = new Error(
     "Post https://api.github.com/graphql: read: connection reset by peer",
   );

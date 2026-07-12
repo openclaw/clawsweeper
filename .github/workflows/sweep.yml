@@ -2036,7 +2036,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     concurrency:
-      group: clawsweeper-target-publish-${{ needs.plan.outputs.target_repo }}
+      group: clawsweeper-target-review-publish-${{ needs.plan.outputs.target_repo }}
       cancel-in-progress: false
       queue: max
     steps:
@@ -2911,7 +2911,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 360
     concurrency:
-      group: clawsweeper-target-publish-${{ needs.apply-proof.outputs.target_repo }}
+      group: clawsweeper-target-apply-${{ needs.apply-proof.outputs.target_repo }}
       cancel-in-progress: false
       queue: max
     env:

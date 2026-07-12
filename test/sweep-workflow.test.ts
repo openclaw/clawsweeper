@@ -551,7 +551,7 @@ test("publish workflow dispatches immediate apply through the isolated lane", ()
   assert.match(dispatchStep, /-f apply_item_numbers="\$item_numbers"/);
   assert.match(
     publishJob,
-    /group: clawsweeper-target-publish-\$\{\{ needs\.plan\.outputs\.target_repo \}\}/,
+    /group: clawsweeper-target-review-publish-\$\{\{ needs\.plan\.outputs\.target_repo \}\}/,
   );
   assert.match(publishJob, /cancel-in-progress: false/);
   assert.match(publishJob, /queue: max/);
@@ -639,7 +639,7 @@ test("apply workflow isolates Codex proof from the credentialed mutation runner"
   assert.match(applyJob, /--artifact-dir \.artifacts\/apply-proof/);
   assert.match(
     applyJob,
-    /group: clawsweeper-target-publish-\$\{\{ needs\.apply-proof\.outputs\.target_repo \}\}/,
+    /group: clawsweeper-target-apply-\$\{\{ needs\.apply-proof\.outputs\.target_repo \}\}/,
   );
   assert.match(applyJob, /cancel-in-progress: false/);
   assert.match(applyJob, /queue: max/);

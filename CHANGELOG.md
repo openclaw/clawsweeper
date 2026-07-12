@@ -40,6 +40,9 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Fixed
 
+- Separated review publication from apply/comment-sync concurrency so long
+  mutation runs no longer block completed reviews from publishing, and retried
+  GitHub CLI commands whose jq process reports truncated JSON.
 - Bound structural, semantic, and content review reuse to the canonical
   persisted durable-comment body hash under the acquired lease, normalizing
   surrounding whitespace while preserving label
