@@ -339,7 +339,7 @@ jobs:
             },
             {
               name: '0007_gitcrawl_snapshot_provenance.sql',
-              sha256: '7965e0350ca569972eae3c82e7e9a8281b9130a7917c8ea9b2822fca1975194b',
+              sha256: 'bbe5d84db53e388127373e8e10f4d5adf8486dac49a09f302368635f95942eab',
             },
           ];
           const migrationEntries = readdirSync('migrations', { withFileTypes: true })

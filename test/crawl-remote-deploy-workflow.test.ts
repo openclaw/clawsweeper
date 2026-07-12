@@ -358,7 +358,7 @@ test("release artifact is immutable, bounded, canonical, and hash verified", () 
     "e6c4a8edb300ebbf93a2e2449d180408f23be7eac1ef05733045b6ed496eb396",
     "5964adcb0807448d937fed38ac9588a1063bf4f490a82b54f15f0e700374ae0c",
     "a0ebfbb5c40c85df5eaba6772a01a68910fa5f1327d4701d25c5dfde16f77d1a",
-    "7965e0350ca569972eae3c82e7e9a8281b9130a7917c8ea9b2822fca1975194b",
+    "bbe5d84db53e388127373e8e10f4d5adf8486dac49a09f302368635f95942eab",
   ]) {
     assert.match(packaging, new RegExp(sha256));
   }
