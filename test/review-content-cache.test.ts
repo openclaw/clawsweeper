@@ -233,6 +233,36 @@ test("content digest ignores PR review comment timestamp churn", () => {
   assert.equal(a, b);
 });
 
+test("content digest busts when bounded PR check state changes", () => {
+  const pull = item({ kind: "pull_request", number: 200 });
+  const passing = itemContentDigestForTest(
+    pull,
+    pullContext({
+      pullChecks: {
+        complete: true,
+        checkRuns: [{ name: "test", status: "completed", conclusion: "success" }],
+        checkRunsTruncated: false,
+        statuses: [],
+        statusesTruncated: false,
+      },
+    }),
+  );
+  const failing = itemContentDigestForTest(
+    pull,
+    pullContext({
+      pullChecks: {
+        complete: true,
+        checkRuns: [{ name: "test", status: "completed", conclusion: "failure" }],
+        checkRunsTruncated: false,
+        statuses: [],
+        statusesTruncated: false,
+      },
+    }),
+  );
+
+  assert.notEqual(passing, failing);
+});
+
 test("review comment revision covers comments outside the bounded prompt window", () => {
   const comments = Array.from({ length: 81 }, (_, index) => ({
     id: index + 1,

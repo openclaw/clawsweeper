@@ -71,6 +71,14 @@ import {
   type ReviewStructuralRecord,
 } from "./review-structural-cache.js";
 import {
+  REVIEW_SEMANTIC_CACHE_VERSION,
+  createReviewSemanticRecord,
+  reviewSemanticCacheDecision,
+  reviewSemanticRevalidationDecision,
+  validReviewSemanticRecord,
+  type ReviewSemanticRecord,
+} from "./review-semantic-cache.js";
+import {
   ASSIST_ANSWER_MAX_BYTES,
   ASSIST_ARTIFACT_MAX_BYTES,
   assertAssistArtifactLiveRevision,
@@ -452,6 +460,7 @@ interface ExistingReview {
   lastFullReviewAt: string | undefined;
   lastFullReviewDecision: string | undefined;
   structuralRecord: ReviewStructuralRecord | null;
+  semanticRecord: ReviewSemanticRecord | null;
 }
 
 interface LatestRelease {
@@ -682,9 +691,11 @@ interface ItemContext {
   relatedItems?: unknown[];
   pullRequest?: unknown;
   pullFiles?: unknown[];
+  semanticPullFiles?: unknown[];
   pullCommits?: unknown[];
   pullReviewComments?: unknown[];
   pullReviewCommentsRevision?: string;
+  pullChecks?: unknown;
   counts?: {
     comments: number;
     commentsHydrated?: number;
@@ -2794,6 +2805,7 @@ function itemContentDigest(item: Item, context: ItemContext, git?: GitInfo): str
         ? (context.pullReviewCommentsRevision ??
           reviewCommentDigestParts(context.pullReviewComments))
         : null,
+      checks: isPull ? (context.pullChecks ?? null) : null,
     }),
   );
 }
@@ -4895,6 +4907,90 @@ export function compactPullRequestForTest(value: unknown): unknown {
   return compactPullRequest(value);
 }
 
+function compactCheckRun(value: unknown): unknown {
+  const check = asRecord(value);
+  return {
+    name: check.name ?? null,
+    status: check.status ?? null,
+    conclusion: check.conclusion ?? null,
+    app: asRecord(check.app).slug ?? null,
+  };
+}
+
+function compactCommitStatus(value: unknown): unknown {
+  const status = asRecord(value);
+  return {
+    context: status.context ?? null,
+    state: status.state ?? null,
+    description: status.description ?? null,
+  };
+}
+
+function pullChecksContext(number: number, headSha: string): unknown {
+  try {
+    const checkResponse = asRecord(
+      ghJson<unknown>(["api", `repos/${targetRepo()}/commits/${headSha}/check-runs?per_page=100`]),
+    );
+    const statusResponse = asRecord(
+      ghJson<unknown>([`api`, `repos/${targetRepo()}/commits/${headSha}/status?per_page=100`]),
+    );
+    const rawCheckRuns = Array.isArray(checkResponse.check_runs) ? checkResponse.check_runs : null;
+    const rawStatuses = Array.isArray(statusResponse.statuses) ? statusResponse.statuses : null;
+    const checkRunsTotal = githubCount(checkResponse.total_count);
+    const statusesTotal = githubCount(statusResponse.total_count);
+    if (!rawCheckRuns || !rawStatuses || checkRunsTotal === null || statusesTotal === null) {
+      return {
+        complete: false,
+        checkRuns: [],
+        checkRunsTruncated: true,
+        statuses: [],
+        statusesTruncated: true,
+      };
+    }
+    const checkRunsTruncated = checkRunsTotal > rawCheckRuns.length || rawCheckRuns.length > 100;
+    const statusesTruncated = statusesTotal > rawStatuses.length || rawStatuses.length > 100;
+    const checkRuns = rawCheckRuns
+      .slice(0, 100)
+      .map(compactCheckRun)
+      .sort((left, right) => stableJson(left).localeCompare(stableJson(right)));
+    const statuses = rawStatuses
+      .slice(0, 100)
+      .map(compactCommitStatus)
+      .sort((left, right) => stableJson(left).localeCompare(stableJson(right)));
+    return {
+      complete: !checkRunsTruncated && !statusesTruncated,
+      checkRuns,
+      checkRunsTruncated,
+      statuses,
+      statusesTruncated,
+    };
+  } catch (error) {
+    console.error(
+      `[review] ${new Date().toISOString()} check-state=unavailable #${number}: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+    return {
+      complete: false,
+      checkRuns: [],
+      checkRunsTruncated: true,
+      statuses: [],
+      statusesTruncated: true,
+    };
+  }
+}
+
+function completePullChecksContext(value: unknown): boolean {
+  const checks = asRecord(value);
+  return (
+    checks.complete === true &&
+    checks.checkRunsTruncated !== true &&
+    checks.statusesTruncated !== true &&
+    Array.isArray(checks.checkRuns) &&
+    Array.isArray(checks.statuses)
+  );
+}
+
 interface ClosingPullRequestReference {
   repo: string;
   number: number;
@@ -5793,6 +5889,19 @@ function compactPullFile(value: unknown): unknown {
   };
 }
 
+function compactSemanticPullFile(value: unknown): unknown {
+  const file = asRecord(value);
+  return {
+    filename: file.filename,
+    previous_filename: file.previous_filename,
+    status: file.status,
+    additions: file.additions,
+    deletions: file.deletions,
+    changes: file.changes,
+    patch: truncateText(file.patch, 512 * 1024),
+  };
+}
+
 function compactPullFilePaths(value: unknown): string[] {
   const file = asRecord(value);
   return [file.filename, file.previous_filename].filter(
@@ -6261,6 +6370,7 @@ function reviewStructuralRecordFromMarkdown(markdown: string): ReviewStructuralR
     kind,
     sourceRevision: frontMatterValue(markdown, "review_structural_source_revision") ?? "",
     itemStateDigest: frontMatterValue(markdown, "review_structural_item_state_digest") ?? "",
+    contextRevision: frontMatterValue(markdown, "review_structural_context_revision") ?? "",
     activityUpdatedAt: frontMatterValue(markdown, "review_structural_activity_updated_at") ?? "",
     relationSensitive: frontMatterBoolean(markdown, "review_structural_relation_sensitive"),
     targetHeadSha: frontMatterValue(markdown, "review_structural_target_head_sha") ?? "",
@@ -6270,6 +6380,26 @@ function reviewStructuralRecordFromMarkdown(markdown: string): ReviewStructuralR
     reviewModel: frontMatterValue(markdown, "review_model") ?? "",
   };
   return validReviewStructuralRecord(record) ? record : null;
+}
+
+function reviewSemanticRecordFromMarkdown(markdown: string): ReviewSemanticRecord | null {
+  const version = Number(frontMatterValue(markdown, "review_semantic_cache_version"));
+  if (version !== REVIEW_SEMANTIC_CACHE_VERSION) return null;
+  const eligibilityReason = frontMatterValue(markdown, "review_semantic_eligibility_reason");
+  const record: ReviewSemanticRecord = {
+    version: REVIEW_SEMANTIC_CACHE_VERSION,
+    fingerprint: frontMatterValue(markdown, "review_semantic_fingerprint") ?? "",
+    codeDigest: frontMatterValue(markdown, "review_semantic_code_digest") ?? "",
+    exactDigest: frontMatterValue(markdown, "review_semantic_exact_digest") ?? "",
+    contextDigest: frontMatterValue(markdown, "review_semantic_context_digest") ?? "",
+    eligible: frontMatterBoolean(markdown, "review_semantic_eligible"),
+    eligibilityReason:
+      (eligibilityReason as ReviewSemanticRecord["eligibilityReason"] | undefined) ??
+      "missing_structural_context",
+    reviewPolicy: frontMatterValue(markdown, "review_policy") ?? "",
+    reviewModel: frontMatterValue(markdown, "review_model") ?? "",
+  };
+  return validReviewSemanticRecord(record) ? record : null;
 }
 
 function existingReview(
@@ -6300,6 +6430,7 @@ function existingReview(
     lastFullReviewAt: frontMatterValue(markdown, "last_full_review_at"),
     lastFullReviewDecision: frontMatterValue(markdown, "last_full_review_decision"),
     structuralRecord: reviewStructuralRecordFromMarkdown(markdown),
+    semanticRecord: reviewSemanticRecordFromMarkdown(markdown),
   };
 }
 
@@ -6334,6 +6465,7 @@ function buildExistingReviewIndex(itemsDir: string): ExistingReviewIndex {
       lastFullReviewAt: frontMatterValue(markdown, "last_full_review_at"),
       lastFullReviewDecision: frontMatterValue(markdown, "last_full_review_decision"),
       structuralRecord: reviewStructuralRecordFromMarkdown(markdown),
+      semanticRecord: reviewSemanticRecordFromMarkdown(markdown),
     });
   }
   return { byKey };
@@ -7574,6 +7706,12 @@ function collectItemContext(
         : filterReviewContextComments(fullPullReviewComments, item.number);
     context.pullRequest = compactPullRequest(pullRequest);
     context.pullFiles = compactMappedWindow(pullFiles, pullFilesWindow.total, 80, compactPullFile);
+    context.semanticPullFiles = compactMappedWindow(
+      pullFiles,
+      pullFilesWindow.total,
+      80,
+      compactSemanticPullFile,
+    );
     context.pullCommits = compactMappedWindow(
       pullCommits,
       pullCommitsWindow.total,
@@ -7590,6 +7728,16 @@ function collectItemContext(
       context.pullReviewCommentsRevision = reviewCommentContentRevision(
         digestPullReviewComments.included.map(compactComment),
       );
+      const headSha = stringOrUndefined(asRecord(pullRecord.head).sha);
+      context.pullChecks = headSha
+        ? pullChecksContext(item.number, headSha)
+        : {
+            complete: false,
+            checkRuns: [],
+            checkRunsTruncated: true,
+            statuses: [],
+            statusesTruncated: true,
+          };
     }
     context.counts = {
       ...context.counts,
@@ -7962,7 +8110,8 @@ export function reviewDecisionSchemaText(): string {
 }
 
 function contextJsonForPrompt(context: ItemContext): string {
-  return JSON.stringify(context, null, 2);
+  const { semanticPullFiles: _, ...promptContext } = context;
+  return JSON.stringify(promptContext, null, 2);
 }
 
 type MediaProofCommandRunner = (
@@ -7995,7 +8144,8 @@ function trimTrailingUrlPunctuation(raw: string): string {
 }
 
 function proofVideoUrlsFromContext(context: ItemContext): string[] {
-  const text = JSON.stringify(context);
+  const { semanticPullFiles: _, ...proofContext } = context;
+  const text = JSON.stringify(proofContext);
   const matches = text.match(/https?:\/\/[^\s<>"'\\)]+/g) ?? [];
   const urls: string[] = [];
   const seen = new Set<string>();
@@ -16137,6 +16287,12 @@ function reviewContextLedger(context: ItemContext): ReviewContextLedgerEntry[] {
       truncated: counts?.pullReviewCommentsTruncated,
     }),
     reviewContextLedgerEntry({
+      section: "pullChecks",
+      label: "PR checks",
+      value: context.pullChecks ?? null,
+      entries: context.pullChecks === undefined ? 0 : 1,
+    }),
+    reviewContextLedgerEntry({
       section: "counts",
       label: "context counts",
       value: counts ?? {},
@@ -18961,6 +19117,11 @@ function updateReviewStructuralFrontMatter(
   );
   next = replaceFrontMatterValue(
     next,
+    "review_structural_context_revision",
+    record?.contextRevision ?? "unknown",
+  );
+  next = replaceFrontMatterValue(
+    next,
     "review_structural_activity_updated_at",
     record?.activityUpdatedAt ?? "unknown",
   );
@@ -18987,6 +19148,49 @@ function updateReviewStructuralFrontMatter(
   return replaceFrontMatterValue(next, "review_structural_cache_hit", cacheHit ? "true" : "false");
 }
 
+function updateReviewSemanticFrontMatter(
+  markdown: string,
+  record: ReviewSemanticRecord | null,
+  cacheHit: boolean,
+): string {
+  let next = replaceFrontMatterValue(
+    markdown,
+    "review_semantic_cache_version",
+    record ? String(record.version) : "unknown",
+  );
+  next = replaceFrontMatterValue(
+    next,
+    "review_semantic_fingerprint",
+    record?.fingerprint ?? "unknown",
+  );
+  next = replaceFrontMatterValue(
+    next,
+    "review_semantic_code_digest",
+    record?.codeDigest ?? "unknown",
+  );
+  next = replaceFrontMatterValue(
+    next,
+    "review_semantic_exact_digest",
+    record?.exactDigest ?? "unknown",
+  );
+  next = replaceFrontMatterValue(
+    next,
+    "review_semantic_context_digest",
+    record?.contextDigest ?? "unknown",
+  );
+  next = replaceFrontMatterValue(
+    next,
+    "review_semantic_eligible",
+    record ? String(record.eligible) : "false",
+  );
+  next = replaceFrontMatterValue(
+    next,
+    "review_semantic_eligibility_reason",
+    record?.eligibilityReason ?? "unknown",
+  );
+  return replaceFrontMatterValue(next, "review_semantic_cache_hit", cacheHit ? "true" : "false");
+}
+
 function markdownFor(options: {
   item: Item;
   context: ItemContext;
@@ -18999,6 +19203,7 @@ function markdownFor(options: {
   reviewPolicy: string;
   runtime: ReviewRuntime;
   structuralRecord?: ReviewStructuralRecord | null;
+  semanticRecord?: ReviewSemanticRecord | null;
   reviewLeaseOwner?: string;
   reviewLeaseCommentId?: number;
 }): string {
@@ -19113,6 +19318,7 @@ review_structural_cache_version: ${options.structuralRecord?.version ?? "unknown
 review_structural_fingerprint: ${options.structuralRecord?.fingerprint ?? "unknown"}
 review_structural_source_revision: ${options.structuralRecord?.sourceRevision ?? "unknown"}
 review_structural_item_state_digest: ${options.structuralRecord?.itemStateDigest ?? "unknown"}
+review_structural_context_revision: ${options.structuralRecord?.contextRevision ?? "unknown"}
 review_structural_activity_updated_at: ${options.structuralRecord?.activityUpdatedAt ?? "unknown"}
 review_structural_relation_sensitive: ${
     options.structuralRecord ? options.structuralRecord.relationSensitive : "unknown"
@@ -19125,6 +19331,14 @@ review_structural_pull_state_digest: ${
     options.structuralRecord ? (options.structuralRecord.pullStateDigest ?? "none") : "unknown"
   }
 review_structural_cache_hit: false
+review_semantic_cache_version: ${options.semanticRecord?.version ?? "unknown"}
+review_semantic_fingerprint: ${options.semanticRecord?.fingerprint ?? "unknown"}
+review_semantic_code_digest: ${options.semanticRecord?.codeDigest ?? "unknown"}
+review_semantic_exact_digest: ${options.semanticRecord?.exactDigest ?? "unknown"}
+review_semantic_context_digest: ${options.semanticRecord?.contextDigest ?? "unknown"}
+review_semantic_eligible: ${options.semanticRecord?.eligible ?? false}
+review_semantic_eligibility_reason: ${options.semanticRecord?.eligibilityReason ?? "unknown"}
+review_semantic_cache_hit: false
 item_source_revision: ${options.context.sourceRevision ?? "unknown"}
 close_comment_sha256: ${options.action.closeComment ? sha256(options.action.closeComment) : "none"}
 review_comment_sha256: none
@@ -19440,6 +19654,7 @@ function buildLocalRangeReview(
   const nameStatus = run("git", ["diff", "--name-status", `${baseSha}..${headSha}`], {
     cwd: targetDir,
   }).trim();
+  const semanticPullFiles: unknown[] = [];
   const pullFiles = nameStatus
     ? nameStatus.split("\n").map((line) => {
         // name-status rows are tab-separated: "A\tfile", "M\tfile", or for rename/copy
@@ -19451,6 +19666,11 @@ function buildLocalRangeReview(
         const filename = parts[parts.length - 1] ?? line;
         const patch = run("git", ["diff", `${baseSha}..${headSha}`, "--", filename], {
           cwd: targetDir,
+        });
+        semanticPullFiles.push({
+          filename,
+          status,
+          patch: truncateText(patch, 512 * 1024),
         });
         return { filename, status, patch: truncateText(patch, 8000) };
       })
@@ -19481,6 +19701,7 @@ function buildLocalRangeReview(
     comments: [],
     timeline: [],
     pullFiles,
+    semanticPullFiles,
     counts: { comments: 0, timeline: 0, pullFiles: pullFiles.length },
   };
   return { item, context, baseSha, headSha };
@@ -19678,9 +19899,19 @@ function reviewCommand(args: Args): void {
     let structuralCacheRevalidations = 0;
     let structuralCacheRevalidationFailures = 0;
     let structuralCacheRevalidationMs = 0;
+    let semanticCacheChecks = 0;
+    let semanticCacheHits = 0;
+    let semanticCacheIneligible = 0;
+    let semanticCacheMs = 0;
+    let semanticCacheRevalidations = 0;
+    let semanticCacheRevalidationFailures = 0;
+    let semanticCacheRevalidationMs = 0;
     let hydrationRuns = 0;
     const structuralCacheReasons = new Map<string, number>();
     const structuralCacheRevalidationReasons = new Map<string, number>();
+    const semanticCacheReasons = new Map<string, number>();
+    const semanticCacheEligibilityReasons = new Map<string, number>();
+    const semanticCacheRevalidationReasons = new Map<string, number>();
     const codexFailureReports: string[] = [];
     const leaseAcquisitionFailureDetails: string[] = [];
     for (const item of candidates) {
@@ -19697,6 +19928,7 @@ function reviewCommand(args: Args): void {
       let structuralRecord: ReviewStructuralRecord | null = null;
       let preHydrationStructuralRecord: ReviewStructuralRecord | null = null;
       let hydratedStructuralAnchor: ReviewStructuralRecord | null = null;
+      let semanticRecord: ReviewSemanticRecord | null = null;
       if (!localRangeData) {
         structuralCacheChecks += 1;
         const structuralProbeDecision = reviewStructuralCacheProbeDecision({
@@ -20091,16 +20323,170 @@ function reviewCommand(args: Args): void {
         }
       }
       const contentDigest = itemContentDigest(item, context, git);
-      const contentCacheReview = explicitDispatch || maintainerRequest ? null : priorReview;
-      const contentCacheHit = reviewContentCacheHit({
-        review: contentCacheReview,
+      const semanticCacheStartedAt = Date.now();
+      semanticCacheChecks += 1;
+      semanticRecord = createReviewSemanticRecord({
+        item,
+        context,
+        git,
+        structuralContextRevision: hydratedStructuralAnchor?.contextRevision ?? null,
         reviewPolicy,
-        contentDigest,
-        now: Date.now(),
+        reviewModel: PUBLIC_CODEX_MODEL,
+      });
+      semanticCacheMs += Date.now() - semanticCacheStartedAt;
+      semanticCacheEligibilityReasons.set(
+        semanticRecord.eligibilityReason,
+        (semanticCacheEligibilityReasons.get(semanticRecord.eligibilityReason) ?? 0) + 1,
+      );
+      if (!semanticRecord.eligible) semanticCacheIneligible += 1;
+      const semanticDecision = reviewSemanticCacheDecision({
+        review: priorReview,
+        priorRecord: priorReview?.semanticRecord ?? null,
+        currentRecord: semanticRecord,
+        reviewPolicy,
+        reviewModel: PUBLIC_CODEX_MODEL,
         explicitDispatch,
         maintainerRequest,
+        coordinationEnabled: Boolean(acquiredReviewLease),
       });
-      if (contentCacheHit) {
+      semanticCacheReasons.set(
+        semanticDecision.reason,
+        (semanticCacheReasons.get(semanticDecision.reason) ?? 0) + 1,
+      );
+      if (semanticDecision.hit) {
+        semanticCacheRevalidations += 1;
+        const initialSemanticRecord = semanticRecord;
+        const semanticRevalidationStartedAt = Date.now();
+        const revalidatedStructuralRecord = refreshStructuralRecordForVerdict();
+        const revalidatedChecks =
+          revalidatedStructuralRecord?.pullHeadSha &&
+          revalidatedStructuralRecord.pullHeadSha === pullHeadShaFromContext(context)
+            ? pullChecksContext(item.number, revalidatedStructuralRecord.pullHeadSha)
+            : {
+                complete: false,
+                checkRuns: [],
+                checkRunsTruncated: true,
+                statuses: [],
+                statusesTruncated: true,
+              };
+        if (!completePullChecksContext(revalidatedChecks)) {
+          semanticCacheRevalidationFailures += 1;
+        }
+        const revalidatedSemanticRecord = createReviewSemanticRecord({
+          item,
+          context: {
+            ...context,
+            pullChecks: revalidatedChecks,
+          },
+          git,
+          structuralContextRevision: revalidatedStructuralRecord?.contextRevision ?? null,
+          reviewPolicy,
+          reviewModel: PUBLIC_CODEX_MODEL,
+        });
+        const semanticRevalidationDecision = reviewSemanticRevalidationDecision({
+          initialRecord: initialSemanticRecord,
+          currentRecord: revalidatedSemanticRecord,
+          reviewPolicy,
+          reviewModel: PUBLIC_CODEX_MODEL,
+        });
+        semanticCacheRevalidationMs += Date.now() - semanticRevalidationStartedAt;
+        const revalidationReason = revalidatedStructuralRecord
+          ? semanticRevalidationDecision.reason
+          : "structural_verdict_input_changed";
+        semanticCacheRevalidationReasons.set(
+          revalidationReason,
+          (semanticCacheRevalidationReasons.get(revalidationReason) ?? 0) + 1,
+        );
+        if (!revalidatedStructuralRecord || !semanticRevalidationDecision.hit) {
+          const leaseToRelease = acquiredReviewLease!;
+          if (!deleteOwnedDedicatedReviewStartLease(item.number, leaseToRelease)) {
+            leaseAcquisitionFailures += 1;
+            leaseAcquisitionFailureDetails.push(
+              `#${item.number}: could not release semantic cache lease after ${revalidationReason}`,
+            );
+            continue;
+          }
+          const acquiredIndex = acquiredReviewLeases.findIndex(
+            (entry) =>
+              entry.itemNumber === item.number &&
+              entry.lease.commentId === leaseToRelease.commentId &&
+              entry.lease.owner === leaseToRelease.owner,
+          );
+          if (acquiredIndex >= 0) acquiredReviewLeases.splice(acquiredIndex, 1);
+          acquiredReviewLease = null;
+          console.error(
+            `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} semantic-cache=revalidation-miss reason=${revalidationReason} defer #${item.number}`,
+          );
+          continue;
+        }
+        structuralRecord = revalidatedStructuralRecord;
+        semanticRecord = revalidatedSemanticRecord;
+        if (structuralRecord) item.updatedAt = structuralRecord.activityUpdatedAt;
+        const reportPath = join(artifactDir, reportFileName(item.repo, item.number));
+        let carried = priorReview!.markdown;
+        carried = replaceFrontMatterValue(carried, "reviewed_at", new Date().toISOString());
+        carried = replaceFrontMatterValue(carried, "item_updated_at", item.updatedAt);
+        carried = replaceFrontMatterValue(
+          carried,
+          "review_lease_owner",
+          acquiredReviewLease!.owner,
+        );
+        carried = replaceFrontMatterValue(
+          carried,
+          "review_lease_comment_id",
+          String(acquiredReviewLease!.commentId),
+        );
+        carried = replaceFrontMatterValue(
+          carried,
+          "item_snapshot_hash",
+          itemSnapshotHash(item, context),
+        );
+        carried = replaceFrontMatterValue(carried, "review_content_digest", contentDigest);
+        carried = replaceFrontMatterValue(
+          carried,
+          "item_source_revision",
+          context.sourceRevision ?? "unknown",
+        );
+        carried = replaceFrontMatterValue(
+          carried,
+          "pull_head_sha",
+          pullHeadShaFromContext(context) ?? "unknown",
+        );
+        carried = replaceFrontMatterValue(carried, "main_sha", git.mainSha);
+        carried = replaceFrontMatterValue(carried, "review_cache_hit", "true");
+        carried = updateReviewStructuralFrontMatter(carried, structuralRecord, false);
+        carried = updateReviewSemanticFrontMatter(carried, semanticRecord, true);
+        writeFileSync(reportPath, carried, "utf8");
+        completed += 1;
+        cacheHits += 1;
+        semanticCacheHits += 1;
+        if (humanLocalReview) {
+          console.error("");
+          console.error("Semantic review cache hit; code and review context unchanged");
+          console.error(`  report: ${displayPath(reportPath)}`);
+        } else {
+          console.error(
+            `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} cache-hit semantic-unchanged skip-model #${item.number} (${completed}/${candidates.length})`,
+          );
+        }
+        continue;
+      }
+      const contentCacheReview =
+        explicitDispatch ||
+        maintainerRequest ||
+        (item.kind === "pull_request" && !completePullChecksContext(context.pullChecks))
+          ? null
+          : priorReview;
+      if (
+        reviewContentCacheHit({
+          review: contentCacheReview,
+          reviewPolicy,
+          contentDigest,
+          now: Date.now(),
+          explicitDispatch,
+          maintainerRequest,
+        })
+      ) {
         structuralRecord = refreshStructuralRecordForVerdict();
         const reportPath = join(artifactDir, reportFileName(item.repo, item.number));
         let carried = priorReview!.markdown;
@@ -20125,6 +20511,7 @@ function reviewCommand(args: Args): void {
         carried = structuralRecord
           ? updateReviewStructuralFrontMatter(carried, structuralRecord, false)
           : replaceFrontMatterValue(carried, "review_structural_cache_hit", "false");
+        carried = updateReviewSemanticFrontMatter(carried, semanticRecord, false);
         writeFileSync(reportPath, carried, "utf8");
         completed += 1;
         cacheHits += 1;
@@ -20238,6 +20625,7 @@ function reviewCommand(args: Args): void {
           reviewPolicy,
           runtime,
           structuralRecord,
+          semanticRecord,
           ...(acquiredReviewLease
             ? {
                 reviewLeaseOwner: acquiredReviewLease.owner,
@@ -20272,7 +20660,7 @@ function reviewCommand(args: Args): void {
     }
     if (!humanLocalReview) {
       console.error(
-        `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} complete reviewed=${completed} cache_hits=${cacheHits} structural_cache_checks=${structuralCacheChecks} structural_cache_hits=${structuralCacheHits} structural_cache_revalidations=${structuralCacheRevalidations} content_cache_hits=${contentCacheHits} hydrations=${hydrationRuns}`,
+        `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} complete reviewed=${completed} cache_hits=${cacheHits} structural_cache_checks=${structuralCacheChecks} structural_cache_hits=${structuralCacheHits} structural_cache_revalidations=${structuralCacheRevalidations} semantic_cache_checks=${semanticCacheChecks} semantic_cache_hits=${semanticCacheHits} semantic_cache_ineligible=${semanticCacheIneligible} semantic_cache_revalidations=${semanticCacheRevalidations} content_cache_hits=${contentCacheHits} hydrations=${hydrationRuns}`,
       );
     }
     writeFileSync(
@@ -20296,6 +20684,28 @@ function reviewCommand(args: Args): void {
           ),
           structural_cache_revalidation_reasons: Object.fromEntries(
             [...structuralCacheRevalidationReasons.entries()].sort(([left], [right]) =>
+              left.localeCompare(right),
+            ),
+          ),
+          semantic_cache_checks: semanticCacheChecks,
+          semantic_cache_hits: semanticCacheHits,
+          semantic_cache_ineligible: semanticCacheIneligible,
+          semantic_cache_ms: semanticCacheMs,
+          semantic_cache_revalidations: semanticCacheRevalidations,
+          semantic_cache_revalidation_failures: semanticCacheRevalidationFailures,
+          semantic_cache_revalidation_ms: semanticCacheRevalidationMs,
+          semantic_cache_reasons: Object.fromEntries(
+            [...semanticCacheReasons.entries()].sort(([left], [right]) =>
+              left.localeCompare(right),
+            ),
+          ),
+          semantic_cache_eligibility_reasons: Object.fromEntries(
+            [...semanticCacheEligibilityReasons.entries()].sort(([left], [right]) =>
+              left.localeCompare(right),
+            ),
+          ),
+          semantic_cache_revalidation_reasons: Object.fromEntries(
+            [...semanticCacheRevalidationReasons.entries()].sort(([left], [right]) =>
               left.localeCompare(right),
             ),
           ),

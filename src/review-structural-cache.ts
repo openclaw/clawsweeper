@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { REVIEW_CACHE_MAX_AGE_DAYS } from "./scheduler-policy.js";
 import { stableJson } from "./stable-json.js";
 
-export const REVIEW_STRUCTURAL_CACHE_VERSION = 3;
+export const REVIEW_STRUCTURAL_CACHE_VERSION = 4;
 export const REVIEW_STRUCTURAL_CACHE_MAX_AGE_DAYS = REVIEW_CACHE_MAX_AGE_DAYS;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -77,6 +77,7 @@ export interface ReviewStructuralRecord {
   kind: ReviewStructuralKind;
   sourceRevision: string;
   itemStateDigest: string;
+  contextRevision: string;
   activityUpdatedAt: string;
   relationSensitive: boolean;
   targetHeadSha: string;
@@ -821,6 +822,48 @@ function sourceRevision(snapshot: ReviewStructuralSnapshot): string {
   );
 }
 
+function contextRevision(snapshot: ReviewStructuralSnapshot): string {
+  return sha256(
+    stableJson({
+      repo: snapshot.repo,
+      number: snapshot.number,
+      kind: snapshot.kind,
+      nodeId: snapshot.nodeId,
+      author: canonicalGitHubLogin(snapshot.author),
+      authorAssociation: snapshot.authorAssociation.toUpperCase(),
+      titleDigest: snapshot.titleDigest,
+      bodyDigest: snapshot.bodyDigest,
+      state: snapshot.state,
+      locked: snapshot.locked,
+      labels: [...snapshot.labels].map((label) => label.toLowerCase()).sort(),
+      comments: normalizedActivities(snapshot.comments),
+      timeline: snapshot.timeline,
+      relationSensitive: snapshot.relationSensitive,
+      latestRelease: {
+        tag: snapshot.latestReleaseTag,
+        sha: snapshot.latestReleaseSha,
+      },
+      pull:
+        snapshot.pull === null
+          ? null
+          : {
+              baseSha: snapshot.pull.baseSha,
+              draft: snapshot.pull.draft,
+              mergeable: snapshot.pull.mergeable,
+              mergeStateStatus: snapshot.pull.mergeStateStatus,
+              reviews: normalizedActivities(snapshot.pull.reviews),
+              reviewThreads: [...snapshot.pull.reviewThreads]
+                .map((thread) => ({
+                  id: thread.id,
+                  isResolved: thread.isResolved,
+                  comments: normalizedActivities(thread.comments),
+                }))
+                .sort((left, right) => left.id.localeCompare(right.id)),
+            },
+    }),
+  );
+}
+
 function recordFingerprint(record: Omit<ReviewStructuralRecord, "fingerprint">): string {
   return sha256(stableJson(record));
 }
@@ -1001,6 +1044,7 @@ export function createReviewStructuralRecord(
     kind: snapshot.kind,
     sourceRevision: sourceRevision(snapshot),
     itemStateDigest,
+    contextRevision: contextRevision(snapshot),
     activityUpdatedAt: snapshot.activityUpdatedAt,
     relationSensitive: snapshot.relationSensitive,
     targetHeadSha: snapshot.targetHeadSha,
@@ -1025,6 +1069,7 @@ export function validReviewStructuralRecord(
     !DIGEST_PATTERN.test(record.fingerprint) ||
     !DIGEST_PATTERN.test(record.sourceRevision) ||
     !DIGEST_PATTERN.test(record.itemStateDigest) ||
+    !DIGEST_PATTERN.test(record.contextRevision) ||
     !validTimestamp(record.activityUpdatedAt) ||
     typeof record.relationSensitive !== "boolean" ||
     !SHA_PATTERN.test(record.targetHeadSha) ||

@@ -150,6 +150,32 @@ test("TypeScript whitespace and ordinary comments do not perturb the semantic di
   assert.notEqual(plain.exactDigest, reformatted.exactDigest);
 });
 
+test("semantic fingerprint uses the bounded full patch instead of prompt truncation", () => {
+  const result = record({
+    context: {
+      pullFiles: [
+        {
+          filename: "src/cache.ts",
+          status: "modified",
+          patch: "@@ -1 +1 @@\n-const answer = 41;\n+\n[truncated 20 chars]",
+        },
+      ],
+      semanticPullFiles: [
+        {
+          filename: "src/cache.ts",
+          status: "modified",
+          additions: 1,
+          deletions: 1,
+          patch: "@@ -1 +1 @@\n-const answer = 41;\n+const answer = 42;",
+        },
+      ],
+    },
+  });
+
+  assert.equal(result.eligible, true);
+  assert.equal(result.eligibilityReason, "eligible");
+});
+
 test("semantic TypeScript token changes bust the code digest", () => {
   const prior = record();
   const changed = record({
@@ -211,9 +237,39 @@ test("TypeScript directives and shebangs remain semantic", () => {
       ],
     },
   });
+  const sourceMapDirective = record({
+    context: {
+      pullFiles: [
+        {
+          filename: "src/cache.ts",
+          status: "modified",
+          additions: 2,
+          deletions: 1,
+          patch:
+            "@@ -1 +1,2 @@\n-const answer = 41;\n+const answer = 42;\n+//# sourceMappingURL=cache.js.map",
+        },
+      ],
+    },
+  });
+  const referenceDirective = record({
+    context: {
+      pullFiles: [
+        {
+          filename: "src/cache.ts",
+          status: "modified",
+          additions: 2,
+          deletions: 1,
+          patch:
+            '@@ -1 +1,2 @@\n-const answer = 41;\n+/// <reference path="./types.d.ts" />\n+const answer = 42;',
+        },
+      ],
+    },
+  });
 
   assert.notEqual(ordinary.codeDigest, directive.codeDigest);
   assert.notEqual(ordinary.codeDigest, shebang.codeDigest);
+  assert.notEqual(ordinary.codeDigest, sourceMapDirective.codeDigest);
+  assert.notEqual(ordinary.codeDigest, referenceDirective.codeDigest);
 });
 
 test("structured JSON formatting does not perturb complete JSON hunks", () => {
@@ -351,9 +407,18 @@ test("incomplete file hydration and mutable check context disable semantic reuse
       pullChecks: { complete: false },
     },
   });
+  const truncatedCommits = record({
+    context: {
+      counts: {
+        ...input().context.counts,
+        pullCommitsTruncated: true,
+      },
+    },
+  });
 
   assert.equal(truncated.eligibilityReason, "incomplete_file_list");
   assert.equal(missingChecks.eligibilityReason, "incomplete_checks");
+  assert.equal(truncatedCommits.eligibilityReason, "incomplete_review_context");
   assert.equal(
     decision({ priorRecord: record(), currentRecord: missingChecks }).reason,
     "semantic_ineligible",

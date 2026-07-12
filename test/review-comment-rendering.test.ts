@@ -162,6 +162,46 @@ test("structural cache probes before hydration but acquires a lease before carry
   );
 });
 
+test("semantic cache runs after hydration and revalidates under the acquired lease", () => {
+  const source = readFileSync("src/clawsweeper.ts", "utf8");
+  const reviewLoop = source.slice(
+    source.indexOf("for (const item of candidates)"),
+    source.indexOf("let decision: Decision", source.indexOf("for (const item of candidates)")),
+  );
+  const hydration = reviewLoop.indexOf("collectItemContext(item");
+  const semanticRecord = reviewLoop.indexOf("createReviewSemanticRecord({", hydration);
+  const semanticDecision = reviewLoop.indexOf("reviewSemanticCacheDecision({", semanticRecord);
+  const semanticRevalidation = reviewLoop.indexOf(
+    "semanticCacheRevalidations += 1",
+    semanticDecision,
+  );
+  const checkRevalidation = reviewLoop.indexOf("pullChecksContext(", semanticRevalidation);
+  const semanticWrite = reviewLoop.indexOf(
+    "writeFileSync(reportPath, carried",
+    semanticRevalidation,
+  );
+  const contentCache = reviewLoop.indexOf("reviewContentCacheHit({", semanticWrite);
+
+  assert.ok(hydration >= 0);
+  assert.ok(semanticRecord > hydration);
+  assert.ok(semanticDecision > semanticRecord);
+  assert.ok(semanticRevalidation > semanticDecision);
+  assert.ok(checkRevalidation > semanticRevalidation);
+  assert.ok(semanticWrite > checkRevalidation);
+  assert.ok(contentCache > semanticWrite);
+  assert.match(
+    reviewLoop.slice(semanticRevalidation, semanticWrite),
+    /reviewStructuralCacheDecision\(\{/,
+  );
+  assert.match(
+    reviewLoop.slice(semanticRevalidation, semanticWrite),
+    /updateReviewSemanticFrontMatter\(carried, semanticRecord, true\)/,
+  );
+  assert.match(source, /semantic_cache_eligibility_reasons/);
+  assert.match(source, /review_semantic_code_digest/);
+  assert.match(source, /check-state=unavailable/);
+});
+
 test("review comment patching only targets ClawSweeper-owned comments", () => {
   assert.equal(canPatchReviewComment({ user: { login: "clawsweeper" } }), true);
   assert.equal(canPatchReviewComment({ user: { login: "clawsweeper[bot]" } }), true);

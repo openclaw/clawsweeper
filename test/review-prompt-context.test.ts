@@ -89,6 +89,24 @@ test("review prompt includes compact previous review state without raw durable r
   assert.doesNotMatch(prompt, /How this review workflow works/);
 });
 
+test("review prompt excludes full semantic-cache patches", () => {
+  const context = {
+    issue: { number: 123, title: "Sample PR" },
+    comments: [],
+    timeline: [],
+    pullFiles: [{ filename: "src/cache.ts", patch: "prompt-sized patch" }],
+    semanticPullFiles: [
+      { filename: "src/cache.ts", patch: "FULL_SEMANTIC_CACHE_PATCH_MUST_STAY_PRIVATE" },
+    ],
+    counts: { comments: 0, timeline: 0, pullFiles: 1 },
+  };
+
+  const prompt = reviewPromptForTest(item({ kind: "pull_request", number: 123 }), context, git);
+
+  assert.match(prompt, /prompt-sized patch/);
+  assert.doesNotMatch(prompt, /FULL_SEMANTIC_CACHE_PATCH_MUST_STAY_PRIVATE/);
+});
+
 test("review prompt includes merge state and guards clean behind-branch drift", () => {
   const compactPullRequest = compactPullRequestForTest({
     number: 123,

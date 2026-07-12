@@ -792,6 +792,52 @@ test("hydrated pull state must match the complete structural PR state", () => {
   );
 });
 
+test("semantic context revision excludes code-volume and commit-count churn", () => {
+  const prior = record(pullSnapshot());
+  const reformatted = record(
+    pullSnapshot({
+      pull: {
+        ...pullSnapshot().pull!,
+        additions: 40,
+        deletions: 30,
+        changedFiles: 4,
+        commitCount: 5,
+      },
+    }),
+  );
+
+  assert.notEqual(prior.sourceRevision, reformatted.sourceRevision);
+  assert.equal(prior.contextRevision, reformatted.contextRevision);
+});
+
+test("semantic context revision includes review and readiness state", () => {
+  const prior = record(pullSnapshot());
+  const changedReview = record(
+    pullSnapshot({
+      pull: {
+        ...pullSnapshot().pull!,
+        reviews: [
+          {
+            ...pullSnapshot().pull!.reviews[0]!,
+            state: "CHANGES_REQUESTED",
+          },
+        ],
+      },
+    }),
+  );
+  const changedReadiness = record(
+    pullSnapshot({
+      pull: {
+        ...pullSnapshot().pull!,
+        mergeStateStatus: "BLOCKED",
+      },
+    }),
+  );
+
+  assert.notEqual(prior.contextRevision, changedReview.contextRevision);
+  assert.notEqual(prior.contextRevision, changedReadiness.contextRevision);
+});
+
 test("issue and PR records cannot be reused across kinds", () => {
   assert.equal(
     decision({ priorRecord: record(), currentRecord: record(pullSnapshot()) }).reason,

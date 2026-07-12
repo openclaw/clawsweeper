@@ -32,6 +32,7 @@ export type ReviewSemanticEligibilityReason =
   | "not_pull_request"
   | "missing_structural_context"
   | "incomplete_checks"
+  | "incomplete_review_context"
   | "incomplete_file_list"
   | "missing_patch"
   | "truncated_patch"
@@ -44,6 +45,26 @@ export type ReviewSemanticEligibilityReason =
   | "malformed_patch"
   | "lexical_ambiguity"
   | "invalid_json";
+
+const ELIGIBILITY_REASONS = new Set<ReviewSemanticEligibilityReason>([
+  "eligible",
+  "not_pull_request",
+  "missing_structural_context",
+  "incomplete_checks",
+  "incomplete_review_context",
+  "incomplete_file_list",
+  "missing_patch",
+  "truncated_patch",
+  "oversized_patch",
+  "binary_patch",
+  "deleted_file",
+  "renamed_file",
+  "unsupported_status",
+  "unsupported_language",
+  "malformed_patch",
+  "lexical_ambiguity",
+  "invalid_json",
+]);
 
 export interface ReviewSemanticRecord {
   version: typeof REVIEW_SEMANTIC_CACHE_VERSION;
@@ -103,6 +124,7 @@ export interface ReviewSemanticInput {
     relatedItems?: readonly unknown[] | undefined;
     pullRequest?: unknown;
     pullFiles?: readonly unknown[] | undefined;
+    semanticPullFiles?: readonly unknown[] | undefined;
     pullCommits?: readonly unknown[] | undefined;
     pullReviewComments?: readonly unknown[] | undefined;
     pullReviewCommentsRevision?: string | undefined;
@@ -176,9 +198,10 @@ function exactFileView(value: unknown): unknown {
 }
 
 function exactDiffDigest(input: ReviewSemanticInput): string {
+  const files = input.context.semanticPullFiles ?? input.context.pullFiles ?? [];
   return sha256(
     stableJson({
-      files: (input.context.pullFiles ?? []).map(exactFileView),
+      files: files.map(exactFileView),
       counts: {
         total: input.context.counts?.pullFiles ?? null,
         hydrated: input.context.counts?.pullFilesHydrated ?? null,
@@ -396,7 +419,7 @@ function semanticCode(input: ReviewSemanticInput): {
   if (input.item.kind !== "pull_request") {
     return { digest: sha256("not-pull-request"), eligible: false, reason: "not_pull_request" };
   }
-  const files = input.context.pullFiles;
+  const files = input.context.semanticPullFiles ?? input.context.pullFiles;
   const counts = input.context.counts;
   const total = finiteCount(counts?.pullFiles);
   const hydrated = finiteCount(counts?.pullFilesHydrated);
@@ -547,6 +570,13 @@ function semanticContext(input: ReviewSemanticInput): {
       reason: "incomplete_checks",
     };
   }
+  if (input.context.counts?.pullCommitsTruncated === true) {
+    return {
+      digest: sha256(stableJson(context)),
+      complete: false,
+      reason: "incomplete_review_context",
+    };
+  }
   return { digest: sha256(stableJson(context)), complete: true, reason: "eligible" };
 }
 
@@ -588,6 +618,7 @@ export function validReviewSemanticRecord(
     !DIGEST_PATTERN.test(record.contextDigest) ||
     !record.reviewPolicy ||
     !record.reviewModel ||
+    !ELIGIBILITY_REASONS.has(record.eligibilityReason) ||
     (record.eligible && record.eligibilityReason !== "eligible") ||
     (!record.eligible && record.eligibilityReason === "eligible")
   ) {
