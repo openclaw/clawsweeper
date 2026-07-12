@@ -138,6 +138,7 @@ import {
 } from "./staged-proof-gates.js";
 import {
   createPreparedPublication,
+  executionIntentRepairDeltaBaseSha,
   verifyExecutionIntentIdentity,
 } from "./prepared-publication.js";
 import { uniqueStrings } from "./validation-command-utils.js";
@@ -1212,13 +1213,17 @@ function preparedPublicationOutcome({
   const preparedHeadSha = run("git", ["rev-parse", "HEAD"], { cwd: targetDir }).trim();
   const preparedTreeSha = run("git", ["rev-parse", "HEAD^{tree}"], { cwd: targetDir }).trim();
   assertAuthorizedSha("prepared repair head", preparedHeadSha, prep.commit);
+  const repairDeltaBaseSha = executionIntentRepairDeltaBaseSha(executionIntent);
+  if (prep.repair_delta_base_sha !== repairDeltaBaseSha) {
+    throw new Error("prepared repair proof used a non-authorized repair delta base");
+  }
   const publication = createPreparedPublication({
     outputDir: path.dirname(resultPath),
     targetDir,
     authorizationSha256,
     executionIntent,
     fixArtifact,
-    repairDeltaBaseSha: String(prep.repair_delta_base_sha),
+    repairDeltaBaseSha,
     preparedHeadSha,
     preparedTreeSha,
   });
@@ -1331,14 +1336,18 @@ function openReplacementPrFromPreparedRepairCheckout({
   const validatedBaseSha = run("git", ["rev-parse", `origin/${baseBranch}`], {
     cwd: targetDir,
   }).trim();
+  const repairDeltaBaseHead = executionIntent
+    ? executionIntentRepairDeltaBaseSha(executionIntent)
+    : sourceHead;
   ensureFinalStagedProof({
     fixArtifact,
     targetDir,
     baseBranch,
-    sourceHead,
+    sourceHead: repairDeltaBaseHead,
     validatedHeadSha: prep.commit,
     validatedBaseSha,
   });
+  prep.repair_delta_base_sha = repairDeltaBaseHead;
   prep.merge_preflight = bindMergePreflightToStagedProof({
     preflight: prep.merge_preflight,
     validatedHeadSha: prep.commit,
@@ -1557,6 +1566,7 @@ function tryAutomergeFastRebaseRepair({
     commit,
     prep: {
       commit,
+      repair_delta_base_sha: sourceHead,
       checkpoint_commits: [],
       merge_preflight: {
         target: null,
@@ -1712,6 +1722,14 @@ function executeReplacementBranch({
       fixArtifact,
     });
   }
+  const sourceHead = currentHead(targetDir);
+  if (executionIntent) {
+    assertAuthorizedSha(
+      "replacement repair delta base",
+      sourceHead,
+      executionIntentRepairDeltaBaseSha(executionIntent),
+    );
+  }
   prepareTargetToolchain(targetDir, currentTargetValidationOptions());
   const rebaseResult = rebaseOntoBase({ targetDir, baseBranch });
   const mechanicalConflictResolution = tryResolveMechanicalRebaseConflicts({
@@ -1735,6 +1753,7 @@ function executeReplacementBranch({
     reconcileWithBase: branchState.resumed,
     pushCheckpoint:
       dryRun || executionIntent ? null : () => pushRecoverableBranch({ targetDir, branch }),
+    sourceHead,
     rebaseResult,
   });
   const provenance = externalMessageProvenance({
@@ -2240,8 +2259,7 @@ function editValidatePrepareMerge({
     run("git", ["rev-parse", `origin/${baseBranch}`], { cwd: targetDir }),
   ).sha;
   const shouldRunCodexEdit = !producedChanges || reconcileWithBase;
-  const repairDeltaBaseHead =
-    rebaseResult?.status === "conflicts" ? (sourceHead ?? targetBaseSha) : currentHead(targetDir);
+  const repairDeltaBaseHead = sourceHead ?? targetBaseSha;
   const proofPreviewOptions = {
     ...currentTargetValidationOptions(fixArtifact.likely_files ?? []),
     pinnedBaseRef: targetBaseSha,
@@ -3254,15 +3272,6 @@ function ensureFinalStagedProof({
   validatedHeadSha,
   validatedBaseSha,
 }: LooseRecord) {
-  const latest = validationProofTraces.at(-1);
-  if (
-    latest?.status === "passed" &&
-    latest.validated_head_sha === validatedHeadSha &&
-    latest.validated_base_sha === validatedBaseSha &&
-    validationProofPlan?.plan_id === latest.plan_id
-  ) {
-    return;
-  }
   const validationOptions = {
     ...currentTargetValidationOptions(fixArtifact.likely_files ?? []),
     pinnedBaseRef: validatedBaseSha,
@@ -3271,6 +3280,22 @@ function ensureFinalStagedProof({
     { fixArtifact, targetDir, sourceHead },
     validationOptions,
   );
+  const requiredPlan = buildTargetValidationProofPlan(
+    validationPlan.commands,
+    targetDir,
+    validationPlan.options,
+    baseBranch,
+  );
+  const latest = validationProofTraces.at(-1);
+  if (
+    latest?.status === "passed" &&
+    latest.validated_head_sha === validatedHeadSha &&
+    latest.validated_base_sha === validatedBaseSha &&
+    validationProofPlan?.plan_id === latest.plan_id &&
+    requiredPlan.plan_id === latest.plan_id
+  ) {
+    return;
+  }
   runTargetValidationProof(validationPlan.commands, targetDir, validationPlan.options, baseBranch);
   const finalTrace = validationProofTraces.at(-1);
   if (

@@ -603,12 +603,22 @@ test("trusted publication rejects forged deterministic comment metadata", () => 
   git(targetDir, "add", ".");
   git(targetDir, "-c", "commit.gpgsign=false", "commit", "-m", "base");
   const repairDeltaBaseSha = git(targetDir, "rev-parse", "HEAD");
+  fs.writeFileSync(path.join(targetDir, "hidden.ts"), "export const hidden = true;\n");
+  git(targetDir, "add", ".");
+  git(targetDir, "-c", "commit.gpgsign=false", "commit", "-m", "hidden code change");
+  const intermediateSha = git(targetDir, "rev-parse", "HEAD");
   fs.writeFileSync(path.join(targetDir, "example.txt"), "prepared\n");
   git(targetDir, "add", ".");
   git(targetDir, "-c", "commit.gpgsign=false", "commit", "-m", "prepared");
   const preparedHeadSha = git(targetDir, "rev-parse", "HEAD");
   const preparedTreeSha = git(targetDir, "rev-parse", "HEAD^{tree}");
-  const intent = executionIntent("a".repeat(64));
+  const baseIntent = executionIntent("a".repeat(64));
+  const { identity_sha256: _baseIdentitySha256, ...baseIdentity } = baseIntent;
+  const intentIdentity = { ...baseIdentity, target_base_sha: repairDeltaBaseSha };
+  const intent = {
+    ...intentIdentity,
+    identity_sha256: digestJson(intentIdentity),
+  };
   const fixArtifact = {
     pr_title: "fix: handoff fixture",
     pr_body: "Handoff fixture.",
@@ -630,9 +640,9 @@ test("trusted publication rejects forged deterministic comment metadata", () => 
       () =>
         assertRepairDeltaBaseBinding(targetDir, intent, {
           ...publication,
-          repair_delta_base_sha: preparedHeadSha,
+          repair_delta_base_sha: intermediateSha,
         }),
-      /does not precede the prepared repair/,
+      /is not the immutable pre-execution head/,
     );
     const { identity_sha256: _identitySha256, ...identity } = publication;
     const forgedIdentity = {

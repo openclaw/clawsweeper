@@ -90,6 +90,18 @@ export type PublicationReceipt = {
   identity_sha256: string;
 };
 
+export function executionIntentRepairDeltaBaseSha(intent: ExecutionIntent): string {
+  const repairDeltaBaseSha =
+    intent.operation === "update_source_pr"
+      ? intent.source.expected_head_sha
+      : (intent.expected_output_sha ?? intent.target_base_sha);
+  if (!repairDeltaBaseSha) {
+    throw new Error("execution intent repair delta base is required");
+  }
+  requireSha(repairDeltaBaseSha, "execution intent repair delta base");
+  return repairDeltaBaseSha;
+}
+
 export function createPreparedPublication({
   outputDir,
   targetDir,
@@ -112,6 +124,9 @@ export function createPreparedPublication({
   requireDigest(authorizationSha256, "authorization digest");
   verifyExecutionIntentIdentity(executionIntent);
   requireSha(repairDeltaBaseSha, "repair delta base SHA");
+  if (repairDeltaBaseSha !== executionIntentRepairDeltaBaseSha(executionIntent)) {
+    throw new Error("repair delta base does not match the immutable pre-execution head");
+  }
   requireSha(preparedHeadSha, "prepared head SHA");
   requireSha(preparedTreeSha, "prepared tree SHA");
 

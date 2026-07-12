@@ -267,9 +267,10 @@ test("contributor repair review loop stays on one pinned target base", () => {
   assert.match(validation, /const baseRef = validationBaseRef\(cwd, baseBranch, options\)/);
   assert.match(validation, /\["git", "diff", "--check", `\$\{baseRef\}\.\.\.HEAD`\]/);
   assert.match(source, /classifyExternalBaseValidationFailure\(\{/);
+  assert.match(source, /const repairDeltaBaseHead = sourceHead \?\? targetBaseSha/);
   assert.match(
     source,
-    /rebaseResult\?\.status === "conflicts" \? \(sourceHead \?\? targetBaseSha\) : currentHead\(targetDir\)/,
+    /const sourceHead = currentHead\(targetDir\);[\s\S]*replacement repair delta base[\s\S]*prepareTargetToolchain/,
   );
   assert.match(validation, /if \(!options\.pinnedBaseRef\) \{[\s\S]*ensureMergeBaseAvailable/);
   assert.match(promptBuilder, /Pinned target base SHA: \$\{targetBaseSha\}/);

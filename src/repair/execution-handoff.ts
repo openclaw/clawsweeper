@@ -18,6 +18,7 @@ import {
   type PreparedPublication,
   type PublicationReceipt,
   digestJson,
+  executionIntentRepairDeltaBaseSha,
   publicationReceipt,
   sha256File,
   verifyExecutionIntentIdentity,
@@ -997,27 +998,15 @@ export function assertRepairDeltaBaseBinding(
   const repairDeltaBaseSha = publication.repair_delta_base_sha;
   if (
     !SHA_PATTERN.test(repairDeltaBaseSha) ||
+    repairDeltaBaseSha !== executionIntentRepairDeltaBaseSha(intent) ||
     repairDeltaBaseSha === publication.prepared_head_sha
   ) {
-    throw new Error("repair delta base does not precede the prepared repair");
+    throw new Error("repair delta base is not the immutable pre-execution head");
   }
   try {
     run("git", ["cat-file", "-e", `${repairDeltaBaseSha}^{commit}`], { cwd: checkout });
   } catch {
     throw new Error("repair delta base is unavailable in the verified repair history");
-  }
-  const authorizedAnchors = new Set(
-    [intent.target_base_sha, intent.source.expected_head_sha, intent.expected_output_sha].filter(
-      (sha): sha is string => Boolean(sha),
-    ),
-  );
-  if (authorizedAnchors.has(repairDeltaBaseSha)) return;
-  try {
-    run("git", ["merge-base", "--is-ancestor", repairDeltaBaseSha, publication.prepared_head_sha], {
-      cwd: checkout,
-    });
-  } catch {
-    throw new Error("repair delta base is outside the authorized repair ancestry");
   }
 }
 
