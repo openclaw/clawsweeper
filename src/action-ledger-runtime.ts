@@ -72,7 +72,8 @@ export const ACTION_EVENT_SHARD_IMPORT_LIMITS = {
   maxFileLines: 2_048,
   maxFileEvents: ACTION_EVENT_SHARD_FILE_LIMITS.maxEvents,
   maxTotalBytes: 16 * 1024 * 1024,
-  maxTotalEvents: 4_096,
+  maxTotalEvents: 256 * ACTION_EVENT_SHARD_FILE_LIMITS.maxEvents,
+  maxCausalBindings: 256 * ACTION_EVENT_SHARD_FILE_LIMITS.maxEvents,
 } as const;
 
 export type WorkflowActionEventInput = {
@@ -125,6 +126,21 @@ type ImportedActionEventShard = {
   identity: ActionEventShardIdentity;
   shardIndex: number | undefined;
   shardCount: number | undefined;
+};
+
+type ActionEventShardImportBinding = {
+  relativePath: string;
+  content: string;
+  label: string;
+  kind: "reservation" | "completion";
+};
+
+type ImportedActionEventIdentityBinding = {
+  schema: "clawsweeper.action-ledger-import-event";
+  schema_version: 1;
+  event_id: string;
+  semantic_sha256: string;
+  parent_event_id: string | null;
 };
 
 type QueuedCrabFleetProjection = {
@@ -434,6 +450,7 @@ export function importActionEventShards(
   }
   const shards = readImportedActionEventShards(safeSource, relativePaths);
   const safeDestination = prepareSafeReadRoot(destinationRoot, "action event shard import");
+  validateImportedActionEventHistory(safeDestination, shards);
   const bindings = prepareActionEventShardImportBindings(safeDestination, shards);
   const prepared = shards.map((shard) => {
     const target = prepareSafeWriteTarget(
@@ -454,7 +471,7 @@ export function importActionEventShards(
     }
     return { ...shard, target, existing };
   });
-  for (const binding of bindings) {
+  for (const binding of bindings.reservations) {
     publishActionEventShardImportBinding(binding);
   }
   let created = 0;
@@ -478,6 +495,21 @@ export function importActionEventShards(
     }
     unchanged += 1;
   }
+  for (const shard of prepared) {
+    const durable = readUtf8FileNoFollow(
+      shard.target,
+      ACTION_EVENT_SHARD_IMPORT_LIMITS.maxFileBytes,
+    );
+    if (
+      durable !== shard.content &&
+      !importedShardReplayEquivalent(durable, shard, shard.target.path)
+    ) {
+      throw new Error(`action event shard import conflict: ${shard.relativePath}`);
+    }
+  }
+  for (const binding of bindings.completions) {
+    publishActionEventShardImportBinding(binding);
+  }
   return { created, unchanged, paths: relativePaths };
 }
 
@@ -493,11 +525,17 @@ function prepareActionEventShardImportBindings(
     }
     return { ...binding, target, existing };
   });
-  return bindings;
+  return {
+    reservations: bindings.filter((binding) => binding.kind === "reservation"),
+    completions: bindings.filter((binding) => binding.kind === "completion"),
+  };
 }
 
-function actionEventShardImportBindings(shards: readonly ImportedActionEventShard[]) {
-  const producerRuns = new Map<string, { relativePath: string; content: string; label: string }>();
+function actionEventShardImportBindings(
+  shards: readonly ImportedActionEventShard[],
+): ActionEventShardImportBinding[] {
+  const producerRuns = new Map<string, ActionEventShardImportBinding>();
+  const eventIdentities = new Map<string, ActionEventShardImportBinding>();
   const shardSets = new Map<string, ImportedActionEventShard[]>();
   for (const shard of shards) {
     const { partitionDate, ...producerIdentity } = shard.identity;
@@ -523,7 +561,22 @@ function actionEventShardImportBindings(shards: readonly ImportedActionEventShar
       ),
       content: producerContent,
       label: "action event shard import producer partition binding",
+      kind: "reservation",
     });
+
+    for (const event of shard.events) {
+      const content = `${actionLedgerJson(importedActionEventIdentityBinding(event))}\n`;
+      const existingEvent = eventIdentities.get(event.event_id);
+      if (existingEvent && existingEvent.content !== content) {
+        throw new Error(`action event shard import event identity conflict: ${event.event_id}`);
+      }
+      eventIdentities.set(event.event_id, {
+        relativePath: importedActionEventIdentityBindingRelativePath(event.event_id),
+        content,
+        label: "action event shard import event identity binding",
+        kind: "reservation",
+      });
+    }
 
     const shardSetKey = actionLedgerJson(shard.identity);
     const group = shardSets.get(shardSetKey) ?? [];
@@ -531,7 +584,7 @@ function actionEventShardImportBindings(shards: readonly ImportedActionEventShar
     shardSets.set(shardSetKey, group);
   }
 
-  const bindings = [...producerRuns.values()];
+  const bindings = [...producerRuns.values(), ...eventIdentities.values()];
   for (const [shardSetKey, group] of shardSets) {
     const shardSetDigest = createHash("sha256").update(shardSetKey).digest("hex");
     const ordered = [...group].sort((left, right) =>
@@ -557,6 +610,7 @@ function actionEventShardImportBindings(shards: readonly ImportedActionEventShar
         })),
       })}\n`,
       label: "action event shard import producer shard-set binding",
+      kind: "completion",
     });
   }
   return bindings.sort((left, right) =>
@@ -565,7 +619,7 @@ function actionEventShardImportBindings(shards: readonly ImportedActionEventShar
 }
 
 function publishActionEventShardImportBinding(
-  binding: ReturnType<typeof prepareActionEventShardImportBindings>[number],
+  binding: ReturnType<typeof prepareActionEventShardImportBindings>["reservations"][number],
 ): void {
   if (binding.existing !== null) return;
   if (writeUtf8FileCreateOnlyNoFollow(binding.target, binding.content) === "created") return;
@@ -573,6 +627,118 @@ function publishActionEventShardImportBinding(
   if (raced !== binding.content) {
     throw new Error(`${binding.label} conflict`);
   }
+}
+
+function validateImportedActionEventHistory(
+  destination: SafeReadRoot,
+  shards: readonly ImportedActionEventShard[],
+): void {
+  const incoming = new Map<string, ImportedActionEventIdentityBinding>();
+  for (const shard of shards) {
+    for (const event of shard.events) {
+      incoming.set(event.event_id, importedActionEventIdentityBinding(event));
+    }
+  }
+
+  const existing = new Map<string, ImportedActionEventIdentityBinding | null>();
+  let bindingReads = 0;
+  const readBinding = (eventId: string): ImportedActionEventIdentityBinding | null => {
+    const cached = existing.get(eventId);
+    if (cached !== undefined) return cached;
+    bindingReads += 1;
+    if (bindingReads > ACTION_EVENT_SHARD_IMPORT_LIMITS.maxCausalBindings) {
+      throw new Error(
+        `action event shard import exceeds ${ACTION_EVENT_SHARD_IMPORT_LIMITS.maxCausalBindings} causal binding limit`,
+      );
+    }
+    const binding = readImportedActionEventIdentityBinding(destination, eventId);
+    existing.set(eventId, binding);
+    return binding;
+  };
+
+  for (const [eventId, binding] of incoming) {
+    const prior = readBinding(eventId);
+    if (prior && prior.semantic_sha256 !== binding.semantic_sha256) {
+      throw new Error(`action event shard import event identity conflict: ${eventId}`);
+    }
+  }
+
+  const resolved = new Set<string>();
+  for (const eventId of incoming.keys()) {
+    const pathPositions = new Map<string, number>();
+    const traversed: string[] = [];
+    let current: string | null = eventId;
+    while (current !== null && !resolved.has(current)) {
+      if (pathPositions.has(current)) {
+        throw new Error(`action event shard import contains a causal cycle: ${current}`);
+      }
+      pathPositions.set(current, traversed.length);
+      traversed.push(current);
+      current = (incoming.get(current) ?? readBinding(current))?.parent_event_id ?? null;
+    }
+    for (const traversedEventId of traversed) resolved.add(traversedEventId);
+  }
+}
+
+function importedActionEventIdentityBinding(
+  event: ActionEvent,
+): ImportedActionEventIdentityBinding {
+  return {
+    schema: "clawsweeper.action-ledger-import-event",
+    schema_version: 1,
+    event_id: event.event_id,
+    semantic_sha256: event.semantic_sha256,
+    parent_event_id: event.parent_event_id,
+  };
+}
+
+function importedActionEventIdentityBindingRelativePath(eventId: string): string {
+  return path.join("ledger", "v1", "import-bindings", "events", `${eventId}.json`);
+}
+
+function readImportedActionEventIdentityBinding(
+  destination: SafeReadRoot,
+  eventId: string,
+): ImportedActionEventIdentityBinding | null {
+  let target;
+  try {
+    target = prepareSafeReadTarget(
+      destination,
+      importedActionEventIdentityBindingRelativePath(eventId),
+      "action event shard import event identity binding",
+    );
+  } catch (error) {
+    if (isNotFoundError(error)) return null;
+    throw error;
+  }
+  const content = readUtf8FileIfExistsNoFollow(target, ACTION_EVENT_IMPORT_BINDING_MAX_BYTES);
+  if (content === null) return null;
+  let value: unknown;
+  try {
+    value = JSON.parse(content);
+  } catch {
+    throw new Error(`invalid action event shard import event identity binding: ${eventId}`);
+  }
+  if (
+    !value ||
+    typeof value !== "object" ||
+    Array.isArray(value) ||
+    (value as Partial<ImportedActionEventIdentityBinding>).schema !==
+      "clawsweeper.action-ledger-import-event" ||
+    (value as Partial<ImportedActionEventIdentityBinding>).schema_version !== 1 ||
+    (value as Partial<ImportedActionEventIdentityBinding>).event_id !== eventId ||
+    !/^[a-f0-9]{64}$/.test(
+      String((value as Partial<ImportedActionEventIdentityBinding>).semantic_sha256 ?? ""),
+    ) ||
+    ((value as Partial<ImportedActionEventIdentityBinding>).parent_event_id !== null &&
+      !/^[a-f0-9]{64}$/.test(
+        String((value as Partial<ImportedActionEventIdentityBinding>).parent_event_id ?? ""),
+      )) ||
+    `${actionLedgerJson(value)}\n` !== content
+  ) {
+    throw new Error(`invalid action event shard import event identity binding: ${eventId}`);
+  }
+  return value as ImportedActionEventIdentityBinding;
 }
 
 function readImportedActionEventShards(

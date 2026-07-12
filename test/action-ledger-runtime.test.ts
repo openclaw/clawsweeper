@@ -162,9 +162,11 @@ function recreateActionEvent(
   {
     eventKey = event.event_key,
     parentEventId = event.parent_event_id,
+    producer = event.producer,
   }: {
     eventKey?: string;
     parentEventId?: string | null;
+    producer?: ActionEvent["producer"];
   } = {},
 ): ActionEvent {
   return createActionEvent(
@@ -177,13 +179,13 @@ function recreateActionEvent(
       idempotencyKeySha256: event.idempotency_key_sha256,
       type: event.event_type,
       producer: {
-        repository: event.producer.repository,
-        sha: event.producer.sha,
-        workflow: event.producer.workflow,
-        job: event.producer.job,
-        runId: event.producer.run_id,
-        runAttempt: event.producer.run_attempt,
-        component: event.producer.component,
+        repository: producer.repository,
+        sha: producer.sha,
+        workflow: producer.workflow,
+        job: producer.job,
+        runId: producer.run_id,
+        runAttempt: producer.run_attempt,
+        component: producer.component,
       },
       subject: {
         repository: event.subject.repository,
@@ -1887,6 +1889,57 @@ test("state shard imports retain producer bindings across sequential batches", (
   );
 });
 
+test("state shard imports retain global event identity and causal acyclicity", () => {
+  const root = tempRoot();
+  const base = recordReview(root);
+  assert.ok(base);
+
+  const identityDestination = trustedChildRoot(root, "identity-destination");
+  const identitySource = trustedChildRoot(root, "identity-source");
+  writeActionEventShard(identitySource, shardIdentity(base), [base]);
+  assert.equal(importActionEventShards(identitySource, identityDestination).created, 1);
+
+  const conflictingProducer = {
+    ...base.producer,
+    component: `${base.producer.component}.conflict`,
+  };
+  const conflicting = recreateActionEvent(base, { producer: conflictingProducer });
+  const conflictingSource = trustedChildRoot(root, "conflicting-source");
+  const conflictingShard = writeActionEventShard(conflictingSource, shardIdentity(conflicting), [
+    conflicting,
+  ]);
+  assert.throws(
+    () => importActionEventShards(conflictingSource, identityDestination),
+    /event identity conflict/,
+  );
+  assert.equal(fs.existsSync(path.join(identityDestination, conflictingShard.relativePath)), false);
+
+  const cycleDestination = trustedChildRoot(root, "cycle-destination");
+  const firstKey = actionEventKey("review.sequential-cycle", { node: "first" });
+  const secondKey = actionEventKey("review.sequential-cycle", { node: "second" });
+  const firstId = actionEventId(base.subject.repository, firstKey);
+  const secondId = actionEventId(base.subject.repository, secondKey);
+  const first = recreateActionEvent(base, {
+    eventKey: firstKey,
+    parentEventId: secondId,
+  });
+  const second = recreateActionEvent(base, {
+    eventKey: secondKey,
+    parentEventId: firstId,
+    producer: {
+      ...base.producer,
+      component: `${base.producer.component}.cycle`,
+    },
+  });
+  const firstSource = trustedChildRoot(root, "cycle-first-source");
+  const secondSource = trustedChildRoot(root, "cycle-second-source");
+  writeActionEventShard(firstSource, shardIdentity(first), [first]);
+  const secondShard = writeActionEventShard(secondSource, shardIdentity(second), [second]);
+  assert.equal(importActionEventShards(firstSource, cycleDestination).created, 1);
+  assert.throws(() => importActionEventShards(secondSource, cycleDestination), /causal cycle/);
+  assert.equal(fs.existsSync(path.join(cycleDestination, secondShard.relativePath)), false);
+});
+
 test("state shard imports reject noncanonical trusted root spellings", async () => {
   const root = tempRoot();
   const source = trustedChildRoot(root, "source");
@@ -2017,7 +2070,7 @@ test("state shard imports enforce per-file byte, line, and event limits", async 
   assert.deepEqual(fs.readdirSync(destination), []);
 });
 
-test("state shard imports enforce aggregate byte and event limits before publication", async () => {
+test("state shard imports enforce aggregate byte limits before publication", async () => {
   const root = tempRoot();
   const destination = trustedChildRoot(root, "destination");
 
@@ -2037,35 +2090,39 @@ test("state shard imports enforce aggregate byte and event limits before publica
     new RegExp(`${ACTION_EVENT_SHARD_IMPORT_LIMITS.maxTotalBytes} total byte limit`),
   );
 
-  const eventSource = trustedChildRoot(root, "event-source");
-  recordReview(root);
-  const [relativePath] = await flushWorkflowActionEvents(root, {
-    env: workflowEnv(),
-    outputRoot: eventSource,
-  });
-  assert.ok(relativePath);
-  const canonicalPath = path.join(eventSource, relativePath);
-  const eventLine = fs.readFileSync(canonicalPath, "utf8").trim();
-  fs.rmSync(canonicalPath);
-  const eventFileCount =
-    Math.floor(
-      ACTION_EVENT_SHARD_IMPORT_LIMITS.maxTotalEvents /
-        ACTION_EVENT_SHARD_IMPORT_LIMITS.maxFileEvents,
-    ) + 1;
-  for (let index = 0; index < eventFileCount; index += 1) {
-    fs.writeFileSync(
-      adversarialShardPath(eventSource, index),
-      `${Array.from(
-        { length: ACTION_EVENT_SHARD_IMPORT_LIMITS.maxFileEvents },
-        () => eventLine,
-      ).join("\n")}\n`,
-    );
-  }
-  assert.throws(
-    () => importActionEventShards(eventSource, destination),
-    new RegExp(`${ACTION_EVENT_SHARD_IMPORT_LIMITS.maxTotalEvents} total event limit`),
+  assert.equal(
+    ACTION_EVENT_SHARD_IMPORT_LIMITS.maxTotalEvents,
+    ACTION_EVENT_SHARD_IMPORT_LIMITS.maxFiles * ACTION_EVENT_SHARD_IMPORT_LIMITS.maxFileEvents,
   );
   assert.deepEqual(fs.readdirSync(destination), []);
+});
+
+test("state shard imports accept a complete 4097-event producer run", () => {
+  const root = tempRoot();
+  const source = trustedChildRoot(root, "source");
+  const destination = trustedChildRoot(root, "destination");
+  const base = recordReview(root);
+  assert.ok(base);
+  const events = Array.from({ length: 4_097 }, (_, index) =>
+    recreateActionEvent(base, {
+      eventKey: actionEventKey("review.large-import", { index }),
+      parentEventId: null,
+    }),
+  );
+  const shards = writeActionEventShards(source, shardIdentity(base), events);
+  assert.ok(shards.length > 4);
+
+  const imported = importActionEventShards(source, destination);
+  assert.equal(imported.created, shards.length);
+  assert.equal(
+    imported.paths.reduce(
+      (count, relativePath) =>
+        count +
+        fs.readFileSync(path.join(destination, relativePath), "utf8").trim().split("\n").length,
+      0,
+    ),
+    events.length,
+  );
 });
 
 test("state shard imports preserve chronological ordering across timestamp offsets", async () => {
@@ -2334,7 +2391,7 @@ test(
 );
 
 test(
-  "interrupted shard imports leave no partial final and recover on replay",
+  "interrupted shard imports publish completion manifests only after payload verification",
   {
     skip: process.platform === "win32" ? "uses SIGKILL process termination" : false,
   },
@@ -2352,17 +2409,14 @@ test(
       path.join(process.cwd(), "dist", "action-ledger-runtime.js"),
     ).href;
     const script = `import fs from "node:fs";
-const originalWrite = fs.writeFileSync;
+const originalLink = fs.linkSync;
 let interrupted = false;
-fs.writeFileSync = (target, data, options) => {
-  if (!interrupted && typeof target === "number") {
+fs.linkSync = (sourcePath, targetPath) => {
+  originalLink(sourcePath, targetPath);
+  if (!interrupted && String(targetPath).endsWith(".jsonl")) {
     interrupted = true;
-    const partial = typeof data === "string" ? data.slice(0, 64) : data.subarray(0, 64);
-    originalWrite(target, partial, options);
-    fs.fsyncSync(target);
     process.kill(process.pid, "SIGKILL");
   }
-  return originalWrite(target, data, options);
 };
 const { importActionEventShards } = await import(${JSON.stringify(moduleUrl)});
 importActionEventShards(process.argv[1], process.argv[2]);`;
@@ -2372,19 +2426,18 @@ importActionEventShards(process.argv[1], process.argv[2]);`;
       { encoding: "utf8" },
     );
     assert.equal(child.signal, "SIGKILL", child.stderr);
-    assert.equal(fs.existsSync(path.join(destination, relativePath)), false);
-    assert.ok(
-      fs
-        .readdirSync(destination, { recursive: true })
-        .some((entry) => String(entry).endsWith(".tmp")),
-    );
+    assert.equal(fs.existsSync(path.join(destination, relativePath)), true);
+    const completionRoot = path.join(destination, "ledger", "v1", "import-bindings", "shard-sets");
+    assert.deepEqual(fs.existsSync(completionRoot) ? fs.readdirSync(completionRoot) : [], []);
 
     const replay = importActionEventShards(source, destination);
-    assert.equal(replay.created, 1);
+    assert.equal(replay.created, 0);
+    assert.equal(replay.unchanged, 1);
     assert.equal(
       fs.readFileSync(path.join(destination, relativePath), "utf8"),
       fs.readFileSync(path.join(source, relativePath), "utf8"),
     );
+    assert.equal(fs.readdirSync(completionRoot).length, 1);
   },
 );
 

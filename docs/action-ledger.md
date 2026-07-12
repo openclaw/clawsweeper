@@ -145,16 +145,25 @@ confidential-identifier checks as every other durable machine-text field.
   never traversed. Links and special entries inside that subtree fail closed.
   Imports cap relative depth at 6, directory entries at 512, directories at 512,
   files at 256, each shard at 2 MiB, 2048 lines, and 1024 events, and each batch
-  at 16 MiB and 4096 events. Every source shard is read once, then the complete
-  bounded batch is parsed and canonicalized before any final destination shard
-  is published. Event IDs and causal topology are validated across the complete
-  batch, so duplicates and cycles cannot hide across files. Numbered parts are
-  grouped by their full producer/run identity, flattened in part order, and
-  required to reproduce the exact deterministic packing, paths, and bytes that
-  the canonical writer would emit. Immutable destination bindings retain each
-  producer run's partition date and complete shard-set manifest across later
-  import batches, so sequential imports cannot move a run or replace a complete
-  numbered set with a different part count.
+  at 16 MiB and at most 262144 events from the bounded file-by-event product.
+  Every source shard is read once, then the complete bounded batch is parsed and
+  canonicalized before any final destination shard is published. Event IDs and
+  causal topology are validated across the complete batch, so duplicates and
+  cycles cannot hide across files. Numbered parts are grouped by their full
+  producer/run identity, flattened in part order, and required to reproduce the
+  exact deterministic packing, paths, and bytes that the canonical writer would
+  emit.
+- Import reservations bind each producer run to one partition and each event ID
+  to one semantic digest and parent edge. Parent traversal follows at most
+  262144 durable bindings per import and rejects instead of accepting an
+  unchecked deeper graph. These bindings preserve global event identity and
+  causal acyclicity across sequential producer imports.
+- Producer and event reservations are published before shard payloads so a
+  replay can safely finish an interrupted import. Complete shard-set manifests
+  are published only after every destination payload has been written and
+  reread as replay-equivalent. Sequential imports therefore cannot move a run,
+  replace a complete numbered set with a different part count, or advertise a
+  complete set whose payload publication did not finish.
 
 ## Privacy Boundary
 
