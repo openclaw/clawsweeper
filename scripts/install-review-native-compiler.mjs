@@ -16,7 +16,10 @@ import { basename, join, resolve } from "node:path";
 import { parse } from "yaml";
 
 const runtimeRoot = process.cwd();
-const typescriptPackage = readJson(join(runtimeRoot, "node_modules", "typescript", "package.json"));
+assertRealDirectory(runtimeRoot, "runtime root");
+const nodeModulesDir = join(runtimeRoot, "node_modules");
+assertRealDirectory(nodeModulesDir, "node_modules");
+const typescriptPackage = readJson(join(nodeModulesDir, "typescript", "package.json"));
 const typescriptVersion = stringProperty(typescriptPackage, "version");
 const nativeName = `typescript-${process.platform}-${process.arch}`;
 if (!/^typescript-[a-z0-9]+-[a-z0-9]+$/.test(nativeName)) {
@@ -38,9 +41,14 @@ const tarballPath = suppliedTarball
   : packNativeCompiler(nativePackage, typescriptVersion, artifactDir);
 verifyIntegrity(tarballPath, integrity);
 
-const namespaceDir = join(runtimeRoot, "node_modules", "@typescript");
+const namespaceDir = join(nodeModulesDir, "@typescript");
 const nativeDir = join(namespaceDir, nativeName);
-mkdirSync(namespaceDir, { recursive: true });
+if (existsSync(namespaceDir)) {
+  assertRealDirectory(namespaceDir, "@typescript namespace");
+} else {
+  mkdirSync(namespaceDir);
+  assertRealDirectory(namespaceDir, "@typescript namespace");
+}
 if (existsSync(nativeDir) && lstatSync(nativeDir).isSymbolicLink()) {
   throw new Error(`Refusing to replace symbolic-link compiler directory: ${nativeDir}`);
 }
@@ -94,6 +102,15 @@ function verifyIntegrity(tarballPath, integrity) {
   if (expected.length !== actual.length || !timingSafeEqual(expected, actual)) {
     throw new Error(`Compiler tarball integrity mismatch for ${tarballPath}.`);
   }
+}
+
+function assertRealDirectory(path, label) {
+  if (!existsSync(path)) throw new Error(`Missing ${label} directory: ${path}`);
+  const stat = lstatSync(path);
+  if (stat.isSymbolicLink()) {
+    throw new Error(`Refusing symbolic-link ${label} directory: ${path}`);
+  }
+  if (!stat.isDirectory()) throw new Error(`Expected ${label} directory: ${path}`);
 }
 
 function readJson(path) {

@@ -10,6 +10,8 @@ import {
   realpathSync,
   rmSync,
   statSync,
+  symlinkSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -94,6 +96,29 @@ packages:
     assert.notEqual(rejected.status, 0);
     assert.match(rejected.stderr, /integrity mismatch/i);
     assert.equal(existsSync(nativeCompiler), false);
+
+    const externalNamespace = join(fixture, "external-typescript-namespace");
+    const externalSentinel = join(externalNamespace, "keep.txt");
+    mkdirSync(externalNamespace);
+    writeFileSync(externalSentinel, "keep");
+    const namespaceLink = join(roundtrip, "node_modules", "@typescript");
+    symlinkSync(
+      externalNamespace,
+      namespaceLink,
+      process.platform === "win32" ? "junction" : "dir",
+    );
+    const symlinkedParent = spawnSync(process.execPath, [installerPath], {
+      cwd: roundtrip,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        CLAWSWEEPER_NATIVE_PACKAGE_TARBALL: packageFile,
+      },
+    });
+    assert.notEqual(symlinkedParent.status, 0);
+    assert.match(symlinkedParent.stderr, /symbolic-link @typescript namespace/i);
+    assert.equal(readFileSync(externalSentinel, "utf8"), "keep");
+    unlinkSync(namespaceLink);
 
     execFileSync(process.execPath, [installerPath], {
       cwd: roundtrip,
