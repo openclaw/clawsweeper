@@ -2089,8 +2089,13 @@ test("repair workers hydrate only durable jobs from generated state", () => {
   assert.equal(
     workflow.match(/uses: \.\/\.github\/actions\/setup-state[\s\S]*?sparse-checkout: jobs/g)
       ?.length,
-    3,
+    2,
   );
+  const executeJob = workflow.slice(
+    workflow.indexOf("\n  execute:"),
+    workflow.indexOf("\n  validate:"),
+  );
+  assert.doesNotMatch(executeJob, /create-state-token|setup-state/);
   assert.match(workflow, /CLAWSWEEPER_STEERABLE_CODEX/);
   assert.match(workflow, /actions\/cache\/restore@v6/);
   assert.match(workflow, /actions\/cache\/save@v6/);

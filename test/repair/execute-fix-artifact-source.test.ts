@@ -287,50 +287,79 @@ test("final synchronized tree is reviewed and reports persist before publication
   assert.match(source, /finalizeExecutionReport\(\{/);
 });
 
-test("repair workflow hands execution artifacts to a trusted post-flight finalizer", () => {
+test("proof runtime budget exhaustion is terminal for validation-fix", () => {
+  const source = readText(path.join(process.cwd(), "src/repair/execute-fix-artifact.ts"));
+  const classifierStart = source.indexOf("function isFixableValidationError(");
+  const classifierEnd = source.indexOf("\nfunction ", classifierStart + 1);
+  const classifier = source.slice(classifierStart, classifierEnd);
+
+  assert.match(classifier, /staged proof runtime budget exhausted/);
+  assert.match(classifier, /validation command runtime budget exhausted/);
+  assert.ok(
+    classifier.indexOf("runtime budget exhausted") <
+      classifier.indexOf("return /validation command failed"),
+  );
+});
+
+test("repair workflow binds one run through no-credential proof and token-only mutation", () => {
   const workflow = readText(
     path.join(process.cwd(), ".github/workflows/repair-cluster-worker.yml"),
   );
+  const authorizeIndex = workflow.indexOf("\n  authorize:");
   const executeIndex = workflow.indexOf("- name: Execute credited fix artifact");
-  const handoffIndex = workflow.indexOf("- name: Upload trusted finalizer handoff");
-  const finalizerIndex = workflow.indexOf("\n  finalize:");
-  const resolveIndex = workflow.indexOf("- name: Resolve exact target repository", finalizerIndex);
+  const handoffIndex = workflow.indexOf("- name: Upload sealed execution handoff");
+  const validateIndex = workflow.indexOf("\n  validate:");
+  const reportIndex = workflow.indexOf("\n  report:");
+  const mutateIndex = workflow.indexOf("\n  mutate:");
+  const receiptIndex = workflow.indexOf(
+    "- name: Verify immutable mutation authorization",
+    mutateIndex,
+  );
   const mutationTokenIndex = workflow.indexOf(
     "- name: Create exact-repository mutation token",
-    resolveIndex,
+    receiptIndex,
   );
   const verifierTokenIndex = workflow.indexOf(
     "- name: Create exact-repository ruleset verifier token",
     mutationTokenIndex,
   );
-  const publishIndex = workflow.indexOf("- name: Publish deferred fix outcome");
-  const postFlightIndex = workflow.indexOf("- name: Post-flight finalize fix PRs");
 
   assert.ok(
-    executeIndex < handoffIndex &&
-      handoffIndex < finalizerIndex &&
-      finalizerIndex < resolveIndex &&
-      resolveIndex < mutationTokenIndex &&
-      mutationTokenIndex < verifierTokenIndex &&
-      verifierTokenIndex < publishIndex &&
-      publishIndex < postFlightIndex,
+    authorizeIndex < executeIndex &&
+      executeIndex < handoffIndex &&
+      handoffIndex < validateIndex &&
+      validateIndex < reportIndex &&
+      reportIndex < mutateIndex &&
+      mutateIndex < receiptIndex &&
+      receiptIndex < mutationTokenIndex &&
+      mutationTokenIndex < verifierTokenIndex,
   );
-  assert.match(workflow.slice(executeIndex, handoffIndex), /--latest --defer-publication/);
-  assert.match(
-    workflow.slice(handoffIndex, finalizerIndex),
-    /clawsweeper-repair-execution-\$\{\{ github\.run_id \}\}-\$\{\{ github\.run_attempt \}\}/,
+  const authorize = workflow.slice(
+    authorizeIndex,
+    workflow.indexOf("\n  execute:", authorizeIndex),
   );
-  const finalizer = workflow.slice(finalizerIndex);
-  assert.match(finalizer, /runs-on: ubuntu-latest/);
-  assert.match(finalizer, /ref: \$\{\{ github\.sha \}\}/);
-  assert.match(finalizer, /persist-credentials: false/);
-  assert.match(finalizer, /parseJob\(jobPath\)/);
-  assert.match(finalizer, /validateJob\(job\)/);
-  assert.match(finalizer, /repositories: \$\{\{ steps\.target\.outputs\.target_name \}\}/);
-  assert.doesNotMatch(finalizer, /setup-codex|repair:execute-fix -- .*--defer-publication/);
-  assert.match(
-    workflow.slice(publishIndex, postFlightIndex),
-    /GH_TOKEN: \${{ steps\.target_post_flight_token\.outputs\.token }}/,
-  );
-  assert.match(workflow.slice(publishIndex, postFlightIndex), /--latest --publish-report-only/);
+  const execute = workflow.slice(workflow.indexOf("\n  execute:"), validateIndex);
+  const validate = workflow.slice(validateIndex, reportIndex);
+  const report = workflow.slice(reportIndex, mutateIndex);
+  const mutate = workflow.slice(mutateIndex);
+
+  assert.match(authorize, /repair:execution-handoff -- authorize/);
+  assert.match(authorize, /persist-credentials: "false"/);
+  assert.match(execute, /repair:execution-handoff -- verify/);
+  assert.match(execute, /repair:execution-handoff -- seal/);
+  assert.match(execute, /repositories: \$\{\{ needs\.authorize\.outputs\.target_name \}\}/);
+  assert.match(execute, /needs\.authorize\.outputs\.result_path/);
+  assert.doesNotMatch(execute, /create-state-token|setup-state|--latest/);
+  assert.match(validate, /GH_TOKEN: ""/);
+  assert.match(validate, /GITHUB_TOKEN: ""/);
+  assert.match(validate, /repair:execution-handoff -- validate/);
+  assert.doesNotMatch(validate, /create-github-app-token|setup-codex|OPENAI_API_KEY/);
+  assert.match(report, /--publish-report-only/);
+  assert.doesNotMatch(report, /permission-contents: write|permission-workflows: write/);
+  assert.match(mutate, /repair:execution-handoff -- verify-receipt/);
+  assert.match(mutate, /needs\.execute\.result == 'success'/);
+  assert.match(mutate, /needs\.execute\.outputs\.execute_fix_outcome == 'success'/);
+  assert.match(mutate, /needs\.execute\.outputs\.mutation_ready == 'true'/);
+  assert.match(mutate, /needs\.validate\.result == 'success'/);
+  assert.doesNotMatch(mutate, /setup-codex|--latest|create-state-token|setup-state/);
 });

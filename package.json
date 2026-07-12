@@ -38,6 +38,7 @@
     "repair:collect-codex-debug": "node dist/repair/collect-codex-debug.js",
     "repair:apply-result": "node dist/repair/apply-result.js",
     "repair:execute-fix": "node dist/repair/execute-fix-artifact.js",
+    "repair:execution-handoff": "node dist/repair/execution-handoff-cli.js",
     "repair:post-flight": "node dist/repair/post-flight.js",
     "repair:finalize-open-prs": "node dist/repair/finalize-open-prs.js",
     "repair:cleanup-replacement-labels": "node dist/repair/cleanup-replacement-labels.js",

@@ -7,6 +7,7 @@ import { serverStrictBaseBindingBlock } from "../../dist/repair/strict-base-bind
 
 const APP_ID = 3306130;
 const APP_SLUG = "openclaw-clawsweeper";
+const INSTALLATION_ID = 987654;
 
 test("strict base binding accepts an enforced non-bypass ruleset", () => {
   const github = fakeGithub({
@@ -17,38 +18,30 @@ test("strict base binding accepts an enforced non-bypass ruleset", () => {
     serverStrictBaseBindingBlock({
       repo: "openclaw/openclaw",
       baseBranch: "main",
-      appId: APP_ID,
-      appSlug: APP_SLUG,
-      readJson: github,
+      ...appIdentity(),
       policyReadJson: github,
     }),
     "",
   );
 });
 
-test("strict base binding authenticates both credentials through their installation", () => {
+test("strict base binding uses documented action outputs without an installation endpoint", () => {
   const requestedEndpoints: string[] = [];
+  const github = fakeGithub({
+    rules: [strictRulesetRule()],
+    ruleset: { bypass_actors: [] },
+    requestedEndpoints,
+  });
   assert.equal(
     serverStrictBaseBindingBlock({
       repo: "openclaw/openclaw",
       baseBranch: "main",
-      appId: APP_ID,
-      appSlug: APP_SLUG,
-      readJson: fakeGithub({
-        rules: [strictRulesetRule()],
-        ruleset: { bypass_actors: [] },
-        requestedEndpoints,
-      }),
-      policyReadJson: fakeGithub({
-        rules: [strictRulesetRule()],
-        ruleset: { bypass_actors: [] },
-        requestedEndpoints,
-      }),
+      ...appIdentity(),
+      policyReadJson: github,
     }),
     "",
   );
-  assert.equal(requestedEndpoints.filter((endpoint) => endpoint === "installation").length, 2);
-  assert.doesNotMatch(requestedEndpoints.join("\n"), /^(?:apps\/|installation\/repositories)/m);
+  assert.doesNotMatch(requestedEndpoints.join("\n"), /(?:^|\/)installation(?:\/|$)/m);
 });
 
 test("strict base binding rejects a ruleset that exempts the merge app", () => {
@@ -62,9 +55,7 @@ test("strict base binding rejects a ruleset that exempts the merge app", () => {
     serverStrictBaseBindingBlock({
       repo: "openclaw/openclaw",
       baseBranch: "main",
-      appId: APP_ID,
-      appSlug: APP_SLUG,
-      readJson: github,
+      ...appIdentity(),
       policyReadJson: github,
     }),
     "automerge disabled: merge credential bypasses the strict base-binding ruleset",
@@ -85,25 +76,19 @@ test("strict base binding accepts classic strict branch protection", () => {
     serverStrictBaseBindingBlock({
       repo: "openclaw/example",
       baseBranch: "main",
-      appId: APP_ID,
-      appSlug: APP_SLUG,
-      readJson: github,
+      ...appIdentity(),
       policyReadJson: github,
     }),
     "",
   );
 });
 
-test("strict base binding fails closed without an installation identity", () => {
+test("strict base binding fails closed without an installation identity output", () => {
   assert.equal(
     serverStrictBaseBindingBlock({
       repo: "openclaw/openclaw",
       baseBranch: "main",
-      appId: APP_ID,
-      appSlug: APP_SLUG,
-      readJson: () => {
-        throw new Error("not an installation token");
-      },
+      ...appIdentity({ installationId: "" }),
     }),
     "automerge disabled: merge credential is not a verifiable GitHub App installation",
   );
@@ -118,9 +103,7 @@ test("strict base binding rejects rulesets whose bypass actors are hidden", () =
     serverStrictBaseBindingBlock({
       repo: "openclaw/openclaw",
       baseBranch: "main",
-      appId: APP_ID,
-      appSlug: APP_SLUG,
-      readJson: github,
+      ...appIdentity(),
       policyReadJson: github,
     }),
     "automerge disabled: unable to verify server-enforced strict base binding",
@@ -132,27 +115,20 @@ test("strict base binding rejects a missing ruleset verifier credential", () => 
     serverStrictBaseBindingBlock({
       repo: "openclaw/openclaw",
       baseBranch: "main",
-      appId: APP_ID,
-      appSlug: APP_SLUG,
-      readJson: fakeGithub({ rules: [], protection: {} }),
+      ...appIdentity(),
+      policyReadJson: undefined,
     }),
     "automerge disabled: ruleset verifier credential is unavailable",
   );
 });
 
-test("strict base binding rejects a verifier credential from another App ID", () => {
+test("strict base binding rejects a verifier credential from another installation", () => {
   assert.equal(
     serverStrictBaseBindingBlock({
       repo: "openclaw/openclaw",
       baseBranch: "main",
-      appId: APP_ID,
-      appSlug: APP_SLUG,
-      readJson: fakeGithub({ rules: [], protection: {} }),
-      policyReadJson: fakeGithub({
-        rules: [],
-        protection: {},
-        installationAppId: APP_ID + 1,
-      }),
+      ...appIdentity({ policyInstallationId: INSTALLATION_ID + 1 }),
+      policyReadJson: fakeGithub({ rules: [], protection: {} }),
     }),
     "automerge disabled: ruleset verifier credential is not the configured GitHub App installation",
   );
@@ -163,14 +139,8 @@ test("strict base binding rejects a verifier credential from another App slug", 
     serverStrictBaseBindingBlock({
       repo: "openclaw/openclaw",
       baseBranch: "main",
-      appId: APP_ID,
-      appSlug: APP_SLUG,
-      readJson: fakeGithub({ rules: [], protection: {} }),
-      policyReadJson: fakeGithub({
-        rules: [],
-        protection: {},
-        installationAppSlug: "other-repair-app",
-      }),
+      ...appIdentity({ policyAppSlug: "other-repair-app" }),
+      policyReadJson: fakeGithub({ rules: [], protection: {} }),
     }),
     "automerge disabled: ruleset verifier credential is not the configured GitHub App installation",
   );
@@ -181,9 +151,7 @@ test("strict base binding requires the configured App identity", () => {
     serverStrictBaseBindingBlock({
       repo: "openclaw/openclaw",
       baseBranch: "main",
-      appId: "",
-      appSlug: APP_SLUG,
-      readJson: fakeGithub({ rules: [], protection: {} }),
+      ...appIdentity({ appId: "" }),
     }),
     "automerge disabled: merge credential is not a verifiable GitHub App installation",
   );
@@ -194,22 +162,7 @@ test("strict base binding requires the authenticated App slug", () => {
     serverStrictBaseBindingBlock({
       repo: "openclaw/openclaw",
       baseBranch: "main",
-      appId: APP_ID,
-      appSlug: "",
-      readJson: fakeGithub({ rules: [], protection: {} }),
-    }),
-    "automerge disabled: merge credential is not a verifiable GitHub App installation",
-  );
-});
-
-test("strict base binding rejects a mutation credential from another App ID", () => {
-  assert.equal(
-    serverStrictBaseBindingBlock({
-      repo: "openclaw/openclaw",
-      baseBranch: "main",
-      appId: APP_ID,
-      appSlug: APP_SLUG,
-      readJson: fakeGithub({ rules: [], protection: {}, installationAppId: APP_ID + 1 }),
+      ...appIdentity({ appSlug: "" }),
     }),
     "automerge disabled: merge credential is not a verifiable GitHub App installation",
   );
@@ -220,32 +173,32 @@ test("strict base binding rejects a mutation credential from another App slug", 
     serverStrictBaseBindingBlock({
       repo: "openclaw/openclaw",
       baseBranch: "main",
-      appId: APP_ID,
-      appSlug: APP_SLUG,
-      readJson: fakeGithub({
-        rules: [],
-        protection: {},
-        installationAppSlug: "other-repair-app",
-      }),
+      ...appIdentity({ appSlug: "other-repair-app" }),
     }),
     "automerge disabled: merge credential is not a verifiable GitHub App installation",
   );
 });
 
-test("strict base binding rejects a mutation credential without an App slug", () => {
+test("strict base binding rejects a missing configured App slug", () => {
   assert.equal(
     serverStrictBaseBindingBlock({
       repo: "openclaw/openclaw",
       baseBranch: "main",
-      appId: APP_ID,
-      appSlug: APP_SLUG,
-      readJson: fakeGithub({
-        rules: [],
-        protection: {},
-        installationAppSlug: null,
-      }),
+      ...appIdentity({ configuredAppSlug: "" }),
     }),
     "automerge disabled: merge credential is not a verifiable GitHub App installation",
+  );
+});
+
+test("strict base binding rejects missing verifier identity outputs", () => {
+  assert.equal(
+    serverStrictBaseBindingBlock({
+      repo: "openclaw/openclaw",
+      baseBranch: "main",
+      ...appIdentity({ policyInstallationId: "" }),
+      policyReadJson: fakeGithub({ rules: [], protection: {} }),
+    }),
+    "automerge disabled: ruleset verifier credential is not the configured GitHub App installation",
   );
 });
 
@@ -256,12 +209,7 @@ test("strict base binding fails closed for non-repository rulesets without fetch
       serverStrictBaseBindingBlock({
         repo: "openclaw/openclaw",
         baseBranch: "main",
-        appId: APP_ID,
-        appSlug: APP_SLUG,
-        readJson: fakeGithub({
-          rules: [strictRulesetRule(sourceType)],
-          requestedEndpoints,
-        }),
+        ...appIdentity(),
         policyReadJson: fakeGithub({
           rules: [strictRulesetRule(sourceType)],
           requestedEndpoints,
@@ -286,13 +234,28 @@ test("all repair merge owners invoke the shared strict base guard before merge",
     const owner = source.slice(start, end < 0 ? undefined : end);
     const guard = owner.indexOf("serverStrictBaseBindingBlock({");
     const appIdentity = owner.indexOf("appId: process.env.CLAWSWEEPER_APP_ID");
+    const configuredSlug = owner.indexOf("configuredAppSlug: process.env.CLAWSWEEPER_APP_SLUG");
     const appSlug = owner.indexOf("appSlug: process.env.CLAWSWEEPER_AUTHENTICATED_APP_SLUG");
+    const installationId = owner.indexOf(
+      "installationId: process.env.CLAWSWEEPER_AUTHENTICATED_INSTALLATION_ID",
+    );
+    const policySlug = owner.indexOf("policyAppSlug: process.env.CLAWSWEEPER_RULESET_APP_SLUG");
+    const policyInstallationId = owner.indexOf(
+      "policyInstallationId: process.env.CLAWSWEEPER_RULESET_INSTALLATION_ID",
+    );
     const policyReader = owner.indexOf("policyReadJson: rulesetPolicyReader()");
     const merge = owner.indexOf(mergeCall);
     assert.ok(guard >= 0, `${file} is missing the strict base guard`);
     assert.ok(appIdentity > guard, `${file} does not bind the configured App identity`);
-    assert.ok(appSlug > appIdentity, `${file} does not bind the authenticated App slug`);
-    assert.ok(policyReader > appSlug, `${file} does not use the isolated ruleset verifier`);
+    assert.ok(configuredSlug > appIdentity, `${file} does not bind the configured App slug`);
+    assert.ok(appSlug > configuredSlug, `${file} does not bind the authenticated App slug`);
+    assert.ok(installationId > appSlug, `${file} does not bind the mutation installation`);
+    assert.ok(policySlug > installationId, `${file} does not bind the verifier App slug`);
+    assert.ok(policyInstallationId > policySlug, `${file} does not bind the verifier installation`);
+    assert.ok(
+      policyReader > policyInstallationId,
+      `${file} does not use the isolated ruleset verifier`,
+    );
     assert.ok(merge > guard, `${file} does not guard the merge call`);
   }
 });
@@ -318,9 +281,21 @@ test("merge-capable workflows isolate verifier credentials in trusted jobs", () 
           step.env?.CLAWSWEEPER_AUTHENTICATED_APP_SLUG,
           "app-slug",
         );
+        const installationProducer = workflowOutputStep(
+          step.env?.CLAWSWEEPER_AUTHENTICATED_INSTALLATION_ID,
+          "installation-id",
+        );
         const verifierProducer = workflowOutputStep(
           step.env?.CLAWSWEEPER_RULESET_GH_TOKEN,
           "token",
+        );
+        const verifierSlugProducer = workflowOutputStep(
+          step.env?.CLAWSWEEPER_RULESET_APP_SLUG,
+          "app-slug",
+        );
+        const verifierInstallationProducer = workflowOutputStep(
+          step.env?.CLAWSWEEPER_RULESET_INSTALLATION_ID,
+          "installation-id",
         );
         assert.ok(tokenProducer, `${file}:${jobName} merge step is missing an App token output`);
         assert.equal(
@@ -328,9 +303,24 @@ test("merge-capable workflows isolate verifier credentials in trusted jobs", () 
           tokenProducer,
           `${file}:${jobName} merge step does not bind the authenticated slug to its token`,
         );
+        assert.equal(
+          installationProducer,
+          tokenProducer,
+          `${file}:${jobName} merge step does not bind the installation to its token`,
+        );
         assert.ok(
           verifierProducer,
           `${file}:${jobName} merge step is missing a ruleset verifier token`,
+        );
+        assert.equal(
+          verifierSlugProducer,
+          verifierProducer,
+          `${file}:${jobName} verifier slug is not bound to its token`,
+        );
+        assert.equal(
+          verifierInstallationProducer,
+          verifierProducer,
+          `${file}:${jobName} verifier installation is not bound to its token`,
         );
         assert.notEqual(
           verifierProducer,
@@ -400,12 +390,13 @@ test("merge-capable workflows isolate verifier credentials in trusted jobs", () 
           `${file}:${jobName} exposes the verifier to deferred repair execution`,
         );
       }
-      if (file.endsWith("repair-cluster-worker.yml")) {
-        assert.ok(
-          executeFixCommands.length > 0,
-          `${file}:${jobName} is missing deterministic report-only publication`,
-        );
-      }
+    }
+    if (file.endsWith("repair-cluster-worker.yml")) {
+      const reportCommands = workflow.jobs?.report?.steps
+        ?.map((step) => step.run ?? "")
+        .filter((run) => /pnpm run repair:execute-fix\b/.test(run));
+      assert.equal(reportCommands?.length, 1);
+      assert.match(reportCommands?.[0] ?? "", /--publish-report-only\b/);
     }
     assert.ok(mergeStepCount > 0, `${file} has no merge-capable repair steps`);
   }
@@ -452,6 +443,27 @@ function strictRulesetRule(
   };
 }
 
+function appIdentity(
+  overrides: Partial<{
+    appId: string | number;
+    configuredAppSlug: string;
+    appSlug: string;
+    installationId: string | number;
+    policyAppSlug: string;
+    policyInstallationId: string | number;
+  }> = {},
+) {
+  return {
+    appId: APP_ID,
+    configuredAppSlug: APP_SLUG,
+    appSlug: APP_SLUG,
+    installationId: INSTALLATION_ID,
+    policyAppSlug: APP_SLUG,
+    policyInstallationId: INSTALLATION_ID,
+    ...overrides,
+  };
+}
+
 type WorkflowStep = {
   id?: string;
   uses?: string;
@@ -493,27 +505,16 @@ function fakeGithub({
   rules,
   ruleset = null,
   protection = { required_status_checks: null },
-  installationAppId = APP_ID,
-  installationAppSlug = APP_SLUG,
   requestedEndpoints,
 }: {
   rules: unknown[];
   ruleset?: unknown;
   protection?: unknown;
-  installationAppId?: number;
-  installationAppSlug?: string | null;
   requestedEndpoints?: string[];
 }) {
   return (args: string[]) => {
     const endpoint = args[1];
     if (endpoint) requestedEndpoints?.push(endpoint);
-    if (endpoint === "installation" || endpoint === "/installation") {
-      return {
-        id: 12345,
-        app_id: installationAppId,
-        app_slug: installationAppSlug,
-      };
-    }
     if (endpoint === "repos/openclaw/openclaw/rules/branches/main") return rules;
     if (endpoint === "repos/openclaw/example/rules/branches/main") return rules;
     if (endpoint === "repos/openclaw/openclaw/rulesets/18588237" && ruleset) return ruleset;

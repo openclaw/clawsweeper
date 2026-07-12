@@ -6,30 +6,45 @@ export function serverStrictBaseBindingBlock({
   repo,
   baseBranch,
   appId,
+  configuredAppSlug,
   appSlug,
-  readJson,
+  installationId,
+  policyAppSlug,
+  policyInstallationId,
   policyReadJson,
 }: {
   repo: string;
   baseBranch: string;
   appId: unknown;
+  configuredAppSlug: unknown;
   appSlug: unknown;
-  readJson: GithubJsonReader;
+  installationId: unknown;
+  policyAppSlug: unknown;
+  policyInstallationId: unknown;
   policyReadJson?: GithubJsonReader | undefined;
 }): string {
   if (!baseBranch) {
     return "automerge disabled: pull request base branch is unavailable for strict binding";
   }
 
-  const authenticatedAppId = authenticatedInstallationAppId(appId, appSlug, readJson);
-  if (!authenticatedAppId) {
+  const configuredIdentity = configuredAppIdentity(appId, configuredAppSlug);
+  const mutationIdentity = actionInstallationIdentity(appSlug, installationId);
+  if (
+    !configuredIdentity ||
+    !mutationIdentity ||
+    mutationIdentity.appSlug !== configuredIdentity.appSlug
+  ) {
     return "automerge disabled: merge credential is not a verifiable GitHub App installation";
   }
   if (!policyReadJson) {
     return "automerge disabled: ruleset verifier credential is unavailable";
   }
-  const verifierAppId = authenticatedInstallationAppId(appId, appSlug, policyReadJson);
-  if (verifierAppId !== authenticatedAppId) {
+  const verifierIdentity = actionInstallationIdentity(policyAppSlug, policyInstallationId);
+  if (
+    !verifierIdentity ||
+    verifierIdentity.appSlug !== configuredIdentity.appSlug ||
+    verifierIdentity.installationId !== mutationIdentity.installationId
+  ) {
     return "automerge disabled: ruleset verifier credential is not the configured GitHub App installation";
   }
 
@@ -50,7 +65,7 @@ export function serverStrictBaseBindingBlock({
           rulesUnavailable = true;
           continue;
         }
-        const bypassesApp = rulesetBypassesApp(ruleset, authenticatedAppId);
+        const bypassesApp = rulesetBypassesApp(ruleset, configuredIdentity.appId);
         if (bypassesApp === null) {
           rulesUnavailable = true;
           continue;
@@ -84,32 +99,36 @@ export function serverStrictBaseBindingBlock({
     : `automerge disabled: ${baseBranch} lacks server-enforced strict base binding`;
 }
 
-function authenticatedInstallationAppId(
+function configuredAppIdentity(
   appId: unknown,
-  appSlug: unknown,
-  readJson: GithubJsonReader,
-): number | null {
+  configuredAppSlug: unknown,
+): { appId: number; appSlug: string } | null {
   const configuredAppId = Number(appId);
   if (!Number.isSafeInteger(configuredAppId) || configuredAppId <= 0) return null;
-  if (typeof appSlug !== "string") return null;
-  const authenticatedAppSlug = appSlug.trim();
-  if (!/^[a-z0-9][a-z0-9-]*$/i.test(authenticatedAppSlug)) return null;
-  try {
-    const installation = readJson(["api", "installation"]);
-    const candidate = installation as LooseRecord;
-    if (Number(candidate?.app_id) !== configuredAppId) {
-      return null;
-    }
-    if (
-      typeof candidate?.app_slug !== "string" ||
-      candidate.app_slug.toLowerCase() !== authenticatedAppSlug.toLowerCase()
-    ) {
-      return null;
-    }
-    return configuredAppId;
-  } catch {
+  const appSlug = normalizedAppSlug(configuredAppSlug);
+  return appSlug ? { appId: configuredAppId, appSlug } : null;
+}
+
+function actionInstallationIdentity(
+  appSlug: unknown,
+  installationId: unknown,
+): { appSlug: string; installationId: number } | null {
+  const normalizedSlug = normalizedAppSlug(appSlug);
+  const normalizedInstallationId = Number(installationId);
+  if (
+    !normalizedSlug ||
+    !Number.isSafeInteger(normalizedInstallationId) ||
+    normalizedInstallationId <= 0
+  ) {
     return null;
   }
+  return { appSlug: normalizedSlug, installationId: normalizedInstallationId };
+}
+
+function normalizedAppSlug(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const appSlug = value.trim().toLowerCase();
+  return /^[a-z0-9][a-z0-9-]*$/.test(appSlug) ? appSlug : null;
 }
 
 function isStrictStatusCheckRule(rule: JsonValue): boolean {
