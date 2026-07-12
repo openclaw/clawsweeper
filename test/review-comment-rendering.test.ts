@@ -458,10 +458,7 @@ test("concurrent review lease election uses server comment order, not client tim
 test("apply retains its mutation lease until the item action is complete", () => {
   const source = readFileSync("src/clawsweeper.ts", "utf8");
   const acquire = source.indexOf("const mutationLeaseBlockReason = acquireApplyMutationLease");
-  const commentSync = source.indexOf(
-    "syncedComment = upsertReviewComment(number, markedReviewComment",
-    acquire,
-  );
+  const commentSync = source.indexOf("syncedComment = upsertReviewComment(", acquire);
   const close = source.indexOf("closeItem({ number, kind: item.kind", commentSync);
   const release = source.indexOf("releaseActiveApplyMutationLease();", close);
   assert.ok(acquire >= 0);

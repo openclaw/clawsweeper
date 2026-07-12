@@ -91,9 +91,16 @@ confidential-identifier checks as every other durable machine-text field.
 - Mutation events require an explicit business `idempotencyIdentity`; outcome
   status and failure reason never define side-effect identity.
 - Review operation identity binds each selected item's repository, kind, number,
-  and observed `updated_at`. Apply operation and mutation identity bind the item
-  source revision, review content digest, and decision packet digest. A crash
-  result and its retry therefore retain one business idempotency key.
+  and observed `updated_at`, while item starts are written only when processing
+  actually begins. Apply operation identity may retain checkpoint and batch
+  context, but apply and retry-dispatch business idempotency bind only the item,
+  immutable source revision, review content digest, and decision packet digest.
+  Candidate order, checkpoint composition, and list indexes never define those
+  side effects.
+- Apply writes an item start at loop entry and persists a mutation-observed
+  receipt immediately after the first successful durable mutation. Per-item
+  terminals are written as each item finishes, so timeout recovery fails only
+  the genuinely active item and preserves whether that item already mutated.
 - Repository, producer SHA, workflow, job, run, attempt, and component all bind
   shard identity. They do not define the logical operation.
 - Workflow, step, invocation, and component identifiers keep a readable prefix

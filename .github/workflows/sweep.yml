@@ -3018,6 +3018,7 @@ jobs:
           CLAWSWEEPER_INTERNAL_MODEL: ${{ secrets.CLAWSWEEPER_MODEL }}
 
       - name: Generate bound close coverage proofs
+        id: generate-apply-proofs
         if: ${{ steps.proof-select.outputs.item_numbers != '' }}
         timeout-minutes: 50
         env:
@@ -3056,7 +3057,14 @@ jobs:
 
       - name: Finalize apply proof action ledger
         if: ${{ always() && steps.proof-select.outputs.item_numbers != '' }}
-        run: pnpm run --silent finalize-action-events
+        env:
+          APPLY_PROOF_OUTCOME: ${{ steps.generate-apply-proofs.outcome || 'not_started' }}
+        run: |
+          args=()
+          if [ "$APPLY_PROOF_OUTCOME" != "success" ]; then
+            args=(--interrupt-open-attempts --reason timeout)
+          fi
+          pnpm run --silent finalize-action-events -- "${args[@]}"
 
       - name: Upload bound close coverage proofs
         if: ${{ always() && steps.proof-select.outputs.item_numbers != '' }}
@@ -3266,6 +3274,8 @@ jobs:
           persist_reconciliation "${reconcile_args[@]}"
 
       - name: Apply unchanged proposed decisions with checkpoints
+        id: apply-existing-run
+        timeout-minutes: 350
         env:
           GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
           TARGET_REPO: ${{ steps.target.outputs.target_repo }}
@@ -3634,6 +3644,17 @@ jobs:
             echo "APPLY_ADAPTIVE_SCAN_REASON=$adaptive_apply_scan_reason"
             echo "APPLY_CANDIDATE_QUALITY_SUMMARY=$candidate_quality_summary"
           } >> "$GITHUB_ENV"
+
+      - name: Finalize apply action ledger
+        if: ${{ always() }}
+        env:
+          APPLY_OUTCOME: ${{ steps.apply-existing-run.outcome || 'not_started' }}
+        run: |
+          args=()
+          if [ "$APPLY_OUTCOME" != "success" ]; then
+            args=(--interrupt-open-attempts --reason timeout)
+          fi
+          pnpm run --silent finalize-action-events -- "${args[@]}"
 
       - name: Retry final apply status publication
         run: |

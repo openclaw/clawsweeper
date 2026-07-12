@@ -20208,6 +20208,8 @@ const ACTION_LEDGER_DROPPED_FIELDS = [
 type ReviewLedgerItem = {
   item: Item;
   index: number;
+  started: boolean;
+  startedAtMs: number | null;
   startEventId: string | null;
   logPublication: boolean;
   terminal: boolean;
@@ -20331,36 +20333,12 @@ function startReviewActionLedger(options: {
   const items = new Map<string, ReviewLedgerItem>();
   for (const [index, item] of options.candidates.entries()) {
     if (!Number.isSafeInteger(item.number) || item.number <= 0) continue;
-    const start = recordWorkflowPhaseEvent(ROOT, {
-      phase: ACTION_EVENT_TYPES.reviewItem,
-      status: ACTION_EVENT_STATUSES.started,
-      reasonCode: ACTION_EVENT_REASON_CODES.selected,
-      retryable: false,
-      mutation: false,
-      identity: { slot: "item_start", index, repository: item.repo, number: item.number },
-      operation: "review",
-      operationIdentity,
-      parentEventId: batchStart?.event_id ?? null,
-      phaseSeq: 10 + index * 10,
-      idempotencyIdentity: {
-        operationIdentity,
-        slot: "item_start",
-        index,
-        repository: item.repo,
-        number: item.number,
-      },
-      component: "review",
-      subject: actionLedgerItemSubject(item),
-      attributes: {
-        batch_index: index,
-        review_mode: "propose",
-      },
-      privacy: actionLedgerPrivacy(),
-    });
     items.set(actionLedgerItemKey(item), {
       item,
       index,
-      startEventId: start?.event_id ?? null,
+      started: false,
+      startedAtMs: null,
+      startEventId: null,
       logPublication: false,
       terminal: false,
     });
@@ -20374,6 +20352,46 @@ function startReviewActionLedger(options: {
   };
 }
 
+function startReviewActionLedgerItem(ledger: ReviewActionLedger, item: Item): ActionEvent | null {
+  const state = ledger.items.get(actionLedgerItemKey(item));
+  if (!state || state.started) return null;
+  const start = recordWorkflowPhaseEvent(ROOT, {
+    phase: ACTION_EVENT_TYPES.reviewItem,
+    status: ACTION_EVENT_STATUSES.started,
+    reasonCode: ACTION_EVENT_REASON_CODES.selected,
+    retryable: false,
+    mutation: false,
+    identity: {
+      slot: "item_start",
+      index: state.index,
+      repository: item.repo,
+      number: item.number,
+    },
+    operation: "review",
+    operationIdentity: ledger.operationIdentity,
+    parentEventId: ledger.batchStartEventId,
+    phaseSeq: 10 + state.index * 10,
+    idempotencyIdentity: {
+      operationIdentity: ledger.operationIdentity,
+      slot: "item_start",
+      index: state.index,
+      repository: item.repo,
+      number: item.number,
+    },
+    component: "review",
+    subject: actionLedgerItemSubject(item),
+    attributes: {
+      batch_index: state.index,
+      review_mode: "propose",
+    },
+    privacy: actionLedgerPrivacy(),
+  });
+  state.started = true;
+  state.startedAtMs = Date.now();
+  state.startEventId = start?.event_id ?? null;
+  return start;
+}
+
 function recordReviewLogPublication(options: {
   ledger: ReviewActionLedger;
   item: Item;
@@ -20384,7 +20402,7 @@ function recordReviewLogPublication(options: {
   retryable?: boolean;
 }): ActionEvent | null {
   const state = options.ledger.items.get(actionLedgerItemKey(options.item));
-  if (!state || state.logPublication) return null;
+  if (!state || !state.started || state.logPublication) return null;
   const prefix = `${options.item.number}.`;
   const logs =
     options.codexWorkDir && existsSync(options.codexWorkDir)
@@ -20459,7 +20477,7 @@ function finishReviewActionLedgerItem(options: {
   completionReason?: string;
 }): ActionEvent | null {
   const state = options.ledger.items.get(actionLedgerItemKey(options.item));
-  if (!state || state.terminal) return null;
+  if (!state || !state.started || state.terminal) return null;
   if (!state.logPublication) {
     recordReviewLogPublication({
       ledger: options.ledger,
@@ -20574,6 +20592,7 @@ function finishReviewActionLedger(options: {
   for (const state of options.ledger.items.values()) {
     if (state.terminal) continue;
     pendingCount += 1;
+    if (!state.started) continue;
     const active = options.activeItem
       ? actionLedgerItemKey(options.activeItem) === actionLedgerItemKey(state.item)
       : false;
@@ -20859,7 +20878,12 @@ function reviewCommand(args: Args): void {
     const semanticCacheRevalidationReasons = new Map<string, number>();
     const codexFailureReports: string[] = [];
     const leaseAcquisitionFailureDetails: string[] = [];
+    // oxfmt-ignore
     for (const item of candidates) {
+      activeReviewItem = item;
+      let reviewItemFailed = false;
+      try {
+      startReviewActionLedgerItem(reviewLedger, item);
       if (humanLocalReview) {
         console.error("");
         console.error("Collecting GitHub context");
@@ -21131,7 +21155,9 @@ function reviewCommand(args: Args): void {
           }
           acquiredReviewLease = startComment.lease;
           if (!acquiredReviewLease) {
-            throw new Error(`review lease acquisition returned no identity for PR #${item.number}`);
+            throw new Error(
+              `review lease acquisition returned no identity for PR #${item.number}`,
+            );
           }
           acquiredReviewLeases.push({ itemNumber: item.number, lease: acquiredReviewLease });
         } catch (error) {
@@ -21147,7 +21173,6 @@ function reviewCommand(args: Args): void {
           continue;
         }
       }
-      activeReviewItem = item;
       const contextStartedAt = Date.now();
       if (!localRangeData) hydrationRuns += 1;
       const context = localRangeData
@@ -21680,7 +21705,8 @@ function reviewCommand(args: Args): void {
       let decision: Decision;
       let codexElapsedMs = 0;
       let codexFailed = false;
-      let codexFailureDisposition: ReturnType<typeof actionLedgerFailureDisposition> | null = null;
+      let codexFailureDisposition: ReturnType<typeof actionLedgerFailureDisposition> | null =
+        null;
       const codexStartedAt = Date.now();
       try {
         if (humanLocalReview) {
@@ -21719,10 +21745,16 @@ function reviewCommand(args: Args): void {
         codexFailed = true;
         codexFailureDisposition = actionLedgerFailureDisposition(error);
         if (error instanceof CodexReviewError) {
-          decision = codexFailureDecision(error.status, error.message, error.stdout, error.stderr, {
-            errorCode: error.errorCode,
-            signal: error.signal,
-          });
+          decision = codexFailureDecision(
+            error.status,
+            error.message,
+            error.stdout,
+            error.stderr,
+            {
+              errorCode: error.errorCode,
+              signal: error.signal,
+            },
+          );
         } else {
           decision = codexFailureDecision(
             null,
@@ -21804,6 +21836,30 @@ function reviewCommand(args: Args): void {
         console.error(
           `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} done #${item.number} (${completed}/${candidates.length}) decision=${decision.decision} confidence=${decision.confidence} action=${action.actionTaken}`,
         );
+      }
+      } catch (error) {
+        reviewItemFailed = true;
+        throw error;
+      } finally {
+        if (
+          !reviewItemFailed &&
+          activeReviewItem &&
+          actionLedgerItemKey(activeReviewItem) === actionLedgerItemKey(item)
+        ) {
+          finishReviewActionLedgerItem({
+            ledger: reviewLedger,
+            item,
+            status: ACTION_EVENT_STATUSES.blocked,
+            reasonCode: ACTION_EVENT_REASON_CODES.leaseActive,
+            retryable: true,
+            cached: false,
+            startedAtMs:
+              reviewLedger.items.get(actionLedgerItemKey(item))?.startedAtMs ??
+              reviewLedger.startedAtMs,
+            completionReason: "coordination_deferred",
+          });
+          activeReviewItem = null;
+        }
       }
     }
     if (coordinationHeldRetryAt) {
@@ -22730,6 +22786,38 @@ export function reviewRetryActionDisposition(action: FailedReviewRetryAction): {
   };
 }
 
+export function reviewRetryBusinessIdempotencyIdentityForTest(options: {
+  repository: string;
+  number: number;
+  revisionKind: FailedReviewRetryRevisionKind;
+  sourceRevision: string;
+  slot: "retry_dispatch" | "retry_exhaustion" | "retry_observation";
+}) {
+  return {
+    operation: "review_retry",
+    slot: options.slot,
+    repository: options.repository,
+    number: options.number,
+    revisionKind: options.revisionKind,
+    sourceRevision: options.sourceRevision,
+  };
+}
+
+function reviewRetryIdempotencySlot(
+  action: FailedReviewRetryAction,
+): "retry_dispatch" | "retry_exhaustion" | "retry_observation" {
+  if (
+    action === "dispatched_failed_review_retry" ||
+    action === "planned_failed_review_retry" ||
+    action === "skipped_dispatch_failed"
+  ) {
+    return "retry_dispatch";
+  }
+  return action === "marked_failed_review_retry_exhausted"
+    ? "retry_exhaustion"
+    : "retry_observation";
+}
+
 function recordFailedReviewRetryEvents(options: {
   ledger: ReviewRetryActionLedger;
   results: readonly FailedReviewRetryResult[];
@@ -22750,6 +22838,13 @@ function recordFailedReviewRetryEvents(options: {
       result.revision ??
       (reportMarkdown ? reviewLeaseRevisionFromReport(reportMarkdown) : null) ??
       undefined;
+    const revisionKind =
+      result.revisionKind ??
+      (kind === "pull_request"
+        ? "pull_head_sha"
+        : kind === "issue"
+          ? "item_source_revision"
+          : undefined);
     const recordPath = result.reportPath ? repoRelativePath(result.reportPath) : undefined;
     const subject: ActionEventSubject =
       result.number > 0 && kind
@@ -22775,6 +22870,28 @@ function recordFailedReviewRetryEvents(options: {
         ? [{ kind: "retry_dispatch", runUrl: result.dispatchUrl }]
         : []),
     ];
+    const retrySlot = reviewRetryIdempotencySlot(result.action);
+    const idempotencyIdentity =
+      result.number > 0 && revisionKind && sourceRevision
+        ? reviewRetryBusinessIdempotencyIdentityForTest({
+            repository: subject.repository,
+            number: result.number,
+            revisionKind,
+            sourceRevision,
+            slot: retrySlot,
+          })
+        : {
+            operation: "review_retry",
+            slot: retrySlot,
+            repository: subject.repository,
+            number: result.number,
+            action: result.action,
+          };
+    if (!options.dryRun && disposition.mutation && (!revisionKind || !sourceRevision)) {
+      throw new Error(
+        `retry mutation receipt for ${subject.repository}#${result.number} is missing its source revision`,
+      );
+    }
     recordWorkflowPhaseEvent(ROOT, {
       phase: ACTION_EVENT_TYPES.reviewRetry,
       status: disposition.status,
@@ -22791,13 +22908,7 @@ function recordFailedReviewRetryEvents(options: {
       operationIdentity,
       parentEventId: options.ledger.batchStartEventId,
       phaseSeq: 10 + index,
-      idempotencyIdentity: {
-        operationIdentity,
-        slot: "retry_result",
-        index,
-        repository: subject.repository,
-        number: result.number,
-      },
+      idempotencyIdentity,
       component: "retry_failed_reviews",
       subject,
       evidence,
@@ -22884,6 +22995,27 @@ function recordFailedReviewRetryEvents(options: {
   options.ledger.terminal = true;
 }
 
+type ApplyItemBusinessIdempotencyIdentity = {
+  operation: "apply";
+  slot: "apply_item" | "review_comment";
+  repository: string;
+  number: number;
+  sourceRevision: string;
+  reviewContentDigest: string;
+  decisionPacketSha256: string;
+};
+
+type ApplyLedgerItem = {
+  entry: ReportEntry;
+  index: number;
+  started: boolean;
+  startEventId: string | null;
+  mutationObserved: boolean;
+  mutationEventId: string | null;
+  terminal: boolean;
+  businessIdentity: Omit<ApplyItemBusinessIdempotencyIdentity, "slot">;
+};
+
 type ApplyActionLedger = {
   operationIdentity: {
     repository: string;
@@ -22903,6 +23035,7 @@ type ApplyActionLedger = {
     }>;
   };
   batchStartEventId: string | null;
+  items: Map<string, ApplyLedgerItem>;
   startedAtMs: number;
   terminal: boolean;
 };
@@ -22957,36 +23090,160 @@ function startApplyActionLedger(options: {
     },
     privacy: actionLedgerPrivacy(),
   });
+  const items = new Map<string, ApplyLedgerItem>();
+  for (const [index, entry] of options.candidates.entries()) {
+    const key = actionLedgerItemKey(entry);
+    if (items.has(key)) continue;
+    items.set(key, {
+      entry,
+      index,
+      started: false,
+      startEventId: null,
+      mutationObserved: false,
+      mutationEventId: null,
+      terminal: false,
+      businessIdentity: {
+        operation: "apply",
+        repository: entry.repo,
+        number: entry.number,
+        sourceRevision: reviewLeaseRevisionFromReport(entry.markdown) ?? "unknown",
+        reviewContentDigest: frontMatterValue(entry.markdown, "review_content_digest") ?? "unknown",
+        decisionPacketSha256: frontMatterValue(entry.markdown, "decision_packet_sha256") ?? "none",
+      },
+    });
+  }
   return {
     operationIdentity,
     batchStartEventId: batchStart?.event_id ?? null,
+    items,
     startedAtMs: Date.now(),
     terminal: false,
   };
 }
 
-function applyItemIdempotencyIdentity(options: {
-  ledger: ApplyActionLedger;
+export function applyItemBusinessIdempotencyIdentityForTest(options: {
+  slot: "apply_item" | "review_comment";
   repository: string;
   number: number;
-  entry: ReportEntry | undefined;
-  slot: "apply_item" | "review_comment";
-}) {
+  sourceRevision: string;
+  reviewContentDigest: string;
+  decisionPacketSha256: string;
+}): ApplyItemBusinessIdempotencyIdentity {
   return {
-    operationIdentity: options.ledger.operationIdentity,
+    operation: "apply",
     slot: options.slot,
     repository: options.repository,
     number: options.number,
-    sourceRevision: options.entry
-      ? (reviewLeaseRevisionFromReport(options.entry.markdown) ?? "unknown")
-      : "unknown",
-    reviewContentDigest: options.entry
-      ? (frontMatterValue(options.entry.markdown, "review_content_digest") ?? "unknown")
-      : "unknown",
-    decisionPacketSha256: options.entry
-      ? (frontMatterValue(options.entry.markdown, "decision_packet_sha256") ?? "none")
-      : "none",
+    sourceRevision: options.sourceRevision,
+    reviewContentDigest: options.reviewContentDigest,
+    decisionPacketSha256: options.decisionPacketSha256,
   };
+}
+
+function applyItemIdempotencyIdentity(
+  state: ApplyLedgerItem,
+  slot: "apply_item" | "review_comment",
+): ApplyItemBusinessIdempotencyIdentity {
+  return applyItemBusinessIdempotencyIdentityForTest({
+    ...state.businessIdentity,
+    slot,
+  });
+}
+
+function applyLedgerItemSubject(
+  state: ApplyLedgerItem,
+  entry: ReportEntry = state.entry,
+): ActionEventSubject {
+  const kind = reportItemKind(entry.markdown);
+  if (!kind) {
+    throw new Error(
+      `apply ledger item ${state.businessIdentity.repository}#${state.businessIdentity.number} has no report item kind`,
+    );
+  }
+  const recordPath = repoRelativePath(entry.path);
+  return {
+    repository: state.businessIdentity.repository,
+    kind,
+    number: state.businessIdentity.number,
+    ...(state.businessIdentity.sourceRevision === "unknown"
+      ? {}
+      : { sourceRevision: state.businessIdentity.sourceRevision }),
+    ...(recordPath.startsWith("../") ? {} : { recordPath }),
+  };
+}
+
+function startApplyActionLedgerItem(
+  ledger: ApplyActionLedger,
+  entry: ReportEntry,
+): ApplyLedgerItem | null {
+  const state = ledger.items.get(actionLedgerItemKey(entry));
+  if (!state) return null;
+  if (state.started) return state;
+  const start = recordWorkflowPhaseEvent(ROOT, {
+    phase: ACTION_EVENT_TYPES.applyAction,
+    status: ACTION_EVENT_STATUSES.started,
+    reasonCode: ACTION_EVENT_REASON_CODES.selected,
+    retryable: false,
+    mutation: false,
+    identity: {
+      slot: "apply_item_start",
+      index: state.index,
+      repository: entry.repo,
+      number: entry.number,
+    },
+    operation: "apply",
+    operationIdentity: ledger.operationIdentity,
+    parentEventId: ledger.batchStartEventId,
+    phaseSeq: 10 + state.index * 20,
+    idempotencyIdentity: applyItemIdempotencyIdentity(state, "apply_item"),
+    component: "apply_decisions",
+    subject: applyLedgerItemSubject(state),
+    evidence: workflowRunEvidence(),
+    attributes: {
+      batch_index: state.index,
+      item_count: 1,
+      completion_reason: "started",
+    },
+    privacy: actionLedgerPrivacy(),
+  });
+  state.started = true;
+  state.startEventId = start?.event_id ?? null;
+  return state;
+}
+
+function recordApplyMutationBoundary(ledger: ApplyActionLedger, entry: ReportEntry): void {
+  const state = startApplyActionLedgerItem(ledger, entry);
+  if (!state || state.mutationObserved) return;
+  const mutation = recordWorkflowPhaseEvent(ROOT, {
+    phase: ACTION_EVENT_TYPES.applyAction,
+    status: ACTION_EVENT_STATUSES.executed,
+    reasonCode: ACTION_EVENT_REASON_CODES.completed,
+    retryable: true,
+    mutation: true,
+    identity: {
+      slot: "apply_mutation_observed",
+      index: state.index,
+      repository: entry.repo,
+      number: entry.number,
+    },
+    operation: "apply",
+    operationIdentity: ledger.operationIdentity,
+    parentEventId: state.startEventId,
+    phaseSeq: 11 + state.index * 20,
+    idempotencyIdentity: applyItemIdempotencyIdentity(state, "apply_item"),
+    component: "apply_decisions",
+    subject: applyLedgerItemSubject(state),
+    evidence: workflowRunEvidence(),
+    attributes: {
+      batch_index: state.index,
+      action_count: 1,
+      partial: true,
+      completion_reason: "mutation_observed",
+    },
+    privacy: actionLedgerPrivacy(),
+  });
+  state.mutationObserved = true;
+  state.mutationEventId = mutation?.event_id ?? null;
 }
 
 export function applyActionEventDisposition(
@@ -23151,63 +23408,39 @@ export function reviewCommentPublicationEventDisposition(
   return null;
 }
 
-function recordApplyActionEvents(options: {
+function recordApplyActionLedgerItemResults(options: {
   ledger: ApplyActionLedger;
+  state: ApplyLedgerItem;
   results: readonly ApplyResult[];
-  entries: ReadonlyMap<number, ReportEntry>;
-  mutationByItem: ReadonlyMap<string, boolean>;
+  entry: ReportEntry;
+  mutationOccurred: boolean;
   dryRun: boolean;
-  reportPath: string;
-  failed?: boolean;
-  failure?: unknown;
-  inFlightItem?: { repo: string; number: number; mutationOccurred: boolean };
 }): void {
-  if (options.ledger.terminal) return;
-  let mutationCount = 0;
-  let closedCount = 0;
-  let skippedCount = 0;
-  for (const [index, result] of options.results.entries()) {
-    const repository = result.repo ?? targetRepo();
-    const mutationOccurred =
-      result.mutationOccurred ??
-      options.mutationByItem.get(`${repository}#${result.number}`) ??
-      false;
+  if (options.state.terminal) return;
+  const results =
+    options.results.length > 0
+      ? options.results
+      : [
+          {
+            repo: options.state.businessIdentity.repository,
+            number: options.state.businessIdentity.number,
+            action: "kept_open" as const,
+            reason: options.mutationOccurred
+              ? "apply item completed after a durable mutation"
+              : "apply item required no action",
+          },
+        ];
+  for (const [resultIndex, result] of results.entries()) {
     const disposition = applyActionEventDisposition(
       result.action,
-      mutationOccurred,
+      options.mutationOccurred,
       options.dryRun,
     );
     const commentDisposition = reviewCommentPublicationEventDisposition(
       result.action,
-      mutationOccurred,
+      options.mutationOccurred,
       options.dryRun,
     );
-    if (disposition.mutation) mutationCount += 1;
-    if (result.action === "closed") closedCount += 1;
-    if (
-      result.action === "kept_open" ||
-      result.action.startsWith("skipped_") ||
-      result.action.startsWith("retry_")
-    ) {
-      skippedCount += 1;
-    }
-    const entry = result.number > 0 ? options.entries.get(result.number) : undefined;
-    const kind = entry ? reportItemKind(entry.markdown) : undefined;
-    const sourceRevision = entry ? reviewLeaseRevisionFromReport(entry.markdown) : null;
-    const recordPath = entry ? repoRelativePath(entry.path) : null;
-    const subject: ActionEventSubject =
-      result.number > 0 && kind
-        ? {
-            repository,
-            kind,
-            number: result.number,
-            ...(sourceRevision ? { sourceRevision } : {}),
-            ...(recordPath && !recordPath.startsWith("../") ? { recordPath } : {}),
-          }
-        : {
-            repository,
-            kind: "workflow",
-          };
     const actionEvent = recordWorkflowPhaseEvent(ROOT, {
       phase: ACTION_EVENT_TYPES.applyAction,
       status: disposition.status,
@@ -23216,40 +23449,27 @@ function recordApplyActionEvents(options: {
       mutation: disposition.mutation,
       identity: {
         slot: "apply_result",
-        index,
-        repository,
-        number: result.number,
+        index: options.state.index,
+        resultIndex,
+        repository: options.state.businessIdentity.repository,
+        number: options.state.businessIdentity.number,
       },
       operation: "apply",
       operationIdentity: options.ledger.operationIdentity,
-      parentEventId: options.ledger.batchStartEventId,
-      phaseSeq: 10 + index * 10,
-      idempotencyIdentity: {
-        ...applyItemIdempotencyIdentity({
-          ledger: options.ledger,
-          repository,
-          number: result.number,
-          entry,
-          slot: "apply_item",
-        }),
-      },
+      parentEventId: options.state.mutationEventId ?? options.state.startEventId,
+      phaseSeq: 12 + options.state.index * 20,
+      idempotencyIdentity: applyItemIdempotencyIdentity(options.state, "apply_item"),
       component: "apply_decisions",
-      subject,
+      subject: applyLedgerItemSubject(options.state, options.entry),
       evidence: [
         ...workflowRunEvidence(),
-        ...(entry
-          ? [
-              {
-                kind: "review_record",
-                sha256: sha256(entry.markdown),
-                ...(recordPath && !recordPath.startsWith("../") ? { reportPath: recordPath } : {}),
-              },
-            ]
-          : []),
+        ...[actionLedgerFileEvidence("review_record", options.entry.path)].filter(
+          (entry): entry is ActionEventEvidence => entry !== null,
+        ),
       ],
       attributes: {
-        batch_index: index,
-        item_count: result.number > 0 ? 1 : 0,
+        batch_index: options.state.index,
+        item_count: 1,
         closed_count: result.action === "closed" ? 1 : 0,
         skipped_count:
           result.action === "kept_open" ||
@@ -23271,25 +23491,19 @@ function recordApplyActionEvents(options: {
         mutation: commentDisposition.mutation,
         identity: {
           slot: "review_comment_publication",
-          index,
-          repository,
-          number: result.number,
+          index: options.state.index,
+          resultIndex,
+          repository: options.state.businessIdentity.repository,
+          number: options.state.businessIdentity.number,
         },
         operation: "apply",
         operationIdentity: options.ledger.operationIdentity,
-        parentEventId: actionEvent?.event_id ?? options.ledger.batchStartEventId,
-        phaseSeq: 11 + index * 10,
-        idempotencyIdentity: {
-          ...applyItemIdempotencyIdentity({
-            ledger: options.ledger,
-            repository,
-            number: result.number,
-            entry,
-            slot: "review_comment",
-          }),
-        },
+        parentEventId:
+          actionEvent?.event_id ?? options.state.mutationEventId ?? options.state.startEventId,
+        phaseSeq: 13 + options.state.index * 20,
+        idempotencyIdentity: applyItemIdempotencyIdentity(options.state, "review_comment"),
         component: "apply_decisions",
-        subject,
+        subject: applyLedgerItemSubject(options.state, options.entry),
         evidence: workflowRunEvidence(),
         attributes: {
           publication_kind: "review_comment",
@@ -23300,65 +23514,138 @@ function recordApplyActionEvents(options: {
       });
     }
   }
-  if (
-    options.failed &&
-    options.inFlightItem &&
-    !options.results.some(
-      (result) =>
-        (result.repo ?? targetRepo()) === options.inFlightItem?.repo &&
-        result.number === options.inFlightItem?.number,
-    )
-  ) {
-    const entry = options.entries.get(options.inFlightItem.number);
-    const kind = entry ? reportItemKind(entry.markdown) : undefined;
-    const sourceRevision = entry ? reviewLeaseRevisionFromReport(entry.markdown) : null;
+  options.state.terminal = true;
+}
+
+function recordApplyActionLedgerItemFailure(options: {
+  ledger: ApplyActionLedger;
+  state: ApplyLedgerItem;
+  entry: ReportEntry;
+  failure: unknown;
+  mutationOccurred: boolean;
+}): void {
+  if (options.state.terminal) return;
+  const disposition = actionLedgerFailureDisposition(options.failure);
+  recordWorkflowPhaseEvent(ROOT, {
+    phase: ACTION_EVENT_TYPES.applyAction,
+    status: disposition.status,
+    reasonCode: disposition.reasonCode,
+    retryable: true,
+    mutation: options.mutationOccurred,
+    identity: {
+      slot: "apply_in_flight_failure",
+      index: options.state.index,
+      repository: options.state.businessIdentity.repository,
+      number: options.state.businessIdentity.number,
+    },
+    operation: "apply",
+    operationIdentity: options.ledger.operationIdentity,
+    parentEventId: options.state.mutationEventId ?? options.state.startEventId,
+    phaseSeq: 12 + options.state.index * 20,
+    idempotencyIdentity: applyItemIdempotencyIdentity(options.state, "apply_item"),
+    component: "apply_decisions",
+    subject: applyLedgerItemSubject(options.state, options.entry),
+    evidence: workflowRunEvidence(),
+    attributes: {
+      failed_count: 1,
+      partial: options.mutationOccurred,
+      completion_reason: disposition.completionReason,
+    },
+    privacy: actionLedgerPrivacy(),
+  });
+  options.state.terminal = true;
+}
+
+function recordApplyActionEvents(options: {
+  ledger: ApplyActionLedger;
+  results: readonly ApplyResult[];
+  entries: ReadonlyMap<number, ReportEntry>;
+  mutationByItem: ReadonlyMap<string, boolean>;
+  dryRun: boolean;
+  reportPath: string;
+  failed?: boolean;
+  failure?: unknown;
+  inFlightItem?: { repo: string; number: number; mutationOccurred: boolean };
+}): void {
+  if (options.ledger.terminal) return;
+  const inFlightKey = options.inFlightItem ? actionLedgerItemKey(options.inFlightItem) : null;
+  if (options.failed && options.inFlightItem && inFlightKey) {
+    const state = options.ledger.items.get(inFlightKey);
+    if (state?.started && !state.terminal) {
+      const entry = options.entries.get(options.inFlightItem.number) ?? state.entry;
+      recordApplyActionLedgerItemFailure({
+        ledger: options.ledger,
+        state,
+        entry,
+        failure: options.failure,
+        mutationOccurred: options.inFlightItem.mutationOccurred || state.mutationObserved,
+      });
+    }
+  }
+  for (const state of options.ledger.items.values()) {
+    if (!state.started || state.terminal) continue;
+    const repository = state.businessIdentity.repository;
+    const number = state.businessIdentity.number;
+    const itemResults = options.results.filter(
+      (result) => (result.repo ?? targetRepo()) === repository && result.number === number,
+    );
+    const entry = options.entries.get(number) ?? state.entry;
+    recordApplyActionLedgerItemResults({
+      ledger: options.ledger,
+      state,
+      results: itemResults,
+      entry,
+      mutationOccurred:
+        state.mutationObserved || options.mutationByItem.get(`${repository}#${number}`) === true,
+      dryRun: options.dryRun,
+    });
+  }
+  for (const [index, result] of options.results.entries()) {
+    if (result.number > 0) continue;
+    const disposition = applyActionEventDisposition(result.action, false, options.dryRun);
     recordWorkflowPhaseEvent(ROOT, {
       phase: ACTION_EVENT_TYPES.applyAction,
-      status: ACTION_EVENT_STATUSES.failed,
-      reasonCode: actionLedgerFailureDisposition(options.failure).reasonCode,
-      retryable: true,
-      mutation: options.inFlightItem.mutationOccurred,
+      status: disposition.status,
+      reasonCode: disposition.reasonCode,
+      retryable: disposition.retryable,
+      mutation: false,
       identity: {
-        slot: "apply_in_flight_failure",
-        repository: options.inFlightItem.repo,
-        number: options.inFlightItem.number,
+        slot: "apply_result",
+        index,
+        repository: result.repo ?? targetRepo(),
+        number: result.number,
       },
       operation: "apply",
       operationIdentity: options.ledger.operationIdentity,
       parentEventId: options.ledger.batchStartEventId,
-      phaseSeq: 900_000,
+      phaseSeq: 900_000 + index,
       idempotencyIdentity: {
-        ...applyItemIdempotencyIdentity({
-          ledger: options.ledger,
-          repository: options.inFlightItem.repo,
-          number: options.inFlightItem.number,
-          entry,
-          slot: "apply_item",
-        }),
+        operationIdentity: options.ledger.operationIdentity,
+        slot: "apply_workflow_result",
+        action: result.action,
       },
       component: "apply_decisions",
-      subject:
-        kind && options.inFlightItem.number > 0
-          ? {
-              repository: options.inFlightItem.repo,
-              kind,
-              number: options.inFlightItem.number,
-              ...(sourceRevision ? { sourceRevision } : {}),
-            }
-          : {
-              repository: options.inFlightItem.repo,
-              kind: "workflow",
-            },
+      subject: {
+        repository: result.repo ?? targetRepo(),
+        kind: "workflow",
+      },
       evidence: workflowRunEvidence(),
       attributes: {
-        failed_count: 1,
-        partial: options.inFlightItem.mutationOccurred,
-        completion_reason: actionLedgerFailureDisposition(options.failure).completionReason,
+        item_count: 0,
+        completion_reason: disposition.completionReason,
+        partial: disposition.status === ACTION_EVENT_STATUSES.yielded,
       },
       privacy: actionLedgerPrivacy(),
     });
-    if (options.inFlightItem.mutationOccurred) mutationCount += 1;
   }
+  const mutationCount = [...options.mutationByItem.values()].filter(Boolean).length;
+  const closedCount = options.results.filter((result) => result.action === "closed").length;
+  const skippedCount = options.results.filter(
+    (result) =>
+      result.action === "kept_open" ||
+      result.action.startsWith("skipped_") ||
+      result.action.startsWith("retry_"),
+  ).length;
   const yielded = options.results.some((result) => result.action === "skipped_runtime_budget");
   const failure = options.failed ? actionLedgerFailureDisposition(options.failure) : null;
   const partial =
@@ -23718,6 +24005,7 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
   logProgress(
     `starting apply: files=${files.length} dry_run=${dryRun} apply_kind=${applyKind} min_age=${minAgeDescription} apply_close_reasons=${closeReasonFilterText(applyCloseReasons)} stale_min_age_days=${staleMinAgeDays} close_delay_ms=${closeDelayMs} sync_comments_only=${syncCommentsOnly} comment_sync_min_age_days=${commentSyncMinAgeDays} max_runtime_ms=${maxRuntimeMs} item_numbers=${requestedItemNumbers.join(",") || "all"}`,
   );
+  // oxfmt-ignore
   for (const entry of fileEntries) {
     releaseActiveApplyMutationLease();
     const file = entry.name;
@@ -23735,10 +24023,15 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
     const repo = entry.repo;
     const number = entry.number;
     activeApplyItem = { repo, number, mutationOccurred: false };
+    startApplyActionLedgerItem(applyLedger, entry);
+    const applyItemResultStart = results.length;
+    let applyItemFailed = false;
+    try {
     const recordMutation = (): void => {
       if (dryRun) return;
       activeApplyItem = { repo, number, mutationOccurred: true };
       mutationByItem.set(`${repo}#${number}`, true);
+      recordApplyMutationBoundary(applyLedger, entry);
     };
     examinedItemNumbers.push(number);
     const decision = frontMatterValue(markdown, "decision");
@@ -24034,7 +24327,9 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
         };
       }
     };
-    const ownedApplyMutationLeaseBlockReason = (lease: AcquiredReviewStartLease): string | null => {
+    const ownedApplyMutationLeaseBlockReason = (
+      lease: AcquiredReviewStartLease,
+    ): string | null => {
       try {
         const revisionBefore = fetchLiveReviewHeadSha();
         const refreshed = issueReviewCommentState(number);
@@ -24329,7 +24624,11 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
     const recordRuntimeBudgetYield = (reason: string): void => {
       if (clawSweeperLabelsChanged && !dryRun) {
         recordMutation();
-        markdown = replaceFrontMatterValue(markdown, "labels_synced_at", new Date().toISOString());
+        markdown = replaceFrontMatterValue(
+          markdown,
+          "labels_synced_at",
+          new Date().toISOString(),
+        );
         writeReportMarkdown(path, markdown);
       }
       removeCurrentCursorTraceItem(examinedItemNumbers, number);
@@ -24444,7 +24743,8 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
             hasAutoCloseAllowedMetadata(counterpartMarkdown) &&
             hasVerifiedLocalCheckoutAccess(counterpartMarkdown)
           ) {
-            const { item: counterpartItem, state: counterpartState } = fetchItem(counterpartNumber);
+            const { item: counterpartItem, state: counterpartState } =
+              fetchItem(counterpartNumber);
             const counterpartReviewedAuthorAssociation = normalizeAuthorAssociation(
               frontMatterValue(counterpartMarkdown, "author_association"),
             );
@@ -24751,7 +25051,10 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
     ) {
       if (!unconfirmedProductDirectionCloseEnabled()) {
         if (
-          recordApplySkipped("kept_open", "unconfirmed product-direction apply policy is disabled")
+          recordApplySkipped(
+            "kept_open",
+            "unconfirmed product-direction apply policy is disabled",
+          )
         ) {
           break;
         }
@@ -25094,7 +25397,11 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
       currentUpdatedAt?: string | undefined;
       currentSnapshotHash?: string | undefined;
     }): boolean => {
-      markdown = replaceFrontMatterValue(markdown, "action_taken", "skipped_changed_since_review");
+      markdown = replaceFrontMatterValue(
+        markdown,
+        "action_taken",
+        "skipped_changed_since_review",
+      );
       if (options.currentUpdatedAt) {
         markdown = replaceFrontMatterValue(
           markdown,
@@ -25145,7 +25452,9 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
       let refreshedContext: ItemContext | null = null;
       const selfMutationMaskedNonAutomationActivity = (): boolean => {
         if (prCloseCoverageProofStartedAtMs === null) return true;
-        refreshedContext ??= collectItemContext(refreshed.item, { fullTimelineForRelations: true });
+        refreshedContext ??= collectItemContext(refreshed.item, {
+          fullTimelineForRelations: true,
+        });
         return contextHasNonAutomationActivityAfter(
           refreshedContext,
           prCloseCoverageProofStartedAtMs,
@@ -25228,7 +25537,11 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
           "applied_at",
           commentUpdatedAt(existingReviewComment) ?? new Date().toISOString(),
         );
-        markdown = replaceFrontMatterValue(markdown, "apply_checked_at", new Date().toISOString());
+        markdown = replaceFrontMatterValue(
+          markdown,
+          "apply_checked_at",
+          new Date().toISOString(),
+        );
         archiveClosed(markdown);
         closedCount += 1;
         processedCount += 1;
@@ -25269,7 +25582,11 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
       continue;
     }
     if (isCloseProposal && updatedSinceReview && !automationOnlyUpdate) {
-      markdown = replaceFrontMatterValue(markdown, "action_taken", "skipped_changed_since_review");
+      markdown = replaceFrontMatterValue(
+        markdown,
+        "action_taken",
+        "skipped_changed_since_review",
+      );
       markdown = replaceFrontMatterValue(markdown, "current_item_updated_at", item.updatedAt);
       markdown = replaceFrontMatterValue(markdown, "apply_checked_at", new Date().toISOString());
       if (!dryRun) writeReportMarkdown(path, markdown);
@@ -25293,7 +25610,11 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
           "skipped_changed_since_review",
         );
         markdown = replaceFrontMatterValue(markdown, "current_item_snapshot_hash", currentHash);
-        markdown = replaceFrontMatterValue(markdown, "apply_checked_at", new Date().toISOString());
+        markdown = replaceFrontMatterValue(
+          markdown,
+          "apply_checked_at",
+          new Date().toISOString(),
+        );
         if (!dryRun) writeReportMarkdown(path, markdown);
         results.push({
           number,
@@ -25377,7 +25698,12 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
         continue;
       }
     }
-    if (state === "open" && item.kind === "issue" && !isCloseProposal && isCurrentCompleteReport) {
+    if (
+      state === "open" &&
+      item.kind === "issue" &&
+      !isCloseProposal &&
+      isCurrentCompleteReport
+    ) {
       const mutationLeaseBlockReason = currentApplyMutationLeaseBlockReason();
       if (mutationLeaseBlockReason) {
         if (recordReviewLeaseSkip(mutationLeaseBlockReason, false)) break;
@@ -25434,7 +25760,8 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
         (pullNumber, pullRepo) => canClosePairCounterpartInThisRun(pullNumber, pullRepo),
       );
       if (openClosingPullRequestReason) {
-        if (markApplySkipped("skipped_open_closing_pr", openClosingPullRequestReason, true)) break;
+        if (markApplySkipped("skipped_open_closing_pr", openClosingPullRequestReason, true))
+          break;
         continue;
       }
     }
@@ -25569,7 +25896,8 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
           canStartSameAuthorPairCloseInThisRun(counterpartNumber, counterpartKind),
       );
       if (sameAuthorCounterpartReason) {
-        if (markApplySkipped("skipped_same_author_pair", sameAuthorCounterpartReason, true)) break;
+        if (markApplySkipped("skipped_same_author_pair", sameAuthorCounterpartReason, true))
+          break;
         continue;
       }
     }
@@ -25587,7 +25915,11 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
     const labelSyncProgressMessage = issueAdvisoryLabelsChanged
       ? `synced advisory issue labels #${number}`
       : `synced ClawSweeper labels #${number}`;
-    if (needsReviewCommentSync && needsReviewCommentBodySync && shouldCheckCanonicalCommentSync()) {
+    if (
+      needsReviewCommentSync &&
+      needsReviewCommentBodySync &&
+      shouldCheckCanonicalCommentSync()
+    ) {
       const wasStaleCanonicalCommentSyncPending = staleCanonicalCommentSyncPending;
       const mutationBoundaryGuard = applyCanonicalCommentSyncGuard(true);
       if (mutationBoundaryGuard.stopApply) break;
@@ -25625,7 +25957,11 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
     if (needsReviewCommentSync) {
       const staleSyncReason = needsReviewCommentBodySync ? staleReviewCommentReason : null;
       if (staleSyncReason) {
-        markdown = replaceFrontMatterValue(markdown, "apply_checked_at", new Date().toISOString());
+        markdown = replaceFrontMatterValue(
+          markdown,
+          "apply_checked_at",
+          new Date().toISOString(),
+        );
         if (!dryRun) writeReportMarkdown(path, markdown);
         results.push({
           number,
@@ -25637,7 +25973,9 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
         if (processedCount >= processedLimit) break;
         continue;
       }
-      const lockedReason = needsReviewCommentBodySync ? lockedConversationApplyReason(item) : null;
+      const lockedReason = needsReviewCommentBodySync
+        ? lockedConversationApplyReason(item)
+        : null;
       if (lockedReason) {
         const actionTaken: ActionTaken = staleCanonicalCommentSyncPending
           ? "retry_stale_canonical_comment_sync"
@@ -25721,7 +26059,11 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
             continue;
           }
           try {
-            syncedComment = upsertReviewComment(number, markedReviewComment, existingReviewComment);
+            syncedComment = upsertReviewComment(
+              number,
+              markedReviewComment,
+              existingReviewComment,
+            );
             recordMutation();
             const syncedCommentUpdatedAt = commentUpdatedAt(syncedComment);
             if (syncedCommentUpdatedAt) {
@@ -25776,7 +26118,11 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
         if (staleCanonicalCommentSyncPending) {
           markdown = completeStaleCanonicalCommentSyncReport(markdown);
         }
-        markdown = replaceFrontMatterValue(markdown, "apply_checked_at", new Date().toISOString());
+        markdown = replaceFrontMatterValue(
+          markdown,
+          "apply_checked_at",
+          new Date().toISOString(),
+        );
         if (!dryRun) writeReportMarkdown(path, markdown);
         results.push({
           number,
@@ -26013,7 +26359,9 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
     results.push({
       number,
       action: "closed",
-      reason: [closeReasonText(closeReason), closeAppliedCommentReason].filter(Boolean).join("; "),
+      reason: [closeReasonText(closeReason), closeAppliedCommentReason]
+        .filter(Boolean)
+        .join("; "),
       ...(emitEventApplyProof ? { terminalStateVerified: true } : {}),
     });
     logProgress(`closed #${number}`);
@@ -26023,6 +26371,42 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
       return;
     }
     if (processedCount >= processedLimit) break;
+    } catch (error) {
+      applyItemFailed = true;
+      throw error;
+    } finally {
+      if (!applyItemFailed) {
+        const state = applyLedger.items.get(actionLedgerItemKey(entry));
+        if (!applyLedger.terminal && state?.started && !state.terminal) {
+          const closedEntryPath = join(closedDir, file);
+          const currentEntryPath = existsSync(path)
+            ? path
+            : existsSync(closedEntryPath)
+              ? closedEntryPath
+              : entry.path;
+          const currentEntry = existsSync(currentEntryPath)
+            ? {
+                ...entry,
+                path: currentEntryPath,
+                markdown: readFileSync(currentEntryPath, "utf8"),
+              }
+            : entry;
+          recordApplyActionLedgerItemResults({
+            ledger: applyLedger,
+            state,
+            results: results
+              .slice(applyItemResultStart)
+              .filter(
+                (result) => (result.repo ?? targetRepo()) === repo && result.number === number,
+              ),
+            entry: currentEntry,
+            mutationOccurred: mutationByItem.get(`${repo}#${number}`) === true,
+            dryRun,
+          });
+        }
+        activeApplyItem = null;
+      }
+    }
   }
   releaseActiveApplyMutationLease();
   activeApplyItem = null;

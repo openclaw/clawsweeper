@@ -410,6 +410,24 @@ export async function flushWorkflowActionEvents(
   return [...paths].sort();
 }
 
+function workflowActionEventIsRecoverableStart(event: ActionEvent): boolean {
+  return (
+    (event.event_type === ACTION_EVENT_TYPES.reviewBatch ||
+      event.event_type === ACTION_EVENT_TYPES.reviewItem ||
+      event.event_type === ACTION_EVENT_TYPES.applyBatch ||
+      event.event_type === ACTION_EVENT_TYPES.applyAction) &&
+    event.action.status === ACTION_EVENT_STATUSES.started
+  );
+}
+
+function workflowActionEventClosesLifecycle(event: ActionEvent): boolean {
+  if (event.action.status === ACTION_EVENT_STATUSES.started) return false;
+  return !(
+    event.event_type === ACTION_EVENT_TYPES.applyAction &&
+    event.action.status === ACTION_EVENT_STATUSES.executed
+  );
+}
+
 export function interruptOpenWorkflowActionEvents(
   root: string,
   options: {
@@ -427,14 +445,7 @@ export function interruptOpenWorkflowActionEvents(
   }
   const safeRoot = prepareSafeReadRoot(root, "action event spool");
   const groups = [...groupWorkflowActionEvents(readAllSpooledActionEvents(safeRoot)).values()]
-    .filter((group) =>
-      group.some(
-        (event) =>
-          (event.event_type === ACTION_EVENT_TYPES.reviewBatch ||
-            event.event_type === ACTION_EVENT_TYPES.reviewItem) &&
-          event.action.status === ACTION_EVENT_STATUSES.started,
-      ),
-    )
+    .filter((group) => group.some(workflowActionEventIsRecoverableStart))
     .sort((left, right) => {
       const leftKey = actionLedgerJson(left[0]!.producer);
       const rightKey = actionLedgerJson(right[0]!.producer);
@@ -448,42 +459,67 @@ export function interruptOpenWorkflowActionEvents(
         (event) => actionLedgerJson(event.producer) === actionLedgerJson(producer),
       );
       const starts = current
-        .filter(
-          (event) =>
-            (event.event_type === ACTION_EVENT_TYPES.reviewBatch ||
-              event.event_type === ACTION_EVENT_TYPES.reviewItem) &&
-            event.action.status === ACTION_EVENT_STATUSES.started,
-        )
+        .filter(workflowActionEventIsRecoverableStart)
         .sort((left, right) => left.phase_seq - right.phase_seq);
       let written = 0;
       for (const start of starts) {
         const lifecycleKey = workflowActionLifecycleKey(start);
-        if (
-          current.some(
-            (event) =>
-              event.event_id !== start.event_id &&
-              event.action.status !== ACTION_EVENT_STATUSES.started &&
-              workflowActionLifecycleKey(event) === lifecycleKey,
-          )
-        ) {
+        const lifecycleEvents = current.filter(
+          (event) =>
+            event.event_id !== start.event_id && workflowActionLifecycleKey(event) === lifecycleKey,
+        );
+        if (lifecycleEvents.some(workflowActionEventClosesLifecycle)) {
           continue;
         }
+        const mutationEvents = current
+          .filter(
+            (event) =>
+              event.operation_id === start.operation_id &&
+              event.attempt_id === start.attempt_id &&
+              event.action.mutation,
+          )
+          .sort(
+            (left, right) =>
+              left.phase_seq - right.phase_seq || left.event_id.localeCompare(right.event_id),
+          );
+        const lifecycleMutation = lifecycleEvents
+          .filter((event) => event.action.mutation)
+          .sort(
+            (left, right) =>
+              left.phase_seq - right.phase_seq || left.event_id.localeCompare(right.event_id),
+          )
+          .at(-1);
+        const mutationOccurred =
+          start.event_type === ACTION_EVENT_TYPES.applyBatch
+            ? mutationEvents.length > 0
+            : lifecycleMutation !== undefined;
+        const parentEventId =
+          start.event_type === ACTION_EVENT_TYPES.applyAction && lifecycleMutation
+            ? lifecycleMutation.event_id
+            : start.event_id;
         const eventInput: ActionEventInput = {
-          eventKey: actionEventKey("review.interrupted", {
+          eventKey: actionEventKey("workflow.interrupted", {
             startEventId: start.event_id,
             reasonCode,
+            mutationOccurred,
           }),
           operationId: start.operation_id,
           attemptId: start.attempt_id,
-          parentEventId: start.event_id,
+          parentEventId,
           phaseSeq:
-            start.event_type === ACTION_EVENT_TYPES.reviewBatch ? 1_000_000 : start.phase_seq + 2,
-          idempotencyKeySha256: actionIdempotencyKey({
-            operationId: start.operation_id,
-            slot: "interrupted_terminal",
-            eventType: start.event_type,
-            subject: workflowActionSubjectIdentity(start),
-          }),
+            start.event_type === ACTION_EVENT_TYPES.reviewBatch ||
+            start.event_type === ACTION_EVENT_TYPES.applyBatch
+              ? 1_000_000
+              : start.phase_seq + 2,
+          idempotencyKeySha256:
+            start.event_type === ACTION_EVENT_TYPES.applyAction
+              ? start.idempotency_key_sha256
+              : actionIdempotencyKey({
+                  operationId: start.operation_id,
+                  slot: "interrupted_terminal",
+                  eventType: start.event_type,
+                  subject: workflowActionSubjectIdentity(start),
+                }),
           type: start.event_type,
           producer: workflowActionProducerInput(start.producer),
           subject: workflowActionSubjectInput(start.subject),
@@ -492,7 +528,7 @@ export function interruptOpenWorkflowActionEvents(
             status: ACTION_EVENT_STATUSES.failed,
             reasonCode,
             retryable: true,
-            mutation: false,
+            mutation: mutationOccurred,
           },
           ...(start.evidence === undefined
             ? {}
@@ -508,6 +544,7 @@ export function interruptOpenWorkflowActionEvents(
           attributes: {
             completion_reason: "timeout",
             failed_count: 1,
+            ...(mutationOccurred ? { action_count: 1 } : {}),
             partial: true,
           },
           privacy: {

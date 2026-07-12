@@ -446,6 +446,12 @@ test("timeout recovery closes only start-only review attempts before finalizatio
         kind: "issue",
         updatedAt: "2026-07-12T09:01:00Z",
       },
+      {
+        repository: "openclaw/openclaw",
+        number: 44,
+        kind: "pull_request",
+        updatedAt: "2026-07-12T09:02:00Z",
+      },
     ],
   };
   const batch = recordWorkflowPhaseEvent(
@@ -566,11 +572,205 @@ test("timeout recovery closes only start-only review attempts before finalizatio
     events.filter(
       (event) =>
         event.event_type === ACTION_EVENT_TYPES.reviewItem &&
-        event.subject.number === 43 &&
+        (event.subject.number === 43 || event.subject.number === 44) &&
         event.action.status === ACTION_EVENT_STATUSES.failed,
     ).length,
     0,
   );
+  assert.equal(events.filter((event) => event.subject.number === 44).length, 0);
+});
+
+test("timeout recovery preserves hard-killed apply mutation truth and ignores untouched items", () => {
+  const root = tempRoot();
+  const env = workflowEnv({
+    CLAWSWEEPER_ACTION_LEDGER_INVOCATION: "apply-0",
+    GITHUB_ACTION: "__apply",
+    GITHUB_JOB: "apply-existing",
+  });
+  const operationIdentity = {
+    repository: "openclaw/openclaw",
+    checkpoint: "2",
+    candidateRevisions: [
+      { number: 41, sourceRevision: "revision-41" },
+      { number: 42, sourceRevision: "revision-42" },
+      { number: 43, sourceRevision: "revision-43" },
+    ],
+  };
+  const batch = recordWorkflowPhaseEvent(
+    root,
+    {
+      phase: ACTION_EVENT_TYPES.applyBatch,
+      status: ACTION_EVENT_STATUSES.started,
+      reasonCode: ACTION_EVENT_REASON_CODES.selected,
+      retryable: false,
+      mutation: false,
+      identity: { slot: "apply_batch_start" },
+      operation: "apply",
+      operationIdentity,
+      phaseSeq: 1,
+      idempotencyIdentity: { operationIdentity, slot: "apply_batch_start" },
+      component: "apply_decisions",
+      subject: { repository: "openclaw/openclaw", kind: "workflow" },
+    },
+    { env },
+  );
+  assert.ok(batch);
+  const completedStart = recordWorkflowPhaseEvent(
+    root,
+    {
+      phase: ACTION_EVENT_TYPES.applyAction,
+      status: ACTION_EVENT_STATUSES.started,
+      reasonCode: ACTION_EVENT_REASON_CODES.selected,
+      retryable: false,
+      mutation: false,
+      identity: { slot: "apply_item_start", number: 41 },
+      operation: "apply",
+      operationIdentity,
+      parentEventId: batch.event_id,
+      phaseSeq: 10,
+      idempotencyIdentity: {
+        operation: "apply",
+        slot: "apply_item",
+        repository: "openclaw/openclaw",
+        number: 41,
+        sourceRevision: "revision-41",
+      },
+      component: "apply_decisions",
+      subject: {
+        repository: "openclaw/openclaw",
+        kind: "pull_request",
+        number: 41,
+        sourceRevision: "revision-41",
+      },
+    },
+    { env },
+  );
+  assert.ok(completedStart);
+  recordWorkflowPhaseEvent(
+    root,
+    {
+      phase: ACTION_EVENT_TYPES.applyAction,
+      status: ACTION_EVENT_STATUSES.completed,
+      reasonCode: ACTION_EVENT_REASON_CODES.completed,
+      retryable: false,
+      mutation: false,
+      identity: { slot: "apply_result", number: 41 },
+      operation: "apply",
+      operationIdentity,
+      parentEventId: completedStart.event_id,
+      phaseSeq: 12,
+      idempotencyIdentity: {
+        operation: "apply",
+        slot: "apply_item",
+        repository: "openclaw/openclaw",
+        number: 41,
+        sourceRevision: "revision-41",
+      },
+      component: "apply_decisions",
+      subject: {
+        repository: "openclaw/openclaw",
+        kind: "pull_request",
+        number: 41,
+        sourceRevision: "revision-41",
+      },
+    },
+    { env },
+  );
+  const activeStart = recordWorkflowPhaseEvent(
+    root,
+    {
+      phase: ACTION_EVENT_TYPES.applyAction,
+      status: ACTION_EVENT_STATUSES.started,
+      reasonCode: ACTION_EVENT_REASON_CODES.selected,
+      retryable: false,
+      mutation: false,
+      identity: { slot: "apply_item_start", number: 42 },
+      operation: "apply",
+      operationIdentity,
+      parentEventId: batch.event_id,
+      phaseSeq: 30,
+      idempotencyIdentity: {
+        operation: "apply",
+        slot: "apply_item",
+        repository: "openclaw/openclaw",
+        number: 42,
+        sourceRevision: "revision-42",
+      },
+      component: "apply_decisions",
+      subject: {
+        repository: "openclaw/openclaw",
+        kind: "pull_request",
+        number: 42,
+        sourceRevision: "revision-42",
+      },
+    },
+    { env },
+  );
+  assert.ok(activeStart);
+  const mutation = recordWorkflowPhaseEvent(
+    root,
+    {
+      phase: ACTION_EVENT_TYPES.applyAction,
+      status: ACTION_EVENT_STATUSES.executed,
+      reasonCode: ACTION_EVENT_REASON_CODES.completed,
+      retryable: true,
+      mutation: true,
+      identity: { slot: "apply_mutation_observed", number: 42 },
+      operation: "apply",
+      operationIdentity,
+      parentEventId: activeStart.event_id,
+      phaseSeq: 31,
+      idempotencyIdentity: {
+        operation: "apply",
+        slot: "apply_item",
+        repository: "openclaw/openclaw",
+        number: 42,
+        sourceRevision: "revision-42",
+      },
+      component: "apply_decisions",
+      subject: {
+        repository: "openclaw/openclaw",
+        kind: "pull_request",
+        number: 42,
+        sourceRevision: "revision-42",
+      },
+    },
+    { env },
+  );
+  assert.ok(mutation);
+
+  assert.equal(
+    interruptOpenWorkflowActionEvents(root, {
+      env,
+      now: () => new Date("2026-07-12T10:05:00Z"),
+    }),
+    2,
+  );
+  assert.equal(interruptOpenWorkflowActionEvents(root, { env }), 0);
+
+  const events = readAllSpooledActionEvents(root);
+  const interrupted = events.filter(
+    (event) =>
+      event.action.status === ACTION_EVENT_STATUSES.failed &&
+      event.action.reason_code === ACTION_EVENT_REASON_CODES.timeout,
+  );
+  assert.equal(interrupted.length, 2);
+  assert.ok(interrupted.every((event) => event.action.mutation));
+  const interruptedItem = interrupted.find(
+    (event) => event.event_type === ACTION_EVENT_TYPES.applyAction && event.subject.number === 42,
+  );
+  assert.ok(interruptedItem);
+  assert.equal(interruptedItem.parent_event_id, mutation.event_id);
+  assert.equal(interruptedItem.idempotency_key_sha256, activeStart.idempotency_key_sha256);
+  assert.equal(
+    interrupted.filter(
+      (event) =>
+        event.event_type === ACTION_EVENT_TYPES.applyAction &&
+        (event.subject.number === 41 || event.subject.number === 43),
+    ).length,
+    0,
+  );
+  assert.equal(events.filter((event) => event.subject.number === 43).length, 0);
 });
 
 test("workflow retries preserve operation and idempotency identity but change attempts", () => {
