@@ -9,6 +9,7 @@ import {
   dispatchClaimLookupKeys,
   dispatchReceiptKeyMaterial,
   exactCommentVersionFastPathDecision,
+  exactCommentVersionMatchesLive,
   hasSuccessfulDispatchExecutionJob,
   isGitHubAppIntegrationAuthError,
   isAllowedMutationActor,
@@ -81,6 +82,32 @@ test("edited comments and changed body bytes always use the full router path", (
       verificationLedgers: [structuredClone(ledger), structuredClone(ledger)],
     }),
     { suppress: false, reason: "body_digest_mismatch" },
+  );
+});
+
+test("terminal cleanup requires the same live comment version", () => {
+  const body = "@clawsweeper re-review";
+  const command = {
+    comment_id: "456",
+    comment_updated_at: "2026-07-12T20:00:00Z",
+    comment_body_sha256: commentBodySha256(body),
+  };
+
+  assert.equal(
+    exactCommentVersionMatchesLive(command, {
+      id: 456,
+      updated_at: "2026-07-12T20:00:00Z",
+      body,
+    }),
+    true,
+  );
+  assert.equal(
+    exactCommentVersionMatchesLive(command, {
+      id: 456,
+      updated_at: "2026-07-12T20:01:00Z",
+      body: `${body} now`,
+    }),
+    false,
   );
 });
 

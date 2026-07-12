@@ -1991,11 +1991,16 @@ test("comment router durably claims dispatch commands and recovers exact workflo
 test("exact comment fast path preserves terminal acknowledgement cleanup", () => {
   const source = readFileSync("src/repair/comment-router.ts", "utf8");
   const cleanupBlock = source.slice(
-    source.indexOf('measure("cleanup_exact_comment_version"'),
+    source.indexOf('measure("verify_exact_comment_version_cleanup"'),
     source.indexOf("if (execute && !exactCommentVersionFastPath.suppress)"),
   );
 
   assert.match(cleanupBlock, /assertMutationActorIsClawsweeperBot\(\)/);
+  assert.match(
+    cleanupBlock,
+    /exactCommentVersionStillCurrent\(exactCommentVersionFastPathCommand\)/,
+  );
+  assert.match(cleanupBlock, /skipped_source_drift/);
   assert.match(cleanupBlock, /cleanupTerminalCommentAck\(exactCommentVersionFastPathCommand\)/);
   assert.match(
     cleanupBlock,

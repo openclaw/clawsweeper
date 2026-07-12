@@ -95,6 +95,7 @@ import {
   dispatchClaimLookupKeys,
   dispatchReceiptKeyMaterial,
   exactCommentVersionFastPathDecision,
+  exactCommentVersionMatchesLive,
   hasSuccessfulDispatchExecutionJob,
   issueNumberFromUrl,
   isAllowedMutationActor,
@@ -341,11 +342,17 @@ const report: LooseRecord = {
 };
 
 if (execute && exactCommentVersionFastPath.suppress && exactCommentVersionFastPathCommand) {
-  measure("cleanup_exact_comment_version", () => {
-    assertMutationActorIsClawsweeperBot();
-    cleanupTerminalCommentAck(exactCommentVersionFastPathCommand);
-    clearTerminalMaintainerCommandReaction(exactCommentVersionFastPathCommand);
-  });
+  const versionStillCurrent = measure("verify_exact_comment_version_cleanup", () =>
+    exactCommentVersionStillCurrent(exactCommentVersionFastPathCommand),
+  );
+  report.exact_comment_version_cleanup = versionStillCurrent ? "completed" : "skipped_source_drift";
+  if (versionStillCurrent) {
+    measure("cleanup_exact_comment_version", () => {
+      assertMutationActorIsClawsweeperBot();
+      cleanupTerminalCommentAck(exactCommentVersionFastPathCommand);
+      clearTerminalMaintainerCommandReaction(exactCommentVersionFastPathCommand);
+    });
+  }
 }
 
 if (execute && !exactCommentVersionFastPath.suppress) {
@@ -4214,6 +4221,17 @@ function cleanupTerminalCommentAck(command: LooseRecord) {
   if (id <= 0) return;
   ghBestEffort(["api", `repos/${command.repo}/issues/comments/${id}`, "--method", "DELETE"]);
   issueCommentsCache.delete(Number(command.issue_number));
+}
+
+function exactCommentVersionStillCurrent(command: LooseRecord) {
+  try {
+    return exactCommentVersionMatchesLive(command, fetchIssueComment(command.comment_id));
+  } catch (error) {
+    console.warn(
+      `[comment-router] warning: exact comment cleanup verification failed for ${command.repo}#${command.issue_number}: ${compactText(ghErrorText(error), 160)}`,
+    );
+    return false;
+  }
 }
 
 function convergePrecreatedCommandAckCommentsInner(command: LooseRecord) {

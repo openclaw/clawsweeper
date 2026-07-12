@@ -150,6 +150,16 @@ export function commentBodySha256(body: JsonValue) {
     .digest("hex");
 }
 
+export function exactCommentVersionMatchesLive(command: LooseRecord, live: JsonValue) {
+  if (!live || typeof live !== "object" || Array.isArray(live)) return false;
+  const comment = live as LooseRecord;
+  return (
+    String(comment.id ?? "") === String(command.comment_id ?? "") &&
+    String(comment.updated_at ?? "") === String(command.comment_updated_at ?? "") &&
+    commentBodySha256(comment.body) === String(command.comment_body_sha256 ?? "")
+  );
+}
+
 export function exactCommentVersionFastPathDecision({
   authenticated,
   sourceAction,
