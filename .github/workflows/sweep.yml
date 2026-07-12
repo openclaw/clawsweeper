@@ -1690,6 +1690,7 @@ jobs:
         with:
           name: clawsweeper-runtime-dist
           path: clawsweeper/.artifacts/review-runtime.tar.gz
+          include-hidden-files: true
           if-no-files-found: error
           retention-days: 1
 
