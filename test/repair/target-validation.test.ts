@@ -390,6 +390,27 @@ test("validation parser rejects snapshot-writing and formatter mutation flags", 
     "GOOS",
     "GOARCH",
   ]);
+  assert.deepEqual(parseAllowedValidationCommand("pnpm format:check"), ["pnpm", "format:check"]);
+  assert.deepEqual(parseAllowedValidationCommand("pnpm run fmt:verify"), [
+    "pnpm",
+    "run",
+    "fmt:verify",
+  ]);
+  assert.deepEqual(parseAllowedValidationCommand("python -u -m pytest tests/unit"), [
+    "python",
+    "-u",
+    "-m",
+    "pytest",
+    "tests/unit",
+  ]);
+  assert.deepEqual(parseAllowedValidationCommand("go mod verify"), ["go", "mod", "verify"]);
+  assert.deepEqual(parseAllowedValidationCommand("go mod graph"), ["go", "mod", "graph"]);
+  assert.deepEqual(parseAllowedValidationCommand("go mod why ./..."), [
+    "go",
+    "mod",
+    "why",
+    "./...",
+  ]);
 });
 
 test("validation preflight defers workspace-scoped scripts to the package manager", () => {
@@ -1116,6 +1137,51 @@ test("bun-based target toolchain installs deps and runs configured validation", 
     "install --frozen-lockfile",
     "run check",
   ]);
+});
+
+test("npm target setup without a lockfile preserves a clean proof checkout", () => {
+  const cwd = gitPackageFixture({ check: "node check.js" });
+  git(cwd, "add", ".");
+  git(cwd, "commit", "-m", "initial");
+  attachOrigin(cwd);
+  const binDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-fake-npm-bin-"));
+  const npmPath = path.join(binDir, "npm.js");
+  const logPath = path.join(binDir, "npm.log");
+  fs.writeFileSync(
+    npmPath,
+    `const fs = require("node:fs");
+const path = require("node:path");
+const args = process.argv.slice(2);
+fs.appendFileSync(${JSON.stringify(logPath)}, args.join(" ") + "\\n");
+if (!args.includes("--no-package-lock")) {
+  fs.writeFileSync(path.join(process.cwd(), "package-lock.json"), "{}\\n");
+}
+fs.mkdirSync(path.join(process.cwd(), "node_modules"), { recursive: true });
+`,
+  );
+  const previousNpmBin = process.env.NPM_BIN;
+  const previousNpmBinArgs = process.env.NPM_BIN_ARGS;
+  Object.assign(process.env, mockCommandBinEnv("npm", npmPath));
+  try {
+    prepareTargetToolchain(cwd, {
+      ...validationOptions("openclaw/example", {
+        toolchain: {
+          packageManager: "npm",
+          baseValidationCommands: ["npm run check"],
+          changedGate: null,
+        },
+      }),
+      installTargetDeps: true,
+      installTimeoutMs: FAKE_TOOLCHAIN_TIMEOUT_MS,
+      setupTimeoutMs: FAKE_TOOLCHAIN_TIMEOUT_MS,
+    });
+  } finally {
+    restoreEnv("NPM_BIN", previousNpmBin);
+    restoreEnv("NPM_BIN_ARGS", previousNpmBinArgs);
+  }
+
+  assert.equal(git(cwd, "status", "--porcelain"), "");
+  assert.equal(fs.readFileSync(logPath, "utf8").trim(), "install --no-package-lock");
 });
 
 test("bun-based target toolchain hides pnpm-injected npm_config_user_agent from preinstall hooks", () => {

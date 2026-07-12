@@ -488,7 +488,6 @@ function hasUnsafePackageManagerPathOption(parts: readonly string[]) {
 
 function hasMutatingValidationFlag(parts: readonly string[]) {
   const denied = new Set([
-    "-u",
     "--fix",
     "--update",
     "--update-snapshot",
@@ -497,7 +496,27 @@ function hasMutatingValidationFlag(parts: readonly string[]) {
     "--updateSnapshots",
     "--write",
   ]);
-  return stripEnvPrefix(parts).some((part) => denied.has(part.split("=", 1)[0] ?? ""));
+  const commandParts = stripEnvPrefix(parts);
+  if (commandParts.some((part) => denied.has(part.split("=", 1)[0] ?? ""))) return true;
+  if (!commandParts.includes("-u")) return false;
+
+  const packageScript = packageScriptRequirement(commandParts)?.name ?? "";
+  if (/^(?:test|test:serial)(?::|$)/.test(packageScript)) return true;
+  const executable = snapshotRunnerExecutable(commandParts);
+  return executable === "jest" || executable === "vitest";
+}
+
+function snapshotRunnerExecutable(parts: readonly string[]): string {
+  const commandParts = stripEnvPrefix(parts);
+  const packageInvocation = packageManagerInvocation(commandParts);
+  if (packageInvocation?.executable === "pnpm" && packageInvocation.command === "exec") {
+    return packageInvocation.args[0] ?? "";
+  }
+  return commandParts[0] ?? "";
+}
+
+function isReadOnlyFormatterScript(script: string): boolean {
+  return /^(?:format|fmt):(?:check|verify)$/.test(script);
 }
 
 function hasMutatingValidationCommand(parts: readonly string[]) {
@@ -520,6 +539,7 @@ function hasMutatingValidationCommand(parts: readonly string[]) {
 
   if (
     packageScript &&
+    !isReadOnlyFormatterScript(packageScript) &&
     /^(?:format|fmt|fix|write|update)(?::|$)|(?::)(?:fix|write|update)$/.test(packageScript)
   ) {
     return true;
@@ -552,7 +572,10 @@ function hasMutatingValidationCommand(parts: readonly string[]) {
           (arg) => arg === "-w" || arg.startsWith("-w=") || arg === "-u" || arg.startsWith("-u="),
         );
     }
-    return ["clean", "fmt", "generate", "get", "install", "mod", "work"].includes(subcommand);
+    if (subcommand === "mod") {
+      return !["graph", "verify", "why"].includes(commandParts[2] ?? "");
+    }
+    return ["clean", "fmt", "generate", "get", "install", "work"].includes(subcommand);
   }
   if (executable === "cargo") {
     if (subcommand === "fmt") return !commandParts.includes("--check");

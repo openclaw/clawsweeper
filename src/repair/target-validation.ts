@@ -373,7 +373,9 @@ function prepareNpmToolchain({
   validationEnv: NodeJS.ProcessEnv;
   installTimeoutMs: number;
 }) {
-  const installArgs = fs.existsSync(path.join(cwd, "package-lock.json")) ? ["ci"] : ["install"];
+  const installArgs = fs.existsSync(path.join(cwd, "package-lock.json"))
+    ? ["ci"]
+    : ["install", "--no-package-lock"];
   run("npm", installArgs, { cwd, env: validationEnv, timeoutMs: installTimeoutMs });
 }
 
