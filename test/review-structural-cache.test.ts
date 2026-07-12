@@ -70,6 +70,7 @@ function pullSnapshot(overrides: Partial<ReviewStructuralSnapshot> = {}): Review
       baseSha: BASE_SHA,
       draft: false,
       mergeable: "MERGEABLE",
+      mergeStateStatus: "CLEAN",
       additions: 10,
       deletions: 2,
       changedFiles: 3,
@@ -203,6 +204,7 @@ function graphqlNode(kind: "issue" | "pull_request") {
     baseRefOid: BASE_SHA,
     isDraft: false,
     mergeable: "MERGEABLE",
+    mergeStateStatus: "CLEAN",
     additions: 10,
     deletions: 2,
     changedFiles: 3,
@@ -469,6 +471,19 @@ test("changed PR review state forces hydration", () => {
             state: "CHANGES_REQUESTED",
           },
         ],
+      },
+    }),
+  );
+  assert.equal(decision({ priorRecord, currentRecord }).reason, "source_changed");
+});
+
+test("changed PR merge-state status forces hydration", () => {
+  const priorRecord = record(pullSnapshot());
+  const currentRecord = record(
+    pullSnapshot({
+      pull: {
+        ...pullSnapshot().pull!,
+        mergeStateStatus: "BLOCKED",
       },
     }),
   );

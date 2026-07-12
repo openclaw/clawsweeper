@@ -34,6 +34,7 @@ export interface ReviewStructuralPullMetadata {
   baseSha: string;
   draft: boolean;
   mergeable: string;
+  mergeStateStatus: string;
   additions: number;
   deletions: number;
   changedFiles: number;
@@ -229,6 +230,7 @@ export function reviewStructuralQuery(kind: ReviewStructuralKind): string {
         baseRefOid
         isDraft
         mergeable
+        mergeStateStatus
         additions
         deletions
         changedFiles
@@ -551,6 +553,7 @@ export function reviewStructuralRecordFromGraphql(
       !baseSha ||
       typeof node.isDraft !== "boolean" ||
       !stringOrUndefined(node.mergeable) ||
+      !stringOrUndefined(node.mergeStateStatus) ||
       additions === null ||
       deletions === null ||
       changedFiles === null ||
@@ -563,6 +566,7 @@ export function reviewStructuralRecordFromGraphql(
       baseSha,
       draft: node.isDraft,
       mergeable: String(node.mergeable),
+      mergeStateStatus: String(node.mergeStateStatus),
       additions,
       deletions,
       changedFiles,
@@ -651,6 +655,7 @@ function sourceRevision(snapshot: ReviewStructuralSnapshot): string {
               baseSha: snapshot.pull.baseSha,
               draft: snapshot.pull.draft,
               mergeable: snapshot.pull.mergeable,
+              mergeStateStatus: snapshot.pull.mergeStateStatus,
               additions: snapshot.pull.additions,
               deletions: snapshot.pull.deletions,
               changedFiles: snapshot.pull.changedFiles,
@@ -676,6 +681,10 @@ function validPullMetadata(pull: ReviewStructuralPullMetadata): boolean {
   return (
     SHA_PATTERN.test(pull.headSha) &&
     SHA_PATTERN.test(pull.baseSha) &&
+    pull.mergeable.length > 0 &&
+    pull.mergeable.length <= 64 &&
+    pull.mergeStateStatus.length > 0 &&
+    pull.mergeStateStatus.length <= 64 &&
     Number.isSafeInteger(pull.additions) &&
     pull.additions >= 0 &&
     Number.isSafeInteger(pull.deletions) &&
