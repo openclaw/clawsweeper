@@ -2044,6 +2044,66 @@ test("staged target proof fails if an allowlisted script mutates the checkout", 
   assert.equal(git(cwd, "rev-parse", "HEAD"), head);
 });
 
+test("staged proof rejects ignored dependency poisoning before later commands", () => {
+  const cwd = gitPackageFixture({
+    poison: "node poison.js",
+    verify: "node verify.js",
+  });
+  const dependencyPath = path.join(cwd, "node_modules", "fixture-dependency", "state.js");
+  const markerPath = path.join(cwd, "poison-used.txt");
+  fs.mkdirSync(path.dirname(dependencyPath), { recursive: true });
+  fs.writeFileSync(dependencyPath, "clean\n");
+  fs.writeFileSync(
+    path.join(cwd, "poison.js"),
+    [
+      "const fs = require('node:fs');",
+      "const file = 'node_modules/fixture-dependency/state.js';",
+      "const before = fs.statSync(file);",
+      "fs.writeFileSync(file, 'owned\\n');",
+      "fs.utimesSync(file, before.atime, before.mtime);",
+      "",
+    ].join("\n"),
+  );
+  fs.writeFileSync(
+    path.join(cwd, "verify.js"),
+    [
+      "const fs = require('node:fs');",
+      "if (fs.readFileSync('node_modules/fixture-dependency/state.js', 'utf8') === 'owned\\n') {",
+      "  fs.writeFileSync('poison-used.txt', 'used\\n');",
+      "}",
+      "",
+    ].join("\n"),
+  );
+  git(cwd, "add", ".");
+  git(cwd, "commit", "-m", "initial");
+  attachOrigin(cwd);
+
+  assert.throws(
+    () =>
+      runStagedValidationProof(
+        ["pnpm poison", "pnpm verify"],
+        cwd,
+        validationOptions("steipete/example", {
+          toolchain: {
+            packageManager: "pnpm",
+            baseValidationCommands: [],
+            changedGate: null,
+          },
+        }),
+      ),
+    (error) => {
+      assert.match(
+        error.message,
+        /mutated ignored proof input surface: node_modules\/fixture-dependency\/state\.js/,
+      );
+      assert.equal(error.trace.status, "failed");
+      return true;
+    },
+  );
+  assert.equal(git(cwd, "status", "--porcelain"), "");
+  assert.equal(fs.existsSync(markerPath), false);
+});
+
 test("staged target proof resolves environment defaults before direct spawn", () => {
   const cwd = gitPackageFixture({
     qa: "node qa.js",

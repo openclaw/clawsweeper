@@ -77,6 +77,10 @@ checkpoint, and status-only commits are intentionally omitted.
   the repaired checkout, and limited package-manager proof commands to explicit
   read-only script or runner forms while rejecting lifecycle, registry, and
   account mutations across pnpm, npm, Bun, and Yarn.
+- Snapshotted every staged-proof checkout input, including ignored dependency
+  and tooling trees plus symlink targets, before execution and revalidated it
+  around every command so one stage cannot poison a later stage while Git
+  remains clean.
 - Replaced the unsupported GitHub installation identity probe with pinned
   `create-github-app-token` App slug and installation outputs plus App IDs
   derived from the authenticated slug, rejected

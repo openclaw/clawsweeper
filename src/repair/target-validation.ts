@@ -428,6 +428,7 @@ export function runStagedValidationProof(
   if (checkoutIdentity.status) {
     throw new Error("staged proof requires a clean validation checkout");
   }
+  const proofInputSnapshot = validationProofInputSnapshot(cwd);
   const validationTimeoutMs = targetValidationTimeoutMs(
     "CLAWSWEEPER_TARGET_VALIDATION_TIMEOUT_MS",
     options.validationTimeoutMs ?? DEFAULT_TARGET_VALIDATION_TIMEOUT_MS,
@@ -461,6 +462,7 @@ export function runStagedValidationProof(
         executed,
         baseRef,
         checkoutIdentity,
+        proofInputSnapshot,
       }),
   });
   return { ...result, plan };
@@ -479,6 +481,7 @@ export function replayStagedValidationProof(
   if (checkoutIdentity.status) {
     throw new Error("staged proof replay requires a clean validation checkout");
   }
+  const proofInputSnapshot = validationProofInputSnapshot(cwd);
   const validationTimeoutMs = targetValidationTimeoutMs(
     "CLAWSWEEPER_TARGET_VALIDATION_TIMEOUT_MS",
     options.validationTimeoutMs ?? DEFAULT_TARGET_VALIDATION_TIMEOUT_MS,
@@ -518,6 +521,7 @@ export function replayStagedValidationProof(
         executed,
         baseRef,
         checkoutIdentity,
+        proofInputSnapshot,
       });
     },
   });
@@ -593,6 +597,7 @@ function runValidationPlanCommand({
   executed,
   baseRef,
   checkoutIdentity,
+  proofInputSnapshot,
 }: {
   parts: string[];
   displayParts: string[];
@@ -604,12 +609,14 @@ function runValidationPlanCommand({
   executed: Set<string>;
   baseRef: string;
   checkoutIdentity: ValidationCheckoutIdentity;
+  proofInputSnapshot: ValidationProofInputSnapshot;
 }) {
   const rendered = displayParts.join(" ");
   const commandIdentity = JSON.stringify(parts);
   if (executed.has(commandIdentity)) {
     return { executedCommands: [], reason: "exact command already passed" };
   }
+  assertValidationProofInputSnapshot(cwd, proofInputSnapshot);
   const startedAt = Date.now();
   while (true) {
     const remainingBudgetMs = remainingCommandBudget(timeoutMs, startedAt);
@@ -623,6 +630,7 @@ function runValidationPlanCommand({
         timeoutMs: remainingBudgetMs,
       });
       assertValidationCheckoutIdentity(cwd, baseRef, checkoutIdentity);
+      assertValidationProofInputSnapshot(cwd, proofInputSnapshot);
       executed.add(commandIdentity);
       return {
         executedCommands: [rendered],
@@ -633,6 +641,7 @@ function runValidationPlanCommand({
       };
     } catch (error) {
       assertValidationCheckoutIdentity(cwd, baseRef, checkoutIdentity);
+      assertValidationProofInputSnapshot(cwd, proofInputSnapshot);
       const remainingBudgetMs = remainingCommandBudget(timeoutMs, startedAt);
       if (
         remainingBudgetMs >= MIN_VALIDATION_RETRY_BUDGET_MS &&
@@ -662,6 +671,8 @@ type ValidationCheckoutIdentity = {
   baseSha: string;
   status: string;
 };
+
+type ValidationProofInputSnapshot = Map<string, string>;
 
 type ValidationSourceIdentity = {
   headSha: string;
@@ -709,6 +720,78 @@ function assertValidationCheckoutIdentity(
   ) {
     throw new Error("unsafe validation command mutated checkout or proof identity");
   }
+}
+
+function validationProofInputSnapshot(cwd: string): ValidationProofInputSnapshot {
+  const root = path.resolve(cwd);
+  const snapshot: ValidationProofInputSnapshot = new Map();
+  const visitedDirectories = new Set<string>();
+
+  const visit = (entryPath: string, relativePath: string) => {
+    if (relativePath === ".git" || relativePath.startsWith(`.git${path.sep}`)) return;
+    const stat = fs.lstatSync(entryPath, { bigint: true });
+    snapshot.set(relativePath, validationProofInputSignature(stat));
+
+    let directoryPath = entryPath;
+    if (stat.isSymbolicLink()) {
+      snapshot.set(`${relativePath}\0link`, fs.readlinkSync(entryPath));
+      const targetPath = fs.realpathSync(entryPath);
+      const targetStat = fs.statSync(targetPath, { bigint: true });
+      snapshot.set(`${relativePath}\0target`, validationProofInputSignature(targetStat));
+      if (!targetStat.isDirectory()) return;
+      directoryPath = targetPath;
+    } else if (!stat.isDirectory()) {
+      return;
+    }
+
+    const realDirectory = fs.realpathSync(directoryPath);
+    if (visitedDirectories.has(realDirectory)) return;
+    visitedDirectories.add(realDirectory);
+    for (const name of fs.readdirSync(directoryPath).sort()) {
+      visit(path.join(directoryPath, name), path.join(relativePath, name));
+    }
+  };
+
+  for (const name of fs.readdirSync(root).sort()) {
+    visit(path.join(root, name), name);
+  }
+  return snapshot;
+}
+
+function validationProofInputSignature(stat: fs.BigIntStats) {
+  return [
+    stat.mode,
+    stat.dev,
+    stat.ino,
+    stat.size,
+    stat.mtimeNs,
+    stat.ctimeNs,
+    stat.isDirectory() ? "directory" : stat.isSymbolicLink() ? "symlink" : "file",
+  ].join(":");
+}
+
+function assertValidationProofInputSnapshot(cwd: string, expected: ValidationProofInputSnapshot) {
+  const actual = validationProofInputSnapshot(cwd);
+  if (actual.size === expected.size) {
+    let matches = true;
+    for (const [entryPath, signature] of expected) {
+      if (actual.get(entryPath) !== signature) {
+        matches = false;
+        break;
+      }
+    }
+    if (matches) return;
+  }
+
+  const changedPath = [...new Set([...expected.keys(), ...actual.keys()])]
+    .sort((left, right) => {
+      const depth = right.split(path.sep).length - left.split(path.sep).length;
+      return depth || left.localeCompare(right);
+    })
+    .find((entryPath) => expected.get(entryPath) !== actual.get(entryPath));
+  throw new Error(
+    `unsafe validation command mutated ignored proof input surface: ${changedPath ?? "unknown"}`,
+  );
 }
 
 function remainingCommandBudget(timeoutMs: number, startedAt: number) {
