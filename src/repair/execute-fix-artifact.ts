@@ -127,6 +127,7 @@ import {
   type TargetValidationOptions,
 } from "./target-validation.js";
 import {
+  isPassedStagedProofBundle,
   stagedProofBundle,
   stagedProofSummary,
   stagedProofTraceFromError,
@@ -2384,15 +2385,29 @@ function editValidatePrepareMerge({
         })
       : null;
   enforceFinalRepairContract({ fixArtifact, targetDir, baseBranch });
+  const commit = run("git", ["rev-parse", "HEAD"], { cwd: targetDir }).trim();
+  const validatedBaseSha = String(codexReview.final_base_sync?.target_base_sha ?? targetBaseSha);
+  ensureFinalStagedProof({
+    fixArtifact,
+    targetDir,
+    baseBranch,
+    sourceHead: repairDeltaBaseHead,
+    validatedHeadSha: commit,
+    validatedBaseSha,
+  });
   if (hasRepairContract || historyCompaction?.status === "compacted") {
     pushCheckpoint?.();
   }
-  const commit = run("git", ["rev-parse", "HEAD"], { cwd: targetDir }).trim();
   return {
     commit,
     checkpoint_commits: checkpointCommits,
     history_compaction: historyCompaction,
-    merge_preflight: buildMergePreflight({ fixArtifact, codexReview }),
+    merge_preflight: buildMergePreflight({
+      fixArtifact,
+      codexReview,
+      validatedHeadSha: commit,
+      validatedBaseSha,
+    }),
   };
 }
 
@@ -3010,7 +3025,13 @@ function codexReviewFailureSummary(review: LooseRecord | null): string {
 
 function isFixableValidationError(error: JsonValue) {
   const message = String(error?.message ?? error);
-  if (/no merge base|validation_script_missing/i.test(message)) return false;
+  if (
+    /no merge base|validation_script_missing|mutated checkout|proof identity|clean validation checkout/i.test(
+      message,
+    )
+  ) {
+    return false;
+  }
   return /validation command failed|git diff --check/i.test(message);
 }
 
@@ -3044,6 +3065,41 @@ function runTargetValidationProof(
       });
     }
     throw error;
+  }
+}
+
+function ensureFinalStagedProof({
+  fixArtifact,
+  targetDir,
+  baseBranch,
+  sourceHead,
+  validatedHeadSha,
+  validatedBaseSha,
+}: LooseRecord) {
+  const latest = validationProofTraces.at(-1);
+  if (
+    latest?.status === "passed" &&
+    latest.validated_head_sha === validatedHeadSha &&
+    latest.validated_base_sha === validatedBaseSha
+  ) {
+    return;
+  }
+  const validationOptions = {
+    ...currentTargetValidationOptions(fixArtifact.likely_files ?? []),
+    pinnedBaseRef: validatedBaseSha,
+  };
+  const validationPlan = repairDeltaValidationPlan(
+    { fixArtifact, targetDir, sourceHead },
+    validationOptions,
+  );
+  runTargetValidationProof(validationPlan.commands, targetDir, validationPlan.options, baseBranch);
+  const finalTrace = validationProofTraces.at(-1);
+  if (
+    finalTrace?.status !== "passed" ||
+    finalTrace.validated_head_sha !== validatedHeadSha ||
+    finalTrace.validated_base_sha !== validatedBaseSha
+  ) {
+    throw new Error("final staged proof is not bound to the final repair head and base");
   }
 }
 
@@ -3340,10 +3396,23 @@ function isCleanCodexReview(review: LooseRecord) {
   );
 }
 
-function buildMergePreflight({ fixArtifact, codexReview }: LooseRecord) {
+function buildMergePreflight({
+  fixArtifact,
+  codexReview,
+  validatedHeadSha,
+  validatedBaseSha,
+}: LooseRecord) {
   const validationCommands = codexReview.validation_commands_run?.length
     ? codexReview.validation_commands_run
     : fixArtifact.validation_commands;
+  const validationProof = stagedProofBundle(validationProofTraces);
+  if (
+    !isPassedStagedProofBundle(validationProof) ||
+    validationProof.validated_head_sha !== validatedHeadSha ||
+    validationProof.validated_base_sha !== validatedBaseSha
+  ) {
+    throw new Error("merge preflight staged proof is not bound to the final repair head and base");
+  }
   return {
     target: null,
     security_status: "cleared",
@@ -3367,7 +3436,9 @@ function buildMergePreflight({ fixArtifact, codexReview }: LooseRecord) {
         : [`Codex /review passed after agentic fix loop: ${codexReview.summary ?? "clean"}`],
     },
     validation_commands: validationCommands,
-    validation_proof: stagedProofBundle(validationProofTraces),
+    validation_proof: validationProof,
+    validated_head_sha: validatedHeadSha,
+    validated_base_sha: validatedBaseSha,
     final_base_sync: codexReview.final_base_sync ?? null,
   };
 }

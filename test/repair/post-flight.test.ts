@@ -6,8 +6,15 @@ import path from "node:path";
 import test from "node:test";
 
 import { mockGhBinEnv } from "../helpers.ts";
+import {
+  buildStagedProofPlan,
+  executeStagedProofPlan,
+  stagedProofBundle,
+} from "../../dist/repair/staged-proof-gates.js";
 
 const repoRoot = process.cwd();
+const MERGE_HEAD_SHA = "a".repeat(40);
+const MERGE_BASE_SHA = "c".repeat(40);
 
 test("issue implementation post-flight waits for green PR checks without merging", () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-post-flight-"));
@@ -244,7 +251,7 @@ test("issue implementation post-flight waits for checks to be created", () => {
   }
 });
 
-test("merge post-flight waits when only ignored checks exist", () => {
+test("merge post-flight rejects stale head and base proof before clean checks", () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-post-flight-"));
   const fakeBin = path.join(tmp, "bin");
   const jobPath = path.join(tmp, "job.md");
@@ -266,10 +273,10 @@ test("merge post-flight waits when only ignored checks exist", () => {
       "  const merged = fs.existsSync(process.env.FAKE_GH_MERGED_FILE);",
       "  process.stdout.write(JSON.stringify({",
       "    number: 123, state: merged ? 'closed' : 'open', title: 'fix(ui): preserve source config',",
-      "    draft: false, labels: [], base: { ref: 'main' },",
+      `    draft: false, labels: [], base: { ref: 'main', sha: '${MERGE_BASE_SHA}' },`,
       "    merged_at: merged ? '2026-05-24T00:42:00Z' : null,",
       "    merge_commit_sha: merged ? 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' : null,",
-      "    head: { sha: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' },",
+      `    head: { sha: '${MERGE_HEAD_SHA}' },`,
       "  }));",
       "  process.exit(0);",
       "}",
@@ -310,23 +317,73 @@ test("merge post-flight waits when only ignored checks exist", () => {
   writeMergeReports(runDir, resultPath);
 
   try {
+    const staleHead = "d".repeat(40);
+    const fixReportPath = path.join(runDir, "fix-execution-report.json");
+    const staleReport = JSON.parse(fs.readFileSync(fixReportPath, "utf8"));
+    staleReport.actions[0].commit = staleHead;
+    staleReport.actions[0].merge_preflight.validation_proof = passedValidationProof(
+      staleHead,
+      MERGE_BASE_SHA,
+    );
+    staleReport.actions[0].merge_preflight.validated_head_sha = staleHead;
+    fs.writeFileSync(fixReportPath, JSON.stringify(staleReport, null, 2));
+    const env = {
+      ...process.env,
+      CLAWSWEEPER_ALLOW_EXECUTE: "1",
+      CLAWSWEEPER_ALLOWED_OWNER: "openclaw",
+      CLAWSWEEPER_ALLOW_MERGE: "1",
+      CLAWSWEEPER_POST_FLIGHT_REQUIRE_PR_CHECKS: "1",
+      CLAWSWEEPER_POST_FLIGHT_WAIT_MS: "10000",
+      CLAWSWEEPER_POST_FLIGHT_POLL_MS: "1",
+      FAKE_GH_MERGED_FILE: mergeFlagPath,
+      FAKE_GH_VIEW_COUNT_FILE: viewCountPath,
+      ...mockGhBinEnv(path.join(fakeBin, "gh"), fakeBin),
+    };
     execFileSync(process.execPath, ["dist/repair/post-flight.js", jobPath, resultPath], {
       cwd: repoRoot,
-      env: {
-        ...process.env,
-        CLAWSWEEPER_ALLOW_EXECUTE: "1",
-        CLAWSWEEPER_ALLOWED_OWNER: "openclaw",
-        CLAWSWEEPER_ALLOW_MERGE: "1",
-        CLAWSWEEPER_POST_FLIGHT_REQUIRE_PR_CHECKS: "1",
-        CLAWSWEEPER_POST_FLIGHT_WAIT_MS: "10000",
-        CLAWSWEEPER_POST_FLIGHT_POLL_MS: "1",
-        FAKE_GH_MERGED_FILE: mergeFlagPath,
-        FAKE_GH_VIEW_COUNT_FILE: viewCountPath,
-        ...mockGhBinEnv(path.join(fakeBin, "gh"), fakeBin),
-      },
+      env,
       stdio: "pipe",
     });
+    const stalePostFlight = JSON.parse(fs.readFileSync(reportPath, "utf8"));
+    assert.equal(stalePostFlight.actions[0]?.status, "blocked");
+    assert.equal(
+      stalePostFlight.actions[0]?.reason,
+      "staged validation proof does not match the live pull request head",
+    );
+    assert.equal(fs.existsSync(mergeFlagPath), false);
 
+    writeMergeReports(runDir, resultPath);
+    const staleBase = "e".repeat(40);
+    const staleBaseReport = JSON.parse(fs.readFileSync(fixReportPath, "utf8"));
+    staleBaseReport.actions[0].merge_preflight.validation_proof = passedValidationProof(
+      MERGE_HEAD_SHA,
+      staleBase,
+    );
+    staleBaseReport.actions[0].merge_preflight.validated_base_sha = staleBase;
+    fs.writeFileSync(fixReportPath, JSON.stringify(staleBaseReport, null, 2));
+    fs.rmSync(reportPath, { force: true });
+    fs.rmSync(viewCountPath, { force: true });
+    execFileSync(process.execPath, ["dist/repair/post-flight.js", jobPath, resultPath], {
+      cwd: repoRoot,
+      env,
+      stdio: "pipe",
+    });
+    const staleBasePostFlight = JSON.parse(fs.readFileSync(reportPath, "utf8"));
+    assert.equal(staleBasePostFlight.actions[0]?.status, "blocked");
+    assert.equal(
+      staleBasePostFlight.actions[0]?.reason,
+      "staged validation proof does not match the live pull request base",
+    );
+    assert.equal(fs.existsSync(mergeFlagPath), false);
+
+    writeMergeReports(runDir, resultPath);
+    fs.rmSync(reportPath, { force: true });
+    fs.rmSync(viewCountPath, { force: true });
+    execFileSync(process.execPath, ["dist/repair/post-flight.js", jobPath, resultPath], {
+      cwd: repoRoot,
+      env,
+      stdio: "pipe",
+    });
     const report = JSON.parse(fs.readFileSync(reportPath, "utf8"));
     assert.equal(report.actions[0]?.status, "executed");
     assert.equal(report.actions[0]?.merge_commit_sha, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
@@ -537,6 +594,7 @@ function writeMergeReports(runDir: string, resultPath: string) {
             status: "opened",
             pr_url: "https://github.com/openclaw/openclaw/pull/123",
             branch: "clawsweeper/automerge-openclaw-openclaw-123",
+            commit: MERGE_HEAD_SHA,
             merge_preflight: {
               security_status: "cleared",
               security_evidence: ["no security signal"],
@@ -545,6 +603,9 @@ function writeMergeReports(runDir: string, resultPath: string) {
               bot_comments_status: "resolved",
               bot_comments_evidence: ["no unresolved bot comments"],
               validation_commands: ["pnpm test"],
+              validation_proof: passedValidationProof(MERGE_HEAD_SHA, MERGE_BASE_SHA),
+              validated_head_sha: MERGE_HEAD_SHA,
+              validated_base_sha: MERGE_BASE_SHA,
               codex_review: {
                 command: "/review",
                 status: "passed",
@@ -559,4 +620,28 @@ function writeMergeReports(runDir: string, resultPath: string) {
       2,
     ),
   );
+}
+
+function passedValidationProof(headSha: string, baseSha: string) {
+  const plan = buildStagedProofPlan({
+    commands: [
+      {
+        parts: ["git", "diff", "--check"],
+        source: "configured",
+        canonical: false,
+        required: true,
+        originalIndex: 0,
+      },
+    ],
+    changedFiles: ["src/example.ts"],
+  });
+  const trace = executeStagedProofPlan(plan, {
+    commandTimeoutMs: 1000,
+    budgetMs: 1000,
+    validatedHeadSha: headSha,
+    validatedBaseSha: baseSha,
+    nowMs: () => 10,
+    runCommand: () => ({ executedCommands: ["git diff --check"], reason: "passed" }),
+  }).trace;
+  return stagedProofBundle([trace]);
 }

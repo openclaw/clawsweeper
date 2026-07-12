@@ -4,6 +4,7 @@ import path from "node:path";
 
 import { runCommand as run } from "./command-runner.js";
 import {
+  currentHead,
   ensureMergeBaseAvailable,
   gitChangedFiles,
   gitLsFiles,
@@ -31,6 +32,7 @@ import {
   looksLikePathArgument,
   packageScriptRequirement,
   parseAllowedValidationCommand,
+  resolveValidationCommandEnvironment,
   stripEnvPrefix,
   uniqueStrings,
   vitestPathFilterIndexes,
@@ -400,8 +402,12 @@ export function runStagedValidationProof(
   options: TargetValidationOptions,
   baseBranch: string = DEFAULT_BASE_BRANCH,
 ): TargetValidationProofResult {
-  const { plan } = createTargetValidationProofPlan(commands, cwd, options, baseBranch);
+  const { baseRef, plan } = createTargetValidationProofPlan(commands, cwd, options, baseBranch);
   const validationEnv = targetValidationEnv();
+  const checkoutIdentity = validationCheckoutIdentity(cwd, baseRef);
+  if (checkoutIdentity.status) {
+    throw new Error("staged proof requires a clean validation checkout");
+  }
   const validationTimeoutMs = targetValidationTimeoutMs(
     "CLAWSWEEPER_TARGET_VALIDATION_TIMEOUT_MS",
     options.validationTimeoutMs ?? DEFAULT_TARGET_VALIDATION_TIMEOUT_MS,
@@ -421,6 +427,8 @@ export function runStagedValidationProof(
   const result = executeStagedProofPlan(plan, {
     commandTimeoutMs: validationTimeoutMs,
     budgetMs: proofBudgetMs,
+    validatedHeadSha: checkoutIdentity.headSha,
+    validatedBaseSha: checkoutIdentity.baseSha,
     runCommand: (command, timeoutMs) =>
       runValidationPlanCommand({
         parts: command.parts,
@@ -430,6 +438,8 @@ export function runStagedValidationProof(
         options,
         attempts,
         executed,
+        baseRef,
+        checkoutIdentity,
       }),
   });
   return { ...result, plan };
@@ -495,6 +505,8 @@ function runValidationPlanCommand({
   options,
   attempts,
   executed,
+  baseRef,
+  checkoutIdentity,
 }: {
   parts: string[];
   timeoutMs: number;
@@ -503,6 +515,8 @@ function runValidationPlanCommand({
   options: TargetValidationOptions;
   attempts: Map<string, number>;
   executed: Set<string>;
+  baseRef: string;
+  checkoutIdentity: ValidationCheckoutIdentity;
 }) {
   const rendered = parts.join(" ");
   if (executed.has(rendered)) {
@@ -510,12 +524,14 @@ function runValidationPlanCommand({
   }
   const startedAt = Date.now();
   while (true) {
+    const resolvedParts = resolveValidationCommandEnvironment(parts, validationEnv);
     try {
-      run(parts[0]!, parts.slice(1), {
+      run(resolvedParts[0]!, resolvedParts.slice(1), {
         cwd,
         env: validationEnv,
         timeoutMs: remainingCommandBudget(timeoutMs, startedAt),
       });
+      assertValidationCheckoutIdentity(cwd, baseRef, checkoutIdentity);
       executed.add(rendered);
       return {
         executedCommands: [rendered],
@@ -525,12 +541,42 @@ function runValidationPlanCommand({
             : "passed",
       };
     } catch (error) {
+      assertValidationCheckoutIdentity(cwd, baseRef, checkoutIdentity);
       if (shouldRetryValidationCommand({ parts, error, attempts, options })) continue;
       throw new Error(
         `validation command failed (${parts.join(" ")}): ${compactText(error.message, 12000)}`,
         { cause: error },
       );
     }
+  }
+}
+
+type ValidationCheckoutIdentity = {
+  headSha: string;
+  baseSha: string;
+  status: string;
+};
+
+function validationCheckoutIdentity(cwd: string, baseRef: string): ValidationCheckoutIdentity {
+  return {
+    headSha: currentHead(cwd),
+    baseSha: run("git", ["rev-parse", baseRef], { cwd }).trim(),
+    status: run("git", ["status", "--porcelain=v1", "-z", "--untracked-files=all"], { cwd }),
+  };
+}
+
+function assertValidationCheckoutIdentity(
+  cwd: string,
+  baseRef: string,
+  expected: ValidationCheckoutIdentity,
+) {
+  const actual = validationCheckoutIdentity(cwd, baseRef);
+  if (
+    actual.headSha !== expected.headSha ||
+    actual.baseSha !== expected.baseSha ||
+    actual.status !== expected.status
+  ) {
+    throw new Error("unsafe validation command mutated checkout or proof identity");
   }
 }
 
@@ -630,7 +676,7 @@ function requiredValidationCommandEntries(
     ...toolchain.baseValidationCommands.map((command) => ({
       command,
       source: "repository_profile" as const,
-      canonical: true,
+      canonical: false,
       required: true,
     })),
   ];

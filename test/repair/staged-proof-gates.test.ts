@@ -11,6 +11,9 @@ import {
   stagedProofTraceFromError,
 } from "../../dist/repair/staged-proof-gates.js";
 
+const VALIDATED_HEAD_SHA = "1".repeat(40);
+const VALIDATED_BASE_SHA = "2".repeat(40);
+
 function command(parts, originalIndex, overrides = {}) {
   return {
     parts,
@@ -131,6 +134,8 @@ test("proof execution fails fast and records skipped prerequisites", () => {
       executeStagedProofPlan(plan, {
         commandTimeoutMs: 1000,
         budgetMs: 5000,
+        validatedHeadSha: VALIDATED_HEAD_SHA,
+        validatedBaseSha: VALIDATED_BASE_SHA,
         nowMs: () => 100,
         runCommand: (entry) => {
           invoked.push(entry.command_kind);
@@ -164,6 +169,8 @@ test("only explicit toolchain contracts skip a later proof command", () => {
   const result = executeStagedProofPlan(plan, {
     commandTimeoutMs: 1000,
     budgetMs: 5000,
+    validatedHeadSha: VALIDATED_HEAD_SHA,
+    validatedBaseSha: VALIDATED_BASE_SHA,
     nowMs: () => 100,
     runCommand: (entry) => {
       invoked.push(entry.command_kind);
@@ -274,6 +281,8 @@ test("runtime budget exhaustion is fail-closed and auditable", () => {
       executeStagedProofPlan(plan, {
         commandTimeoutMs: 1000,
         budgetMs: 50,
+        validatedHeadSha: VALIDATED_HEAD_SHA,
+        validatedBaseSha: VALIDATED_BASE_SHA,
         nowMs: () => now,
         runCommand: (entry, timeoutMs) => {
           assert.equal(timeoutMs, 50);
@@ -307,6 +316,8 @@ test("plan artifacts and traces are deterministic with a deterministic clock", (
     executeStagedProofPlan(plan, {
       commandTimeoutMs: 1000,
       budgetMs: 5000,
+      validatedHeadSha: VALIDATED_HEAD_SHA,
+      validatedBaseSha: VALIDATED_BASE_SHA,
       nowMs: () => 10,
       runCommand: (entry) => ({
         executedCommands: [entry.parts.join(" ")],
@@ -343,6 +354,8 @@ test("merge proof bundle validation fails closed", () => {
   const passed = executeStagedProofPlan(plan, {
     commandTimeoutMs: 1000,
     budgetMs: 5000,
+    validatedHeadSha: VALIDATED_HEAD_SHA,
+    validatedBaseSha: VALIDATED_BASE_SHA,
     nowMs: () => 10,
     runCommand: (entry) => ({
       executedCommands: [entry.parts.join(" ")],
@@ -352,7 +365,10 @@ test("merge proof bundle validation fails closed", () => {
   const bundle = stagedProofBundle([passed]);
 
   assert.equal(isPassedStagedProofBundle(bundle), true);
+  assert.equal(bundle.validated_head_sha, VALIDATED_HEAD_SHA);
+  assert.equal(bundle.validated_base_sha, VALIDATED_BASE_SHA);
   assert.equal(isPassedStagedProofBundle({ ...bundle, status: "failed" }), false);
+  assert.equal(isPassedStagedProofBundle({ ...bundle, validated_head_sha: "3".repeat(40) }), false);
   assert.equal(
     isPassedStagedProofBundle({
       ...bundle,
@@ -381,6 +397,23 @@ test("merge proof bundle validation fails closed", () => {
             passed: 1,
             skipped: 1,
           },
+        },
+      ]),
+    ),
+    false,
+  );
+  assert.equal(
+    isPassedStagedProofBundle(
+      stagedProofBundle([
+        {
+          ...passed,
+          commands: [
+            {
+              ...passed.commands[0],
+              command_digest: "f".repeat(64),
+            },
+            passed.commands[1],
+          ],
         },
       ]),
     ),

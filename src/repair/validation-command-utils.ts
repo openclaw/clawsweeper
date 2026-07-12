@@ -137,11 +137,34 @@ export function parseAllowedValidationCommand(command: unknown): string[] {
   if (
     hasUnsafePackageRunner(parts) ||
     hasInlineInterpreterCode(parts) ||
-    hasMutatingValidationFlag(parts)
+    hasMutatingValidationFlag(parts) ||
+    hasMutatingValidationCommand(parts)
   ) {
     throw new Error(`unsafe validation command: ${text}`);
   }
   return parts;
+}
+
+export function resolveValidationCommandEnvironment(
+  parts: readonly string[],
+  env: NodeJS.ProcessEnv,
+): string[] {
+  const resolvedEnv: NodeJS.ProcessEnv = { ...env };
+  const resolved = [...parts];
+  let index = resolved[0] === "env" ? 1 : 0;
+  while (index < resolved.length && isEnvAssignment(resolved[index])) {
+    const assignment = resolved[index]!;
+    const separator = assignment.indexOf("=");
+    const name = assignment.slice(0, separator);
+    const value = resolveSafeVariableExpansions(assignment.slice(separator + 1), resolvedEnv);
+    resolved[index] = `${name}=${value}`;
+    resolvedEnv[name] = value;
+    index += 1;
+  }
+  for (; index < resolved.length; index += 1) {
+    resolved[index] = resolveSafeVariableExpansions(resolved[index]!, resolvedEnv);
+  }
+  return resolved;
 }
 
 export function stripEnvPrefix(parts: readonly string[]): string[] {
@@ -306,6 +329,76 @@ function hasMutatingValidationFlag(parts: readonly string[]) {
   return stripEnvPrefix(parts).some((part) => denied.has(part.split("=", 1)[0] ?? ""));
 }
 
+function hasMutatingValidationCommand(parts: readonly string[]) {
+  const commandParts = stripEnvPrefix(parts);
+  const executable = commandParts[0] ?? "";
+  const subcommand = commandParts[1] ?? "";
+  const packageScript = packageScriptRequirement(commandParts)?.name ?? "";
+  const wrappedCommandStart =
+    executable === "pnpm" && subcommand === "exec"
+      ? 2
+      : executable === "uv" && subcommand === "run"
+        ? 2
+        : ["bundle", "composer"].includes(executable) && subcommand === "exec"
+          ? 2
+          : -1;
+  if (wrappedCommandStart >= 0) {
+    return hasMutatingValidationCommand(commandParts.slice(wrappedCommandStart));
+  }
+
+  if (
+    packageScript &&
+    /^(?:format|fmt|fix|write|update)(?::|$)|(?::)(?:fix|write|update)$/.test(packageScript)
+  ) {
+    return true;
+  }
+  if (executable === "git") {
+    if (subcommand === "fsck" && commandParts.includes("--lost-found")) return true;
+    return !["diff", "fsck", "status"].includes(subcommand);
+  }
+  if (["pnpm", "npm", "bun"].includes(executable)) {
+    return [
+      "add",
+      "ci",
+      "clean-install",
+      "install",
+      "link",
+      "prune",
+      "publish",
+      "rebuild",
+      "remove",
+      "uninstall",
+      "unlink",
+      "update",
+    ].includes(subcommand);
+  }
+  if (executable === "go") {
+    return ["clean", "env", "fmt", "generate", "get", "install", "mod", "work"].includes(
+      subcommand,
+    );
+  }
+  if (executable === "cargo") {
+    if (subcommand === "fmt") return !commandParts.includes("--check");
+    return [
+      "add",
+      "clean",
+      "fix",
+      "install",
+      "login",
+      "owner",
+      "publish",
+      "remove",
+      "uninstall",
+      "update",
+      "yank",
+    ].includes(subcommand);
+  }
+  if (executable === "ruff" && subcommand === "format") {
+    return !commandParts.includes("--check");
+  }
+  return false;
+}
+
 const SAFE_WRAPPED_VALIDATION_EXECUTABLES = new Set([
   "ava",
   "cargo",
@@ -403,6 +496,16 @@ function splitValidationCommand(text: string): string[] {
 
 function safeVariableExpansion(value: string) {
   return value.match(/^\$\{[A-Z_][A-Z0-9_]*(?::-[A-Za-z0-9_./:-]+)?\}/)?.[0] ?? "";
+}
+
+function resolveSafeVariableExpansions(value: string, env: NodeJS.ProcessEnv) {
+  return value.replace(
+    /\$\{([A-Z_][A-Z0-9_]*)(?::-([A-Za-z0-9_./:-]+))?\}/g,
+    (_match, name: string, fallback: string | undefined) => {
+      const current = env[name];
+      return current ? current : (fallback ?? "");
+    },
+  );
 }
 
 function isEnvAssignment(value: unknown) {

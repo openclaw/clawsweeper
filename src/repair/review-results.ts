@@ -446,6 +446,13 @@ function validateMergePreflight(
     const validationProof = preflight.validation_proof;
     if (validationProof != null && !isPassedStagedProofBundle(validationProof)) {
       failures.push(`${target} merge_preflight.validation_proof must contain passed staged runs`);
+    } else if (validationProof != null) {
+      if (
+        preflight.validated_head_sha !== validationProof.validated_head_sha ||
+        preflight.validated_base_sha !== validationProof.validated_base_sha
+      ) {
+        failures.push(`${target} merge_preflight proof identity must be internally consistent`);
+      }
     }
     const codexReview = preflight.codex_review;
     if (!codexReview || typeof codexReview !== "object") {

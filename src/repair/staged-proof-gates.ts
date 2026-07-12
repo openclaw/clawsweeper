@@ -8,7 +8,7 @@ import {
   vitestPathFilterIndexes,
 } from "./validation-command-utils.js";
 
-export const STAGED_PROOF_SCHEMA_VERSION = 1;
+export const STAGED_PROOF_SCHEMA_VERSION = 2;
 export const MAX_STAGED_PROOF_COMMANDS = 32;
 
 export type StagedProofStage =
@@ -31,6 +31,13 @@ const STAGED_PROOF_TRACE_STATUSES = new Set<string>([
   "failed",
   "skipped_prerequisite",
   "skipped_subsumed",
+]);
+
+const STAGED_PROOF_COMMAND_SOURCES = new Set<string>([
+  "artifact",
+  "configured",
+  "repository_profile",
+  "changed_gate",
 ]);
 
 export type StagedProofRisk = {
@@ -92,6 +99,7 @@ export type StagedProofTraceEntry = {
   stage: StagedProofStage;
   command_digest: string;
   command_kind: string;
+  source: StagedProofCommandSource;
   status: StagedProofTraceStatus;
   duration_ms: number;
   reason: string;
@@ -103,6 +111,8 @@ export type StagedProofTraceEntry = {
 export type StagedProofTrace = {
   schema_version: typeof STAGED_PROOF_SCHEMA_VERSION;
   plan_id: string;
+  validated_head_sha: string;
+  validated_base_sha: string;
   status: "passed" | "failed";
   risk: StagedProofRisk;
   commands: StagedProofTraceEntry[];
@@ -254,14 +264,20 @@ export function executeStagedProofPlan(
     runCommand,
     commandTimeoutMs,
     budgetMs,
+    validatedHeadSha,
+    validatedBaseSha,
     nowMs = Date.now,
   }: {
     runCommand: (command: StagedProofPlanCommand, timeoutMs: number) => StagedProofRunResult;
     commandTimeoutMs: number;
     budgetMs: number;
+    validatedHeadSha: string;
+    validatedBaseSha: string;
     nowMs?: () => number;
   },
 ): StagedProofExecutionResult {
+  validateProofCommitIdentity("validated head", validatedHeadSha);
+  validateProofCommitIdentity("validated base", validatedBaseSha);
   const startedAt = nowMs();
   const entries: StagedProofTraceEntry[] = [];
   const statusById = new Map<string, StagedProofTraceStatus>();
@@ -274,6 +290,7 @@ export function executeStagedProofPlan(
         stage: command.stage,
         command_digest: command.command_digest,
         command_kind: command.command_kind,
+        source: command.source,
         status: "skipped_subsumed",
         duration_ms: 0,
         reason: `explicit toolchain contract: ${command.subsumed_by} subsumes this command`,
@@ -293,6 +310,8 @@ export function executeStagedProofPlan(
       );
       return failProofPlan({
         plan,
+        validatedHeadSha,
+        validatedBaseSha,
         command,
         index,
         entries,
@@ -319,6 +338,8 @@ export function executeStagedProofPlan(
         );
         return failProofPlan({
           plan,
+          validatedHeadSha,
+          validatedBaseSha,
           command,
           index,
           entries,
@@ -336,6 +357,7 @@ export function executeStagedProofPlan(
         stage: command.stage,
         command_digest: command.command_digest,
         command_kind: command.command_kind,
+        source: command.source,
         status: "passed",
         duration_ms: durationMs,
         reason: result.reason || "passed",
@@ -349,6 +371,8 @@ export function executeStagedProofPlan(
       const durationMs = Math.max(0, nowMs() - commandStartedAt);
       return failProofPlan({
         plan,
+        validatedHeadSha,
+        validatedBaseSha,
         command,
         index,
         entries,
@@ -367,7 +391,14 @@ export function executeStagedProofPlan(
 
   return {
     commands: executedCommands,
-    trace: buildTrace(plan, "passed", entries, Math.max(0, nowMs() - startedAt)),
+    trace: buildTrace(
+      plan,
+      validatedHeadSha,
+      validatedBaseSha,
+      "passed",
+      entries,
+      Math.max(0, nowMs() - startedAt),
+    ),
   };
 }
 
@@ -402,6 +433,8 @@ export function stagedProofBundle(traces: readonly StagedProofTrace[]) {
   return {
     schema_version: STAGED_PROOF_SCHEMA_VERSION,
     status: latest?.status ?? "failed",
+    validated_head_sha: latest?.validated_head_sha ?? null,
+    validated_base_sha: latest?.validated_base_sha ?? null,
     runs: bounded,
     summary: {
       runs: bounded.length,
@@ -420,6 +453,8 @@ export function isPassedStagedProofBundle(value: unknown): boolean {
   if (
     bundle.schema_version !== STAGED_PROOF_SCHEMA_VERSION ||
     bundle.status !== "passed" ||
+    !isProofCommitIdentity(bundle.validated_head_sha) ||
+    !isProofCommitIdentity(bundle.validated_base_sha) ||
     !Array.isArray(bundle.runs) ||
     bundle.runs.length === 0 ||
     bundle.runs.length > 8 ||
@@ -433,6 +468,12 @@ export function isPassedStagedProofBundle(value: unknown): boolean {
   const runs = bundle.runs as StagedProofTrace[];
   const latest = runs.at(-1);
   if (!latest || latest.status !== "passed") return false;
+  if (
+    bundle.validated_head_sha !== latest.validated_head_sha ||
+    bundle.validated_base_sha !== latest.validated_base_sha
+  ) {
+    return false;
+  }
   const summary = bundle.summary as Record<string, unknown>;
   return (
     summary.runs === runs.length &&
@@ -464,6 +505,8 @@ export function stagedProofSummary(value: {
 
 function failProofPlan({
   plan,
+  validatedHeadSha,
+  validatedBaseSha,
   command,
   index,
   entries,
@@ -476,6 +519,8 @@ function failProofPlan({
   reason,
 }: {
   plan: StagedProofPlan;
+  validatedHeadSha: string;
+  validatedBaseSha: string;
   command: StagedProofPlanCommand;
   index: number;
   entries: StagedProofTraceEntry[];
@@ -492,6 +537,7 @@ function failProofPlan({
     stage: command.stage,
     command_digest: command.command_digest,
     command_kind: command.command_kind,
+    source: command.source,
     status: "failed",
     duration_ms: durationMs,
     reason,
@@ -506,6 +552,7 @@ function failProofPlan({
       stage: later.stage,
       command_digest: later.command_digest,
       command_kind: later.command_kind,
+      source: later.source,
       status: "skipped_prerequisite",
       duration_ms: 0,
       reason: `prerequisite ${command.id} failed`,
@@ -515,13 +562,22 @@ function failProofPlan({
     });
     statusById.set(later.id, "skipped_prerequisite");
   }
-  const trace = buildTrace(plan, "failed", entries, Math.max(0, nowMs() - startedAt));
+  const trace = buildTrace(
+    plan,
+    validatedHeadSha,
+    validatedBaseSha,
+    "failed",
+    entries,
+    Math.max(0, nowMs() - startedAt),
+  );
   const detail = String((error as Error)?.message ?? error);
   throw new StagedProofExecutionError(detail, trace, executedCommands, error);
 }
 
 function buildTrace(
   plan: StagedProofPlan,
+  validatedHeadSha: string,
+  validatedBaseSha: string,
   status: "passed" | "failed",
   commands: StagedProofTraceEntry[],
   totalDurationMs: number,
@@ -529,6 +585,8 @@ function buildTrace(
   return {
     schema_version: STAGED_PROOF_SCHEMA_VERSION,
     plan_id: plan.plan_id,
+    validated_head_sha: validatedHeadSha,
+    validated_base_sha: validatedBaseSha,
     status,
     risk: plan.risk,
     commands,
@@ -547,6 +605,8 @@ function isStagedProofTrace(value: unknown): boolean {
   if (
     trace.schema_version !== STAGED_PROOF_SCHEMA_VERSION ||
     !/^[a-f0-9]{64}$/.test(String(trace.plan_id ?? "")) ||
+    !isProofCommitIdentity(trace.validated_head_sha) ||
+    !isProofCommitIdentity(trace.validated_base_sha) ||
     !["passed", "failed"].includes(String(trace.status ?? "")) ||
     !Array.isArray(trace.commands) ||
     trace.commands.length === 0 ||
@@ -563,17 +623,27 @@ function isStagedProofTrace(value: unknown): boolean {
     if (!entry || typeof entry !== "object" || Array.isArray(entry)) return false;
     const command = entry as Record<string, unknown>;
     const commandId = String(command.command_id ?? "");
+    const commandDigest = String(command.command_digest ?? "");
     const status = String(command.status ?? "");
-    if (!/^proof-\d+-[a-f0-9]{12}$/.test(commandId) || commandIds.has(commandId)) return false;
+    const commandIdMatch = commandId.match(/^proof-(\d+)-([a-f0-9]{12})$/);
+    if (
+      !commandIdMatch ||
+      Number(commandIdMatch[1]) !== index + 1 ||
+      commandIdMatch[2] !== commandDigest.slice(0, 12) ||
+      commandIds.has(commandId)
+    ) {
+      return false;
+    }
     commandIds.set(commandId, { index, status });
     statuses.push(status);
     commandDurationMs += Number(command.duration_ms);
     return (
       STAGED_PROOF_STAGES.has(String(command.stage ?? "")) &&
-      /^[a-f0-9]{64}$/.test(String(command.command_digest ?? "")) &&
+      /^[a-f0-9]{64}$/.test(commandDigest) &&
       typeof command.command_kind === "string" &&
       command.command_kind.length > 0 &&
       command.command_kind.length <= 96 &&
+      STAGED_PROOF_COMMAND_SOURCES.has(String(command.source ?? "")) &&
       STAGED_PROOF_TRACE_STATUSES.has(status) &&
       isNonNegativeInteger(command.duration_ms) &&
       typeof command.reason === "string" &&
@@ -586,6 +656,22 @@ function isStagedProofTrace(value: unknown): boolean {
     );
   });
   if (!commandsValid) return false;
+  const expectedPlanId = createHash("sha256")
+    .update(
+      JSON.stringify({
+        risk: trace.risk,
+        commands: traceCommands.map((command) => ({
+          digest: command.command_digest,
+          stage: command.stage,
+          source: command.source,
+          prerequisite: command.prerequisite,
+          subsumed_by: command.subsumed_by,
+          subsumption_contract_digest: command.subsumption_contract_digest,
+        })),
+      }),
+    )
+    .digest("hex");
+  if (trace.plan_id !== expectedPlanId) return false;
   for (const [index, command] of traceCommands.entries()) {
     const commandId = String(command.command_id);
     const prerequisite = command.prerequisite;
@@ -676,6 +762,16 @@ function isStagedProofRisk(value: unknown): boolean {
 
 function isNonNegativeInteger(value: unknown): value is number {
   return typeof value === "number" && Number.isInteger(value) && value >= 0;
+}
+
+function isProofCommitIdentity(value: unknown): value is string {
+  return typeof value === "string" && /^[a-f0-9]{40}$/.test(value);
+}
+
+function validateProofCommitIdentity(label: string, value: string) {
+  if (!isProofCommitIdentity(value)) {
+    throw new Error(`staged proof ${label} must be a full lowercase commit SHA`);
+  }
 }
 
 function isProofCommandReference(value: unknown): boolean {

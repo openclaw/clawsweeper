@@ -215,9 +215,10 @@ test("repair contract gates the final cumulative tree, not individual checkpoint
 
   const compact = source.indexOf("const historyCompaction =");
   const enforce = source.indexOf("enforceFinalRepairContract(", compact);
-  const publish = source.indexOf("if (hasRepairContract", enforce);
-  const commit = source.indexOf('const commit = run("git", ["rev-parse", "HEAD"]', publish);
-  assert.ok(compact < enforce && enforce < publish && publish < commit);
+  const commit = source.indexOf('const commit = run("git", ["rev-parse", "HEAD"]', enforce);
+  const proof = source.indexOf("ensureFinalStagedProof(", commit);
+  const publish = source.indexOf("if (hasRepairContract", proof);
+  assert.ok(compact < enforce && enforce < commit && commit < proof && proof < publish);
 });
 
 test("final repair contract compares the repaired tree with the latest base", () => {

@@ -182,7 +182,12 @@ function finalizeFixPr(action: LooseRecord) {
       };
     }
 
-    mergeBlock = validateMergeableFixPr({ pull, view, preflight: action.merge_preflight });
+    mergeBlock = validateMergeableFixPr({
+      pull,
+      view,
+      preflight: action.merge_preflight,
+      expectedHeadSha: action.commit,
+    });
     if (!mergeBlock) break;
     if (dryRun || !shouldWaitForMergeReadiness({ mergeBlock, view }) || Date.now() >= deadline) {
       return {
@@ -494,7 +499,7 @@ function hasLiveSecuritySignal(number: JsonValue, labels: LooseRecord[]) {
   return hasDeterministicSecuritySignal({ comments: [bodies] });
 }
 
-function validateMergeableFixPr({ pull, view, preflight }: LooseRecord) {
+function validateMergeableFixPr({ pull, view, preflight, expectedHeadSha }: LooseRecord) {
   if (pull.state !== "open") return `pull request is ${pull.state}`;
   if (pull.draft || view.isDraft) return "pull request is draft";
   if (String(view.baseRefName ?? pull.base?.ref ?? "") !== "main")
@@ -510,7 +515,11 @@ function validateMergeableFixPr({ pull, view, preflight }: LooseRecord) {
     return `review decision is ${view.reviewDecision}`;
   }
 
-  const preflightBlock = validateMergePreflight(preflight);
+  const preflightBlock = validateMergePreflight(preflight, {
+    expectedHeadSha,
+    liveHeadSha: pull.head?.sha,
+    liveBaseSha: pull.base?.sha,
+  });
   if (preflightBlock) return preflightBlock;
 
   const threadBlock = validateResolvedReviewThreads(result.repo, pull.number);
@@ -524,7 +533,14 @@ function validateMergeableFixPr({ pull, view, preflight }: LooseRecord) {
   return "";
 }
 
-function validateMergePreflight(preflight: LooseRecord) {
+function validateMergePreflight(
+  preflight: LooseRecord,
+  {
+    expectedHeadSha,
+    liveHeadSha,
+    liveBaseSha,
+  }: { expectedHeadSha: unknown; liveHeadSha: unknown; liveBaseSha: unknown },
+) {
   if (!preflight || typeof preflight !== "object") return "merge_preflight is missing";
   if (preflight.security_status !== "cleared") return "security preflight is not cleared";
   if (!Array.isArray(preflight.security_evidence) || preflight.security_evidence.length === 0) {
@@ -545,8 +561,26 @@ function validateMergePreflight(preflight: LooseRecord) {
     return "merge validation commands are missing";
   }
   const validationProof = preflight.validation_proof;
-  if (validationProof != null && !isPassedStagedProofBundle(validationProof)) {
+  if (!isPassedStagedProofBundle(validationProof)) {
     return "staged validation proof is incomplete or failed";
+  }
+  if (!isFullCommitSha(expectedHeadSha)) return "fix action commit is missing or malformed";
+  if (!isFullCommitSha(liveHeadSha)) return "live pull request head is missing or malformed";
+  if (!isFullCommitSha(liveBaseSha)) return "live pull request base is missing or malformed";
+  if (validationProof.validated_head_sha !== expectedHeadSha) {
+    return "staged validation proof does not match the fix action commit";
+  }
+  if (validationProof.validated_head_sha !== liveHeadSha) {
+    return "staged validation proof does not match the live pull request head";
+  }
+  if (validationProof.validated_base_sha !== liveBaseSha) {
+    return "staged validation proof does not match the live pull request base";
+  }
+  if (
+    preflight.validated_head_sha !== validationProof.validated_head_sha ||
+    preflight.validated_base_sha !== validationProof.validated_base_sha
+  ) {
+    return "merge preflight proof identity is inconsistent";
   }
   const codexReview = preflight.codex_review;
   if (!codexReview || codexReview.command !== "/review")
@@ -558,6 +592,10 @@ function validateMergePreflight(preflight: LooseRecord) {
     return "Codex /review evidence is missing";
   }
   return "";
+}
+
+function isFullCommitSha(value: unknown): value is string {
+  return typeof value === "string" && /^[a-f0-9]{40}$/.test(value);
 }
 
 function validateStatusChecks(checks: LooseRecord[]) {

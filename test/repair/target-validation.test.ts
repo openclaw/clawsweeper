@@ -22,7 +22,10 @@ import {
   __resetTargetRepoToolchainCache,
   resolveTargetRepoToolchain,
 } from "../../dist/repair/target-toolchain-config.js";
-import { parseAllowedValidationCommand } from "../../dist/repair/validation-command-utils.js";
+import {
+  parseAllowedValidationCommand,
+  resolveValidationCommandEnvironment,
+} from "../../dist/repair/validation-command-utils.js";
 import { mockCommandBinEnv } from "../helpers.ts";
 
 const FAKE_TOOLCHAIN_TIMEOUT_MS = 15_000;
@@ -356,10 +359,45 @@ test("validation parser rejects snapshot-writing and formatter mutation flags", 
     "pnpm exec jest --updateSnapshot tests/example.test.ts",
     "pnpm test:serial --update-snapshots tests/example.test.ts",
     "pnpm lint --fix",
+    "pnpm format",
     "pnpm format --write",
+    "git checkout main",
+    "git fsck --lost-found",
+    "cargo fmt",
+    "pnpm exec cargo fmt",
+    "go fmt ./...",
   ]) {
     assert.throws(() => parseAllowedValidationCommand(command), /unsafe validation command/);
   }
+  assert.deepEqual(parseAllowedValidationCommand("cargo fmt --check"), ["cargo", "fmt", "--check"]);
+});
+
+test("validation environment defaults resolve without shell execution", () => {
+  assert.deepEqual(
+    resolveValidationCommandEnvironment(
+      [
+        "env",
+        "PROVIDER=mock",
+        "pnpm",
+        "openclaw",
+        "qa",
+        "--provider",
+        "${PROVIDER:-live}",
+        "--model=${MODEL:-openai/test-model}",
+      ],
+      { MODEL: "" },
+    ),
+    [
+      "env",
+      "PROVIDER=mock",
+      "pnpm",
+      "openclaw",
+      "qa",
+      "--provider",
+      "mock",
+      "--model=openai/test-model",
+    ],
+  );
 });
 
 test("validation preflight blocks direct Vitest commands with missing test paths", () => {
@@ -858,7 +896,7 @@ test("pinned-base reproduction prepares an independent runtime after normal setu
   git(cwd, "add", ".");
   git(cwd, "commit", "-m", "base");
   const pinnedBaseRef = git(cwd, "rev-parse", "HEAD");
-  const { binDir } = fakeBunFixture(cwd, { failRun: true });
+  const { binDir } = fakeBunFixture({ failRun: true });
   const options = validationOptions("openclaw/clawhub", {
     ...clawhubToolchain(),
     pinnedBaseRef,
@@ -978,7 +1016,7 @@ test("bun-based target toolchain installs deps and runs configured validation", 
   git(cwd, "commit", "-m", "initial");
   attachOrigin(cwd);
 
-  const { binDir, logPath } = fakeBunFixture(cwd);
+  const { binDir, logPath } = fakeBunFixture();
   withPathPrefix(binDir, () => {
     prepareTargetToolchain(cwd, {
       ...validationOptions("openclaw/clawhub", clawhubToolchain()),
@@ -1016,7 +1054,7 @@ test("bun-based target toolchain hides pnpm-injected npm_config_user_agent from 
   git(cwd, "commit", "-m", "initial");
   attachOrigin(cwd);
 
-  const { binDir, envLogPath } = envLoggingBunFixture(cwd);
+  const { binDir, envLogPath } = envLoggingBunFixture();
   const previousUserAgent = process.env.npm_config_user_agent;
   const previousRegistry = process.env.npm_config_registry;
   const previousCache = process.env.npm_config_cache;
@@ -1303,6 +1341,47 @@ test("staged target proof preserves focused tests before the canonical changed g
   assert.equal("parts" in plan.commands[0], false);
 });
 
+test("repository profile commands are staged by behavior, not all marked canonical", () => {
+  const cwd = gitPackageFixture({
+    "check:changed": "node check.js",
+    lint: "node lint.js",
+    "test:serial": "node test.js",
+    "test:all": "node test-all.js",
+  });
+  fs.mkdirSync(path.join(cwd, "src"), { recursive: true });
+  fs.mkdirSync(path.join(cwd, "test"), { recursive: true });
+  fs.writeFileSync(path.join(cwd, "src", "foo.ts"), "export const foo = 1;\n");
+  fs.writeFileSync(path.join(cwd, "test", "foo.test.ts"), "export {};\n");
+  git(cwd, "add", ".");
+  git(cwd, "commit", "-m", "initial");
+  attachOrigin(cwd);
+  fs.writeFileSync(path.join(cwd, "src", "foo.ts"), "export const foo = 2;\n");
+
+  const plan = buildTargetValidationProofPlan(
+    [],
+    cwd,
+    validationOptions("openclaw/example", {
+      toolchain: {
+        packageManager: "pnpm",
+        baseValidationCommands: ["pnpm lint", "pnpm test:serial test/foo.test.ts", "pnpm test:all"],
+        changedGate: { command: "pnpm check:changed", requiredScript: "check:changed" },
+      },
+    }),
+  );
+
+  assert.deepEqual(
+    plan.commands.map((entry) => [entry.stage, entry.command_kind]),
+    [
+      ["repository_integrity", "git:diff-check"],
+      ["repository_integrity", "git:diff-check"],
+      ["focused_tests", "pnpm:test:serial"],
+      ["static", "pnpm:lint"],
+      ["canonical_changed_surface", "pnpm:check:changed"],
+      ["broad_live_or_e2e", "pnpm:test:all"],
+    ],
+  );
+});
+
 test("staged target proof retains broad commands for elevated-risk surfaces", () => {
   const cwd = gitPackageFixture({
     "check:changed": "node check.js",
@@ -1397,6 +1476,71 @@ test("staged target proof rejects unsafe commands before planning", () => {
   );
 });
 
+test("staged target proof fails if an allowlisted script mutates the checkout", () => {
+  const cwd = gitPackageFixture({
+    verify: "node mutate.js",
+  });
+  fs.writeFileSync(
+    path.join(cwd, "mutate.js"),
+    "require('node:fs').writeFileSync('generated.txt', 'mutated\\n');\n",
+  );
+  git(cwd, "add", ".");
+  git(cwd, "commit", "-m", "initial");
+  attachOrigin(cwd);
+  const head = git(cwd, "rev-parse", "HEAD");
+
+  assert.throws(
+    () =>
+      runStagedValidationProof(
+        ["pnpm verify"],
+        cwd,
+        validationOptions("steipete/example", {
+          toolchain: {
+            packageManager: "pnpm",
+            baseValidationCommands: [],
+            changedGate: null,
+          },
+        }),
+      ),
+    (error) => {
+      assert.match(error.message, /mutated checkout or proof identity/);
+      assert.equal(error.trace.status, "failed");
+      return true;
+    },
+  );
+  assert.equal(git(cwd, "rev-parse", "HEAD"), head);
+});
+
+test("staged target proof resolves environment defaults before direct spawn", () => {
+  const cwd = gitPackageFixture({
+    qa: "node qa.js",
+  });
+  fs.writeFileSync(
+    path.join(cwd, "qa.js"),
+    "if (process.argv[2] !== 'openai/test-model') process.exit(9);\n",
+  );
+  git(cwd, "add", ".");
+  git(cwd, "commit", "-m", "initial");
+  attachOrigin(cwd);
+
+  const result = runStagedValidationProof(
+    ["env MODEL= pnpm qa ${MODEL:-openai/test-model}"],
+    cwd,
+    validationOptions("steipete/example", {
+      toolchain: {
+        packageManager: "pnpm",
+        baseValidationCommands: [],
+        changedGate: null,
+      },
+    }),
+  );
+
+  assert.equal(result.trace.status, "passed");
+  assert.equal(result.trace.validated_head_sha, git(cwd, "rev-parse", "HEAD"));
+  assert.equal(result.trace.validated_base_sha, git(cwd, "rev-parse", "origin/main"));
+  assert.equal(result.commands.includes("env MODEL= pnpm qa ${MODEL:-openai/test-model}"), true);
+});
+
 test("staged target proof exposes compact failed traces without command output", () => {
   const cwd = gitPackageFixture({
     verify: "node verify.js",
@@ -1464,16 +1608,22 @@ test("stalled canonical changed gates fail instead of certifying fallback proof"
 });
 
 test("changed validation retries one transient check:changed failure", () => {
+  const marker = path.join(
+    os.tmpdir(),
+    `clawsweeper-validation-attempt-${process.pid}-${Date.now()}.txt`,
+  );
   const cwd = gitPackageFixture({
     "check:changed":
-      "node -e \"const fs=require('fs'); const file='.attempt'; const count=fs.existsSync(file)?Number(fs.readFileSync(file,'utf8')):0; fs.writeFileSync(file, String(count+1)); if (count===0) { console.error('transient changed gate failure'); process.exit(1); }\"",
+      "node -e \"const fs=require('fs'); const file=process.env.CLAWSWEEPER_TEST_ATTEMPT_FILE; const count=fs.existsSync(file)?Number(fs.readFileSync(file,'utf8')):0; fs.writeFileSync(file, String(count+1)); if (count===0) { console.error('transient changed gate failure'); process.exit(1); }\"",
   });
   git(cwd, "add", ".");
   git(cwd, "commit", "-m", "initial");
   attachOrigin(cwd);
 
   const previous = process.env.CLAWSWEEPER_VALIDATION_RETRIES;
+  const previousMarker = process.env.CLAWSWEEPER_TEST_ATTEMPT_FILE;
   process.env.CLAWSWEEPER_VALIDATION_RETRIES = "1";
+  process.env.CLAWSWEEPER_TEST_ATTEMPT_FILE = marker;
   try {
     assert.deepEqual(
       runAllowedValidationCommands(
@@ -1486,6 +1636,8 @@ test("changed validation retries one transient check:changed failure", () => {
   } finally {
     if (previous === undefined) delete process.env.CLAWSWEEPER_VALIDATION_RETRIES;
     else process.env.CLAWSWEEPER_VALIDATION_RETRIES = previous;
+    restoreEnv("CLAWSWEEPER_TEST_ATTEMPT_FILE", previousMarker);
+    fs.rmSync(marker, { force: true });
   }
 });
 
@@ -1537,7 +1689,25 @@ test("compactText keeps both head and tail for long validation output", () => {
 
 function packageFixture(scripts) {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-validation-"));
-  fs.writeFileSync(path.join(cwd, "package.json"), `${JSON.stringify({ scripts }, null, 2)}\n`);
+  fs.writeFileSync(
+    path.join(cwd, "package.json"),
+    `${JSON.stringify({ scripts, packageManager: "pnpm@10.33.0" }, null, 2)}\n`,
+  );
+  fs.writeFileSync(
+    path.join(cwd, "pnpm-lock.yaml"),
+    [
+      "lockfileVersion: '9.0'",
+      "",
+      "settings:",
+      "  autoInstallPeers: true",
+      "  excludeLinksFromLockfile: false",
+      "",
+      "importers:",
+      "",
+      "  .: {}",
+      "",
+    ].join("\n"),
+  );
   return cwd;
 }
 
@@ -1553,15 +1723,16 @@ function bunPackageFixture(scripts) {
 
 function gitBunPackageFixture(scripts) {
   const cwd = bunPackageFixture(scripts);
+  fs.writeFileSync(path.join(cwd, ".gitignore"), "node_modules/\n");
   git(cwd, "init", "-b", "main");
   git(cwd, "config", "user.email", "clawsweeper@example.invalid");
   git(cwd, "config", "user.name", "ClawSweeper Test");
   return cwd;
 }
 
-function fakeBunFixture(cwd, { failRun = false } = {}) {
+function fakeBunFixture({ failRun = false } = {}) {
   const binDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-fake-bun-bin-"));
-  const logPath = path.join(cwd, "fake-bun.log");
+  const logPath = path.join(binDir, "fake-bun.log");
   writeNodeCommandShim(
     binDir,
     "bun",
@@ -1576,10 +1747,10 @@ if (${JSON.stringify(failRun)} && process.argv[2] === "run") { console.error("sr
   return { binDir, logPath };
 }
 
-function envLoggingBunFixture(cwd) {
+function envLoggingBunFixture() {
   const binDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-fake-bun-env-bin-"));
-  const logPath = path.join(cwd, "fake-bun.log");
-  const envLogPath = path.join(cwd, "fake-bun-env.log");
+  const logPath = path.join(binDir, "fake-bun.log");
+  const envLogPath = path.join(binDir, "fake-bun-env.log");
   writeNodeCommandShim(
     binDir,
     "bun",
@@ -1651,6 +1822,7 @@ function clawhubToolchain() {
 
 function gitPackageFixture(scripts) {
   const cwd = packageFixture(scripts);
+  fs.writeFileSync(path.join(cwd, ".gitignore"), "node_modules/\n");
   git(cwd, "init", "-b", "main");
   git(cwd, "config", "user.email", "clawsweeper@example.invalid");
   git(cwd, "config", "user.name", "ClawSweeper Test");
