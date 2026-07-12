@@ -1869,9 +1869,12 @@ jobs:
           const deployments = entries.filter((entry) => entry?.type === 'deploy');
           if (
             deployments.length !== 1 ||
+            deployments[0]?.version !== 1 ||
             deployments[0]?.worker_name !== 'crawl-remote' ||
             typeof deployments[0]?.version_id !== 'string' ||
-            !/^[0-9a-f-]{36}$/i.test(deployments[0].version_id)
+            !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+              deployments[0].version_id,
+            )
           ) {
             throw new Error('Wrangler deploy output did not identify one crawl-remote version');
           }
