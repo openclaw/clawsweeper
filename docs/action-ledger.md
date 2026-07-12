@@ -66,7 +66,8 @@ ordering without changing the older shared `stableJson` contract. Integer-like
 keys retain byte ordering rather than JavaScript property enumeration order,
 and unpaired-surrogate keys are rejected. Large identifiers must be strings.
 `event_id` is the SHA-256 of normalized repository plus `event_key`. Callers
-cannot supply a raw event key.
+cannot supply a raw event key, and event-key scope prefixes pass the same
+confidential-identifier checks as every other durable machine-text field.
 
 - Replaying the same key and semantic payload is idempotent.
 - Reusing a key for different semantic content is a hard conflict.
@@ -79,10 +80,15 @@ cannot supply a raw event key.
 - `recorded_at` is first-writer metadata and is excluded from event and shard
   replay equality. When equivalent fresh-root reconstructions reach an existing
   shard or import destination, the existing first-writer bytes win.
-- `occurred_at` records the source timestamp and must match across duplicate
-  events. Shard line order is a deterministic topological order: causal
-  children follow their in-shard parents, while independent ready events use
-  source timestamp and event ID as stable tie-breakers.
+- `occurred_at_source` distinguishes caller-supplied source timestamps from
+  writer-generated clock metadata. Source timestamps must match across
+  duplicate events. Generated occurrence and recording clocks are first-writer
+  metadata, so equivalent fresh-root reconstruction cannot conflict solely
+  because another writer observed a different wall clock.
+- Shard line order is a deterministic topological order: causal children follow
+  their in-shard parents. Independent source-timestamp events use occurrence
+  time and event ID as stable tie-breakers; generated-clock events use stable
+  provenance and event ID so wall-clock drift cannot reverse replay order.
 - Shard partition dates come from
   `CLAWSWEEPER_ACTION_LEDGER_PARTITION_DATE` or immutable
   `GITHUB_RUN_STARTED_AT` metadata. The producer-specific marker is persisted
@@ -123,9 +129,9 @@ bearer/API/Cloudflare credential forms, credential field aliases, POSIX and
 Windows absolute paths, case-insensitive private paths, private IPv4 and IPv6
 addresses, and internal hostname suffixes. Percent-encoded octets are rejected
 from durable identifiers and paths rather than decoded into potentially
-confidential forms. Host checks normalize trailing-dot FQDNs and equivalent
-IPv6 loopback forms while all durable text remains restricted to field-specific
-machine vocabularies.
+confidential forms. Host checks normalize case, trailing-dot FQDNs, compressed
+IPv6 loopback forms, URL userinfo, and file URLs while all durable text remains
+restricted to field-specific machine vocabularies.
 
 Every event records a privacy classification, redaction version, and fields
 dropped. The checked-in JSON schema is
