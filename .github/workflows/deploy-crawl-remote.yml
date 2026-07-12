@@ -361,7 +361,7 @@ jobs:
             },
             {
               name: '0008_gitcrawl_publish_candidates.sql',
-              sha256: 'ec4099d18c8ee8b12266e1a6e4850c6b694708e2757d45143ae4ee62a947c93f',
+              sha256: '9a021763b074dd6362615f0d0183933b5986eaf880c792c3a8c8cfcd18bc731f',
             },
           ];
           const migrationEntries = readdirSync('migrations', { withFileTypes: true })
@@ -464,6 +464,7 @@ jobs:
       CLOUDFLARE_ACCOUNT_ID: 91b59577e757131d68d55a471fe32aca
       DEPLOYMENT_STATUS_ATTEMPTS: "60"
       DEPLOYMENT_STATUS_DELAY_SECONDS: "5"
+      DEPLOYMENT_STATUS_TIMEOUT_SECONDS: "300"
       DEPLOY_MESSAGE: clawsweeper run ${{ github.run_id }}/${{ github.run_attempt }} main ${{ needs.preflight.outputs.deploy_sha }}
       DEPLOY_SHA: ${{ needs.preflight.outputs.deploy_sha }}
       ENV: ""
@@ -480,6 +481,9 @@ jobs:
       TOOLCHAIN_ROOT: ${{ github.workspace }}/.github/deploy/crawl-remote-toolchain
       WORKFLOW_SHA: ${{ github.sha }}
       WORKERS_DEV_URL: https://crawl-remote.services-91b.workers.dev
+      WRANGLER_DEPLOY_TIMEOUT_SECONDS: "480"
+      WRANGLER_READ_TIMEOUT_SECONDS: "45"
+      WRANGLER_ROLLBACK_TIMEOUT_SECONDS: "300"
       WRANGLER_VERSION: 4.107.1
     steps:
       - name: Create protected-environment audit token
@@ -847,28 +851,17 @@ jobs:
             throw new Error('canonical crawl-remote workflow registry identity is invalid');
           }
 
-          const disabledStates = new Set([
-            'disabled_inactivity',
-            'disabled_manually',
-          ]);
           if (contentEntry) {
-            if (!workflowEntry || !disabledStates.has(workflowEntry.state)) {
-              throw new Error(
-                'canonical crawl-remote production workflow is still an active or unverified deployment authority',
-              );
-            }
-            console.log(
-              `Canonical crawl-remote production workflow is ${workflowEntry.state}.`,
+            throw new Error(
+              'canonical crawl-remote production workflow must be deleted before central deployment is enabled',
             );
-          } else {
-            const retiredStates = new Set([...disabledStates, 'deleted']);
-            if (workflowEntry && !retiredStates.has(workflowEntry.state)) {
-              throw new Error(
-                'removed crawl-remote production workflow still has an active or unverified registry state',
-              );
-            }
-            console.log('Canonical crawl-remote production workflow is absent from the release SHA.');
           }
+          if (workflowEntry && workflowEntry.state !== 'deleted') {
+            throw new Error(
+              'removed crawl-remote production workflow still has a reactivatable registry state',
+            );
+          }
+          console.log('Canonical crawl-remote production workflow is permanently retired.');
           writeFileSync(
             process.env.WORKFLOW_ID_PATH,
             workflowEntry ? `${workflowEntry.id}\n` : '',
@@ -1364,13 +1357,19 @@ jobs:
           test -n "$CLOUDFLARE_API_TOKEN"
           test "$CLOUDFLARE_TOKEN_SHA256" = "$(printf '%s' "$CLOUDFLARE_API_TOKEN" | sha256sum | cut -d ' ' -f 1)"
           wrangler="$TOOLCHAIN_ROOT/node_modules/.bin/wrangler"
-          test "$("$wrangler" --version)" = "$WRANGLER_VERSION"
+          test "$(
+            timeout --foreground --signal=TERM --kill-after=15s \
+              "${WRANGLER_READ_TIMEOUT_SECONDS}s" \
+              "$wrangler" --version
+          )" = "$WRANGLER_VERSION"
 
           test -f "$RECEIPT_PATH"
           test -f "$PREVIOUS_RELEASE_SHA_PATH"
           test ! -e "$CONSUMED_RECEIPT_PATH"
 
-          "$wrangler" d1 execute crawl-remote \
+          timeout --foreground --signal=TERM --kill-after=15s \
+            "${WRANGLER_READ_TIMEOUT_SECONDS}s" \
+            "$wrangler" d1 execute crawl-remote \
             --remote \
             --json \
             --cwd "$RELEASE_ROOT" \
@@ -1415,7 +1414,7 @@ jobs:
             },
             {
               name: '0008_gitcrawl_publish_candidates.sql',
-              sha256: 'ec4099d18c8ee8b12266e1a6e4850c6b694708e2757d45143ae4ee62a947c93f',
+              sha256: '9a021763b074dd6362615f0d0183933b5986eaf880c792c3a8c8cfcd18bc731f',
             },
           ];
           const compatibleWithPreviousWorker = new Map([
@@ -1432,7 +1431,7 @@ jobs:
               {
                 classification: 'additive-publish-candidate-compat-v1',
                 sha256:
-                  'ec4099d18c8ee8b12266e1a6e4850c6b694708e2757d45143ae4ee62a947c93f',
+                  '9a021763b074dd6362615f0d0183933b5986eaf880c792c3a8c8cfcd18bc731f',
               },
             ],
           ]);
@@ -1570,7 +1569,10 @@ jobs:
                     /foreign key \(archive_id, snapshot_id\)\s+references gitcrawl_snapshots\(archive_id, snapshot_id\) on delete cascade/i.test(
                       sql,
                     ) &&
-                    /insert into gitcrawl_publish_candidates\(archive_id, snapshot_id, completed_at\)[\s\S]*from gitcrawl_active_snapshots active[\s\S]*snapshot\.coverage_complete = 1[\s\S]*on conflict\(archive_id\) do nothing;/i.test(
+                    /insert into gitcrawl_publish_candidates\(archive_id, snapshot_id, completed_at\)[\s\S]*from gitcrawl_active_snapshots active[\s\S]*snapshot\.coverage_complete = 1[\s\S]*trim\(snapshot\.hardening_validated_at\) != ''[\s\S]*on conflict\(archive_id\) do update set[\s\S]*snapshot_id = excluded\.snapshot_id,[\s\S]*completed_at = excluded\.completed_at;/i.test(
+                      sql,
+                    ) &&
+                    /update gitcrawl_snapshot_cutovers[\s\S]*set snapshot_id = \([\s\S]*from gitcrawl_active_snapshots active[\s\S]*active\.snapshot_id != gitcrawl_snapshot_cutovers\.snapshot_id[\s\S]*trim\(snapshot\.hardening_validated_at\) != ''[\s\S]*\);/i.test(
                       sql,
                     ) &&
                     /create trigger if not exists gitcrawl_publish_candidates_old_worker_activation\s+after update of activated_at on gitcrawl_snapshots[\s\S]*old\.activated_at is null[\s\S]*new\.activated_at is not null[\s\S]*update gitcrawl_snapshot_cutovers[\s\S]*set snapshot_id = new\.snapshot_id,\s+cutover_at = new\.activated_at/i.test(
@@ -1604,7 +1606,9 @@ jobs:
 
           mv -- "$RECEIPT_PATH" "$CONSUMED_RECEIPT_PATH"
 
-          "$wrangler" deployments status \
+          timeout --foreground --signal=TERM --kill-after=15s \
+            "${WRANGLER_READ_TIMEOUT_SECONDS}s" \
+            "$wrangler" deployments status \
             --name crawl-remote \
             --json \
             --cwd "$RELEASE_ROOT" \
@@ -1636,7 +1640,9 @@ jobs:
           PREVIOUS_VERSION_NODE
 
           set +e
-          "$wrangler" d1 execute crawl-remote \
+          timeout --foreground --signal=TERM --kill-after=15s \
+            "${WRANGLER_READ_TIMEOUT_SECONDS}s" \
+            "$wrangler" d1 execute crawl-remote \
             --remote \
             --json \
             --cwd "$RELEASE_ROOT" \
@@ -1800,12 +1806,16 @@ jobs:
           console.log('Capability fences match the selected pre-migration states.');
           PRE_FENCE_NODE
 
-          "$wrangler" d1 migrations apply crawl-remote \
+          timeout --foreground --signal=TERM --kill-after=15s \
+            "${WRANGLER_DEPLOY_TIMEOUT_SECONDS}s" \
+            "$wrangler" d1 migrations apply crawl-remote \
             --remote \
             --cwd "$RELEASE_ROOT" \
             --config wrangler.json
 
-          "$wrangler" d1 execute crawl-remote \
+          timeout --foreground --signal=TERM --kill-after=15s \
+            "${WRANGLER_READ_TIMEOUT_SECONDS}s" \
+            "$wrangler" d1 execute crawl-remote \
             --remote \
             --json \
             --cwd "$RELEASE_ROOT" \
@@ -2049,9 +2059,15 @@ jobs:
           test ! -e "$DEPLOY_OUTPUT_PATH"
           test ! -e "$PRE_DEPLOYMENT_RESPONSE"
           wrangler="$TOOLCHAIN_ROOT/node_modules/.bin/wrangler"
-          test "$("$wrangler" --version)" = "$WRANGLER_VERSION"
+          test "$(
+            timeout --foreground --signal=TERM --kill-after=15s \
+              "${WRANGLER_READ_TIMEOUT_SECONDS}s" \
+              "$wrangler" --version
+          )" = "$WRANGLER_VERSION"
 
-          "$wrangler" deployments status \
+          timeout --foreground --signal=TERM --kill-after=15s \
+            "${WRANGLER_READ_TIMEOUT_SECONDS}s" \
+            "$wrangler" deployments status \
             --name crawl-remote \
             --json \
             --cwd "$RELEASE_ROOT" \
@@ -2083,6 +2099,8 @@ jobs:
           PRE_DEPLOYMENT_NODE
 
           WRANGLER_OUTPUT_FILE_PATH="$DEPLOY_OUTPUT_PATH" \
+            timeout --foreground --signal=TERM --kill-after=15s \
+            "${WRANGLER_DEPLOY_TIMEOUT_SECONDS}s" \
             "$wrangler" deploy bundle/index.js \
             --no-bundle \
             --strict \
@@ -2126,6 +2144,12 @@ jobs:
           const deployOutcome = process.env.WORKER_DEPLOY_OUTCOME;
           const attempts = Number(process.env.DEPLOYMENT_STATUS_ATTEMPTS);
           const delaySeconds = Number(process.env.DEPLOYMENT_STATUS_DELAY_SECONDS);
+          const statusTimeoutSeconds = Number(
+            process.env.DEPLOYMENT_STATUS_TIMEOUT_SECONDS,
+          );
+          const readTimeoutSeconds = Number(
+            process.env.WRANGLER_READ_TIMEOUT_SECONDS,
+          );
           const wrangler = join(
             process.env.TOOLCHAIN_ROOT,
             'node_modules',
@@ -2142,14 +2166,22 @@ jobs:
             attempts > 120 ||
             !Number.isSafeInteger(delaySeconds) ||
             delaySeconds < 0 ||
-            delaySeconds > 30
+            delaySeconds > 30 ||
+            !Number.isSafeInteger(statusTimeoutSeconds) ||
+            statusTimeoutSeconds < 1 ||
+            statusTimeoutSeconds > 600 ||
+            !Number.isSafeInteger(readTimeoutSeconds) ||
+            readTimeoutSeconds < 1 ||
+            readTimeoutSeconds > 120
           ) {
             throw new Error('Worker deployment ownership inputs are invalid');
           }
+          const deadline = Date.now() + statusTimeoutSeconds * 1000;
           const version = spawnSync(wrangler, ['--version'], {
             encoding: 'utf8',
             env: process.env,
             maxBuffer: 1024 * 1024,
+            timeout: Math.min(readTimeoutSeconds * 1000, deadline - Date.now()),
           });
           if (
             version.status !== 0 ||
@@ -2160,16 +2192,24 @@ jobs:
 
           function sleep() {
             if (delaySeconds > 0) {
+              const remaining = deadline - Date.now();
+              if (remaining <= 0) {
+                return;
+              }
               Atomics.wait(
                 new Int32Array(new SharedArrayBuffer(4)),
                 0,
                 0,
-                delaySeconds * 1000,
+                Math.min(delaySeconds * 1000, remaining),
               );
             }
           }
 
           for (let attempt = 1; attempt <= attempts; attempt += 1) {
+            const remaining = deadline - Date.now();
+            if (remaining <= 0) {
+              throw new Error('Worker deployment ownership deadline expired');
+            }
             const status = spawnSync(
               wrangler,
               [
@@ -2187,6 +2227,7 @@ jobs:
                 encoding: 'utf8',
                 env: process.env,
                 maxBuffer: 1024 * 1024,
+                timeout: Math.min(readTimeoutSeconds * 1000, remaining),
               },
             );
             if (status.status !== 0) {
@@ -2560,9 +2601,15 @@ jobs:
           test "$previous_version" != ""
           test "$deployed_version" != "$previous_version"
           wrangler="$TOOLCHAIN_ROOT/node_modules/.bin/wrangler"
-          test "$("$wrangler" --version)" = "$WRANGLER_VERSION"
+          test "$(
+            timeout --foreground --signal=TERM --kill-after=15s \
+              "${WRANGLER_READ_TIMEOUT_SECONDS}s" \
+              "$wrangler" --version
+          )" = "$WRANGLER_VERSION"
 
-          "$wrangler" deployments status \
+          timeout --foreground --signal=TERM --kill-after=15s \
+            "${WRANGLER_READ_TIMEOUT_SECONDS}s" \
+            "$wrangler" deployments status \
             --name crawl-remote \
             --json \
             --cwd "$RELEASE_ROOT" \
@@ -2588,14 +2635,18 @@ jobs:
           }
           ROLLBACK_FENCE_NODE
 
-          "$wrangler" rollback "$previous_version" \
+          timeout --foreground --signal=TERM --kill-after=15s \
+            "${WRANGLER_ROLLBACK_TIMEOUT_SECONDS}s" \
+            "$wrangler" rollback "$previous_version" \
             --name crawl-remote \
             --message "rollback failed main ${DEPLOY_SHA}" \
             --yes \
             --cwd "$RELEASE_ROOT" \
             --config wrangler.json
 
-          "$wrangler" deployments status \
+          timeout --foreground --signal=TERM --kill-after=15s \
+            "${WRANGLER_READ_TIMEOUT_SECONDS}s" \
+            "$wrangler" deployments status \
             --name crawl-remote \
             --json \
             --cwd "$RELEASE_ROOT" \

@@ -151,6 +151,10 @@ test("crawl-remote release is maintainer-bound across two fresh runners", () => 
   assert.equal(deploy.env.PRODUCTION_ROUTE_URL, "https://reports.openclaw.ai/crawl-remote");
   assert.equal(deploy.env.DEPLOYMENT_STATUS_ATTEMPTS, "60");
   assert.equal(deploy.env.DEPLOYMENT_STATUS_DELAY_SECONDS, "5");
+  assert.equal(deploy.env.DEPLOYMENT_STATUS_TIMEOUT_SECONDS, "300");
+  assert.equal(deploy.env.WRANGLER_DEPLOY_TIMEOUT_SECONDS, "480");
+  assert.equal(deploy.env.WRANGLER_READ_TIMEOUT_SECONDS, "45");
+  assert.equal(deploy.env.WRANGLER_ROLLBACK_TIMEOUT_SECONDS, "300");
   assert.equal(deploy.env.PRODUCTION_ENVIRONMENT, "crawl-remote-production");
   const environmentToken = step(deploy, "Create protected-environment audit token");
   const environmentAudit = step(deploy, "Audit protected production environment");
@@ -480,7 +484,7 @@ esac
   }
 });
 
-test("canonical crawl-remote production authority must be removed or disabled", () => {
+test("canonical crawl-remote production authority must be permanently removed", () => {
   const token = step(deploy, "Create exact-repository reauthorization token");
   assert.equal(
     token.uses,
@@ -504,9 +508,9 @@ test("canonical crawl-remote production authority must be removed or disabled", 
   assert.match(run, /action_required in_progress pending queued requested waiting/);
   assert.match(run, /workflow authority response is truncated/);
   assert.match(run, /workflow still has \$\{status\} runs/);
-  assert.match(run, /disabled_inactivity/);
-  assert.match(run, /disabled_manually/);
   assert.match(run, /'deleted'/);
+  assert.match(run, /must be deleted before central deployment is enabled/);
+  assert.match(run, /reactivatable registry state/);
   assert.doesNotMatch(
     run,
     /--method\s+(?:POST|PUT|PATCH|DELETE)|workflow dispatch|workflow disable/,
@@ -605,25 +609,28 @@ esac
   }
 
   try {
-    assertSucceeds(verify({ contentPresent: true, registryState: "disabled_manually" }));
-    assertSucceeds(verify({ contentPresent: true, registryState: "disabled_inactivity" }));
     assertSucceeds(verify({ contentPresent: false, registryState: "deleted" }));
     assertSucceeds(verify({ contentPresent: false }));
+    assert.notEqual(verify({ contentPresent: true, registryState: "disabled_manually" }).status, 0);
+    assert.notEqual(
+      verify({ contentPresent: true, registryState: "disabled_inactivity" }).status,
+      0,
+    );
     assert.notEqual(verify({ contentPresent: true, registryState: "active" }).status, 0);
     assert.notEqual(verify({ contentPresent: true }).status, 0);
     assert.notEqual(verify({ contentPresent: false, registryState: "active" }).status, 0);
     assert.notEqual(
       verify({
         contentPresent: true,
-        registryState: "disabled_manually",
+        registryState: "deleted",
         registryTruncated: true,
       }).status,
       0,
     );
     assert.notEqual(
       verify({
-        contentPresent: true,
-        registryState: "disabled_manually",
+        contentPresent: false,
+        registryState: "deleted",
         waitingRun: true,
       }).status,
       0,
@@ -887,7 +894,7 @@ test("release artifact is immutable, bounded, canonical, and hash verified", () 
     "5964adcb0807448d937fed38ac9588a1063bf4f490a82b54f15f0e700374ae0c",
     "a0ebfbb5c40c85df5eaba6772a01a68910fa5f1327d4701d25c5dfde16f77d1a",
     "5c1e92dbf4d51ef62d317e212a0ec8e39df104983656c6416d0c58ef3503744d",
-    "ec4099d18c8ee8b12266e1a6e4850c6b694708e2757d45143ae4ee62a947c93f",
+    "9a021763b074dd6362615f0d0183933b5986eaf880c792c3a8c8cfcd18bc731f",
   ]) {
     assert.match(packaging, new RegExp(sha256));
   }
@@ -1548,11 +1555,15 @@ test("failed Worker release rolls back only the exact previously stable Worker v
   assert.match(rollback.if ?? "", /steps\.post-deploy-main\.outcome != 'success'/);
   assert.match(rollback.if ?? "", /steps\.production-proof\.outcome != 'success'/);
   assert.match(workerDeploy.run ?? "", /WRANGLER_OUTPUT_FILE_PATH="\$DEPLOY_OUTPUT_PATH"/);
+  assert.match(workerDeploy.run ?? "", /WRANGLER_DEPLOY_TIMEOUT_SECONDS/);
   assert.doesNotMatch(workerDeploy.run ?? "", /DEPLOYED_VERSION_PATH|entry\?\.type === 'deploy'/);
   assert.match(deploymentState.run ?? "", /deployment\?\.annotations\?\.\['workers\/message'\]/);
   assert.match(deploymentState.run ?? "", /mutation_owned=true/);
   assert.match(deploymentState.run ?? "", /\['success', 'failure', 'cancelled'\]/);
   assert.match(deploymentState.run ?? "", /deployment mutation remains indeterminate/);
+  assert.match(deploymentState.run ?? "", /DEPLOYMENT_STATUS_TIMEOUT_SECONDS/);
+  assert.match(deploymentState.run ?? "", /WRANGLER_READ_TIMEOUT_SECONDS/);
+  assert.match(deploymentState.run ?? "", /ownership deadline expired/);
   assert.doesNotMatch(deploymentState.run ?? "", /mutation_owned=false/);
   assert.match(deployReceipt.run ?? "", /entry\?\.type === 'deploy'/);
   assert.match(deployReceipt.run ?? "", /deployments\[0\]\?\.version !== 1/);
@@ -1560,6 +1571,8 @@ test("failed Worker release rolls back only the exact previously stable Worker v
   assert.match(run, /refusing rollback because this run no longer owns the current Worker version/);
   assert.match(run, /versions\[0\]\?\.version_id !== process\.env\.DEPLOYED_VERSION/);
   assert.match(run, /wrangler" rollback "\$previous_version"/);
+  assert.match(run, /WRANGLER_ROLLBACK_TIMEOUT_SECONDS/);
+  assert.match(run, /WRANGLER_READ_TIMEOUT_SECONDS/);
   assert.match(run, /--yes/);
   assert.match(run, /deployments status/);
   assert.match(run, /versions\[0\]\?\.version_id !== process\.env\.PREVIOUS_VERSION/);
@@ -1640,12 +1653,14 @@ exit 97
           DEPLOYED_VERSION_PATH: deployedVersionPath,
           DEPLOYMENT_STATUS_ATTEMPTS: "1",
           DEPLOYMENT_STATUS_DELAY_SECONDS: "0",
+          DEPLOYMENT_STATUS_TIMEOUT_SECONDS: "30",
           DEPLOY_MESSAGE: deployMessage,
           GITHUB_OUTPUT: githubOutputPath,
           PREVIOUS_VERSION_PATH: previousVersionPath,
           RELEASE_ROOT: directory,
           TOOLCHAIN_ROOT: toolchainRoot,
           WORKER_DEPLOY_OUTCOME: deployOutcome,
+          WRANGLER_READ_TIMEOUT_SECONDS: "5",
           WRANGLER_VERSION: "4.107.1",
         },
       },
@@ -1798,7 +1813,7 @@ test("pending migration compatibility accepts only the reviewed additive 0007-00
     ],
     [
       "0008_gitcrawl_publish_candidates.sql",
-      "ec4099d18c8ee8b12266e1a6e4850c6b694708e2757d45143ae4ee62a947c93f",
+      "9a021763b074dd6362615f0d0183933b5986eaf880c792c3a8c8cfcd18bc731f",
     ],
   ] as const;
   const migrationSQL = `pragma foreign_keys = on;
@@ -1927,7 +1942,46 @@ join gitcrawl_snapshots snapshot
  and snapshot.snapshot_id = active.snapshot_id
 where snapshot.activated_at is not null
   and snapshot.coverage_complete = 1
-on conflict(archive_id) do nothing;
+  and trim(snapshot.hardening_validated_at) != ''
+on conflict(archive_id) do update set
+  snapshot_id = excluded.snapshot_id,
+  completed_at = excluded.completed_at;
+
+update gitcrawl_snapshot_cutovers
+set snapshot_id = (
+      select active.snapshot_id
+      from gitcrawl_active_snapshots active
+      join gitcrawl_snapshots snapshot
+        on snapshot.archive_id = active.archive_id
+       and snapshot.snapshot_id = active.snapshot_id
+      where active.archive_id = gitcrawl_snapshot_cutovers.archive_id
+        and snapshot.activated_at is not null
+        and snapshot.coverage_complete = 1
+        and trim(snapshot.hardening_validated_at) != ''
+    ),
+    cutover_at = (
+      select active.activated_at
+      from gitcrawl_active_snapshots active
+      join gitcrawl_snapshots snapshot
+        on snapshot.archive_id = active.archive_id
+       and snapshot.snapshot_id = active.snapshot_id
+      where active.archive_id = gitcrawl_snapshot_cutovers.archive_id
+        and snapshot.activated_at is not null
+        and snapshot.coverage_complete = 1
+        and trim(snapshot.hardening_validated_at) != ''
+    )
+where exists (
+  select 1
+  from gitcrawl_active_snapshots active
+  join gitcrawl_snapshots snapshot
+    on snapshot.archive_id = active.archive_id
+   and snapshot.snapshot_id = active.snapshot_id
+  where active.archive_id = gitcrawl_snapshot_cutovers.archive_id
+    and active.snapshot_id != gitcrawl_snapshot_cutovers.snapshot_id
+    and snapshot.activated_at is not null
+    and snapshot.coverage_complete = 1
+    and trim(snapshot.hardening_validated_at) != ''
+);
 
 create trigger if not exists gitcrawl_publish_candidates_old_worker_activation
 after update of activated_at on gitcrawl_snapshots

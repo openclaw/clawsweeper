@@ -32,6 +32,9 @@ checkpoint, and status-only commits are intentionally omitted.
   production token fingerprint; mandatory custom-route proof uses Cloudflare
   Access service-token headers, and failed or stale deployments roll back only
   the Worker to the exact prior stable version; D1 migrations remain applied.
+  The former crawl-remote deployment workflow must be deleted, not merely
+  disabled, and all Wrangler reads, mutations, ownership probes, and rollback
+  commands have explicit deadlines that preserve rollback headroom.
   Environment variables resolve only
   inside protected steps, route-proof mode is mandatory, and D1 packaging
   accepts only the exact reviewed migration sequence and content hashes.
