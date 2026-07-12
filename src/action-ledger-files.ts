@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { constants as bufferConstants } from "node:buffer";
+import { constants as bufferConstants, isUtf8 } from "node:buffer";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -405,7 +405,7 @@ function readUtf8FileWithParentChain(
     }
     const content =
       maxBytes === undefined
-        ? fs.readFileSync(descriptor, "utf8")
+        ? decodeUtf8File(fs.readFileSync(descriptor), target)
         : readBoundedUtf8File(descriptor, maxBytes, target);
     assertStableParentChain(target, parentChain);
     assertPathMatchesIdentity(target.path, openedIdentity, target.label);
@@ -430,7 +430,14 @@ function readBoundedUtf8File(
   if (bytesRead > maxBytes) {
     throw new Error(`${target.label} file exceeds ${maxBytes} byte limit: ${target.path}`);
   }
-  return buffer.subarray(0, bytesRead).toString("utf8");
+  return decodeUtf8File(buffer.subarray(0, bytesRead), target);
+}
+
+function decodeUtf8File(buffer: Uint8Array, target: SafeWriteTarget): string {
+  if (!isUtf8(buffer)) {
+    throw new Error(`invalid UTF-8 in ${target.label} file: ${target.path}`);
+  }
+  return Buffer.from(buffer.buffer, buffer.byteOffset, buffer.byteLength).toString("utf8");
 }
 
 function removeFileNoFollow(target: SafeWriteTarget, expectedIdentity: FileIdentity): void {
@@ -608,10 +615,11 @@ function pathTarget(
 }
 
 function validateRelativePath(relativePath: string, label: string): void {
+  const segments = relativePath.split(/[\\/]/);
   if (
     !relativePath ||
     path.isAbsolute(relativePath) ||
-    relativePath.split(/[\\/]/).includes("..")
+    segments.some((segment) => segment === "." || segment === "..")
   ) {
     throw new Error(`refusing to access ${label} outside root: ${relativePath}`);
   }

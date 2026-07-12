@@ -382,6 +382,7 @@ export const ACTION_EVENT_CONFIDENTIAL_IDENTIFIER_PATTERN_SOURCES = [
   "/(?:[Uu][Ss][Ee][Rr][Ss]|[Hh][Oo][Mm][Ee]|[Pp][Rr][Ii][Vv][Aa][Tt][Ee]|[Tt][Mm][Pp])/",
   "\\\\[Uu][Ss][Ee][Rr][Ss]\\\\",
   "(?:^|[\\\\/])[A-Za-z]:[\\\\/]",
+  "(?:^|[^A-Za-z0-9+.-])[A-Za-z0-9_.@+-]+:(?:/(?!/)|[A-Za-z]:/)",
   "%[0-9A-Fa-f]{2}",
   "(?:^|[^A-Za-z0-9+.-])[Ff][Ii][Ll][Ee]:",
   "(?:^|[^A-Za-z0-9+.-])[A-Za-z][A-Za-z0-9+.-]*://[^\\s/@]+@",
@@ -394,6 +395,7 @@ export const ACTION_EVENT_CONFIDENTIAL_IDENTIFIER_PATTERN_SOURCES = [
   "[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}",
   "(?:^|[/:@])(?:[Ll][Oo][Cc][Aa][Ll][Hh][Oo][Ss][Tt]|(?:[A-Za-z0-9-]+\\.)+(?:[Ll][Oo][Cc][Aa][Ll]|[Ll][Oo][Cc][Aa][Ll][Hh][Oo][Ss][Tt]|[Ii][Nn][Tt][Ee][Rr][Nn][Aa][Ll]|[Cc][Oo][Rr][Pp]|[Ll][Aa][Nn]|[Hh][Oo][Mm][Ee](?:\\.[Aa][Rr][Pp][Aa])?)|(?:[Ii][Nn][Tt][Ee][Rr][Nn][Aa][Ll]|[Ii][Nn][Tt][Rr][Aa][Nn][Ee][Tt])\\.(?:[A-Za-z0-9-]+\\.)*[A-Za-z0-9-]+)\\.*(?:$|[/:])",
   "(?:^|[^0-9])(?:10(?:\\.[0-9]{1,3}){3}|127(?:\\.[0-9]{1,3}){3}|169\\.254(?:\\.[0-9]{1,3}){2}|192\\.168(?:\\.[0-9]{1,3}){2}|172\\.(?:1[6-9]|2[0-9]|3[01])(?:\\.[0-9]{1,3}){2})(?:$|[^0-9])",
+  "(?:^|[^0-9])(?:0[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+|[0-9]+\\.0[0-9]+\\.[0-9]+\\.[0-9]+|[0-9]+\\.[0-9]+\\.0[0-9]+\\.[0-9]+|[0-9]+\\.[0-9]+\\.[0-9]+\\.0[0-9]+)(?:$|[^0-9])",
   "(?:^|[\\[/:@])(?:(?:::)(?:0{1,4}:){0,6}0*1|(?:0{1,4}:){1,6}:(?:0{1,4}:){0,6}0*1|(?:0{1,4}:){7}0*1|(?:(?:::)(?:[Ff]{4}:)?|(?:0{1,4}:){5}[Ff]{4}:|(?:0{1,4}:){6})7[fF][0-9A-Fa-f]{2}:[0-9A-Fa-f]{1,4}|(?:[Ff][CcDd][0-9A-Fa-f]{2}|[Ff][Ee][89AaBb][0-9A-Fa-f]):[0-9A-Fa-f:]+)(?:\\]|$|[/:])",
   "(?:^|[\\[/:@])(?:(?:::)(?:[Ff]{4}:)?|(?:0{1,4}:){5}[Ff]{4}:|(?:0{1,4}:){6})(?:[0]?[Aa][0-9A-Fa-f]{2}|7[Ff][0-9A-Fa-f]{2}|[Aa]9[Ff][Ee]|[Aa][Cc]1[0-9A-Fa-f]|[Cc]0[Aa]8):[0-9A-Fa-f]{1,4}(?:\\]|$|[/:])",
   "(?:^|[\\[/:@])(?:(?:(?:0{1,4}:){0,3}0{1,4})?::[Ff]{4}:|(?:(?:0{1,4}:){0,4}0{1,4})?::)(?:[0]?[Aa][0-9A-Fa-f]{2}|7[Ff][0-9A-Fa-f]{2}|[Aa]9[Ff][Ee]|[Aa][Cc]1[0-9A-Fa-f]|[Cc]0[Aa]8):[0-9A-Fa-f]{1,4}(?:\\]|$|[/:])",
@@ -804,7 +806,10 @@ export function createActionEvent(
   options: { now?: () => Date; generatedOccurredAt?: string } = {},
 ): ActionEvent {
   const semantic = actionEventSemanticValue(input);
-  const recordedAt = (options.now ?? (() => new Date()))().toISOString();
+  const recordedAt = requiredTimestamp(
+    (options.now ?? (() => new Date()))().toISOString(),
+    "action event recorded_at",
+  );
   const hasSourceOccurrence = input.occurredAt !== undefined;
   const occurredAtSource: ActionEventOccurrenceSource = hasSourceOccurrence
     ? "source"
@@ -1114,8 +1119,8 @@ function normalizeAction(action: ActionEventAction) {
     ...(action.reasonCode
       ? { reason_code: machineText(action.reasonCode, "action event action reason code") }
       : {}),
-    retryable: Boolean(action.retryable),
-    mutation: Boolean(action.mutation),
+    retryable: requiredBoolean(action.retryable, "action event action retryable"),
+    mutation: requiredBoolean(action.mutation, "action event action mutation"),
   };
 }
 
@@ -1137,21 +1142,22 @@ function normalizeLearning(learning: ActionEventLearning) {
 }
 
 function normalizeEvidence(evidence: ActionEventEvidence) {
-  const digest = evidence.sha256
-    ? requiredSha256(evidence.sha256, "action event evidence sha256")
-    : undefined;
+  const digest =
+    evidence.sha256 !== undefined
+      ? requiredSha256(evidence.sha256, "action event evidence sha256")
+      : undefined;
   return {
     kind: machineText(evidence.kind, "action event evidence kind"),
     ...(digest ? { sha256: digest } : {}),
-    ...(evidence.reportPath
+    ...(evidence.reportPath !== undefined
       ? {
           report_path: relativeDataPath(evidence.reportPath, "action event evidence report path"),
         }
       : {}),
-    ...(evidence.runUrl
+    ...(evidence.runUrl !== undefined
       ? { run_url: publicUrl(evidence.runUrl, "action event evidence run URL") }
       : {}),
-    ...(evidence.snapshotId
+    ...(evidence.snapshotId !== undefined
       ? {
           snapshot_id: machineText(evidence.snapshotId, "action event evidence snapshot id"),
         }
@@ -1565,6 +1571,9 @@ export function validateActionEvent(value: unknown, source = "action event"): Ac
   ) {
     throw new Error(`invalid action event schema: ${source}`);
   }
+  if (event.parent_event_id === event.event_id) {
+    throw new Error(`action event cannot reference itself as its parent: ${source}`);
+  }
   const semantic = actionEventSemanticValue({
     eventKey: event.event_key,
     operationId: event.operation_id,
@@ -1595,8 +1604,8 @@ export function validateActionEvent(value: unknown, source = "action event"): Ac
       name: String(event.action.name ?? ""),
       status: String(event.action.status ?? ""),
       ...(event.action.reason_code ? { reasonCode: event.action.reason_code } : {}),
-      retryable: Boolean(event.action.retryable),
-      mutation: Boolean(event.action.mutation),
+      retryable: event.action.retryable,
+      mutation: event.action.mutation,
     },
     ...(event.learning
       ? {
@@ -1614,10 +1623,10 @@ export function validateActionEvent(value: unknown, source = "action event"): Ac
       ? {
           evidence: event.evidence.map((entry) => ({
             kind: entry.kind,
-            ...(entry.sha256 ? { sha256: entry.sha256 } : {}),
-            ...(entry.report_path ? { reportPath: entry.report_path } : {}),
-            ...(entry.run_url ? { runUrl: entry.run_url } : {}),
-            ...(entry.snapshot_id ? { snapshotId: entry.snapshot_id } : {}),
+            ...(entry.sha256 !== undefined ? { sha256: entry.sha256 } : {}),
+            ...(entry.report_path !== undefined ? { reportPath: entry.report_path } : {}),
+            ...(entry.run_url !== undefined ? { runUrl: entry.run_url } : {}),
+            ...(entry.snapshot_id !== undefined ? { snapshotId: entry.snapshot_id } : {}),
           })),
         }
       : {}),
@@ -1844,6 +1853,13 @@ function positiveInteger(value: number, label: string): number {
   return value;
 }
 
+function requiredBoolean(value: unknown, label: string): boolean {
+  if (typeof value !== "boolean") {
+    throw new Error(`${label} must be a boolean`);
+  }
+  return value;
+}
+
 function positiveIntegerValue(value: ActionEventScalar, label: string): number {
   if (typeof value !== "number") throw new Error(`${label} must be a positive integer`);
   return positiveInteger(value, label);
@@ -1866,7 +1882,7 @@ function requiredSha256(value: string, label: string): string {
 
 function safePathSegment(value: string): string {
   const safe = value.replace(/[^A-Za-z0-9_.-]+/g, "-").replace(/^-+|-+$/g, "");
-  return safe || "unknown";
+  return !safe || safe === "." || safe === ".." ? "unknown" : safe;
 }
 
 function boundedPathSegment(value: string, maxLength: number): string {

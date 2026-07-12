@@ -35,11 +35,13 @@ import {
   readActionEventShard,
   readAllSpooledActionEvents,
   readSpooledActionEvents,
+  validateActionEvent,
   writeActionEvent,
   writeActionEventShard,
   type ActionEventInput,
   type ActionEventProducer,
 } from "../dist/action-ledger.js";
+import { prepareSafeWriteTarget } from "../dist/action-ledger-files.js";
 import { stableJson } from "../dist/stable-json.js";
 
 const producer: ActionEventProducer = {
@@ -483,6 +485,58 @@ test("events reject malformed correlation identities and self-parenting", () => 
     () => createActionEvent({ ...input, parentEventId: eventId }),
     /cannot reference itself/,
   );
+  const event = createActionEvent(input);
+  assert.throws(
+    () => validateActionEvent({ ...event, parent_event_id: event.event_id }),
+    /cannot reference itself/,
+  );
+});
+
+test("event creation rejects noncanonical writer timestamps before persistence", () => {
+  for (const year of [0, 10_000]) {
+    const now = new Date(0);
+    now.setUTCFullYear(year, 0, 1);
+    const root = tempRoot();
+    assert.throws(
+      () => writeActionEvent(root, reviewInput(), { now: () => now }),
+      /action event recorded_at must be an ISO date-time timestamp/,
+    );
+    assert.deepEqual(fs.readdirSync(root), []);
+  }
+});
+
+test("action flags and supplied evidence values require exact types and bindings", () => {
+  for (const action of [
+    { ...reviewInput().action, retryable: "false" as never },
+    { ...reviewInput().action, mutation: 1 as never },
+  ]) {
+    assert.throws(
+      () => createActionEvent(reviewInput({ action })),
+      /action event action (?:retryable|mutation) must be a boolean/,
+    );
+  }
+
+  const valid = createActionEvent(reviewInput());
+  assert.throws(
+    () =>
+      validateActionEvent({
+        ...valid,
+        action: { ...valid.action, retryable: "false" },
+      }),
+    /action event action retryable must be a boolean/,
+  );
+
+  for (const evidence of [
+    { kind: "review", sha256: "" },
+    { kind: "review", reportPath: "" },
+    { kind: "review", runUrl: "" },
+    { kind: "review", snapshotId: "" },
+  ]) {
+    assert.throws(
+      () => createActionEvent(reviewInput({ evidence: [evidence] })),
+      /required|SHA-256|repository-relative|HTTPS URL/,
+    );
+  }
 });
 
 test("event-key scopes reject raw identities and confidential identifiers", () => {
@@ -743,9 +797,13 @@ test("runtime and schema apply the same machine-text privacy boundary", () => {
     "https://host.docker.internal/api",
     "https://service.internal.././api",
     "https://10.0.0.1/api",
+    "runner:/etc/openclaw/config",
+    "runner:C:/build/worktree",
     "http://2130706433/",
     "http://0x7f000001/",
     "http://017700000001/",
+    "010.0.0.1",
+    "http://010.0.0.1/",
     "http://127.1/",
     "http://127.0.1/",
     "http://10.1/",
@@ -794,8 +852,11 @@ test("privacy normalization preserves public machine identifiers", () => {
     "public.example",
     "public.example..",
     "https://public.example/./api",
+    "runner:relative/path",
     "http://126.1/",
     "http://192.167.1/",
+    "8.0.0.1",
+    "http://8.0.0.1/",
     "0:0:0:0:0:ffff:808:808",
     "0:0:0:0:0:ffff:ac20:1",
     "0:0::ffff:808:808",
@@ -1623,6 +1684,8 @@ test("durable privacy guards reject raw text, local paths, secrets, and invalid 
     "%2FUsers%2Falice%2Fsecret",
     "https%3A%2F%2Fservice.internal%2Fapi",
     "C:/build/runner/worktree",
+    "runner:/etc/openclaw/config",
+    "runner:C:/build/worktree",
     "service.internal",
     "service.internal.",
     "internal.example.com",
@@ -1632,6 +1695,8 @@ test("durable privacy guards reject raw text, local paths, secrets, and invalid 
     "http://2130706433/",
     "http://0x7f000001/",
     "http://017700000001/",
+    "010.0.0.1",
+    "http://010.0.0.1/",
     "host-10.0.0.1",
   ]) {
     assert.throws(
@@ -1968,6 +2033,20 @@ test("checked-in schema rejects values rejected by runtime normalization", () =>
     assert.equal(schemaAccepts(schema, candidate), false, entry.label);
     assert.throws(entry.runtime, undefined, entry.label);
   }
+});
+
+test("ledger file reads reject malformed UTF-8 and dot-only path segments", () => {
+  const root = tempRoot();
+  assert.throws(
+    () => prepareSafeWriteTarget(root, "ledger/./events.jsonl", "action event shard"),
+    /outside root/,
+  );
+
+  const written = writeActionEvent(root, reviewInput());
+  const content = fs.readFileSync(written.path);
+  content[0] = 0xff;
+  fs.writeFileSync(written.path, content);
+  assert.throws(() => readSpooledActionEvents(root, "openclaw/openclaw"), /invalid UTF-8/);
 });
 
 test("event readers reject unknown fields instead of carrying unhashed data into shards", () => {
