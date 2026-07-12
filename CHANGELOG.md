@@ -73,9 +73,10 @@ checkpoint, and status-only commits are intentionally omitted.
 - Routed successful issue-implementation completion comments through the sealed
   publication guard and rebound required-label writes to the exact current
   validated pull-request head immediately before mutation.
-- Kept deadline-expired pending or missing post-flight checks retryable for
-  durable self-heal, and required issue-implementation readiness to match the
-  exact head recorded by the verified publication receipt.
+- Kept deadline-expired pending, missing, or conclusion-less post-flight checks
+  retryable for durable self-heal, blocked malformed check records, and required
+  issue-implementation readiness to match the exact head recorded by the
+  verified publication receipt.
 - Failed closed when a configured canonical changed-gate script disappears from
   the repaired checkout, and limited package-manager proof commands to explicit
   read-only script or runner forms while rejecting lifecycle, registry, and

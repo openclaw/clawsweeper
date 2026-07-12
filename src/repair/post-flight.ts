@@ -786,12 +786,17 @@ function validateStatusChecks(checks: LooseRecord[]) {
     considered += 1;
     const status = String(check.status ?? check.state ?? "").toUpperCase();
     const conclusion = String(check.conclusion ?? "").toUpperCase();
-    if (status && !["COMPLETED", "SUCCESS"].includes(status)) {
-      blockers.push(`${name}: ${status}`);
+    if (conclusion) {
+      if (!PASSING_CHECK_CONCLUSIONS.has(conclusion)) blockers.push(`${name}: ${conclusion}`);
       continue;
     }
-    if (conclusion && !PASSING_CHECK_CONCLUSIONS.has(conclusion)) {
-      blockers.push(`${name}: ${conclusion}`);
+    if (!check.status && PASSING_CHECK_CONCLUSIONS.has(String(check.state ?? "").toUpperCase())) {
+      continue;
+    }
+    if (["COMPLETED", "SUCCESS"].includes(status)) {
+      blockers.push(`${name}: UNKNOWN (${status} without conclusion)`);
+    } else {
+      blockers.push(`${name}: ${status || "UNKNOWN"}`);
     }
   }
   if (considered === 0) return "no PR checks found";
@@ -863,9 +868,16 @@ function checkTimestamp(check: LooseRecord) {
 }
 
 function isPendingStatusCheck(check: LooseRecord) {
-  const status = String(check.status ?? check.state ?? "").toUpperCase();
   const conclusion = String(check.conclusion ?? "").toUpperCase();
-  return !conclusion && Boolean(status) && !["COMPLETED", "SUCCESS"].includes(status);
+  if (conclusion) return false;
+  const checkRunStatus = String(check.status ?? "").toUpperCase();
+  const contextState = String(check.state ?? "").toUpperCase();
+  if (!checkRunStatus && PASSING_CHECK_CONCLUSIONS.has(contextState)) return false;
+  if (["QUEUED", "IN_PROGRESS", "PENDING", "WAITING", "REQUESTED"].includes(checkRunStatus)) {
+    return true;
+  }
+  if (["EXPECTED", "PENDING"].includes(contextState)) return true;
+  return ["COMPLETED", "SUCCESS"].includes(checkRunStatus);
 }
 
 function ignoredCheckNames() {

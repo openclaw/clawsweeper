@@ -611,8 +611,16 @@ test("post-flight keeps no-timestamp pending duplicate checks visible", () => {
   }
 });
 
-for (const checkState of ["missing", "pending"] as const) {
-  test(`issue implementation post-flight requeues deadline-expired ${checkState} checks`, () => {
+for (const checkState of [
+  "missing",
+  "pending",
+  "completed_without_conclusion",
+  "malformed",
+] as const) {
+  const expectedOutcome =
+    checkState === "malformed" ? "blocks malformed" : "requeues deadline-expired";
+  const checkDescription = checkState === "malformed" ? "check records" : `${checkState} checks`;
+  test(`issue implementation post-flight ${expectedOutcome} ${checkDescription}`, () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-post-flight-"));
     const fakeBin = path.join(tmp, "bin");
     const jobPath = path.join(tmp, "job.md");
@@ -642,7 +650,11 @@ for (const checkState of ["missing", "pending"] as const) {
         `  const checks = ${
           checkState === "missing"
             ? "[]"
-            : "[{ name: 'check', workflowName: 'CI', status: 'QUEUED', conclusion: null }]"
+            : checkState === "pending"
+              ? "[{ name: 'check', workflowName: 'CI', status: 'QUEUED', conclusion: null }]"
+              : checkState === "completed_without_conclusion"
+                ? "[{ name: 'check', workflowName: 'CI', status: 'COMPLETED', conclusion: null }]"
+                : "[{ name: 'check', workflowName: 'CI' }]"
         };`,
         "  process.stdout.write(JSON.stringify({",
         "    baseRefName: 'main', isDraft: false, mergeable: 'MERGEABLE',",
@@ -677,13 +689,22 @@ for (const checkState of ["missing", "pending"] as const) {
       );
 
       const report = JSON.parse(fs.readFileSync(reportPath, "utf8"));
-      assert.equal(report.outcome, "requeue");
+      assert.equal(report.outcome, checkState === "malformed" ? "blocked" : "requeue");
       assert.equal(report.actions[0]?.status, "blocked");
-      assert.equal(report.actions[0]?.retry_recommended, true);
+      assert.equal(
+        report.actions[0]?.retry_recommended,
+        checkState === "malformed" ? undefined : true,
+      );
       assert.match(
         report.actions[0]?.reason,
         checkState === "missing" ? /no PR checks found/i : /checks are not clean/i,
       );
+      if (checkState === "completed_without_conclusion") {
+        assert.match(report.actions[0]?.reason, /UNKNOWN \(COMPLETED without conclusion\)/);
+      }
+      if (checkState === "malformed") {
+        assert.match(report.actions[0]?.reason, /check: UNKNOWN/);
+      }
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
     }
