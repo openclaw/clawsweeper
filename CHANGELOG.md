@@ -71,11 +71,13 @@ checkpoint, and status-only commits are intentionally omitted.
   immutable action ledger, including partial, interrupted, timeout, and failed
   executions.
 - Dual-write comment-router command receipt, classification, durable claim,
-  claim refresh, dispatch, wait, recovery, completion, skip, and failure
-  transitions, status-comment progress, and report-only repair requeues into
-  immutable per-attempt action chains, with stable business idempotency across
-  retry invocations, worker-side dispatch deduplication, and immutable
-  publication to the state repository.
+  claim refresh, every command-side GitHub mutation attempt and outcome,
+  dispatch, wait, recovery, completion, skip, and failure transition,
+  status-comment progress, and report-only repair requeues into immutable
+  per-attempt action chains. Forced replays use durable attempt-scoped operation
+  and idempotency identities, while requeues bind dispatch identity to the
+  source job digest and depth before immutable publication to the state
+  repository.
 - Short-circuited authenticated duplicate comment deliveries when their exact
   body version is already terminal in the durable router ledger, while edited,
   retryable, and state-drifted commands retain the full routing path.

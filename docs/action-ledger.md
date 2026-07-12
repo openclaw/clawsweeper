@@ -88,6 +88,17 @@ confidential-identifier checks as every other durable machine-text field.
 - Reusing a key for different semantic content is a hard conflict.
 - Retrying an operation creates a new `attempt_id` and new event records while
   preserving `operation_id` and mutation idempotency keys.
+- Command-side GitHub writes record a mutation-attempt receipt immediately
+  before the request and an accepted, rejected-before-write, or unknown outcome
+  immediately after it. A later command failure inherits accepted or uncertain
+  mutation state instead of being finalized as `mutation: false`.
+- Explicit command replays with a durable command `attempt_id` scope command
+  operation, attempt, and mutation idempotency identity to that replay.
+  Ordinary workflow retries without a durable command attempt retain the
+  stable logical command operation.
+- Repair requeue identity binds the source run, source job path, source job
+  authorization digest, and incremented requeue depth. The same source attempt
+  reuses one dispatch key while a changed source or depth cannot alias it.
 - Mutation events require an explicit business `idempotencyIdentity`; outcome
   status and failure reason never define side-effect identity.
 - Review operation identity binds each selected item's repository, kind, number,
@@ -274,8 +285,8 @@ dropped. The checked-in JSON schema is
 The shared taxonomy defines six families:
 
 1. **Review**: batch, item, retry, log publication, and comment publication.
-2. **Command**: receive, classify, claim refresh, progress, wait, requeue, and
-   recovery.
+2. **Command**: receive, classify, claim refresh, mutation attempt/outcome,
+   progress, wait, requeue, and recovery.
 3. **Repair**: intake, dispatch, plan, execute, validate, review, publish,
    post-flight, requeue, recovery, and queue phases. Blocked and failed summary
    types remain available for coarse emitters.

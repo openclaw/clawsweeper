@@ -475,6 +475,7 @@
         "command.classified",
         "command.claim_refreshed",
         "command.progress",
+        "command.mutation",
         "command.wait",
         "command.requeue",
         "command.recover",

@@ -323,7 +323,11 @@ test("strict base binding fails closed for non-repository rulesets without fetch
 test("all repair merge owners repeat the shared strict base guard immediately before merge", () => {
   for (const [file, functionName, mergeCall] of [
     ["src/repair/apply-result.ts", "function applyMergeAction(", "ghWithRetry(mergeArgs)"],
-    ["src/repair/comment-router.ts", "function executeAutomerge(", "const result = ghSpawn("],
+    [
+      "src/repair/comment-router.ts",
+      "function executeAutomerge(",
+      "const result = runGitHubSpawnMutation(",
+    ],
     ["src/repair/post-flight.ts", "function finalizeFixPr(", "ghWithRetry(mergeArgs)"],
   ] as const) {
     const source = fs.readFileSync(file, "utf8");
