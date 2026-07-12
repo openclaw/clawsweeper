@@ -196,6 +196,37 @@ test("semantic TypeScript token changes bust the code digest", () => {
   assert.equal(decision({ priorRecord: prior, currentRecord: changed }).reason, "code_changed");
 });
 
+test("identical token edits at different source locations do not collide", () => {
+  const firstBlock = record({
+    context: {
+      pullFiles: [
+        {
+          filename: "src/cache.ts",
+          status: "modified",
+          additions: 1,
+          deletions: 1,
+          patch: "@@ -10 +10 @@\n-return staleValue;\n+return freshValue;",
+        },
+      ],
+    },
+  });
+  const secondBlock = record({
+    context: {
+      pullFiles: [
+        {
+          filename: "src/cache.ts",
+          status: "modified",
+          additions: 1,
+          deletions: 1,
+          patch: "@@ -200 +200 @@\n-return staleValue;\n+return freshValue;",
+        },
+      ],
+    },
+  });
+
+  assert.notEqual(firstBlock.codeDigest, secondBlock.codeDigest);
+});
+
 test("TypeScript directives and shebangs remain semantic", () => {
   const ordinary = record({
     context: {
@@ -270,6 +301,54 @@ test("TypeScript directives and shebangs remain semantic", () => {
   assert.notEqual(ordinary.codeDigest, shebang.codeDigest);
   assert.notEqual(ordinary.codeDigest, sourceMapDirective.codeDigest);
   assert.notEqual(ordinary.codeDigest, referenceDirective.codeDigest);
+});
+
+test("tooling and bundler magic comments remain semantic", () => {
+  const ordinary = record({
+    context: {
+      pullFiles: [
+        {
+          filename: "src/cache.ts",
+          status: "modified",
+          additions: 2,
+          deletions: 1,
+          patch:
+            '@@ -1 +1,2 @@\n-const chunk = import("./cache");\n+// load the cache chunk\n+const chunk = import("./cache");',
+        },
+      ],
+    },
+  });
+  const webpack = record({
+    context: {
+      pullFiles: [
+        {
+          filename: "src/cache.ts",
+          status: "modified",
+          additions: 2,
+          deletions: 1,
+          patch:
+            '@@ -1 +1,2 @@\n-const chunk = import("./cache");\n+/* webpackChunkName: "cache" */\n+const chunk = import("./cache");',
+        },
+      ],
+    },
+  });
+  const pure = record({
+    context: {
+      pullFiles: [
+        {
+          filename: "src/cache.ts",
+          status: "modified",
+          additions: 1,
+          deletions: 1,
+          patch:
+            "@@ -1 +1 @@\n-const value = buildCache();\n+const value = /*#__PURE__*/ buildCache();",
+        },
+      ],
+    },
+  });
+
+  assert.notEqual(ordinary.codeDigest, webpack.codeDigest);
+  assert.notEqual(ordinary.codeDigest, pure.codeDigest);
 });
 
 test("structured JSON formatting does not perturb complete JSON hunks", () => {

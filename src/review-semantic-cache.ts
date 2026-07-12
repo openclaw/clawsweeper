@@ -14,7 +14,7 @@ const DIGEST_PATTERN = /^[0-9a-f]{64}$/;
 const MAX_PATCH_CHARS = 512 * 1024;
 const MAX_FILES = 80;
 const DIRECTIVE_COMMENT_PATTERN =
-  /@ts-(?:ignore|expect-error|nocheck|check)\b|[#@]\s*sourceMappingURL=|[#@]\s*sourceURL=|\/\/\/\s*<(?:reference|amd-module|amd-dependency)\b/i;
+  /[@#]|\/\/\/\s*<(?:reference|amd-module|amd-dependency)\b|\b(?:babel|biome|c8|coverage|deno-lint|eslint|esbuild|flow|gql|graphql|istanbul|prettier|rollup|swc|vite|webpack)[\w-]*/i;
 const TYPESCRIPT_EXTENSIONS = new Set([
   ".cjs",
   ".cts",
@@ -144,6 +144,8 @@ export interface ReviewSemanticInput {
 }
 
 interface ParsedHunk {
+  oldStart: number;
+  newStart: number;
   oldText: string;
   newText: string;
 }
@@ -209,12 +211,16 @@ function exactDiffDigest(input: ReviewSemanticInput): string {
   );
 }
 
-function parseHunkHeader(line: string): { oldCount: number; newCount: number } | null {
-  const match = line.match(/^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@(?:.*)?$/);
+function parseHunkHeader(
+  line: string,
+): { oldStart: number; oldCount: number; newStart: number; newCount: number } | null {
+  const match = line.match(/^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(?:.*)?$/);
   if (!match) return null;
   return {
-    oldCount: match[1] === undefined ? 1 : Number(match[1]),
-    newCount: match[2] === undefined ? 1 : Number(match[2]),
+    oldStart: Number(match[1]),
+    oldCount: match[2] === undefined ? 1 : Number(match[2]),
+    newStart: Number(match[3]),
+    newCount: match[4] === undefined ? 1 : Number(match[4]),
   };
 }
 
@@ -261,6 +267,8 @@ function parseUnifiedPatch(patch: string): ParsedHunk[] | null {
     }
     if (oldSeen !== header.oldCount || newSeen !== header.newCount) return null;
     hunks.push({
+      oldStart: header.oldStart,
+      newStart: header.newStart,
       oldText: oldLines.join("\n"),
       newText: newLines.join("\n"),
     });
@@ -319,7 +327,11 @@ function canonicalJson(text: string): string | null {
   }
 }
 
-function semanticHunksForFile(filename: string, hunks: readonly ParsedHunk[]): FileSemanticResult {
+function semanticHunksForFile(
+  filename: string,
+  status: "modified" | "added",
+  hunks: readonly ParsedHunk[],
+): FileSemanticResult {
   const extension = extname(filename).toLowerCase();
   if (TYPESCRIPT_EXTENSIONS.has(extension)) {
     const variant =
@@ -331,7 +343,11 @@ function semanticHunksForFile(filename: string, hunks: readonly ParsedHunk[]): F
       if (!oldTokens.valid || !newTokens.valid) {
         return { eligible: false, reason: "lexical_ambiguity", value: null };
       }
-      semanticHunks.push({ old: oldTokens.tokens, new: newTokens.tokens });
+      semanticHunks.push({
+        sourceAnchor: status === "added" ? hunk.newStart : hunk.oldStart,
+        old: oldTokens.tokens,
+        new: newTokens.tokens,
+      });
     }
     return { eligible: true, reason: "eligible", value: semanticHunks };
   }
@@ -343,7 +359,11 @@ function semanticHunksForFile(filename: string, hunks: readonly ParsedHunk[]): F
       if (oldValue === null || newValue === null) {
         return { eligible: false, reason: "invalid_json", value: null };
       }
-      semanticHunks.push({ old: oldValue, new: newValue });
+      semanticHunks.push({
+        sourceAnchor: status === "added" ? hunk.newStart : hunk.oldStart,
+        old: oldValue,
+        new: newValue,
+      });
     }
     return { eligible: true, reason: "eligible", value: semanticHunks };
   }
@@ -396,7 +416,7 @@ function semanticFile(value: unknown): FileSemanticResult {
       return { eligible: false, reason: "truncated_patch", value: null };
     }
   }
-  const semantic = semanticHunksForFile(filename, hunks);
+  const semantic = semanticHunksForFile(filename, status, hunks);
   if (!semantic.eligible) return semantic;
   return {
     eligible: true,
