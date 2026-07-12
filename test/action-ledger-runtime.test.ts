@@ -1024,26 +1024,28 @@ test("concurrent flushes converge on one immutable shard", async () => {
   );
 });
 
-test("producer locks reclaim only old dead owners and never evict a live holder", async () => {
-  const staleRoot = tempRoot();
-  const staleEvent = recordReviewNumber(staleRoot, 41);
-  assert.ok(staleEvent);
-  const staleTarget = prepareSafeWriteTarget(
-    staleRoot,
-    producerLockRelativePath(staleEvent),
+test("producer locks reclaim fresh dead owners and never evict a live holder by age", async () => {
+  const deadRoot = tempRoot();
+  const deadEvent = recordReviewNumber(deadRoot, 41);
+  assert.ok(deadEvent);
+  const deadTarget = prepareSafeWriteTarget(
+    deadRoot,
+    producerLockRelativePath(deadEvent),
     "test producer lock",
   );
-  const staleContent = `${actionLedgerJson({
+  const deadContent = `${actionLedgerJson({
     schema: "clawsweeper.action-ledger-producer-lock",
     schema_version: 1,
     pid: 2_147_483_647,
-    acquired_at_ms: 0,
+    acquired_at_ms: Date.now(),
     nonce: "00000000-0000-4000-8000-000000000000",
   })}\n`;
-  const releaseStale = tryAcquireUtf8FileLockNoFollow(staleTarget, staleContent);
-  assert.ok(releaseStale);
-  assert.ok(recordReviewNumber(staleRoot, 42));
-  assert.doesNotThrow(releaseStale);
+  const releaseDead = tryAcquireUtf8FileLockNoFollow(deadTarget, deadContent);
+  assert.ok(releaseDead);
+  const deadStartedAt = Date.now();
+  assert.ok(recordReviewNumber(deadRoot, 42));
+  assert.ok(Date.now() - deadStartedAt < 1_000);
+  assert.doesNotThrow(releaseDead);
 
   const liveRoot = tempRoot();
   const outputRoot = trustedChildRoot(liveRoot, "state");

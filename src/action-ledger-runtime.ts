@@ -65,7 +65,6 @@ const ACTION_EVENT_FINALIZATION_MAX_BYTES = 1024 * 1024;
 const ACTION_EVENT_PARTITION_MARKER_MAX_BYTES = 64;
 const ACTION_EVENT_PRODUCER_LOCK_MAX_BYTES = 1024;
 const ACTION_EVENT_PRODUCER_LOCK_WAIT_MS = 10_000;
-const ACTION_EVENT_PRODUCER_LOCK_STALE_MS = 5 * 60_000;
 const pendingCrabFleetPosts = new Set<Promise<void>>();
 const pendingWorkflowCrabFleetPosts = new Map<string, Set<Promise<void>>>();
 const workflowCrabFleetRequests = new Map<string, Set<CrabFleetProjectionRequest>>();
@@ -1511,10 +1510,7 @@ function withWorkflowProducerLock<T>(
     const existing = readUtf8FileIfExistsNoFollow(target, ACTION_EVENT_PRODUCER_LOCK_MAX_BYTES);
     if (existing === null) continue;
     const owner = parseWorkflowProducerLock(existing);
-    if (
-      !processIsAlive(owner.pid) &&
-      Date.now() - owner.acquired_at_ms > ACTION_EVENT_PRODUCER_LOCK_STALE_MS
-    ) {
+    if (!processIsAlive(owner.pid)) {
       removeUtf8FileIfContentNoFollow(target, existing);
       continue;
     }

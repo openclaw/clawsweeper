@@ -154,9 +154,8 @@ confidential-identifier checks as every other durable machine-text field.
 - Producer lock creation is exclusive and rolls back the exact created inode if
   later write or fsync validation fails. Release and stale cleanup are
   identity-checked; a lock disappearing during cleanup is benign. Contenders
-  reclaim a lock only when its recorded process is dead and it is older than
-  five minutes. A live holder is never evicted because synchronous finalization
-  crossed the age threshold.
+  reclaim a lock as soon as its recorded process is dead, while a live holder is
+  never evicted solely because of lock age.
 - Partition-marker reads are capped at 64 bytes. Existing and raced shard reads
   are capped at the same 2 MiB limit as new shard writes. Direct shard readers
   also require a non-empty collection of at most 1024 unique, acyclic events in
