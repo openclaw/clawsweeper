@@ -655,6 +655,7 @@ function applyMergeAction({
     appId: process.env.CLAWSWEEPER_APP_ID,
     appSlug: process.env.CLAWSWEEPER_AUTHENTICATED_APP_SLUG,
     readJson: (ghArgs) => ghJson(ghArgs),
+    policyReadJson: rulesetPolicyReader(),
   });
   if (strictBaseBindingBlock) {
     return {
@@ -713,6 +714,15 @@ function applyMergeAction({
     summary_lines: mergeMessage.summaryLines,
     fixup_lines: mergeMessage.fixupLines,
   };
+}
+
+function rulesetPolicyReader() {
+  const token = process.env.CLAWSWEEPER_RULESET_GH_TOKEN?.trim();
+  if (!token) return undefined;
+  return (ghArgs: string[]) =>
+    ghJson(ghArgs, {
+      env: { GH_TOKEN: token, GITHUB_TOKEN: token },
+    });
 }
 
 function validateClosePolicy({ job, actionName }: LooseRecord) {

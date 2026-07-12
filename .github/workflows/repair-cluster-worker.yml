@@ -452,7 +452,6 @@ jobs:
           client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
           private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
           owner: ${{ steps.target.outputs.target_owner }}
-          permission-administration: read
           permission-actions: write
           permission-contents: write
           permission-issues: write
@@ -592,12 +591,22 @@ jobs:
           client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
           private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
           owner: ${{ steps.target.outputs.target_owner }}
-          permission-administration: read
           permission-actions: write
           permission-contents: write
           permission-issues: write
           permission-pull-requests: write
           permission-workflows: write
+
+      - name: Create isolated ruleset verifier token
+        id: ruleset-verifier-token
+        if: ${{ steps.check_job.outputs.job_exists == '1' && steps.self_heal_head.outputs.matched != 'false' && env.CLAWSWEEPER_ALLOW_MERGE == '1' }}
+        continue-on-error: true
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
+          owner: ${{ steps.target.outputs.target_owner }}
+          permission-administration: write
 
       - name: Publish deferred fix outcome
         if: ${{ always() && steps.check_job.outputs.job_exists == '1' && steps.self_heal_head.outputs.matched != 'false' && env.CLAWSWEEPER_ALLOW_EXECUTE == '1' }}
@@ -615,6 +624,7 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.target_post_flight_token.outputs.token }}
           CLAWSWEEPER_AUTHENTICATED_APP_SLUG: ${{ steps.target_post_flight_token.outputs.app-slug }}
+          CLAWSWEEPER_RULESET_GH_TOKEN: ${{ steps.ruleset-verifier-token.outputs.token }}
           CLAWSWEEPER_ALLOWED_OWNER: ${{ steps.target.outputs.target_owner }}
         run: pnpm run repair:apply-result -- "${{ inputs.job }}" --latest
 
@@ -624,6 +634,7 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.target_post_flight_token.outputs.token }}
           CLAWSWEEPER_AUTHENTICATED_APP_SLUG: ${{ steps.target_post_flight_token.outputs.app-slug }}
+          CLAWSWEEPER_RULESET_GH_TOKEN: ${{ steps.ruleset-verifier-token.outputs.token }}
           CLAWSWEEPER_ALLOWED_OWNER: ${{ steps.target.outputs.target_owner }}
         run: pnpm run repair:post-flight -- "${{ inputs.job }}" --latest
 
@@ -632,6 +643,7 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.target_post_flight_token.outputs.token }}
           CLAWSWEEPER_AUTHENTICATED_APP_SLUG: ${{ steps.target_post_flight_token.outputs.app-slug }}
+          CLAWSWEEPER_RULESET_GH_TOKEN: ${{ steps.ruleset-verifier-token.outputs.token }}
           CLAWSWEEPER_ALLOWED_OWNER: ${{ steps.target.outputs.target_owner }}
         run: pnpm run repair:apply-result -- "${{ inputs.job }}" --latest
 

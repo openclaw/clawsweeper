@@ -9,55 +9,61 @@ const APP_ID = 3306130;
 const APP_SLUG = "openclaw-clawsweeper";
 
 test("strict base binding accepts an enforced non-bypass ruleset", () => {
+  const github = fakeGithub({
+    rules: [strictRulesetRule()],
+    ruleset: { bypass_actors: [] },
+  });
   assert.equal(
     serverStrictBaseBindingBlock({
       repo: "openclaw/openclaw",
       baseBranch: "main",
       appId: APP_ID,
       appSlug: APP_SLUG,
-      readJson: fakeGithub({
-        rules: [strictRulesetRule()],
-        ruleset: { bypass_actors: [] },
-      }),
+      readJson: github,
+      policyReadJson: github,
     }),
     "",
   );
 });
 
 test("strict base binding rejects a ruleset that exempts the merge app", () => {
+  const github = fakeGithub({
+    rules: [strictRulesetRule()],
+    ruleset: {
+      bypass_actors: [{ actor_type: "Integration", actor_id: APP_ID, bypass_mode: "always" }],
+    },
+  });
   assert.equal(
     serverStrictBaseBindingBlock({
       repo: "openclaw/openclaw",
       baseBranch: "main",
       appId: APP_ID,
       appSlug: APP_SLUG,
-      readJson: fakeGithub({
-        rules: [strictRulesetRule()],
-        ruleset: {
-          bypass_actors: [{ actor_type: "Integration", actor_id: APP_ID, bypass_mode: "always" }],
-        },
-      }),
+      readJson: github,
+      policyReadJson: github,
     }),
     "automerge disabled: merge credential bypasses the strict base-binding ruleset",
   );
 });
 
 test("strict base binding accepts classic strict branch protection", () => {
+  const github = fakeGithub({
+    rules: [],
+    protection: {
+      required_status_checks: {
+        strict: true,
+        contexts: ["ci"],
+      },
+    },
+  });
   assert.equal(
     serverStrictBaseBindingBlock({
       repo: "openclaw/example",
       baseBranch: "main",
       appId: APP_ID,
       appSlug: APP_SLUG,
-      readJson: fakeGithub({
-        rules: [],
-        protection: {
-          required_status_checks: {
-            strict: true,
-            contexts: ["ci"],
-          },
-        },
-      }),
+      readJson: github,
+      policyReadJson: github,
     }),
     "",
   );
@@ -79,18 +85,51 @@ test("strict base binding fails closed without an installation identity", () => 
 });
 
 test("strict base binding rejects rulesets whose bypass actors are hidden", () => {
+  const github = fakeGithub({
+    rules: [strictRulesetRule()],
+    ruleset: {},
+  });
   assert.equal(
     serverStrictBaseBindingBlock({
       repo: "openclaw/openclaw",
       baseBranch: "main",
       appId: APP_ID,
       appSlug: APP_SLUG,
-      readJson: fakeGithub({
-        rules: [strictRulesetRule()],
-        ruleset: {},
-      }),
+      readJson: github,
+      policyReadJson: github,
     }),
     "automerge disabled: unable to verify server-enforced strict base binding",
+  );
+});
+
+test("strict base binding rejects a missing ruleset verifier credential", () => {
+  assert.equal(
+    serverStrictBaseBindingBlock({
+      repo: "openclaw/openclaw",
+      baseBranch: "main",
+      appId: APP_ID,
+      appSlug: APP_SLUG,
+      readJson: fakeGithub({ rules: [], protection: {} }),
+    }),
+    "automerge disabled: ruleset verifier credential is unavailable",
+  );
+});
+
+test("strict base binding binds the verifier to the configured App", () => {
+  assert.equal(
+    serverStrictBaseBindingBlock({
+      repo: "openclaw/openclaw",
+      baseBranch: "main",
+      appId: APP_ID,
+      appSlug: APP_SLUG,
+      readJson: fakeGithub({ rules: [], protection: {} }),
+      policyReadJson: fakeGithub({
+        rules: [],
+        protection: {},
+        resolvedAppId: APP_ID + 1,
+      }),
+    }),
+    "automerge disabled: ruleset verifier credential is not the configured GitHub App installation",
   );
 });
 
@@ -146,10 +185,12 @@ test("all repair merge owners invoke the shared strict base guard before merge",
     const guard = owner.indexOf("serverStrictBaseBindingBlock({");
     const appIdentity = owner.indexOf("appId: process.env.CLAWSWEEPER_APP_ID");
     const appSlug = owner.indexOf("appSlug: process.env.CLAWSWEEPER_AUTHENTICATED_APP_SLUG");
+    const policyReader = owner.indexOf("policyReadJson: rulesetPolicyReader()");
     const merge = owner.indexOf(mergeCall);
     assert.ok(guard >= 0, `${file} is missing the strict base guard`);
     assert.ok(appIdentity > guard, `${file} does not bind the configured App identity`);
     assert.ok(appSlug > appIdentity, `${file} does not bind the authenticated App slug`);
+    assert.ok(policyReader > appSlug, `${file} does not use the isolated ruleset verifier`);
     assert.ok(merge > guard, `${file} does not guard the merge call`);
   }
 });
@@ -162,7 +203,17 @@ test("merge-capable workflow steps bind the app slug to the token-producing step
     ".github/workflows/sweep.yml",
   ]) {
     const workflow = parse(fs.readFileSync(file, "utf8")) as {
-      jobs?: Record<string, { steps?: Array<{ env?: Record<string, string>; run?: string }> }>;
+      jobs?: Record<
+        string,
+        {
+          steps?: Array<{
+            id?: string;
+            env?: Record<string, string>;
+            run?: string;
+            with?: Record<string, string>;
+          }>;
+        }
+      >;
     };
     const mergeSteps = Object.values(workflow.jobs ?? {}).flatMap((job) =>
       (job.steps ?? []).filter((step) =>
@@ -176,11 +227,31 @@ test("merge-capable workflow steps bind the app slug to the token-producing step
         step.env?.CLAWSWEEPER_AUTHENTICATED_APP_SLUG,
         "app-slug",
       );
+      const verifierProducer = workflowOutputStep(step.env?.CLAWSWEEPER_RULESET_GH_TOKEN, "token");
       assert.ok(tokenProducer, `${file} merge step is missing an App token output`);
       assert.equal(
         slugProducer,
         tokenProducer,
         `${file} merge step does not bind the authenticated slug to its token`,
+      );
+      assert.ok(verifierProducer, `${file} merge step is missing a ruleset verifier token`);
+      assert.notEqual(
+        verifierProducer,
+        tokenProducer,
+        `${file} merge step reuses its mutation credential for ruleset verification`,
+      );
+      const workflowSteps = Object.values(workflow.jobs ?? {}).flatMap((job) => job.steps ?? []);
+      const mutationStep = workflowSteps.find((candidate) => candidate.id === tokenProducer);
+      assert.equal(
+        mutationStep?.with?.["permission-administration"],
+        undefined,
+        `${file} mutation credential still carries administration access`,
+      );
+      const verifierStep = workflowSteps.find((candidate) => candidate.id === verifierProducer);
+      assert.equal(
+        verifierStep?.with?.["permission-administration"],
+        "write",
+        `${file} ruleset verifier cannot observe bypass actors`,
       );
     }
   }

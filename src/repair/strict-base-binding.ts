@@ -8,12 +8,14 @@ export function serverStrictBaseBindingBlock({
   appId,
   appSlug,
   readJson,
+  policyReadJson,
 }: {
   repo: string;
   baseBranch: string;
   appId: unknown;
   appSlug: unknown;
   readJson: GithubJsonReader;
+  policyReadJson?: GithubJsonReader | undefined;
 }): string {
   if (!baseBranch) {
     return "automerge disabled: pull request base branch is unavailable for strict binding";
@@ -23,11 +25,18 @@ export function serverStrictBaseBindingBlock({
   if (!authenticatedAppId) {
     return "automerge disabled: merge credential is not a verifiable GitHub App installation";
   }
+  if (!policyReadJson) {
+    return "automerge disabled: ruleset verifier credential is unavailable";
+  }
+  const verifierAppId = authenticatedInstallationAppId(appId, appSlug, policyReadJson);
+  if (verifierAppId !== authenticatedAppId) {
+    return "automerge disabled: ruleset verifier credential is not the configured GitHub App installation";
+  }
 
   let rulesUnavailable = false;
   let bypassedStrictRule = false;
   try {
-    const rules = readJson([
+    const rules = policyReadJson([
       "api",
       `repos/${repo}/rules/branches/${encodeURIComponent(baseBranch)}`,
     ]);
@@ -36,7 +45,7 @@ export function serverStrictBaseBindingBlock({
     } else {
       for (const rule of rules) {
         if (!isStrictStatusCheckRule(rule)) continue;
-        const ruleset = fetchRuleset(rule, repo, readJson);
+        const ruleset = fetchRuleset(rule, repo, policyReadJson);
         if (!ruleset) {
           rulesUnavailable = true;
           continue;
@@ -58,7 +67,7 @@ export function serverStrictBaseBindingBlock({
   }
 
   try {
-    const protection = readJson([
+    const protection = policyReadJson([
       "api",
       `repos/${repo}/branches/${encodeURIComponent(baseBranch)}/protection`,
     ]);

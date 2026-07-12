@@ -591,11 +591,22 @@ jobs:
           owner: ${{ steps.target.outputs.target_repo_owner }}
           repositories: ${{ steps.target.outputs.target_repo_name }}
           permission-checks: read
-          permission-administration: read
           permission-contents: write
           permission-issues: write
           permission-pull-requests: write
           permission-statuses: read
+
+      - name: Create isolated ruleset verifier token
+        if: ${{ steps.live-item.outcome == 'success' && vars.CLAWSWEEPER_ALLOW_MERGE == '1' }}
+        id: ruleset-verifier-token
+        continue-on-error: true
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
+          owner: ${{ steps.target.outputs.target_repo_owner }}
+          repositories: ${{ steps.target.outputs.target_repo_name }}
+          permission-administration: write
 
       - uses: ./.github/actions/setup-pnpm
         id: setup-pnpm
@@ -856,6 +867,7 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
           CLAWSWEEPER_AUTHENTICATED_APP_SLUG: ${{ steps.target-write-token.outputs.app-slug }}
+          CLAWSWEEPER_RULESET_GH_TOKEN: ${{ steps.ruleset-verifier-token.outputs.token }}
           CLAWSWEEPER_DISPATCH_TOKEN: ${{ github.token }}
           TARGET_REPO: ${{ steps.target.outputs.target_repo }}
           ITEM_NUMBER: ${{ steps.target.outputs.item_number }}
@@ -1044,6 +1056,7 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
           CLAWSWEEPER_AUTHENTICATED_APP_SLUG: ${{ steps.target-write-token.outputs.app-slug }}
+          CLAWSWEEPER_RULESET_GH_TOKEN: ${{ steps.ruleset-verifier-token.outputs.token }}
           CLAWSWEEPER_DISPATCH_TOKEN: ${{ github.token }}
           TARGET_REPO: ${{ steps.target.outputs.target_repo }}
           ITEM_NUMBER: ${{ steps.target.outputs.item_number }}
@@ -2965,7 +2978,6 @@ jobs:
           private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
           owner: ${{ steps.target.outputs.target_repo_owner }}
           repositories: ${{ steps.target.outputs.target_repo_name }}
-          permission-administration: read
           permission-contents: write
           permission-actions: read
           permission-issues: write

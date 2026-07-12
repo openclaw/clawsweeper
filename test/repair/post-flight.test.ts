@@ -358,6 +358,7 @@ test("merge post-flight requires exact proof and server-enforced strict base bin
       CLAWSWEEPER_ALLOW_MERGE: "1",
       CLAWSWEEPER_APP_ID: "3306130",
       CLAWSWEEPER_AUTHENTICATED_APP_SLUG: "openclaw-clawsweeper",
+      CLAWSWEEPER_RULESET_GH_TOKEN: "ruleset-verifier",
       CLAWSWEEPER_POST_FLIGHT_REQUIRE_PR_CHECKS: "1",
       CLAWSWEEPER_POST_FLIGHT_WAIT_MS: "10000",
       CLAWSWEEPER_POST_FLIGHT_POLL_MS: "1",

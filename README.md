@@ -817,6 +817,12 @@ Token flow:
   context.
 - Apply mode uses the same app token for review comments and closes, so GitHub
   attributes mutations to the app bot account instead of a PAT user.
+- Merge-capable deterministic steps mint a second short-lived token with
+  `Administration: write` solely to read complete ruleset metadata, including
+  bypass actors. The mutation token does not carry administration access; the
+  merge guard verifies that both tokens belong to the configured ClawSweeper
+  App before allowing a merge. The App installation must approve this
+  permission before ruleset-backed automerge can be enabled.
 - Commit review passes Codex only a read-scoped target token as `GH_TOKEN` for
   issue/PR/workflow/commit hydration, then creates write/check credentials only
   after Codex exits.

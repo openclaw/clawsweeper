@@ -140,11 +140,22 @@ jobs:
           private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
           owner: ${{ steps.target.outputs.target_repo_owner }}
           repositories: ${{ steps.target.outputs.target_repo_name }}
-          permission-administration: read
           permission-actions: write
           permission-contents: write
           permission-issues: write
           permission-pull-requests: write
+
+      - name: Create isolated ruleset verifier token
+        id: ruleset-verifier-token
+        if: ${{ vars.CLAWSWEEPER_ALLOW_MERGE == '1' }}
+        continue-on-error: true
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
+          owner: ${{ steps.target.outputs.target_repo_owner }}
+          repositories: ${{ steps.target.outputs.target_repo_name }}
+          permission-administration: write
 
       - name: Create central dispatch token
         id: dispatch-token
@@ -177,6 +188,7 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.app_token.outputs.token }}
           CLAWSWEEPER_AUTHENTICATED_APP_SLUG: ${{ steps.app_token.outputs.app-slug }}
+          CLAWSWEEPER_RULESET_GH_TOKEN: ${{ steps.ruleset-verifier-token.outputs.token }}
           CLAWSWEEPER_DISPATCH_TOKEN: ${{ steps.dispatch-token.outputs.token }}
           CLAWSWEEPER_MUTATION_TOKEN_SOURCE: clawsweeper-app
           CLAWSWEEPER_ALLOW_MERGE: ${{ vars.CLAWSWEEPER_ALLOW_MERGE || '0' }}
@@ -300,6 +312,7 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.app_token.outputs.token }}
           CLAWSWEEPER_AUTHENTICATED_APP_SLUG: ${{ steps.app_token.outputs.app-slug }}
+          CLAWSWEEPER_RULESET_GH_TOKEN: ${{ steps.ruleset-verifier-token.outputs.token }}
           CLAWSWEEPER_DISPATCH_TOKEN: ${{ steps.dispatch-token.outputs.token }}
           CLAWSWEEPER_MUTATION_TOKEN_SOURCE: clawsweeper-app
           CLAWSWEEPER_ALLOW_MERGE: ${{ vars.CLAWSWEEPER_ALLOW_MERGE || '0' }}

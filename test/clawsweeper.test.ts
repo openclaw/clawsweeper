@@ -2720,6 +2720,7 @@ test("codex subprocess env strips GitHub and App credentials", () => {
     process.env.GITHUB_TOKEN = "github";
     process.env.COMMIT_SWEEPER_TARGET_GH_TOKEN = "target";
     process.env.CLAWSWEEPER_PROOF_INSPECTION_TOKEN = "codex-target";
+    process.env.CLAWSWEEPER_RULESET_GH_TOKEN = "ruleset-verifier";
     process.env.CLAWSWEEPER_APP_ID = "123";
     process.env.CLAWSWEEPER_APP_PRIVATE_KEY = "private";
     process.env.CLAWSWEEPER_CRABFLEET_AGENT_TOKEN = "agent";
@@ -2735,6 +2736,7 @@ test("codex subprocess env strips GitHub and App credentials", () => {
     assert.equal(env.GITHUB_TOKEN, undefined);
     assert.equal(env.COMMIT_SWEEPER_TARGET_GH_TOKEN, undefined);
     assert.equal(env.CLAWSWEEPER_PROOF_INSPECTION_TOKEN, undefined);
+    assert.equal(env.CLAWSWEEPER_RULESET_GH_TOKEN, undefined);
     assert.equal(env.CLAWSWEEPER_APP_ID, undefined);
     assert.equal(env.CLAWSWEEPER_APP_PRIVATE_KEY, undefined);
     assert.equal(env.CLAWSWEEPER_CRABFLEET_AGENT_TOKEN, undefined);
