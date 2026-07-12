@@ -78,6 +78,7 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Fixed
 
+- Recovered exact-review intake from Cloudflare SQLite value-size exhaustion by pruning delivery receipts after five days while preserving the pending queue. Thanks @brokemac79.
 - Hardened action-ledger privacy, import identity and causal validation,
   multi-shard capacity, crash-safe completion publication, portable paths,
   bounded shard, marker, and spool reads, producer-lock and finalization races,
