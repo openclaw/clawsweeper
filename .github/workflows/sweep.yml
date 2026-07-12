@@ -1082,7 +1082,6 @@ jobs:
         id: exact-review-primary-result
         if: ${{ always() }}
         env:
-          JOB_CANCELLED: ${{ cancelled() }}
           PRIMARY_JOB_STATUS: ${{ job.status }}
           TARGET_ENABLED: ${{ steps.target.outputs.target_enabled }}
           LIVE_PROCEED: ${{ steps.live-item.outputs.proceed }}
@@ -1100,7 +1099,7 @@ jobs:
           ROUTE_OUTCOME: ${{ steps.queue-exact-verdict-router.outcome }}
         run: |
           outcome=failure
-          if [ "$JOB_CANCELLED" = "true" ] || [ "$REVIEW_OUTCOME" = "cancelled" ]; then
+          if [ "$PRIMARY_JOB_STATUS" = "cancelled" ] || [ "$REVIEW_OUTCOME" = "cancelled" ]; then
             outcome=cancelled
           elif [ "$PRIMARY_JOB_STATUS" != "success" ]; then
             outcome=failure

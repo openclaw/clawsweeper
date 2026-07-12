@@ -126,7 +126,9 @@ test("review and apply primary boundaries ignore ledger-only failures", () => {
   const exactPrimary = step("event-review-apply", "Export exact review primary result");
   const exactQueue = step("event-review-apply", "Complete exact-review queue lease");
   assert.equal(exactPrimary.env?.PRIMARY_JOB_STATUS, "${{ job.status }}");
+  assert.equal(exactPrimary.env?.JOB_CANCELLED, undefined);
   assert.match(exactPrimary.run ?? "", /outcome=(?:failure|cancelled|success)/);
+  assert.match(exactPrimary.run ?? "", /PRIMARY_JOB_STATUS.*cancelled/);
   assert.match(exactPrimary.run ?? "", /PRIMARY_JOB_STATUS.*success/);
   assert.match(exactQueue.env?.PRIMARY_OUTCOME ?? "", /exact-review-primary-result/);
   assert.doesNotMatch(exactQueue.run ?? "", /JOB_STATUS|job\.status/);

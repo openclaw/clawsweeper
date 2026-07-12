@@ -2226,6 +2226,8 @@ test("sweep workflow executes only durable queue leases without runner-side admi
     /steps\.queue-exact-verdict-router\.outcome != 'success'/,
   );
   assert.match(primaryResultStep, /PRIMARY_JOB_STATUS: \$\{\{ job\.status \}\}/);
+  assert.doesNotMatch(primaryResultStep, /JOB_CANCELLED|\$\{\{ cancelled\(\) \}\}/);
+  assert.match(primaryResultStep, /PRIMARY_JOB_STATUS" = "cancelled"/);
   assert.match(primaryResultStep, /echo "outcome=\$outcome" >> "\$GITHUB_OUTPUT"/);
   assert.match(
     completeLeaseStep,

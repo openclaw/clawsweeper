@@ -50,6 +50,22 @@ jobs:
             tsconfig.repair.json
           sparse-checkout-cone-mode: false
 
+      - name: Validate workflow semantics
+        env:
+          ACTIONLINT_VERSION: "1.7.12"
+          ACTIONLINT_LINUX_AMD64_SHA256: "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8"
+        run: |
+          actionlint_archive="${RUNNER_TEMP}/actionlint.tar.gz"
+          curl --fail --show-error --silent --location \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz" \
+            --output "$actionlint_archive"
+          printf '%s  %s\n' "$ACTIONLINT_LINUX_AMD64_SHA256" "$actionlint_archive" | sha256sum --check -
+          tar -xzf "$actionlint_archive" -C "$RUNNER_TEMP" actionlint
+          "$RUNNER_TEMP/actionlint" \
+            -shellcheck= \
+            -ignore 'unexpected key "queue" for "concurrency" section' \
+            .github/workflows/*.yml
+
       - uses: ./.github/actions/setup-pnpm
 
       - name: Run check

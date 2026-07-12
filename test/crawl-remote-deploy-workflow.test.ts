@@ -1459,6 +1459,22 @@ test("networked CI installs the pinned Wrangler lock and exercises its dry-run o
   assert.doesNotMatch(ciSource, /CRAWL_REMOTE_PRODUCTION_CLOUDFLARE_API_TOKEN/);
 });
 
+test("CI validates workflow semantics with a checksum-pinned actionlint", () => {
+  const check = ciWorkflow.jobs.check;
+  const actionlint = step(check, "Validate workflow semantics");
+
+  assert.equal(actionlint.env?.ACTIONLINT_VERSION, "1.7.12");
+  assert.equal(
+    actionlint.env?.ACTIONLINT_LINUX_AMD64_SHA256,
+    "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8",
+  );
+  assert.match(actionlint.run ?? "", /curl --fail --show-error --silent --location/);
+  assert.match(actionlint.run ?? "", /sha256sum --check -/);
+  assert.match(actionlint.run ?? "", /-shellcheck=/);
+  assert.match(actionlint.run ?? "", /unexpected key "queue" for "concurrency" section/);
+  assert.match(actionlint.run ?? "", /\.github\/workflows\/\*\.yml/);
+});
+
 test("deploy reauthorizes exact current main before and after privileged mutations", () => {
   const token = step(deploy, "Create exact-repository reauthorization token");
   assert.equal(
