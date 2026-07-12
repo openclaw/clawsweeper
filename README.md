@@ -822,17 +822,25 @@ Token flow:
   frontmatter, those jobs mint exact-repository mutation and
   `Administration: write` verifier tokens. The verifier exists solely to read
   complete repository-ruleset metadata, including bypass actors; mutation
-  credentials remain administration-free. The merge guard binds both pinned
-  action outputs (`app-slug` and `installation-id`) to the configured
-  ClawSweeper App before allowing a merge. The App installation must approve
-  this permission before ruleset-backed automerge can be enabled.
-- Repair workers freeze one job, repository, and run directory before Codex
-  execution. The execution runner has no state write credential. A separate
-  no-credential runner replays the exact repair proof against the published
-  head and current `origin/main`; a token-only job can mutate only when that
-  receipt and the successful execution manifest match the trusted
-  pre-execution digest. Failed or cancelled execution can publish a report but
-  cannot merge, close, tag, requeue, or run post-flight mutation.
+  credentials remain administration-free. The merge guard derives the
+  authenticated App IDs through the documented App endpoint, then binds those
+  IDs plus the pinned `app-slug` and `installation-id` action outputs before
+  allowing a merge. The App installation must approve this permission before
+  ruleset-backed automerge can be enabled.
+- Repair workers freeze one job, repository, run directory, source item and
+  revision, `origin/main`, output branch and operation, and action identity
+  before Codex execution. The execution runner receives no GitHub or state
+  write credential and can only prepare a local commit, tree, and Git bundle.
+  Target dependency setup disables package lifecycle scripts.
+- A separate no-credential runner reconstructs the prepared commit in a
+  disposable checkout and replays the original normalized staged-proof plan,
+  including provenance, prerequisites, subsumption, and changed-gate
+  semantics. A token-only job can publish only when that receipt and the
+  successful execution manifest match the trusted pre-execution digest.
+  Generic result actions and target tagging are not accepted by this lane.
+  Failed or cancelled execution and failed validation remain target
+  report-only; a central-repository credential may still requeue an explicitly
+  retryable report.
 - Commit review passes Codex only a read-scoped target token as `GH_TOKEN` for
   issue/PR/workflow/commit hydration, then creates write/check credentials only
   after Codex exits.

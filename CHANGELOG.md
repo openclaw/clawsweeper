@@ -46,16 +46,24 @@ checkpoint, and status-only commits are intentionally omitted.
   mutation runs no longer block completed reviews from publishing, and retried
   GitHub CLI commands whose jq process reports truncated JSON.
 - Bound repair execution to one trusted pre-execution job/repository/run
-  manifest, removed state write credentials from the Codex execution job,
-  replayed successful repair proof in a separate credential-free job, and
-  required its digest-bound receipt plus a successful execute outcome before
-  any merge, close, tag, requeue, or post-flight mutation. Failed and cancelled
-  execution remains report-only.
+  manifest plus the exact source item/revision, base, output operation, and
+  action identity; removed GitHub and state write credentials from Codex
+  execution; replayed the exact normalized proof plan in a disposable,
+  credential-free job; and restricted target mutation to the validated bundle,
+  deterministic publication metadata, and receipt-bound post-flight PR.
+  Failed and cancelled execution or validation remains target report-only,
+  while retryable reports can requeue through a central-repository-only token.
 - Replaced the unsupported GitHub installation identity probe with pinned
-  `create-github-app-token` App slug and installation outputs, rejected
+  `create-github-app-token` App slug and installation outputs plus App IDs
+  derived from the authenticated slug, rejected
   mutating package-manager aliases and lifecycle commands in validation plans,
-  stopped retries when their command budget is exhausted, and made proof-budget
-  exhaustion terminal instead of sending it through Codex validation-fix.
+  disabled lifecycle scripts during target dependency setup, rejected setup or
+  validation source mutation, stopped retries when their command budget is
+  exhausted, and made proof-budget exhaustion terminal instead of sending it
+  through Codex validation-fix.
+- Made exact comment-router dispatch concurrency item/comment-specific so
+  unrelated pending exact items cannot replace one another, and required
+  already-merged post-flight PRs to match the authorized publication commit.
 - Bound structural, semantic, and content review reuse to the canonical
   persisted durable-comment body hash under the acquired lease, normalizing
   surrounding whitespace while preserving label

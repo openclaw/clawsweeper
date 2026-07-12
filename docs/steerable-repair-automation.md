@@ -347,18 +347,25 @@ execution job.
 
 ### Execution Job
 
-The execution job:
+Repair publication is split across four jobs:
 
-1. Mints a separate write-capable GitHub App token.
-2. Restores durable state and the same Codex thread.
-3. Re-registers the same CrabFleet work key, rotating credentials.
-4. Downloads the planning artifact.
-5. Revalidates the job and source head.
-6. Runs the bounded Codex edit, validation, and review loop when execution gates
-   are open.
-7. Applies allowed close or merge actions deterministically.
-8. Runs post-flight checks against the pushed head and live GitHub state.
-9. Publishes final result artifacts and saves the Codex session.
+1. `authorize` selects exactly one planning run and binds the immutable job,
+   source item and revision, live `main`, output branch and operation, and
+   action identity.
+2. `execute` restores the Codex thread without GitHub or state write
+   credentials and produces only a local commit, tree, Git bundle, execution
+   report, and manifest.
+3. `validate` uses no credentials, reconstructs the bundle in a disposable
+   checkout, disables package lifecycle scripts, and replays the exact staged
+   proof plan.
+4. `mutate` runs only after successful execution and validation. It verifies
+   both receipts before minting an exact-repository token, publishes the exact
+   commit and deterministic metadata, and limits post-flight to the
+   receipt-bound PR.
+
+The always-running report lane publishes blocked dashboard state without target
+credentials. It can requeue explicit `requeue_required` outcomes with a token
+scoped only to `openclaw/clawsweeper`.
 
 Successful execution ends with:
 

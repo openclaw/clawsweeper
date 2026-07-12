@@ -245,7 +245,21 @@ that proxy config and run without raw OpenAI or Codex API key environment
 variables. The legacy `codex login` path remains available only through the
 local `setup-codex` action's `auth-mode: login` input.
 
-Codex runs in a read-only sandbox for classification and receives no GitHub token. GitHub read access is scoped to deterministic preflight scripts. For reviewed fix artifacts, `execute-fix-artifact` gives Codex a temporary target checkout without GitHub credentials, then the deterministic executor commits, pushes, opens the replacement PR, and closes uneditable source PRs only after the replacement exists. When a replacement carries contributor work forward, non-bot source PR authors are added as `Co-authored-by` trailers and named in the replacement PR body and source close comment. Remaining write access is scoped to `apply-result`.
+Codex runs without GitHub write credentials. Before execution, the workflow binds
+the immutable job and result to the exact source item and revision, target
+`main`, output branch and operation, and repair action identity. The executor
+can create only a local commit, tree, deterministic publication metadata, and
+Git bundle; it cannot push, comment, close, merge, or publish status.
+
+A separate no-credential job reconstructs that bundle in a disposable checkout,
+installs dependencies with lifecycle scripts disabled, rejects source mutation,
+and replays the exact normalized staged-proof plan. Only a successful,
+digest-bound validation receipt lets the final token-only job publish the exact
+commit and receipt-bound PR. Generic result actions, target tagging, arbitrary
+report URLs, and post-merge closeouts are not trusted by this lane. Retryable
+report-only outcomes may use a central `openclaw/clawsweeper` token to requeue,
+but failed or cancelled execution and failed validation cannot mutate the target
+repository.
 
 The repair worker wrapper emits a heartbeat while Codex is running. Execute-side
 edit, review, final rebase, and write-preflight subprocesses emit the same
