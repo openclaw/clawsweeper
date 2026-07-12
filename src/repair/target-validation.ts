@@ -1592,9 +1592,12 @@ function missingRequiredPackageScript(
       continue;
     }
     const selected = selectWorkspacePackages(script, inventory.workspaces);
+    if (selected === null) continue;
     if (
       selected.length === 0 ||
-      selected.some((workspace) => !workspace.scripts.has(script.name))
+      (script.executable === "pnpm" && script.allWorkspaces
+        ? !selected.some((workspace) => workspace.scripts.has(script.name))
+        : selected.some((workspace) => !workspace.scripts.has(script.name)))
     ) {
       return script;
     }
@@ -1671,11 +1674,25 @@ function workspacePatternMatches(pattern: string, relativePath: string): boolean
 function selectWorkspacePackages(
   script: NonNullable<ReturnType<typeof packageScriptRequirement>>,
   workspaces: PackageScriptInventory["workspaces"],
-) {
-  if (script.allWorkspaces) return workspaces;
-  if (script.workspaceSelectors.length === 0) return [];
+): PackageScriptInventory["workspaces"] | null {
+  if (
+    script.executable === "pnpm" &&
+    script.workspaceSelectors.some((selector) => !locallyEvaluablePnpmSelector(selector))
+  ) {
+    return null;
+  }
+  if (script.workspaceSelectors.length === 0) {
+    return script.allWorkspaces ? workspaces : [];
+  }
   return workspaces.filter((workspace) =>
     script.workspaceSelectors.some((selector) => workspaceSelectorMatches(selector, workspace)),
+  );
+}
+
+function locallyEvaluablePnpmSelector(selector: string) {
+  return (
+    !["!", "[", "]", "{", "}", "^"].some((operator) => selector.includes(operator)) &&
+    !selector.includes("...")
   );
 }
 
@@ -1686,7 +1703,10 @@ function workspaceSelectorMatches(
   const normalized = selector.replace(/^\.\/+/, "").replace(/\/+$/, "");
   if (normalized === workspace.name || normalized === workspace.relativePath) return true;
   if (!normalized.includes("*")) return false;
-  return workspacePatternMatches(normalized, workspace.name);
+  return (
+    workspacePatternMatches(normalized, workspace.name) ||
+    workspacePatternMatches(normalized, workspace.relativePath)
+  );
 }
 
 function proofSubsumptionContracts(

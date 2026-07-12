@@ -658,6 +658,74 @@ test("validation preflight defers workspace-scoped scripts to the package manage
   assert.equal(missingSelectedWorkspaceScript.missing_script, "lint");
 });
 
+test("recursive pnpm preflight preserves filters and ignores unrelated workspace scripts", () => {
+  const cwd = packageFixture({});
+  for (const [workspace, scripts] of [
+    ["app", { test: "node --test" }],
+    ["docs", {}],
+  ]) {
+    const directory = path.join(cwd, "packages", workspace);
+    fs.mkdirSync(directory, { recursive: true });
+    fs.writeFileSync(
+      path.join(directory, "package.json"),
+      `${JSON.stringify({ name: `@openclaw/${workspace}`, scripts }, null, 2)}\n`,
+    );
+  }
+  fs.writeFileSync(path.join(cwd, "pnpm-workspace.yaml"), "packages:\n  - packages/*\n");
+  const options = validationOptions("openclaw/example", {
+    toolchain: {
+      packageManager: "pnpm",
+      baseValidationCommands: [],
+      changedGate: null,
+    },
+  });
+
+  for (const [command, resolved] of [
+    ["pnpm --recursive test", "pnpm --recursive test"],
+    [
+      "pnpm --recursive --filter @openclaw/app test",
+      "pnpm --fail-if-no-match --recursive --filter @openclaw/app test",
+    ],
+    [
+      "pnpm --recursive --filter packages/app test",
+      "pnpm --fail-if-no-match --recursive --filter packages/app test",
+    ],
+  ]) {
+    const result = preflightTargetValidationPlan(
+      { fixArtifact: { validation_commands: [command] }, targetDir: cwd },
+      options,
+    );
+    assert.equal(result.status, "passed", command);
+    assert.deepEqual(result.resolved_commands, [resolved]);
+  }
+
+  const missingSelectedScript = preflightTargetValidationPlan(
+    {
+      fixArtifact: {
+        validation_commands: ["pnpm --recursive --filter @openclaw/docs test"],
+      },
+      targetDir: cwd,
+    },
+    options,
+  );
+  assert.equal(missingSelectedScript.status, "blocked");
+  assert.equal(missingSelectedScript.missing_script, "test");
+
+  const delegatedGraphSelector = preflightTargetValidationPlan(
+    {
+      fixArtifact: {
+        validation_commands: ["pnpm --recursive --filter ...@openclaw/app test"],
+      },
+      targetDir: cwd,
+    },
+    options,
+  );
+  assert.equal(delegatedGraphSelector.status, "passed");
+  assert.deepEqual(delegatedGraphSelector.resolved_commands, [
+    "pnpm --fail-if-no-match --recursive --filter ...@openclaw/app test",
+  ]);
+});
+
 test("validation parser accepts only the documented workspace run option positions", () => {
   assert.deepEqual(parseAllowedValidationCommand("bun run --filter @openclaw/worker test"), [
     "bun",
