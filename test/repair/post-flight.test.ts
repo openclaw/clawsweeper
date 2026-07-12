@@ -10,6 +10,7 @@ import {
   buildStagedProofPlan,
   executeStagedProofPlan,
   stagedProofBundle,
+  stagedProofPlanArtifact,
 } from "../../dist/repair/staged-proof-gates.js";
 
 const repoRoot = process.cwd();
@@ -269,8 +270,8 @@ test("merge post-flight requires exact proof and server-enforced strict base bin
       "#!/usr/bin/env node",
       "const fs = require('node:fs');",
       "const args = process.argv.slice(2);",
-      "if (args[0] === 'api' && args[1] === 'installation') {",
-      "  process.stdout.write(JSON.stringify({ app_id: 3306130 }));",
+      "if (args[0] === 'api' && args[1] === 'installation/repositories?per_page=1') {",
+      "  process.stdout.write(JSON.stringify({ total_count: 1, repositories: [{ full_name: 'openclaw/openclaw' }] }));",
       "  process.exit(0);",
       "}",
       "if (args[0] === 'api' && args[1] === 'repos/openclaw/openclaw/pulls/123') {",
@@ -351,6 +352,7 @@ test("merge post-flight requires exact proof and server-enforced strict base bin
       CLAWSWEEPER_ALLOW_EXECUTE: "1",
       CLAWSWEEPER_ALLOWED_OWNER: "openclaw",
       CLAWSWEEPER_ALLOW_MERGE: "1",
+      CLAWSWEEPER_APP_ID: "3306130",
       CLAWSWEEPER_POST_FLIGHT_REQUIRE_PR_CHECKS: "1",
       CLAWSWEEPER_POST_FLIGHT_WAIT_MS: "10000",
       CLAWSWEEPER_POST_FLIGHT_POLL_MS: "1",
@@ -606,6 +608,7 @@ function writeIssueImplementationReports(runDir: string, resultPath: string) {
 }
 
 function writeMergeReports(runDir: string, resultPath: string) {
+  const proof = passedValidationProofFixture(MERGE_HEAD_SHA, MERGE_BASE_SHA);
   fs.writeFileSync(
     resultPath,
     JSON.stringify(
@@ -623,6 +626,7 @@ function writeMergeReports(runDir: string, resultPath: string) {
     path.join(runDir, "fix-execution-report.json"),
     JSON.stringify(
       {
+        validation_proof_plan: proof.plan,
         actions: [
           {
             action: "open_fix_pr",
@@ -638,7 +642,7 @@ function writeMergeReports(runDir: string, resultPath: string) {
               bot_comments_status: "resolved",
               bot_comments_evidence: ["no unresolved bot comments"],
               validation_commands: ["pnpm test"],
-              validation_proof: passedValidationProof(MERGE_HEAD_SHA, MERGE_BASE_SHA),
+              validation_proof: proof.bundle,
               validated_head_sha: MERGE_HEAD_SHA,
               validated_base_sha: MERGE_BASE_SHA,
               codex_review: {
@@ -658,6 +662,10 @@ function writeMergeReports(runDir: string, resultPath: string) {
 }
 
 function passedValidationProof(headSha: string, baseSha: string) {
+  return passedValidationProofFixture(headSha, baseSha).bundle;
+}
+
+function passedValidationProofFixture(headSha: string, baseSha: string) {
   const plan = buildStagedProofPlan({
     commands: [
       {
@@ -678,5 +686,8 @@ function passedValidationProof(headSha: string, baseSha: string) {
     nowMs: () => 10,
     runCommand: () => ({ executedCommands: ["git diff --check"], reason: "passed" }),
   }).trace;
-  return stagedProofBundle([trace]);
+  return {
+    plan: stagedProofPlanArtifact(plan),
+    bundle: stagedProofBundle([trace]),
+  };
 }

@@ -11,6 +11,7 @@ test("strict base binding accepts an enforced non-bypass ruleset", () => {
     serverStrictBaseBindingBlock({
       repo: "openclaw/openclaw",
       baseBranch: "main",
+      appId: APP_ID,
       readJson: fakeGithub({
         rules: [strictRulesetRule()],
         ruleset: { bypass_actors: [] },
@@ -25,6 +26,7 @@ test("strict base binding rejects a ruleset that exempts the merge app", () => {
     serverStrictBaseBindingBlock({
       repo: "openclaw/openclaw",
       baseBranch: "main",
+      appId: APP_ID,
       readJson: fakeGithub({
         rules: [strictRulesetRule()],
         ruleset: {
@@ -41,6 +43,7 @@ test("strict base binding accepts classic strict branch protection", () => {
     serverStrictBaseBindingBlock({
       repo: "openclaw/example",
       baseBranch: "main",
+      appId: APP_ID,
       readJson: fakeGithub({
         rules: [],
         protection: {
@@ -60,9 +63,37 @@ test("strict base binding fails closed without an installation identity", () => 
     serverStrictBaseBindingBlock({
       repo: "openclaw/openclaw",
       baseBranch: "main",
+      appId: APP_ID,
       readJson: () => {
         throw new Error("not an installation token");
       },
+    }),
+    "automerge disabled: merge credential is not a verifiable GitHub App installation",
+  );
+});
+
+test("strict base binding rejects rulesets whose bypass actors are hidden", () => {
+  assert.equal(
+    serverStrictBaseBindingBlock({
+      repo: "openclaw/openclaw",
+      baseBranch: "main",
+      appId: APP_ID,
+      readJson: fakeGithub({
+        rules: [strictRulesetRule()],
+        ruleset: {},
+      }),
+    }),
+    "automerge disabled: unable to verify server-enforced strict base binding",
+  );
+});
+
+test("strict base binding requires the configured App identity", () => {
+  assert.equal(
+    serverStrictBaseBindingBlock({
+      repo: "openclaw/openclaw",
+      baseBranch: "main",
+      appId: "",
+      readJson: fakeGithub({ rules: [], protection: {} }),
     }),
     "automerge disabled: merge credential is not a verifiable GitHub App installation",
   );
@@ -79,8 +110,10 @@ test("all repair merge owners invoke the shared strict base guard before merge",
     const end = source.indexOf("\nfunction ", start + functionName.length);
     const owner = source.slice(start, end < 0 ? undefined : end);
     const guard = owner.indexOf("serverStrictBaseBindingBlock({");
+    const appIdentity = owner.indexOf("appId: process.env.CLAWSWEEPER_APP_ID");
     const merge = owner.indexOf(mergeCall);
     assert.ok(guard >= 0, `${file} is missing the strict base guard`);
+    assert.ok(appIdentity > guard, `${file} does not bind the configured App identity`);
     assert.ok(merge > guard, `${file} does not guard the merge call`);
   }
 });
@@ -109,7 +142,9 @@ function fakeGithub({
 }) {
   return (args: string[]) => {
     const endpoint = args[1];
-    if (endpoint === "installation") return { app_id: APP_ID };
+    if (endpoint === "installation/repositories?per_page=1") {
+      return { total_count: 1, repositories: [{ full_name: "openclaw/openclaw" }] };
+    }
     if (endpoint === "repos/openclaw/openclaw/rules/branches/main") return rules;
     if (endpoint === "repos/openclaw/example/rules/branches/main") return rules;
     if (endpoint === "repos/openclaw/openclaw/rulesets/18588237" && ruleset) return ruleset;

@@ -129,8 +129,10 @@ import {
 import {
   isPassedStagedProofBundle,
   stagedProofBundle,
+  stagedProofPlanArtifact,
   stagedProofSummary,
   stagedProofTraceFromError,
+  type StagedProofPlanArtifact,
   type StagedProofTrace,
 } from "./staged-proof-gates.js";
 import { uniqueStrings } from "./validation-command-utils.js";
@@ -253,6 +255,7 @@ const codexReviewNetworkAccess = parseBooleanEnv(
 let workRoot = "";
 let targetDir = "";
 const validationProofTraces: StagedProofTrace[] = [];
+let validationProofPlan: StagedProofPlanArtifact | null = null;
 
 if (!jobPath) {
   console.error(
@@ -2106,7 +2109,7 @@ function editValidatePrepareMerge({
     { fixArtifact, targetDir, sourceHead: repairDeltaBaseHead },
     proofPreviewOptions,
   );
-  const validationProofPlan = buildTargetValidationProofPlan(
+  validationProofPlan = buildTargetValidationProofPlan(
     proofPreviewScope.commands,
     targetDir,
     proofPreviewScope.options,
@@ -3065,8 +3068,12 @@ function runTargetValidationProof(
   options: TargetValidationOptions,
   baseBranch: string,
 ) {
+  validationProofPlan = buildTargetValidationProofPlan(commands, cwd, options, baseBranch);
+  report.validation_proof_plan = validationProofPlan;
   try {
     const proof = runStagedValidationProof(commands, cwd, options, baseBranch);
+    validationProofPlan = stagedProofPlanArtifact(proof.plan);
+    report.validation_proof_plan = validationProofPlan;
     validationProofTraces.push(proof.trace);
     logProgress("staged validation proof passed", {
       plan_id: proof.trace.plan_id,
@@ -3098,7 +3105,8 @@ function ensureFinalStagedProof({
   if (
     latest?.status === "passed" &&
     latest.validated_head_sha === validatedHeadSha &&
-    latest.validated_base_sha === validatedBaseSha
+    latest.validated_base_sha === validatedBaseSha &&
+    validationProofPlan?.plan_id === latest.plan_id
   ) {
     return;
   }
@@ -3461,7 +3469,7 @@ function bindMergePreflightToStagedProof({
 }: LooseRecord) {
   const validationProof = stagedProofBundle(validationProofTraces);
   if (
-    !isPassedStagedProofBundle(validationProof) ||
+    !isPassedStagedProofBundle(validationProof, validationProofPlan) ||
     validationProof.validated_head_sha !== validatedHeadSha ||
     validationProof.validated_base_sha !== validatedBaseSha
   ) {

@@ -394,6 +394,13 @@ test("validation parser rejects snapshot-writing and formatter mutation flags", 
     "npm --prefix . run test",
     "npm --userconfig .npmrc run test",
     "bun --cwd . test",
+    "make install",
+    "mvn deploy",
+    "gradle publish",
+    "dotnet nuget push package.nupkg",
+    "composer install",
+    "bundle install",
+    "ansible-playbook deploy.yml",
   ]) {
     assert.throws(() => parseAllowedValidationCommand(command), /unsafe validation command/);
   }
@@ -449,6 +456,8 @@ test("validation parser rejects snapshot-writing and formatter mutation flags", 
     ["ansible-playbook", "-u", "deploy", "playbook.yml", "--syntax-check"],
   );
   assert.deepEqual(parseAllowedValidationCommand("gradle -u test"), ["gradle", "-u", "test"]);
+  assert.deepEqual(parseAllowedValidationCommand("mvn verify"), ["mvn", "verify"]);
+  assert.deepEqual(parseAllowedValidationCommand("dotnet test"), ["dotnet", "test"]);
   assert.deepEqual(parseAllowedValidationCommand("go mod verify"), ["go", "mod", "verify"]);
   assert.deepEqual(parseAllowedValidationCommand("go mod graph"), ["go", "mod", "graph"]);
   assert.deepEqual(parseAllowedValidationCommand("go mod why ./..."), [
@@ -541,6 +550,20 @@ test("validation environment defaults resolve without shell execution", () => {
       "mock",
       "--model=openai/test-model",
     ],
+  );
+  assert.deepEqual(
+    resolveValidationCommandEnvironment(
+      ["env", "TARGET=unit", "pnpm", "test:serial", "test/${TARGET}.test.ts"],
+      {},
+    ),
+    ["env", "TARGET=unit", "pnpm", "test:serial", "test/unit.test.ts"],
+  );
+  assert.throws(
+    () =>
+      resolveValidationCommandEnvironment(["git", "diff", "${AWS_SECRET_ACCESS_KEY}"], {
+        AWS_SECRET_ACCESS_KEY: "secret",
+      }),
+    /unsafe validation environment variable expansion/,
   );
 });
 

@@ -159,6 +159,17 @@ const UNSAFE_VALIDATION_ENV_NAMES = new Set([
   "_JAVA_OPTIONS",
 ]);
 
+const SAFE_VALIDATION_EXPANSION_ENV_NAMES = new Set([
+  "CI",
+  "MODEL",
+  "NODE_ENV",
+  "OPENCLAW_CI_OPENAI_MODEL",
+  "OPENCLAW_LOCAL_CHECK",
+  "OPENCLAW_LOCAL_CHECK_MODE",
+  "OPENCLAW_TESTBOX",
+  "PROVIDER",
+]);
+
 const VITEST_BOOLEAN_OPTIONS = new Set([
   "-h",
   "-w",
@@ -382,19 +393,25 @@ export function resolveValidationCommandEnvironment(
   env: NodeJS.ProcessEnv,
 ): string[] {
   const resolvedEnv: NodeJS.ProcessEnv = { ...env };
+  const allowedNames = new Set(SAFE_VALIDATION_EXPANSION_ENV_NAMES);
   const resolved = [...parts];
   let index = resolved[0] === "env" ? 1 : 0;
   while (index < resolved.length && isEnvAssignment(resolved[index])) {
     const assignment = resolved[index]!;
     const separator = assignment.indexOf("=");
     const name = assignment.slice(0, separator);
-    const value = resolveSafeVariableExpansions(assignment.slice(separator + 1), resolvedEnv);
+    const value = resolveSafeVariableExpansions(
+      assignment.slice(separator + 1),
+      resolvedEnv,
+      allowedNames,
+    );
     resolved[index] = `${name}=${value}`;
     resolvedEnv[name] = value;
+    allowedNames.add(name);
     index += 1;
   }
   for (; index < resolved.length; index += 1) {
-    resolved[index] = resolveSafeVariableExpansions(resolved[index]!, resolvedEnv);
+    resolved[index] = resolveSafeVariableExpansions(resolved[index]!, resolvedEnv, allowedNames);
   }
   return resolved;
 }
@@ -759,6 +776,60 @@ function hasMutatingValidationCommand(parts: readonly string[]) {
   if (executable === "ruff" && subcommand === "format") {
     return !commandParts.includes("--check");
   }
+  if (executable === "make") {
+    const targets = commandParts
+      .slice(1)
+      .filter((part) => !part.startsWith("-") && !part.includes("="));
+    return (
+      targets.length === 0 ||
+      targets.some(
+        (target) =>
+          !/^(?:all|analy[sz]e|assemble|build|check|compile|fmt|format|lint|test|typecheck|verify|vet)(?::|[-_].*)?$/.test(
+            target,
+          ),
+      )
+    );
+  }
+  if (executable === "mvn" || executable === "./mvnw") {
+    const goals = commandParts.slice(1).filter((part) => !part.startsWith("-"));
+    return (
+      goals.length === 0 ||
+      goals.some(
+        (goal) =>
+          !/^(?:clean|compile|package|test|test-compile|validate|verify|(?:[^:]+:)?(?:check|lint|test|verify))$/.test(
+            goal,
+          ),
+      )
+    );
+  }
+  if (executable === "gradle" || executable === "./gradlew") {
+    const tasks = commandParts.slice(1).filter((part) => !part.startsWith("-"));
+    return (
+      tasks.length === 0 ||
+      tasks.some(
+        (task) =>
+          !/^(?:analy[sz]e|assemble|build|check|compile\w*|lint\w*|test\w*|verify\w*)$/i.test(
+            task.split(":").at(-1) ?? "",
+          ),
+      )
+    );
+  }
+  if (executable === "dotnet") {
+    if (!["build", "format", "test"].includes(subcommand)) return true;
+    return subcommand === "format" && !commandParts.includes("--verify-no-changes");
+  }
+  if (executable === "ansible-playbook") {
+    return !commandParts.includes("--syntax-check");
+  }
+  if (executable === "composer") {
+    return !["audit", "check-platform-reqs", "validate"].includes(subcommand);
+  }
+  if (executable === "bundle") {
+    return subcommand !== "check";
+  }
+  if (executable === "xcodebuild") {
+    return commandParts.some((part) => ["archive", "-exportArchive"].includes(part));
+  }
   return false;
 }
 
@@ -861,10 +932,17 @@ function safeVariableExpansion(value: string) {
   return value.match(/^\$\{[A-Z_][A-Z0-9_]*(?::-[A-Za-z0-9_./:-]+)?\}/)?.[0] ?? "";
 }
 
-function resolveSafeVariableExpansions(value: string, env: NodeJS.ProcessEnv) {
+function resolveSafeVariableExpansions(
+  value: string,
+  env: NodeJS.ProcessEnv,
+  allowedNames: ReadonlySet<string>,
+) {
   return value.replace(
     /\$\{([A-Z_][A-Z0-9_]*)(?::-([A-Za-z0-9_./:-]+))?\}/g,
     (_match, name: string, fallback: string | undefined) => {
+      if (!allowedNames.has(name)) {
+        throw new Error(`unsafe validation environment variable expansion: ${name}`);
+      }
       const current = env[name];
       return current ? current : (fallback ?? "");
     },

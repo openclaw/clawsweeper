@@ -188,6 +188,7 @@ function finalizeFixPr(action: LooseRecord) {
       view,
       preflight: action.merge_preflight,
       expectedHeadSha: action.commit,
+      validationProofPlan: fixReport.validation_proof_plan,
     });
     if (!mergeBlock) break;
     if (dryRun || !shouldWaitForMergeReadiness({ mergeBlock, view }) || Date.now() >= deadline) {
@@ -230,6 +231,7 @@ function finalizeFixPr(action: LooseRecord) {
   const strictBaseBindingBlock = serverStrictBaseBindingBlock({
     repo: result.repo,
     baseBranch: String(view.baseRefName ?? pull.base?.ref ?? ""),
+    appId: process.env.CLAWSWEEPER_APP_ID,
     readJson: (ghArgs) => ghJson(ghArgs),
   });
   if (strictBaseBindingBlock) {
@@ -515,7 +517,13 @@ function hasLiveSecuritySignal(number: JsonValue, labels: LooseRecord[]) {
   return hasDeterministicSecuritySignal({ comments: [bodies] });
 }
 
-function validateMergeableFixPr({ pull, view, preflight, expectedHeadSha }: LooseRecord) {
+function validateMergeableFixPr({
+  pull,
+  view,
+  preflight,
+  expectedHeadSha,
+  validationProofPlan,
+}: LooseRecord) {
   if (pull.state !== "open") return `pull request is ${pull.state}`;
   if (pull.draft || view.isDraft) return "pull request is draft";
   if (String(view.baseRefName ?? pull.base?.ref ?? "") !== "main")
@@ -535,6 +543,7 @@ function validateMergeableFixPr({ pull, view, preflight, expectedHeadSha }: Loos
     expectedHeadSha,
     liveHeadSha: pull.head?.sha,
     liveBaseSha: pull.base?.sha,
+    validationProofPlan,
   });
   if (preflightBlock) return preflightBlock;
 
@@ -555,7 +564,13 @@ function validateMergePreflight(
     expectedHeadSha,
     liveHeadSha,
     liveBaseSha,
-  }: { expectedHeadSha: unknown; liveHeadSha: unknown; liveBaseSha: unknown },
+    validationProofPlan,
+  }: {
+    expectedHeadSha: unknown;
+    liveHeadSha: unknown;
+    liveBaseSha: unknown;
+    validationProofPlan: unknown;
+  },
 ) {
   if (!preflight || typeof preflight !== "object") return "merge_preflight is missing";
   if (preflight.security_status !== "cleared") return "security preflight is not cleared";
@@ -577,7 +592,7 @@ function validateMergePreflight(
     return "merge validation commands are missing";
   }
   const validationProof = preflight.validation_proof;
-  if (!isPassedStagedProofBundle(validationProof)) {
+  if (!isPassedStagedProofBundle(validationProof, validationProofPlan)) {
     return "staged validation proof is incomplete or failed";
   }
   if (!isFullCommitSha(expectedHeadSha)) return "fix action commit is missing or malformed";

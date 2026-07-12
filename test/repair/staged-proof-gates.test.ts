@@ -172,7 +172,13 @@ test("proof execution fails fast and records skipped prerequisites", () => {
       reason: "passed",
     }),
   }).trace;
-  assert.equal(isPassedStagedProofBundle(stagedProofBundle([failedTrace, passedTrace])), true);
+  assert.equal(
+    isPassedStagedProofBundle(
+      stagedProofBundle([failedTrace, passedTrace]),
+      stagedProofPlanArtifact(plan),
+    ),
+    true,
+  );
 });
 
 test("only explicit toolchain contracts skip a later proof command", () => {
@@ -204,7 +210,8 @@ test("only explicit toolchain contracts skip a later proof command", () => {
   assert.match(result.trace.commands[1].command_id, /^proof-2-/);
   assert.equal(result.trace.commands[1].subsumed_by, result.trace.commands[0].command_id);
   assert.match(result.trace.commands[1].subsumption_contract_digest, /^[a-f0-9]{64}$/);
-  assert.equal(isPassedStagedProofBundle(stagedProofBundle([result.trace])), true);
+  const planArtifact = stagedProofPlanArtifact(plan);
+  assert.equal(isPassedStagedProofBundle(stagedProofBundle([result.trace]), planArtifact), true);
   const malformed = {
     ...result.trace,
     commands: [
@@ -215,7 +222,7 @@ test("only explicit toolchain contracts skip a later proof command", () => {
       },
     ],
   };
-  assert.equal(isPassedStagedProofBundle(stagedProofBundle([malformed])), false);
+  assert.equal(isPassedStagedProofBundle(stagedProofBundle([malformed]), planArtifact), false);
   const malformedContract = {
     ...result.trace,
     commands: [
@@ -226,7 +233,10 @@ test("only explicit toolchain contracts skip a later proof command", () => {
       },
     ],
   };
-  assert.equal(isPassedStagedProofBundle(stagedProofBundle([malformedContract])), false);
+  assert.equal(
+    isPassedStagedProofBundle(stagedProofBundle([malformedContract]), planArtifact),
+    false,
+  );
 });
 
 test("arbitrary test commands are not inferred to be redundant", () => {
@@ -295,6 +305,8 @@ test("path-scoped integration runners remain late and non-subsumable", () => {
     ["node", "--test", "test/e2e/provider.test.js"],
     ["pnpm", "exec", "vitest", "run", "test/integration/provider.test.ts"],
     ["cargo", "test", "--test", "provider_integration"],
+    ["bash", "scripts/run-tests.sh", "test/e2e/provider.test.sh"],
+    ["sh", "scripts/run-tests.sh", "tests/integration/provider.test.sh"],
   ]) {
     const plan = buildStagedProofPlan({
       commands: [command(integrity, 0, { source: "configured" }), command(integrationCommand, 1)],
@@ -411,21 +423,29 @@ test("merge proof bundle validation fails closed", () => {
     }),
   }).trace;
   const bundle = stagedProofBundle([passed]);
+  const planArtifact = stagedProofPlanArtifact(plan);
 
-  assert.equal(isPassedStagedProofBundle(bundle), true);
+  assert.equal(isPassedStagedProofBundle(bundle, planArtifact), true);
+  assert.equal(isPassedStagedProofBundle(bundle, null), false);
   assert.equal(bundle.validated_head_sha, VALIDATED_HEAD_SHA);
   assert.equal(bundle.validated_base_sha, VALIDATED_BASE_SHA);
-  assert.equal(isPassedStagedProofBundle({ ...bundle, status: "failed" }), false);
-  assert.equal(isPassedStagedProofBundle({ ...bundle, validated_head_sha: "3".repeat(40) }), false);
+  assert.equal(isPassedStagedProofBundle({ ...bundle, status: "failed" }, planArtifact), false);
   assert.equal(
-    isPassedStagedProofBundle({
-      ...bundle,
-      runs: [{ ...passed, status: "failed" }],
-    }),
+    isPassedStagedProofBundle({ ...bundle, validated_head_sha: "3".repeat(40) }, planArtifact),
     false,
   );
-  assert.equal(isPassedStagedProofBundle({ ...bundle, runs: [] }), false);
-  assert.equal(isPassedStagedProofBundle({ ...bundle, summary: null }), false);
+  assert.equal(
+    isPassedStagedProofBundle(
+      {
+        ...bundle,
+        runs: [{ ...passed, status: "failed" }],
+      },
+      planArtifact,
+    ),
+    false,
+  );
+  assert.equal(isPassedStagedProofBundle({ ...bundle, runs: [] }, planArtifact), false);
+  assert.equal(isPassedStagedProofBundle({ ...bundle, summary: null }, planArtifact), false);
   assert.equal(
     isPassedStagedProofBundle(
       stagedProofBundle([
@@ -447,6 +467,7 @@ test("merge proof bundle validation fails closed", () => {
           },
         },
       ]),
+      planArtifact,
     ),
     false,
   );
@@ -464,6 +485,7 @@ test("merge proof bundle validation fails closed", () => {
           ],
         },
       ]),
+      planArtifact,
     ),
     false,
   );
@@ -475,6 +497,7 @@ test("merge proof bundle validation fails closed", () => {
           commands: [{ ...passed.commands[0], stage: "unknown" }, passed.commands[1]],
         },
       ]),
+      planArtifact,
     ),
     false,
   );
@@ -486,6 +509,7 @@ test("merge proof bundle validation fails closed", () => {
           commands: [{ ...passed.commands[0], duration_ms: -1 }, passed.commands[1]],
         },
       ]),
+      planArtifact,
     ),
     false,
   );
@@ -497,14 +521,35 @@ test("merge proof bundle validation fails closed", () => {
           summary: { ...passed.summary, passed: 99 },
         },
       ]),
+      planArtifact,
     ),
     false,
   );
   assert.equal(
-    isPassedStagedProofBundle({
-      ...bundle,
-      summary: { ...bundle.summary, passed: 99 },
-    }),
+    isPassedStagedProofBundle(
+      {
+        ...bundle,
+        summary: { ...bundle.summary, passed: 99 },
+      },
+      planArtifact,
+    ),
     false,
   );
+
+  const forgedPlan = buildStagedProofPlan({
+    commands: [command(["pnpm", "test:serial", "test/repair/forged.test.ts"], 0)],
+    changedFiles: [],
+  });
+  const forgedTrace = executeStagedProofPlan(forgedPlan, {
+    commandTimeoutMs: 1000,
+    budgetMs: 5000,
+    validatedHeadSha: VALIDATED_HEAD_SHA,
+    validatedBaseSha: VALIDATED_BASE_SHA,
+    nowMs: () => 10,
+    runCommand: (entry) => ({
+      executedCommands: [entry.parts.join(" ")],
+      reason: "passed",
+    }),
+  }).trace;
+  assert.equal(isPassedStagedProofBundle(stagedProofBundle([forgedTrace]), planArtifact), false);
 });

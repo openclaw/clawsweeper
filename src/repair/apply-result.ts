@@ -652,6 +652,7 @@ function applyMergeAction({
   const strictBaseBindingBlock = serverStrictBaseBindingBlock({
     repo: result.repo,
     baseBranch: String(view.baseRefName ?? pullRequest.base?.ref ?? ""),
+    appId: process.env.CLAWSWEEPER_APP_ID,
     readJson: (ghArgs) => ghJson(ghArgs),
   });
   if (strictBaseBindingBlock) {

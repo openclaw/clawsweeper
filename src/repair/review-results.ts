@@ -4,7 +4,6 @@ import { validateRepairContractShape } from "./repair-contract.js";
 import fs from "node:fs";
 import path from "node:path";
 import { parseArgs, parseJob, repoRoot } from "./lib.js";
-import { isPassedStagedProofBundle } from "./staged-proof-gates.js";
 
 const CLOSE_ACTIONS = new Set([
   "close",
@@ -444,15 +443,10 @@ function validateMergePreflight(
       }
     }
     const validationProof = preflight.validation_proof;
-    if (validationProof != null && !isPassedStagedProofBundle(validationProof)) {
-      failures.push(`${target} merge_preflight.validation_proof must contain passed staged runs`);
-    } else if (validationProof != null) {
-      if (
-        preflight.validated_head_sha !== validationProof.validated_head_sha ||
-        preflight.validated_base_sha !== validationProof.validated_base_sha
-      ) {
-        failures.push(`${target} merge_preflight proof identity must be internally consistent`);
-      }
+    if (validationProof != null) {
+      failures.push(
+        `${target} merge_preflight.validation_proof must be omitted until deterministic execution`,
+      );
     }
     const codexReview = preflight.codex_review;
     if (!codexReview || typeof codexReview !== "object") {

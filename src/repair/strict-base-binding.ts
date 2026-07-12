@@ -5,18 +5,20 @@ type GithubJsonReader = (args: string[]) => JsonValue;
 export function serverStrictBaseBindingBlock({
   repo,
   baseBranch,
+  appId,
   readJson,
 }: {
   repo: string;
   baseBranch: string;
+  appId: unknown;
   readJson: GithubJsonReader;
 }): string {
   if (!baseBranch) {
     return "automerge disabled: pull request base branch is unavailable for strict binding";
   }
 
-  const appId = authenticatedInstallationAppId(readJson);
-  if (!appId) {
+  const authenticatedAppId = authenticatedInstallationAppId(appId, readJson);
+  if (!authenticatedAppId) {
     return "automerge disabled: merge credential is not a verifiable GitHub App installation";
   }
 
@@ -37,7 +39,12 @@ export function serverStrictBaseBindingBlock({
           rulesUnavailable = true;
           continue;
         }
-        if (rulesetBypassesApp(ruleset, appId)) {
+        const bypassesApp = rulesetBypassesApp(ruleset, authenticatedAppId);
+        if (bypassesApp === null) {
+          rulesUnavailable = true;
+          continue;
+        }
+        if (bypassesApp) {
           bypassedStrictRule = true;
           continue;
         }
@@ -66,11 +73,19 @@ export function serverStrictBaseBindingBlock({
     : `automerge disabled: ${baseBranch} lacks server-enforced strict base binding`;
 }
 
-function authenticatedInstallationAppId(readJson: GithubJsonReader): number | null {
+function authenticatedInstallationAppId(appId: unknown, readJson: GithubJsonReader): number | null {
+  const configuredAppId = Number(appId);
+  if (!Number.isSafeInteger(configuredAppId) || configuredAppId <= 0) return null;
   try {
-    const installation = readJson(["api", "installation"]);
-    const appId = Number((installation as LooseRecord)?.app_id);
-    return Number.isSafeInteger(appId) && appId > 0 ? appId : null;
+    const installation = readJson(["api", "installation/repositories?per_page=1"]);
+    const candidate = installation as LooseRecord;
+    if (
+      !Number.isSafeInteger(Number(candidate?.total_count)) ||
+      !Array.isArray(candidate?.repositories)
+    ) {
+      return null;
+    }
+    return configuredAppId;
   } catch {
     return null;
   }
@@ -113,17 +128,16 @@ function fetchRuleset(
   }
 }
 
-function rulesetBypassesApp(ruleset: LooseRecord, appId: number): boolean {
-  return Array.isArray(ruleset.bypass_actors)
-    ? ruleset.bypass_actors.some((actor: JsonValue) => {
-        const candidate = actor as LooseRecord;
-        return (
-          candidate?.actor_type === "Integration" &&
-          Number(candidate.actor_id) === appId &&
-          candidate.bypass_mode !== "never"
-        );
-      })
-    : false;
+function rulesetBypassesApp(ruleset: LooseRecord, appId: number): boolean | null {
+  if (!Array.isArray(ruleset.bypass_actors)) return null;
+  return ruleset.bypass_actors.some((actor: JsonValue) => {
+    const candidate = actor as LooseRecord;
+    return (
+      candidate?.actor_type === "Integration" &&
+      Number(candidate.actor_id) === appId &&
+      candidate.bypass_mode !== "never"
+    );
+  });
 }
 
 function hasStrictClassicProtection(protection: JsonValue): boolean {

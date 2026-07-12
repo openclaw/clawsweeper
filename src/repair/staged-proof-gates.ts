@@ -92,6 +92,27 @@ export type StagedProofPlan = {
   deduplicated_commands: number;
 };
 
+export type StagedProofPlanArtifactCommand = {
+  command_id: string;
+  stage: StagedProofStage;
+  command_digest: string;
+  command_kind: string;
+  source: StagedProofCommandSource;
+  required: boolean;
+  reason: string;
+  prerequisite: string | null;
+  subsumed_by: string | null;
+  subsumption_contract_digest: string | null;
+};
+
+export type StagedProofPlanArtifact = {
+  schema_version: typeof STAGED_PROOF_SCHEMA_VERSION;
+  plan_id: string;
+  risk: StagedProofRisk;
+  deduplicated_commands: number;
+  commands: StagedProofPlanArtifactCommand[];
+};
+
 export type StagedProofTraceStatus =
   | "passed"
   | "failed"
@@ -412,7 +433,7 @@ export function stagedProofTraceFromError(error: unknown): StagedProofTrace | nu
   return error instanceof StagedProofExecutionError ? error.trace : null;
 }
 
-export function stagedProofPlanArtifact(plan: StagedProofPlan) {
+export function stagedProofPlanArtifact(plan: StagedProofPlan): StagedProofPlanArtifact {
   return {
     schema_version: plan.schema_version,
     plan_id: plan.plan_id,
@@ -453,8 +474,9 @@ export function stagedProofBundle(traces: readonly StagedProofTrace[]) {
   };
 }
 
-export function isPassedStagedProofBundle(value: unknown): boolean {
+export function isPassedStagedProofBundle(value: unknown, expectedPlan: unknown): boolean {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  if (!isStagedProofPlanArtifact(expectedPlan)) return false;
   const bundle = value as Record<string, unknown>;
   if (
     bundle.schema_version !== STAGED_PROOF_SCHEMA_VERSION ||
@@ -474,6 +496,7 @@ export function isPassedStagedProofBundle(value: unknown): boolean {
   const runs = bundle.runs as StagedProofTrace[];
   const latest = runs.at(-1);
   if (!latest || latest.status !== "passed") return false;
+  if (!traceMatchesStagedProofPlan(latest, expectedPlan)) return false;
   if (
     bundle.validated_head_sha !== latest.validated_head_sha ||
     bundle.validated_base_sha !== latest.validated_base_sha
@@ -489,6 +512,127 @@ export function isPassedStagedProofBundle(value: unknown): boolean {
     summary.skipped === runs.reduce((sum, run) => sum + run.summary.skipped, 0) &&
     summary.total_duration_ms === runs.reduce((sum, run) => sum + run.summary.total_duration_ms, 0)
   );
+}
+
+function isStagedProofPlanArtifact(value: unknown): value is StagedProofPlanArtifact {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const plan = value as Record<string, unknown>;
+  if (
+    plan.schema_version !== STAGED_PROOF_SCHEMA_VERSION ||
+    !/^[a-f0-9]{64}$/.test(String(plan.plan_id ?? "")) ||
+    !isStagedProofRisk(plan.risk) ||
+    !isNonNegativeInteger(plan.deduplicated_commands) ||
+    !Array.isArray(plan.commands) ||
+    plan.commands.length === 0 ||
+    plan.commands.length > MAX_STAGED_PROOF_COMMANDS
+  ) {
+    return false;
+  }
+
+  const commandIds = new Map<string, { index: number }>();
+  const commands = plan.commands as Record<string, unknown>[];
+  for (const [index, command] of commands.entries()) {
+    if (!command || typeof command !== "object" || Array.isArray(command)) return false;
+    const commandId = String(command.command_id ?? "");
+    const commandDigest = String(command.command_digest ?? "");
+    const commandIdMatch = commandId.match(/^proof-(\d+)-([a-f0-9]{12})$/);
+    if (
+      !commandIdMatch ||
+      Number(commandIdMatch[1]) !== index + 1 ||
+      commandIdMatch[2] !== commandDigest.slice(0, 12) ||
+      commandIds.has(commandId) ||
+      !/^[a-f0-9]{64}$/.test(commandDigest) ||
+      !STAGED_PROOF_STAGES.has(String(command.stage ?? "")) ||
+      typeof command.command_kind !== "string" ||
+      command.command_kind.length === 0 ||
+      command.command_kind.length > 96 ||
+      !STAGED_PROOF_COMMAND_SOURCES.has(String(command.source ?? "")) ||
+      typeof command.required !== "boolean" ||
+      typeof command.reason !== "string" ||
+      command.reason.length === 0 ||
+      command.reason.length > 256 ||
+      !isProofCommandReference(command.prerequisite) ||
+      !isProofCommandReference(command.subsumed_by) ||
+      (command.subsumption_contract_digest !== null &&
+        !/^[a-f0-9]{64}$/.test(String(command.subsumption_contract_digest ?? "")))
+    ) {
+      return false;
+    }
+    if (
+      command.prerequisite !== (index === 0 ? null : commands[index - 1]?.command_id) ||
+      !isEarlierProofCommandReference(command.subsumed_by, index, commandIds)
+    ) {
+      return false;
+    }
+    const subsumingCommand =
+      typeof command.subsumed_by === "string"
+        ? commands[commandIds.get(command.subsumed_by)?.index ?? -1]
+        : undefined;
+    if (
+      (command.subsumed_by === null && command.subsumption_contract_digest !== null) ||
+      (typeof command.subsumed_by === "string" &&
+        (typeof command.subsumption_contract_digest !== "string" ||
+          !subsumingCommand ||
+          command.subsumption_contract_digest !==
+            subsumptionDigest(
+              String(subsumingCommand.command_digest),
+              String(command.command_digest),
+            )))
+    ) {
+      return false;
+    }
+    commandIds.set(commandId, { index });
+  }
+
+  return plan.plan_id === stagedProofPlanIdentity(plan.risk as StagedProofRisk, commands);
+}
+
+function traceMatchesStagedProofPlan(
+  trace: StagedProofTrace,
+  expectedPlan: StagedProofPlanArtifact,
+): boolean {
+  if (
+    trace.plan_id !== expectedPlan.plan_id ||
+    JSON.stringify(trace.risk) !== JSON.stringify(expectedPlan.risk) ||
+    trace.commands.length !== expectedPlan.commands.length
+  ) {
+    return false;
+  }
+  return trace.commands.every((command, index) => {
+    const expected = expectedPlan.commands[index];
+    return (
+      expected !== undefined &&
+      command.command_id === expected.command_id &&
+      command.stage === expected.stage &&
+      command.command_digest === expected.command_digest &&
+      command.command_kind === expected.command_kind &&
+      command.source === expected.source &&
+      command.prerequisite === expected.prerequisite &&
+      command.subsumed_by === expected.subsumed_by &&
+      command.subsumption_contract_digest === expected.subsumption_contract_digest
+    );
+  });
+}
+
+function stagedProofPlanIdentity(
+  risk: StagedProofRisk,
+  commands: readonly Record<string, unknown>[],
+): string {
+  return createHash("sha256")
+    .update(
+      JSON.stringify({
+        risk,
+        commands: commands.map((command) => ({
+          digest: command.command_digest,
+          stage: command.stage,
+          source: command.source,
+          prerequisite: command.prerequisite,
+          subsumed_by: command.subsumed_by,
+          subsumption_contract_digest: command.subsumption_contract_digest,
+        })),
+      }),
+    )
+    .digest("hex");
 }
 
 export function stagedProofSummary(value: {
@@ -1034,7 +1178,7 @@ function isIntegrationProofCommand(parts: readonly string[]): boolean {
     return args.some(isIntegrationPathArgument);
   }
   if ((executable === "bash" || executable === "sh") && commandParts[1]) {
-    return isIntegrationPathArgument(commandParts[1]);
+    return commandParts.slice(1).some(isIntegrationPathArgument);
   }
   const vitestStart = directVitestArgsStart(commandParts);
   if (vitestStart >= 0) {
