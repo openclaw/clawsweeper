@@ -1988,8 +1988,9 @@ test("comment router durably claims dispatch commands and recovers exact workflo
   assert.match(repairWorkflow, /dispatch_key:/);
 });
 
-test("exact comment fast path preserves terminal acknowledgement cleanup", () => {
+test("exact comment fast path avoids shared terminal acknowledgement cleanup races", () => {
   const source = readFileSync("src/repair/comment-router.ts", "utf8");
+  const retryConstant = source.indexOf("const TARGET_LOOKUP_RETRY_ATTEMPTS = 3");
   const preflightBlock = source.slice(
     source.indexOf("const exactCommentVersionFastPathCommand"),
     source.indexOf("const priorDispatchClaims"),
@@ -2003,16 +2004,17 @@ test("exact comment fast path preserves terminal acknowledgement cleanup", () =>
     preflightBlock,
     /!exactCommentVersionStillCurrent\(exactCommentVersionFastPathCommand\)/,
   );
+  assert.ok(retryConstant < source.indexOf("const exactCommentVersionFastPathCommand"));
   assert.match(preflightBlock, /reason: "source_drift"/);
   assert.ok(
     source.indexOf("!exactCommentVersionStillCurrent(exactCommentVersionFastPathCommand)") <
       source.indexOf('measure("list_candidate_comments"'),
   );
-  assert.match(cleanupBlock, /assertMutationActorIsClawsweeperBot\(\)/);
   assert.match(
     cleanupBlock,
     /exactCommentVersionStillCurrent\(exactCommentVersionFastPathCommand\)/,
   );
+  assert.match(cleanupBlock, /skipped_shared_ownership/);
   assert.match(cleanupBlock, /skipped_source_drift/);
   assert.match(cleanupBlock, /reason: "cleanup_source_drift"/);
   assert.match(cleanupBlock, /list_candidate_comments_after_cleanup_drift/);
@@ -2020,18 +2022,15 @@ test("exact comment fast path preserves terminal acknowledgement cleanup", () =>
   assert.match(cleanupBlock, /classify_cleanup_drift_commands/);
   assert.match(cleanupBlock, /commands\.push/);
   assert.match(cleanupBlock, /report\.short_circuited = false/);
-  assert.match(cleanupBlock, /cleanupTerminalCommentAck\(exactCommentVersionFastPathCommand\)/);
-  assert.match(
+  assert.doesNotMatch(
+    cleanupBlock,
+    /cleanupTerminalCommentAck\(exactCommentVersionFastPathCommand\)/,
+  );
+  assert.doesNotMatch(
     cleanupBlock,
     /clearTerminalMaintainerCommandReaction\(exactCommentVersionFastPathCommand\)/,
   );
-  const ackCleanup = source.slice(
-    source.indexOf("function cleanupTerminalCommentAck"),
-    source.indexOf("function convergePrecreatedCommandAckCommentsInner"),
-  );
-  assert.match(ackCleanup, /convergePrecreatedCommandAckComments\(command\)/);
-  assert.match(ackCleanup, /commandStatusMarkerFromBody\(keep\.body\)/);
-  assert.match(ackCleanup, /--method", "DELETE"/);
+  assert.doesNotMatch(source, /function cleanupTerminalCommentAck/);
 });
 
 test("command receipt gates let the oldest same-key run proceed when a newer duplicate is pending", () => {

@@ -161,6 +161,7 @@ const {
 const startedAtMs = Date.now();
 const timings: LooseRecord[] = [];
 const ledger = readLedger(ledgerPath());
+const TARGET_LOOKUP_RETRY_ATTEMPTS = 3;
 let exactCommentVersionFastPath = exactCommentVersionFastPathDecision({
   authenticated:
     args["comment-event-auth"] === "github_webhook_v1" &&
@@ -192,7 +193,6 @@ for (const entry of ledger.commands ?? []) {
   if (entry.status !== "claimed") continue;
   for (const key of dispatchClaimLookupKeys(entry)) priorDispatchClaims.set(key, entry);
 }
-const TARGET_LOOKUP_RETRY_ATTEMPTS = 3;
 const processedCommentVersions = forceReprocess
   ? new Set()
   : new Set(
@@ -294,14 +294,10 @@ if (execute && exactCommentVersionFastPath.suppress && exactCommentVersionFastPa
   const versionStillCurrent = measure("verify_exact_comment_version_cleanup", () =>
     exactCommentVersionStillCurrent(exactCommentVersionFastPathCommand),
   );
-  report.exact_comment_version_cleanup = versionStillCurrent ? "completed" : "skipped_source_drift";
-  if (versionStillCurrent) {
-    measure("cleanup_exact_comment_version", () => {
-      assertMutationActorIsClawsweeperBot();
-      cleanupTerminalCommentAck(exactCommentVersionFastPathCommand);
-      clearTerminalMaintainerCommandReaction(exactCommentVersionFastPathCommand);
-    });
-  } else {
+  report.exact_comment_version_cleanup = versionStillCurrent
+    ? "skipped_shared_ownership"
+    : "skipped_source_drift";
+  if (!versionStillCurrent) {
     exactCommentVersionFastPath = { suppress: false, reason: "cleanup_source_drift" };
     const resumedComments = measure("list_candidate_comments_after_cleanup_drift", () =>
       listCandidateComments(),
@@ -4253,15 +4249,6 @@ function convergePrecreatedCommandAckComments(command: LooseRecord) {
     );
     return null;
   }
-}
-
-function cleanupTerminalCommentAck(command: LooseRecord) {
-  const keep = convergePrecreatedCommandAckComments(command);
-  if (!keep || commandStatusMarkerFromBody(keep.body)) return;
-  const id = Number(keep.id ?? 0) || 0;
-  if (id <= 0) return;
-  ghBestEffort(["api", `repos/${command.repo}/issues/comments/${id}`, "--method", "DELETE"]);
-  issueCommentsCache.delete(Number(command.issue_number));
 }
 
 function exactCommentVersionStillCurrent(command: LooseRecord) {
