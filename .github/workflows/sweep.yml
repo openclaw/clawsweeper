@@ -1250,6 +1250,40 @@ jobs:
         if: ${{ always() && steps.publish-event-result.outputs.requeue_latest == 'true' && steps.complete-exact-review-queue.outcome != 'success' }}
         run: exit 1
 
+      - name: Publish late command status action ledger
+        if: ${{ always() && steps.setup-state.outcome == 'success' && steps.setup-pnpm.outcome == 'success' }}
+        run: |
+          set -euo pipefail
+          test -n "${CLAWSWEEPER_STATE_DIR:-}"
+          source_root=".clawsweeper-repair/action-ledger-state"
+          if [ ! -d "$source_root/ledger" ]; then
+            echo "No late command status action event shards were finalized."
+            exit 0
+          fi
+          event_paths_file=".artifacts/late-command-status-action-ledger-paths.txt"
+          mkdir -p .artifacts
+          pnpm run --silent publish-action-events -- \
+            --source-root "$source_root" \
+            --state-root "$CLAWSWEEPER_STATE_DIR" |
+            jq -r '.paths[]?' |
+            sort -u > "$event_paths_file"
+          if [ ! -s "$event_paths_file" ]; then
+            echo "Late command status action shards existed but no paths were imported." >&2
+            exit 1
+          fi
+          action_ledger_args=()
+          while IFS= read -r event_path; do
+            durable_event_path="$CLAWSWEEPER_STATE_DIR/$event_path"
+            test -f "$durable_event_path"
+            mkdir -p "$(dirname "$event_path")"
+            cp "$durable_event_path" "$event_path"
+            action_ledger_args+=(--path "$event_path")
+          done < "$event_paths_file"
+          pnpm run repair:publish-main -- \
+            --message "chore: append command status action ledger" \
+            "${action_ledger_args[@]}" \
+            --rebase-strategy normal
+
   target-fanout:
     name: Fan out target repository sweeps
     if: ${{ github.event_name == 'schedule' && (github.event.schedule == '4/15 * * * *' || github.event.schedule == '41 * * * *' || github.event.schedule == '37 */6 * * *') }}

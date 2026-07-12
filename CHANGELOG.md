@@ -72,9 +72,10 @@ checkpoint, and status-only commits are intentionally omitted.
   executions.
 - Dual-write comment-router command receipt, classification, durable claim,
   claim refresh, dispatch, wait, recovery, completion, skip, and failure
-  transitions into immutable per-attempt action chains, with stable business
-  idempotency across retry invocations and immutable publication to the state
-  repository.
+  transitions, status-comment progress, and report-only repair requeues into
+  immutable per-attempt action chains, with stable business idempotency across
+  retry invocations, worker-side dispatch deduplication, and immutable
+  publication to the state repository.
 - Short-circuited authenticated duplicate comment deliveries when their exact
   body version is already terminal in the durable router ledger, while edited,
   retryable, and state-drifted commands retain the full routing path.

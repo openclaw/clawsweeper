@@ -1062,7 +1062,22 @@ jobs:
           filter: blob:none
           persist-credentials: false
 
+      - name: Create report state token
+        id: report-state-token
+        uses: ./.github/actions/create-state-token
+        with:
+          client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
+
+      - uses: ./.github/actions/setup-state
+        with:
+          token: ${{ steps.report-state-token.outputs.token }}
+          fetch-depth: 1
+
+      - uses: ./.github/actions/setup-action-ledger
+
       - uses: ./.github/actions/setup-pnpm
+        id: report-setup-pnpm
         with:
           build-script: build:repair
 
@@ -1143,6 +1158,44 @@ jobs:
             --state "Blocked" \
             --detail "The automatic implementation worker stopped before all deterministic gates completed. Open the workflow run for the exact blocker." \
             --run-url "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+      - name: Finalize report command action ledger
+        if: ${{ always() && steps.report-setup-pnpm.outcome == 'success' }}
+        run: pnpm run --silent repair:action-ledger -- finalize
+
+      - name: Publish immutable report command action ledger
+        if: ${{ always() && steps.report-setup-pnpm.outcome == 'success' }}
+        run: |
+          set -euo pipefail
+          test -n "${CLAWSWEEPER_STATE_DIR:-}"
+          source_root=".clawsweeper-repair/action-ledger-state"
+          if [ ! -d "$source_root/ledger" ]; then
+            echo "No report command action event shards were finalized."
+            exit 0
+          fi
+          event_paths_file=".artifacts/report-command-action-ledger-paths.txt"
+          mkdir -p .artifacts
+          pnpm run --silent repair:action-ledger -- publish \
+            --source-root "$source_root" \
+            --state-root "$CLAWSWEEPER_STATE_DIR" |
+            jq -r '.paths[]?' |
+            sort -u > "$event_paths_file"
+          if [ ! -s "$event_paths_file" ]; then
+            echo "Report command action event shards existed but no paths were imported." >&2
+            exit 1
+          fi
+          action_ledger_args=()
+          while IFS= read -r event_path; do
+            durable_event_path="$CLAWSWEEPER_STATE_DIR/$event_path"
+            test -f "$durable_event_path"
+            mkdir -p "$(dirname "$event_path")"
+            cp "$durable_event_path" "$event_path"
+            action_ledger_args+=(--path "$event_path")
+          done < "$event_paths_file"
+          pnpm run repair:publish-main -- \
+            --message "chore: append report command action ledger" \
+            "${action_ledger_args[@]}" \
+            --rebase-strategy normal
 
   mutate:
     name: Token-only post-flight mutation

@@ -760,6 +760,7 @@ test("sweep publishes complete immutable shards for every review and apply produ
     "Publish failed-review retry action ledger",
     "Finalize exact event action ledger",
     "Publish exact event action ledger",
+    "Publish late command status action ledger",
     "Finalize apply proof action ledger",
     "Publish apply proof action events",
     "Publish apply action events",
