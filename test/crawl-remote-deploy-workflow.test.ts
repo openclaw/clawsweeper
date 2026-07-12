@@ -273,10 +273,11 @@ test("protected deploy audits exact environment-owned authority inputs", () => {
     protection_rules: [
       {
         type: "required_reviewers",
+        prevent_self_review: true,
         reviewers: [
           {
-            type: "User",
-            reviewer: { id: 25068, login: "vincentkoc" },
+            type: "Team",
+            reviewer: { id: 15789116, slug: "maintainer" },
           },
         ],
       },
@@ -385,6 +386,40 @@ esac
     });
     assert.notEqual(missingReviewer.status, 0);
     assert.match(missingReviewer.stderr, /protection is not the reviewed shape/);
+
+    const extraReviewer = runAudit({
+      environment: {
+        ...validEnvironment,
+        protection_rules: [
+          {
+            ...validEnvironment.protection_rules[0],
+            reviewers: [
+              ...validEnvironment.protection_rules[0].reviewers,
+              {
+                type: "User",
+                reviewer: { id: 25068, login: "vincentkoc" },
+              },
+            ],
+          },
+        ],
+      },
+    });
+    assert.notEqual(extraReviewer.status, 0);
+    assert.match(extraReviewer.stderr, /protection is not the reviewed shape/);
+
+    const selfReviewAllowed = runAudit({
+      environment: {
+        ...validEnvironment,
+        protection_rules: [
+          {
+            ...validEnvironment.protection_rules[0],
+            prevent_self_review: false,
+          },
+        ],
+      },
+    });
+    assert.notEqual(selfReviewAllowed.status, 0);
+    assert.match(selfReviewAllowed.stderr, /protection is not the reviewed shape/);
 
     const wrongBranch = runAudit({
       branchPolicies: [{ name: "release", type: "branch" }],
@@ -1916,6 +1951,10 @@ if test "$1 $2" = "deployments status"; then
   if test "$FAIL_AFTER_FIRST_STATUS" = "true" && test "$count" -gt "1"; then
     exit 72
   fi
+  if test "$TRANSITION_FIRST_STATUS" = "true" && test "$count" = "1"; then
+    printf '%s\\n' "$TRANSITION_DEPLOYMENT_JSON"
+    exit 0
+  fi
   printf '%s\\n' "$CURRENT_DEPLOYMENT_JSON"
   exit 0
 fi
@@ -1931,12 +1970,14 @@ exit 97
     failAfterFirstStatus = false,
     failFirstStatus = false,
     timeoutSeconds = "2",
+    transitionFirstStatus = false,
   }: {
     currentVersion: string;
     currentMessage: string;
     failAfterFirstStatus?: boolean;
     failFirstStatus?: boolean;
     timeoutSeconds?: string;
+    transitionFirstStatus?: boolean;
   }) {
     rmSync(deployedVersionPath, { force: true });
     rmSync(deploymentResponsePath, { force: true });
@@ -1967,6 +2008,14 @@ exit 97
           RELEASE_ROOT: directory,
           STATUS_COUNT_PATH: statusCountPath,
           TOOLCHAIN_ROOT: toolchainRoot,
+          TRANSITION_DEPLOYMENT_JSON: JSON.stringify({
+            annotations: { "workers/message": currentMessage },
+            versions: [
+              { percentage: 50, version_id: previousVersion },
+              { percentage: 50, version_id: currentVersion },
+            ],
+          }),
+          TRANSITION_FIRST_STATUS: String(transitionFirstStatus),
           WRANGLER_READ_TIMEOUT_SECONDS: "1",
           WRANGLER_VERSION: "4.107.1",
         },
@@ -1983,6 +2032,16 @@ exit 97
     assert.equal(recovered.status, 0, recovered.stdout + recovered.stderr);
     assert.match(readFileSync(githubOutputPath, "utf8"), /mutation_owned=true/);
     assert.match(readFileSync(githubOutputPath, "utf8"), new RegExp(deployedVersion));
+    assert.equal(readFileSync(deployedVersionPath, "utf8").trim(), deployedVersion);
+    assert.equal(readFileSync(statusCountPath, "utf8").trim(), "2");
+
+    const transitioned = runRecovery({
+      currentVersion: deployedVersion,
+      currentMessage: deployMessage,
+      transitionFirstStatus: true,
+    });
+    assert.equal(transitioned.status, 0, transitioned.stdout + transitioned.stderr);
+    assert.match(readFileSync(githubOutputPath, "utf8"), /mutation_owned=true/);
     assert.equal(readFileSync(deployedVersionPath, "utf8").trim(), deployedVersion);
     assert.equal(readFileSync(statusCountPath, "utf8").trim(), "2");
 

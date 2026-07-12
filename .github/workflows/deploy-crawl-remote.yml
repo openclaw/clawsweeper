@@ -582,12 +582,11 @@ jobs:
           if (
             environment?.name !== process.env.PRODUCTION_ENVIRONMENT ||
             reviewerRules.length !== 1 ||
-            !reviewers.some(
-              (entry) =>
-                entry?.type === 'User' &&
-                entry?.reviewer?.id === 25068 &&
-                entry?.reviewer?.login === 'vincentkoc',
-            ) ||
+            reviewerRule?.prevent_self_review !== true ||
+            reviewers.length !== 1 ||
+            reviewers[0]?.type !== 'Team' ||
+            reviewers[0]?.reviewer?.id !== 15789116 ||
+            reviewers[0]?.reviewer?.slug !== 'maintainer' ||
             environment?.deployment_branch_policy?.protected_branches !== false ||
             environment?.deployment_branch_policy?.custom_branch_policies !== true
           ) {
@@ -2758,48 +2757,61 @@ jobs:
               const versions = deployment?.versions;
               if (
                 !Array.isArray(versions) ||
-                versions.length !== 1 ||
-                versions[0]?.percentage !== 100 ||
-                !uuidPattern.test(String(versions[0]?.version_id ?? ''))
+                versions.length < 1 ||
+                versions.length > 8 ||
+                versions.some(
+                  (entry) =>
+                    !uuidPattern.test(String(entry?.version_id ?? '')) ||
+                    typeof entry?.percentage !== 'number' ||
+                    !Number.isFinite(entry.percentage) ||
+                    entry.percentage < 0 ||
+                    entry.percentage > 100,
+                ) ||
+                new Set(versions.map((entry) => entry.version_id)).size !== versions.length ||
+                Math.abs(
+                  versions.reduce((total, entry) => total + entry.percentage, 0) - 100,
+                ) > 0.000001
               ) {
-                throw new Error('recovered Worker deployment is not one stable version');
+                throw new Error('recovered Worker deployment distribution is invalid');
               }
-              const currentVersion = versions[0].version_id;
-              lastProbeSucceeded = true;
-              lastStableVersion = currentVersion;
-              writeFileSync(
-                process.env.RECOVERY_DEPLOYMENT_RESPONSE,
-                status.stdout,
-                { mode: 0o600 },
-              );
-              if (currentVersion !== previousVersion) {
-                if (deployment?.annotations?.['workers/message'] !== expectedMessage) {
-                  throw new Error(
-                    'recovered Worker deployment is not owned by this workflow run',
-                  );
-                }
-                if (existsSync(process.env.DEPLOYED_VERSION_PATH)) {
-                  const recorded = readFileSync(
-                    process.env.DEPLOYED_VERSION_PATH,
-                    'utf8',
-                  ).trim();
-                  if (recorded !== currentVersion) {
+              if (versions.length === 1 && versions[0].percentage === 100) {
+                const currentVersion = versions[0].version_id;
+                lastProbeSucceeded = true;
+                lastStableVersion = currentVersion;
+                writeFileSync(
+                  process.env.RECOVERY_DEPLOYMENT_RESPONSE,
+                  status.stdout,
+                  { mode: 0o600 },
+                );
+                if (currentVersion !== previousVersion) {
+                  if (deployment?.annotations?.['workers/message'] !== expectedMessage) {
                     throw new Error(
-                      'recovered Worker version conflicts with the prior ownership record',
+                      'recovered Worker deployment is not owned by this workflow run',
                     );
                   }
-                } else {
-                  writeFileSync(
-                    process.env.DEPLOYED_VERSION_PATH,
-                    `${currentVersion}\n`,
-                    { flag: 'wx', mode: 0o600 },
+                  if (existsSync(process.env.DEPLOYED_VERSION_PATH)) {
+                    const recorded = readFileSync(
+                      process.env.DEPLOYED_VERSION_PATH,
+                      'utf8',
+                    ).trim();
+                    if (recorded !== currentVersion) {
+                      throw new Error(
+                        'recovered Worker version conflicts with the prior ownership record',
+                      );
+                    }
+                  } else {
+                    writeFileSync(
+                      process.env.DEPLOYED_VERSION_PATH,
+                      `${currentVersion}\n`,
+                      { flag: 'wx', mode: 0o600 },
+                    );
+                  }
+                  appendFileSync(
+                    process.env.GITHUB_OUTPUT,
+                    `mutation_owned=true\ndeployed_version=${currentVersion}\n`,
                   );
+                  process.exit(0);
                 }
-                appendFileSync(
-                  process.env.GITHUB_OUTPUT,
-                  `mutation_owned=true\ndeployed_version=${currentVersion}\n`,
-                );
-                process.exit(0);
               }
             }
 
