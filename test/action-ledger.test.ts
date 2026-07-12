@@ -15,7 +15,9 @@ import {
   ACTION_EVENT_MACHINE_TEXT_PATTERN_SOURCE,
   ACTION_EVENT_PHASE_TYPES,
   ACTION_EVENT_REASON_CODES,
+  ACTION_EVENT_RELATIVE_DATA_PATH_PATTERN_SOURCE,
   ACTION_EVENT_SHARD_FILE_LIMITS,
+  ACTION_EVENT_SPOOL_READ_LIMITS,
   ACTION_EVENT_STATUSES,
   ACTION_EVENT_SUBJECT_KINDS,
   ACTION_EVENT_TIMESTAMP_PATTERN_SOURCE,
@@ -45,7 +47,11 @@ import {
   type ActionEventInput,
   type ActionEventProducer,
 } from "../dist/action-ledger.js";
-import { prepareSafeWriteTarget } from "../dist/action-ledger-files.js";
+import {
+  prepareSafeWriteTarget,
+  removeUtf8FileIfContentNoFollow,
+  tryAcquireUtf8FileLockNoFollow,
+} from "../dist/action-ledger-files.js";
 import { importActionEventShards } from "../dist/action-ledger-runtime.js";
 import { stableJson } from "../dist/stable-json.js";
 
@@ -446,14 +452,14 @@ test("ledger ordering is binary and locale independent without changing shared s
   const event = createActionEvent(
     reviewInput({
       evidence: [
-        { kind: "report", reportPath: "records/\u00e4.md" },
-        { kind: "report", reportPath: "records/z.md" },
+        { kind: "report", reportPath: "records/a.md" },
+        { kind: "report", reportPath: "records/Z.md" },
       ],
     }),
   );
   assert.deepEqual(
     event.evidence?.map((entry) => entry.report_path),
-    ["records/z.md", "records/\u00e4.md"],
+    ["records/Z.md", "records/a.md"],
   );
   const moduleUrl = pathToFileURL(path.join(process.cwd(), "dist", "action-ledger.js")).href;
   const script = `import { actionLedgerJson } from ${JSON.stringify(moduleUrl)};
@@ -522,12 +528,23 @@ test("runtime and schema require the same canonical timestamp syntax", () => {
     fs.readFileSync(path.join(process.cwd(), "schema", "state-ledger-event.schema.json"), "utf8"),
   ) as TestJsonSchema;
   const timestampSchema = (schema.properties as Record<string, TestJsonSchema>).occurred_at!;
-  for (const timestamp of ["2026-07-12T10:00:00Z", "2026-07-12T10:00:00.123456789+02:30"]) {
+  for (const timestamp of [
+    "0001-01-01T00:00:00Z",
+    "0004-02-29T00:00:00Z",
+    "2024-02-29T10:00:00Z",
+    "2026-07-12T10:00:00Z",
+    "2026-07-12T10:00:00.123456789+02:30",
+  ]) {
     assert.equal(schemaNodeAccepts(schema, timestampSchema, timestamp), true, timestamp);
     assert.doesNotThrow(() => createActionEvent(reviewInput({ occurredAt: timestamp })));
   }
   for (const timestamp of [
     "2026-07-12t10:00:00z",
+    "0000-01-01T00:00:00Z",
+    "1900-02-29T10:00:00Z",
+    "2026-02-29T10:00:00Z",
+    "2026-02-30T10:00:00Z",
+    "2026-04-31T10:00:00Z",
     "2026-13-12T10:00:00Z",
     "2026-07-32T10:00:00Z",
     "2026-07-12T24:00:00Z",
@@ -542,6 +559,47 @@ test("runtime and schema require the same canonical timestamp syntax", () => {
       () => createActionEvent(reviewInput({ occurredAt: timestamp })),
       /must be an ISO date-time timestamp/,
       timestamp,
+    );
+  }
+});
+
+test("runtime and schema require namespaced portable data paths", () => {
+  const schema = JSON.parse(
+    fs.readFileSync(path.join(process.cwd(), "schema", "state-ledger-event.schema.json"), "utf8"),
+  ) as TestJsonSchema;
+  const relativePathSchema = (schema.$defs as Record<string, TestJsonSchema>).relativePath!;
+  assert.equal(relativePathSchema.pattern, ACTION_EVENT_RELATIVE_DATA_PATH_PATTERN_SOURCE);
+
+  for (const reportPath of [
+    ".artifacts/review-42.json",
+    "artifacts/reviews/42.md",
+    "jobs/repair_42/result.json",
+    "ledger/v1/events/2026/07/12/events.jsonl",
+    "logs/review/42.json",
+    "notifications/github-activity-report.json",
+    "records/openclaw-openclaw/items/42.md",
+    "results/audit/latest.json",
+  ]) {
+    assert.equal(schemaNodeAccepts(schema, relativePathSchema, reportPath), true, reportPath);
+    assert.doesNotThrow(() =>
+      createActionEvent(reviewInput({ evidence: [{ kind: "report", reportPath }] })),
+    );
+  }
+
+  for (const reportPath of [
+    "review completed without findings",
+    "misc/report.md",
+    "records/review notes.md",
+    "records/\u00e4.md",
+    "records/.hidden",
+    "records/items/",
+    "records",
+  ]) {
+    assert.equal(schemaNodeAccepts(schema, relativePathSchema, reportPath), false, reportPath);
+    assert.throws(
+      () => createActionEvent(reviewInput({ evidence: [{ kind: "report", reportPath }] })),
+      /namespaced repository-relative data path/,
+      reportPath,
     );
   }
 });
@@ -968,6 +1026,60 @@ test("ledger writes require pre-existing canonical trusted roots", () => {
   assert.deepEqual(fs.readdirSync(actualRoot), []);
 });
 
+test("exclusive file locks contend, roll back failed creation, and tolerate disappearance", () => {
+  const root = tempRoot();
+  const target = prepareSafeWriteTarget(root, "locks/producer.lock", "test producer");
+  const firstContent = "first-owner\n";
+  const releaseFirst = tryAcquireUtf8FileLockNoFollow(target, firstContent);
+  assert.ok(releaseFirst);
+  assert.equal(tryAcquireUtf8FileLockNoFollow(target, "second-owner\n"), null);
+  releaseFirst();
+
+  const originalWriteFileSync = fs.writeFileSync;
+  let injected = false;
+  fs.writeFileSync = ((file, data, options) => {
+    originalWriteFileSync(file, data, options as never);
+    if (!injected && typeof file === "number") {
+      injected = true;
+      throw new Error("injected lock write failure");
+    }
+  }) as typeof fs.writeFileSync;
+  try {
+    assert.throws(
+      () => tryAcquireUtf8FileLockNoFollow(target, "failed-owner\n"),
+      /injected lock write failure/,
+    );
+  } finally {
+    fs.writeFileSync = originalWriteFileSync;
+  }
+  assert.equal(injected, true);
+  assert.equal(fs.existsSync(target.path), false);
+
+  const disappearingContent = "disappearing-owner\n";
+  const releaseDisappearing = tryAcquireUtf8FileLockNoFollow(target, disappearingContent);
+  assert.ok(releaseDisappearing);
+  const originalOpenSync = fs.openSync;
+  let disappeared = false;
+  fs.openSync = ((filePath, flags, mode) => {
+    if (!disappeared && filePath === target.path) {
+      disappeared = true;
+      fs.unlinkSync(target.path);
+    }
+    return originalOpenSync(filePath, flags, mode);
+  }) as typeof fs.openSync;
+  try {
+    assert.equal(removeUtf8FileIfContentNoFollow(target, disappearingContent), false);
+  } finally {
+    fs.openSync = originalOpenSync;
+  }
+  assert.equal(disappeared, true);
+  assert.doesNotThrow(releaseDisappearing);
+
+  const releaseFinal = tryAcquireUtf8FileLockNoFollow(target, "final-owner\n");
+  assert.ok(releaseFinal);
+  releaseFinal();
+});
+
 test("spool and shard writes reject symlinked parent directories", () => {
   const root = tempRoot();
   const outside = tempRoot();
@@ -1220,6 +1332,95 @@ test("spool readers reject unsafe entry types instead of skipping them", () => {
   assert.throws(() => readAllSpooledActionEvents(root), /refusing unsafe action event spool entry/);
 });
 
+test("spool readers bound repository and per-repository fanout before sorting", () => {
+  const repositoryRoot = tempRoot();
+  const actionRoot = path.join(repositoryRoot, ".clawsweeper-repair", "action-events");
+  fs.mkdirSync(actionRoot, { recursive: true });
+  for (let index = 0; index <= ACTION_EVENT_SPOOL_READ_LIMITS.maxRepositories; index += 1) {
+    fs.mkdirSync(path.join(actionRoot, `repository-${index}`));
+  }
+  assert.throws(
+    () => readAllSpooledActionEvents(repositoryRoot),
+    new RegExp(`${ACTION_EVENT_SPOOL_READ_LIMITS.maxRepositories} repository limit`),
+  );
+
+  const entryRoot = tempRoot();
+  const written = writeActionEvent(entryRoot, reviewInput());
+  for (let index = 0; index < ACTION_EVENT_SPOOL_READ_LIMITS.maxEntriesPerRepository; index += 1) {
+    fs.writeFileSync(path.join(path.dirname(written.path), `ignored-${index}.tmp`), "");
+  }
+  assert.throws(
+    () => readAllSpooledActionEvents(entryRoot),
+    new RegExp(`${ACTION_EVENT_SPOOL_READ_LIMITS.maxEntriesPerRepository} entry limit`),
+  );
+});
+
+test("spool readers enforce aggregate byte budgets before retaining another event", () => {
+  const root = tempRoot();
+  const machineValues = Array.from(
+    { length: 64 },
+    (_, index) => `value_${index}_${"x".repeat(238)}`,
+  );
+  const machineAttributeKeys = [
+    "cache_mode",
+    "completion_reason",
+    "delivery_kind",
+    "dispatch_kind",
+    "log_kind",
+    "model",
+    "phase",
+    "publication_kind",
+    "queue_kind",
+    "query_version",
+    "reasoning_effort",
+    "review_mode",
+    "state",
+    "status_kind",
+    "validation_kind",
+    "work_kind",
+    "workflow_phase",
+  ];
+  const attributes = Object.fromEntries(
+    machineAttributeKeys.map((key) => [key, machineValues]),
+  ) as ActionEventInput["attributes"];
+  const evidence = Array.from({ length: 64 }, (_, index) => ({
+    kind: `report_${index}`,
+    sha256: createHash("sha256").update(String(index)).digest("hex"),
+    reportPath: `artifacts/reviews/${"x".repeat(238)}_${index}.json`,
+    snapshotId: `snapshot_${index}_${"x".repeat(240)}`,
+  }));
+  const privacy = {
+    classification: "internal" as const,
+    redactionVersion: "v1",
+    fieldsDropped: Array.from({ length: 64 }, (_, index) => `field_${index}_${"x".repeat(240)}`),
+  };
+  const sample = createActionEvent(reviewInput({ attributes, evidence, privacy }));
+  const eventBytes = Buffer.byteLength(`${actionLedgerJson(sample)}\n`, "utf8");
+  const mutableLimits = ACTION_EVENT_SPOOL_READ_LIMITS as { maxTotalBytes: number };
+  const configuredLimit = eventBytes * 2;
+  const originalLimit = mutableLimits.maxTotalBytes;
+  mutableLimits.maxTotalBytes = configuredLimit;
+  try {
+    for (let index = 0; index < 3; index += 1) {
+      writeActionEvent(
+        root,
+        reviewInput({
+          eventKey: reviewEventKey("review.aggregate-budget", { index }),
+          attributes,
+          evidence,
+          privacy,
+        }),
+      );
+    }
+    assert.throws(
+      () => readAllSpooledActionEvents(root),
+      new RegExp(`${configuredLimit} total byte limit`),
+    );
+  } finally {
+    mutableLimits.maxTotalBytes = originalLimit;
+  }
+});
+
 test("event readers reject duplicate keys and noncanonical durable JSON bytes", () => {
   const root = tempRoot();
   const written = writeActionEvent(root, reviewInput());
@@ -1262,6 +1463,113 @@ test("direct event and shard reads enforce bounded allocation", () => {
   assert.throws(
     () => readActionEventShard(shardPath),
     new RegExp(`${ACTION_EVENT_SHARD_FILE_LIMITS.maxBytes} byte limit`),
+  );
+});
+
+test("shard writers bound existing and raced destination reads", () => {
+  const identity = {
+    repository: producer.repository,
+    sha: producer.sha,
+    producer: producer.component,
+    workflow: producer.workflow,
+    job: producer.job,
+    runId: producer.runId,
+    runAttempt: producer.runAttempt,
+    partitionDate: "2026-07-12",
+  };
+  const event = createActionEvent(reviewInput());
+  const relativePath = actionEventShardRelativePath(identity, [event], 1, 1);
+
+  const existingRoot = tempRoot();
+  const existingPath = path.join(existingRoot, relativePath);
+  fs.mkdirSync(path.dirname(existingPath), { recursive: true });
+  fs.writeFileSync(existingPath, Buffer.alloc(ACTION_EVENT_SHARD_FILE_LIMITS.maxBytes + 1, 0x61));
+  assert.throws(
+    () => writeActionEventShard(existingRoot, identity, [event], 1, 1),
+    new RegExp(`${ACTION_EVENT_SHARD_FILE_LIMITS.maxBytes} byte limit`),
+  );
+
+  const racedRoot = tempRoot();
+  const racedPath = path.join(racedRoot, relativePath);
+  const originalLinkSync = fs.linkSync;
+  let raced = false;
+  fs.linkSync = ((source, destination) => {
+    if (!raced && destination === racedPath) {
+      raced = true;
+      fs.writeFileSync(racedPath, Buffer.alloc(ACTION_EVENT_SHARD_FILE_LIMITS.maxBytes + 1, 0x62));
+      const error = new Error("raced shard") as NodeJS.ErrnoException;
+      error.code = "EEXIST";
+      throw error;
+    }
+    return originalLinkSync(source, destination);
+  }) as typeof fs.linkSync;
+  try {
+    assert.throws(
+      () => writeActionEventShard(racedRoot, identity, [event], 1, 1),
+      new RegExp(`${ACTION_EVENT_SHARD_FILE_LIMITS.maxBytes} byte limit`),
+    );
+  } finally {
+    fs.linkSync = originalLinkSync;
+  }
+  assert.equal(raced, true);
+});
+
+test("direct shard readers enforce non-empty unique ordered acyclic collections and counts", () => {
+  const root = tempRoot();
+  const emptyPath = path.join(root, "empty.jsonl");
+  fs.writeFileSync(emptyPath, "");
+  assert.throws(() => readActionEventShard(emptyPath), /requires events/);
+
+  const base = createActionEvent(reviewInput());
+  const duplicatePath = path.join(root, "duplicate.jsonl");
+  const baseLine = actionLedgerJson(base);
+  fs.writeFileSync(duplicatePath, `${baseLine}\n${baseLine}\n`);
+  assert.throws(() => readActionEventShard(duplicatePath), /duplicate event/);
+
+  const earlier = createActionEvent(
+    reviewInput({
+      eventKey: reviewEventKey("review.earlier"),
+      occurredAt: "2026-07-12T09:00:00Z",
+    }),
+  );
+  const later = createActionEvent(
+    reviewInput({
+      eventKey: reviewEventKey("review.later"),
+      occurredAt: "2026-07-12T10:00:00Z",
+    }),
+  );
+  const unorderedPath = path.join(root, "unordered.jsonl");
+  fs.writeFileSync(unorderedPath, `${actionLedgerJson(later)}\n${actionLedgerJson(earlier)}\n`);
+  assert.throws(() => readActionEventShard(unorderedPath), /canonical causal order/);
+
+  const firstKey = reviewEventKey("review.cycle", { node: "first" });
+  const secondKey = reviewEventKey("review.cycle", { node: "second" });
+  const first = createActionEvent(
+    reviewInput({
+      eventKey: firstKey,
+      parentEventId: actionEventId("openclaw/openclaw", secondKey),
+    }),
+  );
+  const second = createActionEvent(
+    reviewInput({
+      eventKey: secondKey,
+      parentEventId: actionEventId("openclaw/openclaw", firstKey),
+    }),
+  );
+  const cyclePath = path.join(root, "cycle.jsonl");
+  fs.writeFileSync(cyclePath, `${actionLedgerJson(first)}\n${actionLedgerJson(second)}\n`);
+  assert.throws(() => readActionEventShard(cyclePath), /causal cycle/);
+
+  const excessivePath = path.join(root, "excessive.jsonl");
+  fs.writeFileSync(
+    excessivePath,
+    `${Array.from({ length: ACTION_EVENT_SHARD_FILE_LIMITS.maxEvents + 1 }, () => baseLine).join(
+      "\n",
+    )}\n`,
+  );
+  assert.throws(
+    () => readActionEventShard(excessivePath),
+    new RegExp(`${ACTION_EVENT_SHARD_FILE_LIMITS.maxEvents} event limit`),
   );
 });
 
@@ -1996,7 +2304,7 @@ test("durable privacy guards reject raw text, local paths, secrets, and invalid 
             },
           }),
         ),
-      /repository-relative path|confidential identifier/,
+      /repository-relative (?:data )?path|confidential identifier/,
     );
   }
 });

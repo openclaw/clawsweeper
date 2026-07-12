@@ -136,8 +136,17 @@ export function readDirectoryEntriesNoFollow(
 }
 
 export function writeUtf8FileExclusiveNoFollow(target: SafeWriteTarget, content: string): void {
+  writeUtf8FileExclusiveNoFollowWithIdentity(target, content, false);
+}
+
+function writeUtf8FileExclusiveNoFollowWithIdentity(
+  target: SafeWriteTarget,
+  content: string,
+  cleanupOnFailure: boolean,
+): FileIdentity {
   const parentChain = captureSafeParentChain(target, true);
   let descriptor: number | undefined;
+  let createdIdentity: FileIdentity | undefined;
   try {
     assertStableParentChain(target, parentChain);
     descriptor = fs.openSync(
@@ -145,7 +154,7 @@ export function writeUtf8FileExclusiveNoFollow(target: SafeWriteTarget, content:
       fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | NO_FOLLOW,
       0o600,
     );
-    const createdIdentity = descriptorIdentity(descriptor, target.label);
+    createdIdentity = descriptorIdentity(descriptor, target.label);
     assertStableParentChain(target, parentChain);
     assertPathMatchesIdentity(target.path, createdIdentity, target.label);
     fs.writeFileSync(descriptor, content, "utf8");
@@ -154,13 +163,96 @@ export function writeUtf8FileExclusiveNoFollow(target: SafeWriteTarget, content:
     assertPathMatchesIdentity(target.path, createdIdentity, target.label);
   } catch (error) {
     if (descriptor !== undefined) {
+      if (createdIdentity === undefined) {
+        try {
+          createdIdentity = descriptorIdentity(descriptor, target.label);
+        } catch {
+          // Preserve the original failure; cleanup below remains best effort.
+        }
+      }
       fs.closeSync(descriptor);
       descriptor = undefined;
+    }
+    if (cleanupOnFailure && createdIdentity !== undefined) {
+      try {
+        removeFileNoFollow(target, createdIdentity);
+      } catch (cleanupError) {
+        if (!isNotFoundError(cleanupError)) {
+          throw new AggregateError(
+            [error, cleanupError],
+            `failed to clean up ${target.label} after lock creation failure`,
+          );
+        }
+      }
     }
     throw error;
   } finally {
     if (descriptor !== undefined) fs.closeSync(descriptor);
   }
+  return createdIdentity!;
+}
+
+export function tryAcquireUtf8FileLockNoFollow(
+  target: SafeWriteTarget,
+  content: string,
+): (() => void) | null {
+  let identity: FileIdentity;
+  try {
+    identity = writeUtf8FileExclusiveNoFollowWithIdentity(target, content, true);
+  } catch (error) {
+    if (isAlreadyExistsError(error)) return null;
+    throw error;
+  }
+  let released = false;
+  return () => {
+    if (released) return;
+    const current = readUtf8FileIfExistsNoFollow(target, Buffer.byteLength(content, "utf8"));
+    if (current === null) {
+      released = true;
+      return;
+    }
+    if (current !== content) {
+      throw new Error(`refusing changed ${target.label} lock file: ${target.path}`);
+    }
+    try {
+      removeFileNoFollow(target, identity);
+    } catch (error) {
+      if (!isNotFoundError(error)) throw error;
+    }
+    released = true;
+  };
+}
+
+export function removeUtf8FileIfContentNoFollow(
+  target: SafeWriteTarget,
+  expectedContent: string,
+): boolean {
+  let identity: FileIdentity;
+  try {
+    identity = fileIdentity(target.path, `${target.label} stale lock`);
+  } catch (error) {
+    if (isNotFoundError(error)) return false;
+    throw error;
+  }
+  let current: string | null;
+  try {
+    current = readUtf8FileIfExistsNoFollow(
+      target,
+      Math.max(1, Buffer.byteLength(expectedContent, "utf8")),
+    );
+  } catch (error) {
+    if (isNotFoundError(error)) return false;
+    throw error;
+  }
+  if (current === null) return false;
+  if (current !== expectedContent) return false;
+  try {
+    removeFileNoFollow(target, identity);
+  } catch (error) {
+    if (isNotFoundError(error)) return false;
+    throw error;
+  }
+  return true;
 }
 
 export function writeUtf8FileCreateOnlyNoFollow(

@@ -373,8 +373,10 @@ export const ACTION_EVENT_ATTRIBUTE_KEYS = [
 ] as const;
 
 export const ACTION_EVENT_MACHINE_TEXT_PATTERN_SOURCE = "^[A-Za-z0-9][A-Za-z0-9_.:/@+\\-]*$";
+export const ACTION_EVENT_RELATIVE_DATA_PATH_PATTERN_SOURCE =
+  "^(?:\\.artifacts|artifacts|jobs|ledger|logs|notifications|records|results)(?:/[A-Za-z0-9_][A-Za-z0-9._+@\\-]{0,254})+$";
 export const ACTION_EVENT_TIMESTAMP_PATTERN_SOURCE =
-  "^[0-9]{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12][0-9]|3[01])T(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](?:\\.[0-9]+)?(?:Z|[+-](?:[01][0-9]|2[0-3]):[0-5][0-9])$";
+  "^(?:(?:(?!0000)[0-9]{4})-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12][0-9]|3[01])|(?:0[469]|11)-(?:0[1-9]|[12][0-9]|30)|02-(?:0[1-9]|1[0-9]|2[0-8]))|(?:[0-9]{2}(?:0[48]|[2468][048]|[13579][26])|(?:0[48]|[2468][048]|[13579][26])00)-02-29)T(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](?:\\.[0-9]+)?(?:Z|[+-](?:[01][0-9]|2[0-3]):[0-5][0-9])$";
 export const ACTION_LEDGER_CANONICAL_JSON_LIMITS = {
   maxDepth: 64,
   maxNodes: 10_000,
@@ -383,6 +385,13 @@ export const ACTION_LEDGER_CANONICAL_JSON_LIMITS = {
 export const ACTION_EVENT_SHARD_FILE_LIMITS = {
   maxBytes: 2 * 1024 * 1024,
   maxEvents: 1_024,
+} as const;
+export const ACTION_EVENT_SPOOL_READ_LIMITS = {
+  maxRepositories: 256,
+  maxEntriesPerRepository: 4_096,
+  maxEvents: 65_536,
+  maxProducers: 256,
+  maxTotalBytes: 64 * 1024 * 1024,
 } as const;
 export const ACTION_EVENT_CONFIDENTIAL_IDENTIFIER_PATTERN_SOURCES = [
   "/(?:[Uu][Ss][Ee][Rr][Ss]|[Hh][Oo][Mm][Ee]|[Pp][Rr][Ii][Vv][Aa][Tt][Ee]|[Tt][Mm][Pp])/",
@@ -416,6 +425,7 @@ const POSITIVE_INTEGER_ATTRIBUTE_KEYS = new Set<ActionEventAttributeKey>([
   "batch_size",
   "shard_count",
 ]);
+const RELATIVE_DATA_PATH_PATTERN = new RegExp(ACTION_EVENT_RELATIVE_DATA_PATH_PATTERN_SOURCE);
 const NON_NEGATIVE_INTEGER_ATTRIBUTE_KEYS = new Set<ActionEventAttributeKey>([
   "action_count",
   "batch_index",
@@ -922,12 +932,12 @@ export function writeActionEventShard(
   const target = prepareSafeWriteTarget(root, relativePath, "action event shard");
   const shardPath = target.path;
   const digest = sha256(content);
-  const existing = readUtf8FileIfExistsNoFollow(target);
+  const existing = readUtf8FileIfExistsNoFollow(target, ACTION_EVENT_SHARD_FILE_LIMITS.maxBytes);
   if (existing !== null) {
     return compareExistingShard(shardPath, relativePath, existing, digest, normalizedEvents);
   }
   const status = writeCreateOnlyFile(target, content, () => {
-    const raced = readUtf8FileIfExistsNoFollow(target);
+    const raced = readUtf8FileIfExistsNoFollow(target, ACTION_EVENT_SHARD_FILE_LIMITS.maxBytes);
     if (raced === null) {
       throw new Error(`action event shard appeared without readable content: ${shardPath}`);
     }
@@ -978,10 +988,12 @@ export function readActionEventShardAt(
 }
 
 function readActionEventShardTarget(target: SafeWriteTarget): ActionEvent[] {
-  return parseActionEventShardContent(
+  const events = parseActionEventShardContent(
     readUtf8FileNoFollow(target, ACTION_EVENT_SHARD_FILE_LIMITS.maxBytes),
     target.path,
   );
+  validateDirectActionEventShard(events, target.path);
+  return events;
 }
 
 export function readSpooledActionEvents(
@@ -998,29 +1010,32 @@ export function readSpooledActionEvents(
   );
   let entries;
   try {
-    entries = readDirectoryEntriesNoFollow(safeRoot, relativeDirectory, "action event spool");
+    entries = readDirectoryEntriesNoFollow(
+      safeRoot,
+      relativeDirectory,
+      "action event spool",
+      ACTION_EVENT_SPOOL_READ_LIMITS.maxEntriesPerRepository,
+    );
   } catch (error) {
     if (isNotFoundError(error)) return [];
     throw error;
   }
-  return entries
-    .filter((entry) => {
-      if (!entry.isFile()) {
-        throw new Error(
-          `refusing unsafe action event spool entry: ${path.join(relativeDirectory, entry.name)}`,
-        );
-      }
-      return entry.name.endsWith(".json");
-    })
-    .map((entry) => {
-      const relativePath = path.join(relativeDirectory, entry.name);
-      const event = readActionEventTarget(
-        prepareSafeReadTarget(safeRoot, relativePath, "action event spool entry"),
+  const budget = createActionEventSpoolReadBudget();
+  for (const entry of entries) {
+    if (!entry.isFile()) {
+      throw new Error(
+        `refusing unsafe action event spool entry: ${path.join(relativeDirectory, entry.name)}`,
       );
-      assertCanonicalSpooledEventPath(event, relativePath, normalizedRepository);
-      return event;
-    })
-    .sort(compareEvents);
+    }
+    if (!entry.name.endsWith(".json")) continue;
+    const relativePath = path.join(relativeDirectory, entry.name);
+    const event = readActionEventTarget(
+      prepareSafeReadTarget(safeRoot, relativePath, "action event spool entry"),
+    );
+    assertCanonicalSpooledEventPath(event, relativePath, normalizedRepository);
+    retainSpooledActionEvent(budget, event);
+  }
+  return budget.events.sort(compareEvents);
 }
 
 export function readAllSpooledActionEvents(root: string | SafeReadRoot): ActionEvent[] {
@@ -1029,14 +1044,24 @@ export function readAllSpooledActionEvents(root: string | SafeReadRoot): ActionE
   const relativeRoot = path.join(".clawsweeper-repair", "action-events");
   let repositoryEntries;
   try {
-    repositoryEntries = readDirectoryEntriesNoFollow(safeRoot, relativeRoot, "action event spool");
+    repositoryEntries = readDirectoryEntriesNoFollow(
+      safeRoot,
+      relativeRoot,
+      "action event spool",
+      ACTION_EVENT_SPOOL_READ_LIMITS.maxRepositories + 3,
+    );
   } catch (error) {
     if (isNotFoundError(error)) return [];
     throw error;
   }
-  const events: ActionEvent[] = [];
+  const budget = createActionEventSpoolReadBudget();
+  let repositoryCount = 0;
   for (const repositoryEntry of repositoryEntries) {
-    if (repositoryEntry.name === "_partitions" || repositoryEntry.name === "_finalizations") {
+    if (
+      repositoryEntry.name === "_partitions" ||
+      repositoryEntry.name === "_finalizations" ||
+      repositoryEntry.name === "_locks"
+    ) {
       if (!repositoryEntry.isDirectory()) {
         throw new Error(`refusing unsafe action event spool entry: ${repositoryEntry.name}`);
       }
@@ -1045,8 +1070,19 @@ export function readAllSpooledActionEvents(root: string | SafeReadRoot): ActionE
     if (!repositoryEntry.isDirectory()) {
       throw new Error(`refusing unsafe action event spool entry: ${repositoryEntry.name}`);
     }
+    repositoryCount += 1;
+    if (repositoryCount > ACTION_EVENT_SPOOL_READ_LIMITS.maxRepositories) {
+      throw new Error(
+        `action event spool exceeds ${ACTION_EVENT_SPOOL_READ_LIMITS.maxRepositories} repository limit`,
+      );
+    }
     const relativeDirectory = path.join(relativeRoot, repositoryEntry.name);
-    const files = readDirectoryEntriesNoFollow(safeRoot, relativeDirectory, "action event spool");
+    const files = readDirectoryEntriesNoFollow(
+      safeRoot,
+      relativeDirectory,
+      "action event spool",
+      ACTION_EVENT_SPOOL_READ_LIMITS.maxEntriesPerRepository,
+    );
     for (const file of files) {
       if (!file.isFile()) {
         throw new Error(
@@ -1059,10 +1095,46 @@ export function readAllSpooledActionEvents(root: string | SafeReadRoot): ActionE
         prepareSafeReadTarget(safeRoot, relativePath, "action event spool entry"),
       );
       assertCanonicalSpooledEventPath(event, relativePath);
-      events.push(event);
+      retainSpooledActionEvent(budget, event);
     }
   }
-  return events.sort(compareEvents);
+  return budget.events.sort(compareEvents);
+}
+
+type ActionEventSpoolReadBudget = {
+  events: ActionEvent[];
+  producerKeys: Set<string>;
+  totalBytes: number;
+};
+
+function createActionEventSpoolReadBudget(): ActionEventSpoolReadBudget {
+  return { events: [], producerKeys: new Set(), totalBytes: 0 };
+}
+
+function retainSpooledActionEvent(budget: ActionEventSpoolReadBudget, event: ActionEvent): void {
+  if (budget.events.length >= ACTION_EVENT_SPOOL_READ_LIMITS.maxEvents) {
+    throw new Error(
+      `action event spool exceeds ${ACTION_EVENT_SPOOL_READ_LIMITS.maxEvents} event limit`,
+    );
+  }
+  const eventBytes = Buffer.byteLength(`${actionLedgerJson(event)}\n`, "utf8");
+  const nextTotalBytes = budget.totalBytes + eventBytes;
+  if (nextTotalBytes > ACTION_EVENT_SPOOL_READ_LIMITS.maxTotalBytes) {
+    throw new Error(
+      `action event spool exceeds ${ACTION_EVENT_SPOOL_READ_LIMITS.maxTotalBytes} total byte limit`,
+    );
+  }
+  const producerKey = actionLedgerJson(event.producer);
+  if (!budget.producerKeys.has(producerKey)) {
+    if (budget.producerKeys.size >= ACTION_EVENT_SPOOL_READ_LIMITS.maxProducers) {
+      throw new Error(
+        `action event spool exceeds ${ACTION_EVENT_SPOOL_READ_LIMITS.maxProducers} producer limit`,
+      );
+    }
+    budget.producerKeys.add(producerKey);
+  }
+  budget.totalBytes = nextTotalBytes;
+  budget.events.push(event);
 }
 
 function assertCanonicalSpooledEventPath(
@@ -1647,6 +1719,21 @@ export function parseActionEventShardContent(content: string, filePath: string):
   );
 }
 
+function validateDirectActionEventShard(events: readonly ActionEvent[], filePath: string): void {
+  if (events.length === 0) {
+    throw new Error(`action event shard requires events: ${filePath}`);
+  }
+  if (events.length > ACTION_EVENT_SHARD_FILE_LIMITS.maxEvents) {
+    throw new Error(
+      `action event shard exceeds ${ACTION_EVENT_SHARD_FILE_LIMITS.maxEvents} event limit: ${filePath}`,
+    );
+  }
+  const ordered = sortActionEventsCausally(events);
+  if (ordered.some((event, index) => event.event_id !== events[index]?.event_id)) {
+    throw new Error(`action event shard events are not in canonical causal order: ${filePath}`);
+  }
+}
+
 function readActionEventTarget(target: SafeWriteTarget): ActionEvent {
   return parseCanonicalActionEventFile(
     readUtf8FileNoFollow(target, ACTION_LEDGER_CANONICAL_JSON_LIMITS.maxBytes),
@@ -1925,17 +2012,11 @@ function writeCreateOnlyFile(
 
 function relativeDataPath(value: string, label: string): string {
   const raw = boundedText(value, label, 512);
-  if (/^(?:[\\/]|[A-Za-z]:[\\/])/.test(raw) || raw.includes("\\")) {
-    throw new Error(`${label} must be a repository-relative path`);
-  }
   const normalized = raw.replace(/^\.\//, "");
-  if (
-    !normalized ||
-    normalized === "." ||
-    path.posix.isAbsolute(normalized) ||
-    normalized.split("/").some((segment) => segment === "." || segment === "..")
-  ) {
-    throw new Error(`${label} must be a repository-relative path`);
+  if (!RELATIVE_DATA_PATH_PATTERN.test(normalized)) {
+    throw new Error(
+      `${label} must be a namespaced repository-relative data path using portable segments`,
+    );
   }
   if (containsConfidentialIdentifier(normalized)) {
     throw new Error(`${label} contains a confidential identifier`);
