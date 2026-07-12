@@ -171,6 +171,22 @@ test("content digest busts when the latest release changes", () => {
   assert.notEqual(a, b);
 });
 
+test("content digest distinguishes complete and unknown release state", () => {
+  const issue = item({ kind: "issue", number: 300 });
+  const known = itemContentDigestForTest(issue, issueContext(), {
+    mainSha: "main-sha",
+    releaseStateComplete: true,
+    latestRelease: null,
+  });
+  const unknown = itemContentDigestForTest(issue, issueContext(), {
+    mainSha: "main-sha",
+    releaseStateComplete: false,
+    latestRelease: null,
+  });
+
+  assert.notEqual(known, unknown);
+});
+
 test("issue digest busts when target main changes", () => {
   const issue = item({ kind: "issue", number: 300 });
   const context = issueContext();

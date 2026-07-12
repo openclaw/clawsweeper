@@ -55,11 +55,12 @@ changed. TypeScript and JavaScript patches are parsed through the TypeScript
 compiler AST service. Whitespace and ordinary comments are ignored where
 lexical state is established, while every non-trivia syntax fragment,
 `@ts-*`, triple-slash reference, source-map, source URL, shebang, legal
-`/*!`/`//!`, global declarations, formatter controls, and tooling directives
-remain part of the digest at their exact syntax attachment. Complete JSON hunks
-are parsed and compacted without reordering object keys. Scheduled shards
-receive a bounded shared runtime archive, then install the exact TypeScript
-native package for their own platform and architecture before review.
+`/*!`/`//!`, global declarations, coverage/static-analysis suppressions,
+formatter controls, and tooling directives remain part of the digest at their
+exact syntax attachment. Complete JSON hunks are parsed and compacted without
+reordering object keys. Scheduled shards receive a bounded shared runtime
+archive, then install the exact TypeScript native package for their own platform
+and architecture only after its tarball matches the committed lockfile SRI.
 
 Semantic reuse requires:
 
@@ -67,7 +68,8 @@ Semantic reuse requires:
 - a supported modified or added TypeScript, JavaScript, or complete JSON file;
 - unchanged title, body, human discussion, relations, reviews, review threads,
   labels including maintainer proof overrides, base and target state, release
-  state, commit messages, merge readiness, checks, policy, and model;
+  state from a complete lookup, commit messages, merge readiness, checks,
+  policy, and model;
 - a prior completed keep-open report within the normal 14-day ceiling; and
 - the normal durable review lease.
 
@@ -77,10 +79,11 @@ truncation, malformed hunks, lexical ambiguity, partial JSON, incomplete check
 state, and truncated commit context retain an exact digest for audit but cannot
 use semantic reuse.
 
-Before carrying a semantic hit, ClawSweeper repeats the structural metadata and
-check-state probes under the lease. Any drift releases the lease and defers the
-item for a fresh hydrated review. Full cache-only patches are never included in
-the model prompt, report frontmatter, or metrics.
+Before carrying a semantic hit, ClawSweeper repeats the target, release,
+structural metadata, and check-state probes under the lease. Any drift or
+incomplete release lookup releases the lease and defers the item for a fresh
+hydrated review. Full cache-only patches are never included in the model prompt,
+report frontmatter, or metrics.
 
 ## Content Stage
 

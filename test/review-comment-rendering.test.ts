@@ -162,6 +162,14 @@ test("structural cache probes before hydration but acquires a lease before carry
   );
   assert.match(structuralProbe, /pullChecksContext\(options\.item\.number, headSha\)/);
   assert.match(structuralProbe, /pullChecksDigest = sha256\(stableJson\(pullChecks\)\)/);
+  assert.match(structuralProbe, /if \(!options\.git\.releaseStateComplete\) return null/);
+  const gitInfoBlock = source.slice(
+    source.indexOf("function gitInfo("),
+    source.indexOf("function reviewTargetBranch"),
+  );
+  assert.match(gitInfoBlock, /releaseStateComplete = false/);
+  assert.match(gitInfoBlock, /"release",\s+"list"/);
+  assert.match(gitInfoBlock, /return \{ mainSha, releaseStateComplete, latestRelease \}/);
   assert.match(source, /coordination-held\.json/);
   assert.match(source, /coordinationHeldRetryAt = startComment\.retryAt/);
   assert.match(source, /review-cache-metrics\.json/);
@@ -207,6 +215,7 @@ test("semantic cache runs after hydration and revalidates under the acquired lea
     reviewLoop.slice(semanticRevalidation, semanticWrite),
     /updateReviewSemanticFrontMatter\(carried, semanticRecord, true\)/,
   );
+  assert.match(reviewLoop.slice(semanticWrite, contentCache), /!git\.releaseStateComplete/);
   assert.match(source, /semantic_cache_eligibility_reasons/);
   assert.match(source, /review_semantic_code_digest/);
   assert.match(source, /check-state=unavailable/);

@@ -473,6 +473,7 @@ interface LatestRelease {
 
 interface GitInfo {
   mainSha: string;
+  releaseStateComplete: boolean;
   latestRelease: LatestRelease | null;
 }
 
@@ -2787,6 +2788,7 @@ function itemContentDigest(item: Item, context: ItemContext, git?: GitInfo): str
       latestRelease: git?.latestRelease
         ? { tagName: git.latestRelease.tagName ?? null, sha: git.latestRelease.sha ?? null }
         : null,
+      releaseStateComplete: git?.releaseStateComplete ?? false,
       targetMainSha: isPull ? null : (git?.mainSha ?? null),
       headSha: isPull ? pullHeadShaFromContext(context) : null,
       baseSha: isPull ? baseSha : null,
@@ -7549,6 +7551,7 @@ function fetchReviewStructuralRecord(options: {
   reviewPolicy: string;
   reviewModel: string;
 }): ReviewStructuralRecord | null {
+  if (!options.git.releaseStateComplete) return null;
   const [owner, name] = options.item.repo.split("/");
   if (!owner || !name) return null;
   const externalRelationSensitive = structuralExternalRelationSensitivity(options.item);
@@ -7845,15 +7848,23 @@ function gitInfo(openclawDir: string, options: ReviewGitInfoOptions = {}): GitIn
     cwd: openclawDir,
   });
   let latestRelease: LatestRelease | null = null;
+  let releaseStateComplete = true;
   try {
-    latestRelease = ghJson<LatestRelease>([
+    const releases = ghJson<LatestRelease[]>([
       "release",
-      "view",
+      "list",
+      "--exclude-drafts",
+      "--exclude-pre-releases",
+      "--limit",
+      "1",
       "--json",
-      "tagName,name,publishedAt,targetCommitish",
+      "tagName,name,publishedAt",
     ]);
+    if (!Array.isArray(releases)) throw new Error("release list response was not an array");
+    latestRelease = releases[0] ?? null;
   } catch {
     latestRelease = null;
+    releaseStateComplete = false;
   }
   if (latestRelease?.tagName) {
     try {
@@ -7865,9 +7876,12 @@ function gitInfo(openclawDir: string, options: ReviewGitInfoOptions = {}): GitIn
       });
     } catch {
       latestRelease.sha = null;
+      releaseStateComplete = false;
     }
+  } else if (latestRelease) {
+    releaseStateComplete = false;
   }
-  return { mainSha, latestRelease };
+  return { mainSha, releaseStateComplete, latestRelease };
 }
 
 function reviewTargetBranch(openclawDir: string): string {
@@ -19847,7 +19861,7 @@ function reviewCommand(args: Args): void {
       ? gitInfo(openclawDir, { targetBranch: checkout.gitTargetBranch })
       : gitInfo(openclawDir);
   let git: GitInfo = localRangeData
-    ? { mainSha: localRangeData.baseSha, latestRelease: null }
+    ? { mainSha: localRangeData.baseSha, releaseStateComplete: true, latestRelease: null }
     : loadReviewGitInfo();
   const reviewPolicy = reviewPolicyHash({ model, reasoningEffort, sandboxMode, serviceTier });
   // Planned background shards receive exact item numbers from the planner, but they are not
@@ -20490,6 +20504,7 @@ function reviewCommand(args: Args): void {
       const contentCacheReview =
         explicitDispatch ||
         maintainerRequest ||
+        !git.releaseStateComplete ||
         (item.kind === "pull_request" && !completePullChecksContext(context.pullChecks))
           ? null
           : priorReview;
