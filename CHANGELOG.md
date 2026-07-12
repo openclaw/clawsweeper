@@ -81,6 +81,9 @@ checkpoint, and status-only commits are intentionally omitted.
   and tooling trees plus symlink targets, before execution and revalidated it
   around every command so one stage cannot poison a later stage while Git
   remains clean.
+- Evaluated every applicable strict repository ruleset before automerge and
+  failed closed if any ruleset bypasses the repair App, weakens the effective
+  required checks, or cannot be fully verified.
 - Replaced the unsupported GitHub installation identity probe with pinned
   `create-github-app-token` App slug and installation outputs plus App IDs
   derived from the authenticated slug, rejected

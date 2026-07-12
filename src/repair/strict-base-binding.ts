@@ -51,39 +51,69 @@ export function serverStrictBaseBindingBlock({
     return "automerge disabled: ruleset verifier credential is not the configured GitHub App installation";
   }
 
-  let rulesUnavailable = false;
+  let rulesListUnavailable = false;
+  let strictRuleCount = 0;
+  let verifiedStrictRuleCount = 0;
+  let strictRuleUnavailable = false;
   let bypassedStrictRule = false;
+  let weakenedStrictRule = false;
   try {
     const rules = policyReadJson([
       "api",
       `repos/${repo}/rules/branches/${encodeURIComponent(baseBranch)}`,
     ]);
     if (!Array.isArray(rules)) {
-      rulesUnavailable = true;
+      rulesListUnavailable = true;
     } else {
       for (const rule of rules) {
         if (!isStrictStatusCheckRule(rule)) continue;
+        strictRuleCount += 1;
         const ruleset = fetchRuleset(rule, repo, policyReadJson);
         if (!ruleset) {
-          rulesUnavailable = true;
+          strictRuleUnavailable = true;
           continue;
         }
         const bypassesApp = rulesetBypassesApp(ruleset, mutationIdentity.appId);
         if (bypassesApp === null) {
-          rulesUnavailable = true;
+          strictRuleUnavailable = true;
           continue;
         }
         if (bypassesApp) {
           bypassedStrictRule = true;
           continue;
         }
-        return "";
+        const weakensRequiredChecks = rulesetWeakensRequiredChecks(ruleset, rule);
+        if (weakensRequiredChecks === null) {
+          strictRuleUnavailable = true;
+          continue;
+        }
+        if (weakensRequiredChecks) {
+          weakenedStrictRule = true;
+          continue;
+        }
+        verifiedStrictRuleCount += 1;
       }
     }
   } catch {
-    rulesUnavailable = true;
+    rulesListUnavailable = true;
   }
 
+  if (bypassedStrictRule) {
+    return "automerge disabled: merge credential bypasses an applicable strict base-binding ruleset";
+  }
+  if (weakenedStrictRule) {
+    return "automerge disabled: an applicable ruleset weakens required strict status checks";
+  }
+  if (rulesListUnavailable || strictRuleUnavailable) {
+    return "automerge disabled: unable to verify every applicable strict base-binding ruleset";
+  }
+  if (strictRuleCount > 0) {
+    return verifiedStrictRuleCount === strictRuleCount
+      ? ""
+      : "automerge disabled: unable to verify every applicable strict base-binding ruleset";
+  }
+
+  let protectionUnavailable = false;
   try {
     const protection = policyReadJson([
       "api",
@@ -91,13 +121,10 @@ export function serverStrictBaseBindingBlock({
     ]);
     if (hasStrictClassicProtection(protection)) return "";
   } catch {
-    rulesUnavailable = true;
+    protectionUnavailable = true;
   }
 
-  if (bypassedStrictRule) {
-    return "automerge disabled: merge credential bypasses the strict base-binding ruleset";
-  }
-  return rulesUnavailable
+  return protectionUnavailable
     ? "automerge disabled: unable to verify server-enforced strict base binding"
     : `automerge disabled: ${baseBranch} lacks server-enforced strict base binding`;
 }
@@ -175,6 +202,50 @@ function rulesetBypassesApp(ruleset: LooseRecord, appId: number): boolean | null
       candidate.bypass_mode !== "never"
     );
   });
+}
+
+function rulesetWeakensRequiredChecks(
+  ruleset: LooseRecord,
+  effectiveRule: JsonValue,
+): boolean | null {
+  if (!Array.isArray(ruleset.rules)) return null;
+  if (ruleset.enforcement !== "active") return true;
+  const statusRules = ruleset.rules
+    .map((rule: JsonValue) => rule as LooseRecord)
+    .filter((rule: LooseRecord) => rule?.type === "required_status_checks");
+  if (statusRules.length === 0) return true;
+  if (
+    statusRules.some(
+      (rule: LooseRecord) => rule.parameters?.strict_required_status_checks_policy !== true,
+    )
+  ) {
+    return true;
+  }
+
+  const expected = requiredStatusCheckIdentities((effectiveRule as LooseRecord)?.parameters);
+  const actual = requiredStatusCheckIdentities({
+    required_status_checks: statusRules.flatMap(
+      (rule: LooseRecord) => rule.parameters?.required_status_checks ?? [],
+    ),
+  });
+  if (!expected || !actual) return null;
+  return [...expected].some((identity) => !actual.has(identity));
+}
+
+function requiredStatusCheckIdentities(parameters: LooseRecord): Set<string> | null {
+  if (!Array.isArray(parameters?.required_status_checks)) return null;
+  const identities = new Set<string>();
+  for (const check of parameters.required_status_checks) {
+    const candidate = check as LooseRecord;
+    const context = String(candidate?.context ?? "").trim();
+    if (!context) return null;
+    const integrationId =
+      candidate.integration_id === null || candidate.integration_id === undefined
+        ? ""
+        : String(candidate.integration_id);
+    identities.add(`${context}\0${integrationId}`);
+  }
+  return identities.size > 0 ? identities : null;
 }
 
 function hasStrictClassicProtection(protection: JsonValue): boolean {

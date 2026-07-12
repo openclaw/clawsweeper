@@ -12,7 +12,7 @@ const INSTALLATION_ID = 987654;
 test("strict base binding accepts an enforced non-bypass ruleset", () => {
   const github = fakeGithub({
     rules: [strictRulesetRule()],
-    ruleset: { bypass_actors: [] },
+    ruleset: strictRulesetDetails(),
   });
   assert.equal(
     serverStrictBaseBindingBlock({
@@ -29,7 +29,7 @@ test("strict base binding uses documented action outputs without an installation
   const requestedEndpoints: string[] = [];
   const github = fakeGithub({
     rules: [strictRulesetRule()],
-    ruleset: { bypass_actors: [] },
+    ruleset: strictRulesetDetails(),
     requestedEndpoints,
   });
   assert.equal(
@@ -47,9 +47,9 @@ test("strict base binding uses documented action outputs without an installation
 test("strict base binding rejects a ruleset that exempts the merge app", () => {
   const github = fakeGithub({
     rules: [strictRulesetRule()],
-    ruleset: {
-      bypass_actors: [{ actor_type: "Integration", actor_id: APP_ID, bypass_mode: "always" }],
-    },
+    ruleset: strictRulesetDetails({
+      bypassActors: [{ actor_type: "Integration", actor_id: APP_ID, bypass_mode: "always" }],
+    }),
   });
   assert.equal(
     serverStrictBaseBindingBlock({
@@ -58,8 +58,94 @@ test("strict base binding rejects a ruleset that exempts the merge app", () => {
       ...appIdentity(),
       policyReadJson: github,
     }),
-    "automerge disabled: merge credential bypasses the strict base-binding ruleset",
+    "automerge disabled: merge credential bypasses an applicable strict base-binding ruleset",
   );
+});
+
+test("strict base binding evaluates every applicable strict ruleset", () => {
+  const requestedEndpoints: string[] = [];
+  const github = fakeGithub({
+    rules: [
+      strictRulesetRule("Repository", 18588237, ["required-ci/first"]),
+      strictRulesetRule("Repository", 18588238, ["required-ci/second"]),
+    ],
+    rulesets: {
+      18588237: strictRulesetDetails({ checks: ["required-ci/first"] }),
+      18588238: strictRulesetDetails({ checks: ["required-ci/second"] }),
+    },
+    requestedEndpoints,
+  });
+
+  assert.equal(
+    serverStrictBaseBindingBlock({
+      repo: "openclaw/openclaw",
+      baseBranch: "main",
+      ...appIdentity(),
+      policyReadJson: github,
+    }),
+    "",
+  );
+  assert.match(requestedEndpoints.join("\n"), /rulesets\/18588237/);
+  assert.match(requestedEndpoints.join("\n"), /rulesets\/18588238/);
+});
+
+test("strict base binding rejects a later applicable ruleset that bypasses the app", () => {
+  const github = fakeGithub({
+    rules: [
+      strictRulesetRule("Repository", 18588237, ["required-ci/first"]),
+      strictRulesetRule("Repository", 18588238, ["required-ci/second"]),
+    ],
+    rulesets: {
+      18588237: strictRulesetDetails({ checks: ["required-ci/first"] }),
+      18588238: strictRulesetDetails({
+        checks: ["required-ci/second"],
+        bypassActors: [{ actor_type: "Integration", actor_id: APP_ID, bypass_mode: "always" }],
+      }),
+    },
+    protection: {
+      required_status_checks: { strict: true, contexts: ["classic-ci"] },
+    },
+  });
+
+  assert.equal(
+    serverStrictBaseBindingBlock({
+      repo: "openclaw/openclaw",
+      baseBranch: "main",
+      ...appIdentity(),
+      policyReadJson: github,
+    }),
+    "automerge disabled: merge credential bypasses an applicable strict base-binding ruleset",
+  );
+});
+
+test("strict base binding rejects a later ruleset that weakens required checks", () => {
+  const requestedEndpoints: string[] = [];
+  const github = fakeGithub({
+    rules: [
+      strictRulesetRule("Repository", 18588237, ["required-ci/first"]),
+      strictRulesetRule("Repository", 18588238, ["required-ci/second", "required-ci/security"]),
+    ],
+    rulesets: {
+      18588237: strictRulesetDetails({ checks: ["required-ci/first"] }),
+      18588238: strictRulesetDetails({ checks: ["required-ci/second"] }),
+    },
+    protection: {
+      required_status_checks: { strict: true, contexts: ["classic-ci"] },
+    },
+    requestedEndpoints,
+  });
+
+  assert.equal(
+    serverStrictBaseBindingBlock({
+      repo: "openclaw/openclaw",
+      baseBranch: "main",
+      ...appIdentity(),
+      policyReadJson: github,
+    }),
+    "automerge disabled: an applicable ruleset weakens required strict status checks",
+  );
+  assert.match(requestedEndpoints.join("\n"), /rulesets\/18588237/);
+  assert.match(requestedEndpoints.join("\n"), /rulesets\/18588238/);
 });
 
 test("strict base binding accepts classic strict branch protection", () => {
@@ -106,7 +192,7 @@ test("strict base binding rejects rulesets whose bypass actors are hidden", () =
       ...appIdentity(),
       policyReadJson: github,
     }),
-    "automerge disabled: unable to verify server-enforced strict base binding",
+    "automerge disabled: unable to verify every applicable strict base-binding ruleset",
   );
 });
 
@@ -227,7 +313,7 @@ test("strict base binding fails closed for non-repository rulesets without fetch
           requestedEndpoints,
         }),
       }),
-      "automerge disabled: unable to verify server-enforced strict base binding",
+      "automerge disabled: unable to verify every applicable strict base-binding ruleset",
     );
     assert.doesNotMatch(requestedEndpoints.join("\n"), /^(?:orgs|enterprises)\//m);
     assert.doesNotMatch(requestedEndpoints.join("\n"), /rulesets\/18588237/);
@@ -552,16 +638,44 @@ test("commit finding intake is merge-disabled and carries no verifier credential
 
 function strictRulesetRule(
   sourceType: "Repository" | "Organization" | "Enterprise" = "Repository",
+  rulesetId = 18588237,
+  checks = ["required-ci/exact-merge"],
 ) {
   return {
     type: "required_status_checks",
-    ruleset_id: 18588237,
+    ruleset_id: rulesetId,
     ruleset_source: sourceType === "Repository" ? "openclaw/openclaw" : "openclaw",
     ruleset_source_type: sourceType,
     parameters: {
       strict_required_status_checks_policy: true,
-      required_status_checks: [{ context: "required-ci/exact-merge" }],
+      required_status_checks: checks.map((context) => ({ context })),
     },
+  };
+}
+
+function strictRulesetDetails({
+  checks = ["required-ci/exact-merge"],
+  bypassActors = [],
+  enforcement = "active",
+  strict = true,
+}: {
+  checks?: string[];
+  bypassActors?: unknown[];
+  enforcement?: string;
+  strict?: boolean;
+} = {}) {
+  return {
+    enforcement,
+    bypass_actors: bypassActors,
+    rules: [
+      {
+        type: "required_status_checks",
+        parameters: {
+          strict_required_status_checks_policy: strict,
+          required_status_checks: checks.map((context) => ({ context })),
+        },
+      },
+    ],
   };
 }
 
@@ -636,11 +750,13 @@ function workflowOutputStep(value: string | undefined, output: string): string |
 function fakeGithub({
   rules,
   ruleset = null,
+  rulesets = {},
   protection = { required_status_checks: null },
   requestedEndpoints,
 }: {
   rules: unknown[];
   ruleset?: unknown;
+  rulesets?: Record<number, unknown>;
   protection?: unknown;
   requestedEndpoints?: string[];
 }) {
@@ -649,6 +765,8 @@ function fakeGithub({
     if (endpoint) requestedEndpoints?.push(endpoint);
     if (endpoint === "repos/openclaw/openclaw/rules/branches/main") return rules;
     if (endpoint === "repos/openclaw/example/rules/branches/main") return rules;
+    const rulesetId = Number(endpoint?.match(/\/rulesets\/(\d+)$/)?.[1]);
+    if (Number.isSafeInteger(rulesetId) && rulesetId in rulesets) return rulesets[rulesetId];
     if (endpoint === "repos/openclaw/openclaw/rulesets/18588237" && ruleset) return ruleset;
     if (endpoint?.endsWith("/branches/main/protection")) return protection;
     throw new Error(`unexpected endpoint: ${endpoint}`);
