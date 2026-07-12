@@ -456,6 +456,16 @@ test("workflow producer identity uses stable workflow and step identifiers", () 
     runAttempt: 2,
     component: "review.__run_5.review-0",
   });
+  assert.equal(
+    workflowActionProducer(
+      "review",
+      workflowEnv({
+        GITHUB_WORKFLOW_REF:
+          "openclaw/clawsweeper/.github/workflows/sweep@nightly.yml@refs/heads/main",
+      }),
+    ).workflow,
+    "sweep@nightly.yml",
+  );
 });
 
 test("workflow producer normalization preserves distinct original identities", () => {
@@ -654,6 +664,23 @@ test("workflow partition timestamps require real calendar dates", async () => {
       outputRoot: earlyOutputRoot,
     });
     assert.match(earlyPath ?? "", new RegExp(`^ledger/v1/events/${runStartedAt.slice(0, 4)}/`));
+  }
+
+  for (const runStartedAt of ["0001-01-01T00:00:00+00:01", "9999-12-31T23:59:59-00:01"]) {
+    const overflowRoot = tempRoot();
+    assert.throws(
+      () =>
+        recordReview(
+          overflowRoot,
+          workflowEnv({
+            CLAWSWEEPER_ACTION_LEDGER_PARTITION_DATE: undefined,
+            GITHUB_RUN_STARTED_AT: runStartedAt,
+          }),
+        ),
+      /GITHUB_RUN_STARTED_AT UTC partition date must be YYYY-MM-DD/,
+      runStartedAt,
+    );
+    assert.equal(fs.existsSync(path.join(overflowRoot, ".clawsweeper-repair")), false);
   }
 });
 
@@ -934,6 +961,66 @@ test("CrabFleet projection bounds active fetches and queued work", async () => {
   );
 });
 
+test("CrabFleet timeouts keep unresolved fetches inside the concurrency bound", async () => {
+  const root = tempRoot();
+  const env = workflowEnv({
+    CLAWSWEEPER_CRABFLEET_AGENT_TOKEN: "agent-token",
+    CLAWSWEEPER_CRABFLEET_SESSION_ID: "session-1",
+    CLAWSWEEPER_CRABFLEET_TIMEOUT_MS: "10",
+  });
+  const resolvers: Array<(response: Response) => void> = [];
+  let started = 0;
+  const errors: string[] = [];
+  const originalError = console.error;
+  console.error = (...args: unknown[]) => errors.push(args.map(String).join(" "));
+  try {
+    for (let index = 0; index < CRABFLEET_PROJECTION_LIMITS.maxConcurrent; index += 1) {
+      const event = recordReview(root, env, new Date("2026-07-12T10:01:00.000Z"), {
+        fetchImpl: (() => {
+          started += 1;
+          return new Promise<Response>((resolve) => resolvers.push(resolve));
+        }) as typeof fetch,
+      });
+      assert.ok(event);
+    }
+    await flushPendingCrabFleetPosts();
+    assert.equal(started, CRABFLEET_PROJECTION_LIMITS.maxConcurrent);
+
+    for (let index = 0; index < CRABFLEET_PROJECTION_LIMITS.maxConcurrent; index += 1) {
+      const event = recordReview(root, env, new Date("2026-07-12T10:01:00.000Z"), {
+        fetchImpl: (() => {
+          started += 1;
+          return new Promise<Response>(() => undefined);
+        }) as typeof fetch,
+      });
+      assert.ok(event);
+    }
+    await flushPendingCrabFleetPosts();
+    assert.equal(started, CRABFLEET_PROJECTION_LIMITS.maxConcurrent);
+    assert.equal(
+      errors.filter((entry) => entry.includes("unresolved CrabFleet requests")).length,
+      CRABFLEET_PROJECTION_LIMITS.maxConcurrent,
+    );
+  } finally {
+    for (const resolve of resolvers) resolve(new Response(null, { status: 204 }));
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+    await flushPendingCrabFleetPosts();
+    console.error = originalError;
+  }
+
+  let recoveryStarted = 0;
+  const recovered = recordReview(root, env, new Date("2026-07-12T10:01:00.000Z"), {
+    fetchImpl: (async () => {
+      recoveryStarted += 1;
+      return new Response(null, { status: 204 });
+    }) as typeof fetch,
+  });
+  assert.ok(recovered);
+  await flushPendingCrabFleetPosts();
+  assert.equal(recoveryStarted, 1);
+});
+
 test("CrabFleet rejects forged confidential event keys before projection", async () => {
   const event = recordReview(tempRoot());
   assert.ok(event);
@@ -1182,9 +1269,10 @@ test("CrabFleet timeouts preserve canonical events and record projection failure
       {
         env,
         fetchImpl: ((_url, init) =>
-          new Promise<Response>(() => {
+          new Promise<Response>((_resolve, reject) => {
             init?.signal?.addEventListener("abort", () => {
               aborted = true;
+              reject(new Error("aborted"));
             });
           })) as typeof fetch,
       },

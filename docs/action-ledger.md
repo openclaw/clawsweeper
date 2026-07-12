@@ -81,7 +81,9 @@ confidential-identifier checks as every other durable machine-text field.
   shard identity. They do not define the logical operation.
 - Workflow, step, invocation, and component identifiers keep a readable prefix
   plus a digest of the original value whenever sanitization or truncation loses
-  information, so distinct producer identities cannot collapse.
+  information, so distinct producer identities cannot collapse. Workflow refs
+  split at the rightmost exact `@refs/` delimiter, preserving `@` characters in
+  workflow filenames.
 - `recorded_at` is first-writer metadata and is excluded from event and shard
   replay equality. When equivalent fresh-root reconstructions reach an existing
   shard or import destination, the existing first-writer bytes win.
@@ -106,7 +108,8 @@ confidential-identifier checks as every other durable machine-text field.
   metadata must round-trip through a real calendar date; impossible dates are
   rejected rather than normalized into another partition. Four-digit years
   `0001` through `0099` remain valid and are not remapped by JavaScript's
-  legacy `Date.UTC` year handling.
+  legacy `Date.UTC` year handling. Timezone conversion must also remain within
+  UTC partition years `0001` through `9999`.
 - Reusing one run/job shard identity for a different event set is a hard
   conflict.
 - Shard path components remain below portable 255-byte filename limits.
@@ -159,11 +162,12 @@ addresses, and internal hostname suffixes. Form-style `+` credential separators
 are rejected when followed by a credential-shaped value. Percent-encoded octets
 are rejected from durable identifiers and paths rather than decoded into
 potentially confidential forms. URL checks normalize scheme-specific paths,
-userinfo, file URLs, numeric URL host aliases, and dot-segment paths. Host
-checks normalize case, repeated trailing root dots, and compressed IPv6 loopback
-and private IPv4-embedded forms, including partially compressed forms embedded
-in unbracketed machine text, while all durable text remains restricted to
-field-specific machine vocabularies.
+userinfo, file URLs, numeric URL host aliases, shorthand private IPv4 URLs such
+as `127.1`, and dot-segment paths. Host checks normalize case, repeated trailing
+root dots, and compressed IPv6 loopback and private IPv4-embedded forms,
+including partially compressed forms embedded in unbracketed machine text,
+while all durable text remains restricted to field-specific machine
+vocabularies.
 
 Every event records a privacy classification, redaction version, and fields
 dropped. The checked-in JSON schema is
@@ -249,9 +253,11 @@ Consumers fold immutable events into purpose-specific views:
 milliseconds. It defaults to 10000 and must be between 1 and 60000. Timeout,
 HTTP, and response-cleanup failures remain projection failures; canonical local
 writes are completed first. Live delivery runs at most four fetches concurrently
-with 64 more projections queued. Further live projections fail closed into the
-same durable retryable `projection.failed` record instead of growing process
-memory without bound.
+with 64 more projections queued. A timed-out fetch keeps its concurrency slot
+until the underlying request settles; a later wave fails closed into durable
+retryable `projection.failed` records if all slots remain unresolved. Further
+live projections also fail closed instead of growing process memory without
+bound.
 
 Projection rebuilds must be deterministic. Truncating a projection never
 deletes source events. State-side compactors may replace hot shards with

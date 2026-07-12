@@ -50,6 +50,7 @@ const MAX_CRABFLEET_TIMEOUT_MS = 60_000;
 const ACTION_EVENT_SHARD_PATH_PATTERN =
   /^ledger\/v1\/events\/\d{4}\/\d{2}\/\d{2}\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\.jsonl$/;
 const pendingCrabFleetPosts = new Set<Promise<void>>();
+const activeCrabFleetRequests = new Set<Promise<Response>>();
 const queuedCrabFleetPosts: QueuedCrabFleetProjection[] = [];
 
 export const CRABFLEET_PROJECTION_LIMITS = {
@@ -140,7 +141,7 @@ export function workflowActionProducer(
   }
   const workflowRef = String(env.GITHUB_WORKFLOW_REF ?? "").trim();
   const workflow = workflowRef
-    ? machineIdentifier(path.posix.basename(workflowRef.split("@", 1)[0] ?? workflowRef), 128)
+    ? machineIdentifier(path.posix.basename(workflowPathFromRef(workflowRef)), 128)
     : machineIdentifier(requiredEnv(env, "GITHUB_WORKFLOW"), 128);
   const step = machineIdentifier(String(env.GITHUB_ACTION ?? "process"), 64);
   const invocation = machineIdentifier(
@@ -381,6 +382,7 @@ export async function postActionEventToCrabFleet(
       signal: controller.signal,
     }),
   );
+  trackCrabFleetRequest(request);
   const lateCleanup = request.then(async (response) => {
     if (timedOut) await cancelResponseBody(response);
   });
@@ -592,12 +594,13 @@ function queueCrabFleetEvent(
 ): void {
   if (!crabFleetProjectionConfigured(env)) return;
   const projection = { root, event, env, fetchImpl };
-  if (pendingCrabFleetPosts.size < CRABFLEET_PROJECTION_LIMITS.maxConcurrent) {
+  if (activeCrabFleetRequests.size < CRABFLEET_PROJECTION_LIMITS.maxConcurrent) {
     startCrabFleetProjection(projection);
     return;
   }
   if (queuedCrabFleetPosts.length < CRABFLEET_PROJECTION_LIMITS.maxQueued) {
     queuedCrabFleetPosts.push(projection);
+    drainCrabFleetProjectionQueue();
     return;
   }
   failCrabFleetProjection(
@@ -625,11 +628,35 @@ function startCrabFleetProjection(projection: QueuedCrabFleetProjection): void {
 
 function drainCrabFleetProjectionQueue(): void {
   while (
-    pendingCrabFleetPosts.size < CRABFLEET_PROJECTION_LIMITS.maxConcurrent &&
+    activeCrabFleetRequests.size < CRABFLEET_PROJECTION_LIMITS.maxConcurrent &&
     queuedCrabFleetPosts.length > 0
   ) {
     startCrabFleetProjection(queuedCrabFleetPosts.shift()!);
   }
+  if (
+    queuedCrabFleetPosts.length > 0 &&
+    pendingCrabFleetPosts.size === 0 &&
+    activeCrabFleetRequests.size >= CRABFLEET_PROJECTION_LIMITS.maxConcurrent
+  ) {
+    const blocked = queuedCrabFleetPosts.splice(0);
+    for (const projection of blocked) {
+      failCrabFleetProjection(
+        projection.root,
+        projection.event,
+        `blocked by ${activeCrabFleetRequests.size} unresolved CrabFleet requests`,
+      );
+    }
+  }
+}
+
+function trackCrabFleetRequest(request: Promise<Response>): void {
+  activeCrabFleetRequests.add(request);
+  void request
+    .finally(() => {
+      activeCrabFleetRequests.delete(request);
+      drainCrabFleetProjectionQueue();
+    })
+    .catch(() => undefined);
 }
 
 function failCrabFleetProjection(root: string, event: ActionEvent, reason: string): void {
@@ -852,7 +879,8 @@ function workflowPartitionTimestampDate(value: string): string {
   if (!validCalendar || !validClock || !Number.isFinite(Date.parse(value))) {
     throw new Error("GITHUB_RUN_STARTED_AT must be an ISO date-time timestamp");
   }
-  return new Date(value).toISOString().slice(0, 10);
+  const partitionDate = new Date(value).toISOString().slice(0, 10);
+  return workflowPartitionCalendarDate(partitionDate, "GITHUB_RUN_STARTED_AT UTC partition date");
 }
 
 function actionEventMessage(event: ActionEvent): string {
@@ -873,6 +901,11 @@ function machineIdentifier(value: string, maxLength: number): string {
   if (prefixLength < 1) throw new Error("workflow action identifier limit is too small");
   const prefix = readable.slice(0, prefixLength).replace(/-+$/g, "") || "id";
   return `${prefix}-${digest}`;
+}
+
+function workflowPathFromRef(workflowRef: string): string {
+  const delimiter = workflowRef.lastIndexOf("@refs/");
+  return delimiter === -1 ? workflowRef : workflowRef.slice(0, delimiter);
 }
 
 function strictUtcCalendarDate(year: number, month: number, day: number): Date {
