@@ -8,6 +8,7 @@ import test from "node:test";
 import {
   assertExactValidationProofPlan,
   assertPublicationPauseBoundary,
+  assertRepairDeltaBaseBinding,
   missingRequiredPublicationLabels,
   prepareExecutionAuthorization,
   preparedRefPublicationState,
@@ -406,7 +407,7 @@ test("every publication mutation rechecks live pause labels and labels precede r
     source.indexOf("function runPublicationMutation"),
     source.indexOf("function assertPublicationNotPaused"),
   );
-  assert.match(mutationWrapper, /assertPublicationNotPaused\(intent, targetPrNumber\)/);
+  assert.match(mutationWrapper, /assertPublicationNotPaused\(intent, targetNumbers\)/);
   for (const mutationOwner of [
     "function publishPreparedRef",
     "function publishExactPullComment",
@@ -427,10 +428,14 @@ test("every publication mutation rechecks live pause labels and labels precede r
     replacement,
     /publishPreparedRef\(\{[\s\S]*targetPrNumber: liveTargetPr,[\s\S]*\}\)/,
   );
-  assert.match(replacement, /runPublicationMutation\(intent, null,[\s\S]*"pr",\s*"create"/);
+  assert.match(replacement, /runPublicationMutation\(intent, \[\],[\s\S]*"pr",\s*"create"/);
   assert.match(
     replacement,
-    /runPublicationMutation\(intent, source\.number,[\s\S]*"pr",\s*"close"/,
+    /runPublicationMutation\(\s*intent,\s*\[targetPrNumber, source\.number\],[\s\S]*"pr",\s*"close"/,
+  );
+  assert.match(
+    replacement,
+    /publishExactPullComment\(\{[\s\S]*targetNumbers: \[targetPrNumber\],[\s\S]*\}\)/,
   );
   assert.ok(
     replacement.indexOf("publishRequiredPullLabels") <
@@ -475,7 +480,7 @@ test("publication pause boundary covers secondary sources and retry targets on e
     ...identity,
     identity_sha256: digestJson(identity),
   });
-  assert.deepEqual(publicationPauseItems(intent, 99), [
+  assert.deepEqual(publicationPauseItems(intent, [99, 43]), [
     { repo: "openclaw/example", number: 42 },
     { repo: "openclaw/example", number: 43 },
     { repo: "openclaw/example", number: 99 },
@@ -488,22 +493,22 @@ test("publication pause boundary covers secondary sources and retry targets on e
   ]);
   const readLabels = (repo: string, number: number) => labels.get(`${repo}#${number}`) ?? [];
   assert.throws(
-    () => assertPublicationPauseBoundary(intent, 99, readLabels),
+    () => assertPublicationPauseBoundary(intent, [99], readLabels),
     /human-review.*openclaw\/example#43/,
   );
 
   labels.set("openclaw/example#43", []);
-  assert.doesNotThrow(() => assertPublicationPauseBoundary(intent, 99, readLabels));
+  assert.doesNotThrow(() => assertPublicationPauseBoundary(intent, [99], readLabels));
   labels.set("openclaw/example#43", ["clawsweeper:manual-only"]);
   assert.throws(
-    () => assertPublicationPauseBoundary(intent, 99, readLabels),
+    () => assertPublicationPauseBoundary(intent, [99], readLabels),
     /manual-only.*openclaw\/example#43/,
   );
 
   labels.set("openclaw/example#43", []);
   labels.set("openclaw/example#99", ["clawsweeper:human-review"]);
   assert.throws(
-    () => assertPublicationPauseBoundary(intent, 99, readLabels),
+    () => assertPublicationPauseBoundary(intent, [99], readLabels),
     /human-review.*openclaw\/example#99/,
   );
 });
@@ -591,10 +596,14 @@ test("trusted publication rejects forged deterministic comment metadata", () => 
   const targetDir = path.join(root, "target");
   const outputDir = path.join(root, "run");
   fs.mkdirSync(targetDir);
-  fs.writeFileSync(path.join(targetDir, "example.txt"), "prepared\n");
+  fs.writeFileSync(path.join(targetDir, "example.txt"), "base\n");
   git(targetDir, "init");
   git(targetDir, "config", "user.name", "ClawSweeper Test");
   git(targetDir, "config", "user.email", "clawsweeper@example.invalid");
+  git(targetDir, "add", ".");
+  git(targetDir, "-c", "commit.gpgsign=false", "commit", "-m", "base");
+  const repairDeltaBaseSha = git(targetDir, "rev-parse", "HEAD");
+  fs.writeFileSync(path.join(targetDir, "example.txt"), "prepared\n");
   git(targetDir, "add", ".");
   git(targetDir, "-c", "commit.gpgsign=false", "commit", "-m", "prepared");
   const preparedHeadSha = git(targetDir, "rev-parse", "HEAD");
@@ -612,9 +621,19 @@ test("trusted publication rejects forged deterministic comment metadata", () => 
       authorizationSha256: "b".repeat(64),
       executionIntent: intent,
       fixArtifact,
+      repairDeltaBaseSha,
       preparedHeadSha,
       preparedTreeSha,
     });
+    assert.doesNotThrow(() => assertRepairDeltaBaseBinding(targetDir, intent, publication));
+    assert.throws(
+      () =>
+        assertRepairDeltaBaseBinding(targetDir, intent, {
+          ...publication,
+          repair_delta_base_sha: preparedHeadSha,
+        }),
+      /does not precede the prepared repair/,
+    );
     const { identity_sha256: _identitySha256, ...identity } = publication;
     const forgedIdentity = {
       ...identity,

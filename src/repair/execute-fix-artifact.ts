@@ -1218,6 +1218,7 @@ function preparedPublicationOutcome({
     authorizationSha256,
     executionIntent,
     fixArtifact,
+    repairDeltaBaseSha: String(prep.repair_delta_base_sha),
     preparedHeadSha,
     preparedTreeSha,
   });
@@ -1229,6 +1230,7 @@ function preparedPublicationOutcome({
     ...(branchRewritten !== null ? { branch_rewritten: branchRewritten } : {}),
     ...(resumedBranch !== null ? { resumed_branch: resumedBranch } : {}),
     commit: preparedHeadSha,
+    repair_delta_base_sha: publication.repair_delta_base_sha,
     prepared_tree_sha: preparedTreeSha,
     publication_intent_sha256: publication.identity_sha256,
     checkpoint_commits: prep.checkpoint_commits ?? [],
@@ -2568,6 +2570,7 @@ function editValidatePrepareMerge({
   }
   return {
     commit,
+    repair_delta_base_sha: repairDeltaBaseHead,
     checkpoint_commits: checkpointCommits,
     history_compaction: historyCompaction,
     merge_preflight: buildMergePreflight({

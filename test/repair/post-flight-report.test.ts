@@ -1,19 +1,70 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { summarizePostFlightReport } from "../../dist/repair/post-flight-report.js";
+import {
+  isPublicationOnlyPostFlightJob,
+  publicationOnlyPostFlightAction,
+  summarizePostFlightReport,
+} from "../../dist/repair/post-flight-report.js";
 
 test("post-flight report succeeds only when every generated action completed", () => {
   assert.deepEqual(
     summarizePostFlightReport({
       actions: [
         { action: "finalize_fix_pr", status: "ready" },
+        { action: "publish_fix_pr", status: "published" },
         { action: "post_merge_closeout", status: "executed" },
       ],
     }),
     {
       outcome: "success",
       detail: "all generated post-flight actions completed",
+    },
+  );
+});
+
+test("post-flight treats non-merge repair lanes as publication-only", () => {
+  assert.equal(
+    isPublicationOnlyPostFlightJob({
+      allowed_actions: ["comment", "fix", "raise_pr"],
+      blocked_actions: ["merge"],
+      allow_merge: false,
+    }),
+    true,
+  );
+  assert.equal(
+    isPublicationOnlyPostFlightJob({
+      allowed_actions: ["comment", "fix", "raise_pr", "merge"],
+      blocked_actions: [],
+      allow_merge: true,
+    }),
+    false,
+  );
+});
+
+test("publication-only completion requires the exact authorized repair head", () => {
+  const action = { commit: "a".repeat(40) };
+  const base = { action: "finalize_fix_pr", pr: "#123" };
+  assert.equal(
+    publicationOnlyPostFlightAction({
+      action,
+      base,
+      pull: { state: "open", head: { sha: "a".repeat(40) } },
+      view: {},
+    }).status,
+    "published",
+  );
+  assert.deepEqual(
+    publicationOnlyPostFlightAction({
+      action,
+      base,
+      pull: { state: "open", head: { sha: "b".repeat(40) } },
+      view: {},
+    }),
+    {
+      ...base,
+      status: "blocked",
+      reason: "published pull request head does not match the authorized repair commit",
     },
   );
 });

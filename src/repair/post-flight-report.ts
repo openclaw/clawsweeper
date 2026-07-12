@@ -7,7 +7,54 @@ export interface PostFlightReportSummary {
   detail: string;
 }
 
-const SUCCESS_STATUSES = new Set(["executed", "ready"]);
+const SUCCESS_STATUSES = new Set(["executed", "published", "ready"]);
+
+export function isPublicationOnlyPostFlightJob(frontmatter: LooseRecord): boolean {
+  return (
+    !Array.isArray(frontmatter.allowed_actions) ||
+    !frontmatter.allowed_actions.includes("merge") ||
+    (Array.isArray(frontmatter.blocked_actions) && frontmatter.blocked_actions.includes("merge")) ||
+    frontmatter.allow_merge !== true
+  );
+}
+
+export function publicationOnlyPostFlightAction({
+  action,
+  base,
+  pull,
+  view,
+}: {
+  action: LooseRecord;
+  base: LooseRecord;
+  pull: LooseRecord;
+  view: LooseRecord;
+}): LooseRecord {
+  const liveHeadSha = String(pull.head?.sha ?? view.headRefOid ?? "");
+  const liveState = String(pull.state ?? view.state ?? "").toLowerCase();
+  const mergedAt = pull.merged_at ?? view.mergedAt ?? null;
+  if (!action.commit || liveHeadSha !== action.commit) {
+    return {
+      ...base,
+      status: "blocked",
+      reason: "published pull request head does not match the authorized repair commit",
+    };
+  }
+  if (liveState !== "open" && !mergedAt) {
+    return {
+      ...base,
+      status: "blocked",
+      reason: `published pull request is ${liveState || "unknown"}`,
+    };
+  }
+  return {
+    ...base,
+    status: "published",
+    reason: mergedAt
+      ? "authorized repair commit was published and the pull request is already merged"
+      : "authorized repair commit was published; merge is intentionally disabled for this lane",
+    merged_at: mergedAt,
+  };
+}
 
 export function summarizePostFlightReport(report: LooseRecord): PostFlightReportSummary {
   const actions = Array.isArray(report.actions) ? report.actions : [];

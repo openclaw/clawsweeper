@@ -7,7 +7,7 @@ import { replacementPrBody } from "./external-messages.js";
 import type { LooseRecord } from "./json-types.js";
 
 export const EXECUTION_INTENT_SCHEMA_VERSION = 2;
-export const PREPARED_PUBLICATION_SCHEMA_VERSION = 1;
+export const PREPARED_PUBLICATION_SCHEMA_VERSION = 2;
 export const PUBLICATION_RECEIPT_SCHEMA_VERSION = 1;
 
 export type ExecutionSourceIntent = {
@@ -60,6 +60,7 @@ export type PreparedPublication = {
   source: ExecutionSourceIntent;
   target_base_ref: string;
   target_base_sha: string;
+  repair_delta_base_sha: string;
   prepared_head_sha: string;
   prepared_tree_sha: string;
   bundle_path: string;
@@ -95,6 +96,7 @@ export function createPreparedPublication({
   authorizationSha256,
   executionIntent,
   fixArtifact,
+  repairDeltaBaseSha,
   preparedHeadSha,
   preparedTreeSha,
 }: {
@@ -103,11 +105,13 @@ export function createPreparedPublication({
   authorizationSha256: string;
   executionIntent: ExecutionIntent;
   fixArtifact: LooseRecord;
+  repairDeltaBaseSha: string;
   preparedHeadSha: string;
   preparedTreeSha: string;
 }): PreparedPublication {
   requireDigest(authorizationSha256, "authorization digest");
   verifyExecutionIntentIdentity(executionIntent);
+  requireSha(repairDeltaBaseSha, "repair delta base SHA");
   requireSha(preparedHeadSha, "prepared head SHA");
   requireSha(preparedTreeSha, "prepared tree SHA");
 
@@ -161,6 +165,7 @@ export function createPreparedPublication({
     source: executionIntent.source,
     target_base_ref: executionIntent.target_base_ref,
     target_base_sha: executionIntent.target_base_sha,
+    repair_delta_base_sha: repairDeltaBaseSha,
     prepared_head_sha: preparedHeadSha,
     prepared_tree_sha: preparedTreeSha,
     bundle_path: bundleName,
@@ -221,6 +226,7 @@ export function verifyPreparedPublication({
   }
   requireSha(publication.prepared_head_sha, "prepared publication head");
   requireSha(publication.prepared_tree_sha, "prepared publication tree");
+  requireSha(publication.repair_delta_base_sha, "prepared publication repair delta base");
   if (publication.bundle_path !== "prepared-repair.bundle") {
     throw new Error("prepared publication bundle path is not the trusted fixed path");
   }

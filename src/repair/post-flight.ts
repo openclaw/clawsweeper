@@ -35,7 +35,11 @@ import { isPassedStagedProofBundle } from "./staged-proof-gates.js";
 import { serverStrictBaseBindingBlock } from "./strict-base-binding.js";
 import { compactText as compactPlainText } from "./text-utils.js";
 import { verifyPublishedReceipt } from "./execution-handoff.js";
-import { summarizePostFlightReport } from "./post-flight-report.js";
+import {
+  isPublicationOnlyPostFlightJob,
+  publicationOnlyPostFlightAction,
+  summarizePostFlightReport,
+} from "./post-flight-report.js";
 
 const PASSING_CHECK_CONCLUSIONS = new Set(["SUCCESS", "SKIPPED", "NEUTRAL"]);
 const FIX_PR_MERGE_STATES = new Set(["CLEAN", "HAS_HOOKS", "UNSTABLE"]);
@@ -171,6 +175,9 @@ function finalizeFixPr(action: LooseRecord) {
 
   if (isIssueImplementationJob()) {
     return finalizeIssueImplementationPr({ base, parsed });
+  }
+  if (publicationReceipt && isPublicationOnlyPostFlightJob(job.frontmatter)) {
+    return finalizePublishedFixPr({ action, base, parsed });
   }
 
   const deadline = Date.now() + POST_FLIGHT_WAIT_MS;
@@ -326,6 +333,13 @@ function finalizeFixPr(action: LooseRecord) {
     fixup_lines: mergeMessage.fixupLines,
     waited_ms: waitedMs,
   };
+}
+
+function finalizePublishedFixPr({ action, base, parsed }: LooseRecord) {
+  const pull = fetchPullRequest(result.repo, parsed.number);
+  const view = fetchPullRequestView(result.repo, parsed.number);
+  const prBase = { ...base, pr: `#${parsed.number}`, title: view.title ?? pull.title ?? null };
+  return publicationOnlyPostFlightAction({ action, base: prBase, pull, view });
 }
 
 function publishedFixAction(fixReport: LooseRecord, receipt: LooseRecord): LooseRecord {

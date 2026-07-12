@@ -42,7 +42,7 @@ import {
 
 const AUTHORIZATION_SCHEMA_VERSION = 2;
 const EXECUTION_SCHEMA_VERSION = 2;
-const VALIDATION_RECEIPT_SCHEMA_VERSION = 2;
+const VALIDATION_RECEIPT_SCHEMA_VERSION = 3;
 const DIGEST_PATTERN = /^[a-f0-9]{64}$/;
 const SHA_PATTERN = /^[a-f0-9]{40}$/;
 const MAX_HANDOFF_FILES = 4_096;
@@ -103,6 +103,7 @@ export type ValidationReceipt = {
   output_repo: string;
   output_branch: string;
   source: ExecutionIntent["source"];
+  repair_delta_base_sha: string;
   validated_head_sha: string;
   validated_tree_sha: string;
   validated_base_sha: string;
@@ -430,6 +431,7 @@ export function validateExecutionHandoff({
   const publication = verifyAuthorizedPreparedPublication(root, expectedAuthorizationSha256);
   if (
     action.commit !== publication.prepared_head_sha ||
+    action.repair_delta_base_sha !== publication.repair_delta_base_sha ||
     action.prepared_tree_sha !== publication.prepared_tree_sha ||
     action.publication_intent_sha256 !== publication.identity_sha256 ||
     action.action !== intent.action_name ||
@@ -447,6 +449,7 @@ export function validateExecutionHandoff({
 
   const checkout = checkoutPreparedRepair({ root, intent, publication });
   try {
+    assertRepairDeltaBaseBinding(checkout, intent, publication);
     const job = parseJob(path.join(root, "job.md"));
     const fixArtifact = objectValue(result.fix_artifact, "fix artifact");
     const automergeTargetValidation =
@@ -473,7 +476,7 @@ export function validateExecutionHandoff({
       {
         fixArtifact,
         targetDir: checkout,
-        sourceHead: intent.source.expected_head_sha,
+        sourceHead: publication.repair_delta_base_sha,
       },
       options,
     );
@@ -519,6 +522,7 @@ export function validateExecutionHandoff({
       output_repo: intent.output_repo,
       output_branch: intent.output_branch,
       source: intent.source,
+      repair_delta_base_sha: publication.repair_delta_base_sha,
       validated_head_sha: publication.prepared_head_sha,
       validated_tree_sha: publication.prepared_tree_sha,
       validated_base_sha: publication.target_base_sha,
@@ -580,6 +584,7 @@ export function verifyValidationReceipt({
     receipt.output_repo !== intent.output_repo ||
     receipt.output_branch !== intent.output_branch ||
     JSON.stringify(receipt.source) !== JSON.stringify(intent.source) ||
+    receipt.repair_delta_base_sha !== publication.repair_delta_base_sha ||
     receipt.validated_head_sha !== publication.prepared_head_sha ||
     receipt.validated_tree_sha !== publication.prepared_tree_sha ||
     receipt.validated_base_sha !== publication.target_base_sha ||
@@ -984,6 +989,38 @@ function checkoutPreparedRepair({
   }
 }
 
+export function assertRepairDeltaBaseBinding(
+  checkout: string,
+  intent: ExecutionIntent,
+  publication: PreparedPublication,
+) {
+  const repairDeltaBaseSha = publication.repair_delta_base_sha;
+  if (
+    !SHA_PATTERN.test(repairDeltaBaseSha) ||
+    repairDeltaBaseSha === publication.prepared_head_sha
+  ) {
+    throw new Error("repair delta base does not precede the prepared repair");
+  }
+  try {
+    run("git", ["cat-file", "-e", `${repairDeltaBaseSha}^{commit}`], { cwd: checkout });
+  } catch {
+    throw new Error("repair delta base is unavailable in the verified repair history");
+  }
+  const authorizedAnchors = new Set(
+    [intent.target_base_sha, intent.source.expected_head_sha, intent.expected_output_sha].filter(
+      (sha): sha is string => Boolean(sha),
+    ),
+  );
+  if (authorizedAnchors.has(repairDeltaBaseSha)) return;
+  try {
+    run("git", ["merge-base", "--is-ancestor", repairDeltaBaseSha, publication.prepared_head_sha], {
+      cwd: checkout,
+    });
+  } catch {
+    throw new Error("repair delta base is outside the authorized repair ancestry");
+  }
+}
+
 function fetchAndVerifyLiveRefs(
   checkout: string,
   intent: ExecutionIntent,
@@ -1132,7 +1169,7 @@ function publishPreparedRef({
           `refs/clawsweeper/prepared:${targetRef}`,
         ]
       : ["push", "origin", `refs/clawsweeper/prepared:${targetRef}`];
-    runPublicationMutation(intent, targetPrNumber, () => run("git", pushArgs, { cwd: checkout }));
+    runPublicationMutation(intent, [targetPrNumber], () => run("git", pushArgs, { cwd: checkout }));
   }
   if (remoteRefSha(checkout, targetRef) !== publication.prepared_head_sha) {
     throw new Error("published branch does not match the exact validated repair commit");
@@ -1153,16 +1190,16 @@ function remoteRefSha(checkout: string, ref: string): string | null {
 
 function runPublicationMutation<T>(
   intent: ExecutionIntent,
-  targetPrNumber: number | null,
+  targetNumbers: ReadonlyArray<number | null>,
   mutation: () => T,
 ): T {
-  assertPublicationNotPaused(intent, targetPrNumber);
+  assertPublicationNotPaused(intent, targetNumbers);
   return mutation();
 }
 
 export function publicationPauseItems(
   intent: ExecutionIntent,
-  targetPrNumber: number | null = null,
+  targetNumbers: ReadonlyArray<number | null> = [],
 ): Array<{ repo: string; number: number }> {
   const items = new Map<string, { repo: string; number: number }>();
   const add = (repo: string, number: number | null) => {
@@ -1177,16 +1214,16 @@ export function publicationPauseItems(
     }
     add(source.repo, source.number);
   }
-  add(intent.target_repo, targetPrNumber);
+  for (const targetNumber of targetNumbers) add(intent.target_repo, targetNumber);
   return [...items.values()];
 }
 
 export function assertPublicationPauseBoundary(
   intent: ExecutionIntent,
-  targetPrNumber: number | null,
+  targetNumbers: ReadonlyArray<number | null>,
   readLabels: (repo: string, number: number) => Iterable<string>,
 ) {
-  assertPauseItemsNotPaused(publicationPauseItems(intent, targetPrNumber), readLabels);
+  assertPauseItemsNotPaused(publicationPauseItems(intent, targetNumbers), readLabels);
 }
 
 function assertPauseItemsNotPaused(
@@ -1203,8 +1240,11 @@ function assertPauseItemsNotPaused(
   }
 }
 
-function assertPublicationNotPaused(intent: ExecutionIntent, targetPrNumber: number | null = null) {
-  assertPublicationPauseBoundary(intent, targetPrNumber, (repo, number) =>
+function assertPublicationNotPaused(
+  intent: ExecutionIntent,
+  targetNumbers: ReadonlyArray<number | null> = [],
+) {
+  assertPublicationPauseBoundary(intent, targetNumbers, (repo, number) =>
     githubLabelNames(ghObject(`repos/${repo}/issues/${number}`).labels),
   );
 }
@@ -1220,17 +1260,19 @@ function publishExactPullComment({
   intent,
   number,
   body,
+  targetNumbers = [],
 }: {
   checkout: string;
   intent: ExecutionIntent;
   number: number;
   body: string;
+  targetNumbers?: ReadonlyArray<number | null>;
 }) {
   const comments = ghPagedArray(
     `repos/${intent.target_repo}/issues/${number}/comments?per_page=100`,
   );
   if (comments.some((comment) => comment.body === body)) return;
-  runPublicationMutation(intent, number, () =>
+  runPublicationMutation(intent, [...targetNumbers, number], () =>
     run("gh", ["pr", "comment", String(number), "--repo", intent.target_repo, "--body", body], {
       cwd: checkout,
     }),
@@ -1252,7 +1294,7 @@ function publishRequiredPullLabels({
     githubLabelNames(pull.labels),
   );
   if (missing.length === 0) return;
-  runPublicationMutation(intent, targetPrNumber, () =>
+  runPublicationMutation(intent, [targetPrNumber], () =>
     run(
       "gh",
       [
@@ -1309,6 +1351,7 @@ function publishSourceBranchRepair({
     intent,
     number: intent.source.number,
     body: publication.source_comment,
+    targetNumbers: [intent.source.number],
   });
   mutations.push({
     operation: "comment",
@@ -1370,7 +1413,7 @@ function publishReplacementRepair({
   } else {
     const bodyPath = path.join(path.dirname(checkout), "pull-request-body.md");
     fs.writeFileSync(bodyPath, publication.pr_body ?? "");
-    const created = runPublicationMutation(intent, null, () =>
+    const created = runPublicationMutation(intent, [], () =>
       run(
         "gh",
         [
@@ -1416,7 +1459,7 @@ function publishReplacementRepair({
     labels: intent.required_labels,
   });
   verifyPublishedPull(intent.target_repo, targetPrNumber, publication, intent);
-  assertPublicationNotPaused(intent, targetPrNumber);
+  assertPublicationNotPaused(intent, [targetPrNumber]);
 
   for (const action of publication.superseded_source_actions) {
     const source = parsePullRequestUrl(action.source);
@@ -1434,6 +1477,7 @@ function publishReplacementRepair({
       intent,
       number: source.number,
       body: comment,
+      targetNumbers: [targetPrNumber],
     });
     mutations.push({
       operation: "comment",
@@ -1444,7 +1488,7 @@ function publishReplacementRepair({
       const sourcePull = ghObject(`repos/${intent.target_repo}/pulls/${source.number}`);
       const sourceState = String(sourcePull.state ?? "").toLowerCase();
       if (sourceState === "open") {
-        runPublicationMutation(intent, source.number, () =>
+        runPublicationMutation(intent, [targetPrNumber, source.number], () =>
           run("gh", ["pr", "close", String(source.number), "--repo", intent.target_repo], {
             cwd: checkout,
           }),
@@ -1534,7 +1578,7 @@ function revalidateLiveSource(intent: ExecutionIntent, publication: PreparedPubl
     ) {
       throw new Error("source pull request changed after authorization");
     }
-    assertPublicationNotPaused(intent, intent.expected_target_pr_number);
+    assertPublicationNotPaused(intent, [intent.expected_target_pr_number]);
     return;
   }
   if (intent.source.kind === "issue") {
