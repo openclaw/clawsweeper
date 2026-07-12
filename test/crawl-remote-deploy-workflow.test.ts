@@ -374,6 +374,7 @@ test("release artifact is immutable, bounded, canonical, and hash verified", () 
     /Wrangler dry-run output must contain index\.js and only known metadata files/,
   );
   assert.match(packaging, /approvedMigrations/);
+  assert.match(packaging, /migrationEntries\.length !== approvedMigrations\.length/);
   assert.match(packaging, /migration \$\{entry\.name\} differs from its reviewed content/);
   assert.match(packaging, /release artifact migrations do not match the reviewed migration set/);
   for (const sha256 of [
@@ -447,6 +448,7 @@ test("release packaging accepts Wrangler metadata and rejects unsupported output
     ["0004_gitcrawl_snapshot_cutover.sql", "create table four(id integer);\n"],
     ["0005_discrawl_cursor_state.sql", "create table five(id integer);\n"],
     ["0006_gitcrawl_observation_order.sql", "insert into five(id) values (1);\n"],
+    ["0007_gitcrawl_snapshot_provenance.sql", "alter table five add column source text;\n"],
   ] as const;
   const fixtureApprovals = fixtureMigrations.map(([name, contents]) => ({
     name,
@@ -523,6 +525,18 @@ test("release packaging accepts Wrangler metadata and rejects unsupported output
 
   try {
     assert.equal(packageBundle().status, 0);
+
+    rmSync(join(directory, "migrations", "0007_gitcrawl_snapshot_provenance.sql"));
+    const missingMigration = packageBundle();
+    assert.notEqual(missingMigration.status, 0);
+    assert.match(
+      missingMigration.stdout + missingMigration.stderr,
+      /release artifact migrations do not match the reviewed migration set/,
+    );
+    writeFileSync(
+      join(directory, "migrations", "0007_gitcrawl_snapshot_provenance.sql"),
+      fixtureMigrations[6][1],
+    );
 
     const extraModule = packageBundle(() => {
       writeFileSync(join(bundleDir, "module.wasm"), "unsupported module\n");

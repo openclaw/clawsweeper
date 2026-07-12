@@ -362,10 +362,7 @@ jobs:
           ];
           const migrationEntries = readdirSync('migrations', { withFileTypes: true })
             .sort((a, b) => a.name.localeCompare(b.name));
-          if (
-            migrationEntries.length < 6 ||
-            migrationEntries.length > approvedMigrations.length
-          ) {
+          if (migrationEntries.length !== approvedMigrations.length) {
             throw new Error('release artifact migrations do not match the reviewed migration set');
           }
           for (const [index, entry] of migrationEntries.entries()) {
