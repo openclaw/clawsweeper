@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   isPublicationOnlyPostFlightJob,
   publicationOnlyPostFlightAction,
+  shouldFinalizePublicationOnlyPostFlight,
   summarizePostFlightReport,
 } from "../../dist/repair/post-flight-report.js";
 
@@ -39,6 +40,30 @@ test("post-flight treats non-merge repair lanes as publication-only", () => {
       allow_merge: true,
     }),
     false,
+  );
+  assert.equal(
+    shouldFinalizePublicationOnlyPostFlight({
+      hasPublicationReceipt: true,
+      frontmatter: {
+        allowed_actions: ["comment", "fix", "raise_pr"],
+        blocked_actions: ["merge"],
+        allow_merge: false,
+      },
+      automergeReplacement: true,
+    }),
+    false,
+  );
+  assert.equal(
+    shouldFinalizePublicationOnlyPostFlight({
+      hasPublicationReceipt: true,
+      frontmatter: {
+        allowed_actions: ["comment", "fix", "raise_pr"],
+        blocked_actions: ["merge"],
+        allow_merge: false,
+      },
+      automergeReplacement: false,
+    }),
+    true,
   );
 });
 

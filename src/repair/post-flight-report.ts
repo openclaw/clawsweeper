@@ -18,6 +18,20 @@ export function isPublicationOnlyPostFlightJob(frontmatter: LooseRecord): boolea
   );
 }
 
+export function shouldFinalizePublicationOnlyPostFlight({
+  hasPublicationReceipt,
+  frontmatter,
+  automergeReplacement,
+}: {
+  hasPublicationReceipt: boolean;
+  frontmatter: LooseRecord;
+  automergeReplacement: boolean;
+}): boolean {
+  return (
+    hasPublicationReceipt && !automergeReplacement && isPublicationOnlyPostFlightJob(frontmatter)
+  );
+}
+
 export function publicationOnlyPostFlightAction({
   action,
   base,

@@ -137,6 +137,7 @@ import {
   type StagedProofTrace,
 } from "./staged-proof-gates.js";
 import {
+  authorizedFixArtifact,
   createPreparedPublication,
   executionIntentRepairDeltaBaseSha,
   verifyExecutionIntentIdentity,
@@ -530,15 +531,7 @@ if (NON_EXECUTABLE_REPAIR_STRATEGIES.has(repairStrategy)) {
 
 let fixArtifact = validateFixArtifact(executableFixArtifact);
 if (executionIntent) {
-  fixArtifact = {
-    ...fixArtifact,
-    repair_strategy: executionIntent.repair_strategy,
-    source_prs:
-      executionIntent.source.kind === "pull_request" && executionIntent.source.url
-        ? [executionIntent.source.url]
-        : executionIntent.source_prs,
-    supersede_source_prs: executionIntent.superseded_source_prs,
-  };
+  fixArtifact = authorizedFixArtifact(executionIntent, fixArtifact);
 }
 const securityBlock = validateFixSecurityScope({ job, resultPath, fixArtifact, plannedFixActions });
 if (securityBlock) {

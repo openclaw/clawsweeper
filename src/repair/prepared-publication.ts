@@ -92,14 +92,29 @@ export type PublicationReceipt = {
 
 export function executionIntentRepairDeltaBaseSha(intent: ExecutionIntent): string {
   const repairDeltaBaseSha =
-    intent.operation === "update_source_pr"
-      ? intent.source.expected_head_sha
-      : (intent.expected_output_sha ?? intent.target_base_sha);
+    intent.expected_output_sha ??
+    (intent.source.kind === "pull_request" ? intent.source.expected_head_sha : null) ??
+    intent.target_base_sha;
   if (!repairDeltaBaseSha) {
     throw new Error("execution intent repair delta base is required");
   }
   requireSha(repairDeltaBaseSha, "execution intent repair delta base");
   return repairDeltaBaseSha;
+}
+
+export function authorizedFixArtifact(
+  executionIntent: ExecutionIntent,
+  fixArtifact: LooseRecord,
+): LooseRecord {
+  return {
+    ...fixArtifact,
+    repair_strategy: executionIntent.repair_strategy,
+    source_prs:
+      executionIntent.source.kind === "pull_request" && executionIntent.source.url
+        ? [executionIntent.source.url]
+        : executionIntent.source_prs,
+    supersede_source_prs: executionIntent.superseded_source_prs,
+  };
 }
 
 export function createPreparedPublication({

@@ -19,8 +19,10 @@ import {
   verifyValidationReceipt,
 } from "../../dist/repair/execution-handoff.js";
 import {
+  authorizedFixArtifact,
   createPreparedPublication,
   digestJson,
+  executionIntentRepairDeltaBaseSha,
   verifyExecutionIntentIdentity,
   verifyPreparedPublication,
 } from "../../dist/repair/prepared-publication.js";
@@ -510,6 +512,44 @@ test("publication pause boundary covers secondary sources and retry targets on e
   assert.throws(
     () => assertPublicationPauseBoundary(intent, [99], readLabels),
     /human-review.*openclaw\/example#99/,
+  );
+});
+
+test("fresh replacements bind proof policy to the sealed source and repair strategy", () => {
+  const base = executionIntent("a".repeat(64));
+  const intent = {
+    ...base,
+    source: {
+      ...base.source,
+      kind: "pull_request" as const,
+      number: 42,
+      url: "https://github.com/openclaw/example/pull/42",
+      expected_head_sha: "2".repeat(40),
+    },
+    repair_strategy: "replace_uneditable_branch",
+    source_prs: ["https://github.com/openclaw/example/pull/42"],
+  };
+  assert.equal(executionIntentRepairDeltaBaseSha(intent), "2".repeat(40));
+  assert.equal(
+    executionIntentRepairDeltaBaseSha({
+      ...intent,
+      expected_output_sha: "3".repeat(40),
+    }),
+    "3".repeat(40),
+  );
+  assert.deepEqual(
+    authorizedFixArtifact(intent, {
+      repair_strategy: "repair_contributor_branch",
+      source_prs: ["https://github.com/openclaw/example/pull/99"],
+      supersede_source_prs: [],
+      validation_commands: ["pnpm test"],
+    }),
+    {
+      repair_strategy: "replace_uneditable_branch",
+      source_prs: ["https://github.com/openclaw/example/pull/42"],
+      supersede_source_prs: [],
+      validation_commands: ["pnpm test"],
+    },
   );
 });
 

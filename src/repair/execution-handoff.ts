@@ -17,6 +17,7 @@ import {
   type ExecutionIntent,
   type PreparedPublication,
   type PublicationReceipt,
+  authorizedFixArtifact,
   digestJson,
   executionIntentRepairDeltaBaseSha,
   publicationReceipt,
@@ -452,7 +453,10 @@ export function validateExecutionHandoff({
   try {
     assertRepairDeltaBaseBinding(checkout, intent, publication);
     const job = parseJob(path.join(root, "job.md"));
-    const fixArtifact = objectValue(result.fix_artifact, "fix artifact");
+    const fixArtifact = authorizedFixArtifact(
+      intent,
+      objectValue(result.fix_artifact, "fix artifact"),
+    );
     const automergeTargetValidation =
       String(job.frontmatter.source ?? "") === "pr_automerge" ||
       String(job.frontmatter.cluster_id ?? "").startsWith("automerge-");
@@ -937,7 +941,7 @@ function verifyAuthorizedPreparedPublication(
     executionIntent: intent,
     authorizationSha256: expectedAuthorizationSha256,
     root,
-    fixArtifact: objectValue(result.fix_artifact, "fix artifact"),
+    fixArtifact: authorizedFixArtifact(intent, objectValue(result.fix_artifact, "fix artifact")),
   });
 }
 

@@ -36,8 +36,8 @@ import { serverStrictBaseBindingBlock } from "./strict-base-binding.js";
 import { compactText as compactPlainText } from "./text-utils.js";
 import { verifyPublishedReceipt } from "./execution-handoff.js";
 import {
-  isPublicationOnlyPostFlightJob,
   publicationOnlyPostFlightAction,
+  shouldFinalizePublicationOnlyPostFlight,
   summarizePostFlightReport,
 } from "./post-flight-report.js";
 
@@ -176,10 +176,6 @@ function finalizeFixPr(action: LooseRecord) {
   if (isIssueImplementationJob()) {
     return finalizeIssueImplementationPr({ base, parsed });
   }
-  if (publicationReceipt && isPublicationOnlyPostFlightJob(job.frontmatter)) {
-    return finalizePublishedFixPr({ action, base, parsed });
-  }
-
   const deadline = Date.now() + POST_FLIGHT_WAIT_MS;
   let pull;
   let view;
@@ -190,6 +186,15 @@ function finalizeFixPr(action: LooseRecord) {
     pull = fetchPullRequest(result.repo, parsed.number);
     view = fetchPullRequestView(result.repo, parsed.number);
     prBase = { ...base, pr: `#${parsed.number}`, title: view.title ?? pull.title ?? null };
+    if (
+      shouldFinalizePublicationOnlyPostFlight({
+        hasPublicationReceipt: Boolean(publicationReceipt),
+        frontmatter: job.frontmatter,
+        automergeReplacement: isAutomergeReplacementMerge(action, pull),
+      })
+    ) {
+      return publicationOnlyPostFlightAction({ action, base: prBase, pull, view });
+    }
     const policyBlock = validateMergePolicy(action, pull);
     if (policyBlock) return { ...prBase, status: "blocked", reason: policyBlock };
 
@@ -333,13 +338,6 @@ function finalizeFixPr(action: LooseRecord) {
     fixup_lines: mergeMessage.fixupLines,
     waited_ms: waitedMs,
   };
-}
-
-function finalizePublishedFixPr({ action, base, parsed }: LooseRecord) {
-  const pull = fetchPullRequest(result.repo, parsed.number);
-  const view = fetchPullRequestView(result.repo, parsed.number);
-  const prBase = { ...base, pr: `#${parsed.number}`, title: view.title ?? pull.title ?? null };
-  return publicationOnlyPostFlightAction({ action, base: prBase, pull, view });
 }
 
 function publishedFixAction(fixReport: LooseRecord, receipt: LooseRecord): LooseRecord {
