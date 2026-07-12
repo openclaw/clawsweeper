@@ -17,6 +17,7 @@ import {
   requiredValidationCommands,
   runAllowedValidationCommands,
   runStagedValidationProof,
+  workspacePackagePaths,
   workspacePatternMatches,
 } from "../../dist/repair/target-validation.js";
 import {
@@ -730,17 +731,66 @@ test("recursive pnpm preflight preserves filters and ignores unrelated workspace
 test("workspace glob matching is bounded for adversarial target patterns", () => {
   const adversarial = `${"*a".repeat(500)}b`;
   const startedAt = performance.now();
-  assert.equal(workspacePatternMatches(adversarial, "a".repeat(500)), false);
+  assert.throws(() => workspacePatternMatches(adversarial, "a".repeat(500)), /operator budget/);
   assert.ok(performance.now() - startedAt < 250);
+  assert.equal(workspacePatternMatches("packages/test-?", "packages/test-a"), true);
+  assert.equal(workspacePatternMatches("packages/{app,web}", "packages/web"), true);
+  assert.equal(workspacePatternMatches("packages/[aw]pp", "packages/app"), true);
+  assert.equal(workspacePatternMatches("packages/**/test-*", "packages/test-unit"), true);
   assert.equal(workspacePatternMatches("packages/**/test-*", "packages/a/b/test-unit"), true);
   assert.equal(workspacePatternMatches("packages/*", "packages/a/b"), false);
-  assert.equal(workspacePatternMatches("packages/[app]", "packages/[app]"), true);
   assert.equal(workspacePatternMatches("packages/🚀", "packages/🚀"), true);
   assert.equal(workspacePatternMatches("packages/*", "packages/🚀"), true);
   assert.throws(
     () => workspacePatternMatches("*".repeat(1_025), "packages/app"),
     /maximum supported length/,
   );
+});
+
+test("workspace discovery enforces directory, depth, entry, and match budgets", () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-workspace-budget-"));
+  try {
+    for (const relativePath of ["packages/app", "packages/web", "packages/deep/child"]) {
+      fs.mkdirSync(path.join(cwd, relativePath), { recursive: true });
+      fs.writeFileSync(path.join(cwd, relativePath, "package.json"), "{}\n");
+    }
+    fs.writeFileSync(path.join(cwd, "one.txt"), "1\n");
+    fs.writeFileSync(path.join(cwd, "two.txt"), "2\n");
+
+    assert.deepEqual(workspacePackagePaths(cwd, ["packages/{app,web}"]), [
+      "packages/app",
+      "packages/web",
+    ]);
+    assert.throws(
+      () => workspacePackagePaths(cwd, ["packages/**"], { maxDirectories: 2 }),
+      /directory budget/,
+    );
+    assert.throws(
+      () => workspacePackagePaths(cwd, ["packages/**"], { maxDepth: 2 }),
+      /depth budget/,
+    );
+    assert.throws(
+      () => workspacePackagePaths(cwd, ["packages/**"], { maxEntries: 2 }),
+      /entry budget/,
+    );
+    assert.throws(
+      () =>
+        workspacePackagePaths(cwd, ["packages/nope", "packages/**"], {
+          maxMatchOperations: 1,
+        }),
+      /glob evaluation.*work budget/,
+    );
+    assert.throws(
+      () =>
+        workspacePackagePaths(
+          cwd,
+          Array.from({ length: 257 }, () => "packages/*"),
+        ),
+      /pattern count/,
+    );
+  } finally {
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
 });
 
 test("validation parser accepts only the documented workspace run option positions", () => {

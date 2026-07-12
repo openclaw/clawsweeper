@@ -1703,23 +1703,62 @@ function workspacePackagePatterns(cwd: string, rootPackage: LooseRecord): string
 
 const MAX_WORKSPACE_PATTERN_LENGTH = 1_024;
 const MAX_WORKSPACE_PATH_LENGTH = 4_096;
+const MAX_WORKSPACE_PATTERNS = 256;
+const MAX_WORKSPACE_PATTERN_OPERATORS = 128;
 
-type WorkspacePatternToken =
-  | { kind: "literal"; value: string }
-  | { kind: "segment_wildcard" }
-  | { kind: "tree_wildcard" };
+export type WorkspaceScanLimits = {
+  maxDirectories: number;
+  maxDepth: number;
+  maxEntries: number;
+  maxMatchOperations: number;
+};
 
-function workspacePackagePaths(cwd: string, patterns: readonly string[]): string[] {
+const DEFAULT_WORKSPACE_SCAN_LIMITS: WorkspaceScanLimits = {
+  maxDirectories: 10_000,
+  maxDepth: 64,
+  maxEntries: 100_000,
+  maxMatchOperations: 100_000,
+};
+
+export function workspacePackagePaths(
+  cwd: string,
+  patterns: readonly string[],
+  overrides: Partial<WorkspaceScanLimits> = {},
+): string[] {
   if (patterns.length === 0) return [];
+  if (patterns.length > MAX_WORKSPACE_PATTERNS) {
+    throw new Error("workspace pattern count exceeds the supported budget");
+  }
+  const limits = workspaceScanLimits(overrides);
   const includedPatterns = patterns
     .filter((pattern) => !pattern.startsWith("!"))
-    .map(compileWorkspacePattern);
+    .map(validateWorkspacePattern);
   const excludedPatterns = patterns
     .filter((pattern) => pattern.startsWith("!"))
-    .map((pattern) => compileWorkspacePattern(pattern.slice(1)));
+    .map((pattern) => validateWorkspacePattern(pattern.slice(1)));
+  if (includedPatterns.length === 0) return [];
+
   const matches: string[] = [];
-  const visit = (directory: string, relativeDirectory: string) => {
+  const pending = [{ directory: cwd, relativeDirectory: "", depth: 0 }];
+  let visitedDirectories = 0;
+  let visitedEntries = 0;
+  let matchOperations = 0;
+  const matchesPattern = (relativePath: string, candidates: readonly string[]) =>
+    candidates.some((pattern) => {
+      matchOperations += 1;
+      if (matchOperations > limits.maxMatchOperations) {
+        throw new Error("workspace glob evaluation exceeded the supported work budget");
+      }
+      return workspacePatternMatches(pattern, relativePath);
+    });
+
+  while (pending.length > 0) {
+    const { directory, relativeDirectory, depth } = pending.pop()!;
     for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+      visitedEntries += 1;
+      if (visitedEntries > limits.maxEntries) {
+        throw new Error("workspace discovery exceeded the supported entry budget");
+      }
       if (
         !entry.isDirectory() ||
         [".git", ".hg", ".svn", ".venv", "node_modules", "venv"].includes(entry.name)
@@ -1729,80 +1768,71 @@ function workspacePackagePaths(cwd: string, patterns: readonly string[]): string
       const relativePath = relativeDirectory
         ? path.posix.join(relativeDirectory, entry.name)
         : entry.name;
+      validateWorkspacePath(relativePath);
+      const childDepth = depth + 1;
+      if (childDepth > limits.maxDepth) {
+        throw new Error("workspace discovery exceeded the supported depth budget");
+      }
+      visitedDirectories += 1;
+      if (visitedDirectories > limits.maxDirectories) {
+        throw new Error("workspace discovery exceeded the supported directory budget");
+      }
       const absolutePath = path.join(directory, entry.name);
       if (
         fs.existsSync(path.join(absolutePath, "package.json")) &&
-        includedPatterns.some((pattern) =>
-          compiledWorkspacePatternMatches(pattern, relativePath),
-        ) &&
-        !excludedPatterns.some((pattern) => compiledWorkspacePatternMatches(pattern, relativePath))
+        matchesPattern(relativePath, includedPatterns) &&
+        !matchesPattern(relativePath, excludedPatterns)
       ) {
         matches.push(relativePath);
       }
-      visit(absolutePath, relativePath);
+      pending.push({
+        directory: absolutePath,
+        relativeDirectory: relativePath,
+        depth: childDepth,
+      });
     }
-  };
-  visit(cwd, "");
+  }
   return [...new Set(matches)].sort();
 }
 
 export function workspacePatternMatches(pattern: string, relativePath: string): boolean {
-  return compiledWorkspacePatternMatches(compileWorkspacePattern(pattern), relativePath);
+  const boundedPattern = validateWorkspacePattern(pattern);
+  validateWorkspacePath(relativePath);
+  try {
+    return path.posix.matchesGlob(relativePath, boundedPattern);
+  } catch {
+    throw new Error("workspace pattern is not a valid supported glob");
+  }
 }
 
-function compileWorkspacePattern(pattern: string): WorkspacePatternToken[] {
-  if (pattern.length > MAX_WORKSPACE_PATTERN_LENGTH) {
+function validateWorkspacePattern(pattern: string): string {
+  if (!pattern || pattern.length > MAX_WORKSPACE_PATTERN_LENGTH) {
     throw new Error("workspace pattern exceeds the maximum supported length");
   }
-  const characters = [...pattern];
-  const tokens: WorkspacePatternToken[] = [];
-  for (let index = 0; index < characters.length; index += 1) {
-    if (characters[index] !== "*") {
-      tokens.push({ kind: "literal", value: characters[index]! });
-      continue;
-    }
-    const treeWildcard = characters[index + 1] === "*";
-    if (treeWildcard) index += 1;
-    tokens.push({ kind: treeWildcard ? "tree_wildcard" : "segment_wildcard" });
+  if (pattern.includes("\0")) {
+    throw new Error("workspace pattern contains a null byte");
   }
-  return tokens;
+  const operators = [...pattern].filter((character) => "*?[]{}(),".includes(character)).length;
+  if (operators > MAX_WORKSPACE_PATTERN_OPERATORS) {
+    throw new Error("workspace pattern exceeds the supported operator budget");
+  }
+  return pattern;
 }
 
-function compiledWorkspacePatternMatches(
-  tokens: readonly WorkspacePatternToken[],
-  relativePath: string,
-): boolean {
+function validateWorkspacePath(relativePath: string) {
   if (relativePath.length > MAX_WORKSPACE_PATH_LENGTH) {
     throw new Error("workspace path exceeds the maximum supported length");
   }
-  let states = new Uint8Array(tokens.length + 1);
-  states[0] = 1;
-  addWorkspaceWildcardEpsilonClosure(tokens, states);
-  for (const character of relativePath) {
-    const next = new Uint8Array(tokens.length + 1);
-    for (let index = 0; index < tokens.length; index += 1) {
-      const token = tokens[index]!;
-      if (token.kind === "literal") {
-        next[index + 1] = Number(states[index] === 1 && token.value === character);
-      } else if (token.kind === "tree_wildcard") {
-        next[index + 1] = Number(states[index] === 1 || states[index + 1] === 1);
-      } else if (character !== "/") {
-        next[index + 1] = Number(states[index] === 1 || states[index + 1] === 1);
-      }
-    }
-    addWorkspaceWildcardEpsilonClosure(tokens, next);
-    states = next;
-  }
-  return states[tokens.length] === 1;
 }
 
-function addWorkspaceWildcardEpsilonClosure(
-  tokens: readonly WorkspacePatternToken[],
-  states: Uint8Array,
-) {
-  for (let index = 0; index < tokens.length; index += 1) {
-    if (states[index] === 1 && tokens[index]!.kind !== "literal") states[index + 1] = 1;
+function workspaceScanLimits(overrides: Partial<WorkspaceScanLimits>): WorkspaceScanLimits {
+  const limits = { ...DEFAULT_WORKSPACE_SCAN_LIMITS, ...overrides };
+  for (const [name, value] of Object.entries(limits)) {
+    if (!Number.isSafeInteger(value) || value <= 0) {
+      throw new Error(`workspace ${name} must be a positive integer`);
+    }
   }
+  return limits;
 }
 
 function selectWorkspacePackages(
