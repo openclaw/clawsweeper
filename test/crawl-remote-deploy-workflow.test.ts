@@ -151,10 +151,25 @@ test("crawl-remote release is maintainer-bound across two fresh runners", () => 
   assert.equal(deploy.env.PRODUCTION_ROUTE_URL, "https://reports.openclaw.ai/crawl-remote");
   assert.equal(deploy.env.DEPLOYMENT_STATUS_ATTEMPTS, "60");
   assert.equal(deploy.env.DEPLOYMENT_STATUS_DELAY_SECONDS, "5");
-  assert.equal(deploy.env.DEPLOYMENT_STATUS_TIMEOUT_SECONDS, "300");
-  assert.equal(deploy.env.WRANGLER_DEPLOY_TIMEOUT_SECONDS, "480");
-  assert.equal(deploy.env.WRANGLER_READ_TIMEOUT_SECONDS, "45");
-  assert.equal(deploy.env.WRANGLER_ROLLBACK_TIMEOUT_SECONDS, "300");
+  assert.equal(deploy.env.DEPLOYMENT_STATUS_TIMEOUT_SECONDS, "120");
+  assert.equal(deploy.env.WRANGLER_DEPLOY_TIMEOUT_SECONDS, "180");
+  assert.equal(deploy.env.WRANGLER_READ_TIMEOUT_SECONDS, "30");
+  assert.equal(deploy.env.WRANGLER_ROLLBACK_TIMEOUT_SECONDS, "180");
+  const readTimeout = Number(deploy.env.WRANGLER_READ_TIMEOUT_SECONDS);
+  const mutationTimeout = Number(deploy.env.WRANGLER_DEPLOY_TIMEOUT_SECONDS);
+  const ownershipTimeout = Number(deploy.env.DEPLOYMENT_STATUS_TIMEOUT_SECONDS);
+  const rollbackTimeout = Number(deploy.env.WRANGLER_ROLLBACK_TIMEOUT_SECONDS);
+  const proofTimeout = 180;
+  const boundedWranglerAndProofSeconds =
+    readTimeout * 7 +
+    mutationTimeout * 2 +
+    ownershipTimeout +
+    proofTimeout +
+    (readTimeout * 3 + rollbackTimeout);
+  assert.ok(
+    boundedWranglerAndProofSeconds <= deploy["timeout-minutes"] * 60 - 5 * 60,
+    "privileged command budgets must reserve at least five minutes for setup and cleanup",
+  );
   assert.equal(deploy.env.PRODUCTION_ENVIRONMENT, "crawl-remote-production");
   const environmentToken = step(deploy, "Create protected-environment audit token");
   const environmentAudit = step(deploy, "Audit protected production environment");

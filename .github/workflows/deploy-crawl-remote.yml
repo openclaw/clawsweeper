@@ -464,7 +464,7 @@ jobs:
       CLOUDFLARE_ACCOUNT_ID: 91b59577e757131d68d55a471fe32aca
       DEPLOYMENT_STATUS_ATTEMPTS: "60"
       DEPLOYMENT_STATUS_DELAY_SECONDS: "5"
-      DEPLOYMENT_STATUS_TIMEOUT_SECONDS: "300"
+      DEPLOYMENT_STATUS_TIMEOUT_SECONDS: "120"
       DEPLOY_MESSAGE: clawsweeper run ${{ github.run_id }}/${{ github.run_attempt }} main ${{ needs.preflight.outputs.deploy_sha }}
       DEPLOY_SHA: ${{ needs.preflight.outputs.deploy_sha }}
       ENV: ""
@@ -481,9 +481,9 @@ jobs:
       TOOLCHAIN_ROOT: ${{ github.workspace }}/.github/deploy/crawl-remote-toolchain
       WORKFLOW_SHA: ${{ github.sha }}
       WORKERS_DEV_URL: https://crawl-remote.services-91b.workers.dev
-      WRANGLER_DEPLOY_TIMEOUT_SECONDS: "480"
-      WRANGLER_READ_TIMEOUT_SECONDS: "45"
-      WRANGLER_ROLLBACK_TIMEOUT_SECONDS: "300"
+      WRANGLER_DEPLOY_TIMEOUT_SECONDS: "180"
+      WRANGLER_READ_TIMEOUT_SECONDS: "30"
+      WRANGLER_ROLLBACK_TIMEOUT_SECONDS: "180"
       WRANGLER_VERSION: 4.107.1
     steps:
       - name: Create protected-environment audit token
@@ -1358,7 +1358,7 @@ jobs:
           test "$CLOUDFLARE_TOKEN_SHA256" = "$(printf '%s' "$CLOUDFLARE_API_TOKEN" | sha256sum | cut -d ' ' -f 1)"
           wrangler="$TOOLCHAIN_ROOT/node_modules/.bin/wrangler"
           test "$(
-            timeout --foreground --signal=TERM --kill-after=15s \
+            timeout --foreground --signal=TERM --kill-after=5s \
               "${WRANGLER_READ_TIMEOUT_SECONDS}s" \
               "$wrangler" --version
           )" = "$WRANGLER_VERSION"
@@ -1367,7 +1367,7 @@ jobs:
           test -f "$PREVIOUS_RELEASE_SHA_PATH"
           test ! -e "$CONSUMED_RECEIPT_PATH"
 
-          timeout --foreground --signal=TERM --kill-after=15s \
+          timeout --foreground --signal=TERM --kill-after=5s \
             "${WRANGLER_READ_TIMEOUT_SECONDS}s" \
             "$wrangler" d1 execute crawl-remote \
             --remote \
@@ -1606,7 +1606,7 @@ jobs:
 
           mv -- "$RECEIPT_PATH" "$CONSUMED_RECEIPT_PATH"
 
-          timeout --foreground --signal=TERM --kill-after=15s \
+          timeout --foreground --signal=TERM --kill-after=5s \
             "${WRANGLER_READ_TIMEOUT_SECONDS}s" \
             "$wrangler" deployments status \
             --name crawl-remote \
@@ -1640,7 +1640,7 @@ jobs:
           PREVIOUS_VERSION_NODE
 
           set +e
-          timeout --foreground --signal=TERM --kill-after=15s \
+          timeout --foreground --signal=TERM --kill-after=5s \
             "${WRANGLER_READ_TIMEOUT_SECONDS}s" \
             "$wrangler" d1 execute crawl-remote \
             --remote \
@@ -1806,14 +1806,14 @@ jobs:
           console.log('Capability fences match the selected pre-migration states.');
           PRE_FENCE_NODE
 
-          timeout --foreground --signal=TERM --kill-after=15s \
+          timeout --foreground --signal=TERM --kill-after=5s \
             "${WRANGLER_DEPLOY_TIMEOUT_SECONDS}s" \
             "$wrangler" d1 migrations apply crawl-remote \
             --remote \
             --cwd "$RELEASE_ROOT" \
             --config wrangler.json
 
-          timeout --foreground --signal=TERM --kill-after=15s \
+          timeout --foreground --signal=TERM --kill-after=5s \
             "${WRANGLER_READ_TIMEOUT_SECONDS}s" \
             "$wrangler" d1 execute crawl-remote \
             --remote \
@@ -2060,12 +2060,12 @@ jobs:
           test ! -e "$PRE_DEPLOYMENT_RESPONSE"
           wrangler="$TOOLCHAIN_ROOT/node_modules/.bin/wrangler"
           test "$(
-            timeout --foreground --signal=TERM --kill-after=15s \
+            timeout --foreground --signal=TERM --kill-after=5s \
               "${WRANGLER_READ_TIMEOUT_SECONDS}s" \
               "$wrangler" --version
           )" = "$WRANGLER_VERSION"
 
-          timeout --foreground --signal=TERM --kill-after=15s \
+          timeout --foreground --signal=TERM --kill-after=5s \
             "${WRANGLER_READ_TIMEOUT_SECONDS}s" \
             "$wrangler" deployments status \
             --name crawl-remote \
@@ -2099,7 +2099,7 @@ jobs:
           PRE_DEPLOYMENT_NODE
 
           WRANGLER_OUTPUT_FILE_PATH="$DEPLOY_OUTPUT_PATH" \
-            timeout --foreground --signal=TERM --kill-after=15s \
+            timeout --foreground --signal=TERM --kill-after=5s \
             "${WRANGLER_DEPLOY_TIMEOUT_SECONDS}s" \
             "$wrangler" deploy bundle/index.js \
             --no-bundle \
@@ -2602,12 +2602,12 @@ jobs:
           test "$deployed_version" != "$previous_version"
           wrangler="$TOOLCHAIN_ROOT/node_modules/.bin/wrangler"
           test "$(
-            timeout --foreground --signal=TERM --kill-after=15s \
+            timeout --foreground --signal=TERM --kill-after=5s \
               "${WRANGLER_READ_TIMEOUT_SECONDS}s" \
               "$wrangler" --version
           )" = "$WRANGLER_VERSION"
 
-          timeout --foreground --signal=TERM --kill-after=15s \
+          timeout --foreground --signal=TERM --kill-after=5s \
             "${WRANGLER_READ_TIMEOUT_SECONDS}s" \
             "$wrangler" deployments status \
             --name crawl-remote \
@@ -2635,7 +2635,7 @@ jobs:
           }
           ROLLBACK_FENCE_NODE
 
-          timeout --foreground --signal=TERM --kill-after=15s \
+          timeout --foreground --signal=TERM --kill-after=5s \
             "${WRANGLER_ROLLBACK_TIMEOUT_SECONDS}s" \
             "$wrangler" rollback "$previous_version" \
             --name crawl-remote \
@@ -2644,7 +2644,7 @@ jobs:
             --cwd "$RELEASE_ROOT" \
             --config wrangler.json
 
-          timeout --foreground --signal=TERM --kill-after=15s \
+          timeout --foreground --signal=TERM --kill-after=5s \
             "${WRANGLER_READ_TIMEOUT_SECONDS}s" \
             "$wrangler" deployments status \
             --name crawl-remote \
