@@ -12,6 +12,7 @@ import {
   assertPublicationSourceIdentity,
   assertRepairDeltaBaseBinding,
   assertSourcePullRevision,
+  checkpointSourceClosureReceipt,
   checkpointedSourceClosures,
   completePendingSourceClosureReceipt,
   missingRequiredPublicationLabels,
@@ -572,23 +573,29 @@ test("planned source closure is not checkpointed until an exact publication rece
   });
   const receiptWithoutClose = checkpointedSourceClosures(publication, receipt, intent);
   assert.equal(receiptWithoutClose.size, 0);
-  const pendingReceipt = publicationReceipt({
-    validationReceiptSha256: "c".repeat(64),
+  const pendingReceipt = checkpointSourceClosureReceipt({
     publication,
-    targetPrNumber: 99,
-    mutations: [
-      {
-        operation: "begin_close_source_pull_request",
-        source: revision.url,
-        repo: revision.repo,
-        pull_number: revision.number,
-        expected_head_sha: revision.expected_head_sha,
-        expected_base_sha: revision.expected_base_sha,
-      },
-    ],
+    receipt,
+    intent,
   });
   assert.equal(checkpointedSourceClosures(publication, pendingReceipt, intent).size, 0);
   assert.deepEqual([...pendingSourceClosures(publication, pendingReceipt, intent)], [revision.url]);
+  assert.equal(
+    checkpointSourceClosureReceipt({
+      publication,
+      receipt: pendingReceipt,
+      intent,
+    }).identity_sha256,
+    pendingReceipt.identity_sha256,
+  );
+  assert.doesNotThrow(() =>
+    assertSourcePullRevision(revision, closedPull, {
+      allowClosed: new Set([
+        ...checkpointedSourceClosures(publication, pendingReceipt, intent),
+        ...pendingSourceClosures(publication, pendingReceipt, intent),
+      ]).has(revision.url),
+    }),
+  );
   const recoveredReceipt = completePendingSourceClosureReceipt({
     publication,
     receipt: pendingReceipt,
@@ -779,6 +786,14 @@ test("publication checkpoint binds source closeout and every mutation rechecks l
     publisher.indexOf("readPriorPublicationCheckpoint") <
       publisher.indexOf("assertPublicationSourceIdentity"),
   );
+  assert.match(
+    publisher,
+    /pendingSourceClosures\([\s\S]*authorizedSourceClosures[\s\S]*checkpointedClosures: authorizedSourceClosures/,
+  );
+  assert.match(
+    publisher,
+    /sourceClosureCheckpointMutations\(publication, priorCheckpoint, intent\)/,
+  );
   const closeoutStart = source.indexOf("function closeSupersededReplacementSources");
   const closeout = source.slice(
     closeoutStart,
@@ -792,9 +807,11 @@ test("publication checkpoint binds source closeout and every mutation rechecks l
     closeout,
     /publishExactPullComment\(\{[\s\S]*checkpointedClosures: completedClosures,[\s\S]*runPublicationMutation\(\{[\s\S]*revalidateSourcePullRevision\(/,
   );
+  assert.match(closeout, /source closeout lacks its durable pre-close checkpoint/);
+  assert.doesNotMatch(closeout, /sourceClosureAttemptReceiptMutation/);
   assert.match(
     closeout,
-    /sourceClosureAttemptReceiptMutation\(action\.revision\)[\s\S]*writeJson\(publicationReceiptPath, currentReceipt\)[\s\S]*"pr", "close"[\s\S]*completePendingSourceClosureReceipt\(\{[\s\S]*revision: action\.revision,[\s\S]*writeJson\(publicationReceiptPath, currentReceipt\)/,
+    /"pr", "close"[\s\S]*completePendingSourceClosureReceipt\(\{[\s\S]*revision: action\.revision,[\s\S]*writeJson\(publicationReceiptPath, currentReceipt\)/,
   );
   assert.match(
     closeout,

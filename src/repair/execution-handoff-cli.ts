@@ -2,6 +2,7 @@
 import fs from "node:fs";
 
 import {
+  checkpointPublishedReplacementSourceClosures,
   closePublishedReplacementSources,
   prepareExecutionAuthorization,
   publishValidatedExecution,
@@ -159,9 +160,28 @@ switch (command) {
     });
     break;
   }
+  case "checkpoint-source-closes": {
+    const receipt = checkpointPublishedReplacementSourceClosures({
+      root: requiredArg(args, "root"),
+      publicationReceiptPath: requiredArg(args, "publication-receipt"),
+      validationReceiptPath: requiredArg(args, "validation-receipt"),
+      expectedAuthorizationSha256: requiredArg(args, "authorization-sha256"),
+      expectedValidationReceiptSha256: requiredArg(args, "validation-receipt-sha256"),
+      expectedPublicationReceiptSha256: requiredArg(args, "publication-receipt-sha256"),
+    });
+    writeOutputs({
+      target_repo: receipt.target_repo,
+      target_pr_number: String(receipt.target_pr_number),
+      target_pr_url: receipt.target_pr_url,
+      published_head_sha: receipt.published_head_sha,
+      publication_receipt_sha256: receipt.identity_sha256,
+      source_closes_checkpointed: "1",
+    });
+    break;
+  }
   default:
     throw new Error(
-      "usage: execution-handoff <authorize|verify|seal|verify-execution|validate|verify-receipt|publish|verify-publication|close-sources> [options]",
+      "usage: execution-handoff <authorize|verify|seal|verify-execution|validate|verify-receipt|publish|verify-publication|checkpoint-source-closes|close-sources> [options]",
     );
 }
 

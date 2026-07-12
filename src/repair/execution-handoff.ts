@@ -663,7 +663,13 @@ export function publishValidatedExecution({
     expectedValidationReceiptSha256,
   });
   const checkpointedClosures = checkpointedSourceClosures(publication, priorCheckpoint, intent);
-  assertPublicationSourceIdentity({ intent, publication, checkpointedClosures });
+  const pendingClosures = pendingSourceClosures(publication, priorCheckpoint, intent);
+  const authorizedSourceClosures = new Set([...checkpointedClosures, ...pendingClosures]);
+  assertPublicationSourceIdentity({
+    intent,
+    publication,
+    checkpointedClosures: authorizedSourceClosures,
+  });
   const checkout = checkoutPreparedRepair({
     root,
     intent,
@@ -671,7 +677,7 @@ export function publishValidatedExecution({
     allowPublishedOutput: true,
   });
   const mutations: LooseRecord[] = priorCheckpoint
-    ? sourceClosureReceiptMutations(publication, priorCheckpoint, intent)
+    ? sourceClosureCheckpointMutations(publication, priorCheckpoint, intent)
     : [];
   try {
     run("gh", ["auth", "setup-git"], { cwd: checkout });
@@ -682,7 +688,7 @@ export function publishValidatedExecution({
             intent,
             publication,
             mutations,
-            checkpointedClosures,
+            checkpointedClosures: authorizedSourceClosures,
           })
         : publishReplacementRepair({
             checkout,
@@ -690,7 +696,7 @@ export function publishValidatedExecution({
             publication,
             publicationCheckpoint: priorCheckpoint,
             mutations,
-            checkpointedClosures,
+            checkpointedClosures: authorizedSourceClosures,
           });
     const receipt = publicationReceipt({
       validationReceiptSha256: validationReceipt.identity_sha256,
@@ -922,6 +928,19 @@ function sourceClosureReceiptMutations(
   return sourceClosureReceiptState(publication, receipt, intent).completed;
 }
 
+function sourceClosureCheckpointMutations(
+  publication: PreparedPublication,
+  receipt: PublicationReceipt,
+  intent: ExecutionIntent,
+): LooseRecord[] {
+  sourceClosureReceiptState(publication, receipt, intent);
+  return receipt.mutations.filter((mutation) =>
+    ["begin_close_source_pull_request", "close_source_pull_request"].includes(
+      String(mutation.operation ?? ""),
+    ),
+  );
+}
+
 function sourceClosureReceiptState(
   publication: PreparedPublication,
   receipt: PublicationReceipt,
@@ -986,6 +1005,37 @@ function sourceClosureAttemptReceiptMutation(revision: SourcePullRevision): Loos
   };
 }
 
+export function checkpointSourceClosureReceipt({
+  publication,
+  receipt,
+  intent,
+}: {
+  publication: PreparedPublication;
+  receipt: PublicationReceipt;
+  intent: ExecutionIntent;
+}): PublicationReceipt {
+  if (receipt.operation !== "open_pull_request") return receipt;
+  const completedClosures = checkpointedSourceClosures(publication, receipt, intent);
+  const pendingClosures = pendingSourceClosures(publication, receipt, intent);
+  const mutations = [...receipt.mutations];
+  for (const action of preparedSourceClosureActions(publication, intent)) {
+    if (
+      action.operation !== "close" ||
+      completedClosures.has(action.source.url) ||
+      pendingClosures.has(action.source.url)
+    ) {
+      continue;
+    }
+    mutations.push(sourceClosureAttemptReceiptMutation(action.revision));
+  }
+  return publicationReceipt({
+    validationReceiptSha256: receipt.validation_receipt_sha256,
+    publication,
+    targetPrNumber: receipt.target_pr_number,
+    mutations,
+  });
+}
+
 export function completePendingSourceClosureReceipt({
   publication,
   receipt,
@@ -1020,6 +1070,54 @@ function sourceClosureReceiptMutation(revision: SourcePullRevision): LooseRecord
     expected_head_sha: revision.expected_head_sha,
     expected_base_sha: revision.expected_base_sha,
   };
+}
+
+export function checkpointPublishedReplacementSourceClosures({
+  root,
+  publicationReceiptPath,
+  validationReceiptPath,
+  expectedAuthorizationSha256,
+  expectedValidationReceiptSha256,
+  expectedPublicationReceiptSha256,
+}: {
+  root: string;
+  publicationReceiptPath: string;
+  validationReceiptPath: string;
+  expectedAuthorizationSha256: string;
+  expectedValidationReceiptSha256: string;
+  expectedPublicationReceiptSha256: string;
+}): PublicationReceipt {
+  const receipt = verifyPublishedReceipt({
+    root,
+    publicationReceiptPath,
+    validationReceiptPath,
+    expectedAuthorizationSha256,
+    expectedValidationReceiptSha256,
+    expectedPublicationReceiptSha256,
+  });
+  if (receipt.operation !== "open_pull_request") return receipt;
+
+  const intent = readExecutionIntent(root);
+  const publication = verifyAuthorizedPreparedPublication(root, expectedAuthorizationSha256);
+  const checkpointedClosures = checkpointedSourceClosures(publication, receipt, intent);
+  const pendingClosures = pendingSourceClosures(publication, receipt, intent);
+  const authorizedClosedSources = new Set([...checkpointedClosures, ...pendingClosures]);
+  assertPublicationSourceIdentity({
+    intent,
+    publication,
+    checkpointedClosures: authorizedClosedSources,
+  });
+  ensurePublishedReplacementAvailable({
+    cwd: root,
+    intent,
+    publication,
+    publicationCheckpoint: receipt,
+    targetPrNumber: receipt.target_pr_number,
+    checkpointedClosures: authorizedClosedSources,
+  });
+  const checkpoint = checkpointSourceClosureReceipt({ publication, receipt, intent });
+  writeJson(publicationReceiptPath, checkpoint);
+  return checkpoint;
 }
 
 export function closePublishedReplacementSources({
@@ -2192,20 +2290,7 @@ function closeSupersededReplacementSources({
   const revisions = new Map(
     sourcePullRevisions(intent).map((revision) => [revision.url, revision]),
   );
-  const actions = publication.superseded_source_actions.map((action) => {
-    const source = parsePullRequestUrl(action.source);
-    if (!source || source.repo !== intent.target_repo || !intent.source_prs.includes(source.url)) {
-      throw new Error("prepared source closeout redirected outside the authorized source set");
-    }
-    if (!["comment", "close"].includes(String(action.operation ?? ""))) {
-      throw new Error("prepared source closeout contains an unsupported operation");
-    }
-    const revision = revisions.get(source.url);
-    if (!revision) {
-      throw new Error("prepared source closeout is missing its authorized source revision");
-    }
-    return { source, revision, operation: String(action.operation) };
-  });
+  const actions = preparedSourceClosureActions(publication, intent);
 
   for (const source of pendingAttempts) {
     if (completedClosures.has(source)) continue;
@@ -2258,6 +2343,9 @@ function closeSupersededReplacementSources({
 
   for (const action of actions) {
     if (action.operation === "close") {
+      if (!completedClosures.has(action.source.url) && !pendingAttempts.has(action.source.url)) {
+        throw new Error("source closeout lacks its durable pre-close checkpoint");
+      }
       const sourcePull = revalidateSourcePullRevision(action.revision, {
         allowClosed:
           completedClosures.has(action.source.url) || pendingAttempts.has(action.source.url),
@@ -2313,19 +2401,6 @@ function closeSupersededReplacementSources({
     const sourcePull = revalidateSourcePullRevision(action.revision);
     const sourceState = String(sourcePull.state ?? "").toLowerCase();
     if (sourceState === "open") {
-      if (!pendingAttempts.has(action.source.url)) {
-        currentReceipt = publicationReceipt({
-          validationReceiptSha256: currentReceipt.validation_receipt_sha256,
-          publication,
-          targetPrNumber,
-          mutations: [
-            ...currentReceipt.mutations,
-            sourceClosureAttemptReceiptMutation(action.revision),
-          ],
-        });
-        writeJson(publicationReceiptPath, currentReceipt);
-        pendingAttempts.add(action.source.url);
-      }
       runPublicationMutation({
         intent,
         publication,
@@ -2359,6 +2434,33 @@ function closeSupersededReplacementSources({
     }
   }
   return currentReceipt;
+}
+
+function preparedSourceClosureActions(
+  publication: PreparedPublication,
+  intent: ExecutionIntent,
+): Array<{
+  source: NonNullable<ReturnType<typeof parsePullRequestUrl>>;
+  revision: SourcePullRevision;
+  operation: string;
+}> {
+  const revisions = new Map(
+    sourcePullRevisions(intent).map((revision) => [revision.url, revision]),
+  );
+  return publication.superseded_source_actions.map((action) => {
+    const source = parsePullRequestUrl(action.source);
+    if (!source || source.repo !== intent.target_repo || !intent.source_prs.includes(source.url)) {
+      throw new Error("prepared source closeout redirected outside the authorized source set");
+    }
+    if (!["comment", "close"].includes(String(action.operation ?? ""))) {
+      throw new Error("prepared source closeout contains an unsupported operation");
+    }
+    const revision = revisions.get(source.url);
+    if (!revision) {
+      throw new Error("prepared source closeout is missing its authorized source revision");
+    }
+    return { source, revision, operation: String(action.operation) };
+  });
 }
 
 function verifyPublishedPull(
