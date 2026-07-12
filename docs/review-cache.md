@@ -15,7 +15,8 @@ A structural hit requires all of the following:
 - the prior review completed with an original keep-open verdict;
 - the review is less than 14 days old;
 - the review policy and public model are unchanged;
-- the item kind and bounded source revision are unchanged;
+- the item kind and bounded source revision are unchanged, and the post-hydration
+  probe matches the hydrated title, body, labels, and human comments exactly;
 - human issue comments, bounded timeline events, PR reviews, review threads,
   and linked-item metadata are unchanged and complete;
 - no explicit relation, matching local report, Gitcrawl cluster member, or

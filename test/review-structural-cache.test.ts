@@ -9,6 +9,7 @@ import {
   reviewStructuralQuery,
   reviewStructuralRecordAtLeastAsFresh,
   reviewStructuralRecordFromGraphql,
+  reviewStructuralRecordMatchesHydratedItem,
   reviewStructuralRecordMatchesHydratedPull,
   reviewStructuralRecordMatchesObservedUpdate,
   reviewStructuralRecordsDescribeSameVerdictInput,
@@ -308,6 +309,7 @@ test("GraphQL decoder builds bounded issue and PR records", () => {
   assert.ok(issueRecord);
   assert.equal(issueRecord.kind, "issue");
   assert.equal(issueRecord.pullHeadSha, null);
+  assert.ok(issueRecord.itemStateDigest);
   assert.ok(pullRecord);
   assert.equal(pullRecord.kind, "pull_request");
   assert.equal(pullRecord.pullHeadSha, HEAD_SHA);
@@ -596,6 +598,19 @@ test("same-second human comment edits change the structural source revision", ()
   assert.ok(original);
   assert.ok(edited);
   assert.notEqual(original.sourceRevision, edited.sourceRevision);
+});
+
+test("post-hydration anchors reject same-second semantic edits", () => {
+  const node = graphqlNode("issue");
+  const hydrated = graphqlRecord("issue", node);
+  const edited = graphqlRecord("issue", {
+    ...node,
+    body: "Edited without a timestamp advance",
+  });
+  assert.ok(hydrated);
+  assert.ok(edited);
+  assert.equal(reviewStructuralRecordMatchesObservedUpdate(edited, node.updatedAt), true);
+  assert.equal(reviewStructuralRecordMatchesHydratedItem(edited, hydrated.itemStateDigest), false);
 });
 
 test("same-second review edits change the structural source revision", () => {

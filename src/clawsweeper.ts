@@ -57,6 +57,8 @@ import { stableJson } from "./stable-json.js";
 import {
   REVIEW_STRUCTURAL_CACHE_VERSION,
   reviewStructuralRecordAtLeastAsFresh,
+  reviewStructuralItemStateDigest,
+  reviewStructuralRecordMatchesHydratedItem,
   reviewStructuralRecordMatchesHydratedPull,
   reviewStructuralRecordMatchesObservedUpdate,
   reviewStructuralRecordsDescribeSameVerdictInput,
@@ -669,6 +671,7 @@ interface ItemContext {
   issue: unknown;
   comments: unknown[];
   timeline: unknown[];
+  structuralItemStateDigest?: string;
   goodFirstIssueHumanLabelState?: GoodFirstIssueHumanLabelState;
   sourceRevision?: string;
   timelineRevision?: string;
@@ -2619,6 +2622,48 @@ function itemSourceRevisionSha256(issue: unknown, comments: unknown[] = []): str
       ),
   };
   return sha256(JSON.stringify(snapshot));
+}
+
+function hydratedReviewStructuralItemStateDigest(
+  issue: unknown,
+  comments: readonly unknown[],
+): string | undefined {
+  const source = asRecord(issue);
+  const title = sourceRevisionScalar(source.title);
+  const body = sourceRevisionScalar(source.body);
+  const author = login(source.user);
+  const authorAssociation = normalizeAuthorAssociation(
+    stringOrUndefined(source.author_association),
+  );
+  const state = stringOrUndefined(source.state);
+  if (!author || !authorAssociation || !state || typeof source.locked !== "boolean") {
+    return undefined;
+  }
+  return (
+    reviewStructuralItemStateDigest({
+      titleDigest: sha256(title),
+      bodyDigest: sha256(body),
+      state,
+      locked: source.locked,
+      author,
+      authorAssociation,
+      labels: revisionLabels(source.labels),
+      comments: comments
+        .map(asRecord)
+        .filter((comment) => !isClawSweeperComment(comment))
+        .map((comment) => ({
+          updatedAt: sourceRevisionScalar(
+            comment.updated_at ?? comment.updatedAt ?? comment.created_at,
+          ),
+          author: login(comment.user) ?? stringOrUndefined(comment.author) ?? null,
+          authorAssociation:
+            normalizeAuthorAssociation(
+              stringOrUndefined(comment.author_association ?? comment.authorAssociation),
+            ) ?? null,
+          bodyDigest: sha256(sourceRevisionScalar(comment.body)),
+        })),
+    }) ?? undefined
+  );
 }
 
 function sourceRevisionScalar(value: unknown): string {
@@ -6214,6 +6259,7 @@ function reviewStructuralRecordFromMarkdown(markdown: string): ReviewStructuralR
     fingerprint: frontMatterValue(markdown, "review_structural_fingerprint") ?? "",
     kind,
     sourceRevision: frontMatterValue(markdown, "review_structural_source_revision") ?? "",
+    itemStateDigest: frontMatterValue(markdown, "review_structural_item_state_digest") ?? "",
     activityUpdatedAt: frontMatterValue(markdown, "review_structural_activity_updated_at") ?? "",
     relationSensitive: frontMatterBoolean(markdown, "review_structural_relation_sensitive"),
     targetHeadSha: frontMatterValue(markdown, "review_structural_target_head_sha") ?? "",
@@ -7451,6 +7497,13 @@ function collectItemContext(
       timelineTruncated: timelineWindow.truncated,
     },
   };
+  const structuralItemStateDigest = hydratedReviewStructuralItemStateDigest(
+    issue,
+    sourceRevisionComments,
+  );
+  if (structuralItemStateDigest) {
+    context.structuralItemStateDigest = structuralItemStateDigest;
+  }
   if (options.reviewCacheDigest) {
     context.timelineRevision = sha256(
       stableJson(reviewTimelineDigestParts((fullTimeline ?? timeline).map(compactTimelineEvent))),
@@ -18902,6 +18955,11 @@ function updateReviewStructuralFrontMatter(
   );
   next = replaceFrontMatterValue(
     next,
+    "review_structural_item_state_digest",
+    record?.itemStateDigest ?? "unknown",
+  );
+  next = replaceFrontMatterValue(
+    next,
     "review_structural_activity_updated_at",
     record?.activityUpdatedAt ?? "unknown",
   );
@@ -19053,6 +19111,7 @@ review_cache_hit: false
 review_structural_cache_version: ${options.structuralRecord?.version ?? "unknown"}
 review_structural_fingerprint: ${options.structuralRecord?.fingerprint ?? "unknown"}
 review_structural_source_revision: ${options.structuralRecord?.sourceRevision ?? "unknown"}
+review_structural_item_state_digest: ${options.structuralRecord?.itemStateDigest ?? "unknown"}
 review_structural_activity_updated_at: ${options.structuralRecord?.activityUpdatedAt ?? "unknown"}
 review_structural_relation_sensitive: ${
     options.structuralRecord ? options.structuralRecord.relationSensitive : "unknown"
@@ -19878,6 +19937,10 @@ function reviewCommand(args: Args): void {
           });
           if (
             reviewStructuralRecordMatchesObservedUpdate(candidate, contextItemUpdatedAt) &&
+            reviewStructuralRecordMatchesHydratedItem(
+              candidate,
+              context.structuralItemStateDigest,
+            ) &&
             (item.kind !== "pull_request" ||
               reviewStructuralRecordMatchesHydratedPull(
                 candidate,

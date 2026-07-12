@@ -76,6 +76,7 @@ export interface ReviewStructuralRecord {
   fingerprint: string;
   kind: ReviewStructuralKind;
   sourceRevision: string;
+  itemStateDigest: string;
   activityUpdatedAt: string;
   relationSensitive: boolean;
   targetHeadSha: string;
@@ -95,6 +96,20 @@ export interface ReviewStructuralPullState {
   deletions: number;
   changedFiles: number;
   commitCount: number;
+}
+
+export interface ReviewStructuralItemState {
+  titleDigest: string;
+  bodyDigest: string;
+  state: string;
+  locked: boolean;
+  author: string;
+  authorAssociation: string;
+  labels: readonly string[];
+  comments: readonly Pick<
+    ReviewStructuralActivity,
+    "updatedAt" | "author" | "authorAssociation" | "bodyDigest"
+  >[];
 }
 
 export interface ReviewStructuralPriorReview {
@@ -796,6 +811,51 @@ function recordFingerprint(record: Omit<ReviewStructuralRecord, "fingerprint">):
   return sha256(stableJson(record));
 }
 
+export function reviewStructuralItemStateDigest(item: ReviewStructuralItemState): string | null {
+  if (
+    !DIGEST_PATTERN.test(item.titleDigest) ||
+    !DIGEST_PATTERN.test(item.bodyDigest) ||
+    !item.state ||
+    item.state.length > 64 ||
+    !item.author ||
+    item.author.length > 128 ||
+    !item.authorAssociation ||
+    item.authorAssociation.length > 64 ||
+    item.labels.length > 100 ||
+    item.comments.length > 100 ||
+    item.comments.some(
+      (comment) =>
+        !validTimestamp(comment.updatedAt) ||
+        (comment.author !== null && comment.author.length > 128) ||
+        (comment.authorAssociation !== null && comment.authorAssociation.length > 64) ||
+        comment.bodyDigest === null ||
+        !DIGEST_PATTERN.test(comment.bodyDigest),
+    )
+  ) {
+    return null;
+  }
+  const comments = item.comments
+    .map((comment) => ({
+      updatedAt: comment.updatedAt,
+      author: comment.author?.toLowerCase() ?? null,
+      authorAssociation: comment.authorAssociation?.toUpperCase() ?? null,
+      bodyDigest: comment.bodyDigest,
+    }))
+    .sort((left, right) => stableJson(left).localeCompare(stableJson(right)));
+  return sha256(
+    stableJson({
+      titleDigest: item.titleDigest,
+      bodyDigest: item.bodyDigest,
+      state: item.state.toUpperCase(),
+      locked: item.locked,
+      author: item.author.toLowerCase(),
+      authorAssociation: item.authorAssociation.toUpperCase(),
+      labels: [...item.labels].map((label) => label.toLowerCase()).sort(),
+      comments,
+    }),
+  );
+}
+
 function normalizedMergeable(value: ReviewStructuralPullState["mergeable"]): string | null {
   if (value === true) return "MERGEABLE";
   if (value === false) return "CONFLICTING";
@@ -911,10 +971,22 @@ export function createReviewStructuralRecord(
   } else if (snapshot.pull !== null) {
     return null;
   }
+  const itemStateDigest = reviewStructuralItemStateDigest({
+    titleDigest: snapshot.titleDigest,
+    bodyDigest: snapshot.bodyDigest,
+    state: snapshot.state,
+    locked: snapshot.locked,
+    author: snapshot.author,
+    authorAssociation: snapshot.authorAssociation,
+    labels: snapshot.labels,
+    comments: snapshot.comments,
+  });
+  if (!itemStateDigest) return null;
   const recordWithoutFingerprint = {
     version: REVIEW_STRUCTURAL_CACHE_VERSION,
     kind: snapshot.kind,
     sourceRevision: sourceRevision(snapshot),
+    itemStateDigest,
     activityUpdatedAt: snapshot.activityUpdatedAt,
     relationSensitive: snapshot.relationSensitive,
     targetHeadSha: snapshot.targetHeadSha,
@@ -938,6 +1010,7 @@ export function validReviewStructuralRecord(
     record.version !== REVIEW_STRUCTURAL_CACHE_VERSION ||
     !DIGEST_PATTERN.test(record.fingerprint) ||
     !DIGEST_PATTERN.test(record.sourceRevision) ||
+    !DIGEST_PATTERN.test(record.itemStateDigest) ||
     !validTimestamp(record.activityUpdatedAt) ||
     typeof record.relationSensitive !== "boolean" ||
     !SHA_PATTERN.test(record.targetHeadSha) ||
@@ -990,6 +1063,18 @@ export function reviewStructuralRecordMatchesObservedUpdate(
   );
 }
 
+export function reviewStructuralRecordMatchesHydratedItem(
+  record: ReviewStructuralRecord | null,
+  itemStateDigest: string | undefined,
+): record is ReviewStructuralRecord {
+  return (
+    validReviewStructuralRecord(record) &&
+    typeof itemStateDigest === "string" &&
+    DIGEST_PATTERN.test(itemStateDigest) &&
+    record.itemStateDigest === itemStateDigest
+  );
+}
+
 export function reviewStructuralRecordMatchesHydratedPull(
   record: ReviewStructuralRecord | null,
   pull: ReviewStructuralPullState | null,
@@ -1008,6 +1093,7 @@ export function reviewStructuralRecordsDescribeSameVerdictInput(
     reviewStructuralRecordAtLeastAsFresh(current, anchor.activityUpdatedAt) &&
     anchor.kind === current.kind &&
     anchor.sourceRevision === current.sourceRevision &&
+    anchor.itemStateDigest === current.itemStateDigest &&
     anchor.relationSensitive === current.relationSensitive &&
     anchor.targetHeadSha === current.targetHeadSha &&
     anchor.pullHeadSha === current.pullHeadSha &&
