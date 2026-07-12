@@ -4,6 +4,7 @@ import { validateRepairContractShape } from "./repair-contract.js";
 import fs from "node:fs";
 import path from "node:path";
 import { parseArgs, parseJob, repoRoot } from "./lib.js";
+import { isPassedStagedProofBundle } from "./staged-proof-gates.js";
 
 const CLOSE_ACTIONS = new Set([
   "close",
@@ -441,6 +442,10 @@ function validateMergePreflight(
       if (!Array.isArray(preflight[key]) || preflight[key].length === 0) {
         failures.push(`${target} merge_preflight.${key} must be a non-empty list`);
       }
+    }
+    const validationProof = preflight.validation_proof;
+    if (validationProof != null && !isPassedStagedProofBundle(validationProof)) {
+      failures.push(`${target} merge_preflight.validation_proof must contain passed staged runs`);
     }
     const codexReview = preflight.codex_review;
     if (!codexReview || typeof codexReview !== "object") {

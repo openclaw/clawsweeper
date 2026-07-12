@@ -31,6 +31,7 @@ import {
   buildRepairSquashMergeMessage,
   writeRepairSquashMergeBody,
 } from "./repair-merge-message.js";
+import { isPassedStagedProofBundle } from "./staged-proof-gates.js";
 import { compactText as compactPlainText } from "./text-utils.js";
 
 const PASSING_CHECK_CONCLUSIONS = new Set(["SUCCESS", "SKIPPED", "NEUTRAL"]);
@@ -542,6 +543,10 @@ function validateMergePreflight(preflight: LooseRecord) {
   }
   if (!Array.isArray(preflight.validation_commands) || preflight.validation_commands.length === 0) {
     return "merge validation commands are missing";
+  }
+  const validationProof = preflight.validation_proof;
+  if (validationProof != null && !isPassedStagedProofBundle(validationProof)) {
+    return "staged validation proof is incomplete or failed";
   }
   const codexReview = preflight.codex_review;
   if (!codexReview || codexReview.command !== "/review")

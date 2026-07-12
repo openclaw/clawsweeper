@@ -185,10 +185,11 @@ export function buildStagedProofPlan({
   const commandsOut: StagedProofPlanCommand[] = [];
   for (const entry of ordered) {
     const previous = commandsOut.at(-1) ?? null;
-    const subsumedBy =
-      commandsOut.find((candidate) =>
-        subsumption.get(commandKey(candidate.parts))?.has(commandKey(entry.command.parts)),
-      ) ?? null;
+    const subsumedBy = canApplySubsumption(entry.command, entry.classification.stage, risk)
+      ? (commandsOut.find((candidate) =>
+          subsumption.get(commandKey(candidate.parts))?.has(commandKey(entry.command.parts)),
+        ) ?? null)
+      : null;
     commandsOut.push({
       id: `proof-${commandsOut.length + 1}-${entry.digest.slice(0, 12)}`,
       command_digest: entry.digest,
@@ -259,7 +260,9 @@ export function executeStagedProofPlan(
     const elapsed = Math.max(0, nowMs() - startedAt);
     const remainingBudget = Math.max(0, budgetMs - elapsed);
     if (remainingBudget <= 0) {
-      const error = new Error(`staged proof runtime budget exhausted before ${command.id}`);
+      const error = new Error(
+        `validation command failed (${command.command_kind}): staged proof runtime budget exhausted before ${command.id}`,
+      );
       return failProofPlan({
         plan,
         command,
@@ -341,18 +344,45 @@ export function stagedProofPlanArtifact(plan: StagedProofPlan) {
 
 export function stagedProofBundle(traces: readonly StagedProofTrace[]) {
   const bounded = traces.slice(-8);
+  const latest = bounded.at(-1) ?? null;
   return {
     schema_version: STAGED_PROOF_SCHEMA_VERSION,
-    status: bounded.some((trace) => trace.status === "failed") ? "failed" : "passed",
+    status: latest?.status ?? "failed",
     runs: bounded,
     summary: {
       runs: bounded.length,
+      failed_runs: bounded.filter((trace) => trace.status === "failed").length,
       passed: bounded.reduce((sum, trace) => sum + trace.summary.passed, 0),
       failed: bounded.reduce((sum, trace) => sum + trace.summary.failed, 0),
       skipped: bounded.reduce((sum, trace) => sum + trace.summary.skipped, 0),
       total_duration_ms: bounded.reduce((sum, trace) => sum + trace.summary.total_duration_ms, 0),
     },
   };
+}
+
+export function isPassedStagedProofBundle(value: unknown): boolean {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const bundle = value as Record<string, unknown>;
+  if (
+    bundle.schema_version !== STAGED_PROOF_SCHEMA_VERSION ||
+    bundle.status !== "passed" ||
+    !Array.isArray(bundle.runs) ||
+    bundle.runs.length === 0 ||
+    bundle.runs.length > 8 ||
+    !bundle.runs.every(isStagedProofTrace)
+  ) {
+    return false;
+  }
+  if (!bundle.summary || typeof bundle.summary !== "object" || Array.isArray(bundle.summary)) {
+    return false;
+  }
+  const latest = bundle.runs.at(-1);
+  return (
+    Boolean(latest) &&
+    typeof latest === "object" &&
+    !Array.isArray(latest) &&
+    (latest as Record<string, unknown>).status === "passed"
+  );
 }
 
 export function stagedProofSummary(value: {
@@ -444,6 +474,40 @@ function buildTrace(
       total_duration_ms: totalDurationMs,
     },
   };
+}
+
+function isStagedProofTrace(value: unknown): boolean {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const trace = value as Record<string, unknown>;
+  if (
+    trace.schema_version !== STAGED_PROOF_SCHEMA_VERSION ||
+    !/^[a-f0-9]{64}$/.test(String(trace.plan_id ?? "")) ||
+    !["passed", "failed"].includes(String(trace.status ?? "")) ||
+    !Array.isArray(trace.commands) ||
+    trace.commands.length === 0 ||
+    trace.commands.length > MAX_STAGED_PROOF_COMMANDS
+  ) {
+    return false;
+  }
+  const statuses: string[] = [];
+  const commandsValid = trace.commands.every((entry) => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) return false;
+    const command = entry as Record<string, unknown>;
+    statuses.push(String(command.status ?? ""));
+    return (
+      typeof command.stage === "string" &&
+      /^[a-f0-9]{64}$/.test(String(command.command_digest ?? "")) &&
+      typeof command.command_kind === "string" &&
+      ["passed", "failed", "skipped_prerequisite", "skipped_subsumed"].includes(
+        String(command.status ?? ""),
+      ) &&
+      Number.isFinite(Number(command.duration_ms))
+    );
+  });
+  if (!commandsValid) return false;
+  return trace.status === "passed"
+    ? statuses.includes("passed") && !statuses.includes("failed")
+    : statuses.includes("failed");
 }
 
 export function stagedProofRiskForPaths(paths: readonly string[]): StagedProofRisk {
@@ -548,6 +612,16 @@ function stageRank(stage: StagedProofStage, risk: StagedProofRisk): number {
   return (risk.level === "narrow" ? narrow : elevated).indexOf(stage);
 }
 
+function canApplySubsumption(
+  command: StagedProofCommandInput,
+  stage: StagedProofStage,
+  risk: StagedProofRisk,
+) {
+  if (risk.level === "elevated" || command.canonical) return false;
+  if (stage === "repository_integrity") return false;
+  return !isLiveProofCommand(stripEnvPrefix(command.parts));
+}
+
 export function isFocusedStagedProofCommand(parts: readonly string[]): boolean {
   const executable = parts[0];
   if (executable === "node" && parts[1] === "--test") {
@@ -603,6 +677,11 @@ function isBroadOrLiveCommand(parts: readonly string[]): boolean {
     return true;
   }
   return directVitestArgsStart(parts) >= 0 && !isFocusedStagedProofCommand(parts);
+}
+
+function isLiveProofCommand(parts: readonly string[]): boolean {
+  const script = packageScriptRequirement(parts)?.name ?? "";
+  return /(?:^|:)(?:e2e|live|docker|integration|install:e2e|parallels)(?::|$)/.test(script);
 }
 
 function packageCommandArgs(parts: readonly string[]): string[] {

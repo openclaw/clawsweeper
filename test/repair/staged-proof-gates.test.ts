@@ -4,6 +4,8 @@ import test from "node:test";
 import {
   buildStagedProofPlan,
   executeStagedProofPlan,
+  isPassedStagedProofBundle,
+  stagedProofBundle,
   stagedProofPlanArtifact,
   stagedProofTraceFromError,
 } from "../../dist/repair/staged-proof-gates.js";
@@ -130,15 +132,12 @@ test("proof execution fails fast and records skipped prerequisites", () => {
 });
 
 test("only explicit toolchain contracts skip a later proof command", () => {
-  const canonical = ["pnpm", "check:changed"];
-  const broad = ["pnpm", "test:all"];
+  const integrity = ["git", "diff", "--check"];
+  const lint = ["pnpm", "lint"];
   const plan = buildStagedProofPlan({
-    commands: [
-      command(canonical, 0, { source: "changed_gate", canonical: true }),
-      command(broad, 1),
-    ],
+    commands: [command(integrity, 0, { source: "configured" }), command(lint, 1)],
     changedFiles: ["src/repair/foo.ts"],
-    subsumptionContracts: [{ command: canonical, subsumes: [broad] }],
+    subsumptionContracts: [{ command: integrity, subsumes: [lint] }],
   });
   const invoked = [];
   const result = executeStagedProofPlan(plan, {
@@ -151,7 +150,7 @@ test("only explicit toolchain contracts skip a later proof command", () => {
     },
   });
 
-  assert.deepEqual(invoked, ["pnpm:check:changed"]);
+  assert.deepEqual(invoked, ["git:diff-check"]);
   assert.deepEqual(
     result.trace.commands.map((entry) => entry.status),
     ["passed", "skipped_subsumed"],
@@ -168,6 +167,26 @@ test("arbitrary test commands are not inferred to be redundant", () => {
       command(["pnpm", "test:serial", "test/repair/foo.test.ts"], 1),
     ],
     changedFiles: ["src/repair/foo.ts"],
+  });
+
+  assert.equal(
+    plan.commands.every((entry) => entry.subsumed_by === null),
+    true,
+  );
+});
+
+test("subsumption never skips canonical, elevated-risk, or live proof", () => {
+  const integrity = ["git", "diff", "--check"];
+  const canonical = ["pnpm", "check:changed"];
+  const live = ["pnpm", "test:live"];
+  const plan = buildStagedProofPlan({
+    commands: [
+      command(integrity, 0, { source: "configured" }),
+      command(canonical, 1, { source: "changed_gate", canonical: true }),
+      command(live, 2),
+    ],
+    changedFiles: [".github/workflows/repair.yml"],
+    subsumptionContracts: [{ command: integrity, subsumes: [canonical, live] }],
   });
 
   assert.equal(
@@ -253,4 +272,33 @@ test("proof plans reject malformed or unbounded command vectors", () => {
       }),
     /exceeds 32 commands/,
   );
+});
+
+test("merge proof bundle validation fails closed", () => {
+  const plan = buildStagedProofPlan({
+    commands: [command(["git", "diff", "--check"], 0)],
+    changedFiles: [],
+  });
+  const passed = executeStagedProofPlan(plan, {
+    commandTimeoutMs: 1000,
+    budgetMs: 5000,
+    nowMs: () => 10,
+    runCommand: (entry) => ({
+      executedCommands: [entry.parts.join(" ")],
+      reason: "passed",
+    }),
+  }).trace;
+  const bundle = stagedProofBundle([passed]);
+
+  assert.equal(isPassedStagedProofBundle(bundle), true);
+  assert.equal(isPassedStagedProofBundle({ ...bundle, status: "failed" }), false);
+  assert.equal(
+    isPassedStagedProofBundle({
+      ...bundle,
+      runs: [{ ...passed, status: "failed" }],
+    }),
+    false,
+  );
+  assert.equal(isPassedStagedProofBundle({ ...bundle, runs: [] }), false);
+  assert.equal(isPassedStagedProofBundle({ ...bundle, summary: null }), false);
 });

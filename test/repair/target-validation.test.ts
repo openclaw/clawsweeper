@@ -963,7 +963,7 @@ test("bun-based target toolchain installs deps and runs configured validation", 
         cwd,
         validationOptions("openclaw/clawhub", clawhubToolchain()),
       ),
-      ["bun run check"],
+      ["git diff --check origin/main...HEAD", "git diff --check", "bun run check"],
     );
   });
 
@@ -1207,6 +1207,41 @@ test("resolveTargetRepoToolchain stays total when the config file is malformed J
   }
 });
 
+test("resolveTargetRepoToolchain loads exact proof subsumption contracts", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-proof-config-"));
+  const configPath = path.join(tmpDir, "target-repositories.json");
+  fs.writeFileSync(
+    configPath,
+    JSON.stringify({
+      repositories: [
+        {
+          target_repo: "openclaw/example",
+          package_manager: "pnpm",
+          validation_commands: [],
+          changed_gate: null,
+          proof_subsumptions: [
+            {
+              command: "git diff --check",
+              subsumes: ["pnpm lint"],
+            },
+          ],
+        },
+      ],
+    }),
+  );
+  __resetTargetRepoToolchainCache();
+  try {
+    assert.deepEqual(resolveTargetRepoToolchain("openclaw/example", configPath).proofSubsumptions, [
+      {
+        command: "git diff --check",
+        subsumes: ["pnpm lint"],
+      },
+    ]);
+  } finally {
+    __resetTargetRepoToolchainCache();
+  }
+});
+
 test("staged target proof preserves focused tests before the canonical changed gate", () => {
   const cwd = gitPackageFixture({
     "check:changed": "node check.js",
@@ -1230,6 +1265,8 @@ test("staged target proof preserves focused tests before the canonical changed g
   assert.deepEqual(
     plan.commands.map((entry) => [entry.stage, entry.command_kind]),
     [
+      ["repository_integrity", "git:diff-check"],
+      ["repository_integrity", "git:diff-check"],
       ["focused_tests", "pnpm:test:serial"],
       ["canonical_changed_surface", "pnpm:check:changed"],
     ],
@@ -1259,7 +1296,12 @@ test("staged target proof retains broad commands for elevated-risk surfaces", ()
   assert.deepEqual(plan.risk.signals, ["workflow"]);
   assert.deepEqual(
     plan.commands.map((entry) => entry.stage),
-    ["canonical_changed_surface", "broad_live_or_e2e"],
+    [
+      "repository_integrity",
+      "repository_integrity",
+      "canonical_changed_surface",
+      "broad_live_or_e2e",
+    ],
   );
 });
 
@@ -1334,7 +1376,7 @@ test("changed validation retries one transient check:changed failure", () => {
         cwd,
         validationOptions("openclaw/openclaw"),
       ),
-      ["pnpm check:changed"],
+      ["git diff --check origin/main...HEAD", "git diff --check", "pnpm check:changed"],
     );
   } finally {
     if (previous === undefined) delete process.env.CLAWSWEEPER_VALIDATION_RETRIES;
@@ -1374,7 +1416,7 @@ test("target validation strips Codex, model, and GitHub write credentials", () =
           },
         }),
       ),
-      ["pnpm check:env"],
+      ["git diff --check origin/main...HEAD", "git diff --check", "pnpm check:env"],
     );
   } finally {
     for (const [key, value] of Object.entries(previous)) restoreEnv(key, value);

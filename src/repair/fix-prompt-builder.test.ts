@@ -87,6 +87,15 @@ test("fix prompt makes Codex own the validation loop", () => {
     maxEditAttempts: 3,
     repositoryContext: "candidate_files (1):\nsrc/repair.ts (100)",
     validationCommands: ["pnpm check:changed"],
+    validationProofPlan: {
+      plan_id: "a".repeat(64),
+      risk: { level: "narrow" },
+      commands: [
+        { stage: "repository_integrity" },
+        { stage: "focused_tests" },
+        { stage: "canonical_changed_surface" },
+      ],
+    },
   });
 
   assert.match(prompt, /Validation loop:/);
@@ -101,6 +110,14 @@ test("fix prompt makes Codex own the validation loop", () => {
   assert.doesNotMatch(prompt, /always fetch latest origin\/main/);
   assert.match(prompt, /run the changed-surface validation in this checkout before returning/);
   assert.match(prompt, /expected validation commands: pnpm check:changed ; pnpm test:repair/);
+  assert.match(
+    prompt,
+    /deterministic staged proof plan aaaaaaaaaaaa: 3 command\(s\), risk=narrow, stages=repository_integrity -> focused_tests -> canonical_changed_surface/,
+  );
+  assert.match(
+    prompt,
+    /do not skip required canonical, review, security, exact-head, or live proof gates/,
+  );
   assert.match(prompt, /fix the failure and rerun until it passes/);
   assert.match(prompt, /do not report validation as passed unless it passed after your last edit/);
 });

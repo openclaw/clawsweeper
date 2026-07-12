@@ -116,15 +116,22 @@ import {
   repairBranchPushRaceReason,
 } from "./repair-branch-push-errors.js";
 import {
+  buildTargetValidationProofPlan,
   canSkipInternalCodexReviewForRepairDelta,
   classifyExternalBaseValidationFailure,
   prepareTargetToolchain,
   preflightTargetValidationPlan,
   repairDeltaValidationPlan,
   reproduceValidationFailureAtPinnedBase,
-  runAllowedValidationCommands,
+  runStagedValidationProof,
   type TargetValidationOptions,
 } from "./target-validation.js";
+import {
+  stagedProofBundle,
+  stagedProofSummary,
+  stagedProofTraceFromError,
+  type StagedProofTrace,
+} from "./staged-proof-gates.js";
 import { uniqueStrings } from "./validation-command-utils.js";
 import {
   changedFilesFromNameOnlyZ,
@@ -244,6 +251,7 @@ const codexReviewNetworkAccess = parseBooleanEnv(
 );
 let workRoot = "";
 let targetDir = "";
+const validationProofTraces: StagedProofTrace[] = [];
 
 if (!jobPath) {
   console.error(
@@ -300,11 +308,13 @@ const targetValidationOptions: TargetValidationOptions = {
   targetRepo: result.repo,
 };
 
-function currentTargetValidationOptions(): TargetValidationOptions {
+function currentTargetValidationOptions(proofSurfacePaths: string[] = []): TargetValidationOptions {
   const remainingMs = remainingFixStepBudgetMs();
   return {
     ...targetValidationOptions,
     installTimeoutMs: boundedTimeout(targetInstallTimeoutMs, remainingMs),
+    proofBudgetMs: remainingMs,
+    proofSurfacePaths,
     setupTimeoutMs: boundedTimeout(targetSetupTimeoutMs, remainingMs),
     validationTimeoutMs: boundedTimeout(targetValidationTimeoutMs, remainingMs),
   };
@@ -569,7 +579,7 @@ const validationPreflight = preflightTargetValidationPlan(
     targetDir,
     baseBranch: DEFAULT_BASE_BRANCH,
   },
-  currentTargetValidationOptions(),
+  currentTargetValidationOptions(fixArtifact.likely_files ?? []),
 );
 report.validation_preflight = validationPreflight;
 if (validationPreflight.status === "blocked") {
@@ -2069,6 +2079,25 @@ function editValidatePrepareMerge({
   const shouldRunCodexEdit = !producedChanges || reconcileWithBase;
   const repairDeltaBaseHead =
     rebaseResult?.status === "conflicts" ? (sourceHead ?? targetBaseSha) : currentHead(targetDir);
+  const proofPreviewOptions = {
+    ...currentTargetValidationOptions(fixArtifact.likely_files ?? []),
+    pinnedBaseRef: targetBaseSha,
+  };
+  const proofPreviewScope = repairDeltaValidationPlan(
+    { fixArtifact, targetDir, sourceHead: repairDeltaBaseHead },
+    proofPreviewOptions,
+  );
+  const validationProofPlan = buildTargetValidationProofPlan(
+    proofPreviewScope.commands,
+    targetDir,
+    proofPreviewScope.options,
+    baseBranch,
+  );
+  report.validation_proof_plan = validationProofPlan;
+  logProgress("prepared staged validation proof plan", {
+    plan_id: validationProofPlan.plan_id,
+    summary: stagedProofSummary(validationProofPlan),
+  });
   if (shouldRunCodexEdit) {
     for (let attempt = 1; attempt <= maxEditAttempts; attempt += 1) {
       const headBeforeAttempt = currentHead(targetDir);
@@ -2089,6 +2118,7 @@ function editValidatePrepareMerge({
             : rebaseResult,
         maxEditAttempts,
         validationCommands: validationPreflight.resolved_commands ?? [],
+        validationProofPlan,
         targetBaseSha,
         isAutomergeRepair: isAutomergeRepairJob(),
       });
@@ -2749,7 +2779,7 @@ function validateAndReviewLoop({
   let validationCommands: LooseRecord[] = [];
   for (let attempt = 1; attempt <= maxReviewAttempts; attempt += 1) {
     const validationOptions = {
-      ...currentTargetValidationOptions(),
+      ...currentTargetValidationOptions(fixArtifact.likely_files ?? []),
       pinnedBaseRef: targetBaseSha,
     };
     const validationPlan = repairDeltaValidationPlan(
@@ -2757,13 +2787,12 @@ function validateAndReviewLoop({
       validationOptions,
     );
     try {
-      validationCommands = runAllowedValidationCommands(
+      validationCommands = runTargetValidationProof(
         validationPlan.commands,
         targetDir,
         validationPlan.options,
         baseBranch,
       );
-      runDiffCheck({ targetDir, baseRef: targetBaseSha });
       if (canSkipInternalCodexReviewForRepairDelta(validationPlan)) {
         return {
           status: "passed_repair_delta_validation",
@@ -2865,13 +2894,12 @@ function validateAndReviewLoop({
         { fixArtifact, targetDir, sourceHead },
         validationOptions,
       );
-      validationCommands = runAllowedValidationCommands(
+      validationCommands = runTargetValidationProof(
         finalValidationPlan.commands,
         targetDir,
         finalValidationPlan.options,
         baseBranch,
       );
-      runDiffCheck({ targetDir, baseRef: targetBaseSha });
       return {
         status: "passed_after_final_review_fix",
         summary:
@@ -2914,7 +2942,7 @@ function validateAndReviewSynchronizedTree({
   repairDeltaPaths,
 }: LooseRecord) {
   const validationOptions = {
-    ...currentTargetValidationOptions(),
+    ...currentTargetValidationOptions(fixArtifact.likely_files ?? []),
     pinnedBaseRef: targetBaseSha,
   };
   const validationPlan = repairDeltaValidationPlan(
@@ -2923,7 +2951,7 @@ function validateAndReviewSynchronizedTree({
   );
   let validationCommands;
   try {
-    validationCommands = runAllowedValidationCommands(
+    validationCommands = runTargetValidationProof(
       validationPlan.commands,
       targetDir,
       validationPlan.options,
@@ -2952,7 +2980,6 @@ function validateAndReviewSynchronizedTree({
     }
     throw error;
   }
-  runDiffCheck({ targetDir, baseRef: targetBaseSha });
   const review = runCodexReview({
     fixArtifact,
     targetDir,
@@ -2993,10 +3020,31 @@ function isRetryableCodexReviewError(error: JsonValue) {
   );
 }
 
-function runDiffCheck({ targetDir, baseRef }: LooseRecord) {
-  run("git", ["merge-base", baseRef, "HEAD"], { cwd: targetDir });
-  run("git", ["diff", "--check", `${baseRef}...HEAD`], { cwd: targetDir });
-  run("git", ["diff", "--check"], { cwd: targetDir });
+function runTargetValidationProof(
+  commands: LooseRecord[],
+  cwd: string,
+  options: TargetValidationOptions,
+  baseBranch: string,
+) {
+  try {
+    const proof = runStagedValidationProof(commands, cwd, options, baseBranch);
+    validationProofTraces.push(proof.trace);
+    logProgress("staged validation proof passed", {
+      plan_id: proof.trace.plan_id,
+      summary: stagedProofSummary(proof.trace),
+    });
+    return proof.commands;
+  } catch (error) {
+    const trace = stagedProofTraceFromError(error);
+    if (trace) {
+      validationProofTraces.push(trace);
+      logProgress("staged validation proof failed", {
+        plan_id: trace.plan_id,
+        summary: stagedProofSummary(trace),
+      });
+    }
+    throw error;
+  }
 }
 
 function runCodexReview({
@@ -3030,6 +3078,7 @@ function runCodexReview({
     "- repository policy overrides fix artifact credit wording: for openclaw/openclaw changelog entries, do not require or re-add forbidden `Thanks @codex`, `Thanks @openclaw`, or `Thanks @steipete` attribution; PR body/history/source links are acceptable credit for those source authors.",
     "",
     `Validation commands actually run: ${validationCommands.join("; ") || "none"}`,
+    `Staged validation proof: ${stagedProofSummary(stagedProofBundle(validationProofTraces))}`,
     validationPlan
       ? `Validation scope: ${validationPlan.scope}; ${validationPlan.reason}; changed files: ${(validationPlan.changed_files ?? []).join(", ") || "none"}`
       : "",
@@ -3229,6 +3278,9 @@ function runCodexValidationFix({
     "- prefer the smallest lint/typecheck/test fix over broad rewrites.",
     "",
     `Validation commands attempted: ${validationCommands.join("; ") || "none"}`,
+    validationProofTraces.length > 0
+      ? `Latest staged proof: ${stagedProofSummary(validationProofTraces.at(-1)!)}`
+      : "",
     validationPlan
       ? `Validation scope: ${validationPlan.scope}; ${validationPlan.reason}; changed files: ${(validationPlan.changed_files ?? []).join(", ") || "none"}`
       : "",
@@ -3315,6 +3367,7 @@ function buildMergePreflight({ fixArtifact, codexReview }: LooseRecord) {
         : [`Codex /review passed after agentic fix loop: ${codexReview.summary ?? "clean"}`],
     },
     validation_commands: validationCommands,
+    validation_proof: stagedProofBundle(validationProofTraces),
     final_base_sync: codexReview.final_base_sync ?? null,
   };
 }
@@ -3641,6 +3694,9 @@ function findLatestResultPath() {
 
 function writeReport(report: LooseRecord, resultPath: string) {
   const reportPath = fixExecutionReportPath(resultPath);
+  if (validationProofTraces.length > 0) {
+    report.validation_proof = stagedProofBundle(validationProofTraces);
+  }
   const debugDir = copyFixDebugArtifacts(path.dirname(reportPath));
   if (debugDir) {
     report.debug_artifacts = path.relative(repoRoot(), debugDir);

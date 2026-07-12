@@ -25,6 +25,7 @@ export function buildFixPrompt({
   rebaseResult,
   maxEditAttempts,
   validationCommands,
+  validationProofPlan,
   targetBaseSha,
   isAutomergeRepair = false,
 }: LooseRecord) {
@@ -58,7 +59,12 @@ export function buildFixPrompt({
     "- exec-adjacent bugs are allowed when the fix is ordinary correctness or hardening and does not redefine the security boundary;",
     "- before returning, verify git status/diff/log show a merge-ready branch state.",
     "",
-    renderValidationLoopGuidance({ fixArtifact, validationCommands, isAutomergeRepair }),
+    renderValidationLoopGuidance({
+      fixArtifact,
+      validationCommands,
+      validationProofPlan,
+      isAutomergeRepair,
+    }),
     "",
     `Mode: ${mode}`,
     `Branch: ${branch}`,
@@ -223,6 +229,7 @@ function renderAutomergeRepairGuidance() {
 function renderValidationLoopGuidance({
   fixArtifact,
   validationCommands = [],
+  validationProofPlan = null,
   isAutomergeRepair = false,
 }: LooseRecord) {
   const commands = [
@@ -240,6 +247,7 @@ function renderValidationLoopGuidance({
       commands.length > 0
         ? `- validation command hints: ${commands.join(" ; ")}`
         : "- validation command hints: discover the narrow changed-surface command from package scripts, PR comments, check logs, and the artifact;",
+      renderStagedProofPlanGuidance(validationProofPlan),
       "- treat artifact validation commands as hints unless they reproduce or prove the failing PR checks;",
       "- if validation fails, fix the failure and rerun until it passes or an external blocker is proven;",
       "- do not report validation as passed unless it passed after your last edit in this checkout;",
@@ -253,10 +261,21 @@ function renderValidationLoopGuidance({
     commands.length > 0
       ? `- expected validation commands: ${commands.join(" ; ")}`
       : "- expected validation commands: discover the narrow changed-surface command from package scripts and the artifact;",
+    renderStagedProofPlanGuidance(validationProofPlan),
     "- if validation fails, fix the failure and rerun until it passes or an external blocker is proven;",
     "- do not report validation as passed unless it passed after your last edit in this checkout;",
     "- include the exact validation commands and final pass/fail result in your final message.",
   ].join("\n");
+}
+
+function renderStagedProofPlanGuidance(plan: LooseRecord | null) {
+  if (!plan || !Array.isArray(plan.commands)) return "";
+  const stages = [
+    ...new Set(
+      plan.commands.map((command: JsonValue) => String(command?.stage ?? "")).filter(Boolean),
+    ),
+  ];
+  return `- deterministic staged proof plan ${String(plan.plan_id ?? "").slice(0, 12)}: ${plan.commands.length} command(s), risk=${plan.risk?.level ?? "unknown"}, stages=${stages.join(" -> ") || "none"}; execute cheap prerequisites first, fail fast, and do not skip required canonical, review, security, exact-head, or live proof gates;`;
 }
 
 function renderChangelogRule(fixArtifact: LooseRecord) {

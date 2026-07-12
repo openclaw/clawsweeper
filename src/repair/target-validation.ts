@@ -451,7 +451,22 @@ function createTargetValidationProofPlan(
   const surfaceHints = options.proofSurfacePaths ?? [];
   const risk = stagedProofRiskForPaths([...changedFiles, ...surfaceHints]);
   const toolchain = getToolchain(options);
-  const resolved: StagedProofCommandInput[] = [];
+  const resolved: StagedProofCommandInput[] = [
+    {
+      parts: ["git", "diff", "--check", `${baseRef}...HEAD`],
+      source: "configured",
+      canonical: false,
+      required: true,
+      originalIndex: -2,
+    },
+    {
+      parts: ["git", "diff", "--check"],
+      source: "configured",
+      canonical: false,
+      required: true,
+      originalIndex: -1,
+    },
+  ];
 
   for (const [originalIndex, command] of requiredValidationCommandEntries(
     commands,
