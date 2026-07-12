@@ -365,10 +365,14 @@ test("repair workflow binds one run through no-credential proof and token-only m
   assert.equal(
     [
       ...authorize.matchAll(
-        /--expected-producer-attempt "\$\{\{ steps\.authorization_publication_artifact\.outputs\.producer_attempt \}\}"/g,
+        /--expected-producer-attempt "\$\{\{ steps\.prior_worker_artifact\.outputs\.producer_attempt \}\}"/g,
       ),
     ].length,
-    4,
+    3,
+  );
+  assert.match(
+    authorize,
+    /Resolve prior checkpoint worker artifact[\s\S]*?--max-producer-attempt "\$\{\{ steps\.authorization_publication_artifact\.outputs\.producer_attempt \}\}"[\s\S]*?--required-prefixes "clawsweeper-repair-authorized,clawsweeper-repair-execution,clawsweeper-repair-validation"/,
   );
   assert.match(
     authorize,
