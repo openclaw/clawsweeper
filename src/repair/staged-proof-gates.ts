@@ -3,6 +3,8 @@ import { createHash } from "node:crypto";
 import {
   isExpensivePnpmValidation,
   looksLikePathArgument,
+  packageManagerInvocation,
+  packageScriptArguments,
   packageScriptRequirement,
   stripEnvPrefix,
   vitestPathFilterIndexes,
@@ -54,6 +56,7 @@ export type StagedProofCommandSource =
 
 export type StagedProofCommandInput = {
   parts: readonly string[];
+  displayParts?: readonly string[];
   source: StagedProofCommandSource;
   canonical: boolean;
   required: boolean;
@@ -70,6 +73,7 @@ export type StagedProofPlanCommand = {
   command_digest: string;
   command_kind: string;
   parts: string[];
+  display_parts: string[];
   stage: StagedProofStage;
   source: StagedProofCommandSource;
   required: boolean;
@@ -174,6 +178,7 @@ export function buildStagedProofPlan({
       unique.set(key, {
         ...command,
         parts: [...command.parts],
+        displayParts: [...(command.displayParts ?? command.parts)],
       });
       continue;
     }
@@ -228,6 +233,7 @@ export function buildStagedProofPlan({
       command_digest: entry.digest,
       command_kind: commandKind(entry.command.parts),
       parts: [...entry.command.parts],
+      display_parts: [...(entry.command.displayParts ?? entry.command.parts)],
       stage: entry.classification.stage,
       source: entry.command.source,
       required: entry.command.required,
@@ -555,8 +561,8 @@ function failProofPlan({
       source: later.source,
       status: "skipped_prerequisite",
       duration_ms: 0,
-      reason: `prerequisite ${command.id} failed`,
-      prerequisite: command.id,
+      reason: `prerequisite ${later.prerequisite ?? command.id} did not pass after ${command.id} failed`,
+      prerequisite: later.prerequisite,
       subsumed_by: later.subsumed_by,
       subsumption_contract_digest: later.subsumption_contract_digest,
     });
@@ -704,7 +710,10 @@ function isStagedProofTrace(value: unknown): boolean {
     }
     if (
       command.status === "skipped_prerequisite" &&
-      (typeof prerequisite !== "string" || commandIds.get(prerequisite)?.status !== "failed")
+      (typeof prerequisite !== "string" ||
+        !["failed", "skipped_prerequisite"].includes(
+          String(commandIds.get(prerequisite)?.status ?? ""),
+        ))
     ) {
       return false;
     }
@@ -919,7 +928,7 @@ export function isFocusedStagedProofCommand(parts: readonly string[]): boolean {
 
   const script = packageScriptRequirement(parts)?.name ?? "";
   if (/^(?:test(?::serial)?|vitest)$/.test(script)) {
-    return packageCommandArgs(parts).some(looksLikePathArgument);
+    return packageScriptArguments(parts).some(looksLikePathArgument);
   }
   const vitestStart = directVitestArgsStart(parts);
   return vitestStart >= 0 && vitestPathFilterIndexes(parts.slice(vitestStart)).length > 0;
@@ -941,9 +950,9 @@ function isStaticCommand(parts: readonly string[]): boolean {
 }
 
 export function isBroadOrLiveStagedProofCommand(parts: readonly string[]): boolean {
-  if (parts[0] === "pnpm") {
-    const commandStart = ["-s", "--silent"].includes(parts[1] ?? "") ? 2 : 1;
-    if (isExpensivePnpmValidation(parts, commandStart, false)) return true;
+  const packageInvocation = packageManagerInvocation(parts);
+  if (packageInvocation?.executable === "pnpm") {
+    if (isExpensivePnpmValidation(parts, packageInvocation.commandIndex, false)) return true;
   }
   const script = packageScriptRequirement(parts)?.name ?? "";
   if (
@@ -968,30 +977,50 @@ export function isBroadOrLiveStagedProofCommand(parts: readonly string[]): boole
   if (parts[0] === "cargo" && parts[1] === "test" && !isFocusedStagedProofCommand(parts)) {
     return true;
   }
+  if (directPlaywrightArgsStart(parts) >= 0) return true;
   return directVitestArgsStart(parts) >= 0 && !isFocusedStagedProofCommand(parts);
 }
 
 function isLiveProofCommand(parts: readonly string[]): boolean {
   const script = packageScriptRequirement(parts)?.name ?? "";
   if (script === "qa" || script === "qa:e2e") return true;
-  if (script === "openclaw" && packageCommandArgs(parts)[0] === "qa") return true;
-  return /(?:^|:)(?:e2e|live|docker|integration|install:e2e|parallels)(?::|$)/.test(script);
-}
-
-function packageCommandArgs(parts: readonly string[]): string[] {
-  const executable = parts[0];
-  if (!["pnpm", "npm", "bun"].includes(executable ?? "")) return [];
-  let index = 1;
-  if (executable === "pnpm" && ["-s", "--silent"].includes(parts[index] ?? "")) index += 1;
-  if (parts[index] === "run") index += 1;
-  return parts.slice(index + 1);
+  if (script === "openclaw" && packageScriptArguments(parts)[0] === "qa") return true;
+  return (
+    directPlaywrightArgsStart(parts) >= 0 ||
+    /(?:^|:)(?:e2e|live|docker|integration|install:e2e|parallels)(?::|$)/.test(script)
+  );
 }
 
 function directVitestArgsStart(parts: readonly string[]): number {
-  if (parts[0] === "pnpm" && parts[1] === "exec" && parts[2] === "vitest" && parts[3] === "run") {
-    return 4;
+  const invocation = packageManagerInvocation(parts);
+  if (
+    invocation?.executable === "pnpm" &&
+    invocation.command === "exec" &&
+    invocation.args[0] === "vitest" &&
+    invocation.args[1] === "run"
+  ) {
+    return invocation.commandIndex + 3;
   }
-  if (parts[0] === "bun" && parts[1] === "run" && parts[2] === "vitest") return 3;
+  if (
+    invocation?.executable === "bun" &&
+    invocation.command === "run" &&
+    invocation.args[0] === "vitest"
+  ) {
+    return invocation.commandIndex + 2;
+  }
+  return -1;
+}
+
+function directPlaywrightArgsStart(parts: readonly string[]): number {
+  const invocation = packageManagerInvocation(parts);
+  if (
+    invocation?.executable === "pnpm" &&
+    invocation.command === "exec" &&
+    invocation.args[0] === "playwright" &&
+    invocation.args[1] === "test"
+  ) {
+    return invocation.commandIndex + 3;
+  }
   return -1;
 }
 

@@ -35,6 +35,7 @@ import {
   resolveValidationCommandEnvironment,
   stripEnvPrefix,
   uniqueStrings,
+  validateAllowedValidationCommandParts,
   vitestPathFilterIndexes,
 } from "./validation-command-utils.js";
 
@@ -391,8 +392,9 @@ export function buildTargetValidationProofPlan(
   options: TargetValidationOptions,
   baseBranch: string = DEFAULT_BASE_BRANCH,
 ) {
+  const validationEnv = targetValidationEnv();
   return stagedProofPlanArtifact(
-    createTargetValidationProofPlan(commands, cwd, options, baseBranch).plan,
+    createTargetValidationProofPlan(commands, cwd, options, baseBranch, validationEnv).plan,
   );
 }
 
@@ -402,8 +404,14 @@ export function runStagedValidationProof(
   options: TargetValidationOptions,
   baseBranch: string = DEFAULT_BASE_BRANCH,
 ): TargetValidationProofResult {
-  const { baseRef, plan } = createTargetValidationProofPlan(commands, cwd, options, baseBranch);
   const validationEnv = targetValidationEnv();
+  const { baseRef, plan } = createTargetValidationProofPlan(
+    commands,
+    cwd,
+    options,
+    baseBranch,
+    validationEnv,
+  );
   const checkoutIdentity = validationCheckoutIdentity(cwd, baseRef);
   if (checkoutIdentity.status) {
     throw new Error("staged proof requires a clean validation checkout");
@@ -432,6 +440,7 @@ export function runStagedValidationProof(
     runCommand: (command, timeoutMs) =>
       runValidationPlanCommand({
         parts: command.parts,
+        displayParts: command.display_parts,
         timeoutMs,
         cwd,
         validationEnv,
@@ -450,6 +459,7 @@ function createTargetValidationProofPlan(
   cwd: string,
   options: TargetValidationOptions,
   baseBranch: string,
+  validationEnv: NodeJS.ProcessEnv,
 ) {
   const baseRef = validationBaseRef(cwd, baseBranch, options);
   const changedFiles = gitChangedFilesFromRef(cwd, baseRef);
@@ -477,6 +487,7 @@ function createTargetValidationProofPlan(
     cwd,
     baseBranch,
     options,
+    validationEnv,
   )) {
     resolved.push(command);
   }
@@ -492,13 +503,14 @@ function createTargetValidationProofPlan(
       commands: resolved,
       changedFiles,
       surfaceHints,
-      subsumptionContracts: proofSubsumptionContracts(toolchain),
+      subsumptionContracts: proofSubsumptionContracts(toolchain, validationEnv),
     }),
   };
 }
 
 function runValidationPlanCommand({
   parts,
+  displayParts,
   timeoutMs,
   cwd,
   validationEnv,
@@ -509,6 +521,7 @@ function runValidationPlanCommand({
   checkoutIdentity,
 }: {
   parts: string[];
+  displayParts: string[];
   timeoutMs: number;
   cwd: string;
   validationEnv: NodeJS.ProcessEnv;
@@ -518,15 +531,14 @@ function runValidationPlanCommand({
   baseRef: string;
   checkoutIdentity: ValidationCheckoutIdentity;
 }) {
-  const rendered = parts.join(" ");
+  const rendered = displayParts.join(" ");
   if (executed.has(rendered)) {
     return { executedCommands: [], reason: "exact command already passed" };
   }
   const startedAt = Date.now();
   while (true) {
-    const resolvedParts = resolveValidationCommandEnvironment(parts, validationEnv);
     try {
-      run(resolvedParts[0]!, resolvedParts.slice(1), {
+      run(parts[0]!, parts.slice(1), {
         cwd,
         env: validationEnv,
         timeoutMs: remainingCommandBudget(timeoutMs, startedAt),
@@ -542,9 +554,19 @@ function runValidationPlanCommand({
       };
     } catch (error) {
       assertValidationCheckoutIdentity(cwd, baseRef, checkoutIdentity);
-      if (shouldRetryValidationCommand({ parts, error, attempts, options })) continue;
+      if (
+        shouldRetryValidationCommand({
+          parts,
+          error,
+          attempts,
+          options,
+          attemptKey: rendered,
+        })
+      ) {
+        continue;
+      }
       throw new Error(
-        `validation command failed (${parts.join(" ")}): ${compactText(error.message, 12000)}`,
+        `validation command failed (${rendered}): ${compactText(error.message, 12000)}`,
         { cause: error },
       );
     }
@@ -592,13 +614,15 @@ export function preflightTargetValidationPlan(
   const availableScripts = [...scripts].sort();
   const resolved: string[] = [];
   const requiredScripts: LooseRecord[] = [];
+  const validationEnv = targetValidationEnv();
   for (const command of resolvedRequiredValidationCommandEntries(
     fixArtifact.validation_commands ?? [],
     targetDir,
     baseBranch,
     options,
+    validationEnv,
   )) {
-    const rendered = command.parts.join(" ");
+    const rendered = (command.displayParts ?? command.parts).join(" ");
     if (!resolved.includes(rendered)) resolved.push(rendered);
     const script = packageScriptRequirement(command.parts);
     if (script) requiredScripts.push(script);
@@ -798,14 +822,20 @@ function isChangedGateStall(error: JsonValue) {
   );
 }
 
-function shouldRetryValidationCommand({ parts, error, attempts, options }: LooseRecord) {
+function shouldRetryValidationCommand({
+  parts,
+  error,
+  attempts,
+  options,
+  attemptKey,
+}: LooseRecord) {
   if (options.strictTargetValidation) return false;
   if (!isChangedGateCommand(parts, options)) return false;
   if (isChangedGateStall(error)) return false;
 
   const configuredRetries = Number.parseInt(process.env.CLAWSWEEPER_VALIDATION_RETRIES ?? "1", 10);
   const maxRetries = Number.isFinite(configuredRetries) ? Math.max(0, configuredRetries) : 1;
-  const rendered = parts.join(" ");
+  const rendered = String(attemptKey ?? parts.join(" "));
   const used = attempts.get(rendered) ?? 0;
   if (used >= maxRetries) return false;
   attempts.set(rendered, used + 1);
@@ -1052,13 +1082,24 @@ function getToolchain(options: TargetValidationOptions): TargetRepoToolchain {
 
 function proofSubsumptionContracts(
   toolchain: TargetRepoToolchain,
+  validationEnv: NodeJS.ProcessEnv,
 ): StagedProofSubsumptionContract[] {
   const out: StagedProofSubsumptionContract[] = [];
   for (const contract of toolchain.proofSubsumptions ?? []) {
     try {
+      const command = parseAllowedValidationCommand(contract.command);
       out.push({
-        command: parseAllowedValidationCommand(contract.command),
-        subsumes: contract.subsumes.map((command) => parseAllowedValidationCommand(command)),
+        command: validateAllowedValidationCommandParts(
+          resolveValidationCommandEnvironment(command, validationEnv),
+          contract.command,
+        ),
+        subsumes: contract.subsumes.map((subsumedCommand) => {
+          const parsed = parseAllowedValidationCommand(subsumedCommand);
+          return validateAllowedValidationCommandParts(
+            resolveValidationCommandEnvironment(parsed, validationEnv),
+            subsumedCommand,
+          );
+        }),
       });
     } catch {
       // Invalid repository metadata cannot weaken or block proof; ignore the contract.
@@ -1072,15 +1113,22 @@ function resolvedRequiredValidationCommandEntries(
   cwd: string,
   baseBranch: string,
   options: TargetValidationOptions,
+  validationEnv: NodeJS.ProcessEnv,
 ): StagedProofCommandInput[] {
   const toolchain = getToolchain(options);
   return requiredValidationCommandEntries(commands, cwd, options).flatMap(
     (command, originalIndex) =>
       resolveAllowedValidationCommands(command.command, cwd, baseBranch, options).map((parts) => {
+        const concreteParts = validateAllowedValidationCommandParts(
+          resolveValidationCommandEnvironment(parts, validationEnv),
+          command.command,
+        );
         const canonical =
-          command.canonical || changedGateCommandParts(toolchain.changedGate, parts) !== null;
+          command.canonical ||
+          changedGateCommandParts(toolchain.changedGate, concreteParts) !== null;
         return {
-          parts,
+          parts: concreteParts,
+          displayParts: parts,
           source:
             canonical && command.source === "artifact" ? ("changed_gate" as const) : command.source,
           canonical,

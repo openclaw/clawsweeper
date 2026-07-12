@@ -221,6 +221,20 @@ test("repair contract gates the final cumulative tree, not individual checkpoint
   assert.ok(compact < enforce && enforce < commit && commit < proof && proof < publish);
 });
 
+test("push-denied replacement fallback re-proves the compacted head before publication", () => {
+  const source = readText(path.join(process.cwd(), "src/repair/execute-fix-artifact.ts"));
+  const start = source.indexOf("function openReplacementPrFromPreparedRepairCheckout(");
+  const end = source.indexOf("function liveRepairPauseBlock(", start);
+  const fallback = source.slice(start, end);
+
+  assert.match(fallback, /sourceHead/);
+  const compact = fallback.indexOf("compactReplacementHistory(");
+  const proof = fallback.indexOf("ensureFinalStagedProof(", compact);
+  const preflight = fallback.indexOf("bindMergePreflightToStagedProof(", proof);
+  const push = fallback.indexOf("pushRecoverableBranch(", preflight);
+  assert.ok(compact < proof && proof < preflight && preflight < push);
+});
+
 test("final repair contract compares the repaired tree with the latest base", () => {
   const source = readText(path.join(process.cwd(), "src/repair/execute-fix-artifact.ts"));
   const start = source.indexOf("function enforceFinalRepairContract(");

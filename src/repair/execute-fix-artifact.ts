@@ -1068,6 +1068,7 @@ function pushRepairBranchAndUpdateStatus({
         fixArtifact,
         sourcePr,
         targetDir,
+        sourceHead,
         prep,
         fallbackReason: blockedReason,
       });
@@ -1171,6 +1172,7 @@ function openReplacementPrFromPreparedRepairCheckout({
   fixArtifact,
   sourcePr,
   targetDir,
+  sourceHead,
   prep,
   fallbackReason,
 }: LooseRecord) {
@@ -1213,6 +1215,22 @@ function openReplacementPrFromPreparedRepairCheckout({
   });
   prep.commit = historyCompaction.commit;
   prep.history_compaction = historyCompaction;
+  const validatedBaseSha = run("git", ["rev-parse", `origin/${baseBranch}`], {
+    cwd: targetDir,
+  }).trim();
+  ensureFinalStagedProof({
+    fixArtifact,
+    targetDir,
+    baseBranch,
+    sourceHead,
+    validatedHeadSha: prep.commit,
+    validatedBaseSha,
+  });
+  prep.merge_preflight = bindMergePreflightToStagedProof({
+    preflight: prep.merge_preflight,
+    validatedHeadSha: prep.commit,
+    validatedBaseSha,
+  });
   const mergedSourceSkip = skipMergedSourceReplacementWithoutDiff({
     mergedSource,
     targetDir,
@@ -3405,6 +3423,42 @@ function buildMergePreflight({
   const validationCommands = codexReview.validation_commands_run?.length
     ? codexReview.validation_commands_run
     : fixArtifact.validation_commands;
+  return bindMergePreflightToStagedProof({
+    preflight: {
+      target: null,
+      security_status: "cleared",
+      security_evidence: [
+        "ClawSweeper Repair scoped security scan found no security-sensitive fix target, source PR, or fix artifact scope.",
+      ],
+      comments_status: "resolved",
+      comments_evidence: [
+        "Agentic fix pass addressed human PR/review comments named in the fix artifact.",
+      ],
+      bot_comments_status: "resolved",
+      bot_comments_evidence: [
+        "Agentic fix pass addressed Greptile/Codex/Asile/CodeRabbit/Copilot-style findings named in the fix artifact.",
+      ],
+      codex_review: {
+        command: "/review",
+        status: codexReview.status === "clean" ? "clean" : "passed",
+        findings_addressed: true,
+        evidence: codexReview.evidence?.length
+          ? codexReview.evidence
+          : [`Codex /review passed after agentic fix loop: ${codexReview.summary ?? "clean"}`],
+      },
+      validation_commands: validationCommands,
+      final_base_sync: codexReview.final_base_sync ?? null,
+    },
+    validatedHeadSha,
+    validatedBaseSha,
+  });
+}
+
+function bindMergePreflightToStagedProof({
+  preflight,
+  validatedHeadSha,
+  validatedBaseSha,
+}: LooseRecord) {
   const validationProof = stagedProofBundle(validationProofTraces);
   if (
     !isPassedStagedProofBundle(validationProof) ||
@@ -3414,32 +3468,10 @@ function buildMergePreflight({
     throw new Error("merge preflight staged proof is not bound to the final repair head and base");
   }
   return {
-    target: null,
-    security_status: "cleared",
-    security_evidence: [
-      "ClawSweeper Repair scoped security scan found no security-sensitive fix target, source PR, or fix artifact scope.",
-    ],
-    comments_status: "resolved",
-    comments_evidence: [
-      "Agentic fix pass addressed human PR/review comments named in the fix artifact.",
-    ],
-    bot_comments_status: "resolved",
-    bot_comments_evidence: [
-      "Agentic fix pass addressed Greptile/Codex/Asile/CodeRabbit/Copilot-style findings named in the fix artifact.",
-    ],
-    codex_review: {
-      command: "/review",
-      status: codexReview.status === "clean" ? "clean" : "passed",
-      findings_addressed: true,
-      evidence: codexReview.evidence?.length
-        ? codexReview.evidence
-        : [`Codex /review passed after agentic fix loop: ${codexReview.summary ?? "clean"}`],
-    },
-    validation_commands: validationCommands,
+    ...preflight,
     validation_proof: validationProof,
     validated_head_sha: validatedHeadSha,
     validated_base_sha: validatedBaseSha,
-    final_base_sync: codexReview.final_base_sync ?? null,
   };
 }
 

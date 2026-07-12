@@ -366,10 +366,22 @@ test("validation parser rejects snapshot-writing and formatter mutation flags", 
     "cargo fmt",
     "pnpm exec cargo fmt",
     "go fmt ./...",
+    "go env -w GOFLAGS=-mod=readonly",
+    "go env -u GOFLAGS",
+    "pnpm --dir . install",
+    "pnpm --silent exec cargo clean",
+    "npm --prefix . install",
   ]) {
     assert.throws(() => parseAllowedValidationCommand(command), /unsafe validation command/);
   }
   assert.deepEqual(parseAllowedValidationCommand("cargo fmt --check"), ["cargo", "fmt", "--check"]);
+  assert.deepEqual(parseAllowedValidationCommand("go env -json"), ["go", "env", "-json"]);
+  assert.deepEqual(parseAllowedValidationCommand("go env GOOS GOARCH"), [
+    "go",
+    "env",
+    "GOOS",
+    "GOARCH",
+  ]);
 });
 
 test("validation environment defaults resolve without shell execution", () => {
@@ -1539,6 +1551,40 @@ test("staged target proof resolves environment defaults before direct spawn", ()
   assert.equal(result.trace.validated_head_sha, git(cwd, "rev-parse", "HEAD"));
   assert.equal(result.trace.validated_base_sha, git(cwd, "rev-parse", "origin/main"));
   assert.equal(result.commands.includes("env MODEL= pnpm qa ${MODEL:-openai/test-model}"), true);
+});
+
+test("staged target proof validates and digests resolved environment argv", () => {
+  const cwd = gitPackageFixture({
+    qa: "node qa.js",
+  });
+  git(cwd, "add", ".");
+  git(cwd, "commit", "-m", "initial");
+  attachOrigin(cwd);
+  const options = validationOptions("steipete/example", {
+    toolchain: {
+      packageManager: "pnpm",
+      baseValidationCommands: [],
+      changedGate: null,
+    },
+  });
+
+  assert.throws(
+    () => buildTargetValidationProofPlan(["env TASK= pnpm ${TASK:-install}"], cwd, options),
+    /unsafe validation command/,
+  );
+
+  const templated = buildTargetValidationProofPlan(
+    ["env MODEL= pnpm qa ${MODEL:-openai/test-model}"],
+    cwd,
+    options,
+  );
+  const concrete = buildTargetValidationProofPlan(
+    ["env MODEL= pnpm qa openai/test-model"],
+    cwd,
+    options,
+  );
+  assert.equal(templated.plan_id, concrete.plan_id);
+  assert.equal(templated.commands.at(-1).command_digest, concrete.commands.at(-1).command_digest);
 });
 
 test("staged target proof exposes compact failed traces without command output", () => {

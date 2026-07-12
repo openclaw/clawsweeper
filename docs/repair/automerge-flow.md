@@ -125,14 +125,17 @@ mandatory. Broad, live, docker, or e2e commands run last, and can be skipped
 only by an exact repository-owned subsumption contract; QA/live proof is never
 subsumed. Snapshot/formatter mutation flags, known mutating subcommands, and
 mutating package-script names are rejected before planning. Supported
-environment defaults are resolved without a shell. The executor also verifies
-that each command leaves the checkout, head, and pinned base unchanged. A failed
-prerequisite, stalled canonical gate, checkout mutation, or command that exceeds
-the total proof budget stops later work and writes bounded digest-only trace
-entries, including command IDs and subsumption-edge digests, to the repair
-report and merge preflight. Schema-v2 traces bind those entries to the exact
-validated head and base; post-flight rejects a trace that does not match the fix
-action, live PR head, and live PR base.
+environment defaults are resolved without a shell; the concrete argv is then
+revalidated and digested, with package-manager global options parsed before the
+effective command or wrapper. The executor also verifies that each command
+leaves the checkout, head, and pinned base unchanged. A failed prerequisite,
+stalled canonical gate, checkout mutation, or command that exceeds the total
+proof budget stops later work and writes bounded digest-only trace entries,
+including the original prerequisite topology and subsumption-edge digests, to
+the repair report and merge preflight. Schema-v2 traces bind those entries to
+the exact validated head and base. Final and push-denied fallback history
+compaction both trigger re-proof and preflight rebinding; post-flight rejects a
+trace that does not match the fix action, live PR head, and live PR base.
 
 ## Exact-Head Rule
 
