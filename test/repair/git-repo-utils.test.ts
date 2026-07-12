@@ -22,12 +22,12 @@ test("git helper bounds execution and terminates the timed-out process", async (
     () =>
       runGitCommand(["stall", marker], {
         targetDir: fixture.root,
-        timeoutMs: 25,
+        timeoutMs: 250,
         env: fixture.env,
       }),
-    /command timed out after 25ms: git stall.*waiting for timeout/s,
+    /command timed out after 250ms: git stall.*waiting for timeout/s,
   );
-  await delay(250);
+  await delay(750);
   assert.equal(fs.existsSync(marker), false);
 });
 
@@ -176,7 +176,7 @@ function fakeGitFixture() {
       'if (mode === "signal") process.kill(process.pid, "SIGTERM");',
       'if (mode === "stall") {',
       '  process.stderr.write("waiting for timeout\\n");',
-      '  setTimeout(() => fs.writeFileSync(marker, "late\\n"), 150);',
+      '  setTimeout(() => fs.writeFileSync(marker, "late\\n"), 600);',
       "}",
       "",
     ].join("\n"),
