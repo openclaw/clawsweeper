@@ -589,9 +589,11 @@ jobs:
           private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
           owner: ${{ steps.target.outputs.target_repo_owner }}
           repositories: ${{ steps.target.outputs.target_repo_name }}
+          permission-checks: read
           permission-contents: write
           permission-issues: write
           permission-pull-requests: write
+          permission-statuses: read
 
       - uses: ./.github/actions/setup-pnpm
         id: setup-pnpm

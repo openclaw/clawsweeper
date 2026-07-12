@@ -57,13 +57,15 @@ test("review execution tokens can read check runs and commit statuses", () => {
   const planStart = workflow.indexOf("\n  plan:", eventReviewStart);
   const reviewStart = workflow.indexOf("\n  review:", planStart);
   const publishStart = workflow.indexOf("\n  publish:", reviewStart);
+  const eventReviewJob = workflow.slice(eventReviewStart, planStart);
+  const scheduledReviewJob = workflow.slice(reviewStart, publishStart);
 
-  for (const job of [
-    workflow.slice(eventReviewStart, planStart),
-    workflow.slice(reviewStart, publishStart),
-  ]) {
+  for (const [job, tokenId] of [
+    [eventReviewJob, "target-write-token"],
+    [scheduledReviewJob, "target-read-token"],
+  ] as const) {
     const permissions = job.slice(job.indexOf("\n    permissions:"), job.indexOf("\n    steps:"));
-    const targetTokenStart = job.indexOf("id: target-read-token");
+    const targetTokenStart = job.indexOf(`id: ${tokenId}`);
     const targetTokenEnd = job.indexOf("\n      - ", targetTokenStart);
     const targetToken = job.slice(targetTokenStart, targetTokenEnd);
 
@@ -72,6 +74,10 @@ test("review execution tokens can read check runs and commit statuses", () => {
     assert.match(targetToken, /permission-checks: read/);
     assert.match(targetToken, /permission-statuses: read/);
   }
+  assert.match(
+    eventReviewJob,
+    /Review exact event item[\s\S]*GH_TOKEN: \$\{\{ steps\.target-write-token\.outputs\.token \}\}/,
+  );
 });
 
 test("scheduled review shards receive the compiler-backed runtime artifact", () => {
