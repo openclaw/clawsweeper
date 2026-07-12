@@ -486,7 +486,9 @@ jobs:
           private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
           owner: openclaw
           repositories: clawsweeper
+          # GitHub classifies deployment-branch-policy reads under Actions.
           permission-actions: read
+          # Environment metadata, variables, and secret names use Environments.
           permission-environments: read
 
       - name: Audit protected production environment

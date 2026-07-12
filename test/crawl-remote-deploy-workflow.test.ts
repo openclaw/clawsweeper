@@ -174,6 +174,7 @@ test("crawl-remote release is maintainer-bound across two fresh runners", () => 
   );
   assert.equal(environmentToken.with?.owner, "openclaw");
   assert.equal(environmentToken.with?.repositories, "clawsweeper");
+  // GitHub maps branch-policy reads to Actions and the remaining audit reads to Environments.
   assert.equal(environmentToken.with?.["permission-actions"], "read");
   assert.equal(environmentToken.with?.["permission-environments"], "read");
   assert.equal(
