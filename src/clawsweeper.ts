@@ -694,6 +694,7 @@ interface ItemContext {
   pullFiles?: unknown[];
   semanticPullFiles?: unknown[];
   pullCommits?: unknown[];
+  pullCommitsRevision?: string;
   pullReviewComments?: unknown[];
   pullReviewCommentsRevision?: string;
   pullChecks?: unknown;
@@ -2754,6 +2755,27 @@ export function reviewCommentContentRevisionForTest(entries: readonly unknown[])
   return reviewCommentContentRevision(entries);
 }
 
+function pullCommitContentRevision(entries: readonly unknown[]): string | null {
+  const identities = [];
+  for (const value of entries) {
+    const commit = asRecord(value);
+    const commitInfo = asRecord(commit.commit);
+    const message =
+      typeof commitInfo.message === "string"
+        ? commitInfo.message
+        : typeof commit.message === "string"
+          ? commit.message
+          : null;
+    if (message === null) return null;
+    const author =
+      typeof commit.author === "string"
+        ? commit.author
+        : login(commit.author) || stringOrUndefined(asRecord(commitInfo.author).name) || null;
+    identities.push({ author, message });
+  }
+  return sha256(stableJson(identities));
+}
+
 function reviewTimelineDigestParts(entries: unknown): unknown {
   if (!Array.isArray(entries)) return null;
   return entries
@@ -2808,7 +2830,7 @@ function itemContentDigest(item: Item, context: ItemContext, git?: GitInfo): str
           }
         : null,
       diff: isPull ? (context.pullFiles ?? null) : null,
-      commits: isPull ? (context.pullCommits ?? null) : null,
+      commits: isPull ? (context.pullCommitsRevision ?? context.pullCommits ?? null) : null,
       reviewComments: isPull
         ? (context.pullReviewCommentsRevision ??
           reviewCommentDigestParts(context.pullReviewComments))
@@ -7895,6 +7917,14 @@ function collectItemContext(
       80,
       compactPullCommit,
     );
+    if (
+      options.reviewCacheDigest &&
+      !pullCommitsWindow.truncated &&
+      pullCommitsWindow.total === pullCommits.length
+    ) {
+      const pullCommitsRevision = pullCommitContentRevision(pullCommits);
+      if (pullCommitsRevision) context.pullCommitsRevision = pullCommitsRevision;
+    }
     context.pullReviewComments = compactMappedWindow(
       filteredPullReviewComments.included,
       filteredPullReviewComments.included.length,
@@ -8298,7 +8328,7 @@ export function reviewDecisionSchemaText(): string {
 }
 
 function contextJsonForPrompt(context: ItemContext): string {
-  const { semanticPullFiles: _, ...promptContext } = context;
+  const { semanticPullFiles: _, pullCommitsRevision: __, ...promptContext } = context;
   return JSON.stringify(promptContext, null, 2);
 }
 
@@ -8332,7 +8362,7 @@ function trimTrailingUrlPunctuation(raw: string): string {
 }
 
 function proofVideoUrlsFromContext(context: ItemContext): string[] {
-  const { semanticPullFiles: _, ...proofContext } = context;
+  const { semanticPullFiles: _, pullCommitsRevision: __, ...proofContext } = context;
   const text = JSON.stringify(proofContext);
   const matches = text.match(/https?:\/\/[^\s<>"'\\)]+/g) ?? [];
   const urls: string[] = [];
@@ -19839,6 +19869,36 @@ function buildLocalRangeReview(
   const title = meta.subject || `local range ${baseSha.slice(0, 8)}..${headSha.slice(0, 8)}`;
   const author = meta.authorName || "local";
   const committedAt = meta.committedAt || "1970-01-01T00:00:00Z";
+  const localCommitShas = run("git", ["rev-list", "--reverse", `${baseSha}..${headSha}`], {
+    cwd: targetDir,
+  })
+    .split("\n")
+    .filter(Boolean);
+  const localCommitIdentities = localCommitShas.map((sha) => {
+    const result = spawnSync("git", ["cat-file", "commit", sha], {
+      cwd: targetDir,
+      encoding: "utf8",
+      env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
+      maxBuffer: 16 * 1024 * 1024,
+    });
+    if (result.error || result.status !== 0) {
+      throw new UserFacingCommandError(`Could not read local commit ${sha} for range review.`);
+    }
+    const separator = result.stdout.indexOf("\n\n");
+    if (separator < 0) {
+      throw new UserFacingCommandError(`Local commit ${sha} has malformed commit data.`);
+    }
+    const headers = result.stdout.slice(0, separator);
+    const message = result.stdout.slice(separator + 2);
+    const authorHeader = headers.split("\n").find((line) => line.startsWith("author "));
+    const commitAuthor =
+      authorHeader?.slice("author ".length).replace(/\s+<[^>]*>\s+\d+\s+[+-]\d{4}$/, "") ?? "local";
+    return { sha, author: commitAuthor, message };
+  });
+  const localCommitRevision = pullCommitContentRevision(localCommitIdentities);
+  if (!localCommitRevision) {
+    throw new UserFacingCommandError("Could not fingerprint local range commit messages.");
+  }
   const nameStatus = run("git", ["diff", "--name-status", `${baseSha}..${headSha}`], {
     cwd: targetDir,
   }).trim();
@@ -19899,9 +19959,44 @@ function buildLocalRangeReview(
     },
     comments: [],
     timeline: [],
+    pullRequest: {
+      number: 0,
+      state: "open",
+      draft: false,
+      merged: false,
+      head: { ref: "HEAD", sha: headSha },
+      base: { ref: base, sha: baseSha },
+    },
     pullFiles,
     semanticPullFiles,
-    counts: { comments: 0, timeline: 0, pullFiles: pullFiles.length },
+    pullCommits: localCommitIdentities.map((commit) => ({
+      sha: commit.sha,
+      author: commit.author,
+      message: truncateText(commit.message, 1000),
+    })),
+    pullCommitsRevision: localCommitRevision,
+    pullReviewComments: [],
+    pullReviewCommentsRevision: reviewCommentContentRevision([]),
+    pullChecks: {
+      complete: true,
+      checkRuns: [],
+      checkRunsTruncated: false,
+      statuses: [],
+      statusesTruncated: false,
+    },
+    counts: {
+      comments: 0,
+      timeline: 0,
+      pullFiles: pullFiles.length,
+      pullFilesHydrated: pullFiles.length,
+      pullFilesTruncated: false,
+      pullCommits: localCommitIdentities.length,
+      pullCommitsHydrated: localCommitIdentities.length,
+      pullCommitsTruncated: false,
+      pullReviewComments: 0,
+      pullReviewCommentsHydrated: 0,
+      pullReviewCommentsTruncated: false,
+    },
   };
   return { item, context, baseSha, headSha };
 }

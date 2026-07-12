@@ -47,6 +47,7 @@ function input(overrides: Record<string, unknown> = {}) {
       },
     ],
     pullCommits: [{ sha: "d".repeat(40), author: "contributor", message: "perf: cache it" }],
+    pullCommitsRevision: "b".repeat(64),
     pullReviewComments: [],
     pullReviewCommentsRevision: "review-comments-1",
     pullChecks: {
@@ -65,6 +66,7 @@ function input(overrides: Record<string, unknown> = {}) {
       pullFilesHydrated: 1,
       pullFilesTruncated: false,
       pullCommits: 1,
+      pullCommitsHydrated: 1,
       pullCommitsTruncated: false,
       pullReviewComments: 0,
       pullReviewCommentsTruncated: false,
@@ -975,6 +977,28 @@ test("head SHA churn alone does not perturb semantic or context digests", () => 
   assert.equal(prior.codeDigest, rebased.codeDigest);
   assert.equal(prior.contextDigest, rebased.contextDigest);
   assert.equal(decision({ priorRecord: prior, currentRecord: rebased }).hit, true);
+});
+
+test("full commit message changes bust context beyond prompt truncation", () => {
+  const prior = record();
+  const changedSuffix = record({
+    context: {
+      pullCommits: [
+        {
+          sha: "2".repeat(40),
+          author: "contributor",
+          message: "x".repeat(1000),
+        },
+      ],
+      pullCommitsRevision: "c".repeat(64),
+    },
+  });
+
+  assert.notEqual(prior.contextDigest, changedSuffix.contextDigest);
+  assert.equal(
+    decision({ priorRecord: prior, currentRecord: changedSuffix }).reason,
+    "context_changed",
+  );
 });
 
 test("explicit reruns, maintainer prompts, policy changes, and close reports never reuse", () => {

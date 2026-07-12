@@ -146,6 +146,7 @@ const record = createReviewSemanticRecord({
       treeModesComplete: true,
     }],
     pullCommits: [],
+    pullCommitsRevision: "d".repeat(64),
     pullReviewComments: [],
     pullChecks: {
       complete: true,
@@ -158,6 +159,8 @@ const record = createReviewSemanticRecord({
       pullFiles: 1,
       pullFilesHydrated: 1,
       pullFilesTruncated: false,
+      pullCommits: 0,
+      pullCommitsHydrated: 0,
       pullCommitsTruncated: false,
     },
   },

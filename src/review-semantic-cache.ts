@@ -145,6 +145,7 @@ export interface ReviewSemanticInput {
     pullFiles?: readonly unknown[] | undefined;
     semanticPullFiles?: readonly unknown[] | undefined;
     pullCommits?: readonly unknown[] | undefined;
+    pullCommitsRevision?: string | undefined;
     pullReviewComments?: readonly unknown[] | undefined;
     pullReviewCommentsRevision?: string | undefined;
     pullChecks?: unknown;
@@ -768,7 +769,7 @@ function semanticContext(input: ReviewSemanticInput): {
       relatedItems: input.context.relatedItems ?? null,
     },
     pull: normalizedPull,
-    commits: normalizedCommits(input.context.pullCommits),
+    commits: input.context.pullCommitsRevision ?? normalizedCommits(input.context.pullCommits),
     reviewComments:
       input.context.pullReviewCommentsRevision ??
       normalizedComments(input.context.pullReviewComments),
@@ -814,7 +815,16 @@ function semanticContext(input: ReviewSemanticInput): {
       reason: "incomplete_checks",
     };
   }
-  if (input.context.counts?.pullCommitsTruncated === true) {
+  const pullCommitsTotal = finiteCount(input.context.counts?.pullCommits);
+  const pullCommitsHydrated = finiteCount(input.context.counts?.pullCommitsHydrated);
+  if (
+    !input.context.pullCommitsRevision ||
+    !DIGEST_PATTERN.test(input.context.pullCommitsRevision) ||
+    input.context.counts?.pullCommitsTruncated === true ||
+    pullCommitsTotal === null ||
+    pullCommitsHydrated === null ||
+    pullCommitsTotal !== pullCommitsHydrated
+  ) {
     return {
       digest: sha256(stableJson(context)),
       complete: false,

@@ -118,7 +118,13 @@ test("buildLocalRangeReview synthesizes a PR item + offline diff from the local 
       },
     );
 
-    assert.deepEqual(result.context.counts, { comments: 0, timeline: 0, pullFiles: 2 });
+    assert.equal(result.context.counts.pullFiles, 2);
+    assert.equal(result.context.counts.pullFilesHydrated, 2);
+    assert.equal(result.context.counts.pullFilesTruncated, false);
+    assert.equal(result.context.counts.pullCommits, 1);
+    assert.equal(result.context.counts.pullCommitsHydrated, 1);
+    assert.equal(result.context.counts.pullCommitsTruncated, false);
+    assert.match(result.context.pullCommitsRevision ?? "", /^[0-9a-f]{64}$/);
     assert.equal(result.baseSha, git(dir, "rev-parse", "base-ref"));
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -143,6 +149,33 @@ test("buildLocalRangeReview falls back to a range title when the commit subject 
     // title = `local range ${baseSha.slice(0,8)}..${headSha.slice(0,8)}`
     assert.equal(result.item.title, `local range ${baseSha.slice(0, 8)}..${headSha.slice(0, 8)}`);
     assert.equal(result.item.title, result.context.issue.title);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("buildLocalRangeReview fingerprints full commit messages beyond prompt truncation", () => {
+  const dir = initRepo();
+  try {
+    writeFileSync(join(dir, "keep.txt"), "base\n");
+    git(dir, "add", "keep.txt");
+    git(dir, "commit", "-q", "-m", "init");
+    git(dir, "branch", "base-ref");
+    writeFileSync(join(dir, "feature.txt"), "feature\n");
+    git(dir, "add", "feature.txt");
+    const prefix = `feat: cache\n\n${"x".repeat(1100)}`;
+    git(dir, "commit", "-q", "-m", `${prefix}a`);
+    const prior = buildLocalRangeReviewForTest(dir, "openclaw/clawsweeper", "base-ref");
+
+    git(dir, "commit", "--amend", "-q", "-m", `${prefix}b`);
+    const changed = buildLocalRangeReviewForTest(dir, "openclaw/clawsweeper", "base-ref");
+    const priorMessage = (prior.context.pullCommits?.[0] as { message?: string } | undefined)
+      ?.message;
+    const changedMessage = (changed.context.pullCommits?.[0] as { message?: string } | undefined)
+      ?.message;
+
+    assert.equal(priorMessage, changedMessage);
+    assert.notEqual(prior.context.pullCommitsRevision, changed.context.pullCommitsRevision);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
