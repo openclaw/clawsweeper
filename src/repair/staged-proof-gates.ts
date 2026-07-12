@@ -17,6 +17,21 @@ export type StagedProofStage =
   | "canonical_changed_surface"
   | "broad_live_or_e2e";
 
+const STAGED_PROOF_STAGES = new Set<string>([
+  "repository_integrity",
+  "static",
+  "focused_tests",
+  "canonical_changed_surface",
+  "broad_live_or_e2e",
+]);
+
+const STAGED_PROOF_TRACE_STATUSES = new Set<string>([
+  "passed",
+  "failed",
+  "skipped_prerequisite",
+  "skipped_subsumed",
+]);
+
 export type StagedProofRisk = {
   level: "narrow" | "elevated";
   signals: string[];
@@ -376,12 +391,17 @@ export function isPassedStagedProofBundle(value: unknown): boolean {
   if (!bundle.summary || typeof bundle.summary !== "object" || Array.isArray(bundle.summary)) {
     return false;
   }
-  const latest = bundle.runs.at(-1);
+  const runs = bundle.runs as StagedProofTrace[];
+  const latest = runs.at(-1);
+  if (!latest || latest.status !== "passed") return false;
+  const summary = bundle.summary as Record<string, unknown>;
   return (
-    Boolean(latest) &&
-    typeof latest === "object" &&
-    !Array.isArray(latest) &&
-    (latest as Record<string, unknown>).status === "passed"
+    summary.runs === runs.length &&
+    summary.failed_runs === runs.filter((run) => run.status === "failed").length &&
+    summary.passed === runs.reduce((sum, run) => sum + run.summary.passed, 0) &&
+    summary.failed === runs.reduce((sum, run) => sum + run.summary.failed, 0) &&
+    summary.skipped === runs.reduce((sum, run) => sum + run.summary.skipped, 0) &&
+    summary.total_duration_ms === runs.reduce((sum, run) => sum + run.summary.total_duration_ms, 0)
   );
 }
 
@@ -485,29 +505,82 @@ function isStagedProofTrace(value: unknown): boolean {
     !["passed", "failed"].includes(String(trace.status ?? "")) ||
     !Array.isArray(trace.commands) ||
     trace.commands.length === 0 ||
-    trace.commands.length > MAX_STAGED_PROOF_COMMANDS
+    trace.commands.length > MAX_STAGED_PROOF_COMMANDS ||
+    !isStagedProofRisk(trace.risk)
   ) {
     return false;
   }
   const statuses: string[] = [];
+  let commandDurationMs = 0;
   const commandsValid = trace.commands.every((entry) => {
     if (!entry || typeof entry !== "object" || Array.isArray(entry)) return false;
     const command = entry as Record<string, unknown>;
-    statuses.push(String(command.status ?? ""));
+    const status = String(command.status ?? "");
+    statuses.push(status);
+    commandDurationMs += Number(command.duration_ms);
     return (
-      typeof command.stage === "string" &&
+      STAGED_PROOF_STAGES.has(String(command.stage ?? "")) &&
       /^[a-f0-9]{64}$/.test(String(command.command_digest ?? "")) &&
       typeof command.command_kind === "string" &&
-      ["passed", "failed", "skipped_prerequisite", "skipped_subsumed"].includes(
-        String(command.status ?? ""),
-      ) &&
-      Number.isFinite(Number(command.duration_ms))
+      command.command_kind.length > 0 &&
+      command.command_kind.length <= 96 &&
+      STAGED_PROOF_TRACE_STATUSES.has(status) &&
+      isNonNegativeInteger(command.duration_ms) &&
+      typeof command.reason === "string" &&
+      command.reason.length > 0 &&
+      command.reason.length <= 256 &&
+      (command.prerequisite === null ||
+        (typeof command.prerequisite === "string" &&
+          /^proof-\d+-[a-f0-9]{12}$/.test(command.prerequisite)))
     );
   });
   if (!commandsValid) return false;
-  return trace.status === "passed"
-    ? statuses.includes("passed") && !statuses.includes("failed")
-    : statuses.includes("failed");
+  const summary = trace.summary;
+  if (!summary || typeof summary !== "object" || Array.isArray(summary)) return false;
+  const summaryRecord = summary as Record<string, unknown>;
+  const passed = statuses.filter((status) => status === "passed").length;
+  const failed = statuses.filter((status) => status === "failed").length;
+  const skipped = statuses.filter((status) => status.startsWith("skipped_")).length;
+  if (
+    summaryRecord.passed !== passed ||
+    summaryRecord.failed !== failed ||
+    summaryRecord.skipped !== skipped ||
+    !isNonNegativeInteger(summaryRecord.total_duration_ms) ||
+    Number(summaryRecord.total_duration_ms) < commandDurationMs
+  ) {
+    return false;
+  }
+  if (trace.status === "passed") {
+    return (
+      passed > 0 && statuses.every((status) => status === "passed" || status === "skipped_subsumed")
+    );
+  }
+  const failedIndex = statuses.indexOf("failed");
+  return (
+    failed === 1 &&
+    failedIndex >= 0 &&
+    statuses.slice(0, failedIndex).every((status) => status !== "skipped_prerequisite") &&
+    statuses.slice(failedIndex + 1).every((status) => status === "skipped_prerequisite")
+  );
+}
+
+function isStagedProofRisk(value: unknown): boolean {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const risk = value as Record<string, unknown>;
+  if (
+    !["narrow", "elevated"].includes(String(risk.level ?? "")) ||
+    !Array.isArray(risk.signals) ||
+    !risk.signals.every((signal) => typeof signal === "string" && signal.length > 0) ||
+    new Set(risk.signals).size !== risk.signals.length ||
+    !isNonNegativeInteger(risk.changed_file_count)
+  ) {
+    return false;
+  }
+  return risk.level === "narrow" ? risk.signals.length === 0 : risk.signals.length > 0;
+}
+
+function isNonNegativeInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0;
 }
 
 export function stagedProofRiskForPaths(paths: readonly string[]): StagedProofRisk {
@@ -588,7 +661,7 @@ function classifyStagedProofCommand(
   }
   return {
     stage: "broad_live_or_e2e",
-    reason: isBroadOrLiveCommand(parts)
+    reason: isBroadOrLiveStagedProofCommand(parts)
       ? "structured broad, integration, live, docker, or e2e command"
       : "unclassified allowlisted command retained as a late conservative proof gate",
   };
@@ -662,7 +735,7 @@ function isStaticCommand(parts: readonly string[]): boolean {
   );
 }
 
-function isBroadOrLiveCommand(parts: readonly string[]): boolean {
+export function isBroadOrLiveStagedProofCommand(parts: readonly string[]): boolean {
   const script = packageScriptRequirement(parts)?.name ?? "";
   if (
     /^(?:test(?::(?:all|e2e|live|docker|integration|install:e2e|parallels))?|qa(?::e2e)?|check)$/.test(

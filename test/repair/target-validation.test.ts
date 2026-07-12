@@ -1305,6 +1305,36 @@ test("staged target proof retains broad commands for elevated-risk surfaces", ()
   );
 });
 
+test("staged target proof retains explicit live commands for narrow surfaces", () => {
+  const cwd = gitPackageFixture({
+    "check:changed": "node check.js",
+    "test:live": "node test-live.js",
+  });
+  fs.mkdirSync(path.join(cwd, "src"), { recursive: true });
+  fs.writeFileSync(path.join(cwd, "src", "foo.ts"), "export const foo = 1;\n");
+  git(cwd, "add", ".");
+  git(cwd, "commit", "-m", "initial");
+  attachOrigin(cwd);
+  fs.writeFileSync(path.join(cwd, "src", "foo.ts"), "export const foo = 2;\n");
+
+  const plan = buildTargetValidationProofPlan(
+    ["pnpm test:live"],
+    cwd,
+    validationOptions("openclaw/openclaw"),
+  );
+
+  assert.equal(plan.risk.level, "narrow");
+  assert.deepEqual(
+    plan.commands.map((entry) => [entry.stage, entry.command_kind]),
+    [
+      ["repository_integrity", "git:diff-check"],
+      ["repository_integrity", "git:diff-check"],
+      ["canonical_changed_surface", "pnpm:check:changed"],
+      ["broad_live_or_e2e", "pnpm:test:live"],
+    ],
+  );
+});
+
 test("staged target proof rejects unsafe commands before planning", () => {
   const cwd = gitPackageFixture({ "check:changed": "node check.js" });
   git(cwd, "add", ".");

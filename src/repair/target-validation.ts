@@ -20,6 +20,7 @@ import { compactText } from "./text-utils.js";
 import {
   buildStagedProofPlan,
   executeStagedProofPlan,
+  isBroadOrLiveStagedProofCommand,
   isFocusedStagedProofCommand,
   stagedProofPlanArtifact,
   stagedProofRiskForPaths,
@@ -474,8 +475,11 @@ function createTargetValidationProofPlan(
     options,
   ).entries()) {
     const parsed = parseAllowedValidationCommand(command.command);
+    const commandParts = stripEnvPrefix(parsed);
     const retainStrongCommand =
-      risk.level === "elevated" || isFocusedStagedProofCommand(stripEnvPrefix(parsed));
+      risk.level === "elevated" ||
+      isFocusedStagedProofCommand(commandParts) ||
+      isBroadOrLiveStagedProofCommand(commandParts);
     const resolvedCommands = resolveAllowedValidationCommands(
       command.command,
       cwd,

@@ -276,7 +276,7 @@ test("proof plans reject malformed or unbounded command vectors", () => {
 
 test("merge proof bundle validation fails closed", () => {
   const plan = buildStagedProofPlan({
-    commands: [command(["git", "diff", "--check"], 0)],
+    commands: [command(["git", "diff", "--check"], 0), command(["pnpm", "lint"], 1)],
     changedFiles: [],
   });
   const passed = executeStagedProofPlan(plan, {
@@ -301,4 +301,68 @@ test("merge proof bundle validation fails closed", () => {
   );
   assert.equal(isPassedStagedProofBundle({ ...bundle, runs: [] }), false);
   assert.equal(isPassedStagedProofBundle({ ...bundle, summary: null }), false);
+  assert.equal(
+    isPassedStagedProofBundle(
+      stagedProofBundle([
+        {
+          ...passed,
+          commands: [
+            passed.commands[0],
+            {
+              ...passed.commands[1],
+              status: "skipped_prerequisite",
+              duration_ms: 0,
+              reason: "prerequisite failed",
+            },
+          ],
+          summary: {
+            ...passed.summary,
+            passed: 1,
+            skipped: 1,
+          },
+        },
+      ]),
+    ),
+    false,
+  );
+  assert.equal(
+    isPassedStagedProofBundle(
+      stagedProofBundle([
+        {
+          ...passed,
+          commands: [{ ...passed.commands[0], stage: "unknown" }, passed.commands[1]],
+        },
+      ]),
+    ),
+    false,
+  );
+  assert.equal(
+    isPassedStagedProofBundle(
+      stagedProofBundle([
+        {
+          ...passed,
+          commands: [{ ...passed.commands[0], duration_ms: -1 }, passed.commands[1]],
+        },
+      ]),
+    ),
+    false,
+  );
+  assert.equal(
+    isPassedStagedProofBundle(
+      stagedProofBundle([
+        {
+          ...passed,
+          summary: { ...passed.summary, passed: 99 },
+        },
+      ]),
+    ),
+    false,
+  );
+  assert.equal(
+    isPassedStagedProofBundle({
+      ...bundle,
+      summary: { ...bundle.summary, passed: 99 },
+    }),
+    false,
+  );
 });
