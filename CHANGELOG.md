@@ -9,6 +9,7 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Added
 
+- Added versioned staged repair proof plans with deterministic cheap-to-expensive validation, exact-command deduplication, explicit-only subsumption, fail-fast runtime budgets, and bounded machine-readable traces in repair reports and merge preflight.
 - Added conservative, add-only `good first issue` labeling for unlocked, small, current-main reproduced bugs with a high-confidence repair prompt and validation steps and no linked-PR, feature, config, product, security, protected-label, or maintainer-opt-out blocker.
 - Added durable maintainer decision packets whose exact question, rationale, options, recommendation, and likely owner come from Codex structured review output while deterministic code only validates and persists the result. Thanks @brokemac79.
 - Added close-candidate quality telemetry to apply status while keeping reporting separate from close eligibility and comment-only sync. Thanks @brokemac79.

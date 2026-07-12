@@ -117,6 +117,15 @@ the normalized gate as the authority before push; if anything remains, it feeds
 the full failure back into a dedicated validation-fix pass before spending the
 next review attempt.
 
+The executor materializes those commands as a deterministic staged proof DAG.
+Exact argv are deduplicated, narrow path-scoped tests run before broader gates,
+and elevated-risk surfaces retain stronger configured or artifact-supplied
+proof. Repository integrity and the canonical changed-surface gate are
+mandatory. Broad, live, docker, or e2e commands run last, and can be skipped
+only by an exact repository-owned subsumption contract. A failed prerequisite
+stops later work and writes bounded digest-only trace entries to the repair
+report and merge preflight.
+
 ## Exact-Head Rule
 
 Every automerge decision is bound to a concrete PR head SHA.
