@@ -176,7 +176,6 @@ import {
 import {
   appendReviewHistoryCycle,
   neutralizeReviewControlMarkers,
-  normalizeDurableReviewVerdictBody,
   parseReviewHistory,
   renderReviewHistorySection,
   reviewHistoryCycleFromCommentBody,
@@ -4804,7 +4803,7 @@ function extractLatestClawSweeperReview(
   const earlierReviewCycles = currentCycle ? history.cycles : history.cycles.slice(0, -1);
   return {
     status: previousReviewStatus(body),
-    verdictDigest: sha256(normalizeDurableReviewVerdictBody(body)),
+    verdictDigest: sha256(body),
     reviewedAt: previousReviewReviewedAt(body) ?? latestCompletedCycle?.reviewedAt ?? null,
     reviewedSha:
       markerAttribute(verdictMarker, "sha") ??
@@ -4861,28 +4860,9 @@ export function extractLatestClawSweeperReviewFromHydrationForTest(
   return extractLatestClawSweeperReviewFromHydration(commentsWindow, completeComments, number);
 }
 
-function previousClawSweeperReviewFromReport(
-  markdown: string,
-  number: number,
-): PreviousClawSweeperReview | null {
-  const closeReason =
-    (frontMatterValue(markdown, "close_reason") as CloseReason | undefined) ?? "none";
-  const body = markedReviewCommentBody(
-    number,
-    renderReviewCommentFromReport(markdown, closeReason),
-  );
-  return extractLatestClawSweeperReview(
-    [
-      {
-        id: `state-report-${number}`,
-        body,
-        html_url: "",
-        updated_at: frontMatterValue(markdown, "reviewed_at") ?? "",
-        user: { login: "clawsweeper[bot]" },
-      },
-    ],
-    number,
-  );
+function previousClawSweeperReviewDigestFromReport(markdown: string): string | null {
+  const digest = frontMatterValue(markdown, "review_comment_sha256")?.trim().toLowerCase();
+  return digest && /^[0-9a-f]{64}$/.test(digest) ? digest : null;
 }
 
 function liveClawSweeperReviewDigest(number: number): string | null {
@@ -4893,9 +4873,9 @@ function liveClawSweeperReviewDigest(number: number): string | null {
 
 export function previousClawSweeperReviewDigestFromReportForTest(
   markdown: string,
-  number: number,
+  _number: number,
 ): string | null {
-  return reviewSemanticPriorReviewDigest(previousClawSweeperReviewFromReport(markdown, number));
+  return previousClawSweeperReviewDigestFromReport(markdown);
 }
 
 function compactTimelineEvent(value: unknown): unknown {
@@ -20319,9 +20299,7 @@ function reviewCommand(args: Args): void {
       }
       const priorReview = localRangeData ? null : existingReview(item, itemsDir);
       const expectedPreviousReviewDigest = priorReview
-        ? reviewSemanticPriorReviewDigest(
-            previousClawSweeperReviewFromReport(priorReview.markdown, item.number),
-          )
+        ? previousClawSweeperReviewDigestFromReport(priorReview.markdown)
         : null;
       let acquiredReviewLease: AcquiredReviewStartLease | null = null;
       let structuralRecord: ReviewStructuralRecord | null = null;

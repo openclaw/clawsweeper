@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
@@ -20,6 +21,7 @@ import {
 import { reviewSemanticPriorReviewDigest } from "../dist/review-semantic-cache.js";
 import {
   changelogReviewDecision,
+  markedReviewCommentForTest,
   realBehaviorProofReportSection,
   reportFrontMatter,
   reviewFinding,
@@ -255,8 +257,13 @@ test("rendered review text cannot create ClawSweeper control markers", () => {
 });
 
 test("state report prior-review identity matches the marked durable comment", () => {
-  const report = keepOpenPullReport();
-  const body = `${renderReviewCommentFromReport(report, "none")}\n\n<!-- clawsweeper-review item=101 -->`;
+  const unsyncedReport = keepOpenPullReport();
+  const body = markedReviewCommentForTest(
+    101,
+    renderReviewCommentFromReport(unsyncedReport, "none"),
+  );
+  const digest = createHash("sha256").update(body).digest("hex");
+  const report = unsyncedReport.replace(/^---\n/, `---\nreview_comment_sha256: ${digest}\n`);
   const liveReview = extractLatestClawSweeperReviewForTest(
     [
       {
@@ -273,6 +280,34 @@ test("state report prior-review identity matches the marked durable comment", ()
   assert.equal(
     previousClawSweeperReviewDigestFromReportForTest(report, 101),
     reviewSemanticPriorReviewDigest(liveReview),
+  );
+});
+
+test("state report prior-review identity preserves the original render context", () => {
+  const unsyncedReport = keepOpenPullReport({ labels: JSON.stringify(["P2"]) });
+  const body = markedReviewCommentForTest(
+    101,
+    renderReviewCommentFromReport(unsyncedReport, "none", {
+      previousLabels: [],
+      prStatusKind: "ready_for_maintainer_look",
+    }),
+  );
+  const digest = createHash("sha256").update(body).digest("hex");
+  const report = unsyncedReport.replace(/^---\n/, `---\nreview_comment_sha256: ${digest}\n`);
+  const reconstructed = markedReviewCommentForTest(
+    101,
+    renderReviewCommentFromReport(unsyncedReport, "none"),
+  );
+
+  assert.notEqual(createHash("sha256").update(reconstructed).digest("hex"), digest);
+  assert.equal(previousClawSweeperReviewDigestFromReportForTest(report, 101), digest);
+  assert.equal(previousClawSweeperReviewDigestFromReportForTest(unsyncedReport, 101), null);
+  assert.equal(
+    previousClawSweeperReviewDigestFromReportForTest(
+      unsyncedReport.replace(/^---\n/, "---\nreview_comment_sha256: stale\n"),
+      101,
+    ),
+    null,
   );
 });
 
@@ -346,15 +381,19 @@ test("durable review identity changes with every verdict-bearing section", () =>
       ),
     ],
   ];
-  const baseDigest = previousClawSweeperReviewDigestFromReportForTest(base, 101);
+  const syncedDigest = (report: string): string | null => {
+    const body = markedReviewCommentForTest(101, renderReviewCommentFromReport(report, "none"));
+    const digest = createHash("sha256").update(body).digest("hex");
+    return previousClawSweeperReviewDigestFromReportForTest(
+      report.replace(/^---\n/, `---\nreview_comment_sha256: ${digest}\n`),
+      101,
+    );
+  };
+  const baseDigest = syncedDigest(base);
 
   assert.ok(baseDigest);
   for (const [name, variant] of variants) {
-    assert.notEqual(
-      previousClawSweeperReviewDigestFromReportForTest(variant, 101),
-      baseDigest,
-      name,
-    );
+    assert.notEqual(syncedDigest(variant), baseDigest, name);
   }
 });
 
