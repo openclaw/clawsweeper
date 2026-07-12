@@ -420,6 +420,13 @@ test("canonical identity hashing rejects excessive depth, nodes, and input size 
       }),
     new RegExp(`canonical JSON size limit ${ACTION_LEDGER_CANONICAL_JSON_LIMITS.maxBytes} bytes`),
   );
+  assert.throws(
+    () =>
+      actionIdempotencyKey({
+        value: "\u0001".repeat(Math.floor(ACTION_LEDGER_CANONICAL_JSON_LIMITS.maxBytes / 6) + 1),
+      }),
+    new RegExp(`canonical JSON size limit ${ACTION_LEDGER_CANONICAL_JSON_LIMITS.maxBytes} bytes`),
+  );
 });
 
 test("ledger ordering is binary and locale independent without changing shared stable JSON", () => {
@@ -1298,7 +1305,7 @@ test("durable shard writers split deterministically within importer event and by
   assert.deepEqual(
     first.map((result) => path.basename(result.path)),
     first.map((_, index) =>
-      path.basename(actionEventShardRelativePath(identity, eventLimited, index + 1)),
+      path.basename(actionEventShardRelativePath(identity, eventLimited, index + 1, first.length)),
     ),
   );
   assert.deepEqual(
@@ -1347,6 +1354,14 @@ test("durable shard writers split deterministically within importer event and by
   assert.throws(
     () => writeActionEventShard(tempRoot(), identity, byteLimited),
     new RegExp(`${ACTION_EVENT_SHARD_FILE_LIMITS.maxBytes} byte limit`),
+  );
+  assert.throws(
+    () => actionEventShardRelativePath(identity, eventLimited, 1),
+    /index and count must be provided together/,
+  );
+  assert.throws(
+    () => actionEventShardRelativePath(identity, eventLimited, 2, 1),
+    /index cannot exceed shard count/,
   );
 });
 
@@ -2031,6 +2046,23 @@ test("checked-in schema rejects values rejected by runtime normalization", () =>
         ),
     },
     {
+      label: "CGNAT address",
+      mutate: (event) => {
+        (event.action as Record<string, unknown>).status = "100.100.100.100";
+      },
+      runtime: () =>
+        createActionEvent(
+          reviewInput({
+            action: {
+              name: "review",
+              status: "100.100.100.100",
+              retryable: false,
+              mutation: false,
+            },
+          }),
+        ),
+    },
+    {
       label: "URL userinfo",
       mutate: (event) => {
         ((event.evidence as Array<Record<string, unknown>>)[0] as Record<string, unknown>)[
@@ -2262,6 +2294,8 @@ test("runtime normalization enforces checked-in schema bounds", () => {
     "10.0.0.1:22",
     "host-10.0.0.1",
     "ssh://alice:secret@10.0.0.1",
+    "https://100.64.0.1/api",
+    "prefix:100.127.255.254",
     "prefix:169.254.169.254",
     "https://internal.local",
     "https://service.internal./api",

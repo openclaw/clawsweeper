@@ -660,7 +660,7 @@ test("workflow events finalize into one replay-stable per-step shard", async () 
   assert.equal(first.length, 1);
   assert.match(
     first[0] ?? "",
-    /^ledger\/v1\/events\/2026\/07\/12\/openclaw-clawsweeper\/review\.__run_5\.review-0\/100-2-review-[a-f0-9]{12}-part-000001\.jsonl$/,
+    /^ledger\/v1\/events\/2026\/07\/12\/openclaw-clawsweeper\/review\.__run_5\.review-0\/100-2-review-[a-f0-9]{12}-part-000001-of-000001\.jsonl$/,
   );
   assert.equal(
     fs.readFileSync(path.join(outputRoot, first[0]!), "utf8").trim().split("\n").length,
@@ -1769,8 +1769,8 @@ test("state shard imports validate duplicate and causal integrity across shard p
 
   const duplicateSource = trustedChildRoot(root, "duplicate-source");
   const duplicateDestination = trustedChildRoot(root, "duplicate-destination");
-  writeActionEventShard(duplicateSource, identity, [event], 1);
-  writeActionEventShard(duplicateSource, identity, [event], 2);
+  writeActionEventShard(duplicateSource, identity, [event], 1, 2);
+  writeActionEventShard(duplicateSource, identity, [event], 2, 2);
   assert.throws(
     () => importActionEventShards(duplicateSource, duplicateDestination),
     /shard batch contains duplicate event/,
@@ -1791,8 +1791,8 @@ test("state shard imports validate duplicate and causal integrity across shard p
   });
   const cycleSource = trustedChildRoot(root, "cycle-source");
   const cycleDestination = trustedChildRoot(root, "cycle-destination");
-  writeActionEventShard(cycleSource, identity, [first], 1);
-  writeActionEventShard(cycleSource, identity, [second], 2);
+  writeActionEventShard(cycleSource, identity, [first], 1, 2);
+  writeActionEventShard(cycleSource, identity, [second], 2, 2);
   assert.throws(() => importActionEventShards(cycleSource, cycleDestination), /causal cycle/);
   assert.deepEqual(fs.readdirSync(cycleDestination), []);
 });
@@ -1808,14 +1808,45 @@ test("state shard imports require deterministic repacking across shard parts", (
   const source = trustedChildRoot(root, "source");
   const destination = trustedChildRoot(root, "destination");
   const identity = shardIdentity(event);
-  writeActionEventShard(source, identity, [event], 1);
-  writeActionEventShard(source, identity, [second], 2);
+  writeActionEventShard(source, identity, [event], 1, 2);
+  writeActionEventShard(source, identity, [second], 2, 2);
 
   assert.throws(
     () => importActionEventShards(source, destination),
     /shard batch is not deterministically packed/,
   );
   assert.deepEqual(fs.readdirSync(destination), []);
+});
+
+test("state shard imports reject incomplete numbered sets and split producer partitions", () => {
+  const root = tempRoot();
+  const event = recordReview(root);
+  assert.ok(event);
+  const second = recreateActionEvent(event, {
+    eventKey: actionEventKey("review.completed", { number: 43 }),
+    parentEventId: null,
+  });
+  const identity = shardIdentity(event);
+
+  const incompleteSource = trustedChildRoot(root, "incomplete-source");
+  const incompleteDestination = trustedChildRoot(root, "incomplete-destination");
+  writeActionEventShard(incompleteSource, identity, [event], 1, 3);
+  writeActionEventShard(incompleteSource, identity, [second], 2, 3);
+  assert.throws(
+    () => importActionEventShards(incompleteSource, incompleteDestination),
+    /shard batch is incomplete/,
+  );
+  assert.deepEqual(fs.readdirSync(incompleteDestination), []);
+
+  const splitSource = trustedChildRoot(root, "split-source");
+  const splitDestination = trustedChildRoot(root, "split-destination");
+  writeActionEventShard(splitSource, identity, [event]);
+  writeActionEventShard(splitSource, { ...identity, partitionDate: "2026-07-13" }, [second]);
+  assert.throws(
+    () => importActionEventShards(splitSource, splitDestination),
+    /splits one producer run across partition dates/,
+  );
+  assert.deepEqual(fs.readdirSync(splitDestination), []);
 });
 
 test("state shard imports reject noncanonical trusted root spellings", async () => {

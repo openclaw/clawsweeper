@@ -122,6 +122,7 @@ type ImportedActionEventShard = {
   events: ActionEvent[];
   identity: ActionEventShardIdentity;
   shardIndex: number | undefined;
+  shardCount: number | undefined;
 };
 
 type QueuedCrabFleetProjection = {
@@ -555,7 +556,7 @@ function validateCanonicalImportedShard(
   relativePath: string,
   events: readonly ActionEvent[],
   content: string,
-): Pick<ImportedActionEventShard, "identity" | "shardIndex"> {
+): Pick<ImportedActionEventShard, "identity" | "shardIndex" | "shardCount"> {
   const match =
     /^ledger\/v1\/events\/(\d{4})\/(\d{2})\/(\d{2})\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\.jsonl$/.exec(
       relativePath,
@@ -590,17 +591,19 @@ function validateCanonicalImportedShard(
     runAttempt: first.producer.run_attempt,
     partitionDate: `${match[1]}-${match[2]}-${match[3]}`,
   };
-  const shardIndex = importedShardIndex(relativePath);
-  const expectedPath = actionEventShardRelativePath(identity, sorted, shardIndex).replaceAll(
-    path.sep,
-    "/",
-  );
+  const { shardIndex, shardCount } = importedShardPart(relativePath);
+  const expectedPath = actionEventShardRelativePath(
+    identity,
+    sorted,
+    shardIndex,
+    shardCount,
+  ).replaceAll(path.sep, "/");
   if (expectedPath !== relativePath) {
     throw new Error(
       `action event shard path does not match canonical identity: ${relativePath} != ${expectedPath}`,
     );
   }
-  return { identity, shardIndex };
+  return { identity, shardIndex, shardCount };
 }
 
 function validateCanonicalImportedShardBatch(shards: readonly ImportedActionEventShard[]): void {
@@ -613,6 +616,17 @@ function validateCanonicalImportedShardBatch(shards: readonly ImportedActionEven
     seen.add(event.event_id);
   }
   sortActionEventsCausally(allEvents);
+
+  const producerPartitions = new Map<string, string>();
+  for (const shard of shards) {
+    const { partitionDate, ...producerIdentity } = shard.identity;
+    const key = actionLedgerJson(producerIdentity);
+    const existing = producerPartitions.get(key);
+    if (existing !== undefined && existing !== partitionDate) {
+      throw new Error("action event shard batch splits one producer run across partition dates");
+    }
+    producerPartitions.set(key, partitionDate);
+  }
 
   const groups = new Map<string, ImportedActionEventShard[]>();
   for (const shard of shards) {
@@ -636,7 +650,16 @@ function validateCanonicalImportedShardGroup(group: readonly ImportedActionEvent
     throw new Error("action event shard batch mixes numbered and unnumbered producer shards");
   }
 
+  const shardCount = numbered[0]!.shardCount!;
+  if (numbered.some((shard) => shard.shardCount !== shardCount) || numbered.length !== shardCount) {
+    throw new Error("action event shard batch is incomplete");
+  }
   const ordered = [...group].sort((left, right) => left.shardIndex! - right.shardIndex!);
+  for (let index = 0; index < ordered.length; index += 1) {
+    if (ordered[index]!.shardIndex !== index + 1) {
+      throw new Error("action event shard batch is incomplete");
+    }
+  }
   const events = sortActionEventsCausally(ordered.flatMap((shard) => shard.events));
   const packed = packImportedActionEventShards(events);
   if (packed.length !== ordered.length) {
@@ -650,6 +673,7 @@ function validateCanonicalImportedShardGroup(group: readonly ImportedActionEvent
       identity,
       eventsForPart,
       index + 1,
+      shardCount,
     ).replaceAll(path.sep, "/");
     const expectedContent = `${eventsForPart.map((event) => actionLedgerJson(event)).join("\n")}\n`;
     if (shard.relativePath !== expectedPath || shard.content !== expectedContent) {
@@ -685,9 +709,14 @@ function packImportedActionEventShards(events: readonly ActionEvent[]): ActionEv
   return shards;
 }
 
-function importedShardIndex(relativePath: string): number | undefined {
-  const match = /-part-(\d{6})\.jsonl$/.exec(relativePath);
-  return match ? Number(match[1]) : undefined;
+function importedShardPart(relativePath: string): {
+  shardIndex: number | undefined;
+  shardCount: number | undefined;
+} {
+  const match = /-part-(\d{6})-of-(\d{6})\.jsonl$/.exec(relativePath);
+  return match
+    ? { shardIndex: Number(match[1]), shardCount: Number(match[2]) }
+    : { shardIndex: undefined, shardCount: undefined };
 }
 
 function queueCrabFleetEvent(

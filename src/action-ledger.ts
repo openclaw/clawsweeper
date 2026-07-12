@@ -398,12 +398,12 @@ export const ACTION_EVENT_CONFIDENTIAL_IDENTIFIER_PATTERN_SOURCES = [
   "[Bb][Aa][Ss][Ii][Cc](?:\\s+|%20|\\s*[:+]\\s*)(?:[A-Za-z0-9+/]{4}){2,}(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?(?:$|[^A-Za-z0-9+/=])",
   "[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}",
   "(?:^|[/:@])(?:[Ll][Oo][Cc][Aa][Ll][Hh][Oo][Ss][Tt]|(?:[A-Za-z0-9-]+\\.)+(?:[Ll][Oo][Cc][Aa][Ll]|[Ll][Oo][Cc][Aa][Ll][Hh][Oo][Ss][Tt]|[Ii][Nn][Tt][Ee][Rr][Nn][Aa][Ll]|[Cc][Oo][Rr][Pp]|[Ll][Aa][Nn]|[Hh][Oo][Mm][Ee](?:\\.[Aa][Rr][Pp][Aa])?)|(?:[Ii][Nn][Tt][Ee][Rr][Nn][Aa][Ll]|[Ii][Nn][Tt][Rr][Aa][Nn][Ee][Tt])\\.(?:[A-Za-z0-9-]+\\.)*[A-Za-z0-9-]+)\\.*(?:$|[/:])",
-  "(?:^|[^0-9])(?:10(?:\\.[0-9]{1,3}){3}|127(?:\\.[0-9]{1,3}){3}|169\\.254(?:\\.[0-9]{1,3}){2}|192\\.168(?:\\.[0-9]{1,3}){2}|172\\.(?:1[6-9]|2[0-9]|3[01])(?:\\.[0-9]{1,3}){2})(?:$|[^0-9])",
+  "(?:^|[^0-9])(?:10(?:\\.[0-9]{1,3}){3}|127(?:\\.[0-9]{1,3}){3}|100\\.(?:6[4-9]|[78][0-9]|9[0-9]|1[01][0-9]|12[0-7])(?:\\.[0-9]{1,3}){2}|169\\.254(?:\\.[0-9]{1,3}){2}|192\\.168(?:\\.[0-9]{1,3}){2}|172\\.(?:1[6-9]|2[0-9]|3[01])(?:\\.[0-9]{1,3}){2})(?:$|[^0-9])",
   "(?:^|[^0-9])(?:0[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+|[0-9]+\\.0[0-9]+\\.[0-9]+\\.[0-9]+|[0-9]+\\.[0-9]+\\.0[0-9]+\\.[0-9]+|[0-9]+\\.[0-9]+\\.[0-9]+\\.0[0-9]+)(?:$|[^0-9])",
   "(?:^|[\\[/:@])(?:(?:::)(?:0{1,4}:){0,6}0*1|(?:0{1,4}:){1,6}:(?:0{1,4}:){0,6}0*1|(?:0{1,4}:){7}0*1|(?:(?:::)(?:[Ff]{4}:)?|(?:0{1,4}:){5}[Ff]{4}:|(?:0{1,4}:){6})7[fF][0-9A-Fa-f]{2}:[0-9A-Fa-f]{1,4}|(?:[Ff][CcDd][0-9A-Fa-f]{2}|[Ff][Ee][89AaBb][0-9A-Fa-f]):[0-9A-Fa-f:]+)(?:\\]|$|[/:])",
   "(?:^|[\\[/:@])(?:(?:::)(?:[Ff]{4}:)?|(?:0{1,4}:){5}[Ff]{4}:|(?:0{1,4}:){6})(?:[0]?[Aa][0-9A-Fa-f]{2}|7[Ff][0-9A-Fa-f]{2}|[Aa]9[Ff][Ee]|[Aa][Cc]1[0-9A-Fa-f]|[Cc]0[Aa]8):[0-9A-Fa-f]{1,4}(?:\\]|$|[/:])",
   "(?:^|[\\[/:@])(?:(?:(?:0{1,4}:){0,3}0{1,4})?::[Ff]{4}:|(?:(?:0{1,4}:){0,4}0{1,4})?::)(?:[0]?[Aa][0-9A-Fa-f]{2}|7[Ff][0-9A-Fa-f]{2}|[Aa]9[Ff][Ee]|[Aa][Cc]1[0-9A-Fa-f]|[Cc]0[Aa]8):[0-9A-Fa-f]{1,4}(?:\\]|$|[/:])",
-  "(?:^|[^A-Za-z0-9+.-])(?:[Hh][Tt][Tt][Pp][Ss]?|[Ff][Tt][Pp]|[Ww][Ss][Ss]?):/{0,2}(?:(?:10|127)(?:\\.[0-9]+){1,2}|(?:169\\.254|192\\.168|172\\.(?:1[6-9]|2[0-9]|3[01]))\\.[0-9]+)(?:$|[/:])",
+  "(?:^|[^A-Za-z0-9+.-])(?:[Hh][Tt][Tt][Pp][Ss]?|[Ff][Tt][Pp]|[Ww][Ss][Ss]?):/{0,2}(?:(?:10|127)(?:\\.[0-9]+){1,2}|(?:100\\.(?:6[4-9]|[78][0-9]|9[0-9]|1[01][0-9]|12[0-7])|169\\.254|192\\.168|172\\.(?:1[6-9]|2[0-9]|3[01]))\\.[0-9]+)(?:$|[/:])",
   "(?:^|[^A-Za-z0-9+.-])(?:[Hh][Tt][Tt][Pp][Ss]?|[Ff][Tt][Pp]|[Ww][Ss][Ss]?):/{0,2}(?:0[Xx][0-9A-Fa-f]+|0[0-7]+|[0-9]+)(?:$|[/:])",
 ] as const;
 
@@ -781,10 +781,14 @@ export function actionEventShardRelativePath(
   identity: ActionEventShardIdentity,
   events: readonly ActionEvent[],
   shardIndex?: number,
+  shardCount?: number,
 ): string {
   const normalizedIdentity = normalizeShardIdentity(identity);
   const normalizedEvents = normalizeShardEvents(events);
   if (normalizedEvents.length === 0) throw new Error("action event shard requires events");
+  if ((shardIndex === undefined) !== (shardCount === undefined)) {
+    throw new Error("action event shard index and count must be provided together");
+  }
   const [year, month, date] = normalizedIdentity.partitionDate.split("-");
   const identityDigest = sha256(actionLedgerJson(normalizedIdentity)).slice(0, 12);
   const filenameBase = [
@@ -793,10 +797,23 @@ export function actionEventShardRelativePath(
     boundedPathSegment(normalizedIdentity.job, 64),
     identityDigest,
   ].join("-");
+  const normalizedShardIndex =
+    shardIndex === undefined ? undefined : actionEventShardIndex(shardIndex);
+  const normalizedShardCount =
+    shardCount === undefined ? undefined : actionEventShardIndex(shardCount);
+  if (
+    normalizedShardIndex !== undefined &&
+    normalizedShardCount !== undefined &&
+    normalizedShardIndex > normalizedShardCount
+  ) {
+    throw new Error("action event shard index cannot exceed shard count");
+  }
   const filename =
-    shardIndex === undefined
+    normalizedShardIndex === undefined
       ? filenameBase
-      : `${filenameBase}-part-${String(actionEventShardIndex(shardIndex)).padStart(6, "0")}`;
+      : `${filenameBase}-part-${String(normalizedShardIndex).padStart(6, "0")}-of-${String(
+          normalizedShardCount,
+        ).padStart(6, "0")}`;
   return path.join(
     "ledger",
     "v1",
@@ -884,11 +901,17 @@ export function writeActionEventShard(
   identity: ActionEventShardIdentity,
   events: readonly ActionEvent[],
   shardIndex?: number,
+  shardCount?: number,
 ): ActionEventShardWriteResult {
   const normalizedEvents = normalizeShardEvents(events);
   if (normalizedEvents.length === 0) throw new Error("action event shard requires events");
   validateShardProducer(identity, normalizedEvents);
-  const relativePath = actionEventShardRelativePath(identity, normalizedEvents, shardIndex);
+  const relativePath = actionEventShardRelativePath(
+    identity,
+    normalizedEvents,
+    shardIndex,
+    shardCount,
+  );
   const content = normalizedEvents.map((event) => actionLedgerJson(event)).join("\n") + "\n";
   assertActionEventShardFileLimits(content, normalizedEvents.length);
   const target = prepareSafeWriteTarget(root, relativePath, "action event shard");
@@ -922,8 +945,9 @@ export function writeActionEventShards(
   const normalizedEvents = normalizeShardEvents(events);
   if (normalizedEvents.length === 0) throw new Error("action event shard requires events");
   validateShardProducer(identity, normalizedEvents);
-  return splitActionEventShardEvents(normalizedEvents).map((shardEvents, index) =>
-    writeActionEventShard(root, identity, shardEvents, index + 1),
+  const shardEvents = splitActionEventShardEvents(normalizedEvents);
+  return shardEvents.map((eventsForShard, index) =>
+    writeActionEventShard(root, identity, eventsForShard, index + 1, shardEvents.length),
   );
 }
 
@@ -2119,7 +2143,7 @@ function validateCanonicalJsonComplexity(root: unknown): void {
       continue;
     }
     if (typeof value === "string") {
-      addBytes(Buffer.byteLength(value, "utf8") + 2, frame.location);
+      addBytes(Buffer.byteLength(JSON.stringify(value), "utf8"), frame.location);
       continue;
     }
     if (typeof value === "number") {
@@ -2172,7 +2196,7 @@ function validateCanonicalJsonComplexity(root: unknown): void {
     for (let index = ownKeys.length - 1; index >= 0; index -= 1) {
       const key = ownKeys[index];
       if (typeof key !== "string") continue;
-      addBytes(Buffer.byteLength(key, "utf8") + 4, `${frame.location}.${key}`);
+      addBytes(Buffer.byteLength(JSON.stringify(key), "utf8") + 2, `${frame.location}.${key}`);
       const descriptor = Object.getOwnPropertyDescriptor(value, key);
       if (descriptor && "value" in descriptor) {
         stack.push({
@@ -2323,6 +2347,7 @@ function privateHost(value: string): boolean {
   return (
     first === 10 ||
     first === 127 ||
+    (first === 100 && second >= 64 && second <= 127) ||
     (first === 169 && second === 254) ||
     (first === 192 && second === 168) ||
     (first === 172 && second >= 16 && second <= 31)
