@@ -1301,6 +1301,51 @@ test(
   },
 );
 
+test("projection admission is registered before producer lock release", async () => {
+  const root = tempRoot();
+  const outputRoot = trustedChildRoot(root, "state");
+  const env = workflowEnv({
+    CLAWSWEEPER_CRABFLEET_AGENT_TOKEN: "agent-token",
+    CLAWSWEEPER_CRABFLEET_SESSION_ID: "session-1",
+  });
+  const originalRenameSync = fs.renameSync;
+  const originalError = console.error;
+  let flush: Promise<string[]> | undefined;
+  let flushStarted = false;
+  fs.renameSync = ((oldPath, newPath) => {
+    const result = originalRenameSync(oldPath, newPath);
+    if (
+      !flushStarted &&
+      String(oldPath).includes(
+        `${path.sep}.clawsweeper-repair${path.sep}action-events${path.sep}_locks${path.sep}`,
+      ) &&
+      String(oldPath).endsWith(".lock")
+    ) {
+      flushStarted = true;
+      flush = flushWorkflowActionEvents(root, { env, outputRoot });
+    }
+    return result;
+  }) as typeof fs.renameSync;
+  console.error = () => undefined;
+  try {
+    assert.ok(recordReviewNumber(root, 101, env, async () => new Response(null, { status: 503 })));
+  } finally {
+    fs.renameSync = originalRenameSync;
+  }
+  try {
+    assert.ok(flush);
+    const paths = await flush;
+    assert.deepEqual(
+      readOutputEvents(outputRoot, paths)
+        .map((event) => event.event_type)
+        .sort(),
+      [ACTION_EVENT_TYPES.projectionFailed, ACTION_EVENT_TYPES.reviewCompleted].sort(),
+    );
+  } finally {
+    console.error = originalError;
+  }
+});
+
 test("finalization publishes local shards before a bounded projection drain and rejects late events", async () => {
   const root = tempRoot();
   const outputRoot = trustedChildRoot(root, "state");

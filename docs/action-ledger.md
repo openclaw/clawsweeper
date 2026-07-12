@@ -25,14 +25,16 @@ ledger/v1/events/YYYY/MM/DD/<producer-repo>/<producer>/<run-id>-<attempt>-<job>-
 Per-job shards avoid a shared append hotspot while preventing one Git commit per
 event. The state ledger receives canonical shards before optional CrabFleet
 delivery is drained. A producer-specific exclusive lock serializes partition
-marker creation, the seal check plus spool write, and finalization. Finalization
-rereads the spool while holding all selected producer locks, then publishes the
-create-only seal and exact shard set. An exact replay remains valid, while a new
-event for a sealed producer is rejected with an instruction to use a new
-invocation identity. Lock files are linked into place only after their canonical
-content is fully written and synced. Ownership binds both PID and process
-incarnation; dead or reused owners are reclaimed immediately, while elapsed age
-alone never evicts a live owner.
+marker creation, the seal check plus spool write, projection registration, and
+finalization. Finalization therefore cannot observe a persisted event before its
+optional request appears in the root-specific projection drain. It rereads the
+spool while holding all selected producer locks, then publishes the create-only
+seal and exact shard set. An exact replay remains valid, while a new event for a
+sealed producer is rejected with an instruction to use a new invocation
+identity. Lock files are linked into place only after their canonical content is
+fully written and synced. Ownership binds both PID and process incarnation; dead
+or reused owners are reclaimed immediately, while elapsed age alone never
+evicts a live owner.
 
 Failed live projections record retryable `projection.failed` events under
 derived `<component>.crabfleet_projection` producers. The first finalization

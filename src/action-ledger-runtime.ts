@@ -311,9 +311,10 @@ export function recordWorkflowActionEvent(
   const event = withWorkflowProducerLock(root, candidate.producer, () => {
     assertWorkflowProducerAcceptsEvent(root, candidate);
     ensureWorkflowPartitionDateValue(root, persistedWorkflowProducer(producer), partitionDate);
-    return writeActionEvent(root, eventInput, writeOptions).event;
+    const persisted = writeActionEvent(root, eventInput, writeOptions).event;
+    queueCrabFleetEvent(root, persisted, env, options.fetchImpl ?? fetch);
+    return persisted;
   });
-  queueCrabFleetEvent(root, event, env, options.fetchImpl ?? fetch);
   return event;
 }
 
