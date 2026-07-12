@@ -6,6 +6,7 @@ import { pathToFileURL } from "node:url";
 import { DEFAULT_TRUSTED_BOTS } from "./config.js";
 import { repoSlug } from "./comment-router-core.js";
 import { isAllowedMutationActor, writePayload } from "./comment-router-utils.js";
+import { runVerifiedPublishedPullMutation } from "./execution-handoff.js";
 import { ghJsonWithRetry, ghPagedWithRetry, ghText } from "./github-cli.js";
 import type { JsonValue, LooseRecord } from "./json-types.js";
 import { parseArgs, parseJob, repoRoot } from "./lib.js";
@@ -111,16 +112,18 @@ async function main() {
     { body },
   );
   let commentId = Number(existing?.id ?? 0);
-  if (commentId > 0) {
-    ghText([
-      "api",
-      `repos/${repo}/issues/comments/${commentId}`,
-      "--method",
-      "PATCH",
-      "--input",
-      payload,
-    ]);
-  } else {
+  const mutateComment = () => {
+    if (commentId > 0) {
+      ghText([
+        "api",
+        `repos/${repo}/issues/comments/${commentId}`,
+        "--method",
+        "PATCH",
+        "--input",
+        payload,
+      ]);
+      return;
+    }
     const created = ghJsonWithRetry<LooseRecord>([
       "api",
       `repos/${repo}/issues/${itemNumber}/comments`,
@@ -130,6 +133,31 @@ async function main() {
       payload,
     ]);
     commentId = Number(created.id ?? 0);
+  };
+  if (isCompletionState(state)) {
+    runVerifiedPublishedPullMutation({
+      root: requiredArg(args, "handoff-root"),
+      publicationReceiptPath: requiredArg(args, "publication-receipt"),
+      validationReceiptPath: requiredArg(args, "validation-receipt"),
+      expectedAuthorizationSha256: requiredArg(args, "authorization-sha256"),
+      expectedValidationReceiptSha256: requiredArg(args, "validation-receipt-sha256"),
+      expectedPublicationReceiptSha256: requiredArg(args, "publication-receipt-sha256"),
+      mutation: ({ receipt, intent }) => {
+        if (
+          intent.source.kind !== "issue" ||
+          intent.source.repo !== repo ||
+          intent.source.number !== itemNumber
+        ) {
+          throw new Error("completion status target differs from the sealed source issue");
+        }
+        if (receipt.target_pr_url !== prUrl) {
+          throw new Error("completion status pull request differs from the publication receipt");
+        }
+        mutateComment();
+      },
+    });
+  } else {
+    mutateComment();
   }
 
   const dashboard = await postDashboardStatus(options).catch((error) => {
@@ -281,6 +309,17 @@ function isTrustedBotComment(comment: LooseRecord) {
 
 function stringArg(value: JsonValue) {
   return typeof value === "string" ? value.trim() : "";
+}
+
+function requiredArg(args: LooseRecord, name: string) {
+  const value = stringArg(args[name]);
+  if (!value) throw new Error(`--${name} is required for completion status publication`);
+  return value;
+}
+
+function isCompletionState(state: string) {
+  const normalized = state.trim().toLowerCase();
+  return normalized.includes("complete") || normalized.includes("open");
 }
 
 function positiveInteger(value: JsonValue) {

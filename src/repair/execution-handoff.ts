@@ -739,6 +739,49 @@ export function verifyPublishedReceipt({
   });
 }
 
+export function runVerifiedPublishedPullMutation<T>({
+  root,
+  publicationReceiptPath,
+  validationReceiptPath,
+  expectedAuthorizationSha256,
+  expectedValidationReceiptSha256,
+  expectedPublicationReceiptSha256,
+  mutation,
+}: {
+  root: string;
+  publicationReceiptPath: string;
+  validationReceiptPath: string;
+  expectedAuthorizationSha256: string;
+  expectedValidationReceiptSha256: string;
+  expectedPublicationReceiptSha256: string;
+  mutation: (context: { receipt: PublicationReceipt; intent: ExecutionIntent }) => T;
+}): T {
+  const receipt = verifyPublishedReceipt({
+    root,
+    publicationReceiptPath,
+    validationReceiptPath,
+    expectedAuthorizationSha256,
+    expectedValidationReceiptSha256,
+    expectedPublicationReceiptSha256,
+  });
+  const intent = readExecutionIntent(root);
+  const publication = verifyAuthorizedPreparedPublication(root, expectedAuthorizationSha256);
+  const checkpointedClosures = checkpointedSourceClosures(publication, receipt);
+  return runPublicationMutation({
+    intent,
+    publication,
+    checkpointedClosures,
+    targetNumbers: [receipt.target_pr_number],
+    mutation: () =>
+      runHeadBoundPullMutation({
+        readPull: () => ghObject(`repos/${intent.target_repo}/pulls/${receipt.target_pr_number}`),
+        publication,
+        intent,
+        mutation: () => mutation({ receipt, intent }),
+      }),
+  });
+}
+
 function readPriorPublicationCheckpoint({
   root,
   outputPath,
@@ -1319,22 +1362,40 @@ function remoteRefSha(checkout: string, ref: string): string | null {
   return sha.toLowerCase();
 }
 
-function runPublicationMutation<T>({
+export function runPublicationMutationBoundary<T>({
   intent,
   publication,
   targetNumbers,
   checkpointedClosures = new Set(),
+  readers = {},
   mutation,
 }: {
   intent: ExecutionIntent;
   publication: PreparedPublication;
   targetNumbers: ReadonlyArray<number | null>;
   checkpointedClosures?: ReadonlySet<string>;
+  readers?: PublicationSourceIdentityReaders;
   mutation: () => T;
 }): T {
-  assertPublicationSourceIdentity({ intent, publication, checkpointedClosures });
-  assertPublicationSafe(intent, targetNumbers);
+  const readIssue =
+    readers.readIssue ??
+    ((repo: string, number: number) => ghObject(`repos/${repo}/issues/${number}`));
+  const readComments =
+    readers.readComments ??
+    ((repo: string, number: number) =>
+      ghPagedArray(`repos/${repo}/issues/${number}/comments?per_page=100`));
+  assertPublicationSourceIdentity({ intent, publication, checkpointedClosures, readers });
+  assertPublicationSafetyBoundary(intent, targetNumbers, (repo, number) => ({
+    labels: githubLabelNames(readIssue(repo, number).labels),
+    comments: readComments(repo, number).map((comment) => String(comment.body ?? "")),
+  }));
   return mutation();
+}
+
+function runPublicationMutation<T>(
+  options: Omit<Parameters<typeof runPublicationMutationBoundary<T>>[0], "readers">,
+): T {
+  return runPublicationMutationBoundary(options);
 }
 
 export function publicationPauseItems(
@@ -1497,19 +1558,26 @@ function publishRequiredPullLabels({
     checkpointedClosures,
     targetNumbers: [targetPrNumber],
     mutation: () =>
-      run(
-        "gh",
-        [
-          "issue",
-          "edit",
-          String(targetPrNumber),
-          "--repo",
-          intent.target_repo,
-          "--add-label",
-          missing.join(","),
-        ],
-        { cwd: checkout },
-      ),
+      runHeadBoundPullMutation({
+        readPull: () => ghObject(`repos/${intent.target_repo}/pulls/${targetPrNumber}`),
+        publication,
+        intent,
+        verifyLabels: false,
+        mutation: () =>
+          run(
+            "gh",
+            [
+              "issue",
+              "edit",
+              String(targetPrNumber),
+              "--repo",
+              intent.target_repo,
+              "--add-label",
+              missing.join(","),
+            ],
+            { cwd: checkout },
+          ),
+      }),
   });
 }
 
@@ -1898,7 +1966,47 @@ function verifyPublishedPull(
   intent: ExecutionIntent,
   verifyLabels = true,
 ) {
-  const pull = ghObject(`repos/${repo}/pulls/${number}`);
+  assertPublishedPullIdentity({
+    pull: ghObject(`repos/${repo}/pulls/${number}`),
+    publication,
+    intent,
+    verifyLabels,
+  });
+}
+
+export function runHeadBoundPullMutation<T>({
+  readPull,
+  publication,
+  intent,
+  verifyLabels = true,
+  mutation,
+}: {
+  readPull: () => LooseRecord;
+  publication: PreparedPublication;
+  intent: ExecutionIntent;
+  verifyLabels?: boolean;
+  mutation: () => T;
+}): T {
+  assertPublishedPullIdentity({
+    pull: readPull(),
+    publication,
+    intent,
+    verifyLabels,
+  });
+  return mutation();
+}
+
+function assertPublishedPullIdentity({
+  pull,
+  publication,
+  intent,
+  verifyLabels,
+}: {
+  pull: LooseRecord;
+  publication: PreparedPublication;
+  intent: ExecutionIntent;
+  verifyLabels: boolean;
+}) {
   const missingLabels = missingRequiredPublicationLabels(
     intent.required_labels,
     githubLabelNames(pull.labels),

@@ -18,6 +18,8 @@ import {
   preparedRefPublicationState,
   publicationPauseItems,
   replacementPublicationLabels,
+  runHeadBoundPullMutation,
+  runPublicationMutationBoundary,
   selectAuthorizedReplacementPull,
   sealExecutionHandoff,
   type SourcePullRevision,
@@ -565,7 +567,7 @@ test("publication checkpoint precedes source closeout and every mutation recheck
     source.indexOf("export function publicationPauseItems"),
   );
   assert.match(mutationWrapper, /assertPublicationSourceIdentity\(/);
-  assert.match(mutationWrapper, /assertPublicationSafe\(intent, targetNumbers\)/);
+  assert.match(mutationWrapper, /assertPublicationSafetyBoundary\(intent, targetNumbers/);
   for (const mutationOwner of [
     "function publishPreparedRef",
     "function publishExactPullComment",
@@ -746,12 +748,74 @@ test("shared publication mutation identity rejects sealed issue drift", () => {
     readComments: () => [],
   };
 
-  assert.doesNotThrow(() => assertPublicationSourceIdentity({ intent, publication, readers }));
+  let mutated = false;
+  assert.doesNotThrow(() =>
+    runPublicationMutationBoundary({
+      intent,
+      publication,
+      targetNumbers: [],
+      readers,
+      mutation: () => {
+        mutated = true;
+      },
+    }),
+  );
+  assert.equal(mutated, true);
   liveIssue = { ...issue, body: "Changed after authorization" };
+  mutated = false;
   assert.throws(
-    () => assertPublicationSourceIdentity({ intent, publication, readers }),
+    () =>
+      runPublicationMutationBoundary({
+        intent,
+        publication,
+        targetNumbers: [],
+        readers,
+        mutation: () => {
+          mutated = true;
+        },
+      }),
     /source issue changed since ClawSweeper queued implementation/,
   );
+  assert.equal(mutated, false);
+});
+
+test("required label mutation rejects a concurrently replaced target head", () => {
+  const intent = executionIntent("a".repeat(64));
+  const publication = checkpointPublication([]);
+  let livePull = {
+    state: "open",
+    merged_at: null,
+    labels: [],
+    head: {
+      repo: { full_name: intent.output_repo },
+      ref: intent.output_branch,
+      sha: publication.prepared_head_sha,
+    },
+    base: { ref: intent.target_base_ref },
+    title: publication.pr_title,
+    body: publication.pr_body,
+  };
+  assert.deepEqual(missingRequiredPublicationLabels(intent.required_labels, []), ["clawsweeper"]);
+  livePull = {
+    ...livePull,
+    head: { ...livePull.head, sha: "8".repeat(40) },
+  };
+  let mutated = false;
+
+  assert.throws(
+    () =>
+      runHeadBoundPullMutation({
+        readPull: () => livePull,
+        publication,
+        intent,
+        verifyLabels: false,
+        mutation: () => {
+          mutated = true;
+        },
+      }),
+    /published pull request does not match the validated output identity/,
+  );
+  assert.equal(mutated, false);
 });
 
 test("publication pause boundary covers secondary sources and retry targets on every mutation", () => {

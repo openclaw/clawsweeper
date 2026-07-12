@@ -90,6 +90,10 @@ test("issue build workflow reports an opened PR without calling pending CI block
     /steps\.post_flight\.outcome == 'failure' \|\| steps\.post_flight\.outputs\.report_outcome != 'success'/,
   );
   assert.match(workflow, /The exact independently validated repair was published at/);
+  assert.match(
+    workflow,
+    /repair:issue-implementation-status[\s\S]*--handoff-root \.clawsweeper-repair\/execution[\s\S]*--publication-receipt-sha256 "\$\{\{ steps\.publish\.outputs\.publication_receipt_sha256 \}\}"/,
+  );
   assert.doesNotMatch(
     workflow,
     /detail="The automatic implementation worker stopped before all post-flight gates passed:/,

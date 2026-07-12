@@ -70,6 +70,9 @@ checkpoint, and status-only commits are intentionally omitted.
   privileged mutation guard immediately before push, create, reopen, label,
   comment, and close operations, allowing only the exact prepared source head
   or source closures authorized by a verified durable publication checkpoint.
+- Routed successful issue-implementation completion comments through the sealed
+  publication guard and rebound required-label writes to the exact current
+  validated pull-request head immediately before mutation.
 - Kept deadline-expired pending or missing post-flight checks retryable for
   durable self-heal, and required issue-implementation readiness to match the
   exact head recorded by the verified publication receipt.
