@@ -3,6 +3,13 @@ import fs from "node:fs";
 import path from "node:path";
 
 import {
+  assertDirectoryNoLinks,
+  prepareSafeWriteTarget,
+  readUtf8FileIfExistsNoFollow,
+  readUtf8FileNoFollow,
+  writeUtf8FileExclusiveNoFollow,
+} from "./action-ledger-files.js";
+import {
   ACTION_EVENT_TYPES,
   actionAttemptId,
   actionEventShardRelativePath,
@@ -341,19 +348,18 @@ export function importActionEventShards(
     }
     const sourcePath = path.join(source, relativePath);
     const events = readActionEventShard(sourcePath);
-    const content = fs.readFileSync(sourcePath, "utf8");
+    const content = readUtf8FileNoFollow(sourcePath, "action event shard import source");
     if (!content.endsWith("\n")) {
       throw new Error(`action event shard must end with a newline: ${relativePath}`);
     }
     validateCanonicalImportedShard(relativePath, events, content);
-    const destinationPath = path.join(destination, relativePath);
-    fs.mkdirSync(path.dirname(destinationPath), { recursive: true });
+    const target = prepareSafeWriteTarget(destination, relativePath, "action event shard import");
     try {
-      fs.writeFileSync(destinationPath, content, { encoding: "utf8", flag: "wx" });
+      writeUtf8FileExclusiveNoFollow(target, content);
       created += 1;
     } catch (error) {
       if (!isAlreadyExistsError(error)) throw error;
-      if (fs.readFileSync(destinationPath, "utf8") !== content) {
+      if (readUtf8FileNoFollow(target.path, "action event shard import") !== content) {
         throw new Error(`action event shard import conflict: ${relativePath}`);
       }
       unchanged += 1;
@@ -510,23 +516,23 @@ function workflowPartitionDate(
   const configured = String(env.CLAWSWEEPER_ACTION_LEDGER_PARTITION_DATE ?? "").trim();
   const identity = createHash("sha256").update(stableJson(producer)).digest("hex");
   const partitionPath = path.join(
-    root,
     ".clawsweeper-repair",
     "action-events",
     "_partitions",
     `${identity}.txt`,
   );
-  if (fs.existsSync(partitionPath)) return fs.readFileSync(partitionPath, "utf8").trim();
+  const target = prepareSafeWriteTarget(root, partitionPath, "action event partition marker");
+  const existing = readUtf8FileIfExistsNoFollow(target.path, "action event partition marker");
+  if (existing !== null) return existing.trim();
   const partitionDate = configured || new Date().toISOString().slice(0, 10);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(partitionDate)) {
     throw new Error("CLAWSWEEPER_ACTION_LEDGER_PARTITION_DATE must be YYYY-MM-DD");
   }
-  fs.mkdirSync(path.dirname(partitionPath), { recursive: true });
   try {
-    fs.writeFileSync(partitionPath, `${partitionDate}\n`, { encoding: "utf8", flag: "wx" });
+    writeUtf8FileExclusiveNoFollow(target, `${partitionDate}\n`);
   } catch (error) {
     if (!isAlreadyExistsError(error)) throw error;
-    return fs.readFileSync(partitionPath, "utf8").trim();
+    return readUtf8FileNoFollow(target.path, "action event partition marker").trim();
   }
   return partitionDate;
 }
@@ -564,6 +570,7 @@ function positiveIntegerEnv(env: NodeJS.ProcessEnv, name: string): number {
 }
 
 function recursiveFiles(root: string): string[] {
+  assertDirectoryNoLinks(root, "action event shard import source");
   return fs.readdirSync(root, { withFileTypes: true }).flatMap((entry) => {
     const resolved = path.join(root, entry.name);
     if (entry.isSymbolicLink()) {

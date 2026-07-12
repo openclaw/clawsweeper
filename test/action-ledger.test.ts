@@ -56,6 +56,10 @@ function tempRoot(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-action-ledger-"));
 }
 
+function createDirectoryLink(target: string, link: string): void {
+  fs.symlinkSync(target, link, process.platform === "win32" ? "junction" : "dir");
+}
+
 function reviewEventKey(
   scope = "review.completed",
   identity: Record<string, unknown> = {
@@ -387,6 +391,37 @@ test("action event writes are create-only and replay-idempotent", () => {
   assert.equal(replayed.status, "unchanged");
   assert.equal(replayed.event.recorded_at, "2026-07-12T10:01:00.000Z");
   assert.equal(fs.readFileSync(created.path, "utf8"), fs.readFileSync(replayed.path, "utf8"));
+});
+
+test("spool and shard writes reject symlinked parent directories", () => {
+  const root = tempRoot();
+  const outside = tempRoot();
+  fs.mkdirSync(path.join(root, ".clawsweeper-repair"));
+  createDirectoryLink(outside, path.join(root, ".clawsweeper-repair", "action-events"));
+
+  assert.throws(() => writeActionEvent(root, reviewInput()), /symbolic link or junction/);
+  assert.deepEqual(fs.readdirSync(outside), []);
+
+  const shardRoot = tempRoot();
+  const shardOutside = tempRoot();
+  createDirectoryLink(shardOutside, path.join(shardRoot, "ledger"));
+  assert.throws(
+    () =>
+      writeActionEventShard(
+        shardRoot,
+        {
+          producer: "review",
+          workflow: "sweep",
+          job: "review-3",
+          runId: "100",
+          runAttempt: 2,
+          partitionDate: "2026-07-12",
+        },
+        [createActionEvent(reviewInput())],
+      ),
+    /symbolic link or junction/,
+  );
+  assert.deepEqual(fs.readdirSync(shardOutside), []);
 });
 
 test("an event key cannot be reused for different semantic content", () => {

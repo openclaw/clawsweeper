@@ -2,6 +2,16 @@ import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
+import {
+  assertDirectoryNoLinks,
+  assertSafeWriteTarget,
+  prepareSafeWriteTarget,
+  readUtf8FileIfExistsNoFollow,
+  readUtf8FileNoFollow,
+  safeSiblingWriteTarget,
+  writeUtf8FileExclusiveNoFollow,
+  type SafeWriteTarget,
+} from "./action-ledger-files.js";
 import { normalizeRepo, slugForRepo } from "./repository-profiles.js";
 import { sortStable, stableJson } from "./stable-json.js";
 
@@ -760,8 +770,8 @@ export function writeActionEvent(
     candidate.subject.repository,
     candidate.event_id,
   );
-  const eventPath = resolveInsideRoot(root, relativePath, "action event");
-  fs.mkdirSync(path.dirname(eventPath), { recursive: true });
+  const target = prepareSafeWriteTarget(root, relativePath, "action event");
+  const eventPath = target.path;
 
   const existing = readActionEventIfExists(eventPath);
   if (existing) {
@@ -775,7 +785,7 @@ export function writeActionEvent(
   }
 
   const content = `${JSON.stringify(sortStable(candidate), null, 2)}\n`;
-  const status = writeCreateOnlyFile(eventPath, content, () => {
+  const status = writeCreateOnlyFile(target, content, () => {
     const raced = readActionEventIfExists(eventPath);
     if (!raced) throw new Error(`action event appeared without readable content: ${eventPath}`);
     compareExistingActionEvent(eventPath, relativePath, raced, candidate, occurredAtWasGenerated);
@@ -797,25 +807,20 @@ export function writeActionEventShard(
   if (normalizedEvents.length === 0) throw new Error("action event shard requires events");
   validateShardProducer(identity, normalizedEvents);
   const relativePath = actionEventShardRelativePath(identity, normalizedEvents);
-  const shardPath = resolveInsideRoot(root, relativePath, "action event shard");
+  const target = prepareSafeWriteTarget(root, relativePath, "action event shard");
+  const shardPath = target.path;
   const content = normalizedEvents.map((event) => stableJson(event)).join("\n") + "\n";
   const digest = sha256(content);
-  fs.mkdirSync(path.dirname(shardPath), { recursive: true });
-  const existing = fs.existsSync(shardPath) ? fs.readFileSync(shardPath, "utf8") : null;
+  const existing = readUtf8FileIfExistsNoFollow(shardPath, "action event shard");
   if (existing !== null) {
     return compareExistingShard(shardPath, relativePath, existing, digest, normalizedEvents.length);
   }
-  const status = writeCreateOnlyFile(shardPath, content, () => {
-    if (!fs.existsSync(shardPath)) {
+  const status = writeCreateOnlyFile(target, content, () => {
+    const raced = readUtf8FileIfExistsNoFollow(shardPath, "action event shard");
+    if (raced === null) {
       throw new Error(`action event shard appeared without readable content: ${shardPath}`);
     }
-    compareExistingShard(
-      shardPath,
-      relativePath,
-      fs.readFileSync(shardPath, "utf8"),
-      digest,
-      normalizedEvents.length,
-    );
+    compareExistingShard(shardPath, relativePath, raced, digest, normalizedEvents.length);
   });
   return {
     status,
@@ -827,13 +832,12 @@ export function writeActionEventShard(
 }
 
 export function readActionEvent(filePath: string): ActionEvent {
-  const parsed = JSON.parse(fs.readFileSync(filePath, "utf8")) as unknown;
+  const parsed = JSON.parse(readUtf8FileNoFollow(filePath, "action event")) as unknown;
   return validateActionEvent(parsed, filePath);
 }
 
 export function readActionEventShard(filePath: string): ActionEvent[] {
-  return fs
-    .readFileSync(filePath, "utf8")
+  return readUtf8FileNoFollow(filePath, "action event shard")
     .split(/\r?\n/)
     .filter(Boolean)
     .map((line, index) =>
@@ -849,6 +853,7 @@ export function readSpooledActionEvents(root: string, repository: string): Actio
     slugForRepo(requiredRepo(repository)),
   );
   if (!fs.existsSync(directory)) return [];
+  assertDirectoryNoLinks(directory, "action event spool");
   return fs
     .readdirSync(directory)
     .filter((entry) => entry.endsWith(".json"))
@@ -859,6 +864,7 @@ export function readSpooledActionEvents(root: string, repository: string): Actio
 export function readAllSpooledActionEvents(root: string): ActionEvent[] {
   const directory = path.resolve(root, ".clawsweeper-repair", "action-events");
   if (!fs.existsSync(directory)) return [];
+  assertDirectoryNoLinks(directory, "action event spool");
   return fs
     .readdirSync(directory, { withFileTypes: true })
     .filter((entry) => entry.isDirectory() && !entry.name.startsWith("_"))
@@ -1256,7 +1262,8 @@ function compareExistingShard(
 }
 
 function readActionEventIfExists(filePath: string): ActionEvent | null {
-  return fs.existsSync(filePath) ? readActionEvent(filePath) : null;
+  const content = readUtf8FileIfExistsNoFollow(filePath, "action event");
+  return content === null ? null : validateActionEvent(JSON.parse(content) as unknown, filePath);
 }
 
 function validateActionEvent(value: unknown, filePath: string): ActionEvent {
@@ -1368,15 +1375,19 @@ function validateActionEvent(value: unknown, filePath: string): ActionEvent {
 }
 
 function writeCreateOnlyFile(
-  destination: string,
+  destination: SafeWriteTarget,
   content: string,
   handleRace: () => void,
 ): "created" | "unchanged" {
-  const temporaryPath = `${destination}.${process.pid}.${randomUUID()}.tmp`;
+  const temporary = safeSiblingWriteTarget(
+    destination,
+    `${path.basename(destination.path)}.${process.pid}.${randomUUID()}.tmp`,
+  );
   try {
-    fs.writeFileSync(temporaryPath, content, { encoding: "utf8", flag: "wx" });
+    writeUtf8FileExclusiveNoFollow(temporary, content);
     try {
-      fs.linkSync(temporaryPath, destination);
+      assertSafeWriteTarget(destination);
+      fs.linkSync(temporary.path, destination.path);
       return "created";
     } catch (error) {
       if (!isAlreadyExistsError(error)) throw error;
@@ -1384,17 +1395,8 @@ function writeCreateOnlyFile(
       return "unchanged";
     }
   } finally {
-    fs.rmSync(temporaryPath, { force: true });
+    fs.rmSync(temporary.path, { force: true });
   }
-}
-
-function resolveInsideRoot(root: string, relativePath: string, label: string): string {
-  const rootPath = path.resolve(root);
-  const destination = path.resolve(rootPath, relativePath);
-  if (destination !== rootPath && !destination.startsWith(`${rootPath}${path.sep}`)) {
-    throw new Error(`refusing to write ${label} outside root: ${relativePath}`);
-  }
-  return destination;
 }
 
 function relativeDataPath(value: string, label: string): string {

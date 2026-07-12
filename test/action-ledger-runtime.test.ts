@@ -23,6 +23,10 @@ function tempRoot(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-action-runtime-"));
 }
 
+function createDirectoryLink(target: string, link: string): void {
+  fs.symlinkSync(target, link, process.platform === "win32" ? "junction" : "dir");
+}
+
 function workflowEnv(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
   return {
     CLAWSWEEPER_ACTION_LEDGER_FORCE: "1",
@@ -654,10 +658,47 @@ test("state shard imports reject forged paths and duplicate events", async () =>
 test("state shard imports reject symbolic links", () => {
   const root = tempRoot();
   const source = path.join(root, "source");
+  const linked = path.join(root, "linked-source");
   fs.mkdirSync(source);
-  fs.symlinkSync(path.join(root, "missing"), path.join(source, "linked"));
+  fs.mkdirSync(linked);
+  createDirectoryLink(linked, path.join(source, "linked"));
   assert.throws(
     () => importActionEventShards(source, path.join(root, "destination")),
     /refusing symbolic link/,
+  );
+});
+
+test("partition markers and import destinations reject symlinked parents", async () => {
+  const root = tempRoot();
+  const source = path.join(root, "source");
+  const outsidePartitions = path.join(root, "outside-partitions");
+  fs.mkdirSync(outsidePartitions);
+  recordReview(root);
+  createDirectoryLink(
+    outsidePartitions,
+    path.join(root, ".clawsweeper-repair", "action-events", "_partitions"),
+  );
+  await assert.rejects(
+    () => flushWorkflowActionEvents(root, { env: workflowEnv(), outputRoot: source }),
+    /symbolic link or junction/,
+  );
+  assert.deepEqual(fs.readdirSync(outsidePartitions), []);
+
+  fs.rmSync(path.join(root, ".clawsweeper-repair", "action-events", "_partitions"));
+  await flushWorkflowActionEvents(root, { env: workflowEnv(), outputRoot: source });
+
+  const destination = path.join(root, "destination");
+  const outsideDestination = path.join(root, "outside-destination");
+  fs.mkdirSync(destination);
+  fs.mkdirSync(outsideDestination);
+  createDirectoryLink(outsideDestination, path.join(destination, "ledger"));
+  assert.throws(() => importActionEventShards(source, destination), /symbolic link or junction/);
+  assert.deepEqual(fs.readdirSync(outsideDestination), []);
+
+  const destinationLink = path.join(root, "destination-link");
+  createDirectoryLink(outsideDestination, destinationLink);
+  assert.throws(
+    () => importActionEventShards(source, destinationLink),
+    /symbolic link or junction/,
   );
 });
