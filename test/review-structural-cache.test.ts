@@ -9,6 +9,7 @@ import {
   reviewStructuralQuery,
   reviewStructuralRecordAtLeastAsFresh,
   reviewStructuralRecordFromGraphql,
+  reviewStructuralRecordMatchesHydratedPull,
   reviewStructuralRecordMatchesObservedUpdate,
   reviewStructuralRecordsDescribeSameVerdictInput,
   type ReviewStructuralRecord,
@@ -50,6 +51,7 @@ function issueSnapshot(
         authorAssociation: "CONTRIBUTOR",
         state: null,
         commitSha: null,
+        bodyDigest: digest("comment"),
       },
     ],
     commentsTruncated: false,
@@ -87,6 +89,7 @@ function pullSnapshot(overrides: Partial<ReviewStructuralSnapshot> = {}): Review
           authorAssociation: "MEMBER",
           state: "APPROVED",
           commitSha: HEAD_SHA,
+          bodyDigest: digest("review"),
         },
       ],
       reviewsTruncated: false,
@@ -102,6 +105,7 @@ function pullSnapshot(overrides: Partial<ReviewStructuralSnapshot> = {}): Review
               authorAssociation: "MEMBER",
               state: null,
               commitSha: null,
+              bodyDigest: digest("thread comment"),
             },
           ],
           commentsTruncated: false,
@@ -222,6 +226,7 @@ function graphqlNode(kind: "issue" | "pull_request") {
       {
         id: "PRR_review",
         updatedAt: "2026-07-10T08:00:00Z",
+        body: "Approved",
         author: { login: "maintainer" },
         authorAssociation: "MEMBER",
         state: "APPROVED",
@@ -306,6 +311,7 @@ test("GraphQL decoder builds bounded issue and PR records", () => {
   assert.ok(pullRecord);
   assert.equal(pullRecord.kind, "pull_request");
   assert.equal(pullRecord.pullHeadSha, HEAD_SHA);
+  assert.ok(pullRecord.pullStateDigest);
 });
 
 test("GraphQL decoder fails closed on truncated metadata", () => {
@@ -390,6 +396,7 @@ test("changed human comment metadata forces hydration", () => {
           authorAssociation: "CONTRIBUTOR",
           state: null,
           commitSha: null,
+          bodyDigest: digest("comment"),
         },
       ],
     }),
@@ -573,6 +580,106 @@ test("changed PR merge-state status forces hydration", () => {
   assert.equal(decision({ priorRecord, currentRecord }).reason, "source_changed");
 });
 
+test("same-second human comment edits change the structural source revision", () => {
+  const node = graphqlNode("issue");
+  const original = graphqlRecord("issue", node);
+  const edited = graphqlRecord("issue", {
+    ...node,
+    comments: graphqlConnection([
+      {
+        ...node.comments.nodes[0],
+        body: "Edited without a timestamp advance",
+      },
+      node.comments.nodes[1],
+    ]),
+  });
+  assert.ok(original);
+  assert.ok(edited);
+  assert.notEqual(original.sourceRevision, edited.sourceRevision);
+});
+
+test("same-second review edits change the structural source revision", () => {
+  const node = graphqlNode("pull_request");
+  const original = graphqlRecord("pull_request", node);
+  const review = node.reviews.nodes[0];
+  assert.ok(review);
+  const edited = graphqlRecord("pull_request", {
+    ...node,
+    reviews: graphqlConnection([
+      {
+        ...review,
+        body: "Approved after another pass",
+      },
+    ]),
+  });
+  assert.ok(original);
+  assert.ok(edited);
+  assert.notEqual(original.sourceRevision, edited.sourceRevision);
+});
+
+test("same-second review-thread edits change the structural source revision", () => {
+  const node = graphqlNode("pull_request");
+  const original = graphqlRecord("pull_request", node);
+  const thread = node.reviewThreads.nodes[0];
+  assert.ok(thread);
+  const comment = thread.comments.nodes[0];
+  assert.ok(comment);
+  const edited = graphqlRecord("pull_request", {
+    ...node,
+    reviewThreads: graphqlConnection([
+      {
+        ...thread,
+        comments: graphqlConnection([
+          {
+            ...comment,
+            body: "Edited without a timestamp advance",
+          },
+        ]),
+      },
+    ]),
+  });
+  assert.ok(original);
+  assert.ok(edited);
+  assert.notEqual(original.sourceRevision, edited.sourceRevision);
+});
+
+test("hydrated pull state must match the complete structural PR state", () => {
+  const current = record(pullSnapshot());
+  const hydrated = {
+    headSha: HEAD_SHA,
+    baseSha: BASE_SHA,
+    draft: false,
+    mergeable: true,
+    mergeStateStatus: "clean",
+    additions: 10,
+    deletions: 2,
+    changedFiles: 3,
+    commitCount: 2,
+  };
+  assert.equal(reviewStructuralRecordMatchesHydratedPull(current, hydrated), true);
+  assert.equal(
+    reviewStructuralRecordMatchesHydratedPull(current, {
+      ...hydrated,
+      baseSha: "d".repeat(40),
+    }),
+    false,
+  );
+  assert.equal(
+    reviewStructuralRecordMatchesHydratedPull(current, {
+      ...hydrated,
+      mergeStateStatus: "blocked",
+    }),
+    false,
+  );
+  assert.equal(
+    reviewStructuralRecordMatchesHydratedPull(current, {
+      ...hydrated,
+      mergeable: false,
+    }),
+    false,
+  );
+});
+
 test("issue and PR records cannot be reused across kinds", () => {
   assert.equal(
     decision({ priorRecord: record(), currentRecord: record(pullSnapshot()) }).reason,
@@ -650,6 +757,7 @@ test("metadata probes ignore ClawSweeper comments but fail closed on malformed e
       authorAssociation: "MEMBER",
       state: null,
       commitSha: null,
+      bodyDigest: digest("No related item"),
     },
   ]);
   assert.equal(

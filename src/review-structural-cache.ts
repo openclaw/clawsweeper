@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { REVIEW_CACHE_MAX_AGE_DAYS } from "./scheduler-policy.js";
 import { stableJson } from "./stable-json.js";
 
-export const REVIEW_STRUCTURAL_CACHE_VERSION = 2;
+export const REVIEW_STRUCTURAL_CACHE_VERSION = 3;
 export const REVIEW_STRUCTURAL_CACHE_MAX_AGE_DAYS = REVIEW_CACHE_MAX_AGE_DAYS;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -20,6 +20,7 @@ export interface ReviewStructuralActivity {
   authorAssociation: string | null;
   state: string | null;
   commitSha: string | null;
+  bodyDigest: string | null;
 }
 
 export interface ReviewStructuralThread {
@@ -79,8 +80,21 @@ export interface ReviewStructuralRecord {
   relationSensitive: boolean;
   targetHeadSha: string;
   pullHeadSha: string | null;
+  pullStateDigest: string | null;
   reviewPolicy: string;
   reviewModel: string;
+}
+
+export interface ReviewStructuralPullState {
+  headSha: string;
+  baseSha: string;
+  draft: boolean;
+  mergeable: string | boolean | null;
+  mergeStateStatus: string;
+  additions: number;
+  deletions: number;
+  changedFiles: number;
+  commitCount: number;
 }
 
 export interface ReviewStructuralPriorReview {
@@ -249,6 +263,7 @@ export function reviewStructuralQuery(kind: ReviewStructuralKind): string {
           nodes {
             id
             updatedAt
+            body
             author { login }
             authorAssociation
             state
@@ -338,12 +353,19 @@ function structuralActivities(
     const authorAssociation = stringOrUndefined(record.authorAssociation) ?? null;
     const state = stringOrUndefined(record.state) ?? null;
     const commitSha = stringOrUndefined(asRecord(record.commit).oid) ?? null;
-    if (!id || !updatedAt) {
+    const hasBody = typeof record.body === "string" || record.body === null;
+    const bodyDigest =
+      typeof record.body === "string"
+        ? sha256(record.body)
+        : record.body === null
+          ? sha256("")
+          : null;
+    if (!id || !updatedAt || !hasBody) {
       malformed = true;
       return [];
     }
     if (author && ignoreAuthor(author)) return [];
-    return [{ id, updatedAt, author, authorAssociation, state, commitSha }];
+    return [{ id, updatedAt, author, authorAssociation, state, commitSha, bodyDigest }];
   });
   return { activities, truncated: connection.truncated || malformed };
 }
@@ -693,7 +715,8 @@ function validActivity(activity: ReviewStructuralActivity): boolean {
     (activity.author === null || activity.author.length <= 128) &&
     (activity.authorAssociation === null || activity.authorAssociation.length <= 64) &&
     (activity.state === null || activity.state.length <= 64) &&
-    (activity.commitSha === null || SHA_PATTERN.test(activity.commitSha))
+    (activity.commitSha === null || SHA_PATTERN.test(activity.commitSha)) &&
+    (activity.bodyDigest === null || DIGEST_PATTERN.test(activity.bodyDigest))
   );
 }
 
@@ -713,6 +736,7 @@ function normalizedActivities(
       authorAssociation: activity.authorAssociation?.toUpperCase() ?? null,
       state: activity.state?.toUpperCase() ?? null,
       commitSha: activity.commitSha,
+      bodyDigest: activity.bodyDigest,
     }))
     .sort(
       (left, right) =>
@@ -770,6 +794,47 @@ function sourceRevision(snapshot: ReviewStructuralSnapshot): string {
 
 function recordFingerprint(record: Omit<ReviewStructuralRecord, "fingerprint">): string {
   return sha256(stableJson(record));
+}
+
+function normalizedMergeable(value: ReviewStructuralPullState["mergeable"]): string | null {
+  if (value === true) return "MERGEABLE";
+  if (value === false) return "CONFLICTING";
+  if (value === null) return "UNKNOWN";
+  const normalized = value.trim().toUpperCase();
+  return normalized ? normalized : null;
+}
+
+export function reviewStructuralPullStateDigest(pull: ReviewStructuralPullState): string | null {
+  const headSha = pull.headSha.trim().toLowerCase();
+  const baseSha = pull.baseSha.trim().toLowerCase();
+  const mergeable = normalizedMergeable(pull.mergeable);
+  const mergeStateStatus = pull.mergeStateStatus.trim().toUpperCase();
+  const counts = [pull.additions, pull.deletions, pull.changedFiles, pull.commitCount];
+  if (
+    !SHA_PATTERN.test(headSha) ||
+    !SHA_PATTERN.test(baseSha) ||
+    typeof pull.draft !== "boolean" ||
+    !mergeable ||
+    mergeable.length > 64 ||
+    !mergeStateStatus ||
+    mergeStateStatus.length > 64 ||
+    counts.some((value) => !Number.isSafeInteger(value) || value < 0)
+  ) {
+    return null;
+  }
+  return sha256(
+    stableJson({
+      headSha,
+      baseSha,
+      draft: pull.draft,
+      mergeable,
+      mergeStateStatus,
+      additions: pull.additions,
+      deletions: pull.deletions,
+      changedFiles: pull.changedFiles,
+      commitCount: pull.commitCount,
+    }),
+  );
 }
 
 function validPullMetadata(pull: ReviewStructuralPullMetadata): boolean {
@@ -854,9 +919,11 @@ export function createReviewStructuralRecord(
     relationSensitive: snapshot.relationSensitive,
     targetHeadSha: snapshot.targetHeadSha,
     pullHeadSha: snapshot.pull?.headSha ?? null,
+    pullStateDigest: snapshot.pull ? reviewStructuralPullStateDigest(snapshot.pull) : null,
     reviewPolicy: options.reviewPolicy,
     reviewModel: options.reviewModel,
   } satisfies Omit<ReviewStructuralRecord, "fingerprint">;
+  if (snapshot.pull && !recordWithoutFingerprint.pullStateDigest) return null;
   return {
     ...recordWithoutFingerprint,
     fingerprint: recordFingerprint(recordWithoutFingerprint),
@@ -880,8 +947,15 @@ export function validReviewStructuralRecord(
     return false;
   }
   if (record.kind === "pull_request") {
-    if (!record.pullHeadSha || !SHA_PATTERN.test(record.pullHeadSha)) return false;
-  } else if (record.pullHeadSha !== null) {
+    if (
+      !record.pullHeadSha ||
+      !SHA_PATTERN.test(record.pullHeadSha) ||
+      !record.pullStateDigest ||
+      !DIGEST_PATTERN.test(record.pullStateDigest)
+    ) {
+      return false;
+    }
+  } else if (record.pullHeadSha !== null || record.pullStateDigest !== null) {
     return false;
   }
   const { fingerprint: _, ...recordWithoutFingerprint } = record;
@@ -916,6 +990,15 @@ export function reviewStructuralRecordMatchesObservedUpdate(
   );
 }
 
+export function reviewStructuralRecordMatchesHydratedPull(
+  record: ReviewStructuralRecord | null,
+  pull: ReviewStructuralPullState | null,
+): record is ReviewStructuralRecord {
+  if (!validReviewStructuralRecord(record) || record.kind !== "pull_request" || !pull) return false;
+  const digest = reviewStructuralPullStateDigest(pull);
+  return digest !== null && record.pullStateDigest === digest;
+}
+
 export function reviewStructuralRecordsDescribeSameVerdictInput(
   anchor: ReviewStructuralRecord | null,
   current: ReviewStructuralRecord | null,
@@ -928,6 +1011,7 @@ export function reviewStructuralRecordsDescribeSameVerdictInput(
     anchor.relationSensitive === current.relationSensitive &&
     anchor.targetHeadSha === current.targetHeadSha &&
     anchor.pullHeadSha === current.pullHeadSha &&
+    anchor.pullStateDigest === current.pullStateDigest &&
     anchor.reviewPolicy === current.reviewPolicy &&
     anchor.reviewModel === current.reviewModel
   );

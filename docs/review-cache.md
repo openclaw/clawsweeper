@@ -21,7 +21,8 @@ A structural hit requires all of the following:
 - no explicit relation, matching local report, Gitcrawl cluster member, or
   enabled GitHub related-item search result can contribute review context;
 - the target branch head is unchanged;
-- a PR head is unchanged; and
+- the complete hydrated PR state is unchanged, including head and base SHAs,
+  draft and mergeability state, diff counts, and commit count; and
 - any item activity timestamp change is covered by the recorded ClawSweeper
   comment or label synchronization boundary.
 

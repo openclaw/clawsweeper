@@ -57,12 +57,14 @@ import { stableJson } from "./stable-json.js";
 import {
   REVIEW_STRUCTURAL_CACHE_VERSION,
   reviewStructuralRecordAtLeastAsFresh,
+  reviewStructuralRecordMatchesHydratedPull,
   reviewStructuralRecordMatchesObservedUpdate,
   reviewStructuralRecordsDescribeSameVerdictInput,
   reviewStructuralQuery,
   reviewStructuralRecordFromGraphql,
   reviewStructuralCacheDecision,
   validReviewStructuralRecord,
+  type ReviewStructuralPullState,
   type ReviewStructuralRecord,
 } from "./review-structural-cache.js";
 import {
@@ -6205,6 +6207,7 @@ function reviewStructuralRecordFromMarkdown(markdown: string): ReviewStructuralR
   const version = Number(frontMatterValue(markdown, "review_structural_cache_version"));
   const kind = reportItemKind(markdown);
   const pullHeadSha = frontMatterValue(markdown, "review_structural_pull_head_sha");
+  const pullStateDigest = frontMatterValue(markdown, "review_structural_pull_state_digest");
   if (version !== REVIEW_STRUCTURAL_CACHE_VERSION || !kind) return null;
   const record: ReviewStructuralRecord = {
     version: REVIEW_STRUCTURAL_CACHE_VERSION,
@@ -6215,6 +6218,7 @@ function reviewStructuralRecordFromMarkdown(markdown: string): ReviewStructuralR
     relationSensitive: frontMatterBoolean(markdown, "review_structural_relation_sensitive"),
     targetHeadSha: frontMatterValue(markdown, "review_structural_target_head_sha") ?? "",
     pullHeadSha: pullHeadSha && pullHeadSha !== "none" ? pullHeadSha : null,
+    pullStateDigest: pullStateDigest && pullStateDigest !== "none" ? pullStateDigest : null,
     reviewPolicy: frontMatterValue(markdown, "review_policy") ?? "",
     reviewModel: frontMatterValue(markdown, "review_model") ?? "",
   };
@@ -17215,6 +17219,49 @@ function pullHeadShaFromContext(context: ItemContext): string | null {
   return typeof sha === "string" && sha.trim() ? sha.trim() : null;
 }
 
+function reviewStructuralPullStateFromContext(
+  context: ItemContext,
+): ReviewStructuralPullState | null {
+  const pull = asRecord(context.pullRequest);
+  const head = asRecord(pull.head);
+  const base = asRecord(pull.base);
+  const headSha = stringOrUndefined(head.sha);
+  const baseSha = stringOrUndefined(base.sha);
+  const mergeStateStatus = stringOrUndefined(pull.mergeableState);
+  const additions = githubCount(pull.additions);
+  const deletions = githubCount(pull.deletions);
+  const changedFiles = githubCount(pull.changedFiles);
+  const commitCount = context.counts?.pullCommits;
+  if (
+    !headSha ||
+    !baseSha ||
+    typeof pull.draft !== "boolean" ||
+    (pull.mergeable !== null &&
+      typeof pull.mergeable !== "boolean" &&
+      typeof pull.mergeable !== "string") ||
+    !mergeStateStatus ||
+    additions === null ||
+    deletions === null ||
+    changedFiles === null ||
+    typeof commitCount !== "number" ||
+    !Number.isSafeInteger(commitCount) ||
+    commitCount < 0
+  ) {
+    return null;
+  }
+  return {
+    headSha,
+    baseSha,
+    draft: pull.draft,
+    mergeable: pull.mergeable,
+    mergeStateStatus,
+    additions,
+    deletions,
+    changedFiles,
+    commitCount,
+  };
+}
+
 function pullHeadShaFromReport(markdown: string): string | null {
   const value = frontMatterValue(markdown, "pull_head_sha");
   return value && value !== "unknown" ? value : null;
@@ -18873,6 +18920,11 @@ function updateReviewStructuralFrontMatter(
     "review_structural_pull_head_sha",
     record ? (record.pullHeadSha ?? "none") : "unknown",
   );
+  next = replaceFrontMatterValue(
+    next,
+    "review_structural_pull_state_digest",
+    record ? (record.pullStateDigest ?? "none") : "unknown",
+  );
   return replaceFrontMatterValue(next, "review_structural_cache_hit", cacheHit ? "true" : "false");
 }
 
@@ -19008,6 +19060,9 @@ review_structural_relation_sensitive: ${
 review_structural_target_head_sha: ${options.structuralRecord?.targetHeadSha ?? "unknown"}
 review_structural_pull_head_sha: ${
     options.structuralRecord ? (options.structuralRecord.pullHeadSha ?? "none") : "unknown"
+  }
+review_structural_pull_state_digest: ${
+    options.structuralRecord ? (options.structuralRecord.pullStateDigest ?? "none") : "unknown"
   }
 review_structural_cache_hit: false
 item_source_revision: ${options.context.sourceRevision ?? "unknown"}
@@ -19821,10 +19876,13 @@ function reviewCommand(args: Args): void {
             reviewPolicy,
             reviewModel: PUBLIC_CODEX_MODEL,
           });
-          const contextPullHeadSha = pullHeadShaFromContext(context)?.trim().toLowerCase() ?? null;
           if (
             reviewStructuralRecordMatchesObservedUpdate(candidate, contextItemUpdatedAt) &&
-            (item.kind !== "pull_request" || candidate.pullHeadSha === contextPullHeadSha)
+            (item.kind !== "pull_request" ||
+              reviewStructuralRecordMatchesHydratedPull(
+                candidate,
+                reviewStructuralPullStateFromContext(context),
+              ))
           ) {
             hydratedStructuralAnchor = candidate;
           }
