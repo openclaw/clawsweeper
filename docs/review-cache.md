@@ -53,18 +53,18 @@ After hydration, pull requests can reuse a prior completed keep-open report when
 the code is semantically unchanged even if the head SHA or ordinary formatting
 changed. TypeScript and JavaScript patches are parsed through the TypeScript
 compiler AST service. Whitespace and ordinary comments are ignored where
-lexical state is established, while parser structure, `@ts-*`, triple-slash
-reference, source-map, source URL, shebang, and tooling directives remain part
-of the digest. Complete JSON hunks are parsed and compacted without reordering
-object keys.
+lexical state is established, while every non-trivia syntax fragment,
+`@ts-*`, triple-slash reference, source-map, source URL, shebang, legal
+`/*!`/`//!`, and tooling directives remain part of the digest. Complete JSON
+hunks are parsed and compacted without reordering object keys.
 
 Semantic reuse requires:
 
 - complete bounded patches for every changed file;
 - a supported modified or added TypeScript, JavaScript, or complete JSON file;
 - unchanged title, body, human discussion, relations, reviews, review threads,
-  labels, base and target state, release state, commit messages, merge
-  readiness, checks, policy, and model;
+  labels including maintainer proof overrides, base and target state, release
+  state, commit messages, merge readiness, checks, policy, and model;
 - a prior completed keep-open report within the normal 14-day ceiling; and
 - the normal durable review lease.
 
