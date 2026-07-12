@@ -713,6 +713,43 @@ test("CrabFleet rejects forged confidential event keys before projection", async
   assert.equal(requests, 0);
 });
 
+test("CrabFleet rejects forged event bodies before projection", async () => {
+  const event = recordReview(tempRoot());
+  assert.ok(event);
+  const forgedEvents = [
+    {
+      ...structuredClone(event),
+      action: {
+        ...event.action,
+        status: "published",
+      },
+    },
+    {
+      ...structuredClone(event),
+      prompt: "unhashed private text",
+    },
+  ];
+  let requests = 0;
+
+  for (const forged of forgedEvents) {
+    await assert.rejects(
+      postActionEventToCrabFleet(
+        forged,
+        workflowEnv({
+          CLAWSWEEPER_CRABFLEET_AGENT_TOKEN: "agent-token",
+          CLAWSWEEPER_CRABFLEET_SESSION_ID: "session-1",
+        }),
+        (async () => {
+          requests += 1;
+          return new Response(null, { status: 204 });
+        }) as typeof fetch,
+      ),
+      /invalid action event semantic digest|unknown or non-canonical fields/,
+    );
+  }
+  assert.equal(requests, 0);
+});
+
 test("CrabFleet projection cancels successful response bodies", async () => {
   const event = recordReview(tempRoot());
   assert.ok(event);

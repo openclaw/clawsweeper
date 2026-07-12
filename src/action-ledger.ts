@@ -1515,9 +1515,9 @@ function readActionEventIfExists(target: SafeWriteTarget): ActionEvent | null {
   return content === null ? null : validateActionEvent(JSON.parse(content) as unknown, target.path);
 }
 
-function validateActionEvent(value: unknown, filePath: string): ActionEvent {
+export function validateActionEvent(value: unknown, source = "action event"): ActionEvent {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error(`invalid action event object: ${filePath}`);
+    throw new Error(`invalid action event object: ${source}`);
   }
   const event = value as Partial<ActionEvent>;
   if (
@@ -1537,7 +1537,7 @@ function validateActionEvent(value: unknown, filePath: string): ActionEvent {
     !event.action ||
     !event.privacy
   ) {
-    throw new Error(`invalid action event schema: ${filePath}`);
+    throw new Error(`invalid action event schema: ${source}`);
   }
   const semantic = actionEventSemanticValue({
     eventKey: event.event_key,
@@ -1603,10 +1603,10 @@ function validateActionEvent(value: unknown, filePath: string): ActionEvent {
     },
   });
   if (actionEventId(semantic.subject.repository, event.event_key) !== event.event_id) {
-    throw new Error(`invalid action event identity: ${filePath}`);
+    throw new Error(`invalid action event identity: ${source}`);
   }
   if (sha256(actionLedgerJson(semantic)) !== event.semantic_sha256) {
-    throw new Error(`invalid action event semantic digest: ${filePath}`);
+    throw new Error(`invalid action event semantic digest: ${source}`);
   }
   const canonical = canonicalJsonValue({
     schema: ACTION_EVENT_SCHEMA,
@@ -1620,7 +1620,7 @@ function validateActionEvent(value: unknown, filePath: string): ActionEvent {
     ...semantic,
   }) as ActionEvent;
   if (actionLedgerJson(canonical) !== actionLedgerJson(value)) {
-    throw new Error(`action event contains unknown or non-canonical fields: ${filePath}`);
+    throw new Error(`action event contains unknown or non-canonical fields: ${source}`);
   }
   return canonical;
 }

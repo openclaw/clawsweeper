@@ -13,7 +13,6 @@ import {
 } from "./action-ledger-files.js";
 import {
   ACTION_EVENT_TYPES,
-  actionEventId,
   actionEventShardContentReplayEquivalent,
   actionAttemptId,
   actionEventShardRelativePath,
@@ -28,6 +27,7 @@ import {
   readActionEventShardAt,
   readAllSpooledActionEvents,
   sortActionEventsCausally,
+  validateActionEvent,
   writeActionEvent,
   writeActionEventShard,
   type ActionEvent,
@@ -308,9 +308,7 @@ export async function postActionEventToCrabFleet(
   env: NodeJS.ProcessEnv = process.env,
   fetchImpl: typeof fetch = fetch,
 ): Promise<void> {
-  if (actionEventId(event.subject.repository, event.event_key) !== event.event_id) {
-    throw new Error("CrabFleet action event identity is invalid");
-  }
+  const validatedEvent = validateActionEvent(event, "CrabFleet action event");
   const sessionId = String(env.CLAWSWEEPER_CRABFLEET_SESSION_ID ?? "").trim();
   const token = String(env.CLAWSWEEPER_CRABFLEET_AGENT_TOKEN ?? "").trim();
   if (!sessionId || !token) return;
@@ -338,12 +336,12 @@ export async function postActionEventToCrabFleet(
         "content-type": "application/json",
       },
       body: JSON.stringify({
-        eventKey: event.event_key,
+        eventKey: validatedEvent.event_key,
         type: "clawsweeper.action",
-        message: actionEventMessage(event),
+        message: actionEventMessage(validatedEvent),
         payload: {
           version: 1,
-          event,
+          event: validatedEvent,
         },
       }),
       signal: controller.signal,
