@@ -155,10 +155,13 @@ confidential-identifier checks as every other durable machine-text field.
   validation, so replacing a validated regular file with a FIFO cannot hang the
   process.
 - Producer lock creation is exclusive and rolls back the exact created inode if
-  later write or fsync validation fails. Release and stale cleanup are
-  identity-checked; a lock disappearing during cleanup is benign. Contenders
-  reclaim a lock as soon as its recorded process is dead, while a live holder is
-  never evicted solely because of lock age.
+  later write or fsync validation fails. Release and stale cleanup atomically
+  rename the observed lock to a private same-directory claim, revalidate its
+  open inode and content, and restore a successor that won the race. A lock
+  disappearing during cleanup is benign. Contenders reclaim a lock as soon as
+  its recorded process is dead or a Linux zombie, bypass PID-only identity
+  caches before stale decisions, and use sub-second macOS process start identity.
+  A live holder is never evicted solely because of lock age.
 - Partition-marker reads are capped at 64 bytes. Existing and raced shard reads
   are capped at the same 2 MiB limit as new shard writes. Direct shard readers
   also require a non-empty collection of at most 1024 unique, acyclic events in

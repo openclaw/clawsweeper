@@ -9,6 +9,22 @@ const DIRECTORY = fs.constants.O_DIRECTORY ?? 0;
 const NON_BLOCKING = fs.constants.O_NONBLOCK ?? 0;
 const PROCESS_IDENTITY_CACHE_MS = 100;
 const processIdentityCache = new Map<number, { expiresAt: number; identity: string | null }>();
+const DARWIN_PROCESS_INFO_SCRIPT = String.raw`
+import ctypes
+import struct
+import sys
+
+size = 136
+buffer = ctypes.create_string_buffer(size)
+libc = ctypes.CDLL("/usr/lib/libSystem.B.dylib")
+written = libc.proc_pidinfo(int(sys.argv[1]), 3, 0, buffer, size)
+if written != size:
+    raise SystemExit(1)
+status = struct.unpack_from("=I", buffer, 4)[0]
+reported_pid = struct.unpack_from("=I", buffer, 12)[0]
+started_sec, started_usec = struct.unpack_from("=QQ", buffer, 120)
+print(f"{status}:{reported_pid}:{started_sec}:{started_usec}")
+`;
 
 export type SafeWriteTarget = {
   path: string;
@@ -266,18 +282,9 @@ export function tryAcquireUtf8FileLockNoFollow(
   let released = false;
   return () => {
     if (released) return;
-    const current = readUtf8FileIfExistsNoFollow(target, Buffer.byteLength(content, "utf8"));
-    if (current === null) {
-      released = true;
-      return;
-    }
-    if (current !== content) {
+    const result = claimAndRemoveUtf8FileNoFollow(target, content, publishedIdentity);
+    if (result === "changed") {
       throw new Error(`refusing changed ${target.label} lock file: ${target.path}`);
-    }
-    try {
-      removeFileNoFollow(target, publishedIdentity);
-    } catch (error) {
-      if (!isNotFoundError(error) && !(error instanceof FileIdentityMismatchError)) throw error;
     }
     released = true;
   };
@@ -287,51 +294,109 @@ export function removeUtf8FileIfContentNoFollow(
   target: SafeWriteTarget,
   expectedContent: string,
 ): boolean {
-  let identity: FileIdentity;
-  try {
-    identity = fileIdentity(target.path, `${target.label} stale lock`);
-  } catch (error) {
-    if (isNotFoundError(error)) return false;
-    throw error;
-  }
-  let current: string | null;
-  try {
-    current = readUtf8FileIfExistsNoFollow(
-      target,
-      Math.max(1, Buffer.byteLength(expectedContent, "utf8")),
-    );
-  } catch (error) {
-    if (isNotFoundError(error)) return false;
-    throw error;
-  }
-  if (current === null) return false;
-  if (current !== expectedContent) return false;
-  if (!pathMatchesFileIdentity(target.path, identity, `${target.label} stale lock`)) return false;
-  try {
-    removeFileNoFollow(target, identity);
-  } catch (error) {
-    if (isNotFoundError(error)) return false;
-    if (error instanceof FileIdentityMismatchError) return false;
-    throw error;
-  }
-  return true;
+  return claimAndRemoveUtf8FileNoFollow(target, expectedContent) === "removed";
 }
 
-export function processIncarnationIdentitySha256(pid = process.pid): string | null {
+type ConditionalRemoveResult = "removed" | "missing" | "changed" | "replaced";
+
+function claimAndRemoveUtf8FileNoFollow(
+  target: SafeWriteTarget,
+  expectedContent: string,
+  expectedIdentity?: FileIdentity,
+): ConditionalRemoveResult {
+  const parentChain = captureSafeParentChain(target, false);
+  const claimed = safeSiblingWriteTarget(
+    target,
+    `${path.basename(target.path)}.${process.pid}.${randomUUID()}.reclaim`,
+  );
+  let descriptor: number | undefined;
+  let removed = false;
+  try {
+    assertStableParentChain(target, parentChain);
+    const pathIdentity = fileIdentity(target.path, `${target.label} stale lock`);
+    descriptor = fs.openSync(target.path, fs.constants.O_RDONLY | NO_FOLLOW | NON_BLOCKING);
+    const openedIdentity = descriptorIdentity(descriptor, `${target.label} stale lock`);
+    if (
+      !fileIdentitiesEqual(pathIdentity, openedIdentity) ||
+      (expectedIdentity !== undefined && !fileIdentitiesEqual(expectedIdentity, openedIdentity))
+    ) {
+      return "replaced";
+    }
+    assertStableParentChain(target, parentChain);
+    assertPathMatchesIdentity(target.path, openedIdentity, `${target.label} stale lock`);
+    const current = readBoundedUtf8File(
+      descriptor,
+      Math.max(1, Buffer.byteLength(expectedContent, "utf8")),
+      target,
+    );
+    if (current !== expectedContent) return "changed";
+    assertStableParentChain(target, parentChain);
+    assertPathMatchesIdentity(target.path, openedIdentity, `${target.label} stale lock`);
+    try {
+      fs.renameSync(target.path, claimed.path);
+    } catch (error) {
+      if (isNotFoundError(error)) return "missing";
+      throw error;
+    }
+    fsyncDirectory(target.parentPath, target.label);
+    assertStableParentChain(target, parentChain);
+    const claimedIdentity = fileIdentity(claimed.path, `${target.label} stale lock claim`);
+    if (!fileIdentitiesEqual(claimedIdentity, openedIdentity)) {
+      restoreClaimedFileNoFollow(claimed, target, claimedIdentity);
+      return "replaced";
+    }
+    removeFileNoFollow(claimed, openedIdentity);
+    removed = true;
+  } catch (error) {
+    if (isNotFoundError(error)) return "missing";
+    if (error instanceof FileIdentityMismatchError) return "replaced";
+    throw error;
+  } finally {
+    if (descriptor !== undefined) fs.closeSync(descriptor);
+  }
+  if (!removed) return "replaced";
+  try {
+    fileIdentity(target.path, `${target.label} successor lock`);
+    return "replaced";
+  } catch (error) {
+    if (isNotFoundError(error)) return "removed";
+    throw error;
+  }
+}
+
+function restoreClaimedFileNoFollow(
+  claimed: SafeWriteTarget,
+  target: SafeWriteTarget,
+  identity: FileIdentity,
+): void {
+  linkFileExclusiveNoFollow(claimed, target);
+  removeFileNoFollow(claimed, identity);
+}
+
+export function processIncarnationIdentitySha256(
+  pid = process.pid,
+  options: { fresh?: boolean } = {},
+): string | null {
   if (!Number.isSafeInteger(pid) || pid < 1) return null;
   const now = Date.now();
   const cached = processIdentityCache.get(pid);
-  if (cached && cached.expiresAt > now) return cached.identity;
+  if (!options.fresh && cached && cached.expiresAt > now) return cached.identity;
   const rawIdentity = processIncarnationIdentity(pid);
   const identity =
     rawIdentity === null
       ? null
       : createHash("sha256").update(`${process.platform}\0${rawIdentity}`).digest("hex");
   processIdentityCache.set(pid, {
-    expiresAt: now + PROCESS_IDENTITY_CACHE_MS,
+    expiresAt: pid === process.pid ? Number.POSITIVE_INFINITY : now + PROCESS_IDENTITY_CACHE_MS,
     identity,
   });
   return identity;
+}
+
+export function processIsDefunct(pid: number): boolean {
+  if (!Number.isSafeInteger(pid) || pid < 1 || process.platform !== "linux") return false;
+  const stat = linuxProcessStat(pid);
+  return stat?.state === "Z" || stat?.state === "X";
 }
 
 export function writeUtf8FileCreateOnlyNoFollow(
@@ -539,7 +604,7 @@ function fileIdentity(filePath: string, label: string): FileIdentity {
 
 function assertPathMatchesIdentity(filePath: string, expected: FileIdentity, label: string): void {
   const actual = fileIdentity(filePath, label);
-  if (actual.dev !== expected.dev || actual.ino !== expected.ino) {
+  if (!fileIdentitiesEqual(actual, expected)) {
     throw new FileIdentityMismatchError(`refusing changed ${label} file: ${filePath}`);
   }
 }
@@ -547,11 +612,15 @@ function assertPathMatchesIdentity(filePath: string, expected: FileIdentity, lab
 function pathMatchesFileIdentity(filePath: string, expected: FileIdentity, label: string): boolean {
   try {
     const actual = fileIdentity(filePath, label);
-    return actual.dev === expected.dev && actual.ino === expected.ino;
+    return fileIdentitiesEqual(actual, expected);
   } catch (error) {
     if (isNotFoundError(error)) return false;
     throw error;
   }
+}
+
+function fileIdentitiesEqual(left: FileIdentity, right: FileIdentity): boolean {
+  return left.dev === right.dev && left.ino === right.ino;
 }
 
 function readUtf8FileWithParentChain(
@@ -641,20 +710,18 @@ function removeFileNoFollow(target: SafeWriteTarget, expectedIdentity: FileIdent
 
 function processIncarnationIdentity(pid: number): string | null {
   if (process.platform === "linux") {
-    try {
-      const bootId = fs.readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
-      const stat = fs.readFileSync(`/proc/${pid}/stat`, "utf8");
-      const commandEnd = stat.lastIndexOf(")");
-      if (!bootId || commandEnd < 0) return null;
-      const fields = stat
-        .slice(commandEnd + 1)
-        .trim()
-        .split(/\s+/);
-      const startTime = fields[19];
-      return startTime && /^\d+$/.test(startTime) ? `${bootId}\0${startTime}` : null;
-    } catch {
+    const bootId = readUtf8Path("/proc/sys/kernel/random/boot_id")?.trim();
+    const stat = linuxProcessStat(pid);
+    if (
+      !bootId ||
+      !stat ||
+      stat.state === "Z" ||
+      stat.state === "X" ||
+      !/^\d+$/.test(stat.startTime)
+    ) {
       return null;
     }
+    return `${bootId}\0${stat.startTime}`;
   }
   if (process.platform === "win32") {
     const startTime = commandOutput("powershell.exe", [
@@ -665,6 +732,17 @@ function processIncarnationIdentity(pid: number): string | null {
     ]);
     return startTime ? `windows\0${startTime}` : null;
   }
+  if (process.platform === "darwin") {
+    const processInfo = commandOutput("/usr/bin/python3", [
+      "-c",
+      DARWIN_PROCESS_INFO_SCRIPT,
+      String(pid),
+    ]);
+    if (processInfo && /^\d+:\d+:\d+:\d+$/.test(processInfo)) {
+      const bootTime = commandOutput("/usr/sbin/sysctl", ["-n", "kern.boottime"]);
+      return `${bootTime ?? "unknown-boot"}\0${processInfo}`;
+    }
+  }
   const startTime = commandOutput("/bin/ps", ["-p", String(pid), "-o", "lstart="]);
   if (!startTime) return null;
   const bootTime =
@@ -672,6 +750,28 @@ function processIncarnationIdentity(pid: number): string | null {
       ? commandOutput("/usr/sbin/sysctl", ["-n", "kern.boottime"])
       : null;
   return `${bootTime ?? "unknown-boot"}\0${startTime}`;
+}
+
+function linuxProcessStat(pid: number): { state: string; startTime: string } | null {
+  const stat = readUtf8Path(`/proc/${pid}/stat`);
+  if (stat === null) return null;
+  const commandEnd = stat.lastIndexOf(")");
+  if (commandEnd < 0) return null;
+  const fields = stat
+    .slice(commandEnd + 1)
+    .trim()
+    .split(/\s+/);
+  const state = fields[0];
+  const startTime = fields[19];
+  return state && startTime ? { state, startTime } : null;
+}
+
+function readUtf8Path(filePath: string): string | null {
+  try {
+    return fs.readFileSync(filePath, "utf8");
+  } catch {
+    return null;
+  }
 }
 
 function commandOutput(command: string, args: readonly string[]): string | null {

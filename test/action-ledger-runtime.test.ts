@@ -1142,6 +1142,165 @@ release();
   assert.equal(readOutputEvents(outputRoot, paths).length, 2);
 });
 
+test(
+  "macOS process identities distinguish processes started within the same second",
+  { skip: process.platform === "darwin" ? false : "requires macOS proc_pidinfo" },
+  () => {
+    const filesModuleUrl = pathToFileURL(
+      path.join(process.cwd(), "dist", "action-ledger-files.js"),
+    ).href;
+    const script = `
+const { processIncarnationIdentitySha256 } = await import(${JSON.stringify(filesModuleUrl)});
+process.stdout.write(JSON.stringify({
+  identity: processIncarnationIdentitySha256(),
+  second: new Date().toISOString().slice(0, 19)
+}));
+`;
+    const samples: Array<{ identity: string; second: string }> = [];
+    for (let index = 0; index < 12; index += 1) {
+      const result = spawnSync(process.execPath, ["--input-type=module", "-e", script], {
+        encoding: "utf8",
+      });
+      assert.equal(result.status, 0, result.stderr);
+      const sample = JSON.parse(result.stdout) as { identity: string | null; second: string };
+      assert.ok(sample.identity);
+      samples.push({ identity: sample.identity, second: sample.second });
+    }
+    const bySecond = new Map<string, Array<{ identity: string; second: string }>>();
+    for (const sample of samples) {
+      const group = bySecond.get(sample.second) ?? [];
+      group.push(sample);
+      bySecond.set(sample.second, group);
+    }
+    const sameSecond = [...bySecond.values()].sort((left, right) => right.length - left.length)[0]!;
+    assert.ok(sameSecond.length >= 2);
+    assert.equal(new Set(sameSecond.map((sample) => sample.identity)).size, sameSecond.length);
+  },
+);
+
+test(
+  "Linux stale-lock checks bypass cached identities after PID reuse",
+  { skip: process.platform === "linux" ? false : "requires Linux procfs" },
+  () => {
+    const root = tempRoot();
+    const first = recordReviewNumber(root, 81);
+    assert.ok(first);
+    const target = prepareSafeWriteTarget(
+      root,
+      producerLockRelativePath(first),
+      "cached identity producer lock",
+    );
+    const cachedIdentity = processIncarnationIdentitySha256();
+    assert.ok(cachedIdentity);
+    const content = `${actionLedgerJson({
+      schema: "clawsweeper.action-ledger-producer-lock",
+      schema_version: 1,
+      pid: process.pid,
+      process_incarnation_sha256: cachedIdentity,
+      acquired_at_ms: Date.now(),
+      nonce: "00000000-0000-4000-8000-000000000003",
+    })}\n`;
+    const releaseCached = tryAcquireUtf8FileLockNoFollow(target, content);
+    assert.ok(releaseCached);
+
+    const statPath = `/proc/${process.pid}/stat`;
+    const originalStat = fs.readFileSync(statPath, "utf8");
+    const commandEnd = originalStat.lastIndexOf(")");
+    assert.ok(commandEnd >= 0);
+    const fields = originalStat
+      .slice(commandEnd + 1)
+      .trim()
+      .split(/\s+/);
+    fields[19] = String(BigInt(fields[19]!) + 1n);
+    const recycledStat = `${originalStat.slice(0, commandEnd + 1)} ${fields.join(" ")}\n`;
+    const originalReadFileSync = fs.readFileSync;
+    fs.readFileSync = ((filePath, options) => {
+      if (filePath === statPath && options === "utf8") return recycledStat;
+      return originalReadFileSync(filePath, options as never);
+    }) as typeof fs.readFileSync;
+    try {
+      const startedAt = Date.now();
+      assert.ok(recordReviewNumber(root, 82));
+      assert.ok(Date.now() - startedAt < 1_000);
+    } finally {
+      fs.readFileSync = originalReadFileSync;
+      processIncarnationIdentitySha256(process.pid, { fresh: true });
+    }
+    assert.doesNotThrow(releaseCached);
+  },
+);
+
+test(
+  "Linux producer locks reclaim zombie owners",
+  { skip: process.platform === "linux" ? false : "requires Linux procfs zombie state" },
+  async (t) => {
+    const python = spawnSync("python3", ["--version"], { encoding: "utf8" });
+    if (python.error || python.status !== 0) {
+      t.skip("python3 is required to hold a zombie child for this test");
+      return;
+    }
+    const root = tempRoot();
+    const first = recordReviewNumber(root, 91);
+    assert.ok(first);
+    const pidPath = path.join(root, "zombie-pid");
+    const keeper = spawn(
+      "python3",
+      [
+        "-c",
+        [
+          "import os, sys, time",
+          "pid = os.fork()",
+          "if pid == 0: os._exit(0)",
+          "open(sys.argv[1], 'w', encoding='utf-8').write(str(pid))",
+          "time.sleep(10)",
+        ].join("\n"),
+        pidPath,
+      ],
+      { stdio: ["ignore", "pipe", "pipe"] },
+    );
+    const keeperDone = childResult(keeper);
+    try {
+      await waitForPath(pidPath);
+      const zombiePid = Number(fs.readFileSync(pidPath, "utf8"));
+      const deadline = Date.now() + 2_000;
+      for (;;) {
+        const stat = fs.readFileSync(`/proc/${zombiePid}/stat`, "utf8");
+        const commandEnd = stat.lastIndexOf(")");
+        const state = stat
+          .slice(commandEnd + 1)
+          .trim()
+          .split(/\s+/)[0];
+        if (state === "Z") break;
+        if (Date.now() >= deadline) throw new Error("child did not enter zombie state");
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+
+      const target = prepareSafeWriteTarget(
+        root,
+        producerLockRelativePath(first),
+        "zombie producer lock",
+      );
+      const content = `${actionLedgerJson({
+        schema: "clawsweeper.action-ledger-producer-lock",
+        schema_version: 1,
+        pid: zombiePid,
+        process_incarnation_sha256: "0".repeat(64),
+        acquired_at_ms: Date.now(),
+        nonce: "00000000-0000-4000-8000-000000000004",
+      })}\n`;
+      const releaseZombie = tryAcquireUtf8FileLockNoFollow(target, content);
+      assert.ok(releaseZombie);
+      const startedAt = Date.now();
+      assert.ok(recordReviewNumber(root, 92));
+      assert.ok(Date.now() - startedAt < 1_000);
+      assert.doesNotThrow(releaseZombie);
+    } finally {
+      keeper.kill("SIGTERM");
+      await keeperDone;
+    }
+  },
+);
+
 test("finalization publishes local shards before a bounded projection drain and rejects late events", async () => {
   const root = tempRoot();
   const outputRoot = trustedChildRoot(root, "state");

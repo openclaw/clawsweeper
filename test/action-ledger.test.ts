@@ -1120,7 +1120,7 @@ test("exclusive file locks contend, roll back failed creation, and tolerate disa
     originalCloseSync(descriptor);
     if (!replaced) {
       replaced = true;
-      fs.unlinkSync(target.path);
+      if (fs.existsSync(target.path)) fs.unlinkSync(target.path);
       fs.writeFileSync(target.path, replacedContent);
     }
   }) as typeof fs.closeSync;
@@ -1132,6 +1132,33 @@ test("exclusive file locks contend, roll back failed creation, and tolerate disa
   assert.equal(replaced, true);
   assert.doesNotThrow(releaseReplaced);
   assert.equal(removeUtf8FileIfContentNoFollow(target, replacedContent), true);
+
+  const staleContent = "stale-owner\n";
+  const successorContent = "successor-owner\n";
+  const releaseStale = tryAcquireUtf8FileLockNoFollow(target, staleContent);
+  assert.ok(releaseStale);
+  const originalRenameSync = fs.renameSync;
+  let releaseSuccessor: (() => void) | null = null;
+  let successorRaced = false;
+  fs.renameSync = ((oldPath, newPath) => {
+    if (!successorRaced && oldPath === target.path) {
+      successorRaced = true;
+      fs.unlinkSync(target.path);
+      releaseSuccessor = tryAcquireUtf8FileLockNoFollow(target, successorContent);
+      assert.ok(releaseSuccessor);
+    }
+    return originalRenameSync(oldPath, newPath);
+  }) as typeof fs.renameSync;
+  try {
+    assert.equal(removeUtf8FileIfContentNoFollow(target, staleContent), false);
+  } finally {
+    fs.renameSync = originalRenameSync;
+  }
+  assert.equal(successorRaced, true);
+  assert.equal(fs.readFileSync(target.path, "utf8"), successorContent);
+  assert.doesNotThrow(releaseStale);
+  assert.ok(releaseSuccessor);
+  releaseSuccessor();
 
   const releaseFinal = tryAcquireUtf8FileLockNoFollow(target, "final-owner\n");
   assert.ok(releaseFinal);

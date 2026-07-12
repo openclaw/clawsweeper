@@ -6,6 +6,7 @@ import {
   prepareSafeReadTarget,
   prepareSafeWriteTarget,
   processIncarnationIdentitySha256,
+  processIsDefunct,
   readDirectoryEntriesNoFollow,
   readUtf8FileIfExistsNoFollow,
   readUtf8FileNoFollow,
@@ -1681,11 +1682,12 @@ function parseActionEventLock(
 
 function actionEventLockOwnerIsStale(owner: ActionEventLock): boolean {
   if (!processIsAlive(owner.pid)) return true;
-  const currentIncarnation = processIncarnationIdentitySha256(owner.pid);
+  const currentIncarnation = processIncarnationIdentitySha256(owner.pid, { fresh: true });
   return currentIncarnation !== null && currentIncarnation !== owner.process_incarnation_sha256;
 }
 
 function processIsAlive(pid: number): boolean {
+  if (processIsDefunct(pid)) return false;
   try {
     process.kill(pid, 0);
     return true;
