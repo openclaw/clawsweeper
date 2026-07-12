@@ -39,6 +39,7 @@ type EventOptions = {
   itemNumber: string;
   closeReasons: string;
   minAgeMinutes: string;
+  reviewOnly: boolean;
   reportPath: string;
   snapshotDir: string;
 };
@@ -229,7 +230,7 @@ async function publishEventResult(options: EventOptions): Promise<void> {
 }
 
 function runApplyDecisions(options: EventOptions): void {
-  runStreaming("pnpm", [
+  const args = [
     "run",
     "apply-decisions",
     "--",
@@ -241,10 +242,11 @@ function runApplyDecisions(options: EventOptions): void {
     "all",
     "--apply-close-reasons",
     options.closeReasons,
+    ...(options.reviewOnly ? ["--sync-comments-only"] : []),
     "--stale-min-age-days",
     "30",
     "--limit",
-    "1",
+    options.reviewOnly ? "0" : "1",
     "--processed-limit",
     "20",
     "--min-age-minutes",
@@ -259,7 +261,8 @@ function runApplyDecisions(options: EventOptions): void {
     "--skip-dashboard",
     "--report-path",
     options.reportPath,
-  ]);
+  ];
+  runStreaming("pnpm", args);
 }
 
 function publishSnapshot({
@@ -416,6 +419,7 @@ function eventOptionsFromEnv(): EventOptions {
       process.env.CLOSE_REASONS ||
       "implemented_on_main,duplicate_or_superseded,low_signal_unmergeable_pr",
     minAgeMinutes: process.env.MIN_AGE_MINUTES || "0",
+    reviewOnly: process.env.REVIEW_ONLY === "true",
     reportPath: ".artifacts/event-apply-report.json",
     snapshotDir: ".artifacts/event-record-snapshot",
   };

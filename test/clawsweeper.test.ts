@@ -2511,6 +2511,13 @@ test("sweep target write tokens can merge pull requests", () => {
 
 test("sweep review recovery uses explicit failed shard artifacts", () => {
   const workflow = readText(".github/workflows/sweep.yml");
+  const publishEventResult = readText("src/repair/publish-event-result.ts");
+  const recoveryStart = workflow.indexOf("\n  recover-review-failures:");
+  const retryStart = workflow.indexOf("\n  retry-failed-reviews:", recoveryStart);
+  const eventReviewStart = workflow.indexOf("\n  event-review-apply:");
+  const targetFanoutStart = workflow.indexOf("\n  target-fanout:", eventReviewStart);
+  const recoveryJob = workflow.slice(recoveryStart, retryStart);
+  const eventReviewJob = workflow.slice(eventReviewStart, targetFanoutStart);
 
   assert.match(
     workflow,
@@ -2530,6 +2537,36 @@ test("sweep review recovery uses explicit failed shard artifacts", () => {
     workflow,
     /needs\.review\.result == 'failure' \|\| needs\.review\.result == 'cancelled'/,
   );
+  assert.match(recoveryJob, /contents: write/);
+  assert.match(recoveryJob, /event_type: "clawsweeper_item"/);
+  assert.match(recoveryJob, /source_action: "failed_review_shard_recovery"/);
+  assert.match(recoveryJob, /dispatch_key: \$dispatch_key/);
+  assert.match(recoveryJob, /repos\/\$GITHUB_REPOSITORY\/dispatches/);
+  assert.match(recoveryJob, /for attempt in 1 2 3/);
+  assert.match(recoveryJob, /failed_recovery_dispatches/);
+  assert.doesNotMatch(recoveryJob, /workflow run sweep\.yml/);
+  assert.match(eventReviewJob, /RECOVERY_TARGET_BRANCH:/);
+  assert.match(eventReviewJob, /RECOVERY_TARGET_BRANCH:-\$\(gh api/);
+  assert.match(eventReviewJob, /REVIEW_ONLY:/);
+  assert.match(
+    eventReviewJob,
+    /sourceAction == 'failed_review_shard_recovery' && 'true' \|\| 'false'/,
+  );
+  assert.match(
+    eventReviewJob,
+    /Queue exact verdict router[\s\S]*sourceAction != 'failed_review_shard_recovery'/,
+  );
+  assert.match(
+    eventReviewJob,
+    /Fail unsuccessful exact review[\s\S]*sourceAction != 'failed_review_shard_recovery'/,
+  );
+  assert.match(
+    eventReviewJob,
+    /React to target item completion[\s\S]*sourceAction == 'failed_review_shard_recovery'/,
+  );
+  assert.match(eventReviewJob, /\[ "\$REVIEW_ONLY" != "true" \]/);
+  assert.match(publishEventResult, /reviewOnly: process\.env\.REVIEW_ONLY === "true"/);
+  assert.match(publishEventResult, /options\.reviewOnly \? \["--sync-comments-only"\] : \[\]/);
 });
 
 test("sweep failed-review retry lane defaults to dry-run exact-item dispatch", () => {
