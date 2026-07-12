@@ -175,9 +175,10 @@ test("crawl-remote release is maintainer-bound across two fresh runners", () => 
   assert.equal(environmentToken.with?.owner, "openclaw");
   assert.equal(environmentToken.with?.repositories, "clawsweeper");
   assert.equal(environmentToken.with?.["permission-actions"], "read");
+  assert.equal(environmentToken.with?.["permission-environments"], "read");
   assert.equal(
     Object.keys(environmentToken.with ?? {}).filter((key) => key.startsWith("permission-")).length,
-    1,
+    2,
   );
   assert.equal(environmentAudit.env?.GH_TOKEN, "${{ steps.source-admin-token.outputs.token }}");
   assert.match(

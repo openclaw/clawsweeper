@@ -487,6 +487,7 @@ jobs:
           owner: openclaw
           repositories: clawsweeper
           permission-actions: read
+          permission-environments: read
 
       - name: Audit protected production environment
         env:
