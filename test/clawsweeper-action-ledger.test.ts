@@ -6,6 +6,7 @@ import {
   actionLedgerFailureDisposition,
   applyActionEventDisposition,
   applyItemBusinessIdempotencyIdentityForTest,
+  isGitHubLabelAlreadyExistsErrorForTest,
   reviewCommentPublicationEventDisposition,
   reviewRetryActionDisposition,
   reviewRetryBusinessIdempotencyIdentityForTest,
@@ -315,6 +316,37 @@ test("apply receipts start per item and persist mutation observation before fina
   assert.match(yieldHandler, /const interruptedItem = resumeCurrent && activeApplyItem !== null/);
   assert.match(yieldHandler, /finishApply\(\s*interruptedItem,/);
   assert.doesNotMatch(yieldHandler, /finishApply\(\);/);
+});
+
+test("apply mutation receipts classify existing labels and held leases as no-ops", () => {
+  assert.equal(
+    isGitHubLabelAlreadyExistsErrorForTest(
+      'HTTP 422: Validation Failed (label "priority: high" already exists)',
+    ),
+    true,
+  );
+  assert.equal(isGitHubLabelAlreadyExistsErrorForTest("HTTP 500: unavailable"), false);
+
+  const source = readText("src/clawsweeper.ts");
+  const labelCreates = source.match(/identity: `label_create:/g) ?? [];
+  const labelNoMutationClassifiers =
+    source.match(/knownNoMutation: labelAlreadyExistsError/g) ?? [];
+  assert.ok(labelCreates.length > 0);
+  assert.equal(labelNoMutationClassifiers.length, labelCreates.length);
+
+  const leaseAcquireStart = source.indexOf("const posted = runObservedApplyMutation({");
+  const leaseAcquireEnd = source.indexOf("if (posted.status !==", leaseAcquireStart);
+  const leaseAcquire = source.slice(leaseAcquireStart, leaseAcquireEnd);
+  assert.match(leaseAcquire, /didMutate: \(result\) => result\.didMutate/);
+  assert.match(
+    source,
+    /return \{ status: "held", lease: null, retryAt: initialLease\.expiresAt, didMutate: false \}/,
+  );
+  assert.match(
+    source,
+    /return \{ status: "held", lease: null, retryAt: winner\.expiresAt, didMutate: false \}/,
+  );
+  assert.match(source, /return \{ status: "posted", lease: acquired, didMutate: true \}/);
 });
 
 test("apply failure finalization survives report publication errors", () => {

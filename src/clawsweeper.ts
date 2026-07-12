@@ -462,8 +462,8 @@ type AcquiredReviewStartLease = {
 };
 
 type ReviewStartStatusCommentResult =
-  | { status: "posted"; lease: AcquiredReviewStartLease }
-  | { status: "held"; lease: null; retryAt: string };
+  | { status: "posted"; lease: AcquiredReviewStartLease; didMutate: true }
+  | { status: "held"; lease: null; retryAt: string; didMutate: false };
 
 interface ExistingReview {
   path: string;
@@ -12985,6 +12985,15 @@ function addIssueLabel(number: number, label: string, onMutation?: () => void): 
   });
 }
 
+function labelAlreadyExistsError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /already exists/i.test(message);
+}
+
+export function isGitHubLabelAlreadyExistsErrorForTest(message: string): boolean {
+  return labelAlreadyExistsError(new Error(message));
+}
+
 function ensurePriorityLabel(label: PriorityLabelSpec, onMutation?: () => void): void {
   try {
     runObservedApplyMutation({
@@ -13003,10 +13012,10 @@ function ensurePriorityLabel(label: PriorityLabelSpec, onMutation?: () => void):
           2,
         ),
       onMutation,
+      knownNoMutation: labelAlreadyExistsError,
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (!/already exists/i.test(message)) throw error;
+    if (!labelAlreadyExistsError(error)) throw error;
   }
 }
 
@@ -13030,10 +13039,10 @@ function ensureImpactLabel(name: ImpactLabelName, onMutation?: () => void): void
           2,
         ),
       onMutation,
+      knownNoMutation: labelAlreadyExistsError,
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (!/already exists/i.test(message)) throw error;
+    if (!labelAlreadyExistsError(error)) throw error;
   }
 }
 
@@ -13057,10 +13066,10 @@ function ensureMergeRiskLabel(name: MergeRiskLabelName, onMutation?: () => void)
           2,
         ),
       onMutation,
+      knownNoMutation: labelAlreadyExistsError,
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (!/already exists/i.test(message)) throw error;
+    if (!labelAlreadyExistsError(error)) throw error;
   }
 }
 
@@ -13361,10 +13370,10 @@ function ensureIssueAdvisorySyncLabel(name: string, onMutation?: () => void): vo
           2,
         ),
       onMutation,
+      knownNoMutation: labelAlreadyExistsError,
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (!/already exists/i.test(message)) throw error;
+    if (!labelAlreadyExistsError(error)) throw error;
   }
 }
 
@@ -13388,10 +13397,10 @@ function ensureMaturityLabel(name: MaturityLabelName, onMutation?: () => void): 
           2,
         ),
       onMutation,
+      knownNoMutation: labelAlreadyExistsError,
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (!/already exists/i.test(message)) throw error;
+    if (!labelAlreadyExistsError(error)) throw error;
   }
 }
 
@@ -13657,10 +13666,10 @@ function ensurePrRatingLabel(tier: PrRatingTier, onMutation?: () => void): void 
           2,
         ),
       onMutation,
+      knownNoMutation: labelAlreadyExistsError,
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (!/already exists/i.test(message)) throw error;
+    if (!labelAlreadyExistsError(error)) throw error;
   }
 }
 
@@ -13682,10 +13691,10 @@ function ensureFeatureShowcaseLabel(onMutation?: () => void): void {
           2,
         ),
       onMutation,
+      knownNoMutation: labelAlreadyExistsError,
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (!/already exists/i.test(message)) throw error;
+    if (!labelAlreadyExistsError(error)) throw error;
   }
 }
 
@@ -13708,10 +13717,10 @@ function ensurePrStatusLabel(kind: PrStatusLabelKind, onMutation?: () => void): 
           2,
         ),
       onMutation,
+      knownNoMutation: labelAlreadyExistsError,
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (!/already exists/i.test(message)) throw error;
+    if (!labelAlreadyExistsError(error)) throw error;
   }
 }
 
@@ -13839,10 +13848,10 @@ function ensureTelegramVisibleProofLabel(onMutation?: () => void): void {
           2,
         ),
       onMutation,
+      knownNoMutation: labelAlreadyExistsError,
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (!/already exists/i.test(message)) throw error;
+    if (!labelAlreadyExistsError(error)) throw error;
   }
 }
 
@@ -13908,11 +13917,12 @@ function ensureRealBehaviorProofSufficientLabel(onMutation?: () => void): boolea
           2,
         ),
       onMutation,
+      knownNoMutation: labelAlreadyExistsError,
     });
     return true;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    if (/already exists/i.test(message)) return true;
+    if (labelAlreadyExistsError(error)) return true;
     console.warn(`Skipping optional label sync for ${PROOF_SUFFICIENT_LABEL}: ${message}`);
     return false;
   }
@@ -13938,11 +13948,12 @@ function ensureRealBehaviorProofMediaLabel(name: string, onMutation?: () => void
           2,
         ),
       onMutation,
+      knownNoMutation: labelAlreadyExistsError,
     });
     return true;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    if (/already exists/i.test(message)) return true;
+    if (labelAlreadyExistsError(error)) return true;
     console.warn(`Skipping optional label sync for ${definition.name}: ${message}`);
     return false;
   }
@@ -19152,7 +19163,7 @@ function postReviewStartStatusComment(options: {
     nowMs: startedAtMs,
   })[0];
   if (initialLease) {
-    return { status: "held", lease: null, retryAt: initialLease.expiresAt };
+    return { status: "held", lease: null, retryAt: initialLease.expiresAt, didMutate: false };
   }
   reapExpiredDedicatedReviewStartLeases(
     options.item.number,
@@ -19203,9 +19214,9 @@ function postReviewStartStatusComment(options: {
         `could not identify the winning review lease for #${options.item.number}; retry required`,
       );
     }
-    return { status: "held", lease: null, retryAt: winner.expiresAt };
+    return { status: "held", lease: null, retryAt: winner.expiresAt, didMutate: false };
   }
-  return { status: "posted", lease: acquired };
+  return { status: "posted", lease: acquired, didMutate: true };
 }
 
 function deleteOwnedDedicatedReviewStartLease(
@@ -24812,6 +24823,7 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
               shardCount: 1,
               purpose: "apply",
             }),
+          didMutate: (result) => result.didMutate,
         });
         if (posted.status !== "posted") {
           return `${item.kind === "pull_request" ? "same-head" : "same-revision"} ClawSweeper lease was acquired concurrently`;

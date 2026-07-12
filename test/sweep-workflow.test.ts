@@ -1144,8 +1144,9 @@ test("apply workflow finalization retries only target status after checkpointed 
   assert.match(actionLedgerStep, /--state-root "\$CLAWSWEEPER_STATE_DIR"/);
   assert.match(actionLedgerStep, /cp "\$durable_event_path" "\$event_path"/);
   assert.match(actionLedgerStep, /--message "chore: append apply action ledger"/);
-  assert.match(actionLedgerStep, /action_ledger_args\+=\(--path "\$event_path"\)/);
-  assert.match(actionLedgerStep, /--rebase-strategy normal/);
+  assert.match(actionLedgerStep, /publish-action-event-paths/);
+  assert.match(actionLedgerStep, /--paths-file "\$event_paths_file"/);
+  assert.doesNotMatch(actionLedgerStep, /repair:publish-main/);
   assert.doesNotMatch(actionLedgerStep, /continue-on-error: true/);
   assert.match(actionLedgerStep, /no paths were imported[\s\S]*exit 1/i);
 });
@@ -1480,7 +1481,8 @@ test("trusted comment router owns command ledger capacity retries", () => {
   const eventJob = sweepWorkflow.slice(eventStart, eventEnd);
 
   assert.match(eventJob, /publish-action-events/);
-  assert.match(eventJob, /repair:publish-main/);
+  assert.match(eventJob, /publish-action-event-paths/);
+  assert.doesNotMatch(eventJob, /repair:publish-main/);
   assert.doesNotMatch(eventJob, /count-command-actions/);
   assert.doesNotMatch(eventJob, /--wait-for-capacity/);
   assert.match(routerWorkflow, /Commit comment router ledger/);

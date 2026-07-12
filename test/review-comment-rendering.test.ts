@@ -297,7 +297,10 @@ test("spoofed durable markers cannot suppress a bot-owned start lease", () => {
   );
   assert.match(postStart, /issueReviewCommentState\(options\.item\.number\)/);
   assert.match(postStart, /freshDedicatedReviewStartLeases\(\{/);
-  assert.match(postStart, /return \{ status: "held", lease: null, retryAt: [^}]+\.expiresAt \}/);
+  assert.match(
+    postStart,
+    /return \{ status: "held", lease: null, retryAt: [^}]+\.expiresAt, didMutate: false \}/,
+  );
   assert.match(postStart, /issues\/\$\{options\.item\.number\}\/comments/);
 });
 
@@ -458,7 +461,7 @@ test("concurrent review lease election uses server comment order, not client tim
 test("apply retains its mutation lease until the item action is complete", () => {
   const source = readFileSync("src/clawsweeper.ts", "utf8");
   const acquire = source.indexOf("const mutationLeaseBlockReason = acquireApplyMutationLease");
-  const commentSync = source.indexOf("syncedComment = upsertReviewComment(", acquire);
+  const commentSync = source.indexOf("identity: `review_comment_upsert:", acquire);
   const close = source.indexOf("closeItem({ number, kind: item.kind", commentSync);
   const release = source.indexOf("releaseActiveApplyMutationLease();", close);
   assert.ok(acquire >= 0);

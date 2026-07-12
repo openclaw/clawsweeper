@@ -65,6 +65,57 @@ async function waitForPath(filePath: string, timeoutMs = 2_000): Promise<void> {
   }
 }
 
+function errnoCode(error: unknown): string | undefined {
+  return error instanceof Error && "code" in error
+    ? (error as NodeJS.ErrnoException).code
+    : undefined;
+}
+
+async function waitForPositivePidFile(filePath: string, timeoutMs = 2_000): Promise<number> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    try {
+      const value = fs.readFileSync(filePath, "utf8").trim();
+      if (/^[1-9]\d*$/.test(value)) {
+        const pid = Number(value);
+        if (Number.isSafeInteger(pid)) return pid;
+      }
+    } catch (error) {
+      if (errnoCode(error) !== "ENOENT") throw error;
+    }
+    if (Date.now() >= deadline)
+      throw new Error(`timed out waiting for positive PID in ${filePath}`);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}
+
+async function waitForLinuxProcessState(
+  pid: number,
+  expectedState: string,
+  timeoutMs = 2_000,
+): Promise<boolean> {
+  if (!Number.isSafeInteger(pid) || pid < 1) throw new Error(`invalid Linux process PID: ${pid}`);
+  const statPath = `/proc/${pid}/stat`;
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    try {
+      const stat = fs.readFileSync(statPath, "utf8");
+      const commandEnd = stat.lastIndexOf(")");
+      if (commandEnd >= 0) {
+        const state = stat
+          .slice(commandEnd + 1)
+          .trim()
+          .split(/\s+/)[0];
+        if (state === expectedState) return true;
+      }
+    } catch (error) {
+      if (errnoCode(error) !== "ENOENT") throw error;
+    }
+    if (Date.now() >= deadline) return false;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}
+
 async function childResult(
   child: ChildProcess,
 ): Promise<{ code: number | null; stdout: string; stderr: string }> {
@@ -774,7 +825,7 @@ test("timeout recovery preserves hard-killed apply mutation truth and ignores un
   assert.equal(events.filter((event) => event.subject.number === 43).length, 0);
 });
 
-test("timeout recovery treats an open pre-dispatch mutation receipt as outcome unknown", () => {
+test("timeout recovery binds an open mutation receipt after an accepted attempt exactly", () => {
   const root = tempRoot();
   const env = workflowEnv({
     CLAWSWEEPER_ACTION_LEDGER_INVOCATION: "apply-uncertain",
@@ -835,7 +886,7 @@ test("timeout recovery treats an open pre-dispatch mutation receipt as outcome u
     { env },
   );
   assert.ok(item);
-  const attempt = recordWorkflowPhaseEvent(
+  const acceptedAttempt = recordWorkflowPhaseEvent(
     root,
     {
       phase: ACTION_EVENT_TYPES.applyAction,
@@ -855,6 +906,72 @@ test("timeout recovery treats an open pre-dispatch mutation receipt as outcome u
         number: 52,
         sourceRevision: "revision-52",
         mutationIdentitySha256: "a".repeat(64),
+      },
+      component: "apply_decisions",
+      subject: {
+        repository: "openclaw/openclaw",
+        kind: "pull_request",
+        number: 52,
+        sourceRevision: "revision-52",
+      },
+      attributes: { completion_reason: "mutation_attempted" },
+    },
+    { env },
+  );
+  assert.ok(acceptedAttempt);
+  const acceptedOutcome = recordWorkflowPhaseEvent(
+    root,
+    {
+      phase: ACTION_EVENT_TYPES.applyAction,
+      status: ACTION_EVENT_STATUSES.executed,
+      reasonCode: ACTION_EVENT_REASON_CODES.completed,
+      retryable: false,
+      mutation: true,
+      identity: { slot: "apply_mutation_outcome", outcome: "accepted" },
+      operation: "apply",
+      operationIdentity,
+      parentEventId: acceptedAttempt.event_id,
+      phaseSeq: 12,
+      idempotencyIdentity: {
+        operation: "apply",
+        slot: "apply_mutation",
+        repository: "openclaw/openclaw",
+        number: 52,
+        sourceRevision: "revision-52",
+        mutationIdentitySha256: "a".repeat(64),
+      },
+      component: "apply_decisions",
+      subject: {
+        repository: "openclaw/openclaw",
+        kind: "pull_request",
+        number: 52,
+        sourceRevision: "revision-52",
+      },
+      attributes: { completion_reason: "mutation_accepted" },
+    },
+    { env },
+  );
+  assert.ok(acceptedOutcome);
+  const attempt = recordWorkflowPhaseEvent(
+    root,
+    {
+      phase: ACTION_EVENT_TYPES.applyAction,
+      status: ACTION_EVENT_STATUSES.started,
+      reasonCode: ACTION_EVENT_REASON_CODES.selected,
+      retryable: false,
+      mutation: false,
+      identity: { slot: "apply_mutation_attempt", mutationIdentitySha256: "c".repeat(64) },
+      operation: "apply",
+      operationIdentity,
+      parentEventId: acceptedOutcome.event_id,
+      phaseSeq: 13,
+      idempotencyIdentity: {
+        operation: "apply",
+        slot: "apply_mutation",
+        repository: "openclaw/openclaw",
+        number: 52,
+        sourceRevision: "revision-52",
+        mutationIdentitySha256: "c".repeat(64),
       },
       component: "apply_decisions",
       subject: {
@@ -966,14 +1083,14 @@ test("timeout recovery treats an open pre-dispatch mutation receipt as outcome u
   );
   assert.ok(rejectedOutcome);
 
-  assert.equal(interruptOpenWorkflowActionEvents(root, { env }), 3);
+  assert.equal(interruptOpenWorkflowActionEvents(root, { env }), 4);
   const events = readAllSpooledActionEvents(root);
   const recovered = events.filter(
     (event) =>
       event.action.status === ACTION_EVENT_STATUSES.failed &&
       event.attributes?.completion_reason === "mutation_outcome_unknown",
   );
-  assert.equal(recovered.length, 2);
+  assert.equal(recovered.length, 3);
   assert.ok(recovered.every((event) => event.action.mutation));
   const recoveredItem = recovered.find(
     (event) =>
@@ -981,6 +1098,12 @@ test("timeout recovery treats an open pre-dispatch mutation receipt as outcome u
   );
   assert.ok(recoveredItem);
   assert.equal(recoveredItem.parent_event_id, attempt.event_id);
+  const recoveredAttempt = recovered.find(
+    (event) => event.idempotency_key_sha256 === attempt.idempotency_key_sha256,
+  );
+  assert.ok(recoveredAttempt);
+  assert.equal(recoveredAttempt.parent_event_id, attempt.event_id);
+  assert.notEqual(recoveredAttempt.parent_event_id, acceptedOutcome.event_id);
   const rejectedRecovery = events.find(
     (event) =>
       event.subject.number === 53 &&
@@ -990,6 +1113,7 @@ test("timeout recovery treats an open pre-dispatch mutation receipt as outcome u
   assert.ok(rejectedRecovery);
   assert.equal(rejectedRecovery.action.mutation, false);
   assert.equal(rejectedRecovery.parent_event_id, rejectedOutcome.event_id);
+  assert.equal(interruptOpenWorkflowActionEvents(root, { env }), 0);
 });
 
 test("workflow retries preserve operation and idempotency identity but change attempts", () => {
@@ -1798,6 +1922,10 @@ test(
   },
 );
 
+test("Linux zombie-lock polling rejects PID 0 before probing procfs", async () => {
+  await assert.rejects(waitForLinuxProcessState(0, "Z"), /invalid Linux process PID: 0/);
+});
+
 test(
   "Linux producer locks reclaim zombie owners",
   { skip: process.platform === "linux" ? false : "requires Linux procfs zombie state" },
@@ -1828,19 +1956,10 @@ test(
     );
     const keeperDone = childResult(keeper);
     try {
-      await waitForPath(pidPath);
-      const zombiePid = Number(fs.readFileSync(pidPath, "utf8"));
-      const deadline = Date.now() + 2_000;
-      for (;;) {
-        const stat = fs.readFileSync(`/proc/${zombiePid}/stat`, "utf8");
-        const commandEnd = stat.lastIndexOf(")");
-        const state = stat
-          .slice(commandEnd + 1)
-          .trim()
-          .split(/\s+/)[0];
-        if (state === "Z") break;
-        if (Date.now() >= deadline) throw new Error("child did not enter zombie state");
-        await new Promise((resolve) => setTimeout(resolve, 5));
+      const zombiePid = await waitForPositivePidFile(pidPath);
+      if (!(await waitForLinuxProcessState(zombiePid, "Z"))) {
+        t.skip("zombie child disappeared before its state could be observed");
+        return;
       }
 
       const target = prepareSafeWriteTarget(

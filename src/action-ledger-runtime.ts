@@ -444,11 +444,18 @@ function workflowActionEventIsMutationOutcome(event: ActionEvent): boolean {
 }
 
 function workflowActionEventClosesLifecycle(start: ActionEvent, event: ActionEvent): boolean {
+  if (event.phase_seq <= start.phase_seq) return false;
   if (event.action.status === ACTION_EVENT_STATUSES.started) return false;
+  if (workflowActionEventIsUncertainMutationStart(start)) {
+    return (
+      event.parent_event_id === start.event_id &&
+      event.idempotency_key_sha256 === start.idempotency_key_sha256
+    );
+  }
   if (
     start.event_type === ACTION_EVENT_TYPES.applyAction &&
-    !workflowActionEventIsUncertainMutationStart(start) &&
-    workflowActionEventIsMutationOutcome(event)
+    workflowActionEventIsMutationOutcome(event) &&
+    event.idempotency_key_sha256 !== start.idempotency_key_sha256
   ) {
     return false;
   }
@@ -544,17 +551,18 @@ export function interruptOpenWorkflowActionEvents(
               left.phase_seq - right.phase_seq || left.event_id.localeCompare(right.event_id),
           )
           .at(-1);
+        const openUncertainMutationStarts = uncertainMutationStarts.filter((event) => {
+          const eventLifecycleKey = workflowActionLifecycleKey(event);
+          return !current.some(
+            (candidate) =>
+              candidate.event_id !== event.event_id &&
+              workflowActionLifecycleKey(candidate) === eventLifecycleKey &&
+              workflowActionEventClosesLifecycle(event, candidate),
+          );
+        });
         const openUncertainMutation =
           workflowActionEventIsUncertainMutationStart(start) ||
-          uncertainMutationStarts.some((event) => {
-            const eventLifecycleKey = workflowActionLifecycleKey(event);
-            return !current.some(
-              (candidate) =>
-                candidate.event_id !== event.event_id &&
-                workflowActionLifecycleKey(candidate) === eventLifecycleKey &&
-                workflowActionEventClosesLifecycle(event, candidate),
-            );
-          });
+          openUncertainMutationStarts.length > 0;
         const uncertainMutation =
           openUncertainMutation ||
           lifecycleMutation?.attributes?.completion_reason === "mutation_outcome_unknown";
@@ -563,12 +571,14 @@ export function interruptOpenWorkflowActionEvents(
           (start.event_type === ACTION_EVENT_TYPES.applyBatch
             ? mutationEvents.length > 0 || openUncertainMutation
             : lifecycleMutation !== undefined || openUncertainMutation);
+        const openReceipt = workflowActionEventIsUncertainMutationStart(start)
+          ? start
+          : openUncertainMutationStarts.at(-1);
         const parentEventId =
-          start.event_type === ACTION_EVENT_TYPES.applyAction && lifecycleMutation
+          openReceipt?.event_id ??
+          (start.event_type === ACTION_EVENT_TYPES.applyAction && lifecycleMutation
             ? lifecycleMutation.event_id
-            : (lifecycleOutcome?.event_id ??
-              uncertainMutationStarts.at(-1)?.event_id ??
-              start.event_id);
+            : (lifecycleOutcome?.event_id ?? start.event_id));
         const eventInput: ActionEventInput = {
           eventKey: actionEventKey("workflow.interrupted", {
             startEventId: start.event_id,
