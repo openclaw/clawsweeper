@@ -9,6 +9,7 @@ import {
   assertExactValidationProofPlan,
   assertPublicationPauseBoundary,
   assertPublicationSafetyBoundary,
+  assertPublicationSourceIdentity,
   assertRepairDeltaBaseBinding,
   assertSourcePullRevision,
   checkpointedSourceClosures,
@@ -33,6 +34,7 @@ import {
   verifyExecutionIntentIdentity,
   verifyPreparedPublication,
 } from "../../dist/repair/prepared-publication.js";
+import { issueSourceRevisionSha256 } from "../../dist/repair/issue-source-guard.js";
 import {
   buildStagedProofPlan,
   stagedProofPlanArtifact,
@@ -562,6 +564,7 @@ test("publication checkpoint precedes source closeout and every mutation recheck
     source.indexOf("function runPublicationMutation"),
     source.indexOf("export function publicationPauseItems"),
   );
+  assert.match(mutationWrapper, /assertPublicationSourceIdentity\(/);
   assert.match(mutationWrapper, /assertPublicationSafe\(intent, targetNumbers\)/);
   for (const mutationOwner of [
     "function publishPreparedRef",
@@ -584,7 +587,10 @@ test("publication checkpoint precedes source closeout and every mutation recheck
     replacement,
     /publishPreparedRef\(\{[\s\S]*targetPrNumber: liveTargetPr,[\s\S]*\}\)/,
   );
-  assert.match(replacement, /runPublicationMutation\(intent, \[\],[\s\S]*"pr",\s*"create"/);
+  assert.match(
+    replacement,
+    /runPublicationMutation\(\{[\s\S]*targetNumbers: \[\],[\s\S]*"pr",\s*"create"/,
+  );
   assert.match(replacement, /"pr", "reopen"/);
   assert.doesNotMatch(replacement, /"pr",\s*"close"|clawsweeper-replacement-publication/);
   assert.ok(
@@ -600,7 +606,7 @@ test("publication checkpoint precedes source closeout and every mutation recheck
   );
   assert.ok(
     publisher.indexOf("readPriorPublicationCheckpoint") <
-      publisher.indexOf("revalidateLiveSources"),
+      publisher.indexOf("assertPublicationSourceIdentity"),
   );
   const closeout = source.slice(
     source.indexOf("function closeSupersededReplacementSources"),
@@ -612,7 +618,7 @@ test("publication checkpoint precedes source closeout and every mutation recheck
   );
   assert.match(
     closeout,
-    /beforeMutation:[\s\S]*revalidateSourcePullRevision\([\s\S]*runPublicationMutation\([\s\S]*revalidateSourcePullRevision\(/,
+    /publishExactPullComment\(\{[\s\S]*checkpointedClosures,[\s\S]*runPublicationMutation\(\{[\s\S]*revalidateSourcePullRevision\(/,
   );
   const resolver = source.slice(
     source.indexOf("function resolveLiveExecutionIntent"),
@@ -620,10 +626,132 @@ test("publication checkpoint precedes source closeout and every mutation recheck
   );
   assert.match(resolver, /source_pull_revisions: liveSourcePulls\.map/);
   const liveRevalidation = source.slice(
-    source.indexOf("function revalidateLiveSources"),
+    source.indexOf("export function assertPublicationSourceIdentity"),
     source.indexOf("function checkoutIdentity"),
   );
   assert.doesNotMatch(liveRevalidation, /superseded_source_actions/);
+});
+
+test("shared publication mutation identity rejects source drift and limits rerun allowances", () => {
+  const revision = sourcePullRevision(42);
+  const preparedHead = "9".repeat(40);
+  const intent = revisionBoundIntent(revision, "update_source_pr");
+  const publication = {
+    ...checkpointPublication([]),
+    operation: "update_source_pr" as const,
+    source: intent.source,
+    prepared_head_sha: preparedHead,
+  };
+  let pull = livePull(revision);
+  const readers = {
+    readPull: () => pull,
+  };
+
+  assert.doesNotThrow(() => assertPublicationSourceIdentity({ intent, publication, readers }));
+  pull = {
+    ...livePull(revision),
+    head: { ...livePull(revision).head, sha: preparedHead },
+  };
+  assert.doesNotThrow(() => assertPublicationSourceIdentity({ intent, publication, readers }));
+
+  pull = {
+    ...livePull(revision),
+    head: { ...livePull(revision).head, sha: "8".repeat(40) },
+  };
+  assert.throws(
+    () => assertPublicationSourceIdentity({ intent, publication, readers }),
+    /revision changed after authorization/,
+  );
+
+  pull = livePull(revision, { state: "closed" });
+  assert.throws(
+    () => assertPublicationSourceIdentity({ intent, publication, readers }),
+    /revision changed after authorization/,
+  );
+  assert.doesNotThrow(() =>
+    assertPublicationSourceIdentity({
+      intent,
+      publication,
+      checkpointedClosures: new Set([revision.url]),
+      readers,
+    }),
+  );
+
+  pull = {
+    ...livePull(revision, { state: "closed" }),
+    merged_at: "2026-07-12T00:00:00Z",
+  };
+  assert.throws(
+    () =>
+      assertPublicationSourceIdentity({
+        intent,
+        publication,
+        checkpointedClosures: new Set([revision.url]),
+        readers,
+      }),
+    /revision changed after authorization/,
+  );
+
+  pull = {
+    ...livePull(revision),
+    base: { ...livePull(revision).base, sha: "7".repeat(40) },
+  };
+  assert.throws(
+    () => assertPublicationSourceIdentity({ intent, publication, readers }),
+    /revision changed after authorization/,
+  );
+
+  const replacementIntent = revisionBoundIntent(revision, "open_pull_request");
+  pull = {
+    ...livePull(revision),
+    head: { ...livePull(revision).head, sha: preparedHead },
+  };
+  assert.throws(
+    () =>
+      assertPublicationSourceIdentity({
+        intent: replacementIntent,
+        publication: { ...publication, operation: "open_pull_request" },
+        readers,
+      }),
+    /revision changed after authorization/,
+  );
+});
+
+test("shared publication mutation identity rejects sealed issue drift", () => {
+  const issue = {
+    state: "open",
+    locked: false,
+    title: "Preserve exact source identity",
+    body: "Original issue body",
+    labels: [],
+  };
+  const revision = issueSourceRevisionSha256(issue, []);
+  const base = executionIntent("a".repeat(64));
+  const intent = {
+    ...base,
+    source: {
+      ...base.source,
+      kind: "issue" as const,
+      repo: "openclaw/example",
+      number: 42,
+      url: "https://github.com/openclaw/example/issues/42",
+      expected_state: "open",
+      expected_revision_sha256: revision,
+    },
+  };
+  const publication = { ...checkpointPublication([]), source: intent.source };
+  let liveIssue = issue;
+  const readers = {
+    readIssue: () => liveIssue,
+    readComments: () => [],
+  };
+
+  assert.doesNotThrow(() => assertPublicationSourceIdentity({ intent, publication, readers }));
+  liveIssue = { ...issue, body: "Changed after authorization" };
+  assert.throws(
+    () => assertPublicationSourceIdentity({ intent, publication, readers }),
+    /source issue changed since ClawSweeper queued implementation/,
+  );
 });
 
 test("publication pause boundary covers secondary sources and retry targets on every mutation", () => {
@@ -1042,6 +1170,32 @@ function livePull(revision: SourcePullRevision, { state = "open" } = {}) {
       ref: revision.expected_base_ref,
       sha: revision.expected_base_sha,
     },
+  };
+}
+
+function revisionBoundIntent(
+  revision: SourcePullRevision,
+  operation: "update_source_pr" | "open_pull_request",
+) {
+  const base = executionIntent("a".repeat(64));
+  return {
+    ...base,
+    operation,
+    source: {
+      ...base.source,
+      kind: "pull_request" as const,
+      repo: revision.repo,
+      number: revision.number,
+      url: revision.url,
+      expected_state: revision.expected_state,
+      expected_head_repo: revision.expected_head_repo,
+      expected_head_ref: revision.expected_head_ref,
+      expected_head_sha: revision.expected_head_sha,
+      expected_base_ref: revision.expected_base_ref,
+      expected_base_sha: revision.expected_base_sha,
+    },
+    source_prs: [revision.url],
+    source_pull_revisions: [revision],
   };
 }
 

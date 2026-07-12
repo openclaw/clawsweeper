@@ -66,6 +66,10 @@ checkpoint, and status-only commits are intentionally omitted.
   replacement sources, bound every primary and secondary source closeout to its
   exact head and base revisions, and prevented producer reruns with missing
   transfers from consuming artifacts emitted by older workflow attempts.
+- Revalidated every sealed issue and pull-request source inside the shared
+  privileged mutation guard immediately before push, create, reopen, label,
+  comment, and close operations, allowing only the exact prepared source head
+  or source closures authorized by a verified durable publication checkpoint.
 - Replaced the unsupported GitHub installation identity probe with pinned
   `create-github-app-token` App slug and installation outputs plus App IDs
   derived from the authenticated slug, rejected
