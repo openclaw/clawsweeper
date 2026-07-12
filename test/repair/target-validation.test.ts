@@ -1361,7 +1361,7 @@ test("bun-based target toolchain installs deps and runs configured validation", 
 
   assert.deepEqual(fs.readFileSync(logPath, "utf8").trim().split(/\r?\n/), [
     "--version",
-    "install --frozen-lockfile",
+    "install --frozen-lockfile --ignore-scripts",
     "run check",
   ]);
 });
@@ -1408,7 +1408,59 @@ fs.mkdirSync(path.join(process.cwd(), "node_modules"), { recursive: true });
   }
 
   assert.equal(git(cwd, "status", "--porcelain"), "");
-  assert.equal(fs.readFileSync(logPath, "utf8").trim(), "install --no-package-lock");
+  assert.equal(
+    fs.readFileSync(logPath, "utf8").trim(),
+    "install --no-package-lock --ignore-scripts",
+  );
+});
+
+test("dependency setup rejects tracked source mutation even with lifecycle scripts disabled", () => {
+  const cwd = gitPackageFixture({ check: "node check.js" });
+  fs.writeFileSync(path.join(cwd, "source.txt"), "original\n");
+  git(cwd, "add", ".");
+  git(cwd, "commit", "-m", "initial");
+  const binDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-mutating-npm-bin-"));
+  const npmPath = path.join(binDir, "npm.js");
+  const logPath = path.join(binDir, "npm.log");
+  fs.writeFileSync(
+    npmPath,
+    `const fs = require("node:fs");
+const path = require("node:path");
+const args = process.argv.slice(2);
+fs.writeFileSync(${JSON.stringify(logPath)}, args.join(" ") + "\\n");
+fs.writeFileSync(path.join(process.cwd(), "source.txt"), "mutated\\n");
+`,
+  );
+  const previousNpmBin = process.env.NPM_BIN;
+  const previousNpmBinArgs = process.env.NPM_BIN_ARGS;
+  Object.assign(process.env, mockCommandBinEnv("npm", npmPath));
+  try {
+    assert.throws(
+      () =>
+        prepareTargetToolchain(cwd, {
+          ...validationOptions("openclaw/example", {
+            toolchain: {
+              packageManager: "npm",
+              baseValidationCommands: ["npm run check"],
+              changedGate: null,
+            },
+          }),
+          installTargetDeps: true,
+          installTimeoutMs: FAKE_TOOLCHAIN_TIMEOUT_MS,
+          setupTimeoutMs: FAKE_TOOLCHAIN_TIMEOUT_MS,
+        }),
+      /target dependency setup mutated source or proof identity/,
+    );
+  } finally {
+    restoreEnv("NPM_BIN", previousNpmBin);
+    restoreEnv("NPM_BIN_ARGS", previousNpmBinArgs);
+  }
+
+  assert.equal(
+    fs.readFileSync(logPath, "utf8").trim(),
+    "install --no-package-lock --ignore-scripts",
+  );
+  assert.equal(fs.readFileSync(path.join(cwd, "source.txt"), "utf8"), "mutated\n");
 });
 
 test("bun-based target toolchain hides pnpm-injected npm_config_user_agent from preinstall hooks", () => {
@@ -1708,7 +1760,8 @@ test("staged target proof preserves focused tests before the canonical changed g
       ["canonical_changed_surface", "pnpm:check:changed"],
     ],
   );
-  assert.equal("parts" in plan.commands[0], false);
+  assert.equal("parts" in plan.commands[0], true);
+  assert.deepEqual(plan.commands[2]?.parts, ["pnpm", "test:serial", "test/foo.test.ts"]);
 });
 
 test("repository profile commands are staged by behavior, not all marked canonical", () => {
@@ -2100,8 +2153,8 @@ test("changed validation does not retry after its command budget is exhausted", 
           ["pnpm check:changed"],
           cwd,
           validationOptions("openclaw/openclaw", {
-            validationTimeoutMs: 1_500,
-            proofBudgetMs: 10_000,
+            validationTimeoutMs: 5_000,
+            proofBudgetMs: 15_000,
           }),
         ),
       /validation command runtime budget exhausted/,

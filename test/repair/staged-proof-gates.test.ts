@@ -8,6 +8,7 @@ import {
   isPassedStagedProofBundle,
   stagedProofBundle,
   stagedProofPlanArtifact,
+  stagedProofPlanFromArtifact,
   stagedProofTraceFromError,
 } from "../../dist/repair/staged-proof-gates.js";
 
@@ -387,6 +388,34 @@ test("plan artifacts and traces are deterministic with a deterministic clock", (
 
   assert.deepEqual(stagedProofPlanArtifact(planA), stagedProofPlanArtifact(planB));
   assert.deepEqual(run(planA).trace, run(planB).trace);
+});
+
+test("plan artifact replay preserves normalized provenance and topology exactly", () => {
+  const integrity = ["git", "diff", "--check"];
+  const lint = ["pnpm", "lint"];
+  const changedGate = ["pnpm", "check:changed"];
+  const plan = buildStagedProofPlan({
+    commands: [
+      command(changedGate, 4, {
+        source: "changed_gate",
+        canonical: true,
+        required: false,
+      }),
+      command(lint, 2, {
+        source: "artifact",
+        displayParts: ["pnpm", "run", "lint"],
+      }),
+      command(integrity, 1, { source: "configured" }),
+      command(lint, 3, { source: "repository_profile" }),
+    ],
+    changedFiles: ["docs/security.md"],
+    subsumptionContracts: [{ command: integrity, subsumes: [lint] }],
+  });
+  const artifact = stagedProofPlanArtifact(plan);
+  const replayed = stagedProofPlanFromArtifact(artifact);
+
+  assert.deepEqual(stagedProofPlanArtifact(replayed), artifact);
+  assert.deepEqual(replayed.commands, plan.commands);
 });
 
 test("proof plans reject malformed or unbounded command vectors", () => {

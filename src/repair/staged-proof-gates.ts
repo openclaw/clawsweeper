@@ -97,12 +97,15 @@ export type StagedProofPlanArtifactCommand = {
   stage: StagedProofStage;
   command_digest: string;
   command_kind: string;
+  parts: string[];
+  display_parts: string[];
   source: StagedProofCommandSource;
   required: boolean;
   reason: string;
   prerequisite: string | null;
   subsumed_by: string | null;
   subsumption_contract_digest: string | null;
+  original_index: number;
 };
 
 export type StagedProofPlanArtifact = {
@@ -444,12 +447,42 @@ export function stagedProofPlanArtifact(plan: StagedProofPlan): StagedProofPlanA
       stage: command.stage,
       command_digest: command.command_digest,
       command_kind: command.command_kind,
+      parts: [...command.parts],
+      display_parts: [...command.display_parts],
       source: command.source,
       required: command.required,
       reason: command.reason,
       prerequisite: command.prerequisite,
       subsumed_by: command.subsumed_by,
       subsumption_contract_digest: command.subsumption_contract_digest,
+      original_index: command.original_index,
+    })),
+  };
+}
+
+export function stagedProofPlanFromArtifact(value: unknown): StagedProofPlan {
+  if (!isStagedProofPlanArtifact(value)) {
+    throw new Error("staged proof plan artifact is invalid");
+  }
+  return {
+    schema_version: value.schema_version,
+    plan_id: value.plan_id,
+    risk: value.risk,
+    deduplicated_commands: value.deduplicated_commands,
+    commands: value.commands.map((command) => ({
+      id: command.command_id,
+      command_digest: command.command_digest,
+      command_kind: command.command_kind,
+      parts: [...command.parts],
+      display_parts: [...command.display_parts],
+      stage: command.stage,
+      source: command.source,
+      required: command.required,
+      reason: command.reason,
+      prerequisite: command.prerequisite,
+      subsumed_by: command.subsumed_by,
+      subsumption_contract_digest: command.subsumption_contract_digest,
+      original_index: command.original_index,
     })),
   };
 }
@@ -514,7 +547,7 @@ export function isPassedStagedProofBundle(value: unknown, expectedPlan: unknown)
   );
 }
 
-function isStagedProofPlanArtifact(value: unknown): value is StagedProofPlanArtifact {
+export function isStagedProofPlanArtifact(value: unknown): value is StagedProofPlanArtifact {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const plan = value as Record<string, unknown>;
   if (
@@ -542,6 +575,9 @@ function isStagedProofPlanArtifact(value: unknown): value is StagedProofPlanArti
       commandIdMatch[2] !== commandDigest.slice(0, 12) ||
       commandIds.has(commandId) ||
       !/^[a-f0-9]{64}$/.test(commandDigest) ||
+      !isCommandParts(command.parts) ||
+      !isCommandParts(command.display_parts) ||
+      commandDigest !== commandDigestForArtifact(command.parts) ||
       !STAGED_PROOF_STAGES.has(String(command.stage ?? "")) ||
       typeof command.command_kind !== "string" ||
       command.command_kind.length === 0 ||
@@ -554,7 +590,8 @@ function isStagedProofPlanArtifact(value: unknown): value is StagedProofPlanArti
       !isProofCommandReference(command.prerequisite) ||
       !isProofCommandReference(command.subsumed_by) ||
       (command.subsumption_contract_digest !== null &&
-        !/^[a-f0-9]{64}$/.test(String(command.subsumption_contract_digest ?? "")))
+        !/^[a-f0-9]{64}$/.test(String(command.subsumption_contract_digest ?? ""))) ||
+      !Number.isInteger(command.original_index)
     ) {
       return false;
     }
@@ -633,6 +670,19 @@ function stagedProofPlanIdentity(
       }),
     )
     .digest("hex");
+}
+
+function isCommandParts(value: unknown): value is string[] {
+  return (
+    Array.isArray(value) &&
+    value.length > 0 &&
+    value.length <= 256 &&
+    value.every((part) => typeof part === "string" && part.length > 0 && part.length <= 16_384)
+  );
+}
+
+function commandDigestForArtifact(value: unknown): string {
+  return commandDigest(value as string[]);
 }
 
 export function stagedProofSummary(value: {

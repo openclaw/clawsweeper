@@ -21,10 +21,12 @@ import { compactText } from "./text-utils.js";
 import {
   buildStagedProofPlan,
   executeStagedProofPlan,
+  stagedProofPlanFromArtifact,
   stagedProofPlanArtifact,
   type StagedProofCommandInput,
   type StagedProofExecutionResult,
   type StagedProofPlan,
+  type StagedProofPlanArtifact,
   type StagedProofSubsumptionContract,
 } from "./staged-proof-gates.js";
 import {
@@ -214,6 +216,10 @@ export function prepareTargetToolchain(cwd: string, options: TargetValidationOpt
   if (!options.installTargetDeps) return;
   const packagePath = path.join(cwd, "package.json");
   if (!fs.existsSync(packagePath)) return;
+  const sourceIdentity = validationSourceIdentity(cwd);
+  if (sourceIdentity.status) {
+    throw new Error("target dependency setup requires a clean source checkout");
+  }
 
   const packageJson = JSON.parse(fs.readFileSync(packagePath, "utf8"));
   const toolchain = getToolchain(options);
@@ -239,10 +245,12 @@ export function prepareTargetToolchain(cwd: string, options: TargetValidationOpt
 
   if (toolchain.packageManager === "bun") {
     prepareBunToolchain({ cwd, validationEnv, setupTimeoutMs, installTimeoutMs });
+    assertValidationSourceIdentity(cwd, sourceIdentity);
     return;
   }
   if (toolchain.packageManager === "npm") {
     prepareNpmToolchain({ cwd, validationEnv, installTimeoutMs });
+    assertValidationSourceIdentity(cwd, sourceIdentity);
     return;
   }
   preparePnpmToolchain({
@@ -252,6 +260,7 @@ export function prepareTargetToolchain(cwd: string, options: TargetValidationOpt
     setupTimeoutMs,
     installTimeoutMs,
   });
+  assertValidationSourceIdentity(cwd, sourceIdentity);
 }
 
 function preparePnpmToolchain({
@@ -281,8 +290,9 @@ function preparePnpmToolchain({
     "install",
     "--frozen-lockfile",
     "--prefer-offline",
+    "--ignore-scripts",
     "--config.engine-strict=false",
-    "--config.enable-pre-post-scripts=true",
+    "--config.enable-pre-post-scripts=false",
   ];
   try {
     run("pnpm", installArgs, { cwd, env: validationEnv, timeoutMs: installTimeoutMs });
@@ -318,20 +328,18 @@ function prepareBunToolchain({
   // ClawSweeper itself runs under pnpm (e.g. `pnpm run repair:execute-fix`), so
   // process.env carries pnpm-injected `npm_config_user_agent=pnpm/...`. When we
   // shell out to `bun install` for a target repo whose package.json has a
-  // preinstall hook like `bunx only-allow bun` (e.g. openclaw/clawhub), bun
-  // forwards the parent env to the preinstall script and `only-allow` reads the
-  // pnpm user-agent and refuses to run. Strip caller identity/lifecycle metadata
-  // from pnpm, but preserve npm-compatible install configuration such as
+  // Strip caller identity/lifecycle metadata from pnpm, but preserve
+  // npm-compatible install configuration such as
   // registry, auth, proxy, userconfig, and cache settings for the target repo.
   const bunEnv = sanitizeEnvForBun(validationEnv);
   run("bun", ["--version"], { cwd, env: bunEnv, timeoutMs: setupTimeoutMs });
-  const installArgs = ["install", "--frozen-lockfile"];
+  const installArgs = ["install", "--frozen-lockfile", "--ignore-scripts"];
   try {
     run("bun", installArgs, { cwd, env: bunEnv, timeoutMs: installTimeoutMs });
   } catch (error) {
     const message = String(error?.message ?? "");
     if (!/lockfile|frozen|out of date|out-of-date/i.test(message)) throw error;
-    run("bun", ["install", "--no-frozen-lockfile"], {
+    run("bun", ["install", "--no-frozen-lockfile", "--ignore-scripts"], {
       cwd,
       env: bunEnv,
       timeoutMs: installTimeoutMs,
@@ -376,8 +384,8 @@ function prepareNpmToolchain({
   installTimeoutMs: number;
 }) {
   const installArgs = fs.existsSync(path.join(cwd, "package-lock.json"))
-    ? ["ci"]
-    : ["install", "--no-package-lock"];
+    ? ["ci", "--ignore-scripts"]
+    : ["install", "--no-package-lock", "--ignore-scripts"];
   run("npm", installArgs, { cwd, env: validationEnv, timeoutMs: installTimeoutMs });
 }
 
@@ -419,6 +427,57 @@ export function runStagedValidationProof(
   const checkoutIdentity = validationCheckoutIdentity(cwd, baseRef);
   if (checkoutIdentity.status) {
     throw new Error("staged proof requires a clean validation checkout");
+  }
+  const validationTimeoutMs = targetValidationTimeoutMs(
+    "CLAWSWEEPER_TARGET_VALIDATION_TIMEOUT_MS",
+    options.validationTimeoutMs ?? DEFAULT_TARGET_VALIDATION_TIMEOUT_MS,
+    options.validationTimeoutMs,
+  );
+  const defaultProofBudgetMs = Math.max(
+    validationTimeoutMs,
+    validationTimeoutMs * plan.commands.length,
+  );
+  const proofBudgetMs = targetValidationTimeoutMs(
+    "CLAWSWEEPER_TARGET_PROOF_BUDGET_MS",
+    options.proofBudgetMs ?? defaultProofBudgetMs,
+    options.proofBudgetMs,
+  );
+  const executed = new Set<string>();
+  const attempts = new Map<string, number>();
+  const result = executeStagedProofPlan(plan, {
+    commandTimeoutMs: validationTimeoutMs,
+    budgetMs: proofBudgetMs,
+    validatedHeadSha: checkoutIdentity.headSha,
+    validatedBaseSha: checkoutIdentity.baseSha,
+    runCommand: (command, timeoutMs) =>
+      runValidationPlanCommand({
+        parts: command.parts,
+        displayParts: command.display_parts,
+        timeoutMs,
+        cwd,
+        validationEnv,
+        options,
+        attempts,
+        executed,
+        baseRef,
+        checkoutIdentity,
+      }),
+  });
+  return { ...result, plan };
+}
+
+export function replayStagedValidationProof(
+  planArtifact: StagedProofPlanArtifact,
+  cwd: string,
+  options: TargetValidationOptions,
+  baseBranch: string = DEFAULT_BASE_BRANCH,
+): TargetValidationProofResult {
+  const validationEnv = targetValidationEnv();
+  const plan = stagedProofPlanFromArtifact(planArtifact);
+  const baseRef = validationBaseRef(cwd, baseBranch, options);
+  const checkoutIdentity = validationCheckoutIdentity(cwd, baseRef);
+  if (checkoutIdentity.status) {
+    throw new Error("staged proof replay requires a clean validation checkout");
   }
   const validationTimeoutMs = targetValidationTimeoutMs(
     "CLAWSWEEPER_TARGET_VALIDATION_TIMEOUT_MS",
@@ -590,6 +649,31 @@ type ValidationCheckoutIdentity = {
   baseSha: string;
   status: string;
 };
+
+type ValidationSourceIdentity = {
+  headSha: string;
+  treeSha: string;
+  status: string;
+};
+
+function validationSourceIdentity(cwd: string): ValidationSourceIdentity {
+  return {
+    headSha: currentHead(cwd),
+    treeSha: run("git", ["rev-parse", "HEAD^{tree}"], { cwd }).trim(),
+    status: run("git", ["status", "--porcelain=v1", "-z", "--untracked-files=all"], { cwd }),
+  };
+}
+
+function assertValidationSourceIdentity(cwd: string, expected: ValidationSourceIdentity) {
+  const actual = validationSourceIdentity(cwd);
+  if (
+    actual.headSha !== expected.headSha ||
+    actual.treeSha !== expected.treeSha ||
+    actual.status !== expected.status
+  ) {
+    throw new Error("target dependency setup mutated source or proof identity");
+  }
+}
 
 function validationCheckoutIdentity(cwd: string, baseRef: string): ValidationCheckoutIdentity {
   return {
