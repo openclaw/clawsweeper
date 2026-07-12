@@ -1790,7 +1790,7 @@ test("durable shard writers split deterministically within importer event and by
     ["unchanged", "unchanged"],
   );
   assert.equal(imported.created, 2);
-  assert.deepEqual(imported.paths, first.map((result) => result.relativePath).sort());
+  assert.deepEqual(imported.eventPaths, first.map((result) => result.relativePath).sort());
   for (const result of first) {
     assert.ok(fs.statSync(result.path).size <= ACTION_EVENT_SHARD_FILE_LIMITS.maxBytes);
     assert.ok(result.eventCount <= ACTION_EVENT_SHARD_FILE_LIMITS.maxEvents);

@@ -194,11 +194,13 @@ import {
   type ActionEventSubject,
 } from "./action-ledger.js";
 import {
+  ACTION_EVENT_SHARD_IMPORT_MAX_PUBLISH_PATHS,
   flushWorkflowActionEvents,
   importActionEventShards,
   interruptOpenWorkflowActionEvents,
   recordWorkflowPhaseEvent,
 } from "./action-ledger-runtime.js";
+import { publishMainCommit } from "./repair/git-publish.js";
 
 export {
   codexEnv,
@@ -257,6 +259,7 @@ type FailedReviewRetryAction =
   | "skipped_retry_exhausted"
   | "skipped_live_fetch_failed"
   | "skipped_dispatch_failed"
+  | "skipped_retry_dispatch_uncertain"
   | "skipped_runtime_budget";
 type TriagePriority = "P0" | "P1" | "P2" | "P3" | "none";
 type ImpactLabelName =
@@ -2562,6 +2565,43 @@ function ghWithRetry(args: string[], attempts = 12): string {
     }
   }
   throw lastError;
+}
+
+type ApplyMutationRunner = <T>(options: {
+  identity: string;
+  operation: () => T;
+  didMutate?: ((result: T) => boolean) | undefined;
+  knownNoMutation?: ((error: unknown) => boolean) | undefined;
+}) => T;
+
+let activeApplyMutationRunner: ApplyMutationRunner | null = null;
+
+function mutationErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function runObservedApplyMutation<T>(options: {
+  identity: string;
+  operation: () => T;
+  onMutation?: (() => void) | undefined;
+  didMutate?: ((result: T) => boolean) | undefined;
+  knownNoMutation?: ((error: unknown) => boolean) | undefined;
+}): T {
+  if (activeApplyMutationRunner) {
+    return activeApplyMutationRunner({
+      identity: options.identity,
+      operation: options.operation,
+      ...(options.didMutate ? { didMutate: options.didMutate } : {}),
+      ...(options.knownNoMutation ? { knownNoMutation: options.knownNoMutation } : {}),
+    });
+  }
+  const result = options.operation();
+  if (options.didMutate?.(result) ?? true) options.onMutation?.();
+  return result;
+}
+
+function ghObservedMutationCommand(args: string[], attempts = 12): string {
+  return activeApplyMutationRunner ? gh(args) : ghWithRetry(args, attempts);
 }
 
 function ghRawOnceWithCheckpoint(args: string[], onBeforeRun: () => void): string {
@@ -6987,6 +7027,21 @@ function failedReviewRetryEligibility(options: {
     reportRevision.kind === "pull_head_sha"
       ? `head ${reportRevision.value}`
       : `source revision ${reportRevision.value}`;
+  const storedRevision = storedFailedReviewRetryRevision(options.markdown);
+  if (
+    frontMatterValue(options.markdown, "failed_review_retry_status") === "dispatching" &&
+    storedRevision &&
+    sameFailedReviewRetryRevision(storedRevision, reportRevision)
+  ) {
+    return {
+      repo,
+      number,
+      action: "skipped_retry_dispatch_uncertain",
+      reason: `dispatch outcome is uncertain for ${revisionDescription}; refusing a duplicate launch`,
+      ...failedReviewRetryResultRevision(reportRevision),
+      attempts,
+    };
+  }
   if (attempts >= options.maxAttempts) {
     return {
       repo,
@@ -12913,13 +12968,42 @@ export function mergeRiskLabelsForTest(
   );
 }
 
+function removeIssueLabel(number: number, label: string, onMutation?: () => void): void {
+  runObservedApplyMutation({
+    identity: `issue_label_remove:${number}:${label}`,
+    operation: () => ghWithRetry(["issue", "edit", String(number), "--remove-label", label]),
+    onMutation,
+  });
+}
+
+function addIssueLabel(number: number, label: string, onMutation?: () => void): void {
+  runObservedApplyMutation({
+    identity: `issue_label_add:${number}:${label}`,
+    operation: () => ghWithRetry(["issue", "edit", String(number), "--add-label", label]),
+    onMutation,
+    knownNoMutation: (error) => missingLabelError(error, label) || labelCapacityError(error),
+  });
+}
+
 function ensurePriorityLabel(label: PriorityLabelSpec, onMutation?: () => void): void {
   try {
-    ghWithRetry(
-      ["label", "create", label.name, "--color", label.color, "--description", label.description],
-      2,
-    );
-    onMutation?.();
+    runObservedApplyMutation({
+      identity: `label_create:${label.name}`,
+      operation: () =>
+        ghObservedMutationCommand(
+          [
+            "label",
+            "create",
+            label.name,
+            "--color",
+            label.color,
+            "--description",
+            label.description,
+          ],
+          2,
+        ),
+      onMutation,
+    });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (!/already exists/i.test(message)) throw error;
@@ -12930,19 +13014,23 @@ function ensureImpactLabel(name: ImpactLabelName, onMutation?: () => void): void
   const definition = IMPACT_LABELS.find((label) => label.name === name);
   if (!definition) return;
   try {
-    ghWithRetry(
-      [
-        "label",
-        "create",
-        definition.name,
-        "--color",
-        definition.color,
-        "--description",
-        definition.description,
-      ],
-      2,
-    );
-    onMutation?.();
+    runObservedApplyMutation({
+      identity: `label_create:${definition.name}`,
+      operation: () =>
+        ghObservedMutationCommand(
+          [
+            "label",
+            "create",
+            definition.name,
+            "--color",
+            definition.color,
+            "--description",
+            definition.description,
+          ],
+          2,
+        ),
+      onMutation,
+    });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (!/already exists/i.test(message)) throw error;
@@ -12953,19 +13041,23 @@ function ensureMergeRiskLabel(name: MergeRiskLabelName, onMutation?: () => void)
   const definition = MERGE_RISK_LABELS.find((label) => label.name === name);
   if (!definition) return;
   try {
-    ghWithRetry(
-      [
-        "label",
-        "create",
-        definition.name,
-        "--color",
-        definition.color,
-        "--description",
-        definition.description,
-      ],
-      2,
-    );
-    onMutation?.();
+    runObservedApplyMutation({
+      identity: `label_create:${definition.name}`,
+      operation: () =>
+        ghObservedMutationCommand(
+          [
+            "label",
+            "create",
+            definition.name,
+            "--color",
+            definition.color,
+            "--description",
+            definition.description,
+          ],
+          2,
+        ),
+      onMutation,
+    });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (!/already exists/i.test(message)) throw error;
@@ -13253,19 +13345,23 @@ function ensureIssueAdvisorySyncLabel(name: string, onMutation?: () => void): vo
       : undefined);
   if (!definition) return;
   try {
-    ghWithRetry(
-      [
-        "label",
-        "create",
-        definition.name,
-        "--color",
-        definition.color,
-        "--description",
-        definition.description,
-      ],
-      2,
-    );
-    onMutation?.();
+    runObservedApplyMutation({
+      identity: `label_create:${definition.name}`,
+      operation: () =>
+        ghObservedMutationCommand(
+          [
+            "label",
+            "create",
+            definition.name,
+            "--color",
+            definition.color,
+            "--description",
+            definition.description,
+          ],
+          2,
+        ),
+      onMutation,
+    });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (!/already exists/i.test(message)) throw error;
@@ -13276,19 +13372,23 @@ function ensureMaturityLabel(name: MaturityLabelName, onMutation?: () => void): 
   const definition = MATURITY_LABELS.find((label) => label.name === name);
   if (!definition) return;
   try {
-    ghWithRetry(
-      [
-        "label",
-        "create",
-        definition.name,
-        "--color",
-        definition.color,
-        "--description",
-        definition.description,
-      ],
-      2,
-    );
-    onMutation?.();
+    runObservedApplyMutation({
+      identity: `label_create:${definition.name}`,
+      operation: () =>
+        ghObservedMutationCommand(
+          [
+            "label",
+            "create",
+            definition.name,
+            "--color",
+            definition.color,
+            "--description",
+            definition.description,
+          ],
+          2,
+        ),
+      onMutation,
+    });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (!/already exists/i.test(message)) throw error;
@@ -13317,8 +13417,7 @@ function syncPriorityLabel(options: {
     if (priorityLabel) ensurePriorityLabel(priorityLabel, options.onMutation);
   }
   for (const label of labelsToRemove) {
-    ghWithRetry(["issue", "edit", String(options.number), "--remove-label", label]);
-    options.onMutation?.();
+    removeIssueLabel(options.number, label, options.onMutation);
   }
   const syncedLabels = options.labels.filter((label) => !labelsToRemove.includes(label));
   const added =
@@ -13354,8 +13453,7 @@ function syncImpactLabels(options: {
   if (!changed) return { labels: nextLabels, changed };
   if (options.dryRun) return { labels: nextLabels, changed };
   for (const label of labelsToRemove) {
-    ghWithRetry(["issue", "edit", String(options.number), "--remove-label", label]);
-    options.onMutation?.();
+    removeIssueLabel(options.number, label, options.onMutation);
   }
   const syncedLabels = options.labels.filter((label) => !labelsToRemove.includes(label));
   let added = false;
@@ -13397,8 +13495,7 @@ function syncMaturityLabels(options: {
   if (!changed) return { labels: nextLabels, changed };
   if (options.dryRun) return { labels: nextLabels, changed };
   for (const label of labelsToRemove) {
-    ghWithRetry(["issue", "edit", String(options.number), "--remove-label", label]);
-    options.onMutation?.();
+    removeIssueLabel(options.number, label, options.onMutation);
   }
   const syncedLabels = options.labels.filter((label) => !labelsToRemove.includes(label));
   let added = false;
@@ -13440,8 +13537,7 @@ function syncMergeRiskLabels(options: {
   if (!changed) return { labels: nextLabels, changed };
   if (options.dryRun) return { labels: nextLabels, changed };
   for (const label of labelsToRemove) {
-    ghWithRetry(["issue", "edit", String(options.number), "--remove-label", label]);
-    options.onMutation?.();
+    removeIssueLabel(options.number, label, options.onMutation);
   }
   const syncedLabels = options.labels.filter((label) => !labelsToRemove.includes(label));
   let added = false;
@@ -13490,8 +13586,7 @@ function syncIssueAdvisoryLabels(options: {
   if (!changed) return { labels: nextLabels, changed };
   if (options.dryRun) return { labels: nextLabels, changed };
   for (const label of labelsToRemove) {
-    ghWithRetry(["issue", "edit", String(options.number), "--remove-label", label]);
-    options.onMutation?.();
+    removeIssueLabel(options.number, label, options.onMutation);
   }
   const syncedLabels = options.labels.filter((label) => !labelsToRemove.includes(label));
   let added = false;
@@ -13538,14 +13633,7 @@ function syncTelegramVisibleProofLabel(options: {
       return { labels: [...options.labels], changed: false };
     }
   } else {
-    ghWithRetry([
-      "issue",
-      "edit",
-      String(options.number),
-      "--remove-label",
-      TELEGRAM_VISIBLE_PROOF_LABEL,
-    ]);
-    options.onMutation?.();
+    removeIssueLabel(options.number, TELEGRAM_VISIBLE_PROOF_LABEL, options.onMutation);
   }
   return { labels: nextLabels, changed };
 }
@@ -13553,19 +13641,23 @@ function syncTelegramVisibleProofLabel(options: {
 function ensurePrRatingLabel(tier: PrRatingTier, onMutation?: () => void): void {
   const definition = ratingLabelForTier(tier);
   try {
-    ghWithRetry(
-      [
-        "label",
-        "create",
-        definition.name,
-        "--color",
-        definition.color,
-        "--description",
-        definition.description,
-      ],
-      2,
-    );
-    onMutation?.();
+    runObservedApplyMutation({
+      identity: `label_create:${definition.name}`,
+      operation: () =>
+        ghObservedMutationCommand(
+          [
+            "label",
+            "create",
+            definition.name,
+            "--color",
+            definition.color,
+            "--description",
+            definition.description,
+          ],
+          2,
+        ),
+      onMutation,
+    });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (!/already exists/i.test(message)) throw error;
@@ -13574,19 +13666,23 @@ function ensurePrRatingLabel(tier: PrRatingTier, onMutation?: () => void): void 
 
 function ensureFeatureShowcaseLabel(onMutation?: () => void): void {
   try {
-    ghWithRetry(
-      [
-        "label",
-        "create",
-        FEATURE_SHOWCASE_LABEL,
-        "--color",
-        FEATURE_SHOWCASE_LABEL_COLOR,
-        "--description",
-        FEATURE_SHOWCASE_LABEL_DESCRIPTION,
-      ],
-      2,
-    );
-    onMutation?.();
+    runObservedApplyMutation({
+      identity: `label_create:${FEATURE_SHOWCASE_LABEL}`,
+      operation: () =>
+        ghObservedMutationCommand(
+          [
+            "label",
+            "create",
+            FEATURE_SHOWCASE_LABEL,
+            "--color",
+            FEATURE_SHOWCASE_LABEL_COLOR,
+            "--description",
+            FEATURE_SHOWCASE_LABEL_DESCRIPTION,
+          ],
+          2,
+        ),
+      onMutation,
+    });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (!/already exists/i.test(message)) throw error;
@@ -13596,19 +13692,23 @@ function ensureFeatureShowcaseLabel(onMutation?: () => void): void {
 function ensurePrStatusLabel(kind: PrStatusLabelKind, onMutation?: () => void): void {
   const definition = prStatusLabelForKind(kind);
   try {
-    ghWithRetry(
-      [
-        "label",
-        "create",
-        definition.name,
-        "--color",
-        definition.color,
-        "--description",
-        definition.description,
-      ],
-      2,
-    );
-    onMutation?.();
+    runObservedApplyMutation({
+      identity: `label_create:${definition.name}`,
+      operation: () =>
+        ghObservedMutationCommand(
+          [
+            "label",
+            "create",
+            definition.name,
+            "--color",
+            definition.color,
+            "--description",
+            definition.description,
+          ],
+          2,
+        ),
+      onMutation,
+    });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (!/already exists/i.test(message)) throw error;
@@ -13668,8 +13768,7 @@ function syncPrRatingLabel(options: {
   if (options.dryRun) return { labels: nextLabels, changed };
   if (labelToAdd) ensurePrRatingLabel(options.rating.overallTier, options.onMutation);
   for (const label of labelsToRemove) {
-    ghWithRetry(["issue", "edit", String(options.number), "--remove-label", label]);
-    options.onMutation?.();
+    removeIssueLabel(options.number, label, options.onMutation);
   }
   const syncedLabels = options.labels.filter((label) => !labelsToRemove.includes(label));
   const added =
@@ -13707,8 +13806,7 @@ function syncPrStatusLabel(options: {
     ensurePrStatusLabel(options.statusKind, options.onMutation);
   }
   for (const label of labelsToRemove) {
-    ghWithRetry(["issue", "edit", String(options.number), "--remove-label", label]);
-    options.onMutation?.();
+    removeIssueLabel(options.number, label, options.onMutation);
   }
   const syncedLabels = options.labels.filter((label) => !labelsToRemove.includes(label));
   const added =
@@ -13725,19 +13823,23 @@ function syncPrStatusLabel(options: {
 
 function ensureTelegramVisibleProofLabel(onMutation?: () => void): void {
   try {
-    ghWithRetry(
-      [
-        "label",
-        "create",
-        TELEGRAM_VISIBLE_PROOF_LABEL,
-        "--color",
-        TELEGRAM_VISIBLE_PROOF_LABEL_COLOR,
-        "--description",
-        TELEGRAM_VISIBLE_PROOF_LABEL_DESCRIPTION,
-      ],
-      2,
-    );
-    onMutation?.();
+    runObservedApplyMutation({
+      identity: `label_create:${TELEGRAM_VISIBLE_PROOF_LABEL}`,
+      operation: () =>
+        ghObservedMutationCommand(
+          [
+            "label",
+            "create",
+            TELEGRAM_VISIBLE_PROOF_LABEL,
+            "--color",
+            TELEGRAM_VISIBLE_PROOF_LABEL_COLOR,
+            "--description",
+            TELEGRAM_VISIBLE_PROOF_LABEL_DESCRIPTION,
+          ],
+          2,
+        ),
+      onMutation,
+    });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (!/already exists/i.test(message)) throw error;
@@ -13767,8 +13869,7 @@ function tryAddOptionalLabel(options: {
     return false;
   }
   try {
-    ghWithRetry(["issue", "edit", String(options.number), "--add-label", options.label]);
-    options.onMutation?.();
+    addIssueLabel(options.number, options.label, options.onMutation);
     return true;
   } catch (error) {
     if (!missingLabelError(error, options.label) && !labelCapacityError(error)) throw error;
@@ -13791,19 +13892,23 @@ export function isGitHubLabelCapacityErrorForTest(message: string): boolean {
 
 function ensureRealBehaviorProofSufficientLabel(onMutation?: () => void): boolean {
   try {
-    ghWithRetry(
-      [
-        "label",
-        "create",
-        PROOF_SUFFICIENT_LABEL,
-        "--color",
-        PROOF_SUFFICIENT_LABEL_COLOR,
-        "--description",
-        PROOF_SUFFICIENT_LABEL_DESCRIPTION,
-      ],
-      2,
-    );
-    onMutation?.();
+    runObservedApplyMutation({
+      identity: `label_create:${PROOF_SUFFICIENT_LABEL}`,
+      operation: () =>
+        ghObservedMutationCommand(
+          [
+            "label",
+            "create",
+            PROOF_SUFFICIENT_LABEL,
+            "--color",
+            PROOF_SUFFICIENT_LABEL_COLOR,
+            "--description",
+            PROOF_SUFFICIENT_LABEL_DESCRIPTION,
+          ],
+          2,
+        ),
+      onMutation,
+    });
     return true;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -13817,19 +13922,23 @@ function ensureRealBehaviorProofMediaLabel(name: string, onMutation?: () => void
   const definition = PROOF_MEDIA_LABELS.find((label) => label.name === name);
   if (!definition) return false;
   try {
-    ghWithRetry(
-      [
-        "label",
-        "create",
-        definition.name,
-        "--color",
-        definition.color,
-        "--description",
-        definition.description,
-      ],
-      2,
-    );
-    onMutation?.();
+    runObservedApplyMutation({
+      identity: `label_create:${definition.name}`,
+      operation: () =>
+        ghObservedMutationCommand(
+          [
+            "label",
+            "create",
+            definition.name,
+            "--color",
+            definition.color,
+            "--description",
+            definition.description,
+          ],
+          2,
+        ),
+      onMutation,
+    });
     return true;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -13868,14 +13977,7 @@ function syncRealBehaviorProofSufficientLabel(options: {
     }
   } else {
     try {
-      ghWithRetry([
-        "issue",
-        "edit",
-        String(options.number),
-        "--remove-label",
-        PROOF_SUFFICIENT_LABEL,
-      ]);
-      options.onMutation?.();
+      removeIssueLabel(options.number, PROOF_SUFFICIENT_LABEL, options.onMutation);
     } catch (error) {
       if (!missingLabelError(error, PROOF_SUFFICIENT_LABEL)) throw error;
       console.warn(
@@ -13910,8 +14012,7 @@ function syncRealBehaviorProofMediaLabels(options: {
   const syncedLabels = [...options.labels];
   for (const label of labelsToRemove) {
     try {
-      ghWithRetry(["issue", "edit", String(options.number), "--remove-label", label]);
-      options.onMutation?.();
+      removeIssueLabel(options.number, label, options.onMutation);
       const index = syncedLabels.indexOf(label);
       if (index >= 0) syncedLabels.splice(index, 1);
     } catch (error) {
@@ -17933,8 +18034,7 @@ function syncStalePullRequestReviewLabels(options: {
   const nextLabels = options.labels.filter((label) => !labelsToRemove.includes(label));
   if (!options.dryRun) {
     for (const label of labelsToRemove) {
-      ghWithRetry(["issue", "edit", String(options.number), "--remove-label", label]);
-      options.onMutation?.();
+      removeIssueLabel(options.number, label, options.onMutation);
     }
   }
   return { labels: nextLabels, changed: true };
@@ -18822,7 +18922,7 @@ function upsertReviewComment(
       payload,
     ];
   }
-  const response = ghWithRetry(args);
+  const response = ghObservedMutationCommand(args);
   const written = reviewCommentFromMutationResponse(response, args);
   if (written) return written;
   const fallback = issueReviewCommentWithBody(number, markedBody);
@@ -18922,14 +19022,18 @@ function ensureCloseAppliedComment(options: {
   const body = renderCloseAppliedComment(options);
   if (options.dryRun) return "dry-run: would post close-applied comment";
   const payload = writeCommentPayload(options.number, body);
-  ghWithRetry([
-    "api",
-    `repos/${targetRepo()}/issues/${options.number}/comments`,
-    "--method",
-    "POST",
-    "--input",
-    payload,
-  ]);
+  runObservedApplyMutation({
+    identity: `close_applied_comment:${options.number}:${sha256(body)}`,
+    operation: () =>
+      ghObservedMutationCommand([
+        "api",
+        `repos/${targetRepo()}/issues/${options.number}/comments`,
+        "--method",
+        "POST",
+        "--input",
+        payload,
+      ]),
+  });
   return "posted close-applied comment";
 }
 
@@ -19065,7 +19169,10 @@ function postReviewStartStatusComment(options: {
     "--input",
     payload,
   ];
-  const created = reviewCommentFromMutationResponse(ghWithRetry(createArgs), createArgs);
+  const created = reviewCommentFromMutationResponse(
+    ghObservedMutationCommand(createArgs),
+    createArgs,
+  );
   const createdCommentId = commentId(created);
   if (createdCommentId === null) {
     throw new Error(
@@ -19104,6 +19211,7 @@ function postReviewStartStatusComment(options: {
 function deleteOwnedDedicatedReviewStartLease(
   itemNumber: number,
   lease: AcquiredReviewStartLease,
+  options: { throwOnError?: boolean } = {},
 ): boolean {
   try {
     const matching = issueReviewCommentState(itemNumber).dedicatedLeaseComments.find(
@@ -19121,6 +19229,7 @@ function deleteOwnedDedicatedReviewStartLease(
     ]);
     return true;
   } catch (error) {
+    if (options.throwOnError) throw error;
     console.error(
       `[review] could not delete owned review lease comment ${lease.commentId}: ${
         error instanceof Error ? error.message : String(error)
@@ -22090,7 +22199,9 @@ function failedReviewRetrySection(options: {
       "- next step: needs human review; retry attempts for this exact revision are exhausted.",
     );
   } else if (options.status === "dispatching") {
-    lines.push("- next step: dispatch attempt checkpointed; wait for the retry cooldown.");
+    lines.push(
+      "- next step: dispatch outcome is uncertain; reconcile the workflow run before another retry.",
+    );
   } else if (options.status === "dispatch_failed") {
     lines.push("- next step: dispatch command failed; retry after the cooldown if still eligible.");
   }
@@ -22387,6 +22498,14 @@ type ReviewRetryActionLedger = {
     reportPath: string;
   };
   batchStartEventId: string | null;
+  dispatchAttempts: Map<
+    string,
+    {
+      eventId: string | null;
+      phaseSeq: number;
+    }
+  >;
+  nextDispatchPhaseSeq: number;
   startedAtMs: number;
   terminal: boolean;
 };
@@ -22425,9 +22544,87 @@ function startFailedReviewRetryLedger(options: {
   return {
     operationIdentity,
     batchStartEventId: batchStart?.event_id ?? null,
+    dispatchAttempts: new Map(),
+    nextDispatchPhaseSeq: 100_000,
     startedAtMs: Date.now(),
     terminal: false,
   };
+}
+
+function reviewRetryDispatchAttemptKey(options: {
+  repository: string;
+  number: number;
+  revision: FailedReviewRetryRevision;
+}): string {
+  return `${options.repository}#${options.number}:${options.revision.kind}:${options.revision.value}`;
+}
+
+function startFailedReviewRetryDispatchAttempt(options: {
+  ledger: ReviewRetryActionLedger;
+  number: number;
+  revision: FailedReviewRetryRevision;
+  reportPath: string;
+  attempts: number;
+  dispatchUrl: string;
+}): void {
+  const repository = targetRepo();
+  const key = reviewRetryDispatchAttemptKey({
+    repository,
+    number: options.number,
+    revision: options.revision,
+  });
+  if (options.ledger.dispatchAttempts.has(key)) return;
+  const phaseSeq = options.ledger.nextDispatchPhaseSeq;
+  options.ledger.nextDispatchPhaseSeq += 10;
+  const kind = reportItemKind(readFileSync(options.reportPath, "utf8"));
+  if (!kind) {
+    throw new Error(
+      `retry dispatch receipt for ${repository}#${options.number} is missing its item kind`,
+    );
+  }
+  const recordPath = repoRelativePath(options.reportPath);
+  const event = recordWorkflowPhaseEvent(ROOT, {
+    phase: ACTION_EVENT_TYPES.reviewRetry,
+    status: ACTION_EVENT_STATUSES.started,
+    reasonCode: ACTION_EVENT_REASON_CODES.selected,
+    retryable: false,
+    mutation: false,
+    identity: {
+      slot: "retry_dispatch_attempt",
+      repository,
+      number: options.number,
+    },
+    operation: "review_retry",
+    operationIdentity: options.ledger.operationIdentity,
+    parentEventId: options.ledger.batchStartEventId,
+    phaseSeq,
+    idempotencyIdentity: reviewRetryBusinessIdempotencyIdentityForTest({
+      repository,
+      number: options.number,
+      revisionKind: options.revision.kind,
+      sourceRevision: options.revision.value,
+      slot: "retry_dispatch",
+    }),
+    component: "retry_failed_reviews",
+    subject: {
+      repository,
+      kind,
+      number: options.number,
+      sourceRevision: options.revision.value,
+      ...(recordPath.startsWith("../") ? {} : { recordPath }),
+    },
+    evidence: [...workflowRunEvidence(), { kind: "retry_dispatch", runUrl: options.dispatchUrl }],
+    attributes: {
+      attempt: options.attempts + 1,
+      retry_count: options.attempts,
+      completion_reason: "dispatch_attempted",
+    },
+    privacy: actionLedgerPrivacy(),
+  });
+  options.ledger.dispatchAttempts.set(key, {
+    eventId: event?.event_id ?? null,
+    phaseSeq,
+  });
 }
 
 function retryFailedReviewsCommand(args: Args): void {
@@ -22580,7 +22777,8 @@ function retryFailedReviewsCommandInner(args: Args): void {
         dispatched += 1;
         continue;
       }
-      const attempts = (eligibility.attempts ?? 0) + 1;
+      const attemptsBeforeDispatch = eligibility.attempts ?? 0;
+      const attempts = attemptsBeforeDispatch + 1;
       let dispatchCheckpointed = false;
       let checkpointDispatchUrl: string | undefined;
       try {
@@ -22597,12 +22795,20 @@ function retryFailedReviewsCommandInner(args: Args): void {
           onBeforeDispatch: (nextDispatchUrl) => {
             dispatchCheckpointed = true;
             checkpointDispatchUrl = nextDispatchUrl;
+            startFailedReviewRetryDispatchAttempt({
+              ledger: retryLedger,
+              number,
+              revision: retryRevision,
+              reportPath: path,
+              attempts: attemptsBeforeDispatch,
+              dispatchUrl: nextDispatchUrl,
+            });
             markdown = checkpointFailedReviewRetry({
               markdown,
               status: "dispatching",
               at: nowIso,
               revision: retryRevision,
-              attempts,
+              attempts: attemptsBeforeDispatch,
               maxAttempts,
               reason: retryReason,
               dispatchUrl: nextDispatchUrl,
@@ -22613,7 +22819,7 @@ function retryFailedReviewsCommandInner(args: Args): void {
               status: "dispatching",
               at: nowIso,
               revision: retryRevision,
-              attempts,
+              attempts: attemptsBeforeDispatch,
               maxAttempts,
               reason: retryReason,
               dispatchUrl: nextDispatchUrl,
@@ -22655,27 +22861,18 @@ function retryFailedReviewsCommandInner(args: Args): void {
         dispatched += 1;
       } catch (error) {
         if (dispatchCheckpointed) {
-          markdown = markFailedReviewRetry({
-            markdown,
-            status: "dispatch_failed",
-            at: nowIso,
-            revision: retryRevision,
-            attempts,
-            maxAttempts,
-            reason: error instanceof Error ? error.message : String(error),
-            ...(checkpointDispatchUrl ? { dispatchUrl: checkpointDispatchUrl } : {}),
-          });
-          writeFileSync(path, markdown, "utf8");
-          writeFailedReviewRetryState(statePath, {
+          results.push({
+            repo: targetRepo(),
             number,
-            status: "dispatch_failed",
-            at: nowIso,
-            revision: retryRevision,
-            attempts,
-            maxAttempts,
+            action: "skipped_retry_dispatch_uncertain",
             reason: error instanceof Error ? error.message : String(error),
+            ...failedReviewRetryResultRevision(retryRevision),
+            attempts: attemptsBeforeDispatch,
+            reportPath: path,
             ...(checkpointDispatchUrl ? { dispatchUrl: checkpointDispatchUrl } : {}),
           });
+          if (error instanceof GitHubRuntimeBudgetError) throw error;
+          continue;
         }
         if (error instanceof GitHubRuntimeBudgetError) throw error;
         results.push({
@@ -22684,7 +22881,7 @@ function retryFailedReviewsCommandInner(args: Args): void {
           action: "skipped_dispatch_failed",
           reason: error instanceof Error ? error.message : String(error),
           ...failedReviewRetryResultRevision(retryRevision),
-          attempts: dispatchCheckpointed ? attempts : eligibility.attempts,
+          attempts: eligibility.attempts,
           reportPath: path,
         });
       }
@@ -22762,6 +22959,14 @@ export function reviewRetryActionDisposition(action: FailedReviewRetryAction): {
       mutation: false,
     };
   }
+  if (action === "skipped_retry_dispatch_uncertain") {
+    return {
+      status: ACTION_EVENT_STATUSES.failed,
+      reasonCode: ACTION_EVENT_REASON_CODES.unavailable,
+      retryable: false,
+      mutation: true,
+    };
+  }
   if (action === "skipped_retry_cooldown") {
     return {
       status: ACTION_EVENT_STATUSES.waiting,
@@ -22809,7 +23014,8 @@ function reviewRetryIdempotencySlot(
   if (
     action === "dispatched_failed_review_retry" ||
     action === "planned_failed_review_retry" ||
-    action === "skipped_dispatch_failed"
+    action === "skipped_dispatch_failed" ||
+    action === "skipped_retry_dispatch_uncertain"
   ) {
     return "retry_dispatch";
   }
@@ -22892,6 +23098,16 @@ function recordFailedReviewRetryEvents(options: {
         `retry mutation receipt for ${subject.repository}#${result.number} is missing its source revision`,
       );
     }
+    const dispatchAttempt =
+      result.number > 0 && revisionKind && sourceRevision
+        ? options.ledger.dispatchAttempts.get(
+            reviewRetryDispatchAttemptKey({
+              repository: subject.repository,
+              number: result.number,
+              revision: { kind: revisionKind, value: sourceRevision },
+            }),
+          )
+        : undefined;
     recordWorkflowPhaseEvent(ROOT, {
       phase: ACTION_EVENT_TYPES.reviewRetry,
       status: disposition.status,
@@ -22906,8 +23122,8 @@ function recordFailedReviewRetryEvents(options: {
       },
       operation: "review_retry",
       operationIdentity,
-      parentEventId: options.ledger.batchStartEventId,
-      phaseSeq: 10 + index,
+      parentEventId: dispatchAttempt?.eventId ?? options.ledger.batchStartEventId,
+      phaseSeq: dispatchAttempt ? dispatchAttempt.phaseSeq + 1 : 10 + index,
       idempotencyIdentity,
       component: "retry_failed_reviews",
       subject,
@@ -22927,7 +23143,9 @@ function recordFailedReviewRetryEvents(options: {
   const yielded = options.results.some((result) => result.action === "skipped_runtime_budget");
   const failed = options.results.some(
     (result) =>
-      result.action === "skipped_dispatch_failed" || result.action === "skipped_live_fetch_failed",
+      result.action === "skipped_dispatch_failed" ||
+      result.action === "skipped_retry_dispatch_uncertain" ||
+      result.action === "skipped_live_fetch_failed",
   );
   const failure =
     options.failure === undefined || options.failure === null
@@ -22997,7 +23215,7 @@ function recordFailedReviewRetryEvents(options: {
 
 type ApplyItemBusinessIdempotencyIdentity = {
   operation: "apply";
-  slot: "apply_item" | "review_comment";
+  slot: "apply_item" | "apply_mutation" | "review_comment";
   repository: string;
   number: number;
   sourceRevision: string;
@@ -23011,7 +23229,9 @@ type ApplyLedgerItem = {
   started: boolean;
   startEventId: string | null;
   mutationObserved: boolean;
+  uncertainMutationObserved: boolean;
   mutationEventId: string | null;
+  mutationAttemptCount: number;
   terminal: boolean;
   businessIdentity: Omit<ApplyItemBusinessIdempotencyIdentity, "slot">;
 };
@@ -23100,7 +23320,9 @@ function startApplyActionLedger(options: {
       started: false,
       startEventId: null,
       mutationObserved: false,
+      uncertainMutationObserved: false,
       mutationEventId: null,
+      mutationAttemptCount: 0,
       terminal: false,
       businessIdentity: {
         operation: "apply",
@@ -23122,7 +23344,7 @@ function startApplyActionLedger(options: {
 }
 
 export function applyItemBusinessIdempotencyIdentityForTest(options: {
-  slot: "apply_item" | "review_comment";
+  slot: "apply_item" | "apply_mutation" | "review_comment";
   repository: string;
   number: number;
   sourceRevision: string;
@@ -23142,7 +23364,7 @@ export function applyItemBusinessIdempotencyIdentityForTest(options: {
 
 function applyItemIdempotencyIdentity(
   state: ApplyLedgerItem,
-  slot: "apply_item" | "review_comment",
+  slot: "apply_item" | "apply_mutation" | "review_comment",
 ): ApplyItemBusinessIdempotencyIdentity {
   return applyItemBusinessIdempotencyIdentityForTest({
     ...state.businessIdentity,
@@ -23211,7 +23433,138 @@ function startApplyActionLedgerItem(
   return state;
 }
 
-function recordApplyMutationBoundary(ledger: ApplyActionLedger, entry: ReportEntry): void {
+type ApplyMutationAttempt = {
+  state: ApplyLedgerItem;
+  eventId: string | null;
+  phaseSeq: number;
+  idempotencyIdentity: ApplyItemBusinessIdempotencyIdentity & {
+    mutationIdentitySha256: string;
+  };
+  mutationIndex: number;
+};
+
+function startApplyMutationAttempt(
+  ledger: ApplyActionLedger,
+  entry: ReportEntry,
+  identity: string,
+): ApplyMutationAttempt | null {
+  const state = startApplyActionLedgerItem(ledger, entry);
+  if (!state) return null;
+  const mutationIndex = state.mutationAttemptCount;
+  state.mutationAttemptCount += 1;
+  const idempotencyIdentity = {
+    ...applyItemIdempotencyIdentity(state, "apply_mutation"),
+    mutationIdentitySha256: sha256(identity),
+  };
+  const phaseSeq = 11 + state.index * 20;
+  const attempt = recordWorkflowPhaseEvent(ROOT, {
+    phase: ACTION_EVENT_TYPES.applyAction,
+    status: ACTION_EVENT_STATUSES.started,
+    reasonCode: ACTION_EVENT_REASON_CODES.selected,
+    retryable: true,
+    mutation: false,
+    identity: {
+      slot: "apply_mutation_attempt",
+      index: state.index,
+      mutationIndex,
+      mutationIdentitySha256: idempotencyIdentity.mutationIdentitySha256,
+      repository: entry.repo,
+      number: entry.number,
+    },
+    operation: "apply",
+    operationIdentity: ledger.operationIdentity,
+    parentEventId: state.mutationEventId ?? state.startEventId,
+    phaseSeq,
+    idempotencyIdentity,
+    component: "apply_decisions",
+    subject: applyLedgerItemSubject(state),
+    evidence: workflowRunEvidence(),
+    attributes: {
+      batch_index: state.index,
+      attempt: mutationIndex + 1,
+      action_count: 1,
+      partial: true,
+      completion_reason: "mutation_attempted",
+    },
+    privacy: actionLedgerPrivacy(),
+  });
+  return {
+    state,
+    eventId: attempt?.event_id ?? null,
+    phaseSeq,
+    idempotencyIdentity,
+    mutationIndex,
+  };
+}
+
+function finishApplyMutationAttempt(options: {
+  ledger: ApplyActionLedger;
+  entry: ReportEntry;
+  attempt: ApplyMutationAttempt;
+  outcome: "accepted" | "rejected" | "unknown";
+}): string | null {
+  const mutation = options.outcome !== "rejected";
+  const event = recordWorkflowPhaseEvent(ROOT, {
+    phase: ACTION_EVENT_TYPES.applyAction,
+    status:
+      options.outcome === "accepted"
+        ? ACTION_EVENT_STATUSES.executed
+        : options.outcome === "rejected"
+          ? ACTION_EVENT_STATUSES.skipped
+          : ACTION_EVENT_STATUSES.failed,
+    reasonCode:
+      options.outcome === "accepted"
+        ? ACTION_EVENT_REASON_CODES.completed
+        : options.outcome === "rejected"
+          ? ACTION_EVENT_REASON_CODES.notApplicable
+          : ACTION_EVENT_REASON_CODES.unavailable,
+    retryable: options.outcome === "unknown",
+    mutation,
+    identity: {
+      slot: "apply_mutation_outcome",
+      index: options.attempt.state.index,
+      mutationIndex: options.attempt.mutationIndex,
+      mutationIdentitySha256: options.attempt.idempotencyIdentity.mutationIdentitySha256,
+      outcome: options.outcome,
+      repository: options.entry.repo,
+      number: options.entry.number,
+    },
+    operation: "apply",
+    operationIdentity: options.ledger.operationIdentity,
+    parentEventId: options.attempt.eventId,
+    phaseSeq: options.attempt.phaseSeq + 1,
+    idempotencyIdentity: options.attempt.idempotencyIdentity,
+    component: "apply_decisions",
+    subject: applyLedgerItemSubject(options.attempt.state),
+    evidence: workflowRunEvidence(),
+    attributes: {
+      batch_index: options.attempt.state.index,
+      attempt: options.attempt.mutationIndex + 1,
+      action_count: mutation ? 1 : 0,
+      partial: options.outcome === "unknown",
+      completion_reason:
+        options.outcome === "accepted"
+          ? "mutation_accepted"
+          : options.outcome === "rejected"
+            ? "mutation_rejected"
+            : "mutation_outcome_unknown",
+    },
+    privacy: actionLedgerPrivacy(),
+  });
+  if (mutation) {
+    options.attempt.state.mutationEventId = event?.event_id ?? options.attempt.eventId;
+  }
+  if (options.outcome === "unknown") {
+    options.attempt.state.uncertainMutationObserved = true;
+  }
+  return event?.event_id ?? null;
+}
+
+function recordApplyMutationBoundary(
+  ledger: ApplyActionLedger,
+  entry: ReportEntry,
+  parentEventId?: string | null,
+): void {
   const state = startApplyActionLedgerItem(ledger, entry);
   if (!state || state.mutationObserved) return;
   const mutation = recordWorkflowPhaseEvent(ROOT, {
@@ -23228,7 +23581,7 @@ function recordApplyMutationBoundary(ledger: ApplyActionLedger, entry: ReportEnt
     },
     operation: "apply",
     operationIdentity: ledger.operationIdentity,
-    parentEventId: state.startEventId,
+    parentEventId: parentEventId ?? state.mutationEventId ?? state.startEventId,
     phaseSeq: 11 + state.index * 20,
     idempotencyIdentity: applyItemIdempotencyIdentity(state, "apply_item"),
     component: "apply_decisions",
@@ -23578,7 +23931,10 @@ function recordApplyActionEvents(options: {
         state,
         entry,
         failure: options.failure,
-        mutationOccurred: options.inFlightItem.mutationOccurred || state.mutationObserved,
+        mutationOccurred:
+          options.inFlightItem.mutationOccurred ||
+          state.mutationObserved ||
+          state.uncertainMutationObserved,
       });
     }
   }
@@ -23596,7 +23952,9 @@ function recordApplyActionEvents(options: {
       results: itemResults,
       entry,
       mutationOccurred:
-        state.mutationObserved || options.mutationByItem.get(`${repository}#${number}`) === true,
+        state.mutationObserved ||
+        state.uncertainMutationObserved ||
+        options.mutationByItem.get(`${repository}#${number}`) === true,
       dryRun: options.dryRun,
     });
   }
@@ -23972,7 +24330,21 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
   const releaseActiveApplyMutationLease = (): void => {
     const active = activeApplyMutationLease;
     activeApplyMutationLease = null;
-    if (active) deleteOwnedDedicatedReviewStartLease(active.itemNumber, active.lease);
+    if (!active) return;
+    try {
+      runObservedApplyMutation({
+        identity: `apply_lease_delete:${active.itemNumber}:${active.lease.commentId}`,
+        operation: () =>
+          deleteOwnedDedicatedReviewStartLease(active.itemNumber, active.lease, {
+            throwOnError: true,
+          }),
+        didMutate: (deleted) => deleted,
+      });
+    } catch (error) {
+      console.error(
+        `[apply] could not delete owned review lease comment ${active.lease.commentId}: ${mutationErrorMessage(error)}`,
+      );
+    }
   };
   runtimeBudget.onFailure = (error: unknown): void => {
     releaseActiveApplyMutationLease();
@@ -23989,13 +24361,17 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
   };
   runtimeBudget.onYield = (reason: string, resumeCurrent = true): void => {
     releaseActiveApplyMutationLease();
+    const interruptedItem = resumeCurrent && activeApplyItem !== null;
     const currentNumber = examinedItemNumbers.at(-1);
     if (resumeCurrent && currentNumber !== undefined) {
       removeCurrentCursorTraceItem(examinedItemNumbers, currentNumber);
     }
     results.push({ number: 0, action: "skipped_runtime_budget", reason });
     logProgress(`stopping apply: ${reason}`);
-    finishApply();
+    finishApply(
+      interruptedItem,
+      interruptedItem ? new GitHubRuntimeBudgetError(reason) : undefined,
+    );
   };
   if (fileEntries.length === 0 && !existsSync(itemsDir)) {
     console.log("No items directory.");
@@ -24026,12 +24402,48 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
     startApplyActionLedgerItem(applyLedger, entry);
     const applyItemResultStart = results.length;
     let applyItemFailed = false;
+    const previousApplyMutationRunner = activeApplyMutationRunner;
     try {
-    const recordMutation = (): void => {
+    const markMutationObserved = (): void => {
       if (dryRun) return;
       activeApplyItem = { repo, number, mutationOccurred: true };
       mutationByItem.set(`${repo}#${number}`, true);
-      recordApplyMutationBoundary(applyLedger, entry);
+    };
+    const recordMutation = (parentEventId?: string | null): void => {
+      markMutationObserved();
+      recordApplyMutationBoundary(applyLedger, entry, parentEventId);
+    };
+    activeApplyMutationRunner = <T>(options: {
+      identity: string;
+      operation: () => T;
+      didMutate?: ((result: T) => boolean) | undefined;
+      knownNoMutation?: ((error: unknown) => boolean) | undefined;
+    }): T => {
+      if (dryRun) return options.operation();
+      const attempt = startApplyMutationAttempt(applyLedger, entry, options.identity);
+      if (!attempt) return options.operation();
+      try {
+        const result = options.operation();
+        const mutated = options.didMutate?.(result) ?? true;
+        const outcomeEventId = finishApplyMutationAttempt({
+          ledger: applyLedger,
+          entry,
+          attempt,
+          outcome: mutated ? "accepted" : "rejected",
+        });
+        if (mutated) recordMutation(outcomeEventId);
+        return result;
+      } catch (error) {
+        const rejected = options.knownNoMutation?.(error) === true;
+        finishApplyMutationAttempt({
+          ledger: applyLedger,
+          entry,
+          attempt,
+          outcome: rejected ? "rejected" : "unknown",
+        });
+        if (!rejected) markMutationObserved();
+        throw error;
+      }
     };
     examinedItemNumbers.push(number);
     const decision = frontMatterValue(markdown, "decision");
@@ -24387,15 +24799,19 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
           headSha: leaseState.headSha,
         };
       } else {
-        const posted = postReviewStartStatusComment({
-          item,
-          headSha: leaseState.headSha,
-          reviewTimeoutMs: Math.max(5 * 60 * 1000, closeDelayMs + 60 * 1000),
-          position: 1,
-          total: 1,
-          shardIndex: 1,
-          shardCount: 1,
-          purpose: "apply",
+        const posted = runObservedApplyMutation({
+          identity: `apply_lease_acquire:${number}:${leaseState.headSha}`,
+          operation: () =>
+            postReviewStartStatusComment({
+              item,
+              headSha: leaseState.headSha,
+              reviewTimeoutMs: Math.max(5 * 60 * 1000, closeDelayMs + 60 * 1000),
+              position: 1,
+              total: 1,
+              shardIndex: 1,
+              shardCount: 1,
+              purpose: "apply",
+            }),
         });
         if (posted.status !== "posted") {
           return `${item.kind === "pull_request" ? "same-head" : "same-revision"} ClawSweeper lease was acquired concurrently`;
@@ -24623,7 +25039,6 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
     };
     const recordRuntimeBudgetYield = (reason: string): void => {
       if (clawSweeperLabelsChanged && !dryRun) {
-        recordMutation();
         markdown = replaceFrontMatterValue(
           markdown,
           "labels_synced_at",
@@ -25334,7 +25749,6 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
     }
     markdown = replaceFrontMatterValue(markdown, "labels", JSON.stringify(item.labels));
     if (clawSweeperLabelsChanged && !dryRun) {
-      recordMutation();
       rememberSelfMutationUpdatedAt();
     }
     const renderOptions: ReviewCommentRenderOptions = {
@@ -25689,7 +26103,6 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
           maturitySyncResult.changed ||
           mergeRiskLabelsChanged
         ) {
-          recordMutation();
           rememberSelfMutationUpdatedAt();
         }
       } catch (error) {
@@ -25742,7 +26155,6 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
         clawSweeperLabelsChanged ||= syncResult.changed;
         markdown = replaceFrontMatterValue(markdown, "labels", JSON.stringify(item.labels));
         if (syncResult.changed) {
-          recordMutation();
           rememberSelfMutationUpdatedAt();
         }
       } catch (error) {
@@ -25902,7 +26314,6 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
       }
     }
     if (clawSweeperLabelsChanged && !dryRun) {
-      recordMutation();
       markdown = replaceFrontMatterValue(markdown, "labels_synced_at", new Date().toISOString());
     }
     const labelSyncReason = issueAdvisoryLabelsChanged
@@ -26059,12 +26470,14 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
             continue;
           }
           try {
-            syncedComment = upsertReviewComment(
-              number,
-              markedReviewComment,
-              existingReviewComment,
-            );
-            recordMutation();
+            syncedComment = runObservedApplyMutation({
+              identity: `review_comment_upsert:${number}:${reviewCommentBodyDigest(markedReviewComment)}`,
+              operation: () =>
+                upsertReviewComment(number, markedReviewComment, existingReviewComment),
+              knownNoMutation: (error) =>
+                isGitHubRequiresAuthenticationError(error) ||
+                isLockedConversationCommentError(error),
+            });
             const syncedCommentUpdatedAt = commentUpdatedAt(syncedComment);
             if (syncedCommentUpdatedAt) {
               allowedSelfMutationUpdatedAts.add(syncedCommentUpdatedAt);
@@ -26331,15 +26744,17 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
             dryRun,
           })
         : null;
-    if (closeAppliedCommentReason === "posted close-applied comment") recordMutation();
     const preCloseMutationLeaseBlockReason = currentApplyMutationLeaseBlockReason();
     if (preCloseMutationLeaseBlockReason) {
       if (recordReviewLeaseSkip(preCloseMutationLeaseBlockReason, false)) break;
       continue;
     }
     ensureRuntimeDelayFits(closeDelayMs, "before close");
-    closeItem({ number, kind: item.kind, reason: closeReason });
-    recordMutation();
+    const appliedCloseReason = closeReason;
+    runObservedApplyMutation({
+      identity: `item_close:${number}:${item.kind}:${appliedCloseReason}`,
+      operation: () => closeItem({ number, kind: item.kind, reason: appliedCloseReason }),
+    });
     let postCloseRuntimeYieldReason: string | null = null;
     try {
       ensureRuntimeDelayFits(closeDelayMs, "before close delay");
@@ -26375,6 +26790,8 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
       applyItemFailed = true;
       throw error;
     } finally {
+      releaseActiveApplyMutationLease();
+      activeApplyMutationRunner = previousApplyMutationRunner;
       if (!applyItemFailed) {
         const state = applyLedger.items.get(actionLedgerItemKey(entry));
         if (!applyLedger.terminal && state?.started && !state.terminal) {
@@ -29119,6 +29536,71 @@ function publishActionEventsCommand(args: Args): void {
   console.log(JSON.stringify(result, null, 2));
 }
 
+const ACTION_EVENT_PUBLISH_PATH_PATTERN =
+  /^ledger\/v1\/(?:events\/\d{4}\/\d{2}\/\d{2}\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\.jsonl|import-bindings\/(?:producer-runs|events|shard-sets|completed-shard-sets)\/[a-f0-9]{64}\.json)$/;
+const ACTION_EVENT_PUBLISH_PATH_FILE_MAX_BYTES = ACTION_EVENT_SHARD_IMPORT_MAX_PUBLISH_PATHS * 512;
+
+export function actionEventPublishPathsForTest(content: string): string[] {
+  if (Buffer.byteLength(content, "utf8") > ACTION_EVENT_PUBLISH_PATH_FILE_MAX_BYTES) {
+    throw new Error(
+      `action event publish path manifest exceeds ${ACTION_EVENT_PUBLISH_PATH_FILE_MAX_BYTES} bytes`,
+    );
+  }
+  const paths = content.split("\n").filter(Boolean);
+  if (paths.length === 0) throw new Error("action event publish path manifest is empty");
+  if (paths.length > ACTION_EVENT_SHARD_IMPORT_MAX_PUBLISH_PATHS) {
+    throw new Error(
+      `action event publish path manifest exceeds ${ACTION_EVENT_SHARD_IMPORT_MAX_PUBLISH_PATHS} paths`,
+    );
+  }
+  let previous = "";
+  for (const path of paths) {
+    if (!ACTION_EVENT_PUBLISH_PATH_PATTERN.test(path)) {
+      throw new Error(`invalid action event publish path: ${path}`);
+    }
+    if (previous && path <= previous) {
+      throw new Error("action event publish paths must be sorted and unique");
+    }
+    previous = path;
+  }
+  return paths;
+}
+
+function publishActionEventPathsCommand(args: Args): void {
+  const pathsFile = resolve(stringArg(args.paths_file, ""));
+  const message = stringArg(args.message, "");
+  if (!pathsFile || pathsFile === ROOT) {
+    throw new UserFacingCommandError("--paths-file is required");
+  }
+  if (!message) throw new UserFacingCommandError("--message is required");
+  const stat = statSync(pathsFile);
+  if (!stat.isFile())
+    throw new Error(`action event publish path manifest is not a file: ${pathsFile}`);
+  if (stat.size > ACTION_EVENT_PUBLISH_PATH_FILE_MAX_BYTES) {
+    throw new Error(
+      `action event publish path manifest exceeds ${ACTION_EVENT_PUBLISH_PATH_FILE_MAX_BYTES} bytes`,
+    );
+  }
+  const paths = actionEventPublishPathsForTest(readFileSync(pathsFile, "utf8"));
+  for (const path of paths) {
+    const source = resolve(ROOT, path);
+    const rootRelativeSource = relative(ROOT, source);
+    if (
+      rootRelativeSource.startsWith("..") ||
+      resolve(ROOT, rootRelativeSource) !== source ||
+      !statSync(source).isFile()
+    ) {
+      throw new Error(`action event publish path is not a regular file: ${path}`);
+    }
+  }
+  const result = publishMainCommit({
+    message,
+    paths,
+    rebaseStrategy: "normal",
+  });
+  console.log(JSON.stringify({ result, path_count: paths.length }));
+}
+
 export async function main(argv = process.argv.slice(2)): Promise<void> {
   const args = parseArgs(argv);
   const command = args._[0] ?? "review";
@@ -29136,6 +29618,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     else if (command === "apply-artifacts") applyArtifactsCommand(args);
     else if (command === "apply-decisions") applyDecisionsCommand(args);
     else if (command === "publish-action-events") publishActionEventsCommand(args);
+    else if (command === "publish-action-event-paths") publishActionEventPathsCommand(args);
     else if (command === "proof-nudges") proofNudgesCommand(args);
     else if (command === "bot-proof") botProofCommand(args);
     else if (command === "audit") auditCommand(args);

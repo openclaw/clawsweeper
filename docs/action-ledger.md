@@ -97,10 +97,18 @@ confidential-identifier checks as every other durable machine-text field.
   immutable source revision, review content digest, and decision packet digest.
   Candidate order, checkpoint composition, and list indexes never define those
   side effects.
-- Apply writes an item start at loop entry and persists a mutation-observed
-  receipt immediately after the first successful durable mutation. Per-item
-  terminals are written as each item finishes, so timeout recovery fails only
-  the genuinely active item and preserves whether that item already mutated.
+- Apply writes an item start at loop entry and a child mutation-attempt receipt
+  before every GitHub write. Accepted, rejected-before-write, and unknown
+  outcomes close that receipt explicitly. Recovery treats an open attempt as a
+  possible mutation, so a crash after GitHub accepted a write can never be
+  finalized as `mutation: false`. Per-item terminals are written as each item
+  finishes, and runtime-budget yield fails the genuinely active item rather than
+  synthesizing a normal kept-open result.
+- Failed-review dispatch writes the same pre-dispatch boundary, keeps the
+  durable retry count unchanged until `gh` returns success, and leaves an
+  ambiguous dispatch fail-closed for that exact source revision. Operators must
+  reconcile the workflow run before another launch; automatic retry never
+  duplicates an outcome-unknown dispatch.
 - Repository, producer SHA, workflow, job, run, attempt, and component all bind
   shard identity. They do not define the logical operation.
 - Workflow, step, invocation, and component identifiers keep a readable prefix
@@ -211,6 +219,11 @@ confidential-identifier checks as every other durable machine-text field.
   first numbered part cannot expose a partial run. Sequential imports therefore
   cannot move a run, replace a reserved numbered set with a different part
   count, or advertise completion before payload publication finishes.
+- The importer returns one sorted publication manifest containing every event
+  shard plus its producer-run, event, shard-set, and completion binding. Workflow
+  publishers stage and commit that complete bounded manifest, so a fresh state
+  clone retains the same cross-import conflict and causal protections instead
+  of receiving payload files alone.
 
 ## Privacy Boundary
 

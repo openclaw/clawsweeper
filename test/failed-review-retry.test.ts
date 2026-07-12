@@ -172,6 +172,22 @@ test("failed review retry eligibility requires infrastructure failure and matchi
     }).action,
     "skipped_not_failed_review",
   );
+  const uncertain = failedReviewRetryEligibilityForTest({
+    markdown: failedReviewReport({
+      failed_review_retry_status: "dispatching",
+      failed_review_retry_count: 0,
+      failed_review_retry_last_at: "2026-06-05T19:59:00Z",
+      failed_review_retry_revision_kind: "pull_head_sha",
+      failed_review_retry_revision: "abc123def456",
+    }),
+    liveState: "open",
+    liveHeadSha: "abc123def456",
+    now,
+    maxAttempts: 2,
+    cooldownMs: 0,
+  });
+  assert.equal(uncertain.action, "skipped_retry_dispatch_uncertain");
+  assert.equal(uncertain.attempts, 0);
 });
 
 test("failed review retry does not redispatch locked or closed no-action items", () => {
@@ -577,7 +593,7 @@ test("failed issue retry bounds a hung GitHub fetch and flushes its report", () 
   }
 });
 
-test("failed issue retry checkpoints an ambiguous dispatch and prevents an immediate duplicate", () => {
+test("failed issue retry leaves an ambiguous dispatch unconsumed and prevents a duplicate", () => {
   const root = mkdtempSync(tmpPrefix);
   const fixture = failedIssueRetryFixture(root, 4345);
   const originalMarkdown = readFileSync(fixture.itemPath, "utf8");
@@ -601,14 +617,14 @@ fs.writeFileSync(counter, String(count + 1));
     }>;
     assert.equal(firstReport.at(-1)?.action, "skipped_runtime_budget", JSON.stringify(firstReport));
     const checkpointed = readFileSync(fixture.itemPath, "utf8");
-    assert.match(checkpointed, /^failed_review_retry_status: dispatch_failed$/m);
-    assert.match(checkpointed, /^failed_review_retry_count: 1$/m);
+    assert.match(checkpointed, /^failed_review_retry_status: dispatching$/m);
+    assert.match(checkpointed, /^failed_review_retry_count: 0$/m);
     assert.match(checkpointed, /^failed_review_retry_revision_kind: item_source_revision$/m);
     assert.match(
       checkpointed,
       new RegExp(`^failed_review_retry_revision: ${fixture.sourceRevision}$`, "m"),
     );
-    assert.equal((checkpointed.match(/^## Failed Review Retry$/gm) ?? []).length, 1);
+    assert.equal((checkpointed.match(/^## Failed Review Retry$/gm) ?? []).length, 0);
     assert.equal(readFileSync(dispatchCountPath, "utf8"), "1");
     const retryState = JSON.parse(readFileSync(fixture.statePath, "utf8")) as {
       status: string;
@@ -621,7 +637,7 @@ fs.writeFileSync(counter, String(count + 1));
         attempts: retryState.attempts,
         revision: retryState.revision,
       },
-      { status: "dispatch_failed", attempts: 1, revision: fixture.sourceRevision },
+      { status: "dispatching", attempts: 0, revision: fixture.sourceRevision },
     );
 
     // The generated sidecar is authoritative; review records are not published by this lane.
@@ -636,8 +652,8 @@ fs.writeFileSync(counter, String(count + 1));
       action: string;
       attempts?: number;
     }>;
-    assert.equal(secondReport[0]?.action, "skipped_retry_cooldown");
-    assert.equal(secondReport[0]?.attempts, 1);
+    assert.equal(secondReport[0]?.action, "skipped_retry_dispatch_uncertain");
+    assert.equal(secondReport[0]?.attempts, 0);
     assert.equal(readFileSync(dispatchCountPath, "utf8"), "1");
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -703,7 +719,7 @@ fs.writeFileSync(counter, String(count + 1));
   }
 });
 
-test("failed issue retry limit counts checkpointed ambiguous dispatches", () => {
+test("failed issue retry limit stops after one uncertain dispatch without consuming an attempt", () => {
   const root = mkdtempSync(tmpPrefix);
   const first = failedIssueRetryFixture(root, 4347);
   const second = failedIssueRetryFixture(root, 4348);
@@ -762,10 +778,10 @@ process.exit(1);
     }>;
     assert.deepEqual(
       report.map(({ number, action, attempts }) => ({ number, action, attempts })),
-      [{ number: 4347, action: "skipped_dispatch_failed", attempts: 1 }],
+      [{ number: 4347, action: "skipped_retry_dispatch_uncertain", attempts: 0 }],
     );
     assert.equal(readFileSync(dispatchCountPath, "utf8"), "1");
-    assert.match(readFileSync(first.itemPath, "utf8"), /^failed_review_retry_count: 1$/m);
+    assert.match(readFileSync(first.itemPath, "utf8"), /^failed_review_retry_count: 0$/m);
     assert.doesNotMatch(readFileSync(second.itemPath, "utf8"), /^failed_review_retry_count:/m);
   } finally {
     rmSync(root, { recursive: true, force: true });

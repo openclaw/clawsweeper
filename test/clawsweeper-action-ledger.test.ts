@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  actionEventPublishPathsForTest,
   actionLedgerFailureDisposition,
   applyActionEventDisposition,
   applyItemBusinessIdempotencyIdentityForTest,
@@ -108,6 +109,31 @@ test("failed-review retry events distinguish dispatch, exhaustion, and backpress
     retryable: false,
     mutation: false,
   });
+  assert.deepEqual(reviewRetryActionDisposition("skipped_retry_dispatch_uncertain"), {
+    status: "failed",
+    reasonCode: "unavailable",
+    retryable: false,
+    mutation: true,
+  });
+});
+
+test("action event publication accepts only sorted canonical event and binding paths", () => {
+  const paths = [
+    "ledger/v1/events/2026/07/12/openclaw-clawsweeper/review/run-part-1-of-1.jsonl",
+    `ledger/v1/import-bindings/completed-shard-sets/${"a".repeat(64)}.json`,
+    `ledger/v1/import-bindings/events/${"b".repeat(64)}.json`,
+    `ledger/v1/import-bindings/producer-runs/${"c".repeat(64)}.json`,
+    `ledger/v1/import-bindings/shard-sets/${"d".repeat(64)}.json`,
+  ].sort();
+  assert.deepEqual(actionEventPublishPathsForTest(`${paths.join("\n")}\n`), paths);
+  assert.throws(
+    () => actionEventPublishPathsForTest(`${paths[1]}\n${paths[0]}\n`),
+    /sorted and unique/,
+  );
+  assert.throws(
+    () => actionEventPublishPathsForTest("ledger/v1/import-bindings/private/raw.json\n"),
+    /invalid action event publish path/,
+  );
 });
 
 test("apply and retry business idempotency ignore batch order but bind source revision", () => {
@@ -255,14 +281,40 @@ test("apply receipts start per item and persist mutation observation before fina
   );
 
   assert.match(applyLoop, /startApplyActionLedgerItem\(applyLedger, entry\)/);
+  assert.match(applyLoop, /mutationByItem\.set\(`\$\{repo\}#\$\{number\}`, true\)/);
   assert.match(
     applyLoop,
-    /const recordMutation = \(\): void => \{[\s\S]*mutationByItem\.set[\s\S]*recordApplyMutationBoundary\(applyLedger, entry\)/,
+    /const recordMutation = \(parentEventId\?: string \| null\): void => \{[\s\S]*recordApplyMutationBoundary\(applyLedger, entry, parentEventId\)/,
   );
+  assert.match(source, /completion_reason: "mutation_attempted"/);
+  assert.match(applyLoop, /runObservedApplyMutation\(\{[\s\S]*review_comment_upsert:/);
+  assert.match(applyLoop, /runObservedApplyMutation\(\{[\s\S]*item_close:/);
+  const mutationAttemptStart = source.indexOf("function startApplyMutationAttempt(");
+  const mutationIdentityStart = source.indexOf(
+    "const idempotencyIdentity = {",
+    mutationAttemptStart,
+  );
+  const mutationIdentity = source.slice(
+    mutationIdentityStart,
+    source.indexOf("const phaseSeq =", mutationIdentityStart),
+  );
+  assert.match(mutationIdentity, /mutationIdentitySha256: sha256\(identity\)/);
+  assert.doesNotMatch(mutationIdentity, /mutationIndex/);
+  assert.match(source, /activeApplyMutationRunner \? gh\(args\) : ghWithRetry\(args, attempts\)/);
   assert.match(
     applyLoop,
     /finally \{[\s\S]*recordApplyActionLedgerItemResults\(\{[\s\S]*activeApplyItem = null;/,
   );
+  const yieldStart = source.indexOf(
+    "runtimeBudget.onYield = (reason: string, resumeCurrent = true): void => {",
+  );
+  const yieldHandler = source.slice(
+    yieldStart,
+    source.indexOf("if (fileEntries.length === 0", yieldStart),
+  );
+  assert.match(yieldHandler, /const interruptedItem = resumeCurrent && activeApplyItem !== null/);
+  assert.match(yieldHandler, /finishApply\(\s*interruptedItem,/);
+  assert.doesNotMatch(yieldHandler, /finishApply\(\);/);
 });
 
 test("apply failure finalization survives report publication errors", () => {
@@ -334,6 +386,9 @@ test("sweep publishes complete immutable shards for every review and apply produ
   const applyStep = workflow.indexOf("- name: Apply unchanged proposed decisions with checkpoints");
   const applyFinalizer = workflow.indexOf("- name: Finalize apply action ledger");
   const applyPublish = workflow.indexOf("- name: Publish apply action events");
+  const retryStep = workflow.indexOf("- name: Plan or dispatch failed-review retries");
+  const retryFinalizer = workflow.indexOf("- name: Finalize failed-review retry action ledger");
+  const retryPublish = workflow.indexOf("- name: Publish failed-review retry action ledger");
 
   assert.ok(reviewStep >= 0);
   assert.ok(reviewFinalizer > reviewStep);
@@ -363,6 +418,14 @@ test("sweep publishes complete immutable shards for every review and apply produ
     workflow.slice(applyFinalizer, applyPublish),
     /if: \$\{\{ always\(\) \}\}[\s\S]*APPLY_OUTCOME:[\s\S]*--interrupt-open-attempts --reason timeout/,
   );
+  assert.ok(retryStep >= 0);
+  assert.ok(retryFinalizer > retryStep);
+  assert.ok(retryPublish > retryFinalizer);
+  assert.match(workflow.slice(retryStep, retryFinalizer), /id: retry-failed-reviews-run/);
+  assert.match(
+    workflow.slice(retryFinalizer, retryPublish),
+    /RETRY_OUTCOME:[\s\S]*--interrupt-open-attempts --reason timeout/,
+  );
 
   for (const name of [
     "Import immutable review action events",
@@ -387,7 +450,8 @@ test("sweep publishes complete immutable shards for every review and apply produ
   assert.match(workflow, /include-hidden-files: true/);
   assert.match(workflow, /--state-root "\$CLAWSWEEPER_STATE_DIR"/);
   assert.match(workflow, /durable_event_path="\$CLAWSWEEPER_STATE_DIR\/\$event_path"/);
-  assert.match(workflow, /action_ledger_args\+=\(--path "\$event_path"\)/);
+  assert.equal((workflow.match(/publish-action-event-paths/g) ?? []).length, 7);
+  assert.doesNotMatch(workflow, /action_ledger_args/);
   assert.doesNotMatch(
     workflow,
     /--message "chore: append (?:review|apply).*action ledger"[\s\S]{0,180}--path "ledger\/v1\/events"/,

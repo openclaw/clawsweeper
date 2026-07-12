@@ -1095,18 +1095,15 @@ jobs:
             echo "Exact event action shards existed but no paths were imported." >&2
             exit 1
           fi
-          action_ledger_args=()
           while IFS= read -r event_path; do
             durable_event_path="$CLAWSWEEPER_STATE_DIR/$event_path"
             test -f "$durable_event_path"
             mkdir -p "$(dirname "$event_path")"
             cp "$durable_event_path" "$event_path"
-            action_ledger_args+=(--path "$event_path")
           done < "$event_paths_file"
-          pnpm run repair:publish-main -- \
-            --message "chore: append exact event action ledger" \
-            "${action_ledger_args[@]}" \
-            --rebase-strategy normal
+          node dist/clawsweeper.js publish-action-event-paths \
+            --paths-file "$event_paths_file" \
+            --message "chore: append exact event action ledger"
 
       - name: Complete exact-review queue lease
         id: complete-exact-review-queue
@@ -2126,14 +2123,9 @@ jobs:
             echo "No immutable review action events to publish."
             exit 0
           fi
-          action_ledger_args=()
-          while IFS= read -r event_path; do
-            action_ledger_args+=(--path "$event_path")
-          done < .artifacts/action-ledger-paths.txt
-          pnpm run repair:publish-main -- \
-            --message "chore: append review action ledger" \
-            "${action_ledger_args[@]}" \
-            --rebase-strategy normal
+          node dist/clawsweeper.js publish-action-event-paths \
+            --paths-file .artifacts/action-ledger-paths.txt \
+            --message "chore: append review action ledger"
 
       - name: Sync before applying artifacts
         run: git pull --rebase --autostash
@@ -2193,18 +2185,15 @@ jobs:
             echo "Review artifact action event shards existed but no paths were imported." >&2
             exit 1
           fi
-          action_ledger_args=()
           while IFS= read -r event_path; do
             durable_event_path="$CLAWSWEEPER_STATE_DIR/$event_path"
             test -f "$durable_event_path"
             mkdir -p "$(dirname "$event_path")"
             cp "$durable_event_path" "$event_path"
-            action_ledger_args+=(--path "$event_path")
           done < "$event_paths_file"
-          pnpm run repair:publish-main -- \
-            --message "chore: append review artifact action ledger" \
-            "${action_ledger_args[@]}" \
-            --rebase-strategy normal
+          node dist/clawsweeper.js publish-action-event-paths \
+            --paths-file "$event_paths_file" \
+            --message "chore: append review artifact action ledger"
 
       - name: Commit review records
         env:
@@ -2486,18 +2475,15 @@ jobs:
             echo "Selected review comment action shards existed but no paths were imported." >&2
             exit 1
           fi
-          action_ledger_args=()
           while IFS= read -r event_path; do
             durable_event_path="$CLAWSWEEPER_STATE_DIR/$event_path"
             test -f "$durable_event_path"
             mkdir -p "$(dirname "$event_path")"
             cp "$durable_event_path" "$event_path"
-            action_ledger_args+=(--path "$event_path")
           done < "$event_paths_file"
-          pnpm run repair:publish-main -- \
-            --message "chore: append selected review comment action ledger" \
-            "${action_ledger_args[@]}" \
-            --rebase-strategy normal
+          node dist/clawsweeper.js publish-action-event-paths \
+            --paths-file "$event_paths_file" \
+            --message "chore: append selected review comment action ledger"
 
       - name: Dispatch selected safe close proposals to isolated apply
         if: ${{ success() && steps.target-write-token.outputs.token != '' && github.event.inputs.apply_after_review == 'true' }}
@@ -2685,6 +2671,7 @@ jobs:
           build-script: build:all
 
       - name: Plan or dispatch failed-review retries
+        id: retry-failed-reviews-run
         env:
           GH_TOKEN: ${{ github.token }}
           TARGET_REPO: openclaw/openclaw
@@ -2715,6 +2702,17 @@ jobs:
             --report-path artifacts/failed-review-retry-report.json \
             "${dry_run_arg[@]}"
 
+      - name: Finalize failed-review retry action ledger
+        if: ${{ always() }}
+        env:
+          RETRY_OUTCOME: ${{ steps.retry-failed-reviews-run.outcome || 'not_started' }}
+        run: |
+          args=()
+          if [ "$RETRY_OUTCOME" != "success" ]; then
+            args=(--interrupt-open-attempts --reason timeout)
+          fi
+          pnpm run --silent finalize-action-events -- "${args[@]}"
+
       - name: Publish failed-review retry state
         if: ${{ always() && vars.CLAWSWEEPER_FAILED_REVIEW_RETRY_ENABLED == '1' && hashFiles('results/failed-review-retries/openclaw-openclaw/*.json') != '' }}
         run: |
@@ -2744,18 +2742,15 @@ jobs:
             echo "Failed-review retry action shards existed but no paths were imported." >&2
             exit 1
           fi
-          action_ledger_args=()
           while IFS= read -r event_path; do
             durable_event_path="$CLAWSWEEPER_STATE_DIR/$event_path"
             test -f "$durable_event_path"
             mkdir -p "$(dirname "$event_path")"
             cp "$durable_event_path" "$event_path"
-            action_ledger_args+=(--path "$event_path")
           done < "$event_paths_file"
-          pnpm run repair:publish-main -- \
-            --message "chore: append failed review retry action ledger" \
-            "${action_ledger_args[@]}" \
-            --rebase-strategy normal
+          node dist/clawsweeper.js publish-action-event-paths \
+            --paths-file "$event_paths_file" \
+            --message "chore: append failed review retry action ledger"
 
       - uses: actions/upload-artifact@v7
         if: ${{ always() }}
@@ -3151,18 +3146,15 @@ jobs:
             echo "Apply proof action event shards existed but no paths were imported." >&2
             exit 1
           fi
-          action_ledger_args=()
           while IFS= read -r event_path; do
             durable_event_path="$CLAWSWEEPER_STATE_DIR/$event_path"
             test -f "$durable_event_path"
             mkdir -p "$(dirname "$event_path")"
             cp "$durable_event_path" "$event_path"
-            action_ledger_args+=(--path "$event_path")
           done < "$event_paths_file"
-          pnpm run repair:publish-main -- \
-            --message "chore: append apply proof action ledger" \
-            "${action_ledger_args[@]}" \
-            --rebase-strategy normal
+          node dist/clawsweeper.js publish-action-event-paths \
+            --paths-file "$event_paths_file" \
+            --message "chore: append apply proof action ledger"
 
   apply-existing:
     name: Apply close proposals
@@ -3690,18 +3682,15 @@ jobs:
             echo "Apply action event shards existed but no paths were imported." >&2
             exit 1
           fi
-          action_ledger_args=()
           while IFS= read -r event_path; do
             durable_event_path="$CLAWSWEEPER_STATE_DIR/$event_path"
             test -f "$durable_event_path"
             mkdir -p "$(dirname "$event_path")"
             cp "$durable_event_path" "$event_path"
-            action_ledger_args+=(--path "$event_path")
           done < "$event_paths_file"
-          pnpm run repair:publish-main -- \
-            --message "chore: append apply action ledger" \
-            "${action_ledger_args[@]}" \
-            --rebase-strategy normal
+          node dist/clawsweeper.js publish-action-event-paths \
+            --paths-file "$event_paths_file" \
+            --message "chore: append apply action ledger"
 
       - name: Continue apply sweep
         if: ${{ success() }}

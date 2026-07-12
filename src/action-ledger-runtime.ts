@@ -103,6 +103,9 @@ export const ACTION_EVENT_SHARD_IMPORT_LIMITS = {
   maxCausalBindings: 256 * ACTION_EVENT_SHARD_FILE_LIMITS.maxEvents,
 } as const;
 
+export const ACTION_EVENT_SHARD_IMPORT_MAX_PUBLISH_PATHS =
+  ACTION_EVENT_SHARD_IMPORT_LIMITS.maxTotalEvents + ACTION_EVENT_SHARD_IMPORT_LIMITS.maxFiles * 4;
+
 export type WorkflowActionEventInput = {
   scope: string;
   identity: unknown;
@@ -143,6 +146,9 @@ export type WorkflowActionPhaseEventInput = Omit<
 export type ActionEventShardImportResult = {
   created: number;
   unchanged: number;
+  eventPaths: string[];
+  reservationPaths: string[];
+  completionPaths: string[];
   paths: string[];
 };
 
@@ -414,17 +420,42 @@ function workflowActionEventIsRecoverableStart(event: ActionEvent): boolean {
   return (
     (event.event_type === ACTION_EVENT_TYPES.reviewBatch ||
       event.event_type === ACTION_EVENT_TYPES.reviewItem ||
+      event.event_type === ACTION_EVENT_TYPES.reviewRetry ||
       event.event_type === ACTION_EVENT_TYPES.applyBatch ||
       event.event_type === ACTION_EVENT_TYPES.applyAction) &&
     event.action.status === ACTION_EVENT_STATUSES.started
   );
 }
 
-function workflowActionEventClosesLifecycle(event: ActionEvent): boolean {
+function workflowActionEventIsUncertainMutationStart(event: ActionEvent): boolean {
+  return (
+    event.action.status === ACTION_EVENT_STATUSES.started &&
+    (event.attributes?.completion_reason === "mutation_attempted" ||
+      event.attributes?.completion_reason === "dispatch_attempted")
+  );
+}
+
+function workflowActionEventIsMutationOutcome(event: ActionEvent): boolean {
+  return (
+    event.attributes?.completion_reason === "mutation_accepted" ||
+    event.attributes?.completion_reason === "mutation_rejected" ||
+    event.attributes?.completion_reason === "mutation_outcome_unknown"
+  );
+}
+
+function workflowActionEventClosesLifecycle(start: ActionEvent, event: ActionEvent): boolean {
   if (event.action.status === ACTION_EVENT_STATUSES.started) return false;
+  if (
+    start.event_type === ACTION_EVENT_TYPES.applyAction &&
+    !workflowActionEventIsUncertainMutationStart(start) &&
+    workflowActionEventIsMutationOutcome(event)
+  ) {
+    return false;
+  }
   return !(
     event.event_type === ACTION_EVENT_TYPES.applyAction &&
-    event.action.status === ACTION_EVENT_STATUSES.executed
+    event.action.status === ACTION_EVENT_STATUSES.executed &&
+    !workflowActionEventIsUncertainMutationStart(start)
   );
 }
 
@@ -468,9 +499,26 @@ export function interruptOpenWorkflowActionEvents(
           (event) =>
             event.event_id !== start.event_id && workflowActionLifecycleKey(event) === lifecycleKey,
         );
-        if (lifecycleEvents.some(workflowActionEventClosesLifecycle)) {
+        if (lifecycleEvents.some((event) => workflowActionEventClosesLifecycle(start, event))) {
           continue;
         }
+        const uncertainMutationStarts = current
+          .filter(
+            (event) =>
+              event.operation_id === start.operation_id &&
+              event.attempt_id === start.attempt_id &&
+              (start.event_type === ACTION_EVENT_TYPES.reviewBatch ||
+                start.event_type === ACTION_EVENT_TYPES.applyBatch ||
+                (start.event_type === ACTION_EVENT_TYPES.reviewRetry &&
+                  start.subject.kind === "workflow") ||
+                actionLedgerJson(workflowActionSubjectIdentity(event)) ===
+                  actionLedgerJson(workflowActionSubjectIdentity(start))) &&
+              workflowActionEventIsUncertainMutationStart(event),
+          )
+          .sort(
+            (left, right) =>
+              left.phase_seq - right.phase_seq || left.event_id.localeCompare(right.event_id),
+          );
         const mutationEvents = current
           .filter(
             (event) =>
@@ -489,14 +537,38 @@ export function interruptOpenWorkflowActionEvents(
               left.phase_seq - right.phase_seq || left.event_id.localeCompare(right.event_id),
           )
           .at(-1);
+        const lifecycleOutcome = lifecycleEvents
+          .filter(workflowActionEventIsMutationOutcome)
+          .sort(
+            (left, right) =>
+              left.phase_seq - right.phase_seq || left.event_id.localeCompare(right.event_id),
+          )
+          .at(-1);
+        const openUncertainMutation =
+          workflowActionEventIsUncertainMutationStart(start) ||
+          uncertainMutationStarts.some((event) => {
+            const eventLifecycleKey = workflowActionLifecycleKey(event);
+            return !current.some(
+              (candidate) =>
+                candidate.event_id !== event.event_id &&
+                workflowActionLifecycleKey(candidate) === eventLifecycleKey &&
+                workflowActionEventClosesLifecycle(event, candidate),
+            );
+          });
+        const uncertainMutation =
+          openUncertainMutation ||
+          lifecycleMutation?.attributes?.completion_reason === "mutation_outcome_unknown";
         const mutationOccurred =
-          start.event_type === ACTION_EVENT_TYPES.applyBatch
-            ? mutationEvents.length > 0
-            : lifecycleMutation !== undefined;
+          workflowActionEventIsUncertainMutationStart(start) ||
+          (start.event_type === ACTION_EVENT_TYPES.applyBatch
+            ? mutationEvents.length > 0 || openUncertainMutation
+            : lifecycleMutation !== undefined || openUncertainMutation);
         const parentEventId =
           start.event_type === ACTION_EVENT_TYPES.applyAction && lifecycleMutation
             ? lifecycleMutation.event_id
-            : start.event_id;
+            : (lifecycleOutcome?.event_id ??
+              uncertainMutationStarts.at(-1)?.event_id ??
+              start.event_id);
         const eventInput: ActionEventInput = {
           eventKey: actionEventKey("workflow.interrupted", {
             startEventId: start.event_id,
@@ -542,7 +614,11 @@ export function interruptOpenWorkflowActionEvents(
                 })),
               }),
           attributes: {
-            completion_reason: "timeout",
+            completion_reason: uncertainMutation
+              ? start.event_type === ACTION_EVENT_TYPES.reviewRetry
+                ? "dispatch_outcome_unknown"
+                : "mutation_outcome_unknown"
+              : "timeout",
             failed_count: 1,
             ...(mutationOccurred ? { action_count: 1 } : {}),
             partial: true,
@@ -804,18 +880,26 @@ export function importActionEventShards(
   sourceRoot: string,
   destinationRoot: string,
 ): ActionEventShardImportResult {
+  const emptyResult = (): ActionEventShardImportResult => ({
+    created: 0,
+    unchanged: 0,
+    eventPaths: [],
+    reservationPaths: [],
+    completionPaths: [],
+    paths: [],
+  });
   let safeSource: SafeReadRoot;
   try {
     safeSource = prepareSafeReadRoot(sourceRoot, "action event shard import source");
   } catch (error) {
-    if (isNotFoundError(error)) return { created: 0, unchanged: 0, paths: [] };
+    if (isNotFoundError(error)) return emptyResult();
     throw error;
   }
   let relativePaths: string[];
   try {
     relativePaths = collectActionEventShardFiles(safeSource);
   } catch (error) {
-    if (isNotFoundError(error)) return { created: 0, unchanged: 0, paths: [] };
+    if (isNotFoundError(error)) return emptyResult();
     throw error;
   }
   const shards = readImportedActionEventShards(safeSource, relativePaths);
@@ -889,7 +973,23 @@ export function importActionEventShards(
       for (const binding of bindings.completions) {
         publishActionEventShardImportBinding(binding);
       }
-      return { created, unchanged, paths: relativePaths };
+      const eventPaths = [...relativePaths].sort();
+      const reservationPaths = bindings.reservations.map((binding) => binding.relativePath).sort();
+      const completionPaths = bindings.completions.map((binding) => binding.relativePath).sort();
+      const paths = [...new Set([...reservationPaths, ...eventPaths, ...completionPaths])].sort();
+      if (paths.length > ACTION_EVENT_SHARD_IMPORT_MAX_PUBLISH_PATHS) {
+        throw new Error(
+          `action event shard import exceeds ${ACTION_EVENT_SHARD_IMPORT_MAX_PUBLISH_PATHS} publish path limit`,
+        );
+      }
+      return {
+        created,
+        unchanged,
+        eventPaths,
+        reservationPaths,
+        completionPaths,
+        paths,
+      };
     },
   );
 }

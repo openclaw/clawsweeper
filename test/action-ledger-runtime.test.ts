@@ -8,6 +8,7 @@ import test from "node:test";
 import { pathToFileURL } from "node:url";
 
 import {
+  ACTION_EVENT_SHARD_IMPORT_MAX_PUBLISH_PATHS,
   ACTION_EVENT_SHARD_IMPORT_LIMITS,
   CRABFLEET_PROJECTION_LIMITS,
   flushPendingCrabFleetPosts,
@@ -771,6 +772,224 @@ test("timeout recovery preserves hard-killed apply mutation truth and ignores un
     0,
   );
   assert.equal(events.filter((event) => event.subject.number === 43).length, 0);
+});
+
+test("timeout recovery treats an open pre-dispatch mutation receipt as outcome unknown", () => {
+  const root = tempRoot();
+  const env = workflowEnv({
+    CLAWSWEEPER_ACTION_LEDGER_INVOCATION: "apply-uncertain",
+    GITHUB_ACTION: "__apply",
+    GITHUB_JOB: "apply-existing",
+  });
+  const operationIdentity = {
+    repository: "openclaw/openclaw",
+    candidateRevisions: [{ number: 52, sourceRevision: "revision-52" }],
+  };
+  const batch = recordWorkflowPhaseEvent(
+    root,
+    {
+      phase: ACTION_EVENT_TYPES.applyBatch,
+      status: ACTION_EVENT_STATUSES.started,
+      reasonCode: ACTION_EVENT_REASON_CODES.selected,
+      retryable: false,
+      mutation: false,
+      identity: { slot: "apply_batch_start" },
+      operation: "apply",
+      operationIdentity,
+      phaseSeq: 1,
+      idempotencyIdentity: { operationIdentity, slot: "apply_batch_start" },
+      component: "apply_decisions",
+      subject: { repository: "openclaw/openclaw", kind: "workflow" },
+    },
+    { env },
+  );
+  assert.ok(batch);
+  const item = recordWorkflowPhaseEvent(
+    root,
+    {
+      phase: ACTION_EVENT_TYPES.applyAction,
+      status: ACTION_EVENT_STATUSES.started,
+      reasonCode: ACTION_EVENT_REASON_CODES.selected,
+      retryable: false,
+      mutation: false,
+      identity: { slot: "apply_item_start", number: 52 },
+      operation: "apply",
+      operationIdentity,
+      parentEventId: batch.event_id,
+      phaseSeq: 10,
+      idempotencyIdentity: {
+        operation: "apply",
+        slot: "apply_item",
+        repository: "openclaw/openclaw",
+        number: 52,
+        sourceRevision: "revision-52",
+      },
+      component: "apply_decisions",
+      subject: {
+        repository: "openclaw/openclaw",
+        kind: "pull_request",
+        number: 52,
+        sourceRevision: "revision-52",
+      },
+    },
+    { env },
+  );
+  assert.ok(item);
+  const attempt = recordWorkflowPhaseEvent(
+    root,
+    {
+      phase: ACTION_EVENT_TYPES.applyAction,
+      status: ACTION_EVENT_STATUSES.started,
+      reasonCode: ACTION_EVENT_REASON_CODES.selected,
+      retryable: false,
+      mutation: false,
+      identity: { slot: "apply_mutation_attempt", mutationIdentitySha256: "a".repeat(64) },
+      operation: "apply",
+      operationIdentity,
+      parentEventId: item.event_id,
+      phaseSeq: 11,
+      idempotencyIdentity: {
+        operation: "apply",
+        slot: "apply_mutation",
+        repository: "openclaw/openclaw",
+        number: 52,
+        sourceRevision: "revision-52",
+        mutationIdentitySha256: "a".repeat(64),
+      },
+      component: "apply_decisions",
+      subject: {
+        repository: "openclaw/openclaw",
+        kind: "pull_request",
+        number: 52,
+        sourceRevision: "revision-52",
+      },
+      attributes: { completion_reason: "mutation_attempted" },
+    },
+    { env },
+  );
+  assert.ok(attempt);
+  const rejectedItem = recordWorkflowPhaseEvent(
+    root,
+    {
+      phase: ACTION_EVENT_TYPES.applyAction,
+      status: ACTION_EVENT_STATUSES.started,
+      reasonCode: ACTION_EVENT_REASON_CODES.selected,
+      retryable: false,
+      mutation: false,
+      identity: { slot: "apply_item_start", number: 53 },
+      operation: "apply",
+      operationIdentity,
+      parentEventId: batch.event_id,
+      phaseSeq: 30,
+      idempotencyIdentity: {
+        operation: "apply",
+        slot: "apply_item",
+        repository: "openclaw/openclaw",
+        number: 53,
+        sourceRevision: "revision-53",
+      },
+      component: "apply_decisions",
+      subject: {
+        repository: "openclaw/openclaw",
+        kind: "pull_request",
+        number: 53,
+        sourceRevision: "revision-53",
+      },
+    },
+    { env },
+  );
+  assert.ok(rejectedItem);
+  const rejectedAttempt = recordWorkflowPhaseEvent(
+    root,
+    {
+      phase: ACTION_EVENT_TYPES.applyAction,
+      status: ACTION_EVENT_STATUSES.started,
+      reasonCode: ACTION_EVENT_REASON_CODES.selected,
+      retryable: false,
+      mutation: false,
+      identity: { slot: "apply_mutation_attempt", mutationIdentitySha256: "b".repeat(64) },
+      operation: "apply",
+      operationIdentity,
+      parentEventId: rejectedItem.event_id,
+      phaseSeq: 31,
+      idempotencyIdentity: {
+        operation: "apply",
+        slot: "apply_mutation",
+        repository: "openclaw/openclaw",
+        number: 53,
+        sourceRevision: "revision-53",
+        mutationIdentitySha256: "b".repeat(64),
+      },
+      component: "apply_decisions",
+      subject: {
+        repository: "openclaw/openclaw",
+        kind: "pull_request",
+        number: 53,
+        sourceRevision: "revision-53",
+      },
+      attributes: { completion_reason: "mutation_attempted" },
+    },
+    { env },
+  );
+  assert.ok(rejectedAttempt);
+  const rejectedOutcome = recordWorkflowPhaseEvent(
+    root,
+    {
+      phase: ACTION_EVENT_TYPES.applyAction,
+      status: ACTION_EVENT_STATUSES.skipped,
+      reasonCode: ACTION_EVENT_REASON_CODES.notApplicable,
+      retryable: false,
+      mutation: false,
+      identity: { slot: "apply_mutation_outcome", outcome: "rejected" },
+      operation: "apply",
+      operationIdentity,
+      parentEventId: rejectedAttempt.event_id,
+      phaseSeq: 32,
+      idempotencyIdentity: {
+        operation: "apply",
+        slot: "apply_mutation",
+        repository: "openclaw/openclaw",
+        number: 53,
+        sourceRevision: "revision-53",
+        mutationIdentitySha256: "b".repeat(64),
+      },
+      component: "apply_decisions",
+      subject: {
+        repository: "openclaw/openclaw",
+        kind: "pull_request",
+        number: 53,
+        sourceRevision: "revision-53",
+      },
+      attributes: { completion_reason: "mutation_rejected" },
+    },
+    { env },
+  );
+  assert.ok(rejectedOutcome);
+
+  assert.equal(interruptOpenWorkflowActionEvents(root, { env }), 3);
+  const events = readAllSpooledActionEvents(root);
+  const recovered = events.filter(
+    (event) =>
+      event.action.status === ACTION_EVENT_STATUSES.failed &&
+      event.attributes?.completion_reason === "mutation_outcome_unknown",
+  );
+  assert.equal(recovered.length, 2);
+  assert.ok(recovered.every((event) => event.action.mutation));
+  const recoveredItem = recovered.find(
+    (event) =>
+      event.subject.number === 52 && event.idempotency_key_sha256 === item.idempotency_key_sha256,
+  );
+  assert.ok(recoveredItem);
+  assert.equal(recoveredItem.parent_event_id, attempt.event_id);
+  const rejectedRecovery = events.find(
+    (event) =>
+      event.subject.number === 53 &&
+      event.action.status === ACTION_EVENT_STATUSES.failed &&
+      event.attributes?.completion_reason === "timeout",
+  );
+  assert.ok(rejectedRecovery);
+  assert.equal(rejectedRecovery.action.mutation, false);
+  assert.equal(rejectedRecovery.parent_event_id, rejectedOutcome.event_id);
 });
 
 test("workflow retries preserve operation and idempotency identity but change attempts", () => {
@@ -1818,7 +2037,7 @@ test("full producer identity prevents cross-repository shard collisions", async 
 
   const imported = importActionEventShards(outputRoot, destination);
   assert.equal(imported.created, 2);
-  assert.deepEqual(imported.paths, paths);
+  assert.deepEqual(imported.eventPaths, paths);
 });
 
 test("CrabFleet projection sends the validated ledger event and bearer token", async () => {
@@ -2887,7 +3106,7 @@ test("state shard imports are validated, create-only, and conflict detecting", a
   });
 
   const created = importActionEventShards(source, destination);
-  const destinationDirectory = path.dirname(path.join(destination, created.paths[0]!));
+  const destinationDirectory = path.dirname(path.join(destination, created.eventPaths[0]!));
   const replayed = importActionEventShards(source, destination);
   assert.equal(created.created, 1);
   assert.equal(replayed.unchanged, 1);
@@ -2896,7 +3115,7 @@ test("state shard imports are validated, create-only, and conflict detecting", a
     [],
   );
 
-  const shard = path.join(source, created.paths[0]!);
+  const shard = path.join(source, created.eventPaths[0]!);
   fs.appendFileSync(shard, "\n", "utf8");
   assert.throws(
     () => importActionEventShards(source, destination),
@@ -3331,7 +3550,7 @@ test("state shard imports accept a complete 4097-event producer run", () => {
   const imported = importActionEventShards(source, destination);
   assert.equal(imported.created, shards.length);
   assert.equal(
-    imported.paths.reduce(
+    imported.eventPaths.reduce(
       (count, relativePath) =>
         count +
         fs.readFileSync(path.join(destination, relativePath), "utf8").trim().split("\n").length,
@@ -3385,7 +3604,7 @@ test("state shard imports preserve chronological ordering across timestamp offse
   const imported = importActionEventShards(source, destination);
   assert.equal(imported.created, 1);
   const eventTypes = fs
-    .readFileSync(path.join(destination, imported.paths[0]!), "utf8")
+    .readFileSync(path.join(destination, imported.eventPaths[0]!), "utf8")
     .trim()
     .split("\n")
     .map((line) => JSON.parse(line).event_type);
@@ -3459,7 +3678,7 @@ test("state shard imports accept exact sub-millisecond canonical ordering", asyn
   const imported = importActionEventShards(source, destination);
   assert.equal(imported.created, 1);
   const occurredAt = fs
-    .readFileSync(path.join(destination, imported.paths[0]!), "utf8")
+    .readFileSync(path.join(destination, imported.eventPaths[0]!), "utf8")
     .trim()
     .split("\n")
     .map((line) => JSON.parse(line).occurred_at);
@@ -3548,6 +3767,9 @@ test("state shard imports ignore unrelated entries and reject links in the ledge
   assert.deepEqual(importActionEventShards(source, emptyDestination), {
     created: 0,
     unchanged: 0,
+    eventPaths: [],
+    reservationPaths: [],
+    completionPaths: [],
     paths: [],
   });
   createDirectoryLink(linked, path.join(source, "ledger"));
@@ -3688,7 +3910,24 @@ importActionEventShards(process.argv[1], process.argv[2]);`;
     const replay = importActionEventShards(source, destination);
     assert.equal(replay.created, 1);
     assert.equal(replay.unchanged, 1);
-    assert.deepEqual(replay.paths, sourceShards.map((shard) => shard.relativePath).sort());
+    assert.deepEqual(replay.eventPaths, sourceShards.map((shard) => shard.relativePath).sort());
+    assert.ok(replay.reservationPaths.length > 0);
+    assert.ok(replay.completionPaths.length > 0);
+    assert.deepEqual(
+      replay.paths,
+      [...replay.eventPaths, ...replay.reservationPaths, ...replay.completionPaths].sort(),
+    );
+    assert.ok(replay.paths.length <= ACTION_EVENT_SHARD_IMPORT_MAX_PUBLISH_PATHS);
+    const freshState = trustedChildRoot(root, "fresh-state");
+    for (const relativePath of replay.paths) {
+      const target = path.join(freshState, relativePath);
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      fs.copyFileSync(path.join(destination, relativePath), target);
+    }
+    assert.throws(
+      () => importActionEventShards(replacementSource, freshState),
+      /producer shard-set binding conflict/,
+    );
     for (const shard of sourceShards) {
       assert.equal(
         fs.readFileSync(path.join(destination, shard.relativePath), "utf8"),

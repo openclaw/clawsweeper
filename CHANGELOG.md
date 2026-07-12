@@ -59,6 +59,10 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Changed
 
+- Made action-ledger publication include every transactional import binding,
+  added pre-dispatch apply and retry receipts with conservative unknown-outcome
+  recovery, failed active apply items on runtime yield, and made ambiguous retry
+  dispatches fail closed without consuming an attempt or launching twice.
 - Dual-write review batches, items, retries, Codex log publications, durable
   review comments, apply actions, apply batches, and apply reports into the
   immutable action ledger, including partial, interrupted, timeout, and failed
