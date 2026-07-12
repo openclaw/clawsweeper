@@ -865,7 +865,6 @@ test("CrabFleet projection sends the validated ledger event and bearer token", a
     workflowEnv({
       CLAWSWEEPER_CRABFLEET_AGENT_TOKEN: "agent-token",
       CLAWSWEEPER_CRABFLEET_SESSION_ID: "session-1",
-      CLAWSWEEPER_CRABFLEET_URL: "https://crabfleet.example/",
     }),
     (async (url: string | URL | Request, init?: RequestInit) => {
       requests.push({
@@ -880,7 +879,7 @@ test("CrabFleet projection sends the validated ledger event and bearer token", a
   assert.ok(request);
   assert.equal(
     request.url,
-    "https://crabfleet.example/api/agent/interactive-sessions/session-1/events",
+    "https://crabfleet.openclaw.ai/api/agent/interactive-sessions/session-1/events",
   );
   const init = request.init;
   assert.ok(init);
@@ -890,6 +889,37 @@ test("CrabFleet projection sends the validated ledger event and bearer token", a
   assert.equal(body.eventKey, event.event_key);
   assert.equal(body.type, "clawsweeper.action");
   assert.deepEqual(body.payload, { version: 1, event });
+});
+
+test("CrabFleet projection rejects unsafe configured origins before authorization", async () => {
+  const event = recordReview(tempRoot());
+  assert.ok(event);
+  let requests = 0;
+  for (const configuredUrl of [
+    "http://crabfleet.openclaw.ai",
+    "https://user:password@crabfleet.openclaw.ai",
+    "https://crabfleet.openclaw.ai.evil.example",
+    "https://crabfleet.openclaw.ai/api",
+    "https://crabfleet.openclaw.ai?redirect=https://evil.example",
+  ]) {
+    await assert.rejects(
+      postActionEventToCrabFleet(
+        event,
+        workflowEnv({
+          CLAWSWEEPER_CRABFLEET_AGENT_TOKEN: "agent-token",
+          CLAWSWEEPER_CRABFLEET_SESSION_ID: "session-1",
+          CLAWSWEEPER_CRABFLEET_URL: configuredUrl,
+        }),
+        (async () => {
+          requests += 1;
+          return new Response(null, { status: 204 });
+        }) as typeof fetch,
+      ),
+      /credential-free HTTPS origin https:\/\/crabfleet\.openclaw\.ai/,
+      configuredUrl,
+    );
+  }
+  assert.equal(requests, 0);
 });
 
 test("CrabFleet projection bounds active fetches and queued work", async () => {
@@ -961,6 +991,55 @@ test("CrabFleet projection bounds active fetches and queued work", async () => {
   );
 });
 
+test("CrabFleet queued projections snapshot endpoint and credentials", async () => {
+  const root = tempRoot();
+  const env = workflowEnv({
+    CLAWSWEEPER_CRABFLEET_AGENT_TOKEN: "original-token",
+    CLAWSWEEPER_CRABFLEET_SESSION_ID: "original-session",
+    CLAWSWEEPER_CRABFLEET_TIMEOUT_MS: "1000",
+  });
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  for (let index = 0; index < CRABFLEET_PROJECTION_LIMITS.maxConcurrent; index += 1) {
+    assert.ok(
+      recordReview(root, env, new Date("2026-07-12T10:01:00.000Z"), {
+        fetchImpl: (async () => {
+          await gate;
+          return new Response(null, { status: 204 });
+        }) as typeof fetch,
+      }),
+    );
+  }
+
+  let queuedRequest: { url: string; authorization: string } | undefined;
+  assert.ok(
+    recordReview(root, env, new Date("2026-07-12T10:01:00.000Z"), {
+      fetchImpl: (async (url, init) => {
+        if (!init) throw new Error("missing CrabFleet request init");
+        queuedRequest = {
+          url: String(url),
+          authorization: String((init.headers as Record<string, string>).authorization),
+        };
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        return new Response(null, { status: 204 });
+      }) as typeof fetch,
+    }),
+  );
+  env.CLAWSWEEPER_CRABFLEET_AGENT_TOKEN = "changed-token";
+  env.CLAWSWEEPER_CRABFLEET_SESSION_ID = "changed-session";
+  env.CLAWSWEEPER_CRABFLEET_URL = "https://evil.example";
+  env.CLAWSWEEPER_CRABFLEET_TIMEOUT_MS = "1";
+
+  release();
+  await flushPendingCrabFleetPosts();
+  assert.deepEqual(queuedRequest, {
+    url: "https://crabfleet.openclaw.ai/api/agent/interactive-sessions/original-session/events",
+    authorization: "Bearer original-token",
+  });
+});
+
 test("CrabFleet timeouts keep unresolved fetches inside the concurrency bound", async () => {
   const root = tempRoot();
   const env = workflowEnv({
@@ -1017,6 +1096,80 @@ test("CrabFleet timeouts keep unresolved fetches inside the concurrency bound", 
     }) as typeof fetch,
   });
   assert.ok(recovered);
+  await flushPendingCrabFleetPosts();
+  assert.equal(recoveryStarted, 1);
+});
+
+test("CrabFleet timeouts hold slots until response cleanup settles", async () => {
+  const root = tempRoot();
+  const env = workflowEnv({
+    CLAWSWEEPER_CRABFLEET_AGENT_TOKEN: "agent-token",
+    CLAWSWEEPER_CRABFLEET_SESSION_ID: "session-1",
+    CLAWSWEEPER_CRABFLEET_TIMEOUT_MS: "10",
+  });
+  const cleanupResolvers: Array<() => void> = [];
+  let started = 0;
+  let secondWaveStarted = 0;
+  const errors: string[] = [];
+  const originalError = console.error;
+  console.error = (...args: unknown[]) => errors.push(args.map(String).join(" "));
+  try {
+    for (let index = 0; index < CRABFLEET_PROJECTION_LIMITS.maxConcurrent; index += 1) {
+      assert.ok(
+        recordReview(root, env, new Date("2026-07-12T10:01:00.000Z"), {
+          fetchImpl: (async () => {
+            started += 1;
+            return {
+              ok: true,
+              status: 204,
+              body: {
+                cancel: () =>
+                  new Promise<void>((resolve) => {
+                    cleanupResolvers.push(resolve);
+                  }),
+              },
+            } as unknown as Response;
+          }) as typeof fetch,
+        }),
+      );
+    }
+    await flushPendingCrabFleetPosts();
+    assert.equal(started, CRABFLEET_PROJECTION_LIMITS.maxConcurrent);
+    assert.equal(cleanupResolvers.length, CRABFLEET_PROJECTION_LIMITS.maxConcurrent);
+
+    for (let index = 0; index < CRABFLEET_PROJECTION_LIMITS.maxConcurrent; index += 1) {
+      assert.ok(
+        recordReview(root, env, new Date("2026-07-12T10:01:00.000Z"), {
+          fetchImpl: (async () => {
+            secondWaveStarted += 1;
+            return new Response(null, { status: 204 });
+          }) as typeof fetch,
+        }),
+      );
+    }
+    await flushPendingCrabFleetPosts();
+    assert.equal(secondWaveStarted, 0);
+    assert.equal(
+      errors.filter((entry) => entry.includes("unresolved CrabFleet requests")).length,
+      CRABFLEET_PROJECTION_LIMITS.maxConcurrent,
+    );
+  } finally {
+    for (const resolve of cleanupResolvers) resolve();
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+    await flushPendingCrabFleetPosts();
+    console.error = originalError;
+  }
+
+  let recoveryStarted = 0;
+  assert.ok(
+    recordReview(root, env, new Date("2026-07-12T10:01:00.000Z"), {
+      fetchImpl: (async () => {
+        recoveryStarted += 1;
+        return new Response(null, { status: 204 });
+      }) as typeof fetch,
+    }),
+  );
   await flushPendingCrabFleetPosts();
   assert.equal(recoveryStarted, 1);
 });

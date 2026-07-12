@@ -255,10 +255,16 @@ milliseconds. It defaults to 10000 and must be between 1 and 60000. Timeout,
 HTTP, and response-cleanup failures remain projection failures; canonical local
 writes are completed first. Live delivery runs at most four fetches concurrently
 with 64 more projections queued. A timed-out fetch keeps its concurrency slot
-until the underlying request settles; a later wave fails closed into durable
-retryable `projection.failed` records if all slots remain unresolved. Further
-live projections also fail closed instead of growing process memory without
-bound.
+until the underlying request and response-body cleanup settle; a later wave
+fails closed into durable retryable `projection.failed` records if all slots
+remain unresolved. Queued projections snapshot their endpoint, session, token,
+and timeout before admission, so later environment mutation cannot reroute
+them. Further live projections also fail closed instead of growing process
+memory without bound.
+
+`CLAWSWEEPER_CRABFLEET_URL` must be the credential-free HTTPS origin
+`https://crabfleet.openclaw.ai`. Userinfo, alternate origins, paths, queries,
+fragments, and plaintext HTTP are rejected before the bearer token is attached.
 
 Projection rebuilds must be deterministic. Truncating a projection never
 deletes source events. State-side compactors may replace hot shards with

@@ -46,12 +46,14 @@ import {
 import { normalizeRepo } from "./repository-profiles.js";
 
 const DEFAULT_EVENT_OUTPUT_DIR = path.join(".clawsweeper-repair", "action-ledger-state");
+const DEFAULT_CRABFLEET_ORIGIN = "https://crabfleet.openclaw.ai";
 const DEFAULT_CRABFLEET_TIMEOUT_MS = 10_000;
 const MAX_CRABFLEET_TIMEOUT_MS = 60_000;
+const ALLOWED_CRABFLEET_ORIGINS = new Set([DEFAULT_CRABFLEET_ORIGIN]);
 const ACTION_EVENT_SHARD_PATH_PATTERN =
   /^ledger\/v1\/events\/\d{4}\/\d{2}\/\d{2}\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\.jsonl$/;
 const pendingCrabFleetPosts = new Set<Promise<void>>();
-const activeCrabFleetRequests = new Set<Promise<Response>>();
+const activeCrabFleetRequests = new Set<Promise<unknown>>();
 const queuedCrabFleetPosts: QueuedCrabFleetProjection[] = [];
 
 export const CRABFLEET_PROJECTION_LIMITS = {
@@ -123,8 +125,14 @@ type ImportedActionEventShard = {
 type QueuedCrabFleetProjection = {
   root: string;
   event: ActionEvent;
-  env: NodeJS.ProcessEnv;
+  config: CrabFleetProjectionConfig;
   fetchImpl: typeof fetch;
+};
+
+type CrabFleetProjectionConfig = {
+  endpointUrl: string;
+  token: string;
+  timeoutMs: number;
 };
 
 export function workflowActionEventsEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
@@ -344,31 +352,33 @@ export async function postActionEventToCrabFleet(
   env: NodeJS.ProcessEnv = process.env,
   fetchImpl: typeof fetch = fetch,
 ): Promise<void> {
+  const config = crabFleetProjectionConfig(env);
+  if (!config) return;
+  await postActionEventToCrabFleetConfig(event, config, fetchImpl);
+}
+
+async function postActionEventToCrabFleetConfig(
+  event: ActionEvent,
+  config: CrabFleetProjectionConfig,
+  fetchImpl: typeof fetch,
+): Promise<void> {
   const validatedEvent = validateActionEvent(event, "CrabFleet action event");
-  const sessionId = String(env.CLAWSWEEPER_CRABFLEET_SESSION_ID ?? "").trim();
-  const token = String(env.CLAWSWEEPER_CRABFLEET_AGENT_TOKEN ?? "").trim();
-  if (!sessionId || !token) return;
-  const baseUrl = String(env.CLAWSWEEPER_CRABFLEET_URL ?? "https://crabfleet.openclaw.ai").replace(
-    /\/+$/,
-    "",
-  );
-  const timeoutMs = crabFleetTimeoutMs(env);
   const controller = new AbortController();
-  let timedOut = false;
   let timeout: NodeJS.Timeout | undefined;
-  const timeoutError = new Error(`CrabFleet action event append timed out after ${timeoutMs}ms`);
+  const timeoutError = new Error(
+    `CrabFleet action event append timed out after ${config.timeoutMs}ms`,
+  );
   const deadline = new Promise<never>((_resolve, reject) => {
     timeout = setTimeout(() => {
-      timedOut = true;
       controller.abort();
       reject(timeoutError);
-    }, timeoutMs);
+    }, config.timeoutMs);
   });
   const request = Promise.resolve().then(() =>
-    fetchImpl(`${baseUrl}/api/agent/interactive-sessions/${encodeURIComponent(sessionId)}/events`, {
+    fetchImpl(config.endpointUrl, {
       method: "POST",
       headers: {
-        authorization: `Bearer ${token}`,
+        authorization: `Bearer ${config.token}`,
         "content-type": "application/json",
       },
       body: JSON.stringify({
@@ -383,17 +393,16 @@ export async function postActionEventToCrabFleet(
       signal: controller.signal,
     }),
   );
-  trackCrabFleetRequest(request);
-  const lateCleanup = request.then(async (response) => {
-    if (timedOut) await cancelResponseBody(response);
+  const requestAndCleanup = request.then(async (response) => {
+    const result = { ok: response.ok, status: response.status };
+    await cancelResponseBody(response);
+    return result;
   });
-  void lateCleanup.catch(() => undefined);
+  trackCrabFleetRequest(requestAndCleanup);
   try {
-    const response = await Promise.race([request, deadline]);
-    const status = response.status;
-    await Promise.race([cancelResponseBody(response), deadline]);
-    if (!response.ok) {
-      throw new Error(`CrabFleet action event append failed (${status})`);
+    const result = await Promise.race([requestAndCleanup, deadline]);
+    if (!result.ok) {
+      throw new Error(`CrabFleet action event append failed (${result.status})`);
     }
   } finally {
     if (timeout) clearTimeout(timeout);
@@ -599,8 +608,9 @@ function queueCrabFleetEvent(
   env: NodeJS.ProcessEnv,
   fetchImpl: typeof fetch,
 ): void {
-  if (!crabFleetProjectionConfigured(env)) return;
-  const projection = { root, event, env, fetchImpl };
+  const config = crabFleetProjectionConfig(env);
+  if (!config) return;
+  const projection = { root, event, config, fetchImpl };
   if (activeCrabFleetRequests.size < CRABFLEET_PROJECTION_LIMITS.maxConcurrent) {
     startCrabFleetProjection(projection);
     return;
@@ -618,7 +628,11 @@ function queueCrabFleetEvent(
 }
 
 function startCrabFleetProjection(projection: QueuedCrabFleetProjection): void {
-  const post = postActionEventToCrabFleet(projection.event, projection.env, projection.fetchImpl)
+  const post = postActionEventToCrabFleetConfig(
+    projection.event,
+    projection.config,
+    projection.fetchImpl,
+  )
     .catch((error) => {
       failCrabFleetProjection(
         projection.root,
@@ -656,7 +670,7 @@ function drainCrabFleetProjectionQueue(): void {
   }
 }
 
-function trackCrabFleetRequest(request: Promise<Response>): void {
+function trackCrabFleetRequest(request: Promise<unknown>): void {
   activeCrabFleetRequests.add(request);
   void request
     .finally(() => {
@@ -669,13 +683,6 @@ function trackCrabFleetRequest(request: Promise<Response>): void {
 function failCrabFleetProjection(root: string, event: ActionEvent, reason: string): void {
   recordCrabFleetProjectionFailure(root, event);
   console.error(`[action-ledger] live CrabFleet projection failed: ${reason}`);
-}
-
-function crabFleetProjectionConfigured(env: NodeJS.ProcessEnv): boolean {
-  return Boolean(
-    String(env.CLAWSWEEPER_CRABFLEET_SESSION_ID ?? "").trim() &&
-    String(env.CLAWSWEEPER_CRABFLEET_AGENT_TOKEN ?? "").trim(),
-  );
 }
 
 function recordCrabFleetProjectionFailure(root: string, event: ActionEvent): void {
@@ -1000,6 +1007,39 @@ function crabFleetTimeoutMs(env: NodeJS.ProcessEnv): number {
     );
   }
   return value;
+}
+
+function crabFleetProjectionConfig(env: NodeJS.ProcessEnv): CrabFleetProjectionConfig | null {
+  const sessionId = String(env.CLAWSWEEPER_CRABFLEET_SESSION_ID ?? "").trim();
+  const token = String(env.CLAWSWEEPER_CRABFLEET_AGENT_TOKEN ?? "").trim();
+  if (!sessionId || !token) return null;
+  const rawUrl = String(env.CLAWSWEEPER_CRABFLEET_URL ?? DEFAULT_CRABFLEET_ORIGIN).trim();
+  let parsed: URL;
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    throw new Error(
+      `CLAWSWEEPER_CRABFLEET_URL must be the credential-free HTTPS origin ${DEFAULT_CRABFLEET_ORIGIN}`,
+    );
+  }
+  if (
+    parsed.protocol !== "https:" ||
+    parsed.username ||
+    parsed.password ||
+    parsed.pathname !== "/" ||
+    parsed.search ||
+    parsed.hash ||
+    !ALLOWED_CRABFLEET_ORIGINS.has(parsed.origin)
+  ) {
+    throw new Error(
+      `CLAWSWEEPER_CRABFLEET_URL must be the credential-free HTTPS origin ${DEFAULT_CRABFLEET_ORIGIN}`,
+    );
+  }
+  return {
+    endpointUrl: `${parsed.origin}/api/agent/interactive-sessions/${encodeURIComponent(sessionId)}/events`,
+    token,
+    timeoutMs: crabFleetTimeoutMs(env),
+  };
 }
 
 async function cancelResponseBody(response: Response): Promise<void> {
