@@ -1913,6 +1913,9 @@ if test "$1 $2" = "deployments status"; then
   if test "$FAIL_FIRST_STATUS" = "true" && test "$count" = "1"; then
     exit 72
   fi
+  if test "$FAIL_AFTER_FIRST_STATUS" = "true" && test "$count" -gt "1"; then
+    exit 72
+  fi
   printf '%s\\n' "$CURRENT_DEPLOYMENT_JSON"
   exit 0
 fi
@@ -1925,11 +1928,13 @@ exit 97
   function runRecovery({
     currentVersion,
     currentMessage,
+    failAfterFirstStatus = false,
     failFirstStatus = false,
     timeoutSeconds = "2",
   }: {
     currentVersion: string;
     currentMessage: string;
+    failAfterFirstStatus?: boolean;
     failFirstStatus?: boolean;
     timeoutSeconds?: string;
   }) {
@@ -1954,6 +1959,7 @@ exit 97
           DEPLOYMENT_RECOVERY_TIMEOUT_SECONDS: timeoutSeconds,
           DEPLOYMENT_STATUS_DELAY_SECONDS: "0",
           DEPLOY_MESSAGE: deployMessage,
+          FAIL_AFTER_FIRST_STATUS: String(failAfterFirstStatus),
           FAIL_FIRST_STATUS: String(failFirstStatus),
           GITHUB_OUTPUT: githubOutputPath,
           PREVIOUS_VERSION_PATH: previousVersionPath,
@@ -1987,6 +1993,19 @@ exit 97
     });
     assert.equal(unchanged.status, 0, unchanged.stdout + unchanged.stderr);
     assert.match(readFileSync(githubOutputPath, "utf8"), /mutation_owned=false/);
+    assert.equal(existsSync(deployedVersionPath), false);
+
+    const indeterminate = runRecovery({
+      currentVersion: previousVersion,
+      currentMessage: "previous deployment",
+      failAfterFirstStatus: true,
+      timeoutSeconds: "1",
+    });
+    assert.notEqual(indeterminate.status, 0);
+    assert.match(
+      indeterminate.stdout + indeterminate.stderr,
+      /unable to recover current Worker deployment ownership/,
+    );
     assert.equal(existsSync(deployedVersionPath), false);
 
     const foreign = runRecovery({

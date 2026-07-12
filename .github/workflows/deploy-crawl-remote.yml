@@ -2725,6 +2725,7 @@ jobs:
             throw new Error('trusted Wrangler version changed before ownership recovery');
           }
 
+          let lastProbeSucceeded = false;
           let lastStableVersion = '';
           while (Date.now() < deadline) {
             const remaining = deadline - Date.now();
@@ -2748,6 +2749,7 @@ jobs:
                 timeout: Math.min(readTimeoutSeconds * 1000, remaining),
               },
             );
+            lastProbeSucceeded = false;
             if (status.status === 0) {
               if (Buffer.byteLength(status.stdout, 'utf8') > 1024 * 1024) {
                 throw new Error('recovered Worker deployment response is oversized');
@@ -2763,6 +2765,7 @@ jobs:
                 throw new Error('recovered Worker deployment is not one stable version');
               }
               const currentVersion = versions[0].version_id;
+              lastProbeSucceeded = true;
               lastStableVersion = currentVersion;
               writeFileSync(
                 process.env.RECOVERY_DEPLOYMENT_RESPONSE,
@@ -2814,7 +2817,7 @@ jobs:
             }
           }
 
-          if (lastStableVersion === previousVersion) {
+          if (lastProbeSucceeded && lastStableVersion === previousVersion) {
             appendFileSync(process.env.GITHUB_OUTPUT, 'mutation_owned=false\n');
             process.exit(0);
           }
