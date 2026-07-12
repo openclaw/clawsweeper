@@ -4,7 +4,7 @@ export type PackageScriptRequirement = {
   workspaceScoped: boolean;
 };
 
-type PackageManagerExecutable = "pnpm" | "npm" | "bun";
+type PackageManagerExecutable = "pnpm" | "npm" | "bun" | "yarn";
 
 export type PackageManagerInvocation = {
   executable: PackageManagerExecutable;
@@ -71,18 +71,24 @@ const PACKAGE_MANAGER_GLOBAL_OPTIONS: Record<
     boolean: new Set(["--silent"]),
     value: new Set(["-C", "--cwd", "--filter"]),
   },
+  yarn: {
+    boolean: new Set(["-s", "--silent"]),
+    value: new Set(["--cache-folder", "--cwd", "--global-folder"]),
+  },
 };
 
 const PACKAGE_MANAGER_WORKSPACE_OPTIONS: Record<PackageManagerExecutable, ReadonlySet<string>> = {
   pnpm: new Set(["-F", "-r", "--filter", "--recursive"]),
   npm: new Set(["-w", "--workspace", "--workspaces"]),
   bun: new Set(["--filter"]),
+  yarn: new Set(),
 };
 
 const UNSAFE_PACKAGE_MANAGER_PATH_OPTIONS: Record<PackageManagerExecutable, ReadonlySet<string>> = {
   pnpm: new Set(["-C", "--config-dir", "--dir", "--store-dir", "--virtual-store-dir"]),
   npm: new Set(["--cache", "--prefix", "--userconfig"]),
   bun: new Set(["-C", "--cwd"]),
+  yarn: new Set(["--cache-folder", "--cwd", "--global-folder"]),
 };
 
 const PACKAGE_COMMAND_ALIASES = new Map([
@@ -101,6 +107,7 @@ const PACKAGE_COMMAND_ALIASES = new Map([
   ["install-clean", "clean-install"],
   ["isntall-clean", "clean-install"],
   ["it", "install-test"],
+  ["pub", "publish"],
   ["rm", "remove"],
   ["r", "remove"],
   ["un", "uninstall"],
@@ -113,18 +120,34 @@ const PACKAGE_COMMAND_ALIASES = new Map([
   ["x", "exec"],
 ]);
 
-const MUTATING_PACKAGE_COMMANDS = new Set([
+const PACKAGE_MANAGER_NON_SCRIPT_COMMANDS = new Set([
+  "access",
   "add",
+  "audit",
+  "bin",
   "cache",
   "ci",
   "clean-install",
+  "completion",
   "config",
   "create",
   "dedupe",
+  "deprecate",
   "deploy",
+  "diff",
   "dist-tag",
+  "doctor",
+  "dlx",
   "env",
+  "exec",
+  "explain",
+  "explore",
   "fetch",
+  "find-dupes",
+  "fund",
+  "get",
+  "help",
+  "help-search",
   "hook",
   "import",
   "init",
@@ -132,20 +155,38 @@ const MUTATING_PACKAGE_COMMANDS = new Set([
   "install-ci-test",
   "install-test",
   "link",
+  "list",
+  "ll",
+  "login",
+  "logout",
+  "ls",
+  "npm",
+  "org",
+  "outdated",
   "owner",
   "pack",
   "patch",
   "patch-commit",
+  "ping",
   "pkg",
+  "prefix",
   "profile",
   "prune",
   "publish",
+  "query",
   "rebuild",
   "remove",
+  "repo",
+  "restart",
+  "root",
+  "search",
   "set",
   "shrinkwrap",
   "star",
+  "stars",
+  "start",
   "store",
+  "stop",
   "team",
   "token",
   "uninstall",
@@ -154,6 +195,11 @@ const MUTATING_PACKAGE_COMMANDS = new Set([
   "unstar",
   "update",
   "version",
+  "view",
+  "whoami",
+  "why",
+  "workspace",
+  "workspaces",
 ]);
 
 const MUTATING_PACKAGE_LIFECYCLE_SCRIPTS = new Set([
@@ -164,16 +210,30 @@ const MUTATING_PACKAGE_LIFECYCLE_SCRIPTS = new Set([
   "postpack",
   "postprepare",
   "postpublish",
+  "postrestart",
+  "poststart",
+  "poststop",
+  "posttest",
   "postuninstall",
+  "postversion",
   "preinstall",
   "prepack",
   "preprepare",
   "prepare",
   "prepublish",
   "prepublishonly",
+  "prerestart",
+  "prestart",
+  "prestop",
+  "pretest",
   "preuninstall",
+  "preversion",
   "publish",
+  "restart",
+  "start",
+  "stop",
   "uninstall",
+  "version",
 ]);
 
 const UNSAFE_VALIDATION_ENV_NAMES = new Set([
@@ -308,10 +368,13 @@ export function packageScriptRequirement(
   if (!invocation) return null;
   const normalizedCommand = normalizedPackageCommand(invocation.command);
   const usesRunCommand = normalizedCommand === "run";
-  if (invocation.executable !== "pnpm" && !usesRunCommand) return null;
+  const usesScriptShorthand =
+    ["pnpm", "yarn"].includes(invocation.executable) ||
+    (invocation.executable === "npm" && normalizedCommand === "test");
+  if (!usesRunCommand && !usesScriptShorthand) return null;
   const runInvocation = usesRunCommand ? packageRunInvocation(invocation) : null;
   const script = usesRunCommand ? runInvocation?.script : normalizedCommand;
-  if (!script || ["exec", "dlx", "install", "add", "remove"].includes(script)) return null;
+  if (!script || PACKAGE_MANAGER_NON_SCRIPT_COMMANDS.has(script)) return null;
   const scriptIndex = usesRunCommand ? runInvocation!.scriptIndex : invocation.commandIndex;
   return {
     name: script,
@@ -362,7 +425,14 @@ export function packageManagerInvocation(
 ): PackageManagerInvocation | null {
   const commandParts = stripEnvPrefix(parts);
   const executable = commandParts[0];
-  if (executable !== "pnpm" && executable !== "npm" && executable !== "bun") return null;
+  if (
+    executable !== "pnpm" &&
+    executable !== "npm" &&
+    executable !== "bun" &&
+    executable !== "yarn"
+  ) {
+    return null;
+  }
   const options = PACKAGE_MANAGER_GLOBAL_OPTIONS[executable];
   const globalOptions: PackageManagerInvocation["globalOptions"] = [];
   let index = 1;
@@ -659,6 +729,7 @@ function isAllowedValidationExecutable(executable: string, parts: readonly strin
       "pnpm",
       "npm",
       "bun",
+      "yarn",
       "node",
       "git",
       "make",
@@ -794,19 +865,39 @@ function hasUnsafePackageRunner(parts: readonly string[]) {
 
 function hasUnsupportedPackageManagerInvocation(parts: readonly string[]) {
   const executable = stripEnvPrefix(parts)[0];
-  if (!["pnpm", "npm", "bun"].includes(executable ?? "")) return false;
+  if (!["pnpm", "npm", "bun", "yarn"].includes(executable ?? "")) return false;
   const invocation = packageManagerInvocation(parts);
   if (!invocation) return true;
+  return !isReadOnlyPackageManagerInvocation(invocation);
+}
+
+function isReadOnlyPackageManagerInvocation(invocation: PackageManagerInvocation) {
+  const command = normalizedPackageCommand(invocation.command);
+  if (command === "run") {
+    const run = packageRunInvocation(invocation);
+    return Boolean(run && !MUTATING_PACKAGE_LIFECYCLE_SCRIPTS.has(run.script.toLowerCase()));
+  }
+  if (invocation.executable === "pnpm" && command === "exec") return true;
+  if (invocation.executable === "npm") return command === "test";
+  if (invocation.executable === "bun") return command === "test";
   return (
-    normalizedPackageCommand(invocation.command) === "run" &&
-    packageRunInvocation(invocation) === null
+    ["pnpm", "yarn"].includes(invocation.executable) &&
+    !PACKAGE_MANAGER_NON_SCRIPT_COMMANDS.has(command) &&
+    !MUTATING_PACKAGE_LIFECYCLE_SCRIPTS.has(command)
   );
 }
 
 function hasUnsafePackageManagerPathOption(parts: readonly string[]) {
   const commandParts = stripEnvPrefix(parts);
   const executable = commandParts[0];
-  if (executable !== "pnpm" && executable !== "npm" && executable !== "bun") return false;
+  if (
+    executable !== "pnpm" &&
+    executable !== "npm" &&
+    executable !== "bun" &&
+    executable !== "yarn"
+  ) {
+    return false;
+  }
   const denied = UNSAFE_PACKAGE_MANAGER_PATH_OPTIONS[executable];
   for (const token of commandParts.slice(1)) {
     if (token === "--") break;
@@ -964,15 +1055,6 @@ function hasMutatingValidationCommand(parts: readonly string[]) {
   if (executable === "git") {
     if (subcommand === "fsck" && commandParts.includes("--lost-found")) return true;
     return !["diff", "fsck", "status"].includes(subcommand);
-  }
-  if (["pnpm", "npm", "bun"].includes(executable)) {
-    if (MUTATING_PACKAGE_COMMANDS.has(subcommand)) return true;
-    if (subcommand === "run") {
-      const lifecycle = String(
-        packageInvocation ? packageRunInvocation(packageInvocation)?.script : "",
-      ).toLowerCase();
-      return MUTATING_PACKAGE_LIFECYCLE_SCRIPTS.has(lifecycle);
-    }
   }
   if (executable === "go") {
     if (subcommand === "env") {

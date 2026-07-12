@@ -99,6 +99,29 @@ test("validation preflight reports injected OpenClaw changed gate", () => {
   );
 });
 
+test("configured changed gates fail closed when their script disappears", () => {
+  const cwd = gitPackageFixture({});
+  git(cwd, "add", ".");
+  git(cwd, "commit", "-m", "initial");
+  attachOrigin(cwd);
+  const options = validationOptions("openclaw/openclaw");
+
+  assert.deepEqual(requiredValidationCommands([], cwd, options), ["pnpm check:changed"]);
+  const preflight = preflightTargetValidationPlan(
+    { fixArtifact: { validation_commands: [] }, targetDir: cwd },
+    options,
+  );
+  assert.equal(preflight.status, "blocked");
+  assert.equal(preflight.code, "validation_script_missing");
+  assert.equal(preflight.required, "pnpm check:changed");
+  assert.equal(preflight.missing_script, "check:changed");
+  assert.deepEqual(preflight.resolved_commands, ["pnpm check:changed"]);
+  assert.throws(
+    () => buildTargetValidationProofPlan([], cwd, options),
+    /validation_script_missing: required pnpm check:changed is unavailable/,
+  );
+});
+
 test("validation preflight blocks targets without any validation command", () => {
   const cwd = packageFixture({});
 
@@ -429,13 +452,27 @@ test("validation parser rejects snapshot-writing and formatter mutation flags", 
     "pnpm --filter app i",
     "pnpm --filter app deploy",
     "pnpm pack",
+    "pnpm postinstall",
+    "pnpm prepare",
+    "pnpm preinstall",
+    "pnpm publish",
+    "pnpm config set registry https://registry.example.invalid",
     "pnpm run install",
     "pnpm run postinstall",
     "pnpm run-script postprepare",
+    "npm access list packages",
+    "npm deprecate left-pad broken",
+    "npm pub",
     "npm run install",
     "npm run postinstall",
+    "npm whoami",
     "bun run install",
     "bun run postinstall",
+    "yarn config set registry https://registry.example.invalid",
+    "yarn npm publish",
+    "yarn postinstall",
+    "yarn prepare",
+    "yarn preinstall",
     "npm --prefix . run test",
     "npm --userconfig .npmrc run test",
     "bun --cwd . test",
@@ -463,6 +500,8 @@ test("validation parser rejects snapshot-writing and formatter mutation flags", 
     "run",
     "fmt:verify",
   ]);
+  assert.deepEqual(parseAllowedValidationCommand("yarn run lint"), ["yarn", "run", "lint"]);
+  assert.deepEqual(parseAllowedValidationCommand("yarn test"), ["yarn", "test"]);
   assert.deepEqual(parseAllowedValidationCommand("python -u -m pytest tests/unit"), [
     "python",
     "-u",

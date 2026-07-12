@@ -73,6 +73,10 @@ checkpoint, and status-only commits are intentionally omitted.
 - Kept deadline-expired pending or missing post-flight checks retryable for
   durable self-heal, and required issue-implementation readiness to match the
   exact head recorded by the verified publication receipt.
+- Failed closed when a configured canonical changed-gate script disappears from
+  the repaired checkout, and limited package-manager proof commands to explicit
+  read-only script or runner forms while rejecting lifecycle, registry, and
+  account mutations across pnpm, npm, Bun, and Yarn.
 - Replaced the unsupported GitHub installation identity probe with pinned
   `create-github-app-token` App slug and installation outputs plus App IDs
   derived from the authenticated slug, rejected

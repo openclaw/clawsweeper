@@ -547,6 +547,12 @@ function createTargetValidationProofPlan(
       "validation_command_missing: no configured or artifact validation command is available",
     );
   }
+  const missingScript = missingRequiredPackageScript(requiredCommands, readPackageScriptSet(cwd));
+  if (missingScript) {
+    throw new Error(
+      `validation_script_missing: required ${missingScript.command} is unavailable in target checkout`,
+    );
+  }
   const resolved: StagedProofCommandInput[] = [
     {
       parts: ["git", "diff", "--check", `${baseRef}...HEAD`],
@@ -723,7 +729,7 @@ export function preflightTargetValidationPlan(
   const scripts = readPackageScriptSet(targetDir);
   const availableScripts = [...scripts].sort();
   const resolved: string[] = [];
-  const requiredScripts: LooseRecord[] = [];
+  const resolvedEntries: StagedProofCommandInput[] = [];
   const validationEnv = targetValidationEnv();
   for (const command of resolvedRequiredValidationCommandEntries(
     fixArtifact.validation_commands ?? [],
@@ -732,10 +738,9 @@ export function preflightTargetValidationPlan(
     options,
     validationEnv,
   )) {
+    resolvedEntries.push(command);
     const rendered = (command.displayParts ?? command.parts).join(" ");
     if (!resolved.includes(rendered)) resolved.push(rendered);
-    const script = packageScriptRequirement(command.parts);
-    if (script && !script.workspaceScoped) requiredScripts.push(script);
   }
 
   if (resolved.length === 0) {
@@ -749,7 +754,7 @@ export function preflightTargetValidationPlan(
     };
   }
 
-  const missing = requiredScripts.find((script: JsonValue) => !scripts.has(script.name));
+  const missing = missingRequiredPackageScript(resolvedEntries, scripts);
   if (!missing) {
     return {
       status: "passed",
@@ -815,7 +820,7 @@ function requiredValidationCommandEntries(
     })),
   ];
   const gate = toolchain.changedGate;
-  if (gate && !options.skipOpenClawChangedGate && requiresChangedGate(cwd, toolchain)) {
+  if (gate && !options.skipOpenClawChangedGate) {
     out.push({
       command: gate.command,
       source: "changed_gate",
@@ -1192,13 +1197,19 @@ function readPackageScriptSet(cwd: string) {
   }
 }
 
-function requiresChangedGate(cwd: string, toolchain: TargetRepoToolchain) {
-  if (!toolchain.changedGate) return false;
-  return readPackageScriptSet(cwd).has(toolchain.changedGate.requiredScript);
-}
-
 function getToolchain(options: TargetValidationOptions): TargetRepoToolchain {
   return options.toolchain ?? resolveTargetRepoToolchain(options.targetRepo);
+}
+
+function missingRequiredPackageScript(
+  commands: readonly { parts: readonly string[] }[],
+  scripts: ReadonlySet<string>,
+) {
+  for (const command of commands) {
+    const script = packageScriptRequirement(command.parts);
+    if (script && !script.workspaceScoped && !scripts.has(script.name)) return script;
+  }
+  return null;
 }
 
 function proofSubsumptionContracts(
