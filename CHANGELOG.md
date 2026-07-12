@@ -10,6 +10,7 @@ checkpoint, and status-only commits are intentionally omitted.
 ### Added
 
 - Added versioned staged repair proof plans with deterministic cheap-to-expensive validation, behavioral profile-command staging, concrete-argv environment resolution and revalidation, structured package-manager option parsing, checkout immutability checks, retention of every allowlisted required command, exact-command deduplication, explicit-only non-live subsumption with digest provenance, fail-closed canonical-gate stalls and runtime budgets, topology-stable retry traces, and bounded machine-readable proof bound to the exact validated head/base after final or fallback history compaction.
+- Required repair automerge to verify server-enforced strict base-branch status checks before merging, blocking when the effective rule is absent or unreadable so validated-base races cannot bypass proof.
 - Added conservative, add-only `good first issue` labeling for unlocked, small, current-main reproduced bugs with a high-confidence repair prompt and validation steps and no linked-PR, feature, config, product, security, protected-label, or maintainer-opt-out blocker.
 - Added durable maintainer decision packets whose exact question, rationale, options, recommendation, and likely owner come from Codex structured review output while deterministic code only validates and persists the result. Thanks @brokemac79.
 - Added close-candidate quality telemetry to apply status while keeping reporting separate from close eligibility and comment-only sync. Thanks @brokemac79.

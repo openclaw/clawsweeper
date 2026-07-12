@@ -251,7 +251,7 @@ test("issue implementation post-flight waits for checks to be created", () => {
   }
 });
 
-test("merge post-flight rejects stale head and base proof before clean checks", () => {
+test("merge post-flight requires exact proof and server-enforced strict base binding", () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-post-flight-"));
   const fakeBin = path.join(tmp, "bin");
   const jobPath = path.join(tmp, "job.md");
@@ -282,6 +282,13 @@ test("merge post-flight rejects stale head and base proof before clean checks", 
       "}",
       "if (args[0] === 'api' && args[1] === 'repos/openclaw/openclaw/issues/123/comments?per_page=100') {",
       "  process.stdout.write('');",
+      "  process.exit(0);",
+      "}",
+      "if (args[0] === 'api' && args[1] === 'repos/openclaw/openclaw/rules/branches/main') {",
+      "  const rules = process.env.FAKE_GH_STRICT_BASE === '1'",
+      "    ? [{ type: 'required_status_checks', parameters: { strict_required_status_checks_policy: true, required_status_checks: [{ context: 'clownfish/exact-merge' }] } }]",
+      "    : [];",
+      "  process.stdout.write(JSON.stringify(rules));",
       "  process.exit(0);",
       "}",
       "if (args[0] === 'api' && args[1] === 'graphql') {",
@@ -382,6 +389,22 @@ test("merge post-flight rejects stale head and base proof before clean checks", 
     execFileSync(process.execPath, ["dist/repair/post-flight.js", jobPath, resultPath], {
       cwd: repoRoot,
       env,
+      stdio: "pipe",
+    });
+    const unboundReport = JSON.parse(fs.readFileSync(reportPath, "utf8"));
+    assert.equal(unboundReport.actions[0]?.status, "blocked");
+    assert.equal(
+      unboundReport.actions[0]?.reason,
+      "automerge disabled: main lacks server-enforced strict base binding",
+    );
+    assert.equal(fs.existsSync(mergeFlagPath), false);
+
+    writeMergeReports(runDir, resultPath);
+    fs.rmSync(reportPath, { force: true });
+    fs.rmSync(viewCountPath, { force: true });
+    execFileSync(process.execPath, ["dist/repair/post-flight.js", jobPath, resultPath], {
+      cwd: repoRoot,
+      env: { ...env, FAKE_GH_STRICT_BASE: "1" },
       stdio: "pipe",
     });
     const report = JSON.parse(fs.readFileSync(reportPath, "utf8"));

@@ -226,6 +226,20 @@ function finalizeFixPr(action: LooseRecord) {
     };
   }
 
+  const strictBaseBindingBlock = validateServerStrictBaseBinding(
+    result.repo,
+    String(view.baseRefName ?? pull.base?.ref ?? ""),
+  );
+  if (strictBaseBindingBlock) {
+    return {
+      ...prBase,
+      status: "blocked",
+      reason: strictBaseBindingBlock,
+      merge_method: "squash",
+      waited_ms: waitedMs,
+    };
+  }
+
   const mergeMessage = buildRepairSquashMergeMessage({
     target: parsed.number,
     title: view.title ?? pull.title,
@@ -592,6 +606,36 @@ function validateMergePreflight(
     return "Codex /review evidence is missing";
   }
   return "";
+}
+
+function validateServerStrictBaseBinding(repo: string, baseBranch: string) {
+  if (!baseBranch) {
+    return "automerge disabled: pull request base branch is unavailable for strict binding";
+  }
+  let rules;
+  try {
+    rules = ghJson(["api", `repos/${repo}/rules/branches/${encodeURIComponent(baseBranch)}`]);
+  } catch (error) {
+    return `automerge disabled: unable to verify server-enforced strict base binding: ${compactText(
+      ghErrorText(error),
+      300,
+    )}`;
+  }
+  if (!Array.isArray(rules)) {
+    return "automerge disabled: GitHub returned invalid effective branch rules";
+  }
+  const strictRule = rules.some((rule: LooseRecord) => {
+    if (rule?.type !== "required_status_checks") return false;
+    const parameters = rule.parameters;
+    return (
+      parameters?.strict_required_status_checks_policy === true &&
+      Array.isArray(parameters.required_status_checks) &&
+      parameters.required_status_checks.length > 0
+    );
+  });
+  return strictRule
+    ? ""
+    : `automerge disabled: ${baseBranch} lacks server-enforced strict base binding`;
 }
 
 function isFullCommitSha(value: unknown): value is string {
