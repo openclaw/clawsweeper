@@ -909,7 +909,7 @@ test("release artifact is immutable, bounded, canonical, and hash verified", () 
     "5964adcb0807448d937fed38ac9588a1063bf4f490a82b54f15f0e700374ae0c",
     "a0ebfbb5c40c85df5eaba6772a01a68910fa5f1327d4701d25c5dfde16f77d1a",
     "5c1e92dbf4d51ef62d317e212a0ec8e39df104983656c6416d0c58ef3503744d",
-    "9a021763b074dd6362615f0d0183933b5986eaf880c792c3a8c8cfcd18bc731f",
+    "3d5afadb62b4343cc88c54a18702aee13b61d1d5a74312a191996833155ab462",
   ]) {
     assert.match(packaging, new RegExp(sha256));
   }
@@ -1828,7 +1828,7 @@ test("pending migration compatibility accepts only the reviewed additive 0007-00
     ],
     [
       "0008_gitcrawl_publish_candidates.sql",
-      "9a021763b074dd6362615f0d0183933b5986eaf880c792c3a8c8cfcd18bc731f",
+      "3d5afadb62b4343cc88c54a18702aee13b61d1d5a74312a191996833155ab462",
     ],
   ] as const;
   const migrationSQL = `pragma foreign_keys = on;
@@ -1960,7 +1960,14 @@ where snapshot.activated_at is not null
   and trim(snapshot.hardening_validated_at) != ''
 on conflict(archive_id) do update set
   snapshot_id = excluded.snapshot_id,
-  completed_at = excluded.completed_at;
+  completed_at = excluded.completed_at
+where exists (
+  select 1
+  from gitcrawl_snapshot_cutovers cutover
+  where cutover.archive_id = excluded.archive_id
+    and cutover.snapshot_id != excluded.snapshot_id
+    and cutover.snapshot_id = gitcrawl_publish_candidates.snapshot_id
+);
 
 update gitcrawl_snapshot_cutovers
 set snapshot_id = (

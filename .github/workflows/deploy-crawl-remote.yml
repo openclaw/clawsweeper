@@ -361,7 +361,7 @@ jobs:
             },
             {
               name: '0008_gitcrawl_publish_candidates.sql',
-              sha256: '9a021763b074dd6362615f0d0183933b5986eaf880c792c3a8c8cfcd18bc731f',
+              sha256: '3d5afadb62b4343cc88c54a18702aee13b61d1d5a74312a191996833155ab462',
             },
           ];
           const migrationEntries = readdirSync('migrations', { withFileTypes: true })
@@ -1414,7 +1414,7 @@ jobs:
             },
             {
               name: '0008_gitcrawl_publish_candidates.sql',
-              sha256: '9a021763b074dd6362615f0d0183933b5986eaf880c792c3a8c8cfcd18bc731f',
+              sha256: '3d5afadb62b4343cc88c54a18702aee13b61d1d5a74312a191996833155ab462',
             },
           ];
           const compatibleWithPreviousWorker = new Map([
@@ -1431,7 +1431,7 @@ jobs:
               {
                 classification: 'additive-publish-candidate-compat-v1',
                 sha256:
-                  '9a021763b074dd6362615f0d0183933b5986eaf880c792c3a8c8cfcd18bc731f',
+                  '3d5afadb62b4343cc88c54a18702aee13b61d1d5a74312a191996833155ab462',
               },
             ],
           ]);
@@ -1569,7 +1569,7 @@ jobs:
                     /foreign key \(archive_id, snapshot_id\)\s+references gitcrawl_snapshots\(archive_id, snapshot_id\) on delete cascade/i.test(
                       sql,
                     ) &&
-                    /insert into gitcrawl_publish_candidates\(archive_id, snapshot_id, completed_at\)[\s\S]*from gitcrawl_active_snapshots active[\s\S]*snapshot\.coverage_complete = 1[\s\S]*trim\(snapshot\.hardening_validated_at\) != ''[\s\S]*on conflict\(archive_id\) do update set[\s\S]*snapshot_id = excluded\.snapshot_id,[\s\S]*completed_at = excluded\.completed_at;/i.test(
+                    /insert into gitcrawl_publish_candidates\(archive_id, snapshot_id, completed_at\)[\s\S]*from gitcrawl_active_snapshots active[\s\S]*snapshot\.coverage_complete = 1[\s\S]*trim\(snapshot\.hardening_validated_at\) != ''[\s\S]*on conflict\(archive_id\) do update set[\s\S]*snapshot_id = excluded\.snapshot_id,[\s\S]*completed_at = excluded\.completed_at[\s\S]*where exists \([\s\S]*from gitcrawl_snapshot_cutovers cutover[\s\S]*cutover\.snapshot_id != excluded\.snapshot_id[\s\S]*cutover\.snapshot_id = gitcrawl_publish_candidates\.snapshot_id[\s\S]*\);/i.test(
                       sql,
                     ) &&
                     /update gitcrawl_snapshot_cutovers[\s\S]*set snapshot_id = \([\s\S]*from gitcrawl_active_snapshots active[\s\S]*active\.snapshot_id != gitcrawl_snapshot_cutovers\.snapshot_id[\s\S]*trim\(snapshot\.hardening_validated_at\) != ''[\s\S]*\);/i.test(
