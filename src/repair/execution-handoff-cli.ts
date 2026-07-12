@@ -6,6 +6,7 @@ import {
   closePublishedReplacementSources,
   prepareExecutionAuthorization,
   publishValidatedExecution,
+  restoreCheckpointedExecutionAuthorization,
   sealExecutionHandoff,
   validateExecutionHandoff,
   verifyExecutionAuthorization,
@@ -29,6 +30,32 @@ switch (command) {
       workflowSha: requiredArg(args, "workflow-sha"),
       allowedOwner: requiredArg(args, "allowed-owner"),
       closeSupersededSourcePrs: /^(1|true|yes|on)$/i.test(args.get("close-superseded") ?? ""),
+    });
+    writeOutputs({
+      authorization_sha256: authorization.identity_sha256,
+      job_path: `${requiredArg(args, "out")}/job.md`,
+      result_path: `${requiredArg(args, "out")}/run/result.json`,
+      run_dir: `${requiredArg(args, "out")}/run`,
+      execution_intent_path: `${requiredArg(args, "out")}/execution-intent.json`,
+      source_job_path: authorization.source_job_path,
+      target_repo: authorization.target_repo,
+      target_owner: authorization.target_owner,
+      target_name: authorization.target_name,
+    });
+    break;
+  }
+  case "restore-authorization": {
+    const authorization = restoreCheckpointedExecutionAuthorization({
+      sourceRoot: requiredArg(args, "source-root"),
+      publicationRoot: requiredArg(args, "publication-root"),
+      publicationReceiptPath: requiredArg(args, "publication-receipt"),
+      outputRoot: requiredArg(args, "out"),
+      workflowRunId: requiredArg(args, "run-id"),
+      workflowRunAttempt: requiredArg(args, "run-attempt"),
+      workflowRepository: requiredArg(args, "workflow-repository"),
+      workflowSha: requiredArg(args, "workflow-sha"),
+      sourceJobPath: requiredArg(args, "source-job-path"),
+      allowedOwner: requiredArg(args, "allowed-owner"),
     });
     writeOutputs({
       authorization_sha256: authorization.identity_sha256,
@@ -149,6 +176,7 @@ switch (command) {
       expectedAuthorizationSha256: requiredArg(args, "authorization-sha256"),
       expectedValidationReceiptSha256: requiredArg(args, "validation-receipt-sha256"),
       expectedPublicationReceiptSha256: requiredArg(args, "publication-receipt-sha256"),
+      expectedCloseActor: requiredArg(args, "close-actor"),
     });
     writeOutputs({
       target_repo: receipt.target_repo,
@@ -168,6 +196,7 @@ switch (command) {
       expectedAuthorizationSha256: requiredArg(args, "authorization-sha256"),
       expectedValidationReceiptSha256: requiredArg(args, "validation-receipt-sha256"),
       expectedPublicationReceiptSha256: requiredArg(args, "publication-receipt-sha256"),
+      expectedCloseActor: requiredArg(args, "close-actor"),
     });
     writeOutputs({
       target_repo: receipt.target_repo,
@@ -181,7 +210,7 @@ switch (command) {
   }
   default:
     throw new Error(
-      "usage: execution-handoff <authorize|verify|seal|verify-execution|validate|verify-receipt|publish|verify-publication|checkpoint-source-closes|close-sources> [options]",
+      "usage: execution-handoff <authorize|restore-authorization|verify|seal|verify-execution|validate|verify-receipt|publish|verify-publication|checkpoint-source-closes|close-sources> [options]",
     );
 }
 

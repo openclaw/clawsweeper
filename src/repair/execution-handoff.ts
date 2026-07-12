@@ -75,6 +75,25 @@ export type SourcePullRevision = {
   expected_base_sha: string;
 };
 
+export type SourcePullStateEvent = {
+  id: number;
+  event: "closed" | "reopened";
+  actor: string;
+  created_at: string;
+};
+
+export type SourceCloseEvidence = {
+  close_event_id: number;
+  close_actor: string;
+  closed_at: string;
+};
+
+export type SourceReopenEvidence = SourceCloseEvidence & {
+  reopen_event_id: number;
+  reopen_actor: string;
+  reopened_at: string;
+};
+
 type RevisionBoundExecutionIntent = ExecutionIntent & {
   source_pull_revisions?: SourcePullRevision[];
 };
@@ -236,6 +255,84 @@ export function prepareExecutionAuthorization({
   writeJson(path.join(outputRoot, "authorization.json"), authorization);
   verifyExecutionAuthorization(outputRoot, authorization.identity_sha256);
   return authorization;
+}
+
+export function restoreCheckpointedExecutionAuthorization({
+  sourceRoot,
+  publicationRoot,
+  publicationReceiptPath,
+  outputRoot,
+  workflowRunId,
+  workflowRunAttempt,
+  workflowRepository,
+  workflowSha,
+  sourceJobPath,
+  allowedOwner,
+}: {
+  sourceRoot: string;
+  publicationRoot: string;
+  publicationReceiptPath: string;
+  outputRoot: string;
+  workflowRunId: string;
+  workflowRunAttempt: string;
+  workflowRepository: string;
+  workflowSha: string;
+  sourceJobPath: string;
+  allowedOwner: string;
+}): ExecutionAuthorization {
+  const candidate = readJsonObject(
+    path.join(sourceRoot, "authorization.json"),
+    "checkpoint authorization",
+  ) as ExecutionAuthorization;
+  const authorization = verifyExecutionAuthorization(
+    sourceRoot,
+    requiredDigest(candidate.identity_sha256, "checkpoint authorization digest"),
+  );
+  const publicationAuthorization = verifyExecutionAuthorization(
+    publicationRoot,
+    authorization.identity_sha256,
+  );
+  const currentAttempt = Number(workflowRunAttempt);
+  const producerAttempt = Number(authorization.workflow_run_attempt);
+  const normalizedJobPath = path.posix.normalize(sourceJobPath.replaceAll("\\", "/"));
+  assertAllowedOwner(authorization.target_repo, allowedOwner);
+  if (
+    authorization.workflow_run_id !== requiredText(workflowRunId, "workflow run id") ||
+    publicationAuthorization.identity_sha256 !== authorization.identity_sha256 ||
+    authorization.workflow_repository !== requiredRepo(workflowRepository, "workflow repository") ||
+    authorization.workflow_sha !== requiredSha(workflowSha, "workflow SHA") ||
+    authorization.source_job_path !== normalizedJobPath ||
+    !Number.isSafeInteger(currentAttempt) ||
+    !Number.isSafeInteger(producerAttempt) ||
+    producerAttempt < 1 ||
+    producerAttempt >= currentAttempt
+  ) {
+    throw new Error("checkpoint authorization does not belong to this exact workflow rerun");
+  }
+
+  const publication = verifyAuthorizedPreparedPublication(
+    publicationRoot,
+    authorization.identity_sha256,
+  );
+  const receipt = readJsonObject(
+    publicationReceiptPath,
+    "checkpoint publication receipt",
+  ) as PublicationReceipt;
+  verifyPublicationReceipt({
+    receipt,
+    publication,
+    validationReceiptSha256: requiredDigest(
+      receipt.validation_receipt_sha256,
+      "checkpoint validation receipt digest",
+    ),
+  });
+  const intent = readExecutionIntent(publicationRoot);
+  sourceClosureReceiptState(publication, receipt, intent);
+
+  fs.rmSync(outputRoot, { recursive: true, force: true });
+  fs.mkdirSync(outputRoot, { recursive: true });
+  copyTree(sourceRoot, outputRoot);
+  return verifyExecutionAuthorization(outputRoot, authorization.identity_sha256);
 }
 
 function assertExecutionIntentBindings(
@@ -920,6 +1017,24 @@ export function pendingSourceClosures(
   );
 }
 
+export function preservedReopenedSourceClosures(
+  publication: PreparedPublication,
+  receipt: PublicationReceipt | null,
+  intent: ExecutionIntent,
+): Set<string> {
+  if (!receipt) return new Set();
+  verifyPublicationReceipt({
+    receipt,
+    publication,
+    validationReceiptSha256: receipt.validation_receipt_sha256,
+  });
+  return new Set(
+    sourceClosureReceiptState(publication, receipt, intent).reopened.map((mutation) =>
+      String(mutation.source),
+    ),
+  );
+}
+
 function sourceClosureReceiptMutations(
   publication: PreparedPublication,
   receipt: PublicationReceipt,
@@ -935,9 +1050,11 @@ function sourceClosureCheckpointMutations(
 ): LooseRecord[] {
   sourceClosureReceiptState(publication, receipt, intent);
   return receipt.mutations.filter((mutation) =>
-    ["begin_close_source_pull_request", "close_source_pull_request"].includes(
-      String(mutation.operation ?? ""),
-    ),
+    [
+      "begin_close_source_pull_request",
+      "close_source_pull_request",
+      "preserve_reopened_source_pull_request",
+    ].includes(String(mutation.operation ?? "")),
   );
 }
 
@@ -945,7 +1062,12 @@ function sourceClosureReceiptState(
   publication: PreparedPublication,
   receipt: PublicationReceipt,
   intent: ExecutionIntent,
-): { pending: LooseRecord[]; completed: LooseRecord[] } {
+): {
+  pending: LooseRecord[];
+  completed: LooseRecord[];
+  reopened: LooseRecord[];
+  attempts: Map<string, LooseRecord>;
+} {
   const plannedClosures = new Set(
     publication.superseded_source_actions
       .filter((action) => action.operation === "close")
@@ -954,14 +1076,15 @@ function sourceClosureReceiptState(
   const revisions = new Map(
     sourcePullRevisions(intent).map((revision) => [revision.url, revision]),
   );
-  const pending: LooseRecord[] = [];
   const completed: LooseRecord[] = [];
-  const pendingSources = new Set<string>();
-  const completedSources = new Set<string>();
+  const reopened: LooseRecord[] = [];
+  const attempts = new Map<string, LooseRecord>();
+  const terminalSources = new Set<string>();
   for (const mutation of receipt.mutations) {
     if (
       mutation.operation !== "begin_close_source_pull_request" &&
-      mutation.operation !== "close_source_pull_request"
+      mutation.operation !== "close_source_pull_request" &&
+      mutation.operation !== "preserve_reopened_source_pull_request"
     ) {
       continue;
     }
@@ -978,23 +1101,41 @@ function sourceClosureReceiptState(
       throw new Error("publication receipt contains an unauthorized source-close completion");
     }
     if (mutation.operation === "begin_close_source_pull_request") {
-      if (pendingSources.has(source) || completedSources.has(source)) {
+      if (attempts.has(source) || terminalSources.has(source)) {
         throw new Error("publication receipt repeats a source-close attempt");
       }
-      pendingSources.add(source);
-      pending.push(mutation);
+      sourceClosureExpectedActor(mutation);
+      sourceClosureCheckpointEventId(mutation);
+      attempts.set(source, mutation);
       continue;
     }
-    if (completedSources.has(source)) {
+    const attempt = attempts.get(source);
+    if (!attempt) {
+      throw new Error("source-close completion lacks its durable begin checkpoint");
+    }
+    if (terminalSources.has(source)) {
       throw new Error("publication receipt repeats a source-close completion");
     }
-    completedSources.add(source);
-    completed.push(mutation);
+    terminalSources.add(source);
+    if (mutation.operation === "close_source_pull_request") {
+      assertCloseEvidenceMatchesAttempt(mutation, attempt);
+      completed.push(mutation);
+    } else {
+      assertReopenEvidenceMatchesAttempt(mutation, attempt);
+      reopened.push(mutation);
+    }
   }
-  return { pending, completed };
+  const pending = [...attempts.entries()]
+    .filter(([source]) => !terminalSources.has(source))
+    .map(([, mutation]) => mutation);
+  return { pending, completed, reopened, attempts };
 }
 
-function sourceClosureAttemptReceiptMutation(revision: SourcePullRevision): LooseRecord {
+function sourceClosureAttemptReceiptMutation(
+  revision: SourcePullRevision,
+  expectedCloseActor: string,
+  stateEvents: readonly SourcePullStateEvent[],
+): LooseRecord {
   return {
     operation: "begin_close_source_pull_request",
     source: revision.url,
@@ -1002,6 +1143,9 @@ function sourceClosureAttemptReceiptMutation(revision: SourcePullRevision): Loos
     pull_number: revision.number,
     expected_head_sha: revision.expected_head_sha,
     expected_base_sha: revision.expected_base_sha,
+    expected_close_actor: requiredCloseActor(expectedCloseActor),
+    last_state_event_id:
+      stateEvents.length === 0 ? null : Math.max(...stateEvents.map((event) => event.id)),
   };
 }
 
@@ -1009,10 +1153,14 @@ export function checkpointSourceClosureReceipt({
   publication,
   receipt,
   intent,
+  expectedCloseActor,
+  sourceStateEvents = new Map(),
 }: {
   publication: PreparedPublication;
   receipt: PublicationReceipt;
   intent: ExecutionIntent;
+  expectedCloseActor: string;
+  sourceStateEvents?: ReadonlyMap<string, readonly SourcePullStateEvent[]>;
 }): PublicationReceipt {
   if (receipt.operation !== "open_pull_request") return receipt;
   const completedClosures = checkpointedSourceClosures(publication, receipt, intent);
@@ -1026,7 +1174,13 @@ export function checkpointSourceClosureReceipt({
     ) {
       continue;
     }
-    mutations.push(sourceClosureAttemptReceiptMutation(action.revision));
+    mutations.push(
+      sourceClosureAttemptReceiptMutation(
+        action.revision,
+        expectedCloseActor,
+        sourceStateEvents.get(action.source.url) ?? [],
+      ),
+    );
   }
   return publicationReceipt({
     validationReceiptSha256: receipt.validation_receipt_sha256,
@@ -1041,11 +1195,13 @@ export function completePendingSourceClosureReceipt({
   receipt,
   intent,
   revision,
+  evidence,
 }: {
   publication: PreparedPublication;
   receipt: PublicationReceipt;
   intent: ExecutionIntent;
   revision: SourcePullRevision;
+  evidence: SourceCloseEvidence;
 }): PublicationReceipt {
   if (checkpointedSourceClosures(publication, receipt, intent).has(revision.url)) {
     return receipt;
@@ -1057,11 +1213,14 @@ export function completePendingSourceClosureReceipt({
     validationReceiptSha256: receipt.validation_receipt_sha256,
     publication,
     targetPrNumber: receipt.target_pr_number,
-    mutations: [...receipt.mutations, sourceClosureReceiptMutation(revision)],
+    mutations: [...receipt.mutations, sourceClosureReceiptMutation(revision, evidence)],
   });
 }
 
-function sourceClosureReceiptMutation(revision: SourcePullRevision): LooseRecord {
+function sourceClosureReceiptMutation(
+  revision: SourcePullRevision,
+  evidence: SourceCloseEvidence,
+): LooseRecord {
   return {
     operation: "close_source_pull_request",
     source: revision.url,
@@ -1069,6 +1228,169 @@ function sourceClosureReceiptMutation(revision: SourcePullRevision): LooseRecord
     pull_number: revision.number,
     expected_head_sha: revision.expected_head_sha,
     expected_base_sha: revision.expected_base_sha,
+    ...evidence,
+  };
+}
+
+export function preservePendingSourceReopenReceipt({
+  publication,
+  receipt,
+  intent,
+  revision,
+  evidence,
+}: {
+  publication: PreparedPublication;
+  receipt: PublicationReceipt;
+  intent: ExecutionIntent;
+  revision: SourcePullRevision;
+  evidence: SourceReopenEvidence;
+}): PublicationReceipt {
+  if (!pendingSourceClosures(publication, receipt, intent).has(revision.url)) {
+    throw new Error("source reopen preservation lacks its durable pre-close checkpoint");
+  }
+  return publicationReceipt({
+    validationReceiptSha256: receipt.validation_receipt_sha256,
+    publication,
+    targetPrNumber: receipt.target_pr_number,
+    mutations: [
+      ...receipt.mutations,
+      {
+        operation: "preserve_reopened_source_pull_request",
+        source: revision.url,
+        repo: revision.repo,
+        pull_number: revision.number,
+        expected_head_sha: revision.expected_head_sha,
+        expected_base_sha: revision.expected_base_sha,
+        ...evidence,
+      },
+    ],
+  });
+}
+
+function sourceClosureExpectedActor(mutation: LooseRecord): string {
+  return requiredCloseActor(mutation.expected_close_actor);
+}
+
+function sourceClosureCheckpointEventId(mutation: LooseRecord): number | null {
+  if (mutation.last_state_event_id === null) return null;
+  const eventId = Number(mutation.last_state_event_id);
+  if (!Number.isSafeInteger(eventId) || eventId <= 0) {
+    throw new Error("source-close checkpoint event id is invalid");
+  }
+  return eventId;
+}
+
+function assertCloseEvidenceMatchesAttempt(evidence: LooseRecord, attempt: LooseRecord) {
+  const expectedActor = sourceClosureExpectedActor(attempt);
+  const marker = sourceClosureCheckpointEventId(attempt) ?? 0;
+  const eventId = requiredEventId(evidence.close_event_id, "source close event id");
+  if (
+    eventId <= marker ||
+    normalizeActor(evidence.close_actor) !== normalizeActor(expectedActor) ||
+    !validEventTimestamp(evidence.closed_at)
+  ) {
+    throw new Error("source-close completion lacks trusted ClawSweeper actor evidence");
+  }
+}
+
+function assertReopenEvidenceMatchesAttempt(evidence: LooseRecord, attempt: LooseRecord) {
+  assertCloseEvidenceMatchesAttempt(evidence, attempt);
+  const reopenEventId = requiredEventId(evidence.reopen_event_id, "source reopen event id");
+  if (
+    reopenEventId <= Number(evidence.close_event_id) ||
+    !normalizeActor(evidence.reopen_actor) ||
+    !validEventTimestamp(evidence.reopened_at)
+  ) {
+    throw new Error("source reopen preservation evidence is invalid");
+  }
+}
+
+function requiredEventId(value: unknown, label: string): number {
+  const eventId = Number(value);
+  if (!Number.isSafeInteger(eventId) || eventId <= 0) throw new Error(`${label} is invalid`);
+  return eventId;
+}
+
+function requiredCloseActor(value: unknown): string {
+  const actor = String(value ?? "").trim();
+  if (!/^[A-Za-z0-9_.-]+\[bot\]$/i.test(actor)) {
+    throw new Error("source-close actor must be a GitHub App bot login");
+  }
+  return actor;
+}
+
+function normalizeActor(value: unknown): string {
+  return String(value ?? "")
+    .trim()
+    .toLowerCase();
+}
+
+function validEventTimestamp(value: unknown): boolean {
+  const text = String(value ?? "");
+  return Boolean(text) && Number.isFinite(Date.parse(text));
+}
+
+export function sourceCloseRecovery({
+  attempt,
+  state,
+  events,
+}: {
+  attempt: LooseRecord;
+  state: string;
+  events: readonly SourcePullStateEvent[];
+}):
+  | { status: "retry" }
+  | { status: "closed"; evidence: SourceCloseEvidence }
+  | { status: "reopened"; evidence: SourceReopenEvidence } {
+  const expectedActor = sourceClosureExpectedActor(attempt);
+  const marker = sourceClosureCheckpointEventId(attempt) ?? 0;
+  const afterCheckpoint = [...events]
+    .filter((event) => event.id > marker)
+    .sort((left, right) => left.id - right.id);
+  const normalizedState = state.toLowerCase();
+  if (afterCheckpoint.length === 0) {
+    if (normalizedState === "open") return { status: "retry" };
+    throw new Error("pending source close cannot be attributed to ClawSweeper");
+  }
+
+  const latest = afterCheckpoint.at(-1)!;
+  const trustedClose = [...afterCheckpoint]
+    .reverse()
+    .find(
+      (event) =>
+        event.event === "closed" &&
+        normalizeActor(event.actor) === normalizeActor(expectedActor) &&
+        event.id <= latest.id,
+    );
+  if (latest.event === "closed") {
+    if (
+      normalizedState !== "closed" ||
+      normalizeActor(latest.actor) !== normalizeActor(expectedActor)
+    ) {
+      throw new Error("pending source close was completed by an untrusted actor");
+    }
+    return {
+      status: "closed",
+      evidence: {
+        close_event_id: latest.id,
+        close_actor: latest.actor,
+        closed_at: latest.created_at,
+      },
+    };
+  }
+  if (normalizedState !== "open" || !trustedClose) {
+    throw new Error("pending source reopen is not backed by a ClawSweeper close");
+  }
+  return {
+    status: "reopened",
+    evidence: {
+      close_event_id: trustedClose.id,
+      close_actor: trustedClose.actor,
+      closed_at: trustedClose.created_at,
+      reopen_event_id: latest.id,
+      reopen_actor: latest.actor,
+      reopened_at: latest.created_at,
+    },
   };
 }
 
@@ -1079,6 +1401,7 @@ export function checkpointPublishedReplacementSourceClosures({
   expectedAuthorizationSha256,
   expectedValidationReceiptSha256,
   expectedPublicationReceiptSha256,
+  expectedCloseActor,
 }: {
   root: string;
   publicationReceiptPath: string;
@@ -1086,6 +1409,7 @@ export function checkpointPublishedReplacementSourceClosures({
   expectedAuthorizationSha256: string;
   expectedValidationReceiptSha256: string;
   expectedPublicationReceiptSha256: string;
+  expectedCloseActor: string;
 }): PublicationReceipt {
   const receipt = verifyPublishedReceipt({
     root,
@@ -1115,7 +1439,21 @@ export function checkpointPublishedReplacementSourceClosures({
     targetPrNumber: receipt.target_pr_number,
     checkpointedClosures: authorizedClosedSources,
   });
-  const checkpoint = checkpointSourceClosureReceipt({ publication, receipt, intent });
+  const sourceStateEvents = new Map(
+    preparedSourceClosureActions(publication, intent)
+      .filter((action) => action.operation === "close")
+      .map((action) => [
+        action.source.url,
+        readSourcePullStateEvents(action.revision.repo, action.revision.number),
+      ]),
+  );
+  const checkpoint = checkpointSourceClosureReceipt({
+    publication,
+    receipt,
+    intent,
+    expectedCloseActor,
+    sourceStateEvents,
+  });
   writeJson(publicationReceiptPath, checkpoint);
   return checkpoint;
 }
@@ -1127,6 +1465,7 @@ export function closePublishedReplacementSources({
   expectedAuthorizationSha256,
   expectedValidationReceiptSha256,
   expectedPublicationReceiptSha256,
+  expectedCloseActor,
 }: {
   root: string;
   publicationReceiptPath: string;
@@ -1134,6 +1473,7 @@ export function closePublishedReplacementSources({
   expectedAuthorizationSha256: string;
   expectedValidationReceiptSha256: string;
   expectedPublicationReceiptSha256: string;
+  expectedCloseActor: string;
 }): PublicationReceipt {
   const receipt = verifyPublishedReceipt({
     root,
@@ -1164,6 +1504,7 @@ export function closePublishedReplacementSources({
     targetPrNumber: receipt.target_pr_number,
     checkpointedClosures,
     pendingClosures,
+    expectedCloseActor,
   });
 }
 
@@ -2265,6 +2606,94 @@ function ensurePublishedReplacementAvailable({
   verifyPublishedPull(intent.target_repo, targetPrNumber, publication, intent);
 }
 
+function assertExactPublishedReplacementAvailable({
+  intent,
+  publication,
+  publicationCheckpoint,
+  targetPrNumber,
+}: {
+  intent: ExecutionIntent;
+  publication: PreparedPublication;
+  publicationCheckpoint: PublicationReceipt;
+  targetPrNumber: number;
+}) {
+  const pull = ghObject(`repos/${intent.target_repo}/pulls/${targetPrNumber}`);
+  const selection = selectAuthorizedReplacementPull({
+    pulls: [pull],
+    publication,
+    intent,
+    publicationCheckpoint,
+  });
+  if (!selection || selection.number !== targetPrNumber || selection.state !== "open") {
+    throw new Error("published replacement is no longer the exact open authorized target");
+  }
+  assertPublishedPullIdentity({ pull, publication, intent });
+}
+
+class SourceCloseCompensationFailure extends Error {
+  readonly closeEvidence: SourceCloseEvidence;
+
+  constructor(message: string, closeEvidence: SourceCloseEvidence) {
+    super(message);
+    this.name = "SourceCloseCompensationFailure";
+    this.closeEvidence = closeEvidence;
+  }
+}
+
+export function runReplacementBoundSourceClose({
+  assertSourceOpen,
+  assertReplacementOpen,
+  closeSource,
+  readRecovery,
+  compensateSource,
+  readCompensatedRecovery,
+}: {
+  assertSourceOpen: () => void;
+  assertReplacementOpen: () => void;
+  closeSource: () => void;
+  readRecovery: () => ReturnType<typeof sourceCloseRecovery>;
+  compensateSource: () => void;
+  readCompensatedRecovery: () => ReturnType<typeof sourceCloseRecovery>;
+}):
+  | { status: "closed"; evidence: SourceCloseEvidence }
+  | { status: "compensated"; evidence: SourceReopenEvidence; replacement_error: string } {
+  assertSourceOpen();
+  assertReplacementOpen();
+  closeSource();
+
+  let replacementError: unknown = null;
+  try {
+    assertReplacementOpen();
+  } catch (error) {
+    replacementError = error;
+  }
+  const recovery = readRecovery();
+  if (recovery.status !== "closed") {
+    throw new Error("source pull request close did not persist with trusted actor evidence");
+  }
+  if (!replacementError) return recovery;
+
+  try {
+    compensateSource();
+    const compensated = readCompensatedRecovery();
+    if (compensated.status !== "reopened") {
+      throw new Error("source close compensation did not persist");
+    }
+    return {
+      status: "compensated",
+      evidence: compensated.evidence,
+      replacement_error: String((replacementError as Error)?.message ?? replacementError),
+    };
+  } catch (compensationError) {
+    throw new SourceCloseCompensationFailure(
+      `replacement changed after source close and compensation failed: ${String(
+        (compensationError as Error)?.message ?? compensationError,
+      )}`,
+      recovery.evidence,
+    );
+  }
+}
+
 function closeSupersededReplacementSources({
   cwd,
   intent,
@@ -2274,6 +2703,7 @@ function closeSupersededReplacementSources({
   targetPrNumber,
   checkpointedClosures,
   pendingClosures,
+  expectedCloseActor,
 }: {
   cwd: string;
   intent: ExecutionIntent;
@@ -2283,10 +2713,12 @@ function closeSupersededReplacementSources({
   targetPrNumber: number;
   checkpointedClosures: ReadonlySet<string>;
   pendingClosures: ReadonlySet<string>;
+  expectedCloseActor: string;
 }): PublicationReceipt {
   let currentReceipt = publicationCheckpoint;
   let completedClosures = new Set(checkpointedClosures);
   const pendingAttempts = new Set(pendingClosures);
+  let preservedReopens = preservedReopenedSourceClosures(publication, currentReceipt, intent);
   const revisions = new Map(
     sourcePullRevisions(intent).map((revision) => [revision.url, revision]),
   );
@@ -2298,24 +2730,46 @@ function closeSupersededReplacementSources({
     if (!revision) {
       throw new Error("pending source closeout is missing its authorized source revision");
     }
+    const attempt = sourceClosureReceiptState(publication, currentReceipt, intent).attempts.get(
+      source,
+    );
+    if (!attempt) {
+      throw new Error("pending source closeout is missing its durable begin checkpoint");
+    }
+    if (
+      normalizeActor(sourceClosureExpectedActor(attempt)) !==
+      normalizeActor(requiredCloseActor(expectedCloseActor))
+    ) {
+      throw new Error("pending source closeout actor changed across workflow attempts");
+    }
     const sourcePull = revalidateSourcePullRevision(revision, { allowClosed: true });
     const state = String(sourcePull.state ?? "").toLowerCase();
-    const stateBlock = sourceCloseoutStateBlock({
-      source,
+    const recovery = sourceCloseRecovery({
+      attempt,
       state,
-      completed: false,
-      pending: true,
+      events: readSourcePullStateEvents(revision.repo, revision.number),
     });
-    if (stateBlock) throw new Error(stateBlock);
-    if (state !== "closed") continue;
-    currentReceipt = completePendingSourceClosureReceipt({
-      publication,
-      receipt: currentReceipt,
-      intent,
-      revision,
-    });
+    if (recovery.status === "retry") continue;
+    currentReceipt =
+      recovery.status === "closed"
+        ? completePendingSourceClosureReceipt({
+            publication,
+            receipt: currentReceipt,
+            intent,
+            revision,
+            evidence: recovery.evidence,
+          })
+        : preservePendingSourceReopenReceipt({
+            publication,
+            receipt: currentReceipt,
+            intent,
+            revision,
+            evidence: recovery.evidence,
+          });
     writeJson(publicationReceiptPath, currentReceipt);
     completedClosures = checkpointedSourceClosures(publication, currentReceipt, intent);
+    preservedReopens = preservedReopenedSourceClosures(publication, currentReceipt, intent);
+    pendingAttempts.delete(source);
   }
 
   for (const source of completedClosures) {
@@ -2331,6 +2785,16 @@ function closeSupersededReplacementSources({
     });
     if (stateBlock) throw new Error(stateBlock);
   }
+  for (const source of preservedReopens) {
+    const revision = revisions.get(source);
+    if (!revision) {
+      throw new Error("preserved source reopen is missing its authorized source revision");
+    }
+    const sourcePull = revalidateSourcePullRevision(revision);
+    if (String(sourcePull.state ?? "").toLowerCase() !== "open") {
+      throw new Error(`preserved reopened source pull request is no longer open: ${source}`);
+    }
+  }
 
   ensurePublishedReplacementAvailable({
     cwd,
@@ -2343,6 +2807,7 @@ function closeSupersededReplacementSources({
 
   for (const action of actions) {
     if (action.operation === "close") {
+      if (preservedReopens.has(action.source.url)) continue;
       if (!completedClosures.has(action.source.url) && !pendingAttempts.has(action.source.url)) {
         throw new Error("source closeout lacks its durable pre-close checkpoint");
       }
@@ -2390,48 +2855,124 @@ function closeSupersededReplacementSources({
     });
     if (action.operation !== "close") continue;
 
-    ensurePublishedReplacementAvailable({
-      cwd,
-      intent,
-      publication,
-      publicationCheckpoint: currentReceipt,
-      targetPrNumber,
-      checkpointedClosures: completedClosures,
-    });
-    const sourcePull = revalidateSourcePullRevision(action.revision);
-    const sourceState = String(sourcePull.state ?? "").toLowerCase();
-    if (sourceState === "open") {
-      runPublicationMutation({
+    const attempt = sourceClosureReceiptState(publication, currentReceipt, intent).attempts.get(
+      action.source.url,
+    );
+    if (!attempt) throw new Error("source closeout lacks its durable begin checkpoint");
+    const authorizedClosedSources = new Set([...completedClosures, ...pendingAttempts]);
+    let result: ReturnType<typeof runReplacementBoundSourceClose> | undefined;
+    try {
+      result = runPublicationMutation({
         intent,
         publication,
-        checkpointedClosures: completedClosures,
+        checkpointedClosures: authorizedClosedSources,
         targetNumbers: [targetPrNumber, action.source.number],
-        mutation: () => {
-          revalidateSourcePullRevision(action.revision);
-          return run(
-            "gh",
-            ["pr", "close", String(action.source.number), "--repo", intent.target_repo],
-            {
-              cwd,
+        mutation: () =>
+          runReplacementBoundSourceClose({
+            assertSourceOpen: () => {
+              const sourcePull = revalidateSourcePullRevision(action.revision);
+              if (String(sourcePull.state ?? "").toLowerCase() !== "open") {
+                throw new Error("authorized source pull request is no longer open");
+              }
             },
-          );
-        },
+            assertReplacementOpen: () =>
+              assertExactPublishedReplacementAvailable({
+                intent,
+                publication,
+                publicationCheckpoint: currentReceipt,
+                targetPrNumber,
+              }),
+            closeSource: () => {
+              run(
+                "gh",
+                ["pr", "close", String(action.source.number), "--repo", intent.target_repo],
+                { cwd },
+              );
+            },
+            readRecovery: () => {
+              const sourcePull = revalidateSourcePullRevision(action.revision, {
+                allowClosed: true,
+              });
+              return sourceCloseRecovery({
+                attempt,
+                state: String(sourcePull.state ?? "").toLowerCase(),
+                events: readSourcePullStateEvents(action.revision.repo, action.revision.number),
+              });
+            },
+            compensateSource: () =>
+              runPublicationMutation({
+                intent,
+                publication,
+                checkpointedClosures: authorizedClosedSources,
+                targetNumbers: [action.source.number],
+                mutation: () => {
+                  const sourcePull = revalidateSourcePullRevision(action.revision, {
+                    allowClosed: true,
+                  });
+                  const recovery = sourceCloseRecovery({
+                    attempt,
+                    state: String(sourcePull.state ?? "").toLowerCase(),
+                    events: readSourcePullStateEvents(action.revision.repo, action.revision.number),
+                  });
+                  if (recovery.status !== "closed") {
+                    throw new Error("source close compensation lost trusted close identity");
+                  }
+                  run(
+                    "gh",
+                    ["pr", "reopen", String(action.source.number), "--repo", intent.target_repo],
+                    { cwd },
+                  );
+                },
+              }),
+            readCompensatedRecovery: () => {
+              const sourcePull = revalidateSourcePullRevision(action.revision, {
+                allowClosed: true,
+              });
+              return sourceCloseRecovery({
+                attempt,
+                state: String(sourcePull.state ?? "").toLowerCase(),
+                events: readSourcePullStateEvents(action.revision.repo, action.revision.number),
+              });
+            },
+          }),
       });
-      const closedSource = revalidateSourcePullRevision(action.revision, { allowClosed: true });
-      if (String(closedSource.state ?? "").toLowerCase() !== "closed") {
-        throw new Error("source pull request close did not persist");
+    } catch (error) {
+      if (error instanceof SourceCloseCompensationFailure) {
+        currentReceipt = completePendingSourceClosureReceipt({
+          publication,
+          receipt: currentReceipt,
+          intent,
+          revision: action.revision,
+          evidence: error.closeEvidence,
+        });
+        writeJson(publicationReceiptPath, currentReceipt);
       }
-      currentReceipt = completePendingSourceClosureReceipt({
+      throw error;
+    }
+    if (!result) throw new Error("source close mutation returned no result");
+    if (result.status === "compensated") {
+      currentReceipt = preservePendingSourceReopenReceipt({
         publication,
         receipt: currentReceipt,
         intent,
         revision: action.revision,
+        evidence: result.evidence,
       });
       writeJson(publicationReceiptPath, currentReceipt);
-      completedClosures = checkpointedSourceClosures(publication, currentReceipt, intent);
-    } else {
-      throw new Error(`authorized source pull request is ${sourceState || "unknown"}`);
+      throw new Error(
+        `replacement changed after source close; source reopen compensation persisted: ${result.replacement_error}`,
+      );
     }
+    currentReceipt = completePendingSourceClosureReceipt({
+      publication,
+      receipt: currentReceipt,
+      intent,
+      revision: action.revision,
+      evidence: result.evidence,
+    });
+    writeJson(publicationReceiptPath, currentReceipt);
+    completedClosures = checkpointedSourceClosures(publication, currentReceipt, intent);
+    pendingAttempts.delete(action.source.url);
   }
   return currentReceipt;
 }
@@ -2843,6 +3384,29 @@ function ghPagedArray(endpoint: string): LooseRecord[] {
     throw new Error(`GitHub paginated response for ${endpoint} is invalid`);
   }
   return pages.flat().map((value) => objectValue(value, `GitHub item for ${endpoint}`));
+}
+
+function readSourcePullStateEvents(repo: string, number: number): SourcePullStateEvent[] {
+  const events = ghPagedArray(`repos/${repo}/issues/${number}/events?per_page=100`)
+    .filter((event) => event.event === "closed" || event.event === "reopened")
+    .map((event) => {
+      const actor = String(event.actor?.login ?? "").trim();
+      const createdAt = String(event.created_at ?? "");
+      if (!actor || !validEventTimestamp(createdAt)) {
+        throw new Error("source pull request state event identity is invalid");
+      }
+      return {
+        id: requiredEventId(event.id, "source pull request state event id"),
+        event: event.event as "closed" | "reopened",
+        actor,
+        created_at: createdAt,
+      };
+    })
+    .sort((left, right) => left.id - right.id);
+  if (new Set(events.map((event) => event.id)).size !== events.length) {
+    throw new Error("source pull request state events contain duplicate ids");
+  }
+  return events;
 }
 
 function githubLabelNames(labels: unknown): string[] {

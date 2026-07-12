@@ -17,16 +17,22 @@ import {
   completePendingSourceClosureReceipt,
   missingRequiredPublicationLabels,
   pendingSourceClosures,
+  preservePendingSourceReopenReceipt,
+  preservedReopenedSourceClosures,
   prepareExecutionAuthorization,
   preparedRefPublicationState,
   publicationPauseItems,
   replacementPublicationLabels,
+  restoreCheckpointedExecutionAuthorization,
   runExactReplacementReopenMutation,
   runHeadBoundPullMutation,
   runPublicationMutationBoundary,
+  runReplacementBoundSourceClose,
   selectAuthorizedReplacementPull,
   sealExecutionHandoff,
+  sourceCloseRecovery,
   sourceCloseoutStateBlock,
+  type SourcePullStateEvent,
   type SourcePullRevision,
   verifyExecutionHandoff,
   verifyValidationReceipt,
@@ -75,6 +81,77 @@ test("execution authorization selects one explicit run and seals its immutable i
     assert.equal(
       verifyExecutionHandoff(fixture.outputRoot, authorization.identity_sha256).tree_sha256,
       manifest.tree_sha256,
+    );
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("full reruns restore the exact checkpoint authorization without live source intake", () => {
+  const fixture = handoffFixture();
+  try {
+    const authorization = prepareAuthorization(fixture);
+    const immutableRoot = path.join(path.dirname(fixture.outputRoot), "immutable");
+    fs.cpSync(fixture.outputRoot, immutableRoot, { recursive: true });
+    const intent = executionIntent(authorization.action_identity_sha256);
+    const target = path.join(path.dirname(fixture.outputRoot), "target");
+    fs.mkdirSync(target);
+    fs.writeFileSync(path.join(target, "fixture.txt"), "prepared\n");
+    git(target, "init");
+    git(target, "config", "user.name", "ClawSweeper Test");
+    git(target, "config", "user.email", "clawsweeper@example.invalid");
+    git(target, "add", ".");
+    git(target, "-c", "commit.gpgsign=false", "commit", "-m", "prepared");
+    const publication = createPreparedPublication({
+      outputDir: path.join(fixture.outputRoot, "run"),
+      targetDir: target,
+      authorizationSha256: authorization.identity_sha256,
+      executionIntent: intent,
+      fixArtifact: JSON.parse(
+        fs.readFileSync(path.join(fixture.outputRoot, "run", "result.json"), "utf8"),
+      ).fix_artifact,
+      repairDeltaBaseSha: intent.target_base_sha,
+      preparedHeadSha: git(target, "rev-parse", "HEAD"),
+      preparedTreeSha: git(target, "rev-parse", "HEAD^{tree}"),
+    });
+    const receipt = publicationReceipt({
+      validationReceiptSha256: "c".repeat(64),
+      publication,
+      targetPrNumber: 99,
+      mutations: [],
+    });
+    const receiptPath = path.join(path.dirname(fixture.outputRoot), "receipt.json");
+    fs.writeFileSync(receiptPath, `${JSON.stringify(receipt, null, 2)}\n`);
+    const restoredRoot = path.join(path.dirname(fixture.outputRoot), "restored");
+    const restored = restoreCheckpointedExecutionAuthorization({
+      sourceRoot: immutableRoot,
+      publicationRoot: fixture.outputRoot,
+      publicationReceiptPath: receiptPath,
+      outputRoot: restoredRoot,
+      workflowRunId: "123456",
+      workflowRunAttempt: "3",
+      workflowRepository: "openclaw/clawsweeper",
+      workflowSha: "a".repeat(40),
+      sourceJobPath: authorization.source_job_path,
+      allowedOwner: "openclaw",
+    });
+    assert.equal(restored.identity_sha256, authorization.identity_sha256);
+    assert.equal(fs.existsSync(path.join(restoredRoot, "run", "publication-intent.json")), false);
+    assert.throws(
+      () =>
+        restoreCheckpointedExecutionAuthorization({
+          sourceRoot: immutableRoot,
+          publicationRoot: fixture.outputRoot,
+          publicationReceiptPath: receiptPath,
+          outputRoot: restoredRoot,
+          workflowRunId: "123456",
+          workflowRunAttempt: "2",
+          workflowRepository: "openclaw/clawsweeper",
+          workflowSha: "a".repeat(40),
+          sourceJobPath: authorization.source_job_path,
+          allowedOwner: "openclaw",
+        }),
+      /does not belong to this exact workflow rerun/,
     );
   } finally {
     fixture.cleanup();
@@ -546,6 +623,13 @@ test("replacement publication binds source, implementation, and automerge labels
 
 test("planned source closure is not checkpointed until an exact publication receipt exists", () => {
   const revision = sourcePullRevision(42);
+  const closeActor = "openclaw-clawsweeper[bot]";
+  const priorEvents = [sourceStateEvent(10, "reopened", "maintainer")];
+  const closeEvidence = {
+    close_event_id: 11,
+    close_actor: closeActor,
+    closed_at: "2026-07-12T00:01:00Z",
+  };
   const intent = revisionBoundIntent(revision, "open_pull_request");
   const publication = checkpointPublication([
     {
@@ -577,6 +661,8 @@ test("planned source closure is not checkpointed until an exact publication rece
     publication,
     receipt,
     intent,
+    expectedCloseActor: closeActor,
+    sourceStateEvents: new Map([[revision.url, priorEvents]]),
   });
   assert.equal(checkpointedSourceClosures(publication, pendingReceipt, intent).size, 0);
   assert.deepEqual([...pendingSourceClosures(publication, pendingReceipt, intent)], [revision.url]);
@@ -585,6 +671,8 @@ test("planned source closure is not checkpointed until an exact publication rece
       publication,
       receipt: pendingReceipt,
       intent,
+      expectedCloseActor: closeActor,
+      sourceStateEvents: new Map([[revision.url, priorEvents]]),
     }).identity_sha256,
     pendingReceipt.identity_sha256,
   );
@@ -601,6 +689,7 @@ test("planned source closure is not checkpointed until an exact publication rece
     receipt: pendingReceipt,
     intent,
     revision,
+    evidence: closeEvidence,
   });
   assert.deepEqual(
     [...checkpointedSourceClosures(publication, recoveredReceipt, intent)],
@@ -612,6 +701,7 @@ test("planned source closure is not checkpointed until an exact publication rece
       receipt: recoveredReceipt,
       intent,
       revision,
+      evidence: closeEvidence,
     }).identity_sha256,
     recoveredReceipt.identity_sha256,
   );
@@ -622,6 +712,7 @@ test("planned source closure is not checkpointed until an exact publication rece
         receipt,
         intent,
         revision,
+        evidence: closeEvidence,
       }),
     /lacks its durable pre-close checkpoint/,
   );
@@ -631,12 +722,23 @@ test("planned source closure is not checkpointed until an exact publication rece
     targetPrNumber: 99,
     mutations: [
       {
+        operation: "begin_close_source_pull_request",
+        source: revision.url,
+        repo: revision.repo,
+        pull_number: revision.number,
+        expected_head_sha: revision.expected_head_sha,
+        expected_base_sha: revision.expected_base_sha,
+        expected_close_actor: closeActor,
+        last_state_event_id: 10,
+      },
+      {
         operation: "close_source_pull_request",
         source: revision.url,
         repo: revision.repo,
         pull_number: revision.number,
         expected_head_sha: revision.expected_head_sha,
         expected_base_sha: revision.expected_base_sha,
+        ...closeEvidence,
       },
     ],
   });
@@ -676,12 +778,23 @@ test("planned source closure is not checkpointed until an exact publication rece
     targetPrNumber: 99,
     mutations: [
       {
+        operation: "begin_close_source_pull_request",
+        source: revision.url,
+        repo: revision.repo,
+        pull_number: revision.number,
+        expected_head_sha: revision.expected_head_sha,
+        expected_base_sha: revision.expected_base_sha,
+        expected_close_actor: closeActor,
+        last_state_event_id: 10,
+      },
+      {
         operation: "close_source_pull_request",
         source: revision.url,
         repo: revision.repo,
         pull_number: revision.number,
         expected_head_sha: "f".repeat(40),
         expected_base_sha: revision.expected_base_sha,
+        ...closeEvidence,
       },
     ],
   });
@@ -689,6 +802,130 @@ test("planned source closure is not checkpointed until an exact publication rece
     () => checkpointedSourceClosures(publication, unauthorizedCompletion, intent),
     /unauthorized source-close completion/,
   );
+});
+
+test("pending source recovery requires the ClawSweeper close actor and preserves a later reopen", () => {
+  const revision = sourcePullRevision(42);
+  const intent = revisionBoundIntent(revision, "open_pull_request");
+  const publication = checkpointPublication([{ source: revision.url, operation: "close" }]);
+  const closeActor = "openclaw-clawsweeper[bot]";
+  const receipt = checkpointSourceClosureReceipt({
+    publication,
+    receipt: publicationReceipt({
+      validationReceiptSha256: "c".repeat(64),
+      publication,
+      targetPrNumber: 99,
+      mutations: [],
+    }),
+    intent,
+    expectedCloseActor: closeActor,
+    sourceStateEvents: new Map([[revision.url, [sourceStateEvent(10, "reopened", "maintainer")]]]),
+  });
+  const attempt = receipt.mutations.find(
+    (mutation) => mutation.operation === "begin_close_source_pull_request",
+  )!;
+
+  assert.throws(
+    () =>
+      sourceCloseRecovery({
+        attempt,
+        state: "closed",
+        events: [sourceStateEvent(11, "closed", "maintainer")],
+      }),
+    /untrusted actor/,
+  );
+  assert.deepEqual(sourceCloseRecovery({ attempt, state: "open", events: [] }), {
+    status: "retry",
+  });
+  const recovery = sourceCloseRecovery({
+    attempt,
+    state: "open",
+    events: [
+      sourceStateEvent(11, "closed", closeActor),
+      sourceStateEvent(12, "reopened", "maintainer"),
+    ],
+  });
+  assert.equal(recovery.status, "reopened");
+  if (recovery.status !== "reopened") return;
+  const preserved = preservePendingSourceReopenReceipt({
+    publication,
+    receipt,
+    intent,
+    revision,
+    evidence: recovery.evidence,
+  });
+  assert.deepEqual([...pendingSourceClosures(publication, preserved, intent)], []);
+  assert.deepEqual(
+    [...preservedReopenedSourceClosures(publication, preserved, intent)],
+    [revision.url],
+  );
+});
+
+test("source close rechecks replacement immediately and compensates post-close drift", () => {
+  const closeActor = "openclaw-clawsweeper[bot]";
+  const attempt = {
+    expected_close_actor: closeActor,
+    last_state_event_id: 10,
+  };
+  const calls: string[] = [];
+  let replacementChecks = 0;
+  let state = "open";
+  let events: SourcePullStateEvent[] = [];
+  const result = runReplacementBoundSourceClose({
+    assertSourceOpen: () => calls.push("source"),
+    assertReplacementOpen: () => {
+      calls.push("replacement");
+      replacementChecks += 1;
+      if (replacementChecks > 1) throw new Error("replacement drifted");
+    },
+    closeSource: () => {
+      calls.push("close");
+      state = "closed";
+      events = [sourceStateEvent(11, "closed", closeActor)];
+    },
+    readRecovery: () => sourceCloseRecovery({ attempt, state, events }),
+    compensateSource: () => {
+      calls.push("compensate");
+      state = "open";
+      events.push(sourceStateEvent(12, "reopened", closeActor));
+    },
+    readCompensatedRecovery: () => sourceCloseRecovery({ attempt, state, events }),
+  });
+  assert.deepEqual(calls.slice(0, 3), ["source", "replacement", "close"]);
+  assert.equal(result.status, "compensated");
+  assert.equal(state, "open");
+});
+
+test("source close fails closed when replacement drift compensation cannot reopen", () => {
+  const closeActor = "openclaw-clawsweeper[bot]";
+  const attempt = {
+    expected_close_actor: closeActor,
+    last_state_event_id: 10,
+  };
+  let state = "open";
+  let events: SourcePullStateEvent[] = [];
+  let replacementChecks = 0;
+  assert.throws(
+    () =>
+      runReplacementBoundSourceClose({
+        assertSourceOpen: () => undefined,
+        assertReplacementOpen: () => {
+          replacementChecks += 1;
+          if (replacementChecks > 1) throw new Error("replacement drifted");
+        },
+        closeSource: () => {
+          state = "closed";
+          events = [sourceStateEvent(11, "closed", closeActor)];
+        },
+        readRecovery: () => sourceCloseRecovery({ attempt, state, events }),
+        compensateSource: () => {
+          throw new Error("reopen denied");
+        },
+        readCompensatedRecovery: () => sourceCloseRecovery({ attempt, state, events }),
+      }),
+    /compensation failed: reopen denied/,
+  );
+  assert.equal(state, "closed");
 });
 
 test("completed source closeout distinguishes a later human reopen", () => {
@@ -801,7 +1038,7 @@ test("publication checkpoint binds source closeout and every mutation rechecks l
   );
   assert.match(
     closeout,
-    /ensurePublishedReplacementAvailable\([\s\S]*publishExactPullComment\([\s\S]*ensurePublishedReplacementAvailable\([\s\S]*"pr",\s*"close"/,
+    /ensurePublishedReplacementAvailable\([\s\S]*publishExactPullComment\([\s\S]*runReplacementBoundSourceClose\(\{[\s\S]*assertReplacementOpen:[\s\S]*"pr",\s*"close"/,
   );
   assert.match(
     closeout,
@@ -815,8 +1052,10 @@ test("publication checkpoint binds source closeout and every mutation rechecks l
   );
   assert.match(
     closeout,
-    /for \(const source of pendingAttempts\)[\s\S]*state !== "closed"[\s\S]*completePendingSourceClosureReceipt\(\{[\s\S]*revision,[\s\S]*writeJson\(publicationReceiptPath, currentReceipt\)/,
+    /for \(const source of pendingAttempts\)[\s\S]*sourceCloseRecovery\(\{[\s\S]*completePendingSourceClosureReceipt\(\{[\s\S]*preservePendingSourceReopenReceipt\(\{[\s\S]*writeJson\(publicationReceiptPath, currentReceipt\)/,
   );
+  assert.match(closeout, /SourceCloseCompensationFailure[\s\S]*error\.closeEvidence/);
+  assert.match(closeout, /preservedReopens\.has\(action\.source\.url\)\) continue/);
   assert.ok(closeout.indexOf("sourceCloseoutStateBlock") < closeout.indexOf('["pr", "close"'));
   const resolver = source.slice(
     source.indexOf("function resolveLiveExecutionIntent"),
@@ -1430,6 +1669,19 @@ function livePull(revision: SourcePullRevision, { state = "open" } = {}) {
       ref: revision.expected_base_ref,
       sha: revision.expected_base_sha,
     },
+  };
+}
+
+function sourceStateEvent(
+  id: number,
+  event: "closed" | "reopened",
+  actor: string,
+): SourcePullStateEvent {
+  return {
+    id,
+    event,
+    actor,
+    created_at: `2026-07-12T00:${String(id).padStart(2, "0")}:00Z`,
   };
 }
 
