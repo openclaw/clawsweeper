@@ -1437,14 +1437,15 @@ test("event re-review status lets the durable queue reconcile interruptions", ()
   assert.doesNotMatch(block, /state="Superseded"/);
 });
 
-test("trusted comment router owns event ledger publication and capacity retries", () => {
+test("trusted comment router owns command ledger capacity retries", () => {
   const sweepWorkflow = readText(".github/workflows/sweep.yml");
   const routerWorkflow = readText(".github/workflows/repair-comment-router.yml");
   const eventStart = sweepWorkflow.indexOf("\n  event-review-apply:");
   const eventEnd = sweepWorkflow.indexOf("\n  target-fanout:", eventStart);
   const eventJob = sweepWorkflow.slice(eventStart, eventEnd);
 
-  assert.doesNotMatch(eventJob, /repair:publish-main/);
+  assert.match(eventJob, /publish-action-events/);
+  assert.match(eventJob, /repair:publish-main/);
   assert.doesNotMatch(eventJob, /count-command-actions/);
   assert.doesNotMatch(eventJob, /--wait-for-capacity/);
   assert.match(routerWorkflow, /Commit comment router ledger/);
