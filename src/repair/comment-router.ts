@@ -125,6 +125,15 @@ import {
 import { issueSourceRevisionSha256 } from "./issue-source-guard.js";
 import { runtimeStrictBaseBindingBlock } from "./strict-base-binding.js";
 import { compactText, escapeRegExp } from "./text-utils.js";
+import {
+  flushCommandActionEvents,
+  recordCommandClaimed,
+  recordCommandClaimRefreshed,
+  recordCommandClassified,
+  recordCommandFailure,
+  recordCommandOutcome,
+  recordCommandReceived,
+} from "./command-action-ledger.js";
 
 const args = parseArgs(process.argv.slice(2));
 const config = readCommentRouterConfig(args);
@@ -239,7 +248,10 @@ const rawCommands: LooseRecord[] = [];
 
 for (const comment of comments) {
   const command = routedCommandForComment(comment);
-  if (command) rawCommands.push(command);
+  if (command) {
+    rawCommands.push(command);
+    recordCommandReceived(command);
+  }
 }
 let supersededReReviewVersions = supersededReReviewCommentVersions(rawCommands);
 
@@ -247,10 +259,11 @@ await measureAsync("prehydrate_comment_commands", () =>
   prehydrateCommandLookups(rawCommands, { refreshIssueComments: true }),
 );
 const classifiedCommentCommands = measure("classify_comment_commands", () =>
-  rawCommands.map((command) => classifyCommand(command)),
+  rawCommands.map((command) => classifyAndRecordCommand(command)),
 );
 for (const command of listRepairLoopSweepCommands(classifiedCommentCommands)) {
   rawCommands.push(command);
+  recordCommandReceived(command);
 }
 
 const sweepCommands = rawCommands.slice(classifiedCommentCommands.length);
@@ -260,7 +273,7 @@ await measureAsync("prehydrate_repair_loop_sweeps", () =>
 const commands = [
   ...classifiedCommentCommands,
   ...measure("classify_repair_loop_sweeps", () =>
-    sweepCommands.map((command) => classifyCommand(command)),
+    sweepCommands.map((command) => classifyAndRecordCommand(command)),
   ),
 ];
 
@@ -320,21 +333,23 @@ if (execute && exactCommentVersionFastPath.suppress && exactCommentVersionFastPa
       .map((comment) => routedCommandForComment(comment))
       .filter((command): command is LooseRecord => Boolean(command));
     rawCommands.push(...resumedRawCommands);
+    for (const command of resumedRawCommands) recordCommandReceived(command);
     supersededReReviewVersions = supersededReReviewCommentVersions(rawCommands);
     await measureAsync("prehydrate_cleanup_drift_commands", () =>
       prehydrateCommandLookups(resumedRawCommands, { refreshIssueComments: true }),
     );
     const resumedClassified = measure("classify_cleanup_drift_commands", () =>
-      resumedRawCommands.map((command) => classifyCommand(command)),
+      resumedRawCommands.map((command) => classifyAndRecordCommand(command)),
     );
     const resumedSweepCommands = listRepairLoopSweepCommands(resumedClassified);
     rawCommands.push(...resumedSweepCommands);
+    for (const command of resumedSweepCommands) recordCommandReceived(command);
     await measureAsync("prehydrate_cleanup_drift_sweeps", () =>
       prehydrateCommandLookups(resumedSweepCommands, { refreshIssueComments: true }),
     );
     commands.push(
       ...resumedClassified,
-      ...resumedSweepCommands.map((command) => classifyCommand(command)),
+      ...resumedSweepCommands.map((command) => classifyAndRecordCommand(command)),
     );
     actionable = commands.filter((command: JsonValue) => command.status === "ready");
     report.scanned_comments = Number(report.scanned_comments ?? 0) + resumedComments.length;
@@ -356,13 +371,20 @@ if (execute && !exactCommentVersionFastPath.suppress) {
       report.live_worker_capacity_before_dispatch =
         capacities.length === 1 ? capacities[0] : capacities;
     }
-    report.ledger_claimed = measure("claim_dispatch_commands", () =>
+    const claimedCommands = measure("claim_dispatch_commands", () =>
       claimDispatchCommands(actionable),
     );
-    if (report.ledger_claimed) writeLedger(ledgerPath(), ledger);
+    report.ledger_claimed = appendLedger(ledger, claimedCommands);
+    if (report.ledger_claimed) {
+      writeLedger(ledgerPath(), ledger);
+      for (const command of claimedCommands) recordCommandClaimed(command);
+    }
     for (const command of commands) convergePrecreatedCommandAckComments(command);
     for (const command of commands) acknowledgeSkippedMaintainerCommand(command);
-    for (const command of actionable) executeCommand(command);
+    for (const command of commands) {
+      if (command.status !== "ready") recordCommandOutcome(command);
+    }
+    for (const command of actionable) executeCommandWithReceipt(command);
   });
   report.ledger_changed = measure("append_ledger", () => appendLedger(ledger, commands));
   if (report.ledger_changed) writeLedger(ledgerPath(), ledger);
@@ -373,6 +395,7 @@ report.timings = {
   phases: timings,
 };
 if (writeReport) writeReportFile(repoRoot(), report);
+await flushCommandActionEvents();
 console.log(JSON.stringify(report, null, 2));
 
 function measure<T>(name: string, fn: () => T): T {
@@ -456,11 +479,10 @@ function routedCommandForComment(comment: JsonValue): LooseRecord | null {
 
 function claimDispatchCommands(commands: LooseRecord[]) {
   const processedAt = new Date().toISOString();
-  const claims = commands
+  return commands
     .filter(commandNeedsDurableDispatchClaim)
     .filter((command) => !priorDispatchClaim(command))
     .map((command) => dispatchClaimEntry(command, processedAt));
-  return appendLedger(ledger, claims);
 }
 
 function dispatchClaimEntry(command: LooseRecord, processedAt: string) {
@@ -482,6 +504,7 @@ function refreshDispatchClaim(command: LooseRecord) {
   appendLedger(ledger, [claim]);
   writeLedger(ledgerPath(), ledger);
   for (const key of dispatchClaimLookupKeys(claim)) priorDispatchClaims.set(key, claim);
+  recordCommandClaimRefreshed(claim);
 }
 
 function commandNeedsDurableDispatchClaim(command: LooseRecord) {
@@ -1220,6 +1243,12 @@ function classifyCommand(command: LooseRecord): JsonValue {
       { action: "comment", status: execute ? "pending" : "planned" },
     ],
   };
+}
+
+function classifyAndRecordCommand(command: LooseRecord): LooseRecord {
+  const classified = classifyCommand(command) as LooseRecord;
+  recordCommandClassified(classified);
+  return classified;
 }
 
 function classifyAutoclose(command: LooseRecord, issue: LooseRecord, pull: LooseRecord): JsonValue {
@@ -2245,6 +2274,16 @@ function executeCommand(command: LooseRecord) {
         : "executed";
   } finally {
     clearTerminalMaintainerCommandReaction(command);
+  }
+}
+
+function executeCommandWithReceipt(command: LooseRecord) {
+  try {
+    executeCommand(command);
+    recordCommandOutcome(command);
+  } catch (error) {
+    recordCommandFailure(command, error);
+    throw error;
   }
 }
 

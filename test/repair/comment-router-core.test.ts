@@ -1944,7 +1944,7 @@ test("comment router durably claims dispatch commands and recovers exact workflo
   );
   const claimIndex = executeBlock.indexOf("claimDispatchCommands(actionable)");
   const ackIndex = executeBlock.indexOf("convergePrecreatedCommandAckComments(command)");
-  const executeIndex = executeBlock.indexOf("executeCommand(command)");
+  const executeIndex = executeBlock.indexOf("executeCommandWithReceipt(command)");
   const claimFunction = source.slice(
     source.indexOf("function claimDispatchCommands"),
     source.indexOf("function assertMutationActorIsClawsweeperBot"),
