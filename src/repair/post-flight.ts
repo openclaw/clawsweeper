@@ -34,6 +34,7 @@ import {
 import { isPassedStagedProofBundle } from "./staged-proof-gates.js";
 import { serverStrictBaseBindingBlock } from "./strict-base-binding.js";
 import { compactText as compactPlainText } from "./text-utils.js";
+import { verifyPublishedReceipt } from "./execution-handoff.js";
 
 const PASSING_CHECK_CONCLUSIONS = new Set(["SUCCESS", "SKIPPED", "NEUTRAL"]);
 const FIX_PR_MERGE_STATES = new Set(["CLEAN", "HAS_HOOKS", "UNSTABLE"]);
@@ -54,6 +55,16 @@ const jobPath = args._[0];
 const resultPathArg = args._[1];
 const latest = Boolean(args.latest);
 const dryRun = Boolean(args["dry-run"] || process.env.CLAWSWEEPER_POST_FLIGHT_DRY_RUN === "1");
+const publicationReceipt = args["publication-receipt"]
+  ? verifyPublishedReceipt({
+      root: requiredOption("handoff-root"),
+      publicationReceiptPath: requiredOption("publication-receipt"),
+      validationReceiptPath: requiredOption("validation-receipt"),
+      expectedAuthorizationSha256: requiredOption("authorization-sha256"),
+      expectedValidationReceiptSha256: requiredOption("validation-receipt-sha256"),
+      expectedPublicationReceiptSha256: requiredOption("publication-receipt-sha256"),
+    })
+  : null;
 
 if (!jobPath) {
   console.error("usage: node scripts/post-flight.ts <job.md> [result.json] [--latest] [--dry-run]");
@@ -114,11 +125,14 @@ if (!fixReport) {
   process.exit(0);
 }
 
-for (const action of fixReport.actions ?? []) {
+const fixActions = publicationReceipt
+  ? [publishedFixAction(fixReport, publicationReceipt)]
+  : (fixReport.actions ?? []);
+for (const action of fixActions) {
   if (!FIX_PR_ACTIONS.has(String(action.action ?? ""))) continue;
   const finalized = finalizeFixPr(action);
   report.actions.push(finalized);
-  if (finalized.status === "executed") {
+  if (finalized.status === "executed" && !publicationReceipt) {
     report.actions.push(...finalizePostMergeCloseouts(action, finalized));
   }
 }
@@ -173,6 +187,14 @@ function finalizeFixPr(action: LooseRecord) {
 
     const mergedAt = pull.merged_at ?? view.mergedAt ?? null;
     if (mergedAt) {
+      const mergedHead = String(pull.head?.sha ?? view.headRefOid ?? "");
+      if (!action.commit || mergedHead !== action.commit) {
+        return {
+          ...prBase,
+          status: "blocked",
+          reason: "merged pull request head does not match the authorized repair commit",
+        };
+      }
       return {
         ...prBase,
         status: "executed",
@@ -231,10 +253,11 @@ function finalizeFixPr(action: LooseRecord) {
   const strictBaseBindingBlock = serverStrictBaseBindingBlock({
     repo: result.repo,
     baseBranch: String(view.baseRefName ?? pull.base?.ref ?? ""),
-    appId: process.env.CLAWSWEEPER_APP_ID,
     configuredAppSlug: process.env.CLAWSWEEPER_APP_SLUG,
+    authenticatedAppId: process.env.CLAWSWEEPER_AUTHENTICATED_APP_ID,
     appSlug: process.env.CLAWSWEEPER_AUTHENTICATED_APP_SLUG,
     installationId: process.env.CLAWSWEEPER_AUTHENTICATED_INSTALLATION_ID,
+    policyAppId: process.env.CLAWSWEEPER_RULESET_APP_ID,
     policyAppSlug: process.env.CLAWSWEEPER_RULESET_APP_SLUG,
     policyInstallationId: process.env.CLAWSWEEPER_RULESET_INSTALLATION_ID,
     policyReadJson: rulesetPolicyReader(),
@@ -302,6 +325,34 @@ function finalizeFixPr(action: LooseRecord) {
     fixup_lines: mergeMessage.fixupLines,
     waited_ms: waitedMs,
   };
+}
+
+function publishedFixAction(fixReport: LooseRecord, receipt: LooseRecord): LooseRecord {
+  const expectedAction =
+    receipt.operation === "update_source_pr" ? "repair_contributor_branch" : "open_fix_pr";
+  const prepared = (fixReport.actions ?? []).filter(
+    (action: JsonValue) =>
+      action?.action === expectedAction &&
+      action?.status === "prepared" &&
+      action?.commit === receipt.published_head_sha,
+  );
+  if (prepared.length !== 1) {
+    throw new Error("publication receipt does not match one exact prepared fix action");
+  }
+  return {
+    ...prepared[0],
+    action: expectedAction,
+    status: receipt.operation === "update_source_pr" ? "pushed" : "opened",
+    target: receipt.target_pr_url,
+    pr_url: receipt.target_pr_url,
+    commit: receipt.published_head_sha,
+  };
+}
+
+function requiredOption(name: string): string {
+  const value = String(args[name] ?? "").trim();
+  if (!value) throw new Error(`--${name} is required with --publication-receipt`);
+  return value;
 }
 
 function rulesetPolicyReader() {

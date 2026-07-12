@@ -3,10 +3,12 @@ import fs from "node:fs";
 
 import {
   prepareExecutionAuthorization,
+  publishValidatedExecution,
   sealExecutionHandoff,
   validateExecutionHandoff,
   verifyExecutionAuthorization,
   verifyExecutionHandoff,
+  verifyPublishedReceipt,
   verifyValidationReceipt,
 } from "./execution-handoff.js";
 
@@ -24,12 +26,14 @@ switch (command) {
       workflowRepository: requiredArg(args, "workflow-repository"),
       workflowSha: requiredArg(args, "workflow-sha"),
       allowedOwner: requiredArg(args, "allowed-owner"),
+      closeSupersededSourcePrs: /^(1|true|yes|on)$/i.test(args.get("close-superseded") ?? ""),
     });
     writeOutputs({
       authorization_sha256: authorization.identity_sha256,
       job_path: `${requiredArg(args, "out")}/job.md`,
       result_path: `${requiredArg(args, "out")}/run/result.json`,
       run_dir: `${requiredArg(args, "out")}/run`,
+      execution_intent_path: `${requiredArg(args, "out")}/execution-intent.json`,
       source_job_path: authorization.source_job_path,
       target_repo: authorization.target_repo,
       target_owner: authorization.target_owner,
@@ -47,6 +51,7 @@ switch (command) {
       job_path: `${requiredArg(args, "root")}/job.md`,
       result_path: `${requiredArg(args, "root")}/run/result.json`,
       run_dir: `${requiredArg(args, "root")}/run`,
+      execution_intent_path: `${requiredArg(args, "root")}/execution-intent.json`,
       target_repo: authorization.target_repo,
       target_owner: authorization.target_owner,
       target_name: authorization.target_name,
@@ -100,9 +105,43 @@ switch (command) {
     });
     break;
   }
+  case "publish": {
+    const receipt = publishValidatedExecution({
+      root: requiredArg(args, "root"),
+      validationReceiptPath: requiredArg(args, "validation-receipt"),
+      expectedAuthorizationSha256: requiredArg(args, "authorization-sha256"),
+      expectedValidationReceiptSha256: requiredArg(args, "validation-receipt-sha256"),
+      outputPath: requiredArg(args, "publication-receipt"),
+    });
+    writeOutputs({
+      publication_receipt_sha256: receipt.identity_sha256,
+      target_repo: receipt.target_repo,
+      target_pr_number: String(receipt.target_pr_number),
+      target_pr_url: receipt.target_pr_url,
+      published_head_sha: receipt.published_head_sha,
+    });
+    break;
+  }
+  case "verify-publication": {
+    const receipt = verifyPublishedReceipt({
+      root: requiredArg(args, "root"),
+      publicationReceiptPath: requiredArg(args, "publication-receipt"),
+      validationReceiptPath: requiredArg(args, "validation-receipt"),
+      expectedAuthorizationSha256: requiredArg(args, "authorization-sha256"),
+      expectedValidationReceiptSha256: requiredArg(args, "validation-receipt-sha256"),
+      expectedPublicationReceiptSha256: requiredArg(args, "publication-receipt-sha256"),
+    });
+    writeOutputs({
+      target_repo: receipt.target_repo,
+      target_pr_number: String(receipt.target_pr_number),
+      target_pr_url: receipt.target_pr_url,
+      published_head_sha: receipt.published_head_sha,
+    });
+    break;
+  }
   default:
     throw new Error(
-      "usage: execution-handoff <authorize|verify|seal|verify-execution|validate|verify-receipt> [options]",
+      "usage: execution-handoff <authorize|verify|seal|verify-execution|validate|verify-receipt|publish|verify-publication> [options]",
     );
 }
 

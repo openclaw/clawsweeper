@@ -136,6 +136,10 @@ import {
   type StagedProofPlanArtifact,
   type StagedProofTrace,
 } from "./staged-proof-gates.js";
+import {
+  createPreparedPublication,
+  verifyExecutionIntentIdentity,
+} from "./prepared-publication.js";
 import { uniqueStrings } from "./validation-command-utils.js";
 import {
   changedFilesFromNameOnlyZ,
@@ -175,8 +179,11 @@ const jobPath = args._[0];
 const resultPathArg = args._[1];
 const latest = Boolean(args.latest);
 const dryRun = Boolean(args["dry-run"] || process.env.CLAWSWEEPER_FIX_DRY_RUN === "1");
-const deferPublication = Boolean(args["defer-publication"]);
+const preparePublication = Boolean(args["prepare-publication"]);
+const deferPublication = Boolean(args["defer-publication"] || preparePublication);
 const publishReportOnly = Boolean(args["publish-report-only"]);
+const authorizationSha256 = String(args["authorization-sha256"] ?? "");
+const executionIntentPath = String(args["execution-intent"] ?? "");
 const model = String(args.model ?? process.env.CLAWSWEEPER_MODEL ?? "internal");
 const executionModelArgs = codexModelArgs(model);
 const { codexTimeoutMs, fixStepTimeoutMs, lateWorkerReserveMs } = repairTimeoutBudgetFromEnv(
@@ -278,10 +285,10 @@ if (jobErrors.length > 0) {
 
 assertAllowedOwner(job.frontmatter.repo, process.env.CLAWSWEEPER_ALLOWED_OWNER);
 
-if (!["execute", "autonomous"].includes(job.frontmatter.mode)) {
+if (!publishReportOnly && !["execute", "autonomous"].includes(job.frontmatter.mode)) {
   throw new Error("refusing fix execution: job frontmatter mode is not execute or autonomous");
 }
-if (process.env.CLAWSWEEPER_ALLOW_EXECUTE !== "1") {
+if (!publishReportOnly && process.env.CLAWSWEEPER_ALLOW_EXECUTE !== "1") {
   throw new Error("refusing fix execution: CLAWSWEEPER_ALLOW_EXECUTE must be 1");
 }
 
@@ -297,6 +304,22 @@ if (result.cluster_id !== job.frontmatter.cluster_id) {
 }
 if (result.mode !== job.frontmatter.mode) {
   throw new Error(`result mode ${result.mode} does not match job mode ${job.frontmatter.mode}`);
+}
+const executionIntent = preparePublication
+  ? verifyExecutionIntentIdentity(
+      JSON.parse(
+        fs.readFileSync(requiredPreparationArg(executionIntentPath, "execution-intent"), "utf8"),
+      ),
+    )
+  : null;
+if (preparePublication) {
+  requiredPreparationArg(authorizationSha256, "authorization-sha256");
+  if (process.env.GH_TOKEN || process.env.GITHUB_TOKEN) {
+    throw new Error("prepared execution must not receive GitHub credentials");
+  }
+  if (executionIntent?.target_repo !== result.repo) {
+    throw new Error("prepared execution intent does not match the target repository");
+  }
 }
 
 const automergeTargetValidation =
@@ -505,6 +528,17 @@ if (NON_EXECUTABLE_REPAIR_STRATEGIES.has(repairStrategy)) {
 }
 
 let fixArtifact = validateFixArtifact(executableFixArtifact);
+if (executionIntent) {
+  fixArtifact = {
+    ...fixArtifact,
+    repair_strategy: executionIntent.repair_strategy,
+    source_prs:
+      executionIntent.source.kind === "pull_request" && executionIntent.source.url
+        ? [executionIntent.source.url]
+        : executionIntent.source_prs,
+    supersede_source_prs: executionIntent.superseded_source_prs,
+  };
+}
 const securityBlock = validateFixSecurityScope({ job, resultPath, fixArtifact, plannedFixActions });
 if (securityBlock) {
   report.status = "skipped";
@@ -671,6 +705,7 @@ try {
           status: "failed",
           reason: error.message,
         });
+        if (executionIntent) throw error;
         if (!shouldFallbackToReplacementAfterRepairError(error)) throw error;
         const fallbackTargetDir = prepareFallbackReplacementCheckout(targetDir);
         outcome = executeReplacementBranch({
@@ -836,6 +871,17 @@ function preflightRepairSourceBranchWrite(fixArtifact: LooseRecord) {
   if (fixArtifact.repair_strategy !== "repair_contributor_branch") {
     return { status: "not_applicable" };
   }
+  if (executionIntent) {
+    const sourcePr = authorizedSourcePullRequest();
+    return {
+      status: "writable",
+      source_pr: sourcePr.url,
+      head_repo: sourcePr.head.repo.full_name,
+      head_ref: sourcePr.head.ref,
+      same_repo_branch: true,
+      maintainer_can_modify: true,
+    };
+  }
   const sourcePr = firstSourcePullRequest(fixArtifact);
   const pull = fetchPullRequest(result.repo, sourcePr.number);
   if (pull.state !== "open") {
@@ -882,7 +928,9 @@ function executeRepairBranch({ fixArtifact, targetDir }: LooseRecord) {
   const baseBranch = String(process.env.CLAWSWEEPER_FIX_BASE_BRANCH ?? DEFAULT_BASE_BRANCH);
   const sourcePr = firstSourcePullRequest(fixArtifact);
   logProgress("repairing contributor branch", { source_pr: sourcePr.url, base_branch: baseBranch });
-  const pull = fetchPullRequest(result.repo, sourcePr.number);
+  const pull = executionIntent
+    ? authorizedSourcePullRequest()
+    : fetchPullRequest(result.repo, sourcePr.number);
   if (pull.state !== "open") throw new Error(`source PR #${sourcePr.number} is ${pull.state}`);
   const initialPauseBlock = liveRepairPauseBlock({
     pull,
@@ -901,6 +949,7 @@ function executeRepairBranch({ fixArtifact, targetDir }: LooseRecord) {
   );
   logProgress("fetching latest base for contributor repair", { base_branch: baseBranch });
   runGitNetwork(["fetch", "origin", `${baseBranch}:refs/remotes/origin/${baseBranch}`], targetDir);
+  assertAuthorizedRef("target base", `origin/${baseBranch}`, executionIntent?.target_base_sha);
   logProgress("fetching contributor PR head", {
     source_pr: sourcePr.url,
     head_repo: pull.head.repo.full_name,
@@ -915,6 +964,11 @@ function executeRepairBranch({ fixArtifact, targetDir }: LooseRecord) {
   });
   ensureMergeBaseAvailable({ targetDir, baseBranch });
   const sourceHead = currentHead(targetDir);
+  assertAuthorizedSha(
+    "source pull request head",
+    sourceHead,
+    executionIntent?.source.expected_head_sha,
+  );
   logProgress("preparing target toolchain", { source_head: sourceHead });
   prepareTargetToolchain(targetDir, currentTargetValidationOptions());
   const codexOwnsInitialRebase =
@@ -1016,6 +1070,16 @@ function pushRepairBranchAndUpdateStatus({
       branch_rewritten: branchUpdate.rewritten,
       merge_preflight: prep.merge_preflight,
     };
+  }
+  if (executionIntent) {
+    return preparedPublicationOutcome({
+      fixArtifact,
+      targetDir,
+      prep,
+      branch: executionIntent.output_branch,
+      target: sourcePr.url,
+      branchRewritten: branchUpdate.rewritten,
+    });
   }
 
   ghAuthSetupGit(targetDir);
@@ -1128,6 +1192,49 @@ function pushRepairBranchAndUpdateStatus({
     status_comment_updated: statusCommentUpdated,
     merge_preflight: prep.merge_preflight,
     review_threads: threadResolution,
+  };
+}
+
+function preparedPublicationOutcome({
+  fixArtifact,
+  targetDir,
+  prep,
+  branch,
+  target = null,
+  branchRewritten = null,
+  resumedBranch = null,
+  contributorCredits = [],
+}: LooseRecord) {
+  if (!executionIntent) throw new Error("prepared publication requires an execution intent");
+  if (branch !== executionIntent.output_branch) {
+    throw new Error("prepared repair branch differs from the authorized output branch");
+  }
+  const preparedHeadSha = run("git", ["rev-parse", "HEAD"], { cwd: targetDir }).trim();
+  const preparedTreeSha = run("git", ["rev-parse", "HEAD^{tree}"], { cwd: targetDir }).trim();
+  assertAuthorizedSha("prepared repair head", preparedHeadSha, prep.commit);
+  const publication = createPreparedPublication({
+    outputDir: path.dirname(resultPath),
+    targetDir,
+    authorizationSha256,
+    executionIntent,
+    fixArtifact,
+    preparedHeadSha,
+    preparedTreeSha,
+  });
+  return {
+    action: executionIntent.action_name,
+    status: "prepared",
+    ...(target ? { target } : {}),
+    branch,
+    ...(branchRewritten !== null ? { branch_rewritten: branchRewritten } : {}),
+    ...(resumedBranch !== null ? { resumed_branch: resumedBranch } : {}),
+    commit: preparedHeadSha,
+    prepared_tree_sha: preparedTreeSha,
+    publication_intent_sha256: publication.identity_sha256,
+    checkpoint_commits: prep.checkpoint_commits ?? [],
+    merge_preflight: prep.merge_preflight,
+    supersede_sources: executionIntent.superseded_source_prs,
+    contributor_credit: contributorCredits.map(publicContributorCredit),
   };
 }
 
@@ -1282,11 +1389,13 @@ function openReplacementPrFromPreparedRepairCheckout({
     provenance,
     contributorCredits,
     maintainerAttribution: jobMaintainerAttribution(),
-    sourceClosingReferences: sourceClosingReferences({
-      fixArtifact,
-      targetDir,
-      repo: result.repo,
-    }),
+    sourceClosingReferences: executionIntent
+      ? executionIntent.source_closing_references
+      : sourceClosingReferences({
+          fixArtifact,
+          targetDir,
+          repo: result.repo,
+        }),
   });
   const bodyPath = path.join(workRoot, "replacement-pr-body.md");
   fs.writeFileSync(bodyPath, body);
@@ -1553,20 +1662,28 @@ function executeReplacementBranch({
   fallbackReason,
 }: LooseRecord) {
   const baseBranch = String(process.env.CLAWSWEEPER_FIX_BASE_BRANCH ?? DEFAULT_BASE_BRANCH);
-  const contributorCredits = sourceContributorCredits({
-    fixArtifact,
-    targetDir,
-    repo: result.repo,
-  });
-  const mergedSource = mergedReplacementSourcePr({ fixArtifact, targetDir });
-  const branch = replacementBranchName(result.cluster_id);
-  const areaCapacityBlock = validateActivePrAreaCapacity({
-    fixArtifact,
-    targetDir,
-    branch,
-    repo: result.repo,
-    maxActivePrsPerArea,
-  });
+  const contributorCredits = executionIntent
+    ? executionIntent.contributor_credits
+    : sourceContributorCredits({
+        fixArtifact,
+        targetDir,
+        repo: result.repo,
+      });
+  const mergedSource = executionIntent
+    ? null
+    : mergedReplacementSourcePr({ fixArtifact, targetDir });
+  const branch = executionIntent
+    ? executionIntent.output_branch
+    : replacementBranchName(result.cluster_id);
+  const areaCapacityBlock = executionIntent
+    ? null
+    : validateActivePrAreaCapacity({
+        fixArtifact,
+        targetDir,
+        branch,
+        repo: result.repo,
+        maxActivePrsPerArea,
+      });
   if (areaCapacityBlock) {
     return {
       action: "open_fix_pr",
@@ -1576,13 +1693,23 @@ function executeReplacementBranch({
       ...areaCapacityBlock,
     };
   }
-  runGitNetwork(["fetch", "origin", baseBranch], targetDir);
-  const branchState = checkoutRecoverableReplacementBranch({
-    targetDir,
-    branch,
-    baseBranch,
-    fixArtifact,
-  });
+  let branchState;
+  if (executionIntent) {
+    branchState = checkoutAuthorizedPublicationBranch({
+      targetDir,
+      branch,
+      baseBranch,
+      fixArtifact,
+    });
+  } else {
+    runGitNetwork(["fetch", "origin", baseBranch], targetDir);
+    branchState = checkoutRecoverableReplacementBranch({
+      targetDir,
+      branch,
+      baseBranch,
+      fixArtifact,
+    });
+  }
   prepareTargetToolchain(targetDir, currentTargetValidationOptions());
   const rebaseResult = rebaseOntoBase({ targetDir, baseBranch });
   const mechanicalConflictResolution = tryResolveMechanicalRebaseConflicts({
@@ -1593,7 +1720,7 @@ function executeReplacementBranch({
     logProgress("mechanically resolved replacement rebase conflicts", mechanicalConflictResolution);
   }
 
-  if (!dryRun) ghAuthSetupGit(targetDir);
+  if (!dryRun && !executionIntent) ghAuthSetupGit(targetDir);
   const prep = editValidatePrepareMerge({
     fixArtifact,
     targetDir,
@@ -1604,7 +1731,8 @@ function executeReplacementBranch({
     contributorCredits,
     allowExistingChanges: branchState.resumed && branchHasBaseDiff({ targetDir, baseBranch }),
     reconcileWithBase: branchState.resumed,
-    pushCheckpoint: dryRun ? null : () => pushRecoverableBranch({ targetDir, branch }),
+    pushCheckpoint:
+      dryRun || executionIntent ? null : () => pushRecoverableBranch({ targetDir, branch }),
     rebaseResult,
   });
   const provenance = externalMessageProvenance({
@@ -1667,6 +1795,16 @@ function executeReplacementBranch({
       contributor_credit: contributorCredits.map(publicContributorCredit),
       reason: "replacement branch has no changes versus base after repair",
     };
+  }
+  if (executionIntent) {
+    return preparedPublicationOutcome({
+      fixArtifact,
+      targetDir,
+      prep,
+      branch,
+      resumedBranch: branchState.resumed,
+      contributorCredits,
+    });
   }
 
   pushRecoverableBranch({ targetDir, branch });
@@ -2477,7 +2615,7 @@ function updateAutomergeProgressStatus({
   details = null,
   headSha = null,
 }: LooseRecord) {
-  if (!isBranchRepairStatusJob() || dryRun) return false;
+  if (executionIntent || !isBranchRepairStatusJob() || dryRun) return false;
   const target = automergeOutcomeTargetPrNumber();
   if (!target) return false;
   try {
@@ -2527,6 +2665,7 @@ function reconcileLatestBaseBeforePush({
   runGitNetwork(["fetch", "origin", `${baseBranch}:refs/remotes/origin/${baseBranch}`], targetDir);
   const baseRef = `origin/${baseBranch}`;
   const baseSha = run("git", ["rev-parse", baseRef], { cwd: targetDir }).trim();
+  assertAuthorizedSha("target base", baseSha, executionIntent?.target_base_sha);
   if (isAncestor({ targetDir, ancestor: baseRef, descendant: "HEAD" })) {
     return { status: "already-current", base_sha: baseSha };
   }
@@ -3544,6 +3683,64 @@ function ensureTargetCheckout(repo: string, targetDir: string) {
   if (status) throw new Error(`target checkout has uncommitted changes: ${targetDir}`);
 }
 
+function checkoutAuthorizedPublicationBranch({
+  targetDir,
+  branch,
+  baseBranch,
+  fixArtifact,
+}: LooseRecord) {
+  if (!executionIntent) throw new Error("authorized checkout requires an execution intent");
+  if (
+    branch !== executionIntent.output_branch ||
+    baseBranch !== executionIntent.target_base_ref ||
+    fixArtifact.repair_strategy !== executionIntent.repair_strategy
+  ) {
+    throw new Error("target checkout differs from the authorized publication intent");
+  }
+  runGitNetwork(
+    ["fetch", "origin", `+refs/heads/${baseBranch}:refs/remotes/origin/${baseBranch}`],
+    targetDir,
+  );
+  assertAuthorizedRef("target base", `origin/${baseBranch}`, executionIntent.target_base_sha);
+
+  if (executionIntent.expected_output_sha) {
+    runGitNetwork(
+      ["fetch", "origin", `+refs/heads/${branch}:refs/remotes/origin/${branch}`],
+      targetDir,
+    );
+    assertAuthorizedRef(
+      "existing output branch",
+      `origin/${branch}`,
+      executionIntent.expected_output_sha,
+    );
+    run("git", ["checkout", "-B", branch, `origin/${branch}`], { cwd: targetDir });
+    return { resumed: true, branch };
+  }
+
+  if (executionIntent.source.kind === "pull_request" && executionIntent.source.number) {
+    const sourceRef = `refs/remotes/clawsweeper/source-pr-${executionIntent.source.number}`;
+    runGitNetwork(
+      ["fetch", "origin", `+refs/pull/${executionIntent.source.number}/head:${sourceRef}`],
+      targetDir,
+    );
+    assertAuthorizedRef(
+      "source pull request head",
+      sourceRef,
+      executionIntent.source.expected_head_sha,
+    );
+    run("git", ["checkout", "-B", branch, sourceRef], { cwd: targetDir });
+    return {
+      resumed: false,
+      branch,
+      source_pr: executionIntent.source.url,
+      source_head_sha: executionIntent.source.expected_head_sha,
+    };
+  }
+
+  run("git", ["checkout", "-B", branch, `origin/${baseBranch}`], { cwd: targetDir });
+  return { resumed: false, branch };
+}
+
 function cloneTargetCheckout(repo: string, targetDir: string) {
   fs.mkdirSync(path.dirname(targetDir), { recursive: true });
   setupGitHubCredentialHelper();
@@ -3573,6 +3770,51 @@ function cloneTargetCheckout(repo: string, targetDir: string) {
   }
   fs.rmSync(targetDir, { recursive: true, force: true });
   throw lastError instanceof Error ? lastError : new Error(String(lastError));
+}
+
+function authorizedSourcePullRequest(): LooseRecord {
+  if (
+    !executionIntent ||
+    executionIntent.operation !== "update_source_pr" ||
+    executionIntent.source.kind !== "pull_request" ||
+    !executionIntent.source.number ||
+    !executionIntent.source.url
+  ) {
+    throw new Error("authorized repair does not target a source pull request");
+  }
+  return {
+    number: executionIntent.source.number,
+    url: executionIntent.source.url,
+    state: "open",
+    draft: false,
+    maintainer_can_modify: true,
+    head: {
+      repo: { full_name: executionIntent.source.expected_head_repo },
+      ref: executionIntent.source.expected_head_ref,
+      sha: executionIntent.source.expected_head_sha,
+    },
+    base: {
+      ref: executionIntent.source.expected_base_ref,
+      sha: executionIntent.source.expected_base_sha,
+    },
+  };
+}
+
+function assertAuthorizedRef(label: string, ref: string, expected: JsonValue) {
+  if (!expected) return;
+  const actual = run("git", ["rev-parse", ref], { cwd: targetDir }).trim();
+  assertAuthorizedSha(label, actual, expected);
+}
+
+function assertAuthorizedSha(label: string, actual: JsonValue, expected: JsonValue) {
+  if (expected && actual !== expected) {
+    throw new Error(`${label} changed after execution authorization`);
+  }
+}
+
+function requiredPreparationArg(value: string, name: string): string {
+  if (!value.trim()) throw new Error(`--${name} is required with --prepare-publication`);
+  return value;
 }
 
 function setupGitHubCredentialHelper() {

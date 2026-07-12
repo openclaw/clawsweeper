@@ -270,10 +270,6 @@ test("merge post-flight requires exact proof and server-enforced strict base bin
       "#!/usr/bin/env node",
       "const fs = require('node:fs');",
       "const args = process.argv.slice(2);",
-      "if (args[0] === 'api' && args[1] === 'installation') {",
-      "  process.stdout.write(JSON.stringify({ app_id: 3306130, app_slug: 'openclaw-clawsweeper' }));",
-      "  process.exit(0);",
-      "}",
       "if (args[0] === 'api' && args[1] === 'repos/openclaw/openclaw/pulls/123') {",
       "  const merged = fs.existsSync(process.env.FAKE_GH_MERGED_FILE);",
       "  process.stdout.write(JSON.stringify({",
@@ -352,10 +348,11 @@ test("merge post-flight requires exact proof and server-enforced strict base bin
       CLAWSWEEPER_ALLOW_EXECUTE: "1",
       CLAWSWEEPER_ALLOWED_OWNER: "openclaw",
       CLAWSWEEPER_ALLOW_MERGE: "1",
-      CLAWSWEEPER_APP_ID: "3306130",
       CLAWSWEEPER_APP_SLUG: "openclaw-clawsweeper",
+      CLAWSWEEPER_AUTHENTICATED_APP_ID: "3306130",
       CLAWSWEEPER_AUTHENTICATED_APP_SLUG: "openclaw-clawsweeper",
       CLAWSWEEPER_AUTHENTICATED_INSTALLATION_ID: "987654",
+      CLAWSWEEPER_RULESET_APP_ID: "3306130",
       CLAWSWEEPER_RULESET_APP_SLUG: "openclaw-clawsweeper",
       CLAWSWEEPER_RULESET_INSTALLATION_ID: "987654",
       CLAWSWEEPER_RULESET_GH_TOKEN: "ruleset-verifier",
@@ -366,6 +363,35 @@ test("merge post-flight requires exact proof and server-enforced strict base bin
       FAKE_GH_VIEW_COUNT_FILE: viewCountPath,
       ...mockGhBinEnv(path.join(fakeBin, "gh"), fakeBin),
     };
+    writeMergeReports(runDir, resultPath);
+    fs.writeFileSync(mergeFlagPath, "1");
+    const alreadyMergedPath = path.join(runDir, "fix-execution-report.json");
+    const alreadyMergedReport = JSON.parse(fs.readFileSync(alreadyMergedPath, "utf8"));
+    alreadyMergedReport.actions[0].commit = "d".repeat(40);
+    fs.writeFileSync(alreadyMergedPath, JSON.stringify(alreadyMergedReport, null, 2));
+    execFileSync(process.execPath, ["dist/repair/post-flight.js", jobPath, resultPath], {
+      cwd: repoRoot,
+      env,
+      stdio: "pipe",
+    });
+    const alreadyMerged = JSON.parse(fs.readFileSync(reportPath, "utf8"));
+    assert.equal(alreadyMerged.actions[0]?.status, "blocked");
+    assert.equal(
+      alreadyMerged.actions[0]?.reason,
+      "merged pull request head does not match the authorized repair commit",
+    );
+    fs.rmSync(mergeFlagPath, { force: true });
+    fs.rmSync(reportPath, { force: true });
+    fs.rmSync(viewCountPath, { force: true });
+    const staleAfterMerged = JSON.parse(fs.readFileSync(fixReportPath, "utf8"));
+    staleAfterMerged.actions[0].commit = staleHead;
+    staleAfterMerged.actions[0].merge_preflight.validation_proof = passedValidationProof(
+      staleHead,
+      MERGE_BASE_SHA,
+    );
+    staleAfterMerged.actions[0].merge_preflight.validated_head_sha = staleHead;
+    fs.writeFileSync(fixReportPath, JSON.stringify(staleAfterMerged, null, 2));
+
     execFileSync(process.execPath, ["dist/repair/post-flight.js", jobPath, resultPath], {
       cwd: repoRoot,
       env,

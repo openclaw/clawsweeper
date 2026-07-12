@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -10,6 +11,11 @@ import {
   verifyExecutionHandoff,
   verifyValidationReceipt,
 } from "../../dist/repair/execution-handoff.js";
+import {
+  createPreparedPublication,
+  digestJson,
+  verifyPreparedPublication,
+} from "../../dist/repair/prepared-publication.js";
 
 test("execution authorization selects one explicit run and seals its immutable identity", () => {
   const fixture = handoffFixture();
@@ -24,7 +30,7 @@ test("execution authorization selects one explicit run and seals its immutable i
         actions: [
           {
             action: "open_fix_pr",
-            status: "opened",
+            status: "prepared",
             pr_url: "https://github.com/openclaw/example/pull/42",
           },
         ],
@@ -35,7 +41,7 @@ test("execution authorization selects one explicit run and seals its immutable i
       expectedAuthorizationSha256: authorization.identity_sha256,
       executeOutcome: "success",
     });
-    assert.equal(manifest.mutation_ready, true);
+    assert.equal(manifest.mutation_ready, false);
     assert.equal(
       verifyExecutionHandoff(fixture.outputRoot, authorization.identity_sha256).tree_sha256,
       manifest.tree_sha256,
@@ -88,6 +94,145 @@ test("execution authorization rejects symlinked handoff content", () => {
       path.join(fixture.runsRoot, "trusted-run", "linked-result.json"),
     );
     assert.throws(() => prepareAuthorization(fixture), /handoff contains symlink/);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("execution authorization rejects same-repository source redirection", () => {
+  const fixture = handoffFixture();
+  try {
+    fs.writeFileSync(
+      fixture.jobPath,
+      fs
+        .readFileSync(fixture.jobPath, "utf8")
+        .replace("candidates: [#42]", "candidates: [#42, #43]\ncanonical: [#42]"),
+    );
+    assert.throws(
+      () =>
+        prepareExecutionAuthorization({
+          jobPath: fixture.jobPath,
+          runsRoot: fixture.runsRoot,
+          outputRoot: fixture.outputRoot,
+          workflowRunId: "123456",
+          workflowRunAttempt: "2",
+          workflowRepository: "openclaw/clawsweeper",
+          workflowSha: "a".repeat(40),
+          allowedOwner: "openclaw",
+          resolveIntent: ({ actionIdentitySha256 }) => {
+            const base = executionIntent(actionIdentitySha256);
+            const { identity_sha256: _identitySha256, ...identity } = base;
+            const redirected = {
+              ...identity,
+              source: {
+                ...identity.source,
+                kind: "pull_request" as const,
+                number: 43,
+                url: "https://github.com/openclaw/example/pull/43",
+                expected_state: "open",
+                expected_head_repo: "openclaw/example",
+                expected_head_ref: "feature",
+                expected_head_sha: "2".repeat(40),
+                expected_base_ref: "main",
+                expected_base_sha: "1".repeat(40),
+              },
+            };
+            return { ...redirected, identity_sha256: digestJson(redirected) };
+          },
+        }),
+      /redirected the immutable source item/,
+    );
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("execution authorization rejects output repository redirection", () => {
+  const fixture = handoffFixture();
+  try {
+    assert.throws(
+      () =>
+        prepareExecutionAuthorization({
+          jobPath: fixture.jobPath,
+          runsRoot: fixture.runsRoot,
+          outputRoot: fixture.outputRoot,
+          workflowRunId: "123456",
+          workflowRunAttempt: "2",
+          workflowRepository: "openclaw/clawsweeper",
+          workflowSha: "a".repeat(40),
+          allowedOwner: "openclaw",
+          resolveIntent: ({ actionIdentitySha256 }) => {
+            const base = executionIntent(actionIdentitySha256);
+            const { identity_sha256: _identitySha256, ...identity } = base;
+            const redirected = { ...identity, output_repo: "openclaw/other" };
+            return { ...redirected, identity_sha256: digestJson(redirected) };
+          },
+        }),
+      /changed the authorized output operation/,
+    );
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("execution authorization rejects same-repository output branch redirection", () => {
+  const fixture = handoffFixture();
+  try {
+    assert.throws(
+      () =>
+        prepareExecutionAuthorization({
+          jobPath: fixture.jobPath,
+          runsRoot: fixture.runsRoot,
+          outputRoot: fixture.outputRoot,
+          workflowRunId: "123456",
+          workflowRunAttempt: "2",
+          workflowRepository: "openclaw/clawsweeper",
+          workflowSha: "a".repeat(40),
+          allowedOwner: "openclaw",
+          resolveIntent: ({ actionIdentitySha256 }) => {
+            const base = executionIntent(actionIdentitySha256);
+            const { identity_sha256: _identitySha256, ...identity } = base;
+            const redirected = {
+              ...identity,
+              output_branch: "clawsweeper/attacker-selected",
+            };
+            return { ...redirected, identity_sha256: digestJson(redirected) };
+          },
+        }),
+      /changed the authorized output operation/,
+    );
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("execution authorization rejects an altered immutable source head", () => {
+  const fixture = handoffFixture();
+  try {
+    fs.writeFileSync(
+      fixture.jobPath,
+      fs
+        .readFileSync(fixture.jobPath, "utf8")
+        .replace(
+          "allow_fix_pr: true",
+          `allow_fix_pr: true\nexpected_head_sha: "${"1".repeat(40)}"`,
+        ),
+    );
+    assert.throws(
+      () =>
+        prepareExecutionAuthorization({
+          jobPath: fixture.jobPath,
+          runsRoot: fixture.runsRoot,
+          outputRoot: fixture.outputRoot,
+          workflowRunId: "123456",
+          workflowRunAttempt: "2",
+          workflowRepository: "openclaw/clawsweeper",
+          workflowSha: "a".repeat(40),
+          allowedOwner: "openclaw",
+          resolveIntent: ({ actionIdentitySha256 }) => executionIntent(actionIdentitySha256),
+        }),
+      /changed the expected source head/,
+    );
   } finally {
     fixture.cleanup();
   }
@@ -180,6 +325,61 @@ test("report-only execution cannot become mutation-ready", () => {
   }
 });
 
+test("trusted publication rejects forged deterministic comment metadata", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-publication-"));
+  const targetDir = path.join(root, "target");
+  const outputDir = path.join(root, "run");
+  fs.mkdirSync(targetDir);
+  fs.writeFileSync(path.join(targetDir, "example.txt"), "prepared\n");
+  git(targetDir, "init");
+  git(targetDir, "config", "user.name", "ClawSweeper Test");
+  git(targetDir, "config", "user.email", "clawsweeper@example.invalid");
+  git(targetDir, "add", ".");
+  git(targetDir, "-c", "commit.gpgsign=false", "commit", "-m", "prepared");
+  const preparedHeadSha = git(targetDir, "rev-parse", "HEAD");
+  const preparedTreeSha = git(targetDir, "rev-parse", "HEAD^{tree}");
+  const intent = executionIntent("a".repeat(64));
+  const fixArtifact = {
+    pr_title: "fix: handoff fixture",
+    pr_body: "Handoff fixture.",
+  };
+
+  try {
+    const publication = createPreparedPublication({
+      outputDir,
+      targetDir,
+      authorizationSha256: "b".repeat(64),
+      executionIntent: intent,
+      fixArtifact,
+      preparedHeadSha,
+      preparedTreeSha,
+    });
+    const { identity_sha256: _identitySha256, ...identity } = publication;
+    const forgedIdentity = {
+      ...identity,
+      source_comment: "forged privileged comment",
+    };
+    const forged = {
+      ...forgedIdentity,
+      identity_sha256: digestJson(forgedIdentity),
+    };
+
+    assert.throws(
+      () =>
+        verifyPreparedPublication({
+          publication: forged,
+          executionIntent: intent,
+          authorizationSha256: "b".repeat(64),
+          root,
+          fixArtifact,
+        }),
+      /prepared source comment is not deterministic/,
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 function prepareAuthorization(fixture: ReturnType<typeof handoffFixture>) {
   return prepareExecutionAuthorization({
     jobPath: fixture.jobPath,
@@ -190,6 +390,7 @@ function prepareAuthorization(fixture: ReturnType<typeof handoffFixture>) {
     workflowRepository: "openclaw/clawsweeper",
     workflowSha: "a".repeat(40),
     allowedOwner: "openclaw",
+    resolveIntent: ({ actionIdentitySha256 }) => executionIntent(actionIdentitySha256),
   });
 }
 
@@ -228,7 +429,16 @@ function handoffFixture() {
       repo: "openclaw/example",
       cluster_id: "handoff-test",
       mode: "autonomous",
-      actions: [],
+      canonical_pr: null,
+      reviewed_sha: null,
+      actions: [{ action: "open_fix_pr", status: "planned" }],
+      fix_artifact: {
+        repair_strategy: "new_fix_pr",
+        source_prs: [],
+        pr_title: "fix: handoff fixture",
+        pr_body: "Handoff fixture.",
+        validation_commands: ["npm test"],
+      },
     })}\n`,
   );
   return {
@@ -240,4 +450,44 @@ function handoffFixture() {
       fs.rmSync(jobPath, { force: true });
     },
   };
+}
+
+function executionIntent(actionIdentitySha256: string) {
+  const identity = {
+    schema_version: 1,
+    target_repo: "openclaw/example",
+    source: {
+      kind: "job" as const,
+      repo: "openclaw/example",
+      number: null,
+      url: null,
+      expected_state: "authorized",
+      expected_revision_sha256: null,
+      expected_head_repo: null,
+      expected_head_ref: null,
+      expected_head_sha: null,
+      expected_base_ref: null,
+      expected_base_sha: null,
+    },
+    target_base_ref: "main",
+    target_base_sha: "1".repeat(40),
+    operation: "open_pull_request" as const,
+    output_repo: "openclaw/example",
+    output_branch: "clawsweeper/handoff-test",
+    expected_output_sha: null,
+    expected_target_pr_number: null,
+    action_name: "open_fix_pr" as const,
+    repair_strategy: "new_fix_pr",
+    action_identity_sha256: actionIdentitySha256,
+    source_prs: [],
+    source_closing_references: [],
+    contributor_credits: [],
+    superseded_source_prs: [],
+    close_superseded_source_prs: false,
+  };
+  return { ...identity, identity_sha256: digestJson(identity) };
+}
+
+function git(cwd: string, ...args: string[]): string {
+  return execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
 }
