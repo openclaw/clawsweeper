@@ -1771,17 +1771,7 @@ jobs:
 
       - name: Install review compiler service
         working-directory: clawsweeper
-        run: |
-          typescript_version="$(node -p "require('./node_modules/typescript/package.json').version")"
-          native_name="typescript-$(node -p 'process.platform')-$(node -p 'process.arch')"
-          native_dir="node_modules/@typescript/$native_name"
-          mkdir -p .artifacts/native-compiler "$native_dir"
-          package_file="$(npm pack "@typescript/$native_name@$typescript_version" --pack-destination .artifacts/native-compiler --silent)"
-          tar -xzf ".artifacts/native-compiler/$package_file" -C "$native_dir" --strip-components=1
-          native_compiler="$native_dir/lib/tsc"
-          test -n "$native_compiler"
-          test -x "$native_compiler"
-          "$native_compiler" --version
+        run: node scripts/install-review-native-compiler.mjs
 
       - uses: ./clawsweeper/.github/actions/setup-codex
         env:

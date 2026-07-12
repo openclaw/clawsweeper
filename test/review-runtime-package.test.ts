@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import {
+  appendFileSync,
+  copyFileSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -42,34 +44,66 @@ test("review runtime artifact carries the TypeScript compiler service", () => {
     execFileSync("tar", ["-xzf", archive, "-C", roundtrip], { stdio: "pipe" });
     assert.equal(existsSync(join(roundtrip, "node_modules", "@typescript")), false);
 
+    const typescriptPackage = JSON.parse(
+      readFileSync(join(roundtrip, "node_modules", "typescript", "package.json"), "utf8"),
+    );
+    assert.equal(typescriptPackage.name, "typescript");
+    assert.equal(
+      JSON.parse(readFileSync(join(roundtrip, "node_modules", "yaml", "package.json"), "utf8"))
+        .name,
+      "yaml",
+    );
     const typescriptSource = realpathSync(join(process.cwd(), "node_modules", "typescript"));
     const nativeSource = realpathSync(
       join(dirname(typescriptSource), "@typescript", nativePackageName),
     );
-    const nativeDirectory = join(roundtrip, "node_modules", "@typescript", nativePackageName);
-    mkdirSync(nativeDirectory, { recursive: true });
     const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
-    const packageFile = execFileSync(
-      npmCommand,
-      ["pack", nativeSource, "--pack-destination", fixture, "--silent"],
-      { encoding: "utf8" },
-    )
-      .trim()
-      .split(/\r?\n/)
-      .at(-1);
-    assert.ok(packageFile);
-    execFileSync(
-      "tar",
-      ["-xzf", join(fixture, packageFile), "-C", nativeDirectory, "--strip-components=1"],
-      { stdio: "pipe" },
+    const packed = JSON.parse(
+      execFileSync(
+        npmCommand,
+        ["pack", nativeSource, "--pack-destination", fixture, "--ignore-scripts", "--json"],
+        { encoding: "utf8" },
+      ),
+    )[0];
+    assert.equal(typeof packed?.filename, "string");
+    assert.equal(typeof packed?.integrity, "string");
+    const packageFile = join(fixture, packed.filename);
+    writeFileSync(
+      join(roundtrip, "pnpm-lock.yaml"),
+      `lockfileVersion: '9.0'
+packages:
+  '@typescript/${nativePackageName}@${typescriptPackage.version}':
+    resolution: {integrity: ${packed.integrity}}
+`,
     );
+    mkdirSync(join(roundtrip, "scripts"));
+    const installerPath = join(roundtrip, "scripts", "install-review-native-compiler.mjs");
+    copyFileSync("scripts/install-review-native-compiler.mjs", installerPath);
 
-    assert.equal(
-      JSON.parse(
-        readFileSync(join(roundtrip, "node_modules", "typescript", "package.json"), "utf8"),
-      ).name,
-      "typescript",
-    );
+    const tamperedPackage = join(fixture, "tampered.tgz");
+    copyFileSync(packageFile, tamperedPackage);
+    appendFileSync(tamperedPackage, "tampered");
+    const rejected = spawnSync(process.execPath, [installerPath], {
+      cwd: roundtrip,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        CLAWSWEEPER_NATIVE_PACKAGE_TARBALL: tamperedPackage,
+      },
+    });
+    assert.notEqual(rejected.status, 0);
+    assert.match(rejected.stderr, /integrity mismatch/i);
+    assert.equal(existsSync(nativeCompiler), false);
+
+    execFileSync(process.execPath, [installerPath], {
+      cwd: roundtrip,
+      env: {
+        ...process.env,
+        CLAWSWEEPER_NATIVE_PACKAGE_TARBALL: packageFile,
+      },
+      stdio: "pipe",
+    });
+
     assert.equal(
       JSON.parse(
         readFileSync(
@@ -122,7 +156,7 @@ const record = createReviewSemanticRecord({
       pullCommitsTruncated: false,
     },
   },
-  git: { mainSha: "b".repeat(40), latestRelease: null },
+  git: { mainSha: "b".repeat(40), releaseStateComplete: true, latestRelease: null },
   structuralContextRevision: "c".repeat(64),
   reviewPolicy: "policy",
   reviewModel: "model",

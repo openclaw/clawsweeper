@@ -42,8 +42,10 @@ if (existsSync(outputRoot) && lstatSync(outputRoot).isSymbolicLink()) {
 
 const distSource = join(repoRoot, "dist");
 const typescriptSource = realpathSync(join(repoRoot, "node_modules", "typescript"));
+const yamlSource = realpathSync(join(repoRoot, "node_modules", "yaml"));
 
 assertPackageName(typescriptSource, "typescript");
+assertPackageName(yamlSource, "yaml");
 if (!existsSync(distSource)) {
   throw new Error("Built runtime not found. Run the build before preparing the review artifact.");
 }
@@ -52,6 +54,10 @@ rmSync(outputRoot, { force: true, recursive: true });
 mkdirSync(join(outputRoot, "node_modules"), { recursive: true });
 cpSync(distSource, join(outputRoot, "dist"), { dereference: true, recursive: true });
 cpSync(typescriptSource, join(outputRoot, "node_modules", "typescript"), {
+  dereference: true,
+  recursive: true,
+});
+cpSync(yamlSource, join(outputRoot, "node_modules", "yaml"), {
   dereference: true,
   recursive: true,
 });
