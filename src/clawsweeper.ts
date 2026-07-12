@@ -22882,7 +22882,9 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
             );
             const counterpartAllowApplyCloseActionUpgrade =
               isApplyCloseCandidateReport(counterpartMarkdown);
-            const counterpartMarkedReviewCommentHash = sha256(counterpartMarkedReviewComment);
+            const counterpartMarkedReviewCommentHash = reviewCommentBodyDigest(
+              counterpartMarkedReviewComment,
+            );
             const counterpartNeedsReviewCommentSync = shouldSyncReviewComment({
               syncCommentsOnly: false,
               isCloseProposal: true,
