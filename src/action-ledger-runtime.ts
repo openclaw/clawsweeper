@@ -40,16 +40,16 @@ import {
   type ActionEventProducer,
   type ActionEventPhaseType,
   type ActionEventReasonCode,
+  type ActionEventShardIdentity,
   type ActionEventStatus,
   type ActionEventSubject,
 } from "./action-ledger.js";
 import { normalizeRepo } from "./repository-profiles.js";
 
 const DEFAULT_EVENT_OUTPUT_DIR = path.join(".clawsweeper-repair", "action-ledger-state");
-const DEFAULT_CRABFLEET_ORIGIN = "https://crabfleet.openclaw.ai";
+const DEFAULT_CRABFLEET_BASE_URL = "https://crabfleet.openclaw.ai";
 const DEFAULT_CRABFLEET_TIMEOUT_MS = 10_000;
 const MAX_CRABFLEET_TIMEOUT_MS = 60_000;
-const ALLOWED_CRABFLEET_ORIGINS = new Set([DEFAULT_CRABFLEET_ORIGIN]);
 const ACTION_EVENT_SHARD_PATH_PATTERN =
   /^ledger\/v1\/events\/\d{4}\/\d{2}\/\d{2}\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\.jsonl$/;
 const pendingCrabFleetPosts = new Set<Promise<void>>();
@@ -120,6 +120,8 @@ type ImportedActionEventShard = {
   relativePath: string;
   content: string;
   events: ActionEvent[];
+  identity: ActionEventShardIdentity;
+  shardIndex: number | undefined;
 };
 
 type QueuedCrabFleetProjection = {
@@ -509,10 +511,12 @@ function readImportedActionEventShards(
     }
     return { relativePath, content, events };
   });
-  for (const { relativePath, content, events } of parsed) {
-    validateCanonicalImportedShard(relativePath, events, content);
-  }
-  return parsed;
+  const validated = parsed.map((shard) => ({
+    ...shard,
+    ...validateCanonicalImportedShard(shard.relativePath, shard.events, shard.content),
+  }));
+  validateCanonicalImportedShardBatch(validated);
+  return validated;
 }
 
 function importedShardReplayEquivalent(
@@ -551,7 +555,7 @@ function validateCanonicalImportedShard(
   relativePath: string,
   events: readonly ActionEvent[],
   content: string,
-): void {
+): Pick<ImportedActionEventShard, "identity" | "shardIndex"> {
   const match =
     /^ledger\/v1\/events\/(\d{4})\/(\d{2})\/(\d{2})\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\.jsonl$/.exec(
       relativePath,
@@ -576,25 +580,109 @@ function validateCanonicalImportedShard(
   if (content !== canonicalContent) {
     throw new Error(`action event shard content is not canonical: ${relativePath}`);
   }
-  const expectedPath = actionEventShardRelativePath(
-    {
-      repository: first.producer.repository,
-      sha: first.producer.sha,
-      producer: first.producer.component,
-      workflow: first.producer.workflow,
-      job: first.producer.job,
-      runId: first.producer.run_id,
-      runAttempt: first.producer.run_attempt,
-      partitionDate: `${match[1]}-${match[2]}-${match[3]}`,
-    },
-    sorted,
-    importedShardIndex(relativePath),
-  ).replaceAll(path.sep, "/");
+  const identity = {
+    repository: first.producer.repository,
+    sha: first.producer.sha,
+    producer: first.producer.component,
+    workflow: first.producer.workflow,
+    job: first.producer.job,
+    runId: first.producer.run_id,
+    runAttempt: first.producer.run_attempt,
+    partitionDate: `${match[1]}-${match[2]}-${match[3]}`,
+  };
+  const shardIndex = importedShardIndex(relativePath);
+  const expectedPath = actionEventShardRelativePath(identity, sorted, shardIndex).replaceAll(
+    path.sep,
+    "/",
+  );
   if (expectedPath !== relativePath) {
     throw new Error(
       `action event shard path does not match canonical identity: ${relativePath} != ${expectedPath}`,
     );
   }
+  return { identity, shardIndex };
+}
+
+function validateCanonicalImportedShardBatch(shards: readonly ImportedActionEventShard[]): void {
+  const allEvents = shards.flatMap((shard) => shard.events);
+  const seen = new Set<string>();
+  for (const event of allEvents) {
+    if (seen.has(event.event_id)) {
+      throw new Error(`action event shard batch contains duplicate event: ${event.event_id}`);
+    }
+    seen.add(event.event_id);
+  }
+  sortActionEventsCausally(allEvents);
+
+  const groups = new Map<string, ImportedActionEventShard[]>();
+  for (const shard of shards) {
+    const key = actionLedgerJson(shard.identity);
+    const group = groups.get(key) ?? [];
+    group.push(shard);
+    groups.set(key, group);
+  }
+  for (const group of groups.values()) validateCanonicalImportedShardGroup(group);
+}
+
+function validateCanonicalImportedShardGroup(group: readonly ImportedActionEventShard[]): void {
+  const numbered = group.filter((shard) => shard.shardIndex !== undefined);
+  if (numbered.length === 0) {
+    if (group.length !== 1) {
+      throw new Error("action event shard batch contains repeated unnumbered producer shards");
+    }
+    return;
+  }
+  if (numbered.length !== group.length) {
+    throw new Error("action event shard batch mixes numbered and unnumbered producer shards");
+  }
+
+  const ordered = [...group].sort((left, right) => left.shardIndex! - right.shardIndex!);
+  const events = sortActionEventsCausally(ordered.flatMap((shard) => shard.events));
+  const packed = packImportedActionEventShards(events);
+  if (packed.length !== ordered.length) {
+    throw new Error("action event shard batch is not deterministically packed");
+  }
+  const identity = ordered[0]!.identity;
+  for (let index = 0; index < packed.length; index += 1) {
+    const eventsForPart = packed[index]!;
+    const shard = ordered[index]!;
+    const expectedPath = actionEventShardRelativePath(
+      identity,
+      eventsForPart,
+      index + 1,
+    ).replaceAll(path.sep, "/");
+    const expectedContent = `${eventsForPart.map((event) => actionLedgerJson(event)).join("\n")}\n`;
+    if (shard.relativePath !== expectedPath || shard.content !== expectedContent) {
+      throw new Error("action event shard batch is not deterministically packed");
+    }
+  }
+}
+
+function packImportedActionEventShards(events: readonly ActionEvent[]): ActionEvent[][] {
+  const shards: ActionEvent[][] = [];
+  let current: ActionEvent[] = [];
+  let currentBytes = 0;
+  for (const event of events) {
+    const eventBytes = Buffer.byteLength(`${actionLedgerJson(event)}\n`, "utf8");
+    if (eventBytes > ACTION_EVENT_SHARD_FILE_LIMITS.maxBytes) {
+      throw new Error(
+        `action event ${event.event_id} exceeds ${ACTION_EVENT_SHARD_FILE_LIMITS.maxBytes} shard byte limit`,
+      );
+    }
+    if (
+      current.length > 0 &&
+      (current.length >= ACTION_EVENT_SHARD_FILE_LIMITS.maxEvents ||
+        currentBytes + eventBytes > ACTION_EVENT_SHARD_FILE_LIMITS.maxBytes)
+    ) {
+      shards.push(current);
+      current = [];
+      currentBytes = 0;
+    }
+    current.push(event);
+    currentBytes += eventBytes;
+  }
+  if (current.length > 0) shards.push(current);
+  return shards;
 }
 
 function importedShardIndex(relativePath: string): number | undefined {
@@ -608,7 +696,13 @@ function queueCrabFleetEvent(
   env: NodeJS.ProcessEnv,
   fetchImpl: typeof fetch,
 ): void {
-  const config = crabFleetProjectionConfig(env);
+  let config: CrabFleetProjectionConfig | null;
+  try {
+    config = crabFleetProjectionConfig(env);
+  } catch {
+    failCrabFleetProjection(root, event, "invalid CrabFleet projection configuration");
+    return;
+  }
   if (!config) return;
   const projection = { root, event, config, fetchImpl };
   if (activeCrabFleetRequests.size < CRABFLEET_PROJECTION_LIMITS.maxConcurrent) {
@@ -1012,34 +1106,60 @@ function crabFleetTimeoutMs(env: NodeJS.ProcessEnv): number {
 function crabFleetProjectionConfig(env: NodeJS.ProcessEnv): CrabFleetProjectionConfig | null {
   const sessionId = String(env.CLAWSWEEPER_CRABFLEET_SESSION_ID ?? "").trim();
   const token = String(env.CLAWSWEEPER_CRABFLEET_AGENT_TOKEN ?? "").trim();
-  if (!sessionId || !token) return null;
-  const rawUrl = String(env.CLAWSWEEPER_CRABFLEET_URL ?? DEFAULT_CRABFLEET_ORIGIN).trim();
+  if (!sessionId && !token) return null;
+  if (!sessionId || !token) {
+    throw new Error("CrabFleet projection requires both session ID and agent token");
+  }
+  const registeredBaseUrl = crabFleetRegisteredBaseUrl(env, sessionId);
+  const configuredBaseUrl = crabFleetConfiguredBaseUrl(env);
+  if (configuredBaseUrl !== registeredBaseUrl) {
+    throw new Error("CrabFleet projection base does not match registered session provenance");
+  }
+  return {
+    endpointUrl: `${registeredBaseUrl}/api/agent/interactive-sessions/${encodeURIComponent(sessionId)}/events`,
+    token,
+    timeoutMs: crabFleetTimeoutMs(env),
+  };
+}
+
+function crabFleetConfiguredBaseUrl(env: NodeJS.ProcessEnv): string {
+  const rawUrl = String(env.CLAWSWEEPER_CRABFLEET_URL ?? DEFAULT_CRABFLEET_BASE_URL).trim();
+  const parsed = credentialFreeHttpsUrl(rawUrl, "CLAWSWEEPER_CRABFLEET_URL");
+  const basePath = parsed.pathname.replace(/\/+$/, "");
+  return `${parsed.origin}${basePath === "/" ? "" : basePath}`;
+}
+
+function crabFleetRegisteredBaseUrl(env: NodeJS.ProcessEnv, sessionId: string): string {
+  const rawUrl = String(env.CLAWSWEEPER_CRABFLEET_WORK_STATE_URL ?? "").trim();
+  if (!rawUrl) {
+    throw new Error("CrabFleet projection requires registered work-state provenance");
+  }
+  const parsed = credentialFreeHttpsUrl(rawUrl, "CLAWSWEEPER_CRABFLEET_WORK_STATE_URL");
+  const suffix = `/api/agent/interactive-sessions/${encodeURIComponent(sessionId)}/work-state`;
+  if (!parsed.pathname.endsWith(suffix)) {
+    throw new Error("CrabFleet work-state URL does not match the registered session");
+  }
+  const basePath = parsed.pathname.slice(0, -suffix.length).replace(/\/+$/, "");
+  return `${parsed.origin}${basePath}`;
+}
+
+function credentialFreeHttpsUrl(value: string, label: string): URL {
   let parsed: URL;
   try {
-    parsed = new URL(rawUrl);
+    parsed = new URL(value);
   } catch {
-    throw new Error(
-      `CLAWSWEEPER_CRABFLEET_URL must be the credential-free HTTPS origin ${DEFAULT_CRABFLEET_ORIGIN}`,
-    );
+    throw new Error(`${label} must be a credential-free HTTPS URL`);
   }
   if (
     parsed.protocol !== "https:" ||
     parsed.username ||
     parsed.password ||
-    parsed.pathname !== "/" ||
     parsed.search ||
-    parsed.hash ||
-    !ALLOWED_CRABFLEET_ORIGINS.has(parsed.origin)
+    parsed.hash
   ) {
-    throw new Error(
-      `CLAWSWEEPER_CRABFLEET_URL must be the credential-free HTTPS origin ${DEFAULT_CRABFLEET_ORIGIN}`,
-    );
+    throw new Error(`${label} must be a credential-free HTTPS URL`);
   }
-  return {
-    endpointUrl: `${parsed.origin}/api/agent/interactive-sessions/${encodeURIComponent(sessionId)}/events`,
-    token,
-    timeoutMs: crabFleetTimeoutMs(env),
-  };
+  return parsed;
 }
 
 async function cancelResponseBody(response: Response): Promise<void> {

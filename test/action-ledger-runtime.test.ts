@@ -23,7 +23,14 @@ import {
   ACTION_EVENT_REASON_CODES,
   ACTION_EVENT_STATUSES,
   ACTION_EVENT_TYPES,
+  actionEventId,
+  actionEventKey,
   actionLedgerJson,
+  createActionEvent,
+  writeActionEventShard,
+  type ActionEvent,
+  type ActionEventInput,
+  type ActionEventShardIdentity,
 } from "../dist/action-ledger.js";
 
 function tempRoot(): string {
@@ -59,7 +66,7 @@ function adversarialShardPath(source: string, index: number): string {
 }
 
 function workflowEnv(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
-  return {
+  const env = {
     CLAWSWEEPER_ACTION_LEDGER_FORCE: "1",
     CLAWSWEEPER_ACTION_LEDGER_INVOCATION: "review-0",
     CLAWSWEEPER_ACTION_LEDGER_PARTITION_DATE: "2026-07-12",
@@ -73,6 +80,11 @@ function workflowEnv(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
     GITHUB_WORKFLOW_REF: "openclaw/clawsweeper/.github/workflows/sweep.yml@refs/heads/main",
     ...overrides,
   };
+  const sessionId = String(env.CLAWSWEEPER_CRABFLEET_SESSION_ID ?? "").trim();
+  if (sessionId && overrides.CLAWSWEEPER_CRABFLEET_WORK_STATE_URL === undefined) {
+    env.CLAWSWEEPER_CRABFLEET_WORK_STATE_URL = `https://crabfleet.openclaw.ai/api/agent/interactive-sessions/${encodeURIComponent(sessionId)}/work-state`;
+  }
+  return env;
 }
 
 function recordReview(
@@ -128,6 +140,104 @@ function recordReview(
       now: () => now,
       fetchImpl: options.fetchImpl ?? (async () => new Response(null, { status: 204 })),
     },
+  );
+}
+
+function shardIdentity(event: ActionEvent): ActionEventShardIdentity {
+  return {
+    repository: event.producer.repository,
+    sha: event.producer.sha,
+    producer: event.producer.component,
+    workflow: event.producer.workflow,
+    job: event.producer.job,
+    runId: event.producer.run_id,
+    runAttempt: event.producer.run_attempt,
+    partitionDate: "2026-07-12",
+  };
+}
+
+function recreateActionEvent(
+  event: ActionEvent,
+  {
+    eventKey = event.event_key,
+    parentEventId = event.parent_event_id,
+  }: {
+    eventKey?: string;
+    parentEventId?: string | null;
+  } = {},
+): ActionEvent {
+  return createActionEvent(
+    {
+      eventKey,
+      operationId: event.operation_id,
+      attemptId: event.attempt_id,
+      parentEventId,
+      phaseSeq: event.phase_seq,
+      idempotencyKeySha256: event.idempotency_key_sha256,
+      type: event.event_type,
+      producer: {
+        repository: event.producer.repository,
+        sha: event.producer.sha,
+        workflow: event.producer.workflow,
+        job: event.producer.job,
+        runId: event.producer.run_id,
+        runAttempt: event.producer.run_attempt,
+        component: event.producer.component,
+      },
+      subject: {
+        repository: event.subject.repository,
+        kind: event.subject.kind,
+        ...(event.subject.subject_id === undefined ? {} : { subjectId: event.subject.subject_id }),
+        ...(event.subject.number === undefined ? {} : { number: event.subject.number }),
+        ...(event.subject.cluster_id === undefined ? {} : { clusterId: event.subject.cluster_id }),
+        ...(event.subject.source_revision === undefined
+          ? {}
+          : { sourceRevision: event.subject.source_revision }),
+        ...(event.subject.record_path === undefined
+          ? {}
+          : { recordPath: event.subject.record_path }),
+      },
+      action: {
+        name: event.action.name,
+        status: event.action.status,
+        ...(event.action.reason_code === undefined ? {} : { reasonCode: event.action.reason_code }),
+        retryable: event.action.retryable,
+        mutation: event.action.mutation,
+      },
+      ...(event.learning === undefined
+        ? {}
+        : {
+            learning: {
+              category: event.learning.category,
+              signal: event.learning.signal,
+              ...(event.learning.rule_id === undefined ? {} : { ruleId: event.learning.rule_id }),
+              ...(event.learning.confidence === undefined
+                ? {}
+                : { confidence: event.learning.confidence }),
+            },
+          }),
+      ...(event.evidence === undefined
+        ? {}
+        : {
+            evidence: event.evidence.map((entry) => ({
+              kind: entry.kind,
+              ...(entry.sha256 === undefined ? {} : { sha256: entry.sha256 }),
+              ...(entry.report_path === undefined ? {} : { reportPath: entry.report_path }),
+              ...(entry.run_url === undefined ? {} : { runUrl: entry.run_url }),
+              ...(entry.snapshot_id === undefined ? {} : { snapshotId: entry.snapshot_id }),
+            })),
+          }),
+      ...(event.attributes === undefined
+        ? {}
+        : { attributes: event.attributes as ActionEventInput["attributes"] }),
+      privacy: {
+        classification: event.privacy.classification,
+        redactionVersion: event.privacy.redaction_version,
+        fieldsDropped: event.privacy.fields_dropped,
+      },
+      occurredAt: event.occurred_at,
+    },
+    { now: () => new Date(event.recorded_at) },
   );
 }
 
@@ -891,7 +1001,28 @@ test("CrabFleet projection sends the validated ledger event and bearer token", a
   assert.deepEqual(body.payload, { version: 1, event });
 });
 
-test("CrabFleet projection rejects unsafe configured origins before authorization", async () => {
+test("CrabFleet projection preserves a custom base bound to session provenance", async () => {
+  const customBase = "https://fleet.example.test/staging";
+  const event = recordReview(tempRoot());
+  assert.ok(event);
+  let requestUrl = "";
+  await postActionEventToCrabFleet(
+    event,
+    workflowEnv({
+      CLAWSWEEPER_CRABFLEET_AGENT_TOKEN: "agent-token",
+      CLAWSWEEPER_CRABFLEET_SESSION_ID: "session-1",
+      CLAWSWEEPER_CRABFLEET_URL: customBase,
+      CLAWSWEEPER_CRABFLEET_WORK_STATE_URL: `${customBase}/api/agent/interactive-sessions/session-1/work-state`,
+    }),
+    (async (url: string | URL | Request) => {
+      requestUrl = String(url);
+      return new Response(null, { status: 204 });
+    }) as typeof fetch,
+  );
+  assert.equal(requestUrl, `${customBase}/api/agent/interactive-sessions/session-1/events`);
+});
+
+test("CrabFleet projection rejects unsafe URLs and registration-origin drift", async () => {
   const event = recordReview(tempRoot());
   assert.ok(event);
   let requests = 0;
@@ -915,7 +1046,7 @@ test("CrabFleet projection rejects unsafe configured origins before authorizatio
           return new Response(null, { status: 204 });
         }) as typeof fetch,
       ),
-      /credential-free HTTPS origin https:\/\/crabfleet\.openclaw\.ai/,
+      /credential-free HTTPS URL|registered session provenance/,
       configuredUrl,
     );
   }
@@ -993,10 +1124,13 @@ test("CrabFleet projection bounds active fetches and queued work", async () => {
 
 test("CrabFleet queued projections snapshot endpoint and credentials", async () => {
   const root = tempRoot();
+  const customBase = "https://fleet.example.test/staging";
   const env = workflowEnv({
     CLAWSWEEPER_CRABFLEET_AGENT_TOKEN: "original-token",
     CLAWSWEEPER_CRABFLEET_SESSION_ID: "original-session",
     CLAWSWEEPER_CRABFLEET_TIMEOUT_MS: "1000",
+    CLAWSWEEPER_CRABFLEET_URL: customBase,
+    CLAWSWEEPER_CRABFLEET_WORK_STATE_URL: `${customBase}/api/agent/interactive-sessions/original-session/work-state`,
   });
   let release!: () => void;
   const gate = new Promise<void>((resolve) => {
@@ -1035,7 +1169,7 @@ test("CrabFleet queued projections snapshot endpoint and credentials", async () 
   release();
   await flushPendingCrabFleetPosts();
   assert.deepEqual(queuedRequest, {
-    url: "https://crabfleet.openclaw.ai/api/agent/interactive-sessions/original-session/events",
+    url: `${customBase}/api/agent/interactive-sessions/original-session/events`,
     authorization: "Bearer original-token",
   });
 });
@@ -1262,6 +1396,67 @@ test("CrabFleet projection cancels successful response bodies", async () => {
       )) as typeof fetch,
   );
   assert.equal(cancelled, 1);
+});
+
+test("malformed CrabFleet projection configuration is non-fatal and durably redacted", async () => {
+  const cases = [
+    {
+      name: "url",
+      overrides: {
+        CLAWSWEEPER_CRABFLEET_URL: "https://user:private-value@fleet.example.test",
+      },
+    },
+    {
+      name: "timeout",
+      overrides: {
+        CLAWSWEEPER_CRABFLEET_TIMEOUT_MS: "999999",
+      },
+    },
+  ];
+  for (const testCase of cases) {
+    const root = tempRoot();
+    const outputRoot = trustedChildRoot(root, "state");
+    const env = workflowEnv({
+      CLAWSWEEPER_CRABFLEET_AGENT_TOKEN: "agent-private-value",
+      CLAWSWEEPER_CRABFLEET_SESSION_ID: `session-${testCase.name}`,
+      ...testCase.overrides,
+    });
+    let requests = 0;
+    const errors: string[] = [];
+    const originalError = console.error;
+    console.error = (...args: unknown[]) => errors.push(args.map(String).join(" "));
+    try {
+      const event = recordReview(root, env, new Date("2026-07-12T10:01:00.000Z"), {
+        fetchImpl: (async () => {
+          requests += 1;
+          return new Response(null, { status: 204 });
+        }) as typeof fetch,
+      });
+      assert.ok(event, testCase.name);
+      const [relativePath] = await flushWorkflowActionEvents(root, { env, outputRoot });
+      assert.ok(relativePath, testCase.name);
+      const events = fs
+        .readFileSync(path.join(outputRoot, relativePath), "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line));
+      assert.deepEqual(
+        events.map((entry) => entry.event_type),
+        [ACTION_EVENT_TYPES.reviewCompleted, ACTION_EVENT_TYPES.projectionFailed],
+        testCase.name,
+      );
+    } finally {
+      console.error = originalError;
+    }
+    assert.equal(requests, 0, testCase.name);
+    assert.equal(errors.length, 1, testCase.name);
+    assert.match(errors[0] ?? "", /invalid CrabFleet projection configuration/, testCase.name);
+    assert.doesNotMatch(
+      errors.join("\n"),
+      /private-value|999999|fleet\.example\.test/,
+      testCase.name,
+    );
+  }
 });
 
 test("CrabFleet projection failures remain durable and retryable", async () => {
@@ -1564,6 +1759,63 @@ test("state shard imports are validated, create-only, and conflict detecting", a
     () => importActionEventShards(source, destination),
     /action event shard content is not canonical/,
   );
+});
+
+test("state shard imports validate duplicate and causal integrity across shard parts", () => {
+  const root = tempRoot();
+  const event = recordReview(root);
+  assert.ok(event);
+  const identity = shardIdentity(event);
+
+  const duplicateSource = trustedChildRoot(root, "duplicate-source");
+  const duplicateDestination = trustedChildRoot(root, "duplicate-destination");
+  writeActionEventShard(duplicateSource, identity, [event], 1);
+  writeActionEventShard(duplicateSource, identity, [event], 2);
+  assert.throws(
+    () => importActionEventShards(duplicateSource, duplicateDestination),
+    /shard batch contains duplicate event/,
+  );
+  assert.deepEqual(fs.readdirSync(duplicateDestination), []);
+
+  const firstKey = actionEventKey("review.cycle", { node: "first" });
+  const secondKey = actionEventKey("review.cycle", { node: "second" });
+  const firstId = actionEventId(event.subject.repository, firstKey);
+  const secondId = actionEventId(event.subject.repository, secondKey);
+  const first = recreateActionEvent(event, {
+    eventKey: firstKey,
+    parentEventId: secondId,
+  });
+  const second = recreateActionEvent(event, {
+    eventKey: secondKey,
+    parentEventId: firstId,
+  });
+  const cycleSource = trustedChildRoot(root, "cycle-source");
+  const cycleDestination = trustedChildRoot(root, "cycle-destination");
+  writeActionEventShard(cycleSource, identity, [first], 1);
+  writeActionEventShard(cycleSource, identity, [second], 2);
+  assert.throws(() => importActionEventShards(cycleSource, cycleDestination), /causal cycle/);
+  assert.deepEqual(fs.readdirSync(cycleDestination), []);
+});
+
+test("state shard imports require deterministic repacking across shard parts", () => {
+  const root = tempRoot();
+  const event = recordReview(root);
+  assert.ok(event);
+  const second = recreateActionEvent(event, {
+    eventKey: actionEventKey("review.completed", { number: 43 }),
+    parentEventId: null,
+  });
+  const source = trustedChildRoot(root, "source");
+  const destination = trustedChildRoot(root, "destination");
+  const identity = shardIdentity(event);
+  writeActionEventShard(source, identity, [event], 1);
+  writeActionEventShard(source, identity, [second], 2);
+
+  assert.throws(
+    () => importActionEventShards(source, destination),
+    /shard batch is not deterministically packed/,
+  );
+  assert.deepEqual(fs.readdirSync(destination), []);
 });
 
 test("state shard imports reject noncanonical trusted root spellings", async () => {

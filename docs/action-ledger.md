@@ -147,7 +147,11 @@ confidential-identifier checks as every other durable machine-text field.
   files at 256, each shard at 2 MiB, 2048 lines, and 1024 events, and each batch
   at 16 MiB and 4096 events. Every source shard is read once, then the complete
   bounded batch is parsed and canonicalized before any final destination shard
-  is published.
+  is published. Event IDs and causal topology are validated across the complete
+  batch, so duplicates and cycles cannot hide across files. Numbered parts are
+  grouped by their full producer/run identity, flattened in part order, and
+  required to reproduce the exact deterministic packing, paths, and bytes that
+  the canonical writer would emit.
 
 ## Privacy Boundary
 
@@ -262,9 +266,20 @@ and timeout before admission, so later environment mutation cannot reroute
 them. Further live projections also fail closed instead of growing process
 memory without bound.
 
-`CLAWSWEEPER_CRABFLEET_URL` must be the credential-free HTTPS origin
-`https://crabfleet.openclaw.ai`. Userinfo, alternate origins, paths, queries,
-fragments, and plaintext HTTP are rejected before the bearer token is attached.
+Projection configuration is also optional and non-authoritative. Once the local
+event is durable, malformed URL or timeout settings, incomplete session
+credentials, and registration-provenance mismatches are converted into a
+redacted retryable `projection.failed` event instead of escaping into the review
+or repair workflow.
+
+`CLAWSWEEPER_CRABFLEET_URL` remains a configurable credential-free HTTPS base
+and defaults to `https://crabfleet.openclaw.ai`. Projection derives the trusted
+base from the session-scoped `CLAWSWEEPER_CRABFLEET_WORK_STATE_URL` returned by
+registration, requires the configured base and registered session route to
+match, and only then attaches the bearer token. This preserves staging and
+self-hosted CrabFleet deployments while rejecting later environment-origin or
+base-path drift. Queued projections retain that validated base even if the
+process environment changes after admission.
 
 Projection rebuilds must be deterministic. Truncating a projection never
 deletes source events. State-side compactors may replace hot shards with
