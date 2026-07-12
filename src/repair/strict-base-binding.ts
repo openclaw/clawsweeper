@@ -91,7 +91,8 @@ function authenticatedInstallationAppId(
 ): number | null {
   const configuredAppId = Number(appId);
   if (!Number.isSafeInteger(configuredAppId) || configuredAppId <= 0) return null;
-  const authenticatedAppSlug = String(appSlug ?? "").trim();
+  if (typeof appSlug !== "string") return null;
+  const authenticatedAppSlug = appSlug.trim();
   if (!/^[a-z0-9][a-z0-9-]*$/i.test(authenticatedAppSlug)) return null;
   try {
     const installation = readJson(["api", "installation"]);
@@ -100,7 +101,7 @@ function authenticatedInstallationAppId(
       return null;
     }
     if (
-      typeof candidate?.app_slug === "string" &&
+      typeof candidate?.app_slug !== "string" ||
       candidate.app_slug.toLowerCase() !== authenticatedAppSlug.toLowerCase()
     ) {
       return null;
