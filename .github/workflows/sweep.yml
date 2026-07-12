@@ -768,16 +768,21 @@ jobs:
             echo "::notice::Exact review produced no artifact because the item closed during review."
           fi
 
+      - name: Finalize exact event action ledger
+        if: ${{ always() && steps.live-item.outputs.proceed == 'true' }}
+        run: pnpm run --silent finalize-action-events
+
       - name: Create state token
         id: state-token
-        if: ${{ steps.live-item.outputs.proceed == 'true' && steps.review-exact-event-item.outcome == 'success' }}
+        if: ${{ always() && steps.live-item.outputs.proceed == 'true' }}
         uses: ./.github/actions/create-state-token
         with:
           client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
           private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
 
       - uses: ./.github/actions/setup-state
-        if: ${{ steps.live-item.outputs.proceed == 'true' && steps.review-exact-event-item.outcome == 'success' }}
+        id: setup-state
+        if: ${{ always() && steps.live-item.outputs.proceed == 'true' }}
         with:
           token: ${{ steps.state-token.outputs.token }}
           fetch-depth: 1
@@ -1053,6 +1058,39 @@ jobs:
       - name: Fail unsuccessful exact review
         if: ${{ always() && steps.target.outputs.target_enabled != 'false' && steps.live-item.outputs.proceed != 'false' && steps.publish-event-result.outputs.terminal_noop != 'true' && steps.publish-event-result.outputs.policy_noop != 'true' && steps.publish-event-result.outputs.requeue_latest != 'true' && (steps.review-exact-event-item.outcome != 'success' || steps.publish-event-result.outcome != 'success' || (steps.publish-event-result.outputs.terminal_missing != 'true' && steps.publish-event-result.outputs.terminal_closed != 'true' && steps.publish-event-result.outputs.guarded_open != 'true' && steps.queue-exact-verdict-router.outcome != 'success')) }}
         run: exit 1
+
+      - name: Publish exact event action ledger
+        if: ${{ always() && steps.setup-state.outcome == 'success' }}
+        run: |
+          set -euo pipefail
+          test -n "${CLAWSWEEPER_STATE_DIR:-}"
+          if [ ! -d .clawsweeper-repair/action-ledger-state/ledger ]; then
+            echo "No exact event action shards were finalized."
+            exit 0
+          fi
+          event_paths_file=".artifacts/exact-event-action-ledger-paths.txt"
+          mkdir -p .artifacts
+          pnpm run --silent publish-action-events -- \
+            --source-root .clawsweeper-repair/action-ledger-state \
+            --state-root "$CLAWSWEEPER_STATE_DIR" |
+            jq -r '.paths[]?' |
+            sort -u > "$event_paths_file"
+          if [ ! -s "$event_paths_file" ]; then
+            echo "Exact event action shards existed but no paths were imported." >&2
+            exit 1
+          fi
+          action_ledger_args=()
+          while IFS= read -r event_path; do
+            durable_event_path="$CLAWSWEEPER_STATE_DIR/$event_path"
+            test -f "$durable_event_path"
+            mkdir -p "$(dirname "$event_path")"
+            cp "$durable_event_path" "$event_path"
+            action_ledger_args+=(--path "$event_path")
+          done < "$event_paths_file"
+          pnpm run repair:publish-main -- \
+            --message "chore: append exact event action ledger" \
+            "${action_ledger_args[@]}" \
+            --rebase-strategy normal
 
       - name: Complete exact-review queue lease
         id: complete-exact-review-queue
@@ -1815,6 +1853,11 @@ jobs:
             "${additional_prompt_arg[@]}" \
             "${expected_source_revision_arg[@]}"
 
+      - name: Finalize review action ledger
+        if: always()
+        working-directory: clawsweeper
+        run: node dist/clawsweeper.js finalize-action-events
+
       - name: Record shard metrics
         if: always()
         env:
@@ -1859,6 +1902,14 @@ jobs:
           path: |
             review-artifacts/shard-${{ matrix.shard }}/*.md
             review-artifacts/shard-${{ matrix.shard }}/review-cache-metrics.json
+          if-no-files-found: ignore
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: action-ledger-review-${{ matrix.shard }}
+          path: clawsweeper/.clawsweeper-repair/action-ledger-state/**
+          include-hidden-files: true
           if-no-files-found: ignore
 
       - uses: actions/upload-artifact@v7
@@ -2005,10 +2056,55 @@ jobs:
           path: review-metrics
           merge-multiple: true
 
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: action-ledger-review-*
+          path: .clawsweeper-repair/action-ledger-download
+          merge-multiple: true
+
+      - name: Import immutable review action events
+        run: |
+          set -euo pipefail
+          test -n "${CLAWSWEEPER_STATE_DIR:-}"
+          mkdir -p .artifacts
+          : > .artifacts/action-ledger-paths.txt
+          for source_root in \
+            .clawsweeper-repair/action-ledger-download \
+            .clawsweeper-repair/action-ledger-state
+          do
+            pnpm run --silent publish-action-events -- \
+              --source-root "$source_root" \
+              --state-root "$CLAWSWEEPER_STATE_DIR" |
+              jq -r '.paths[]?' >> .artifacts/action-ledger-paths.txt
+          done
+          sort -u -o .artifacts/action-ledger-paths.txt .artifacts/action-ledger-paths.txt
+          while IFS= read -r event_path; do
+            durable_event_path="$CLAWSWEEPER_STATE_DIR/$event_path"
+            test -f "$durable_event_path"
+            mkdir -p "$(dirname "$event_path")"
+            cp "$durable_event_path" "$event_path"
+          done < .artifacts/action-ledger-paths.txt
+
+      - name: Publish immutable review action ledger
+        run: |
+          if [ ! -s .artifacts/action-ledger-paths.txt ]; then
+            echo "No immutable review action events to publish."
+            exit 0
+          fi
+          action_ledger_args=()
+          while IFS= read -r event_path; do
+            action_ledger_args+=(--path "$event_path")
+          done < .artifacts/action-ledger-paths.txt
+          pnpm run repair:publish-main -- \
+            --message "chore: append review action ledger" \
+            "${action_ledger_args[@]}" \
+            --rebase-strategy normal
+
       - name: Sync before applying artifacts
         run: git pull --rebase --autostash
 
       - name: Apply review artifacts
+        id: apply-review-artifacts
         env:
           GH_TOKEN: ${{ github.token }}
           EXACT_ITEM: ${{ github.event.client_payload.item_number || github.event.inputs.item_number || github.event.inputs.item_numbers || '' }}
@@ -2040,6 +2136,40 @@ jobs:
             --due-backlog "${{ needs.plan.outputs.due_backlog }}" \
             --oldest-unreviewed-at "${{ needs.plan.outputs.oldest_unreviewed_at }}" \
             --capacity-reason "${{ needs.plan.outputs.capacity_reason }}"
+
+      - name: Publish review artifact action ledger
+        if: ${{ always() && steps.apply-review-artifacts.outcome != 'skipped' }}
+        run: |
+          set -euo pipefail
+          test -n "${CLAWSWEEPER_STATE_DIR:-}"
+          source_root=".clawsweeper-repair/action-ledger-state"
+          if [ ! -d "$source_root/ledger" ]; then
+            echo "No review artifact action event shards were finalized."
+            exit 0
+          fi
+          event_paths_file=".artifacts/review-artifact-action-ledger-paths.txt"
+          mkdir -p .artifacts
+          pnpm run --silent publish-action-events -- \
+            --source-root "$source_root" \
+            --state-root "$CLAWSWEEPER_STATE_DIR" |
+            jq -r '.paths[]?' |
+            sort -u > "$event_paths_file"
+          if [ ! -s "$event_paths_file" ]; then
+            echo "Review artifact action event shards existed but no paths were imported." >&2
+            exit 1
+          fi
+          action_ledger_args=()
+          while IFS= read -r event_path; do
+            durable_event_path="$CLAWSWEEPER_STATE_DIR/$event_path"
+            test -f "$durable_event_path"
+            mkdir -p "$(dirname "$event_path")"
+            cp "$durable_event_path" "$event_path"
+            action_ledger_args+=(--path "$event_path")
+          done < "$event_paths_file"
+          pnpm run repair:publish-main -- \
+            --message "chore: append review artifact action ledger" \
+            "${action_ledger_args[@]}" \
+            --rebase-strategy normal
 
       - name: Commit review records
         env:
@@ -2250,6 +2380,7 @@ jobs:
           echo "::warning::Unable to dispatch background comment sync after three attempts; apply/comment-sync backstops can pick it up later."
 
       - name: Sync selected review comments
+        id: sync-selected-review-comments
         if: ${{ success() && steps.target-write-token.outputs.token != '' && ((github.event_name == 'repository_dispatch' && github.event.action != 'clawsweeper_target_sweep') || github.event.inputs.item_number != '' || github.event.inputs.item_numbers != '') }}
         timeout-minutes: 15
         env:
@@ -2299,6 +2430,39 @@ jobs:
             --path apply-report.json \
             --path "results/sweep-status/${target_slug}.json" \
             --rebase-strategy theirs
+
+      - name: Publish selected review comment action ledger
+        if: ${{ always() && steps.sync-selected-review-comments.outcome != 'skipped' }}
+        run: |
+          set -euo pipefail
+          test -n "${CLAWSWEEPER_STATE_DIR:-}"
+          if [ ! -d .clawsweeper-repair/action-ledger-state/ledger ]; then
+            echo "No selected review comment action shards were finalized."
+            exit 0
+          fi
+          event_paths_file=".artifacts/selected-comment-action-ledger-paths.txt"
+          mkdir -p .artifacts
+          pnpm run --silent publish-action-events -- \
+            --source-root .clawsweeper-repair/action-ledger-state \
+            --state-root "$CLAWSWEEPER_STATE_DIR" |
+            jq -r '.paths[]?' |
+            sort -u > "$event_paths_file"
+          if [ ! -s "$event_paths_file" ]; then
+            echo "Selected review comment action shards existed but no paths were imported." >&2
+            exit 1
+          fi
+          action_ledger_args=()
+          while IFS= read -r event_path; do
+            durable_event_path="$CLAWSWEEPER_STATE_DIR/$event_path"
+            test -f "$durable_event_path"
+            mkdir -p "$(dirname "$event_path")"
+            cp "$durable_event_path" "$event_path"
+            action_ledger_args+=(--path "$event_path")
+          done < "$event_paths_file"
+          pnpm run repair:publish-main -- \
+            --message "chore: append selected review comment action ledger" \
+            "${action_ledger_args[@]}" \
+            --rebase-strategy normal
 
       - name: Dispatch selected safe close proposals to isolated apply
         if: ${{ success() && steps.target-write-token.outputs.token != '' && github.event.inputs.apply_after_review == 'true' }}
@@ -2522,6 +2686,40 @@ jobs:
             --path results/failed-review-retries/openclaw-openclaw \
             --rebase-strategy theirs
 
+      - name: Publish failed-review retry action ledger
+        if: ${{ always() }}
+        run: |
+          set -euo pipefail
+          test -n "${CLAWSWEEPER_STATE_DIR:-}"
+          source_root=".clawsweeper-repair/action-ledger-state"
+          if [ ! -d "$source_root/ledger" ]; then
+            echo "No failed-review retry action event shards were finalized."
+            exit 0
+          fi
+          event_paths_file=".artifacts/failed-review-retry-action-ledger-paths.txt"
+          mkdir -p .artifacts
+          pnpm run --silent publish-action-events -- \
+            --source-root "$source_root" \
+            --state-root "$CLAWSWEEPER_STATE_DIR" |
+            jq -r '.paths[]?' |
+            sort -u > "$event_paths_file"
+          if [ ! -s "$event_paths_file" ]; then
+            echo "Failed-review retry action shards existed but no paths were imported." >&2
+            exit 1
+          fi
+          action_ledger_args=()
+          while IFS= read -r event_path; do
+            durable_event_path="$CLAWSWEEPER_STATE_DIR/$event_path"
+            test -f "$durable_event_path"
+            mkdir -p "$(dirname "$event_path")"
+            cp "$durable_event_path" "$event_path"
+            action_ledger_args+=(--path "$event_path")
+          done < "$event_paths_file"
+          pnpm run repair:publish-main -- \
+            --message "chore: append failed review retry action ledger" \
+            "${action_ledger_args[@]}" \
+            --rebase-strategy normal
+
       - uses: actions/upload-artifact@v7
         if: ${{ always() }}
         with:
@@ -2667,6 +2865,7 @@ jobs:
     outputs:
       target_repo: ${{ steps.target.outputs.target_repo }}
       artifact_name: ${{ steps.proof-artifact.outputs.name }}
+      action_ledger_artifact_name: ${{ steps.publishable-action-ledger.outputs.name }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -2688,7 +2887,9 @@ jobs:
 
       - name: Resolve proof artifact identity
         id: proof-artifact
-        run: echo "name=apply-coverage-proofs-${{ github.run_id }}-${{ github.run_attempt }}" >> "$GITHUB_OUTPUT"
+        run: |
+          echo "name=apply-coverage-proofs-${{ github.run_id }}-${{ github.run_attempt }}" >> "$GITHUB_OUTPUT"
+          echo "action_ledger_name=action-ledger-apply-proof-${{ github.run_id }}-${{ github.run_attempt }}" >> "$GITHUB_OUTPUT"
 
       - uses: ./.github/actions/setup-state
         with:
@@ -2813,6 +3014,10 @@ jobs:
             --report-path .artifacts/apply-proof/apply-report.json \
             --progress-every 1
 
+      - name: Finalize apply proof action ledger
+        if: ${{ always() && steps.proof-select.outputs.item_numbers != '' }}
+        run: pnpm run --silent finalize-action-events
+
       - name: Upload bound close coverage proofs
         if: ${{ always() && steps.proof-select.outputs.item_numbers != '' }}
         uses: actions/upload-artifact@v7
@@ -2822,9 +3027,98 @@ jobs:
           if-no-files-found: ignore
           retention-days: 1
 
+      - name: Upload apply proof action events
+        id: upload-action-events
+        if: ${{ always() && steps.proof-select.outputs.item_numbers != '' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.proof-artifact.outputs.action_ledger_name }}
+          path: .clawsweeper-repair/action-ledger-state/**
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Export uploaded apply proof action ledger identity
+        id: publishable-action-ledger
+        if: ${{ always() && steps.upload-action-events.outputs.artifact-id != '' }}
+        run: echo "name=${{ steps.proof-artifact.outputs.action_ledger_name }}" >> "$GITHUB_OUTPUT"
+
+  publish-apply-proof-action-ledger:
+    name: Publish immutable apply proof action ledger
+    needs: apply-proof
+    if: ${{ always() && needs.apply-proof.result != 'skipped' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          filter: blob:none
+
+      - name: Download apply proof action events
+        if: ${{ needs.apply-proof.outputs.action_ledger_artifact_name != '' }}
+        uses: actions/download-artifact@v8
+        with:
+          name: ${{ needs.apply-proof.outputs.action_ledger_artifact_name }}
+          path: .clawsweeper-repair/action-ledger-proof
+
+      - name: Create state token
+        if: ${{ needs.apply-proof.outputs.action_ledger_artifact_name != '' }}
+        id: state-token
+        uses: ./.github/actions/create-state-token
+        with:
+          client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
+
+      - uses: ./.github/actions/setup-state
+        if: ${{ needs.apply-proof.outputs.action_ledger_artifact_name != '' }}
+        with:
+          token: ${{ steps.state-token.outputs.token }}
+          filter: blob:none
+          fetch-depth: 1
+
+      - uses: ./.github/actions/setup-pnpm
+        if: ${{ needs.apply-proof.outputs.action_ledger_artifact_name != '' }}
+        with:
+          build-script: build:all
+
+      - name: Publish apply proof action events
+        if: ${{ needs.apply-proof.outputs.action_ledger_artifact_name != '' }}
+        run: |
+          set -euo pipefail
+          test -n "${CLAWSWEEPER_STATE_DIR:-}"
+          source_root=".clawsweeper-repair/action-ledger-proof"
+          if [ ! -d "$source_root/ledger" ]; then
+            echo "The uploaded apply proof artifact did not contain action event shards." >&2
+            exit 1
+          fi
+          event_paths_file=".artifacts/apply-proof-action-ledger-paths.txt"
+          mkdir -p .artifacts
+          pnpm run --silent publish-action-events -- \
+            --source-root "$source_root" \
+            --state-root "$CLAWSWEEPER_STATE_DIR" |
+            jq -r '.paths[]?' |
+            sort -u > "$event_paths_file"
+          if [ ! -s "$event_paths_file" ]; then
+            echo "Apply proof action event shards existed but no paths were imported." >&2
+            exit 1
+          fi
+          action_ledger_args=()
+          while IFS= read -r event_path; do
+            durable_event_path="$CLAWSWEEPER_STATE_DIR/$event_path"
+            test -f "$durable_event_path"
+            mkdir -p "$(dirname "$event_path")"
+            cp "$durable_event_path" "$event_path"
+            action_ledger_args+=(--path "$event_path")
+          done < "$event_paths_file"
+          pnpm run repair:publish-main -- \
+            --message "chore: append apply proof action ledger" \
+            "${action_ledger_args[@]}" \
+            --rebase-strategy normal
+
   apply-existing:
     name: Apply close proposals
-    needs: apply-proof
+    needs: [apply-proof, publish-apply-proof-action-ledger]
     if: ${{ ((github.event_name == 'workflow_dispatch' && github.event.inputs.apply_existing == 'true') || (github.event_name == 'schedule' && (github.event.schedule == '3 * * * *' || github.event.schedule == '18 * * * *' || github.event.schedule == '33 * * * *' || github.event.schedule == '48 * * * *' || github.event.schedule == '8,23,38,53 * * * *' || github.event.schedule == '6,21,36,51 * * * *'))) && !(github.event_name == 'repository_dispatch' && github.event.client_payload.target_repo == 'openclaw/clawhub' && vars.CLAWSWEEPER_ENABLE_CLAWHUB != '1') && !(github.event_name == 'schedule' && github.event.schedule == '8,23,38,53 * * * *' && vars.CLAWSWEEPER_ENABLE_CLAWHUB != '1') }}
     runs-on: ubuntu-latest
     timeout-minutes: 360
@@ -3311,6 +3605,40 @@ jobs:
             --message "chore: mark sweep apply finished" \
             --path "results/sweep-status/${target_slug}.json" \
             --rebase-strategy apply-records
+
+      - name: Publish apply action events
+        if: ${{ always() }}
+        run: |
+          set -euo pipefail
+          test -n "${CLAWSWEEPER_STATE_DIR:-}"
+          source_root=".clawsweeper-repair/action-ledger-state"
+          if [ ! -d "$source_root/ledger" ]; then
+            echo "No apply action event shards were finalized."
+            exit 0
+          fi
+          event_paths_file=".artifacts/apply-action-ledger-paths.txt"
+          mkdir -p .artifacts
+          pnpm run --silent publish-action-events -- \
+            --source-root "$source_root" \
+            --state-root "$CLAWSWEEPER_STATE_DIR" |
+            jq -r '.paths[]?' |
+            sort -u > "$event_paths_file"
+          if [ ! -s "$event_paths_file" ]; then
+            echo "Apply action event shards existed but no paths were imported." >&2
+            exit 1
+          fi
+          action_ledger_args=()
+          while IFS= read -r event_path; do
+            durable_event_path="$CLAWSWEEPER_STATE_DIR/$event_path"
+            test -f "$durable_event_path"
+            mkdir -p "$(dirname "$event_path")"
+            cp "$durable_event_path" "$event_path"
+            action_ledger_args+=(--path "$event_path")
+          done < "$event_paths_file"
+          pnpm run repair:publish-main -- \
+            --message "chore: append apply action ledger" \
+            "${action_ledger_args[@]}" \
+            --rebase-strategy normal
 
       - name: Continue apply sweep
         if: ${{ success() }}
