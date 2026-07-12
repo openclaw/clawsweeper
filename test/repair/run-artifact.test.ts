@@ -236,7 +236,7 @@ test("repair workflow resolves producer artifacts by trusted id across rerun att
       /uses: actions\/download-artifact@v8\n\s+with:\n([\s\S]*?)(?=\n\s{6}- (?:name|uses):|\n\n)/g,
     ),
   ];
-  assert.equal(downloadBlocks.length, 10);
+  assert.equal(downloadBlocks.length, 13);
   for (const block of downloadBlocks) {
     assert.match(block[1]!, /artifact-ids: \$\{\{ steps\.[^.]+\.outputs\.artifact_id \}\}/);
     assert.match(block[1]!, /github-token: \$\{\{ github\.token \}\}/);
@@ -256,12 +256,33 @@ test("repair workflow resolves producer artifacts by trusted id across rerun att
   ]) {
     assert.match(workflow, new RegExp(`--prefix ${prefix}`));
   }
-  assert.match(workflow, /artifact_id: \$\{\{ steps\.upload\.outputs\.artifact-id \}\}/);
-  assert.match(workflow, /artifact_id: \$\{\{ steps\.upload_execution\.outputs\.artifact-id \}\}/);
+  assert.match(
+    workflow,
+    /artifact_id: \$\{\{ steps\.prior_authorized_artifact\.outputs\.artifact_id \|\| steps\.upload\.outputs\.artifact-id \}\}/,
+  );
+  assert.match(
+    workflow,
+    /artifact_id: \$\{\{ needs\.authorize\.outputs\.recovery_execution_artifact_id \|\| steps\.upload_execution\.outputs\.artifact-id \}\}/,
+  );
+  assert.match(
+    workflow,
+    /artifact_id: \$\{\{ needs\.authorize\.outputs\.recovery_validation_artifact_id \|\| steps\.upload\.outputs\.artifact-id \}\}/,
+  );
+  assert.match(
+    workflow,
+    /cluster:[\s\S]*?producer_attempt: \$\{\{ steps\.producer_attempt\.outputs\.value \}\}/,
+  );
+  assert.match(
+    workflow,
+    /authorize:[\s\S]*?producer_attempt: \$\{\{ steps\.restore_authorization\.outputs\.checkpoint_producer_attempt \|\| steps\.producer_attempt\.outputs\.value \}\}/,
+  );
   assert.equal(
-    [...workflow.matchAll(/producer_attempt: \$\{\{ steps\.producer_attempt\.outputs\.value \}\}/g)]
-      .length,
-    4,
+    [
+      ...workflow.matchAll(
+        /producer_attempt: \$\{\{ needs\.authorize\.outputs\.checkpoint_recovered == '1' && needs\.authorize\.outputs\.producer_attempt \|\| steps\.producer_attempt\.outputs\.value \}\}/g,
+      ),
+    ].length,
+    2,
   );
   assert.equal(
     [
@@ -286,7 +307,7 @@ test("repair workflow resolves producer artifacts by trusted id across rerun att
         /--expected-producer-attempt "\$\{\{ steps\.authorization_publication_artifact\.outputs\.producer_attempt \}\}"/g,
       ),
     ].length,
-    2,
+    3,
   );
 });
 
