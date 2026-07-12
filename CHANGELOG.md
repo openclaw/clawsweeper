@@ -32,6 +32,9 @@ checkpoint, and status-only commits are intentionally omitted.
   production token fingerprint; mandatory custom-route proof uses Cloudflare
   Access service-token headers, and failed or stale deployments roll back only
   the Worker to the exact prior stable version; D1 migrations remain applied.
+  The 30-minute protected job enforces a 25-minute internal mutation deadline,
+  reserves seven minutes between D1 and Worker cutoffs, and reauthorizes both
+  repository main tips again after production proof before accepting success.
   The former crawl-remote deployment workflow must be deleted, not merely
   disabled, and all Wrangler reads, mutations, ownership probes, and rollback
   commands have explicit deadlines. Absolute pre-mutation cutoffs refuse D1 or

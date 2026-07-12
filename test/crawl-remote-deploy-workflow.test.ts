@@ -152,8 +152,14 @@ test("crawl-remote release is maintainer-bound across two fresh runners", () => 
   assert.equal(deploy.env.DEPLOYMENT_STATUS_ATTEMPTS, "60");
   assert.equal(deploy.env.DEPLOYMENT_STATUS_DELAY_SECONDS, "5");
   assert.equal(deploy.env.DEPLOYMENT_STATUS_TIMEOUT_SECONDS, "120");
-  assert.equal(deploy.env.D1_MUTATION_MIN_REMAINING_SECONDS, "1260");
+  assert.equal(deploy.env.D1_MUTATION_MIN_REMAINING_SECONDS, "1320");
   assert.equal(deploy.env.WORKER_MUTATION_MIN_REMAINING_SECONDS, "900");
+  assert.ok(
+    Number(deploy.env.D1_MUTATION_MIN_REMAINING_SECONDS) -
+      Number(deploy.env.WORKER_MUTATION_MIN_REMAINING_SECONDS) >=
+      7 * 60,
+    "D1 mutation must reserve at least seven minutes before the Worker mutation cutoff",
+  );
   assert.equal(deploy.env.WRANGLER_DEPLOY_TIMEOUT_SECONDS, "180");
   assert.equal(deploy.env.WRANGLER_READ_TIMEOUT_SECONDS, "30");
   assert.equal(deploy.env.WRANGLER_ROLLBACK_TIMEOUT_SECONDS, "180");
@@ -240,7 +246,7 @@ test("crawl-remote release is maintainer-bound across two fresh runners", () => 
   assert.equal(canonicalAuthority.env?.GH_TOKEN, "${{ steps.target-token.outputs.token }}");
   assert.equal(canonicalAuthority.env?.CLOUDFLARE_API_TOKEN, undefined);
   assert.equal(preflight["timeout-minutes"], 25);
-  assert.equal(deploy["timeout-minutes"], 25);
+  assert.equal(deploy["timeout-minutes"], 30);
 });
 
 test("protected deploy audits exact environment-owned authority inputs", () => {
@@ -787,16 +793,20 @@ esac
     step(deploy, "Reauthorize current main immediately before Worker deploy").run ?? "";
   const reauthorizeAfterWorker =
     step(deploy, "Reauthorize current main after Worker deploy").run ?? "";
+  const reauthorizeAfterProof =
+    step(deploy, "Reauthorize current main after production proof").run ?? "";
 
   try {
     assert.equal(runScript(authorize, mergedCrawlRemoteMain, true).status, 0);
     assert.equal(runScript(reauthorizeBeforeD1, mergedCrawlRemoteMain, false).status, 0);
     assert.equal(runScript(reauthorizeBeforeWorker, mergedCrawlRemoteMain, false).status, 0);
     assert.equal(runScript(reauthorizeAfterWorker, mergedCrawlRemoteMain, false).status, 0);
+    assert.equal(runScript(reauthorizeAfterProof, mergedCrawlRemoteMain, false).status, 0);
     assert.notEqual(runScript(authorize, "a".repeat(40), true).status, 0);
     assert.notEqual(runScript(reauthorizeBeforeD1, "a".repeat(40), false).status, 0);
     assert.notEqual(runScript(reauthorizeBeforeWorker, "a".repeat(40), false).status, 0);
     assert.notEqual(runScript(reauthorizeAfterWorker, "a".repeat(40), false).status, 0);
+    assert.notEqual(runScript(reauthorizeAfterProof, "a".repeat(40), false).status, 0);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
@@ -864,6 +874,8 @@ printf '%s\\n' "$((count + 1))" > "$GH_COUNTER"
     step(deploy, "Reauthorize current main immediately before Worker deploy").run ?? "";
   const reauthorizeAfterWorker =
     step(deploy, "Reauthorize current main after Worker deploy").run ?? "";
+  const reauthorizeAfterProof =
+    step(deploy, "Reauthorize current main after production proof").run ?? "";
 
   try {
     assert.equal(runScript(reauthorizeBeforeD1).status, 0);
@@ -876,6 +888,14 @@ printf '%s\\n' "$((count + 1))" > "$GH_COUNTER"
     const movedAfterDeploy = runScript(reauthorizeAfterWorker);
     assert.notEqual(movedAfterDeploy.status, 0);
     assert.match(movedAfterDeploy.stdout + movedAfterDeploy.stderr, /advanced during deployment/);
+    rmSync(counterPath, { force: true });
+    assert.equal(runScript(reauthorizeAfterProof).status, 0);
+    const movedAfterProof = runScript(reauthorizeAfterProof);
+    assert.notEqual(movedAfterProof.status, 0);
+    assert.match(
+      movedAfterProof.stdout + movedAfterProof.stderr,
+      /advanced after production proof/,
+    );
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
@@ -1422,10 +1442,13 @@ test("deploy reauthorizes exact current main before and after privileged mutatio
   const deploymentState = step(deploy, "Resolve Worker deployment ownership");
   const deployReceipt = step(deploy, "Validate Worker deploy receipt");
   const reauthorizeAfterWorker = step(deploy, "Reauthorize current main after Worker deploy");
+  const productionProof = step(deploy, "Poll exact production release");
+  const reauthorizeAfterProof = step(deploy, "Reauthorize current main after production proof");
   for (const reauthorize of [
     reauthorizeBeforeD1,
     reauthorizeBeforeWorker,
     reauthorizeAfterWorker,
+    reauthorizeAfterProof,
   ]) {
     assert.match(reauthorize.run ?? "", /\[\[ "\$DEPLOY_SHA" != "\$current_main_sha" \]\]/);
     assert.match(
@@ -1454,6 +1477,11 @@ test("deploy reauthorizes exact current main before and after privileged mutatio
     steps(deploy).indexOf(deployReceipt) + 1,
     steps(deploy).indexOf(reauthorizeAfterWorker),
   );
+  assert.ok(steps(deploy).indexOf(reauthorizeAfterWorker) < steps(deploy).indexOf(productionProof));
+  assert.equal(
+    steps(deploy).indexOf(productionProof) + 1,
+    steps(deploy).indexOf(reauthorizeAfterProof),
+  );
   assert.match(migration.run ?? "", /test ! -e "\$CONSUMED_RECEIPT_PATH"/);
   assert.match(migration.run ?? "", /mv -- "\$RECEIPT_PATH" "\$CONSUMED_RECEIPT_PATH"/);
   assert.equal(baseline.env?.CLOUDFLARE_API_TOKEN, undefined);
@@ -1470,6 +1498,10 @@ test("deploy reauthorizes exact current main before and after privileged mutatio
   assert.equal(deploymentState["continue-on-error"], true);
   assert.equal(deployReceipt["continue-on-error"], true);
   assert.equal(reauthorizeAfterWorker["continue-on-error"], true);
+  assert.equal(reauthorizeAfterProof.id, "final-main");
+  assert.equal(reauthorizeAfterProof["continue-on-error"], true);
+  assert.equal(reauthorizeAfterProof.if, "${{ steps.production-proof.outcome == 'success' }}");
+  assert.equal(reauthorizeAfterProof.run?.match(/timeout --foreground/g)?.length, 2);
   assert.match(
     reauthorizeAfterWorker.if ?? "",
     /steps\.deployment-state\.outputs\.mutation_owned == 'true'/,
@@ -1567,6 +1599,7 @@ test("failed Worker release rolls back only the exact previously stable Worker v
   const deployReceipt = step(deploy, "Validate Worker deploy receipt");
   const postDeployMain = step(deploy, "Reauthorize current main after Worker deploy");
   const proof = step(deploy, "Poll exact production release");
+  const finalMain = step(deploy, "Reauthorize current main after production proof");
   const rollback = step(deploy, "Roll back failed Worker release");
   const finalGate = step(deploy, "Require successful release and proof");
   const run = rollback.run ?? "";
@@ -1576,7 +1609,12 @@ test("failed Worker release rolls back only the exact previously stable Worker v
   assert.equal(deployReceipt.id, "deploy-receipt");
   assert.equal(postDeployMain.id, "post-deploy-main");
   assert.equal(proof.id, "production-proof");
+  assert.equal(finalMain.id, "final-main");
   assert.equal(proof["continue-on-error"], true);
+  assert.equal(finalMain["continue-on-error"], true);
+  assert.equal(finalMain.if, "${{ steps.production-proof.outcome == 'success' }}");
+  assert.equal(steps(deploy).indexOf(proof) + 1, steps(deploy).indexOf(finalMain));
+  assert.equal(steps(deploy).indexOf(finalMain) + 1, steps(deploy).indexOf(rollback));
   assert.match(rollback.if ?? "", /always\(\)/);
   assert.match(rollback.if ?? "", /steps\.deployment-state\.outcome == 'success'/);
   assert.match(rollback.if ?? "", /steps\.deployment-state\.outputs\.mutation_owned == 'true'/);
@@ -1584,6 +1622,7 @@ test("failed Worker release rolls back only the exact previously stable Worker v
   assert.match(rollback.if ?? "", /steps\.deploy-receipt\.outcome != 'success'/);
   assert.match(rollback.if ?? "", /steps\.post-deploy-main\.outcome != 'success'/);
   assert.match(rollback.if ?? "", /steps\.production-proof\.outcome != 'success'/);
+  assert.match(rollback.if ?? "", /steps\.final-main\.outcome != 'success'/);
   assert.match(workerDeploy.run ?? "", /WRANGLER_OUTPUT_FILE_PATH="\$DEPLOY_OUTPUT_PATH"/);
   assert.match(workerDeploy.run ?? "", /WRANGLER_DEPLOY_TIMEOUT_SECONDS/);
   assert.doesNotMatch(workerDeploy.run ?? "", /DEPLOYED_VERSION_PATH|entry\?\.type === 'deploy'/);
@@ -1616,6 +1655,8 @@ test("failed Worker release rolls back only the exact previously stable Worker v
   assert.match(finalGate.run ?? "", /MUTATION_OWNED.*DEPLOY_RECEIPT_OUTCOME/s);
   assert.match(finalGate.run ?? "", /DEPLOY_RECEIPT_OUTCOME.*POST_DEPLOY_MAIN_OUTCOME/s);
   assert.match(finalGate.run ?? "", /PRODUCTION_PROOF_OUTCOME.*success/s);
+  assert.match(finalGate.run ?? "", /FINAL_MAIN_OUTCOME.*success/s);
+  assert.equal(finalGate.env?.FINAL_MAIN_OUTCOME, "${{ steps.final-main.outcome }}");
   assert.match(finalGate.run ?? "", /rollback outcome/);
 });
 

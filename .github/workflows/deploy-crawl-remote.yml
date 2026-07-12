@@ -449,7 +449,7 @@ jobs:
         inputs.confirmation == 'deploy crawl-remote production'
       }}
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 30
     environment:
       name: crawl-remote-production
       url: https://crawl-remote.services-91b.workers.dev
@@ -462,7 +462,7 @@ jobs:
       CI: "true"
       CLAWSWEEPER_APP_CLIENT_ID: Iv23liOECG0slfuhz093
       CLOUDFLARE_ACCOUNT_ID: 91b59577e757131d68d55a471fe32aca
-      D1_MUTATION_MIN_REMAINING_SECONDS: "1260"
+      D1_MUTATION_MIN_REMAINING_SECONDS: "1320"
       DEPLOYMENT_STATUS_ATTEMPTS: "60"
       DEPLOYMENT_STATUS_DELAY_SECONDS: "5"
       DEPLOYMENT_STATUS_TIMEOUT_SECONDS: "120"
@@ -2606,6 +2606,43 @@ jobs:
           echo "::error::required production endpoints did not converge to release $DEPLOY_SHA before the deadline."
           exit 1
 
+      - name: Reauthorize current main after production proof
+        id: final-main
+        if: ${{ steps.production-proof.outcome == 'success' }}
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ steps.target-token.outputs.token }}
+          SOURCE_GH_TOKEN: ${{ github.token }}
+        run: |
+          unset BASH_ENV ENV CDPATH GLOBIGNORE NODE_OPTIONS
+          current_source_main_sha="$(
+            GH_TOKEN="$SOURCE_GH_TOKEN" \
+              timeout --foreground --signal=TERM --kill-after=5s \
+              "${WRANGLER_READ_TIMEOUT_SECONDS}s" \
+              gh api "repos/$SOURCE_REPOSITORY/commits/main" --jq '.sha'
+          )"
+          if [[ ! "$current_source_main_sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::ClawSweeper main did not resolve to a full lowercase commit SHA."
+            exit 1
+          fi
+          if [[ "$WORKFLOW_SHA" != "$current_source_main_sha" ]]; then
+            echo "::error::ClawSweeper main advanced after production proof; rollback is required."
+            exit 1
+          fi
+          current_main_sha="$(
+            timeout --foreground --signal=TERM --kill-after=5s \
+              "${WRANGLER_READ_TIMEOUT_SECONDS}s" \
+              gh api "repos/$TARGET_REPOSITORY/commits/main" --jq '.sha'
+          )"
+          if [[ ! "$current_main_sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::crawl-remote main did not resolve to a full lowercase commit SHA."
+            exit 1
+          fi
+          if [[ "$DEPLOY_SHA" != "$current_main_sha" ]]; then
+            echo "::error::crawl-remote main advanced after production proof; rollback is required."
+            exit 1
+          fi
+
       - name: Roll back failed Worker release
         id: rollback
         if: >-
@@ -2617,7 +2654,8 @@ jobs:
               steps.worker-deploy.outcome != 'success' ||
               steps.deploy-receipt.outcome != 'success' ||
               steps.post-deploy-main.outcome != 'success' ||
-              steps.production-proof.outcome != 'success'
+              steps.production-proof.outcome != 'success' ||
+              steps.final-main.outcome != 'success'
             )
           }}
         env:
@@ -2715,6 +2753,7 @@ jobs:
         env:
           DEPLOYMENT_STATE_OUTCOME: ${{ steps.deployment-state.outcome }}
           DEPLOY_RECEIPT_OUTCOME: ${{ steps.deploy-receipt.outcome }}
+          FINAL_MAIN_OUTCOME: ${{ steps.final-main.outcome }}
           MUTATION_OWNED: ${{ steps.deployment-state.outputs.mutation_owned }}
           POST_DEPLOY_MAIN_OUTCOME: ${{ steps.post-deploy-main.outcome }}
           PREVIOUS_WORKER_PROBE_OUTCOME: ${{ steps.previous-worker-probe.outcome }}
@@ -2729,9 +2768,10 @@ jobs:
             "$MUTATION_OWNED" == "true" &&
             "$DEPLOY_RECEIPT_OUTCOME" == "success" &&
             "$POST_DEPLOY_MAIN_OUTCOME" == "success" &&
-            "$PRODUCTION_PROOF_OUTCOME" == "success"
+            "$PRODUCTION_PROOF_OUTCOME" == "success" &&
+            "$FINAL_MAIN_OUTCOME" == "success"
           ]]; then
             exit 0
           fi
-          echo "::error::crawl-remote release failed or lost authorization; deployment state: $DEPLOYMENT_STATE_OUTCOME/$MUTATION_OWNED; deploy receipt: $DEPLOY_RECEIPT_OUTCOME; previous Worker probe: $PREVIOUS_WORKER_PROBE_OUTCOME; Worker rollback outcome: $ROLLBACK_OUTCOME. D1 migrations are not rolled back."
+          echo "::error::crawl-remote release failed or lost authorization; deployment state: $DEPLOYMENT_STATE_OUTCOME/$MUTATION_OWNED; deploy receipt: $DEPLOY_RECEIPT_OUTCOME; final main authorization: $FINAL_MAIN_OUTCOME; previous Worker probe: $PREVIOUS_WORKER_PROBE_OUTCOME; Worker rollback outcome: $ROLLBACK_OUTCOME. D1 migrations are not rolled back."
           exit 1
