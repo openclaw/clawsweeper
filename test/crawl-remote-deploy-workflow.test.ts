@@ -1,7 +1,15 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -1118,6 +1126,7 @@ test("deploy uses the committed exact Node and Wrangler toolchain before credent
     [
       "Apply and verify D1 migrations",
       "Deploy verified Worker bundle",
+      "Resolve Worker deployment ownership",
       "Roll back failed Worker release",
     ],
   );
@@ -1137,7 +1146,7 @@ test("deploy uses the committed exact Node and Wrangler toolchain before credent
   assert.doesNotMatch(source, /secrets\.CRAWL_REMOTE_CLOUDFLARE_API_TOKEN/);
   assert.doesNotMatch(source, /\|\|\s*secrets\./);
   assert.doesNotMatch(source, /CRAWL_REMOTE_CUSTOM_ROUTE_PROOF\s*\|\|/);
-  assert.equal(source.match(/CRAWL_REMOTE_PRODUCTION_CLOUDFLARE_API_TOKEN/g)?.length, 3);
+  assert.equal(source.match(/CRAWL_REMOTE_PRODUCTION_CLOUDFLARE_API_TOKEN/g)?.length, 4);
 });
 
 test("networked CI installs the pinned Wrangler lock and exercises its dry-run outside pnpm check", () => {
@@ -1207,6 +1216,8 @@ test("deploy reauthorizes exact current main before and after privileged mutatio
     "Reauthorize current main immediately before Worker deploy",
   );
   const workerDeploy = step(deploy, "Deploy verified Worker bundle");
+  const deploymentState = step(deploy, "Resolve Worker deployment ownership");
+  const deployReceipt = step(deploy, "Validate Worker deploy receipt");
   const reauthorizeAfterWorker = step(deploy, "Reauthorize current main after Worker deploy");
   for (const reauthorize of [
     reauthorizeBeforeD1,
@@ -1234,8 +1245,10 @@ test("deploy reauthorizes exact current main before and after privileged mutatio
     steps(deploy).indexOf(reauthorizeBeforeWorker) + 1,
     steps(deploy).indexOf(workerDeploy),
   );
+  assert.equal(steps(deploy).indexOf(workerDeploy) + 1, steps(deploy).indexOf(deploymentState));
+  assert.equal(steps(deploy).indexOf(deploymentState) + 1, steps(deploy).indexOf(deployReceipt));
   assert.equal(
-    steps(deploy).indexOf(workerDeploy) + 1,
+    steps(deploy).indexOf(deployReceipt) + 1,
     steps(deploy).indexOf(reauthorizeAfterWorker),
   );
   assert.match(migration.run ?? "", /test ! -e "\$CONSUMED_RECEIPT_PATH"/);
@@ -1251,8 +1264,14 @@ test("deploy reauthorizes exact current main before and after privileged mutatio
   assert.match(workerDeploy.run ?? "", /test -f "\$PENDING_MIGRATIONS_PATH"/);
   assert.match(workerDeploy.run ?? "", /test -f "\$PREVIOUS_WORKER_PROBE_PATH"/);
   assert.equal(workerDeploy["continue-on-error"], true);
+  assert.equal(deploymentState["continue-on-error"], true);
+  assert.equal(deployReceipt["continue-on-error"], true);
   assert.equal(reauthorizeAfterWorker["continue-on-error"], true);
-  assert.equal(reauthorizeAfterWorker.if, "${{ steps.worker-deploy.outcome == 'success' }}");
+  assert.match(
+    reauthorizeAfterWorker.if ?? "",
+    /steps\.deployment-state\.outputs\.mutation_owned == 'true'/,
+  );
+  assert.match(reauthorizeAfterWorker.if ?? "", /steps\.deploy-receipt\.outcome == 'success'/);
 });
 
 test("privileged mutations use only verified files and prove the selected D1 fence state", () => {
@@ -1306,7 +1325,8 @@ test("privileged mutations use only verified files and prove the selected D1 fen
   assert.match(workerDeploy, /--no-bundle/);
   assert.match(workerDeploy, /--strict/);
   assert.match(workerDeploy, /--var "CRAWL_REMOTE_RELEASE_SHA:\$DEPLOY_SHA"/);
-  assert.match(workerDeploy, /--message "main \$\{DEPLOY_SHA\}"/);
+  assert.match(workerDeploy, /--message "\$DEPLOY_MESSAGE"/);
+  assert.match(deploy.env.DEPLOY_MESSAGE ?? "", /github\.run_id.*github\.run_attempt.*deploy_sha/);
 
   const ledgerQueryIndex = migration.indexOf('> "$APPLIED_MIGRATIONS_RESPONSE"');
   const preQueryIndex = migration.indexOf('> "$PRE_FENCE_RESPONSE"');
@@ -1321,6 +1341,8 @@ test("privileged mutations use only verified files and prove the selected D1 fen
 
 test("failed Worker release rolls back only the exact previously stable Worker version", () => {
   const workerDeploy = step(deploy, "Deploy verified Worker bundle");
+  const deploymentState = step(deploy, "Resolve Worker deployment ownership");
+  const deployReceipt = step(deploy, "Validate Worker deploy receipt");
   const postDeployMain = step(deploy, "Reauthorize current main after Worker deploy");
   const proof = step(deploy, "Poll exact production release");
   const rollback = step(deploy, "Roll back failed Worker release");
@@ -1328,18 +1350,26 @@ test("failed Worker release rolls back only the exact previously stable Worker v
   const run = rollback.run ?? "";
 
   assert.equal(workerDeploy.id, "worker-deploy");
+  assert.equal(deploymentState.id, "deployment-state");
+  assert.equal(deployReceipt.id, "deploy-receipt");
   assert.equal(postDeployMain.id, "post-deploy-main");
   assert.equal(proof.id, "production-proof");
   assert.equal(proof["continue-on-error"], true);
   assert.match(rollback.if ?? "", /always\(\)/);
-  assert.match(rollback.if ?? "", /steps\.worker-deploy\.outcome == 'success'/);
-  assert.doesNotMatch(rollback.if ?? "", /steps\.worker-deploy\.outcome != 'success'/);
+  assert.match(rollback.if ?? "", /steps\.deployment-state\.outcome == 'success'/);
+  assert.match(rollback.if ?? "", /steps\.deployment-state\.outputs\.mutation_owned == 'true'/);
+  assert.match(rollback.if ?? "", /steps\.worker-deploy\.outcome != 'success'/);
+  assert.match(rollback.if ?? "", /steps\.deploy-receipt\.outcome != 'success'/);
   assert.match(rollback.if ?? "", /steps\.post-deploy-main\.outcome != 'success'/);
   assert.match(rollback.if ?? "", /steps\.production-proof\.outcome != 'success'/);
   assert.match(workerDeploy.run ?? "", /WRANGLER_OUTPUT_FILE_PATH="\$DEPLOY_OUTPUT_PATH"/);
-  assert.match(workerDeploy.run ?? "", /entry\?\.type === 'deploy'/);
-  assert.match(workerDeploy.run ?? "", /deployments\[0\]\?\.version !== 1/);
-  assert.match(workerDeploy.run ?? "", /DEPLOYED_VERSION_PATH/);
+  assert.doesNotMatch(workerDeploy.run ?? "", /DEPLOYED_VERSION_PATH|entry\?\.type === 'deploy'/);
+  assert.match(deploymentState.run ?? "", /deployment\?\.annotations\?\.\['workers\/message'\]/);
+  assert.match(deploymentState.run ?? "", /mutation_owned=true/);
+  assert.match(deploymentState.run ?? "", /mutation_owned=false/);
+  assert.match(deployReceipt.run ?? "", /entry\?\.type === 'deploy'/);
+  assert.match(deployReceipt.run ?? "", /deployments\[0\]\?\.version !== 1/);
+  assert.match(deployReceipt.run ?? "", /version_id !== deployedVersion/);
   assert.match(run, /refusing rollback because this run no longer owns the current Worker version/);
   assert.match(run, /versions\[0\]\?\.version_id !== process\.env\.DEPLOYED_VERSION/);
   assert.match(run, /wrangler" rollback "\$previous_version"/);
@@ -1350,9 +1380,185 @@ test("failed Worker release rolls back only the exact previously stable Worker v
   assert.match(run, /D1 migrations remain applied/);
   assert.equal(finalGate.if, "${{ always() }}");
   assert.match(finalGate.run ?? "", /D1 migrations are not rolled back/);
-  assert.match(finalGate.run ?? "", /WORKER_DEPLOY_OUTCOME.*POST_DEPLOY_MAIN_OUTCOME/s);
+  assert.match(finalGate.run ?? "", /WORKER_DEPLOY_OUTCOME.*DEPLOYMENT_STATE_OUTCOME/s);
+  assert.match(finalGate.run ?? "", /MUTATION_OWNED.*DEPLOY_RECEIPT_OUTCOME/s);
+  assert.match(finalGate.run ?? "", /DEPLOY_RECEIPT_OUTCOME.*POST_DEPLOY_MAIN_OUTCOME/s);
   assert.match(finalGate.run ?? "", /PRODUCTION_PROOF_OUTCOME.*success/s);
   assert.match(finalGate.run ?? "", /rollback outcome/);
+});
+
+test("deployment ownership recovers a mutation after the deploy command reports failure", () => {
+  const ownership = step(deploy, "Resolve Worker deployment ownership");
+  const receipt = step(deploy, "Validate Worker deploy receipt");
+  const directory = mkdtempSync(join(tmpdir(), "crawl-remote-deployment-ownership-"));
+  const toolchainRoot = join(directory, "toolchain");
+  const binRoot = join(toolchainRoot, "node_modules", ".bin");
+  const wranglerPath = join(binRoot, "wrangler");
+  const previousVersionPath = join(directory, "previous-version.txt");
+  const deployedVersionPath = join(directory, "deployed-version.txt");
+  const deploymentResponsePath = join(directory, "deployment.json");
+  const deployOutputPath = join(directory, "deploy-output.ndjson");
+  const githubOutputPath = join(directory, "github-output");
+  const previousVersion = "11111111-1111-4111-8111-111111111111";
+  const deployedVersion = "22222222-2222-4222-8222-222222222222";
+  const foreignVersion = "33333333-3333-4333-8333-333333333333";
+  const deployMessage = "clawsweeper run 123/1 main " + mergedCrawlRemoteMain;
+  const token = "production-token";
+  const tokenSHA = createHash("sha256").update(token).digest("hex");
+
+  mkdirSync(binRoot, { recursive: true });
+  writeFileSync(
+    wranglerPath,
+    `#!/bin/sh
+if test "$1" = "--version"; then
+  printf '%s\\n' "$WRANGLER_VERSION"
+  exit 0
+fi
+if test "$1 $2" = "deployments status"; then
+  printf '%s\\n' "$CURRENT_DEPLOYMENT_JSON"
+  exit 0
+fi
+exit 97
+`,
+  );
+  chmodSync(wranglerPath, 0o755);
+  writeFileSync(previousVersionPath, `${previousVersion}\n`);
+
+  function runOwnership({
+    currentVersion,
+    currentMessage,
+    deployOutcome,
+  }: {
+    currentVersion: string;
+    currentMessage: string;
+    deployOutcome: "success" | "failure";
+  }) {
+    rmSync(deployedVersionPath, { force: true });
+    rmSync(deploymentResponsePath, { force: true });
+    rmSync(githubOutputPath, { force: true });
+    return spawnSync(
+      "bash",
+      ["--noprofile", "--norc", "-euo", "pipefail", "-c", ownership.run ?? ""],
+      {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          CLOUDFLARE_API_TOKEN: token,
+          CLOUDFLARE_TOKEN_SHA256: tokenSHA,
+          CURRENT_DEPLOYMENT_JSON: JSON.stringify({
+            annotations: { "workers/message": currentMessage },
+            versions: [{ percentage: 100, version_id: currentVersion }],
+          }),
+          CURRENT_DEPLOYMENT_RESPONSE: deploymentResponsePath,
+          DEPLOYED_VERSION_PATH: deployedVersionPath,
+          DEPLOYMENT_STATUS_ATTEMPTS: "1",
+          DEPLOYMENT_STATUS_DELAY_SECONDS: "0",
+          DEPLOY_MESSAGE: deployMessage,
+          GITHUB_OUTPUT: githubOutputPath,
+          PREVIOUS_VERSION_PATH: previousVersionPath,
+          RELEASE_ROOT: directory,
+          TOOLCHAIN_ROOT: toolchainRoot,
+          WORKER_DEPLOY_OUTCOME: deployOutcome,
+          WRANGLER_VERSION: "4.107.1",
+        },
+      },
+    );
+  }
+
+  try {
+    const partialSuccess = runOwnership({
+      currentVersion: deployedVersion,
+      currentMessage: deployMessage,
+      deployOutcome: "failure",
+    });
+    assert.equal(partialSuccess.status, 0, partialSuccess.stdout + partialSuccess.stderr);
+    assert.match(readFileSync(githubOutputPath, "utf8"), /mutation_owned=true/);
+    assert.equal(readFileSync(deployedVersionPath, "utf8").trim(), deployedVersion);
+
+    writeFileSync(
+      deployOutputPath,
+      `${JSON.stringify({
+        type: "deploy",
+        version: 1,
+        worker_name: "crawl-remote",
+        version_id: deployedVersion,
+      })}\n`,
+    );
+    const validReceipt = spawnSync(
+      "bash",
+      ["--noprofile", "--norc", "-euo", "pipefail", "-c", receipt.run ?? ""],
+      {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          DEPLOYED_VERSION_PATH: deployedVersionPath,
+          DEPLOY_OUTPUT_PATH: deployOutputPath,
+        },
+      },
+    );
+    assert.equal(validReceipt.status, 0, validReceipt.stdout + validReceipt.stderr);
+
+    const noMutation = runOwnership({
+      currentVersion: previousVersion,
+      currentMessage: "previous deployment",
+      deployOutcome: "failure",
+    });
+    assert.equal(noMutation.status, 0, noMutation.stdout + noMutation.stderr);
+    assert.match(readFileSync(githubOutputPath, "utf8"), /mutation_owned=false/);
+    assert.equal(existsSync(deployedVersionPath), false);
+
+    const falseSuccess = runOwnership({
+      currentVersion: previousVersion,
+      currentMessage: "previous deployment",
+      deployOutcome: "success",
+    });
+    assert.notEqual(falseSuccess.status, 0);
+    assert.match(
+      falseSuccess.stdout + falseSuccess.stderr,
+      /successful Worker deploy did not become the current version/,
+    );
+
+    const foreignMutation = runOwnership({
+      currentVersion: foreignVersion,
+      currentMessage: "another deployer",
+      deployOutcome: "failure",
+    });
+    assert.notEqual(foreignMutation.status, 0);
+    assert.match(
+      foreignMutation.stdout + foreignMutation.stderr,
+      /current Worker deployment is not owned by this workflow run/,
+    );
+
+    writeFileSync(
+      deployOutputPath,
+      `${JSON.stringify({
+        type: "deploy",
+        version: 1,
+        worker_name: "crawl-remote",
+        version_id: foreignVersion,
+      })}\n`,
+    );
+    writeFileSync(deployedVersionPath, `${deployedVersion}\n`);
+    const mismatchedReceipt = spawnSync(
+      "bash",
+      ["--noprofile", "--norc", "-euo", "pipefail", "-c", receipt.run ?? ""],
+      {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          DEPLOYED_VERSION_PATH: deployedVersionPath,
+          DEPLOY_OUTPUT_PATH: deployOutputPath,
+        },
+      },
+    );
+    assert.notEqual(mismatchedReceipt.status, 0);
+    assert.match(
+      mismatchedReceipt.stdout + mismatchedReceipt.stderr,
+      /deploy receipt does not match the owned Worker version/,
+    );
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 test("pending migration compatibility accepts only the reviewed additive 0007 suffix", () => {
