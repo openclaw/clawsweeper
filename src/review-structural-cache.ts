@@ -750,6 +750,10 @@ function validMachineMetadata(value: unknown): boolean {
   return serialized.length > 0 && serialized.length <= MAX_MACHINE_METADATA_CHARS;
 }
 
+function canonicalGitHubLogin(login: string): string {
+  return login.toLowerCase().replace(/\[bot\]$/, "");
+}
+
 function normalizedActivities(
   activities: readonly ReviewStructuralActivity[],
 ): ReviewStructuralActivity[] {
@@ -757,7 +761,7 @@ function normalizedActivities(
     .map((activity) => ({
       id: activity.id,
       updatedAt: activity.updatedAt,
-      author: activity.author?.toLowerCase() ?? null,
+      author: activity.author === null ? null : canonicalGitHubLogin(activity.author),
       authorAssociation: activity.authorAssociation?.toUpperCase() ?? null,
       state: activity.state?.toUpperCase() ?? null,
       commitSha: activity.commitSha,
@@ -778,7 +782,7 @@ function sourceRevision(snapshot: ReviewStructuralSnapshot): string {
       number: snapshot.number,
       kind: snapshot.kind,
       nodeId: snapshot.nodeId,
-      author: snapshot.author.toLowerCase(),
+      author: canonicalGitHubLogin(snapshot.author),
       authorAssociation: snapshot.authorAssociation.toUpperCase(),
       titleDigest: snapshot.titleDigest,
       bodyDigest: snapshot.bodyDigest,
@@ -847,7 +851,7 @@ export function reviewStructuralItemStateDigest(item: ReviewStructuralItemState)
   const comments = item.comments
     .map((comment) => ({
       updatedAt: comment.updatedAt,
-      author: comment.author?.toLowerCase() ?? null,
+      author: comment.author === null ? null : canonicalGitHubLogin(comment.author),
       authorAssociation: comment.authorAssociation?.toUpperCase() ?? null,
       bodyDigest: comment.bodyDigest,
     }))
@@ -858,7 +862,7 @@ export function reviewStructuralItemStateDigest(item: ReviewStructuralItemState)
       bodyDigest: item.bodyDigest,
       state: item.state.toUpperCase(),
       locked: item.locked,
-      author: item.author.toLowerCase(),
+      author: canonicalGitHubLogin(item.author),
       authorAssociation: item.authorAssociation.toUpperCase(),
       labels: [...item.labels].map((label) => label.toLowerCase()).sort(),
       comments,

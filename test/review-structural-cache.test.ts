@@ -348,6 +348,33 @@ test("GraphQL decoder builds bounded issue and PR records", () => {
   assert.ok(pullRecord.pullStateDigest);
 });
 
+test("structural records canonicalize GitHub App login suffixes", () => {
+  const graphql = record(
+    issueSnapshot({
+      author: "dependabot",
+      comments: [
+        {
+          ...issueSnapshot().comments[0],
+          author: "third-party-app",
+        },
+      ],
+    }),
+  );
+  const rest = record(
+    issueSnapshot({
+      author: "dependabot[bot]",
+      comments: [
+        {
+          ...issueSnapshot().comments[0],
+          author: "third-party-app[bot]",
+        },
+      ],
+    }),
+  );
+  assert.equal(graphql.itemStateDigest, rest.itemStateDigest);
+  assert.equal(graphql.sourceRevision, rest.sourceRevision);
+});
+
 test("GraphQL decoder fails closed on truncated metadata", () => {
   const issue = graphqlNode("issue");
   const comments = {
