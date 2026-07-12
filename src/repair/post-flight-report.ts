@@ -70,6 +70,23 @@ export function publicationOnlyPostFlightAction({
   };
 }
 
+export function issueImplementationPublishedHeadBlock({
+  expectedPublishedHeadSha,
+  pull,
+  view,
+}: {
+  expectedPublishedHeadSha: unknown;
+  pull: LooseRecord;
+  view: LooseRecord;
+}): string {
+  const expected = String(expectedPublishedHeadSha ?? "");
+  if (!expected) return "";
+  const liveHeadSha = String(pull.head?.sha ?? view.headRefOid ?? "");
+  return liveHeadSha === expected
+    ? ""
+    : "issue implementation pull request head does not match the published receipt";
+}
+
 export function summarizePostFlightReport(report: LooseRecord): PostFlightReportSummary {
   const actions = Array.isArray(report.actions) ? report.actions : [];
   const incomplete = actions.filter(

@@ -70,6 +70,9 @@ checkpoint, and status-only commits are intentionally omitted.
   privileged mutation guard immediately before push, create, reopen, label,
   comment, and close operations, allowing only the exact prepared source head
   or source closures authorized by a verified durable publication checkpoint.
+- Kept deadline-expired pending or missing post-flight checks retryable for
+  durable self-heal, and required issue-implementation readiness to match the
+  exact head recorded by the verified publication receipt.
 - Replaced the unsupported GitHub installation identity probe with pinned
   `create-github-app-token` App slug and installation outputs plus App IDs
   derived from the authenticated slug, rejected

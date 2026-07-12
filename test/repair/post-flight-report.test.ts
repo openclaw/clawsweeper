@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   isPublicationOnlyPostFlightJob,
+  issueImplementationPublishedHeadBlock,
   postFlightOutcomeExitCode,
   publicationOnlyPostFlightAction,
   shouldFinalizePublicationOnlyPostFlight,
@@ -92,6 +93,34 @@ test("publication-only completion requires the exact authorized repair head", ()
       status: "blocked",
       reason: "published pull request head does not match the authorized repair commit",
     },
+  );
+});
+
+test("issue implementation completion requires the exact published receipt head", () => {
+  const expectedPublishedHeadSha = "a".repeat(40);
+  assert.equal(
+    issueImplementationPublishedHeadBlock({
+      expectedPublishedHeadSha,
+      pull: { head: { sha: expectedPublishedHeadSha } },
+      view: {},
+    }),
+    "",
+  );
+  assert.equal(
+    issueImplementationPublishedHeadBlock({
+      expectedPublishedHeadSha,
+      pull: { head: { sha: "b".repeat(40) } },
+      view: { headRefOid: expectedPublishedHeadSha },
+    }),
+    "issue implementation pull request head does not match the published receipt",
+  );
+  assert.equal(
+    issueImplementationPublishedHeadBlock({
+      expectedPublishedHeadSha,
+      pull: {},
+      view: {},
+    }),
+    "issue implementation pull request head does not match the published receipt",
   );
 });
 

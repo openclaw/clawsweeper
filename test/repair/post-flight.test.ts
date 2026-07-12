@@ -601,6 +601,101 @@ test("post-flight keeps no-timestamp pending duplicate checks visible", () => {
   }
 });
 
+for (const checkState of ["missing", "pending"] as const) {
+  test(`issue implementation post-flight requeues deadline-expired ${checkState} checks`, () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-post-flight-"));
+    const fakeBin = path.join(tmp, "bin");
+    const jobPath = path.join(tmp, "job.md");
+    const runDir = path.join(tmp, "run");
+    const resultPath = path.join(runDir, "result.json");
+    const reportPath = path.join(runDir, "post-flight-report.json");
+
+    fs.mkdirSync(fakeBin, { recursive: true });
+    fs.mkdirSync(runDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(fakeBin, "gh"),
+      [
+        "#!/usr/bin/env node",
+        "const args = process.argv.slice(2);",
+        "if (args[0] === 'api' && args[1] === 'repos/openclaw/openclaw/pulls/123') {",
+        "  process.stdout.write(JSON.stringify({",
+        "    number: 123, state: 'open', title: 'fix(ui): preserve source config',",
+        "    draft: false, labels: [], base: { ref: 'main' }, merged_at: null,",
+        "    head: { sha: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' },",
+        "  }));",
+        "  process.exit(0);",
+        "}",
+        "if (args[0] === 'api' && args[1] === 'repos/openclaw/openclaw/issues/123/comments?per_page=100') {",
+        "  process.exit(0);",
+        "}",
+        "if (args[0] === 'pr' && args[1] === 'view') {",
+        `  const checks = ${
+          checkState === "missing"
+            ? "[]"
+            : "[{ name: 'check', workflowName: 'CI', status: 'QUEUED', conclusion: null }]"
+        };`,
+        "  process.stdout.write(JSON.stringify({",
+        "    baseRefName: 'main', isDraft: false, mergeable: 'MERGEABLE',",
+        "    mergeStateStatus: 'UNSTABLE', reviewDecision: null, state: 'OPEN',",
+        "    statusCheckRollup: checks, title: 'fix(ui): preserve source config',",
+        "    url: 'https://github.com/openclaw/openclaw/pull/123',",
+        "  }));",
+        "  process.exit(0);",
+        "}",
+        "process.stderr.write(`unexpected gh args: ${args.join(' ')}\\n`);",
+        "process.exit(1);",
+      ].join("\n"),
+      { mode: 0o755 },
+    );
+
+    writeIssueImplementationJob(jobPath);
+    writeIssueImplementationReports(runDir, resultPath);
+
+    try {
+      runPostFlight(
+        jobPath,
+        resultPath,
+        {
+          ...process.env,
+          CLAWSWEEPER_ALLOW_EXECUTE: "1",
+          CLAWSWEEPER_ALLOWED_OWNER: "openclaw",
+          CLAWSWEEPER_POST_FLIGHT_WAIT_MS: "0",
+          CLAWSWEEPER_POST_FLIGHT_POLL_MS: "0",
+          ...mockGhBinEnv(path.join(fakeBin, "gh"), fakeBin),
+        },
+        1,
+      );
+
+      const report = JSON.parse(fs.readFileSync(reportPath, "utf8"));
+      assert.equal(report.outcome, "requeue");
+      assert.equal(report.actions[0]?.status, "blocked");
+      assert.equal(report.actions[0]?.retry_recommended, true);
+      assert.match(
+        report.actions[0]?.reason,
+        checkState === "missing" ? /no PR checks found/i : /checks are not clean/i,
+      );
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+}
+
+test("issue implementation post-flight checks the publication receipt head before readiness", () => {
+  const source = fs.readFileSync("src/repair/post-flight.ts", "utf8");
+  const issueFinalizer = source.slice(
+    source.indexOf("function finalizeIssueImplementationPr"),
+    source.indexOf("function finalizePostMergeCloseouts"),
+  );
+  assert.match(
+    source,
+    /expectedPublishedHeadSha:\s*publicationReceipt\?\.published_head_sha\s*\?\?\s*null/,
+  );
+  assert.ok(
+    issueFinalizer.indexOf("issueImplementationPublishedHeadBlock") <
+      issueFinalizer.indexOf('status: "ready"'),
+  );
+});
+
 test("post-flight exports a blocked report before exiting unsuccessfully", () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-post-flight-"));
   const jobPath = path.join(tmp, "job.md");

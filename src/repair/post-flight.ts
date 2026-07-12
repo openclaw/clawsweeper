@@ -36,6 +36,7 @@ import { serverStrictBaseBindingBlock } from "./strict-base-binding.js";
 import { compactText as compactPlainText } from "./text-utils.js";
 import { verifyPublishedReceipt } from "./execution-handoff.js";
 import {
+  issueImplementationPublishedHeadBlock,
   postFlightOutcomeExitCode,
   publicationOnlyPostFlightAction,
   shouldFinalizePublicationOnlyPostFlight,
@@ -174,7 +175,11 @@ function finalizeFixPr(action: LooseRecord) {
   }
 
   if (isIssueImplementationJob()) {
-    return finalizeIssueImplementationPr({ base, parsed });
+    return finalizeIssueImplementationPr({
+      base,
+      parsed,
+      expectedPublishedHeadSha: publicationReceipt?.published_head_sha ?? null,
+    });
   }
   const deadline = Date.now() + POST_FLIGHT_WAIT_MS;
   let pull;
@@ -228,7 +233,9 @@ function finalizeFixPr(action: LooseRecord) {
       validationProofPlan: fixReport.validation_proof_plan,
     });
     if (!mergeBlock) break;
-    if (dryRun || !shouldWaitForMergeReadiness({ mergeBlock, view }) || Date.now() >= deadline) {
+    const waitable = shouldWaitForMergeReadiness({ mergeBlock, view });
+    const deadlineExpired = Date.now() >= deadline;
+    if (dryRun || !waitable || deadlineExpired) {
       return {
         ...prBase,
         status: "blocked",
@@ -236,6 +243,7 @@ function finalizeFixPr(action: LooseRecord) {
         mergeable: view.mergeable ?? null,
         merge_state_status: view.mergeStateStatus ?? null,
         review_decision: view.reviewDecision ?? null,
+        ...(!dryRun && waitable && deadlineExpired ? { retry_recommended: true } : {}),
         waited_ms: waitedMs,
       };
     }
@@ -389,7 +397,7 @@ function rulesetPolicyReader() {
     });
 }
 
-function finalizeIssueImplementationPr({ base, parsed }: LooseRecord) {
+function finalizeIssueImplementationPr({ base, parsed, expectedPublishedHeadSha }: LooseRecord) {
   const deadline = Date.now() + POST_FLIGHT_WAIT_MS;
   let waitedMs = 0;
   for (;;) {
@@ -402,6 +410,20 @@ function finalizeIssueImplementationPr({ base, parsed }: LooseRecord) {
         ...prBase,
         status: "blocked",
         reason: securityBlock,
+        waited_ms: waitedMs,
+      };
+    }
+
+    const receiptHeadBlock = issueImplementationPublishedHeadBlock({
+      expectedPublishedHeadSha,
+      pull,
+      view,
+    });
+    if (receiptHeadBlock) {
+      return {
+        ...prBase,
+        status: "blocked",
+        reason: receiptHeadBlock,
         waited_ms: waitedMs,
       };
     }
@@ -425,15 +447,16 @@ function finalizeIssueImplementationPr({ base, parsed }: LooseRecord) {
         mergeable: view.mergeable ?? null,
         merge_state_status: view.mergeStateStatus ?? null,
         review_decision: view.reviewDecision ?? null,
+        ...(expectedPublishedHeadSha
+          ? { published_head_sha: String(expectedPublishedHeadSha) }
+          : {}),
         waited_ms: waitedMs,
       };
     }
 
-    if (
-      dryRun ||
-      !shouldWaitForIssueImplementationChecks(checkBlock, view) ||
-      Date.now() >= deadline
-    ) {
+    const waitable = shouldWaitForIssueImplementationChecks(checkBlock, view);
+    const deadlineExpired = Date.now() >= deadline;
+    if (dryRun || !waitable || deadlineExpired) {
       return {
         ...prBase,
         status: "blocked",
@@ -441,6 +464,7 @@ function finalizeIssueImplementationPr({ base, parsed }: LooseRecord) {
         mergeable: view.mergeable ?? null,
         merge_state_status: view.mergeStateStatus ?? null,
         review_decision: view.reviewDecision ?? null,
+        ...(!dryRun && waitable && deadlineExpired ? { retry_recommended: true } : {}),
         waited_ms: waitedMs,
       };
     }
