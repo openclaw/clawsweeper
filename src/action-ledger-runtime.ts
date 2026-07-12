@@ -20,6 +20,7 @@ import {
   ACTION_EVENT_TYPES,
   actionEventShardsReplayEquivalent,
   actionAttemptId,
+  actionEventShardImportBindingRelativePaths,
   actionEventShardRelativePath,
   actionEventSpoolRelativePath,
   actionEventKey,
@@ -760,10 +761,10 @@ function actionEventShardImportBindings(
 
   const bindings = [...producerRuns.values(), ...eventIdentities.values()];
   for (const [shardSetKey, group] of shardSets) {
-    const shardSetDigest = createHash("sha256").update(shardSetKey).digest("hex");
     const ordered = [...group].sort((left, right) =>
       left.relativePath < right.relativePath ? -1 : left.relativePath > right.relativePath ? 1 : 0,
     );
+    const bindingPaths = actionEventShardImportBindingRelativePaths(ordered[0]!.identity);
     const reservation = {
       schema: "clawsweeper.action-ledger-import-shard-set",
       schema_version: 1,
@@ -777,25 +778,13 @@ function actionEventShardImportBindings(
     };
     const reservationContent = `${actionLedgerJson(reservation)}\n`;
     bindings.push({
-      relativePath: path.join(
-        "ledger",
-        "v1",
-        "import-bindings",
-        "shard-sets",
-        `${shardSetDigest}.json`,
-      ),
+      relativePath: bindingPaths.reservation,
       content: reservationContent,
       label: "action event shard import producer shard-set binding",
       kind: "reservation",
     });
     bindings.push({
-      relativePath: path.join(
-        "ledger",
-        "v1",
-        "import-bindings",
-        "completed-shard-sets",
-        `${shardSetDigest}.json`,
-      ),
+      relativePath: bindingPaths.completion,
       content: `${actionLedgerJson({
         schema: "clawsweeper.action-ledger-import-shard-set-completion",
         schema_version: 1,

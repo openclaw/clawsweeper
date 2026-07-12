@@ -28,6 +28,8 @@ import {
   actionEventShardRelativePath,
   actionLedgerJson,
   createActionEvent,
+  readActionEventShard,
+  readActionEventShardAt,
   writeActionEventShard,
   writeActionEventShards,
   type ActionEvent,
@@ -3065,11 +3067,14 @@ test(
     const destination = trustedChildRoot(root, "destination");
     const base = recordReview(root);
     assert.ok(base);
-    const [relativePath] = await flushWorkflowActionEvents(root, {
-      env: workflowEnv(),
-      outputRoot: source,
-    });
-    assert.ok(relativePath);
+    const events = Array.from({ length: 1_025 }, (_, index) =>
+      recreateActionEvent(base, {
+        eventKey: actionEventKey("review.interrupted-import", { index }),
+        parentEventId: null,
+      }),
+    );
+    const sourceShards = writeActionEventShards(source, shardIdentity(base), events);
+    assert.equal(sourceShards.length, 2);
     const moduleUrl = pathToFileURL(
       path.join(process.cwd(), "dist", "action-ledger-runtime.js"),
     ).href;
@@ -3091,7 +3096,19 @@ importActionEventShards(process.argv[1], process.argv[2]);`;
       { encoding: "utf8" },
     );
     assert.equal(child.signal, "SIGKILL", child.stderr);
-    assert.equal(fs.existsSync(path.join(destination, relativePath)), true);
+    const published = sourceShards.filter((shard) =>
+      fs.existsSync(path.join(destination, shard.relativePath)),
+    );
+    assert.equal(published.length, 1);
+    const interrupted = published[0]!;
+    assert.throws(
+      () => readActionEventShardAt(destination, interrupted.relativePath),
+      /import transaction is incomplete/,
+    );
+    assert.throws(
+      () => readActionEventShard(path.join(destination, interrupted.relativePath)),
+      /import transaction is incomplete/,
+    );
     const reservationRoot = path.join(destination, "ledger", "v1", "import-bindings", "shard-sets");
     const completionRoot = path.join(
       destination,
@@ -3118,12 +3135,16 @@ importActionEventShards(process.argv[1], process.argv[2]);`;
     assert.equal(fs.existsSync(path.join(destination, replacementShard.relativePath)), false);
 
     const replay = importActionEventShards(source, destination);
-    assert.equal(replay.created, 0);
+    assert.equal(replay.created, 1);
     assert.equal(replay.unchanged, 1);
-    assert.equal(
-      fs.readFileSync(path.join(destination, relativePath), "utf8"),
-      fs.readFileSync(path.join(source, relativePath), "utf8"),
-    );
+    assert.deepEqual(replay.paths, sourceShards.map((shard) => shard.relativePath).sort());
+    for (const shard of sourceShards) {
+      assert.equal(
+        fs.readFileSync(path.join(destination, shard.relativePath), "utf8"),
+        fs.readFileSync(path.join(source, shard.relativePath), "utf8"),
+      );
+      assert.doesNotThrow(() => readActionEventShardAt(destination, shard.relativePath));
+    }
     assert.equal(fs.readdirSync(completionRoot).length, 1);
   },
 );

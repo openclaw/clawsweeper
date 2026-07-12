@@ -190,9 +190,11 @@ confidential-identifier checks as every other durable machine-text field.
   payloads so a replay can safely finish an interrupted import without reserving
   a second immutable set. A separate completion marker is published only after
   every destination payload has been written and reread as replay-equivalent.
-  Sequential imports therefore cannot move a run, replace a reserved numbered
-  set with a different part count, or advertise completion before payload
-  publication finishes.
+  Canonical shard readers treat every reserved payload as invisible until that
+  marker validates the exact reservation, so a crash after publishing only the
+  first numbered part cannot expose a partial run. Sequential imports therefore
+  cannot move a run, replace a reserved numbered set with a different part
+  count, or advertise completion before payload publication finishes.
 
 ## Privacy Boundary
 

@@ -848,6 +848,23 @@ export function actionEventShardRelativePath(
   );
 }
 
+export function actionEventShardImportBindingRelativePaths(identity: ActionEventShardIdentity): {
+  reservation: string;
+  completion: string;
+} {
+  const digest = sha256(actionLedgerJson(normalizeShardIdentity(identity)));
+  return {
+    reservation: path.join("ledger", "v1", "import-bindings", "shard-sets", `${digest}.json`),
+    completion: path.join(
+      "ledger",
+      "v1",
+      "import-bindings",
+      "completed-shard-sets",
+      `${digest}.json`,
+    ),
+  };
+}
+
 export function createActionEvent(
   input: ActionEventInput,
   options: { now?: () => Date; generatedOccurredAt?: string } = {},
@@ -981,9 +998,7 @@ export function readActionEvent(filePath: string): ActionEvent {
 }
 
 export function readActionEventShard(filePath: string): ActionEvent[] {
-  return readActionEventShardTarget(
-    prepareSafeReadTarget(path.dirname(filePath), path.basename(filePath), "action event shard"),
-  );
+  return readActionEventShardTarget(prepareActionEventShardReadTarget(filePath));
 }
 
 export function readActionEventShardAt(
@@ -995,13 +1010,191 @@ export function readActionEventShardAt(
   );
 }
 
+function prepareActionEventShardReadTarget(filePath: string): SafeWriteTarget {
+  const resolved = path.resolve(filePath);
+  const marker = `${path.sep}ledger${path.sep}v1${path.sep}events${path.sep}`;
+  const markerIndex = resolved.indexOf(marker);
+  if (markerIndex >= 0) {
+    const filesystemRoot = path.parse(resolved).root;
+    const rootPath =
+      markerIndex < filesystemRoot.length ? filesystemRoot : resolved.slice(0, markerIndex);
+    return prepareSafeReadTarget(rootPath, path.relative(rootPath, resolved), "action event shard");
+  }
+  return prepareSafeReadTarget(
+    path.dirname(resolved),
+    path.basename(resolved),
+    "action event shard",
+  );
+}
+
 function readActionEventShardTarget(target: SafeWriteTarget): ActionEvent[] {
   const events = parseActionEventShardContent(
     readUtf8FileNoFollow(target, ACTION_EVENT_SHARD_FILE_LIMITS.maxBytes),
     target.path,
   );
   validateDirectActionEventShard(events, target.path);
+  assertCompletedImportedActionEventShard(target, events);
   return events;
+}
+
+function assertCompletedImportedActionEventShard(
+  target: SafeWriteTarget,
+  events: readonly ActionEvent[],
+): void {
+  const relativePath = path.relative(target.rootPath, target.path).replaceAll(path.sep, "/");
+  const match =
+    /^ledger\/v1\/events\/(\d{4})\/(\d{2})\/(\d{2})\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\.jsonl$/.exec(
+      relativePath,
+    );
+  const first = events[0];
+  if (!match || !first) return;
+  const identity = normalizeShardIdentity({
+    repository: first.producer.repository,
+    sha: first.producer.sha,
+    producer: first.producer.component,
+    workflow: first.producer.workflow,
+    job: first.producer.job,
+    runId: first.producer.run_id,
+    runAttempt: first.producer.run_attempt,
+    partitionDate: `${match[1]}-${match[2]}-${match[3]}`,
+  });
+  const part = /-part-(\d{6})-of-(\d{6})\.jsonl$/.exec(relativePath);
+  const expectedPath = actionEventShardRelativePath(
+    identity,
+    events,
+    part ? Number(part[1]) : undefined,
+    part ? Number(part[2]) : undefined,
+  ).replaceAll(path.sep, "/");
+  if (expectedPath !== relativePath) {
+    throw new Error(`action event shard path does not match canonical identity: ${target.path}`);
+  }
+
+  const root: SafeReadRoot = {
+    path: target.rootPath,
+    realPath: target.rootRealPath,
+    identity: target.rootIdentity,
+  };
+  const bindings = actionEventShardImportBindingRelativePaths(identity);
+  const reservationContent = readOptionalImportBinding(root, bindings.reservation);
+  const completionContent = readOptionalImportBinding(root, bindings.completion);
+  if (reservationContent === null && completionContent === null) return;
+  if (reservationContent === null) {
+    throw new Error(`invalid action event shard import transaction: ${target.path}`);
+  }
+  const reservation = parseActionEventShardImportReservation(
+    reservationContent,
+    identity,
+    target.path,
+  );
+  const replaySha256 = sha256(
+    `${events.map((event) => actionEventReplayJson(event)).join("\n")}\n`,
+  );
+  if (
+    !reservation.shards.some(
+      (shard) => shard.path === relativePath && shard.replay_sha256 === replaySha256,
+    )
+  ) {
+    throw new Error(`invalid action event shard import transaction: ${target.path}`);
+  }
+  if (completionContent === null) {
+    throw new Error(`action event shard import transaction is incomplete: ${target.path}`);
+  }
+  parseActionEventShardImportCompletion(
+    completionContent,
+    identity,
+    sha256(reservationContent),
+    target.path,
+  );
+}
+
+function readOptionalImportBinding(root: SafeReadRoot, relativePath: string): string | null {
+  let target;
+  try {
+    target = prepareSafeReadTarget(root, relativePath, "action event shard import binding");
+  } catch (error) {
+    if (isNotFoundError(error)) return null;
+    throw error;
+  }
+  return readUtf8FileIfExistsNoFollow(target, ACTION_LEDGER_CANONICAL_JSON_LIMITS.maxBytes);
+}
+
+function parseActionEventShardImportReservation(
+  content: string,
+  identity: ReturnType<typeof normalizeShardIdentity>,
+  source: string,
+): {
+  shards: Array<{ path: string; replay_sha256: string }>;
+} {
+  let value: unknown;
+  try {
+    value = JSON.parse(content);
+  } catch {
+    throw new Error(`invalid action event shard import transaction: ${source}`);
+  }
+  const reservation = value as {
+    schema?: unknown;
+    schema_version?: unknown;
+    producer?: unknown;
+    shards?: unknown;
+  };
+  const shards = Array.isArray(reservation.shards)
+    ? reservation.shards.map((entry) => {
+        const shard = entry as { path?: unknown; replay_sha256?: unknown };
+        return {
+          path: String(shard.path ?? ""),
+          replay_sha256: String(shard.replay_sha256 ?? ""),
+        };
+      })
+    : [];
+  const expected = {
+    schema: "clawsweeper.action-ledger-import-shard-set",
+    schema_version: 1,
+    producer: identity,
+    shards,
+  };
+  if (
+    reservation.schema !== expected.schema ||
+    reservation.schema_version !== expected.schema_version ||
+    actionLedgerJson(reservation.producer ?? null) !== actionLedgerJson(identity) ||
+    shards.length === 0 ||
+    shards.some(
+      (shard) =>
+        !/^ledger\/v1\/events\/[A-Za-z0-9_./-]+\.jsonl$/.test(shard.path) ||
+        !/^[a-f0-9]{64}$/.test(shard.replay_sha256),
+    ) ||
+    new Set(shards.map((shard) => shard.path)).size !== shards.length ||
+    `${actionLedgerJson(value)}\n` !== content ||
+    actionLedgerJson(value) !== actionLedgerJson(expected)
+  ) {
+    throw new Error(`invalid action event shard import transaction: ${source}`);
+  }
+  return { shards };
+}
+
+function parseActionEventShardImportCompletion(
+  content: string,
+  identity: ReturnType<typeof normalizeShardIdentity>,
+  reservationSha256: string,
+  source: string,
+): void {
+  let value: unknown;
+  try {
+    value = JSON.parse(content);
+  } catch {
+    throw new Error(`invalid action event shard import transaction: ${source}`);
+  }
+  const expected = {
+    schema: "clawsweeper.action-ledger-import-shard-set-completion",
+    schema_version: 1,
+    producer: identity,
+    reservation_sha256: reservationSha256,
+  };
+  if (
+    `${actionLedgerJson(value)}\n` !== content ||
+    actionLedgerJson(value) !== actionLedgerJson(expected)
+  ) {
+    throw new Error(`invalid action event shard import transaction: ${source}`);
+  }
 }
 
 export function readSpooledActionEvents(
