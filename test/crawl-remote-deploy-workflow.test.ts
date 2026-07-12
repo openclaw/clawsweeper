@@ -1926,7 +1926,7 @@ exit 97
   }
 });
 
-test("rollback restores an owned persistent split and rejects a foreign annotation", () => {
+test("rollback restores an owned split and rejects foreign annotation or identity", () => {
   const rollback = step(deploy, "Roll back failed Worker release");
   const directory = mkdtempSync(join(tmpdir(), "crawl-remote-split-rollback-"));
   const toolchainRoot = join(directory, "toolchain");
@@ -1942,6 +1942,7 @@ test("rollback restores an owned persistent split and rejects a foreign annotati
   const previousVersion = "11111111-1111-4111-8111-111111111111";
   const deployedVersion = "22222222-2222-4222-8222-222222222222";
   const deploymentID = "44444444-4444-4444-8444-444444444444";
+  const foreignDeploymentID = "55555555-5555-4555-8555-555555555555";
   const deployMessage = "clawsweeper run 123/1 main " + mergedCrawlRemoteMain;
   const token = "production-token";
   const tokenSHA = createHash("sha256").update(token).digest("hex");
@@ -1981,7 +1982,7 @@ exit 97
   writeFileSync(deployedVersionPath, `${deployedVersion}\n`);
   writeFileSync(ownedDeploymentIDPath, `${deploymentID}\n`);
 
-  function runRollback(currentMessage: string) {
+  function runRollback(currentMessage: string, currentDeploymentID = deploymentID) {
     rmSync(currentDeploymentPath, { force: true });
     rmSync(rollbackDeploymentPath, { force: true });
     rmSync(statusCountPath, { force: true });
@@ -1996,7 +1997,7 @@ exit 97
           CLOUDFLARE_API_TOKEN: token,
           CLOUDFLARE_TOKEN_SHA256: tokenSHA,
           CURRENT_DEPLOYMENT_JSON: JSON.stringify({
-            id: deploymentID,
+            id: currentDeploymentID,
             annotations: { "workers/message": currentMessage },
             versions: [
               { percentage: 75, version_id: previousVersion },
@@ -2041,6 +2042,15 @@ exit 97
     );
     assert.equal(existsSync(rollbackMarkerPath), false);
     assert.equal(readFileSync(statusCountPath, "utf8").trim(), "1");
+
+    const foreignID = runRollback(deployMessage, foreignDeploymentID);
+    assert.notEqual(foreignID.status, 0);
+    assert.match(
+      foreignID.stdout + foreignID.stderr,
+      /this run no longer owns the current Worker deployment/,
+    );
+    assert.equal(existsSync(rollbackMarkerPath), false);
+    assert.equal(readFileSync(statusCountPath, "utf8").trim(), "1");
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
@@ -2062,6 +2072,7 @@ test("late ownership recovery fences rollback after transient status failure", (
   const deployedVersion = "22222222-2222-4222-8222-222222222222";
   const foreignVersion = "33333333-3333-4333-8333-333333333333";
   const deploymentID = "44444444-4444-4444-8444-444444444444";
+  const foreignDeploymentID = "55555555-5555-4555-8555-555555555555";
   const deployMessage = "clawsweeper run 123/1 main " + mergedCrawlRemoteMain;
   const token = "production-token";
   const tokenSHA = createHash("sha256").update(token).digest("hex");
@@ -2105,6 +2116,7 @@ exit 97
     currentMessage,
     failAfterFirstStatus = false,
     failFirstStatus = false,
+    recordedDeploymentID = "",
     timeoutSeconds = "2",
     transitionFirstStatus = false,
   }: {
@@ -2112,6 +2124,7 @@ exit 97
     currentMessage: string;
     failAfterFirstStatus?: boolean;
     failFirstStatus?: boolean;
+    recordedDeploymentID?: string;
     timeoutSeconds?: string;
     transitionFirstStatus?: boolean;
   }) {
@@ -2120,6 +2133,9 @@ exit 97
     rmSync(deploymentResponsePath, { force: true });
     rmSync(githubOutputPath, { force: true });
     rmSync(statusCountPath, { force: true });
+    if (recordedDeploymentID) {
+      writeFileSync(ownedDeploymentIDPath, `${recordedDeploymentID}\n`);
+    }
     return spawnSync(
       "bash",
       ["--noprofile", "--norc", "-euo", "pipefail", "-c", recovery.run ?? ""],
@@ -2224,6 +2240,18 @@ exit 97
       /recovered Worker deployment is not owned by this workflow run/,
     );
     assert.equal(existsSync(deployedVersionPath), false);
+
+    const conflictingRecord = runRecovery({
+      currentVersion: deployedVersion,
+      currentMessage: deployMessage,
+      recordedDeploymentID: foreignDeploymentID,
+    });
+    assert.notEqual(conflictingRecord.status, 0);
+    assert.match(
+      conflictingRecord.stdout + conflictingRecord.stderr,
+      /recovered Worker deployment conflicts with the prior ownership record/,
+    );
+    assert.equal(readFileSync(ownedDeploymentIDPath, "utf8").trim(), foreignDeploymentID);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
