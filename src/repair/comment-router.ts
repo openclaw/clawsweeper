@@ -180,6 +180,12 @@ const exactCommentVersionFastPathCommand = exactCommentVersionFastPath.suppress
   : null;
 if (exactCommentVersionFastPath.suppress && !exactCommentVersionFastPathCommand) {
   exactCommentVersionFastPath = { suppress: false, reason: "state_drift" };
+} else if (
+  exactCommentVersionFastPath.suppress &&
+  exactCommentVersionFastPathCommand &&
+  !exactCommentVersionStillCurrent(exactCommentVersionFastPathCommand)
+) {
+  exactCommentVersionFastPath = { suppress: false, reason: "source_drift" };
 }
 const priorDispatchClaims = new Map<string, LooseRecord>();
 for (const entry of ledger.commands ?? []) {
