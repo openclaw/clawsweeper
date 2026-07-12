@@ -17,6 +17,13 @@ export type PackageManagerInvocation = {
   }>;
 };
 
+type PackageRunInvocation = {
+  script: string;
+  scriptIndex: number;
+  scriptArgs: string[];
+  options: PackageManagerInvocation["globalOptions"];
+};
+
 const PACKAGE_MANAGER_GLOBAL_OPTIONS: Record<
   PackageManagerExecutable,
   { boolean: ReadonlySet<string>; value: ReadonlySet<string> }
@@ -302,13 +309,14 @@ export function packageScriptRequirement(
   const normalizedCommand = normalizedPackageCommand(invocation.command);
   const usesRunCommand = normalizedCommand === "run";
   if (invocation.executable !== "pnpm" && !usesRunCommand) return null;
-  const script = usesRunCommand ? invocation.args[0] : normalizedCommand;
+  const runInvocation = usesRunCommand ? packageRunInvocation(invocation) : null;
+  const script = usesRunCommand ? runInvocation?.script : normalizedCommand;
   if (!script || ["exec", "dlx", "install", "add", "remove"].includes(script)) return null;
-  const scriptIndex = usesRunCommand ? invocation.commandIndex + 1 : invocation.commandIndex;
+  const scriptIndex = usesRunCommand ? runInvocation!.scriptIndex : invocation.commandIndex;
   return {
     name: script,
     command: commandParts.slice(0, scriptIndex + 1).join(" "),
-    workspaceScoped: invocation.globalOptions.some(
+    workspaceScoped: [...invocation.globalOptions, ...(runInvocation?.options ?? [])].some(
       (option) =>
         PACKAGE_MANAGER_WORKSPACE_OPTIONS[invocation.executable].has(option.name) &&
         option.value !== "false",
@@ -320,10 +328,11 @@ export function packageScriptArguments(parts: readonly string[]): string[] {
   const invocation = packageManagerInvocation(parts);
   const requirement = packageScriptRequirement(parts);
   if (!invocation || !requirement) return [];
-  const args =
+  const runInvocation =
     normalizedPackageCommand(invocation.command) === "run"
-      ? invocation.args.slice(1)
-      : invocation.args;
+      ? packageRunInvocation(invocation)
+      : null;
+  const args = runInvocation ? runInvocation.scriptArgs : invocation.args;
   return args[0] === "--" ? args.slice(1) : args;
 }
 
@@ -399,6 +408,104 @@ export function packageManagerInvocation(
     args: commandParts.slice(index + 1),
     globalOptions,
   };
+}
+
+function packageRunInvocation(invocation: PackageManagerInvocation): PackageRunInvocation | null {
+  if (normalizedPackageCommand(invocation.command) !== "run") return null;
+  if (invocation.executable === "bun") {
+    const parsed = parsePackageOptions(
+      invocation.args,
+      {
+        boolean: new Set(),
+        value: new Set(["--filter"]),
+      },
+      0,
+    );
+    if (!parsed) return null;
+    const script = invocation.args[parsed.nextIndex];
+    if (!script || script.startsWith("-")) return null;
+    return {
+      script,
+      scriptIndex: invocation.commandIndex + 1 + parsed.nextIndex,
+      scriptArgs: invocation.args.slice(parsed.nextIndex + 1),
+      options: parsed.options,
+    };
+  }
+
+  const script = invocation.args[0];
+  if (!script || script.startsWith("-")) return null;
+  if (invocation.executable !== "npm") {
+    return {
+      script,
+      scriptIndex: invocation.commandIndex + 1,
+      scriptArgs: invocation.args.slice(1),
+      options: [],
+    };
+  }
+
+  const separatorIndex = invocation.args.indexOf("--", 1);
+  const optionEnd = separatorIndex < 0 ? invocation.args.length : separatorIndex;
+  const parsed = parsePackageOptions(
+    invocation.args.slice(1, optionEnd),
+    {
+      boolean: new Set([
+        "--foreground-scripts",
+        "--if-present",
+        "--ignore-scripts",
+        "--silent",
+        "--workspaces",
+      ]),
+      value: new Set(["-w", "--workspace"]),
+    },
+    0,
+    true,
+  );
+  if (!parsed || parsed.nextIndex !== optionEnd - 1) return null;
+  return {
+    script,
+    scriptIndex: invocation.commandIndex + 1,
+    scriptArgs: separatorIndex < 0 ? [] : invocation.args.slice(separatorIndex + 1),
+    options: parsed.options,
+  };
+}
+
+function parsePackageOptions(
+  args: readonly string[],
+  allowed: { boolean: ReadonlySet<string>; value: ReadonlySet<string> },
+  startIndex: number,
+  requireOptions = false,
+): { nextIndex: number; options: PackageManagerInvocation["globalOptions"] } | null {
+  const options: PackageManagerInvocation["globalOptions"] = [];
+  let index = startIndex;
+  while (index < args.length && args[index]?.startsWith("-")) {
+    const token = args[index]!;
+    const option = token.split("=", 1)[0]!;
+    if (allowed.boolean.has(option)) {
+      options.push({
+        name: option,
+        value: token.includes("=") ? token.slice(token.indexOf("=") + 1) : null,
+      });
+      index += 1;
+      continue;
+    }
+    if (allowed.value.has(option)) {
+      if (token.includes("=")) {
+        const value = token.slice(token.indexOf("=") + 1);
+        if (!value) return null;
+        options.push({ name: option, value });
+        index += 1;
+        continue;
+      }
+      const value = args[index + 1];
+      if (!value || value.startsWith("-")) return null;
+      options.push({ name: option, value });
+      index += 2;
+      continue;
+    }
+    return null;
+  }
+  if (requireOptions && index < args.length) return null;
+  return { nextIndex: index, options };
 }
 
 export function isExpensivePnpmValidation(
@@ -687,8 +794,12 @@ function hasUnsafePackageRunner(parts: readonly string[]) {
 
 function hasUnsupportedPackageManagerInvocation(parts: readonly string[]) {
   const executable = stripEnvPrefix(parts)[0];
+  if (!["pnpm", "npm", "bun"].includes(executable ?? "")) return false;
+  const invocation = packageManagerInvocation(parts);
+  if (!invocation) return true;
   return (
-    ["pnpm", "npm", "bun"].includes(executable ?? "") && packageManagerInvocation(parts) === null
+    normalizedPackageCommand(invocation.command) === "run" &&
+    packageRunInvocation(invocation) === null
   );
 }
 
@@ -857,7 +968,9 @@ function hasMutatingValidationCommand(parts: readonly string[]) {
   if (["pnpm", "npm", "bun"].includes(executable)) {
     if (MUTATING_PACKAGE_COMMANDS.has(subcommand)) return true;
     if (subcommand === "run") {
-      const lifecycle = String(packageInvocation?.args[0] ?? "").toLowerCase();
+      const lifecycle = String(
+        packageInvocation ? packageRunInvocation(packageInvocation)?.script : "",
+      ).toLowerCase();
       return MUTATING_PACKAGE_LIFECYCLE_SCRIPTS.has(lifecycle);
     }
   }

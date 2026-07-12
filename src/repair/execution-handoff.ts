@@ -29,7 +29,9 @@ import {
   type StagedProofPlanArtifact,
 } from "./staged-proof-gates.js";
 import {
+  buildTargetValidationProofPlan,
   prepareTargetToolchain,
+  repairDeltaValidationPlan,
   replayStagedValidationProof,
   type TargetValidationOptions,
 } from "./target-validation.js";
@@ -437,23 +439,24 @@ export function validateExecutionHandoff({
     "execution proof plan",
   ) as StagedProofPlanArtifact;
   const executionProof = objectValue(mergePreflight.validation_proof, "execution validation proof");
-  if (
-    !isPassedStagedProofBundle(executionProof, executionProofPlan) ||
-    executionProof.validated_head_sha !== publication.prepared_head_sha ||
-    executionProof.validated_base_sha !== publication.target_base_sha
-  ) {
-    throw new Error("execution proof is not bound to the prepared repair head and base");
-  }
 
   const checkout = checkoutPreparedRepair({ root, intent, publication });
   try {
+    const job = parseJob(path.join(root, "job.md"));
+    const fixArtifact = objectValue(result.fix_artifact, "fix artifact");
+    const automergeTargetValidation =
+      String(job.frontmatter.source ?? "") === "pr_automerge" ||
+      String(job.frontmatter.cluster_id ?? "").startsWith("automerge-");
     const options: TargetValidationOptions = {
-      additionalValidationCommands: [],
+      additionalValidationCommands:
+        automergeTargetValidation && authorization.target_repo === "openclaw/openclaw"
+          ? ["pnpm lint", "pnpm check:test-types"]
+          : [],
       allowExpensiveValidation: true,
       installTargetDeps: true,
       pinnedBaseRef: publication.target_base_sha,
-      proofSurfacePaths: Array.isArray(result.fix_artifact?.likely_files)
-        ? result.fix_artifact.likely_files.map(String)
+      proofSurfacePaths: Array.isArray(fixArtifact.likely_files)
+        ? fixArtifact.likely_files.map(String)
         : [],
       strictTargetValidation: true,
       targetRepo: authorization.target_repo,
@@ -461,14 +464,36 @@ export function validateExecutionHandoff({
     const immutableBeforeSetup = checkoutIdentity(checkout, publication.target_base_sha);
     prepareTargetToolchain(checkout, options);
     assertCheckoutIdentity(checkout, publication.target_base_sha, immutableBeforeSetup);
-    const independentProof = replayStagedValidationProof(
-      executionProofPlan,
-      checkout,
+    const validationPlan = repairDeltaValidationPlan(
+      {
+        fixArtifact,
+        targetDir: checkout,
+        sourceHead: intent.source.expected_head_sha,
+      },
       options,
+    );
+    const independentlyRequiredPlan = buildTargetValidationProofPlan(
+      validationPlan.commands,
+      checkout,
+      validationPlan.options,
+      publication.target_base_ref,
+    );
+    assertExactValidationProofPlan(executionProofPlan, independentlyRequiredPlan);
+    if (
+      !isPassedStagedProofBundle(executionProof, independentlyRequiredPlan) ||
+      executionProof.validated_head_sha !== publication.prepared_head_sha ||
+      executionProof.validated_base_sha !== publication.target_base_sha
+    ) {
+      throw new Error("execution proof is not bound to the prepared repair head and base");
+    }
+    const independentProof = replayStagedValidationProof(
+      independentlyRequiredPlan,
+      checkout,
+      validationPlan.options,
       publication.target_base_ref,
     );
     const independentProofPlan = stagedProofPlanArtifact(independentProof.plan);
-    if (JSON.stringify(independentProofPlan) !== JSON.stringify(executionProofPlan)) {
+    if (JSON.stringify(independentProofPlan) !== JSON.stringify(independentlyRequiredPlan)) {
       throw new Error("independent validation did not replay the exact normalized proof plan");
     }
 
@@ -503,6 +528,15 @@ export function validateExecutionHandoff({
     return receipt;
   } finally {
     fs.rmSync(path.dirname(checkout), { recursive: true, force: true });
+  }
+}
+
+export function assertExactValidationProofPlan(
+  executionProofPlan: StagedProofPlanArtifact,
+  independentlyRequiredPlan: StagedProofPlanArtifact,
+) {
+  if (JSON.stringify(executionProofPlan) !== JSON.stringify(independentlyRequiredPlan)) {
+    throw new Error("execution proof plan differs from independently required validation policy");
   }
 }
 

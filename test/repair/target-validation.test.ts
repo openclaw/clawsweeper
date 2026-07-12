@@ -12,11 +12,16 @@ import {
   preflightTargetValidationPlan,
   prepareTargetToolchain,
   repairDeltaValidationPlan,
+  replayStagedValidationProof,
   reproduceValidationFailureAtPinnedBase,
   requiredValidationCommands,
   runAllowedValidationCommands,
   runStagedValidationProof,
 } from "../../dist/repair/target-validation.js";
+import {
+  buildStagedProofPlan,
+  stagedProofPlanArtifact,
+} from "../../dist/repair/staged-proof-gates.js";
 import { compactText } from "../../dist/repair/text-utils.js";
 import {
   __resetTargetRepoToolchainCache,
@@ -535,8 +540,10 @@ test("validation preflight defers workspace-scoped scripts to the package manage
     "pnpm --filter @openclaw/worker test",
     "pnpm --recursive test",
     "npm --workspace @openclaw/worker run test",
+    "npm run test --workspace @openclaw/worker",
     "npm --workspaces run test",
     "bun --filter @openclaw/worker test",
+    "bun run --filter @openclaw/worker test",
   ]) {
     assert.deepEqual(
       preflightTargetValidationPlan(
@@ -595,6 +602,33 @@ test("validation preflight defers workspace-scoped scripts to the package manage
   );
   assert.equal(disabledWorkspaceResult.status, "blocked");
   assert.equal(disabledWorkspaceResult.missing_script, "test");
+});
+
+test("validation parser accepts only the documented workspace run option positions", () => {
+  assert.deepEqual(parseAllowedValidationCommand("bun run --filter @openclaw/worker test"), [
+    "bun",
+    "run",
+    "--filter",
+    "@openclaw/worker",
+    "test",
+  ]);
+  assert.deepEqual(parseAllowedValidationCommand("npm run test --workspace @openclaw/worker"), [
+    "npm",
+    "run",
+    "test",
+    "--workspace",
+    "@openclaw/worker",
+  ]);
+  for (const command of [
+    "bun run --cwd packages/worker test",
+    "bun run --unknown @openclaw/worker test",
+    "npm run test --prefix packages/worker",
+    "npm run test --unknown @openclaw/worker",
+    "bun run --filter @openclaw/worker postinstall",
+    "npm run install --workspace @openclaw/worker",
+  ]) {
+    assert.throws(() => parseAllowedValidationCommand(command), /unsafe validation command/);
+  }
 });
 
 test("staged target proof fails when a pnpm filter matches no workspace", () => {
@@ -1896,6 +1930,43 @@ test("staged target proof rejects unsafe commands before planning", () => {
         validationOptions("openclaw/openclaw"),
       ),
     /unsupported validation command|unsafe validation command/,
+  );
+});
+
+test("staged proof replay revalidates forged argv before execution", () => {
+  const cwd = gitPackageFixture({});
+  git(cwd, "add", ".");
+  git(cwd, "commit", "-m", "initial");
+  attachOrigin(cwd);
+  const forged = stagedProofPlanArtifact(
+    buildStagedProofPlan({
+      commands: [
+        {
+          parts: ["node", "-e", "process.exit(0)"],
+          source: "artifact",
+          canonical: false,
+          required: true,
+          originalIndex: 0,
+        },
+      ],
+      changedFiles: [],
+    }),
+  );
+
+  assert.throws(
+    () =>
+      replayStagedValidationProof(
+        forged,
+        cwd,
+        validationOptions("steipete/example", {
+          toolchain: {
+            packageManager: "pnpm",
+            baseValidationCommands: [],
+            changedGate: null,
+          },
+        }),
+      ),
+    /unsafe validation command/,
   );
 });
 

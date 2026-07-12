@@ -6,6 +6,7 @@ import path from "node:path";
 import test from "node:test";
 
 import {
+  assertExactValidationProofPlan,
   prepareExecutionAuthorization,
   sealExecutionHandoff,
   verifyExecutionHandoff,
@@ -16,6 +17,10 @@ import {
   digestJson,
   verifyPreparedPublication,
 } from "../../dist/repair/prepared-publication.js";
+import {
+  buildStagedProofPlan,
+  stagedProofPlanArtifact,
+} from "../../dist/repair/staged-proof-gates.js";
 
 test("execution authorization selects one explicit run and seals its immutable identity", () => {
   const fixture = handoffFixture();
@@ -323,6 +328,84 @@ test("report-only execution cannot become mutation-ready", () => {
   } finally {
     fixture.cleanup();
   }
+});
+
+test("independent validation rejects self-consistent plans that omit required gates", () => {
+  const command = (parts: string[], originalIndex: number) => ({
+    parts,
+    source: "artifact" as const,
+    canonical: false,
+    required: true,
+    originalIndex,
+  });
+  const independentlyRequired = stagedProofPlanArtifact(
+    buildStagedProofPlan({
+      commands: [
+        command(["git", "diff", "--check"], 0),
+        command(["pnpm", "test:serial", "test/repair/execution-handoff.test.ts"], 1),
+      ],
+      changedFiles: ["src/repair/execution-handoff.ts"],
+    }),
+  );
+  const forgedSelfConsistent = stagedProofPlanArtifact(
+    buildStagedProofPlan({
+      commands: [command(["git", "diff", "--check"], 0)],
+      changedFiles: ["src/repair/execution-handoff.ts"],
+    }),
+  );
+
+  assert.throws(
+    () => assertExactValidationProofPlan(forgedSelfConsistent, independentlyRequired),
+    /differs from independently required validation policy/,
+  );
+});
+
+test("independent validation rejects plan additions and reordering", () => {
+  const required = stagedProofPlanArtifact(
+    buildStagedProofPlan({
+      commands: [
+        {
+          parts: ["pnpm", "lint"],
+          source: "configured",
+          canonical: false,
+          required: true,
+          originalIndex: 0,
+        },
+        {
+          parts: ["pnpm", "check:test-types"],
+          source: "configured",
+          canonical: false,
+          required: true,
+          originalIndex: 1,
+        },
+      ],
+      changedFiles: [],
+    }),
+  );
+  const added = {
+    ...required,
+    commands: [
+      ...required.commands,
+      {
+        ...required.commands[0]!,
+        command_id: "forged-addition",
+        original_index: 2,
+      },
+    ],
+  };
+  const reordered = {
+    ...required,
+    commands: [...required.commands].reverse(),
+  };
+
+  assert.throws(
+    () => assertExactValidationProofPlan(added, required),
+    /differs from independently required validation policy/,
+  );
+  assert.throws(
+    () => assertExactValidationProofPlan(reordered, required),
+    /differs from independently required validation policy/,
+  );
 });
 
 test("trusted publication rejects forged deterministic comment metadata", () => {

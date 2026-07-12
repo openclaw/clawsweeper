@@ -500,9 +500,15 @@ export function replayStagedValidationProof(
     budgetMs: proofBudgetMs,
     validatedHeadSha: checkoutIdentity.headSha,
     validatedBaseSha: checkoutIdentity.baseSha,
-    runCommand: (command, timeoutMs) =>
-      runValidationPlanCommand({
-        parts: command.parts,
+    runCommand: (command, timeoutMs) => {
+      const validatedParts = requireWorkspaceMatchFailure(
+        validateAllowedValidationCommandParts(command.parts, command.display_parts.join(" ")),
+      );
+      if (JSON.stringify(validatedParts) !== JSON.stringify(command.parts)) {
+        throw new Error("staged proof replay command differs from current validation policy");
+      }
+      return runValidationPlanCommand({
+        parts: validatedParts,
         displayParts: command.display_parts,
         timeoutMs,
         cwd,
@@ -512,7 +518,8 @@ export function replayStagedValidationProof(
         executed,
         baseRef,
         checkoutIdentity,
-      }),
+      });
+    },
   });
   return { ...result, plan };
 }
