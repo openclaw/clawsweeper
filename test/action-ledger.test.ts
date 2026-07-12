@@ -635,6 +635,100 @@ test("durable shards preserve sub-millisecond ordering across timestamp offsets"
   );
 });
 
+test("durable shards preserve causal order ahead of source timestamps", () => {
+  const root = tempRoot();
+  const parent = createActionEvent(
+    reviewInput({
+      eventKey: reviewEventKey("review.started"),
+      phaseSeq: 1,
+      type: ACTION_EVENT_TYPES.reviewStarted,
+      action: {
+        name: "review",
+        status: "started",
+        retryable: true,
+        mutation: false,
+      },
+      occurredAt: "2026-07-12T12:00:00.000Z",
+    }),
+  );
+  const child = createActionEvent(
+    reviewInput({
+      parentEventId: parent.event_id,
+      occurredAt: "2026-07-12T10:00:00.000Z",
+    }),
+  );
+  const shard = writeActionEventShard(
+    root,
+    {
+      repository: producer.repository,
+      sha: producer.sha,
+      producer: producer.component,
+      workflow: producer.workflow,
+      job: producer.job,
+      runId: producer.runId,
+      runAttempt: producer.runAttempt,
+      partitionDate: "2026-07-12",
+    },
+    [child, parent],
+  );
+
+  const events = readActionEventShard(shard.path);
+  assert.deepEqual(
+    events.map((event) => event.event_id),
+    [parent.event_id, child.event_id],
+  );
+  assert.deepEqual(
+    events.map((event) => event.occurred_at),
+    ["2026-07-12T12:00:00.000Z", "2026-07-12T10:00:00.000Z"],
+  );
+});
+
+test("durable shards reject causal cycles", () => {
+  const firstKey = reviewEventKey("review.started", { node: "first" });
+  const secondKey = reviewEventKey("review.completed", { node: "second" });
+  const firstId = actionEventId("openclaw/openclaw", firstKey);
+  const secondId = actionEventId("openclaw/openclaw", secondKey);
+  const first = createActionEvent(
+    reviewInput({
+      eventKey: firstKey,
+      parentEventId: secondId,
+      phaseSeq: 1,
+      type: ACTION_EVENT_TYPES.reviewStarted,
+      action: {
+        name: "review",
+        status: "started",
+        retryable: true,
+        mutation: false,
+      },
+    }),
+  );
+  const second = createActionEvent(
+    reviewInput({
+      eventKey: secondKey,
+      parentEventId: firstId,
+    }),
+  );
+
+  assert.throws(
+    () =>
+      writeActionEventShard(
+        tempRoot(),
+        {
+          repository: producer.repository,
+          sha: producer.sha,
+          producer: producer.component,
+          workflow: producer.workflow,
+          job: producer.job,
+          runId: producer.runId,
+          runAttempt: producer.runAttempt,
+          partitionDate: "2026-07-12",
+        },
+        [first, second],
+      ),
+    /causal cycle/,
+  );
+});
+
 test("a shard identity cannot be reused for a different event set", () => {
   const root = tempRoot();
   const identity = {

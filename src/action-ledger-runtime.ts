@@ -16,12 +16,12 @@ import {
   actionEventKey,
   actionIdempotencyKey,
   actionOperationId,
-  compareActionEventTimestamps,
   isActionEventPhaseType,
   isActionEventReasonCode,
   isActionEventStatus,
   readActionEventShard,
   readAllSpooledActionEvents,
+  sortActionEventsCausally,
   writeActionEvent,
   writeActionEventShard,
   type ActionEvent,
@@ -394,11 +394,7 @@ function validateCanonicalImportedShard(
       throw new Error(`action event shard mixes producer identities: ${relativePath}`);
     }
   }
-  const sorted = [...events].sort(
-    (left, right) =>
-      compareActionEventTimestamps(left.occurred_at, right.occurred_at) ||
-      left.event_id.localeCompare(right.event_id),
-  );
+  const sorted = sortActionEventsCausally(events);
   const canonicalContent = `${sorted.map((event) => stableJson(event)).join("\n")}\n`;
   if (content !== canonicalContent) {
     throw new Error(`action event shard content is not canonical: ${relativePath}`);

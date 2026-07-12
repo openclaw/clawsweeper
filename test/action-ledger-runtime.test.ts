@@ -395,6 +395,28 @@ test("fresh roots reconstruct shard partitions from immutable run metadata", asy
   );
 });
 
+test("concurrent flushes converge on one immutable shard", async () => {
+  const root = tempRoot();
+  const outputRoot = path.join(root, "state");
+  recordReview(root);
+
+  const results = await Promise.all(
+    Array.from({ length: 8 }, () =>
+      flushWorkflowActionEvents(root, {
+        env: workflowEnv(),
+        outputRoot,
+      }),
+    ),
+  );
+  for (const result of results) assert.deepEqual(result, results[0]);
+  const relativePath = results[0]?.[0];
+  assert.ok(relativePath);
+  assert.equal(
+    fs.readFileSync(path.join(outputRoot, relativePath), "utf8").trim().split("\n").length,
+    1,
+  );
+});
+
 test("different workflow steps receive independent shard identities", async () => {
   const root = tempRoot();
   const outputRoot = path.join(root, "state");
@@ -512,7 +534,7 @@ test("CrabFleet projection failures remain durable and retryable", async () => {
           retryable: false,
           mutation: false,
         },
-        occurredAt: "2026-07-12T10:00:00.000Z",
+        occurredAt: "2026-07-12T12:00:00.000Z",
       },
       {
         env,
@@ -538,6 +560,8 @@ test("CrabFleet projection failures remain durable and retryable", async () => {
     [ACTION_EVENT_TYPES.reviewCompleted, ACTION_EVENT_TYPES.projectionFailed],
   );
   const failure = events[1];
+  assert.equal(events[0].occurred_at, "2026-07-12T12:00:00.000Z");
+  assert.equal(failure.occurred_at, "2026-07-12T10:01:00.000Z");
   assert.equal(failure.action.reason_code, "append_failed");
   assert.equal(failure.action.retryable, true);
   assert.equal(failure.learning.signal, "retry_from_durable_ledger");
@@ -754,7 +778,11 @@ test("partition markers and import destinations reject symlinked parents", async
   assert.deepEqual(fs.readdirSync(outsidePartitions), []);
 
   fs.rmSync(path.join(root, ".clawsweeper-repair", "action-events", "_partitions"));
-  await flushWorkflowActionEvents(root, { env: workflowEnv(), outputRoot: source });
+  const [relativePath] = await flushWorkflowActionEvents(root, {
+    env: workflowEnv(),
+    outputRoot: source,
+  });
+  assert.ok(relativePath);
 
   const destination = path.join(root, "destination");
   const outsideDestination = path.join(root, "outside-destination");
@@ -770,4 +798,18 @@ test("partition markers and import destinations reject symlinked parents", async
     () => importActionEventShards(source, destinationLink),
     /symbolic link or junction/,
   );
+
+  if (process.platform !== "win32") {
+    const finalDestination = path.join(root, "final-destination");
+    const outsideFile = path.join(root, "outside-shard.jsonl");
+    const finalPath = path.join(finalDestination, relativePath);
+    fs.mkdirSync(path.dirname(finalPath), { recursive: true });
+    fs.writeFileSync(outsideFile, "sentinel\n");
+    fs.symlinkSync(outsideFile, finalPath, "file");
+    assert.throws(
+      () => importActionEventShards(source, finalDestination),
+      /symbolic link or non-file/,
+    );
+    assert.equal(fs.readFileSync(outsideFile, "utf8"), "sentinel\n");
+  }
 });

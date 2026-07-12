@@ -1175,7 +1175,7 @@ function normalizeShardEvents(events: readonly ActionEvent[]): ActionEvent[] {
     }
     byId.set(validated.event_id, existing ?? validated);
   }
-  return [...byId.values()].sort(compareEvents);
+  return sortActionEventsCausally([...byId.values()]);
 }
 
 function normalizeShardIdentity(identity: ActionEventShardIdentity) {
@@ -1219,6 +1219,77 @@ function compareEvents(left: ActionEvent, right: ActionEvent): number {
     compareActionEventTimestamps(left.occurred_at, right.occurred_at) ||
     left.event_id.localeCompare(right.event_id)
   );
+}
+
+export function sortActionEventsCausally(events: readonly ActionEvent[]): ActionEvent[] {
+  const byId = new Map<string, ActionEvent>();
+  const childIds = new Map<string, string[]>();
+  const inDegree = new Map<string, number>();
+  for (const event of events) {
+    if (byId.has(event.event_id)) {
+      throw new Error(`action event shard contains duplicate event: ${event.event_id}`);
+    }
+    byId.set(event.event_id, event);
+    inDegree.set(event.event_id, 0);
+  }
+  for (const event of events) {
+    const parentId = event.parent_event_id;
+    if (!parentId || !byId.has(parentId)) continue;
+    inDegree.set(event.event_id, (inDegree.get(event.event_id) ?? 0) + 1);
+    const children = childIds.get(parentId) ?? [];
+    children.push(event.event_id);
+    childIds.set(parentId, children);
+  }
+
+  const ready: ActionEvent[] = [];
+  for (const event of events) {
+    if (inDegree.get(event.event_id) === 0) pushReadyEvent(ready, event);
+  }
+  const sorted: ActionEvent[] = [];
+  while (ready.length > 0) {
+    const event = popReadyEvent(ready);
+    sorted.push(event);
+    for (const childId of childIds.get(event.event_id) ?? []) {
+      const remaining = (inDegree.get(childId) ?? 0) - 1;
+      inDegree.set(childId, remaining);
+      if (remaining === 0) pushReadyEvent(ready, byId.get(childId)!);
+    }
+  }
+  if (sorted.length !== events.length) {
+    throw new Error("action event shard contains a causal cycle");
+  }
+  return sorted;
+}
+
+function pushReadyEvent(heap: ActionEvent[], event: ActionEvent): void {
+  heap.push(event);
+  let index = heap.length - 1;
+  while (index > 0) {
+    const parent = Math.floor((index - 1) / 2);
+    if (compareEvents(heap[parent]!, event) <= 0) break;
+    heap[index] = heap[parent]!;
+    index = parent;
+  }
+  heap[index] = event;
+}
+
+function popReadyEvent(heap: ActionEvent[]): ActionEvent {
+  const first = heap[0]!;
+  const last = heap.pop()!;
+  if (heap.length === 0) return first;
+  let index = 0;
+  while (true) {
+    const left = index * 2 + 1;
+    if (left >= heap.length) break;
+    const right = left + 1;
+    const child =
+      right < heap.length && compareEvents(heap[right]!, heap[left]!) < 0 ? right : left;
+    if (compareEvents(last, heap[child]!) <= 0) break;
+    heap[index] = heap[child]!;
+    index = child;
+  }
+  heap[index] = last;
+  return first;
 }
 
 export function compareActionEventTimestamps(left: string, right: string): number {
