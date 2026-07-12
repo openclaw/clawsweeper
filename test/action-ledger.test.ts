@@ -6,7 +6,9 @@ import test from "node:test";
 
 import {
   ACTION_EVENT_ATTRIBUTE_KEYS,
+  ACTION_EVENT_CONFIDENTIAL_IDENTIFIER_PATTERN_SOURCES,
   ACTION_EVENT_FAMILIES,
+  ACTION_EVENT_MACHINE_TEXT_PATTERN_SOURCE,
   ACTION_EVENT_PHASE_TYPES,
   ACTION_EVENT_REASON_CODES,
   ACTION_EVENT_STATUSES,
@@ -207,6 +209,12 @@ test("identity hashing rejects values outside the canonical JSON domain", () => 
   for (const identity of invalidIdentities) {
     assert.throws(() => actionIdempotencyKey(identity), /action event data contains/);
   }
+  for (const identity of [{ token: "opaque" }, { api_key: "opaque" }, { clientSecret: "opaque" }]) {
+    assert.throws(
+      () => actionIdempotencyKey(identity),
+      /identity contains a high-risk credential field/,
+    );
+  }
   assert.throws(() => {
     const cycle: { self?: unknown } = {};
     cycle.self = cycle;
@@ -375,6 +383,67 @@ test("runtime allowlists stay aligned with the checked-in schema", () => {
   assert.deepEqual(schema.$defs.standardEventType.enum, Object.values(ACTION_EVENT_TYPES));
   assert.deepEqual(schema.$defs.canonicalActionStatus.enum, Object.values(ACTION_EVENT_STATUSES));
   assert.deepEqual(schema.$defs.canonicalReasonCode.enum, Object.values(ACTION_EVENT_REASON_CODES));
+  assert.equal(schema.$defs.machineText.pattern, ACTION_EVENT_MACHINE_TEXT_PATTERN_SOURCE);
+  assert.deepEqual(
+    schema.$defs.confidentialIdentifier.anyOf.map((entry: { pattern: string }) => entry.pattern),
+    [...ACTION_EVENT_CONFIDENTIAL_IDENTIFIER_PATTERN_SOURCES],
+  );
+});
+
+test("runtime and schema apply the same machine-text privacy boundary", () => {
+  const schema = JSON.parse(
+    fs.readFileSync(path.join(process.cwd(), "schema", "state-ledger-event.schema.json"), "utf8"),
+  );
+  const machineText = schema.$defs.machineText as {
+    minLength: number;
+    maxLength: number;
+    pattern: string;
+  };
+  const confidentialPatterns = (
+    schema.$defs.confidentialIdentifier.anyOf as Array<{ pattern: string }>
+  ).map((entry) => new RegExp(entry.pattern));
+  const schemaAllows = (value: string): boolean =>
+    value.length >= machineText.minLength &&
+    value.length <= machineText.maxLength &&
+    new RegExp(machineText.pattern).test(value) &&
+    confidentialPatterns.every((pattern) => !pattern.test(value));
+  const samples = [
+    "review.completed",
+    "claude-3.5",
+    "github.com/openclaw",
+    `ghs_${"A".repeat(30)}`,
+    `ghu_${"A".repeat(30)}`,
+    `gho_${"A".repeat(30)}`,
+    `ghr_${"A".repeat(30)}`,
+    `github_pat_${"A".repeat(24)}`,
+    `eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.${"A".repeat(32)}`,
+    `Bearer:${"A".repeat(32)}`,
+    `api_key:${"A".repeat(32)}`,
+    `cloudflare_api_token:${"A".repeat(32)}`,
+    "service.internal",
+    "internal.example.com",
+    "https://host.docker.internal/api",
+    "https://10.0.0.1/api",
+  ];
+
+  for (const value of samples) {
+    let runtimeAllows = true;
+    try {
+      createActionEvent(
+        reviewInput({
+          action: {
+            name: "review",
+            status: value,
+            retryable: false,
+            mutation: false,
+          },
+        }),
+      );
+    } catch {
+      runtimeAllows = false;
+    }
+    assert.equal(runtimeAllows, schemaAllows(value), value);
+  }
 });
 
 test("action event writes are create-only and replay-idempotent", () => {
@@ -719,20 +788,33 @@ test("durable privacy guards reject raw text, local paths, secrets, and invalid 
       ),
     /confidential identifier/,
   );
-  assert.throws(
-    () =>
-      createActionEvent(
-        reviewInput({
-          action: {
-            name: "review",
-            status: `github_pat_${"A".repeat(24)}`,
-            retryable: false,
-            mutation: false,
-          },
-        }),
-      ),
-    /confidential identifier/,
-  );
+  for (const confidentialIdentifier of [
+    `ghs_${"A".repeat(30)}`,
+    `ghu_${"A".repeat(30)}`,
+    `gho_${"A".repeat(30)}`,
+    `ghr_${"A".repeat(30)}`,
+    `github_pat_${"A".repeat(24)}`,
+    `eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.${"A".repeat(32)}`,
+    `Bearer:${"A".repeat(32)}`,
+    `cloudflare_api_token:${"A".repeat(32)}`,
+    "service.internal",
+    "internal.example.com",
+  ]) {
+    assert.throws(
+      () =>
+        createActionEvent(
+          reviewInput({
+            action: {
+              name: "review",
+              status: confidentialIdentifier,
+              retryable: false,
+              mutation: false,
+            },
+          }),
+        ),
+      /confidential identifier/,
+    );
+  }
   assert.throws(
     () =>
       createActionEvent(
@@ -785,6 +867,7 @@ test("durable privacy guards reject raw text, local paths, secrets, and invalid 
     "./",
     ".//Users/example/private.txt",
     "./C:/Users/example/private.txt",
+    `records/github_pat_${"A".repeat(24)}.md`,
   ]) {
     assert.throws(
       () =>
@@ -798,7 +881,7 @@ test("durable privacy guards reject raw text, local paths, secrets, and invalid 
             },
           }),
         ),
-      /repository-relative path/,
+      /repository-relative path|confidential identifier/,
     );
   }
 });

@@ -372,6 +372,19 @@ export const ACTION_EVENT_ATTRIBUTE_KEYS = [
   "workflow_phase",
 ] as const;
 
+export const ACTION_EVENT_MACHINE_TEXT_PATTERN_SOURCE = "^[A-Za-z0-9][A-Za-z0-9_.:/@+\\-]*$";
+export const ACTION_EVENT_CONFIDENTIAL_IDENTIFIER_PATTERN_SOURCES = [
+  "/(?:Users|home|private|tmp)/",
+  "\\\\Users\\\\",
+  "BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY",
+  "(?:gh[pousr]_[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{16,}|sk-[A-Za-z0-9_-]{16,})",
+  "eyJ[A-Za-z0-9_-]{5,}\\.eyJ[A-Za-z0-9_-]{5,}\\.[A-Za-z0-9_-]{16,}",
+  "(?:[Bb]earer|[Aa]uthorization|api[_-]?(?:key|token)|access[_-]?token|client[_-]?secret|cloudflare[_-]?(?:api[_-]?)?(?:key|token))[:=_-][A-Za-z0-9._~-]{16,}",
+  "[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}",
+  "(?:^|[/:@])(?:localhost|(?:[A-Za-z0-9-]+\\.)+(?:local|localhost|internal|corp|lan|home(?:\\.arpa)?)|(?:internal|intranet)\\.(?:[A-Za-z0-9-]+\\.)*[A-Za-z0-9-]+)(?:$|[/:])",
+  "(?:^|[/:@])(?:10(?:\\.[0-9]{1,3}){3}|127(?:\\.[0-9]{1,3}){3}|169\\.254(?:\\.[0-9]{1,3}){2}|192\\.168(?:\\.[0-9]{1,3}){2}|172\\.(?:1[6-9]|2[0-9]|3[01])(?:\\.[0-9]{1,3}){2})(?:$|[/:])",
+] as const;
+
 const POSITIVE_INTEGER_ATTRIBUTE_KEYS = new Set<ActionEventAttributeKey>([
   "attempt",
   "batch_size",
@@ -431,6 +444,25 @@ const MACHINE_TEXT_ATTRIBUTE_KEYS = new Set<ActionEventAttributeKey>([
   "workflow_phase",
 ]);
 const MAX_EVENT_COLLECTION_ITEMS = 64;
+const MACHINE_TEXT_PATTERN = new RegExp(ACTION_EVENT_MACHINE_TEXT_PATTERN_SOURCE);
+const CONFIDENTIAL_IDENTIFIER_PATTERNS = ACTION_EVENT_CONFIDENTIAL_IDENTIFIER_PATTERN_SOURCES.map(
+  (source) => new RegExp(source),
+);
+const HIGH_RISK_CREDENTIAL_FIELD_NAMES = new Set([
+  "authorization",
+  "cookie",
+  "credential",
+  "credentials",
+  "password",
+  "passwd",
+  "secret",
+  "token",
+  "accesstoken",
+  "apikey",
+  "apitoken",
+  "privatekey",
+  "clientsecret",
+]);
 
 export type ActionEventAttributeKey = (typeof ACTION_EVENT_ATTRIBUTE_KEYS)[number];
 export type ActionEventType = (typeof ACTION_EVENT_TYPES)[keyof typeof ACTION_EVENT_TYPES];
@@ -661,7 +693,7 @@ export function isActionEventReasonCode(value: string): value is ActionEventReas
 
 export function actionEventKey(scope: string, identity: unknown): string {
   const normalizedScope = eventScope(scope);
-  return `${normalizedScope}:${sha256(canonicalJson(identity))}`;
+  return `${normalizedScope}:${sha256(canonicalIdentityJson(identity))}`;
 }
 
 export function actionOperationId(
@@ -670,7 +702,7 @@ export function actionOperationId(
   identity: unknown,
 ): string {
   return sha256(
-    canonicalJson({
+    canonicalIdentityJson({
       repository: requiredRepo(repository),
       operation: eventScope(operation),
       identity,
@@ -680,7 +712,7 @@ export function actionOperationId(
 
 export function actionAttemptId(operationId: string, identity: unknown): string {
   return sha256(
-    canonicalJson({
+    canonicalIdentityJson({
       operation_id: requiredSha256(operationId, "action operation id"),
       identity,
     }),
@@ -688,7 +720,7 @@ export function actionAttemptId(operationId: string, identity: unknown): string 
 }
 
 export function actionIdempotencyKey(identity: unknown): string {
-  return sha256(canonicalJson(identity));
+  return sha256(canonicalIdentityJson(identity));
 }
 
 export function actionEventId(repository: string, eventKey: string): string {
@@ -1409,6 +1441,9 @@ function relativeDataPath(value: string, label: string): string {
   ) {
     throw new Error(`${label} must be a repository-relative path`);
   }
+  if (containsConfidentialIdentifier(normalized)) {
+    throw new Error(`${label} contains a confidential identifier`);
+  }
   return normalized;
 }
 
@@ -1444,7 +1479,7 @@ function requiredRepo(value: string): string {
 
 function machineText(value: string, label: string, maxLength = 256): string {
   const normalized = boundedText(value, label, maxLength);
-  if (!/^[A-Za-z0-9][A-Za-z0-9_.:/@+-]*$/.test(normalized)) {
+  if (!MACHINE_TEXT_PATTERN.test(normalized)) {
     throw new Error(`${label} must be machine-readable text`);
   }
   if (containsConfidentialIdentifier(normalized)) {
@@ -1586,14 +1621,15 @@ function safePathSegment(value: string): string {
   return safe || "unknown";
 }
 
-function canonicalJson(value: unknown): string {
-  return JSON.stringify(canonicalJsonValue(value));
+function canonicalIdentityJson(value: unknown): string {
+  return JSON.stringify(canonicalJsonValue(value, new Set<object>(), "$", true));
 }
 
 function canonicalJsonValue(
   value: unknown,
   ancestors: Set<object> = new Set<object>(),
   location = "$",
+  rejectCredentialFields = false,
 ): unknown {
   if (value === null || typeof value === "string" || typeof value === "boolean") return value;
   if (typeof value === "number") {
@@ -1636,7 +1672,12 @@ function canonicalJsonValue(
         if (!descriptor?.enumerable || !("value" in descriptor)) {
           throw new Error(`action event data contains a non-data array item at ${location}`);
         }
-        return canonicalJsonValue(descriptor.value, ancestors, `${location}[${index}]`);
+        return canonicalJsonValue(
+          descriptor.value,
+          ancestors,
+          `${location}[${index}]`,
+          rejectCredentialFields,
+        );
       });
     }
 
@@ -1650,11 +1691,21 @@ function canonicalJsonValue(
     }
     const normalized: Record<string, unknown> = {};
     for (const key of (ownKeys as string[]).sort(compareCanonicalKeys)) {
+      if (rejectCredentialFields && highRiskCredentialField(key)) {
+        throw new Error(
+          `action event identity contains a high-risk credential field at ${location}`,
+        );
+      }
       const descriptor = Object.getOwnPropertyDescriptor(value, key);
       if (!descriptor?.enumerable || !("value" in descriptor)) {
         throw new Error(`action event data contains a non-data property at ${location}.${key}`);
       }
-      normalized[key] = canonicalJsonValue(descriptor.value, ancestors, `${location}.${key}`);
+      normalized[key] = canonicalJsonValue(
+        descriptor.value,
+        ancestors,
+        `${location}.${key}`,
+        rejectCredentialFields,
+      );
     }
     return normalized;
   } finally {
@@ -1666,20 +1717,16 @@ function compareCanonicalKeys(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
 }
 
+function highRiskCredentialField(value: string): boolean {
+  return HIGH_RISK_CREDENTIAL_FIELD_NAMES.has(value.replace(/[^A-Za-z0-9]/g, "").toLowerCase());
+}
+
 function sha256(value: string): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
 function containsConfidentialIdentifier(value: string): boolean {
-  if (
-    [
-      /\/(?:Users|home|private|tmp)\//,
-      /\\Users\\/,
-      /BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY/,
-      /(?:ghp_|github_pat_|sk-)[A-Za-z0-9_-]{16,}/,
-      /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/i,
-    ].some((pattern) => pattern.test(value))
-  ) {
+  if (CONFIDENTIAL_IDENTIFIER_PATTERNS.some((pattern) => pattern.test(value))) {
     return true;
   }
   if (privateHost(value)) return true;
@@ -1712,7 +1759,15 @@ function privateHost(value: string): boolean {
     .replace(/^\[|\]$/g, "")
     .toLowerCase();
   if (!host) return false;
-  if (host === "localhost" || host.endsWith(".local")) return true;
+  if (
+    host === "localhost" ||
+    [".local", ".localhost", ".internal", ".corp", ".lan", ".home", ".home.arpa"].some((suffix) =>
+      host.endsWith(suffix),
+    ) ||
+    (/^(?:internal|intranet)\./.test(host) && host.includes("."))
+  ) {
+    return true;
+  }
   if (host === "::1" || /^(?:fc|fd)[0-9a-f]{2}:/.test(host) || /^fe[89ab][0-9a-f]:/.test(host)) {
     return true;
   }

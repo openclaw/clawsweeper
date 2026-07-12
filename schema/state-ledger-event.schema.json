@@ -577,13 +577,20 @@
       "type": "string",
       "minLength": 1,
       "maxLength": 256,
-      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:/@+\\-]*$"
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:/@+\\-]*$",
+      "not": {
+        "$ref": "#/$defs/confidentialIdentifier"
+      }
     },
     "machineText128": {
-      "type": "string",
-      "minLength": 1,
-      "maxLength": 128,
-      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:/@+\\-]*$"
+      "allOf": [
+        {
+          "$ref": "#/$defs/machineText"
+        },
+        {
+          "maxLength": 128
+        }
+      ]
     },
     "eventKey": {
       "type": "string",
@@ -610,9 +617,43 @@
           },
           {
             "pattern": "(?:^|[\\\\/])\\.\\.(?:[\\\\/]|$)"
+          },
+          {
+            "$ref": "#/$defs/confidentialIdentifier"
           }
         ]
       }
+    },
+    "confidentialIdentifier": {
+      "anyOf": [
+        {
+          "pattern": "/(?:Users|home|private|tmp)/"
+        },
+        {
+          "pattern": "\\\\Users\\\\"
+        },
+        {
+          "pattern": "BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY"
+        },
+        {
+          "pattern": "(?:gh[pousr]_[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{16,}|sk-[A-Za-z0-9_-]{16,})"
+        },
+        {
+          "pattern": "eyJ[A-Za-z0-9_-]{5,}\\.eyJ[A-Za-z0-9_-]{5,}\\.[A-Za-z0-9_-]{16,}"
+        },
+        {
+          "pattern": "(?:[Bb]earer|[Aa]uthorization|api[_-]?(?:key|token)|access[_-]?token|client[_-]?secret|cloudflare[_-]?(?:api[_-]?)?(?:key|token))[:=_-][A-Za-z0-9._~-]{16,}"
+        },
+        {
+          "pattern": "[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}"
+        },
+        {
+          "pattern": "(?:^|[/:@])(?:localhost|(?:[A-Za-z0-9-]+\\.)+(?:local|localhost|internal|corp|lan|home(?:\\.arpa)?)|(?:internal|intranet)\\.(?:[A-Za-z0-9-]+\\.)*[A-Za-z0-9-]+)(?:$|[/:])"
+        },
+        {
+          "pattern": "(?:^|[/:@])(?:10(?:\\.[0-9]{1,3}){3}|127(?:\\.[0-9]{1,3}){3}|169\\.254(?:\\.[0-9]{1,3}){2}|192\\.168(?:\\.[0-9]{1,3}){2}|172\\.(?:1[6-9]|2[0-9]|3[01])(?:\\.[0-9]{1,3}){2})(?:$|[/:])"
+        }
+      ]
     },
     "machineTextOrArray": {
       "oneOf": [
