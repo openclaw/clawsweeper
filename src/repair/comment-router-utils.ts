@@ -17,21 +17,51 @@ const TRANSIENT_CANCELLED_CHECKS = new Set(["real behavior proof"]);
 
 export function dispatchClaimLookupKeys(entry: LooseRecord) {
   const keys: string[] = [];
+  const attemptId = forcedReplayAttemptId(entry);
   const commentId = String(entry.comment_id ?? "").trim();
   const commentUpdatedAt = String(entry.comment_updated_at ?? "").trim();
-  if (commentId && commentUpdatedAt) keys.push(`comment:${commentId}:${commentUpdatedAt}`);
+  if (commentId && commentUpdatedAt) {
+    keys.push(scopedDispatchLookupKey(`comment:${commentId}:${commentUpdatedAt}`, attemptId));
+  }
   const idempotencyKey = String(entry.idempotency_key ?? "").trim();
-  if (idempotencyKey) keys.push(`idempotency:${idempotencyKey}`);
+  if (idempotencyKey) {
+    keys.push(scopedDispatchLookupKey(`idempotency:${idempotencyKey}`, attemptId));
+  }
   return keys;
 }
 
 export function dispatchReceiptKeyMaterial(entry: LooseRecord, claim: LooseRecord | null) {
   const idempotencyKey = String(entry.idempotency_key ?? entry.comment_version_key ?? "unknown");
+  const attemptId = forcedReplayAttemptId(entry);
+  if (attemptId) {
+    return JSON.stringify({
+      idempotency_key: idempotencyKey,
+      forced_replay_attempt_id: attemptId,
+    });
+  }
   if (entry.automation_source !== "repair_loop_label_sweep") return idempotencyKey;
   const attempt = String(
     claim?.processed_at ?? entry.processed_at ?? entry.comment_updated_at ?? "unknown-attempt",
   );
   return `${idempotencyKey}:${attempt}`;
+}
+
+export function routerDispatchReceiptKey(entry: LooseRecord, claim: LooseRecord | null) {
+  return `router-${createHash("sha256")
+    .update(dispatchReceiptKeyMaterial(entry, claim))
+    .digest("hex")
+    .slice(0, 16)}`;
+}
+
+function forcedReplayAttemptId(entry: LooseRecord): string | null {
+  if (entry.forced_replay !== true) return null;
+  const attemptId = String(entry.attempt_id ?? "").trim();
+  if (!attemptId) throw new Error("forced replay dispatch identity requires attempt_id");
+  return attemptId;
+}
+
+function scopedDispatchLookupKey(key: string, attemptId: string | null): string {
+  return attemptId ? `forced-replay:${JSON.stringify([key, attemptId])}` : key;
 }
 
 export function hasSuccessfulDispatchExecutionJob(jobs: LooseRecord[], requiredJobName: string) {

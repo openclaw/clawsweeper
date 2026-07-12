@@ -76,9 +76,10 @@ checkpoint, and status-only commits are intentionally omitted.
   status-comment progress, and report-only repair requeues into immutable
   per-attempt action chains. Each retried request receives its own causal
   receipt pair while retaining stable business idempotency; forced replays use
-  production-wired durable attempt identities; and bounded requeues dispatch
-  the same original source path bound to their digest and depth before immutable
-  publication to the state repository.
+  production-wired durable attempt identities through dispatch claims and worker
+  receipt keys; and bounded requeues dispatch the same original source path
+  bound to their digest and depth before immutable publication to the state
+  repository.
 - Short-circuited authenticated duplicate comment deliveries when their exact
   body version is already terminal in the durable router ledger, while edited,
   retryable, and state-drifted commands retain the full routing path.

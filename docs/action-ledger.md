@@ -96,8 +96,8 @@ confidential-identifier checks as every other durable machine-text field.
   uncertain mutation state instead of being finalized as `mutation: false`.
 - Explicit command replays require a durable command `attempt_id` derived from
   or forwarded through the production workflow. It scopes command operation,
-  attempt, and mutation idempotency identity to that replay while remaining
-  stable across retries of the same workflow run.
+  attempt, mutation idempotency, dispatch claims, and worker receipt keys to that
+  replay while remaining stable across retries of the same workflow run.
 - Repair requeue identity binds the source run, source job path, source job
   authorization digest, and incremented requeue depth. The dispatched job path
   is the same original source path bound into the receipt, including when the

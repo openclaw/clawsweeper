@@ -14,12 +14,14 @@ import {
   isGitHubAppIntegrationAuthError,
   isAllowedMutationActor,
   normalizeGitHubActor,
+  routerDispatchReceiptKey,
   selectCommentsForRouting,
   shouldSuppressProcessedCommentVersion,
   sortCommentsForRouting,
   supersededReReviewCommentVersions,
   summarizeChecks,
 } from "../../dist/repair/comment-router-utils.js";
+import { forcedReplayCommandFields, readCommentRouterConfig } from "../../dist/repair/config.js";
 
 test("exact terminal comment versions short-circuit duplicate created deliveries", () => {
   const body = "@clawsweeper re-review";
@@ -248,6 +250,48 @@ test("synthetic dispatch receipt material is stable within an attempt and change
   assert.notEqual(
     dispatchReceiptKeyMaterial(command, firstClaim),
     dispatchReceiptKeyMaterial(command, nextClaim),
+  );
+});
+
+test("production forced replay parsing scopes claims and dispatch keys by durable attempt", () => {
+  const baseArgs = {
+    repo: "openclaw/openclaw",
+    "repair-repo": "openclaw/clawsweeper",
+    "review-repo": "openclaw/clawsweeper",
+  };
+  const baseCommand = {
+    idempotency_key:
+      "clawsweeper-repair:openclaw/openclaw:74499:991122:2026-07-12T20:00:00Z:automerge",
+    comment_id: "991122",
+    comment_updated_at: "2026-07-12T20:00:00Z",
+  };
+  const forcedCommand = (attemptId: string) => ({
+    ...baseCommand,
+    ...forcedReplayCommandFields(
+      readCommentRouterConfig({
+        ...baseArgs,
+        "force-reprocess": true,
+        "attempt-id": attemptId,
+      }),
+    ),
+  });
+
+  const first = forcedCommand("forced-replay-41001");
+  const firstRetry = forcedCommand("forced-replay-41001");
+  const second = forcedCommand("forced-replay-41002");
+  assert.deepEqual(dispatchClaimLookupKeys(first), dispatchClaimLookupKeys(firstRetry));
+  assert.equal(routerDispatchReceiptKey(first, null), routerDispatchReceiptKey(firstRetry, null));
+  assert.deepEqual(
+    dispatchClaimLookupKeys(first).filter((key) => dispatchClaimLookupKeys(second).includes(key)),
+    [],
+  );
+  assert.notEqual(routerDispatchReceiptKey(first, null), routerDispatchReceiptKey(second, null));
+
+  const normalReplay = { ...baseCommand, processed_at: "2026-07-12T20:05:00Z" };
+  assert.deepEqual(dispatchClaimLookupKeys(baseCommand), dispatchClaimLookupKeys(normalReplay));
+  assert.equal(
+    routerDispatchReceiptKey(baseCommand, null),
+    routerDispatchReceiptKey(normalReplay, null),
   );
 });
 

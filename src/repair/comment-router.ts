@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 import type { JsonValue, LooseRecord } from "./json-types.js";
-import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { adaptiveReviewBudgetForPullRequest } from "./adaptive-review-budget.js";
@@ -94,7 +93,6 @@ import {
   commentBodySha256,
   dispatchClaimDecision,
   dispatchClaimLookupKeys,
-  dispatchReceiptKeyMaterial,
   exactCommentVersionFastPathDecision,
   exactCommentVersionMatchesLive,
   hasSuccessfulDispatchExecutionJob,
@@ -102,6 +100,7 @@ import {
   isAllowedMutationActor,
   isGitHubAppIntegrationAuthError,
   readLedger,
+  routerDispatchReceiptKey,
   selectCommentsForRouting,
   shouldSuppressProcessedCommentVersion,
   stripAnsi,
@@ -541,10 +540,7 @@ function priorDispatchClaim(command: LooseRecord) {
 }
 
 function dispatchReceiptKey(command: LooseRecord) {
-  return `router-${createHash("sha256")
-    .update(dispatchReceiptKeyMaterial(command, priorDispatchClaim(command)))
-    .digest("hex")
-    .slice(0, 16)}`;
+  return routerDispatchReceiptKey(command, priorDispatchClaim(command));
 }
 
 function claimedDispatchState({
