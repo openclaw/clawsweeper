@@ -1,7 +1,15 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -19,6 +27,8 @@ const deploy = workflow.jobs.deploy;
 interface WorkflowStep {
   name: string;
   id?: string;
+  if?: string;
+  "continue-on-error"?: boolean;
   uses?: string;
   env?: Record<string, string>;
   run?: string;
@@ -108,12 +118,45 @@ test("crawl-remote release is maintainer-bound across two fresh runners", () => 
   );
   assert.deepEqual(deploy.environment, {
     name: "crawl-remote-production",
-    url: "https://reports.openclaw.ai/crawl-remote",
+    url: "https://crawl-remote.services-91b.workers.dev",
   });
+  assert.equal(deploy.env.DEPLOY_AUTHORITY, "${{ vars.CRAWL_REMOTE_DEPLOY_AUTHORITY }}");
+  assert.equal(
+    deploy.env.CLOUDFLARE_TOKEN_SHA256,
+    "${{ vars.CRAWL_REMOTE_CLOUDFLARE_TOKEN_SHA256 }}",
+  );
+  assert.equal(
+    deploy.env.CUSTOM_ROUTE_PROOF,
+    "${{ vars.CRAWL_REMOTE_CUSTOM_ROUTE_PROOF || 'disabled' }}",
+  );
   assert.equal(deploy.env.WORKERS_DEV_URL, "https://crawl-remote.services-91b.workers.dev");
   assert.equal(deploy.env.PRODUCTION_ROUTE_URL, "https://reports.openclaw.ai/crawl-remote");
+  const authority = step(deploy, "Verify central deployment authority");
+  assert.equal(steps(deploy).indexOf(authority), 0);
+  assert.match(authority.run ?? "", /DEPLOY_AUTHORITY.*clawsweeper-v1/s);
+  assert.match(authority.run ?? "", /disabled.*access-service-token/s);
   assert.equal(preflight["timeout-minutes"], 25);
   assert.equal(deploy["timeout-minutes"], 25);
+});
+
+test("protected environment must explicitly own the deployment authority", () => {
+  const run = step(deploy, "Verify central deployment authority").run ?? "";
+  function verify(authority: string, customRouteProof: string) {
+    return spawnSync("bash", ["--noprofile", "--norc", "-euo", "pipefail", "-c", run], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        CUSTOM_ROUTE_PROOF: customRouteProof,
+        DEPLOY_AUTHORITY: authority,
+      },
+    });
+  }
+
+  assert.equal(verify("clawsweeper-v1", "disabled").status, 0);
+  assert.equal(verify("clawsweeper-v1", "access-service-token").status, 0);
+  assert.notEqual(verify("", "disabled").status, 0);
+  assert.notEqual(verify("crawl-remote-v1", "disabled").status, 0);
+  assert.notEqual(verify("clawsweeper-v1", "public").status, 0);
 });
 
 test("preflight authorizes and checks out only the exact current main SHA", () => {
@@ -205,14 +248,18 @@ test("authorization scripts reject every SHA except the current crawl-remote mai
   const reauthorizeBeforeD1 = step(deploy, "Reauthorize current main before D1 mutation").run ?? "";
   const reauthorizeBeforeWorker =
     step(deploy, "Reauthorize current main immediately before Worker deploy").run ?? "";
+  const reauthorizeAfterWorker =
+    step(deploy, "Reauthorize current main after Worker deploy").run ?? "";
 
   try {
     assert.equal(runScript(authorize, mergedCrawlRemoteMain, true).status, 0);
     assert.equal(runScript(reauthorizeBeforeD1, mergedCrawlRemoteMain, false).status, 0);
     assert.equal(runScript(reauthorizeBeforeWorker, mergedCrawlRemoteMain, false).status, 0);
+    assert.equal(runScript(reauthorizeAfterWorker, mergedCrawlRemoteMain, false).status, 0);
     assert.notEqual(runScript(authorize, "a".repeat(40), true).status, 0);
     assert.notEqual(runScript(reauthorizeBeforeD1, "a".repeat(40), false).status, 0);
     assert.notEqual(runScript(reauthorizeBeforeWorker, "a".repeat(40), false).status, 0);
+    assert.notEqual(runScript(reauthorizeAfterWorker, "a".repeat(40), false).status, 0);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
@@ -262,6 +309,8 @@ printf '%s\\n' "$((count + 1))" > "$GH_COUNTER"
   const reauthorizeBeforeD1 = step(deploy, "Reauthorize current main before D1 mutation").run ?? "";
   const reauthorizeBeforeWorker =
     step(deploy, "Reauthorize current main immediately before Worker deploy").run ?? "";
+  const reauthorizeAfterWorker =
+    step(deploy, "Reauthorize current main after Worker deploy").run ?? "";
 
   try {
     assert.equal(runScript(reauthorizeBeforeD1).status, 0);
@@ -269,6 +318,11 @@ printf '%s\\n' "$((count + 1))" > "$GH_COUNTER"
     const moved = runScript(reauthorizeBeforeWorker);
     assert.notEqual(moved.status, 0);
     assert.match(moved.stdout + moved.stderr, /no longer the current main tip/);
+    rmSync(counterPath, { force: true });
+    assert.equal(runScript(reauthorizeBeforeWorker).status, 0);
+    const movedAfterDeploy = runScript(reauthorizeAfterWorker);
+    assert.notEqual(movedAfterDeploy.status, 0);
+    assert.match(movedAfterDeploy.stdout + movedAfterDeploy.stderr, /advanced during deployment/);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
@@ -291,8 +345,13 @@ test("release artifact is immutable, bounded, canonical, and hash verified", () 
   assert.match(packaging, /source Wrangler config has an unexpected deployment identity/);
   assert.match(packaging, /sourceConfig\.vars\?\.CRAWL_REMOTE_RELEASE_SHA/);
   assert.match(packaging, /source Wrangler config targets unexpected production resources/);
-  assert.match(packaging, /bundleEntries\.length !== 1/);
-  assert.match(packaging, /Wrangler dry-run output must contain only index\.js/);
+  assert.match(packaging, /allowedBundleEntries/);
+  assert.match(packaging, /README\.md.*index\.js.*index\.js\.map/s);
+  assert.match(
+    packaging,
+    /Wrangler dry-run output must contain index\.js and only known metadata files/,
+  );
+  assert.match(packaging, /not backward-compatible with Worker rollback/);
 
   const upload = step(preflight, "Upload immutable release artifact");
   assert.equal(upload.uses, "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a");
@@ -329,7 +388,7 @@ test("release artifact is immutable, bounded, canonical, and hash verified", () 
   assert.match(verify, /release receipt already exists/);
 });
 
-test("release packaging rejects unsupported Wrangler output modules and assets", () => {
+test("release packaging accepts Wrangler metadata and rejects unsupported output or migrations", () => {
   const run = step(preflight, "Package bounded release artifact").run ?? "";
   const packager = run.match(/node --input-type=module <<'NODE'\n([\s\S]*?)\nNODE/)?.[1];
   assert.ok(packager, "missing inline release artifact packager");
@@ -383,6 +442,8 @@ test("release packaging rejects unsupported Wrangler output modules and assets",
     rmSync(artifactRoot, { recursive: true, force: true });
     mkdirSync(bundleDir, { recursive: true });
     writeFileSync(join(bundleDir, "index.js"), "export default {};\n");
+    writeFileSync(join(bundleDir, "index.js.map"), "{}\n");
+    writeFileSync(join(bundleDir, "README.md"), "Generated by Wrangler 4.107.1.\n");
     mutate?.();
     return spawnSync(process.execPath, ["--input-type=module"], {
       cwd: directory,
@@ -411,7 +472,7 @@ test("release packaging rejects unsupported Wrangler output modules and assets",
     assert.notEqual(extraModule.status, 0);
     assert.match(
       extraModule.stdout + extraModule.stderr,
-      /Wrangler dry-run output must contain only index\.js/,
+      /Wrangler dry-run output must contain index\.js and only known metadata files/,
     );
 
     const extraAsset = packageBundle(() => {
@@ -421,7 +482,15 @@ test("release packaging rejects unsupported Wrangler output modules and assets",
     assert.notEqual(extraAsset.status, 0);
     assert.match(
       extraAsset.stdout + extraAsset.stderr,
-      /Wrangler dry-run output must contain only index\.js/,
+      /Wrangler dry-run output must contain index\.js and only known metadata files/,
+    );
+
+    writeFileSync(join(directory, "migrations", "0001_test.sql"), "drop table production;\n");
+    const destructiveMigration = packageBundle();
+    assert.notEqual(destructiveMigration.status, 0);
+    assert.match(
+      destructiveMigration.stdout + destructiveMigration.stderr,
+      /not backward-compatible with Worker rollback/,
     );
   } finally {
     rmSync(directory, { recursive: true, force: true });
@@ -567,7 +636,7 @@ test("protected deploy never executes target lifecycle code", () => {
   assert.doesNotMatch(deployRuns, /\bnpx\b/);
   assert.doesNotMatch(deployRuns, /\$RELEASE_ROOT\/package\.json|src\/index/);
   assert.doesNotMatch(deployRuns, /\bsource\b|\beval\b|bash -c|sh -c/);
-  assert.equal(deployRuns.match(/\$TOOLCHAIN_ROOT\/node_modules\/\.bin\/wrangler/g)?.length, 2);
+  assert.equal(deployRuns.match(/\$TOOLCHAIN_ROOT\/node_modules\/\.bin\/wrangler/g)?.length, 3);
   assert.equal(deployRuns.match(/\.\/node_modules\/\.bin\/wrangler/g)?.length, 1);
   assert.equal(
     steps(deploy).filter((candidate) => candidate.uses?.startsWith("actions/checkout@")).length,
@@ -663,6 +732,37 @@ test("deploy executes the committed exact Node and Wrangler toolchain install be
       ).version,
       "4.107.1",
     );
+    const fixtureRoot = join(workspace, "wrangler-fixture");
+    const bundleRoot = join(fixtureRoot, "bundle");
+    mkdirSync(fixtureRoot);
+    writeFileSync(
+      join(fixtureRoot, "index.ts"),
+      "export default { fetch() { return new Response('ok'); } };\n",
+    );
+    writeFileSync(
+      join(fixtureRoot, "wrangler.json"),
+      JSON.stringify({
+        name: "crawl-remote-packaging-fixture",
+        main: "index.ts",
+        compatibility_date: "2026-07-12",
+      }),
+    );
+    const dryRun = spawnSync(
+      join(toolchainRoot, "node_modules", ".bin", "wrangler"),
+      ["deploy", "--dry-run", "--outdir", bundleRoot],
+      {
+        cwd: fixtureRoot,
+        encoding: "utf8",
+        env: process.env,
+      },
+    );
+    assert.equal(dryRun.status, 0, dryRun.stdout + dryRun.stderr);
+    const bundleEntries = readdirSync(bundleRoot).sort();
+    assert.ok(bundleEntries.includes("index.js"));
+    assert.deepEqual(
+      bundleEntries.filter((entry) => !["README.md", "index.js", "index.js.map"].includes(entry)),
+      [],
+    );
   } finally {
     rmSync(workspace, { recursive: true, force: true });
   }
@@ -672,21 +772,27 @@ test("deploy executes the committed exact Node and Wrangler toolchain install be
   );
   assert.deepEqual(
     credentialSteps.map((candidate) => candidate.name),
-    ["Apply and verify D1 migrations", "Deploy verified Worker bundle"],
+    [
+      "Apply and verify D1 migrations",
+      "Deploy verified Worker bundle",
+      "Roll back failed Worker release",
+    ],
   );
   for (const credentialStep of credentialSteps) {
     assert.ok(steps(deploy).indexOf(install) < steps(deploy).indexOf(credentialStep));
     assert.equal(
       credentialStep.env?.CLOUDFLARE_API_TOKEN,
-      "${{ secrets.CRAWL_REMOTE_CLOUDFLARE_API_TOKEN }}",
+      "${{ secrets.CRAWL_REMOTE_PRODUCTION_CLOUDFLARE_API_TOKEN }}",
     );
+    assert.match(credentialStep.run ?? "", /CLOUDFLARE_TOKEN_SHA256.*sha256sum/s);
   }
   assert.doesNotMatch(source, /OPENCLAW_CLOUDFLARE_WORKERS_API_TOKEN/);
+  assert.doesNotMatch(source, /secrets\.CRAWL_REMOTE_CLOUDFLARE_API_TOKEN/);
   assert.doesNotMatch(source, /\|\|\s*secrets\./);
-  assert.equal(source.match(/CRAWL_REMOTE_CLOUDFLARE_API_TOKEN/g)?.length, 2);
+  assert.equal(source.match(/CRAWL_REMOTE_PRODUCTION_CLOUDFLARE_API_TOKEN/g)?.length, 3);
 });
 
-test("deploy reauthorizes exact current main before D1 and again immediately before Worker deploy", () => {
+test("deploy reauthorizes exact current main before and after privileged mutations", () => {
   const token = step(deploy, "Create exact-repository reauthorization token");
   assert.equal(
     token.uses,
@@ -706,7 +812,12 @@ test("deploy reauthorizes exact current main before D1 and again immediately bef
     "Reauthorize current main immediately before Worker deploy",
   );
   const workerDeploy = step(deploy, "Deploy verified Worker bundle");
-  for (const reauthorize of [reauthorizeBeforeD1, reauthorizeBeforeWorker]) {
+  const reauthorizeAfterWorker = step(deploy, "Reauthorize current main after Worker deploy");
+  for (const reauthorize of [
+    reauthorizeBeforeD1,
+    reauthorizeBeforeWorker,
+    reauthorizeAfterWorker,
+  ]) {
     assert.match(reauthorize.run ?? "", /\[\[ "\$DEPLOY_SHA" != "\$current_main_sha" \]\]/);
     assert.doesNotMatch(reauthorize.run ?? "", /compare\/|comparison_status|ancestor|"ahead"/);
     assert.equal(reauthorize.env?.CLOUDFLARE_API_TOKEN, undefined);
@@ -721,16 +832,27 @@ test("deploy reauthorizes exact current main before D1 and again immediately bef
     steps(deploy).indexOf(reauthorizeBeforeWorker) + 1,
     steps(deploy).indexOf(workerDeploy),
   );
+  assert.equal(
+    steps(deploy).indexOf(workerDeploy) + 1,
+    steps(deploy).indexOf(reauthorizeAfterWorker),
+  );
   assert.match(migration.run ?? "", /test ! -e "\$CONSUMED_RECEIPT_PATH"/);
   assert.match(migration.run ?? "", /mv -- "\$RECEIPT_PATH" "\$CONSUMED_RECEIPT_PATH"/);
   assert.match(reauthorizeBeforeWorker.run ?? "", /test -f "\$CONSUMED_RECEIPT_PATH"/);
   assert.match(workerDeploy.run ?? "", /test -f "\$CONSUMED_RECEIPT_PATH"/);
+  assert.equal(workerDeploy["continue-on-error"], true);
+  assert.equal(reauthorizeAfterWorker["continue-on-error"], true);
+  assert.equal(reauthorizeAfterWorker.if, "${{ steps.worker-deploy.outcome == 'success' }}");
 });
 
 test("privileged mutations use only verified files and prove the selected D1 fence state", () => {
   const migration = step(deploy, "Apply and verify D1 migrations").run ?? "";
   const workerDeploy = step(deploy, "Deploy verified Worker bundle").run ?? "";
   assert.match(migration, /\$TOOLCHAIN_ROOT\/node_modules\/\.bin\/wrangler/);
+  assert.match(migration, /deployments status/);
+  assert.match(migration, /versions\.length !== 1/);
+  assert.match(migration, /versions\[0\]\?\.percentage !== 100/);
+  assert.match(migration, /PREVIOUS_VERSION_PATH/);
   assert.match(migration, /d1 migrations apply crawl-remote/);
   assert.match(migration, /--cwd "\$RELEASE_ROOT"/);
   assert.match(migration, /--config wrangler\.json/);
@@ -767,6 +889,33 @@ test("privileged mutations use only verified files and prove the selected D1 fen
   assert.ok(preQueryIndex >= 0);
   assert.ok(preQueryIndex < migrationIndex);
   assert.ok(migrationIndex < postQueryIndex);
+});
+
+test("failed Worker release rolls back the exact previously stable version", () => {
+  const workerDeploy = step(deploy, "Deploy verified Worker bundle");
+  const postDeployMain = step(deploy, "Reauthorize current main after Worker deploy");
+  const proof = step(deploy, "Poll exact production release");
+  const rollback = step(deploy, "Roll back failed Worker release");
+  const finalGate = step(deploy, "Require successful release and proof");
+  const run = rollback.run ?? "";
+
+  assert.equal(workerDeploy.id, "worker-deploy");
+  assert.equal(postDeployMain.id, "post-deploy-main");
+  assert.equal(proof.id, "production-proof");
+  assert.equal(proof["continue-on-error"], true);
+  assert.match(rollback.if ?? "", /always\(\)/);
+  assert.match(rollback.if ?? "", /steps\.worker-deploy\.outcome != 'success'/);
+  assert.match(rollback.if ?? "", /steps\.post-deploy-main\.outcome != 'success'/);
+  assert.match(rollback.if ?? "", /steps\.production-proof\.outcome != 'success'/);
+  assert.match(run, /wrangler" rollback "\$previous_version"/);
+  assert.match(run, /--yes/);
+  assert.match(run, /deployments status/);
+  assert.match(run, /versions\[0\]\?\.version_id !== process\.env\.PREVIOUS_VERSION/);
+  assert.match(run, /versions\[0\]\?\.percentage !== 100/);
+  assert.equal(finalGate.if, "${{ always() }}");
+  assert.match(finalGate.run ?? "", /WORKER_DEPLOY_OUTCOME.*POST_DEPLOY_MAIN_OUTCOME/s);
+  assert.match(finalGate.run ?? "", /PRODUCTION_PROOF_OUTCOME.*success/s);
+  assert.match(finalGate.run ?? "", /rollback outcome/);
 });
 
 test("pre-migration fence validator rejects mismatch and gates missing-table bootstrap", () => {
@@ -942,6 +1091,9 @@ test("production proof polls semantic state and binds both responses to the rele
   assert.match(run, /\$WORKERS_DEV_URL\/v1\/contract/);
   assert.match(run, /\$PRODUCTION_ROUTE_URL\/health/);
   assert.match(run, /\$PRODUCTION_ROUTE_URL\/v1\/contract/);
+  assert.match(run, /CF-Access-Client-Id/);
+  assert.match(run, /CF-Access-Client-Secret/);
+  assert.match(run, /CUSTOM_ROUTE_PROOF.*access-service-token/s);
   assert.match(run, /label: 'workers\.dev'/);
   assert.match(run, /label: 'production route'/);
   assert.match(run, /for \(const endpoint of endpoints\) validateEndpoint\(endpoint\)/);
@@ -958,11 +1110,11 @@ test("production proof polls semantic state and binds both responses to the rele
   assert.match(run, /expectedObservationOrderState === 'active'.*!observationOrderActive/s);
   assert.match(run, /expectedObservationOrderState === 'dormant'.*observationOrderActive/s);
   assert.match(run, /process\.exit\(1\)/);
-  assert.match(run, /production endpoints did not converge to release \$DEPLOY_SHA/);
+  assert.match(run, /required production endpoints did not converge to release \$DEPLOY_SHA/);
   assert.doesNotMatch(run, /curl .*--retry/s);
 });
 
-test("production semantic validator requires both origins to advertise the selected release", () => {
+test("production semantic validator always requires workers.dev and gates the Access route", () => {
   const run = step(deploy, "Poll exact production release").run ?? "";
   const validator = run.match(/node --input-type=module <<'NODE'\n([\s\S]*?)\nNODE/)?.[1];
   assert.ok(validator, "missing inline production semantic validator");
@@ -987,6 +1139,7 @@ test("production semantic validator requires both origins to advertise the selec
     state: "dormant" | "active",
     workersDev: EndpointResponse = {},
     productionRoute: EndpointResponse = {},
+    customRouteProof: "disabled" | "access-service-token" = "disabled",
   ) {
     const defaultCapabilities = state === "active" ? [observationCapability] : [];
     function writeEndpoint(healthPath: string, contractPath: string, response: EndpointResponse) {
@@ -1019,6 +1172,7 @@ test("production semantic validator requires both origins to advertise the selec
       encoding: "utf8",
       env: {
         ...process.env,
+        CUSTOM_ROUTE_PROOF: customRouteProof,
         DEPLOY_SHA: releaseSha,
         OBSERVATION_ORDER_STATE: state,
         PRODUCTION_ROUTE_CONTRACT_RESPONSE: productionRouteContractPath,
@@ -1033,10 +1187,22 @@ test("production semantic validator requires both origins to advertise the selec
     assert.equal(validate("dormant").status, 0);
     assert.equal(validate("active").status, 0);
     assert.notEqual(validate("dormant", { healthSha: "b".repeat(40) }).status, 0);
-    assert.notEqual(validate("dormant", {}, { contractSha: "b".repeat(40) }).status, 0);
+    assert.equal(validate("dormant", {}, { contractSha: "b".repeat(40) }).status, 0);
+    assert.notEqual(
+      validate("dormant", {}, { contractSha: "b".repeat(40) }, "access-service-token").status,
+      0,
+    );
+    assert.equal(validate("dormant", {}, {}, "access-service-token").status, 0);
     assert.notEqual(validate("active", { capabilities: [] }).status, 0);
-    assert.notEqual(validate("dormant", {}, { capabilities: [observationCapability] }).status, 0);
-    assert.notEqual(validate("dormant", {}, { capabilities: null }).status, 0);
+    assert.notEqual(
+      validate("dormant", {}, { capabilities: [observationCapability] }, "access-service-token")
+        .status,
+      0,
+    );
+    assert.notEqual(
+      validate("dormant", {}, { capabilities: null }, "access-service-token").status,
+      0,
+    );
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
