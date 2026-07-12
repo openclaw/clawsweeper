@@ -388,7 +388,8 @@ export function packageScriptRequirement(
     executable: invocation.executable,
     allWorkspaces: options.some(
       (option) =>
-        ["-r", "--recursive", "--workspaces"].includes(option.name) && option.value !== "false",
+        ["-r", "--recursive", "--ws", "--workspaces"].includes(option.name) &&
+        option.value !== "false",
     ),
     workspaceSelectors: options
       .filter(
