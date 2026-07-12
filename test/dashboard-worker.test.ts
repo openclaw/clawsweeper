@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { createHash, createHmac, generateKeyPairSync } from "node:crypto";
+import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
+import { isDeepStrictEqual } from "node:util";
 import { createContext, Script } from "node:vm";
 
 import worker, {
@@ -405,22 +407,212 @@ class MemoryKv {
   }
 }
 
+class MemorySqlCursor<T extends Record<string, unknown>> implements Iterable<T> {
+  rowsRead = 0;
+  readonly rowsWritten: number;
+  private readonly rows: T[];
+
+  constructor(rows: T[], rowsWritten: number) {
+    this.rows = rows;
+    this.rowsWritten = rowsWritten;
+  }
+
+  *[Symbol.iterator]() {
+    for (const row of this.rows) {
+      this.rowsRead += 1;
+      yield row;
+    }
+  }
+}
+
+class MemorySqlStorage {
+  private readonly database = new DatabaseSync(":memory:");
+  private failure: { pattern: RegExp; error: Error } | undefined;
+
+  exec(query: string, ...bindings: unknown[]) {
+    if (this.failure?.pattern.test(query)) {
+      const { error } = this.failure;
+      this.failure = undefined;
+      throw error;
+    }
+    const statement = this.database.prepare(query);
+    if (/^\s*(?:SELECT|WITH)\b/i.test(query) || /\bRETURNING\b/i.test(query)) {
+      const rows = statement.all(...bindings) as Record<string, unknown>[];
+      return new MemorySqlCursor(rows, rows.length);
+    }
+    const result = statement.run(...bindings);
+    return new MemorySqlCursor([], Number(result.changes));
+  }
+
+  transactionSync<T>(callback: () => T) {
+    this.database.exec("BEGIN IMMEDIATE");
+    try {
+      const result = callback();
+      this.database.exec("COMMIT");
+      return result;
+    } catch (error) {
+      this.database.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  failNext(pattern: RegExp, error = new Error("injected SQL failure")) {
+    this.failure = { pattern, error };
+  }
+
+  hasNormalizedQueue() {
+    const table = this.database
+      .prepare(
+        "SELECT 1 AS found FROM sqlite_master WHERE type = 'table' AND name = 'exact_review_queue_meta'",
+      )
+      .get() as { found?: number } | undefined;
+    if (!table) return false;
+    return Boolean(
+      this.database
+        .prepare("SELECT 1 AS found FROM exact_review_queue_meta WHERE singleton_id = 1")
+        .get(),
+    );
+  }
+
+  readNormalizedQueue() {
+    const meta = this.database
+      .prepare("SELECT dispatcher_json FROM exact_review_queue_meta WHERE singleton_id = 1")
+      .get() as { dispatcher_json?: string | null } | undefined;
+    const items = Object.fromEntries(
+      (
+        this.database
+          .prepare("SELECT item_key, item_json FROM exact_review_queue_items ORDER BY item_key")
+          .all() as Array<{ item_key: string; item_json: string }>
+      ).map((row) => [row.item_key, JSON.parse(row.item_json)]),
+    );
+    const deliveries = Object.fromEntries(
+      (
+        this.database
+          .prepare(
+            "SELECT delivery_id, received_at FROM exact_review_queue_deliveries ORDER BY delivery_id",
+          )
+          .all() as Array<{ delivery_id: string; received_at: number }>
+      ).map((row) => [row.delivery_id, row.received_at]),
+    );
+    const state: {
+      deliveries: Record<string, number>;
+      items: Record<string, unknown>;
+      dispatcher?: unknown;
+    } = { deliveries, items };
+    if (meta?.dispatcher_json) state.dispatcher = JSON.parse(meta.dispatcher_json);
+    return state;
+  }
+
+  replaceNormalizedQueue(value: unknown) {
+    const state = (value && typeof value === "object" ? value : {}) as {
+      deliveries?: Record<string, number>;
+      items?: Record<string, unknown>;
+      dispatcher?: unknown;
+    };
+    this.transactionSync(() => {
+      this.database.exec("DELETE FROM exact_review_queue_deliveries");
+      this.database.exec("DELETE FROM exact_review_queue_items");
+      const insertDelivery = this.database.prepare(
+        "INSERT INTO exact_review_queue_deliveries (delivery_id, received_at) VALUES (?, ?)",
+      );
+      for (const [deliveryId, receivedAt] of Object.entries(state.deliveries || {})) {
+        insertDelivery.run(deliveryId, receivedAt);
+      }
+      const insertItem = this.database.prepare(
+        "INSERT INTO exact_review_queue_items (item_key, item_json) VALUES (?, ?)",
+      );
+      for (const [itemKey, item] of Object.entries(state.items || {})) {
+        insertItem.run(itemKey, JSON.stringify(item));
+      }
+      this.database
+        .prepare("UPDATE exact_review_queue_meta SET dispatcher_json = ? WHERE singleton_id = 1")
+        .run(state.dispatcher === undefined ? null : JSON.stringify(state.dispatcher));
+    });
+  }
+
+  setMigrationTime(migratedAt: number) {
+    this.database
+      .prepare("UPDATE exact_review_queue_meta SET migrated_at = ? WHERE singleton_id = 1")
+      .run(migratedAt);
+  }
+
+  setReceiptTime(deliveryId: string, receivedAt: number) {
+    this.database
+      .prepare("UPDATE exact_review_queue_deliveries SET received_at = ? WHERE delivery_id = ?")
+      .run(receivedAt, deliveryId);
+  }
+}
+
 class MemoryDurableStorage {
   private values = new Map<string, unknown>();
   private putCounts = new Map<string, number>();
+  private putFailure: { key: string; error: Error } | undefined;
+  private deleteFailure: { key: string; error: Error } | undefined;
   private alarmAt: number | null = null;
+  readonly sql = new MemorySqlStorage();
+  readonly kv = {
+    get: (key: string) => this.values.get(key),
+    put: (key: string, value: unknown) => this.putRawSync(key, value),
+    delete: (key: string) => this.deleteRawSync(key),
+  };
 
-  async get(key: string) {
+  transactionSync<T>(callback: () => T) {
+    const valuesBefore = new Map(
+      Array.from(this.values, ([key, value]) => [key, structuredClone(value)]),
+    );
+    const putCountsBefore = new Map(this.putCounts);
+    try {
+      return this.sql.transactionSync(callback);
+    } catch (error) {
+      this.values = valuesBefore;
+      this.putCounts = putCountsBefore;
+      throw error;
+    }
+  }
+
+  async get(key: string, options?: { noCache?: boolean }) {
+    if (key === "exact-review-queue" && this.sql.hasNormalizedQueue() && !options?.noCache) {
+      return this.sql.readNormalizedQueue();
+    }
     return this.values.get(key);
   }
 
   async put(key: string, value: unknown) {
-    this.values.set(key, value);
-    this.putCounts.set(key, (this.putCounts.get(key) || 0) + 1);
+    this.throwPutFailure(key);
+    if (key === "exact-review-queue" && this.sql.hasNormalizedQueue()) {
+      const normalized = this.sql.readNormalizedQueue();
+      const candidate = (value && typeof value === "object" ? value : {}) as {
+        deliveries?: Record<string, number>;
+        items?: Record<string, unknown>;
+        dispatcher?: unknown;
+      };
+      const deliveryEntries = Object.entries(candidate.deliveries || {});
+      const markerEntries = deliveryEntries.filter(([deliveryId]) =>
+        /^__clawsweeper_sql_generation:\d+$/.test(deliveryId),
+      );
+      const candidateReceipts = Object.fromEntries(
+        deliveryEntries.filter(
+          ([deliveryId]) => !deliveryId.startsWith("__clawsweeper_sql_generation:"),
+        ),
+      );
+      const normalizedReceiptIds = Object.keys(normalized.deliveries).sort();
+      const rollbackShadow =
+        markerEntries.length === 1 &&
+        markerEntries[0][1] === Number.MAX_SAFE_INTEGER &&
+        isDeepStrictEqual(Object.keys(candidateReceipts).sort(), normalizedReceiptIds) &&
+        normalizedReceiptIds.every(
+          (deliveryId) =>
+            Number(candidateReceipts[deliveryId]) >= Number(normalized.deliveries[deliveryId]),
+        ) &&
+        isDeepStrictEqual(candidate.items || {}, normalized.items) &&
+        isDeepStrictEqual(candidate.dispatcher, normalized.dispatcher);
+      if (!rollbackShadow) this.sql.replaceNormalizedQueue(candidate);
+    }
+    this.storeRaw(key, value);
   }
 
   async delete(key: string) {
-    this.values.delete(key);
+    return this.deleteRawSync(key);
   }
 
   async list() {
@@ -445,6 +637,64 @@ class MemoryDurableStorage {
 
   putCount(key: string) {
     return this.putCounts.get(key) || 0;
+  }
+
+  rawHas(key: string) {
+    return this.values.has(key);
+  }
+
+  rawGet(key: string) {
+    return this.values.get(key);
+  }
+
+  rawPut(key: string, value: unknown) {
+    this.values.set(key, structuredClone(value));
+  }
+
+  private throwPutFailure(key: string) {
+    if (this.putFailure?.key !== key) return;
+    const { error } = this.putFailure;
+    this.putFailure = undefined;
+    throw error;
+  }
+
+  private putRawSync(key: string, value: unknown) {
+    this.throwPutFailure(key);
+    this.storeRaw(key, value);
+  }
+
+  private storeRaw(key: string, value: unknown) {
+    this.values.set(key, structuredClone(value));
+    this.putCounts.set(key, (this.putCounts.get(key) || 0) + 1);
+  }
+
+  private deleteRawSync(key: string) {
+    if (this.deleteFailure?.key === key) {
+      const { error } = this.deleteFailure;
+      this.deleteFailure = undefined;
+      throw error;
+    }
+    return this.values.delete(key);
+  }
+
+  failNextPut(key: string, error = new Error("injected storage put failure")) {
+    this.putFailure = { key, error };
+  }
+
+  failNextDelete(key: string, error = new Error("injected storage delete failure")) {
+    this.deleteFailure = { key, error };
+  }
+
+  failNextSql(pattern: RegExp, error?: Error) {
+    this.sql.failNext(pattern, error);
+  }
+
+  setExactReviewMigrationTime(migratedAt: number) {
+    this.sql.setMigrationTime(migratedAt);
+  }
+
+  setExactReviewReceiptTime(deliveryId: string, receivedAt: number) {
+    this.sql.setReceiptTime(deliveryId, receivedAt);
   }
 }
 
@@ -889,13 +1139,13 @@ test("exact-review queue coalesces deliveries, dispatches a bound rollout snapsh
   }
 });
 
-test("exact-review queue retains delivery dedupe records for five days", async () => {
+test("exact-review queue migrates delivery receipts and retains them for seven days", async () => {
   const storage = new MemoryDurableStorage();
-  const fiveDaysMs = 5 * 24 * 60 * 60 * 1000;
+  const sevenDaysMs = 7 * 24 * 60 * 60 * 1000;
   await storage.put("exact-review-queue", {
     deliveries: {
-      "delivery-expired": Date.now() - fiveDaysMs - 60_000,
-      "delivery-within-window": Date.now() - fiveDaysMs + 60_000,
+      "delivery-expired": Date.now() - sevenDaysMs - 60_000,
+      "delivery-within-window": Date.now() - sevenDaysMs + 60_000,
     },
     items: {},
   });
@@ -913,6 +1163,432 @@ test("exact-review queue retains delivery dedupe records for five days", async (
     "delivery-fresh",
     "delivery-within-window",
   ]);
+  const stats = await (
+    await queue.fetch(new Request("https://clawsweeper-exact-review-queue/stats"))
+  ).json();
+  assert.equal(stats.delivery_receipts, 2);
+  assert.equal(stats.storage_schema_version, 1);
+  assert.equal(stats.legacy_rollback_available, true);
+  const shadowDeliveries = (
+    storage.rawGet("exact-review-queue") as { deliveries: Record<string, number> }
+  ).deliveries;
+  const shadowGenerationIds = Object.keys(shadowDeliveries).filter((deliveryId) =>
+    deliveryId.startsWith("__clawsweeper_sql_generation:"),
+  );
+  assert.equal(shadowGenerationIds.length, 1);
+  assert.equal(shadowDeliveries[shadowGenerationIds[0]], Number.MAX_SAFE_INTEGER);
+  assert.deepEqual(
+    Object.keys(shadowDeliveries)
+      .filter((deliveryId) => !deliveryId.startsWith("__clawsweeper_sql_generation:"))
+      .sort(),
+    ["delivery-fresh", "delivery-within-window"],
+  );
+  assert.ok(shadowDeliveries["delivery-within-window"] > Date.now() - 5 * 24 * 60 * 60 * 1000);
+
+  const restarted = new ExactReviewQueue({ storage }, {});
+  const duplicate = await restarted.fetch(
+    buildExactReviewQueueRequest("delivery-within-window", 619, "edited"),
+  );
+  assert.deepEqual(await duplicate.json(), {
+    ok: true,
+    deduped: true,
+    item_key: "openclaw/gogcli#619",
+  });
+});
+
+test("exact-review receipt acceptance and queue mutation commit atomically", async () => {
+  const storage = new MemoryDurableStorage();
+  const queue = new ExactReviewQueue({ storage }, {});
+  await queue.fetch(new Request("https://clawsweeper-exact-review-queue/stats"));
+  storage.failNextSql(/INSERT INTO exact_review_queue_items/);
+
+  await assert.rejects(
+    queue.fetch(buildExactReviewQueueRequest("delivery-atomic", 625, "opened")),
+    /injected SQL failure/,
+  );
+  let state = (await storage.get("exact-review-queue")) as {
+    deliveries: Record<string, number>;
+    items: Record<string, unknown>;
+  };
+  assert.deepEqual(state.deliveries, {});
+  assert.deepEqual(state.items, {});
+
+  assert.equal(
+    (await queue.fetch(buildExactReviewQueueRequest("delivery-atomic", 625, "opened"))).status,
+    202,
+  );
+  state = (await storage.get("exact-review-queue")) as {
+    deliveries: Record<string, number>;
+    items: Record<string, unknown>;
+  };
+  assert.deepEqual(Object.keys(state.deliveries), ["delivery-atomic"]);
+  assert.deepEqual(Object.keys(state.items), ["openclaw/gogcli#625"]);
+});
+
+test("exact-review re-upgrade imports rollback-era queue mutations and receipts", async () => {
+  const storage = new MemoryDurableStorage();
+  const queue = new ExactReviewQueue({ storage }, {});
+  assert.equal(
+    (await queue.fetch(buildExactReviewQueueRequest("delivery-before-rollback", 626, "opened")))
+      .status,
+    202,
+  );
+
+  const shadow = structuredClone(
+    storage.rawGet("exact-review-queue") as {
+      deliveries: Record<string, number>;
+      items: Record<string, Record<string, unknown>>;
+    },
+  );
+  const oldGenerationId = Object.keys(shadow.deliveries).find((deliveryId) =>
+    deliveryId.startsWith("__clawsweeper_sql_generation:"),
+  );
+  assert.ok(oldGenerationId);
+  const rollbackItem = structuredClone(shadow.items["openclaw/gogcli#626"]);
+  rollbackItem.key = "openclaw/gogcli#627";
+  rollbackItem.decision = {
+    ...(rollbackItem.decision as Record<string, unknown>),
+    itemNumber: 627,
+  };
+  delete shadow.items["openclaw/gogcli#626"];
+  shadow.items["openclaw/gogcli#627"] = rollbackItem;
+  shadow.deliveries["delivery-during-rollback"] = Date.now();
+  storage.rawPut("exact-review-queue", shadow);
+
+  const upgraded = new ExactReviewQueue({ storage }, {});
+  const stats = await (
+    await upgraded.fetch(new Request("https://clawsweeper-exact-review-queue/stats"))
+  ).json();
+  assert.equal(stats.pending, 1);
+  assert.equal(stats.delivery_receipts, 2);
+  const state = (await storage.get("exact-review-queue")) as {
+    deliveries: Record<string, number>;
+    items: Record<string, unknown>;
+  };
+  assert.deepEqual(Object.keys(state.items), ["openclaw/gogcli#627"]);
+  assert.deepEqual(Object.keys(state.deliveries).sort(), [
+    "delivery-before-rollback",
+    "delivery-during-rollback",
+  ]);
+  const upgradedShadow = storage.rawGet("exact-review-queue") as {
+    deliveries: Record<string, number>;
+  };
+  const upgradedGenerationIds = Object.keys(upgradedShadow.deliveries).filter((deliveryId) =>
+    deliveryId.startsWith("__clawsweeper_sql_generation:"),
+  );
+  assert.equal(upgradedGenerationIds.length, 1);
+  assert.match(upgradedGenerationIds[0], /^__clawsweeper_sql_generation:\d+$/);
+  assert.notEqual(upgradedGenerationIds[0], oldGenerationId);
+  assert.deepEqual(
+    Object.keys(upgradedShadow.deliveries)
+      .filter((deliveryId) => !deliveryId.startsWith("__clawsweeper_sql_generation:"))
+      .sort(),
+    ["delivery-before-rollback", "delivery-during-rollback"],
+  );
+});
+
+test("exact-review re-upgrade distinguishes a refreshed rollback receipt", async () => {
+  const storage = new MemoryDurableStorage();
+  const queue = new ExactReviewQueue({ storage }, {});
+  assert.equal(
+    (await queue.fetch(buildExactReviewQueueRequest("delivery-refreshed", 634, "opened"))).status,
+    202,
+  );
+  const oldReceivedAt = Date.now() - 8 * 24 * 60 * 60 * 1000;
+  const refreshedAt = Date.now();
+  storage.setExactReviewReceiptTime("delivery-refreshed", oldReceivedAt);
+  const rollback = structuredClone(
+    storage.rawGet("exact-review-queue") as {
+      deliveries: Record<string, number>;
+      items: Record<string, { revision: number; updatedAt: number }>;
+    },
+  );
+  rollback.deliveries["delivery-refreshed"] = refreshedAt;
+  rollback.items["openclaw/gogcli#634"].revision += 1;
+  rollback.items["openclaw/gogcli#634"].updatedAt = refreshedAt;
+  storage.rawPut("exact-review-queue", rollback);
+
+  const upgraded = new ExactReviewQueue({ storage }, {});
+  const stats = await (
+    await upgraded.fetch(new Request("https://clawsweeper-exact-review-queue/stats"))
+  ).json();
+  assert.equal(stats.pending, 1);
+  assert.equal(stats.delivery_receipts, 1);
+  const state = (await storage.get("exact-review-queue")) as {
+    deliveries: Record<string, number>;
+    items: Record<string, { revision: number }>;
+  };
+  assert.equal(state.deliveries["delivery-refreshed"], refreshedAt);
+  assert.equal(state.items["openclaw/gogcli#634"].revision, 2);
+  assert.deepEqual(
+    await (
+      await upgraded.fetch(buildExactReviewQueueRequest("delivery-refreshed", 634, "edited"))
+    ).json(),
+    { ok: true, deduped: true, item_key: "openclaw/gogcli#634" },
+  );
+});
+
+test("exact-review receipt pruning removes its translated shadow atomically", async () => {
+  const storage = new MemoryDurableStorage();
+  const queue = new ExactReviewQueue({ storage }, {});
+  assert.equal(
+    (await queue.fetch(buildExactReviewQueueRequest("delivery-pruned", 635, "opened"))).status,
+    202,
+  );
+  const expiredAt = Date.now() - 7 * 24 * 60 * 60 * 1000 - 1;
+  storage.setExactReviewReceiptTime("delivery-pruned", expiredAt);
+  const staleShadow = structuredClone(
+    storage.rawGet("exact-review-queue") as { deliveries: Record<string, number> },
+  );
+  staleShadow.deliveries["delivery-pruned"] = expiredAt + 2 * 24 * 60 * 60 * 1000;
+  storage.rawPut("exact-review-queue", staleShadow);
+
+  let stats = await (
+    await queue.fetch(new Request("https://clawsweeper-exact-review-queue/stats"))
+  ).json();
+  assert.equal(stats.delivery_receipts, 0);
+  const refreshedShadow = storage.rawGet("exact-review-queue") as {
+    deliveries: Record<string, number>;
+  };
+  assert.deepEqual(
+    Object.keys(refreshedShadow.deliveries).filter(
+      (deliveryId) => !deliveryId.startsWith("__clawsweeper_sql_generation:"),
+    ),
+    [],
+  );
+
+  const restarted = new ExactReviewQueue({ storage }, {});
+  stats = await (
+    await restarted.fetch(new Request("https://clawsweeper-exact-review-queue/stats"))
+  ).json();
+  assert.equal(stats.delivery_receipts, 0);
+});
+
+test("exact-review re-upgrade fails closed for a divergent stale rollback shadow", async () => {
+  const storage = new MemoryDurableStorage();
+  const queue = new ExactReviewQueue({ storage }, {});
+  assert.equal(
+    (await queue.fetch(buildExactReviewQueueRequest("delivery-stale-1", 628, "opened"))).status,
+    202,
+  );
+  const staleShadow = structuredClone(storage.rawGet("exact-review-queue"));
+  assert.equal(
+    (await queue.fetch(buildExactReviewQueueRequest("delivery-stale-2", 629, "opened"))).status,
+    202,
+  );
+  storage.rawPut("exact-review-queue", staleShadow);
+
+  const upgraded = new ExactReviewQueue({ storage }, {});
+  await assert.rejects(
+    upgraded.fetch(new Request("https://clawsweeper-exact-review-queue/stats")),
+    /ambiguous exact-review legacy rollback state/,
+  );
+  const sqlState = (await storage.get("exact-review-queue")) as {
+    items: Record<string, unknown>;
+  };
+  assert.deepEqual(Object.keys(sqlState.items).sort(), [
+    "openclaw/gogcli#628",
+    "openclaw/gogcli#629",
+  ]);
+  assert.deepEqual(storage.rawGet("exact-review-queue"), staleShadow);
+});
+
+test("exact-review discards a stale rollback shadow when its refresh fails", async () => {
+  const storage = new MemoryDurableStorage();
+  const queue = new ExactReviewQueue({ storage }, {});
+  await queue.fetch(new Request("https://clawsweeper-exact-review-queue/stats"));
+  assert.equal(storage.rawHas("exact-review-queue"), true);
+  storage.failNextPut("exact-review-queue");
+  const warnings: unknown[][] = [];
+  const originalWarn = console.warn;
+  console.warn = (...args) => warnings.push(args);
+  try {
+    assert.equal(
+      (await queue.fetch(buildExactReviewQueueRequest("delivery-mirror-failure", 630, "opened")))
+        .status,
+      202,
+    );
+  } finally {
+    console.warn = originalWarn;
+  }
+  assert.equal(storage.rawHas("exact-review-queue"), false);
+  assert.match(String(warnings[0][0]), /legacy rollback shadow unavailable/);
+
+  const restarted = new ExactReviewQueue({ storage }, {});
+  const stats = await (
+    await restarted.fetch(new Request("https://clawsweeper-exact-review-queue/stats"))
+  ).json();
+  assert.equal(stats.pending, 1);
+  assert.equal(stats.delivery_receipts, 1);
+  assert.equal(storage.rawHas("exact-review-queue"), true);
+});
+
+test("exact-review rolls SQL back when an obsolete shadow cannot be removed", async () => {
+  const storage = new MemoryDurableStorage();
+  const queue = new ExactReviewQueue({ storage }, {});
+  await queue.fetch(new Request("https://clawsweeper-exact-review-queue/stats"));
+  const originalShadow = structuredClone(storage.rawGet("exact-review-queue"));
+  storage.failNextPut("exact-review-queue");
+  storage.failNextDelete("exact-review-queue");
+  const warnings: unknown[][] = [];
+  const originalWarn = console.warn;
+  console.warn = (...args) => warnings.push(args);
+  try {
+    await assert.rejects(
+      queue.fetch(buildExactReviewQueueRequest("delivery-atomic-shadow", 633, "opened")),
+      /injected storage delete failure/,
+    );
+  } finally {
+    console.warn = originalWarn;
+  }
+  assert.match(String(warnings[0][0]), /stale legacy rollback shadow could not be removed/);
+  assert.deepEqual(storage.rawGet("exact-review-queue"), originalShadow);
+  let state = (await storage.get("exact-review-queue")) as {
+    deliveries: Record<string, number>;
+    items: Record<string, unknown>;
+  };
+  assert.deepEqual(state.deliveries, {});
+  assert.deepEqual(state.items, {});
+
+  assert.equal(
+    (await queue.fetch(buildExactReviewQueueRequest("delivery-atomic-shadow", 633, "opened")))
+      .status,
+    202,
+  );
+  state = (await storage.get("exact-review-queue")) as {
+    deliveries: Record<string, number>;
+    items: Record<string, unknown>;
+  };
+  assert.deepEqual(Object.keys(state.deliveries), ["delivery-atomic-shadow"]);
+  assert.deepEqual(Object.keys(state.items), ["openclaw/gogcli#633"]);
+});
+
+test("exact-review SQL rows outgrow the bounded rollback shadow without blocking intake", async () => {
+  const storage = new MemoryDurableStorage();
+  const now = Date.now();
+  const items = Object.fromEntries(
+    Array.from({ length: 220 }, (_, index) => {
+      const itemNumber = 10_000 + index;
+      const key = `openclaw/openclaw#${itemNumber}`;
+      return [
+        key,
+        {
+          key,
+          decision: {
+            targetRepo: "openclaw/openclaw",
+            targetBranch: "main",
+            itemNumber,
+            itemKind: "issue",
+            sourceEvent: "issues",
+            sourceAction: "opened",
+            supersedesInProgress: false,
+            additionalPrompt: "x".repeat(5_000),
+          },
+          state: "pending",
+          revision: 1,
+          createdAt: now,
+          updatedAt: now,
+          nextAttemptAt: now,
+          attempts: 0,
+        },
+      ];
+    }),
+  );
+  await storage.put("exact-review-queue", { deliveries: {}, items });
+  const warnings: unknown[][] = [];
+  const originalWarn = console.warn;
+  console.warn = (...args) => warnings.push(args);
+  let queue: ExactReviewQueue;
+  try {
+    queue = new ExactReviewQueue({ storage }, {});
+    const response = await queue.fetch(
+      buildExactReviewQueueRequest("delivery-after-large-migration", 20_000, "opened"),
+    );
+    assert.equal(response.status, 202);
+  } finally {
+    console.warn = originalWarn;
+  }
+
+  const stats = await (
+    await queue!.fetch(new Request("https://clawsweeper-exact-review-queue/stats"))
+  ).json();
+  assert.equal(stats.pending, 221);
+  assert.equal(stats.delivery_receipts, 1);
+  assert.equal(stats.legacy_rollback_available, false);
+  assert.equal(warnings.length, 1);
+  assert.match(String(warnings[0][0]), /legacy rollback shadow unavailable/);
+  assert.match(String(warnings[0][1]), /shadow is \d+ bytes/);
+  assert.equal(storage.rawHas("exact-review-queue"), false);
+});
+
+test("exact-review migration removes its rollback shadow after one day", async () => {
+  const storage = new MemoryDurableStorage();
+  const queue = new ExactReviewQueue({ storage }, {});
+  assert.equal(
+    (await queue.fetch(buildExactReviewQueueRequest("delivery-shadow", 626, "opened"))).status,
+    202,
+  );
+  assert.equal(storage.rawHas("exact-review-queue"), true);
+
+  storage.setExactReviewMigrationTime(Date.now() - 24 * 60 * 60 * 1000 - 1);
+  const restarted = new ExactReviewQueue({ storage }, {});
+  const stats = await (
+    await restarted.fetch(new Request("https://clawsweeper-exact-review-queue/stats"))
+  ).json();
+  assert.equal(stats.pending, 1);
+  assert.equal(stats.delivery_receipts, 1);
+  assert.equal(stats.legacy_rollback_available, false);
+  assert.equal(storage.rawHas("exact-review-queue"), false);
+});
+
+test("exact-review imports an active rollback before expiring an old bridge", async () => {
+  const storage = new MemoryDurableStorage();
+  const queue = new ExactReviewQueue({ storage }, {});
+  assert.equal(
+    (await queue.fetch(buildExactReviewQueueRequest("delivery-old-bridge", 631, "opened"))).status,
+    202,
+  );
+  const shadow = structuredClone(
+    storage.rawGet("exact-review-queue") as {
+      deliveries: Record<string, number>;
+      items: Record<string, Record<string, unknown>>;
+    },
+  );
+  const oldMigrationTime = Date.now() - 24 * 60 * 60 * 1000 - 1;
+  storage.setExactReviewMigrationTime(oldMigrationTime);
+  const generationId = Object.keys(shadow.deliveries).find((deliveryId) =>
+    deliveryId.startsWith("__clawsweeper_sql_generation:"),
+  );
+  assert.ok(generationId);
+  assert.equal(shadow.deliveries[generationId], Number.MAX_SAFE_INTEGER);
+  for (const [deliveryId, receivedAt] of Object.entries(shadow.deliveries)) {
+    if (receivedAt <= Date.now() - 5 * 24 * 60 * 60 * 1000) {
+      delete shadow.deliveries[deliveryId];
+    }
+  }
+  assert.equal(shadow.deliveries[generationId], Number.MAX_SAFE_INTEGER);
+  shadow.deliveries["delivery-old-bridge-rollback"] = Date.now();
+  const rollbackItem = structuredClone(shadow.items["openclaw/gogcli#631"]);
+  rollbackItem.key = "openclaw/gogcli#632";
+  rollbackItem.decision = {
+    ...(rollbackItem.decision as Record<string, unknown>),
+    itemNumber: 632,
+  };
+  delete shadow.items["openclaw/gogcli#631"];
+  shadow.items["openclaw/gogcli#632"] = rollbackItem;
+  storage.rawPut("exact-review-queue", shadow);
+
+  const upgraded = new ExactReviewQueue({ storage }, {});
+  const stats = await (
+    await upgraded.fetch(new Request("https://clawsweeper-exact-review-queue/stats"))
+  ).json();
+  assert.equal(stats.pending, 1);
+  assert.equal(stats.delivery_receipts, 2);
+  const state = (await storage.get("exact-review-queue")) as {
+    items: Record<string, unknown>;
+  };
+  assert.deepEqual(Object.keys(state.items), ["openclaw/gogcli#632"]);
+  assert.equal(storage.rawHas("exact-review-queue"), false);
 });
 
 test("exact-review claim preserves its immutable decision across a newer enqueue", async () => {
@@ -1202,6 +1878,7 @@ test("exact-review claim and completion reject forged or incomplete lease tuples
     },
   });
   const queue = new ExactReviewQueue({ storage }, {});
+  await queue.fetch(new Request("https://clawsweeper-exact-review-queue/stats"));
   const claimBase = {
     lease_id: "lease-622",
     item_key: "openclaw/openclaw#622",
@@ -1543,6 +2220,12 @@ test("exact-review queue rejects unbounded or unsafe command context", async () 
     assert.equal(response.status, 400);
     assert.deepEqual(await response.json(), { error: "invalid_exact_review_item" });
   }
+
+  const reservedDelivery = await queue.fetch(
+    buildExactReviewQueueRequest("__clawsweeper_sql_generation:99", 597, "opened"),
+  );
+  assert.equal(reservedDelivery.status, 400);
+  assert.deepEqual(await reservedDelivery.json(), { error: "reserved_delivery_id" });
 });
 
 test("exact-review queue retries dispatch failures and reclaims an unclaimed lease", async () => {
@@ -2506,7 +3189,6 @@ test("exact-review reconciliation cannot release a later attempt with the same r
 
 test("exact-review stats heals a missing or stale alarm and expired lease", async () => {
   const storage = new MemoryDurableStorage();
-  const queue = new ExactReviewQueue({ storage }, {});
   await storage.put("exact-review-queue", {
     deliveries: {},
     items: {
@@ -2534,6 +3216,7 @@ test("exact-review stats heals a missing or stale alarm and expired lease", asyn
       },
     },
   });
+  const queue = new ExactReviewQueue({ storage }, {});
 
   const response = await queue.fetch(new Request("https://clawsweeper-exact-review-queue/stats"));
   assert.equal(response.status, 200);

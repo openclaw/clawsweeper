@@ -3,6 +3,7 @@ import {
   isClawSweeperReReviewCommandText,
 } from "../src/repair/comment-command-text.ts";
 import { isExactReviewCloseGuardLabel } from "../src/repair/exact-review-guard-labels.ts";
+import { stableJson } from "../src/stable-json.ts";
 import { bayHtml } from "./bay-page.ts";
 import { TRIAGE_ROUTING_GROUPS, triageRoutingGroupsForLabels } from "./triage-routing-groups.ts";
 
@@ -62,7 +63,6 @@ type ExactReviewClaimedRun = {
   claimGeneration: number;
 };
 type ExactReviewQueueState = {
-  deliveries: Record<string, number>;
   items: Record<string, ExactReviewQueueItem>;
   dispatcher?: {
     state: "active" | "paused" | "blocked" | "unknown";
@@ -71,6 +71,19 @@ type ExactReviewQueueState = {
     checkedAt: number;
     retryAt?: number;
   };
+};
+type LegacyExactReviewQueueState = ExactReviewQueueState & {
+  deliveries?: Record<string, number>;
+};
+type ExactReviewQueueBaseline = {
+  items: Map<string, string>;
+  dispatcherJson: string | null;
+};
+type ExactReviewQueueStorageMeta = {
+  schema_version: number;
+  migrated_at: number;
+  storage_generation: number;
+  dispatcher_json: string | null;
 };
 type DurableObjectStub = { fetch: (request: Request) => Promise<Response> };
 type DurableObjectNamespace = {
@@ -110,10 +123,23 @@ const EXACT_REVIEW_COMPLETION_RETRY_MAX_MS = 2 * 60 * 60 * 1000;
 const EXACT_REVIEW_RECONCILE_RUN_LIMIT = 32;
 const EXACT_REVIEW_RECONCILE_CLAIM_MATCH_LIMIT = EXACT_REVIEW_RECONCILE_RUN_LIMIT * 2;
 const EXACT_REVIEW_RECONCILE_CONCURRENCY = 4;
-// Keep a multi-day idempotency window for delayed GitHub/Actions retries while
-// limiting the singleton queue record until delivery receipts move to bounded storage.
-const EXACT_REVIEW_QUEUE_DELIVERY_TTL_MS = 5 * 24 * 60 * 60 * 1000;
+// This is an idempotency policy, not a storage-size control. Receipts live in
+// individual indexed SQLite rows and are pruned in bounded batches.
+const EXACT_REVIEW_QUEUE_DELIVERY_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const EXACT_REVIEW_QUEUE_DELIVERY_PRUNE_BATCH = 1_000;
+const EXACT_REVIEW_QUEUE_DELIVERY_PRUNE_MAX_BATCHES = 5;
+const EXACT_REVIEW_QUEUE_SQL_BINDING_ROW_BATCH = 50;
+const EXACT_REVIEW_QUEUE_STORAGE_SCHEMA_VERSION = 1;
+const EXACT_REVIEW_QUEUE_LEGACY_ROLLBACK_MS = 24 * 60 * 60 * 1000;
+const EXACT_REVIEW_QUEUE_LEGACY_SHADOW_MAX_BYTES = 1 * 1024 * 1024;
+const EXACT_REVIEW_QUEUE_LEGACY_RECEIPT_ROW_LIMIT = 20_000;
+const EXACT_REVIEW_QUEUE_LEGACY_RECEIPT_SHIFT_MS = 2 * 24 * 60 * 60 * 1000;
+const EXACT_REVIEW_QUEUE_ROLLBACK_CLOCK_SKEW_MS = 5 * 60 * 1000;
+const EXACT_REVIEW_QUEUE_LEGACY_GENERATION_PREFIX = "__clawsweeper_sql_generation:";
 const EXACT_REVIEW_QUEUE_STATE_KEY = "exact-review-queue";
+const EXACT_REVIEW_QUEUE_META_TABLE = "exact_review_queue_meta";
+const EXACT_REVIEW_QUEUE_ITEM_TABLE = "exact_review_queue_items";
+const EXACT_REVIEW_QUEUE_DELIVERY_TABLE = "exact_review_queue_deliveries";
 const EXACT_REVIEW_QUEUE_NAME = "global";
 const EXACT_REVIEW_COMMAND_STATUS_MARKER_PATTERN =
   /^<!-- clawsweeper-command-status:[^<>\r\n]{1,200} -->$/;
@@ -401,63 +427,98 @@ export class StatusStore {
 export class ExactReviewQueue {
   private storage;
   private env;
+  private ready: Promise<void>;
+  private migratedAt = 0;
+  private legacyMirrorDisabled = false;
+  private legacyMirrorWarningReported = false;
+  private readonly baselines = new WeakMap<ExactReviewQueueState, ExactReviewQueueBaseline>();
 
   constructor(state, env) {
     this.storage = state.storage;
     this.env = env;
+    const initialize = () => this.initializeStorage();
+    this.ready =
+      typeof state.blockConcurrencyWhile === "function"
+        ? Promise.resolve(state.blockConcurrencyWhile(initialize))
+        : initialize();
   }
 
   async fetch(request: Request) {
+    await this.ready;
+    this.cleanupLegacyCompatibilitySync();
     const url = new URL(request.url);
     if (request.method === "POST" && url.pathname === "/enqueue") {
       const body = objectValue(await request.json().catch(() => null));
       const deliveryId = String(body.delivery_id || "").trim();
       const decision = exactReviewDecisionFrom(body.decision);
       if (!deliveryId) return json({ error: "missing_delivery_id" }, 400);
+      if (deliveryId.startsWith(EXACT_REVIEW_QUEUE_LEGACY_GENERATION_PREFIX)) {
+        return json({ error: "reserved_delivery_id" }, 400);
+      }
       if (!decision) return json({ error: "invalid_exact_review_item" }, 400);
       if (!isExactReviewQueueTargetEnabled(decision, this.env)) {
         return json({ ok: true, accepted: false, reason: "target not enabled" }, 202);
       }
 
       const now = Date.now();
-      const state = await this.readState();
-      pruneExactReviewDeliveries(state, now);
-      const existingDelivery = state.deliveries[deliveryId];
-      if (existingDelivery) {
+      const accepted = this.storage.transactionSync(() => {
+        this.pruneDeliveryReceiptsSync(now);
+        this.storage.sql.exec(
+          `DELETE FROM ${EXACT_REVIEW_QUEUE_DELIVERY_TABLE}
+            WHERE delivery_id = ? AND received_at <= ?`,
+          deliveryId,
+          now - EXACT_REVIEW_QUEUE_DELIVERY_TTL_MS,
+        );
+        const insertedReceipts = Array.from(
+          this.storage.sql.exec(
+            `INSERT OR IGNORE INTO ${EXACT_REVIEW_QUEUE_DELIVERY_TABLE}
+             (delivery_id, received_at) VALUES (?, ?)
+           RETURNING delivery_id`,
+            deliveryId,
+            now,
+          ),
+        );
+        if (insertedReceipts.length !== 1) {
+          this.syncLegacyCompatibilitySync(this.readStateSync());
+          return { deduped: true as const };
+        }
+
+        const state = this.readStateSync();
+        const key = exactReviewItemKey(decision);
+        const current = state.items[key];
+        const nextAttemptAt = exactReviewQueueEnqueueAttemptAt(state, now);
+        if (current) {
+          // A pending command has no executor yet, so an ordinary item event must not erase its
+          // acknowledgement context. Once dispatched, that lease already owns the context and a
+          // newer revision should start clean unless it carries its own command fields.
+          current.decision =
+            current.state === "pending"
+              ? mergePendingExactReviewDecision(current.decision, decision)
+              : decision;
+          current.revision += 1;
+          current.updatedAt = now;
+          current.nextAttemptAt = nextAttemptAt;
+          if (current.state === "pending") current.attempts = 0;
+        } else {
+          state.items[key] = {
+            key,
+            decision,
+            state: "pending",
+            revision: 1,
+            createdAt: now,
+            updatedAt: now,
+            nextAttemptAt,
+            attempts: 0,
+          };
+        }
+        this.writeStateSync(state);
+        return { deduped: false as const, key, state };
+      });
+      if (accepted.deduped) {
         return json({ ok: true, deduped: true, item_key: exactReviewItemKey(decision) }, 202);
       }
-
-      state.deliveries[deliveryId] = now;
-      const key = exactReviewItemKey(decision);
-      const current = state.items[key];
-      const nextAttemptAt = exactReviewQueueEnqueueAttemptAt(state, now);
-      if (current) {
-        // A pending command has no executor yet, so an ordinary item event must not erase its
-        // acknowledgement context. Once dispatched, that lease already owns the context and a
-        // newer revision should start clean unless it carries its own command fields.
-        current.decision =
-          current.state === "pending"
-            ? mergePendingExactReviewDecision(current.decision, decision)
-            : decision;
-        current.revision += 1;
-        current.updatedAt = now;
-        current.nextAttemptAt = nextAttemptAt;
-        if (current.state === "pending") current.attempts = 0;
-      } else {
-        state.items[key] = {
-          key,
-          decision,
-          state: "pending",
-          revision: 1,
-          createdAt: now,
-          updatedAt: now,
-          nextAttemptAt,
-          attempts: 0,
-        };
-      }
-      await this.writeState(state);
-      await this.scheduleNext(state, now);
-      return json({ ok: true, queued: true, item_key: key }, 202);
+      await this.scheduleNext(accepted.state, now);
+      return json({ ok: true, queued: true, item_key: accepted.key }, 202);
     }
 
     if (request.method === "POST" && url.pathname === "/claim") {
@@ -479,7 +540,7 @@ export class ExactReviewQueue {
       }
 
       const now = Date.now();
-      const state = await this.readState();
+      const state = this.readStateSync();
       const item = tupleClaim ? state.items[itemKey] : exactReviewItemForLease(state, leaseId);
       if (
         !item ||
@@ -597,7 +658,7 @@ export class ExactReviewQueue {
       if (body.retry_at !== undefined && requestedRetryAt === null) {
         return json({ error: "invalid_retry_at" }, 400);
       }
-      const state = await this.readState();
+      const state = this.readStateSync();
       const item = tupleCompletion ? state.items[itemKey] : exactReviewItemForLease(state, leaseId);
       if (
         !item ||
@@ -655,7 +716,7 @@ export class ExactReviewQueue {
       // the durable queue to be reconciled.
       const requestedRunIds = new Set(requestedRuns.map((run) => run.runId));
       const matchesByRunId = new Map<string, ExactReviewQueueItem[]>();
-      const state = await this.readState();
+      const state = this.readStateSync();
       for (const item of Object.values(state.items)) {
         if (
           item.state !== "leased" ||
@@ -684,7 +745,7 @@ export class ExactReviewQueue {
       if (!runs) return json({ error: "invalid_terminal_runs" }, 400);
 
       const now = Date.now();
-      const state = await this.readState();
+      const state = this.readStateSync();
       let reconciled = 0;
       let requeued = 0;
       let completed = 0;
@@ -712,29 +773,45 @@ export class ExactReviewQueue {
 
     if (request.method === "GET" && url.pathname === "/stats") {
       const now = Date.now();
-      const state = await this.readState();
-      // Dashboard reads are also the operational heartbeat. Reclaim leases and
-      // restore the alarm here so a deploy or lost alarm cannot strand backlog.
-      const changed = reclaimExpiredExactReviewLeases(state, now);
-      if (changed) await this.writeState(state);
+      const state = this.storage.transactionSync(() => {
+        this.pruneDeliveryReceiptsSync(now);
+        const current = this.readStateSync();
+        // Dashboard reads are also the operational heartbeat. Reclaim leases and
+        // restore the alarm here so a deploy or lost alarm cannot strand backlog.
+        const changed = reclaimExpiredExactReviewLeases(current, now);
+        if (changed) this.writeStateSync(current);
+        else this.syncLegacyCompatibilitySync(current);
+        return current;
+      });
       await this.scheduleNext(state, now);
-      return json(
-        exactReviewQueueStats(
+      return json({
+        ...exactReviewQueueStats(
           state,
           now,
           exactReviewQueueCapacity(this.env),
           exactReviewTargetCapacity(this.env),
         ),
-      );
+        delivery_receipts: this.deliveryReceiptCountSync(),
+        storage_schema_version: EXACT_REVIEW_QUEUE_STORAGE_SCHEMA_VERSION,
+        legacy_rollback_available:
+          !this.legacyMirrorDisabled &&
+          now < this.migratedAt + EXACT_REVIEW_QUEUE_LEGACY_ROLLBACK_MS,
+      });
     }
 
     return new Response("not found", { status: 404 });
   }
 
   async alarm() {
+    await this.ready;
+    this.cleanupLegacyCompatibilitySync();
     const startedAt = Date.now();
     await this.storage.deleteAlarm();
-    const snapshot = await this.readState();
+    this.storage.transactionSync(() => {
+      this.pruneDeliveryReceiptsSync(startedAt);
+      this.syncLegacyCompatibilitySync(this.readStateSync());
+    });
+    const snapshot = this.readStateSync();
     const snapshotChanged = reclaimExpiredExactReviewLeases(snapshot, startedAt);
     const capacity = exactReviewQueueCapacity(this.env);
     const targetCapacity = exactReviewTargetCapacity(this.env);
@@ -763,7 +840,7 @@ export class ExactReviewQueue {
     // External fetches release the Durable Object input gate. Re-read before any
     // write so concurrent enqueue, claim, or complete requests cannot be lost.
     const now = Date.now();
-    const state = await this.readState();
+    const state = this.readStateSync();
     reclaimExpiredExactReviewLeases(state, now);
     const admitted = exactReviewQueueAdmittedItems(state, now, capacity, targetCapacity);
     if (!preflight.ok) {
@@ -833,7 +910,7 @@ export class ExactReviewQueue {
     // Dispatch calls also release the input gate. Merge failures into current
     // state only when the exact lease still owns the item.
     const completedAt = Date.now();
-    const current = await this.readState();
+    const current = this.readStateSync();
     let currentChanged = false;
     for (const failure of failures) {
       const item = current.items[failure.key];
@@ -857,21 +934,510 @@ export class ExactReviewQueue {
     await this.scheduleNext(current, completedAt);
   }
 
-  private async readState(): Promise<ExactReviewQueueState> {
-    const stored = (await this.storage.get(EXACT_REVIEW_QUEUE_STATE_KEY)) as
-      | ExactReviewQueueState
+  private async initializeStorage() {
+    this.ensureStorageSchemaSync();
+    let meta = this.readStorageMetaSync();
+    let migratedLegacy = false;
+    const legacy = this.storage.kv.get(EXACT_REVIEW_QUEUE_STATE_KEY) as
+      | LegacyExactReviewQueueState
       | undefined;
+    if (!meta) {
+      const migratedAt = Date.now();
+      this.migratedAt = migratedAt;
+      this.storage.transactionSync(() => {
+        if (this.readStorageMetaSync()) return;
+
+        const itemRows = Object.entries(
+          legacy?.items && typeof legacy.items === "object" ? legacy.items : {},
+        ).map(([itemKey, item]) => [itemKey, JSON.stringify({ ...item, key: itemKey })]);
+        this.insertMigrationRowsSync(
+          EXACT_REVIEW_QUEUE_ITEM_TABLE,
+          ["item_key", "item_json"],
+          itemRows,
+        );
+
+        const receiptCutoff = migratedAt - EXACT_REVIEW_QUEUE_DELIVERY_TTL_MS;
+        const receiptRows = Object.entries(
+          legacy?.deliveries && typeof legacy.deliveries === "object" ? legacy.deliveries : {},
+        )
+          .filter(
+            ([deliveryId, receivedAt]) =>
+              !deliveryId.startsWith(EXACT_REVIEW_QUEUE_LEGACY_GENERATION_PREFIX) &&
+              Number.isSafeInteger(receivedAt) &&
+              receivedAt > receiptCutoff,
+          )
+          .map(([deliveryId, receivedAt]) => [deliveryId, receivedAt]);
+        this.insertMigrationRowsSync(
+          EXACT_REVIEW_QUEUE_DELIVERY_TABLE,
+          ["delivery_id", "received_at"],
+          receiptRows,
+        );
+
+        const dispatcherJson =
+          legacy?.dispatcher && typeof legacy.dispatcher === "object"
+            ? JSON.stringify(legacy.dispatcher)
+            : null;
+        this.storage.sql.exec(
+          `INSERT INTO ${EXACT_REVIEW_QUEUE_META_TABLE}
+             (singleton_id, schema_version, migrated_at, storage_generation, dispatcher_json)
+           VALUES (1, ?, ?, 1, ?)`,
+          EXACT_REVIEW_QUEUE_STORAGE_SCHEMA_VERSION,
+          migratedAt,
+          dispatcherJson,
+        );
+        migratedLegacy = true;
+        this.syncLegacyCompatibilitySync(this.readStateSync());
+      });
+      meta = this.readStorageMetaSync();
+    }
+    if (!meta || Number(meta.schema_version) !== EXACT_REVIEW_QUEUE_STORAGE_SCHEMA_VERSION) {
+      throw new Error(`unsupported exact-review queue storage schema ${meta?.schema_version}`);
+    }
+    if (!Number.isSafeInteger(meta.storage_generation) || meta.storage_generation < 1) {
+      throw new Error("invalid exact-review queue storage generation");
+    }
+    if (!Number.isSafeInteger(meta.migrated_at) || meta.migrated_at < 1) {
+      throw new Error("invalid exact-review queue migration time");
+    }
+    this.migratedAt = Number(meta.migrated_at);
+    // Reconcile a surviving generation even after the ordinary shadow window:
+    // an actual rollback can keep mutating it while the new Worker is absent.
+    if (!migratedLegacy) {
+      this.storage.transactionSync(() => {
+        if (legacy) this.reconcileLegacyRollbackSync(legacy, meta);
+        this.syncLegacyCompatibilitySync(this.readStateSync());
+      });
+    }
+  }
+
+  private ensureStorageSchemaSync() {
+    this.storage.sql.exec(
+      `CREATE TABLE IF NOT EXISTS ${EXACT_REVIEW_QUEUE_META_TABLE} (
+         singleton_id INTEGER PRIMARY KEY CHECK (singleton_id = 1),
+         schema_version INTEGER NOT NULL,
+         migrated_at INTEGER NOT NULL,
+         storage_generation INTEGER NOT NULL,
+         dispatcher_json TEXT
+       ) STRICT`,
+    );
+    this.storage.sql.exec(
+      `CREATE TABLE IF NOT EXISTS ${EXACT_REVIEW_QUEUE_ITEM_TABLE} (
+         item_key TEXT PRIMARY KEY,
+         item_json TEXT NOT NULL
+       ) STRICT`,
+    );
+    this.storage.sql.exec(
+      `CREATE TABLE IF NOT EXISTS ${EXACT_REVIEW_QUEUE_DELIVERY_TABLE} (
+         delivery_id TEXT PRIMARY KEY,
+         received_at INTEGER NOT NULL
+       ) STRICT`,
+    );
+    this.storage.sql.exec(
+      `CREATE INDEX IF NOT EXISTS exact_review_queue_deliveries_received_at
+         ON ${EXACT_REVIEW_QUEUE_DELIVERY_TABLE} (received_at, delivery_id)`,
+    );
+  }
+
+  private readStorageMetaSync() {
+    return Array.from(
+      this.storage.sql.exec(
+        `SELECT schema_version, migrated_at, storage_generation, dispatcher_json
+           FROM ${EXACT_REVIEW_QUEUE_META_TABLE}
+          WHERE singleton_id = 1`,
+      ),
+    )[0] as ExactReviewQueueStorageMeta | undefined;
+  }
+
+  private insertMigrationRowsSync(table: string, columns: string[], rows: unknown[][]) {
+    for (let offset = 0; offset < rows.length; offset += EXACT_REVIEW_QUEUE_SQL_BINDING_ROW_BATCH) {
+      const batch = rows.slice(offset, offset + EXACT_REVIEW_QUEUE_SQL_BINDING_ROW_BATCH);
+      const placeholders = batch.map(() => `(${columns.map(() => "?").join(", ")})`).join(", ");
+      this.storage.sql.exec(
+        `INSERT OR REPLACE INTO ${table} (${columns.join(", ")}) VALUES ${placeholders}`,
+        ...batch.flat(),
+      );
+    }
+  }
+
+  private readDeliveryReceiptsByIdSync(deliveryIds: string[]) {
+    const receipts = new Map<string, number>();
+    for (
+      let offset = 0;
+      offset < deliveryIds.length;
+      offset += EXACT_REVIEW_QUEUE_SQL_BINDING_ROW_BATCH
+    ) {
+      const batch = deliveryIds.slice(offset, offset + EXACT_REVIEW_QUEUE_SQL_BINDING_ROW_BATCH);
+      const placeholders = batch.map(() => "?").join(", ");
+      for (const row of this.storage.sql.exec(
+        `SELECT delivery_id, received_at
+           FROM ${EXACT_REVIEW_QUEUE_DELIVERY_TABLE}
+          WHERE delivery_id IN (${placeholders})`,
+        ...batch,
+      ) as Iterable<{ delivery_id: string; received_at: number }>) {
+        receipts.set(row.delivery_id, row.received_at);
+      }
+    }
+    return receipts;
+  }
+
+  private reconcileLegacyRollbackSync(
+    legacy: LegacyExactReviewQueueState,
+    meta: ExactReviewQueueStorageMeta,
+  ) {
+    const legacyState = this.normalizeLegacyState(legacy);
+    const sqlState = this.readStateSync();
+    const stateMatches = stableJson(legacyState) === stableJson(sqlState);
+    const { generation: legacyGeneration, receipts } = this.readLegacyBridge(legacy);
+    const sqlGeneration = Number(meta.storage_generation);
+
+    if (legacyGeneration !== undefined && legacyGeneration > sqlGeneration) {
+      throw new Error(
+        `invalid exact-review legacy rollback generation ${legacyGeneration} > ${sqlGeneration}`,
+      );
+    }
+    if (legacyGeneration !== undefined && legacyGeneration < sqlGeneration && !stateMatches) {
+      // A stale shadow can mean either a failed mirror write by this version or
+      // rollback-era mutations by the old version. Neither side is safe to discard.
+      throw new Error(
+        `ambiguous exact-review legacy rollback state at generations ${legacyGeneration} and ${sqlGeneration}`,
+      );
+    }
+    if (legacyGeneration === undefined && !stateMatches) {
+      throw new Error("ambiguous exact-review legacy rollback state without a generation marker");
+    }
+
+    const replaceState = legacyGeneration === sqlGeneration && !stateMatches;
+    const sqlReceipts = this.readDeliveryReceiptsByIdSync(
+      receipts.map(([deliveryId]) => String(deliveryId)),
+    );
+    const receiptChanges: unknown[][] = [];
+    if (legacyGeneration === sqlGeneration) {
+      const latestRollbackTime = Date.now() + EXACT_REVIEW_QUEUE_ROLLBACK_CLOCK_SKEW_MS;
+      for (const [deliveryId, receivedAt] of receipts) {
+        const sqlReceivedAt = sqlReceipts.get(String(deliveryId));
+        if (
+          sqlReceivedAt !== undefined &&
+          Number(receivedAt) === this.legacyReceiptTimestamp(sqlReceivedAt)
+        ) {
+          continue;
+        }
+        if (!Number.isSafeInteger(receivedAt) || Number(receivedAt) > latestRollbackTime) {
+          throw new Error(`invalid exact-review rollback receipt ${deliveryId}`);
+        }
+        receiptChanges.push([deliveryId, receivedAt]);
+      }
+    } else if (legacyGeneration !== undefined) {
+      for (const [deliveryId, receivedAt] of receipts) {
+        const sqlReceivedAt = sqlReceipts.get(String(deliveryId));
+        if (
+          sqlReceivedAt === undefined ||
+          Number(receivedAt) !== this.legacyReceiptTimestamp(sqlReceivedAt)
+        ) {
+          throw new Error(
+            `ambiguous exact-review legacy rollback receipt at generations ${legacyGeneration} and ${sqlGeneration}`,
+          );
+        }
+      }
+    }
+
+    if (replaceState) {
+      this.storage.sql.exec(`DELETE FROM ${EXACT_REVIEW_QUEUE_ITEM_TABLE}`);
+      this.insertMigrationRowsSync(
+        EXACT_REVIEW_QUEUE_ITEM_TABLE,
+        ["item_key", "item_json"],
+        Object.entries(legacyState.items).map(([itemKey, item]) => [itemKey, JSON.stringify(item)]),
+      );
+    }
+    this.insertMigrationRowsSync(
+      EXACT_REVIEW_QUEUE_DELIVERY_TABLE,
+      ["delivery_id", "received_at"],
+      receiptChanges,
+    );
+    if (!replaceState && receiptChanges.length === 0) return;
+    this.storage.sql.exec(
+      `UPDATE ${EXACT_REVIEW_QUEUE_META_TABLE}
+          SET dispatcher_json = ?, storage_generation = storage_generation + 1
+        WHERE singleton_id = 1 AND storage_generation = ?`,
+      replaceState && legacyState.dispatcher
+        ? JSON.stringify(legacyState.dispatcher)
+        : replaceState
+          ? null
+          : meta.dispatcher_json,
+      sqlGeneration,
+    );
+    const reconciledGeneration = this.readStorageMetaSync()?.storage_generation;
+    if (reconciledGeneration !== sqlGeneration + 1) {
+      throw new Error("exact-review legacy rollback reconciliation lost its generation race");
+    }
+  }
+
+  private normalizeLegacyState(legacy: LegacyExactReviewQueueState): ExactReviewQueueState {
+    const items = Object.fromEntries(
+      Object.entries(legacy.items && typeof legacy.items === "object" ? legacy.items : {}).map(
+        ([itemKey, item]) => [itemKey, { ...item, key: itemKey }],
+      ),
+    ) as Record<string, ExactReviewQueueItem>;
     return {
-      deliveries:
-        stored?.deliveries && typeof stored.deliveries === "object" ? stored.deliveries : {},
-      items: stored?.items && typeof stored.items === "object" ? stored.items : {},
-      dispatcher:
-        stored?.dispatcher && typeof stored.dispatcher === "object" ? stored.dispatcher : undefined,
+      items,
+      ...(legacy.dispatcher && typeof legacy.dispatcher === "object"
+        ? { dispatcher: legacy.dispatcher }
+        : {}),
     };
   }
 
-  private async writeState(state: ExactReviewQueueState) {
-    await this.storage.put(EXACT_REVIEW_QUEUE_STATE_KEY, state);
+  private readLegacyBridge(legacy: LegacyExactReviewQueueState) {
+    const deliveries =
+      legacy.deliveries && typeof legacy.deliveries === "object" ? legacy.deliveries : {};
+    const generationMarkers = Object.entries(deliveries).filter(([deliveryId]) =>
+      deliveryId.startsWith(EXACT_REVIEW_QUEUE_LEGACY_GENERATION_PREFIX),
+    );
+    if (generationMarkers.length > 1) {
+      throw new Error("invalid exact-review legacy rollback generation markers");
+    }
+
+    let generation: number | undefined;
+    if (generationMarkers.length === 1) {
+      const [deliveryId, markedAt] = generationMarkers[0];
+      const rawGeneration = deliveryId.slice(EXACT_REVIEW_QUEUE_LEGACY_GENERATION_PREFIX.length);
+      generation = Number(rawGeneration);
+      if (
+        !/^\d+$/.test(rawGeneration) ||
+        !Number.isSafeInteger(generation) ||
+        generation < 1 ||
+        markedAt !== Number.MAX_SAFE_INTEGER
+      ) {
+        throw new Error("invalid exact-review legacy rollback generation marker");
+      }
+    }
+
+    const receiptCutoff = Date.now() - EXACT_REVIEW_QUEUE_DELIVERY_TTL_MS;
+    const receipts = Object.entries(deliveries)
+      .filter(
+        ([deliveryId, receivedAt]) =>
+          !deliveryId.startsWith(EXACT_REVIEW_QUEUE_LEGACY_GENERATION_PREFIX) &&
+          Number.isSafeInteger(receivedAt) &&
+          receivedAt > receiptCutoff,
+      )
+      .map(([deliveryId, receivedAt]) => [deliveryId, receivedAt]);
+    return { generation, receipts };
+  }
+
+  private readStateSync(): ExactReviewQueueState {
+    const meta = this.readStorageMetaSync();
+    if (!meta || Number(meta.schema_version) !== EXACT_REVIEW_QUEUE_STORAGE_SCHEMA_VERSION) {
+      throw new Error("exact-review queue storage is not initialized");
+    }
+
+    const items: Record<string, ExactReviewQueueItem> = {};
+    const baselineItems = new Map<string, string>();
+    for (const row of this.storage.sql.exec(
+      `SELECT item_key, item_json FROM ${EXACT_REVIEW_QUEUE_ITEM_TABLE}`,
+    ) as Iterable<{ item_key: string; item_json: string }>) {
+      let item: ExactReviewQueueItem;
+      try {
+        item = JSON.parse(row.item_json) as ExactReviewQueueItem;
+      } catch {
+        throw new Error(`invalid exact-review queue item JSON for ${row.item_key}`);
+      }
+      if (!item || typeof item !== "object" || item.key !== row.item_key) {
+        throw new Error(`invalid exact-review queue item for ${row.item_key}`);
+      }
+      items[row.item_key] = item;
+      baselineItems.set(row.item_key, row.item_json);
+    }
+
+    let dispatcher: ExactReviewQueueState["dispatcher"];
+    if (meta.dispatcher_json) {
+      try {
+        dispatcher = JSON.parse(meta.dispatcher_json) as ExactReviewQueueState["dispatcher"];
+      } catch {
+        throw new Error("invalid exact-review queue dispatcher JSON");
+      }
+    }
+    const state = { items, dispatcher };
+    this.baselines.set(state, {
+      items: baselineItems,
+      dispatcherJson: meta.dispatcher_json,
+    });
+    return state;
+  }
+
+  private writeState(state: ExactReviewQueueState) {
+    this.storage.transactionSync(() => this.writeStateSync(state));
+  }
+
+  private writeStateSync(state: ExactReviewQueueState) {
+    const baseline = this.baselines.get(state) || this.readStateBaselineSync();
+    const nextItems = new Map<string, string>();
+    for (const [itemKey, item] of Object.entries(state.items)) {
+      const itemJson = JSON.stringify(item);
+      nextItems.set(itemKey, itemJson);
+      if (baseline.items.get(itemKey) === itemJson) continue;
+      this.storage.sql.exec(
+        `INSERT INTO ${EXACT_REVIEW_QUEUE_ITEM_TABLE} (item_key, item_json)
+         VALUES (?, ?)
+         ON CONFLICT(item_key) DO UPDATE SET item_json = excluded.item_json`,
+        itemKey,
+        itemJson,
+      );
+    }
+    for (const itemKey of baseline.items.keys()) {
+      if (!nextItems.has(itemKey)) {
+        this.storage.sql.exec(
+          `DELETE FROM ${EXACT_REVIEW_QUEUE_ITEM_TABLE} WHERE item_key = ?`,
+          itemKey,
+        );
+      }
+    }
+
+    const dispatcherJson = state.dispatcher ? JSON.stringify(state.dispatcher) : null;
+    this.storage.sql.exec(
+      `UPDATE ${EXACT_REVIEW_QUEUE_META_TABLE}
+          SET dispatcher_json = ?, storage_generation = storage_generation + 1
+        WHERE singleton_id = 1`,
+      dispatcherJson,
+    );
+    this.syncLegacyCompatibilitySync(state);
+    this.baselines.set(state, { items: nextItems, dispatcherJson });
+  }
+
+  private readStateBaselineSync(): ExactReviewQueueBaseline {
+    const items = new Map<string, string>();
+    for (const row of this.storage.sql.exec(
+      `SELECT item_key, item_json FROM ${EXACT_REVIEW_QUEUE_ITEM_TABLE}`,
+    ) as Iterable<{ item_key: string; item_json: string }>) {
+      items.set(row.item_key, row.item_json);
+    }
+    return {
+      items,
+      dispatcherJson: this.readStorageMetaSync()?.dispatcher_json ?? null,
+    };
+  }
+
+  private pruneDeliveryReceiptsSync(now: number) {
+    const cutoff = now - EXACT_REVIEW_QUEUE_DELIVERY_TTL_MS;
+    for (let batch = 0; batch < EXACT_REVIEW_QUEUE_DELIVERY_PRUNE_MAX_BATCHES; batch += 1) {
+      const deleted = Array.from(
+        this.storage.sql.exec(
+          `DELETE FROM ${EXACT_REVIEW_QUEUE_DELIVERY_TABLE}
+          WHERE delivery_id IN (
+            SELECT delivery_id
+              FROM ${EXACT_REVIEW_QUEUE_DELIVERY_TABLE}
+             WHERE received_at <= ?
+             ORDER BY received_at, delivery_id
+             LIMIT ${EXACT_REVIEW_QUEUE_DELIVERY_PRUNE_BATCH}
+          )
+        RETURNING delivery_id`,
+          cutoff,
+        ),
+      );
+      if (deleted.length < EXACT_REVIEW_QUEUE_DELIVERY_PRUNE_BATCH) break;
+    }
+  }
+
+  private deliveryReceiptCountSync() {
+    const row = Array.from(
+      this.storage.sql.exec(
+        `SELECT COUNT(*) AS receipt_count FROM ${EXACT_REVIEW_QUEUE_DELIVERY_TABLE}`,
+      ),
+    )[0] as { receipt_count?: number } | undefined;
+    return Number(row?.receipt_count || 0);
+  }
+
+  private legacyReceiptTimestamp(receivedAt: number) {
+    return Math.min(
+      Number.MAX_SAFE_INTEGER,
+      receivedAt + EXACT_REVIEW_QUEUE_LEGACY_RECEIPT_SHIFT_MS,
+    );
+  }
+
+  private legacyDeliverySnapshotSync(now: number) {
+    const rows = Array.from(
+      this.storage.sql.exec(
+        `SELECT delivery_id, received_at
+           FROM ${EXACT_REVIEW_QUEUE_DELIVERY_TABLE}
+          WHERE received_at > ?
+          ORDER BY delivery_id
+          LIMIT ${EXACT_REVIEW_QUEUE_LEGACY_RECEIPT_ROW_LIMIT + 1}`,
+        now - EXACT_REVIEW_QUEUE_DELIVERY_TTL_MS,
+      ) as Iterable<{ delivery_id: string; received_at: number }>,
+    );
+    if (rows.length > EXACT_REVIEW_QUEUE_LEGACY_RECEIPT_ROW_LIMIT) return undefined;
+    return Object.fromEntries(
+      rows.map((row) => [row.delivery_id, this.legacyReceiptTimestamp(row.received_at)]),
+    );
+  }
+
+  private syncLegacyCompatibilitySync(state: ExactReviewQueueState) {
+    const now = Date.now();
+    if (now >= this.migratedAt + EXACT_REVIEW_QUEUE_LEGACY_ROLLBACK_MS) {
+      this.cleanupLegacyCompatibilitySync();
+      return;
+    }
+    const generation = this.readStorageMetaSync()?.storage_generation;
+    if (!Number.isSafeInteger(generation) || Number(generation) < 1) {
+      throw new Error("invalid exact-review queue storage generation");
+    }
+    const deliveries = this.legacyDeliverySnapshotSync(now);
+    if (!deliveries) {
+      this.disableLegacyMirrorSync(
+        `active receipt count exceeds ${EXACT_REVIEW_QUEUE_LEGACY_RECEIPT_ROW_LIMIT}`,
+      );
+      return;
+    }
+    // Old Worker code preserves the marker as an inert receipt. If it mutates
+    // this shadow after a rollback, the next upgrade can reconcile that exact
+    // generation instead of silently choosing one side. Its five-day receipt
+    // pruner sees timestamps shifted by two days, preserving the restored
+    // seven-day contract without changing the normalized SQL timestamps.
+    const shadow = {
+      deliveries: {
+        ...deliveries,
+        [`${EXACT_REVIEW_QUEUE_LEGACY_GENERATION_PREFIX}${generation}`]: Number.MAX_SAFE_INTEGER,
+      },
+      items: state.items,
+      dispatcher: state.dispatcher,
+    };
+    const shadowBytes = new TextEncoder().encode(JSON.stringify(shadow)).byteLength;
+    if (shadowBytes > EXACT_REVIEW_QUEUE_LEGACY_SHADOW_MAX_BYTES) {
+      this.disableLegacyMirrorSync(`shadow is ${shadowBytes} bytes`);
+      return;
+    }
+    try {
+      this.storage.kv.put(EXACT_REVIEW_QUEUE_STATE_KEY, shadow);
+      this.legacyMirrorDisabled = false;
+    } catch (error) {
+      this.disableLegacyMirrorSync(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  private disableLegacyMirrorSync(reason: string) {
+    try {
+      // A failed refresh must not leave a stale generation that becomes
+      // indistinguishable from rollback-era mutations on the next upgrade.
+      this.storage.kv.delete(EXACT_REVIEW_QUEUE_STATE_KEY);
+    } catch (error) {
+      console.warn(
+        "exact-review stale legacy rollback shadow could not be removed",
+        error instanceof Error ? error.message : String(error),
+      );
+      throw error;
+    }
+    this.reportLegacyMirrorUnavailable(reason);
+  }
+
+  private reportLegacyMirrorUnavailable(reason: string) {
+    this.legacyMirrorDisabled = true;
+    if (this.legacyMirrorWarningReported) return;
+    this.legacyMirrorWarningReported = true;
+    console.warn("exact-review legacy rollback shadow unavailable", reason);
+  }
+
+  private cleanupLegacyCompatibilitySync() {
+    if (!this.migratedAt || Date.now() < this.migratedAt + EXACT_REVIEW_QUEUE_LEGACY_ROLLBACK_MS) {
+      return;
+    }
+    this.storage.kv.delete(EXACT_REVIEW_QUEUE_STATE_KEY);
   }
 
   private async scheduleNext(state: ExactReviewQueueState, now: number) {
@@ -2079,14 +2645,6 @@ function exactReviewQueueNextWakeAt(
   });
   if (!times.length) return now + DEFAULT_EXACT_REVIEW_RETRY_MS;
   return Math.max(now + 1_000, Math.min(...times));
-}
-
-function pruneExactReviewDeliveries(state: ExactReviewQueueState, now: number) {
-  for (const [deliveryId, receivedAt] of Object.entries(state.deliveries)) {
-    if (!Number.isFinite(receivedAt) || receivedAt + EXACT_REVIEW_QUEUE_DELIVERY_TTL_MS <= now) {
-      delete state.deliveries[deliveryId];
-    }
-  }
 }
 
 export function exactReviewQueueCapacity(env) {

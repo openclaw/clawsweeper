@@ -182,6 +182,34 @@ command-status identifiers so the leased GitHub Actions executor can update the
 original acknowledgement through completion. GitHub Actions remains the
 executor and the existing review/apply safety model remains unchanged.
 
+The singleton Durable Object stores each delivery receipt and queue item in its
+own SQLite row. Receipt insertion and item coalescing commit in one transaction,
+so a crash cannot record a duplicate-suppression receipt without its queued
+work. Receipts retain the seven-day idempotency window and expire through the
+indexed timestamp path in bounded batches; `/api/exact-review-queue` reports
+`delivery_receipts`, `storage_schema_version`, and
+`legacy_rollback_available` for operational proof. On the first upgraded
+request, the Worker transactionally imports the former `exact-review-queue`
+value. For 24 hours it maintains a generation-marked legacy shadow containing
+the queue and the complete active seven-day receipt set. Receipt timestamps are
+translated by two days so the immediately previous Worker's five-day pruner
+preserves their original seven-day expiry, and the reserved generation marker
+cannot expire. SQL state, its generation, and the synchronous KV shadow update
+in one SQLite transaction, so no committed generation can leave an older shadow
+readable. A later re-upgrade uses the generation plus deterministic timestamp
+translation to distinguish unchanged shadow receipts from receipts accepted or
+refreshed by the rolled-back Worker. It imports authoritative queue and receipt
+changes; a surviving generation is reconciled before deletion even when the
+rollback outlives the ordinary window. A divergent stale generation fails
+closed instead of discarding either side.
+
+The Worker publishes that compatibility shadow only when the complete active
+set stays within 20,000 receipts and 1 MiB. If it cannot publish the complete
+shadow, it deletes any stale copy, reports rollback unavailable, and keeps the
+normalized queue serving; it never emits a lossy rollback state or retries the
+oversized write. The rollback bridge therefore cannot recreate the normalized
+queue's intake failure.
+
 Before each dispatch batch, the queue reads the `sweep.yml` workflow state once.
 If the workflow is disabled, or GitHub cannot confirm its state, due items stay
 pending and retry after `EXACT_REVIEW_WORKFLOW_PAUSED_RETRY_MS` (60 seconds by

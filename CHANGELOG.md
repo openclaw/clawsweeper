@@ -78,7 +78,7 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Fixed
 
-- Recovered exact-review intake from Cloudflare SQLite value-size exhaustion by pruning delivery receipts after five days while preserving the pending queue. Thanks @brokemac79.
+- Recovered exact-review intake from Cloudflare SQLite value-size exhaustion by normalizing delivery receipts and queue items into independently bounded rows, committing dedupe and admission atomically, restoring the seven-day idempotency window, and migrating live queue state through a transaction-coupled, generation-aware, size-bounded rollback bridge that retains the complete active dedupe set and safely reimports rollback-era changes. Thanks @brokemac79.
 - Hardened action-ledger privacy, import identity and causal validation,
   multi-shard capacity, crash-safe completion publication, portable paths,
   bounded shard, marker, and spool reads, producer-lock and finalization races,
