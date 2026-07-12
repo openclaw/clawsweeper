@@ -15,20 +15,22 @@ The repository digest prevents collisions between repositories whose readable
 slugs are identical. Readers also verify that every event's repository and
 event ID reproduce its exact spool path.
 
-At job finalization, the spool is sorted, deduplicated, and published as one or
-more immutable JSONL shards:
+At job finalization, each producer's exact spool set is sealed, sorted,
+deduplicated, and published as one or more immutable JSONL shards:
 
 ```text
 ledger/v1/events/YYYY/MM/DD/<producer-repo>/<producer>/<run-id>-<attempt>-<job>-<digest>-part-<index>-of-<count>.jsonl
 ```
 
 Per-job shards avoid a shared append hotspot while preventing one Git commit per
-event. CrabFleet receives live structured events; the state ledger receives the
-canonical finalized shards. A failed live CrabFleet projection records a
-retryable `projection.failed` event in those shards, so delivery outages cannot
-erase or block the authoritative action history. Projection requests have a
-bounded deadline, abort on timeout, and cancel response bodies after every HTTP
-response.
+event. The state ledger receives canonical shards before optional CrabFleet
+delivery is drained. The create-only producer seal binds the exact event set;
+an exact replay remains valid, while a new event for a sealed producer is
+rejected with an instruction to use a new invocation identity. A failed live
+projection records a retryable `projection.failed` event under a derived
+`<component>.crabfleet_projection` producer and finalizes that local shard in a
+second pass. Delivery outages therefore cannot erase, delay, or append behind
+the authoritative producer history.
 
 ## Identity And Replay
 
@@ -115,7 +117,9 @@ confidential-identifier checks as every other durable machine-text field.
   numbered run/job shard part for different content is a hard conflict.
 - Shard path components remain below portable 255-byte filename limits.
   Overlong readable repository, producer, run, or job components are truncated
-  with a hash suffix; the full normalized identity still binds the shard digest.
+  with a hash suffix; Windows device names such as `CON`, `AUX`, and `NUL`, plus
+  trailing-dot components, are encoded with a hash suffix. The full normalized
+  identity still binds the shard digest.
 - Spool, shard, partition-marker, and import writes require a pre-existing
   trusted root. The supplied root pathname must already be absolute and
   canonical, and its native real path must be identical, so roots reached
@@ -171,20 +175,27 @@ The ledger stores machine-readable reason codes, counts, booleans, hashes,
 bounded subject IDs, relative report paths, public run URLs, and snapshot IDs.
 It does not store prompts, bodies, comments, diffs, patches, raw logs, raw
 payloads, arbitrary model text, local absolute paths, credentials, private
-hosts, or email addresses. Credential detection covers GitHub token families,
-JWT-shaped values, Basic credentials, whitespace or separator-delimited
-bearer/API/Cloudflare credential forms, credential field aliases, POSIX and
-Windows absolute paths, case-insensitive private paths, private IPv4 and IPv6
-addresses, and internal hostname suffixes. Form-style `+` credential separators
-are rejected when followed by a credential-shaped value. Percent-encoded octets
-are rejected from durable identifiers and paths rather than decoded into
-potentially confidential forms. URL checks normalize scheme-specific paths,
-userinfo, file URLs, numeric URL host aliases, shorthand private IPv4 URLs such
-as `127.1`, and dot-segment paths. Host checks normalize case, repeated trailing
-root dots, and compressed IPv6 loopback and private IPv4-embedded forms,
-including partially compressed forms embedded in unbracketed machine text,
-while all durable text remains restricted to field-specific machine
-vocabularies.
+hosts, or email addresses. Credential detection covers GitHub and standard
+`npm_<36 chars>` token families, JWT-shaped values, Basic credentials,
+whitespace or separator-delimited bearer/API/Cloudflare credential forms,
+credential field aliases, POSIX and Windows absolute paths, case-insensitive
+private paths, private IPv4 and IPv6 addresses, and internal hostname suffixes.
+Form-style `+` credential separators are rejected when followed by a
+credential-shaped value. Percent-encoded octets are rejected from durable
+identifiers and paths rather than decoded into potentially confidential forms.
+URL checks normalize scheme-specific paths, userinfo, file URLs, decimal,
+octal, hexadecimal, and mixed-radix numeric host aliases, shorthand private
+IPv4 URLs such as `127.1`, and dot-segment paths. Host checks normalize case,
+repeated trailing root dots, and compressed IPv6 loopback and private
+IPv4-embedded forms, including partially compressed forms embedded in
+unbracketed machine text, while all durable text remains restricted to
+field-specific machine vocabularies.
+
+Durable JSON files must already be the exact canonical encoding with unique
+object keys that the writer emits, including the trailing newline. Readers
+reject duplicate object keys with a bounded raw-byte scan before full parsing,
+and reject other noncanonical bytes before accepting the value. Direct event
+and shard reads cap allocation at 1 MiB and 2 MiB respectively.
 
 Every event records a privacy classification, redaction version, and fields
 dropped. The checked-in JSON schema is
@@ -266,17 +277,19 @@ Consumers fold immutable events into purpose-specific views:
 - notification ledgers track external delivery;
 - evidence graphs bind review and apply claims to GitHub and Gitcrawl sources.
 
-`CLAWSWEEPER_CRABFLEET_TIMEOUT_MS` sets the live projection deadline in
-milliseconds. It defaults to 10000 and must be between 1 and 60000. Timeout,
-HTTP, and response-cleanup failures remain projection failures; canonical local
-writes are completed first. Live delivery runs at most four fetches concurrently
-with 64 more projections queued. A timed-out fetch keeps its concurrency slot
-until the underlying request and response-body cleanup settle; a later wave
-fails closed into durable retryable `projection.failed` records if all slots
-remain unresolved. Queued projections snapshot their endpoint, session, token,
-and timeout before admission, so later environment mutation cannot reroute
-them. Further live projections also fail closed instead of growing process
-memory without bound.
+`CLAWSWEEPER_CRABFLEET_TIMEOUT_MS` sets each live request deadline in
+milliseconds. It defaults to 10000 and must be between 1 and 60000. Finalization
+first publishes authoritative local shards, then gives the entire optional
+projection drain one 10000 ms deadline, bounded to at most 60000 ms through the
+runtime flush option. Timeout, HTTP, and response-cleanup failures remain
+projection failures. Live delivery, including exported direct posts, runs at
+most four fetches concurrently with 64 more projections queued. A timed-out
+fetch keeps its concurrency slot until the underlying request and response-body
+cleanup settle; a later wave fails closed into durable retryable
+`projection.failed` records if all slots remain unresolved. Queued projections
+snapshot their endpoint, session, token, and timeout before admission, so later
+environment mutation cannot reroute them. Further live projections also fail
+closed instead of growing process memory without bound.
 
 Projection configuration is also optional and non-authoritative. Once the local
 event is durable, malformed URL or timeout settings, incomplete session

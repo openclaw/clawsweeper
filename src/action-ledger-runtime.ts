@@ -12,11 +12,13 @@ import {
   type SafeReadRoot,
 } from "./action-ledger-files.js";
 import {
+  ACTION_LEDGER_CANONICAL_JSON_LIMITS,
   ACTION_EVENT_SHARD_FILE_LIMITS,
   ACTION_EVENT_TYPES,
   actionEventShardsReplayEquivalent,
   actionAttemptId,
   actionEventShardRelativePath,
+  actionEventSpoolRelativePath,
   actionEventKey,
   actionIdempotencyKey,
   actionLedgerJson,
@@ -51,16 +53,22 @@ const DEFAULT_EVENT_OUTPUT_DIR = path.join(".clawsweeper-repair", "action-ledger
 const DEFAULT_CRABFLEET_BASE_URL = "https://crabfleet.openclaw.ai";
 const DEFAULT_CRABFLEET_TIMEOUT_MS = 10_000;
 const MAX_CRABFLEET_TIMEOUT_MS = 60_000;
+const DEFAULT_CRABFLEET_FLUSH_TIMEOUT_MS = 10_000;
+const MAX_CRABFLEET_FLUSH_TIMEOUT_MS = 60_000;
 const ACTION_EVENT_SHARD_PATH_PATTERN =
   /^ledger\/v1\/events\/\d{4}\/\d{2}\/\d{2}\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\.jsonl$/;
 const ACTION_EVENT_IMPORT_BINDING_MAX_BYTES = 1024 * 1024;
+const ACTION_EVENT_FINALIZATION_MAX_BYTES = 1024 * 1024;
 const pendingCrabFleetPosts = new Set<Promise<void>>();
-const activeCrabFleetRequests = new Set<Promise<unknown>>();
-const queuedCrabFleetPosts: QueuedCrabFleetProjection[] = [];
+const workflowCrabFleetRequests = new Set<CrabFleetProjectionRequest>();
+const activeCrabFleetRequests = new Set<CrabFleetProjectionRequest>();
+const queuedCrabFleetPosts: CrabFleetProjectionRequest[] = [];
 
 export const CRABFLEET_PROJECTION_LIMITS = {
   maxConcurrent: 4,
   maxQueued: 64,
+  defaultFlushTimeoutMs: DEFAULT_CRABFLEET_FLUSH_TIMEOUT_MS,
+  maxFlushTimeoutMs: MAX_CRABFLEET_FLUSH_TIMEOUT_MS,
 } as const;
 
 export const ACTION_EVENT_SHARD_IMPORT_LIMITS = {
@@ -143,17 +151,36 @@ type ImportedActionEventIdentityBinding = {
   parent_event_id: string | null;
 };
 
-type QueuedCrabFleetProjection = {
-  root: string;
+type CrabFleetProjectionRequest = {
   event: ActionEvent;
   config: CrabFleetProjectionConfig;
   fetchImpl: typeof fetch;
+  promise: Promise<void>;
+  resolve: () => void;
+  reject: (error: unknown) => void;
+  done: boolean;
+  handle?: CrabFleetPostHandle;
 };
 
 type CrabFleetProjectionConfig = {
   endpointUrl: string;
   token: string;
   timeoutMs: number;
+};
+
+type CrabFleetPostHandle = {
+  result: Promise<void>;
+  settled: Promise<void>;
+  cancel: (error: Error) => void;
+};
+
+type WorkflowProducerFinalization = {
+  schema: "clawsweeper.action-ledger-producer-finalization";
+  schema_version: 1;
+  producer: ActionEvent["producer"];
+  partition_date: string;
+  event_count: number;
+  replay_sha256: string;
 };
 
 export function workflowActionEventsEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
@@ -249,7 +276,8 @@ export function recordWorkflowActionEvent(
   };
   const recordedAt = options.now ? options.now() : new Date();
   const writeOptions = { now: () => recordedAt };
-  createActionEvent(eventInput, writeOptions);
+  const candidate = createActionEvent(eventInput, writeOptions);
+  assertWorkflowProducerAcceptsEvent(root, candidate);
   ensureWorkflowPartitionDate(root, persistedWorkflowProducer(producer), env);
   const event = writeActionEvent(root, eventInput, writeOptions).event;
   queueCrabFleetEvent(root, event, env, options.fetchImpl ?? fetch);
@@ -318,9 +346,9 @@ export async function flushWorkflowActionEvents(
   options: {
     env?: NodeJS.ProcessEnv;
     outputRoot?: string;
+    projectionFlushTimeoutMs?: number;
   } = {},
 ): Promise<string[]> {
-  await flushPendingCrabFleetPosts();
   const env = options.env ?? process.env;
   if (!workflowActionEventsEnabled(env)) return [];
   const safeRoot = prepareSafeReadRoot(root, "action event spool");
@@ -329,6 +357,22 @@ export async function flushWorkflowActionEvents(
     env.CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT ??
     path.join(root, DEFAULT_EVENT_OUTPUT_DIR);
   const safeOutputRoot = prepareSafeReadRoot(outputRoot, "action event shard output");
+  const paths = new Set(finalizeWorkflowActionEventSpool(safeRoot, safeOutputRoot));
+  await flushPendingCrabFleetPosts(
+    options.projectionFlushTimeoutMs === undefined
+      ? {}
+      : { timeoutMs: options.projectionFlushTimeoutMs },
+  );
+  for (const relativePath of finalizeWorkflowActionEventSpool(safeRoot, safeOutputRoot)) {
+    paths.add(relativePath);
+  }
+  return [...paths].sort();
+}
+
+function finalizeWorkflowActionEventSpool(
+  safeRoot: SafeReadRoot,
+  safeOutputRoot: SafeReadRoot,
+): string[] {
   const events = readAllSpooledActionEvents(safeRoot);
   const groups = new Map<string, ActionEvent[]>();
   for (const event of events) {
@@ -339,9 +383,11 @@ export async function flushWorkflowActionEvents(
   }
   const paths: string[] = [];
   for (const group of groups.values()) {
-    const first = group[0];
+    const ordered = sortActionEventsCausally(group);
+    const first = ordered[0];
     if (!first) continue;
     const partitionDate = readWorkflowPartitionDate(safeRoot, first.producer);
+    reserveWorkflowProducerFinalization(safeRoot, first.producer, partitionDate, ordered);
     const results = writeActionEventShards(
       safeOutputRoot.path,
       {
@@ -354,17 +400,34 @@ export async function flushWorkflowActionEvents(
         runAttempt: first.producer.run_attempt,
         partitionDate,
       },
-      group,
+      ordered,
     );
     paths.push(...results.map((result) => result.relativePath));
   }
   return paths.sort();
 }
 
-export async function flushPendingCrabFleetPosts(): Promise<void> {
-  while (pendingCrabFleetPosts.size > 0 || queuedCrabFleetPosts.length > 0) {
-    drainCrabFleetProjectionQueue();
-    await Promise.all(pendingCrabFleetPosts);
+export async function flushPendingCrabFleetPosts(
+  options: { timeoutMs?: number } = {},
+): Promise<void> {
+  const timeoutMs = crabFleetFlushTimeoutMs(options.timeoutMs);
+  let timeout: NodeJS.Timeout | undefined;
+  const deadlineError = new Error(`CrabFleet projection flush timed out after ${timeoutMs}ms`);
+  const deadline = new Promise<"timeout">((resolve) => {
+    timeout = setTimeout(() => resolve("timeout"), timeoutMs);
+  });
+  try {
+    while (pendingCrabFleetPosts.size > 0) {
+      drainCrabFleetProjectionQueue();
+      const pending = Promise.all(pendingCrabFleetPosts).then(() => "settled" as const);
+      if ((await Promise.race([pending, deadline])) === "timeout") {
+        failPendingWorkflowCrabFleetRequests(deadlineError);
+        await Promise.all(pendingCrabFleetPosts);
+        return;
+      }
+    }
+  } finally {
+    if (timeout) clearTimeout(timeout);
   }
 }
 
@@ -375,17 +438,19 @@ export async function postActionEventToCrabFleet(
 ): Promise<void> {
   const config = crabFleetProjectionConfig(env);
   if (!config) return;
-  await postActionEventToCrabFleetConfig(event, config, fetchImpl);
+  await enqueueCrabFleetProjection(event, config, fetchImpl);
 }
 
-async function postActionEventToCrabFleetConfig(
+function startActionEventCrabFleetPost(
   event: ActionEvent,
   config: CrabFleetProjectionConfig,
   fetchImpl: typeof fetch,
-): Promise<void> {
+): CrabFleetPostHandle {
   const validatedEvent = validateActionEvent(event, "CrabFleet action event");
   const controller = new AbortController();
   let timeout: NodeJS.Timeout | undefined;
+  let cancelReject!: (error: Error) => void;
+  let cancelled = false;
   const timeoutError = new Error(
     `CrabFleet action event append timed out after ${config.timeoutMs}ms`,
   );
@@ -394,6 +459,9 @@ async function postActionEventToCrabFleetConfig(
       controller.abort();
       reject(timeoutError);
     }, config.timeoutMs);
+  });
+  const cancellation = new Promise<never>((_resolve, reject) => {
+    cancelReject = reject;
   });
   const request = Promise.resolve().then(() =>
     fetchImpl(config.endpointUrl, {
@@ -419,15 +487,29 @@ async function postActionEventToCrabFleetConfig(
     await cancelResponseBody(response);
     return result;
   });
-  trackCrabFleetRequest(requestAndCleanup);
-  try {
-    const result = await Promise.race([requestAndCleanup, deadline]);
-    if (!result.ok) {
-      throw new Error(`CrabFleet action event append failed (${result.status})`);
-    }
-  } finally {
-    if (timeout) clearTimeout(timeout);
-  }
+  const result = Promise.race([requestAndCleanup, deadline, cancellation])
+    .then((response) => {
+      if (!response.ok) {
+        throw new Error(`CrabFleet action event append failed (${response.status})`);
+      }
+    })
+    .finally(() => {
+      if (timeout) clearTimeout(timeout);
+    });
+  const settled = requestAndCleanup.then(
+    () => undefined,
+    () => undefined,
+  );
+  return {
+    result,
+    settled,
+    cancel: (error) => {
+      if (cancelled) return;
+      cancelled = true;
+      controller.abort();
+      cancelReject(error);
+    },
+  };
 }
 
 export function importActionEventShards(
@@ -999,41 +1081,87 @@ function queueCrabFleetEvent(
     return;
   }
   if (!config) return;
-  const projection = { root, event, config, fetchImpl };
+  const request = createCrabFleetProjectionRequest(event, config, fetchImpl);
+  workflowCrabFleetRequests.add(request);
+  const post = request.promise
+    .catch((error) => {
+      failCrabFleetProjection(root, event, error instanceof Error ? error.message : String(error));
+    })
+    .finally(() => {
+      workflowCrabFleetRequests.delete(request);
+      pendingCrabFleetPosts.delete(post);
+    });
+  pendingCrabFleetPosts.add(post);
+  admitCrabFleetProjection(request);
+}
+
+function enqueueCrabFleetProjection(
+  event: ActionEvent,
+  config: CrabFleetProjectionConfig,
+  fetchImpl: typeof fetch,
+): Promise<void> {
+  const request = createCrabFleetProjectionRequest(event, config, fetchImpl);
+  admitCrabFleetProjection(request);
+  return request.promise;
+}
+
+function createCrabFleetProjectionRequest(
+  event: ActionEvent,
+  config: CrabFleetProjectionConfig,
+  fetchImpl: typeof fetch,
+): CrabFleetProjectionRequest {
+  let resolve!: () => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<void>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return {
+    event,
+    config,
+    fetchImpl,
+    promise,
+    resolve,
+    reject,
+    done: false,
+  };
+}
+
+function admitCrabFleetProjection(request: CrabFleetProjectionRequest): void {
   if (activeCrabFleetRequests.size < CRABFLEET_PROJECTION_LIMITS.maxConcurrent) {
-    startCrabFleetProjection(projection);
+    startCrabFleetProjection(request);
     return;
   }
   if (queuedCrabFleetPosts.length < CRABFLEET_PROJECTION_LIMITS.maxQueued) {
-    queuedCrabFleetPosts.push(projection);
+    queuedCrabFleetPosts.push(request);
     drainCrabFleetProjectionQueue();
     return;
   }
-  failCrabFleetProjection(
-    root,
-    event,
-    `queue limit ${CRABFLEET_PROJECTION_LIMITS.maxQueued} reached`,
+  settleCrabFleetProjection(
+    request,
+    new Error(`queue limit ${CRABFLEET_PROJECTION_LIMITS.maxQueued} reached`),
   );
 }
 
-function startCrabFleetProjection(projection: QueuedCrabFleetProjection): void {
-  const post = postActionEventToCrabFleetConfig(
-    projection.event,
-    projection.config,
-    projection.fetchImpl,
-  )
-    .catch((error) => {
-      failCrabFleetProjection(
-        projection.root,
-        projection.event,
-        error instanceof Error ? error.message : String(error),
-      );
-    })
-    .finally(() => {
-      pendingCrabFleetPosts.delete(post);
-      drainCrabFleetProjectionQueue();
-    });
-  pendingCrabFleetPosts.add(post);
+function startCrabFleetProjection(request: CrabFleetProjectionRequest): void {
+  const handle = startActionEventCrabFleetPost(request.event, request.config, request.fetchImpl);
+  request.handle = handle;
+  activeCrabFleetRequests.add(request);
+  void handle.result.then(
+    () => settleCrabFleetProjection(request),
+    (error) => settleCrabFleetProjection(request, error),
+  );
+  void handle.settled.finally(() => {
+    activeCrabFleetRequests.delete(request);
+    drainCrabFleetProjectionQueue();
+  });
+}
+
+function settleCrabFleetProjection(request: CrabFleetProjectionRequest, error?: unknown): void {
+  if (request.done) return;
+  request.done = true;
+  if (error === undefined) request.resolve();
+  else request.reject(error);
 }
 
 function drainCrabFleetProjectionQueue(): void {
@@ -1045,28 +1173,28 @@ function drainCrabFleetProjectionQueue(): void {
   }
   if (
     queuedCrabFleetPosts.length > 0 &&
-    pendingCrabFleetPosts.size === 0 &&
-    activeCrabFleetRequests.size >= CRABFLEET_PROJECTION_LIMITS.maxConcurrent
+    activeCrabFleetRequests.size >= CRABFLEET_PROJECTION_LIMITS.maxConcurrent &&
+    [...activeCrabFleetRequests].every((request) => request.done)
   ) {
     const blocked = queuedCrabFleetPosts.splice(0);
-    for (const projection of blocked) {
-      failCrabFleetProjection(
-        projection.root,
-        projection.event,
-        `blocked by ${activeCrabFleetRequests.size} unresolved CrabFleet requests`,
+    for (const request of blocked) {
+      settleCrabFleetProjection(
+        request,
+        new Error(`blocked by ${activeCrabFleetRequests.size} unresolved CrabFleet requests`),
       );
     }
   }
 }
 
-function trackCrabFleetRequest(request: Promise<unknown>): void {
-  activeCrabFleetRequests.add(request);
-  void request
-    .finally(() => {
-      activeCrabFleetRequests.delete(request);
-      drainCrabFleetProjectionQueue();
-    })
-    .catch(() => undefined);
+function failPendingWorkflowCrabFleetRequests(error: Error): void {
+  for (const request of workflowCrabFleetRequests) {
+    if (request.done) continue;
+    const queuedIndex = queuedCrabFleetPosts.indexOf(request);
+    if (queuedIndex !== -1) queuedCrabFleetPosts.splice(queuedIndex, 1);
+    request.handle?.cancel(error);
+    settleCrabFleetProjection(request, error);
+  }
+  drainCrabFleetProjectionQueue();
 }
 
 function failCrabFleetProjection(root: string, event: ActionEvent, reason: string): void {
@@ -1076,12 +1204,19 @@ function failCrabFleetProjection(root: string, event: ActionEvent, reason: strin
 
 function recordCrabFleetProjectionFailure(root: string, event: ActionEvent): void {
   try {
+    const producer = crabFleetProjectionFailureProducer(event);
+    const partitionDate = readWorkflowPartitionDate(
+      prepareSafeReadRoot(root, "action event spool"),
+      event.producer,
+    );
+    ensureWorkflowPartitionDateValue(root, producer, partitionDate);
     writeActionEvent(
       root,
       {
         eventKey: actionEventKey("projection.failed", {
           sourceEventId: event.event_id,
           destination: "crabfleet",
+          producer: producer.component,
         }),
         operationId: event.operation_id,
         attemptId: event.attempt_id,
@@ -1094,13 +1229,13 @@ function recordCrabFleetProjectionFailure(root: string, event: ActionEvent): voi
         }),
         type: ACTION_EVENT_TYPES.projectionFailed,
         producer: {
-          repository: event.producer.repository,
-          sha: event.producer.sha,
-          workflow: event.producer.workflow,
-          job: event.producer.job,
-          runId: event.producer.run_id,
-          runAttempt: event.producer.run_attempt,
-          component: event.producer.component,
+          repository: producer.repository,
+          sha: producer.sha,
+          workflow: producer.workflow,
+          job: producer.job,
+          runId: producer.run_id,
+          runAttempt: producer.run_attempt,
+          component: producer.component,
         },
         subject: {
           repository: event.subject.repository,
@@ -1154,6 +1289,13 @@ function recordCrabFleetProjectionFailure(root: string, event: ActionEvent): voi
   }
 }
 
+function crabFleetProjectionFailureProducer(event: ActionEvent): ActionEvent["producer"] {
+  return {
+    ...event.producer,
+    component: machineIdentifier(`${event.producer.component}.crabfleet_projection`, 256),
+  };
+}
+
 function ensureWorkflowPartitionDate(
   root: string,
   producer: ActionEvent["producer"],
@@ -1174,6 +1316,14 @@ function ensureWorkflowPartitionDate(
       "action event partitioning requires CLAWSWEEPER_ACTION_LEDGER_PARTITION_DATE or GITHUB_RUN_STARTED_AT",
     );
   }
+  return ensureWorkflowPartitionDateValue(root, producer, partitionDate);
+}
+
+function ensureWorkflowPartitionDateValue(
+  root: string,
+  producer: ActionEvent["producer"],
+  partitionDate: string,
+): string {
   const target = prepareSafeWriteTarget(
     root,
     workflowPartitionRelativePath(producer),
@@ -1187,6 +1337,109 @@ function ensureWorkflowPartitionDate(
     return validateWorkflowPartitionMarker(readUtf8FileNoFollow(target), partitionDate);
   }
   return partitionDate;
+}
+
+function assertWorkflowProducerAcceptsEvent(root: string, event: ActionEvent): void {
+  const safeRoot = prepareSafeReadRoot(root, "action event spool");
+  if (readWorkflowProducerFinalization(safeRoot, event.producer) === null) return;
+  try {
+    const target = prepareSafeReadTarget(
+      safeRoot,
+      actionEventSpoolRelativePath(event.subject.repository, event.event_id),
+      "action event spool entry",
+    );
+    if (
+      readUtf8FileIfExistsNoFollow(target, ACTION_LEDGER_CANONICAL_JSON_LIMITS.maxBytes) !== null
+    ) {
+      return;
+    }
+  } catch (error) {
+    if (!isNotFoundError(error)) throw error;
+  }
+  throw new Error(
+    "action event producer is already finalized; use a new CLAWSWEEPER_ACTION_LEDGER_INVOCATION",
+  );
+}
+
+function reserveWorkflowProducerFinalization(
+  root: SafeReadRoot,
+  producer: ActionEvent["producer"],
+  partitionDate: string,
+  events: readonly ActionEvent[],
+): void {
+  const value: WorkflowProducerFinalization = {
+    schema: "clawsweeper.action-ledger-producer-finalization",
+    schema_version: 1,
+    producer,
+    partition_date: partitionDate,
+    event_count: events.length,
+    replay_sha256: createHash("sha256")
+      .update(`${events.map((event) => actionEventReplayJson(event)).join("\n")}\n`)
+      .digest("hex"),
+  };
+  const content = `${actionLedgerJson(value)}\n`;
+  const target = prepareSafeWriteTarget(
+    root.path,
+    workflowFinalizationRelativePath(producer),
+    "action event producer finalization",
+  );
+  const existing = readUtf8FileIfExistsNoFollow(target, ACTION_EVENT_FINALIZATION_MAX_BYTES);
+  if (existing !== null) {
+    if (existing !== content) {
+      throw new Error("action event producer finalization conflicts with late spool events");
+    }
+    return;
+  }
+  if (writeUtf8FileCreateOnlyNoFollow(target, content) === "created") return;
+  if (readUtf8FileNoFollow(target, ACTION_EVENT_FINALIZATION_MAX_BYTES) !== content) {
+    throw new Error("action event producer finalization conflicts with late spool events");
+  }
+}
+
+function readWorkflowProducerFinalization(
+  root: SafeReadRoot,
+  producer: ActionEvent["producer"],
+): WorkflowProducerFinalization | null {
+  let target;
+  try {
+    target = prepareSafeReadTarget(
+      root,
+      workflowFinalizationRelativePath(producer),
+      "action event producer finalization",
+    );
+  } catch (error) {
+    if (isNotFoundError(error)) return null;
+    throw error;
+  }
+  const content = readUtf8FileIfExistsNoFollow(target, ACTION_EVENT_FINALIZATION_MAX_BYTES);
+  if (content === null) return null;
+  let value: unknown;
+  try {
+    value = JSON.parse(content);
+  } catch {
+    throw new Error("invalid action event producer finalization");
+  }
+  const finalization = value as Partial<WorkflowProducerFinalization>;
+  if (
+    !value ||
+    typeof value !== "object" ||
+    Array.isArray(value) ||
+    finalization.schema !== "clawsweeper.action-ledger-producer-finalization" ||
+    finalization.schema_version !== 1 ||
+    actionLedgerJson(finalization.producer) !== actionLedgerJson(producer) ||
+    typeof finalization.partition_date !== "string" ||
+    !Number.isSafeInteger(finalization.event_count) ||
+    Number(finalization.event_count) < 1 ||
+    !/^[a-f0-9]{64}$/.test(String(finalization.replay_sha256 ?? "")) ||
+    `${actionLedgerJson(value)}\n` !== content
+  ) {
+    throw new Error("invalid action event producer finalization");
+  }
+  workflowPartitionCalendarDate(
+    finalization.partition_date,
+    "action event producer finalization partition",
+  );
+  return value as WorkflowProducerFinalization;
 }
 
 function readWorkflowPartitionDate(root: SafeReadRoot, producer: ActionEvent["producer"]): string {
@@ -1204,6 +1457,11 @@ function readWorkflowPartitionDate(root: SafeReadRoot, producer: ActionEvent["pr
 function workflowPartitionRelativePath(producer: ActionEvent["producer"]): string {
   const identity = createHash("sha256").update(actionLedgerJson(producer)).digest("hex");
   return path.join(".clawsweeper-repair", "action-events", "_partitions", `${identity}.txt`);
+}
+
+function workflowFinalizationRelativePath(producer: ActionEvent["producer"]): string {
+  const identity = createHash("sha256").update(actionLedgerJson(producer)).digest("hex");
+  return path.join(".clawsweeper-repair", "action-events", "_finalizations", `${identity}.json`);
 }
 
 function persistedWorkflowProducer(producer: ActionEventProducer): ActionEvent["producer"] {
@@ -1396,6 +1654,20 @@ function crabFleetTimeoutMs(env: NodeJS.ProcessEnv): number {
     );
   }
   return value;
+}
+
+function crabFleetFlushTimeoutMs(value: number | undefined): number {
+  const normalized = value ?? DEFAULT_CRABFLEET_FLUSH_TIMEOUT_MS;
+  if (
+    !Number.isSafeInteger(normalized) ||
+    normalized < 1 ||
+    normalized > MAX_CRABFLEET_FLUSH_TIMEOUT_MS
+  ) {
+    throw new Error(
+      `CrabFleet projection flush timeout must be an integer between 1 and ${MAX_CRABFLEET_FLUSH_TIMEOUT_MS}`,
+    );
+  }
+  return normalized;
 }
 
 function crabFleetProjectionConfig(env: NodeJS.ProcessEnv): CrabFleetProjectionConfig | null {

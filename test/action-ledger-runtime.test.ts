@@ -25,6 +25,7 @@ import {
   ACTION_EVENT_TYPES,
   actionEventId,
   actionEventKey,
+  actionEventShardRelativePath,
   actionLedgerJson,
   createActionEvent,
   writeActionEventShard,
@@ -155,6 +156,17 @@ function shardIdentity(event: ActionEvent): ActionEventShardIdentity {
     runAttempt: event.producer.run_attempt,
     partitionDate: "2026-07-12",
   };
+}
+
+function readOutputEvents(outputRoot: string, relativePaths: readonly string[]): ActionEvent[] {
+  return relativePaths.flatMap((relativePath) =>
+    fs
+      .readFileSync(path.join(outputRoot, relativePath), "utf8")
+      .trim()
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as ActionEvent),
+  );
 }
 
 function recreateActionEvent(
@@ -922,6 +934,88 @@ test("concurrent flushes converge on one immutable shard", async () => {
   );
 });
 
+test("finalization publishes local shards before a bounded projection drain and rejects late events", async () => {
+  const root = tempRoot();
+  const outputRoot = trustedChildRoot(root, "state");
+  const env = workflowEnv({
+    CLAWSWEEPER_CRABFLEET_AGENT_TOKEN: "agent-token",
+    CLAWSWEEPER_CRABFLEET_SESSION_ID: "session-1",
+    CLAWSWEEPER_CRABFLEET_TIMEOUT_MS: "60000",
+  });
+  let aborted = false;
+  const originalError = console.error;
+  console.error = () => undefined;
+  try {
+    const event = recordReview(root, env, new Date("2026-07-12T10:01:00.000Z"), {
+      fetchImpl: ((_url, init) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => {
+            aborted = true;
+            reject(new Error("aborted"));
+          });
+        })) as typeof fetch,
+    });
+    assert.ok(event);
+    const primaryPath = actionEventShardRelativePath(shardIdentity(event), [event], 1, 1);
+    const startedAt = Date.now();
+    const flush = flushWorkflowActionEvents(root, {
+      env,
+      outputRoot,
+      projectionFlushTimeoutMs: 20,
+    });
+
+    assert.equal(fs.existsSync(path.join(outputRoot, primaryPath)), true);
+    assert.equal(readOutputEvents(outputRoot, [primaryPath])[0]?.event_id, event.event_id);
+    assert.throws(
+      () =>
+        recordWorkflowActionEvent(
+          root,
+          {
+            scope: "review.completed",
+            identity: { number: 43 },
+            type: ACTION_EVENT_TYPES.reviewCompleted,
+            component: "review",
+            subject: {
+              repository: "openclaw/openclaw",
+              kind: "pull_request",
+              number: 43,
+            },
+            action: {
+              name: "review",
+              status: "completed",
+              retryable: false,
+              mutation: false,
+            },
+          },
+          { env },
+        ),
+      /producer is already finalized; use a new CLAWSWEEPER_ACTION_LEDGER_INVOCATION/,
+    );
+
+    const paths = await flush;
+    assert.ok(Date.now() - startedAt < 1_000);
+    assert.equal(aborted, true);
+    assert.deepEqual(
+      readOutputEvents(outputRoot, paths)
+        .map((entry) => entry.event_type)
+        .sort(),
+      [ACTION_EVENT_TYPES.projectionFailed, ACTION_EVENT_TYPES.reviewCompleted].sort(),
+    );
+
+    const replay = recordReview(root, workflowEnv(), new Date("2026-07-12T10:01:00.000Z"));
+    assert.equal(replay?.event_id, event.event_id);
+    assert.ok(
+      recordReview(
+        root,
+        workflowEnv({ CLAWSWEEPER_ACTION_LEDGER_INVOCATION: "review-1" }),
+        new Date("2026-07-12T10:01:00.000Z"),
+      ),
+    );
+  } finally {
+    console.error = originalError;
+  }
+});
+
 test("different workflow steps receive independent shard identities", async () => {
   const root = tempRoot();
   const outputRoot = trustedChildRoot(root, "state");
@@ -1112,17 +1206,46 @@ test("CrabFleet projection bounds active fetches and queued work", async () => {
     console.error = originalError;
   }
 
-  const [relativePath] = await flushWorkflowActionEvents(root, { env, outputRoot });
-  assert.ok(relativePath);
-  const events = fs
-    .readFileSync(path.join(outputRoot, relativePath), "utf8")
-    .trim()
-    .split("\n")
-    .map((line) => JSON.parse(line));
+  const paths = await flushWorkflowActionEvents(root, { env, outputRoot });
+  const events = readOutputEvents(outputRoot, paths);
   assert.deepEqual(
-    events.map((event) => event.event_type),
-    [ACTION_EVENT_TYPES.reviewCompleted, ACTION_EVENT_TYPES.projectionFailed],
+    events.map((event) => event.event_type).sort(),
+    [ACTION_EVENT_TYPES.reviewCompleted, ACTION_EVENT_TYPES.projectionFailed].sort(),
   );
+});
+
+test("exported CrabFleet posts share the four-request admission bound", async () => {
+  const event = recordReview(tempRoot());
+  assert.ok(event);
+  const env = workflowEnv({
+    CLAWSWEEPER_CRABFLEET_AGENT_TOKEN: "agent-token",
+    CLAWSWEEPER_CRABFLEET_SESSION_ID: "session-1",
+  });
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let active = 0;
+  let maxActive = 0;
+  let started = 0;
+  const posts = Array.from({ length: CRABFLEET_PROJECTION_LIMITS.maxConcurrent * 2 }, () =>
+    postActionEventToCrabFleet(event, env, (async () => {
+      started += 1;
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      await gate;
+      active -= 1;
+      return new Response(null, { status: 204 });
+    }) as typeof fetch),
+  );
+
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(started, CRABFLEET_PROJECTION_LIMITS.maxConcurrent);
+  assert.equal(maxActive, CRABFLEET_PROJECTION_LIMITS.maxConcurrent);
+  release();
+  await Promise.all(posts);
+  assert.equal(started, CRABFLEET_PROJECTION_LIMITS.maxConcurrent * 2);
+  assert.equal(maxActive, CRABFLEET_PROJECTION_LIMITS.maxConcurrent);
 });
 
 test("CrabFleet queued projections snapshot endpoint and credentials", async () => {
@@ -1436,16 +1559,11 @@ test("malformed CrabFleet projection configuration is non-fatal and durably reda
         }) as typeof fetch,
       });
       assert.ok(event, testCase.name);
-      const [relativePath] = await flushWorkflowActionEvents(root, { env, outputRoot });
-      assert.ok(relativePath, testCase.name);
-      const events = fs
-        .readFileSync(path.join(outputRoot, relativePath), "utf8")
-        .trim()
-        .split("\n")
-        .map((line) => JSON.parse(line));
+      const paths = await flushWorkflowActionEvents(root, { env, outputRoot });
+      const events = readOutputEvents(outputRoot, paths);
       assert.deepEqual(
-        events.map((entry) => entry.event_type),
-        [ACTION_EVENT_TYPES.reviewCompleted, ACTION_EVENT_TYPES.projectionFailed],
+        events.map((entry) => entry.event_type).sort(),
+        [ACTION_EVENT_TYPES.reviewCompleted, ACTION_EVENT_TYPES.projectionFailed].sort(),
         testCase.name,
       );
     } finally {
@@ -1511,20 +1629,18 @@ test("CrabFleet projection failures remain durable and retryable", async () => {
   }
   assert.ok(event);
 
-  const [relativePath] = await flushWorkflowActionEvents(root, { env, outputRoot });
-  assert.ok(relativePath);
-  const events = fs
-    .readFileSync(path.join(outputRoot, relativePath), "utf8")
-    .trim()
-    .split("\n")
-    .map((line) => JSON.parse(line));
+  const paths = await flushWorkflowActionEvents(root, { env, outputRoot });
+  const events = readOutputEvents(outputRoot, paths);
   assert.deepEqual(
-    events.map((entry) => entry.event_type),
-    [ACTION_EVENT_TYPES.reviewCompleted, ACTION_EVENT_TYPES.projectionFailed],
+    events.map((entry) => entry.event_type).sort(),
+    [ACTION_EVENT_TYPES.reviewCompleted, ACTION_EVENT_TYPES.projectionFailed].sort(),
   );
-  const failure = events[1];
-  assert.equal(events[0].occurred_at, "2026-07-12T12:00:00.000Z");
-  assert.equal(events[0].occurred_at_source, "source");
+  const source = events.find((entry) => entry.event_type === ACTION_EVENT_TYPES.reviewCompleted);
+  const failure = events.find((entry) => entry.event_type === ACTION_EVENT_TYPES.projectionFailed);
+  assert.ok(source);
+  assert.ok(failure);
+  assert.equal(source.occurred_at, "2026-07-12T12:00:00.000Z");
+  assert.equal(source.occurred_at_source, "source");
   assert.equal(failure.occurred_at, "2026-07-12T10:01:00.000Z");
   assert.equal(failure.occurred_at_source, "generated");
   assert.equal(failure.action.reason_code, "append_failed");
@@ -1550,39 +1666,36 @@ test("fresh-root projection failures replay despite generated clock drift", asyn
   const originalError = console.error;
   console.error = () => undefined;
   try {
-    let firstPath: string | undefined;
-    let firstContent: string | undefined;
+    let firstPaths: string[] | undefined;
+    let firstContents: string[] | undefined;
     for (const [index, root] of roots.entries()) {
       const event = recordReview(root, env, timestamps[index], {
         generatedOccurrence: true,
         fetchImpl: async () => new Response(null, { status: 503 }),
       });
       assert.ok(event);
-      const [relativePath] = await flushWorkflowActionEvents(root, { env, outputRoot });
-      assert.ok(relativePath);
+      const paths = await flushWorkflowActionEvents(root, { env, outputRoot });
+      const contents = paths.map((relativePath) =>
+        fs.readFileSync(path.join(outputRoot, relativePath), "utf8"),
+      );
       if (index === 0) {
-        firstPath = relativePath;
-        firstContent = fs.readFileSync(path.join(outputRoot, relativePath), "utf8");
+        firstPaths = paths;
+        firstContents = contents;
       } else {
-        assert.equal(relativePath, firstPath);
-        assert.equal(fs.readFileSync(path.join(outputRoot, relativePath), "utf8"), firstContent);
+        assert.deepEqual(paths, firstPaths);
+        assert.deepEqual(contents, firstContents);
       }
     }
   } finally {
     console.error = originalError;
   }
 
-  const [relativePath] = await flushWorkflowActionEvents(roots[0]!, { env, outputRoot });
-  assert.ok(relativePath);
-  const events = fs
-    .readFileSync(path.join(outputRoot, relativePath), "utf8")
-    .trim()
-    .split("\n")
-    .map((line) => JSON.parse(line));
-  assert.deepEqual(
-    events.map((event) => event.occurred_at_source),
-    ["generated", "generated"],
-  );
+  const paths = await flushWorkflowActionEvents(roots[0]!, { env, outputRoot });
+  const events = readOutputEvents(outputRoot, paths);
+  assert.deepEqual(events.map((event) => event.occurred_at_source).sort(), [
+    "generated",
+    "generated",
+  ]);
 });
 
 test("CrabFleet timeouts preserve canonical events and record projection failure", async () => {
@@ -1629,16 +1742,11 @@ test("CrabFleet timeouts preserve canonical events and record projection failure
       },
     );
     assert.ok(event);
-    const [relativePath] = await flushWorkflowActionEvents(root, { env, outputRoot });
-    assert.ok(relativePath);
-    const events = fs
-      .readFileSync(path.join(outputRoot, relativePath), "utf8")
-      .trim()
-      .split("\n")
-      .map((line) => JSON.parse(line));
+    const paths = await flushWorkflowActionEvents(root, { env, outputRoot });
+    const events = readOutputEvents(outputRoot, paths);
     assert.deepEqual(
-      events.map((entry) => entry.event_type),
-      [ACTION_EVENT_TYPES.reviewCompleted, ACTION_EVENT_TYPES.projectionFailed],
+      events.map((entry) => entry.event_type).sort(),
+      [ACTION_EVENT_TYPES.reviewCompleted, ACTION_EVENT_TYPES.projectionFailed].sort(),
     );
   } finally {
     console.error = originalError;
@@ -1723,13 +1831,8 @@ test("projection failure recording remains valid at max-safe phase sequence", as
         fetchImpl: async () => new Response(null, { status: 503 }),
       },
     );
-    const [relativePath] = await flushWorkflowActionEvents(root, { env, outputRoot });
-    assert.ok(relativePath);
-    const phaseSequences = fs
-      .readFileSync(path.join(outputRoot, relativePath), "utf8")
-      .trim()
-      .split("\n")
-      .map((line) => JSON.parse(line).phase_seq);
+    const paths = await flushWorkflowActionEvents(root, { env, outputRoot });
+    const phaseSequences = readOutputEvents(outputRoot, paths).map((event) => event.phase_seq);
     assert.deepEqual(phaseSequences, [Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER]);
   } finally {
     console.error = originalError;

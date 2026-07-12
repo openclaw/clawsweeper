@@ -528,7 +528,13 @@ test("runtime and schema require the same canonical timestamp syntax", () => {
   }
   for (const timestamp of [
     "2026-07-12t10:00:00z",
+    "2026-13-12T10:00:00Z",
+    "2026-07-32T10:00:00Z",
+    "2026-07-12T24:00:00Z",
+    "2026-07-12T10:60:00Z",
     "2026-07-12T10:00:60Z",
+    "2026-07-12T10:00:00+24:00",
+    "2026-07-12T10:00:00+02:60",
     "2026-07-12 10:00:00Z",
   ]) {
     assert.equal(schemaNodeAccepts(schema, timestampSchema, timestamp), false, timestamp);
@@ -1219,15 +1225,23 @@ test("event readers reject duplicate keys and noncanonical durable JSON bytes", 
   const written = writeActionEvent(root, reviewInput());
   const canonical = fs.readFileSync(written.path, "utf8");
   const concealed = `npm_${"A".repeat(36)}`;
-  fs.writeFileSync(
-    written.path,
-    canonical.replace(
-      `"event_type":"${ACTION_EVENT_TYPES.reviewCompleted}"`,
-      `"event_type":"${concealed}","event_type":"${ACTION_EVENT_TYPES.reviewCompleted}"`,
-    ),
-  );
+  for (const duplicateKey of ["event_type", "event_\\u0074ype"]) {
+    fs.writeFileSync(
+      written.path,
+      canonical.replace(
+        `"event_type":"${ACTION_EVENT_TYPES.reviewCompleted}"`,
+        `"event_type":"${concealed}","${duplicateKey}":"${ACTION_EVENT_TYPES.reviewCompleted}"`,
+      ),
+    );
 
-  assert.match(fs.readFileSync(written.path, "utf8"), new RegExp(concealed));
+    assert.match(fs.readFileSync(written.path, "utf8"), new RegExp(concealed));
+    assert.throws(
+      () => readSpooledActionEvents(root, "openclaw/openclaw"),
+      /action event JSON contains a duplicate object key/,
+    );
+  }
+
+  fs.writeFileSync(written.path, canonical.replace('{"action":', '{ "action":'));
   assert.throws(
     () => readSpooledActionEvents(root, "openclaw/openclaw"),
     /action event JSON is not canonical/,
