@@ -492,6 +492,7 @@ test("review item source revision ignores advisory labels but tracks protected l
           { name: "impact:message-loss" },
           { name: "issue-rating: 🦪 silver shellfish" },
           { name: "P1" },
+          { name: "maturity:stable" },
           { name: "feature: ✨ showcase" },
           { name: "good first issue" },
           { name: "mantis: telegram-visible-proof" },

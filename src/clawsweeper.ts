@@ -2721,6 +2721,7 @@ function isClawSweeperAdvisorySourceRevisionLabel(label: string): boolean {
   return (
     /^(?:status|rating|proof|merge-risk|impact|issue-rating):/.test(label) ||
     /^p[0-3]$/.test(label) ||
+    MATURITY_LABEL_NAMES.has(label) ||
     label === "feature: ✨ showcase" ||
     label === GOOD_FIRST_ISSUE_LABEL ||
     label === "mantis: telegram-visible-proof" ||
