@@ -42,6 +42,7 @@ import {
   buildAutomergeMergeArgs,
   buildAutomergeSquashMessage,
   commandHasAction,
+  commandResponseMarker,
   commandStatusMarkerFromBody,
   createCachedIssueCommentsLookup,
   createCachedIssueCommentsLookupAsync,
@@ -294,14 +295,18 @@ if (execute && exactCommentVersionFastPath.suppress && exactCommentVersionFastPa
   const versionStillCurrent = measure("verify_exact_comment_version_cleanup", () =>
     exactCommentVersionStillCurrent(exactCommentVersionFastPathCommand),
   );
-  report.exact_comment_version_ack = versionStillCurrent
+  const ackConvergence = versionStillCurrent
     ? measure("converge_exact_comment_version_ack", () =>
         convergeExactCommentVersionFastPathAck(exactCommentVersionFastPathCommand, statusCommentId),
       )
     : "skipped_source_drift";
+  report.exact_comment_version_ack = ackConvergence;
   report.exact_comment_version_cleanup = versionStillCurrent
     ? "skipped_shared_ownership"
     : "skipped_source_drift";
+  if (versionStillCurrent && exactCommentVersionAckFailed(ackConvergence)) {
+    throw new Error(`exact comment acknowledgement convergence failed: ${ackConvergence}`);
+  }
   if (!versionStillCurrent) {
     exactCommentVersionFastPath = { suppress: false, reason: "cleanup_source_drift" };
     const resumedComments = measure("list_candidate_comments_after_cleanup_drift", () =>
@@ -4272,13 +4277,17 @@ function convergeExactCommentVersionFastPathAck(command: LooseRecord, commentId:
   if (!Number.isInteger(id) || id <= 0) return "not_requested";
   try {
     const comment = fetchIssueComment(id);
-    if (!comment || !isTrustedStatusComment(comment)) return "skipped_untrusted";
+    if (!comment) return "already_converged";
+    if (!isTrustedStatusComment(comment)) return "skipped_untrusted";
     if (issueNumberFromUrl(comment.issue_url) !== Number(command.issue_number))
       return "skipped_item_mismatch";
     const ackMarker = commandAckMarkerForCommentId(command.comment_id);
     if (commandAckMarkerFromBody(comment.body) !== ackMarker) return "skipped_marker_mismatch";
     if (commandStatusMarkerFromBody(comment.body)) return "already_terminal";
-    const body = `${ackMarker}\n${renderResponse(command, replayedDispatchResult(command))}`;
+    const terminal = exactCommentVersionTerminalResponse(command, id);
+    const terminalBody =
+      String(terminal?.body ?? "").trim() || exactCommentVersionMissingTerminalBody(command);
+    const body = terminalBody.includes(ackMarker) ? terminalBody : `${ackMarker}\n${terminalBody}`;
     const payloadPath = writePayload(repoRoot(), `comment-router-fast-path-${id}`, { body });
     ghText([
       "api",
@@ -4298,24 +4307,37 @@ function convergeExactCommentVersionFastPathAck(command: LooseRecord, commentId:
   }
 }
 
-function replayedDispatchResult(command: LooseRecord) {
-  if (String(command.status ?? "") !== "executed") return null;
-  const action = (name: string) =>
-    (command.actions ?? []).find(
-      (candidate: JsonValue) =>
-        candidate?.action === name && ["executed", "active"].includes(String(candidate.status)),
-    );
-  const repair = action("dispatch_repair");
-  if (repair && REPAIR_INTENTS.has(String(command.intent ?? ""))) return repair;
-  const replayed: LooseRecord = {};
-  if (repair) replayed.repair = repair;
-  const clawsweeper = action("dispatch_clawsweeper") ?? action("dispatch_assist");
-  if (clawsweeper) replayed.clawsweeper = clawsweeper;
-  const autoclose = action("autoclose");
-  if (autoclose) replayed.autoclose = autoclose;
-  const merge = action("merge");
-  if (merge) replayed.merge = merge;
-  return Object.keys(replayed).length > 0 ? replayed : null;
+function exactCommentVersionTerminalResponse(command: LooseRecord, excludeId: number) {
+  const markerId = command.comment_version_key ?? command.comment_id;
+  return cachedIssueComments(command.issue_number)
+    .slice()
+    .reverse()
+    .find((comment: JsonValue) => {
+      if (Number(comment.id ?? 0) === excludeId || !isTrustedStatusComment(comment)) return false;
+      return hasCommandResponseMarker(comment.body, {
+        commentId: markerId,
+        intent: command.intent,
+        matchAnyHead: true,
+      });
+    });
+}
+
+function exactCommentVersionMissingTerminalBody(command: LooseRecord) {
+  return [
+    commandStatusMarker(command),
+    commandResponseMarker({
+      commentId: command.comment_version_key ?? command.comment_id,
+      intent: command.intent,
+      headSha: command.target?.head_sha ?? "na",
+    }),
+    "ClawSweeper already handled this exact command version.",
+    "",
+    "The original detailed response is no longer available. Run the command again for a fresh result.",
+  ].join("\n");
+}
+
+function exactCommentVersionAckFailed(result: string) {
+  return !["not_requested", "updated", "already_terminal", "already_converged"].includes(result);
 }
 
 function convergePrecreatedCommandAckCommentsInner(command: LooseRecord) {

@@ -2019,6 +2019,8 @@ test("exact comment fast path avoids shared terminal acknowledgement cleanup rac
   assert.match(cleanupBlock, /skipped_shared_ownership/);
   assert.match(cleanupBlock, /skipped_source_drift/);
   assert.match(cleanupBlock, /reason: "cleanup_source_drift"/);
+  assert.match(cleanupBlock, /exactCommentVersionAckFailed\(ackConvergence\)/);
+  assert.match(cleanupBlock, /throw new Error/);
   assert.match(cleanupBlock, /list_candidate_comments_after_cleanup_drift/);
   assert.match(cleanupBlock, /prehydrate_cleanup_drift_commands/);
   assert.match(cleanupBlock, /classify_cleanup_drift_commands/);
@@ -2041,8 +2043,12 @@ test("exact comment fast path avoids shared terminal acknowledgement cleanup rac
   assert.match(ackConvergence, /issueNumberFromUrl\(comment\.issue_url\)/);
   assert.match(ackConvergence, /commandAckMarkerFromBody\(comment\.body\)/);
   assert.match(ackConvergence, /commandStatusMarkerFromBody\(comment\.body\)/);
-  assert.match(ackConvergence, /renderResponse\(command, replayedDispatchResult\(command\)\)/);
+  assert.match(ackConvergence, /exactCommentVersionTerminalResponse\(command, id\)/);
+  assert.match(ackConvergence, /hasCommandResponseMarker\(comment\.body/);
+  assert.match(ackConvergence, /exactCommentVersionMissingTerminalBody\(command\)/);
+  assert.match(ackConvergence, /commandResponseMarker\(\{/);
   assert.match(ackConvergence, /"--method",\s*"PATCH"/);
+  assert.doesNotMatch(ackConvergence, /renderResponse\(/);
   assert.doesNotMatch(ackConvergence, /"DELETE"/);
   assert.doesNotMatch(ackConvergence, /clearTerminalMaintainerCommandReaction/);
 });
