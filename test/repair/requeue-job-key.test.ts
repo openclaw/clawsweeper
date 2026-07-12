@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { deterministicRequeueDispatchKey } from "../../dist/repair/requeue-job-key.js";
+import {
+  boundedNextRequeueDepth,
+  deterministicRequeueDispatchKey,
+  normalizedRequeueSourceJobPath,
+} from "../../dist/repair/requeue-job-key.js";
 
 const base = {
   repo: "openclaw/clawsweeper",
@@ -23,4 +27,24 @@ test("requeue dispatch identity binds source job digest and depth", () => {
     key,
   );
   assert.notEqual(deterministicRequeueDispatchKey({ ...base, depth: 2 }), key);
+});
+
+test("requeue depth advances once and respects the production bound", () => {
+  assert.equal(boundedNextRequeueDepth(0, 1), 1);
+  assert.throws(() => boundedNextRequeueDepth(1, 1), /reached the maximum 1/);
+  assert.throws(() => boundedNextRequeueDepth(-1, 1), /non-negative integer/);
+});
+
+test("requeue source paths preserve the original jobs path for sealed local jobs", () => {
+  assert.equal(
+    normalizedRequeueSourceJobPath(
+      "jobs/openclaw/inbox/automerge-openclaw-openclaw-514.md",
+      ".clawsweeper-repair/authorized/job.md",
+    ),
+    "jobs/openclaw/inbox/automerge-openclaw-openclaw-514.md",
+  );
+  assert.throws(
+    () => normalizedRequeueSourceJobPath("../private/job.md", "jobs/openclaw/inbox/job.md"),
+    /normalized relative jobs/,
+  );
 });

@@ -88,17 +88,21 @@ confidential-identifier checks as every other durable machine-text field.
 - Reusing a key for different semantic content is a hard conflict.
 - Retrying an operation creates a new `attempt_id` and new event records while
   preserving `operation_id` and mutation idempotency keys.
-- Command-side GitHub writes record a mutation-attempt receipt immediately
-  before the request and an accepted, rejected-before-write, or unknown outcome
-  immediately after it. A later command failure inherits accepted or uncertain
-  mutation state instead of being finalized as `mutation: false`.
-- Explicit command replays with a durable command `attempt_id` scope command
-  operation, attempt, and mutation idempotency identity to that replay.
-  Ordinary workflow retries without a durable command attempt retain the
-  stable logical command operation.
+- Receipt-aware command-side GitHub writes record a mutation-attempt receipt
+  immediately before each actual request and an accepted, rejected-before-write,
+  or unknown outcome immediately after it. Retried requests reuse the business
+  idempotency identity but receive separate causal receipt pairs; best-effort
+  metadata writes remain one-shot. A later command failure inherits accepted or
+  uncertain mutation state instead of being finalized as `mutation: false`.
+- Explicit command replays require a durable command `attempt_id` derived from
+  or forwarded through the production workflow. It scopes command operation,
+  attempt, and mutation idempotency identity to that replay while remaining
+  stable across retries of the same workflow run.
 - Repair requeue identity binds the source run, source job path, source job
-  authorization digest, and incremented requeue depth. The same source attempt
-  reuses one dispatch key while a changed source or depth cannot alias it.
+  authorization digest, and incremented requeue depth. The dispatched job path
+  is the same original source path bound into the receipt, including when the
+  locally verified job is sealed elsewhere. Depth is propagated to the next
+  workflow run and bounded before another dispatch.
 - Mutation events require an explicit business `idempotencyIdentity`; outcome
   status and failure reason never define side-effect identity.
 - Review operation identity binds each selected item's repository, kind, number,

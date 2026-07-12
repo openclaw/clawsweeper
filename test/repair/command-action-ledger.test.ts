@@ -12,7 +12,9 @@ import {
   recordCommandOutcome,
   recordCommandReceived,
   runCommandMutation,
+  runCommandMutationWithRetry,
 } from "../../dist/repair/command-action-ledger.js";
+import { forcedReplayCommandFields, readCommentRouterConfig } from "../../dist/repair/config.js";
 
 test("command receipts preserve operation identity across explicit retry attempts", async () => {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "command-action-ledger-")));
@@ -236,6 +238,71 @@ test("command mutation receipts preserve accepted and unknown partial failures",
   }
 });
 
+test("retried mutations emit one receipt pair per actual request", async () => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "command-retry-ledger-")));
+  const outputRoot = path.join(root, "output");
+  fs.mkdirSync(outputRoot);
+  const previous = { ...process.env };
+  Object.assign(process.env, {
+    CLAWSWEEPER_ACTION_LEDGER_FORCE: "1",
+    CLAWSWEEPER_ACTION_LEDGER_ROOT: root,
+    CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT: outputRoot,
+    CLAWSWEEPER_ACTION_LEDGER_INVOCATION: "request-retry",
+    GITHUB_REPOSITORY: "openclaw/clawsweeper",
+    GITHUB_SHA: "8".repeat(40),
+    GITHUB_WORKFLOW: "repair comment router",
+    GITHUB_WORKFLOW_REF:
+      "openclaw/clawsweeper/.github/workflows/repair-comment-router.yml@refs/heads/main",
+    GITHUB_JOB: "route-comments",
+    GITHUB_RUN_ID: "28345",
+    GITHUB_RUN_ATTEMPT: "1",
+    GITHUB_ACTION: "route",
+    GITHUB_RUN_STARTED_AT: "2026-07-12T17:30:00Z",
+    CLAWSWEEPER_CRABFLEET_AGENT_TOKEN: "",
+    CLAWSWEEPER_CRABFLEET_SESSION_ID: "",
+  });
+
+  try {
+    const command = syntheticCommand("9".repeat(40));
+    let requests = 0;
+    assert.equal(
+      runCommandMutationWithRetry(command, {
+        kind: "comment_update",
+        identity: { repository: command.repo, commentId: 42, bodySha256: "a".repeat(64) },
+        attempts: 2,
+        shouldRetry: () => true,
+        operation: () => {
+          requests += 1;
+          if (requests === 1) throw new Error("HTTP 502 after request submission");
+          return "accepted";
+        },
+      }),
+      "accepted",
+    );
+    assert.equal(requests, 2);
+    await flushCommandActionEvents();
+
+    const mutations = readEvents(outputRoot).filter(
+      (event) => event.event_type === "command.mutation",
+    );
+    assert.deepEqual(
+      mutations.map((event) => event.attributes.completion_reason),
+      ["mutation_attempted", "mutation_outcome_unknown", "mutation_attempted", "mutation_accepted"],
+    );
+    assert.equal(new Set(mutations.map((event) => event.idempotency_key_sha256)).size, 1);
+    assert.deepEqual(
+      mutations.map((event) => event.phase_seq),
+      [1, 2, 3, 4],
+    );
+  } finally {
+    for (const key of Object.keys(process.env)) {
+      if (!(key in previous)) delete process.env[key];
+    }
+    Object.assign(process.env, previous);
+    fs.rmSync(root, { force: true, recursive: true });
+  }
+});
+
 test("forced replay attempt identity scopes operation and mutation idempotency", async () => {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "command-attempt-ledger-")));
   const outputRoot = path.join(root, "output");
@@ -261,8 +328,18 @@ test("forced replay attempt identity scopes operation and mutation idempotency",
   });
 
   try {
-    for (const attemptId of ["forced-replay-1", "forced-replay-2"]) {
-      const command = syntheticCommand("2".repeat(40), attemptId);
+    for (const runId of ["32345", "32346"]) {
+      process.env.GITHUB_RUN_ID = runId;
+      const replay = readCommentRouterConfig({
+        repo: "openclaw/openclaw",
+        "repair-repo": "openclaw/clawsweeper",
+        "review-repo": "openclaw/clawsweeper",
+        "force-reprocess": true,
+      });
+      const command = {
+        ...syntheticCommand("2".repeat(40)),
+        ...forcedReplayCommandFields(replay),
+      };
       recordCommandReceived(command);
       runCommandMutation(command, {
         kind: "review_dispatch",

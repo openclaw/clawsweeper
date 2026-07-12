@@ -223,6 +223,12 @@ type CommandMutationOptions<T> = {
   knownNoMutation?: (error: unknown) => boolean;
 };
 
+type CommandMutationRetryOptions<T> = CommandMutationOptions<T> & {
+  attempts: number;
+  shouldRetry: (error: unknown, attempt: number) => boolean;
+  beforeRetry?: (error: unknown, attempt: number) => void;
+};
+
 type CommandMutationIdentity = {
   operation: ReturnType<typeof commandOperationIdentity>;
   mutation: string;
@@ -298,6 +304,25 @@ export function runCommandMutation<T>(command: LooseRecord, options: CommandMuta
     outcome,
   });
   return result;
+}
+
+export function runCommandMutationWithRetry<T>(
+  command: LooseRecord,
+  options: CommandMutationRetryOptions<T>,
+): T {
+  const { attempts, shouldRetry, beforeRetry, ...mutationOptions } = options;
+  const attemptCount = Number.isFinite(attempts) ? Math.max(1, Math.floor(attempts)) : 1;
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= attemptCount; attempt += 1) {
+    try {
+      return runCommandMutation(command, mutationOptions);
+    } catch (error) {
+      lastError = error;
+      if (attempt >= attemptCount || !shouldRetry(error, attempt)) throw error;
+      beforeRetry?.(error, attempt);
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error(String(lastError));
 }
 
 export function runCommandLifecycleMutation<T>(

@@ -26,7 +26,11 @@ import {
   runCommandLifecycleMutation,
   type CommandLifecycleInput,
 } from "./command-action-ledger.js";
-import { deterministicRequeueDispatchKey } from "./requeue-job-key.js";
+import {
+  boundedNextRequeueDepth,
+  deterministicRequeueDispatchKey,
+  normalizedRequeueSourceJobPath,
+} from "./requeue-job-key.js";
 
 const DEFAULT_REPO = currentProjectRepo();
 const DEFAULT_WORKFLOW = REPAIR_CLUSTER_WORKFLOW;
@@ -53,6 +57,7 @@ const sourceRunId = String(
   args["source-run-id"] ?? requestedRunId ?? process.env.GITHUB_RUN_ID ?? "",
 ).trim();
 const requeueDepth = nonNegativeIntegerArg(args["requeue-depth"], "requeue-depth", 0);
+const maxRequeueDepth = nonNegativeIntegerArg(args["max-requeue-depth"], "max-requeue-depth", 1);
 
 const resolved = requestedRunId
   ? resolveFromRunId(String(requestedRunId))
@@ -60,13 +65,13 @@ const resolved = requestedRunId
 
 if (!resolved.source_job) {
   console.error(
-    `usage: node scripts/requeue-job.ts <job.md|run-id> [--mode plan|execute|autonomous] [--execute] [--open-execute-window] [--source-run-id id] [--source-job-path path] [--requeue-depth n] [--runner label] [--execution-runner label] [--model model] [--max-live-workers ${AUTOMATION_LIMITS.repair_live_runs.default}] [--wait-for-capacity]`,
+    `usage: node scripts/requeue-job.ts <job.md|run-id> [--mode plan|execute|autonomous] [--execute] [--open-execute-window] [--source-run-id id] [--source-job-path path] [--requeue-depth n] [--max-requeue-depth n] [--runner label] [--execution-runner label] [--model model] [--max-live-workers ${AUTOMATION_LIMITS.repair_live_runs.default}] [--wait-for-capacity]`,
   );
   process.exit(2);
 }
 
 const job = parseJob(resolved.source_job);
-const sourceJobPath = String(args["source-job-path"] ?? job.relativePath);
+const sourceJobPath = normalizedRequeueSourceJobPath(args["source-job-path"], job.relativePath);
 const authorizationSha256 = createHash("sha256").update(job.raw).digest("hex");
 const errors = validateJob(job);
 if (errors.length > 0) {
@@ -88,6 +93,7 @@ const summary: LooseRecord = {
   source_job: sourceJobPath,
   source_authorization_sha256: authorizationSha256,
   requeue_depth: requeueDepth,
+  max_requeue_depth: maxRequeueDepth,
   mode,
   runner,
   execution_runner: executionRunner,
@@ -103,7 +109,7 @@ if (!execute) {
 const gateRestores: JsonValue[] = [];
 const headSha = currentHeadSha();
 const dispatchStartedAt = new Date(Date.now() - 5000).toISOString();
-const nextRequeueDepth = requeueDepth + 1;
+const nextRequeueDepth = boundedNextRequeueDepth(requeueDepth, maxRequeueDepth);
 const dispatchKey = deterministicRequeueDispatchKey({
   repo,
   workflow,
@@ -132,7 +138,7 @@ try {
   summary.live_worker_capacity_before_dispatch = waitForCapacity
     ? waitForLiveWorkerCapacity({ repo, workflow, requested: 1, maxLiveWorkers })
     : assertLiveWorkerCapacity({ repo, workflow, requested: 1, maxLiveWorkers });
-  dispatchJob(job.relativePath, mode, dispatchKey, requeueLifecycle);
+  dispatchJob(sourceJobPath, mode, dispatchKey, requeueLifecycle);
   recordCommandRequeue(requeueLifecycle, {
     dispatchKey,
     sourceJobPath,
@@ -268,6 +274,8 @@ function dispatchJob(
           `model=${model}`,
           "-f",
           "requeue=true",
+          "-f",
+          `requeue_depth=${nextRequeueDepth}`,
         ],
         { cwd: repoRoot(), encoding: "utf8", stdio: "pipe" },
       ),

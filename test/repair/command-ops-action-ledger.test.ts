@@ -22,7 +22,7 @@ test("report-only repair requeues forward a stable dispatch receipt and publish 
   const source = readText("src/repair/requeue-job.ts");
   const workflow = readText(".github/workflows/repair-cluster-worker.yml");
   const dispatchIndex = source.indexOf(
-    "dispatchJob(job.relativePath, mode, dispatchKey, requeueLifecycle)",
+    "dispatchJob(sourceJobPath, mode, dispatchKey, requeueLifecycle)",
   );
   const receiptIndex = source.indexOf("recordCommandRequeue(requeueLifecycle", dispatchIndex);
 
@@ -31,7 +31,10 @@ test("report-only repair requeues forward a stable dispatch receipt and publish 
   assert.match(source, /deterministicRequeueDispatchKey\(\{/);
   assert.match(source, /authorizationSha256/);
   assert.match(source, /depth: nextRequeueDepth/);
+  assert.match(source, /boundedNextRequeueDepth\(requeueDepth, maxRequeueDepth\)/);
   assert.match(source, /`dispatch_key=\$\{dispatchKey\}`/);
+  assert.match(source, /`job=\$\{jobPath\}`/);
+  assert.match(source, /`requeue_depth=\$\{nextRequeueDepth\}`/);
   assert.match(source, /operationKey: `repair-requeue:/);
   assert.match(source, /sourceRevision: authorizationSha256/);
   assert.match(source, /runCommandLifecycleMutation\(lifecycle,/);
@@ -40,6 +43,12 @@ test("report-only repair requeues forward a stable dispatch receipt and publish 
   assert.match(workflow, /uses: \.\/\.github\/actions\/setup-action-ledger/);
   assert.match(workflow, /- name: Publish immutable report command action ledger/);
   assert.match(workflow, /--message "chore: append report command action ledger"/);
+  assert.match(
+    workflow,
+    /--source-job-path "\$\{\{ needs\.authorize\.outputs\.source_job_path \}\}"/,
+  );
+  assert.match(workflow, /--requeue-depth "\$\{\{ inputs\.requeue_depth \}\}"/);
+  assert.match(workflow, /--max-requeue-depth 1/);
 });
 
 test("exact review publishes status receipts created after its first ledger publication", () => {

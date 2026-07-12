@@ -2057,7 +2057,7 @@ test("exact comment fast path converges terminal acknowledgement before own reac
   assert.match(ackConvergence, /exactCommentVersionMissingTerminalBody\(command\)/);
   assert.match(ackConvergence, /commandResponseMarker\(\{/);
   assert.match(ackConvergence, /"--method",\s*"PATCH"/);
-  assert.match(ackConvergence, /\\b404\\b\|not found/);
+  assert.match(ackConvergence, /githubNotFoundNoMutation/);
   assert.doesNotMatch(ackConvergence, /renderResponse\(/);
   assert.doesNotMatch(ackConvergence, /"DELETE"/);
   assert.doesNotMatch(ackConvergence, /clearTerminalMaintainerCommandReaction/);

@@ -15,6 +15,11 @@ on:
         required: true
         default: false
         type: boolean
+      attempt_id:
+        description: "Optional durable identity for one forced replay across workflow retries"
+        required: false
+        default: ""
+        type: string
       target_repo:
         description: "Repository to scan for ClawSweeper commands"
         required: true
@@ -240,6 +245,7 @@ jobs:
           runner="${{ github.event_name == 'workflow_dispatch' && inputs.runner || vars.CLAWSWEEPER_WORKER_RUNNER || 'blacksmith-4vcpu-ubuntu-2404' }}"
           execution_runner="${{ github.event_name == 'workflow_dispatch' && inputs.execution_runner || vars.CLAWSWEEPER_EXECUTION_RUNNER || 'blacksmith-16vcpu-ubuntu-2404' }}"
           force_reprocess="${{ github.event_name == 'workflow_dispatch' && inputs.force_reprocess || 'false' }}"
+          attempt_id="${{ github.event_name == 'workflow_dispatch' && inputs.attempt_id || '' }}"
           if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
             target_repo="${{ github.event.client_payload.target_repo || 'openclaw/openclaw' }}"
             target_branch="${{ github.event.client_payload.target_branch || '' }}"
@@ -256,6 +262,7 @@ jobs:
             comment_updated_at="${{ github.event.client_payload.comment_updated_at || '' }}"
             comment_body_sha256="${{ github.event.client_payload.comment_body_sha256 || '' }}"
             force_reprocess="${{ github.event.client_payload.force_reprocess || 'false' }}"
+            attempt_id="${{ github.event.client_payload.attempt_id || '' }}"
           else
             status_comment_id=""
             source_event=""
@@ -264,6 +271,13 @@ jobs:
             comment_event_auth=""
             comment_updated_at=""
             comment_body_sha256=""
+          fi
+          if [ "$force_reprocess" = "true" ] && [ -z "$attempt_id" ]; then
+            attempt_id="forced-replay-${GITHUB_RUN_ID}"
+          fi
+          if [ "$force_reprocess" != "true" ] && [ -n "$attempt_id" ]; then
+            echo "attempt_id requires force_reprocess=true" >&2
+            exit 1
           fi
 
           args=(
@@ -310,6 +324,7 @@ jobs:
           fi
           if [ "$force_reprocess" = "true" ]; then
             args+=(--force-reprocess)
+            args+=(--attempt-id "$attempt_id")
           fi
           if { [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.execute }}" = "true" ]; } ||
              { [ "${{ github.event_name }}" = "repository_dispatch" ]; } ||
@@ -370,6 +385,7 @@ jobs:
           runner="${{ github.event_name == 'workflow_dispatch' && inputs.runner || vars.CLAWSWEEPER_WORKER_RUNNER || 'blacksmith-4vcpu-ubuntu-2404' }}"
           execution_runner="${{ github.event_name == 'workflow_dispatch' && inputs.execution_runner || vars.CLAWSWEEPER_EXECUTION_RUNNER || 'blacksmith-16vcpu-ubuntu-2404' }}"
           force_reprocess="${{ github.event_name == 'workflow_dispatch' && inputs.force_reprocess || 'false' }}"
+          attempt_id="${{ github.event_name == 'workflow_dispatch' && inputs.attempt_id || '' }}"
           if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
             target_repo="${{ github.event.client_payload.target_repo || 'openclaw/openclaw' }}"
             target_branch="${{ github.event.client_payload.target_branch || '' }}"
@@ -386,6 +402,7 @@ jobs:
             comment_updated_at="${{ github.event.client_payload.comment_updated_at || '' }}"
             comment_body_sha256="${{ github.event.client_payload.comment_body_sha256 || '' }}"
             force_reprocess="${{ github.event.client_payload.force_reprocess || 'false' }}"
+            attempt_id="${{ github.event.client_payload.attempt_id || '' }}"
           else
             status_comment_id=""
             source_event=""
@@ -394,6 +411,13 @@ jobs:
             comment_event_auth=""
             comment_updated_at=""
             comment_body_sha256=""
+          fi
+          if [ "$force_reprocess" = "true" ] && [ -z "$attempt_id" ]; then
+            attempt_id="forced-replay-${GITHUB_RUN_ID}"
+          fi
+          if [ "$force_reprocess" != "true" ] && [ -n "$attempt_id" ]; then
+            echo "attempt_id requires force_reprocess=true" >&2
+            exit 1
           fi
 
           args=(
@@ -440,6 +464,7 @@ jobs:
           fi
           if [ "$force_reprocess" = "true" ]; then
             args+=(--force-reprocess)
+            args+=(--attempt-id "$attempt_id")
           fi
           args+=(--execute)
 

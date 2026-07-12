@@ -25,10 +25,12 @@ test("comment router records receipts after durable command boundaries", () => {
 test("comment router wraps every GitHub mutation at the request boundary", () => {
   const source = readText("src/repair/comment-router.ts");
 
-  assert.equal(source.match(/\bghText\(/g)?.length, 1);
+  assert.equal(source.match(/\bghText\(/g)?.length, 2);
   assert.equal(source.match(/\bghSpawn\(/g)?.length, 1);
   assert.doesNotMatch(source, /\bghBestEffort\b/);
-  assert.match(source, /function runGitHubTextMutation[\s\S]*runCommandMutation/);
+  assert.doesNotMatch(source, /ghTextWithRetry as ghText/);
+  assert.match(source, /function runGitHubTextMutation[\s\S]*runCommandMutationWithRetry/);
+  assert.match(source, /function runGitHubBestEffortMutation[\s\S]*runGitHubTextMutationOnce/);
   assert.match(source, /function runGitHubSpawnMutation[\s\S]*runCommandMutation/);
   for (const kind of [
     "label_create",
@@ -50,6 +52,27 @@ test("comment router wraps every GitHub mutation at the request boundary", () =>
   ]) {
     assert.match(source, new RegExp(`"${kind}"`), kind);
   }
+});
+
+test("exact comment convergence classifies a missing comment as no mutation", () => {
+  const source = readText("src/repair/comment-router.ts");
+  const fastPath = source.slice(source.indexOf("function convergeExactCommentVersionFastPathAck"));
+
+  assert.match(source, /function githubNotFoundNoMutation[\s\S]*isGitHubNotFoundError\(error\)/);
+  assert.match(
+    fastPath,
+    /"ack_comment_update"[\s\S]*githubNotFoundNoMutation[\s\S]*return "already_converged"/,
+  );
+});
+
+test("forced replay attempt identity flows through the production workflow", () => {
+  const source = readText("src/repair/comment-router.ts");
+  const workflow = readText(".github/workflows/repair-comment-router.yml");
+
+  assert.match(source, /forcedReplayCommandFields\(\{ forceReprocess, attemptId \}\)/);
+  assert.match(workflow, /attempt_id:/);
+  assert.match(workflow, /attempt_id="forced-replay-\$\{GITHUB_RUN_ID\}"/);
+  assert.equal(workflow.match(/args\+=\(--attempt-id "\$attempt_id"\)/g)?.length, 2);
 });
 
 test("command receipt identity excludes list position and binds command attempts", () => {

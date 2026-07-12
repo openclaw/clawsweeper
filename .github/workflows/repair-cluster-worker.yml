@@ -56,6 +56,11 @@ on:
         required: false
         default: false
         type: boolean
+      requeue_depth:
+        description: "Current requeue depth carried by the prior dispatch"
+        required: false
+        default: "0"
+        type: string
 
 permissions:
   contents: read
@@ -1136,9 +1141,13 @@ jobs:
           CLAWSWEEPER_MUTATION_TOKEN_SOURCE: clawsweeper-app
         run: |
           pnpm run repair:requeue -- "${{ needs.authorize.outputs.source_job_path }}" \
+            --source-job-path "${{ needs.authorize.outputs.source_job_path }}" \
+            --source-run-id "${{ github.run_id }}" \
             --mode "${{ inputs.mode }}" \
             --execute \
             --open-execute-window \
+            --requeue-depth "${{ inputs.requeue_depth }}" \
+            --max-requeue-depth 1 \
             --wait-for-capacity \
             --runner "${{ inputs.runner }}" \
             --execution-runner "${{ inputs.execution_runner }}" \

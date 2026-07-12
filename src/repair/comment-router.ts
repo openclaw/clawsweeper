@@ -111,7 +111,11 @@ import {
   writePayload,
   writeReportFile,
 } from "./comment-router-utils.js";
-import { DEFAULT_TRUSTED_BOTS, readCommentRouterConfig } from "./config.js";
+import {
+  DEFAULT_TRUSTED_BOTS,
+  forcedReplayCommandFields,
+  readCommentRouterConfig,
+} from "./config.js";
 import {
   ghErrorText,
   ghJsonWithRetry as ghJson,
@@ -119,8 +123,10 @@ import {
   ghPagedWithRetry as ghPaged,
   ghPagedWithRetryAsync as ghPagedAsync,
   ghSpawn,
-  ghTextWithRetry as ghText,
+  ghText,
+  type GhRetryOptions,
 } from "./github-cli.js";
+import { ghRetryKind, ghRetryWaitMs } from "../github-retry.js";
 import { issueSourceRevisionSha256 } from "./issue-source-guard.js";
 import { runtimeStrictBaseBindingBlock } from "./strict-base-binding.js";
 import { compactText, escapeRegExp } from "./text-utils.js";
@@ -133,6 +139,7 @@ import {
   recordCommandOutcome,
   recordCommandReceived,
   runCommandMutation,
+  runCommandMutationWithRetry,
 } from "./command-action-ledger.js";
 
 const args = parseArgs(process.argv.slice(2));
@@ -150,6 +157,7 @@ const {
   headPrefix,
   execute,
   forceReprocess,
+  attemptId,
   writeReport,
   waitForCapacity,
   maxLiveWorkers,
@@ -287,6 +295,7 @@ const report: LooseRecord = {
   since,
   execute,
   force_reprocess: forceReprocess,
+  forced_replay_attempt_id: attemptId,
   max_comments: maxComments,
   item_numbers: [...itemNumbers],
   comment_ids: [...commentIds],
@@ -472,6 +481,7 @@ function routedCommandForComment(comment: JsonValue): LooseRecord | null {
     expected_item_updated_at: parsed.expected_item_updated_at ?? null,
     expected_source_revision: parsed.expected_source_revision ?? null,
     finding_id: parsed.finding_id ?? null,
+    ...forcedReplayCommandFields({ forceReprocess, attemptId }),
     status: "pending",
     actions: [],
   };
@@ -2342,6 +2352,34 @@ function runGitHubTextMutation(
   kind: string,
   identity: unknown,
   ghArgs: string[],
+  options: GhRetryOptions = {},
+  knownNoMutation?: (error: unknown) => boolean,
+) {
+  const attempts = githubMutationRetryAttempts(options);
+  const { attempts: _attempts, ...runOptions } = options;
+  return runCommandMutationWithRetry(command, {
+    kind,
+    identity,
+    operation: () => ghText(ghArgs, runOptions),
+    attempts,
+    shouldRetry: (error) => {
+      try {
+        if (knownNoMutation?.(error)) return false;
+      } catch {
+        // The receipt already conservatively classified a failing predicate as unknown.
+      }
+      return ghRetryKind(error) !== "none";
+    },
+    beforeRetry: (error, attempt) => sleepMs(ghRetryWaitMs(ghRetryKind(error), attempt - 1)),
+    ...(knownNoMutation ? { knownNoMutation } : {}),
+  });
+}
+
+function runGitHubTextMutationOnce(
+  command: LooseRecord,
+  kind: string,
+  identity: unknown,
+  ghArgs: string[],
   options: Parameters<typeof ghText>[1] = {},
   knownNoMutation?: (error: unknown) => boolean,
 ) {
@@ -2376,11 +2414,22 @@ function runGitHubBestEffortMutation(
   knownNoMutation?: (error: unknown) => boolean,
 ) {
   try {
-    runGitHubTextMutation(command, kind, identity, ghArgs, {}, knownNoMutation);
+    runGitHubTextMutationOnce(command, kind, identity, ghArgs, {}, knownNoMutation);
     return true;
   } catch {
     return false;
   }
+}
+
+function githubMutationRetryAttempts(options: GhRetryOptions): number {
+  if (options.attempts !== undefined) {
+    return Number.isFinite(options.attempts) ? Math.max(1, Math.floor(options.attempts)) : 6;
+  }
+  const configured =
+    options.env?.CLAWSWEEPER_GH_RETRY_ATTEMPTS ?? process.env.CLAWSWEEPER_GH_RETRY_ATTEMPTS;
+  if (configured == null || configured.trim() === "") return 6;
+  const attempts = Number(configured);
+  return Number.isFinite(attempts) ? Math.max(1, Math.floor(attempts)) : 6;
 }
 
 function githubAlreadyExistsNoMutation(error: unknown) {
@@ -2388,7 +2437,7 @@ function githubAlreadyExistsNoMutation(error: unknown) {
 }
 
 function githubNotFoundNoMutation(error: unknown) {
-  return /\b404\b|\bnot found\b/i.test(ghErrorText(error));
+  return isGitHubNotFoundError(error);
 }
 
 function applyRemoveLabelActions(command: LooseRecord) {
@@ -4199,6 +4248,7 @@ function listRepairLoopSweepCommands(existingCommands: LooseRecord[]) {
         trusted_bot_author: "clawsweeper[bot]",
         automation_source: "repair_loop_label_sweep",
         repair_reason: "scheduled ClawSweeper repair-loop label sweep",
+        ...forcedReplayCommandFields({ forceReprocess, attemptId }),
         status: "pending",
         actions: [],
       });
@@ -4610,11 +4660,13 @@ function convergeExactCommentVersionFastPathAck(command: LooseRecord, commentId:
         "--input",
         payloadPath,
       ],
+      {},
+      githubNotFoundNoMutation,
     );
     issueCommentsCache.delete(Number(command.issue_number));
     return "updated";
   } catch (error) {
-    if (/\b404\b|not found/i.test(ghErrorText(error))) return "already_converged";
+    if (githubNotFoundNoMutation(error)) return "already_converged";
     console.warn(
       `[comment-router] warning: exact comment acknowledgement convergence failed for ${command.repo}#${command.issue_number}: ${compactText(ghErrorText(error), 160)}`,
     );
