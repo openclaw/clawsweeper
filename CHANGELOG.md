@@ -9,7 +9,7 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Added
 
-- Added versioned staged repair proof plans with deterministic cheap-to-expensive validation, behavioral profile-command staging, concrete-argv environment resolution and revalidation, structured package-manager option parsing, checkout immutability checks, retention of every allowlisted required command, exact-command deduplication, explicit-only non-live subsumption with digest provenance, fail-closed canonical-gate stalls and runtime budgets, topology-stable retry traces, and bounded machine-readable proof bound to the exact validated head/base after final or fallback history compaction.
+- Added versioned staged repair proof plans with deterministic cheap-to-expensive validation, behavioral profile-command staging, concrete-argv environment resolution and revalidation, structured package-manager option parsing, checkout immutability checks, retention of every allowlisted required command, exact-command deduplication, explicit-only non-live subsumption with digest provenance, fail-closed canonical-gate stalls and runtime budgets, topology-stable retry traces, and bounded machine-readable proof bound to the exact validated head/base after final or fallback history compaction. Thanks @vincentkoc.
 - Required every repair merge owner to verify a non-bypass GitHub App credential and server-enforced strict base-branch status checks from repository rulesets or classic protection before merging, using a fresh trusted finalizer with exact-repository mutation and administration verifier tokens while keeping Codex credentials administration-free.
 - Added conservative, add-only `good first issue` labeling for unlocked, small, current-main reproduced bugs with a high-confidence repair prompt and validation steps and no linked-PR, feature, config, product, security, protected-label, or maintainer-opt-out blocker.
 - Added durable maintainer decision packets whose exact question, rationale, options, recommendation, and likely owner come from Codex structured review output while deterministic code only validates and persists the result. Thanks @brokemac79.
@@ -80,7 +80,8 @@ checkpoint, and status-only commits are intentionally omitted.
 - Failed closed when a configured canonical changed-gate script disappears from
   the repaired checkout, and limited package-manager proof commands to explicit
   read-only script or runner forms while rejecting lifecycle, registry, and
-  account mutations across pnpm, npm, Bun, and Yarn.
+  account mutations across pnpm, npm, Bun, and Yarn while preserving documented
+  npm workspace selector positions and shorthand.
 - Restricted staged-proof ignored-input checks to dependency, tooling, config,
   and explicit command inputs; rejected escaping or cyclic symlinks; allowed
   unrelated ignored generated outputs; and suppressed npm/pnpm pre/post hooks

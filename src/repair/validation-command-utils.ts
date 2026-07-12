@@ -66,6 +66,7 @@ const PACKAGE_MANAGER_GLOBAL_OPTIONS: Record<
       "--if-present",
       "--ignore-scripts",
       "--silent",
+      "--ws",
       "--workspaces",
     ]),
     value: new Set(["-w", "--cache", "--loglevel", "--prefix", "--userconfig", "--workspace"]),
@@ -82,7 +83,7 @@ const PACKAGE_MANAGER_GLOBAL_OPTIONS: Record<
 
 const PACKAGE_MANAGER_WORKSPACE_OPTIONS: Record<PackageManagerExecutable, ReadonlySet<string>> = {
   pnpm: new Set(["-F", "-r", "--filter", "--recursive"]),
-  npm: new Set(["-w", "--workspace", "--workspaces"]),
+  npm: new Set(["-w", "--workspace", "--ws", "--workspaces"]),
   bun: new Set(["--filter"]),
   yarn: new Set(),
 };
@@ -519,9 +520,9 @@ function packageRunInvocation(invocation: PackageManagerInvocation): PackageRunI
     };
   }
 
-  const script = invocation.args[0];
-  if (!script || script.startsWith("-")) return null;
   if (invocation.executable !== "npm") {
+    const script = invocation.args[0];
+    if (!script || script.startsWith("-")) return null;
     return {
       script,
       scriptIndex: invocation.commandIndex + 1,
@@ -530,30 +531,66 @@ function packageRunInvocation(invocation: PackageManagerInvocation): PackageRunI
     };
   }
 
-  const separatorIndex = invocation.args.indexOf("--", 1);
+  const separatorIndex = invocation.args.indexOf("--");
   const optionEnd = separatorIndex < 0 ? invocation.args.length : separatorIndex;
-  const parsed = parsePackageOptions(
-    invocation.args.slice(1, optionEnd),
-    {
-      boolean: new Set([
-        "--foreground-scripts",
-        "--if-present",
-        "--ignore-scripts",
-        "--silent",
-        "--workspaces",
-      ]),
-      value: new Set(["-w", "--workspace"]),
-    },
-    0,
-    true,
-  );
-  if (!parsed || parsed.nextIndex !== optionEnd - 1) return null;
+  const parsed = parseNpmRunArguments(invocation.args.slice(0, optionEnd));
+  if (!parsed) return null;
   return {
-    script,
-    scriptIndex: invocation.commandIndex + 1,
+    script: parsed.script,
+    scriptIndex: invocation.commandIndex + 1 + parsed.scriptIndex,
     scriptArgs: separatorIndex < 0 ? [] : invocation.args.slice(separatorIndex + 1),
     options: parsed.options,
   };
+}
+
+function parseNpmRunArguments(args: readonly string[]): {
+  script: string;
+  scriptIndex: number;
+  options: PackageManagerInvocation["globalOptions"];
+} | null {
+  const allowed = {
+    boolean: new Set([
+      "--foreground-scripts",
+      "--if-present",
+      "--ignore-scripts",
+      "--silent",
+      "--ws",
+      "--workspaces",
+    ]),
+    value: new Set(["-w", "--workspace"]),
+  };
+  const options: PackageManagerInvocation["globalOptions"] = [];
+  let script = "";
+  let scriptIndex = -1;
+  for (let index = 0; index < args.length; index += 1) {
+    const token = args[index]!;
+    if (!token.startsWith("-")) {
+      if (script) return null;
+      script = token;
+      scriptIndex = index;
+      continue;
+    }
+    const option = token.split("=", 1)[0]!;
+    if (allowed.boolean.has(option)) {
+      options.push({
+        name: option,
+        value: token.includes("=") ? token.slice(token.indexOf("=") + 1) : null,
+      });
+      continue;
+    }
+    if (!allowed.value.has(option)) return null;
+    if (token.includes("=")) {
+      const value = token.slice(token.indexOf("=") + 1);
+      if (!value) return null;
+      options.push({ name: option, value });
+      continue;
+    }
+    const value = args[index + 1];
+    if (!value || value.startsWith("-")) return null;
+    options.push({ name: option, value });
+    index += 1;
+  }
+  return script ? { script, scriptIndex, options } : null;
 }
 
 function parsePackageOptions(

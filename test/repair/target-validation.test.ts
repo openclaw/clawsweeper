@@ -584,7 +584,10 @@ test("validation preflight defers workspace-scoped scripts to the package manage
     "pnpm --filter @openclaw/worker test",
     "pnpm --recursive test",
     "npm --workspace @openclaw/worker run test",
+    "npm --ws run test",
     "npm run test --workspace @openclaw/worker",
+    "npm run --workspace @openclaw/worker test",
+    "npm run test --ws",
     "npm --workspaces run test",
     "bun --filter @openclaw/worker test",
     "bun run --filter @openclaw/worker test",
@@ -793,7 +796,7 @@ test("workspace discovery enforces directory, depth, entry, and match budgets", 
   }
 });
 
-test("validation parser accepts only the documented workspace run option positions", () => {
+test("validation parser accepts documented workspace run option positions", () => {
   assert.deepEqual(parseAllowedValidationCommand("bun run --filter @openclaw/worker test"), [
     "bun",
     "run",
@@ -807,6 +810,19 @@ test("validation parser accepts only the documented workspace run option positio
     "test",
     "--workspace",
     "@openclaw/worker",
+  ]);
+  assert.deepEqual(parseAllowedValidationCommand("npm run --workspace @openclaw/worker test"), [
+    "npm",
+    "run",
+    "--workspace",
+    "@openclaw/worker",
+    "test",
+  ]);
+  assert.deepEqual(parseAllowedValidationCommand("npm run test --ws"), [
+    "npm",
+    "run",
+    "test",
+    "--ws",
   ]);
   for (const command of [
     "bun run --cwd packages/worker test",
