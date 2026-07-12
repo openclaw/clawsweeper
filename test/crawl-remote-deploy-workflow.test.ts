@@ -1694,8 +1694,14 @@ test("failed Worker release rolls back only the exact previously stable Worker v
   assert.match(deployReceipt.run ?? "", /version_id !== deployedVersion/);
   assert.equal(postDeployMain.run?.match(/timeout --foreground/g)?.length, 2);
   assert.match(postDeployMain.run ?? "", /WRANGLER_READ_TIMEOUT_SECONDS/);
-  assert.match(run, /refusing rollback because this run no longer owns the current Worker version/);
-  assert.match(run, /versions\[0\]\?\.version_id !== process\.env\.DEPLOYED_VERSION/);
+  assert.match(
+    run,
+    /refusing rollback because this run no longer owns the current Worker deployment/,
+  );
+  assert.match(run, /deployment\?\.annotations\?\.\['workers\/message'\] !== expectedMessage/);
+  assert.match(run, /versions\.length > 2/);
+  assert.match(run, /entry\.version_id === deployedVersion/);
+  assert.match(run, /entry\.version_id === previousVersion/);
   assert.match(run, /wrangler" rollback "\$previous_version"/);
   assert.match(run, /WRANGLER_ROLLBACK_TIMEOUT_SECONDS/);
   assert.match(run, /WRANGLER_READ_TIMEOUT_SECONDS/);
@@ -1733,12 +1739,14 @@ test("deployment ownership recovers a mutation after the deploy command reports 
   const wranglerPath = join(binRoot, "wrangler");
   const previousVersionPath = join(directory, "previous-version.txt");
   const deployedVersionPath = join(directory, "deployed-version.txt");
+  const ownedDeploymentIDPath = join(directory, "owned-deployment-id.txt");
   const deploymentResponsePath = join(directory, "deployment.json");
   const deployOutputPath = join(directory, "deploy-output.ndjson");
   const githubOutputPath = join(directory, "github-output");
   const previousVersion = "11111111-1111-4111-8111-111111111111";
   const deployedVersion = "22222222-2222-4222-8222-222222222222";
   const foreignVersion = "33333333-3333-4333-8333-333333333333";
+  const deploymentID = "44444444-4444-4444-8444-444444444444";
   const deployMessage = "clawsweeper run 123/1 main " + mergedCrawlRemoteMain;
   const token = "production-token";
   const tokenSHA = createHash("sha256").update(token).digest("hex");
@@ -1771,6 +1779,7 @@ exit 97
     deployOutcome: "success" | "failure" | "cancelled";
   }) {
     rmSync(deployedVersionPath, { force: true });
+    rmSync(ownedDeploymentIDPath, { force: true });
     rmSync(deploymentResponsePath, { force: true });
     rmSync(githubOutputPath, { force: true });
     return spawnSync(
@@ -1783,6 +1792,7 @@ exit 97
           CLOUDFLARE_API_TOKEN: token,
           CLOUDFLARE_TOKEN_SHA256: tokenSHA,
           CURRENT_DEPLOYMENT_JSON: JSON.stringify({
+            id: deploymentID,
             annotations: { "workers/message": currentMessage },
             versions: [{ percentage: 100, version_id: currentVersion }],
           }),
@@ -1793,6 +1803,7 @@ exit 97
           DEPLOYMENT_STATUS_TIMEOUT_SECONDS: "30",
           DEPLOY_MESSAGE: deployMessage,
           GITHUB_OUTPUT: githubOutputPath,
+          OWNED_DEPLOYMENT_ID_PATH: ownedDeploymentIDPath,
           PREVIOUS_VERSION_PATH: previousVersionPath,
           RELEASE_ROOT: directory,
           TOOLCHAIN_ROOT: toolchainRoot,
@@ -1813,6 +1824,7 @@ exit 97
     assert.equal(partialSuccess.status, 0, partialSuccess.stdout + partialSuccess.stderr);
     assert.match(readFileSync(githubOutputPath, "utf8"), /mutation_owned=true/);
     assert.equal(readFileSync(deployedVersionPath, "utf8").trim(), deployedVersion);
+    assert.equal(readFileSync(ownedDeploymentIDPath, "utf8").trim(), deploymentID);
 
     writeFileSync(
       deployOutputPath,
@@ -1848,6 +1860,7 @@ exit 97
       /deployment mutation remains indeterminate after 1 status checks/,
     );
     assert.equal(existsSync(deployedVersionPath), false);
+    assert.equal(existsSync(ownedDeploymentIDPath), false);
 
     const falseSuccess = runOwnership({
       currentVersion: previousVersion,
@@ -1868,6 +1881,7 @@ exit 97
     assert.equal(cancelledSuccess.status, 0, cancelledSuccess.stdout + cancelledSuccess.stderr);
     assert.match(readFileSync(githubOutputPath, "utf8"), /mutation_owned=true/);
     assert.equal(readFileSync(deployedVersionPath, "utf8").trim(), deployedVersion);
+    assert.equal(readFileSync(ownedDeploymentIDPath, "utf8").trim(), deploymentID);
 
     const foreignMutation = runOwnership({
       currentVersion: foreignVersion,
@@ -1912,6 +1926,126 @@ exit 97
   }
 });
 
+test("rollback restores an owned persistent split and rejects a foreign annotation", () => {
+  const rollback = step(deploy, "Roll back failed Worker release");
+  const directory = mkdtempSync(join(tmpdir(), "crawl-remote-split-rollback-"));
+  const toolchainRoot = join(directory, "toolchain");
+  const binRoot = join(toolchainRoot, "node_modules", ".bin");
+  const wranglerPath = join(binRoot, "wrangler");
+  const previousVersionPath = join(directory, "previous-version.txt");
+  const deployedVersionPath = join(directory, "deployed-version.txt");
+  const ownedDeploymentIDPath = join(directory, "owned-deployment-id.txt");
+  const currentDeploymentPath = join(directory, "current-deployment.json");
+  const rollbackDeploymentPath = join(directory, "rollback-deployment.json");
+  const statusCountPath = join(directory, "status-count");
+  const rollbackMarkerPath = join(directory, "rollback-marker");
+  const previousVersion = "11111111-1111-4111-8111-111111111111";
+  const deployedVersion = "22222222-2222-4222-8222-222222222222";
+  const deploymentID = "44444444-4444-4444-8444-444444444444";
+  const deployMessage = "clawsweeper run 123/1 main " + mergedCrawlRemoteMain;
+  const token = "production-token";
+  const tokenSHA = createHash("sha256").update(token).digest("hex");
+
+  mkdirSync(binRoot, { recursive: true });
+  writeFileSync(
+    wranglerPath,
+    `#!/bin/sh
+if test "$1" = "--version"; then
+  printf '%s\\n' "$WRANGLER_VERSION"
+  exit 0
+fi
+if test "$1 $2" = "deployments status"; then
+  count=0
+  if test -f "$STATUS_COUNT_PATH"; then
+    count="$(cat "$STATUS_COUNT_PATH")"
+  fi
+  count=$((count + 1))
+  printf '%s\\n' "$count" > "$STATUS_COUNT_PATH"
+  if test "$count" = "1"; then
+    printf '%s\\n' "$CURRENT_DEPLOYMENT_JSON"
+  else
+    printf '%s\\n' "$ROLLED_BACK_DEPLOYMENT_JSON"
+  fi
+  exit 0
+fi
+if test "$1" = "rollback"; then
+  test "$2" = "$PREVIOUS_VERSION"
+  printf '%s\\n' "$2" > "$ROLLBACK_MARKER_PATH"
+  exit 0
+fi
+exit 97
+`,
+  );
+  chmodSync(wranglerPath, 0o755);
+  writeFileSync(previousVersionPath, `${previousVersion}\n`);
+  writeFileSync(deployedVersionPath, `${deployedVersion}\n`);
+  writeFileSync(ownedDeploymentIDPath, `${deploymentID}\n`);
+
+  function runRollback(currentMessage: string) {
+    rmSync(currentDeploymentPath, { force: true });
+    rmSync(rollbackDeploymentPath, { force: true });
+    rmSync(statusCountPath, { force: true });
+    rmSync(rollbackMarkerPath, { force: true });
+    return spawnSync(
+      "bash",
+      ["--noprofile", "--norc", "-euo", "pipefail", "-c", rollback.run ?? ""],
+      {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          CLOUDFLARE_API_TOKEN: token,
+          CLOUDFLARE_TOKEN_SHA256: tokenSHA,
+          CURRENT_DEPLOYMENT_JSON: JSON.stringify({
+            id: deploymentID,
+            annotations: { "workers/message": currentMessage },
+            versions: [
+              { percentage: 75, version_id: previousVersion },
+              { percentage: 25, version_id: deployedVersion },
+            ],
+          }),
+          CURRENT_DEPLOYMENT_RESPONSE: currentDeploymentPath,
+          DEPLOYED_VERSION_PATH: deployedVersionPath,
+          DEPLOY_MESSAGE: deployMessage,
+          DEPLOY_SHA: mergedCrawlRemoteMain,
+          OWNED_DEPLOYMENT_ID_PATH: ownedDeploymentIDPath,
+          PREVIOUS_VERSION: previousVersion,
+          PREVIOUS_VERSION_PATH: previousVersionPath,
+          RELEASE_ROOT: directory,
+          ROLLBACK_DEPLOYMENT_RESPONSE: rollbackDeploymentPath,
+          ROLLBACK_MARKER_PATH: rollbackMarkerPath,
+          ROLLED_BACK_DEPLOYMENT_JSON: JSON.stringify({
+            annotations: { "workers/message": `rollback failed main ${mergedCrawlRemoteMain}` },
+            versions: [{ percentage: 100, version_id: previousVersion }],
+          }),
+          STATUS_COUNT_PATH: statusCountPath,
+          TOOLCHAIN_ROOT: toolchainRoot,
+          WRANGLER_READ_TIMEOUT_SECONDS: "5",
+          WRANGLER_ROLLBACK_TIMEOUT_SECONDS: "5",
+          WRANGLER_VERSION: "4.107.1",
+        },
+      },
+    );
+  }
+
+  try {
+    const owned = runRollback(deployMessage);
+    assert.equal(owned.status, 0, owned.stdout + owned.stderr);
+    assert.equal(readFileSync(rollbackMarkerPath, "utf8").trim(), previousVersion);
+    assert.equal(readFileSync(statusCountPath, "utf8").trim(), "2");
+
+    const foreign = runRollback("another authorized deployment");
+    assert.notEqual(foreign.status, 0);
+    assert.match(
+      foreign.stdout + foreign.stderr,
+      /this run no longer owns the current Worker deployment/,
+    );
+    assert.equal(existsSync(rollbackMarkerPath), false);
+    assert.equal(readFileSync(statusCountPath, "utf8").trim(), "1");
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("late ownership recovery fences rollback after transient status failure", () => {
   const recovery = step(deploy, "Recover unresolved Worker deployment ownership");
   const directory = mkdtempSync(join(tmpdir(), "crawl-remote-ownership-recovery-"));
@@ -1920,12 +2054,14 @@ test("late ownership recovery fences rollback after transient status failure", (
   const wranglerPath = join(binRoot, "wrangler");
   const previousVersionPath = join(directory, "previous-version.txt");
   const deployedVersionPath = join(directory, "deployed-version.txt");
+  const ownedDeploymentIDPath = join(directory, "owned-deployment-id.txt");
   const deploymentResponsePath = join(directory, "deployment.json");
   const githubOutputPath = join(directory, "github-output");
   const statusCountPath = join(directory, "status-count");
   const previousVersion = "11111111-1111-4111-8111-111111111111";
   const deployedVersion = "22222222-2222-4222-8222-222222222222";
   const foreignVersion = "33333333-3333-4333-8333-333333333333";
+  const deploymentID = "44444444-4444-4444-8444-444444444444";
   const deployMessage = "clawsweeper run 123/1 main " + mergedCrawlRemoteMain;
   const token = "production-token";
   const tokenSHA = createHash("sha256").update(token).digest("hex");
@@ -1980,6 +2116,7 @@ exit 97
     transitionFirstStatus?: boolean;
   }) {
     rmSync(deployedVersionPath, { force: true });
+    rmSync(ownedDeploymentIDPath, { force: true });
     rmSync(deploymentResponsePath, { force: true });
     rmSync(githubOutputPath, { force: true });
     rmSync(statusCountPath, { force: true });
@@ -1993,6 +2130,7 @@ exit 97
           CLOUDFLARE_API_TOKEN: token,
           CLOUDFLARE_TOKEN_SHA256: tokenSHA,
           CURRENT_DEPLOYMENT_JSON: JSON.stringify({
+            id: deploymentID,
             annotations: { "workers/message": currentMessage },
             versions: [{ percentage: 100, version_id: currentVersion }],
           }),
@@ -2003,12 +2141,14 @@ exit 97
           FAIL_AFTER_FIRST_STATUS: String(failAfterFirstStatus),
           FAIL_FIRST_STATUS: String(failFirstStatus),
           GITHUB_OUTPUT: githubOutputPath,
+          OWNED_DEPLOYMENT_ID_PATH: ownedDeploymentIDPath,
           PREVIOUS_VERSION_PATH: previousVersionPath,
           RECOVERY_DEPLOYMENT_RESPONSE: deploymentResponsePath,
           RELEASE_ROOT: directory,
           STATUS_COUNT_PATH: statusCountPath,
           TOOLCHAIN_ROOT: toolchainRoot,
           TRANSITION_DEPLOYMENT_JSON: JSON.stringify({
+            id: deploymentID,
             annotations: { "workers/message": currentMessage },
             versions: [
               { percentage: 50, version_id: previousVersion },
@@ -2033,6 +2173,7 @@ exit 97
     assert.match(readFileSync(githubOutputPath, "utf8"), /mutation_owned=true/);
     assert.match(readFileSync(githubOutputPath, "utf8"), new RegExp(deployedVersion));
     assert.equal(readFileSync(deployedVersionPath, "utf8").trim(), deployedVersion);
+    assert.equal(readFileSync(ownedDeploymentIDPath, "utf8").trim(), deploymentID);
     assert.equal(readFileSync(statusCountPath, "utf8").trim(), "2");
 
     const transitioned = runRecovery({
@@ -2043,7 +2184,8 @@ exit 97
     assert.equal(transitioned.status, 0, transitioned.stdout + transitioned.stderr);
     assert.match(readFileSync(githubOutputPath, "utf8"), /mutation_owned=true/);
     assert.equal(readFileSync(deployedVersionPath, "utf8").trim(), deployedVersion);
-    assert.equal(readFileSync(statusCountPath, "utf8").trim(), "2");
+    assert.equal(readFileSync(ownedDeploymentIDPath, "utf8").trim(), deploymentID);
+    assert.equal(readFileSync(statusCountPath, "utf8").trim(), "1");
 
     const unchanged = runRecovery({
       currentVersion: previousVersion,
@@ -2057,6 +2199,7 @@ exit 97
     );
     assert.equal(existsSync(githubOutputPath), false);
     assert.equal(existsSync(deployedVersionPath), false);
+    assert.equal(existsSync(ownedDeploymentIDPath), false);
 
     const indeterminate = runRecovery({
       currentVersion: previousVersion,

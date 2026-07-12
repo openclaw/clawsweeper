@@ -2153,6 +2153,7 @@ jobs:
           CLOUDFLARE_TOKEN_SHA256: ${{ vars.CRAWL_REMOTE_CLOUDFLARE_TOKEN_SHA256 }}
           CURRENT_DEPLOYMENT_RESPONSE: ${{ runner.temp }}/crawl-remote-current-deployment.json
           DEPLOYED_VERSION_PATH: ${{ runner.temp }}/crawl-remote-deployed-version.txt
+          OWNED_DEPLOYMENT_ID_PATH: ${{ runner.temp }}/crawl-remote-owned-deployment-id.txt
           PREVIOUS_VERSION_PATH: ${{ runner.temp }}/crawl-remote-previous-version.txt
           RELEASE_ROOT: ${{ runner.temp }}/crawl-remote-release
           WORKER_DEPLOY_OUTCOME: ${{ steps.worker-deploy.outcome }}
@@ -2163,6 +2164,7 @@ jobs:
           test -f "$PREVIOUS_VERSION_PATH"
           test ! -e "$CURRENT_DEPLOYMENT_RESPONSE"
           test ! -e "$DEPLOYED_VERSION_PATH"
+          test ! -e "$OWNED_DEPLOYMENT_ID_PATH"
 
           node --input-type=module <<'DEPLOY_VERSION_NODE'
           import { spawnSync } from 'node:child_process';
@@ -2279,8 +2281,10 @@ jobs:
               mode: 0o600,
             });
             const deployment = JSON.parse(status.stdout);
+            const deploymentID = String(deployment?.id ?? '');
             const versions = deployment?.versions;
             if (
+              !uuidPattern.test(deploymentID) ||
               !Array.isArray(versions) ||
               versions.length !== 1 ||
               versions[0]?.percentage !== 100 ||
@@ -2308,9 +2312,14 @@ jobs:
               `${currentVersion}\n`,
               { flag: 'wx', mode: 0o600 },
             );
+            writeFileSync(
+              process.env.OWNED_DEPLOYMENT_ID_PATH,
+              `${deploymentID}\n`,
+              { flag: 'wx', mode: 0o600 },
+            );
             appendFileSync(
               process.env.GITHUB_OUTPUT,
-              `mutation_owned=true\ndeployed_version=${currentVersion}\n`,
+              `mutation_owned=true\ndeployed_version=${currentVersion}\ndeployment_id=${deploymentID}\n`,
             );
             process.exit(0);
           }
@@ -2659,6 +2668,7 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CRAWL_REMOTE_PRODUCTION_CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_TOKEN_SHA256: ${{ vars.CRAWL_REMOTE_CLOUDFLARE_TOKEN_SHA256 }}
           DEPLOYED_VERSION_PATH: ${{ runner.temp }}/crawl-remote-deployed-version.txt
+          OWNED_DEPLOYMENT_ID_PATH: ${{ runner.temp }}/crawl-remote-owned-deployment-id.txt
           PREVIOUS_VERSION_PATH: ${{ runner.temp }}/crawl-remote-previous-version.txt
           RECOVERY_DEPLOYMENT_RESPONSE: ${{ runner.temp }}/crawl-remote-recovered-deployment.json
           RELEASE_ROOT: ${{ runner.temp }}/crawl-remote-release
@@ -2751,8 +2761,10 @@ jobs:
                 throw new Error('recovered Worker deployment response is oversized');
               }
               const deployment = JSON.parse(status.stdout);
+              const deploymentID = String(deployment?.id ?? '');
               const versions = deployment?.versions;
               if (
+                !uuidPattern.test(deploymentID) ||
                 !Array.isArray(versions) ||
                 versions.length < 1 ||
                 versions.length > 8 ||
@@ -2771,42 +2783,71 @@ jobs:
               ) {
                 throw new Error('recovered Worker deployment distribution is invalid');
               }
-              if (versions.length === 1 && versions[0].percentage === 100) {
-                const currentVersion = versions[0].version_id;
+              const previousEntry = versions.find(
+                (entry) => entry.version_id === previousVersion,
+              );
+              const candidateEntries = versions.filter(
+                (entry) => entry.version_id !== previousVersion,
+              );
+              if (candidateEntries.length > 0) {
+                if (
+                  candidateEntries.length !== 1 ||
+                  (versions.length > 1 && !previousEntry)
+                ) {
+                  throw new Error(
+                    'recovered Worker deployment is not one bounded transition from the previous version',
+                  );
+                }
+                if (deployment?.annotations?.['workers/message'] !== expectedMessage) {
+                  throw new Error(
+                    'recovered Worker deployment is not owned by this workflow run',
+                  );
+                }
+                const currentVersion = candidateEntries[0].version_id;
                 writeFileSync(
                   process.env.RECOVERY_DEPLOYMENT_RESPONSE,
                   status.stdout,
                   { mode: 0o600 },
                 );
-                if (currentVersion !== previousVersion) {
-                  if (deployment?.annotations?.['workers/message'] !== expectedMessage) {
+                if (existsSync(process.env.DEPLOYED_VERSION_PATH)) {
+                  const recorded = readFileSync(
+                    process.env.DEPLOYED_VERSION_PATH,
+                    'utf8',
+                  ).trim();
+                  if (recorded !== currentVersion) {
                     throw new Error(
-                      'recovered Worker deployment is not owned by this workflow run',
+                      'recovered Worker version conflicts with the prior ownership record',
                     );
                   }
-                  if (existsSync(process.env.DEPLOYED_VERSION_PATH)) {
-                    const recorded = readFileSync(
-                      process.env.DEPLOYED_VERSION_PATH,
-                      'utf8',
-                    ).trim();
-                    if (recorded !== currentVersion) {
-                      throw new Error(
-                        'recovered Worker version conflicts with the prior ownership record',
-                      );
-                    }
-                  } else {
-                    writeFileSync(
-                      process.env.DEPLOYED_VERSION_PATH,
-                      `${currentVersion}\n`,
-                      { flag: 'wx', mode: 0o600 },
-                    );
-                  }
-                  appendFileSync(
-                    process.env.GITHUB_OUTPUT,
-                    `mutation_owned=true\ndeployed_version=${currentVersion}\n`,
+                } else {
+                  writeFileSync(
+                    process.env.DEPLOYED_VERSION_PATH,
+                    `${currentVersion}\n`,
+                    { flag: 'wx', mode: 0o600 },
                   );
-                  process.exit(0);
                 }
+                if (existsSync(process.env.OWNED_DEPLOYMENT_ID_PATH)) {
+                  const recorded = readFileSync(
+                    process.env.OWNED_DEPLOYMENT_ID_PATH,
+                    'utf8',
+                  ).trim();
+                  if (recorded !== deploymentID) {
+                    throw new Error(
+                      'recovered Worker deployment conflicts with the prior ownership record',
+                    );
+                  }
+                } else {
+                  writeFileSync(
+                    process.env.OWNED_DEPLOYMENT_ID_PATH,
+                    `${deploymentID}\n`,
+                    { flag: 'wx', mode: 0o600 },
+                  );
+                }
+                appendFileSync(
+                  process.env.GITHUB_OUTPUT,
+                  `mutation_owned=true\ndeployed_version=${currentVersion}\ndeployment_id=${deploymentID}\n`,
+                );
+                process.exit(0);
               }
             }
 
@@ -2855,6 +2896,7 @@ jobs:
           CLOUDFLARE_TOKEN_SHA256: ${{ vars.CRAWL_REMOTE_CLOUDFLARE_TOKEN_SHA256 }}
           CURRENT_DEPLOYMENT_RESPONSE: ${{ runner.temp }}/crawl-remote-current-deployment-before-rollback.json
           DEPLOYED_VERSION_PATH: ${{ runner.temp }}/crawl-remote-deployed-version.txt
+          OWNED_DEPLOYMENT_ID_PATH: ${{ runner.temp }}/crawl-remote-owned-deployment-id.txt
           PREVIOUS_VERSION_PATH: ${{ runner.temp }}/crawl-remote-previous-version.txt
           RELEASE_ROOT: ${{ runner.temp }}/crawl-remote-release
           ROLLBACK_DEPLOYMENT_RESPONSE: ${{ runner.temp }}/crawl-remote-rollback-deployment.json
@@ -2863,10 +2905,13 @@ jobs:
           test -n "$CLOUDFLARE_API_TOKEN"
           test "$CLOUDFLARE_TOKEN_SHA256" = "$(printf '%s' "$CLOUDFLARE_API_TOKEN" | sha256sum | cut -d ' ' -f 1)"
           test -f "$DEPLOYED_VERSION_PATH"
+          test -f "$OWNED_DEPLOYMENT_ID_PATH"
           test -f "$PREVIOUS_VERSION_PATH"
           deployed_version="$(tr -d '\r\n' < "$DEPLOYED_VERSION_PATH")"
+          owned_deployment_id="$(tr -d '\r\n' < "$OWNED_DEPLOYMENT_ID_PATH")"
           previous_version="$(tr -d '\r\n' < "$PREVIOUS_VERSION_PATH")"
           test "$deployed_version" != ""
+          test "$owned_deployment_id" != ""
           test "$previous_version" != ""
           test "$deployed_version" != "$previous_version"
           wrangler="$TOOLCHAIN_ROOT/node_modules/.bin/wrangler"
@@ -2885,21 +2930,55 @@ jobs:
             --config wrangler.json \
             > "$CURRENT_DEPLOYMENT_RESPONSE"
 
-          DEPLOYED_VERSION="$deployed_version" node --input-type=module <<'ROLLBACK_FENCE_NODE'
+          DEPLOYED_VERSION="$deployed_version" OWNED_DEPLOYMENT_ID="$owned_deployment_id" PREVIOUS_VERSION="$previous_version" node --input-type=module <<'ROLLBACK_FENCE_NODE'
           import { readFileSync } from 'node:fs';
 
+          const uuidPattern =
+            /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+          const deployedVersion = process.env.DEPLOYED_VERSION ?? '';
+          const ownedDeploymentID = process.env.OWNED_DEPLOYMENT_ID ?? '';
+          const previousVersion = process.env.PREVIOUS_VERSION ?? '';
+          const expectedMessage = process.env.DEPLOY_MESSAGE ?? '';
           const deployment = JSON.parse(
             readFileSync(process.env.CURRENT_DEPLOYMENT_RESPONSE, 'utf8'),
           );
           const versions = deployment?.versions;
           if (
             !Array.isArray(versions) ||
-            versions.length !== 1 ||
-            versions[0]?.version_id !== process.env.DEPLOYED_VERSION ||
-            versions[0]?.percentage !== 100
+            versions.length < 1 ||
+            versions.length > 2 ||
+            !uuidPattern.test(deployedVersion) ||
+            !uuidPattern.test(ownedDeploymentID) ||
+            !uuidPattern.test(previousVersion) ||
+            deployedVersion === previousVersion ||
+            expectedMessage.length === 0 ||
+            expectedMessage.length > 256 ||
+            versions.some(
+              (entry) =>
+                !uuidPattern.test(String(entry?.version_id ?? '')) ||
+                typeof entry?.percentage !== 'number' ||
+                !Number.isFinite(entry.percentage) ||
+                entry.percentage < 0 ||
+                entry.percentage > 100,
+            ) ||
+            new Set(versions.map((entry) => entry.version_id)).size !== versions.length ||
+            Math.abs(
+              versions.reduce((total, entry) => total + entry.percentage, 0) - 100,
+            ) > 0.000001 ||
+            deployment?.id !== ownedDeploymentID ||
+            !versions.some((entry) => entry.version_id === deployedVersion) ||
+            (
+              versions.length === 1 &&
+              versions[0].percentage !== 100
+            ) ||
+            (
+              versions.length === 2 &&
+              !versions.some((entry) => entry.version_id === previousVersion)
+            ) ||
+            deployment?.annotations?.['workers/message'] !== expectedMessage
           ) {
             throw new Error(
-              'refusing rollback because this run no longer owns the current Worker version',
+              'refusing rollback because this run no longer owns the current Worker deployment',
             );
           }
           ROLLBACK_FENCE_NODE
