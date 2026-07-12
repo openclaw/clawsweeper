@@ -55,8 +55,11 @@ changed. TypeScript and JavaScript patches are parsed through the TypeScript
 compiler AST service. Whitespace and ordinary comments are ignored where
 lexical state is established, while every non-trivia syntax fragment,
 `@ts-*`, triple-slash reference, source-map, source URL, shebang, legal
-`/*!`/`//!`, and tooling directives remain part of the digest. Complete JSON
-hunks are parsed and compacted without reordering object keys.
+`/*!`/`//!`, global declarations, formatter controls, and tooling directives
+remain part of the digest at their exact syntax attachment. Complete JSON hunks
+are parsed and compacted without reordering object keys. Scheduled shards carry
+the matching TypeScript compiler service and platform binary in their bounded
+runtime artifact.
 
 Semantic reuse requires:
 

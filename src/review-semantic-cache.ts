@@ -8,7 +8,7 @@ import { API } from "typescript/unstable/sync";
 import { REVIEW_CACHE_MAX_AGE_DAYS } from "./scheduler-policy.js";
 import { stableJson } from "./stable-json.js";
 
-export const REVIEW_SEMANTIC_CACHE_VERSION = 3;
+export const REVIEW_SEMANTIC_CACHE_VERSION = 4;
 export const REVIEW_SEMANTIC_CACHE_MAX_AGE_DAYS = REVIEW_CACHE_MAX_AGE_DAYS;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -16,7 +16,7 @@ const DIGEST_PATTERN = /^[0-9a-f]{64}$/;
 const MAX_PATCH_CHARS = 512 * 1024;
 const MAX_FILES = 80;
 const DIRECTIVE_COMMENT_PATTERN =
-  /^\/[/*]!|[@#]|\/\/\/\s*<(?:reference|amd-module|amd-dependency)\b|\b(?:babel|biome|c8|coverage|deno-lint|eslint|esbuild|flow|gql|graphql|istanbul|prettier|rollup|swc|vite|webpack)[\w-]*/i;
+  /(?:^\/[/*]!|[@#]|\/\/\/\s*<(?:reference|amd-module|amd-dependency)\b|\b(?:babel|biome|c8|coverage|deno-fmt|deno-lint|eslint|esbuild|flow|gql|graphql|istanbul|jshint|jslint|prettier|rollup|swc|tslint|vite|webpack)[\w-]*|\b(?:exported|globals?)\b)/i;
 const TYPESCRIPT_EXTENSIONS = new Set([
   ".cjs",
   ".cts",
@@ -345,7 +345,7 @@ function canonicalAstNode(node: Node, sourceFile: SourceFile): unknown {
 
 function semanticDirectiveComments(sourceFile: SourceFile): unknown[] {
   const literalRanges: Array<{ start: number; end: number }> = [];
-  const leafStarts: number[] = [];
+  const leafRanges: Array<{ start: number; end: number }> = [];
   const visit = (node: Node): void => {
     if (COMMENT_LITERAL_KINDS.has(node.kind)) {
       literalRanges.push({ start: node.getStart(sourceFile), end: node.getEnd() });
@@ -355,15 +355,18 @@ function semanticDirectiveComments(sourceFile: SourceFile): unknown[] {
       hasChild = true;
       visit(child);
     });
-    if (!hasChild) leafStarts.push(node.getStart(sourceFile));
+    if (!hasChild) {
+      leafRanges.push({ start: node.getStart(sourceFile), end: node.getEnd() });
+    }
   };
   visit(sourceFile);
   literalRanges.sort((left, right) => left.start - right.start || left.end - right.end);
-  leafStarts.sort((left, right) => left - right);
+  leafRanges.sort((left, right) => left.start - right.start || left.end - right.end);
 
   const directives: unknown[] = [];
   const text = sourceFile.text;
   let literalIndex = 0;
+  let previousLeaf = -1;
   for (let index = 0; index < text.length; index += 1) {
     while (literalRanges[literalIndex] && literalRanges[literalIndex]!.end <= index) {
       literalIndex += 1;
@@ -385,10 +388,19 @@ function semanticDirectiveComments(sourceFile: SourceFile): unknown[] {
     if (end < 0) continue;
     const comment = text.slice(index, end);
     if (isDirectiveComment(comment)) {
-      const nextLeaf = leafStarts.findIndex((start) => start >= end);
+      while (leafRanges[previousLeaf + 1] && leafRanges[previousLeaf + 1]!.end <= index) {
+        previousLeaf += 1;
+      }
+      let nextLeaf = previousLeaf + 1;
+      while (leafRanges[nextLeaf] && leafRanges[nextLeaf]!.start < end) nextLeaf += 1;
+      const previousEnd = previousLeaf < 0 ? 0 : leafRanges[previousLeaf]!.end;
+      const nextStart = leafRanges[nextLeaf]?.start ?? text.length;
       directives.push({
+        afterSyntax: canonicalSyntaxGap(text.slice(end, nextStart)),
+        beforeSyntax: canonicalSyntaxGap(text.slice(previousEnd, index)),
         line: sourceFile.getLineAndCharacterOfPosition(index).line,
-        nextLeaf: nextLeaf < 0 ? leafStarts.length : nextLeaf,
+        nextLeaf,
+        previousLeaf,
         text: comment,
       });
     }

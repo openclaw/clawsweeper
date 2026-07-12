@@ -370,6 +370,86 @@ test("tooling and bundler magic comments remain semantic", () => {
   assert.notEqual(ordinary.codeDigest, legal.codeDigest);
 });
 
+test("tooling directives retain their exact syntax attachment", () => {
+  const beforeNew = record({
+    context: {
+      pullFiles: [
+        {
+          filename: "src/cache.ts",
+          status: "modified",
+          additions: 1,
+          deletions: 1,
+          patch:
+            "@@ -1 +1 @@\n-const value = buildCache();\n+const value = /*#__PURE__*/ new Cache();",
+        },
+      ],
+    },
+  });
+  const afterNew = record({
+    context: {
+      pullFiles: [
+        {
+          filename: "src/cache.ts",
+          status: "modified",
+          additions: 1,
+          deletions: 1,
+          patch:
+            "@@ -1 +1 @@\n-const value = buildCache();\n+const value = new /*#__PURE__*/ Cache();",
+        },
+      ],
+    },
+  });
+
+  assert.equal(beforeNew.eligible, true);
+  assert.equal(afterNew.eligible, true);
+  assert.notEqual(beforeNew.codeDigest, afterNew.codeDigest);
+});
+
+test("global declarations and formatter controls remain semantic", () => {
+  const ordinary = record({
+    context: {
+      pullFiles: [
+        {
+          filename: "src/cache.ts",
+          status: "modified",
+          additions: 2,
+          deletions: 1,
+          patch: "@@ -1 +1,2 @@\n-const value = Cache;\n+// ordinary\n+const value = Cache;",
+        },
+      ],
+    },
+  });
+  const globalDeclaration = record({
+    context: {
+      pullFiles: [
+        {
+          filename: "src/cache.ts",
+          status: "modified",
+          additions: 2,
+          deletions: 1,
+          patch: "@@ -1 +1,2 @@\n-const value = Cache;\n+/* global Cache */\n+const value = Cache;",
+        },
+      ],
+    },
+  });
+  const denoFormatter = record({
+    context: {
+      pullFiles: [
+        {
+          filename: "src/cache.ts",
+          status: "modified",
+          additions: 2,
+          deletions: 1,
+          patch: "@@ -1 +1,2 @@\n-const value = Cache;\n+// deno-fmt-ignore\n+const value = Cache;",
+        },
+      ],
+    },
+  });
+
+  assert.notEqual(ordinary.codeDigest, globalDeclaration.codeDigest);
+  assert.notEqual(ordinary.codeDigest, denoFormatter.codeDigest);
+});
+
 test("structured JSON ignores formatting but preserves object order", () => {
   const compact = record({
     context: {
