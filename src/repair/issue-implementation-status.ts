@@ -6,7 +6,10 @@ import { pathToFileURL } from "node:url";
 import { DEFAULT_TRUSTED_BOTS } from "./config.js";
 import { repoSlug } from "./comment-router-core.js";
 import { isAllowedMutationActor, writePayload } from "./comment-router-utils.js";
-import { runVerifiedPublishedPullMutation } from "./execution-handoff.js";
+import {
+  runVerifiedPublishedPullMutation,
+  runVerifiedSealedSourceMutation,
+} from "./execution-handoff.js";
 import { ghJsonWithRetry, ghPagedWithRetry, ghText } from "./github-cli.js";
 import type { JsonValue, LooseRecord } from "./json-types.js";
 import { parseArgs, parseJob, repoRoot } from "./lib.js";
@@ -135,27 +138,56 @@ async function main() {
     commentId = Number(created.id ?? 0);
   };
   if (isTerminalMutationState(state)) {
-    runVerifiedPublishedPullMutation({
-      root: requiredArg(args, "handoff-root"),
-      publicationReceiptPath: requiredArg(args, "publication-receipt"),
-      validationReceiptPath: requiredArg(args, "validation-receipt"),
-      expectedAuthorizationSha256: requiredArg(args, "authorization-sha256"),
-      expectedValidationReceiptSha256: requiredArg(args, "validation-receipt-sha256"),
-      expectedPublicationReceiptSha256: requiredArg(args, "publication-receipt-sha256"),
-      mutation: ({ receipt, intent }) => {
-        if (
-          intent.source.kind !== "issue" ||
-          intent.source.repo !== repo ||
-          intent.source.number !== itemNumber
-        ) {
-          throw new Error("terminal status target differs from the sealed source issue");
-        }
-        if (receipt.target_pr_url !== prUrl) {
-          throw new Error("terminal status pull request differs from the publication receipt");
-        }
-        mutateComment();
-      },
-    });
+    const root = requiredArg(args, "handoff-root");
+    const validationReceiptPath = requiredArg(args, "validation-receipt");
+    const expectedAuthorizationSha256 = requiredArg(args, "authorization-sha256");
+    const expectedValidationReceiptSha256 = requiredArg(args, "validation-receipt-sha256");
+    const publicationReceiptSha256 = stringArg(args["publication-receipt-sha256"]);
+    const assertSealedSource = (intent: LooseRecord) => {
+      if (
+        intent.source?.kind !== "issue" ||
+        intent.source?.repo !== repo ||
+        intent.source?.number !== itemNumber
+      ) {
+        throw new Error("terminal status target differs from the sealed source issue");
+      }
+    };
+    if (publicationReceiptSha256) {
+      runVerifiedPublishedPullMutation({
+        root,
+        publicationReceiptPath: requiredArg(args, "publication-receipt"),
+        validationReceiptPath,
+        expectedAuthorizationSha256,
+        expectedValidationReceiptSha256,
+        expectedPublicationReceiptSha256: publicationReceiptSha256,
+        mutation: ({ receipt, intent }) => {
+          assertSealedSource(intent);
+          if (receipt.target_pr_url !== prUrl) {
+            throw new Error("terminal status pull request differs from the publication receipt");
+          }
+          mutateComment();
+        },
+      });
+    } else {
+      if (!args["sealed-source-only"]) {
+        throw new Error(
+          "terminal status without a publication receipt requires --sealed-source-only",
+        );
+      }
+      if (isSuccessfulTerminalMutationState(state) || prUrl) {
+        throw new Error("successful terminal status requires a verified publication receipt");
+      }
+      runVerifiedSealedSourceMutation({
+        root,
+        validationReceiptPath,
+        expectedAuthorizationSha256,
+        expectedValidationReceiptSha256,
+        mutation: ({ intent }) => {
+          assertSealedSource(intent);
+          mutateComment();
+        },
+      });
+    }
   } else {
     mutateComment();
   }
@@ -325,6 +357,11 @@ export function isTerminalMutationState(state: string) {
     normalized.includes("block") ||
     normalized.includes("fail")
   );
+}
+
+export function isSuccessfulTerminalMutationState(state: string) {
+  const normalized = state.trim().toLowerCase();
+  return normalized.includes("complete") || normalized.includes("open");
 }
 
 function positiveInteger(value: JsonValue) {

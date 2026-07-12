@@ -1184,13 +1184,14 @@ jobs:
           POST_FLIGHT_OUTCOME: ${{ steps.post_flight.outputs.report_outcome }}
           POST_FLIGHT_DETAIL: ${{ steps.post_flight.outputs.report_detail }}
           TRUSTED_PR_URL: ${{ steps.publish.outputs.target_pr_url }}
+          PUBLICATION_RECEIPT_SHA256: ${{ steps.publish.outputs.publication_receipt_sha256 }}
         run: |
           set -euo pipefail
           state="Blocked"
           detail="The automatic implementation worker stopped before all deterministic gates completed. Open the workflow run for the exact blocker."
           case "$POST_FLIGHT_OUTCOME" in
             success)
-              if [ "$EXECUTE_OUTCOME" = "success" ] && [ -n "$TRUSTED_PR_URL" ]; then
+              if [ "$EXECUTE_OUTCOME" = "success" ] && [ -n "$TRUSTED_PR_URL" ] && [ -n "$PUBLICATION_RECEIPT_SHA256" ]; then
                 state="PR Opened"
                 detail="The exact independently validated repair was published at $TRUSTED_PR_URL and passed all post-flight gates."
               fi
@@ -1202,18 +1203,28 @@ jobs:
               detail="Post-flight blocked publication completion: ${POST_FLIGHT_DETAIL:-terminal policy gate}."
               ;;
           esac
+          status_guard=(
+            --handoff-root .clawsweeper-repair/execution
+            --authorization-sha256 "${{ needs.authorize.outputs.authorization_sha256 }}"
+            --validation-receipt .clawsweeper-repair/validation/receipt.json
+            --validation-receipt-sha256 "${{ needs.validate.outputs.receipt_sha256 }}"
+          )
+          if [ -n "$PUBLICATION_RECEIPT_SHA256" ]; then
+            status_guard+=(
+              --publication-receipt .clawsweeper-repair/publication/receipt.json
+              --publication-receipt-sha256 "$PUBLICATION_RECEIPT_SHA256"
+            )
+          else
+            TRUSTED_PR_URL=""
+            status_guard+=(--sealed-source-only)
+          fi
           pnpm run repair:issue-implementation-status -- \
             --job .clawsweeper-repair/execution/job.md \
             --state "$state" \
             --detail "$detail" \
             --run-url "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
             --pr-url "$TRUSTED_PR_URL" \
-            --handoff-root .clawsweeper-repair/execution \
-            --authorization-sha256 "${{ needs.authorize.outputs.authorization_sha256 }}" \
-            --validation-receipt .clawsweeper-repair/validation/receipt.json \
-            --validation-receipt-sha256 "${{ needs.validate.outputs.receipt_sha256 }}" \
-            --publication-receipt .clawsweeper-repair/publication/receipt.json \
-            --publication-receipt-sha256 "${{ steps.publish.outputs.publication_receipt_sha256 }}"
+            "${status_guard[@]}"
 
       - name: Record work completion
         if: ${{ success() && steps.post_flight.outputs.report_outcome == 'success' && steps.crabfleet_session.outcome == 'success' }}

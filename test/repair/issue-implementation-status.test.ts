@@ -4,6 +4,7 @@ import test from "node:test";
 
 import {
   isTerminalMutationState,
+  isSuccessfulTerminalMutationState,
   issueImplementationStatusMarker,
   renderIssueImplementationStatusComment,
 } from "../../dist/repair/issue-implementation-status.js";
@@ -45,6 +46,20 @@ test("blocked and failed status comments require the terminal mutation guard", (
   for (const state of ["Queued", "Planning", "Building"]) {
     assert.equal(isTerminalMutationState(state), false, state);
   }
+  for (const state of ["Complete", "PR Opened"]) {
+    assert.equal(isSuccessfulTerminalMutationState(state), true, state);
+  }
+  for (const state of ["Blocked", "Failed"]) {
+    assert.equal(isSuccessfulTerminalMutationState(state), false, state);
+  }
+
+  const source = fs.readFileSync("src/repair/issue-implementation-status.ts", "utf8");
+  assert.match(source, /publicationReceiptSha256[\s\S]*runVerifiedPublishedPullMutation\(/);
+  assert.match(source, /--sealed-source-only[\s\S]*runVerifiedSealedSourceMutation\(/);
+  assert.match(
+    source,
+    /isSuccessfulTerminalMutationState\(state\) \|\| prUrl[\s\S]*requires a verified publication receipt/,
+  );
 });
 
 test("issue implementation status updates progress without replacing worker results", () => {
@@ -102,7 +117,15 @@ test("issue build workflow reports an opened PR without calling pending CI block
   assert.match(workflow, /The exact independently validated repair was published at/);
   assert.match(
     workflow,
-    /repair:issue-implementation-status[\s\S]*--handoff-root \.clawsweeper-repair\/execution[\s\S]*--publication-receipt-sha256 "\$\{\{ steps\.publish\.outputs\.publication_receipt_sha256 \}\}"/,
+    /status_guard=\([\s\S]*--handoff-root \.clawsweeper-repair\/execution[\s\S]*--validation-receipt-sha256 "\$\{\{ needs\.validate\.outputs\.receipt_sha256 \}\}"/,
+  );
+  assert.match(
+    workflow,
+    /if \[ -n "\$PUBLICATION_RECEIPT_SHA256" \]; then[\s\S]*--publication-receipt-sha256 "\$PUBLICATION_RECEIPT_SHA256"[\s\S]*else[\s\S]*TRUSTED_PR_URL=""[\s\S]*--sealed-source-only/,
+  );
+  assert.match(
+    workflow,
+    /\[ -n "\$TRUSTED_PR_URL" \] && \[ -n "\$PUBLICATION_RECEIPT_SHA256" \][\s\S]*state="PR Opened"/,
   );
   assert.doesNotMatch(
     workflow,
