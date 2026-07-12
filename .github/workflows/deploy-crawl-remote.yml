@@ -286,6 +286,15 @@ jobs:
           mkdirSync(join(artifactRoot, 'bundle'), { recursive: true });
           mkdirSync(join(artifactRoot, 'migrations'), { recursive: true });
 
+          const bundleEntries = readdirSync(bundleDir, { withFileTypes: true });
+          if (
+            bundleEntries.length !== 1 ||
+            bundleEntries[0].name !== 'index.js' ||
+            !bundleEntries[0].isFile() ||
+            bundleEntries[0].isSymbolicLink()
+          ) {
+            throw new Error('Wrangler dry-run output must contain only index.js');
+          }
           const bundleSource = join(bundleDir, 'index.js');
           const bundleStat = assertRegularFile(bundleSource, 'deploy bundle');
           if (bundleStat.size < 1 || bundleStat.size > 5 * 1024 * 1024) {

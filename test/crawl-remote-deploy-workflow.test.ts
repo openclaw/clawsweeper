@@ -289,6 +289,8 @@ test("release artifact is immutable, bounded, canonical, and hash verified", () 
   assert.match(packaging, /source Wrangler config has an unexpected deployment identity/);
   assert.match(packaging, /sourceConfig\.vars\?\.CRAWL_REMOTE_RELEASE_SHA/);
   assert.match(packaging, /source Wrangler config targets unexpected production resources/);
+  assert.match(packaging, /bundleEntries\.length !== 1/);
+  assert.match(packaging, /Wrangler dry-run output must contain only index\.js/);
 
   const upload = step(preflight, "Upload immutable release artifact");
   assert.equal(upload.uses, "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a");
@@ -323,6 +325,105 @@ test("release artifact is immutable, bounded, canonical, and hash verified", () 
   assert.match(verify, /deployment Wrangler config targets unexpected resources/);
   assert.match(verify, /flag: 'wx'/);
   assert.match(verify, /release receipt already exists/);
+});
+
+test("release packaging rejects unsupported Wrangler output modules and assets", () => {
+  const run = step(preflight, "Package bounded release artifact").run ?? "";
+  const packager = run.match(/node --input-type=module <<'NODE'\n([\s\S]*?)\nNODE/)?.[1];
+  assert.ok(packager, "missing inline release artifact packager");
+
+  const directory = mkdtempSync(join(tmpdir(), "crawl-remote-packaging-proof-"));
+  const bundleDir = join(directory, "bundle");
+  const artifactRoot = join(directory, "artifact");
+  const runId = "123456";
+  const runAttempt = 1;
+  const state = "dormant";
+  const targetSha = mergedCrawlRemoteMain;
+  const artifactName = `crawl-remote-release-${runId}-${runAttempt}-${targetSha}-${state}`;
+  const receiptName = `crawl-remote-release-receipt-${runId}-${runAttempt}-${targetSha}-${state}.json`;
+
+  mkdirSync(join(directory, "migrations"), { recursive: true });
+  writeFileSync(join(directory, "migrations", "0001_test.sql"), "select 1;\n");
+  writeFileSync(
+    join(directory, "wrangler.jsonc"),
+    JSON.stringify({
+      $schema: "node_modules/wrangler/config-schema.json",
+      name: "crawl-remote",
+      main: "src/index.ts",
+      compatibility_date: "2026-05-27",
+      workers_dev: true,
+      observability: { enabled: true },
+      vars: {},
+      routes: [
+        {
+          pattern: "reports.openclaw.ai/crawl-remote/*",
+          zone_name: "openclaw.ai",
+        },
+      ],
+      d1_databases: [
+        {
+          binding: "DB",
+          database_name: "crawl-remote",
+          database_id: "42baacd3-c917-400f-a12f-e0fada21e11f",
+        },
+      ],
+      r2_buckets: [
+        {
+          binding: "ARCHIVES",
+          bucket_name: "crawl-remote-archives",
+        },
+      ],
+    }),
+  );
+
+  function packageBundle(mutate?: () => void) {
+    rmSync(bundleDir, { recursive: true, force: true });
+    rmSync(artifactRoot, { recursive: true, force: true });
+    mkdirSync(bundleDir, { recursive: true });
+    writeFileSync(join(bundleDir, "index.js"), "export default {};\n");
+    mutate?.();
+    return spawnSync(process.execPath, ["--input-type=module"], {
+      cwd: directory,
+      input: packager,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        ARTIFACT_NAME: artifactName,
+        ARTIFACT_ROOT: artifactRoot,
+        BUNDLE_DIR: bundleDir,
+        DEPLOY_SHA: targetSha,
+        GITHUB_RUN_ATTEMPT: String(runAttempt),
+        GITHUB_RUN_ID: runId,
+        OBSERVATION_ORDER_STATE: state,
+        RECEIPT_NAME: receiptName,
+      },
+    });
+  }
+
+  try {
+    assert.equal(packageBundle().status, 0);
+
+    const extraModule = packageBundle(() => {
+      writeFileSync(join(bundleDir, "module.wasm"), "unsupported module\n");
+    });
+    assert.notEqual(extraModule.status, 0);
+    assert.match(
+      extraModule.stdout + extraModule.stderr,
+      /Wrangler dry-run output must contain only index\.js/,
+    );
+
+    const extraAsset = packageBundle(() => {
+      mkdirSync(join(bundleDir, "assets"));
+      writeFileSync(join(bundleDir, "assets", "logo.svg"), "<svg />\n");
+    });
+    assert.notEqual(extraAsset.status, 0);
+    assert.match(
+      extraAsset.stdout + extraAsset.stderr,
+      /Wrangler dry-run output must contain only index\.js/,
+    );
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 test("artifact verifier rejects tampering, extras, cross-state reuse, and oversized files", () => {
