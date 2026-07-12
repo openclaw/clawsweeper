@@ -8,7 +8,7 @@ import { API } from "typescript/unstable/sync";
 import { REVIEW_CACHE_MAX_AGE_DAYS } from "./scheduler-policy.js";
 import { stableJson } from "./stable-json.js";
 
-export const REVIEW_SEMANTIC_CACHE_VERSION = 7;
+export const REVIEW_SEMANTIC_CACHE_VERSION = 8;
 export const REVIEW_SEMANTIC_CACHE_MAX_AGE_DAYS = REVIEW_CACHE_MAX_AGE_DAYS;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -16,7 +16,7 @@ const DIGEST_PATTERN = /^[0-9a-f]{64}$/;
 const MAX_PATCH_CHARS = 512 * 1024;
 const MAX_FILES = 80;
 const DIRECTIVE_COMMENT_PATTERN =
-  /(?:^\/[/*]!|[@#]|\/\/\/\s*<(?:reference|amd-module|amd-dependency)\b|\b(?:babel|biome|c8|coverage|deno-fmt|deno-lint|eslint|esbuild|flow|gql|graphql|istanbul|jshint|jslint|nosonar|oxfmt|oxlint|prettier|rollup|swc|tslint|v8|vite|webpack)[\w-]*|\b(?:exported|globals?)\b)/i;
+  /(?:^\/[/*]!|^\/\*(?:::?|\?)|[@#]|\/\/\/\s*<(?:reference|amd-module|amd-dependency)\b|\b(?:babel|biome|c8|coverage|deno-fmt|deno-lint|eslint|esbuild|flow|gql|graphql|istanbul|jshint|jslint|nosonar|oxfmt|oxlint|prettier|rollup|swc|tslint|v8|vite|webpack)[\w-]*|\b(?:exported|globals?)\b)/i;
 const TYPESCRIPT_EXTENSIONS = new Set([
   ".cjs",
   ".cts",
@@ -755,7 +755,11 @@ function semanticContext(input: ReviewSemanticInput): {
     },
   };
   const context = {
-    item: input.item,
+    item: {
+      repo: input.item.repo,
+      number: input.item.number,
+      kind: input.item.kind,
+    },
     issue,
     comments: normalizedComments(input.context.comments),
     timeline:

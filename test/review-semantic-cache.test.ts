@@ -371,6 +371,41 @@ test("TypeScript directives and shebangs remain semantic", () => {
   assert.notEqual(ordinary.codeDigest, referenceDirective.codeDigest);
 });
 
+test("Flow comment annotations remain semantic", () => {
+  const numberType = record({
+    context: {
+      pullFiles: [
+        {
+          filename: "src/cache.js",
+          status: "modified",
+          additions: 1,
+          deletions: 1,
+          patch:
+            "@@ -1 +1 @@\n-function square(x /*: boolean */) { return x * x; }\n+function square(x /*: number */) { return x * x; }",
+        },
+      ],
+    },
+  });
+  const stringType = record({
+    context: {
+      pullFiles: [
+        {
+          filename: "src/cache.js",
+          status: "modified",
+          additions: 1,
+          deletions: 1,
+          patch:
+            "@@ -1 +1 @@\n-function square(x /*: boolean */) { return x * x; }\n+function square(x /*: string */) { return x * x; }",
+        },
+      ],
+    },
+  });
+
+  assert.equal(numberType.eligible, true);
+  assert.equal(stringType.eligible, true);
+  assert.notEqual(numberType.codeDigest, stringType.codeDigest);
+});
+
 test("tooling and bundler magic comments remain semantic", () => {
   const ordinary = record({
     context: {
@@ -1005,6 +1040,26 @@ test("head SHA churn alone does not perturb semantic or context digests", () => 
   assert.equal(prior.codeDigest, rebased.codeDigest);
   assert.equal(prior.contextDigest, rebased.contextDigest);
   assert.equal(decision({ priorRecord: prior, currentRecord: rebased }).hit, true);
+});
+
+test("mutable item timestamps do not perturb semantic context", () => {
+  const prior = record({
+    item: {
+      ...input().item,
+      createdAt: "2026-01-01T00:00:00Z",
+      updatedAt: "2026-01-02T00:00:00Z",
+    },
+  });
+  const refreshed = record({
+    item: {
+      ...input().item,
+      createdAt: "2026-01-01T00:00:00Z",
+      updatedAt: "2026-01-03T00:00:00Z",
+    },
+  });
+
+  assert.equal(prior.contextDigest, refreshed.contextDigest);
+  assert.equal(decision({ priorRecord: prior, currentRecord: refreshed }).hit, true);
 });
 
 test("full commit message changes bust context beyond prompt truncation", () => {
