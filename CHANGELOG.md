@@ -33,9 +33,10 @@ checkpoint, and status-only commits are intentionally omitted.
   Access service-token headers, and failed or stale deployments roll back only
   the Worker to the exact prior stable version; D1 migrations remain applied.
   The 40-minute protected job enforces a 35-minute internal mutation deadline,
-  leaves thirteen minutes for bounded setup before the D1 cutoff, reserves
-  seven minutes between D1 and Worker cutoffs, and reauthorizes both repository
-  main tips again after production proof before accepting success.
+  leaves eleven minutes for bounded setup before the D1 cutoff, reserves seven
+  minutes between D1 and Worker cutoffs plus two minutes for late ownership
+  recovery, and reauthorizes both repository main tips again after production
+  proof before accepting success.
   The former crawl-remote deployment workflow must be deleted, not merely
   disabled, and all Wrangler reads, mutations, ownership probes, and rollback
   commands have explicit deadlines. Absolute pre-mutation cutoffs refuse D1 or

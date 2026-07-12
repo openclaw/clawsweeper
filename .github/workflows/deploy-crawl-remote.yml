@@ -462,7 +462,8 @@ jobs:
       CI: "true"
       CLAWSWEEPER_APP_CLIENT_ID: Iv23liOECG0slfuhz093
       CLOUDFLARE_ACCOUNT_ID: 91b59577e757131d68d55a471fe32aca
-      D1_MUTATION_MIN_REMAINING_SECONDS: "1320"
+      D1_MUTATION_MIN_REMAINING_SECONDS: "1440"
+      DEPLOYMENT_RECOVERY_TIMEOUT_SECONDS: "120"
       DEPLOYMENT_STATUS_ATTEMPTS: "60"
       DEPLOYMENT_STATUS_DELAY_SECONDS: "5"
       DEPLOYMENT_STATUS_TIMEOUT_SECONDS: "120"
@@ -481,7 +482,7 @@ jobs:
       TARGET_REPOSITORY: openclaw/crawl-remote
       TOOLCHAIN_ROOT: ${{ github.workspace }}/.github/deploy/crawl-remote-toolchain
       WORKFLOW_SHA: ${{ github.sha }}
-      WORKER_MUTATION_MIN_REMAINING_SECONDS: "900"
+      WORKER_MUTATION_MIN_REMAINING_SECONDS: "1020"
       WORKERS_DEV_URL: https://crawl-remote.services-91b.workers.dev
       WRANGLER_DEPLOY_TIMEOUT_SECONDS: "180"
       WRANGLER_READ_TIMEOUT_SECONDS: "30"
@@ -2643,13 +2644,198 @@ jobs:
             exit 1
           fi
 
+      - name: Recover unresolved Worker deployment ownership
+        id: ownership-recovery
+        if: >-
+          ${{
+            always() &&
+            steps.worker-deploy.outcome != 'skipped' &&
+            (
+              steps.deployment-state.outcome != 'success' ||
+              steps.deployment-state.outputs.mutation_owned != 'true'
+            )
+          }}
+        continue-on-error: true
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CRAWL_REMOTE_PRODUCTION_CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_TOKEN_SHA256: ${{ vars.CRAWL_REMOTE_CLOUDFLARE_TOKEN_SHA256 }}
+          DEPLOYED_VERSION_PATH: ${{ runner.temp }}/crawl-remote-deployed-version.txt
+          PREVIOUS_VERSION_PATH: ${{ runner.temp }}/crawl-remote-previous-version.txt
+          RECOVERY_DEPLOYMENT_RESPONSE: ${{ runner.temp }}/crawl-remote-recovered-deployment.json
+          RELEASE_ROOT: ${{ runner.temp }}/crawl-remote-release
+        run: |
+          unset BASH_ENV ENV CDPATH GLOBIGNORE NODE_OPTIONS
+          test -n "$CLOUDFLARE_API_TOKEN"
+          test "$CLOUDFLARE_TOKEN_SHA256" = "$(printf '%s' "$CLOUDFLARE_API_TOKEN" | sha256sum | cut -d ' ' -f 1)"
+          test -f "$PREVIOUS_VERSION_PATH"
+
+          node --input-type=module <<'RECOVER_DEPLOYMENT_NODE'
+          import { spawnSync } from 'node:child_process';
+          import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
+          import { join } from 'node:path';
+
+          const uuidPattern =
+            /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+          const previousVersion = readFileSync(
+            process.env.PREVIOUS_VERSION_PATH,
+            'utf8',
+          ).trim();
+          const expectedMessage = process.env.DEPLOY_MESSAGE ?? '';
+          const recoveryTimeoutSeconds = Number(
+            process.env.DEPLOYMENT_RECOVERY_TIMEOUT_SECONDS,
+          );
+          const readTimeoutSeconds = Number(
+            process.env.WRANGLER_READ_TIMEOUT_SECONDS,
+          );
+          const delayMilliseconds = Math.min(
+            2000,
+            Math.max(250, Number(process.env.DEPLOYMENT_STATUS_DELAY_SECONDS) * 1000),
+          );
+          const wrangler = join(
+            process.env.TOOLCHAIN_ROOT,
+            'node_modules',
+            '.bin',
+            'wrangler',
+          );
+          if (
+            !uuidPattern.test(previousVersion) ||
+            expectedMessage.length === 0 ||
+            expectedMessage.length > 256 ||
+            !Number.isSafeInteger(recoveryTimeoutSeconds) ||
+            recoveryTimeoutSeconds < 1 ||
+            recoveryTimeoutSeconds > 300 ||
+            !Number.isSafeInteger(readTimeoutSeconds) ||
+            readTimeoutSeconds < 1 ||
+            readTimeoutSeconds > 120
+          ) {
+            throw new Error('Worker deployment recovery inputs are invalid');
+          }
+
+          const deadline = Date.now() + recoveryTimeoutSeconds * 1000;
+          const version = spawnSync(wrangler, ['--version'], {
+            encoding: 'utf8',
+            env: process.env,
+            maxBuffer: 1024 * 1024,
+            timeout: Math.min(readTimeoutSeconds * 1000, deadline - Date.now()),
+          });
+          if (
+            version.status !== 0 ||
+            version.stdout.trim() !== process.env.WRANGLER_VERSION
+          ) {
+            throw new Error('trusted Wrangler version changed before ownership recovery');
+          }
+
+          let lastStableVersion = '';
+          while (Date.now() < deadline) {
+            const remaining = deadline - Date.now();
+            const status = spawnSync(
+              wrangler,
+              [
+                'deployments',
+                'status',
+                '--name',
+                'crawl-remote',
+                '--json',
+                '--cwd',
+                process.env.RELEASE_ROOT,
+                '--config',
+                'wrangler.json',
+              ],
+              {
+                encoding: 'utf8',
+                env: process.env,
+                maxBuffer: 1024 * 1024,
+                timeout: Math.min(readTimeoutSeconds * 1000, remaining),
+              },
+            );
+            if (status.status === 0) {
+              if (Buffer.byteLength(status.stdout, 'utf8') > 1024 * 1024) {
+                throw new Error('recovered Worker deployment response is oversized');
+              }
+              const deployment = JSON.parse(status.stdout);
+              const versions = deployment?.versions;
+              if (
+                !Array.isArray(versions) ||
+                versions.length !== 1 ||
+                versions[0]?.percentage !== 100 ||
+                !uuidPattern.test(String(versions[0]?.version_id ?? ''))
+              ) {
+                throw new Error('recovered Worker deployment is not one stable version');
+              }
+              const currentVersion = versions[0].version_id;
+              lastStableVersion = currentVersion;
+              writeFileSync(
+                process.env.RECOVERY_DEPLOYMENT_RESPONSE,
+                status.stdout,
+                { mode: 0o600 },
+              );
+              if (currentVersion !== previousVersion) {
+                if (deployment?.annotations?.['workers/message'] !== expectedMessage) {
+                  throw new Error(
+                    'recovered Worker deployment is not owned by this workflow run',
+                  );
+                }
+                if (existsSync(process.env.DEPLOYED_VERSION_PATH)) {
+                  const recorded = readFileSync(
+                    process.env.DEPLOYED_VERSION_PATH,
+                    'utf8',
+                  ).trim();
+                  if (recorded !== currentVersion) {
+                    throw new Error(
+                      'recovered Worker version conflicts with the prior ownership record',
+                    );
+                  }
+                } else {
+                  writeFileSync(
+                    process.env.DEPLOYED_VERSION_PATH,
+                    `${currentVersion}\n`,
+                    { flag: 'wx', mode: 0o600 },
+                  );
+                }
+                appendFileSync(
+                  process.env.GITHUB_OUTPUT,
+                  `mutation_owned=true\ndeployed_version=${currentVersion}\n`,
+                );
+                process.exit(0);
+              }
+            }
+
+            const waitMilliseconds = Math.min(
+              delayMilliseconds,
+              Math.max(0, deadline - Date.now()),
+            );
+            if (waitMilliseconds > 0) {
+              Atomics.wait(
+                new Int32Array(new SharedArrayBuffer(4)),
+                0,
+                0,
+                waitMilliseconds,
+              );
+            }
+          }
+
+          if (lastStableVersion === previousVersion) {
+            appendFileSync(process.env.GITHUB_OUTPUT, 'mutation_owned=false\n');
+            process.exit(0);
+          }
+          throw new Error('unable to recover current Worker deployment ownership');
+          RECOVER_DEPLOYMENT_NODE
+
       - name: Roll back failed Worker release
         id: rollback
         if: >-
           ${{
             always() &&
-            steps.deployment-state.outcome == 'success' &&
-            steps.deployment-state.outputs.mutation_owned == 'true' &&
+            (
+              (
+                steps.deployment-state.outcome == 'success' &&
+                steps.deployment-state.outputs.mutation_owned == 'true'
+              ) ||
+              (
+                steps.ownership-recovery.outcome == 'success' &&
+                steps.ownership-recovery.outputs.mutation_owned == 'true'
+              )
+            ) &&
             (
               steps.worker-deploy.outcome != 'success' ||
               steps.deploy-receipt.outcome != 'success' ||
@@ -2755,6 +2941,8 @@ jobs:
           DEPLOY_RECEIPT_OUTCOME: ${{ steps.deploy-receipt.outcome }}
           FINAL_MAIN_OUTCOME: ${{ steps.final-main.outcome }}
           MUTATION_OWNED: ${{ steps.deployment-state.outputs.mutation_owned }}
+          OWNERSHIP_RECOVERY_OUTCOME: ${{ steps.ownership-recovery.outcome }}
+          RECOVERED_MUTATION_OWNED: ${{ steps.ownership-recovery.outputs.mutation_owned }}
           POST_DEPLOY_MAIN_OUTCOME: ${{ steps.post-deploy-main.outcome }}
           PREVIOUS_WORKER_PROBE_OUTCOME: ${{ steps.previous-worker-probe.outcome }}
           PRODUCTION_PROOF_OUTCOME: ${{ steps.production-proof.outcome }}
@@ -2773,5 +2961,5 @@ jobs:
           ]]; then
             exit 0
           fi
-          echo "::error::crawl-remote release failed or lost authorization; deployment state: $DEPLOYMENT_STATE_OUTCOME/$MUTATION_OWNED; deploy receipt: $DEPLOY_RECEIPT_OUTCOME; final main authorization: $FINAL_MAIN_OUTCOME; previous Worker probe: $PREVIOUS_WORKER_PROBE_OUTCOME; Worker rollback outcome: $ROLLBACK_OUTCOME. D1 migrations are not rolled back."
+          echo "::error::crawl-remote release failed or lost authorization; deployment state: $DEPLOYMENT_STATE_OUTCOME/$MUTATION_OWNED; ownership recovery: $OWNERSHIP_RECOVERY_OUTCOME/$RECOVERED_MUTATION_OWNED; deploy receipt: $DEPLOY_RECEIPT_OUTCOME; final main authorization: $FINAL_MAIN_OUTCOME; previous Worker probe: $PREVIOUS_WORKER_PROBE_OUTCOME; Worker rollback outcome: $ROLLBACK_OUTCOME. D1 migrations are not rolled back."
           exit 1

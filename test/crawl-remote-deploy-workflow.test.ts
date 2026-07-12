@@ -152,11 +152,12 @@ test("crawl-remote release is maintainer-bound across two fresh runners", () => 
   assert.equal(deploy.env.DEPLOYMENT_STATUS_ATTEMPTS, "60");
   assert.equal(deploy.env.DEPLOYMENT_STATUS_DELAY_SECONDS, "5");
   assert.equal(deploy.env.DEPLOYMENT_STATUS_TIMEOUT_SECONDS, "120");
-  assert.equal(deploy.env.D1_MUTATION_MIN_REMAINING_SECONDS, "1320");
-  assert.equal(deploy.env.WORKER_MUTATION_MIN_REMAINING_SECONDS, "900");
+  assert.equal(deploy.env.D1_MUTATION_MIN_REMAINING_SECONDS, "1440");
+  assert.equal(deploy.env.WORKER_MUTATION_MIN_REMAINING_SECONDS, "1020");
+  assert.equal(deploy.env.DEPLOYMENT_RECOVERY_TIMEOUT_SECONDS, "120");
   assert.ok(
-    35 * 60 - Number(deploy.env.D1_MUTATION_MIN_REMAINING_SECONDS) >= 13 * 60,
-    "protected setup must retain at least thirteen minutes before the D1 cutoff",
+    35 * 60 - Number(deploy.env.D1_MUTATION_MIN_REMAINING_SECONDS) >= 11 * 60,
+    "protected setup must retain at least eleven minutes before the D1 cutoff",
   );
   assert.ok(
     Number(deploy.env.D1_MUTATION_MIN_REMAINING_SECONDS) -
@@ -170,12 +171,14 @@ test("crawl-remote release is maintainer-bound across two fresh runners", () => 
   const readTimeout = Number(deploy.env.WRANGLER_READ_TIMEOUT_SECONDS);
   const mutationTimeout = Number(deploy.env.WRANGLER_DEPLOY_TIMEOUT_SECONDS);
   const ownershipTimeout = Number(deploy.env.DEPLOYMENT_STATUS_TIMEOUT_SECONDS);
+  const recoveryTimeout = Number(deploy.env.DEPLOYMENT_RECOVERY_TIMEOUT_SECONDS);
   const rollbackTimeout = Number(deploy.env.WRANGLER_ROLLBACK_TIMEOUT_SECONDS);
   const proofTimeout = 180;
   const boundedWranglerAndProofSeconds =
     readTimeout * 7 +
     mutationTimeout * 2 +
     ownershipTimeout +
+    recoveryTimeout +
     proofTimeout +
     (readTimeout * 3 + rollbackTimeout);
   assert.ok(
@@ -1354,6 +1357,7 @@ test("deploy uses the committed exact Node and Wrangler toolchain before credent
       "Apply and verify D1 migrations",
       "Deploy verified Worker bundle",
       "Resolve Worker deployment ownership",
+      "Recover unresolved Worker deployment ownership",
       "Roll back failed Worker release",
     ],
   );
@@ -1373,7 +1377,7 @@ test("deploy uses the committed exact Node and Wrangler toolchain before credent
   assert.doesNotMatch(source, /secrets\.CRAWL_REMOTE_CLOUDFLARE_API_TOKEN/);
   assert.doesNotMatch(source, /\|\|\s*secrets\./);
   assert.doesNotMatch(source, /CRAWL_REMOTE_CUSTOM_ROUTE_PROOF\s*\|\|/);
-  assert.equal(source.match(/CRAWL_REMOTE_PRODUCTION_CLOUDFLARE_API_TOKEN/g)?.length, 5);
+  assert.equal(source.match(/CRAWL_REMOTE_PRODUCTION_CLOUDFLARE_API_TOKEN/g)?.length, 6);
 });
 
 test("networked CI installs the pinned Wrangler lock and exercises its dry-run outside pnpm check", () => {
@@ -1604,6 +1608,7 @@ test("failed Worker release rolls back only the exact previously stable Worker v
   const postDeployMain = step(deploy, "Reauthorize current main after Worker deploy");
   const proof = step(deploy, "Poll exact production release");
   const finalMain = step(deploy, "Reauthorize current main after production proof");
+  const ownershipRecovery = step(deploy, "Recover unresolved Worker deployment ownership");
   const rollback = step(deploy, "Roll back failed Worker release");
   const finalGate = step(deploy, "Require successful release and proof");
   const run = rollback.run ?? "";
@@ -1618,10 +1623,21 @@ test("failed Worker release rolls back only the exact previously stable Worker v
   assert.equal(finalMain["continue-on-error"], true);
   assert.equal(finalMain.if, "${{ steps.production-proof.outcome == 'success' }}");
   assert.equal(steps(deploy).indexOf(proof) + 1, steps(deploy).indexOf(finalMain));
-  assert.equal(steps(deploy).indexOf(finalMain) + 1, steps(deploy).indexOf(rollback));
+  assert.equal(ownershipRecovery.id, "ownership-recovery");
+  assert.equal(ownershipRecovery["continue-on-error"], true);
+  assert.match(ownershipRecovery.if ?? "", /always\(\)/);
+  assert.match(ownershipRecovery.if ?? "", /steps\.deployment-state\.outcome != 'success'/);
+  assert.match(
+    ownershipRecovery.if ?? "",
+    /steps\.deployment-state\.outputs\.mutation_owned != 'true'/,
+  );
+  assert.equal(steps(deploy).indexOf(finalMain) + 1, steps(deploy).indexOf(ownershipRecovery));
+  assert.equal(steps(deploy).indexOf(ownershipRecovery) + 1, steps(deploy).indexOf(rollback));
   assert.match(rollback.if ?? "", /always\(\)/);
   assert.match(rollback.if ?? "", /steps\.deployment-state\.outcome == 'success'/);
   assert.match(rollback.if ?? "", /steps\.deployment-state\.outputs\.mutation_owned == 'true'/);
+  assert.match(rollback.if ?? "", /steps\.ownership-recovery\.outcome == 'success'/);
+  assert.match(rollback.if ?? "", /steps\.ownership-recovery\.outputs\.mutation_owned == 'true'/);
   assert.match(rollback.if ?? "", /steps\.worker-deploy\.outcome != 'success'/);
   assert.match(rollback.if ?? "", /steps\.deploy-receipt\.outcome != 'success'/);
   assert.match(rollback.if ?? "", /steps\.post-deploy-main\.outcome != 'success'/);
@@ -1661,6 +1677,15 @@ test("failed Worker release rolls back only the exact previously stable Worker v
   assert.match(finalGate.run ?? "", /PRODUCTION_PROOF_OUTCOME.*success/s);
   assert.match(finalGate.run ?? "", /FINAL_MAIN_OUTCOME.*success/s);
   assert.equal(finalGate.env?.FINAL_MAIN_OUTCOME, "${{ steps.final-main.outcome }}");
+  assert.equal(
+    finalGate.env?.OWNERSHIP_RECOVERY_OUTCOME,
+    "${{ steps.ownership-recovery.outcome }}",
+  );
+  assert.equal(
+    finalGate.env?.RECOVERED_MUTATION_OWNED,
+    "${{ steps.ownership-recovery.outputs.mutation_owned }}",
+  );
+  assert.match(finalGate.run ?? "", /ownership recovery/);
   assert.match(finalGate.run ?? "", /rollback outcome/);
 });
 
@@ -1847,6 +1872,133 @@ exit 97
       mismatchedReceipt.stdout + mismatchedReceipt.stderr,
       /deploy receipt does not match the owned Worker version/,
     );
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("late ownership recovery fences rollback after transient status failure", () => {
+  const recovery = step(deploy, "Recover unresolved Worker deployment ownership");
+  const directory = mkdtempSync(join(tmpdir(), "crawl-remote-ownership-recovery-"));
+  const toolchainRoot = join(directory, "toolchain");
+  const binRoot = join(toolchainRoot, "node_modules", ".bin");
+  const wranglerPath = join(binRoot, "wrangler");
+  const previousVersionPath = join(directory, "previous-version.txt");
+  const deployedVersionPath = join(directory, "deployed-version.txt");
+  const deploymentResponsePath = join(directory, "deployment.json");
+  const githubOutputPath = join(directory, "github-output");
+  const statusCountPath = join(directory, "status-count");
+  const previousVersion = "11111111-1111-4111-8111-111111111111";
+  const deployedVersion = "22222222-2222-4222-8222-222222222222";
+  const foreignVersion = "33333333-3333-4333-8333-333333333333";
+  const deployMessage = "clawsweeper run 123/1 main " + mergedCrawlRemoteMain;
+  const token = "production-token";
+  const tokenSHA = createHash("sha256").update(token).digest("hex");
+
+  mkdirSync(binRoot, { recursive: true });
+  writeFileSync(
+    wranglerPath,
+    `#!/bin/sh
+if test "$1" = "--version"; then
+  printf '%s\\n' "$WRANGLER_VERSION"
+  exit 0
+fi
+if test "$1 $2" = "deployments status"; then
+  count=0
+  if test -f "$STATUS_COUNT_PATH"; then
+    count="$(cat "$STATUS_COUNT_PATH")"
+  fi
+  count=$((count + 1))
+  printf '%s\\n' "$count" > "$STATUS_COUNT_PATH"
+  if test "$FAIL_FIRST_STATUS" = "true" && test "$count" = "1"; then
+    exit 72
+  fi
+  printf '%s\\n' "$CURRENT_DEPLOYMENT_JSON"
+  exit 0
+fi
+exit 97
+`,
+  );
+  chmodSync(wranglerPath, 0o755);
+  writeFileSync(previousVersionPath, `${previousVersion}\n`);
+
+  function runRecovery({
+    currentVersion,
+    currentMessage,
+    failFirstStatus = false,
+    timeoutSeconds = "2",
+  }: {
+    currentVersion: string;
+    currentMessage: string;
+    failFirstStatus?: boolean;
+    timeoutSeconds?: string;
+  }) {
+    rmSync(deployedVersionPath, { force: true });
+    rmSync(deploymentResponsePath, { force: true });
+    rmSync(githubOutputPath, { force: true });
+    rmSync(statusCountPath, { force: true });
+    return spawnSync(
+      "bash",
+      ["--noprofile", "--norc", "-euo", "pipefail", "-c", recovery.run ?? ""],
+      {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          CLOUDFLARE_API_TOKEN: token,
+          CLOUDFLARE_TOKEN_SHA256: tokenSHA,
+          CURRENT_DEPLOYMENT_JSON: JSON.stringify({
+            annotations: { "workers/message": currentMessage },
+            versions: [{ percentage: 100, version_id: currentVersion }],
+          }),
+          DEPLOYED_VERSION_PATH: deployedVersionPath,
+          DEPLOYMENT_RECOVERY_TIMEOUT_SECONDS: timeoutSeconds,
+          DEPLOYMENT_STATUS_DELAY_SECONDS: "0",
+          DEPLOY_MESSAGE: deployMessage,
+          FAIL_FIRST_STATUS: String(failFirstStatus),
+          GITHUB_OUTPUT: githubOutputPath,
+          PREVIOUS_VERSION_PATH: previousVersionPath,
+          RECOVERY_DEPLOYMENT_RESPONSE: deploymentResponsePath,
+          RELEASE_ROOT: directory,
+          STATUS_COUNT_PATH: statusCountPath,
+          TOOLCHAIN_ROOT: toolchainRoot,
+          WRANGLER_READ_TIMEOUT_SECONDS: "1",
+          WRANGLER_VERSION: "4.107.1",
+        },
+      },
+    );
+  }
+
+  try {
+    const recovered = runRecovery({
+      currentVersion: deployedVersion,
+      currentMessage: deployMessage,
+      failFirstStatus: true,
+    });
+    assert.equal(recovered.status, 0, recovered.stdout + recovered.stderr);
+    assert.match(readFileSync(githubOutputPath, "utf8"), /mutation_owned=true/);
+    assert.match(readFileSync(githubOutputPath, "utf8"), new RegExp(deployedVersion));
+    assert.equal(readFileSync(deployedVersionPath, "utf8").trim(), deployedVersion);
+    assert.equal(readFileSync(statusCountPath, "utf8").trim(), "2");
+
+    const unchanged = runRecovery({
+      currentVersion: previousVersion,
+      currentMessage: "previous deployment",
+      timeoutSeconds: "1",
+    });
+    assert.equal(unchanged.status, 0, unchanged.stdout + unchanged.stderr);
+    assert.match(readFileSync(githubOutputPath, "utf8"), /mutation_owned=false/);
+    assert.equal(existsSync(deployedVersionPath), false);
+
+    const foreign = runRecovery({
+      currentVersion: foreignVersion,
+      currentMessage: "another deployer",
+    });
+    assert.notEqual(foreign.status, 0);
+    assert.match(
+      foreign.stdout + foreign.stderr,
+      /recovered Worker deployment is not owned by this workflow run/,
+    );
+    assert.equal(existsSync(deployedVersionPath), false);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
