@@ -2050,8 +2050,12 @@ exit 97
       currentMessage: "previous deployment",
       timeoutSeconds: "1",
     });
-    assert.equal(unchanged.status, 0, unchanged.stdout + unchanged.stderr);
-    assert.match(readFileSync(githubOutputPath, "utf8"), /mutation_owned=false/);
+    assert.notEqual(unchanged.status, 0);
+    assert.match(
+      unchanged.stdout + unchanged.stderr,
+      /unable to recover current Worker deployment ownership/,
+    );
+    assert.equal(existsSync(githubOutputPath), false);
     assert.equal(existsSync(deployedVersionPath), false);
 
     const indeterminate = runRecovery({

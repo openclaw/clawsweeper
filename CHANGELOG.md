@@ -41,7 +41,9 @@ checkpoint, and status-only commits are intentionally omitted.
   disabled, and all Wrangler reads, mutations, ownership probes, and rollback
   commands have explicit deadlines. Absolute pre-mutation cutoffs refuse D1 or
   Worker changes once the protected job can no longer preserve the complete
-  proof and rollback window.
+  proof and rollback window. A timed-out ownership recovery remains
+  indeterminate even when every observed status still shows the previous
+  Worker, so a delayed Cloudflare mutation is never misreported as absent.
   Environment variables resolve only
   inside protected steps, route-proof mode is mandatory, and D1 packaging
   accepts only the exact reviewed migration sequence and content hashes.
