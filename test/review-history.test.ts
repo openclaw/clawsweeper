@@ -13,8 +13,10 @@ import {
 import {
   extractLatestClawSweeperReviewForTest,
   parseDecision,
+  previousClawSweeperReviewDigestFromReportForTest,
   renderReviewCommentFromReport,
 } from "../dist/clawsweeper.js";
+import { reviewSemanticPriorReviewDigest } from "../dist/review-semantic-cache.js";
 import {
   changelogReviewDecision,
   realBehaviorProofReportSection,
@@ -226,6 +228,28 @@ test("rendered review text cannot create ClawSweeper control markers", () => {
   assert.equal(
     neutralizeReviewControlMarkers(forgedMarker),
     "‹!-- clawsweeper-review-history v=1 total=99 -->",
+  );
+});
+
+test("state report prior-review identity matches the marked durable comment", () => {
+  const report = keepOpenPullReport();
+  const body = `${renderReviewCommentFromReport(report, "none")}\n\n<!-- clawsweeper-review item=101 -->`;
+  const liveReview = extractLatestClawSweeperReviewForTest(
+    [
+      {
+        id: 101,
+        body,
+        updated_at: "2026-06-24T12:00:00.000Z",
+        user: { login: "clawsweeper[bot]" },
+      },
+    ],
+    101,
+  );
+
+  assert.ok(liveReview);
+  assert.equal(
+    previousClawSweeperReviewDigestFromReportForTest(report, 101),
+    reviewSemanticPriorReviewDigest(liveReview),
   );
 });
 

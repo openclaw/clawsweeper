@@ -366,6 +366,16 @@ test("--local-range defaults to the current checkout and isolates gh config in a
     );
     assert.equal(realpathSync(dirname(dirname(ghConfigDir ?? ""))), realpathSync(gitArtifactRoot));
     assert.ok(existsSync(ghConfigDir ?? ""));
+    const cacheMetrics = JSON.parse(
+      readFileSync(join(dirname(ghConfigDir ?? ""), "review-cache-metrics.json"), "utf8"),
+    ) as Record<string, unknown>;
+    assert.equal(cacheMetrics.semantic_cache_checks, 0);
+    assert.equal(cacheMetrics.semantic_cache_hits, 0);
+    assert.equal(cacheMetrics.semantic_cache_revalidations, 0);
+    assert.match(
+      readFileSync(join(dirname(ghConfigDir ?? ""), "0.md"), "utf8"),
+      /review_semantic_cache_version: unknown/,
+    );
     assert.equal(git(dir, "status", "--porcelain"), "");
   } finally {
     rmSync(codexDir, { recursive: true, force: true });

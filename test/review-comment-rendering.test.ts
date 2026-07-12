@@ -191,12 +191,17 @@ test("semantic cache runs after hydration and revalidates under the acquired lea
   );
   const hydration = reviewLoop.indexOf("collectItemContext(item");
   const semanticRecord = reviewLoop.indexOf("createReviewSemanticRecord({", hydration);
+  const localRangeGuard = reviewLoop.lastIndexOf("if (!localRangeData)", semanticRecord);
   const semanticDecision = reviewLoop.indexOf("reviewSemanticCacheDecision({", semanticRecord);
   const semanticRevalidation = reviewLoop.indexOf(
     "semanticCacheRevalidations += 1",
     semanticDecision,
   );
   const checkRevalidation = reviewLoop.indexOf("pullChecksContext(", semanticRevalidation);
+  const priorReviewRevalidation = reviewLoop.indexOf(
+    "fetchIssueReviewComments(item.number)",
+    semanticRevalidation,
+  );
   const relationRevalidation = reviewLoop.indexOf(
     "refreshRelatedItemsContext(item, context)",
     semanticRevalidation,
@@ -212,11 +217,13 @@ test("semantic cache runs after hydration and revalidates under the acquired lea
   const contentCache = reviewLoop.indexOf("reviewContentCacheHit({", semanticWrite);
 
   assert.ok(hydration >= 0);
+  assert.ok(localRangeGuard > hydration);
   assert.ok(semanticRecord > hydration);
   assert.ok(semanticDecision > semanticRecord);
   assert.ok(semanticRevalidation > semanticDecision);
   assert.ok(checkRevalidation > semanticRevalidation);
-  assert.ok(relationRevalidation > checkRevalidation);
+  assert.ok(priorReviewRevalidation > checkRevalidation);
+  assert.ok(relationRevalidation > priorReviewRevalidation);
   assert.ok(revalidatedRecord > relationRevalidation);
   assert.ok(semanticWrite > revalidatedRecord);
   assert.ok(contentCache > semanticWrite);
@@ -225,10 +232,21 @@ test("semantic cache runs after hydration and revalidates under the acquired lea
     /refreshStructuralRecordForVerdict\(\)/,
   );
   assert.match(
+    reviewLoop.slice(localRangeGuard, semanticDecision),
+    /expectedPreviousReviewDigest[\s\S]*currentPreviousReviewDigest/,
+  );
+  assert.match(
+    reviewLoop.slice(priorReviewRevalidation, semanticWrite),
+    /reviewSemanticPriorReviewDigest\(\s*revalidatedContext\.previousClawSweeperReview/,
+  );
+  assert.match(
     reviewLoop.slice(semanticRevalidation, semanticWrite),
     /updateReviewSemanticFrontMatter\(carried, semanticRecord, true\)/,
   );
-  assert.match(reviewLoop.slice(semanticWrite, contentCache), /!git\.releaseStateComplete/);
+  assert.match(
+    reviewLoop.slice(semanticWrite, contentCache),
+    /previousReviewIdentityChanged[\s\S]*!git\.releaseStateComplete/,
+  );
   const verdictRefresh = source.slice(
     source.indexOf("const refreshStructuralRecordForVerdict"),
     source.indexOf("\n      if (", source.indexOf("const refreshStructuralRecordForVerdict") + 1),

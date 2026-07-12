@@ -40,6 +40,9 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Fixed
 
+- Bound semantic review reuse to the live durable prior-review identity, preserved
+  security scanner suppression directives, rejected malformed eligibility
+  records, and skipped unreachable compiler work for local-range reviews.
 - Packaged only planned prior review reports into scheduled shard runtimes and
   rebound structural cache probes to the explicit latest release state,
   restoring safe cache reuse without broad generated-state artifacts.

@@ -16,7 +16,7 @@ const DIGEST_PATTERN = /^[0-9a-f]{64}$/;
 const MAX_PATCH_CHARS = 512 * 1024;
 const MAX_FILES = 80;
 const DIRECTIVE_COMMENT_PATTERN =
-  /(?:^\/[/*]!|^\/\*(?:::?|\?)|[@#]|\/\/\/\s*<(?:reference|amd-module|amd-dependency)\b|\b(?:babel|biome|c8|coverage|deno-fmt|deno-lint|eslint|esbuild|flow|gql|graphql|istanbul|jshint|jslint|nosonar|oxfmt|oxlint|prettier|rollup|swc|tslint|v8|vite|webpack)[\w-]*|\b(?:exported|globals?)\b)/i;
+  /(?:^\/[/*]!|^\/\*(?:::?|\?)|[@#]|\/\/\/\s*<(?:reference|amd-module|amd-dependency)\b|\b(?:babel|biome|c8|coverage|deno-fmt|deno-lint|eslint|esbuild|flow|gitleaks|gql|graphql|istanbul|jshint|jslint|nosemgrep|nosonar|oxfmt|oxlint|prettier|rollup|semgrep|swc|tslint|v8|vite|webpack)[\w-]*|\b(?:exported|globals?)\b)/i;
 const TYPESCRIPT_EXTENSIONS = new Set([
   ".cjs",
   ".cts",
@@ -117,6 +117,7 @@ export type ReviewSemanticCacheReason =
   | "policy_changed"
   | "model_changed"
   | "stale_review"
+  | "previous_review_changed"
   | "missing_or_invalid_record"
   | "semantic_ineligible"
   | "code_changed"
@@ -856,6 +857,40 @@ function recordFingerprint(record: Omit<ReviewSemanticRecord, "fingerprint">): s
   return sha256(stableJson(record));
 }
 
+export function reviewSemanticPriorReviewDigest(value: unknown): string | null {
+  const review = asRecord(value);
+  const findings = Array.isArray(review.findings)
+    ? review.findings.map((entry) => {
+        const finding = asRecord(entry);
+        return {
+          priority: stringValue(finding.priority),
+          title: stringValue(finding.title),
+        };
+      })
+    : [];
+  const identity = {
+    status: stringValue(review.status),
+    reviewedSha: stringValue(review.reviewedSha),
+    verdictMarker: stringValue(review.verdictMarker),
+    actionMarker: stringValue(review.actionMarker),
+    summary: stringValue(review.summary),
+    proofStatus: stringValue(review.proofStatus),
+    rating: stringValue(review.rating),
+    nextStep: stringValue(review.nextStep),
+    findings,
+  };
+  if (
+    !identity.status &&
+    !identity.reviewedSha &&
+    !identity.verdictMarker &&
+    !identity.actionMarker &&
+    !identity.summary
+  ) {
+    return null;
+  }
+  return sha256(stableJson(identity));
+}
+
 export function createReviewSemanticRecord(input: ReviewSemanticInput): ReviewSemanticRecord {
   const exactDigest = exactDiffDigest(input);
   const code = semanticCode(input);
@@ -888,6 +923,7 @@ export function validReviewSemanticRecord(
     !DIGEST_PATTERN.test(record.codeDigest) ||
     !DIGEST_PATTERN.test(record.exactDigest) ||
     !DIGEST_PATTERN.test(record.contextDigest) ||
+    typeof record.eligible !== "boolean" ||
     !record.reviewPolicy ||
     !record.reviewModel ||
     !ELIGIBILITY_REASONS.has(record.eligibilityReason) ||
@@ -937,6 +973,8 @@ export function reviewSemanticCacheDecision(options: {
   review: ReviewSemanticPriorReview | null;
   priorRecord: ReviewSemanticRecord | null;
   currentRecord: ReviewSemanticRecord | null;
+  expectedPreviousReviewDigest: string | null;
+  currentPreviousReviewDigest: string | null;
   reviewPolicy: string;
   reviewModel: string;
   explicitDispatch: boolean;
@@ -968,6 +1006,13 @@ export function reviewSemanticCacheDecision(options: {
   ) {
     return { hit: false, reason: "stale_review" };
   }
+  if (
+    !options.expectedPreviousReviewDigest ||
+    !options.currentPreviousReviewDigest ||
+    options.expectedPreviousReviewDigest !== options.currentPreviousReviewDigest
+  ) {
+    return { hit: false, reason: "previous_review_changed" };
+  }
   return compareSemanticRecords(
     options.priorRecord,
     options.currentRecord,
@@ -979,9 +1024,18 @@ export function reviewSemanticCacheDecision(options: {
 export function reviewSemanticRevalidationDecision(options: {
   initialRecord: ReviewSemanticRecord | null;
   currentRecord: ReviewSemanticRecord | null;
+  initialPreviousReviewDigest: string | null;
+  currentPreviousReviewDigest: string | null;
   reviewPolicy: string;
   reviewModel: string;
 }): ReviewSemanticCacheDecision {
+  if (
+    !options.initialPreviousReviewDigest ||
+    !options.currentPreviousReviewDigest ||
+    options.initialPreviousReviewDigest !== options.currentPreviousReviewDigest
+  ) {
+    return { hit: false, reason: "previous_review_changed" };
+  }
   return compareSemanticRecords(
     options.initialRecord,
     options.currentRecord,

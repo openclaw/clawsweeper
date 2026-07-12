@@ -1,15 +1,37 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import test from "node:test";
 
 import {
   createReviewSemanticRecord,
   reviewSemanticCacheDecision,
+  reviewSemanticPriorReviewDigest,
   reviewSemanticRevalidationDecision,
+  validReviewSemanticRecord,
 } from "../dist/review-semantic-cache.js";
+import { stableJson } from "../dist/stable-json.js";
 
 const NOW = Date.parse("2026-07-12T12:00:00Z");
 const DAY_MS = 24 * 60 * 60 * 1000;
 const STRUCTURAL_CONTEXT = "a".repeat(64);
+const PREVIOUS_REVIEW = {
+  status: "needs changes before merge.",
+  reviewedAt: "2026-07-11T12:00:00Z",
+  reviewedSha: "b".repeat(40),
+  verdictMarker: `<!-- clawsweeper-verdict:keep-open item=123 sha=${"b".repeat(40)} -->`,
+  actionMarker: null,
+  summary: "The prior review found one cache identity issue.",
+  proofStatus: "Status: not_applicable",
+  rating: "Overall: needs changes",
+  nextStep: "Repair the cache identity.",
+  findings: [{ priority: "P1", title: "Bind review identity" }],
+  earlierReviewCycles: [],
+  completedReviewCycles: 1,
+  commentId: 10,
+  commentUrl: "https://example.invalid/review",
+  commentUpdatedAt: "2026-07-11T12:00:00Z",
+};
+const PREVIOUS_REVIEW_DIGEST = reviewSemanticPriorReviewDigest(PREVIOUS_REVIEW);
 
 function input(overrides: Record<string, unknown> = {}) {
   const context = {
@@ -139,6 +161,8 @@ function decision(overrides: Record<string, unknown> = {}) {
     review: review(),
     priorRecord,
     currentRecord: priorRecord,
+    expectedPreviousReviewDigest: PREVIOUS_REVIEW_DIGEST,
+    currentPreviousReviewDigest: PREVIOUS_REVIEW_DIGEST,
     reviewPolicy: "policy-1",
     reviewModel: "gpt-5.6",
     explicitDispatch: false,
@@ -364,11 +388,40 @@ test("TypeScript directives and shebangs remain semantic", () => {
       ],
     },
   });
+  const nosemgrep = record({
+    context: {
+      pullFiles: [
+        {
+          filename: "src/cache.ts",
+          status: "modified",
+          additions: 2,
+          deletions: 1,
+          patch:
+            "@@ -1 +1,2 @@\n-const answer = 41;\n+// nosemgrep: dangerous-eval\n+const answer = 42;",
+        },
+      ],
+    },
+  });
+  const gitleaks = record({
+    context: {
+      pullFiles: [
+        {
+          filename: "src/cache.ts",
+          status: "modified",
+          additions: 2,
+          deletions: 1,
+          patch: "@@ -1 +1,2 @@\n-const answer = 41;\n+// gitleaks:allow\n+const answer = 42;",
+        },
+      ],
+    },
+  });
 
   assert.notEqual(ordinary.codeDigest, directive.codeDigest);
   assert.notEqual(ordinary.codeDigest, shebang.codeDigest);
   assert.notEqual(ordinary.codeDigest, sourceMapDirective.codeDigest);
   assert.notEqual(ordinary.codeDigest, referenceDirective.codeDigest);
+  assert.notEqual(ordinary.codeDigest, nosemgrep.codeDigest);
+  assert.notEqual(ordinary.codeDigest, gitleaks.codeDigest);
 });
 
 test("Flow comment annotations remain semantic", () => {
@@ -1091,6 +1144,47 @@ test("explicit reruns, maintainer prompts, policy changes, and close reports nev
   assert.equal(decision({ review: review({ decision: "close" }) }).reason, "non_keep_open_verdict");
 });
 
+test("prior review identity binds visible verdict content but ignores comment metadata", () => {
+  const sameReview = {
+    ...PREVIOUS_REVIEW,
+    reviewedAt: "2026-07-12T01:00:00Z",
+    commentId: 11,
+    commentUrl: "https://example.invalid/review-updated",
+    commentUpdatedAt: "2026-07-12T01:00:00Z",
+    earlierReviewCycles: [{ sha: "older" }],
+    completedReviewCycles: 2,
+  };
+  const changedReview = {
+    ...sameReview,
+    summary: "A newer completed review found a different blocker.",
+  };
+
+  assert.equal(reviewSemanticPriorReviewDigest(sameReview), PREVIOUS_REVIEW_DIGEST);
+  assert.notEqual(reviewSemanticPriorReviewDigest(changedReview), PREVIOUS_REVIEW_DIGEST);
+  assert.equal(
+    decision({
+      currentPreviousReviewDigest: reviewSemanticPriorReviewDigest(changedReview),
+    }).reason,
+    "previous_review_changed",
+  );
+});
+
+test("semantic records require a boolean eligibility value", () => {
+  const valid = record();
+  const { fingerprint: _, ...withoutFingerprint } = valid;
+  const malformedWithoutFingerprint = {
+    ...withoutFingerprint,
+    eligible: "true",
+  };
+  const malformed = {
+    ...malformedWithoutFingerprint,
+    fingerprint: createHash("sha256").update(stableJson(malformedWithoutFingerprint)).digest("hex"),
+  };
+
+  assert.equal(validReviewSemanticRecord(valid), true);
+  assert.equal(validReviewSemanticRecord(malformed as never), false);
+});
+
 test("stale, failed, and future-dated reviews never reuse", () => {
   assert.equal(
     decision({ review: review({ reviewStatus: "failed" }) }).reason,
@@ -1128,9 +1222,29 @@ test("post-lease revalidation catches mutable context drift", () => {
     reviewSemanticRevalidationDecision({
       initialRecord,
       currentRecord,
+      initialPreviousReviewDigest: PREVIOUS_REVIEW_DIGEST,
+      currentPreviousReviewDigest: PREVIOUS_REVIEW_DIGEST,
       reviewPolicy: "policy-1",
       reviewModel: "gpt-5.6",
     }),
     { hit: false, reason: "context_changed" },
+  );
+});
+
+test("post-lease revalidation catches prior review drift", () => {
+  const semanticRecord = record();
+  assert.deepEqual(
+    reviewSemanticRevalidationDecision({
+      initialRecord: semanticRecord,
+      currentRecord: semanticRecord,
+      initialPreviousReviewDigest: PREVIOUS_REVIEW_DIGEST,
+      currentPreviousReviewDigest: reviewSemanticPriorReviewDigest({
+        ...PREVIOUS_REVIEW,
+        findings: [{ priority: "P1", title: "A newer review finding" }],
+      }),
+      reviewPolicy: "policy-1",
+      reviewModel: "gpt-5.6",
+    }),
+    { hit: false, reason: "previous_review_changed" },
   );
 });

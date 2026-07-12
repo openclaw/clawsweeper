@@ -74,6 +74,7 @@ import {
   REVIEW_SEMANTIC_CACHE_VERSION,
   createReviewSemanticRecord,
   reviewSemanticCacheDecision,
+  reviewSemanticPriorReviewDigest,
   reviewSemanticRevalidationDecision,
   validReviewSemanticRecord,
   type ReviewSemanticRecord,
@@ -4838,6 +4839,56 @@ export function extractLatestClawSweeperReviewForTest(
   return extractLatestClawSweeperReview(comments, number);
 }
 
+function extractLatestClawSweeperReviewFromHydration(
+  commentsWindow: ContextHydration<unknown>,
+  completeComments: readonly unknown[],
+  number: number,
+): PreviousClawSweeperReview | null {
+  return extractLatestClawSweeperReview(
+    commentsWindow.truncated ? completeComments : commentsWindow.items,
+    number,
+  );
+}
+
+export function extractLatestClawSweeperReviewFromHydrationForTest(
+  commentsWindow: ContextHydration<unknown>,
+  completeComments: readonly unknown[],
+  number: number,
+): PreviousClawSweeperReview | null {
+  return extractLatestClawSweeperReviewFromHydration(commentsWindow, completeComments, number);
+}
+
+function previousClawSweeperReviewFromReport(
+  markdown: string,
+  number: number,
+): PreviousClawSweeperReview | null {
+  const closeReason =
+    (frontMatterValue(markdown, "close_reason") as CloseReason | undefined) ?? "none";
+  const body = markedReviewCommentBody(
+    number,
+    renderReviewCommentFromReport(markdown, closeReason),
+  );
+  return extractLatestClawSweeperReview(
+    [
+      {
+        id: `state-report-${number}`,
+        body,
+        html_url: "",
+        updated_at: frontMatterValue(markdown, "reviewed_at") ?? "",
+        user: { login: "clawsweeper[bot]" },
+      },
+    ],
+    number,
+  );
+}
+
+export function previousClawSweeperReviewDigestFromReportForTest(
+  markdown: string,
+  number: number,
+): string | null {
+  return reviewSemanticPriorReviewDigest(previousClawSweeperReviewFromReport(markdown, number));
+}
+
 function compactTimelineEvent(value: unknown): unknown {
   const event = asRecord(value);
   const sourceIssue = asRecord(asRecord(event.source).issue);
@@ -7819,7 +7870,11 @@ function collectItemContext(
     ? ghPaged<unknown>(`repos/${targetRepo()}/issues/${item.number}/comments`)
     : comments;
   const filteredComments = filterReviewContextComments(comments, item.number);
-  const previousClawSweeperReview = extractLatestClawSweeperReview(comments, item.number);
+  const previousClawSweeperReview = extractLatestClawSweeperReviewFromHydration(
+    commentsWindow,
+    sourceRevisionComments,
+    item.number,
+  );
   const timelineWindow = ghPagedLinkHeaderContextWindow<unknown>(
     `repos/${targetRepo()}/issues/${item.number}/timeline`,
     80,
@@ -20658,37 +20713,56 @@ function reviewCommand(args: Args): void {
         }
       }
       const contentDigest = itemContentDigest(item, context, git);
-      const semanticCacheStartedAt = Date.now();
-      semanticCacheChecks += 1;
-      semanticRecord = createReviewSemanticRecord({
-        item,
-        context,
-        git,
-        structuralContextRevision: hydratedStructuralAnchor?.contextRevision ?? null,
-        reviewPolicy,
-        reviewModel: PUBLIC_CODEX_MODEL,
-      });
-      semanticCacheMs += Date.now() - semanticCacheStartedAt;
-      semanticCacheEligibilityReasons.set(
-        semanticRecord.eligibilityReason,
-        (semanticCacheEligibilityReasons.get(semanticRecord.eligibilityReason) ?? 0) + 1,
-      );
-      if (!semanticRecord.eligible) semanticCacheIneligible += 1;
-      const semanticDecision = reviewSemanticCacheDecision({
-        review: priorReview,
-        priorRecord: priorReview?.semanticRecord ?? null,
-        currentRecord: semanticRecord,
-        reviewPolicy,
-        reviewModel: PUBLIC_CODEX_MODEL,
-        explicitDispatch,
-        maintainerRequest,
-        coordinationEnabled: Boolean(acquiredReviewLease),
-      });
-      semanticCacheReasons.set(
-        semanticDecision.reason,
-        (semanticCacheReasons.get(semanticDecision.reason) ?? 0) + 1,
-      );
-      if (semanticDecision.hit) {
+      let currentPreviousReviewDigest: string | null = null;
+      let previousReviewIdentityChanged = false;
+      let semanticDecision: ReturnType<typeof reviewSemanticCacheDecision> | null = null;
+      if (!localRangeData) {
+        const semanticCacheStartedAt = Date.now();
+        semanticCacheChecks += 1;
+        semanticRecord = createReviewSemanticRecord({
+          item,
+          context,
+          git,
+          structuralContextRevision: hydratedStructuralAnchor?.contextRevision ?? null,
+          reviewPolicy,
+          reviewModel: PUBLIC_CODEX_MODEL,
+        });
+        semanticCacheMs += Date.now() - semanticCacheStartedAt;
+        semanticCacheEligibilityReasons.set(
+          semanticRecord.eligibilityReason,
+          (semanticCacheEligibilityReasons.get(semanticRecord.eligibilityReason) ?? 0) + 1,
+        );
+        if (!semanticRecord.eligible) semanticCacheIneligible += 1;
+        const expectedPreviousReviewDigest = priorReview
+          ? reviewSemanticPriorReviewDigest(
+              previousClawSweeperReviewFromReport(priorReview.markdown, item.number),
+            )
+          : null;
+        currentPreviousReviewDigest = reviewSemanticPriorReviewDigest(
+          context.previousClawSweeperReview,
+        );
+        previousReviewIdentityChanged =
+          !expectedPreviousReviewDigest ||
+          !currentPreviousReviewDigest ||
+          expectedPreviousReviewDigest !== currentPreviousReviewDigest;
+        semanticDecision = reviewSemanticCacheDecision({
+          review: priorReview,
+          priorRecord: priorReview?.semanticRecord ?? null,
+          currentRecord: semanticRecord,
+          expectedPreviousReviewDigest,
+          currentPreviousReviewDigest,
+          reviewPolicy,
+          reviewModel: PUBLIC_CODEX_MODEL,
+          explicitDispatch,
+          maintainerRequest,
+          coordinationEnabled: Boolean(acquiredReviewLease),
+        });
+        semanticCacheReasons.set(
+          semanticDecision.reason,
+          (semanticCacheReasons.get(semanticDecision.reason) ?? 0) + 1,
+        );
+      }
+      if (semanticDecision?.hit) {
         semanticCacheRevalidations += 1;
         const initialSemanticRecord = semanticRecord;
         const semanticRevalidationStartedAt = Date.now();
@@ -20711,6 +20785,15 @@ function reviewCommand(args: Args): void {
           ...context,
           pullChecks: revalidatedChecks,
         };
+        const revalidatedPreviousReview = extractLatestClawSweeperReview(
+          fetchIssueReviewComments(item.number),
+          item.number,
+        );
+        if (revalidatedPreviousReview) {
+          revalidatedContext.previousClawSweeperReview = revalidatedPreviousReview;
+        } else {
+          delete revalidatedContext.previousClawSweeperReview;
+        }
         const revalidatedRelatedItems = refreshRelatedItemsContext(item, context);
         if (revalidatedRelatedItems.length > 0) {
           revalidatedContext.relatedItems = revalidatedRelatedItems;
@@ -20737,6 +20820,10 @@ function reviewCommand(args: Args): void {
         const semanticRevalidationDecision = reviewSemanticRevalidationDecision({
           initialRecord: initialSemanticRecord,
           currentRecord: revalidatedSemanticRecord,
+          initialPreviousReviewDigest: currentPreviousReviewDigest,
+          currentPreviousReviewDigest: reviewSemanticPriorReviewDigest(
+            revalidatedContext.previousClawSweeperReview,
+          ),
           reviewPolicy,
           reviewModel: PUBLIC_CODEX_MODEL,
         });
@@ -20825,6 +20912,7 @@ function reviewCommand(args: Args): void {
       const contentCacheReview =
         explicitDispatch ||
         maintainerRequest ||
+        previousReviewIdentityChanged ||
         !git.releaseStateComplete ||
         (item.kind === "pull_request" && !completePullChecksContext(context.pullChecks))
           ? null

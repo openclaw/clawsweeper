@@ -7,6 +7,7 @@ import {
   compactMappedSlice,
   compactMappedWindow,
   extractLatestClawSweeperReviewForTest,
+  extractLatestClawSweeperReviewFromHydrationForTest,
   filterReviewContextCommentsForTest,
   ghPagedContextWindow,
   ghPagedLinkHeaderContextWindow,
@@ -333,6 +334,39 @@ Needs real behavior proof before merge.
   assert.equal(review.findings[0]?.priority, "P1");
   assert.equal(review.findings[0]?.title, "Preserve session state");
   assert.doesNotMatch(JSON.stringify(review), /How this review workflow works/);
+});
+
+test("durable review identity uses complete comments outside the prompt window", () => {
+  const comments = Array.from({ length: 30 }, (_, index) =>
+    issueComment(index + 1, `comment ${index + 1}`, "contributor"),
+  );
+  comments[14] = issueComment(
+    15,
+    `Codex review: passed.
+
+**Summary**
+The review in the middle of an active discussion remains authoritative.
+
+<!-- clawsweeper-verdict:pass item=123 sha=abc confidence=high -->
+<!-- clawsweeper-review item=123 -->`,
+    "clawsweeper[bot]",
+    "2026-05-24T02:00:00Z",
+  );
+  const commentsWindow = ghPagedContextWindow<unknown>(
+    "repos/openclaw/openclaw/issues/123/comments",
+    comments.length,
+    24,
+    {
+      page: (_path, page) => comments.slice((page - 1) * 100, page * 100),
+    },
+  );
+
+  assert.equal(extractLatestClawSweeperReviewForTest(commentsWindow.items, 123), null);
+  const review = extractLatestClawSweeperReviewFromHydrationForTest(commentsWindow, comments, 123);
+
+  assert.ok(review);
+  assert.equal(review.reviewedSha, "abc");
+  assert.match(review.summary ?? "", /middle of an active discussion/);
 });
 
 test("latest ClawSweeper durable review parser supports compact merge readiness layout", () => {
