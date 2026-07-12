@@ -55,6 +55,14 @@ import {
 import { parseGhJson, parseGhJsonLinesWithRetry, parseGhJsonWithRetry } from "./github-json.js";
 import { stableJson } from "./stable-json.js";
 import {
+  REVIEW_STRUCTURAL_CACHE_VERSION,
+  reviewStructuralQuery,
+  reviewStructuralRecordFromGraphql,
+  reviewStructuralCacheDecision,
+  validReviewStructuralRecord,
+  type ReviewStructuralRecord,
+} from "./review-structural-cache.js";
+import {
   ASSIST_ANSWER_MAX_BYTES,
   ASSIST_ARTIFACT_MAX_BYTES,
   assertAssistArtifactLiveRevision,
@@ -430,9 +438,11 @@ interface ExistingReview {
   decision: string | undefined;
   reviewStatus: string | undefined;
   reviewPolicy: string | undefined;
+  reviewModel: string | undefined;
   contentDigest: string | undefined;
   lastFullReviewAt: string | undefined;
   lastFullReviewDecision: string | undefined;
+  structuralRecord: ReviewStructuralRecord | null;
 }
 
 interface LatestRelease {
@@ -4455,7 +4465,9 @@ const CLAWSWEEPER_BOT_AUTHORS = new Set(
     "clawsweeper[bot]",
     "openclaw-clawsweeper[bot]",
     process.env.CLAWSWEEPER_COMMENT_AUTHOR_LOGIN,
-  ].filter((login): login is string => typeof login === "string" && login.length > 0),
+  ]
+    .filter((login): login is string => typeof login === "string" && login.length > 0)
+    .map((login) => login.toLowerCase()),
 );
 const CLAWSWEEPER_COMMAND_ONLY_PATTERN = /^@clawsweeper\s+(?:re-review|re-run|review)\s*$/i;
 
@@ -6132,6 +6144,25 @@ export function reviewReportCanPromoteToCloseForTest(markdown: string): boolean 
   return reviewReportCanPromoteToClose(markdown);
 }
 
+function reviewStructuralRecordFromMarkdown(markdown: string): ReviewStructuralRecord | null {
+  const version = Number(frontMatterValue(markdown, "review_structural_cache_version"));
+  const kind = reportItemKind(markdown);
+  const pullHeadSha = frontMatterValue(markdown, "review_structural_pull_head_sha");
+  if (version !== REVIEW_STRUCTURAL_CACHE_VERSION || !kind) return null;
+  const record: ReviewStructuralRecord = {
+    version: REVIEW_STRUCTURAL_CACHE_VERSION,
+    fingerprint: frontMatterValue(markdown, "review_structural_fingerprint") ?? "",
+    kind,
+    sourceRevision: frontMatterValue(markdown, "review_structural_source_revision") ?? "",
+    activityUpdatedAt: frontMatterValue(markdown, "review_structural_activity_updated_at") ?? "",
+    targetHeadSha: frontMatterValue(markdown, "review_structural_target_head_sha") ?? "",
+    pullHeadSha: pullHeadSha && pullHeadSha !== "none" ? pullHeadSha : null,
+    reviewPolicy: frontMatterValue(markdown, "review_policy") ?? "",
+    reviewModel: frontMatterValue(markdown, "review_model") ?? "",
+  };
+  return validReviewStructuralRecord(record) ? record : null;
+}
+
 function existingReview(
   item: Pick<Item, "number" | "repo">,
   itemsDir: string,
@@ -6154,9 +6185,11 @@ function existingReview(
     decision: frontMatterValue(markdown, "decision"),
     reviewStatus: effectiveReviewStatus(markdown),
     reviewPolicy: frontMatterValue(markdown, "review_policy"),
+    reviewModel: frontMatterValue(markdown, "review_model"),
     contentDigest: frontMatterValue(markdown, "review_content_digest"),
     lastFullReviewAt: frontMatterValue(markdown, "last_full_review_at"),
     lastFullReviewDecision: frontMatterValue(markdown, "last_full_review_decision"),
+    structuralRecord: reviewStructuralRecordFromMarkdown(markdown),
   };
 }
 
@@ -6185,9 +6218,11 @@ function buildExistingReviewIndex(itemsDir: string): ExistingReviewIndex {
       decision: frontMatterValue(markdown, "decision"),
       reviewStatus: effectiveReviewStatus(markdown),
       reviewPolicy: frontMatterValue(markdown, "review_policy"),
+      reviewModel: frontMatterValue(markdown, "review_model"),
       contentDigest: frontMatterValue(markdown, "review_content_digest"),
       lastFullReviewAt: frontMatterValue(markdown, "last_full_review_at"),
       lastFullReviewDecision: frontMatterValue(markdown, "last_full_review_decision"),
+      structuralRecord: reviewStructuralRecordFromMarkdown(markdown),
     });
   }
   return { byKey };
@@ -7262,6 +7297,41 @@ function planCandidates(options: {
       floorBackfill,
     }),
   };
+}
+
+function fetchReviewStructuralRecord(options: {
+  item: Item;
+  git: GitInfo;
+  reviewPolicy: string;
+  reviewModel: string;
+}): ReviewStructuralRecord | null {
+  const [owner, name] = options.item.repo.split("/");
+  if (!owner || !name) return null;
+  const response = ghJson<unknown>([
+    "api",
+    "graphql",
+    "-f",
+    `owner=${owner}`,
+    "-f",
+    `name=${name}`,
+    "-F",
+    `number=${options.item.number}`,
+    "-f",
+    `query=${reviewStructuralQuery(options.item.kind)}`,
+  ]);
+  return reviewStructuralRecordFromGraphql({
+    response,
+    repo: options.item.repo,
+    number: options.item.number,
+    kind: options.item.kind,
+    targetHeadSha: options.git.mainSha.trim().toLowerCase(),
+    latestReleaseTag: options.git.latestRelease?.tagName ?? null,
+    latestReleaseSha: options.git.latestRelease?.sha?.trim().toLowerCase() ?? null,
+    reviewPolicy: options.reviewPolicy,
+    reviewModel: options.reviewModel,
+    ignoreAuthor: (author) => CLAWSWEEPER_BOT_AUTHORS.has(author.toLowerCase()),
+    ignoreLabel: (label) => isIgnorableSourceRevisionLabel(normalizeLabelName(label)),
+  });
 }
 
 function collectItemContext(
@@ -18698,6 +18768,44 @@ function pullRequestFilePathsFromContext(context: ItemContext): string[] {
   return pullRequestFilePathsFromContextForTest(context);
 }
 
+function updateReviewStructuralFrontMatter(
+  markdown: string,
+  record: ReviewStructuralRecord | null,
+  cacheHit: boolean,
+): string {
+  let next = replaceFrontMatterValue(
+    markdown,
+    "review_structural_cache_version",
+    record ? String(record.version) : "unknown",
+  );
+  next = replaceFrontMatterValue(
+    next,
+    "review_structural_fingerprint",
+    record?.fingerprint ?? "unknown",
+  );
+  next = replaceFrontMatterValue(
+    next,
+    "review_structural_source_revision",
+    record?.sourceRevision ?? "unknown",
+  );
+  next = replaceFrontMatterValue(
+    next,
+    "review_structural_activity_updated_at",
+    record?.activityUpdatedAt ?? "unknown",
+  );
+  next = replaceFrontMatterValue(
+    next,
+    "review_structural_target_head_sha",
+    record?.targetHeadSha ?? "unknown",
+  );
+  next = replaceFrontMatterValue(
+    next,
+    "review_structural_pull_head_sha",
+    record ? (record.pullHeadSha ?? "none") : "unknown",
+  );
+  return replaceFrontMatterValue(next, "review_structural_cache_hit", cacheHit ? "true" : "false");
+}
+
 function markdownFor(options: {
   item: Item;
   context: ItemContext;
@@ -18709,6 +18817,7 @@ function markdownFor(options: {
   contentDigest: string;
   reviewPolicy: string;
   runtime: ReviewRuntime;
+  structuralRecord?: ReviewStructuralRecord | null;
   reviewLeaseOwner?: string;
   reviewLeaseCommentId?: number;
 }): string {
@@ -18819,6 +18928,15 @@ review_content_digest: ${options.contentDigest}
 last_full_review_at: ${reviewedAt}
 last_full_review_decision: ${options.decision.decision}
 review_cache_hit: false
+review_structural_cache_version: ${options.structuralRecord?.version ?? "unknown"}
+review_structural_fingerprint: ${options.structuralRecord?.fingerprint ?? "unknown"}
+review_structural_source_revision: ${options.structuralRecord?.sourceRevision ?? "unknown"}
+review_structural_activity_updated_at: ${options.structuralRecord?.activityUpdatedAt ?? "unknown"}
+review_structural_target_head_sha: ${options.structuralRecord?.targetHeadSha ?? "unknown"}
+review_structural_pull_head_sha: ${
+    options.structuralRecord ? (options.structuralRecord.pullHeadSha ?? "none") : "unknown"
+  }
+review_structural_cache_hit: false
 item_source_revision: ${options.context.sourceRevision ?? "unknown"}
 close_comment_sha256: ${options.action.closeComment ? sha256(options.action.closeComment) : "none"}
 review_comment_sha256: none
@@ -19364,6 +19482,13 @@ function reviewCommand(args: Args): void {
     let codexFailures = 0;
     let leaseAcquisitionFailures = 0;
     let cacheHits = 0;
+    let contentCacheHits = 0;
+    let structuralCacheChecks = 0;
+    let structuralCacheHits = 0;
+    let structuralCacheProbeFailures = 0;
+    let structuralCacheProbeMs = 0;
+    let hydrationRuns = 0;
+    const structuralCacheReasons = new Map<string, number>();
     const codexFailureReports: string[] = [];
     const leaseAcquisitionFailureDetails: string[] = [];
     for (const item of candidates) {
@@ -19375,12 +19500,73 @@ function reviewCommand(args: Args): void {
           `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} start #${item.number} (${completed + 1}/${candidates.length})`,
         );
       }
+      const priorReview = localRangeData ? null : existingReview(item, itemsDir);
+      let structuralRecord: ReviewStructuralRecord | null = null;
+      if (!localRangeData) {
+        structuralCacheChecks += 1;
+        const structuralProbeStartedAt = Date.now();
+        try {
+          structuralRecord = fetchReviewStructuralRecord({
+            item,
+            git,
+            reviewPolicy,
+            reviewModel: PUBLIC_CODEX_MODEL,
+          });
+        } catch (error) {
+          structuralCacheProbeFailures += 1;
+          console.error(
+            `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} structural-cache=probe-failed #${item.number}: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+        } finally {
+          structuralCacheProbeMs += Date.now() - structuralProbeStartedAt;
+        }
+        if (structuralRecord) item.updatedAt = structuralRecord.activityUpdatedAt;
+        const structuralDecision = reviewStructuralCacheDecision({
+          review: priorReview,
+          priorRecord: priorReview?.structuralRecord ?? null,
+          currentRecord: structuralRecord,
+          reviewPolicy,
+          reviewModel: PUBLIC_CODEX_MODEL,
+          explicitDispatch,
+          maintainerRequest,
+        });
+        structuralCacheReasons.set(
+          structuralDecision.reason,
+          (structuralCacheReasons.get(structuralDecision.reason) ?? 0) + 1,
+        );
+        if (structuralDecision.hit) {
+          const reportPath = join(artifactDir, reportFileName(item.repo, item.number));
+          let carried = priorReview!.markdown;
+          carried = replaceFrontMatterValue(carried, "reviewed_at", new Date().toISOString());
+          carried = replaceFrontMatterValue(carried, "item_updated_at", item.updatedAt);
+          carried = replaceFrontMatterValue(carried, "review_lease_owner", "unknown");
+          carried = replaceFrontMatterValue(carried, "review_lease_comment_id", "unknown");
+          carried = replaceFrontMatterValue(carried, "review_cache_hit", "true");
+          carried = updateReviewStructuralFrontMatter(carried, structuralRecord, true);
+          writeFileSync(reportPath, carried, "utf8");
+          completed += 1;
+          cacheHits += 1;
+          structuralCacheHits += 1;
+          if (humanLocalReview) {
+            console.error("");
+            console.error("Structural review cache hit; GitHub context unchanged");
+            console.error(`  report: ${displayPath(reportPath)}`);
+          } else {
+            console.error(
+              `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} cache-hit structural-unchanged skip-hydration-model #${item.number} (${completed}/${candidates.length})`,
+            );
+          }
+          continue;
+        }
+      }
       let acquiredReviewLease: AcquiredReviewStartLease | null = null;
       if (!skipStartComment && item.kind === "pull_request") {
         try {
           const startComment = postReviewStartStatusComment({
             item,
-            headSha: pullRequestHeadSha(item.number),
+            headSha: structuralRecord?.pullHeadSha ?? pullRequestHeadSha(item.number),
             reviewTimeoutMs: timeoutMs,
             position: completed + 1,
             total: candidates.length,
@@ -19413,6 +19599,7 @@ function reviewCommand(args: Args): void {
         }
       }
       const contextStartedAt = Date.now();
+      if (!localRangeData) hydrationRuns += 1;
       const context = localRangeData
         ? localRangeData.context
         : collectItemContext(item, {
@@ -19490,11 +19677,10 @@ function reviewCommand(args: Args): void {
         }
       }
       const contentDigest = itemContentDigest(item, context, git);
-      const priorReview =
-        explicitDispatch || maintainerRequest ? null : existingReview(item, itemsDir);
+      const contentCacheReview = explicitDispatch || maintainerRequest ? null : priorReview;
       if (
         reviewContentCacheHit({
-          review: priorReview,
+          review: contentCacheReview,
           reviewPolicy,
           contentDigest,
           now: Date.now(),
@@ -19522,9 +19708,13 @@ function reviewCommand(args: Args): void {
           itemSnapshotHash(item, context),
         );
         carried = replaceFrontMatterValue(carried, "review_cache_hit", "true");
+        carried = structuralRecord
+          ? updateReviewStructuralFrontMatter(carried, structuralRecord, false)
+          : replaceFrontMatterValue(carried, "review_structural_cache_hit", "false");
         writeFileSync(reportPath, carried, "utf8");
         completed += 1;
         cacheHits += 1;
+        contentCacheHits += 1;
         if (humanLocalReview) {
           console.error("");
           console.error("Review cache hit; content unchanged since the last review");
@@ -19632,6 +19822,7 @@ function reviewCommand(args: Args): void {
           contentDigest,
           reviewPolicy,
           runtime,
+          structuralRecord,
           ...(acquiredReviewLease
             ? {
                 reviewLeaseOwner: acquiredReviewLease.owner,
@@ -19666,9 +19857,33 @@ function reviewCommand(args: Args): void {
     }
     if (!humanLocalReview) {
       console.error(
-        `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} complete reviewed=${completed} cache_hits=${cacheHits}`,
+        `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} complete reviewed=${completed} cache_hits=${cacheHits} structural_cache_checks=${structuralCacheChecks} structural_cache_hits=${structuralCacheHits} content_cache_hits=${contentCacheHits} hydrations=${hydrationRuns}`,
       );
     }
+    writeFileSync(
+      join(artifactDir, "review-cache-metrics.json"),
+      JSON.stringify(
+        {
+          candidates: candidates.length,
+          completed,
+          cache_hits: cacheHits,
+          structural_cache_checks: structuralCacheChecks,
+          structural_cache_hits: structuralCacheHits,
+          structural_cache_probe_failures: structuralCacheProbeFailures,
+          structural_cache_probe_ms: structuralCacheProbeMs,
+          structural_cache_reasons: Object.fromEntries(
+            [...structuralCacheReasons.entries()].sort(([left], [right]) =>
+              left.localeCompare(right),
+            ),
+          ),
+          content_cache_hits: contentCacheHits,
+          hydrations: hydrationRuns,
+        },
+        null,
+        2,
+      ) + "\n",
+      "utf8",
+    );
     if (leaseAcquisitionFailures > 0) {
       throw new Error(
         `Could not acquire durable review coordination for ${leaseAcquisitionFailures} item${

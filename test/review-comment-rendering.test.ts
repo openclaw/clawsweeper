@@ -104,21 +104,27 @@ test("comment matcher recognizes old and new Codex review comments", () => {
   assert.equal(isCodexReviewCommentBody("Thanks for the report, I can reproduce this."), false);
 });
 
-test("review start lease is acquired before cache reuse and slow media preprocessing", () => {
+test("structural cache runs before leases while content cache remains lease-coordinated", () => {
   const source = readFileSync("src/clawsweeper.ts", "utf8");
   const reviewLoop = source.slice(
     source.indexOf("for (const item of candidates)"),
     source.indexOf("let decision: Decision", source.indexOf("for (const item of candidates)")),
   );
-  const cacheHit = reviewLoop.indexOf("reviewContentCacheHit({");
+  const structuralCache = reviewLoop.indexOf("reviewStructuralCacheDecision({");
+  const contentCache = reviewLoop.indexOf("reviewContentCacheHit({");
   const startLease = reviewLoop.indexOf("postReviewStartStatusComment({");
-  const mediaPrep = reviewLoop.indexOf("prepareMediaProofArtifacts(context", cacheHit);
+  const hydration = reviewLoop.indexOf("collectItemContext(item");
+  const mediaPrep = reviewLoop.indexOf("prepareMediaProofArtifacts(context", contentCache);
 
+  assert.ok(structuralCache >= 0);
   assert.ok(startLease >= 0);
-  assert.ok(cacheHit > startLease);
-  assert.ok(mediaPrep > cacheHit);
+  assert.ok(structuralCache < startLease);
+  assert.ok(structuralCache < hydration);
+  assert.ok(contentCache > startLease);
+  assert.ok(mediaPrep > contentCache);
   assert.match(source, /coordination-held\.json/);
   assert.match(source, /coordinationHeldRetryAt = startComment\.retryAt/);
+  assert.match(source, /review-cache-metrics\.json/);
 });
 
 test("review comment patching only targets ClawSweeper-owned comments", () => {
