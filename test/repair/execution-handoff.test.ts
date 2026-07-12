@@ -12,10 +12,12 @@ import {
   assertPublicationSourceIdentity,
   assertRepairDeltaBaseBinding,
   assertSourcePullRevision,
+  checkpointPendingSourceReopenReceipt,
   checkpointSourceClosureReceipt,
   checkpointedSourceClosures,
   completePendingSourceClosureReceipt,
   missingRequiredPublicationLabels,
+  pendingSourceReopenClosures,
   pendingSourceClosures,
   preservePendingSourceReopenReceipt,
   preservedReopenedSourceClosures,
@@ -666,6 +668,27 @@ test("planned source closure is not checkpointed until an exact publication rece
   });
   assert.equal(checkpointedSourceClosures(publication, pendingReceipt, intent).size, 0);
   assert.deepEqual([...pendingSourceClosures(publication, pendingReceipt, intent)], [revision.url]);
+  const compensatingReceipt = checkpointPendingSourceReopenReceipt({
+    publication,
+    receipt: pendingReceipt,
+    intent,
+    revision,
+    evidence: closeEvidence,
+  });
+  assert.deepEqual(
+    [...pendingSourceReopenClosures(publication, compensatingReceipt, intent)],
+    [revision.url],
+  );
+  assert.equal(
+    checkpointPendingSourceReopenReceipt({
+      publication,
+      receipt: compensatingReceipt,
+      intent,
+      revision,
+      evidence: closeEvidence,
+    }).identity_sha256,
+    compensatingReceipt.identity_sha256,
+  );
   assert.equal(
     checkpointSourceClosureReceipt({
       publication,
@@ -837,6 +860,25 @@ test("pending source recovery requires the ClawSweeper close actor and preserves
   assert.deepEqual(sourceCloseRecovery({ attempt, state: "open", events: [] }), {
     status: "retry",
   });
+  assert.deepEqual(
+    sourceCloseRecovery({
+      attempt,
+      state: "open",
+      events: [
+        sourceStateEvent(11, "closed", "maintainer"),
+        sourceStateEvent(12, "reopened", "maintainer"),
+      ],
+    }),
+    { status: "retry" },
+  );
+  assert.deepEqual(
+    sourceCloseRecovery({
+      attempt,
+      state: "open",
+      events: [sourceStateEvent(11, "closed", closeActor)],
+    }),
+    { status: "awaiting_reopen" },
+  );
   const recovery = sourceCloseRecovery({
     attempt,
     state: "open",
@@ -858,6 +900,15 @@ test("pending source recovery requires the ClawSweeper close actor and preserves
   assert.deepEqual(
     [...preservedReopenedSourceClosures(publication, preserved, intent)],
     [revision.url],
+  );
+  assert.equal(
+    checkpointSourceClosureReceipt({
+      publication,
+      receipt: preserved,
+      intent,
+      expectedCloseActor: closeActor,
+    }).identity_sha256,
+    preserved.identity_sha256,
   );
 });
 
@@ -884,6 +935,7 @@ test("source close rechecks replacement immediately and compensates post-close d
       events = [sourceStateEvent(11, "closed", closeActor)];
     },
     readRecovery: () => sourceCloseRecovery({ attempt, state, events }),
+    checkpointCompensation: () => calls.push("checkpoint"),
     compensateSource: () => {
       calls.push("compensate");
       state = "open";
@@ -892,6 +944,7 @@ test("source close rechecks replacement immediately and compensates post-close d
     readCompensatedRecovery: () => sourceCloseRecovery({ attempt, state, events }),
   });
   assert.deepEqual(calls.slice(0, 3), ["source", "replacement", "close"]);
+  assert.ok(calls.indexOf("checkpoint") < calls.indexOf("compensate"));
   assert.equal(result.status, "compensated");
   assert.equal(state, "open");
 });
@@ -918,6 +971,7 @@ test("source close fails closed when replacement drift compensation cannot reope
           events = [sourceStateEvent(11, "closed", closeActor)];
         },
         readRecovery: () => sourceCloseRecovery({ attempt, state, events }),
+        checkpointCompensation: () => undefined,
         compensateSource: () => {
           throw new Error("reopen denied");
         },
@@ -926,6 +980,43 @@ test("source close fails closed when replacement drift compensation cannot reope
     /compensation failed: reopen denied/,
   );
   assert.equal(state, "closed");
+});
+
+test("successful source reopen with stale evidence remains pending instead of finalizing close", () => {
+  const closeActor = "openclaw-clawsweeper[bot]";
+  const attempt = {
+    expected_close_actor: closeActor,
+    last_state_event_id: 10,
+  };
+  let state = "open";
+  let events: SourcePullStateEvent[] = [];
+  let replacementChecks = 0;
+  let checkpointed = false;
+  assert.throws(
+    () =>
+      runReplacementBoundSourceClose({
+        assertSourceOpen: () => undefined,
+        assertReplacementOpen: () => {
+          replacementChecks += 1;
+          if (replacementChecks > 1) throw new Error("replacement drifted");
+        },
+        closeSource: () => {
+          state = "closed";
+          events = [sourceStateEvent(11, "closed", closeActor)];
+        },
+        readRecovery: () => sourceCloseRecovery({ attempt, state, events }),
+        checkpointCompensation: () => {
+          checkpointed = true;
+        },
+        compensateSource: () => {
+          state = "open";
+        },
+        readCompensatedRecovery: () => sourceCloseRecovery({ attempt, state, events }),
+      }),
+    /reopen evidence is not yet durable/,
+  );
+  assert.equal(checkpointed, true);
+  assert.equal(state, "open");
 });
 
 test("completed source closeout distinguishes a later human reopen", () => {
@@ -1049,6 +1140,10 @@ test("publication checkpoint binds source closeout and every mutation rechecks l
   assert.match(
     closeout,
     /"pr", "close"[\s\S]*completePendingSourceClosureReceipt\(\{[\s\S]*revision: action\.revision,[\s\S]*writeJson\(publicationReceiptPath, currentReceipt\)/,
+  );
+  assert.ok(
+    closeout.indexOf("checkpointPendingSourceReopenReceipt") <
+      closeout.indexOf("compensateSource:"),
   );
   assert.match(
     closeout,
