@@ -1754,13 +1754,14 @@ function compileWorkspacePattern(pattern: string): WorkspacePatternToken[] {
   if (pattern.length > MAX_WORKSPACE_PATTERN_LENGTH) {
     throw new Error("workspace pattern exceeds the maximum supported length");
   }
+  const characters = [...pattern];
   const tokens: WorkspacePatternToken[] = [];
-  for (let index = 0; index < pattern.length; index += 1) {
-    if (pattern[index] !== "*") {
-      tokens.push({ kind: "literal", value: pattern[index]! });
+  for (let index = 0; index < characters.length; index += 1) {
+    if (characters[index] !== "*") {
+      tokens.push({ kind: "literal", value: characters[index]! });
       continue;
     }
-    const treeWildcard = pattern[index + 1] === "*";
+    const treeWildcard = characters[index + 1] === "*";
     if (treeWildcard) index += 1;
     tokens.push({ kind: treeWildcard ? "tree_wildcard" : "segment_wildcard" });
   }

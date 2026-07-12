@@ -735,6 +735,8 @@ test("workspace glob matching is bounded for adversarial target patterns", () =>
   assert.equal(workspacePatternMatches("packages/**/test-*", "packages/a/b/test-unit"), true);
   assert.equal(workspacePatternMatches("packages/*", "packages/a/b"), false);
   assert.equal(workspacePatternMatches("packages/[app]", "packages/[app]"), true);
+  assert.equal(workspacePatternMatches("packages/🚀", "packages/🚀"), true);
+  assert.equal(workspacePatternMatches("packages/*", "packages/🚀"), true);
   assert.throws(
     () => workspacePatternMatches("*".repeat(1_025), "packages/app"),
     /maximum supported length/,
