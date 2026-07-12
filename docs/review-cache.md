@@ -22,6 +22,7 @@ A structural hit requires all of the following:
   and linked-item metadata are unchanged and complete;
 - no explicit relation, matching local report, Gitcrawl cluster member, or
   enabled GitHub related-item search result can contribute review context;
+- bounded PR check runs and commit statuses are unchanged and complete;
 - the target branch head is unchanged;
 - the complete hydrated PR state is unchanged, including head and base SHAs,
   draft and mergeability state, diff counts, and commit count; and
@@ -42,17 +43,20 @@ that anchor again.
 Before carrying a structural hit, ClawSweeper acquires the normal durable review
 lease for the unchanged PR head or issue source revision. Missing coordination,
 an incomplete lease tuple, or a concurrent review always disables reuse.
-ClawSweeper then repeats the bounded probe under that lease; any intervening
-non-ClawSweeper activity forces full hydration.
+ClawSweeper then refreshes target and release state and repeats the bounded
+metadata and check-state probes under that lease; any intervening drift forces
+full hydration.
 
 ## Semantic Stage
 
 After hydration, pull requests can reuse a prior completed keep-open report when
 the code is semantically unchanged even if the head SHA or ordinary formatting
-changed. TypeScript and JavaScript patches are tokenized with the TypeScript
-compiler scanner. Whitespace and ordinary comments are ignored, while
-`@ts-*`, triple-slash reference, source-map, source URL, and shebang directives
-remain part of the digest. Complete JSON hunks are parsed and canonicalized.
+changed. TypeScript and JavaScript patches are parsed through the TypeScript
+compiler AST service. Whitespace and ordinary comments are ignored where
+lexical state is established, while parser structure, `@ts-*`, triple-slash
+reference, source-map, source URL, shebang, and tooling directives remain part
+of the digest. Complete JSON hunks are parsed and compacted without reordering
+object keys.
 
 Semantic reuse requires:
 
@@ -64,7 +68,8 @@ Semantic reuse requires:
 - a prior completed keep-open report within the normal 14-day ceiling; and
 - the normal durable review lease.
 
-Unsupported languages, deletions, renames, binary or missing patches, prompt
+Unsupported languages, isolated mid-file or multi-hunk compiler patches,
+compiler parse failures, deletions, renames, binary or missing patches, prompt
 truncation, malformed hunks, lexical ambiguity, partial JSON, incomplete check
 state, and truncated commit context retain an exact digest for audit but cannot
 use semantic reuse.
