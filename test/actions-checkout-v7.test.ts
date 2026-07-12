@@ -26,19 +26,37 @@ const checkoutReferences = actionFiles.flatMap((path) =>
   readFileSync(path, "utf8")
     .split("\n")
     .filter((line) => line.includes("actions/checkout@"))
-    .map((line) => ({ path, reference: line.trim().replace(/^-?\s*uses:\s*/, "") })),
+    .map((line) => ({
+      path,
+      reference: line
+        .trim()
+        .replace(/^-?\s*uses:\s*/, "")
+        .replace(/\s+#.*$/, ""),
+    })),
 );
+const checkoutV7Commit = "9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0";
 
 test("every checkout uses v7 without disabling its fork-PR guard", () => {
   assert.ok(checkoutReferences.length > 0, "expected checkout action references");
-  assert.deepEqual(
-    [...new Set(checkoutReferences.map(({ reference }) => reference))],
-    ["actions/checkout@v7"],
-    checkoutReferences.map(({ path, reference }) => `${path}: ${reference}`).join("\n"),
-  );
+  for (const { path, reference } of checkoutReferences) {
+    assert.ok(
+      reference === "actions/checkout@v7" || reference === `actions/checkout@${checkoutV7Commit}`,
+      `${path}: ${reference}`,
+    );
+  }
 
   const sources = actionFiles.map((path) => readFileSync(path, "utf8")).join("\n");
   assert.doesNotMatch(sources, /allow-unsafe-pr-checkout:\s*true/);
+});
+
+test("production crawl-remote checkout is pinned to the audited v7 commit", () => {
+  const workflow = parse(
+    readFileSync(".github/workflows/deploy-crawl-remote.yml", "utf8"),
+  ) as WorkflowDocument;
+  const checkout = Object.values(workflow.jobs ?? {})
+    .flatMap((job) => job.steps ?? [])
+    .find((step) => step.uses?.startsWith("actions/checkout@"));
+  assert.equal(checkout?.uses, `actions/checkout@${checkoutV7Commit}`);
 });
 
 test("trusted-event workflows explicitly checkout the default branch", () => {

@@ -77,8 +77,7 @@ jobs:
           echo "deploy_sha=$REQUESTED_SHA" >> "$GITHUB_OUTPUT"
 
       - name: Checkout approved crawl-remote main
-        # YAML \u0040 is "@"; the parsed action is the immutable checkout v7 pin.
-        uses: "actions/checkout\u00409c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0" # v7
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           repository: openclaw/crawl-remote
           ref: ${{ steps.authorize.outputs.deploy_sha }}
@@ -138,7 +137,7 @@ jobs:
           test -n "$CLOUDFLARE_API_TOKEN"
           npm run db:migrate:remote
 
-          npx wrangler d1 execute crawl-remote \
+          ./node_modules/.bin/wrangler d1 execute crawl-remote \
             --remote \
             --json \
             --command \

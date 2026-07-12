@@ -89,7 +89,8 @@ test("crawl-remote deployment preflights before the immutable mutation pair", ()
   );
   const migration = step("Apply remote D1 migrations");
   assert.match(migration.run ?? "", /npm run db:migrate:remote/);
-  assert.match(migration.run ?? "", /wrangler d1 execute crawl-remote/);
+  assert.match(migration.run ?? "", /\.\/node_modules\/\.bin\/wrangler d1 execute crawl-remote/);
+  assert.doesNotMatch(migration.run ?? "", /\bnpx\b|npm exec/);
   assert.match(migration.run ?? "", /--remote/);
   assert.match(migration.run ?? "", /--json/);
   assert.match(
