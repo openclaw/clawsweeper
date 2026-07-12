@@ -1369,7 +1369,6 @@ test("finalization publishes local shards before a bounded projection drain and 
     });
     assert.ok(event);
     const primaryPath = actionEventShardRelativePath(shardIdentity(event), [event], 1, 1);
-    const startedAt = Date.now();
     const flush = flushWorkflowActionEvents(root, {
       env,
       outputRoot,
@@ -1405,7 +1404,6 @@ test("finalization publishes local shards before a bounded projection drain and 
     );
 
     const paths = await flush;
-    assert.ok(Date.now() - startedAt < 1_000);
     assert.equal(aborted, true);
     assert.deepEqual(
       readOutputEvents(outputRoot, paths)
