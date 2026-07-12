@@ -795,7 +795,6 @@ export function createActionEvent(
   options: { now?: () => Date; generatedOccurredAt?: string } = {},
 ): ActionEvent {
   const semantic = actionEventSemanticValue(input);
-  const semanticSha256 = sha256(actionLedgerJson(semantic));
   const recordedAt = (options.now ?? (() => new Date()))().toISOString();
   const occurredAtSource: ActionEventOccurrenceSource = input.occurredAt ? "source" : "generated";
   const occurredAt = input.occurredAt
@@ -803,6 +802,7 @@ export function createActionEvent(
     : options.generatedOccurredAt
       ? requiredTimestamp(options.generatedOccurredAt, "generated action event occurredAt")
       : recordedAt;
+  const semanticSha256 = actionEventSemanticSha256(semantic, occurredAt, occurredAtSource);
   const eventId = actionEventId(semantic.subject.repository, input.eventKey);
   if (semantic.parent_event_id === eventId) {
     throw new Error("action event cannot reference itself as its parent");
@@ -1473,6 +1473,18 @@ export function actionEventReplayJson(event: ActionEvent): string {
   return actionLedgerJson(replayValue);
 }
 
+function actionEventSemanticSha256(
+  semantic: ReturnType<typeof actionEventSemanticValue>,
+  occurredAt: string,
+  occurredAtSource: ActionEventOccurrenceSource,
+): string {
+  const occurrence =
+    occurredAtSource === "source"
+      ? { occurred_at: occurredAt, occurred_at_source: occurredAtSource }
+      : { occurred_at_source: occurredAtSource };
+  return sha256(actionLedgerJson({ occurrence, semantic }));
+}
+
 export function actionEventShardsReplayEquivalent(
   left: readonly ActionEvent[],
   right: readonly ActionEvent[],
@@ -1606,7 +1618,9 @@ export function validateActionEvent(value: unknown, source = "action event"): Ac
   if (actionEventId(semantic.subject.repository, event.event_key) !== event.event_id) {
     throw new Error(`invalid action event identity: ${source}`);
   }
-  if (sha256(actionLedgerJson(semantic)) !== event.semantic_sha256) {
+  const occurredAt = requiredTimestamp(String(event.occurred_at ?? ""), "action event occurred_at");
+  const occurredAtSource = requiredOccurrenceSource(event.occurred_at_source);
+  if (actionEventSemanticSha256(semantic, occurredAt, occurredAtSource) !== event.semantic_sha256) {
     throw new Error(`invalid action event semantic digest: ${source}`);
   }
   const canonical = canonicalJsonValue({
@@ -1615,8 +1629,8 @@ export function validateActionEvent(value: unknown, source = "action event"): Ac
     event_id: event.event_id,
     event_key: event.event_key,
     semantic_sha256: event.semantic_sha256,
-    occurred_at: requiredTimestamp(String(event.occurred_at ?? ""), "action event occurred_at"),
-    occurred_at_source: requiredOccurrenceSource(event.occurred_at_source),
+    occurred_at: occurredAt,
+    occurred_at_source: occurredAtSource,
     recorded_at: requiredTimestamp(String(event.recorded_at ?? ""), "action event recorded_at"),
     ...semantic,
   }) as ActionEvent;

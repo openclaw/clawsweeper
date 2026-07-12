@@ -1249,6 +1249,27 @@ test("state shard imports reject forged confidential event-key scopes", async ()
   );
 });
 
+test("state shard imports reject forged source occurrence provenance", async () => {
+  const root = tempRoot();
+  const source = path.join(root, "source");
+  recordReview(root);
+  const [relativePath] = await flushWorkflowActionEvents(root, {
+    env: workflowEnv(),
+    outputRoot: source,
+  });
+  assert.ok(relativePath);
+  const shardPath = path.join(source, relativePath);
+  const event = JSON.parse(fs.readFileSync(shardPath, "utf8"));
+  event.occurred_at = "2020-01-01T00:00:00.000Z";
+  event.occurred_at_source = "generated";
+  fs.writeFileSync(shardPath, `${actionLedgerJson(event)}\n`, "utf8");
+
+  assert.throws(
+    () => importActionEventShards(source, path.join(root, "destination")),
+    /invalid action event semantic digest/,
+  );
+});
+
 test("state shard imports ignore unrelated entries and reject links in the ledger subtree", () => {
   const root = tempRoot();
   const source = path.join(root, "source");

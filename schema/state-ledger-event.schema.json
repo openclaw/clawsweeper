@@ -67,7 +67,8 @@
       "description": "Stable side-effect identity that remains constant across retries of the same mutation."
     },
     "semantic_sha256": {
-      "$ref": "#/$defs/sha256"
+      "$ref": "#/$defs/sha256",
+      "description": "Digest of canonical semantic content plus source occurrence provenance. Generated wall-clock values remain first-writer metadata."
     },
     "occurred_at": {
       "type": "string",

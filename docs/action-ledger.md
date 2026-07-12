@@ -81,10 +81,11 @@ confidential-identifier checks as every other durable machine-text field.
   replay equality. When equivalent fresh-root reconstructions reach an existing
   shard or import destination, the existing first-writer bytes win.
 - `occurred_at_source` distinguishes caller-supplied source timestamps from
-  writer-generated clock metadata. Source timestamps must match across
-  duplicate events. Generated occurrence and recording clocks are first-writer
-  metadata, so equivalent fresh-root reconstruction cannot conflict solely
-  because another writer observed a different wall clock.
+  writer-generated clock metadata. The semantic digest binds source timestamps
+  and the source/generated marker, so chronology cannot be downgraded without
+  invalidating the event. Generated occurrence and recording clocks remain
+  first-writer metadata, so equivalent fresh-root reconstruction cannot conflict
+  solely because another writer observed a different wall clock.
 - Shard line order is a deterministic topological order: causal children follow
   their in-shard parents. Independent source-timestamp events use occurrence
   time and event ID as stable tie-breakers; generated-clock events use stable

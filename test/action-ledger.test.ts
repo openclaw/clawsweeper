@@ -1331,7 +1331,7 @@ test("shard paths use the stable run partition instead of event ordering", () =>
   );
 });
 
-test("duplicate event IDs preserve first-writer metadata but require identical source metadata", () => {
+test("duplicate event IDs preserve recording metadata and reject changed source provenance", () => {
   const identity = {
     repository: producer.repository,
     sha: producer.sha,
@@ -1351,7 +1351,7 @@ test("duplicate event IDs preserve first-writer metadata but require identical s
 
   assert.throws(
     () => actionEventShardRelativePath(identity, [first, conflicting]),
-    /conflicting duplicate metadata/,
+    /action event conflict/,
   );
 
   const replay = createActionEvent(reviewInput(), {
@@ -1405,8 +1405,22 @@ test("replaying an event with generated occurrence time preserves the first writ
   assert.equal(replay.status, "unchanged");
   assert.equal(first.event.occurred_at_source, "generated");
   assert.equal(replay.event.occurred_at_source, "generated");
+  assert.equal(replay.event.semantic_sha256, first.event.semantic_sha256);
   assert.equal(replay.event.occurred_at, first.event.occurred_at);
   assert.equal(replay.event.recorded_at, first.event.recorded_at);
+});
+
+test("source occurrence provenance is bound into the semantic digest", () => {
+  const source = createActionEvent(reviewInput(), {
+    now: () => new Date("2026-07-12T10:01:00.000Z"),
+  });
+  const generated = createActionEvent(reviewInput({ occurredAt: undefined }), {
+    now: () => new Date("2026-07-12T10:00:00.000Z"),
+  });
+
+  assert.equal(source.occurred_at, generated.occurred_at);
+  assert.notEqual(source.occurred_at_source, generated.occurred_at_source);
+  assert.notEqual(source.semantic_sha256, generated.semantic_sha256);
 });
 
 test("generated occurrence clocks cannot reverse deterministic shard ordering", () => {
