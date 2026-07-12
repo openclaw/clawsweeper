@@ -8,9 +8,17 @@ on:
         required: true
         type: string
       main_sha:
-        description: Full 40-character SHA at the tip of crawl-remote main
+        description: Full 40-character SHA from crawl-remote main
         required: true
         type: string
+      observation_order_state:
+        description: Expected Gitcrawl observation-order rollout state
+        required: true
+        default: dormant
+        type: choice
+        options:
+          - dormant
+          - active
 
 permissions: {}
 
@@ -19,8 +27,8 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  deploy:
-    name: Migrate and deploy immutable crawl-remote main
+  preflight:
+    name: Build immutable crawl-remote release artifact
     if: >-
       ${{
         github.actor == 'vincentkoc' &&
@@ -32,14 +40,14 @@ jobs:
       }}
     runs-on: ubuntu-latest
     timeout-minutes: 25
-    environment:
-      name: crawl-remote-production
-      url: https://crawl-remote.services-91b.workers.dev
+    outputs:
+      artifact_name: ${{ steps.authorize.outputs.artifact_name }}
+      deploy_sha: ${{ steps.authorize.outputs.deploy_sha }}
+      observation_order_state: ${{ steps.authorize.outputs.observation_order_state }}
+      receipt_name: ${{ steps.authorize.outputs.receipt_name }}
     env:
       CI: "true"
       CLAWSWEEPER_APP_CLIENT_ID: Iv23liOECG0slfuhz093
-      CLOUDFLARE_ACCOUNT_ID: 91b59577e757131d68d55a471fe32aca
-      PRODUCTION_URL: https://crawl-remote.services-91b.workers.dev
       TARGET_REPOSITORY: openclaw/crawl-remote
     steps:
       - name: Create exact-repository read token
@@ -56,6 +64,7 @@ jobs:
         id: authorize
         env:
           GH_TOKEN: ${{ steps.target-token.outputs.token }}
+          OBSERVATION_ORDER_STATE: ${{ inputs.observation_order_state }}
           REQUESTED_SHA: ${{ inputs.main_sha }}
         shell: bash
         run: |
@@ -65,18 +74,34 @@ jobs:
             echo "::error::main_sha must be a full lowercase 40-character commit SHA."
             exit 1
           fi
-
-          CURRENT_MAIN_SHA="$(
-            gh api "repos/$TARGET_REPOSITORY/commits/main" --jq '.sha'
-          )"
-          if [[ "$REQUESTED_SHA" != "$CURRENT_MAIN_SHA" ]]; then
-            echo "::error::main_sha does not match the current crawl-remote main tip."
+          if [[ "$OBSERVATION_ORDER_STATE" != "dormant" && "$OBSERVATION_ORDER_STATE" != "active" ]]; then
+            echo "::error::observation_order_state must be dormant or active."
             exit 1
           fi
 
-          echo "deploy_sha=$REQUESTED_SHA" >> "$GITHUB_OUTPUT"
+          current_main_sha="$(
+            gh api "repos/$TARGET_REPOSITORY/commits/main" --jq '.sha'
+          )"
+          comparison_status="$(
+            gh api \
+              "repos/$TARGET_REPOSITORY/compare/${REQUESTED_SHA}...${current_main_sha}" \
+              --jq '.status'
+          )"
+          if [[ "$comparison_status" != "identical" && "$comparison_status" != "ahead" ]]; then
+            echo "::error::main_sha is not an ancestor of the current crawl-remote main tip."
+            exit 1
+          fi
 
-      - name: Checkout approved crawl-remote main
+          artifact_name="crawl-remote-release-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${REQUESTED_SHA}-${OBSERVATION_ORDER_STATE}"
+          receipt_name="crawl-remote-release-receipt-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${REQUESTED_SHA}-${OBSERVATION_ORDER_STATE}.json"
+          {
+            echo "artifact_name=$artifact_name"
+            echo "deploy_sha=$REQUESTED_SHA"
+            echo "observation_order_state=$OBSERVATION_ORDER_STATE"
+            echo "receipt_name=$receipt_name"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Checkout approved crawl-remote release
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           repository: openclaw/crawl-remote
@@ -108,40 +133,622 @@ jobs:
       - name: Test
         run: npm test
 
-      - name: Validate Worker bundle
-        run: npm run deploy -- --dry-run --outdir .wrangler/deploy-dry-run
-
-      - name: Freeze current main as the release unit
+      - name: Build deploy bundle
         env:
-          DEPLOY_SHA: ${{ steps.authorize.outputs.deploy_sha }}
-          GH_TOKEN: ${{ steps.target-token.outputs.token }}
+          BUNDLE_DIR: ${{ runner.temp }}/crawl-remote-bundle
         shell: bash
         run: |
           set -euo pipefail
+          rm -rf "$BUNDLE_DIR"
+          npm run deploy -- --dry-run --outdir "$BUNDLE_DIR"
 
-          CURRENT_MAIN_SHA="$(
+      - name: Package bounded release artifact
+        env:
+          ARTIFACT_NAME: ${{ steps.authorize.outputs.artifact_name }}
+          ARTIFACT_ROOT: ${{ runner.temp }}/${{ steps.authorize.outputs.artifact_name }}
+          BUNDLE_DIR: ${{ runner.temp }}/crawl-remote-bundle
+          DEPLOY_SHA: ${{ steps.authorize.outputs.deploy_sha }}
+          OBSERVATION_ORDER_STATE: ${{ steps.authorize.outputs.observation_order_state }}
+          RECEIPT_NAME: ${{ steps.authorize.outputs.receipt_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'NODE'
+          import { createHash } from 'node:crypto';
+          import {
+            copyFileSync,
+            lstatSync,
+            mkdirSync,
+            readFileSync,
+            readdirSync,
+            rmSync,
+            writeFileSync,
+          } from 'node:fs';
+          import { basename, join } from 'node:path';
+
+          const {
+            ARTIFACT_NAME: artifactName,
+            ARTIFACT_ROOT: artifactRoot,
+            BUNDLE_DIR: bundleDir,
+            DEPLOY_SHA: targetSha,
+            GITHUB_RUN_ATTEMPT: runAttemptText,
+            GITHUB_RUN_ID: runId,
+            OBSERVATION_ORDER_STATE: observationOrderState,
+            RECEIPT_NAME: receiptName,
+          } = process.env;
+          const runAttempt = Number(runAttemptText);
+          if (
+            !artifactName ||
+            !artifactRoot ||
+            !bundleDir ||
+            !/^[0-9a-f]{40}$/.test(targetSha ?? '') ||
+            !/^[0-9]+$/.test(runId ?? '') ||
+            !Number.isSafeInteger(runAttempt) ||
+            runAttempt < 1 ||
+            !['dormant', 'active'].includes(observationOrderState ?? '') ||
+            !receiptName
+          ) {
+            throw new Error('invalid release artifact identity');
+          }
+
+          const expectedArtifactName =
+            `crawl-remote-release-${runId}-${runAttempt}-${targetSha}-${observationOrderState}`;
+          const expectedReceiptName =
+            `crawl-remote-release-receipt-${runId}-${runAttempt}-${targetSha}-${observationOrderState}.json`;
+          if (artifactName !== expectedArtifactName || receiptName !== expectedReceiptName) {
+            throw new Error('release artifact identity is not bound to this run and SHA');
+          }
+
+          function assertRegularFile(path, label) {
+            const stat = lstatSync(path);
+            if (!stat.isFile() || stat.isSymbolicLink()) {
+              throw new Error(`${label} must be one regular file`);
+            }
+            return stat;
+          }
+
+          function assertExactKeys(value, keys, label) {
+            if (!value || typeof value !== 'object' || Array.isArray(value)) {
+              throw new Error(`${label} must be an object`);
+            }
+            const actual = Object.keys(value).sort();
+            const expected = [...keys].sort();
+            if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+              throw new Error(`${label} has unexpected fields`);
+            }
+          }
+
+          const sourceConfigPath = 'wrangler.jsonc';
+          assertRegularFile(sourceConfigPath, sourceConfigPath);
+          const sourceConfig = JSON.parse(readFileSync(sourceConfigPath, 'utf8'));
+          assertExactKeys(
+            sourceConfig,
+            [
+              '$schema',
+              'compatibility_date',
+              'd1_databases',
+              'main',
+              'name',
+              'observability',
+              'r2_buckets',
+              'routes',
+              'vars',
+              'workers_dev',
+            ],
+            'source Wrangler config',
+          );
+          if (
+            sourceConfig.name !== 'crawl-remote' ||
+            sourceConfig.main !== 'src/index.ts' ||
+            sourceConfig.workers_dev !== true ||
+            sourceConfig.vars?.CRAWL_REMOTE_RELEASE_SHA !== undefined
+          ) {
+            throw new Error('source Wrangler config has an unexpected deployment identity');
+          }
+          if (
+            JSON.stringify(sourceConfig.routes) !==
+              JSON.stringify([
+                {
+                  pattern: 'reports.openclaw.ai/crawl-remote/*',
+                  zone_name: 'openclaw.ai',
+                },
+              ]) ||
+            JSON.stringify(sourceConfig.d1_databases) !==
+              JSON.stringify([
+                {
+                  binding: 'DB',
+                  database_name: 'crawl-remote',
+                  database_id: '42baacd3-c917-400f-a12f-e0fada21e11f',
+                },
+              ]) ||
+            JSON.stringify(sourceConfig.r2_buckets) !==
+              JSON.stringify([
+                {
+                  binding: 'ARCHIVES',
+                  bucket_name: 'crawl-remote-archives',
+                },
+              ])
+          ) {
+            throw new Error('source Wrangler config targets unexpected production resources');
+          }
+
+          const deploymentConfig = {
+            name: sourceConfig.name,
+            compatibility_date: sourceConfig.compatibility_date,
+            workers_dev: sourceConfig.workers_dev,
+            observability: sourceConfig.observability,
+            vars: sourceConfig.vars,
+            routes: sourceConfig.routes,
+            d1_databases: sourceConfig.d1_databases,
+            r2_buckets: sourceConfig.r2_buckets,
+          };
+
+          rmSync(artifactRoot, { recursive: true, force: true });
+          mkdirSync(join(artifactRoot, 'bundle'), { recursive: true });
+          mkdirSync(join(artifactRoot, 'migrations'), { recursive: true });
+
+          const bundleSource = join(bundleDir, 'index.js');
+          const bundleStat = assertRegularFile(bundleSource, 'deploy bundle');
+          if (bundleStat.size < 1 || bundleStat.size > 5 * 1024 * 1024) {
+            throw new Error('deploy bundle is empty or exceeds 5 MiB');
+          }
+          copyFileSync(bundleSource, join(artifactRoot, 'bundle', 'index.js'));
+          writeFileSync(
+            join(artifactRoot, 'wrangler.json'),
+            `${JSON.stringify(deploymentConfig, null, 2)}\n`,
+          );
+
+          const migrationEntries = readdirSync('migrations', { withFileTypes: true })
+            .sort((a, b) => a.name.localeCompare(b.name));
+          if (migrationEntries.length === 0) {
+            throw new Error('release artifact requires at least one D1 migration');
+          }
+          for (const entry of migrationEntries) {
+            if (!entry.isFile() || !/^[0-9]{4}_[a-z0-9_]+\.sql$/.test(entry.name)) {
+              throw new Error(`invalid migration artifact entry: ${entry.name}`);
+            }
+            const source = join('migrations', entry.name);
+            const stat = assertRegularFile(source, `migration ${entry.name}`);
+            if (stat.size < 1 || stat.size > 1024 * 1024) {
+              throw new Error(`migration ${entry.name} is empty or exceeds 1 MiB`);
+            }
+            copyFileSync(source, join(artifactRoot, 'migrations', basename(entry.name)));
+          }
+
+          const payloadPaths = [
+            'bundle/index.js',
+            'wrangler.json',
+            ...migrationEntries.map((entry) => `migrations/${entry.name}`),
+          ].sort();
+          const files = payloadPaths.map((path) => {
+            const content = readFileSync(join(artifactRoot, path));
+            return {
+              path,
+              sha256: createHash('sha256').update(content).digest('hex'),
+              bytes: content.byteLength,
+            };
+          });
+          const manifest = {
+            schema_version: 1,
+            target_repository: 'openclaw/crawl-remote',
+            target_sha: targetSha,
+            run_id: runId,
+            run_attempt: runAttempt,
+            artifact_name: artifactName,
+            observation_order_state: observationOrderState,
+            receipt_name: receiptName,
+            files,
+          };
+          writeFileSync(
+            join(artifactRoot, 'manifest.json'),
+            `${JSON.stringify(manifest, null, 2)}\n`,
+          );
+          NODE
+
+      - name: Upload immutable release artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ${{ steps.authorize.outputs.artifact_name }}
+          path: ${{ runner.temp }}/${{ steps.authorize.outputs.artifact_name }}
+          if-no-files-found: error
+          include-hidden-files: false
+          compression-level: 0
+          overwrite: false
+          retention-days: 1
+
+  deploy:
+    name: Migrate and deploy verified crawl-remote release
+    needs: preflight
+    if: >-
+      ${{
+        needs.preflight.result == 'success' &&
+        github.actor == 'vincentkoc' &&
+        github.actor_id == '25068' &&
+        github.triggering_actor == 'vincentkoc' &&
+        github.run_attempt == 1 &&
+        github.ref == 'refs/heads/main' &&
+        inputs.confirmation == 'deploy crawl-remote production'
+      }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    environment:
+      name: crawl-remote-production
+      url: https://crawl-remote.services-91b.workers.dev
+    defaults:
+      run:
+        shell: bash --noprofile --norc -euo pipefail {0}
+    env:
+      ARTIFACT_NAME: ${{ needs.preflight.outputs.artifact_name }}
+      BASH_ENV: ""
+      CI: "true"
+      CLAWSWEEPER_APP_CLIENT_ID: Iv23liOECG0slfuhz093
+      CLOUDFLARE_ACCOUNT_ID: 91b59577e757131d68d55a471fe32aca
+      DEPLOY_SHA: ${{ needs.preflight.outputs.deploy_sha }}
+      ENV: ""
+      NODE_OPTIONS: ""
+      NPM_CONFIG_IGNORE_SCRIPTS: "true"
+      NPM_CONFIG_USERCONFIG: /dev/null
+      OBSERVATION_ORDER_STATE: ${{ needs.preflight.outputs.observation_order_state }}
+      PRODUCTION_URL: https://crawl-remote.services-91b.workers.dev
+      RECEIPT_NAME: ${{ needs.preflight.outputs.receipt_name }}
+      TARGET_REPOSITORY: openclaw/crawl-remote
+      WRANGLER_VERSION: 4.107.1
+    steps:
+      - name: Setup trusted Node runtime
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version: 24
+
+      - name: Install exact trusted Wrangler
+        env:
+          WRANGLER_PREFIX: ${{ runner.temp }}/crawl-remote-wrangler-4.107.1
+        run: |
+          unset BASH_ENV ENV CDPATH GLOBIGNORE NODE_OPTIONS
+          test ! -e "$WRANGLER_PREFIX"
+          mkdir -p "$WRANGLER_PREFIX"
+          npm install \
+            --ignore-scripts \
+            --no-audit \
+            --no-fund \
+            --no-save \
+            --prefix "$WRANGLER_PREFIX" \
+            "wrangler@$WRANGLER_VERSION"
+          actual_version="$("$WRANGLER_PREFIX/node_modules/.bin/wrangler" --version)"
+          test "$actual_version" = "$WRANGLER_VERSION"
+
+      - name: Download immutable release artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: ${{ needs.preflight.outputs.artifact_name }}
+          path: ${{ runner.temp }}/crawl-remote-release
+
+      - name: Verify bounded release artifact
+        env:
+          RECEIPT_PATH: ${{ runner.temp }}/${{ needs.preflight.outputs.receipt_name }}
+          RELEASE_ROOT: ${{ runner.temp }}/crawl-remote-release
+        run: |
+          unset BASH_ENV ENV CDPATH GLOBIGNORE NODE_OPTIONS
+          node --input-type=module <<'NODE'
+          import { createHash } from 'node:crypto';
+          import {
+            lstatSync,
+            readFileSync,
+            readdirSync,
+            writeFileSync,
+          } from 'node:fs';
+          import { join, relative, sep } from 'node:path';
+
+          const {
+            ARTIFACT_NAME: artifactName,
+            DEPLOY_SHA: targetSha,
+            GITHUB_RUN_ATTEMPT: runAttemptText,
+            GITHUB_RUN_ID: runId,
+            OBSERVATION_ORDER_STATE: observationOrderState,
+            RECEIPT_NAME: receiptName,
+            RECEIPT_PATH: receiptPath,
+            RELEASE_ROOT: releaseRoot,
+          } = process.env;
+          const runAttempt = Number(runAttemptText);
+          const expectedArtifactName =
+            `crawl-remote-release-${runId}-${runAttempt}-${targetSha}-${observationOrderState}`;
+          const expectedReceiptName =
+            `crawl-remote-release-receipt-${runId}-${runAttempt}-${targetSha}-${observationOrderState}.json`;
+          if (
+            !releaseRoot ||
+            !receiptPath ||
+            artifactName !== expectedArtifactName ||
+            receiptName !== expectedReceiptName ||
+            !/^[0-9a-f]{40}$/.test(targetSha ?? '') ||
+            !/^[0-9]+$/.test(runId ?? '') ||
+            !Number.isSafeInteger(runAttempt) ||
+            runAttempt < 1 ||
+            !['dormant', 'active'].includes(observationOrderState ?? '')
+          ) {
+            throw new Error('downloaded artifact identity is not bound to this run and SHA');
+          }
+
+          function assertExactKeys(value, keys, label) {
+            if (!value || typeof value !== 'object' || Array.isArray(value)) {
+              throw new Error(`${label} must be an object`);
+            }
+            const actual = Object.keys(value).sort();
+            const expected = [...keys].sort();
+            if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+              throw new Error(`${label} has unexpected fields`);
+            }
+          }
+
+          function walk(root, directory = root) {
+            const files = [];
+            for (const entry of readdirSync(directory, { withFileTypes: true })) {
+              const absolute = join(directory, entry.name);
+              const stat = lstatSync(absolute);
+              if (stat.isSymbolicLink()) {
+                throw new Error(`artifact contains symlink: ${relative(root, absolute)}`);
+              }
+              if (stat.isDirectory()) {
+                files.push(...walk(root, absolute));
+              } else if (stat.isFile()) {
+                files.push(relative(root, absolute).split(sep).join('/'));
+              } else {
+                throw new Error(`artifact contains non-file entry: ${relative(root, absolute)}`);
+              }
+            }
+            return files;
+          }
+
+          const manifestPath = join(releaseRoot, 'manifest.json');
+          const rawManifest = readFileSync(manifestPath, 'utf8');
+          if (Buffer.byteLength(rawManifest) > 128 * 1024) {
+            throw new Error('release manifest exceeds 128 KiB');
+          }
+          const manifest = JSON.parse(rawManifest);
+          assertExactKeys(
+            manifest,
+            [
+              'artifact_name',
+              'files',
+              'observation_order_state',
+              'receipt_name',
+              'run_attempt',
+              'run_id',
+              'schema_version',
+              'target_repository',
+              'target_sha',
+            ],
+            'release manifest',
+          );
+          if (
+            manifest.schema_version !== 1 ||
+            manifest.target_repository !== 'openclaw/crawl-remote' ||
+            manifest.target_sha !== targetSha ||
+            manifest.run_id !== runId ||
+            manifest.run_attempt !== runAttempt ||
+            manifest.artifact_name !== artifactName ||
+            manifest.observation_order_state !== observationOrderState ||
+            manifest.receipt_name !== receiptName ||
+            !Array.isArray(manifest.files) ||
+            manifest.files.length < 3
+          ) {
+            throw new Error('release manifest identity is invalid');
+          }
+
+          const canonicalFiles = [];
+          const declaredPaths = new Set();
+          for (const file of manifest.files) {
+            assertExactKeys(file, ['bytes', 'path', 'sha256'], 'release manifest file');
+            if (
+              typeof file.path !== 'string' ||
+              (
+                file.path !== 'bundle/index.js' &&
+                file.path !== 'wrangler.json' &&
+                !/^migrations\/[0-9]{4}_[a-z0-9_]+\.sql$/.test(file.path)
+              ) ||
+              !/^[0-9a-f]{64}$/.test(file.sha256) ||
+              !Number.isSafeInteger(file.bytes) ||
+              file.bytes < 1 ||
+              declaredPaths.has(file.path)
+            ) {
+              throw new Error(`invalid release manifest path: ${String(file.path)}`);
+            }
+            const maxBytes = file.path === 'bundle/index.js'
+              ? 5 * 1024 * 1024
+              : file.path === 'wrangler.json'
+                ? 128 * 1024
+                : 1024 * 1024;
+            if (file.bytes > maxBytes) {
+              throw new Error(`release artifact file exceeds its size limit: ${file.path}`);
+            }
+            declaredPaths.add(file.path);
+            canonicalFiles.push({
+              path: file.path,
+              sha256: file.sha256,
+              bytes: file.bytes,
+            });
+          }
+          canonicalFiles.sort((a, b) => a.path.localeCompare(b.path));
+          if (
+            canonicalFiles[0]?.path !== 'bundle/index.js' ||
+            !declaredPaths.has('wrangler.json') ||
+            !canonicalFiles.some((file) => file.path.startsWith('migrations/'))
+          ) {
+            throw new Error('release manifest is missing required payload files');
+          }
+
+          const canonicalManifest = {
+            schema_version: 1,
+            target_repository: 'openclaw/crawl-remote',
+            target_sha: targetSha,
+            run_id: runId,
+            run_attempt: runAttempt,
+            artifact_name: artifactName,
+            observation_order_state: observationOrderState,
+            receipt_name: receiptName,
+            files: canonicalFiles,
+          };
+          if (rawManifest !== `${JSON.stringify(canonicalManifest, null, 2)}\n`) {
+            throw new Error('release manifest is not canonical');
+          }
+
+          const actualPaths = walk(releaseRoot).sort();
+          const expectedPaths = ['manifest.json', ...canonicalFiles.map((file) => file.path)].sort();
+          if (JSON.stringify(actualPaths) !== JSON.stringify(expectedPaths)) {
+            throw new Error('release artifact contains files outside the manifest allowlist');
+          }
+
+          let totalBytes = 0;
+          for (const file of canonicalFiles) {
+            const absolute = join(releaseRoot, file.path);
+            const stat = lstatSync(absolute);
+            if (!stat.isFile() || stat.isSymbolicLink() || stat.size !== file.bytes) {
+              throw new Error(`release artifact size mismatch: ${file.path}`);
+            }
+            const content = readFileSync(absolute);
+            const actualHash = createHash('sha256').update(content).digest('hex');
+            if (actualHash !== file.sha256) {
+              throw new Error(`release artifact hash mismatch: ${file.path}`);
+            }
+            totalBytes += file.bytes;
+          }
+          if (totalBytes > 10 * 1024 * 1024) {
+            throw new Error('release artifact exceeds 10 MiB');
+          }
+
+          const configRaw = readFileSync(join(releaseRoot, 'wrangler.json'), 'utf8');
+          const config = JSON.parse(configRaw);
+          assertExactKeys(
+            config,
+            [
+              'compatibility_date',
+              'd1_databases',
+              'name',
+              'observability',
+              'r2_buckets',
+              'routes',
+              'vars',
+              'workers_dev',
+            ],
+            'deployment Wrangler config',
+          );
+          if (
+            config.name !== 'crawl-remote' ||
+            config.workers_dev !== true ||
+            config.vars?.CRAWL_REMOTE_RELEASE_SHA !== undefined ||
+            Object.hasOwn(config, 'main') ||
+            Object.hasOwn(config, 'build')
+          ) {
+            throw new Error('deployment Wrangler config has unsafe execution fields');
+          }
+          if (
+            JSON.stringify(config.routes) !==
+              JSON.stringify([
+                {
+                  pattern: 'reports.openclaw.ai/crawl-remote/*',
+                  zone_name: 'openclaw.ai',
+                },
+              ]) ||
+            JSON.stringify(config.d1_databases) !==
+              JSON.stringify([
+                {
+                  binding: 'DB',
+                  database_name: 'crawl-remote',
+                  database_id: '42baacd3-c917-400f-a12f-e0fada21e11f',
+                },
+              ]) ||
+            JSON.stringify(config.r2_buckets) !==
+              JSON.stringify([
+                {
+                  binding: 'ARCHIVES',
+                  bucket_name: 'crawl-remote-archives',
+                },
+              ])
+          ) {
+            throw new Error('deployment Wrangler config targets unexpected resources');
+          }
+
+          const manifestSha256 = createHash('sha256').update(rawManifest).digest('hex');
+          const receipt = {
+            schema_version: 1,
+            target_sha: targetSha,
+            run_id: runId,
+            run_attempt: runAttempt,
+            artifact_name: artifactName,
+            observation_order_state: observationOrderState,
+            receipt_name: receiptName,
+            manifest_sha256: manifestSha256,
+          };
+          try {
+            lstatSync(receiptPath);
+            throw new Error('release receipt already exists');
+          } catch (error) {
+            if (error?.code !== 'ENOENT') throw error;
+          }
+          writeFileSync(receiptPath, `${JSON.stringify(receipt, null, 2)}\n`, {
+            flag: 'wx',
+            mode: 0o600,
+          });
+          NODE
+
+      - name: Create exact-repository resume token
+        id: target-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
+          owner: openclaw
+          repositories: crawl-remote
+          permission-contents: read
+
+      - name: Reauthorize ancestor release immediately before mutation
+        env:
+          GH_TOKEN: ${{ steps.target-token.outputs.token }}
+          RECEIPT_PATH: ${{ runner.temp }}/${{ needs.preflight.outputs.receipt_name }}
+        run: |
+          unset BASH_ENV ENV CDPATH GLOBIGNORE NODE_OPTIONS
+          test -f "$RECEIPT_PATH"
+          current_main_sha="$(
             gh api "repos/$TARGET_REPOSITORY/commits/main" --jq '.sha'
           )"
-          if [[ "$CURRENT_MAIN_SHA" != "$DEPLOY_SHA" ]]; then
-            echo "::error::crawl-remote main advanced; dispatch a new deployment."
+          comparison_status="$(
+            gh api \
+              "repos/$TARGET_REPOSITORY/compare/${DEPLOY_SHA}...${current_main_sha}" \
+              --jq '.status'
+          )"
+          if [[ "$comparison_status" != "identical" && "$comparison_status" != "ahead" ]]; then
+            echo "::error::approved crawl-remote release is no longer an ancestor of main."
             exit 1
           fi
 
-      - name: Apply remote D1 migrations
+      - name: Apply migrations and deploy verified bundle
         env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.OPENCLAW_CLOUDFLARE_WORKERS_API_TOKEN }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CRAWL_REMOTE_CLOUDFLARE_API_TOKEN }}
           FENCE_RESPONSE: ${{ runner.temp }}/crawl-remote-observation-fence.json
-        shell: bash
+          RECEIPT_PATH: ${{ runner.temp }}/${{ needs.preflight.outputs.receipt_name }}
+          RELEASE_ROOT: ${{ runner.temp }}/crawl-remote-release
+          WRANGLER_PREFIX: ${{ runner.temp }}/crawl-remote-wrangler-4.107.1
         run: |
-          set -euo pipefail
+          unset BASH_ENV ENV CDPATH GLOBIGNORE NODE_OPTIONS
           test -n "$CLOUDFLARE_API_TOKEN"
-          npm run db:migrate:remote
+          wrangler="$WRANGLER_PREFIX/node_modules/.bin/wrangler"
+          test "$("$wrangler" --version)" = "$WRANGLER_VERSION"
 
-          ./node_modules/.bin/wrangler d1 execute crawl-remote \
+          consumed_receipt="${RECEIPT_PATH}.consumed"
+          test -f "$RECEIPT_PATH"
+          test ! -e "$consumed_receipt"
+          mv -- "$RECEIPT_PATH" "$consumed_receipt"
+
+          "$wrangler" d1 migrations apply crawl-remote \
+            --remote \
+            --cwd "$RELEASE_ROOT" \
+            --config wrangler.json
+
+          "$wrangler" d1 execute crawl-remote \
             --remote \
             --json \
+            --cwd "$RELEASE_ROOT" \
+            --config wrangler.json \
             --command \
-            "select capability, migration_ready, cutover_enabled from remote_capability_fences where capability = 'gitcrawl.observation-order.v1'" \
+            "select capability, migration_ready, cutover_enabled, activated_at from remote_capability_fences where capability = 'gitcrawl.observation-order.v1'" \
             > "$FENCE_RESPONSE"
 
           node --input-type=module <<'NODE'
@@ -164,70 +771,157 @@ jobs:
           }
 
           const fence = rows[0];
+          const expectedState = process.env.OBSERVATION_ORDER_STATE;
+          const expectedCutover = expectedState === 'active' ? 1 : 0;
           if (
+            !['dormant', 'active'].includes(expectedState) ||
             fence?.capability !== 'gitcrawl.observation-order.v1' ||
-            Number(fence?.migration_ready) !== 1 ||
-            Number(fence?.cutover_enabled) !== 0
+            fence?.migration_ready !== 1 ||
+            fence?.cutover_enabled !== expectedCutover ||
+            (
+              expectedState === 'active' &&
+              (
+                typeof fence?.activated_at !== 'string' ||
+                fence.activated_at.trim().length === 0
+              )
+            ) ||
+            (expectedState === 'dormant' && fence?.activated_at !== '')
           ) {
-            throw new Error('observation-order migration is not ready and dormant');
+            throw new Error(
+              `observation-order migration does not match expected ${expectedState} state`,
+            );
           }
 
-          console.log('Observation-order migration is ready with cutover disabled.');
+          console.log(`Observation-order migration is ready and ${expectedState}.`);
           NODE
 
-      - name: Deploy Worker
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.OPENCLAW_CLOUDFLARE_WORKERS_API_TOKEN }}
-          DEPLOY_SHA: ${{ steps.authorize.outputs.deploy_sha }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          test -n "$CLOUDFLARE_API_TOKEN"
-          npm run deploy -- --message "main ${DEPLOY_SHA}"
+          "$wrangler" deploy bundle/index.js \
+            --no-bundle \
+            --strict \
+            --cwd "$RELEASE_ROOT" \
+            --config wrangler.json \
+            --var "CRAWL_REMOTE_RELEASE_SHA:$DEPLOY_SHA" \
+            --message "main ${DEPLOY_SHA}"
 
-      - name: Verify production endpoints
+      - name: Poll exact production release
         env:
           CONTRACT_RESPONSE: ${{ runner.temp }}/crawl-remote-contract.json
           HEALTH_RESPONSE: ${{ runner.temp }}/crawl-remote-health.json
-        shell: bash
         run: |
-          set -euo pipefail
+          unset BASH_ENV ENV CDPATH GLOBIGNORE NODE_OPTIONS
+          deadline=$((SECONDS + 180))
+          attempt=0
 
-          curl --fail-with-body --silent --show-error \
-            --retry 6 --retry-all-errors --retry-delay 5 \
-            --output "$HEALTH_RESPONSE" \
-            "$PRODUCTION_URL/health"
-          curl --fail-with-body --silent --show-error \
-            --retry 6 --retry-all-errors --retry-delay 5 \
-            --output "$CONTRACT_RESPONSE" \
-            "$PRODUCTION_URL/v1/contract"
+          fetch_endpoint() {
+            local url="$1"
+            local output="$2"
+            local remaining=$((deadline - SECONDS))
+            local timeout
 
-          node --input-type=module <<'NODE'
+            if (( remaining <= 0 )); then
+              return 1
+            fi
+            timeout="$remaining"
+            if (( timeout > 10 )); then
+              timeout=10
+            fi
+
+            curl --fail-with-body --silent --show-error \
+              --connect-timeout "$timeout" \
+              --max-time "$timeout" \
+              --max-filesize 1048576 \
+              --header "cache-control: no-cache" \
+              --output "$output" \
+              "$url"
+          }
+
+          while (( SECONDS < deadline )); do
+            attempt=$((attempt + 1))
+            rm -f "$HEALTH_RESPONSE" "$CONTRACT_RESPONSE"
+            if fetch_endpoint "$PRODUCTION_URL/health" "$HEALTH_RESPONSE" &&
+              fetch_endpoint "$PRODUCTION_URL/v1/contract" "$CONTRACT_RESPONSE" &&
+              node --input-type=module <<'NODE'
           import { readFileSync } from 'node:fs';
 
-          const health = JSON.parse(readFileSync(process.env.HEALTH_RESPONSE, 'utf8'));
-          if (health.ok !== true) {
-            throw new Error('production /health response is not healthy');
-          }
-
-          const contract = JSON.parse(readFileSync(process.env.CONTRACT_RESPONSE, 'utf8'));
-          if (contract.service !== 'crawl-remote' || contract.protocol_version !== 'v1') {
-            throw new Error('production /v1/contract response is not the crawl-remote v1 contract');
-          }
-
-          const observationFenceNote =
-            'Gitcrawl observation ordering requires the D1 migration, explicit publisher capability, and operator cutover fence before it is advertised or activated.';
-          const notes = Array.isArray(contract.notes) ? contract.notes : [];
-          if (!notes.includes(observationFenceNote)) {
-            throw new Error('production contract does not identify the observation-order fence');
-          }
-
-          const routes = Array.isArray(contract.routes) ? contract.routes : [];
-          for (const path of ['/health', '/v1/contract']) {
-            if (!routes.some((route) => route?.method === 'GET' && route?.path === path)) {
-              throw new Error(`production contract is missing GET ${path}`);
+          try {
+            const expectedSha = process.env.DEPLOY_SHA;
+            const expectedObservationOrderState = process.env.OBSERVATION_ORDER_STATE;
+            const health = JSON.parse(readFileSync(process.env.HEALTH_RESPONSE, 'utf8'));
+            if (health.ok !== true || health.release_sha !== expectedSha) {
+              throw new Error('health response does not identify the approved release');
             }
-          }
 
-          console.log('Production health and contract verified.');
+            const contract = JSON.parse(readFileSync(process.env.CONTRACT_RESPONSE, 'utf8'));
+            if (
+              contract.service !== 'crawl-remote' ||
+              contract.protocol_version !== 'v1' ||
+              contract.release_sha !== expectedSha
+            ) {
+              throw new Error('contract response does not identify the approved release');
+            }
+
+            const observationFenceNote =
+              'Gitcrawl observation ordering requires the D1 migration, explicit publisher capability, and operator cutover fence before it is advertised or activated.';
+            const notes = Array.isArray(contract.notes) ? contract.notes : [];
+            if (!notes.includes(observationFenceNote)) {
+              throw new Error('production contract does not identify the observation-order fence');
+            }
+
+            const apps = Array.isArray(contract.apps) ? contract.apps : [];
+            const gitcrawl = apps.find((app) => app?.app === 'gitcrawl');
+            if (!gitcrawl) {
+              throw new Error('production contract is missing the Gitcrawl app');
+            }
+            if (!Array.isArray(gitcrawl.capabilities)) {
+              throw new Error('production Gitcrawl capabilities are malformed');
+            }
+            const capabilities = gitcrawl.capabilities;
+            const observationOrderActive = capabilities.includes(
+              'gitcrawl.observation-order.v1',
+            );
+            if (
+              !['dormant', 'active'].includes(expectedObservationOrderState) ||
+              (
+                expectedObservationOrderState === 'active' &&
+                !observationOrderActive
+              ) ||
+              (
+                expectedObservationOrderState === 'dormant' &&
+                observationOrderActive
+              )
+            ) {
+              throw new Error(
+                `production contract does not match expected ${expectedObservationOrderState} observation-order state`,
+              );
+            }
+
+            const routes = Array.isArray(contract.routes) ? contract.routes : [];
+            for (const path of ['/health', '/v1/contract']) {
+              if (!routes.some((route) => route?.method === 'GET' && route?.path === path)) {
+                throw new Error(`production contract is missing GET ${path}`);
+              }
+            }
+          } catch (error) {
+            console.error(error instanceof Error ? error.message : String(error));
+            process.exit(1);
+          }
           NODE
+            then
+              echo "Production release $DEPLOY_SHA verified after $attempt attempt(s)."
+              exit 0
+            fi
+
+            remaining=$((deadline - SECONDS))
+            if (( remaining <= 0 )); then
+              break
+            fi
+            sleep_for=5
+            if (( sleep_for > remaining )); then
+              sleep_for="$remaining"
+            fi
+            echo "Production release is not visible yet; retrying."
+            sleep "$sleep_for"
+          done
+
+          echo "::error::production did not converge to release $DEPLOY_SHA before the deadline."
+          exit 1
