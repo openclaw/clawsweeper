@@ -137,6 +137,12 @@ export async function handleGitHubWebhook({
     itemNumber: accepted.itemNumber,
     sourceCommentId: accepted.commentId,
   });
+  await addReaction({
+    token: targetToken,
+    repo: accepted.targetRepo,
+    commentId: accepted.commentId,
+    content: "eyes",
+  });
   await dispatchCommentRouter({
     token: dispatchToken,
     targetRepo: accepted.targetRepo,
@@ -671,6 +677,31 @@ async function listFastAckComments({
     if (response.length < 100) return comments;
   }
   return comments;
+}
+
+async function addReaction({
+  token,
+  repo,
+  commentId,
+  content,
+}: {
+  token: string;
+  repo: string;
+  commentId: number;
+  content: string;
+}) {
+  try {
+    await githubFetch({
+      token,
+      path: `/repos/${repo}/issues/comments/${commentId}/reactions`,
+      method: "POST",
+      body: { content },
+    });
+  } catch (error) {
+    if (!/\b422\b|already exists/i.test(String(error))) {
+      console.warn(`[clawsweeper webhook] comment reaction failed: ${String(error)}`);
+    }
+  }
 }
 
 async function dispatchItemReview({

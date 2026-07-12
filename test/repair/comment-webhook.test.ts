@@ -757,7 +757,7 @@ test("concurrent duplicate command webhooks converge on one fast ack comment", a
     assert.deepEqual(left, { statusCode: 202, body: { ok: true, status_comment_id: 9001 } });
     assert.deepEqual(right, { statusCode: 202, body: { ok: true, status_comment_id: 9001 } });
     assert.equal(fastAckPosts, 1);
-    assert.equal(reactions, 0);
+    assert.equal(reactions, 2);
     assert.equal(dispatches, 2);
     assert.deepEqual(
       dispatchBodies.map((body) => body.client_payload),

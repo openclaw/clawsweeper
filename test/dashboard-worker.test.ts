@@ -5435,7 +5435,7 @@ test("hosted webhook coalesces concurrent duplicate fast ack comments", async ()
     assert.deepEqual(await leftResponse.json(), { ok: true, status_comment_id: 777 });
     assert.deepEqual(await rightResponse.json(), { ok: true, status_comment_id: 777 });
     assert.equal(fastAckPosts, 1);
-    assert.equal(reactions, 0);
+    assert.equal(reactions, 2);
     assert.equal(comments.length, 1);
     assert.match(comments[0]?.body || "", /clawsweeper-command-ack:456/);
     assert.equal(dispatchBodies.length, 2);
