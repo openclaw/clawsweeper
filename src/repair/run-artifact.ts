@@ -16,6 +16,7 @@ export function resolveRunArtifact({
   currentAttempt,
   expectedArtifactId,
   expectedArtifactDigest,
+  fallbackPrefixes = [],
   allowPriorAttempts = process.env.CLAWSWEEPER_ALLOW_PRIOR_ARTIFACT === "1",
 }: {
   artifacts: LooseRecord[];
@@ -24,10 +25,15 @@ export function resolveRunArtifact({
   currentAttempt: number;
   expectedArtifactId?: string | null;
   expectedArtifactDigest?: string | null;
+  fallbackPrefixes?: string[];
   allowPriorAttempts?: boolean;
 }): ResolvedRunArtifact {
-  if (!prefix || !/^[A-Za-z0-9_.-]+$/.test(prefix)) {
-    throw new Error("artifact prefix is invalid");
+  const prefixes = [prefix, ...fallbackPrefixes];
+  if (
+    prefixes.some((candidate) => !candidate || !/^[A-Za-z0-9_.-]+$/.test(candidate)) ||
+    new Set(prefixes).size !== prefixes.length
+  ) {
+    throw new Error("artifact prefixes are invalid");
   }
   if (!/^[1-9][0-9]*$/.test(runId)) {
     throw new Error("workflow run id is invalid");
@@ -41,9 +47,14 @@ export function resolveRunArtifact({
   if ((expectedId === null) !== (expectedDigest === null)) {
     throw new Error("trusted producer artifact id and digest must be provided together");
   }
-  const namePattern = new RegExp(`^${escapeRegExp(prefix)}-${runId}-([1-9][0-9]*)$`);
+  const namePatterns = prefixes.map(
+    (candidate) => new RegExp(`^${escapeRegExp(candidate)}-${runId}-([1-9][0-9]*)$`),
+  );
   const candidates = artifacts.flatMap((artifact) => {
-    const match = String(artifact.name ?? "").match(namePattern);
+    const name = String(artifact.name ?? "");
+    const prefixPriority = namePatterns.findIndex((pattern) => pattern.test(name));
+    if (prefixPriority < 0) return [];
+    const match = name.match(namePatterns[prefixPriority]!);
     if (!match) return [];
     const producerAttempt = Number(match[1]);
     const id = Number(artifact.id);
@@ -61,6 +72,7 @@ export function resolveRunArtifact({
         id,
         name: String(artifact.name),
         producerAttempt,
+        prefixPriority,
         digest,
         expired: artifact.expired === true,
       },
@@ -90,10 +102,12 @@ export function resolveRunArtifact({
   }
   const producerAttempt = Math.max(...eligible.map((artifact) => artifact.producerAttempt));
   const latest = eligible.filter((artifact) => artifact.producerAttempt === producerAttempt);
-  if (latest.length !== 1) {
+  const prefixPriority = Math.min(...latest.map((artifact) => artifact.prefixPriority));
+  const preferred = latest.filter((artifact) => artifact.prefixPriority === prefixPriority);
+  if (preferred.length !== 1) {
     throw new Error("trusted producer artifact selection is ambiguous");
   }
-  return finalizeArtifact(latest[0]!, expectedDigest);
+  return finalizeArtifact(preferred[0]!, expectedDigest);
 }
 
 function finalizeArtifact(

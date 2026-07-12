@@ -1093,37 +1093,14 @@ jobs:
             --repository "${{ github.repository }}" \
             --run-id "${{ github.run_id }}" \
             --current-attempt "${{ github.run_attempt }}" \
-            --prefix clawsweeper-repair-publication
-
-      - name: Resolve prior durable source-close checkpoint
-        id: prior_source_close_artifact
-        if: ${{ steps.prior_publication_artifact.outcome != 'success' }}
-        continue-on-error: true
-        env:
-          GH_TOKEN: ${{ github.token }}
-          CLAWSWEEPER_ALLOW_PRIOR_ARTIFACT: "1"
-        run: |
-          pnpm run repair:resolve-run-artifact -- \
-            --repository "${{ github.repository }}" \
-            --run-id "${{ github.run_id }}" \
-            --current-attempt "${{ github.run_attempt }}" \
-            --prefix clawsweeper-repair-publication-close
+            --prefix clawsweeper-repair-publication \
+            --fallback-prefix clawsweeper-repair-publication-close
 
       - name: Download prior durable publication checkpoint
         if: ${{ steps.prior_publication_artifact.outcome == 'success' }}
         uses: actions/download-artifact@v8
         with:
           artifact-ids: ${{ steps.prior_publication_artifact.outputs.artifact_id }}
-          path: .clawsweeper-repair/publication
-          github-token: ${{ github.token }}
-          repository: ${{ github.repository }}
-          run-id: ${{ github.run_id }}
-
-      - name: Download prior durable source-close checkpoint
-        if: ${{ steps.prior_publication_artifact.outcome != 'success' && steps.prior_source_close_artifact.outcome == 'success' }}
-        uses: actions/download-artifact@v8
-        with:
-          artifact-ids: ${{ steps.prior_source_close_artifact.outputs.artifact_id }}
           path: .clawsweeper-repair/publication
           github-token: ${{ github.token }}
           repository: ${{ github.repository }}

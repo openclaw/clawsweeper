@@ -81,6 +81,42 @@ test("trusted producer outputs pin an exact artifact id and digest", () => {
   );
 });
 
+test("checkpoint recovery selects the newest attempt across artifact prefixes", () => {
+  assert.deepEqual(
+    resolveRunArtifact({
+      artifacts: [
+        artifact(101, 1, digest1, "clawsweeper-repair-publication"),
+        artifact(102, 2, digest2, "clawsweeper-repair-publication-close"),
+      ],
+      prefix: "clawsweeper-repair-publication",
+      fallbackPrefixes: ["clawsweeper-repair-publication-close"],
+      runId: "9001",
+      currentAttempt: 3,
+      allowPriorAttempts: true,
+    }),
+    {
+      id: 102,
+      name: "clawsweeper-repair-publication-close-9001-2",
+      producerAttempt: 2,
+      digest: digest2,
+    },
+  );
+  assert.equal(
+    resolveRunArtifact({
+      artifacts: [
+        artifact(103, 2, digest1, "clawsweeper-repair-publication"),
+        artifact(104, 2, digest2, "clawsweeper-repair-publication-close"),
+      ],
+      prefix: "clawsweeper-repair-publication",
+      fallbackPrefixes: ["clawsweeper-repair-publication-close"],
+      runId: "9001",
+      currentAttempt: 3,
+      allowPriorAttempts: true,
+    }).id,
+    103,
+  );
+});
+
 test("artifact resolution rejects expired, ambiguous, and untrusted candidates", () => {
   assert.throws(
     () =>
@@ -135,7 +171,7 @@ test("repair workflow resolves producer artifacts by trusted id across rerun att
       /uses: actions\/download-artifact@v8\n\s+with:\n([\s\S]*?)(?=\n\s{6}- (?:name|uses):|\n\n)/g,
     ),
   ];
-  assert.equal(downloadBlocks.length, 8);
+  assert.equal(downloadBlocks.length, 7);
   for (const block of downloadBlocks) {
     assert.match(block[1]!, /artifact-ids: \$\{\{ steps\.[^.]+\.outputs\.artifact_id \}\}/);
     assert.match(block[1]!, /github-token: \$\{\{ github\.token \}\}/);
@@ -152,7 +188,6 @@ test("repair workflow resolves producer artifacts by trusted id across rerun att
     "clawsweeper-repair-execution",
     "clawsweeper-repair-validation",
     "clawsweeper-repair-publication",
-    "clawsweeper-repair-publication-close",
   ]) {
     assert.match(workflow, new RegExp(`--prefix ${prefix}`));
   }
@@ -174,14 +209,19 @@ test("repair workflow resolves producer artifacts by trusted id across rerun att
   assert.match(workflow, /Upload worker transfer artifacts[\s\S]*?if-no-files-found: error/);
   assert.match(
     workflow,
-    /Resolve prior durable publication checkpoint[\s\S]*?--prefix clawsweeper-repair-publication[\s\S]*?Resolve prior durable source-close checkpoint[\s\S]*?--prefix clawsweeper-repair-publication-close[\s\S]*?Download prior durable publication checkpoint[\s\S]*?Download prior durable source-close checkpoint[\s\S]*?Publish exact independently validated repair/,
+    /Resolve prior durable publication checkpoint[\s\S]*?--prefix clawsweeper-repair-publication[\s\S]*?--fallback-prefix clawsweeper-repair-publication-close[\s\S]*?Download prior durable publication checkpoint[\s\S]*?Publish exact independently validated repair/,
   );
 });
 
-function artifact(id: number, attempt: number, digest: string) {
+function artifact(
+  id: number,
+  attempt: number,
+  digest: string,
+  prefix = "clawsweeper-repair-execution",
+) {
   return {
     id,
-    name: `clawsweeper-repair-execution-9001-${attempt}`,
+    name: `${prefix}-9001-${attempt}`,
     digest: `sha256:${digest}`,
     expired: false,
   };
