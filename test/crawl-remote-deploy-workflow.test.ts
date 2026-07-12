@@ -149,18 +149,47 @@ test("crawl-remote release is maintainer-bound across two fresh runners", () => 
   assert.equal(deploy.env.WORKFLOW_SHA, "${{ github.sha }}");
   assert.equal(deploy.env.WORKERS_DEV_URL, "https://crawl-remote.services-91b.workers.dev");
   assert.equal(deploy.env.PRODUCTION_ROUTE_URL, "https://reports.openclaw.ai/crawl-remote");
+  assert.equal(deploy.env.DEPLOYMENT_STATUS_ATTEMPTS, "60");
+  assert.equal(deploy.env.DEPLOYMENT_STATUS_DELAY_SECONDS, "5");
+  assert.equal(deploy.env.PRODUCTION_ENVIRONMENT, "crawl-remote-production");
+  const environmentToken = step(deploy, "Create protected-environment audit token");
+  const environmentAudit = step(deploy, "Audit protected production environment");
   const sourceAuthorization = step(deploy, "Reauthorize current ClawSweeper workflow");
   const authority = step(deploy, "Verify central deployment authority");
   const proofCredentials = step(deploy, "Validate protected production proof credentials");
   const token = step(deploy, "Create exact-repository reauthorization token");
   const canonicalAuthority = step(deploy, "Verify canonical crawl-remote mutator is retired");
   const checkout = step(deploy, "Checkout trusted deployment toolchain");
-  assert.equal(steps(deploy).indexOf(sourceAuthorization), 0);
-  assert.equal(steps(deploy).indexOf(authority), 1);
-  assert.equal(steps(deploy).indexOf(proofCredentials), 2);
-  assert.equal(steps(deploy).indexOf(token), 3);
-  assert.equal(steps(deploy).indexOf(canonicalAuthority), 4);
-  assert.equal(steps(deploy).indexOf(checkout), 5);
+  assert.equal(steps(deploy).indexOf(environmentToken), 0);
+  assert.equal(steps(deploy).indexOf(environmentAudit), 1);
+  assert.equal(steps(deploy).indexOf(sourceAuthorization), 2);
+  assert.equal(steps(deploy).indexOf(authority), 3);
+  assert.equal(steps(deploy).indexOf(proofCredentials), 4);
+  assert.equal(steps(deploy).indexOf(token), 5);
+  assert.equal(steps(deploy).indexOf(canonicalAuthority), 6);
+  assert.equal(steps(deploy).indexOf(checkout), 7);
+  assert.equal(
+    environmentToken.uses,
+    "actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1",
+  );
+  assert.equal(environmentToken.with?.owner, "openclaw");
+  assert.equal(environmentToken.with?.repositories, "clawsweeper");
+  assert.equal(environmentToken.with?.["permission-actions"], "read");
+  assert.equal(
+    Object.keys(environmentToken.with ?? {}).filter((key) => key.startsWith("permission-")).length,
+    1,
+  );
+  assert.equal(environmentAudit.env?.GH_TOKEN, "${{ steps.source-admin-token.outputs.token }}");
+  assert.match(
+    environmentAudit.run ?? "",
+    /environments\/\$PRODUCTION_ENVIRONMENT\/variables\?per_page=100/,
+  );
+  assert.match(
+    environmentAudit.run ?? "",
+    /environments\/\$PRODUCTION_ENVIRONMENT\/secrets\?per_page=100/,
+  );
+  assert.match(environmentAudit.run ?? "", /deployment-branch-policies\?per_page=100/);
+  assert.equal(environmentAudit.run?.match(/--paginate --slurp/g)?.length, 3);
   assert.equal(sourceAuthorization.env?.GH_TOKEN, "${{ github.token }}");
   assert.match(sourceAuthorization.run ?? "", /repos\/\$SOURCE_REPOSITORY\/commits\/main/);
   assert.match(sourceAuthorization.run ?? "", /\[\[ "\$WORKFLOW_SHA" != "\$current_main_sha" \]\]/);
@@ -184,6 +213,146 @@ test("crawl-remote release is maintainer-bound across two fresh runners", () => 
   assert.equal(canonicalAuthority.env?.CLOUDFLARE_API_TOKEN, undefined);
   assert.equal(preflight["timeout-minutes"], 25);
   assert.equal(deploy["timeout-minutes"], 25);
+});
+
+test("protected deploy audits exact environment-owned authority inputs", () => {
+  const audit = step(deploy, "Audit protected production environment");
+  const directory = mkdtempSync(join(tmpdir(), "crawl-remote-environment-audit-"));
+  const ghPath = join(directory, "gh");
+  const environmentFixture = join(directory, "environment-fixture.json");
+  const variablesFixture = join(directory, "variables-fixture.json");
+  const secretsFixture = join(directory, "secrets-fixture.json");
+  const branchPoliciesFixture = join(directory, "branch-policies-fixture.json");
+  const environmentResponse = join(directory, "environment-response.json");
+  const variablesResponse = join(directory, "variables-response.json");
+  const secretsResponse = join(directory, "secrets-response.json");
+  const branchPoliciesResponse = join(directory, "branch-policies-response.json");
+  const validEnvironment = {
+    name: "crawl-remote-production",
+    protection_rules: [
+      {
+        type: "required_reviewers",
+        reviewers: [
+          {
+            type: "User",
+            reviewer: { id: 25068, login: "vincentkoc" },
+          },
+        ],
+      },
+    ],
+    deployment_branch_policy: {
+      protected_branches: false,
+      custom_branch_policies: true,
+    },
+  };
+  const validVariables = [
+    { name: "CRAWL_REMOTE_DEPLOY_AUTHORITY" },
+    { name: "CRAWL_REMOTE_CLOUDFLARE_TOKEN_SHA256" },
+    { name: "CRAWL_REMOTE_CUSTOM_ROUTE_PROOF" },
+  ];
+  const validSecrets = [
+    { name: "CRAWL_REMOTE_PRODUCTION_CLOUDFLARE_API_TOKEN" },
+    { name: "CRAWL_REMOTE_ACCESS_CLIENT_ID" },
+    { name: "CRAWL_REMOTE_ACCESS_CLIENT_SECRET" },
+  ];
+  const validBranchPolicies = [{ name: "main", type: "branch" }];
+
+  writeFileSync(
+    ghPath,
+    `#!/bin/sh
+endpoint=
+for argument in "$@"; do
+  endpoint="$argument"
+done
+case "$endpoint" in
+  */variables?per_page=100) cat "$MOCK_VARIABLES_FIXTURE" ;;
+  */secrets?per_page=100) cat "$MOCK_SECRETS_FIXTURE" ;;
+  */deployment-branch-policies?per_page=100) cat "$MOCK_BRANCH_POLICIES_FIXTURE" ;;
+  */environments/crawl-remote-production) cat "$MOCK_ENVIRONMENT_FIXTURE" ;;
+  *) exit 97 ;;
+esac
+`,
+  );
+  chmodSync(ghPath, 0o755);
+
+  function runAudit({
+    environment = validEnvironment,
+    variables = validVariables,
+    secrets = validSecrets,
+    branchPolicies = validBranchPolicies,
+  }: {
+    environment?: unknown;
+    variables?: Array<{ name: string }>;
+    secrets?: Array<{ name: string }>;
+    branchPolicies?: Array<{ name: string; type: string }>;
+  } = {}) {
+    writeFileSync(environmentFixture, JSON.stringify(environment));
+    writeFileSync(variablesFixture, JSON.stringify([{ total_count: variables.length, variables }]));
+    writeFileSync(secretsFixture, JSON.stringify([{ total_count: secrets.length, secrets }]));
+    writeFileSync(
+      branchPoliciesFixture,
+      JSON.stringify([{ total_count: branchPolicies.length, branch_policies: branchPolicies }]),
+    );
+    for (const path of [
+      environmentResponse,
+      variablesResponse,
+      secretsResponse,
+      branchPoliciesResponse,
+    ]) {
+      rmSync(path, { force: true });
+    }
+    return spawnSync("bash", ["--noprofile", "--norc", "-euo", "pipefail", "-c", audit.run ?? ""], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        BRANCH_POLICIES_RESPONSE: branchPoliciesResponse,
+        ENVIRONMENT_RESPONSE: environmentResponse,
+        ENVIRONMENT_SECRETS_RESPONSE: secretsResponse,
+        ENVIRONMENT_VARIABLES_RESPONSE: variablesResponse,
+        GH_TOKEN: "environment-audit-token",
+        MOCK_BRANCH_POLICIES_FIXTURE: branchPoliciesFixture,
+        MOCK_ENVIRONMENT_FIXTURE: environmentFixture,
+        MOCK_SECRETS_FIXTURE: secretsFixture,
+        MOCK_VARIABLES_FIXTURE: variablesFixture,
+        PATH: `${directory}:${process.env.PATH ?? ""}`,
+        PRODUCTION_ENVIRONMENT: "crawl-remote-production",
+        SOURCE_REPOSITORY: "openclaw/clawsweeper",
+      },
+    });
+  }
+
+  try {
+    const valid = runAudit();
+    assert.equal(valid.status, 0, valid.stdout + valid.stderr);
+
+    const missingVariable = runAudit({ variables: validVariables.slice(1) });
+    assert.notEqual(missingVariable.status, 0);
+    assert.match(missingVariable.stderr, /missing variable CRAWL_REMOTE_DEPLOY_AUTHORITY/);
+
+    const missingSecret = runAudit({ secrets: validSecrets.slice(1) });
+    assert.notEqual(missingSecret.status, 0);
+    assert.match(
+      missingSecret.stderr,
+      /missing secret CRAWL_REMOTE_PRODUCTION_CLOUDFLARE_API_TOKEN/,
+    );
+
+    const missingReviewer = runAudit({
+      environment: {
+        ...validEnvironment,
+        protection_rules: [{ type: "required_reviewers", reviewers: [] }],
+      },
+    });
+    assert.notEqual(missingReviewer.status, 0);
+    assert.match(missingReviewer.stderr, /protection is not the reviewed shape/);
+
+    const wrongBranch = runAudit({
+      branchPolicies: [{ name: "release", type: "branch" }],
+    });
+    assert.notEqual(wrongBranch.status, 0);
+    assert.match(wrongBranch.stderr, /must allow only the main branch/);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 test("protected environment must explicitly own the deployment authority", () => {
@@ -1146,7 +1315,7 @@ test("deploy uses the committed exact Node and Wrangler toolchain before credent
   assert.doesNotMatch(source, /secrets\.CRAWL_REMOTE_CLOUDFLARE_API_TOKEN/);
   assert.doesNotMatch(source, /\|\|\s*secrets\./);
   assert.doesNotMatch(source, /CRAWL_REMOTE_CUSTOM_ROUTE_PROOF\s*\|\|/);
-  assert.equal(source.match(/CRAWL_REMOTE_PRODUCTION_CLOUDFLARE_API_TOKEN/g)?.length, 4);
+  assert.equal(source.match(/CRAWL_REMOTE_PRODUCTION_CLOUDFLARE_API_TOKEN/g)?.length, 5);
 });
 
 test("networked CI installs the pinned Wrangler lock and exercises its dry-run outside pnpm check", () => {
@@ -1326,7 +1495,16 @@ test("privileged mutations use only verified files and prove the selected D1 fen
   assert.match(workerDeploy, /--strict/);
   assert.match(workerDeploy, /--var "CRAWL_REMOTE_RELEASE_SHA:\$DEPLOY_SHA"/);
   assert.match(workerDeploy, /--message "\$DEPLOY_MESSAGE"/);
+  assert.match(workerDeploy, /test -f "\$PREVIOUS_VERSION_PATH"/);
+  assert.match(workerDeploy, /deployments status/);
+  assert.match(workerDeploy, /versions\.length !== 1/);
+  assert.match(workerDeploy, /versions\[0\]\?\.percentage !== 100/);
+  assert.match(workerDeploy, /versions\[0\]\?\.version_id !== previousVersion/);
+  assert.match(workerDeploy, /current Worker version changed after migration proof/);
   assert.match(deploy.env.DEPLOY_MESSAGE ?? "", /github\.run_id.*github\.run_attempt.*deploy_sha/);
+  assert.ok(
+    workerDeploy.indexOf("deployments status") < workerDeploy.indexOf("WRANGLER_OUTPUT_FILE_PATH"),
+  );
 
   const ledgerQueryIndex = migration.indexOf('> "$APPLIED_MIGRATIONS_RESPONSE"');
   const preQueryIndex = migration.indexOf('> "$PRE_FENCE_RESPONSE"');
@@ -1366,7 +1544,9 @@ test("failed Worker release rolls back only the exact previously stable Worker v
   assert.doesNotMatch(workerDeploy.run ?? "", /DEPLOYED_VERSION_PATH|entry\?\.type === 'deploy'/);
   assert.match(deploymentState.run ?? "", /deployment\?\.annotations\?\.\['workers\/message'\]/);
   assert.match(deploymentState.run ?? "", /mutation_owned=true/);
-  assert.match(deploymentState.run ?? "", /mutation_owned=false/);
+  assert.match(deploymentState.run ?? "", /\['success', 'failure', 'cancelled'\]/);
+  assert.match(deploymentState.run ?? "", /deployment mutation remains indeterminate/);
+  assert.doesNotMatch(deploymentState.run ?? "", /mutation_owned=false/);
   assert.match(deployReceipt.run ?? "", /entry\?\.type === 'deploy'/);
   assert.match(deployReceipt.run ?? "", /deployments\[0\]\?\.version !== 1/);
   assert.match(deployReceipt.run ?? "", /version_id !== deployedVersion/);
@@ -1431,7 +1611,7 @@ exit 97
   }: {
     currentVersion: string;
     currentMessage: string;
-    deployOutcome: "success" | "failure";
+    deployOutcome: "success" | "failure" | "cancelled";
   }) {
     rmSync(deployedVersionPath, { force: true });
     rmSync(deploymentResponsePath, { force: true });
@@ -1503,8 +1683,11 @@ exit 97
       currentMessage: "previous deployment",
       deployOutcome: "failure",
     });
-    assert.equal(noMutation.status, 0, noMutation.stdout + noMutation.stderr);
-    assert.match(readFileSync(githubOutputPath, "utf8"), /mutation_owned=false/);
+    assert.notEqual(noMutation.status, 0);
+    assert.match(
+      noMutation.stdout + noMutation.stderr,
+      /deployment mutation remains indeterminate after 1 status checks/,
+    );
     assert.equal(existsSync(deployedVersionPath), false);
 
     const falseSuccess = runOwnership({
@@ -1515,8 +1698,17 @@ exit 97
     assert.notEqual(falseSuccess.status, 0);
     assert.match(
       falseSuccess.stdout + falseSuccess.stderr,
-      /successful Worker deploy did not become the current version/,
+      /deployment mutation remains indeterminate after 1 status checks/,
     );
+
+    const cancelledSuccess = runOwnership({
+      currentVersion: deployedVersion,
+      currentMessage: deployMessage,
+      deployOutcome: "cancelled",
+    });
+    assert.equal(cancelledSuccess.status, 0, cancelledSuccess.stdout + cancelledSuccess.stderr);
+    assert.match(readFileSync(githubOutputPath, "utf8"), /mutation_owned=true/);
+    assert.equal(readFileSync(deployedVersionPath, "utf8").trim(), deployedVersion);
 
     const foreignMutation = runOwnership({
       currentVersion: foreignVersion,
