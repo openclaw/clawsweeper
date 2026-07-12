@@ -65,6 +65,7 @@ import {
   reviewStructuralQuery,
   reviewStructuralRecordFromGraphql,
   reviewStructuralCacheDecision,
+  reviewStructuralCacheProbeDecision,
   validReviewStructuralRecord,
   type ReviewStructuralPullState,
   type ReviewStructuralRecord,
@@ -19694,187 +19695,205 @@ function reviewCommand(args: Args): void {
       const priorReview = localRangeData ? null : existingReview(item, itemsDir);
       let acquiredReviewLease: AcquiredReviewStartLease | null = null;
       let structuralRecord: ReviewStructuralRecord | null = null;
+      let preHydrationStructuralRecord: ReviewStructuralRecord | null = null;
       let hydratedStructuralAnchor: ReviewStructuralRecord | null = null;
       if (!localRangeData) {
         structuralCacheChecks += 1;
-        const structuralProbeStartedAt = Date.now();
-        try {
-          structuralRecord = fetchReviewStructuralRecord({
-            item,
-            git,
-            reviewPolicy,
-            reviewModel: PUBLIC_CODEX_MODEL,
-          });
-          if (!reviewStructuralRecordAtLeastAsFresh(structuralRecord, item.updatedAt)) {
-            structuralRecord = null;
-          }
-        } catch (error) {
-          structuralCacheProbeFailures += 1;
-          console.error(
-            `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} structural-cache=probe-failed #${item.number}: ${
-              error instanceof Error ? error.message : String(error)
-            }`,
-          );
-        } finally {
-          structuralCacheProbeMs += Date.now() - structuralProbeStartedAt;
-        }
-        if (structuralRecord) item.updatedAt = structuralRecord.activityUpdatedAt;
-        const structuralDecision = reviewStructuralCacheDecision({
+        const structuralProbeDecision = reviewStructuralCacheProbeDecision({
           review: priorReview,
-          priorRecord: priorReview?.structuralRecord ?? null,
-          currentRecord: structuralRecord,
           reviewPolicy,
           reviewModel: PUBLIC_CODEX_MODEL,
           explicitDispatch,
           maintainerRequest,
           coordinationEnabled: !skipStartComment,
         });
-        structuralCacheReasons.set(
-          structuralDecision.reason,
-          (structuralCacheReasons.get(structuralDecision.reason) ?? 0) + 1,
-        );
-        if (structuralDecision.hit) {
-          const initialStructuralRecord = structuralRecord;
+        if (!structuralProbeDecision.hit) {
+          structuralCacheReasons.set(
+            structuralProbeDecision.reason,
+            (structuralCacheReasons.get(structuralProbeDecision.reason) ?? 0) + 1,
+          );
+        } else {
+          const structuralProbeStartedAt = Date.now();
           try {
-            const leaseRevision =
-              item.kind === "pull_request"
-                ? structuralRecord?.pullHeadSha
-                : priorReview?.itemSourceRevision;
-            const startComment = postReviewStartStatusComment({
-              item,
-              headSha: leaseRevision ?? "",
-              reviewTimeoutMs: timeoutMs,
-              position: completed + 1,
-              total: candidates.length,
-              shardIndex,
-              shardCount,
-            });
-            console.error(
-              `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} structural-cache-start-comment=${startComment.status} #${item.number}`,
-            );
-            if (startComment.status === "held") {
-              coordinationHeldRetryAt = startComment.retryAt;
-              continue;
-            }
-            acquiredReviewLease = startComment.lease;
-            if (!acquiredReviewLease) {
-              throw new Error(
-                `structural cache lease acquisition returned no identity for #${item.number}`,
-              );
-            }
-            acquiredReviewLeases.push({ itemNumber: item.number, lease: acquiredReviewLease });
-          } catch (error) {
-            leaseAcquisitionFailures += 1;
-            leaseAcquisitionFailureDetails.push(
-              `#${item.number}: ${error instanceof Error ? error.message : String(error)}`,
-            );
-            console.error(
-              `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} structural-cache-start-comment=failed #${item.number}: ${
-                error instanceof Error ? error.message : String(error)
-              }`,
-            );
-            continue;
-          }
-          structuralCacheRevalidations += 1;
-          const structuralRevalidationStartedAt = Date.now();
-          let revalidatedStructuralRecord: ReviewStructuralRecord | null = null;
-          try {
-            revalidatedStructuralRecord = fetchReviewStructuralRecord({
+            structuralRecord = fetchReviewStructuralRecord({
               item,
               git,
               reviewPolicy,
               reviewModel: PUBLIC_CODEX_MODEL,
             });
-            if (
-              !reviewStructuralRecordAtLeastAsFresh(revalidatedStructuralRecord, item.updatedAt)
-            ) {
-              revalidatedStructuralRecord = null;
+            if (!reviewStructuralRecordAtLeastAsFresh(structuralRecord, item.updatedAt)) {
+              structuralRecord = null;
             }
           } catch (error) {
-            structuralCacheRevalidationFailures += 1;
+            structuralCacheProbeFailures += 1;
             console.error(
-              `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} structural-cache=revalidation-probe-failed #${item.number}: ${
+              `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} structural-cache=probe-failed #${item.number}: ${
                 error instanceof Error ? error.message : String(error)
               }`,
             );
           } finally {
-            structuralCacheRevalidationMs += Date.now() - structuralRevalidationStartedAt;
+            structuralCacheProbeMs += Date.now() - structuralProbeStartedAt;
           }
-          const revalidationDecision = reviewStructuralCacheDecision({
-            review: priorReview
-              ? {
-                  ...priorReview,
-                  reviewCommentSyncedAt: new Date().toISOString(),
-                }
-              : null,
-            priorRecord: initialStructuralRecord,
-            currentRecord: revalidatedStructuralRecord,
+          preHydrationStructuralRecord = structuralRecord;
+          if (structuralRecord) item.updatedAt = structuralRecord.activityUpdatedAt;
+          const structuralDecision = reviewStructuralCacheDecision({
+            review: priorReview,
+            priorRecord: priorReview?.structuralRecord ?? null,
+            currentRecord: structuralRecord,
             reviewPolicy,
             reviewModel: PUBLIC_CODEX_MODEL,
             explicitDispatch,
             maintainerRequest,
-            coordinationEnabled: true,
+            coordinationEnabled: !skipStartComment,
           });
-          structuralCacheRevalidationReasons.set(
-            revalidationDecision.reason,
-            (structuralCacheRevalidationReasons.get(revalidationDecision.reason) ?? 0) + 1,
+          structuralCacheReasons.set(
+            structuralDecision.reason,
+            (structuralCacheReasons.get(structuralDecision.reason) ?? 0) + 1,
           );
-          if (!revalidationDecision.hit) {
-            const leaseToRelease = acquiredReviewLease!;
-            if (!deleteOwnedDedicatedReviewStartLease(item.number, leaseToRelease)) {
+          if (structuralDecision.hit) {
+            const initialStructuralRecord = structuralRecord;
+            try {
+              const leaseRevision =
+                item.kind === "pull_request"
+                  ? structuralRecord?.pullHeadSha
+                  : priorReview?.itemSourceRevision;
+              const startComment = postReviewStartStatusComment({
+                item,
+                headSha: leaseRevision ?? "",
+                reviewTimeoutMs: timeoutMs,
+                position: completed + 1,
+                total: candidates.length,
+                shardIndex,
+                shardCount,
+              });
+              console.error(
+                `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} structural-cache-start-comment=${startComment.status} #${item.number}`,
+              );
+              if (startComment.status === "held") {
+                coordinationHeldRetryAt = startComment.retryAt;
+                continue;
+              }
+              acquiredReviewLease = startComment.lease;
+              if (!acquiredReviewLease) {
+                throw new Error(
+                  `structural cache lease acquisition returned no identity for #${item.number}`,
+                );
+              }
+              acquiredReviewLeases.push({ itemNumber: item.number, lease: acquiredReviewLease });
+            } catch (error) {
               leaseAcquisitionFailures += 1;
               leaseAcquisitionFailureDetails.push(
-                `#${item.number}: could not release structural cache lease after ${revalidationDecision.reason}`,
+                `#${item.number}: ${error instanceof Error ? error.message : String(error)}`,
+              );
+              console.error(
+                `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} structural-cache-start-comment=failed #${item.number}: ${
+                  error instanceof Error ? error.message : String(error)
+                }`,
               );
               continue;
             }
-            const acquiredIndex = acquiredReviewLeases.findIndex(
-              (entry) =>
-                entry.itemNumber === item.number &&
-                entry.lease.commentId === leaseToRelease.commentId &&
-                entry.lease.owner === leaseToRelease.owner,
-            );
-            if (acquiredIndex >= 0) acquiredReviewLeases.splice(acquiredIndex, 1);
-            acquiredReviewLease = null;
-            structuralRecord = revalidatedStructuralRecord;
-            if (structuralRecord) item.updatedAt = structuralRecord.activityUpdatedAt;
-            console.error(
-              `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} structural-cache=revalidation-miss reason=${revalidationDecision.reason} hydrate #${item.number}`,
-            );
-          } else {
-            const confirmedStructuralRecord = revalidatedStructuralRecord!;
-            structuralRecord = confirmedStructuralRecord;
-            item.updatedAt = confirmedStructuralRecord.activityUpdatedAt;
-            const reportPath = join(artifactDir, reportFileName(item.repo, item.number));
-            let carried = priorReview!.markdown;
-            carried = replaceFrontMatterValue(carried, "reviewed_at", new Date().toISOString());
-            carried = replaceFrontMatterValue(carried, "item_updated_at", item.updatedAt);
-            carried = replaceFrontMatterValue(
-              carried,
-              "review_lease_owner",
-              acquiredReviewLease.owner,
-            );
-            carried = replaceFrontMatterValue(
-              carried,
-              "review_lease_comment_id",
-              String(acquiredReviewLease.commentId),
-            );
-            carried = replaceFrontMatterValue(carried, "review_cache_hit", "true");
-            carried = updateReviewStructuralFrontMatter(carried, structuralRecord, true);
-            writeFileSync(reportPath, carried, "utf8");
-            completed += 1;
-            cacheHits += 1;
-            structuralCacheHits += 1;
-            if (humanLocalReview) {
-              console.error("");
-              console.error("Structural review cache hit; GitHub context unchanged");
-              console.error(`  report: ${displayPath(reportPath)}`);
-            } else {
+            structuralCacheRevalidations += 1;
+            const structuralRevalidationStartedAt = Date.now();
+            let revalidatedStructuralRecord: ReviewStructuralRecord | null = null;
+            try {
+              revalidatedStructuralRecord = fetchReviewStructuralRecord({
+                item,
+                git,
+                reviewPolicy,
+                reviewModel: PUBLIC_CODEX_MODEL,
+              });
+              if (
+                !reviewStructuralRecordAtLeastAsFresh(revalidatedStructuralRecord, item.updatedAt)
+              ) {
+                revalidatedStructuralRecord = null;
+              }
+            } catch (error) {
+              structuralCacheRevalidationFailures += 1;
               console.error(
-                `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} cache-hit structural-unchanged skip-hydration-model #${item.number} (${completed}/${candidates.length})`,
+                `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} structural-cache=revalidation-probe-failed #${item.number}: ${
+                  error instanceof Error ? error.message : String(error)
+                }`,
               );
+            } finally {
+              structuralCacheRevalidationMs += Date.now() - structuralRevalidationStartedAt;
             }
-            continue;
+            const revalidationDecision = reviewStructuralCacheDecision({
+              review: priorReview
+                ? {
+                    ...priorReview,
+                    reviewCommentSyncedAt: new Date().toISOString(),
+                  }
+                : null,
+              priorRecord: initialStructuralRecord,
+              currentRecord: revalidatedStructuralRecord,
+              reviewPolicy,
+              reviewModel: PUBLIC_CODEX_MODEL,
+              explicitDispatch,
+              maintainerRequest,
+              coordinationEnabled: true,
+            });
+            structuralCacheRevalidationReasons.set(
+              revalidationDecision.reason,
+              (structuralCacheRevalidationReasons.get(revalidationDecision.reason) ?? 0) + 1,
+            );
+            if (!revalidationDecision.hit) {
+              const leaseToRelease = acquiredReviewLease!;
+              if (!deleteOwnedDedicatedReviewStartLease(item.number, leaseToRelease)) {
+                leaseAcquisitionFailures += 1;
+                leaseAcquisitionFailureDetails.push(
+                  `#${item.number}: could not release structural cache lease after ${revalidationDecision.reason}`,
+                );
+                continue;
+              }
+              const acquiredIndex = acquiredReviewLeases.findIndex(
+                (entry) =>
+                  entry.itemNumber === item.number &&
+                  entry.lease.commentId === leaseToRelease.commentId &&
+                  entry.lease.owner === leaseToRelease.owner,
+              );
+              if (acquiredIndex >= 0) acquiredReviewLeases.splice(acquiredIndex, 1);
+              acquiredReviewLease = null;
+              structuralRecord = revalidatedStructuralRecord;
+              preHydrationStructuralRecord = revalidatedStructuralRecord;
+              if (structuralRecord) item.updatedAt = structuralRecord.activityUpdatedAt;
+              console.error(
+                `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} structural-cache=revalidation-miss reason=${revalidationDecision.reason} hydrate #${item.number}`,
+              );
+            } else {
+              const confirmedStructuralRecord = revalidatedStructuralRecord!;
+              structuralRecord = confirmedStructuralRecord;
+              item.updatedAt = confirmedStructuralRecord.activityUpdatedAt;
+              const reportPath = join(artifactDir, reportFileName(item.repo, item.number));
+              let carried = priorReview!.markdown;
+              carried = replaceFrontMatterValue(carried, "reviewed_at", new Date().toISOString());
+              carried = replaceFrontMatterValue(carried, "item_updated_at", item.updatedAt);
+              carried = replaceFrontMatterValue(
+                carried,
+                "review_lease_owner",
+                acquiredReviewLease.owner,
+              );
+              carried = replaceFrontMatterValue(
+                carried,
+                "review_lease_comment_id",
+                String(acquiredReviewLease.commentId),
+              );
+              carried = replaceFrontMatterValue(carried, "review_cache_hit", "true");
+              carried = updateReviewStructuralFrontMatter(carried, structuralRecord, true);
+              writeFileSync(reportPath, carried, "utf8");
+              completed += 1;
+              cacheHits += 1;
+              structuralCacheHits += 1;
+              if (humanLocalReview) {
+                console.error("");
+                console.error("Structural review cache hit; GitHub context unchanged");
+                console.error(`  report: ${displayPath(reportPath)}`);
+              } else {
+                console.error(
+                  `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} cache-hit structural-unchanged skip-hydration-model #${item.number} (${completed}/${candidates.length})`,
+                );
+              }
+              continue;
+            }
           }
         }
       }
@@ -19925,7 +19944,7 @@ function reviewCommand(args: Args): void {
       const contextElapsedMs = Date.now() - contextStartedAt;
       const contextItemUpdatedAt = stringOrUndefined(asRecord(context.issue).updatedAt);
       if (contextItemUpdatedAt) item.updatedAt = contextItemUpdatedAt;
-      if (!localRangeData && contextItemUpdatedAt) {
+      if (!localRangeData && contextItemUpdatedAt && preHydrationStructuralRecord) {
         structuralCacheRevalidations += 1;
         const structuralRevalidationStartedAt = Date.now();
         try {
@@ -19936,6 +19955,10 @@ function reviewCommand(args: Args): void {
             reviewModel: PUBLIC_CODEX_MODEL,
           });
           if (
+            reviewStructuralRecordsDescribeSameVerdictInput(
+              preHydrationStructuralRecord,
+              candidate,
+            ) &&
             reviewStructuralRecordMatchesObservedUpdate(candidate, contextItemUpdatedAt) &&
             reviewStructuralRecordMatchesHydratedItem(
               candidate,

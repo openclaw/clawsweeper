@@ -110,7 +110,12 @@ test("structural cache probes before hydration but acquires a lease before carry
     source.indexOf("for (const item of candidates)"),
     source.indexOf("let decision: Decision", source.indexOf("for (const item of candidates)")),
   );
-  const structuralCache = reviewLoop.indexOf("reviewStructuralCacheDecision({");
+  const structuralEligibility = reviewLoop.indexOf("reviewStructuralCacheProbeDecision({");
+  const structuralProbe = reviewLoop.indexOf(
+    "structuralRecord = fetchReviewStructuralRecord({",
+    structuralEligibility,
+  );
+  const structuralCache = reviewLoop.indexOf("reviewStructuralCacheDecision({", structuralProbe);
   const structuralHit = reviewLoop.indexOf("if (structuralDecision.hit)");
   const structuralLease = reviewLoop.indexOf("postReviewStartStatusComment({", structuralHit);
   const structuralRevalidation = reviewLoop.indexOf(
@@ -122,6 +127,8 @@ test("structural cache probes before hydration but acquires a lease before carry
   const hydration = reviewLoop.indexOf("collectItemContext(item");
   const mediaPrep = reviewLoop.indexOf("prepareMediaProofArtifacts(context", contentCache);
 
+  assert.ok(structuralEligibility >= 0);
+  assert.ok(structuralProbe > structuralEligibility);
   assert.ok(structuralCache >= 0);
   assert.ok(structuralCache < hydration);
   assert.ok(structuralHit > structuralCache);
@@ -139,6 +146,12 @@ test("structural cache probes before hydration but acquires a lease before carry
     reviewLoop.slice(structuralHit, structuralWrite),
     /review_lease_comment_id[\s\S]*acquiredReviewLease\.commentId/,
   );
+  const hydratedAnchor = reviewLoop.indexOf(
+    "reviewStructuralRecordsDescribeSameVerdictInput(",
+    hydration,
+  );
+  assert.ok(hydratedAnchor > hydration);
+  assert.match(reviewLoop.slice(hydration, hydratedAnchor + 160), /preHydrationStructuralRecord/);
   assert.match(source, /coordination-held\.json/);
   assert.match(source, /coordinationHeldRetryAt = startComment\.retryAt/);
   assert.match(source, /review-cache-metrics\.json/);

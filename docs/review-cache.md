@@ -15,8 +15,9 @@ A structural hit requires all of the following:
 - the prior review completed with an original keep-open verdict;
 - the review is less than 14 days old;
 - the review policy and public model are unchanged;
-- the item kind and bounded source revision are unchanged, and the post-hydration
-  probe matches the hydrated title, body, labels, and human comments exactly;
+- the item kind and bounded source revision are unchanged across probes taken
+  immediately before and after hydration, and the post-hydration probe matches
+  the hydrated title, body, labels, and human comments exactly;
 - human issue comments, bounded timeline events, PR reviews, review threads,
   and linked-item metadata are unchanged and complete;
 - no explicit relation, matching local report, Gitcrawl cluster member, or
@@ -30,6 +31,13 @@ A structural hit requires all of the following:
 Explicit reviews, maintainer prompts, close verdicts, failed reviews, legacy
 records, truncated metadata, malformed API responses, and probe failures always
 continue to full hydration.
+
+ClawSweeper evaluates those cheap eligibility conditions before issuing the
+bounded GraphQL query. Eligible legacy reports may still be probed so a
+structural record can be seeded after hydration. A record is seeded only when
+the pre-hydration and post-hydration snapshots describe the same complete
+timeline, review, and review-thread input; the final verdict probe must match
+that anchor again.
 
 Before carrying a structural hit, ClawSweeper acquires the normal durable review
 lease for the unchanged PR head or issue source revision. Missing coordination,

@@ -6,6 +6,7 @@ import {
   createReviewStructuralRecord,
   reviewStructuralActivitiesForTest,
   reviewStructuralCacheDecision,
+  reviewStructuralCacheProbeDecision,
   reviewStructuralQuery,
   reviewStructuralRecordAtLeastAsFresh,
   reviewStructuralRecordFromGraphql,
@@ -276,6 +277,37 @@ function graphqlRecord(kind: "issue" | "pull_request", node = graphqlNode(kind))
 
 test("unchanged completed keep-open issue hits the structural cache", () => {
   assert.deepEqual(decision(), { hit: true, reason: "hit" });
+});
+
+test("cheap eligibility rejects ineligible reviews before structural records are needed", () => {
+  const eligible = {
+    review: review(),
+    reviewPolicy: "policy-1",
+    reviewModel: "gpt-5.6",
+    explicitDispatch: false,
+    maintainerRequest: false,
+    coordinationEnabled: true,
+    now: NOW,
+  };
+  assert.deepEqual(reviewStructuralCacheProbeDecision(eligible), {
+    hit: true,
+    reason: "hit",
+  });
+  assert.equal(
+    reviewStructuralCacheProbeDecision({ ...eligible, review: null }).reason,
+    "missing_review",
+  );
+  assert.equal(
+    reviewStructuralCacheProbeDecision({ ...eligible, explicitDispatch: true }).reason,
+    "explicit_dispatch",
+  );
+  assert.equal(
+    reviewStructuralCacheProbeDecision({
+      ...eligible,
+      review: review({ lastFullReviewAt: new Date(NOW - 14 * DAY_MS).toISOString() }),
+    }).reason,
+    "stale_review",
+  );
 });
 
 test("structural probes cannot undercut a newer observed item generation", () => {
@@ -656,6 +688,44 @@ test("same-second review-thread edits change the structural source revision", ()
   assert.ok(original);
   assert.ok(edited);
   assert.notEqual(original.sourceRevision, edited.sourceRevision);
+});
+
+test("hydration anchors reject same-second PR review and timeline edits", () => {
+  const node = graphqlNode("pull_request");
+  const beforeHydration = graphqlRecord("pull_request", node);
+  const review = node.reviews.nodes[0];
+  assert.ok(beforeHydration);
+  assert.ok(review);
+  const reviewEdited = graphqlRecord("pull_request", {
+    ...node,
+    reviews: graphqlConnection([{ ...review, body: "Edited during hydration" }]),
+  });
+  assert.ok(reviewEdited);
+  assert.equal(reviewStructuralRecordMatchesObservedUpdate(reviewEdited, node.updatedAt), true);
+  assert.equal(
+    reviewStructuralRecordsDescribeSameVerdictInput(beforeHydration, reviewEdited),
+    false,
+  );
+
+  const timelineEdited = graphqlRecord("pull_request", {
+    ...node,
+    timelineItems: graphqlConnection([
+      ...node.timelineItems.nodes,
+      {
+        __typename: "LabeledEvent",
+        id: "LE_human",
+        createdAt: node.updatedAt,
+        actor: { login: "maintainer" },
+        label: { name: "needs-review" },
+      },
+    ]),
+  });
+  assert.ok(timelineEdited);
+  assert.equal(reviewStructuralRecordMatchesObservedUpdate(timelineEdited, node.updatedAt), true);
+  assert.equal(
+    reviewStructuralRecordsDescribeSameVerdictInput(beforeHydration, timelineEdited),
+    false,
+  );
 });
 
 test("hydrated pull state must match the complete structural PR state", () => {

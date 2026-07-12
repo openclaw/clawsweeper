@@ -149,6 +149,16 @@ export interface ReviewStructuralCacheDecision {
   reason: ReviewStructuralCacheReason;
 }
 
+export interface ReviewStructuralCacheProbeOptions {
+  review: ReviewStructuralPriorReview | null;
+  reviewPolicy: string;
+  reviewModel: string;
+  explicitDispatch: boolean;
+  maintainerRequest: boolean;
+  coordinationEnabled: boolean;
+  now?: number;
+}
+
 export interface ReviewStructuralGraphqlOptions {
   response: unknown;
   repo: string;
@@ -1134,17 +1144,9 @@ function activityCoveredByReview(
   );
 }
 
-export function reviewStructuralCacheDecision(options: {
-  review: ReviewStructuralPriorReview | null;
-  priorRecord: ReviewStructuralRecord | null;
-  currentRecord: ReviewStructuralRecord | null;
-  reviewPolicy: string;
-  reviewModel: string;
-  explicitDispatch: boolean;
-  maintainerRequest: boolean;
-  coordinationEnabled: boolean;
-  now?: number;
-}): ReviewStructuralCacheDecision {
+export function reviewStructuralCacheProbeDecision(
+  options: ReviewStructuralCacheProbeOptions,
+): ReviewStructuralCacheDecision {
   if (options.explicitDispatch) return { hit: false, reason: "explicit_dispatch" };
   if (options.maintainerRequest) return { hit: false, reason: "maintainer_request" };
   if (!options.coordinationEnabled) return { hit: false, reason: "coordination_disabled" };
@@ -1172,6 +1174,18 @@ export function reviewStructuralCacheDecision(options: {
   ) {
     return { hit: false, reason: "stale_review" };
   }
+  return { hit: true, reason: "hit" };
+}
+
+export function reviewStructuralCacheDecision(
+  options: ReviewStructuralCacheProbeOptions & {
+    priorRecord: ReviewStructuralRecord | null;
+    currentRecord: ReviewStructuralRecord | null;
+  },
+): ReviewStructuralCacheDecision {
+  const probeDecision = reviewStructuralCacheProbeDecision(options);
+  if (!probeDecision.hit) return probeDecision;
+  const review = options.review!;
   const prior = options.priorRecord;
   const current = options.currentRecord;
   if (!validReviewStructuralRecord(prior) || !validReviewStructuralRecord(current)) {
