@@ -686,6 +686,7 @@ export function publishValidatedExecution({
             checkout,
             intent,
             publication,
+            publicationCheckpoint: priorCheckpoint,
             mutations,
             checkpointedClosures,
           });
@@ -739,6 +740,40 @@ export function verifyPublishedReceipt({
   });
 }
 
+export function verifyPublishedPullContext({
+  root,
+  publicationReceiptPath,
+  validationReceiptPath,
+  expectedAuthorizationSha256,
+  expectedValidationReceiptSha256,
+  expectedPublicationReceiptSha256,
+}: {
+  root: string;
+  publicationReceiptPath: string;
+  validationReceiptPath: string;
+  expectedAuthorizationSha256: string;
+  expectedValidationReceiptSha256: string;
+  expectedPublicationReceiptSha256: string;
+}): {
+  receipt: PublicationReceipt;
+  intent: ExecutionIntent;
+  publication: PreparedPublication;
+} {
+  const receipt = verifyPublishedReceipt({
+    root,
+    publicationReceiptPath,
+    validationReceiptPath,
+    expectedAuthorizationSha256,
+    expectedValidationReceiptSha256,
+    expectedPublicationReceiptSha256,
+  });
+  return {
+    receipt,
+    intent: readExecutionIntent(root),
+    publication: verifyAuthorizedPreparedPublication(root, expectedAuthorizationSha256),
+  };
+}
+
 export function runVerifiedPublishedPullMutation<T>({
   root,
   publicationReceiptPath,
@@ -756,7 +791,7 @@ export function runVerifiedPublishedPullMutation<T>({
   expectedPublicationReceiptSha256: string;
   mutation: (context: { receipt: PublicationReceipt; intent: ExecutionIntent }) => T;
 }): T {
-  const receipt = verifyPublishedReceipt({
+  const { receipt, intent, publication } = verifyPublishedPullContext({
     root,
     publicationReceiptPath,
     validationReceiptPath,
@@ -764,8 +799,6 @@ export function runVerifiedPublishedPullMutation<T>({
     expectedValidationReceiptSha256,
     expectedPublicationReceiptSha256,
   });
-  const intent = readExecutionIntent(root);
-  const publication = verifyAuthorizedPreparedPublication(root, expectedAuthorizationSha256);
   const checkpointedClosures = checkpointedSourceClosures(publication, receipt);
   return runPublicationMutation({
     intent,
@@ -779,6 +812,35 @@ export function runVerifiedPublishedPullMutation<T>({
         intent,
         mutation: () => mutation({ receipt, intent }),
       }),
+  });
+}
+
+export function runVerifiedSealedSourceMutation<T>({
+  root,
+  validationReceiptPath,
+  expectedAuthorizationSha256,
+  expectedValidationReceiptSha256,
+  mutation,
+}: {
+  root: string;
+  validationReceiptPath: string;
+  expectedAuthorizationSha256: string;
+  expectedValidationReceiptSha256: string;
+  mutation: (context: { intent: ExecutionIntent }) => T;
+}): T {
+  verifyValidationReceipt({
+    root,
+    receiptPath: validationReceiptPath,
+    expectedAuthorizationSha256,
+    expectedReceiptSha256: expectedValidationReceiptSha256,
+  });
+  const intent = readExecutionIntent(root);
+  const publication = verifyAuthorizedPreparedPublication(root, expectedAuthorizationSha256);
+  return runPublicationMutation({
+    intent,
+    publication,
+    targetNumbers: [],
+    mutation: () => mutation({ intent }),
   });
 }
 
@@ -864,6 +926,7 @@ export function closePublishedReplacementSources({
     cwd: root,
     intent,
     publication,
+    publicationCheckpoint: receipt,
     targetPrNumber: receipt.target_pr_number,
     checkpointedClosures,
   });
@@ -871,6 +934,7 @@ export function closePublishedReplacementSources({
     cwd: root,
     intent,
     publication,
+    publicationCheckpoint: receipt,
     targetPrNumber: receipt.target_pr_number,
     checkpointedClosures,
   });
@@ -1641,12 +1705,14 @@ function publishReplacementRepair({
   checkout,
   intent,
   publication,
+  publicationCheckpoint,
   mutations,
   checkpointedClosures,
 }: {
   checkout: string;
   intent: ExecutionIntent;
   publication: PreparedPublication;
+  publicationCheckpoint: PublicationReceipt | null;
   mutations: LooseRecord[];
   checkpointedClosures: ReadonlySet<string>;
 }): number {
@@ -1654,6 +1720,7 @@ function publishReplacementRepair({
     pulls: pullsForBranch(intent.target_repo, intent.output_branch, intent.target_base_ref, "all"),
     publication,
     intent,
+    publicationCheckpoint,
   });
   const liveTargetPr = recovery?.number ?? null;
   if (
@@ -1790,10 +1857,12 @@ export function selectAuthorizedReplacementPull({
   pulls,
   publication,
   intent,
+  publicationCheckpoint = null,
 }: {
   pulls: LooseRecord[];
   publication: PreparedPublication;
   intent: ExecutionIntent;
+  publicationCheckpoint?: PublicationReceipt | null;
 }): { number: number; state: "open" | "reopen" } | null {
   const allowedHeadShas = new Set(
     [intent.expected_output_sha, publication.prepared_head_sha].filter((sha): sha is string =>
@@ -1829,7 +1898,23 @@ export function selectAuthorizedReplacementPull({
     throw new Error("authorized replacement pull request is already merged");
   }
   if (state === "open") return { number, state: "open" };
-  if (state === "closed") return { number, state: "reopen" };
+  if (state === "closed") {
+    if (!publicationCheckpoint) {
+      throw new Error("closed replacement pull request lacks a verified publication checkpoint");
+    }
+    verifyPublicationReceipt({
+      receipt: publicationCheckpoint,
+      publication,
+      validationReceiptSha256: publicationCheckpoint.validation_receipt_sha256,
+    });
+    if (
+      publicationCheckpoint.operation !== "open_pull_request" ||
+      publicationCheckpoint.target_pr_number !== number
+    ) {
+      throw new Error("publication checkpoint does not authorize reopening this replacement");
+    }
+    return { number, state: "reopen" };
+  }
   throw new Error(`authorized replacement pull request is ${state || "unknown"}`);
 }
 
@@ -1837,12 +1922,14 @@ function ensurePublishedReplacementAvailable({
   cwd,
   intent,
   publication,
+  publicationCheckpoint,
   targetPrNumber,
   checkpointedClosures,
 }: {
   cwd: string;
   intent: ExecutionIntent;
   publication: PreparedPublication;
+  publicationCheckpoint: PublicationReceipt;
   targetPrNumber: number;
   checkpointedClosures: ReadonlySet<string>;
 }) {
@@ -1850,6 +1937,7 @@ function ensurePublishedReplacementAvailable({
     pulls: [ghObject(`repos/${intent.target_repo}/pulls/${targetPrNumber}`)],
     publication,
     intent,
+    publicationCheckpoint,
   });
   if (!selection || selection.number !== targetPrNumber) {
     throw new Error("publication checkpoint target no longer matches the authorized replacement");
@@ -1873,12 +1961,14 @@ function closeSupersededReplacementSources({
   cwd,
   intent,
   publication,
+  publicationCheckpoint,
   targetPrNumber,
   checkpointedClosures,
 }: {
   cwd: string;
   intent: ExecutionIntent;
   publication: PreparedPublication;
+  publicationCheckpoint: PublicationReceipt;
   targetPrNumber: number;
   checkpointedClosures: ReadonlySet<string>;
 }) {
@@ -1905,6 +1995,7 @@ function closeSupersededReplacementSources({
       cwd,
       intent,
       publication,
+      publicationCheckpoint,
       targetPrNumber,
       checkpointedClosures,
     });
@@ -1929,6 +2020,7 @@ function closeSupersededReplacementSources({
       cwd,
       intent,
       publication,
+      publicationCheckpoint,
       targetPrNumber,
       checkpointedClosures,
     });
@@ -1996,23 +2088,27 @@ export function runHeadBoundPullMutation<T>({
   return mutation();
 }
 
-function assertPublishedPullIdentity({
+export function publishedPullIdentityBlock({
   pull,
   publication,
   intent,
-  verifyLabels,
+  verifyLabels = true,
+  allowMerged = false,
 }: {
   pull: LooseRecord;
   publication: PreparedPublication;
   intent: ExecutionIntent;
-  verifyLabels: boolean;
-}) {
+  verifyLabels?: boolean;
+  allowMerged?: boolean;
+}): string {
   const missingLabels = missingRequiredPublicationLabels(
     intent.required_labels,
     githubLabelNames(pull.labels),
   );
+  const liveState = String(pull.state ?? "").toLowerCase();
+  const merged = Boolean(pull.merged_at ?? pull.mergedAt);
   if (
-    String(pull.state ?? "").toLowerCase() !== "open" ||
+    (liveState !== "open" && !(allowMerged && merged)) ||
     pull.head?.repo?.full_name !== intent.output_repo ||
     pull.head?.ref !== intent.output_branch ||
     pull.head?.sha !== publication.prepared_head_sha ||
@@ -2021,8 +2117,14 @@ function assertPublishedPullIdentity({
       (pull.title !== publication.pr_title || pull.body !== publication.pr_body)) ||
     (verifyLabels && missingLabels.length > 0)
   ) {
-    throw new Error("published pull request does not match the validated output identity");
+    return "published pull request does not match the validated output identity";
   }
+  return "";
+}
+
+function assertPublishedPullIdentity(options: Parameters<typeof publishedPullIdentityBlock>[0]) {
+  const block = publishedPullIdentityBlock(options);
+  if (block) throw new Error(block);
 }
 
 export function assertPublicationSourceIdentity({

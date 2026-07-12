@@ -485,24 +485,21 @@ test("merge post-flight requires exact proof and server-enforced strict base bin
       1,
     );
     const mergeRaceReport = JSON.parse(fs.readFileSync(reportPath, "utf8"));
-    assert.equal(mergeRaceReport.outcome, "requeue");
+    assert.equal(mergeRaceReport.outcome, "blocked");
     assert.equal(mergeRaceReport.actions[0]?.status, "blocked");
-    assert.equal(mergeRaceReport.actions[0]?.retry_recommended, true);
-    assert.match(mergeRaceReport.actions[0]?.reason, /merge attempt needs branch refresh/);
+    assert.equal(mergeRaceReport.actions[0]?.retry_recommended, undefined);
+    assert.match(mergeRaceReport.actions[0]?.reason, /requires a verified publication checkpoint/);
     assert.equal(fs.existsSync(mergeFlagPath), false);
 
     writeMergeReports(runDir, resultPath);
     fs.rmSync(reportPath, { force: true });
     fs.rmSync(viewCountPath, { force: true });
     fs.rmSync(commentsCountPath, { force: true });
-    execFileSync(process.execPath, ["dist/repair/post-flight.js", jobPath, resultPath], {
-      cwd: repoRoot,
-      env: { ...env, FAKE_GH_STRICT_BASE: "1" },
-      stdio: "pipe",
-    });
+    runPostFlight(jobPath, resultPath, { ...env, FAKE_GH_STRICT_BASE: "1" }, 1);
     const report = JSON.parse(fs.readFileSync(reportPath, "utf8"));
-    assert.equal(report.actions[0]?.status, "executed");
-    assert.equal(report.actions[0]?.merge_commit_sha, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+    assert.equal(report.actions[0]?.status, "blocked");
+    assert.match(report.actions[0]?.reason, /requires a verified publication checkpoint/);
+    assert.equal(fs.existsSync(mergeFlagPath), false);
     assert.equal(fs.readFileSync(viewCountPath, "utf8"), "2");
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
@@ -517,8 +514,18 @@ test("post-flight rechecks live security immediately before privileged mutations
   );
   assert.match(
     finalizeFixPr,
-    /liveSecurityBlockReason\([\s\S]*fetchPullRequest[\s\S]*\n\s*try \{\n\s*ghWithRetry\(mergeArgs\)/,
+    /liveSecurityBlockReason\([\s\S]*fetchPullRequest[\s\S]*runVerifiedPostFlightPullMutation\(parsed\.number, \(\) => ghWithRetry\(mergeArgs\)\)/,
   );
+  assert.match(
+    finalizeFixPr,
+    /runVerifiedPostFlightPullMutation\(parsed\.number, \(\) =>[\s\S]*labelForClawSweeperReview/,
+  );
+  const mutationWrapper = source.slice(
+    source.indexOf("function runVerifiedPostFlightPullMutation"),
+    source.indexOf("function rulesetPolicyReader"),
+  );
+  assert.match(mutationWrapper, /runVerifiedPublishedPullMutation\(/);
+  assert.match(mutationWrapper, /receipt\.target_pr_number !== number/);
 
   const closeout = source.slice(
     source.indexOf("function finalizePostMergeCloseout"),

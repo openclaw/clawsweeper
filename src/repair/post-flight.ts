@@ -34,7 +34,10 @@ import {
 import { isPassedStagedProofBundle } from "./staged-proof-gates.js";
 import { serverStrictBaseBindingBlock } from "./strict-base-binding.js";
 import { compactText as compactPlainText } from "./text-utils.js";
-import { verifyPublishedReceipt } from "./execution-handoff.js";
+import {
+  runVerifiedPublishedPullMutation,
+  verifyPublishedPullContext,
+} from "./execution-handoff.js";
 import {
   issueImplementationPublishedHeadBlock,
   postFlightOutcomeExitCode,
@@ -62,16 +65,20 @@ const jobPath = args._[0];
 const resultPathArg = args._[1];
 const latest = Boolean(args.latest);
 const dryRun = Boolean(args["dry-run"] || process.env.CLAWSWEEPER_POST_FLIGHT_DRY_RUN === "1");
-const publicationReceipt = args["publication-receipt"]
-  ? verifyPublishedReceipt({
+const publicationVerification = args["publication-receipt"]
+  ? {
       root: requiredOption("handoff-root"),
       publicationReceiptPath: requiredOption("publication-receipt"),
       validationReceiptPath: requiredOption("validation-receipt"),
       expectedAuthorizationSha256: requiredOption("authorization-sha256"),
       expectedValidationReceiptSha256: requiredOption("validation-receipt-sha256"),
       expectedPublicationReceiptSha256: requiredOption("publication-receipt-sha256"),
-    })
+    }
   : null;
+const publicationContext = publicationVerification
+  ? verifyPublishedPullContext(publicationVerification)
+  : null;
+const publicationReceipt = publicationContext?.receipt ?? null;
 
 if (!jobPath) {
   console.error("usage: node scripts/post-flight.ts <job.md> [result.json] [--latest] [--dry-run]");
@@ -200,7 +207,14 @@ function finalizeFixPr(action: LooseRecord) {
         automergeReplacement: isAutomergeReplacementMerge(action, pull),
       })
     ) {
-      return publicationOnlyPostFlightAction({ action, base: prBase, pull, view });
+      return publicationOnlyPostFlightAction({
+        action,
+        base: prBase,
+        pull,
+        view,
+        publication: publicationContext!.publication,
+        intent: publicationContext!.intent,
+      });
     }
     const policyBlock = validateMergePolicy(action, pull);
     if (policyBlock) return { ...prBase, status: "blocked", reason: policyBlock };
@@ -268,7 +282,11 @@ function finalizeFixPr(action: LooseRecord) {
       fetchPullRequest(result.repo, parsed.number).labels ?? [],
     );
     if (securityBlock) return { ...prBase, status: "blocked", reason: securityBlock };
-    labelForClawSweeperReview(result.repo, parsed.number);
+    const mutationBlock = postFlightPullMutationBlock(parsed.number);
+    if (mutationBlock) return { ...prBase, status: "blocked", reason: mutationBlock };
+    runVerifiedPostFlightPullMutation(parsed.number, () =>
+      labelForClawSweeperReview(result.repo, parsed.number),
+    );
     return {
       ...prBase,
       status: "blocked",
@@ -326,8 +344,10 @@ function finalizeFixPr(action: LooseRecord) {
     fetchPullRequest(result.repo, parsed.number).labels ?? [],
   );
   if (securityBlock) return { ...prBase, status: "blocked", reason: securityBlock };
+  const mutationBlock = postFlightPullMutationBlock(parsed.number);
+  if (mutationBlock) return { ...prBase, status: "blocked", reason: mutationBlock };
   try {
-    ghWithRetry(mergeArgs);
+    runVerifiedPostFlightPullMutation(parsed.number, () => ghWithRetry(mergeArgs));
   } catch (error) {
     const detail = ghErrorText(error);
     if (isRecoverableMergeRace(detail)) {
@@ -386,6 +406,37 @@ function requiredOption(name: string): string {
   const value = String(args[name] ?? "").trim();
   if (!value) throw new Error(`--${name} is required with --publication-receipt`);
   return value;
+}
+
+function postFlightPullMutationBlock(number: number): string {
+  if (!publicationVerification || !publicationReceipt) {
+    return "post-flight pull mutation requires a verified publication checkpoint";
+  }
+  if (
+    publicationReceipt.target_repo !== result.repo ||
+    publicationReceipt.target_pr_number !== number
+  ) {
+    return "post-flight pull mutation target differs from the publication checkpoint";
+  }
+  return "";
+}
+
+function runVerifiedPostFlightPullMutation<T>(number: number, mutation: () => T): T {
+  const block = postFlightPullMutationBlock(number);
+  if (block || !publicationVerification) throw new Error(block);
+  return runVerifiedPublishedPullMutation({
+    ...publicationVerification,
+    mutation: ({ receipt, intent }) => {
+      if (
+        receipt.target_repo !== result.repo ||
+        receipt.target_pr_number !== number ||
+        intent.target_repo !== result.repo
+      ) {
+        throw new Error("post-flight pull mutation escaped the verified publication target");
+      }
+      return mutation();
+    },
+  });
 }
 
 function rulesetPolicyReader() {

@@ -70,14 +70,16 @@ test("post-flight treats non-merge repair lanes as publication-only", () => {
 });
 
 test("publication-only completion requires the exact authorized repair head", () => {
-  const action = { commit: "a".repeat(40) };
+  const { action, publication, intent, pull } = publicationIdentityFixture();
   const base = { action: "finalize_fix_pr", pr: "#123" };
   assert.equal(
     publicationOnlyPostFlightAction({
       action,
       base,
-      pull: { state: "open", head: { sha: "a".repeat(40) } },
+      pull,
       view: {},
+      publication,
+      intent,
     }).status,
     "published",
   );
@@ -85,15 +87,45 @@ test("publication-only completion requires the exact authorized repair head", ()
     publicationOnlyPostFlightAction({
       action,
       base,
-      pull: { state: "open", head: { sha: "b".repeat(40) } },
+      pull: { ...pull, head: { ...pull.head, sha: "b".repeat(40) } },
       view: {},
+      publication,
+      intent,
     }),
     {
       ...base,
       status: "blocked",
-      reason: "published pull request head does not match the authorized repair commit",
+      reason: "published pull request does not match the validated output identity",
     },
   );
+});
+
+test("publication-only completion rejects redirected prepared publication identity", () => {
+  const { action, publication, intent, pull } = publicationIdentityFixture();
+  const base = { action: "finalize_fix_pr", pr: "#123" };
+  for (const redirected of [
+    { ...pull, head: { ...pull.head, repo: { full_name: "attacker/example" } } },
+    { ...pull, head: { ...pull.head, ref: "attacker-branch" } },
+    { ...pull, base: { ref: "release" } },
+    { ...pull, title: "unrelated pull request" },
+    { ...pull, body: "forged body" },
+  ]) {
+    assert.deepEqual(
+      publicationOnlyPostFlightAction({
+        action,
+        base,
+        pull: redirected,
+        view: {},
+        publication,
+        intent,
+      }),
+      {
+        ...base,
+        status: "blocked",
+        reason: "published pull request does not match the validated output identity",
+      },
+    );
+  }
 });
 
 test("issue implementation completion requires the exact published receipt head", () => {
@@ -173,3 +205,40 @@ test("post-flight exits nonzero for blocked and requeue reports", () => {
   assert.equal(postFlightOutcomeExitCode("blocked"), 1);
   assert.equal(postFlightOutcomeExitCode("requeue"), 1);
 });
+
+function publicationIdentityFixture() {
+  const preparedHeadSha = "a".repeat(40);
+  const publication = {
+    prepared_head_sha: preparedHeadSha,
+    output_repo: "openclaw/example",
+    output_branch: "clawsweeper/exact-repair",
+    target_base_ref: "main",
+    pr_title: "fix: exact repair",
+    pr_body: "Exact prepared repair.",
+  };
+  const intent = {
+    operation: "open_pull_request",
+    output_repo: publication.output_repo,
+    output_branch: publication.output_branch,
+    target_base_ref: publication.target_base_ref,
+    required_labels: [],
+  };
+  return {
+    action: { commit: preparedHeadSha },
+    publication,
+    intent,
+    pull: {
+      state: "open",
+      merged_at: null,
+      labels: [],
+      title: publication.pr_title,
+      body: publication.pr_body,
+      head: {
+        repo: { full_name: publication.output_repo },
+        ref: publication.output_branch,
+        sha: preparedHeadSha,
+      },
+      base: { ref: publication.target_base_ref },
+    },
+  };
+}

@@ -384,6 +384,7 @@ test("publication retry accepts only the exact already-pushed authorized commit"
 test("replacement retry reopens only the exact closed authorized pull request", () => {
   const intent = executionIntent("a".repeat(64));
   const publication = {
+    ...checkpointPublication([]),
     prepared_head_sha: "2".repeat(40),
     pr_title: "fix: exact replacement",
     pr_body: "Exact replacement body.",
@@ -401,6 +402,12 @@ test("replacement retry reopens only the exact closed authorized pull request", 
     },
     base: { ref: intent.target_base_ref },
   };
+  const checkpoint = publicationReceipt({
+    validationReceiptSha256: "f".repeat(64),
+    publication,
+    targetPrNumber: 99,
+    mutations: [],
+  });
 
   assert.deepEqual(
     selectAuthorizedReplacementPull({
@@ -414,8 +421,33 @@ test("replacement retry reopens only the exact closed authorized pull request", 
       ],
       publication,
       intent,
+      publicationCheckpoint: checkpoint,
     }),
     { number: 99, state: "reopen" },
+  );
+  assert.throws(
+    () =>
+      selectAuthorizedReplacementPull({
+        pulls: [exactClosed],
+        publication,
+        intent,
+      }),
+    /lacks a verified publication checkpoint/,
+  );
+  assert.throws(
+    () =>
+      selectAuthorizedReplacementPull({
+        pulls: [exactClosed],
+        publication,
+        intent,
+        publicationCheckpoint: publicationReceipt({
+          validationReceiptSha256: "f".repeat(64),
+          publication,
+          targetPrNumber: 100,
+          mutations: [],
+        }),
+      }),
+    /does not authorize reopening/,
   );
   assert.throws(
     () =>
@@ -610,9 +642,10 @@ test("publication checkpoint precedes source closeout and every mutation recheck
     publisher.indexOf("readPriorPublicationCheckpoint") <
       publisher.indexOf("assertPublicationSourceIdentity"),
   );
+  const closeoutStart = source.indexOf("function closeSupersededReplacementSources");
   const closeout = source.slice(
-    source.indexOf("function closeSupersededReplacementSources"),
-    source.indexOf("function verifyPublishedPull"),
+    closeoutStart,
+    source.indexOf("\nfunction verifyPublishedPull(", closeoutStart),
   );
   assert.match(
     closeout,

@@ -1,4 +1,6 @@
 import type { JsonValue, LooseRecord } from "./json-types.js";
+import { publishedPullIdentityBlock } from "./execution-handoff.js";
+import type { ExecutionIntent, PreparedPublication } from "./prepared-publication.js";
 
 export type PostFlightReportOutcome = "success" | "blocked" | "requeue";
 
@@ -37,20 +39,36 @@ export function publicationOnlyPostFlightAction({
   base,
   pull,
   view,
+  publication,
+  intent,
 }: {
   action: LooseRecord;
   base: LooseRecord;
   pull: LooseRecord;
   view: LooseRecord;
+  publication: PreparedPublication;
+  intent: ExecutionIntent;
 }): LooseRecord {
-  const liveHeadSha = String(pull.head?.sha ?? view.headRefOid ?? "");
   const liveState = String(pull.state ?? view.state ?? "").toLowerCase();
   const mergedAt = pull.merged_at ?? view.mergedAt ?? null;
-  if (!action.commit || liveHeadSha !== action.commit) {
+  if (!action.commit || action.commit !== publication.prepared_head_sha) {
     return {
       ...base,
       status: "blocked",
       reason: "published pull request head does not match the authorized repair commit",
+    };
+  }
+  const identityBlock = publishedPullIdentityBlock({
+    pull,
+    publication,
+    intent,
+    allowMerged: true,
+  });
+  if (identityBlock) {
+    return {
+      ...base,
+      status: "blocked",
+      reason: identityBlock,
     };
   }
   if (liveState !== "open" && !mergedAt) {
