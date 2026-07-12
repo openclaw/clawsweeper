@@ -28,6 +28,7 @@ import {
   actionLedgerJson,
   createActionEvent,
   writeActionEventShard,
+  writeActionEventShards,
   type ActionEvent,
   type ActionEventInput,
   type ActionEventShardIdentity,
@@ -1849,6 +1850,43 @@ test("state shard imports reject incomplete numbered sets and split producer par
   assert.deepEqual(fs.readdirSync(splitDestination), []);
 });
 
+test("state shard imports retain producer bindings across sequential batches", () => {
+  const root = tempRoot();
+  const event = recordReview(root);
+  assert.ok(event);
+  const identity = shardIdentity(event);
+  const destination = trustedChildRoot(root, "destination");
+
+  const initialSource = trustedChildRoot(root, "initial-source");
+  writeActionEventShard(initialSource, identity, [event], 1, 1);
+  assert.equal(importActionEventShards(initialSource, destination).created, 1);
+
+  const replacementSource = trustedChildRoot(root, "replacement-source");
+  const replacementEvents = Array.from({ length: 1_025 }, (_, index) =>
+    recreateActionEvent(event, {
+      eventKey: actionEventKey("review.replacement", { index }),
+      parentEventId: null,
+    }),
+  );
+  const replacementParts = writeActionEventShards(replacementSource, identity, replacementEvents);
+  assert.equal(replacementParts.length, 2);
+  assert.throws(
+    () => importActionEventShards(replacementSource, destination),
+    /producer shard-set binding conflict/,
+  );
+
+  const movedSource = trustedChildRoot(root, "moved-source");
+  const movedEvent = recreateActionEvent(event, {
+    eventKey: actionEventKey("review.moved", { partition: "2026-07-13" }),
+    parentEventId: null,
+  });
+  writeActionEventShard(movedSource, { ...identity, partitionDate: "2026-07-13" }, [movedEvent]);
+  assert.throws(
+    () => importActionEventShards(movedSource, destination),
+    /producer partition binding conflict/,
+  );
+});
+
 test("state shard imports reject noncanonical trusted root spellings", async () => {
   const root = tempRoot();
   const source = trustedChildRoot(root, "source");
@@ -2335,8 +2373,11 @@ importActionEventShards(process.argv[1], process.argv[2]);`;
     );
     assert.equal(child.signal, "SIGKILL", child.stderr);
     assert.equal(fs.existsSync(path.join(destination, relativePath)), false);
-    const destinationDirectory = path.dirname(path.join(destination, relativePath));
-    assert.ok(fs.readdirSync(destinationDirectory).some((entry) => entry.endsWith(".tmp")));
+    assert.ok(
+      fs
+        .readdirSync(destination, { recursive: true })
+        .some((entry) => String(entry).endsWith(".tmp")),
+    );
 
     const replay = importActionEventShards(source, destination);
     assert.equal(replay.created, 1);

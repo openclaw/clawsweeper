@@ -21,6 +21,7 @@ import {
   actionIdempotencyKey,
   actionLedgerJson,
   actionOperationId,
+  actionEventReplayJson,
   createActionEvent,
   isActionEventPhaseType,
   isActionEventReasonCode,
@@ -52,6 +53,7 @@ const DEFAULT_CRABFLEET_TIMEOUT_MS = 10_000;
 const MAX_CRABFLEET_TIMEOUT_MS = 60_000;
 const ACTION_EVENT_SHARD_PATH_PATTERN =
   /^ledger\/v1\/events\/\d{4}\/\d{2}\/\d{2}\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\.jsonl$/;
+const ACTION_EVENT_IMPORT_BINDING_MAX_BYTES = 1024 * 1024;
 const pendingCrabFleetPosts = new Set<Promise<void>>();
 const activeCrabFleetRequests = new Set<Promise<unknown>>();
 const queuedCrabFleetPosts: QueuedCrabFleetProjection[] = [];
@@ -432,6 +434,7 @@ export function importActionEventShards(
   }
   const shards = readImportedActionEventShards(safeSource, relativePaths);
   const safeDestination = prepareSafeReadRoot(destinationRoot, "action event shard import");
+  const bindings = prepareActionEventShardImportBindings(safeDestination, shards);
   const prepared = shards.map((shard) => {
     const target = prepareSafeWriteTarget(
       safeDestination.path,
@@ -451,6 +454,9 @@ export function importActionEventShards(
     }
     return { ...shard, target, existing };
   });
+  for (const binding of bindings) {
+    publishActionEventShardImportBinding(binding);
+  }
   let created = 0;
   let unchanged = 0;
   for (const shard of prepared) {
@@ -473,6 +479,100 @@ export function importActionEventShards(
     unchanged += 1;
   }
   return { created, unchanged, paths: relativePaths };
+}
+
+function prepareActionEventShardImportBindings(
+  destination: SafeReadRoot,
+  shards: readonly ImportedActionEventShard[],
+) {
+  const bindings = actionEventShardImportBindings(shards).map((binding) => {
+    const target = prepareSafeWriteTarget(destination.path, binding.relativePath, binding.label);
+    const existing = readUtf8FileIfExistsNoFollow(target, ACTION_EVENT_IMPORT_BINDING_MAX_BYTES);
+    if (existing !== null && existing !== binding.content) {
+      throw new Error(`${binding.label} conflict`);
+    }
+    return { ...binding, target, existing };
+  });
+  return bindings;
+}
+
+function actionEventShardImportBindings(shards: readonly ImportedActionEventShard[]) {
+  const producerRuns = new Map<string, { relativePath: string; content: string; label: string }>();
+  const shardSets = new Map<string, ImportedActionEventShard[]>();
+  for (const shard of shards) {
+    const { partitionDate, ...producerIdentity } = shard.identity;
+    const producerKey = actionLedgerJson(producerIdentity);
+    const producerDigest = createHash("sha256").update(producerKey).digest("hex");
+    const producerContent = `${actionLedgerJson({
+      schema: "clawsweeper.action-ledger-import-producer-run",
+      schema_version: 1,
+      producer: producerIdentity,
+      partition_date: partitionDate,
+    })}\n`;
+    const existingProducer = producerRuns.get(producerKey);
+    if (existingProducer && existingProducer.content !== producerContent) {
+      throw new Error("action event shard batch splits one producer run across partition dates");
+    }
+    producerRuns.set(producerKey, {
+      relativePath: path.join(
+        "ledger",
+        "v1",
+        "import-bindings",
+        "producer-runs",
+        `${producerDigest}.json`,
+      ),
+      content: producerContent,
+      label: "action event shard import producer partition binding",
+    });
+
+    const shardSetKey = actionLedgerJson(shard.identity);
+    const group = shardSets.get(shardSetKey) ?? [];
+    group.push(shard);
+    shardSets.set(shardSetKey, group);
+  }
+
+  const bindings = [...producerRuns.values()];
+  for (const [shardSetKey, group] of shardSets) {
+    const shardSetDigest = createHash("sha256").update(shardSetKey).digest("hex");
+    const ordered = [...group].sort((left, right) =>
+      left.relativePath < right.relativePath ? -1 : left.relativePath > right.relativePath ? 1 : 0,
+    );
+    bindings.push({
+      relativePath: path.join(
+        "ledger",
+        "v1",
+        "import-bindings",
+        "shard-sets",
+        `${shardSetDigest}.json`,
+      ),
+      content: `${actionLedgerJson({
+        schema: "clawsweeper.action-ledger-import-shard-set",
+        schema_version: 1,
+        producer: ordered[0]!.identity,
+        shards: ordered.map((shard) => ({
+          path: shard.relativePath,
+          replay_sha256: createHash("sha256")
+            .update(`${shard.events.map((event) => actionEventReplayJson(event)).join("\n")}\n`)
+            .digest("hex"),
+        })),
+      })}\n`,
+      label: "action event shard import producer shard-set binding",
+    });
+  }
+  return bindings.sort((left, right) =>
+    left.relativePath < right.relativePath ? -1 : left.relativePath > right.relativePath ? 1 : 0,
+  );
+}
+
+function publishActionEventShardImportBinding(
+  binding: ReturnType<typeof prepareActionEventShardImportBindings>[number],
+): void {
+  if (binding.existing !== null) return;
+  if (writeUtf8FileCreateOnlyNoFollow(binding.target, binding.content) === "created") return;
+  const raced = readUtf8FileNoFollow(binding.target, ACTION_EVENT_IMPORT_BINDING_MAX_BYTES);
+  if (raced !== binding.content) {
+    throw new Error(`${binding.label} conflict`);
+  }
 }
 
 function readImportedActionEventShards(
