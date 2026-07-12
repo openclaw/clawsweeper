@@ -124,6 +124,8 @@ jobs:
       allow_fix_pr: ${{ steps.capture_gates.outputs.allow_fix_pr }}
       allow_merge: ${{ steps.capture_gates.outputs.allow_merge }}
       job_exists: ${{ steps.check_job.outputs.job_exists }}
+      worker_artifact_id: ${{ steps.upload_worker.outputs.artifact-id }}
+      worker_artifact_digest: ${{ steps.upload_worker.outputs.artifact-digest }}
     env:
       CLAWSWEEPER_ALLOWED_OWNER: ${{ vars.CLAWSWEEPER_ALLOWED_OWNER || 'openclaw' }}
       CLAWSWEEPER_ALLOW_EXECUTE: ${{ (inputs.mode == 'execute' || inputs.mode == 'autonomous') && vars.CLAWSWEEPER_ALLOW_EXECUTE == '1' && '1' || '0' }}
@@ -340,6 +342,7 @@ jobs:
           retention-days: 7
 
       - name: Upload worker transfer artifacts
+        id: upload_worker
         if: ${{ always() && (inputs.mode == 'execute' || inputs.mode == 'autonomous') && !inputs.dry_run }}
         uses: actions/upload-artifact@v7
         with:
@@ -392,6 +395,9 @@ jobs:
     if: ${{ needs.cluster.result == 'success' && needs.cluster.outputs.job_exists == '1' && (inputs.mode == 'execute' || inputs.mode == 'autonomous') && !inputs.dry_run }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: read
     outputs:
       authorization_sha256: ${{ steps.authorize.outputs.authorization_sha256 }}
       job_path: ${{ steps.authorize.outputs.job_path }}
@@ -402,6 +408,7 @@ jobs:
       target_repo: ${{ steps.authorize.outputs.target_repo }}
       target_owner: ${{ steps.authorize.outputs.target_owner }}
       target_name: ${{ steps.authorize.outputs.target_name }}
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
       artifact_digest: ${{ steps.upload.outputs.artifact-digest }}
     env:
       CLAWSWEEPER_ALLOWED_OWNER: ${{ vars.CLAWSWEEPER_ALLOWED_OWNER || 'openclaw' }}
@@ -471,11 +478,27 @@ jobs:
         with:
           build-script: build:repair
 
+      - name: Resolve worker artifact producer
+        id: worker_artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          pnpm run repair:resolve-run-artifact -- \
+            --repository "${{ github.repository }}" \
+            --run-id "${{ github.run_id }}" \
+            --current-attempt "${{ github.run_attempt }}" \
+            --prefix clawsweeper-repair-worker \
+            --expected-artifact-id "${{ needs.cluster.outputs.worker_artifact_id }}" \
+            --expected-artifact-digest "${{ needs.cluster.outputs.worker_artifact_digest }}"
+
       - name: Download worker artifact
         uses: actions/download-artifact@v8
         with:
-          name: clawsweeper-repair-worker-${{ github.run_id }}-${{ github.run_attempt }}
+          artifact-ids: ${{ steps.worker_artifact.outputs.artifact_id }}
           path: .clawsweeper-repair/incoming
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ github.run_id }}
 
       - name: Authorize exact job and run
         id: authorize
@@ -510,11 +533,15 @@ jobs:
     if: ${{ needs.authorize.result == 'success' }}
     runs-on: ${{ inputs.execution_runner }}
     timeout-minutes: 75
+    permissions:
+      actions: read
+      contents: read
     outputs:
       job_exists: ${{ steps.check_job.outputs.job_exists }}
       execute_fix_outcome: ${{ steps.execute_fix.outcome }}
       mutation_ready: ${{ steps.seal.outputs.mutation_ready }}
       execution_manifest_sha256: ${{ steps.seal.outputs.execution_manifest_sha256 }}
+      artifact_id: ${{ steps.upload_execution.outputs.artifact-id }}
       artifact_digest: ${{ steps.upload_execution.outputs.artifact-digest }}
     env:
       CLAWSWEEPER_ALLOWED_OWNER: ${{ needs.authorize.outputs.target_owner }}
@@ -547,11 +574,27 @@ jobs:
         with:
           build-script: build:repair
 
+      - name: Resolve immutable execution handoff producer
+        id: authorized_artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          pnpm run repair:resolve-run-artifact -- \
+            --repository "${{ github.repository }}" \
+            --run-id "${{ github.run_id }}" \
+            --current-attempt "${{ github.run_attempt }}" \
+            --prefix clawsweeper-repair-authorized \
+            --expected-artifact-id "${{ needs.authorize.outputs.artifact_id }}" \
+            --expected-artifact-digest "${{ needs.authorize.outputs.artifact_digest }}"
+
       - name: Download immutable execution handoff
         uses: actions/download-artifact@v8
         with:
-          name: clawsweeper-repair-authorized-${{ github.run_id }}-${{ github.run_attempt }}
+          artifact-ids: ${{ steps.authorized_artifact.outputs.artifact_id }}
           path: .clawsweeper-repair/authorized
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ github.run_id }}
 
       - name: Verify immutable execution handoff
         id: check_job
@@ -681,9 +724,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
+      actions: read
       contents: read
     outputs:
       receipt_sha256: ${{ steps.validate.outputs.receipt_sha256 }}
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
       artifact_digest: ${{ steps.upload.outputs.artifact-digest }}
     env:
       OPENCLAW_LOCAL_CHECK: "0"
@@ -705,11 +750,27 @@ jobs:
         with:
           bun-version: 1.3.14
 
+      - name: Resolve sealed execution handoff producer
+        id: execution_artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          pnpm run repair:resolve-run-artifact -- \
+            --repository "${{ github.repository }}" \
+            --run-id "${{ github.run_id }}" \
+            --current-attempt "${{ github.run_attempt }}" \
+            --prefix clawsweeper-repair-execution \
+            --expected-artifact-id "${{ needs.execute.outputs.artifact_id }}" \
+            --expected-artifact-digest "${{ needs.execute.outputs.artifact_digest }}"
+
       - name: Download sealed execution handoff
         uses: actions/download-artifact@v8
         with:
-          name: clawsweeper-repair-execution-${{ github.run_id }}-${{ github.run_attempt }}
+          artifact-ids: ${{ steps.execution_artifact.outputs.artifact_id }}
           path: .clawsweeper-repair/execution
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ github.run_id }}
 
       - name: Independently replay exact repair proof
         id: validate
@@ -741,6 +802,9 @@ jobs:
     if: ${{ always() && needs.authorize.result == 'success' && needs.execute.result != 'skipped' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: read
     env:
       CLAWSWEEPER_ALLOWED_OWNER: ${{ needs.authorize.outputs.target_owner }}
       CLAWSWEEPER_ALLOW_EXECUTE: ${{ needs.cluster.outputs.allow_execute == '1' && '1' || '0' }}
@@ -756,11 +820,27 @@ jobs:
         with:
           build-script: build:repair
 
+      - name: Resolve sealed execution handoff producer
+        id: execution_artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          pnpm run repair:resolve-run-artifact -- \
+            --repository "${{ github.repository }}" \
+            --run-id "${{ github.run_id }}" \
+            --current-attempt "${{ github.run_attempt }}" \
+            --prefix clawsweeper-repair-execution \
+            --expected-artifact-id "${{ needs.execute.outputs.artifact_id }}" \
+            --expected-artifact-digest "${{ needs.execute.outputs.artifact_digest }}"
+
       - name: Download sealed execution handoff
         uses: actions/download-artifact@v8
         with:
-          name: clawsweeper-repair-execution-${{ github.run_id }}-${{ github.run_attempt }}
+          artifact-ids: ${{ steps.execution_artifact.outputs.artifact_id }}
           path: .clawsweeper-repair/execution
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ github.run_id }}
 
       - name: Verify report-only handoff
         run: |
@@ -828,6 +908,9 @@ jobs:
     if: ${{ needs.execute.result == 'success' && needs.execute.outputs.execute_fix_outcome == 'success' && needs.execute.outputs.mutation_ready == 'true' && needs.validate.result == 'success' && needs.report.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    permissions:
+      actions: read
+      contents: read
     env:
       CLAWSWEEPER_ALLOWED_OWNER: ${{ needs.authorize.outputs.target_owner }}
       CLAWSWEEPER_ALLOW_EXECUTE: ${{ needs.cluster.outputs.allow_execute == '1' && '1' || '0' }}
@@ -852,17 +935,49 @@ jobs:
         with:
           build-script: build:repair
 
+      - name: Resolve sealed execution handoff producer
+        id: execution_artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          pnpm run repair:resolve-run-artifact -- \
+            --repository "${{ github.repository }}" \
+            --run-id "${{ github.run_id }}" \
+            --current-attempt "${{ github.run_attempt }}" \
+            --prefix clawsweeper-repair-execution \
+            --expected-artifact-id "${{ needs.execute.outputs.artifact_id }}" \
+            --expected-artifact-digest "${{ needs.execute.outputs.artifact_digest }}"
+
       - name: Download sealed execution handoff
         uses: actions/download-artifact@v8
         with:
-          name: clawsweeper-repair-execution-${{ github.run_id }}-${{ github.run_attempt }}
+          artifact-ids: ${{ steps.execution_artifact.outputs.artifact_id }}
           path: .clawsweeper-repair/execution
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ github.run_id }}
+
+      - name: Resolve independent validation receipt producer
+        id: validation_artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          pnpm run repair:resolve-run-artifact -- \
+            --repository "${{ github.repository }}" \
+            --run-id "${{ github.run_id }}" \
+            --current-attempt "${{ github.run_attempt }}" \
+            --prefix clawsweeper-repair-validation \
+            --expected-artifact-id "${{ needs.validate.outputs.artifact_id }}" \
+            --expected-artifact-digest "${{ needs.validate.outputs.artifact_digest }}"
 
       - name: Download independent validation receipt
         uses: actions/download-artifact@v8
         with:
-          name: clawsweeper-repair-validation-${{ github.run_id }}-${{ github.run_attempt }}
+          artifact-ids: ${{ steps.validation_artifact.outputs.artifact_id }}
           path: .clawsweeper-repair/validation
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ github.run_id }}
 
       - name: Verify immutable mutation authorization
         id: receipt

@@ -39,6 +39,7 @@
     "repair:apply-result": "node dist/repair/apply-result.js",
     "repair:execute-fix": "node dist/repair/execute-fix-artifact.js",
     "repair:execution-handoff": "node dist/repair/execution-handoff-cli.js",
+    "repair:resolve-run-artifact": "node dist/repair/resolve-run-artifact.js",
     "repair:post-flight": "node dist/repair/post-flight.js",
     "repair:finalize-open-prs": "node dist/repair/finalize-open-prs.js",
     "repair:cleanup-replacement-labels": "node dist/repair/cleanup-replacement-labels.js",
