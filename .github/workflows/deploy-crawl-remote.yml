@@ -312,29 +312,62 @@ jobs:
             `${JSON.stringify(deploymentConfig, null, 2)}\n`,
           );
 
+          const approvedMigrations = [
+            {
+              name: '0001_remote_archives.sql',
+              sha256: 'bfb2ee56d01c7547a644f48b5c493cb9d971646ce331acc10c6bfd78d9b7d066',
+            },
+            {
+              name: '0002_gitcrawl_enrichment_snapshots.sql',
+              sha256: 'f984199bef0406ce91724e9ac83a97f41928b1560a51974deb841596f1e403e2',
+            },
+            {
+              name: '0003_gitcrawl_snapshot_hardening.sql',
+              sha256: '5daa6e14364f7bd4eba3cc5f61ec266b0559962e7345a65080cc9ef26b084e46',
+            },
+            {
+              name: '0004_gitcrawl_snapshot_cutover.sql',
+              sha256: 'e6c4a8edb300ebbf93a2e2449d180408f23be7eac1ef05733045b6ed496eb396',
+            },
+            {
+              name: '0005_discrawl_cursor_state.sql',
+              sha256: '5964adcb0807448d937fed38ac9588a1063bf4f490a82b54f15f0e700374ae0c',
+            },
+            {
+              name: '0006_gitcrawl_observation_order.sql',
+              sha256: 'a0ebfbb5c40c85df5eaba6772a01a68910fa5f1327d4701d25c5dfde16f77d1a',
+            },
+            {
+              name: '0007_gitcrawl_snapshot_provenance.sql',
+              sha256: '7965e0350ca569972eae3c82e7e9a8281b9130a7917c8ea9b2822fca1975194b',
+            },
+          ];
           const migrationEntries = readdirSync('migrations', { withFileTypes: true })
             .sort((a, b) => a.name.localeCompare(b.name));
-          if (migrationEntries.length === 0) {
-            throw new Error('release artifact requires at least one D1 migration');
+          if (
+            migrationEntries.length < 6 ||
+            migrationEntries.length > approvedMigrations.length
+          ) {
+            throw new Error('release artifact migrations do not match the reviewed migration set');
           }
-          for (const entry of migrationEntries) {
+          for (const [index, entry] of migrationEntries.entries()) {
             if (!entry.isFile() || !/^[0-9]{4}_[a-z0-9_]+\.sql$/.test(entry.name)) {
               throw new Error(`invalid migration artifact entry: ${entry.name}`);
+            }
+            const approved = approvedMigrations[index];
+            if (!approved || entry.name !== approved.name) {
+              throw new Error(`migration ${entry.name} is not in the reviewed migration sequence`);
             }
             const source = join('migrations', entry.name);
             const stat = assertRegularFile(source, `migration ${entry.name}`);
             if (stat.size < 1 || stat.size > 1024 * 1024) {
               throw new Error(`migration ${entry.name} is empty or exceeds 1 MiB`);
             }
-            const sql = readFileSync(source, 'utf8');
-            if (
-              /\b(drop|rename|truncate)\b/i.test(sql) ||
-              /\bdelete\s+from\b/i.test(sql) ||
-              /\balter\s+table\b(?![\s\S]{0,160}\badd\s+column\b)/i.test(sql)
-            ) {
-              throw new Error(
-                `migration ${entry.name} is not backward-compatible with Worker rollback`,
-              );
+            const migrationSHA256 = createHash('sha256')
+              .update(readFileSync(source))
+              .digest('hex');
+            if (migrationSHA256 !== approved.sha256) {
+              throw new Error(`migration ${entry.name} differs from its reviewed content`);
             }
             copyFileSync(source, join(artifactRoot, 'migrations', basename(entry.name)));
           }
@@ -409,10 +442,7 @@ jobs:
       CI: "true"
       CLAWSWEEPER_APP_CLIENT_ID: Iv23liOECG0slfuhz093
       CLOUDFLARE_ACCOUNT_ID: 91b59577e757131d68d55a471fe32aca
-      CLOUDFLARE_TOKEN_SHA256: ${{ vars.CRAWL_REMOTE_CLOUDFLARE_TOKEN_SHA256 }}
-      CUSTOM_ROUTE_PROOF: ${{ vars.CRAWL_REMOTE_CUSTOM_ROUTE_PROOF || 'disabled' }}
       DEPLOY_SHA: ${{ needs.preflight.outputs.deploy_sha }}
-      DEPLOY_AUTHORITY: ${{ vars.CRAWL_REMOTE_DEPLOY_AUTHORITY }}
       ENV: ""
       NODE_OPTIONS: ""
       NPM_CONFIG_IGNORE_SCRIPTS: "true"
@@ -426,6 +456,9 @@ jobs:
       WRANGLER_VERSION: 4.107.1
     steps:
       - name: Verify central deployment authority
+        env:
+          CUSTOM_ROUTE_PROOF: ${{ vars.CRAWL_REMOTE_CUSTOM_ROUTE_PROOF }}
+          DEPLOY_AUTHORITY: ${{ vars.CRAWL_REMOTE_DEPLOY_AUTHORITY }}
         run: |
           unset BASH_ENV ENV CDPATH GLOBIGNORE NODE_OPTIONS
           if [[ "$DEPLOY_AUTHORITY" != "clawsweeper-v1" ]]; then
@@ -769,6 +802,7 @@ jobs:
       - name: Apply and verify D1 migrations
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CRAWL_REMOTE_PRODUCTION_CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_TOKEN_SHA256: ${{ vars.CRAWL_REMOTE_CLOUDFLARE_TOKEN_SHA256 }}
           CONSUMED_RECEIPT_PATH: ${{ runner.temp }}/${{ needs.preflight.outputs.receipt_name }}.consumed
           FENCE_RESPONSE: ${{ runner.temp }}/crawl-remote-observation-fence.json
           PREVIOUS_DEPLOYMENT_RESPONSE: ${{ runner.temp }}/crawl-remote-previous-deployment.json
@@ -1034,6 +1068,7 @@ jobs:
         continue-on-error: true
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CRAWL_REMOTE_PRODUCTION_CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_TOKEN_SHA256: ${{ vars.CRAWL_REMOTE_CLOUDFLARE_TOKEN_SHA256 }}
           CONSUMED_RECEIPT_PATH: ${{ runner.temp }}/${{ needs.preflight.outputs.receipt_name }}.consumed
           RELEASE_ROOT: ${{ runner.temp }}/crawl-remote-release
         run: |
@@ -1083,6 +1118,7 @@ jobs:
         env:
           CF_ACCESS_CLIENT_ID: ${{ secrets.CRAWL_REMOTE_ACCESS_CLIENT_ID }}
           CF_ACCESS_CLIENT_SECRET: ${{ secrets.CRAWL_REMOTE_ACCESS_CLIENT_SECRET }}
+          CUSTOM_ROUTE_PROOF: ${{ vars.CRAWL_REMOTE_CUSTOM_ROUTE_PROOF }}
           PRODUCTION_ROUTE_CONTRACT_RESPONSE: ${{ runner.temp }}/crawl-remote-production-route-contract.json
           PRODUCTION_ROUTE_HEALTH_RESPONSE: ${{ runner.temp }}/crawl-remote-production-route-health.json
           WORKERS_DEV_CONTRACT_RESPONSE: ${{ runner.temp }}/crawl-remote-workers-dev-contract.json
@@ -1272,6 +1308,7 @@ jobs:
           }}
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CRAWL_REMOTE_PRODUCTION_CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_TOKEN_SHA256: ${{ vars.CRAWL_REMOTE_CLOUDFLARE_TOKEN_SHA256 }}
           PREVIOUS_DEPLOYMENT_RESPONSE: ${{ runner.temp }}/crawl-remote-rollback-deployment.json
           PREVIOUS_VERSION_PATH: ${{ runner.temp }}/crawl-remote-previous-version.txt
           RELEASE_ROOT: ${{ runner.temp }}/crawl-remote-release
