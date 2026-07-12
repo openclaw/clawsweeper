@@ -118,7 +118,7 @@ jobs:
           owner: openclaw
           repositories: clawsweeper
           permission-actions: write
-          permission-contents: write
+          permission-contents: read
 
       - name: Create state token
         id: state-token

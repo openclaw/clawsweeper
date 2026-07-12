@@ -641,6 +641,12 @@ test("commit finding intake is merge-disabled and carries no verifier credential
     source,
     /Create central dispatch token[\s\S]*repositories: clawsweeper[\s\S]*permission-actions: write/,
   );
+  const dispatchToken = source.slice(
+    source.indexOf("- name: Create central dispatch token"),
+    source.indexOf("- name: Create state token"),
+  );
+  assert.match(dispatchToken, /permission-contents: read/);
+  assert.doesNotMatch(dispatchToken, /permission-contents: write/);
   assert.match(source, /pnpm run repair:dispatch --/);
   assert.match(source, /--mode autonomous[\s\S]*--execution-runner "\$EXECUTION_RUNNER"/);
   assert.doesNotMatch(source, /repair:execute-fix|repair:post-flight|setup-codex/);
