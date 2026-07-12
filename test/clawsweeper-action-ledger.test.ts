@@ -784,19 +784,52 @@ test("sweep publishes complete immutable shards for every review and apply produ
 });
 
 test("comment router publishes immutable command receipts for initial and retry invocations", () => {
+  const setupAction = readText(".github/actions/setup-action-ledger/action.yml");
   const workflow = readText(".github/workflows/repair-comment-router.yml");
+  const finalizeStart = workflow.indexOf("- name: Finalize command action ledger");
+  const publishStart = workflow.indexOf("- name: Publish immutable command action ledger");
+  const finalizeStep = workflow.slice(finalizeStart, publishStart);
+  const publishStep = workflow.slice(publishStart);
 
+  assert.match(setupAction, /CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT=\$output_root/);
   assert.match(workflow, /uses: \.\/\.github\/actions\/setup-action-ledger/);
   assert.match(workflow, /CLAWSWEEPER_ACTION_LEDGER_INVOCATION: initial/);
   assert.match(workflow, /CLAWSWEEPER_ACTION_LEDGER_INVOCATION: retry/);
-  assert.match(workflow, /- name: Finalize command action ledger/);
-  assert.match(workflow, /repair:action-ledger -- finalize/);
-  assert.match(workflow, /- name: Publish immutable command action ledger/);
-  assert.match(workflow, /repair:action-ledger -- publish/);
-  assert.match(workflow, /--message "chore: append command action ledger"/);
-  assert.match(workflow, /action_ledger_args\+=\(--path "\$event_path"\)/);
+  assert.ok(finalizeStart >= 0);
+  assert.ok(publishStart > finalizeStart);
+  assertCommandFinalizerUsesCanonicalRoot(finalizeStep);
+  assertCommandPublisherUsesCanonicalRoot(publishStep);
+  assert.match(publishStep, /repair:action-ledger -- publish/);
+  assert.match(publishStep, /--message "chore: append command action ledger"/);
+  assert.match(publishStep, /action_ledger_args\+=\(--path "\$event_path"\)/);
   assert.doesNotMatch(
-    workflow,
+    publishStep,
     /--message "chore: append command action ledger"[\s\S]{0,180}--path "ledger\/v1\/events"/,
   );
 });
+
+function assertCommandFinalizerUsesCanonicalRoot(step: string): void {
+  assert.match(
+    step,
+    /CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT:\?setup-action-ledger output root is required/,
+  );
+  assert.match(step, /repair:action-ledger -- finalize/);
+}
+
+function assertCommandPublisherUsesCanonicalRoot(step: string): void {
+  assert.match(
+    step,
+    /source_root="\$\{CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT:\?setup-action-ledger output root is required\}"/,
+  );
+  assert.match(step, /--source-root "\$source_root"/);
+  assert.match(step, /if \[ ! -d "\$source_root\/ledger" \]; then[\s\S]*?exit 1[\s\S]*?fi/);
+  assert.match(step, /jq -e 'select\(\.event_type \| startswith\("command\."\)\)' "\$shard_path"/);
+  assert.match(step, /if \[ "\$command_shard_found" != "true" \]; then[\s\S]*?exit 1[\s\S]*?fi/);
+  assert.match(
+    step,
+    /if ! jq -e '\.created > 0' "\$import_result_file" >\/dev\/null; then[\s\S]*?exit 1[\s\S]*?fi/,
+  );
+  assert.match(step, /jq -r '\.paths\[\]\?' "\$import_result_file"/);
+  assert.match(step, /if \[ ! -s "\$event_paths_file" \]; then[\s\S]*?exit 1[\s\S]*?fi/);
+  assert.doesNotMatch(step, /exit 0/);
+}

@@ -78,8 +78,8 @@ checkpoint, and status-only commits are intentionally omitted.
   receipt pair while retaining stable business idempotency; forced replays use
   production-wired durable attempt identities through dispatch claims and worker
   receipt keys; and bounded requeues dispatch the same original source path
-  bound to their digest and depth before immutable publication to the state
-  repository.
+  bound to their digest and depth before fail-closed immutable publication from
+  the setup-provided action-ledger output root to the state repository.
 - Short-circuited authenticated duplicate comment deliveries when their exact
   body version is already terminal in the durable router ledger, while edited,
   retryable, and state-drifted commands retain the full routing path.

@@ -1169,25 +1169,44 @@ jobs:
             --run-url "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
 
       - name: Finalize report command action ledger
-        if: ${{ always() && steps.report-setup-pnpm.outcome == 'success' }}
-        run: pnpm run --silent repair:action-ledger -- finalize
+        if: ${{ always() && steps.report-setup-pnpm.outcome == 'success' && steps.repair_requeue.outputs.count != '' && steps.repair_requeue.outputs.count != '0' }}
+        run: |
+          set -euo pipefail
+          : "${CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT:?setup-action-ledger output root is required}"
+          pnpm run --silent repair:action-ledger -- finalize
 
       - name: Publish immutable report command action ledger
-        if: ${{ always() && steps.report-setup-pnpm.outcome == 'success' }}
+        if: ${{ always() && steps.report-setup-pnpm.outcome == 'success' && steps.repair_requeue.outputs.count != '' && steps.repair_requeue.outputs.count != '0' }}
         run: |
           set -euo pipefail
           test -n "${CLAWSWEEPER_STATE_DIR:-}"
-          source_root=".clawsweeper-repair/action-ledger-state"
+          source_root="${CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT:?setup-action-ledger output root is required}"
           if [ ! -d "$source_root/ledger" ]; then
-            echo "No report command action event shards were finalized."
-            exit 0
+            echo "Expected report command action event shards in $source_root, but none were finalized." >&2
+            exit 1
+          fi
+          command_shard_found=false
+          while IFS= read -r -d '' shard_path; do
+            if jq -e 'select(.event_type | startswith("command."))' "$shard_path" >/dev/null; then
+              command_shard_found=true
+              break
+            fi
+          done < <(find "$source_root/ledger/v1/events" -type f -name '*.jsonl' -print0)
+          if [ "$command_shard_found" != "true" ]; then
+            echo "Expected command receipt events, but the finalized shard set contained none." >&2
+            exit 1
           fi
           event_paths_file=".artifacts/report-command-action-ledger-paths.txt"
+          import_result_file=".artifacts/report-command-action-ledger-import.json"
           mkdir -p .artifacts
           pnpm run --silent repair:action-ledger -- publish \
             --source-root "$source_root" \
-            --state-root "$CLAWSWEEPER_STATE_DIR" |
-            jq -r '.paths[]?' |
+            --state-root "$CLAWSWEEPER_STATE_DIR" > "$import_result_file"
+          if ! jq -e '.created > 0' "$import_result_file" >/dev/null; then
+            echo "Report command action event shards were expected but no new shards were imported." >&2
+            exit 1
+          fi
+          jq -r '.paths[]?' "$import_result_file" |
             sort -u > "$event_paths_file"
           if [ ! -s "$event_paths_file" ]; then
             echo "Report command action event shards existed but no paths were imported." >&2
