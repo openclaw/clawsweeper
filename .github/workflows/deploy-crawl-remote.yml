@@ -467,11 +467,30 @@ jobs:
       PRODUCTION_ROUTE_URL: https://reports.openclaw.ai/crawl-remote
       RECEIPT_NAME: ${{ needs.preflight.outputs.receipt_name }}
       SNAPSHOT_PROVENANCE_STATE: ${{ needs.preflight.outputs.snapshot_provenance_state }}
+      SOURCE_REPOSITORY: ${{ github.repository }}
       TARGET_REPOSITORY: openclaw/crawl-remote
       TOOLCHAIN_ROOT: ${{ github.workspace }}/.github/deploy/crawl-remote-toolchain
+      WORKFLOW_SHA: ${{ github.sha }}
       WORKERS_DEV_URL: https://crawl-remote.services-91b.workers.dev
       WRANGLER_VERSION: 4.107.1
     steps:
+      - name: Reauthorize current ClawSweeper workflow
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          unset BASH_ENV ENV CDPATH GLOBIGNORE NODE_OPTIONS
+          current_main_sha="$(
+            gh api "repos/$SOURCE_REPOSITORY/commits/main" --jq '.sha'
+          )"
+          if [[ ! "$current_main_sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::ClawSweeper main did not resolve to a full lowercase commit SHA."
+            exit 1
+          fi
+          if [[ "$WORKFLOW_SHA" != "$current_main_sha" ]]; then
+            echo "::error::approved ClawSweeper workflow is no longer the current main tip."
+            exit 1
+          fi
+
       - name: Verify central deployment authority
         env:
           CUSTOM_ROUTE_PROOF: ${{ vars.CRAWL_REMOTE_CUSTOM_ROUTE_PROOF }}
@@ -590,44 +609,64 @@ jobs:
           CANONICAL_WORKFLOW_PATH: .github/workflows/deploy.yml
           GH_TOKEN: ${{ steps.target-token.outputs.token }}
           WORKFLOW_CONTENTS_RESPONSE: ${{ runner.temp }}/crawl-remote-workflow-contents.json
+          WORKFLOW_ID_PATH: ${{ runner.temp }}/crawl-remote-workflow-id.txt
           WORKFLOW_REGISTRY_RESPONSE: ${{ runner.temp }}/crawl-remote-workflow-registry.json
+          WORKFLOW_RUNS_ROOT: ${{ runner.temp }}/crawl-remote-workflow-runs
         run: |
           unset BASH_ENV ENV CDPATH GLOBIGNORE NODE_OPTIONS
           gh api \
             "repos/$TARGET_REPOSITORY/contents/.github/workflows?ref=$DEPLOY_SHA" \
             > "$WORKFLOW_CONTENTS_RESPONSE"
-          gh api \
+          gh api --paginate --slurp \
             "repos/$TARGET_REPOSITORY/actions/workflows?per_page=100" \
             > "$WORKFLOW_REGISTRY_RESPONSE"
 
           node --input-type=module <<'CANONICAL_WORKFLOW_NODE'
-          import { readFileSync } from 'node:fs';
+          import { readFileSync, writeFileSync } from 'node:fs';
 
           const canonicalPath = process.env.CANONICAL_WORKFLOW_PATH;
           const contents = JSON.parse(
             readFileSync(process.env.WORKFLOW_CONTENTS_RESPONSE, 'utf8'),
           );
-          const registry = JSON.parse(
+          const registryPages = JSON.parse(
             readFileSync(process.env.WORKFLOW_REGISTRY_RESPONSE, 'utf8'),
           );
           if (
             canonicalPath !== '.github/workflows/deploy.yml' ||
             !Array.isArray(contents) ||
-            !registry ||
-            typeof registry !== 'object' ||
-            Array.isArray(registry) ||
-            !Number.isSafeInteger(registry.total_count) ||
-            registry.total_count < 0 ||
-            !Array.isArray(registry.workflows) ||
-            registry.total_count < registry.workflows.length
+            !Array.isArray(registryPages) ||
+            registryPages.length === 0
           ) {
             throw new Error('crawl-remote workflow authority response is invalid');
+          }
+          const registryTotals = new Set();
+          const registryWorkflows = [];
+          for (const page of registryPages) {
+            if (
+              !page ||
+              typeof page !== 'object' ||
+              Array.isArray(page) ||
+              !Number.isSafeInteger(page.total_count) ||
+              page.total_count < 0 ||
+              !Array.isArray(page.workflows) ||
+              page.total_count < page.workflows.length
+            ) {
+              throw new Error('crawl-remote workflow authority response is invalid');
+            }
+            registryTotals.add(page.total_count);
+            registryWorkflows.push(...page.workflows);
+          }
+          if (
+            registryTotals.size !== 1 ||
+            [...registryTotals][0] !== registryWorkflows.length
+          ) {
+            throw new Error('crawl-remote workflow authority response is truncated');
           }
 
           const contentMatches = contents.filter(
             (entry) => entry?.path === canonicalPath,
           );
-          const registryMatches = registry.workflows.filter(
+          const registryMatches = registryWorkflows.filter(
             (entry) => entry?.path === canonicalPath,
           );
           if (contentMatches.length > 1 || registryMatches.length > 1) {
@@ -651,6 +690,8 @@ jobs:
             workflowEntry &&
             (
               workflowEntry.name !== 'deploy production' ||
+              !Number.isSafeInteger(workflowEntry.id) ||
+              workflowEntry.id <= 0 ||
               typeof workflowEntry.state !== 'string'
             )
           ) {
@@ -679,7 +720,73 @@ jobs:
             }
             console.log('Canonical crawl-remote production workflow is absent from the release SHA.');
           }
+          writeFileSync(
+            process.env.WORKFLOW_ID_PATH,
+            workflowEntry ? `${workflowEntry.id}\n` : '',
+            { flag: 'wx', mode: 0o600 },
+          );
           CANONICAL_WORKFLOW_NODE
+
+          workflow_id="$(tr -d '\r\n' < "$WORKFLOW_ID_PATH")"
+          if [[ -n "$workflow_id" ]]; then
+            if [[ ! "$workflow_id" =~ ^[1-9][0-9]*$ ]]; then
+              echo "::error::canonical crawl-remote workflow ID is invalid."
+              exit 1
+            fi
+            mkdir -m 700 "$WORKFLOW_RUNS_ROOT"
+            for status in action_required in_progress pending queued requested waiting; do
+              gh api --paginate --slurp \
+                "repos/$TARGET_REPOSITORY/actions/workflows/$workflow_id/runs?per_page=100&status=$status" \
+                > "$WORKFLOW_RUNS_ROOT/$status.json"
+            done
+
+          node --input-type=module <<'CANONICAL_WORKFLOW_RUNS_NODE'
+          import { readFileSync } from 'node:fs';
+          import { join } from 'node:path';
+
+          const statuses = [
+            'action_required',
+            'in_progress',
+            'pending',
+            'queued',
+            'requested',
+            'waiting',
+          ];
+          for (const status of statuses) {
+            const pages = JSON.parse(
+              readFileSync(join(process.env.WORKFLOW_RUNS_ROOT, `${status}.json`), 'utf8'),
+            );
+            if (!Array.isArray(pages) || pages.length === 0) {
+              throw new Error(`crawl-remote ${status} workflow-run response is invalid`);
+            }
+            const runs = [];
+            const totals = new Set();
+            for (const page of pages) {
+              if (
+                !page ||
+                typeof page !== 'object' ||
+                Array.isArray(page) ||
+                !Number.isSafeInteger(page.total_count) ||
+                page.total_count < 0 ||
+                !Array.isArray(page.workflow_runs) ||
+                page.total_count < page.workflow_runs.length
+              ) {
+                throw new Error(`crawl-remote ${status} workflow-run response is invalid`);
+              }
+              totals.add(page.total_count);
+              runs.push(...page.workflow_runs);
+            }
+            if (totals.size !== 1 || [...totals][0] !== runs.length) {
+              throw new Error(`crawl-remote ${status} workflow-run response is truncated`);
+            }
+            if (runs.length !== 0) {
+              throw new Error(
+                `canonical crawl-remote production workflow still has ${status} runs`,
+              );
+            }
+          }
+          CANONICAL_WORKFLOW_RUNS_NODE
+          fi
 
       - name: Checkout trusted deployment toolchain
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
@@ -1060,9 +1167,22 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.target-token.outputs.token }}
           RECEIPT_PATH: ${{ runner.temp }}/${{ needs.preflight.outputs.receipt_name }}
+          SOURCE_GH_TOKEN: ${{ github.token }}
         run: |
           unset BASH_ENV ENV CDPATH GLOBIGNORE NODE_OPTIONS
           test -f "$RECEIPT_PATH"
+          current_source_main_sha="$(
+            GH_TOKEN="$SOURCE_GH_TOKEN" \
+              gh api "repos/$SOURCE_REPOSITORY/commits/main" --jq '.sha'
+          )"
+          if [[ ! "$current_source_main_sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::ClawSweeper main did not resolve to a full lowercase commit SHA."
+            exit 1
+          fi
+          if [[ "$WORKFLOW_SHA" != "$current_source_main_sha" ]]; then
+            echo "::error::ClawSweeper main advanced before D1 mutation."
+            exit 1
+          fi
           current_main_sha="$(
             gh api "repos/$TARGET_REPOSITORY/commits/main" --jq '.sha'
           )"
@@ -1676,11 +1796,24 @@ jobs:
           GH_TOKEN: ${{ steps.target-token.outputs.token }}
           PENDING_MIGRATIONS_PATH: ${{ runner.temp }}/crawl-remote-compatible-pending-migrations.json
           PREVIOUS_WORKER_PROBE_PATH: ${{ runner.temp }}/crawl-remote-previous-worker-migration-proof.txt
+          SOURCE_GH_TOKEN: ${{ github.token }}
         run: |
           unset BASH_ENV ENV CDPATH GLOBIGNORE NODE_OPTIONS
           test -f "$CONSUMED_RECEIPT_PATH"
           test -f "$PENDING_MIGRATIONS_PATH"
           test -f "$PREVIOUS_WORKER_PROBE_PATH"
+          current_source_main_sha="$(
+            GH_TOKEN="$SOURCE_GH_TOKEN" \
+              gh api "repos/$SOURCE_REPOSITORY/commits/main" --jq '.sha'
+          )"
+          if [[ ! "$current_source_main_sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::ClawSweeper main did not resolve to a full lowercase commit SHA."
+            exit 1
+          fi
+          if [[ "$WORKFLOW_SHA" != "$current_source_main_sha" ]]; then
+            echo "::error::ClawSweeper main advanced before Worker deployment."
+            exit 1
+          fi
           current_main_sha="$(
             gh api "repos/$TARGET_REPOSITORY/commits/main" --jq '.sha'
           )"
@@ -1700,6 +1833,8 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CRAWL_REMOTE_PRODUCTION_CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_TOKEN_SHA256: ${{ vars.CRAWL_REMOTE_CLOUDFLARE_TOKEN_SHA256 }}
           CONSUMED_RECEIPT_PATH: ${{ runner.temp }}/${{ needs.preflight.outputs.receipt_name }}.consumed
+          DEPLOY_OUTPUT_PATH: ${{ runner.temp }}/crawl-remote-deploy-output.ndjson
+          DEPLOYED_VERSION_PATH: ${{ runner.temp }}/crawl-remote-deployed-version.txt
           PENDING_MIGRATIONS_PATH: ${{ runner.temp }}/crawl-remote-compatible-pending-migrations.json
           PREVIOUS_WORKER_PROBE_PATH: ${{ runner.temp }}/crawl-remote-previous-worker-migration-proof.txt
           RELEASE_ROOT: ${{ runner.temp }}/crawl-remote-release
@@ -1710,10 +1845,13 @@ jobs:
           test -f "$CONSUMED_RECEIPT_PATH"
           test -f "$PENDING_MIGRATIONS_PATH"
           test -f "$PREVIOUS_WORKER_PROBE_PATH"
+          test ! -e "$DEPLOY_OUTPUT_PATH"
+          test ! -e "$DEPLOYED_VERSION_PATH"
           wrangler="$TOOLCHAIN_ROOT/node_modules/.bin/wrangler"
           test "$("$wrangler" --version)" = "$WRANGLER_VERSION"
 
-          "$wrangler" deploy bundle/index.js \
+          WRANGLER_OUTPUT_FILE_PATH="$DEPLOY_OUTPUT_PATH" \
+            "$wrangler" deploy bundle/index.js \
             --no-bundle \
             --strict \
             --cwd "$RELEASE_ROOT" \
@@ -1721,14 +1859,50 @@ jobs:
             --var "CRAWL_REMOTE_RELEASE_SHA:$DEPLOY_SHA" \
             --message "main ${DEPLOY_SHA}"
 
+          node --input-type=module <<'DEPLOY_VERSION_NODE'
+          import { readFileSync, writeFileSync } from 'node:fs';
+
+          const entries = readFileSync(process.env.DEPLOY_OUTPUT_PATH, 'utf8')
+            .split(/\r?\n/)
+            .filter(Boolean)
+            .map((line) => JSON.parse(line));
+          const deployments = entries.filter((entry) => entry?.type === 'deploy');
+          if (
+            deployments.length !== 1 ||
+            deployments[0]?.worker_name !== 'crawl-remote' ||
+            typeof deployments[0]?.version_id !== 'string' ||
+            !/^[0-9a-f-]{36}$/i.test(deployments[0].version_id)
+          ) {
+            throw new Error('Wrangler deploy output did not identify one crawl-remote version');
+          }
+          writeFileSync(
+            process.env.DEPLOYED_VERSION_PATH,
+            `${deployments[0].version_id}\n`,
+            { flag: 'wx', mode: 0o600 },
+          );
+          DEPLOY_VERSION_NODE
+
       - name: Reauthorize current main after Worker deploy
         id: post-deploy-main
         if: ${{ steps.worker-deploy.outcome == 'success' }}
         continue-on-error: true
         env:
           GH_TOKEN: ${{ steps.target-token.outputs.token }}
+          SOURCE_GH_TOKEN: ${{ github.token }}
         run: |
           unset BASH_ENV ENV CDPATH GLOBIGNORE NODE_OPTIONS
+          current_source_main_sha="$(
+            GH_TOKEN="$SOURCE_GH_TOKEN" \
+              gh api "repos/$SOURCE_REPOSITORY/commits/main" --jq '.sha'
+          )"
+          if [[ ! "$current_source_main_sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::ClawSweeper main did not resolve to a full lowercase commit SHA."
+            exit 1
+          fi
+          if [[ "$WORKFLOW_SHA" != "$current_source_main_sha" ]]; then
+            echo "::error::ClawSweeper main advanced during deployment; rollback is required."
+            exit 1
+          fi
           current_main_sha="$(
             gh api "repos/$TARGET_REPOSITORY/commits/main" --jq '.sha'
           )"
@@ -1958,9 +2132,8 @@ jobs:
         if: >-
           ${{
             always() &&
-            steps.worker-deploy.outcome != 'skipped' &&
+            steps.worker-deploy.outcome == 'success' &&
             (
-              steps.worker-deploy.outcome != 'success' ||
               steps.post-deploy-main.outcome != 'success' ||
               steps.production-proof.outcome != 'success'
             )
@@ -1968,18 +2141,50 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CRAWL_REMOTE_PRODUCTION_CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_TOKEN_SHA256: ${{ vars.CRAWL_REMOTE_CLOUDFLARE_TOKEN_SHA256 }}
-          PREVIOUS_DEPLOYMENT_RESPONSE: ${{ runner.temp }}/crawl-remote-rollback-deployment.json
+          CURRENT_DEPLOYMENT_RESPONSE: ${{ runner.temp }}/crawl-remote-current-deployment-before-rollback.json
+          DEPLOYED_VERSION_PATH: ${{ runner.temp }}/crawl-remote-deployed-version.txt
           PREVIOUS_VERSION_PATH: ${{ runner.temp }}/crawl-remote-previous-version.txt
           RELEASE_ROOT: ${{ runner.temp }}/crawl-remote-release
+          ROLLBACK_DEPLOYMENT_RESPONSE: ${{ runner.temp }}/crawl-remote-rollback-deployment.json
         run: |
           unset BASH_ENV ENV CDPATH GLOBIGNORE NODE_OPTIONS
           test -n "$CLOUDFLARE_API_TOKEN"
           test "$CLOUDFLARE_TOKEN_SHA256" = "$(printf '%s' "$CLOUDFLARE_API_TOKEN" | sha256sum | cut -d ' ' -f 1)"
+          test -f "$DEPLOYED_VERSION_PATH"
           test -f "$PREVIOUS_VERSION_PATH"
+          deployed_version="$(tr -d '\r\n' < "$DEPLOYED_VERSION_PATH")"
           previous_version="$(tr -d '\r\n' < "$PREVIOUS_VERSION_PATH")"
+          test "$deployed_version" != ""
           test "$previous_version" != ""
+          test "$deployed_version" != "$previous_version"
           wrangler="$TOOLCHAIN_ROOT/node_modules/.bin/wrangler"
           test "$("$wrangler" --version)" = "$WRANGLER_VERSION"
+
+          "$wrangler" deployments status \
+            --name crawl-remote \
+            --json \
+            --cwd "$RELEASE_ROOT" \
+            --config wrangler.json \
+            > "$CURRENT_DEPLOYMENT_RESPONSE"
+
+          DEPLOYED_VERSION="$deployed_version" node --input-type=module <<'ROLLBACK_FENCE_NODE'
+          import { readFileSync } from 'node:fs';
+
+          const deployment = JSON.parse(
+            readFileSync(process.env.CURRENT_DEPLOYMENT_RESPONSE, 'utf8'),
+          );
+          const versions = deployment?.versions;
+          if (
+            !Array.isArray(versions) ||
+            versions.length !== 1 ||
+            versions[0]?.version_id !== process.env.DEPLOYED_VERSION ||
+            versions[0]?.percentage !== 100
+          ) {
+            throw new Error(
+              'refusing rollback because this run no longer owns the current Worker version',
+            );
+          }
+          ROLLBACK_FENCE_NODE
 
           "$wrangler" rollback "$previous_version" \
             --name crawl-remote \
@@ -1993,13 +2198,13 @@ jobs:
             --json \
             --cwd "$RELEASE_ROOT" \
             --config wrangler.json \
-            > "$PREVIOUS_DEPLOYMENT_RESPONSE"
+            > "$ROLLBACK_DEPLOYMENT_RESPONSE"
 
           PREVIOUS_VERSION="$previous_version" node --input-type=module <<'ROLLBACK_NODE'
           import { readFileSync } from 'node:fs';
 
           const deployment = JSON.parse(
-            readFileSync(process.env.PREVIOUS_DEPLOYMENT_RESPONSE, 'utf8'),
+            readFileSync(process.env.ROLLBACK_DEPLOYMENT_RESPONSE, 'utf8'),
           );
           const versions = deployment?.versions;
           if (
