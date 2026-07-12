@@ -45,6 +45,17 @@ checkpoint, and status-only commits are intentionally omitted.
 - Separated review publication from apply/comment-sync concurrency so long
   mutation runs no longer block completed reviews from publishing, and retried
   GitHub CLI commands whose jq process reports truncated JSON.
+- Bound repair execution to one trusted pre-execution job/repository/run
+  manifest, removed state write credentials from the Codex execution job,
+  replayed successful repair proof in a separate credential-free job, and
+  required its digest-bound receipt plus a successful execute outcome before
+  any merge, close, tag, requeue, or post-flight mutation. Failed and cancelled
+  execution remains report-only.
+- Replaced the unsupported GitHub installation identity probe with pinned
+  `create-github-app-token` App slug and installation outputs, rejected
+  mutating package-manager aliases and lifecycle commands in validation plans,
+  stopped retries when their command budget is exhausted, and made proof-budget
+  exhaustion terminal instead of sending it through Codex validation-fix.
 - Bound structural, semantic, and content review reuse to the canonical
   persisted durable-comment body hash under the acquired lease, normalizing
   surrounding whitespace while preserving label
