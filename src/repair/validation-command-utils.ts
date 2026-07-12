@@ -1,6 +1,9 @@
 export type PackageScriptRequirement = {
   command: string;
+  executable: PackageManagerExecutable;
   name: string;
+  allWorkspaces: boolean;
+  workspaceSelectors: string[];
   workspaceScoped: boolean;
 };
 
@@ -376,13 +379,27 @@ export function packageScriptRequirement(
   const script = usesRunCommand ? runInvocation?.script : normalizedCommand;
   if (!script || PACKAGE_MANAGER_NON_SCRIPT_COMMANDS.has(script)) return null;
   const scriptIndex = usesRunCommand ? runInvocation!.scriptIndex : invocation.commandIndex;
+  const options = [...invocation.globalOptions, ...(runInvocation?.options ?? [])];
+  const workspaceOptions = PACKAGE_MANAGER_WORKSPACE_OPTIONS[invocation.executable];
   return {
     name: script,
     command: commandParts.slice(0, scriptIndex + 1).join(" "),
-    workspaceScoped: [...invocation.globalOptions, ...(runInvocation?.options ?? [])].some(
+    executable: invocation.executable,
+    allWorkspaces: options.some(
       (option) =>
-        PACKAGE_MANAGER_WORKSPACE_OPTIONS[invocation.executable].has(option.name) &&
-        option.value !== "false",
+        ["-r", "--recursive", "--workspaces"].includes(option.name) && option.value !== "false",
+    ),
+    workspaceSelectors: options
+      .filter(
+        (option) =>
+          workspaceOptions.has(option.name) &&
+          !["-r", "--recursive", "--workspaces"].includes(option.name) &&
+          option.value !== null &&
+          option.value !== "false",
+      )
+      .map((option) => String(option.value)),
+    workspaceScoped: options.some(
+      (option) => workspaceOptions.has(option.name) && option.value !== "false",
     ),
   };
 }
@@ -671,6 +688,7 @@ export function validateAllowedValidationCommandParts(
   if (
     hasUnsafeValidationEnvironment(normalized) ||
     hasUnsupportedPackageManagerInvocation(normalized) ||
+    hasNoopPackageScriptOption(normalized) ||
     hasUnsafePackageManagerPathOption(normalized) ||
     hasUnsafePackageRunner(normalized) ||
     hasUncontainedPackageLifecycleHooks(normalized) ||
@@ -790,6 +808,18 @@ function isAllowedValidationExecutable(executable: string, parts: readonly strin
     isSafeLocalShellScriptInvocation(stripEnvPrefix(parts)) ||
     executable === "scripts/run-opengrep.sh" ||
     executable === "./scripts/run-opengrep.sh"
+  );
+}
+
+function hasNoopPackageScriptOption(parts: readonly string[]) {
+  const invocation = packageManagerInvocation(parts);
+  if (!invocation || packageScriptRequirement(parts) === null) return false;
+  const runInvocation =
+    normalizedPackageCommand(invocation.command) === "run"
+      ? packageRunInvocation(invocation)
+      : null;
+  return [...invocation.globalOptions, ...(runInvocation?.options ?? [])].some(
+    (option) => option.name === "--if-present",
   );
 }
 

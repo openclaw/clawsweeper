@@ -644,6 +644,18 @@ test("validation preflight defers workspace-scoped scripts to the package manage
   );
   assert.equal(disabledWorkspaceResult.status, "blocked");
   assert.equal(disabledWorkspaceResult.missing_script, "test");
+
+  const missingSelectedWorkspaceScript = preflightTargetValidationPlan(
+    {
+      fixArtifact: {
+        validation_commands: ["npm --workspace @openclaw/worker run lint"],
+      },
+      targetDir: cwd,
+    },
+    options,
+  );
+  assert.equal(missingSelectedWorkspaceScript.status, "blocked");
+  assert.equal(missingSelectedWorkspaceScript.missing_script, "lint");
 });
 
 test("validation parser accepts only the documented workspace run option positions", () => {
@@ -666,6 +678,8 @@ test("validation parser accepts only the documented workspace run option positio
     "bun run --unknown @openclaw/worker test",
     "npm run test --prefix packages/worker",
     "npm run test --unknown @openclaw/worker",
+    "npm --if-present --workspace @openclaw/worker run test",
+    "npm run test --workspace @openclaw/worker --if-present",
     "bun run --filter @openclaw/worker postinstall",
     "npm run install --workspace @openclaw/worker",
   ]) {
@@ -673,7 +687,7 @@ test("validation parser accepts only the documented workspace run option positio
   }
 });
 
-test("staged target proof fails when a pnpm filter matches no workspace", () => {
+test("staged target proof rejects a pnpm filter that matches no workspace before execution", () => {
   const cwd = gitPackageFixture({});
   fs.writeFileSync(path.join(cwd, "pnpm-workspace.yaml"), "packages:\n  - packages/*\n");
   git(cwd, "add", ".");
@@ -693,16 +707,11 @@ test("staged target proof fails when a pnpm filter matches no workspace", () => 
           },
         }),
       ),
-    (error) => {
-      assert.match(error.message, /validation command failed/);
-      assert.match(error.message, /No projects matched the filters/);
-      assert.equal(error.trace.status, "failed");
-      return true;
-    },
+    /validation_script_missing: required pnpm --fail-if-no-match --filter __clawsweeper_no_such_workspace__/,
   );
 });
 
-test("staged target proof overrides a disabled pnpm no-match failure", () => {
+test("staged target proof rejects a disabled pnpm no-match failure before execution", () => {
   const cwd = gitPackageFixture({});
   fs.writeFileSync(path.join(cwd, "pnpm-workspace.yaml"), "packages:\n  - packages/*\n");
   git(cwd, "add", ".");
@@ -722,12 +731,7 @@ test("staged target proof overrides a disabled pnpm no-match failure", () => {
           },
         }),
       ),
-    (error) => {
-      assert.match(error.message, /validation command failed/);
-      assert.match(error.message, /No projects matched the filters/);
-      assert.equal(error.trace.status, "failed");
-      return true;
-    },
+    /validation_script_missing: required pnpm --fail-if-no-match --filter __clawsweeper_no_such_workspace__/,
   );
 });
 
@@ -2045,6 +2049,66 @@ test("staged target proof fails if an allowlisted script mutates the checkout", 
     },
   );
   assert.equal(git(cwd, "rev-parse", "HEAD"), head);
+});
+
+for (const hiddenFlag of ["--assume-unchanged", "--skip-worktree"]) {
+  test(`staged target proof rejects tracked files hidden with ${hiddenFlag}`, () => {
+    const cwd = gitPackageFixture({ verify: "node --test" });
+    git(cwd, "add", ".");
+    git(cwd, "commit", "-m", "initial");
+    attachOrigin(cwd);
+    git(cwd, "update-index", hiddenFlag, "package.json");
+
+    assert.throws(
+      () =>
+        runStagedValidationProof(
+          ["pnpm verify"],
+          cwd,
+          validationOptions("steipete/example", {
+            toolchain: {
+              packageManager: "pnpm",
+              baseValidationCommands: [],
+              changedGate: null,
+            },
+          }),
+        ),
+      /rejects hidden tracked index flags/,
+    );
+  });
+}
+
+test("staged proof budget includes checkout and recursive proof-input sealing", () => {
+  const cwd = gitPackageFixture({ verify: "node --test" });
+  fs.mkdirSync(path.join(cwd, "node_modules", "fixture"), { recursive: true });
+  fs.writeFileSync(path.join(cwd, "node_modules", "fixture", "state.js"), "clean\n");
+  git(cwd, "add", ".");
+  git(cwd, "commit", "-m", "initial");
+  attachOrigin(cwd);
+
+  const originalNow = Date.now;
+  let calls = 0;
+  Date.now = () => (calls++ === 0 ? 1_000 : 1_101);
+  try {
+    assert.throws(
+      () =>
+        runStagedValidationProof(
+          ["pnpm verify"],
+          cwd,
+          validationOptions("steipete/example", {
+            proofBudgetMs: 100,
+            validationTimeoutMs: 1_000,
+            toolchain: {
+              packageManager: "pnpm",
+              baseValidationCommands: [],
+              changedGate: null,
+            },
+          }),
+        ),
+      /staged proof runtime budget exhausted before/,
+    );
+  } finally {
+    Date.now = originalNow;
+  }
 });
 
 test("staged proof rejects ignored dependency poisoning before later commands", () => {

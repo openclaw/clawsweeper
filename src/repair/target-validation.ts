@@ -1,6 +1,8 @@
+import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { parse as parseYaml } from "yaml";
 
 import { runCommand as run } from "./command-runner.js";
 import {
@@ -452,11 +454,6 @@ export function runStagedValidationProof(
     baseBranch,
     validationEnv,
   );
-  const checkoutIdentity = validationCheckoutIdentity(cwd, baseRef);
-  if (checkoutIdentity.status) {
-    throw new Error("staged proof requires a clean validation checkout");
-  }
-  const proofInputSnapshot = validationProofInputSnapshot(cwd, plan.commands);
   const validationTimeoutMs = targetValidationTimeoutMs(
     "CLAWSWEEPER_TARGET_VALIDATION_TIMEOUT_MS",
     options.validationTimeoutMs ?? DEFAULT_TARGET_VALIDATION_TIMEOUT_MS,
@@ -471,11 +468,17 @@ export function runStagedValidationProof(
     options.proofBudgetMs ?? defaultProofBudgetMs,
     options.proofBudgetMs,
   );
+  const proofStartedAt = Date.now();
+  const checkoutIdentity = validationCheckoutIdentity(cwd, baseRef);
+  if (checkoutIdentity.status) {
+    throw new Error("staged proof requires a clean validation checkout");
+  }
+  const proofInputSnapshot = validationProofInputSnapshot(cwd, plan.commands);
   const executed = new Set<string>();
   const attempts = new Map<string, number>();
   const result = executeStagedProofPlan(plan, {
     commandTimeoutMs: validationTimeoutMs,
-    budgetMs: proofBudgetMs,
+    budgetMs: remainingProofBudgetMs(proofBudgetMs, proofStartedAt),
     validatedHeadSha: checkoutIdentity.headSha,
     validatedBaseSha: checkoutIdentity.baseSha,
     runCommand: (command, timeoutMs) =>
@@ -505,11 +508,6 @@ export function replayStagedValidationProof(
   const validationEnv = targetValidationEnv();
   const plan = stagedProofPlanFromArtifact(planArtifact);
   const baseRef = validationBaseRef(cwd, baseBranch, options);
-  const checkoutIdentity = validationCheckoutIdentity(cwd, baseRef);
-  if (checkoutIdentity.status) {
-    throw new Error("staged proof replay requires a clean validation checkout");
-  }
-  const proofInputSnapshot = validationProofInputSnapshot(cwd, plan.commands);
   const validationTimeoutMs = targetValidationTimeoutMs(
     "CLAWSWEEPER_TARGET_VALIDATION_TIMEOUT_MS",
     options.validationTimeoutMs ?? DEFAULT_TARGET_VALIDATION_TIMEOUT_MS,
@@ -524,11 +522,17 @@ export function replayStagedValidationProof(
     options.proofBudgetMs ?? defaultProofBudgetMs,
     options.proofBudgetMs,
   );
+  const proofStartedAt = Date.now();
+  const checkoutIdentity = validationCheckoutIdentity(cwd, baseRef);
+  if (checkoutIdentity.status) {
+    throw new Error("staged proof replay requires a clean validation checkout");
+  }
+  const proofInputSnapshot = validationProofInputSnapshot(cwd, plan.commands);
   const executed = new Set<string>();
   const attempts = new Map<string, number>();
   const result = executeStagedProofPlan(plan, {
     commandTimeoutMs: validationTimeoutMs,
-    budgetMs: proofBudgetMs,
+    budgetMs: remainingProofBudgetMs(proofBudgetMs, proofStartedAt),
     validatedHeadSha: checkoutIdentity.headSha,
     validatedBaseSha: checkoutIdentity.baseSha,
     runCommand: (command, timeoutMs) => {
@@ -579,7 +583,10 @@ function createTargetValidationProofPlan(
       "validation_command_missing: no configured or artifact validation command is available",
     );
   }
-  const missingScript = missingRequiredPackageScript(requiredCommands, readPackageScriptSet(cwd));
+  const missingScript = missingRequiredPackageScript(
+    requiredCommands,
+    readPackageScriptInventory(cwd),
+  );
   if (missingScript) {
     throw new Error(
       `validation_script_missing: required ${missingScript.command} is unavailable in target checkout`,
@@ -699,6 +706,7 @@ type ValidationCheckoutIdentity = {
   headSha: string;
   baseSha: string;
   status: string;
+  trackedWorktreeSha256: string;
 };
 
 type ValidationProofInputSnapshot = {
@@ -709,6 +717,7 @@ type ValidationSourceIdentity = {
   headSha: string;
   treeSha: string;
   status: string;
+  trackedWorktreeSha256: string;
 };
 
 function validationSourceIdentity(cwd: string): ValidationSourceIdentity {
@@ -716,6 +725,7 @@ function validationSourceIdentity(cwd: string): ValidationSourceIdentity {
     headSha: currentHead(cwd),
     treeSha: run("git", ["rev-parse", "HEAD^{tree}"], { cwd }).trim(),
     status: run("git", ["status", "--porcelain=v1", "-z", "--untracked-files=all"], { cwd }),
+    trackedWorktreeSha256: trackedWorktreeSha256(cwd),
   };
 }
 
@@ -724,7 +734,8 @@ function assertValidationSourceIdentity(cwd: string, expected: ValidationSourceI
   if (
     actual.headSha !== expected.headSha ||
     actual.treeSha !== expected.treeSha ||
-    actual.status !== expected.status
+    actual.status !== expected.status ||
+    actual.trackedWorktreeSha256 !== expected.trackedWorktreeSha256
   ) {
     throw new Error("target dependency setup mutated source or proof identity");
   }
@@ -735,6 +746,7 @@ function validationCheckoutIdentity(cwd: string, baseRef: string): ValidationChe
     headSha: currentHead(cwd),
     baseSha: run("git", ["rev-parse", baseRef], { cwd }).trim(),
     status: run("git", ["status", "--porcelain=v1", "-z", "--untracked-files=all"], { cwd }),
+    trackedWorktreeSha256: trackedWorktreeSha256(cwd),
   };
 }
 
@@ -747,7 +759,8 @@ function assertValidationCheckoutIdentity(
   if (
     actual.headSha !== expected.headSha ||
     actual.baseSha !== expected.baseSha ||
-    actual.status !== expected.status
+    actual.status !== expected.status ||
+    actual.trackedWorktreeSha256 !== expected.trackedWorktreeSha256
   ) {
     throw new Error("unsafe validation command mutated checkout or proof identity");
   }
@@ -986,6 +999,72 @@ function remainingCommandBudget(timeoutMs: number, startedAt: number) {
   return Math.max(0, timeoutMs - Math.max(0, Date.now() - startedAt));
 }
 
+function remainingProofBudgetMs(budgetMs: number, startedAt: number) {
+  return Math.max(0, budgetMs - Math.max(0, Date.now() - startedAt));
+}
+
+function trackedWorktreeSha256(cwd: string): string {
+  assertNoHiddenTrackedIndexFlags(cwd);
+  const root = fs.realpathSync(cwd);
+  const digest = crypto.createHash("sha256");
+  const entries = run("git", ["ls-files", "--stage", "-z"], { cwd }).split("\0").filter(Boolean);
+  for (const entry of entries) {
+    const match = entry.match(/^([0-7]{6}) ([a-f0-9]{40,64}) ([0-3])\t([\s\S]+)$/);
+    if (!match || match[3] !== "0") {
+      throw new Error("staged proof requires an unambiguous tracked index");
+    }
+    const [, mode, indexObject, , relativePath] = match;
+    const absolutePath = path.resolve(root, ...relativePath!.split("/"));
+    if (!isPathWithin(root, absolutePath)) {
+      throw new Error(`tracked proof input escapes validation checkout: ${relativePath}`);
+    }
+    updateProofDigest(digest, "path", relativePath!);
+    updateProofDigest(digest, "mode", mode!);
+    updateProofDigest(digest, "index", indexObject!);
+    if (mode === "160000") {
+      const head = run("git", ["-C", absolutePath, "rev-parse", "HEAD"], { cwd }).trim();
+      updateProofDigest(digest, "gitlink", head);
+      continue;
+    }
+    let stat: fs.Stats;
+    try {
+      stat = fs.lstatSync(absolutePath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      updateProofDigest(digest, "working-tree", ABSENT_PROOF_INPUT);
+      continue;
+    }
+    if (stat.isSymbolicLink()) {
+      updateProofDigest(digest, "symlink", fs.readlinkSync(absolutePath));
+      continue;
+    }
+    if (!stat.isFile()) {
+      throw new Error(`tracked proof input is not a regular file: ${relativePath}`);
+    }
+    const bytes = fs.readFileSync(absolutePath);
+    digest.update(`working-tree:${bytes.length}:`);
+    digest.update(bytes);
+    digest.update("\0");
+  }
+  return digest.digest("hex");
+}
+
+function assertNoHiddenTrackedIndexFlags(cwd: string) {
+  const entries = run("git", ["ls-files", "-v", "-z"], { cwd }).split("\0").filter(Boolean);
+  for (const entry of entries) {
+    const tag = entry[0] ?? "";
+    if (tag === "S" || (/[A-Za-z]/.test(tag) && tag === tag.toLowerCase())) {
+      throw new Error(
+        `staged proof rejects hidden tracked index flags: ${entry.slice(2) || "unknown"}`,
+      );
+    }
+  }
+}
+
+function updateProofDigest(digest: crypto.Hash, label: string, value: string) {
+  digest.update(`${label}:${Buffer.byteLength(value)}:${value}\0`);
+}
+
 function validationCommandBudgetError(rendered: string, cause?: unknown) {
   return new Error(
     `validation command failed (${rendered}): validation command runtime budget exhausted`,
@@ -997,8 +1076,8 @@ export function preflightTargetValidationPlan(
   { fixArtifact, targetDir, baseBranch = DEFAULT_BASE_BRANCH }: LooseRecord,
   options: TargetValidationOptions,
 ) {
-  const scripts = readPackageScriptSet(targetDir);
-  const availableScripts = [...scripts].sort();
+  const scriptInventory = readPackageScriptInventory(targetDir);
+  const availableScripts = [...scriptInventory.rootScripts].sort();
   const resolved: string[] = [];
   const resolvedEntries: StagedProofCommandInput[] = [];
   const validationEnv = targetValidationEnv();
@@ -1025,7 +1104,7 @@ export function preflightTargetValidationPlan(
     };
   }
 
-  const missing = missingRequiredPackageScript(resolvedEntries, scripts);
+  const missing = missingRequiredPackageScript(resolvedEntries, scriptInventory);
   if (!missing) {
     return {
       status: "passed",
@@ -1457,14 +1536,43 @@ function splitGitLines(value: string) {
     .filter(Boolean);
 }
 
-function readPackageScriptSet(cwd: string) {
+type PackageScriptInventory = {
+  rootScripts: Set<string>;
+  workspaces: Array<{
+    name: string;
+    relativePath: string;
+    scripts: Set<string>;
+  }>;
+};
+
+function readPackageScriptInventory(cwd: string): PackageScriptInventory {
   const packagePath = path.join(cwd, "package.json");
-  if (!fs.existsSync(packagePath)) return new Set<string>();
+  if (!fs.existsSync(packagePath)) return { rootScripts: new Set(), workspaces: [] };
   try {
     const pkg = JSON.parse(fs.readFileSync(packagePath, "utf8"));
-    return new Set<string>(Object.keys(pkg.scripts ?? {}));
+    const patterns = workspacePackagePatterns(cwd, pkg);
+    const workspaces = workspacePackagePaths(cwd, patterns).flatMap((relativePath) => {
+      try {
+        const workspace = JSON.parse(
+          fs.readFileSync(path.join(cwd, relativePath, "package.json"), "utf8"),
+        );
+        return [
+          {
+            name: String(workspace.name ?? ""),
+            relativePath,
+            scripts: new Set<string>(Object.keys(workspace.scripts ?? {})),
+          },
+        ];
+      } catch {
+        return [];
+      }
+    });
+    return {
+      rootScripts: new Set<string>(Object.keys(pkg.scripts ?? {})),
+      workspaces,
+    };
   } catch {
-    return new Set<string>();
+    return { rootScripts: new Set(), workspaces: [] };
   }
 }
 
@@ -1474,13 +1582,111 @@ function getToolchain(options: TargetValidationOptions): TargetRepoToolchain {
 
 function missingRequiredPackageScript(
   commands: readonly { parts: readonly string[] }[],
-  scripts: ReadonlySet<string>,
+  inventory: PackageScriptInventory,
 ) {
   for (const command of commands) {
     const script = packageScriptRequirement(command.parts);
-    if (script && !script.workspaceScoped && !scripts.has(script.name)) return script;
+    if (!script) continue;
+    if (!script.workspaceScoped) {
+      if (!inventory.rootScripts.has(script.name)) return script;
+      continue;
+    }
+    const selected = selectWorkspacePackages(script, inventory.workspaces);
+    if (
+      selected.length === 0 ||
+      selected.some((workspace) => !workspace.scripts.has(script.name))
+    ) {
+      return script;
+    }
   }
   return null;
+}
+
+function workspacePackagePatterns(cwd: string, rootPackage: LooseRecord): string[] {
+  const packageWorkspaces = Array.isArray(rootPackage.workspaces)
+    ? rootPackage.workspaces
+    : Array.isArray(rootPackage.workspaces?.packages)
+      ? rootPackage.workspaces.packages
+      : [];
+  const pnpmWorkspacePath = path.join(cwd, "pnpm-workspace.yaml");
+  let pnpmPackages: unknown[] = [];
+  if (fs.existsSync(pnpmWorkspacePath)) {
+    try {
+      const parsed = parseYaml(fs.readFileSync(pnpmWorkspacePath, "utf8"));
+      pnpmPackages = Array.isArray(parsed?.packages) ? parsed.packages : [];
+    } catch {
+      pnpmPackages = [];
+    }
+  }
+  return uniqueStrings([...packageWorkspaces, ...pnpmPackages])
+    .map((pattern) =>
+      pattern
+        .replaceAll("\\", "/")
+        .replace(/^\.\/+/, "")
+        .replace(/\/+$/, ""),
+    )
+    .filter(Boolean);
+}
+
+function workspacePackagePaths(cwd: string, patterns: readonly string[]): string[] {
+  if (patterns.length === 0) return [];
+  const matches: string[] = [];
+  const visit = (directory: string, relativeDirectory: string) => {
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+      if (
+        !entry.isDirectory() ||
+        [".git", ".hg", ".svn", ".venv", "node_modules", "venv"].includes(entry.name)
+      ) {
+        continue;
+      }
+      const relativePath = relativeDirectory
+        ? path.posix.join(relativeDirectory, entry.name)
+        : entry.name;
+      const absolutePath = path.join(directory, entry.name);
+      if (
+        fs.existsSync(path.join(absolutePath, "package.json")) &&
+        patterns.some(
+          (pattern) => !pattern.startsWith("!") && workspacePatternMatches(pattern, relativePath),
+        ) &&
+        !patterns.some(
+          (pattern) =>
+            pattern.startsWith("!") && workspacePatternMatches(pattern.slice(1), relativePath),
+        )
+      ) {
+        matches.push(relativePath);
+      }
+      visit(absolutePath, relativePath);
+    }
+  };
+  visit(cwd, "");
+  return [...new Set(matches)].sort();
+}
+
+function workspacePatternMatches(pattern: string, relativePath: string): boolean {
+  const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&");
+  const globbed = escaped.replaceAll("**", "\0").replaceAll("*", "[^/]*").replaceAll("\0", ".*");
+  return new RegExp(`^${globbed}$`).test(relativePath);
+}
+
+function selectWorkspacePackages(
+  script: NonNullable<ReturnType<typeof packageScriptRequirement>>,
+  workspaces: PackageScriptInventory["workspaces"],
+) {
+  if (script.allWorkspaces) return workspaces;
+  if (script.workspaceSelectors.length === 0) return [];
+  return workspaces.filter((workspace) =>
+    script.workspaceSelectors.some((selector) => workspaceSelectorMatches(selector, workspace)),
+  );
+}
+
+function workspaceSelectorMatches(
+  selector: string,
+  workspace: PackageScriptInventory["workspaces"][number],
+) {
+  const normalized = selector.replace(/^\.\/+/, "").replace(/\/+$/, "");
+  if (normalized === workspace.name || normalized === workspace.relativePath) return true;
+  if (!normalized.includes("*")) return false;
+  return workspacePatternMatches(normalized, workspace.name);
 }
 
 function proofSubsumptionContracts(
