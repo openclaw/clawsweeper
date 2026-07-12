@@ -520,7 +520,7 @@ function hasSnapshotUpdateShortFlag(parts: readonly string[]): boolean {
     .filter((part) => (part.split("=", 1)[0] ?? "") === "-u");
   if (shortUpdateFlags.length === 0) return false;
   if (packageInvocation) return true;
-  if (["jest", "vitest"].includes(executable)) return true;
+  if (["ava", "jest", "vitest"].includes(executable)) return true;
   if (!["python", "python3"].includes(executable)) return false;
   return !(
     shortUpdateFlags.length === 1 &&
