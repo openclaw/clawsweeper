@@ -729,6 +729,7 @@ test("runtime and schema apply the same machine-text privacy boundary", () => {
     "0:0:0:0:0:0:c0a8:1",
     "service.internal",
     "service.internal.",
+    "service.internal..",
     "SERVICE.INTERNAL",
     "LOCALHOST:443",
     "user@LOCALHOST",
@@ -740,6 +741,7 @@ test("runtime and schema apply the same machine-text privacy boundary", () => {
     "HTTPS:user@host/path",
     "internal.example.com",
     "https://host.docker.internal/api",
+    "https://service.internal.././api",
     "https://10.0.0.1/api",
     "http://2130706433/",
     "http://0x7f000001/",
@@ -786,6 +788,8 @@ test("privacy normalization preserves public machine identifiers", () => {
     "file-cache",
     "file+cache",
     "public.example",
+    "public.example..",
+    "https://public.example/./api",
     "0:0:0:0:0:ffff:808:808",
     "0:0:0:0:0:ffff:ac20:1",
     "0:0::ffff:808:808",
@@ -2089,6 +2093,7 @@ test("runtime normalization enforces checked-in schema bounds", () => {
     "prefix:169.254.169.254",
     "https://internal.local",
     "https://service.internal./api",
+    "https://service.internal.././api",
     "0:0:0:0:0:0:0:1",
   ]) {
     assert.throws(

@@ -159,11 +159,11 @@ addresses, and internal hostname suffixes. Form-style `+` credential separators
 are rejected when followed by a credential-shaped value. Percent-encoded octets
 are rejected from durable identifiers and paths rather than decoded into
 potentially confidential forms. URL checks normalize scheme-specific paths,
-userinfo, file URLs, and numeric URL host aliases. Host checks normalize case,
-trailing-dot FQDNs, and compressed IPv6 loopback and private IPv4-embedded forms,
-including partially compressed forms embedded in unbracketed machine text,
-while all durable text remains restricted to field-specific machine
-vocabularies.
+userinfo, file URLs, numeric URL host aliases, and dot-segment paths. Host
+checks normalize case, repeated trailing root dots, and compressed IPv6 loopback
+and private IPv4-embedded forms, including partially compressed forms embedded
+in unbracketed machine text, while all durable text remains restricted to
+field-specific machine vocabularies.
 
 Every event records a privacy classification, redaction version, and fields
 dropped. The checked-in JSON schema is
