@@ -160,7 +160,7 @@ const {
 const startedAtMs = Date.now();
 const timings: LooseRecord[] = [];
 const ledger = readLedger(ledgerPath());
-const exactCommentVersionFastPath = exactCommentVersionFastPathDecision({
+let exactCommentVersionFastPath = exactCommentVersionFastPathDecision({
   authenticated:
     args["comment-event-auth"] === "github_webhook_v1" &&
     args["source-event"] === "issue_comment" &&
@@ -174,6 +174,12 @@ const exactCommentVersionFastPath = exactCommentVersionFastPathDecision({
   ledger,
   verificationLedgers: exactCommentVersionVerificationLedgers(),
 });
+const exactCommentVersionFastPathCommand = exactCommentVersionFastPath.suppress
+  ? exactCommentVersionLedgerCommand(exactCommentVersionFastPath.commentVersionKey)
+  : null;
+if (exactCommentVersionFastPath.suppress && !exactCommentVersionFastPathCommand) {
+  exactCommentVersionFastPath = { suppress: false, reason: "state_drift" };
+}
 const priorDispatchClaims = new Map<string, LooseRecord>();
 for (const entry of ledger.commands ?? []) {
   if (entry.status !== "claimed") continue;
@@ -333,6 +339,14 @@ const report: LooseRecord = {
   exact_comment_version_fast_path: exactCommentVersionFastPath,
   short_circuited: exactCommentVersionFastPath.suppress,
 };
+
+if (execute && exactCommentVersionFastPath.suppress && exactCommentVersionFastPathCommand) {
+  measure("cleanup_exact_comment_version", () => {
+    assertMutationActorIsClawsweeperBot();
+    cleanupTerminalCommentAck(exactCommentVersionFastPathCommand);
+    clearTerminalMaintainerCommandReaction(exactCommentVersionFastPathCommand);
+  });
+}
 
 if (execute && !exactCommentVersionFastPath.suppress) {
   await measureAsync("execute_commands", async () => {
@@ -4193,6 +4207,15 @@ function convergePrecreatedCommandAckComments(command: LooseRecord) {
   }
 }
 
+function cleanupTerminalCommentAck(command: LooseRecord) {
+  const keep = convergePrecreatedCommandAckComments(command);
+  if (!keep || commandStatusMarkerFromBody(keep.body)) return;
+  const id = Number(keep.id ?? 0) || 0;
+  if (id <= 0) return;
+  ghBestEffort(["api", `repos/${command.repo}/issues/comments/${id}`, "--method", "DELETE"]);
+  issueCommentsCache.delete(Number(command.issue_number));
+}
+
 function convergePrecreatedCommandAckCommentsInner(command: LooseRecord) {
   const marker = commandAckMarkerForCommentId(command.comment_id);
   const comments = cachedIssueComments(command.issue_number).filter(
@@ -4515,6 +4538,13 @@ function exactCommentVersionVerificationLedgers() {
   const stateLedgerPath = path.join(path.resolve(stateDir), "results", "comment-router.json");
   if (!fs.existsSync(stateLedgerPath)) return [];
   return [readLedger(stateLedgerPath), readLedger(ledgerPath())];
+}
+
+function exactCommentVersionLedgerCommand(commentVersionKey: JsonValue) {
+  const matches = (Array.isArray(ledger.commands) ? ledger.commands : []).filter(
+    (entry: JsonValue) => entry?.comment_version_key === commentVersionKey,
+  );
+  return matches.length === 1 ? matches[0] : null;
 }
 
 function idempotencyKey(

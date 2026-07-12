@@ -1988,6 +1988,28 @@ test("comment router durably claims dispatch commands and recovers exact workflo
   assert.match(repairWorkflow, /dispatch_key:/);
 });
 
+test("exact comment fast path preserves terminal acknowledgement cleanup", () => {
+  const source = readFileSync("src/repair/comment-router.ts", "utf8");
+  const cleanupBlock = source.slice(
+    source.indexOf('measure("cleanup_exact_comment_version"'),
+    source.indexOf("if (execute && !exactCommentVersionFastPath.suppress)"),
+  );
+
+  assert.match(cleanupBlock, /assertMutationActorIsClawsweeperBot\(\)/);
+  assert.match(cleanupBlock, /cleanupTerminalCommentAck\(exactCommentVersionFastPathCommand\)/);
+  assert.match(
+    cleanupBlock,
+    /clearTerminalMaintainerCommandReaction\(exactCommentVersionFastPathCommand\)/,
+  );
+  const ackCleanup = source.slice(
+    source.indexOf("function cleanupTerminalCommentAck"),
+    source.indexOf("function convergePrecreatedCommandAckCommentsInner"),
+  );
+  assert.match(ackCleanup, /convergePrecreatedCommandAckComments\(command\)/);
+  assert.match(ackCleanup, /commandStatusMarkerFromBody\(keep\.body\)/);
+  assert.match(ackCleanup, /--method", "DELETE"/);
+});
+
 test("command receipt gates let the oldest same-key run proceed when a newer duplicate is pending", () => {
   const receiptGate = readFileSync("scripts/dispatch-receipt-owner.sh", "utf8");
 
