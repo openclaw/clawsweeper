@@ -50,6 +50,12 @@ const MAX_CRABFLEET_TIMEOUT_MS = 60_000;
 const ACTION_EVENT_SHARD_PATH_PATTERN =
   /^ledger\/v1\/events\/\d{4}\/\d{2}\/\d{2}\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\.jsonl$/;
 const pendingCrabFleetPosts = new Set<Promise<void>>();
+const queuedCrabFleetPosts: QueuedCrabFleetProjection[] = [];
+
+export const CRABFLEET_PROJECTION_LIMITS = {
+  maxConcurrent: 4,
+  maxQueued: 64,
+} as const;
 
 export const ACTION_EVENT_SHARD_IMPORT_LIMITS = {
   maxDepth: 6,
@@ -110,6 +116,13 @@ type ImportedActionEventShard = {
   relativePath: string;
   content: string;
   events: ActionEvent[];
+};
+
+type QueuedCrabFleetProjection = {
+  root: string;
+  event: ActionEvent;
+  env: NodeJS.ProcessEnv;
+  fetchImpl: typeof fetch;
 };
 
 export function workflowActionEventsEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
@@ -318,7 +331,8 @@ export async function flushWorkflowActionEvents(
 }
 
 export async function flushPendingCrabFleetPosts(): Promise<void> {
-  while (pendingCrabFleetPosts.size > 0) {
+  while (pendingCrabFleetPosts.size > 0 || queuedCrabFleetPosts.length > 0) {
+    drainCrabFleetProjectionQueue();
     await Promise.all(pendingCrabFleetPosts);
   }
 }
@@ -576,17 +590,58 @@ function queueCrabFleetEvent(
   env: NodeJS.ProcessEnv,
   fetchImpl: typeof fetch,
 ): void {
-  const post = postActionEventToCrabFleet(event, env, fetchImpl)
+  if (!crabFleetProjectionConfigured(env)) return;
+  const projection = { root, event, env, fetchImpl };
+  if (pendingCrabFleetPosts.size < CRABFLEET_PROJECTION_LIMITS.maxConcurrent) {
+    startCrabFleetProjection(projection);
+    return;
+  }
+  if (queuedCrabFleetPosts.length < CRABFLEET_PROJECTION_LIMITS.maxQueued) {
+    queuedCrabFleetPosts.push(projection);
+    return;
+  }
+  failCrabFleetProjection(
+    root,
+    event,
+    `queue limit ${CRABFLEET_PROJECTION_LIMITS.maxQueued} reached`,
+  );
+}
+
+function startCrabFleetProjection(projection: QueuedCrabFleetProjection): void {
+  const post = postActionEventToCrabFleet(projection.event, projection.env, projection.fetchImpl)
     .catch((error) => {
-      recordCrabFleetProjectionFailure(root, event);
-      console.error(
-        `[action-ledger] live CrabFleet projection failed: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
+      failCrabFleetProjection(
+        projection.root,
+        projection.event,
+        error instanceof Error ? error.message : String(error),
       );
     })
-    .finally(() => pendingCrabFleetPosts.delete(post));
+    .finally(() => {
+      pendingCrabFleetPosts.delete(post);
+      drainCrabFleetProjectionQueue();
+    });
   pendingCrabFleetPosts.add(post);
+}
+
+function drainCrabFleetProjectionQueue(): void {
+  while (
+    pendingCrabFleetPosts.size < CRABFLEET_PROJECTION_LIMITS.maxConcurrent &&
+    queuedCrabFleetPosts.length > 0
+  ) {
+    startCrabFleetProjection(queuedCrabFleetPosts.shift()!);
+  }
+}
+
+function failCrabFleetProjection(root: string, event: ActionEvent, reason: string): void {
+  recordCrabFleetProjectionFailure(root, event);
+  console.error(`[action-ledger] live CrabFleet projection failed: ${reason}`);
+}
+
+function crabFleetProjectionConfigured(env: NodeJS.ProcessEnv): boolean {
+  return Boolean(
+    String(env.CLAWSWEEPER_CRABFLEET_SESSION_ID ?? "").trim() &&
+    String(env.CLAWSWEEPER_CRABFLEET_AGENT_TOKEN ?? "").trim(),
+  );
 }
 
 function recordCrabFleetProjectionFailure(root: string, event: ActionEvent): void {

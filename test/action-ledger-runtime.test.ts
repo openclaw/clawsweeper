@@ -9,6 +9,8 @@ import { pathToFileURL } from "node:url";
 
 import {
   ACTION_EVENT_SHARD_IMPORT_LIMITS,
+  CRABFLEET_PROJECTION_LIMITS,
+  flushPendingCrabFleetPosts,
   flushWorkflowActionEvents,
   importActionEventShards,
   postActionEventToCrabFleet,
@@ -861,6 +863,75 @@ test("CrabFleet projection sends the validated ledger event and bearer token", a
   assert.equal(body.eventKey, event.event_key);
   assert.equal(body.type, "clawsweeper.action");
   assert.deepEqual(body.payload, { version: 1, event });
+});
+
+test("CrabFleet projection bounds active fetches and queued work", async () => {
+  const root = tempRoot();
+  const outputRoot = trustedChildRoot(root, "state");
+  const env = workflowEnv({
+    CLAWSWEEPER_CRABFLEET_AGENT_TOKEN: "agent-token",
+    CLAWSWEEPER_CRABFLEET_SESSION_ID: "session-1",
+  });
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let active = 0;
+  let maxActive = 0;
+  let started = 0;
+  const errors: string[] = [];
+  const originalError = console.error;
+  console.error = (...args: unknown[]) => errors.push(args.map(String).join(" "));
+  try {
+    const total =
+      CRABFLEET_PROJECTION_LIMITS.maxConcurrent + CRABFLEET_PROJECTION_LIMITS.maxQueued + 1;
+    for (let index = 0; index < total; index += 1) {
+      const event = recordReview(root, env, new Date("2026-07-12T10:01:00.000Z"), {
+        fetchImpl: (async () => {
+          started += 1;
+          active += 1;
+          maxActive = Math.max(maxActive, active);
+          await gate;
+          active -= 1;
+          return new Response(null, { status: 204 });
+        }) as typeof fetch,
+      });
+      assert.ok(event);
+    }
+
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(started, CRABFLEET_PROJECTION_LIMITS.maxConcurrent);
+    assert.equal(maxActive, CRABFLEET_PROJECTION_LIMITS.maxConcurrent);
+    assert.equal(errors.length, 1);
+    assert.match(
+      errors[0] ?? "",
+      new RegExp(`queue limit ${CRABFLEET_PROJECTION_LIMITS.maxQueued} reached`),
+    );
+
+    release();
+    await flushPendingCrabFleetPosts();
+    assert.equal(
+      started,
+      CRABFLEET_PROJECTION_LIMITS.maxConcurrent + CRABFLEET_PROJECTION_LIMITS.maxQueued,
+    );
+    assert.equal(maxActive, CRABFLEET_PROJECTION_LIMITS.maxConcurrent);
+  } finally {
+    release();
+    await flushPendingCrabFleetPosts();
+    console.error = originalError;
+  }
+
+  const [relativePath] = await flushWorkflowActionEvents(root, { env, outputRoot });
+  assert.ok(relativePath);
+  const events = fs
+    .readFileSync(path.join(outputRoot, relativePath), "utf8")
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line));
+  assert.deepEqual(
+    events.map((event) => event.event_type),
+    [ACTION_EVENT_TYPES.reviewCompleted, ACTION_EVENT_TYPES.projectionFailed],
+  );
 });
 
 test("CrabFleet rejects forged confidential event keys before projection", async () => {

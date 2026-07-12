@@ -248,7 +248,10 @@ Consumers fold immutable events into purpose-specific views:
 `CLAWSWEEPER_CRABFLEET_TIMEOUT_MS` sets the live projection deadline in
 milliseconds. It defaults to 10000 and must be between 1 and 60000. Timeout,
 HTTP, and response-cleanup failures remain projection failures; canonical local
-writes are completed first.
+writes are completed first. Live delivery runs at most four fetches concurrently
+with 64 more projections queued. Further live projections fail closed into the
+same durable retryable `projection.failed` record instead of growing process
+memory without bound.
 
 Projection rebuilds must be deterministic. Truncating a projection never
 deletes source events. State-side compactors may replace hot shards with
