@@ -15,7 +15,7 @@ At job finalization, the spool is sorted, deduplicated, and published as one
 immutable JSONL shard:
 
 ```text
-ledger/v1/events/YYYY/MM/DD/<producer>/<run-id>-<attempt>-<job>-<digest>.jsonl
+ledger/v1/events/YYYY/MM/DD/<producer-repo>/<producer>/<run-id>-<attempt>-<job>-<digest>.jsonl
 ```
 
 Per-job shards avoid a shared append hotspot while preventing one Git commit per
@@ -51,22 +51,35 @@ identity fields are not:
 - Gitcrawl snapshot ID, query, and evidence-binding phase.
 
 `actionOperationId`, `actionAttemptId`, and `actionIdempotencyKey` canonicalize
-and hash their inputs. `event_id` is the SHA-256 of normalized repository plus
-`event_key`. Callers cannot supply a raw event key. Local event files and
-published shards use create-only atomic semantics.
+and hash their inputs. Identity inputs must be plain canonical JSON trees:
+non-finite or negative-zero numbers, dates, class instances, sparse or
+decorated arrays, accessors, `undefined`, functions, symbols, bigints, cycles,
+and credential-bearing field names are rejected before hashing. `event_id` is
+the SHA-256 of normalized repository plus `event_key`. Callers cannot supply a
+raw event key.
 
 - Replaying the same key and semantic payload is idempotent.
 - Reusing a key for different semantic content is a hard conflict.
 - Retrying an operation creates a new `attempt_id` and new event records while
   preserving `operation_id` and mutation idempotency keys.
-- Workflow run and job identity describe the producer; they do not define the
-  logical operation.
+- Mutation events require an explicit business `idempotencyIdentity`; outcome
+  status and failure reason never define side-effect identity.
+- Repository, producer SHA, workflow, job, run, attempt, and component all bind
+  shard identity. They do not define the logical operation.
 - `recorded_at` is first-writer metadata and is excluded from replay equality.
-- `occurred_at` records source ordering and must match across duplicate events.
-- Shard partition dates come from stable workflow-run identity, never event
-  ordering, so retries and late events cannot move a shard to another path.
+- `occurred_at` records the source timestamp and must match across duplicate
+  events. Shard line order is a deterministic topological order: causal
+  children follow their in-shard parents, while independent ready events use
+  source timestamp and event ID as stable tie-breakers.
+- Shard partition dates come from
+  `CLAWSWEEPER_ACTION_LEDGER_PARTITION_DATE` or immutable
+  `GITHUB_RUN_STARTED_AT` metadata. Wall clock and event ordering are never
+  used, so fresh-root reconstruction cannot move a run to another path.
 - Reusing one run/job shard identity for a different event set is a hard
   conflict.
+- Spool, shard, partition-marker, and import writes create parent directories
+  one component at a time, reject symlinks and junctions, and use no-follow
+  file access where the platform supports it.
 
 ## Privacy Boundary
 
@@ -74,7 +87,10 @@ The ledger stores machine-readable reason codes, counts, booleans, hashes,
 bounded subject IDs, relative report paths, public run URLs, and snapshot IDs.
 It does not store prompts, bodies, comments, diffs, patches, raw logs, raw
 payloads, arbitrary model text, local absolute paths, credentials, private
-hosts, or email addresses.
+hosts, or email addresses. Credential detection covers GitHub token families,
+JWT-shaped values, bearer/API/Cloudflare credential forms, private network
+addresses, and internal hostname suffixes while all durable text remains
+restricted to field-specific machine vocabularies.
 
 Every event records a privacy classification, redaction version, and fields
 dropped. The checked-in JSON schema is
