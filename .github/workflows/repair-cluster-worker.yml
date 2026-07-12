@@ -533,7 +533,8 @@ jobs:
             --repository "${{ github.repository }}" \
             --run-id "${{ github.run_id }}" \
             --current-attempt "${{ github.run_attempt }}" \
-            --expected-producer-attempt "${{ steps.authorization_publication_artifact.outputs.producer_attempt }}" \
+            --max-producer-attempt "${{ steps.authorization_publication_artifact.outputs.producer_attempt }}" \
+            --required-prefixes "clawsweeper-repair-authorized,clawsweeper-repair-execution,clawsweeper-repair-validation" \
             --prefix clawsweeper-repair-worker
 
       - name: Download prior checkpoint worker artifact
@@ -557,7 +558,7 @@ jobs:
             --repository "${{ github.repository }}" \
             --run-id "${{ github.run_id }}" \
             --current-attempt "${{ github.run_attempt }}" \
-            --expected-producer-attempt "${{ steps.authorization_publication_artifact.outputs.producer_attempt }}" \
+            --expected-producer-attempt "${{ steps.prior_worker_artifact.outputs.producer_attempt }}" \
             --prefix clawsweeper-repair-authorized
 
       - name: Download prior checkpoint authorization
@@ -581,7 +582,7 @@ jobs:
             --repository "${{ github.repository }}" \
             --run-id "${{ github.run_id }}" \
             --current-attempt "${{ github.run_attempt }}" \
-            --expected-producer-attempt "${{ steps.authorization_publication_artifact.outputs.producer_attempt }}" \
+            --expected-producer-attempt "${{ steps.prior_worker_artifact.outputs.producer_attempt }}" \
             --prefix clawsweeper-repair-execution
 
       - name: Download prior checkpoint execution handoff
@@ -605,7 +606,7 @@ jobs:
             --repository "${{ github.repository }}" \
             --run-id "${{ github.run_id }}" \
             --current-attempt "${{ github.run_attempt }}" \
-            --expected-producer-attempt "${{ steps.authorization_publication_artifact.outputs.producer_attempt }}" \
+            --expected-producer-attempt "${{ steps.prior_worker_artifact.outputs.producer_attempt }}" \
             --prefix clawsweeper-repair-validation
 
       - name: Download prior checkpoint validation receipt

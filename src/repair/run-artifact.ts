@@ -15,9 +15,11 @@ export function resolveRunArtifact({
   runId,
   currentAttempt,
   expectedProducerAttempt,
+  maxProducerAttempt,
   expectedArtifactId,
   expectedArtifactDigest,
   fallbackPrefixes = [],
+  requiredPrefixes = [],
   allowPriorAttempts = process.env.CLAWSWEEPER_ALLOW_PRIOR_ARTIFACT === "1",
 }: {
   artifacts: LooseRecord[];
@@ -25,15 +27,19 @@ export function resolveRunArtifact({
   runId: string;
   currentAttempt: number;
   expectedProducerAttempt?: string | number | null;
+  maxProducerAttempt?: string | number | null;
   expectedArtifactId?: string | null;
   expectedArtifactDigest?: string | null;
   fallbackPrefixes?: string[];
+  requiredPrefixes?: string[];
   allowPriorAttempts?: boolean;
 }): ResolvedRunArtifact {
   const prefixes = [prefix, ...fallbackPrefixes];
   if (
     prefixes.some((candidate) => !candidate || !/^[A-Za-z0-9_.-]+$/.test(candidate)) ||
-    new Set(prefixes).size !== prefixes.length
+    requiredPrefixes.some((candidate) => !candidate || !/^[A-Za-z0-9_.-]+$/.test(candidate)) ||
+    new Set(prefixes).size !== prefixes.length ||
+    new Set(requiredPrefixes).size !== requiredPrefixes.length
   ) {
     throw new Error("artifact prefixes are invalid");
   }
@@ -44,8 +50,18 @@ export function resolveRunArtifact({
     throw new Error("current workflow attempt is invalid");
   }
   const pinnedProducerAttempt = parseOptionalProducerAttempt(expectedProducerAttempt);
+  const maximumProducerAttempt = parseOptionalProducerAttempt(maxProducerAttempt);
   if (pinnedProducerAttempt !== null && pinnedProducerAttempt >= currentAttempt) {
     throw new Error("expected producer attempt must precede the current workflow attempt");
+  }
+  if (maximumProducerAttempt !== null && maximumProducerAttempt >= currentAttempt) {
+    throw new Error("maximum producer attempt must precede the current workflow attempt");
+  }
+  if (pinnedProducerAttempt !== null && maximumProducerAttempt !== null) {
+    throw new Error("expected and maximum producer attempts cannot both be provided");
+  }
+  if (requiredPrefixes.length > 0 && pinnedProducerAttempt !== null) {
+    throw new Error("required artifact prefixes cannot be combined with an exact producer attempt");
   }
 
   const expectedId = parseOptionalArtifactId(expectedArtifactId);
@@ -93,10 +109,25 @@ export function resolveRunArtifact({
     return finalizeArtifact(exact[0]!, expectedDigest);
   }
 
+  const cohortProducerAttempt =
+    requiredPrefixes.length > 0
+      ? resolveArtifactCohortAttempt({
+          artifacts,
+          primaryCandidates: candidates,
+          requiredPrefixes,
+          runId,
+          currentAttempt,
+          maximumProducerAttempt,
+          allowPriorAttempts,
+        })
+      : null;
+  const effectiveProducerAttempt = pinnedProducerAttempt ?? cohortProducerAttempt;
   const eligible = candidates.filter(
     (artifact) =>
       !artifact.expired &&
-      (pinnedProducerAttempt === null || artifact.producerAttempt === pinnedProducerAttempt) &&
+      (effectiveProducerAttempt === null ||
+        artifact.producerAttempt === effectiveProducerAttempt) &&
+      (maximumProducerAttempt === null || artifact.producerAttempt <= maximumProducerAttempt) &&
       (artifact.producerAttempt === currentAttempt ||
         (allowPriorAttempts && artifact.producerAttempt < currentAttempt)),
   );
@@ -115,6 +146,66 @@ export function resolveRunArtifact({
     throw new Error("trusted producer artifact selection is ambiguous");
   }
   return finalizeArtifact(preferred[0]!, expectedDigest);
+}
+
+function resolveArtifactCohortAttempt({
+  artifacts,
+  primaryCandidates,
+  requiredPrefixes,
+  runId,
+  currentAttempt,
+  maximumProducerAttempt,
+  allowPriorAttempts,
+}: {
+  artifacts: LooseRecord[];
+  primaryCandidates: Array<{
+    producerAttempt: number;
+    expired: boolean;
+    digest: string | null;
+  }>;
+  requiredPrefixes: string[];
+  runId: string;
+  currentAttempt: number;
+  maximumProducerAttempt: number | null;
+  allowPriorAttempts: boolean;
+}): number {
+  const attempts = [
+    ...new Set(
+      primaryCandidates
+        .filter(
+          (artifact) =>
+            !artifact.expired &&
+            artifact.digest &&
+            (maximumProducerAttempt === null ||
+              artifact.producerAttempt <= maximumProducerAttempt) &&
+            (artifact.producerAttempt === currentAttempt ||
+              (allowPriorAttempts && artifact.producerAttempt < currentAttempt)),
+        )
+        .map((artifact) => artifact.producerAttempt),
+    ),
+  ].sort((left, right) => right - left);
+  for (const producerAttempt of attempts) {
+    let complete = true;
+    for (const requiredPrefix of requiredPrefixes) {
+      const matches = artifacts.filter(
+        (artifact) =>
+          parseArtifactName(String(artifact.name ?? ""), requiredPrefix, runId) === producerAttempt,
+      );
+      if (matches.length > 1) {
+        throw new Error("trusted producer artifact cohort is ambiguous");
+      }
+      if (
+        matches.length !== 1 ||
+        matches[0]!.expired === true ||
+        !normalizeOptionalDigest(matches[0]!.digest)
+      ) {
+        complete = false;
+        break;
+      }
+    }
+    if (complete) return producerAttempt;
+  }
+  throw new Error("no complete trusted producer artifact cohort matches this workflow run");
 }
 
 function finalizeArtifact(

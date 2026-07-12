@@ -160,6 +160,36 @@ test("checkpoint recovery pins related artifacts to the publication producer att
   );
 });
 
+test("checkpoint recovery follows the newest complete proof cohort across chained reruns", () => {
+  assert.deepEqual(
+    resolveRunArtifact({
+      artifacts: [
+        artifact(101, 1, digest1, "clawsweeper-repair-worker"),
+        artifact(102, 1, digest1, "clawsweeper-repair-authorized"),
+        artifact(103, 1, digest1, "clawsweeper-repair-execution"),
+        artifact(104, 1, digest1, "clawsweeper-repair-validation"),
+        artifact(201, 2, digest2, "clawsweeper-repair-worker"),
+      ],
+      prefix: "clawsweeper-repair-worker",
+      requiredPrefixes: [
+        "clawsweeper-repair-authorized",
+        "clawsweeper-repair-execution",
+        "clawsweeper-repair-validation",
+      ],
+      runId: "9001",
+      currentAttempt: 3,
+      maxProducerAttempt: "2",
+      allowPriorAttempts: true,
+    }),
+    {
+      id: 101,
+      name: "clawsweeper-repair-worker-9001-1",
+      producerAttempt: 1,
+      digest: digest1,
+    },
+  );
+});
+
 test("artifact resolution rejects expired, ambiguous, and untrusted candidates", () => {
   assert.throws(
     () =>
@@ -315,10 +345,14 @@ test("repair workflow resolves producer artifacts by trusted id across rerun att
   assert.equal(
     [
       ...workflow.matchAll(
-        /--expected-producer-attempt "\$\{\{ steps\.authorization_publication_artifact\.outputs\.producer_attempt \}\}"/g,
+        /--expected-producer-attempt "\$\{\{ steps\.prior_worker_artifact\.outputs\.producer_attempt \}\}"/g,
       ),
     ].length,
-    4,
+    3,
+  );
+  assert.match(
+    workflow,
+    /Resolve prior checkpoint worker artifact[\s\S]*?--max-producer-attempt "\$\{\{ steps\.authorization_publication_artifact\.outputs\.producer_attempt \}\}"[\s\S]*?--required-prefixes "clawsweeper-repair-authorized,clawsweeper-repair-execution,clawsweeper-repair-validation"/,
   );
 });
 
