@@ -1116,6 +1116,149 @@ test("timeout recovery binds an open mutation receipt after an accepted attempt 
   assert.equal(interruptOpenWorkflowActionEvents(root, { env }), 0);
 });
 
+test("interruption recovery follows the latest accepted mutation ordinal", () => {
+  const root = tempRoot();
+  const env = workflowEnv({
+    CLAWSWEEPER_ACTION_LEDGER_INVOCATION: "apply-ordered-mutations",
+    GITHUB_ACTION: "__apply",
+    GITHUB_JOB: "apply-existing",
+  });
+  const operationIdentity = {
+    repository: "openclaw/openclaw",
+    candidateRevisions: [{ number: 53, sourceRevision: "revision-53" }],
+  };
+  const batch = recordWorkflowPhaseEvent(
+    root,
+    {
+      phase: ACTION_EVENT_TYPES.applyBatch,
+      status: ACTION_EVENT_STATUSES.started,
+      reasonCode: ACTION_EVENT_REASON_CODES.selected,
+      retryable: false,
+      mutation: false,
+      identity: { slot: "apply_batch_start" },
+      operation: "apply",
+      operationIdentity,
+      phaseSeq: 1,
+      idempotencyIdentity: { operationIdentity, slot: "apply_batch_start" },
+      component: "apply_decisions",
+      subject: { repository: "openclaw/openclaw", kind: "workflow" },
+    },
+    { env },
+  );
+  assert.ok(batch);
+  const item = recordWorkflowPhaseEvent(
+    root,
+    {
+      phase: ACTION_EVENT_TYPES.applyAction,
+      status: ACTION_EVENT_STATUSES.started,
+      reasonCode: ACTION_EVENT_REASON_CODES.selected,
+      retryable: false,
+      mutation: false,
+      identity: { slot: "apply_item_start", number: 53 },
+      operation: "apply",
+      operationIdentity,
+      parentEventId: batch.event_id,
+      phaseSeq: 2,
+      idempotencyIdentity: {
+        operation: "apply",
+        slot: "apply_item",
+        repository: "openclaw/openclaw",
+        number: 53,
+        sourceRevision: "revision-53",
+      },
+      component: "apply_decisions",
+      subject: {
+        repository: "openclaw/openclaw",
+        kind: "pull_request",
+        number: 53,
+        sourceRevision: "revision-53",
+      },
+    },
+    { env },
+  );
+  assert.ok(item);
+
+  let parentEventId = item.event_id;
+  let latestOutcome: ActionEvent | null = null;
+  for (const [index, mutationIdentitySha256] of ["f".repeat(64), "0".repeat(64)].entries()) {
+    const idempotencyIdentity = {
+      operation: "apply",
+      slot: "apply_mutation",
+      repository: "openclaw/openclaw",
+      number: 53,
+      sourceRevision: "revision-53",
+      mutationIdentitySha256,
+    };
+    const attempt = recordWorkflowPhaseEvent(
+      root,
+      {
+        phase: ACTION_EVENT_TYPES.applyAction,
+        status: ACTION_EVENT_STATUSES.started,
+        reasonCode: ACTION_EVENT_REASON_CODES.selected,
+        retryable: true,
+        mutation: false,
+        identity: { slot: "apply_mutation_attempt", mutationIdentitySha256 },
+        operation: "apply",
+        operationIdentity,
+        parentEventId,
+        phaseSeq: 3 + index * 2,
+        idempotencyIdentity,
+        component: "apply_decisions",
+        subject: {
+          repository: "openclaw/openclaw",
+          kind: "pull_request",
+          number: 53,
+          sourceRevision: "revision-53",
+        },
+        attributes: { completion_reason: "mutation_attempted" },
+      },
+      { env },
+    );
+    assert.ok(attempt);
+    const outcome = recordWorkflowPhaseEvent(
+      root,
+      {
+        phase: ACTION_EVENT_TYPES.applyAction,
+        status: ACTION_EVENT_STATUSES.executed,
+        reasonCode: ACTION_EVENT_REASON_CODES.completed,
+        retryable: false,
+        mutation: true,
+        identity: { slot: "apply_mutation_outcome", mutationIdentitySha256, outcome: "accepted" },
+        operation: "apply",
+        operationIdentity,
+        parentEventId: attempt.event_id,
+        phaseSeq: 4 + index * 2,
+        idempotencyIdentity,
+        component: "apply_decisions",
+        subject: {
+          repository: "openclaw/openclaw",
+          kind: "pull_request",
+          number: 53,
+          sourceRevision: "revision-53",
+        },
+        attributes: { completion_reason: "mutation_accepted" },
+      },
+      { env },
+    );
+    assert.ok(outcome);
+    parentEventId = outcome.event_id;
+    latestOutcome = outcome;
+  }
+
+  assert.ok(latestOutcome);
+  assert.equal(interruptOpenWorkflowActionEvents(root, { env }), 2);
+  const recoveredItem = readAllSpooledActionEvents(root).find(
+    (event) =>
+      event.subject.number === 53 &&
+      event.attributes?.completion_reason === "timeout" &&
+      event.attributes.partial === true,
+  );
+  assert.ok(recoveredItem);
+  assert.equal(recoveredItem.parent_event_id, latestOutcome.event_id);
+  assert.equal(recoveredItem.action.mutation, true);
+  assert.equal(recoveredItem.action.retryable, true);
+});
+
 test("interruption recovery preserves any earlier unknown mutation outcome", () => {
   const root = tempRoot();
   const env = workflowEnv({

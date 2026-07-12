@@ -1017,6 +1017,7 @@ interface ApplyResult {
   action: ActionTaken;
   reason: string;
   mutationOccurred?: boolean;
+  commentMutationOccurred?: boolean;
   durableReviewSynced?: boolean;
   terminalMissingVerified?: boolean;
   terminalStateVerified?: boolean;
@@ -9272,6 +9273,22 @@ function codexReviewFailureRetryable(error: unknown): boolean {
   return error instanceof CodexReviewError ? error.retryable : true;
 }
 
+function combinedCodexReviewError(
+  initialError: CodexReviewError,
+  retryError: CodexReviewError,
+  reasoningEffort: string,
+): CodexReviewError {
+  return new CodexReviewError({
+    message: `${initialError.message}\nFinal ${reasoningEffort}-reasoning retry also failed: ${retryError.message}`,
+    status: retryError.status ?? initialError.status,
+    stdout: retryError.stdout || initialError.stdout,
+    stderr: initialError.stderr || retryError.stderr,
+    errorCode: initialError.errorCode ?? retryError.errorCode,
+    signal: initialError.signal ?? retryError.signal,
+    retryable: retryError.retryable,
+  });
+}
+
 export function codexReviewFailureRetryableForTest(retryable: boolean): boolean {
   return codexReviewFailureRetryable(
     new CodexReviewError({
@@ -9280,6 +9297,25 @@ export function codexReviewFailureRetryableForTest(retryable: boolean): boolean 
       retryable,
     }),
   );
+}
+
+export function combinedCodexReviewRetryableForTest(
+  initialRetryable: boolean,
+  finalRetryable: boolean,
+): boolean {
+  return combinedCodexReviewError(
+    new CodexReviewError({
+      message: "initial Codex failure",
+      status: 1,
+      retryable: initialRetryable,
+    }),
+    new CodexReviewError({
+      message: "final Codex failure",
+      status: 1,
+      retryable: finalRetryable,
+    }),
+    "high",
+  ).retryable;
 }
 
 function openclawDirtyStatus(openclawDir: string): string {
@@ -9549,15 +9585,7 @@ function runCodex(options: {
       return runReviewPass(options.reasoningEffort, 1);
     } catch (retryError) {
       if (!(retryError instanceof CodexReviewError)) throw retryError;
-      throw new CodexReviewError({
-        message: `${error.message}\nFinal ${options.reasoningEffort}-reasoning retry also failed: ${retryError.message}`,
-        status: retryError.status ?? error.status,
-        stdout: retryError.stdout || error.stdout,
-        stderr: error.stderr || retryError.stderr,
-        errorCode: error.errorCode ?? retryError.errorCode,
-        signal: error.signal ?? retryError.signal,
-        retryable: error.retryable,
-      });
+      throw combinedCodexReviewError(error, retryError, options.reasoningEffort);
     }
   }
 }
@@ -23295,6 +23323,74 @@ function reviewRetryIdempotencySlot(
     : "retry_observation";
 }
 
+export function reviewRetryBatchEventDisposition(
+  actions: readonly FailedReviewRetryAction[],
+  failure: ReturnType<typeof actionLedgerFailureDisposition> | null = null,
+): {
+  status: ActionEventStatus;
+  reasonCode: ActionEventReasonCode;
+  retryable: boolean;
+  completionReason: string;
+  failedCount: number;
+  partial: boolean;
+} {
+  const dispatchOutcomeUnknown = actions.includes("skipped_retry_dispatch_uncertain");
+  const yielded = actions.includes("skipped_runtime_budget");
+  const failed =
+    dispatchOutcomeUnknown ||
+    actions.some(
+      (action) => action === "skipped_dispatch_failed" || action === "skipped_live_fetch_failed",
+    );
+  if (dispatchOutcomeUnknown) {
+    return {
+      status: ACTION_EVENT_STATUSES.failed,
+      reasonCode: ACTION_EVENT_REASON_CODES.unavailable,
+      retryable: false,
+      completionReason: "dispatch_outcome_unknown",
+      failedCount: 1 + (failure ? 1 : 0),
+      partial: true,
+    };
+  }
+  if (failure) {
+    return {
+      status: failure.status,
+      reasonCode: failure.reasonCode,
+      retryable: true,
+      completionReason: failure.completionReason,
+      failedCount: 1 + (failed ? 1 : 0),
+      partial: actions.length > 0,
+    };
+  }
+  if (failed) {
+    return {
+      status: ACTION_EVENT_STATUSES.failed,
+      reasonCode: ACTION_EVENT_REASON_CODES.unavailable,
+      retryable: true,
+      completionReason: "failed",
+      failedCount: 1,
+      partial: false,
+    };
+  }
+  if (yielded) {
+    return {
+      status: ACTION_EVENT_STATUSES.yielded,
+      reasonCode: ACTION_EVENT_REASON_CODES.runtimeBudget,
+      retryable: true,
+      completionReason: "partial",
+      failedCount: 0,
+      partial: true,
+    };
+  }
+  return {
+    status: ACTION_EVENT_STATUSES.completed,
+    reasonCode: ACTION_EVENT_REASON_CODES.completed,
+    retryable: false,
+    completionReason: "completed",
+    failedCount: 0,
+    partial: false,
+  };
+}
+
 function recordFailedReviewRetryEvents(options: {
   ledger: ReviewRetryActionLedger;
   results: readonly FailedReviewRetryResult[];
@@ -23304,6 +23400,7 @@ function recordFailedReviewRetryEvents(options: {
 }): void {
   if (options.ledger.terminal) return;
   const operationIdentity = options.ledger.operationIdentity;
+  let dispatchOutcomeUnknownEventId: string | null = null;
   for (const [index, result] of options.results.entries()) {
     const disposition = reviewRetryActionDisposition(result.action);
     const reportMarkdown =
@@ -23387,7 +23484,7 @@ function recordFailedReviewRetryEvents(options: {
             }),
           )
         : undefined;
-    recordWorkflowPhaseEvent(ROOT, {
+    const event = recordWorkflowPhaseEvent(ROOT, {
       phase: ACTION_EVENT_TYPES.reviewRetry,
       status: disposition.status,
       reasonCode: disposition.reasonCode,
@@ -23414,46 +23511,37 @@ function recordFailedReviewRetryEvents(options: {
         final_attempt:
           result.action === "marked_failed_review_retry_exhausted" ||
           result.action === "skipped_retry_already_exhausted",
-        completion_reason: result.action,
+        completion_reason:
+          result.action === "skipped_retry_dispatch_uncertain"
+            ? "dispatch_outcome_unknown"
+            : result.action,
       },
       privacy: actionLedgerPrivacy(),
     });
+    if (result.action === "skipped_retry_dispatch_uncertain") {
+      dispatchOutcomeUnknownEventId = event?.event_id ?? dispatchAttempt?.eventId ?? null;
+    }
   }
-  const yielded = options.results.some((result) => result.action === "skipped_runtime_budget");
-  const failed = options.results.some(
-    (result) =>
-      result.action === "skipped_dispatch_failed" ||
-      result.action === "skipped_retry_dispatch_uncertain" ||
-      result.action === "skipped_live_fetch_failed",
-  );
   const failure =
     options.failure === undefined || options.failure === null
       ? null
       : actionLedgerFailureDisposition(options.failure);
+  const batchDisposition = reviewRetryBatchEventDisposition(
+    options.results.map((result) => result.action),
+    failure,
+  );
   recordWorkflowPhaseEvent(ROOT, {
     phase: ACTION_EVENT_TYPES.reviewRetry,
-    status: failure
-      ? failure.status
-      : failed
-        ? ACTION_EVENT_STATUSES.failed
-        : yielded
-          ? ACTION_EVENT_STATUSES.yielded
-          : ACTION_EVENT_STATUSES.completed,
-    reasonCode: failure
-      ? failure.reasonCode
-      : failed
-        ? ACTION_EVENT_REASON_CODES.unavailable
-        : yielded
-          ? ACTION_EVENT_REASON_CODES.runtimeBudget
-          : ACTION_EVENT_REASON_CODES.completed,
-    retryable: Boolean(failure) || failed || yielded,
+    status: batchDisposition.status,
+    reasonCode: batchDisposition.reasonCode,
+    retryable: batchDisposition.retryable,
     mutation:
       !options.dryRun &&
       options.results.some((result) => reviewRetryActionDisposition(result.action).mutation),
     identity: { slot: "retry_batch_terminal" },
     operation: "review_retry",
     operationIdentity,
-    parentEventId: options.ledger.batchStartEventId,
+    parentEventId: dispatchOutcomeUnknownEventId ?? options.ledger.batchStartEventId,
     phaseSeq: 1_000_000,
     idempotencyIdentity: { operationIdentity, slot: "retry_batch_terminal" },
     component: "retry_failed_reviews",
@@ -23474,18 +23562,12 @@ function recordFailedReviewRetryEvents(options: {
           result.action === "dispatched_failed_review_retry" ||
           result.action === "planned_failed_review_retry",
       ).length,
-      failed_count: (failed ? 1 : 0) + (failure ? 1 : 0),
+      failed_count: batchDisposition.failedCount,
       skipped_count: options.results.filter((result) => result.action.startsWith("skipped_"))
         .length,
-      partial: yielded || (failure !== null && options.results.length > 0),
+      partial: batchDisposition.partial,
       duration_ms: Math.max(0, Date.now() - options.ledger.startedAtMs),
-      completion_reason: failure
-        ? failure.completionReason
-        : failed
-          ? "failed"
-          : yielded
-            ? "partial"
-            : "completed",
+      completion_reason: batchDisposition.completionReason,
     },
     privacy: actionLedgerPrivacy(),
   });
@@ -23507,6 +23589,7 @@ type ApplyLedgerItem = {
   index: number;
   started: boolean;
   startEventId: string | null;
+  lastEventId: string | null;
   mutationObserved: boolean;
   uncertainMutationObserved: boolean;
   mutationEventId: string | null;
@@ -23536,8 +23619,24 @@ type ApplyActionLedger = {
   batchStartEventId: string | null;
   items: Map<string, ApplyLedgerItem>;
   startedAtMs: number;
+  nextPhaseSeq: number;
   terminal: boolean;
 };
+
+type ApplyPhaseCursor = {
+  nextPhaseSeq: number;
+};
+
+function nextApplyPhaseSeq(cursor: ApplyPhaseCursor): number {
+  const phaseSeq = cursor.nextPhaseSeq;
+  cursor.nextPhaseSeq += 1;
+  return phaseSeq;
+}
+
+export function applyPhaseSequenceForTest(count: number): number[] {
+  const cursor: ApplyPhaseCursor = { nextPhaseSeq: 2 };
+  return Array.from({ length: Math.max(0, count) }, () => nextApplyPhaseSeq(cursor));
+}
 
 function startApplyActionLedger(options: {
   applyKind: ApplyKind;
@@ -23598,6 +23697,7 @@ function startApplyActionLedger(options: {
       index,
       started: false,
       startEventId: null,
+      lastEventId: null,
       mutationObserved: false,
       uncertainMutationObserved: false,
       mutationEventId: null,
@@ -23618,6 +23718,7 @@ function startApplyActionLedger(options: {
     batchStartEventId: batchStart?.event_id ?? null,
     items,
     startedAtMs: Date.now(),
+    nextPhaseSeq: 2,
     terminal: false,
   };
 }
@@ -23680,6 +23781,7 @@ function startApplyActionLedgerItem(
   const state = ledger.items.get(actionLedgerItemKey(entry));
   if (!state) return null;
   if (state.started) return state;
+  const phaseSeq = nextApplyPhaseSeq(ledger);
   const start = recordWorkflowPhaseEvent(ROOT, {
     phase: ACTION_EVENT_TYPES.applyAction,
     status: ACTION_EVENT_STATUSES.started,
@@ -23695,7 +23797,7 @@ function startApplyActionLedgerItem(
     operation: "apply",
     operationIdentity: ledger.operationIdentity,
     parentEventId: ledger.batchStartEventId,
-    phaseSeq: 10 + state.index * 20,
+    phaseSeq,
     idempotencyIdentity: applyItemIdempotencyIdentity(state, "apply_item"),
     component: "apply_decisions",
     subject: applyLedgerItemSubject(state),
@@ -23709,13 +23811,13 @@ function startApplyActionLedgerItem(
   });
   state.started = true;
   state.startEventId = start?.event_id ?? null;
+  state.lastEventId = state.startEventId;
   return state;
 }
 
 type ApplyMutationAttempt = {
   state: ApplyLedgerItem;
   eventId: string | null;
-  phaseSeq: number;
   idempotencyIdentity: ApplyItemBusinessIdempotencyIdentity & {
     mutationIdentitySha256: string;
   };
@@ -23735,7 +23837,7 @@ function startApplyMutationAttempt(
     ...applyItemIdempotencyIdentity(state, "apply_mutation"),
     mutationIdentitySha256: sha256(identity),
   };
-  const phaseSeq = 11 + state.index * 20;
+  const phaseSeq = nextApplyPhaseSeq(ledger);
   const attempt = recordWorkflowPhaseEvent(ROOT, {
     phase: ACTION_EVENT_TYPES.applyAction,
     status: ACTION_EVENT_STATUSES.started,
@@ -23752,7 +23854,7 @@ function startApplyMutationAttempt(
     },
     operation: "apply",
     operationIdentity: ledger.operationIdentity,
-    parentEventId: state.mutationEventId ?? state.startEventId,
+    parentEventId: state.lastEventId ?? state.startEventId,
     phaseSeq,
     idempotencyIdentity,
     component: "apply_decisions",
@@ -23767,10 +23869,10 @@ function startApplyMutationAttempt(
     },
     privacy: actionLedgerPrivacy(),
   });
+  state.lastEventId = attempt?.event_id ?? state.lastEventId;
   return {
     state,
     eventId: attempt?.event_id ?? null,
-    phaseSeq,
     idempotencyIdentity,
     mutationIndex,
   };
@@ -23783,6 +23885,7 @@ function finishApplyMutationAttempt(options: {
   outcome: "accepted" | "rejected" | "unknown";
 }): string | null {
   const mutation = options.outcome !== "rejected";
+  const phaseSeq = nextApplyPhaseSeq(options.ledger);
   const event = recordWorkflowPhaseEvent(ROOT, {
     phase: ACTION_EVENT_TYPES.applyAction,
     status:
@@ -23811,7 +23914,7 @@ function finishApplyMutationAttempt(options: {
     operation: "apply",
     operationIdentity: options.ledger.operationIdentity,
     parentEventId: options.attempt.eventId,
-    phaseSeq: options.attempt.phaseSeq + 1,
+    phaseSeq,
     idempotencyIdentity: options.attempt.idempotencyIdentity,
     component: "apply_decisions",
     subject: applyLedgerItemSubject(options.attempt.state),
@@ -23830,6 +23933,7 @@ function finishApplyMutationAttempt(options: {
     },
     privacy: actionLedgerPrivacy(),
   });
+  options.attempt.state.lastEventId = event?.event_id ?? options.attempt.state.lastEventId;
   if (mutation) {
     options.attempt.state.mutationEventId = event?.event_id ?? options.attempt.eventId;
   }
@@ -23846,6 +23950,7 @@ function recordApplyMutationBoundary(
 ): void {
   const state = startApplyActionLedgerItem(ledger, entry);
   if (!state || state.mutationObserved) return;
+  const phaseSeq = nextApplyPhaseSeq(ledger);
   const mutation = recordWorkflowPhaseEvent(ROOT, {
     phase: ACTION_EVENT_TYPES.applyAction,
     status: ACTION_EVENT_STATUSES.executed,
@@ -23860,8 +23965,8 @@ function recordApplyMutationBoundary(
     },
     operation: "apply",
     operationIdentity: ledger.operationIdentity,
-    parentEventId: parentEventId ?? state.mutationEventId ?? state.startEventId,
-    phaseSeq: 11 + state.index * 20,
+    parentEventId: parentEventId ?? state.lastEventId ?? state.startEventId,
+    phaseSeq,
     idempotencyIdentity: applyItemIdempotencyIdentity(state, "apply_item"),
     component: "apply_decisions",
     subject: applyLedgerItemSubject(state),
@@ -23875,7 +23980,8 @@ function recordApplyMutationBoundary(
     privacy: actionLedgerPrivacy(),
   });
   state.mutationObserved = true;
-  state.mutationEventId = mutation?.event_id ?? null;
+  state.lastEventId = mutation?.event_id ?? state.lastEventId;
+  state.mutationEventId = mutation?.event_id ?? state.mutationEventId;
 }
 
 export function applyActionEventDisposition(
@@ -23963,13 +24069,11 @@ export function applyActionEventDisposition(
   }
   if (action === "kept_open" || action.startsWith("skipped_")) {
     return {
-      status: mutationOccurred ? ACTION_EVENT_STATUSES.completed : ACTION_EVENT_STATUSES.skipped,
-      reasonCode: mutationOccurred
-        ? ACTION_EVENT_REASON_CODES.completed
-        : ACTION_EVENT_REASON_CODES.notApplicable,
+      status: ACTION_EVENT_STATUSES.skipped,
+      reasonCode: ACTION_EVENT_REASON_CODES.notApplicable,
       retryable: false,
       mutation: mutationOccurred,
-      completionReason: mutationOccurred ? "mutation_completed" : "skipped",
+      completionReason: action,
     };
   }
   return {
@@ -24005,7 +24109,7 @@ export function applyRuntimeBudgetYieldResultsForTest(
 
 export function reviewCommentPublicationEventDisposition(
   action: ActionTaken,
-  mutationOccurred: boolean,
+  commentMutationOccurred: boolean,
   dryRun: boolean,
 ): {
   status: ActionEventStatus;
@@ -24019,7 +24123,7 @@ export function reviewCommentPublicationEventDisposition(
       status: dryRun ? ACTION_EVENT_STATUSES.planned : ACTION_EVENT_STATUSES.published,
       reasonCode: dryRun ? ACTION_EVENT_REASON_CODES.dryRun : ACTION_EVENT_REASON_CODES.published,
       retryable: false,
-      mutation: !dryRun && mutationOccurred,
+      mutation: !dryRun && commentMutationOccurred,
       completionReason: dryRun ? "dry_run" : "comment_published",
     };
   }
@@ -24092,9 +24196,10 @@ function recordApplyActionLedgerItemResults(options: {
     );
     const commentDisposition = reviewCommentPublicationEventDisposition(
       result.action,
-      options.mutationOccurred,
+      result.commentMutationOccurred === true,
       options.dryRun,
     );
+    const actionPhaseSeq = nextApplyPhaseSeq(options.ledger);
     const actionEvent = recordWorkflowPhaseEvent(ROOT, {
       phase: ACTION_EVENT_TYPES.applyAction,
       status: disposition.status,
@@ -24110,8 +24215,8 @@ function recordApplyActionLedgerItemResults(options: {
       },
       operation: "apply",
       operationIdentity: options.ledger.operationIdentity,
-      parentEventId: options.state.mutationEventId ?? options.state.startEventId,
-      phaseSeq: 12 + options.state.index * 20,
+      parentEventId: options.state.lastEventId ?? options.state.startEventId,
+      phaseSeq: actionPhaseSeq,
       idempotencyIdentity: applyItemIdempotencyIdentity(options.state, "apply_item"),
       component: "apply_decisions",
       subject: applyLedgerItemSubject(options.state, options.entry),
@@ -24136,8 +24241,10 @@ function recordApplyActionLedgerItemResults(options: {
       },
       privacy: actionLedgerPrivacy(),
     });
+    options.state.lastEventId = actionEvent?.event_id ?? options.state.lastEventId;
     if (commentDisposition) {
-      recordWorkflowPhaseEvent(ROOT, {
+      const commentPhaseSeq = nextApplyPhaseSeq(options.ledger);
+      const commentEvent = recordWorkflowPhaseEvent(ROOT, {
         phase: ACTION_EVENT_TYPES.reviewCommentPublication,
         status: commentDisposition.status,
         reasonCode: commentDisposition.reasonCode,
@@ -24152,9 +24259,8 @@ function recordApplyActionLedgerItemResults(options: {
         },
         operation: "apply",
         operationIdentity: options.ledger.operationIdentity,
-        parentEventId:
-          actionEvent?.event_id ?? options.state.mutationEventId ?? options.state.startEventId,
-        phaseSeq: 13 + options.state.index * 20,
+        parentEventId: options.state.lastEventId ?? options.state.startEventId,
+        phaseSeq: commentPhaseSeq,
         idempotencyIdentity: applyItemIdempotencyIdentity(options.state, "review_comment"),
         component: "apply_decisions",
         subject: applyLedgerItemSubject(options.state, options.entry),
@@ -24166,6 +24272,7 @@ function recordApplyActionLedgerItemResults(options: {
         },
         privacy: actionLedgerPrivacy(),
       });
+      options.state.lastEventId = commentEvent?.event_id ?? options.state.lastEventId;
     }
   }
   options.state.terminal = true;
@@ -24180,7 +24287,8 @@ function recordApplyActionLedgerItemFailure(options: {
 }): void {
   if (options.state.terminal) return;
   const disposition = actionLedgerFailureDisposition(options.failure);
-  recordWorkflowPhaseEvent(ROOT, {
+  const phaseSeq = nextApplyPhaseSeq(options.ledger);
+  const event = recordWorkflowPhaseEvent(ROOT, {
     phase: ACTION_EVENT_TYPES.applyAction,
     status: disposition.status,
     reasonCode: disposition.reasonCode,
@@ -24194,8 +24302,8 @@ function recordApplyActionLedgerItemFailure(options: {
     },
     operation: "apply",
     operationIdentity: options.ledger.operationIdentity,
-    parentEventId: options.state.mutationEventId ?? options.state.startEventId,
-    phaseSeq: 12 + options.state.index * 20,
+    parentEventId: options.state.lastEventId ?? options.state.startEventId,
+    phaseSeq,
     idempotencyIdentity: applyItemIdempotencyIdentity(options.state, "apply_item"),
     component: "apply_decisions",
     subject: applyLedgerItemSubject(options.state, options.entry),
@@ -24207,6 +24315,7 @@ function recordApplyActionLedgerItemFailure(options: {
     },
     privacy: actionLedgerPrivacy(),
   });
+  options.state.lastEventId = event?.event_id ?? options.state.lastEventId;
   options.state.terminal = true;
 }
 
@@ -24262,6 +24371,7 @@ function recordApplyActionEvents(options: {
   for (const [index, result] of options.results.entries()) {
     if (result.number > 0) continue;
     const disposition = applyActionEventDisposition(result.action, false, options.dryRun);
+    const phaseSeq = nextApplyPhaseSeq(options.ledger);
     recordWorkflowPhaseEvent(ROOT, {
       phase: ACTION_EVENT_TYPES.applyAction,
       status: disposition.status,
@@ -24277,7 +24387,7 @@ function recordApplyActionEvents(options: {
       operation: "apply",
       operationIdentity: options.ledger.operationIdentity,
       parentEventId: options.ledger.batchStartEventId,
-      phaseSeq: 900_000 + index,
+      phaseSeq,
       idempotencyIdentity: {
         operationIdentity: options.ledger.operationIdentity,
         slot: "apply_workflow_result",
@@ -24329,6 +24439,7 @@ function recordApplyActionEvents(options: {
         : options.results.length === 0
           ? ACTION_EVENT_REASON_CODES.noChanges
           : ACTION_EVENT_REASON_CODES.completed;
+  const batchTerminalPhaseSeq = nextApplyPhaseSeq(options.ledger);
   const batchTerminal = recordWorkflowPhaseEvent(ROOT, {
     phase: ACTION_EVENT_TYPES.applyBatch,
     status: batchStatus,
@@ -24339,7 +24450,7 @@ function recordApplyActionEvents(options: {
     operation: "apply",
     operationIdentity: options.ledger.operationIdentity,
     parentEventId: options.ledger.batchStartEventId,
-    phaseSeq: 1_000_000,
+    phaseSeq: batchTerminalPhaseSeq,
     idempotencyIdentity: {
       operationIdentity: options.ledger.operationIdentity,
       slot: "apply_batch_terminal",
@@ -24372,6 +24483,7 @@ function recordApplyActionEvents(options: {
     privacy: actionLedgerPrivacy(),
   });
   const reportEvidence = actionLedgerFileEvidence("apply_report", options.reportPath);
+  const reportPublicationPhaseSeq = nextApplyPhaseSeq(options.ledger);
   recordWorkflowPhaseEvent(ROOT, {
     phase: ACTION_EVENT_TYPES.applyPublish,
     status: reportEvidence ? ACTION_EVENT_STATUSES.completed : ACTION_EVENT_STATUSES.skipped,
@@ -24384,7 +24496,7 @@ function recordApplyActionEvents(options: {
     operation: "apply",
     operationIdentity: options.ledger.operationIdentity,
     parentEventId: batchTerminal?.event_id ?? options.ledger.batchStartEventId,
-    phaseSeq: 1_000_001,
+    phaseSeq: reportPublicationPhaseSeq,
     idempotencyIdentity: {
       operationIdentity: options.ledger.operationIdentity,
       slot: "apply_report_publication",
@@ -24591,7 +24703,11 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
   const finishApply = (failed = false, failure?: unknown): void => {
     if (applyEventsFinalized) return;
     const publicResults = results.map(
-      ({ mutationOccurred: _mutationOccurred, ...result }) => result,
+      ({
+        mutationOccurred: _mutationOccurred,
+        commentMutationOccurred: _commentMutationOccurred,
+        ...result
+      }) => result,
     );
     let publicationError: unknown = null;
     try {
@@ -26809,6 +26925,7 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
         reason: closeBlockedForCommentSync
           ? [closeBlockedForCommentSync.reason, ...syncReasons].join("; ")
           : syncReasons.join("; "),
+        commentMutationOccurred: !dryRun && needsReviewCommentBodySync,
         ...(emitEventApplyProof ? { durableReviewSynced: true } : {}),
       });
       processedCount += 1;

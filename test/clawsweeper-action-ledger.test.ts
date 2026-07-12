@@ -6,14 +6,17 @@ import {
   actionLedgerFailureDisposition,
   applyActionEventDisposition,
   applyItemBusinessIdempotencyIdentityForTest,
+  applyPhaseSequenceForTest,
   applyRuntimeBudgetYieldResultsForTest,
   classifyGitHubDispatchResultForTest,
+  combinedCodexReviewRetryableForTest,
   codexReviewFailureRetryableForTest,
   heldReviewStartStatusCommentResultForTest,
   isGitHubLabelAlreadyExistsErrorForTest,
   observedGitHubMutationAttemptsForTest,
   reviewCommentPublicationEventDisposition,
   reviewRetryActionDisposition,
+  reviewRetryBatchEventDisposition,
   reviewRetryBusinessIdempotencyIdentityForTest,
   untrustedCodexEnvForTest,
 } from "../dist/clawsweeper.js";
@@ -72,6 +75,20 @@ test("review and apply outcome classifiers cover terminal and resumable states",
     mutation: false,
     completionReason: "source_changed",
   });
+  assert.deepEqual(applyActionEventDisposition("kept_open", true, false), {
+    status: "skipped",
+    reasonCode: "not_applicable",
+    retryable: false,
+    mutation: true,
+    completionReason: "kept_open",
+  });
+  assert.deepEqual(applyActionEventDisposition("skipped_protected_label", true, false), {
+    status: "skipped",
+    reasonCode: "not_applicable",
+    retryable: false,
+    mutation: true,
+    completionReason: "skipped_protected_label",
+  });
   assert.deepEqual(reviewCommentPublicationEventDisposition("review_comment_synced", true, false), {
     status: "published",
     reasonCode: "published",
@@ -79,6 +96,16 @@ test("review and apply outcome classifiers cover terminal and resumable states",
     mutation: true,
     completionReason: "comment_published",
   });
+  assert.deepEqual(
+    reviewCommentPublicationEventDisposition("review_comment_synced", false, false),
+    {
+      status: "published",
+      reasonCode: "published",
+      retryable: false,
+      mutation: false,
+      completionReason: "comment_published",
+    },
+  );
   assert.deepEqual(reviewCommentPublicationEventDisposition("skipped_comment_auth", true, false), {
     status: "blocked",
     reasonCode: "authorization_failed",
@@ -129,6 +156,20 @@ test("failed-review retry events distinguish dispatch, exhaustion, and backpress
     retryable: false,
     mutation: true,
   });
+  assert.deepEqual(
+    reviewRetryBatchEventDisposition([
+      "skipped_dispatch_failed",
+      "skipped_retry_dispatch_uncertain",
+    ]),
+    {
+      status: "failed",
+      reasonCode: "unavailable",
+      retryable: false,
+      completionReason: "dispatch_outcome_unknown",
+      failedCount: 1,
+      partial: true,
+    },
+  );
 });
 
 test("action event publication accepts only sorted canonical event and binding paths", () => {
@@ -247,7 +288,7 @@ test("lane instrumentation uses stable slots with explicit parent and phase orde
   assert.match(source, /parentEventId: state\.startEventId/);
   assert.match(
     source,
-    /parentEventId:\s*actionEvent\?\.event_id \?\? options\.state\.mutationEventId \?\? options\.state\.startEventId/,
+    /parentEventId: options\.state\.lastEventId \?\? options\.state\.startEventId/,
   );
   assert.match(source, /phaseSeq: 10 \+ state\.index \* 10/);
   assert.match(source, /phaseSeq: 11 \+ state\.index \* 10/);
@@ -321,7 +362,15 @@ test("apply receipts start per item and persist mutation observation before fina
     /const recordMutation = \(parentEventId\?: string \| null\): void => \{[\s\S]*recordApplyMutationBoundary\(applyLedger, entry, parentEventId\)/,
   );
   assert.match(source, /completion_reason: "mutation_attempted"/);
+  assert.match(source, /parentEventId: state\.lastEventId \?\? state\.startEventId/);
+  assert.match(source, /const phaseSeq = nextApplyPhaseSeq\(ledger\)/);
+  assert.doesNotMatch(source, /11 \+ state\.index \* 20/);
   assert.match(applyLoop, /syncedComment = upsertReviewComment\(/);
+  assert.match(applyLoop, /commentMutationOccurred: !dryRun && needsReviewCommentBodySync/);
+  assert.match(
+    source,
+    /reviewCommentPublicationEventDisposition\(\s*result\.action,\s*result\.commentMutationOccurred === true,/,
+  );
   assert.match(applyLoop, /closeItem\(\{ number, kind: item\.kind/);
   const mutationAttemptStart = source.indexOf("function startApplyMutationAttempt(");
   const mutationIdentityStart = source.indexOf(
@@ -390,6 +439,7 @@ test("apply mutation receipts bind every GitHub request attempt and preserve no-
   assert.match(source, /identity: `review_lease_delete:/);
   assert.doesNotMatch(source, /identity: `apply_lease_acquire:/);
   assert.match(source, /return \{ status: "posted", lease: acquired, didMutate: true \}/);
+  assert.deepEqual(applyPhaseSequenceForTest(6), [2, 3, 4, 5, 6, 7]);
 });
 
 test("runtime yields bind the active item and terminal Codex failures preserve retryability", () => {
@@ -410,6 +460,8 @@ test("runtime yields bind the active item and terminal Codex failures preserve r
   );
   assert.equal(codexReviewFailureRetryableForTest(false), false);
   assert.equal(codexReviewFailureRetryableForTest(true), true);
+  assert.equal(combinedCodexReviewRetryableForTest(true, false), false);
+  assert.equal(combinedCodexReviewRetryableForTest(false, true), true);
 });
 
 test("retry dispatch outcomes distinguish definite rejection, ambiguity, and acceptance", () => {
