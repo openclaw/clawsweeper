@@ -22,12 +22,18 @@ checkpoint, and status-only commits are intentionally omitted.
   current-main check immediately before Worker deployment, an explicit
   dormant-or-active selectors for observation ordering and snapshot
   provenance, fail-closed single-output Worker packaging, 31-day
-  approval-window artifact retention, and exact release-identity and contract
-  polling on workers.dev. The protected
+  approval-window artifact retention, exact release-identity and contract
+  polling on workers.dev, and a fail-closed compatibility contract that accepts
+  only the reviewed pending migration suffix. Migration 0007 is mechanically
+  checked as additive, and the still-serving previous Worker's public,
+  D1-backed contract must remain healthy without regressing routes,
+  capabilities, or notes after migration and before Worker deployment. The
+  protected
   environment must explicitly own the deployment authority and bind the
   production token fingerprint; optional custom-route proof uses Cloudflare
-  Access service-token headers, and failed or stale deployments roll back to
-  the exact prior stable Worker version. Environment variables resolve only
+  Access service-token headers, and failed or stale deployments roll back only
+  the Worker to the exact prior stable version; D1 migrations remain applied.
+  Environment variables resolve only
   inside protected steps, route-proof mode is mandatory, and D1 packaging
   accepts only the exact reviewed migration sequence and content hashes.
 - Added conservative, add-only `good first issue` labeling for unlocked, small, current-main reproduced bugs with a high-confidence repair prompt and validation steps and no linked-PR, feature, config, product, security, protected-label, or maintainer-opt-out blocker.

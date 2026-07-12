@@ -803,6 +803,75 @@ jobs:
           repositories: crawl-remote
           permission-contents: read
 
+      - name: Capture previous Worker D1 contract baseline
+        env:
+          PREVIOUS_RELEASE_SHA_PATH: ${{ runner.temp }}/crawl-remote-previous-release-sha.txt
+          PREVIOUS_WORKER_CONTRACT_BASELINE: ${{ runner.temp }}/crawl-remote-previous-contract-before-migration.json
+          PREVIOUS_WORKER_HEALTH_BASELINE: ${{ runner.temp }}/crawl-remote-previous-health-before-migration.json
+        run: |
+          unset BASH_ENV ENV CDPATH GLOBIGNORE NODE_OPTIONS
+          curl --fail-with-body --silent --show-error \
+            --connect-timeout 10 \
+            --max-time 20 \
+            --max-filesize 1048576 \
+            --header "cache-control: no-cache" \
+            --output "$PREVIOUS_WORKER_HEALTH_BASELINE" \
+            "$WORKERS_DEV_URL/health?migration_probe=${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-before"
+          curl --fail-with-body --silent --show-error \
+            --connect-timeout 10 \
+            --max-time 20 \
+            --max-filesize 1048576 \
+            --header "cache-control: no-cache" \
+            --output "$PREVIOUS_WORKER_CONTRACT_BASELINE" \
+            "$WORKERS_DEV_URL/v1/contract?migration_probe=${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-before"
+
+          node --input-type=module <<'PREVIOUS_WORKER_BASELINE_NODE'
+          import { readFileSync, writeFileSync } from 'node:fs';
+
+          const health = JSON.parse(
+            readFileSync(process.env.PREVIOUS_WORKER_HEALTH_BASELINE, 'utf8'),
+          );
+          const contract = JSON.parse(
+            readFileSync(process.env.PREVIOUS_WORKER_CONTRACT_BASELINE, 'utf8'),
+          );
+          const releaseSHA = health?.release_sha;
+          if (
+            JSON.stringify(Object.keys(health ?? {}).sort()) !==
+              JSON.stringify(['ok', 'release_sha']) ||
+            health.ok !== true ||
+            typeof releaseSHA !== 'string' ||
+            !/^[0-9a-f]{40}$/.test(releaseSHA) ||
+            contract?.service !== 'crawl-remote' ||
+            contract?.protocol_version !== 'v1' ||
+            contract?.release_sha !== releaseSHA
+          ) {
+            throw new Error('previous Worker public identity is invalid before D1 migration');
+          }
+
+          const routes = Array.isArray(contract.routes) ? contract.routes : [];
+          for (const path of ['/health', '/v1/contract']) {
+            if (
+              !routes.some(
+                (route) =>
+                  route?.method === 'GET' &&
+                  route?.path === path &&
+                  route?.auth === 'public',
+              )
+            ) {
+              throw new Error(`previous Worker contract is missing public GET ${path}`);
+            }
+          }
+          const apps = Array.isArray(contract.apps) ? contract.apps : [];
+          const gitcrawl = apps.find((app) => app?.app === 'gitcrawl');
+          if (!gitcrawl || !Array.isArray(gitcrawl.capabilities)) {
+            throw new Error('previous Worker D1-backed Gitcrawl contract is invalid');
+          }
+
+          writeFileSync(process.env.PREVIOUS_RELEASE_SHA_PATH, `${releaseSHA}\n`, {
+            mode: 0o600,
+          });
+          PREVIOUS_WORKER_BASELINE_NODE
+
       - name: Reauthorize current main before D1 mutation
         env:
           GH_TOKEN: ${{ steps.target-token.outputs.token }}
@@ -824,11 +893,14 @@ jobs:
 
       - name: Apply and verify D1 migrations
         env:
+          APPLIED_MIGRATIONS_RESPONSE: ${{ runner.temp }}/crawl-remote-applied-migrations.json
           CLOUDFLARE_API_TOKEN: ${{ secrets.CRAWL_REMOTE_PRODUCTION_CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_TOKEN_SHA256: ${{ vars.CRAWL_REMOTE_CLOUDFLARE_TOKEN_SHA256 }}
           CONSUMED_RECEIPT_PATH: ${{ runner.temp }}/${{ needs.preflight.outputs.receipt_name }}.consumed
           FENCE_RESPONSE: ${{ runner.temp }}/crawl-remote-observation-fence.json
+          PENDING_MIGRATIONS_PATH: ${{ runner.temp }}/crawl-remote-compatible-pending-migrations.json
           PREVIOUS_DEPLOYMENT_RESPONSE: ${{ runner.temp }}/crawl-remote-previous-deployment.json
+          PREVIOUS_RELEASE_SHA_PATH: ${{ runner.temp }}/crawl-remote-previous-release-sha.txt
           PREVIOUS_VERSION_PATH: ${{ runner.temp }}/crawl-remote-previous-version.txt
           PRE_FENCE_ERROR: ${{ runner.temp }}/crawl-remote-observation-fence-precheck.err
           PRE_FENCE_RESPONSE: ${{ runner.temp }}/crawl-remote-observation-fence-precheck.json
@@ -842,7 +914,193 @@ jobs:
           test "$("$wrangler" --version)" = "$WRANGLER_VERSION"
 
           test -f "$RECEIPT_PATH"
+          test -f "$PREVIOUS_RELEASE_SHA_PATH"
           test ! -e "$CONSUMED_RECEIPT_PATH"
+
+          "$wrangler" d1 execute crawl-remote \
+            --remote \
+            --json \
+            --cwd "$RELEASE_ROOT" \
+            --config wrangler.json \
+            --command "select name from d1_migrations order by id" \
+            > "$APPLIED_MIGRATIONS_RESPONSE"
+          test "$(wc -c < "$APPLIED_MIGRATIONS_RESPONSE")" -le 1048576
+
+          node --input-type=module <<'PENDING_MIGRATIONS_NODE'
+          import { createHash } from 'node:crypto';
+          import { readFileSync, writeFileSync } from 'node:fs';
+          import { join } from 'node:path';
+
+          const approvedMigrations = [
+            {
+              name: '0001_remote_archives.sql',
+              sha256: 'bfb2ee56d01c7547a644f48b5c493cb9d971646ce331acc10c6bfd78d9b7d066',
+            },
+            {
+              name: '0002_gitcrawl_enrichment_snapshots.sql',
+              sha256: 'f984199bef0406ce91724e9ac83a97f41928b1560a51974deb841596f1e403e2',
+            },
+            {
+              name: '0003_gitcrawl_snapshot_hardening.sql',
+              sha256: '5daa6e14364f7bd4eba3cc5f61ec266b0559962e7345a65080cc9ef26b084e46',
+            },
+            {
+              name: '0004_gitcrawl_snapshot_cutover.sql',
+              sha256: 'e6c4a8edb300ebbf93a2e2449d180408f23be7eac1ef05733045b6ed496eb396',
+            },
+            {
+              name: '0005_discrawl_cursor_state.sql',
+              sha256: '5964adcb0807448d937fed38ac9588a1063bf4f490a82b54f15f0e700374ae0c',
+            },
+            {
+              name: '0006_gitcrawl_observation_order.sql',
+              sha256: 'a0ebfbb5c40c85df5eaba6772a01a68910fa5f1327d4701d25c5dfde16f77d1a',
+            },
+            {
+              name: '0007_gitcrawl_snapshot_provenance.sql',
+              sha256: '8b1ef863087eccf41a7c9e5cf1e72f905613adea55df1840f9c96c3cfb2b7ad5',
+            },
+          ];
+          const compatibleWithPreviousWorker = new Map([
+            [
+              '0007_gitcrawl_snapshot_provenance.sql',
+              {
+                classification: 'additive-snapshot-provenance-v1',
+                sha256:
+                  '8b1ef863087eccf41a7c9e5cf1e72f905613adea55df1840f9c96c3cfb2b7ad5',
+              },
+            ],
+          ]);
+
+          const manifest = JSON.parse(
+            readFileSync(join(process.env.RELEASE_ROOT, 'manifest.json'), 'utf8'),
+          );
+          const reviewedMigrations = Array.isArray(manifest?.files)
+            ? manifest.files
+                .filter((file) => /^migrations\/[0-9]{4}_[a-z0-9_]+\.sql$/.test(file?.path))
+                .map((file) => ({
+                  name: file.path.slice('migrations/'.length),
+                  sha256: file.sha256,
+                }))
+            : [];
+          if (JSON.stringify(reviewedMigrations) !== JSON.stringify(approvedMigrations)) {
+            throw new Error('release manifest is not bound to the reviewed migration set');
+          }
+
+          const executions = JSON.parse(
+            readFileSync(process.env.APPLIED_MIGRATIONS_RESPONSE, 'utf8'),
+          );
+          if (
+            !Array.isArray(executions) ||
+            executions.length !== 1 ||
+            executions[0]?.success !== true ||
+            !Array.isArray(executions[0]?.results)
+          ) {
+            throw new Error('remote D1 migration ledger query did not succeed exactly once');
+          }
+
+          const appliedNames = executions[0].results.map((row) => row?.name);
+          if (
+            appliedNames.some(
+              (name) =>
+                typeof name !== 'string' ||
+                !/^[0-9]{4}_[a-z0-9_]+\.sql$/.test(name),
+            ) ||
+            new Set(appliedNames).size !== appliedNames.length
+          ) {
+            throw new Error('remote D1 migration ledger contains malformed or duplicate names');
+          }
+          const expectedAppliedPrefix = approvedMigrations
+            .slice(0, appliedNames.length)
+            .map((migration) => migration.name);
+          if (JSON.stringify(appliedNames) !== JSON.stringify(expectedAppliedPrefix)) {
+            throw new Error('remote D1 migration ledger is not the reviewed migration prefix');
+          }
+
+          const pendingMigrations = approvedMigrations.slice(appliedNames.length);
+          const compatibility = [];
+          for (const migration of pendingMigrations) {
+            const contract = compatibleWithPreviousWorker.get(migration.name);
+            if (!contract || contract.sha256 !== migration.sha256) {
+              throw new Error(
+                `pending migration ${migration.name} is not classified as compatible with the previous Worker`,
+              );
+            }
+
+            const migrationPath = join(
+              process.env.RELEASE_ROOT,
+              'migrations',
+              migration.name,
+            );
+            const sql = readFileSync(migrationPath, 'utf8').replaceAll('\r\n', '\n');
+            const sha256 = createHash('sha256').update(sql).digest('hex');
+            if (sha256 !== migration.sha256) {
+              throw new Error(`pending migration ${migration.name} is not the reviewed content`);
+            }
+
+            const createdTables = [
+              ...sql.matchAll(
+                /\bcreate\s+table\s+if\s+not\s+exists\s+([a-z_][a-z0-9_]*)/gi,
+              ),
+            ].map((match) => match[1].toLowerCase());
+            const insertedTables = [
+              ...sql.matchAll(
+                /\binsert(?:\s+or\s+ignore)?\s+into\s+([a-z_][a-z0-9_]*)/gi,
+              ),
+            ].map((match) => match[1].toLowerCase());
+            const triggerTargets = [
+              ...sql.matchAll(
+                /\bcreate\s+trigger\s+if\s+not\s+exists\s+[a-z_][a-z0-9_]*[\s\S]*?\bon\s+([a-z_][a-z0-9_]*)/gi,
+              ),
+            ].map((match) => match[1].toLowerCase());
+            if (
+              /\b(?:alter|drop|truncate|vacuum|reindex|replace)\b/i.test(sql) ||
+              JSON.stringify(createdTables) !==
+                JSON.stringify(['gitcrawl_snapshot_provenance']) ||
+              JSON.stringify(insertedTables) !==
+                JSON.stringify([
+                  'gitcrawl_snapshot_provenance',
+                  'remote_capability_fences',
+                ]) ||
+              JSON.stringify(triggerTargets) !==
+                JSON.stringify([
+                  'gitcrawl_snapshot_provenance',
+                  'gitcrawl_snapshot_provenance',
+                ]) ||
+              !/foreign key \(archive_id, snapshot_id\)\s+references gitcrawl_snapshots\(archive_id, snapshot_id\) on delete cascade/i.test(
+                sql,
+              ) ||
+              !/insert or ignore into gitcrawl_snapshot_provenance[\s\S]*select archive_id, snapshot_id, 'legacy', '', created_at\s+from gitcrawl_snapshots;/i.test(
+                sql,
+              ) ||
+              !/insert into remote_capability_fences[\s\S]*'gitcrawl\.snapshot\.provenance\.v1'[\s\S]*on conflict\(capability\) do nothing;/i.test(
+                sql,
+              )
+            ) {
+              throw new Error(
+                '0007 migration is not the reviewed additive previous-Worker-compatible schema shape',
+              );
+            }
+            compatibility.push({
+              name: migration.name,
+              sha256,
+              classification: contract.classification,
+            });
+          }
+
+          const proof = {
+            schema_version: 1,
+            applied_migrations: appliedNames,
+            pending_migrations: pendingMigrations.map((migration) => migration.name),
+            compatible_with_previous_worker: compatibility,
+          };
+          writeFileSync(
+            process.env.PENDING_MIGRATIONS_PATH,
+            `${JSON.stringify(proof, null, 2)}\n`,
+            { flag: 'wx', mode: 0o600 },
+          );
+          PENDING_MIGRATIONS_NODE
+
           mv -- "$RECEIPT_PATH" "$CONSUMED_RECEIPT_PATH"
 
           "$wrangler" deployments status \
@@ -1112,13 +1370,133 @@ jobs:
           console.log('Capability migrations are ready in the selected states.');
           POST_FENCE_NODE
 
+      - name: Probe previous Worker against migrated D1
+        id: previous-worker-probe
+        env:
+          PENDING_MIGRATIONS_PATH: ${{ runner.temp }}/crawl-remote-compatible-pending-migrations.json
+          PREVIOUS_RELEASE_SHA_PATH: ${{ runner.temp }}/crawl-remote-previous-release-sha.txt
+          PREVIOUS_WORKER_CONTRACT_BASELINE: ${{ runner.temp }}/crawl-remote-previous-contract-before-migration.json
+          PREVIOUS_WORKER_CONTRACT_PROBE: ${{ runner.temp }}/crawl-remote-previous-contract-after-migration.json
+          PREVIOUS_WORKER_HEALTH_BASELINE: ${{ runner.temp }}/crawl-remote-previous-health-before-migration.json
+          PREVIOUS_WORKER_HEALTH_PROBE: ${{ runner.temp }}/crawl-remote-previous-health-after-migration.json
+          PREVIOUS_WORKER_PROBE_PATH: ${{ runner.temp }}/crawl-remote-previous-worker-migration-proof.txt
+        run: |
+          unset BASH_ENV ENV CDPATH GLOBIGNORE NODE_OPTIONS
+          test -f "$PENDING_MIGRATIONS_PATH"
+          test -f "$PREVIOUS_RELEASE_SHA_PATH"
+          test -f "$PREVIOUS_WORKER_HEALTH_BASELINE"
+          test -f "$PREVIOUS_WORKER_CONTRACT_BASELINE"
+          test ! -e "$PREVIOUS_WORKER_PROBE_PATH"
+
+          curl --fail-with-body --silent --show-error \
+            --connect-timeout 10 \
+            --max-time 20 \
+            --max-filesize 1048576 \
+            --header "cache-control: no-cache" \
+            --output "$PREVIOUS_WORKER_HEALTH_PROBE" \
+            "$WORKERS_DEV_URL/health?migration_probe=${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-after"
+          curl --fail-with-body --silent --show-error \
+            --connect-timeout 10 \
+            --max-time 20 \
+            --max-filesize 1048576 \
+            --header "cache-control: no-cache" \
+            --output "$PREVIOUS_WORKER_CONTRACT_PROBE" \
+            "$WORKERS_DEV_URL/v1/contract?migration_probe=${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-after"
+
+          node --input-type=module <<'PREVIOUS_WORKER_PROBE_NODE'
+          import { readFileSync, writeFileSync } from 'node:fs';
+          import { isDeepStrictEqual } from 'node:util';
+
+          const expectedReleaseSHA = readFileSync(
+            process.env.PREVIOUS_RELEASE_SHA_PATH,
+            'utf8',
+          ).trim();
+          const baselineHealth = JSON.parse(
+            readFileSync(process.env.PREVIOUS_WORKER_HEALTH_BASELINE, 'utf8'),
+          );
+          const baselineContract = JSON.parse(
+            readFileSync(process.env.PREVIOUS_WORKER_CONTRACT_BASELINE, 'utf8'),
+          );
+          const probedHealth = JSON.parse(
+            readFileSync(process.env.PREVIOUS_WORKER_HEALTH_PROBE, 'utf8'),
+          );
+          const probedContract = JSON.parse(
+            readFileSync(process.env.PREVIOUS_WORKER_CONTRACT_PROBE, 'utf8'),
+          );
+          const probedRoutes = Array.isArray(probedContract?.routes)
+            ? probedContract.routes
+            : [];
+          const probedApps = Array.isArray(probedContract?.apps)
+            ? probedContract.apps
+            : [];
+          if (
+            !/^[0-9a-f]{40}$/.test(expectedReleaseSHA) ||
+            probedHealth?.ok !== true ||
+            probedHealth?.release_sha !== expectedReleaseSHA ||
+            probedContract?.service !== 'crawl-remote' ||
+            probedContract?.protocol_version !== 'v1' ||
+            probedContract?.release_sha !== expectedReleaseSHA ||
+            !isDeepStrictEqual(probedHealth, baselineHealth)
+          ) {
+            throw new Error(
+              'previous Worker public identity failed after D1 migration',
+            );
+          }
+
+          for (const route of baselineContract.routes) {
+            if (!probedRoutes.some((candidate) => isDeepStrictEqual(candidate, route))) {
+              throw new Error('previous Worker contract lost a route after D1 migration');
+            }
+          }
+          for (const baselineApp of baselineContract.apps) {
+            const probedApp = probedApps.find((app) => app?.app === baselineApp?.app);
+            if (!probedApp) {
+              throw new Error('previous Worker contract lost an app after D1 migration');
+            }
+            const baselineCapabilities = Array.isArray(baselineApp.capabilities)
+              ? baselineApp.capabilities
+              : [];
+            const probedCapabilities = Array.isArray(probedApp.capabilities)
+              ? probedApp.capabilities
+              : [];
+            if (
+              baselineCapabilities.some(
+                (capability) => !probedCapabilities.includes(capability),
+              )
+            ) {
+              throw new Error(
+                'previous Worker contract lost a capability after D1 migration',
+              );
+            }
+          }
+          const baselineNotes = Array.isArray(baselineContract.notes)
+            ? baselineContract.notes
+            : [];
+          const probedNotes = Array.isArray(probedContract.notes)
+            ? probedContract.notes
+            : [];
+          if (baselineNotes.some((note) => !probedNotes.includes(note))) {
+            throw new Error('previous Worker contract lost a note after D1 migration');
+          }
+
+          writeFileSync(
+            process.env.PREVIOUS_WORKER_PROBE_PATH,
+            `${expectedReleaseSHA}\n`,
+            { flag: 'wx', mode: 0o600 },
+          );
+          PREVIOUS_WORKER_PROBE_NODE
+
       - name: Reauthorize current main immediately before Worker deploy
         env:
           CONSUMED_RECEIPT_PATH: ${{ runner.temp }}/${{ needs.preflight.outputs.receipt_name }}.consumed
           GH_TOKEN: ${{ steps.target-token.outputs.token }}
+          PENDING_MIGRATIONS_PATH: ${{ runner.temp }}/crawl-remote-compatible-pending-migrations.json
+          PREVIOUS_WORKER_PROBE_PATH: ${{ runner.temp }}/crawl-remote-previous-worker-migration-proof.txt
         run: |
           unset BASH_ENV ENV CDPATH GLOBIGNORE NODE_OPTIONS
           test -f "$CONSUMED_RECEIPT_PATH"
+          test -f "$PENDING_MIGRATIONS_PATH"
+          test -f "$PREVIOUS_WORKER_PROBE_PATH"
           current_main_sha="$(
             gh api "repos/$TARGET_REPOSITORY/commits/main" --jq '.sha'
           )"
@@ -1138,12 +1516,16 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CRAWL_REMOTE_PRODUCTION_CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_TOKEN_SHA256: ${{ vars.CRAWL_REMOTE_CLOUDFLARE_TOKEN_SHA256 }}
           CONSUMED_RECEIPT_PATH: ${{ runner.temp }}/${{ needs.preflight.outputs.receipt_name }}.consumed
+          PENDING_MIGRATIONS_PATH: ${{ runner.temp }}/crawl-remote-compatible-pending-migrations.json
+          PREVIOUS_WORKER_PROBE_PATH: ${{ runner.temp }}/crawl-remote-previous-worker-migration-proof.txt
           RELEASE_ROOT: ${{ runner.temp }}/crawl-remote-release
         run: |
           unset BASH_ENV ENV CDPATH GLOBIGNORE NODE_OPTIONS
           test -n "$CLOUDFLARE_API_TOKEN"
           test "$CLOUDFLARE_TOKEN_SHA256" = "$(printf '%s' "$CLOUDFLARE_API_TOKEN" | sha256sum | cut -d ' ' -f 1)"
           test -f "$CONSUMED_RECEIPT_PATH"
+          test -f "$PENDING_MIGRATIONS_PATH"
+          test -f "$PREVIOUS_WORKER_PROBE_PATH"
           wrangler="$TOOLCHAIN_ROOT/node_modules/.bin/wrangler"
           test "$("$wrangler" --version)" = "$WRANGLER_VERSION"
 
@@ -1444,12 +1826,14 @@ jobs:
           ) {
             throw new Error('Worker rollback did not restore the previous stable version');
           }
+          console.log('Previous Worker version restored; D1 migrations remain applied.');
           ROLLBACK_NODE
 
       - name: Require successful release and proof
         if: ${{ always() }}
         env:
           POST_DEPLOY_MAIN_OUTCOME: ${{ steps.post-deploy-main.outcome }}
+          PREVIOUS_WORKER_PROBE_OUTCOME: ${{ steps.previous-worker-probe.outcome }}
           PRODUCTION_PROOF_OUTCOME: ${{ steps.production-proof.outcome }}
           ROLLBACK_OUTCOME: ${{ steps.rollback.outcome }}
           WORKER_DEPLOY_OUTCOME: ${{ steps.worker-deploy.outcome }}
@@ -1462,5 +1846,5 @@ jobs:
           ]]; then
             exit 0
           fi
-          echo "::error::crawl-remote release failed or lost authorization; rollback outcome: $ROLLBACK_OUTCOME."
+          echo "::error::crawl-remote release failed or lost authorization; previous Worker probe: $PREVIOUS_WORKER_PROBE_OUTCOME; Worker rollback outcome: $ROLLBACK_OUTCOME. D1 migrations are not rolled back."
           exit 1

@@ -55,6 +55,79 @@ jobs:
       - name: Run check
         run: pnpm run check
 
+  crawl-remote-toolchain:
+    name: crawl-remote toolchain integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      NODE_OPTIONS: ""
+      NPM_CONFIG_IGNORE_SCRIPTS: "true"
+      NPM_CONFIG_USERCONFIG: /dev/null
+      TOOLCHAIN_ROOT: ${{ github.workspace }}/.github/deploy/crawl-remote-toolchain
+      WRANGLER_VERSION: 4.107.1
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          sparse-checkout: .github/deploy/crawl-remote-toolchain
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - name: Setup pinned Node runtime
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version: 24.18.0
+
+      - name: Install pinned Wrangler from the committed lock
+        working-directory: .github/deploy/crawl-remote-toolchain
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund
+          actual_version="$(./node_modules/.bin/wrangler --version)"
+          test "$actual_version" = "$WRANGLER_VERSION"
+
+      - name: Exercise pinned Wrangler dry-run
+        env:
+          BUNDLE_ROOT: ${{ runner.temp }}/crawl-remote-toolchain-bundle
+          FIXTURE_ROOT: ${{ runner.temp }}/crawl-remote-toolchain-fixture
+        run: |
+          rm -rf "$FIXTURE_ROOT" "$BUNDLE_ROOT"
+          mkdir -p "$FIXTURE_ROOT"
+          printf '%s\n' \
+            "export default { fetch() { return new Response('ok'); } };" \
+            > "$FIXTURE_ROOT/index.ts"
+          node --input-type=module <<'NODE'
+          import { writeFileSync } from 'node:fs';
+          import { join } from 'node:path';
+
+          writeFileSync(
+            join(process.env.FIXTURE_ROOT, 'wrangler.json'),
+            `${JSON.stringify(
+              {
+                name: 'crawl-remote-toolchain-fixture',
+                main: 'index.ts',
+                compatibility_date: '2026-07-12',
+              },
+              null,
+              2,
+            )}\n`,
+          );
+          NODE
+          (
+            cd "$FIXTURE_ROOT" || exit 1
+            "$TOOLCHAIN_ROOT/node_modules/.bin/wrangler" deploy \
+              --dry-run \
+              --outdir "$BUNDLE_ROOT"
+          )
+          test -s "$BUNDLE_ROOT/index.js"
+          while IFS= read -r entry; do
+            case "$entry" in
+              README.md | index.js | index.js.map) ;;
+              *)
+                echo "::error::unexpected Wrangler dry-run output: $entry"
+                exit 1
+                ;;
+            esac
+          done < <(find "$BUNDLE_ROOT" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort)
+
   windows-codex-launch:
     name: Windows Codex launcher
     runs-on: windows-latest

@@ -1,26 +1,21 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import {
-  chmodSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  readdirSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { parse } from "yaml";
 
 const workflowPath = ".github/workflows/deploy-crawl-remote.yml";
+const ciWorkflowPath = ".github/workflows/ci.yml";
 const cloudflareAccountId = "1".repeat(32);
 const d1DatabaseId = "22222222-2222-4222-8222-222222222222";
 const mergedCrawlRemoteMain = "d6bb9b7a9c7eff0704dab4845a00e1863b7b8ef1";
 const source = readFileSync(workflowPath, "utf8");
 const workflow = parse(source);
+const ciSource = readFileSync(ciWorkflowPath, "utf8");
+const ciWorkflow = parse(ciSource);
 const preflight = workflow.jobs.preflight;
 const deploy = workflow.jobs.deploy;
 
@@ -33,6 +28,7 @@ interface WorkflowStep {
   env?: Record<string, string>;
   run?: string;
   with?: Record<string, unknown>;
+  "working-directory"?: string;
 }
 
 function steps(job: { steps: WorkflowStep[] }): WorkflowStep[] {
@@ -235,12 +231,16 @@ test("authorization scripts reject every SHA except the current crawl-remote mai
   const directory = mkdtempSync(join(tmpdir(), "crawl-remote-main-authorization-"));
   const ghPath = join(directory, "gh");
   const outputPath = join(directory, "output");
+  const pendingMigrationsPath = join(directory, "pending-migrations.json");
+  const previousWorkerProbePath = join(directory, "previous-worker-proof.txt");
   const receiptPath = join(directory, "receipt.json");
   const consumedReceiptPath = `${receiptPath}.consumed`;
   writeFileSync(ghPath, '#!/bin/sh\nprintf "%s\\n" "$CURRENT_MAIN_SHA"\n');
   chmodSync(ghPath, 0o755);
   writeFileSync(receiptPath, "{}\n");
   writeFileSync(consumedReceiptPath, "{}\n");
+  writeFileSync(pendingMigrationsPath, "{}\n");
+  writeFileSync(previousWorkerProbePath, `${mergedCrawlRemoteMain}\n`);
 
   function runScript(script: string, deploySha: string, authorize: boolean) {
     writeFileSync(outputPath, "");
@@ -256,6 +256,8 @@ test("authorization scripts reject every SHA except the current crawl-remote mai
         GITHUB_RUN_ID: "123456",
         OBSERVATION_ORDER_STATE: "dormant",
         PATH: `${directory}:${process.env.PATH}`,
+        PENDING_MIGRATIONS_PATH: pendingMigrationsPath,
+        PREVIOUS_WORKER_PROBE_PATH: previousWorkerProbePath,
         RECEIPT_PATH: receiptPath,
         REQUESTED_SHA: deploySha,
         SNAPSHOT_PROVENANCE_STATE: "dormant",
@@ -291,6 +293,8 @@ test("Worker deploy reauthorization rejects main moving after D1 migrations", ()
   const consumedReceiptPath = join(directory, "receipt.json.consumed");
   const counterPath = join(directory, "gh-calls");
   const ghPath = join(directory, "gh");
+  const pendingMigrationsPath = join(directory, "pending-migrations.json");
+  const previousWorkerProbePath = join(directory, "previous-worker-proof.txt");
   const receiptPath = join(directory, "receipt.json");
   writeFileSync(
     ghPath,
@@ -309,6 +313,8 @@ printf '%s\\n' "$((count + 1))" > "$GH_COUNTER"
   );
   chmodSync(ghPath, 0o755);
   writeFileSync(receiptPath, "{}\n");
+  writeFileSync(pendingMigrationsPath, "{}\n");
+  writeFileSync(previousWorkerProbePath, `${mergedCrawlRemoteMain}\n`);
 
   function runScript(script: string) {
     return spawnSync("bash", ["--noprofile", "--norc", "-euo", "pipefail", "-c", script], {
@@ -321,6 +327,8 @@ printf '%s\\n' "$((count + 1))" > "$GH_COUNTER"
         GH_TOKEN: "test",
         MOVED_MAIN_SHA: "a".repeat(40),
         PATH: `${directory}:${process.env.PATH}`,
+        PENDING_MIGRATIONS_PATH: pendingMigrationsPath,
+        PREVIOUS_WORKER_PROBE_PATH: previousWorkerProbePath,
         RECEIPT_PATH: receiptPath,
         TARGET_REPOSITORY: "openclaw/crawl-remote",
       },
@@ -749,7 +757,7 @@ test("protected deploy never executes target lifecycle code", () => {
   }
 });
 
-test("deploy executes the committed exact Node and Wrangler toolchain install before credentials", () => {
+test("deploy uses the committed exact Node and Wrangler toolchain before credentials", () => {
   assert.equal(
     step(deploy, "Setup trusted Node runtime").uses,
     "actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e",
@@ -788,74 +796,6 @@ test("deploy executes the committed exact Node and Wrangler toolchain install be
   assert.match(install.run ?? "", /actual_version=.*--version/);
   assert.equal(install.env?.CLOUDFLARE_API_TOKEN, undefined);
 
-  const workspace = mkdtempSync(join(tmpdir(), "crawl-remote-toolchain-install-"));
-  const toolchainRoot = join(workspace, ".github", "deploy", "crawl-remote-toolchain");
-  mkdirSync(toolchainRoot, { recursive: true });
-  writeFileSync(
-    join(toolchainRoot, "package.json"),
-    readFileSync(".github/deploy/crawl-remote-toolchain/package.json"),
-  );
-  writeFileSync(
-    join(toolchainRoot, "package-lock.json"),
-    readFileSync(".github/deploy/crawl-remote-toolchain/package-lock.json"),
-  );
-  try {
-    const installed = spawnSync(
-      "bash",
-      ["--noprofile", "--norc", "-euo", "pipefail", "-c", install.run ?? ""],
-      {
-        cwd: workspace,
-        encoding: "utf8",
-        env: {
-          ...process.env,
-          TOOLCHAIN_ROOT: toolchainRoot,
-          WRANGLER_VERSION: "4.107.1",
-        },
-        timeout: 120_000,
-      },
-    );
-    assert.equal(installed.status, 0, installed.stdout + installed.stderr);
-    assert.equal(
-      JSON.parse(
-        readFileSync(join(toolchainRoot, "node_modules", "wrangler", "package.json"), "utf8"),
-      ).version,
-      "4.107.1",
-    );
-    const fixtureRoot = join(workspace, "wrangler-fixture");
-    const bundleRoot = join(fixtureRoot, "bundle");
-    mkdirSync(fixtureRoot);
-    writeFileSync(
-      join(fixtureRoot, "index.ts"),
-      "export default { fetch() { return new Response('ok'); } };\n",
-    );
-    writeFileSync(
-      join(fixtureRoot, "wrangler.json"),
-      JSON.stringify({
-        name: "crawl-remote-packaging-fixture",
-        main: "index.ts",
-        compatibility_date: "2026-07-12",
-      }),
-    );
-    const dryRun = spawnSync(
-      join(toolchainRoot, "node_modules", ".bin", "wrangler"),
-      ["deploy", "--dry-run", "--outdir", bundleRoot],
-      {
-        cwd: fixtureRoot,
-        encoding: "utf8",
-        env: process.env,
-      },
-    );
-    assert.equal(dryRun.status, 0, dryRun.stdout + dryRun.stderr);
-    const bundleEntries = readdirSync(bundleRoot).sort();
-    assert.ok(bundleEntries.includes("index.js"));
-    assert.deepEqual(
-      bundleEntries.filter((entry) => !["README.md", "index.js", "index.js.map"].includes(entry)),
-      [],
-    );
-  } finally {
-    rmSync(workspace, { recursive: true, force: true });
-  }
-
   const credentialSteps = steps(deploy).filter(
     (candidate) => candidate.env?.CLOUDFLARE_API_TOKEN !== undefined,
   );
@@ -886,6 +826,50 @@ test("deploy executes the committed exact Node and Wrangler toolchain install be
   assert.equal(source.match(/CRAWL_REMOTE_PRODUCTION_CLOUDFLARE_API_TOKEN/g)?.length, 3);
 });
 
+test("networked CI installs the pinned Wrangler lock and exercises its dry-run outside pnpm check", () => {
+  const integration = ciWorkflow.jobs["crawl-remote-toolchain"];
+  const check = ciWorkflow.jobs.check;
+  assert.ok(integration, "missing crawl-remote toolchain integration job");
+  assert.equal(integration.name, "crawl-remote toolchain integration");
+  assert.equal(integration["timeout-minutes"], 10);
+  assert.equal(integration.env.WRANGLER_VERSION, "4.107.1");
+  assert.equal(
+    integration.env.TOOLCHAIN_ROOT,
+    "${{ github.workspace }}/.github/deploy/crawl-remote-toolchain",
+  );
+  assert.equal(step(check, "Run check").run, "pnpm run check");
+  assert.doesNotMatch(step(check, "Run check").run ?? "", /crawl-remote-toolchain|npm ci/);
+
+  const checkout = steps(integration)[0];
+  assert.equal(checkout.uses, "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0");
+  assert.equal(checkout.with?.["sparse-checkout"], ".github/deploy/crawl-remote-toolchain");
+  assert.equal(checkout.with?.["sparse-checkout-cone-mode"], false);
+  assert.equal(checkout.with?.["persist-credentials"], false);
+
+  const setup = step(integration, "Setup pinned Node runtime");
+  assert.equal(setup.uses, "actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e");
+  assert.equal(setup.with?.["node-version"], "24.18.0");
+
+  const install = step(integration, "Install pinned Wrangler from the committed lock");
+  assert.equal(install["working-directory"], ".github/deploy/crawl-remote-toolchain");
+  assert.match(install.run ?? "", /npm ci --ignore-scripts --no-audit --no-fund/);
+  assert.match(install.run ?? "", /\.\/node_modules\/\.bin\/wrangler --version/);
+  assert.doesNotMatch(install.run ?? "", /npm install|npx|wrangler@/);
+
+  const dryRun = step(integration, "Exercise pinned Wrangler dry-run");
+  assert.match(dryRun.run ?? "", /\$TOOLCHAIN_ROOT\/node_modules\/\.bin\/wrangler/);
+  assert.match(dryRun.run ?? "", /deploy[\s\S]*--dry-run[\s\S]*--outdir/);
+  assert.match(dryRun.run ?? "", /test -s "\$BUNDLE_ROOT\/index\.js"/);
+  assert.doesNotMatch(dryRun.run ?? "", /\bnpm\b|\bnpx\b/);
+
+  const integrationRuns = steps(integration)
+    .map((candidate) => candidate.run ?? "")
+    .join("\n");
+  assert.equal(integrationRuns.match(/\bnpm ci\b/g)?.length, 1);
+  assert.doesNotMatch(integrationRuns, /CLOUDFLARE_API_TOKEN|secrets\./);
+  assert.doesNotMatch(ciSource, /CRAWL_REMOTE_PRODUCTION_CLOUDFLARE_API_TOKEN/);
+});
+
 test("deploy reauthorizes exact current main before and after privileged mutations", () => {
   const token = step(deploy, "Create exact-repository reauthorization token");
   assert.equal(
@@ -899,8 +883,10 @@ test("deploy reauthorizes exact current main before and after privileged mutatio
     1,
   );
 
+  const baseline = step(deploy, "Capture previous Worker D1 contract baseline");
   const reauthorizeBeforeD1 = step(deploy, "Reauthorize current main before D1 mutation");
   const migration = step(deploy, "Apply and verify D1 migrations");
+  const previousWorkerProbe = step(deploy, "Probe previous Worker against migrated D1");
   const reauthorizeBeforeWorker = step(
     deploy,
     "Reauthorize current main immediately before Worker deploy",
@@ -917,9 +903,11 @@ test("deploy reauthorizes exact current main before and after privileged mutatio
     assert.equal(reauthorize.env?.CLOUDFLARE_API_TOKEN, undefined);
   }
 
+  assert.equal(steps(deploy).indexOf(baseline) + 1, steps(deploy).indexOf(reauthorizeBeforeD1));
   assert.equal(steps(deploy).indexOf(reauthorizeBeforeD1) + 1, steps(deploy).indexOf(migration));
+  assert.equal(steps(deploy).indexOf(migration) + 1, steps(deploy).indexOf(previousWorkerProbe));
   assert.equal(
-    steps(deploy).indexOf(migration) + 1,
+    steps(deploy).indexOf(previousWorkerProbe) + 1,
     steps(deploy).indexOf(reauthorizeBeforeWorker),
   );
   assert.equal(
@@ -932,8 +920,16 @@ test("deploy reauthorizes exact current main before and after privileged mutatio
   );
   assert.match(migration.run ?? "", /test ! -e "\$CONSUMED_RECEIPT_PATH"/);
   assert.match(migration.run ?? "", /mv -- "\$RECEIPT_PATH" "\$CONSUMED_RECEIPT_PATH"/);
+  assert.equal(baseline.env?.CLOUDFLARE_API_TOKEN, undefined);
+  assert.equal(previousWorkerProbe.env?.CLOUDFLARE_API_TOKEN, undefined);
+  assert.match(baseline.run ?? "", /\$WORKERS_DEV_URL\/v1\/contract\?migration_probe=/);
+  assert.match(previousWorkerProbe.run ?? "", /\$WORKERS_DEV_URL\/v1\/contract\?migration_probe=/);
+  assert.match(reauthorizeBeforeWorker.run ?? "", /test -f "\$PENDING_MIGRATIONS_PATH"/);
+  assert.match(reauthorizeBeforeWorker.run ?? "", /test -f "\$PREVIOUS_WORKER_PROBE_PATH"/);
   assert.match(reauthorizeBeforeWorker.run ?? "", /test -f "\$CONSUMED_RECEIPT_PATH"/);
   assert.match(workerDeploy.run ?? "", /test -f "\$CONSUMED_RECEIPT_PATH"/);
+  assert.match(workerDeploy.run ?? "", /test -f "\$PENDING_MIGRATIONS_PATH"/);
+  assert.match(workerDeploy.run ?? "", /test -f "\$PREVIOUS_WORKER_PROBE_PATH"/);
   assert.equal(workerDeploy["continue-on-error"], true);
   assert.equal(reauthorizeAfterWorker["continue-on-error"], true);
   assert.equal(reauthorizeAfterWorker.if, "${{ steps.worker-deploy.outcome == 'success' }}");
@@ -947,6 +943,17 @@ test("privileged mutations use only verified files and prove the selected D1 fen
   assert.match(migration, /versions\.length !== 1/);
   assert.match(migration, /versions\[0\]\?\.percentage !== 100/);
   assert.match(migration, /PREVIOUS_VERSION_PATH/);
+  assert.match(migration, /select name from d1_migrations order by id/);
+  assert.match(migration, /PENDING_MIGRATIONS_NODE/);
+  assert.match(migration, /release manifest is not bound to the reviewed migration set/);
+  assert.match(migration, /remote D1 migration ledger is not the reviewed migration prefix/);
+  assert.match(
+    migration,
+    /pending migration \$\{migration\.name\} is not classified as compatible with the previous Worker/,
+  );
+  assert.match(migration, /additive-snapshot-provenance-v1/);
+  assert.match(migration, /gitcrawl_snapshot_provenance/);
+  assert.match(migration, /on conflict\\\(capability\\\) do nothing/);
   assert.match(migration, /d1 migrations apply crawl-remote/);
   assert.match(migration, /--cwd "\$RELEASE_ROOT"/);
   assert.match(migration, /--config wrangler\.json/);
@@ -981,15 +988,18 @@ test("privileged mutations use only verified files and prove the selected D1 fen
   assert.match(workerDeploy, /--var "CRAWL_REMOTE_RELEASE_SHA:\$DEPLOY_SHA"/);
   assert.match(workerDeploy, /--message "main \$\{DEPLOY_SHA\}"/);
 
+  const ledgerQueryIndex = migration.indexOf('> "$APPLIED_MIGRATIONS_RESPONSE"');
   const preQueryIndex = migration.indexOf('> "$PRE_FENCE_RESPONSE"');
   const migrationIndex = migration.indexOf('"$wrangler" d1 migrations apply');
   const postQueryIndex = migration.indexOf('> "$FENCE_RESPONSE"');
+  assert.ok(ledgerQueryIndex >= 0);
+  assert.ok(ledgerQueryIndex < preQueryIndex);
   assert.ok(preQueryIndex >= 0);
   assert.ok(preQueryIndex < migrationIndex);
   assert.ok(migrationIndex < postQueryIndex);
 });
 
-test("failed Worker release rolls back the exact previously stable version", () => {
+test("failed Worker release rolls back only the exact previously stable Worker version", () => {
   const workerDeploy = step(deploy, "Deploy verified Worker bundle");
   const postDeployMain = step(deploy, "Reauthorize current main after Worker deploy");
   const proof = step(deploy, "Poll exact production release");
@@ -1010,10 +1020,285 @@ test("failed Worker release rolls back the exact previously stable version", () 
   assert.match(run, /deployments status/);
   assert.match(run, /versions\[0\]\?\.version_id !== process\.env\.PREVIOUS_VERSION/);
   assert.match(run, /versions\[0\]\?\.percentage !== 100/);
+  assert.match(run, /D1 migrations remain applied/);
   assert.equal(finalGate.if, "${{ always() }}");
+  assert.match(finalGate.run ?? "", /D1 migrations are not rolled back/);
   assert.match(finalGate.run ?? "", /WORKER_DEPLOY_OUTCOME.*POST_DEPLOY_MAIN_OUTCOME/s);
   assert.match(finalGate.run ?? "", /PRODUCTION_PROOF_OUTCOME.*success/s);
   assert.match(finalGate.run ?? "", /rollback outcome/);
+});
+
+test("pending migration compatibility accepts only the reviewed additive 0007 suffix", () => {
+  const run = step(deploy, "Apply and verify D1 migrations").run ?? "";
+  const validator = run.match(
+    /node --input-type=module <<'PENDING_MIGRATIONS_NODE'\n([\s\S]*?)\nPENDING_MIGRATIONS_NODE/,
+  )?.[1];
+  assert.ok(validator, "missing inline pending migration compatibility validator");
+
+  const approvedMigrations = [
+    [
+      "0001_remote_archives.sql",
+      "bfb2ee56d01c7547a644f48b5c493cb9d971646ce331acc10c6bfd78d9b7d066",
+    ],
+    [
+      "0002_gitcrawl_enrichment_snapshots.sql",
+      "f984199bef0406ce91724e9ac83a97f41928b1560a51974deb841596f1e403e2",
+    ],
+    [
+      "0003_gitcrawl_snapshot_hardening.sql",
+      "5daa6e14364f7bd4eba3cc5f61ec266b0559962e7345a65080cc9ef26b084e46",
+    ],
+    [
+      "0004_gitcrawl_snapshot_cutover.sql",
+      "e6c4a8edb300ebbf93a2e2449d180408f23be7eac1ef05733045b6ed496eb396",
+    ],
+    [
+      "0005_discrawl_cursor_state.sql",
+      "5964adcb0807448d937fed38ac9588a1063bf4f490a82b54f15f0e700374ae0c",
+    ],
+    [
+      "0006_gitcrawl_observation_order.sql",
+      "a0ebfbb5c40c85df5eaba6772a01a68910fa5f1327d4701d25c5dfde16f77d1a",
+    ],
+    [
+      "0007_gitcrawl_snapshot_provenance.sql",
+      "8b1ef863087eccf41a7c9e5cf1e72f905613adea55df1840f9c96c3cfb2b7ad5",
+    ],
+  ] as const;
+  const migrationSQL = `pragma foreign_keys = on;
+
+create table if not exists gitcrawl_snapshot_provenance (
+  archive_id text not null,
+  snapshot_id text not null,
+  binding_mode text not null,
+  source_sha256 text not null default '',
+  created_at text not null,
+  current_manifest_pending integer not null default 0,
+  current_manifest_published_at text not null default '',
+  current_manifest_updated_at text not null default '',
+  primary key (archive_id, snapshot_id),
+  foreign key (archive_id, snapshot_id)
+    references gitcrawl_snapshots(archive_id, snapshot_id) on delete cascade,
+  check (binding_mode in ('legacy', 'bound')),
+  check (
+    (binding_mode = 'legacy' and source_sha256 = '')
+    or (
+      binding_mode = 'bound'
+      and snapshot_id = source_sha256
+      and length(source_sha256) = 64
+      and source_sha256 = lower(source_sha256)
+      and source_sha256 not glob '*[^0-9a-f]*'
+    )
+  ),
+  check (current_manifest_pending in (0, 1))
+);
+
+create trigger if not exists gitcrawl_snapshot_provenance_identity_immutable
+before update of archive_id, snapshot_id, binding_mode, source_sha256, created_at
+on gitcrawl_snapshot_provenance
+for each row
+when new.archive_id is not old.archive_id
+  or new.snapshot_id is not old.snapshot_id
+  or new.binding_mode is not old.binding_mode
+  or new.source_sha256 is not old.source_sha256
+  or new.created_at is not old.created_at
+begin
+  select raise(abort, 'gitcrawl snapshot provenance identity is immutable');
+end;
+
+create trigger if not exists gitcrawl_snapshot_provenance_delete_guard
+before delete on gitcrawl_snapshot_provenance
+for each row
+when exists (
+  select 1
+  from gitcrawl_snapshots snapshot
+  where snapshot.archive_id = old.archive_id
+    and snapshot.snapshot_id = old.snapshot_id
+)
+begin
+  select raise(abort, 'gitcrawl snapshot provenance identity cannot be deleted');
+end;
+
+insert or ignore into gitcrawl_snapshot_provenance(
+  archive_id,
+  snapshot_id,
+  binding_mode,
+  source_sha256,
+  created_at
+)
+select archive_id, snapshot_id, 'legacy', '', created_at
+from gitcrawl_snapshots;
+
+insert into remote_capability_fences(
+  capability,
+  migration_ready,
+  cutover_enabled,
+  created_at,
+  activated_at
+) values (
+  'gitcrawl.snapshot.provenance.v1',
+  1,
+  0,
+  strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+  ''
+)
+on conflict(capability) do nothing;
+`;
+
+  const directory = mkdtempSync(join(tmpdir(), "crawl-remote-pending-migrations-"));
+  const releaseRoot = join(directory, "release");
+  const migrationsRoot = join(releaseRoot, "migrations");
+  const responsePath = join(directory, "applied.json");
+  const proofPath = join(directory, "proof.json");
+  mkdirSync(migrationsRoot, { recursive: true });
+  writeFileSync(
+    join(releaseRoot, "manifest.json"),
+    JSON.stringify({
+      files: approvedMigrations.map(([name, sha256]) => ({
+        path: `migrations/${name}`,
+        sha256,
+      })),
+    }),
+  );
+  writeFileSync(join(migrationsRoot, approvedMigrations[6][0]), migrationSQL);
+
+  function validate(appliedNames: readonly string[], response?: unknown) {
+    rmSync(proofPath, { force: true });
+    writeFileSync(
+      responsePath,
+      JSON.stringify(
+        response ?? [
+          {
+            success: true,
+            results: appliedNames.map((name) => ({ name })),
+          },
+        ],
+      ),
+    );
+    return spawnSync(process.execPath, ["--input-type=module"], {
+      input: validator,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        APPLIED_MIGRATIONS_RESPONSE: responsePath,
+        PENDING_MIGRATIONS_PATH: proofPath,
+        RELEASE_ROOT: releaseRoot,
+      },
+    });
+  }
+
+  try {
+    const names = approvedMigrations.map(([name]) => name);
+    const pending0007 = validate(names.slice(0, 6));
+    assert.equal(pending0007.status, 0, pending0007.stdout + pending0007.stderr);
+    const proof = JSON.parse(readFileSync(proofPath, "utf8"));
+    assert.deepEqual(proof.pending_migrations, ["0007_gitcrawl_snapshot_provenance.sql"]);
+    assert.deepEqual(proof.compatible_with_previous_worker, [
+      {
+        name: "0007_gitcrawl_snapshot_provenance.sql",
+        sha256: approvedMigrations[6][1],
+        classification: "additive-snapshot-provenance-v1",
+      },
+    ]);
+
+    assert.equal(validate(names).status, 0);
+    assert.notEqual(validate(names.slice(0, 5)).status, 0);
+    assert.notEqual(validate([...names.slice(0, 6), "0008_unreviewed.sql"]).status, 0);
+    assert.notEqual(validate([names[0], names[2]]).status, 0);
+    assert.notEqual(validate([], [{ success: false, results: [] }]).status, 0);
+
+    writeFileSync(join(migrationsRoot, approvedMigrations[6][0]), `${migrationSQL}\n-- tampered\n`);
+    assert.notEqual(validate(names.slice(0, 6)).status, 0);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("previous Worker public contract must survive the D1 migration without regressions", () => {
+  const baselineRun = step(deploy, "Capture previous Worker D1 contract baseline").run ?? "";
+  const probeRun = step(deploy, "Probe previous Worker against migrated D1").run ?? "";
+  const baselineValidator = baselineRun.match(
+    /node --input-type=module <<'PREVIOUS_WORKER_BASELINE_NODE'\n([\s\S]*?)\nPREVIOUS_WORKER_BASELINE_NODE/,
+  )?.[1];
+  const probeValidator = probeRun.match(
+    /node --input-type=module <<'PREVIOUS_WORKER_PROBE_NODE'\n([\s\S]*?)\nPREVIOUS_WORKER_PROBE_NODE/,
+  )?.[1];
+  assert.ok(baselineValidator, "missing previous Worker baseline validator");
+  assert.ok(probeValidator, "missing previous Worker post-migration validator");
+
+  const directory = mkdtempSync(join(tmpdir(), "crawl-remote-previous-worker-probe-"));
+  const baselineHealthPath = join(directory, "baseline-health.json");
+  const baselineContractPath = join(directory, "baseline-contract.json");
+  const probeHealthPath = join(directory, "probe-health.json");
+  const probeContractPath = join(directory, "probe-contract.json");
+  const releasePath = join(directory, "release.txt");
+  const proofPath = join(directory, "proof.txt");
+  const releaseSHA = "a".repeat(40);
+  const health = { ok: true, release_sha: releaseSHA };
+  const contract = {
+    service: "crawl-remote",
+    protocol_version: "v1",
+    release_sha: releaseSHA,
+    routes: [
+      { method: "GET", path: "/health", auth: "public" },
+      { method: "GET", path: "/v1/contract", auth: "public" },
+    ],
+    apps: [{ app: "gitcrawl", capabilities: ["gitcrawl.observation-order.v1"] }],
+  };
+  writeFileSync(baselineHealthPath, JSON.stringify(health));
+  writeFileSync(baselineContractPath, JSON.stringify(contract));
+
+  function baseline() {
+    rmSync(releasePath, { force: true });
+    return spawnSync(process.execPath, ["--input-type=module"], {
+      input: baselineValidator,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        PREVIOUS_RELEASE_SHA_PATH: releasePath,
+        PREVIOUS_WORKER_CONTRACT_BASELINE: baselineContractPath,
+        PREVIOUS_WORKER_HEALTH_BASELINE: baselineHealthPath,
+      },
+    });
+  }
+
+  function probe(probedHealth: unknown, probedContract: unknown) {
+    rmSync(proofPath, { force: true });
+    writeFileSync(probeHealthPath, JSON.stringify(probedHealth));
+    writeFileSync(probeContractPath, JSON.stringify(probedContract));
+    return spawnSync(process.execPath, ["--input-type=module"], {
+      input: probeValidator,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        PREVIOUS_RELEASE_SHA_PATH: releasePath,
+        PREVIOUS_WORKER_CONTRACT_BASELINE: baselineContractPath,
+        PREVIOUS_WORKER_CONTRACT_PROBE: probeContractPath,
+        PREVIOUS_WORKER_HEALTH_BASELINE: baselineHealthPath,
+        PREVIOUS_WORKER_HEALTH_PROBE: probeHealthPath,
+        PREVIOUS_WORKER_PROBE_PATH: proofPath,
+      },
+    });
+  }
+
+  try {
+    const baselineResult = baseline();
+    assert.equal(baselineResult.status, 0, baselineResult.stdout + baselineResult.stderr);
+    const probeResult = probe(health, contract);
+    assert.equal(probeResult.status, 0, probeResult.stdout + probeResult.stderr);
+    assert.equal(readFileSync(proofPath, "utf8"), `${releaseSHA}\n`);
+    assert.notEqual(probe({ ...health, release_sha: "b".repeat(40) }, contract).status, 0);
+    assert.equal(
+      probe(health, { ...contract, notes: ["additive migration-ready note"] }).status,
+      0,
+    );
+    assert.notEqual(probe(health, { ...contract, apps: [] }).status, 0);
+
+    writeFileSync(baselineContractPath, JSON.stringify({ ...contract, routes: [], apps: [] }));
+    assert.notEqual(baseline().status, 0);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 test("pre-migration fence validator rejects mismatch and gates missing-table bootstrap", () => {
