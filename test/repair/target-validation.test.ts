@@ -2258,6 +2258,59 @@ test(
   },
 );
 
+test(
+  "staged proof seals files beneath in-checkout dependency symlinks",
+  { skip: process.platform === "win32" },
+  () => {
+    const cwd = gitPackageFixture({
+      poison: "node poison.js",
+      verify: "node verify.js",
+    });
+    fs.appendFileSync(path.join(cwd, ".gitignore"), "node_modules/\ndependency-store/\n");
+    fs.mkdirSync(path.join(cwd, "dependency-store", "fixture"), { recursive: true });
+    fs.writeFileSync(path.join(cwd, "dependency-store", "fixture", "state.js"), "safe\n");
+    fs.mkdirSync(path.join(cwd, "node_modules"), { recursive: true });
+    fs.symlinkSync(
+      path.join("..", "dependency-store", "fixture"),
+      path.join(cwd, "node_modules", "fixture"),
+    );
+    fs.writeFileSync(
+      path.join(cwd, "poison.js"),
+      "require('node:fs').writeFileSync('dependency-store/fixture/state.js', 'owned\\n');\n",
+    );
+    fs.writeFileSync(
+      path.join(cwd, "verify.js"),
+      [
+        "const fs = require('node:fs');",
+        "if (fs.readFileSync('node_modules/fixture/state.js', 'utf8') === 'owned\\n') {",
+        "  fs.writeFileSync('poison-used.txt', 'used\\n');",
+        "}",
+        "",
+      ].join("\n"),
+    );
+    git(cwd, "add", ".");
+    git(cwd, "commit", "-m", "initial");
+    attachOrigin(cwd);
+
+    assert.throws(
+      () =>
+        runStagedValidationProof(
+          ["pnpm poison", "pnpm verify"],
+          cwd,
+          validationOptions("steipete/example", {
+            toolchain: {
+              packageManager: "pnpm",
+              baseValidationCommands: [],
+              changedGate: null,
+            },
+          }),
+        ),
+      /mutated ignored proof input surface: dependency-store\/fixture\/state\.js/,
+    );
+    assert.equal(fs.existsSync(path.join(cwd, "poison-used.txt")), false);
+  },
+);
+
 for (const packageCommand of ["npm run check", "pnpm check"]) {
   test(`${packageCommand} executes the approved script without pre/post lifecycle hooks`, () => {
     const cwd = gitPackageFixture({

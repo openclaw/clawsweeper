@@ -757,10 +757,13 @@ function validationProofInputSnapshot(
   cwd: string,
   commands: readonly { parts: readonly string[] }[],
 ): ValidationProofInputSnapshot {
-  const root = path.resolve(cwd);
+  const root = fs.realpathSync(cwd);
   const entries = new Map<string, string>();
+  const visitedPaths = new Set<string>();
 
   const visit = (relativePath: string) => {
+    if (visitedPaths.has(relativePath)) return;
+    visitedPaths.add(relativePath);
     const entryPath = proofInputPath(root, relativePath);
     const stat = fs.lstatSync(entryPath, { bigint: true });
     entries.set(relativePath, validationProofInputSignature(stat));
@@ -769,10 +772,12 @@ function validationProofInputSnapshot(
       entries.set(`${relativePath}\0link`, fs.readlinkSync(entryPath));
       const targetPath = proofInputSymlinkTarget(root, entryPath, relativePath);
       const targetStat = fs.statSync(targetPath, { bigint: true });
+      const targetRelativePath = proofInputRelativePath(root, targetPath);
       entries.set(
         `${relativePath}\0target`,
-        `${proofInputRelativePath(root, targetPath)}\0${validationProofInputSignature(targetStat)}`,
+        `${targetRelativePath}\0${validationProofInputSignature(targetStat)}`,
       );
+      visit(targetRelativePath);
       return;
     }
     if (!stat.isDirectory()) {
@@ -808,7 +813,7 @@ function validationProofInputSignature(stat: fs.BigIntStats) {
 }
 
 function assertValidationProofInputSnapshot(cwd: string, expected: ValidationProofInputSnapshot) {
-  const root = path.resolve(cwd);
+  const root = fs.realpathSync(cwd);
   for (const [entryPath, signature] of expected.entries) {
     if (currentProofInputSignature(root, entryPath) === signature) continue;
     throw new Error(
