@@ -1,0 +1,11 @@
+{
+  "name": "crawl-remote-deployment-toolchain",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "wrangler": "4.107.1"
+  },
+  "engines": {
+    "node": "24.18.0"
+  }
+}

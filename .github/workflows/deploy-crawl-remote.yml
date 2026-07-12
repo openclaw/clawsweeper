@@ -8,7 +8,7 @@ on:
         required: true
         type: string
       main_sha:
-        description: Full 40-character SHA from crawl-remote main
+        description: Exact current 40-character SHA of crawl-remote main
         required: true
         type: string
       observation_order_state:
@@ -82,13 +82,12 @@ jobs:
           current_main_sha="$(
             gh api "repos/$TARGET_REPOSITORY/commits/main" --jq '.sha'
           )"
-          comparison_status="$(
-            gh api \
-              "repos/$TARGET_REPOSITORY/compare/${REQUESTED_SHA}...${current_main_sha}" \
-              --jq '.status'
-          )"
-          if [[ "$comparison_status" != "identical" && "$comparison_status" != "ahead" ]]; then
-            echo "::error::main_sha is not an ancestor of the current crawl-remote main tip."
+          if [[ ! "$current_main_sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::crawl-remote main did not resolve to a full lowercase commit SHA."
+            exit 1
+          fi
+          if [[ "$REQUESTED_SHA" != "$current_main_sha" ]]; then
+            echo "::error::main_sha must exactly match the current crawl-remote main tip."
             exit 1
           fi
 
@@ -359,6 +358,8 @@ jobs:
   deploy:
     name: Migrate and deploy verified crawl-remote release
     needs: preflight
+    permissions:
+      contents: read
     if: >-
       ${{
         needs.preflight.result == 'success' &&
@@ -392,28 +393,31 @@ jobs:
       PRODUCTION_URL: https://crawl-remote.services-91b.workers.dev
       RECEIPT_NAME: ${{ needs.preflight.outputs.receipt_name }}
       TARGET_REPOSITORY: openclaw/crawl-remote
+      TOOLCHAIN_ROOT: ${{ github.workspace }}/.github/deploy/crawl-remote-toolchain
       WRANGLER_VERSION: 4.107.1
     steps:
+      - name: Checkout trusted deployment toolchain
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          repository: openclaw/clawsweeper
+          ref: ${{ github.sha }}
+          sparse-checkout: .github/deploy/crawl-remote-toolchain
+          sparse-checkout-cone-mode: false
+          fetch-depth: 1
+          persist-credentials: false
+
       - name: Setup trusted Node runtime
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
         with:
-          node-version: 24
+          node-version: 24.18.0
 
       - name: Install exact trusted Wrangler
-        env:
-          WRANGLER_PREFIX: ${{ runner.temp }}/crawl-remote-wrangler-4.107.1
         run: |
           unset BASH_ENV ENV CDPATH GLOBIGNORE NODE_OPTIONS
-          test ! -e "$WRANGLER_PREFIX"
-          mkdir -p "$WRANGLER_PREFIX"
-          npm install \
-            --ignore-scripts \
-            --no-audit \
-            --no-fund \
-            --no-save \
-            --prefix "$WRANGLER_PREFIX" \
-            "wrangler@$WRANGLER_VERSION"
-          actual_version="$("$WRANGLER_PREFIX/node_modules/.bin/wrangler" --version)"
+          test -f "$TOOLCHAIN_ROOT/package.json"
+          test -f "$TOOLCHAIN_ROOT/package-lock.json"
+          npm ci --ignore-scripts --no-audit --no-fund --prefix "$TOOLCHAIN_ROOT"
+          actual_version="$("$TOOLCHAIN_ROOT/node_modules/.bin/wrangler" --version)"
           test "$actual_version" = "$WRANGLER_VERSION"
 
       - name: Download immutable release artifact
@@ -689,7 +693,7 @@ jobs:
           });
           NODE
 
-      - name: Create exact-repository resume token
+      - name: Create exact-repository reauthorization token
         id: target-token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
@@ -699,7 +703,7 @@ jobs:
           repositories: crawl-remote
           permission-contents: read
 
-      - name: Reauthorize ancestor release immediately before mutation
+      - name: Reauthorize current main immediately before mutation
         env:
           GH_TOKEN: ${{ steps.target-token.outputs.token }}
           RECEIPT_PATH: ${{ runner.temp }}/${{ needs.preflight.outputs.receipt_name }}
@@ -709,13 +713,12 @@ jobs:
           current_main_sha="$(
             gh api "repos/$TARGET_REPOSITORY/commits/main" --jq '.sha'
           )"
-          comparison_status="$(
-            gh api \
-              "repos/$TARGET_REPOSITORY/compare/${DEPLOY_SHA}...${current_main_sha}" \
-              --jq '.status'
-          )"
-          if [[ "$comparison_status" != "identical" && "$comparison_status" != "ahead" ]]; then
-            echo "::error::approved crawl-remote release is no longer an ancestor of main."
+          if [[ ! "$current_main_sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::crawl-remote main did not resolve to a full lowercase commit SHA."
+            exit 1
+          fi
+          if [[ "$DEPLOY_SHA" != "$current_main_sha" ]]; then
+            echo "::error::approved crawl-remote release is no longer the current main tip."
             exit 1
           fi
 
@@ -723,19 +726,129 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CRAWL_REMOTE_CLOUDFLARE_API_TOKEN }}
           FENCE_RESPONSE: ${{ runner.temp }}/crawl-remote-observation-fence.json
+          PRE_FENCE_ERROR: ${{ runner.temp }}/crawl-remote-observation-fence-precheck.err
+          PRE_FENCE_RESPONSE: ${{ runner.temp }}/crawl-remote-observation-fence-precheck.json
           RECEIPT_PATH: ${{ runner.temp }}/${{ needs.preflight.outputs.receipt_name }}
           RELEASE_ROOT: ${{ runner.temp }}/crawl-remote-release
-          WRANGLER_PREFIX: ${{ runner.temp }}/crawl-remote-wrangler-4.107.1
         run: |
           unset BASH_ENV ENV CDPATH GLOBIGNORE NODE_OPTIONS
           test -n "$CLOUDFLARE_API_TOKEN"
-          wrangler="$WRANGLER_PREFIX/node_modules/.bin/wrangler"
+          wrangler="$TOOLCHAIN_ROOT/node_modules/.bin/wrangler"
           test "$("$wrangler" --version)" = "$WRANGLER_VERSION"
 
           consumed_receipt="${RECEIPT_PATH}.consumed"
           test -f "$RECEIPT_PATH"
           test ! -e "$consumed_receipt"
           mv -- "$RECEIPT_PATH" "$consumed_receipt"
+
+          set +e
+          "$wrangler" d1 execute crawl-remote \
+            --remote \
+            --json \
+            --cwd "$RELEASE_ROOT" \
+            --config wrangler.json \
+            --command \
+            "select capability, migration_ready, cutover_enabled, activated_at from remote_capability_fences where capability = 'gitcrawl.observation-order.v1'" \
+            > "$PRE_FENCE_RESPONSE" 2> "$PRE_FENCE_ERROR"
+          pre_fence_status=$?
+          set -e
+          test "$(wc -c < "$PRE_FENCE_RESPONSE")" -le 1048576
+          test "$(wc -c < "$PRE_FENCE_ERROR")" -le 1048576
+
+          PRE_FENCE_STATUS="$pre_fence_status" node --input-type=module <<'PRE_FENCE_NODE'
+          import { readFileSync } from 'node:fs';
+
+          const expectedState = process.env.OBSERVATION_ORDER_STATE;
+          if (!['dormant', 'active'].includes(expectedState)) {
+            throw new Error('observation-order pre-migration state is invalid');
+          }
+
+          const statusText = process.env.PRE_FENCE_STATUS ?? '';
+          if (!/^(0|[1-9][0-9]*)$/.test(statusText)) {
+            throw new Error('observation-order pre-migration query status is invalid');
+          }
+          const status = Number(statusText);
+          const response = readFileSync(process.env.PRE_FENCE_RESPONSE, 'utf8');
+          const errorOutput = readFileSync(process.env.PRE_FENCE_ERROR, 'utf8');
+
+          if (status !== 0) {
+            let failure;
+            try {
+              failure = JSON.parse(response);
+            } catch {
+              throw new Error('observation-order pre-migration query failed');
+            }
+            const failureKeys =
+              failure && typeof failure === 'object' && !Array.isArray(failure)
+                ? Object.keys(failure)
+                : [];
+            const errorKeys =
+              failure?.error &&
+              typeof failure.error === 'object' &&
+              !Array.isArray(failure.error)
+                ? Object.keys(failure.error)
+                : [];
+            const missingTableErrors = new Set([
+              'no such table: remote_capability_fences: SQLITE_ERROR',
+              'D1_ERROR: no such table: remote_capability_fences: SQLITE_ERROR',
+            ]);
+            if (
+              errorOutput.length !== 0 ||
+              JSON.stringify(failureKeys) !== JSON.stringify(['error']) ||
+              JSON.stringify(errorKeys) !== JSON.stringify(['text']) ||
+              !missingTableErrors.has(failure.error.text)
+            ) {
+              throw new Error('observation-order pre-migration query failed');
+            }
+            if (expectedState !== 'dormant') {
+              throw new Error(
+                'observation-order fence table is missing but active state was selected',
+              );
+            }
+            console.log('Observation-order fence table is absent before dormant bootstrap.');
+            process.exit(0);
+          }
+
+          const executions = JSON.parse(response);
+          if (
+            !Array.isArray(executions) ||
+            executions.length !== 1 ||
+            executions[0]?.success !== true
+          ) {
+            throw new Error(
+              'observation-order pre-migration query did not succeed exactly once',
+            );
+          }
+
+          const rows = executions[0].results;
+          if (!Array.isArray(rows) || rows.length !== 1) {
+            throw new Error(
+              'observation-order pre-migration query did not return exactly one row',
+            );
+          }
+
+          const fence = rows[0];
+          const expectedCutover = expectedState === 'active' ? 1 : 0;
+          if (
+            fence?.capability !== 'gitcrawl.observation-order.v1' ||
+            fence?.migration_ready !== 1 ||
+            fence?.cutover_enabled !== expectedCutover ||
+            (
+              expectedState === 'active' &&
+              (
+                typeof fence?.activated_at !== 'string' ||
+                fence.activated_at.trim().length === 0
+              )
+            ) ||
+            (expectedState === 'dormant' && fence?.activated_at !== '')
+          ) {
+            throw new Error(
+              `observation-order fence does not match selected ${expectedState} state before migration`,
+            );
+          }
+
+          console.log(`Observation-order fence matches selected ${expectedState} state.`);
+          PRE_FENCE_NODE
 
           "$wrangler" d1 migrations apply crawl-remote \
             --remote \
@@ -751,7 +864,7 @@ jobs:
             "select capability, migration_ready, cutover_enabled, activated_at from remote_capability_fences where capability = 'gitcrawl.observation-order.v1'" \
             > "$FENCE_RESPONSE"
 
-          node --input-type=module <<'NODE'
+          node --input-type=module <<'POST_FENCE_NODE'
           import { readFileSync } from 'node:fs';
 
           const executions = JSON.parse(
@@ -793,7 +906,7 @@ jobs:
           }
 
           console.log(`Observation-order migration is ready and ${expectedState}.`);
-          NODE
+          POST_FENCE_NODE
 
           "$wrangler" deploy bundle/index.js \
             --no-bundle \

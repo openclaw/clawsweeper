@@ -15,11 +15,12 @@ checkpoint, and status-only commits are intentionally omitted.
   Cloudflare Workers credential into crawl-remote's protected, main-only
   production environment without exposing the token in workflow output.
 - Added a maintainer-only two-runner workflow that builds a hash-bound
-  crawl-remote release artifact without production credentials, then resumes
-  any still-main-ancestor SHA on a fresh protected runner using an
-  environment-specific Cloudflare token, a pinned isolated Wrangler, strict D1
-  fence proof, an explicit dormant-or-active observation-order selector, and
-  exact release-identity polling.
+  crawl-remote release artifact without production credentials, then requires
+  that exact SHA to remain the current main tip on a fresh protected runner
+  using an environment-specific Cloudflare token, a committed lockfile-backed
+  Wrangler toolchain, pre- and post-migration D1 fence proof, an explicit
+  dormant-or-active observation-order selector, and exact release-identity
+  polling.
 - Added conservative, add-only `good first issue` labeling for unlocked, small, current-main reproduced bugs with a high-confidence repair prompt and validation steps and no linked-PR, feature, config, product, security, protected-label, or maintainer-opt-out blocker.
 - Added durable maintainer decision packets whose exact question, rationale, options, recommendation, and likely owner come from Codex structured review output while deterministic code only validates and persists the result. Thanks @brokemac79.
 - Added close-candidate quality telemetry to apply status while keeping reporting separate from close eligibility and comment-only sync. Thanks @brokemac79.

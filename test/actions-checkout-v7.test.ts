@@ -53,10 +53,19 @@ test("production crawl-remote checkout is pinned to the audited v7 commit", () =
   const workflow = parse(
     readFileSync(".github/workflows/deploy-crawl-remote.yml", "utf8"),
   ) as WorkflowDocument;
-  const checkout = Object.values(workflow.jobs ?? {})
-    .flatMap((job) => job.steps ?? [])
-    .find((step) => step.uses?.startsWith("actions/checkout@"));
-  assert.equal(checkout?.uses, `actions/checkout@${checkoutV7Commit}`);
+  const preflightCheckout = workflow.jobs?.preflight?.steps?.find((step) =>
+    step.uses?.startsWith("actions/checkout@"),
+  );
+  const deployCheckout = workflow.jobs?.deploy?.steps?.find((step) =>
+    step.uses?.startsWith("actions/checkout@"),
+  );
+  assert.equal(preflightCheckout?.uses, `actions/checkout@${checkoutV7Commit}`);
+  assert.equal(preflightCheckout?.with?.repository, "openclaw/crawl-remote");
+  assert.equal(deployCheckout?.uses, `actions/checkout@${checkoutV7Commit}`);
+  assert.equal(deployCheckout?.with?.repository, "openclaw/clawsweeper");
+  assert.equal(deployCheckout?.with?.ref, "${{ github.sha }}");
+  assert.equal(deployCheckout?.with?.["sparse-checkout"], ".github/deploy/crawl-remote-toolchain");
+  assert.equal(deployCheckout?.with?.["persist-credentials"], false);
 });
 
 test("trusted-event workflows explicitly checkout the default branch", () => {
