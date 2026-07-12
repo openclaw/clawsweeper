@@ -119,6 +119,29 @@ test("validation preflight blocks targets without any validation command", () =>
   );
 });
 
+test("staged proof rejects an empty required gate before adding integrity checks", () => {
+  const cwd = gitPackageFixture({});
+  git(cwd, "add", ".");
+  git(cwd, "commit", "-m", "initial");
+  attachOrigin(cwd);
+
+  assert.throws(
+    () =>
+      buildTargetValidationProofPlan(
+        [],
+        cwd,
+        validationOptions("steipete/example", {
+          toolchain: {
+            packageManager: "pnpm",
+            baseValidationCommands: [],
+            changedGate: null,
+          },
+        }),
+      ),
+    /validation_command_missing: no configured or artifact validation command is available/,
+  );
+});
+
 test("OpenClaw automerge repairs can require CI-parity validation commands", () => {
   const cwd = packageFixture({
     "check:changed": "node check.js",
@@ -2044,6 +2067,7 @@ test("target validation strips Codex, model, and GitHub write credentials", () =
     "CODEX_HOME",
     "GH_TOKEN",
     "GITHUB_TOKEN",
+    "CLAWSWEEPER_RULESET_GH_TOKEN",
   ];
   const secretNameArray = `[${secretNames.map((name) => `'${name}'`).join(",")}]`;
   const cwd = gitPackageFixture({

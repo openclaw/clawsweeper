@@ -468,6 +468,18 @@ function createTargetValidationProofPlan(
   const changedFiles = gitChangedFilesFromRef(cwd, baseRef);
   const surfaceHints = options.proofSurfacePaths ?? [];
   const toolchain = getToolchain(options);
+  const requiredCommands = resolvedRequiredValidationCommandEntries(
+    commands,
+    cwd,
+    baseBranch,
+    options,
+    validationEnv,
+  );
+  if (requiredCommands.length === 0) {
+    throw new Error(
+      "validation_command_missing: no configured or artifact validation command is available",
+    );
+  }
   const resolved: StagedProofCommandInput[] = [
     {
       parts: ["git", "diff", "--check", `${baseRef}...HEAD`],
@@ -483,23 +495,9 @@ function createTargetValidationProofPlan(
       required: true,
       originalIndex: -1,
     },
+    ...requiredCommands,
   ];
 
-  for (const command of resolvedRequiredValidationCommandEntries(
-    commands,
-    cwd,
-    baseBranch,
-    options,
-    validationEnv,
-  )) {
-    resolved.push(command);
-  }
-
-  if (resolved.length === 0) {
-    throw new Error(
-      "validation_command_missing: no configured or artifact validation command is available",
-    );
-  }
   return {
     baseRef,
     plan: buildStagedProofPlan({
@@ -858,6 +856,9 @@ function targetValidationEnv() {
   delete env.CODEX_HOME;
   delete env.GH_TOKEN;
   delete env.GITHUB_TOKEN;
+  for (const key of Object.keys(env)) {
+    if (/^CLAWSWEEPER_.*GH_TOKEN$/.test(key)) delete env[key];
+  }
   return env;
 }
 
