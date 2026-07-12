@@ -99,6 +99,24 @@ test("buildLocalRangeReview synthesizes a PR item + offline diff from the local 
     assert.match(byName("feature.txt")?.patch ?? "", /\+hello world/);
     assert.equal(byName("keep.txt")?.status, "M");
     assert.match(byName("keep.txt")?.patch ?? "", /\+more/);
+    const semanticFiles = result.context.semanticPullFiles as Array<Record<string, unknown>>;
+    const semanticByName = (name: string) => semanticFiles.find((file) => file.filename === name);
+    assert.deepEqual(
+      {
+        baseMode: semanticByName("feature.txt")?.baseMode,
+        baseType: semanticByName("feature.txt")?.baseType,
+        headMode: semanticByName("feature.txt")?.headMode,
+        headType: semanticByName("feature.txt")?.headType,
+        treeModesComplete: semanticByName("feature.txt")?.treeModesComplete,
+      },
+      {
+        baseMode: null,
+        baseType: null,
+        headMode: "100644",
+        headType: "blob",
+        treeModesComplete: true,
+      },
+    );
 
     assert.deepEqual(result.context.counts, { comments: 0, timeline: 0, pullFiles: 2 });
     assert.equal(result.baseSha, git(dir, "rev-parse", "base-ref"));

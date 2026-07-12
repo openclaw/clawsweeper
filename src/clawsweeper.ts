@@ -723,6 +723,11 @@ interface ItemContext {
   };
 }
 
+interface GitTreeEntry {
+  mode: string;
+  type: string;
+}
+
 interface LocalRelatedTitleEntry {
   number: number;
   kind: ItemKind | undefined;
@@ -5905,6 +5910,151 @@ function compactSemanticPullFile(value: unknown): unknown {
   };
 }
 
+function normalizedPullFileStatus(value: unknown): string {
+  const status = typeof value === "string" ? value.trim().toLowerCase() : "";
+  if (status === "m" || status === "modified" || status === "changed") return "modified";
+  if (status === "a" || status === "added") return "added";
+  if (status === "d" || status === "deleted" || status === "removed") return "deleted";
+  if (status.startsWith("r") || status === "renamed") return "renamed";
+  if (status.startsWith("c") || status === "copied") return "copied";
+  return status;
+}
+
+function gitCommitExists(targetDir: string, sha: string): boolean {
+  try {
+    run("git", ["cat-file", "-e", `${sha}^{commit}`], {
+      cwd: targetDir,
+      env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function ensureReviewTreeCommit(options: {
+  targetDir: string;
+  sha: string;
+  sourceRef: string;
+  destinationRef: string;
+}): boolean {
+  if (!/^[0-9a-f]{40}$/i.test(options.sha)) return false;
+  if (gitCommitExists(options.targetDir, options.sha)) return true;
+  try {
+    run(
+      "git",
+      [
+        "fetch",
+        "--force",
+        "--filter=blob:none",
+        "origin",
+        `${options.sourceRef}:${options.destinationRef}`,
+        "--depth=1",
+      ],
+      { cwd: options.targetDir },
+    );
+  } catch {
+    return false;
+  }
+  return gitCommitExists(options.targetDir, options.sha);
+}
+
+function gitTreeEntry(
+  targetDir: string,
+  sha: string,
+  path: string,
+): GitTreeEntry | null | undefined {
+  if (!path || path.includes("\0") || path.includes("\n") || path.includes("\r")) return undefined;
+  const result = spawnSync("git", ["ls-tree", "-z", sha, "--", path], {
+    cwd: targetDir,
+    encoding: "utf8",
+    env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
+    maxBuffer: 1024 * 1024,
+  });
+  if (result.error || result.status !== 0) return undefined;
+  if (!result.stdout) return null;
+  if (!result.stdout.endsWith("\0")) return undefined;
+  const entry = result.stdout.slice(0, -1);
+  if (entry.includes("\0")) return undefined;
+  const match = entry.match(/^([0-7]{6}) (blob|tree|commit) [0-9a-f]{40,64}\t(.*)$/s);
+  if (!match || match[3] !== path) return undefined;
+  return { mode: match[1]!, type: match[2]! };
+}
+
+function pullFileTreeIdentity(options: {
+  file: unknown;
+  targetDir: string;
+  baseSha: string;
+  headSha: string;
+}): Record<string, unknown> {
+  const file = asRecord(options.file);
+  const filename = stringOrUndefined(file.filename) ?? "";
+  const previousFilename = stringOrUndefined(file.previous_filename) ?? "";
+  const status = normalizedPullFileStatus(file.status);
+  if (!filename) return { treeModesComplete: false };
+  const basePath = status === "added" ? null : previousFilename || filename;
+  const headPath = status === "deleted" ? null : filename;
+  const baseEntry = basePath ? gitTreeEntry(options.targetDir, options.baseSha, basePath) : null;
+  const headEntry = headPath ? gitTreeEntry(options.targetDir, options.headSha, headPath) : null;
+  const treeModesComplete =
+    baseEntry !== undefined &&
+    headEntry !== undefined &&
+    ((status === "added" && baseEntry === null && headEntry !== null) ||
+      (status === "deleted" && baseEntry !== null && headEntry === null) ||
+      ((status === "modified" || status === "renamed" || status === "copied") &&
+        baseEntry !== null &&
+        headEntry !== null));
+  return {
+    baseMode: baseEntry?.mode ?? null,
+    baseType: baseEntry?.type ?? null,
+    headMode: headEntry?.mode ?? null,
+    headType: headEntry?.type ?? null,
+    treeModesComplete,
+  };
+}
+
+function semanticPullFilesWithTreeIdentity(options: {
+  files: readonly unknown[];
+  itemNumber: number;
+  pullRequest: unknown;
+  targetDir: string;
+}): unknown[] {
+  const pull = asRecord(options.pullRequest);
+  const base = asRecord(pull.base);
+  const head = asRecord(pull.head);
+  const baseSha = stringOrUndefined(base.sha) ?? "";
+  const headSha = stringOrUndefined(head.sha) ?? "";
+  const baseRef = stringOrUndefined(base.ref) ?? "";
+  const commitsAvailable =
+    isSafeGitBranchName(baseRef) &&
+    ensureReviewTreeCommit({
+      targetDir: options.targetDir,
+      sha: baseSha,
+      sourceRef: `refs/heads/${baseRef}`,
+      destinationRef: `refs/clawsweeper/review-cache/base-${options.itemNumber}`,
+    }) &&
+    ensureReviewTreeCommit({
+      targetDir: options.targetDir,
+      sha: headSha,
+      sourceRef: `refs/pull/${options.itemNumber}/head`,
+      destinationRef: `refs/clawsweeper/review-cache/head-${options.itemNumber}`,
+    });
+
+  return options.files.map((value) => {
+    const compact = asRecord(compactSemanticPullFile(value));
+    if (!commitsAvailable) return { ...compact, treeModesComplete: false };
+    return {
+      ...compact,
+      ...pullFileTreeIdentity({
+        file: value,
+        targetDir: options.targetDir,
+        baseSha,
+        headSha,
+      }),
+    };
+  });
+}
+
 function compactPullFilePaths(value: unknown): string[] {
   const file = asRecord(value);
   return [file.filename, file.previous_filename].filter(
@@ -7598,7 +7748,11 @@ function fetchReviewStructuralRecord(options: {
 
 function collectItemContext(
   item: Item,
-  options: { fullTimelineForRelations?: boolean; reviewCacheDigest?: boolean } = {},
+  options: {
+    fullTimelineForRelations?: boolean;
+    reviewCacheDigest?: boolean;
+    reviewCacheGitDir?: string;
+  } = {},
 ): ItemContext {
   const issue = ghJson<unknown>(["api", `repos/${targetRepo()}/issues/${item.number}`]);
   const issueRecord = asRecord(issue);
@@ -7720,12 +7874,21 @@ function collectItemContext(
         : filterReviewContextComments(fullPullReviewComments, item.number);
     context.pullRequest = compactPullRequest(pullRequest);
     context.pullFiles = compactMappedWindow(pullFiles, pullFilesWindow.total, 80, compactPullFile);
-    context.semanticPullFiles = compactMappedWindow(
-      pullFiles,
-      pullFilesWindow.total,
-      80,
-      compactSemanticPullFile,
-    );
+    context.semanticPullFiles =
+      options.reviewCacheDigest &&
+      options.reviewCacheGitDir &&
+      !pullFilesWindow.truncated &&
+      pullFilesWindow.total === pullFiles.length
+        ? semanticPullFilesWithTreeIdentity({
+            files: pullFiles,
+            itemNumber: item.number,
+            pullRequest,
+            targetDir: options.reviewCacheGitDir,
+          })
+        : compactMappedWindow(pullFiles, pullFilesWindow.total, 80, (file) => ({
+            ...asRecord(compactSemanticPullFile(file)),
+            treeModesComplete: false,
+          }));
     context.pullCommits = compactMappedWindow(
       pullCommits,
       pullCommitsWindow.total,
@@ -19689,15 +19852,26 @@ function buildLocalRangeReview(
         const parts = line.split("\t");
         const status = parts[0] ?? line;
         const filename = parts[parts.length - 1] ?? line;
+        const previousFilename = parts.length > 2 ? parts[parts.length - 2] : undefined;
         const patch = run("git", ["diff", `${baseSha}..${headSha}`, "--", filename], {
           cwd: targetDir,
         });
-        semanticPullFiles.push({
+        const file = {
           filename,
+          ...(previousFilename ? { previous_filename: previousFilename } : {}),
           status,
           patch: truncateText(patch, 512 * 1024),
+        };
+        semanticPullFiles.push({
+          ...file,
+          ...pullFileTreeIdentity({ file, targetDir, baseSha, headSha }),
         });
-        return { filename, status, patch: truncateText(patch, 8000) };
+        return {
+          filename,
+          ...(previousFilename ? { previous_filename: previousFilename } : {}),
+          status,
+          patch: truncateText(patch, 8000),
+        };
       })
     : [];
   const item: Item = {
@@ -20200,6 +20374,7 @@ function reviewCommand(args: Args): void {
         : collectItemContext(item, {
             fullTimelineForRelations: true,
             reviewCacheDigest: true,
+            reviewCacheGitDir: openclawDir,
           });
       const contextElapsedMs = Date.now() - contextStartedAt;
       const contextItemUpdatedAt = stringOrUndefined(asRecord(context.issue).updatedAt);

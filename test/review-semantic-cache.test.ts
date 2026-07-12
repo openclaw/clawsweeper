@@ -86,7 +86,7 @@ function input(overrides: Record<string, unknown> = {}) {
     reviewPolicy: "policy-1",
     reviewModel: "gpt-5.6",
   };
-  return {
+  const merged = {
     ...base,
     ...overrides,
     context: {
@@ -94,6 +94,25 @@ function input(overrides: Record<string, unknown> = {}) {
       ...(overrides.context as Record<string, unknown> | undefined),
     },
   };
+  const withTreeIdentity = (value: unknown): unknown => {
+    const file = value as Record<string, unknown>;
+    if (file.treeModesComplete !== undefined || file.omitted !== undefined) return file;
+    const status = String(file.status ?? "").toLowerCase();
+    return {
+      ...file,
+      baseMode: status === "added" ? null : "100644",
+      baseType: status === "added" ? null : "blob",
+      headMode: status === "deleted" ? null : "100644",
+      headType: status === "deleted" ? null : "blob",
+      treeModesComplete: true,
+    };
+  };
+  const mergedContext = merged.context as Record<string, unknown>;
+  for (const key of ["pullFiles", "semanticPullFiles"]) {
+    const files = mergedContext[key];
+    if (Array.isArray(files)) mergedContext[key] = files.map(withTreeIdentity);
+  }
+  return merged;
 }
 
 function record(overrides: Record<string, unknown> = {}) {
@@ -195,6 +214,48 @@ test("semantic TypeScript token changes bust the code digest", () => {
 
   assert.notEqual(prior.codeDigest, changed.codeDigest);
   assert.equal(decision({ priorRecord: prior, currentRecord: changed }).reason, "code_changed");
+});
+
+test("Git tree mode changes bust the code digest and unsupported modes fail closed", () => {
+  const prior = record();
+  const executable = record({
+    context: {
+      pullFiles: [
+        {
+          ...input().context.pullFiles[0],
+          baseMode: "100644",
+          baseType: "blob",
+          headMode: "100755",
+          headType: "blob",
+          treeModesComplete: true,
+        },
+      ],
+    },
+  });
+  const symlink = record({
+    context: {
+      pullFiles: [
+        {
+          ...input().context.pullFiles[0],
+          baseMode: "100644",
+          baseType: "blob",
+          headMode: "120000",
+          headType: "blob",
+          treeModesComplete: true,
+        },
+      ],
+    },
+  });
+  const unavailable = record({
+    context: {
+      pullFiles: [{ ...input().context.pullFiles[0], treeModesComplete: false }],
+    },
+  });
+
+  assert.notEqual(prior.codeDigest, executable.codeDigest);
+  assert.equal(decision({ priorRecord: prior, currentRecord: executable }).reason, "code_changed");
+  assert.equal(symlink.eligibilityReason, "unsupported_file_mode");
+  assert.equal(unavailable.eligibilityReason, "incomplete_file_modes");
 });
 
 test("identical token edits at different source locations do not collide", () => {

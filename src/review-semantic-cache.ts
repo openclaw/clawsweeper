@@ -8,7 +8,7 @@ import { API } from "typescript/unstable/sync";
 import { REVIEW_CACHE_MAX_AGE_DAYS } from "./scheduler-policy.js";
 import { stableJson } from "./stable-json.js";
 
-export const REVIEW_SEMANTIC_CACHE_VERSION = 6;
+export const REVIEW_SEMANTIC_CACHE_VERSION = 7;
 export const REVIEW_SEMANTIC_CACHE_MAX_AGE_DAYS = REVIEW_CACHE_MAX_AGE_DAYS;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -48,6 +48,8 @@ export type ReviewSemanticEligibilityReason =
   | "incomplete_checks"
   | "incomplete_review_context"
   | "incomplete_file_list"
+  | "incomplete_file_modes"
+  | "unsupported_file_mode"
   | "missing_patch"
   | "truncated_patch"
   | "oversized_patch"
@@ -68,6 +70,8 @@ const ELIGIBILITY_REASONS = new Set<ReviewSemanticEligibilityReason>([
   "incomplete_checks",
   "incomplete_review_context",
   "incomplete_file_list",
+  "incomplete_file_modes",
+  "unsupported_file_mode",
   "missing_patch",
   "truncated_patch",
   "oversized_patch",
@@ -212,6 +216,11 @@ function exactFileView(value: unknown): unknown {
     deletions: file.deletions ?? null,
     changes: file.changes ?? null,
     patch: file.patch ?? null,
+    baseMode: file.baseMode ?? null,
+    baseType: file.baseType ?? null,
+    headMode: file.headMode ?? null,
+    headType: file.headType ?? null,
+    treeModesComplete: file.treeModesComplete ?? false,
   };
 }
 
@@ -564,6 +573,22 @@ function semanticFile(value: unknown, compiler: SemanticCompilerSession): FileSe
   if (status !== "modified" && status !== "added") {
     return { eligible: false, reason: "unsupported_status", value: null };
   }
+  if (file.treeModesComplete !== true) {
+    return { eligible: false, reason: "incomplete_file_modes", value: null };
+  }
+  const baseMode = stringValue(file.baseMode);
+  const baseType = stringValue(file.baseType);
+  const headMode = stringValue(file.headMode);
+  const headType = stringValue(file.headType);
+  const regularBlob = (mode: string | null, type: string | null): boolean =>
+    type === "blob" && (mode === "100644" || mode === "100755");
+  if (
+    !regularBlob(headMode, headType) ||
+    (status === "modified" && !regularBlob(baseMode, baseType)) ||
+    (status === "added" && (baseMode !== null || baseType !== null))
+  ) {
+    return { eligible: false, reason: "unsupported_file_mode", value: null };
+  }
   if (!patch) return { eligible: false, reason: "missing_patch", value: null };
   if (patch.length > MAX_PATCH_CHARS) {
     return { eligible: false, reason: "oversized_patch", value: null };
@@ -599,6 +624,10 @@ function semanticFile(value: unknown, compiler: SemanticCompilerSession): FileSe
     value: {
       filename,
       status,
+      baseMode,
+      baseType,
+      headMode,
+      headType,
       hunks: semantic.value,
     },
   };
