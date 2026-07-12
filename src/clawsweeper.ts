@@ -467,6 +467,7 @@ interface LatestRelease {
   tagName?: string;
   name?: string;
   publishedAt?: string;
+  isLatest?: boolean;
   targetCommitish?: string;
   sha?: string | null;
 }
@@ -8049,12 +8050,15 @@ function gitInfo(openclawDir: string, options: ReviewGitInfoOptions = {}): GitIn
       "--exclude-drafts",
       "--exclude-pre-releases",
       "--limit",
-      "1",
+      "100",
       "--json",
-      "tagName,name,publishedAt",
+      "tagName,name,publishedAt,isLatest",
     ]);
     if (!Array.isArray(releases)) throw new Error("release list response was not an array");
-    latestRelease = releases[0] ?? null;
+    latestRelease = releases.find((release) => release.isLatest === true) ?? null;
+    if (releases.length > 0 && !latestRelease) {
+      throw new Error("release list response did not identify the latest release");
+    }
   } catch {
     latestRelease = null;
     releaseStateComplete = false;
@@ -20325,6 +20329,7 @@ function reviewCommand(args: Args): void {
             const structuralRevalidationStartedAt = Date.now();
             let revalidatedStructuralRecord: ReviewStructuralRecord | null = null;
             try {
+              git = loadReviewGitInfo();
               revalidatedStructuralRecord = fetchReviewStructuralRecord({
                 item,
                 git,

@@ -156,19 +156,22 @@ test("structural cache probes before hydration but acquires a lease before carry
     reviewLoop.slice(structuralRevalidation, structuralWrite),
     /git = loadReviewGitInfo\(\)[\s\S]*fetchReviewStructuralRecord\(\{/,
   );
-  const structuralProbe = source.slice(
+  const structuralProbeSource = source.slice(
     source.indexOf("function fetchReviewStructuralRecord"),
     source.indexOf("function collectItemContext"),
   );
-  assert.match(structuralProbe, /pullChecksContext\(options\.item\.number, headSha\)/);
-  assert.match(structuralProbe, /pullChecksDigest = sha256\(stableJson\(pullChecks\)\)/);
-  assert.match(structuralProbe, /if \(!options\.git\.releaseStateComplete\) return null/);
+  assert.match(structuralProbeSource, /pullChecksContext\(options\.item\.number, headSha\)/);
+  assert.match(structuralProbeSource, /pullChecksDigest = sha256\(stableJson\(pullChecks\)\)/);
+  assert.match(structuralProbeSource, /if \(!options\.git\.releaseStateComplete\) return null/);
   const gitInfoBlock = source.slice(
     source.indexOf("function gitInfo("),
     source.indexOf("function reviewTargetBranch"),
   );
   assert.match(gitInfoBlock, /releaseStateComplete = false/);
   assert.match(gitInfoBlock, /"release",\s+"list"/);
+  assert.match(gitInfoBlock, /"tagName,name,publishedAt,isLatest"/);
+  assert.match(gitInfoBlock, /release\.isLatest === true/);
+  assert.doesNotMatch(gitInfoBlock, /releases\[0\]/);
   assert.match(gitInfoBlock, /return \{ mainSha, releaseStateComplete, latestRelease \}/);
   assert.match(source, /coordination-held\.json/);
   assert.match(source, /coordinationHeldRetryAt = startComment\.retryAt/);
