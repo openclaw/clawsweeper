@@ -294,6 +294,11 @@ if (execute && exactCommentVersionFastPath.suppress && exactCommentVersionFastPa
   const versionStillCurrent = measure("verify_exact_comment_version_cleanup", () =>
     exactCommentVersionStillCurrent(exactCommentVersionFastPathCommand),
   );
+  report.exact_comment_version_ack = versionStillCurrent
+    ? measure("converge_exact_comment_version_ack", () =>
+        convergeExactCommentVersionFastPathAck(exactCommentVersionFastPathCommand, statusCommentId),
+      )
+    : "skipped_source_drift";
   report.exact_comment_version_cleanup = versionStillCurrent
     ? "skipped_shared_ownership"
     : "skipped_source_drift";
@@ -4260,6 +4265,57 @@ function exactCommentVersionStillCurrent(command: LooseRecord) {
     );
     return false;
   }
+}
+
+function convergeExactCommentVersionFastPathAck(command: LooseRecord, commentId: JsonValue) {
+  const id = Number(commentId ?? 0);
+  if (!Number.isInteger(id) || id <= 0) return "not_requested";
+  try {
+    const comment = fetchIssueComment(id);
+    if (!comment || !isTrustedStatusComment(comment)) return "skipped_untrusted";
+    if (issueNumberFromUrl(comment.issue_url) !== Number(command.issue_number))
+      return "skipped_item_mismatch";
+    const ackMarker = commandAckMarkerForCommentId(command.comment_id);
+    if (commandAckMarkerFromBody(comment.body) !== ackMarker) return "skipped_marker_mismatch";
+    if (commandStatusMarkerFromBody(comment.body)) return "already_terminal";
+    const body = `${ackMarker}\n${renderResponse(command, replayedDispatchResult(command))}`;
+    const payloadPath = writePayload(repoRoot(), `comment-router-fast-path-${id}`, { body });
+    ghText([
+      "api",
+      `repos/${command.repo}/issues/comments/${id}`,
+      "--method",
+      "PATCH",
+      "--input",
+      payloadPath,
+    ]);
+    issueCommentsCache.delete(Number(command.issue_number));
+    return "updated";
+  } catch (error) {
+    console.warn(
+      `[comment-router] warning: exact comment acknowledgement convergence failed for ${command.repo}#${command.issue_number}: ${compactText(ghErrorText(error), 160)}`,
+    );
+    return "failed";
+  }
+}
+
+function replayedDispatchResult(command: LooseRecord) {
+  if (String(command.status ?? "") !== "executed") return null;
+  const action = (name: string) =>
+    (command.actions ?? []).find(
+      (candidate: JsonValue) =>
+        candidate?.action === name && ["executed", "active"].includes(String(candidate.status)),
+    );
+  const repair = action("dispatch_repair");
+  if (repair && REPAIR_INTENTS.has(String(command.intent ?? ""))) return repair;
+  const replayed: LooseRecord = {};
+  if (repair) replayed.repair = repair;
+  const clawsweeper = action("dispatch_clawsweeper") ?? action("dispatch_assist");
+  if (clawsweeper) replayed.clawsweeper = clawsweeper;
+  const autoclose = action("autoclose");
+  if (autoclose) replayed.autoclose = autoclose;
+  const merge = action("merge");
+  if (merge) replayed.merge = merge;
+  return Object.keys(replayed).length > 0 ? replayed : null;
 }
 
 function convergePrecreatedCommandAckCommentsInner(command: LooseRecord) {

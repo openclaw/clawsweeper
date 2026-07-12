@@ -2014,6 +2014,8 @@ test("exact comment fast path avoids shared terminal acknowledgement cleanup rac
     cleanupBlock,
     /exactCommentVersionStillCurrent\(exactCommentVersionFastPathCommand\)/,
   );
+  assert.match(cleanupBlock, /convergeExactCommentVersionFastPathAck\(/);
+  assert.match(cleanupBlock, /statusCommentId/);
   assert.match(cleanupBlock, /skipped_shared_ownership/);
   assert.match(cleanupBlock, /skipped_source_drift/);
   assert.match(cleanupBlock, /reason: "cleanup_source_drift"/);
@@ -2031,6 +2033,18 @@ test("exact comment fast path avoids shared terminal acknowledgement cleanup rac
     /clearTerminalMaintainerCommandReaction\(exactCommentVersionFastPathCommand\)/,
   );
   assert.doesNotMatch(source, /function cleanupTerminalCommentAck/);
+  const ackConvergence = source.slice(
+    source.indexOf("function convergeExactCommentVersionFastPathAck"),
+    source.indexOf("function convergePrecreatedCommandAckCommentsInner"),
+  );
+  assert.match(ackConvergence, /isTrustedStatusComment\(comment\)/);
+  assert.match(ackConvergence, /issueNumberFromUrl\(comment\.issue_url\)/);
+  assert.match(ackConvergence, /commandAckMarkerFromBody\(comment\.body\)/);
+  assert.match(ackConvergence, /commandStatusMarkerFromBody\(comment\.body\)/);
+  assert.match(ackConvergence, /renderResponse\(command, replayedDispatchResult\(command\)\)/);
+  assert.match(ackConvergence, /"--method",\s*"PATCH"/);
+  assert.doesNotMatch(ackConvergence, /"DELETE"/);
+  assert.doesNotMatch(ackConvergence, /clearTerminalMaintainerCommandReaction/);
 });
 
 test("command receipt gates let the oldest same-key run proceed when a newer duplicate is pending", () => {
