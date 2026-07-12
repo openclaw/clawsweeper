@@ -29,7 +29,10 @@ marker creation, the seal check plus spool write, and finalization. Finalization
 rereads the spool while holding all selected producer locks, then publishes the
 create-only seal and exact shard set. An exact replay remains valid, while a new
 event for a sealed producer is rejected with an instruction to use a new
-invocation identity.
+invocation identity. Lock files are linked into place only after their canonical
+content is fully written and synced. Ownership binds both PID and process
+incarnation; dead or reused owners are reclaimed immediately, while elapsed age
+alone never evicts a live owner.
 
 Failed live projections record retryable `projection.failed` events under
 derived `<component>.crabfleet_projection` producers. The first finalization
@@ -180,13 +183,16 @@ confidential-identifier checks as every other durable machine-text field.
   to one semantic digest and parent edge. Parent traversal follows at most
   262144 durable bindings per import and rejects instead of accepting an
   unchecked deeper graph. These bindings preserve global event identity and
-  causal acyclicity across sequential producer imports.
-- Producer and event reservations are published before shard payloads so a
-  replay can safely finish an interrupted import. Complete shard-set manifests
-  are published only after every destination payload has been written and
-  reread as replay-equivalent. Sequential imports therefore cannot move a run,
-  replace a complete numbered set with a different part count, or advertise a
-  complete set whose payload publication did not finish.
+  causal acyclicity across sequential producer imports. One destination lock
+  serializes validation through reservation, payload publication, verification,
+  and completion, so concurrent opposing parent edges cannot both commit.
+- Producer, event, and exact shard-set reservations are published before shard
+  payloads so a replay can safely finish an interrupted import without reserving
+  a second immutable set. A separate completion marker is published only after
+  every destination payload has been written and reread as replay-equivalent.
+  Sequential imports therefore cannot move a run, replace a reserved numbered
+  set with a different part count, or advertise completion before payload
+  publication finishes.
 
 ## Privacy Boundary
 
@@ -197,8 +203,11 @@ payloads, arbitrary model text, local absolute paths, credentials, private
 hosts, or email addresses. Credential detection covers GitHub and standard
 `npm_<36 chars>` token families, JWT-shaped values, Basic credentials,
 whitespace or separator-delimited bearer/API/Cloudflare credential forms,
-credential field aliases, POSIX and Windows absolute paths, case-insensitive
-private paths, private IPv4 and IPv6 addresses, and internal hostname suffixes.
+credential field aliases, POSIX and Windows absolute paths, one-quartet Basic
+credentials, private paths, private IPv4 and IPv6 addresses, and internal
+hostname suffixes. Portable relative paths additionally reject Windows device
+names and trailing-dot segments. Public run URLs reject query or fragment
+delimiters even when empty.
 Form-style `+` credential separators are rejected when followed by a
 credential-shaped value. Percent-encoded octets are rejected from durable
 identifiers and paths rather than decoded into potentially confidential forms.
@@ -309,16 +318,19 @@ projection drain for that spool root one 10000 ms deadline, bounded to at most
 60000 ms through the runtime flush option. Independent ledger roots do not wait
 for or fail one another's projection queues. Timeout, HTTP, and
 response-cleanup failures remain projection failures. Live delivery, including
-exported direct posts, runs at most four fetches concurrently with 64 more
-projections queued. A timed-out fetch keeps its concurrency slot until the
-underlying request and response-body cleanup settle; a later wave fails closed
-into durable retryable `projection.failed` records if all slots remain
-unresolved. Direct events are validated before admission, and queued requests
-have their own bounded deadline so invalid events, dead slots, or ignored
-cancellation cannot leave caller promises pending forever. Queued projections
-snapshot their endpoint, session, token, and timeout before admission, so later
-environment mutation cannot reroute them. Further live projections also fail
-closed instead of growing process memory without bound.
+exported direct posts, runs at most four fetches concurrently. Each spool root
+may queue 64 projections, with 64 queued roots and 256 queued projections
+process-wide. Admission selects the queued root with the fewest active requests,
+so one saturated root cannot deny the next recovered slot to an independent
+root. A timed-out fetch keeps its concurrency slot until the underlying request
+and response-body cleanup settle; only that request set's queued projections
+fail closed if all of its slots remain unresolved. Direct events are validated
+before admission, and queued requests have their own bounded deadline so
+invalid events, dead slots, or ignored cancellation cannot leave caller
+promises pending forever. Queued projections snapshot their endpoint, session,
+token, and timeout before admission, so later environment mutation cannot
+reroute them. Further live projections also fail closed instead of growing
+process memory without bound.
 
 Projection configuration is also optional and non-authoritative. Once the local
 event is durable, malformed URL or timeout settings, incomplete session
