@@ -152,6 +152,15 @@ export type ActionEventShardImportResult = {
   paths: string[];
 };
 
+export type ExpectedActionEventProducer = {
+  repository: string;
+  sha: string;
+  workflow: string;
+  job: string;
+  runId: string;
+  runAttempt: number;
+};
+
 type ImportedActionEventShard = {
   relativePath: string;
   content: string;
@@ -478,7 +487,11 @@ export function interruptOpenWorkflowActionEvents(
   const env = options.env ?? process.env;
   if (!workflowActionEventsEnabled(env)) return 0;
   const reasonCode = options.reasonCode ?? ACTION_EVENT_REASON_CODES.timeout;
-  if (reasonCode !== ACTION_EVENT_REASON_CODES.timeout) {
+  if (
+    reasonCode !== ACTION_EVENT_REASON_CODES.timeout &&
+    reasonCode !== ACTION_EVENT_REASON_CODES.cancelled &&
+    reasonCode !== ACTION_EVENT_REASON_CODES.workflowFailed
+  ) {
     throw new Error(`unsupported interrupted workflow action reason: ${reasonCode}`);
   }
   const safeRoot = prepareSafeReadRoot(root, "action event spool");
@@ -566,9 +579,13 @@ export function interruptOpenWorkflowActionEvents(
         const uncertainMutation =
           openUncertainMutation ||
           lifecycleMutation?.attributes?.completion_reason === "mutation_outcome_unknown";
+        const aggregatesChildMutations =
+          start.event_type === ACTION_EVENT_TYPES.applyBatch ||
+          (start.event_type === ACTION_EVENT_TYPES.reviewRetry &&
+            start.subject.kind === "workflow");
         const mutationOccurred =
           workflowActionEventIsUncertainMutationStart(start) ||
-          (start.event_type === ACTION_EVENT_TYPES.applyBatch
+          (aggregatesChildMutations
             ? mutationEvents.length > 0 || openUncertainMutation
             : lifecycleMutation !== undefined || openUncertainMutation);
         const openReceipt = workflowActionEventIsUncertainMutationStart(start)
@@ -590,10 +607,13 @@ export function interruptOpenWorkflowActionEvents(
           parentEventId,
           phaseSeq:
             start.event_type === ACTION_EVENT_TYPES.reviewBatch ||
-            start.event_type === ACTION_EVENT_TYPES.applyBatch
+            start.event_type === ACTION_EVENT_TYPES.applyBatch ||
+            (start.event_type === ACTION_EVENT_TYPES.reviewRetry &&
+              start.subject.kind === "workflow")
               ? 1_000_000
               : start.phase_seq + 2,
           idempotencyKeySha256:
+            workflowActionEventIsUncertainMutationStart(start) ||
             start.event_type === ACTION_EVENT_TYPES.applyAction
               ? start.idempotency_key_sha256
               : actionIdempotencyKey({
@@ -609,7 +629,7 @@ export function interruptOpenWorkflowActionEvents(
             name: start.event_type,
             status: ACTION_EVENT_STATUSES.failed,
             reasonCode,
-            retryable: true,
+            retryable: !uncertainMutation,
             mutation: mutationOccurred,
           },
           ...(start.evidence === undefined
@@ -628,7 +648,11 @@ export function interruptOpenWorkflowActionEvents(
               ? start.event_type === ACTION_EVENT_TYPES.reviewRetry
                 ? "dispatch_outcome_unknown"
                 : "mutation_outcome_unknown"
-              : "timeout",
+              : reasonCode === ACTION_EVENT_REASON_CODES.timeout
+                ? "timeout"
+                : reasonCode === ACTION_EVENT_REASON_CODES.cancelled
+                  ? "cancelled"
+                  : "workflow_failed",
             failed_count: 1,
             ...(mutationOccurred ? { action_count: 1 } : {}),
             partial: true,
@@ -889,6 +913,7 @@ function startActionEventCrabFleetPost(
 export function importActionEventShards(
   sourceRoot: string,
   destinationRoot: string,
+  options: { expectedProducer?: ExpectedActionEventProducer | undefined } = {},
 ): ActionEventShardImportResult {
   const emptyResult = (): ActionEventShardImportResult => ({
     created: 0,
@@ -913,6 +938,9 @@ export function importActionEventShards(
     throw error;
   }
   const shards = readImportedActionEventShards(safeSource, relativePaths);
+  if (options.expectedProducer) {
+    validateImportedActionEventProducer(shards, options.expectedProducer);
+  }
   const safeDestination = prepareSafeReadRoot(destinationRoot, "action event shard import");
   return withActionEventLock(
     safeDestination.path,
@@ -1002,6 +1030,30 @@ export function importActionEventShards(
       };
     },
   );
+}
+
+function validateImportedActionEventProducer(
+  shards: readonly ImportedActionEventShard[],
+  expected: ExpectedActionEventProducer,
+): void {
+  for (const shard of shards) {
+    const actual = shard.identity;
+    const mismatched = (
+      [
+        ["repository", actual.repository, expected.repository],
+        ["sha", actual.sha, expected.sha],
+        ["workflow", actual.workflow, expected.workflow],
+        ["job", actual.job, expected.job],
+        ["run_id", actual.runId, expected.runId],
+        ["run_attempt", actual.runAttempt, expected.runAttempt],
+      ] as const
+    ).find(([, value, expectedValue]) => value !== expectedValue);
+    if (mismatched) {
+      throw new Error(
+        `action event shard producer provenance mismatch for ${mismatched[0]}: expected ${mismatched[2]}, got ${mismatched[1]}`,
+      );
+    }
+  }
 }
 
 function prepareActionEventShardImportBindings(

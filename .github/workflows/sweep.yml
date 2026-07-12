@@ -740,7 +740,7 @@ jobs:
             --max-pages 1 \
             --codex-model internal \
             --codex-reasoning-effort high \
-            --codex-sandbox danger-full-access \
+            --codex-sandbox read-only \
             --codex-timeout-ms "$codex_timeout_ms" \
             --item-numbers "${{ steps.target.outputs.item_number }}" \
             --readonly-openclaw \
@@ -781,10 +781,15 @@ jobs:
         if: ${{ always() && steps.live-item.outputs.proceed == 'true' }}
         env:
           REVIEW_EXIT_CODE: ${{ steps.review-exact-event-item.outputs.exit_code || '' }}
+          REVIEW_OUTCOME: ${{ steps.review-exact-event-item.outcome || 'not_started' }}
         run: |
           args=()
-          if [ "$REVIEW_EXIT_CODE" = "124" ] || [ "$REVIEW_EXIT_CODE" = "137" ]; then
+          if [ "$REVIEW_OUTCOME" = "cancelled" ] || [ "$REVIEW_EXIT_CODE" = "130" ] || [ "$REVIEW_EXIT_CODE" = "143" ]; then
+            args=(--interrupt-open-attempts --reason cancelled)
+          elif [ "$REVIEW_EXIT_CODE" = "124" ] || [ "$REVIEW_EXIT_CODE" = "137" ]; then
             args=(--interrupt-open-attempts --reason timeout)
+          elif [ "$REVIEW_OUTCOME" != "success" ]; then
+            args=(--interrupt-open-attempts --reason workflow_failed)
           fi
           pnpm run --silent finalize-action-events -- "${args[@]}"
 
@@ -1080,15 +1085,16 @@ jobs:
         run: |
           set -euo pipefail
           test -n "${CLAWSWEEPER_STATE_DIR:-}"
-          if [ ! -d .clawsweeper-repair/action-ledger-state/ledger ]; then
+          if [ ! -d "$CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT/ledger" ]; then
             echo "No exact event action shards were finalized."
             exit 0
           fi
           event_paths_file=".artifacts/exact-event-action-ledger-paths.txt"
           mkdir -p .artifacts
           pnpm run --silent publish-action-events -- \
-            --source-root .clawsweeper-repair/action-ledger-state \
-            --state-root "$CLAWSWEEPER_STATE_DIR" |
+            --source-root "$CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT" \
+            --state-root "$CLAWSWEEPER_STATE_DIR" \
+            --expected-producer-job "$GITHUB_JOB" |
             jq -r '.paths[]?' |
             sort -u > "$event_paths_file"
           if [ ! -s "$event_paths_file" ]; then
@@ -1631,7 +1637,7 @@ jobs:
             --shard-count "$SHARD_COUNT" \
             --codex-model internal \
             --codex-reasoning-effort high \
-            --codex-sandbox danger-full-access \
+            --codex-sandbox read-only \
             --min-active-shards "$MIN_ACTIVE_SHARDS" \
             --min-backfill-review-age-minutes "$MIN_BACKFILL_REVIEW_AGE_MINUTES" \
             "${hot_intake_arg[@]}" \
@@ -1861,7 +1867,7 @@ jobs:
             --max-pages ${{ needs.plan.outputs.max_pages }} \
             --codex-model internal \
             --codex-reasoning-effort high \
-            --codex-sandbox danger-full-access \
+            --codex-sandbox read-only \
             --codex-timeout-ms ${{ needs.plan.outputs.codex_timeout_ms }} \
             --item-numbers "${{ matrix.item_numbers }}" \
             "${planned_automatic_review_arg[@]}" \
@@ -1881,10 +1887,15 @@ jobs:
         working-directory: clawsweeper
         env:
           REVIEW_EXIT_CODE: ${{ steps.review-shard.outputs.exit_code || '' }}
+          REVIEW_OUTCOME: ${{ steps.review-shard.outcome || 'not_started' }}
         run: |
           args=()
-          if [ "$REVIEW_EXIT_CODE" = "124" ] || [ "$REVIEW_EXIT_CODE" = "137" ]; then
+          if [ "$REVIEW_OUTCOME" = "cancelled" ] || [ "$REVIEW_EXIT_CODE" = "130" ] || [ "$REVIEW_EXIT_CODE" = "143" ]; then
+            args=(--interrupt-open-attempts --reason cancelled)
+          elif [ "$REVIEW_EXIT_CODE" = "124" ] || [ "$REVIEW_EXIT_CODE" = "137" ]; then
             args=(--interrupt-open-attempts --reason timeout)
+          elif [ "$REVIEW_OUTCOME" != "success" ]; then
+            args=(--interrupt-open-attempts --reason workflow_failed)
           fi
           node dist/clawsweeper.js finalize-action-events "${args[@]}"
 
@@ -1938,7 +1949,7 @@ jobs:
         if: always()
         with:
           name: action-ledger-review-${{ matrix.shard }}
-          path: clawsweeper/.clawsweeper-repair/action-ledger-state/**
+          path: ${{ runner.temp }}/clawsweeper-action-ledger/${{ github.run_id }}/${{ github.run_attempt }}/${{ github.job }}/**
           include-hidden-files: true
           if-no-files-found: ignore
 
@@ -2100,15 +2111,16 @@ jobs:
           test -n "${CLAWSWEEPER_STATE_DIR:-}"
           mkdir -p .artifacts
           : > .artifacts/action-ledger-paths.txt
-          for source_root in \
-            .clawsweeper-repair/action-ledger-download \
-            .clawsweeper-repair/action-ledger-state
-          do
-            pnpm run --silent publish-action-events -- \
-              --source-root "$source_root" \
-              --state-root "$CLAWSWEEPER_STATE_DIR" |
-              jq -r '.paths[]?' >> .artifacts/action-ledger-paths.txt
-          done
+          pnpm run --silent publish-action-events -- \
+            --source-root .clawsweeper-repair/action-ledger-download \
+            --state-root "$CLAWSWEEPER_STATE_DIR" \
+            --expected-producer-job review |
+            jq -r '.paths[]?' >> .artifacts/action-ledger-paths.txt
+          pnpm run --silent publish-action-events -- \
+            --source-root "$CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT" \
+            --state-root "$CLAWSWEEPER_STATE_DIR" \
+            --expected-producer-job "$GITHUB_JOB" |
+            jq -r '.paths[]?' >> .artifacts/action-ledger-paths.txt
           sort -u -o .artifacts/action-ledger-paths.txt .artifacts/action-ledger-paths.txt
           while IFS= read -r event_path; do
             durable_event_path="$CLAWSWEEPER_STATE_DIR/$event_path"
@@ -2169,7 +2181,7 @@ jobs:
         run: |
           set -euo pipefail
           test -n "${CLAWSWEEPER_STATE_DIR:-}"
-          source_root=".clawsweeper-repair/action-ledger-state"
+          source_root="$CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT"
           if [ ! -d "$source_root/ledger" ]; then
             echo "No review artifact action event shards were finalized."
             exit 0
@@ -2178,7 +2190,8 @@ jobs:
           mkdir -p .artifacts
           pnpm run --silent publish-action-events -- \
             --source-root "$source_root" \
-            --state-root "$CLAWSWEEPER_STATE_DIR" |
+            --state-root "$CLAWSWEEPER_STATE_DIR" \
+            --expected-producer-job "$GITHUB_JOB" |
             jq -r '.paths[]?' |
             sort -u > "$event_paths_file"
           if [ ! -s "$event_paths_file" ]; then
@@ -2460,15 +2473,16 @@ jobs:
         run: |
           set -euo pipefail
           test -n "${CLAWSWEEPER_STATE_DIR:-}"
-          if [ ! -d .clawsweeper-repair/action-ledger-state/ledger ]; then
+          if [ ! -d "$CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT/ledger" ]; then
             echo "No selected review comment action shards were finalized."
             exit 0
           fi
           event_paths_file=".artifacts/selected-comment-action-ledger-paths.txt"
           mkdir -p .artifacts
           pnpm run --silent publish-action-events -- \
-            --source-root .clawsweeper-repair/action-ledger-state \
-            --state-root "$CLAWSWEEPER_STATE_DIR" |
+            --source-root "$CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT" \
+            --state-root "$CLAWSWEEPER_STATE_DIR" \
+            --expected-producer-job "$GITHUB_JOB" |
             jq -r '.paths[]?' |
             sort -u > "$event_paths_file"
           if [ ! -s "$event_paths_file" ]; then
@@ -2672,6 +2686,7 @@ jobs:
 
       - name: Plan or dispatch failed-review retries
         id: retry-failed-reviews-run
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
           TARGET_REPO: openclaw/openclaw
@@ -2689,6 +2704,7 @@ jobs:
             dry_run_arg=(--dry-run)
             echo "::notice::Failed-review retry is running in dry-run mode. Set CLAWSWEEPER_FAILED_REVIEW_RETRY_ENABLED=1 to dispatch exact-item retries."
           fi
+          set +e
           pnpm run retry-failed-reviews -- \
             --target-repo "$TARGET_REPO" \
             --limit "$RETRY_LIMIT" \
@@ -2701,15 +2717,24 @@ jobs:
             --state-dir results/failed-review-retries/openclaw-openclaw \
             --report-path artifacts/failed-review-retry-report.json \
             "${dry_run_arg[@]}"
+          retry_exit_code=$?
+          set -e
+          echo "exit_code=$retry_exit_code" >> "$GITHUB_OUTPUT"
+          exit "$retry_exit_code"
 
       - name: Finalize failed-review retry action ledger
         if: ${{ always() }}
         env:
+          RETRY_EXIT_CODE: ${{ steps.retry-failed-reviews-run.outputs.exit_code || '' }}
           RETRY_OUTCOME: ${{ steps.retry-failed-reviews-run.outcome || 'not_started' }}
         run: |
           args=()
-          if [ "$RETRY_OUTCOME" != "success" ]; then
+          if [ "$RETRY_OUTCOME" = "cancelled" ] || [ "$RETRY_EXIT_CODE" = "130" ] || [ "$RETRY_EXIT_CODE" = "143" ]; then
+            args=(--interrupt-open-attempts --reason cancelled)
+          elif [ "$RETRY_EXIT_CODE" = "124" ] || [ "$RETRY_EXIT_CODE" = "137" ]; then
             args=(--interrupt-open-attempts --reason timeout)
+          elif [ "$RETRY_OUTCOME" != "success" ]; then
+            args=(--interrupt-open-attempts --reason workflow_failed)
           fi
           pnpm run --silent finalize-action-events -- "${args[@]}"
 
@@ -2726,7 +2751,7 @@ jobs:
         run: |
           set -euo pipefail
           test -n "${CLAWSWEEPER_STATE_DIR:-}"
-          source_root=".clawsweeper-repair/action-ledger-state"
+          source_root="$CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT"
           if [ ! -d "$source_root/ledger" ]; then
             echo "No failed-review retry action event shards were finalized."
             exit 0
@@ -2735,7 +2760,8 @@ jobs:
           mkdir -p .artifacts
           pnpm run --silent publish-action-events -- \
             --source-root "$source_root" \
-            --state-root "$CLAWSWEEPER_STATE_DIR" |
+            --state-root "$CLAWSWEEPER_STATE_DIR" \
+            --expected-producer-job "$GITHUB_JOB" |
             jq -r '.paths[]?' |
             sort -u > "$event_paths_file"
           if [ ! -s "$event_paths_file" ]; then
@@ -3056,8 +3082,10 @@ jobs:
           APPLY_PROOF_OUTCOME: ${{ steps.generate-apply-proofs.outcome || 'not_started' }}
         run: |
           args=()
-          if [ "$APPLY_PROOF_OUTCOME" != "success" ]; then
-            args=(--interrupt-open-attempts --reason timeout)
+          if [ "$APPLY_PROOF_OUTCOME" = "cancelled" ]; then
+            args=(--interrupt-open-attempts --reason cancelled)
+          elif [ "$APPLY_PROOF_OUTCOME" != "success" ]; then
+            args=(--interrupt-open-attempts --reason workflow_failed)
           fi
           pnpm run --silent finalize-action-events -- "${args[@]}"
 
@@ -3076,7 +3104,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: ${{ steps.proof-artifact.outputs.action_ledger_name }}
-          path: .clawsweeper-repair/action-ledger-state/**
+          path: ${{ runner.temp }}/clawsweeper-action-ledger/${{ github.run_id }}/${{ github.run_attempt }}/${{ github.job }}/**
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 7
@@ -3139,7 +3167,8 @@ jobs:
           mkdir -p .artifacts
           pnpm run --silent publish-action-events -- \
             --source-root "$source_root" \
-            --state-root "$CLAWSWEEPER_STATE_DIR" |
+            --state-root "$CLAWSWEEPER_STATE_DIR" \
+            --expected-producer-job apply-proof |
             jq -r '.paths[]?' |
             sort -u > "$event_paths_file"
           if [ ! -s "$event_paths_file" ]; then
@@ -3643,8 +3672,10 @@ jobs:
           APPLY_OUTCOME: ${{ steps.apply-existing-run.outcome || 'not_started' }}
         run: |
           args=()
-          if [ "$APPLY_OUTCOME" != "success" ]; then
-            args=(--interrupt-open-attempts --reason timeout)
+          if [ "$APPLY_OUTCOME" = "cancelled" ]; then
+            args=(--interrupt-open-attempts --reason cancelled)
+          elif [ "$APPLY_OUTCOME" != "success" ]; then
+            args=(--interrupt-open-attempts --reason workflow_failed)
           fi
           pnpm run --silent finalize-action-events -- "${args[@]}"
 
@@ -3666,7 +3697,7 @@ jobs:
         run: |
           set -euo pipefail
           test -n "${CLAWSWEEPER_STATE_DIR:-}"
-          source_root=".clawsweeper-repair/action-ledger-state"
+          source_root="$CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT"
           if [ ! -d "$source_root/ledger" ]; then
             echo "No apply action event shards were finalized."
             exit 0
@@ -3675,7 +3706,8 @@ jobs:
           mkdir -p .artifacts
           pnpm run --silent publish-action-events -- \
             --source-root "$source_root" \
-            --state-root "$CLAWSWEEPER_STATE_DIR" |
+            --state-root "$CLAWSWEEPER_STATE_DIR" \
+            --expected-producer-job "$GITHUB_JOB" |
             jq -r '.paths[]?' |
             sort -u > "$event_paths_file"
           if [ ! -s "$event_paths_file" ]; then

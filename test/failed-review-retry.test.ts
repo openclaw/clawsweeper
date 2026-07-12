@@ -747,7 +747,7 @@ if (path.endsWith("/dispatches") && args.includes("POST")) {
   const counter = ${JSON.stringify(dispatchCountPath)};
   const count = fs.existsSync(counter) ? Number(fs.readFileSync(counter, "utf8")) : 0;
   fs.writeFileSync(counter, String(count + 1));
-  console.error("dispatch response lost after acceptance");
+  console.error("HTTP 502: dispatch response lost after acceptance");
   process.exit(1);
 }
 console.error("unexpected gh args: " + args.join(" "));
@@ -783,6 +783,44 @@ process.exit(1);
     assert.equal(readFileSync(dispatchCountPath, "utf8"), "1");
     assert.match(readFileSync(first.itemPath, "utf8"), /^failed_review_retry_count: 0$/m);
     assert.doesNotMatch(readFileSync(second.itemPath, "utf8"), /^failed_review_retry_count:/m);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("definite failed dispatch clears uncertainty without consuming the retry attempt", () => {
+  const root = mkdtempSync(tmpPrefix);
+  const fixture = failedIssueRetryFixture(root, 4349);
+  try {
+    withMockGh(
+      root,
+      issueRetryGhMock(
+        fixture.issue,
+        'console.error("HTTP 422: validation failed"); process.exit(1);',
+      ),
+      () => runFailedIssueRetry(fixture),
+    );
+
+    const report = JSON.parse(readFileSync(fixture.reportPath, "utf8")) as Array<{
+      action: string;
+      attempts?: number;
+    }>;
+    assert.equal(report[0]?.action, "skipped_dispatch_failed");
+    assert.equal(report[0]?.attempts, 0);
+    const markdown = readFileSync(fixture.itemPath, "utf8");
+    assert.match(markdown, /^failed_review_retry_status: dispatch_failed$/m);
+    assert.match(markdown, /^failed_review_retry_count: 0$/m);
+    assert.equal(
+      failedReviewRetryEligibilityForTest({
+        markdown,
+        liveState: "open",
+        liveSourceRevision: fixture.sourceRevision,
+        now: Date.now() + 1,
+        maxAttempts: 2,
+        cooldownMs: 0,
+      }).action,
+      "planned_failed_review_retry",
+    );
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

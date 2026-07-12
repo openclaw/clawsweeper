@@ -199,6 +199,7 @@ import {
   importActionEventShards,
   interruptOpenWorkflowActionEvents,
   recordWorkflowPhaseEvent,
+  workflowActionProducer,
 } from "./action-ledger-runtime.js";
 import { publishMainCommit } from "./repair/git-publish.js";
 
@@ -463,7 +464,21 @@ type AcquiredReviewStartLease = {
 
 type ReviewStartStatusCommentResult =
   | { status: "posted"; lease: AcquiredReviewStartLease; didMutate: true }
-  | { status: "held"; lease: null; retryAt: string; didMutate: false };
+  | { status: "held"; lease: null; retryAt: string; didMutate: boolean };
+
+function heldReviewStartStatusCommentResult(
+  retryAt: string,
+  didMutate: boolean,
+): ReviewStartStatusCommentResult {
+  return { status: "held", lease: null, retryAt, didMutate };
+}
+
+export function heldReviewStartStatusCommentResultForTest(
+  retryAt: string,
+  didMutate: boolean,
+): ReviewStartStatusCommentResult {
+  return heldReviewStartStatusCommentResult(retryAt, didMutate);
+}
 
 interface ExistingReview {
   path: string;
@@ -2479,6 +2494,35 @@ function sleepMs(milliseconds: number): void {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds);
 }
 
+function untrustedCodexEnv(
+  options: {
+    ghToken?: string | undefined;
+    preserveCodexAuth?: boolean | undefined;
+  } = {},
+): NodeJS.ProcessEnv {
+  const env = codexEnv(options);
+  for (const key of Object.keys(env)) {
+    if (key.startsWith("CLAWSWEEPER_ACTION_LEDGER_")) delete env[key];
+  }
+  return env;
+}
+
+export function untrustedCodexEnvForTest(
+  env: NodeJS.ProcessEnv,
+  options: {
+    ghToken?: string | undefined;
+    preserveCodexAuth?: boolean | undefined;
+  } = {},
+): NodeJS.ProcessEnv {
+  const previousEnv = process.env;
+  try {
+    process.env = { ...env };
+    return untrustedCodexEnv(options);
+  } finally {
+    process.env = previousEnv;
+  }
+}
+
 let lastThrottleHeartbeatAt = 0;
 let throttleHeartbeatContext: (() => string) | null = null;
 
@@ -2540,11 +2584,16 @@ function maybePublishThrottleHeartbeat(options: {
   }
 }
 
-function ghWithRetry(args: string[], attempts = 12): string {
+type GitHubRetryOptions = {
+  request?: ((args: string[], attempt: number) => string) | undefined;
+  sleepBeforeRetry?: ((waitMs: number) => void) | undefined;
+};
+
+function ghWithRetry(args: string[], attempts = 12, options: GitHubRetryOptions = {}): string {
   let lastError: unknown;
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     try {
-      return gh(args);
+      return options.request?.(args, attempt) ?? gh(args);
     } catch (error) {
       if (error instanceof GitHubRuntimeBudgetError) throw error;
       lastError = error;
@@ -2561,7 +2610,8 @@ function ghWithRetry(args: string[], attempts = 12): string {
       if (retryKind === "throttle") {
         maybePublishThrottleHeartbeat({ args, attempt, attempts, waitMs });
       }
-      sleepBeforeGitHubRetry(waitMs);
+      if (options.sleepBeforeRetry) options.sleepBeforeRetry(waitMs);
+      else sleepBeforeGitHubRetry(waitMs);
     }
   }
   throw lastError;
@@ -2600,15 +2650,136 @@ function runObservedApplyMutation<T>(options: {
   return result;
 }
 
-function ghObservedMutationCommand(args: string[], attempts = 12): string {
-  return activeApplyMutationRunner ? gh(args) : ghWithRetry(args, attempts);
+function ghObservedMutationCommand(options: {
+  identity: string;
+  args: string[];
+  attempts?: number | undefined;
+  onMutation?: (() => void) | undefined;
+  didMutate?: ((result: string) => boolean) | undefined;
+  knownNoMutation?: ((error: unknown) => boolean) | undefined;
+  request?: ((args: string[], attempt: number) => string) | undefined;
+  sleepBeforeRetry?: ((waitMs: number) => void) | undefined;
+}): string {
+  return ghWithRetry(options.args, options.attempts ?? 12, {
+    request: (args, attempt) =>
+      runObservedApplyMutation({
+        identity: `${options.identity}:request_attempt:${attempt + 1}`,
+        operation: () => (options.request ? options.request(args, attempt) : gh(args)),
+        ...(options.onMutation ? { onMutation: options.onMutation } : {}),
+        ...(options.didMutate ? { didMutate: options.didMutate } : {}),
+        ...(options.knownNoMutation ? { knownNoMutation: options.knownNoMutation } : {}),
+      }),
+    ...(options.sleepBeforeRetry ? { sleepBeforeRetry: options.sleepBeforeRetry } : {}),
+  });
 }
 
-function ghRawOnceWithCheckpoint(args: string[], onBeforeRun: () => void): string {
+export function observedGitHubMutationAttemptsForTest(
+  outcomes: readonly ("transient" | "accepted" | "already_exists")[],
+): Array<{ identity: string; outcome: "accepted" | "rejected" | "unknown" }> {
+  const receipts: Array<{
+    identity: string;
+    outcome: "accepted" | "rejected" | "unknown";
+  }> = [];
+  const previousRunner = activeApplyMutationRunner;
+  activeApplyMutationRunner = <T>(options: {
+    identity: string;
+    operation: () => T;
+    didMutate?: ((result: T) => boolean) | undefined;
+    knownNoMutation?: ((error: unknown) => boolean) | undefined;
+  }): T => {
+    try {
+      const result = options.operation();
+      receipts.push({
+        identity: options.identity,
+        outcome: options.didMutate?.(result) === false ? "rejected" : "accepted",
+      });
+      return result;
+    } catch (error) {
+      receipts.push({
+        identity: options.identity,
+        outcome: options.knownNoMutation?.(error) === true ? "rejected" : "unknown",
+      });
+      throw error;
+    }
+  };
+  try {
+    ghObservedMutationCommand({
+      identity: "test_mutation",
+      args: ["api", "test"],
+      attempts: outcomes.length,
+      knownNoMutation: labelAlreadyExistsError,
+      request: (_args, attempt) => {
+        const outcome = outcomes[attempt];
+        if (outcome === "accepted") return "ok";
+        if (outcome === "already_exists") throw new Error("label already exists");
+        throw new Error("HTTP 502: transient upstream failure");
+      },
+      sleepBeforeRetry: () => {},
+    });
+  } catch {
+    // The receipts are the assertion surface for rejected terminal attempts.
+  } finally {
+    activeApplyMutationRunner = previousRunner;
+  }
+  return receipts;
+}
+
+export type GitHubDispatchOutcome =
+  | "definitely_not_dispatched"
+  | "ambiguous_transport"
+  | "accepted";
+
+class GitHubDispatchError extends Error {
+  readonly outcome: Exclude<GitHubDispatchOutcome, "accepted">;
+  readonly cause: unknown;
+
+  constructor(outcome: Exclude<GitHubDispatchOutcome, "accepted">, cause: unknown) {
+    super(cause instanceof Error ? cause.message : String(cause));
+    this.name = "GitHubDispatchError";
+    this.outcome = outcome;
+    this.cause = cause;
+  }
+}
+
+function classifyGitHubDispatchResult(options: {
+  status: number | null;
+  signal?: NodeJS.Signals | null | undefined;
+  errorCode?: string | undefined;
+  stderr?: string | undefined;
+}): GitHubDispatchOutcome {
+  if (options.signal) return "ambiguous_transport";
+  if (options.errorCode) {
+    return options.errorCode === "ETIMEDOUT" || options.errorCode === "ENOBUFS"
+      ? "ambiguous_transport"
+      : "definitely_not_dispatched";
+  }
+  if (options.status === 0) return "accepted";
+  if (options.status === null) return "ambiguous_transport";
+  const error = new Error(options.stderr?.trim() || `GitHub dispatch exited ${options.status}`);
+  return ghRetryKind(error) === "none" ? "definitely_not_dispatched" : "ambiguous_transport";
+}
+
+export function classifyGitHubDispatchResultForTest(options: {
+  status: number | null;
+  signal?: NodeJS.Signals | null | undefined;
+  errorCode?: string | undefined;
+  stderr?: string | undefined;
+}): GitHubDispatchOutcome {
+  return classifyGitHubDispatchResult(options);
+}
+
+function ghRawOnceWithCheckpoint(
+  args: string[],
+  onBeforeRun: () => void,
+): { outcome: "accepted"; output: string } {
   const env = { ...process.env };
   const command = resolveCommand("gh", args, env);
   const timeoutMs = githubCommandTimeoutMs();
-  onBeforeRun();
+  try {
+    onBeforeRun();
+  } catch (error) {
+    throw new GitHubDispatchError("definitely_not_dispatched", error);
+  }
   const result = spawnSync(command.command, command.args, {
     cwd: ROOT,
     encoding: "utf8",
@@ -2618,16 +2789,37 @@ function ghRawOnceWithCheckpoint(args: string[], onBeforeRun: () => void): strin
     timeout: timeoutMs,
   });
   if (result.error) {
+    const errorCode = (result.error as NodeJS.ErrnoException).code;
     if (timeoutMs !== undefined && (result.error as NodeJS.ErrnoException).code === "ETIMEDOUT") {
-      throw githubRuntimeBudgetError("during GitHub dispatch");
+      throw new GitHubDispatchError(
+        "ambiguous_transport",
+        githubRuntimeBudgetError("during GitHub dispatch"),
+      );
     }
-    throw result.error;
+    throw new GitHubDispatchError(
+      classifyGitHubDispatchResult({
+        status: result.status,
+        signal: result.signal,
+        ...(errorCode ? { errorCode } : {}),
+      }) as Exclude<GitHubDispatchOutcome, "accepted">,
+      result.error,
+    );
   }
   if (result.status !== 0) {
     const stderr = typeof result.stderr === "string" ? result.stderr.trim() : "";
-    throw new Error([`Command failed: gh ${args.join(" ")}`, stderr].filter(Boolean).join("\n"));
+    const error = new Error(
+      [`Command failed: gh ${args.join(" ")}`, stderr].filter(Boolean).join("\n"),
+    );
+    throw new GitHubDispatchError(
+      classifyGitHubDispatchResult({
+        status: result.status,
+        signal: result.signal,
+        stderr,
+      }) as Exclude<GitHubDispatchOutcome, "accepted">,
+      error,
+    );
   }
-  return (result.stdout ?? "").trim();
+  return { outcome: "accepted", output: (result.stdout ?? "").trim() };
 }
 
 function ghJson<T>(args: string[]): T {
@@ -9207,7 +9399,7 @@ function runCodex(options: {
         ],
         cwd: options.openclawDir,
         env: {
-          ...codexEnv({
+          ...untrustedCodexEnv({
             ghToken: process.env.CLAWSWEEPER_PROOF_INSPECTION_TOKEN,
             preserveCodexAuth: options.preserveCodexAuth,
           }),
@@ -9551,7 +9743,7 @@ function runCodexAssist(options: {
       "-",
     ],
     cwd: ROOT,
-    env: { ...codexEnv(), GH_CONFIG_DIR: emptyGitHubConfigDir },
+    env: { ...untrustedCodexEnv(), GH_CONFIG_DIR: emptyGitHubConfigDir },
     input: prompt,
     timeoutMs: options.timeoutMs,
   });
@@ -12969,17 +13161,17 @@ export function mergeRiskLabelsForTest(
 }
 
 function removeIssueLabel(number: number, label: string, onMutation?: () => void): void {
-  runObservedApplyMutation({
+  ghObservedMutationCommand({
     identity: `issue_label_remove:${number}:${label}`,
-    operation: () => ghWithRetry(["issue", "edit", String(number), "--remove-label", label]),
+    args: ["issue", "edit", String(number), "--remove-label", label],
     onMutation,
   });
 }
 
 function addIssueLabel(number: number, label: string, onMutation?: () => void): void {
-  runObservedApplyMutation({
+  ghObservedMutationCommand({
     identity: `issue_label_add:${number}:${label}`,
-    operation: () => ghWithRetry(["issue", "edit", String(number), "--add-label", label]),
+    args: ["issue", "edit", String(number), "--add-label", label],
     onMutation,
     knownNoMutation: (error) => missingLabelError(error, label) || labelCapacityError(error),
   });
@@ -12996,21 +13188,18 @@ export function isGitHubLabelAlreadyExistsErrorForTest(message: string): boolean
 
 function ensurePriorityLabel(label: PriorityLabelSpec, onMutation?: () => void): void {
   try {
-    runObservedApplyMutation({
+    ghObservedMutationCommand({
       identity: `label_create:${label.name}`,
-      operation: () =>
-        ghObservedMutationCommand(
-          [
-            "label",
-            "create",
-            label.name,
-            "--color",
-            label.color,
-            "--description",
-            label.description,
-          ],
-          2,
-        ),
+      args: [
+        "label",
+        "create",
+        label.name,
+        "--color",
+        label.color,
+        "--description",
+        label.description,
+      ],
+      attempts: 2,
       onMutation,
       knownNoMutation: labelAlreadyExistsError,
     });
@@ -13023,21 +13212,18 @@ function ensureImpactLabel(name: ImpactLabelName, onMutation?: () => void): void
   const definition = IMPACT_LABELS.find((label) => label.name === name);
   if (!definition) return;
   try {
-    runObservedApplyMutation({
+    ghObservedMutationCommand({
       identity: `label_create:${definition.name}`,
-      operation: () =>
-        ghObservedMutationCommand(
-          [
-            "label",
-            "create",
-            definition.name,
-            "--color",
-            definition.color,
-            "--description",
-            definition.description,
-          ],
-          2,
-        ),
+      args: [
+        "label",
+        "create",
+        definition.name,
+        "--color",
+        definition.color,
+        "--description",
+        definition.description,
+      ],
+      attempts: 2,
       onMutation,
       knownNoMutation: labelAlreadyExistsError,
     });
@@ -13050,21 +13236,18 @@ function ensureMergeRiskLabel(name: MergeRiskLabelName, onMutation?: () => void)
   const definition = MERGE_RISK_LABELS.find((label) => label.name === name);
   if (!definition) return;
   try {
-    runObservedApplyMutation({
+    ghObservedMutationCommand({
       identity: `label_create:${definition.name}`,
-      operation: () =>
-        ghObservedMutationCommand(
-          [
-            "label",
-            "create",
-            definition.name,
-            "--color",
-            definition.color,
-            "--description",
-            definition.description,
-          ],
-          2,
-        ),
+      args: [
+        "label",
+        "create",
+        definition.name,
+        "--color",
+        definition.color,
+        "--description",
+        definition.description,
+      ],
+      attempts: 2,
       onMutation,
       knownNoMutation: labelAlreadyExistsError,
     });
@@ -13354,21 +13537,18 @@ function ensureIssueAdvisorySyncLabel(name: string, onMutation?: () => void): vo
       : undefined);
   if (!definition) return;
   try {
-    runObservedApplyMutation({
+    ghObservedMutationCommand({
       identity: `label_create:${definition.name}`,
-      operation: () =>
-        ghObservedMutationCommand(
-          [
-            "label",
-            "create",
-            definition.name,
-            "--color",
-            definition.color,
-            "--description",
-            definition.description,
-          ],
-          2,
-        ),
+      args: [
+        "label",
+        "create",
+        definition.name,
+        "--color",
+        definition.color,
+        "--description",
+        definition.description,
+      ],
+      attempts: 2,
       onMutation,
       knownNoMutation: labelAlreadyExistsError,
     });
@@ -13381,21 +13561,18 @@ function ensureMaturityLabel(name: MaturityLabelName, onMutation?: () => void): 
   const definition = MATURITY_LABELS.find((label) => label.name === name);
   if (!definition) return;
   try {
-    runObservedApplyMutation({
+    ghObservedMutationCommand({
       identity: `label_create:${definition.name}`,
-      operation: () =>
-        ghObservedMutationCommand(
-          [
-            "label",
-            "create",
-            definition.name,
-            "--color",
-            definition.color,
-            "--description",
-            definition.description,
-          ],
-          2,
-        ),
+      args: [
+        "label",
+        "create",
+        definition.name,
+        "--color",
+        definition.color,
+        "--description",
+        definition.description,
+      ],
+      attempts: 2,
       onMutation,
       knownNoMutation: labelAlreadyExistsError,
     });
@@ -13650,21 +13827,18 @@ function syncTelegramVisibleProofLabel(options: {
 function ensurePrRatingLabel(tier: PrRatingTier, onMutation?: () => void): void {
   const definition = ratingLabelForTier(tier);
   try {
-    runObservedApplyMutation({
+    ghObservedMutationCommand({
       identity: `label_create:${definition.name}`,
-      operation: () =>
-        ghObservedMutationCommand(
-          [
-            "label",
-            "create",
-            definition.name,
-            "--color",
-            definition.color,
-            "--description",
-            definition.description,
-          ],
-          2,
-        ),
+      args: [
+        "label",
+        "create",
+        definition.name,
+        "--color",
+        definition.color,
+        "--description",
+        definition.description,
+      ],
+      attempts: 2,
       onMutation,
       knownNoMutation: labelAlreadyExistsError,
     });
@@ -13675,21 +13849,18 @@ function ensurePrRatingLabel(tier: PrRatingTier, onMutation?: () => void): void 
 
 function ensureFeatureShowcaseLabel(onMutation?: () => void): void {
   try {
-    runObservedApplyMutation({
+    ghObservedMutationCommand({
       identity: `label_create:${FEATURE_SHOWCASE_LABEL}`,
-      operation: () =>
-        ghObservedMutationCommand(
-          [
-            "label",
-            "create",
-            FEATURE_SHOWCASE_LABEL,
-            "--color",
-            FEATURE_SHOWCASE_LABEL_COLOR,
-            "--description",
-            FEATURE_SHOWCASE_LABEL_DESCRIPTION,
-          ],
-          2,
-        ),
+      args: [
+        "label",
+        "create",
+        FEATURE_SHOWCASE_LABEL,
+        "--color",
+        FEATURE_SHOWCASE_LABEL_COLOR,
+        "--description",
+        FEATURE_SHOWCASE_LABEL_DESCRIPTION,
+      ],
+      attempts: 2,
       onMutation,
       knownNoMutation: labelAlreadyExistsError,
     });
@@ -13701,21 +13872,18 @@ function ensureFeatureShowcaseLabel(onMutation?: () => void): void {
 function ensurePrStatusLabel(kind: PrStatusLabelKind, onMutation?: () => void): void {
   const definition = prStatusLabelForKind(kind);
   try {
-    runObservedApplyMutation({
+    ghObservedMutationCommand({
       identity: `label_create:${definition.name}`,
-      operation: () =>
-        ghObservedMutationCommand(
-          [
-            "label",
-            "create",
-            definition.name,
-            "--color",
-            definition.color,
-            "--description",
-            definition.description,
-          ],
-          2,
-        ),
+      args: [
+        "label",
+        "create",
+        definition.name,
+        "--color",
+        definition.color,
+        "--description",
+        definition.description,
+      ],
+      attempts: 2,
       onMutation,
       knownNoMutation: labelAlreadyExistsError,
     });
@@ -13832,21 +14000,18 @@ function syncPrStatusLabel(options: {
 
 function ensureTelegramVisibleProofLabel(onMutation?: () => void): void {
   try {
-    runObservedApplyMutation({
+    ghObservedMutationCommand({
       identity: `label_create:${TELEGRAM_VISIBLE_PROOF_LABEL}`,
-      operation: () =>
-        ghObservedMutationCommand(
-          [
-            "label",
-            "create",
-            TELEGRAM_VISIBLE_PROOF_LABEL,
-            "--color",
-            TELEGRAM_VISIBLE_PROOF_LABEL_COLOR,
-            "--description",
-            TELEGRAM_VISIBLE_PROOF_LABEL_DESCRIPTION,
-          ],
-          2,
-        ),
+      args: [
+        "label",
+        "create",
+        TELEGRAM_VISIBLE_PROOF_LABEL,
+        "--color",
+        TELEGRAM_VISIBLE_PROOF_LABEL_COLOR,
+        "--description",
+        TELEGRAM_VISIBLE_PROOF_LABEL_DESCRIPTION,
+      ],
+      attempts: 2,
       onMutation,
       knownNoMutation: labelAlreadyExistsError,
     });
@@ -13901,21 +14066,18 @@ export function isGitHubLabelCapacityErrorForTest(message: string): boolean {
 
 function ensureRealBehaviorProofSufficientLabel(onMutation?: () => void): boolean {
   try {
-    runObservedApplyMutation({
+    ghObservedMutationCommand({
       identity: `label_create:${PROOF_SUFFICIENT_LABEL}`,
-      operation: () =>
-        ghObservedMutationCommand(
-          [
-            "label",
-            "create",
-            PROOF_SUFFICIENT_LABEL,
-            "--color",
-            PROOF_SUFFICIENT_LABEL_COLOR,
-            "--description",
-            PROOF_SUFFICIENT_LABEL_DESCRIPTION,
-          ],
-          2,
-        ),
+      args: [
+        "label",
+        "create",
+        PROOF_SUFFICIENT_LABEL,
+        "--color",
+        PROOF_SUFFICIENT_LABEL_COLOR,
+        "--description",
+        PROOF_SUFFICIENT_LABEL_DESCRIPTION,
+      ],
+      attempts: 2,
       onMutation,
       knownNoMutation: labelAlreadyExistsError,
     });
@@ -13932,21 +14094,18 @@ function ensureRealBehaviorProofMediaLabel(name: string, onMutation?: () => void
   const definition = PROOF_MEDIA_LABELS.find((label) => label.name === name);
   if (!definition) return false;
   try {
-    runObservedApplyMutation({
+    ghObservedMutationCommand({
       identity: `label_create:${definition.name}`,
-      operation: () =>
-        ghObservedMutationCommand(
-          [
-            "label",
-            "create",
-            definition.name,
-            "--color",
-            definition.color,
-            "--description",
-            definition.description,
-          ],
-          2,
-        ),
+      args: [
+        "label",
+        "create",
+        definition.name,
+        "--color",
+        definition.color,
+        "--description",
+        definition.description,
+      ],
+      attempts: 2,
       onMutation,
       knownNoMutation: labelAlreadyExistsError,
     });
@@ -18909,6 +19068,7 @@ function upsertReviewComment(
   number: number,
   body: string,
   existing = issueReviewComment(number, [body]),
+  mutationIdentity = `review_comment_upsert:${number}:${reviewCommentBodyDigest(body)}`,
 ): Record<string, unknown> | undefined {
   const markedBody = markedReviewCommentBody(number, body);
   const id = commentId(existing);
@@ -18933,7 +19093,12 @@ function upsertReviewComment(
       payload,
     ];
   }
-  const response = ghObservedMutationCommand(args);
+  const response = ghObservedMutationCommand({
+    identity: mutationIdentity,
+    args,
+    knownNoMutation: (error) =>
+      isGitHubRequiresAuthenticationError(error) || isLockedConversationCommentError(error),
+  });
   const written = reviewCommentFromMutationResponse(response, args);
   if (written) return written;
   const fallback = issueReviewCommentWithBody(number, markedBody);
@@ -19033,17 +19198,16 @@ function ensureCloseAppliedComment(options: {
   const body = renderCloseAppliedComment(options);
   if (options.dryRun) return "dry-run: would post close-applied comment";
   const payload = writeCommentPayload(options.number, body);
-  runObservedApplyMutation({
+  ghObservedMutationCommand({
     identity: `close_applied_comment:${options.number}:${sha256(body)}`,
-    operation: () =>
-      ghObservedMutationCommand([
-        "api",
-        `repos/${targetRepo()}/issues/${options.number}/comments`,
-        "--method",
-        "POST",
-        "--input",
-        payload,
-      ]),
+    args: [
+      "api",
+      `repos/${targetRepo()}/issues/${options.number}/comments`,
+      "--method",
+      "POST",
+      "--input",
+      payload,
+    ],
   });
   return "posted close-applied comment";
 }
@@ -19163,7 +19327,7 @@ function postReviewStartStatusComment(options: {
     nowMs: startedAtMs,
   })[0];
   if (initialLease) {
-    return { status: "held", lease: null, retryAt: initialLease.expiresAt, didMutate: false };
+    return heldReviewStartStatusCommentResult(initialLease.expiresAt, false);
   }
   reapExpiredDedicatedReviewStartLeases(
     options.item.number,
@@ -19181,7 +19345,10 @@ function postReviewStartStatusComment(options: {
     payload,
   ];
   const created = reviewCommentFromMutationResponse(
-    ghObservedMutationCommand(createArgs),
+    ghObservedMutationCommand({
+      identity: `review_lease_post:${options.item.number}:${leaseOwner}`,
+      args: createArgs,
+    }),
     createArgs,
   );
   const createdCommentId = commentId(created);
@@ -19214,7 +19381,7 @@ function postReviewStartStatusComment(options: {
         `could not identify the winning review lease for #${options.item.number}; retry required`,
       );
     }
-    return { status: "held", lease: null, retryAt: winner.expiresAt, didMutate: false };
+    return heldReviewStartStatusCommentResult(winner.expiresAt, true);
   }
   return { status: "posted", lease: acquired, didMutate: true };
 }
@@ -19232,12 +19399,15 @@ function deleteOwnedDedicatedReviewStartLease(
         (commentBody(comment) ?? "").includes(`sha=${lease.headSha}`),
     );
     if (!matching) return false;
-    ghWithRetry([
-      "api",
-      `repos/${targetRepo()}/issues/comments/${lease.commentId}`,
-      "--method",
-      "DELETE",
-    ]);
+    ghObservedMutationCommand({
+      identity: `review_lease_delete:${itemNumber}:${lease.commentId}`,
+      args: [
+        "api",
+        `repos/${targetRepo()}/issues/comments/${lease.commentId}`,
+        "--method",
+        "DELETE",
+      ],
+    });
     return true;
   } catch (error) {
     if (options.throwOnError) throw error;
@@ -19265,12 +19435,15 @@ function reapExpiredDedicatedReviewStartLeases(
   });
   for (const lease of expired) {
     try {
-      ghWithRetry([
-        "api",
-        `repos/${targetRepo()}/issues/comments/${lease.commentId}`,
-        "--method",
-        "DELETE",
-      ]);
+      ghObservedMutationCommand({
+        identity: `review_lease_reap:${itemNumber}:${lease.commentId}`,
+        args: [
+          "api",
+          `repos/${targetRepo()}/issues/comments/${lease.commentId}`,
+          "--method",
+          "DELETE",
+        ],
+      });
       console.error(
         `[review] reaped expired review lease comment ${lease.commentId} for #${itemNumber} (lease expired ${lease.expiresAt})`,
       );
@@ -19293,7 +19466,10 @@ function pullRequestHeadSha(number: number): string {
 
 function closeItem(options: { number: number; kind: ItemKind; reason: CloseReason }): void {
   if (options.kind === "pull_request") {
-    ghWithRetry(["pr", "close", String(options.number)]);
+    ghObservedMutationCommand({
+      identity: `item_close:${options.number}:${options.kind}:${options.reason}`,
+      args: ["pr", "close", String(options.number)],
+    });
   } else {
     const reason = isImplementationCloseReason(options.reason) ? "completed" : "not_planned";
     const closePayloadFile = join(ROOT, ".artifacts", `close-${options.number}.json`);
@@ -19302,14 +19478,17 @@ function closeItem(options: { number: number; kind: ItemKind; reason: CloseReaso
       JSON.stringify({ state: "closed", state_reason: reason }),
       "utf8",
     );
-    ghWithRetry([
-      "api",
-      `repos/${targetRepo()}/issues/${options.number}`,
-      "--method",
-      "PATCH",
-      "--input",
-      closePayloadFile,
-    ]);
+    ghObservedMutationCommand({
+      identity: `item_close:${options.number}:${options.kind}:${options.reason}`,
+      args: [
+        "api",
+        `repos/${targetRepo()}/issues/${options.number}`,
+        "--method",
+        "PATCH",
+        "--input",
+        closePayloadFile,
+      ],
+    });
   }
 }
 
@@ -22437,7 +22616,7 @@ function dispatchFailedReviewRetry(options: {
       );
     }
     const dispatchUrl = `https://github.com/${options.workflowRepo}/actions/workflows/sweep.yml`;
-    ghRawOnceWithCheckpoint(
+    const dispatch = ghRawOnceWithCheckpoint(
       [
         "api",
         "--method",
@@ -22468,10 +22647,11 @@ function dispatchFailedReviewRetry(options: {
       ],
       () => options.onBeforeDispatch?.(dispatchUrl),
     );
+    if (dispatch.outcome !== "accepted") throw new Error("GitHub dispatch was not accepted");
     return dispatchUrl;
   }
   const dispatchUrl = `https://github.com/${options.workflowRepo}/actions/workflows/sweep.yml`;
-  ghRawOnceWithCheckpoint(
+  const dispatch = ghRawOnceWithCheckpoint(
     [
       "workflow",
       "run",
@@ -22499,6 +22679,7 @@ function dispatchFailedReviewRetry(options: {
     ],
     () => options.onBeforeDispatch?.(dispatchUrl),
   );
+  if (dispatch.outcome !== "accepted") throw new Error("GitHub dispatch was not accepted");
   return dispatchUrl;
 }
 
@@ -22804,7 +22985,6 @@ function retryFailedReviewsCommandInner(args: Args): void {
           maxAttempts,
           codexTimeoutMs,
           onBeforeDispatch: (nextDispatchUrl) => {
-            dispatchCheckpointed = true;
             checkpointDispatchUrl = nextDispatchUrl;
             startFailedReviewRetryDispatchAttempt({
               ledger: retryLedger,
@@ -22835,6 +23015,7 @@ function retryFailedReviewsCommandInner(args: Args): void {
               reason: retryReason,
               dispatchUrl: nextDispatchUrl,
             });
+            dispatchCheckpointed = true;
             attempted += 1;
           },
         });
@@ -22871,7 +23052,13 @@ function retryFailedReviewsCommandInner(args: Args): void {
         });
         dispatched += 1;
       } catch (error) {
-        if (dispatchCheckpointed) {
+        const dispatchOutcome =
+          error instanceof GitHubDispatchError
+            ? error.outcome
+            : dispatchCheckpointed
+              ? "ambiguous_transport"
+              : "definitely_not_dispatched";
+        if (dispatchCheckpointed && dispatchOutcome === "ambiguous_transport") {
           results.push({
             repo: targetRepo(),
             number,
@@ -22882,18 +23069,48 @@ function retryFailedReviewsCommandInner(args: Args): void {
             reportPath: path,
             ...(checkpointDispatchUrl ? { dispatchUrl: checkpointDispatchUrl } : {}),
           });
-          if (error instanceof GitHubRuntimeBudgetError) throw error;
+          if (
+            error instanceof GitHubDispatchError &&
+            error.cause instanceof GitHubRuntimeBudgetError
+          ) {
+            throw error.cause;
+          }
           continue;
         }
         if (error instanceof GitHubRuntimeBudgetError) throw error;
+        const reason = error instanceof Error ? error.message : String(error);
+        if (checkpointDispatchUrl) {
+          markdown = markFailedReviewRetry({
+            markdown,
+            status: "dispatch_failed",
+            at: nowIso,
+            revision: retryRevision,
+            attempts: attemptsBeforeDispatch,
+            maxAttempts,
+            reason,
+            ...(checkpointDispatchUrl ? { dispatchUrl: checkpointDispatchUrl } : {}),
+          });
+          writeFileSync(path, markdown, "utf8");
+          writeFailedReviewRetryState(statePath, {
+            number,
+            status: "dispatch_failed",
+            at: nowIso,
+            revision: retryRevision,
+            attempts: attemptsBeforeDispatch,
+            maxAttempts,
+            reason,
+            ...(checkpointDispatchUrl ? { dispatchUrl: checkpointDispatchUrl } : {}),
+          });
+        }
         results.push({
           repo: targetRepo(),
           number,
           action: "skipped_dispatch_failed",
-          reason: error instanceof Error ? error.message : String(error),
+          reason,
           ...failedReviewRetryResultRevision(retryRevision),
           attempts: eligibility.attempts,
           reportPath: path,
+          ...(checkpointDispatchUrl ? { dispatchUrl: checkpointDispatchUrl } : {}),
         });
       }
     }
@@ -24343,13 +24560,8 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
     activeApplyMutationLease = null;
     if (!active) return;
     try {
-      runObservedApplyMutation({
-        identity: `apply_lease_delete:${active.itemNumber}:${active.lease.commentId}`,
-        operation: () =>
-          deleteOwnedDedicatedReviewStartLease(active.itemNumber, active.lease, {
-            throwOnError: true,
-          }),
-        didMutate: (deleted) => deleted,
+      deleteOwnedDedicatedReviewStartLease(active.itemNumber, active.lease, {
+        throwOnError: true,
       });
     } catch (error) {
       console.error(
@@ -24810,20 +25022,15 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
           headSha: leaseState.headSha,
         };
       } else {
-        const posted = runObservedApplyMutation({
-          identity: `apply_lease_acquire:${number}:${leaseState.headSha}`,
-          operation: () =>
-            postReviewStartStatusComment({
-              item,
-              headSha: leaseState.headSha,
-              reviewTimeoutMs: Math.max(5 * 60 * 1000, closeDelayMs + 60 * 1000),
-              position: 1,
-              total: 1,
-              shardIndex: 1,
-              shardCount: 1,
-              purpose: "apply",
-            }),
-          didMutate: (result) => result.didMutate,
+        const posted = postReviewStartStatusComment({
+          item,
+          headSha: leaseState.headSha,
+          reviewTimeoutMs: Math.max(5 * 60 * 1000, closeDelayMs + 60 * 1000),
+          position: 1,
+          total: 1,
+          shardIndex: 1,
+          shardCount: 1,
+          purpose: "apply",
         });
         if (posted.status !== "posted") {
           return `${item.kind === "pull_request" ? "same-head" : "same-revision"} ClawSweeper lease was acquired concurrently`;
@@ -26482,14 +26689,11 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
             continue;
           }
           try {
-            syncedComment = runObservedApplyMutation({
-              identity: `review_comment_upsert:${number}:${reviewCommentBodyDigest(markedReviewComment)}`,
-              operation: () =>
-                upsertReviewComment(number, markedReviewComment, existingReviewComment),
-              knownNoMutation: (error) =>
-                isGitHubRequiresAuthenticationError(error) ||
-                isLockedConversationCommentError(error),
-            });
+            syncedComment = upsertReviewComment(
+              number,
+              markedReviewComment,
+              existingReviewComment,
+            );
             const syncedCommentUpdatedAt = commentUpdatedAt(syncedComment);
             if (syncedCommentUpdatedAt) {
               allowedSelfMutationUpdatedAts.add(syncedCommentUpdatedAt);
@@ -26763,10 +26967,7 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
     }
     ensureRuntimeDelayFits(closeDelayMs, "before close");
     const appliedCloseReason = closeReason;
-    runObservedApplyMutation({
-      identity: `item_close:${number}:${item.kind}:${appliedCloseReason}`,
-      operation: () => closeItem({ number, kind: item.kind, reason: appliedCloseReason }),
-    });
+    closeItem({ number, kind: item.kind, reason: appliedCloseReason });
     let postCloseRuntimeYieldReason: string | null = null;
     try {
       ensureRuntimeDelayFits(closeDelayMs, "before close delay");
@@ -29544,7 +29745,21 @@ function publishActionEventsCommand(args: Args): void {
     stringArg(args.source_root, join(ROOT, ".clawsweeper-repair", "action-ledger-download")),
   );
   const stateRoot = resolve(stringArg(args.state_root, ROOT));
-  const result = importActionEventShards(sourceRoot, stateRoot);
+  const expectedProducerJob = stringArg(args.expected_producer_job, "");
+  if (!expectedProducerJob) {
+    throw new UserFacingCommandError("--expected-producer-job is required");
+  }
+  const currentProducer = workflowActionProducer("action_event_publisher");
+  const result = importActionEventShards(sourceRoot, stateRoot, {
+    expectedProducer: {
+      repository: currentProducer.repository,
+      sha: currentProducer.sha,
+      workflow: currentProducer.workflow,
+      job: expectedProducerJob,
+      runId: currentProducer.runId,
+      runAttempt: currentProducer.runAttempt,
+    },
+  });
   console.log(JSON.stringify(result, null, 2));
 }
 
@@ -29650,17 +29865,21 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     else if (command === "finalize-action-events") {
       if (boolArg(args.interrupt_open_attempts)) {
         const reason = stringArg(args.reason, ACTION_EVENT_REASON_CODES.timeout);
-        if (reason !== ACTION_EVENT_REASON_CODES.timeout) {
+        if (
+          reason !== ACTION_EVENT_REASON_CODES.timeout &&
+          reason !== ACTION_EVENT_REASON_CODES.cancelled &&
+          reason !== ACTION_EVENT_REASON_CODES.workflowFailed
+        ) {
           throw new UserFacingCommandError(
             `Unsupported --reason for interrupted action events: ${reason}`,
           );
         }
         const interrupted = interruptOpenWorkflowActionEvents(ROOT, {
-          reasonCode: ACTION_EVENT_REASON_CODES.timeout,
+          reasonCode: reason,
         });
         if (interrupted > 0) {
           console.error(
-            `[action-ledger] recorded ${interrupted} timeout terminal event${
+            `[action-ledger] recorded ${interrupted} ${reason} terminal event${
               interrupted === 1 ? "" : "s"
             }`,
           );

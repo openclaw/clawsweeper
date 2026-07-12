@@ -92,6 +92,11 @@ checkpoint, and status-only commits are intentionally omitted.
   backstops cannot create permanent parallel continuation chains that overwhelm
   serialized review publication, while exact-item, apply, and comment-sync
   lanes remain independent.
+- Bound apply receipts to each actual GitHub request attempt, recorded lease
+  creation and cleanup independently, preserved exact retry-dispatch identity
+  and uncertainty, aggregated retry child mutations, authenticated imported
+  workflow producers outside the Codex workspace, and retained cancellation
+  and ordinary workflow-failure reasons during ledger finalization.
 - Recovered exact-review intake from Cloudflare SQLite value-size exhaustion by normalizing delivery receipts and queue items into independently bounded rows, committing dedupe and admission atomically, restoring the seven-day idempotency window, and migrating live queue state through a transaction-coupled, generation-aware, size-bounded rollback bridge that retains the complete active dedupe set and safely reimports rollback-era changes. Thanks @brokemac79.
 - Hardened action-ledger privacy, import identity and causal validation,
   multi-shard capacity, crash-safe completion publication, portable paths,

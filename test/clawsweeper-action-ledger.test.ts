@@ -6,10 +6,14 @@ import {
   actionLedgerFailureDisposition,
   applyActionEventDisposition,
   applyItemBusinessIdempotencyIdentityForTest,
+  classifyGitHubDispatchResultForTest,
+  heldReviewStartStatusCommentResultForTest,
   isGitHubLabelAlreadyExistsErrorForTest,
+  observedGitHubMutationAttemptsForTest,
   reviewCommentPublicationEventDisposition,
   reviewRetryActionDisposition,
   reviewRetryBusinessIdempotencyIdentityForTest,
+  untrustedCodexEnvForTest,
 } from "../dist/clawsweeper.js";
 import { actionIdempotencyKey } from "../dist/action-ledger.js";
 import { readText } from "./helpers.ts";
@@ -288,8 +292,8 @@ test("apply receipts start per item and persist mutation observation before fina
     /const recordMutation = \(parentEventId\?: string \| null\): void => \{[\s\S]*recordApplyMutationBoundary\(applyLedger, entry, parentEventId\)/,
   );
   assert.match(source, /completion_reason: "mutation_attempted"/);
-  assert.match(applyLoop, /runObservedApplyMutation\(\{[\s\S]*review_comment_upsert:/);
-  assert.match(applyLoop, /runObservedApplyMutation\(\{[\s\S]*item_close:/);
+  assert.match(applyLoop, /syncedComment = upsertReviewComment\(/);
+  assert.match(applyLoop, /closeItem\(\{ number, kind: item\.kind/);
   const mutationAttemptStart = source.indexOf("function startApplyMutationAttempt(");
   const mutationIdentityStart = source.indexOf(
     "const idempotencyIdentity = {",
@@ -301,7 +305,7 @@ test("apply receipts start per item and persist mutation observation before fina
   );
   assert.match(mutationIdentity, /mutationIdentitySha256: sha256\(identity\)/);
   assert.doesNotMatch(mutationIdentity, /mutationIndex/);
-  assert.match(source, /activeApplyMutationRunner \? gh\(args\) : ghWithRetry\(args, attempts\)/);
+  assert.match(source, /identity: `\$\{options\.identity\}:request_attempt:\$\{attempt \+ 1\}`/);
   assert.match(
     applyLoop,
     /finally \{[\s\S]*recordApplyActionLedgerItemResults\(\{[\s\S]*activeApplyItem = null;/,
@@ -318,7 +322,7 @@ test("apply receipts start per item and persist mutation observation before fina
   assert.doesNotMatch(yieldHandler, /finishApply\(\);/);
 });
 
-test("apply mutation receipts classify existing labels and held leases as no-ops", () => {
+test("apply mutation receipts bind every GitHub request attempt and preserve no-op truth", () => {
   assert.equal(
     isGitHubLabelAlreadyExistsErrorForTest(
       'HTTP 422: Validation Failed (label "priority: high" already exists)',
@@ -326,27 +330,65 @@ test("apply mutation receipts classify existing labels and held leases as no-ops
     true,
   );
   assert.equal(isGitHubLabelAlreadyExistsErrorForTest("HTTP 500: unavailable"), false);
+  assert.deepEqual(observedGitHubMutationAttemptsForTest(["transient", "accepted"]), [
+    { identity: "test_mutation:request_attempt:1", outcome: "unknown" },
+    { identity: "test_mutation:request_attempt:2", outcome: "accepted" },
+  ]);
+  assert.deepEqual(observedGitHubMutationAttemptsForTest(["already_exists"]), [
+    { identity: "test_mutation:request_attempt:1", outcome: "rejected" },
+  ]);
+  assert.deepEqual(heldReviewStartStatusCommentResultForTest("2026-07-12T12:00:00Z", false), {
+    status: "held",
+    lease: null,
+    retryAt: "2026-07-12T12:00:00Z",
+    didMutate: false,
+  });
+  assert.deepEqual(heldReviewStartStatusCommentResultForTest("2026-07-12T12:00:00Z", true), {
+    status: "held",
+    lease: null,
+    retryAt: "2026-07-12T12:00:00Z",
+    didMutate: true,
+  });
 
   const source = readText("src/clawsweeper.ts");
   const labelCreates = source.match(/identity: `label_create:/g) ?? [];
   const labelNoMutationClassifiers =
     source.match(/knownNoMutation: labelAlreadyExistsError/g) ?? [];
   assert.ok(labelCreates.length > 0);
-  assert.equal(labelNoMutationClassifiers.length, labelCreates.length);
-
-  const leaseAcquireStart = source.indexOf("const posted = runObservedApplyMutation({");
-  const leaseAcquireEnd = source.indexOf("if (posted.status !==", leaseAcquireStart);
-  const leaseAcquire = source.slice(leaseAcquireStart, leaseAcquireEnd);
-  assert.match(leaseAcquire, /didMutate: \(result\) => result\.didMutate/);
-  assert.match(
-    source,
-    /return \{ status: "held", lease: null, retryAt: initialLease\.expiresAt, didMutate: false \}/,
-  );
-  assert.match(
-    source,
-    /return \{ status: "held", lease: null, retryAt: winner\.expiresAt, didMutate: false \}/,
-  );
+  assert.ok(labelNoMutationClassifiers.length >= labelCreates.length);
+  assert.match(source, /identity: `review_lease_post:/);
+  assert.match(source, /identity: `review_lease_delete:/);
+  assert.doesNotMatch(source, /identity: `apply_lease_acquire:/);
   assert.match(source, /return \{ status: "posted", lease: acquired, didMutate: true \}/);
+});
+
+test("retry dispatch outcomes distinguish definite rejection, ambiguity, and acceptance", () => {
+  assert.equal(
+    classifyGitHubDispatchResultForTest({ status: 1, stderr: "HTTP 422: validation failed" }),
+    "definitely_not_dispatched",
+  );
+  assert.equal(
+    classifyGitHubDispatchResultForTest({ status: 1, stderr: "HTTP 502: bad gateway" }),
+    "ambiguous_transport",
+  );
+  assert.equal(
+    classifyGitHubDispatchResultForTest({ status: null, errorCode: "ETIMEDOUT" }),
+    "ambiguous_transport",
+  );
+  assert.equal(classifyGitHubDispatchResultForTest({ status: 0 }), "accepted");
+});
+
+test("untrusted Codex processes cannot inherit action-ledger producer authority", () => {
+  const env = untrustedCodexEnvForTest({
+    CLAWSWEEPER_ACTION_LEDGER_FORCE: "1",
+    CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT: "/tmp/privileged-ledger",
+    CLAWSWEEPER_ACTION_LEDGER_INVOCATION: "review-0",
+    GH_TOKEN: "ambient",
+  });
+  assert.equal(env.CLAWSWEEPER_ACTION_LEDGER_FORCE, undefined);
+  assert.equal(env.CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT, undefined);
+  assert.equal(env.CLAWSWEEPER_ACTION_LEDGER_INVOCATION, undefined);
+  assert.equal(env.GH_TOKEN, undefined);
 });
 
 test("apply failure finalization survives report publication errors", () => {
@@ -436,8 +478,8 @@ test("sweep publishes complete immutable shards for every review and apply produ
     /id: generate-apply-proofs[\s\S]*timeout-minutes: 50/,
   );
   assert.match(
-    workflow.slice(applyProofFinalizer, applyProofFinalizer + 500),
-    /APPLY_PROOF_OUTCOME:[\s\S]*--interrupt-open-attempts --reason timeout/,
+    workflow.slice(applyProofFinalizer, applyProofFinalizer + 700),
+    /APPLY_PROOF_OUTCOME:[\s\S]*--interrupt-open-attempts --reason cancelled[\s\S]*--interrupt-open-attempts --reason workflow_failed/,
   );
   assert.ok(applyStep >= 0);
   assert.ok(applyFinalizer > applyStep);
@@ -448,7 +490,7 @@ test("sweep publishes complete immutable shards for every review and apply produ
   );
   assert.match(
     workflow.slice(applyFinalizer, applyPublish),
-    /if: \$\{\{ always\(\) \}\}[\s\S]*APPLY_OUTCOME:[\s\S]*--interrupt-open-attempts --reason timeout/,
+    /if: \$\{\{ always\(\) \}\}[\s\S]*APPLY_OUTCOME:[\s\S]*--interrupt-open-attempts --reason cancelled[\s\S]*--interrupt-open-attempts --reason workflow_failed/,
   );
   assert.ok(retryStep >= 0);
   assert.ok(retryFinalizer > retryStep);
@@ -456,7 +498,7 @@ test("sweep publishes complete immutable shards for every review and apply produ
   assert.match(workflow.slice(retryStep, retryFinalizer), /id: retry-failed-reviews-run/);
   assert.match(
     workflow.slice(retryFinalizer, retryPublish),
-    /RETRY_OUTCOME:[\s\S]*--interrupt-open-attempts --reason timeout/,
+    /RETRY_EXIT_CODE:[\s\S]*--interrupt-open-attempts --reason cancelled[\s\S]*--interrupt-open-attempts --reason timeout[\s\S]*--interrupt-open-attempts --reason workflow_failed/,
   );
 
   for (const name of [

@@ -22,12 +22,7 @@ runs:
           echo "Unable to resolve immutable workflow run creation time." >&2
           exit 1
         fi
-        worktree_root="$GITHUB_WORKSPACE"
-        if [ "${{ inputs.worktree-path }}" != "." ]; then
-          worktree_root="$worktree_root/${{ inputs.worktree-path }}"
-        fi
-        worktree_root="$(cd "$worktree_root" && pwd -P)"
-        output_root="$worktree_root/.clawsweeper-repair/action-ledger-state"
+        output_root="$RUNNER_TEMP/clawsweeper-action-ledger/${GITHUB_RUN_ID}/${GITHUB_RUN_ATTEMPT}/${GITHUB_JOB}"
         mkdir -p "$output_root"
         output_root="$(cd "$output_root" && pwd -P)"
         {

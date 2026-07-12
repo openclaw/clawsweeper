@@ -1116,6 +1116,135 @@ test("timeout recovery binds an open mutation receipt after an accepted attempt 
   assert.equal(interruptOpenWorkflowActionEvents(root, { env }), 0);
 });
 
+test("interruption recovery closes the exact retry dispatch and aggregates it into the batch", () => {
+  const root = tempRoot();
+  const env = workflowEnv({
+    CLAWSWEEPER_ACTION_LEDGER_INVOCATION: "retry-0",
+    GITHUB_ACTION: "__retry",
+    GITHUB_JOB: "retry-failed-reviews",
+  });
+  const operationIdentity = {
+    repository: "openclaw/openclaw",
+    requestedItemNumbers: [42],
+  };
+  const batch = recordWorkflowPhaseEvent(
+    root,
+    {
+      phase: ACTION_EVENT_TYPES.reviewRetry,
+      status: ACTION_EVENT_STATUSES.started,
+      reasonCode: ACTION_EVENT_REASON_CODES.selected,
+      retryable: false,
+      mutation: false,
+      identity: { slot: "retry_batch_start" },
+      operation: "review_retry",
+      operationIdentity,
+      phaseSeq: 1,
+      idempotencyIdentity: { operationIdentity, slot: "retry_batch_start" },
+      component: "retry_failed_reviews",
+      subject: { repository: "openclaw/openclaw", kind: "workflow" },
+    },
+    { env },
+  );
+  assert.ok(batch);
+  const dispatch = recordWorkflowPhaseEvent(
+    root,
+    {
+      phase: ACTION_EVENT_TYPES.reviewRetry,
+      status: ACTION_EVENT_STATUSES.started,
+      reasonCode: ACTION_EVENT_REASON_CODES.selected,
+      retryable: false,
+      mutation: false,
+      identity: { slot: "retry_dispatch_attempt", number: 42 },
+      operation: "review_retry",
+      operationIdentity,
+      parentEventId: batch.event_id,
+      phaseSeq: 100_000,
+      idempotencyIdentity: {
+        operation: "review_retry",
+        slot: "retry_dispatch",
+        repository: "openclaw/openclaw",
+        number: 42,
+        sourceRevision: "revision-42",
+      },
+      component: "retry_failed_reviews",
+      subject: {
+        repository: "openclaw/openclaw",
+        kind: "issue",
+        number: 42,
+        sourceRevision: "revision-42",
+      },
+      attributes: { completion_reason: "dispatch_attempted" },
+    },
+    { env },
+  );
+  assert.ok(dispatch);
+
+  assert.equal(
+    interruptOpenWorkflowActionEvents(root, {
+      env,
+      reasonCode: ACTION_EVENT_REASON_CODES.workflowFailed,
+    }),
+    2,
+  );
+  const events = readAllSpooledActionEvents(root);
+  const dispatchTerminal = events.find(
+    (event) =>
+      event.parent_event_id === dispatch.event_id &&
+      event.subject.number === 42 &&
+      event.attributes?.completion_reason === "dispatch_outcome_unknown",
+  );
+  assert.ok(dispatchTerminal);
+  assert.equal(dispatchTerminal.idempotency_key_sha256, dispatch.idempotency_key_sha256);
+  assert.equal(dispatchTerminal.action.retryable, false);
+  assert.equal(dispatchTerminal.action.mutation, true);
+
+  const batchTerminal = events.find(
+    (event) =>
+      event.subject.kind === "workflow" &&
+      event.action.status === ACTION_EVENT_STATUSES.failed &&
+      event.phase_seq === 1_000_000,
+  );
+  assert.ok(batchTerminal);
+  assert.equal(batchTerminal.action.mutation, true);
+  assert.equal(batchTerminal.action.retryable, false);
+  assert.equal(interruptOpenWorkflowActionEvents(root, { env }), 0);
+});
+
+test("interruption recovery preserves cancellation instead of rewriting it as timeout", () => {
+  const root = tempRoot();
+  const env = workflowEnv({ CLAWSWEEPER_ACTION_LEDGER_INVOCATION: "cancelled-review" });
+  recordWorkflowPhaseEvent(
+    root,
+    {
+      phase: ACTION_EVENT_TYPES.reviewBatch,
+      status: ACTION_EVENT_STATUSES.started,
+      reasonCode: ACTION_EVENT_REASON_CODES.selected,
+      retryable: false,
+      mutation: false,
+      identity: { slot: "review_batch_start" },
+      operation: "review",
+      operationIdentity: { repository: "openclaw/openclaw" },
+      phaseSeq: 1,
+      component: "review",
+      subject: { repository: "openclaw/openclaw", kind: "workflow" },
+    },
+    { env },
+  );
+
+  assert.equal(
+    interruptOpenWorkflowActionEvents(root, {
+      env,
+      reasonCode: ACTION_EVENT_REASON_CODES.cancelled,
+    }),
+    1,
+  );
+  const terminal = readAllSpooledActionEvents(root).find(
+    (event) => event.action.status === ACTION_EVENT_STATUSES.failed,
+  );
+  assert.equal(terminal?.action.reason_code, ACTION_EVENT_REASON_CODES.cancelled);
+  assert.equal(terminal?.attributes?.completion_reason, "cancelled");
+});
+
 test("workflow retries preserve operation and idempotency identity but change attempts", () => {
   const root = tempRoot();
   const input = {
@@ -3239,6 +3368,48 @@ test("state shard imports are validated, create-only, and conflict detecting", a
   assert.throws(
     () => importActionEventShards(source, destination),
     /action event shard content is not canonical/,
+  );
+});
+
+test("state shard imports reject producer provenance outside the authenticated workflow job", async () => {
+  const root = tempRoot();
+  const source = trustedChildRoot(root, "source");
+  const destination = trustedChildRoot(root, "destination");
+  const event = recordReview(root);
+  assert.ok(event);
+  await flushWorkflowActionEvents(root, {
+    env: workflowEnv(),
+    outputRoot: source,
+  });
+
+  assert.throws(
+    () =>
+      importActionEventShards(source, destination, {
+        expectedProducer: {
+          repository: event.producer.repository,
+          sha: event.producer.sha,
+          workflow: event.producer.workflow,
+          job: "publish",
+          runId: event.producer.run_id,
+          runAttempt: event.producer.run_attempt,
+        },
+      }),
+    /producer provenance mismatch for job/,
+  );
+  assert.deepEqual(fs.readdirSync(destination), []);
+
+  assert.equal(
+    importActionEventShards(source, destination, {
+      expectedProducer: {
+        repository: event.producer.repository,
+        sha: event.producer.sha,
+        workflow: event.producer.workflow,
+        job: event.producer.job,
+        runId: event.producer.run_id,
+        runAttempt: event.producer.run_attempt,
+      },
+    }).created,
+    1,
   );
 });
 

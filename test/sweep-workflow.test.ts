@@ -46,8 +46,11 @@ test("ledger-producing jobs initialize immutable workflow context", () => {
 
   const action = readText(".github/actions/setup-action-ledger/action.yml");
   assert.match(action, /actions\/runs\/\$\{GITHUB_RUN_ID\}/);
-  assert.match(action, /worktree_root="\$\(cd "\$worktree_root" && pwd -P\)"/);
-  assert.doesNotMatch(action, /GITHUB_WORKSPACE\/\$\{\{ inputs\.worktree-path \}\}/);
+  assert.match(
+    action,
+    /RUNNER_TEMP\/clawsweeper-action-ledger\/\$\{GITHUB_RUN_ID\}\/\$\{GITHUB_RUN_ATTEMPT\}\/\$\{GITHUB_JOB\}/,
+  );
+  assert.doesNotMatch(action, /GITHUB_WORKSPACE/);
   assert.match(action, /CLAWSWEEPER_ACTION_LEDGER_FORCE=1/);
   assert.match(action, /CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT=\$output_root/);
   assert.match(action, /GITHUB_RUN_STARTED_AT=\$run_started_at/);
@@ -81,6 +84,9 @@ test("review workflow gives Codex a read-only inspection token", () => {
   assert.match(exactReviewStep, /Exact review produced no artifact for open item/);
   assert.match(reviewJob, /uses: \.\/clawsweeper\/\.github\/actions\/setup-codex/);
   assert.doesNotMatch(reviewJob, /uses: \.\/\.github\/actions\/setup-codex/);
+  assert.match(exactReviewStep, /--codex-sandbox read-only/);
+  assert.match(reviewJob, /--codex-sandbox read-only/);
+  assert.doesNotMatch(workflow, /--codex-sandbox danger-full-access/);
 });
 
 test("review execution tokens can read check runs and commit statuses", () => {
@@ -670,7 +676,10 @@ test("apply workflow isolates Codex proof from the credentialed mutation runner"
   );
   assert.match(proofJob, /id: upload-action-events/);
   assert.match(proofJob, /name: \$\{\{ steps\.proof-artifact\.outputs\.action_ledger_name \}\}/);
-  assert.match(proofJob, /path: \.clawsweeper-repair\/action-ledger-state\/\*\*/);
+  assert.match(
+    proofJob,
+    /path: \$\{\{ runner\.temp \}\}\/clawsweeper-action-ledger\/\$\{\{ github\.run_id \}\}\/\$\{\{ github\.run_attempt \}\}\/\$\{\{ github\.job \}\}\/\*\*/,
+  );
   assert.match(proofJob, /include-hidden-files: true/);
   assert.match(proofJob, /if-no-files-found: error/);
   assert.match(
@@ -1140,8 +1149,9 @@ test("apply workflow finalization retries only target status after checkpointed 
   assert.doesNotMatch(finalStatusStep, /results\/(?:apply|comment-sync)-cursors/);
   assert.match(actionLedgerStep, /publish-action-events/);
   assert.doesNotMatch(actionLedgerStep, /action-ledger-proof/);
-  assert.match(actionLedgerStep, /action-ledger-state/);
+  assert.match(actionLedgerStep, /CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT/);
   assert.match(actionLedgerStep, /--state-root "\$CLAWSWEEPER_STATE_DIR"/);
+  assert.match(actionLedgerStep, /--expected-producer-job "\$GITHUB_JOB"/);
   assert.match(actionLedgerStep, /cp "\$durable_event_path" "\$event_path"/);
   assert.match(actionLedgerStep, /--message "chore: append apply action ledger"/);
   assert.match(actionLedgerStep, /publish-action-event-paths/);
@@ -1987,7 +1997,25 @@ test("review finalizers recover start-only ledger attempts after hard timeout", 
     assert.match(block, /"124"/);
     assert.match(block, /"137"/);
     assert.match(block, /--interrupt-open-attempts --reason timeout/);
+    assert.match(block, /--interrupt-open-attempts --reason cancelled/);
+    assert.match(block, /--interrupt-open-attempts --reason workflow_failed/);
+    assert.ok(
+      block.indexOf("--reason cancelled") < block.indexOf("--reason timeout"),
+      "explicit cancellation must outrank timeout-like signal exits",
+    );
   }
+});
+
+test("every action-ledger publication authenticates the expected producer job", () => {
+  const workflow = readText(".github/workflows/sweep.yml");
+  const commands = workflow.match(
+    /pnpm run --silent publish-action-events -- \\\n(?:\s+.*\\\n)*\s+--expected-producer-job [^\n]+/g,
+  );
+  assert.ok(commands);
+  assert.equal(commands.length, 8);
+  assert.ok(commands.every((command) => command.includes("--expected-producer-job")));
+  assert.match(workflow, /--expected-producer-job review/);
+  assert.match(workflow, /--expected-producer-job apply-proof/);
 });
 
 test("sweep exact event reviews preserve the configured fallback without an adaptive payload", () => {
