@@ -1458,21 +1458,34 @@ jobs:
         if: always()
         env:
           AUTHORIZATION_SHA256: ${{ needs.authorize.outputs.authorization_sha256 }}
+          WORKER_ARTIFACT_ID: ${{ needs.cluster.outputs.worker_artifact_id }}
+          WORKER_ARTIFACT_DIGEST: ${{ needs.cluster.outputs.worker_artifact_digest }}
+          WORKER_PRODUCER_ATTEMPT: ${{ needs.cluster.outputs.producer_attempt }}
           AUTHORIZATION_ARTIFACT_ID: ${{ needs.authorize.outputs.artifact_id }}
           AUTHORIZATION_ARTIFACT_DIGEST: ${{ needs.authorize.outputs.artifact_digest }}
+          AUTHORIZATION_PRODUCER_ATTEMPT: ${{ needs.authorize.outputs.producer_attempt }}
           EXECUTION_ARTIFACT_ID: ${{ needs.execute.outputs.artifact_id }}
           EXECUTION_ARTIFACT_DIGEST: ${{ needs.execute.outputs.artifact_digest }}
+          EXECUTION_PRODUCER_ATTEMPT: ${{ needs.execute.outputs.producer_attempt }}
           VALIDATION_ARTIFACT_ID: ${{ needs.validate.outputs.artifact_id }}
           VALIDATION_ARTIFACT_DIGEST: ${{ needs.validate.outputs.artifact_digest }}
+          VALIDATION_PRODUCER_ATTEMPT: ${{ needs.validate.outputs.producer_attempt }}
           PRE_CLOSE_ARTIFACT_ID: ${{ steps.upload_source_close_checkpoint.outputs.artifact-id }}
           PRE_CLOSE_ARTIFACT_DIGEST: ${{ steps.upload_source_close_checkpoint.outputs.artifact-digest }}
           PUBLICATION_ARTIFACT_ID: ${{ steps.upload_publication_checkpoint.outputs.artifact-id }}
           PUBLICATION_ARTIFACT_DIGEST: ${{ steps.upload_publication_checkpoint.outputs.artifact-digest }}
+          FINAL_WORKER_ARTIFACT_NAME: clawsweeper-repair-${{ github.run_id }}-${{ github.run_attempt }}
           CLOSE_ACTOR: ${{ steps.target_post_flight_token.outputs.app-slug }}[bot]
         run: |
           node <<'NODE'
           const fs = require("node:fs");
           const path = require("node:path");
+          const artifact = (name, id, digest, producerAttempt) => ({
+            name,
+            id: id || null,
+            digest: digest || null,
+            producer_attempt: producerAttempt || null,
+          });
           const receiptPath = ".clawsweeper-repair/publication/receipt.json";
           const receipt = fs.existsSync(receiptPath)
             ? JSON.parse(fs.readFileSync(receiptPath, "utf8"))
@@ -1494,30 +1507,53 @@ jobs:
                     "begin_reopen_source_pull_request",
                     "close_source_pull_request",
                     "preserve_reopened_source_pull_request",
+                    "preserve_human_reopened_source_pull_request",
                   ].includes(String(mutation?.operation || "")),
                 )
               : [],
             artifacts: {
-              authorization: {
-                id: process.env.AUTHORIZATION_ARTIFACT_ID || null,
-                digest: process.env.AUTHORIZATION_ARTIFACT_DIGEST || null,
-              },
-              execution: {
-                id: process.env.EXECUTION_ARTIFACT_ID || null,
-                digest: process.env.EXECUTION_ARTIFACT_DIGEST || null,
-              },
-              validation: {
-                id: process.env.VALIDATION_ARTIFACT_ID || null,
-                digest: process.env.VALIDATION_ARTIFACT_DIGEST || null,
-              },
-              pre_close: {
-                id: process.env.PRE_CLOSE_ARTIFACT_ID || null,
-                digest: process.env.PRE_CLOSE_ARTIFACT_DIGEST || null,
-              },
-              publication: {
-                id: process.env.PUBLICATION_ARTIFACT_ID || null,
-                digest: process.env.PUBLICATION_ARTIFACT_DIGEST || null,
-              },
+              worker: artifact(
+                `clawsweeper-repair-worker-${process.env.GITHUB_RUN_ID}-${process.env.WORKER_PRODUCER_ATTEMPT}`,
+                process.env.WORKER_ARTIFACT_ID,
+                process.env.WORKER_ARTIFACT_DIGEST,
+                process.env.WORKER_PRODUCER_ATTEMPT,
+              ),
+              authorization: artifact(
+                `clawsweeper-repair-authorized-${process.env.GITHUB_RUN_ID}-${process.env.AUTHORIZATION_PRODUCER_ATTEMPT}`,
+                process.env.AUTHORIZATION_ARTIFACT_ID,
+                process.env.AUTHORIZATION_ARTIFACT_DIGEST,
+                process.env.AUTHORIZATION_PRODUCER_ATTEMPT,
+              ),
+              execution: artifact(
+                `clawsweeper-repair-execution-${process.env.GITHUB_RUN_ID}-${process.env.EXECUTION_PRODUCER_ATTEMPT}`,
+                process.env.EXECUTION_ARTIFACT_ID,
+                process.env.EXECUTION_ARTIFACT_DIGEST,
+                process.env.EXECUTION_PRODUCER_ATTEMPT,
+              ),
+              validation: artifact(
+                `clawsweeper-repair-validation-${process.env.GITHUB_RUN_ID}-${process.env.VALIDATION_PRODUCER_ATTEMPT}`,
+                process.env.VALIDATION_ARTIFACT_ID,
+                process.env.VALIDATION_ARTIFACT_DIGEST,
+                process.env.VALIDATION_PRODUCER_ATTEMPT,
+              ),
+              pre_close: artifact(
+                `clawsweeper-repair-publication-close-${process.env.GITHUB_RUN_ID}-${process.env.GITHUB_RUN_ATTEMPT}`,
+                process.env.PRE_CLOSE_ARTIFACT_ID,
+                process.env.PRE_CLOSE_ARTIFACT_DIGEST,
+                process.env.GITHUB_RUN_ATTEMPT,
+              ),
+              publication: artifact(
+                `clawsweeper-repair-publication-${process.env.GITHUB_RUN_ID}-${process.env.GITHUB_RUN_ATTEMPT}`,
+                process.env.PUBLICATION_ARTIFACT_ID,
+                process.env.PUBLICATION_ARTIFACT_DIGEST,
+                process.env.GITHUB_RUN_ATTEMPT,
+              ),
+              final_worker: artifact(
+                process.env.FINAL_WORKER_ARTIFACT_NAME,
+                "",
+                "",
+                process.env.GITHUB_RUN_ATTEMPT,
+              ),
             },
           };
           const output = ".clawsweeper-repair/provenance/publication.json";
@@ -1526,6 +1562,7 @@ jobs:
           NODE
 
       - name: Upload final worker artifacts
+        id: upload_final_worker
         if: always()
         uses: actions/upload-artifact@v7
         with:
@@ -1536,6 +1573,58 @@ jobs:
             .clawsweeper-repair/publication/receipt.json
             .clawsweeper-repair/provenance/publication.json
           if-no-files-found: warn
+          retention-days: 90
+
+      - name: Record final worker artifact provenance
+        if: ${{ always() && steps.upload_final_worker.outcome == 'success' }}
+        env:
+          FINAL_WORKER_ARTIFACT_ID: ${{ steps.upload_final_worker.outputs.artifact-id }}
+          FINAL_WORKER_ARTIFACT_DIGEST: ${{ steps.upload_final_worker.outputs.artifact-digest }}
+          FINAL_WORKER_ARTIFACT_NAME: clawsweeper-repair-${{ github.run_id }}-${{ github.run_attempt }}
+          FINAL_PROVENANCE_ARTIFACT_NAME: clawsweeper-repair-provenance-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          node <<'NODE'
+          const crypto = require("node:crypto");
+          const fs = require("node:fs");
+          const source = ".clawsweeper-repair/provenance/publication.json";
+          const publication = JSON.parse(fs.readFileSync(source, "utf8"));
+          const finalWorker = {
+            name: process.env.FINAL_WORKER_ARTIFACT_NAME,
+            id: process.env.FINAL_WORKER_ARTIFACT_ID || null,
+            digest: process.env.FINAL_WORKER_ARTIFACT_DIGEST || null,
+            producer_attempt: process.env.GITHUB_RUN_ATTEMPT,
+          };
+          const provenance = {
+            ...publication,
+            schema_version: 2,
+            publication_provenance_sha256: crypto
+              .createHash("sha256")
+              .update(fs.readFileSync(source))
+              .digest("hex"),
+            artifacts: {
+              ...publication.artifacts,
+              final_worker: finalWorker,
+              provenance: {
+                name: process.env.FINAL_PROVENANCE_ARTIFACT_NAME,
+                id: null,
+                digest: null,
+                producer_attempt: process.env.GITHUB_RUN_ATTEMPT,
+              },
+            },
+          };
+          fs.writeFileSync(
+            ".clawsweeper-repair/provenance/final-worker.json",
+            `${JSON.stringify(provenance, null, 2)}\n`,
+          );
+          NODE
+
+      - name: Upload final worker provenance
+        if: ${{ always() && steps.upload_final_worker.outcome == 'success' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: clawsweeper-repair-provenance-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .clawsweeper-repair/provenance/final-worker.json
+          if-no-files-found: error
           retention-days: 90
 
       - name: Record work failure

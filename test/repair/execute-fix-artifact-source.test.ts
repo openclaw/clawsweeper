@@ -469,7 +469,23 @@ test("repair workflow binds one run through no-credential proof and token-only m
   assert.match(mutate, /needs\.validate\.result == 'success'/);
   assert.match(
     mutate,
-    /Write final publication provenance[\s\S]*source_close_mutations[\s\S]*begin_reopen_source_pull_request[\s\S]*Upload final worker artifacts[\s\S]*\.clawsweeper-repair\/publication\/receipt\.json[\s\S]*\.clawsweeper-repair\/provenance\/publication\.json[\s\S]*retention-days: 90/,
+    /Write final publication provenance[\s\S]*source_close_mutations[\s\S]*preserve_human_reopened_source_pull_request/,
+  );
+  assert.match(
+    mutate,
+    /artifacts: \{[\s\S]*worker: artifact\([\s\S]*authorization: artifact\([\s\S]*execution: artifact\([\s\S]*validation: artifact\([\s\S]*pre_close: artifact\([\s\S]*publication: artifact\([\s\S]*final_worker: artifact\(/,
+  );
+  assert.match(
+    mutate,
+    /Upload final worker artifacts[\s\S]*\.clawsweeper-repair\/publication\/receipt\.json[\s\S]*\.clawsweeper-repair\/provenance\/publication\.json[\s\S]*retention-days: 90/,
+  );
+  assert.match(
+    mutate,
+    /Record final worker artifact provenance[\s\S]*FINAL_WORKER_ARTIFACT_ID[\s\S]*publication_provenance_sha256[\s\S]*Upload final worker provenance[\s\S]*retention-days: 90/,
+  );
+  assert.match(
+    mutate,
+    /WORKER_PRODUCER_ATTEMPT: \$\{\{ needs\.cluster\.outputs\.producer_attempt \}\}[\s\S]*AUTHORIZATION_PRODUCER_ATTEMPT: \$\{\{ needs\.authorize\.outputs\.producer_attempt \}\}[\s\S]*EXECUTION_PRODUCER_ATTEMPT: \$\{\{ needs\.execute\.outputs\.producer_attempt \}\}[\s\S]*VALIDATION_PRODUCER_ATTEMPT: \$\{\{ needs\.validate\.outputs\.producer_attempt \}\}/,
   );
   assert.doesNotMatch(mutate, /setup-codex|--latest|create-state-token|setup-state/);
   assert.match(mutate, /npm_config_ignore_scripts: "true"/);
