@@ -197,6 +197,14 @@ test("semantic cache runs after hydration and revalidates under the acquired lea
     semanticDecision,
   );
   const checkRevalidation = reviewLoop.indexOf("pullChecksContext(", semanticRevalidation);
+  const relationRevalidation = reviewLoop.indexOf(
+    "refreshRelatedItemsContext(item, context)",
+    semanticRevalidation,
+  );
+  const revalidatedRecord = reviewLoop.indexOf(
+    "createReviewSemanticRecord({",
+    relationRevalidation,
+  );
   const semanticWrite = reviewLoop.indexOf(
     "writeFileSync(reportPath, carried",
     semanticRevalidation,
@@ -208,7 +216,9 @@ test("semantic cache runs after hydration and revalidates under the acquired lea
   assert.ok(semanticDecision > semanticRecord);
   assert.ok(semanticRevalidation > semanticDecision);
   assert.ok(checkRevalidation > semanticRevalidation);
-  assert.ok(semanticWrite > checkRevalidation);
+  assert.ok(relationRevalidation > checkRevalidation);
+  assert.ok(revalidatedRecord > relationRevalidation);
+  assert.ok(semanticWrite > revalidatedRecord);
   assert.ok(contentCache > semanticWrite);
   assert.match(
     reviewLoop.slice(semanticRevalidation, semanticWrite),

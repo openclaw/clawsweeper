@@ -815,6 +815,20 @@ function semanticContext(input: ReviewSemanticInput): {
       reason: "incomplete_checks",
     };
   }
+  if (
+    (input.context.relatedItems ?? []).some((entry) => {
+      const record = asRecord(entry);
+      return [record.error, record.pullRequestError].some(
+        (value) => typeof value === "string" && value.trim().length > 0,
+      );
+    })
+  ) {
+    return {
+      digest: sha256(stableJson(context)),
+      complete: false,
+      reason: "incomplete_review_context",
+    };
+  }
   const pullCommitsTotal = finiteCount(input.context.counts?.pullCommits);
   const pullCommitsHydrated = finiteCount(input.context.counts?.pullCommitsHydrated);
   if (

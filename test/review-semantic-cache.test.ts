@@ -900,10 +900,22 @@ test("incomplete file hydration and mutable check context disable semantic reuse
       },
     },
   });
+  const incompleteRelation = record({
+    context: {
+      relatedItems: [
+        {
+          number: 456,
+          mentionedIn: ["item body"],
+          error: "GitHub request failed",
+        },
+      ],
+    },
+  });
 
   assert.equal(truncated.eligibilityReason, "incomplete_file_list");
   assert.equal(missingChecks.eligibilityReason, "incomplete_checks");
   assert.equal(truncatedCommits.eligibilityReason, "incomplete_review_context");
+  assert.equal(incompleteRelation.eligibilityReason, "incomplete_review_context");
   assert.equal(
     decision({ priorRecord: record(), currentRecord: missingChecks }).reason,
     "semantic_ineligible",
@@ -948,6 +960,16 @@ test("changed discussion, reviews, checks, or target context busts the context d
     },
   });
   const changedReviews = record({ structuralContextRevision: "b".repeat(64) });
+  const changedRelation = record({
+    context: {
+      relatedItems: [
+        {
+          mentionedIn: ["item body"],
+          issue: { number: 456, state: "closed", title: "Related issue" },
+        },
+      ],
+    },
+  });
   const changedTarget = record({
     git: {
       mainSha: "1".repeat(40),
@@ -956,7 +978,13 @@ test("changed discussion, reviews, checks, or target context busts the context d
     },
   });
 
-  for (const currentRecord of [changedDiscussion, changedChecks, changedReviews, changedTarget]) {
+  for (const currentRecord of [
+    changedDiscussion,
+    changedChecks,
+    changedReviews,
+    changedRelation,
+    changedTarget,
+  ]) {
     assert.notEqual(prior.contextDigest, currentRecord.contextDigest);
     assert.equal(decision({ priorRecord: prior, currentRecord }).reason, "context_changed");
   }

@@ -5842,6 +5842,36 @@ function relatedItemsContext(options: {
   return related.slice(0, RELATED_ITEMS_LIMIT);
 }
 
+function refreshRelatedItemsContext(item: Item, context: ItemContext): unknown[] {
+  const seen = new Set<number>([item.number]);
+  const related: unknown[] = [];
+  const refreshedExplicit = (context.relatedItems ?? [])
+    .map((candidate) => {
+      const record = asRecord(candidate);
+      if (!record.issue && !record.pullRequest && !record.error && !record.pullRequestError) {
+        return null;
+      }
+      const number = relatedItemNumber(candidate);
+      if (number === null) return null;
+      const mentionedIn = Array.isArray(record.mentionedIn)
+        ? record.mentionedIn.filter((entry): entry is string => typeof entry === "string")
+        : [];
+      return compactRelatedItem(number, mentionedIn);
+    })
+    .filter((entry) => entry !== null);
+  appendUniqueRelatedItems(related, seen, refreshedExplicit);
+  if (related.length < RELATED_ITEMS_LIMIT) {
+    appendUniqueRelatedItems(related, seen, compactLocalRelatedTitleItems(item, seen));
+  }
+  if (related.length < RELATED_ITEMS_LIMIT) {
+    appendUniqueRelatedItems(related, seen, compactRelatedGitcrawlItems(item, seen));
+  }
+  if (related.length < RELATED_ITEMS_LIMIT) {
+    appendUniqueRelatedItems(related, seen, compactRelatedGitHubIssueSearchItems(item, seen));
+  }
+  return related.slice(0, RELATED_ITEMS_LIMIT);
+}
+
 function normalizeAuthorLogin(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim().toLowerCase() : null;
 }
@@ -20677,12 +20707,28 @@ function reviewCommand(args: Args): void {
         if (!completePullChecksContext(revalidatedChecks)) {
           semanticCacheRevalidationFailures += 1;
         }
+        const revalidatedContext: ItemContext = {
+          ...context,
+          pullChecks: revalidatedChecks,
+        };
+        const revalidatedRelatedItems = refreshRelatedItemsContext(item, context);
+        if (revalidatedRelatedItems.length > 0) {
+          revalidatedContext.relatedItems = revalidatedRelatedItems;
+        } else {
+          delete revalidatedContext.relatedItems;
+        }
+        if (
+          revalidatedContext.counts &&
+          (context.counts?.relatedItems !== undefined || revalidatedRelatedItems.length > 0)
+        ) {
+          revalidatedContext.counts = {
+            ...revalidatedContext.counts,
+            relatedItems: revalidatedRelatedItems.length,
+          };
+        }
         const revalidatedSemanticRecord = createReviewSemanticRecord({
           item,
-          context: {
-            ...context,
-            pullChecks: revalidatedChecks,
-          },
+          context: revalidatedContext,
           git,
           structuralContextRevision: revalidatedStructuralRecord?.contextRevision ?? null,
           reviewPolicy,
