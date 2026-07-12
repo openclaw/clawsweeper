@@ -662,7 +662,7 @@ export function publishValidatedExecution({
     expectedAuthorizationSha256,
     expectedValidationReceiptSha256,
   });
-  const checkpointedClosures = checkpointedSourceClosures(publication, priorCheckpoint);
+  const checkpointedClosures = checkpointedSourceClosures(publication, priorCheckpoint, intent);
   assertPublicationSourceIdentity({ intent, publication, checkpointedClosures });
   const checkout = checkoutPreparedRepair({
     root,
@@ -670,7 +670,9 @@ export function publishValidatedExecution({
     publication,
     allowPublishedOutput: true,
   });
-  const mutations: LooseRecord[] = [];
+  const mutations: LooseRecord[] = priorCheckpoint
+    ? sourceClosureReceiptMutations(publication, priorCheckpoint, intent)
+    : [];
   try {
     run("gh", ["auth", "setup-git"], { cwd: checkout });
     const targetPrNumber =
@@ -799,7 +801,7 @@ export function runVerifiedPublishedPullMutation<T>({
     expectedValidationReceiptSha256,
     expectedPublicationReceiptSha256,
   });
-  const checkpointedClosures = checkpointedSourceClosures(publication, receipt);
+  const checkpointedClosures = checkpointedSourceClosures(publication, receipt, intent);
   return runPublicationMutation({
     intent,
     publication,
@@ -879,6 +881,7 @@ function readPriorPublicationCheckpoint({
 export function checkpointedSourceClosures(
   publication: PreparedPublication,
   receipt: PublicationReceipt | null,
+  intent: ExecutionIntent,
 ): Set<string> {
   if (!receipt) return new Set();
   verifyPublicationReceipt({
@@ -887,10 +890,59 @@ export function checkpointedSourceClosures(
     validationReceiptSha256: receipt.validation_receipt_sha256,
   });
   return new Set(
+    sourceClosureReceiptMutations(publication, receipt, intent).map((mutation) =>
+      String(mutation.source),
+    ),
+  );
+}
+
+function sourceClosureReceiptMutations(
+  publication: PreparedPublication,
+  receipt: PublicationReceipt,
+  intent: ExecutionIntent,
+): LooseRecord[] {
+  const plannedClosures = new Set(
     publication.superseded_source_actions
       .filter((action) => action.operation === "close")
       .map((action) => String(action.source)),
   );
+  const revisions = new Map(
+    sourcePullRevisions(intent).map((revision) => [revision.url, revision]),
+  );
+  const completed: LooseRecord[] = [];
+  const seen = new Set<string>();
+  for (const mutation of receipt.mutations) {
+    if (mutation.operation !== "close_source_pull_request") continue;
+    const source = String(mutation.source ?? "");
+    const revision = revisions.get(source);
+    if (
+      !plannedClosures.has(source) ||
+      !revision ||
+      mutation.repo !== revision.repo ||
+      mutation.pull_number !== revision.number ||
+      mutation.expected_head_sha !== revision.expected_head_sha ||
+      mutation.expected_base_sha !== revision.expected_base_sha
+    ) {
+      throw new Error("publication receipt contains an unauthorized source-close completion");
+    }
+    if (seen.has(source)) {
+      throw new Error("publication receipt repeats a source-close completion");
+    }
+    seen.add(source);
+    completed.push(mutation);
+  }
+  return completed;
+}
+
+function sourceClosureReceiptMutation(revision: SourcePullRevision): LooseRecord {
+  return {
+    operation: "close_source_pull_request",
+    source: revision.url,
+    repo: revision.repo,
+    pull_number: revision.number,
+    expected_head_sha: revision.expected_head_sha,
+    expected_base_sha: revision.expected_base_sha,
+  };
 }
 
 export function closePublishedReplacementSources({
@@ -920,7 +972,7 @@ export function closePublishedReplacementSources({
 
   const intent = readExecutionIntent(root);
   const publication = verifyAuthorizedPreparedPublication(root, expectedAuthorizationSha256);
-  const checkpointedClosures = checkpointedSourceClosures(publication, receipt);
+  const checkpointedClosures = checkpointedSourceClosures(publication, receipt, intent);
   assertPublicationSourceIdentity({ intent, publication, checkpointedClosures });
   ensurePublishedReplacementAvailable({
     cwd: root,
@@ -930,15 +982,15 @@ export function closePublishedReplacementSources({
     targetPrNumber: receipt.target_pr_number,
     checkpointedClosures,
   });
-  closeSupersededReplacementSources({
+  return closeSupersededReplacementSources({
     cwd: root,
     intent,
     publication,
     publicationCheckpoint: receipt,
+    publicationReceiptPath,
     targetPrNumber: receipt.target_pr_number,
     checkpointedClosures,
   });
-  return receipt;
 }
 
 function resolveLiveExecutionIntent({
@@ -1757,8 +1809,16 @@ function publishReplacementRepair({
         checkpointedClosures,
         targetNumbers: [liveTargetPr],
         mutation: () =>
-          run("gh", ["pr", "reopen", String(liveTargetPr), "--repo", intent.target_repo], {
-            cwd: checkout,
+          runExactReplacementReopenMutation({
+            readPull: () => ghObject(`repos/${intent.target_repo}/pulls/${liveTargetPr}`),
+            expectedNumber: liveTargetPr,
+            publication,
+            intent,
+            publicationCheckpoint,
+            mutation: () =>
+              run("gh", ["pr", "reopen", String(liveTargetPr), "--repo", intent.target_repo], {
+                cwd: checkout,
+              }),
           }),
       });
       mutations.push({
@@ -1770,24 +1830,37 @@ function publishReplacementRepair({
     verifyPublishedPull(intent.target_repo, liveTargetPr, publication, intent, false);
     targetPrNumber = liveTargetPr;
   } else if (targetPrNumber) {
+    const expectedTargetPrNumber = targetPrNumber;
     if (recovery?.state === "reopen") {
       runPublicationMutation({
         intent,
         publication,
         checkpointedClosures,
-        targetNumbers: [targetPrNumber],
+        targetNumbers: [expectedTargetPrNumber],
         mutation: () =>
-          run("gh", ["pr", "reopen", String(targetPrNumber), "--repo", intent.target_repo], {
-            cwd: checkout,
+          runExactReplacementReopenMutation({
+            readPull: () => ghObject(`repos/${intent.target_repo}/pulls/${expectedTargetPrNumber}`),
+            expectedNumber: expectedTargetPrNumber,
+            publication,
+            intent,
+            publicationCheckpoint,
+            mutation: () =>
+              run(
+                "gh",
+                ["pr", "reopen", String(expectedTargetPrNumber), "--repo", intent.target_repo],
+                {
+                  cwd: checkout,
+                },
+              ),
           }),
       });
       mutations.push({
         operation: "reopen_pull_request",
         repo: intent.target_repo,
-        pull_number: targetPrNumber,
+        pull_number: expectedTargetPrNumber,
       });
     }
-    verifyPublishedPull(intent.target_repo, targetPrNumber, publication, intent, false);
+    verifyPublishedPull(intent.target_repo, expectedTargetPrNumber, publication, intent, false);
   } else {
     const bodyPath = path.join(path.dirname(checkout), "pull-request-body.md");
     fs.writeFileSync(bodyPath, publication.pr_body ?? "");
@@ -1918,6 +1991,56 @@ export function selectAuthorizedReplacementPull({
   throw new Error(`authorized replacement pull request is ${state || "unknown"}`);
 }
 
+export function runExactReplacementReopenMutation<T>({
+  readPull,
+  expectedNumber,
+  publication,
+  intent,
+  publicationCheckpoint,
+  mutation,
+}: {
+  readPull: () => LooseRecord;
+  expectedNumber: number;
+  publication: PreparedPublication;
+  intent: ExecutionIntent;
+  publicationCheckpoint: PublicationReceipt | null;
+  mutation: () => T;
+}): T {
+  const selection = selectAuthorizedReplacementPull({
+    pulls: [readPull()],
+    publication,
+    intent,
+    publicationCheckpoint,
+  });
+  if (!selection || selection.number !== expectedNumber || selection.state !== "reopen") {
+    throw new Error("replacement pull request is no longer the exact closed authorized target");
+  }
+  return mutation();
+}
+
+export function sourceCloseoutStateBlock({
+  source,
+  state,
+  completed,
+}: {
+  source: string;
+  state: string;
+  completed: boolean;
+}): string {
+  if (completed) {
+    if (state === "closed") return "";
+    if (state === "open") {
+      return `source pull request was reopened after ClawSweeper closeout: ${source}`;
+    }
+  } else {
+    if (state === "open") return "";
+    if (state === "closed") {
+      return `source pull request closed without a completed ClawSweeper receipt: ${source}`;
+    }
+  }
+  return `authorized source pull request is ${state || "unknown"}`;
+}
+
 function ensurePublishedReplacementAvailable({
   cwd,
   intent,
@@ -1949,8 +2072,16 @@ function ensurePublishedReplacementAvailable({
       checkpointedClosures,
       targetNumbers: [targetPrNumber],
       mutation: () =>
-        run("gh", ["pr", "reopen", String(targetPrNumber), "--repo", intent.target_repo], {
-          cwd,
+        runExactReplacementReopenMutation({
+          readPull: () => ghObject(`repos/${intent.target_repo}/pulls/${targetPrNumber}`),
+          expectedNumber: targetPrNumber,
+          publication,
+          intent,
+          publicationCheckpoint,
+          mutation: () =>
+            run("gh", ["pr", "reopen", String(targetPrNumber), "--repo", intent.target_repo], {
+              cwd,
+            }),
         }),
     });
   }
@@ -1962,6 +2093,7 @@ function closeSupersededReplacementSources({
   intent,
   publication,
   publicationCheckpoint,
+  publicationReceiptPath,
   targetPrNumber,
   checkpointedClosures,
 }: {
@@ -1969,9 +2101,12 @@ function closeSupersededReplacementSources({
   intent: ExecutionIntent;
   publication: PreparedPublication;
   publicationCheckpoint: PublicationReceipt;
+  publicationReceiptPath: string;
   targetPrNumber: number;
   checkpointedClosures: ReadonlySet<string>;
-}) {
+}): PublicationReceipt {
+  let currentReceipt = publicationCheckpoint;
+  let completedClosures = new Set(checkpointedClosures);
   const revisions = new Map(
     sourcePullRevisions(intent).map((revision) => [revision.url, revision]),
   );
@@ -1990,14 +2125,43 @@ function closeSupersededReplacementSources({
     return { source, revision, operation: String(action.operation) };
   });
 
+  for (const source of completedClosures) {
+    const revision = revisions.get(source);
+    if (!revision) {
+      throw new Error("completed source closeout is missing its authorized source revision");
+    }
+    const sourcePull = revalidateSourcePullRevision(revision, { allowClosed: true });
+    const stateBlock = sourceCloseoutStateBlock({
+      source,
+      state: String(sourcePull.state ?? "").toLowerCase(),
+      completed: true,
+    });
+    if (stateBlock) throw new Error(stateBlock);
+  }
+
   for (const action of actions) {
+    if (action.operation === "close") {
+      const sourcePull = revalidateSourcePullRevision(action.revision, {
+        allowClosed: completedClosures.has(action.source.url),
+      });
+      const sourceState = String(sourcePull.state ?? "").toLowerCase();
+      const stateBlock = sourceCloseoutStateBlock({
+        source: action.source.url,
+        state: sourceState,
+        completed: completedClosures.has(action.source.url),
+      });
+      if (stateBlock) throw new Error(stateBlock);
+      if (completedClosures.has(action.source.url)) {
+        continue;
+      }
+    }
     ensurePublishedReplacementAvailable({
       cwd,
       intent,
       publication,
-      publicationCheckpoint,
+      publicationCheckpoint: currentReceipt,
       targetPrNumber,
-      checkpointedClosures,
+      checkpointedClosures: completedClosures,
     });
     const replacementUrl = `https://github.com/${intent.target_repo}/pull/${targetPrNumber}`;
     const comment = [
@@ -2012,7 +2176,7 @@ function closeSupersededReplacementSources({
       number: action.source.number,
       body: comment,
       targetNumbers: [targetPrNumber],
-      checkpointedClosures,
+      checkpointedClosures: completedClosures,
     });
     if (action.operation !== "close") continue;
 
@@ -2020,19 +2184,17 @@ function closeSupersededReplacementSources({
       cwd,
       intent,
       publication,
-      publicationCheckpoint,
+      publicationCheckpoint: currentReceipt,
       targetPrNumber,
-      checkpointedClosures,
+      checkpointedClosures: completedClosures,
     });
-    const sourcePull = revalidateSourcePullRevision(action.revision, {
-      allowClosed: checkpointedClosures.has(action.source.url),
-    });
+    const sourcePull = revalidateSourcePullRevision(action.revision);
     const sourceState = String(sourcePull.state ?? "").toLowerCase();
     if (sourceState === "open") {
       runPublicationMutation({
         intent,
         publication,
-        checkpointedClosures,
+        checkpointedClosures: completedClosures,
         targetNumbers: [targetPrNumber, action.source.number],
         mutation: () => {
           revalidateSourcePullRevision(action.revision);
@@ -2045,10 +2207,23 @@ function closeSupersededReplacementSources({
           );
         },
       });
-    } else if (sourceState !== "closed") {
+      const closedSource = revalidateSourcePullRevision(action.revision, { allowClosed: true });
+      if (String(closedSource.state ?? "").toLowerCase() !== "closed") {
+        throw new Error("source pull request close did not persist");
+      }
+      currentReceipt = publicationReceipt({
+        validationReceiptSha256: currentReceipt.validation_receipt_sha256,
+        publication,
+        targetPrNumber,
+        mutations: [...currentReceipt.mutations, sourceClosureReceiptMutation(action.revision)],
+      });
+      writeJson(publicationReceiptPath, currentReceipt);
+      completedClosures = checkpointedSourceClosures(publication, currentReceipt, intent);
+    } else {
       throw new Error(`authorized source pull request is ${sourceState || "unknown"}`);
     }
   }
+  return currentReceipt;
 }
 
 function verifyPublishedPull(

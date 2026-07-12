@@ -1128,15 +1128,8 @@ jobs:
             --publication-receipt .clawsweeper-repair/publication/receipt.json \
             --publication-receipt-sha256 "${{ steps.publish.outputs.publication_receipt_sha256 }}"
 
-      - name: Upload durable publication checkpoint
-        uses: actions/upload-artifact@v7
-        with:
-          name: clawsweeper-repair-publication-${{ github.run_id }}-${{ github.run_attempt }}
-          path: .clawsweeper-repair/publication/receipt.json
-          if-no-files-found: error
-          retention-days: 7
-
       - name: Close superseded sources from publication checkpoint
+        id: close_sources
         env:
           GH_TOKEN: ${{ steps.target_post_flight_token.outputs.token }}
           GITHUB_TOKEN: ${{ steps.target_post_flight_token.outputs.token }}
@@ -1148,6 +1141,15 @@ jobs:
             --validation-receipt-sha256 "${{ needs.validate.outputs.receipt_sha256 }}" \
             --publication-receipt .clawsweeper-repair/publication/receipt.json \
             --publication-receipt-sha256 "${{ steps.publish.outputs.publication_receipt_sha256 }}"
+
+      - name: Upload durable publication checkpoint
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: clawsweeper-repair-publication-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .clawsweeper-repair/publication/receipt.json
+          if-no-files-found: error
+          retention-days: 7
 
       - name: Post-flight finalize fix PRs
         id: post_flight
@@ -1172,7 +1174,7 @@ jobs:
             --validation-receipt .clawsweeper-repair/validation/receipt.json \
             --validation-receipt-sha256 "${{ needs.validate.outputs.receipt_sha256 }}" \
             --publication-receipt .clawsweeper-repair/publication/receipt.json \
-            --publication-receipt-sha256 "${{ steps.publish.outputs.publication_receipt_sha256 }}"
+            --publication-receipt-sha256 "${{ steps.close_sources.outputs.publication_receipt_sha256 }}"
 
       - name: Publish automatic implementation completion status
         if: ${{ always() && steps.check_job.outputs.job_exists == '1' }}
@@ -1184,7 +1186,7 @@ jobs:
           POST_FLIGHT_OUTCOME: ${{ steps.post_flight.outputs.report_outcome }}
           POST_FLIGHT_DETAIL: ${{ steps.post_flight.outputs.report_detail }}
           TRUSTED_PR_URL: ${{ steps.publish.outputs.target_pr_url }}
-          PUBLICATION_RECEIPT_SHA256: ${{ steps.publish.outputs.publication_receipt_sha256 }}
+          PUBLICATION_RECEIPT_SHA256: ${{ steps.close_sources.outputs.publication_receipt_sha256 }}
         run: |
           set -euo pipefail
           state="Blocked"

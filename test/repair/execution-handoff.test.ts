@@ -18,10 +18,12 @@ import {
   preparedRefPublicationState,
   publicationPauseItems,
   replacementPublicationLabels,
+  runExactReplacementReopenMutation,
   runHeadBoundPullMutation,
   runPublicationMutationBoundary,
   selectAuthorizedReplacementPull,
   sealExecutionHandoff,
+  sourceCloseoutStateBlock,
   type SourcePullRevision,
   verifyExecutionHandoff,
   verifyValidationReceipt,
@@ -476,6 +478,34 @@ test("replacement retry reopens only the exact closed authorized pull request", 
       }),
     /multiple exact pull request targets/,
   );
+
+  let liveReplacement = exactClosed;
+  let reopenCount = 0;
+  assert.equal(
+    runExactReplacementReopenMutation({
+      readPull: () => liveReplacement,
+      expectedNumber: 99,
+      publication,
+      intent,
+      publicationCheckpoint: checkpoint,
+      mutation: () => ++reopenCount,
+    }),
+    1,
+  );
+  liveReplacement = { ...exactClosed, state: "open" };
+  assert.throws(
+    () =>
+      runExactReplacementReopenMutation({
+        readPull: () => liveReplacement,
+        expectedNumber: 99,
+        publication,
+        intent,
+        publicationCheckpoint: checkpoint,
+        mutation: () => ++reopenCount,
+      }),
+    /no longer the exact closed authorized target/,
+  );
+  assert.equal(reopenCount, 1);
 });
 
 test("replacement publication binds source, implementation, and automerge labels", () => {
@@ -513,6 +543,7 @@ test("replacement publication binds source, implementation, and automerge labels
 
 test("planned source closure is not checkpointed until an exact publication receipt exists", () => {
   const revision = sourcePullRevision(42);
+  const intent = revisionBoundIntent(revision, "open_pull_request");
   const publication = checkpointPublication([
     {
       source: revision.url,
@@ -521,7 +552,7 @@ test("planned source closure is not checkpointed until an exact publication rece
   ]);
   const closedPull = livePull(revision, { state: "closed" });
 
-  const plannedOnly = checkpointedSourceClosures(publication, null);
+  const plannedOnly = checkpointedSourceClosures(publication, null, intent);
   assert.equal(plannedOnly.size, 0);
   assert.throws(
     () =>
@@ -537,7 +568,24 @@ test("planned source closure is not checkpointed until an exact publication rece
     targetPrNumber: 99,
     mutations: [],
   });
-  const checkpointed = checkpointedSourceClosures(publication, receipt);
+  const receiptWithoutClose = checkpointedSourceClosures(publication, receipt, intent);
+  assert.equal(receiptWithoutClose.size, 0);
+  const completedReceipt = publicationReceipt({
+    validationReceiptSha256: "c".repeat(64),
+    publication,
+    targetPrNumber: 99,
+    mutations: [
+      {
+        operation: "close_source_pull_request",
+        source: revision.url,
+        repo: revision.repo,
+        pull_number: revision.number,
+        expected_head_sha: revision.expected_head_sha,
+        expected_base_sha: revision.expected_base_sha,
+      },
+    ],
+  });
+  const checkpointed = checkpointedSourceClosures(publication, completedReceipt, intent);
   assert.deepEqual([...checkpointed], [revision.url]);
   assert.doesNotThrow(() =>
     assertSourcePullRevision(revision, closedPull, {
@@ -557,12 +605,49 @@ test("planned source closure is not checkpointed until an exact publication rece
   );
   assert.throws(
     () =>
-      checkpointedSourceClosures(publication, {
-        ...receipt,
-        prepared_publication_sha256: "f".repeat(64),
-      }),
+      checkpointedSourceClosures(
+        publication,
+        {
+          ...completedReceipt,
+          prepared_publication_sha256: "f".repeat(64),
+        },
+        intent,
+      ),
     /publication receipt does not match/,
   );
+  const unauthorizedCompletion = publicationReceipt({
+    validationReceiptSha256: "c".repeat(64),
+    publication,
+    targetPrNumber: 99,
+    mutations: [
+      {
+        operation: "close_source_pull_request",
+        source: revision.url,
+        repo: revision.repo,
+        pull_number: revision.number,
+        expected_head_sha: "f".repeat(40),
+        expected_base_sha: revision.expected_base_sha,
+      },
+    ],
+  });
+  assert.throws(
+    () => checkpointedSourceClosures(publication, unauthorizedCompletion, intent),
+    /unauthorized source-close completion/,
+  );
+});
+
+test("completed source closeout distinguishes a later human reopen", () => {
+  const source = "https://github.com/openclaw/openclaw/pull/42";
+  assert.equal(sourceCloseoutStateBlock({ source, state: "closed", completed: true }), "");
+  assert.match(
+    sourceCloseoutStateBlock({ source, state: "open", completed: true }),
+    /reopened after ClawSweeper closeout/,
+  );
+  assert.match(
+    sourceCloseoutStateBlock({ source, state: "closed", completed: false }),
+    /closed without a completed ClawSweeper receipt/,
+  );
+  assert.equal(sourceCloseoutStateBlock({ source, state: "open", completed: false }), "");
 });
 
 test("every source closeout remains bound to its exact head and base revisions", () => {
@@ -592,7 +677,7 @@ test("every source closeout remains bound to its exact head and base revisions",
   );
 });
 
-test("publication checkpoint precedes source closeout and every mutation rechecks live safety", () => {
+test("publication checkpoint binds source closeout and every mutation rechecks live safety", () => {
   const source = fs.readFileSync("src/repair/execution-handoff.ts", "utf8");
   const mutationWrapper = source.slice(
     source.indexOf("function runPublicationMutation"),
@@ -653,8 +738,13 @@ test("publication checkpoint precedes source closeout and every mutation recheck
   );
   assert.match(
     closeout,
-    /publishExactPullComment\(\{[\s\S]*checkpointedClosures,[\s\S]*runPublicationMutation\(\{[\s\S]*revalidateSourcePullRevision\(/,
+    /publishExactPullComment\(\{[\s\S]*checkpointedClosures: completedClosures,[\s\S]*runPublicationMutation\(\{[\s\S]*revalidateSourcePullRevision\(/,
   );
+  assert.match(
+    closeout,
+    /"pr", "close"[\s\S]*sourceClosureReceiptMutation\(action\.revision\)[\s\S]*writeJson\(publicationReceiptPath, currentReceipt\)/,
+  );
+  assert.ok(closeout.indexOf("sourceCloseoutStateBlock") < closeout.indexOf('["pr", "close"'));
   const resolver = source.slice(
     source.indexOf("function resolveLiveExecutionIntent"),
     source.indexOf("function verifyAuthorizedPreparedPublication"),

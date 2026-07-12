@@ -154,6 +154,7 @@ switch (command) {
       target_pr_number: String(receipt.target_pr_number),
       target_pr_url: receipt.target_pr_url,
       published_head_sha: receipt.published_head_sha,
+      publication_receipt_sha256: receipt.identity_sha256,
       sources_closed: "1",
     });
     break;

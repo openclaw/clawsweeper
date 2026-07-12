@@ -381,9 +381,14 @@ test("repair workflow binds one run through no-credential proof and token-only m
   const postFlightIndex = mutate.indexOf("- name: Post-flight finalize fix PRs");
   assert.ok(
     publishIndex < verifyPublicationIndex &&
-      verifyPublicationIndex < checkpointIndex &&
-      checkpointIndex < closeSourcesIndex &&
+      verifyPublicationIndex < closeSourcesIndex &&
+      closeSourcesIndex < checkpointIndex &&
+      checkpointIndex < postFlightIndex &&
       closeSourcesIndex < postFlightIndex,
+  );
+  assert.match(
+    mutate,
+    /id: close_sources[\s\S]*publication_receipt_sha256[\s\S]*steps\.close_sources\.outputs\.publication_receipt_sha256/,
   );
   assert.match(mutate, /needs\.execute\.result == 'success'/);
   assert.match(mutate, /needs\.execute\.outputs\.execute_fix_outcome == 'success'/);
