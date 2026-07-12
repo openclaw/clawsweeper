@@ -79,6 +79,7 @@ function input(overrides: Record<string, unknown> = {}) {
     context,
     git: {
       mainSha: "e".repeat(40),
+      releaseStateComplete: true,
       latestRelease: { tagName: "v1.0.0", sha: "f".repeat(40) },
     },
     structuralContextRevision: STRUCTURAL_CONTEXT,
@@ -472,11 +473,40 @@ test("global declarations and formatter controls remain semantic", () => {
       ],
     },
   });
+  const v8Control = record({
+    context: {
+      pullFiles: [
+        {
+          filename: "src/cache.ts",
+          status: "modified",
+          additions: 2,
+          deletions: 1,
+          patch:
+            "@@ -1 +1,2 @@\n-const value = Cache;\n+/* v8 ignore next */\n+const value = Cache;",
+        },
+      ],
+    },
+  });
+  const noSonarControl = record({
+    context: {
+      pullFiles: [
+        {
+          filename: "src/cache.ts",
+          status: "modified",
+          additions: 2,
+          deletions: 1,
+          patch: "@@ -1 +1,2 @@\n-const value = Cache;\n+// NOSONAR\n+const value = Cache;",
+        },
+      ],
+    },
+  });
 
   assert.notEqual(ordinary.codeDigest, globalDeclaration.codeDigest);
   assert.notEqual(ordinary.codeDigest, denoFormatter.codeDigest);
   assert.notEqual(ordinary.codeDigest, oxlintControl.codeDigest);
   assert.notEqual(ordinary.codeDigest, oxfmtControl.codeDigest);
+  assert.notEqual(ordinary.codeDigest, v8Control.codeDigest);
+  assert.notEqual(ordinary.codeDigest, noSonarControl.codeDigest);
 });
 
 test("structured JSON ignores formatting but preserves object order", () => {
@@ -817,6 +847,23 @@ test("incomplete file hydration and mutable check context disable semantic reuse
   );
 });
 
+test("unknown release state disables semantic reuse", () => {
+  const unknownRelease = record({
+    git: {
+      mainSha: "e".repeat(40),
+      releaseStateComplete: false,
+      latestRelease: null,
+    },
+  });
+
+  assert.equal(unknownRelease.eligible, false);
+  assert.equal(unknownRelease.eligibilityReason, "incomplete_release_state");
+  assert.equal(
+    decision({ priorRecord: record(), currentRecord: unknownRelease }).reason,
+    "semantic_ineligible",
+  );
+});
+
 test("changed discussion, reviews, checks, or target context busts the context digest", () => {
   const prior = record();
   const changedDiscussion = record({
@@ -841,6 +888,7 @@ test("changed discussion, reviews, checks, or target context busts the context d
   const changedTarget = record({
     git: {
       mainSha: "1".repeat(40),
+      releaseStateComplete: true,
       latestRelease: { tagName: "v1.0.0", sha: "f".repeat(40) },
     },
   });

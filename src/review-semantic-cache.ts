@@ -8,7 +8,7 @@ import { API } from "typescript/unstable/sync";
 import { REVIEW_CACHE_MAX_AGE_DAYS } from "./scheduler-policy.js";
 import { stableJson } from "./stable-json.js";
 
-export const REVIEW_SEMANTIC_CACHE_VERSION = 5;
+export const REVIEW_SEMANTIC_CACHE_VERSION = 6;
 export const REVIEW_SEMANTIC_CACHE_MAX_AGE_DAYS = REVIEW_CACHE_MAX_AGE_DAYS;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -16,7 +16,7 @@ const DIGEST_PATTERN = /^[0-9a-f]{64}$/;
 const MAX_PATCH_CHARS = 512 * 1024;
 const MAX_FILES = 80;
 const DIRECTIVE_COMMENT_PATTERN =
-  /(?:^\/[/*]!|[@#]|\/\/\/\s*<(?:reference|amd-module|amd-dependency)\b|\b(?:babel|biome|c8|coverage|deno-fmt|deno-lint|eslint|esbuild|flow|gql|graphql|istanbul|jshint|jslint|oxfmt|oxlint|prettier|rollup|swc|tslint|vite|webpack)[\w-]*|\b(?:exported|globals?)\b)/i;
+  /(?:^\/[/*]!|[@#]|\/\/\/\s*<(?:reference|amd-module|amd-dependency)\b|\b(?:babel|biome|c8|coverage|deno-fmt|deno-lint|eslint|esbuild|flow|gql|graphql|istanbul|jshint|jslint|nosonar|oxfmt|oxlint|prettier|rollup|swc|tslint|v8|vite|webpack)[\w-]*|\b(?:exported|globals?)\b)/i;
 const TYPESCRIPT_EXTENSIONS = new Set([
   ".cjs",
   ".cts",
@@ -44,6 +44,7 @@ export type ReviewSemanticEligibilityReason =
   | "eligible"
   | "not_pull_request"
   | "missing_structural_context"
+  | "incomplete_release_state"
   | "incomplete_checks"
   | "incomplete_review_context"
   | "incomplete_file_list"
@@ -63,6 +64,7 @@ const ELIGIBILITY_REASONS = new Set<ReviewSemanticEligibilityReason>([
   "eligible",
   "not_pull_request",
   "missing_structural_context",
+  "incomplete_release_state",
   "incomplete_checks",
   "incomplete_review_context",
   "incomplete_file_list",
@@ -146,6 +148,7 @@ export interface ReviewSemanticInput {
   };
   git: {
     mainSha: string;
+    releaseStateComplete: boolean;
     latestRelease: {
       tagName?: string | undefined;
       sha?: string | null | undefined;
@@ -749,6 +752,7 @@ function semanticContext(input: ReviewSemanticInput): {
     },
     target: {
       mainSha: input.git.mainSha,
+      releaseStateComplete: input.git.releaseStateComplete,
       latestRelease: input.git.latestRelease
         ? {
             tagName: input.git.latestRelease.tagName ?? null,
@@ -760,6 +764,13 @@ function semanticContext(input: ReviewSemanticInput): {
     reviewPolicy: input.reviewPolicy,
     reviewModel: input.reviewModel,
   };
+  if (!input.git.releaseStateComplete) {
+    return {
+      digest: sha256(stableJson(context)),
+      complete: false,
+      reason: "incomplete_release_state",
+    };
+  }
   if (!input.structuralContextRevision || !DIGEST_PATTERN.test(input.structuralContextRevision)) {
     return {
       digest: sha256(stableJson(context)),
