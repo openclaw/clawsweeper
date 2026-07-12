@@ -106,7 +106,10 @@ test("scheduled review shards receive the compiler-backed runtime artifact", () 
   assert.match(reviewJob, /name: clawsweeper-runtime-dist\s+path: clawsweeper\/\.artifacts/);
   assert.doesNotMatch(reviewJob, /name: clawsweeper-runtime-dist\s+path: clawsweeper\/dist/);
   assert.match(reviewJob, /tar -xzf \.artifacts\/review-runtime\.tar\.gz/);
-  assert.match(reviewJob, /node scripts\/install-review-native-compiler\.mjs/);
+  assert.match(
+    reviewJob,
+    /name: Install review compiler service\s+continue-on-error: true[\s\S]*node scripts\/install-review-native-compiler\.mjs/,
+  );
   assert.doesNotMatch(reviewJob, /npm pack "@typescript/);
 });
 

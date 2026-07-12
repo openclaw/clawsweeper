@@ -229,6 +229,12 @@ test("semantic cache runs after hydration and revalidates under the acquired lea
     /updateReviewSemanticFrontMatter\(carried, semanticRecord, true\)/,
   );
   assert.match(reviewLoop.slice(semanticWrite, contentCache), /!git\.releaseStateComplete/);
+  const verdictRefresh = source.slice(
+    source.indexOf("const refreshStructuralRecordForVerdict"),
+    source.indexOf("\n      if (", source.indexOf("const refreshStructuralRecordForVerdict") + 1),
+  );
+  assert.match(verdictRefresh, /const refreshedGit = loadReviewGitInfo\(\)/);
+  assert.doesNotMatch(verdictRefresh, /\bgit\s*=/);
   assert.match(source, /semantic_cache_eligibility_reasons/);
   assert.match(source, /review_semantic_code_digest/);
   assert.match(source, /check-state=unavailable/);

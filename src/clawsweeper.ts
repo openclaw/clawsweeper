@@ -20562,10 +20562,10 @@ function reviewCommand(args: Args): void {
         const structuralRevalidationStartedAt = Date.now();
         let candidate: ReviewStructuralRecord | null = null;
         try {
-          git = loadReviewGitInfo();
+          const refreshedGit = loadReviewGitInfo();
           candidate = fetchReviewStructuralRecord({
             item,
-            git,
+            git: refreshedGit,
             reviewPolicy,
             reviewModel: PUBLIC_CODEX_MODEL,
           });
