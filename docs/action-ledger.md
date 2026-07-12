@@ -8,8 +8,12 @@ truth.
 Writers first spool individual events locally:
 
 ```text
-.clawsweeper-repair/action-events/<repo-slug>/<event-id>.json
+.clawsweeper-repair/action-events/<repo-slug>-<repo-digest>/<event-id>.json
 ```
+
+The repository digest prevents collisions between repositories whose readable
+slugs are identical. Readers also verify that every event's repository and
+event ID reproduce its exact spool path.
 
 At job finalization, the spool is sorted, deduplicated, and published as one
 immutable JSONL shard:
@@ -57,9 +61,12 @@ and hash their inputs. Identity inputs must be plain canonical JSON trees:
 non-finite, negative-zero, or unsafe-integer numbers, dates, class instances,
 sparse or decorated arrays, accessors, `undefined`, functions, symbols,
 bigints, cycles, and credential-bearing field aliases are rejected before
-hashing. Object keys and evidence use locale-independent UTF-8 byte ordering;
-large identifiers must be strings. `event_id` is the SHA-256 of normalized
-repository plus `event_key`. Callers cannot supply a raw event key.
+hashing. Ledger object keys and evidence use locale-independent UTF-8 byte
+ordering without changing the older shared `stableJson` contract. Integer-like
+keys retain byte ordering rather than JavaScript property enumeration order,
+and unpaired-surrogate keys are rejected. Large identifiers must be strings.
+`event_id` is the SHA-256 of normalized repository plus `event_key`. Callers
+cannot supply a raw event key.
 
 - Replaying the same key and semantic payload is idempotent.
 - Reusing a key for different semantic content is a hard conflict.
@@ -69,7 +76,9 @@ repository plus `event_key`. Callers cannot supply a raw event key.
   status and failure reason never define side-effect identity.
 - Repository, producer SHA, workflow, job, run, attempt, and component all bind
   shard identity. They do not define the logical operation.
-- `recorded_at` is first-writer metadata and is excluded from replay equality.
+- `recorded_at` is first-writer metadata and is excluded from event and shard
+  replay equality. When equivalent fresh-root reconstructions reach an existing
+  shard or import destination, the existing first-writer bytes win.
 - `occurred_at` records the source timestamp and must match across duplicate
   events. Shard line order is a deterministic topological order: causal
   children follow their in-shard parents, while independent ready events use
@@ -88,14 +97,19 @@ repository plus `event_key`. Callers cannot supply a raw event key.
   descriptors against their final paths, and use no-follow file access where
   the platform supports it. Final files are hard-linked create-only from a
   fully written and fsynced sibling staging file, then the destination directory
-  is fsynced where supported. A crash can leave a regular `.tmp` staging file
-  but never a partial final shard; replay safely publishes the canonical file.
-  Staging names are ignored by readers, while symlinks, directories, and special
-  entries fail closed. Staging files are not removed through mutable pathnames.
+  is fsynced where supported. Successful publications and create-only race
+  losers remove their staging aliases only while the anchored parent chain and
+  staging inode still match. A crash or detected parent replacement can leave a
+  regular `.tmp` staging file but never a partial final shard; replay safely
+  publishes the canonical file. Staging names are ignored by readers, while
+  symlinks, directories, and special entries fail closed.
 - Multi-step readers retain one validated root identity from enumeration through
   file parsing. Root, parent-chain, descriptor, and final-path identities are
-  rechecked around reads, so directory replacement cannot silently redirect
-  spool or import data.
+  rechecked around reads. File opens are nonblocking before descriptor type
+  validation, so replacing a validated regular file with a FIFO cannot hang the
+  process.
+- Shard imports begin at `ledger/v1/events`; unrelated source-tree entries are
+  never traversed. Links and special entries inside that subtree fail closed.
 
 ## Privacy Boundary
 
@@ -104,11 +118,14 @@ bounded subject IDs, relative report paths, public run URLs, and snapshot IDs.
 It does not store prompts, bodies, comments, diffs, patches, raw logs, raw
 payloads, arbitrary model text, local absolute paths, credentials, private
 hosts, or email addresses. Credential detection covers GitHub token families,
-JWT-shaped values, Basic credentials, whitespace, URL-encoded, or
-separator-delimited bearer/API/Cloudflare credential forms, credential field
-aliases, POSIX and Windows absolute paths, case-insensitive private paths,
-private IPv4 and IPv6 addresses, and internal hostname suffixes while all durable
-text remains restricted to field-specific machine vocabularies.
+JWT-shaped values, Basic credentials, whitespace or separator-delimited
+bearer/API/Cloudflare credential forms, credential field aliases, POSIX and
+Windows absolute paths, case-insensitive private paths, private IPv4 and IPv6
+addresses, and internal hostname suffixes. Percent-encoded octets are rejected
+from durable identifiers and paths rather than decoded into potentially
+confidential forms. Host checks normalize trailing-dot FQDNs and equivalent
+IPv6 loopback forms while all durable text remains restricted to field-specific
+machine vocabularies.
 
 Every event records a privacy classification, redaction version, and fields
 dropped. The checked-in JSON schema is
