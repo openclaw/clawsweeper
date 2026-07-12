@@ -458,7 +458,7 @@ jobs:
       CI: "true"
       CLAWSWEEPER_APP_CLIENT_ID: Iv23liOECG0slfuhz093
       CLOUDFLARE_ACCOUNT_ID: 91b59577e757131d68d55a471fe32aca
-      DEPLOYMENT_STATUS_ATTEMPTS: "6"
+      DEPLOYMENT_STATUS_ATTEMPTS: "60"
       DEPLOYMENT_STATUS_DELAY_SECONDS: "5"
       DEPLOY_MESSAGE: clawsweeper run ${{ github.run_id }}/${{ github.run_attempt }} main ${{ needs.preflight.outputs.deploy_sha }}
       DEPLOY_SHA: ${{ needs.preflight.outputs.deploy_sha }}
@@ -468,6 +468,7 @@ jobs:
       NPM_CONFIG_USERCONFIG: /dev/null
       OBSERVATION_ORDER_STATE: ${{ needs.preflight.outputs.observation_order_state }}
       PRODUCTION_ROUTE_URL: https://reports.openclaw.ai/crawl-remote
+      PRODUCTION_ENVIRONMENT: crawl-remote-production
       RECEIPT_NAME: ${{ needs.preflight.outputs.receipt_name }}
       SNAPSHOT_PROVENANCE_STATE: ${{ needs.preflight.outputs.snapshot_provenance_state }}
       SOURCE_REPOSITORY: ${{ github.repository }}
@@ -477,6 +478,145 @@ jobs:
       WORKERS_DEV_URL: https://crawl-remote.services-91b.workers.dev
       WRANGLER_VERSION: 4.107.1
     steps:
+      - name: Create protected-environment audit token
+        id: source-admin-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
+          owner: openclaw
+          repositories: clawsweeper
+          permission-actions: read
+
+      - name: Audit protected production environment
+        env:
+          BRANCH_POLICIES_RESPONSE: ${{ runner.temp }}/crawl-remote-environment-branch-policies.json
+          ENVIRONMENT_RESPONSE: ${{ runner.temp }}/crawl-remote-environment.json
+          ENVIRONMENT_SECRETS_RESPONSE: ${{ runner.temp }}/crawl-remote-environment-secrets.json
+          ENVIRONMENT_VARIABLES_RESPONSE: ${{ runner.temp }}/crawl-remote-environment-variables.json
+          GH_TOKEN: ${{ steps.source-admin-token.outputs.token }}
+        run: |
+          unset BASH_ENV ENV CDPATH GLOBIGNORE NODE_OPTIONS
+          gh api \
+            "repos/$SOURCE_REPOSITORY/environments/$PRODUCTION_ENVIRONMENT" \
+            > "$ENVIRONMENT_RESPONSE"
+          gh api --paginate --slurp \
+            "repos/$SOURCE_REPOSITORY/environments/$PRODUCTION_ENVIRONMENT/variables?per_page=100" \
+            > "$ENVIRONMENT_VARIABLES_RESPONSE"
+          gh api --paginate --slurp \
+            "repos/$SOURCE_REPOSITORY/environments/$PRODUCTION_ENVIRONMENT/secrets?per_page=100" \
+            > "$ENVIRONMENT_SECRETS_RESPONSE"
+          gh api --paginate --slurp \
+            "repos/$SOURCE_REPOSITORY/environments/$PRODUCTION_ENVIRONMENT/deployment-branch-policies?per_page=100" \
+            > "$BRANCH_POLICIES_RESPONSE"
+
+          node --input-type=module <<'ENVIRONMENT_AUDIT_NODE'
+          import { readFileSync } from 'node:fs';
+
+          function readPaged(path, key, label) {
+            const pages = JSON.parse(readFileSync(path, 'utf8'));
+            if (!Array.isArray(pages) || pages.length === 0) {
+              throw new Error(`${label} response is invalid`);
+            }
+            const totals = new Set();
+            const entries = [];
+            for (const page of pages) {
+              if (
+                !page ||
+                typeof page !== 'object' ||
+                Array.isArray(page) ||
+                !Number.isSafeInteger(page.total_count) ||
+                page.total_count < 0 ||
+                !Array.isArray(page[key]) ||
+                page.total_count < page[key].length
+              ) {
+                throw new Error(`${label} response is invalid`);
+              }
+              totals.add(page.total_count);
+              entries.push(...page[key]);
+            }
+            if (totals.size !== 1 || [...totals][0] !== entries.length) {
+              throw new Error(`${label} response is truncated`);
+            }
+            return entries;
+          }
+
+          const environment = JSON.parse(
+            readFileSync(process.env.ENVIRONMENT_RESPONSE, 'utf8'),
+          );
+          const protectionRules = Array.isArray(environment?.protection_rules)
+            ? environment.protection_rules
+            : [];
+          const reviewerRules = protectionRules.filter(
+            (rule) => rule?.type === 'required_reviewers',
+          );
+          const reviewerRule = reviewerRules[0];
+          const reviewers = Array.isArray(reviewerRule?.reviewers)
+            ? reviewerRule.reviewers
+            : [];
+          if (
+            environment?.name !== process.env.PRODUCTION_ENVIRONMENT ||
+            reviewerRules.length !== 1 ||
+            !reviewers.some(
+              (entry) =>
+                entry?.type === 'User' &&
+                entry?.reviewer?.id === 25068 &&
+                entry?.reviewer?.login === 'vincentkoc',
+            ) ||
+            environment?.deployment_branch_policy?.protected_branches !== false ||
+            environment?.deployment_branch_policy?.custom_branch_policies !== true
+          ) {
+            throw new Error(
+              'crawl-remote production environment protection is not the reviewed shape',
+            );
+          }
+
+          const variables = readPaged(
+            process.env.ENVIRONMENT_VARIABLES_RESPONSE,
+            'variables',
+            'environment variables',
+          );
+          const secrets = readPaged(
+            process.env.ENVIRONMENT_SECRETS_RESPONSE,
+            'secrets',
+            'environment secrets',
+          );
+          const branchPolicies = readPaged(
+            process.env.BRANCH_POLICIES_RESPONSE,
+            'branch_policies',
+            'environment branch policies',
+          );
+          const variableNames = new Set(variables.map((entry) => entry?.name));
+          const secretNames = new Set(secrets.map((entry) => entry?.name));
+          for (const name of [
+            'CRAWL_REMOTE_DEPLOY_AUTHORITY',
+            'CRAWL_REMOTE_CLOUDFLARE_TOKEN_SHA256',
+            'CRAWL_REMOTE_CUSTOM_ROUTE_PROOF',
+          ]) {
+            if (!variableNames.has(name)) {
+              throw new Error(`production environment is missing variable ${name}`);
+            }
+          }
+          for (const name of [
+            'CRAWL_REMOTE_PRODUCTION_CLOUDFLARE_API_TOKEN',
+            'CRAWL_REMOTE_ACCESS_CLIENT_ID',
+            'CRAWL_REMOTE_ACCESS_CLIENT_SECRET',
+          ]) {
+            if (!secretNames.has(name)) {
+              throw new Error(`production environment is missing secret ${name}`);
+            }
+          }
+          if (
+            branchPolicies.length !== 1 ||
+            branchPolicies[0]?.name !== 'main' ||
+            branchPolicies[0]?.type !== 'branch'
+          ) {
+            throw new Error(
+              'crawl-remote production environment must allow only the main branch',
+            );
+          }
+          ENVIRONMENT_AUDIT_NODE
+
       - name: Reauthorize current ClawSweeper workflow
         env:
           GH_TOKEN: ${{ github.token }}
@@ -1840,6 +1980,8 @@ jobs:
           CONSUMED_RECEIPT_PATH: ${{ runner.temp }}/${{ needs.preflight.outputs.receipt_name }}.consumed
           DEPLOY_OUTPUT_PATH: ${{ runner.temp }}/crawl-remote-deploy-output.ndjson
           PENDING_MIGRATIONS_PATH: ${{ runner.temp }}/crawl-remote-compatible-pending-migrations.json
+          PRE_DEPLOYMENT_RESPONSE: ${{ runner.temp }}/crawl-remote-pre-deployment.json
+          PREVIOUS_VERSION_PATH: ${{ runner.temp }}/crawl-remote-previous-version.txt
           PREVIOUS_WORKER_PROBE_PATH: ${{ runner.temp }}/crawl-remote-previous-worker-migration-proof.txt
           RELEASE_ROOT: ${{ runner.temp }}/crawl-remote-release
         run: |
@@ -1848,10 +1990,43 @@ jobs:
           test "$CLOUDFLARE_TOKEN_SHA256" = "$(printf '%s' "$CLOUDFLARE_API_TOKEN" | sha256sum | cut -d ' ' -f 1)"
           test -f "$CONSUMED_RECEIPT_PATH"
           test -f "$PENDING_MIGRATIONS_PATH"
+          test -f "$PREVIOUS_VERSION_PATH"
           test -f "$PREVIOUS_WORKER_PROBE_PATH"
           test ! -e "$DEPLOY_OUTPUT_PATH"
+          test ! -e "$PRE_DEPLOYMENT_RESPONSE"
           wrangler="$TOOLCHAIN_ROOT/node_modules/.bin/wrangler"
           test "$("$wrangler" --version)" = "$WRANGLER_VERSION"
+
+          "$wrangler" deployments status \
+            --name crawl-remote \
+            --json \
+            --cwd "$RELEASE_ROOT" \
+            --config wrangler.json \
+            > "$PRE_DEPLOYMENT_RESPONSE"
+          test "$(wc -c < "$PRE_DEPLOYMENT_RESPONSE")" -le 1048576
+
+          node --input-type=module <<'PRE_DEPLOYMENT_NODE'
+          import { readFileSync } from 'node:fs';
+
+          const previousVersion = readFileSync(
+            process.env.PREVIOUS_VERSION_PATH,
+            'utf8',
+          ).trim();
+          const deployment = JSON.parse(
+            readFileSync(process.env.PRE_DEPLOYMENT_RESPONSE, 'utf8'),
+          );
+          const versions = deployment?.versions;
+          if (
+            !Array.isArray(versions) ||
+            versions.length !== 1 ||
+            versions[0]?.percentage !== 100 ||
+            versions[0]?.version_id !== previousVersion
+          ) {
+            throw new Error(
+              'current Worker version changed after migration proof; refusing deployment',
+            );
+          }
+          PRE_DEPLOYMENT_NODE
 
           WRANGLER_OUTPUT_FILE_PATH="$DEPLOY_OUTPUT_PATH" \
             "$wrangler" deploy bundle/index.js \
@@ -1907,10 +2082,10 @@ jobs:
             !uuidPattern.test(previousVersion) ||
             expectedMessage.length === 0 ||
             expectedMessage.length > 256 ||
-            !['success', 'failure'].includes(deployOutcome) ||
+            !['success', 'failure', 'cancelled'].includes(deployOutcome) ||
             !Number.isSafeInteger(attempts) ||
             attempts < 1 ||
-            attempts > 12 ||
+            attempts > 120 ||
             !Number.isSafeInteger(delaySeconds) ||
             delaySeconds < 0 ||
             delaySeconds > 30
@@ -1989,16 +2164,9 @@ jobs:
                 sleep();
                 continue;
               }
-              if (deployOutcome === 'success') {
-                throw new Error(
-                  'successful Worker deploy did not become the current version',
-                );
-              }
-              appendFileSync(
-                process.env.GITHUB_OUTPUT,
-                `mutation_owned=false\ncurrent_version=${currentVersion}\n`,
+              throw new Error(
+                `Worker deployment mutation remains indeterminate after ${attempts} status checks`,
               );
-              process.exit(0);
             }
             if (deployment?.annotations?.['workers/message'] !== expectedMessage) {
               throw new Error(
