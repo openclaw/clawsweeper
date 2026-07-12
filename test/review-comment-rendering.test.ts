@@ -156,6 +156,10 @@ test("structural cache probes before hydration but acquires a lease before carry
     reviewLoop.slice(structuralRevalidation, structuralWrite),
     /git = loadReviewGitInfo\(\)[\s\S]*fetchReviewStructuralRecord\(\{/,
   );
+  assert.match(
+    reviewLoop.slice(structuralRevalidation, structuralWrite),
+    /liveClawSweeperReviewDigest\(item\.number\)[\s\S]*previousReviewIdentityMatches/,
+  );
   const structuralProbeSource = source.slice(
     source.indexOf("function fetchReviewStructuralRecord"),
     source.indexOf("function collectItemContext"),
@@ -191,6 +195,11 @@ test("semantic cache runs after hydration and revalidates under the acquired lea
   );
   const hydration = reviewLoop.indexOf("collectItemContext(item");
   const semanticRecord = reviewLoop.indexOf("createReviewSemanticRecord({", hydration);
+  const issueLease = reviewLoop.indexOf('} else if (item.kind !== "pull_request")', hydration);
+  const issueReviewRevalidation = reviewLoop.indexOf(
+    "fetchIssueReviewComments(item.number)",
+    issueLease,
+  );
   const localRangeGuard = reviewLoop.lastIndexOf("if (!localRangeData)", semanticRecord);
   const semanticDecision = reviewLoop.indexOf("reviewSemanticCacheDecision({", semanticRecord);
   const semanticRevalidation = reviewLoop.indexOf(
@@ -218,6 +227,9 @@ test("semantic cache runs after hydration and revalidates under the acquired lea
 
   assert.ok(hydration >= 0);
   assert.ok(localRangeGuard > hydration);
+  assert.ok(issueLease > hydration);
+  assert.ok(issueReviewRevalidation > issueLease);
+  assert.ok(issueReviewRevalidation < semanticRecord);
   assert.ok(semanticRecord > hydration);
   assert.ok(semanticDecision > semanticRecord);
   assert.ok(semanticRevalidation > semanticDecision);

@@ -4882,6 +4882,12 @@ function previousClawSweeperReviewFromReport(
   );
 }
 
+function liveClawSweeperReviewDigest(number: number): string | null {
+  return reviewSemanticPriorReviewDigest(
+    extractLatestClawSweeperReview(fetchIssueReviewComments(number), number),
+  );
+}
+
 export function previousClawSweeperReviewDigestFromReportForTest(
   markdown: string,
   number: number,
@@ -20309,6 +20315,11 @@ function reviewCommand(args: Args): void {
         );
       }
       const priorReview = localRangeData ? null : existingReview(item, itemsDir);
+      const expectedPreviousReviewDigest = priorReview
+        ? reviewSemanticPriorReviewDigest(
+            previousClawSweeperReviewFromReport(priorReview.markdown, item.number),
+          )
+        : null;
       let acquiredReviewLease: AcquiredReviewStartLease | null = null;
       let structuralRecord: ReviewStructuralRecord | null = null;
       let preHydrationStructuralRecord: ReviewStructuralRecord | null = null;
@@ -20413,6 +20424,7 @@ function reviewCommand(args: Args): void {
             structuralCacheRevalidations += 1;
             const structuralRevalidationStartedAt = Date.now();
             let revalidatedStructuralRecord: ReviewStructuralRecord | null = null;
+            let revalidatedPreviousReviewDigest: string | null = null;
             try {
               git = loadReviewGitInfo();
               revalidatedStructuralRecord = fetchReviewStructuralRecord({
@@ -20426,6 +20438,7 @@ function reviewCommand(args: Args): void {
               ) {
                 revalidatedStructuralRecord = null;
               }
+              revalidatedPreviousReviewDigest = liveClawSweeperReviewDigest(item.number);
             } catch (error) {
               structuralCacheRevalidationFailures += 1;
               console.error(
@@ -20451,16 +20464,23 @@ function reviewCommand(args: Args): void {
               maintainerRequest,
               coordinationEnabled: true,
             });
+            const previousReviewIdentityMatches =
+              expectedPreviousReviewDigest !== null &&
+              revalidatedPreviousReviewDigest !== null &&
+              expectedPreviousReviewDigest === revalidatedPreviousReviewDigest;
+            const revalidationReason = previousReviewIdentityMatches
+              ? revalidationDecision.reason
+              : "previous_review_changed";
             structuralCacheRevalidationReasons.set(
-              revalidationDecision.reason,
-              (structuralCacheRevalidationReasons.get(revalidationDecision.reason) ?? 0) + 1,
+              revalidationReason,
+              (structuralCacheRevalidationReasons.get(revalidationReason) ?? 0) + 1,
             );
-            if (!revalidationDecision.hit) {
+            if (!revalidationDecision.hit || !previousReviewIdentityMatches) {
               const leaseToRelease = acquiredReviewLease!;
               if (!deleteOwnedDedicatedReviewStartLease(item.number, leaseToRelease)) {
                 leaseAcquisitionFailures += 1;
                 leaseAcquisitionFailureDetails.push(
-                  `#${item.number}: could not release structural cache lease after ${revalidationDecision.reason}`,
+                  `#${item.number}: could not release structural cache lease after ${revalidationReason}`,
                 );
                 continue;
               }
@@ -20476,7 +20496,7 @@ function reviewCommand(args: Args): void {
               preHydrationStructuralRecord = revalidatedStructuralRecord;
               if (structuralRecord) item.updatedAt = structuralRecord.activityUpdatedAt;
               console.error(
-                `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} structural-cache=revalidation-miss reason=${revalidationDecision.reason} hydrate #${item.number}`,
+                `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} structural-cache=revalidation-miss reason=${revalidationReason} hydrate #${item.number}`,
               );
             } else {
               const confirmedStructuralRecord = revalidatedStructuralRecord!;
@@ -20712,6 +20732,47 @@ function reviewCommand(args: Args): void {
           continue;
         }
       }
+      if (!localRangeData && item.kind === "issue" && acquiredReviewLease) {
+        try {
+          const revalidatedPreviousReview = extractLatestClawSweeperReview(
+            fetchIssueReviewComments(item.number),
+            item.number,
+          );
+          if (revalidatedPreviousReview) {
+            context.previousClawSweeperReview = revalidatedPreviousReview;
+          } else {
+            delete context.previousClawSweeperReview;
+          }
+        } catch (error) {
+          const leaseToRelease = acquiredReviewLease;
+          leaseAcquisitionFailures += 1;
+          leaseAcquisitionFailureDetails.push(
+            `#${item.number}: could not refresh durable review after acquiring issue lease: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+          if (!deleteOwnedDedicatedReviewStartLease(item.number, leaseToRelease)) {
+            leaseAcquisitionFailureDetails.push(
+              `#${item.number}: could not release issue review lease after durable review refresh failed`,
+            );
+            continue;
+          }
+          const acquiredIndex = acquiredReviewLeases.findIndex(
+            (entry) =>
+              entry.itemNumber === item.number &&
+              entry.lease.commentId === leaseToRelease.commentId &&
+              entry.lease.owner === leaseToRelease.owner,
+          );
+          if (acquiredIndex >= 0) acquiredReviewLeases.splice(acquiredIndex, 1);
+          acquiredReviewLease = null;
+          console.error(
+            `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} durable-review=revalidation-failed defer #${item.number}: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+          continue;
+        }
+      }
       const contentDigest = itemContentDigest(item, context, git);
       let currentPreviousReviewDigest: string | null = null;
       let previousReviewIdentityChanged = false;
@@ -20733,11 +20794,6 @@ function reviewCommand(args: Args): void {
           (semanticCacheEligibilityReasons.get(semanticRecord.eligibilityReason) ?? 0) + 1,
         );
         if (!semanticRecord.eligible) semanticCacheIneligible += 1;
-        const expectedPreviousReviewDigest = priorReview
-          ? reviewSemanticPriorReviewDigest(
-              previousClawSweeperReviewFromReport(priorReview.markdown, item.number),
-            )
-          : null;
         currentPreviousReviewDigest = reviewSemanticPriorReviewDigest(
           context.previousClawSweeperReview,
         );

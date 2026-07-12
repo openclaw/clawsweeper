@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import test from "node:test";
 
 import {
+  REVIEW_SEMANTIC_CACHE_VERSION,
   createReviewSemanticRecord,
   reviewSemanticCacheDecision,
   reviewSemanticPriorReviewDigest,
@@ -1183,6 +1184,11 @@ test("semantic records require a boolean eligibility value", () => {
 
   assert.equal(validReviewSemanticRecord(valid), true);
   assert.equal(validReviewSemanticRecord(malformed as never), false);
+});
+
+test("semantic record version changes invalidate legacy directive digests", () => {
+  assert.equal(REVIEW_SEMANTIC_CACHE_VERSION, 9);
+  assert.equal(validReviewSemanticRecord({ ...record(), version: 8 } as never), false);
 });
 
 test("stale, failed, and future-dated reviews never reuse", () => {
