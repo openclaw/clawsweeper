@@ -1551,6 +1551,25 @@ export function sourceCloseRecovery({
     : { status: "human_reopened", evidence };
 }
 
+export function sourceCloseRecoveryFromPull({
+  attempt,
+  pull,
+  events,
+}: {
+  attempt: LooseRecord;
+  pull: LooseRecord;
+  events: readonly SourcePullStateEvent[];
+}): ReturnType<typeof sourceCloseRecovery> {
+  if (pull.merged_at ?? pull.mergedAt) {
+    throw new Error("pending source close recovery cannot mutate a merged pull request");
+  }
+  return sourceCloseRecovery({
+    attempt,
+    state: String(pull.state ?? "").toLowerCase(),
+    events,
+  });
+}
+
 export function finalizePendingSourceClosureReceipt({
   publication,
   receipt,
@@ -2200,6 +2219,7 @@ export function runPublicationMutationBoundary<T>({
   publication,
   targetNumbers,
   checkpointedClosures = new Set(),
+  pendingReopenSources = new Set(),
   readers = {},
   mutation,
 }: {
@@ -2207,6 +2227,7 @@ export function runPublicationMutationBoundary<T>({
   publication: PreparedPublication;
   targetNumbers: ReadonlyArray<number | null>;
   checkpointedClosures?: ReadonlySet<string>;
+  pendingReopenSources?: ReadonlySet<string>;
   readers?: PublicationSourceIdentityReaders;
   mutation: () => T;
 }): T {
@@ -2217,7 +2238,13 @@ export function runPublicationMutationBoundary<T>({
     readers.readComments ??
     ((repo: string, number: number) =>
       ghPagedArray(`repos/${repo}/issues/${number}/comments?per_page=100`));
-  assertPublicationSourceIdentity({ intent, publication, checkpointedClosures, readers });
+  assertPublicationSourceIdentity({
+    intent,
+    publication,
+    checkpointedClosures,
+    pendingReopenSources,
+    readers,
+  });
   assertPublicationSafetyBoundary(intent, targetNumbers, (repo, number) => ({
     labels: githubLabelNames(readIssue(repo, number).labels),
     comments: readComments(repo, number).map((comment) => String(comment.body ?? "")),
@@ -2945,6 +2972,7 @@ export function runReplacementBoundSourceClose({
   assertReplacementOpen,
   closeSource,
   readRecovery,
+  assertClosedSourceIdentity,
   checkpointCompensation,
   compensateSource,
   readCompensatedRecovery,
@@ -2953,27 +2981,33 @@ export function runReplacementBoundSourceClose({
   assertReplacementOpen: () => void;
   closeSource: () => void;
   readRecovery: () => ReturnType<typeof sourceCloseRecovery>;
+  assertClosedSourceIdentity: () => void;
   checkpointCompensation: (evidence: SourceCloseEvidence) => void;
   compensateSource: () => void;
   readCompensatedRecovery: () => ReturnType<typeof sourceCloseRecovery>;
 }):
   | { status: "closed"; evidence: SourceCloseEvidence }
-  | { status: "compensated"; evidence: SourceReopenEvidence; replacement_error: string } {
+  | { status: "compensated"; evidence: SourceReopenEvidence; closeout_error: string } {
   assertSourceOpen();
   assertReplacementOpen();
   closeSource();
 
-  let replacementError: unknown = null;
+  let closeoutError: unknown = null;
   try {
     assertReplacementOpen();
   } catch (error) {
-    replacementError = error;
+    closeoutError = error;
   }
   const recovery = readRecovery();
   if (recovery.status !== "closed") {
     throw new Error("source pull request close did not persist with trusted actor evidence");
   }
-  if (!replacementError) return recovery;
+  try {
+    assertClosedSourceIdentity();
+  } catch (error) {
+    closeoutError ??= error;
+  }
+  if (!closeoutError) return recovery;
 
   checkpointCompensation(recovery.evidence);
   try {
@@ -2995,7 +3029,7 @@ export function runReplacementBoundSourceClose({
     return {
       status: "compensated",
       evidence: compensated.evidence,
-      replacement_error: String((replacementError as Error)?.message ?? replacementError),
+      closeout_error: String((closeoutError as Error)?.message ?? closeoutError),
     };
   } catch (verificationError) {
     if (verificationError instanceof SourceCloseCompensationUnverified) {
@@ -3039,12 +3073,69 @@ function closeSupersededReplacementSources({
     sourcePullRevisions(intent).map((revision) => [revision.url, revision]),
   );
   const actions = preparedSourceClosureActions(publication, intent);
-  const readLiveRecovery = (revision: SourcePullRevision, attempt: LooseRecord) => {
-    const sourcePull = revalidateSourcePullRevision(revision, { allowClosed: true });
-    return sourceCloseRecovery({
-      attempt,
-      state: String(sourcePull.state ?? "").toLowerCase(),
-      events: readSourcePullStateEvents(revision.repo, revision.number),
+  const readLiveSourceClosure = (revision: SourcePullRevision, attempt: LooseRecord) => {
+    const pull = ghObject(`repos/${revision.repo}/pulls/${revision.number}`);
+    return {
+      pull,
+      recovery: sourceCloseRecoveryFromPull({
+        attempt,
+        pull,
+        events: readSourcePullStateEvents(revision.repo, revision.number),
+      }),
+    };
+  };
+  const readLiveRecovery = (revision: SourcePullRevision, attempt: LooseRecord) =>
+    readLiveSourceClosure(revision, attempt).recovery;
+  const reopenCheckpointedSource = (
+    revision: SourcePullRevision,
+    attempt: LooseRecord,
+  ): PublicationReceipt => {
+    const authorizedClosedSources = new Set([...completedClosures, ...pendingAttempts]);
+    runPublicationMutationBoundary({
+      intent,
+      publication,
+      checkpointedClosures: authorizedClosedSources,
+      pendingReopenSources: new Set([revision.url]),
+      targetNumbers: [revision.number],
+      mutation: () => {
+        const liveRecovery = readLiveRecovery(revision, attempt);
+        if (liveRecovery.status !== "closed") {
+          throw new Error("source reopen compensation lost trusted close identity");
+        }
+        try {
+          run("gh", ["pr", "reopen", String(revision.number), "--repo", intent.target_repo], {
+            cwd,
+          });
+        } catch (error) {
+          throw new SourceCloseCompensationFailure(
+            `checkpointed source reopen compensation failed: ${String(
+              (error as Error)?.message ?? error,
+            )}`,
+          );
+        }
+      },
+    });
+    let compensated: ReturnType<typeof sourceCloseRecovery>;
+    try {
+      compensated = readLiveRecovery(revision, attempt);
+    } catch (error) {
+      throw new SourceCloseCompensationUnverified(
+        `checkpointed source reopen completed but could not be verified: ${String(
+          (error as Error)?.message ?? error,
+        )}`,
+      );
+    }
+    if (compensated.status !== "reopened" && compensated.status !== "human_reopened") {
+      throw new SourceCloseCompensationUnverified(
+        "checkpointed source reopen completed but durable reopen evidence is pending",
+      );
+    }
+    return finalizePendingSourceClosureReceipt({
+      publication,
+      receipt: currentReceipt,
+      intent,
+      revision,
+      readRecovery: () => readLiveRecovery(revision, attempt),
     });
   };
 
@@ -3066,90 +3157,22 @@ function closeSupersededReplacementSources({
     ) {
       throw new Error("pending source closeout actor changed across workflow attempts");
     }
-    const recovery = readLiveRecovery(revision, attempt);
+    const live = readLiveSourceClosure(revision, attempt);
+    const recovery = live.recovery;
     if (pendingReopenAttempts.has(source)) {
       if (recovery.status === "awaiting_reopen" || recovery.status === "retry") {
         throw new Error("source reopen compensation is waiting for durable actor evidence");
       }
-      if (recovery.status === "closed") {
-        try {
-          runPublicationMutation({
-            intent,
-            publication,
-            checkpointedClosures: new Set([...completedClosures, ...pendingAttempts]),
-            targetNumbers: [revision.number],
-            mutation: () => {
-              const liveSource = revalidateSourcePullRevision(revision, { allowClosed: true });
-              const liveRecovery = sourceCloseRecovery({
-                attempt,
-                state: String(liveSource.state ?? "").toLowerCase(),
-                events: readSourcePullStateEvents(revision.repo, revision.number),
-              });
-              if (liveRecovery.status !== "closed") {
-                throw new Error("source reopen compensation lost trusted close identity");
-              }
-              try {
-                run("gh", ["pr", "reopen", String(revision.number), "--repo", intent.target_repo], {
-                  cwd,
-                });
-              } catch (error) {
-                throw new SourceCloseCompensationFailure(
-                  `checkpointed source reopen compensation failed: ${String(
-                    (error as Error)?.message ?? error,
-                  )}`,
-                );
-              }
-            },
-          });
-        } catch (error) {
-          if (error instanceof SourceCloseCompensationFailure) {
-            currentReceipt = finalizePendingSourceClosureReceipt({
+      currentReceipt =
+        recovery.status === "closed"
+          ? reopenCheckpointedSource(revision, attempt)
+          : finalizePendingSourceClosureReceipt({
               publication,
               receipt: currentReceipt,
               intent,
               revision,
               readRecovery: () => readLiveRecovery(revision, attempt),
             });
-            writeJson(publicationReceiptPath, currentReceipt);
-          }
-          throw error;
-        }
-        let compensated: ReturnType<typeof sourceCloseRecovery>;
-        try {
-          const compensatedSource = revalidateSourcePullRevision(revision, { allowClosed: true });
-          compensated = sourceCloseRecovery({
-            attempt,
-            state: String(compensatedSource.state ?? "").toLowerCase(),
-            events: readSourcePullStateEvents(revision.repo, revision.number),
-          });
-        } catch (error) {
-          throw new SourceCloseCompensationUnverified(
-            `checkpointed source reopen completed but could not be verified: ${String(
-              (error as Error)?.message ?? error,
-            )}`,
-          );
-        }
-        if (compensated.status !== "reopened" && compensated.status !== "human_reopened") {
-          throw new SourceCloseCompensationUnverified(
-            "checkpointed source reopen completed but durable reopen evidence is pending",
-          );
-        }
-        currentReceipt = finalizePendingSourceClosureReceipt({
-          publication,
-          receipt: currentReceipt,
-          intent,
-          revision,
-          readRecovery: () => readLiveRecovery(revision, attempt),
-        });
-      } else {
-        currentReceipt = finalizePendingSourceClosureReceipt({
-          publication,
-          receipt: currentReceipt,
-          intent,
-          revision,
-          readRecovery: () => readLiveRecovery(revision, attempt),
-        });
-      }
       writeJson(publicationReceiptPath, currentReceipt);
       completedClosures = checkpointedSourceClosures(publication, currentReceipt, intent);
       preservedReopens = preservedReopenedSourceClosures(publication, currentReceipt, intent);
@@ -3161,13 +3184,54 @@ function closeSupersededReplacementSources({
       throw new Error("source reopen is visible before its durable event evidence");
     }
     if (recovery.status === "retry") continue;
-    currentReceipt = finalizePendingSourceClosureReceipt({
-      publication,
-      receipt: currentReceipt,
-      intent,
-      revision,
-      readRecovery: () => readLiveRecovery(revision, attempt),
-    });
+    if (recovery.status === "closed") {
+      let compensationReason: unknown = null;
+      try {
+        assertSourcePullRevision(revision, live.pull, { allowClosed: true });
+      } catch (error) {
+        compensationReason = error;
+      }
+      if (!compensationReason) {
+        try {
+          assertExactPublishedReplacementAvailable({
+            intent,
+            publication,
+            publicationCheckpoint: currentReceipt,
+            targetPrNumber,
+          });
+        } catch (error) {
+          compensationReason = error;
+        }
+      }
+      if (compensationReason) {
+        currentReceipt = checkpointPendingSourceReopenReceipt({
+          publication,
+          receipt: currentReceipt,
+          intent,
+          revision,
+          evidence: recovery.evidence,
+        });
+        writeJson(publicationReceiptPath, currentReceipt);
+        pendingReopenAttempts = pendingSourceReopenClosures(publication, currentReceipt, intent);
+        currentReceipt = reopenCheckpointedSource(revision, attempt);
+      } else {
+        currentReceipt = finalizePendingSourceClosureReceipt({
+          publication,
+          receipt: currentReceipt,
+          intent,
+          revision,
+          readRecovery: () => readLiveRecovery(revision, attempt),
+        });
+      }
+    } else {
+      currentReceipt = finalizePendingSourceClosureReceipt({
+        publication,
+        receipt: currentReceipt,
+        intent,
+        revision,
+        readRecovery: () => readLiveRecovery(revision, attempt),
+      });
+    }
     writeJson(publicationReceiptPath, currentReceipt);
     completedClosures = checkpointedSourceClosures(publication, currentReceipt, intent);
     preservedReopens = preservedReopenedSourceClosures(publication, currentReceipt, intent);
@@ -3265,106 +3329,92 @@ function closeSupersededReplacementSources({
     );
     if (!attempt) throw new Error("source closeout lacks its durable begin checkpoint");
     const authorizedClosedSources = new Set([...completedClosures, ...pendingAttempts]);
-    let result: ReturnType<typeof runReplacementBoundSourceClose> | undefined;
-    try {
-      result = runPublicationMutation({
-        intent,
-        publication,
-        checkpointedClosures: authorizedClosedSources,
-        targetNumbers: [targetPrNumber, action.source.number],
-        mutation: () =>
-          runReplacementBoundSourceClose({
-            assertSourceOpen: () => {
-              const sourcePull = revalidateSourcePullRevision(action.revision);
-              if (String(sourcePull.state ?? "").toLowerCase() !== "open") {
-                throw new Error("authorized source pull request is no longer open");
-              }
-            },
-            assertReplacementOpen: () =>
-              assertExactPublishedReplacementAvailable({
-                intent,
-                publication,
-                publicationCheckpoint: currentReceipt,
-                targetPrNumber,
-              }),
-            closeSource: () => {
-              run(
-                "gh",
-                ["pr", "close", String(action.source.number), "--repo", intent.target_repo],
-                { cwd },
-              );
-            },
-            readRecovery: () => {
-              const sourcePull = revalidateSourcePullRevision(action.revision, {
-                allowClosed: true,
-              });
-              return sourceCloseRecovery({
-                attempt,
-                state: String(sourcePull.state ?? "").toLowerCase(),
-                events: readSourcePullStateEvents(action.revision.repo, action.revision.number),
-              });
-            },
-            checkpointCompensation: (evidence) => {
-              currentReceipt = checkpointPendingSourceReopenReceipt({
-                publication,
-                receipt: currentReceipt,
-                intent,
-                revision: action.revision,
-                evidence,
-              });
-              writeJson(publicationReceiptPath, currentReceipt);
-            },
-            compensateSource: () =>
-              runPublicationMutation({
-                intent,
-                publication,
-                checkpointedClosures: authorizedClosedSources,
-                targetNumbers: [action.source.number],
-                mutation: () => {
-                  const sourcePull = revalidateSourcePullRevision(action.revision, {
-                    allowClosed: true,
-                  });
-                  const recovery = sourceCloseRecovery({
-                    attempt,
-                    state: String(sourcePull.state ?? "").toLowerCase(),
-                    events: readSourcePullStateEvents(action.revision.repo, action.revision.number),
-                  });
-                  if (recovery.status !== "closed") {
-                    throw new Error("source close compensation lost trusted close identity");
-                  }
-                  run(
-                    "gh",
-                    ["pr", "reopen", String(action.source.number), "--repo", intent.target_repo],
-                    { cwd },
-                  );
-                },
-              }),
-            readCompensatedRecovery: () => {
-              const sourcePull = revalidateSourcePullRevision(action.revision, {
-                allowClosed: true,
-              });
-              return sourceCloseRecovery({
-                attempt,
-                state: String(sourcePull.state ?? "").toLowerCase(),
-                events: readSourcePullStateEvents(action.revision.repo, action.revision.number),
-              });
-            },
-          }),
-      });
-    } catch (error) {
-      if (error instanceof SourceCloseCompensationFailure) {
-        currentReceipt = finalizePendingSourceClosureReceipt({
-          publication,
-          receipt: currentReceipt,
-          intent,
-          revision: action.revision,
-          readRecovery: () => readLiveRecovery(action.revision, attempt),
-        });
-        writeJson(publicationReceiptPath, currentReceipt);
-      }
-      throw error;
-    }
-    if (!result) throw new Error("source close mutation returned no result");
+    const result = runPublicationMutation({
+      intent,
+      publication,
+      checkpointedClosures: authorizedClosedSources,
+      targetNumbers: [targetPrNumber, action.source.number],
+      mutation: () =>
+        runReplacementBoundSourceClose({
+          assertSourceOpen: () => {
+            const sourcePull = revalidateSourcePullRevision(action.revision);
+            if (String(sourcePull.state ?? "").toLowerCase() !== "open") {
+              throw new Error("authorized source pull request is no longer open");
+            }
+          },
+          assertReplacementOpen: () =>
+            assertExactPublishedReplacementAvailable({
+              intent,
+              publication,
+              publicationCheckpoint: currentReceipt,
+              targetPrNumber,
+            }),
+          closeSource: () => {
+            run("gh", ["pr", "close", String(action.source.number), "--repo", intent.target_repo], {
+              cwd,
+            });
+          },
+          readRecovery: () => {
+            const sourcePull = ghObject(
+              `repos/${action.revision.repo}/pulls/${action.revision.number}`,
+            );
+            return sourceCloseRecoveryFromPull({
+              attempt,
+              pull: sourcePull,
+              events: readSourcePullStateEvents(action.revision.repo, action.revision.number),
+            });
+          },
+          assertClosedSourceIdentity: () => {
+            revalidateSourcePullRevision(action.revision, { allowClosed: true });
+          },
+          checkpointCompensation: (evidence) => {
+            currentReceipt = checkpointPendingSourceReopenReceipt({
+              publication,
+              receipt: currentReceipt,
+              intent,
+              revision: action.revision,
+              evidence,
+            });
+            writeJson(publicationReceiptPath, currentReceipt);
+          },
+          compensateSource: () =>
+            runPublicationMutationBoundary({
+              intent,
+              publication,
+              checkpointedClosures: authorizedClosedSources,
+              pendingReopenSources: new Set([action.revision.url]),
+              targetNumbers: [action.source.number],
+              mutation: () => {
+                const sourcePull = ghObject(
+                  `repos/${action.revision.repo}/pulls/${action.revision.number}`,
+                );
+                const recovery = sourceCloseRecoveryFromPull({
+                  attempt,
+                  pull: sourcePull,
+                  events: readSourcePullStateEvents(action.revision.repo, action.revision.number),
+                });
+                if (recovery.status !== "closed") {
+                  throw new Error("source close compensation lost trusted close identity");
+                }
+                run(
+                  "gh",
+                  ["pr", "reopen", String(action.source.number), "--repo", intent.target_repo],
+                  { cwd },
+                );
+              },
+            }),
+          readCompensatedRecovery: () => {
+            const sourcePull = ghObject(
+              `repos/${action.revision.repo}/pulls/${action.revision.number}`,
+            );
+            return sourceCloseRecoveryFromPull({
+              attempt,
+              pull: sourcePull,
+              events: readSourcePullStateEvents(action.revision.repo, action.revision.number),
+            });
+          },
+        }),
+    });
     if (result.status === "compensated") {
       currentReceipt = finalizePendingSourceClosureReceipt({
         publication,
@@ -3375,7 +3425,7 @@ function closeSupersededReplacementSources({
       });
       writeJson(publicationReceiptPath, currentReceipt);
       throw new Error(
-        `replacement changed after source close; source reopen compensation persisted: ${result.replacement_error}`,
+        `source close safety changed after close; source reopen compensation persisted: ${result.closeout_error}`,
       );
     }
     currentReceipt = finalizePendingSourceClosureReceipt({
@@ -3499,11 +3549,13 @@ export function assertPublicationSourceIdentity({
   intent,
   publication,
   checkpointedClosures = new Set(),
+  pendingReopenSources = new Set(),
   readers = {},
 }: {
   intent: ExecutionIntent;
   publication: PreparedPublication;
   checkpointedClosures?: ReadonlySet<string>;
+  pendingReopenSources?: ReadonlySet<string>;
   readers?: PublicationSourceIdentityReaders;
 }) {
   const readPull =
@@ -3517,8 +3569,24 @@ export function assertPublicationSourceIdentity({
     ((repo: string, number: number) =>
       ghPagedArray(`repos/${repo}/issues/${number}/comments?per_page=100`));
   const revisions = sourcePullRevisions(intent);
+  const revisionUrls = new Set(revisions.map((revision) => revision.url));
+  for (const source of pendingReopenSources) {
+    if (!revisionUrls.has(source) || !checkpointedClosures.has(source)) {
+      throw new Error("source reopen compensation lacks an authorized durable checkpoint");
+    }
+  }
   for (const revision of revisions) {
-    assertSourcePullRevision(revision, readPull(revision.repo, revision.number), {
+    const pull = readPull(revision.repo, revision.number);
+    if (pendingReopenSources.has(revision.url)) {
+      if (
+        String(pull.state ?? "").toLowerCase() !== "closed" ||
+        (pull.merged_at ?? pull.mergedAt)
+      ) {
+        throw new Error("source reopen compensation no longer targets a closed pull request");
+      }
+      continue;
+    }
+    assertSourcePullRevision(revision, pull, {
       allowClosed: checkpointedClosures.has(revision.url),
       allowedHeadShas:
         intent.operation === "update_source_pr" && revision.url === intent.source.url

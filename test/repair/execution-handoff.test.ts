@@ -35,6 +35,7 @@ import {
   selectAuthorizedReplacementPull,
   sealExecutionHandoff,
   sourceCloseRecovery,
+  sourceCloseRecoveryFromPull,
   sourceCloseoutStateBlock,
   trustedPullCloseEvidence,
   type SourcePullStateEvent,
@@ -1103,6 +1104,7 @@ test("source close rechecks replacement immediately and compensates post-close d
       events = [sourceStateEvent(11, "closed", closeActor)];
     },
     readRecovery: () => sourceCloseRecovery({ attempt, state, events }),
+    assertClosedSourceIdentity: () => undefined,
     checkpointCompensation: () => calls.push("checkpoint"),
     compensateSource: () => {
       calls.push("compensate");
@@ -1117,12 +1119,70 @@ test("source close rechecks replacement immediately and compensates post-close d
   assert.equal(state, "open");
 });
 
-test("source close fails closed when replacement drift compensation cannot reopen", () => {
+test("bot-attributed close with source head or base drift triggers reopen compensation", () => {
   const closeActor = "openclaw-clawsweeper[bot]";
   const attempt = {
     expected_close_actor: closeActor,
     last_state_event_id: 10,
   };
+  let pull = {
+    ...livePull(sourcePullRevision(42), { state: "open" }),
+    state: "open",
+  };
+  let events: SourcePullStateEvent[] = [];
+  let checkpointed = false;
+  const result = runReplacementBoundSourceClose({
+    assertSourceOpen: () => undefined,
+    assertReplacementOpen: () => undefined,
+    closeSource: () => {
+      pull = {
+        ...pull,
+        state: "closed",
+        head: { ...pull.head, sha: "4".repeat(40) },
+        base: { ...pull.base, sha: "5".repeat(40) },
+      };
+      events = [sourceStateEvent(11, "closed", closeActor)];
+    },
+    readRecovery: () => sourceCloseRecoveryFromPull({ attempt, pull, events }),
+    assertClosedSourceIdentity: () => {
+      assertSourcePullRevision(sourcePullRevision(42), pull, { allowClosed: true });
+    },
+    checkpointCompensation: () => {
+      checkpointed = true;
+    },
+    compensateSource: () => {
+      pull = { ...pull, state: "open" };
+      events.push(sourceStateEvent(12, "reopened", closeActor));
+    },
+    readCompensatedRecovery: () => sourceCloseRecoveryFromPull({ attempt, pull, events }),
+  });
+  assert.equal(checkpointed, true);
+  assert.equal(result.status, "compensated");
+  if (result.status !== "compensated") return;
+  assert.match(result.closeout_error, /revision changed after authorization/);
+  assert.equal(pull.state, "open");
+});
+
+test("failed replacement drift compensation keeps the durable reopen checkpoint retryable", () => {
+  const revision = sourcePullRevision(42);
+  const intent = revisionBoundIntent(revision, "open_pull_request");
+  const publication = checkpointPublication([{ source: revision.url, operation: "close" }]);
+  const closeActor = "openclaw-clawsweeper[bot]";
+  let receipt = checkpointSourceClosureReceipt({
+    publication,
+    receipt: publicationReceipt({
+      validationReceiptSha256: "c".repeat(64),
+      publication,
+      targetPrNumber: 99,
+      mutations: [],
+    }),
+    intent,
+    expectedCloseActor: closeActor,
+    sourceStateEvents: new Map([[revision.url, [sourceStateEvent(10, "reopened", "maintainer")]]]),
+  });
+  const attempt = receipt.mutations.find(
+    (mutation) => mutation.operation === "begin_close_source_pull_request",
+  )!;
   let state = "open";
   let events: SourcePullStateEvent[] = [];
   let replacementChecks = 0;
@@ -1139,7 +1199,16 @@ test("source close fails closed when replacement drift compensation cannot reope
           events = [sourceStateEvent(11, "closed", closeActor)];
         },
         readRecovery: () => sourceCloseRecovery({ attempt, state, events }),
-        checkpointCompensation: () => undefined,
+        assertClosedSourceIdentity: () => undefined,
+        checkpointCompensation: (evidence) => {
+          receipt = checkpointPendingSourceReopenReceipt({
+            publication,
+            receipt,
+            intent,
+            revision,
+            evidence,
+          });
+        },
         compensateSource: () => {
           throw new Error("reopen denied");
         },
@@ -1148,6 +1217,8 @@ test("source close fails closed when replacement drift compensation cannot reope
     /compensation failed: reopen denied/,
   );
   assert.equal(state, "closed");
+  assert.deepEqual([...pendingSourceReopenClosures(publication, receipt, intent)], [revision.url]);
+  assert.deepEqual([...checkpointedSourceClosures(publication, receipt, intent)], []);
 });
 
 test("successful source reopen with stale evidence remains pending instead of finalizing close", () => {
@@ -1173,6 +1244,7 @@ test("successful source reopen with stale evidence remains pending instead of fi
           events = [sourceStateEvent(11, "closed", closeActor)];
         },
         readRecovery: () => sourceCloseRecovery({ attempt, state, events }),
+        assertClosedSourceIdentity: () => undefined,
         checkpointCompensation: () => {
           checkpointed = true;
         },
@@ -1317,9 +1389,14 @@ test("publication checkpoint binds source closeout and every mutation rechecks l
     closeout,
     /for \(const source of pendingAttempts\)[\s\S]*readLiveRecovery\([\s\S]*finalizePendingSourceClosureReceipt\(\{[\s\S]*writeJson\(publicationReceiptPath, currentReceipt\)/,
   );
+  assert.doesNotMatch(closeout, /instanceof SourceCloseCompensationFailure/);
   assert.match(
     closeout,
-    /SourceCloseCompensationFailure[\s\S]*finalizePendingSourceClosureReceipt\(\{/,
+    /sourceCloseRecoveryFromPull\([\s\S]*pendingReopenSources: new Set\(\[revision\.url\]\)/,
+  );
+  assert.match(
+    closeout,
+    /checkpointPendingSourceReopenReceipt\(\{[\s\S]*writeJson\(publicationReceiptPath, currentReceipt\)[\s\S]*reopenCheckpointedSource\(/,
   );
   assert.match(closeout, /preservedReopens\.has\(action\.source\.url\)\) continue/);
   assert.ok(closeout.indexOf("sourceCloseoutStateBlock") < closeout.indexOf('["pr", "close"'));
@@ -1417,6 +1494,82 @@ test("shared publication mutation identity rejects source drift and limits rerun
         readers,
       }),
     /revision changed after authorization/,
+  );
+});
+
+test("publication mutation exempts only a checkpointed compensatory reopen from source drift", () => {
+  const revision = sourcePullRevision(42);
+  const intent = revisionBoundIntent(revision, "open_pull_request");
+  const publication = checkpointPublication([{ source: revision.url, operation: "close" }]);
+  let pull = {
+    ...livePull(revision, { state: "closed" }),
+    head: { ...livePull(revision).head, sha: "4".repeat(40) },
+    base: { ...livePull(revision).base, sha: "5".repeat(40) },
+  };
+  const readers = {
+    readPull: () => pull,
+    readIssue: () => ({ labels: [] }),
+    readComments: () => [],
+  };
+  let mutated = false;
+  assert.throws(
+    () =>
+      runPublicationMutationBoundary({
+        intent,
+        publication,
+        targetNumbers: [revision.number],
+        checkpointedClosures: new Set([revision.url]),
+        readers,
+        mutation: () => {
+          mutated = true;
+        },
+      }),
+    /revision changed after authorization/,
+  );
+  assert.equal(mutated, false);
+  assert.throws(
+    () =>
+      runPublicationMutationBoundary({
+        intent,
+        publication,
+        targetNumbers: [revision.number],
+        pendingReopenSources: new Set([revision.url]),
+        readers,
+        mutation: () => {
+          mutated = true;
+        },
+      }),
+    /lacks an authorized durable checkpoint/,
+  );
+  assert.equal(mutated, false);
+  assert.doesNotThrow(() =>
+    runPublicationMutationBoundary({
+      intent,
+      publication,
+      targetNumbers: [revision.number],
+      checkpointedClosures: new Set([revision.url]),
+      pendingReopenSources: new Set([revision.url]),
+      readers,
+      mutation: () => {
+        mutated = true;
+      },
+    }),
+  );
+  assert.equal(mutated, true);
+
+  pull = { ...pull, merged_at: "2026-07-12T00:00:00Z" };
+  assert.throws(
+    () =>
+      runPublicationMutationBoundary({
+        intent,
+        publication,
+        targetNumbers: [revision.number],
+        checkpointedClosures: new Set([revision.url]),
+        pendingReopenSources: new Set([revision.url]),
+        readers,
+        mutation: () => undefined,
+      }),
+    /no longer targets a closed pull request/,
   );
 });
 
