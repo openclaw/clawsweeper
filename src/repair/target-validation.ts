@@ -625,7 +625,7 @@ export function preflightTargetValidationPlan(
     const rendered = (command.displayParts ?? command.parts).join(" ");
     if (!resolved.includes(rendered)) resolved.push(rendered);
     const script = packageScriptRequirement(command.parts);
-    if (script) requiredScripts.push(script);
+    if (script && !script.workspaceScoped) requiredScripts.push(script);
   }
 
   if (resolved.length === 0) {

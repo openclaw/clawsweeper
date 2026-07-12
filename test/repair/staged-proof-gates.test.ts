@@ -286,6 +286,28 @@ test("direct QA and live runners remain non-subsumable on narrow surfaces", () =
   }
 });
 
+test("path-scoped integration runners remain late and non-subsumable", () => {
+  const integrity = ["git", "diff", "--check"];
+  for (const integrationCommand of [
+    ["python", "-m", "pytest", "tests/integration/test_provider.py"],
+    ["pytest", "-m", "integration and not slow"],
+    ["go", "test", "./integration/..."],
+    ["node", "--test", "test/e2e/provider.test.js"],
+    ["pnpm", "exec", "vitest", "run", "test/integration/provider.test.ts"],
+    ["cargo", "test", "--test", "provider_integration"],
+  ]) {
+    const plan = buildStagedProofPlan({
+      commands: [command(integrity, 0, { source: "configured" }), command(integrationCommand, 1)],
+      changedFiles: ["src/repair/foo.ts"],
+      subsumptionContracts: [{ command: integrity, subsumes: [integrationCommand] }],
+    });
+
+    assert.equal(plan.risk.level, "narrow");
+    assert.equal(plan.commands[1].stage, "broad_live_or_e2e", integrationCommand.join(" "));
+    assert.equal(plan.commands[1].subsumed_by, null, integrationCommand.join(" "));
+  }
+});
+
 test("runtime budget exhaustion is fail-closed and auditable", () => {
   const plan = buildStagedProofPlan({
     commands: [

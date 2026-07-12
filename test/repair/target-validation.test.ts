@@ -371,6 +371,14 @@ test("validation parser rejects snapshot-writing and formatter mutation flags", 
     "pnpm --dir . install",
     "pnpm --silent exec cargo clean",
     "npm --prefix . install",
+    "pnpm --dir . test",
+    "pnpm -C packages/app test",
+    "pnpm --config-dir . test",
+    "pnpm --store-dir .pnpm-store test",
+    "pnpm --config.ignore-scripts=false test",
+    "npm --prefix . run test",
+    "npm --userconfig .npmrc run test",
+    "bun --cwd . test",
   ]) {
     assert.throws(() => parseAllowedValidationCommand(command), /unsafe validation command/);
   }
@@ -382,6 +390,63 @@ test("validation parser rejects snapshot-writing and formatter mutation flags", 
     "GOOS",
     "GOARCH",
   ]);
+});
+
+test("validation preflight defers workspace-scoped scripts to the package manager", () => {
+  const cwd = packageFixture({});
+  fs.mkdirSync(path.join(cwd, "packages", "worker"), { recursive: true });
+  fs.writeFileSync(
+    path.join(cwd, "packages", "worker", "package.json"),
+    `${JSON.stringify(
+      {
+        name: "@openclaw/worker",
+        scripts: { test: "node --test" },
+      },
+      null,
+      2,
+    )}\n`,
+  );
+  fs.writeFileSync(path.join(cwd, "pnpm-workspace.yaml"), "packages:\n  - packages/*\n");
+  const options = validationOptions("openclaw/example", {
+    toolchain: {
+      packageManager: "pnpm",
+      baseValidationCommands: [],
+      changedGate: null,
+    },
+  });
+
+  for (const command of [
+    "pnpm --filter @openclaw/worker test",
+    "pnpm --recursive test",
+    "npm --workspace @openclaw/worker run test",
+    "npm --workspaces run test",
+    "bun --filter @openclaw/worker test",
+  ]) {
+    assert.deepEqual(
+      preflightTargetValidationPlan(
+        {
+          fixArtifact: { validation_commands: [command] },
+          targetDir: cwd,
+        },
+        options,
+      ),
+      {
+        status: "passed",
+        resolved_commands: [command],
+        available_scripts: [],
+      },
+    );
+  }
+
+  const disabledWorkspaceResult = preflightTargetValidationPlan(
+    {
+      fixArtifact: { validation_commands: ["npm --workspaces=false run test"] },
+      targetDir: cwd,
+    },
+    options,
+  );
+  assert.equal(disabledWorkspaceResult.status, "blocked");
+  assert.equal(disabledWorkspaceResult.missing_script, "test");
 });
 
 test("validation environment defaults resolve without shell execution", () => {

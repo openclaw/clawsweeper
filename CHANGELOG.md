@@ -54,6 +54,7 @@ checkpoint, and status-only commits are intentionally omitted.
 - Packaged only planned prior review reports into scheduled shard runtimes and
   rebound structural cache probes to the explicit latest release state,
   restoring safe cache reuse without broad generated-state artifacts.
+- Rejected package-manager directory and external-config overrides in repair proof, deferred workspace-scoped script checks to the selected package manager, and kept path-scoped Python, Go, Node, Cargo, and Vitest integration proof non-subsumable.
 - Coalesced superseded sweep and planner concurrency entries instead of retaining up to 100 pending runs per group, while keeping durable leased reviews and explicit manual apply or comment-sync runs isolated.
 - Required a live `DIRTY` merge conflict and at least 30 days without contributor comments or head activity before publishing or applying low-signal pull-request close verdicts, honoring longer configured stale thresholds and applying the same fail-closed policy to stale-review promotion and trusted close routing.
 - Retried successful GitHub CLI JSON-lines responses when their output is truncated, preventing transient list-page corruption from aborting close-apply runs.

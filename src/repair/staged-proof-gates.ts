@@ -858,6 +858,12 @@ function classifyStagedProofCommand(
       reason: "structured git integrity check",
     };
   }
+  if (isIntegrationProofCommand(parts)) {
+    return {
+      stage: "broad_live_or_e2e",
+      reason: "structured integration, live, docker, or e2e command",
+    };
+  }
   if (isFocusedStagedProofCommand(parts)) {
     return {
       stage: "focused_tests",
@@ -910,6 +916,7 @@ function canApplySubsumption(
 }
 
 export function isFocusedStagedProofCommand(parts: readonly string[]): boolean {
+  if (isIntegrationProofCommand(parts)) return false;
   const executable = parts[0];
   if (executable === "node" && parts[1] === "--test") {
     return parts.slice(2).some(looksLikePathArgument);
@@ -950,6 +957,7 @@ function isStaticCommand(parts: readonly string[]): boolean {
 }
 
 export function isBroadOrLiveStagedProofCommand(parts: readonly string[]): boolean {
+  if (isIntegrationProofCommand(parts)) return true;
   const packageInvocation = packageManagerInvocation(parts);
   if (packageInvocation?.executable === "pnpm") {
     if (isExpensivePnpmValidation(parts, packageInvocation.commandIndex, false)) return true;
@@ -982,6 +990,7 @@ export function isBroadOrLiveStagedProofCommand(parts: readonly string[]): boole
 }
 
 function isLiveProofCommand(parts: readonly string[]): boolean {
+  if (isIntegrationProofCommand(parts)) return true;
   const script = packageScriptRequirement(parts)?.name ?? "";
   if (script === "qa" || script === "qa:e2e") return true;
   if (script === "openclaw" && packageScriptArguments(parts)[0] === "qa") return true;
@@ -989,6 +998,85 @@ function isLiveProofCommand(parts: readonly string[]): boolean {
     directPlaywrightArgsStart(parts) >= 0 ||
     /(?:^|:)(?:e2e|live|docker|integration|install:e2e|parallels)(?::|$)/.test(script)
   );
+}
+
+function isIntegrationProofCommand(parts: readonly string[]): boolean {
+  const commandParts = stripEnvPrefix(parts);
+  const executable = commandParts[0] ?? "";
+  const packageScript = packageScriptRequirement(commandParts);
+  if (
+    packageScript &&
+    /(?:^|:)(?:e2e|live|docker|integration|install:e2e|parallels)(?::|$)/.test(packageScript.name)
+  ) {
+    return true;
+  }
+  if (packageScriptArguments(commandParts).some(isIntegrationPathArgument)) return true;
+
+  if (executable === "node" && commandParts[1] === "--test") {
+    return commandParts.slice(2).some(isIntegrationPathArgument);
+  }
+  if (executable === "pytest") {
+    return pytestHasIntegrationSelector(commandParts.slice(1));
+  }
+  if (
+    (executable === "python" || executable === "python3") &&
+    commandParts[1] === "-m" &&
+    commandParts[2] === "pytest"
+  ) {
+    return pytestHasIntegrationSelector(commandParts.slice(3));
+  }
+  if (executable === "go" && commandParts[1] === "test") {
+    return commandParts.slice(2).some(isIntegrationPathArgument);
+  }
+  if (executable === "cargo" && commandParts[1] === "test") {
+    const args = commandParts.slice(2);
+    if (args.includes("--test") || args.some((arg) => arg.startsWith("--test="))) return true;
+    return args.some(isIntegrationPathArgument);
+  }
+  if ((executable === "bash" || executable === "sh") && commandParts[1]) {
+    return isIntegrationPathArgument(commandParts[1]);
+  }
+  const vitestStart = directVitestArgsStart(commandParts);
+  if (vitestStart >= 0) {
+    const args = commandParts.slice(vitestStart);
+    return vitestPathFilterIndexes(args).some((index) => isIntegrationPathArgument(args[index]));
+  }
+  return false;
+}
+
+function pytestHasIntegrationSelector(args: readonly string[]): boolean {
+  for (const [index, arg] of args.entries()) {
+    if (isIntegrationPathArgument(arg)) return true;
+    if (arg === "-m" && integrationSelectorExpression(args[index + 1])) {
+      return true;
+    }
+    if (arg.startsWith("-m=") && integrationSelectorExpression(arg.slice(arg.indexOf("=") + 1))) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function integrationSelectorExpression(value: unknown): boolean {
+  return (
+    String(value ?? "")
+      .match(/[A-Za-z_][A-Za-z0-9_-]*/g)
+      ?.some((name) =>
+        /^(?:e2e|live|docker|integration|integration_test|integration-tests?)$/i.test(name),
+      ) === true
+  );
+}
+
+function isIntegrationPathArgument(value: unknown): boolean {
+  const text = String(value ?? "");
+  if (!looksLikePathArgument(text)) return false;
+  return text
+    .replaceAll("\\", "/")
+    .split("/")
+    .filter(Boolean)
+    .some((segment) =>
+      /(?:^|[._-])(?:e2e|live|docker|integration|integrations)(?:[._-]|$)/i.test(segment),
+    );
 }
 
 function directVitestArgsStart(parts: readonly string[]): number {

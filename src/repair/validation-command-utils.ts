@@ -1,6 +1,7 @@
 export type PackageScriptRequirement = {
   command: string;
   name: string;
+  workspaceScoped: boolean;
 };
 
 type PackageManagerExecutable = "pnpm" | "npm" | "bun";
@@ -10,6 +11,10 @@ export type PackageManagerInvocation = {
   command: string;
   commandIndex: number;
   args: string[];
+  globalOptions: Array<{
+    name: string;
+    value: string | null;
+  }>;
 };
 
 const PACKAGE_MANAGER_GLOBAL_OPTIONS: Record<
@@ -60,6 +65,18 @@ const PACKAGE_MANAGER_GLOBAL_OPTIONS: Record<
   },
 };
 
+const PACKAGE_MANAGER_WORKSPACE_OPTIONS: Record<PackageManagerExecutable, ReadonlySet<string>> = {
+  pnpm: new Set(["-F", "-r", "--filter", "--recursive"]),
+  npm: new Set(["-w", "--workspace", "--workspaces"]),
+  bun: new Set(["--filter"]),
+};
+
+const UNSAFE_PACKAGE_MANAGER_PATH_OPTIONS: Record<PackageManagerExecutable, ReadonlySet<string>> = {
+  pnpm: new Set(["-C", "--config-dir", "--dir", "--store-dir", "--virtual-store-dir"]),
+  npm: new Set(["--cache", "--prefix", "--userconfig"]),
+  bun: new Set(["-C", "--cwd"]),
+};
+
 const VITEST_BOOLEAN_OPTIONS = new Set([
   "-h",
   "-w",
@@ -105,6 +122,11 @@ export function packageScriptRequirement(
   return {
     name: script,
     command: commandParts.slice(0, scriptIndex + 1).join(" "),
+    workspaceScoped: invocation.globalOptions.some(
+      (option) =>
+        PACKAGE_MANAGER_WORKSPACE_OPTIONS[invocation.executable].has(option.name) &&
+        option.value !== "false",
+    ),
   };
 }
 
@@ -123,24 +145,36 @@ export function packageManagerInvocation(
   const executable = commandParts[0];
   if (executable !== "pnpm" && executable !== "npm" && executable !== "bun") return null;
   const options = PACKAGE_MANAGER_GLOBAL_OPTIONS[executable];
+  const globalOptions: PackageManagerInvocation["globalOptions"] = [];
   let index = 1;
   while (index < commandParts.length && commandParts[index]?.startsWith("-")) {
     const token = commandParts[index]!;
     const option = token.split("=", 1)[0]!;
     if (options.boolean.has(option)) {
+      globalOptions.push({
+        name: option,
+        value: token.includes("=") ? token.slice(token.indexOf("=") + 1) : null,
+      });
       index += 1;
       continue;
     }
     if (options.value.has(option)) {
       if (token.includes("=")) {
+        const value = token.slice(token.indexOf("=") + 1);
+        if (!value) return null;
+        globalOptions.push({ name: option, value });
         index += 1;
         continue;
       }
       if (!commandParts[index + 1] || commandParts[index + 1]!.startsWith("-")) return null;
+      globalOptions.push({ name: option, value: commandParts[index + 1]! });
       index += 2;
       continue;
     }
     if (executable === "pnpm" && option.startsWith("--config.") && token.includes("=")) {
+      const value = token.slice(token.indexOf("=") + 1);
+      if (!value) return null;
+      globalOptions.push({ name: option, value });
       index += 1;
       continue;
     }
@@ -153,6 +187,7 @@ export function packageManagerInvocation(
     command,
     commandIndex: index,
     args: commandParts.slice(index + 1),
+    globalOptions,
   };
 }
 
@@ -248,6 +283,7 @@ export function validateAllowedValidationCommandParts(
   }
   if (
     hasUnsupportedPackageManagerInvocation(normalized) ||
+    hasUnsafePackageManagerPathOption(normalized) ||
     hasUnsafePackageRunner(normalized) ||
     hasInlineInterpreterCode(normalized) ||
     hasMutatingValidationFlag(normalized) ||
@@ -434,6 +470,20 @@ function hasUnsupportedPackageManagerInvocation(parts: readonly string[]) {
   return (
     ["pnpm", "npm", "bun"].includes(executable ?? "") && packageManagerInvocation(parts) === null
   );
+}
+
+function hasUnsafePackageManagerPathOption(parts: readonly string[]) {
+  const commandParts = stripEnvPrefix(parts);
+  const executable = commandParts[0];
+  if (executable !== "pnpm" && executable !== "npm" && executable !== "bun") return false;
+  const denied = UNSAFE_PACKAGE_MANAGER_PATH_OPTIONS[executable];
+  for (const token of commandParts.slice(1)) {
+    if (token === "--") break;
+    const option = token.split("=", 1)[0]!;
+    if (denied.has(option)) return true;
+    if (executable === "pnpm" && option.startsWith("--config.")) return true;
+  }
+  return false;
 }
 
 function hasMutatingValidationFlag(parts: readonly string[]) {

@@ -122,12 +122,15 @@ Exact argv are deduplicated, narrow path-scoped tests run before broader gates,
 and every allowlisted command required by the artifact or repository profile is
 retained. Repository integrity and the canonical changed-surface gate are
 mandatory. Broad, live, docker, or e2e commands run last, and can be skipped
-only by an exact repository-owned subsumption contract; QA/live proof is never
-subsumed. Snapshot/formatter mutation flags, known mutating subcommands, and
-mutating package-script names are rejected before planning. Supported
-environment defaults are resolved without a shell; the concrete argv is then
-revalidated and digested, with package-manager global options parsed before the
-effective command or wrapper. The executor also verifies that each command
+only by an exact repository-owned subsumption contract; structured integration
+and QA/live proof is never subsumed. Snapshot/formatter mutation flags,
+package-manager cwd/prefix/config path overrides, known mutating subcommands,
+and mutating package-script names are rejected before planning. Workspace
+selectors remain intact and defer script existence to the selected workspace
+instead of the root package. Supported environment defaults are resolved
+without a shell; the concrete argv is then revalidated and digested, with
+package-manager global options parsed before the effective command or wrapper.
+The executor also verifies that each command
 leaves the checkout, head, and pinned base unchanged. A failed prerequisite,
 stalled canonical gate, checkout mutation, or command that exceeds the total
 proof budget stops later work and writes bounded digest-only trace entries,
