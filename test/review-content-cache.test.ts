@@ -96,6 +96,21 @@ test("content digest busts when a diff patch byte changes", () => {
   assert.notEqual(a, b);
 });
 
+test("content digest uses the full commit-message revision", () => {
+  const pull = item({ kind: "pull_request", number: 200 });
+  const compactCommits = [{ author: "contributor", message: "x".repeat(1000) }];
+  const a = itemContentDigestForTest(
+    pull,
+    pullContext({ pullCommits: compactCommits, pullCommitsRevision: "a".repeat(64) }),
+  );
+  const b = itemContentDigestForTest(
+    pull,
+    pullContext({ pullCommits: compactCommits, pullCommitsRevision: "b".repeat(64) }),
+  );
+
+  assert.notEqual(a, b);
+});
+
 test("content digest busts when the PR head sha changes", () => {
   const pull = item({ kind: "pull_request", number: 200 });
   const a = itemContentDigestForTest(pull, pullContext());
