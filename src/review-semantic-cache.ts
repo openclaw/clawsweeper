@@ -173,9 +173,7 @@ function finiteCount(value: unknown): number | null {
 }
 
 function normalizedStatus(value: unknown): string {
-  const status = String(value ?? "")
-    .trim()
-    .toLowerCase();
+  const status = typeof value === "string" ? value.trim().toLowerCase() : "";
   if (status === "m" || status === "modified" || status === "changed") return "modified";
   if (status === "a" || status === "added") return "added";
   if (status === "d" || status === "deleted" || status === "removed") return "deleted";
