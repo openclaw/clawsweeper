@@ -1402,19 +1402,6 @@ jobs:
           working-directory: clawsweeper
           build-script: build:all
 
-      - name: Prepare review runtime artifact
-        working-directory: clawsweeper
-        run: |
-          node scripts/prepare-review-runtime.mjs --output .artifacts/review-runtime
-          tar -czf .artifacts/review-runtime.tar.gz -C .artifacts/review-runtime .
-
-      - uses: actions/upload-artifact@v7
-        with:
-          name: clawsweeper-runtime-dist
-          path: clawsweeper/.artifacts/review-runtime.tar.gz
-          if-no-files-found: error
-          retention-days: 1
-
       - name: Publish planning-started status
         if: ${{ !((github.event_name == 'workflow_dispatch' && github.event.inputs.apply_existing == 'true') || (github.event_name == 'schedule' && (github.event.schedule == '3 * * * *' || github.event.schedule == '18 * * * *' || github.event.schedule == '33 * * * *' || github.event.schedule == '48 * * * *' || github.event.schedule == '6,21,36,51 * * * *'))) && !((github.event_name == 'workflow_dispatch' && github.event.inputs.hot_intake == 'true' && github.event.inputs.item_number == '' && github.event.inputs.item_numbers == '') || (github.event_name == 'schedule' && (github.event.schedule == '*/5 * * * *' || github.event.schedule == '2/5 * * * *'))) }}
         continue-on-error: true
@@ -1685,6 +1672,26 @@ jobs:
             --batch-size "$BATCH_SIZE" \
             --shard-count "$SHARD_COUNT" >> "$GITHUB_OUTPUT"
           cat plan.json
+
+      - name: Prepare review runtime artifact
+        working-directory: clawsweeper
+        env:
+          TARGET_REPO: ${{ steps.target.outputs.target_repo }}
+        run: |
+          target_slug="${TARGET_REPO//\//-}"
+          node scripts/prepare-review-runtime.mjs \
+            --output .artifacts/review-runtime \
+            --plan plan.json \
+            --state-root "$CLAWSWEEPER_STATE_DIR" \
+            --records-path "records/${target_slug}/items"
+          tar -czf .artifacts/review-runtime.tar.gz -C .artifacts/review-runtime .
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: clawsweeper-runtime-dist
+          path: clawsweeper/.artifacts/review-runtime.tar.gz
+          if-no-files-found: error
+          retention-days: 1
 
       - name: Publish planning status
         if: ${{ (github.event_name != 'workflow_dispatch' || github.event.inputs.apply_existing != 'true') && (steps.mode.outputs.hot_intake != 'true' || github.event.inputs.item_number != '' || github.event.inputs.item_numbers != '') }}

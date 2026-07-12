@@ -19,11 +19,29 @@ import test from "node:test";
 
 import { tmpPrefix } from "./helpers.ts";
 
+const recordsPath = "records/openclaw-openclaw/items";
+
+function reviewRuntimeArgs(output: string, plan: string, stateRoot: string): string[] {
+  return [
+    "scripts/prepare-review-runtime.mjs",
+    "--output",
+    output,
+    "--plan",
+    plan,
+    "--state-root",
+    stateRoot,
+    "--records-path",
+    recordsPath,
+  ];
+}
+
 test("review runtime artifact carries the TypeScript compiler service", () => {
   const fixture = mkdtempSync(tmpPrefix);
   const artifactsRoot = join(process.cwd(), ".artifacts");
   mkdirSync(artifactsRoot, { recursive: true });
   const output = mkdtempSync(join(artifactsRoot, "review-runtime-test-"));
+  const plan = join(fixture, "plan.json");
+  const stateRoot = join(fixture, "state");
   const archive = join(fixture, "review-runtime.tar.gz");
   const roundtrip = join(fixture, "roundtrip");
   const nativePackageName = `typescript-${process.platform}-${process.arch}`;
@@ -37,7 +55,9 @@ test("review runtime artifact carries the TypeScript compiler service", () => {
   );
 
   try {
-    execFileSync(process.execPath, ["scripts/prepare-review-runtime.mjs", "--output", output], {
+    mkdirSync(stateRoot);
+    writeFileSync(plan, '{"shards":[{"shard":0,"itemNumbers":[]}]}\n');
+    execFileSync(process.execPath, reviewRuntimeArgs(output, plan, stateRoot), {
       cwd: process.cwd(),
       stdio: "pipe",
     });
@@ -212,7 +232,11 @@ if (!record.eligible) throw new Error(record.eligibilityReason);
 test("review runtime staging rejects destructive output paths", () => {
   const fixture = mkdtempSync(tmpPrefix);
   const sentinel = join(fixture, "keep.txt");
+  const plan = join(fixture, "plan.json");
+  const stateRoot = join(fixture, "state");
   writeFileSync(sentinel, "keep");
+  writeFileSync(plan, '{"shards":[{"shard":0,"itemNumbers":[]}]}\n');
+  mkdirSync(stateRoot);
 
   try {
     for (const output of [
@@ -221,15 +245,98 @@ test("review runtime staging rejects destructive output paths", () => {
       join(process.cwd(), ".artifacts"),
       join(process.cwd(), ".artifacts", "nested", "runtime"),
     ]) {
-      const result = spawnSync(
-        process.execPath,
-        ["scripts/prepare-review-runtime.mjs", "--output", output],
-        { cwd: process.cwd(), encoding: "utf8" },
-      );
+      const result = spawnSync(process.execPath, reviewRuntimeArgs(output, plan, stateRoot), {
+        cwd: process.cwd(),
+        encoding: "utf8",
+      });
       assert.notEqual(result.status, 0, output);
     }
     assert.equal(readFileSync(sentinel, "utf8"), "keep");
   } finally {
+    rmSync(fixture, { force: true, recursive: true });
+  }
+});
+
+test("review runtime staging copies only reports selected by the review plan", () => {
+  const fixture = mkdtempSync(tmpPrefix);
+  const artifactsRoot = join(process.cwd(), ".artifacts");
+  mkdirSync(artifactsRoot, { recursive: true });
+  const output = mkdtempSync(join(artifactsRoot, "review-runtime-records-test-"));
+  const plan = join(fixture, "plan.json");
+  const stateRoot = join(fixture, "state");
+  const recordsRoot = join(stateRoot, ...recordsPath.split("/"));
+
+  try {
+    mkdirSync(recordsRoot, { recursive: true });
+    writeFileSync(
+      plan,
+      JSON.stringify({
+        shards: [
+          { shard: 0, itemNumbers: [1, 2] },
+          { shard: 1, itemNumbers: [2, 3] },
+        ],
+      }),
+    );
+    writeFileSync(join(recordsRoot, "1.md"), "selected one\n");
+    writeFileSync(join(recordsRoot, "2.md"), "selected two\n");
+    writeFileSync(join(recordsRoot, "4.md"), "not selected\n");
+
+    execFileSync(process.execPath, reviewRuntimeArgs(output, plan, stateRoot), {
+      cwd: process.cwd(),
+      stdio: "pipe",
+    });
+
+    const packagedRecords = join(output, ...recordsPath.split("/"));
+    assert.equal(readFileSync(join(packagedRecords, "1.md"), "utf8"), "selected one\n");
+    assert.equal(readFileSync(join(packagedRecords, "2.md"), "utf8"), "selected two\n");
+    assert.equal(existsSync(join(packagedRecords, "3.md")), false);
+    assert.equal(existsSync(join(packagedRecords, "4.md")), false);
+  } finally {
+    rmSync(output, { force: true, recursive: true });
+    rmSync(fixture, { force: true, recursive: true });
+  }
+});
+
+test("review runtime staging rejects malformed plans and unsafe report paths", () => {
+  const fixture = mkdtempSync(tmpPrefix);
+  const artifactsRoot = join(process.cwd(), ".artifacts");
+  mkdirSync(artifactsRoot, { recursive: true });
+  const output = mkdtempSync(join(artifactsRoot, "review-runtime-unsafe-test-"));
+  const plan = join(fixture, "plan.json");
+  const stateRoot = join(fixture, "state");
+  const recordsRoot = join(stateRoot, ...recordsPath.split("/"));
+
+  try {
+    mkdirSync(recordsRoot, { recursive: true });
+    writeFileSync(plan, '{"shards":[{"shard":0,"itemNumbers":[0]}]}\n');
+    const malformed = spawnSync(process.execPath, reviewRuntimeArgs(output, plan, stateRoot), {
+      cwd: process.cwd(),
+      encoding: "utf8",
+    });
+    assert.notEqual(malformed.status, 0);
+    assert.match(malformed.stderr, /invalid review plan item number/i);
+
+    writeFileSync(plan, '{"shards":[{"shard":0,"itemNumbers":[1]}]}\n');
+    const traversalArgs = reviewRuntimeArgs(output, plan, stateRoot);
+    traversalArgs[traversalArgs.indexOf(recordsPath)] = "records/../private/items";
+    const traversal = spawnSync(process.execPath, traversalArgs, {
+      cwd: process.cwd(),
+      encoding: "utf8",
+    });
+    assert.notEqual(traversal.status, 0);
+    assert.match(traversal.stderr, /records path must match/i);
+
+    const external = join(fixture, "external.md");
+    writeFileSync(external, "external\n");
+    symlinkSync(external, join(recordsRoot, "1.md"));
+    const symlinked = spawnSync(process.execPath, reviewRuntimeArgs(output, plan, stateRoot), {
+      cwd: process.cwd(),
+      encoding: "utf8",
+    });
+    assert.notEqual(symlinked.status, 0);
+    assert.match(symlinked.stderr, /regular file/i);
+  } finally {
+    rmSync(output, { force: true, recursive: true });
     rmSync(fixture, { force: true, recursive: true });
   }
 });

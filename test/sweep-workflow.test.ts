@@ -90,7 +90,10 @@ test("scheduled review shards receive the compiler-backed runtime artifact", () 
 
   assert.match(
     planJob,
-    /node scripts\/prepare-review-runtime\.mjs --output \.artifacts\/review-runtime/,
+    /node scripts\/prepare-review-runtime\.mjs[\s\S]*--output \.artifacts\/review-runtime[\s\S]*--plan plan\.json[\s\S]*--state-root "\$CLAWSWEEPER_STATE_DIR"[\s\S]*--records-path "records\/\$\{target_slug\}\/items"/,
+  );
+  assert.ok(
+    planJob.indexOf("id: select") < planJob.indexOf("name: Prepare review runtime artifact"),
   );
   assert.match(
     planJob,
