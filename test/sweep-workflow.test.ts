@@ -21,6 +21,38 @@ test("sweep keeps optional media tooling out of review startup", () => {
   assert.doesNotMatch(workflow, /setup-media-proof-tools/);
 });
 
+test("ledger-producing jobs initialize immutable workflow context", () => {
+  const workflow = readText(".github/workflows/sweep.yml");
+  for (const jobName of [
+    "event-review-apply",
+    "review",
+    "publish",
+    "retry-failed-reviews",
+    "apply-proof",
+    "apply-existing",
+  ]) {
+    const start = workflow.indexOf(`\n  ${jobName}:`);
+    assert.notEqual(start, -1, `missing ${jobName} job`);
+    const remaining = workflow.slice(start + 1);
+    const nextJob = remaining.match(/\n  [a-z0-9_-]+:\n/);
+    const end = nextJob?.index === undefined ? workflow.length : start + 1 + nextJob.index;
+    const job = workflow.slice(start, end);
+    assert.match(
+      job,
+      /uses: \.\/(?:clawsweeper\/)?\.github\/actions\/setup-action-ledger/,
+      `${jobName} must initialize the action ledger`,
+    );
+  }
+
+  const action = readText(".github/actions/setup-action-ledger/action.yml");
+  assert.match(action, /actions\/runs\/\$\{GITHUB_RUN_ID\}/);
+  assert.match(action, /worktree_root="\$\(cd "\$worktree_root" && pwd -P\)"/);
+  assert.doesNotMatch(action, /GITHUB_WORKSPACE\/\$\{\{ inputs\.worktree-path \}\}/);
+  assert.match(action, /CLAWSWEEPER_ACTION_LEDGER_FORCE=1/);
+  assert.match(action, /CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT=\$output_root/);
+  assert.match(action, /GITHUB_RUN_STARTED_AT=\$run_started_at/);
+});
+
 test("review workflow gives Codex a read-only inspection token", () => {
   const workflow = readText(".github/workflows/sweep.yml");
   const eventReviewJobStart = workflow.indexOf("\n  event-review-apply:");
@@ -607,7 +639,10 @@ test("apply workflow isolates Codex proof from the credentialed mutation runner"
   const proofPublisherJob = workflow.slice(proofPublisherStart, applyJobStart);
   const applyJob = workflow.slice(applyJobStart);
 
-  assert.match(proofJob, /permissions:\s+contents: read\s+issues: read\s+pull-requests: read/);
+  assert.match(
+    proofJob,
+    /permissions:\s+actions: read\s+contents: read\s+issues: read\s+pull-requests: read/,
+  );
   assert.match(proofJob, /persist-credentials: false/);
   assert.match(proofJob, /persist-credentials: "false"/);
   assert.doesNotMatch(proofJob, /Create target write token|Create state token/);
@@ -1931,9 +1966,26 @@ test("sweep exact event reviews consume only the immutable claimed decision", ()
   assert.match(reviewBlock, /detected media allowance \$\{media_proof_timeout_seconds\}s/);
   assert.doesNotMatch(reviewBlock, /review_timeout_seconds=.*media_proof_timeout_seconds/);
   assert.match(reviewBlock, /timeout --kill-after=30s "\$\{review_timeout_seconds\}s"/);
+  assert.match(reviewBlock, /echo "exit_code=\$review_exit_code" >> "\$GITHUB_OUTPUT"/);
   assert.match(reviewBlock, /--codex-timeout-ms "\$codex_timeout_ms"/);
   assert.doesNotMatch(reviewBlock, /timeout --kill-after=30s 12m/);
   assert.doesNotMatch(reviewBlock, /--codex-timeout-ms 600000/);
+});
+
+test("review finalizers recover start-only ledger attempts after hard timeout", () => {
+  const workflow = readText(".github/workflows/sweep.yml");
+  for (const finalizerName of [
+    "Finalize exact event action ledger",
+    "Finalize review action ledger",
+  ]) {
+    const start = workflow.indexOf(`- name: ${finalizerName}`);
+    assert.ok(start >= 0, `missing ${finalizerName}`);
+    const block = workflow.slice(start, workflow.indexOf("\n      - name:", start + 1));
+    assert.match(block, /REVIEW_EXIT_CODE:/);
+    assert.match(block, /"124"/);
+    assert.match(block, /"137"/);
+    assert.match(block, /--interrupt-open-attempts --reason timeout/);
+  }
 });
 
 test("sweep exact event reviews preserve the configured fallback without an adaptive payload", () => {

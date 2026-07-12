@@ -443,6 +443,8 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      - uses: ./.github/actions/setup-action-ledger
+
       - name: Resolve event payload
         id: target
         env:
@@ -729,6 +731,7 @@ jobs:
           media_preprocessing_reserve_seconds=480
           review_timeout_seconds=$((codex_timeout_seconds + media_preprocessing_reserve_seconds + 180))
           echo "::notice::Exact event review timeout is ${review_timeout_seconds}s for per-item Codex timeout ${codex_timeout_seconds}s, reserved media preprocessing ${media_preprocessing_reserve_seconds}s, and detected media allowance ${media_proof_timeout_seconds}s."
+          set +e
           timeout --kill-after=30s "${review_timeout_seconds}s" pnpm run review -- \
             --target-repo "${{ steps.target.outputs.target_repo }}" \
             --target-dir "${{ steps.target.outputs.target_checkout_dir }}" \
@@ -744,6 +747,12 @@ jobs:
             --shard-index 0 \
             --shard-count 1 \
             "${additional_prompt_arg[@]}"
+          review_exit_code=$?
+          set -e
+          echo "exit_code=$review_exit_code" >> "$GITHUB_OUTPUT"
+          if [ "$review_exit_code" -ne 0 ]; then
+            exit "$review_exit_code"
+          fi
 
           coordination_held_path="artifacts/event/coordination-held.json"
           if [ -f "$coordination_held_path" ]; then
@@ -770,7 +779,14 @@ jobs:
 
       - name: Finalize exact event action ledger
         if: ${{ always() && steps.live-item.outputs.proceed == 'true' }}
-        run: pnpm run --silent finalize-action-events
+        env:
+          REVIEW_EXIT_CODE: ${{ steps.review-exact-event-item.outputs.exit_code || '' }}
+        run: |
+          args=()
+          if [ "$REVIEW_EXIT_CODE" = "124" ] || [ "$REVIEW_EXIT_CODE" = "137" ]; then
+            args=(--interrupt-open-attempts --reason timeout)
+          fi
+          pnpm run --silent finalize-action-events -- "${args[@]}"
 
       - name: Create state token
         id: state-token
@@ -1684,6 +1700,7 @@ jobs:
     timeout-minutes: 75
     continue-on-error: true
     permissions:
+      actions: read
       checks: read
       contents: read
       issues: read
@@ -1700,6 +1717,10 @@ jobs:
           filter: blob:none
           fetch-depth: 1
           persist-credentials: false
+
+      - uses: ./clawsweeper/.github/actions/setup-action-ledger
+        with:
+          worktree-path: clawsweeper
 
       - name: Create target review token
         id: target-read-token
@@ -1834,6 +1855,7 @@ jobs:
             review_timeout_seconds=4200
           fi
           echo "::notice::Review shard timeout is ${review_timeout_seconds}s for batch size ${{ needs.plan.outputs.batch_size }} and per-item Codex timeout ${codex_timeout_seconds}s."
+          set +e
           timeout --kill-after=30s "${review_timeout_seconds}s" node dist/clawsweeper.js review \
             --target-repo "${{ needs.plan.outputs.target_repo }}" \
             --target-dir "../${{ needs.plan.outputs.target_checkout_dir }}" \
@@ -1852,11 +1874,22 @@ jobs:
             --shard-count ${{ needs.plan.outputs.planned_shards }} \
             "${additional_prompt_arg[@]}" \
             "${expected_source_revision_arg[@]}"
+          review_exit_code=$?
+          set -e
+          echo "exit_code=$review_exit_code" >> "$GITHUB_OUTPUT"
+          exit "$review_exit_code"
 
       - name: Finalize review action ledger
         if: always()
         working-directory: clawsweeper
-        run: node dist/clawsweeper.js finalize-action-events
+        env:
+          REVIEW_EXIT_CODE: ${{ steps.review-shard.outputs.exit_code || '' }}
+        run: |
+          args=()
+          if [ "$REVIEW_EXIT_CODE" = "124" ] || [ "$REVIEW_EXIT_CODE" = "137" ]; then
+            args=(--interrupt-open-attempts --reason timeout)
+          fi
+          node dist/clawsweeper.js finalize-action-events "${args[@]}"
 
       - name: Record shard metrics
         if: always()
@@ -2014,6 +2047,8 @@ jobs:
           filter: blob:none
           fetch-depth: 0
           persist-credentials: false
+
+      - uses: ./.github/actions/setup-action-ledger
 
       - name: Create target write token
         id: target-write-token
@@ -2632,6 +2667,8 @@ jobs:
           filter: blob:none
           fetch-depth: 0
 
+      - uses: ./.github/actions/setup-action-ledger
+
       - name: Create state token
         id: state-token
         uses: ./.github/actions/create-state-token
@@ -2856,6 +2893,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
+      actions: read
       contents: read
       issues: read
       pull-requests: read
@@ -2872,6 +2910,8 @@ jobs:
           filter: blob:none
           fetch-depth: 1
           persist-credentials: false
+
+      - uses: ./.github/actions/setup-action-ledger
 
       - name: Resolve proof target repository
         id: target
@@ -3135,6 +3175,8 @@ jobs:
           filter: blob:none
           fetch-depth: 0
           persist-credentials: false
+
+      - uses: ./.github/actions/setup-action-ledger
 
       - name: Resolve target repository
         id: target
