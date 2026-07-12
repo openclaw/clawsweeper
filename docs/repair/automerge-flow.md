@@ -152,10 +152,10 @@ Every automerge decision is bound to a concrete PR head SHA.
   from an earlier failed or cancelled review; `/clawsweeper stop` still wins.
 - Merge commands use the reviewed head SHA so GitHub cannot merge a moved head
   accidentally.
-- Repair post-flight also requires GitHub's effective base-branch rules to
-  enforce strict required status checks. That server-side rule rejects a merge
-  if the base advances after proof validation; when the rule is absent or
-  cannot be verified, automerge remains blocked.
+- Every repair merge owner requires a verifiable GitHub App installation plus
+  effective base-branch rules that enforce strict required status checks. The
+  app must not be a ruleset bypass actor. Ruleset and classic branch-protection
+  forms are supported; when neither can be verified, automerge remains blocked.
 
 This is why repair workers dispatch an immediate exact-head review after a
 branch push instead of waiting for the normal scheduled sweep.

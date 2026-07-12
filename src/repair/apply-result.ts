@@ -32,6 +32,7 @@ import {
   buildRepairSquashMergeMessage,
   writeRepairSquashMergeBody,
 } from "./repair-merge-message.js";
+import { serverStrictBaseBindingBlock } from "./strict-base-binding.js";
 import {
   compactPrCloseCoverageProofComment,
   compactPrCloseCoverageProofText,
@@ -642,6 +643,22 @@ function applyMergeAction({
       ...base,
       status: "planned",
       reason: "dry run",
+      live_state: live.state,
+      live_updated_at: live.updated_at,
+      merge_method: "squash",
+    };
+  }
+
+  const strictBaseBindingBlock = serverStrictBaseBindingBlock({
+    repo: result.repo,
+    baseBranch: String(view.baseRefName ?? pullRequest.base?.ref ?? ""),
+    readJson: (ghArgs) => ghJson(ghArgs),
+  });
+  if (strictBaseBindingBlock) {
+    return {
+      ...base,
+      status: "blocked",
+      reason: strictBaseBindingBlock,
       live_state: live.state,
       live_updated_at: live.updated_at,
       merge_method: "squash",

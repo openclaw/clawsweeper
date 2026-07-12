@@ -123,6 +123,7 @@ import {
   ghTextWithRetry as ghText,
 } from "./github-cli.js";
 import { issueSourceRevisionSha256 } from "./issue-source-guard.js";
+import { serverStrictBaseBindingBlock } from "./strict-base-binding.js";
 import { compactText, escapeRegExp } from "./text-utils.js";
 
 const args = parseArgs(process.argv.slice(2));
@@ -3470,6 +3471,19 @@ function executeAutomerge(command: LooseRecord) {
       action: "merge",
       status: reviewLeaseBlock.retryable ? "waiting" : "blocked",
       reason: reviewLeaseBlock.reason,
+      merge_method: "squash",
+    };
+  }
+  const strictBaseBindingBlock = serverStrictBaseBindingBlock({
+    repo: command.repo,
+    baseBranch: String(view.baseRefName ?? latestTarget.base_ref ?? targetBranch ?? "main"),
+    readJson: (ghArgs) => ghJson(ghArgs),
+  });
+  if (strictBaseBindingBlock) {
+    return {
+      action: "merge",
+      status: "blocked",
+      reason: strictBaseBindingBlock,
       merge_method: "squash",
     };
   }
