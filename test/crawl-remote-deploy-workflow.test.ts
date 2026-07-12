@@ -886,7 +886,8 @@ test("release artifact is immutable, bounded, canonical, and hash verified", () 
     "e6c4a8edb300ebbf93a2e2449d180408f23be7eac1ef05733045b6ed496eb396",
     "5964adcb0807448d937fed38ac9588a1063bf4f490a82b54f15f0e700374ae0c",
     "a0ebfbb5c40c85df5eaba6772a01a68910fa5f1327d4701d25c5dfde16f77d1a",
-    "8b1ef863087eccf41a7c9e5cf1e72f905613adea55df1840f9c96c3cfb2b7ad5",
+    "5c1e92dbf4d51ef62d317e212a0ec8e39df104983656c6416d0c58ef3503744d",
+    "ec4099d18c8ee8b12266e1a6e4850c6b694708e2757d45143ae4ee62a947c93f",
   ]) {
     assert.match(packaging, new RegExp(sha256));
   }
@@ -1462,8 +1463,11 @@ test("privileged mutations use only verified files and prove the selected D1 fen
     migration,
     /pending migration \$\{migration\.name\} is not classified as compatible with the previous Worker/,
   );
-  assert.match(migration, /additive-snapshot-provenance-v1/);
+  assert.match(migration, /additive-snapshot-provenance-and-retirement-v2/);
+  assert.match(migration, /additive-publish-candidate-compat-v1/);
   assert.match(migration, /gitcrawl_snapshot_provenance/);
+  assert.match(migration, /gitcrawl_archive_snapshot_state/);
+  assert.match(migration, /gitcrawl_publish_candidates/);
   assert.match(migration, /on conflict\\\(capability\\\) do nothing/);
   assert.match(migration, /d1 migrations apply crawl-remote/);
   assert.match(migration, /--cwd "\$RELEASE_ROOT"/);
@@ -1756,7 +1760,7 @@ exit 97
   }
 });
 
-test("pending migration compatibility accepts only the reviewed additive 0007 suffix", () => {
+test("pending migration compatibility accepts only the reviewed additive 0007-0008 suffix", () => {
   const run = step(deploy, "Apply and verify D1 migrations").run ?? "";
   const validator = run.match(
     /node --input-type=module <<'PENDING_MIGRATIONS_NODE'\n([\s\S]*?)\nPENDING_MIGRATIONS_NODE/,
@@ -1790,7 +1794,11 @@ test("pending migration compatibility accepts only the reviewed additive 0007 su
     ],
     [
       "0007_gitcrawl_snapshot_provenance.sql",
-      "8b1ef863087eccf41a7c9e5cf1e72f905613adea55df1840f9c96c3cfb2b7ad5",
+      "5c1e92dbf4d51ef62d317e212a0ec8e39df104983656c6416d0c58ef3503744d",
+    ],
+    [
+      "0008_gitcrawl_publish_candidates.sql",
+      "ec4099d18c8ee8b12266e1a6e4850c6b694708e2757d45143ae4ee62a947c93f",
     ],
   ] as const;
   const migrationSQL = `pragma foreign_keys = on;
@@ -1847,6 +1855,35 @@ begin
   select raise(abort, 'gitcrawl snapshot provenance identity cannot be deleted');
 end;
 
+create table if not exists gitcrawl_archive_snapshot_state (
+  archive_id text primary key references remote_archives(id) on delete cascade,
+  raw_sqlite_retired integer not null default 1 check (raw_sqlite_retired = 1),
+  raw_sqlite_retired_at text not null check (trim(raw_sqlite_retired_at) != '')
+);
+
+create trigger if not exists gitcrawl_archive_snapshot_state_immutable
+before update of archive_id, raw_sqlite_retired, raw_sqlite_retired_at
+on gitcrawl_archive_snapshot_state
+for each row
+when new.archive_id is not old.archive_id
+  or new.raw_sqlite_retired is not old.raw_sqlite_retired
+  or new.raw_sqlite_retired_at is not old.raw_sqlite_retired_at
+begin
+  select raise(abort, 'gitcrawl archive snapshot state is immutable');
+end;
+
+create trigger if not exists gitcrawl_archive_snapshot_state_delete_guard
+before delete on gitcrawl_archive_snapshot_state
+for each row
+when exists (
+  select 1
+  from remote_archives archive
+  where archive.id = old.archive_id
+)
+begin
+  select raise(abort, 'gitcrawl archive snapshot state cannot be deleted');
+end;
+
 insert or ignore into gitcrawl_snapshot_provenance(
   archive_id,
   snapshot_id,
@@ -1872,6 +1909,51 @@ insert into remote_capability_fences(
 )
 on conflict(capability) do nothing;
 `;
+  const migration0008SQL = `pragma foreign_keys = on;
+
+create table if not exists gitcrawl_publish_candidates (
+  archive_id text primary key references remote_archives(id) on delete cascade,
+  snapshot_id text not null,
+  completed_at text not null,
+  foreign key (archive_id, snapshot_id)
+    references gitcrawl_snapshots(archive_id, snapshot_id) on delete cascade
+);
+
+insert into gitcrawl_publish_candidates(archive_id, snapshot_id, completed_at)
+select active.archive_id, active.snapshot_id, active.activated_at
+from gitcrawl_active_snapshots active
+join gitcrawl_snapshots snapshot
+  on snapshot.archive_id = active.archive_id
+ and snapshot.snapshot_id = active.snapshot_id
+where snapshot.activated_at is not null
+  and snapshot.coverage_complete = 1
+on conflict(archive_id) do nothing;
+
+create trigger if not exists gitcrawl_publish_candidates_old_worker_activation
+after update of activated_at on gitcrawl_snapshots
+for each row
+when old.activated_at is null
+  and new.activated_at is not null
+  and exists (
+    select 1
+    from gitcrawl_active_snapshots active
+    where active.archive_id = new.archive_id
+      and active.snapshot_id = new.snapshot_id
+      and active.activated_at = new.activated_at
+  )
+begin
+  insert into gitcrawl_publish_candidates(archive_id, snapshot_id, completed_at)
+  values (new.archive_id, new.snapshot_id, new.activated_at)
+  on conflict(archive_id) do update set
+    snapshot_id = excluded.snapshot_id,
+    completed_at = excluded.completed_at;
+
+  update gitcrawl_snapshot_cutovers
+  set snapshot_id = new.snapshot_id,
+      cutover_at = new.activated_at
+  where archive_id = new.archive_id;
+end;
+`;
 
   const directory = mkdtempSync(join(tmpdir(), "crawl-remote-pending-migrations-"));
   const releaseRoot = join(directory, "release");
@@ -1889,6 +1971,7 @@ on conflict(capability) do nothing;
     }),
   );
   writeFileSync(join(migrationsRoot, approvedMigrations[6][0]), migrationSQL);
+  writeFileSync(join(migrationsRoot, approvedMigrations[7][0]), migration0008SQL);
 
   function validate(appliedNames: readonly string[], response?: unknown) {
     rmSync(proofPath, { force: true });
@@ -1920,23 +2003,49 @@ on conflict(capability) do nothing;
     const pending0007 = validate(names.slice(0, 6));
     assert.equal(pending0007.status, 0, pending0007.stdout + pending0007.stderr);
     const proof = JSON.parse(readFileSync(proofPath, "utf8"));
-    assert.deepEqual(proof.pending_migrations, ["0007_gitcrawl_snapshot_provenance.sql"]);
+    assert.deepEqual(proof.pending_migrations, [
+      "0007_gitcrawl_snapshot_provenance.sql",
+      "0008_gitcrawl_publish_candidates.sql",
+    ]);
     assert.deepEqual(proof.compatible_with_previous_worker, [
       {
         name: "0007_gitcrawl_snapshot_provenance.sql",
         sha256: approvedMigrations[6][1],
-        classification: "additive-snapshot-provenance-v1",
+        classification: "additive-snapshot-provenance-and-retirement-v2",
+      },
+      {
+        name: "0008_gitcrawl_publish_candidates.sql",
+        sha256: approvedMigrations[7][1],
+        classification: "additive-publish-candidate-compat-v1",
+      },
+    ]);
+
+    const pending0008 = validate(names.slice(0, 7));
+    assert.equal(pending0008.status, 0, pending0008.stdout + pending0008.stderr);
+    const pending0008Proof = JSON.parse(readFileSync(proofPath, "utf8"));
+    assert.deepEqual(pending0008Proof.pending_migrations, ["0008_gitcrawl_publish_candidates.sql"]);
+    assert.deepEqual(pending0008Proof.compatible_with_previous_worker, [
+      {
+        name: "0008_gitcrawl_publish_candidates.sql",
+        sha256: approvedMigrations[7][1],
+        classification: "additive-publish-candidate-compat-v1",
       },
     ]);
 
     assert.equal(validate(names).status, 0);
     assert.notEqual(validate(names.slice(0, 5)).status, 0);
-    assert.notEqual(validate([...names.slice(0, 6), "0008_unreviewed.sql"]).status, 0);
+    assert.notEqual(validate([...names.slice(0, 7), "0009_unreviewed.sql"]).status, 0);
     assert.notEqual(validate([names[0], names[2]]).status, 0);
     assert.notEqual(validate([], [{ success: false, results: [] }]).status, 0);
 
     writeFileSync(join(migrationsRoot, approvedMigrations[6][0]), `${migrationSQL}\n-- tampered\n`);
     assert.notEqual(validate(names.slice(0, 6)).status, 0);
+    writeFileSync(join(migrationsRoot, approvedMigrations[6][0]), migrationSQL);
+    writeFileSync(
+      join(migrationsRoot, approvedMigrations[7][0]),
+      `${migration0008SQL}\n-- tampered\n`,
+    );
+    assert.notEqual(validate(names.slice(0, 7)).status, 0);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }

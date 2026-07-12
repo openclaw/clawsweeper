@@ -357,7 +357,11 @@ jobs:
             },
             {
               name: '0007_gitcrawl_snapshot_provenance.sql',
-              sha256: '8b1ef863087eccf41a7c9e5cf1e72f905613adea55df1840f9c96c3cfb2b7ad5',
+              sha256: '5c1e92dbf4d51ef62d317e212a0ec8e39df104983656c6416d0c58ef3503744d',
+            },
+            {
+              name: '0008_gitcrawl_publish_candidates.sql',
+              sha256: 'ec4099d18c8ee8b12266e1a6e4850c6b694708e2757d45143ae4ee62a947c93f',
             },
           ];
           const migrationEntries = readdirSync('migrations', { withFileTypes: true })
@@ -1407,16 +1411,28 @@ jobs:
             },
             {
               name: '0007_gitcrawl_snapshot_provenance.sql',
-              sha256: '8b1ef863087eccf41a7c9e5cf1e72f905613adea55df1840f9c96c3cfb2b7ad5',
+              sha256: '5c1e92dbf4d51ef62d317e212a0ec8e39df104983656c6416d0c58ef3503744d',
+            },
+            {
+              name: '0008_gitcrawl_publish_candidates.sql',
+              sha256: 'ec4099d18c8ee8b12266e1a6e4850c6b694708e2757d45143ae4ee62a947c93f',
             },
           ];
           const compatibleWithPreviousWorker = new Map([
             [
               '0007_gitcrawl_snapshot_provenance.sql',
               {
-                classification: 'additive-snapshot-provenance-v1',
+                classification: 'additive-snapshot-provenance-and-retirement-v2',
                 sha256:
-                  '8b1ef863087eccf41a7c9e5cf1e72f905613adea55df1840f9c96c3cfb2b7ad5',
+                  '5c1e92dbf4d51ef62d317e212a0ec8e39df104983656c6416d0c58ef3503744d',
+              },
+            ],
+            [
+              '0008_gitcrawl_publish_candidates.sql',
+              {
+                classification: 'additive-publish-candidate-compat-v1',
+                sha256:
+                  'ec4099d18c8ee8b12266e1a6e4850c6b694708e2757d45143ae4ee62a947c93f',
               },
             ],
           ]);
@@ -1502,32 +1518,68 @@ jobs:
                 /\bcreate\s+trigger\s+if\s+not\s+exists\s+[a-z_][a-z0-9_]*[\s\S]*?\bon\s+([a-z_][a-z0-9_]*)/gi,
               ),
             ].map((match) => match[1].toLowerCase());
-            if (
-              /\b(?:alter|drop|truncate|vacuum|reindex|replace)\b/i.test(sql) ||
-              JSON.stringify(createdTables) !==
-                JSON.stringify(['gitcrawl_snapshot_provenance']) ||
-              JSON.stringify(insertedTables) !==
-                JSON.stringify([
-                  'gitcrawl_snapshot_provenance',
-                  'remote_capability_fences',
-                ]) ||
-              JSON.stringify(triggerTargets) !==
-                JSON.stringify([
-                  'gitcrawl_snapshot_provenance',
-                  'gitcrawl_snapshot_provenance',
-                ]) ||
-              !/foreign key \(archive_id, snapshot_id\)\s+references gitcrawl_snapshots\(archive_id, snapshot_id\) on delete cascade/i.test(
-                sql,
-              ) ||
-              !/insert or ignore into gitcrawl_snapshot_provenance[\s\S]*select archive_id, snapshot_id, 'legacy', '', created_at\s+from gitcrawl_snapshots;/i.test(
-                sql,
-              ) ||
-              !/insert into remote_capability_fences[\s\S]*'gitcrawl\.snapshot\.provenance\.v1'[\s\S]*on conflict\(capability\) do nothing;/i.test(
-                sql,
-              )
-            ) {
+            const destructive = /\b(?:alter|drop|truncate|vacuum|reindex|replace)\b/i.test(
+              sql,
+            );
+            const compatibleShape =
+              migration.name === '0007_gitcrawl_snapshot_provenance.sql'
+                ? !destructive &&
+                  JSON.stringify(createdTables) ===
+                    JSON.stringify([
+                      'gitcrawl_snapshot_provenance',
+                      'gitcrawl_archive_snapshot_state',
+                    ]) &&
+                  JSON.stringify(insertedTables) ===
+                    JSON.stringify([
+                      'gitcrawl_snapshot_provenance',
+                      'remote_capability_fences',
+                    ]) &&
+                  JSON.stringify(triggerTargets) ===
+                    JSON.stringify([
+                      'gitcrawl_snapshot_provenance',
+                      'gitcrawl_snapshot_provenance',
+                      'gitcrawl_archive_snapshot_state',
+                      'gitcrawl_archive_snapshot_state',
+                    ]) &&
+                  /foreign key \(archive_id, snapshot_id\)\s+references gitcrawl_snapshots\(archive_id, snapshot_id\) on delete cascade/i.test(
+                    sql,
+                  ) &&
+                  /create table if not exists gitcrawl_archive_snapshot_state[\s\S]*archive_id text primary key references remote_archives\(id\) on delete cascade[\s\S]*raw_sqlite_retired integer not null default 1 check \(raw_sqlite_retired = 1\)/i.test(
+                    sql,
+                  ) &&
+                  /insert or ignore into gitcrawl_snapshot_provenance[\s\S]*select archive_id, snapshot_id, 'legacy', '', created_at\s+from gitcrawl_snapshots;/i.test(
+                    sql,
+                  ) &&
+                  /insert into remote_capability_fences[\s\S]*'gitcrawl\.snapshot\.provenance\.v1'[\s\S]*on conflict\(capability\) do nothing;/i.test(
+                    sql,
+                  )
+                : migration.name === '0008_gitcrawl_publish_candidates.sql'
+                  ? !destructive &&
+                    JSON.stringify(createdTables) ===
+                      JSON.stringify(['gitcrawl_publish_candidates']) &&
+                    JSON.stringify(insertedTables) ===
+                      JSON.stringify([
+                        'gitcrawl_publish_candidates',
+                        'gitcrawl_publish_candidates',
+                      ]) &&
+                    JSON.stringify(triggerTargets) ===
+                      JSON.stringify(['gitcrawl_snapshots']) &&
+                    /archive_id text primary key references remote_archives\(id\) on delete cascade/i.test(
+                      sql,
+                    ) &&
+                    /foreign key \(archive_id, snapshot_id\)\s+references gitcrawl_snapshots\(archive_id, snapshot_id\) on delete cascade/i.test(
+                      sql,
+                    ) &&
+                    /insert into gitcrawl_publish_candidates\(archive_id, snapshot_id, completed_at\)[\s\S]*from gitcrawl_active_snapshots active[\s\S]*snapshot\.coverage_complete = 1[\s\S]*on conflict\(archive_id\) do nothing;/i.test(
+                      sql,
+                    ) &&
+                    /create trigger if not exists gitcrawl_publish_candidates_old_worker_activation\s+after update of activated_at on gitcrawl_snapshots[\s\S]*old\.activated_at is null[\s\S]*new\.activated_at is not null[\s\S]*update gitcrawl_snapshot_cutovers[\s\S]*set snapshot_id = new\.snapshot_id,\s+cutover_at = new\.activated_at/i.test(
+                      sql,
+                    )
+                  : false;
+            if (!compatibleShape) {
               throw new Error(
-                '0007 migration is not the reviewed additive previous-Worker-compatible schema shape',
+                `${migration.name} is not the reviewed additive previous-Worker-compatible schema shape`,
               );
             }
             compatibility.push({

@@ -21,8 +21,10 @@ checkpoint, and status-only commits are intentionally omitted.
   provenance, fail-closed single-output Worker packaging, 31-day
   approval-window artifact retention, exact release-identity and contract
   polling on workers.dev, and a fail-closed compatibility contract that accepts
-  only the reviewed pending migration suffix. Migration 0007 is mechanically
-  checked as additive, and the still-serving previous Worker's public,
+  only the reviewed pending migration suffix. Migrations 0007 and 0008 are
+  mechanically checked as additive, including immutable archive-retirement
+  state and the old-worker publish-candidate bridge, and the still-serving
+  previous Worker's public,
   D1-backed contract must remain healthy without regressing routes,
   capabilities, or notes after migration and before Worker deployment. The
   protected
