@@ -176,6 +176,7 @@ import {
 import {
   appendReviewHistoryCycle,
   neutralizeReviewControlMarkers,
+  normalizeDurableReviewVerdictBody,
   parseReviewHistory,
   renderReviewHistorySection,
   reviewHistoryCycleFromCommentBody,
@@ -4569,6 +4570,7 @@ const CLAWSWEEPER_COMMAND_ONLY_PATTERN = /^@clawsweeper\s+(?:re-review|re-run|re
 
 interface PreviousClawSweeperReview {
   status: string;
+  verdictDigest: string;
   reviewedAt: string | null;
   reviewedSha: string | null;
   verdictMarker: string | null;
@@ -4802,6 +4804,7 @@ function extractLatestClawSweeperReview(
   const earlierReviewCycles = currentCycle ? history.cycles : history.cycles.slice(0, -1);
   return {
     status: previousReviewStatus(body),
+    verdictDigest: sha256(normalizeDurableReviewVerdictBody(body)),
     reviewedAt: previousReviewReviewedAt(body) ?? latestCompletedCycle?.reviewedAt ?? null,
     reviewedSha:
       markerAttribute(verdictMarker, "sha") ??

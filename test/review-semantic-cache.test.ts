@@ -1170,6 +1170,63 @@ test("prior review identity binds visible verdict content but ignores comment me
   );
 });
 
+test("prior review identity prefers the complete durable verdict digest", () => {
+  const verdictDigest = "f".repeat(64);
+  const review = {
+    ...PREVIOUS_REVIEW,
+    verdictDigest,
+  };
+
+  assert.equal(reviewSemanticPriorReviewDigest(review), verdictDigest);
+  assert.equal(
+    reviewSemanticPriorReviewDigest({
+      ...review,
+      summary: "A stale compact projection cannot override the durable verdict.",
+    }),
+    verdictDigest,
+  );
+});
+
+test("prior review identity fallback includes detailed verdict fields", () => {
+  const base = {
+    ...PREVIOUS_REVIEW,
+    findings: [
+      {
+        priority: "P1",
+        title: "Bind review identity",
+        body: "The stale report can replace a newer finding.",
+        location: { path: "src/cache.ts", line: 10 },
+      },
+    ],
+    securityReview: { status: "cleared", summary: "No concerns." },
+    maintainerDecision: { required: false },
+  };
+  const baseDigest = reviewSemanticPriorReviewDigest(base);
+
+  assert.ok(baseDigest);
+  assert.notEqual(
+    reviewSemanticPriorReviewDigest({
+      ...base,
+      findings: [{ ...base.findings[0], body: "A different detailed finding." }],
+    }),
+    baseDigest,
+  );
+  assert.notEqual(
+    reviewSemanticPriorReviewDigest({
+      ...base,
+      securityReview: { status: "needs_attention", summary: "Review token handling." },
+    }),
+    baseDigest,
+  );
+  assert.notEqual(
+    reviewSemanticPriorReviewDigest({
+      ...base,
+      maintainerDecision: { required: true, question: "Accept the remaining risk?" },
+    }),
+    baseDigest,
+  );
+});
+
 test("semantic records require a boolean eligibility value", () => {
   const valid = record();
   const { fingerprint: _, ...withoutFingerprint } = valid;

@@ -859,35 +859,26 @@ function recordFingerprint(record: Omit<ReviewSemanticRecord, "fingerprint">): s
 
 export function reviewSemanticPriorReviewDigest(value: unknown): string | null {
   const review = asRecord(value);
-  const findings = Array.isArray(review.findings)
-    ? review.findings.map((entry) => {
-        const finding = asRecord(entry);
-        return {
-          priority: stringValue(finding.priority),
-          title: stringValue(finding.title),
-        };
-      })
-    : [];
-  const identity = {
-    status: stringValue(review.status),
-    reviewedSha: stringValue(review.reviewedSha),
-    verdictMarker: stringValue(review.verdictMarker),
-    actionMarker: stringValue(review.actionMarker),
-    summary: stringValue(review.summary),
-    proofStatus: stringValue(review.proofStatus),
-    rating: stringValue(review.rating),
-    nextStep: stringValue(review.nextStep),
-    findings,
+  const verdictDigest = stringValue(review.verdictDigest);
+  if (verdictDigest && DIGEST_PATTERN.test(verdictDigest)) return verdictDigest;
+
+  const excluded = new Set([
+    "verdictDigest",
+    "reviewedAt",
+    "earlierReviewCycles",
+    "completedReviewCycles",
+    "commentId",
+    "commentUrl",
+    "commentUpdatedAt",
+  ]);
+  const identity = Object.fromEntries(Object.entries(review).filter(([key]) => !excluded.has(key)));
+  const hasIdentity = (entry: unknown): boolean => {
+    if (typeof entry === "string") return entry.trim().length > 0;
+    if (typeof entry === "number" || typeof entry === "boolean") return true;
+    if (Array.isArray(entry)) return entry.some(hasIdentity);
+    return Object.values(asRecord(entry)).some(hasIdentity);
   };
-  if (
-    !identity.status &&
-    !identity.reviewedSha &&
-    !identity.verdictMarker &&
-    !identity.actionMarker &&
-    !identity.summary
-  ) {
-    return null;
-  }
+  if (!hasIdentity(identity)) return null;
   return sha256(stableJson(identity));
 }
 

@@ -10,6 +10,12 @@ export interface ReviewHistoryLedger {
   totalCompletedCycles: number;
 }
 
+interface ParsedReviewHistory {
+  ledger: ReviewHistoryLedger;
+  start: number;
+  end: number;
+}
+
 export const MAX_REVIEW_HISTORY_CYCLES = 8;
 const MAX_CYCLE_FINDINGS = 6;
 const MAX_HISTORY_FIELD_CHARS = 160;
@@ -97,7 +103,7 @@ function parseReviewHistoryLine(line: string): ReviewHistoryCycle | null {
   return { reviewedAt: head[1].trim(), sha: head[2], verdict, findings };
 }
 
-function parseReviewHistoryAt(body: string, markerIndex: number): ReviewHistoryLedger | null {
+function parseReviewHistoryAt(body: string, markerIndex: number): ParsedReviewHistory | null {
   const markerEnd = body.indexOf("-->", markerIndex + REVIEW_HISTORY_MARKER_PREFIX.length);
   if (markerEnd < 0) return null;
   const marker = body.slice(markerIndex + 4, markerEnd).trim();
@@ -143,21 +149,46 @@ function parseReviewHistoryAt(body: string, markerIndex: number): ReviewHistoryL
   ].join("\n");
   if (summary.replaceAll("\r\n", "\n") !== expectedSummary) return null;
   return {
-    cycles,
-    totalCompletedCycles: parsedTotal,
+    ledger: {
+      cycles,
+      totalCompletedCycles: parsedTotal,
+    },
+    start: detailsStart,
+    end: detailsEnd + "</details>".length,
   };
 }
 
-export function parseReviewHistory(body: string): ReviewHistoryLedger {
+function latestParsedReviewHistory(body: string): ParsedReviewHistory | null {
   let searchFrom = body.length;
   while (searchFrom > 0) {
     const markerIndex = body.lastIndexOf(REVIEW_HISTORY_MARKER_PREFIX, searchFrom - 1);
     if (markerIndex < 0) break;
-    const ledger = parseReviewHistoryAt(body, markerIndex);
-    if (ledger) return ledger;
+    const parsed = parseReviewHistoryAt(body, markerIndex);
+    if (parsed) return parsed;
     searchFrom = markerIndex;
   }
+  return null;
+}
+
+export function parseReviewHistory(body: string): ReviewHistoryLedger {
+  const parsed = latestParsedReviewHistory(body);
+  if (parsed) return parsed.ledger;
   return { cycles: [], totalCompletedCycles: 0 };
+}
+
+export function normalizeDurableReviewVerdictBody(body: string): string {
+  const normalized = body.replace(/\r\n?/g, "\n");
+  const parsed = latestParsedReviewHistory(normalized);
+  const withoutHistory = parsed
+    ? [normalized.slice(0, parsed.start).trimEnd(), normalized.slice(parsed.end).trimStart()]
+        .filter(Boolean)
+        .join("\n\n")
+    : normalized;
+  return withoutHistory
+    .split("\n")
+    .map((line) => line.trimEnd())
+    .join("\n")
+    .trim();
 }
 
 function reviewHistoryCycleKey(cycle: ReviewHistoryCycle): string {
