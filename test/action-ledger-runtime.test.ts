@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
@@ -34,6 +34,10 @@ import {
   type ActionEventInput,
   type ActionEventShardIdentity,
 } from "../dist/action-ledger.js";
+import {
+  prepareSafeWriteTarget,
+  tryAcquireUtf8FileLockNoFollow,
+} from "../dist/action-ledger-files.js";
 
 function tempRoot(): string {
   return fs.realpathSync.native(
@@ -45,6 +49,34 @@ function trustedChildRoot(root: string, name: string): string {
   const child = path.join(root, name);
   fs.mkdirSync(child);
   return fs.realpathSync.native(child);
+}
+
+async function waitForPath(filePath: string, timeoutMs = 2_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!fs.existsSync(filePath)) {
+    if (Date.now() >= deadline) throw new Error(`timed out waiting for ${filePath}`);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}
+
+async function childResult(
+  child: ChildProcess,
+): Promise<{ code: number | null; stdout: string; stderr: string }> {
+  let stdout = "";
+  let stderr = "";
+  child.stdout?.setEncoding("utf8");
+  child.stderr?.setEncoding("utf8");
+  child.stdout?.on("data", (chunk) => {
+    stdout += String(chunk);
+  });
+  child.stderr?.on("data", (chunk) => {
+    stderr += String(chunk);
+  });
+  const code = await new Promise<number | null>((resolve, reject) => {
+    child.once("error", reject);
+    child.once("exit", resolve);
+  });
+  return { code, stdout, stderr };
 }
 
 function createDirectoryLink(target: string, link: string): void {
@@ -143,6 +175,46 @@ function recordReview(
       fetchImpl: options.fetchImpl ?? (async () => new Response(null, { status: 204 })),
     },
   );
+}
+
+function recordReviewNumber(
+  root: string,
+  number: number,
+  env: NodeJS.ProcessEnv = workflowEnv(),
+  fetchImpl: typeof fetch = async () => new Response(null, { status: 204 }),
+) {
+  return recordWorkflowActionEvent(
+    root,
+    {
+      scope: "review.completed",
+      identity: { repository: "openclaw/openclaw", number, sourceRevision: `abc${number}` },
+      type: ACTION_EVENT_TYPES.reviewCompleted,
+      component: "review",
+      subject: {
+        repository: "openclaw/openclaw",
+        kind: "pull_request",
+        number,
+        sourceRevision: `abc${number}`,
+      },
+      action: {
+        name: "review",
+        status: "completed",
+        retryable: false,
+        mutation: false,
+      },
+      occurredAt: "2026-07-12T10:00:00.000Z",
+    },
+    {
+      env,
+      now: () => new Date("2026-07-12T10:01:00.000Z"),
+      fetchImpl,
+    },
+  );
+}
+
+function producerLockRelativePath(event: ActionEvent): string {
+  const identity = createHash("sha256").update(actionLedgerJson(event.producer)).digest("hex");
+  return path.join(".clawsweeper-repair", "action-events", "_locks", `${identity}.lock`);
 }
 
 function shardIdentity(event: ActionEvent): ActionEventShardIdentity {
@@ -809,6 +881,24 @@ test("workflow partition timestamps require real calendar dates", async () => {
   }
 });
 
+test("workflow partition-marker reads are bounded on replay and finalization", async () => {
+  const root = tempRoot();
+  const outputRoot = trustedChildRoot(root, "state");
+  const env = workflowEnv();
+  recordReview(root, env);
+  const markerDirectory = path.join(root, ".clawsweeper-repair", "action-events", "_partitions");
+  const [markerName] = fs.readdirSync(markerDirectory);
+  assert.ok(markerName);
+  const markerPath = path.join(markerDirectory, markerName);
+  fs.writeFileSync(markerPath, "2".repeat(65));
+
+  assert.throws(() => recordReview(root, env), /partition marker file exceeds 64 byte limit/);
+  await assert.rejects(
+    flushWorkflowActionEvents(root, { env, outputRoot }),
+    /partition marker file exceeds 64 byte limit/,
+  );
+});
+
 test("fresh-root shard replay preserves the first recorded-at metadata", async () => {
   const env = workflowEnv();
   const firstRoot = tempRoot();
@@ -932,6 +1022,87 @@ test("concurrent flushes converge on one immutable shard", async () => {
     fs.readFileSync(path.join(outputRoot, relativePath), "utf8").trim().split("\n").length,
     1,
   );
+});
+
+test("producer locks reclaim only old dead owners and never evict a live holder", async () => {
+  const staleRoot = tempRoot();
+  const staleEvent = recordReviewNumber(staleRoot, 41);
+  assert.ok(staleEvent);
+  const staleTarget = prepareSafeWriteTarget(
+    staleRoot,
+    producerLockRelativePath(staleEvent),
+    "test producer lock",
+  );
+  const staleContent = `${actionLedgerJson({
+    schema: "clawsweeper.action-ledger-producer-lock",
+    schema_version: 1,
+    pid: 2_147_483_647,
+    acquired_at_ms: 0,
+    nonce: "00000000-0000-4000-8000-000000000000",
+  })}\n`;
+  const releaseStale = tryAcquireUtf8FileLockNoFollow(staleTarget, staleContent);
+  assert.ok(releaseStale);
+  assert.ok(recordReviewNumber(staleRoot, 42));
+  assert.doesNotThrow(releaseStale);
+
+  const liveRoot = tempRoot();
+  const outputRoot = trustedChildRoot(liveRoot, "state");
+  const liveEvent = recordReviewNumber(liveRoot, 51);
+  assert.ok(liveEvent);
+  const readyPath = path.join(liveRoot, "holder-ready");
+  const filesModuleUrl = pathToFileURL(
+    path.join(process.cwd(), "dist", "action-ledger-files.js"),
+  ).href;
+  const ledgerModuleUrl = pathToFileURL(path.join(process.cwd(), "dist", "action-ledger.js")).href;
+  const holderScript = `
+import fs from "node:fs";
+const { prepareSafeWriteTarget, tryAcquireUtf8FileLockNoFollow } = await import(${JSON.stringify(
+    filesModuleUrl,
+  )});
+const { actionLedgerJson } = await import(${JSON.stringify(ledgerModuleUrl)});
+const target = prepareSafeWriteTarget(process.argv[1], process.argv[2], "live producer lock");
+const content = actionLedgerJson({
+  schema: "clawsweeper.action-ledger-producer-lock",
+  schema_version: 1,
+  pid: process.pid,
+  acquired_at_ms: Date.now() - 5 * 60_000 + 75,
+  nonce: "00000000-0000-4000-8000-000000000001"
+}) + "\\n";
+const release = tryAcquireUtf8FileLockNoFollow(target, content);
+if (!release) process.exit(3);
+fs.writeFileSync(process.argv[3], "ready\\n");
+await new Promise((resolve) => setTimeout(resolve, 150));
+if (!fs.existsSync(target.path) || fs.readFileSync(target.path, "utf8") !== content) process.exit(4);
+release();
+`;
+  const holder = spawn(
+    process.execPath,
+    [
+      "--input-type=module",
+      "-e",
+      holderScript,
+      liveRoot,
+      producerLockRelativePath(liveEvent),
+      readyPath,
+    ],
+    { stdio: ["ignore", "pipe", "pipe"] },
+  );
+  const holderDone = childResult(holder);
+  await waitForPath(readyPath);
+
+  const startedAt = Date.now();
+  assert.ok(recordReviewNumber(liveRoot, 52));
+  assert.ok(Date.now() - startedAt >= 100);
+  const result = await holderDone;
+  assert.equal(result.code, 0, result.stderr || result.stdout);
+
+  const paths = await flushWorkflowActionEvents(liveRoot, {
+    env: workflowEnv(),
+    outputRoot,
+  });
+  assert.equal(readOutputEvents(outputRoot, paths).length, 2);
+  assert.throws(() => recordReviewNumber(liveRoot, 53), /producer is already finalized/);
+  assert.equal(readOutputEvents(outputRoot, paths).length, 2);
 });
 
 test("finalization publishes local shards before a bounded projection drain and rejects late events", async () => {
@@ -1248,6 +1419,48 @@ test("exported CrabFleet posts share the four-request admission bound", async ()
   assert.equal(maxActive, CRABFLEET_PROJECTION_LIMITS.maxConcurrent);
 });
 
+test("queued direct CrabFleet posts validate before admission and reject without hanging", async () => {
+  const event = recordReview(tempRoot());
+  assert.ok(event);
+  const env = workflowEnv({
+    CLAWSWEEPER_CRABFLEET_AGENT_TOKEN: "agent-token",
+    CLAWSWEEPER_CRABFLEET_SESSION_ID: "session-1",
+    CLAWSWEEPER_CRABFLEET_TIMEOUT_MS: "1000",
+  });
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const active = Array.from({ length: CRABFLEET_PROJECTION_LIMITS.maxConcurrent }, () =>
+    postActionEventToCrabFleet(event, env, (async () => {
+      await gate;
+      return new Response(null, { status: 204 });
+    }) as typeof fetch),
+  );
+  await new Promise((resolve) => setImmediate(resolve));
+
+  const unhandled: unknown[] = [];
+  const onUnhandled = (error: unknown) => unhandled.push(error);
+  process.on("unhandledRejection", onUnhandled);
+  try {
+    await Promise.race([
+      assert.rejects(
+        postActionEventToCrabFleet({ ...event, event_id: "invalid" }, env),
+        /invalid action event identity|invalid action event schema/,
+      ),
+      new Promise<never>((_resolve, reject) =>
+        setTimeout(() => reject(new Error("invalid queued post hung")), 200),
+      ),
+    ]);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(unhandled, []);
+  } finally {
+    release();
+    await Promise.all(active);
+    process.off("unhandledRejection", onUnhandled);
+  }
+});
+
 test("CrabFleet queued projections snapshot endpoint and credentials", async () => {
   const root = tempRoot();
   const customBase = "https://fleet.example.test/staging";
@@ -1298,6 +1511,51 @@ test("CrabFleet queued projections snapshot endpoint and credentials", async () 
     url: `${customBase}/api/agent/interactive-sessions/original-session/events`,
     authorization: "Bearer original-token",
   });
+});
+
+test("workflow projection drains are scoped to one spool root", async () => {
+  const blockedRoot = tempRoot();
+  const blockedOutput = trustedChildRoot(blockedRoot, "state");
+  const readyRoot = tempRoot();
+  const readyOutput = trustedChildRoot(readyRoot, "state");
+  const blockedEnv = workflowEnv({
+    CLAWSWEEPER_CRABFLEET_AGENT_TOKEN: "agent-token",
+    CLAWSWEEPER_CRABFLEET_SESSION_ID: "session-1",
+    CLAWSWEEPER_CRABFLEET_TIMEOUT_MS: "60000",
+  });
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  assert.ok(
+    recordReviewNumber(blockedRoot, 71, blockedEnv, (async () => {
+      await gate;
+      return new Response(null, { status: 204 });
+    }) as typeof fetch),
+  );
+  assert.ok(recordReviewNumber(readyRoot, 72, workflowEnv()));
+
+  let timeout: NodeJS.Timeout | undefined;
+  try {
+    const readyPaths = await Promise.race([
+      flushWorkflowActionEvents(readyRoot, {
+        env: workflowEnv(),
+        outputRoot: readyOutput,
+      }),
+      new Promise<never>((_resolve, reject) => {
+        timeout = setTimeout(() => reject(new Error("independent root drain was blocked")), 250);
+      }),
+    ]);
+    assert.equal(readOutputEvents(readyOutput, readyPaths).length, 1);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+    release();
+  }
+  const blockedPaths = await flushWorkflowActionEvents(blockedRoot, {
+    env: blockedEnv,
+    outputRoot: blockedOutput,
+  });
+  assert.equal(readOutputEvents(blockedOutput, blockedPaths).length, 1);
 });
 
 test("CrabFleet timeouts keep unresolved fetches inside the concurrency bound", async () => {
@@ -1358,6 +1616,49 @@ test("CrabFleet timeouts keep unresolved fetches inside the concurrency bound", 
   assert.ok(recovered);
   await flushPendingCrabFleetPosts();
   assert.equal(recoveryStarted, 1);
+});
+
+test("queued direct CrabFleet posts terminate when every active cleanup is stuck", async () => {
+  const event = recordReview(tempRoot());
+  assert.ok(event);
+  const env = workflowEnv({
+    CLAWSWEEPER_CRABFLEET_AGENT_TOKEN: "agent-token",
+    CLAWSWEEPER_CRABFLEET_SESSION_ID: "session-1",
+    CLAWSWEEPER_CRABFLEET_TIMEOUT_MS: "10",
+  });
+  const cleanupResolvers: Array<() => void> = [];
+  const fetchImpl = (async () =>
+    ({
+      ok: true,
+      status: 204,
+      body: {
+        cancel: () =>
+          new Promise<void>((resolve) => {
+            cleanupResolvers.push(resolve);
+          }),
+      },
+    }) as unknown as Response) as typeof fetch;
+  const posts = Array.from({ length: CRABFLEET_PROJECTION_LIMITS.maxConcurrent + 1 }, () =>
+    postActionEventToCrabFleet(event, env, fetchImpl),
+  );
+  const settled = await Promise.race([
+    Promise.allSettled(posts),
+    new Promise<never>((_resolve, reject) =>
+      setTimeout(() => reject(new Error("queued direct posts did not terminate")), 500),
+    ),
+  ]);
+  assert.equal(
+    settled.every((result) => result.status === "rejected"),
+    true,
+  );
+  assert.match(
+    String((settled.at(-1) as PromiseRejectedResult).reason),
+    /blocked by .* unresolved CrabFleet requests|queue timed out/,
+  );
+  assert.equal(cleanupResolvers.length, CRABFLEET_PROJECTION_LIMITS.maxConcurrent);
+  for (const resolve of cleanupResolvers) resolve();
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
 });
 
 test("CrabFleet timeouts hold slots until response cleanup settles", async () => {
@@ -1577,6 +1878,41 @@ test("malformed CrabFleet projection configuration is non-fatal and durably reda
       /private-value|999999|fleet\.example\.test/,
       testCase.name,
     );
+  }
+});
+
+test("projection-failure producers seal only after their root-specific drain completes", async () => {
+  const root = tempRoot();
+  const outputRoot = trustedChildRoot(root, "state");
+  const invalidEnv = workflowEnv({
+    CLAWSWEEPER_CRABFLEET_AGENT_TOKEN: "agent-token",
+    CLAWSWEEPER_CRABFLEET_SESSION_ID: "session-1",
+    CLAWSWEEPER_CRABFLEET_URL: "https://evil.example",
+  });
+  const validEnv = workflowEnv({
+    CLAWSWEEPER_CRABFLEET_AGENT_TOKEN: "agent-token",
+    CLAWSWEEPER_CRABFLEET_SESSION_ID: "session-1",
+  });
+  const originalError = console.error;
+  console.error = () => undefined;
+  try {
+    assert.ok(recordReviewNumber(root, 61, invalidEnv));
+    assert.ok(
+      recordReviewNumber(root, 62, validEnv, async () => new Response(null, { status: 503 })),
+    );
+    const paths = await flushWorkflowActionEvents(root, { env: validEnv, outputRoot });
+    const events = readOutputEvents(outputRoot, paths);
+    assert.equal(
+      events.filter((event) => event.event_type === ACTION_EVENT_TYPES.reviewCompleted).length,
+      2,
+    );
+    assert.equal(
+      events.filter((event) => event.event_type === ACTION_EVENT_TYPES.projectionFailed).length,
+      2,
+    );
+    assert.deepEqual(await flushWorkflowActionEvents(root, { env: validEnv, outputRoot }), paths);
+  } finally {
+    console.error = originalError;
   }
 });
 
