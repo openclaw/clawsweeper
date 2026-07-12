@@ -19,10 +19,18 @@ type CommandEventOptions = {
   status: ActionEventStatus;
   reasonCode: ActionEventReasonCode;
   mutation: boolean;
+  component?: string;
   eventIdentity?: unknown;
   idempotencyIdentity?: unknown;
   state?: string;
   dispatchKind?: string;
+};
+
+export type CommandLifecycleInput = {
+  repository: string;
+  operationKey: string;
+  number?: number | null;
+  sourceRevision?: string | null;
 };
 
 type CommandEventChain = {
@@ -184,6 +192,79 @@ export function recordCommandFailure(command: LooseRecord, error: unknown): void
   });
 }
 
+export function recordCommandProgress(
+  input: CommandLifecycleInput,
+  options: {
+    state: string;
+    status: "completed" | "failed" | "skipped" | "unchanged";
+    mutation: boolean;
+    reasonCode?: ActionEventReasonCode;
+  },
+): void {
+  const command = lifecycleCommand(input);
+  const status = ACTION_EVENT_STATUSES[options.status];
+  recordCommandEvent(command, ACTION_EVENT_TYPES.commandProgress, {
+    status,
+    reasonCode:
+      options.reasonCode ??
+      (status === ACTION_EVENT_STATUSES.completed
+        ? ACTION_EVENT_REASON_CODES.completed
+        : status === ACTION_EVENT_STATUSES.unchanged
+          ? ACTION_EVENT_REASON_CODES.contentUnchanged
+          : status === ACTION_EVENT_STATUSES.skipped
+            ? ACTION_EVENT_REASON_CODES.notApplicable
+            : ACTION_EVENT_REASON_CODES.exception),
+    mutation: options.mutation,
+    component: "command_status",
+    idempotencyIdentity: options.mutation
+      ? {
+          operation: commandOperationIdentity(command),
+          mutation: "status_comment",
+          state: machineState(options.state, "unknown"),
+        }
+      : undefined,
+    state: options.state,
+  });
+}
+
+export function recordCommandRequeue(
+  input: CommandLifecycleInput,
+  options: { dispatchKey: string },
+): void {
+  const command = lifecycleCommand(input);
+  recordCommandEvent(command, ACTION_EVENT_TYPES.commandRequeue, {
+    status: ACTION_EVENT_STATUSES.requeued,
+    reasonCode: ACTION_EVENT_REASON_CODES.retryScheduled,
+    mutation: true,
+    component: "repair_requeue",
+    eventIdentity: { dispatchKey: options.dispatchKey },
+    idempotencyIdentity: {
+      operation: commandOperationIdentity(command),
+      mutation: "requeue_dispatch",
+      dispatchKey: options.dispatchKey,
+    },
+    state: "requeued",
+    dispatchKind: "dispatch_repair",
+  });
+}
+
+export function recordCommandLifecycleFailure(
+  input: CommandLifecycleInput,
+  options: { component: "command_status" | "repair_requeue"; error: unknown },
+): void {
+  const command = lifecycleCommand(input);
+  recordCommandEvent(command, ACTION_EVENT_TYPES.commandFailed, {
+    status: ACTION_EVENT_STATUSES.failed,
+    reasonCode: ACTION_EVENT_REASON_CODES.exception,
+    mutation: false,
+    component: options.component,
+    eventIdentity: {
+      errorKind: options.error instanceof Error ? options.error.name : typeof options.error,
+    },
+    state: "failed",
+  });
+}
+
 export async function flushCommandActionEvents(): Promise<string[]> {
   return flushWorkflowActionEvents(commandActionLedgerRoot());
 }
@@ -217,7 +298,7 @@ function recordCommandEvent(
       ? {}
       : { idempotencyIdentity: options.idempotencyIdentity }),
     type,
-    component: "comment_router",
+    component: options.component ?? "comment_router",
     subject: commandSubject(command, operationIdentity),
     action: {
       name: type,
@@ -259,7 +340,21 @@ function commandAttemptIdentity() {
       .toLowerCase(),
     runId: String(process.env.GITHUB_RUN_ID ?? "").trim(),
     runAttempt: positiveInteger(process.env.GITHUB_RUN_ATTEMPT),
+    action: String(process.env.GITHUB_ACTION ?? "process").trim(),
     invocation: String(process.env.CLAWSWEEPER_ACTION_LEDGER_INVOCATION ?? "default").trim(),
+  };
+}
+
+function lifecycleCommand(input: CommandLifecycleInput): LooseRecord {
+  const sourceRevision = machineRevision(input.sourceRevision);
+  return {
+    repo: input.repository,
+    issue_number: input.number ?? null,
+    idempotency_key: input.operationKey,
+    comment_body_sha256: sha256OrNull(input.sourceRevision),
+    expected_source_revision: sourceRevision,
+    status: "pending",
+    actions: [],
   };
 }
 

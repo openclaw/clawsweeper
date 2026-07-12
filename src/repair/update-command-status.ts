@@ -10,6 +10,12 @@ import {
   issueNumberFromUrl,
   writePayload,
 } from "./comment-router-utils.js";
+import {
+  flushCommandActionEvents,
+  recordCommandLifecycleFailure,
+  recordCommandProgress,
+  type CommandLifecycleInput,
+} from "./command-action-ledger.js";
 
 const PROGRESS_START = "<!-- clawsweeper-command-progress:start -->";
 const PROGRESS_END = "<!-- clawsweeper-command-progress:end -->";
@@ -28,20 +34,40 @@ type Options = {
 
 if (import.meta.url === `file://${process.argv[1]}`) {
   const options = parseOptions(process.argv.slice(2));
-  await updateCommandStatus(options);
+  await runCommandStatusUpdate(options);
 }
 
 async function updateCommandStatus(options: Options) {
-  if (!options.marker && !options.statusCommentId) return;
+  const lifecycle = commandStatusLifecycle(options);
+  if (!options.marker && !options.statusCommentId) {
+    recordCommandProgress(lifecycle, {
+      state: options.state,
+      status: "skipped",
+      mutation: false,
+    });
+    return;
+  }
   validateRepo(options.repo);
   validateItemNumber(options.itemNumber);
   const comment = await findCommandStatusComment(options);
   if (!comment?.id || typeof comment.body !== "string") {
     console.warn(`No command status comment found for ${options.repo}#${options.itemNumber}.`);
+    recordCommandProgress(lifecycle, {
+      state: options.state,
+      status: "skipped",
+      mutation: false,
+    });
     return;
   }
   const body = mergeCommandProgressSection(comment.body, options);
-  if (body === comment.body) return;
+  if (body === comment.body) {
+    recordCommandProgress(lifecycle, {
+      state: options.state,
+      status: "unchanged",
+      mutation: false,
+    });
+    return;
+  }
   const payload = writePayload(repoRoot(), `command-status-progress-${comment.id}`, { body });
   ghText([
     "api",
@@ -51,6 +77,48 @@ async function updateCommandStatus(options: Options) {
     "--input",
     payload,
   ]);
+  recordCommandProgress(lifecycle, {
+    state: options.state,
+    status: "completed",
+    mutation: true,
+  });
+}
+
+async function runCommandStatusUpdate(options: Options) {
+  let commandError: unknown = null;
+  try {
+    await updateCommandStatus(options);
+  } catch (error) {
+    commandError = error;
+    recordCommandLifecycleFailure(commandStatusLifecycle(options), {
+      component: "command_status",
+      error,
+    });
+  }
+  try {
+    await flushCommandActionEvents();
+  } catch (error) {
+    if (commandError) {
+      console.error(
+        `[action-ledger] failed to finalize command status receipts: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    } else {
+      commandError = error;
+    }
+  }
+  if (commandError) throw commandError;
+}
+
+function commandStatusLifecycle(options: Options): CommandLifecycleInput {
+  return {
+    repository: options.repo,
+    number: Number(options.itemNumber),
+    operationKey: `command-status:${
+      options.marker || options.statusCommentId || `${options.repo}#${options.itemNumber}`
+    }`,
+  };
 }
 
 async function findCommandStatusComment(options: Options): Promise<LooseRecord | null> {

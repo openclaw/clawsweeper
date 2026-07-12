@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import type { JsonValue, LooseRecord } from "./json-types.js";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -18,6 +19,12 @@ import { ghJson, ghText } from "./github-cli.js";
 import { sleepMs } from "./timing.js";
 import { REPAIR_CLUSTER_WORKFLOW } from "./constants.js";
 import { AUTOMATION_LIMITS } from "./limits.js";
+import {
+  flushCommandActionEvents,
+  recordCommandLifecycleFailure,
+  recordCommandRequeue,
+  type CommandLifecycleInput,
+} from "./command-action-ledger.js";
 
 const DEFAULT_REPO = currentProjectRepo();
 const DEFAULT_WORKFLOW = REPAIR_CLUSTER_WORKFLOW;
@@ -86,6 +93,13 @@ if (!execute) {
 const gateRestores: JsonValue[] = [];
 const headSha = currentHeadSha();
 const dispatchStartedAt = new Date(Date.now() - 5000).toISOString();
+const requeueLifecycle: CommandLifecycleInput = {
+  repository: repo,
+  operationKey: `repair-requeue:${repo}:${job.relativePath}:${mode}:${requestedRunId ?? "direct"}:${headSha}`,
+  sourceRevision: headSha,
+};
+const dispatchKey = requeueDispatchKey(requeueLifecycle);
+let commandError: unknown = null;
 
 try {
   if (openExecuteWindow && ["execute", "autonomous"].includes(mode)) {
@@ -99,10 +113,12 @@ try {
   summary.live_worker_capacity_before_dispatch = waitForCapacity
     ? waitForLiveWorkerCapacity({ repo, workflow, requested: 1, maxLiveWorkers })
     : assertLiveWorkerCapacity({ repo, workflow, requested: 1, maxLiveWorkers });
-  dispatchJob(job.relativePath, mode);
+  dispatchJob(job.relativePath, mode, dispatchKey);
+  recordCommandRequeue(requeueLifecycle, { dispatchKey });
   const observedRuns = waitForStartedRuns({ headSha, since: dispatchStartedAt, expectedCount: 1 });
 
   summary.status = "dispatched";
+  summary.dispatch_key = dispatchKey;
   summary.observed_runs = observedRuns.map((run: JsonValue) => ({
     run_id: String(run.databaseId),
     status: run.status,
@@ -111,11 +127,31 @@ try {
     url: run.url,
   }));
   console.log(JSON.stringify(summary, null, 2));
+} catch (error) {
+  commandError = error;
+  recordCommandLifecycleFailure(requeueLifecycle, {
+    component: "repair_requeue",
+    error,
+  });
 } finally {
   for (const gate of gateRestores.reverse()) {
     setGate(gate.name, gate.previous || "1");
   }
 }
+try {
+  await flushCommandActionEvents();
+} catch (error) {
+  if (commandError) {
+    console.error(
+      `[action-ledger] failed to finalize repair requeue receipts: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  } else {
+    commandError = error;
+  }
+}
+if (commandError) throw commandError;
 
 function resolveFromRunId(runId: string) {
   const fromLedger = readPublishedRunRecord(runId);
@@ -156,7 +192,7 @@ function findFirstFile(root: string, basename: string) {
   return null;
 }
 
-function dispatchJob(jobPath: string, mode: string) {
+function dispatchJob(jobPath: string, mode: string, dispatchKey: string) {
   const result = spawnSync(
     "gh",
     [
@@ -167,6 +203,8 @@ function dispatchJob(jobPath: string, mode: string) {
       repo,
       "-f",
       `job=${jobPath}`,
+      "-f",
+      `dispatch_key=${dispatchKey}`,
       "-f",
       `mode=${mode}`,
       "-f",
@@ -183,6 +221,19 @@ function dispatchJob(jobPath: string, mode: string) {
   if (result.status !== 0) {
     throw new Error(`failed to dispatch ${jobPath}: ${result.stderr || result.stdout}`);
   }
+}
+
+function requeueDispatchKey(input: CommandLifecycleInput) {
+  return `requeue-${createHash("sha256")
+    .update(
+      JSON.stringify({
+        repository: input.repository,
+        operationKey: input.operationKey,
+        sourceRevision: input.sourceRevision ?? null,
+      }),
+    )
+    .digest("hex")
+    .slice(0, 16)}`;
 }
 
 function waitForStartedRuns({ expectedCount, headSha, since }: LooseRecord) {
