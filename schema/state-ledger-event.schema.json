@@ -16,6 +16,7 @@
     "idempotency_key_sha256",
     "semantic_sha256",
     "occurred_at",
+    "occurred_at_source",
     "recorded_at",
     "event_type",
     "producer",
@@ -71,6 +72,10 @@
     "occurred_at": {
       "type": "string",
       "format": "date-time"
+    },
+    "occurred_at_source": {
+      "enum": ["source", "generated"],
+      "description": "Whether occurred_at came from a source event or writer-generated clock metadata."
     },
     "recorded_at": {
       "type": "string",
@@ -603,7 +608,10 @@
       "type": "string",
       "minLength": 66,
       "maxLength": 193,
-      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.+\\-]{0,127}:[a-f0-9]{64}$"
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.+\\-]{0,127}:[a-f0-9]{64}$",
+      "not": {
+        "$ref": "#/$defs/confidentialIdentifier"
+      }
     },
     "repository": {
       "type": "string",
@@ -653,6 +661,12 @@
           "pattern": "%[0-9A-Fa-f]{2}"
         },
         {
+          "pattern": "(?:^|[^A-Za-z0-9+.-])[Ff][Ii][Ll][Ee]:[\\\\/]"
+        },
+        {
+          "pattern": "(?:^|[^A-Za-z0-9+.-])[A-Za-z][A-Za-z0-9+.-]*://[^\\s/@]+@"
+        },
+        {
           "pattern": "BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY"
         },
         {
@@ -665,19 +679,19 @@
           "pattern": "(?:[Bb][Ee][Aa][Rr][Ee][Rr]|[Aa][Uu][Tt][Hh][Oo][Rr][Ii][Zz][Aa][Tt][Ii][Oo][Nn]|[Aa][Pp][Ii][_-]?(?:[Kk][Ee][Yy]|[Tt][Oo][Kk][Ee][Nn])|[Aa][Cc][Cc][Ee][Ss][Ss][_-]?[Tt][Oo][Kk][Ee][Nn]|[Cc][Ll][Ii][Ee][Nn][Tt][_-]?[Ss][Ee][Cc][Rr][Ee][Tt]|[Cc][Ll][Oo][Uu][Dd][Ff][Ll][Aa][Rr][Ee][_-]?(?:[Aa][Pp][Ii][_-]?)?(?:[Kk][Ee][Yy]|[Tt][Oo][Kk][Ee][Nn]))(?:\\s+|%20|\\s*[:=_-]\\s*)[A-Za-z0-9._~+\\/-]{16,}={0,2}"
         },
         {
-          "pattern": "[Bb][Aa][Ss][Ii][Cc](?:\\s+|%20)[A-Za-z0-9+/]{8,}={0,2}"
+          "pattern": "[Bb][Aa][Ss][Ii][Cc](?:\\s+|%20|\\s*:\\s*)[A-Za-z0-9+/]{8,}={0,2}"
         },
         {
           "pattern": "[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}"
         },
         {
-          "pattern": "(?:^|[/:@])(?:localhost|(?:[A-Za-z0-9-]+\\.)+(?:local|localhost|internal|corp|lan|home(?:\\.arpa)?)|(?:internal|intranet)\\.(?:[A-Za-z0-9-]+\\.)*[A-Za-z0-9-]+)\\.?(?:$|[/:])"
+          "pattern": "(?:^|[/:@])(?:[Ll][Oo][Cc][Aa][Ll][Hh][Oo][Ss][Tt]|(?:[A-Za-z0-9-]+\\.)+(?:[Ll][Oo][Cc][Aa][Ll]|[Ll][Oo][Cc][Aa][Ll][Hh][Oo][Ss][Tt]|[Ii][Nn][Tt][Ee][Rr][Nn][Aa][Ll]|[Cc][Oo][Rr][Pp]|[Ll][Aa][Nn]|[Hh][Oo][Mm][Ee](?:\\.[Aa][Rr][Pp][Aa])?)|(?:[Ii][Nn][Tt][Ee][Rr][Nn][Aa][Ll]|[Ii][Nn][Tt][Rr][Aa][Nn][Ee][Tt])\\.(?:[A-Za-z0-9-]+\\.)*[A-Za-z0-9-]+)\\.?(?:$|[/:])"
         },
         {
           "pattern": "(?:^|[^0-9])(?:10(?:\\.[0-9]{1,3}){3}|127(?:\\.[0-9]{1,3}){3}|169\\.254(?:\\.[0-9]{1,3}){2}|192\\.168(?:\\.[0-9]{1,3}){2}|172\\.(?:1[6-9]|2[0-9]|3[01])(?:\\.[0-9]{1,3}){2})(?:$|[^0-9])"
         },
         {
-          "pattern": "(?:^|[\\[/:@])(?:(?:::1)|(?:0{1,4}:){7}0*1|(?:(?:::)(?:[Ff]{4}:)?|(?:0{1,4}:){5}[Ff]{4}:|(?:0{1,4}:){6})7[fF][0-9A-Fa-f]{2}:[0-9A-Fa-f]{1,4}|(?:[Ff][CcDd][0-9A-Fa-f]{2}|[Ff][Ee][89AaBb][0-9A-Fa-f]):[0-9A-Fa-f:]+)(?:\\]|$|[/:])"
+          "pattern": "(?:^|[\\[/:@])(?:(?:::)(?:0{1,4}:){0,6}0*1|(?:0{1,4}:){1,6}:(?:0{1,4}:){0,6}0*1|(?:0{1,4}:){7}0*1|(?:(?:::)(?:[Ff]{4}:)?|(?:0{1,4}:){5}[Ff]{4}:|(?:0{1,4}:){6})7[fF][0-9A-Fa-f]{2}:[0-9A-Fa-f]{1,4}|(?:[Ff][CcDd][0-9A-Fa-f]{2}|[Ff][Ee][89AaBb][0-9A-Fa-f]):[0-9A-Fa-f:]+)(?:\\]|$|[/:])"
         }
       ]
     },

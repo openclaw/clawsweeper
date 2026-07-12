@@ -13,6 +13,7 @@ import {
 } from "./action-ledger-files.js";
 import {
   ACTION_EVENT_TYPES,
+  actionEventId,
   actionEventShardContentReplayEquivalent,
   actionAttemptId,
   actionEventShardRelativePath,
@@ -307,6 +308,9 @@ export async function postActionEventToCrabFleet(
   env: NodeJS.ProcessEnv = process.env,
   fetchImpl: typeof fetch = fetch,
 ): Promise<void> {
+  if (actionEventId(event.subject.repository, event.event_key) !== event.event_id) {
+    throw new Error("CrabFleet action event identity is invalid");
+  }
   const sessionId = String(env.CLAWSWEEPER_CRABFLEET_SESSION_ID ?? "").trim();
   const token = String(env.CLAWSWEEPER_CRABFLEET_AGENT_TOKEN ?? "").trim();
   if (!sessionId || !token) return;
@@ -497,65 +501,75 @@ function queueCrabFleetEvent(
 
 function recordCrabFleetProjectionFailure(root: string, event: ActionEvent): void {
   try {
-    writeActionEvent(root, {
-      eventKey: actionEventKey("projection.failed", {
-        sourceEventId: event.event_id,
-        destination: "crabfleet",
-      }),
-      operationId: event.operation_id,
-      attemptId: event.attempt_id,
-      parentEventId: event.event_id,
-      phaseSeq: event.phase_seq === Number.MAX_SAFE_INTEGER ? event.phase_seq : event.phase_seq + 1,
-      idempotencyKeySha256: actionIdempotencyKey({
-        sourceEventId: event.event_id,
-        destination: "crabfleet",
-      }),
-      type: ACTION_EVENT_TYPES.projectionFailed,
-      producer: {
-        repository: event.producer.repository,
-        sha: event.producer.sha,
-        workflow: event.producer.workflow,
-        job: event.producer.job,
-        runId: event.producer.run_id,
-        runAttempt: event.producer.run_attempt,
-        component: event.producer.component,
+    writeActionEvent(
+      root,
+      {
+        eventKey: actionEventKey("projection.failed", {
+          sourceEventId: event.event_id,
+          destination: "crabfleet",
+        }),
+        operationId: event.operation_id,
+        attemptId: event.attempt_id,
+        parentEventId: event.event_id,
+        phaseSeq:
+          event.phase_seq === Number.MAX_SAFE_INTEGER ? event.phase_seq : event.phase_seq + 1,
+        idempotencyKeySha256: actionIdempotencyKey({
+          sourceEventId: event.event_id,
+          destination: "crabfleet",
+        }),
+        type: ACTION_EVENT_TYPES.projectionFailed,
+        producer: {
+          repository: event.producer.repository,
+          sha: event.producer.sha,
+          workflow: event.producer.workflow,
+          job: event.producer.job,
+          runId: event.producer.run_id,
+          runAttempt: event.producer.run_attempt,
+          component: event.producer.component,
+        },
+        subject: {
+          repository: event.subject.repository,
+          kind: event.subject.kind,
+          ...(event.subject.subject_id === undefined
+            ? {}
+            : { subjectId: event.subject.subject_id }),
+          ...(event.subject.number === undefined ? {} : { number: event.subject.number }),
+          ...(event.subject.cluster_id === undefined
+            ? {}
+            : { clusterId: event.subject.cluster_id }),
+          ...(event.subject.source_revision === undefined
+            ? {}
+            : { sourceRevision: event.subject.source_revision }),
+          ...(event.subject.record_path === undefined
+            ? {}
+            : { recordPath: event.subject.record_path }),
+        },
+        action: {
+          name: "crabfleet_projection",
+          status: "failed",
+          reasonCode: "append_failed",
+          retryable: true,
+          mutation: false,
+        },
+        learning: {
+          category: "delivery",
+          signal: "retry_from_durable_ledger",
+          ruleId: "crabfleet_projection_failed",
+          confidence: 1,
+        },
+        attributes: {
+          phase: "live_projection",
+        },
+        privacy: {
+          classification: "internal",
+          redactionVersion: "v1",
+          fieldsDropped: ["token", "response_body", "error_detail"],
+        },
       },
-      subject: {
-        repository: event.subject.repository,
-        kind: event.subject.kind,
-        ...(event.subject.subject_id === undefined ? {} : { subjectId: event.subject.subject_id }),
-        ...(event.subject.number === undefined ? {} : { number: event.subject.number }),
-        ...(event.subject.cluster_id === undefined ? {} : { clusterId: event.subject.cluster_id }),
-        ...(event.subject.source_revision === undefined
-          ? {}
-          : { sourceRevision: event.subject.source_revision }),
-        ...(event.subject.record_path === undefined
-          ? {}
-          : { recordPath: event.subject.record_path }),
+      {
+        generatedOccurredAt: event.recorded_at,
       },
-      action: {
-        name: "crabfleet_projection",
-        status: "failed",
-        reasonCode: "append_failed",
-        retryable: true,
-        mutation: false,
-      },
-      learning: {
-        category: "delivery",
-        signal: "retry_from_durable_ledger",
-        ruleId: "crabfleet_projection_failed",
-        confidence: 1,
-      },
-      attributes: {
-        phase: "live_projection",
-      },
-      privacy: {
-        classification: "internal",
-        redactionVersion: "v1",
-        fieldsDropped: ["token", "response_body", "error_detail"],
-      },
-      occurredAt: event.recorded_at,
-    });
+    );
   } catch (error) {
     console.error(
       `[action-ledger] failed to record CrabFleet projection failure: ${

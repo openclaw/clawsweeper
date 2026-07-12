@@ -378,15 +378,17 @@ export const ACTION_EVENT_CONFIDENTIAL_IDENTIFIER_PATTERN_SOURCES = [
   "\\\\[Uu][Ss][Ee][Rr][Ss]\\\\",
   "(?:^|[\\\\/])[A-Za-z]:[\\\\/]",
   "%[0-9A-Fa-f]{2}",
+  "(?:^|[^A-Za-z0-9+.-])[Ff][Ii][Ll][Ee]:[\\\\/]",
+  "(?:^|[^A-Za-z0-9+.-])[A-Za-z][A-Za-z0-9+.-]*://[^\\s/@]+@",
   "BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY",
   "(?:[Gg][Hh][PpOoUuSsRr]_[A-Za-z0-9]{16,}|[Gg][Ii][Tt][Hh][Uu][Bb]_[Pp][Aa][Tt]_[A-Za-z0-9_]{16,}|[Ss][Kk]-[A-Za-z0-9_-]{16,})",
   "eyJ[A-Za-z0-9_-]{5,}\\.eyJ[A-Za-z0-9_-]{5,}\\.[A-Za-z0-9_-]{16,}",
   "(?:[Bb][Ee][Aa][Rr][Ee][Rr]|[Aa][Uu][Tt][Hh][Oo][Rr][Ii][Zz][Aa][Tt][Ii][Oo][Nn]|[Aa][Pp][Ii][_-]?(?:[Kk][Ee][Yy]|[Tt][Oo][Kk][Ee][Nn])|[Aa][Cc][Cc][Ee][Ss][Ss][_-]?[Tt][Oo][Kk][Ee][Nn]|[Cc][Ll][Ii][Ee][Nn][Tt][_-]?[Ss][Ee][Cc][Rr][Ee][Tt]|[Cc][Ll][Oo][Uu][Dd][Ff][Ll][Aa][Rr][Ee][_-]?(?:[Aa][Pp][Ii][_-]?)?(?:[Kk][Ee][Yy]|[Tt][Oo][Kk][Ee][Nn]))(?:\\s+|%20|\\s*[:=_-]\\s*)[A-Za-z0-9._~+\\/-]{16,}={0,2}",
-  "[Bb][Aa][Ss][Ii][Cc](?:\\s+|%20)[A-Za-z0-9+/]{8,}={0,2}",
+  "[Bb][Aa][Ss][Ii][Cc](?:\\s+|%20|\\s*:\\s*)[A-Za-z0-9+/]{8,}={0,2}",
   "[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}",
-  "(?:^|[/:@])(?:localhost|(?:[A-Za-z0-9-]+\\.)+(?:local|localhost|internal|corp|lan|home(?:\\.arpa)?)|(?:internal|intranet)\\.(?:[A-Za-z0-9-]+\\.)*[A-Za-z0-9-]+)\\.?(?:$|[/:])",
+  "(?:^|[/:@])(?:[Ll][Oo][Cc][Aa][Ll][Hh][Oo][Ss][Tt]|(?:[A-Za-z0-9-]+\\.)+(?:[Ll][Oo][Cc][Aa][Ll]|[Ll][Oo][Cc][Aa][Ll][Hh][Oo][Ss][Tt]|[Ii][Nn][Tt][Ee][Rr][Nn][Aa][Ll]|[Cc][Oo][Rr][Pp]|[Ll][Aa][Nn]|[Hh][Oo][Mm][Ee](?:\\.[Aa][Rr][Pp][Aa])?)|(?:[Ii][Nn][Tt][Ee][Rr][Nn][Aa][Ll]|[Ii][Nn][Tt][Rr][Aa][Nn][Ee][Tt])\\.(?:[A-Za-z0-9-]+\\.)*[A-Za-z0-9-]+)\\.?(?:$|[/:])",
   "(?:^|[^0-9])(?:10(?:\\.[0-9]{1,3}){3}|127(?:\\.[0-9]{1,3}){3}|169\\.254(?:\\.[0-9]{1,3}){2}|192\\.168(?:\\.[0-9]{1,3}){2}|172\\.(?:1[6-9]|2[0-9]|3[01])(?:\\.[0-9]{1,3}){2})(?:$|[^0-9])",
-  "(?:^|[\\[/:@])(?:(?:::1)|(?:0{1,4}:){7}0*1|(?:(?:::)(?:[Ff]{4}:)?|(?:0{1,4}:){5}[Ff]{4}:|(?:0{1,4}:){6})7[fF][0-9A-Fa-f]{2}:[0-9A-Fa-f]{1,4}|(?:[Ff][CcDd][0-9A-Fa-f]{2}|[Ff][Ee][89AaBb][0-9A-Fa-f]):[0-9A-Fa-f:]+)(?:\\]|$|[/:])",
+  "(?:^|[\\[/:@])(?:(?:::)(?:0{1,4}:){0,6}0*1|(?:0{1,4}:){1,6}:(?:0{1,4}:){0,6}0*1|(?:0{1,4}:){7}0*1|(?:(?:::)(?:[Ff]{4}:)?|(?:0{1,4}:){5}[Ff]{4}:|(?:0{1,4}:){6})7[fF][0-9A-Fa-f]{2}:[0-9A-Fa-f]{1,4}|(?:[Ff][CcDd][0-9A-Fa-f]{2}|[Ff][Ee][89AaBb][0-9A-Fa-f]):[0-9A-Fa-f:]+)(?:\\]|$|[/:])",
 ] as const;
 
 const POSITIVE_INTEGER_ATTRIBUTE_KEYS = new Set<ActionEventAttributeKey>([
@@ -535,6 +537,8 @@ export type ActionEventPrivacy = {
   fieldsDropped: readonly string[];
 };
 
+export type ActionEventOccurrenceSource = "source" | "generated";
+
 export type ActionEventInput = {
   eventKey: string;
   operationId: string;
@@ -565,6 +569,7 @@ export type ActionEvent = {
   idempotency_key_sha256: string;
   semantic_sha256: string;
   occurred_at: string;
+  occurred_at_source: ActionEventOccurrenceSource;
   recorded_at: string;
   event_type: string;
   producer: {
@@ -786,14 +791,17 @@ export function actionEventShardRelativePath(
 
 export function createActionEvent(
   input: ActionEventInput,
-  options: { now?: () => Date } = {},
+  options: { now?: () => Date; generatedOccurredAt?: string } = {},
 ): ActionEvent {
   const semantic = actionEventSemanticValue(input);
   const semanticSha256 = sha256(actionLedgerJson(semantic));
   const recordedAt = (options.now ?? (() => new Date()))().toISOString();
+  const occurredAtSource: ActionEventOccurrenceSource = input.occurredAt ? "source" : "generated";
   const occurredAt = input.occurredAt
     ? requiredTimestamp(input.occurredAt, "action event occurredAt")
-    : recordedAt;
+    : options.generatedOccurredAt
+      ? requiredTimestamp(options.generatedOccurredAt, "generated action event occurredAt")
+      : recordedAt;
   const eventId = actionEventId(semantic.subject.repository, input.eventKey);
   if (semantic.parent_event_id === eventId) {
     throw new Error("action event cannot reference itself as its parent");
@@ -805,6 +813,7 @@ export function createActionEvent(
     event_key: requiredEventKey(input.eventKey),
     semantic_sha256: semanticSha256,
     occurred_at: occurredAt,
+    occurred_at_source: occurredAtSource,
     recorded_at: recordedAt,
     ...semantic,
   }) as ActionEvent;
@@ -813,10 +822,9 @@ export function createActionEvent(
 export function writeActionEvent(
   root: string,
   input: ActionEventInput,
-  options: { now?: () => Date } = {},
+  options: { now?: () => Date; generatedOccurredAt?: string } = {},
 ): ActionEventWriteResult {
   const candidate = createActionEvent(input, options);
-  const occurredAtWasGenerated = !input.occurredAt;
   const relativePath = actionEventSpoolRelativePath(
     candidate.subject.repository,
     candidate.event_id,
@@ -826,20 +834,14 @@ export function writeActionEvent(
 
   const existing = readActionEventIfExists(target);
   if (existing) {
-    return compareExistingActionEvent(
-      eventPath,
-      relativePath,
-      existing,
-      candidate,
-      occurredAtWasGenerated,
-    );
+    return compareExistingActionEvent(eventPath, relativePath, existing, candidate);
   }
 
   const content = `${actionLedgerJson(candidate)}\n`;
   const status = writeCreateOnlyFile(target, content, () => {
     const raced = readActionEventIfExists(target);
     if (!raced) throw new Error(`action event appeared without readable content: ${eventPath}`);
-    compareExistingActionEvent(eventPath, relativePath, raced, candidate, occurredAtWasGenerated);
+    compareExistingActionEvent(eventPath, relativePath, raced, candidate);
   });
   return {
     status,
@@ -1048,6 +1050,7 @@ function actionEventSemanticValue(input: ActionEventInput) {
     | "event_key"
     | "semantic_sha256"
     | "occurred_at"
+    | "occurred_at_source"
     | "recorded_at"
   >;
 }
@@ -1302,10 +1305,16 @@ function validateShardProducer(
 }
 
 function compareEvents(left: ActionEvent, right: ActionEvent): number {
-  return (
-    compareActionEventTimestamps(left.occurred_at, right.occurred_at) ||
-    compareLedgerText(left.event_id, right.event_id)
-  );
+  if (left.occurred_at_source === "source" && right.occurred_at_source === "source") {
+    return (
+      compareActionEventTimestamps(left.occurred_at, right.occurred_at) ||
+      compareLedgerText(left.event_id, right.event_id)
+    );
+  }
+  if (left.occurred_at_source !== right.occurred_at_source) {
+    return left.occurred_at_source === "source" ? -1 : 1;
+  }
+  return compareLedgerText(left.event_id, right.event_id);
 }
 
 export function sortActionEventsCausally(events: readonly ActionEvent[]): ActionEvent[] {
@@ -1417,14 +1426,8 @@ function compareExistingActionEvent(
   relativePath: string,
   existing: ActionEvent,
   candidate: ActionEvent,
-  occurredAtWasGenerated = false,
 ): ActionEventWriteResult {
-  if (
-    existing.event_id === candidate.event_id &&
-    existing.event_key === candidate.event_key &&
-    existing.semantic_sha256 === candidate.semantic_sha256 &&
-    (occurredAtWasGenerated || existing.occurred_at === candidate.occurred_at)
-  ) {
+  if (actionEventReplayJson(existing) === actionEventReplayJson(candidate)) {
     return { status: "unchanged", event: existing, path: eventPath, relativePath };
   }
   throw new ActionEventConflictError({
@@ -1461,6 +1464,10 @@ function compareExistingShard(
 }
 
 export function actionEventReplayJson(event: ActionEvent): string {
+  if (event.occurred_at_source === "generated") {
+    const { occurred_at: _occurredAt, recorded_at: _recordedAt, ...generatedReplayValue } = event;
+    return actionLedgerJson(generatedReplayValue);
+  }
   const { recorded_at: _recordedAt, ...replayValue } = event;
   return actionLedgerJson(replayValue);
 }
@@ -1524,6 +1531,7 @@ function validateActionEvent(value: unknown, filePath: string): ActionEvent {
     typeof event.phase_seq !== "number" ||
     typeof event.idempotency_key_sha256 !== "string" ||
     typeof event.semantic_sha256 !== "string" ||
+    typeof event.occurred_at_source !== "string" ||
     !event.producer ||
     !event.subject ||
     !event.action ||
@@ -1607,6 +1615,7 @@ function validateActionEvent(value: unknown, filePath: string): ActionEvent {
     event_key: event.event_key,
     semantic_sha256: event.semantic_sha256,
     occurred_at: requiredTimestamp(String(event.occurred_at ?? ""), "action event occurred_at"),
+    occurred_at_source: requiredOccurrenceSource(event.occurred_at_source),
     recorded_at: requiredTimestamp(String(event.recorded_at ?? ""), "action event recorded_at"),
     ...semantic,
   }) as ActionEvent;
@@ -1693,6 +1702,9 @@ function eventScope(value: string): string {
   if (!/^[A-Za-z0-9][A-Za-z0-9_.+-]*$/.test(normalized)) {
     throw new Error("action event scope must be machine-readable text");
   }
+  if (containsConfidentialIdentifier(normalized)) {
+    throw new Error("action event scope contains a confidential identifier");
+  }
   return normalized;
 }
 
@@ -1701,7 +1713,15 @@ function requiredEventKey(value: string): string {
   if (!/^[A-Za-z0-9][A-Za-z0-9_.+-]{0,127}:[a-f0-9]{64}$/.test(normalized)) {
     throw new Error("action event key must be generated from a machine-readable scope and digest");
   }
+  eventScope(normalized.slice(0, normalized.indexOf(":")));
   return normalized;
+}
+
+function requiredOccurrenceSource(value: string): ActionEventOccurrenceSource {
+  if (value !== "source" && value !== "generated") {
+    throw new Error("action event occurred_at_source must be source or generated");
+  }
+  return value;
 }
 
 function requiredText(value: string, label: string): string {
