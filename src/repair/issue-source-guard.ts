@@ -101,6 +101,7 @@ function isClawSweeperAdvisoryLabel(label: string): boolean {
   return (
     /^(?:status|rating|proof|merge-risk|impact|issue-rating):/.test(label) ||
     /^p[0-3]$/.test(label) ||
+    label === "maturity:stable" ||
     label === "feature: ✨ showcase" ||
     label === "good first issue" ||
     label === "mantis: telegram-visible-proof" ||
