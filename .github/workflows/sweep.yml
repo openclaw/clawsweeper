@@ -2452,6 +2452,7 @@ jobs:
           if [ "$selected_comment_exit_code" -ne 0 ]; then
             exit "$selected_comment_exit_code"
           fi
+          echo "sync_succeeded=true" >> "$GITHUB_OUTPUT"
           synced_count="$(pnpm run --silent workflow -- count-actions --report apply-report.json --action review_comment_synced)"
           pnpm run status -- \
             --target-repo "$TARGET_REPO" \
@@ -2524,7 +2525,7 @@ jobs:
             --message "chore: append selected review comment action ledger"
 
       - name: Dispatch selected safe close proposals to isolated apply
-        if: ${{ success() && steps.target-write-token.outputs.token != '' && github.event.inputs.apply_after_review == 'true' }}
+        if: ${{ always() && !cancelled() && steps.sync-selected-review-comments.outputs.sync_succeeded == 'true' && steps.target-write-token.outputs.token != '' && github.event.inputs.apply_after_review == 'true' }}
         env:
           GH_TOKEN: ${{ github.token }}
           TARGET_REPO: ${{ needs.plan.outputs.target_repo }}
@@ -2960,6 +2961,7 @@ jobs:
     outputs:
       target_repo: ${{ steps.target.outputs.target_repo }}
       artifact_name: ${{ steps.proof-artifact.outputs.name }}
+      proof_ready: ${{ steps.primary-proof-result.outputs.ready }}
       action_ledger_artifact_name: ${{ steps.publishable-action-ledger.outputs.name }}
     steps:
       - uses: actions/checkout@v7
@@ -3112,6 +3114,11 @@ jobs:
             --report-path .artifacts/apply-proof/apply-report.json \
             --progress-every 1
 
+      - name: Export primary apply proof result
+        id: primary-proof-result
+        if: ${{ success() && (steps.proof-select.outputs.item_numbers == '' || steps.generate-apply-proofs.outcome == 'success') }}
+        run: echo "ready=true" >> "$GITHUB_OUTPUT"
+
       - name: Finalize apply proof action ledger
         if: ${{ always() && steps.proof-select.outputs.item_numbers != '' }}
         env:
@@ -3224,7 +3231,7 @@ jobs:
   apply-existing:
     name: Apply close proposals
     needs: [apply-proof, publish-apply-proof-action-ledger]
-    if: ${{ ((github.event_name == 'workflow_dispatch' && github.event.inputs.apply_existing == 'true') || (github.event_name == 'schedule' && (github.event.schedule == '3 * * * *' || github.event.schedule == '18 * * * *' || github.event.schedule == '33 * * * *' || github.event.schedule == '48 * * * *' || github.event.schedule == '8,23,38,53 * * * *' || github.event.schedule == '6,21,36,51 * * * *'))) && !(github.event_name == 'repository_dispatch' && github.event.client_payload.target_repo == 'openclaw/clawhub' && vars.CLAWSWEEPER_ENABLE_CLAWHUB != '1') && !(github.event_name == 'schedule' && github.event.schedule == '8,23,38,53 * * * *' && vars.CLAWSWEEPER_ENABLE_CLAWHUB != '1') }}
+    if: ${{ always() && !cancelled() && needs.apply-proof.outputs.proof_ready == 'true' && ((github.event_name == 'workflow_dispatch' && github.event.inputs.apply_existing == 'true') || (github.event_name == 'schedule' && (github.event.schedule == '3 * * * *' || github.event.schedule == '18 * * * *' || github.event.schedule == '33 * * * *' || github.event.schedule == '48 * * * *' || github.event.schedule == '8,23,38,53 * * * *' || github.event.schedule == '6,21,36,51 * * * *'))) && !(github.event_name == 'repository_dispatch' && github.event.client_payload.target_repo == 'openclaw/clawhub' && vars.CLAWSWEEPER_ENABLE_CLAWHUB != '1') && !(github.event_name == 'schedule' && github.event.schedule == '8,23,38,53 * * * *' && vars.CLAWSWEEPER_ENABLE_CLAWHUB != '1') }}
     runs-on: ubuntu-latest
     timeout-minutes: 360
     concurrency:

@@ -100,11 +100,14 @@ checkpoint, and status-only commits are intentionally omitted.
   creation and cleanup independently, bound retry dispatches to review and
   decision digests, aggregated every exact-attempt mutation outcome, and made
   pre-spawn budget exhaustion a definite no-mutation yield. Interruption
-  recovery now appends causal, collision-free terminal phases; selected-comment
-  and failed-review retry lanes finalize interrupted receipts before
-  publication; scheduled retry failures remain failed after cleanup; active
-  coverage-proof yields cannot become kept-open terminals; and review mutation,
-  retryability, and cancellation status survive finalization.
+  recovery now terminalizes exact open mutation receipts before their enclosing
+  item and batch summaries with causal, collision-free phases; immutable ledger
+  finalization and publisher failures remain visible without suppressing valid
+  isolated apply dispatch or proof-backed apply work; selected-comment and
+  failed-review retry lanes finalize interrupted receipts before publication;
+  scheduled retry failures remain failed after cleanup; active coverage-proof
+  yields cannot become kept-open terminals; and review mutation, retryability,
+  and cancellation status survive finalization.
 - Recovered exact-review intake from Cloudflare SQLite value-size exhaustion by normalizing delivery receipts and queue items into independently bounded rows, committing dedupe and admission atomically, restoring the seven-day idempotency window, and migrating live queue state through a transaction-coupled, generation-aware, size-bounded rollback bridge that retains the complete active dedupe set and safely reimports rollback-era changes. Thanks @brokemac79.
 - Hardened action-ledger privacy, import identity and causal validation,
   multi-shard capacity, crash-safe completion publication, portable paths,

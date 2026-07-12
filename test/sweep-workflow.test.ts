@@ -577,10 +577,18 @@ test("publish workflow dispatches immediate apply through the isolated lane", ()
   );
   const dispatchEnd = publishJob.indexOf("\n      - ", dispatchStart + 1);
   const dispatchStep = publishJob.slice(dispatchStart, dispatchEnd);
+  const dispatchCondition = dispatchStep.match(/^\s+if: (.+)$/m)?.[1] ?? "";
 
   assert.doesNotMatch(publishJob, /setup-codex/);
   assert.match(publishJob, /name: Dispatch selected safe close proposals to isolated apply/);
   assert.doesNotMatch(dispatchStep, /pnpm run apply-decisions/);
+  assert.match(
+    dispatchCondition,
+    /^\$\{\{ always\(\) && !cancelled\(\) && steps\.sync-selected-review-comments\.outputs\.sync_succeeded == 'true'/,
+  );
+  assert.doesNotMatch(dispatchCondition, /sync-selected-review-comments\.outcome/);
+  assert.doesNotMatch(dispatchCondition, /finalize-selected-review-comment-action-ledger/);
+  assert.doesNotMatch(dispatchCondition, /publish-selected-review-comment-action-ledger/);
   assert.match(dispatchStep, /gh workflow run sweep\.yml/);
   assert.match(dispatchStep, /-f apply_existing=true/);
   assert.match(dispatchStep, /-f apply_item_numbers="\$item_numbers"/);
@@ -604,8 +612,15 @@ test("selected comment sync finalizes interrupted receipts before publication", 
   const publicationStart = publishJob.indexOf(
     "- name: Publish selected review comment action ledger",
   );
+  const primarySyncSuccess = publishJob.indexOf(
+    'echo "sync_succeeded=true" >> "$GITHUB_OUTPUT"',
+    syncStart,
+  );
+  const statusPublishStart = publishJob.indexOf("pnpm run status --", syncStart);
 
   assert.ok(syncStart >= 0);
+  assert.ok(primarySyncSuccess > syncStart);
+  assert.ok(statusPublishStart > primarySyncSuccess);
   assert.ok(finalizerStart > syncStart);
   assert.ok(publicationStart > finalizerStart);
   assert.match(
@@ -700,6 +715,10 @@ test("apply workflow isolates Codex proof from the credentialed mutation runner"
   const proofJob = workflow.slice(proofJobStart, proofPublisherStart);
   const proofPublisherJob = workflow.slice(proofPublisherStart, applyJobStart);
   const applyJob = workflow.slice(applyJobStart);
+  const applyCondition = applyJob.match(/^\s+if: (.+)$/m)?.[1] ?? "";
+  const proofGenerationStart = proofJob.indexOf("- name: Generate bound close coverage proofs");
+  const primaryProofResultStart = proofJob.indexOf("- name: Export primary apply proof result");
+  const proofFinalizerStart = proofJob.indexOf("- name: Finalize apply proof action ledger");
 
   assert.match(
     proofJob,
@@ -721,6 +740,7 @@ test("apply workflow isolates Codex proof from the credentialed mutation runner"
     proofJob,
     /action_ledger_artifact_name: \$\{\{ steps\.publishable-action-ledger\.outputs\.name \}\}/,
   );
+  assert.match(proofJob, /proof_ready: \$\{\{ steps\.primary-proof-result\.outputs\.ready \}\}/);
   assert.match(
     proofJob,
     /name=apply-coverage-proofs-\$\{\{ github\.run_id \}\}-\$\{\{ github\.run_attempt \}\}/,
@@ -738,6 +758,13 @@ test("apply workflow isolates Codex proof from the credentialed mutation runner"
   );
   assert.match(proofJob, /include-hidden-files: true/);
   assert.match(proofJob, /if-no-files-found: error/);
+  assert.ok(proofGenerationStart >= 0);
+  assert.ok(primaryProofResultStart > proofGenerationStart);
+  assert.ok(proofFinalizerStart > primaryProofResultStart);
+  assert.match(
+    proofJob,
+    /id: primary-proof-result[\s\S]*if: \$\{\{ success\(\) && \(steps\.proof-select\.outputs\.item_numbers == '' \|\| steps\.generate-apply-proofs\.outcome == 'success'\) \}\}[\s\S]*echo "ready=true" >> "\$GITHUB_OUTPUT"/,
+  );
   assert.match(
     proofJob,
     /if: \$\{\{ always\(\) && steps\.upload-action-events\.outputs\.artifact-id != '' \}\}/,
@@ -757,6 +784,12 @@ test("apply workflow isolates Codex proof from the credentialed mutation runner"
   assert.doesNotMatch(proofPublisherJob, /github\.run_attempt/);
 
   assert.match(applyJob, /needs: \[apply-proof, publish-apply-proof-action-ledger\]/);
+  assert.match(
+    applyCondition,
+    /^\$\{\{ always\(\) && !cancelled\(\) && needs\.apply-proof\.outputs\.proof_ready == 'true' &&/,
+  );
+  assert.doesNotMatch(applyCondition, /needs\.apply-proof\.result/);
+  assert.doesNotMatch(applyCondition, /needs\.publish-apply-proof-action-ledger/);
   assert.doesNotMatch(applyJob, /setup-codex|OPENAI_API_KEY|CLAWSWEEPER_INTERNAL_MODEL/);
   assert.match(applyJob, /Create target write token/);
   assert.match(applyJob, /Create state token/);
@@ -1392,7 +1425,7 @@ test("sweep target tokens fall back when an org app installation is missing", ()
   );
   assert.ok(
     workflow.includes(
-      "if: ${{ success() && steps.target-write-token.outputs.token != '' && github.event.inputs.apply_after_review == 'true' }}",
+      "if: ${{ always() && !cancelled() && steps.sync-selected-review-comments.outputs.sync_succeeded == 'true' && steps.target-write-token.outputs.token != '' && github.event.inputs.apply_after_review == 'true' }}",
     ),
   );
   assert.doesNotMatch(workflow, new RegExp("OPENCLAW_" + "GH_TOKEN"));

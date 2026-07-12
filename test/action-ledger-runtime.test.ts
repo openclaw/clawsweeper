@@ -825,7 +825,7 @@ test("timeout recovery preserves hard-killed apply mutation truth and ignores un
   assert.equal(events.filter((event) => event.subject.number === 43).length, 0);
 });
 
-test("timeout recovery binds an open mutation receipt after an accepted attempt exactly", () => {
+test("timeout recovery terminalizes the latest open mutation before its item summary", () => {
   const root = tempRoot();
   const env = workflowEnv({
     CLAWSWEEPER_ACTION_LEDGER_INVOCATION: "apply-uncertain",
@@ -1092,18 +1092,21 @@ test("timeout recovery binds an open mutation receipt after an accepted attempt 
   );
   assert.equal(recovered.length, 3);
   assert.ok(recovered.every((event) => event.action.mutation));
-  const recoveredItem = recovered.find(
-    (event) =>
-      event.subject.number === 52 && event.idempotency_key_sha256 === item.idempotency_key_sha256,
-  );
-  assert.ok(recoveredItem);
-  assert.equal(recoveredItem.parent_event_id, attempt.event_id);
   const recoveredAttempt = recovered.find(
     (event) => event.idempotency_key_sha256 === attempt.idempotency_key_sha256,
   );
   assert.ok(recoveredAttempt);
   assert.equal(recoveredAttempt.parent_event_id, attempt.event_id);
   assert.notEqual(recoveredAttempt.parent_event_id, acceptedOutcome.event_id);
+  assert.ok(acceptedOutcome.phase_seq < attempt.phase_seq);
+  assert.ok(attempt.phase_seq < recoveredAttempt.phase_seq);
+  const recoveredItem = recovered.find(
+    (event) =>
+      event.subject.number === 52 && event.idempotency_key_sha256 === item.idempotency_key_sha256,
+  );
+  assert.ok(recoveredItem);
+  assert.equal(recoveredItem.parent_event_id, recoveredAttempt.event_id);
+  assert.ok(recoveredAttempt.phase_seq < recoveredItem.phase_seq);
   const rejectedRecovery = events.find(
     (event) =>
       event.subject.number === 53 &&
@@ -1574,9 +1577,13 @@ test("interruption recovery preserves any earlier unknown mutation outcome", () 
   assert.ok(recovered.every((event) => event.action.mutation));
   assert.ok(recovered.every((event) => event.action.retryable === false));
   const itemTerminal = recovered.find((event) => event.subject.number === 54);
+  assert.ok(itemTerminal);
   assert.equal(itemTerminal?.parent_event_id, unknown.event_id);
+  assert.ok(unknown.phase_seq < itemTerminal.phase_seq);
   const batchTerminal = recovered.find((event) => event.subject.kind === "workflow");
-  assert.equal(batchTerminal?.parent_event_id, unknown.event_id);
+  assert.ok(batchTerminal);
+  assert.equal(batchTerminal.parent_event_id, itemTerminal.event_id);
+  assert.ok(itemTerminal.phase_seq < batchTerminal.phase_seq);
   assert.equal(interruptOpenWorkflowActionEvents(root, { env }), 0);
 });
 
@@ -1669,6 +1676,8 @@ test("interruption recovery closes the exact retry dispatch and aggregates it in
       event.phase_seq === 1_000_000,
   );
   assert.ok(batchTerminal);
+  assert.equal(batchTerminal.parent_event_id, dispatchTerminal.event_id);
+  assert.ok(dispatchTerminal.phase_seq < batchTerminal.phase_seq);
   assert.equal(batchTerminal.action.mutation, true);
   assert.equal(batchTerminal.action.retryable, false);
   assert.equal(interruptOpenWorkflowActionEvents(root, { env }), 0);

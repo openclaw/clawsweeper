@@ -452,6 +452,18 @@ function workflowActionEventIsMutationOutcome(event: ActionEvent): boolean {
   );
 }
 
+function workflowActionRecoveryPriority(event: ActionEvent): number {
+  if (workflowActionEventIsUncertainMutationStart(event)) return 0;
+  if (
+    event.event_type === ACTION_EVENT_TYPES.reviewBatch ||
+    event.event_type === ACTION_EVENT_TYPES.applyBatch ||
+    (event.event_type === ACTION_EVENT_TYPES.reviewRetry && event.subject.kind === "workflow")
+  ) {
+    return 2;
+  }
+  return 1;
+}
+
 function workflowActionEventClosesLifecycle(start: ActionEvent, event: ActionEvent): boolean {
   if (event.phase_seq <= start.phase_seq) return false;
   if (event.action.status === ACTION_EVENT_STATUSES.started) return false;
@@ -546,7 +558,12 @@ export function interruptOpenWorkflowActionEvents(
       );
       const starts = current
         .filter(workflowActionEventIsRecoverableStart)
-        .sort((left, right) => left.phase_seq - right.phase_seq);
+        .sort(
+          (left, right) =>
+            workflowActionRecoveryPriority(left) - workflowActionRecoveryPriority(right) ||
+            left.phase_seq - right.phase_seq ||
+            left.event_id.localeCompare(right.event_id),
+        );
       let written = 0;
       for (const start of starts) {
         const lifecycleKey = workflowActionLifecycleKey(start);
