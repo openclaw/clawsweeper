@@ -24,13 +24,19 @@ ledger/v1/events/YYYY/MM/DD/<producer-repo>/<producer>/<run-id>-<attempt>-<job>-
 
 Per-job shards avoid a shared append hotspot while preventing one Git commit per
 event. The state ledger receives canonical shards before optional CrabFleet
-delivery is drained. The create-only producer seal binds the exact event set;
-an exact replay remains valid, while a new event for a sealed producer is
-rejected with an instruction to use a new invocation identity. A failed live
-projection records a retryable `projection.failed` event under a derived
-`<component>.crabfleet_projection` producer and finalizes that local shard in a
-second pass. Delivery outages therefore cannot erase, delay, or append behind
-the authoritative producer history.
+delivery is drained. A producer-specific exclusive lock serializes partition
+marker creation, the seal check plus spool write, and finalization. Finalization
+rereads the spool while holding all selected producer locks, then publishes the
+create-only seal and exact shard set. An exact replay remains valid, while a new
+event for a sealed producer is rejected with an instruction to use a new
+invocation identity.
+
+Failed live projections record retryable `projection.failed` events under
+derived `<component>.crabfleet_projection` producers. The first finalization
+pass deliberately skips producers containing only those failures, the
+root-specific projection queue is drained, and a second pass seals the resulting
+failure shards. Delivery outages therefore cannot erase, delay, append behind,
+or permanently conflict with the authoritative producer history.
 
 ## Identity And Replay
 
@@ -145,6 +151,20 @@ confidential-identifier checks as every other durable machine-text field.
   rechecked around reads. File opens are nonblocking before descriptor type
   validation, so replacing a validated regular file with a FIFO cannot hang the
   process.
+- Producer lock creation is exclusive and rolls back the exact created inode if
+  later write or fsync validation fails. Release and stale cleanup are
+  identity-checked; a lock disappearing during cleanup is benign. Contenders
+  reclaim a lock only when its recorded process is dead and it is older than
+  five minutes. A live holder is never evicted because synchronous finalization
+  crossed the age threshold.
+- Partition-marker reads are capped at 64 bytes. Existing and raced shard reads
+  are capped at the same 2 MiB limit as new shard writes. Direct shard readers
+  also require a non-empty collection of at most 1024 unique, acyclic events in
+  exact canonical causal order.
+- Spool reads retain at most 256 repository directories, 4096 entries per
+  repository, 256 producers, 65536 events, and 64 MiB of canonical event bytes.
+  Fanout, event count, producer count, and aggregate bytes are rejected before
+  the complete collection is retained and sorted.
 - Shard imports begin at `ledger/v1/events`; unrelated source-tree entries are
   never traversed. Links and special entries inside that subtree fail closed.
   Imports cap relative depth at 6, directory entries at 512, directories at 512,
@@ -190,6 +210,12 @@ repeated trailing root dots, and compressed IPv6 loopback and private
 IPv4-embedded forms, including partially compressed forms embedded in
 unbracketed machine text, while all durable text remains restricted to
 field-specific machine vocabularies.
+
+Durable relative data paths must use portable ASCII segments beneath one of
+`.artifacts/`, `artifacts/`, `jobs/`, `ledger/`, `logs/`, `notifications/`,
+`records/`, or `results/`. Arbitrary prose, bare namespaces, hidden child
+segments, traversal, encoded octets, and absolute paths are rejected by both
+runtime validation and the checked-in schema.
 
 Durable JSON files must already be the exact canonical encoding with unique
 object keys that the writer emits, including the trailing newline. Readers
@@ -280,13 +306,17 @@ Consumers fold immutable events into purpose-specific views:
 `CLAWSWEEPER_CRABFLEET_TIMEOUT_MS` sets each live request deadline in
 milliseconds. It defaults to 10000 and must be between 1 and 60000. Finalization
 first publishes authoritative local shards, then gives the entire optional
-projection drain one 10000 ms deadline, bounded to at most 60000 ms through the
-runtime flush option. Timeout, HTTP, and response-cleanup failures remain
-projection failures. Live delivery, including exported direct posts, runs at
-most four fetches concurrently with 64 more projections queued. A timed-out
-fetch keeps its concurrency slot until the underlying request and response-body
-cleanup settle; a later wave fails closed into durable retryable
-`projection.failed` records if all slots remain unresolved. Queued projections
+projection drain for that spool root one 10000 ms deadline, bounded to at most
+60000 ms through the runtime flush option. Independent ledger roots do not wait
+for or fail one another's projection queues. Timeout, HTTP, and
+response-cleanup failures remain projection failures. Live delivery, including
+exported direct posts, runs at most four fetches concurrently with 64 more
+projections queued. A timed-out fetch keeps its concurrency slot until the
+underlying request and response-body cleanup settle; a later wave fails closed
+into durable retryable `projection.failed` records if all slots remain
+unresolved. Direct events are validated before admission, and queued requests
+have their own bounded deadline so invalid events, dead slots, or ignored
+cancellation cannot leave caller promises pending forever. Queued projections
 snapshot their endpoint, session, token, and timeout before admission, so later
 environment mutation cannot reroute them. Further live projections also fail
 closed instead of growing process memory without bound.
