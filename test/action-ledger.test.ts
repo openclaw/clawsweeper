@@ -645,29 +645,30 @@ test("runtime allowlists stay aligned with the checked-in schema", () => {
   assert.deepEqual(schema.$defs.canonicalActionStatus.enum, Object.values(ACTION_EVENT_STATUSES));
   assert.deepEqual(schema.$defs.canonicalReasonCode.enum, Object.values(ACTION_EVENT_REASON_CODES));
   assert.equal(schema.$defs.machineText.pattern, ACTION_EVENT_MACHINE_TEXT_PATTERN_SOURCE);
+  const confidentialEntries = schema.$defs.confidentialIdentifier.anyOf as Array<{
+    pattern?: string;
+    $ref?: string;
+  }>;
   assert.deepEqual(
-    schema.$defs.confidentialIdentifier.anyOf.map((entry: { pattern: string }) => entry.pattern),
+    confidentialEntries.flatMap((entry) => (entry.pattern ? [entry.pattern] : [])),
     [...ACTION_EVENT_CONFIDENTIAL_IDENTIFIER_PATTERN_SOURCES],
+  );
+  assert.deepEqual(
+    confidentialEntries.flatMap((entry) => (entry.$ref ? [entry.$ref] : [])),
+    ["#/$defs/compressedPrivateIpv4EmbeddedIpv6"],
   );
 });
 
 test("runtime and schema apply the same machine-text privacy boundary", () => {
   const schema = JSON.parse(
     fs.readFileSync(path.join(process.cwd(), "schema", "state-ledger-event.schema.json"), "utf8"),
-  );
-  const machineText = schema.$defs.machineText as {
-    minLength: number;
-    maxLength: number;
-    pattern: string;
+  ) as TestJsonSchema;
+  const valid = createActionEvent(reviewInput());
+  const schemaAllows = (value: string): boolean => {
+    const candidate = structuredClone(valid) as unknown as Record<string, unknown>;
+    (candidate.action as Record<string, unknown>).status = value;
+    return schemaAccepts(schema, candidate);
   };
-  const confidentialPatterns = (
-    schema.$defs.confidentialIdentifier.anyOf as Array<{ pattern: string }>
-  ).map((entry) => new RegExp(entry.pattern));
-  const schemaAllows = (value: string): boolean =>
-    value.length >= machineText.minLength &&
-    value.length <= machineText.maxLength &&
-    new RegExp(machineText.pattern).test(value) &&
-    confidentialPatterns.every((pattern) => !pattern.test(value));
   const samples = [
     "review.completed",
     "claude-3.5",
@@ -693,6 +694,8 @@ test("runtime and schema apply the same machine-text privacy boundary", () => {
     "0:0:0:0:0:0:0:1",
     "::ffff:7f00:1",
     "::ffff:c0a8:1",
+    "0:0::ffff:c0a8:1",
+    "0::c0a8:1",
     "0:0:0:0:0:ffff:a00:1",
     "0:0:0:0:0:ffff:7f00:1",
     "0:0:0:0:0:ffff:a9fe:1",
@@ -715,6 +718,9 @@ test("runtime and schema apply the same machine-text privacy boundary", () => {
     "https://10.0.0.1/api",
     "host-10.0.0.1",
     "0:0::1",
+    "0:0::ffff:808:808",
+    "0::808:808",
+    "2001:4860:4860::8888",
   ];
 
   for (const value of samples) {
@@ -752,6 +758,9 @@ test("privacy normalization preserves public machine identifiers", () => {
     "public.example",
     "0:0:0:0:0:ffff:808:808",
     "0:0:0:0:0:ffff:ac20:1",
+    "0:0::ffff:808:808",
+    "0::808:808",
+    "2001:4860:4860::8888",
     "https://github.com/openclaw/clawsweeper/actions/runs/100",
   ]) {
     const event = createActionEvent(

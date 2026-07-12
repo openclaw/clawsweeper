@@ -140,8 +140,8 @@ are rejected when followed by a credential-shaped value. Percent-encoded octets
 are rejected from durable identifiers and paths rather than decoded into
 potentially confidential forms. URL checks normalize scheme-specific paths,
 userinfo, and file URLs; host checks normalize case, trailing-dot FQDNs, and
-compressed IPv6 loopback forms while all durable text remains restricted to
-field-specific machine vocabularies.
+compressed IPv6 loopback and private IPv4-embedded forms while all durable text
+remains restricted to field-specific machine vocabularies.
 
 Every event records a privacy classification, redaction version, and fields
 dropped. The checked-in JSON schema is

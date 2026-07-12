@@ -699,8 +699,14 @@
         },
         {
           "pattern": "(?:^|[\\[/:@])(?:(?:::)(?:[Ff]{4}:)?|(?:0{1,4}:){5}[Ff]{4}:|(?:0{1,4}:){6})(?:[0]?[Aa][0-9A-Fa-f]{2}|7[Ff][0-9A-Fa-f]{2}|[Aa]9[Ff][Ee]|[Aa][Cc]1[0-9A-Fa-f]|[Cc]0[Aa]8):[0-9A-Fa-f]{1,4}(?:\\]|$|[/:])"
+        },
+        {
+          "$ref": "#/$defs/compressedPrivateIpv4EmbeddedIpv6"
         }
       ]
+    },
+    "compressedPrivateIpv4EmbeddedIpv6": {
+      "pattern": "(?:^|[\\[/:@])(?:(?:(?:0{1,4}:){0,3}0{1,4})?::[Ff]{4}:|(?:(?:0{1,4}:){0,4}0{1,4})?::)(?:[0]?[Aa][0-9A-Fa-f]{2}|7[Ff][0-9A-Fa-f]{2}|[Aa]9[Ff][Ee]|[Aa][Cc]1[0-9A-Fa-f]|[Cc]0[Aa]8):[0-9A-Fa-f]{1,4}(?:\\]|$|[/:])"
     },
     "machineTextOrArray": {
       "oneOf": [
