@@ -479,6 +479,8 @@ test("spool and shard writes reject symlinked parent directories", () => {
       writeActionEventShard(
         shardRoot,
         {
+          repository: producer.repository,
+          sha: producer.sha,
           producer: "review",
           workflow: "sweep",
           job: "review-3",
@@ -556,6 +558,8 @@ test("durable shards batch sorted events once per producer job", () => {
     { now: () => new Date("2026-07-12T09:58:01.000Z") },
   );
   const identity = {
+    repository: producer.repository,
+    sha: producer.sha,
     producer: "review",
     workflow: "sweep",
     job: "review-3",
@@ -573,7 +577,7 @@ test("durable shards batch sorted events once per producer job", () => {
   assert.equal(created.relativePath, actionEventShardRelativePath(identity, [started, completed]));
   assert.match(
     created.relativePath,
-    /^ledger\/v1\/events\/2026\/07\/12\/review\/100-2-review-3-[a-f0-9]{12}\.jsonl$/,
+    /^ledger\/v1\/events\/2026\/07\/12\/openclaw-clawsweeper\/review\/100-2-review-3-[a-f0-9]{12}\.jsonl$/,
   );
   assert.deepEqual(
     readActionEventShard(created.path).map((event) => event.event_type),
@@ -613,6 +617,8 @@ test("durable shards preserve sub-millisecond ordering across timestamp offsets"
     }),
   );
   const identity = {
+    repository: producer.repository,
+    sha: producer.sha,
     producer: "review",
     workflow: "sweep",
     job: "review-3",
@@ -632,6 +638,8 @@ test("durable shards preserve sub-millisecond ordering across timestamp offsets"
 test("a shard identity cannot be reused for a different event set", () => {
   const root = tempRoot();
   const identity = {
+    repository: producer.repository,
+    sha: producer.sha,
     producer: "review",
     workflow: "sweep",
     job: "review-3",
@@ -665,6 +673,8 @@ test("a shard identity cannot be reused for a different event set", () => {
 
 test("shard paths use the stable run partition instead of event ordering", () => {
   const identity = {
+    repository: producer.repository,
+    sha: producer.sha,
     producer: "review",
     workflow: "sweep",
     job: "review-3",
@@ -695,6 +705,8 @@ test("shard paths use the stable run partition instead of event ordering", () =>
 
 test("duplicate event IDs must have identical occurrence metadata", () => {
   const identity = {
+    repository: producer.repository,
+    sha: producer.sha,
     producer: "review",
     workflow: "sweep",
     job: "review-3",
@@ -1025,6 +1037,8 @@ test("runtime normalization enforces checked-in schema bounds", () => {
       writeActionEventShard(
         tempRoot(),
         {
+          repository: producer.repository,
+          sha: producer.sha,
           producer: "review",
           workflow: "sweep",
           job: "review-3",
@@ -1038,22 +1052,30 @@ test("runtime normalization enforces checked-in schema bounds", () => {
   );
 });
 
-test("shards reject events from a different workflow identity", () => {
+test("shards reject events from any different producer identity", () => {
   const event = createActionEvent(reviewInput());
-  assert.throws(
-    () =>
-      writeActionEventShard(
-        tempRoot(),
-        {
-          producer: "apply",
-          workflow: "sweep",
-          job: "review-3",
-          runId: "100",
-          runAttempt: 2,
-          partitionDate: "2026-07-12",
-        },
-        [event],
-      ),
-    /does not match shard producer identity/,
+  const identity = {
+    repository: producer.repository,
+    sha: producer.sha,
+    producer: producer.component,
+    workflow: producer.workflow,
+    job: producer.job,
+    runId: producer.runId,
+    runAttempt: producer.runAttempt,
+    partitionDate: "2026-07-12",
+  };
+  for (const changed of [
+    { ...identity, repository: "other/automation" },
+    { ...identity, sha: "def456" },
+    { ...identity, producer: "apply" },
+  ]) {
+    assert.throws(
+      () => writeActionEventShard(tempRoot(), changed, [event]),
+      /does not match shard producer identity/,
+    );
+  }
+  assert.notEqual(
+    actionEventShardRelativePath(identity, [event]),
+    actionEventShardRelativePath({ ...identity, sha: "def456" }, [event]),
   );
 });

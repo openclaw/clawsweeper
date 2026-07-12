@@ -268,6 +268,8 @@ export async function flushWorkflowActionEvents(
     const result = writeActionEventShard(
       outputRoot,
       {
+        repository: first.producer.repository,
+        sha: first.producer.sha,
         producer: first.producer.component,
         workflow: first.producer.workflow,
         job: first.producer.job,
@@ -340,7 +342,7 @@ export function importActionEventShards(
   let unchanged = 0;
   for (const relativePath of relativePaths) {
     if (
-      !/^ledger\/v1\/events\/\d{4}\/\d{2}\/\d{2}\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\.jsonl$/.test(
+      !/^ledger\/v1\/events\/\d{4}\/\d{2}\/\d{2}\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\.jsonl$/.test(
         relativePath,
       )
     ) {
@@ -374,7 +376,7 @@ function validateCanonicalImportedShard(
   content: string,
 ): void {
   const match =
-    /^ledger\/v1\/events\/(\d{4})\/(\d{2})\/(\d{2})\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\.jsonl$/.exec(
+    /^ledger\/v1\/events\/(\d{4})\/(\d{2})\/(\d{2})\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\.jsonl$/.exec(
       relativePath,
     );
   const first = events[0];
@@ -403,6 +405,8 @@ function validateCanonicalImportedShard(
   }
   const expectedPath = actionEventShardRelativePath(
     {
+      repository: first.producer.repository,
+      sha: first.producer.sha,
       producer: first.producer.component,
       workflow: first.producer.workflow,
       job: first.producer.job,
@@ -514,6 +518,20 @@ function workflowPartitionDate(
   env: NodeJS.ProcessEnv,
 ): string {
   const configured = String(env.CLAWSWEEPER_ACTION_LEDGER_PARTITION_DATE ?? "").trim();
+  const runStartedAt = String(env.GITHUB_RUN_STARTED_AT ?? "").trim();
+  let partitionDate: string;
+  if (configured) {
+    partitionDate = workflowPartitionCalendarDate(
+      configured,
+      "CLAWSWEEPER_ACTION_LEDGER_PARTITION_DATE",
+    );
+  } else if (runStartedAt) {
+    partitionDate = workflowPartitionTimestampDate(runStartedAt);
+  } else {
+    throw new Error(
+      "action event partitioning requires CLAWSWEEPER_ACTION_LEDGER_PARTITION_DATE or GITHUB_RUN_STARTED_AT",
+    );
+  }
   const identity = createHash("sha256").update(stableJson(producer)).digest("hex");
   const partitionPath = path.join(
     ".clawsweeper-repair",
@@ -523,18 +541,56 @@ function workflowPartitionDate(
   );
   const target = prepareSafeWriteTarget(root, partitionPath, "action event partition marker");
   const existing = readUtf8FileIfExistsNoFollow(target.path, "action event partition marker");
-  if (existing !== null) return existing.trim();
-  const partitionDate = configured || new Date().toISOString().slice(0, 10);
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(partitionDate)) {
-    throw new Error("CLAWSWEEPER_ACTION_LEDGER_PARTITION_DATE must be YYYY-MM-DD");
+  if (existing !== null) {
+    return validateWorkflowPartitionMarker(existing, partitionDate);
   }
   try {
     writeUtf8FileExclusiveNoFollow(target, `${partitionDate}\n`);
   } catch (error) {
     if (!isAlreadyExistsError(error)) throw error;
-    return readUtf8FileNoFollow(target.path, "action event partition marker").trim();
+    return validateWorkflowPartitionMarker(
+      readUtf8FileNoFollow(target.path, "action event partition marker"),
+      partitionDate,
+    );
   }
   return partitionDate;
+}
+
+function validateWorkflowPartitionMarker(content: string, expected: string): string {
+  const recorded = workflowPartitionCalendarDate(content.trim(), "action event partition marker");
+  if (recorded !== expected) {
+    throw new Error(`action event partition marker conflict: ${recorded} != ${expected}`);
+  }
+  return recorded;
+}
+
+function workflowPartitionCalendarDate(value: string, label: string): string {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (!match) throw new Error(`${label} must be YYYY-MM-DD`);
+  const [, yearText, monthText, dayText] = match;
+  const year = Number(yearText);
+  const month = Number(monthText);
+  const day = Number(dayText);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  if (
+    year < 1 ||
+    date.getUTCFullYear() !== year ||
+    date.getUTCMonth() !== month - 1 ||
+    date.getUTCDate() !== day
+  ) {
+    throw new Error(`${label} must be YYYY-MM-DD`);
+  }
+  return value;
+}
+
+function workflowPartitionTimestampDate(value: string): string {
+  if (
+    !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(value) ||
+    !Number.isFinite(Date.parse(value))
+  ) {
+    throw new Error("GITHUB_RUN_STARTED_AT must be an ISO date-time timestamp");
+  }
+  return new Date(value).toISOString().slice(0, 10);
 }
 
 function actionEventMessage(event: ActionEvent): string {

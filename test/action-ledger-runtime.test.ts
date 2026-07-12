@@ -349,11 +349,49 @@ test("workflow events finalize into one replay-stable per-step shard", async () 
   assert.equal(first.length, 1);
   assert.match(
     first[0] ?? "",
-    /^ledger\/v1\/events\/2026\/07\/12\/review\.__run_5\.review-0\/100-2-review-[a-f0-9]{12}\.jsonl$/,
+    /^ledger\/v1\/events\/2026\/07\/12\/openclaw-clawsweeper\/review\.__run_5\.review-0\/100-2-review-[a-f0-9]{12}\.jsonl$/,
   );
   assert.equal(
     fs.readFileSync(path.join(outputRoot, first[0]!), "utf8").trim().split("\n").length,
     1,
+  );
+});
+
+test("fresh roots reconstruct shard partitions from immutable run metadata", async () => {
+  const env = workflowEnv({
+    CLAWSWEEPER_ACTION_LEDGER_PARTITION_DATE: undefined,
+    GITHUB_RUN_STARTED_AT: "2026-07-10T23:30:00-02:00",
+  });
+  const roots = [tempRoot(), tempRoot()];
+  const paths: string[] = [];
+  for (const root of roots) {
+    recordReview(root, env);
+    const [relativePath] = await flushWorkflowActionEvents(root, {
+      env,
+      outputRoot: path.join(root, "state"),
+    });
+    assert.ok(relativePath);
+    paths.push(relativePath);
+  }
+
+  assert.equal(paths[1], paths[0]);
+  assert.match(paths[0] ?? "", /^ledger\/v1\/events\/2026\/07\/11\//);
+
+  const missingMetadataRoot = tempRoot();
+  recordReview(
+    missingMetadataRoot,
+    workflowEnv({
+      CLAWSWEEPER_ACTION_LEDGER_PARTITION_DATE: undefined,
+    }),
+  );
+  await assert.rejects(
+    () =>
+      flushWorkflowActionEvents(missingMetadataRoot, {
+        env: workflowEnv({
+          CLAWSWEEPER_ACTION_LEDGER_PARTITION_DATE: undefined,
+        }),
+      }),
+    /requires CLAWSWEEPER_ACTION_LEDGER_PARTITION_DATE or GITHUB_RUN_STARTED_AT/,
   );
 });
 
@@ -369,6 +407,37 @@ test("different workflow steps receive independent shard identities", async () =
   });
   assert.equal(paths.length, 2);
   assert.notEqual(paths[0], paths[1]);
+});
+
+test("full producer identity prevents cross-repository shard collisions", async () => {
+  const root = tempRoot();
+  const outputRoot = path.join(root, "state");
+  recordReview(
+    root,
+    workflowEnv({
+      GITHUB_REPOSITORY: "openclaw/clawsweeper",
+      GITHUB_SHA: "abc123",
+    }),
+  );
+  recordReview(
+    root,
+    workflowEnv({
+      GITHUB_REPOSITORY: "other/automation",
+      GITHUB_SHA: "def456",
+    }),
+  );
+
+  const paths = await flushWorkflowActionEvents(root, {
+    env: workflowEnv(),
+    outputRoot,
+  });
+  assert.equal(paths.length, 2);
+  assert.ok(paths.some((entry) => entry.includes("/openclaw-clawsweeper/")));
+  assert.ok(paths.some((entry) => entry.includes("/other-automation/")));
+
+  const imported = importActionEventShards(outputRoot, path.join(root, "destination"));
+  assert.equal(imported.created, 2);
+  assert.deepEqual(imported.paths, paths);
 });
 
 test("CrabFleet projection sends the validated ledger event and bearer token", async () => {

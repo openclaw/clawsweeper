@@ -613,6 +613,8 @@ export type ActionEventWriteResult = {
 };
 
 export type ActionEventShardIdentity = {
+  repository: string;
+  sha: string;
   producer: string;
   workflow: string;
   job: string;
@@ -760,6 +762,7 @@ export function actionEventShardRelativePath(
     String(year),
     String(month),
     String(date),
+    safePathSegment(slugForRepo(normalizedIdentity.repository)),
     safePathSegment(normalizedIdentity.producer),
     `${filename}.jsonl`,
   );
@@ -1177,6 +1180,8 @@ function normalizeShardEvents(events: readonly ActionEvent[]): ActionEvent[] {
 
 function normalizeShardIdentity(identity: ActionEventShardIdentity) {
   return {
+    repository: requiredRepo(identity.repository),
+    sha: machineText(identity.sha, "action event shard producer sha"),
     producer: machineText(identity.producer, "action event shard producer"),
     workflow: machineText(identity.workflow, "action event shard workflow", 128),
     job: machineText(identity.job, "action event shard job", 128),
@@ -1196,6 +1201,8 @@ function validateShardProducer(
   const normalized = normalizeShardIdentity(identity);
   for (const event of events) {
     if (
+      event.producer.repository !== normalized.repository ||
+      event.producer.sha !== normalized.sha ||
       event.producer.component !== normalized.producer ||
       event.producer.workflow !== normalized.workflow ||
       event.producer.job !== normalized.job ||
