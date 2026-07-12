@@ -1,6 +1,6 @@
 # Review Cache
 
-Scheduled keep-open reviews use two independent cache stages.
+Scheduled keep-open reviews use three independent cache stages.
 
 ## Structural Stage
 
@@ -45,18 +45,48 @@ an incomplete lease tuple, or a concurrent review always disables reuse.
 ClawSweeper then repeats the bounded probe under that lease; any intervening
 non-ClawSweeper activity forces full hydration.
 
+## Semantic Stage
+
+After hydration, pull requests can reuse a prior completed keep-open report when
+the code is semantically unchanged even if the head SHA or ordinary formatting
+changed. TypeScript and JavaScript patches are tokenized with the TypeScript
+compiler scanner. Whitespace and ordinary comments are ignored, while
+`@ts-*`, triple-slash reference, source-map, source URL, and shebang directives
+remain part of the digest. Complete JSON hunks are parsed and canonicalized.
+
+Semantic reuse requires:
+
+- complete bounded patches for every changed file;
+- a supported modified or added TypeScript, JavaScript, or complete JSON file;
+- unchanged title, body, human discussion, relations, reviews, review threads,
+  labels, base and target state, release state, commit messages, merge
+  readiness, checks, policy, and model;
+- a prior completed keep-open report within the normal 14-day ceiling; and
+- the normal durable review lease.
+
+Unsupported languages, deletions, renames, binary or missing patches, prompt
+truncation, malformed hunks, lexical ambiguity, partial JSON, incomplete check
+state, and truncated commit context retain an exact digest for audit but cannot
+use semantic reuse.
+
+Before carrying a semantic hit, ClawSweeper repeats the structural metadata and
+check-state probes under the lease. Any drift releases the lease and defers the
+item for a fresh hydrated review. Full cache-only patches are never included in
+the model prompt, report frontmatter, or metrics.
+
 ## Content Stage
 
-When the structural stage misses, ClawSweeper hydrates the normal comments,
-timeline, relations, PR files, commits, and review comments. The existing
-content digest may still reuse an unchanged keep-open verdict after that full
-context is proven.
+When the structural and semantic stages miss, the existing exact content digest
+may still reuse an unchanged keep-open verdict after the full context is
+proven.
 
-Neither cache stage can promote a report to close.
+No cache stage can promote a report to close.
 
 ## Metrics
 
 Each review run writes `review-cache-metrics.json` in its artifact directory.
 It reports structural checks, hits, probe failures, probe time, miss reasons,
-post-lease revalidation results, content-cache hits, and full hydration count.
-The final review log emits the same high-level counters.
+semantic eligibility and miss reasons, post-lease revalidation results,
+content-cache hits, and full hydration count. The final review log emits the
+same high-level counters. Metrics contain only counts, timings, and bounded
+reason names.
