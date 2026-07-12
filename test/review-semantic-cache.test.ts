@@ -99,7 +99,7 @@ function input(overrides: Record<string, unknown> = {}) {
   const withTreeIdentity = (value: unknown): unknown => {
     const file = value as Record<string, unknown>;
     if (file.treeModesComplete !== undefined || file.omitted !== undefined) return file;
-    const status = String(file.status ?? "").toLowerCase();
+    const status = typeof file.status === "string" ? file.status.toLowerCase() : "";
     return {
       ...file,
       baseMode: status === "added" ? null : "100644",
