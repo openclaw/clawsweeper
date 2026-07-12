@@ -6,6 +6,7 @@ import {
   lstatSync,
   mkdirSync,
   readFileSync,
+  readdirSync,
   realpathSync,
   rmSync,
 } from "node:fs";
@@ -19,6 +20,51 @@ const outputArg = requiredArg("--output");
 const planArg = requiredArg("--plan");
 const stateRootArg = requiredArg("--state-root");
 const recordsPath = requiredArg("--records-path");
+const relatedTitleStopWords = new Set([
+  "about",
+  "after",
+  "allow",
+  "already",
+  "also",
+  "and",
+  "are",
+  "because",
+  "being",
+  "bug",
+  "cannot",
+  "claw",
+  "clawhub",
+  "claws",
+  "codex",
+  "does",
+  "doesn",
+  "don",
+  "error",
+  "fails",
+  "feat",
+  "feature",
+  "fix",
+  "for",
+  "from",
+  "has",
+  "have",
+  "into",
+  "issue",
+  "main",
+  "not",
+  "openclaw",
+  "pr",
+  "request",
+  "should",
+  "that",
+  "the",
+  "this",
+  "through",
+  "using",
+  "when",
+  "with",
+  "without",
+]);
 
 const outputRoot = resolve(repoRoot, outputArg);
 const planPath = resolve(repoRoot, planArg);
@@ -58,7 +104,8 @@ if (lstatSync(stateRoot).isSymbolicLink()) {
 const distSource = join(repoRoot, "dist");
 const typescriptSource = realpathSync(join(repoRoot, "node_modules", "typescript"));
 const yamlSource = realpathSync(join(repoRoot, "node_modules", "yaml"));
-const itemNumbers = plannedItemNumbers(planPath);
+const plannedItems = readPlannedItems(planPath);
+const itemNumbers = plannedItems.map((item) => item.number);
 
 assertPackageName(typescriptSource, "typescript");
 assertPackageName(yamlSource, "yaml");
@@ -83,9 +130,15 @@ copySelectedReports({
   recordsPath,
   stateRoot,
 });
+const relatedReportCount = copyRelatedReports({
+  outputRoot,
+  plannedItems,
+  recordsPath,
+  stateRoot,
+});
 
 console.log(
-  `Prepared architecture-neutral review runtime with ${itemNumbers.length} report slots.`,
+  `Prepared architecture-neutral review runtime with ${itemNumbers.length} report slots and ${relatedReportCount} bounded relation reports.`,
 );
 
 function assertPackageName(directory, expectedName) {
@@ -117,6 +170,97 @@ function copySelectedReports({ itemNumbers, outputRoot, recordsPath, stateRoot }
   }
 }
 
+function copyRelatedReports({ outputRoot, plannedItems, recordsPath, stateRoot }) {
+  if (plannedItems.length === 0) return 0;
+  const recordsRootPath = recordsPath.slice(0, -"/items".length);
+  const selectedNumbers = new Set(plannedItems.map((item) => item.number));
+  const candidates = [];
+  for (const location of ["items", "closed"]) {
+    const relativeDirectory = `${recordsRootPath}/${location}`;
+    const directory = join(stateRoot, ...relativeDirectory.split("/"));
+    assertNoSymlinkPath(stateRoot, relativeDirectory);
+    if (!existsSync(directory)) continue;
+    if (!lstatSync(directory).isDirectory()) {
+      throw new Error(`Review records path is not a directory: ${relativeDirectory}`);
+    }
+    for (const filename of readDirectoryNames(directory)) {
+      if (!/^[1-9][0-9]*\.md$/.test(filename)) continue;
+      const source = join(directory, filename);
+      const sourceStat = lstatSync(source);
+      if (sourceStat.isSymbolicLink() || !sourceStat.isFile()) {
+        throw new Error(`Review report must be a regular file: ${relativeDirectory}/${filename}`);
+      }
+      const markdown = readFileSync(source, "utf8");
+      const number = Number(filename.slice(0, -3));
+      const repository = frontMatterValue(markdown, "repository");
+      const title = displayTitle(frontMatterValue(markdown, "title") ?? "");
+      if (!Number.isSafeInteger(number) || !title) continue;
+      candidates.push({
+        filename,
+        location,
+        number,
+        repository,
+        source,
+        title,
+      });
+    }
+  }
+
+  const selectedReportKeys = new Set(
+    itemNumbersWithLocations(outputRoot, recordsRootPath).map(
+      ({ location, number }) => `${location}:${number}`,
+    ),
+  );
+  const related = new Map();
+  for (const item of plannedItems) {
+    const terms = relatedTitleSearchTerms(item.title);
+    if (terms.length < 2) continue;
+    const matches = candidates
+      .flatMap((candidate) => {
+        if (candidate.number === item.number || selectedNumbers.has(candidate.number)) return [];
+        if (candidate.repository && candidate.repository !== item.repo) return [];
+        const candidateTerms = new Set(relatedTitleSearchTerms(candidate.title, 12));
+        const overlap = terms.filter((term) => candidateTerms.has(term)).length;
+        return overlap >= 2 ? [{ candidate, overlap }] : [];
+      })
+      .sort(
+        (left, right) =>
+          right.overlap - left.overlap || left.candidate.number - right.candidate.number,
+      )
+      .slice(0, 5);
+    for (const { candidate } of matches) {
+      related.set(`${candidate.location}:${candidate.number}`, candidate);
+    }
+  }
+
+  let copied = 0;
+  for (const [key, candidate] of related) {
+    if (selectedReportKeys.has(key)) continue;
+    const outputDirectory = join(outputRoot, ...recordsRootPath.split("/"), candidate.location);
+    mkdirSync(outputDirectory, { recursive: true });
+    cpSync(candidate.source, join(outputDirectory, candidate.filename));
+    copied += 1;
+  }
+  return copied;
+}
+
+function itemNumbersWithLocations(outputRoot, recordsRootPath) {
+  const entries = [];
+  for (const location of ["items", "closed"]) {
+    const directory = join(outputRoot, ...recordsRootPath.split("/"), location);
+    if (!existsSync(directory)) continue;
+    for (const filename of readDirectoryNames(directory)) {
+      if (!/^[1-9][0-9]*\.md$/.test(filename)) continue;
+      entries.push({ location, number: Number(filename.slice(0, -3)) });
+    }
+  }
+  return entries;
+}
+
+function readDirectoryNames(directory) {
+  return readdirSync(directory).sort();
+}
+
 function assertNoSymlinkPath(root, pathFromRoot) {
   let current = root;
   for (const segment of pathFromRoot.split("/")) {
@@ -128,7 +272,7 @@ function assertNoSymlinkPath(root, pathFromRoot) {
   }
 }
 
-function plannedItemNumbers(path) {
+function readPlannedItems(path) {
   const plan = JSON.parse(readFileSync(path, "utf8"));
   if (!plan || typeof plan !== "object" || !Array.isArray(plan.shards)) {
     throw new Error("Review plan must contain a shards array.");
@@ -146,7 +290,63 @@ function plannedItemNumbers(path) {
       numbers.add(itemNumber);
     }
   }
-  return [...numbers].sort((left, right) => left - right);
+  const candidates = Array.isArray(plan.candidates) ? plan.candidates : [];
+  const planned = new Map();
+  for (const candidate of candidates) {
+    if (!candidate || typeof candidate !== "object") {
+      throw new Error("Every review plan candidate must be an object.");
+    }
+    if (!numbers.has(candidate.number)) continue;
+    if (
+      !Number.isSafeInteger(candidate.number) ||
+      candidate.number <= 0 ||
+      typeof candidate.title !== "string" ||
+      typeof candidate.repo !== "string"
+    ) {
+      throw new Error(`Invalid review plan candidate: ${String(candidate.number)}`);
+    }
+    planned.set(candidate.number, {
+      number: candidate.number,
+      repo: candidate.repo,
+      title: candidate.title,
+    });
+  }
+  return [...numbers]
+    .sort((left, right) => left - right)
+    .map((number) => planned.get(number) ?? { number, repo: "", title: "" });
+}
+
+function frontMatterValue(markdown, key) {
+  const match = markdown.match(new RegExp(`^${key}:\\s*(.*)$`, "m"));
+  return match?.[1]?.trim();
+}
+
+function displayTitle(value) {
+  if (!value) return "";
+  try {
+    const parsed = JSON.parse(value);
+    return typeof parsed === "string" ? parsed : value;
+  } catch {
+    return value;
+  }
+}
+
+function relatedTitleSearchTerms(title, limit = 6) {
+  const seen = new Set();
+  return (
+    String(title)
+      .toLowerCase()
+      .match(/[a-z0-9][a-z0-9_-]{2,}/g)
+      ?.map((term) => term.replace(/^_+|_+$/g, ""))
+      .filter((term) => {
+        if (!term || relatedTitleStopWords.has(term) || /^[0-9]+$/.test(term) || seen.has(term)) {
+          return false;
+        }
+        seen.add(term);
+        return true;
+      })
+      .slice(0, limit) ?? []
+  );
 }
 
 function requiredArg(name) {

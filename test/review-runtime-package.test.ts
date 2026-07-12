@@ -297,6 +297,79 @@ test("review runtime staging copies only reports selected by the review plan", (
   }
 });
 
+test("review runtime staging includes bounded title-related reports from open and closed state", () => {
+  const fixture = mkdtempSync(tmpPrefix);
+  const artifactsRoot = join(process.cwd(), ".artifacts");
+  mkdirSync(artifactsRoot, { recursive: true });
+  const output = mkdtempSync(join(artifactsRoot, "review-runtime-relations-test-"));
+  const plan = join(fixture, "plan.json");
+  const stateRoot = join(fixture, "state");
+  const recordsRoot = join(stateRoot, "records", "openclaw-openclaw");
+  const itemsRoot = join(recordsRoot, "items");
+  const closedRoot = join(recordsRoot, "closed");
+  const report = (number: number, title: string): string => `---
+number: ${number}
+repository: openclaw/openclaw
+type: issue
+title: ${JSON.stringify(title)}
+review_status: complete
+---
+
+## Summary
+
+Report ${number}.
+`;
+
+  try {
+    mkdirSync(itemsRoot, { recursive: true });
+    mkdirSync(closedRoot, { recursive: true });
+    writeFileSync(
+      plan,
+      JSON.stringify({
+        shards: [{ shard: 0, itemNumbers: [1] }],
+        candidates: [
+          {
+            number: 1,
+            repo: "openclaw/openclaw",
+            title: "Provider authentication retry failure",
+          },
+        ],
+      }),
+    );
+    writeFileSync(join(itemsRoot, "1.md"), report(1, "Provider authentication retry failure"));
+    writeFileSync(join(itemsRoot, "2.md"), report(2, "Provider authentication timeout"));
+    writeFileSync(join(itemsRoot, "3.md"), report(3, "Provider authentication refresh"));
+    writeFileSync(join(itemsRoot, "4.md"), report(4, "Provider authentication fallback"));
+    writeFileSync(join(itemsRoot, "5.md"), report(5, "Provider authentication session"));
+    writeFileSync(join(itemsRoot, "6.md"), report(6, "Provider authentication token"));
+    writeFileSync(join(itemsRoot, "7.md"), report(7, "Provider authentication credentials"));
+    writeFileSync(join(itemsRoot, "8.md"), report(8, "Unrelated scheduler behavior"));
+    writeFileSync(
+      join(closedRoot, "9.md"),
+      report(9, "Provider authentication retry failure cache"),
+    );
+
+    execFileSync(process.execPath, reviewRuntimeArgs(output, plan, stateRoot), {
+      cwd: process.cwd(),
+      stdio: "pipe",
+    });
+
+    const packagedRoot = join(output, "records", "openclaw-openclaw");
+    assert.equal(existsSync(join(packagedRoot, "items", "1.md")), true);
+    assert.equal(existsSync(join(packagedRoot, "items", "2.md")), true);
+    assert.equal(existsSync(join(packagedRoot, "items", "3.md")), true);
+    assert.equal(existsSync(join(packagedRoot, "items", "4.md")), true);
+    assert.equal(existsSync(join(packagedRoot, "items", "5.md")), true);
+    assert.equal(existsSync(join(packagedRoot, "items", "6.md")), false);
+    assert.equal(existsSync(join(packagedRoot, "items", "7.md")), false);
+    assert.equal(existsSync(join(packagedRoot, "items", "8.md")), false);
+    assert.equal(existsSync(join(packagedRoot, "closed", "9.md")), true);
+  } finally {
+    rmSync(output, { force: true, recursive: true });
+    rmSync(fixture, { force: true, recursive: true });
+  }
+});
+
 test("review runtime staging rejects malformed plans and unsafe report paths", () => {
   const fixture = mkdtempSync(tmpPrefix);
   const artifactsRoot = join(process.cwd(), ".artifacts");
