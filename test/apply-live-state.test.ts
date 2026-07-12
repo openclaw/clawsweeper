@@ -20,6 +20,7 @@ test("event apply proof marks only live deterministic remain-open guards", () =>
     "skipped_close_exempt_label",
     "skipped_maintainer_authored",
     "skipped_locked_conversation",
+    "skipped_low_signal_live_guard",
   ];
 
   for (const action of guardedActions) {

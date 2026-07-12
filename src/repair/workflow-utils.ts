@@ -834,6 +834,14 @@ const APPLY_SKIP_NEXT_ACTION_DETAILS: Record<string, ApplySkipNextActionDetail> 
     summary: "GitHub blocked the durable comment write because the conversation is locked.",
     next_step: "Unlock the conversation before retrying comment sync, or leave it unchanged.",
   },
+  skipped_low_signal_live_guard: {
+    bucket: "stable_skip",
+    owner: "none",
+    retryable: false,
+    label: "Live close guard",
+    summary: "Current GitHub state no longer satisfies the low-signal close policy.",
+    next_step: "Leave the item open until a later review or live-state change makes it eligible.",
+  },
   skipped_same_author_pair: {
     bucket: "stable_skip",
     owner: "none",
@@ -1717,6 +1725,7 @@ const SELECTABLE_CLOSE_ACTIONS = new Set([
   "proposed_close",
   "retry_pr_close_coverage_proof",
   "kept_open",
+  "skipped_low_signal_live_guard",
   "skipped_open_closing_pr",
   "skipped_same_author_pair",
 ]);

@@ -1269,6 +1269,12 @@ test("apply mode prioritizes matching close proposals before comment sync", () =
     close_reason: "implemented_on_main",
     action_taken: "kept_open",
   });
+  const lowSignalLiveGuard = reportFrontMatter({
+    type: "pull_request",
+    decision: "close",
+    close_reason: "low_signal_unmergeable_pr",
+    action_taken: "skipped_low_signal_live_guard",
+  });
   const pairBlockedOpenClosingPr = reportFrontMatter({
     decision: "close",
     close_reason: "implemented_on_main",
@@ -1295,6 +1301,7 @@ test("apply mode prioritizes matching close proposals before comment sync", () =
   assert.equal(applyDecisionPriority(legacyMaintainerSkip, "issue"), 0);
   assert.equal(applyDecisionPriority(legacyInvalidDecision, "issue"), 0);
   assert.equal(applyDecisionPriority(legacyKeptOpen, "issue"), 0);
+  assert.equal(applyDecisionPriority(lowSignalLiveGuard, "pull_request"), 0);
   assert.equal(applyDecisionPriority(pairBlockedOpenClosingPr, "issue"), 1);
   assert.equal(applyDecisionPriority(pairBlockedSameAuthor, "issue"), 1);
   assert.equal(applyDecisionPriority(pullRequestClose, "issue"), 1);

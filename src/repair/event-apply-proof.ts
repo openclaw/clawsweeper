@@ -24,6 +24,7 @@ const GUARDED_OPEN_ACTIONS = new Set([
   "skipped_open_closing_pr",
   "skipped_protected_label",
   "skipped_close_exempt_label",
+  "skipped_low_signal_live_guard",
   "skipped_same_author_pair",
 ]);
 

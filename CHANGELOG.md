@@ -78,6 +78,8 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Fixed
 
+- Completed exact-review events when a fresh low-signal close guard keeps the
+  item open, instead of retrying the same safely rejected close forever.
 - Coalesced self-continuing hot and normal review runs per target so scheduled
   backstops cannot create permanent parallel continuation chains that overwhelm
   serialized review publication, while exact-item, apply, and comment-sync

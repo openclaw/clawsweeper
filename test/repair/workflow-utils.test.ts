@@ -546,6 +546,7 @@ test("workflow utilities classify common apply skip reasons into next actions", 
       { number: 70, action: "retry_pr_close_coverage_proof" },
       { number: 80, action: "skipped_missing_record" },
       { number: 90, action: "skipped_close_exempt_label" },
+      { number: 100, action: "skipped_low_signal_live_guard" },
     ]),
   );
 
@@ -564,7 +565,7 @@ test("workflow utilities classify common apply skip reasons into next actions", 
     defer_until_closing_pr: 1,
     maintainer_review: 3,
     report_quality_repair: 2,
-    stable_skip: 1,
+    stable_skip: 2,
   });
   assert.equal(
     summary.next_actions.find((action) => action.reason === "skipped_pr_close_coverage_proof")
@@ -578,6 +579,10 @@ test("workflow utilities classify common apply skip reasons into next actions", 
   assert.equal(
     summary.next_actions.find((action) => action.reason === "skipped_same_author_pair")?.retryable,
     false,
+  );
+  assert.equal(
+    summary.next_actions.find((action) => action.reason === "skipped_low_signal_live_guard")?.label,
+    "Live close guard",
   );
   assert.equal(
     summary.next_actions.find((action) => action.reason === "skipped_invalid_decision")?.owner,
@@ -1478,6 +1483,21 @@ test("workflow utilities select eligible proposed close records", () => {
       "",
     ].join("\n"),
   );
+  write(
+    path.join(root, "records/openclaw-openclaw/items/openclaw-openclaw-36.md"),
+    [
+      "---",
+      "repository: openclaw/openclaw",
+      "type: pull_request",
+      "decision: close",
+      "confidence: high",
+      "action_taken: skipped_low_signal_live_guard",
+      "close_reason: low_signal_unmergeable_pr",
+      `item_created_at: ${oldDate}`,
+      "---",
+      "",
+    ].join("\n"),
+  );
 
   const selected = withCwd(root, () =>
     proposedItemNumbers({
@@ -1490,7 +1510,7 @@ test("workflow utilities select eligible proposed close records", () => {
     }),
   );
 
-  assert.deepEqual(selected, [5, 12, 15, 17, 18, 21, 22, 24, 25, 26, 27, 30, 31, 32, 35]);
+  assert.deepEqual(selected, [5, 12, 15, 17, 18, 21, 22, 24, 25, 26, 27, 30, 31, 32, 35, 36]);
   assert.deepEqual(
     withCwd(root, () =>
       proposedItemNumbers({
@@ -1502,7 +1522,7 @@ test("workflow utilities select eligible proposed close records", () => {
         minAgeMinutes: null,
       }),
     ),
-    [15, 22, 32, 35],
+    [15, 22, 32, 35, 36],
   );
   assert.deepEqual(
     withCwd(root, () =>

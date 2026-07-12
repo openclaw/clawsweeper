@@ -378,6 +378,7 @@ type ActionTaken =
   | "skipped_maintainer_authored"
   | "skipped_protected_label"
   | "skipped_close_exempt_label"
+  | "skipped_low_signal_live_guard"
   | "skipped_pr_close_coverage_proof"
   | "retry_pr_close_coverage_proof"
   | "retry_stale_canonical_comment_sync"
@@ -1795,6 +1796,7 @@ const EVENT_GUARDED_OPEN_ACTIONS = new Set<string>([
   "skipped_open_closing_pr",
   "skipped_protected_label",
   "skipped_close_exempt_label",
+  "skipped_low_signal_live_guard",
   "skipped_same_author_pair",
 ]);
 
@@ -6449,8 +6451,9 @@ function isRetryableCloseSkipReport(markdown: string): boolean {
 }
 
 function isRetryableKeptOpenCloseReport(markdown: string): boolean {
+  const action = frontMatterValue(markdown, "action_taken");
   return (
-    frontMatterValue(markdown, "action_taken") === "kept_open" &&
+    (action === "kept_open" || action === "skipped_low_signal_live_guard") &&
     hasHighConfidenceAllowedCloseMetadata(markdown)
   );
 }
@@ -23206,7 +23209,7 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
         staleMinAgeDays,
       );
       if (lowSignalBlockReason) {
-        if (markApplySkipped("kept_open", lowSignalBlockReason)) break;
+        if (markApplySkipped("skipped_low_signal_live_guard", lowSignalBlockReason, true)) break;
         continue;
       }
     }
@@ -24105,7 +24108,14 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
               ? lowSignalUnmergeablePrApplyBlockReasonSafe(number, staleMinAgeDays)
               : null;
           if (lowSignalCommentSyncBlockReason) {
-            if (markApplySkipped("kept_open", lowSignalCommentSyncBlockReason)) break;
+            if (
+              markApplySkipped(
+                "skipped_low_signal_live_guard",
+                lowSignalCommentSyncBlockReason,
+                true,
+              )
+            )
+              break;
             continue;
           }
           try {
@@ -24308,7 +24318,7 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
         ? lowSignalUnmergeablePrApplyBlockReasonSafe(number, staleMinAgeDays)
         : null;
     if (lowSignalBlockReason) {
-      if (markApplySkipped("kept_open", lowSignalBlockReason)) break;
+      if (markApplySkipped("skipped_low_signal_live_guard", lowSignalBlockReason, true)) break;
       continue;
     }
     const inactivityCloseBlockReason =

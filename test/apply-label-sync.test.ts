@@ -2731,7 +2731,7 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/322\\/timeline(?:\\?|$
     assert.deepEqual(JSON.parse(readFileSync(reportPath, "utf8")), [
       {
         number: 322,
-        action: "kept_open",
+        action: "skipped_low_signal_live_guard",
         reason: "maintainer issue comment blocks low-signal auto-close",
       },
     ]);

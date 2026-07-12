@@ -26,7 +26,13 @@ function runLowSignalApplyFixture(options: {
   mergeableState?: string | null;
   comments?: (reviewComment: string) => unknown[];
   timeline?: unknown[];
-}): Array<{ number: number; action: string; reason: string }> {
+  eventApplyProof?: boolean;
+}): Array<{
+  number: number;
+  action: string;
+  reason: string;
+  guardedOpenStateVerified?: boolean;
+}> {
   const root = mkdtempSync(tmpPrefix);
   try {
     const itemsDir = join(root, "items");
@@ -79,6 +85,7 @@ function runLowSignalApplyFixture(options: {
             "30",
             "--item-numbers",
             String(options.number),
+            ...(options.eventApplyProof ? ["--event-apply-proof"] : []),
           ],
         });
       },
@@ -600,12 +607,15 @@ test("apply-decisions keeps MERGEABLE UNSTABLE low-signal proposals open", () =>
     mergeable: true,
     mergeableState: "unstable",
     headActivityAt: "2026-02-01T01:00:00Z",
+    eventApplyProof: true,
   });
 
+  const guarded = report.find((entry) => entry.action === "skipped_low_signal_live_guard");
   assert.match(
-    report.find((entry) => entry.action === "kept_open")?.reason ?? "",
+    guarded?.reason ?? "",
     /requires a live merge conflict; GitHub reports mergeable=true, mergeable_state=unstable/,
   );
+  assert.equal(guarded?.guardedOpenStateVerified, true);
   assert.equal(
     report.some((entry) => entry.action === "closed"),
     false,
@@ -691,7 +701,7 @@ test("apply-decisions rechecks low-signal liveness before writing an unsynced cl
     assert.deepEqual(report, [
       {
         number,
-        action: "kept_open",
+        action: "skipped_low_signal_live_guard",
         reason:
           "low_signal_unmergeable_pr requires 30 days without author comments or head activity",
       },
@@ -700,7 +710,7 @@ test("apply-decisions rechecks low-signal liveness before writing an unsynced cl
     assert.equal(existsSync(join(root, `comment-state-${number}.json`)), false);
     assert.match(
       readFileSync(join(itemsDir, `${number}.md`), "utf8"),
-      /^action_taken: kept_open$/m,
+      /^action_taken: skipped_low_signal_live_guard$/m,
     );
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -756,7 +766,7 @@ test("apply-decisions keeps recently updated DIRTY low-signal proposals open", (
   });
 
   assert.match(
-    report.find((entry) => entry.action === "kept_open")?.reason ?? "",
+    report.find((entry) => entry.action === "skipped_low_signal_live_guard")?.reason ?? "",
     /requires 30 days without author comments or head activity/,
   );
   assert.equal(
@@ -804,7 +814,7 @@ test("apply-decisions fails closed without current-head activity evidence", () =
   });
 
   assert.match(
-    report.find((entry) => entry.action === "kept_open")?.reason ?? "",
+    report.find((entry) => entry.action === "skipped_low_signal_live_guard")?.reason ?? "",
     /requires dated activity evidence for the current head/,
   );
 });

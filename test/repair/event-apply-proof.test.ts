@@ -266,6 +266,7 @@ test("exact event proof completes live-shaped deterministic guarded-open results
     "skipped_close_exempt_label",
     "skipped_maintainer_authored",
     "skipped_locked_conversation",
+    "skipped_low_signal_live_guard",
   ]) {
     const snapshot = `---\nrepository: openclaw/openclaw\nnumber: 91668\naction_taken: ${action}\n---\n`;
     const proof = exactEventApplyProof(
