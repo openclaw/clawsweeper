@@ -458,6 +458,9 @@ jobs:
       CI: "true"
       CLAWSWEEPER_APP_CLIENT_ID: Iv23liOECG0slfuhz093
       CLOUDFLARE_ACCOUNT_ID: 91b59577e757131d68d55a471fe32aca
+      DEPLOYMENT_STATUS_ATTEMPTS: "6"
+      DEPLOYMENT_STATUS_DELAY_SECONDS: "5"
+      DEPLOY_MESSAGE: clawsweeper run ${{ github.run_id }}/${{ github.run_attempt }} main ${{ needs.preflight.outputs.deploy_sha }}
       DEPLOY_SHA: ${{ needs.preflight.outputs.deploy_sha }}
       ENV: ""
       NODE_OPTIONS: ""
@@ -1422,11 +1425,13 @@ jobs:
           );
           const versions = deployment?.versions;
           if (
-            !Array.isArray(versions) ||
-            versions.length !== 1 ||
-            versions[0]?.percentage !== 100 ||
-            !/^[0-9a-f-]{36}$/i.test(String(versions[0]?.version_id ?? ''))
-          ) {
+              !Array.isArray(versions) ||
+              versions.length !== 1 ||
+              versions[0]?.percentage !== 100 ||
+              !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+                String(versions[0]?.version_id ?? ''),
+              )
+            ) {
             throw new Error('current Worker deployment is not one stable rollback version');
           }
           writeFileSync(
@@ -1834,7 +1839,6 @@ jobs:
           CLOUDFLARE_TOKEN_SHA256: ${{ vars.CRAWL_REMOTE_CLOUDFLARE_TOKEN_SHA256 }}
           CONSUMED_RECEIPT_PATH: ${{ runner.temp }}/${{ needs.preflight.outputs.receipt_name }}.consumed
           DEPLOY_OUTPUT_PATH: ${{ runner.temp }}/crawl-remote-deploy-output.ndjson
-          DEPLOYED_VERSION_PATH: ${{ runner.temp }}/crawl-remote-deployed-version.txt
           PENDING_MIGRATIONS_PATH: ${{ runner.temp }}/crawl-remote-compatible-pending-migrations.json
           PREVIOUS_WORKER_PROBE_PATH: ${{ runner.temp }}/crawl-remote-previous-worker-migration-proof.txt
           RELEASE_ROOT: ${{ runner.temp }}/crawl-remote-release
@@ -1846,7 +1850,6 @@ jobs:
           test -f "$PENDING_MIGRATIONS_PATH"
           test -f "$PREVIOUS_WORKER_PROBE_PATH"
           test ! -e "$DEPLOY_OUTPUT_PATH"
-          test ! -e "$DEPLOYED_VERSION_PATH"
           wrangler="$TOOLCHAIN_ROOT/node_modules/.bin/wrangler"
           test "$("$wrangler" --version)" = "$WRANGLER_VERSION"
 
@@ -1857,11 +1860,186 @@ jobs:
             --cwd "$RELEASE_ROOT" \
             --config wrangler.json \
             --var "CRAWL_REMOTE_RELEASE_SHA:$DEPLOY_SHA" \
-            --message "main ${DEPLOY_SHA}"
+            --message "$DEPLOY_MESSAGE"
+
+      - name: Resolve Worker deployment ownership
+        id: deployment-state
+        if: ${{ always() && steps.worker-deploy.outcome != 'skipped' }}
+        continue-on-error: true
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CRAWL_REMOTE_PRODUCTION_CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_TOKEN_SHA256: ${{ vars.CRAWL_REMOTE_CLOUDFLARE_TOKEN_SHA256 }}
+          CURRENT_DEPLOYMENT_RESPONSE: ${{ runner.temp }}/crawl-remote-current-deployment.json
+          DEPLOYED_VERSION_PATH: ${{ runner.temp }}/crawl-remote-deployed-version.txt
+          PREVIOUS_VERSION_PATH: ${{ runner.temp }}/crawl-remote-previous-version.txt
+          RELEASE_ROOT: ${{ runner.temp }}/crawl-remote-release
+          WORKER_DEPLOY_OUTCOME: ${{ steps.worker-deploy.outcome }}
+        run: |
+          unset BASH_ENV ENV CDPATH GLOBIGNORE NODE_OPTIONS
+          test -n "$CLOUDFLARE_API_TOKEN"
+          test "$CLOUDFLARE_TOKEN_SHA256" = "$(printf '%s' "$CLOUDFLARE_API_TOKEN" | sha256sum | cut -d ' ' -f 1)"
+          test -f "$PREVIOUS_VERSION_PATH"
+          test ! -e "$CURRENT_DEPLOYMENT_RESPONSE"
+          test ! -e "$DEPLOYED_VERSION_PATH"
 
           node --input-type=module <<'DEPLOY_VERSION_NODE'
-          import { readFileSync, writeFileSync } from 'node:fs';
+          import { spawnSync } from 'node:child_process';
+          import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
+          import { join } from 'node:path';
 
+          const uuidPattern =
+            /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+          const previousVersion = readFileSync(
+            process.env.PREVIOUS_VERSION_PATH,
+            'utf8',
+          ).trim();
+          const expectedMessage = process.env.DEPLOY_MESSAGE ?? '';
+          const deployOutcome = process.env.WORKER_DEPLOY_OUTCOME;
+          const attempts = Number(process.env.DEPLOYMENT_STATUS_ATTEMPTS);
+          const delaySeconds = Number(process.env.DEPLOYMENT_STATUS_DELAY_SECONDS);
+          const wrangler = join(
+            process.env.TOOLCHAIN_ROOT,
+            'node_modules',
+            '.bin',
+            'wrangler',
+          );
+          if (
+            !uuidPattern.test(previousVersion) ||
+            expectedMessage.length === 0 ||
+            expectedMessage.length > 256 ||
+            !['success', 'failure'].includes(deployOutcome) ||
+            !Number.isSafeInteger(attempts) ||
+            attempts < 1 ||
+            attempts > 12 ||
+            !Number.isSafeInteger(delaySeconds) ||
+            delaySeconds < 0 ||
+            delaySeconds > 30
+          ) {
+            throw new Error('Worker deployment ownership inputs are invalid');
+          }
+          const version = spawnSync(wrangler, ['--version'], {
+            encoding: 'utf8',
+            env: process.env,
+            maxBuffer: 1024 * 1024,
+          });
+          if (
+            version.status !== 0 ||
+            version.stdout.trim() !== process.env.WRANGLER_VERSION
+          ) {
+            throw new Error('trusted Wrangler version changed before ownership proof');
+          }
+
+          function sleep() {
+            if (delaySeconds > 0) {
+              Atomics.wait(
+                new Int32Array(new SharedArrayBuffer(4)),
+                0,
+                0,
+                delaySeconds * 1000,
+              );
+            }
+          }
+
+          for (let attempt = 1; attempt <= attempts; attempt += 1) {
+            const status = spawnSync(
+              wrangler,
+              [
+                'deployments',
+                'status',
+                '--name',
+                'crawl-remote',
+                '--json',
+                '--cwd',
+                process.env.RELEASE_ROOT,
+                '--config',
+                'wrangler.json',
+              ],
+              {
+                encoding: 'utf8',
+                env: process.env,
+                maxBuffer: 1024 * 1024,
+              },
+            );
+            if (status.status !== 0) {
+              if (attempt < attempts) {
+                sleep();
+                continue;
+              }
+              throw new Error('unable to resolve current Worker deployment');
+            }
+            if (Buffer.byteLength(status.stdout, 'utf8') > 1024 * 1024) {
+              throw new Error('current Worker deployment response is oversized');
+            }
+            writeFileSync(process.env.CURRENT_DEPLOYMENT_RESPONSE, status.stdout, {
+              mode: 0o600,
+            });
+            const deployment = JSON.parse(status.stdout);
+            const versions = deployment?.versions;
+            if (
+              !Array.isArray(versions) ||
+              versions.length !== 1 ||
+              versions[0]?.percentage !== 100 ||
+              !uuidPattern.test(String(versions[0]?.version_id ?? ''))
+            ) {
+              throw new Error('current Worker deployment is not one stable version');
+            }
+            const currentVersion = versions[0].version_id;
+            if (currentVersion === previousVersion) {
+              if (attempt < attempts) {
+                sleep();
+                continue;
+              }
+              if (deployOutcome === 'success') {
+                throw new Error(
+                  'successful Worker deploy did not become the current version',
+                );
+              }
+              appendFileSync(
+                process.env.GITHUB_OUTPUT,
+                `mutation_owned=false\ncurrent_version=${currentVersion}\n`,
+              );
+              process.exit(0);
+            }
+            if (deployment?.annotations?.['workers/message'] !== expectedMessage) {
+              throw new Error(
+                'current Worker deployment is not owned by this workflow run',
+              );
+            }
+            writeFileSync(
+              process.env.DEPLOYED_VERSION_PATH,
+              `${currentVersion}\n`,
+              { flag: 'wx', mode: 0o600 },
+            );
+            appendFileSync(
+              process.env.GITHUB_OUTPUT,
+              `mutation_owned=true\ndeployed_version=${currentVersion}\n`,
+            );
+            process.exit(0);
+          }
+
+          throw new Error('unable to resolve Worker deployment ownership');
+          DEPLOY_VERSION_NODE
+
+      - name: Validate Worker deploy receipt
+        id: deploy-receipt
+        if: ${{ steps.deployment-state.outputs.mutation_owned == 'true' }}
+        continue-on-error: true
+        env:
+          DEPLOY_OUTPUT_PATH: ${{ runner.temp }}/crawl-remote-deploy-output.ndjson
+          DEPLOYED_VERSION_PATH: ${{ runner.temp }}/crawl-remote-deployed-version.txt
+        run: |
+          unset BASH_ENV ENV CDPATH GLOBIGNORE NODE_OPTIONS
+          test -f "$DEPLOY_OUTPUT_PATH"
+          test -f "$DEPLOYED_VERSION_PATH"
+          test "$(wc -c < "$DEPLOY_OUTPUT_PATH")" -le 1048576
+
+          node --input-type=module <<'DEPLOY_RECEIPT_NODE'
+          import { readFileSync } from 'node:fs';
+
+          const deployedVersion = readFileSync(
+            process.env.DEPLOYED_VERSION_PATH,
+            'utf8',
+          ).trim();
           const entries = readFileSync(process.env.DEPLOY_OUTPUT_PATH, 'utf8')
             .split(/\r?\n/)
             .filter(Boolean)
@@ -1871,23 +2049,23 @@ jobs:
             deployments.length !== 1 ||
             deployments[0]?.version !== 1 ||
             deployments[0]?.worker_name !== 'crawl-remote' ||
-            typeof deployments[0]?.version_id !== 'string' ||
-            !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
-              deployments[0].version_id,
-            )
+            deployments[0]?.version_id !== deployedVersion
           ) {
-            throw new Error('Wrangler deploy output did not identify one crawl-remote version');
+            throw new Error(
+              'Wrangler deploy receipt does not match the owned Worker version',
+            );
           }
-          writeFileSync(
-            process.env.DEPLOYED_VERSION_PATH,
-            `${deployments[0].version_id}\n`,
-            { flag: 'wx', mode: 0o600 },
-          );
-          DEPLOY_VERSION_NODE
+          DEPLOY_RECEIPT_NODE
 
       - name: Reauthorize current main after Worker deploy
         id: post-deploy-main
-        if: ${{ steps.worker-deploy.outcome == 'success' }}
+        if: >-
+          ${{
+            steps.worker-deploy.outcome == 'success' &&
+            steps.deployment-state.outcome == 'success' &&
+            steps.deployment-state.outputs.mutation_owned == 'true' &&
+            steps.deploy-receipt.outcome == 'success'
+          }}
         continue-on-error: true
         env:
           GH_TOKEN: ${{ steps.target-token.outputs.token }}
@@ -1923,6 +2101,9 @@ jobs:
         if: >-
           ${{
             steps.worker-deploy.outcome == 'success' &&
+            steps.deployment-state.outcome == 'success' &&
+            steps.deployment-state.outputs.mutation_owned == 'true' &&
+            steps.deploy-receipt.outcome == 'success' &&
             steps.post-deploy-main.outcome == 'success'
           }}
         continue-on-error: true
@@ -2135,8 +2316,11 @@ jobs:
         if: >-
           ${{
             always() &&
-            steps.worker-deploy.outcome == 'success' &&
+            steps.deployment-state.outcome == 'success' &&
+            steps.deployment-state.outputs.mutation_owned == 'true' &&
             (
+              steps.worker-deploy.outcome != 'success' ||
+              steps.deploy-receipt.outcome != 'success' ||
               steps.post-deploy-main.outcome != 'success' ||
               steps.production-proof.outcome != 'success'
             )
@@ -2224,6 +2408,9 @@ jobs:
       - name: Require successful release and proof
         if: ${{ always() }}
         env:
+          DEPLOYMENT_STATE_OUTCOME: ${{ steps.deployment-state.outcome }}
+          DEPLOY_RECEIPT_OUTCOME: ${{ steps.deploy-receipt.outcome }}
+          MUTATION_OWNED: ${{ steps.deployment-state.outputs.mutation_owned }}
           POST_DEPLOY_MAIN_OUTCOME: ${{ steps.post-deploy-main.outcome }}
           PREVIOUS_WORKER_PROBE_OUTCOME: ${{ steps.previous-worker-probe.outcome }}
           PRODUCTION_PROOF_OUTCOME: ${{ steps.production-proof.outcome }}
@@ -2233,10 +2420,13 @@ jobs:
           unset BASH_ENV ENV CDPATH GLOBIGNORE NODE_OPTIONS
           if [[
             "$WORKER_DEPLOY_OUTCOME" == "success" &&
+            "$DEPLOYMENT_STATE_OUTCOME" == "success" &&
+            "$MUTATION_OWNED" == "true" &&
+            "$DEPLOY_RECEIPT_OUTCOME" == "success" &&
             "$POST_DEPLOY_MAIN_OUTCOME" == "success" &&
             "$PRODUCTION_PROOF_OUTCOME" == "success"
           ]]; then
             exit 0
           fi
-          echo "::error::crawl-remote release failed or lost authorization; previous Worker probe: $PREVIOUS_WORKER_PROBE_OUTCOME; Worker rollback outcome: $ROLLBACK_OUTCOME. D1 migrations are not rolled back."
+          echo "::error::crawl-remote release failed or lost authorization; deployment state: $DEPLOYMENT_STATE_OUTCOME/$MUTATION_OWNED; deploy receipt: $DEPLOY_RECEIPT_OUTCOME; previous Worker probe: $PREVIOUS_WORKER_PROBE_OUTCOME; Worker rollback outcome: $ROLLBACK_OUTCOME. D1 migrations are not rolled back."
           exit 1
