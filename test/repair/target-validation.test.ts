@@ -629,6 +629,14 @@ test("validation parser rejects execution-control environment assignments", () =
     "npm_config_userconfig=./malicious.npmrc pnpm check:changed",
     "GIT_CONFIG_COUNT=1 git diff --check",
     "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER=./runner cargo test",
+    "GOFLAGS=-toolexec=./hook go test ./...",
+    "MAVEN_OPTS=-javaagent:./hook.jar mvn test",
+    "GRADLE_OPTS=-Dorg.gradle.jvmargs=-javaagent:./hook.jar gradle test",
+    "RUSTFLAGS=-Clinker=./hook cargo test",
+    "CARGO_ENCODED_RUSTFLAGS=-Clinker=./hook cargo test",
+    "CC=./compiler make test",
+    "PERL5OPT=-Mlocal::lib=./hook make test",
+    "PYTEST_ADDOPTS=-p./hook pytest tests",
   ]) {
     assert.throws(() => parseAllowedValidationCommand(command), /unsafe validation command/);
   }
