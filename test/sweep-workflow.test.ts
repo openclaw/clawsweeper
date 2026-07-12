@@ -1132,7 +1132,7 @@ test("apply workflow drops a coverage-proof tail only after exact trace examinat
         "-lc",
         [
           'export PATH="$NODE_BIN_DIR:$PATH"',
-          'pnpm() { corepack pnpm "$@"; }',
+          'pnpm() { while [ "$#" -gt 0 ] && [ "$1" != "--" ]; do shift; done; [ "$#" -gt 0 ] && shift; node dist/repair/workflow-utils.js "$@"; }',
           "source scripts/apply-workflow-helpers.sh",
           "auto_selected_apply_batch=true",
           "item_numbers=10,20,30,40",

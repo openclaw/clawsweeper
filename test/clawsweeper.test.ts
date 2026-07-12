@@ -2089,7 +2089,7 @@ test("repair workers hydrate only durable jobs from generated state", () => {
   assert.equal(
     workflow.match(/uses: \.\/\.github\/actions\/setup-state[\s\S]*?sparse-checkout: jobs/g)
       ?.length,
-    2,
+    3,
   );
   assert.match(workflow, /CLAWSWEEPER_STEERABLE_CODEX/);
   assert.match(workflow, /actions\/cache\/restore@v6/);
@@ -2199,7 +2199,7 @@ test("sweep workflow executes only durable queue leases without runner-side admi
   );
   assert.match(
     eventReviewBlock.slice(failReviewIndex, completeLeaseIndex),
-    /steps\.route-synced-verdict\.outcome != 'success'/,
+    /steps\.queue-exact-verdict-router\.outcome != 'success'/,
   );
   assert.match(completeLeaseStep, /JOB_STATUS: \$\{\{ job\.status \}\}/);
   assert.match(completeLeaseStep, /if: \$\{\{ always\(\) \}\}/);
@@ -2357,7 +2357,12 @@ test("repair workflows preserve existing dispatch while scheduled cluster intake
   ].join("\n");
 
   assert.doesNotMatch(existingRepairWorkflows, /CLAWSWEEPER_FEATURE_REPAIR_ENABLED/);
-  assert.match(sweep, /pnpm run repair:comment-router -- \\\n[\s\S]*--execute/);
+  assert.doesNotMatch(sweep, /pnpm run repair:comment-router --/);
+  assert.match(
+    sweep,
+    /gh workflow run repair-comment-router\.yml[\s\S]*-f item_numbers="\$ITEM_NUMBER"/,
+  );
+  assert.match(router, /pnpm run repair:comment-router -- "\$\{args\[@\]\}"/);
   assert.match(router, /\{ \[ "\$\{\{ github\.event_name \}\}" = "repository_dispatch" \]; \}/);
   assert.match(issueImplementation, /ENABLED: \$\{\{ github\.event\.inputs\.enabled/);
   assert.match(commitFinding, /ENABLED: \$\{\{ github\.event\.inputs\.enabled/);
