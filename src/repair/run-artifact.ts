@@ -14,6 +14,7 @@ export function resolveRunArtifact({
   prefix,
   runId,
   currentAttempt,
+  expectedProducerAttempt,
   expectedArtifactId,
   expectedArtifactDigest,
   fallbackPrefixes = [],
@@ -23,6 +24,7 @@ export function resolveRunArtifact({
   prefix: string;
   runId: string;
   currentAttempt: number;
+  expectedProducerAttempt?: string | number | null;
   expectedArtifactId?: string | null;
   expectedArtifactDigest?: string | null;
   fallbackPrefixes?: string[];
@@ -40,6 +42,10 @@ export function resolveRunArtifact({
   }
   if (!Number.isInteger(currentAttempt) || currentAttempt < 1) {
     throw new Error("current workflow attempt is invalid");
+  }
+  const pinnedProducerAttempt = parseOptionalProducerAttempt(expectedProducerAttempt);
+  if (pinnedProducerAttempt !== null && pinnedProducerAttempt >= currentAttempt) {
+    throw new Error("expected producer attempt must precede the current workflow attempt");
   }
 
   const expectedId = parseOptionalArtifactId(expectedArtifactId);
@@ -76,7 +82,11 @@ export function resolveRunArtifact({
   });
 
   if (expectedId !== null) {
-    const exact = candidates.filter((artifact) => artifact.id === expectedId);
+    const exact = candidates.filter(
+      (artifact) =>
+        artifact.id === expectedId &&
+        (pinnedProducerAttempt === null || artifact.producerAttempt === pinnedProducerAttempt),
+    );
     if (exact.length !== 1) {
       throw new Error("expected producer artifact id is missing or ambiguous");
     }
@@ -86,6 +96,7 @@ export function resolveRunArtifact({
   const eligible = candidates.filter(
     (artifact) =>
       !artifact.expired &&
+      (pinnedProducerAttempt === null || artifact.producerAttempt === pinnedProducerAttempt) &&
       (artifact.producerAttempt === currentAttempt ||
         (allowPriorAttempts && artifact.producerAttempt < currentAttempt)),
   );
@@ -127,6 +138,15 @@ function finalizeArtifact(
     producerAttempt: artifact.producerAttempt,
     digest: artifact.digest,
   };
+}
+
+function parseOptionalProducerAttempt(value: unknown): number | null {
+  const text = String(value ?? "").trim();
+  if (!text) return null;
+  if (!/^[1-9][0-9]*$/.test(text)) throw new Error("expected producer attempt is invalid");
+  const attempt = Number(text);
+  if (!Number.isSafeInteger(attempt)) throw new Error("expected producer attempt is invalid");
+  return attempt;
 }
 
 function parseOptionalArtifactId(value: unknown): number | null {

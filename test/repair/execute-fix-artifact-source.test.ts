@@ -358,6 +358,14 @@ test("repair workflow binds one run through no-credential proof and token-only m
     authorize,
     /Restore checkpoint authorization before live source intake[\s\S]*--source-root \.clawsweeper-repair\/recovery-authorized[\s\S]*--publication-root \.clawsweeper-repair\/recovery-execution[\s\S]*--publication-receipt \.clawsweeper-repair\/recovery-publication\/receipt\.json[\s\S]*--source-job-path "\$\{\{ inputs\.job \}\}"/,
   );
+  assert.equal(
+    [
+      ...authorize.matchAll(
+        /--expected-producer-attempt "\$\{\{ steps\.authorization_publication_artifact\.outputs\.producer_attempt \}\}"/g,
+      ),
+    ].length,
+    2,
+  );
   assert.match(authorize, /persist-credentials: "false"/);
   assert.match(execute, /repair:execution-handoff -- verify/);
   assert.match(execute, /repair:execution-handoff -- seal/);
@@ -436,7 +444,7 @@ test("repair workflow binds one run through no-credential proof and token-only m
   assert.match(mutate, /needs\.validate\.result == 'success'/);
   assert.match(
     mutate,
-    /Write final publication provenance[\s\S]*source_close_mutations[\s\S]*Upload final worker artifacts[\s\S]*\.clawsweeper-repair\/publication\/receipt\.json[\s\S]*\.clawsweeper-repair\/provenance\/publication\.json[\s\S]*retention-days: 90/,
+    /Write final publication provenance[\s\S]*source_close_mutations[\s\S]*begin_reopen_source_pull_request[\s\S]*Upload final worker artifacts[\s\S]*\.clawsweeper-repair\/publication\/receipt\.json[\s\S]*\.clawsweeper-repair\/provenance\/publication\.json[\s\S]*retention-days: 90/,
   );
   assert.doesNotMatch(mutate, /setup-codex|--latest|create-state-token|setup-state/);
   assert.match(mutate, /npm_config_ignore_scripts: "true"/);

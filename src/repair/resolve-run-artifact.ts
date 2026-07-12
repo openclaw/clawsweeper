@@ -30,6 +30,7 @@ const artifact = resolveRunArtifact({
   prefix: requiredArg(args, "prefix"),
   runId,
   currentAttempt: Number(requiredArg(args, "current-attempt")),
+  expectedProducerAttempt: args.get("expected-producer-attempt") ?? null,
   expectedArtifactId: args.get("expected-artifact-id") ?? null,
   expectedArtifactDigest: args.get("expected-artifact-digest") ?? null,
   fallbackPrefixes: args.has("fallback-prefix") ? [requiredArg(args, "fallback-prefix")] : [],

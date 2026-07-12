@@ -117,6 +117,49 @@ test("checkpoint recovery selects the newest attempt across artifact prefixes", 
   );
 });
 
+test("checkpoint recovery pins related artifacts to the publication producer attempt", () => {
+  assert.deepEqual(
+    resolveRunArtifact({
+      artifacts: [artifact(101, 1, digest1), artifact(102, 2, digest2)],
+      prefix: "clawsweeper-repair-execution",
+      runId: "9001",
+      currentAttempt: 3,
+      expectedProducerAttempt: "1",
+      allowPriorAttempts: true,
+    }),
+    {
+      id: 101,
+      name: "clawsweeper-repair-execution-9001-1",
+      producerAttempt: 1,
+      digest: digest1,
+    },
+  );
+  assert.throws(
+    () =>
+      resolveRunArtifact({
+        artifacts: [artifact(101, 1, digest1)],
+        prefix: "clawsweeper-repair-execution",
+        runId: "9001",
+        currentAttempt: 3,
+        expectedProducerAttempt: "2",
+        allowPriorAttempts: true,
+      }),
+    /no trusted current or prior producer artifact/,
+  );
+  assert.throws(
+    () =>
+      resolveRunArtifact({
+        artifacts: [artifact(101, 1, digest1)],
+        prefix: "clawsweeper-repair-execution",
+        runId: "9001",
+        currentAttempt: 3,
+        expectedProducerAttempt: "3",
+        allowPriorAttempts: true,
+      }),
+    /must precede the current workflow attempt/,
+  );
+});
+
 test("artifact resolution rejects expired, ambiguous, and untrusted candidates", () => {
   assert.throws(
     () =>
@@ -236,6 +279,14 @@ test("repair workflow resolves producer artifacts by trusted id across rerun att
   assert.match(
     workflow,
     /Resolve prior publication checkpoint for authorization recovery[\s\S]*?Resolve prior checkpoint authorization[\s\S]*?Resolve prior checkpoint execution handoff[\s\S]*?Restore checkpoint authorization before live source intake[\s\S]*?Authorize exact job and run/,
+  );
+  assert.equal(
+    [
+      ...workflow.matchAll(
+        /--expected-producer-attempt "\$\{\{ steps\.authorization_publication_artifact\.outputs\.producer_attempt \}\}"/g,
+      ),
+    ].length,
+    2,
   );
 });
 

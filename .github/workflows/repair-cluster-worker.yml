@@ -523,6 +523,7 @@ jobs:
             --repository "${{ github.repository }}" \
             --run-id "${{ github.run_id }}" \
             --current-attempt "${{ github.run_attempt }}" \
+            --expected-producer-attempt "${{ steps.authorization_publication_artifact.outputs.producer_attempt }}" \
             --prefix clawsweeper-repair-authorized
 
       - name: Download prior checkpoint authorization
@@ -546,6 +547,7 @@ jobs:
             --repository "${{ github.repository }}" \
             --run-id "${{ github.run_id }}" \
             --current-attempt "${{ github.run_attempt }}" \
+            --expected-producer-attempt "${{ steps.authorization_publication_artifact.outputs.producer_attempt }}" \
             --prefix clawsweeper-repair-execution
 
       - name: Download prior checkpoint execution handoff
@@ -1385,6 +1387,7 @@ jobs:
               ? receipt.mutations.filter((mutation) =>
                   [
                     "begin_close_source_pull_request",
+                    "begin_reopen_source_pull_request",
                     "close_source_pull_request",
                     "preserve_reopened_source_pull_request",
                   ].includes(String(mutation?.operation || "")),
