@@ -295,6 +295,7 @@ if (execute && exactCommentVersionFastPath.suppress && exactCommentVersionFastPa
   const versionStillCurrent = measure("verify_exact_comment_version_cleanup", () =>
     exactCommentVersionStillCurrent(exactCommentVersionFastPathCommand),
   );
+  if (versionStillCurrent) assertMutationActorIsClawsweeperBot();
   const ackConvergence = versionStillCurrent
     ? measure("converge_exact_comment_version_ack", () =>
         convergeExactCommentVersionFastPathAck(exactCommentVersionFastPathCommand, statusCommentId),
@@ -4300,6 +4301,7 @@ function convergeExactCommentVersionFastPathAck(command: LooseRecord, commentId:
     issueCommentsCache.delete(Number(command.issue_number));
     return "updated";
   } catch (error) {
+    if (/\b404\b|not found/i.test(ghErrorText(error))) return "already_converged";
     console.warn(
       `[comment-router] warning: exact comment acknowledgement convergence failed for ${command.repo}#${command.issue_number}: ${compactText(ghErrorText(error), 160)}`,
     );

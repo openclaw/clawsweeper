@@ -2020,6 +2020,7 @@ test("exact comment fast path avoids shared terminal acknowledgement cleanup rac
   assert.match(cleanupBlock, /skipped_source_drift/);
   assert.match(cleanupBlock, /reason: "cleanup_source_drift"/);
   assert.match(cleanupBlock, /exactCommentVersionAckFailed\(ackConvergence\)/);
+  assert.match(cleanupBlock, /if \(versionStillCurrent\) assertMutationActorIsClawsweeperBot\(\)/);
   assert.match(cleanupBlock, /throw new Error/);
   assert.match(cleanupBlock, /list_candidate_comments_after_cleanup_drift/);
   assert.match(cleanupBlock, /prehydrate_cleanup_drift_commands/);
@@ -2048,6 +2049,7 @@ test("exact comment fast path avoids shared terminal acknowledgement cleanup rac
   assert.match(ackConvergence, /exactCommentVersionMissingTerminalBody\(command\)/);
   assert.match(ackConvergence, /commandResponseMarker\(\{/);
   assert.match(ackConvergence, /"--method",\s*"PATCH"/);
+  assert.match(ackConvergence, /\\b404\\b\|not found/);
   assert.doesNotMatch(ackConvergence, /renderResponse\(/);
   assert.doesNotMatch(ackConvergence, /"DELETE"/);
   assert.doesNotMatch(ackConvergence, /clearTerminalMaintainerCommandReaction/);
