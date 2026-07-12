@@ -243,9 +243,14 @@ test("contributor repair review loop stays on one pinned target base", () => {
   );
   assert.match(source, /validateAndReviewLoop\(\{[\s\S]*targetBaseSha/);
   assert.match(source, /pinnedBaseRef: targetBaseSha/);
-  assert.match(source, /runDiffCheck\(\{ targetDir, baseRef: targetBaseSha \}\)/);
+  assert.match(
+    source,
+    /runTargetValidationProof\([\s\S]*?validationPlan\.options,[\s\S]*?baseBranch/,
+  );
   assert.match(source, /pinned target base \$\{targetBaseSha\}/);
   assert.match(validation, /pinnedBaseRef\?: string/);
+  assert.match(validation, /const baseRef = validationBaseRef\(cwd, baseBranch, options\)/);
+  assert.match(validation, /\["git", "diff", "--check", `\$\{baseRef\}\.\.\.HEAD`\]/);
   assert.match(source, /classifyExternalBaseValidationFailure\(\{/);
   assert.match(
     source,
