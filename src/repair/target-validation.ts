@@ -534,7 +534,8 @@ function runValidationPlanCommand({
   checkoutIdentity: ValidationCheckoutIdentity;
 }) {
   const rendered = displayParts.join(" ");
-  if (executed.has(rendered)) {
+  const commandIdentity = JSON.stringify(parts);
+  if (executed.has(commandIdentity)) {
     return { executedCommands: [], reason: "exact command already passed" };
   }
   const startedAt = Date.now();
@@ -546,12 +547,12 @@ function runValidationPlanCommand({
         timeoutMs: remainingCommandBudget(timeoutMs, startedAt),
       });
       assertValidationCheckoutIdentity(cwd, baseRef, checkoutIdentity);
-      executed.add(rendered);
+      executed.add(commandIdentity);
       return {
         executedCommands: [rendered],
         reason:
-          (attempts.get(rendered) ?? 0) > 0
-            ? `passed after ${(attempts.get(rendered) ?? 0) + 1} attempts`
+          (attempts.get(commandIdentity) ?? 0) > 0
+            ? `passed after ${(attempts.get(commandIdentity) ?? 0) + 1} attempts`
             : "passed",
       };
     } catch (error) {
@@ -562,7 +563,7 @@ function runValidationPlanCommand({
           error,
           attempts,
           options,
-          attemptKey: rendered,
+          attemptKey: commandIdentity,
         })
       ) {
         continue;

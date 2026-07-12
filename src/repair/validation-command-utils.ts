@@ -77,6 +77,56 @@ const UNSAFE_PACKAGE_MANAGER_PATH_OPTIONS: Record<PackageManagerExecutable, Read
   bun: new Set(["-C", "--cwd"]),
 };
 
+const UNSAFE_VALIDATION_ENV_NAMES = new Set([
+  "BASH_ENV",
+  "BUN_INSTALL",
+  "BUN_INSTALL_CACHE_DIR",
+  "CARGO_BUILD_RUSTC",
+  "CARGO_BUILD_RUSTC_WRAPPER",
+  "CARGO_HOME",
+  "CDPATH",
+  "CLASSPATH",
+  "COMSPEC",
+  "COREPACK_HOME",
+  "COREPACK_INTEGRITY_KEYS",
+  "COREPACK_NPM_REGISTRY",
+  "DOTNET_ADDITIONAL_DEPS",
+  "DOTNET_SHARED_STORE",
+  "DOTNET_STARTUP_HOOKS",
+  "ENV",
+  "GEM_HOME",
+  "GEM_PATH",
+  "GOENV",
+  "GOCACHEPROG",
+  "GOROOT",
+  "GOTOOLDIR",
+  "IFS",
+  "JAVA_HOME",
+  "JAVA_TOOL_OPTIONS",
+  "JDK_JAVA_OPTIONS",
+  "MAKEFLAGS",
+  "MFLAGS",
+  "NODE_OPTIONS",
+  "NODE_PATH",
+  "PATH",
+  "PATHEXT",
+  "PHPRC",
+  "PHP_INI_SCAN_DIR",
+  "PNPM_HOME",
+  "PYTHONHOME",
+  "PYTHONINSPECT",
+  "PYTHONPATH",
+  "PYTHONSTARTUP",
+  "RUBYLIB",
+  "RUBYOPT",
+  "RUSTC",
+  "RUSTC_WRAPPER",
+  "RUSTC_WORKSPACE_WRAPPER",
+  "RUSTUP_HOME",
+  "SHELL",
+  "_JAVA_OPTIONS",
+]);
+
 const VITEST_BOOLEAN_OPTIONS = new Set([
   "-h",
   "-w",
@@ -282,6 +332,7 @@ export function validateAllowedValidationCommandParts(
     throw new Error(`unsupported validation command: ${displayCommand}`);
   }
   if (
+    hasUnsafeValidationEnvironment(normalized) ||
     hasUnsupportedPackageManagerInvocation(normalized) ||
     hasUnsafePackageManagerPathOption(normalized) ||
     hasUnsafePackageRunner(normalized) ||
@@ -486,6 +537,26 @@ function hasUnsafePackageManagerPathOption(parts: readonly string[]) {
   return false;
 }
 
+function hasUnsafeValidationEnvironment(parts: readonly string[]) {
+  let index = parts[0] === "env" ? 1 : 0;
+  while (index < parts.length && isEnvAssignment(parts[index])) {
+    const name = String(parts[index]).slice(0, String(parts[index]).indexOf("=")).toUpperCase();
+    if (
+      UNSAFE_VALIDATION_ENV_NAMES.has(name) ||
+      name.startsWith("DYLD_") ||
+      name.startsWith("GIT_") ||
+      name.startsWith("LD_") ||
+      name.startsWith("NPM_CONFIG_") ||
+      name.startsWith("PNPM_CONFIG_") ||
+      /^CARGO_TARGET_.+_RUNNER$/.test(name)
+    ) {
+      return true;
+    }
+    index += 1;
+  }
+  return false;
+}
+
 function hasMutatingValidationFlag(parts: readonly string[]) {
   const denied = new Set([
     "--fix",
@@ -515,18 +586,64 @@ function hasSnapshotUpdateShortFlag(parts: readonly string[]): boolean {
     return hasSnapshotUpdateShortFlag(commandParts.slice(2));
   }
 
-  const shortUpdateFlags = commandParts
-    .slice(1)
-    .filter((part) => (part.split("=", 1)[0] ?? "") === "-u");
-  if (shortUpdateFlags.length === 0) return false;
+  const shortUpdateIndexes = commandParts
+    .map((part, index) => ({ index, option: part.split("=", 1)[0] ?? "" }))
+    .filter(({ index, option }) => index > 0 && option === "-u")
+    .map(({ index }) => index);
+  if (shortUpdateIndexes.length === 0) return false;
   if (packageInvocation) return true;
-  if (["ava", "jest", "vitest"].includes(executable)) return true;
-  if (!["python", "python3"].includes(executable)) return false;
-  return !(
-    shortUpdateFlags.length === 1 &&
-    shortUpdateFlags[0] === "-u" &&
-    commandParts[1] === "-u"
-  );
+  if (["python", "python3"].includes(executable)) {
+    return hasUnsafePythonUnbufferedFlag(commandParts, shortUpdateIndexes);
+  }
+  if (["ansible-playbook", "gradle", "./gradlew"].includes(executable)) return false;
+
+  const nestedRunner = nestedValidationRunner(commandParts);
+  if (nestedRunner) return hasSnapshotUpdateShortFlag(nestedRunner);
+
+  // Short -u is overloaded by test runners and wrappers. Permit it only for
+  // commands whose read-only meaning is explicit above.
+  return true;
+}
+
+function hasUnsafePythonUnbufferedFlag(
+  commandParts: readonly string[],
+  shortUpdateIndexes: readonly number[],
+) {
+  let boundary = commandParts.length;
+  for (let index = 1; index < commandParts.length; index += 1) {
+    const part = commandParts[index]!;
+    if (part === "--") {
+      boundary = index + 1;
+      break;
+    }
+    if (part === "-m" || part === "-c" || !part.startsWith("-")) {
+      boundary = index;
+      break;
+    }
+    if (["-W", "-X", "--check-hash-based-pycs"].includes(part)) index += 1;
+  }
+  return shortUpdateIndexes.some((index) => commandParts[index] !== "-u" || index >= boundary);
+}
+
+function nestedValidationRunner(commandParts: readonly string[]): string[] | null {
+  const executable = commandParts[0] ?? "";
+  if (!["c8", "nyc", "node"].includes(executable)) return null;
+  const runnerAliases = new Map([
+    ["ava", "ava"],
+    ["ava.js", "ava"],
+    ["jest", "jest"],
+    ["jest.js", "jest"],
+    ["vitest", "vitest"],
+    ["vitest.js", "vitest"],
+    ["vitest.mjs", "vitest"],
+  ]);
+  for (let index = 1; index < commandParts.length; index += 1) {
+    const part = commandParts[index]!;
+    if (part.startsWith("-")) continue;
+    const alias = runnerAliases.get(part.split(/[\\/]/).pop() ?? "");
+    if (alias) return [alias, ...commandParts.slice(index + 1)];
+  }
+  return null;
 }
 
 function isReadOnlyFormatterScript(script: string): boolean {

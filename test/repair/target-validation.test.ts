@@ -367,8 +367,12 @@ test("validation parser rejects snapshot-writing and formatter mutation flags", 
     "bun test -u",
     "bun run vitest -u",
     "uv run vitest -u tests/browser/pageActions.test.ts",
+    "pnpm exec c8 vitest -u tests/browser/pageActions.test.ts",
+    "pnpm exec nyc ava -u tests/example.test.ts",
+    "pnpm exec node ./node_modules/vitest/vitest.mjs -u tests/example.test.ts",
     "python -u=true -m pytest tests/unit",
-    "python -B -u -m pytest tests/unit",
+    "python -m pytest -u tests/unit",
+    "python tests/run.py -u",
     "pnpm lint --fix",
     "pnpm format",
     "pnpm format --write",
@@ -409,6 +413,23 @@ test("validation parser rejects snapshot-writing and formatter mutation flags", 
   ]);
   assert.deepEqual(parseAllowedValidationCommand("python -u -m pytest tests/unit"), [
     "python",
+    "-u",
+    "-m",
+    "pytest",
+    "tests/unit",
+  ]);
+  assert.deepEqual(parseAllowedValidationCommand("python -B -u -m pytest tests/unit"), [
+    "python",
+    "-B",
+    "-u",
+    "-m",
+    "pytest",
+    "tests/unit",
+  ]);
+  assert.deepEqual(parseAllowedValidationCommand("python -W error -u -m pytest tests/unit"), [
+    "python",
+    "-W",
+    "error",
     "-u",
     "-m",
     "pytest",
@@ -597,6 +618,26 @@ test("validation parser requires env assignments before env command", () => {
     () => parseAllowedValidationCommand("env pnpm test:serial src/foo.test.ts"),
     /unsupported validation command/,
   );
+});
+
+test("validation parser rejects execution-control environment assignments", () => {
+  for (const command of [
+    "PATH=./bin pnpm check:changed",
+    "NODE_OPTIONS=--require=./hook.cjs node --test test/example.test.ts",
+    "BASH_ENV=./hook.sh bash tests/run-tests.sh",
+    "LD_PRELOAD=./hook.so make test",
+    "npm_config_userconfig=./malicious.npmrc pnpm check:changed",
+    "GIT_CONFIG_COUNT=1 git diff --check",
+    "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER=./runner cargo test",
+  ]) {
+    assert.throws(() => parseAllowedValidationCommand(command), /unsafe validation command/);
+  }
+  assert.deepEqual(parseAllowedValidationCommand("CI=1 pnpm check:changed"), [
+    "env",
+    "CI=1",
+    "pnpm",
+    "check:changed",
+  ]);
 });
 
 test("validation parser accepts common non-Node project commands", () => {
@@ -1741,6 +1782,37 @@ test("staged target proof validates and digests resolved environment argv", () =
   );
   assert.equal(templated.plan_id, concrete.plan_id);
   assert.equal(templated.commands.at(-1).command_digest, concrete.commands.at(-1).command_digest);
+});
+
+test("staged target proof executes colliding rendered commands by structured argv", () => {
+  const cwd = gitPackageFixture({});
+  const logPath = path.join(os.tmpdir(), `clawsweeper-argv-${process.pid}-${Date.now()}.log`);
+  fs.writeFileSync(
+    path.join(cwd, "record-argv.cjs"),
+    "require('node:fs').appendFileSync(process.argv[2], JSON.stringify(process.argv.slice(3)) + '\\n');\n",
+  );
+  git(cwd, "add", ".");
+  git(cwd, "commit", "-m", "initial");
+  attachOrigin(cwd);
+
+  try {
+    const result = runStagedValidationProof(
+      [`node record-argv.cjs ${logPath} "a b"`, `node record-argv.cjs ${logPath} a b`],
+      cwd,
+      validationOptions("steipete/example", {
+        toolchain: {
+          packageManager: "pnpm",
+          baseValidationCommands: [],
+          changedGate: null,
+        },
+      }),
+    );
+
+    assert.equal(result.trace.status, "passed");
+    assert.deepEqual(fs.readFileSync(logPath, "utf8").trim().split("\n"), ['["a b"]', '["a","b"]']);
+  } finally {
+    fs.rmSync(logPath, { force: true });
+  }
 });
 
 test("staged target proof exposes compact failed traces without command output", () => {
