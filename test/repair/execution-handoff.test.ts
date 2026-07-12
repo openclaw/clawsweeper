@@ -15,6 +15,7 @@ import {
   preparedRefPublicationState,
   publicationPauseItems,
   replacementPublicationLabels,
+  selectAuthorizedReplacementPull,
   sealExecutionHandoff,
   verifyExecutionHandoff,
   verifyValidationReceipt,
@@ -24,6 +25,7 @@ import {
   createPreparedPublication,
   digestJson,
   executionIntentRepairDeltaBaseSha,
+  type PreparedPublication,
   verifyExecutionIntentIdentity,
   verifyPreparedPublication,
 } from "../../dist/repair/prepared-publication.js";
@@ -371,6 +373,71 @@ test("publication retry accepts only the exact already-pushed authorized commit"
   );
 });
 
+test("replacement retry reopens only the exact closed authorized pull request", () => {
+  const intent = executionIntent("a".repeat(64));
+  const publication = {
+    prepared_head_sha: "2".repeat(40),
+    pr_title: "fix: exact replacement",
+    pr_body: "Exact replacement body.",
+  } as PreparedPublication;
+  const exactClosed = {
+    number: 99,
+    state: "closed",
+    merged_at: null,
+    title: publication.pr_title,
+    body: publication.pr_body,
+    head: {
+      repo: { full_name: intent.output_repo },
+      ref: intent.output_branch,
+      sha: publication.prepared_head_sha,
+    },
+    base: { ref: intent.target_base_ref },
+  };
+
+  assert.deepEqual(
+    selectAuthorizedReplacementPull({
+      pulls: [
+        {
+          ...exactClosed,
+          number: 98,
+          title: "unrelated historical pull",
+        },
+        exactClosed,
+      ],
+      publication,
+      intent,
+    }),
+    { number: 99, state: "reopen" },
+  );
+  assert.throws(
+    () =>
+      selectAuthorizedReplacementPull({
+        pulls: [{ ...exactClosed, state: "open", body: "forged body" }],
+        publication,
+        intent,
+      }),
+    /does not match the authorized publication/,
+  );
+  assert.throws(
+    () =>
+      selectAuthorizedReplacementPull({
+        pulls: [{ ...exactClosed, merged_at: "2026-07-12T00:00:00Z" }],
+        publication,
+        intent,
+      }),
+    /already merged/,
+  );
+  assert.throws(
+    () =>
+      selectAuthorizedReplacementPull({
+        pulls: [exactClosed, { ...exactClosed, number: 100 }],
+        publication,
+        intent,
+      }),
+    /multiple exact pull request targets/,
+  );
+});
+
 test("replacement publication binds source, implementation, and automerge labels", () => {
   assert.deepEqual(
     replacementPublicationLabels({
@@ -404,7 +471,7 @@ test("replacement publication binds source, implementation, and automerge labels
   );
 });
 
-test("every publication mutation rechecks live pause labels and labels precede receipt", () => {
+test("publication checkpoint precedes source closeout and every mutation rechecks live safety", () => {
   const source = fs.readFileSync("src/repair/execution-handoff.ts", "utf8");
   const mutationWrapper = source.slice(
     source.indexOf("function runPublicationMutation"),
@@ -422,24 +489,19 @@ test("every publication mutation rechecks live pause labels and labels precede r
   }
   const replacement = source.slice(
     source.indexOf("function publishReplacementRepair"),
-    source.indexOf("function verifyPublishedPull"),
+    source.indexOf("export function selectAuthorizedReplacementPull"),
   );
   assert.ok(
-    replacement.indexOf("verifyAuthorizedTargetPull") < replacement.indexOf("publishPreparedRef"),
+    replacement.indexOf("selectAuthorizedReplacementPull") <
+      replacement.indexOf("publishPreparedRef"),
   );
   assert.match(
     replacement,
     /publishPreparedRef\(\{[\s\S]*targetPrNumber: liveTargetPr,[\s\S]*\}\)/,
   );
   assert.match(replacement, /runPublicationMutation\(intent, \[\],[\s\S]*"pr",\s*"create"/);
-  assert.match(
-    replacement,
-    /runPublicationMutation\(\s*intent,\s*\[targetPrNumber, source\.number\],[\s\S]*"pr",\s*"close"/,
-  );
-  assert.match(
-    replacement,
-    /publishExactPullComment\(\{[\s\S]*targetNumbers: \[targetPrNumber\],[\s\S]*\}\)/,
-  );
+  assert.match(replacement, /"pr", "reopen"/);
+  assert.doesNotMatch(replacement, /"pr",\s*"close"|clawsweeper-replacement-publication/);
   assert.ok(
     replacement.indexOf("publishRequiredPullLabels") <
       replacement.lastIndexOf("verifyPublishedPull(intent.target_repo, targetPrNumber"),
@@ -450,6 +512,14 @@ test("every publication mutation rechecks live pause labels and labels precede r
   );
   assert.ok(
     publisher.indexOf("publishReplacementRepair") < publisher.indexOf("publicationReceipt"),
+  );
+  const closeout = source.slice(
+    source.indexOf("function closeSupersededReplacementSources"),
+    source.indexOf("function verifyPublishedPull"),
+  );
+  assert.match(
+    closeout,
+    /ensurePublishedReplacementAvailable\([\s\S]*publishExactPullComment\([\s\S]*ensurePublishedReplacementAvailable\([\s\S]*"pr",\s*"close"/,
   );
 });
 

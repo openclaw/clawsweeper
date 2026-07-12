@@ -371,6 +371,20 @@ test("repair workflow binds one run through no-credential proof and token-only m
   assert.match(mutate, /repair:execution-handoff -- verify-receipt/);
   assert.match(mutate, /repair:execution-handoff -- publish/);
   assert.match(mutate, /repair:execution-handoff -- verify-publication/);
+  assert.match(mutate, /repair:execution-handoff -- close-sources/);
+  const publishIndex = mutate.indexOf("- name: Publish exact independently validated repair");
+  const verifyPublicationIndex = mutate.indexOf("- name: Verify publication receipt");
+  const checkpointIndex = mutate.indexOf("- name: Upload durable publication checkpoint");
+  const closeSourcesIndex = mutate.indexOf(
+    "- name: Close superseded sources from publication checkpoint",
+  );
+  const postFlightIndex = mutate.indexOf("- name: Post-flight finalize fix PRs");
+  assert.ok(
+    publishIndex < verifyPublicationIndex &&
+      verifyPublicationIndex < checkpointIndex &&
+      checkpointIndex < closeSourcesIndex &&
+      closeSourcesIndex < postFlightIndex,
+  );
   assert.match(mutate, /needs\.execute\.result == 'success'/);
   assert.match(mutate, /needs\.execute\.outputs\.execute_fix_outcome == 'success'/);
   assert.match(mutate, /needs\.execute\.outputs\.mutation_ready == 'true'/);

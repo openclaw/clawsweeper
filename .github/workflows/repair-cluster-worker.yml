@@ -964,13 +964,26 @@ jobs:
             --publication-receipt .clawsweeper-repair/publication/receipt.json \
             --publication-receipt-sha256 "${{ steps.publish.outputs.publication_receipt_sha256 }}"
 
-      - name: Upload trusted publication receipt
+      - name: Upload durable publication checkpoint
         uses: actions/upload-artifact@v7
         with:
           name: clawsweeper-repair-publication-${{ github.run_id }}-${{ github.run_attempt }}
           path: .clawsweeper-repair/publication/receipt.json
           if-no-files-found: error
           retention-days: 7
+
+      - name: Close superseded sources from publication checkpoint
+        env:
+          GH_TOKEN: ${{ steps.target_post_flight_token.outputs.token }}
+          GITHUB_TOKEN: ${{ steps.target_post_flight_token.outputs.token }}
+        run: |
+          pnpm run repair:execution-handoff -- close-sources \
+            --root .clawsweeper-repair/execution \
+            --authorization-sha256 "${{ needs.authorize.outputs.authorization_sha256 }}" \
+            --validation-receipt .clawsweeper-repair/validation/receipt.json \
+            --validation-receipt-sha256 "${{ needs.validate.outputs.receipt_sha256 }}" \
+            --publication-receipt .clawsweeper-repair/publication/receipt.json \
+            --publication-receipt-sha256 "${{ steps.publish.outputs.publication_receipt_sha256 }}"
 
       - name: Post-flight finalize fix PRs
         id: post_flight

@@ -686,6 +686,48 @@ export function verifyPublishedReceipt({
   });
 }
 
+export function closePublishedReplacementSources({
+  root,
+  publicationReceiptPath,
+  validationReceiptPath,
+  expectedAuthorizationSha256,
+  expectedValidationReceiptSha256,
+  expectedPublicationReceiptSha256,
+}: {
+  root: string;
+  publicationReceiptPath: string;
+  validationReceiptPath: string;
+  expectedAuthorizationSha256: string;
+  expectedValidationReceiptSha256: string;
+  expectedPublicationReceiptSha256: string;
+}): PublicationReceipt {
+  const receipt = verifyPublishedReceipt({
+    root,
+    publicationReceiptPath,
+    validationReceiptPath,
+    expectedAuthorizationSha256,
+    expectedValidationReceiptSha256,
+    expectedPublicationReceiptSha256,
+  });
+  if (receipt.operation !== "open_pull_request") return receipt;
+
+  const intent = readExecutionIntent(root);
+  const publication = verifyAuthorizedPreparedPublication(root, expectedAuthorizationSha256);
+  ensurePublishedReplacementAvailable({
+    cwd: root,
+    intent,
+    publication,
+    targetPrNumber: receipt.target_pr_number,
+  });
+  closeSupersededReplacementSources({
+    cwd: root,
+    intent,
+    publication,
+    targetPrNumber: receipt.target_pr_number,
+  });
+  return receipt;
+}
+
 function resolveLiveExecutionIntent({
   job,
   result,
@@ -1411,19 +1453,17 @@ function publishReplacementRepair({
   publication: PreparedPublication;
   mutations: LooseRecord[];
 }): number {
-  const liveTargetPr = openPullForBranch(
-    intent.target_repo,
-    intent.output_branch,
-    intent.target_base_ref,
-  );
+  const recovery = selectAuthorizedReplacementPull({
+    pulls: pullsForBranch(intent.target_repo, intent.output_branch, intent.target_base_ref, "all"),
+    publication,
+    intent,
+  });
+  const liveTargetPr = recovery?.number ?? null;
   if (
     intent.expected_target_pr_number !== null &&
     liveTargetPr !== intent.expected_target_pr_number
   ) {
     throw new Error("target pull request changed after authorization");
-  }
-  if (liveTargetPr !== null) {
-    verifyAuthorizedTargetPull(intent.target_repo, liveTargetPr, publication, intent);
   }
   const targetRef = `refs/heads/${intent.output_branch}`;
   publishPreparedRef({
@@ -1443,10 +1483,35 @@ function publishReplacementRepair({
   });
 
   let targetPrNumber = intent.expected_target_pr_number;
+  let createdTargetPr = false;
   if (!targetPrNumber && liveTargetPr) {
+    if (recovery?.state === "reopen") {
+      runPublicationMutation(intent, [liveTargetPr], () =>
+        run("gh", ["pr", "reopen", String(liveTargetPr), "--repo", intent.target_repo], {
+          cwd: checkout,
+        }),
+      );
+      mutations.push({
+        operation: "reopen_pull_request",
+        repo: intent.target_repo,
+        pull_number: liveTargetPr,
+      });
+    }
     verifyPublishedPull(intent.target_repo, liveTargetPr, publication, intent, false);
     targetPrNumber = liveTargetPr;
   } else if (targetPrNumber) {
+    if (recovery?.state === "reopen") {
+      runPublicationMutation(intent, [targetPrNumber], () =>
+        run("gh", ["pr", "reopen", String(targetPrNumber), "--repo", intent.target_repo], {
+          cwd: checkout,
+        }),
+      );
+      mutations.push({
+        operation: "reopen_pull_request",
+        repo: intent.target_repo,
+        pull_number: targetPrNumber,
+      });
+    }
     verifyPublishedPull(intent.target_repo, targetPrNumber, publication, intent, false);
   } else {
     const bodyPath = path.join(path.dirname(checkout), "pull-request-body.md");
@@ -1476,12 +1541,13 @@ function publishReplacementRepair({
       throw new Error("created pull request URL escaped the authorized target repository");
     }
     targetPrNumber = parsed.number;
+    createdTargetPr = true;
     verifyPublishedPull(intent.target_repo, targetPrNumber, publication, intent, false);
   }
   if (targetPrNumber === null) {
     throw new Error("authorized output pull request was not created");
   }
-  if (intent.expected_target_pr_number === null) {
+  if (createdTargetPr) {
     mutations.push({
       operation: "open_pull_request",
       repo: intent.target_repo,
@@ -1498,12 +1564,112 @@ function publishReplacementRepair({
   });
   verifyPublishedPull(intent.target_repo, targetPrNumber, publication, intent);
   assertPublicationSafe(intent, [targetPrNumber]);
+  return targetPrNumber;
+}
 
-  for (const action of publication.superseded_source_actions) {
+export function selectAuthorizedReplacementPull({
+  pulls,
+  publication,
+  intent,
+}: {
+  pulls: LooseRecord[];
+  publication: PreparedPublication;
+  intent: ExecutionIntent;
+}): { number: number; state: "open" | "reopen" } | null {
+  const allowedHeadShas = new Set(
+    [intent.expected_output_sha, publication.prepared_head_sha].filter((sha): sha is string =>
+      Boolean(sha),
+    ),
+  );
+  const exact = pulls.filter(
+    (pull) =>
+      pull.head?.repo?.full_name === intent.output_repo &&
+      pull.head?.ref === intent.output_branch &&
+      allowedHeadShas.has(String(pull.head?.sha ?? "")) &&
+      pull.base?.ref === intent.target_base_ref &&
+      pull.title === publication.pr_title &&
+      pull.body === publication.pr_body,
+  );
+  if (exact.length > 1) {
+    throw new Error("authorized output branch has multiple exact pull request targets");
+  }
+  if (exact.length === 0) {
+    if (pulls.some((pull) => String(pull.state ?? "").toLowerCase() === "open")) {
+      throw new Error("existing output pull request does not match the authorized publication");
+    }
+    return null;
+  }
+
+  const pull = exact[0]!;
+  const number = Number(pull.number);
+  if (!Number.isInteger(number) || number <= 0) {
+    throw new Error("authorized output pull request number is invalid");
+  }
+  const state = String(pull.state ?? "").toLowerCase();
+  if (pull.merged_at || pull.mergedAt) {
+    throw new Error("authorized replacement pull request is already merged");
+  }
+  if (state === "open") return { number, state: "open" };
+  if (state === "closed") return { number, state: "reopen" };
+  throw new Error(`authorized replacement pull request is ${state || "unknown"}`);
+}
+
+function ensurePublishedReplacementAvailable({
+  cwd,
+  intent,
+  publication,
+  targetPrNumber,
+}: {
+  cwd: string;
+  intent: ExecutionIntent;
+  publication: PreparedPublication;
+  targetPrNumber: number;
+}) {
+  const selection = selectAuthorizedReplacementPull({
+    pulls: [ghObject(`repos/${intent.target_repo}/pulls/${targetPrNumber}`)],
+    publication,
+    intent,
+  });
+  if (!selection || selection.number !== targetPrNumber) {
+    throw new Error("publication checkpoint target no longer matches the authorized replacement");
+  }
+  if (selection.state === "reopen") {
+    runPublicationMutation(intent, [targetPrNumber], () =>
+      run("gh", ["pr", "reopen", String(targetPrNumber), "--repo", intent.target_repo], { cwd }),
+    );
+  }
+  verifyPublishedPull(intent.target_repo, targetPrNumber, publication, intent);
+}
+
+function closeSupersededReplacementSources({
+  cwd,
+  intent,
+  publication,
+  targetPrNumber,
+}: {
+  cwd: string;
+  intent: ExecutionIntent;
+  publication: PreparedPublication;
+  targetPrNumber: number;
+}) {
+  const actions = publication.superseded_source_actions.map((action) => {
     const source = parsePullRequestUrl(action.source);
     if (!source || source.repo !== intent.target_repo || !intent.source_prs.includes(source.url)) {
       throw new Error("prepared source closeout redirected outside the authorized source set");
     }
+    if (!["comment", "close"].includes(String(action.operation ?? ""))) {
+      throw new Error("prepared source closeout contains an unsupported operation");
+    }
+    return { source, operation: String(action.operation) };
+  });
+
+  for (const action of actions) {
+    ensurePublishedReplacementAvailable({
+      cwd,
+      intent,
+      publication,
+      targetPrNumber,
+    });
     const replacementUrl = `https://github.com/${intent.target_repo}/pull/${targetPrNumber}`;
     const comment = [
       "<!-- clawsweeper-replacement-publication -->",
@@ -1511,37 +1677,32 @@ function publishReplacementRepair({
       `Validated commit: \`${publication.prepared_head_sha}\``,
     ].join("\n");
     publishExactPullComment({
-      checkout,
+      checkout: cwd,
       intent,
-      number: source.number,
+      number: action.source.number,
       body: comment,
       targetNumbers: [targetPrNumber],
     });
-    mutations.push({
-      operation: "comment",
-      repo: intent.target_repo,
-      pull_number: source.number,
+    if (action.operation !== "close") continue;
+
+    ensurePublishedReplacementAvailable({
+      cwd,
+      intent,
+      publication,
+      targetPrNumber,
     });
-    if (action.operation === "close") {
-      const sourcePull = ghObject(`repos/${intent.target_repo}/pulls/${source.number}`);
-      const sourceState = String(sourcePull.state ?? "").toLowerCase();
-      if (sourceState === "open") {
-        runPublicationMutation(intent, [targetPrNumber, source.number], () =>
-          run("gh", ["pr", "close", String(source.number), "--repo", intent.target_repo], {
-            cwd: checkout,
-          }),
-        );
-      } else if (sourceState !== "closed") {
-        throw new Error(`authorized source pull request is ${sourceState || "unknown"}`);
-      }
-      mutations.push({
-        operation: "close_pull_request",
-        repo: intent.target_repo,
-        pull_number: source.number,
-      });
+    const sourcePull = ghObject(`repos/${intent.target_repo}/pulls/${action.source.number}`);
+    const sourceState = String(sourcePull.state ?? "").toLowerCase();
+    if (sourceState === "open") {
+      runPublicationMutation(intent, [targetPrNumber, action.source.number], () =>
+        run("gh", ["pr", "close", String(action.source.number), "--repo", intent.target_repo], {
+          cwd,
+        }),
+      );
+    } else if (sourceState !== "closed") {
+      throw new Error(`authorized source pull request is ${sourceState || "unknown"}`);
     }
   }
-  return targetPrNumber;
 }
 
 function verifyPublishedPull(
@@ -1567,31 +1728,6 @@ function verifyPublishedPull(
     (verifyLabels && missingLabels.length > 0)
   ) {
     throw new Error("published pull request does not match the validated output identity");
-  }
-}
-
-function verifyAuthorizedTargetPull(
-  repo: string,
-  number: number,
-  publication: PreparedPublication,
-  intent: ExecutionIntent,
-) {
-  const pull = ghObject(`repos/${repo}/pulls/${number}`);
-  const allowedHeadShas = new Set(
-    [intent.expected_output_sha, publication.prepared_head_sha].filter((sha): sha is string =>
-      Boolean(sha),
-    ),
-  );
-  if (
-    String(pull.state ?? "").toLowerCase() !== "open" ||
-    pull.head?.repo?.full_name !== intent.output_repo ||
-    pull.head?.ref !== intent.output_branch ||
-    !allowedHeadShas.has(String(pull.head?.sha ?? "")) ||
-    pull.base?.ref !== intent.target_base_ref ||
-    pull.title !== publication.pr_title ||
-    pull.body !== publication.pr_body
-  ) {
-    throw new Error("existing output pull request does not match the authorized publication");
   }
 }
 
@@ -1775,30 +1911,46 @@ function ghOptionalRefSha(repo: string, branch: string): string | null {
 }
 
 function openPullForBranch(repo: string, branch: string, base: string): number | null {
+  const pulls = pullsForBranch(repo, branch, base, "open");
+  if (pulls.length > 1) {
+    throw new Error("authorized output branch has an ambiguous pull request target");
+  }
+  if (pulls.length === 0) return null;
+  return Number(pulls[0]!.number);
+}
+
+function pullsForBranch(
+  repo: string,
+  branch: string,
+  base: string,
+  state: "open" | "all",
+): LooseRecord[] {
   const owner = repo.split("/")[0]!;
-  const pulls = JSON.parse(
+  const summaries = JSON.parse(
     run("gh", [
       "api",
       "--method",
       "GET",
       `repos/${repo}/pulls`,
       "-f",
-      "state=open",
+      `state=${state}`,
       "-f",
       `head=${owner}:${branch}`,
       "-f",
       `base=${base}`,
     ]),
   );
-  if (!Array.isArray(pulls) || pulls.length > 1) {
-    throw new Error("authorized output branch has an ambiguous pull request target");
+  if (!Array.isArray(summaries)) {
+    throw new Error("authorized output branch pull request response is invalid");
   }
-  if (pulls.length === 0) return null;
-  const number = Number(pulls[0]?.number);
-  if (!Number.isInteger(number) || number <= 0) {
-    throw new Error("authorized output pull request number is invalid");
+  const numbers = summaries.map((pull) => Number(pull?.number));
+  if (
+    numbers.some((number) => !Number.isInteger(number) || number <= 0) ||
+    new Set(numbers).size !== numbers.length
+  ) {
+    throw new Error("authorized output pull request list is invalid");
   }
-  return number;
+  return numbers.map((number) => ghObject(`repos/${repo}/pulls/${number}`));
 }
 
 function preparedFixMutation(report: LooseRecord): LooseRecord | null {
