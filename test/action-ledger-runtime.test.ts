@@ -24,7 +24,15 @@ import {
 } from "../dist/action-ledger.js";
 
 function tempRoot(): string {
-  return fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-action-runtime-"));
+  return fs.realpathSync.native(
+    fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-action-runtime-")),
+  );
+}
+
+function trustedChildRoot(root: string, name: string): string {
+  const child = path.join(root, name);
+  fs.mkdirSync(child);
+  return fs.realpathSync.native(child);
 }
 
 function createDirectoryLink(target: string, link: string): void {
@@ -418,7 +426,7 @@ test("workflow producer identity uses stable workflow and step identifiers", () 
 
 test("workflow events finalize into one replay-stable per-step shard", async () => {
   const root = tempRoot();
-  const outputRoot = path.join(root, "state");
+  const outputRoot = trustedChildRoot(root, "state");
   const event = recordReview(root);
   assert.ok(event);
 
@@ -452,9 +460,10 @@ test("fresh roots reconstruct shard partitions from immutable run metadata", asy
   const paths: string[] = [];
   for (const root of roots) {
     recordReview(root, env);
+    const outputRoot = trustedChildRoot(root, "state");
     const [relativePath] = await flushWorkflowActionEvents(root, {
       env,
-      outputRoot: path.join(root, "state"),
+      outputRoot,
     });
     assert.ok(relativePath);
     paths.push(relativePath);
@@ -551,7 +560,7 @@ test("imports preserve first-writer shard bytes across fresh-root recorded-at dr
 
 test("historical producer partitions survive later-run flush environments", async () => {
   const root = tempRoot();
-  const outputRoot = path.join(root, "state");
+  const outputRoot = trustedChildRoot(root, "state");
   recordReview(
     root,
     workflowEnv({
@@ -581,7 +590,7 @@ test("historical producer partitions survive later-run flush environments", asyn
 
 test("concurrent flushes converge on one immutable shard", async () => {
   const root = tempRoot();
-  const outputRoot = path.join(root, "state");
+  const outputRoot = trustedChildRoot(root, "state");
   recordReview(root);
 
   const results = await Promise.all(
@@ -603,7 +612,7 @@ test("concurrent flushes converge on one immutable shard", async () => {
 
 test("different workflow steps receive independent shard identities", async () => {
   const root = tempRoot();
-  const outputRoot = path.join(root, "state");
+  const outputRoot = trustedChildRoot(root, "state");
   recordReview(root, workflowEnv({ GITHUB_ACTION: "__run_5" }));
   recordReview(root, workflowEnv({ GITHUB_ACTION: "__run_6" }));
 
@@ -617,7 +626,8 @@ test("different workflow steps receive independent shard identities", async () =
 
 test("full producer identity prevents cross-repository shard collisions", async () => {
   const root = tempRoot();
-  const outputRoot = path.join(root, "state");
+  const outputRoot = trustedChildRoot(root, "state");
+  const destination = trustedChildRoot(root, "destination");
   recordReview(
     root,
     workflowEnv({
@@ -641,7 +651,7 @@ test("full producer identity prevents cross-repository shard collisions", async 
   assert.ok(paths.some((entry) => entry.includes("/openclaw-clawsweeper/")));
   assert.ok(paths.some((entry) => entry.includes("/other-automation/")));
 
-  const imported = importActionEventShards(outputRoot, path.join(root, "destination"));
+  const imported = importActionEventShards(outputRoot, destination);
   assert.equal(imported.created, 2);
   assert.deepEqual(imported.paths, paths);
 });
@@ -775,7 +785,7 @@ test("CrabFleet projection cancels successful response bodies", async () => {
 
 test("CrabFleet projection failures remain durable and retryable", async () => {
   const root = tempRoot();
-  const outputRoot = path.join(root, "state");
+  const outputRoot = trustedChildRoot(root, "state");
   const errors: string[] = [];
   const originalError = console.error;
   const env = workflowEnv({
@@ -898,7 +908,7 @@ test("fresh-root projection failures replay despite generated clock drift", asyn
 
 test("CrabFleet timeouts preserve canonical events and record projection failure", async () => {
   const root = tempRoot();
-  const outputRoot = path.join(root, "state");
+  const outputRoot = trustedChildRoot(root, "state");
   const errors: string[] = [];
   const originalError = console.error;
   let aborted = false;
@@ -1000,7 +1010,7 @@ test("late CrabFleet response cleanup failures are consumed after timeout", asyn
 
 test("projection failure recording remains valid at max-safe phase sequence", async () => {
   const root = tempRoot();
-  const outputRoot = path.join(root, "state");
+  const outputRoot = trustedChildRoot(root, "state");
   const env = workflowEnv({
     CLAWSWEEPER_CRABFLEET_AGENT_TOKEN: "agent-token",
     CLAWSWEEPER_CRABFLEET_SESSION_ID: "session-1",
@@ -1048,8 +1058,8 @@ test("projection failure recording remains valid at max-safe phase sequence", as
 
 test("state shard imports are validated, create-only, and conflict detecting", async () => {
   const root = tempRoot();
-  const source = path.join(root, "source");
-  const destination = path.join(root, "destination");
+  const source = trustedChildRoot(root, "source");
+  const destination = trustedChildRoot(root, "destination");
   recordReview(root);
   await flushWorkflowActionEvents(root, {
     env: workflowEnv(),
@@ -1076,8 +1086,8 @@ test("state shard imports are validated, create-only, and conflict detecting", a
 
 test("state shard imports preserve chronological ordering across timestamp offsets", async () => {
   const root = tempRoot();
-  const source = path.join(root, "source");
-  const destination = path.join(root, "destination");
+  const source = trustedChildRoot(root, "source");
+  const destination = trustedChildRoot(root, "destination");
   recordReview(root);
   recordWorkflowActionEvent(
     root,
@@ -1130,8 +1140,8 @@ test("state shard imports preserve chronological ordering across timestamp offse
 
 test("state shard imports accept exact sub-millisecond canonical ordering", async () => {
   const root = tempRoot();
-  const source = path.join(root, "source");
-  const destination = path.join(root, "destination");
+  const source = trustedChildRoot(root, "source");
+  const destination = trustedChildRoot(root, "destination");
   const env = workflowEnv();
   recordWorkflowActionEvent(
     root,
@@ -1201,7 +1211,9 @@ test("state shard imports accept exact sub-millisecond canonical ordering", asyn
 
 test("state shard imports reject forged paths and duplicate events", async () => {
   const root = tempRoot();
-  const source = path.join(root, "source");
+  const source = trustedChildRoot(root, "source");
+  const forgedDestination = trustedChildRoot(root, "forged-destination");
+  const duplicateDestination = trustedChildRoot(root, "duplicate-destination");
   recordReview(root);
   const [relativePath] = await flushWorkflowActionEvents(root, {
     env: workflowEnv(),
@@ -1213,21 +1225,22 @@ test("state shard imports reject forged paths and duplicate events", async () =>
   const forged = path.join(path.dirname(shard), `forged-${path.basename(shard)}`);
   fs.renameSync(shard, forged);
   assert.throws(
-    () => importActionEventShards(source, path.join(root, "forged-destination")),
+    () => importActionEventShards(source, forgedDestination),
     /path does not match canonical identity/,
   );
 
   fs.renameSync(forged, shard);
   fs.writeFileSync(shard, `${content.trim()}\n${content.trim()}\n`, "utf8");
   assert.throws(
-    () => importActionEventShards(source, path.join(root, "duplicate-destination")),
+    () => importActionEventShards(source, duplicateDestination),
     /contains duplicate events/,
   );
 });
 
 test("state shard imports reject forged confidential event-key scopes", async () => {
   const root = tempRoot();
-  const source = path.join(root, "source");
+  const source = trustedChildRoot(root, "source");
+  const destination = trustedChildRoot(root, "destination");
   recordReview(root);
   const [relativePath] = await flushWorkflowActionEvents(root, {
     env: workflowEnv(),
@@ -1243,15 +1256,13 @@ test("state shard imports reject forged confidential event-key scopes", async ()
     .digest("hex");
   fs.writeFileSync(shardPath, `${actionLedgerJson(event)}\n`, "utf8");
 
-  assert.throws(
-    () => importActionEventShards(source, path.join(root, "destination")),
-    /confidential identifier/,
-  );
+  assert.throws(() => importActionEventShards(source, destination), /confidential identifier/);
 });
 
 test("state shard imports reject forged source occurrence provenance", async () => {
   const root = tempRoot();
-  const source = path.join(root, "source");
+  const source = trustedChildRoot(root, "source");
+  const destination = trustedChildRoot(root, "destination");
   recordReview(root);
   const [relativePath] = await flushWorkflowActionEvents(root, {
     env: workflowEnv(),
@@ -1265,32 +1276,29 @@ test("state shard imports reject forged source occurrence provenance", async () 
   fs.writeFileSync(shardPath, `${actionLedgerJson(event)}\n`, "utf8");
 
   assert.throws(
-    () => importActionEventShards(source, path.join(root, "destination")),
+    () => importActionEventShards(source, destination),
     /invalid action event semantic digest/,
   );
 });
 
 test("state shard imports ignore unrelated entries and reject links in the ledger subtree", () => {
   const root = tempRoot();
-  const source = path.join(root, "source");
-  const linked = path.join(root, "linked-source");
-  fs.mkdirSync(source);
-  fs.mkdirSync(linked);
+  const source = trustedChildRoot(root, "source");
+  const linked = trustedChildRoot(root, "linked-source");
+  const emptyDestination = trustedChildRoot(root, "empty-destination");
+  const destination = trustedChildRoot(root, "destination");
   createDirectoryLink(linked, path.join(source, "linked"));
-  assert.deepEqual(importActionEventShards(source, path.join(root, "empty-destination")), {
+  assert.deepEqual(importActionEventShards(source, emptyDestination), {
     created: 0,
     unchanged: 0,
     paths: [],
   });
   createDirectoryLink(linked, path.join(source, "ledger"));
-  assert.throws(
-    () => importActionEventShards(source, path.join(root, "destination")),
-    /symbolic link or junction/,
-  );
+  assert.throws(() => importActionEventShards(source, destination), /symbolic link or junction/);
 });
 
 test(
-  "state shard imports bind file reads to the enumerated source root",
+  "state shard import checks detect source-root swaps as defense in depth",
   {
     skip:
       process.platform === "win32"
@@ -1299,9 +1307,9 @@ test(
   },
   async () => {
     const root = tempRoot();
-    const source = path.join(root, "source");
+    const source = trustedChildRoot(root, "source");
     const outside = path.join(root, "outside");
-    const destination = path.join(root, "destination");
+    const destination = trustedChildRoot(root, "destination");
     recordReview(root);
     const [relativePath] = await flushWorkflowActionEvents(root, {
       env: workflowEnv(),
@@ -1348,8 +1356,8 @@ test(
   },
   async () => {
     const root = tempRoot();
-    const source = path.join(root, "source");
-    const destination = path.join(root, "destination");
+    const source = trustedChildRoot(root, "source");
+    const destination = trustedChildRoot(root, "destination");
     recordReview(root);
     const [relativePath] = await flushWorkflowActionEvents(root, {
       env: workflowEnv(),
@@ -1395,7 +1403,7 @@ importActionEventShards(process.argv[1], process.argv[2]);`;
 
 test("partition markers and import destinations reject symlinked parents", async () => {
   const root = tempRoot();
-  const source = path.join(root, "source");
+  const source = trustedChildRoot(root, "source");
   const outsidePartitions = path.join(root, "outside-partitions");
   fs.mkdirSync(outsidePartitions);
   fs.mkdirSync(path.join(root, ".clawsweeper-repair", "action-events"), { recursive: true });

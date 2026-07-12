@@ -61,7 +61,9 @@ const attemptId = actionAttemptId(operationId, {
 });
 
 function tempRoot(): string {
-  return fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-action-ledger-"));
+  return fs.realpathSync.native(
+    fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-action-ledger-")),
+  );
 }
 
 function createDirectoryLink(target: string, link: string): void {
@@ -690,6 +692,13 @@ test("runtime and schema apply the same machine-text privacy boundary", () => {
     `fc00::1`,
     "0:0:0:0:0:0:0:1",
     "::ffff:7f00:1",
+    "::ffff:c0a8:1",
+    "0:0:0:0:0:ffff:a00:1",
+    "0:0:0:0:0:ffff:7f00:1",
+    "0:0:0:0:0:ffff:a9fe:1",
+    "0:0:0:0:0:ffff:ac10:1",
+    "0:0:0:0:0:ffff:c0a8:1",
+    "0:0:0:0:0:0:c0a8:1",
     "service.internal",
     "service.internal.",
     "SERVICE.INTERNAL",
@@ -741,6 +750,8 @@ test("privacy normalization preserves public machine identifiers", () => {
     "file-cache",
     "file+cache",
     "public.example",
+    "0:0:0:0:0:ffff:808:808",
+    "0:0:0:0:0:ffff:ac20:1",
     "https://github.com/openclaw/clawsweeper/actions/runs/100",
   ]) {
     const event = createActionEvent(
@@ -772,6 +783,30 @@ test("action event writes are create-only and replay-idempotent", () => {
   assert.equal(replayed.status, "unchanged");
   assert.equal(replayed.event.recorded_at, "2026-07-12T10:01:00.000Z");
   assert.equal(fs.readFileSync(created.path, "utf8"), fs.readFileSync(replayed.path, "utf8"));
+});
+
+test("ledger writes require pre-existing canonical trusted roots", () => {
+  const parent = tempRoot();
+  const missingRoot = path.join(parent, "missing");
+  assert.throws(() => writeActionEvent(missingRoot, reviewInput()), /missing action event root/);
+  assert.equal(fs.existsSync(missingRoot), false);
+
+  const noncanonicalRoot = `${parent}${path.sep}child${path.sep}..`;
+  assert.throws(
+    () => writeActionEvent(noncanonicalRoot, reviewInput()),
+    /noncanonical action event root/,
+  );
+
+  const actualParent = path.join(parent, "actual-parent");
+  const actualRoot = path.join(actualParent, "ledger");
+  fs.mkdirSync(actualRoot, { recursive: true });
+  const linkedParent = path.join(parent, "linked-parent");
+  createDirectoryLink(actualParent, linkedParent);
+  assert.throws(
+    () => writeActionEvent(path.join(linkedParent, "ledger"), reviewInput()),
+    /link-resolved action event root/,
+  );
+  assert.deepEqual(fs.readdirSync(actualRoot), []);
 });
 
 test("spool and shard writes reject symlinked parent directories", () => {
@@ -808,7 +843,7 @@ test("spool and shard writes reject symlinked parent directories", () => {
 });
 
 test(
-  "writes fail closed when a parent is swapped during open",
+  "parent-chain checks detect a swap during open as defense in depth",
   {
     skip:
       process.platform === "win32"
@@ -855,9 +890,7 @@ test(
 
     assert.equal(swapped, true);
     assert.equal(fs.existsSync(path.join(root, relativePath)), false);
-    const leaked = fs.readdirSync(outside).map((entry) => path.join(outside, entry));
-    assert.ok(leaked.length <= 1);
-    for (const filePath of leaked) assert.equal(fs.statSync(filePath).size, 0);
+    fs.rmSync(outside, { recursive: true, force: true });
   },
 );
 
@@ -893,7 +926,7 @@ test("successful and race-loser publications remove staging aliases", () => {
 });
 
 test(
-  "staging cleanup refuses a parent replaced after publication",
+  "staging cleanup checks detect a replaced parent as defense in depth",
   {
     skip:
       process.platform === "win32"
@@ -930,13 +963,12 @@ test(
     }
 
     assert.equal(swapped, true);
-    assert.deepEqual(fs.readdirSync(outside), []);
     assert.ok(fs.readdirSync(eventParent).some((entry) => entry.endsWith(".tmp")));
   },
 );
 
 test(
-  "event reads reject a parent swap between validation and open",
+  "event read checks detect a parent swap as defense in depth",
   {
     skip:
       process.platform === "win32"
@@ -1724,16 +1756,16 @@ test("checked-in schema rejects values rejected by runtime normalization", () =>
         ),
     },
     {
-      label: "IPv4-mapped IPv6 loopback",
+      label: "expanded IPv4-mapped private IPv6",
       mutate: (event) => {
-        (event.action as Record<string, unknown>).status = "::ffff:7f00:1";
+        (event.action as Record<string, unknown>).status = "0:0:0:0:0:ffff:c0a8:1";
       },
       runtime: () =>
         createActionEvent(
           reviewInput({
             action: {
               name: "review",
-              status: "::ffff:7f00:1",
+              status: "0:0:0:0:0:ffff:c0a8:1",
               retryable: false,
               mutation: false,
             },

@@ -40,22 +40,17 @@ export function prepareSafeWriteTarget(
   label: string,
 ): SafeWriteTarget {
   validateRelativePath(relativePath, label);
-  const rootPath = ensureDirectoryNoLinks(path.resolve(root), `${label} root`);
-  const rootRealPath = fs.realpathSync.native(rootPath);
-  const rootIdentity = directoryFileIdentity(rootPath, `${label} root`);
+  const safeRoot = prepareCanonicalRoot(root, `${label} root`);
+  const rootPath = safeRoot.path;
+  const rootRealPath = safeRoot.realPath;
+  const rootIdentity = safeRoot.identity;
   const target = pathTarget(rootPath, rootRealPath, rootIdentity, relativePath, label);
   assertSafeWriteTarget(target);
   return target;
 }
 
 export function prepareSafeReadRoot(root: string, label: string): SafeReadRoot {
-  const rootPath = path.resolve(root);
-  assertDirectoryNoLinks(rootPath, `${label} root`);
-  return {
-    path: rootPath,
-    realPath: fs.realpathSync.native(rootPath),
-    identity: directoryFileIdentity(rootPath, `${label} root`),
-  };
+  return prepareCanonicalRoot(root, `${label} root`);
 }
 
 export function prepareSafeReadTarget(
@@ -234,40 +229,21 @@ export function linkFileExclusiveNoFollow(
   assertPathMatchesIdentity(destination.path, sourceIdentity, destination.label);
 }
 
-function ensureDirectoryNoLinks(directory: string, label: string): string {
-  const missing: string[] = [];
-  let current = directory;
-  while (true) {
-    try {
-      const stat = fs.lstatSync(current);
-      if (stat.isSymbolicLink() || !stat.isDirectory()) {
-        throw new Error(`refusing symbolic link or junction for ${label}: ${current}`);
-      }
-      break;
-    } catch (error) {
-      if (!isNotFoundError(error)) throw error;
-      const parent = path.dirname(current);
-      if (parent === current) throw error;
-      missing.unshift(path.basename(current));
-      current = parent;
-    }
+function prepareCanonicalRoot(root: string, label: string): SafeReadRoot {
+  const rootPath = path.resolve(root);
+  if (root !== rootPath) {
+    throw new Error(`refusing noncanonical ${label}: ${root}`);
   }
-  for (const segment of missing) {
-    current = path.join(current, segment);
-    let created = false;
-    try {
-      fs.mkdirSync(current);
-      created = true;
-    } catch (error) {
-      if (!isAlreadyExistsError(error)) throw error;
-    }
-    const stat = lstatRequired(current, label);
-    if (stat.isSymbolicLink() || !stat.isDirectory()) {
-      throw new Error(`refusing symbolic link or junction for ${label}: ${current}`);
-    }
-    if (created) fsyncDirectory(path.dirname(current), label);
+  assertDirectoryNoLinks(rootPath, label);
+  const realPath = fs.realpathSync.native(rootPath);
+  if (realPath !== rootPath) {
+    throw new Error(`refusing link-resolved ${label}: ${rootPath}`);
   }
-  return directory;
+  return {
+    path: rootPath,
+    realPath,
+    identity: directoryFileIdentity(rootPath, label),
+  };
 }
 
 function ensureDescendantDirectory(target: SafeWriteTarget): void {
