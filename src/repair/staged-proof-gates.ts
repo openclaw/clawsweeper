@@ -132,7 +132,7 @@ export function buildStagedProofPlan({
   surfaceHints?: readonly string[];
   subsumptionContracts?: readonly StagedProofSubsumptionContract[];
 }): StagedProofPlan {
-  const risk = stagedProofRisk([...changedFiles, ...surfaceHints]);
+  const risk = stagedProofRiskForPaths([...changedFiles, ...surfaceHints]);
   const unique = new Map<string, StagedProofCommandInput>();
   let deduplicatedCommands = 0;
 
@@ -446,7 +446,7 @@ function buildTrace(
   };
 }
 
-function stagedProofRisk(paths: readonly string[]): StagedProofRisk {
+export function stagedProofRiskForPaths(paths: readonly string[]): StagedProofRisk {
   const normalized = [
     ...new Set(
       paths
@@ -507,7 +507,7 @@ function classifyStagedProofCommand(
       reason: "structured git integrity check",
     };
   }
-  if (isFocusedTestCommand(parts)) {
+  if (isFocusedStagedProofCommand(parts)) {
     return {
       stage: "focused_tests",
       reason:
@@ -548,7 +548,7 @@ function stageRank(stage: StagedProofStage, risk: StagedProofRisk): number {
   return (risk.level === "narrow" ? narrow : elevated).indexOf(stage);
 }
 
-function isFocusedTestCommand(parts: readonly string[]): boolean {
+export function isFocusedStagedProofCommand(parts: readonly string[]): boolean {
   const executable = parts[0];
   if (executable === "node" && parts[1] === "--test") {
     return parts.slice(2).some(looksLikePathArgument);
@@ -597,10 +597,12 @@ function isBroadOrLiveCommand(parts: readonly string[]): boolean {
   ) {
     return true;
   }
-  if (parts[0] === "pytest" && !isFocusedTestCommand(parts)) return true;
+  if (parts[0] === "pytest" && !isFocusedStagedProofCommand(parts)) return true;
   if (parts[0] === "go" && parts[1] === "test" && parts.includes("./...")) return true;
-  if (parts[0] === "cargo" && parts[1] === "test" && !isFocusedTestCommand(parts)) return true;
-  return directVitestArgsStart(parts) >= 0 && !isFocusedTestCommand(parts);
+  if (parts[0] === "cargo" && parts[1] === "test" && !isFocusedStagedProofCommand(parts)) {
+    return true;
+  }
+  return directVitestArgsStart(parts) >= 0 && !isFocusedStagedProofCommand(parts);
 }
 
 function packageCommandArgs(parts: readonly string[]): string[] {

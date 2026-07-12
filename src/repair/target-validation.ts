@@ -18,6 +18,17 @@ import {
 } from "./target-toolchain-config.js";
 import { compactText } from "./text-utils.js";
 import {
+  buildStagedProofPlan,
+  executeStagedProofPlan,
+  isFocusedStagedProofCommand,
+  stagedProofPlanArtifact,
+  stagedProofRiskForPaths,
+  type StagedProofCommandInput,
+  type StagedProofExecutionResult,
+  type StagedProofPlan,
+  type StagedProofSubsumptionContract,
+} from "./staged-proof-gates.js";
+import {
   isExpensivePnpmValidation,
   isTestFile,
   looksLikePathArgument,
@@ -43,6 +54,8 @@ export type TargetValidationOptions = {
   targetRepo: string;
   setupTimeoutMs?: number;
   validationTimeoutMs?: number;
+  proofBudgetMs?: number;
+  proofSurfacePaths?: string[];
   pinnedBaseRef?: string;
   /**
    * Optional override of the per-repo toolchain (package manager, base validation
@@ -64,6 +77,17 @@ export type RepairDeltaValidationPlan = {
 export type ExternalBaseValidationBlocker = {
   paths: string[];
   reason: string;
+};
+
+export type TargetValidationProofResult = StagedProofExecutionResult & {
+  plan: StagedProofPlan;
+};
+
+type RequiredValidationCommand = {
+  command: LooseRecord;
+  source: StagedProofCommandInput["source"];
+  canonical: boolean;
+  required: boolean;
 };
 
 export function classifyExternalBaseValidationFailure({
@@ -359,68 +383,199 @@ export function runAllowedValidationCommands(
   options: TargetValidationOptions,
   baseBranch: string = DEFAULT_BASE_BRANCH,
 ) {
-  const baseRef = validationBaseRef(cwd, baseBranch, options);
+  return runStagedValidationProof(commands, cwd, options, baseBranch).commands;
+}
+
+export function buildTargetValidationProofPlan(
+  commands: LooseRecord[],
+  cwd: string,
+  options: TargetValidationOptions,
+  baseBranch: string = DEFAULT_BASE_BRANCH,
+) {
+  return stagedProofPlanArtifact(
+    createTargetValidationProofPlan(commands, cwd, options, baseBranch).plan,
+  );
+}
+
+export function runStagedValidationProof(
+  commands: LooseRecord[],
+  cwd: string,
+  options: TargetValidationOptions,
+  baseBranch: string = DEFAULT_BASE_BRANCH,
+): TargetValidationProofResult {
+  const { baseRef, plan } = createTargetValidationProofPlan(commands, cwd, options, baseBranch);
   const validationEnv = targetValidationEnv();
   const validationTimeoutMs = targetValidationTimeoutMs(
     "CLAWSWEEPER_TARGET_VALIDATION_TIMEOUT_MS",
     options.validationTimeoutMs ?? DEFAULT_TARGET_VALIDATION_TIMEOUT_MS,
     options.validationTimeoutMs,
   );
-  const executed: string[] = [];
+  const defaultProofBudgetMs = Math.max(
+    validationTimeoutMs,
+    validationTimeoutMs * plan.commands.length,
+  );
+  const proofBudgetMs = targetValidationTimeoutMs(
+    "CLAWSWEEPER_TARGET_PROOF_BUDGET_MS",
+    options.proofBudgetMs ?? defaultProofBudgetMs,
+    options.proofBudgetMs,
+  );
+  const executed = new Set<string>();
   const attempts = new Map<string, number>();
-  const requiredCommands = requiredValidationCommands(commands, cwd, options);
-  if (requiredCommands.length === 0) {
+  const result = executeStagedProofPlan(plan, {
+    commandTimeoutMs: validationTimeoutMs,
+    budgetMs: proofBudgetMs,
+    runCommand: (command, timeoutMs) =>
+      runValidationPlanCommand({
+        parts: command.parts,
+        timeoutMs,
+        cwd,
+        validationEnv,
+        baseBranch,
+        baseRef,
+        options,
+        attempts,
+        executed,
+      }),
+  });
+  return { ...result, plan };
+}
+
+function createTargetValidationProofPlan(
+  commands: LooseRecord[],
+  cwd: string,
+  options: TargetValidationOptions,
+  baseBranch: string,
+) {
+  const baseRef = validationBaseRef(cwd, baseBranch, options);
+  const changedFiles = gitChangedFilesFromRef(cwd, baseRef);
+  const surfaceHints = options.proofSurfacePaths ?? [];
+  const risk = stagedProofRiskForPaths([...changedFiles, ...surfaceHints]);
+  const toolchain = getToolchain(options);
+  const resolved: StagedProofCommandInput[] = [];
+
+  for (const [originalIndex, command] of requiredValidationCommandEntries(
+    commands,
+    cwd,
+    options,
+  ).entries()) {
+    const parsed = parseAllowedValidationCommand(command.command);
+    const retainStrongCommand =
+      risk.level === "elevated" || isFocusedStagedProofCommand(stripEnvPrefix(parsed));
+    const resolvedCommands = resolveAllowedValidationCommands(
+      command.command,
+      cwd,
+      baseBranch,
+      options,
+      retainStrongCommand,
+    );
+    for (const parts of resolvedCommands) {
+      const canonical =
+        command.canonical || changedGateCommandParts(toolchain.changedGate, parts) !== null;
+      resolved.push({
+        parts,
+        source: canonical && command.source === "artifact" ? "changed_gate" : command.source,
+        canonical,
+        required: command.required,
+        originalIndex,
+      });
+    }
+  }
+
+  if (resolved.length === 0) {
     throw new Error(
       "validation_command_missing: no configured or artifact validation command is available",
     );
   }
-  for (const command of requiredCommands) {
-    const resolvedCommands = resolveAllowedValidationCommands(command, cwd, baseBranch, options);
-    for (const parts of resolvedCommands) {
-      const executable = parts[0]!;
-      const rendered = parts.join(" ");
-      if (executed.includes(rendered)) continue;
-      while (true) {
-        try {
-          run(executable, parts.slice(1), {
+  return {
+    baseRef,
+    plan: buildStagedProofPlan({
+      commands: resolved,
+      changedFiles,
+      surfaceHints,
+      subsumptionContracts: proofSubsumptionContracts(toolchain),
+    }),
+  };
+}
+
+function runValidationPlanCommand({
+  parts,
+  timeoutMs,
+  cwd,
+  validationEnv,
+  baseBranch,
+  baseRef,
+  options,
+  attempts,
+  executed,
+}: {
+  parts: string[];
+  timeoutMs: number;
+  cwd: string;
+  validationEnv: NodeJS.ProcessEnv;
+  baseBranch: string;
+  baseRef: string;
+  options: TargetValidationOptions;
+  attempts: Map<string, number>;
+  executed: Set<string>;
+}) {
+  const rendered = parts.join(" ");
+  if (executed.has(rendered)) {
+    return { executedCommands: [], reason: "exact command already passed" };
+  }
+  const startedAt = Date.now();
+  while (true) {
+    try {
+      run(parts[0]!, parts.slice(1), {
+        cwd,
+        env: validationEnv,
+        timeoutMs: remainingCommandBudget(timeoutMs, startedAt),
+      });
+      executed.add(rendered);
+      return {
+        executedCommands: [rendered],
+        reason:
+          (attempts.get(rendered) ?? 0) > 0
+            ? `passed after ${(attempts.get(rendered) ?? 0) + 1} attempts`
+            : "passed",
+      };
+    } catch (error) {
+      const fallbackCommands = validationFallbackCommands({
+        parts,
+        error,
+        cwd,
+        baseBranch,
+        baseRef,
+        options,
+      });
+      if (fallbackCommands.length > 0) {
+        const fallbackExecuted: string[] = [];
+        for (const fallbackParts of fallbackCommands) {
+          const fallbackRendered = fallbackParts.join(" ");
+          if (executed.has(fallbackRendered)) continue;
+          run(fallbackParts[0]!, fallbackParts.slice(1), {
             cwd,
             env: validationEnv,
-            timeoutMs: validationTimeoutMs,
+            timeoutMs: remainingCommandBudget(timeoutMs, startedAt),
           });
-          executed.push(rendered);
-          break;
-        } catch (error) {
-          const fallbackCommands = validationFallbackCommands({
-            parts,
-            error,
-            cwd,
-            baseBranch,
-            baseRef,
-            options,
-          });
-          if (fallbackCommands.length > 0) {
-            for (const fallbackParts of fallbackCommands) {
-              const fallbackExecutable = fallbackParts[0]!;
-              const fallbackRendered = fallbackParts.join(" ");
-              if (executed.includes(fallbackRendered)) continue;
-              run(fallbackExecutable, fallbackParts.slice(1), {
-                cwd,
-                env: validationEnv,
-                timeoutMs: validationTimeoutMs,
-              });
-              executed.push(fallbackRendered);
-            }
-            break;
-          }
-          if (shouldRetryValidationCommand({ parts, error, attempts, options })) continue;
-          throw new Error(
-            `validation command failed (${parts.join(" ")}): ${compactText(error.message, 12000)}`,
-          );
+          executed.add(fallbackRendered);
+          fallbackExecuted.push(fallbackRendered);
         }
+        return {
+          executedCommands: fallbackExecuted,
+          reason: "canonical changed gate replaced by its bounded stall fallback",
+        };
       }
+      if (shouldRetryValidationCommand({ parts, error, attempts, options })) continue;
+      throw new Error(
+        `validation command failed (${parts.join(" ")}): ${compactText(error.message, 12000)}`,
+        { cause: error },
+      );
     }
   }
-  return executed;
+}
+
+function remainingCommandBudget(timeoutMs: number, startedAt: number) {
+  return Math.max(1, timeoutMs - Math.max(0, Date.now() - startedAt));
 }
 
 export function preflightTargetValidationPlan(
@@ -492,22 +647,65 @@ export function requiredValidationCommands(
   cwd: string,
   options: TargetValidationOptions,
 ) {
-  const toolchain = getToolchain(options);
-  const replacementCommands = [
-    ...(options.additionalValidationCommands ?? []),
-    ...toolchain.baseValidationCommands,
-  ];
-  const sanitized = sanitizeStaleChangedGateCommands(
-    commands ?? [],
-    toolchain,
-    replacementCommands,
+  return uniqueStrings(
+    requiredValidationCommandEntries(commands ?? [], cwd, options).map((entry) => entry.command),
   );
-  const out = [...sanitized, ...replacementCommands];
+}
+
+function requiredValidationCommandEntries(
+  commands: LooseRecord[],
+  cwd: string,
+  options: TargetValidationOptions,
+): RequiredValidationCommand[] {
+  const toolchain = getToolchain(options);
+  const additionalCommands = options.additionalValidationCommands ?? [];
+  const replacementCommands = [...additionalCommands, ...toolchain.baseValidationCommands];
+  const sanitized = sanitizeStaleChangedGateCommands(commands, toolchain, replacementCommands);
+  const out: RequiredValidationCommand[] = [
+    ...sanitized.map((command) => ({
+      command,
+      source: "artifact" as const,
+      canonical: false,
+      required: true,
+    })),
+    ...additionalCommands.map((command) => ({
+      command,
+      source: "configured" as const,
+      canonical: false,
+      required: true,
+    })),
+    ...toolchain.baseValidationCommands.map((command) => ({
+      command,
+      source: "repository_profile" as const,
+      canonical: true,
+      required: true,
+    })),
+  ];
   const gate = toolchain.changedGate;
   if (gate && !options.skipOpenClawChangedGate && requiresChangedGate(cwd, toolchain)) {
-    out.push(gate.command);
+    out.push({
+      command: gate.command,
+      source: "changed_gate",
+      canonical: true,
+      required: true,
+    });
   }
-  return uniqueStrings(out);
+  const unique = new Map<string, RequiredValidationCommand>();
+  for (const entry of out) {
+    const key = String(entry.command);
+    const previous = unique.get(key);
+    if (!previous) {
+      unique.set(key, entry);
+      continue;
+    }
+    unique.set(key, {
+      ...previous,
+      source: entry.canonical ? entry.source : previous.source,
+      canonical: previous.canonical || entry.canonical,
+      required: previous.required || entry.required,
+    });
+  }
+  return [...unique.values()];
 }
 
 /**
@@ -665,6 +863,7 @@ function resolveAllowedValidationCommands(
   cwd: string,
   baseBranch: string = DEFAULT_BASE_BRANCH,
   options: TargetValidationOptions,
+  retainStrongCommand = false,
 ) {
   const parts = parseAllowedValidationCommand(command);
   const commandParts = stripEnvPrefix(parts);
@@ -674,6 +873,7 @@ function resolveAllowedValidationCommands(
   const gate = toolchain.changedGate;
   if (
     !options.strictTargetValidation &&
+    !retainStrongCommand &&
     gate &&
     scripts.has(gate.requiredScript) &&
     commandParts[0] !== "git"
@@ -688,7 +888,10 @@ function resolveAllowedValidationCommands(
   if (toolchain.packageManager === "pnpm" && commandParts[0] === "pnpm") {
     const commandStart = commandParts[1] === "-s" || commandParts[1] === "--silent" ? 2 : 1;
     const pnpmScript = commandParts[commandStart];
-    if (isExpensivePnpmValidation(commandParts, commandStart, options.allowExpensiveValidation)) {
+    if (
+      !retainStrongCommand &&
+      isExpensivePnpmValidation(commandParts, commandStart, options.allowExpensiveValidation)
+    ) {
       return [["pnpm", "check:changed"]];
     }
     const vitestArgsStart =
@@ -891,6 +1094,23 @@ function requiresChangedGate(cwd: string, toolchain: TargetRepoToolchain) {
 
 function getToolchain(options: TargetValidationOptions): TargetRepoToolchain {
   return options.toolchain ?? resolveTargetRepoToolchain(options.targetRepo);
+}
+
+function proofSubsumptionContracts(
+  toolchain: TargetRepoToolchain,
+): StagedProofSubsumptionContract[] {
+  const out: StagedProofSubsumptionContract[] = [];
+  for (const contract of toolchain.proofSubsumptions ?? []) {
+    try {
+      out.push({
+        command: parseAllowedValidationCommand(contract.command),
+        subsumes: contract.subsumes.map((command) => parseAllowedValidationCommand(command)),
+      });
+    } catch {
+      // Invalid repository metadata cannot weaken or block proof; ignore the contract.
+    }
+  }
+  return out;
 }
 
 function isChangedGateCommand(parts: readonly string[], options: TargetValidationOptions) {

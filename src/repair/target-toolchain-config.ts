@@ -19,12 +19,20 @@ export interface TargetRepoToolchain {
   baseValidationCommands: readonly string[];
   /** Optional incremental gate (e.g. OpenClaw's pnpm check:changed). */
   changedGate: TargetChangedGate | null;
+  /** Exact, repository-owned proof contracts. Arbitrary test commands are never inferred redundant. */
+  proofSubsumptions?: readonly TargetProofSubsumption[];
+}
+
+export interface TargetProofSubsumption {
+  command: string;
+  subsumes: readonly string[];
 }
 
 interface ToolchainConfigEntry {
   package_manager?: unknown;
   validation_commands?: unknown;
   changed_gate?: unknown;
+  proof_subsumptions?: unknown;
 }
 
 const SUPPORTED_PACKAGE_MANAGERS: ReadonlySet<TargetPackageManager> = new Set([
@@ -154,6 +162,7 @@ function parseToolchainEntry(
     packageManager,
     baseValidationCommands,
     changedGate,
+    proofSubsumptions: parseProofSubsumptions(entry.proof_subsumptions),
   };
 }
 
@@ -186,6 +195,29 @@ function parseChangedGate(value: unknown): TargetChangedGate | null {
     return null;
   }
   return { command, requiredScript };
+}
+
+function parseProofSubsumptions(value: unknown): readonly TargetProofSubsumption[] {
+  if (value === null || value === undefined) return [];
+  if (!Array.isArray(value)) {
+    warnOnce(`proof_subsumptions must be an array; ignoring entry`);
+    return [];
+  }
+  const out: TargetProofSubsumption[] = [];
+  for (const entry of value) {
+    if (!isObject(entry)) {
+      warnOnce(`proof_subsumptions entries must be objects; ignoring entry`);
+      continue;
+    }
+    const command = stringOrEmpty(entry.command);
+    const subsumes = stringArray(entry.subsumes);
+    if (!command || subsumes.length === 0) {
+      warnOnce(`proof_subsumptions entry requires command and non-empty subsumes`);
+      continue;
+    }
+    out.push({ command, subsumes });
+  }
+  return out;
 }
 
 function stringArray(value: unknown): readonly string[] {

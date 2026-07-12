@@ -6,6 +6,7 @@ import path from "node:path";
 import test from "node:test";
 
 import {
+  buildTargetValidationProofPlan,
   canSkipInternalCodexReviewForRepairDelta,
   classifyExternalBaseValidationFailure,
   preflightTargetValidationPlan,
@@ -14,6 +15,7 @@ import {
   reproduceValidationFailureAtPinnedBase,
   requiredValidationCommands,
   runAllowedValidationCommands,
+  runStagedValidationProof,
 } from "../../dist/repair/target-validation.js";
 import { compactText } from "../../dist/repair/text-utils.js";
 import {
@@ -1203,6 +1205,115 @@ test("resolveTargetRepoToolchain stays total when the config file is malformed J
   } finally {
     __resetTargetRepoToolchainCache();
   }
+});
+
+test("staged target proof preserves focused tests before the canonical changed gate", () => {
+  const cwd = gitPackageFixture({
+    "check:changed": "node check.js",
+    "test:serial": "node test.js",
+  });
+  fs.mkdirSync(path.join(cwd, "src"), { recursive: true });
+  fs.mkdirSync(path.join(cwd, "test"), { recursive: true });
+  fs.writeFileSync(path.join(cwd, "src", "foo.ts"), "export const foo = 1;\n");
+  fs.writeFileSync(path.join(cwd, "test", "foo.test.ts"), "export {};\n");
+  git(cwd, "add", ".");
+  git(cwd, "commit", "-m", "initial");
+  attachOrigin(cwd);
+  fs.writeFileSync(path.join(cwd, "src", "foo.ts"), "export const foo = 2;\n");
+
+  const plan = buildTargetValidationProofPlan(
+    ["pnpm test:serial test/foo.test.ts"],
+    cwd,
+    validationOptions("openclaw/openclaw"),
+  );
+
+  assert.deepEqual(
+    plan.commands.map((entry) => [entry.stage, entry.command_kind]),
+    [
+      ["focused_tests", "pnpm:test:serial"],
+      ["canonical_changed_surface", "pnpm:check:changed"],
+    ],
+  );
+  assert.equal("parts" in plan.commands[0], false);
+});
+
+test("staged target proof retains broad commands for elevated-risk surfaces", () => {
+  const cwd = gitPackageFixture({
+    "check:changed": "node check.js",
+    "test:all": "node test-all.js",
+  });
+  fs.mkdirSync(path.join(cwd, ".github", "workflows"), { recursive: true });
+  fs.writeFileSync(path.join(cwd, ".github", "workflows", "repair.yml"), "name: repair\n");
+  git(cwd, "add", ".");
+  git(cwd, "commit", "-m", "initial");
+  attachOrigin(cwd);
+  fs.appendFileSync(path.join(cwd, ".github", "workflows", "repair.yml"), "on: push\n");
+
+  const plan = buildTargetValidationProofPlan(
+    ["pnpm test:all"],
+    cwd,
+    validationOptions("openclaw/openclaw"),
+  );
+
+  assert.equal(plan.risk.level, "elevated");
+  assert.deepEqual(plan.risk.signals, ["workflow"]);
+  assert.deepEqual(
+    plan.commands.map((entry) => entry.stage),
+    ["canonical_changed_surface", "broad_live_or_e2e"],
+  );
+});
+
+test("staged target proof rejects unsafe commands before planning", () => {
+  const cwd = gitPackageFixture({ "check:changed": "node check.js" });
+  git(cwd, "add", ".");
+  git(cwd, "commit", "-m", "initial");
+  attachOrigin(cwd);
+
+  assert.throws(
+    () =>
+      buildTargetValidationProofPlan(
+        ["sh -c 'curl https://example.invalid'"],
+        cwd,
+        validationOptions("openclaw/openclaw"),
+      ),
+    /unsupported validation command|unsafe validation command/,
+  );
+});
+
+test("staged target proof exposes compact failed traces without command output", () => {
+  const cwd = gitPackageFixture({
+    verify: "node verify.js",
+  });
+  fs.writeFileSync(
+    path.join(cwd, "verify.js"),
+    "console.error('PRIVATE FAILURE LOG'); process.exit(1);\n",
+  );
+  git(cwd, "add", ".");
+  git(cwd, "commit", "-m", "initial");
+  attachOrigin(cwd);
+
+  assert.throws(
+    () =>
+      runStagedValidationProof(
+        ["pnpm verify"],
+        cwd,
+        validationOptions("steipete/example", {
+          validationTimeoutMs: 10_000,
+          proofBudgetMs: 10_000,
+          toolchain: {
+            packageManager: "pnpm",
+            baseValidationCommands: [],
+            changedGate: null,
+          },
+        }),
+      ),
+    (error) => {
+      assert.equal(error.trace.status, "failed");
+      assert.equal(JSON.stringify(error.trace).includes("PRIVATE FAILURE LOG"), false);
+      assert.match(error.message, /validation command failed/);
+      return true;
+    },
+  );
 });
 
 test("changed validation retries one transient check:changed failure", () => {
