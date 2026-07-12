@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -19,6 +20,7 @@ import {
   ACTION_EVENT_REASON_CODES,
   ACTION_EVENT_STATUSES,
   ACTION_EVENT_TYPES,
+  actionLedgerJson,
 } from "../dist/action-ledger.js";
 
 function tempRoot(): string {
@@ -50,6 +52,10 @@ function recordReview(
   root: string,
   env: NodeJS.ProcessEnv = workflowEnv(),
   now = new Date("2026-07-12T10:01:00.000Z"),
+  options: {
+    generatedOccurrence?: boolean;
+    fetchImpl?: typeof fetch;
+  } = {},
 ) {
   return recordWorkflowActionEvent(
     root,
@@ -85,12 +91,12 @@ function recordReview(
         redactionVersion: "v1",
         fieldsDropped: ["body", "comments", "diff", "logs", "prompt"],
       },
-      occurredAt: "2026-07-12T10:00:00.000Z",
+      ...(options.generatedOccurrence ? {} : { occurredAt: "2026-07-12T10:00:00.000Z" }),
     },
     {
       env,
       now: () => now,
-      fetchImpl: async () => new Response(null, { status: 204 }),
+      fetchImpl: options.fetchImpl ?? (async () => new Response(null, { status: 204 })),
     },
   );
 }
@@ -354,6 +360,50 @@ test("phase event helpers reject noncanonical phase, status, and reason strings"
   );
 });
 
+test("workflow event scopes reject confidential identifiers before persistence or projection", () => {
+  for (const scope of [`ghp_${"A".repeat(20)}`, `Bearer-${"A".repeat(20)}`, "service.internal"]) {
+    const root = tempRoot();
+    let requests = 0;
+    assert.throws(
+      () =>
+        recordWorkflowActionEvent(
+          root,
+          {
+            scope,
+            identity: { number: 42 },
+            type: ACTION_EVENT_TYPES.reviewCompleted,
+            component: "review",
+            subject: {
+              repository: "openclaw/openclaw",
+              kind: "pull_request",
+              number: 42,
+            },
+            action: {
+              name: "review",
+              status: "completed",
+              retryable: false,
+              mutation: false,
+            },
+          },
+          {
+            env: workflowEnv({
+              CLAWSWEEPER_CRABFLEET_AGENT_TOKEN: "agent-token",
+              CLAWSWEEPER_CRABFLEET_SESSION_ID: "session-1",
+            }),
+            fetchImpl: (async () => {
+              requests += 1;
+              return new Response(null, { status: 204 });
+            }) as typeof fetch,
+          },
+        ),
+      /confidential identifier/,
+      scope,
+    );
+    assert.equal(requests, 0, scope);
+    assert.equal(fs.existsSync(path.join(root, ".clawsweeper-repair")), false, scope);
+  }
+});
+
 test("workflow producer identity uses stable workflow and step identifiers", () => {
   assert.deepEqual(workflowActionProducer("review", workflowEnv()), {
     repository: "openclaw/clawsweeper",
@@ -441,6 +491,31 @@ test("fresh-root shard replay preserves the first recorded-at metadata", async (
   assert.equal(replayPath, firstPath);
   assert.equal(fs.readFileSync(path.join(outputRoot, replayPath!), "utf8"), firstContent);
   assert.equal(JSON.parse(firstContent).recorded_at, "2026-07-12T10:01:00.000Z");
+});
+
+test("fresh-root shard replay ignores only generated occurrence clock drift", async () => {
+  const env = workflowEnv();
+  const firstRoot = tempRoot();
+  const replayRoot = tempRoot();
+  const outputRoot = tempRoot();
+  const first = recordReview(firstRoot, env, new Date("2026-07-12T10:01:00.000Z"), {
+    generatedOccurrence: true,
+  });
+  const [firstPath] = await flushWorkflowActionEvents(firstRoot, { env, outputRoot });
+  assert.ok(first);
+  assert.ok(firstPath);
+  const firstContent = fs.readFileSync(path.join(outputRoot, firstPath), "utf8");
+
+  const replay = recordReview(replayRoot, env, new Date("2026-07-12T11:30:00.000Z"), {
+    generatedOccurrence: true,
+  });
+  const [replayPath] = await flushWorkflowActionEvents(replayRoot, { env, outputRoot });
+  assert.ok(replay);
+  assert.equal(replayPath, firstPath);
+  assert.notEqual(replay.occurred_at, first.occurred_at);
+  assert.equal(first.occurred_at_source, "generated");
+  assert.equal(replay.occurred_at_source, "generated");
+  assert.equal(fs.readFileSync(path.join(outputRoot, replayPath!), "utf8"), firstContent);
 });
 
 test("imports preserve first-writer shard bytes across fresh-root recorded-at drift", async () => {
@@ -608,6 +683,36 @@ test("CrabFleet projection sends the validated ledger event and bearer token", a
   assert.deepEqual(body.payload, { version: 1, event });
 });
 
+test("CrabFleet rejects forged confidential event keys before projection", async () => {
+  const event = recordReview(tempRoot());
+  assert.ok(event);
+  const forgedKey = `ghp_${"A".repeat(20)}:${event.event_key.split(":")[1]}`;
+  const forged = {
+    ...event,
+    event_key: forgedKey,
+    event_id: createHash("sha256")
+      .update(`${event.subject.repository}\n${forgedKey}`)
+      .digest("hex"),
+  };
+  let requests = 0;
+
+  await assert.rejects(
+    postActionEventToCrabFleet(
+      forged,
+      workflowEnv({
+        CLAWSWEEPER_CRABFLEET_AGENT_TOKEN: "agent-token",
+        CLAWSWEEPER_CRABFLEET_SESSION_ID: "session-1",
+      }),
+      (async () => {
+        requests += 1;
+        return new Response(null, { status: 204 });
+      }) as typeof fetch,
+    ),
+    /confidential identifier/,
+  );
+  assert.equal(requests, 0);
+});
+
 test("CrabFleet projection cancels successful response bodies", async () => {
   const event = recordReview(tempRoot());
   assert.ok(event);
@@ -693,7 +798,9 @@ test("CrabFleet projection failures remain durable and retryable", async () => {
   );
   const failure = events[1];
   assert.equal(events[0].occurred_at, "2026-07-12T12:00:00.000Z");
+  assert.equal(events[0].occurred_at_source, "source");
   assert.equal(failure.occurred_at, "2026-07-12T10:01:00.000Z");
+  assert.equal(failure.occurred_at_source, "generated");
   assert.equal(failure.action.reason_code, "append_failed");
   assert.equal(failure.action.retryable, true);
   assert.equal(failure.learning.signal, "retry_from_durable_ledger");
@@ -704,6 +811,52 @@ test("CrabFleet projection failures remain durable and retryable", async () => {
   assert.equal(errors.length, 1);
   assert.match(errors[0] ?? "", /append failed \(503\)/);
   assert.doesNotMatch(errors[0] ?? "", /sensitive upstream detail/);
+});
+
+test("fresh-root projection failures replay despite generated clock drift", async () => {
+  const env = workflowEnv({
+    CLAWSWEEPER_CRABFLEET_AGENT_TOKEN: "agent-token",
+    CLAWSWEEPER_CRABFLEET_SESSION_ID: "session-1",
+  });
+  const outputRoot = tempRoot();
+  const roots = [tempRoot(), tempRoot()];
+  const timestamps = [new Date("2026-07-12T10:01:00.000Z"), new Date("2026-07-12T11:30:00.000Z")];
+  const originalError = console.error;
+  console.error = () => undefined;
+  try {
+    let firstPath: string | undefined;
+    let firstContent: string | undefined;
+    for (const [index, root] of roots.entries()) {
+      const event = recordReview(root, env, timestamps[index], {
+        generatedOccurrence: true,
+        fetchImpl: async () => new Response(null, { status: 503 }),
+      });
+      assert.ok(event);
+      const [relativePath] = await flushWorkflowActionEvents(root, { env, outputRoot });
+      assert.ok(relativePath);
+      if (index === 0) {
+        firstPath = relativePath;
+        firstContent = fs.readFileSync(path.join(outputRoot, relativePath), "utf8");
+      } else {
+        assert.equal(relativePath, firstPath);
+        assert.equal(fs.readFileSync(path.join(outputRoot, relativePath), "utf8"), firstContent);
+      }
+    }
+  } finally {
+    console.error = originalError;
+  }
+
+  const [relativePath] = await flushWorkflowActionEvents(roots[0]!, { env, outputRoot });
+  assert.ok(relativePath);
+  const events = fs
+    .readFileSync(path.join(outputRoot, relativePath), "utf8")
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line));
+  assert.deepEqual(
+    events.map((event) => event.occurred_at_source),
+    ["generated", "generated"],
+  );
 });
 
 test("CrabFleet timeouts preserve canonical events and record projection failure", async () => {
@@ -1032,6 +1185,30 @@ test("state shard imports reject forged paths and duplicate events", async () =>
   assert.throws(
     () => importActionEventShards(source, path.join(root, "duplicate-destination")),
     /contains duplicate events/,
+  );
+});
+
+test("state shard imports reject forged confidential event-key scopes", async () => {
+  const root = tempRoot();
+  const source = path.join(root, "source");
+  recordReview(root);
+  const [relativePath] = await flushWorkflowActionEvents(root, {
+    env: workflowEnv(),
+    outputRoot: source,
+  });
+  assert.ok(relativePath);
+  const shardPath = path.join(source, relativePath);
+  const event = JSON.parse(fs.readFileSync(shardPath, "utf8"));
+  const forgedKey = `service.internal:${event.event_key.split(":")[1]}`;
+  event.event_key = forgedKey;
+  event.event_id = createHash("sha256")
+    .update(`${event.subject.repository}\n${forgedKey}`)
+    .digest("hex");
+  fs.writeFileSync(shardPath, `${actionLedgerJson(event)}\n`, "utf8");
+
+  assert.throws(
+    () => importActionEventShards(source, path.join(root, "destination")),
+    /confidential identifier/,
   );
 });
 

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -434,6 +435,7 @@ test("every event persists the required correlation envelope", () => {
   assert.equal(event.parent_event_id, null);
   assert.equal(event.phase_seq, 2);
   assert.match(event.idempotency_key_sha256, /^[a-f0-9]{64}$/);
+  assert.equal(event.occurred_at_source, "source");
 });
 
 test("events reject malformed correlation identities and self-parenting", () => {
@@ -453,7 +455,7 @@ test("events reject malformed correlation identities and self-parenting", () => 
   );
 });
 
-test("callers cannot persist raw event identity in an event key", () => {
+test("event-key scopes reject raw identities and confidential identifiers", () => {
   assert.throws(
     () =>
       createActionEvent(
@@ -462,6 +464,52 @@ test("callers cannot persist raw event identity in an event key", () => {
         }),
       ),
     /must be generated/,
+  );
+
+  const schema = JSON.parse(
+    fs.readFileSync(path.join(process.cwd(), "schema", "state-ledger-event.schema.json"), "utf8"),
+  ) as TestJsonSchema;
+  const eventKeySchema = (schema.$defs as Record<string, TestJsonSchema>).eventKey!;
+  const safeKey = actionEventKey("review.completed", { number: 42 });
+  assert.equal(schemaNodeAccepts(schema, eventKeySchema, safeKey), true);
+
+  for (const scope of [`ghp_${"A".repeat(20)}`, `Bearer-${"A".repeat(20)}`, "service.internal"]) {
+    const forgedKey = `${scope}:${"a".repeat(64)}`;
+    assert.throws(() => actionEventKey(scope, { number: 42 }), /confidential identifier/, scope);
+    assert.throws(
+      () => actionEventId("openclaw/openclaw", forgedKey),
+      /confidential identifier/,
+      scope,
+    );
+    assert.throws(
+      () => createActionEvent(reviewInput({ eventKey: forgedKey })),
+      /confidential identifier/,
+      scope,
+    );
+    assert.equal(schemaNodeAccepts(schema, eventKeySchema, forgedKey), false, scope);
+  }
+});
+
+test("event readers reject forged confidential event-key scopes", () => {
+  const root = tempRoot();
+  const valid = createActionEvent(reviewInput());
+  const forgedKey = `ghp_${"A".repeat(20)}:${valid.event_key.split(":")[1]}`;
+  const forgedId = createHash("sha256")
+    .update(`${valid.subject.repository}\n${forgedKey}`)
+    .digest("hex");
+  const forged = {
+    ...valid,
+    event_id: forgedId,
+    event_key: forgedKey,
+  };
+  const relativePath = actionEventSpoolRelativePath(valid.subject.repository, forgedId);
+  const target = path.join(root, relativePath);
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  fs.writeFileSync(target, `${actionLedgerJson(forged)}\n`, "utf8");
+
+  assert.throws(
+    () => readSpooledActionEvents(root, valid.subject.repository),
+    /confidential identifier/,
   );
 });
 
@@ -623,6 +671,7 @@ test("runtime and schema apply the same machine-text privacy boundary", () => {
     `github_pat_${"A".repeat(24)}`,
     `eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.${"A".repeat(32)}`,
     `Bearer:${"A".repeat(32)}`,
+    "Basic:dXNlcjpwYXNz",
     "alice%40example.com",
     "%2FUsers%2Falice%2Fsecret",
     "https%3A%2F%2Fservice.internal%2Fapi",
@@ -633,10 +682,16 @@ test("runtime and schema apply the same machine-text privacy boundary", () => {
     "::ffff:7f00:1",
     "service.internal",
     "service.internal.",
+    "SERVICE.INTERNAL",
+    "LOCALHOST:443",
+    "user@LOCALHOST",
+    "file:/etc/passwd",
+    "https://user@host/path",
     "internal.example.com",
     "https://host.docker.internal/api",
     "https://10.0.0.1/api",
     "host-10.0.0.1",
+    "0:0::1",
   ];
 
   for (const value of samples) {
@@ -656,6 +711,33 @@ test("runtime and schema apply the same machine-text privacy boundary", () => {
       runtimeAllows = false;
     }
     assert.equal(runtimeAllows, schemaAllows(value), value);
+  }
+});
+
+test("privacy normalization preserves public machine identifiers", () => {
+  const schema = JSON.parse(
+    fs.readFileSync(path.join(process.cwd(), "schema", "state-ledger-event.schema.json"), "utf8"),
+  ) as TestJsonSchema;
+  for (const status of [
+    "basic-authentication",
+    "localhost-check",
+    "user-at-localhost",
+    "file-cache",
+    "public.example",
+    "https://github.com/openclaw/clawsweeper/actions/runs/100",
+  ]) {
+    const event = createActionEvent(
+      reviewInput({
+        action: {
+          name: "review",
+          status,
+          retryable: false,
+          mutation: false,
+        },
+      }),
+    );
+    assert.equal(event.action.status, status);
+    assert.equal(schemaAccepts(schema, event), true, status);
   }
 });
 
@@ -1296,16 +1378,57 @@ test("spooled events remain independent and read in occurrence order", () => {
 
 test("replaying an event with generated occurrence time preserves the first write", () => {
   const root = tempRoot();
-  const first = writeActionEvent(root, reviewInput(), {
+  const first = writeActionEvent(root, reviewInput({ occurredAt: undefined }), {
     now: () => new Date("2026-07-12T10:01:00.000Z"),
   });
-  const replay = writeActionEvent(root, reviewInput(), {
+  const replay = writeActionEvent(root, reviewInput({ occurredAt: undefined }), {
     now: () => new Date("2026-07-12T10:02:00.000Z"),
   });
 
   assert.equal(replay.status, "unchanged");
+  assert.equal(first.event.occurred_at_source, "generated");
+  assert.equal(replay.event.occurred_at_source, "generated");
   assert.equal(replay.event.occurred_at, first.event.occurred_at);
   assert.equal(replay.event.recorded_at, first.event.recorded_at);
+});
+
+test("generated occurrence clocks cannot reverse deterministic shard ordering", () => {
+  const identity = {
+    repository: producer.repository,
+    sha: producer.sha,
+    producer: producer.component,
+    workflow: producer.workflow,
+    job: producer.job,
+    runId: producer.runId,
+    runAttempt: producer.runAttempt,
+    partitionDate: "2026-07-12",
+  };
+  const inputA = reviewInput({
+    eventKey: reviewEventKey("generated.a"),
+    occurredAt: undefined,
+  });
+  const inputB = reviewInput({
+    eventKey: reviewEventKey("generated.b"),
+    occurredAt: undefined,
+  });
+  const firstEvents = [
+    createActionEvent(inputA, { now: () => new Date("2026-07-12T11:00:00.000Z") }),
+    createActionEvent(inputB, { now: () => new Date("2026-07-12T10:00:00.000Z") }),
+  ];
+  const replayEvents = [
+    createActionEvent(inputA, { now: () => new Date("2026-07-12T09:00:00.000Z") }),
+    createActionEvent(inputB, { now: () => new Date("2026-07-12T12:00:00.000Z") }),
+  ];
+  const root = tempRoot();
+  const first = writeActionEventShard(root, identity, firstEvents);
+  const replay = writeActionEventShard(root, identity, replayEvents);
+
+  assert.equal(replay.status, "unchanged");
+  assert.equal(replay.path, first.path);
+  assert.deepEqual(
+    readActionEventShard(first.path).map((event) => event.event_id),
+    firstEvents.map((event) => event.event_id).sort(),
+  );
 });
 
 test("replaying an event with a changed explicit occurrence time still conflicts", () => {
@@ -1658,6 +1781,34 @@ test("checked-in schema rejects values rejected by runtime normalization", () =>
       },
     },
   ];
+
+  for (const value of [
+    "Basic:dXNlcjpwYXNz",
+    "LOCALHOST:443",
+    "user@LOCALHOST",
+    "file:/etc/passwd",
+    "SERVICE.INTERNAL",
+    "0:0::1",
+    "https://user@host/path",
+  ]) {
+    cases.push({
+      label: `confidential machine text ${value}`,
+      mutate: (event) => {
+        (event.action as Record<string, unknown>).status = value;
+      },
+      runtime: () =>
+        createActionEvent(
+          reviewInput({
+            action: {
+              name: "review",
+              status: value,
+              retryable: false,
+              mutation: false,
+            },
+          }),
+        ),
+    });
+  }
 
   for (const entry of cases) {
     const candidate = structuredClone(valid) as unknown as Record<string, unknown>;
