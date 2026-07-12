@@ -108,17 +108,6 @@ jobs:
           permission-workflows: write
           permission-actions: read
 
-      - name: Create isolated ruleset verifier token
-        id: ruleset-verifier-token
-        if: ${{ env.CLAWSWEEPER_ALLOW_MERGE == '1' }}
-        continue-on-error: true
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
-        with:
-          client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
-          private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
-          owner: ${{ vars.CLAWSWEEPER_ALLOWED_OWNER || github.repository_owner }}
-          permission-administration: write
-
       - name: Create state token
         id: state-token
         uses: ./.github/actions/create-state-token
@@ -184,7 +173,6 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.app_token.outputs.token }}
           CLAWSWEEPER_AUTHENTICATED_APP_SLUG: ${{ steps.app_token.outputs.app-slug }}
-          CLAWSWEEPER_RULESET_GH_TOKEN: ${{ steps.ruleset-verifier-token.outputs.token }}
         run: pnpm run repair:post-flight -- "${{ steps.prepare.outputs.job_path }}" "${{ steps.prepare.outputs.result_path }}"
 
       - name: Publish local result ledger
