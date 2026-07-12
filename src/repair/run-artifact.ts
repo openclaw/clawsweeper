@@ -47,16 +47,12 @@ export function resolveRunArtifact({
   if ((expectedId === null) !== (expectedDigest === null)) {
     throw new Error("trusted producer artifact id and digest must be provided together");
   }
-  const namePatterns = prefixes.map(
-    (candidate) => new RegExp(`^${escapeRegExp(candidate)}-${runId}-([1-9][0-9]*)$`),
-  );
   const candidates = artifacts.flatMap((artifact) => {
     const name = String(artifact.name ?? "");
-    const prefixPriority = namePatterns.findIndex((pattern) => pattern.test(name));
+    const parsedNames = prefixes.map((candidate) => parseArtifactName(name, candidate, runId));
+    const prefixPriority = parsedNames.findIndex((producerAttempt) => producerAttempt !== null);
     if (prefixPriority < 0) return [];
-    const match = name.match(namePatterns[prefixPriority]!);
-    if (!match) return [];
-    const producerAttempt = Number(match[1]);
+    const producerAttempt = parsedNames[prefixPriority]!;
     const id = Number(artifact.id);
     if (
       !Number.isInteger(id) ||
@@ -150,6 +146,11 @@ function normalizeOptionalDigest(value: unknown): string | null {
   return normalized;
 }
 
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+function parseArtifactName(name: string, prefix: string, runId: string): number | null {
+  const literalPrefix = `${prefix}-${runId}-`;
+  if (!name.startsWith(literalPrefix)) return null;
+  const attempt = name.slice(literalPrefix.length);
+  if (!/^[1-9][0-9]*$/.test(attempt)) return null;
+  const parsed = Number(attempt);
+  return Number.isSafeInteger(parsed) ? parsed : null;
 }

@@ -1701,8 +1701,22 @@ function workspacePackagePatterns(cwd: string, rootPackage: LooseRecord): string
     .filter(Boolean);
 }
 
+const MAX_WORKSPACE_PATTERN_LENGTH = 1_024;
+const MAX_WORKSPACE_PATH_LENGTH = 4_096;
+
+type WorkspacePatternToken =
+  | { kind: "literal"; value: string }
+  | { kind: "segment_wildcard" }
+  | { kind: "tree_wildcard" };
+
 function workspacePackagePaths(cwd: string, patterns: readonly string[]): string[] {
   if (patterns.length === 0) return [];
+  const includedPatterns = patterns
+    .filter((pattern) => !pattern.startsWith("!"))
+    .map(compileWorkspacePattern);
+  const excludedPatterns = patterns
+    .filter((pattern) => pattern.startsWith("!"))
+    .map((pattern) => compileWorkspacePattern(pattern.slice(1)));
   const matches: string[] = [];
   const visit = (directory: string, relativeDirectory: string) => {
     for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
@@ -1718,13 +1732,10 @@ function workspacePackagePaths(cwd: string, patterns: readonly string[]): string
       const absolutePath = path.join(directory, entry.name);
       if (
         fs.existsSync(path.join(absolutePath, "package.json")) &&
-        patterns.some(
-          (pattern) => !pattern.startsWith("!") && workspacePatternMatches(pattern, relativePath),
+        includedPatterns.some((pattern) =>
+          compiledWorkspacePatternMatches(pattern, relativePath),
         ) &&
-        !patterns.some(
-          (pattern) =>
-            pattern.startsWith("!") && workspacePatternMatches(pattern.slice(1), relativePath),
-        )
+        !excludedPatterns.some((pattern) => compiledWorkspacePatternMatches(pattern, relativePath))
       ) {
         matches.push(relativePath);
       }
@@ -1735,10 +1746,62 @@ function workspacePackagePaths(cwd: string, patterns: readonly string[]): string
   return [...new Set(matches)].sort();
 }
 
-function workspacePatternMatches(pattern: string, relativePath: string): boolean {
-  const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&");
-  const globbed = escaped.replaceAll("**", "\0").replaceAll("*", "[^/]*").replaceAll("\0", ".*");
-  return new RegExp(`^${globbed}$`).test(relativePath);
+export function workspacePatternMatches(pattern: string, relativePath: string): boolean {
+  return compiledWorkspacePatternMatches(compileWorkspacePattern(pattern), relativePath);
+}
+
+function compileWorkspacePattern(pattern: string): WorkspacePatternToken[] {
+  if (pattern.length > MAX_WORKSPACE_PATTERN_LENGTH) {
+    throw new Error("workspace pattern exceeds the maximum supported length");
+  }
+  const tokens: WorkspacePatternToken[] = [];
+  for (let index = 0; index < pattern.length; index += 1) {
+    if (pattern[index] !== "*") {
+      tokens.push({ kind: "literal", value: pattern[index]! });
+      continue;
+    }
+    const treeWildcard = pattern[index + 1] === "*";
+    if (treeWildcard) index += 1;
+    tokens.push({ kind: treeWildcard ? "tree_wildcard" : "segment_wildcard" });
+  }
+  return tokens;
+}
+
+function compiledWorkspacePatternMatches(
+  tokens: readonly WorkspacePatternToken[],
+  relativePath: string,
+): boolean {
+  if (relativePath.length > MAX_WORKSPACE_PATH_LENGTH) {
+    throw new Error("workspace path exceeds the maximum supported length");
+  }
+  let states = new Uint8Array(tokens.length + 1);
+  states[0] = 1;
+  addWorkspaceWildcardEpsilonClosure(tokens, states);
+  for (const character of relativePath) {
+    const next = new Uint8Array(tokens.length + 1);
+    for (let index = 0; index < tokens.length; index += 1) {
+      const token = tokens[index]!;
+      if (token.kind === "literal") {
+        next[index + 1] = Number(states[index] === 1 && token.value === character);
+      } else if (token.kind === "tree_wildcard") {
+        next[index + 1] = Number(states[index] === 1 || states[index + 1] === 1);
+      } else if (character !== "/") {
+        next[index + 1] = Number(states[index] === 1 || states[index + 1] === 1);
+      }
+    }
+    addWorkspaceWildcardEpsilonClosure(tokens, next);
+    states = next;
+  }
+  return states[tokens.length] === 1;
+}
+
+function addWorkspaceWildcardEpsilonClosure(
+  tokens: readonly WorkspacePatternToken[],
+  states: Uint8Array,
+) {
+  for (let index = 0; index < tokens.length; index += 1) {
+    if (states[index] === 1 && tokens[index]!.kind !== "literal") states[index + 1] = 1;
+  }
 }
 
 function selectWorkspacePackages(

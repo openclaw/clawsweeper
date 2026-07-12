@@ -164,6 +164,28 @@ test("artifact resolution rejects expired, ambiguous, and untrusted candidates",
   );
 });
 
+test("artifact names treat target prefixes as bounded literals", () => {
+  assert.equal(
+    resolveRunArtifact({
+      artifacts: [artifact(101, 1, digest1, "repair.prefix")],
+      prefix: "repair.prefix",
+      runId: "9001",
+      currentAttempt: 1,
+    }).id,
+    101,
+  );
+  assert.throws(
+    () =>
+      resolveRunArtifact({
+        artifacts: [artifact(101, 1, digest1, "repairXprefix")],
+        prefix: "repair.prefix",
+        runId: "9001",
+        currentAttempt: 1,
+      }),
+    /current producer attempt did not publish/,
+  );
+});
+
 test("repair workflow resolves producer artifacts by trusted id across rerun attempts", () => {
   const workflow = fs.readFileSync(".github/workflows/repair-cluster-worker.yml", "utf8");
   const downloadBlocks = [

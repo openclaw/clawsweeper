@@ -17,6 +17,7 @@ import {
   requiredValidationCommands,
   runAllowedValidationCommands,
   runStagedValidationProof,
+  workspacePatternMatches,
 } from "../../dist/repair/target-validation.js";
 import {
   buildStagedProofPlan,
@@ -724,6 +725,20 @@ test("recursive pnpm preflight preserves filters and ignores unrelated workspace
   assert.deepEqual(delegatedGraphSelector.resolved_commands, [
     "pnpm --fail-if-no-match --recursive --filter ...@openclaw/app test",
   ]);
+});
+
+test("workspace glob matching is bounded for adversarial target patterns", () => {
+  const adversarial = `${"*a".repeat(500)}b`;
+  const startedAt = performance.now();
+  assert.equal(workspacePatternMatches(adversarial, "a".repeat(500)), false);
+  assert.ok(performance.now() - startedAt < 250);
+  assert.equal(workspacePatternMatches("packages/**/test-*", "packages/a/b/test-unit"), true);
+  assert.equal(workspacePatternMatches("packages/*", "packages/a/b"), false);
+  assert.equal(workspacePatternMatches("packages/[app]", "packages/[app]"), true);
+  assert.throws(
+    () => workspacePatternMatches("*".repeat(1_025), "packages/app"),
+    /maximum supported length/,
+  );
 });
 
 test("validation parser accepts only the documented workspace run option positions", () => {
