@@ -487,6 +487,200 @@ jobs:
             exit 1
           fi
 
+      - name: Validate protected production proof credentials
+        env:
+          ACCESS_PREFLIGHT_CONTRACT_RESPONSE: ${{ runner.temp }}/crawl-remote-access-preflight-contract.json
+          ACCESS_PREFLIGHT_HEALTH_RESPONSE: ${{ runner.temp }}/crawl-remote-access-preflight-health.json
+          CF_ACCESS_CLIENT_ID: ${{ secrets.CRAWL_REMOTE_ACCESS_CLIENT_ID }}
+          CF_ACCESS_CLIENT_SECRET: ${{ secrets.CRAWL_REMOTE_ACCESS_CLIENT_SECRET }}
+          CUSTOM_ROUTE_PROOF: ${{ vars.CRAWL_REMOTE_CUSTOM_ROUTE_PROOF }}
+        run: |
+          unset BASH_ENV ENV CDPATH GLOBIGNORE NODE_OPTIONS
+          if [[ "$CUSTOM_ROUTE_PROOF" == "access-service-token" ]]; then
+            if [[ -z "$CF_ACCESS_CLIENT_ID" ]]; then
+              echo "::error::access-service-token proof requires CRAWL_REMOTE_ACCESS_CLIENT_ID."
+              exit 1
+            fi
+            if [[ -z "$CF_ACCESS_CLIENT_SECRET" ]]; then
+              echo "::error::access-service-token proof requires CRAWL_REMOTE_ACCESS_CLIENT_SECRET."
+              exit 1
+            fi
+
+            rm -f \
+              "$ACCESS_PREFLIGHT_HEALTH_RESPONSE" \
+              "$ACCESS_PREFLIGHT_CONTRACT_RESPONSE"
+            curl --fail-with-body --silent --show-error \
+              --connect-timeout 10 \
+              --max-time 20 \
+              --max-filesize 1048576 \
+              --header "accept: application/json" \
+              --header "cache-control: no-cache" \
+              --header "CF-Access-Client-Id: $CF_ACCESS_CLIENT_ID" \
+              --header "CF-Access-Client-Secret: $CF_ACCESS_CLIENT_SECRET" \
+              --output "$ACCESS_PREFLIGHT_HEALTH_RESPONSE" \
+              "$PRODUCTION_ROUTE_URL/health?access_preflight=${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+            curl --fail-with-body --silent --show-error \
+              --connect-timeout 10 \
+              --max-time 20 \
+              --max-filesize 1048576 \
+              --header "accept: application/json" \
+              --header "cache-control: no-cache" \
+              --header "CF-Access-Client-Id: $CF_ACCESS_CLIENT_ID" \
+              --header "CF-Access-Client-Secret: $CF_ACCESS_CLIENT_SECRET" \
+              --output "$ACCESS_PREFLIGHT_CONTRACT_RESPONSE" \
+              "$PRODUCTION_ROUTE_URL/v1/contract?access_preflight=${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+
+          node --input-type=module <<'ACCESS_PREFLIGHT_NODE'
+          import { readFileSync } from 'node:fs';
+
+          const health = JSON.parse(
+            readFileSync(process.env.ACCESS_PREFLIGHT_HEALTH_RESPONSE, 'utf8'),
+          );
+          const contract = JSON.parse(
+            readFileSync(process.env.ACCESS_PREFLIGHT_CONTRACT_RESPONSE, 'utf8'),
+          );
+          const releaseSha = health?.release_sha;
+          if (
+            health?.ok !== true ||
+            typeof releaseSha !== 'string' ||
+            !/^[0-9a-f]{40}$/.test(releaseSha) ||
+            contract?.service !== 'crawl-remote' ||
+            contract?.protocol_version !== 'v1' ||
+            contract?.release_sha !== releaseSha
+          ) {
+            throw new Error(
+              'Cloudflare Access service-token preflight did not reach the current crawl-remote release',
+            );
+          }
+
+          const routes = Array.isArray(contract.routes) ? contract.routes : [];
+          for (const path of ['/health', '/v1/contract']) {
+            if (
+              !routes.some(
+                (route) =>
+                  route?.method === 'GET' &&
+                  route?.path === path,
+              )
+            ) {
+              throw new Error(
+                `Cloudflare Access service-token preflight is missing GET ${path}`,
+              );
+            }
+          }
+          console.log('Cloudflare Access service-token proof credentials are valid.');
+          ACCESS_PREFLIGHT_NODE
+          elif [[ "$CUSTOM_ROUTE_PROOF" != "disabled" ]]; then
+            echo "::error::CRAWL_REMOTE_CUSTOM_ROUTE_PROOF must be disabled or access-service-token."
+            exit 1
+          fi
+
+      - name: Create exact-repository reauthorization token
+        id: target-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
+          owner: openclaw
+          repositories: crawl-remote
+          permission-actions: read
+          permission-contents: read
+
+      - name: Verify canonical crawl-remote mutator is retired
+        env:
+          CANONICAL_WORKFLOW_PATH: .github/workflows/deploy.yml
+          GH_TOKEN: ${{ steps.target-token.outputs.token }}
+          WORKFLOW_CONTENTS_RESPONSE: ${{ runner.temp }}/crawl-remote-workflow-contents.json
+          WORKFLOW_REGISTRY_RESPONSE: ${{ runner.temp }}/crawl-remote-workflow-registry.json
+        run: |
+          unset BASH_ENV ENV CDPATH GLOBIGNORE NODE_OPTIONS
+          gh api \
+            "repos/$TARGET_REPOSITORY/contents/.github/workflows?ref=$DEPLOY_SHA" \
+            > "$WORKFLOW_CONTENTS_RESPONSE"
+          gh api \
+            "repos/$TARGET_REPOSITORY/actions/workflows?per_page=100" \
+            > "$WORKFLOW_REGISTRY_RESPONSE"
+
+          node --input-type=module <<'CANONICAL_WORKFLOW_NODE'
+          import { readFileSync } from 'node:fs';
+
+          const canonicalPath = process.env.CANONICAL_WORKFLOW_PATH;
+          const contents = JSON.parse(
+            readFileSync(process.env.WORKFLOW_CONTENTS_RESPONSE, 'utf8'),
+          );
+          const registry = JSON.parse(
+            readFileSync(process.env.WORKFLOW_REGISTRY_RESPONSE, 'utf8'),
+          );
+          if (
+            canonicalPath !== '.github/workflows/deploy.yml' ||
+            !Array.isArray(contents) ||
+            !registry ||
+            typeof registry !== 'object' ||
+            Array.isArray(registry) ||
+            !Number.isSafeInteger(registry.total_count) ||
+            registry.total_count < 0 ||
+            !Array.isArray(registry.workflows) ||
+            registry.total_count < registry.workflows.length
+          ) {
+            throw new Error('crawl-remote workflow authority response is invalid');
+          }
+
+          const contentMatches = contents.filter(
+            (entry) => entry?.path === canonicalPath,
+          );
+          const registryMatches = registry.workflows.filter(
+            (entry) => entry?.path === canonicalPath,
+          );
+          if (contentMatches.length > 1 || registryMatches.length > 1) {
+            throw new Error('canonical crawl-remote workflow identity is ambiguous');
+          }
+
+          const contentEntry = contentMatches[0];
+          const workflowEntry = registryMatches[0];
+          if (
+            contentEntry &&
+            (
+              contentEntry.name !== 'deploy.yml' ||
+              contentEntry.type !== 'file' ||
+              typeof contentEntry.sha !== 'string' ||
+              !/^[0-9a-f]{40}$/.test(contentEntry.sha)
+            )
+          ) {
+            throw new Error('canonical crawl-remote workflow content identity is invalid');
+          }
+          if (
+            workflowEntry &&
+            (
+              workflowEntry.name !== 'deploy production' ||
+              typeof workflowEntry.state !== 'string'
+            )
+          ) {
+            throw new Error('canonical crawl-remote workflow registry identity is invalid');
+          }
+
+          const disabledStates = new Set([
+            'disabled_inactivity',
+            'disabled_manually',
+          ]);
+          if (contentEntry) {
+            if (!workflowEntry || !disabledStates.has(workflowEntry.state)) {
+              throw new Error(
+                'canonical crawl-remote production workflow is still an active or unverified deployment authority',
+              );
+            }
+            console.log(
+              `Canonical crawl-remote production workflow is ${workflowEntry.state}.`,
+            );
+          } else {
+            const retiredStates = new Set([...disabledStates, 'deleted']);
+            if (workflowEntry && !retiredStates.has(workflowEntry.state)) {
+              throw new Error(
+                'removed crawl-remote production workflow still has an active or unverified registry state',
+              );
+            }
+            console.log('Canonical crawl-remote production workflow is absent from the release SHA.');
+          }
+          CANONICAL_WORKFLOW_NODE
+
       - name: Checkout trusted deployment toolchain
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
@@ -792,16 +986,6 @@ jobs:
             mode: 0o600,
           });
           NODE
-
-      - name: Create exact-repository reauthorization token
-        id: target-token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
-        with:
-          client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
-          private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
-          owner: openclaw
-          repositories: crawl-remote
-          permission-contents: read
 
       - name: Capture previous Worker D1 contract baseline
         env:

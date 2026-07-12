@@ -140,11 +140,33 @@ test("crawl-remote release is maintainer-bound across two fresh runners", () => 
   assert.equal(deploy.env.WORKERS_DEV_URL, "https://crawl-remote.services-91b.workers.dev");
   assert.equal(deploy.env.PRODUCTION_ROUTE_URL, "https://reports.openclaw.ai/crawl-remote");
   const authority = step(deploy, "Verify central deployment authority");
+  const proofCredentials = step(deploy, "Validate protected production proof credentials");
+  const token = step(deploy, "Create exact-repository reauthorization token");
+  const canonicalAuthority = step(deploy, "Verify canonical crawl-remote mutator is retired");
+  const checkout = step(deploy, "Checkout trusted deployment toolchain");
   assert.equal(steps(deploy).indexOf(authority), 0);
+  assert.equal(steps(deploy).indexOf(proofCredentials), 1);
+  assert.equal(steps(deploy).indexOf(token), 2);
+  assert.equal(steps(deploy).indexOf(canonicalAuthority), 3);
+  assert.equal(steps(deploy).indexOf(checkout), 4);
   assert.equal(authority.env?.DEPLOY_AUTHORITY, "${{ vars.CRAWL_REMOTE_DEPLOY_AUTHORITY }}");
   assert.equal(authority.env?.CUSTOM_ROUTE_PROOF, "${{ vars.CRAWL_REMOTE_CUSTOM_ROUTE_PROOF }}");
   assert.match(authority.run ?? "", /DEPLOY_AUTHORITY.*clawsweeper-v1/s);
   assert.match(authority.run ?? "", /disabled.*access-service-token/s);
+  assert.equal(
+    proofCredentials.env?.CF_ACCESS_CLIENT_ID,
+    "${{ secrets.CRAWL_REMOTE_ACCESS_CLIENT_ID }}",
+  );
+  assert.equal(
+    proofCredentials.env?.CF_ACCESS_CLIENT_SECRET,
+    "${{ secrets.CRAWL_REMOTE_ACCESS_CLIENT_SECRET }}",
+  );
+  assert.equal(
+    proofCredentials.env?.CUSTOM_ROUTE_PROOF,
+    "${{ vars.CRAWL_REMOTE_CUSTOM_ROUTE_PROOF }}",
+  );
+  assert.equal(canonicalAuthority.env?.GH_TOKEN, "${{ steps.target-token.outputs.token }}");
+  assert.equal(canonicalAuthority.env?.CLOUDFLARE_API_TOKEN, undefined);
   assert.equal(preflight["timeout-minutes"], 25);
   assert.equal(deploy["timeout-minutes"], 25);
 });
@@ -168,6 +190,216 @@ test("protected environment must explicitly own the deployment authority", () =>
   assert.notEqual(verify("crawl-remote-v1", "disabled").status, 0);
   assert.notEqual(verify("clawsweeper-v1", "").status, 0);
   assert.notEqual(verify("clawsweeper-v1", "public").status, 0);
+});
+
+test("protected preflight validates Access proof secrets before deployment setup", () => {
+  const proofCredentials = step(deploy, "Validate protected production proof credentials");
+  const run = proofCredentials.run ?? "";
+  const directory = mkdtempSync(join(tmpdir(), "crawl-remote-access-preflight-"));
+  const curlPath = join(directory, "curl");
+  const healthPath = join(directory, "health.json");
+  const contractPath = join(directory, "contract.json");
+  writeFileSync(
+    curlPath,
+    `#!/bin/sh
+output=
+url=
+client_id_header=
+client_secret_header=
+while test "$#" -gt 0; do
+  case "$1" in
+    --header)
+      case "$2" in
+        CF-Access-Client-Id:*) client_id_header="$2" ;;
+        CF-Access-Client-Secret:*) client_secret_header="$2" ;;
+      esac
+      shift 2
+      ;;
+    --output)
+      output="$2"
+      shift 2
+      ;;
+    http*)
+      url="$1"
+      shift
+      ;;
+    *)
+      shift
+      ;;
+  esac
+done
+test "$client_id_header" = "CF-Access-Client-Id: $EXPECTED_CLIENT_ID" || exit 22
+test "$client_secret_header" = "CF-Access-Client-Secret: $EXPECTED_CLIENT_SECRET" || exit 22
+case "$url" in
+  */health?*)
+    printf '{"ok":true,"release_sha":"%s"}\\n' "$RELEASE_SHA" > "$output"
+    ;;
+  */v1/contract?*)
+    printf '{"service":"crawl-remote","protocol_version":"v1","release_sha":"%s","routes":[{"method":"GET","path":"/health"},{"method":"GET","path":"/v1/contract"}]}\\n' "$RELEASE_SHA" > "$output"
+    ;;
+  *)
+    exit 23
+    ;;
+esac
+`,
+  );
+  chmodSync(curlPath, 0o755);
+
+  function verify(customRouteProof: string, clientId = "", clientSecret = "") {
+    return spawnSync("bash", ["--noprofile", "--norc", "-euo", "pipefail", "-c", run], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        ACCESS_PREFLIGHT_CONTRACT_RESPONSE: contractPath,
+        ACCESS_PREFLIGHT_HEALTH_RESPONSE: healthPath,
+        CF_ACCESS_CLIENT_ID: clientId,
+        CF_ACCESS_CLIENT_SECRET: clientSecret,
+        CUSTOM_ROUTE_PROOF: customRouteProof,
+        EXPECTED_CLIENT_ID: "client-id",
+        EXPECTED_CLIENT_SECRET: "client-secret",
+        GITHUB_RUN_ATTEMPT: "1",
+        GITHUB_RUN_ID: "123456",
+        PATH: `${directory}:${process.env.PATH}`,
+        PRODUCTION_ROUTE_URL: "https://reports.openclaw.ai/crawl-remote",
+        RELEASE_SHA: mergedCrawlRemoteMain,
+      },
+    });
+  }
+
+  try {
+    assert.equal(verify("disabled").status, 0);
+    const validCredentials = verify("access-service-token", "client-id", "client-secret");
+    assert.equal(validCredentials.status, 0, validCredentials.stdout + validCredentials.stderr);
+    assert.notEqual(verify("access-service-token", "", "client-secret").status, 0);
+    assert.notEqual(verify("access-service-token", "client-id", "").status, 0);
+    assert.notEqual(verify("access-service-token", "client-id", "wrong-secret").status, 0);
+    assert.notEqual(verify("public", "client-id", "client-secret").status, 0);
+    assert.match(run, /requires CRAWL_REMOTE_ACCESS_CLIENT_ID/);
+    assert.match(run, /requires CRAWL_REMOTE_ACCESS_CLIENT_SECRET/);
+    assert.match(run, /\$PRODUCTION_ROUTE_URL\/health\?access_preflight=/);
+    assert.match(run, /\$PRODUCTION_ROUTE_URL\/v1\/contract\?access_preflight=/);
+    assert.match(run, /CF-Access-Client-Id/);
+    assert.match(run, /CF-Access-Client-Secret/);
+    assert.match(run, /contract\?\.release_sha !== releaseSha/);
+
+    const checkout = step(deploy, "Checkout trusted deployment toolchain");
+    const migration = step(deploy, "Apply and verify D1 migrations");
+    const workerDeploy = step(deploy, "Deploy verified Worker bundle");
+    assert.ok(steps(deploy).indexOf(proofCredentials) < steps(deploy).indexOf(checkout));
+    assert.ok(steps(deploy).indexOf(proofCredentials) < steps(deploy).indexOf(migration));
+    assert.ok(steps(deploy).indexOf(proofCredentials) < steps(deploy).indexOf(workerDeploy));
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("canonical crawl-remote production authority must be removed or disabled", () => {
+  const token = step(deploy, "Create exact-repository reauthorization token");
+  assert.equal(
+    token.uses,
+    "actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1",
+  );
+  assert.equal(token.with?.owner, "openclaw");
+  assert.equal(token.with?.repositories, "crawl-remote");
+  assert.equal(token.with?.["permission-actions"], "read");
+  assert.equal(token.with?.["permission-contents"], "read");
+  assert.equal(
+    Object.keys(token.with ?? {}).filter((key) => key.startsWith("permission-")).length,
+    2,
+  );
+
+  const retirement = step(deploy, "Verify canonical crawl-remote mutator is retired");
+  const run = retirement.run ?? "";
+  assert.match(run, /repos\/\$TARGET_REPOSITORY\/contents\/\.github\/workflows\?ref=\$DEPLOY_SHA/);
+  assert.match(run, /repos\/\$TARGET_REPOSITORY\/actions\/workflows\?per_page=100/);
+  assert.match(run, /disabled_inactivity/);
+  assert.match(run, /disabled_manually/);
+  assert.match(run, /'deleted'/);
+  assert.doesNotMatch(
+    run,
+    /--method\s+(?:POST|PUT|PATCH|DELETE)|workflow dispatch|workflow disable/,
+  );
+
+  const directory = mkdtempSync(join(tmpdir(), "crawl-remote-authority-retirement-"));
+  const contentsPath = join(directory, "contents.json");
+  const registryPath = join(directory, "registry.json");
+  const ghPath = join(directory, "gh");
+  writeFileSync(
+    ghPath,
+    `#!/bin/sh
+case "$*" in
+  *"contents/.github/workflows?ref="*)
+    printf '%s\\n' "$WORKFLOW_CONTENTS_JSON"
+    ;;
+  *"actions/workflows?per_page=100"*)
+    printf '%s\\n' "$WORKFLOW_REGISTRY_JSON"
+    ;;
+  *)
+    exit 97
+    ;;
+esac
+`,
+  );
+  chmodSync(ghPath, 0o755);
+
+  function verify({
+    contentPresent,
+    registryState,
+  }: {
+    contentPresent: boolean;
+    registryState?: string;
+  }) {
+    const canonicalPath = ".github/workflows/deploy.yml";
+    const contents = contentPresent
+      ? [
+          {
+            name: "deploy.yml",
+            path: canonicalPath,
+            sha: "a".repeat(40),
+            type: "file",
+          },
+        ]
+      : [{ name: "ci.yml", path: ".github/workflows/ci.yml", sha: "b".repeat(40), type: "file" }];
+    const workflows = registryState
+      ? [{ name: "deploy production", path: canonicalPath, state: registryState }]
+      : [];
+    return spawnSync("bash", ["--noprofile", "--norc", "-euo", "pipefail", "-c", run], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        CANONICAL_WORKFLOW_PATH: canonicalPath,
+        DEPLOY_SHA: mergedCrawlRemoteMain,
+        GH_TOKEN: "test",
+        PATH: `${directory}:${process.env.PATH}`,
+        TARGET_REPOSITORY: "openclaw/crawl-remote",
+        WORKFLOW_CONTENTS_JSON: JSON.stringify(contents),
+        WORKFLOW_CONTENTS_RESPONSE: contentsPath,
+        WORKFLOW_REGISTRY_JSON: JSON.stringify({
+          total_count: workflows.length,
+          workflows,
+        }),
+        WORKFLOW_REGISTRY_RESPONSE: registryPath,
+      },
+    });
+  }
+
+  try {
+    assert.equal(verify({ contentPresent: true, registryState: "disabled_manually" }).status, 0);
+    assert.equal(verify({ contentPresent: true, registryState: "disabled_inactivity" }).status, 0);
+    assert.equal(verify({ contentPresent: false, registryState: "deleted" }).status, 0);
+    assert.equal(verify({ contentPresent: false }).status, 0);
+    assert.notEqual(verify({ contentPresent: true, registryState: "active" }).status, 0);
+    assert.notEqual(verify({ contentPresent: true }).status, 0);
+    assert.notEqual(verify({ contentPresent: false, registryState: "active" }).status, 0);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+
+  const checkout = step(deploy, "Checkout trusted deployment toolchain");
+  const migration = step(deploy, "Apply and verify D1 migrations");
+  assert.ok(steps(deploy).indexOf(token) < steps(deploy).indexOf(retirement));
+  assert.ok(steps(deploy).indexOf(retirement) < steps(deploy).indexOf(checkout));
+  assert.ok(steps(deploy).indexOf(retirement) < steps(deploy).indexOf(migration));
 });
 
 test("preflight authorizes and checks out only the exact current main SHA", () => {
@@ -877,10 +1109,11 @@ test("deploy reauthorizes exact current main before and after privileged mutatio
     "actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1",
   );
   assert.equal(token.with?.repositories, "crawl-remote");
+  assert.equal(token.with?.["permission-actions"], "read");
   assert.equal(token.with?.["permission-contents"], "read");
   assert.equal(
     Object.keys(token.with ?? {}).filter((key) => key.startsWith("permission-")).length,
-    1,
+    2,
   );
 
   const baseline = step(deploy, "Capture previous Worker D1 contract baseline");
