@@ -236,7 +236,7 @@ test("repair workflow resolves producer artifacts by trusted id across rerun att
       /uses: actions\/download-artifact@v8\n\s+with:\n([\s\S]*?)(?=\n\s{6}- (?:name|uses):|\n\n)/g,
     ),
   ];
-  assert.equal(downloadBlocks.length, 13);
+  assert.equal(downloadBlocks.length, 14);
   for (const block of downloadBlocks) {
     assert.match(block[1]!, /artifact-ids: \$\{\{ steps\.[^.]+\.outputs\.artifact_id \}\}/);
     assert.match(block[1]!, /github-token: \$\{\{ github\.token \}\}/);
@@ -270,6 +270,14 @@ test("repair workflow resolves producer artifacts by trusted id across rerun att
   );
   assert.match(
     workflow,
+    /worker_artifact_id: \$\{\{ steps\.prior_worker_artifact\.outputs\.artifact_id \|\| needs\.cluster\.outputs\.worker_artifact_id \}\}/,
+  );
+  assert.match(
+    workflow,
+    /worker_artifact_digest: \$\{\{ steps\.prior_worker_artifact\.outputs\.artifact_digest \|\| needs\.cluster\.outputs\.worker_artifact_digest \}\}/,
+  );
+  assert.match(
+    workflow,
     /cluster:[\s\S]*?producer_attempt: \$\{\{ steps\.producer_attempt\.outputs\.value \}\}/,
   );
   assert.match(
@@ -292,14 +300,17 @@ test("repair workflow resolves producer artifacts by trusted id across rerun att
     ].length,
     6,
   );
-  assert.match(workflow, /Upload worker transfer artifacts[\s\S]*?if-no-files-found: error/);
+  assert.match(
+    workflow,
+    /Upload worker transfer artifacts[\s\S]*?if-no-files-found: error[\s\S]*?retention-days: 90/,
+  );
   assert.match(
     workflow,
     /Resolve prior durable publication checkpoint[\s\S]*?--prefix clawsweeper-repair-publication[\s\S]*?--fallback-prefix clawsweeper-repair-publication-close[\s\S]*?Download prior durable publication checkpoint[\s\S]*?Publish exact independently validated repair/,
   );
   assert.match(
     workflow,
-    /Resolve prior publication checkpoint for authorization recovery[\s\S]*?Resolve prior checkpoint authorization[\s\S]*?Resolve prior checkpoint execution handoff[\s\S]*?Restore checkpoint authorization before live source intake[\s\S]*?Authorize exact job and run/,
+    /Resolve prior publication checkpoint for authorization recovery[\s\S]*?Resolve prior checkpoint worker artifact[\s\S]*?Resolve prior checkpoint authorization[\s\S]*?Resolve prior checkpoint execution handoff[\s\S]*?Restore checkpoint authorization before live source intake[\s\S]*?Authorize exact job and run/,
   );
   assert.equal(
     [
@@ -307,7 +318,7 @@ test("repair workflow resolves producer artifacts by trusted id across rerun att
         /--expected-producer-attempt "\$\{\{ steps\.authorization_publication_artifact\.outputs\.producer_attempt \}\}"/g,
       ),
     ].length,
-    3,
+    4,
   );
 });
 

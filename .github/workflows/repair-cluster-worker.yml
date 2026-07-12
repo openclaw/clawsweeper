@@ -354,6 +354,7 @@ jobs:
           name: clawsweeper-repair-worker-${{ github.run_id }}-${{ github.run_attempt }}
           path: .clawsweeper-repair/runs
           if-no-files-found: error
+          retention-days: 90
 
       - name: Upload final worker artifacts
         if: ${{ always() && (!((inputs.mode == 'execute' || inputs.mode == 'autonomous') && !inputs.dry_run) || failure() || cancelled()) }}
@@ -415,6 +416,9 @@ jobs:
       target_name: ${{ steps.restore_authorization.outputs.target_name || steps.authorize.outputs.target_name }}
       checkpoint_recovered: ${{ steps.restore_authorization.outputs.checkpoint_recovered }}
       checkpoint_validation_receipt_sha256: ${{ steps.restore_authorization.outputs.checkpoint_validation_receipt_sha256 }}
+      worker_artifact_id: ${{ steps.prior_worker_artifact.outputs.artifact_id || needs.cluster.outputs.worker_artifact_id }}
+      worker_artifact_digest: ${{ steps.prior_worker_artifact.outputs.artifact_digest || needs.cluster.outputs.worker_artifact_digest }}
+      worker_producer_attempt: ${{ steps.restore_authorization.outputs.checkpoint_producer_attempt || needs.cluster.outputs.producer_attempt }}
       recovery_execution_artifact_id: ${{ steps.prior_execution_artifact.outputs.artifact_id }}
       recovery_execution_artifact_digest: ${{ steps.prior_execution_artifact.outputs.artifact_digest }}
       recovery_validation_artifact_id: ${{ steps.prior_validation_artifact.outputs.artifact_id }}
@@ -514,6 +518,30 @@ jobs:
         with:
           artifact-ids: ${{ steps.authorization_publication_artifact.outputs.artifact_id }}
           path: .clawsweeper-repair/recovery-publication
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ github.run_id }}
+
+      - name: Resolve prior checkpoint worker artifact
+        id: prior_worker_artifact
+        if: ${{ steps.authorization_publication_artifact.outcome == 'success' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CLAWSWEEPER_ALLOW_PRIOR_ARTIFACT: "1"
+        run: |
+          pnpm run repair:resolve-run-artifact -- \
+            --repository "${{ github.repository }}" \
+            --run-id "${{ github.run_id }}" \
+            --current-attempt "${{ github.run_attempt }}" \
+            --expected-producer-attempt "${{ steps.authorization_publication_artifact.outputs.producer_attempt }}" \
+            --prefix clawsweeper-repair-worker
+
+      - name: Download prior checkpoint worker artifact
+        if: ${{ steps.authorization_publication_artifact.outcome == 'success' }}
+        uses: actions/download-artifact@v8
+        with:
+          artifact-ids: ${{ steps.prior_worker_artifact.outputs.artifact_id }}
+          path: .clawsweeper-repair/recovery-worker
           github-token: ${{ github.token }}
           repository: ${{ github.repository }}
           run-id: ${{ github.run_id }}
@@ -1458,9 +1486,9 @@ jobs:
         if: always()
         env:
           AUTHORIZATION_SHA256: ${{ needs.authorize.outputs.authorization_sha256 }}
-          WORKER_ARTIFACT_ID: ${{ needs.cluster.outputs.worker_artifact_id }}
-          WORKER_ARTIFACT_DIGEST: ${{ needs.cluster.outputs.worker_artifact_digest }}
-          WORKER_PRODUCER_ATTEMPT: ${{ needs.cluster.outputs.producer_attempt }}
+          WORKER_ARTIFACT_ID: ${{ needs.authorize.outputs.worker_artifact_id }}
+          WORKER_ARTIFACT_DIGEST: ${{ needs.authorize.outputs.worker_artifact_digest }}
+          WORKER_PRODUCER_ATTEMPT: ${{ needs.authorize.outputs.worker_producer_attempt }}
           AUTHORIZATION_ARTIFACT_ID: ${{ needs.authorize.outputs.artifact_id }}
           AUTHORIZATION_ARTIFACT_DIGEST: ${{ needs.authorize.outputs.artifact_digest }}
           AUTHORIZATION_PRODUCER_ATTEMPT: ${{ needs.authorize.outputs.producer_attempt }}

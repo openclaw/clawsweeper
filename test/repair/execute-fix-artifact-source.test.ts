@@ -344,6 +344,10 @@ test("repair workflow binds one run through no-credential proof and token-only m
   const report = workflow.slice(reportIndex, mutateIndex);
   const mutate = workflow.slice(mutateIndex);
 
+  assert.match(
+    workflow.slice(workflow.indexOf("\n  cluster:"), authorizeIndex),
+    /Upload worker transfer artifacts[\s\S]*if-no-files-found: error[\s\S]*retention-days: 90/,
+  );
   assert.match(authorize, /repair:execution-handoff -- authorize/);
   assert.match(authorize, /repair:execution-handoff -- restore-authorization/);
   assert.ok(
@@ -364,7 +368,11 @@ test("repair workflow binds one run through no-credential proof and token-only m
         /--expected-producer-attempt "\$\{\{ steps\.authorization_publication_artifact\.outputs\.producer_attempt \}\}"/g,
       ),
     ].length,
-    3,
+    4,
+  );
+  assert.match(
+    authorize,
+    /Resolve prior checkpoint worker artifact[\s\S]*--prefix clawsweeper-repair-worker[\s\S]*Download prior checkpoint worker artifact[\s\S]*artifact-ids: \$\{\{ steps\.prior_worker_artifact\.outputs\.artifact_id \}\}/,
   );
   assert.match(
     authorize,
@@ -373,6 +381,10 @@ test("repair workflow binds one run through no-credential proof and token-only m
   assert.match(
     authorize,
     /artifact_id: \$\{\{ steps\.prior_authorized_artifact\.outputs\.artifact_id \|\| steps\.upload\.outputs\.artifact-id \}\}/,
+  );
+  assert.match(
+    authorize,
+    /worker_artifact_id: \$\{\{ steps\.prior_worker_artifact\.outputs\.artifact_id \|\| needs\.cluster\.outputs\.worker_artifact_id \}\}/,
   );
   assert.match(authorize, /persist-credentials: "false"/);
   assert.match(execute, /repair:execution-handoff -- verify/);
@@ -485,7 +497,7 @@ test("repair workflow binds one run through no-credential proof and token-only m
   );
   assert.match(
     mutate,
-    /WORKER_PRODUCER_ATTEMPT: \$\{\{ needs\.cluster\.outputs\.producer_attempt \}\}[\s\S]*AUTHORIZATION_PRODUCER_ATTEMPT: \$\{\{ needs\.authorize\.outputs\.producer_attempt \}\}[\s\S]*EXECUTION_PRODUCER_ATTEMPT: \$\{\{ needs\.execute\.outputs\.producer_attempt \}\}[\s\S]*VALIDATION_PRODUCER_ATTEMPT: \$\{\{ needs\.validate\.outputs\.producer_attempt \}\}/,
+    /WORKER_ARTIFACT_ID: \$\{\{ needs\.authorize\.outputs\.worker_artifact_id \}\}[\s\S]*WORKER_ARTIFACT_DIGEST: \$\{\{ needs\.authorize\.outputs\.worker_artifact_digest \}\}[\s\S]*WORKER_PRODUCER_ATTEMPT: \$\{\{ needs\.authorize\.outputs\.worker_producer_attempt \}\}[\s\S]*AUTHORIZATION_PRODUCER_ATTEMPT: \$\{\{ needs\.authorize\.outputs\.producer_attempt \}\}[\s\S]*EXECUTION_PRODUCER_ATTEMPT: \$\{\{ needs\.execute\.outputs\.producer_attempt \}\}[\s\S]*VALIDATION_PRODUCER_ATTEMPT: \$\{\{ needs\.validate\.outputs\.producer_attempt \}\}/,
   );
   assert.doesNotMatch(mutate, /setup-codex|--latest|create-state-token|setup-state/);
   assert.match(mutate, /npm_config_ignore_scripts: "true"/);
