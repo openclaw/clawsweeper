@@ -265,9 +265,27 @@ export function verifyPreparedPublication({
 
 export function verifyExecutionIntentIdentity(intent: ExecutionIntent): ExecutionIntent {
   const { identity_sha256: identitySha256, ...identity } = intent;
+  const sourcePrPattern = new RegExp(
+    `^https://github\\.com/${escapeRegExp(intent.target_repo)}/pull/[1-9][0-9]*$`,
+  );
   if (
     intent.schema_version !== EXECUTION_INTENT_SCHEMA_VERSION ||
     identitySha256 !== digestJson(identity) ||
+    !Array.isArray(intent.source_prs) ||
+    intent.source_prs.some(
+      (source, index) =>
+        typeof source !== "string" ||
+        !sourcePrPattern.test(source) ||
+        intent.source_prs.indexOf(source) !== index,
+    ) ||
+    (intent.source.kind === "pull_request" &&
+      (!intent.source.url || !intent.source_prs.includes(intent.source.url))) ||
+    !Array.isArray(intent.superseded_source_prs) ||
+    intent.superseded_source_prs.some(
+      (source, index) =>
+        !intent.source_prs.includes(source) ||
+        intent.superseded_source_prs.indexOf(source) !== index,
+    ) ||
     !Array.isArray(intent.required_labels) ||
     intent.required_labels.some(
       (label, index) =>
@@ -281,6 +299,10 @@ export function verifyExecutionIntentIdentity(intent: ExecutionIntent): Executio
     throw new Error("execution intent identity is invalid");
   }
   return intent;
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 export function publicationReceipt({

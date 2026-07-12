@@ -689,17 +689,18 @@ function resolveLiveExecutionIntent({
   const targetRepo = requiredRepo(result.repo, "target repository");
   const fixArtifact = objectValue(result.fix_artifact, "fix artifact");
   const repairStrategy = requiredText(fixArtifact.repair_strategy, "repair strategy");
-  const sourcePrs = ((fixArtifact.source_prs ?? []) as JsonValue[])
-    .map((source: JsonValue) => parsePullRequestUrl(source))
-    .filter(
-      (
-        source: ReturnType<typeof parsePullRequestUrl>,
-      ): source is NonNullable<ReturnType<typeof parsePullRequestUrl>> =>
-        Boolean(source && source.repo === targetRepo),
-    );
+  const sourceValues = (fixArtifact.source_prs ?? []) as JsonValue[];
+  const sourcePrs = sourceValues.map((source: JsonValue) => parsePullRequestUrl(source));
+  if (
+    sourcePrs.some((source) => !source || source.repo !== targetRepo) ||
+    new Set(sourcePrs.map((source) => source!.url)).size !== sourcePrs.length
+  ) {
+    throw new Error("fix artifact source PRs must be unique canonical target-repository URLs");
+  }
+  const exactSourcePrs = sourcePrs as NonNullable<ReturnType<typeof parsePullRequestUrl>>[];
   const allowedNumbers = jobTargetNumbers(job, targetRepo);
-  const sourcePr = sourcePrs[0] ?? null;
-  for (const candidate of sourcePrs) {
+  const sourcePr = exactSourcePrs[0] ?? null;
+  for (const candidate of exactSourcePrs) {
     if (allowedNumbers.size > 0 && !allowedNumbers.has(candidate.number)) {
       throw new Error(
         `fix artifact source PR #${candidate.number} is outside the immutable job target set`,
@@ -847,11 +848,24 @@ function resolveLiveExecutionIntent({
   const existingTargetPr = updateSource
     ? source.number
     : openPullForBranch(targetRepo, outputBranch, targetBaseRef);
-  const normalizedSourcePrs = sourcePrs.map((entry) => entry.url);
-  for (const additionalSource of sourcePrs.slice(sourcePr ? 1 : 0)) {
-    sourceLabelSets.push(
-      githubLabelNames(ghObject(`repos/${targetRepo}/pulls/${additionalSource.number}`).labels),
-    );
+  const normalizedSourcePrs = exactSourcePrs.map((entry) => entry.url);
+  for (const additionalSource of exactSourcePrs.slice(sourcePr ? 1 : 0)) {
+    const pull = ghObject(`repos/${targetRepo}/pulls/${additionalSource.number}`);
+    const sourceLabels = githubLabelNames(pull.labels);
+    const pauseLabel = repairPauseLabel(sourceLabels);
+    if (String(pull.state ?? "").toLowerCase() !== "open") {
+      throw new Error(`source PR #${additionalSource.number} is not open`);
+    }
+    if (pull.base?.ref !== targetBaseRef) {
+      throw new Error(`source PR #${additionalSource.number} does not target ${targetBaseRef}`);
+    }
+    if (pauseLabel) {
+      throw new Error(`source PR #${additionalSource.number} is paused by ${pauseLabel}`);
+    }
+    sourceLabelSets.push(sourceLabels);
+  }
+  if (operation === "open_pull_request" && existingTargetPr !== null) {
+    assertItemNotPaused(targetRepo, existingTargetPr);
   }
   assertAuthorizedClosingReferences({
     fixArtifact,
@@ -1094,12 +1108,14 @@ function publishPreparedRef({
   publication,
   targetRef,
   expectedSha,
+  targetPrNumber = null,
 }: {
   checkout: string;
   intent: ExecutionIntent;
   publication: PreparedPublication;
   targetRef: string;
   expectedSha: string | null;
+  targetPrNumber?: number | null;
 }) {
   const liveSha = remoteRefSha(checkout, targetRef);
   const state = preparedRefPublicationState({
@@ -1116,7 +1132,7 @@ function publishPreparedRef({
           `refs/clawsweeper/prepared:${targetRef}`,
         ]
       : ["push", "origin", `refs/clawsweeper/prepared:${targetRef}`];
-    runPublicationMutation(intent, null, () => run("git", pushArgs, { cwd: checkout }));
+    runPublicationMutation(intent, targetPrNumber, () => run("git", pushArgs, { cwd: checkout }));
   }
   if (remoteRefSha(checkout, targetRef) !== publication.prepared_head_sha) {
     throw new Error("published branch does not match the exact validated repair commit");
@@ -1137,30 +1153,66 @@ function remoteRefSha(checkout: string, ref: string): string | null {
 
 function runPublicationMutation<T>(
   intent: ExecutionIntent,
-  additionalSourceNumber: number | null,
+  targetPrNumber: number | null,
   mutation: () => T,
 ): T {
-  assertPublicationNotPaused(intent);
-  if (
-    additionalSourceNumber &&
-    (intent.source.repo !== intent.target_repo || additionalSourceNumber !== intent.source.number)
-  ) {
-    assertItemNotPaused(intent.target_repo, additionalSourceNumber);
-  }
+  assertPublicationNotPaused(intent, targetPrNumber);
   return mutation();
 }
 
-function assertPublicationNotPaused(intent: ExecutionIntent) {
-  if (!intent.source.number) return;
-  assertItemNotPaused(intent.source.repo, intent.source.number);
+export function publicationPauseItems(
+  intent: ExecutionIntent,
+  targetPrNumber: number | null = null,
+): Array<{ repo: string; number: number }> {
+  const items = new Map<string, { repo: string; number: number }>();
+  const add = (repo: string, number: number | null) => {
+    if (!Number.isInteger(number) || Number(number) <= 0) return;
+    items.set(`${repo.toLowerCase()}#${number}`, { repo, number: Number(number) });
+  };
+  add(intent.source.repo, intent.source.number);
+  for (const sourceUrl of intent.source_prs) {
+    const source = parsePullRequestUrl(sourceUrl);
+    if (!source || source.repo !== intent.target_repo || source.url !== sourceUrl) {
+      throw new Error("execution intent contains an invalid publication source PR");
+    }
+    add(source.repo, source.number);
+  }
+  add(intent.target_repo, targetPrNumber);
+  return [...items.values()];
+}
+
+export function assertPublicationPauseBoundary(
+  intent: ExecutionIntent,
+  targetPrNumber: number | null,
+  readLabels: (repo: string, number: number) => Iterable<string>,
+) {
+  assertPauseItemsNotPaused(publicationPauseItems(intent, targetPrNumber), readLabels);
+}
+
+function assertPauseItemsNotPaused(
+  items: Iterable<{ repo: string; number: number }>,
+  readLabels: (repo: string, number: number) => Iterable<string>,
+) {
+  for (const item of items) {
+    const pauseLabel = repairPauseLabel([...readLabels(item.repo, item.number)]);
+    if (pauseLabel) {
+      throw new Error(
+        `publication paused by live ${pauseLabel} label on ${item.repo}#${item.number}`,
+      );
+    }
+  }
+}
+
+function assertPublicationNotPaused(intent: ExecutionIntent, targetPrNumber: number | null = null) {
+  assertPublicationPauseBoundary(intent, targetPrNumber, (repo, number) =>
+    githubLabelNames(ghObject(`repos/${repo}/issues/${number}`).labels),
+  );
 }
 
 function assertItemNotPaused(repo: string, number: number) {
-  const item = ghObject(`repos/${repo}/issues/${number}`);
-  const pauseLabel = repairPauseLabel(githubLabelNames(item.labels));
-  if (pauseLabel) {
-    throw new Error(`publication paused by live ${pauseLabel} label on ${repo}#${number}`);
-  }
+  assertPauseItemsNotPaused([{ repo, number }], (itemRepo, itemNumber) =>
+    githubLabelNames(ghObject(`repos/${itemRepo}/issues/${itemNumber}`).labels),
+  );
 }
 
 function publishExactPullComment({
@@ -1200,7 +1252,7 @@ function publishRequiredPullLabels({
     githubLabelNames(pull.labels),
   );
   if (missing.length === 0) return;
-  runPublicationMutation(intent, null, () =>
+  runPublicationMutation(intent, targetPrNumber, () =>
     run(
       "gh",
       [
@@ -1243,6 +1295,7 @@ function publishSourceBranchRepair({
     publication,
     targetRef,
     expectedSha: intent.source.expected_head_sha,
+    targetPrNumber: intent.source.number,
   });
   mutations.push({
     operation: "push",
@@ -1288,6 +1341,9 @@ function publishReplacementRepair({
   ) {
     throw new Error("target pull request changed after authorization");
   }
+  if (liveTargetPr !== null) {
+    verifyAuthorizedTargetPull(intent.target_repo, liveTargetPr, publication, intent);
+  }
   const targetRef = `refs/heads/${intent.output_branch}`;
   publishPreparedRef({
     checkout,
@@ -1295,6 +1351,7 @@ function publishReplacementRepair({
     publication,
     targetRef,
     expectedSha: intent.expected_output_sha,
+    targetPrNumber: liveTargetPr,
   });
   mutations.push({
     operation: "push",
@@ -1359,6 +1416,7 @@ function publishReplacementRepair({
     labels: intent.required_labels,
   });
   verifyPublishedPull(intent.target_repo, targetPrNumber, publication, intent);
+  assertPublicationNotPaused(intent, targetPrNumber);
 
   for (const action of publication.superseded_source_actions) {
     const source = parsePullRequestUrl(action.source);
@@ -1430,6 +1488,31 @@ function verifyPublishedPull(
   }
 }
 
+function verifyAuthorizedTargetPull(
+  repo: string,
+  number: number,
+  publication: PreparedPublication,
+  intent: ExecutionIntent,
+) {
+  const pull = ghObject(`repos/${repo}/pulls/${number}`);
+  const allowedHeadShas = new Set(
+    [intent.expected_output_sha, publication.prepared_head_sha].filter((sha): sha is string =>
+      Boolean(sha),
+    ),
+  );
+  if (
+    String(pull.state ?? "").toLowerCase() !== "open" ||
+    pull.head?.repo?.full_name !== intent.output_repo ||
+    pull.head?.ref !== intent.output_branch ||
+    !allowedHeadShas.has(String(pull.head?.sha ?? "")) ||
+    pull.base?.ref !== intent.target_base_ref ||
+    pull.title !== publication.pr_title ||
+    pull.body !== publication.pr_body
+  ) {
+    throw new Error("existing output pull request does not match the authorized publication");
+  }
+}
+
 function revalidateLiveSource(intent: ExecutionIntent, publication: PreparedPublication) {
   if (intent.source.kind === "pull_request") {
     const pull = ghObject(`repos/${intent.source.repo}/pulls/${intent.source.number}`);
@@ -1451,7 +1534,7 @@ function revalidateLiveSource(intent: ExecutionIntent, publication: PreparedPubl
     ) {
       throw new Error("source pull request changed after authorization");
     }
-    assertPublicationNotPaused(intent);
+    assertPublicationNotPaused(intent, intent.expected_target_pr_number);
     return;
   }
   if (intent.source.kind === "issue") {

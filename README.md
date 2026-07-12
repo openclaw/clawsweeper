@@ -118,7 +118,9 @@ The executor cannot choose the privileged proof surface: a credential-free
 validator rebuilds the required staged plan from the sealed source, patch, and
 current target policy, revalidates every command, and binds the accepted
 commit/tree to a narrow publication receipt. Publication retries accept only
-the exact authorized remote commit and restore the required replacement labels.
+the exact authorized remote commit, recheck every sealed source and existing
+replacement target for live pause labels before each mutation, and restore the
+required replacement labels.
 
 Operators can create repair-only jobs for one author's blocked pull requests in
 one repository with `pnpm repair:pr-intake -- --repo owner/name --author login`,

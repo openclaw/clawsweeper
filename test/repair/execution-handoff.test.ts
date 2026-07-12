@@ -7,9 +7,11 @@ import test from "node:test";
 
 import {
   assertExactValidationProofPlan,
+  assertPublicationPauseBoundary,
   missingRequiredPublicationLabels,
   prepareExecutionAuthorization,
   preparedRefPublicationState,
+  publicationPauseItems,
   replacementPublicationLabels,
   sealExecutionHandoff,
   verifyExecutionHandoff,
@@ -18,6 +20,7 @@ import {
 import {
   createPreparedPublication,
   digestJson,
+  verifyExecutionIntentIdentity,
   verifyPreparedPublication,
 } from "../../dist/repair/prepared-publication.js";
 import {
@@ -144,6 +147,7 @@ test("execution authorization rejects same-repository source redirection", () =>
                 expected_base_ref: "main",
                 expected_base_sha: "1".repeat(40),
               },
+              source_prs: ["https://github.com/openclaw/example/pull/43"],
             };
             return { ...redirected, identity_sha256: digestJson(redirected) };
           },
@@ -402,7 +406,7 @@ test("every publication mutation rechecks live pause labels and labels precede r
     source.indexOf("function runPublicationMutation"),
     source.indexOf("function assertPublicationNotPaused"),
   );
-  assert.match(mutationWrapper, /assertPublicationNotPaused\(intent\)/);
+  assert.match(mutationWrapper, /assertPublicationNotPaused\(intent, targetPrNumber\)/);
   for (const mutationOwner of [
     "function publishPreparedRef",
     "function publishExactPullComment",
@@ -415,6 +419,13 @@ test("every publication mutation rechecks live pause labels and labels precede r
   const replacement = source.slice(
     source.indexOf("function publishReplacementRepair"),
     source.indexOf("function verifyPublishedPull"),
+  );
+  assert.ok(
+    replacement.indexOf("verifyAuthorizedTargetPull") < replacement.indexOf("publishPreparedRef"),
+  );
+  assert.match(
+    replacement,
+    /publishPreparedRef\(\{[\s\S]*targetPrNumber: liveTargetPr,[\s\S]*\}\)/,
   );
   assert.match(replacement, /runPublicationMutation\(intent, null,[\s\S]*"pr",\s*"create"/);
   assert.match(
@@ -431,6 +442,69 @@ test("every publication mutation rechecks live pause labels and labels precede r
   );
   assert.ok(
     publisher.indexOf("publishReplacementRepair") < publisher.indexOf("publicationReceipt"),
+  );
+});
+
+test("publication pause boundary covers secondary sources and retry targets on every mutation", () => {
+  const base = executionIntent("a".repeat(64));
+  const { identity_sha256: _identitySha256, ...baseIdentity } = base;
+  const identity = {
+    ...baseIdentity,
+    source: {
+      ...baseIdentity.source,
+      kind: "pull_request" as const,
+      number: 42,
+      url: "https://github.com/openclaw/example/pull/42",
+      expected_state: "open",
+      expected_head_repo: "openclaw/example",
+      expected_head_ref: "source-42",
+      expected_head_sha: "2".repeat(40),
+      expected_base_ref: "main",
+      expected_base_sha: "1".repeat(40),
+    },
+    source_prs: [
+      "https://github.com/openclaw/example/pull/42",
+      "https://github.com/openclaw/example/pull/43",
+    ],
+    superseded_source_prs: [
+      "https://github.com/openclaw/example/pull/42",
+      "https://github.com/openclaw/example/pull/43",
+    ],
+  };
+  const intent = verifyExecutionIntentIdentity({
+    ...identity,
+    identity_sha256: digestJson(identity),
+  });
+  assert.deepEqual(publicationPauseItems(intent, 99), [
+    { repo: "openclaw/example", number: 42 },
+    { repo: "openclaw/example", number: 43 },
+    { repo: "openclaw/example", number: 99 },
+  ]);
+
+  const labels = new Map<string, string[]>([
+    ["openclaw/example#42", []],
+    ["openclaw/example#43", ["clawsweeper:human-review"]],
+    ["openclaw/example#99", []],
+  ]);
+  const readLabels = (repo: string, number: number) => labels.get(`${repo}#${number}`) ?? [];
+  assert.throws(
+    () => assertPublicationPauseBoundary(intent, 99, readLabels),
+    /human-review.*openclaw\/example#43/,
+  );
+
+  labels.set("openclaw/example#43", []);
+  assert.doesNotThrow(() => assertPublicationPauseBoundary(intent, 99, readLabels));
+  labels.set("openclaw/example#43", ["clawsweeper:manual-only"]);
+  assert.throws(
+    () => assertPublicationPauseBoundary(intent, 99, readLabels),
+    /manual-only.*openclaw\/example#43/,
+  );
+
+  labels.set("openclaw/example#43", []);
+  labels.set("openclaw/example#99", ["clawsweeper:human-review"]);
+  assert.throws(
+    () => assertPublicationPauseBoundary(intent, 99, readLabels),
+    /human-review.*openclaw\/example#99/,
   );
 });
 

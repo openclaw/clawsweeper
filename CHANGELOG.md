@@ -56,10 +56,10 @@ checkpoint, and status-only commits are intentionally omitted.
 - Rebuilt every staged repair proof plan from sealed source and patch identity
   plus current target policy before replay, revalidated every replayed command,
   made exact-commit publication retries idempotent across partial push/comment
-  failures, restored required replacement labels, honored late pause labels
-  before each mutation, derived terminal workflow state from the generated
-  post-flight report, and skipped merge-only App identity probes when merge is
-  disabled.
+  failures, restored required replacement labels, honored late pause labels on
+  every sealed source and existing replacement target before each mutation,
+  derived terminal workflow state from the generated post-flight report, and
+  skipped merge-only App identity probes when merge is disabled.
 - Replaced the unsupported GitHub installation identity probe with pinned
   `create-github-app-token` App slug and installation outputs plus App IDs
   derived from the authenticated slug, rejected
