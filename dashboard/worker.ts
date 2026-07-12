@@ -1144,7 +1144,7 @@ async function githubWebhook(request, env, ctx) {
     return json({ ok: true, accepted: false, reason: decision.reason }, 202);
   }
 
-  if (decision.type === "item") {
+  if ("type" in decision && decision.type === "item") {
     const deliveryId = request.headers.get("x-github-delivery") || "";
     const queued = await enqueueExactReview({
       env,
@@ -1248,6 +1248,7 @@ function classifyGithubIssueCommentWebhook({ event, payload }) {
   if (!Number.isInteger(installationId) || installationId <= 0) {
     return { accepted: false, reason: "missing installation id" };
   }
+  const commentUpdatedAt = exactWebhookTimestamp(comment.updated_at);
   return {
     accepted: true,
     type: "issue_comment",
@@ -1257,7 +1258,18 @@ function classifyGithubIssueCommentWebhook({ event, payload }) {
     commentId,
     installationId,
     sourceAction: action,
+    ...(commentUpdatedAt
+      ? {
+          commentUpdatedAt,
+          commentBody: String(comment.body || ""),
+        }
+      : {}),
   };
+}
+
+function exactWebhookTimestamp(value) {
+  const text = String(value || "").trim();
+  return text && Number.isFinite(Date.parse(text)) ? text : null;
 }
 
 function classifyGithubItemWebhook({ event, payload }) {
@@ -2429,6 +2441,14 @@ async function dispatchClawsweeperItem({
 }
 
 async function dispatchClawsweeperComment({ token, decision, statusCommentId }) {
+  const exactVersion =
+    decision.commentUpdatedAt && typeof decision.commentBody === "string"
+      ? {
+          comment_event_auth: "github_webhook_v1",
+          comment_updated_at: decision.commentUpdatedAt,
+          comment_body_sha256: await sha256Text(decision.commentBody),
+        }
+      : {};
   await githubTokenJson({
     token,
     path: `/repos/${CLAWSWEEPER_REVIEW_REPO}/dispatches`,
@@ -2443,11 +2463,17 @@ async function dispatchClawsweeperComment({ token, decision, statusCommentId }) 
         status_comment_id: statusCommentId,
         source_event: "issue_comment",
         source_action: decision.sourceAction,
+        ...exactVersion,
         max_comments: "1",
       },
     },
     errorLabel: "ClawSweeper comment dispatch",
   });
+}
+
+async function sha256Text(value) {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+  return hexEncode(new Uint8Array(digest));
 }
 
 async function githubTokenJson({ token, path, method = "GET", body, errorLabel }) {

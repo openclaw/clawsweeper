@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { createHmac, generateKeyPairSync } from "node:crypto";
+import { createHash, createHmac, generateKeyPairSync } from "node:crypto";
 import test from "node:test";
 import { createContext, Script } from "node:vm";
 
@@ -5283,6 +5283,7 @@ test("hosted webhook reuses existing fast ack comments on redelivery", async () 
           comment: {
             id: 456,
             body: "@clawsweeper status",
+            updated_at: "2026-07-12T20:00:00Z",
             author_association: "OWNER",
             user: { login: "steipete" },
           },
@@ -5309,6 +5310,9 @@ test("hosted webhook reuses existing fast ack comments on redelivery", async () 
         status_comment_id: 777,
         source_event: "issue_comment",
         source_action: "created",
+        comment_event_auth: "github_webhook_v1",
+        comment_updated_at: "2026-07-12T20:00:00Z",
+        comment_body_sha256: createHash("sha256").update("@clawsweeper status").digest("hex"),
         max_comments: "1",
       },
     });
