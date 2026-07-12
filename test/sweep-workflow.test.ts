@@ -264,11 +264,14 @@ test("exact event publish and routing require a successful fresh review artifact
   assert.match(routeStep, /-f target_repo="\$TARGET_REPO"/);
   assert.match(routeStep, /-f target_branch="\$TARGET_BRANCH"/);
   assert.match(routeStep, /-f item_numbers="\$ITEM_NUMBER"/);
-  assert.match(
-    routerWorkflow,
-    /format\('repair-comment-router-\{0\}', github\.event\.inputs\.target_repo \|\| github\.event\.client_payload\.target_repo \|\| 'openclaw\/openclaw'\)/,
+  assert.match(routerWorkflow, /repair-comment-router-\{0\}-item-\{1\}-comment-\{2\}/);
+  assert.match(routerWorkflow, /repair-comment-router-\{0\}-item-\{1\}/);
+  assert.match(routerWorkflow, /repair-comment-router-\{0\}-items-\{1\}/);
+  assert.match(routerWorkflow, /cancel-in-progress: false/);
+  assert.ok(
+    routerWorkflow.indexOf("repair-comment-router-{0}-item-{1}") <
+      routerWorkflow.indexOf("format('repair-comment-router-{0}', github.event.inputs.target_repo"),
   );
-  assert.doesNotMatch(routerWorkflow, /repair-comment-router-\{0\}-items/);
   assert.match(
     eventReviewJob,
     /INTAKE_TERMINAL_MISSING: \$\{\{ steps\.live-item\.outputs\.terminal_missing \}\}/,

@@ -2095,25 +2095,34 @@ test("repair workers hydrate only durable jobs from generated state", () => {
     workflow.indexOf("\n  execute:"),
     workflow.indexOf("\n  validate:"),
   );
+  const reportJob = workflow.slice(
+    workflow.indexOf("\n  report:"),
+    workflow.indexOf("\n  mutate:"),
+  );
+  const mutateJob = workflow.slice(workflow.indexOf("\n  mutate:"));
   assert.doesNotMatch(executeJob, /create-state-token|setup-state/);
   assert.match(workflow, /CLAWSWEEPER_STEERABLE_CODEX/);
   assert.match(workflow, /actions\/cache\/restore@v6/);
   assert.match(workflow, /actions\/cache\/save@v6/);
   assert.match(workflow, /repair:action-session -- register/);
   assert.match(workflow, /completion-reason gates_passed/);
-  assert.match(workflow, /post_flight_report=.*post-flight-report\.json/);
-  assert.match(workflow, /\.action == "finalize_fix_pr"/);
-  assert.match(workflow, /\.status == "ready"/);
   assert.match(
-    workflow,
-    /id: requeue_dispatch[\s\S]*if: \$\{\{ always\(\) && steps\.repair_requeue\.outputs\.count != '' && steps\.repair_requeue\.outputs\.count != '0' \}\}/,
+    reportJob,
+    /id: repair_requeue[\s\S]*count-requeue-required[\s\S]*id: requeue_token[\s\S]*repair:requeue/,
   );
+  assert.match(reportJob, /if: \$\{\{ always\(\)/);
+  assert.match(reportJob, /Publish terminal report-only status[\s\S]*--dashboard-only/);
+  assert.doesNotMatch(reportJob, /target_post_flight_token|permission-pull-requests/);
   assert.match(
-    workflow,
-    /if: \$\{\{ always\(\) && failure\(\) && steps\.crabfleet_session\.outcome == 'success' && \(steps\.repair_requeue\.outputs\.count == '' \|\| steps\.repair_requeue\.outputs\.count == '0' \|\| steps\.requeue_dispatch\.outcome != 'success'\) \}\}/,
+    mutateJob,
+    /if: \$\{\{ needs\.execute\.result == 'success' && needs\.execute\.outputs\.execute_fix_outcome == 'success' && needs\.execute\.outputs\.mutation_ready == 'true' && needs\.validate\.result == 'success' && needs\.report\.result == 'success' \}\}/,
   );
+  assert.match(mutateJob, /repair:execution-handoff -- verify-publication/);
+  assert.match(mutateJob, /--publication-receipt-sha256/);
+  assert.match(mutateJob, /TRUSTED_PR_URL: \$\{\{ steps\.publish\.outputs\.target_pr_url \}\}/);
+  assert.doesNotMatch(mutateJob, /repair:apply-result|repair:tag-clawsweeper/);
   assert.equal(workflow.match(/id: crabfleet_session/g)?.length, 2);
-  assert.equal(workflow.match(/steps\.crabfleet_session\.outcome == 'success'/g)?.length, 6);
+  assert.equal(workflow.match(/steps\.crabfleet_session\.outcome == 'success'/g)?.length, 5);
   assert.doesNotMatch(workflow, /if: \$\{\{[^\n]*env\.CLAWSWEEPER_CRABFLEET_AGENT_TOKEN/);
 });
 
