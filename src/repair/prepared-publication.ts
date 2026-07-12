@@ -6,7 +6,7 @@ import { runCommand as run } from "./command-runner.js";
 import { replacementPrBody } from "./external-messages.js";
 import type { LooseRecord } from "./json-types.js";
 
-export const EXECUTION_INTENT_SCHEMA_VERSION = 1;
+export const EXECUTION_INTENT_SCHEMA_VERSION = 2;
 export const PREPARED_PUBLICATION_SCHEMA_VERSION = 1;
 export const PUBLICATION_RECEIPT_SCHEMA_VERSION = 1;
 
@@ -43,6 +43,7 @@ export type ExecutionIntent = {
   contributor_credits: LooseRecord[];
   superseded_source_prs: string[];
   close_superseded_source_prs: boolean;
+  required_labels: string[];
   identity_sha256: string;
 };
 
@@ -266,7 +267,16 @@ export function verifyExecutionIntentIdentity(intent: ExecutionIntent): Executio
   const { identity_sha256: identitySha256, ...identity } = intent;
   if (
     intent.schema_version !== EXECUTION_INTENT_SCHEMA_VERSION ||
-    identitySha256 !== digestJson(identity)
+    identitySha256 !== digestJson(identity) ||
+    !Array.isArray(intent.required_labels) ||
+    intent.required_labels.some(
+      (label, index) =>
+        typeof label !== "string" ||
+        !label.trim() ||
+        intent.required_labels.findIndex(
+          (candidate) => candidate.toLowerCase() === label.toLowerCase(),
+        ) !== index,
+    )
   ) {
     throw new Error("execution intent identity is invalid");
   }

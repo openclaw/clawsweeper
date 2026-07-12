@@ -35,6 +35,7 @@ export function replacementSourceLabelCopyable(value: string): boolean {
   if (!label) return false;
   const key = label.toLowerCase();
   if (key === "stale") return false;
+  if (key === "clawsweeper:human-review" || key === "clawsweeper:manual-only") return false;
   if (
     key.startsWith("close:") ||
     key.startsWith("merge-risk:") ||

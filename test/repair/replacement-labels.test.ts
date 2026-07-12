@@ -90,6 +90,8 @@ test("replacement source label filter documents denied classes", () => {
     "merge-risk: 🚨 compatibility",
     "size: M",
     "P3",
+    "clawsweeper:human-review",
+    "clawsweeper:manual-only",
   ]) {
     assert.equal(replacementSourceLabelCopyable(label), false, label);
   }
