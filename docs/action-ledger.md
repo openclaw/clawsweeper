@@ -98,18 +98,25 @@ confidential-identifier checks as every other durable machine-text field.
   or fresh-root reconstruction cannot move a run to another path.
 - Reusing one run/job shard identity for a different event set is a hard
   conflict.
-- Spool, shard, partition-marker, and import writes create parent directories
-  one component at a time, reject symlinks and junctions, snapshot every parent
-  inode and device immediately around pathname mutations, verify opened
-  descriptors against their final paths, and use no-follow file access where
-  the platform supports it. Final files are hard-linked create-only from a
-  fully written and fsynced sibling staging file, then the destination directory
-  is fsynced where supported. Successful publications and create-only race
-  losers remove their staging aliases only while the anchored parent chain and
-  staging inode still match. A crash or detected parent replacement can leave a
-  regular `.tmp` staging file but never a partial final shard; replay safely
-  publishes the canonical file. Staging names are ignored by readers, while
-  symlinks, directories, and special entries fail closed.
+- Spool, shard, partition-marker, and import writes require a pre-existing
+  trusted root. The supplied root pathname must already be absolute and
+  canonical, and its native real path must be identical, so roots reached
+  through symlinks or junctions are rejected. Callers create and permission this
+  root before invoking the ledger.
+- Under that trusted-root model, writers create descendant directories one
+  component at a time and reject links or special entries. Final files are
+  hard-linked create-only from a fully written and fsynced sibling staging file,
+  then the destination directory is fsynced where supported. A crash can leave
+  a regular `.tmp` staging file but never publishes a partial final shard;
+  replay safely publishes the canonical file. Staging names are ignored by
+  readers, while symlinks, directories, and special entries fail closed.
+- Parent-chain, inode, real-path, descriptor, and final-path checks are
+  defense-in-depth corruption and replacement detection. Portable Node v1 does
+  not claim containment against a process that can concurrently rename or swap
+  the trusted root or its ancestors: Node does not expose the handle-relative
+  `openat`, `linkat`, and `unlinkat` operations needed to enforce that boundary.
+  Such hostile concurrent filesystem mutation is outside the v1 threat model
+  and must be prevented with workspace ownership and process isolation.
 - Multi-step readers retain one validated root identity from enumeration through
   file parsing. Root, parent-chain, descriptor, and final-path identities are
   rechecked around reads. File opens are nonblocking before descriptor type
