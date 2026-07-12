@@ -15,6 +15,7 @@ import {
   ACTION_EVENT_MACHINE_TEXT_PATTERN_SOURCE,
   ACTION_EVENT_PHASE_TYPES,
   ACTION_EVENT_REASON_CODES,
+  ACTION_EVENT_SHARD_FILE_LIMITS,
   ACTION_EVENT_STATUSES,
   ACTION_EVENT_SUBJECT_KINDS,
   ACTION_EVENT_TYPES,
@@ -38,10 +39,12 @@ import {
   validateActionEvent,
   writeActionEvent,
   writeActionEventShard,
+  writeActionEventShards,
   type ActionEventInput,
   type ActionEventProducer,
 } from "../dist/action-ledger.js";
 import { prepareSafeWriteTarget } from "../dist/action-ledger-files.js";
+import { importActionEventShards } from "../dist/action-ledger-runtime.js";
 import { stableJson } from "../dist/stable-json.js";
 
 const producer: ActionEventProducer = {
@@ -1260,6 +1263,90 @@ test("durable shards batch sorted events once per producer job", () => {
   assert.deepEqual(
     readActionEventShard(created.path).map((event) => event.event_type),
     [ACTION_EVENT_TYPES.reviewStarted, ACTION_EVENT_TYPES.reviewCompleted],
+  );
+});
+
+test("durable shard writers split deterministically within importer event and byte limits", () => {
+  const identity = {
+    repository: producer.repository,
+    sha: producer.sha,
+    producer: producer.component,
+    workflow: producer.workflow,
+    job: producer.job,
+    runId: producer.runId,
+    runAttempt: producer.runAttempt,
+    partitionDate: "2026-07-12",
+  };
+  const eventLimited = Array.from(
+    { length: ACTION_EVENT_SHARD_FILE_LIMITS.maxEvents + 1 },
+    (_, index) =>
+      createActionEvent(
+        reviewInput({
+          eventKey: reviewEventKey("review.completed", { index }),
+        }),
+      ),
+  );
+  const eventRoot = tempRoot();
+  const first = writeActionEventShards(eventRoot, identity, eventLimited);
+  const replay = writeActionEventShards(eventRoot, identity, [...eventLimited].reverse());
+  const imported = importActionEventShards(eventRoot, tempRoot());
+
+  assert.deepEqual(
+    first.map((result) => result.eventCount),
+    [ACTION_EVENT_SHARD_FILE_LIMITS.maxEvents, 1],
+  );
+  assert.deepEqual(
+    first.map((result) => path.basename(result.path)),
+    first.map((_, index) =>
+      path.basename(actionEventShardRelativePath(identity, eventLimited, index + 1)),
+    ),
+  );
+  assert.deepEqual(
+    replay.map((result) => result.status),
+    ["unchanged", "unchanged"],
+  );
+  assert.equal(imported.created, 2);
+  assert.deepEqual(imported.paths, first.map((result) => result.relativePath).sort());
+  for (const result of first) {
+    assert.ok(fs.statSync(result.path).size <= ACTION_EVENT_SHARD_FILE_LIMITS.maxBytes);
+    assert.ok(result.eventCount <= ACTION_EVENT_SHARD_FILE_LIMITS.maxEvents);
+  }
+  assert.throws(
+    () => writeActionEventShard(tempRoot(), identity, eventLimited),
+    new RegExp(`${ACTION_EVENT_SHARD_FILE_LIMITS.maxEvents} event limit`),
+  );
+
+  const bulkyEvidence = Array.from({ length: 64 }, (_, index) => ({
+    kind: `evidence_${index}`,
+    snapshotId: `snapshot_${index}_${"x".repeat(220)}`,
+  }));
+  const byteLimited = [];
+  let bytes = 0;
+  for (let index = 0; bytes <= ACTION_EVENT_SHARD_FILE_LIMITS.maxBytes; index += 1) {
+    const event = createActionEvent(
+      reviewInput({
+        eventKey: reviewEventKey("review.completed", { bulky: index }),
+        evidence: bulkyEvidence,
+      }),
+    );
+    byteLimited.push(event);
+    bytes += Buffer.byteLength(`${actionLedgerJson(event)}\n`, "utf8");
+  }
+  assert.ok(byteLimited.length < ACTION_EVENT_SHARD_FILE_LIMITS.maxEvents);
+  const byteResults = writeActionEventShards(tempRoot(), identity, byteLimited);
+  assert.ok(byteResults.length > 1);
+  assert.equal(
+    byteResults.reduce((total, result) => total + result.eventCount, 0),
+    byteLimited.length,
+  );
+  assert.ok(
+    byteResults.every(
+      (result) => fs.statSync(result.path).size <= ACTION_EVENT_SHARD_FILE_LIMITS.maxBytes,
+    ),
+  );
+  assert.throws(
+    () => writeActionEventShard(tempRoot(), identity, byteLimited),
+    new RegExp(`${ACTION_EVENT_SHARD_FILE_LIMITS.maxBytes} byte limit`),
   );
 });
 

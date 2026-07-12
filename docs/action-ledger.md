@@ -15,17 +15,17 @@ The repository digest prevents collisions between repositories whose readable
 slugs are identical. Readers also verify that every event's repository and
 event ID reproduce its exact spool path.
 
-At job finalization, the spool is sorted, deduplicated, and published as one
-immutable JSONL shard:
+At job finalization, the spool is sorted, deduplicated, and published as one or
+more immutable JSONL shards:
 
 ```text
-ledger/v1/events/YYYY/MM/DD/<producer-repo>/<producer>/<run-id>-<attempt>-<job>-<digest>.jsonl
+ledger/v1/events/YYYY/MM/DD/<producer-repo>/<producer>/<run-id>-<attempt>-<job>-<digest>-part-<index>.jsonl
 ```
 
 Per-job shards avoid a shared append hotspot while preventing one Git commit per
 event. CrabFleet receives live structured events; the state ledger receives the
-canonical finalized shard. A failed live CrabFleet projection records a
-retryable `projection.failed` event in that shard, so delivery outages cannot
+canonical finalized shards. A failed live CrabFleet projection records a
+retryable `projection.failed` event in those shards, so delivery outages cannot
 erase or block the authoritative action history. Projection requests have a
 bounded deadline, abort on timeout, and cancel response bodies after every HTTP
 response.
@@ -110,8 +110,9 @@ confidential-identifier checks as every other durable machine-text field.
   `0001` through `0099` remain valid and are not remapped by JavaScript's
   legacy `Date.UTC` year handling. Timezone conversion must also remain within
   UTC partition years `0001` through `9999`.
-- Reusing one run/job shard identity for a different event set is a hard
-  conflict.
+- Shards are deterministically packed in canonical event order. Every output
+  stays at or below 1024 events and 2 MiB, matching importer limits. Reusing a
+  numbered run/job shard part for different content is a hard conflict.
 - Shard path components remain below portable 255-byte filename limits.
   Overlong readable repository, producer, run, or job components are truncated
   with a hash suffix; the full normalized identity still binds the shard digest.

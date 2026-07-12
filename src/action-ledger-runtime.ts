@@ -12,6 +12,7 @@ import {
   type SafeReadRoot,
 } from "./action-ledger-files.js";
 import {
+  ACTION_EVENT_SHARD_FILE_LIMITS,
   ACTION_EVENT_TYPES,
   actionEventShardsReplayEquivalent,
   actionAttemptId,
@@ -29,7 +30,7 @@ import {
   sortActionEventsCausally,
   validateActionEvent,
   writeActionEvent,
-  writeActionEventShard,
+  writeActionEventShards,
   type ActionEvent,
   type ActionEventAction,
   type ActionEventAttributes,
@@ -63,9 +64,9 @@ export const ACTION_EVENT_SHARD_IMPORT_LIMITS = {
   maxEntriesPerDirectory: 512,
   maxDirectories: 512,
   maxFiles: 256,
-  maxFileBytes: 2 * 1024 * 1024,
+  maxFileBytes: ACTION_EVENT_SHARD_FILE_LIMITS.maxBytes,
   maxFileLines: 2_048,
-  maxFileEvents: 1_024,
+  maxFileEvents: ACTION_EVENT_SHARD_FILE_LIMITS.maxEvents,
   maxTotalBytes: 16 * 1024 * 1024,
   maxTotalEvents: 4_096,
 } as const;
@@ -312,7 +313,7 @@ export async function flushWorkflowActionEvents(
     const first = group[0];
     if (!first) continue;
     const partitionDate = readWorkflowPartitionDate(safeRoot, first.producer);
-    const result = writeActionEventShard(
+    const results = writeActionEventShards(
       safeOutputRoot.path,
       {
         repository: first.producer.repository,
@@ -326,7 +327,7 @@ export async function flushWorkflowActionEvents(
       },
       group,
     );
-    paths.push(result.relativePath);
+    paths.push(...results.map((result) => result.relativePath));
   }
   return paths.sort();
 }
@@ -578,12 +579,18 @@ function validateCanonicalImportedShard(
       partitionDate: `${match[1]}-${match[2]}-${match[3]}`,
     },
     sorted,
+    importedShardIndex(relativePath),
   ).replaceAll(path.sep, "/");
   if (expectedPath !== relativePath) {
     throw new Error(
       `action event shard path does not match canonical identity: ${relativePath} != ${expectedPath}`,
     );
   }
+}
+
+function importedShardIndex(relativePath: string): number | undefined {
+  const match = /-part-(\d{6})\.jsonl$/.exec(relativePath);
+  return match ? Number(match[1]) : undefined;
 }
 
 function queueCrabFleetEvent(

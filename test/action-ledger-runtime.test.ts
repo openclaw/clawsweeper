@@ -550,7 +550,7 @@ test("workflow events finalize into one replay-stable per-step shard", async () 
   assert.equal(first.length, 1);
   assert.match(
     first[0] ?? "",
-    /^ledger\/v1\/events\/2026\/07\/12\/openclaw-clawsweeper\/review\.__run_5\.review-0\/100-2-review-[a-f0-9]{12}\.jsonl$/,
+    /^ledger\/v1\/events\/2026\/07\/12\/openclaw-clawsweeper\/review\.__run_5\.review-0\/100-2-review-[a-f0-9]{12}-part-000001\.jsonl$/,
   );
   assert.equal(
     fs.readFileSync(path.join(outputRoot, first[0]!), "utf8").trim().split("\n").length,

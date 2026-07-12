@@ -378,6 +378,10 @@ export const ACTION_LEDGER_CANONICAL_JSON_LIMITS = {
   maxNodes: 10_000,
   maxBytes: 1024 * 1024,
 } as const;
+export const ACTION_EVENT_SHARD_FILE_LIMITS = {
+  maxBytes: 2 * 1024 * 1024,
+  maxEvents: 1_024,
+} as const;
 export const ACTION_EVENT_CONFIDENTIAL_IDENTIFIER_PATTERN_SOURCES = [
   "/(?:[Uu][Ss][Ee][Rr][Ss]|[Hh][Oo][Mm][Ee]|[Pp][Rr][Ii][Vv][Aa][Tt][Ee]|[Tt][Mm][Pp])/",
   "\\\\[Uu][Ss][Ee][Rr][Ss]\\\\",
@@ -776,18 +780,23 @@ function actionEventSpoolRepositoryDirectory(repository: string): string {
 export function actionEventShardRelativePath(
   identity: ActionEventShardIdentity,
   events: readonly ActionEvent[],
+  shardIndex?: number,
 ): string {
   const normalizedIdentity = normalizeShardIdentity(identity);
   const normalizedEvents = normalizeShardEvents(events);
   if (normalizedEvents.length === 0) throw new Error("action event shard requires events");
   const [year, month, date] = normalizedIdentity.partitionDate.split("-");
   const identityDigest = sha256(actionLedgerJson(normalizedIdentity)).slice(0, 12);
-  const filename = [
+  const filenameBase = [
     boundedPathSegment(normalizedIdentity.runId, 64),
     String(normalizedIdentity.runAttempt),
     boundedPathSegment(normalizedIdentity.job, 64),
     identityDigest,
   ].join("-");
+  const filename =
+    shardIndex === undefined
+      ? filenameBase
+      : `${filenameBase}-part-${String(actionEventShardIndex(shardIndex)).padStart(6, "0")}`;
   return path.join(
     "ledger",
     "v1",
@@ -874,14 +883,16 @@ export function writeActionEventShard(
   root: string,
   identity: ActionEventShardIdentity,
   events: readonly ActionEvent[],
+  shardIndex?: number,
 ): ActionEventShardWriteResult {
   const normalizedEvents = normalizeShardEvents(events);
   if (normalizedEvents.length === 0) throw new Error("action event shard requires events");
   validateShardProducer(identity, normalizedEvents);
-  const relativePath = actionEventShardRelativePath(identity, normalizedEvents);
+  const relativePath = actionEventShardRelativePath(identity, normalizedEvents, shardIndex);
+  const content = normalizedEvents.map((event) => actionLedgerJson(event)).join("\n") + "\n";
+  assertActionEventShardFileLimits(content, normalizedEvents.length);
   const target = prepareSafeWriteTarget(root, relativePath, "action event shard");
   const shardPath = target.path;
-  const content = normalizedEvents.map((event) => actionLedgerJson(event)).join("\n") + "\n";
   const digest = sha256(content);
   const existing = readUtf8FileIfExistsNoFollow(target);
   if (existing !== null) {
@@ -901,6 +912,19 @@ export function writeActionEventShard(
     sha256: digest,
     eventCount: normalizedEvents.length,
   };
+}
+
+export function writeActionEventShards(
+  root: string,
+  identity: ActionEventShardIdentity,
+  events: readonly ActionEvent[],
+): ActionEventShardWriteResult[] {
+  const normalizedEvents = normalizeShardEvents(events);
+  if (normalizedEvents.length === 0) throw new Error("action event shard requires events");
+  validateShardProducer(identity, normalizedEvents);
+  return splitActionEventShardEvents(normalizedEvents).map((shardEvents, index) =>
+    writeActionEventShard(root, identity, shardEvents, index + 1),
+  );
 }
 
 export function readActionEvent(filePath: string): ActionEvent {
@@ -1286,6 +1310,54 @@ function normalizeShardEvents(events: readonly ActionEvent[]): ActionEvent[] {
     byId.set(validated.event_id, existing ?? validated);
   }
   return sortActionEventsCausally([...byId.values()]);
+}
+
+function splitActionEventShardEvents(events: readonly ActionEvent[]): ActionEvent[][] {
+  const shards: ActionEvent[][] = [];
+  let current: ActionEvent[] = [];
+  let currentBytes = 0;
+  for (const event of events) {
+    const eventBytes = Buffer.byteLength(`${actionLedgerJson(event)}\n`, "utf8");
+    if (eventBytes > ACTION_EVENT_SHARD_FILE_LIMITS.maxBytes) {
+      throw new Error(
+        `action event ${event.event_id} exceeds ${ACTION_EVENT_SHARD_FILE_LIMITS.maxBytes} shard byte limit`,
+      );
+    }
+    if (
+      current.length > 0 &&
+      (current.length >= ACTION_EVENT_SHARD_FILE_LIMITS.maxEvents ||
+        currentBytes + eventBytes > ACTION_EVENT_SHARD_FILE_LIMITS.maxBytes)
+    ) {
+      shards.push(current);
+      current = [];
+      currentBytes = 0;
+    }
+    current.push(event);
+    currentBytes += eventBytes;
+  }
+  if (current.length > 0) shards.push(current);
+  return shards;
+}
+
+function assertActionEventShardFileLimits(content: string, eventCount: number): void {
+  if (eventCount > ACTION_EVENT_SHARD_FILE_LIMITS.maxEvents) {
+    throw new Error(
+      `action event shard exceeds ${ACTION_EVENT_SHARD_FILE_LIMITS.maxEvents} event limit`,
+    );
+  }
+  const bytes = Buffer.byteLength(content, "utf8");
+  if (bytes > ACTION_EVENT_SHARD_FILE_LIMITS.maxBytes) {
+    throw new Error(
+      `action event shard exceeds ${ACTION_EVENT_SHARD_FILE_LIMITS.maxBytes} byte limit`,
+    );
+  }
+}
+
+function actionEventShardIndex(value: number): number {
+  if (!Number.isSafeInteger(value) || value < 1 || value > 999_999) {
+    throw new Error("action event shard index must be an integer between 1 and 999999");
+  }
+  return value;
 }
 
 function normalizeShardIdentity(identity: ActionEventShardIdentity) {
