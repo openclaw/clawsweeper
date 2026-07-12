@@ -17,7 +17,9 @@ import {
 } from "./action-ledger-files.js";
 import {
   ACTION_LEDGER_CANONICAL_JSON_LIMITS,
+  ACTION_EVENT_REASON_CODES,
   ACTION_EVENT_SHARD_FILE_LIMITS,
+  ACTION_EVENT_STATUSES,
   ACTION_EVENT_TYPES,
   actionEventShardsReplayEquivalent,
   actionAttemptId,
@@ -215,7 +217,7 @@ type ActionEventLock = {
 
 export function workflowActionEventsEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
   if (env.CLAWSWEEPER_ACTION_LEDGER_DISABLED === "1") return false;
-  return env.GITHUB_ACTIONS === "true" || env.CLAWSWEEPER_ACTION_LEDGER_FORCE === "1";
+  return env.CLAWSWEEPER_ACTION_LEDGER_FORCE === "1";
 }
 
 export function workflowActionProducer(
@@ -406,6 +408,171 @@ export async function flushWorkflowActionEvents(
     paths.add(relativePath);
   }
   return [...paths].sort();
+}
+
+export function interruptOpenWorkflowActionEvents(
+  root: string,
+  options: {
+    env?: NodeJS.ProcessEnv;
+    now?: () => Date;
+    fetchImpl?: typeof fetch;
+    reasonCode?: ActionEventReasonCode;
+  } = {},
+): number {
+  const env = options.env ?? process.env;
+  if (!workflowActionEventsEnabled(env)) return 0;
+  const reasonCode = options.reasonCode ?? ACTION_EVENT_REASON_CODES.timeout;
+  if (reasonCode !== ACTION_EVENT_REASON_CODES.timeout) {
+    throw new Error(`unsupported interrupted workflow action reason: ${reasonCode}`);
+  }
+  const safeRoot = prepareSafeReadRoot(root, "action event spool");
+  const groups = [...groupWorkflowActionEvents(readAllSpooledActionEvents(safeRoot)).values()]
+    .filter((group) =>
+      group.some(
+        (event) =>
+          (event.event_type === ACTION_EVENT_TYPES.reviewBatch ||
+            event.event_type === ACTION_EVENT_TYPES.reviewItem) &&
+          event.action.status === ACTION_EVENT_STATUSES.started,
+      ),
+    )
+    .sort((left, right) => {
+      const leftKey = actionLedgerJson(left[0]!.producer);
+      const rightKey = actionLedgerJson(right[0]!.producer);
+      return leftKey < rightKey ? -1 : leftKey > rightKey ? 1 : 0;
+    });
+  let interrupted = 0;
+  for (const group of groups) {
+    const producer = group[0]!.producer;
+    interrupted += withWorkflowProducerLock(root, producer, () => {
+      const current = readAllSpooledActionEvents(safeRoot).filter(
+        (event) => actionLedgerJson(event.producer) === actionLedgerJson(producer),
+      );
+      const starts = current
+        .filter(
+          (event) =>
+            (event.event_type === ACTION_EVENT_TYPES.reviewBatch ||
+              event.event_type === ACTION_EVENT_TYPES.reviewItem) &&
+            event.action.status === ACTION_EVENT_STATUSES.started,
+        )
+        .sort((left, right) => left.phase_seq - right.phase_seq);
+      let written = 0;
+      for (const start of starts) {
+        const lifecycleKey = workflowActionLifecycleKey(start);
+        if (
+          current.some(
+            (event) =>
+              event.event_id !== start.event_id &&
+              event.action.status !== ACTION_EVENT_STATUSES.started &&
+              workflowActionLifecycleKey(event) === lifecycleKey,
+          )
+        ) {
+          continue;
+        }
+        const eventInput: ActionEventInput = {
+          eventKey: actionEventKey("review.interrupted", {
+            startEventId: start.event_id,
+            reasonCode,
+          }),
+          operationId: start.operation_id,
+          attemptId: start.attempt_id,
+          parentEventId: start.event_id,
+          phaseSeq:
+            start.event_type === ACTION_EVENT_TYPES.reviewBatch ? 1_000_000 : start.phase_seq + 2,
+          idempotencyKeySha256: actionIdempotencyKey({
+            operationId: start.operation_id,
+            slot: "interrupted_terminal",
+            eventType: start.event_type,
+            subject: workflowActionSubjectIdentity(start),
+          }),
+          type: start.event_type,
+          producer: workflowActionProducerInput(start.producer),
+          subject: workflowActionSubjectInput(start.subject),
+          action: {
+            name: start.event_type,
+            status: ACTION_EVENT_STATUSES.failed,
+            reasonCode,
+            retryable: true,
+            mutation: false,
+          },
+          ...(start.evidence === undefined
+            ? {}
+            : {
+                evidence: start.evidence.map((entry) => ({
+                  kind: entry.kind,
+                  ...(entry.sha256 === undefined ? {} : { sha256: entry.sha256 }),
+                  ...(entry.report_path === undefined ? {} : { reportPath: entry.report_path }),
+                  ...(entry.run_url === undefined ? {} : { runUrl: entry.run_url }),
+                  ...(entry.snapshot_id === undefined ? {} : { snapshotId: entry.snapshot_id }),
+                })),
+              }),
+          attributes: {
+            completion_reason: "timeout",
+            failed_count: 1,
+            partial: true,
+          },
+          privacy: {
+            classification: start.privacy.classification,
+            redactionVersion: start.privacy.redaction_version,
+            fieldsDropped: start.privacy.fields_dropped,
+          },
+        };
+        const writeOptions = { now: options.now ?? (() => new Date()) };
+        const candidate = createActionEvent(eventInput, writeOptions);
+        assertWorkflowProducerAcceptsEvent(root, candidate);
+        const partitionDate = readWorkflowPartitionDate(safeRoot, start.producer);
+        ensureWorkflowPartitionDateValue(root, start.producer, partitionDate);
+        const event = writeActionEvent(root, eventInput, writeOptions).event;
+        queueCrabFleetEvent(root, event, env, options.fetchImpl ?? fetch);
+        current.push(event);
+        written += 1;
+      }
+      return written;
+    });
+  }
+  return interrupted;
+}
+
+function workflowActionLifecycleKey(event: ActionEvent): string {
+  return actionLedgerJson({
+    operationId: event.operation_id,
+    attemptId: event.attempt_id,
+    eventType: event.event_type,
+    subject: workflowActionSubjectIdentity(event),
+  });
+}
+
+function workflowActionSubjectIdentity(event: ActionEvent) {
+  return {
+    repository: event.subject.repository,
+    kind: event.subject.kind,
+    ...(event.subject.subject_id === undefined ? {} : { subjectId: event.subject.subject_id }),
+    ...(event.subject.number === undefined ? {} : { number: event.subject.number }),
+    ...(event.subject.cluster_id === undefined ? {} : { clusterId: event.subject.cluster_id }),
+  };
+}
+
+function workflowActionProducerInput(producer: ActionEvent["producer"]): ActionEventProducer {
+  return {
+    repository: producer.repository,
+    sha: producer.sha,
+    workflow: producer.workflow,
+    job: producer.job,
+    runId: producer.run_id,
+    runAttempt: producer.run_attempt,
+    component: producer.component,
+  };
+}
+
+function workflowActionSubjectInput(subject: ActionEvent["subject"]): ActionEventSubject {
+  return {
+    repository: subject.repository,
+    kind: subject.kind,
+    ...(subject.subject_id === undefined ? {} : { subjectId: subject.subject_id }),
+    ...(subject.number === undefined ? {} : { number: subject.number }),
+    ...(subject.cluster_id === undefined ? {} : { clusterId: subject.cluster_id }),
+    ...(subject.source_revision === undefined ? {} : { sourceRevision: subject.source_revision }),
+    ...(subject.record_path === undefined ? {} : { recordPath: subject.record_path }),
+  };
 }
 
 function finalizeWorkflowActionEventSpool(

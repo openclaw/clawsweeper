@@ -139,6 +139,13 @@ test("lane instrumentation uses stable slots with explicit parent and phase orde
     source,
     /idempotencyIdentity: \{\s*operationIdentity: options\.ledger\.operationIdentity,\s*slot: "apply_batch_terminal"/,
   );
+  assert.match(source, /candidateSnapshots: options\.candidates\.map/);
+  assert.match(source, /candidateRevisions: options\.candidates\.map/);
+  assert.match(source, /slot: "apply_item"/);
+  assert.doesNotMatch(
+    source,
+    /idempotencyIdentity: \{[^}]{0,300}slot: "apply_(?:result|in_flight_failure)"/,
+  );
   assert.match(
     source,
     /idempotencyIdentity: \{\s*operationIdentity: options\.ledger\.operationIdentity,\s*slot: "batch_terminal"/,

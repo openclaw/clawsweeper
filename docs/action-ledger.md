@@ -90,6 +90,10 @@ confidential-identifier checks as every other durable machine-text field.
   preserving `operation_id` and mutation idempotency keys.
 - Mutation events require an explicit business `idempotencyIdentity`; outcome
   status and failure reason never define side-effect identity.
+- Review operation identity binds each selected item's repository, kind, number,
+  and observed `updated_at`. Apply operation and mutation identity bind the item
+  source revision, review content digest, and decision packet digest. A crash
+  result and its retry therefore retain one business idempotency key.
 - Repository, producer SHA, workflow, job, run, attempt, and component all bind
   shard identity. They do not define the logical operation.
 - Workflow, step, invocation, and component identifiers keep a readable prefix
@@ -269,6 +273,12 @@ New writers should prefer phase-oriented types from
 reasons from `ACTION_EVENT_REASON_CODES`. The event type identifies what phase
 ran; `action.status` identifies its transition or outcome. Free-form detail
 belongs in neither field.
+
+`published` is reserved for evidence durably visible at its declared external
+destination, such as a synced GitHub comment or an imported immutable ledger
+shard. A log, review record, or apply report that only exists in the current
+workspace is `completed` and identifies its local or worktree destination via
+`publication_kind`; a later publication lane records the durable transition.
 
 ```ts
 recordWorkflowPhaseEvent(root, {

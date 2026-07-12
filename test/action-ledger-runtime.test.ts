@@ -13,6 +13,7 @@ import {
   flushPendingCrabFleetPosts,
   flushWorkflowActionEvents,
   importActionEventShards,
+  interruptOpenWorkflowActionEvents,
   postActionEventToCrabFleet,
   recordWorkflowActionEvent,
   recordWorkflowPhaseEvent,
@@ -28,6 +29,7 @@ import {
   actionEventShardRelativePath,
   actionLedgerJson,
   createActionEvent,
+  readAllSpooledActionEvents,
   readActionEventShard,
   readActionEventShardAt,
   writeActionEventShard,
@@ -332,30 +334,32 @@ function recreateActionEvent(
 }
 
 test("workflow event telemetry is disabled outside an explicit workflow context", () => {
-  assert.equal(
-    recordWorkflowActionEvent(
-      tempRoot(),
-      {
-        scope: "review.completed",
-        identity: { number: 42 },
-        type: ACTION_EVENT_TYPES.reviewCompleted,
-        component: "review",
-        subject: {
-          repository: "openclaw/openclaw",
-          kind: "pull_request",
-          number: 42,
+  for (const env of [{}, { GITHUB_ACTIONS: "true" }]) {
+    assert.equal(
+      recordWorkflowActionEvent(
+        tempRoot(),
+        {
+          scope: "review.completed",
+          identity: { number: 42 },
+          type: ACTION_EVENT_TYPES.reviewCompleted,
+          component: "review",
+          subject: {
+            repository: "openclaw/openclaw",
+            kind: "pull_request",
+            number: 42,
+          },
+          action: {
+            name: "review",
+            status: "completed",
+            retryable: false,
+            mutation: false,
+          },
         },
-        action: {
-          name: "review",
-          status: "completed",
-          retryable: false,
-          mutation: false,
-        },
-      },
-      { env: {} },
-    ),
-    null,
-  );
+        { env },
+      ),
+      null,
+    );
+  }
 });
 
 test("phase event helpers derive canonical types, action names, and replay identities", () => {
@@ -422,6 +426,151 @@ test("phase event helpers derive canonical types, action names, and replay ident
   assert.equal(first.parent_event_id, null);
   assert.equal(first.phase_seq, 3);
   assert.match(first.idempotency_key_sha256, /^[a-f0-9]{64}$/);
+});
+
+test("timeout recovery closes only start-only review attempts before finalization", () => {
+  const root = tempRoot();
+  const env = workflowEnv();
+  const operationIdentity = {
+    repository: "openclaw/openclaw",
+    candidateSnapshots: [
+      {
+        repository: "openclaw/openclaw",
+        number: 42,
+        kind: "pull_request",
+        updatedAt: "2026-07-12T09:00:00Z",
+      },
+      {
+        repository: "openclaw/openclaw",
+        number: 43,
+        kind: "issue",
+        updatedAt: "2026-07-12T09:01:00Z",
+      },
+    ],
+  };
+  const batch = recordWorkflowPhaseEvent(
+    root,
+    {
+      phase: ACTION_EVENT_TYPES.reviewBatch,
+      status: ACTION_EVENT_STATUSES.started,
+      reasonCode: ACTION_EVENT_REASON_CODES.selected,
+      retryable: false,
+      mutation: false,
+      identity: { slot: "batch_start" },
+      operation: "review",
+      operationIdentity,
+      phaseSeq: 1,
+      component: "review",
+      subject: { repository: "openclaw/openclaw", kind: "workflow" },
+    },
+    { env },
+  );
+  assert.ok(batch);
+  const openItem = recordWorkflowPhaseEvent(
+    root,
+    {
+      phase: ACTION_EVENT_TYPES.reviewItem,
+      status: ACTION_EVENT_STATUSES.started,
+      reasonCode: ACTION_EVENT_REASON_CODES.selected,
+      retryable: false,
+      mutation: false,
+      identity: { slot: "item_start", number: 42 },
+      operation: "review",
+      operationIdentity,
+      parentEventId: batch.event_id,
+      phaseSeq: 10,
+      component: "review",
+      subject: { repository: "openclaw/openclaw", kind: "pull_request", number: 42 },
+    },
+    { env },
+  );
+  assert.ok(openItem);
+  const completedItem = recordWorkflowPhaseEvent(
+    root,
+    {
+      phase: ACTION_EVENT_TYPES.reviewItem,
+      status: ACTION_EVENT_STATUSES.started,
+      reasonCode: ACTION_EVENT_REASON_CODES.selected,
+      retryable: false,
+      mutation: false,
+      identity: { slot: "item_start", number: 43 },
+      operation: "review",
+      operationIdentity,
+      parentEventId: batch.event_id,
+      phaseSeq: 20,
+      component: "review",
+      subject: { repository: "openclaw/openclaw", kind: "issue", number: 43 },
+    },
+    { env },
+  );
+  assert.ok(completedItem);
+  recordWorkflowPhaseEvent(
+    root,
+    {
+      phase: ACTION_EVENT_TYPES.reviewItem,
+      status: ACTION_EVENT_STATUSES.completed,
+      reasonCode: ACTION_EVENT_REASON_CODES.completed,
+      retryable: false,
+      mutation: false,
+      identity: { slot: "item_terminal", number: 43 },
+      operation: "review",
+      operationIdentity,
+      parentEventId: completedItem.event_id,
+      phaseSeq: 22,
+      component: "review",
+      subject: {
+        repository: "openclaw/openclaw",
+        kind: "issue",
+        number: 43,
+        sourceRevision: "revision-43",
+      },
+    },
+    { env },
+  );
+
+  assert.equal(
+    interruptOpenWorkflowActionEvents(root, {
+      env,
+      now: () => new Date("2026-07-12T10:05:00Z"),
+    }),
+    2,
+  );
+  assert.equal(interruptOpenWorkflowActionEvents(root, { env }), 0);
+
+  const events = readAllSpooledActionEvents(root);
+  const interrupted = events.filter(
+    (event) =>
+      event.action.status === ACTION_EVENT_STATUSES.failed &&
+      event.action.reason_code === ACTION_EVENT_REASON_CODES.timeout,
+  );
+  assert.equal(interrupted.length, 2);
+  assert.deepEqual(
+    interrupted
+      .map((event) => [event.event_type, event.subject.number ?? null] as const)
+      .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0)),
+    [
+      [ACTION_EVENT_TYPES.reviewBatch, null],
+      [ACTION_EVENT_TYPES.reviewItem, 42],
+    ],
+  );
+  assert.ok(
+    interrupted.every(
+      (event) =>
+        event.operation_id === batch.operation_id &&
+        event.attempt_id === batch.attempt_id &&
+        event.action.retryable &&
+        !event.action.mutation,
+    ),
+  );
+  assert.equal(
+    events.filter(
+      (event) =>
+        event.event_type === ACTION_EVENT_TYPES.reviewItem &&
+        event.subject.number === 43 &&
+        event.action.status === ACTION_EVENT_STATUSES.failed,
+    ).length,
+    0,
+  );
 });
 
 test("workflow retries preserve operation and idempotency identity but change attempts", () => {
