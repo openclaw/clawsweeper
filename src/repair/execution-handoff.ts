@@ -2973,6 +2973,7 @@ export function runReplacementBoundSourceClose({
   closeSource,
   readRecovery,
   assertClosedSourceIdentity,
+  persistClosedReceipt,
   checkpointCompensation,
   compensateSource,
   readCompensatedRecovery,
@@ -2982,6 +2983,7 @@ export function runReplacementBoundSourceClose({
   closeSource: () => void;
   readRecovery: () => ReturnType<typeof sourceCloseRecovery>;
   assertClosedSourceIdentity: () => void;
+  persistClosedReceipt: (evidence: SourceCloseEvidence) => void;
   checkpointCompensation: (evidence: SourceCloseEvidence) => void;
   compensateSource: () => void;
   readCompensatedRecovery: () => ReturnType<typeof sourceCloseRecovery>;
@@ -3006,6 +3008,17 @@ export function runReplacementBoundSourceClose({
     assertClosedSourceIdentity();
   } catch (error) {
     closeoutError ??= error;
+  }
+  if (!closeoutError) {
+    try {
+      assertReplacementOpen();
+      assertClosedSourceIdentity();
+      persistClosedReceipt(recovery.evidence);
+      assertReplacementOpen();
+      assertClosedSourceIdentity();
+    } catch (error) {
+      closeoutError = error;
+    }
   }
   if (!closeoutError) return recovery;
 
@@ -3329,6 +3342,7 @@ function closeSupersededReplacementSources({
     );
     if (!attempt) throw new Error("source closeout lacks its durable begin checkpoint");
     const authorizedClosedSources = new Set([...completedClosures, ...pendingAttempts]);
+    let persistedCloseReceipt: PublicationReceipt | null = null;
     const result = runPublicationMutation({
       intent,
       publication,
@@ -3366,6 +3380,16 @@ function closeSupersededReplacementSources({
           },
           assertClosedSourceIdentity: () => {
             revalidateSourcePullRevision(action.revision, { allowClosed: true });
+          },
+          persistClosedReceipt: (evidence) => {
+            persistedCloseReceipt = completePendingSourceClosureReceipt({
+              publication,
+              receipt: currentReceipt,
+              intent,
+              revision: action.revision,
+              evidence,
+            });
+            writeJson(publicationReceiptPath, persistedCloseReceipt);
           },
           checkpointCompensation: (evidence) => {
             currentReceipt = checkpointPendingSourceReopenReceipt({
@@ -3428,14 +3452,10 @@ function closeSupersededReplacementSources({
         `source close safety changed after close; source reopen compensation persisted: ${result.closeout_error}`,
       );
     }
-    currentReceipt = finalizePendingSourceClosureReceipt({
-      publication,
-      receipt: currentReceipt,
-      intent,
-      revision: action.revision,
-      readRecovery: () => readLiveRecovery(action.revision, attempt),
-    });
-    writeJson(publicationReceiptPath, currentReceipt);
+    if (!persistedCloseReceipt) {
+      throw new Error("source closeout terminal receipt was not persisted");
+    }
+    currentReceipt = persistedCloseReceipt;
     completedClosures = checkpointedSourceClosures(publication, currentReceipt, intent);
     pendingAttempts.delete(action.source.url);
   }

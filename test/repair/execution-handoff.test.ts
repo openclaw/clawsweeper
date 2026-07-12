@@ -1105,6 +1105,7 @@ test("source close rechecks replacement immediately and compensates post-close d
     },
     readRecovery: () => sourceCloseRecovery({ attempt, state, events }),
     assertClosedSourceIdentity: () => undefined,
+    persistClosedReceipt: () => calls.push("persist"),
     checkpointCompensation: () => calls.push("checkpoint"),
     compensateSource: () => {
       calls.push("compensate");
@@ -1116,6 +1117,46 @@ test("source close rechecks replacement immediately and compensates post-close d
   assert.deepEqual(calls.slice(0, 3), ["source", "replacement", "close"]);
   assert.ok(calls.indexOf("checkpoint") < calls.indexOf("compensate"));
   assert.equal(result.status, "compensated");
+  assert.equal(state, "open");
+});
+
+test("post-receipt replacement drift overwrites the terminal close with compensation", () => {
+  const closeActor = "openclaw-clawsweeper[bot]";
+  const attempt = {
+    expected_close_actor: closeActor,
+    last_state_event_id: 10,
+  };
+  const calls: string[] = [];
+  let replacementChecks = 0;
+  let state = "open";
+  let events: SourcePullStateEvent[] = [];
+  const result = runReplacementBoundSourceClose({
+    assertSourceOpen: () => calls.push("source"),
+    assertReplacementOpen: () => {
+      calls.push("replacement");
+      replacementChecks += 1;
+      if (replacementChecks === 4) throw new Error("replacement drifted after receipt");
+    },
+    closeSource: () => {
+      calls.push("close");
+      state = "closed";
+      events = [sourceStateEvent(11, "closed", closeActor)];
+    },
+    readRecovery: () => sourceCloseRecovery({ attempt, state, events }),
+    assertClosedSourceIdentity: () => calls.push("source-identity"),
+    persistClosedReceipt: () => calls.push("persist"),
+    checkpointCompensation: () => calls.push("checkpoint"),
+    compensateSource: () => {
+      calls.push("compensate");
+      state = "open";
+      events.push(sourceStateEvent(12, "reopened", closeActor));
+    },
+    readCompensatedRecovery: () => sourceCloseRecovery({ attempt, state, events }),
+  });
+
+  assert.equal(result.status, "compensated");
+  assert.ok(calls.indexOf("persist") < calls.indexOf("checkpoint"));
+  assert.ok(calls.indexOf("checkpoint") < calls.indexOf("compensate"));
   assert.equal(state, "open");
 });
 
@@ -1147,6 +1188,7 @@ test("bot-attributed close with source head or base drift triggers reopen compen
     assertClosedSourceIdentity: () => {
       assertSourcePullRevision(sourcePullRevision(42), pull, { allowClosed: true });
     },
+    persistClosedReceipt: () => undefined,
     checkpointCompensation: () => {
       checkpointed = true;
     },
@@ -1200,6 +1242,7 @@ test("failed replacement drift compensation keeps the durable reopen checkpoint 
         },
         readRecovery: () => sourceCloseRecovery({ attempt, state, events }),
         assertClosedSourceIdentity: () => undefined,
+        persistClosedReceipt: () => undefined,
         checkpointCompensation: (evidence) => {
           receipt = checkpointPendingSourceReopenReceipt({
             publication,
@@ -1245,6 +1288,7 @@ test("successful source reopen with stale evidence remains pending instead of fi
         },
         readRecovery: () => sourceCloseRecovery({ attempt, state, events }),
         assertClosedSourceIdentity: () => undefined,
+        persistClosedReceipt: () => undefined,
         checkpointCompensation: () => {
           checkpointed = true;
         },
@@ -1379,7 +1423,7 @@ test("publication checkpoint binds source closeout and every mutation rechecks l
   assert.doesNotMatch(closeout, /sourceClosureAttemptReceiptMutation/);
   assert.match(
     closeout,
-    /"pr", "close"[\s\S]*finalizePendingSourceClosureReceipt\(\{[\s\S]*revision: action\.revision,[\s\S]*readRecovery:[\s\S]*writeJson\(publicationReceiptPath, currentReceipt\)/,
+    /"pr", "close"[\s\S]*persistClosedReceipt:[\s\S]*completePendingSourceClosureReceipt\(\{[\s\S]*writeJson\(publicationReceiptPath, persistedCloseReceipt\)/,
   );
   assert.ok(
     closeout.indexOf("checkpointPendingSourceReopenReceipt") <
