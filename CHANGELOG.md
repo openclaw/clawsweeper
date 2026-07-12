@@ -70,6 +70,11 @@ checkpoint, and status-only commits are intentionally omitted.
   review comments, apply actions, apply batches, and apply reports into the
   immutable action ledger, including partial, interrupted, timeout, and failed
   executions.
+- Dual-write comment-router command receipt, classification, durable claim,
+  claim refresh, dispatch, wait, recovery, completion, skip, and failure
+  transitions into immutable per-attempt action chains, with stable business
+  idempotency across retry invocations and immutable publication to the state
+  repository.
 - Short-circuited authenticated duplicate comment deliveries when their exact
   body version is already terminal in the durable router ledger, while edited,
   retryable, and state-drifted commands retain the full routing path.

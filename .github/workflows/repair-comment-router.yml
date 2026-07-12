@@ -107,6 +107,9 @@ jobs:
             src/github-json.ts
             src/github-retry.ts
             src/pr-close-coverage-proof.ts
+            src/action-ledger-files.ts
+            src/action-ledger-runtime.ts
+            src/action-ledger.ts
             src/repair
             src/repository-profiles.ts
             package.json
@@ -168,7 +171,10 @@ jobs:
           token: ${{ steps.state-token.outputs.token }}
           fetch-depth: 1
 
+      - uses: ./.github/actions/setup-action-ledger
+
       - uses: ./.github/actions/setup-pnpm
+        id: setup-pnpm
         with:
           build-script: build:repair
 
@@ -221,6 +227,7 @@ jobs:
           CLAWSWEEPER_DISPATCH_TOKEN: ${{ steps.dispatch-token.outputs.token }}
           CLAWSWEEPER_MUTATION_TOKEN_SOURCE: clawsweeper-app
           CLAWSWEEPER_ALLOW_MERGE: ${{ vars.CLAWSWEEPER_ALLOW_MERGE || '0' }}
+          CLAWSWEEPER_ACTION_LEDGER_INVOCATION: initial
         run: |
           set -euo pipefail
           target_repo="${{ github.event_name == 'workflow_dispatch' && inputs.target_repo || vars.CLAWSWEEPER_TARGET_REPO || 'openclaw/openclaw' }}"
@@ -350,6 +357,7 @@ jobs:
           CLAWSWEEPER_DISPATCH_TOKEN: ${{ steps.dispatch-token.outputs.token }}
           CLAWSWEEPER_MUTATION_TOKEN_SOURCE: clawsweeper-app
           CLAWSWEEPER_ALLOW_MERGE: ${{ vars.CLAWSWEEPER_ALLOW_MERGE || '0' }}
+          CLAWSWEEPER_ACTION_LEDGER_INVOCATION: retry
         run: |
           set -euo pipefail
           target_repo="${{ github.event_name == 'workflow_dispatch' && inputs.target_repo || vars.CLAWSWEEPER_TARGET_REPO || 'openclaw/openclaw' }}"
@@ -447,3 +455,41 @@ jobs:
             --path results/comment-router-latest.json \
             --path jobs \
             --rebase-strategy theirs
+
+      - name: Finalize command action ledger
+        if: ${{ always() && steps.setup-pnpm.outcome == 'success' }}
+        run: pnpm run --silent repair:action-ledger -- finalize
+
+      - name: Publish immutable command action ledger
+        if: ${{ always() && steps.setup-pnpm.outcome == 'success' }}
+        run: |
+          set -euo pipefail
+          test -n "${CLAWSWEEPER_STATE_DIR:-}"
+          source_root=".clawsweeper-repair/action-ledger-state"
+          if [ ! -d "$source_root/ledger" ]; then
+            echo "No command action event shards were finalized."
+            exit 0
+          fi
+          event_paths_file=".artifacts/command-action-ledger-paths.txt"
+          mkdir -p .artifacts
+          pnpm run --silent repair:action-ledger -- publish \
+            --source-root "$source_root" \
+            --state-root "$CLAWSWEEPER_STATE_DIR" |
+            jq -r '.paths[]?' |
+            sort -u > "$event_paths_file"
+          if [ ! -s "$event_paths_file" ]; then
+            echo "Command action event shards existed but no paths were imported." >&2
+            exit 1
+          fi
+          action_ledger_args=()
+          while IFS= read -r event_path; do
+            durable_event_path="$CLAWSWEEPER_STATE_DIR/$event_path"
+            test -f "$durable_event_path"
+            mkdir -p "$(dirname "$event_path")"
+            cp "$durable_event_path" "$event_path"
+            action_ledger_args+=(--path "$event_path")
+          done < "$event_paths_file"
+          pnpm run repair:publish-main -- \
+            --message "chore: append command action ledger" \
+            "${action_ledger_args[@]}" \
+            --rebase-strategy normal

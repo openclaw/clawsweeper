@@ -69,6 +69,19 @@ test("repair comment router workflow preserves repository dispatch target branch
   );
 });
 
+test("repair comment router sparse checkout includes action ledger runtime", () => {
+  const workflow = readText(".github/workflows/repair-comment-router.yml");
+  const entries = sparseCheckoutEntries(workflow);
+
+  for (const requiredPath of [
+    "src/action-ledger-files.ts",
+    "src/action-ledger-runtime.ts",
+    "src/action-ledger.ts",
+  ]) {
+    assert.ok(entries.has(requiredPath), `repair comment router missing ${requiredPath}`);
+  }
+});
+
 test("sweep workflow preserves manual target branches and hydrates exact branches live", () => {
   const workflow = readText(".github/workflows/sweep.yml");
   const dispatchTargetBranchResolver =

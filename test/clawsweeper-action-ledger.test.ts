@@ -782,3 +782,21 @@ test("sweep publishes complete immutable shards for every review and apply produ
     /--message "chore: append (?:review|apply).*action ledger"[\s\S]{0,180}--path "ledger\/v1\/events"/,
   );
 });
+
+test("comment router publishes immutable command receipts for initial and retry invocations", () => {
+  const workflow = readText(".github/workflows/repair-comment-router.yml");
+
+  assert.match(workflow, /uses: \.\/\.github\/actions\/setup-action-ledger/);
+  assert.match(workflow, /CLAWSWEEPER_ACTION_LEDGER_INVOCATION: initial/);
+  assert.match(workflow, /CLAWSWEEPER_ACTION_LEDGER_INVOCATION: retry/);
+  assert.match(workflow, /- name: Finalize command action ledger/);
+  assert.match(workflow, /repair:action-ledger -- finalize/);
+  assert.match(workflow, /- name: Publish immutable command action ledger/);
+  assert.match(workflow, /repair:action-ledger -- publish/);
+  assert.match(workflow, /--message "chore: append command action ledger"/);
+  assert.match(workflow, /action_ledger_args\+=\(--path "\$event_path"\)/);
+  assert.doesNotMatch(
+    workflow,
+    /--message "chore: append command action ledger"[\s\S]{0,180}--path "ledger\/v1\/events"/,
+  );
+});
