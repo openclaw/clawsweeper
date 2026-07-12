@@ -200,7 +200,8 @@ The ledger stores machine-readable reason codes, counts, booleans, hashes,
 bounded subject IDs, relative report paths, public run URLs, and snapshot IDs.
 It does not store prompts, bodies, comments, diffs, patches, raw logs, raw
 payloads, arbitrary model text, local absolute paths, credentials, private
-hosts, or email addresses. Credential detection covers GitHub and standard
+hosts, or email addresses, including single-label internal domains. Credential
+detection covers GitHub, Slack `xox*`, AWS access-key ID, and standard
 `npm_<36 chars>` token families, JWT-shaped values, Basic credentials,
 whitespace or separator-delimited bearer/API/Cloudflare credential forms,
 credential field aliases, POSIX and Windows absolute paths, one-quartet Basic

@@ -45,8 +45,9 @@ checkpoint, and status-only commits are intentionally omitted.
 - Hardened action-ledger privacy, import identity and causal validation,
   multi-shard capacity, crash-safe completion publication, portable paths,
   bounded shard, marker, and spool reads, producer-lock and finalization races,
-  direct shard collection invariants, calendar timestamp parity, root-scoped
-  projection drains, and bounded optional CrabFleet delivery.
+  direct shard collection invariants, calendar timestamp parity, single-label
+  email and common service-credential rejection, root-scoped projection drains,
+  and bounded optional CrabFleet delivery.
 - Bounded every repair git helper subprocess while retaining the shorter configurable network timeout, ordinary nonzero and signal status semantics, platform-aware command launching, and explicit spawn-error reporting. Thanks @hex-AI12.
 - Waited for the exact dashboard Worker commit to reach the live health endpoint before running post-deploy smoke checks, preventing Cloudflare rollout propagation from producing false CI failures.
 - Separated review publication from apply/comment-sync concurrency so long

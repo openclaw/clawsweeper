@@ -669,6 +669,12 @@
           "pattern": "(?:^|[^A-Za-z0-9])[Nn][Pp][Mm]_[A-Za-z0-9]{36}(?:$|[^A-Za-z0-9])"
         },
         {
+          "pattern": "(?:^|[^A-Za-z0-9])[Xx][Oo][Xx][A-Za-z]-[A-Za-z0-9-]{10,}(?:$|[^A-Za-z0-9-])"
+        },
+        {
+          "pattern": "(?:^|[^A-Za-z0-9])(?:[Aa][Kk][Ii][Aa]|[Aa][Ss][Ii][Aa])[A-Za-z0-9]{16}(?:$|[^A-Za-z0-9])"
+        },
+        {
           "pattern": "eyJ[A-Za-z0-9_-]{5,}\\.eyJ[A-Za-z0-9_-]{5,}\\.[A-Za-z0-9_-]{16,}"
         },
         {
@@ -678,7 +684,7 @@
           "pattern": "[Bb][Aa][Ss][Ii][Cc](?:\\s+|%20|\\s*[:+]\\s*)(?:[A-Za-z0-9+/]{4}){1,}(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?(?:$|[^A-Za-z0-9+/=])"
         },
         {
-          "pattern": "[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}"
+          "pattern": "[A-Za-z0-9._%+-]+@[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?"
         },
         {
           "pattern": "(?:^|[/:@])(?:[Ll][Oo][Cc][Aa][Ll][Hh][Oo][Ss][Tt]|(?:[A-Za-z0-9-]+\\.)+(?:[Ll][Oo][Cc][Aa][Ll]|[Ll][Oo][Cc][Aa][Ll][Hh][Oo][Ss][Tt]|[Ii][Nn][Tt][Ee][Rr][Nn][Aa][Ll]|[Cc][Oo][Rr][Pp]|[Ll][Aa][Nn]|[Hh][Oo][Mm][Ee](?:\\.[Aa][Rr][Pp][Aa])?)|(?:[Ii][Nn][Tt][Ee][Rr][Nn][Aa][Ll]|[Ii][Nn][Tt][Rr][Aa][Nn][Ee][Tt])\\.(?:[A-Za-z0-9-]+\\.)*[A-Za-z0-9-]+)\\.*(?:$|[/:])"
