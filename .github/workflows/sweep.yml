@@ -1398,12 +1398,14 @@ jobs:
 
       - name: Prepare review runtime artifact
         working-directory: clawsweeper
-        run: node scripts/prepare-review-runtime.mjs --output .artifacts/review-runtime
+        run: |
+          node scripts/prepare-review-runtime.mjs --output .artifacts/review-runtime
+          tar -czf .artifacts/review-runtime.tar.gz -C .artifacts/review-runtime .
 
       - uses: actions/upload-artifact@v7
         with:
           name: clawsweeper-runtime-dist
-          path: clawsweeper/.artifacts/review-runtime
+          path: clawsweeper/.artifacts/review-runtime.tar.gz
           if-no-files-found: error
           retention-days: 1
 
@@ -1760,7 +1762,15 @@ jobs:
       - uses: actions/download-artifact@v8
         with:
           name: clawsweeper-runtime-dist
-          path: clawsweeper
+          path: clawsweeper/.artifacts
+
+      - name: Extract review runtime artifact
+        working-directory: clawsweeper
+        run: |
+          tar -xzf .artifacts/review-runtime.tar.gz
+          native_compiler="$(find node_modules/@typescript -path '*/lib/tsc' -type f -print -quit)"
+          test -n "$native_compiler"
+          test -x "$native_compiler"
 
       - uses: ./clawsweeper/.github/actions/setup-codex
         env:

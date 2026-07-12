@@ -59,7 +59,7 @@ lexical state is established, while every non-trivia syntax fragment,
 remain part of the digest at their exact syntax attachment. Complete JSON hunks
 are parsed and compacted without reordering object keys. Scheduled shards carry
 the matching TypeScript compiler service and platform binary in their bounded
-runtime artifact.
+mode-preserving runtime archive.
 
 Semantic reuse requires:
 

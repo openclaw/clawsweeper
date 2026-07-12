@@ -65,10 +65,16 @@ test("scheduled review shards receive the compiler-backed runtime artifact", () 
   );
   assert.match(
     planJob,
-    /name: clawsweeper-runtime-dist\s+path: clawsweeper\/\.artifacts\/review-runtime/,
+    /tar -czf \.artifacts\/review-runtime\.tar\.gz -C \.artifacts\/review-runtime \./,
   );
-  assert.match(reviewJob, /name: clawsweeper-runtime-dist\s+path: clawsweeper/);
+  assert.match(
+    planJob,
+    /name: clawsweeper-runtime-dist\s+path: clawsweeper\/\.artifacts\/review-runtime\.tar\.gz/,
+  );
+  assert.match(reviewJob, /name: clawsweeper-runtime-dist\s+path: clawsweeper\/\.artifacts/);
   assert.doesNotMatch(reviewJob, /name: clawsweeper-runtime-dist\s+path: clawsweeper\/dist/);
+  assert.match(reviewJob, /tar -xzf \.artifacts\/review-runtime\.tar\.gz/);
+  assert.match(reviewJob, /test -x "\$native_compiler"/);
 });
 
 test("exact event publish and routing require a successful fresh review artifact", () => {

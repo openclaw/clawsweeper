@@ -1,9 +1,18 @@
 #!/usr/bin/env node
 
-import { cpSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import {
+  cpSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+} from "node:fs";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 const repoRoot = resolve(import.meta.dirname, "..");
+const artifactsRoot = join(repoRoot, ".artifacts");
 const outputArgIndex = process.argv.indexOf("--output");
 const outputArg = outputArgIndex >= 0 ? process.argv[outputArgIndex + 1] : undefined;
 if (!outputArg || outputArg.startsWith("--")) {
@@ -11,8 +20,24 @@ if (!outputArg || outputArg.startsWith("--")) {
 }
 
 const outputRoot = resolve(repoRoot, outputArg);
-if (outputRoot === repoRoot) {
-  throw new Error("Review runtime output must not be the repository root.");
+mkdirSync(artifactsRoot, { recursive: true });
+const artifactsFromRepo = relative(realpathSync(repoRoot), realpathSync(artifactsRoot));
+const outputFromArtifacts = relative(artifactsRoot, outputRoot);
+if (
+  !artifactsFromRepo ||
+  artifactsFromRepo === ".." ||
+  artifactsFromRepo.startsWith(`..${sep}`) ||
+  isAbsolute(artifactsFromRepo) ||
+  !outputFromArtifacts ||
+  outputFromArtifacts === ".." ||
+  outputFromArtifacts.startsWith(`..${sep}`) ||
+  isAbsolute(outputFromArtifacts) ||
+  outputFromArtifacts.includes(sep)
+) {
+  throw new Error("Review runtime output must be one direct child of the repository .artifacts.");
+}
+if (existsSync(outputRoot) && lstatSync(outputRoot).isSymbolicLink()) {
+  throw new Error("Review runtime output must not be a symbolic link.");
 }
 
 const distSource = join(repoRoot, "dist");

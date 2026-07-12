@@ -1,25 +1,29 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import {
-  chmodSync,
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
   statSync,
   writeFileSync,
 } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import test from "node:test";
 
 import { tmpPrefix } from "./helpers.ts";
 
 test("review runtime artifact carries the TypeScript compiler service", () => {
   const fixture = mkdtempSync(tmpPrefix);
-  const output = join(fixture, "runtime");
+  const artifactsRoot = join(process.cwd(), ".artifacts");
+  mkdirSync(artifactsRoot, { recursive: true });
+  const output = mkdtempSync(join(artifactsRoot, "review-runtime-test-"));
+  const archive = join(fixture, "review-runtime.tar.gz");
+  const roundtrip = join(fixture, "roundtrip");
   const nativePackageName = `typescript-${process.platform}-${process.arch}`;
   const nativeCompiler = join(
-    output,
+    roundtrip,
     "node_modules",
     "@typescript",
     nativePackageName,
@@ -32,16 +36,20 @@ test("review runtime artifact carries the TypeScript compiler service", () => {
       cwd: process.cwd(),
       stdio: "pipe",
     });
+    execFileSync("tar", ["-czf", archive, "-C", output, "."], { stdio: "pipe" });
+    mkdirSync(roundtrip);
+    execFileSync("tar", ["-xzf", archive, "-C", roundtrip], { stdio: "pipe" });
 
     assert.equal(
-      JSON.parse(readFileSync(join(output, "node_modules", "typescript", "package.json"), "utf8"))
-        .name,
+      JSON.parse(
+        readFileSync(join(roundtrip, "node_modules", "typescript", "package.json"), "utf8"),
+      ).name,
       "typescript",
     );
     assert.equal(
       JSON.parse(
         readFileSync(
-          join(output, "node_modules", "@typescript", nativePackageName, "package.json"),
+          join(roundtrip, "node_modules", "@typescript", nativePackageName, "package.json"),
           "utf8",
         ),
       ).name,
@@ -52,8 +60,8 @@ test("review runtime artifact carries the TypeScript compiler service", () => {
       assert.notEqual(statSync(nativeCompiler).mode & 0o111, 0);
     }
 
-    writeFileSync(join(output, "package.json"), '{"type":"module"}\n');
-    const smokePath = join(output, "semantic-smoke.mjs");
+    writeFileSync(join(roundtrip, "package.json"), '{"type":"module"}\n');
+    const smokePath = join(roundtrip, "semantic-smoke.mjs");
     writeFileSync(
       smokePath,
       `
@@ -98,12 +106,37 @@ const record = createReviewSemanticRecord({
 if (!record.eligible) throw new Error(record.eligibilityReason);
 `,
     );
-    chmodSync(smokePath, 0o755);
     execFileSync(process.execPath, [smokePath], {
-      cwd: output,
+      cwd: roundtrip,
       env: { ...process.env, NODE_PATH: "" },
       stdio: "pipe",
     });
+  } finally {
+    rmSync(output, { force: true, recursive: true });
+    rmSync(fixture, { force: true, recursive: true });
+  }
+});
+
+test("review runtime staging rejects destructive output paths", () => {
+  const fixture = mkdtempSync(tmpPrefix);
+  const sentinel = join(fixture, "keep.txt");
+  writeFileSync(sentinel, "keep");
+
+  try {
+    for (const output of [
+      fixture,
+      resolve(process.cwd(), ".."),
+      join(process.cwd(), ".artifacts"),
+      join(process.cwd(), ".artifacts", "nested", "runtime"),
+    ]) {
+      const result = spawnSync(
+        process.execPath,
+        ["scripts/prepare-review-runtime.mjs", "--output", output],
+        { cwd: process.cwd(), encoding: "utf8" },
+      );
+      assert.notEqual(result.status, 0, output);
+    }
+    assert.equal(readFileSync(sentinel, "utf8"), "keep");
   } finally {
     rmSync(fixture, { force: true, recursive: true });
   }
