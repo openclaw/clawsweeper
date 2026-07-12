@@ -1732,8 +1732,12 @@ test("target review queues coalesce background work without delaying exact plann
     workflow.indexOf("\n    outputs:", workflow.indexOf("\n  plan:")),
   );
 
-  assert.match(concurrencyBlock, /format\('clawsweeper-intake-v2-\{0\}', github\.run_id\)/);
-  assert.match(concurrencyBlock, /format\('clawsweeper-review-\{0\}', github\.run_id\)/);
+  assert.match(concurrencyBlock, /&& 'clawsweeper-intake-v2'/);
+  assert.match(concurrencyBlock, /\|\| 'clawsweeper-review'/);
+  assert.doesNotMatch(
+    concurrencyBlock,
+    /format\('clawsweeper-(?:intake-v2|review)-\{0\}', github\.run_id\)/,
+  );
   assert.match(
     concurrencyBlock,
     /github\.event\.client_payload\.queue_lease_id \|\| github\.event\.client_payload\.item_number/,
