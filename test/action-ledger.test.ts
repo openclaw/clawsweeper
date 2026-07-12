@@ -18,6 +18,7 @@ import {
   ACTION_EVENT_SHARD_FILE_LIMITS,
   ACTION_EVENT_STATUSES,
   ACTION_EVENT_SUBJECT_KINDS,
+  ACTION_EVENT_TIMESTAMP_PATTERN_SOURCE,
   ACTION_EVENT_TYPES,
   ActionEventConflictError,
   ActionEventShardConflictError,
@@ -33,6 +34,7 @@ import {
   isActionEventPhaseType,
   isActionEventReasonCode,
   isActionEventStatus,
+  readActionEvent,
   readActionEventShard,
   readAllSpooledActionEvents,
   readSpooledActionEvents,
@@ -515,6 +517,29 @@ test("event creation rejects noncanonical writer timestamps before persistence",
   }
 });
 
+test("runtime and schema require the same canonical timestamp syntax", () => {
+  const schema = JSON.parse(
+    fs.readFileSync(path.join(process.cwd(), "schema", "state-ledger-event.schema.json"), "utf8"),
+  ) as TestJsonSchema;
+  const timestampSchema = (schema.properties as Record<string, TestJsonSchema>).occurred_at!;
+  for (const timestamp of ["2026-07-12T10:00:00Z", "2026-07-12T10:00:00.123456789+02:30"]) {
+    assert.equal(schemaNodeAccepts(schema, timestampSchema, timestamp), true, timestamp);
+    assert.doesNotThrow(() => createActionEvent(reviewInput({ occurredAt: timestamp })));
+  }
+  for (const timestamp of [
+    "2026-07-12t10:00:00z",
+    "2026-07-12T10:00:60Z",
+    "2026-07-12 10:00:00Z",
+  ]) {
+    assert.equal(schemaNodeAccepts(schema, timestampSchema, timestamp), false, timestamp);
+    assert.throws(
+      () => createActionEvent(reviewInput({ occurredAt: timestamp })),
+      /must be an ISO date-time timestamp/,
+      timestamp,
+    );
+  }
+});
+
 test("action flags and supplied evidence values require exact types and bindings", () => {
   for (const action of [
     { ...reviewInput().action, retryable: "false" as never },
@@ -737,6 +762,8 @@ test("runtime allowlists stay aligned with the checked-in schema", () => {
   assert.deepEqual(schema.$defs.canonicalActionStatus.enum, Object.values(ACTION_EVENT_STATUSES));
   assert.deepEqual(schema.$defs.canonicalReasonCode.enum, Object.values(ACTION_EVENT_REASON_CODES));
   assert.equal(schema.$defs.machineText.pattern, ACTION_EVENT_MACHINE_TEXT_PATTERN_SOURCE);
+  assert.equal(schema.properties.occurred_at.pattern, ACTION_EVENT_TIMESTAMP_PATTERN_SOURCE);
+  assert.equal(schema.properties.recorded_at.pattern, ACTION_EVENT_TIMESTAMP_PATTERN_SOURCE);
   const confidentialEntries = schema.$defs.confidentialIdentifier.anyOf as Array<{
     pattern?: string;
   }>;
@@ -765,6 +792,7 @@ test("runtime and schema apply the same machine-text privacy boundary", () => {
     `gho_${"A".repeat(30)}`,
     `ghr_${"A".repeat(30)}`,
     `github_pat_${"A".repeat(24)}`,
+    `npm_${"A".repeat(36)}`,
     `eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.${"A".repeat(32)}`,
     `Bearer:${"A".repeat(32)}`,
     `Bearer+${"A".repeat(32)}`,
@@ -811,6 +839,9 @@ test("runtime and schema apply the same machine-text privacy boundary", () => {
     "runner:C:/build/worktree",
     "http://2130706433/",
     "http://0x7f000001/",
+    "http://0x7f.1/",
+    "http://0x64.0x40.1.1/",
+    "http://0x8.8.8.8/",
     "http://017700000001/",
     "010.0.0.1",
     "http://010.0.0.1/",
@@ -1181,6 +1212,43 @@ test("spool readers reject unsafe entry types instead of skipping them", () => {
   fs.rmSync(path.join(path.dirname(written.path), "poison.json"), { recursive: true });
   fs.writeFileSync(path.join(root, ".clawsweeper-repair", "action-events", "poison"), "data");
   assert.throws(() => readAllSpooledActionEvents(root), /refusing unsafe action event spool entry/);
+});
+
+test("event readers reject duplicate keys and noncanonical durable JSON bytes", () => {
+  const root = tempRoot();
+  const written = writeActionEvent(root, reviewInput());
+  const canonical = fs.readFileSync(written.path, "utf8");
+  const concealed = `npm_${"A".repeat(36)}`;
+  fs.writeFileSync(
+    written.path,
+    canonical.replace(
+      `"event_type":"${ACTION_EVENT_TYPES.reviewCompleted}"`,
+      `"event_type":"${concealed}","event_type":"${ACTION_EVENT_TYPES.reviewCompleted}"`,
+    ),
+  );
+
+  assert.match(fs.readFileSync(written.path, "utf8"), new RegExp(concealed));
+  assert.throws(
+    () => readSpooledActionEvents(root, "openclaw/openclaw"),
+    /action event JSON is not canonical/,
+  );
+});
+
+test("direct event and shard reads enforce bounded allocation", () => {
+  const root = tempRoot();
+  const eventPath = path.join(root, "event.json");
+  const shardPath = path.join(root, "events.jsonl");
+  fs.writeFileSync(eventPath, Buffer.alloc(ACTION_LEDGER_CANONICAL_JSON_LIMITS.maxBytes + 1, 0x61));
+  fs.writeFileSync(shardPath, Buffer.alloc(ACTION_EVENT_SHARD_FILE_LIMITS.maxBytes + 1, 0x61));
+
+  assert.throws(
+    () => readActionEvent(eventPath),
+    new RegExp(`${ACTION_LEDGER_CANONICAL_JSON_LIMITS.maxBytes} byte limit`),
+  );
+  assert.throws(
+    () => readActionEventShard(shardPath),
+    new RegExp(`${ACTION_EVENT_SHARD_FILE_LIMITS.maxBytes} byte limit`),
+  );
 });
 
 test("an event key cannot be reused for different semantic content", () => {
@@ -1608,6 +1676,34 @@ test("shard path components stay below portable filesystem name limits", () => {
     written.relativePath,
     actionEventShardRelativePath({ ...identity, runId: `${"r".repeat(255)}x` }, [event]),
   );
+});
+
+test("shard path components encode Windows device names and trailing dots", () => {
+  for (const component of ["CON", "AUX.txt", "NUL", "COM1", "LPT9", "producer."]) {
+    const reservedProducer = { ...producer, component };
+    const event = createActionEvent(reviewInput({ producer: reservedProducer }));
+    const relativePath = actionEventShardRelativePath(
+      {
+        repository: reservedProducer.repository,
+        sha: reservedProducer.sha,
+        producer: reservedProducer.component,
+        workflow: reservedProducer.workflow,
+        job: reservedProducer.job,
+        runId: reservedProducer.runId,
+        runAttempt: reservedProducer.runAttempt,
+        partitionDate: "2026-07-12",
+      },
+      [event],
+    );
+    const producerComponent = relativePath.split("/").at(-2)!;
+    assert.doesNotMatch(
+      producerComponent,
+      /^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\.|$)/i,
+      component,
+    );
+    assert.equal(producerComponent.endsWith("."), false, component);
+    assert.match(producerComponent, /-[a-f0-9]{12}$/, component);
+  }
 });
 
 test("duplicate event IDs preserve recording metadata and reject changed source provenance", () => {

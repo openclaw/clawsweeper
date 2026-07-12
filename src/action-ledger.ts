@@ -373,6 +373,8 @@ export const ACTION_EVENT_ATTRIBUTE_KEYS = [
 ] as const;
 
 export const ACTION_EVENT_MACHINE_TEXT_PATTERN_SOURCE = "^[A-Za-z0-9][A-Za-z0-9_.:/@+\\-]*$";
+export const ACTION_EVENT_TIMESTAMP_PATTERN_SOURCE =
+  "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]+)?(?:Z|[+-][0-9]{2}:[0-9]{2})$";
 export const ACTION_LEDGER_CANONICAL_JSON_LIMITS = {
   maxDepth: 64,
   maxNodes: 10_000,
@@ -393,6 +395,7 @@ export const ACTION_EVENT_CONFIDENTIAL_IDENTIFIER_PATTERN_SOURCES = [
   "(?:^|[^A-Za-z0-9+.-])(?:[Hh][Tt][Tt][Pp][Ss]?|[Ff][Tt][Pp]|[Ss][Ss][Hh]|[Ww][Ss]?):(?://)?[^\\s/@]+@",
   "BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY",
   "(?:[Gg][Hh][PpOoUuSsRr]_[A-Za-z0-9]{16,}|[Gg][Ii][Tt][Hh][Uu][Bb]_[Pp][Aa][Tt]_[A-Za-z0-9_]{16,}|[Ss][Kk]-[A-Za-z0-9_-]{16,})",
+  "(?:^|[^A-Za-z0-9])[Nn][Pp][Mm]_[A-Za-z0-9]{36}(?:$|[^A-Za-z0-9])",
   "eyJ[A-Za-z0-9_-]{5,}\\.eyJ[A-Za-z0-9_-]{5,}\\.[A-Za-z0-9_-]{16,}",
   "(?:[Bb][Ee][Aa][Rr][Ee][Rr]|[Aa][Uu][Tt][Hh][Oo][Rr][Ii][Zz][Aa][Tt][Ii][Oo][Nn]|[Aa][Pp][Ii][_-]?(?:[Kk][Ee][Yy]|[Tt][Oo][Kk][Ee][Nn])|[Aa][Cc][Cc][Ee][Ss][Ss][_-]?[Tt][Oo][Kk][Ee][Nn]|[Cc][Ll][Ii][Ee][Nn][Tt][_-]?[Ss][Ee][Cc][Rr][Ee][Tt]|[Cc][Ll][Oo][Uu][Dd][Ff][Ll][Aa][Rr][Ee][_-]?(?:[Aa][Pp][Ii][_-]?)?(?:[Kk][Ee][Yy]|[Tt][Oo][Kk][Ee][Nn]))(?:\\s+|%20|\\s*[:=_+\\-]\\s*)[A-Za-z0-9._~+\\/-]{16,}={0,2}",
   "[Bb][Aa][Ss][Ii][Cc](?:\\s+|%20|\\s*[:+]\\s*)(?:[A-Za-z0-9+/]{4}){2,}(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?(?:$|[^A-Za-z0-9+/=])",
@@ -405,6 +408,7 @@ export const ACTION_EVENT_CONFIDENTIAL_IDENTIFIER_PATTERN_SOURCES = [
   "(?:^|[\\[/:@])(?:(?:(?:0{1,4}:){0,3}0{1,4})?::[Ff]{4}:|(?:(?:0{1,4}:){0,4}0{1,4})?::)(?:[0]?[Aa][0-9A-Fa-f]{2}|64(?:4[0-9A-Fa-f]|[5-7][0-9A-Fa-f])|7[Ff][0-9A-Fa-f]{2}|[Aa]9[Ff][Ee]|[Aa][Cc]1[0-9A-Fa-f]|[Cc]0[Aa]8):[0-9A-Fa-f]{1,4}(?:\\]|$|[/:])",
   "(?:^|[^A-Za-z0-9+.-])(?:[Hh][Tt][Tt][Pp][Ss]?|[Ff][Tt][Pp]|[Ww][Ss][Ss]?):/{0,2}(?:(?:10|127)(?:\\.[0-9]+){1,2}|(?:100\\.(?:6[4-9]|[78][0-9]|9[0-9]|1[01][0-9]|12[0-7])|169\\.254|192\\.168|172\\.(?:1[6-9]|2[0-9]|3[01]))\\.[0-9]+)(?:$|[/:])",
   "(?:^|[^A-Za-z0-9+.-])(?:[Hh][Tt][Tt][Pp][Ss]?|[Ff][Tt][Pp]|[Ww][Ss][Ss]?):/{0,2}(?:0[Xx][0-9A-Fa-f]+|0[0-7]+|[0-9]+)(?:$|[/:])",
+  "(?:^|[^A-Za-z0-9+.-])(?:[Hh][Tt][Tt][Pp][Ss]?|[Ff][Tt][Pp]|[Ww][Ss][Ss]?):/{0,2}(?:[A-Za-z0-9-]+\\.)*(?:0[Xx][0-9A-Fa-f]+|0[0-9]+)(?:\\.|[/:]|$)",
 ] as const;
 
 const POSITIVE_INTEGER_ATTRIBUTE_KEYS = new Set<ActionEventAttributeKey>([
@@ -467,6 +471,7 @@ const MACHINE_TEXT_ATTRIBUTE_KEYS = new Set<ActionEventAttributeKey>([
 ]);
 const MAX_EVENT_COLLECTION_ITEMS = 64;
 const MACHINE_TEXT_PATTERN = new RegExp(ACTION_EVENT_MACHINE_TEXT_PATTERN_SOURCE);
+const TIMESTAMP_PATTERN = new RegExp(ACTION_EVENT_TIMESTAMP_PATTERN_SOURCE);
 const CONFIDENTIAL_IDENTIFIER_PATTERNS = ACTION_EVENT_CONFIDENTIAL_IDENTIFIER_PATTERN_SOURCES.map(
   (source) => new RegExp(source),
 );
@@ -973,7 +978,10 @@ export function readActionEventShardAt(
 }
 
 function readActionEventShardTarget(target: SafeWriteTarget): ActionEvent[] {
-  return parseActionEventShardContent(readUtf8FileNoFollow(target), target.path);
+  return parseActionEventShardContent(
+    readUtf8FileNoFollow(target, ACTION_EVENT_SHARD_FILE_LIMITS.maxBytes),
+    target.path,
+  );
 }
 
 export function readSpooledActionEvents(
@@ -1626,21 +1634,51 @@ export function actionEventShardContentReplayEquivalent(
 }
 
 export function parseActionEventShardContent(content: string, filePath: string): ActionEvent[] {
-  return content
-    .split(/\r?\n/)
-    .filter(Boolean)
-    .map((line, index) =>
-      validateActionEvent(JSON.parse(line) as unknown, `${filePath}:${index + 1}`),
-    );
+  if (content.length === 0) return [];
+  if (!content.endsWith("\n")) {
+    throw new Error(`action event shard must end with a newline: ${filePath}`);
+  }
+  const lines = content.slice(0, -1).split("\n");
+  if (lines.some((line) => line.length === 0 || line.endsWith("\r"))) {
+    throw new Error(`action event shard content is not canonical: ${filePath}`);
+  }
+  return lines.map((line, index) =>
+    parseCanonicalActionEventJson(line, `${filePath}:${index + 1}`),
+  );
 }
 
 function readActionEventTarget(target: SafeWriteTarget): ActionEvent {
-  return validateActionEvent(JSON.parse(readUtf8FileNoFollow(target)) as unknown, target.path);
+  return parseCanonicalActionEventFile(
+    readUtf8FileNoFollow(target, ACTION_LEDGER_CANONICAL_JSON_LIMITS.maxBytes),
+    target.path,
+  );
 }
 
 function readActionEventIfExists(target: SafeWriteTarget): ActionEvent | null {
-  const content = readUtf8FileIfExistsNoFollow(target);
-  return content === null ? null : validateActionEvent(JSON.parse(content) as unknown, target.path);
+  const content = readUtf8FileIfExistsNoFollow(
+    target,
+    ACTION_LEDGER_CANONICAL_JSON_LIMITS.maxBytes,
+  );
+  return content === null ? null : parseCanonicalActionEventFile(content, target.path);
+}
+
+function parseCanonicalActionEventFile(content: string, source: string): ActionEvent {
+  if (
+    !content.endsWith("\n") ||
+    content.slice(0, -1).includes("\n") ||
+    content.slice(0, -1).endsWith("\r")
+  ) {
+    throw new Error(`action event file content is not canonical: ${source}`);
+  }
+  return parseCanonicalActionEventJson(content.slice(0, -1), source);
+}
+
+function parseCanonicalActionEventJson(content: string, source: string): ActionEvent {
+  const event = validateActionEvent(JSON.parse(content) as unknown, source);
+  if (actionLedgerJson(event) !== content) {
+    throw new Error(`action event JSON is not canonical: ${source}`);
+  }
+  return event;
 }
 
 export function validateActionEvent(value: unknown, source = "action event"): ActionEvent {
@@ -1879,13 +1917,14 @@ function boundedText(value: string, label: string, maxLength: number): string {
 
 function requiredTimestamp(value: string, label: string): string {
   const normalized = requiredText(value, label);
-  const match =
-    /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(Z|[+-](\d{2}):(\d{2}))$/.exec(
-      normalized,
-    );
-  if (!match) {
+  if (!TIMESTAMP_PATTERN.test(normalized)) {
     throw new Error(`${label} must be an ISO date-time timestamp`);
   }
+  const match =
+    /^([0-9]{4})-([0-9]{2})-([0-9]{2})T([0-9]{2}):([0-9]{2}):([0-9]{2})(?:\.[0-9]+)?(Z|[+-]([0-9]{2}):([0-9]{2}))$/.exec(
+      normalized,
+    );
+  if (!match) throw new Error(`${label} must be an ISO date-time timestamp`);
   const [
     ,
     yearText,
@@ -1982,9 +2021,13 @@ function safePathSegment(value: string): string {
 }
 
 function boundedPathSegment(value: string, maxLength: number): string {
-  const safe = safePathSegment(value);
-  if (safe.length <= maxLength) return safe;
+  let safe = safePathSegment(value);
+  const reservedDevice = /^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\.|$)/i.test(safe);
+  const trailingDot = safe.endsWith(".");
+  if (!reservedDevice && !trailingDot && safe.length <= maxLength) return safe;
   const digest = sha256(value).slice(0, 12);
+  if (reservedDevice) safe = `_${safe}`;
+  if (trailingDot) safe = safe.replace(/\.+$/, "");
   return `${safe.slice(0, maxLength - digest.length - 1)}-${digest}`;
 }
 
