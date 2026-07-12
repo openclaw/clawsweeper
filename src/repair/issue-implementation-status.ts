@@ -49,8 +49,33 @@ async function main() {
   const detail = stringArg(args.detail) || "ClawSweeper is preparing the implementation worker.";
   const runUrl = stringArg(args["run-url"]) || currentActionsRunUrl();
   const prUrl = stringArg(args["pr-url"]);
+  const dashboardOnly = Boolean(args["dashboard-only"]);
   validateRepo(repo);
   validatePrUrl(prUrl, repo);
+
+  if (dashboardOnly) {
+    const options: StatusOptions = {
+      repo,
+      itemNumber,
+      state,
+      detail,
+      runUrl,
+      prUrl,
+      title: stringArg(args.title) || `Issue #${itemNumber}`,
+    };
+    const dashboard = await postDashboardStatus(options);
+    writeStepOutput("dashboard_status", dashboard);
+    console.log(
+      JSON.stringify({
+        status: "dashboard_only",
+        dashboard_status: dashboard,
+        repo,
+        item_number: itemNumber,
+        state,
+      }),
+    );
+    return;
+  }
 
   const issue = ghJsonWithRetry<LooseRecord>(["api", `repos/${repo}/issues/${itemNumber}`]);
   const options: StatusOptions = {

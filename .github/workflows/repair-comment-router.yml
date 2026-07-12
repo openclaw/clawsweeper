@@ -71,13 +71,12 @@ permissions:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
-  CLAWSWEEPER_APP_ID: "3306130"
   CLAWSWEEPER_APP_SLUG: openclaw-clawsweeper
   CLAWSWEEPER_APP_CLIENT_ID: Iv23liOECG0slfuhz093
   CLAWSWEEPER_UNSPONSORED_FEATURE_CLOSE_ENABLED: ${{ vars.CLAWSWEEPER_UNSPONSORED_FEATURE_CLOSE_ENABLED || 'false' }}
 
 concurrency:
-  group: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.comment_id && format('repair-comment-router-{0}-comment-{1}', github.event.client_payload.target_repo || 'openclaw/openclaw', github.event.client_payload.comment_id) || format('repair-comment-router-{0}', github.event.inputs.target_repo || github.event.client_payload.target_repo || 'openclaw/openclaw') }}
+  group: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.item_number && github.event.client_payload.comment_id && format('repair-comment-router-{0}-item-{1}-comment-{2}', github.event.client_payload.target_repo || 'openclaw/openclaw', github.event.client_payload.item_number, github.event.client_payload.comment_id) || github.event_name == 'repository_dispatch' && github.event.client_payload.item_number && format('repair-comment-router-{0}-item-{1}', github.event.client_payload.target_repo || 'openclaw/openclaw', github.event.client_payload.item_number) || github.event_name == 'repository_dispatch' && github.event.client_payload.comment_id && format('repair-comment-router-{0}-comment-{1}', github.event.client_payload.target_repo || 'openclaw/openclaw', github.event.client_payload.comment_id) || github.event_name == 'workflow_dispatch' && inputs.item_numbers != '' && format('repair-comment-router-{0}-items-{1}', inputs.target_repo || 'openclaw/openclaw', inputs.item_numbers) || format('repair-comment-router-{0}', github.event.inputs.target_repo || github.event.client_payload.target_repo || 'openclaw/openclaw') }}
   cancel-in-progress: false
 
 jobs:
@@ -185,11 +184,36 @@ jobs:
           repositories: ${{ steps.target.outputs.target_repo_name }}
           permission-administration: write
 
+      - name: Bind authenticated mutation App identity
+        id: mutation-app
+        env:
+          GH_TOKEN: ${{ steps.app_token.outputs.token }}
+          APP_SLUG: ${{ steps.app_token.outputs.app-slug }}
+        run: |
+          set -euo pipefail
+          app_id="$(gh api "apps/$APP_SLUG" --jq '.id')"
+          test "$app_id" -gt 0
+          echo "app_id=$app_id" >> "$GITHUB_OUTPUT"
+
+      - name: Bind authenticated ruleset App identity
+        id: ruleset-app
+        if: ${{ vars.CLAWSWEEPER_ALLOW_MERGE == '1' && steps.ruleset-verifier-token.outcome == 'success' }}
+        env:
+          GH_TOKEN: ${{ steps.ruleset-verifier-token.outputs.token }}
+          APP_SLUG: ${{ steps.ruleset-verifier-token.outputs.app-slug }}
+        run: |
+          set -euo pipefail
+          app_id="$(gh api "apps/$APP_SLUG" --jq '.id')"
+          test "$app_id" -gt 0
+          echo "app_id=$app_id" >> "$GITHUB_OUTPUT"
+
       - name: Route ClawSweeper comments
         env:
           GH_TOKEN: ${{ steps.app_token.outputs.token }}
+          CLAWSWEEPER_AUTHENTICATED_APP_ID: ${{ steps.mutation-app.outputs.app_id }}
           CLAWSWEEPER_AUTHENTICATED_APP_SLUG: ${{ steps.app_token.outputs.app-slug }}
           CLAWSWEEPER_AUTHENTICATED_INSTALLATION_ID: ${{ steps.app_token.outputs.installation-id }}
+          CLAWSWEEPER_RULESET_APP_ID: ${{ steps.ruleset-app.outputs.app_id }}
           CLAWSWEEPER_RULESET_APP_SLUG: ${{ steps.ruleset-verifier-token.outputs.app-slug }}
           CLAWSWEEPER_RULESET_INSTALLATION_ID: ${{ steps.ruleset-verifier-token.outputs.installation-id }}
           CLAWSWEEPER_RULESET_GH_TOKEN: ${{ steps.ruleset-verifier-token.outputs.token }}
@@ -315,8 +339,10 @@ jobs:
         if: ${{ steps.waiting-repair-dispatches.outputs.count != '' && steps.waiting-repair-dispatches.outputs.count != '0' }}
         env:
           GH_TOKEN: ${{ steps.app_token.outputs.token }}
+          CLAWSWEEPER_AUTHENTICATED_APP_ID: ${{ steps.mutation-app.outputs.app_id }}
           CLAWSWEEPER_AUTHENTICATED_APP_SLUG: ${{ steps.app_token.outputs.app-slug }}
           CLAWSWEEPER_AUTHENTICATED_INSTALLATION_ID: ${{ steps.app_token.outputs.installation-id }}
+          CLAWSWEEPER_RULESET_APP_ID: ${{ steps.ruleset-app.outputs.app_id }}
           CLAWSWEEPER_RULESET_APP_SLUG: ${{ steps.ruleset-verifier-token.outputs.app-slug }}
           CLAWSWEEPER_RULESET_INSTALLATION_ID: ${{ steps.ruleset-verifier-token.outputs.installation-id }}
           CLAWSWEEPER_RULESET_GH_TOKEN: ${{ steps.ruleset-verifier-token.outputs.token }}

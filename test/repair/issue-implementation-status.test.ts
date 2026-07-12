@@ -71,7 +71,8 @@ test("issue build workflow reports an opened PR without calling pending CI block
   const workflow = fs.readFileSync(".github/workflows/repair-cluster-worker.yml", "utf8");
 
   assert.match(workflow, /state="PR Opened"/);
-  assert.match(workflow, /The implementation PR is open\. Post-flight status:/);
+  assert.match(workflow, /TRUSTED_PR_URL: \$\{\{ steps\.publish\.outputs\.target_pr_url \}\}/);
+  assert.match(workflow, /The exact independently validated repair was published at/);
   assert.doesNotMatch(
     workflow,
     /detail="The automatic implementation worker stopped before all post-flight gates passed:/,

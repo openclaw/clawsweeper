@@ -5,20 +5,22 @@ type GithubJsonReader = (args: string[]) => JsonValue;
 export function serverStrictBaseBindingBlock({
   repo,
   baseBranch,
-  appId,
   configuredAppSlug,
+  authenticatedAppId,
   appSlug,
   installationId,
+  policyAppId,
   policyAppSlug,
   policyInstallationId,
   policyReadJson,
 }: {
   repo: string;
   baseBranch: string;
-  appId: unknown;
   configuredAppSlug: unknown;
+  authenticatedAppId: unknown;
   appSlug: unknown;
   installationId: unknown;
+  policyAppId: unknown;
   policyAppSlug: unknown;
   policyInstallationId: unknown;
   policyReadJson?: GithubJsonReader | undefined;
@@ -27,22 +29,23 @@ export function serverStrictBaseBindingBlock({
     return "automerge disabled: pull request base branch is unavailable for strict binding";
   }
 
-  const configuredIdentity = configuredAppIdentity(appId, configuredAppSlug);
-  const mutationIdentity = actionInstallationIdentity(appSlug, installationId);
-  if (
-    !configuredIdentity ||
-    !mutationIdentity ||
-    mutationIdentity.appSlug !== configuredIdentity.appSlug
-  ) {
+  const configuredSlug = normalizedAppSlug(configuredAppSlug);
+  const mutationIdentity = actionInstallationIdentity(authenticatedAppId, appSlug, installationId);
+  if (!configuredSlug || !mutationIdentity || mutationIdentity.appSlug !== configuredSlug) {
     return "automerge disabled: merge credential is not a verifiable GitHub App installation";
   }
   if (!policyReadJson) {
     return "automerge disabled: ruleset verifier credential is unavailable";
   }
-  const verifierIdentity = actionInstallationIdentity(policyAppSlug, policyInstallationId);
+  const verifierIdentity = actionInstallationIdentity(
+    policyAppId,
+    policyAppSlug,
+    policyInstallationId,
+  );
   if (
     !verifierIdentity ||
-    verifierIdentity.appSlug !== configuredIdentity.appSlug ||
+    verifierIdentity.appId !== mutationIdentity.appId ||
+    verifierIdentity.appSlug !== configuredSlug ||
     verifierIdentity.installationId !== mutationIdentity.installationId
   ) {
     return "automerge disabled: ruleset verifier credential is not the configured GitHub App installation";
@@ -65,7 +68,7 @@ export function serverStrictBaseBindingBlock({
           rulesUnavailable = true;
           continue;
         }
-        const bypassesApp = rulesetBypassesApp(ruleset, configuredIdentity.appId);
+        const bypassesApp = rulesetBypassesApp(ruleset, mutationIdentity.appId);
         if (bypassesApp === null) {
           rulesUnavailable = true;
           continue;
@@ -99,30 +102,28 @@ export function serverStrictBaseBindingBlock({
     : `automerge disabled: ${baseBranch} lacks server-enforced strict base binding`;
 }
 
-function configuredAppIdentity(
-  appId: unknown,
-  configuredAppSlug: unknown,
-): { appId: number; appSlug: string } | null {
-  const configuredAppId = Number(appId);
-  if (!Number.isSafeInteger(configuredAppId) || configuredAppId <= 0) return null;
-  const appSlug = normalizedAppSlug(configuredAppSlug);
-  return appSlug ? { appId: configuredAppId, appSlug } : null;
-}
-
 function actionInstallationIdentity(
+  appId: unknown,
   appSlug: unknown,
   installationId: unknown,
-): { appSlug: string; installationId: number } | null {
+): { appId: number; appSlug: string; installationId: number } | null {
+  const normalizedAppId = Number(appId);
   const normalizedSlug = normalizedAppSlug(appSlug);
   const normalizedInstallationId = Number(installationId);
   if (
+    !Number.isSafeInteger(normalizedAppId) ||
+    normalizedAppId <= 0 ||
     !normalizedSlug ||
     !Number.isSafeInteger(normalizedInstallationId) ||
     normalizedInstallationId <= 0
   ) {
     return null;
   }
-  return { appSlug: normalizedSlug, installationId: normalizedInstallationId };
+  return {
+    appId: normalizedAppId,
+    appSlug: normalizedSlug,
+    installationId: normalizedInstallationId,
+  };
 }
 
 function normalizedAppSlug(value: unknown): string | null {

@@ -146,12 +146,12 @@ test("strict base binding rejects a verifier credential from another App slug", 
   );
 });
 
-test("strict base binding requires the configured App identity", () => {
+test("strict base binding requires the authenticated App identity", () => {
   assert.equal(
     serverStrictBaseBindingBlock({
       repo: "openclaw/openclaw",
       baseBranch: "main",
-      ...appIdentity({ appId: "" }),
+      ...appIdentity({ authenticatedAppId: "" }),
     }),
     "automerge disabled: merge credential is not a verifiable GitHub App installation",
   );
@@ -165,6 +165,18 @@ test("strict base binding requires the authenticated App slug", () => {
       ...appIdentity({ appSlug: "" }),
     }),
     "automerge disabled: merge credential is not a verifiable GitHub App installation",
+  );
+});
+
+test("strict base binding rejects a verifier credential from another App id", () => {
+  assert.equal(
+    serverStrictBaseBindingBlock({
+      repo: "openclaw/openclaw",
+      baseBranch: "main",
+      ...appIdentity({ policyAppId: APP_ID + 1 }),
+      policyReadJson: fakeGithub({ rules: [], protection: {} }),
+    }),
+    "automerge disabled: ruleset verifier credential is not the configured GitHub App installation",
   );
 });
 
@@ -233,12 +245,15 @@ test("all repair merge owners invoke the shared strict base guard before merge",
     const end = source.indexOf("\nfunction ", start + functionName.length);
     const owner = source.slice(start, end < 0 ? undefined : end);
     const guard = owner.indexOf("serverStrictBaseBindingBlock({");
-    const appIdentity = owner.indexOf("appId: process.env.CLAWSWEEPER_APP_ID");
     const configuredSlug = owner.indexOf("configuredAppSlug: process.env.CLAWSWEEPER_APP_SLUG");
+    const appIdentity = owner.indexOf(
+      "authenticatedAppId: process.env.CLAWSWEEPER_AUTHENTICATED_APP_ID",
+    );
     const appSlug = owner.indexOf("appSlug: process.env.CLAWSWEEPER_AUTHENTICATED_APP_SLUG");
     const installationId = owner.indexOf(
       "installationId: process.env.CLAWSWEEPER_AUTHENTICATED_INSTALLATION_ID",
     );
+    const policyAppId = owner.indexOf("policyAppId: process.env.CLAWSWEEPER_RULESET_APP_ID");
     const policySlug = owner.indexOf("policyAppSlug: process.env.CLAWSWEEPER_RULESET_APP_SLUG");
     const policyInstallationId = owner.indexOf(
       "policyInstallationId: process.env.CLAWSWEEPER_RULESET_INSTALLATION_ID",
@@ -246,11 +261,12 @@ test("all repair merge owners invoke the shared strict base guard before merge",
     const policyReader = owner.indexOf("policyReadJson: rulesetPolicyReader()");
     const merge = owner.indexOf(mergeCall);
     assert.ok(guard >= 0, `${file} is missing the strict base guard`);
-    assert.ok(appIdentity > guard, `${file} does not bind the configured App identity`);
-    assert.ok(configuredSlug > appIdentity, `${file} does not bind the configured App slug`);
-    assert.ok(appSlug > configuredSlug, `${file} does not bind the authenticated App slug`);
+    assert.ok(configuredSlug > guard, `${file} does not bind the configured App slug`);
+    assert.ok(appIdentity > configuredSlug, `${file} does not bind the authenticated App id`);
+    assert.ok(appSlug > appIdentity, `${file} does not bind the authenticated App slug`);
     assert.ok(installationId > appSlug, `${file} does not bind the mutation installation`);
-    assert.ok(policySlug > installationId, `${file} does not bind the verifier App slug`);
+    assert.ok(policyAppId > installationId, `${file} does not bind the verifier App id`);
+    assert.ok(policySlug > policyAppId, `${file} does not bind the verifier App slug`);
     assert.ok(policyInstallationId > policySlug, `${file} does not bind the verifier installation`);
     assert.ok(
       policyReader > policyInstallationId,
@@ -327,6 +343,16 @@ test("merge-capable workflows isolate verifier credentials in trusted jobs", () 
           tokenProducer,
           `${file}:${jobName} merge step reuses its mutation credential for ruleset verification`,
         );
+        assert.match(
+          String(step.env?.CLAWSWEEPER_AUTHENTICATED_APP_ID ?? ""),
+          /steps\.[^.]+\.outputs\.app_id/,
+          `${file}:${jobName} merge step does not bind the authenticated App id`,
+        );
+        assert.match(
+          String(step.env?.CLAWSWEEPER_RULESET_APP_ID ?? ""),
+          /steps\.[^.]+\.outputs\.app_id/,
+          `${file}:${jobName} merge step does not bind the verifier App id`,
+        );
 
         const mutationStep = steps.find((candidate) => candidate.id === tokenProducer);
         const verifierStep = steps.find((candidate) => candidate.id === verifierProducer);
@@ -395,10 +421,77 @@ test("merge-capable workflows isolate verifier credentials in trusted jobs", () 
       const reportCommands = workflow.jobs?.report?.steps
         ?.map((step) => step.run ?? "")
         .filter((run) => /pnpm run repair:execute-fix\b/.test(run));
-      assert.equal(reportCommands?.length, 1);
-      assert.match(reportCommands?.[0] ?? "", /--publish-report-only\b/);
+      assert.equal(reportCommands?.length, 0);
+      assert.match(fs.readFileSync(file, "utf8"), /repair:execution-handoff -- publish/);
     }
     assert.ok(mergeStepCount > 0, `${file} has no merge-capable repair steps`);
+  }
+});
+
+test("repair execution and validation cannot mutate GitHub before trusted publication", () => {
+  const file = ".github/workflows/repair-cluster-worker.yml";
+  const source = fs.readFileSync(file, "utf8");
+  const workflow = readWorkflow(file);
+  const execute = workflow.jobs?.execute;
+  const validate = workflow.jobs?.validate;
+  const report = workflow.jobs?.report;
+  const mutate = workflow.jobs?.mutate;
+  assert.ok(execute && validate && report && mutate);
+
+  const executeText = JSON.stringify(execute);
+  const validateText = JSON.stringify(validate);
+  const reportText = JSON.stringify(report);
+  assert.doesNotMatch(executeText, /create-github-app-token|create-state-token|setup-state/);
+  assert.doesNotMatch(validateText, /create-github-app-token|create-state-token|setup-state/);
+  assert.doesNotMatch(
+    `${executeText}\n${validateText}`,
+    /\b(?:git push|gh pr create|gh pr merge|gh issue close|gh api .*comments)\b/,
+  );
+  assert.match(executeText, /"GH_TOKEN":""/);
+  assert.match(executeText, /"GITHUB_TOKEN":""/);
+  assert.match(validateText, /"GH_TOKEN":""/);
+  assert.match(validateText, /"GITHUB_TOKEN":""/);
+  assert.match(executeText, /--prepare-publication/);
+  assert.match(String(mutate.if ?? ""), /needs\.execute\.result == 'success'/);
+  assert.match(
+    String(mutate.if ?? ""),
+    /needs\.execute\.outputs\.execute_fix_outcome == 'success'/,
+  );
+  assert.match(String(mutate.if ?? ""), /needs\.validate\.result == 'success'/);
+  assert.match(String(report.if ?? ""), /always\(\)/);
+  assert.match(reportText, /count-requeue-required/);
+  assert.match(reportText, /repair:requeue/);
+  assert.doesNotMatch(reportText, /target_post_flight_token|permission-pull-requests/);
+  assert.doesNotMatch(JSON.stringify(mutate), /repair:apply-result|repair:tag-clawsweeper/);
+  assert.match(JSON.stringify(mutate), /npm_config_ignore_scripts/);
+  assert.match(source, /Publish execution-disabled terminal status/);
+  assert.match(source, /--dashboard-only/);
+});
+
+test("exact router dispatch concurrency is item-specific and cannot replace another item", () => {
+  const source = fs.readFileSync(".github/workflows/repair-comment-router.yml", "utf8");
+  const workflow = readWorkflow(".github/workflows/repair-comment-router.yml");
+  const group = String(workflow.concurrency?.group ?? "");
+
+  assert.match(group, /github\.event\.client_payload\.comment_id/);
+  assert.match(group, /github\.event\.client_payload\.item_number/);
+  assert.match(group, /inputs\.item_numbers/);
+  assert.equal(workflow.concurrency?.["cancel-in-progress"], false);
+  assert.match(
+    source,
+    /format\('repair-comment-router-\{0\}-item-\{1\}'.*github\.event\.client_payload\.item_number/,
+  );
+});
+
+test("workflow App identity is derived from authenticated tokens, never a configured numeric id", () => {
+  for (const file of [
+    ".github/workflows/repair-cluster-worker.yml",
+    ".github/workflows/repair-comment-router.yml",
+  ]) {
+    const source = fs.readFileSync(file, "utf8");
+    assert.doesNotMatch(source, /CLAWSWEEPER_APP_ID/);
+    assert.match(source, /gh api "apps\/\$APP_SLUG" --jq '\.id'/);
+    assert.doesNotMatch(source, new RegExp(`gh api (?:["'])?installation(?:["'/\\s]|$)`));
   }
 });
 
@@ -445,19 +538,21 @@ function strictRulesetRule(
 
 function appIdentity(
   overrides: Partial<{
-    appId: string | number;
     configuredAppSlug: string;
+    authenticatedAppId: string | number;
     appSlug: string;
     installationId: string | number;
+    policyAppId: string | number;
     policyAppSlug: string;
     policyInstallationId: string | number;
   }> = {},
 ) {
   return {
-    appId: APP_ID,
     configuredAppSlug: APP_SLUG,
+    authenticatedAppId: APP_ID,
     appSlug: APP_SLUG,
     installationId: INSTALLATION_ID,
+    policyAppId: APP_ID,
     policyAppSlug: APP_SLUG,
     policyInstallationId: INSTALLATION_ID,
     ...overrides,
@@ -474,7 +569,11 @@ type WorkflowStep = {
 
 type Workflow = {
   env?: Record<string, string>;
-  jobs?: Record<string, { steps?: WorkflowStep[] }>;
+  concurrency?: {
+    group?: string;
+    "cancel-in-progress"?: boolean;
+  };
+  jobs?: Record<string, { if?: string; steps?: WorkflowStep[] }>;
 };
 
 function readWorkflow(file: string): Workflow {

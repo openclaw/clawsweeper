@@ -3477,10 +3477,11 @@ function executeAutomerge(command: LooseRecord) {
   const strictBaseBindingBlock = serverStrictBaseBindingBlock({
     repo: command.repo,
     baseBranch: String(view.baseRefName ?? latestTarget.base_ref ?? targetBranch ?? "main"),
-    appId: process.env.CLAWSWEEPER_APP_ID,
     configuredAppSlug: process.env.CLAWSWEEPER_APP_SLUG,
+    authenticatedAppId: process.env.CLAWSWEEPER_AUTHENTICATED_APP_ID,
     appSlug: process.env.CLAWSWEEPER_AUTHENTICATED_APP_SLUG,
     installationId: process.env.CLAWSWEEPER_AUTHENTICATED_INSTALLATION_ID,
+    policyAppId: process.env.CLAWSWEEPER_RULESET_APP_ID,
     policyAppSlug: process.env.CLAWSWEEPER_RULESET_APP_SLUG,
     policyInstallationId: process.env.CLAWSWEEPER_RULESET_INSTALLATION_ID,
     policyReadJson: rulesetPolicyReader(),

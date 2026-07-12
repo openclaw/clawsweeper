@@ -62,7 +62,6 @@ permissions:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
-  CLAWSWEEPER_APP_ID: "3306130"
   CLAWSWEEPER_APP_SLUG: openclaw-clawsweeper
   CLAWSWEEPER_APP_CLIENT_ID: Iv23liOECG0slfuhz093
   CLAWSWEEPER_MODEL: internal
@@ -178,15 +177,6 @@ jobs:
           permission-issues: read
           permission-pull-requests: read
 
-      - name: Create target status token
-        id: status_token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
-        with:
-          client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
-          private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
-          owner: ${{ steps.target.outputs.target_owner }}
-          permission-issues: write
-
       - name: Create state token
         id: state-token
         uses: ./.github/actions/create-state-token
@@ -199,6 +189,7 @@ jobs:
           token: ${{ steps.state-token.outputs.token }}
           fetch-depth: 1
           sparse-checkout: jobs
+          persist-credentials: "false"
 
       - name: Check job file
         id: check_job
@@ -232,6 +223,21 @@ jobs:
         if: ${{ steps.check_job.outputs.job_exists == '1' }}
         with:
           build-script: build:repair
+
+      - name: Publish execution-disabled terminal status
+        if: ${{ steps.check_job.outputs.job_exists == '1' && (inputs.mode == 'execute' || inputs.mode == 'autonomous') && env.CLAWSWEEPER_ALLOW_EXECUTE != '1' }}
+        continue-on-error: true
+        env:
+          GH_TOKEN: ""
+          GITHUB_TOKEN: ""
+          CLAWSWEEPER_STATUS_INGEST_TOKEN: ${{ secrets.CLAWSWEEPER_STATUS_INGEST_TOKEN }}
+        run: |
+          pnpm run repair:issue-implementation-status -- \
+            --job "${{ inputs.job }}" \
+            --dashboard-only \
+            --state "Blocked" \
+            --detail "Automatic execution is disabled by the trusted CLAWSWEEPER_ALLOW_EXECUTE gate." \
+            --run-url "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
 
       - uses: ./.github/actions/setup-codex
         if: ${{ steps.check_job.outputs.job_exists == '1' }}
@@ -285,19 +291,6 @@ jobs:
           GH_TOKEN: ${{ steps.app_token.outputs.token }}
           CLAWSWEEPER_ALLOWED_OWNER: ${{ steps.target.outputs.target_owner }}
         run: pnpm run repair:conflict-self-heal -- --verify-job-head "${{ inputs.job }}"
-
-      - name: Publish automatic implementation planning status
-        if: ${{ steps.check_job.outputs.job_exists == '1' && steps.self_heal_head.outputs.matched != 'false' }}
-        continue-on-error: true
-        env:
-          GH_TOKEN: ${{ steps.status_token.outputs.token }}
-          CLAWSWEEPER_STATUS_INGEST_TOKEN: ${{ secrets.CLAWSWEEPER_STATUS_INGEST_TOKEN }}
-        run: |
-          pnpm run repair:issue-implementation-status -- \
-            --job "${{ inputs.job }}" \
-            --state "Planning" \
-            --detail "Codex is reading the issue and repository, choosing an implementation, and planning validation." \
-            --run-url "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
 
       - name: Run worker
         if: ${{ steps.check_job.outputs.job_exists == '1' && steps.self_heal_head.outputs.matched != 'false' }}
@@ -404,6 +397,7 @@ jobs:
       job_path: ${{ steps.authorize.outputs.job_path }}
       result_path: ${{ steps.authorize.outputs.result_path }}
       run_dir: ${{ steps.authorize.outputs.run_dir }}
+      execution_intent_path: ${{ steps.authorize.outputs.execution_intent_path }}
       source_job_path: ${{ steps.authorize.outputs.source_job_path }}
       target_repo: ${{ steps.authorize.outputs.target_repo }}
       target_owner: ${{ steps.authorize.outputs.target_owner }}
@@ -437,6 +431,42 @@ jobs:
           JOB_PATH: ${{ inputs.job }}
         run: scripts/restore-repair-job.sh "$JOB_PATH" "execution authorization"
 
+      - name: Resolve exact target repository
+        id: target
+        env:
+          JOB_PATH: ${{ inputs.job }}
+        run: |
+          set -euo pipefail
+          repo="$(sed -n 's/^repo:[[:space:]]*//p' "$JOB_PATH" | head -n 1 | tr -d '"')"
+          case "$repo" in
+            "$CLAWSWEEPER_ALLOWED_OWNER"/*) ;;
+            *)
+              echo "Invalid target repository in immutable job: $repo" >&2
+              exit 1
+              ;;
+          esac
+          name="${repo#*/}"
+          if ! printf '%s' "$name" | grep -Eq '^[A-Za-z0-9_.-]+$'; then
+            echo "Invalid target repository name: $name" >&2
+            exit 1
+          fi
+          {
+            echo "owner=${CLAWSWEEPER_ALLOWED_OWNER}"
+            echo "name=$name"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Create exact-repository authorization token
+        id: target_read_token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
+          owner: ${{ steps.target.outputs.owner }}
+          repositories: ${{ steps.target.outputs.name }}
+          permission-contents: read
+          permission-issues: read
+          permission-pull-requests: read
+
       - uses: ./.github/actions/setup-pnpm
         with:
           build-script: build:repair
@@ -449,6 +479,8 @@ jobs:
 
       - name: Authorize exact job and run
         id: authorize
+        env:
+          GH_TOKEN: ${{ steps.target_read_token.outputs.token }}
         run: |
           pnpm run repair:execution-handoff -- authorize \
             --job "${{ inputs.job }}" \
@@ -458,7 +490,8 @@ jobs:
             --run-attempt "${{ github.run_attempt }}" \
             --workflow-repository "${{ github.repository }}" \
             --workflow-sha "${{ github.sha }}" \
-            --allowed-owner "${CLAWSWEEPER_ALLOWED_OWNER}"
+            --allowed-owner "${CLAWSWEEPER_ALLOWED_OWNER}" \
+            --close-superseded "${{ vars.CLAWSWEEPER_CLOSE_SUPERSEDED_SOURCE_PRS || '1' }}"
 
       - name: Upload immutable execution handoff
         id: upload
@@ -470,7 +503,7 @@ jobs:
           retention-days: 7
 
   execute:
-    name: Execute and apply cluster actions
+    name: Prepare repair artifact without credentials
     needs:
       - cluster
       - authorize
@@ -479,7 +512,6 @@ jobs:
     timeout-minutes: 75
     outputs:
       job_exists: ${{ steps.check_job.outputs.job_exists }}
-      self_heal_matched: ${{ steps.self_heal_head.outputs.matched }}
       execute_fix_outcome: ${{ steps.execute_fix.outcome }}
       mutation_ready: ${{ steps.seal.outputs.mutation_ready }}
       execution_manifest_sha256: ${{ steps.seal.outputs.execution_manifest_sha256 }}
@@ -528,20 +560,6 @@ jobs:
             --root .clawsweeper-repair/authorized \
             --authorization-sha256 "${{ needs.authorize.outputs.authorization_sha256 }}"
 
-      - name: Create exact-repository execution token
-        id: target_write_token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
-        with:
-          client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
-          private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
-          owner: ${{ needs.authorize.outputs.target_owner }}
-          repositories: ${{ needs.authorize.outputs.target_name }}
-          permission-actions: write
-          permission-contents: write
-          permission-issues: write
-          permission-pull-requests: write
-          permission-workflows: write
-
       - name: Resolve Codex session cache
         id: codex_session
         if: ${{ steps.check_job.outputs.job_exists == '1' && env.CLAWSWEEPER_STEERABLE_CODEX == '1' }}
@@ -587,39 +605,21 @@ jobs:
           CLAWSWEEPER_ALLOWED_OWNER: ${{ needs.authorize.outputs.target_owner }}
         run: pnpm run repair:validate-job -- "${{ needs.authorize.outputs.job_path }}"
 
-      - name: Verify self-heal head
-        id: self_heal_head
-        if: ${{ steps.check_job.outputs.job_exists == '1' }}
-        env:
-          GH_TOKEN: ${{ steps.target_write_token.outputs.token }}
-          CLAWSWEEPER_ALLOWED_OWNER: ${{ needs.authorize.outputs.target_owner }}
-        run: pnpm run repair:conflict-self-heal -- --verify-job-head "${{ needs.authorize.outputs.job_path }}"
-
-      - name: Publish automatic implementation build status
-        if: ${{ steps.check_job.outputs.job_exists == '1' && steps.self_heal_head.outputs.matched != 'false' && env.CLAWSWEEPER_ALLOW_EXECUTE == '1' && env.CLAWSWEEPER_ALLOW_FIX_PR == '1' }}
-        continue-on-error: true
-        env:
-          GH_TOKEN: ${{ steps.target_write_token.outputs.token }}
-          CLAWSWEEPER_STATUS_INGEST_TOKEN: ${{ secrets.CLAWSWEEPER_STATUS_INGEST_TOKEN }}
-        run: |
-          pnpm run repair:issue-implementation-status -- \
-            --job "${{ needs.authorize.outputs.job_path }}" \
-            --state "Building" \
-            --detail "Codex is editing, validating, and reviewing the implementation before a branch or pull request is published." \
-            --run-url "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-
       - name: Execute credited fix artifact
         id: execute_fix
-        if: ${{ steps.check_job.outputs.job_exists == '1' && steps.self_heal_head.outputs.matched != 'false' && env.CLAWSWEEPER_ALLOW_EXECUTE == '1' && env.CLAWSWEEPER_ALLOW_FIX_PR == '1' }}
+        if: ${{ steps.check_job.outputs.job_exists == '1' && env.CLAWSWEEPER_ALLOW_EXECUTE == '1' && env.CLAWSWEEPER_ALLOW_FIX_PR == '1' }}
         timeout-minutes: 70
         env:
-          GH_TOKEN: ${{ steps.target_write_token.outputs.token }}
+          GH_TOKEN: ""
+          GITHUB_TOKEN: ""
           CLAWSWEEPER_ALLOWED_OWNER: ${{ needs.authorize.outputs.target_owner }}
         run: |
           pnpm run repair:execute-fix -- \
             "${{ needs.authorize.outputs.job_path }}" \
             "${{ needs.authorize.outputs.result_path }}" \
-            --defer-publication
+            --prepare-publication \
+            --execution-intent "${{ needs.authorize.outputs.execution_intent_path }}" \
+            --authorization-sha256 "${{ needs.authorize.outputs.authorization_sha256 }}"
 
       - name: Seal execution handoff
         id: seal
@@ -695,6 +695,8 @@ jobs:
           persist-credentials: false
 
       - uses: ./.github/actions/setup-pnpm
+        env:
+          npm_config_ignore_scripts: "true"
         with:
           build-script: build:repair
 
@@ -730,7 +732,7 @@ jobs:
           retention-days: 7
 
   report:
-    name: Publish report-only execution outcome
+    name: Report and requeue without target credentials
     needs:
       - cluster
       - authorize
@@ -766,35 +768,51 @@ jobs:
             --root .clawsweeper-repair/execution \
             --authorization-sha256 "${{ needs.authorize.outputs.authorization_sha256 }}"
 
-      - name: Create exact-repository report token
-        id: report_token
+      - name: Detect repair requeue requests
+        id: repair_requeue
+        run: |
+          set -euo pipefail
+          count="$(pnpm run --silent workflow -- count-requeue-required --dir .clawsweeper-repair/execution/run)"
+          echo "count=$count" >> "$GITHUB_OUTPUT"
+
+      - name: Create central requeue token
+        id: requeue_token
+        if: ${{ steps.repair_requeue.outputs.count != '' && steps.repair_requeue.outputs.count != '0' }}
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
           client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
           private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
-          owner: ${{ needs.authorize.outputs.target_owner }}
-          repositories: ${{ needs.authorize.outputs.target_name }}
-          permission-issues: write
-          permission-pull-requests: write
+          owner: openclaw
+          repositories: clawsweeper
+          permission-actions: write
+          permission-contents: write
 
-      - name: Publish deferred fix outcome
+      - name: Requeue retryable report-only outcomes
+        if: ${{ steps.repair_requeue.outputs.count != '' && steps.repair_requeue.outputs.count != '0' }}
         env:
-          GH_TOKEN: ${{ steps.report_token.outputs.token }}
+          GH_TOKEN: ${{ steps.requeue_token.outputs.token }}
+          CLAWSWEEPER_MUTATION_TOKEN_SOURCE: clawsweeper-app
         run: |
-          pnpm run repair:execute-fix -- \
-            .clawsweeper-repair/execution/job.md \
-            .clawsweeper-repair/execution/run/result.json \
-            --publish-report-only
+          pnpm run repair:requeue -- "${{ needs.authorize.outputs.source_job_path }}" \
+            --mode "${{ inputs.mode }}" \
+            --execute \
+            --open-execute-window \
+            --wait-for-capacity \
+            --runner "${{ inputs.runner }}" \
+            --execution-runner "${{ inputs.execution_runner }}" \
+            --model "${{ inputs.model }}"
 
-      - name: Publish blocked execution status
+      - name: Publish terminal report-only status
         if: ${{ needs.execute.result != 'success' || needs.execute.outputs.execute_fix_outcome != 'success' || needs.execute.outputs.mutation_ready != 'true' || needs.validate.result != 'success' }}
         continue-on-error: true
         env:
-          GH_TOKEN: ${{ steps.report_token.outputs.token }}
+          GH_TOKEN: ""
+          GITHUB_TOKEN: ""
           CLAWSWEEPER_STATUS_INGEST_TOKEN: ${{ secrets.CLAWSWEEPER_STATUS_INGEST_TOKEN }}
         run: |
           pnpm run repair:issue-implementation-status -- \
             --job .clawsweeper-repair/execution/job.md \
+            --dashboard-only \
             --state "Blocked" \
             --detail "The automatic implementation worker stopped before all deterministic gates completed. Open the workflow run for the exact blocker." \
             --run-url "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
@@ -829,6 +847,8 @@ jobs:
           persist-credentials: false
 
       - uses: ./.github/actions/setup-pnpm
+        env:
+          npm_config_ignore_scripts: "true"
         with:
           build-script: build:repair
 
@@ -865,24 +885,15 @@ jobs:
           CLAWSWEEPER_CRABFLEET_OWNER: ${{ vars.CLAWSWEEPER_CRABFLEET_OWNER }}
         run: pnpm run repair:action-session -- register .clawsweeper-repair/execution/job.md
 
-      - name: Detect repair requeue requests
-        id: repair_requeue
-        if: ${{ success() && steps.check_job.outputs.job_exists == '1' && needs.execute.result == 'success' && needs.execute.outputs.execute_fix_outcome == 'success' && needs.execute.outputs.mutation_ready == 'true' && needs.validate.result == 'success' && env.CLAWSWEEPER_ALLOW_EXECUTE == '1' && env.CLAWSWEEPER_ALLOW_FIX_PR == '1' }}
-        run: |
-          set -euo pipefail
-          count="$(pnpm run --silent workflow -- count-requeue-required --dir .clawsweeper-repair/execution/run)"
-          echo "count=$count" >> "$GITHUB_OUTPUT"
-
       - name: Create exact-repository mutation token
         id: target_post_flight_token
-        if: ${{ steps.check_job.outputs.job_exists == '1' && needs.execute.outputs.self_heal_matched != 'false' }}
+        if: ${{ steps.check_job.outputs.job_exists == '1' }}
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
           client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
           private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
           owner: ${{ needs.authorize.outputs.target_owner }}
           repositories: ${{ needs.authorize.outputs.target_name }}
-          permission-actions: write
           permission-contents: write
           permission-issues: write
           permission-pull-requests: write
@@ -890,7 +901,7 @@ jobs:
 
       - name: Create exact-repository ruleset verifier token
         id: ruleset-verifier-token
-        if: ${{ steps.check_job.outputs.job_exists == '1' && needs.execute.outputs.self_heal_matched != 'false' && env.CLAWSWEEPER_ALLOW_MERGE == '1' }}
+        if: ${{ steps.check_job.outputs.job_exists == '1' && env.CLAWSWEEPER_ALLOW_MERGE == '1' }}
         continue-on-error: true
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
@@ -900,44 +911,75 @@ jobs:
           repositories: ${{ needs.authorize.outputs.target_name }}
           permission-administration: write
 
-      - name: Create central requeue token
-        id: requeue-token
-        if: ${{ steps.repair_requeue.outputs.count != '' && steps.repair_requeue.outputs.count != '0' }}
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
-        with:
-          client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
-          private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
-          owner: openclaw
-          repositories: clawsweeper
-          permission-actions: write
-          permission-contents: write
+      - name: Bind authenticated mutation App identity
+        id: mutation_app
+        env:
+          GH_TOKEN: ${{ steps.target_post_flight_token.outputs.token }}
+          APP_SLUG: ${{ steps.target_post_flight_token.outputs.app-slug }}
+        run: |
+          set -euo pipefail
+          test -n "$APP_SLUG"
+          app_id="$(gh api "apps/$APP_SLUG" --jq '.id')"
+          test "$app_id" -gt 0
+          echo "app_id=$app_id" >> "$GITHUB_OUTPUT"
+
+      - name: Bind authenticated ruleset App identity
+        id: ruleset_app
+        if: ${{ env.CLAWSWEEPER_ALLOW_MERGE == '1' && steps.ruleset-verifier-token.outcome == 'success' }}
+        env:
+          GH_TOKEN: ${{ steps.ruleset-verifier-token.outputs.token }}
+          APP_SLUG: ${{ steps.ruleset-verifier-token.outputs.app-slug }}
+        run: |
+          set -euo pipefail
+          test -n "$APP_SLUG"
+          app_id="$(gh api "apps/$APP_SLUG" --jq '.id')"
+          test "$app_id" -gt 0
+          echo "app_id=$app_id" >> "$GITHUB_OUTPUT"
 
       - name: Record deterministic validation phase
         if: ${{ success() && needs.execute.outputs.execute_fix_outcome == 'success' && steps.crabfleet_session.outcome == 'success' }}
         run: pnpm run repair:action-session -- update --state running --phase post_flight --summary "Codex changes validated; applying GitHub post-flight gates"
 
-      - name: Apply safe closure actions
-        if: ${{ success() && steps.check_job.outputs.job_exists == '1' && needs.execute.result == 'success' && needs.execute.outputs.execute_fix_outcome == 'success' && needs.execute.outputs.mutation_ready == 'true' && needs.validate.result == 'success' && needs.execute.outputs.self_heal_matched != 'false' && env.CLAWSWEEPER_ALLOW_EXECUTE == '1' }}
+      - name: Publish exact independently validated repair
+        id: publish
         env:
           GH_TOKEN: ${{ steps.target_post_flight_token.outputs.token }}
-          CLAWSWEEPER_AUTHENTICATED_APP_SLUG: ${{ steps.target_post_flight_token.outputs.app-slug }}
-          CLAWSWEEPER_AUTHENTICATED_INSTALLATION_ID: ${{ steps.target_post_flight_token.outputs.installation-id }}
-          CLAWSWEEPER_RULESET_APP_SLUG: ${{ steps.ruleset-verifier-token.outputs.app-slug }}
-          CLAWSWEEPER_RULESET_INSTALLATION_ID: ${{ steps.ruleset-verifier-token.outputs.installation-id }}
-          CLAWSWEEPER_RULESET_GH_TOKEN: ${{ steps.ruleset-verifier-token.outputs.token }}
-          CLAWSWEEPER_ALLOWED_OWNER: ${{ needs.authorize.outputs.target_owner }}
+          GITHUB_TOKEN: ${{ steps.target_post_flight_token.outputs.token }}
         run: |
-          pnpm run repair:apply-result -- \
-            .clawsweeper-repair/execution/job.md \
-            .clawsweeper-repair/execution/run/result.json
+          pnpm run repair:execution-handoff -- publish \
+            --root .clawsweeper-repair/execution \
+            --authorization-sha256 "${{ needs.authorize.outputs.authorization_sha256 }}" \
+            --validation-receipt .clawsweeper-repair/validation/receipt.json \
+            --validation-receipt-sha256 "${{ needs.validate.outputs.receipt_sha256 }}" \
+            --publication-receipt .clawsweeper-repair/publication/receipt.json
+
+      - name: Verify publication receipt
+        run: |
+          pnpm run repair:execution-handoff -- verify-publication \
+            --root .clawsweeper-repair/execution \
+            --authorization-sha256 "${{ needs.authorize.outputs.authorization_sha256 }}" \
+            --validation-receipt .clawsweeper-repair/validation/receipt.json \
+            --validation-receipt-sha256 "${{ needs.validate.outputs.receipt_sha256 }}" \
+            --publication-receipt .clawsweeper-repair/publication/receipt.json \
+            --publication-receipt-sha256 "${{ steps.publish.outputs.publication_receipt_sha256 }}"
+
+      - name: Upload trusted publication receipt
+        uses: actions/upload-artifact@v7
+        with:
+          name: clawsweeper-repair-publication-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .clawsweeper-repair/publication/receipt.json
+          if-no-files-found: error
+          retention-days: 7
 
       - name: Post-flight finalize fix PRs
         id: post_flight
-        if: ${{ success() && steps.check_job.outputs.job_exists == '1' && needs.execute.result == 'success' && needs.execute.outputs.execute_fix_outcome == 'success' && needs.execute.outputs.mutation_ready == 'true' && needs.validate.result == 'success' && needs.execute.outputs.self_heal_matched != 'false' && env.CLAWSWEEPER_ALLOW_EXECUTE == '1' && env.CLAWSWEEPER_ALLOW_FIX_PR == '1' }}
+        if: ${{ success() && steps.check_job.outputs.job_exists == '1' && env.CLAWSWEEPER_ALLOW_EXECUTE == '1' && env.CLAWSWEEPER_ALLOW_FIX_PR == '1' }}
         env:
           GH_TOKEN: ${{ steps.target_post_flight_token.outputs.token }}
+          CLAWSWEEPER_AUTHENTICATED_APP_ID: ${{ steps.mutation_app.outputs.app_id }}
           CLAWSWEEPER_AUTHENTICATED_APP_SLUG: ${{ steps.target_post_flight_token.outputs.app-slug }}
           CLAWSWEEPER_AUTHENTICATED_INSTALLATION_ID: ${{ steps.target_post_flight_token.outputs.installation-id }}
+          CLAWSWEEPER_RULESET_APP_ID: ${{ steps.ruleset_app.outputs.app_id }}
           CLAWSWEEPER_RULESET_APP_SLUG: ${{ steps.ruleset-verifier-token.outputs.app-slug }}
           CLAWSWEEPER_RULESET_INSTALLATION_ID: ${{ steps.ruleset-verifier-token.outputs.installation-id }}
           CLAWSWEEPER_RULESET_GH_TOKEN: ${{ steps.ruleset-verifier-token.outputs.token }}
@@ -945,30 +987,13 @@ jobs:
         run: |
           pnpm run repair:post-flight -- \
             .clawsweeper-repair/execution/job.md \
-            .clawsweeper-repair/execution/run/result.json
-
-      - name: Apply post-flight closeouts
-        if: ${{ success() && steps.check_job.outputs.job_exists == '1' && needs.execute.result == 'success' && needs.execute.outputs.execute_fix_outcome == 'success' && needs.execute.outputs.mutation_ready == 'true' && needs.validate.result == 'success' && needs.execute.outputs.self_heal_matched != 'false' && env.CLAWSWEEPER_ALLOW_EXECUTE == '1' }}
-        env:
-          GH_TOKEN: ${{ steps.target_post_flight_token.outputs.token }}
-          CLAWSWEEPER_AUTHENTICATED_APP_SLUG: ${{ steps.target_post_flight_token.outputs.app-slug }}
-          CLAWSWEEPER_AUTHENTICATED_INSTALLATION_ID: ${{ steps.target_post_flight_token.outputs.installation-id }}
-          CLAWSWEEPER_RULESET_APP_SLUG: ${{ steps.ruleset-verifier-token.outputs.app-slug }}
-          CLAWSWEEPER_RULESET_INSTALLATION_ID: ${{ steps.ruleset-verifier-token.outputs.installation-id }}
-          CLAWSWEEPER_RULESET_GH_TOKEN: ${{ steps.ruleset-verifier-token.outputs.token }}
-          CLAWSWEEPER_ALLOWED_OWNER: ${{ needs.authorize.outputs.target_owner }}
-        run: |
-          pnpm run repair:apply-result -- \
-            .clawsweeper-repair/execution/job.md \
-            .clawsweeper-repair/execution/run/result.json
-
-      - name: Tag ClawSweeper targets
-        if: ${{ success() && steps.check_job.outputs.job_exists == '1' && needs.execute.result == 'success' && needs.execute.outputs.execute_fix_outcome == 'success' && needs.execute.outputs.mutation_ready == 'true' && needs.validate.result == 'success' && needs.execute.outputs.self_heal_matched != 'false' && env.CLAWSWEEPER_ALLOW_EXECUTE == '1' }}
-        continue-on-error: true
-        env:
-          GH_TOKEN: ${{ steps.target_post_flight_token.outputs.token }}
-          CLAWSWEEPER_ALLOWED_OWNER: ${{ needs.authorize.outputs.target_owner }}
-        run: pnpm run repair:tag-clawsweeper -- .clawsweeper-repair/execution/run --apply --live --open-branches false --report .clawsweeper-repair/execution/run/clawsweeper-label-report.json
+            .clawsweeper-repair/execution/run/result.json \
+            --handoff-root .clawsweeper-repair/execution \
+            --authorization-sha256 "${{ needs.authorize.outputs.authorization_sha256 }}" \
+            --validation-receipt .clawsweeper-repair/validation/receipt.json \
+            --validation-receipt-sha256 "${{ needs.validate.outputs.receipt_sha256 }}" \
+            --publication-receipt .clawsweeper-repair/publication/receipt.json \
+            --publication-receipt-sha256 "${{ steps.publish.outputs.publication_receipt_sha256 }}"
 
       - name: Publish automatic implementation completion status
         if: ${{ always() && steps.check_job.outputs.job_exists == '1' }}
@@ -978,85 +1003,16 @@ jobs:
           CLAWSWEEPER_STATUS_INGEST_TOKEN: ${{ secrets.CLAWSWEEPER_STATUS_INGEST_TOKEN }}
           EXECUTE_OUTCOME: ${{ needs.execute.outputs.execute_fix_outcome }}
           POST_FLIGHT_OUTCOME: ${{ steps.post_flight.outcome }}
+          TRUSTED_PR_URL: ${{ steps.publish.outputs.target_pr_url }}
         run: |
           set -euo pipefail
           state="Blocked"
           detail="The automatic implementation worker stopped before all deterministic gates completed. Open the workflow run for the exact blocker."
-          pr_url=""
-          report=""
-          post_flight_report=""
-          if [ "$EXECUTE_OUTCOME" = "success" ]; then
-            report=".clawsweeper-repair/execution/run/fix-execution-report.json"
-            if [ ! -f "$report" ]; then
-              report=""
-            fi
-            if [ -n "$report" ]; then
-              pr_url="$(
-                jq -r '
-                  [
-                    .actions[]?
-                    | select(
-                        .action == "open_fix_pr" and
-                        (.status | IN("opened", "executed", "updated")) and
-                        ((.pr_url // "") != "")
-                      )
-                    | .pr_url
-                  ][-1] // empty
-                ' "$report"
-              )"
-            fi
-          fi
-          if [ "$EXECUTE_OUTCOME" = "success" ] && [ "$POST_FLIGHT_OUTCOME" = "success" ] && [ -n "$report" ]; then
-            post_flight_report="${report%/*}/post-flight-report.json"
-            if [ ! -f "$post_flight_report" ]; then
-              post_flight_report=""
-            fi
-            if [ -n "$pr_url" ]; then
-              state="PR Opened"
-              detail="The implementation PR is open. Normal pull request checks and maintainer review continue on $pr_url."
-              post_flight_ready="false"
-              if [ -n "$post_flight_report" ]; then
-                post_flight_ready="$(
-                  jq -r --arg pr_url "$pr_url" '
-                    any(
-                      .actions[]?;
-                      .action == "finalize_fix_pr" and
-                      .source_action == "open_fix_pr" and
-                      .status == "ready" and
-                      ((.target // "") == $pr_url)
-                    )
-                  ' "$post_flight_report"
-                )"
-              fi
-              if [ "$post_flight_ready" = "true" ]; then
-                detail="The implementation PR passed the worker's edit, validation, review, publish, and post-flight gates."
-              else
-                reason="$(
-                  jq -r '
-                    [
-                      .actions[]?
-                      | select(.status | IN("blocked", "failed", "skipped"))
-                      | .reason
-                      | select(type == "string" and length > 0)
-                    ][-1] // empty
-                  ' "$post_flight_report" 2>/dev/null || true
-                )"
-                if [ -z "$reason" ]; then
-                  reason="$(
-                    jq -r '
-                      [
-                        .actions[]?
-                        | select(.status | IN("blocked", "failed", "skipped"))
-                        | .reason
-                        | select(type == "string" and length > 0)
-                      ][-1] // .reason // empty
-                    ' "$report"
-                  )"
-                fi
-                if [ -n "$reason" ]; then
-                  detail="The implementation PR is open. Post-flight status: $reason"
-                fi
-              fi
+          if [ "$EXECUTE_OUTCOME" = "success" ] && [ -n "$TRUSTED_PR_URL" ]; then
+            state="PR Opened"
+            detail="The exact independently validated repair was published at $TRUSTED_PR_URL."
+            if [ "$POST_FLIGHT_OUTCOME" = "success" ]; then
+              detail="The implementation passed execution, independent validation, publication, and post-flight gates."
             fi
           fi
           pnpm run repair:issue-implementation-status -- \
@@ -1064,32 +1020,10 @@ jobs:
             --state "$state" \
             --detail "$detail" \
             --run-url "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
-            --pr-url "$pr_url"
-
-      - name: Requeue source-head repair races
-        id: requeue_dispatch
-        if: ${{ always() && steps.repair_requeue.outputs.count != '' && steps.repair_requeue.outputs.count != '0' }}
-        env:
-          GH_TOKEN: ${{ steps.requeue-token.outputs.token }}
-          CLAWSWEEPER_MUTATION_TOKEN_SOURCE: clawsweeper-app
-        run: |
-          set -euo pipefail
-          echo "Requeueing ${{ steps.repair_requeue.outputs.count }} source-head race repair result(s) against the latest head."
-          pnpm run repair:requeue -- "${{ needs.authorize.outputs.source_job_path }}" \
-            --mode "${{ inputs.mode }}" \
-            --execute \
-            --open-execute-window \
-            --wait-for-capacity \
-            --runner "${{ inputs.runner }}" \
-            --execution-runner "${{ inputs.execution_runner }}" \
-            --model "${{ inputs.model }}"
-
-      - name: Record requeued work
-        if: ${{ always() && steps.crabfleet_session.outcome == 'success' && steps.repair_requeue.outputs.count != '' && steps.repair_requeue.outputs.count != '0' && steps.requeue_dispatch.outcome == 'success' }}
-        run: pnpm run repair:action-session -- update --state running --phase requeued --summary "Source head changed; replacement Action dispatched"
+            --pr-url "$TRUSTED_PR_URL"
 
       - name: Record work completion
-        if: ${{ success() && steps.crabfleet_session.outcome == 'success' && (steps.repair_requeue.outputs.count == '' || steps.repair_requeue.outputs.count == '0') }}
+        if: ${{ success() && steps.crabfleet_session.outcome == 'success' }}
         run: pnpm run repair:action-session -- update --state completed --phase "done" --summary "Repair, validation, review, push, and post-flight gates completed" --completion-reason gates_passed
 
       - name: Upload final worker artifacts
@@ -1101,6 +1035,6 @@ jobs:
           if-no-files-found: warn
 
       - name: Record work failure
-        if: ${{ always() && failure() && steps.crabfleet_session.outcome == 'success' && (steps.repair_requeue.outputs.count == '' || steps.repair_requeue.outputs.count == '0' || steps.requeue_dispatch.outcome != 'success') }}
+        if: ${{ always() && failure() && steps.crabfleet_session.outcome == 'success' }}
         continue-on-error: true
         run: pnpm run repair:action-session -- update --state blocked --phase action_failed --summary "Repair Action failed before all completion gates passed" --completion-reason action_failed

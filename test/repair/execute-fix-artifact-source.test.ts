@@ -347,19 +347,38 @@ test("repair workflow binds one run through no-credential proof and token-only m
   assert.match(authorize, /persist-credentials: "false"/);
   assert.match(execute, /repair:execution-handoff -- verify/);
   assert.match(execute, /repair:execution-handoff -- seal/);
-  assert.match(execute, /repositories: \$\{\{ needs\.authorize\.outputs\.target_name \}\}/);
+  assert.match(execute, /GH_TOKEN: ""/);
+  assert.match(execute, /GITHUB_TOKEN: ""/);
+  assert.match(execute, /--prepare-publication/);
+  assert.match(execute, /--execution-intent/);
   assert.match(execute, /needs\.authorize\.outputs\.result_path/);
-  assert.doesNotMatch(execute, /create-state-token|setup-state|--latest/);
+  assert.doesNotMatch(
+    execute,
+    /create-github-app-token|create-state-token|setup-state|--latest|permission-(?:contents|issues|pull-requests): write/,
+  );
   assert.match(validate, /GH_TOKEN: ""/);
   assert.match(validate, /GITHUB_TOKEN: ""/);
   assert.match(validate, /repair:execution-handoff -- validate/);
   assert.doesNotMatch(validate, /create-github-app-token|setup-codex|OPENAI_API_KEY/);
-  assert.match(report, /--publish-report-only/);
-  assert.doesNotMatch(report, /permission-contents: write|permission-workflows: write/);
+  assert.match(report, /count-requeue-required/);
+  assert.match(report, /--dashboard-only/);
+  assert.match(report, /repositories: clawsweeper/);
+  assert.doesNotMatch(
+    report,
+    /needs\.authorize\.outputs\.target_name|permission-(?:issues|pull-requests): write|--publish-report-only/,
+  );
   assert.match(mutate, /repair:execution-handoff -- verify-receipt/);
+  assert.match(mutate, /repair:execution-handoff -- publish/);
+  assert.match(mutate, /repair:execution-handoff -- verify-publication/);
   assert.match(mutate, /needs\.execute\.result == 'success'/);
   assert.match(mutate, /needs\.execute\.outputs\.execute_fix_outcome == 'success'/);
   assert.match(mutate, /needs\.execute\.outputs\.mutation_ready == 'true'/);
   assert.match(mutate, /needs\.validate\.result == 'success'/);
   assert.doesNotMatch(mutate, /setup-codex|--latest|create-state-token|setup-state/);
+  assert.match(mutate, /npm_config_ignore_scripts: "true"/);
+  assert.doesNotMatch(mutate, /repair:apply-result|repair:tag-clawsweeper/);
+  assert.match(
+    readText(path.join(process.cwd(), "src/repair/post-flight.ts")),
+    /finalized\.status === "executed" && !publicationReceipt/,
+  );
 });
