@@ -24,6 +24,7 @@ import {
   actionEventShardRelativePath,
   actionEventSpoolRelativePath,
   actionIdempotencyKey,
+  actionLedgerJson,
   actionOperationId,
   createActionEvent,
   isActionEventPhaseType,
@@ -249,8 +250,41 @@ test("action events use deterministic identities and local spool paths", () => {
   assert.match(id, /^[a-f0-9]{64}$/);
   assert.equal(
     actionEventSpoolRelativePath("OpenClaw/OpenClaw", id),
-    path.join(".clawsweeper-repair", "action-events", "openclaw-openclaw", `${id}.json`),
+    path.join(
+      ".clawsweeper-repair",
+      "action-events",
+      "openclaw-openclaw-5dcd5a46c4da",
+      `${id}.json`,
+    ),
   );
+});
+
+test("spool directories isolate lossy repository slugs and readers verify canonical placement", () => {
+  const root = tempRoot();
+  const firstRepository = "a/b-c";
+  const secondRepository = "a-b/c";
+  const event = writeActionEvent(
+    root,
+    reviewInput({
+      subject: {
+        repository: firstRepository,
+        kind: "repository",
+      },
+    }),
+  );
+  const misplacedPath = path.join(
+    root,
+    actionEventSpoolRelativePath(secondRepository, event.event.event_id),
+  );
+
+  assert.notEqual(
+    path.dirname(actionEventSpoolRelativePath(firstRepository, event.event.event_id)),
+    path.dirname(actionEventSpoolRelativePath(secondRepository, event.event.event_id)),
+  );
+  fs.mkdirSync(path.dirname(misplacedPath), { recursive: true });
+  fs.copyFileSync(event.path, misplacedPath);
+  assert.throws(() => readSpooledActionEvents(root, secondRepository), /spool repository mismatch/);
+  assert.throws(() => readAllSpooledActionEvents(root), /spool path is not canonical/);
 });
 
 test("operation, attempt, and idempotency identities are canonical and separately scoped", () => {
@@ -341,6 +375,10 @@ test("identity hashing rejects values outside the canonical JSON domain", () => 
     actionIdempotencyKey({ runId: String(Number.MAX_SAFE_INTEGER + 2) }),
     /^[a-f0-9]{64}$/,
   );
+  assert.throws(
+    () => actionIdempotencyKey({ ["\ud800"]: "unsupported" }),
+    /unsupported object key/,
+  );
   assert.throws(() => {
     const cycle: { self?: unknown } = {};
     cycle.self = cycle;
@@ -348,8 +386,18 @@ test("identity hashing rejects values outside the canonical JSON domain", () => 
   }, /contains a cycle/);
 });
 
-test("canonical ordering is binary and locale independent", () => {
-  assert.equal(stableJson({ "\u00e4": 1, z: 2 }), '{"z":2,"\u00e4":1}');
+test("ledger ordering is binary and locale independent without changing shared stable JSON", () => {
+  const sharedValue = { "\u00e4": 1, z: 2 };
+  const sharedExpected = JSON.stringify(
+    Object.fromEntries(
+      Object.entries(sharedValue).sort(([left], [right]) => left.localeCompare(right)),
+    ),
+  );
+  assert.equal(stableJson(sharedValue), sharedExpected);
+  assert.equal(
+    actionLedgerJson({ "2": "two", "10": "ten", "\u00e4": 1, z: 2 }),
+    '{"10":"ten","2":"two","z":2,"\u00e4":1}',
+  );
   const event = createActionEvent(
     reviewInput({
       evidence: [
@@ -362,9 +410,9 @@ test("canonical ordering is binary and locale independent", () => {
     event.evidence?.map((entry) => entry.report_path),
     ["records/z.md", "records/\u00e4.md"],
   );
-  const moduleUrl = pathToFileURL(path.join(process.cwd(), "dist", "stable-json.js")).href;
-  const script = `import { stableJson } from ${JSON.stringify(moduleUrl)};
-process.stdout.write(stableJson({ "\\u00e4": 1, z: 2 }));`;
+  const moduleUrl = pathToFileURL(path.join(process.cwd(), "dist", "action-ledger.js")).href;
+  const script = `import { actionLedgerJson } from ${JSON.stringify(moduleUrl)};
+process.stdout.write(actionLedgerJson({ "2": "two", "10": "ten", "\\u00e4": 1, z: 2 }));`;
   const outputs = ["en_US.UTF-8", "sv_SE.UTF-8"].map((locale) => {
     const child = spawnSync(process.execPath, ["--input-type=module", "-e", script], {
       encoding: "utf8",
@@ -373,7 +421,10 @@ process.stdout.write(stableJson({ "\\u00e4": 1, z: 2 }));`;
     assert.equal(child.status, 0, child.stderr);
     return child.stdout;
   });
-  assert.deepEqual(outputs, ['{"z":2,"\u00e4":1}', '{"z":2,"\u00e4":1}']);
+  assert.deepEqual(outputs, [
+    '{"10":"ten","2":"two","z":2,"\u00e4":1}',
+    '{"10":"ten","2":"two","z":2,"\u00e4":1}',
+  ]);
 });
 
 test("every event persists the required correlation envelope", () => {
@@ -572,13 +623,20 @@ test("runtime and schema apply the same machine-text privacy boundary", () => {
     `github_pat_${"A".repeat(24)}`,
     `eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.${"A".repeat(32)}`,
     `Bearer:${"A".repeat(32)}`,
+    "alice%40example.com",
+    "%2FUsers%2Falice%2Fsecret",
+    "https%3A%2F%2Fservice.internal%2Fapi",
     `api_key:${"A".repeat(32)}`,
     `cloudflare_api_token:${"A".repeat(32)}`,
     `fc00::1`,
+    "0:0:0:0:0:0:0:1",
+    "::ffff:7f00:1",
     "service.internal",
+    "service.internal.",
     "internal.example.com",
     "https://host.docker.internal/api",
     "https://10.0.0.1/api",
+    "host-10.0.0.1",
   ];
 
   for (const value of samples) {
@@ -704,8 +762,39 @@ test(
   },
 );
 
+test("successful and race-loser publications remove staging aliases", () => {
+  const root = tempRoot();
+  const created = writeActionEvent(root, reviewInput());
+  assert.equal(created.status, "created");
+  assert.deepEqual(
+    fs.readdirSync(path.dirname(created.path)).filter((entry) => entry.endsWith(".tmp")),
+    [],
+  );
+
+  fs.rmSync(created.path);
+  const originalLinkSync = fs.linkSync;
+  let raced = false;
+  fs.linkSync = ((source, destination) => {
+    if (!raced) {
+      raced = true;
+      originalLinkSync(source, destination);
+    }
+    return originalLinkSync(source, destination);
+  }) as typeof fs.linkSync;
+  try {
+    assert.equal(writeActionEvent(root, reviewInput()).status, "unchanged");
+  } finally {
+    fs.linkSync = originalLinkSync;
+  }
+  assert.equal(raced, true);
+  assert.deepEqual(
+    fs.readdirSync(path.dirname(created.path)).filter((entry) => entry.endsWith(".tmp")),
+    [],
+  );
+});
+
 test(
-  "create-only publication never cleans up through a swapped parent",
+  "staging cleanup refuses a parent replaced after publication",
   {
     skip:
       process.platform === "win32"
@@ -719,39 +808,31 @@ test(
     const relativePath = actionEventSpoolRelativePath(event.subject.repository, event.event_id);
     const eventParent = path.dirname(path.join(root, relativePath));
     const savedParent = `${eventParent}.saved`;
-    const originalUnlinkSync = fs.unlinkSync;
-    let cleanupAttempted = false;
+    const originalLinkSync = fs.linkSync;
+    let swapped = false;
 
-    fs.unlinkSync = ((filePath) => {
-      if (
-        !cleanupAttempted &&
-        typeof filePath === "string" &&
-        path.dirname(filePath) === eventParent &&
-        filePath.endsWith(".tmp")
-      ) {
-        cleanupAttempted = true;
-        const outsideVictim = path.join(outside, path.basename(filePath));
-        fs.writeFileSync(outsideVictim, "outside-sentinel\n");
+    fs.linkSync = ((source, destination) => {
+      originalLinkSync(source, destination);
+      if (!swapped) {
+        swapped = true;
         fs.renameSync(eventParent, savedParent);
         createDirectoryLink(outside, eventParent);
-        try {
-          originalUnlinkSync(filePath);
-        } finally {
-          originalUnlinkSync(eventParent);
-          fs.renameSync(savedParent, eventParent);
-        }
-        return;
       }
-      originalUnlinkSync(filePath);
-    }) as typeof fs.unlinkSync;
+    }) as typeof fs.linkSync;
     try {
-      assert.equal(writeActionEvent(root, reviewInput()).status, "created");
+      assert.throws(
+        () => writeActionEvent(root, reviewInput()),
+        /symbolic link or junction|changed/,
+      );
     } finally {
-      fs.unlinkSync = originalUnlinkSync;
+      fs.linkSync = originalLinkSync;
+      if (fs.lstatSync(eventParent).isSymbolicLink()) fs.unlinkSync(eventParent);
+      if (fs.existsSync(savedParent)) fs.renameSync(savedParent, eventParent);
     }
 
-    assert.equal(cleanupAttempted, false);
+    assert.equal(swapped, true);
     assert.deepEqual(fs.readdirSync(outside), []);
+    assert.ok(fs.readdirSync(eventParent).some((entry) => entry.endsWith(".tmp")));
   },
 );
 
@@ -797,6 +878,39 @@ test(
       );
     } finally {
       fs.openSync = originalOpenSync;
+    }
+    assert.equal(swapped, true);
+  },
+);
+
+test(
+  "event reads cannot block when a validated file is swapped to a FIFO",
+  {
+    skip: process.platform === "win32" ? "requires POSIX FIFO semantics" : false,
+  },
+  () => {
+    const root = tempRoot();
+    const written = writeActionEvent(root, reviewInput());
+    const saved = `${written.path}.saved`;
+    const originalOpenSync = fs.openSync;
+    let swapped = false;
+
+    fs.openSync = ((filePath, flags, mode) => {
+      if (!swapped && filePath === written.path) {
+        swapped = true;
+        assert.notEqual(Number(flags) & (fs.constants.O_NONBLOCK ?? 0), 0);
+        fs.renameSync(written.path, saved);
+        const fifo = spawnSync("/usr/bin/mkfifo", [written.path], { encoding: "utf8" });
+        assert.equal(fifo.status, 0, fifo.stderr);
+      }
+      return originalOpenSync(filePath, flags, mode);
+    }) as typeof fs.openSync;
+    try {
+      assert.throws(() => readSpooledActionEvents(root, "openclaw/openclaw"), /refusing non-file/);
+    } finally {
+      fs.openSync = originalOpenSync;
+      if (fs.existsSync(written.path)) fs.rmSync(written.path);
+      if (fs.existsSync(saved)) fs.renameSync(saved, written.path);
     }
     assert.equal(swapped, true);
   },
@@ -1118,7 +1232,7 @@ test("shard paths use the stable run partition instead of event ordering", () =>
   );
 });
 
-test("duplicate event IDs must have identical occurrence metadata", () => {
+test("duplicate event IDs preserve first-writer metadata but require identical source metadata", () => {
   const identity = {
     repository: producer.repository,
     sha: producer.sha,
@@ -1140,6 +1254,14 @@ test("duplicate event IDs must have identical occurrence metadata", () => {
     () => actionEventShardRelativePath(identity, [first, conflicting]),
     /conflicting duplicate metadata/,
   );
+
+  const replay = createActionEvent(reviewInput(), {
+    now: () => new Date("2026-07-12T11:00:00.000Z"),
+  });
+  const root = tempRoot();
+  const written = writeActionEventShard(root, identity, [first, replay]);
+  const [persisted] = readActionEventShard(written.path);
+  assert.equal(persisted?.recorded_at, first.recorded_at);
 });
 
 test("spooled events remain independent and read in occurrence order", () => {
@@ -1227,9 +1349,15 @@ test("durable privacy guards reject raw text, local paths, secrets, and invalid 
     `Bearer%20${"A".repeat(32)}`,
     `Basic ${Buffer.from("user:password").toString("base64")}`,
     `cloudflare_api_token:${"A".repeat(32)}`,
+    "alice%40example.com",
+    "%2FUsers%2Falice%2Fsecret",
+    "https%3A%2F%2Fservice.internal%2Fapi",
     "C:/build/runner/worktree",
     "service.internal",
+    "service.internal.",
     "internal.example.com",
+    "0:0:0:0:0:0:0:1",
+    "host-10.0.0.1",
   ]) {
     assert.throws(
       () =>
@@ -1389,6 +1517,112 @@ test("checked-in schema rejects values rejected by runtime normalization", () =>
         ),
     },
     {
+      label: "percent-encoded private path",
+      mutate: (event) => {
+        ((event.evidence as Array<Record<string, unknown>>)[0] as Record<string, unknown>)[
+          "report_path"
+        ] = "records/%2FUsers%2Fexample%2Fsecret.txt";
+      },
+      runtime: () =>
+        createActionEvent(
+          reviewInput({
+            evidence: [
+              {
+                kind: "review",
+                reportPath: "records/%2FUsers%2Fexample%2Fsecret.txt",
+              },
+            ],
+          }),
+        ),
+    },
+    {
+      label: "trailing-dot private host",
+      mutate: (event) => {
+        (event.action as Record<string, unknown>).status = "service.internal.";
+      },
+      runtime: () =>
+        createActionEvent(
+          reviewInput({
+            action: {
+              name: "review",
+              status: "service.internal.",
+              retryable: false,
+              mutation: false,
+            },
+          }),
+        ),
+    },
+    {
+      label: "expanded IPv6 loopback",
+      mutate: (event) => {
+        (event.action as Record<string, unknown>).status = "0:0:0:0:0:0:0:1";
+      },
+      runtime: () =>
+        createActionEvent(
+          reviewInput({
+            action: {
+              name: "review",
+              status: "0:0:0:0:0:0:0:1",
+              retryable: false,
+              mutation: false,
+            },
+          }),
+        ),
+    },
+    {
+      label: "IPv4-mapped IPv6 loopback",
+      mutate: (event) => {
+        (event.action as Record<string, unknown>).status = "::ffff:7f00:1";
+      },
+      runtime: () =>
+        createActionEvent(
+          reviewInput({
+            action: {
+              name: "review",
+              status: "::ffff:7f00:1",
+              retryable: false,
+              mutation: false,
+            },
+          }),
+        ),
+    },
+    {
+      label: "embedded private IPv4",
+      mutate: (event) => {
+        (event.action as Record<string, unknown>).status = "host-10.0.0.1";
+      },
+      runtime: () =>
+        createActionEvent(
+          reviewInput({
+            action: {
+              name: "review",
+              status: "host-10.0.0.1",
+              retryable: false,
+              mutation: false,
+            },
+          }),
+        ),
+    },
+    {
+      label: "URL userinfo",
+      mutate: (event) => {
+        ((event.evidence as Array<Record<string, unknown>>)[0] as Record<string, unknown>)[
+          "run_url"
+        ] = "https://user@github.com/openclaw/clawsweeper/actions/runs/100";
+      },
+      runtime: () =>
+        createActionEvent(
+          reviewInput({
+            evidence: [
+              {
+                kind: "run",
+                runUrl: "https://user@github.com/openclaw/clawsweeper/actions/runs/100",
+              },
+            ],
+          }),
+        ),
+    },
+    {
       label: "whitespace bearer credential",
       mutate: (event) => {
         ((event.evidence as Array<Record<string, unknown>>)[0] as Record<string, unknown>)[
@@ -1452,6 +1686,8 @@ test("run URLs are limited to public GitHub workflow evidence", () => {
     "https://[::1]/actions/runs/100",
     "https://[fc00::1]/actions/runs/100",
     "https://internal.example/actions/runs/100",
+    "https://service.internal./actions/runs/100",
+    "https://user@github.com/openclaw/clawsweeper/actions/runs/100",
     "https://github.com/login/oauth/authorize?client_secret=PLACEHOLDER",
     "https://github.com/openclaw/clawsweeper/actions/runs/100?token=PLACEHOLDER",
     "https://github.com/openclaw/clawsweeper/issues/100",
@@ -1548,9 +1784,12 @@ test("runtime normalization enforces checked-in schema bounds", () => {
   );
   for (const status of [
     "10.0.0.1:22",
+    "host-10.0.0.1",
     "ssh://alice:secret@10.0.0.1",
     "prefix:169.254.169.254",
     "https://internal.local",
+    "https://service.internal./api",
+    "0:0:0:0:0:0:0:1",
   ]) {
     assert.throws(
       () =>

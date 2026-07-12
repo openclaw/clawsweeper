@@ -46,7 +46,11 @@ function workflowEnv(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
   };
 }
 
-function recordReview(root: string, env: NodeJS.ProcessEnv = workflowEnv()) {
+function recordReview(
+  root: string,
+  env: NodeJS.ProcessEnv = workflowEnv(),
+  now = new Date("2026-07-12T10:01:00.000Z"),
+) {
   return recordWorkflowActionEvent(
     root,
     {
@@ -85,7 +89,7 @@ function recordReview(root: string, env: NodeJS.ProcessEnv = workflowEnv()) {
     },
     {
       env,
-      now: () => new Date("2026-07-12T10:01:00.000Z"),
+      now: () => now,
       fetchImpl: async () => new Response(null, { status: 204 }),
     },
   );
@@ -422,6 +426,54 @@ test("fresh roots reconstruct shard partitions from immutable run metadata", asy
   );
 });
 
+test("fresh-root shard replay preserves the first recorded-at metadata", async () => {
+  const env = workflowEnv();
+  const firstRoot = tempRoot();
+  const replayRoot = tempRoot();
+  const outputRoot = tempRoot();
+  recordReview(firstRoot, env, new Date("2026-07-12T10:01:00.000Z"));
+  const [firstPath] = await flushWorkflowActionEvents(firstRoot, { env, outputRoot });
+  assert.ok(firstPath);
+  const firstContent = fs.readFileSync(path.join(outputRoot, firstPath), "utf8");
+
+  recordReview(replayRoot, env, new Date("2026-07-12T11:30:00.000Z"));
+  const [replayPath] = await flushWorkflowActionEvents(replayRoot, { env, outputRoot });
+  assert.equal(replayPath, firstPath);
+  assert.equal(fs.readFileSync(path.join(outputRoot, replayPath!), "utf8"), firstContent);
+  assert.equal(JSON.parse(firstContent).recorded_at, "2026-07-12T10:01:00.000Z");
+});
+
+test("imports preserve first-writer shard bytes across fresh-root recorded-at drift", async () => {
+  const env = workflowEnv();
+  const firstRoot = tempRoot();
+  const replayRoot = tempRoot();
+  const firstOutput = tempRoot();
+  const replayOutput = tempRoot();
+  const destination = tempRoot();
+  recordReview(firstRoot, env, new Date("2026-07-12T10:01:00.000Z"));
+  recordReview(replayRoot, env, new Date("2026-07-12T11:30:00.000Z"));
+  const [firstPath] = await flushWorkflowActionEvents(firstRoot, {
+    env,
+    outputRoot: firstOutput,
+  });
+  const [replayPath] = await flushWorkflowActionEvents(replayRoot, {
+    env,
+    outputRoot: replayOutput,
+  });
+  assert.equal(replayPath, firstPath);
+  assert.notEqual(
+    fs.readFileSync(path.join(firstOutput, firstPath!), "utf8"),
+    fs.readFileSync(path.join(replayOutput, replayPath!), "utf8"),
+  );
+
+  assert.equal(importActionEventShards(firstOutput, destination).created, 1);
+  assert.equal(importActionEventShards(replayOutput, destination).unchanged, 1);
+  assert.equal(
+    fs.readFileSync(path.join(destination, firstPath!), "utf8"),
+    fs.readFileSync(path.join(firstOutput, firstPath!), "utf8"),
+  );
+});
+
 test("historical producer partitions survive later-run flush environments", async () => {
   const root = tempRoot();
   const outputRoot = path.join(root, "state");
@@ -716,6 +768,46 @@ test("CrabFleet timeouts preserve canonical events and record projection failure
   assert.match(errors[0] ?? "", /timed out after 20ms/);
 });
 
+test("late CrabFleet response cleanup failures are consumed after timeout", async () => {
+  const event = recordReview(tempRoot());
+  assert.ok(event);
+  let resolveResponse!: (response: Response) => void;
+  const response = new Promise<Response>((resolve) => {
+    resolveResponse = resolve;
+  });
+  const unhandled: unknown[] = [];
+  const onUnhandled = (error: unknown) => unhandled.push(error);
+  process.on("unhandledRejection", onUnhandled);
+  try {
+    await assert.rejects(
+      postActionEventToCrabFleet(
+        event,
+        workflowEnv({
+          CLAWSWEEPER_CRABFLEET_AGENT_TOKEN: "agent-token",
+          CLAWSWEEPER_CRABFLEET_SESSION_ID: "session-1",
+          CLAWSWEEPER_CRABFLEET_TIMEOUT_MS: "10",
+        }),
+        (() => response) as typeof fetch,
+      ),
+      /timed out after 10ms/,
+    );
+    resolveResponse({
+      ok: true,
+      status: 200,
+      body: {
+        cancel: async () => {
+          throw new Error("late cleanup failure");
+        },
+      },
+    } as unknown as Response);
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(unhandled, []);
+  } finally {
+    process.off("unhandledRejection", onUnhandled);
+  }
+});
+
 test("projection failure recording remains valid at max-safe phase sequence", async () => {
   const root = tempRoot();
   const outputRoot = path.join(root, "state");
@@ -776,15 +868,12 @@ test("state shard imports are validated, create-only, and conflict detecting", a
 
   const created = importActionEventShards(source, destination);
   const destinationDirectory = path.dirname(path.join(destination, created.paths[0]!));
-  const stagingCount = fs
-    .readdirSync(destinationDirectory)
-    .filter((entry) => entry.endsWith(".tmp")).length;
   const replayed = importActionEventShards(source, destination);
   assert.equal(created.created, 1);
   assert.equal(replayed.unchanged, 1);
-  assert.equal(
-    fs.readdirSync(destinationDirectory).filter((entry) => entry.endsWith(".tmp")).length,
-    stagingCount,
+  assert.deepEqual(
+    fs.readdirSync(destinationDirectory).filter((entry) => entry.endsWith(".tmp")),
+    [],
   );
 
   const shard = path.join(source, created.paths[0]!);
@@ -946,16 +1035,22 @@ test("state shard imports reject forged paths and duplicate events", async () =>
   );
 });
 
-test("state shard imports reject symbolic links", () => {
+test("state shard imports ignore unrelated entries and reject links in the ledger subtree", () => {
   const root = tempRoot();
   const source = path.join(root, "source");
   const linked = path.join(root, "linked-source");
   fs.mkdirSync(source);
   fs.mkdirSync(linked);
   createDirectoryLink(linked, path.join(source, "linked"));
+  assert.deepEqual(importActionEventShards(source, path.join(root, "empty-destination")), {
+    created: 0,
+    unchanged: 0,
+    paths: [],
+  });
+  createDirectoryLink(linked, path.join(source, "ledger"));
   assert.throws(
     () => importActionEventShards(source, path.join(root, "destination")),
-    /refusing symbolic link/,
+    /symbolic link or junction/,
   );
 });
 
