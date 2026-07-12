@@ -1095,11 +1095,35 @@ jobs:
             --current-attempt "${{ github.run_attempt }}" \
             --prefix clawsweeper-repair-publication
 
+      - name: Resolve prior durable source-close checkpoint
+        id: prior_source_close_artifact
+        if: ${{ steps.prior_publication_artifact.outcome != 'success' }}
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CLAWSWEEPER_ALLOW_PRIOR_ARTIFACT: "1"
+        run: |
+          pnpm run repair:resolve-run-artifact -- \
+            --repository "${{ github.repository }}" \
+            --run-id "${{ github.run_id }}" \
+            --current-attempt "${{ github.run_attempt }}" \
+            --prefix clawsweeper-repair-publication-close
+
       - name: Download prior durable publication checkpoint
         if: ${{ steps.prior_publication_artifact.outcome == 'success' }}
         uses: actions/download-artifact@v8
         with:
           artifact-ids: ${{ steps.prior_publication_artifact.outputs.artifact_id }}
+          path: .clawsweeper-repair/publication
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ github.run_id }}
+
+      - name: Download prior durable source-close checkpoint
+        if: ${{ steps.prior_publication_artifact.outcome != 'success' && steps.prior_source_close_artifact.outcome == 'success' }}
+        uses: actions/download-artifact@v8
+        with:
+          artifact-ids: ${{ steps.prior_source_close_artifact.outputs.artifact_id }}
           path: .clawsweeper-repair/publication
           github-token: ${{ github.token }}
           repository: ${{ github.repository }}
@@ -1128,6 +1152,29 @@ jobs:
             --publication-receipt .clawsweeper-repair/publication/receipt.json \
             --publication-receipt-sha256 "${{ steps.publish.outputs.publication_receipt_sha256 }}"
 
+      - name: Prepare durable source-close checkpoint
+        id: checkpoint_sources
+        env:
+          GH_TOKEN: ${{ steps.target_post_flight_token.outputs.token }}
+          GITHUB_TOKEN: ${{ steps.target_post_flight_token.outputs.token }}
+        run: |
+          pnpm run repair:execution-handoff -- checkpoint-source-closes \
+            --root .clawsweeper-repair/execution \
+            --authorization-sha256 "${{ needs.authorize.outputs.authorization_sha256 }}" \
+            --validation-receipt .clawsweeper-repair/validation/receipt.json \
+            --validation-receipt-sha256 "${{ needs.validate.outputs.receipt_sha256 }}" \
+            --publication-receipt .clawsweeper-repair/publication/receipt.json \
+            --publication-receipt-sha256 "${{ steps.publish.outputs.publication_receipt_sha256 }}"
+
+      - name: Upload durable pre-close checkpoint
+        id: upload_source_close_checkpoint
+        uses: actions/upload-artifact@v7
+        with:
+          name: clawsweeper-repair-publication-close-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .clawsweeper-repair/publication/receipt.json
+          if-no-files-found: error
+          retention-days: 7
+
       - name: Close superseded sources from publication checkpoint
         id: close_sources
         env:
@@ -1140,9 +1187,9 @@ jobs:
             --validation-receipt .clawsweeper-repair/validation/receipt.json \
             --validation-receipt-sha256 "${{ needs.validate.outputs.receipt_sha256 }}" \
             --publication-receipt .clawsweeper-repair/publication/receipt.json \
-            --publication-receipt-sha256 "${{ steps.publish.outputs.publication_receipt_sha256 }}"
+            --publication-receipt-sha256 "${{ steps.checkpoint_sources.outputs.publication_receipt_sha256 }}"
 
-      - name: Upload durable publication checkpoint
+      - name: Upload completed publication checkpoint
         if: always()
         uses: actions/upload-artifact@v7
         with:

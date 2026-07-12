@@ -371,20 +371,35 @@ test("repair workflow binds one run through no-credential proof and token-only m
   assert.match(mutate, /repair:execution-handoff -- verify-receipt/);
   assert.match(mutate, /repair:execution-handoff -- publish/);
   assert.match(mutate, /repair:execution-handoff -- verify-publication/);
+  assert.match(mutate, /repair:execution-handoff -- checkpoint-source-closes/);
   assert.match(mutate, /repair:execution-handoff -- close-sources/);
   const publishIndex = mutate.indexOf("- name: Publish exact independently validated repair");
   const verifyPublicationIndex = mutate.indexOf("- name: Verify publication receipt");
-  const checkpointIndex = mutate.indexOf("- name: Upload durable publication checkpoint");
+  const prepareCheckpointIndex = mutate.indexOf("- name: Prepare durable source-close checkpoint");
+  const durableCheckpointIndex = mutate.indexOf("- name: Upload durable pre-close checkpoint");
   const closeSourcesIndex = mutate.indexOf(
     "- name: Close superseded sources from publication checkpoint",
+  );
+  const completionCheckpointIndex = mutate.indexOf(
+    "- name: Upload completed publication checkpoint",
   );
   const postFlightIndex = mutate.indexOf("- name: Post-flight finalize fix PRs");
   assert.ok(
     publishIndex < verifyPublicationIndex &&
-      verifyPublicationIndex < closeSourcesIndex &&
-      closeSourcesIndex < checkpointIndex &&
-      checkpointIndex < postFlightIndex &&
+      verifyPublicationIndex < prepareCheckpointIndex &&
+      prepareCheckpointIndex < durableCheckpointIndex &&
+      durableCheckpointIndex < closeSourcesIndex &&
+      closeSourcesIndex < completionCheckpointIndex &&
+      completionCheckpointIndex < postFlightIndex &&
       closeSourcesIndex < postFlightIndex,
+  );
+  assert.match(
+    mutate,
+    /Upload durable pre-close checkpoint[\s\S]*name: clawsweeper-repair-publication-close-\$\{\{ github\.run_id \}\}-\$\{\{ github\.run_attempt \}\}[\s\S]*if-no-files-found: error[\s\S]*Close superseded sources from publication checkpoint/,
+  );
+  assert.match(
+    mutate,
+    /checkpoint-source-closes[\s\S]*id: upload_source_close_checkpoint[\s\S]*close-sources[\s\S]*steps\.checkpoint_sources\.outputs\.publication_receipt_sha256/,
   );
   assert.match(
     mutate,
