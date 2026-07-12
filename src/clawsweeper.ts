@@ -19490,8 +19490,12 @@ function reviewCommand(args: Args): void {
     let structuralCacheHits = 0;
     let structuralCacheProbeFailures = 0;
     let structuralCacheProbeMs = 0;
+    let structuralCacheRevalidations = 0;
+    let structuralCacheRevalidationFailures = 0;
+    let structuralCacheRevalidationMs = 0;
     let hydrationRuns = 0;
     const structuralCacheReasons = new Map<string, number>();
+    const structuralCacheRevalidationReasons = new Map<string, number>();
     const codexFailureReports: string[] = [];
     const leaseAcquisitionFailureDetails: string[] = [];
     for (const item of candidates) {
@@ -19542,6 +19546,7 @@ function reviewCommand(args: Args): void {
           (structuralCacheReasons.get(structuralDecision.reason) ?? 0) + 1,
         );
         if (structuralDecision.hit) {
+          const initialStructuralRecord = structuralRecord;
           try {
             const leaseRevision =
               item.kind === "pull_request"
@@ -19582,36 +19587,102 @@ function reviewCommand(args: Args): void {
             );
             continue;
           }
-          const reportPath = join(artifactDir, reportFileName(item.repo, item.number));
-          let carried = priorReview!.markdown;
-          carried = replaceFrontMatterValue(carried, "reviewed_at", new Date().toISOString());
-          carried = replaceFrontMatterValue(carried, "item_updated_at", item.updatedAt);
-          carried = replaceFrontMatterValue(
-            carried,
-            "review_lease_owner",
-            acquiredReviewLease.owner,
-          );
-          carried = replaceFrontMatterValue(
-            carried,
-            "review_lease_comment_id",
-            String(acquiredReviewLease.commentId),
-          );
-          carried = replaceFrontMatterValue(carried, "review_cache_hit", "true");
-          carried = updateReviewStructuralFrontMatter(carried, structuralRecord, true);
-          writeFileSync(reportPath, carried, "utf8");
-          completed += 1;
-          cacheHits += 1;
-          structuralCacheHits += 1;
-          if (humanLocalReview) {
-            console.error("");
-            console.error("Structural review cache hit; GitHub context unchanged");
-            console.error(`  report: ${displayPath(reportPath)}`);
-          } else {
+          structuralCacheRevalidations += 1;
+          const structuralRevalidationStartedAt = Date.now();
+          let revalidatedStructuralRecord: ReviewStructuralRecord | null = null;
+          try {
+            revalidatedStructuralRecord = fetchReviewStructuralRecord({
+              item,
+              git,
+              reviewPolicy,
+              reviewModel: PUBLIC_CODEX_MODEL,
+            });
+          } catch (error) {
+            structuralCacheRevalidationFailures += 1;
             console.error(
-              `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} cache-hit structural-unchanged skip-hydration-model #${item.number} (${completed}/${candidates.length})`,
+              `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} structural-cache=revalidation-probe-failed #${item.number}: ${
+                error instanceof Error ? error.message : String(error)
+              }`,
             );
+          } finally {
+            structuralCacheRevalidationMs += Date.now() - structuralRevalidationStartedAt;
           }
-          continue;
+          const revalidationDecision = reviewStructuralCacheDecision({
+            review: priorReview
+              ? {
+                  ...priorReview,
+                  reviewCommentSyncedAt: new Date().toISOString(),
+                }
+              : null,
+            priorRecord: initialStructuralRecord,
+            currentRecord: revalidatedStructuralRecord,
+            reviewPolicy,
+            reviewModel: PUBLIC_CODEX_MODEL,
+            explicitDispatch,
+            maintainerRequest,
+            coordinationEnabled: true,
+          });
+          structuralCacheRevalidationReasons.set(
+            revalidationDecision.reason,
+            (structuralCacheRevalidationReasons.get(revalidationDecision.reason) ?? 0) + 1,
+          );
+          if (!revalidationDecision.hit) {
+            const leaseToRelease = acquiredReviewLease!;
+            if (!deleteOwnedDedicatedReviewStartLease(item.number, leaseToRelease)) {
+              leaseAcquisitionFailures += 1;
+              leaseAcquisitionFailureDetails.push(
+                `#${item.number}: could not release structural cache lease after ${revalidationDecision.reason}`,
+              );
+              continue;
+            }
+            const acquiredIndex = acquiredReviewLeases.findIndex(
+              (entry) =>
+                entry.itemNumber === item.number &&
+                entry.lease.commentId === leaseToRelease.commentId &&
+                entry.lease.owner === leaseToRelease.owner,
+            );
+            if (acquiredIndex >= 0) acquiredReviewLeases.splice(acquiredIndex, 1);
+            acquiredReviewLease = null;
+            structuralRecord = revalidatedStructuralRecord;
+            if (structuralRecord) item.updatedAt = structuralRecord.activityUpdatedAt;
+            console.error(
+              `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} structural-cache=revalidation-miss reason=${revalidationDecision.reason} hydrate #${item.number}`,
+            );
+          } else {
+            const confirmedStructuralRecord = revalidatedStructuralRecord!;
+            structuralRecord = confirmedStructuralRecord;
+            item.updatedAt = confirmedStructuralRecord.activityUpdatedAt;
+            const reportPath = join(artifactDir, reportFileName(item.repo, item.number));
+            let carried = priorReview!.markdown;
+            carried = replaceFrontMatterValue(carried, "reviewed_at", new Date().toISOString());
+            carried = replaceFrontMatterValue(carried, "item_updated_at", item.updatedAt);
+            carried = replaceFrontMatterValue(
+              carried,
+              "review_lease_owner",
+              acquiredReviewLease.owner,
+            );
+            carried = replaceFrontMatterValue(
+              carried,
+              "review_lease_comment_id",
+              String(acquiredReviewLease.commentId),
+            );
+            carried = replaceFrontMatterValue(carried, "review_cache_hit", "true");
+            carried = updateReviewStructuralFrontMatter(carried, structuralRecord, true);
+            writeFileSync(reportPath, carried, "utf8");
+            completed += 1;
+            cacheHits += 1;
+            structuralCacheHits += 1;
+            if (humanLocalReview) {
+              console.error("");
+              console.error("Structural review cache hit; GitHub context unchanged");
+              console.error(`  report: ${displayPath(reportPath)}`);
+            } else {
+              console.error(
+                `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} cache-hit structural-unchanged skip-hydration-model #${item.number} (${completed}/${candidates.length})`,
+              );
+            }
+            continue;
+          }
         }
       }
       if (!skipStartComment && item.kind === "pull_request") {
@@ -19909,7 +19980,7 @@ function reviewCommand(args: Args): void {
     }
     if (!humanLocalReview) {
       console.error(
-        `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} complete reviewed=${completed} cache_hits=${cacheHits} structural_cache_checks=${structuralCacheChecks} structural_cache_hits=${structuralCacheHits} content_cache_hits=${contentCacheHits} hydrations=${hydrationRuns}`,
+        `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} complete reviewed=${completed} cache_hits=${cacheHits} structural_cache_checks=${structuralCacheChecks} structural_cache_hits=${structuralCacheHits} structural_cache_revalidations=${structuralCacheRevalidations} content_cache_hits=${contentCacheHits} hydrations=${hydrationRuns}`,
       );
     }
     writeFileSync(
@@ -19923,8 +19994,16 @@ function reviewCommand(args: Args): void {
           structural_cache_hits: structuralCacheHits,
           structural_cache_probe_failures: structuralCacheProbeFailures,
           structural_cache_probe_ms: structuralCacheProbeMs,
+          structural_cache_revalidations: structuralCacheRevalidations,
+          structural_cache_revalidation_failures: structuralCacheRevalidationFailures,
+          structural_cache_revalidation_ms: structuralCacheRevalidationMs,
           structural_cache_reasons: Object.fromEntries(
             [...structuralCacheReasons.entries()].sort(([left], [right]) =>
+              left.localeCompare(right),
+            ),
+          ),
+          structural_cache_revalidation_reasons: Object.fromEntries(
+            [...structuralCacheRevalidationReasons.entries()].sort(([left], [right]) =>
               left.localeCompare(right),
             ),
           ),

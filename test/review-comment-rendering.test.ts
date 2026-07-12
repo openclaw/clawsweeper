@@ -113,6 +113,10 @@ test("structural cache probes before hydration but acquires a lease before carry
   const structuralCache = reviewLoop.indexOf("reviewStructuralCacheDecision({");
   const structuralHit = reviewLoop.indexOf("if (structuralDecision.hit)");
   const structuralLease = reviewLoop.indexOf("postReviewStartStatusComment({", structuralHit);
+  const structuralRevalidation = reviewLoop.indexOf(
+    "structuralCacheRevalidations += 1",
+    structuralLease,
+  );
   const structuralWrite = reviewLoop.indexOf("writeFileSync(reportPath, carried", structuralLease);
   const contentCache = reviewLoop.indexOf("reviewContentCacheHit({");
   const hydration = reviewLoop.indexOf("collectItemContext(item");
@@ -122,7 +126,8 @@ test("structural cache probes before hydration but acquires a lease before carry
   assert.ok(structuralCache < hydration);
   assert.ok(structuralHit > structuralCache);
   assert.ok(structuralLease > structuralHit);
-  assert.ok(structuralWrite > structuralLease);
+  assert.ok(structuralRevalidation > structuralLease);
+  assert.ok(structuralWrite > structuralRevalidation);
   assert.ok(structuralWrite < hydration);
   assert.ok(contentCache > structuralLease);
   assert.ok(mediaPrep > contentCache);
@@ -137,6 +142,11 @@ test("structural cache probes before hydration but acquires a lease before carry
   assert.match(source, /coordination-held\.json/);
   assert.match(source, /coordinationHeldRetryAt = startComment\.retryAt/);
   assert.match(source, /review-cache-metrics\.json/);
+  const workflow = readFileSync(".github/workflows/sweep.yml", "utf8");
+  assert.match(
+    workflow,
+    /review-artifacts\/shard-\$\{\{ matrix\.shard \}\}\/review-cache-metrics\.json/,
+  );
 });
 
 test("review comment patching only targets ClawSweeper-owned comments", () => {

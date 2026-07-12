@@ -1906,6 +1906,7 @@ jobs:
           name: review-shard-${{ matrix.shard }}
           path: |
             review-artifacts/shard-${{ matrix.shard }}/*.md
+            review-artifacts/shard-${{ matrix.shard }}/review-cache-metrics.json
           if-no-files-found: ignore
 
       - uses: actions/upload-artifact@v7

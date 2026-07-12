@@ -28,6 +28,8 @@ continue to full hydration.
 Before carrying a structural hit, ClawSweeper acquires the normal durable review
 lease for the unchanged PR head or issue source revision. Missing coordination,
 an incomplete lease tuple, or a concurrent review always disables reuse.
+ClawSweeper then repeats the bounded probe under that lease; any intervening
+non-ClawSweeper activity forces full hydration.
 
 ## Content Stage
 
@@ -42,5 +44,5 @@ Neither cache stage can promote a report to close.
 
 Each review run writes `review-cache-metrics.json` in its artifact directory.
 It reports structural checks, hits, probe failures, probe time, miss reasons,
-content-cache hits, and full hydration count. The final review log emits the
-same high-level counters.
+post-lease revalidation results, content-cache hits, and full hydration count.
+The final review log emits the same high-level counters.
