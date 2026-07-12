@@ -9,7 +9,7 @@ import {
   realpathSync,
   rmSync,
 } from "node:fs";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 
 const repoRoot = resolve(import.meta.dirname, "..");
 const artifactsRoot = join(repoRoot, ".artifacts");
@@ -42,30 +42,21 @@ if (existsSync(outputRoot) && lstatSync(outputRoot).isSymbolicLink()) {
 
 const distSource = join(repoRoot, "dist");
 const typescriptSource = realpathSync(join(repoRoot, "node_modules", "typescript"));
-const nativePackageName = `typescript-${process.platform}-${process.arch}`;
-const nativeSource = realpathSync(
-  join(dirname(typescriptSource), "@typescript", nativePackageName),
-);
 
 assertPackageName(typescriptSource, "typescript");
-assertPackageName(nativeSource, `@typescript/${nativePackageName}`);
 if (!existsSync(distSource)) {
   throw new Error("Built runtime not found. Run the build before preparing the review artifact.");
 }
 
 rmSync(outputRoot, { force: true, recursive: true });
-mkdirSync(join(outputRoot, "node_modules", "@typescript"), { recursive: true });
+mkdirSync(join(outputRoot, "node_modules"), { recursive: true });
 cpSync(distSource, join(outputRoot, "dist"), { dereference: true, recursive: true });
 cpSync(typescriptSource, join(outputRoot, "node_modules", "typescript"), {
   dereference: true,
   recursive: true,
 });
-cpSync(nativeSource, join(outputRoot, "node_modules", "@typescript", nativePackageName), {
-  dereference: true,
-  recursive: true,
-});
 
-console.log(`Prepared review runtime for ${process.platform}-${process.arch}.`);
+console.log("Prepared architecture-neutral review runtime.");
 
 function assertPackageName(directory, expectedName) {
   const packageJson = JSON.parse(readFileSync(join(directory, "package.json"), "utf8"));

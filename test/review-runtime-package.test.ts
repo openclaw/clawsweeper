@@ -5,11 +5,12 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   statSync,
   writeFileSync,
 } from "node:fs";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 
 import { tmpPrefix } from "./helpers.ts";
@@ -39,6 +40,29 @@ test("review runtime artifact carries the TypeScript compiler service", () => {
     execFileSync("tar", ["-czf", archive, "-C", output, "."], { stdio: "pipe" });
     mkdirSync(roundtrip);
     execFileSync("tar", ["-xzf", archive, "-C", roundtrip], { stdio: "pipe" });
+    assert.equal(existsSync(join(roundtrip, "node_modules", "@typescript")), false);
+
+    const typescriptSource = realpathSync(join(process.cwd(), "node_modules", "typescript"));
+    const nativeSource = realpathSync(
+      join(dirname(typescriptSource), "@typescript", nativePackageName),
+    );
+    const nativeDirectory = join(roundtrip, "node_modules", "@typescript", nativePackageName);
+    mkdirSync(nativeDirectory, { recursive: true });
+    const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
+    const packageFile = execFileSync(
+      npmCommand,
+      ["pack", nativeSource, "--pack-destination", fixture, "--silent"],
+      { encoding: "utf8" },
+    )
+      .trim()
+      .split(/\r?\n/)
+      .at(-1);
+    assert.ok(packageFile);
+    execFileSync(
+      "tar",
+      ["-xzf", join(fixture, packageFile), "-C", nativeDirectory, "--strip-components=1"],
+      { stdio: "pipe" },
+    );
 
     assert.equal(
       JSON.parse(
@@ -59,6 +83,7 @@ test("review runtime artifact carries the TypeScript compiler service", () => {
     if (process.platform !== "win32") {
       assert.notEqual(statSync(nativeCompiler).mode & 0o111, 0);
     }
+    execFileSync(nativeCompiler, ["--version"], { stdio: "pipe" });
 
     writeFileSync(join(roundtrip, "package.json"), '{"type":"module"}\n');
     const smokePath = join(roundtrip, "semantic-smoke.mjs");

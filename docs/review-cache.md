@@ -57,9 +57,9 @@ lexical state is established, while every non-trivia syntax fragment,
 `@ts-*`, triple-slash reference, source-map, source URL, shebang, legal
 `/*!`/`//!`, global declarations, formatter controls, and tooling directives
 remain part of the digest at their exact syntax attachment. Complete JSON hunks
-are parsed and compacted without reordering object keys. Scheduled shards carry
-the matching TypeScript compiler service and platform binary in their bounded
-mode-preserving runtime archive.
+are parsed and compacted without reordering object keys. Scheduled shards
+receive a bounded shared runtime archive, then install the exact TypeScript
+native package for their own platform and architecture before review.
 
 Semantic reuse requires:
 

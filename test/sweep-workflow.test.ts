@@ -74,7 +74,16 @@ test("scheduled review shards receive the compiler-backed runtime artifact", () 
   assert.match(reviewJob, /name: clawsweeper-runtime-dist\s+path: clawsweeper\/\.artifacts/);
   assert.doesNotMatch(reviewJob, /name: clawsweeper-runtime-dist\s+path: clawsweeper\/dist/);
   assert.match(reviewJob, /tar -xzf \.artifacts\/review-runtime\.tar\.gz/);
+  assert.match(
+    reviewJob,
+    /native_name="typescript-\$\(node -p 'process\.platform'\)-\$\(node -p 'process\.arch'\)"/,
+  );
+  assert.match(
+    reviewJob,
+    /npm pack "@typescript\/\$native_name@\$typescript_version" --pack-destination \.artifacts\/native-compiler --silent/,
+  );
   assert.match(reviewJob, /test -x "\$native_compiler"/);
+  assert.match(reviewJob, /"\$native_compiler" --version/);
 });
 
 test("exact event publish and routing require a successful fresh review artifact", () => {
