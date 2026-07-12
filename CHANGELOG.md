@@ -18,7 +18,8 @@ checkpoint, and status-only commits are intentionally omitted.
   crawl-remote release artifact without production credentials, then requires
   that exact SHA to remain the current main tip on a fresh protected runner
   using an environment-specific Cloudflare token, a committed lockfile-backed
-  Wrangler toolchain, pre- and post-migration D1 fence proof, an explicit
+  Wrangler toolchain, pre- and post-migration D1 fence proof, a second
+  current-main check immediately before Worker deployment, an explicit
   dormant-or-active observation-order selector, and exact release-identity
   polling.
 - Added conservative, add-only `good first issue` labeling for unlocked, small, current-main reproduced bugs with a high-confidence repair prompt and validation steps and no linked-PR, feature, config, product, security, protected-label, or maintainer-opt-out blocker.

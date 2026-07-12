@@ -8,6 +8,8 @@ import test from "node:test";
 import { parse } from "yaml";
 
 const workflowPath = ".github/workflows/deploy-crawl-remote.yml";
+const cloudflareAccountId = "1".repeat(32);
+const d1DatabaseId = "22222222-2222-4222-8222-222222222222";
 const mergedCrawlRemoteMain = "d6bb9b7a9c7eff0704dab4845a00e1863b7b8ef1";
 const source = readFileSync(workflowPath, "utf8");
 const workflow = parse(source);
@@ -47,6 +49,29 @@ function exactFence(state: "dormant" | "active") {
       ],
     },
   ];
+}
+
+function apiErrorFailure({
+  accountTag = cloudflareAccountId,
+  code = 7500,
+  note = "D1_ERROR: no such table: remote_capability_fences: SQLITE_ERROR [code: 7500]",
+  text = `A request to the Cloudflare API (/accounts/${cloudflareAccountId}/d1/database/${d1DatabaseId}/query) failed.`,
+}: {
+  accountTag?: string;
+  code?: number;
+  note?: string;
+  text?: string;
+} = {}) {
+  return {
+    error: {
+      text,
+      notes: [{ text: note }],
+      kind: "error",
+      name: "APIError",
+      code,
+      accountTag,
+    },
+  };
 }
 
 test("crawl-remote release is maintainer-bound across two fresh runners", () => {
@@ -146,9 +171,11 @@ test("authorization scripts reject every SHA except the current crawl-remote mai
   const ghPath = join(directory, "gh");
   const outputPath = join(directory, "output");
   const receiptPath = join(directory, "receipt.json");
+  const consumedReceiptPath = `${receiptPath}.consumed`;
   writeFileSync(ghPath, '#!/bin/sh\nprintf "%s\\n" "$CURRENT_MAIN_SHA"\n');
   chmodSync(ghPath, 0o755);
   writeFileSync(receiptPath, "{}\n");
+  writeFileSync(consumedReceiptPath, "{}\n");
 
   function runScript(script: string, deploySha: string, authorize: boolean) {
     writeFileSync(outputPath, "");
@@ -156,6 +183,7 @@ test("authorization scripts reject every SHA except the current crawl-remote mai
       encoding: "utf8",
       env: {
         ...process.env,
+        CONSUMED_RECEIPT_PATH: consumedReceiptPath,
         CURRENT_MAIN_SHA: mergedCrawlRemoteMain,
         DEPLOY_SHA: deploySha,
         GITHUB_OUTPUT: outputPath,
@@ -172,14 +200,73 @@ test("authorization scripts reject every SHA except the current crawl-remote mai
   }
 
   const authorize = step(preflight, "Authorize immutable main release").run ?? "";
-  const reauthorize =
-    step(deploy, "Reauthorize current main immediately before mutation").run ?? "";
+  const reauthorizeBeforeD1 = step(deploy, "Reauthorize current main before D1 mutation").run ?? "";
+  const reauthorizeBeforeWorker =
+    step(deploy, "Reauthorize current main immediately before Worker deploy").run ?? "";
 
   try {
     assert.equal(runScript(authorize, mergedCrawlRemoteMain, true).status, 0);
-    assert.equal(runScript(reauthorize, mergedCrawlRemoteMain, false).status, 0);
+    assert.equal(runScript(reauthorizeBeforeD1, mergedCrawlRemoteMain, false).status, 0);
+    assert.equal(runScript(reauthorizeBeforeWorker, mergedCrawlRemoteMain, false).status, 0);
     assert.notEqual(runScript(authorize, "a".repeat(40), true).status, 0);
-    assert.notEqual(runScript(reauthorize, "a".repeat(40), false).status, 0);
+    assert.notEqual(runScript(reauthorizeBeforeD1, "a".repeat(40), false).status, 0);
+    assert.notEqual(runScript(reauthorizeBeforeWorker, "a".repeat(40), false).status, 0);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("Worker deploy reauthorization rejects main moving after D1 migrations", () => {
+  const directory = mkdtempSync(join(tmpdir(), "crawl-remote-moving-main-"));
+  const consumedReceiptPath = join(directory, "receipt.json.consumed");
+  const counterPath = join(directory, "gh-calls");
+  const ghPath = join(directory, "gh");
+  const receiptPath = join(directory, "receipt.json");
+  writeFileSync(
+    ghPath,
+    `#!/bin/sh
+count=0
+if test -f "$GH_COUNTER"; then
+  count="$(cat "$GH_COUNTER")"
+fi
+if test "$count" -eq 0; then
+  printf '%s\\n' "$DEPLOY_SHA"
+else
+  printf '%s\\n' "$MOVED_MAIN_SHA"
+fi
+printf '%s\\n' "$((count + 1))" > "$GH_COUNTER"
+`,
+  );
+  chmodSync(ghPath, 0o755);
+  writeFileSync(receiptPath, "{}\n");
+
+  function runScript(script: string) {
+    return spawnSync("bash", ["--noprofile", "--norc", "-euo", "pipefail", "-c", script], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        CONSUMED_RECEIPT_PATH: consumedReceiptPath,
+        DEPLOY_SHA: mergedCrawlRemoteMain,
+        GH_COUNTER: counterPath,
+        GH_TOKEN: "test",
+        MOVED_MAIN_SHA: "a".repeat(40),
+        PATH: `${directory}:${process.env.PATH}`,
+        RECEIPT_PATH: receiptPath,
+        TARGET_REPOSITORY: "openclaw/crawl-remote",
+      },
+    });
+  }
+
+  const reauthorizeBeforeD1 = step(deploy, "Reauthorize current main before D1 mutation").run ?? "";
+  const reauthorizeBeforeWorker =
+    step(deploy, "Reauthorize current main immediately before Worker deploy").run ?? "";
+
+  try {
+    assert.equal(runScript(reauthorizeBeforeD1).status, 0);
+    writeFileSync(consumedReceiptPath, "{}\n");
+    const moved = runScript(reauthorizeBeforeWorker);
+    assert.notEqual(moved.status, 0);
+    assert.match(moved.stdout + moved.stderr, /no longer the current main tip/);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
@@ -378,6 +465,7 @@ test("protected deploy never executes target lifecycle code", () => {
   assert.doesNotMatch(deployRuns, /\$RELEASE_ROOT\/package\.json|src\/index/);
   assert.doesNotMatch(deployRuns, /\bsource\b|\beval\b|bash -c|sh -c/);
   assert.equal(deployRuns.match(/\$TOOLCHAIN_ROOT\/node_modules\/\.bin\/wrangler/g)?.length, 2);
+  assert.equal(deployRuns.match(/\.\/node_modules\/\.bin\/wrangler/g)?.length, 1);
   assert.equal(
     steps(deploy).filter((candidate) => candidate.uses?.startsWith("actions/checkout@")).length,
     1,
@@ -400,7 +488,7 @@ test("protected deploy never executes target lifecycle code", () => {
   }
 });
 
-test("deploy installs the committed exact Node and Wrangler toolchain before credentials", () => {
+test("deploy executes the committed exact Node and Wrangler toolchain install before credentials", () => {
   assert.equal(
     step(deploy, "Setup trusted Node runtime").uses,
     "actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e",
@@ -432,34 +520,70 @@ test("deploy installs the committed exact Node and Wrangler toolchain before cre
   assert.match(toolchainLock.packages["node_modules/wrangler"].integrity, /^sha512-/);
 
   const install = step(deploy, "Install exact trusted Wrangler");
-  assert.match(
-    install.run ?? "",
-    /npm ci --ignore-scripts --no-audit --no-fund --prefix "\$TOOLCHAIN_ROOT"/,
-  );
+  assert.match(install.run ?? "", /cd "\$TOOLCHAIN_ROOT"/);
+  assert.match(install.run ?? "", /npm ci --ignore-scripts --no-audit --no-fund/);
+  assert.doesNotMatch(install.run ?? "", /--prefix/);
   assert.doesNotMatch(install.run ?? "", /npm install|wrangler@/);
   assert.match(install.run ?? "", /actual_version=.*--version/);
   assert.equal(install.env?.CLOUDFLARE_API_TOKEN, undefined);
+
+  const workspace = mkdtempSync(join(tmpdir(), "crawl-remote-toolchain-install-"));
+  const toolchainRoot = join(workspace, ".github", "deploy", "crawl-remote-toolchain");
+  mkdirSync(toolchainRoot, { recursive: true });
+  writeFileSync(
+    join(toolchainRoot, "package.json"),
+    readFileSync(".github/deploy/crawl-remote-toolchain/package.json"),
+  );
+  writeFileSync(
+    join(toolchainRoot, "package-lock.json"),
+    readFileSync(".github/deploy/crawl-remote-toolchain/package-lock.json"),
+  );
+  try {
+    const installed = spawnSync(
+      "bash",
+      ["--noprofile", "--norc", "-euo", "pipefail", "-c", install.run ?? ""],
+      {
+        cwd: workspace,
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          TOOLCHAIN_ROOT: toolchainRoot,
+          WRANGLER_VERSION: "4.107.1",
+        },
+        timeout: 120_000,
+      },
+    );
+    assert.equal(installed.status, 0, installed.stdout + installed.stderr);
+    assert.equal(
+      JSON.parse(
+        readFileSync(join(toolchainRoot, "node_modules", "wrangler", "package.json"), "utf8"),
+      ).version,
+      "4.107.1",
+    );
+  } finally {
+    rmSync(workspace, { recursive: true, force: true });
+  }
 
   const credentialSteps = steps(deploy).filter(
     (candidate) => candidate.env?.CLOUDFLARE_API_TOKEN !== undefined,
   );
   assert.deepEqual(
     credentialSteps.map((candidate) => candidate.name),
-    ["Apply migrations and deploy verified bundle"],
+    ["Apply and verify D1 migrations", "Deploy verified Worker bundle"],
   );
-  const credentialStep = credentialSteps[0];
-  assert.ok(credentialStep);
-  assert.ok(steps(deploy).indexOf(install) < steps(deploy).indexOf(credentialStep));
-  assert.equal(
-    credentialStep.env?.CLOUDFLARE_API_TOKEN,
-    "${{ secrets.CRAWL_REMOTE_CLOUDFLARE_API_TOKEN }}",
-  );
+  for (const credentialStep of credentialSteps) {
+    assert.ok(steps(deploy).indexOf(install) < steps(deploy).indexOf(credentialStep));
+    assert.equal(
+      credentialStep.env?.CLOUDFLARE_API_TOKEN,
+      "${{ secrets.CRAWL_REMOTE_CLOUDFLARE_API_TOKEN }}",
+    );
+  }
   assert.doesNotMatch(source, /OPENCLAW_CLOUDFLARE_WORKERS_API_TOKEN/);
   assert.doesNotMatch(source, /\|\|\s*secrets\./);
-  assert.equal(source.match(/CRAWL_REMOTE_CLOUDFLARE_API_TOKEN/g)?.length, 1);
+  assert.equal(source.match(/CRAWL_REMOTE_CLOUDFLARE_API_TOKEN/g)?.length, 2);
 });
 
-test("deploy reauthorizes exact current main and consumes one receipt before mutation", () => {
+test("deploy reauthorizes exact current main before D1 and again immediately before Worker deploy", () => {
   const token = step(deploy, "Create exact-repository reauthorization token");
   assert.equal(
     token.uses,
@@ -472,62 +596,78 @@ test("deploy reauthorizes exact current main and consumes one receipt before mut
     1,
   );
 
-  const reauthorize = step(deploy, "Reauthorize current main immediately before mutation");
-  assert.match(reauthorize.run ?? "", /\[\[ "\$DEPLOY_SHA" != "\$current_main_sha" \]\]/);
-  assert.doesNotMatch(reauthorize.run ?? "", /compare\/|comparison_status|ancestor|"ahead"/);
+  const reauthorizeBeforeD1 = step(deploy, "Reauthorize current main before D1 mutation");
+  const migration = step(deploy, "Apply and verify D1 migrations");
+  const reauthorizeBeforeWorker = step(
+    deploy,
+    "Reauthorize current main immediately before Worker deploy",
+  );
+  const workerDeploy = step(deploy, "Deploy verified Worker bundle");
+  for (const reauthorize of [reauthorizeBeforeD1, reauthorizeBeforeWorker]) {
+    assert.match(reauthorize.run ?? "", /\[\[ "\$DEPLOY_SHA" != "\$current_main_sha" \]\]/);
+    assert.doesNotMatch(reauthorize.run ?? "", /compare\/|comparison_status|ancestor|"ahead"/);
+    assert.equal(reauthorize.env?.CLOUDFLARE_API_TOKEN, undefined);
+  }
 
-  const reauthorizeIndex = steps(deploy).indexOf(reauthorize);
-  const mutation = step(deploy, "Apply migrations and deploy verified bundle");
-  const mutationIndex = steps(deploy).indexOf(mutation);
-  assert.equal(reauthorizeIndex + 1, mutationIndex);
-  assert.match(mutation.run ?? "", /test ! -e "\$consumed_receipt"/);
-  assert.match(mutation.run ?? "", /mv -- "\$RECEIPT_PATH" "\$consumed_receipt"/);
+  assert.equal(steps(deploy).indexOf(reauthorizeBeforeD1) + 1, steps(deploy).indexOf(migration));
+  assert.equal(
+    steps(deploy).indexOf(migration) + 1,
+    steps(deploy).indexOf(reauthorizeBeforeWorker),
+  );
+  assert.equal(
+    steps(deploy).indexOf(reauthorizeBeforeWorker) + 1,
+    steps(deploy).indexOf(workerDeploy),
+  );
+  assert.match(migration.run ?? "", /test ! -e "\$CONSUMED_RECEIPT_PATH"/);
+  assert.match(migration.run ?? "", /mv -- "\$RECEIPT_PATH" "\$CONSUMED_RECEIPT_PATH"/);
+  assert.match(reauthorizeBeforeWorker.run ?? "", /test -f "\$CONSUMED_RECEIPT_PATH"/);
+  assert.match(workerDeploy.run ?? "", /test -f "\$CONSUMED_RECEIPT_PATH"/);
 });
 
-test("privileged mutation uses only verified files and proves the selected D1 fence state", () => {
-  const mutation = step(deploy, "Apply migrations and deploy verified bundle").run ?? "";
-  assert.match(mutation, /\$TOOLCHAIN_ROOT\/node_modules\/\.bin\/wrangler/);
-  assert.match(mutation, /d1 migrations apply crawl-remote/);
-  assert.match(mutation, /--cwd "\$RELEASE_ROOT"/);
-  assert.match(mutation, /--config wrangler\.json/);
-  assert.match(mutation, /d1 execute crawl-remote/);
+test("privileged mutations use only verified files and prove the selected D1 fence state", () => {
+  const migration = step(deploy, "Apply and verify D1 migrations").run ?? "";
+  const workerDeploy = step(deploy, "Deploy verified Worker bundle").run ?? "";
+  assert.match(migration, /\$TOOLCHAIN_ROOT\/node_modules\/\.bin\/wrangler/);
+  assert.match(migration, /d1 migrations apply crawl-remote/);
+  assert.match(migration, /--cwd "\$RELEASE_ROOT"/);
+  assert.match(migration, /--config wrangler\.json/);
+  assert.match(migration, /d1 execute crawl-remote/);
   assert.match(
-    mutation,
+    migration,
     /select capability, migration_ready, cutover_enabled, activated_at from remote_capability_fences/,
   );
-  assert.match(mutation, /capability = 'gitcrawl\.observation-order\.v1'/);
-  assert.match(mutation, /executions\.length !== 1/);
-  assert.match(mutation, /rows\.length !== 1/);
-  assert.match(mutation, /fence\?\.migration_ready !== 1/);
-  assert.match(mutation, /expectedState === 'active' \? 1 : 0/);
-  assert.match(mutation, /fence\?\.cutover_enabled !== expectedCutover/);
-  assert.match(mutation, /expectedState === 'active'/);
-  assert.match(mutation, /fence\.activated_at\.trim\(\)\.length === 0/);
-  assert.match(mutation, /expectedState === 'dormant'.*fence\?\.activated_at !== ''/s);
-  assert.match(mutation, /PRE_FENCE_STATUS="\$pre_fence_status"/);
-  assert.match(mutation, /no such table: remote_capability_fences: SQLITE_ERROR/);
-  assert.match(mutation, /JSON\.stringify\(failureKeys\).*JSON\.stringify\(\['error'\]\)/s);
-  assert.match(mutation, /errorOutput\.length !== 0/);
-  assert.match(mutation, /expectedState !== 'dormant'/);
-  assert.match(mutation, /pre-migration query failed/);
-  assert.match(mutation, /deploy bundle\/index\.js/);
-  assert.match(mutation, /--no-bundle/);
-  assert.match(mutation, /--strict/);
-  assert.match(mutation, /--var "CRAWL_REMOTE_RELEASE_SHA:\$DEPLOY_SHA"/);
-  assert.match(mutation, /--message "main \$\{DEPLOY_SHA\}"/);
+  assert.match(migration, /capability = 'gitcrawl\.observation-order\.v1'/);
+  assert.match(migration, /executions\.length !== 1/);
+  assert.match(migration, /rows\.length !== 1/);
+  assert.match(migration, /fence\?\.migration_ready !== 1/);
+  assert.match(migration, /expectedState === 'active' \? 1 : 0/);
+  assert.match(migration, /fence\?\.cutover_enabled !== expectedCutover/);
+  assert.match(migration, /fence\.activated_at\.trim\(\)\.length === 0/);
+  assert.match(migration, /expectedState === 'dormant'.*fence\?\.activated_at !== ''/s);
+  assert.match(migration, /PRE_FENCE_STATUS="\$pre_fence_status"/);
+  assert.match(migration, /apiError\.name !== 'APIError'/);
+  assert.match(migration, /apiError\.code !== 7500/);
+  assert.match(migration, /apiError\.accountTag !== expectedAccountId/);
+  assert.match(migration, /missingTableNotes/);
+  assert.match(migration, /errorOutput\.length !== 0/);
+  assert.match(migration, /expectedState !== 'dormant'/);
+  assert.match(migration, /pre-migration query failed/);
+  assert.match(workerDeploy, /deploy bundle\/index\.js/);
+  assert.match(workerDeploy, /--no-bundle/);
+  assert.match(workerDeploy, /--strict/);
+  assert.match(workerDeploy, /--var "CRAWL_REMOTE_RELEASE_SHA:\$DEPLOY_SHA"/);
+  assert.match(workerDeploy, /--message "main \$\{DEPLOY_SHA\}"/);
 
-  const preQueryIndex = mutation.indexOf('> "$PRE_FENCE_RESPONSE"');
-  const migrationIndex = mutation.indexOf('"$wrangler" d1 migrations apply');
-  const postQueryIndex = mutation.indexOf('> "$FENCE_RESPONSE"');
-  const deployIndex = mutation.indexOf('"$wrangler" deploy bundle/index.js');
+  const preQueryIndex = migration.indexOf('> "$PRE_FENCE_RESPONSE"');
+  const migrationIndex = migration.indexOf('"$wrangler" d1 migrations apply');
+  const postQueryIndex = migration.indexOf('> "$FENCE_RESPONSE"');
   assert.ok(preQueryIndex >= 0);
   assert.ok(preQueryIndex < migrationIndex);
   assert.ok(migrationIndex < postQueryIndex);
-  assert.ok(postQueryIndex < deployIndex);
 });
 
 test("pre-migration fence validator rejects mismatch and gates missing-table bootstrap", () => {
-  const run = step(deploy, "Apply migrations and deploy verified bundle").run ?? "";
+  const run = step(deploy, "Apply and verify D1 migrations").run ?? "";
   const validator = run.match(
     /node --input-type=module <<'PRE_FENCE_NODE'\n([\s\S]*?)\nPRE_FENCE_NODE/,
   )?.[1];
@@ -536,6 +676,19 @@ test("pre-migration fence validator rejects mismatch and gates missing-table boo
   const directory = mkdtempSync(join(tmpdir(), "crawl-remote-pre-fence-proof-"));
   const responsePath = join(directory, "fence.json");
   const errorPath = join(directory, "fence.err");
+  const releaseRoot = join(directory, "release");
+  mkdirSync(releaseRoot);
+  writeFileSync(
+    join(releaseRoot, "wrangler.json"),
+    JSON.stringify({
+      d1_databases: [
+        {
+          database_name: "crawl-remote",
+          database_id: d1DatabaseId,
+        },
+      ],
+    }),
+  );
 
   function validate(
     state: "dormant" | "active",
@@ -553,10 +706,12 @@ test("pre-migration fence validator rejects mismatch and gates missing-table boo
       encoding: "utf8",
       env: {
         ...process.env,
+        CLOUDFLARE_ACCOUNT_ID: cloudflareAccountId,
         OBSERVATION_ORDER_STATE: state,
         PRE_FENCE_ERROR: errorPath,
         PRE_FENCE_RESPONSE: responsePath,
         PRE_FENCE_STATUS: String(options.status ?? 0),
+        RELEASE_ROOT: releaseRoot,
       },
     });
   }
@@ -569,41 +724,41 @@ test("pre-migration fence validator rejects mismatch and gates missing-table boo
     assert.equal(
       validate("dormant", {
         status: 1,
-        response: {
-          error: {
-            text: "no such table: remote_capability_fences: SQLITE_ERROR",
-          },
-        },
+        response: apiErrorFailure(),
       }).status,
       0,
     );
     assert.notEqual(
       validate("active", {
         status: 1,
-        response: {
-          error: {
-            text: "D1_ERROR: no such table: remote_capability_fences: SQLITE_ERROR",
-          },
-        },
+        response: apiErrorFailure(),
       }).status,
       0,
     );
     assert.notEqual(
       validate("dormant", {
         status: 1,
-        response: { error: { text: "authentication failed" } },
+        response: apiErrorFailure({
+          code: 10000,
+          note: "Authentication error [code: 10000]",
+        }),
       }).status,
       0,
     );
     assert.notEqual(
       validate("dormant", {
         status: 1,
-        response: {
-          error: {
-            text: "no such table: remote_capability_fences: SQLITE_ERROR",
-          },
-        },
+        response: apiErrorFailure(),
         error: "unexpected stderr",
+      }).status,
+      0,
+    );
+    const extraField = apiErrorFailure();
+    Object.assign(extraField.error, { meta: { diagnostic: "unexpected" } });
+    assert.notEqual(
+      validate("dormant", {
+        status: 1,
+        response: extraField,
       }).status,
       0,
     );
@@ -615,7 +770,7 @@ test("pre-migration fence validator rejects mismatch and gates missing-table boo
 });
 
 test("post-migration D1 fence validator accepts only the selected state", () => {
-  const run = step(deploy, "Apply migrations and deploy verified bundle").run ?? "";
+  const run = step(deploy, "Apply and verify D1 migrations").run ?? "";
   const validator = run.match(
     /node --input-type=module <<'POST_FENCE_NODE'\n([\s\S]*?)\nPOST_FENCE_NODE/,
   )?.[1];

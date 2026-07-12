@@ -416,9 +416,12 @@ jobs:
           unset BASH_ENV ENV CDPATH GLOBIGNORE NODE_OPTIONS
           test -f "$TOOLCHAIN_ROOT/package.json"
           test -f "$TOOLCHAIN_ROOT/package-lock.json"
-          npm ci --ignore-scripts --no-audit --no-fund --prefix "$TOOLCHAIN_ROOT"
-          actual_version="$("$TOOLCHAIN_ROOT/node_modules/.bin/wrangler" --version)"
-          test "$actual_version" = "$WRANGLER_VERSION"
+          (
+            cd "$TOOLCHAIN_ROOT" || exit 1
+            npm ci --ignore-scripts --no-audit --no-fund
+            actual_version="$(./node_modules/.bin/wrangler --version)"
+            test "$actual_version" = "$WRANGLER_VERSION"
+          )
 
       - name: Download immutable release artifact
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -703,7 +706,7 @@ jobs:
           repositories: crawl-remote
           permission-contents: read
 
-      - name: Reauthorize current main immediately before mutation
+      - name: Reauthorize current main before D1 mutation
         env:
           GH_TOKEN: ${{ steps.target-token.outputs.token }}
           RECEIPT_PATH: ${{ runner.temp }}/${{ needs.preflight.outputs.receipt_name }}
@@ -722,9 +725,10 @@ jobs:
             exit 1
           fi
 
-      - name: Apply migrations and deploy verified bundle
+      - name: Apply and verify D1 migrations
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CRAWL_REMOTE_CLOUDFLARE_API_TOKEN }}
+          CONSUMED_RECEIPT_PATH: ${{ runner.temp }}/${{ needs.preflight.outputs.receipt_name }}.consumed
           FENCE_RESPONSE: ${{ runner.temp }}/crawl-remote-observation-fence.json
           PRE_FENCE_ERROR: ${{ runner.temp }}/crawl-remote-observation-fence-precheck.err
           PRE_FENCE_RESPONSE: ${{ runner.temp }}/crawl-remote-observation-fence-precheck.json
@@ -736,10 +740,9 @@ jobs:
           wrangler="$TOOLCHAIN_ROOT/node_modules/.bin/wrangler"
           test "$("$wrangler" --version)" = "$WRANGLER_VERSION"
 
-          consumed_receipt="${RECEIPT_PATH}.consumed"
           test -f "$RECEIPT_PATH"
-          test ! -e "$consumed_receipt"
-          mv -- "$RECEIPT_PATH" "$consumed_receipt"
+          test ! -e "$CONSUMED_RECEIPT_PATH"
+          mv -- "$RECEIPT_PATH" "$CONSUMED_RECEIPT_PATH"
 
           set +e
           "$wrangler" d1 execute crawl-remote \
@@ -757,6 +760,7 @@ jobs:
 
           PRE_FENCE_STATUS="$pre_fence_status" node --input-type=module <<'PRE_FENCE_NODE'
           import { readFileSync } from 'node:fs';
+          import { join } from 'node:path';
 
           const expectedState = process.env.OBSERVATION_ORDER_STATE;
           if (!['dormant', 'active'].includes(expectedState)) {
@@ -782,21 +786,46 @@ jobs:
               failure && typeof failure === 'object' && !Array.isArray(failure)
                 ? Object.keys(failure)
                 : [];
+            const apiError = failure?.error;
             const errorKeys =
-              failure?.error &&
-              typeof failure.error === 'object' &&
-              !Array.isArray(failure.error)
-                ? Object.keys(failure.error)
+              apiError && typeof apiError === 'object' && !Array.isArray(apiError)
+                ? Object.keys(apiError).sort()
                 : [];
-            const missingTableErrors = new Set([
-              'no such table: remote_capability_fences: SQLITE_ERROR',
-              'D1_ERROR: no such table: remote_capability_fences: SQLITE_ERROR',
+            const config = JSON.parse(
+              readFileSync(join(process.env.RELEASE_ROOT, 'wrangler.json'), 'utf8'),
+            );
+            const database = Array.isArray(config.d1_databases)
+              ? config.d1_databases.find(
+                  (candidate) => candidate?.database_name === 'crawl-remote',
+                )
+              : undefined;
+            const expectedAccountId = process.env.CLOUDFLARE_ACCOUNT_ID;
+            const expectedDatabaseId = database?.database_id;
+            const expectedText =
+              `A request to the Cloudflare API (/accounts/${expectedAccountId}/d1/database/${expectedDatabaseId}/query) failed.`;
+            const missingTableNotes = new Set([
+              'no such table: remote_capability_fences: SQLITE_ERROR [code: 7500]',
+              'D1_ERROR: no such table: remote_capability_fences: SQLITE_ERROR [code: 7500]',
             ]);
+            const notes = apiError?.notes;
             if (
               errorOutput.length !== 0 ||
               JSON.stringify(failureKeys) !== JSON.stringify(['error']) ||
-              JSON.stringify(errorKeys) !== JSON.stringify(['text']) ||
-              !missingTableErrors.has(failure.error.text)
+              JSON.stringify(errorKeys) !==
+                JSON.stringify(['accountTag', 'code', 'kind', 'name', 'notes', 'text']) ||
+              typeof expectedAccountId !== 'string' ||
+              !/^[0-9a-f]{32}$/.test(expectedAccountId) ||
+              typeof expectedDatabaseId !== 'string' ||
+              !/^[0-9a-f-]{36}$/.test(expectedDatabaseId) ||
+              apiError.text !== expectedText ||
+              apiError.name !== 'APIError' ||
+              apiError.kind !== 'error' ||
+              apiError.code !== 7500 ||
+              apiError.accountTag !== expectedAccountId ||
+              !Array.isArray(notes) ||
+              notes.length !== 1 ||
+              JSON.stringify(Object.keys(notes[0] ?? {})) !== JSON.stringify(['text']) ||
+              !missingTableNotes.has(notes[0].text)
             ) {
               throw new Error('observation-order pre-migration query failed');
             }
@@ -907,6 +936,37 @@ jobs:
 
           console.log(`Observation-order migration is ready and ${expectedState}.`);
           POST_FENCE_NODE
+
+      - name: Reauthorize current main immediately before Worker deploy
+        env:
+          CONSUMED_RECEIPT_PATH: ${{ runner.temp }}/${{ needs.preflight.outputs.receipt_name }}.consumed
+          GH_TOKEN: ${{ steps.target-token.outputs.token }}
+        run: |
+          unset BASH_ENV ENV CDPATH GLOBIGNORE NODE_OPTIONS
+          test -f "$CONSUMED_RECEIPT_PATH"
+          current_main_sha="$(
+            gh api "repos/$TARGET_REPOSITORY/commits/main" --jq '.sha'
+          )"
+          if [[ ! "$current_main_sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::crawl-remote main did not resolve to a full lowercase commit SHA."
+            exit 1
+          fi
+          if [[ "$DEPLOY_SHA" != "$current_main_sha" ]]; then
+            echo "::error::approved crawl-remote release is no longer the current main tip."
+            exit 1
+          fi
+
+      - name: Deploy verified Worker bundle
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CRAWL_REMOTE_CLOUDFLARE_API_TOKEN }}
+          CONSUMED_RECEIPT_PATH: ${{ runner.temp }}/${{ needs.preflight.outputs.receipt_name }}.consumed
+          RELEASE_ROOT: ${{ runner.temp }}/crawl-remote-release
+        run: |
+          unset BASH_ENV ENV CDPATH GLOBIGNORE NODE_OPTIONS
+          test -n "$CLOUDFLARE_API_TOKEN"
+          test -f "$CONSUMED_RECEIPT_PATH"
+          wrangler="$TOOLCHAIN_ROOT/node_modules/.bin/wrangler"
+          test "$("$wrangler" --version)" = "$WRANGLER_VERSION"
 
           "$wrangler" deploy bundle/index.js \
             --no-bundle \
