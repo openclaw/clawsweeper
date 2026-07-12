@@ -62,6 +62,10 @@ checkpoint, and status-only commits are intentionally omitted.
   treated exact-head publication-only lanes as successful, derived terminal
   workflow state from the generated post-flight report, and skipped merge-only
   App identity probes when merge is disabled.
+- Required durable prior publication checkpoints before accepting already-closed
+  replacement sources, bound every primary and secondary source closeout to its
+  exact head and base revisions, and prevented producer reruns with missing
+  transfers from consuming artifacts emitted by older workflow attempts.
 - Replaced the unsupported GitHub installation identity probe with pinned
   `create-github-app-token` App slug and installation outputs plus App IDs
   derived from the authenticated slug, rejected

@@ -16,6 +16,7 @@ export function resolveRunArtifact({
   currentAttempt,
   expectedArtifactId,
   expectedArtifactDigest,
+  allowPriorAttempts = process.env.CLAWSWEEPER_ALLOW_PRIOR_ARTIFACT === "1",
 }: {
   artifacts: LooseRecord[];
   prefix: string;
@@ -23,6 +24,7 @@ export function resolveRunArtifact({
   currentAttempt: number;
   expectedArtifactId?: string | null;
   expectedArtifactDigest?: string | null;
+  allowPriorAttempts?: boolean;
 }): ResolvedRunArtifact {
   if (!prefix || !/^[A-Za-z0-9_.-]+$/.test(prefix)) {
     throw new Error("artifact prefix is invalid");
@@ -36,6 +38,9 @@ export function resolveRunArtifact({
 
   const expectedId = parseOptionalArtifactId(expectedArtifactId);
   const expectedDigest = normalizeOptionalDigest(expectedArtifactDigest);
+  if ((expectedId === null) !== (expectedDigest === null)) {
+    throw new Error("trusted producer artifact id and digest must be provided together");
+  }
   const namePattern = new RegExp(`^${escapeRegExp(prefix)}-${runId}-([1-9][0-9]*)$`);
   const candidates = artifacts.flatMap((artifact) => {
     const match = String(artifact.name ?? "").match(namePattern);
@@ -71,10 +76,17 @@ export function resolveRunArtifact({
   }
 
   const eligible = candidates.filter(
-    (artifact) => !artifact.expired && (!expectedDigest || artifact.digest === expectedDigest),
+    (artifact) =>
+      !artifact.expired &&
+      (artifact.producerAttempt === currentAttempt ||
+        (allowPriorAttempts && artifact.producerAttempt < currentAttempt)),
   );
   if (eligible.length === 0) {
-    throw new Error("no trusted producer artifact matches this workflow run");
+    throw new Error(
+      allowPriorAttempts
+        ? "no trusted current or prior producer artifact matches this workflow run"
+        : "current producer attempt did not publish a trusted artifact",
+    );
   }
   const producerAttempt = Math.max(...eligible.map((artifact) => artifact.producerAttempt));
   const latest = eligible.filter((artifact) => artifact.producerAttempt === producerAttempt);

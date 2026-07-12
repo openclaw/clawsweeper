@@ -18,6 +18,7 @@ test("reruns select the latest trusted producer attempt instead of the consumer 
       prefix: "clawsweeper-repair-execution",
       runId: "9001",
       currentAttempt: 3,
+      allowPriorAttempts: true,
     }),
     {
       id: 102,
@@ -25,6 +26,32 @@ test("reruns select the latest trusted producer attempt instead of the consumer 
       producerAttempt: 2,
       digest: digest2,
     },
+  );
+});
+
+test("a rerun of the producer cannot fall back to an older artifact", () => {
+  assert.throws(
+    () =>
+      resolveRunArtifact({
+        artifacts: [artifact(101, 1, digest1), artifact(102, 2, digest2)],
+        prefix: "clawsweeper-repair-execution",
+        runId: "9001",
+        currentAttempt: 3,
+      }),
+    /current producer attempt did not publish/,
+  );
+  assert.equal(
+    resolveRunArtifact({
+      artifacts: [
+        artifact(101, 1, digest1),
+        artifact(102, 2, digest2),
+        artifact(103, 3, "3".repeat(64)),
+      ],
+      prefix: "clawsweeper-repair-execution",
+      runId: "9001",
+      currentAttempt: 3,
+    }).id,
+    103,
   );
 });
 
@@ -63,6 +90,7 @@ test("artifact resolution rejects expired, ambiguous, and untrusted candidates",
         runId: "9001",
         currentAttempt: 3,
         expectedArtifactId: "101",
+        expectedArtifactDigest: digest1,
       }),
     /expired/,
   );
@@ -73,6 +101,7 @@ test("artifact resolution rejects expired, ambiguous, and untrusted candidates",
         prefix: "clawsweeper-repair-execution",
         runId: "9001",
         currentAttempt: 3,
+        allowPriorAttempts: true,
       }),
     /ambiguous/,
   );
@@ -82,9 +111,20 @@ test("artifact resolution rejects expired, ambiguous, and untrusted candidates",
         artifacts: [{ ...artifact(101, 1, digest1), digest: null }],
         prefix: "clawsweeper-repair-execution",
         runId: "9001",
-        currentAttempt: 3,
+        currentAttempt: 1,
       }),
     /missing a trusted digest/,
+  );
+  assert.throws(
+    () =>
+      resolveRunArtifact({
+        artifacts: [artifact(101, 1, digest1)],
+        prefix: "clawsweeper-repair-execution",
+        runId: "9001",
+        currentAttempt: 1,
+        expectedArtifactId: "101",
+      }),
+    /id and digest must be provided together/,
   );
 });
 
@@ -95,7 +135,7 @@ test("repair workflow resolves producer artifacts by trusted id across rerun att
       /uses: actions\/download-artifact@v8\n\s+with:\n([\s\S]*?)(?=\n\s{6}- (?:name|uses):|\n\n)/g,
     ),
   ];
-  assert.equal(downloadBlocks.length, 6);
+  assert.equal(downloadBlocks.length, 7);
   for (const block of downloadBlocks) {
     assert.match(block[1]!, /artifact-ids: \$\{\{ steps\.[^.]+\.outputs\.artifact_id \}\}/);
     assert.match(block[1]!, /github-token: \$\{\{ github\.token \}\}/);
@@ -111,11 +151,30 @@ test("repair workflow resolves producer artifacts by trusted id across rerun att
     "clawsweeper-repair-authorized",
     "clawsweeper-repair-execution",
     "clawsweeper-repair-validation",
+    "clawsweeper-repair-publication",
   ]) {
     assert.match(workflow, new RegExp(`--prefix ${prefix}`));
   }
   assert.match(workflow, /artifact_id: \$\{\{ steps\.upload\.outputs\.artifact-id \}\}/);
   assert.match(workflow, /artifact_id: \$\{\{ steps\.upload_execution\.outputs\.artifact-id \}\}/);
+  assert.equal(
+    [...workflow.matchAll(/producer_attempt: \$\{\{ steps\.producer_attempt\.outputs\.value \}\}/g)]
+      .length,
+    4,
+  );
+  assert.equal(
+    [
+      ...workflow.matchAll(
+        /CLAWSWEEPER_ALLOW_PRIOR_ARTIFACT: \$\{\{ needs\.[^.]+\.outputs\.producer_attempt != '' && needs\.[^.]+\.outputs\.producer_attempt != github\.run_attempt && '1' \|\| '0' \}\}/g,
+      ),
+    ].length,
+    6,
+  );
+  assert.match(workflow, /Upload worker transfer artifacts[\s\S]*?if-no-files-found: error/);
+  assert.match(
+    workflow,
+    /Resolve prior durable publication checkpoint[\s\S]*?CLAWSWEEPER_ALLOW_PRIOR_ARTIFACT: "1"[\s\S]*?--prefix clawsweeper-repair-publication[\s\S]*?Download prior durable publication checkpoint[\s\S]*?Publish exact independently validated repair/,
+  );
 });
 
 function artifact(id: number, attempt: number, digest: string) {

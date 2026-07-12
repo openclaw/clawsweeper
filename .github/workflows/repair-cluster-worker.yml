@@ -126,6 +126,7 @@ jobs:
       job_exists: ${{ steps.check_job.outputs.job_exists }}
       worker_artifact_id: ${{ steps.upload_worker.outputs.artifact-id }}
       worker_artifact_digest: ${{ steps.upload_worker.outputs.artifact-digest }}
+      producer_attempt: ${{ steps.producer_attempt.outputs.value }}
     env:
       CLAWSWEEPER_ALLOWED_OWNER: ${{ vars.CLAWSWEEPER_ALLOWED_OWNER || 'openclaw' }}
       CLAWSWEEPER_ALLOW_EXECUTE: ${{ (inputs.mode == 'execute' || inputs.mode == 'autonomous') && vars.CLAWSWEEPER_ALLOW_EXECUTE == '1' && '1' || '0' }}
@@ -143,6 +144,10 @@ jobs:
       CLAWSWEEPER_CRABFLEET_URL: ${{ vars.CLAWSWEEPER_CRABFLEET_URL || 'https://crabfleet.openclaw.ai' }}
       OPENCLAW_LOCAL_CHECK: "0"
     steps:
+      - name: Record producer attempt
+        id: producer_attempt
+        run: echo "value=$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
+
       - uses: actions/checkout@v7
         with:
           filter: blob:none
@@ -348,7 +353,7 @@ jobs:
         with:
           name: clawsweeper-repair-worker-${{ github.run_id }}-${{ github.run_attempt }}
           path: .clawsweeper-repair/runs
-          if-no-files-found: warn
+          if-no-files-found: error
 
       - name: Upload final worker artifacts
         if: ${{ always() && (!((inputs.mode == 'execute' || inputs.mode == 'autonomous') && !inputs.dry_run) || failure() || cancelled()) }}
@@ -410,9 +415,14 @@ jobs:
       target_name: ${{ steps.authorize.outputs.target_name }}
       artifact_id: ${{ steps.upload.outputs.artifact-id }}
       artifact_digest: ${{ steps.upload.outputs.artifact-digest }}
+      producer_attempt: ${{ steps.producer_attempt.outputs.value }}
     env:
       CLAWSWEEPER_ALLOWED_OWNER: ${{ vars.CLAWSWEEPER_ALLOWED_OWNER || 'openclaw' }}
     steps:
+      - name: Record producer attempt
+        id: producer_attempt
+        run: echo "value=$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
+
       - uses: actions/checkout@v7
         with:
           ref: ${{ github.sha }}
@@ -482,6 +492,7 @@ jobs:
         id: worker_artifact
         env:
           GH_TOKEN: ${{ github.token }}
+          CLAWSWEEPER_ALLOW_PRIOR_ARTIFACT: ${{ needs.cluster.outputs.producer_attempt != '' && needs.cluster.outputs.producer_attempt != github.run_attempt && '1' || '0' }}
         run: |
           pnpm run repair:resolve-run-artifact -- \
             --repository "${{ github.repository }}" \
@@ -543,6 +554,7 @@ jobs:
       execution_manifest_sha256: ${{ steps.seal.outputs.execution_manifest_sha256 }}
       artifact_id: ${{ steps.upload_execution.outputs.artifact-id }}
       artifact_digest: ${{ steps.upload_execution.outputs.artifact-digest }}
+      producer_attempt: ${{ steps.producer_attempt.outputs.value }}
     env:
       CLAWSWEEPER_ALLOWED_OWNER: ${{ needs.authorize.outputs.target_owner }}
       CLAWSWEEPER_ALLOW_EXECUTE: ${{ needs.cluster.outputs.allow_execute == '1' && '1' || '0' }}
@@ -565,6 +577,10 @@ jobs:
       CLAWSWEEPER_CRABFLEET_URL: ${{ vars.CLAWSWEEPER_CRABFLEET_URL || 'https://crabfleet.openclaw.ai' }}
       OPENCLAW_LOCAL_CHECK: "0"
     steps:
+      - name: Record producer attempt
+        id: producer_attempt
+        run: echo "value=$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
+
       - uses: actions/checkout@v7
         with:
           filter: blob:none
@@ -578,6 +594,7 @@ jobs:
         id: authorized_artifact
         env:
           GH_TOKEN: ${{ github.token }}
+          CLAWSWEEPER_ALLOW_PRIOR_ARTIFACT: ${{ needs.authorize.outputs.producer_attempt != '' && needs.authorize.outputs.producer_attempt != github.run_attempt && '1' || '0' }}
         run: |
           pnpm run repair:resolve-run-artifact -- \
             --repository "${{ github.repository }}" \
@@ -730,9 +747,14 @@ jobs:
       receipt_sha256: ${{ steps.validate.outputs.receipt_sha256 }}
       artifact_id: ${{ steps.upload.outputs.artifact-id }}
       artifact_digest: ${{ steps.upload.outputs.artifact-digest }}
+      producer_attempt: ${{ steps.producer_attempt.outputs.value }}
     env:
       OPENCLAW_LOCAL_CHECK: "0"
     steps:
+      - name: Record producer attempt
+        id: producer_attempt
+        run: echo "value=$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
+
       - uses: actions/checkout@v7
         with:
           ref: ${{ github.sha }}
@@ -754,6 +776,7 @@ jobs:
         id: execution_artifact
         env:
           GH_TOKEN: ${{ github.token }}
+          CLAWSWEEPER_ALLOW_PRIOR_ARTIFACT: ${{ needs.execute.outputs.producer_attempt != '' && needs.execute.outputs.producer_attempt != github.run_attempt && '1' || '0' }}
         run: |
           pnpm run repair:resolve-run-artifact -- \
             --repository "${{ github.repository }}" \
@@ -824,6 +847,7 @@ jobs:
         id: execution_artifact
         env:
           GH_TOKEN: ${{ github.token }}
+          CLAWSWEEPER_ALLOW_PRIOR_ARTIFACT: ${{ needs.execute.outputs.producer_attempt != '' && needs.execute.outputs.producer_attempt != github.run_attempt && '1' || '0' }}
         run: |
           pnpm run repair:resolve-run-artifact -- \
             --repository "${{ github.repository }}" \
@@ -939,6 +963,7 @@ jobs:
         id: execution_artifact
         env:
           GH_TOKEN: ${{ github.token }}
+          CLAWSWEEPER_ALLOW_PRIOR_ARTIFACT: ${{ needs.execute.outputs.producer_attempt != '' && needs.execute.outputs.producer_attempt != github.run_attempt && '1' || '0' }}
         run: |
           pnpm run repair:resolve-run-artifact -- \
             --repository "${{ github.repository }}" \
@@ -961,6 +986,7 @@ jobs:
         id: validation_artifact
         env:
           GH_TOKEN: ${{ github.token }}
+          CLAWSWEEPER_ALLOW_PRIOR_ARTIFACT: ${{ needs.validate.outputs.producer_attempt != '' && needs.validate.outputs.producer_attempt != github.run_attempt && '1' || '0' }}
         run: |
           pnpm run repair:resolve-run-artifact -- \
             --repository "${{ github.repository }}" \
@@ -1055,6 +1081,29 @@ jobs:
       - name: Record deterministic validation phase
         if: ${{ success() && needs.execute.outputs.execute_fix_outcome == 'success' && steps.crabfleet_session.outcome == 'success' }}
         run: pnpm run repair:action-session -- update --state running --phase post_flight --summary "Codex changes validated; applying GitHub post-flight gates"
+
+      - name: Resolve prior durable publication checkpoint
+        id: prior_publication_artifact
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CLAWSWEEPER_ALLOW_PRIOR_ARTIFACT: "1"
+        run: |
+          pnpm run repair:resolve-run-artifact -- \
+            --repository "${{ github.repository }}" \
+            --run-id "${{ github.run_id }}" \
+            --current-attempt "${{ github.run_attempt }}" \
+            --prefix clawsweeper-repair-publication
+
+      - name: Download prior durable publication checkpoint
+        if: ${{ steps.prior_publication_artifact.outcome == 'success' }}
+        uses: actions/download-artifact@v8
+        with:
+          artifact-ids: ${{ steps.prior_publication_artifact.outputs.artifact_id }}
+          path: .clawsweeper-repair/publication
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ github.run_id }}
 
       - name: Publish exact independently validated repair
         id: publish

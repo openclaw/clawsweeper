@@ -10,6 +10,8 @@ import {
   assertPublicationPauseBoundary,
   assertPublicationSafetyBoundary,
   assertRepairDeltaBaseBinding,
+  assertSourcePullRevision,
+  checkpointedSourceClosures,
   missingRequiredPublicationLabels,
   prepareExecutionAuthorization,
   preparedRefPublicationState,
@@ -17,6 +19,7 @@ import {
   replacementPublicationLabels,
   selectAuthorizedReplacementPull,
   sealExecutionHandoff,
+  type SourcePullRevision,
   verifyExecutionHandoff,
   verifyValidationReceipt,
 } from "../../dist/repair/execution-handoff.js";
@@ -25,6 +28,7 @@ import {
   createPreparedPublication,
   digestJson,
   executionIntentRepairDeltaBaseSha,
+  publicationReceipt,
   type PreparedPublication,
   verifyExecutionIntentIdentity,
   verifyPreparedPublication,
@@ -471,6 +475,87 @@ test("replacement publication binds source, implementation, and automerge labels
   );
 });
 
+test("planned source closure is not checkpointed until an exact publication receipt exists", () => {
+  const revision = sourcePullRevision(42);
+  const publication = checkpointPublication([
+    {
+      source: revision.url,
+      operation: "close",
+    },
+  ]);
+  const closedPull = livePull(revision, { state: "closed" });
+
+  const plannedOnly = checkpointedSourceClosures(publication, null);
+  assert.equal(plannedOnly.size, 0);
+  assert.throws(
+    () =>
+      assertSourcePullRevision(revision, closedPull, {
+        allowClosed: plannedOnly.has(revision.url),
+      }),
+    /revision changed after authorization/,
+  );
+
+  const receipt = publicationReceipt({
+    validationReceiptSha256: "c".repeat(64),
+    publication,
+    targetPrNumber: 99,
+    mutations: [],
+  });
+  const checkpointed = checkpointedSourceClosures(publication, receipt);
+  assert.deepEqual([...checkpointed], [revision.url]);
+  assert.doesNotThrow(() =>
+    assertSourcePullRevision(revision, closedPull, {
+      allowClosed: checkpointed.has(revision.url),
+    }),
+  );
+  assert.throws(
+    () =>
+      assertSourcePullRevision(
+        revision,
+        { ...closedPull, merged_at: "2026-07-12T00:00:00Z" },
+        {
+          allowClosed: true,
+        },
+      ),
+    /revision changed after authorization/,
+  );
+  assert.throws(
+    () =>
+      checkpointedSourceClosures(publication, {
+        ...receipt,
+        prepared_publication_sha256: "f".repeat(64),
+      }),
+    /publication receipt does not match/,
+  );
+});
+
+test("every source closeout remains bound to its exact head and base revisions", () => {
+  const revision = sourcePullRevision(43);
+  assert.doesNotThrow(() => assertSourcePullRevision(revision, livePull(revision)));
+  assert.throws(
+    () =>
+      assertSourcePullRevision(revision, {
+        ...livePull(revision),
+        head: {
+          ...livePull(revision).head,
+          sha: "4".repeat(40),
+        },
+      }),
+    /revision changed after authorization/,
+  );
+  assert.throws(
+    () =>
+      assertSourcePullRevision(revision, {
+        ...livePull(revision),
+        base: {
+          ...livePull(revision).base,
+          sha: "5".repeat(40),
+        },
+      }),
+    /revision changed after authorization/,
+  );
+});
+
 test("publication checkpoint precedes source closeout and every mutation rechecks live safety", () => {
   const source = fs.readFileSync("src/repair/execution-handoff.ts", "utf8");
   const mutationWrapper = source.slice(
@@ -513,6 +598,10 @@ test("publication checkpoint precedes source closeout and every mutation recheck
   assert.ok(
     publisher.indexOf("publishReplacementRepair") < publisher.indexOf("publicationReceipt"),
   );
+  assert.ok(
+    publisher.indexOf("readPriorPublicationCheckpoint") <
+      publisher.indexOf("revalidateLiveSources"),
+  );
   const closeout = source.slice(
     source.indexOf("function closeSupersededReplacementSources"),
     source.indexOf("function verifyPublishedPull"),
@@ -521,6 +610,20 @@ test("publication checkpoint precedes source closeout and every mutation recheck
     closeout,
     /ensurePublishedReplacementAvailable\([\s\S]*publishExactPullComment\([\s\S]*ensurePublishedReplacementAvailable\([\s\S]*"pr",\s*"close"/,
   );
+  assert.match(
+    closeout,
+    /beforeMutation:[\s\S]*revalidateSourcePullRevision\([\s\S]*runPublicationMutation\([\s\S]*revalidateSourcePullRevision\(/,
+  );
+  const resolver = source.slice(
+    source.indexOf("function resolveLiveExecutionIntent"),
+    source.indexOf("function verifyAuthorizedPreparedPublication"),
+  );
+  assert.match(resolver, /source_pull_revisions: liveSourcePulls\.map/);
+  const liveRevalidation = source.slice(
+    source.indexOf("function revalidateLiveSources"),
+    source.indexOf("function checkoutIdentity"),
+  );
+  assert.doesNotMatch(liveRevalidation, /superseded_source_actions/);
 });
 
 test("publication pause boundary covers secondary sources and retry targets on every mutation", () => {
@@ -910,6 +1013,64 @@ function executionIntent(actionIdentitySha256: string) {
     required_labels: ["clawsweeper"],
   };
   return { ...identity, identity_sha256: digestJson(identity) };
+}
+
+function sourcePullRevision(number: number): SourcePullRevision {
+  return {
+    url: `https://github.com/openclaw/example/pull/${number}`,
+    repo: "openclaw/example",
+    number,
+    expected_state: "open",
+    expected_head_repo: "contributor/example",
+    expected_head_ref: `source-${number}`,
+    expected_head_sha: "2".repeat(40),
+    expected_base_ref: "main",
+    expected_base_sha: "1".repeat(40),
+  };
+}
+
+function livePull(revision: SourcePullRevision, { state = "open" } = {}) {
+  return {
+    state,
+    merged_at: null,
+    head: {
+      repo: { full_name: revision.expected_head_repo },
+      ref: revision.expected_head_ref,
+      sha: revision.expected_head_sha,
+    },
+    base: {
+      ref: revision.expected_base_ref,
+      sha: revision.expected_base_sha,
+    },
+  };
+}
+
+function checkpointPublication(supersededSourceActions: Array<Record<string, string>>) {
+  const intent = executionIntent("a".repeat(64));
+  return {
+    schema_version: 2,
+    authorization_sha256: "b".repeat(64),
+    execution_intent_sha256: intent.identity_sha256,
+    action_identity_sha256: intent.action_identity_sha256,
+    target_repo: intent.target_repo,
+    operation: "open_pull_request",
+    output_repo: intent.output_repo,
+    output_branch: intent.output_branch,
+    expected_output_sha: intent.expected_output_sha,
+    source: intent.source,
+    target_base_ref: intent.target_base_ref,
+    target_base_sha: intent.target_base_sha,
+    repair_delta_base_sha: intent.target_base_sha,
+    prepared_head_sha: "2".repeat(40),
+    prepared_tree_sha: "3".repeat(40),
+    bundle_path: "prepared-repair.bundle",
+    bundle_sha256: "d".repeat(64),
+    pr_title: "fix: exact replacement",
+    pr_body: "Exact replacement.",
+    source_comment: "Prepared replacement.",
+    superseded_source_actions: supersededSourceActions,
+    identity_sha256: "e".repeat(64),
+  } as PreparedPublication;
 }
 
 function git(cwd: string, ...args: string[]): string {

@@ -63,6 +63,30 @@ type IntentResolver = (options: {
   closeSupersededSourcePrs: boolean;
 }) => ExecutionIntent;
 
+export type SourcePullRevision = {
+  url: string;
+  repo: string;
+  number: number;
+  expected_state: "open";
+  expected_head_repo: string;
+  expected_head_ref: string;
+  expected_head_sha: string;
+  expected_base_ref: string;
+  expected_base_sha: string;
+};
+
+type RevisionBoundExecutionIntent = ExecutionIntent & {
+  source_pull_revisions?: SourcePullRevision[];
+};
+
+type ParsedPullRequest = NonNullable<ReturnType<typeof parsePullRequestUrl>>;
+
+type LiveSourcePull = {
+  pull: LooseRecord;
+  labels: string[];
+  revision: SourcePullRevision;
+};
+
 export type ExecutionAuthorization = {
   schema_version: number;
   workflow_run_id: string;
@@ -167,6 +191,7 @@ export function prepareExecutionAuthorization({
   });
   verifyExecutionIntentIdentity(executionIntent);
   assertExecutionIntentBindings(executionIntent, job, result);
+  sourcePullRevisions(executionIntent);
   if (
     executionIntent.target_repo !== targetRepo ||
     executionIntent.action_identity_sha256 !== actionIdentitySha256
@@ -315,9 +340,11 @@ export function verifyExecutionAuthorization(
 }
 
 export function readExecutionIntent(root: string): ExecutionIntent {
-  return verifyExecutionIntentIdentity(
+  const intent = verifyExecutionIntentIdentity(
     readJsonObject(path.join(root, "execution-intent.json"), "execution intent") as ExecutionIntent,
   );
+  sourcePullRevisions(intent);
+  return intent;
 }
 
 export function sealExecutionHandoff({
@@ -622,7 +649,18 @@ export function publishValidatedExecution({
   });
   const intent = readExecutionIntent(root);
   const publication = verifyAuthorizedPreparedPublication(root, expectedAuthorizationSha256);
-  revalidateLiveSource(intent, publication);
+  const priorCheckpoint = readPriorPublicationCheckpoint({
+    root,
+    outputPath,
+    validationReceiptPath,
+    expectedAuthorizationSha256,
+    expectedValidationReceiptSha256,
+  });
+  revalidateLiveSources(
+    intent,
+    publication,
+    checkpointedSourceClosures(publication, priorCheckpoint),
+  );
   const checkout = checkoutPreparedRepair({
     root,
     intent,
@@ -686,6 +724,55 @@ export function verifyPublishedReceipt({
   });
 }
 
+function readPriorPublicationCheckpoint({
+  root,
+  outputPath,
+  validationReceiptPath,
+  expectedAuthorizationSha256,
+  expectedValidationReceiptSha256,
+}: {
+  root: string;
+  outputPath: string;
+  validationReceiptPath: string;
+  expectedAuthorizationSha256: string;
+  expectedValidationReceiptSha256: string;
+}): PublicationReceipt | null {
+  if (!fs.existsSync(outputPath)) return null;
+  try {
+    const candidate = readJsonObject(outputPath, "prior publication receipt");
+    return verifyPublishedReceipt({
+      root,
+      publicationReceiptPath: outputPath,
+      validationReceiptPath,
+      expectedAuthorizationSha256,
+      expectedValidationReceiptSha256,
+      expectedPublicationReceiptSha256: requiredDigest(
+        candidate.identity_sha256,
+        "prior publication receipt digest",
+      ),
+    });
+  } catch {
+    return null;
+  }
+}
+
+export function checkpointedSourceClosures(
+  publication: PreparedPublication,
+  receipt: PublicationReceipt | null,
+): Set<string> {
+  if (!receipt) return new Set();
+  verifyPublicationReceipt({
+    receipt,
+    publication,
+    validationReceiptSha256: receipt.validation_receipt_sha256,
+  });
+  return new Set(
+    publication.superseded_source_actions
+      .filter((action) => action.operation === "close")
+      .map((action) => String(action.source)),
+  );
+}
+
 export function closePublishedReplacementSources({
   root,
   publicationReceiptPath,
@@ -713,6 +800,8 @@ export function closePublishedReplacementSources({
 
   const intent = readExecutionIntent(root);
   const publication = verifyAuthorizedPreparedPublication(root, expectedAuthorizationSha256);
+  const checkpointedClosures = checkpointedSourceClosures(publication, receipt);
+  revalidateLiveSources(intent, publication, checkpointedClosures);
   ensurePublishedReplacementAvailable({
     cwd: root,
     intent,
@@ -724,6 +813,7 @@ export function closePublishedReplacementSources({
     intent,
     publication,
     targetPrNumber: receipt.target_pr_number,
+    checkpointedClosures,
   });
   return receipt;
 }
@@ -766,32 +856,25 @@ function resolveLiveExecutionIntent({
       `fix artifact source PR #${sourcePr.number} differs from intended source #${intendedSourceNumber}`,
     );
   }
+  const targetBaseRef = "main";
+  const liveSourcePulls = exactSourcePrs.map((candidate) =>
+    snapshotOpenSourcePull(targetRepo, candidate, targetBaseRef),
+  );
 
   let source: ExecutionIntent["source"];
   let contributorCredits: LooseRecord[] = [];
   let sourceClosingReferences: string[] = [];
   const sourceLabelSets: string[][] = [];
   if (sourcePr) {
-    const pull = ghObject(`repos/${targetRepo}/pulls/${sourcePr.number}`);
-    const headRepo = requiredRepo(pull.head?.repo?.full_name, "source pull head repository");
-    const headRef = requiredRef(pull.head?.ref, "source pull head ref");
-    const headSha = requiredSha(pull.head?.sha, "source pull head SHA");
-    const sourceBaseRef = requiredRef(pull.base?.ref, "source pull base ref");
-    const sourceBaseSha = requiredSha(pull.base?.sha, "source pull base SHA");
-    if (String(pull.state ?? "").toLowerCase() !== "open") {
-      throw new Error(`source PR #${sourcePr.number} is not open`);
-    }
-    if (sourceBaseRef !== "main") {
-      throw new Error(`source PR #${sourcePr.number} does not target main`);
-    }
-    const sourceLabels = githubLabelNames(pull.labels);
-    const pauseLabel = repairPauseLabel(sourceLabels);
-    if (pauseLabel) {
-      throw new Error(`source PR #${sourcePr.number} is paused by ${pauseLabel}`);
-    }
-    sourceLabelSets.push(sourceLabels);
+    const liveSource = liveSourcePulls[0]!;
+    const { pull, revision } = liveSource;
+    sourceLabelSets.push(liveSource.labels);
     for (const expected of [job.frontmatter.expected_head_sha, result.reviewed_sha]) {
-      if (expected && SHA_PATTERN.test(String(expected)) && String(expected) !== headSha) {
+      if (
+        expected &&
+        SHA_PATTERN.test(String(expected)) &&
+        String(expected) !== revision.expected_head_sha
+      ) {
         throw new Error(`source PR #${sourcePr.number} head changed before authorization`);
       }
     }
@@ -802,11 +885,11 @@ function resolveLiveExecutionIntent({
       url: sourcePr.url,
       expected_state: "open",
       expected_revision_sha256: null,
-      expected_head_repo: headRepo,
-      expected_head_ref: headRef,
-      expected_head_sha: headSha,
-      expected_base_ref: sourceBaseRef,
-      expected_base_sha: sourceBaseSha,
+      expected_head_repo: revision.expected_head_repo,
+      expected_head_ref: revision.expected_head_ref,
+      expected_head_sha: revision.expected_head_sha,
+      expected_base_ref: revision.expected_base_ref,
+      expected_base_sha: revision.expected_base_sha,
     };
     const login = String(pull.user?.login ?? "").trim();
     if (login && !/\[bot\]$/i.test(login)) {
@@ -879,7 +962,6 @@ function resolveLiveExecutionIntent({
     };
   }
 
-  const targetBaseRef = "main";
   const targetBase = ghObject(`repos/${targetRepo}/branches/${targetBaseRef}`);
   const targetBaseSha = requiredSha(targetBase.commit?.sha, "target main SHA");
   const updateSource =
@@ -902,20 +984,8 @@ function resolveLiveExecutionIntent({
     ? source.number
     : openPullForBranch(targetRepo, outputBranch, targetBaseRef);
   const normalizedSourcePrs = exactSourcePrs.map((entry) => entry.url);
-  for (const additionalSource of exactSourcePrs.slice(sourcePr ? 1 : 0)) {
-    const pull = ghObject(`repos/${targetRepo}/pulls/${additionalSource.number}`);
-    const sourceLabels = githubLabelNames(pull.labels);
-    const pauseLabel = repairPauseLabel(sourceLabels);
-    if (String(pull.state ?? "").toLowerCase() !== "open") {
-      throw new Error(`source PR #${additionalSource.number} is not open`);
-    }
-    if (pull.base?.ref !== targetBaseRef) {
-      throw new Error(`source PR #${additionalSource.number} does not target ${targetBaseRef}`);
-    }
-    if (pauseLabel) {
-      throw new Error(`source PR #${additionalSource.number} is paused by ${pauseLabel}`);
-    }
-    sourceLabelSets.push(sourceLabels);
+  for (const additionalSource of liveSourcePulls.slice(sourcePr ? 1 : 0)) {
+    sourceLabelSets.push(additionalSource.labels);
   }
   if (operation === "open_pull_request" && existingTargetPr !== null) {
     assertItemSafe(targetRepo, existingTargetPr);
@@ -956,6 +1026,7 @@ function resolveLiveExecutionIntent({
     repair_strategy: updateSource ? repairStrategy : "replace_uneditable_branch",
     action_identity_sha256: actionIdentitySha256,
     source_prs: normalizedSourcePrs,
+    source_pull_revisions: liveSourcePulls.map((entry) => entry.revision),
     source_closing_references: sourceClosingReferences,
     contributor_credits: contributorCredits,
     superseded_source_prs: supersededSourcePrs,
@@ -1341,22 +1412,29 @@ function publishExactPullComment({
   number,
   body,
   targetNumbers = [],
+  beforeMutation,
 }: {
   checkout: string;
   intent: ExecutionIntent;
   number: number;
   body: string;
   targetNumbers?: ReadonlyArray<number | null>;
+  beforeMutation?: () => void;
 }) {
   const comments = ghPagedArray(
     `repos/${intent.target_repo}/issues/${number}/comments?per_page=100`,
   );
   if (comments.some((comment) => comment.body === body)) return;
-  runPublicationMutation(intent, [...targetNumbers, number], () =>
-    run("gh", ["pr", "comment", String(number), "--repo", intent.target_repo, "--body", body], {
-      cwd: checkout,
-    }),
-  );
+  runPublicationMutation(intent, [...targetNumbers, number], () => {
+    beforeMutation?.();
+    return run(
+      "gh",
+      ["pr", "comment", String(number), "--repo", intent.target_repo, "--body", body],
+      {
+        cwd: checkout,
+      },
+    );
+  });
 }
 
 function publishRequiredPullLabels({
@@ -1646,12 +1724,17 @@ function closeSupersededReplacementSources({
   intent,
   publication,
   targetPrNumber,
+  checkpointedClosures,
 }: {
   cwd: string;
   intent: ExecutionIntent;
   publication: PreparedPublication;
   targetPrNumber: number;
+  checkpointedClosures: ReadonlySet<string>;
 }) {
+  const revisions = new Map(
+    sourcePullRevisions(intent).map((revision) => [revision.url, revision]),
+  );
   const actions = publication.superseded_source_actions.map((action) => {
     const source = parsePullRequestUrl(action.source);
     if (!source || source.repo !== intent.target_repo || !intent.source_prs.includes(source.url)) {
@@ -1660,7 +1743,11 @@ function closeSupersededReplacementSources({
     if (!["comment", "close"].includes(String(action.operation ?? ""))) {
       throw new Error("prepared source closeout contains an unsupported operation");
     }
-    return { source, operation: String(action.operation) };
+    const revision = revisions.get(source.url);
+    if (!revision) {
+      throw new Error("prepared source closeout is missing its authorized source revision");
+    }
+    return { source, revision, operation: String(action.operation) };
   });
 
   for (const action of actions) {
@@ -1682,6 +1769,10 @@ function closeSupersededReplacementSources({
       number: action.source.number,
       body: comment,
       targetNumbers: [targetPrNumber],
+      beforeMutation: () =>
+        revalidateSourcePullRevision(action.revision, {
+          allowClosed: checkpointedClosures.has(action.source.url),
+        }),
     });
     if (action.operation !== "close") continue;
 
@@ -1691,14 +1782,21 @@ function closeSupersededReplacementSources({
       publication,
       targetPrNumber,
     });
-    const sourcePull = ghObject(`repos/${intent.target_repo}/pulls/${action.source.number}`);
+    const sourcePull = revalidateSourcePullRevision(action.revision, {
+      allowClosed: checkpointedClosures.has(action.source.url),
+    });
     const sourceState = String(sourcePull.state ?? "").toLowerCase();
     if (sourceState === "open") {
-      runPublicationMutation(intent, [targetPrNumber, action.source.number], () =>
-        run("gh", ["pr", "close", String(action.source.number), "--repo", intent.target_repo], {
-          cwd,
-        }),
-      );
+      runPublicationMutation(intent, [targetPrNumber, action.source.number], () => {
+        revalidateSourcePullRevision(action.revision);
+        return run(
+          "gh",
+          ["pr", "close", String(action.source.number), "--repo", intent.target_repo],
+          {
+            cwd,
+          },
+        );
+      });
     } else if (sourceState !== "closed") {
       throw new Error(`authorized source pull request is ${sourceState || "unknown"}`);
     }
@@ -1731,29 +1829,23 @@ function verifyPublishedPull(
   }
 }
 
-function revalidateLiveSource(intent: ExecutionIntent, publication: PreparedPublication) {
-  if (intent.source.kind === "pull_request") {
-    const pull = ghObject(`repos/${intent.source.repo}/pulls/${intent.source.number}`);
-    const liveState = String(pull.state ?? "").toLowerCase();
-    const liveHeadSha = String(pull.head?.sha ?? "");
-    const authorizedClosedState =
-      liveState === "closed" &&
-      publication.superseded_source_actions.some(
-        (action) => action.source === intent.source.url && action.operation === "close",
-      );
-    const authorizedPublishedHead =
-      intent.operation === "update_source_pr" && liveHeadSha === publication.prepared_head_sha;
-    if (
-      (liveState !== intent.source.expected_state && !authorizedClosedState) ||
-      pull.head?.repo?.full_name !== intent.source.expected_head_repo ||
-      pull.head?.ref !== intent.source.expected_head_ref ||
-      (liveHeadSha !== intent.source.expected_head_sha && !authorizedPublishedHead) ||
-      pull.base?.ref !== intent.source.expected_base_ref
-    ) {
-      throw new Error("source pull request changed after authorization");
-    }
+function revalidateLiveSources(
+  intent: ExecutionIntent,
+  publication: PreparedPublication,
+  checkpointedClosures: ReadonlySet<string> = new Set(),
+) {
+  const revisions = sourcePullRevisions(intent);
+  for (const revision of revisions) {
+    revalidateSourcePullRevision(revision, {
+      allowClosed: checkpointedClosures.has(revision.url),
+      allowedHeadShas:
+        intent.operation === "update_source_pr" && revision.url === intent.source.url
+          ? [publication.prepared_head_sha]
+          : [],
+    });
+  }
+  if (revisions.length > 0) {
     assertPublicationSafe(intent, [intent.expected_target_pr_number]);
-    return;
   }
   if (intent.source.kind === "issue") {
     const issue = ghObject(`repos/${intent.source.repo}/issues/${intent.source.number}`);
@@ -1782,6 +1874,147 @@ function assertCheckoutIdentity(cwd: string, baseRef: string, expected: LooseRec
   if (JSON.stringify(checkoutIdentity(cwd, baseRef)) !== JSON.stringify(expected)) {
     throw new Error("target dependency setup changed the immutable repair source");
   }
+}
+
+function snapshotOpenSourcePull(
+  repo: string,
+  source: ParsedPullRequest,
+  expectedBaseRef: string,
+): LiveSourcePull {
+  const pull = ghObject(`repos/${repo}/pulls/${source.number}`);
+  const revision: SourcePullRevision = {
+    url: source.url,
+    repo,
+    number: source.number,
+    expected_state: "open",
+    expected_head_repo: requiredRepo(pull.head?.repo?.full_name, "source pull head repository"),
+    expected_head_ref: requiredRef(pull.head?.ref, "source pull head ref"),
+    expected_head_sha: requiredSha(pull.head?.sha, "source pull head SHA"),
+    expected_base_ref: requiredRef(pull.base?.ref, "source pull base ref"),
+    expected_base_sha: requiredSha(pull.base?.sha, "source pull base SHA"),
+  };
+  if (revision.expected_base_ref !== expectedBaseRef) {
+    throw new Error(`source PR #${source.number} does not target ${expectedBaseRef}`);
+  }
+  assertSourcePullRevision(revision, pull);
+  const labels = githubLabelNames(pull.labels);
+  const pauseLabel = repairPauseLabel(labels);
+  if (pauseLabel) {
+    throw new Error(`source PR #${source.number} is paused by ${pauseLabel}`);
+  }
+  return { pull, labels, revision };
+}
+
+function sourcePullRevisions(intent: ExecutionIntent): SourcePullRevision[] {
+  const raw = (intent as RevisionBoundExecutionIntent).source_pull_revisions;
+  if (!Array.isArray(raw)) {
+    if (intent.source_prs.length === 0) return [];
+    throw new Error("execution intent is missing revision-bound source pull identities");
+  }
+  if (raw.length !== intent.source_prs.length) {
+    throw new Error("execution intent source pull identity count changed");
+  }
+  const revisions = raw.map((value, index) =>
+    parseSourcePullRevision(value, intent, intent.source_prs[index]!),
+  );
+  if (intent.source.kind === "pull_request") {
+    const primary = revisions[0];
+    if (
+      !primary ||
+      primary.url !== intent.source.url ||
+      primary.repo !== intent.source.repo ||
+      primary.number !== intent.source.number ||
+      primary.expected_state !== intent.source.expected_state ||
+      primary.expected_head_repo !== intent.source.expected_head_repo ||
+      primary.expected_head_ref !== intent.source.expected_head_ref ||
+      primary.expected_head_sha !== intent.source.expected_head_sha ||
+      primary.expected_base_ref !== intent.source.expected_base_ref ||
+      primary.expected_base_sha !== intent.source.expected_base_sha
+    ) {
+      throw new Error("execution intent primary source pull identity changed");
+    }
+  }
+  return revisions;
+}
+
+function parseSourcePullRevision(
+  value: unknown,
+  intent: ExecutionIntent,
+  expectedUrl: string,
+): SourcePullRevision {
+  const revision = objectValue(value, "source pull revision");
+  const parsed = parsePullRequestUrl(revision.url);
+  const number = Number(revision.number);
+  if (
+    revision.url !== expectedUrl ||
+    !parsed ||
+    parsed.url !== expectedUrl ||
+    parsed.repo !== intent.target_repo ||
+    parsed.number !== number ||
+    revision.repo !== intent.target_repo ||
+    !Number.isInteger(number) ||
+    number <= 0 ||
+    revision.expected_state !== "open"
+  ) {
+    throw new Error("execution intent source pull identity is invalid");
+  }
+  return {
+    url: expectedUrl,
+    repo: intent.target_repo,
+    number,
+    expected_state: "open",
+    expected_head_repo: requiredRepo(
+      revision.expected_head_repo,
+      "source pull expected head repository",
+    ),
+    expected_head_ref: requiredRef(revision.expected_head_ref, "source pull expected head ref"),
+    expected_head_sha: requiredSha(revision.expected_head_sha, "source pull expected head SHA"),
+    expected_base_ref: requiredRef(revision.expected_base_ref, "source pull expected base ref"),
+    expected_base_sha: requiredSha(revision.expected_base_sha, "source pull expected base SHA"),
+  };
+}
+
+export function assertSourcePullRevision(
+  expected: SourcePullRevision,
+  pull: LooseRecord,
+  {
+    allowClosed = false,
+    allowedHeadShas = [],
+  }: {
+    allowClosed?: boolean;
+    allowedHeadShas?: Iterable<string>;
+  } = {},
+) {
+  const state = String(pull.state ?? "").toLowerCase();
+  const merged = Boolean(pull.merged_at ?? pull.mergedAt);
+  const allowedStates = state === expected.expected_state || (allowClosed && state === "closed");
+  const heads = new Set([expected.expected_head_sha, ...allowedHeadShas]);
+  if (
+    !allowedStates ||
+    merged ||
+    pull.head?.repo?.full_name !== expected.expected_head_repo ||
+    pull.head?.ref !== expected.expected_head_ref ||
+    !heads.has(String(pull.head?.sha ?? "")) ||
+    pull.base?.ref !== expected.expected_base_ref ||
+    pull.base?.sha !== expected.expected_base_sha
+  ) {
+    throw new Error(`source pull request revision changed after authorization: ${expected.url}`);
+  }
+}
+
+function revalidateSourcePullRevision(
+  expected: SourcePullRevision,
+  {
+    allowClosed = false,
+    allowedHeadShas = [],
+  }: {
+    allowClosed?: boolean;
+    allowedHeadShas?: Iterable<string>;
+  } = {},
+): LooseRecord {
+  const pull = ghObject(`repos/${expected.repo}/pulls/${expected.number}`);
+  assertSourcePullRevision(expected, pull, { allowClosed, allowedHeadShas });
+  return pull;
 }
 
 function repairActionIdentity(result: LooseRecord): string {
