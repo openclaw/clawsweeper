@@ -5362,18 +5362,22 @@ function sqliteScalarBestEffort(dbPath: string, sql: string): string | null {
 }
 
 function sqliteJsonBestEffort(dbPath: string, sql: string): unknown[] {
+  return sqliteJsonProbe(dbPath, sql) ?? [];
+}
+
+function sqliteJsonProbe(dbPath: string, sql: string): unknown[] | null {
   const result = spawnSync("sqlite3", ["-json", dbPath, sql], {
     cwd: ROOT,
     encoding: "utf8",
     maxBuffer: 16 * 1024 * 1024,
     timeout: 10_000,
   });
-  if (result.error || result.status !== 0) return [];
+  if (result.error || result.status !== 0) return null;
   try {
     const parsed = JSON.parse(result.stdout.trim() || "[]") as unknown;
-    return Array.isArray(parsed) ? parsed : [];
+    return Array.isArray(parsed) ? parsed : null;
   } catch {
-    return [];
+    return null;
   }
 }
 
@@ -5548,6 +5552,55 @@ function compactRelatedGitcrawlItems(item: Item, seen: ReadonlySet<number>): unk
         body: truncateText(typeof row.body === "string" ? row.body : "", 800),
       },
     }));
+}
+
+function structuralExternalRelationSensitivity(item: Item): boolean | null {
+  const seen = new Set<number>([item.number]);
+  if (compactLocalRelatedTitleItems(item, seen).length > 0) return true;
+  if (item.kind !== "issue") return false;
+
+  const repo = targetRepo();
+  const dbPath = gitcrawlDbPath(repo);
+  if (dbPath) {
+    const source = detectGitcrawlClusterSource(dbPath);
+    if (!source) return null;
+    const rows = sqliteJsonProbe(
+      dbPath,
+      gitcrawlRelatedIssueSql(source, item.number, RELATED_GITCRAWL_LIMIT, repo),
+    );
+    if (!rows) return null;
+    if (
+      rows.some((entry) => {
+        const number = asRecord(entry).number;
+        return typeof number === "number" && number !== item.number;
+      })
+    ) {
+      return true;
+    }
+  }
+
+  if (!envFlagEnabled(process.env.CLAWSWEEPER_RELATED_GITHUB_SEARCH)) return false;
+  const query = relatedGitHubIssueSearchQuery(repo, item.title);
+  if (!query) return false;
+  try {
+    const response = asRecord(
+      ghJsonOnce<unknown>(
+        [
+          "api",
+          `search/issues?q=${encodeURIComponent(query)}&per_page=${RELATED_GITHUB_SEARCH_LIMIT}`,
+        ],
+        RELATED_GITHUB_SEARCH_TIMEOUT_MS,
+      ),
+    );
+    if (!Array.isArray(response.items)) return null;
+    return response.items.map(asRecord).some((candidate) => {
+      const number = candidate.number;
+      return typeof number === "number" && number !== item.number && !candidate.pull_request;
+    });
+  } catch (error) {
+    if (error instanceof GitHubRuntimeBudgetError) throw error;
+    return null;
+  }
 }
 
 function relatedItemNumber(value: unknown): number | null {
@@ -6156,6 +6209,7 @@ function reviewStructuralRecordFromMarkdown(markdown: string): ReviewStructuralR
     kind,
     sourceRevision: frontMatterValue(markdown, "review_structural_source_revision") ?? "",
     activityUpdatedAt: frontMatterValue(markdown, "review_structural_activity_updated_at") ?? "",
+    relationSensitive: frontMatterBoolean(markdown, "review_structural_relation_sensitive"),
     targetHeadSha: frontMatterValue(markdown, "review_structural_target_head_sha") ?? "",
     pullHeadSha: pullHeadSha && pullHeadSha !== "none" ? pullHeadSha : null,
     reviewPolicy: frontMatterValue(markdown, "review_policy") ?? "",
@@ -7310,6 +7364,10 @@ function fetchReviewStructuralRecord(options: {
 }): ReviewStructuralRecord | null {
   const [owner, name] = options.item.repo.split("/");
   if (!owner || !name) return null;
+  const externalRelationSensitive = structuralExternalRelationSensitivity(options.item);
+  if (externalRelationSensitive === null) {
+    throw new Error(`structural relation probe failed for #${options.item.number}`);
+  }
   const response = ghJson<unknown>([
     "api",
     "graphql",
@@ -7334,6 +7392,7 @@ function fetchReviewStructuralRecord(options: {
     reviewModel: options.reviewModel,
     ignoreAuthor: (author) => CLAWSWEEPER_BOT_AUTHORS.has(author.toLowerCase()),
     ignoreLabel: (label) => isIgnorableSourceRevisionLabel(normalizeLabelName(label)),
+    externalRelationSensitive,
   });
 }
 
@@ -18798,6 +18857,11 @@ function updateReviewStructuralFrontMatter(
   );
   next = replaceFrontMatterValue(
     next,
+    "review_structural_relation_sensitive",
+    record ? String(record.relationSensitive) : "unknown",
+  );
+  next = replaceFrontMatterValue(
+    next,
     "review_structural_target_head_sha",
     record?.targetHeadSha ?? "unknown",
   );
@@ -18935,6 +18999,9 @@ review_structural_cache_version: ${options.structuralRecord?.version ?? "unknown
 review_structural_fingerprint: ${options.structuralRecord?.fingerprint ?? "unknown"}
 review_structural_source_revision: ${options.structuralRecord?.sourceRevision ?? "unknown"}
 review_structural_activity_updated_at: ${options.structuralRecord?.activityUpdatedAt ?? "unknown"}
+review_structural_relation_sensitive: ${
+    options.structuralRecord ? options.structuralRecord.relationSensitive : "unknown"
+  }
 review_structural_target_head_sha: ${options.structuralRecord?.targetHeadSha ?? "unknown"}
 review_structural_pull_head_sha: ${
     options.structuralRecord ? (options.structuralRecord.pullHeadSha ?? "none") : "unknown"

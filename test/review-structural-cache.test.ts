@@ -52,6 +52,7 @@ function issueSnapshot(
     commentsTruncated: false,
     timeline: [{ type: "CrossReferencedEvent", id: "CE_1", source: "PR_kwDO1" }],
     timelineTruncated: false,
+    relationSensitive: false,
     targetHeadSha: TARGET_SHA,
     latestReleaseTag: "v1.0.0",
     latestReleaseSha: TARGET_SHA,
@@ -172,12 +173,14 @@ function graphqlNode(kind: "issue" | "pull_request") {
       {
         id: "IC_human",
         updatedAt: "2026-07-10T09:00:00Z",
+        body: "No related item",
         author: { login: "contributor" },
         authorAssociation: "CONTRIBUTOR",
       },
       {
         id: "IC_bot",
         updatedAt: "2026-07-10T09:30:00Z",
+        body: "Automated status",
         author: { login: "clawsweeper[bot]" },
         authorAssociation: "NONE",
       },
@@ -188,6 +191,7 @@ function graphqlNode(kind: "issue" | "pull_request") {
         __typename: "IssueComment",
         id: "IC_bot_timeline",
         updatedAt: "2026-07-10T09:30:00Z",
+        body: "Automated status",
         author: { login: "clawsweeper[bot]" },
       },
       {
@@ -229,6 +233,7 @@ function graphqlNode(kind: "issue" | "pull_request") {
           {
             id: "PRRC_comment",
             updatedAt: "2026-07-10T08:30:00Z",
+            body: "No related item",
             author: { login: "maintainer" },
             authorAssociation: "MEMBER",
           },
@@ -382,6 +387,46 @@ test("changed target head forces issue hydration", () => {
   assert.equal(decision({ priorRecord, currentRecord }).reason, "target_changed");
 });
 
+test("relation-sensitive records always force full hydration", () => {
+  const relationRecord = record(issueSnapshot({ relationSensitive: true }));
+  assert.deepEqual(decision({ priorRecord: relationRecord, currentRecord: relationRecord }), {
+    hit: false,
+    reason: "relation_context_present",
+  });
+});
+
+test("GraphQL decoder detects explicit and external relation sources", () => {
+  const explicit = graphqlRecord("issue", {
+    ...graphqlNode("issue"),
+    body: "See #456 for the shared failure.",
+  });
+  assert.ok(explicit);
+  assert.equal(explicit.relationSensitive, true);
+
+  const external = reviewStructuralRecordFromGraphql({
+    response: {
+      data: {
+        repository: {
+          issue: graphqlNode("issue"),
+        },
+      },
+    },
+    repo: "openclaw/openclaw",
+    number: 123,
+    kind: "issue",
+    targetHeadSha: TARGET_SHA,
+    latestReleaseTag: "v1.0.0",
+    latestReleaseSha: TARGET_SHA,
+    reviewPolicy: "policy-1",
+    reviewModel: "gpt-5.6",
+    ignoreAuthor: (author) => author.toLowerCase() === "clawsweeper[bot]",
+    ignoreLabel: (label) => label.toLowerCase() === "p2",
+    externalRelationSensitive: true,
+  });
+  assert.ok(external);
+  assert.equal(external.relationSensitive, true);
+});
+
 test("changed author association or release identity forces hydration", () => {
   const priorRecord = record();
   assert.equal(
@@ -533,16 +578,16 @@ test("truncated comments, timeline, reviews, and threads cannot seed the cache",
   );
 });
 
-test("metadata probes request activity metadata without comment or review bodies", () => {
+test("metadata probes inspect relation links without persisting comment or review bodies", () => {
   const issueQuery = reviewStructuralQuery("issue");
   const pullQuery = reviewStructuralQuery("pull_request");
 
   assert.match(issueQuery, /comments\(last: 100\)/);
   assert.match(issueQuery, /CrossReferencedEvent/);
-  assert.doesNotMatch(issueQuery, /comments\(last: 100\)[\s\S]*?\bbody\b/);
+  assert.match(issueQuery, /comments\(last: 100\)[\s\S]*?\bbody\b/);
   assert.match(pullQuery, /headRefOid/);
   assert.match(pullQuery, /reviewThreads\(last: 100\)/);
-  assert.doesNotMatch(pullQuery, /reviewThreads\(last: 100\)[\s\S]*?\bbody\b/);
+  assert.match(pullQuery, /reviewThreads\(last: 100\)[\s\S]*?\bbody\b/);
 });
 
 test("metadata probes ignore ClawSweeper comments but fail closed on malformed entries", () => {
@@ -553,12 +598,14 @@ test("metadata probes ignore ClawSweeper comments but fail closed on malformed e
         {
           id: "bot-comment",
           updatedAt: "2026-07-10T10:00:00Z",
+          body: "Automated status",
           author: { login: "ClawSweeper[bot]" },
           authorAssociation: "NONE",
         },
         {
           id: "human-comment",
           updatedAt: "2026-07-10T10:01:00Z",
+          body: "No related item",
           author: { login: "maintainer" },
           authorAssociation: "MEMBER",
         },

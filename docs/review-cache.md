@@ -5,8 +5,10 @@ Scheduled keep-open reviews use two independent cache stages.
 ## Structural Stage
 
 Before ClawSweeper hydrates full GitHub context, it loads bounded metadata for
-the selected item. The metadata record contains only digests, timestamps, item
-identifiers, and commit SHAs. Bodies and comment text are never persisted.
+the selected item. It inspects bounded item, comment, and review-comment bodies
+only for same-repository relation links; body text is never persisted. The
+metadata record contains only digests, booleans, timestamps, item identifiers,
+and commit SHAs.
 
 A structural hit requires all of the following:
 
@@ -16,6 +18,8 @@ A structural hit requires all of the following:
 - the item kind and bounded source revision are unchanged;
 - human issue comments, bounded timeline events, PR reviews, review threads,
   and linked-item metadata are unchanged and complete;
+- no explicit relation, matching local report, Gitcrawl cluster member, or
+  enabled GitHub related-item search result can contribute review context;
 - the target branch head is unchanged;
 - a PR head is unchanged; and
 - any item activity timestamp change is covered by the recorded ClawSweeper

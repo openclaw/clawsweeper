@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { REVIEW_CACHE_MAX_AGE_DAYS } from "./scheduler-policy.js";
 import { stableJson } from "./stable-json.js";
 
-export const REVIEW_STRUCTURAL_CACHE_VERSION = 1;
+export const REVIEW_STRUCTURAL_CACHE_VERSION = 2;
 export const REVIEW_STRUCTURAL_CACHE_MAX_AGE_DAYS = REVIEW_CACHE_MAX_AGE_DAYS;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -63,6 +63,7 @@ export interface ReviewStructuralSnapshot {
   commentsTruncated: boolean;
   timeline: readonly unknown[];
   timelineTruncated: boolean;
+  relationSensitive: boolean;
   targetHeadSha: string;
   latestReleaseTag: string | null;
   latestReleaseSha: string | null;
@@ -75,6 +76,7 @@ export interface ReviewStructuralRecord {
   kind: ReviewStructuralKind;
   sourceRevision: string;
   activityUpdatedAt: string;
+  relationSensitive: boolean;
   targetHeadSha: string;
   pullHeadSha: string | null;
   reviewPolicy: string;
@@ -109,6 +111,7 @@ export type ReviewStructuralCacheReason =
   | "item_kind_changed"
   | "source_changed"
   | "activity_changed"
+  | "relation_context_present"
   | "target_changed"
   | "pull_head_changed";
 
@@ -129,6 +132,7 @@ export interface ReviewStructuralGraphqlOptions {
   reviewModel: string;
   ignoreAuthor: (author: string) => boolean;
   ignoreLabel: (label: string) => boolean;
+  externalRelationSensitive?: boolean;
 }
 
 const REVIEW_STRUCTURAL_TIMELINE_QUERY = `
@@ -139,6 +143,7 @@ const REVIEW_STRUCTURAL_TIMELINE_QUERY = `
       ... on Node { id }
       ... on IssueComment {
         updatedAt
+        body
         author { login }
       }
       ... on LabeledEvent {
@@ -217,6 +222,7 @@ const REVIEW_STRUCTURAL_COMMON_QUERY = `
     nodes {
       id
       updatedAt
+      body
       author { login }
       authorAssociation
     }
@@ -259,6 +265,7 @@ export function reviewStructuralQuery(kind: ReviewStructuralKind): string {
               nodes {
                 id
                 updatedAt
+                body
                 author { login }
                 authorAssociation
               }
@@ -404,6 +411,77 @@ function structuralRelationTarget(value: unknown): unknown {
   };
 }
 
+function relatedItemReference(value: unknown, repo: string, currentNumber: number): boolean {
+  if (typeof value !== "string" || !value.trim()) return false;
+  const [owner, name] = repo.split("/");
+  if (!owner || !name) return false;
+  const escapedRepo = `${escapeRegExp(owner)}\\/${escapeRegExp(name)}`;
+  for (const match of value.matchAll(
+    new RegExp(
+      `github\\.com\\/${escapedRepo}\\/(?:issues|pull)\\/(\\d+)|(?<![\\w/])#(\\d+)\\b`,
+      "g",
+    ),
+  )) {
+    const number = Number(match[1] ?? match[2]);
+    if (Number.isInteger(number) && number > 0 && number !== currentNumber) return true;
+  }
+  return false;
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function commentRelationSensitivity(
+  value: unknown,
+  options: ReviewStructuralGraphqlOptions,
+): boolean | null {
+  const connection = structuralConnection(value, "last");
+  if (connection.truncated) return null;
+  for (const entry of connection.nodes) {
+    const record = asRecord(entry);
+    const author = stringOrUndefined(asRecord(record.author).login);
+    if (author && options.ignoreAuthor(author)) continue;
+    if (typeof record.body !== "string") return null;
+    if (relatedItemReference(record.body, options.repo, options.number)) return true;
+  }
+  return false;
+}
+
+function timelineRelationSensitivity(
+  value: unknown,
+  options: ReviewStructuralGraphqlOptions,
+): boolean | null {
+  const connection = structuralConnection(value, "last");
+  if (connection.truncated) return null;
+  for (const entry of connection.nodes) {
+    const record = asRecord(entry);
+    const type = stringOrUndefined(record.__typename);
+    if (!type) return null;
+    if (type === "CrossReferencedEvent" || type === "ConnectedEvent") return true;
+    if (type !== "IssueComment") continue;
+    const author = stringOrUndefined(asRecord(record.author).login);
+    if (author && options.ignoreAuthor(author)) continue;
+    if (typeof record.body !== "string") return null;
+    if (relatedItemReference(record.body, options.repo, options.number)) return true;
+  }
+  return false;
+}
+
+function reviewThreadRelationSensitivity(
+  value: unknown,
+  options: ReviewStructuralGraphqlOptions,
+): boolean | null {
+  const connection = structuralConnection(value, "last");
+  if (connection.truncated) return null;
+  for (const entry of connection.nodes) {
+    const sensitive = commentRelationSensitivity(asRecord(entry).comments, options);
+    if (sensitive === null) return null;
+    if (sensitive) return true;
+  }
+  return false;
+}
+
 function structuralTimeline(
   value: unknown,
   ignoreAuthor: (author: string) => boolean,
@@ -519,6 +597,14 @@ export function reviewStructuralRecordFromGraphql(
     options.ignoreAuthor,
     options.ignoreLabel,
   );
+  const commentRelations = commentRelationSensitivity(node.comments, options);
+  const timelineRelations = timelineRelationSensitivity(node.timelineItems, options);
+  if (commentRelations === null || timelineRelations === null) return null;
+  let relationSensitive =
+    options.externalRelationSensitive === true ||
+    relatedItemReference(body, options.repo, options.number) ||
+    commentRelations ||
+    timelineRelations;
   const snapshot: ReviewStructuralSnapshot = {
     repo: options.repo,
     number: options.number,
@@ -537,6 +623,7 @@ export function reviewStructuralRecordFromGraphql(
     commentsTruncated: comments.truncated,
     timeline: timeline.timeline,
     timelineTruncated: timeline.truncated,
+    relationSensitive,
     targetHeadSha: options.targetHeadSha.trim().toLowerCase(),
     latestReleaseTag: options.latestReleaseTag,
     latestReleaseSha: options.latestReleaseSha?.trim().toLowerCase() ?? null,
@@ -545,6 +632,7 @@ export function reviewStructuralRecordFromGraphql(
   if (options.kind === "pull_request") {
     const reviews = structuralActivities(node.reviews, options.ignoreAuthor);
     const reviewThreads = structuralReviewThreads(node.reviewThreads, options.ignoreAuthor);
+    const reviewThreadRelations = reviewThreadRelationSensitivity(node.reviewThreads, options);
     const headSha = stringOrUndefined(node.headRefOid)?.trim().toLowerCase();
     const baseSha = stringOrUndefined(node.baseRefOid)?.trim().toLowerCase();
     const additions = nonNegativeInteger(node.additions);
@@ -564,6 +652,9 @@ export function reviewStructuralRecordFromGraphql(
     ) {
       return null;
     }
+    if (reviewThreadRelations === null) return null;
+    relationSensitive ||= reviewThreadRelations;
+    snapshot.relationSensitive = relationSensitive;
     snapshot.pull = {
       headSha,
       baseSha,
@@ -647,6 +738,7 @@ function sourceRevision(snapshot: ReviewStructuralSnapshot): string {
       labels: [...snapshot.labels].map((label) => label.toLowerCase()).sort(),
       comments: normalizedActivities(snapshot.comments),
       timeline: snapshot.timeline,
+      relationSensitive: snapshot.relationSensitive,
       latestRelease: {
         tag: snapshot.latestReleaseTag,
         sha: snapshot.latestReleaseSha,
@@ -733,6 +825,7 @@ export function createReviewStructuralRecord(
     !snapshot.comments.every(validActivity) ||
     snapshot.timelineTruncated ||
     snapshot.timeline.length > 100 ||
+    typeof snapshot.relationSensitive !== "boolean" ||
     !validMachineMetadata(snapshot.timeline) ||
     !validMachineMetadata({
       comments: snapshot.comments,
@@ -758,6 +851,7 @@ export function createReviewStructuralRecord(
     kind: snapshot.kind,
     sourceRevision: sourceRevision(snapshot),
     activityUpdatedAt: snapshot.activityUpdatedAt,
+    relationSensitive: snapshot.relationSensitive,
     targetHeadSha: snapshot.targetHeadSha,
     pullHeadSha: snapshot.pull?.headSha ?? null,
     reviewPolicy: options.reviewPolicy,
@@ -778,6 +872,7 @@ export function validReviewStructuralRecord(
     !DIGEST_PATTERN.test(record.fingerprint) ||
     !DIGEST_PATTERN.test(record.sourceRevision) ||
     !validTimestamp(record.activityUpdatedAt) ||
+    typeof record.relationSensitive !== "boolean" ||
     !SHA_PATTERN.test(record.targetHeadSha) ||
     !record.reviewPolicy ||
     !record.reviewModel
@@ -882,6 +977,9 @@ export function reviewStructuralCacheDecision(options: {
   }
   if (!activityCoveredByReview(prior, current, review)) {
     return { hit: false, reason: "activity_changed" };
+  }
+  if (current.relationSensitive) {
+    return { hit: false, reason: "relation_context_present" };
   }
   if (prior.targetHeadSha !== current.targetHeadSha) {
     return { hit: false, reason: "target_changed" };
