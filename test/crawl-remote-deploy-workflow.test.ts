@@ -300,7 +300,7 @@ test("release artifact is immutable, bounded, canonical, and hash verified", () 
   assert.equal(upload.with?.overwrite, false);
   assert.equal(upload.with?.["if-no-files-found"], "error");
   assert.equal(upload.with?.["include-hidden-files"], false);
-  assert.equal(upload.with?.["retention-days"], 1);
+  assert.equal(upload.with?.["retention-days"], 31);
 
   const download = step(deploy, "Download immutable release artifact");
   assert.equal(download.uses, "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c");

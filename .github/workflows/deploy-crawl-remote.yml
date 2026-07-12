@@ -362,7 +362,7 @@ jobs:
           include-hidden-files: false
           compression-level: 0
           overwrite: false
-          retention-days: 1
+          retention-days: 31 # Covers GitHub's 30-day environment approval window.
 
   deploy:
     name: Migrate and deploy verified crawl-remote release
