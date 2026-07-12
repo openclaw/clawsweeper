@@ -297,9 +297,11 @@ jobs:
       cancel-in-progress: false
     permissions:
       actions: write
+      checks: read
       contents: write
       issues: write
       pull-requests: write
+      statuses: read
     steps:
       - name: Claim exact-review queue lease
         id: claim-exact-review-queue
@@ -505,9 +507,11 @@ jobs:
           private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
           owner: ${{ steps.target.outputs.target_repo_owner }}
           repositories: ${{ steps.target.outputs.target_repo_name }}
+          permission-checks: read
           permission-contents: read
           permission-issues: read
           permission-pull-requests: read
+          permission-statuses: read
 
       - name: Check live target item state
         if: ${{ steps.target.outputs.target_enabled == 'true' }}
@@ -1714,9 +1718,11 @@ jobs:
     timeout-minutes: 75
     continue-on-error: true
     permissions:
+      checks: read
       contents: read
       issues: read
       pull-requests: read
+      statuses: read
     strategy:
       fail-fast: false
       matrix:
@@ -1738,9 +1744,11 @@ jobs:
           private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
           owner: ${{ needs.plan.outputs.target_repo_owner }}
           repositories: ${{ needs.plan.outputs.target_repo_name }}
+          permission-checks: read
           permission-contents: read
           permission-issues: write
           permission-pull-requests: read
+          permission-statuses: read
 
       - name: Create target Codex inspection token
         id: codex-inspection-token

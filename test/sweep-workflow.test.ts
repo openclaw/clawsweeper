@@ -51,6 +51,29 @@ test("review workflow gives Codex a read-only inspection token", () => {
   assert.doesNotMatch(reviewJob, /uses: \.\/\.github\/actions\/setup-codex/);
 });
 
+test("review execution tokens can read check runs and commit statuses", () => {
+  const workflow = readText(".github/workflows/sweep.yml");
+  const eventReviewStart = workflow.indexOf("\n  event-review-apply:");
+  const planStart = workflow.indexOf("\n  plan:", eventReviewStart);
+  const reviewStart = workflow.indexOf("\n  review:", planStart);
+  const publishStart = workflow.indexOf("\n  publish:", reviewStart);
+
+  for (const job of [
+    workflow.slice(eventReviewStart, planStart),
+    workflow.slice(reviewStart, publishStart),
+  ]) {
+    const permissions = job.slice(job.indexOf("\n    permissions:"), job.indexOf("\n    steps:"));
+    const targetTokenStart = job.indexOf("id: target-read-token");
+    const targetTokenEnd = job.indexOf("\n      - ", targetTokenStart);
+    const targetToken = job.slice(targetTokenStart, targetTokenEnd);
+
+    assert.match(permissions, /checks: read/);
+    assert.match(permissions, /statuses: read/);
+    assert.match(targetToken, /permission-checks: read/);
+    assert.match(targetToken, /permission-statuses: read/);
+  }
+});
+
 test("scheduled review shards receive the compiler-backed runtime artifact", () => {
   const workflow = readText(".github/workflows/sweep.yml");
   const planJobStart = workflow.indexOf("\n  plan:");
