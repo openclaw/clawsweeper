@@ -60,24 +60,26 @@ formatter controls, and tooling directives remain part of the digest at their
 exact syntax attachment. Complete JSON hunks are parsed and compacted without
 reordering object keys. Scheduled shards receive a bounded shared runtime
 archive, then install the exact TypeScript native package for their own platform
-and architecture only after its tarball matches the committed lockfile SRI.
+and architecture only after its tarball matches the committed lockfile SRI and
+every installation parent is proven to be a real directory.
 
 Semantic reuse requires:
 
 - complete bounded patches for every changed file;
+- exact base/head Git tree modes for regular blobs, included in the code digest;
 - a supported modified or added TypeScript, JavaScript, or complete JSON file;
 - unchanged title, body, human discussion, relations, reviews, review threads,
   labels including maintainer proof overrides, base and target state, release
-  state from a complete lookup, commit messages, merge readiness, checks,
-  policy, and model;
+  state from a complete lookup, full commit-message revision, merge readiness,
+  checks, policy, and model;
 - a prior completed keep-open report within the normal 14-day ceiling; and
 - the normal durable review lease.
 
 Unsupported languages, isolated mid-file or multi-hunk compiler patches,
 compiler parse failures, deletions, renames, binary or missing patches, prompt
-truncation, malformed hunks, lexical ambiguity, partial JSON, incomplete check
-state, and truncated commit context retain an exact digest for audit but cannot
-use semantic reuse.
+truncation, malformed hunks, lexical ambiguity, partial JSON, missing or
+unsupported Git tree modes, incomplete check state, and truncated commit
+context retain an exact digest for audit but cannot use semantic reuse.
 
 Before carrying a semantic hit, ClawSweeper repeats the target, release,
 structural metadata, and check-state probes under the lease. Any drift or
