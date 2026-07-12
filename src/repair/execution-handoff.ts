@@ -28,6 +28,7 @@ import {
   writeJson,
 } from "./prepared-publication.js";
 import { replacementLabelsToCopy } from "./replacement-labels.js";
+import { hasDeterministicSecuritySignal } from "./security-signals.js";
 import {
   isPassedStagedProofBundle,
   stagedProofBundle,
@@ -875,7 +876,7 @@ function resolveLiveExecutionIntent({
     sourceLabelSets.push(sourceLabels);
   }
   if (operation === "open_pull_request" && existingTargetPr !== null) {
-    assertItemNotPaused(targetRepo, existingTargetPr);
+    assertItemSafe(targetRepo, existingTargetPr);
   }
   assertAuthorizedClosingReferences({
     fixArtifact,
@@ -1186,7 +1187,7 @@ function runPublicationMutation<T>(
   targetNumbers: ReadonlyArray<number | null>,
   mutation: () => T,
 ): T {
-  assertPublicationNotPaused(intent, targetNumbers);
+  assertPublicationSafe(intent, targetNumbers);
   return mutation();
 }
 
@@ -1219,6 +1220,44 @@ export function assertPublicationPauseBoundary(
   assertPauseItemsNotPaused(publicationPauseItems(intent, targetNumbers), readLabels);
 }
 
+export function assertPublicationSafetyBoundary(
+  intent: ExecutionIntent,
+  targetNumbers: ReadonlyArray<number | null>,
+  readSignals: (
+    repo: string,
+    number: number,
+  ) => { labels: Iterable<string>; comments: Iterable<string> },
+) {
+  assertPublicationItemsSafe(publicationPauseItems(intent, targetNumbers), readSignals);
+}
+
+function assertPublicationItemsSafe(
+  items: Iterable<{ repo: string; number: number }>,
+  readSignals: (
+    repo: string,
+    number: number,
+  ) => { labels: Iterable<string>; comments: Iterable<string> },
+) {
+  for (const item of items) {
+    const signals = readSignals(item.repo, item.number);
+    const labels = [...signals.labels];
+    const pauseLabel = repairPauseLabel(labels);
+    if (pauseLabel) {
+      throw new Error(
+        `publication paused by live ${pauseLabel} label on ${item.repo}#${item.number}`,
+      );
+    }
+    if (
+      hasDeterministicSecuritySignal({
+        labels,
+        comments: [...signals.comments],
+      })
+    ) {
+      throw new Error(`publication blocked by live security signal on ${item.repo}#${item.number}`);
+    }
+  }
+}
+
 function assertPauseItemsNotPaused(
   items: Iterable<{ repo: string; number: number }>,
   readLabels: (repo: string, number: number) => Iterable<string>,
@@ -1233,19 +1272,25 @@ function assertPauseItemsNotPaused(
   }
 }
 
-function assertPublicationNotPaused(
+function assertPublicationSafe(
   intent: ExecutionIntent,
   targetNumbers: ReadonlyArray<number | null> = [],
 ) {
-  assertPublicationPauseBoundary(intent, targetNumbers, (repo, number) =>
-    githubLabelNames(ghObject(`repos/${repo}/issues/${number}`).labels),
-  );
+  assertPublicationSafetyBoundary(intent, targetNumbers, (repo, number) => ({
+    labels: githubLabelNames(ghObject(`repos/${repo}/issues/${number}`).labels),
+    comments: ghPagedArray(`repos/${repo}/issues/${number}/comments?per_page=100`).map((comment) =>
+      String(comment.body ?? ""),
+    ),
+  }));
 }
 
-function assertItemNotPaused(repo: string, number: number) {
-  assertPauseItemsNotPaused([{ repo, number }], (itemRepo, itemNumber) =>
-    githubLabelNames(ghObject(`repos/${itemRepo}/issues/${itemNumber}`).labels),
-  );
+function assertItemSafe(repo: string, number: number) {
+  assertPublicationItemsSafe([{ repo, number }], (itemRepo, itemNumber) => ({
+    labels: githubLabelNames(ghObject(`repos/${itemRepo}/issues/${itemNumber}`).labels),
+    comments: ghPagedArray(`repos/${itemRepo}/issues/${itemNumber}/comments?per_page=100`).map(
+      (comment) => String(comment.body ?? ""),
+    ),
+  }));
 }
 
 function publishExactPullComment({
@@ -1452,7 +1497,7 @@ function publishReplacementRepair({
     labels: intent.required_labels,
   });
   verifyPublishedPull(intent.target_repo, targetPrNumber, publication, intent);
-  assertPublicationNotPaused(intent, [targetPrNumber]);
+  assertPublicationSafe(intent, [targetPrNumber]);
 
   for (const action of publication.superseded_source_actions) {
     const source = parsePullRequestUrl(action.source);
@@ -1571,7 +1616,7 @@ function revalidateLiveSource(intent: ExecutionIntent, publication: PreparedPubl
     ) {
       throw new Error("source pull request changed after authorization");
     }
-    assertPublicationNotPaused(intent, [intent.expected_target_pr_number]);
+    assertPublicationSafe(intent, [intent.expected_target_pr_number]);
     return;
   }
   if (intent.source.kind === "issue") {

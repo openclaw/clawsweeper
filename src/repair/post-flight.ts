@@ -186,6 +186,8 @@ function finalizeFixPr(action: LooseRecord) {
     pull = fetchPullRequest(result.repo, parsed.number);
     view = fetchPullRequestView(result.repo, parsed.number);
     prBase = { ...base, pr: `#${parsed.number}`, title: view.title ?? pull.title ?? null };
+    const securityBlock = liveSecurityBlockReason(parsed.number, pull.labels ?? []);
+    if (securityBlock) return { ...prBase, status: "blocked", reason: securityBlock };
     if (
       shouldFinalizePublicationOnlyPostFlight({
         hasPublicationReceipt: Boolean(publicationReceipt),
@@ -253,6 +255,11 @@ function finalizeFixPr(action: LooseRecord) {
   }
 
   if (process.env.CLAWSWEEPER_ALLOW_MERGE !== "1") {
+    const securityBlock = liveSecurityBlockReason(
+      parsed.number,
+      fetchPullRequest(result.repo, parsed.number).labels ?? [],
+    );
+    if (securityBlock) return { ...prBase, status: "blocked", reason: securityBlock };
     labelForClawSweeperReview(result.repo, parsed.number);
     return {
       ...prBase,
@@ -306,6 +313,11 @@ function finalizeFixPr(action: LooseRecord) {
     bodyFile,
   ];
   if (pull.head?.sha) mergeArgs.push("--match-head-commit", String(pull.head.sha));
+  const securityBlock = liveSecurityBlockReason(
+    parsed.number,
+    fetchPullRequest(result.repo, parsed.number).labels ?? [],
+  );
+  if (securityBlock) return { ...prBase, status: "blocked", reason: securityBlock };
   try {
     ghWithRetry(mergeArgs);
   } catch (error) {
@@ -384,6 +396,15 @@ function finalizeIssueImplementationPr({ base, parsed }: LooseRecord) {
     const pull = fetchPullRequest(result.repo, parsed.number);
     const view = fetchPullRequestView(result.repo, parsed.number);
     const prBase = { ...base, pr: `#${parsed.number}`, title: view.title ?? pull.title ?? null };
+    const securityBlock = liveSecurityBlockReason(parsed.number, pull.labels ?? []);
+    if (securityBlock) {
+      return {
+        ...prBase,
+        status: "blocked",
+        reason: securityBlock,
+        waited_ms: waitedMs,
+      };
+    }
 
     if (pull.state !== "open") {
       return {
@@ -498,6 +519,10 @@ function finalizePostMergeCloseout({
     };
   }
 
+  const beforeLabelSecurityBlock = liveSecurityBlockReason(target, live.labels ?? []);
+  if (beforeLabelSecurityBlock) {
+    return { ...base, status: "blocked", reason: beforeLabelSecurityBlock };
+  }
   ghBestEffort([
     "issue",
     "edit",
@@ -507,6 +532,10 @@ function finalizePostMergeCloseout({
     "--add-label",
     "clawsweeper",
   ]);
+  const beforeCommentSecurityBlock = freshLiveSecurityBlockReason(target);
+  if (beforeCommentSecurityBlock) {
+    return { ...base, status: "blocked", reason: beforeCommentSecurityBlock };
+  }
   ghWithRetry([
     "issue",
     "comment",
@@ -523,6 +552,10 @@ function finalizePostMergeCloseout({
       }),
     }),
   ]);
+  const beforeCloseSecurityBlock = freshLiveSecurityBlockReason(target);
+  if (beforeCloseSecurityBlock) {
+    return { ...base, status: "blocked", reason: beforeCloseSecurityBlock };
+  }
   if (live.pull_request) {
     ghWithRetry(["pr", "close", String(target), "--repo", result.repo]);
   } else {
@@ -593,6 +626,17 @@ function hasLiveSecuritySignal(number: JsonValue, labels: LooseRecord[]) {
     ".[].body",
   ]);
   return hasDeterministicSecuritySignal({ comments: [bodies] });
+}
+
+function liveSecurityBlockReason(number: JsonValue, labels: LooseRecord[]) {
+  return hasLiveSecuritySignal(number, labels)
+    ? "security-sensitive target requires central security triage"
+    : "";
+}
+
+function freshLiveSecurityBlockReason(number: JsonValue) {
+  const issue = fetchIssue(result.repo, number);
+  return liveSecurityBlockReason(number, issue.labels ?? []);
 }
 
 function validateMergeableFixPr({

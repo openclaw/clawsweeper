@@ -8,6 +8,7 @@ import test from "node:test";
 import {
   assertExactValidationProofPlan,
   assertPublicationPauseBoundary,
+  assertPublicationSafetyBoundary,
   assertRepairDeltaBaseBinding,
   missingRequiredPublicationLabels,
   prepareExecutionAuthorization,
@@ -407,9 +408,9 @@ test("every publication mutation rechecks live pause labels and labels precede r
   const source = fs.readFileSync("src/repair/execution-handoff.ts", "utf8");
   const mutationWrapper = source.slice(
     source.indexOf("function runPublicationMutation"),
-    source.indexOf("function assertPublicationNotPaused"),
+    source.indexOf("export function publicationPauseItems"),
   );
-  assert.match(mutationWrapper, /assertPublicationNotPaused\(intent, targetNumbers\)/);
+  assert.match(mutationWrapper, /assertPublicationSafe\(intent, targetNumbers\)/);
   for (const mutationOwner of [
     "function publishPreparedRef",
     "function publishExactPullComment",
@@ -512,6 +513,28 @@ test("publication pause boundary covers secondary sources and retry targets on e
   assert.throws(
     () => assertPublicationPauseBoundary(intent, [99], readLabels),
     /human-review.*openclaw\/example#99/,
+  );
+
+  labels.set("openclaw/example#99", []);
+  labels.set("openclaw/example#43", ["security:sensitive"]);
+  assert.throws(
+    () =>
+      assertPublicationSafetyBoundary(intent, [99], (repo, number) => ({
+        labels: readLabels(repo, number),
+        comments: [],
+      })),
+    /security signal.*openclaw\/example#43/,
+  );
+
+  labels.set("openclaw/example#43", []);
+  assert.throws(
+    () =>
+      assertPublicationSafetyBoundary(intent, [99], (repo, number) => ({
+        labels: readLabels(repo, number),
+        comments:
+          number === 99 ? ["<!-- clawsweeper-security:security-sensitive item=99 sha=abc -->"] : [],
+      })),
+    /security signal.*openclaw\/example#99/,
   );
 });
 

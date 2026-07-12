@@ -45,6 +45,9 @@ test("issue implementation post-flight waits for green PR checks without merging
       "  }));",
       "  process.exit(0);",
       "}",
+      "if (args[0] === 'api' && args[1] === 'repos/openclaw/openclaw/issues/123/comments?per_page=100') {",
+      "  process.exit(0);",
+      "}",
       "if (args[0] === 'pr' && args[1] === 'view') {",
       "  process.stdout.write(JSON.stringify({",
       "    baseRefName: 'main',",
@@ -205,6 +208,9 @@ test("issue implementation post-flight waits for checks to be created", () => {
       "  }));",
       "  process.exit(0);",
       "}",
+      "if (args[0] === 'api' && args[1] === 'repos/openclaw/openclaw/issues/123/comments?per_page=100') {",
+      "  process.exit(0);",
+      "}",
       "if (args[0] === 'pr' && args[1] === 'view') {",
       "  const path = process.env.FAKE_GH_VIEW_COUNT_FILE;",
       "  const count = fs.existsSync(path) ? Number(fs.readFileSync(path, 'utf8')) : 0;",
@@ -261,6 +267,7 @@ test("merge post-flight requires exact proof and server-enforced strict base bin
   const reportPath = path.join(runDir, "post-flight-report.json");
   const mergeFlagPath = path.join(tmp, "merged.txt");
   const viewCountPath = path.join(tmp, "view-count.txt");
+  const commentsCountPath = path.join(tmp, "comments-count.txt");
 
   fs.mkdirSync(fakeBin, { recursive: true });
   fs.mkdirSync(runDir, { recursive: true });
@@ -282,7 +289,12 @@ test("merge post-flight requires exact proof and server-enforced strict base bin
       "  process.exit(0);",
       "}",
       "if (args[0] === 'api' && args[1] === 'repos/openclaw/openclaw/issues/123/comments?per_page=100') {",
-      "  process.stdout.write('');",
+      "  const path = process.env.FAKE_GH_COMMENTS_COUNT_FILE;",
+      "  const count = fs.existsSync(path) ? Number(fs.readFileSync(path, 'utf8')) : 0;",
+      "  fs.writeFileSync(path, String(count + 1));",
+      "  if (process.env.FAKE_GH_LATE_SECURITY === '1' && count >= 2) {",
+      "    process.stdout.write('<!-- clawsweeper-security:security-sensitive item=123 sha=abc -->');",
+      "  }",
       "  process.exit(0);",
       "}",
       "if (args[0] === 'api' && args[1] === 'repos/openclaw/openclaw/rules/branches/main') {",
@@ -361,6 +373,7 @@ test("merge post-flight requires exact proof and server-enforced strict base bin
       CLAWSWEEPER_POST_FLIGHT_POLL_MS: "1",
       FAKE_GH_MERGED_FILE: mergeFlagPath,
       FAKE_GH_VIEW_COUNT_FILE: viewCountPath,
+      FAKE_GH_COMMENTS_COUNT_FILE: commentsCountPath,
       ...mockGhBinEnv(path.join(fakeBin, "gh"), fakeBin),
     };
     writeMergeReports(runDir, resultPath);
@@ -448,6 +461,24 @@ test("merge post-flight requires exact proof and server-enforced strict base bin
     writeMergeReports(runDir, resultPath);
     fs.rmSync(reportPath, { force: true });
     fs.rmSync(viewCountPath, { force: true });
+    fs.rmSync(commentsCountPath, { force: true });
+    execFileSync(process.execPath, ["dist/repair/post-flight.js", jobPath, resultPath], {
+      cwd: repoRoot,
+      env: { ...env, FAKE_GH_STRICT_BASE: "1", FAKE_GH_LATE_SECURITY: "1" },
+      stdio: "pipe",
+    });
+    const lateSecurityReport = JSON.parse(fs.readFileSync(reportPath, "utf8"));
+    assert.equal(lateSecurityReport.actions[0]?.status, "blocked");
+    assert.equal(
+      lateSecurityReport.actions[0]?.reason,
+      "security-sensitive target requires central security triage",
+    );
+    assert.equal(fs.existsSync(mergeFlagPath), false);
+
+    writeMergeReports(runDir, resultPath);
+    fs.rmSync(reportPath, { force: true });
+    fs.rmSync(viewCountPath, { force: true });
+    fs.rmSync(commentsCountPath, { force: true });
     execFileSync(process.execPath, ["dist/repair/post-flight.js", jobPath, resultPath], {
       cwd: repoRoot,
       env: { ...env, FAKE_GH_STRICT_BASE: "1" },
@@ -460,6 +491,30 @@ test("merge post-flight requires exact proof and server-enforced strict base bin
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
+});
+
+test("post-flight rechecks live security immediately before privileged mutations", () => {
+  const source = fs.readFileSync("src/repair/post-flight.ts", "utf8");
+  const finalizeFixPr = source.slice(
+    source.indexOf("function finalizeFixPr"),
+    source.indexOf("function publishedFixAction"),
+  );
+  assert.match(
+    finalizeFixPr,
+    /liveSecurityBlockReason\([\s\S]*fetchPullRequest[\s\S]*\n\s*try \{\n\s*ghWithRetry\(mergeArgs\)/,
+  );
+
+  const closeout = source.slice(
+    source.indexOf("function finalizePostMergeCloseout"),
+    source.indexOf("function validateMergePolicy"),
+  );
+  assert.ok(
+    [...closeout.matchAll(/SecurityBlock = (?:freshL|l)iveSecurityBlockReason/g)].length >= 3,
+  );
+  assert.ok(
+    closeout.indexOf("beforeCommentSecurityBlock") < closeout.indexOf('"issue",\n    "comment"'),
+  );
+  assert.ok(closeout.indexOf("beforeCloseSecurityBlock") < closeout.indexOf('["pr", "close"'));
 });
 
 test("post-flight keeps no-timestamp pending duplicate checks visible", () => {
@@ -485,6 +540,9 @@ test("post-flight keeps no-timestamp pending duplicate checks visible", () => {
       "    draft: false, labels: [], base: { ref: 'main' }, merged_at: null,",
       "    head: { sha: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' },",
       "  }));",
+      "  process.exit(0);",
+      "}",
+      "if (args[0] === 'api' && args[1] === 'repos/openclaw/openclaw/issues/123/comments?per_page=100') {",
       "  process.exit(0);",
       "}",
       "if (args[0] === 'pr' && args[1] === 'view') {",
