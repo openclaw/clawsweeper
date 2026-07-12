@@ -39,6 +39,7 @@ import {
   stripEnvPrefix,
   uniqueStrings,
   validateAllowedValidationCommandParts,
+  validationCommandForExecution,
   vitestPathFilterIndexes,
 } from "./validation-command-utils.js";
 
@@ -47,6 +48,33 @@ const DEFAULT_TARGET_SETUP_TIMEOUT_MS = 2 * 60 * 1000;
 const DEFAULT_TARGET_INSTALL_TIMEOUT_MS = 12 * 60 * 1000;
 const DEFAULT_TARGET_VALIDATION_TIMEOUT_MS = 12 * 60 * 1000;
 const MIN_VALIDATION_RETRY_BUDGET_MS = 1_000;
+const ABSENT_PROOF_INPUT = "<absent>";
+const PROTECTED_PROOF_INPUT_DIRECTORIES = new Set([
+  ".venv",
+  ".yarn",
+  "node_modules",
+  "venv",
+  "vendor",
+]);
+const ROOT_PROOF_INPUT_CANDIDATES = [
+  ".env",
+  ".env.ci",
+  ".env.development",
+  ".env.local",
+  ".env.production",
+  ".env.staging",
+  ".env.test",
+  ".npmrc",
+  ".pnp.cjs",
+  ".pnp.loader.mjs",
+  ".pnpmfile.cjs",
+  ".venv",
+  ".yarn",
+  ".yarnrc",
+  ".yarnrc.yml",
+  "node_modules",
+  "venv",
+];
 
 export type TargetValidationOptions = {
   additionalValidationCommands?: string[];
@@ -428,7 +456,7 @@ export function runStagedValidationProof(
   if (checkoutIdentity.status) {
     throw new Error("staged proof requires a clean validation checkout");
   }
-  const proofInputSnapshot = validationProofInputSnapshot(cwd);
+  const proofInputSnapshot = validationProofInputSnapshot(cwd, plan.commands);
   const validationTimeoutMs = targetValidationTimeoutMs(
     "CLAWSWEEPER_TARGET_VALIDATION_TIMEOUT_MS",
     options.validationTimeoutMs ?? DEFAULT_TARGET_VALIDATION_TIMEOUT_MS,
@@ -481,7 +509,7 @@ export function replayStagedValidationProof(
   if (checkoutIdentity.status) {
     throw new Error("staged proof replay requires a clean validation checkout");
   }
-  const proofInputSnapshot = validationProofInputSnapshot(cwd);
+  const proofInputSnapshot = validationProofInputSnapshot(cwd, plan.commands);
   const validationTimeoutMs = targetValidationTimeoutMs(
     "CLAWSWEEPER_TARGET_VALIDATION_TIMEOUT_MS",
     options.validationTimeoutMs ?? DEFAULT_TARGET_VALIDATION_TIMEOUT_MS,
@@ -624,7 +652,8 @@ function runValidationPlanCommand({
       throw validationCommandBudgetError(rendered);
     }
     try {
-      run(parts[0]!, parts.slice(1), {
+      const executionParts = validationCommandForExecution(parts);
+      run(executionParts[0]!, executionParts.slice(1), {
         cwd,
         env: validationEnv,
         timeoutMs: remainingBudgetMs,
@@ -672,7 +701,9 @@ type ValidationCheckoutIdentity = {
   status: string;
 };
 
-type ValidationProofInputSnapshot = Map<string, string>;
+type ValidationProofInputSnapshot = {
+  entries: Map<string, string>;
+};
 
 type ValidationSourceIdentity = {
   headSha: string;
@@ -722,40 +753,46 @@ function assertValidationCheckoutIdentity(
   }
 }
 
-function validationProofInputSnapshot(cwd: string): ValidationProofInputSnapshot {
+function validationProofInputSnapshot(
+  cwd: string,
+  commands: readonly { parts: readonly string[] }[],
+): ValidationProofInputSnapshot {
   const root = path.resolve(cwd);
-  const snapshot: ValidationProofInputSnapshot = new Map();
-  const visitedDirectories = new Set<string>();
+  const entries = new Map<string, string>();
 
-  const visit = (entryPath: string, relativePath: string) => {
-    if (relativePath === ".git" || relativePath.startsWith(`.git${path.sep}`)) return;
+  const visit = (relativePath: string) => {
+    const entryPath = proofInputPath(root, relativePath);
     const stat = fs.lstatSync(entryPath, { bigint: true });
-    snapshot.set(relativePath, validationProofInputSignature(stat));
+    entries.set(relativePath, validationProofInputSignature(stat));
 
-    let directoryPath = entryPath;
     if (stat.isSymbolicLink()) {
-      snapshot.set(`${relativePath}\0link`, fs.readlinkSync(entryPath));
-      const targetPath = fs.realpathSync(entryPath);
+      entries.set(`${relativePath}\0link`, fs.readlinkSync(entryPath));
+      const targetPath = proofInputSymlinkTarget(root, entryPath, relativePath);
       const targetStat = fs.statSync(targetPath, { bigint: true });
-      snapshot.set(`${relativePath}\0target`, validationProofInputSignature(targetStat));
-      if (!targetStat.isDirectory()) return;
-      directoryPath = targetPath;
-    } else if (!stat.isDirectory()) {
+      entries.set(
+        `${relativePath}\0target`,
+        `${proofInputRelativePath(root, targetPath)}\0${validationProofInputSignature(targetStat)}`,
+      );
       return;
     }
-
-    const realDirectory = fs.realpathSync(directoryPath);
-    if (visitedDirectories.has(realDirectory)) return;
-    visitedDirectories.add(realDirectory);
-    for (const name of fs.readdirSync(directoryPath).sort()) {
-      visit(path.join(directoryPath, name), path.join(relativePath, name));
+    if (!stat.isDirectory()) {
+      if (!stat.isFile()) {
+        throw new Error(`unsupported proof input entry: ${relativePath}`);
+      }
+      return;
+    }
+    const children = fs.readdirSync(entryPath).sort();
+    entries.set(`${relativePath}\0children`, children.join("\0"));
+    for (const name of children) {
+      visit(path.posix.join(relativePath, name));
     }
   };
 
-  for (const name of fs.readdirSync(root).sort()) {
-    visit(path.join(root, name), name);
+  for (const relativePath of validationProofInputCandidates(cwd, commands)) {
+    if (proofInputLstat(root, relativePath)) visit(relativePath);
+    else entries.set(relativePath, ABSENT_PROOF_INPUT);
   }
-  return snapshot;
+  return { entries };
 }
 
 function validationProofInputSignature(stat: fs.BigIntStats) {
@@ -771,27 +808,173 @@ function validationProofInputSignature(stat: fs.BigIntStats) {
 }
 
 function assertValidationProofInputSnapshot(cwd: string, expected: ValidationProofInputSnapshot) {
-  const actual = validationProofInputSnapshot(cwd);
-  if (actual.size === expected.size) {
-    let matches = true;
-    for (const [entryPath, signature] of expected) {
-      if (actual.get(entryPath) !== signature) {
-        matches = false;
-        break;
-      }
+  const root = path.resolve(cwd);
+  for (const [entryPath, signature] of expected.entries) {
+    if (currentProofInputSignature(root, entryPath) === signature) continue;
+    throw new Error(
+      `unsafe validation command mutated ignored proof input surface: ${entryPath.split("\0", 1)[0] ?? "unknown"}`,
+    );
+  }
+}
+
+function validationProofInputCandidates(
+  cwd: string,
+  commands: readonly { parts: readonly string[] }[],
+): string[] {
+  const candidates = new Set(ROOT_PROOF_INPUT_CANDIDATES);
+  for (const candidate of trackedManifestProofInputCandidates(cwd)) candidates.add(candidate);
+  const ignoredEntries = run(
+    "git",
+    ["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z"],
+    { cwd },
+  );
+  const ignoredPaths = ignoredEntries
+    .split("\0")
+    .map((entry) => entry.replace(/\/+$/, ""))
+    .filter(Boolean);
+  for (const ignoredPath of ignoredPaths) {
+    const parts = ignoredPath.split("/");
+    const protectedIndex = parts.findIndex((part) => PROTECTED_PROOF_INPUT_DIRECTORIES.has(part));
+    if (protectedIndex >= 0) {
+      candidates.add(parts.slice(0, protectedIndex + 1).join("/"));
+    } else if (isProtectedProofInputFile(ignoredPath)) {
+      candidates.add(ignoredPath);
     }
-    if (matches) return;
   }
 
-  const changedPath = [...new Set([...expected.keys(), ...actual.keys()])]
-    .sort((left, right) => {
-      const depth = right.split(path.sep).length - left.split(path.sep).length;
-      return depth || left.localeCompare(right);
-    })
-    .find((entryPath) => expected.get(entryPath) !== actual.get(entryPath));
-  throw new Error(
-    `unsafe validation command mutated ignored proof input surface: ${changedPath ?? "unknown"}`,
+  for (const command of commands) {
+    for (const argument of stripEnvPrefix(command.parts).slice(1)) {
+      if (!looksLikePathArgument(argument) || argument.startsWith("-")) continue;
+      const absolute = path.resolve(cwd, argument);
+      if (!isPathWithin(path.resolve(cwd), absolute) || !fs.existsSync(absolute)) continue;
+      const relative = proofInputRelativePath(path.resolve(cwd), absolute);
+      if (
+        ignoredPaths.some((ignored) => relative === ignored || relative.startsWith(`${ignored}/`))
+      ) {
+        candidates.add(relative);
+      }
+    }
+  }
+
+  return [...candidates]
+    .map((candidate) => candidate.replaceAll("\\", "/").replace(/^\.\/+/, ""))
+    .filter((candidate) => candidate && candidate !== ".git" && !candidate.startsWith(".git/"))
+    .sort((left, right) => left.localeCompare(right))
+    .filter(
+      (candidate, index, values) =>
+        !values.some(
+          (parent, parentIndex) =>
+            parentIndex !== index &&
+            candidate.startsWith(`${parent}/`) &&
+            parent.split("/").length < candidate.split("/").length,
+        ),
+    );
+}
+
+function trackedManifestProofInputCandidates(cwd: string): string[] {
+  const manifests = run(
+    "git",
+    [
+      "ls-files",
+      "-z",
+      "--",
+      ":(glob)**/Cargo.toml",
+      ":(glob)**/Gemfile",
+      ":(glob)**/Pipfile",
+      ":(glob)**/composer.json",
+      ":(glob)**/go.mod",
+      ":(glob)**/package.json",
+      ":(glob)**/poetry.lock",
+      ":(glob)**/pyproject.toml",
+      ":(glob)**/requirements*.txt",
+    ],
+    { cwd },
+  )
+    .split("\0")
+    .filter(Boolean);
+  const candidates = new Set<string>();
+  for (const manifest of manifests) {
+    const directory = path.posix.dirname(manifest);
+    for (const name of ROOT_PROOF_INPUT_CANDIDATES) {
+      candidates.add(directory === "." ? name : path.posix.join(directory, name));
+    }
+    if (
+      path.posix.basename(manifest) === "Cargo.toml" ||
+      path.posix.basename(manifest) === "go.mod"
+    ) {
+      candidates.add(directory === "." ? "vendor" : path.posix.join(directory, "vendor"));
+    }
+  }
+  return [...candidates];
+}
+
+function isProtectedProofInputFile(filePath: string) {
+  const name = path.posix.basename(filePath);
+  return (
+    /^\.env(?:\..+)?$/.test(name) ||
+    /^(?:\.npmrc|\.pnp\.(?:cjs|loader\.mjs)|\.pnpmfile\.cjs|\.yarnrc(?:\.yml)?)$/.test(name)
   );
+}
+
+function currentProofInputSignature(root: string, entryPath: string): string {
+  const [relativePath, kind = "stat"] = entryPath.split("\0");
+  const absolute = proofInputPath(root, relativePath!);
+  const stat = proofInputLstat(root, relativePath!);
+  if (!stat) return ABSENT_PROOF_INPUT;
+  if (kind === "stat") return validationProofInputSignature(stat);
+  if (kind === "children") {
+    return stat.isDirectory() ? fs.readdirSync(absolute).sort().join("\0") : "<not-directory>";
+  }
+  if (kind === "link") {
+    return stat.isSymbolicLink() ? fs.readlinkSync(absolute) : "<not-symlink>";
+  }
+  if (kind === "target") {
+    if (!stat.isSymbolicLink()) return "<not-symlink>";
+    const targetPath = proofInputSymlinkTarget(root, absolute, relativePath!);
+    return `${proofInputRelativePath(root, targetPath)}\0${validationProofInputSignature(
+      fs.statSync(targetPath, { bigint: true }),
+    )}`;
+  }
+  return "<unknown-proof-input>";
+}
+
+function proofInputLstat(root: string, relativePath: string): fs.BigIntStats | null {
+  try {
+    return fs.lstatSync(proofInputPath(root, relativePath), { bigint: true });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
+}
+
+function proofInputPath(root: string, relativePath: string) {
+  const absolute = path.resolve(root, ...relativePath.split("/"));
+  if (!isPathWithin(root, absolute)) {
+    throw new Error(`proof input path escapes validation checkout: ${relativePath}`);
+  }
+  return absolute;
+}
+
+function proofInputSymlinkTarget(root: string, entryPath: string, relativePath: string) {
+  let targetPath: string;
+  try {
+    targetPath = fs.realpathSync(entryPath);
+  } catch {
+    throw new Error(`proof input symlink is broken or cyclic: ${relativePath}`);
+  }
+  if (!isPathWithin(root, targetPath)) {
+    throw new Error(`proof input symlink escapes validation checkout: ${relativePath}`);
+  }
+  return targetPath;
+}
+
+function proofInputRelativePath(root: string, absolute: string) {
+  return path.relative(root, absolute).split(path.sep).join("/");
+}
+
+function isPathWithin(root: string, candidate: string) {
+  const relative = path.relative(root, candidate);
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
 }
 
 function remainingCommandBudget(timeoutMs: number, startedAt: number) {

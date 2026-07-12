@@ -673,6 +673,7 @@ export function validateAllowedValidationCommandParts(
     hasUnsupportedPackageManagerInvocation(normalized) ||
     hasUnsafePackageManagerPathOption(normalized) ||
     hasUnsafePackageRunner(normalized) ||
+    hasUncontainedPackageLifecycleHooks(normalized) ||
     hasInlineInterpreterCode(normalized) ||
     hasMutatingValidationFlag(normalized) ||
     hasMutatingValidationCommand(normalized)
@@ -680,6 +681,35 @@ export function validateAllowedValidationCommandParts(
     throw new Error(`unsafe validation command: ${displayCommand}`);
   }
   return normalized;
+}
+
+export function validationCommandForExecution(parts: readonly string[]): string[] {
+  const commandParts = stripEnvPrefix(parts);
+  const invocation = packageManagerInvocation(commandParts);
+  if (!invocation || !packageScriptRequirement(commandParts)) return [...parts];
+  if (invocation.executable === "yarn") {
+    throw new Error(
+      "unsafe validation command: Yarn package scripts cannot suppress lifecycle hooks",
+    );
+  }
+  const envPrefix = parts.slice(0, parts.length - commandParts.length);
+  if (invocation.executable === "npm") {
+    const ignoreScripts = npmIgnoreScriptsMode(parts);
+    if (ignoreScripts === "disabled") {
+      throw new Error("unsafe validation command: npm lifecycle suppression is overridden");
+    }
+    if (ignoreScripts === "enabled") return [...parts];
+    return [...envPrefix, "npm", "--ignore-scripts", ...commandParts.slice(1)];
+  }
+  if (invocation.executable === "pnpm") {
+    return [
+      ...envPrefix,
+      "pnpm",
+      "--config.enable-pre-post-scripts=false",
+      ...commandParts.slice(1),
+    ];
+  }
+  return [...parts];
 }
 
 export function resolveValidationCommandEnvironment(
@@ -869,6 +899,31 @@ function hasUnsupportedPackageManagerInvocation(parts: readonly string[]) {
   const invocation = packageManagerInvocation(parts);
   if (!invocation) return true;
   return !isReadOnlyPackageManagerInvocation(invocation);
+}
+
+function hasUncontainedPackageLifecycleHooks(parts: readonly string[]) {
+  const invocation = packageManagerInvocation(parts);
+  if (!invocation || packageScriptRequirement(parts) === null) return false;
+  if (invocation.executable === "yarn") return true;
+  return invocation.executable === "npm" && npmIgnoreScriptsMode(parts) === "disabled";
+}
+
+function npmIgnoreScriptsMode(parts: readonly string[]): "enabled" | "disabled" | null {
+  const commandParts = stripEnvPrefix(parts);
+  if (commandParts[0] !== "npm") return null;
+  let enabled = false;
+  for (const token of commandParts.slice(1)) {
+    if (token === "--") break;
+    if (token === "--ignore-scripts") {
+      enabled = true;
+      continue;
+    }
+    if (token.startsWith("--ignore-scripts=")) {
+      if (token.slice(token.indexOf("=") + 1).toLowerCase() !== "true") return "disabled";
+      enabled = true;
+    }
+  }
+  return enabled ? "enabled" : null;
 }
 
 function isReadOnlyPackageManagerInvocation(invocation: PackageManagerInvocation) {

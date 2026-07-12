@@ -30,6 +30,7 @@ import {
 import {
   parseAllowedValidationCommand,
   resolveValidationCommandEnvironment,
+  validationCommandForExecution,
 } from "../../dist/repair/validation-command-utils.js";
 import { mockCommandBinEnv } from "../helpers.ts";
 
@@ -442,6 +443,8 @@ test("validation parser rejects snapshot-writing and formatter mutation flags", 
     "pnpm --config-dir . test",
     "pnpm --store-dir .pnpm-store test",
     "pnpm --config.ignore-scripts=false test",
+    "npm --ignore-scripts=false run check",
+    "npm run check --ignore-scripts=false",
     "npm i",
     "npm insta",
     "npm cit",
@@ -500,8 +503,8 @@ test("validation parser rejects snapshot-writing and formatter mutation flags", 
     "run",
     "fmt:verify",
   ]);
-  assert.deepEqual(parseAllowedValidationCommand("yarn run lint"), ["yarn", "run", "lint"]);
-  assert.deepEqual(parseAllowedValidationCommand("yarn test"), ["yarn", "test"]);
+  assert.throws(() => parseAllowedValidationCommand("yarn run lint"), /unsafe validation command/);
+  assert.throws(() => parseAllowedValidationCommand("yarn test"), /unsafe validation command/);
   assert.deepEqual(parseAllowedValidationCommand("python -u -m pytest tests/unit"), [
     "python",
     "-u",
@@ -2102,6 +2105,220 @@ test("staged proof rejects ignored dependency poisoning before later commands", 
   );
   assert.equal(git(cwd, "status", "--porcelain"), "");
   assert.equal(fs.existsSync(markerPath), false);
+});
+
+test("staged proof rejects creation of a nested ignored dependency root", () => {
+  const cwd = gitPackageFixture({
+    poison: "node poison.js",
+    verify: "node verify.js",
+  });
+  fs.appendFileSync(path.join(cwd, ".gitignore"), "node_modules/\n");
+  fs.mkdirSync(path.join(cwd, "packages", "app"), { recursive: true });
+  fs.writeFileSync(path.join(cwd, "packages", "app", "package.json"), "{}\n");
+  fs.writeFileSync(
+    path.join(cwd, "poison.js"),
+    [
+      "const fs = require('node:fs');",
+      "fs.mkdirSync('packages/app/node_modules/fixture-dependency', { recursive: true });",
+      "fs.writeFileSync('packages/app/node_modules/fixture-dependency/state.js', 'owned\\n');",
+      "",
+    ].join("\n"),
+  );
+  fs.writeFileSync(
+    path.join(cwd, "verify.js"),
+    [
+      "const fs = require('node:fs');",
+      "if (fs.readFileSync('packages/app/node_modules/fixture-dependency/state.js', 'utf8') === 'owned\\n') {",
+      "  fs.writeFileSync('poison-used.txt', 'used\\n');",
+      "}",
+      "",
+    ].join("\n"),
+  );
+  git(cwd, "add", ".");
+  git(cwd, "commit", "-m", "initial");
+  attachOrigin(cwd);
+
+  assert.throws(
+    () =>
+      runStagedValidationProof(
+        ["pnpm poison", "pnpm verify"],
+        cwd,
+        validationOptions("steipete/example", {
+          toolchain: {
+            packageManager: "pnpm",
+            baseValidationCommands: [],
+            changedGate: null,
+          },
+        }),
+      ),
+    (error) => {
+      assert.match(
+        error.message,
+        /mutated ignored proof input surface: packages\/app\/node_modules/,
+      );
+      assert.equal(error.trace.status, "failed");
+      return true;
+    },
+  );
+  assert.equal(fs.existsSync(path.join(cwd, "poison-used.txt")), false);
+});
+
+test("staged proof allows unrelated ignored generated outputs between commands", () => {
+  const cwd = gitPackageFixture({
+    generate: "node generate.js",
+    verify: "node verify.js",
+  });
+  fs.appendFileSync(path.join(cwd, ".gitignore"), "coverage/\n");
+  fs.writeFileSync(
+    path.join(cwd, "generate.js"),
+    "require('node:fs').mkdirSync('coverage', { recursive: true }); require('node:fs').writeFileSync('coverage/result.json', '{}\\n');\n",
+  );
+  fs.writeFileSync(
+    path.join(cwd, "verify.js"),
+    "if (!require('node:fs').existsSync('coverage/result.json')) process.exit(9);\n",
+  );
+  git(cwd, "add", ".");
+  git(cwd, "commit", "-m", "initial");
+  attachOrigin(cwd);
+
+  const result = runStagedValidationProof(
+    ["pnpm generate", "pnpm verify"],
+    cwd,
+    validationOptions("steipete/example", {
+      toolchain: {
+        packageManager: "pnpm",
+        baseValidationCommands: [],
+        changedGate: null,
+      },
+    }),
+  );
+
+  assert.equal(result.trace.status, "passed");
+  assert.equal(fs.readFileSync(path.join(cwd, "coverage", "result.json"), "utf8"), "{}\n");
+});
+
+test(
+  "staged proof rejects dependency symlinks that escape the checkout",
+  { skip: process.platform === "win32" },
+  () => {
+    const cwd = gitPackageFixture({ verify: "node verify.js" });
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-proof-outside-"));
+    fs.mkdirSync(path.join(cwd, "node_modules"), { recursive: true });
+    fs.symlinkSync(outside, path.join(cwd, "node_modules", "escape"));
+    fs.writeFileSync(path.join(cwd, "verify.js"), "\n");
+    git(cwd, "add", ".");
+    git(cwd, "commit", "-m", "initial");
+    attachOrigin(cwd);
+
+    assert.throws(
+      () =>
+        runStagedValidationProof(
+          ["pnpm verify"],
+          cwd,
+          validationOptions("steipete/example", {
+            toolchain: {
+              packageManager: "pnpm",
+              baseValidationCommands: [],
+              changedGate: null,
+            },
+          }),
+        ),
+      /proof input symlink escapes validation checkout: node_modules\/escape/,
+    );
+  },
+);
+
+test(
+  "staged proof rejects cyclic dependency symlinks without traversing them",
+  { skip: process.platform === "win32" },
+  () => {
+    const cwd = gitPackageFixture({ verify: "node verify.js" });
+    fs.mkdirSync(path.join(cwd, "node_modules"), { recursive: true });
+    fs.symlinkSync("loop", path.join(cwd, "node_modules", "loop"));
+    fs.writeFileSync(path.join(cwd, "verify.js"), "\n");
+    git(cwd, "add", ".");
+    git(cwd, "commit", "-m", "initial");
+    attachOrigin(cwd);
+
+    assert.throws(
+      () =>
+        runStagedValidationProof(
+          ["pnpm verify"],
+          cwd,
+          validationOptions("steipete/example", {
+            toolchain: {
+              packageManager: "pnpm",
+              baseValidationCommands: [],
+              changedGate: null,
+            },
+          }),
+        ),
+      /proof input symlink is broken or cyclic: node_modules\/loop/,
+    );
+  },
+);
+
+for (const packageCommand of ["npm run check", "pnpm check"]) {
+  test(`${packageCommand} executes the approved script without pre/post lifecycle hooks`, () => {
+    const cwd = gitPackageFixture({
+      precheck: "node precheck.js",
+      check: "node check.js",
+      postcheck: "node postcheck.js",
+    });
+    fs.appendFileSync(path.join(cwd, ".gitignore"), "proof-events/\n");
+    for (const [file, event] of [
+      ["precheck.js", "pre"],
+      ["check.js", "main"],
+      ["postcheck.js", "post"],
+    ]) {
+      fs.writeFileSync(
+        path.join(cwd, file),
+        `const fs = require("node:fs"); fs.mkdirSync("proof-events", { recursive: true }); fs.appendFileSync("proof-events/events", ${JSON.stringify(`${event}\n`)});\n`,
+      );
+    }
+    git(cwd, "add", ".");
+    git(cwd, "commit", "-m", "initial");
+    attachOrigin(cwd);
+
+    const result = runStagedValidationProof(
+      [packageCommand],
+      cwd,
+      validationOptions("steipete/example", {
+        toolchain: {
+          packageManager: packageCommand.startsWith("npm ") ? "npm" : "pnpm",
+          baseValidationCommands: [],
+          changedGate: null,
+        },
+      }),
+    );
+
+    assert.equal(result.trace.status, "passed");
+    assert.equal(fs.readFileSync(path.join(cwd, "proof-events", "events"), "utf8"), "main\n");
+  });
+}
+
+test("package validation execution injects lifecycle suppression without changing proof argv", () => {
+  assert.deepEqual(validationCommandForExecution(["npm", "run", "check"]), [
+    "npm",
+    "--ignore-scripts",
+    "run",
+    "check",
+  ]);
+  assert.deepEqual(validationCommandForExecution(["pnpm", "--filter", "app", "check"]), [
+    "pnpm",
+    "--config.enable-pre-post-scripts=false",
+    "--filter",
+    "app",
+    "check",
+  ]);
+  assert.throws(
+    () => validationCommandForExecution(["npm", "--ignore-scripts=false", "run", "check"]),
+    /npm lifecycle suppression is overridden/,
+  );
+  assert.throws(
+    () => validationCommandForExecution(["npm", "run", "check", "--ignore-scripts=false"]),
+    /npm lifecycle suppression is overridden/,
+  );
 });
 
 test("staged target proof resolves environment defaults before direct spawn", () => {

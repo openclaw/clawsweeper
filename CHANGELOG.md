@@ -80,10 +80,10 @@ checkpoint, and status-only commits are intentionally omitted.
   the repaired checkout, and limited package-manager proof commands to explicit
   read-only script or runner forms while rejecting lifecycle, registry, and
   account mutations across pnpm, npm, Bun, and Yarn.
-- Snapshotted every staged-proof checkout input, including ignored dependency
-  and tooling trees plus symlink targets, before execution and revalidated it
-  around every command so one stage cannot poison a later stage while Git
-  remains clean.
+- Restricted staged-proof ignored-input checks to dependency, tooling, config,
+  and explicit command inputs; rejected escaping or cyclic symlinks; allowed
+  unrelated ignored generated outputs; and suppressed npm/pnpm pre/post hooks
+  while rejecting Yarn script execution that cannot provide the same guarantee.
 - Evaluated every applicable strict repository ruleset before automerge and
   failed closed if any ruleset bypasses the repair App, weakens the effective
   required checks, or cannot be fully verified.
