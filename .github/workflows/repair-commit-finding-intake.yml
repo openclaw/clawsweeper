@@ -171,6 +171,7 @@ jobs:
         if: ${{ steps.prepare.outputs.should_repair == 'true' && steps.execute.outcome == 'success' && env.CLAWSWEEPER_ALLOW_EXECUTE == '1' && env.CLAWSWEEPER_ALLOW_FIX_PR == '1' }}
         env:
           GH_TOKEN: ${{ steps.app_token.outputs.token }}
+          CLAWSWEEPER_AUTHENTICATED_APP_SLUG: ${{ steps.app_token.outputs.app-slug }}
         run: pnpm run repair:post-flight -- "${{ steps.prepare.outputs.job_path }}" "${{ steps.prepare.outputs.result_path }}"
 
       - name: Publish local result ledger

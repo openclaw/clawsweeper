@@ -176,6 +176,7 @@ jobs:
       - name: Route ClawSweeper comments
         env:
           GH_TOKEN: ${{ steps.app_token.outputs.token }}
+          CLAWSWEEPER_AUTHENTICATED_APP_SLUG: ${{ steps.app_token.outputs.app-slug }}
           CLAWSWEEPER_DISPATCH_TOKEN: ${{ steps.dispatch-token.outputs.token }}
           CLAWSWEEPER_MUTATION_TOKEN_SOURCE: clawsweeper-app
           CLAWSWEEPER_ALLOW_MERGE: ${{ vars.CLAWSWEEPER_ALLOW_MERGE || '0' }}
@@ -298,6 +299,7 @@ jobs:
         if: ${{ steps.waiting-repair-dispatches.outputs.count != '' && steps.waiting-repair-dispatches.outputs.count != '0' }}
         env:
           GH_TOKEN: ${{ steps.app_token.outputs.token }}
+          CLAWSWEEPER_AUTHENTICATED_APP_SLUG: ${{ steps.app_token.outputs.app-slug }}
           CLAWSWEEPER_DISPATCH_TOKEN: ${{ steps.dispatch-token.outputs.token }}
           CLAWSWEEPER_MUTATION_TOKEN_SOURCE: clawsweeper-app
           CLAWSWEEPER_ALLOW_MERGE: ${{ vars.CLAWSWEEPER_ALLOW_MERGE || '0' }}

@@ -614,6 +614,7 @@ jobs:
         if: ${{ steps.check_job.outputs.job_exists == '1' && steps.self_heal_head.outputs.matched != 'false' && env.CLAWSWEEPER_ALLOW_EXECUTE == '1' }}
         env:
           GH_TOKEN: ${{ steps.target_post_flight_token.outputs.token }}
+          CLAWSWEEPER_AUTHENTICATED_APP_SLUG: ${{ steps.target_post_flight_token.outputs.app-slug }}
           CLAWSWEEPER_ALLOWED_OWNER: ${{ steps.target.outputs.target_owner }}
         run: pnpm run repair:apply-result -- "${{ inputs.job }}" --latest
 
@@ -622,6 +623,7 @@ jobs:
         if: ${{ steps.check_job.outputs.job_exists == '1' && steps.self_heal_head.outputs.matched != 'false' && env.CLAWSWEEPER_ALLOW_EXECUTE == '1' && env.CLAWSWEEPER_ALLOW_FIX_PR == '1' }}
         env:
           GH_TOKEN: ${{ steps.target_post_flight_token.outputs.token }}
+          CLAWSWEEPER_AUTHENTICATED_APP_SLUG: ${{ steps.target_post_flight_token.outputs.app-slug }}
           CLAWSWEEPER_ALLOWED_OWNER: ${{ steps.target.outputs.target_owner }}
         run: pnpm run repair:post-flight -- "${{ inputs.job }}" --latest
 
@@ -629,6 +631,7 @@ jobs:
         if: ${{ steps.check_job.outputs.job_exists == '1' && steps.self_heal_head.outputs.matched != 'false' && env.CLAWSWEEPER_ALLOW_EXECUTE == '1' }}
         env:
           GH_TOKEN: ${{ steps.target_post_flight_token.outputs.token }}
+          CLAWSWEEPER_AUTHENTICATED_APP_SLUG: ${{ steps.target_post_flight_token.outputs.app-slug }}
           CLAWSWEEPER_ALLOWED_OWNER: ${{ steps.target.outputs.target_owner }}
         run: pnpm run repair:apply-result -- "${{ inputs.job }}" --latest
 

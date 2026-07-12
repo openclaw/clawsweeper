@@ -3478,6 +3478,7 @@ function executeAutomerge(command: LooseRecord) {
     repo: command.repo,
     baseBranch: String(view.baseRefName ?? latestTarget.base_ref ?? targetBranch ?? "main"),
     appId: process.env.CLAWSWEEPER_APP_ID,
+    appSlug: process.env.CLAWSWEEPER_AUTHENTICATED_APP_SLUG,
     readJson: (ghArgs) => ghJson(ghArgs),
   });
   if (strictBaseBindingBlock) {

@@ -855,6 +855,7 @@ jobs:
         timeout-minutes: 4
         env:
           GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
+          CLAWSWEEPER_AUTHENTICATED_APP_SLUG: ${{ steps.target-write-token.outputs.app-slug }}
           CLAWSWEEPER_DISPATCH_TOKEN: ${{ github.token }}
           TARGET_REPO: ${{ steps.target.outputs.target_repo }}
           ITEM_NUMBER: ${{ steps.target.outputs.item_number }}
@@ -1042,6 +1043,7 @@ jobs:
         if: ${{ success() && steps.review-exact-event-item.outcome == 'success' && steps.publish-event-result.outcome == 'success' && steps.route-synced-verdict.outcome == 'success' && steps.waiting-event-repair-dispatches.outputs.count != '' && steps.waiting-event-repair-dispatches.outputs.count != '0' }}
         env:
           GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
+          CLAWSWEEPER_AUTHENTICATED_APP_SLUG: ${{ steps.target-write-token.outputs.app-slug }}
           CLAWSWEEPER_DISPATCH_TOKEN: ${{ github.token }}
           TARGET_REPO: ${{ steps.target.outputs.target_repo }}
           ITEM_NUMBER: ${{ steps.target.outputs.item_number }}

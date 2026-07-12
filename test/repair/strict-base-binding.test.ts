@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import test from "node:test";
+import { parse } from "yaml";
 
 import { serverStrictBaseBindingBlock } from "../../dist/repair/strict-base-binding.js";
 
 const APP_ID = 3306130;
+const APP_SLUG = "openclaw-clawsweeper";
 
 test("strict base binding accepts an enforced non-bypass ruleset", () => {
   assert.equal(
@@ -12,6 +14,7 @@ test("strict base binding accepts an enforced non-bypass ruleset", () => {
       repo: "openclaw/openclaw",
       baseBranch: "main",
       appId: APP_ID,
+      appSlug: APP_SLUG,
       readJson: fakeGithub({
         rules: [strictRulesetRule()],
         ruleset: { bypass_actors: [] },
@@ -27,6 +30,7 @@ test("strict base binding rejects a ruleset that exempts the merge app", () => {
       repo: "openclaw/openclaw",
       baseBranch: "main",
       appId: APP_ID,
+      appSlug: APP_SLUG,
       readJson: fakeGithub({
         rules: [strictRulesetRule()],
         ruleset: {
@@ -44,6 +48,7 @@ test("strict base binding accepts classic strict branch protection", () => {
       repo: "openclaw/example",
       baseBranch: "main",
       appId: APP_ID,
+      appSlug: APP_SLUG,
       readJson: fakeGithub({
         rules: [],
         protection: {
@@ -64,6 +69,7 @@ test("strict base binding fails closed without an installation identity", () => 
       repo: "openclaw/openclaw",
       baseBranch: "main",
       appId: APP_ID,
+      appSlug: APP_SLUG,
       readJson: () => {
         throw new Error("not an installation token");
       },
@@ -78,6 +84,7 @@ test("strict base binding rejects rulesets whose bypass actors are hidden", () =
       repo: "openclaw/openclaw",
       baseBranch: "main",
       appId: APP_ID,
+      appSlug: APP_SLUG,
       readJson: fakeGithub({
         rules: [strictRulesetRule()],
         ruleset: {},
@@ -93,7 +100,34 @@ test("strict base binding requires the configured App identity", () => {
       repo: "openclaw/openclaw",
       baseBranch: "main",
       appId: "",
+      appSlug: APP_SLUG,
       readJson: fakeGithub({ rules: [], protection: {} }),
+    }),
+    "automerge disabled: merge credential is not a verifiable GitHub App installation",
+  );
+});
+
+test("strict base binding requires the authenticated App slug", () => {
+  assert.equal(
+    serverStrictBaseBindingBlock({
+      repo: "openclaw/openclaw",
+      baseBranch: "main",
+      appId: APP_ID,
+      appSlug: "",
+      readJson: fakeGithub({ rules: [], protection: {} }),
+    }),
+    "automerge disabled: merge credential is not a verifiable GitHub App installation",
+  );
+});
+
+test("strict base binding rejects an authenticated slug that resolves to another App", () => {
+  assert.equal(
+    serverStrictBaseBindingBlock({
+      repo: "openclaw/openclaw",
+      baseBranch: "main",
+      appId: APP_ID,
+      appSlug: APP_SLUG,
+      readJson: fakeGithub({ rules: [], protection: {}, resolvedAppId: APP_ID + 1 }),
     }),
     "automerge disabled: merge credential is not a verifiable GitHub App installation",
   );
@@ -111,10 +145,44 @@ test("all repair merge owners invoke the shared strict base guard before merge",
     const owner = source.slice(start, end < 0 ? undefined : end);
     const guard = owner.indexOf("serverStrictBaseBindingBlock({");
     const appIdentity = owner.indexOf("appId: process.env.CLAWSWEEPER_APP_ID");
+    const appSlug = owner.indexOf("appSlug: process.env.CLAWSWEEPER_AUTHENTICATED_APP_SLUG");
     const merge = owner.indexOf(mergeCall);
     assert.ok(guard >= 0, `${file} is missing the strict base guard`);
     assert.ok(appIdentity > guard, `${file} does not bind the configured App identity`);
+    assert.ok(appSlug > appIdentity, `${file} does not bind the authenticated App slug`);
     assert.ok(merge > guard, `${file} does not guard the merge call`);
+  }
+});
+
+test("merge-capable workflow steps bind the app slug to the token-producing step", () => {
+  for (const file of [
+    ".github/workflows/repair-cluster-worker.yml",
+    ".github/workflows/repair-comment-router.yml",
+    ".github/workflows/repair-commit-finding-intake.yml",
+    ".github/workflows/sweep.yml",
+  ]) {
+    const workflow = parse(fs.readFileSync(file, "utf8")) as {
+      jobs?: Record<string, { steps?: Array<{ env?: Record<string, string>; run?: string }> }>;
+    };
+    const mergeSteps = Object.values(workflow.jobs ?? {}).flatMap((job) =>
+      (job.steps ?? []).filter((step) =>
+        /pnpm run repair:(?:apply-result|post-flight|comment-router)\b/.test(step.run ?? ""),
+      ),
+    );
+    assert.ok(mergeSteps.length > 0, `${file} has no merge-capable repair steps`);
+    for (const step of mergeSteps) {
+      const tokenProducer = workflowOutputStep(step.env?.GH_TOKEN, "token");
+      const slugProducer = workflowOutputStep(
+        step.env?.CLAWSWEEPER_AUTHENTICATED_APP_SLUG,
+        "app-slug",
+      );
+      assert.ok(tokenProducer, `${file} merge step is missing an App token output`);
+      assert.equal(
+        slugProducer,
+        tokenProducer,
+        `${file} merge step does not bind the authenticated slug to its token`,
+      );
+    }
   }
 });
 
@@ -126,24 +194,36 @@ function strictRulesetRule() {
     ruleset_source_type: "Repository",
     parameters: {
       strict_required_status_checks_policy: true,
-      required_status_checks: [{ context: "clownfish/exact-merge" }],
+      required_status_checks: [{ context: "required-ci/exact-merge" }],
     },
   };
+}
+
+function workflowOutputStep(value: string | undefined, output: string): string | null {
+  return (
+    value?.match(new RegExp(`steps\\.([^.]+)\\.outputs\\.${output.replace("-", "\\-")}`))?.[1] ??
+    null
+  );
 }
 
 function fakeGithub({
   rules,
   ruleset = null,
   protection = { required_status_checks: null },
+  resolvedAppId = APP_ID,
 }: {
   rules: unknown[];
   ruleset?: unknown;
   protection?: unknown;
+  resolvedAppId?: number;
 }) {
   return (args: string[]) => {
     const endpoint = args[1];
     if (endpoint === "installation/repositories?per_page=1") {
       return { total_count: 1, repositories: [{ full_name: "openclaw/openclaw" }] };
+    }
+    if (endpoint === `apps/${APP_SLUG}`) {
+      return { id: resolvedAppId, slug: APP_SLUG };
     }
     if (endpoint === "repos/openclaw/openclaw/rules/branches/main") return rules;
     if (endpoint === "repos/openclaw/example/rules/branches/main") return rules;

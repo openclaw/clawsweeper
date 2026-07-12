@@ -6,18 +6,20 @@ export function serverStrictBaseBindingBlock({
   repo,
   baseBranch,
   appId,
+  appSlug,
   readJson,
 }: {
   repo: string;
   baseBranch: string;
   appId: unknown;
+  appSlug: unknown;
   readJson: GithubJsonReader;
 }): string {
   if (!baseBranch) {
     return "automerge disabled: pull request base branch is unavailable for strict binding";
   }
 
-  const authenticatedAppId = authenticatedInstallationAppId(appId, readJson);
+  const authenticatedAppId = authenticatedInstallationAppId(appId, appSlug, readJson);
   if (!authenticatedAppId) {
     return "automerge disabled: merge credential is not a verifiable GitHub App installation";
   }
@@ -73,15 +75,31 @@ export function serverStrictBaseBindingBlock({
     : `automerge disabled: ${baseBranch} lacks server-enforced strict base binding`;
 }
 
-function authenticatedInstallationAppId(appId: unknown, readJson: GithubJsonReader): number | null {
+function authenticatedInstallationAppId(
+  appId: unknown,
+  appSlug: unknown,
+  readJson: GithubJsonReader,
+): number | null {
   const configuredAppId = Number(appId);
   if (!Number.isSafeInteger(configuredAppId) || configuredAppId <= 0) return null;
+  const authenticatedAppSlug = String(appSlug ?? "").trim();
+  if (!/^[a-z0-9][a-z0-9-]*$/i.test(authenticatedAppSlug)) return null;
   try {
     const installation = readJson(["api", "installation/repositories?per_page=1"]);
     const candidate = installation as LooseRecord;
     if (
       !Number.isSafeInteger(Number(candidate?.total_count)) ||
       !Array.isArray(candidate?.repositories)
+    ) {
+      return null;
+    }
+    const app = readJson([
+      "api",
+      `apps/${encodeURIComponent(authenticatedAppSlug)}`,
+    ]) as LooseRecord;
+    if (
+      Number(app?.id) !== configuredAppId ||
+      String(app?.slug ?? "").toLowerCase() !== authenticatedAppSlug.toLowerCase()
     ) {
       return null;
     }
