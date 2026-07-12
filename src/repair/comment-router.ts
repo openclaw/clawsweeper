@@ -111,7 +111,7 @@ import {
   writePayload,
   writeReportFile,
 } from "./comment-router-utils.js";
-import { readCommentRouterConfig } from "./config.js";
+import { DEFAULT_TRUSTED_BOTS, readCommentRouterConfig } from "./config.js";
 import {
   ghBestEffort,
   ghErrorText,
@@ -302,12 +302,14 @@ if (execute && exactCommentVersionFastPath.suppress && exactCommentVersionFastPa
       )
     : "skipped_source_drift";
   report.exact_comment_version_ack = ackConvergence;
-  report.exact_comment_version_cleanup = versionStillCurrent
-    ? "skipped_shared_ownership"
-    : "skipped_source_drift";
   if (versionStillCurrent && exactCommentVersionAckFailed(ackConvergence)) {
     throw new Error(`exact comment acknowledgement convergence failed: ${ackConvergence}`);
   }
+  report.exact_comment_version_cleanup = versionStillCurrent
+    ? measure("clear_exact_comment_version_reaction", () =>
+        removeOwnCommentReaction(exactCommentVersionFastPathCommand, "eyes"),
+      )
+    : "skipped_source_drift";
   if (!versionStillCurrent) {
     exactCommentVersionFastPath = { suppress: false, reason: "cleanup_source_drift" };
     const resumedComments = measure("list_candidate_comments_after_cleanup_drift", () =>
@@ -4511,7 +4513,7 @@ function clearTerminalMaintainerCommandReaction(command: LooseRecord) {
 }
 
 function removeOwnCommentReaction(command: LooseRecord, content: string) {
-  if (!command.comment_id) return;
+  if (!command.comment_id) return "not_applicable";
   let reactions: LooseRecord[] = [];
   try {
     const fetched = ghJson<LooseRecord[]>(
@@ -4527,11 +4529,15 @@ function removeOwnCommentReaction(command: LooseRecord, content: string) {
     console.warn(
       `warning: failed to list ${content} reactions for comment ${command.comment_id}: ${message}`,
     );
-    return;
+    return "list_failed";
   }
 
+  let matched = false;
+  let removed = false;
+  let deleteFailed = false;
   for (const reaction of reactions) {
     if (!isOwnCommentReaction(reaction, content)) continue;
+    matched = true;
     try {
       ghText(
         [
@@ -4542,20 +4548,25 @@ function removeOwnCommentReaction(command: LooseRecord, content: string) {
         ],
         { attempts: 1 },
       );
+      removed = true;
     } catch (error) {
       const message = compactText(ghErrorText(error), 220);
       if (/\b404\b|not found/i.test(message)) continue;
+      deleteFailed = true;
       console.warn(
         `warning: failed to delete ${content} reaction ${reaction.id} from comment ${command.comment_id}: ${message}`,
       );
     }
   }
+  if (deleteFailed) return "delete_failed";
+  if (removed) return "removed";
+  return matched ? "already_absent" : "not_found";
 }
 
 function isOwnCommentReaction(reaction: LooseRecord, content: string) {
   if (String(reaction?.content ?? "").toLowerCase() !== content.toLowerCase()) return false;
   const login = String(reaction?.user?.login ?? "").toLowerCase();
-  return isAllowedMutationActor(login, trustedBots);
+  return isAllowedMutationActor(login, DEFAULT_TRUSTED_BOTS);
 }
 
 function ensureAutomergeLabel(repo: string) {
