@@ -256,6 +256,8 @@ test("comment webhook still accepts post-close re-review commands for router res
     commentId: 456,
     installationId: 123,
     sourceAction: "created",
+    commentUpdatedAt: "2026-05-19T05:03:00Z",
+    commentBodySha256: crypto.createHash("sha256").update("@clawsweeper re-review").digest("hex"),
   });
 });
 
@@ -678,6 +680,7 @@ test("concurrent duplicate command webhooks converge on one fast ack comment", a
   let nextCommentId = 9001;
   let fastAckPosts = 0;
   let dispatches = 0;
+  const dispatchBodies: Array<Record<string, unknown>> = [];
   process.env.CLAWSWEEPER_APP_ID = "12345";
   delete process.env.CLAWSWEEPER_APP_CLIENT_ID;
   process.env.CLAWSWEEPER_FAST_ACK_SETTLE_DELAYS_MS = "0,0,0";
@@ -718,6 +721,7 @@ test("concurrent duplicate command webhooks converge on one fast ack comment", a
     }
     if (path === "/repos/openclaw/clawsweeper/dispatches" && method === "POST") {
       dispatches += 1;
+      dispatchBodies.push(JSON.parse(String(init?.body ?? "{}")));
       return jsonResponse({});
     }
     if (path.startsWith("/repos/openclaw/openclaw/issues/comments/") && method === "DELETE") {
@@ -738,6 +742,7 @@ test("concurrent duplicate command webhooks converge on one fast ack comment", a
       comment: {
         id: 456,
         body: "@clawsweeper re-review",
+        updated_at: "2026-07-12T20:00:00Z",
         author_association: "MEMBER",
         user: { login: "user" },
       },
@@ -751,6 +756,25 @@ test("concurrent duplicate command webhooks converge on one fast ack comment", a
     assert.deepEqual(right, { statusCode: 202, body: { ok: true, status_comment_id: 9001 } });
     assert.equal(fastAckPosts, 1);
     assert.equal(dispatches, 2);
+    assert.deepEqual(
+      dispatchBodies.map((body) => body.client_payload),
+      Array.from({ length: 2 }, () => ({
+        target_repo: "openclaw/openclaw",
+        target_branch: "main",
+        item_number: 71898,
+        comment_id: 456,
+        status_comment_id: 9001,
+        source_event: "issue_comment",
+        source_action: "created",
+        comment_event_auth: "github_webhook_v1",
+        comment_updated_at: "2026-07-12T20:00:00Z",
+        comment_body_sha256: crypto
+          .createHash("sha256")
+          .update("@clawsweeper re-review")
+          .digest("hex"),
+        max_comments: "1",
+      })),
+    );
     assert.equal(comments.length, 1);
     assert.match(comments[0]?.body ?? "", /clawsweeper-command-ack:456/);
     await new Promise((resolve) => setTimeout(resolve, 0));

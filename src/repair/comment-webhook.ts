@@ -12,6 +12,7 @@ import {
 } from "./comment-router-core.js";
 import { adaptiveReviewBudgetForPullRequest } from "./adaptive-review-budget.js";
 import { isExactReviewCloseGuardLabel } from "./exact-review-guard-labels.js";
+import { commentBodySha256 } from "./comment-router-utils.js";
 
 const DEFAULT_PORT = 8787;
 const REVIEW_REPO = "openclaw/clawsweeper";
@@ -41,6 +42,8 @@ type AcceptedIssueCommentWebhook = {
   commentId: number;
   installationId: number;
   sourceAction: string;
+  commentUpdatedAt?: string;
+  commentBodySha256?: string;
 };
 
 type AcceptedItemWebhook = {
@@ -148,6 +151,8 @@ export async function handleGitHubWebhook({
     commentId: accepted.commentId,
     statusCommentId,
     sourceAction: accepted.sourceAction,
+    ...(accepted.commentUpdatedAt ? { commentUpdatedAt: accepted.commentUpdatedAt } : {}),
+    ...(accepted.commentBodySha256 ? { commentBodyDigest: accepted.commentBodySha256 } : {}),
   });
   settleFastAckComments({
     token: targetToken,
@@ -227,6 +232,7 @@ export function classifyIssueCommentWebhook({
   if (!Number.isInteger(installationId) || installationId <= 0) {
     return { accepted: false, reason: "missing installation id" };
   }
+  const commentUpdatedAt = exactWebhookTimestamp(comment.updated_at);
   return {
     accepted: true,
     type: "issue_comment",
@@ -236,7 +242,18 @@ export function classifyIssueCommentWebhook({
     commentId,
     installationId,
     sourceAction: String(payload.action ?? "created"),
+    ...(commentUpdatedAt
+      ? {
+          commentUpdatedAt,
+          commentBodySha256: commentBodySha256(comment.body),
+        }
+      : {}),
   };
+}
+
+function exactWebhookTimestamp(value: JsonValue) {
+  const text = String(value ?? "").trim();
+  return text && Number.isFinite(Date.parse(text)) ? text : null;
 }
 
 export function classifyItemWebhook({ event, payload }: { event: string; payload: LooseRecord }) {
@@ -723,6 +740,8 @@ async function dispatchCommentRouter({
   commentId,
   statusCommentId,
   sourceAction,
+  commentUpdatedAt,
+  commentBodyDigest,
 }: {
   token: string;
   targetRepo: string;
@@ -731,6 +750,8 @@ async function dispatchCommentRouter({
   commentId: number;
   statusCommentId: number;
   sourceAction: string;
+  commentUpdatedAt?: string;
+  commentBodyDigest?: string;
 }) {
   await githubFetch({
     token,
@@ -746,6 +767,9 @@ async function dispatchCommentRouter({
         status_comment_id: statusCommentId,
         source_event: "issue_comment",
         source_action: sourceAction,
+        comment_event_auth: "github_webhook_v1",
+        ...(commentUpdatedAt ? { comment_updated_at: commentUpdatedAt } : {}),
+        ...(commentBodyDigest ? { comment_body_sha256: commentBodyDigest } : {}),
         max_comments: "1",
       },
     },
