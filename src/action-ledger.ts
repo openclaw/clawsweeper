@@ -374,7 +374,7 @@ export const ACTION_EVENT_ATTRIBUTE_KEYS = [
 
 export const ACTION_EVENT_MACHINE_TEXT_PATTERN_SOURCE = "^[A-Za-z0-9][A-Za-z0-9_.:/@+\\-]*$";
 export const ACTION_EVENT_RELATIVE_DATA_PATH_PATTERN_SOURCE =
-  "^(?:\\.artifacts|artifacts|jobs|ledger|logs|notifications|records|results)(?:/[A-Za-z0-9_][A-Za-z0-9._+@\\-]{0,254})+$";
+  "^(?:\\.artifacts|artifacts|jobs|ledger|logs|notifications|records|results)(?:/(?!(?:[Cc][Oo][Nn]|[Pp][Rr][Nn]|[Aa][Uu][Xx]|[Nn][Uu][Ll]|[Cc][Oo][Mm][1-9]|[Ll][Pp][Tt][1-9])(?:\\.|/|$))[A-Za-z0-9_](?:[A-Za-z0-9._+@\\-]{0,253}[A-Za-z0-9_+@\\-])?)+$";
 export const ACTION_EVENT_TIMESTAMP_PATTERN_SOURCE =
   "^(?:(?:(?!0000)[0-9]{4})-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12][0-9]|3[01])|(?:0[469]|11)-(?:0[1-9]|[12][0-9]|30)|02-(?:0[1-9]|1[0-9]|2[0-8]))|(?:[0-9]{2}(?:0[48]|[2468][048]|[13579][26])|(?:0[48]|[2468][048]|[13579][26])00)-02-29)T(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](?:\\.[0-9]+)?(?:Z|[+-](?:[01][0-9]|2[0-3]):[0-5][0-9])$";
 export const ACTION_LEDGER_CANONICAL_JSON_LIMITS = {
@@ -385,6 +385,9 @@ export const ACTION_LEDGER_CANONICAL_JSON_LIMITS = {
 export const ACTION_EVENT_SHARD_FILE_LIMITS = {
   maxBytes: 2 * 1024 * 1024,
   maxEvents: 1_024,
+} as const;
+export const ACTION_EVENT_SHARD_SET_LIMITS = {
+  maxEvents: 65_536,
 } as const;
 export const ACTION_EVENT_SPOOL_READ_LIMITS = {
   maxRepositories: 256,
@@ -407,7 +410,7 @@ export const ACTION_EVENT_CONFIDENTIAL_IDENTIFIER_PATTERN_SOURCES = [
   "(?:^|[^A-Za-z0-9])[Nn][Pp][Mm]_[A-Za-z0-9]{36}(?:$|[^A-Za-z0-9])",
   "eyJ[A-Za-z0-9_-]{5,}\\.eyJ[A-Za-z0-9_-]{5,}\\.[A-Za-z0-9_-]{16,}",
   "(?:[Bb][Ee][Aa][Rr][Ee][Rr]|[Aa][Uu][Tt][Hh][Oo][Rr][Ii][Zz][Aa][Tt][Ii][Oo][Nn]|[Aa][Pp][Ii][_-]?(?:[Kk][Ee][Yy]|[Tt][Oo][Kk][Ee][Nn])|[Aa][Cc][Cc][Ee][Ss][Ss][_-]?[Tt][Oo][Kk][Ee][Nn]|[Cc][Ll][Ii][Ee][Nn][Tt][_-]?[Ss][Ee][Cc][Rr][Ee][Tt]|[Cc][Ll][Oo][Uu][Dd][Ff][Ll][Aa][Rr][Ee][_-]?(?:[Aa][Pp][Ii][_-]?)?(?:[Kk][Ee][Yy]|[Tt][Oo][Kk][Ee][Nn]))(?:\\s+|%20|\\s*[:=_+\\-]\\s*)[A-Za-z0-9._~+\\/-]{16,}={0,2}",
-  "[Bb][Aa][Ss][Ii][Cc](?:\\s+|%20|\\s*[:+]\\s*)(?:[A-Za-z0-9+/]{4}){2,}(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?(?:$|[^A-Za-z0-9+/=])",
+  "[Bb][Aa][Ss][Ii][Cc](?:\\s+|%20|\\s*[:+]\\s*)(?:[A-Za-z0-9+/]{4}){1,}(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?(?:$|[^A-Za-z0-9+/=])",
   "[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}",
   "(?:^|[/:@])(?:[Ll][Oo][Cc][Aa][Ll][Hh][Oo][Ss][Tt]|(?:[A-Za-z0-9-]+\\.)+(?:[Ll][Oo][Cc][Aa][Ll]|[Ll][Oo][Cc][Aa][Ll][Hh][Oo][Ss][Tt]|[Ii][Nn][Tt][Ee][Rr][Nn][Aa][Ll]|[Cc][Oo][Rr][Pp]|[Ll][Aa][Nn]|[Hh][Oo][Mm][Ee](?:\\.[Aa][Rr][Pp][Aa])?)|(?:[Ii][Nn][Tt][Ee][Rr][Nn][Aa][Ll]|[Ii][Nn][Tt][Rr][Aa][Nn][Ee][Tt])\\.(?:[A-Za-z0-9-]+\\.)*[A-Za-z0-9-]+)\\.*(?:$|[/:])",
   "(?:^|[^0-9])(?:10(?:\\.[0-9]{1,3}){3}|127(?:\\.[0-9]{1,3}){3}|100\\.(?:6[4-9]|[78][0-9]|9[0-9]|1[01][0-9]|12[0-7])(?:\\.[0-9]{1,3}){2}|169\\.254(?:\\.[0-9]{1,3}){2}|192\\.168(?:\\.[0-9]{1,3}){2}|172\\.(?:1[6-9]|2[0-9]|3[01])(?:\\.[0-9]{1,3}){2})(?:$|[^0-9])",
@@ -798,6 +801,7 @@ export function actionEventShardRelativePath(
   shardIndex?: number,
   shardCount?: number,
 ): string {
+  assertRawActionEventShardInput(events, ACTION_EVENT_SHARD_FILE_LIMITS.maxEvents);
   const normalizedIdentity = normalizeShardIdentity(identity);
   const normalizedEvents = normalizeShardEvents(events);
   if (normalizedEvents.length === 0) throw new Error("action event shard requires events");
@@ -918,6 +922,7 @@ export function writeActionEventShard(
   shardIndex?: number,
   shardCount?: number,
 ): ActionEventShardWriteResult {
+  assertRawActionEventShardInput(events, ACTION_EVENT_SHARD_FILE_LIMITS.maxEvents);
   const normalizedEvents = normalizeShardEvents(events);
   if (normalizedEvents.length === 0) throw new Error("action event shard requires events");
   validateShardProducer(identity, normalizedEvents);
@@ -957,6 +962,7 @@ export function writeActionEventShards(
   identity: ActionEventShardIdentity,
   events: readonly ActionEvent[],
 ): ActionEventShardWriteResult[] {
+  assertRawActionEventShardInput(events, ACTION_EVENT_SHARD_SET_LIMITS.maxEvents);
   const normalizedEvents = normalizeShardEvents(events);
   if (normalizedEvents.length === 0) throw new Error("action event shard requires events");
   validateShardProducer(identity, normalizedEvents);
@@ -1414,6 +1420,12 @@ function normalizeShardEvents(events: readonly ActionEvent[]): ActionEvent[] {
     byId.set(validated.event_id, existing ?? validated);
   }
   return sortActionEventsCausally([...byId.values()]);
+}
+
+function assertRawActionEventShardInput(events: readonly ActionEvent[], maxEvents: number): void {
+  if (events.length > maxEvents) {
+    throw new Error(`action event shard input exceeds ${maxEvents} raw event limit`);
+  }
 }
 
 function splitActionEventShardEvents(events: readonly ActionEvent[]): ActionEvent[][] {
@@ -2026,6 +2038,9 @@ function relativeDataPath(value: string, label: string): string {
 
 function publicUrl(value: string, label: string): string {
   const normalized = requiredText(value, label);
+  if (normalized.includes("?") || normalized.includes("#")) {
+    throw new Error(`${label} must be a credential-free HTTPS URL`);
+  }
   const parsed = new URL(normalized);
   if (
     parsed.protocol !== "https:" ||

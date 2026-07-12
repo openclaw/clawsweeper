@@ -17,6 +17,7 @@ import {
   ACTION_EVENT_REASON_CODES,
   ACTION_EVENT_RELATIVE_DATA_PATH_PATTERN_SOURCE,
   ACTION_EVENT_SHARD_FILE_LIMITS,
+  ACTION_EVENT_SHARD_SET_LIMITS,
   ACTION_EVENT_SPOOL_READ_LIMITS,
   ACTION_EVENT_STATUSES,
   ACTION_EVENT_SUBJECT_KINDS,
@@ -44,6 +45,7 @@ import {
   writeActionEvent,
   writeActionEventShard,
   writeActionEventShards,
+  type ActionEvent,
   type ActionEventInput,
   type ActionEventProducer,
 } from "../dist/action-ledger.js";
@@ -594,6 +596,12 @@ test("runtime and schema require namespaced portable data paths", () => {
     "records/.hidden",
     "records/items/",
     "records",
+    "records/CON",
+    "records/con.txt",
+    "records/NUL.txt",
+    "records/COM1",
+    "records/LPT9.log",
+    "records/item.",
   ]) {
     assert.equal(schemaNodeAccepts(schema, relativePathSchema, reportPath), false, reportPath);
     assert.throws(
@@ -660,6 +668,7 @@ test("event-key scopes reject raw identities and confidential identifiers", () =
     `ghp_${"A".repeat(20)}`,
     `Bearer-${"A".repeat(20)}`,
     `Bearer+${"A".repeat(20)}`,
+    "Basic+YTpi",
     "Basic+dXNlcjpwYXNz",
     "service.internal",
   ]) {
@@ -862,6 +871,7 @@ test("runtime and schema apply the same machine-text privacy boundary", () => {
     `Bearer+${"A".repeat(32)}`,
     `bEaReR+${"A".repeat(32)}`,
     "Basic:dXNlcjpwYXNz",
+    "Basic+YTpi",
     "Basic+dXNlcjpwYXNz",
     "bAsIc+dXNlcjpwYXNz",
     "alice%40example.com",
@@ -1041,6 +1051,7 @@ test("exclusive file locks contend, roll back failed creation, and tolerate disa
     originalWriteFileSync(file, data, options as never);
     if (!injected && typeof file === "number") {
       injected = true;
+      assert.equal(fs.existsSync(target.path), false);
       throw new Error("injected lock write failure");
     }
   }) as typeof fs.writeFileSync;
@@ -1054,6 +1065,26 @@ test("exclusive file locks contend, roll back failed creation, and tolerate disa
   }
   assert.equal(injected, true);
   assert.equal(fs.existsSync(target.path), false);
+  assert.deepEqual(fs.readdirSync(path.dirname(target.path)), []);
+
+  const originalFsyncSync = fs.fsyncSync;
+  let fsyncCalls = 0;
+  fs.fsyncSync = ((descriptor) => {
+    fsyncCalls += 1;
+    if (fsyncCalls === 2) throw new Error("injected published lock failure");
+    return originalFsyncSync(descriptor);
+  }) as typeof fs.fsyncSync;
+  try {
+    assert.throws(
+      () => tryAcquireUtf8FileLockNoFollow(target, "published-failure\n"),
+      /injected published lock failure/,
+    );
+  } finally {
+    fs.fsyncSync = originalFsyncSync;
+  }
+  assert.equal(fsyncCalls >= 2, true);
+  assert.equal(fs.existsSync(target.path), false);
+  assert.deepEqual(fs.readdirSync(path.dirname(target.path)), []);
 
   const disappearingContent = "disappearing-owner\n";
   const releaseDisappearing = tryAcquireUtf8FileLockNoFollow(target, disappearingContent);
@@ -1074,6 +1105,28 @@ test("exclusive file locks contend, roll back failed creation, and tolerate disa
   }
   assert.equal(disappeared, true);
   assert.doesNotThrow(releaseDisappearing);
+
+  const replacedContent = "replaced-owner\n";
+  const releaseReplaced = tryAcquireUtf8FileLockNoFollow(target, replacedContent);
+  assert.ok(releaseReplaced);
+  const originalCloseSync = fs.closeSync;
+  let replaced = false;
+  fs.closeSync = ((descriptor) => {
+    originalCloseSync(descriptor);
+    if (!replaced) {
+      replaced = true;
+      fs.unlinkSync(target.path);
+      fs.writeFileSync(target.path, replacedContent);
+    }
+  }) as typeof fs.closeSync;
+  try {
+    assert.equal(removeUtf8FileIfContentNoFollow(target, replacedContent), false);
+  } finally {
+    fs.closeSync = originalCloseSync;
+  }
+  assert.equal(replaced, true);
+  assert.doesNotThrow(releaseReplaced);
+  assert.equal(removeUtf8FileIfContentNoFollow(target, replacedContent), true);
 
   const releaseFinal = tryAcquireUtf8FileLockNoFollow(target, "final-owner\n");
   assert.ok(releaseFinal);
@@ -1695,7 +1748,9 @@ test("durable shard writers split deterministically within importer event and by
   assert.deepEqual(
     first.map((result) => path.basename(result.path)),
     first.map((_, index) =>
-      path.basename(actionEventShardRelativePath(identity, eventLimited, index + 1, first.length)),
+      path.basename(
+        actionEventShardRelativePath(identity, [eventLimited[0]!], index + 1, first.length),
+      ),
     ),
   );
   assert.deepEqual(
@@ -1710,7 +1765,27 @@ test("durable shard writers split deterministically within importer event and by
   }
   assert.throws(
     () => writeActionEventShard(tempRoot(), identity, eventLimited),
-    new RegExp(`${ACTION_EVENT_SHARD_FILE_LIMITS.maxEvents} event limit`),
+    new RegExp(`${ACTION_EVENT_SHARD_FILE_LIMITS.maxEvents} raw event limit`),
+  );
+  const duplicateFlood = Array(ACTION_EVENT_SHARD_FILE_LIMITS.maxEvents + 1).fill(
+    eventLimited[0]!,
+  ) as ActionEvent[];
+  assert.throws(
+    () => actionEventShardRelativePath(identity, duplicateFlood),
+    new RegExp(`${ACTION_EVENT_SHARD_FILE_LIMITS.maxEvents} raw event limit`),
+  );
+  assert.throws(
+    () => writeActionEventShard(tempRoot(), identity, duplicateFlood),
+    new RegExp(`${ACTION_EVENT_SHARD_FILE_LIMITS.maxEvents} raw event limit`),
+  );
+  assert.throws(
+    () =>
+      writeActionEventShards(
+        tempRoot(),
+        identity,
+        Array(ACTION_EVENT_SHARD_SET_LIMITS.maxEvents + 1).fill(eventLimited[0]!) as ActionEvent[],
+      ),
+    new RegExp(`${ACTION_EVENT_SHARD_SET_LIMITS.maxEvents} raw event limit`),
   );
 
   const bulkyEvidence = Array.from({ length: 64 }, (_, index) => ({
@@ -1746,11 +1821,11 @@ test("durable shard writers split deterministically within importer event and by
     new RegExp(`${ACTION_EVENT_SHARD_FILE_LIMITS.maxBytes} byte limit`),
   );
   assert.throws(
-    () => actionEventShardRelativePath(identity, eventLimited, 1),
+    () => actionEventShardRelativePath(identity, [eventLimited[0]!], 1),
     /index and count must be provided together/,
   );
   assert.throws(
-    () => actionEventShardRelativePath(identity, eventLimited, 2, 1),
+    () => actionEventShardRelativePath(identity, [eventLimited[0]!], 2, 1),
     /index cannot exceed shard count/,
   );
 });
@@ -2198,6 +2273,7 @@ test("durable privacy guards reject raw text, local paths, secrets, and invalid 
     `Bearer:${"A".repeat(32)}`,
     `bEaReR ${"A".repeat(32)}`,
     `Bearer%20${"A".repeat(32)}`,
+    "Basic YTpi",
     `Basic ${Buffer.from("user:password").toString("base64")}`,
     `cloudflare_api_token:${"A".repeat(32)}`,
     "alice%40example.com",
@@ -2617,6 +2693,19 @@ test("event readers reject unknown fields instead of carrying unhashed data into
 });
 
 test("run URLs are limited to public GitHub workflow evidence", () => {
+  const schema = JSON.parse(
+    fs.readFileSync(path.join(process.cwd(), "schema", "state-ledger-event.schema.json"), "utf8"),
+  ) as TestJsonSchema;
+  const valid = createActionEvent(
+    reviewInput({
+      evidence: [
+        {
+          kind: "run",
+          runUrl: "https://github.com/openclaw/clawsweeper/actions/runs/100",
+        },
+      ],
+    }),
+  );
   for (const runUrl of [
     "https://169.254.169.254/latest/meta-data",
     "https://[::1]/actions/runs/100",
@@ -2626,6 +2715,8 @@ test("run URLs are limited to public GitHub workflow evidence", () => {
     "https://user@github.com/openclaw/clawsweeper/actions/runs/100",
     "https://github.com/login/oauth/authorize?client_secret=PLACEHOLDER",
     "https://github.com/openclaw/clawsweeper/actions/runs/100?token=PLACEHOLDER",
+    "https://github.com/openclaw/clawsweeper/actions/runs/100?",
+    "https://github.com/openclaw/clawsweeper/actions/runs/100#",
     "https://github.com/openclaw/clawsweeper/issues/100",
   ]) {
     assert.throws(
@@ -2637,6 +2728,11 @@ test("run URLs are limited to public GitHub workflow evidence", () => {
         ),
       /credential-free HTTPS URL|public github\.com Actions run/,
     );
+    const candidate = structuredClone(valid) as unknown as Record<string, unknown>;
+    ((candidate.evidence as Array<Record<string, unknown>>)[0] as Record<string, unknown>)[
+      "run_url"
+    ] = runUrl;
+    assert.equal(schemaAccepts(schema, candidate), false, runUrl);
   }
 });
 
