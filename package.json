@@ -98,14 +98,14 @@
     "repair:pr-intake": "node dist/repair/pr-repair-intake.js"
   },
   "dependencies": {
+    "typescript": "^7.0.2",
     "yaml": "^2.9.0"
   },
   "devDependencies": {
     "@types/node": "^26.1.1",
     "oxfmt": "^0.58.0",
     "oxlint": "^1.73.0",
-    "oxlint-tsgolint": "0.24.0",
-    "typescript": "^7.0.2"
+    "oxlint-tsgolint": "0.24.0"
   },
   "engines": {
     "node": ">=24"

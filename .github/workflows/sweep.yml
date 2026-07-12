@@ -1396,10 +1396,14 @@ jobs:
           working-directory: clawsweeper
           build-script: build:all
 
+      - name: Prepare review runtime artifact
+        working-directory: clawsweeper
+        run: node scripts/prepare-review-runtime.mjs --output .artifacts/review-runtime
+
       - uses: actions/upload-artifact@v7
         with:
           name: clawsweeper-runtime-dist
-          path: clawsweeper/dist
+          path: clawsweeper/.artifacts/review-runtime
           if-no-files-found: error
           retention-days: 1
 
@@ -1756,7 +1760,7 @@ jobs:
       - uses: actions/download-artifact@v8
         with:
           name: clawsweeper-runtime-dist
-          path: clawsweeper/dist
+          path: clawsweeper
 
       - uses: ./clawsweeper/.github/actions/setup-codex
         env:

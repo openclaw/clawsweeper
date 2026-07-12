@@ -51,6 +51,26 @@ test("review workflow gives Codex a read-only inspection token", () => {
   assert.doesNotMatch(reviewJob, /uses: \.\/\.github\/actions\/setup-codex/);
 });
 
+test("scheduled review shards receive the compiler-backed runtime artifact", () => {
+  const workflow = readText(".github/workflows/sweep.yml");
+  const planJobStart = workflow.indexOf("\n  plan:");
+  const reviewJobStart = workflow.indexOf("\n  review:", planJobStart);
+  const publishJobStart = workflow.indexOf("\n  publish:", reviewJobStart);
+  const planJob = workflow.slice(planJobStart, reviewJobStart);
+  const reviewJob = workflow.slice(reviewJobStart, publishJobStart);
+
+  assert.match(
+    planJob,
+    /node scripts\/prepare-review-runtime\.mjs --output \.artifacts\/review-runtime/,
+  );
+  assert.match(
+    planJob,
+    /name: clawsweeper-runtime-dist\s+path: clawsweeper\/\.artifacts\/review-runtime/,
+  );
+  assert.match(reviewJob, /name: clawsweeper-runtime-dist\s+path: clawsweeper/);
+  assert.doesNotMatch(reviewJob, /name: clawsweeper-runtime-dist\s+path: clawsweeper\/dist/);
+});
+
 test("exact event publish and routing require a successful fresh review artifact", () => {
   const workflow = readText(".github/workflows/sweep.yml");
   const routerWorkflow = readText(".github/workflows/repair-comment-router.yml");
