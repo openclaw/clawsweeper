@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 
 import {
+  isExpensivePnpmValidation,
   looksLikePathArgument,
   packageScriptRequirement,
   stripEnvPrefix,
@@ -68,6 +69,7 @@ export type StagedProofPlanCommand = {
   reason: string;
   prerequisite: string | null;
   subsumed_by: string | null;
+  subsumption_contract_digest: string | null;
   original_index: number;
 };
 
@@ -86,6 +88,7 @@ export type StagedProofTraceStatus =
   | "skipped_subsumed";
 
 export type StagedProofTraceEntry = {
+  command_id: string;
   stage: StagedProofStage;
   command_digest: string;
   command_kind: string;
@@ -93,6 +96,8 @@ export type StagedProofTraceEntry = {
   duration_ms: number;
   reason: string;
   prerequisite: string | null;
+  subsumed_by: string | null;
+  subsumption_contract_digest: string | null;
 };
 
 export type StagedProofTrace = {
@@ -205,6 +210,9 @@ export function buildStagedProofPlan({
           subsumption.get(commandKey(candidate.parts))?.has(commandKey(entry.command.parts)),
         ) ?? null)
       : null;
+    const subsumptionContractDigest = subsumedBy
+      ? subsumptionDigest(subsumedBy.command_digest, entry.digest)
+      : null;
     commandsOut.push({
       id: `proof-${commandsOut.length + 1}-${entry.digest.slice(0, 12)}`,
       command_digest: entry.digest,
@@ -216,6 +224,7 @@ export function buildStagedProofPlan({
       reason: entry.classification.reason,
       prerequisite: previous?.id ?? null,
       subsumed_by: subsumedBy?.id ?? null,
+      subsumption_contract_digest: subsumptionContractDigest,
       original_index: entry.command.originalIndex,
     });
   }
@@ -226,6 +235,7 @@ export function buildStagedProofPlan({
     source: command.source,
     prerequisite: command.prerequisite,
     subsumed_by: command.subsumed_by,
+    subsumption_contract_digest: command.subsumption_contract_digest,
   }));
   return {
     schema_version: STAGED_PROOF_SCHEMA_VERSION,
@@ -260,13 +270,16 @@ export function executeStagedProofPlan(
   for (const [index, command] of plan.commands.entries()) {
     if (command.subsumed_by && statusById.get(command.subsumed_by) === "passed") {
       entries.push({
+        command_id: command.id,
         stage: command.stage,
         command_digest: command.command_digest,
         command_kind: command.command_kind,
         status: "skipped_subsumed",
         duration_ms: 0,
         reason: `explicit toolchain contract: ${command.subsumed_by} subsumes this command`,
-        prerequisite: command.subsumed_by,
+        prerequisite: command.prerequisite,
+        subsumed_by: command.subsumed_by,
+        subsumption_contract_digest: command.subsumption_contract_digest,
       });
       statusById.set(command.id, "skipped_subsumed");
       continue;
@@ -299,6 +312,7 @@ export function executeStagedProofPlan(
       executedCommands.push(...result.executedCommands);
       const durationMs = Math.max(0, nowMs() - commandStartedAt);
       entries.push({
+        command_id: command.id,
         stage: command.stage,
         command_digest: command.command_digest,
         command_kind: command.command_kind,
@@ -306,6 +320,8 @@ export function executeStagedProofPlan(
         duration_ms: durationMs,
         reason: result.reason || "passed",
         prerequisite: command.prerequisite,
+        subsumed_by: command.subsumed_by,
+        subsumption_contract_digest: command.subsumption_contract_digest,
       });
       statusById.set(command.id, "passed");
     } catch (error) {
@@ -345,6 +361,7 @@ export function stagedProofPlanArtifact(plan: StagedProofPlan) {
     risk: plan.risk,
     deduplicated_commands: plan.deduplicated_commands,
     commands: plan.commands.map((command) => ({
+      command_id: command.id,
       stage: command.stage,
       command_digest: command.command_digest,
       command_kind: command.command_kind,
@@ -353,6 +370,7 @@ export function stagedProofPlanArtifact(plan: StagedProofPlan) {
       reason: command.reason,
       prerequisite: command.prerequisite,
       subsumed_by: command.subsumed_by,
+      subsumption_contract_digest: command.subsumption_contract_digest,
     })),
   };
 }
@@ -449,6 +467,7 @@ function failProofPlan({
   reason: string;
 }): never {
   entries.push({
+    command_id: command.id,
     stage: command.stage,
     command_digest: command.command_digest,
     command_kind: command.command_kind,
@@ -456,10 +475,13 @@ function failProofPlan({
     duration_ms: durationMs,
     reason,
     prerequisite: command.prerequisite,
+    subsumed_by: command.subsumed_by,
+    subsumption_contract_digest: command.subsumption_contract_digest,
   });
   statusById.set(command.id, "failed");
   for (const later of plan.commands.slice(index + 1)) {
     entries.push({
+      command_id: later.id,
       stage: later.stage,
       command_digest: later.command_digest,
       command_kind: later.command_kind,
@@ -467,6 +489,8 @@ function failProofPlan({
       duration_ms: 0,
       reason: `prerequisite ${command.id} failed`,
       prerequisite: command.id,
+      subsumed_by: later.subsumed_by,
+      subsumption_contract_digest: later.subsumption_contract_digest,
     });
     statusById.set(later.id, "skipped_prerequisite");
   }
@@ -511,11 +535,16 @@ function isStagedProofTrace(value: unknown): boolean {
     return false;
   }
   const statuses: string[] = [];
+  const commandIds = new Map<string, { index: number; status: string }>();
+  const traceCommands = trace.commands as Record<string, unknown>[];
   let commandDurationMs = 0;
-  const commandsValid = trace.commands.every((entry) => {
+  const commandsValid = traceCommands.every((entry, index) => {
     if (!entry || typeof entry !== "object" || Array.isArray(entry)) return false;
     const command = entry as Record<string, unknown>;
+    const commandId = String(command.command_id ?? "");
     const status = String(command.status ?? "");
+    if (!/^proof-\d+-[a-f0-9]{12}$/.test(commandId) || commandIds.has(commandId)) return false;
+    commandIds.set(commandId, { index, status });
     statuses.push(status);
     commandDurationMs += Number(command.duration_ms);
     return (
@@ -529,12 +558,57 @@ function isStagedProofTrace(value: unknown): boolean {
       typeof command.reason === "string" &&
       command.reason.length > 0 &&
       command.reason.length <= 256 &&
-      (command.prerequisite === null ||
-        (typeof command.prerequisite === "string" &&
-          /^proof-\d+-[a-f0-9]{12}$/.test(command.prerequisite)))
+      isProofCommandReference(command.prerequisite) &&
+      isProofCommandReference(command.subsumed_by) &&
+      (command.subsumption_contract_digest === null ||
+        /^[a-f0-9]{64}$/.test(String(command.subsumption_contract_digest ?? "")))
     );
   });
   if (!commandsValid) return false;
+  for (const [index, command] of traceCommands.entries()) {
+    const commandId = String(command.command_id);
+    const prerequisite = command.prerequisite;
+    const subsumedBy = command.subsumed_by;
+    const contractDigest = command.subsumption_contract_digest;
+    if (!isEarlierProofCommandReference(prerequisite, index, commandIds)) return false;
+    if (!isEarlierProofCommandReference(subsumedBy, index, commandIds)) return false;
+    const subsumingCommand =
+      typeof subsumedBy === "string"
+        ? traceCommands[commandIds.get(subsumedBy)?.index ?? -1]
+        : undefined;
+    if (
+      (subsumedBy === null && contractDigest !== null) ||
+      (typeof subsumedBy === "string" &&
+        (typeof contractDigest !== "string" ||
+          !subsumingCommand ||
+          contractDigest !==
+            subsumptionDigest(
+              String(subsumingCommand.command_digest),
+              String(command.command_digest),
+            )))
+    ) {
+      return false;
+    }
+    if (
+      command.status === "skipped_subsumed" &&
+      (typeof subsumedBy !== "string" || commandIds.get(subsumedBy)?.status !== "passed")
+    ) {
+      return false;
+    }
+    if (
+      command.status === "skipped_prerequisite" &&
+      (typeof prerequisite !== "string" || commandIds.get(prerequisite)?.status !== "failed")
+    ) {
+      return false;
+    }
+    if (
+      trace.status === "passed" &&
+      prerequisite !== (index === 0 ? null : String(traceCommands[index - 1]?.command_id))
+    ) {
+      return false;
+    }
+    if (commandIds.get(commandId)?.index !== index) return false;
+  }
   const summary = trace.summary;
   if (!summary || typeof summary !== "object" || Array.isArray(summary)) return false;
   const summaryRecord = summary as Record<string, unknown>;
@@ -581,6 +655,20 @@ function isStagedProofRisk(value: unknown): boolean {
 
 function isNonNegativeInteger(value: unknown): value is number {
   return typeof value === "number" && Number.isInteger(value) && value >= 0;
+}
+
+function isProofCommandReference(value: unknown): boolean {
+  return value === null || (typeof value === "string" && /^proof-\d+-[a-f0-9]{12}$/.test(value));
+}
+
+function isEarlierProofCommandReference(
+  value: unknown,
+  index: number,
+  commandIds: ReadonlyMap<string, { index: number }>,
+): boolean {
+  return (
+    value === null || (typeof value === "string" && (commandIds.get(value)?.index ?? index) < index)
+  );
 }
 
 export function stagedProofRiskForPaths(paths: readonly string[]): StagedProofRisk {
@@ -736,15 +824,29 @@ function isStaticCommand(parts: readonly string[]): boolean {
 }
 
 export function isBroadOrLiveStagedProofCommand(parts: readonly string[]): boolean {
+  if (parts[0] === "pnpm") {
+    const commandStart = ["-s", "--silent"].includes(parts[1] ?? "") ? 2 : 1;
+    if (isExpensivePnpmValidation(parts, commandStart, false)) return true;
+  }
   const script = packageScriptRequirement(parts)?.name ?? "";
   if (
-    /^(?:test(?::(?:all|e2e|live|docker|integration|install:e2e|parallels))?|qa(?::e2e)?|check)$/.test(
+    /^(?:test(?::(?:all|serial|e2e|live|docker|integration|install:e2e|parallels))?|qa(?::e2e)?|check|android:test:integration)$/.test(
       script,
     )
   ) {
     return true;
   }
+  if (parts[0] === "node" && parts[1] === "--test") {
+    return !isFocusedStagedProofCommand(parts);
+  }
   if (parts[0] === "pytest" && !isFocusedStagedProofCommand(parts)) return true;
+  if (
+    ["python", "python3"].includes(parts[0] ?? "") &&
+    parts[1] === "-m" &&
+    parts[2] === "pytest"
+  ) {
+    return !isFocusedStagedProofCommand(parts);
+  }
   if (parts[0] === "go" && parts[1] === "test" && parts.includes("./...")) return true;
   if (parts[0] === "cargo" && parts[1] === "test" && !isFocusedStagedProofCommand(parts)) {
     return true;
@@ -787,6 +889,12 @@ function commandKind(parts: readonly string[]): string {
 
 function commandDigest(parts: readonly string[]): string {
   return createHash("sha256").update(commandKey(parts)).digest("hex");
+}
+
+function subsumptionDigest(subsumingCommandDigest: string, subsumedCommandDigest: string): string {
+  return createHash("sha256")
+    .update(JSON.stringify([subsumingCommandDigest, subsumedCommandDigest]))
+    .digest("hex");
 }
 
 function commandKey(parts: readonly string[]): string {

@@ -119,12 +119,13 @@ next review attempt.
 
 The executor materializes those commands as a deterministic staged proof DAG.
 Exact argv are deduplicated, narrow path-scoped tests run before broader gates,
-and elevated-risk surfaces retain stronger configured or artifact-supplied
-proof. Repository integrity and the canonical changed-surface gate are
+and every allowlisted command required by the artifact or repository profile is
+retained. Repository integrity and the canonical changed-surface gate are
 mandatory. Broad, live, docker, or e2e commands run last, and can be skipped
 only by an exact repository-owned subsumption contract. A failed prerequisite
-stops later work and writes bounded digest-only trace entries to the repair
-report and merge preflight.
+stops later work and writes bounded digest-only trace entries, including
+command IDs and subsumption-edge digests, to the repair report and merge
+preflight.
 
 ## Exact-Head Rule
 

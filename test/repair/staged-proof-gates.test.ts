@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   buildStagedProofPlan,
   executeStagedProofPlan,
+  isBroadOrLiveStagedProofCommand,
   isPassedStagedProofBundle,
   stagedProofBundle,
   stagedProofPlanArtifact,
@@ -70,6 +71,26 @@ test("risky surfaces retain static proof before focused tests", () => {
   assert.deepEqual(
     plan.commands.map((entry) => entry.stage),
     ["static", "focused_tests", "canonical_changed_surface"],
+  );
+});
+
+test("broad proof classification covers every supported required suite form", () => {
+  for (const parts of [
+    ["pnpm", "test:serial"],
+    ["pnpm", "android:test:integration"],
+    ["pnpm", "openclaw", "qa", "suite"],
+    ["python", "-m", "pytest"],
+    ["node", "--test"],
+  ]) {
+    assert.equal(isBroadOrLiveStagedProofCommand(parts), true, parts.join(" "));
+  }
+  assert.equal(
+    isBroadOrLiveStagedProofCommand(["node", "--test", "test/repair/foo.test.ts"]),
+    false,
+  );
+  assert.equal(
+    isBroadOrLiveStagedProofCommand(["python", "-m", "pytest", "test/repair/foo_test.py"]),
+    false,
   );
 });
 
@@ -155,6 +176,32 @@ test("only explicit toolchain contracts skip a later proof command", () => {
     result.trace.commands.map((entry) => entry.status),
     ["passed", "skipped_subsumed"],
   );
+  assert.match(result.trace.commands[1].command_id, /^proof-2-/);
+  assert.equal(result.trace.commands[1].subsumed_by, result.trace.commands[0].command_id);
+  assert.match(result.trace.commands[1].subsumption_contract_digest, /^[a-f0-9]{64}$/);
+  assert.equal(isPassedStagedProofBundle(stagedProofBundle([result.trace])), true);
+  const malformed = {
+    ...result.trace,
+    commands: [
+      result.trace.commands[0],
+      {
+        ...result.trace.commands[1],
+        subsumed_by: "proof-99-000000000000",
+      },
+    ],
+  };
+  assert.equal(isPassedStagedProofBundle(stagedProofBundle([malformed])), false);
+  const malformedContract = {
+    ...result.trace,
+    commands: [
+      result.trace.commands[0],
+      {
+        ...result.trace.commands[1],
+        subsumption_contract_digest: "0".repeat(64),
+      },
+    ],
+  };
+  assert.equal(isPassedStagedProofBundle(stagedProofBundle([malformedContract])), false);
 });
 
 test("arbitrary test commands are not inferred to be redundant", () => {

@@ -20,17 +20,13 @@ import { compactText } from "./text-utils.js";
 import {
   buildStagedProofPlan,
   executeStagedProofPlan,
-  isBroadOrLiveStagedProofCommand,
-  isFocusedStagedProofCommand,
   stagedProofPlanArtifact,
-  stagedProofRiskForPaths,
   type StagedProofCommandInput,
   type StagedProofExecutionResult,
   type StagedProofPlan,
   type StagedProofSubsumptionContract,
 } from "./staged-proof-gates.js";
 import {
-  isExpensivePnpmValidation,
   isTestFile,
   looksLikePathArgument,
   packageScriptRequirement,
@@ -450,7 +446,6 @@ function createTargetValidationProofPlan(
   const baseRef = validationBaseRef(cwd, baseBranch, options);
   const changedFiles = gitChangedFilesFromRef(cwd, baseRef);
   const surfaceHints = options.proofSurfacePaths ?? [];
-  const risk = stagedProofRiskForPaths([...changedFiles, ...surfaceHints]);
   const toolchain = getToolchain(options);
   const resolved: StagedProofCommandInput[] = [
     {
@@ -469,35 +464,13 @@ function createTargetValidationProofPlan(
     },
   ];
 
-  for (const [originalIndex, command] of requiredValidationCommandEntries(
+  for (const command of resolvedRequiredValidationCommandEntries(
     commands,
     cwd,
+    baseBranch,
     options,
-  ).entries()) {
-    const parsed = parseAllowedValidationCommand(command.command);
-    const commandParts = stripEnvPrefix(parsed);
-    const retainStrongCommand =
-      risk.level === "elevated" ||
-      isFocusedStagedProofCommand(commandParts) ||
-      isBroadOrLiveStagedProofCommand(commandParts);
-    const resolvedCommands = resolveAllowedValidationCommands(
-      command.command,
-      cwd,
-      baseBranch,
-      options,
-      retainStrongCommand,
-    );
-    for (const parts of resolvedCommands) {
-      const canonical =
-        command.canonical || changedGateCommandParts(toolchain.changedGate, parts) !== null;
-      resolved.push({
-        parts,
-        source: canonical && command.source === "artifact" ? "changed_gate" : command.source,
-        canonical,
-        required: command.required,
-        originalIndex,
-      });
-    }
+  )) {
+    resolved.push(command);
   }
 
   if (resolved.length === 0) {
@@ -605,23 +578,16 @@ export function preflightTargetValidationPlan(
   const availableScripts = [...scripts].sort();
   const resolved: string[] = [];
   const requiredScripts: LooseRecord[] = [];
-  for (const command of requiredValidationCommands(
+  for (const command of resolvedRequiredValidationCommandEntries(
     fixArtifact.validation_commands ?? [],
     targetDir,
+    baseBranch,
     options,
   )) {
-    const resolvedCommands = resolveAllowedValidationCommands(
-      command,
-      targetDir,
-      baseBranch,
-      options,
-    );
-    for (const parts of resolvedCommands) {
-      const rendered = parts.join(" ");
-      if (!resolved.includes(rendered)) resolved.push(rendered);
-      const script = packageScriptRequirement(parts);
-      if (script) requiredScripts.push(script);
-    }
+    const rendered = command.parts.join(" ");
+    if (!resolved.includes(rendered)) resolved.push(rendered);
+    const script = packageScriptRequirement(command.parts);
+    if (script) requiredScripts.push(script);
   }
 
   if (resolved.length === 0) {
@@ -882,37 +848,14 @@ function resolveAllowedValidationCommands(
   cwd: string,
   baseBranch: string = DEFAULT_BASE_BRANCH,
   options: TargetValidationOptions,
-  retainStrongCommand = false,
 ) {
   const parts = parseAllowedValidationCommand(command);
   const commandParts = stripEnvPrefix(parts);
   const envPrefix = parts[0] === "env" ? parts.slice(0, parts.length - commandParts.length) : [];
-  const scripts = readPackageScriptSet(cwd);
   const toolchain = getToolchain(options);
-  const gate = toolchain.changedGate;
-  if (
-    !options.strictTargetValidation &&
-    !retainStrongCommand &&
-    gate &&
-    scripts.has(gate.requiredScript) &&
-    commandParts[0] !== "git"
-  ) {
-    return [gate.command.split(" ")];
-  }
-  if (commandParts[0] === "npm" && commandParts[1] === "run" && commandParts[2] === "validate") {
-    if (!scripts.has("validate") && gate && scripts.has(gate.requiredScript)) {
-      return [gate.command.split(" ")];
-    }
-  }
   if (toolchain.packageManager === "pnpm" && commandParts[0] === "pnpm") {
     const commandStart = commandParts[1] === "-s" || commandParts[1] === "--silent" ? 2 : 1;
     const pnpmScript = commandParts[commandStart];
-    if (
-      !retainStrongCommand &&
-      isExpensivePnpmValidation(commandParts, commandStart, options.allowExpensiveValidation)
-    ) {
-      return [["pnpm", "check:changed"]];
-    }
     const vitestArgsStart =
       pnpmScript === "vitest" && commandParts[commandStart + 1] === "run"
         ? commandStart + 2
@@ -1130,6 +1073,30 @@ function proofSubsumptionContracts(
     }
   }
   return out;
+}
+
+function resolvedRequiredValidationCommandEntries(
+  commands: LooseRecord[],
+  cwd: string,
+  baseBranch: string,
+  options: TargetValidationOptions,
+): StagedProofCommandInput[] {
+  const toolchain = getToolchain(options);
+  return requiredValidationCommandEntries(commands, cwd, options).flatMap(
+    (command, originalIndex) =>
+      resolveAllowedValidationCommands(command.command, cwd, baseBranch, options).map((parts) => {
+        const canonical =
+          command.canonical || changedGateCommandParts(toolchain.changedGate, parts) !== null;
+        return {
+          parts,
+          source:
+            canonical && command.source === "artifact" ? ("changed_gate" as const) : command.source,
+          canonical,
+          required: command.required,
+          originalIndex,
+        };
+      }),
+  );
 }
 
 function isChangedGateCommand(parts: readonly string[], options: TargetValidationOptions) {

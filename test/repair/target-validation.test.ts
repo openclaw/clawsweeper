@@ -147,15 +147,18 @@ test("OpenClaw automerge repairs can require CI-parity validation commands", () 
 });
 
 test("validation preflight accepts env-prefixed OpenClaw QA commands", () => {
-  const cwd = packageFixture({ "check:changed": "node check.js" });
+  const command =
+    "env QA_PARITY_CONCURRENCY=1 OPENCLAW_BUILD_PRIVATE_QA=1 OPENCLAW_ENABLE_PRIVATE_QA_CLI=1 OPENAI_API_KEY= ANTHROPIC_API_KEY= OPENCLAW_LIVE_OPENAI_KEY= OPENCLAW_LIVE_ANTHROPIC_KEY= OPENCLAW_LIVE_GEMINI_KEY= OPENCLAW_LIVE_SETUP_TOKEN_VALUE= pnpm openclaw qa suite --provider-mode mock-openai --parity-pack agentic --concurrency 1 --model ${OPENCLAW_CI_OPENAI_MODEL:-openai/gpt-5.6-sol} --alt-model example/model-alt --output-dir .artifacts/qa-e2e/gpt54";
+  const cwd = packageFixture({
+    "check:changed": "node check.js",
+    openclaw: "node openclaw.js",
+  });
 
   assert.deepEqual(
     preflightTargetValidationPlan(
       {
         fixArtifact: {
-          validation_commands: [
-            "env QA_PARITY_CONCURRENCY=1 OPENCLAW_BUILD_PRIVATE_QA=1 OPENCLAW_ENABLE_PRIVATE_QA_CLI=1 OPENAI_API_KEY= ANTHROPIC_API_KEY= OPENCLAW_LIVE_OPENAI_KEY= OPENCLAW_LIVE_ANTHROPIC_KEY= OPENCLAW_LIVE_GEMINI_KEY= OPENCLAW_LIVE_SETUP_TOKEN_VALUE= pnpm openclaw qa suite --provider-mode mock-openai --parity-pack agentic --concurrency 1 --model ${OPENCLAW_CI_OPENAI_MODEL:-openai/gpt-5.6-sol} --alt-model example/model-alt --output-dir .artifacts/qa-e2e/gpt54",
-          ],
+          validation_commands: [command],
         },
         targetDir: cwd,
       },
@@ -163,22 +166,27 @@ test("validation preflight accepts env-prefixed OpenClaw QA commands", () => {
     ),
     {
       status: "passed",
-      resolved_commands: ["pnpm check:changed"],
-      available_scripts: ["check:changed"],
+      resolved_commands: [command, "pnpm check:changed"],
+      available_scripts: ["check:changed", "openclaw"],
     },
   );
 });
 
 test("validation preflight accepts assignment-prefixed OpenClaw test commands", () => {
-  const cwd = packageFixture({ "check:changed": "node check.js" });
+  const cwd = packageFixture({
+    "check:changed": "node check.js",
+    "test:serial": "node test.js",
+  });
+  fs.mkdirSync(path.join(cwd, "src", "pairing"), { recursive: true });
+  fs.writeFileSync(path.join(cwd, "src", "pairing", "pairing-store.test.ts"), "");
+  const command =
+    "OPENCLAW_VITEST_FS_MODULE_CACHE_PATH=.vitest-cache-pairing pnpm test:serial src/pairing/pairing-store.test.ts";
 
   assert.deepEqual(
     preflightTargetValidationPlan(
       {
         fixArtifact: {
-          validation_commands: [
-            "OPENCLAW_VITEST_FS_MODULE_CACHE_PATH=.vitest-cache-pairing pnpm test:serial src/pairing/pairing-store.test.ts",
-          ],
+          validation_commands: [command],
         },
         targetDir: cwd,
       },
@@ -186,8 +194,8 @@ test("validation preflight accepts assignment-prefixed OpenClaw test commands", 
     ),
     {
       status: "passed",
-      resolved_commands: ["pnpm check:changed"],
-      available_scripts: ["check:changed"],
+      resolved_commands: [`env ${command}`, "pnpm check:changed"],
+      available_scripts: ["check:changed", "test:serial"],
     },
   );
 });
@@ -296,7 +304,7 @@ test("validation preflight preserves directory-scoped direct Vitest commands", (
   );
 });
 
-test("validation preflight blocks unscoped direct Vitest commands", () => {
+test("validation preflight preserves unscoped allowlisted direct Vitest commands", () => {
   const cwd = packageFixture({});
   fs.writeFileSync(path.join(cwd, "vitest.browser.config.ts"), "");
   const options = validationOptions("steipete/oracle", {
@@ -307,14 +315,29 @@ test("validation preflight blocks unscoped direct Vitest commands", () => {
     },
   });
 
-  for (const command of [
-    "pnpm vitest run --config vitest.browser.config.ts",
-    "pnpm exec vitest run --config vitest.browser.config.ts",
-    "pnpm vitest run --exclude tests/browser/pageActions.test.ts",
-    "pnpm vitest run --update tests/browser/pageActions.test.ts",
-    "pnpm vitest run -u tests/browser/pageActions.test.ts",
-    "pnpm vitest run login",
-    "pnpm exec vitest run src",
+  for (const [command, resolved] of [
+    [
+      "pnpm vitest run --config vitest.browser.config.ts",
+      "pnpm exec vitest run --config vitest.browser.config.ts",
+    ],
+    [
+      "pnpm exec vitest run --config vitest.browser.config.ts",
+      "pnpm exec vitest run --config vitest.browser.config.ts",
+    ],
+    [
+      "pnpm vitest run --exclude tests/browser/pageActions.test.ts",
+      "pnpm exec vitest run --exclude tests/browser/pageActions.test.ts",
+    ],
+    [
+      "pnpm vitest run --update tests/browser/pageActions.test.ts",
+      "pnpm exec vitest run --update tests/browser/pageActions.test.ts",
+    ],
+    [
+      "pnpm vitest run -u tests/browser/pageActions.test.ts",
+      "pnpm exec vitest run -u tests/browser/pageActions.test.ts",
+    ],
+    ["pnpm vitest run login", "pnpm exec vitest run login"],
+    ["pnpm exec vitest run src", "pnpm exec vitest run src"],
   ]) {
     const result = preflightTargetValidationPlan(
       {
@@ -326,10 +349,11 @@ test("validation preflight blocks unscoped direct Vitest commands", () => {
       options,
     );
 
-    assert.equal(result.status, "blocked");
-    assert.equal(result.code, "validation_script_missing");
-    assert.equal(result.missing_script, "check:changed");
-    assert.deepEqual(result.resolved_commands, ["pnpm check:changed"]);
+    assert.deepEqual(result, {
+      status: "passed",
+      resolved_commands: [resolved],
+      available_scripts: [],
+    });
   }
 });
 
@@ -511,7 +535,7 @@ test("validation preflight accepts scoped OpenGrep commands", () => {
     ),
     {
       status: "passed",
-      resolved_commands: ["pnpm check:changed"],
+      resolved_commands: [command, "pnpm check:changed"],
       available_scripts: ["check:changed"],
     },
   );
@@ -1333,6 +1357,22 @@ test("staged target proof retains explicit live commands for narrow surfaces", (
       ["broad_live_or_e2e", "pnpm:test:live"],
     ],
   );
+});
+
+test("validation preflight blocks missing required live scripts before execution", () => {
+  const cwd = packageFixture({ "check:changed": "node check.js" });
+  const result = preflightTargetValidationPlan(
+    {
+      fixArtifact: { validation_commands: ["pnpm test:live"] },
+      targetDir: cwd,
+    },
+    validationOptions("openclaw/openclaw"),
+  );
+
+  assert.equal(result.status, "blocked");
+  assert.equal(result.code, "validation_script_missing");
+  assert.equal(result.missing_script, "test:live");
+  assert.deepEqual(result.resolved_commands, ["pnpm test:live", "pnpm check:changed"]);
 });
 
 test("staged target proof rejects unsafe commands before planning", () => {
