@@ -14,6 +14,16 @@ const DEFAULT_IGNORED_CHECKS = [
   "Stale",
 ];
 const TRANSIENT_CANCELLED_CHECKS = new Set(["real behavior proof"]);
+const LEDGER_COMMAND_STATUSES = new Set(["claimed", "executed", "skipped", "waiting"]);
+const LEDGER_COMMAND_STRING_FIELDS = [
+  "idempotency_key",
+  "comment_id",
+  "comment_version_key",
+  "comment_created_at",
+  "comment_updated_at",
+  "repo",
+  "processed_at",
+] as const;
 
 export function dispatchClaimLookupKeys(entry: LooseRecord) {
   const keys: string[] = [];
@@ -552,7 +562,42 @@ function validatedLedgerCommand(entry: JsonValue): LooseRecord {
   if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
     throw new Error("comment router ledger commands must be objects");
   }
-  return { ...entry, ...forcedReplayIdentityFields(entry) };
+  const command = { ...entry, ...forcedReplayIdentityFields(entry) };
+  for (const field of LEDGER_COMMAND_STRING_FIELDS) {
+    const value = command[field];
+    if (value !== undefined && value !== null && (typeof value !== "string" || !value.trim())) {
+      throw new Error(`comment router ledger command ${field} must be a non-empty string or null`);
+    }
+  }
+  if (!LEDGER_COMMAND_STATUSES.has(command.status)) {
+    throw new Error("comment router ledger command status is invalid");
+  }
+  if (
+    typeof command.processed_at !== "string" ||
+    !Number.isFinite(Date.parse(command.processed_at))
+  ) {
+    throw new Error("comment router ledger command processed_at must be a valid timestamp");
+  }
+  if (
+    command.actions !== undefined &&
+    (!Array.isArray(command.actions) ||
+      command.actions.some(
+        (action: JsonValue) => !action || typeof action !== "object" || Array.isArray(action),
+      ))
+  ) {
+    throw new Error("comment router ledger command actions must be an array of objects");
+  }
+  if (
+    command.target !== undefined &&
+    command.target !== null &&
+    (typeof command.target !== "object" || Array.isArray(command.target))
+  ) {
+    throw new Error("comment router ledger command target must be an object or null");
+  }
+  if (command.status === "claimed" && dispatchClaimLookupKeys(command).length === 0) {
+    throw new Error("claimed comment router ledger command requires a durable lookup identity");
+  }
+  return command;
 }
 
 function forcedReplayIdentityFields(entry: LooseRecord): LooseRecord {

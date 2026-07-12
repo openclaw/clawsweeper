@@ -698,24 +698,111 @@ test("readLedger rejects malformed forced replay identity", (t) => {
   const directory = mkdtempSync(path.join(tmpdir(), "clawsweeper-comment-router-ledger-"));
   const ledgerPath = path.join(directory, "comment-router.json");
   t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const base = {
+    idempotency_key: "claim-before-dispatch",
+    comment_id: "125",
+    comment_updated_at: "2026-07-12T20:00:00Z",
+    status: "claimed",
+    processed_at: "2026-07-12T20:05:00Z",
+  };
 
   writeLedger(ledgerPath, {
     updated_at: null,
-    commands: [{ status: "claimed", forced_replay: true }],
+    commands: [{ ...base, forced_replay: true }],
   });
   assert.throws(() => readLedger(ledgerPath), /attempt_id must be a non-empty token/);
 
   writeLedger(ledgerPath, {
     updated_at: null,
-    commands: [{ status: "claimed", attempt_id: "forced-replay-41001" }],
+    commands: [{ ...base, attempt_id: "forced-replay-41001" }],
   });
   assert.throws(() => readLedger(ledgerPath), /requires forced_replay=true/);
 
   writeLedger(ledgerPath, {
     updated_at: null,
-    commands: [{ status: "claimed", forced_replay: "true", attempt_id: "forced-replay-41001" }],
+    commands: [{ ...base, forced_replay: "true", attempt_id: "forced-replay-41001" }],
   });
   assert.throws(() => readLedger(ledgerPath), /requires forced_replay=true/);
+});
+
+test("readLedger fails closed on malformed claimed state before restart dispatch", (t) => {
+  const directory = mkdtempSync(path.join(tmpdir(), "clawsweeper-comment-router-ledger-"));
+  const ledgerPath = path.join(directory, "comment-router.json");
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+
+  writeLedger(ledgerPath, {
+    updated_at: "2026-07-12T20:05:00Z",
+    commands: [
+      {
+        status: "claimed",
+        processed_at: "2026-07-12T20:05:00Z",
+        forced_replay: true,
+        attempt_id: "forced-replay-41001",
+        actions: [{ action: "dispatch_clawsweeper", status: "claimed" }],
+      },
+    ],
+  });
+
+  let dispatchReached = false;
+  assert.throws(() => {
+    const restored = readLedger(ledgerPath);
+    dispatchReached = true;
+    dispatchClaimDecision({
+      claim: restored.commands[0] ?? null,
+      runs: [],
+      expectedTitle: "Review event item openclaw/openclaw#74499 [router-abc]",
+    });
+  }, /requires a durable lookup identity/);
+  assert.equal(dispatchReached, false);
+});
+
+test("readLedger validates compact command entry structure", (t) => {
+  const directory = mkdtempSync(path.join(tmpdir(), "clawsweeper-comment-router-ledger-"));
+  const ledgerPath = path.join(directory, "comment-router.json");
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const base = {
+    idempotency_key: "claim-before-dispatch",
+    status: "claimed",
+    processed_at: "2026-07-12T20:05:00Z",
+  };
+
+  writeLedger(ledgerPath, {
+    updated_at: null,
+    commands: [{ ...base, status: "ready" }],
+  });
+  assert.throws(() => readLedger(ledgerPath), /command status is invalid/);
+
+  writeLedger(ledgerPath, {
+    updated_at: null,
+    commands: [{ ...base, processed_at: "not-a-timestamp" }],
+  });
+  assert.throws(() => readLedger(ledgerPath), /processed_at must be a valid timestamp/);
+
+  writeLedger(ledgerPath, {
+    updated_at: null,
+    commands: [{ ...base, actions: {} }],
+  });
+  assert.throws(() => readLedger(ledgerPath), /actions must be an array of objects/);
+
+  writeLedger(ledgerPath, {
+    updated_at: null,
+    commands: [{ ...base, target: [] }],
+  });
+  assert.throws(() => readLedger(ledgerPath), /target must be an object or null/);
+
+  writeLedger(ledgerPath, {
+    updated_at: null,
+    commands: [
+      base,
+      {
+        comment_id: "125",
+        comment_updated_at: "2026-07-12T20:00:00Z",
+        status: "claimed",
+        processed_at: "2026-07-12T20:05:00Z",
+      },
+    ],
+  });
+  assert.equal(readLedger(ledgerPath).commands.length, 2);
 });
 
 test("fresh dispatch claims wait for the Actions receipt visibility window", () => {
