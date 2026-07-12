@@ -280,6 +280,48 @@ test("GraphQL decoder fails closed on truncated metadata", () => {
   assert.equal(graphqlRecord("issue", { ...issue, comments }), null);
 });
 
+test("GraphQL decoder requires the queried pagination boundary", () => {
+  const issue = graphqlNode("issue");
+  assert.equal(
+    graphqlRecord("issue", {
+      ...issue,
+      labels: {
+        pageInfo: { hasPreviousPage: false },
+        nodes: [{ name: "bug" }],
+      },
+    }),
+    null,
+  );
+  assert.equal(
+    graphqlRecord("issue", {
+      ...issue,
+      comments: {
+        pageInfo: { hasNextPage: false },
+        nodes: issue.comments.nodes,
+      },
+    }),
+    null,
+  );
+});
+
+test("GraphQL decoder rejects incomplete relation targets", () => {
+  const issue = graphqlNode("issue");
+  assert.equal(
+    graphqlRecord("issue", {
+      ...issue,
+      timelineItems: graphqlConnection([
+        {
+          __typename: "CrossReferencedEvent",
+          id: "CE_incomplete",
+          createdAt: "2026-07-10T09:45:00Z",
+          source: null,
+        },
+      ]),
+    }),
+    null,
+  );
+});
+
 test("GraphQL decoder tracks human timeline events and ignores owned churn", () => {
   const node = graphqlNode("issue");
   const full = graphqlRecord("issue", node);
@@ -373,6 +415,15 @@ test("stale completed reviews force hydration", () => {
   assert.equal(
     decision({
       review: review({ lastFullReviewAt: new Date(NOW - 14 * DAY_MS).toISOString() }),
+    }).reason,
+    "stale_review",
+  );
+});
+
+test("future completed review timestamps force hydration", () => {
+  assert.equal(
+    decision({
+      review: review({ lastFullReviewAt: new Date(NOW + DAY_MS).toISOString() }),
     }).reason,
     "stale_review",
   );

@@ -291,7 +291,10 @@ function nonNegativeInteger(value: unknown): number | null {
   return Math.floor(number);
 }
 
-function structuralConnection(value: unknown): {
+function structuralConnection(
+  value: unknown,
+  direction: "first" | "last",
+): {
   nodes: unknown[];
   truncated: boolean;
 } {
@@ -299,12 +302,10 @@ function structuralConnection(value: unknown): {
   const nodes = connection.nodes;
   const pageInfo = asRecord(connection.pageInfo);
   if (!Array.isArray(nodes)) return { nodes: [], truncated: true };
+  const boundary = direction === "first" ? pageInfo.hasNextPage : pageInfo.hasPreviousPage;
   return {
     nodes,
-    truncated:
-      pageInfo.hasPreviousPage === true ||
-      pageInfo.hasNextPage === true ||
-      (pageInfo.hasPreviousPage !== false && pageInfo.hasNextPage !== false),
+    truncated: boundary !== false,
   };
 }
 
@@ -315,7 +316,7 @@ function structuralActivities(
   activities: ReviewStructuralActivity[];
   truncated: boolean;
 } {
-  const connection = structuralConnection(value);
+  const connection = structuralConnection(value, "last");
   let malformed = false;
   const activities = connection.nodes.flatMap((entry) => {
     const record = asRecord(entry);
@@ -353,7 +354,7 @@ function structuralLabels(
   labels: string[];
   truncated: boolean;
 } {
-  const connection = structuralConnection(value);
+  const connection = structuralConnection(value, "first");
   let malformed = false;
   const labels = connection.nodes.flatMap((entry) => {
     const name = stringOrUndefined(asRecord(entry).name);
@@ -372,15 +373,29 @@ function structuralRelationTarget(value: unknown): unknown {
   const type = stringOrUndefined(target.__typename);
   const id = stringOrUndefined(target.id);
   const number = nonNegativeInteger(target.number);
-  if (!type || !id || !repository || number === null) return null;
+  const state = stringOrUndefined(target.state);
+  const updatedAt = stringOrUndefined(target.updatedAt);
+  const headSha = stringOrUndefined(target.headRefOid)?.trim().toLowerCase() ?? null;
+  if (
+    (type !== "Issue" && type !== "PullRequest") ||
+    !id ||
+    !repository ||
+    number === null ||
+    !state ||
+    !updatedAt ||
+    !validTimestamp(updatedAt) ||
+    (type === "PullRequest" && (!headSha || !SHA_PATTERN.test(headSha)))
+  ) {
+    return null;
+  }
   return {
     type,
     id,
     repository,
     number,
-    state: stringOrUndefined(target.state) ?? null,
-    updatedAt: stringOrUndefined(target.updatedAt) ?? null,
-    headSha: stringOrUndefined(target.headRefOid) ?? null,
+    state,
+    updatedAt,
+    headSha: type === "PullRequest" ? headSha : null,
   };
 }
 
@@ -392,7 +407,7 @@ function structuralTimeline(
   timeline: unknown[];
   truncated: boolean;
 } {
-  const connection = structuralConnection(value);
+  const connection = structuralConnection(value, "last");
   let malformed = false;
   const timeline = connection.nodes.flatMap((entry) => {
     const record = asRecord(entry);
@@ -409,6 +424,14 @@ function structuralTimeline(
     }
     if (author && ignoreAuthor(author)) return [];
     if (label && ignoreLabel(label)) return [];
+    const relationTarget =
+      type === "CrossReferencedEvent" || type === "ConnectedEvent"
+        ? structuralRelationTarget(record.source ?? record.subject)
+        : null;
+    if ((type === "CrossReferencedEvent" || type === "ConnectedEvent") && relationTarget === null) {
+      malformed = true;
+      return [];
+    }
     return [
       {
         type,
@@ -419,7 +442,7 @@ function structuralTimeline(
         label,
         willCloseTarget:
           typeof record.willCloseTarget === "boolean" ? record.willCloseTarget : null,
-        target: structuralRelationTarget(record.source ?? record.subject),
+        target: relationTarget,
       },
     ];
   });
@@ -433,7 +456,7 @@ function structuralReviewThreads(
   threads: ReviewStructuralThread[];
   truncated: boolean;
 } {
-  const connection = structuralConnection(value);
+  const connection = structuralConnection(value, "last");
   let malformed = false;
   const threads = connection.nodes.flatMap((entry) => {
     const record = asRecord(entry);
@@ -817,6 +840,7 @@ export function reviewStructuralCacheDecision(options: {
   const now = options.now ?? Date.now();
   if (
     lastFullReviewAt === null ||
+    lastFullReviewAt > now ||
     now - lastFullReviewAt >= REVIEW_STRUCTURAL_CACHE_MAX_AGE_DAYS * DAY_MS
   ) {
     return { hit: false, reason: "stale_review" };
