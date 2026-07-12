@@ -30307,16 +30307,31 @@ function publishActionEventPathsCommand(args: Args): void {
   console.log(JSON.stringify({ result, path_count: paths.length }));
 }
 
-export async function main(argv = process.argv.slice(2)): Promise<void> {
+function isExplicitActionLedgerCommand(command: string): boolean {
+  return (
+    command === "finalize-action-events" ||
+    command === "publish-action-events" ||
+    command === "publish-action-event-paths"
+  );
+}
+
+export async function main(
+  argv = process.argv.slice(2),
+  dependencies: {
+    flushWorkflowActionEvents?: typeof flushWorkflowActionEvents;
+  } = {},
+): Promise<void> {
   const args = parseArgs(argv);
   const command = args._[0] ?? "review";
+  const flushActionEvents = dependencies.flushWorkflowActionEvents ?? flushWorkflowActionEvents;
   if (!process.env.CLAWSWEEPER_ACTION_LEDGER_INVOCATION) {
     process.env.CLAWSWEEPER_ACTION_LEDGER_INVOCATION = sha256(stableJson({ command, args })).slice(
       0,
       16,
     );
   }
-  let commandError: unknown = null;
+  let commandFailed = false;
+  let commandError: unknown;
   try {
     if (command === "plan") planCommand(args);
     else if (command === "review") reviewCommand(args);
@@ -30366,11 +30381,11 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
       }
     } else throw new UserFacingCommandError(`Unknown command: ${command}`);
   } catch (error) {
+    commandFailed = true;
     commandError = error;
   }
-  if (command === "finalize-action-events" && commandError) throw commandError;
   try {
-    const shardPaths = await flushWorkflowActionEvents(ROOT);
+    const shardPaths = await flushActionEvents(ROOT);
     if (shardPaths.length > 0) {
       console.error(
         `[action-ledger] finalized ${shardPaths.length} immutable workflow shard${
@@ -30379,17 +30394,24 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
       );
     }
   } catch (error) {
-    if (commandError) {
+    if (commandFailed) {
       console.error(
-        `[action-ledger] finalization failed after command failure: ${
+        `[action-ledger] best-effort finalization failed after command failure: ${
           error instanceof Error ? error.message : String(error)
         }`,
       );
-    } else {
+    } else if (isExplicitActionLedgerCommand(command)) {
+      commandFailed = true;
       commandError = error;
+    } else {
+      console.error(
+        `[action-ledger] best-effort finalization failed after successful ${command}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
     }
   }
-  if (commandError) throw commandError;
+  if (commandFailed) throw commandError;
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

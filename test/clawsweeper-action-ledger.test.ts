@@ -14,6 +14,7 @@ import {
   codexReviewFailureRetryableForTest,
   heldReviewStartStatusCommentResultForTest,
   isGitHubLabelAlreadyExistsErrorForTest,
+  main,
   observedGitHubMutationAttemptsForTest,
   reviewCommentPublicationEventDisposition,
   reviewRetryActionDisposition,
@@ -23,6 +24,68 @@ import {
 } from "../dist/clawsweeper.js";
 import { actionIdempotencyKey } from "../dist/action-ledger.js";
 import { readText } from "./helpers.ts";
+
+test("primary command success survives best-effort action ledger flush failure", async (t) => {
+  const errors: string[] = [];
+  let flushCalls = 0;
+  t.mock.method(console, "error", (...args: unknown[]) => {
+    errors.push(args.map(String).join(" "));
+  });
+
+  await main(["check"], {
+    flushWorkflowActionEvents: async () => {
+      flushCalls += 1;
+      throw new Error("simulated flush failure");
+    },
+  });
+
+  assert.equal(flushCalls, 1);
+  assert.match(
+    errors.join("\n"),
+    /\[action-ledger\] best-effort finalization failed after successful check: simulated flush failure/,
+  );
+});
+
+test("primary command failure is not masked by action ledger flush failure", async (t) => {
+  const errors: string[] = [];
+  let flushCalls = 0;
+  t.mock.method(console, "error", (...args: unknown[]) => {
+    errors.push(args.map(String).join(" "));
+  });
+
+  await assert.rejects(
+    main(["unknown-primary-command"], {
+      flushWorkflowActionEvents: async () => {
+        flushCalls += 1;
+        throw new Error("simulated flush failure");
+      },
+    }),
+    (error: unknown) => {
+      assert.equal(
+        error instanceof Error ? error.message : String(error),
+        "Unknown command: unknown-primary-command",
+      );
+      return true;
+    },
+  );
+
+  assert.equal(flushCalls, 1);
+  assert.match(
+    errors.join("\n"),
+    /\[action-ledger\] best-effort finalization failed after command failure: simulated flush failure/,
+  );
+});
+
+test("explicit action ledger finalization keeps flush failure strict", async () => {
+  await assert.rejects(
+    main(["finalize-action-events"], {
+      flushWorkflowActionEvents: async () => {
+        throw new Error("simulated flush failure");
+      },
+    }),
+    /simulated flush failure/,
+  );
+});
 
 test("review and apply outcome classifiers cover terminal and resumable states", () => {
   assert.deepEqual(actionLedgerFailureDisposition(new Error("worker timed out after 30s")), {
