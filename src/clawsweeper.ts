@@ -7566,6 +7566,15 @@ function fetchReviewStructuralRecord(options: {
     "-f",
     `query=${reviewStructuralQuery(options.item.kind)}`,
   ]);
+  let pullChecksDigest: string | null = null;
+  if (options.item.kind === "pull_request") {
+    const pull = asRecord(asRecord(asRecord(response).data).repository).pullRequest;
+    const headSha = stringOrUndefined(asRecord(pull).headRefOid)?.trim().toLowerCase();
+    if (!headSha) return null;
+    const pullChecks = pullChecksContext(options.item.number, headSha);
+    if (!completePullChecksContext(pullChecks)) return null;
+    pullChecksDigest = sha256(stableJson(pullChecks));
+  }
   return reviewStructuralRecordFromGraphql({
     response,
     repo: options.item.repo,
@@ -7574,6 +7583,7 @@ function fetchReviewStructuralRecord(options: {
     targetHeadSha: options.git.mainSha.trim().toLowerCase(),
     latestReleaseTag: options.git.latestRelease?.tagName ?? null,
     latestReleaseSha: options.git.latestRelease?.sha?.trim().toLowerCase() ?? null,
+    pullChecksDigest,
     reviewPolicy: options.reviewPolicy,
     reviewModel: options.reviewModel,
     ignoreAuthor: (author) => CLAWSWEEPER_BOT_AUTHORS.has(author.toLowerCase()),
@@ -19831,11 +19841,13 @@ function reviewCommand(args: Args): void {
   const readonlyOpenclaw = boolArg(args.readonly_openclaw);
   const skipStartComment = boolArg(args.skip_start_comment) || localOnly || localRange;
   const forcedLoginMethod = reviewCodexForcedLoginMethod(args);
-  const git: GitInfo = localRangeData
-    ? { mainSha: localRangeData.baseSha, latestRelease: null }
-    : checkout.gitTargetBranch
+  const loadReviewGitInfo = (): GitInfo =>
+    checkout.gitTargetBranch
       ? gitInfo(openclawDir, { targetBranch: checkout.gitTargetBranch })
       : gitInfo(openclawDir);
+  let git: GitInfo = localRangeData
+    ? { mainSha: localRangeData.baseSha, latestRelease: null }
+    : loadReviewGitInfo();
   const reviewPolicy = reviewPolicyHash({ model, reasoningEffort, sandboxMode, serviceTier });
   // Planned background shards receive exact item numbers from the planner, but they are not
   // user-requested exact reviews. Only the workflow may opt those batches into cache reuse.
@@ -19947,6 +19959,7 @@ function reviewCommand(args: Args): void {
         } else {
           const structuralProbeStartedAt = Date.now();
           try {
+            git = loadReviewGitInfo();
             structuralRecord = fetchReviewStructuralRecord({
               item,
               git,
@@ -20180,6 +20193,7 @@ function reviewCommand(args: Args): void {
         structuralCacheRevalidations += 1;
         const structuralRevalidationStartedAt = Date.now();
         try {
+          git = loadReviewGitInfo();
           const candidate = fetchReviewStructuralRecord({
             item,
             git,
@@ -20228,6 +20242,7 @@ function reviewCommand(args: Args): void {
         const structuralRevalidationStartedAt = Date.now();
         let candidate: ReviewStructuralRecord | null = null;
         try {
+          git = loadReviewGitInfo();
           candidate = fetchReviewStructuralRecord({
             item,
             git,

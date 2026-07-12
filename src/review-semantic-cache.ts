@@ -1,12 +1,14 @@
 import { createHash } from "node:crypto";
 import { extname } from "node:path";
 
-import { createScanner, getShebang, LanguageVariant, SyntaxKind } from "typescript/unstable/ast";
+import { getShebang, SyntaxKind, type Node, type SourceFile } from "typescript/unstable/ast";
+import { createVirtualFileSystem, type FileSystem } from "typescript/unstable/fs";
+import { API } from "typescript/unstable/sync";
 
 import { REVIEW_CACHE_MAX_AGE_DAYS } from "./scheduler-policy.js";
 import { stableJson } from "./stable-json.js";
 
-export const REVIEW_SEMANTIC_CACHE_VERSION = 1;
+export const REVIEW_SEMANTIC_CACHE_VERSION = 2;
 export const REVIEW_SEMANTIC_CACHE_MAX_AGE_DAYS = REVIEW_CACHE_MAX_AGE_DAYS;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -26,6 +28,17 @@ const TYPESCRIPT_EXTENSIONS = new Set([
   ".tsx",
 ]);
 const JSON_EXTENSIONS = new Set([".json"]);
+const COMMENT_LITERAL_KINDS = new Set([
+  SyntaxKind.JsxText,
+  SyntaxKind.JsxTextAllWhiteSpaces,
+  SyntaxKind.NoSubstitutionTemplateLiteral,
+  SyntaxKind.RegularExpressionLiteral,
+  SyntaxKind.StringLiteral,
+  SyntaxKind.TemplateHead,
+  SyntaxKind.TemplateMiddle,
+  SyntaxKind.TemplateTail,
+]);
+const COMPILER_VIRTUAL_ROOT = "/clawsweeper-semantic-cache";
 
 export type ReviewSemanticEligibilityReason =
   | "eligible"
@@ -280,73 +293,185 @@ function isDirectiveComment(value: string): boolean {
   return DIRECTIVE_COMMENT_PATTERN.test(value);
 }
 
-function scanCompilerTokens(
-  text: string,
-  languageVariant: LanguageVariant,
-): { tokens: string[]; valid: boolean } {
-  const scanner = createScanner(false, languageVariant, text);
-  const shebang = getShebang(text);
-  const tokens: string[] = [];
-  let iterations = 0;
-  while (iterations <= text.length + 1) {
-    iterations += 1;
-    const kind = scanner.scan();
-    const tokenText = scanner.getTokenText();
-    if (kind === SyntaxKind.EndOfFile) return { tokens, valid: true };
-    if (scanner.isUnterminated()) return { tokens: [], valid: false };
-    if (
-      kind === SyntaxKind.WhitespaceTrivia ||
-      kind === SyntaxKind.NewLineTrivia ||
-      ((kind === SyntaxKind.SingleLineCommentTrivia ||
-        kind === SyntaxKind.MultiLineCommentTrivia) &&
-        !isDirectiveComment(tokenText))
-    ) {
+function canonicalAstNode(node: Node, sourceFile: SourceFile): unknown {
+  const children: unknown[] = [];
+  node.forEachChild((child) => {
+    children.push(canonicalAstNode(child, sourceFile));
+  });
+  return children.length > 0
+    ? [node.kind, node.flags, children]
+    : [node.kind, node.flags, node.getText(sourceFile)];
+}
+
+function semanticDirectiveComments(sourceFile: SourceFile): unknown[] {
+  const literalRanges: Array<{ start: number; end: number }> = [];
+  const leafStarts: number[] = [];
+  const visit = (node: Node): void => {
+    if (COMMENT_LITERAL_KINDS.has(node.kind)) {
+      literalRanges.push({ start: node.getStart(sourceFile), end: node.getEnd() });
+    }
+    let hasChild = false;
+    node.forEachChild((child) => {
+      hasChild = true;
+      visit(child);
+    });
+    if (!hasChild) leafStarts.push(node.getStart(sourceFile));
+  };
+  visit(sourceFile);
+  literalRanges.sort((left, right) => left.start - right.start || left.end - right.end);
+  leafStarts.sort((left, right) => left - right);
+
+  const directives: unknown[] = [];
+  const text = sourceFile.text;
+  let literalIndex = 0;
+  for (let index = 0; index < text.length; index += 1) {
+    while (literalRanges[literalIndex] && literalRanges[literalIndex]!.end <= index) {
+      literalIndex += 1;
+    }
+    const literal = literalRanges[literalIndex];
+    if (literal && index >= literal.start && index < literal.end) {
+      index = literal.end - 1;
       continue;
     }
-    if (kind === SyntaxKind.Unknown && shebang === tokenText && scanner.getTokenStart() === 0) {
-      tokens.push(`shebang:${tokenText}`);
-      continue;
+    let end = -1;
+    if (text.startsWith("//", index)) {
+      const lineEnd = text.indexOf("\n", index + 2);
+      end = lineEnd < 0 ? text.length : lineEnd;
+    } else if (text.startsWith("/*", index)) {
+      const blockEnd = text.indexOf("*/", index + 2);
+      if (blockEnd < 0) return [{ invalid: true }];
+      end = blockEnd + 2;
     }
-    if (
-      kind === SyntaxKind.Unknown ||
-      kind === SyntaxKind.ConflictMarkerTrivia ||
-      kind === SyntaxKind.NonTextFileMarkerTrivia
-    ) {
-      return { tokens: [], valid: false };
+    if (end < 0) continue;
+    const comment = text.slice(index, end);
+    if (isDirectiveComment(comment)) {
+      const nextLeaf = leafStarts.findIndex((start) => start >= end);
+      directives.push({
+        line: sourceFile.getLineAndCharacterOfPosition(index).line,
+        nextLeaf: nextLeaf < 0 ? leafStarts.length : nextLeaf,
+        text: comment,
+      });
     }
-    tokens.push(`${kind}:${tokenText}`);
+    index = end - 1;
   }
-  return { tokens: [], valid: false };
+  return directives;
+}
+
+class SemanticCompilerSession {
+  private readonly fileSystem: FileSystem = createVirtualFileSystem({});
+  private readonly api = new API({
+    cwd: COMPILER_VIRTUAL_ROOT,
+    fs: this.fileSystem,
+  });
+  private nextFileId = 0;
+
+  parse(text: string, extension: string): { digest: string; valid: boolean } {
+    const writeFile = this.fileSystem.writeFile;
+    if (!writeFile) return { digest: "", valid: false };
+    const fileName = `${COMPILER_VIRTUAL_ROOT}/snippet-${this.nextFileId}${extension}`;
+    this.nextFileId += 1;
+    writeFile(fileName, text);
+    try {
+      const snapshot = this.api.updateSnapshot({ openFiles: [fileName] });
+      try {
+        const project = snapshot.getDefaultProjectForFile(fileName);
+        const sourceFile = project?.program.getSourceFile(fileName);
+        if (
+          !project ||
+          !sourceFile ||
+          project.program.getSyntacticDiagnostics(fileName).length > 0
+        ) {
+          return { digest: "", valid: false };
+        }
+        const directives = semanticDirectiveComments(sourceFile);
+        if (directives.some((directive) => asRecord(directive).invalid === true)) {
+          return { digest: "", valid: false };
+        }
+        return {
+          digest: sha256(
+            stableJson({
+              ast: canonicalAstNode(sourceFile, sourceFile),
+              directives,
+              shebang: getShebang(text) ?? null,
+            }),
+          ),
+          valid: true,
+        };
+      } finally {
+        snapshot.dispose();
+      }
+    } catch {
+      return { digest: "", valid: false };
+    }
+  }
+
+  close(): void {
+    try {
+      this.api.close();
+    } catch {
+      // Compiler service shutdown cannot make an otherwise safe fingerprint reusable.
+    }
+  }
 }
 
 function canonicalJson(text: string): string | null {
   try {
-    return stableJson(JSON.parse(text) as unknown);
+    JSON.parse(text);
   } catch {
     return null;
   }
+  let inString = false;
+  let escaped = false;
+  let canonical = "";
+  for (const character of text) {
+    if (inString) {
+      canonical += character;
+      if (escaped) {
+        escaped = false;
+      } else if (character === "\\") {
+        escaped = true;
+      } else if (character === '"') {
+        inString = false;
+      }
+      continue;
+    }
+    if (character === '"') {
+      inString = true;
+      canonical += character;
+      continue;
+    }
+    if (!/\s/.test(character)) canonical += character;
+  }
+  return canonical;
 }
 
 function semanticHunksForFile(
   filename: string,
   status: "modified" | "added",
   hunks: readonly ParsedHunk[],
+  compiler: SemanticCompilerSession,
 ): FileSemanticResult {
   const extension = extname(filename).toLowerCase();
   if (TYPESCRIPT_EXTENSIONS.has(extension)) {
-    const variant =
-      extension === ".tsx" || extension === ".jsx" ? LanguageVariant.JSX : LanguageVariant.Standard;
+    if (
+      hunks.length !== 1 ||
+      (status === "added"
+        ? hunks[0]?.oldStart !== 0 || hunks[0]?.newStart !== 1
+        : hunks[0]?.oldStart !== 1 || hunks[0]?.newStart !== 1)
+    ) {
+      return { eligible: false, reason: "lexical_ambiguity", value: null };
+    }
     const semanticHunks = [];
     for (const hunk of hunks) {
-      const oldTokens = scanCompilerTokens(hunk.oldText, variant);
-      const newTokens = scanCompilerTokens(hunk.newText, variant);
-      if (!oldTokens.valid || !newTokens.valid) {
+      const oldAst = compiler.parse(hunk.oldText, extension);
+      const newAst = compiler.parse(hunk.newText, extension);
+      if (!oldAst.valid || !newAst.valid) {
         return { eligible: false, reason: "lexical_ambiguity", value: null };
       }
       semanticHunks.push({
         sourceAnchor: status === "added" ? hunk.newStart : hunk.oldStart,
-        old: oldTokens.tokens,
-        new: newTokens.tokens,
+        old: oldAst.digest,
+        new: newAst.digest,
       });
     }
     return { eligible: true, reason: "eligible", value: semanticHunks };
@@ -370,7 +495,7 @@ function semanticHunksForFile(
   return { eligible: false, reason: "unsupported_language", value: null };
 }
 
-function semanticFile(value: unknown): FileSemanticResult {
+function semanticFile(value: unknown, compiler: SemanticCompilerSession): FileSemanticResult {
   const file = asRecord(value);
   const filename = stringValue(file.filename);
   const previousFilename = stringValue(file.previous_filename);
@@ -416,7 +541,7 @@ function semanticFile(value: unknown): FileSemanticResult {
       return { eligible: false, reason: "truncated_patch", value: null };
     }
   }
-  const semantic = semanticHunksForFile(filename, status, hunks);
+  const semantic = semanticHunksForFile(filename, status, hunks, compiler);
   if (!semantic.eligible) return semantic;
   return {
     eligible: true,
@@ -457,16 +582,30 @@ function semanticCode(input: ReviewSemanticInput): {
     };
   }
   const semanticFiles = [];
-  for (const file of files) {
-    const result = semanticFile(file);
-    if (!result.eligible) {
-      return {
-        digest: sha256(stableJson(files.map(exactFileView))),
-        eligible: false,
-        reason: result.reason,
-      };
+  let compiler: SemanticCompilerSession;
+  try {
+    compiler = new SemanticCompilerSession();
+  } catch {
+    return {
+      digest: sha256(stableJson(files.map(exactFileView))),
+      eligible: false,
+      reason: "lexical_ambiguity",
+    };
+  }
+  try {
+    for (const file of files) {
+      const result = semanticFile(file, compiler);
+      if (!result.eligible) {
+        return {
+          digest: sha256(stableJson(files.map(exactFileView))),
+          eligible: false,
+          reason: result.reason,
+        };
+      }
+      semanticFiles.push(result.value);
     }
-    semanticFiles.push(result.value);
+  } finally {
+    compiler.close();
   }
   semanticFiles.sort((left, right) =>
     String(asRecord(left).filename).localeCompare(String(asRecord(right).filename)),

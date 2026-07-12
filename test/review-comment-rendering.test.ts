@@ -152,6 +152,16 @@ test("structural cache probes before hydration but acquires a lease before carry
   );
   assert.ok(hydratedAnchor > hydration);
   assert.match(reviewLoop.slice(hydration, hydratedAnchor + 160), /preHydrationStructuralRecord/);
+  assert.match(
+    reviewLoop.slice(structuralRevalidation, structuralWrite),
+    /git = loadReviewGitInfo\(\)[\s\S]*fetchReviewStructuralRecord\(\{/,
+  );
+  const structuralProbe = source.slice(
+    source.indexOf("function fetchReviewStructuralRecord"),
+    source.indexOf("function collectItemContext"),
+  );
+  assert.match(structuralProbe, /pullChecksContext\(options\.item\.number, headSha\)/);
+  assert.match(structuralProbe, /pullChecksDigest = sha256\(stableJson\(pullChecks\)\)/);
   assert.match(source, /coordination-held\.json/);
   assert.match(source, /coordinationHeldRetryAt = startComment\.retryAt/);
   assert.match(source, /review-cache-metrics\.json/);
@@ -191,7 +201,7 @@ test("semantic cache runs after hydration and revalidates under the acquired lea
   assert.ok(contentCache > semanticWrite);
   assert.match(
     reviewLoop.slice(semanticRevalidation, semanticWrite),
-    /reviewStructuralCacheDecision\(\{/,
+    /refreshStructuralRecordForVerdict\(\)/,
   );
   assert.match(
     reviewLoop.slice(semanticRevalidation, semanticWrite),

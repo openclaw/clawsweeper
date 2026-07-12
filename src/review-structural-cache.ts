@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { REVIEW_CACHE_MAX_AGE_DAYS } from "./scheduler-policy.js";
 import { stableJson } from "./stable-json.js";
 
-export const REVIEW_STRUCTURAL_CACHE_VERSION = 4;
+export const REVIEW_STRUCTURAL_CACHE_VERSION = 5;
 export const REVIEW_STRUCTURAL_CACHE_MAX_AGE_DAYS = REVIEW_CACHE_MAX_AGE_DAYS;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -40,6 +40,7 @@ export interface ReviewStructuralPullMetadata {
   deletions: number;
   changedFiles: number;
   commitCount: number;
+  checksDigest: string;
   reviews: readonly ReviewStructuralActivity[];
   reviewsTruncated: boolean;
   reviewThreads: readonly ReviewStructuralThread[];
@@ -168,6 +169,7 @@ export interface ReviewStructuralGraphqlOptions {
   targetHeadSha: string;
   latestReleaseTag: string | null;
   latestReleaseSha: string | null;
+  pullChecksDigest: string | null;
   reviewPolicy: string;
   reviewModel: string;
   ignoreAuthor: (author: string) => boolean;
@@ -696,7 +698,9 @@ export function reviewStructuralRecordFromGraphql(
       additions === null ||
       deletions === null ||
       changedFiles === null ||
-      commitCount === null
+      commitCount === null ||
+      !options.pullChecksDigest ||
+      !DIGEST_PATTERN.test(options.pullChecksDigest)
     ) {
       return null;
     }
@@ -713,6 +717,7 @@ export function reviewStructuralRecordFromGraphql(
       deletions,
       changedFiles,
       commitCount,
+      checksDigest: options.pullChecksDigest,
       reviews: reviews.activities,
       reviewsTruncated: reviews.truncated,
       reviewThreads: reviewThreads.threads,
@@ -809,6 +814,7 @@ function sourceRevision(snapshot: ReviewStructuralSnapshot): string {
               deletions: snapshot.pull.deletions,
               changedFiles: snapshot.pull.changedFiles,
               commitCount: snapshot.pull.commitCount,
+              checksDigest: snapshot.pull.checksDigest,
               reviews: normalizedActivities(snapshot.pull.reviews),
               reviewThreads: [...snapshot.pull.reviewThreads]
                 .map((thread) => ({
@@ -851,6 +857,7 @@ function contextRevision(snapshot: ReviewStructuralSnapshot): string {
               draft: snapshot.pull.draft,
               mergeable: snapshot.pull.mergeable,
               mergeStateStatus: snapshot.pull.mergeStateStatus,
+              checksDigest: snapshot.pull.checksDigest,
               reviews: normalizedActivities(snapshot.pull.reviews),
               reviewThreads: [...snapshot.pull.reviewThreads]
                 .map((thread) => ({
@@ -970,6 +977,7 @@ function validPullMetadata(pull: ReviewStructuralPullMetadata): boolean {
     pull.changedFiles >= 0 &&
     Number.isSafeInteger(pull.commitCount) &&
     pull.commitCount >= 0 &&
+    DIGEST_PATTERN.test(pull.checksDigest) &&
     !pull.reviewsTruncated &&
     pull.reviews.every(validActivity) &&
     !pull.reviewThreadsTruncated &&

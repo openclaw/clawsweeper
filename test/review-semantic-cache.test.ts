@@ -224,6 +224,10 @@ test("identical token edits at different source locations do not collide", () =>
     },
   });
 
+  assert.equal(firstBlock.eligible, false);
+  assert.equal(firstBlock.eligibilityReason, "lexical_ambiguity");
+  assert.equal(secondBlock.eligible, false);
+  assert.equal(secondBlock.eligibilityReason, "lexical_ambiguity");
   assert.notEqual(firstBlock.codeDigest, secondBlock.codeDigest);
 });
 
@@ -351,7 +355,7 @@ test("tooling and bundler magic comments remain semantic", () => {
   assert.notEqual(ordinary.codeDigest, pure.codeDigest);
 });
 
-test("structured JSON formatting does not perturb complete JSON hunks", () => {
+test("structured JSON ignores formatting but preserves object order", () => {
   const compact = record({
     context: {
       pullFiles: [
@@ -373,6 +377,19 @@ test("structured JSON formatting does not perturb complete JSON hunks", () => {
           status: "modified",
           additions: 1,
           deletions: 1,
+          patch: '@@ -1 +1 @@\n-{ "enabled": false }\n+{ "enabled": true, "limit": 2 }',
+        },
+      ],
+    },
+  });
+  const reordered = record({
+    context: {
+      pullFiles: [
+        {
+          filename: "config.json",
+          status: "modified",
+          additions: 1,
+          deletions: 1,
           patch: '@@ -1 +1 @@\n-{ "enabled": false }\n+{ "limit": 2, "enabled": true }',
         },
       ],
@@ -382,6 +399,138 @@ test("structured JSON formatting does not perturb complete JSON hunks", () => {
   assert.equal(compact.eligible, true);
   assert.equal(formatted.eligible, true);
   assert.equal(compact.codeDigest, formatted.codeDigest);
+  assert.notEqual(compact.codeDigest, reordered.codeDigest);
+});
+
+test("compiler AST distinguishes regex, template, JSX, and shift semantics", () => {
+  const cases = [
+    {
+      name: "regular expression",
+      filename: "src/cache.ts",
+      before: "const pattern = /old/;",
+      after: "const pattern = /a b/;",
+      changed: "const pattern = /a  b/;",
+    },
+    {
+      name: "interpolated template",
+      filename: "src/cache.ts",
+      before: "const value = `old ${input}`;",
+      after: "const value = `new ${input}`;",
+      changed: "const value = `new  ${input}`;",
+    },
+    {
+      name: "JSX",
+      filename: "src/cache.tsx",
+      before: "const view = <p>old</p>;",
+      after: "const view = <p>new</p>;",
+      changed: "const view = <p>new value</p>;",
+    },
+    {
+      name: "shift operator",
+      filename: "src/cache.ts",
+      before: "const value = input;",
+      after: "const value = input >> 1;",
+      changed: "const value = input > > 1;",
+    },
+  ];
+
+  for (const entry of cases) {
+    const baseline = record({
+      context: {
+        pullFiles: [
+          {
+            filename: entry.filename,
+            status: "modified",
+            additions: 1,
+            deletions: 1,
+            patch: `@@ -1 +1 @@\n-${entry.before}\n+${entry.after}`,
+          },
+        ],
+      },
+    });
+    const changed = record({
+      context: {
+        pullFiles: [
+          {
+            filename: entry.filename,
+            status: "modified",
+            additions: 1,
+            deletions: 1,
+            patch: `@@ -1 +1 @@\n-${entry.before}\n+${entry.changed}`,
+          },
+        ],
+      },
+    });
+    assert.equal(baseline.eligible, true, entry.name);
+    assert.notEqual(baseline.codeDigest, changed.codeDigest, entry.name);
+  }
+});
+
+test("partial lexical context and compiler parse errors fail closed", () => {
+  const isolated = record({
+    context: {
+      pullFiles: [
+        {
+          filename: "src/cache.ts",
+          status: "modified",
+          additions: 1,
+          deletions: 1,
+          patch: "@@ -20 +20 @@\n-// inside a possible template\n+// changed runtime text",
+        },
+      ],
+    },
+  });
+  const malformed = record({
+    context: {
+      pullFiles: [
+        {
+          filename: "src/cache.ts",
+          status: "modified",
+          additions: 1,
+          deletions: 1,
+          patch: "@@ -1 +1 @@\n-const value = 1;\n+const value = ;",
+        },
+      ],
+    },
+  });
+
+  for (const result of [isolated, malformed]) {
+    assert.equal(result.eligible, false);
+    assert.equal(result.eligibilityReason, "lexical_ambiguity");
+  }
+});
+
+test("ASI-significant line terminators remain semantic", () => {
+  const newline = record({
+    context: {
+      pullFiles: [
+        {
+          filename: "src/cache.ts",
+          status: "modified",
+          additions: 2,
+          deletions: 1,
+          patch: "@@ -1 +1,2 @@\n-return staleValue;\n+return\n+{ fresh: true };",
+        },
+      ],
+    },
+  });
+  const inline = record({
+    context: {
+      pullFiles: [
+        {
+          filename: "src/cache.ts",
+          status: "modified",
+          additions: 1,
+          deletions: 1,
+          patch: "@@ -1 +1 @@\n-return staleValue;\n+return { fresh: true };",
+        },
+      ],
+    },
+  });
+
+  assert.equal(newline.eligible, true);
+  assert.equal(inline.eligible, true);
+  assert.notEqual(newline.codeDigest, inline.codeDigest);
 });
 
 test("ambiguous, truncated, binary, unsupported, deleted, renamed, and missing patches fail closed", () => {

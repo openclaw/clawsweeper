@@ -23,6 +23,7 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 const TARGET_SHA = "a".repeat(40);
 const HEAD_SHA = "b".repeat(40);
 const BASE_SHA = "c".repeat(40);
+const CHECKS_DIGEST = "d".repeat(64);
 
 function digest(value: string): string {
   return createHash("sha256").update(value).digest("hex");
@@ -83,6 +84,7 @@ function pullSnapshot(overrides: Partial<ReviewStructuralSnapshot> = {}): Review
       deletions: 2,
       changedFiles: 3,
       commitCount: 2,
+      checksDigest: CHECKS_DIGEST,
       reviews: [
         {
           id: "PRR_review_1",
@@ -268,6 +270,7 @@ function graphqlRecord(kind: "issue" | "pull_request", node = graphqlNode(kind))
     targetHeadSha: TARGET_SHA,
     latestReleaseTag: "v1.0.0",
     latestReleaseSha: TARGET_SHA,
+    pullChecksDigest: kind === "pull_request" ? CHECKS_DIGEST : null,
     reviewPolicy: "policy-1",
     reviewModel: "gpt-5.6",
     ignoreAuthor: (author) => author.toLowerCase() === "clawsweeper[bot]",
@@ -792,6 +795,19 @@ test("hydrated pull state must match the complete structural PR state", () => {
   );
 });
 
+test("changed PR check state forces hydration", () => {
+  const priorRecord = record(pullSnapshot());
+  const currentRecord = record(
+    pullSnapshot({
+      pull: {
+        ...pullSnapshot().pull!,
+        checksDigest: "e".repeat(64),
+      },
+    }),
+  );
+  assert.equal(decision({ priorRecord, currentRecord }).reason, "source_changed");
+});
+
 test("semantic context revision excludes code-volume and commit-count churn", () => {
   const prior = record(pullSnapshot());
   const reformatted = record(
@@ -833,9 +849,18 @@ test("semantic context revision includes review and readiness state", () => {
       },
     }),
   );
+  const changedChecks = record(
+    pullSnapshot({
+      pull: {
+        ...pullSnapshot().pull!,
+        checksDigest: "e".repeat(64),
+      },
+    }),
+  );
 
   assert.notEqual(prior.contextRevision, changedReview.contextRevision);
   assert.notEqual(prior.contextRevision, changedReadiness.contextRevision);
+  assert.notEqual(prior.contextRevision, changedChecks.contextRevision);
 });
 
 test("issue and PR records cannot be reused across kinds", () => {
@@ -881,6 +906,27 @@ test("metadata probes inspect relation links without persisting comment or revie
   assert.match(pullQuery, /headRefOid/);
   assert.match(pullQuery, /reviewThreads\(last: 100\)/);
   assert.match(pullQuery, /reviewThreads\(last: 100\)[\s\S]*?\bbody\b/);
+});
+
+test("PR structural records require a complete check-state digest", () => {
+  const node = graphqlNode("pull_request");
+  assert.equal(
+    reviewStructuralRecordFromGraphql({
+      response: { data: { repository: { pullRequest: node } } },
+      repo: "openclaw/openclaw",
+      number: 123,
+      kind: "pull_request",
+      targetHeadSha: TARGET_SHA,
+      latestReleaseTag: "v1.0.0",
+      latestReleaseSha: TARGET_SHA,
+      pullChecksDigest: null,
+      reviewPolicy: "policy-1",
+      reviewModel: "gpt-5.6",
+      ignoreAuthor: () => false,
+      ignoreLabel: () => false,
+    }),
+    null,
+  );
 });
 
 test("metadata probes ignore ClawSweeper comments but fail closed on malformed entries", () => {
