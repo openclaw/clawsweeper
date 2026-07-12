@@ -155,6 +155,10 @@ test("crawl-remote release is maintainer-bound across two fresh runners", () => 
   assert.equal(deploy.env.D1_MUTATION_MIN_REMAINING_SECONDS, "1320");
   assert.equal(deploy.env.WORKER_MUTATION_MIN_REMAINING_SECONDS, "900");
   assert.ok(
+    35 * 60 - Number(deploy.env.D1_MUTATION_MIN_REMAINING_SECONDS) >= 13 * 60,
+    "protected setup must retain at least thirteen minutes before the D1 cutoff",
+  );
+  assert.ok(
     Number(deploy.env.D1_MUTATION_MIN_REMAINING_SECONDS) -
       Number(deploy.env.WORKER_MUTATION_MIN_REMAINING_SECONDS) >=
       7 * 60,
@@ -197,7 +201,7 @@ test("crawl-remote release is maintainer-bound across two fresh runners", () => 
   assert.equal(steps(deploy).indexOf(token), 6);
   assert.equal(steps(deploy).indexOf(canonicalAuthority), 7);
   assert.equal(steps(deploy).indexOf(checkout), 8);
-  assert.match(deadline.run ?? "", /started_at \+ 25 \* 60/);
+  assert.match(deadline.run ?? "", /started_at \+ 35 \* 60/);
   assert.match(deadline.run ?? "", /DEPLOY_JOB_DEADLINE_EPOCH/);
   assert.equal(
     environmentToken.uses,
@@ -246,7 +250,7 @@ test("crawl-remote release is maintainer-bound across two fresh runners", () => 
   assert.equal(canonicalAuthority.env?.GH_TOKEN, "${{ steps.target-token.outputs.token }}");
   assert.equal(canonicalAuthority.env?.CLOUDFLARE_API_TOKEN, undefined);
   assert.equal(preflight["timeout-minutes"], 25);
-  assert.equal(deploy["timeout-minutes"], 30);
+  assert.equal(deploy["timeout-minutes"], 40);
 });
 
 test("protected deploy audits exact environment-owned authority inputs", () => {

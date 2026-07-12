@@ -449,7 +449,7 @@ jobs:
         inputs.confirmation == 'deploy crawl-remote production'
       }}
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
     environment:
       name: crawl-remote-production
       url: https://crawl-remote.services-91b.workers.dev
@@ -496,7 +496,7 @@ jobs:
             echo "::error::could not resolve the protected deployment start time."
             exit 1
           fi
-          deadline="$((started_at + 25 * 60))"
+          deadline="$((started_at + 35 * 60))"
           printf 'DEPLOY_JOB_DEADLINE_EPOCH=%s\n' "$deadline" >> "$GITHUB_ENV"
 
       - name: Create protected-environment audit token
