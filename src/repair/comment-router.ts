@@ -236,10 +236,158 @@ const comments = measure("list_candidate_comments", () =>
 const rawCommands: LooseRecord[] = [];
 
 for (const comment of comments) {
+  const command = routedCommandForComment(comment);
+  if (command) rawCommands.push(command);
+}
+let supersededReReviewVersions = supersededReReviewCommentVersions(rawCommands);
+
+await measureAsync("prehydrate_comment_commands", () =>
+  prehydrateCommandLookups(rawCommands, { refreshIssueComments: true }),
+);
+const classifiedCommentCommands = measure("classify_comment_commands", () =>
+  rawCommands.map((command) => classifyCommand(command)),
+);
+for (const command of listRepairLoopSweepCommands(classifiedCommentCommands)) {
+  rawCommands.push(command);
+}
+
+const sweepCommands = rawCommands.slice(classifiedCommentCommands.length);
+await measureAsync("prehydrate_repair_loop_sweeps", () =>
+  prehydrateCommandLookups(sweepCommands, { refreshIssueComments: true }),
+);
+const commands = [
+  ...classifiedCommentCommands,
+  ...measure("classify_repair_loop_sweeps", () =>
+    sweepCommands.map((command) => classifyCommand(command)),
+  ),
+];
+
+let actionable = commands.filter((command: JsonValue) => command.status === "ready");
+const report: LooseRecord = {
+  status: execute ? "executed" : "dry_run",
+  generated_at: new Date().toISOString(),
+  repo: targetRepo,
+  repair_repo: repairRepo,
+  review_repo: reviewRepo,
+  since,
+  execute,
+  force_reprocess: forceReprocess,
+  max_comments: maxComments,
+  item_numbers: [...itemNumbers],
+  comment_ids: [...commentIds],
+  status_comment_id: statusCommentId,
+  max_autoclose_targets: maxAutocloseTargets,
+  scanned_comments: comments.length,
+  commands_seen: commands.length,
+  actionable: actionable.length,
+  trusted_bots: [...trustedBots],
+  allowed_repository_permissions: [...allowedRepositoryPermissions],
+  max_auto_repairs_per_head: maxAutoRepairsPerHead,
+  max_auto_repairs_per_pr: maxAutoRepairsPerPr,
+  lookup_concurrency: lookupConcurrency,
+  commands,
+  exact_comment_version_fast_path: exactCommentVersionFastPath,
+  short_circuited: exactCommentVersionFastPath.suppress,
+};
+
+if (execute && exactCommentVersionFastPath.suppress && exactCommentVersionFastPathCommand) {
+  const versionStillCurrent = measure("verify_exact_comment_version_cleanup", () =>
+    exactCommentVersionStillCurrent(exactCommentVersionFastPathCommand),
+  );
+  report.exact_comment_version_cleanup = versionStillCurrent ? "completed" : "skipped_source_drift";
+  if (versionStillCurrent) {
+    measure("cleanup_exact_comment_version", () => {
+      assertMutationActorIsClawsweeperBot();
+      cleanupTerminalCommentAck(exactCommentVersionFastPathCommand);
+      clearTerminalMaintainerCommandReaction(exactCommentVersionFastPathCommand);
+    });
+  } else {
+    exactCommentVersionFastPath = { suppress: false, reason: "cleanup_source_drift" };
+    const resumedComments = measure("list_candidate_comments_after_cleanup_drift", () =>
+      listCandidateComments(),
+    );
+    const resumedRawCommands = resumedComments
+      .map((comment) => routedCommandForComment(comment))
+      .filter((command): command is LooseRecord => Boolean(command));
+    rawCommands.push(...resumedRawCommands);
+    supersededReReviewVersions = supersededReReviewCommentVersions(rawCommands);
+    await measureAsync("prehydrate_cleanup_drift_commands", () =>
+      prehydrateCommandLookups(resumedRawCommands, { refreshIssueComments: true }),
+    );
+    const resumedClassified = measure("classify_cleanup_drift_commands", () =>
+      resumedRawCommands.map((command) => classifyCommand(command)),
+    );
+    const resumedSweepCommands = listRepairLoopSweepCommands(resumedClassified);
+    rawCommands.push(...resumedSweepCommands);
+    await measureAsync("prehydrate_cleanup_drift_sweeps", () =>
+      prehydrateCommandLookups(resumedSweepCommands, { refreshIssueComments: true }),
+    );
+    commands.push(
+      ...resumedClassified,
+      ...resumedSweepCommands.map((command) => classifyCommand(command)),
+    );
+    actionable = commands.filter((command: JsonValue) => command.status === "ready");
+    report.scanned_comments = Number(report.scanned_comments ?? 0) + resumedComments.length;
+    report.commands_seen = commands.length;
+    report.actionable = actionable.length;
+    report.exact_comment_version_fast_path = exactCommentVersionFastPath;
+    report.short_circuited = false;
+  }
+}
+
+if (execute && !exactCommentVersionFastPath.suppress) {
+  await measureAsync("execute_commands", async () => {
+    assertMutationActorIsClawsweeperBot();
+    const capacityRequests = workerCapacityRequests(actionable);
+    if (capacityRequests.length > 0) {
+      const capacities = capacityRequests.map((request) =>
+        waitForCapacity ? waitForLiveWorkerCapacity(request) : assertLiveWorkerCapacity(request),
+      );
+      report.live_worker_capacity_before_dispatch =
+        capacities.length === 1 ? capacities[0] : capacities;
+    }
+    report.ledger_claimed = measure("claim_dispatch_commands", () =>
+      claimDispatchCommands(actionable),
+    );
+    if (report.ledger_claimed) writeLedger(ledgerPath(), ledger);
+    for (const command of commands) convergePrecreatedCommandAckComments(command);
+    for (const command of commands) acknowledgeSkippedMaintainerCommand(command);
+    for (const command of actionable) executeCommand(command);
+  });
+  report.ledger_changed = measure("append_ledger", () => appendLedger(ledger, commands));
+  if (report.ledger_changed) writeLedger(ledgerPath(), ledger);
+}
+
+report.timings = {
+  total_ms: Date.now() - startedAtMs,
+  phases: timings,
+};
+if (writeReport) writeReportFile(repoRoot(), report);
+console.log(JSON.stringify(report, null, 2));
+
+function measure<T>(name: string, fn: () => T): T {
+  const start = Date.now();
+  try {
+    return fn();
+  } finally {
+    timings.push({ name, ms: Date.now() - start });
+  }
+}
+
+async function measureAsync<T>(name: string, fn: () => Promise<T>): Promise<T> {
+  const start = Date.now();
+  try {
+    return await fn();
+  } finally {
+    timings.push({ name, ms: Date.now() - start });
+  }
+}
+
+function routedCommandForComment(comment: JsonValue): LooseRecord | null {
   const parsed: LooseRecord = parseRoutedCommentCommand(comment, { trustedAuthors: trustedBots });
-  if (!parsed) continue;
+  if (!parsed) return null;
   const issueNumber = issueNumberFromUrl(comment.issue_url);
-  const command: LooseRecord = {
+  return {
     idempotency_key: idempotencyKey(parsed, issueNumber, comment.id, comment.updated_at),
     comment_id: String(comment.id),
     comment_version_key: commentVersionKey({
@@ -294,119 +442,6 @@ for (const comment of comments) {
     status: "pending",
     actions: [],
   };
-  rawCommands.push(command);
-}
-const supersededReReviewVersions = supersededReReviewCommentVersions(rawCommands);
-
-await measureAsync("prehydrate_comment_commands", () =>
-  prehydrateCommandLookups(rawCommands, { refreshIssueComments: true }),
-);
-const classifiedCommentCommands = measure("classify_comment_commands", () =>
-  rawCommands.map((command) => classifyCommand(command)),
-);
-for (const command of listRepairLoopSweepCommands(classifiedCommentCommands)) {
-  rawCommands.push(command);
-}
-
-const sweepCommands = rawCommands.slice(classifiedCommentCommands.length);
-await measureAsync("prehydrate_repair_loop_sweeps", () =>
-  prehydrateCommandLookups(sweepCommands, { refreshIssueComments: true }),
-);
-const commands = [
-  ...classifiedCommentCommands,
-  ...measure("classify_repair_loop_sweeps", () =>
-    sweepCommands.map((command) => classifyCommand(command)),
-  ),
-];
-
-const actionable = commands.filter((command: JsonValue) => command.status === "ready");
-const report: LooseRecord = {
-  status: execute ? "executed" : "dry_run",
-  generated_at: new Date().toISOString(),
-  repo: targetRepo,
-  repair_repo: repairRepo,
-  review_repo: reviewRepo,
-  since,
-  execute,
-  force_reprocess: forceReprocess,
-  max_comments: maxComments,
-  item_numbers: [...itemNumbers],
-  comment_ids: [...commentIds],
-  status_comment_id: statusCommentId,
-  max_autoclose_targets: maxAutocloseTargets,
-  scanned_comments: comments.length,
-  commands_seen: commands.length,
-  actionable: actionable.length,
-  trusted_bots: [...trustedBots],
-  allowed_repository_permissions: [...allowedRepositoryPermissions],
-  max_auto_repairs_per_head: maxAutoRepairsPerHead,
-  max_auto_repairs_per_pr: maxAutoRepairsPerPr,
-  lookup_concurrency: lookupConcurrency,
-  commands,
-  exact_comment_version_fast_path: exactCommentVersionFastPath,
-  short_circuited: exactCommentVersionFastPath.suppress,
-};
-
-if (execute && exactCommentVersionFastPath.suppress && exactCommentVersionFastPathCommand) {
-  const versionStillCurrent = measure("verify_exact_comment_version_cleanup", () =>
-    exactCommentVersionStillCurrent(exactCommentVersionFastPathCommand),
-  );
-  report.exact_comment_version_cleanup = versionStillCurrent ? "completed" : "skipped_source_drift";
-  if (versionStillCurrent) {
-    measure("cleanup_exact_comment_version", () => {
-      assertMutationActorIsClawsweeperBot();
-      cleanupTerminalCommentAck(exactCommentVersionFastPathCommand);
-      clearTerminalMaintainerCommandReaction(exactCommentVersionFastPathCommand);
-    });
-  }
-}
-
-if (execute && !exactCommentVersionFastPath.suppress) {
-  await measureAsync("execute_commands", async () => {
-    assertMutationActorIsClawsweeperBot();
-    const capacityRequests = workerCapacityRequests(actionable);
-    if (capacityRequests.length > 0) {
-      const capacities = capacityRequests.map((request) =>
-        waitForCapacity ? waitForLiveWorkerCapacity(request) : assertLiveWorkerCapacity(request),
-      );
-      report.live_worker_capacity_before_dispatch =
-        capacities.length === 1 ? capacities[0] : capacities;
-    }
-    report.ledger_claimed = measure("claim_dispatch_commands", () =>
-      claimDispatchCommands(actionable),
-    );
-    if (report.ledger_claimed) writeLedger(ledgerPath(), ledger);
-    for (const command of commands) convergePrecreatedCommandAckComments(command);
-    for (const command of commands) acknowledgeSkippedMaintainerCommand(command);
-    for (const command of actionable) executeCommand(command);
-  });
-  report.ledger_changed = measure("append_ledger", () => appendLedger(ledger, commands));
-  if (report.ledger_changed) writeLedger(ledgerPath(), ledger);
-}
-
-report.timings = {
-  total_ms: Date.now() - startedAtMs,
-  phases: timings,
-};
-if (writeReport) writeReportFile(repoRoot(), report);
-console.log(JSON.stringify(report, null, 2));
-
-function measure<T>(name: string, fn: () => T): T {
-  const start = Date.now();
-  try {
-    return fn();
-  } finally {
-    timings.push({ name, ms: Date.now() - start });
-  }
-}
-
-async function measureAsync<T>(name: string, fn: () => Promise<T>): Promise<T> {
-  const start = Date.now();
-  try {
-    return await fn();
-  } finally {
-    timings.push({ name, ms: Date.now() - start });
-  }
 }
 
 function claimDispatchCommands(commands: LooseRecord[]) {

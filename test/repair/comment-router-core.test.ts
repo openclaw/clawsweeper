@@ -2014,6 +2014,12 @@ test("exact comment fast path preserves terminal acknowledgement cleanup", () =>
     /exactCommentVersionStillCurrent\(exactCommentVersionFastPathCommand\)/,
   );
   assert.match(cleanupBlock, /skipped_source_drift/);
+  assert.match(cleanupBlock, /reason: "cleanup_source_drift"/);
+  assert.match(cleanupBlock, /list_candidate_comments_after_cleanup_drift/);
+  assert.match(cleanupBlock, /prehydrate_cleanup_drift_commands/);
+  assert.match(cleanupBlock, /classify_cleanup_drift_commands/);
+  assert.match(cleanupBlock, /commands\.push/);
+  assert.match(cleanupBlock, /report\.short_circuited = false/);
   assert.match(cleanupBlock, /cleanupTerminalCommentAck\(exactCommentVersionFastPathCommand\)/);
   assert.match(
     cleanupBlock,
