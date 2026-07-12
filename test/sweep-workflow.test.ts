@@ -596,12 +596,15 @@ test("apply workflow isolates Codex proof from the credentialed mutation runner"
     workflow.indexOf("\njobs:"),
   );
   const proofJobStart = workflow.indexOf("\n  apply-proof:");
+  const proofPublisherStart = workflow.indexOf("\n  publish-apply-proof-action-ledger:");
   const applyJobStart = workflow.indexOf("\n  apply-existing:");
   assert.notEqual(proofJobStart, -1);
+  assert.notEqual(proofPublisherStart, -1);
   assert.notEqual(applyJobStart, -1);
   assert.doesNotMatch(workflowConcurrency, /queue: max/);
   assert.match(workflowConcurrency, /cancel-in-progress: false/);
-  const proofJob = workflow.slice(proofJobStart, applyJobStart);
+  const proofJob = workflow.slice(proofJobStart, proofPublisherStart);
+  const proofPublisherJob = workflow.slice(proofPublisherStart, applyJobStart);
   const applyJob = workflow.slice(applyJobStart);
 
   assert.match(proofJob, /permissions:\s+contents: read\s+issues: read\s+pull-requests: read/);
@@ -619,16 +622,47 @@ test("apply workflow isolates Codex proof from the credentialed mutation runner"
   assert.match(proofJob, /artifact_name: \$\{\{ steps\.proof-artifact\.outputs\.name \}\}/);
   assert.match(
     proofJob,
+    /action_ledger_artifact_name: \$\{\{ steps\.publishable-action-ledger\.outputs\.name \}\}/,
+  );
+  assert.match(
+    proofJob,
     /name=apply-coverage-proofs-\$\{\{ github\.run_id \}\}-\$\{\{ github\.run_attempt \}\}/,
   );
   assert.match(proofJob, /name: \$\{\{ steps\.proof-artifact\.outputs\.name \}\}/);
+  assert.match(
+    proofJob,
+    /action_ledger_name=action-ledger-apply-proof-\$\{\{ github\.run_id \}\}-\$\{\{ github\.run_attempt \}\}/,
+  );
+  assert.match(proofJob, /id: upload-action-events/);
+  assert.match(proofJob, /name: \$\{\{ steps\.proof-artifact\.outputs\.action_ledger_name \}\}/);
+  assert.match(proofJob, /path: \.clawsweeper-repair\/action-ledger-state\/\*\*/);
+  assert.match(proofJob, /include-hidden-files: true/);
+  assert.match(proofJob, /if-no-files-found: error/);
+  assert.match(
+    proofJob,
+    /if: \$\{\{ always\(\) && steps\.upload-action-events\.outputs\.artifact-id != '' \}\}/,
+  );
 
-  assert.match(applyJob, /needs: apply-proof/);
+  assert.match(proofPublisherJob, /needs: apply-proof/);
+  assert.match(
+    proofPublisherJob,
+    /if: \$\{\{ always\(\) && needs\.apply-proof\.result != 'skipped' \}\}/,
+  );
+  assert.match(
+    proofPublisherJob,
+    /name: \$\{\{ needs\.apply-proof\.outputs\.action_ledger_artifact_name \}\}/,
+  );
+  assert.match(proofPublisherJob, /path: \.clawsweeper-repair\/action-ledger-proof/);
+  assert.match(proofPublisherJob, /Publish apply proof action events/);
+  assert.doesNotMatch(proofPublisherJob, /github\.run_attempt/);
+
+  assert.match(applyJob, /needs: \[apply-proof, publish-apply-proof-action-ledger\]/);
   assert.doesNotMatch(applyJob, /setup-codex|OPENAI_API_KEY|CLAWSWEEPER_INTERNAL_MODEL/);
   assert.match(applyJob, /Create target write token/);
   assert.match(applyJob, /Create state token/);
   assert.match(applyJob, /actions\/download-artifact@v8/);
   assert.match(applyJob, /name: \$\{\{ needs\.apply-proof\.outputs\.artifact_name \}\}/);
+  assert.doesNotMatch(applyJob, /action-ledger-proof/);
   assert.match(applyJob, /validate_coverage_proof_tree .* 8 262144 2097152/);
   assert.doesNotMatch(applyJob, /COVERAGE_PROOF_TRUSTED_STARTED_AT|proof-trust/);
   assert.match(applyJob, /target_repo.*PROOF_TARGET_REPO/);
@@ -1027,12 +1061,15 @@ test("apply workflow finalization retries only target status after checkpointed 
     "- name: Apply unchanged proposed decisions with checkpoints",
   );
   const finalStatusStart = applyJob.indexOf("- name: Retry final apply status publication");
+  const actionLedgerStart = applyJob.indexOf("- name: Publish apply action events");
   const continueStart = applyJob.indexOf("- name: Continue apply sweep");
   assert.ok(applyStart !== -1);
   assert.ok(finalStatusStart > applyStart);
-  assert.ok(continueStart > finalStatusStart);
+  assert.ok(actionLedgerStart > finalStatusStart);
+  assert.ok(continueStart > actionLedgerStart);
   const applyStep = applyJob.slice(applyStart, finalStatusStart);
-  const finalStatusStep = applyJob.slice(finalStatusStart, continueStart);
+  const finalStatusStep = applyJob.slice(finalStatusStart, actionLedgerStart);
+  const actionLedgerStep = applyJob.slice(actionLedgerStart, continueStart);
 
   const commentCheckpoint = applyStep.indexOf(
     'publish_changes "chore: sync sweep review comments checkpoint $checkpoint" records apply-report.json results/comment-sync-cursors',
@@ -1066,6 +1103,16 @@ test("apply workflow finalization retries only target status after checkpointed 
   assert.doesNotMatch(finalStatusStep, /--path\s+"?records(?:\/|\s)/);
   assert.doesNotMatch(finalStatusStep, /apply-report\.json/);
   assert.doesNotMatch(finalStatusStep, /results\/(?:apply|comment-sync)-cursors/);
+  assert.match(actionLedgerStep, /publish-action-events/);
+  assert.doesNotMatch(actionLedgerStep, /action-ledger-proof/);
+  assert.match(actionLedgerStep, /action-ledger-state/);
+  assert.match(actionLedgerStep, /--state-root "\$CLAWSWEEPER_STATE_DIR"/);
+  assert.match(actionLedgerStep, /cp "\$durable_event_path" "\$event_path"/);
+  assert.match(actionLedgerStep, /--message "chore: append apply action ledger"/);
+  assert.match(actionLedgerStep, /action_ledger_args\+=\(--path "\$event_path"\)/);
+  assert.match(actionLedgerStep, /--rebase-strategy normal/);
+  assert.doesNotMatch(actionLedgerStep, /continue-on-error: true/);
+  assert.match(actionLedgerStep, /no paths were imported[\s\S]*exit 1/i);
 });
 
 test("apply workflow does not queue runtime-yield continuation without cursor progress", () => {
@@ -1178,10 +1225,12 @@ test("apply workflow drops a coverage-proof tail only after exact trace examinat
 test("apply proof and mutation start from fresh non-persisted source checkouts", () => {
   const workflow = readText(".github/workflows/sweep.yml");
   const proofJobStart = workflow.indexOf("\n  apply-proof:");
+  const proofPublisherStart = workflow.indexOf("\n  publish-apply-proof-action-ledger:");
   const applyJobStart = workflow.indexOf("\n  apply-existing:");
   assert.notEqual(proofJobStart, -1);
+  assert.notEqual(proofPublisherStart, -1);
   assert.notEqual(applyJobStart, -1);
-  const proofJob = workflow.slice(proofJobStart, applyJobStart);
+  const proofJob = workflow.slice(proofJobStart, proofPublisherStart);
   const applyJob = workflow.slice(applyJobStart);
 
   assert.match(proofJob, /actions\/checkout@v7[\s\S]*?persist-credentials: false/);
