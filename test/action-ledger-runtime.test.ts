@@ -342,41 +342,50 @@ test("CrabFleet projection sends the validated ledger event and bearer token", a
 test("CrabFleet projection failures remain durable and retryable", async () => {
   const root = tempRoot();
   const outputRoot = path.join(root, "state");
+  const errors: string[] = [];
+  const originalError = console.error;
   const env = workflowEnv({
     CLAWSWEEPER_CRABFLEET_AGENT_TOKEN: "agent-token",
     CLAWSWEEPER_CRABFLEET_SESSION_ID: "session-1",
   });
-  const event = recordWorkflowActionEvent(
-    root,
-    {
-      scope: "review.completed",
-      identity: {
-        repository: "openclaw/openclaw",
-        number: 42,
-        sourceRevision: "abc123",
+  console.error = (...args: unknown[]) => errors.push(args.map(String).join(" "));
+  let event: ReturnType<typeof recordWorkflowActionEvent>;
+  try {
+    event = recordWorkflowActionEvent(
+      root,
+      {
+        scope: "review.completed",
+        identity: {
+          repository: "openclaw/openclaw",
+          number: 42,
+          sourceRevision: "abc123",
+        },
+        type: ACTION_EVENT_TYPES.reviewCompleted,
+        component: "review",
+        subject: {
+          repository: "openclaw/openclaw",
+          kind: "pull_request",
+          number: 42,
+          sourceRevision: "abc123",
+        },
+        action: {
+          name: "review",
+          status: "completed",
+          retryable: false,
+          mutation: false,
+        },
+        occurredAt: "2026-07-12T10:00:00.000Z",
       },
-      type: ACTION_EVENT_TYPES.reviewCompleted,
-      component: "review",
-      subject: {
-        repository: "openclaw/openclaw",
-        kind: "pull_request",
-        number: 42,
-        sourceRevision: "abc123",
+      {
+        env,
+        now: () => new Date("2026-07-12T10:01:00.000Z"),
+        fetchImpl: async () => new Response("sensitive upstream detail", { status: 503 }),
       },
-      action: {
-        name: "review",
-        status: "completed",
-        retryable: false,
-        mutation: false,
-      },
-      occurredAt: "2026-07-12T10:00:00.000Z",
-    },
-    {
-      env,
-      now: () => new Date("2026-07-12T10:01:00.000Z"),
-      fetchImpl: async () => new Response("unavailable", { status: 503 }),
-    },
-  );
+    );
+    await flushWorkflowActionEvents(root, { env, outputRoot });
+  } finally {
+    console.error = originalError;
+  }
   assert.ok(event);
 
   const [relativePath] = await flushWorkflowActionEvents(root, { env, outputRoot });
@@ -398,6 +407,9 @@ test("CrabFleet projection failures remain durable and retryable", async () => {
   assert.equal(failure.attempt_id, event.attempt_id);
   assert.equal(failure.parent_event_id, event.event_id);
   assert.equal(failure.phase_seq, event.phase_seq + 1);
+  assert.equal(errors.length, 1);
+  assert.match(errors[0] ?? "", /append failed \(503\)/);
+  assert.doesNotMatch(errors[0] ?? "", /sensitive upstream detail/);
 });
 
 test("state shard imports are validated, create-only, and conflict detecting", async () => {

@@ -310,8 +310,8 @@ export async function postActionEventToCrabFleet(
     },
   );
   if (!response.ok) {
-    const detail = (await response.text()).slice(0, 300);
-    throw new Error(`CrabFleet action event append failed (${response.status}): ${detail}`);
+    await response.body?.cancel();
+    throw new Error(`CrabFleet action event append failed (${response.status})`);
   }
 }
 
