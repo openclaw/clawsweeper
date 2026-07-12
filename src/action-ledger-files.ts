@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { constants as bufferConstants } from "node:buffer";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -97,15 +98,18 @@ export function assertDirectoryNoLinks(directory: string, label: string): void {
   }
 }
 
-export function readUtf8FileNoFollow(target: SafeWriteTarget): string {
+export function readUtf8FileNoFollow(target: SafeWriteTarget, maxBytes?: number): string {
   const parentChain = captureSafeParentChain(target, false);
-  return readUtf8FileWithParentChain(target, parentChain);
+  return readUtf8FileWithParentChain(target, parentChain, maxBytes);
 }
 
-export function readUtf8FileIfExistsNoFollow(target: SafeWriteTarget): string | null {
+export function readUtf8FileIfExistsNoFollow(
+  target: SafeWriteTarget,
+  maxBytes?: number,
+): string | null {
   const parentChain = captureSafeParentChain(target, false);
   try {
-    return readUtf8FileWithParentChain(target, parentChain);
+    return readUtf8FileWithParentChain(target, parentChain, maxBytes);
   } catch (error) {
     if (!isNotFoundError(error)) throw error;
     assertStableParentChain(target, parentChain);
@@ -117,12 +121,13 @@ export function readDirectoryEntriesNoFollow(
   root: string | SafeReadRoot,
   relativePath: string,
   label: string,
+  maxEntries?: number,
 ): fs.Dirent[] {
   const target = prepareSafeDirectoryReadTarget(root, relativePath, label);
   const chain = captureSafeDirectoryChain(target);
-  const first = sortedDirectoryEntries(target.path);
+  const first = sortedDirectoryEntries(target.path, maxEntries);
   assertStableDirectoryChain(target, chain);
-  const second = sortedDirectoryEntries(target.path);
+  const second = sortedDirectoryEntries(target.path, maxEntries);
   assertStableDirectoryChain(target, chain);
   if (directoryEntriesSignature(first) !== directoryEntriesSignature(second)) {
     throw new Error(`refusing changed ${label} directory: ${target.path}`);
@@ -371,13 +376,22 @@ function assertPathMatchesIdentity(filePath: string, expected: FileIdentity, lab
 function readUtf8FileWithParentChain(
   target: SafeWriteTarget,
   parentChain: ParentChainSnapshot,
+  maxBytes?: number,
 ): string {
+  if (
+    maxBytes !== undefined &&
+    (!Number.isSafeInteger(maxBytes) || maxBytes < 0 || maxBytes >= bufferConstants.MAX_LENGTH)
+  ) {
+    throw new Error(`invalid ${target.label} byte limit: ${maxBytes}`);
+  }
   assertStableParentChain(target, parentChain);
   const expectedIdentity = fileIdentity(target.path, target.label);
   assertStableParentChain(target, parentChain);
   const descriptor = fs.openSync(target.path, fs.constants.O_RDONLY | NO_FOLLOW | NON_BLOCKING);
   try {
-    const openedIdentity = descriptorIdentity(descriptor, target.label);
+    const openedStat = fs.fstatSync(descriptor, { bigint: true });
+    if (!openedStat.isFile()) throw new Error(`refusing non-file for ${target.label}`);
+    const openedIdentity = { dev: openedStat.dev, ino: openedStat.ino };
     if (
       openedIdentity.dev !== expectedIdentity.dev ||
       openedIdentity.ino !== expectedIdentity.ino
@@ -386,13 +400,37 @@ function readUtf8FileWithParentChain(
     }
     assertStableParentChain(target, parentChain);
     assertPathMatchesIdentity(target.path, openedIdentity, target.label);
-    const content = fs.readFileSync(descriptor, "utf8");
+    if (maxBytes !== undefined && openedStat.size > BigInt(maxBytes)) {
+      throw new Error(`${target.label} file exceeds ${maxBytes} byte limit: ${target.path}`);
+    }
+    const content =
+      maxBytes === undefined
+        ? fs.readFileSync(descriptor, "utf8")
+        : readBoundedUtf8File(descriptor, maxBytes, target);
     assertStableParentChain(target, parentChain);
     assertPathMatchesIdentity(target.path, openedIdentity, target.label);
     return content;
   } finally {
     fs.closeSync(descriptor);
   }
+}
+
+function readBoundedUtf8File(
+  descriptor: number,
+  maxBytes: number,
+  target: SafeWriteTarget,
+): string {
+  const buffer = Buffer.allocUnsafe(maxBytes + 1);
+  let bytesRead = 0;
+  while (bytesRead < buffer.length) {
+    const count = fs.readSync(descriptor, buffer, bytesRead, buffer.length - bytesRead, null);
+    if (count === 0) break;
+    bytesRead += count;
+  }
+  if (bytesRead > maxBytes) {
+    throw new Error(`${target.label} file exceeds ${maxBytes} byte limit: ${target.path}`);
+  }
+  return buffer.subarray(0, bytesRead).toString("utf8");
 }
 
 function removeFileNoFollow(target: SafeWriteTarget, expectedIdentity: FileIdentity): void {
@@ -482,10 +520,32 @@ function directoryChainPaths(target: SafeWriteTarget): string[] {
   return entries;
 }
 
-function sortedDirectoryEntries(directory: string): fs.Dirent[] {
-  return fs
-    .readdirSync(directory, { withFileTypes: true })
-    .sort((left, right) => (left.name < right.name ? -1 : left.name > right.name ? 1 : 0));
+function sortedDirectoryEntries(directory: string, maxEntries?: number): fs.Dirent[] {
+  if (maxEntries === undefined) {
+    return fs
+      .readdirSync(directory, { withFileTypes: true })
+      .sort((left, right) => (left.name < right.name ? -1 : left.name > right.name ? 1 : 0));
+  }
+  if (!Number.isSafeInteger(maxEntries) || maxEntries < 1) {
+    throw new Error(`invalid directory entry limit: ${maxEntries}`);
+  }
+  const handle = fs.opendirSync(directory);
+  const entries: fs.Dirent[] = [];
+  try {
+    for (;;) {
+      const entry = handle.readSync();
+      if (!entry) break;
+      entries.push(entry);
+      if (entries.length > maxEntries) {
+        throw new Error(`directory exceeds ${maxEntries} entry limit: ${directory}`);
+      }
+    }
+  } finally {
+    handle.closeSync();
+  }
+  return entries.sort((left, right) =>
+    left.name < right.name ? -1 : left.name > right.name ? 1 : 0,
+  );
 }
 
 function directoryEntriesSignature(entries: readonly fs.Dirent[]): string {

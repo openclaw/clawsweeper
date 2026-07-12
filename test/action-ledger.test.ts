@@ -647,15 +647,10 @@ test("runtime allowlists stay aligned with the checked-in schema", () => {
   assert.equal(schema.$defs.machineText.pattern, ACTION_EVENT_MACHINE_TEXT_PATTERN_SOURCE);
   const confidentialEntries = schema.$defs.confidentialIdentifier.anyOf as Array<{
     pattern?: string;
-    $ref?: string;
   }>;
   assert.deepEqual(
     confidentialEntries.flatMap((entry) => (entry.pattern ? [entry.pattern] : [])),
     [...ACTION_EVENT_CONFIDENTIAL_IDENTIFIER_PATTERN_SOURCES],
-  );
-  assert.deepEqual(
-    confidentialEntries.flatMap((entry) => (entry.$ref ? [entry.$ref] : [])),
-    ["#/$defs/compressedPrivateIpv4EmbeddedIpv6"],
   );
 });
 
@@ -696,6 +691,8 @@ test("runtime and schema apply the same machine-text privacy boundary", () => {
     "::ffff:c0a8:1",
     "0:0::ffff:c0a8:1",
     "0::c0a8:1",
+    "status:0:0::ffff:c0a8:1",
+    "status:0::c0a8:1",
     "0:0:0:0:0:ffff:a00:1",
     "0:0:0:0:0:ffff:7f00:1",
     "0:0:0:0:0:ffff:a9fe:1",
@@ -716,11 +713,16 @@ test("runtime and schema apply the same machine-text privacy boundary", () => {
     "internal.example.com",
     "https://host.docker.internal/api",
     "https://10.0.0.1/api",
+    "http://2130706433/",
+    "http://0x7f000001/",
+    "http://017700000001/",
     "host-10.0.0.1",
     "0:0::1",
     "0:0::ffff:808:808",
     "0::808:808",
     "2001:4860:4860::8888",
+    "status:0:0::ffff:808:808",
+    "status:2001:4860:4860::8888",
   ];
 
   for (const value of samples) {
@@ -761,6 +763,8 @@ test("privacy normalization preserves public machine identifiers", () => {
     "0:0::ffff:808:808",
     "0::808:808",
     "2001:4860:4860::8888",
+    "status:0:0::ffff:808:808",
+    "status:2001:4860:4860::8888",
     "https://github.com/openclaw/clawsweeper/actions/runs/100",
   ]) {
     const event = createActionEvent(
@@ -1372,6 +1376,39 @@ test("shard paths use the stable run partition instead of event ordering", () =>
   );
 });
 
+test("shard path components stay below portable filesystem name limits", () => {
+  const longProducer = {
+    repository: producer.repository,
+    sha: producer.sha,
+    workflow: "w".repeat(128),
+    job: "j".repeat(128),
+    runId: "r".repeat(256),
+    runAttempt: Number.MAX_SAFE_INTEGER,
+    component: "p".repeat(256),
+  };
+  const event = createActionEvent(reviewInput({ producer: longProducer }));
+  const identity = {
+    repository: longProducer.repository,
+    sha: longProducer.sha,
+    producer: longProducer.component,
+    workflow: longProducer.workflow,
+    job: longProducer.job,
+    runId: longProducer.runId,
+    runAttempt: longProducer.runAttempt,
+    partitionDate: "2026-07-12",
+  };
+  const written = writeActionEventShard(tempRoot(), identity, [event]);
+  const components = written.relativePath.split("/");
+
+  assert.ok(components.every((component) => Buffer.byteLength(component, "utf8") < 255));
+  assert.ok(Buffer.byteLength(path.basename(written.path), "utf8") < 255);
+  assert.equal(readActionEventShard(written.path).length, 1);
+  assert.notEqual(
+    written.relativePath,
+    actionEventShardRelativePath({ ...identity, runId: `${"r".repeat(255)}x` }, [event]),
+  );
+});
+
 test("duplicate event IDs preserve recording metadata and reject changed source provenance", () => {
   const identity = {
     repository: producer.repository,
@@ -1552,6 +1589,11 @@ test("durable privacy guards reject raw text, local paths, secrets, and invalid 
     "service.internal.",
     "internal.example.com",
     "0:0:0:0:0:0:0:1",
+    "status:0:0::ffff:c0a8:1",
+    "status:0::c0a8:1",
+    "http://2130706433/",
+    "http://0x7f000001/",
+    "http://017700000001/",
     "host-10.0.0.1",
   ]) {
     assert.throws(
@@ -1974,6 +2016,10 @@ test("runtime normalization enforces checked-in schema bounds", () => {
         }),
       ),
     /cluster id exceeds 256/,
+  );
+  assert.throws(
+    () => createActionEvent(reviewInput({ occurredAt: "" })),
+    /action event occurredAt is required/,
   );
   assert.throws(
     () => createActionEvent(reviewInput({ occurredAt: "2026-07-12" })),

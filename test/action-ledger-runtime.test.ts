@@ -8,6 +8,7 @@ import test from "node:test";
 import { pathToFileURL } from "node:url";
 
 import {
+  ACTION_EVENT_SHARD_IMPORT_LIMITS,
   flushWorkflowActionEvents,
   importActionEventShards,
   postActionEventToCrabFleet,
@@ -39,6 +40,22 @@ function createDirectoryLink(target: string, link: string): void {
   fs.symlinkSync(target, link, process.platform === "win32" ? "junction" : "dir");
 }
 
+function adversarialShardPath(source: string, index: number): string {
+  const directory = path.join(
+    source,
+    "ledger",
+    "v1",
+    "events",
+    "2026",
+    "07",
+    "12",
+    "openclaw-clawsweeper",
+    "review",
+  );
+  fs.mkdirSync(directory, { recursive: true });
+  return path.join(directory, `run-1-review-${String(index).padStart(4, "0")}.jsonl`);
+}
+
 function workflowEnv(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
   return {
     CLAWSWEEPER_ACTION_LEDGER_FORCE: "1",
@@ -62,6 +79,7 @@ function recordReview(
   now = new Date("2026-07-12T10:01:00.000Z"),
   options: {
     generatedOccurrence?: boolean;
+    occurredAt?: string;
     fetchImpl?: typeof fetch;
   } = {},
 ) {
@@ -99,7 +117,9 @@ function recordReview(
         redactionVersion: "v1",
         fieldsDropped: ["body", "comments", "diff", "logs", "prompt"],
       },
-      ...(options.generatedOccurrence ? {} : { occurredAt: "2026-07-12T10:00:00.000Z" }),
+      ...(options.generatedOccurrence
+        ? {}
+        : { occurredAt: options.occurredAt ?? "2026-07-12T10:00:00.000Z" }),
     },
     {
       env,
@@ -336,6 +356,18 @@ test("invalid workflow events do not create partition markers", () => {
   assert.equal(fs.existsSync(path.join(root, ".clawsweeper-repair")), false);
 });
 
+test("workflow writers reject explicitly empty source timestamps", () => {
+  const root = tempRoot();
+  assert.throws(
+    () =>
+      recordReview(root, workflowEnv(), new Date("2026-07-12T10:01:00.000Z"), {
+        occurredAt: "",
+      }),
+    /action event occurredAt is required/,
+  );
+  assert.equal(fs.existsSync(path.join(root, ".clawsweeper-repair")), false);
+});
+
 test("phase event helpers reject noncanonical phase, status, and reason strings", () => {
   const base = {
     phase: ACTION_EVENT_PHASE_TYPES.reviewItem,
@@ -451,6 +483,31 @@ test("workflow events finalize into one replay-stable per-step shard", async () 
   );
 });
 
+test("finalization rejects noncanonical caller and environment output roots", async () => {
+  const root = tempRoot();
+  const outputRoot = trustedChildRoot(root, "state");
+  fs.mkdirSync(path.join(outputRoot, "child"));
+  const noncanonical = `${outputRoot}${path.sep}child${path.sep}..`;
+  recordReview(root);
+
+  await assert.rejects(
+    flushWorkflowActionEvents(root, {
+      env: workflowEnv(),
+      outputRoot: noncanonical,
+    }),
+    /noncanonical action event shard output root/,
+  );
+  await assert.rejects(
+    flushWorkflowActionEvents(root, {
+      env: workflowEnv({
+        CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT: noncanonical,
+      }),
+    }),
+    /noncanonical action event shard output root/,
+  );
+  assert.deepEqual(fs.readdirSync(outputRoot), ["child"]);
+});
+
 test("fresh roots reconstruct shard partitions from immutable run metadata", async () => {
   const env = workflowEnv({
     CLAWSWEEPER_ACTION_LEDGER_PARTITION_DATE: undefined,
@@ -483,6 +540,39 @@ test("fresh roots reconstruct shard partitions from immutable run metadata", asy
       ),
     /requires CLAWSWEEPER_ACTION_LEDGER_PARTITION_DATE or GITHUB_RUN_STARTED_AT/,
   );
+});
+
+test("workflow partition timestamps require real calendar dates", async () => {
+  for (const runStartedAt of [
+    "2026-02-29T00:00:00Z",
+    "2026-02-30T00:00:00Z",
+    "2026-04-31T23:59:59+02:00",
+  ]) {
+    const root = tempRoot();
+    assert.throws(
+      () =>
+        recordReview(
+          root,
+          workflowEnv({
+            CLAWSWEEPER_ACTION_LEDGER_PARTITION_DATE: undefined,
+            GITHUB_RUN_STARTED_AT: runStartedAt,
+          }),
+        ),
+      /GITHUB_RUN_STARTED_AT must be an ISO date-time timestamp/,
+      runStartedAt,
+    );
+    assert.equal(fs.existsSync(path.join(root, ".clawsweeper-repair")), false);
+  }
+
+  const root = tempRoot();
+  const outputRoot = trustedChildRoot(root, "state");
+  const env = workflowEnv({
+    CLAWSWEEPER_ACTION_LEDGER_PARTITION_DATE: undefined,
+    GITHUB_RUN_STARTED_AT: "2024-02-29T23:30:00-02:00",
+  });
+  recordReview(root, env);
+  const [relativePath] = await flushWorkflowActionEvents(root, { env, outputRoot });
+  assert.match(relativePath ?? "", /^ledger\/v1\/events\/2024\/03\/01\//);
 });
 
 test("fresh-root shard replay preserves the first recorded-at metadata", async () => {
@@ -1105,6 +1195,166 @@ test("state shard imports reject noncanonical trusted root spellings", async () 
   );
 });
 
+test("state shard imports read each source shard once", async () => {
+  const root = tempRoot();
+  const source = trustedChildRoot(root, "source");
+  const destination = trustedChildRoot(root, "destination");
+  recordReview(root);
+  const [relativePath] = await flushWorkflowActionEvents(root, {
+    env: workflowEnv(),
+    outputRoot: source,
+  });
+  assert.ok(relativePath);
+  const shardPath = path.join(source, relativePath);
+  const originalOpenSync = fs.openSync;
+  let sourceOpenCount = 0;
+  fs.openSync = ((filePath, flags, mode) => {
+    if (filePath === shardPath) sourceOpenCount += 1;
+    return originalOpenSync(filePath, flags, mode);
+  }) as typeof fs.openSync;
+  try {
+    assert.equal(importActionEventShards(source, destination).created, 1);
+  } finally {
+    fs.openSync = originalOpenSync;
+  }
+  assert.equal(sourceOpenCount, 1);
+});
+
+test("state shard imports bound traversal depth and fanout", () => {
+  const root = tempRoot();
+  const destination = trustedChildRoot(root, "destination");
+
+  const deepSource = trustedChildRoot(root, "deep-source");
+  fs.mkdirSync(path.join(deepSource, "ledger", "v1", "events", "a", "b", "c", "d", "e", "f"), {
+    recursive: true,
+  });
+  assert.throws(
+    () => importActionEventShards(deepSource, destination),
+    new RegExp(`maximum depth ${ACTION_EVENT_SHARD_IMPORT_LIMITS.maxDepth}`),
+  );
+
+  const fileSource = trustedChildRoot(root, "file-source");
+  const fileDirectory = path.join(fileSource, "ledger", "v1", "events");
+  fs.mkdirSync(fileDirectory, { recursive: true });
+  for (let index = 0; index <= ACTION_EVENT_SHARD_IMPORT_LIMITS.maxFiles; index += 1) {
+    fs.writeFileSync(path.join(fileDirectory, `entry-${index}.txt`), "");
+  }
+  assert.throws(
+    () => importActionEventShards(fileSource, destination),
+    new RegExp(`${ACTION_EVENT_SHARD_IMPORT_LIMITS.maxFiles} file limit`),
+  );
+
+  const directorySource = trustedChildRoot(root, "directory-source");
+  const directoryRoot = path.join(directorySource, "ledger", "v1", "events");
+  fs.mkdirSync(directoryRoot, { recursive: true });
+  for (let index = 0; index < ACTION_EVENT_SHARD_IMPORT_LIMITS.maxDirectories; index += 1) {
+    fs.mkdirSync(path.join(directoryRoot, `directory-${index}`));
+  }
+  assert.throws(
+    () => importActionEventShards(directorySource, destination),
+    new RegExp(`${ACTION_EVENT_SHARD_IMPORT_LIMITS.maxDirectories} directory limit`),
+  );
+  assert.deepEqual(fs.readdirSync(destination), []);
+});
+
+test("state shard imports enforce per-file byte, line, and event limits", async () => {
+  const root = tempRoot();
+  const destination = trustedChildRoot(root, "destination");
+
+  const byteSource = trustedChildRoot(root, "byte-source");
+  fs.writeFileSync(
+    adversarialShardPath(byteSource, 1),
+    Buffer.alloc(ACTION_EVENT_SHARD_IMPORT_LIMITS.maxFileBytes + 1, 0x61),
+  );
+  assert.throws(
+    () => importActionEventShards(byteSource, destination),
+    new RegExp(`${ACTION_EVENT_SHARD_IMPORT_LIMITS.maxFileBytes} byte limit`),
+  );
+
+  const lineSource = trustedChildRoot(root, "line-source");
+  fs.writeFileSync(
+    adversarialShardPath(lineSource, 1),
+    "\n".repeat(ACTION_EVENT_SHARD_IMPORT_LIMITS.maxFileLines + 1),
+  );
+  assert.throws(
+    () => importActionEventShards(lineSource, destination),
+    new RegExp(`${ACTION_EVENT_SHARD_IMPORT_LIMITS.maxFileLines} line limit`),
+  );
+
+  const eventSource = trustedChildRoot(root, "event-source");
+  recordReview(root);
+  const [relativePath] = await flushWorkflowActionEvents(root, {
+    env: workflowEnv(),
+    outputRoot: eventSource,
+  });
+  assert.ok(relativePath);
+  const eventPath = path.join(eventSource, relativePath);
+  const eventLine = fs.readFileSync(eventPath, "utf8").trim();
+  fs.writeFileSync(
+    eventPath,
+    `${Array.from(
+      { length: ACTION_EVENT_SHARD_IMPORT_LIMITS.maxFileEvents + 1 },
+      () => eventLine,
+    ).join("\n")}\n`,
+  );
+  assert.throws(
+    () => importActionEventShards(eventSource, destination),
+    new RegExp(`${ACTION_EVENT_SHARD_IMPORT_LIMITS.maxFileEvents} event limit`),
+  );
+  assert.deepEqual(fs.readdirSync(destination), []);
+});
+
+test("state shard imports enforce aggregate byte and event limits before publication", async () => {
+  const root = tempRoot();
+  const destination = trustedChildRoot(root, "destination");
+
+  const byteSource = trustedChildRoot(root, "byte-source");
+  const byteFileCount =
+    Math.floor(
+      ACTION_EVENT_SHARD_IMPORT_LIMITS.maxTotalBytes /
+        ACTION_EVENT_SHARD_IMPORT_LIMITS.maxFileBytes,
+    ) + 1;
+  for (let index = 0; index < byteFileCount; index += 1) {
+    const content = Buffer.alloc(ACTION_EVENT_SHARD_IMPORT_LIMITS.maxFileBytes, 0x61);
+    content[content.length - 1] = 0x0a;
+    fs.writeFileSync(adversarialShardPath(byteSource, index), content);
+  }
+  assert.throws(
+    () => importActionEventShards(byteSource, destination),
+    new RegExp(`${ACTION_EVENT_SHARD_IMPORT_LIMITS.maxTotalBytes} total byte limit`),
+  );
+
+  const eventSource = trustedChildRoot(root, "event-source");
+  recordReview(root);
+  const [relativePath] = await flushWorkflowActionEvents(root, {
+    env: workflowEnv(),
+    outputRoot: eventSource,
+  });
+  assert.ok(relativePath);
+  const canonicalPath = path.join(eventSource, relativePath);
+  const eventLine = fs.readFileSync(canonicalPath, "utf8").trim();
+  fs.rmSync(canonicalPath);
+  const eventFileCount =
+    Math.floor(
+      ACTION_EVENT_SHARD_IMPORT_LIMITS.maxTotalEvents /
+        ACTION_EVENT_SHARD_IMPORT_LIMITS.maxFileEvents,
+    ) + 1;
+  for (let index = 0; index < eventFileCount; index += 1) {
+    fs.writeFileSync(
+      adversarialShardPath(eventSource, index),
+      `${Array.from(
+        { length: ACTION_EVENT_SHARD_IMPORT_LIMITS.maxFileEvents },
+        () => eventLine,
+      ).join("\n")}\n`,
+    );
+  }
+  assert.throws(
+    () => importActionEventShards(eventSource, destination),
+    new RegExp(`${ACTION_EVENT_SHARD_IMPORT_LIMITS.maxTotalEvents} total event limit`),
+  );
+  assert.deepEqual(fs.readdirSync(destination), []);
+});
+
 test("state shard imports preserve chronological ordering across timestamp offsets", async () => {
   const root = tempRoot();
   const source = trustedChildRoot(root, "source");
@@ -1360,7 +1610,7 @@ test(
     try {
       assert.throws(
         () => importActionEventShards(source, destination),
-        /changed action event shard file/,
+        /changed action event shard import source file/,
       );
     } finally {
       fs.openSync = originalOpenSync;

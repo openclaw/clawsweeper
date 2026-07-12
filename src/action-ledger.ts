@@ -391,6 +391,8 @@ export const ACTION_EVENT_CONFIDENTIAL_IDENTIFIER_PATTERN_SOURCES = [
   "(?:^|[^0-9])(?:10(?:\\.[0-9]{1,3}){3}|127(?:\\.[0-9]{1,3}){3}|169\\.254(?:\\.[0-9]{1,3}){2}|192\\.168(?:\\.[0-9]{1,3}){2}|172\\.(?:1[6-9]|2[0-9]|3[01])(?:\\.[0-9]{1,3}){2})(?:$|[^0-9])",
   "(?:^|[\\[/:@])(?:(?:::)(?:0{1,4}:){0,6}0*1|(?:0{1,4}:){1,6}:(?:0{1,4}:){0,6}0*1|(?:0{1,4}:){7}0*1|(?:(?:::)(?:[Ff]{4}:)?|(?:0{1,4}:){5}[Ff]{4}:|(?:0{1,4}:){6})7[fF][0-9A-Fa-f]{2}:[0-9A-Fa-f]{1,4}|(?:[Ff][CcDd][0-9A-Fa-f]{2}|[Ff][Ee][89AaBb][0-9A-Fa-f]):[0-9A-Fa-f:]+)(?:\\]|$|[/:])",
   "(?:^|[\\[/:@])(?:(?:::)(?:[Ff]{4}:)?|(?:0{1,4}:){5}[Ff]{4}:|(?:0{1,4}:){6})(?:[0]?[Aa][0-9A-Fa-f]{2}|7[Ff][0-9A-Fa-f]{2}|[Aa]9[Ff][Ee]|[Aa][Cc]1[0-9A-Fa-f]|[Cc]0[Aa]8):[0-9A-Fa-f]{1,4}(?:\\]|$|[/:])",
+  "(?:^|[\\[/:@])(?:(?:(?:0{1,4}:){0,3}0{1,4})?::[Ff]{4}:|(?:(?:0{1,4}:){0,4}0{1,4})?::)(?:[0]?[Aa][0-9A-Fa-f]{2}|7[Ff][0-9A-Fa-f]{2}|[Aa]9[Ff][Ee]|[Aa][Cc]1[0-9A-Fa-f]|[Cc]0[Aa]8):[0-9A-Fa-f]{1,4}(?:\\]|$|[/:])",
+  "(?:^|[^A-Za-z0-9+.-])(?:[Hh][Tt][Tt][Pp][Ss]?|[Ff][Tt][Pp]|[Ww][Ss][Ss]?):/{0,2}(?:0[Xx][0-9A-Fa-f]+|0[0-7]+|[0-9]+)(?:$|[/:])",
 ] as const;
 
 const POSITIVE_INTEGER_ATTRIBUTE_KEYS = new Set<ActionEventAttributeKey>([
@@ -773,9 +775,9 @@ export function actionEventShardRelativePath(
   const [year, month, date] = normalizedIdentity.partitionDate.split("-");
   const identityDigest = sha256(actionLedgerJson(normalizedIdentity)).slice(0, 12);
   const filename = [
-    safePathSegment(normalizedIdentity.runId),
+    boundedPathSegment(normalizedIdentity.runId, 64),
     String(normalizedIdentity.runAttempt),
-    safePathSegment(normalizedIdentity.job),
+    boundedPathSegment(normalizedIdentity.job, 64),
     identityDigest,
   ].join("-");
   return path.join(
@@ -785,8 +787,8 @@ export function actionEventShardRelativePath(
     String(year),
     String(month),
     String(date),
-    safePathSegment(slugForRepo(normalizedIdentity.repository)),
-    safePathSegment(normalizedIdentity.producer),
+    boundedPathSegment(slugForRepo(normalizedIdentity.repository), 120),
+    boundedPathSegment(normalizedIdentity.producer, 120),
     `${filename}.jsonl`,
   );
 }
@@ -797,12 +799,16 @@ export function createActionEvent(
 ): ActionEvent {
   const semantic = actionEventSemanticValue(input);
   const recordedAt = (options.now ?? (() => new Date()))().toISOString();
-  const occurredAtSource: ActionEventOccurrenceSource = input.occurredAt ? "source" : "generated";
-  const occurredAt = input.occurredAt
-    ? requiredTimestamp(input.occurredAt, "action event occurredAt")
-    : options.generatedOccurredAt
-      ? requiredTimestamp(options.generatedOccurredAt, "generated action event occurredAt")
-      : recordedAt;
+  const hasSourceOccurrence = input.occurredAt !== undefined;
+  const occurredAtSource: ActionEventOccurrenceSource = hasSourceOccurrence
+    ? "source"
+    : "generated";
+  const occurredAt =
+    input.occurredAt !== undefined
+      ? requiredTimestamp(input.occurredAt, "action event occurredAt")
+      : options.generatedOccurredAt !== undefined
+        ? requiredTimestamp(options.generatedOccurredAt, "generated action event occurredAt")
+        : recordedAt;
   const semanticSha256 = actionEventSemanticSha256(semantic, occurredAt, occurredAtSource);
   const eventId = actionEventId(semantic.subject.repository, input.eventKey);
   if (semantic.parent_event_id === eventId) {
@@ -1511,7 +1517,7 @@ export function actionEventShardContentReplayEquivalent(
   return actionEventShardsReplayEquivalent(parsed, events);
 }
 
-function parseActionEventShardContent(content: string, filePath: string): ActionEvent[] {
+export function parseActionEventShardContent(content: string, filePath: string): ActionEvent[] {
   return content
     .split(/\r?\n/)
     .filter(Boolean)
@@ -1855,6 +1861,13 @@ function requiredSha256(value: string, label: string): string {
 function safePathSegment(value: string): string {
   const safe = value.replace(/[^A-Za-z0-9_.-]+/g, "-").replace(/^-+|-+$/g, "");
   return safe || "unknown";
+}
+
+function boundedPathSegment(value: string, maxLength: number): string {
+  const safe = safePathSegment(value);
+  if (safe.length <= maxLength) return safe;
+  const digest = sha256(value).slice(0, 12);
+  return `${safe.slice(0, maxLength - digest.length - 1)}-${digest}`;
 }
 
 function canonicalIdentityJson(value: unknown): string {

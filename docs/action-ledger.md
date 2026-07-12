@@ -85,7 +85,9 @@ confidential-identifier checks as every other durable machine-text field.
   and the source/generated marker, so chronology cannot be downgraded without
   invalidating the event. Generated occurrence and recording clocks remain
   first-writer metadata, so equivalent fresh-root reconstruction cannot conflict
-  solely because another writer observed a different wall clock.
+  solely because another writer observed a different wall clock. An explicitly
+  supplied empty timestamp is invalid source evidence; only an omitted value
+  selects the generated clock.
 - Shard line order is a deterministic topological order: causal children follow
   their in-shard parents. Independent source-timestamp events use occurrence
   time and event ID as stable tie-breakers; generated-clock events use stable
@@ -95,14 +97,20 @@ confidential-identifier checks as every other durable machine-text field.
   `GITHUB_RUN_STARTED_AT` metadata. The producer-specific marker is persisted
   before its first event, and finalization only reads that marker. Wall clock,
   the current flush environment, and event ordering are never used, so delayed
-  or fresh-root reconstruction cannot move a run to another path.
+  or fresh-root reconstruction cannot move a run to another path. Timestamp
+  metadata must round-trip through a real calendar date; impossible dates are
+  rejected rather than normalized into another partition.
 - Reusing one run/job shard identity for a different event set is a hard
   conflict.
+- Shard path components remain below portable 255-byte filename limits.
+  Overlong readable repository, producer, run, or job components are truncated
+  with a hash suffix; the full normalized identity still binds the shard digest.
 - Spool, shard, partition-marker, and import writes require a pre-existing
   trusted root. The supplied root pathname must already be absolute and
   canonical, and its native real path must be identical, so roots reached
   through symlinks or junctions are rejected. Callers create and permission this
-  root before invoking the ledger.
+  root before invoking the ledger. Finalization validates caller and environment
+  output-root strings in that original form before any path normalization.
 - Under that trusted-root model, writers create descendant directories one
   component at a time and reject links or special entries. Final files are
   hard-linked create-only from a fully written and fsynced sibling staging file,
@@ -124,6 +132,11 @@ confidential-identifier checks as every other durable machine-text field.
   process.
 - Shard imports begin at `ledger/v1/events`; unrelated source-tree entries are
   never traversed. Links and special entries inside that subtree fail closed.
+  Imports cap relative depth at 6, directory entries at 512, directories at 512,
+  files at 256, each shard at 2 MiB, 2048 lines, and 1024 events, and each batch
+  at 16 MiB and 4096 events. Every source shard is read once, then the complete
+  bounded batch is parsed and canonicalized before any final destination shard
+  is published.
 
 ## Privacy Boundary
 
@@ -139,9 +152,11 @@ addresses, and internal hostname suffixes. Form-style `+` credential separators
 are rejected when followed by a credential-shaped value. Percent-encoded octets
 are rejected from durable identifiers and paths rather than decoded into
 potentially confidential forms. URL checks normalize scheme-specific paths,
-userinfo, and file URLs; host checks normalize case, trailing-dot FQDNs, and
-compressed IPv6 loopback and private IPv4-embedded forms while all durable text
-remains restricted to field-specific machine vocabularies.
+userinfo, file URLs, and numeric URL host aliases. Host checks normalize case,
+trailing-dot FQDNs, and compressed IPv6 loopback and private IPv4-embedded forms,
+including partially compressed forms embedded in unbracketed machine text,
+while all durable text remains restricted to field-specific machine
+vocabularies.
 
 Every event records a privacy classification, redaction version, and fields
 dropped. The checked-in JSON schema is
