@@ -114,6 +114,11 @@ Maintainer commands can opt PRs into `autofix` or `automerge`, dispatch a fresh
 exact-head review, and run a bounded Codex review/fix loop. Codex handles the
 code repair and local validation loop; deterministic executor steps own every
 GitHub mutation, branch push, label update, and final merge gate.
+The executor cannot choose the privileged proof surface: a credential-free
+validator rebuilds the required staged plan from the sealed source, patch, and
+current target policy, revalidates every command, and binds the accepted
+commit/tree to a narrow publication receipt. Publication retries accept only
+the exact authorized remote commit and restore the required replacement labels.
 
 Operators can create repair-only jobs for one author's blocked pull requests in
 one repository with `pnpm repair:pr-intake -- --repo owner/name --author login`,
@@ -271,8 +276,9 @@ Common commands:
   closes the item and any open same-repo targets explicitly referenced in the
   command text.
 - `clawsweeper:human-review` and `clawsweeper:manual-only` stop automatic PR
-  repair and issue-to-PR mutation. Issue implementation rechecks the live issue
-  immediately before every branch push and before PR creation.
+  repair and issue-to-PR mutation. The trusted publisher rechecks the live
+  source item immediately before every branch push, PR create, comment, label,
+  or close mutation.
 
 Only maintainers are accepted for write actions. The router checks repository
 collaborator permission (`admin`, `maintain`, or `write`) and falls back to

@@ -53,6 +53,13 @@ checkpoint, and status-only commits are intentionally omitted.
   deterministic publication metadata, and receipt-bound post-flight PR.
   Failed and cancelled execution or validation remains target report-only,
   while retryable reports can requeue through a central-repository-only token.
+- Rebuilt every staged repair proof plan from sealed source and patch identity
+  plus current target policy before replay, revalidated every replayed command,
+  made exact-commit publication retries idempotent across partial push/comment
+  failures, restored required replacement labels, honored late pause labels
+  before each mutation, derived terminal workflow state from the generated
+  post-flight report, and skipped merge-only App identity probes when merge is
+  disabled.
 - Replaced the unsupported GitHub installation identity probe with pinned
   `create-github-app-token` App slug and installation outputs plus App IDs
   derived from the authenticated slug, rejected
