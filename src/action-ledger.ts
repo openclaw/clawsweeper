@@ -4,10 +4,11 @@ import path from "node:path";
 
 import {
   assertDirectoryNoLinks,
-  assertSafeWriteTarget,
+  linkFileExclusiveNoFollow,
   prepareSafeWriteTarget,
   readUtf8FileIfExistsNoFollow,
   readUtf8FileNoFollow,
+  removeFileNoFollow,
   safeSiblingWriteTarget,
   writeUtf8FileExclusiveNoFollow,
   type SafeWriteTarget,
@@ -374,15 +375,16 @@ export const ACTION_EVENT_ATTRIBUTE_KEYS = [
 
 export const ACTION_EVENT_MACHINE_TEXT_PATTERN_SOURCE = "^[A-Za-z0-9][A-Za-z0-9_.:/@+\\-]*$";
 export const ACTION_EVENT_CONFIDENTIAL_IDENTIFIER_PATTERN_SOURCES = [
-  "/(?:Users|home|private|tmp)/",
-  "\\\\Users\\\\",
+  "/(?:[Uu][Ss][Ee][Rr][Ss]|[Hh][Oo][Mm][Ee]|[Pp][Rr][Ii][Vv][Aa][Tt][Ee]|[Tt][Mm][Pp])/",
+  "\\\\[Uu][Ss][Ee][Rr][Ss]\\\\",
   "BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY",
-  "(?:gh[pousr]_[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{16,}|sk-[A-Za-z0-9_-]{16,})",
+  "(?:[Gg][Hh][PpOoUuSsRr]_[A-Za-z0-9]{16,}|[Gg][Ii][Tt][Hh][Uu][Bb]_[Pp][Aa][Tt]_[A-Za-z0-9_]{16,}|[Ss][Kk]-[A-Za-z0-9_-]{16,})",
   "eyJ[A-Za-z0-9_-]{5,}\\.eyJ[A-Za-z0-9_-]{5,}\\.[A-Za-z0-9_-]{16,}",
-  "(?:[Bb]earer|[Aa]uthorization|api[_-]?(?:key|token)|access[_-]?token|client[_-]?secret|cloudflare[_-]?(?:api[_-]?)?(?:key|token))[:=_-][A-Za-z0-9._~-]{16,}",
+  "(?:[Bb][Ee][Aa][Rr][Ee][Rr]|[Aa][Uu][Tt][Hh][Oo][Rr][Ii][Zz][Aa][Tt][Ii][Oo][Nn]|[Aa][Pp][Ii][_-]?(?:[Kk][Ee][Yy]|[Tt][Oo][Kk][Ee][Nn])|[Aa][Cc][Cc][Ee][Ss][Ss][_-]?[Tt][Oo][Kk][Ee][Nn]|[Cc][Ll][Ii][Ee][Nn][Tt][_-]?[Ss][Ee][Cc][Rr][Ee][Tt]|[Cc][Ll][Oo][Uu][Dd][Ff][Ll][Aa][Rr][Ee][_-]?(?:[Aa][Pp][Ii][_-]?)?(?:[Kk][Ee][Yy]|[Tt][Oo][Kk][Ee][Nn]))(?:\\s+|\\s*[:=_-]\\s*)[A-Za-z0-9._~-]{16,}",
   "[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}",
   "(?:^|[/:@])(?:localhost|(?:[A-Za-z0-9-]+\\.)+(?:local|localhost|internal|corp|lan|home(?:\\.arpa)?)|(?:internal|intranet)\\.(?:[A-Za-z0-9-]+\\.)*[A-Za-z0-9-]+)(?:$|[/:])",
   "(?:^|[/:@])(?:10(?:\\.[0-9]{1,3}){3}|127(?:\\.[0-9]{1,3}){3}|169\\.254(?:\\.[0-9]{1,3}){2}|192\\.168(?:\\.[0-9]{1,3}){2}|172\\.(?:1[6-9]|2[0-9]|3[01])(?:\\.[0-9]{1,3}){2})(?:$|[/:])",
+  "(?:^|[\\[/:@])(?:(?:::1)|(?:[Ff][CcDd][0-9A-Fa-f]{2}|[Ff][Ee][89AaBb][0-9A-Fa-f]):[0-9A-Fa-f:]+)(?:\\]|$|[/:])",
 ] as const;
 
 const POSITIVE_INTEGER_ATTRIBUTE_KEYS = new Set<ActionEventAttributeKey>([
@@ -460,6 +462,10 @@ const HIGH_RISK_CREDENTIAL_FIELD_NAMES = new Set([
   "accesstoken",
   "apikey",
   "apitoken",
+  "authtoken",
+  "githubtoken",
+  "refreshtoken",
+  "cloudflareapitoken",
   "privatekey",
   "clientsecret",
 ]);
@@ -1496,8 +1502,7 @@ function writeCreateOnlyFile(
   try {
     writeUtf8FileExclusiveNoFollow(temporary, content);
     try {
-      assertSafeWriteTarget(destination);
-      fs.linkSync(temporary.path, destination.path);
+      linkFileExclusiveNoFollow(temporary, destination);
       return "created";
     } catch (error) {
       if (!isAlreadyExistsError(error)) throw error;
@@ -1505,17 +1510,21 @@ function writeCreateOnlyFile(
       return "unchanged";
     }
   } finally {
-    fs.rmSync(temporary.path, { force: true });
+    removeFileNoFollow(temporary);
   }
 }
 
 function relativeDataPath(value: string, label: string): string {
-  const normalized = boundedText(value, label, 512).replaceAll("\\", "/").replace(/^\.\//, "");
+  const raw = boundedText(value, label, 512);
+  if (/^(?:[\\/]|[A-Za-z]:[\\/])/.test(raw) || raw.includes("\\")) {
+    throw new Error(`${label} must be a repository-relative path`);
+  }
+  const normalized = raw.replace(/^\.\//, "");
   if (
     !normalized ||
+    normalized === "." ||
     path.posix.isAbsolute(normalized) ||
-    /^[A-Za-z]:\//.test(normalized) ||
-    normalized.split("/").includes("..")
+    normalized.split("/").some((segment) => segment === "." || segment === "..")
   ) {
     throw new Error(`${label} must be a repository-relative path`);
   }
@@ -1557,11 +1566,11 @@ function requiredRepo(value: string): string {
 
 function machineText(value: string, label: string, maxLength = 256): string {
   const normalized = boundedText(value, label, maxLength);
-  if (!MACHINE_TEXT_PATTERN.test(normalized)) {
-    throw new Error(`${label} must be machine-readable text`);
-  }
   if (containsConfidentialIdentifier(normalized)) {
     throw new Error(`${label} contains a confidential identifier`);
+  }
+  if (!MACHINE_TEXT_PATTERN.test(normalized)) {
+    throw new Error(`${label} must be machine-readable text`);
   }
   return normalized;
 }
@@ -1711,7 +1720,11 @@ function canonicalJsonValue(
 ): unknown {
   if (value === null || typeof value === "string" || typeof value === "boolean") return value;
   if (typeof value === "number") {
-    if (!Number.isFinite(value) || Object.is(value, -0)) {
+    if (
+      !Number.isFinite(value) ||
+      Object.is(value, -0) ||
+      (Number.isInteger(value) && !Number.isSafeInteger(value))
+    ) {
       throw new Error(`action event data contains a lossy number at ${location}`);
     }
     return value;

@@ -62,6 +62,106 @@ function createDirectoryLink(target: string, link: string): void {
   fs.symlinkSync(target, link, process.platform === "win32" ? "junction" : "dir");
 }
 
+type TestJsonSchema = Record<string, unknown>;
+
+function schemaAccepts(root: TestJsonSchema, value: unknown): boolean {
+  return schemaNodeAccepts(root, root, value);
+}
+
+function schemaNodeAccepts(root: TestJsonSchema, node: TestJsonSchema, value: unknown): boolean {
+  const reference = node.$ref;
+  if (typeof reference === "string") {
+    if (!reference.startsWith("#/$defs/")) return false;
+    const name = reference.slice("#/$defs/".length);
+    const definition = (root.$defs as Record<string, TestJsonSchema> | undefined)?.[name];
+    if (!definition || !schemaNodeAccepts(root, definition, value)) return false;
+  }
+  const allOf = node.allOf as TestJsonSchema[] | undefined;
+  if (allOf && !allOf.every((entry) => schemaNodeAccepts(root, entry, value))) return false;
+  const anyOf = node.anyOf as TestJsonSchema[] | undefined;
+  if (anyOf && !anyOf.some((entry) => schemaNodeAccepts(root, entry, value))) return false;
+  const oneOf = node.oneOf as TestJsonSchema[] | undefined;
+  if (oneOf && oneOf.filter((entry) => schemaNodeAccepts(root, entry, value)).length !== 1) {
+    return false;
+  }
+  const excluded = node.not as TestJsonSchema | undefined;
+  if (excluded && schemaNodeAccepts(root, excluded, value)) return false;
+  if ("const" in node && !sameJsonValue(value, node.const)) return false;
+  const allowed = node.enum as unknown[] | undefined;
+  if (allowed && !allowed.some((entry) => sameJsonValue(value, entry))) return false;
+
+  const type = node.type;
+  if (typeof type === "string" && !matchesSchemaType(type, value)) return false;
+  if (Array.isArray(type) && !type.some((entry) => matchesSchemaType(String(entry), value))) {
+    return false;
+  }
+
+  if (typeof value === "string") {
+    if (typeof node.minLength === "number" && value.length < node.minLength) return false;
+    if (typeof node.maxLength === "number" && value.length > node.maxLength) return false;
+    if (typeof node.pattern === "string" && !new RegExp(node.pattern).test(value)) return false;
+    if (node.format === "date-time" && !Number.isFinite(Date.parse(value))) return false;
+    if (node.format === "uri") {
+      try {
+        new URL(value);
+      } catch {
+        return false;
+      }
+    }
+  }
+
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) return false;
+    if (typeof node.minimum === "number" && value < node.minimum) return false;
+    if (typeof node.maximum === "number" && value > node.maximum) return false;
+  }
+
+  if (Array.isArray(value)) {
+    if (typeof node.maxItems === "number" && value.length > node.maxItems) return false;
+    if (
+      node.uniqueItems === true &&
+      new Set(value.map((entry) => JSON.stringify(entry))).size !== value.length
+    ) {
+      return false;
+    }
+    const items = node.items as TestJsonSchema | undefined;
+    if (items && !value.every((entry) => schemaNodeAccepts(root, items, entry))) return false;
+  }
+
+  if (value !== null && typeof value === "object" && !Array.isArray(value)) {
+    const record = value as Record<string, unknown>;
+    const required = node.required as string[] | undefined;
+    if (required && required.some((key) => !Object.hasOwn(record, key))) return false;
+    const properties = (node.properties as Record<string, TestJsonSchema> | undefined) ?? {};
+    if (
+      node.additionalProperties === false &&
+      Object.keys(record).some((key) => !properties[key])
+    ) {
+      return false;
+    }
+    for (const [key, entry] of Object.entries(record)) {
+      const property = properties[key];
+      if (property && !schemaNodeAccepts(root, property, entry)) return false;
+    }
+  }
+
+  return true;
+}
+
+function matchesSchemaType(type: string, value: unknown): boolean {
+  if (type === "null") return value === null;
+  if (type === "array") return Array.isArray(value);
+  if (type === "object")
+    return value !== null && typeof value === "object" && !Array.isArray(value);
+  if (type === "integer") return typeof value === "number" && Number.isInteger(value);
+  if (type === "number") return typeof value === "number";
+  return typeof value === type;
+}
+
+function sameJsonValue(left: unknown, right: unknown): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
 function reviewEventKey(
   scope = "review.completed",
   identity: Record<string, unknown> = {
@@ -189,6 +289,8 @@ test("identity hashing rejects values outside the canonical JSON domain", () => 
     Number.POSITIVE_INFINITY,
     Number.NEGATIVE_INFINITY,
     -0,
+    Number.MAX_SAFE_INTEGER + 1,
+    Number.MAX_SAFE_INTEGER + 2,
     new Date("2026-07-12T00:00:00Z"),
     new IdentityClass(),
     undefined,
@@ -209,12 +311,24 @@ test("identity hashing rejects values outside the canonical JSON domain", () => 
   for (const identity of invalidIdentities) {
     assert.throws(() => actionIdempotencyKey(identity), /action event data contains/);
   }
-  for (const identity of [{ token: "opaque" }, { api_key: "opaque" }, { clientSecret: "opaque" }]) {
+  for (const identity of [
+    { token: "opaque" },
+    { api_key: "opaque" },
+    { clientSecret: "opaque" },
+    { authToken: "opaque" },
+    { githubToken: "opaque" },
+    { refresh_token: "opaque" },
+    { cloudflareApiToken: "opaque" },
+  ]) {
     assert.throws(
       () => actionIdempotencyKey(identity),
       /identity contains a high-risk credential field/,
     );
   }
+  assert.match(
+    actionIdempotencyKey({ runId: String(Number.MAX_SAFE_INTEGER + 2) }),
+    /^[a-f0-9]{64}$/,
+  );
   assert.throws(() => {
     const cycle: { self?: unknown } = {};
     cycle.self = cycle;
@@ -420,6 +534,7 @@ test("runtime and schema apply the same machine-text privacy boundary", () => {
     `Bearer:${"A".repeat(32)}`,
     `api_key:${"A".repeat(32)}`,
     `cloudflare_api_token:${"A".repeat(32)}`,
+    `fc00::1`,
     "service.internal",
     "internal.example.com",
     "https://host.docker.internal/api",
@@ -494,6 +609,60 @@ test("spool and shard writes reject symlinked parent directories", () => {
   );
   assert.deepEqual(fs.readdirSync(shardOutside), []);
 });
+
+test(
+  "writes fail closed when a parent is swapped during open",
+  {
+    skip:
+      process.platform === "win32"
+        ? "requires POSIX directory rename and symlink semantics"
+        : false,
+  },
+  () => {
+    const root = tempRoot();
+    const outside = tempRoot();
+    const event = createActionEvent(reviewInput());
+    const relativePath = actionEventSpoolRelativePath(event.subject.repository, event.event_id);
+    const eventParent = path.dirname(path.join(root, relativePath));
+    const savedParent = `${eventParent}.saved`;
+    const originalOpenSync = fs.openSync;
+    let swapped = false;
+
+    fs.openSync = ((filePath, flags, mode) => {
+      if (
+        !swapped &&
+        typeof filePath === "string" &&
+        path.dirname(filePath) === eventParent &&
+        filePath.endsWith(".tmp")
+      ) {
+        swapped = true;
+        fs.renameSync(eventParent, savedParent);
+        createDirectoryLink(outside, eventParent);
+        try {
+          return originalOpenSync(filePath, flags, mode);
+        } finally {
+          fs.unlinkSync(eventParent);
+          fs.renameSync(savedParent, eventParent);
+        }
+      }
+      return originalOpenSync(filePath, flags, mode);
+    }) as typeof fs.openSync;
+    try {
+      assert.throws(
+        () => writeActionEvent(root, reviewInput()),
+        /missing action event|changed action event/,
+      );
+    } finally {
+      fs.openSync = originalOpenSync;
+    }
+
+    assert.equal(swapped, true);
+    assert.equal(fs.existsSync(path.join(root, relativePath)), false);
+    const leaked = fs.readdirSync(outside).map((entry) => path.join(outside, entry));
+    assert.ok(leaked.length <= 1);
+    for (const filePath of leaked) assert.equal(fs.statSync(filePath).size, 0);
+  },
+);
 
 test("an event key cannot be reused for different semantic content", () => {
   const root = tempRoot();
@@ -902,6 +1071,7 @@ test("durable privacy guards reject raw text, local paths, secrets, and invalid 
     `github_pat_${"A".repeat(24)}`,
     `eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.${"A".repeat(32)}`,
     `Bearer:${"A".repeat(32)}`,
+    `bEaReR ${"A".repeat(32)}`,
     `cloudflare_api_token:${"A".repeat(32)}`,
     "service.internal",
     "internal.example.com",
@@ -973,6 +1143,10 @@ test("durable privacy guards reject raw text, local paths, secrets, and invalid 
     "./",
     ".//Users/example/private.txt",
     "./C:/Users/example/private.txt",
+    `records/Bearer ${"A".repeat(32)}.json`,
+    "C:/USERS/Private/secret.txt",
+    "records/C:/USERS/Private/secret.txt",
+    "\\\\server\\share\\report.json",
     `records/github_pat_${"A".repeat(24)}.md`,
   ]) {
     assert.throws(
@@ -989,6 +1163,104 @@ test("durable privacy guards reject raw text, local paths, secrets, and invalid 
         ),
       /repository-relative path|confidential identifier/,
     );
+  }
+});
+
+test("checked-in schema rejects values rejected by runtime normalization", () => {
+  const schema = JSON.parse(
+    fs.readFileSync(path.join(process.cwd(), "schema", "state-ledger-event.schema.json"), "utf8"),
+  ) as TestJsonSchema;
+  const valid = createActionEvent(reviewInput());
+  assert.equal(schemaAccepts(schema, valid), true);
+
+  const cases: Array<{
+    label: string;
+    mutate: (event: Record<string, unknown>) => void;
+    runtime: () => unknown;
+  }> = [
+    {
+      label: "private IPv6",
+      mutate: (event) => {
+        (event.action as Record<string, unknown>).status = "fc00::1";
+      },
+      runtime: () =>
+        createActionEvent(
+          reviewInput({
+            action: {
+              name: "review",
+              status: "fc00::1",
+              retryable: false,
+              mutation: false,
+            },
+          }),
+        ),
+    },
+    {
+      label: "dot-only relative path",
+      mutate: (event) => {
+        ((event.evidence as Array<Record<string, unknown>>)[0] as Record<string, unknown>)[
+          "report_path"
+        ] = "./";
+      },
+      runtime: () =>
+        createActionEvent(reviewInput({ evidence: [{ kind: "review", reportPath: "./" }] })),
+    },
+    {
+      label: "UNC relative path",
+      mutate: (event) => {
+        ((event.evidence as Array<Record<string, unknown>>)[0] as Record<string, unknown>)[
+          "report_path"
+        ] = "\\\\server\\share\\report.json";
+      },
+      runtime: () =>
+        createActionEvent(
+          reviewInput({
+            evidence: [{ kind: "review", reportPath: "\\\\server\\share\\report.json" }],
+          }),
+        ),
+    },
+    {
+      label: "uppercase Windows private path",
+      mutate: (event) => {
+        ((event.evidence as Array<Record<string, unknown>>)[0] as Record<string, unknown>)[
+          "report_path"
+        ] = "records/C:/USERS/Private/secret.txt";
+      },
+      runtime: () =>
+        createActionEvent(
+          reviewInput({
+            evidence: [{ kind: "review", reportPath: "records/C:/USERS/Private/secret.txt" }],
+          }),
+        ),
+    },
+    {
+      label: "whitespace bearer credential",
+      mutate: (event) => {
+        ((event.evidence as Array<Record<string, unknown>>)[0] as Record<string, unknown>)[
+          "report_path"
+        ] = `records/Bearer ${"A".repeat(32)}.json`;
+      },
+      runtime: () =>
+        createActionEvent(
+          reviewInput({
+            evidence: [{ kind: "review", reportPath: `records/Bearer ${"A".repeat(32)}.json` }],
+          }),
+        ),
+    },
+    {
+      label: "unsafe integer",
+      mutate: (event) => {
+        event.phase_seq = Number.MAX_SAFE_INTEGER + 1;
+      },
+      runtime: () => createActionEvent(reviewInput({ phaseSeq: Number.MAX_SAFE_INTEGER + 1 })),
+    },
+  ];
+
+  for (const entry of cases) {
+    const candidate = structuredClone(valid) as unknown as Record<string, unknown>;
+    entry.mutate(candidate);
+    assert.equal(schemaAccepts(schema, candidate), false, entry.label);
+    assert.throws(entry.runtime, undefined, entry.label);
   }
 });
 
