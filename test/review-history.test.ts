@@ -262,13 +262,14 @@ test("state report prior-review identity matches the marked durable comment", ()
     101,
     renderReviewCommentFromReport(unsyncedReport, "none"),
   );
-  const digest = createHash("sha256").update(body).digest("hex");
+  const persistedBody = `\n${body}\n\n`;
+  const digest = createHash("sha256").update(body.trim()).digest("hex");
   const report = unsyncedReport.replace(/^---\n/, `---\nreview_comment_sha256: ${digest}\n`);
   const liveReview = extractLatestClawSweeperReviewForTest(
     [
       {
         id: 101,
-        body,
+        body: persistedBody,
         updated_at: "2026-06-24T12:00:00.000Z",
         user: { login: "clawsweeper[bot]" },
       },

@@ -40,8 +40,9 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Fixed
 
-- Bound structural, semantic, and content review reuse to the exact persisted
-  durable-comment body hash under the acquired lease, preserving label
+- Bound structural, semantic, and content review reuse to the canonical
+  persisted durable-comment body hash under the acquired lease, normalizing
+  surrounding whitespace while preserving label
   transitions and linked-item render context; versioned security scanner
   directive hashing, isolated durable-comment refresh failures to the affected
   item, rejected malformed eligibility records, and skipped unreachable

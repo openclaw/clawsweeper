@@ -2602,6 +2602,10 @@ function sha256(text: string): string {
   return createHash("sha256").update(text).digest("hex");
 }
 
+function reviewCommentBodyDigest(body: string): string {
+  return sha256(body.trim());
+}
+
 let reviewPromptTemplateCache: string | undefined;
 let reviewDecisionSchemaCache: string | undefined;
 let prCloseCoverageProofPromptTemplateCache: string | undefined;
@@ -4803,7 +4807,7 @@ function extractLatestClawSweeperReview(
   const earlierReviewCycles = currentCycle ? history.cycles : history.cycles.slice(0, -1);
   return {
     status: previousReviewStatus(body),
-    verdictDigest: sha256(body),
+    verdictDigest: reviewCommentBodyDigest(body),
     reviewedAt: previousReviewReviewedAt(body) ?? latestCompletedCycle?.reviewedAt ?? null,
     reviewedSha:
       markerAttribute(verdictMarker, "sha") ??
@@ -18560,7 +18564,7 @@ function reviewCommentHashMatches(
   ) {
     return false;
   }
-  return storedHash === sha256(actual);
+  return storedHash === reviewCommentBodyDigest(actual);
 }
 
 const PATCHABLE_REVIEW_COMMENT_AUTHORS = new Set(
@@ -18667,7 +18671,11 @@ function updateReviewCommentMetadata(
   comment: Record<string, unknown> | undefined,
   body: string,
 ): string {
-  let next = replaceFrontMatterValue(markdown, "review_comment_sha256", sha256(body));
+  let next = replaceFrontMatterValue(
+    markdown,
+    "review_comment_sha256",
+    reviewCommentBodyDigest(body),
+  );
   const id = commentId(comment);
   const url = commentUrl(comment);
   if (id !== null) next = replaceFrontMatterValue(next, "review_comment_id", String(id));
@@ -23823,7 +23831,7 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
         continue;
       }
     }
-    let reviewCommentHash = sha256(markedReviewComment);
+    let reviewCommentHash = reviewCommentBodyDigest(markedReviewComment);
     const allowApplyCloseActionUpgrade = isUpgradedCloseCandidate;
     let existingReviewCommentMatches = commentBodyMatches(
       existingReviewComment,
@@ -23909,7 +23917,7 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
           isCloseProposal = false;
           reviewComment = renderReviewCommentFromReport(markdown, closeReason, renderOptions);
           markedReviewComment = markedReviewCommentForApply(reviewComment);
-          reviewCommentHash = sha256(markedReviewComment);
+          reviewCommentHash = reviewCommentBodyDigest(markedReviewComment);
           existingReviewCommentMatches = commentBodyMatches(
             existingReviewComment,
             markedReviewComment,
@@ -23982,7 +23990,7 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
       if (!wasStaleCanonicalCommentSyncPending && staleCanonicalCommentSyncPending) {
         reviewComment = renderCurrentReviewComment();
         markedReviewComment = markedReviewCommentForApply(reviewComment);
-        reviewCommentHash = sha256(markedReviewComment);
+        reviewCommentHash = reviewCommentBodyDigest(markedReviewComment);
         existingReviewCommentMatches = commentBodyMatches(
           existingReviewComment,
           markedReviewComment,
