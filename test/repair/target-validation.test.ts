@@ -897,7 +897,7 @@ test("validation environment defaults resolve without shell execution", () => {
         "qa",
         "--provider",
         "${PROVIDER:-live}",
-        "--model=${MODEL:-openai/test-model}",
+        "--model=${MODEL:-example/model-test}",
       ],
       { MODEL: "" },
     ),
@@ -909,7 +909,7 @@ test("validation environment defaults resolve without shell execution", () => {
       "qa",
       "--provider",
       "mock",
-      "--model=openai/test-model",
+      "--model=example/model-test",
     ],
   );
   assert.deepEqual(
@@ -2780,14 +2780,14 @@ test("staged target proof resolves environment defaults before direct spawn", ()
   });
   fs.writeFileSync(
     path.join(cwd, "qa.js"),
-    "if (process.argv[2] !== 'openai/test-model') process.exit(9);\n",
+    "if (process.argv[2] !== 'example/model-test') process.exit(9);\n",
   );
   git(cwd, "add", ".");
   git(cwd, "commit", "-m", "initial");
   attachOrigin(cwd);
 
   const result = runStagedValidationProof(
-    ["env MODEL= pnpm qa ${MODEL:-openai/test-model}"],
+    ["env MODEL= pnpm qa ${MODEL:-example/model-test}"],
     cwd,
     validationOptions("steipete/example", {
       toolchain: {
@@ -2801,7 +2801,7 @@ test("staged target proof resolves environment defaults before direct spawn", ()
   assert.equal(result.trace.status, "passed");
   assert.equal(result.trace.validated_head_sha, git(cwd, "rev-parse", "HEAD"));
   assert.equal(result.trace.validated_base_sha, git(cwd, "rev-parse", "origin/main"));
-  assert.equal(result.commands.includes("env MODEL= pnpm qa ${MODEL:-openai/test-model}"), true);
+  assert.equal(result.commands.includes("env MODEL= pnpm qa ${MODEL:-example/model-test}"), true);
 });
 
 test("staged target proof validates and digests resolved environment argv", () => {
@@ -2825,12 +2825,12 @@ test("staged target proof validates and digests resolved environment argv", () =
   );
 
   const templated = buildTargetValidationProofPlan(
-    ["env MODEL= pnpm qa ${MODEL:-openai/test-model}"],
+    ["env MODEL= pnpm qa ${MODEL:-example/model-test}"],
     cwd,
     options,
   );
   const concrete = buildTargetValidationProofPlan(
-    ["env MODEL= pnpm qa openai/test-model"],
+    ["env MODEL= pnpm qa example/model-test"],
     cwd,
     options,
   );
