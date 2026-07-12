@@ -137,12 +137,6 @@ export async function handleGitHubWebhook({
     itemNumber: accepted.itemNumber,
     sourceCommentId: accepted.commentId,
   });
-  await addReaction({
-    token: targetToken,
-    repo: accepted.targetRepo,
-    commentId: accepted.commentId,
-    content: "eyes",
-  });
   await dispatchCommentRouter({
     token: dispatchToken,
     targetRepo: accepted.targetRepo,
@@ -679,29 +673,6 @@ async function listFastAckComments({
   return comments;
 }
 
-async function addReaction({
-  token,
-  repo,
-  commentId,
-  content,
-}: {
-  token: string;
-  repo: string;
-  commentId: number;
-  content: string;
-}) {
-  try {
-    await githubFetch({
-      token,
-      path: `/repos/${repo}/issues/comments/${commentId}/reactions`,
-      method: "POST",
-      body: { content },
-    });
-  } catch (error) {
-    if (!/\b422\b|already exists/i.test(String(error))) throw error;
-  }
-}
-
 async function dispatchItemReview({
   token,
   accepted,
@@ -770,7 +741,6 @@ async function dispatchCommentRouter({
         comment_event_auth: "github_webhook_v1",
         ...(commentUpdatedAt ? { comment_updated_at: commentUpdatedAt } : {}),
         ...(commentBodyDigest ? { comment_body_sha256: commentBodyDigest } : {}),
-        max_comments: "1",
       },
     },
   });

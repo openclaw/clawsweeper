@@ -5313,9 +5313,13 @@ test("hosted webhook reuses existing fast ack comments on redelivery", async () 
         comment_event_auth: "github_webhook_v1",
         comment_updated_at: "2026-07-12T20:00:00Z",
         comment_body_sha256: createHash("sha256").update("@clawsweeper status").digest("hex"),
-        max_comments: "1",
       },
     });
+    assert.equal(
+      Object.keys((dispatchBody as { client_payload: Record<string, unknown> }).client_payload)
+        .length,
+      10,
+    );
     await new Promise((resolve) => setTimeout(resolve, 0));
   } finally {
     globalThis.fetch = originalFetch;
@@ -5431,7 +5435,7 @@ test("hosted webhook coalesces concurrent duplicate fast ack comments", async ()
     assert.deepEqual(await leftResponse.json(), { ok: true, status_comment_id: 777 });
     assert.deepEqual(await rightResponse.json(), { ok: true, status_comment_id: 777 });
     assert.equal(fastAckPosts, 1);
-    assert.equal(reactions, 2);
+    assert.equal(reactions, 0);
     assert.equal(comments.length, 1);
     assert.match(comments[0]?.body || "", /clawsweeper-command-ack:456/);
     assert.equal(dispatchBodies.length, 2);
@@ -5555,9 +5559,12 @@ test("hosted webhook removes duplicate fast ack comments after concurrent redeli
         status_comment_id: 777,
         source_event: "issue_comment",
         source_action: "created",
-        max_comments: "1",
       },
     });
+    assert.ok(
+      Object.keys((dispatchBody as { client_payload: Record<string, unknown> }).client_payload)
+        .length <= 10,
+    );
     await new Promise((resolve) => setTimeout(resolve, 0));
   } finally {
     globalThis.fetch = originalFetch;

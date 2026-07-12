@@ -1183,12 +1183,6 @@ async function githubWebhook(request, env, ctx) {
     itemNumber: commentDecision.itemNumber,
     sourceCommentId: commentDecision.commentId,
   });
-  await addIssueCommentReaction({
-    token: targetToken,
-    repo: commentDecision.targetRepo,
-    commentId: commentDecision.commentId,
-    content: "eyes",
-  });
   await dispatchClawsweeperComment({
     token: dispatchToken,
     decision: commentDecision,
@@ -2373,19 +2367,6 @@ function fastAckMarker(sourceCommentId) {
   return `<!-- clawsweeper-command-ack:${sourceCommentId} -->`;
 }
 
-async function addIssueCommentReaction({ token, repo, commentId, content }) {
-  await githubTokenJson({
-    token,
-    path: `/repos/${repo}/issues/comments/${commentId}/reactions`,
-    method: "POST",
-    body: { content },
-    errorLabel: "ClawSweeper comment reaction",
-  }).catch((error) => {
-    if (!String(error.message || "").includes("422")) throw error;
-    return null;
-  });
-}
-
 async function dispatchClawsweeperItem({
   token,
   decision,
@@ -2464,7 +2445,6 @@ async function dispatchClawsweeperComment({ token, decision, statusCommentId }) 
         source_event: "issue_comment",
         source_action: decision.sourceAction,
         ...exactVersion,
-        max_comments: "1",
       },
     },
     errorLabel: "ClawSweeper comment dispatch",

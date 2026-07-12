@@ -679,6 +679,7 @@ test("concurrent duplicate command webhooks converge on one fast ack comment", a
     [];
   let nextCommentId = 9001;
   let fastAckPosts = 0;
+  let reactions = 0;
   let dispatches = 0;
   const dispatchBodies: Array<Record<string, unknown>> = [];
   process.env.CLAWSWEEPER_APP_ID = "12345";
@@ -717,6 +718,7 @@ test("concurrent duplicate command webhooks converge on one fast ack comment", a
       return jsonResponse(comment);
     }
     if (path === "/repos/openclaw/openclaw/issues/comments/456/reactions" && method === "POST") {
+      reactions += 1;
       return jsonResponse({ id: 1 });
     }
     if (path === "/repos/openclaw/clawsweeper/dispatches" && method === "POST") {
@@ -755,6 +757,7 @@ test("concurrent duplicate command webhooks converge on one fast ack comment", a
     assert.deepEqual(left, { statusCode: 202, body: { ok: true, status_comment_id: 9001 } });
     assert.deepEqual(right, { statusCode: 202, body: { ok: true, status_comment_id: 9001 } });
     assert.equal(fastAckPosts, 1);
+    assert.equal(reactions, 0);
     assert.equal(dispatches, 2);
     assert.deepEqual(
       dispatchBodies.map((body) => body.client_payload),
@@ -772,8 +775,12 @@ test("concurrent duplicate command webhooks converge on one fast ack comment", a
           .createHash("sha256")
           .update("@clawsweeper re-review")
           .digest("hex"),
-        max_comments: "1",
       })),
+    );
+    assert.ok(
+      dispatchBodies.every(
+        (body) => Object.keys(body.client_payload as Record<string, unknown>).length <= 10,
+      ),
     );
     assert.equal(comments.length, 1);
     assert.match(comments[0]?.body ?? "", /clawsweeper-command-ack:456/);
