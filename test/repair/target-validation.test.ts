@@ -1514,6 +1514,29 @@ test("bun-based target toolchain installs deps and runs configured validation", 
   ]);
 });
 
+test("bun lockfile fallback keeps lifecycle hooks disabled", () => {
+  const cwd = gitBunPackageFixture({ check: "bun x tsc --noEmit" });
+  git(cwd, "add", ".");
+  git(cwd, "commit", "-m", "initial");
+  attachOrigin(cwd);
+
+  const { binDir, logPath } = fakeBunFixture({ failFrozenInstall: true });
+  withPathPrefix(binDir, () => {
+    prepareTargetToolchain(cwd, {
+      ...validationOptions("openclaw/clawhub", clawhubToolchain()),
+      installTargetDeps: true,
+      installTimeoutMs: FAKE_TOOLCHAIN_TIMEOUT_MS,
+      setupTimeoutMs: FAKE_TOOLCHAIN_TIMEOUT_MS,
+    });
+  });
+
+  assert.deepEqual(fs.readFileSync(logPath, "utf8").trim().split(/\r?\n/), [
+    "--version",
+    "install --frozen-lockfile --ignore-scripts",
+    "install --no-frozen-lockfile --ignore-scripts",
+  ]);
+});
+
 test("npm target setup without a lockfile preserves a clean proof checkout", () => {
   const cwd = gitPackageFixture({ check: "node check.js" });
   git(cwd, "add", ".");
@@ -2145,6 +2168,137 @@ for (const hiddenFlag of ["--assume-unchanged", "--skip-worktree"]) {
   });
 }
 
+for (const [name, createLink, error] of [
+  [
+    "escape",
+    (cwd) => {
+      const outside = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-symlink-outside-"));
+      const target = path.join(outside, "target.json");
+      fs.writeFileSync(target, "{}\n");
+      fs.symlinkSync(target, path.join(cwd, "tracked-config"));
+    },
+    /tracked proof input symlink escapes validation checkout: tracked-config/,
+  ],
+  [
+    "broken",
+    (cwd) => fs.symlinkSync("missing-config.json", path.join(cwd, "tracked-config")),
+    /tracked proof input symlink is broken or cyclic: tracked-config/,
+  ],
+  [
+    "cycle",
+    (cwd) => {
+      fs.symlinkSync("tracked-config-b", path.join(cwd, "tracked-config"));
+      fs.symlinkSync("tracked-config", path.join(cwd, "tracked-config-b"));
+    },
+    /tracked proof input symlink is broken or cyclic: tracked-config/,
+  ],
+]) {
+  test(
+    `staged proof rejects a tracked symlink ${name}`,
+    { skip: process.platform === "win32" },
+    () => {
+      const cwd = gitPackageFixture({ verify: "node --test" });
+      createLink(cwd);
+      git(cwd, "add", ".");
+      git(cwd, "commit", "-m", "initial");
+      attachOrigin(cwd);
+
+      assert.throws(
+        () =>
+          runStagedValidationProof(
+            ["pnpm verify"],
+            cwd,
+            validationOptions("steipete/example", {
+              toolchain: {
+                packageManager: "pnpm",
+                baseValidationCommands: [],
+                changedGate: null,
+              },
+            }),
+          ),
+        error,
+      );
+    },
+  );
+}
+
+test(
+  "staged proof binds ignored content reached through a tracked symlink",
+  { skip: process.platform === "win32" },
+  () => {
+    const cwd = gitPackageFixture({ poison: "node poison.js" });
+    fs.appendFileSync(path.join(cwd, ".gitignore"), "ignored-store/\n");
+    fs.mkdirSync(path.join(cwd, "ignored-store"), { recursive: true });
+    fs.writeFileSync(path.join(cwd, "ignored-store", "config.json"), '{"safe":true}\n');
+    fs.symlinkSync("ignored-store/config.json", path.join(cwd, "tracked-config"));
+    fs.writeFileSync(
+      path.join(cwd, "poison.js"),
+      "require('node:fs').writeFileSync('ignored-store/config.json', '{\"safe\":false}\\n');\n",
+    );
+    git(cwd, "add", ".");
+    git(cwd, "commit", "-m", "initial");
+    attachOrigin(cwd);
+
+    assert.throws(
+      () =>
+        runStagedValidationProof(
+          ["pnpm poison"],
+          cwd,
+          validationOptions("steipete/example", {
+            toolchain: {
+              packageManager: "pnpm",
+              baseValidationCommands: [],
+              changedGate: null,
+            },
+          }),
+        ),
+      /mutated checkout or proof identity/,
+    );
+  },
+);
+
+test(
+  "staged proof binds ignored target identity reached through a tracked symlink",
+  { skip: process.platform === "win32" },
+  () => {
+    const cwd = gitPackageFixture({ poison: "node poison.js" });
+    fs.appendFileSync(path.join(cwd, ".gitignore"), "ignored-store/\n");
+    fs.mkdirSync(path.join(cwd, "ignored-store"), { recursive: true });
+    fs.writeFileSync(path.join(cwd, "ignored-store", "a.json"), '{"same":true}\n');
+    fs.writeFileSync(path.join(cwd, "ignored-store", "b.json"), '{"same":true}\n');
+    fs.symlinkSync("a.json", path.join(cwd, "ignored-store", "current.json"));
+    fs.symlinkSync("ignored-store/current.json", path.join(cwd, "tracked-config"));
+    fs.writeFileSync(
+      path.join(cwd, "poison.js"),
+      [
+        "const fs = require('node:fs');",
+        "fs.unlinkSync('ignored-store/current.json');",
+        "fs.symlinkSync('b.json', 'ignored-store/current.json');",
+        "",
+      ].join("\n"),
+    );
+    git(cwd, "add", ".");
+    git(cwd, "commit", "-m", "initial");
+    attachOrigin(cwd);
+
+    assert.throws(
+      () =>
+        runStagedValidationProof(
+          ["pnpm poison"],
+          cwd,
+          validationOptions("steipete/example", {
+            toolchain: {
+              packageManager: "pnpm",
+              baseValidationCommands: [],
+              changedGate: null,
+            },
+          }),
+        ),
+      /mutated checkout or proof identity/,
+    );
+  },
+);
+
 test("staged proof budget includes checkout and recursive proof-input sealing", () => {
   const cwd = gitPackageFixture({ verify: "node --test" });
   fs.mkdirSync(path.join(cwd, "node_modules", "fixture"), { recursive: true });
@@ -2172,6 +2326,37 @@ test("staged proof budget includes checkout and recursive proof-input sealing", 
             },
           }),
         ),
+      /staged proof runtime budget exhausted before/,
+    );
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
+test("staged proof replay budget includes checkout and recursive proof-input sealing", () => {
+  const cwd = gitPackageFixture({ verify: "node --test" });
+  fs.mkdirSync(path.join(cwd, "node_modules", "fixture"), { recursive: true });
+  fs.writeFileSync(path.join(cwd, "node_modules", "fixture", "state.js"), "clean\n");
+  git(cwd, "add", ".");
+  git(cwd, "commit", "-m", "initial");
+  attachOrigin(cwd);
+  const options = validationOptions("steipete/example", {
+    proofBudgetMs: 100,
+    validationTimeoutMs: 1_000,
+    toolchain: {
+      packageManager: "pnpm",
+      baseValidationCommands: [],
+      changedGate: null,
+    },
+  });
+  const plan = buildTargetValidationProofPlan(["pnpm verify"], cwd, options);
+
+  const originalNow = Date.now;
+  let calls = 0;
+  Date.now = () => (calls++ === 0 ? 1_000 : 1_101);
+  try {
+    assert.throws(
+      () => replayStagedValidationProof(plan, cwd, options),
       /staged proof runtime budget exhausted before/,
     );
   } finally {
@@ -2835,7 +3020,7 @@ function gitBunPackageFixture(scripts) {
   return cwd;
 }
 
-function fakeBunFixture({ failRun = false } = {}) {
+function fakeBunFixture({ failRun = false, failFrozenInstall = false } = {}) {
   const binDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-fake-bun-bin-"));
   const logPath = path.join(binDir, "fake-bun.log");
   writeNodeCommandShim(
@@ -2845,6 +3030,7 @@ function fakeBunFixture({ failRun = false } = {}) {
 const fs = require("node:fs");
 fs.appendFileSync(${JSON.stringify(logPath)}, process.argv.slice(2).join(" ") + "\\n");
 if (process.argv[2] === "--version") console.log("1.3.10");
+if (${JSON.stringify(failFrozenInstall)} && process.argv[2] === "install" && process.argv.includes("--frozen-lockfile")) { console.error("lockfile is out of date"); process.exit(1); }
 if (process.argv[2] === "install") fs.mkdirSync("node_modules", { recursive: true });
 if (${JSON.stringify(failRun)} && process.argv[2] === "run") { console.error("src/base.ts:1: lint failed"); process.exit(1); }
 `,

@@ -354,13 +354,8 @@ function prepareBunToolchain({
 }) {
   // The repair execution workflow provisions pinned Bun before this path runs.
   // Keep a clear fail-fast probe so local/manual runners surface setup gaps early.
-  //
-  // ClawSweeper itself runs under pnpm (e.g. `pnpm run repair:execute-fix`), so
-  // process.env carries pnpm-injected `npm_config_user_agent=pnpm/...`. When we
-  // shell out to `bun install` for a target repo whose package.json has a
-  // Strip caller identity/lifecycle metadata from pnpm, but preserve
-  // npm-compatible install configuration such as
-  // registry, auth, proxy, userconfig, and cache settings for the target repo.
+  // ClawSweeper runs under pnpm, so strip caller lifecycle identity before Bun
+  // while preserving target registry, auth, proxy, userconfig, and cache settings.
   const bunEnv = sanitizeEnvForBun(validationEnv);
   run("bun", ["--version"], { cwd, env: bunEnv, timeoutMs: setupTimeoutMs });
   const installArgs = ["install", "--frozen-lockfile", "--ignore-scripts"];
@@ -1036,6 +1031,9 @@ function trackedWorktreeSha256(cwd: string): string {
     }
     if (stat.isSymbolicLink()) {
       updateProofDigest(digest, "symlink", fs.readlinkSync(absolutePath));
+      const targetPath = trackedProofInputSymlinkTarget(root, absolutePath, relativePath!);
+      updateProofDigest(digest, "symlink-target", proofInputRelativePath(root, targetPath));
+      updateTrackedSymlinkTargetDigest(digest, root, targetPath, relativePath!, new Set());
       continue;
     }
     if (!stat.isFile()) {
@@ -1047,6 +1045,78 @@ function trackedWorktreeSha256(cwd: string): string {
     digest.update("\0");
   }
   return digest.digest("hex");
+}
+
+function trackedProofInputSymlinkTarget(root: string, entryPath: string, relativePath: string) {
+  let targetPath: string;
+  try {
+    targetPath = fs.realpathSync(entryPath);
+  } catch {
+    throw new Error(`tracked proof input symlink is broken or cyclic: ${relativePath}`);
+  }
+  if (!isPathWithin(root, targetPath)) {
+    throw new Error(`tracked proof input symlink escapes validation checkout: ${relativePath}`);
+  }
+  return targetPath;
+}
+
+function updateTrackedSymlinkTargetDigest(
+  digest: crypto.Hash,
+  root: string,
+  entryPath: string,
+  logicalPath: string,
+  activeDirectories: Set<string>,
+) {
+  const stat = fs.lstatSync(entryPath);
+  updateProofDigest(digest, "symlink-target-entry", logicalPath);
+  updateProofDigest(digest, "symlink-target-mode", stat.mode.toString(8));
+  if (stat.isSymbolicLink()) {
+    updateProofDigest(digest, "symlink-target-link", fs.readlinkSync(entryPath));
+    const targetPath = trackedProofInputSymlinkTarget(root, entryPath, logicalPath);
+    updateProofDigest(digest, "symlink-target-resolved", proofInputRelativePath(root, targetPath));
+    if (activeDirectories.has(targetPath)) {
+      throw new Error(`tracked proof input symlink is broken or cyclic: ${logicalPath}`);
+    }
+    updateTrackedSymlinkTargetDigest(
+      digest,
+      root,
+      targetPath,
+      `${logicalPath}\0target`,
+      activeDirectories,
+    );
+    return;
+  }
+  if (stat.isFile()) {
+    const bytes = fs.readFileSync(entryPath);
+    digest.update(`symlink-target-bytes:${bytes.length}:`);
+    digest.update(bytes);
+    digest.update("\0");
+    return;
+  }
+  if (!stat.isDirectory()) {
+    throw new Error(`tracked proof input symlink target is unsupported: ${logicalPath}`);
+  }
+
+  const realDirectory = fs.realpathSync(entryPath);
+  if (activeDirectories.has(realDirectory)) {
+    throw new Error(`tracked proof input symlink is broken or cyclic: ${logicalPath}`);
+  }
+  activeDirectories.add(realDirectory);
+  try {
+    const children = fs.readdirSync(entryPath).sort();
+    updateProofDigest(digest, "symlink-target-children", children.join("\0"));
+    for (const child of children) {
+      updateTrackedSymlinkTargetDigest(
+        digest,
+        root,
+        path.join(entryPath, child),
+        `${logicalPath}/${child}`,
+        activeDirectories,
+      );
+    }
+  } finally {
+    activeDirectories.delete(realDirectory);
+  }
 }
 
 function assertNoHiddenTrackedIndexFlags(cwd: string) {
