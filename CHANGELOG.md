@@ -26,7 +26,9 @@ checkpoint, and status-only commits are intentionally omitted.
   environment must explicitly own the deployment authority and bind the
   production token fingerprint; optional custom-route proof uses Cloudflare
   Access service-token headers, and failed or stale deployments roll back to
-  the exact prior stable Worker version while migrations remain add-only.
+  the exact prior stable Worker version. Environment variables resolve only
+  inside protected steps, route-proof mode is mandatory, and D1 packaging
+  accepts only the exact reviewed migration sequence and content hashes.
 - Added conservative, add-only `good first issue` labeling for unlocked, small, current-main reproduced bugs with a high-confidence repair prompt and validation steps and no linked-PR, feature, config, product, security, protected-label, or maintainer-opt-out blocker.
 - Added durable maintainer decision packets whose exact question, rationale, options, recommendation, and likely owner come from Codex structured review output while deterministic code only validates and persists the result. Thanks @brokemac79.
 - Added close-candidate quality telemetry to apply status while keeping reporting separate from close eligibility and comment-only sync. Thanks @brokemac79.
