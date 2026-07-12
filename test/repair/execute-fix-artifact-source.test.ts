@@ -279,6 +279,8 @@ test("final synchronized tree is reviewed and reports persist before publication
   const source = readText(path.join(process.cwd(), "src/repair/execute-fix-artifact.ts"));
 
   assert.match(source, /reviewAfterFinalBaseSync\(\{/);
+  assert.match(source, /finalBaseSyncRequiresReview\(\{/);
+  assert.match(source, /return \{ status: "already-current", base_sha: baseSha \}/);
   assert.match(source, /validateAndReviewSynchronizedTree\(\{/);
   assert.match(source, /repairDeltaPaths: finalSyncRepairDeltaPaths/);
   assert.match(source, /attempt: "final-sync"/);

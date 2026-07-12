@@ -6,6 +6,7 @@ import path from "node:path";
 import test from "node:test";
 
 import {
+  finalBaseSyncRequiresReview,
   finalizeExecutionReport,
   pinRepairBase,
   persistBeforePublication,
@@ -67,6 +68,25 @@ test("unchanged final base sync keeps the existing review", () => {
   });
 
   assert.equal(review, currentReview);
+});
+
+test("already-current sync reruns review when the fetched base advanced", () => {
+  assert.equal(
+    finalBaseSyncRequiresReview({
+      syncStatus: "already-current",
+      synchronizedBaseSha: "b".repeat(40),
+      validatedBaseSha: "a".repeat(40),
+    }),
+    true,
+  );
+  assert.equal(
+    finalBaseSyncRequiresReview({
+      syncStatus: "already-current",
+      synchronizedBaseSha: "a".repeat(40),
+      validatedBaseSha: "a".repeat(40),
+    }),
+    false,
+  );
 });
 
 test("publication failure cannot prevent durable report persistence", () => {

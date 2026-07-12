@@ -89,6 +89,7 @@ import {
 import { canTreatRebaseAsCompleteRepair } from "./fix-edit-policy.js";
 import { applyMechanicalChangelogFix } from "./mechanical-changelog.js";
 import {
+  finalBaseSyncRequiresReview,
   finalizeExecutionReport,
   pinRepairBase,
   reviewAfterFinalBaseSync,
@@ -2348,12 +2349,20 @@ function editValidatePrepareMerge({
     details: sync.status,
     headSha: currentHead(targetDir),
   });
-  if (sync.status !== "already-current") {
-    const synchronizedBaseSha = run("git", ["rev-parse", `origin/${baseBranch}`], {
-      cwd: targetDir,
-    }).trim();
+  const synchronizedBaseSha = String(
+    sync.base_sha ??
+      run("git", ["rev-parse", `origin/${baseBranch}`], {
+        cwd: targetDir,
+      }).trim(),
+  );
+  const syncRequiresReview = finalBaseSyncRequiresReview({
+    syncStatus: String(sync.status),
+    synchronizedBaseSha,
+    validatedBaseSha: targetBaseSha,
+  });
+  if (syncRequiresReview) {
     codexReview = reviewAfterFinalBaseSync({
-      syncChanged: true,
+      syncChanged: syncRequiresReview,
       currentReview: codexReview,
       reviewSynchronizedTree: () =>
         validateAndReviewSynchronizedTree({
@@ -2517,12 +2526,13 @@ function reconcileLatestBaseBeforePush({
 }: LooseRecord) {
   runGitNetwork(["fetch", "origin", `${baseBranch}:refs/remotes/origin/${baseBranch}`], targetDir);
   const baseRef = `origin/${baseBranch}`;
+  const baseSha = run("git", ["rev-parse", baseRef], { cwd: targetDir }).trim();
   if (isAncestor({ targetDir, ancestor: baseRef, descendant: "HEAD" })) {
-    return { status: "already-current" };
+    return { status: "already-current", base_sha: baseSha };
   }
 
   const rebaseResult = rebaseOntoBase({ targetDir, baseBranch });
-  if (rebaseResult.status !== "conflicts") return rebaseResult;
+  if (rebaseResult.status !== "conflicts") return { ...rebaseResult, base_sha: baseSha };
 
   runCodexBaseReconcile({
     fixArtifact,
@@ -2538,6 +2548,7 @@ function reconcileLatestBaseBeforePush({
   const completed = completeRebaseIfResolved({ targetDir });
   return {
     status: "codex-reconciled",
+    base_sha: baseSha,
     rebase_result: rebaseResult,
     completed_rebase: completed,
   };

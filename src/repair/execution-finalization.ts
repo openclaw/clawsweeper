@@ -25,6 +25,18 @@ export function reviewAfterFinalBaseSync<T>({
   return review;
 }
 
+export function finalBaseSyncRequiresReview({
+  syncStatus,
+  synchronizedBaseSha,
+  validatedBaseSha,
+}: {
+  syncStatus: string;
+  synchronizedBaseSha: string;
+  validatedBaseSha: string;
+}): boolean {
+  return syncStatus !== "already-current" || synchronizedBaseSha !== validatedBaseSha;
+}
+
 export function persistBeforePublication({
   reportPath,
   serialize,
