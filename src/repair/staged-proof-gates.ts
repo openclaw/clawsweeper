@@ -310,7 +310,27 @@ export function executeStagedProofPlan(
     try {
       const result = runCommand(command, Math.max(1, Math.min(commandTimeoutMs, remainingBudget)));
       executedCommands.push(...result.executedCommands);
-      const durationMs = Math.max(0, nowMs() - commandStartedAt);
+      const commandCompletedAt = nowMs();
+      const durationMs = Math.max(0, commandCompletedAt - commandStartedAt);
+      const totalElapsed = Math.max(0, commandCompletedAt - startedAt);
+      if (totalElapsed > budgetMs) {
+        const error = new Error(
+          `validation command failed (${command.command_kind}): staged proof runtime budget exhausted after ${command.id}`,
+        );
+        return failProofPlan({
+          plan,
+          command,
+          index,
+          entries,
+          statusById,
+          executedCommands,
+          startedAt,
+          nowMs,
+          error,
+          durationMs,
+          reason: "runtime_budget_exhausted_after_command",
+        });
+      }
       entries.push({
         command_id: command.id,
         stage: command.stage,
@@ -325,6 +345,7 @@ export function executeStagedProofPlan(
       });
       statusById.set(command.id, "passed");
     } catch (error) {
+      if (error instanceof StagedProofExecutionError) throw error;
       const durationMs = Math.max(0, nowMs() - commandStartedAt);
       return failProofPlan({
         plan,
@@ -856,6 +877,8 @@ export function isBroadOrLiveStagedProofCommand(parts: readonly string[]): boole
 
 function isLiveProofCommand(parts: readonly string[]): boolean {
   const script = packageScriptRequirement(parts)?.name ?? "";
+  if (script === "qa" || script === "qa:e2e") return true;
+  if (script === "openclaw" && packageCommandArgs(parts)[0] === "qa") return true;
   return /(?:^|:)(?:e2e|live|docker|integration|install:e2e|parallels)(?::|$)/.test(script);
 }
 

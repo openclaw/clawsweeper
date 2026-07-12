@@ -328,14 +328,6 @@ test("validation preflight preserves unscoped allowlisted direct Vitest commands
       "pnpm vitest run --exclude tests/browser/pageActions.test.ts",
       "pnpm exec vitest run --exclude tests/browser/pageActions.test.ts",
     ],
-    [
-      "pnpm vitest run --update tests/browser/pageActions.test.ts",
-      "pnpm exec vitest run --update tests/browser/pageActions.test.ts",
-    ],
-    [
-      "pnpm vitest run -u tests/browser/pageActions.test.ts",
-      "pnpm exec vitest run -u tests/browser/pageActions.test.ts",
-    ],
     ["pnpm vitest run login", "pnpm exec vitest run login"],
     ["pnpm exec vitest run src", "pnpm exec vitest run src"],
   ]) {
@@ -354,6 +346,19 @@ test("validation preflight preserves unscoped allowlisted direct Vitest commands
       resolved_commands: [resolved],
       available_scripts: [],
     });
+  }
+});
+
+test("validation parser rejects snapshot-writing and formatter mutation flags", () => {
+  for (const command of [
+    "pnpm vitest run --update tests/browser/pageActions.test.ts",
+    "pnpm exec vitest run -u tests/browser/pageActions.test.ts",
+    "pnpm exec jest --updateSnapshot tests/example.test.ts",
+    "pnpm test:serial --update-snapshots tests/example.test.ts",
+    "pnpm lint --fix",
+    "pnpm format --write",
+  ]) {
+    assert.throws(() => parseAllowedValidationCommand(command), /unsafe validation command/);
   }
 });
 
@@ -1423,6 +1428,36 @@ test("staged target proof exposes compact failed traces without command output",
       assert.equal(error.trace.status, "failed");
       assert.equal(JSON.stringify(error.trace).includes("PRIVATE FAILURE LOG"), false);
       assert.match(error.message, /validation command failed/);
+      return true;
+    },
+  );
+});
+
+test("stalled canonical changed gates fail instead of certifying fallback proof", () => {
+  const cwd = gitPackageFixture({
+    "check:changed": "node stalled-check.js",
+  });
+  fs.writeFileSync(
+    path.join(cwd, "stalled-check.js"),
+    "console.error('no output for 1000ms'); process.exit(1);\n",
+  );
+  git(cwd, "add", ".");
+  git(cwd, "commit", "-m", "initial");
+  attachOrigin(cwd);
+
+  assert.throws(
+    () =>
+      runStagedValidationProof(["pnpm check:changed"], cwd, validationOptions("openclaw/openclaw")),
+    (error) => {
+      assert.match(error.message, /no output for 1000ms/);
+      assert.deepEqual(
+        error.trace.commands.map((entry) => [entry.command_kind, entry.status]),
+        [
+          ["git:diff-check", "passed"],
+          ["git:diff-check", "passed"],
+          ["pnpm:check:changed", "failed"],
+        ],
+      );
       return true;
     },
   );

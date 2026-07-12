@@ -400,7 +400,7 @@ export function runStagedValidationProof(
   options: TargetValidationOptions,
   baseBranch: string = DEFAULT_BASE_BRANCH,
 ): TargetValidationProofResult {
-  const { baseRef, plan } = createTargetValidationProofPlan(commands, cwd, options, baseBranch);
+  const { plan } = createTargetValidationProofPlan(commands, cwd, options, baseBranch);
   const validationEnv = targetValidationEnv();
   const validationTimeoutMs = targetValidationTimeoutMs(
     "CLAWSWEEPER_TARGET_VALIDATION_TIMEOUT_MS",
@@ -427,8 +427,6 @@ export function runStagedValidationProof(
         timeoutMs,
         cwd,
         validationEnv,
-        baseBranch,
-        baseRef,
         options,
         attempts,
         executed,
@@ -494,8 +492,6 @@ function runValidationPlanCommand({
   timeoutMs,
   cwd,
   validationEnv,
-  baseBranch,
-  baseRef,
   options,
   attempts,
   executed,
@@ -504,8 +500,6 @@ function runValidationPlanCommand({
   timeoutMs: number;
   cwd: string;
   validationEnv: NodeJS.ProcessEnv;
-  baseBranch: string;
-  baseRef: string;
   options: TargetValidationOptions;
   attempts: Map<string, number>;
   executed: Set<string>;
@@ -531,32 +525,6 @@ function runValidationPlanCommand({
             : "passed",
       };
     } catch (error) {
-      const fallbackCommands = validationFallbackCommands({
-        parts,
-        error,
-        cwd,
-        baseBranch,
-        baseRef,
-        options,
-      });
-      if (fallbackCommands.length > 0) {
-        const fallbackExecuted: string[] = [];
-        for (const fallbackParts of fallbackCommands) {
-          const fallbackRendered = fallbackParts.join(" ");
-          if (executed.has(fallbackRendered)) continue;
-          run(fallbackParts[0]!, fallbackParts.slice(1), {
-            cwd,
-            env: validationEnv,
-            timeoutMs: remainingCommandBudget(timeoutMs, startedAt),
-          });
-          executed.add(fallbackRendered);
-          fallbackExecuted.push(fallbackRendered);
-        }
-        return {
-          executedCommands: fallbackExecuted,
-          reason: "canonical changed gate replaced by its bounded stall fallback",
-        };
-      }
       if (shouldRetryValidationCommand({ parts, error, attempts, options })) continue;
       throw new Error(
         `validation command failed (${parts.join(" ")}): ${compactText(error.message, 12000)}`,
@@ -776,28 +744,6 @@ export function canSkipInternalCodexReviewForRepairDelta(plan: LooseRecord) {
 function restoreTargetLockfile(cwd: string, lockfile: string) {
   if (!fs.existsSync(path.join(cwd, lockfile))) return;
   run("git", ["checkout", "--", lockfile], { cwd });
-}
-
-function validationFallbackCommands({
-  parts,
-  error,
-  cwd,
-  baseBranch,
-  baseRef,
-  options,
-}: LooseRecord) {
-  if (options.strictTargetValidation) return [];
-  if (!isChangedGateCommand(parts, options)) return [];
-  if (/no merge base/i.test(String(error?.message ?? ""))) {
-    validationBaseRef(cwd, baseBranch, options);
-    return [parts];
-  }
-  if (!isChangedGateStall(error)) return [];
-  const changedTests = changedTestFiles(cwd, baseBranch, options);
-  return [
-    ["git", "diff", "--check", `${baseRef}...HEAD`],
-    ...(changedTests.length > 0 ? [["pnpm", "test:serial", ...changedTests]] : []),
-  ];
 }
 
 function isChangedGateStall(error: JsonValue) {

@@ -134,7 +134,11 @@ export function parseAllowedValidationCommand(command: unknown): string[] {
   if (!executable || !isAllowedValidationExecutable(executable, parts)) {
     throw new Error(`unsupported validation command: ${text}`);
   }
-  if (hasUnsafePackageRunner(parts) || hasInlineInterpreterCode(parts)) {
+  if (
+    hasUnsafePackageRunner(parts) ||
+    hasInlineInterpreterCode(parts) ||
+    hasMutatingValidationFlag(parts)
+  ) {
     throw new Error(`unsafe validation command: ${text}`);
   }
   return parts;
@@ -286,6 +290,20 @@ function hasUnsafePackageRunner(parts: readonly string[]) {
             : "";
   if (!wrapper) return false;
   return !SAFE_WRAPPED_VALIDATION_EXECUTABLES.has(wrapper);
+}
+
+function hasMutatingValidationFlag(parts: readonly string[]) {
+  const denied = new Set([
+    "-u",
+    "--fix",
+    "--update",
+    "--update-snapshot",
+    "--update-snapshots",
+    "--updateSnapshot",
+    "--updateSnapshots",
+    "--write",
+  ]);
+  return stripEnvPrefix(parts).some((part) => denied.has(part.split("=", 1)[0] ?? ""));
 }
 
 const SAFE_WRAPPED_VALIDATION_EXECUTABLES = new Set([

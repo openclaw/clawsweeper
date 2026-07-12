@@ -242,6 +242,20 @@ test("subsumption never skips canonical, elevated-risk, or live proof", () => {
   );
 });
 
+test("direct QA suites remain non-subsumable on narrow surfaces", () => {
+  const integrity = ["git", "diff", "--check"];
+  const qa = ["pnpm", "openclaw", "qa", "suite", "--provider-mode", "mock-openai"];
+  const plan = buildStagedProofPlan({
+    commands: [command(integrity, 0, { source: "configured" }), command(qa, 1)],
+    changedFiles: ["src/repair/foo.ts"],
+    subsumptionContracts: [{ command: integrity, subsumes: [qa] }],
+  });
+
+  assert.equal(plan.risk.level, "narrow");
+  assert.equal(plan.commands[1].stage, "broad_live_or_e2e");
+  assert.equal(plan.commands[1].subsumed_by, null);
+});
+
 test("runtime budget exhaustion is fail-closed and auditable", () => {
   const plan = buildStagedProofPlan({
     commands: [
@@ -273,8 +287,8 @@ test("runtime budget exhaustion is fail-closed and auditable", () => {
       assert.deepEqual(
         trace.commands.map((entry) => [entry.status, entry.reason]),
         [
-          ["passed", "passed"],
-          ["failed", "runtime_budget_exhausted"],
+          ["failed", "runtime_budget_exhausted_after_command"],
+          ["skipped_prerequisite", `prerequisite ${plan.commands[0].id} failed`],
         ],
       );
       return true;

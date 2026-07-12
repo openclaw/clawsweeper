@@ -122,10 +122,12 @@ Exact argv are deduplicated, narrow path-scoped tests run before broader gates,
 and every allowlisted command required by the artifact or repository profile is
 retained. Repository integrity and the canonical changed-surface gate are
 mandatory. Broad, live, docker, or e2e commands run last, and can be skipped
-only by an exact repository-owned subsumption contract. A failed prerequisite
-stops later work and writes bounded digest-only trace entries, including
-command IDs and subsumption-edge digests, to the repair report and merge
-preflight.
+only by an exact repository-owned subsumption contract; QA/live proof is never
+subsumed. Snapshot/formatter mutation flags are rejected before planning. A
+failed prerequisite, stalled canonical gate, or command that exceeds the total
+proof budget stops later work and writes bounded digest-only trace entries,
+including command IDs and subsumption-edge digests, to the repair report and
+merge preflight.
 
 ## Exact-Head Rule
 
