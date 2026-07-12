@@ -835,8 +835,9 @@ Required `clawsweeper` app permissions:
   source branches containing `.github/workflows/*` changes.
 - Actions: read/write on `openclaw/clawsweeper`, for run cancellation, manual
   dispatch, self-heal, and commit-review continuations.
-- Checks: write on target repositories when commit Check Runs should be
-  published.
+- Checks: read/write on target repositories, for structural cache state and
+  commit Check Run publication.
+- Commit statuses: read on target repositories, for structural cache state.
 
 Optional steerable Action setup:
 
