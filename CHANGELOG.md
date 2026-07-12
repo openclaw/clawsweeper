@@ -20,9 +20,10 @@ checkpoint, and status-only commits are intentionally omitted.
   using an environment-specific Cloudflare token, a committed lockfile-backed
   Wrangler toolchain, pre- and post-migration D1 fence proof, a second
   current-main check immediately before Worker deployment, an explicit
-  dormant-or-active observation-order selector, fail-closed single-output
-  Worker packaging, 31-day approval-window artifact retention, and exact
-  release-identity and contract polling on workers.dev. The protected
+  dormant-or-active selectors for observation ordering and snapshot
+  provenance, fail-closed single-output Worker packaging, 31-day
+  approval-window artifact retention, and exact release-identity and contract
+  polling on workers.dev. The protected
   environment must explicitly own the deployment authority and bind the
   production token fingerprint; optional custom-route proof uses Cloudflare
   Access service-token headers, and failed or stale deployments roll back to

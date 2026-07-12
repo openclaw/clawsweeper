@@ -19,6 +19,14 @@ on:
         options:
           - dormant
           - active
+      snapshot_provenance_state:
+        description: Expected Gitcrawl snapshot-provenance rollout state
+        required: true
+        default: dormant
+        type: choice
+        options:
+          - dormant
+          - active
 
 permissions: {}
 
@@ -45,6 +53,7 @@ jobs:
       deploy_sha: ${{ steps.authorize.outputs.deploy_sha }}
       observation_order_state: ${{ steps.authorize.outputs.observation_order_state }}
       receipt_name: ${{ steps.authorize.outputs.receipt_name }}
+      snapshot_provenance_state: ${{ steps.authorize.outputs.snapshot_provenance_state }}
     env:
       CI: "true"
       CLAWSWEEPER_APP_CLIENT_ID: Iv23liOECG0slfuhz093
@@ -66,6 +75,7 @@ jobs:
           GH_TOKEN: ${{ steps.target-token.outputs.token }}
           OBSERVATION_ORDER_STATE: ${{ inputs.observation_order_state }}
           REQUESTED_SHA: ${{ inputs.main_sha }}
+          SNAPSHOT_PROVENANCE_STATE: ${{ inputs.snapshot_provenance_state }}
         shell: bash
         run: |
           set -euo pipefail
@@ -76,6 +86,10 @@ jobs:
           fi
           if [[ "$OBSERVATION_ORDER_STATE" != "dormant" && "$OBSERVATION_ORDER_STATE" != "active" ]]; then
             echo "::error::observation_order_state must be dormant or active."
+            exit 1
+          fi
+          if [[ "$SNAPSHOT_PROVENANCE_STATE" != "dormant" && "$SNAPSHOT_PROVENANCE_STATE" != "active" ]]; then
+            echo "::error::snapshot_provenance_state must be dormant or active."
             exit 1
           fi
 
@@ -91,13 +105,14 @@ jobs:
             exit 1
           fi
 
-          artifact_name="crawl-remote-release-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${REQUESTED_SHA}-${OBSERVATION_ORDER_STATE}"
-          receipt_name="crawl-remote-release-receipt-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${REQUESTED_SHA}-${OBSERVATION_ORDER_STATE}.json"
+          artifact_name="crawl-remote-release-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${REQUESTED_SHA}-${OBSERVATION_ORDER_STATE}-${SNAPSHOT_PROVENANCE_STATE}"
+          receipt_name="crawl-remote-release-receipt-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${REQUESTED_SHA}-${OBSERVATION_ORDER_STATE}-${SNAPSHOT_PROVENANCE_STATE}.json"
           {
             echo "artifact_name=$artifact_name"
             echo "deploy_sha=$REQUESTED_SHA"
             echo "observation_order_state=$OBSERVATION_ORDER_STATE"
             echo "receipt_name=$receipt_name"
+            echo "snapshot_provenance_state=$SNAPSHOT_PROVENANCE_STATE"
           } >> "$GITHUB_OUTPUT"
 
       - name: Checkout approved crawl-remote release
@@ -149,6 +164,7 @@ jobs:
           DEPLOY_SHA: ${{ steps.authorize.outputs.deploy_sha }}
           OBSERVATION_ORDER_STATE: ${{ steps.authorize.outputs.observation_order_state }}
           RECEIPT_NAME: ${{ steps.authorize.outputs.receipt_name }}
+          SNAPSHOT_PROVENANCE_STATE: ${{ steps.authorize.outputs.snapshot_provenance_state }}
         shell: bash
         run: |
           set -euo pipefail
@@ -174,6 +190,7 @@ jobs:
             GITHUB_RUN_ID: runId,
             OBSERVATION_ORDER_STATE: observationOrderState,
             RECEIPT_NAME: receiptName,
+            SNAPSHOT_PROVENANCE_STATE: snapshotProvenanceState,
           } = process.env;
           const runAttempt = Number(runAttemptText);
           if (
@@ -185,15 +202,16 @@ jobs:
             !Number.isSafeInteger(runAttempt) ||
             runAttempt < 1 ||
             !['dormant', 'active'].includes(observationOrderState ?? '') ||
+            !['dormant', 'active'].includes(snapshotProvenanceState ?? '') ||
             !receiptName
           ) {
             throw new Error('invalid release artifact identity');
           }
 
           const expectedArtifactName =
-            `crawl-remote-release-${runId}-${runAttempt}-${targetSha}-${observationOrderState}`;
+            `crawl-remote-release-${runId}-${runAttempt}-${targetSha}-${observationOrderState}-${snapshotProvenanceState}`;
           const expectedReceiptName =
-            `crawl-remote-release-receipt-${runId}-${runAttempt}-${targetSha}-${observationOrderState}.json`;
+            `crawl-remote-release-receipt-${runId}-${runAttempt}-${targetSha}-${observationOrderState}-${snapshotProvenanceState}.json`;
           if (artifactName !== expectedArtifactName || receiptName !== expectedReceiptName) {
             throw new Error('release artifact identity is not bound to this run and SHA');
           }
@@ -339,7 +357,7 @@ jobs:
             },
             {
               name: '0007_gitcrawl_snapshot_provenance.sql',
-              sha256: 'bbe5d84db53e388127373e8e10f4d5adf8486dac49a09f302368635f95942eab',
+              sha256: '3b680137957040dfe7010507b5a7b4a70d1afa5927795304ef6e7f2d2c82bac1',
             },
           ];
           const migrationEntries = readdirSync('migrations', { withFileTypes: true })
@@ -394,6 +412,7 @@ jobs:
             artifact_name: artifactName,
             observation_order_state: observationOrderState,
             receipt_name: receiptName,
+            snapshot_provenance_state: snapshotProvenanceState,
             files,
           };
           writeFileSync(
@@ -450,6 +469,7 @@ jobs:
       OBSERVATION_ORDER_STATE: ${{ needs.preflight.outputs.observation_order_state }}
       PRODUCTION_ROUTE_URL: https://reports.openclaw.ai/crawl-remote
       RECEIPT_NAME: ${{ needs.preflight.outputs.receipt_name }}
+      SNAPSHOT_PROVENANCE_STATE: ${{ needs.preflight.outputs.snapshot_provenance_state }}
       TARGET_REPOSITORY: openclaw/crawl-remote
       TOOLCHAIN_ROOT: ${{ github.workspace }}/.github/deploy/crawl-remote-toolchain
       WORKERS_DEV_URL: https://crawl-remote.services-91b.workers.dev
@@ -528,12 +548,13 @@ jobs:
             RECEIPT_NAME: receiptName,
             RECEIPT_PATH: receiptPath,
             RELEASE_ROOT: releaseRoot,
+            SNAPSHOT_PROVENANCE_STATE: snapshotProvenanceState,
           } = process.env;
           const runAttempt = Number(runAttemptText);
           const expectedArtifactName =
-            `crawl-remote-release-${runId}-${runAttempt}-${targetSha}-${observationOrderState}`;
+            `crawl-remote-release-${runId}-${runAttempt}-${targetSha}-${observationOrderState}-${snapshotProvenanceState}`;
           const expectedReceiptName =
-            `crawl-remote-release-receipt-${runId}-${runAttempt}-${targetSha}-${observationOrderState}.json`;
+            `crawl-remote-release-receipt-${runId}-${runAttempt}-${targetSha}-${observationOrderState}-${snapshotProvenanceState}.json`;
           if (
             !releaseRoot ||
             !receiptPath ||
@@ -543,7 +564,8 @@ jobs:
             !/^[0-9]+$/.test(runId ?? '') ||
             !Number.isSafeInteger(runAttempt) ||
             runAttempt < 1 ||
-            !['dormant', 'active'].includes(observationOrderState ?? '')
+            !['dormant', 'active'].includes(observationOrderState ?? '') ||
+            !['dormant', 'active'].includes(snapshotProvenanceState ?? '')
           ) {
             throw new Error('downloaded artifact identity is not bound to this run and SHA');
           }
@@ -594,6 +616,7 @@ jobs:
               'run_attempt',
               'run_id',
               'schema_version',
+              'snapshot_provenance_state',
               'target_repository',
               'target_sha',
             ],
@@ -608,6 +631,7 @@ jobs:
             manifest.artifact_name !== artifactName ||
             manifest.observation_order_state !== observationOrderState ||
             manifest.receipt_name !== receiptName ||
+            manifest.snapshot_provenance_state !== snapshotProvenanceState ||
             !Array.isArray(manifest.files) ||
             manifest.files.length < 3
           ) {
@@ -665,6 +689,7 @@ jobs:
             artifact_name: artifactName,
             observation_order_state: observationOrderState,
             receipt_name: receiptName,
+            snapshot_provenance_state: snapshotProvenanceState,
             files: canonicalFiles,
           };
           if (rawManifest !== `${JSON.stringify(canonicalManifest, null, 2)}\n`) {
@@ -756,6 +781,7 @@ jobs:
             artifact_name: artifactName,
             observation_order_state: observationOrderState,
             receipt_name: receiptName,
+            snapshot_provenance_state: snapshotProvenanceState,
             manifest_sha256: manifestSha256,
           };
           try {
@@ -858,7 +884,7 @@ jobs:
             --cwd "$RELEASE_ROOT" \
             --config wrangler.json \
             --command \
-            "select capability, migration_ready, cutover_enabled, activated_at from remote_capability_fences where capability = 'gitcrawl.observation-order.v1'" \
+            "select capability, migration_ready, cutover_enabled, activated_at from remote_capability_fences where capability in ('gitcrawl.observation-order.v1', 'gitcrawl.snapshot.provenance.v1') order by capability" \
             > "$PRE_FENCE_RESPONSE" 2> "$PRE_FENCE_ERROR"
           pre_fence_status=$?
           set -e
@@ -869,9 +895,16 @@ jobs:
           import { readFileSync } from 'node:fs';
           import { join } from 'node:path';
 
-          const expectedState = process.env.OBSERVATION_ORDER_STATE;
-          if (!['dormant', 'active'].includes(expectedState)) {
-            throw new Error('observation-order pre-migration state is invalid');
+          const expectedStates = new Map([
+            ['gitcrawl.observation-order.v1', process.env.OBSERVATION_ORDER_STATE],
+            ['gitcrawl.snapshot.provenance.v1', process.env.SNAPSHOT_PROVENANCE_STATE],
+          ]);
+          if (
+            [...expectedStates.values()].some(
+              (state) => !['dormant', 'active'].includes(state),
+            )
+          ) {
+            throw new Error('pre-migration fence state is invalid');
           }
 
           const statusText = process.env.PRE_FENCE_STATUS ?? '';
@@ -936,12 +969,12 @@ jobs:
             ) {
               throw new Error('observation-order pre-migration query failed');
             }
-            if (expectedState !== 'dormant') {
+            if ([...expectedStates.values()].some((state) => state !== 'dormant')) {
               throw new Error(
-                'observation-order fence table is missing but active state was selected',
+                'capability fence table is missing but active state was selected',
               );
             }
-            console.log('Observation-order fence table is absent before dormant bootstrap.');
+            console.log('Capability fence table is absent before dormant bootstrap.');
             process.exit(0);
           }
 
@@ -952,38 +985,61 @@ jobs:
             executions[0]?.success !== true
           ) {
             throw new Error(
-              'observation-order pre-migration query did not succeed exactly once',
+              'capability pre-migration query did not succeed exactly once',
             );
           }
 
           const rows = executions[0].results;
-          if (!Array.isArray(rows) || rows.length !== 1) {
+          if (!Array.isArray(rows) || rows.length < 1 || rows.length > expectedStates.size) {
             throw new Error(
-              'observation-order pre-migration query did not return exactly one row',
+              'capability pre-migration query returned an invalid row count',
             );
           }
 
-          const fence = rows[0];
-          const expectedCutover = expectedState === 'active' ? 1 : 0;
-          if (
-            fence?.capability !== 'gitcrawl.observation-order.v1' ||
-            fence?.migration_ready !== 1 ||
-            fence?.cutover_enabled !== expectedCutover ||
-            (
-              expectedState === 'active' &&
+          const fences = new Map();
+          for (const fence of rows) {
+            if (
+              !expectedStates.has(fence?.capability) ||
+              fences.has(fence.capability)
+            ) {
+              throw new Error('pre-migration query returned an unknown or duplicate fence');
+            }
+            fences.set(fence.capability, fence);
+          }
+
+          for (const [capability, expectedState] of expectedStates) {
+            const fence = fences.get(capability);
+            if (!fence) {
+              if (
+                capability === 'gitcrawl.snapshot.provenance.v1' &&
+                expectedState === 'dormant'
+              ) {
+                continue;
+              }
+              throw new Error(
+                `${capability} fence is missing before selected ${expectedState} deployment`,
+              );
+            }
+            const expectedCutover = expectedState === 'active' ? 1 : 0;
+            if (
+              fence.migration_ready !== 1 ||
+              fence.cutover_enabled !== expectedCutover ||
               (
-                typeof fence?.activated_at !== 'string' ||
-                fence.activated_at.trim().length === 0
-              )
-            ) ||
-            (expectedState === 'dormant' && fence?.activated_at !== '')
-          ) {
-            throw new Error(
-              `observation-order fence does not match selected ${expectedState} state before migration`,
-            );
+                expectedState === 'active' &&
+                (
+                  typeof fence.activated_at !== 'string' ||
+                  fence.activated_at.trim().length === 0
+                )
+              ) ||
+              (expectedState === 'dormant' && fence.activated_at !== '')
+            ) {
+              throw new Error(
+                `${capability} fence does not match selected ${expectedState} state before migration`,
+              );
+            }
           }
 
-          console.log(`Observation-order fence matches selected ${expectedState} state.`);
+          console.log('Capability fences match the selected pre-migration states.');
           PRE_FENCE_NODE
 
           "$wrangler" d1 migrations apply crawl-remote \
@@ -997,7 +1053,7 @@ jobs:
             --cwd "$RELEASE_ROOT" \
             --config wrangler.json \
             --command \
-            "select capability, migration_ready, cutover_enabled, activated_at from remote_capability_fences where capability = 'gitcrawl.observation-order.v1'" \
+            "select capability, migration_ready, cutover_enabled, activated_at from remote_capability_fences where capability in ('gitcrawl.observation-order.v1', 'gitcrawl.snapshot.provenance.v1') order by capability" \
             > "$FENCE_RESPONSE"
 
           node --input-type=module <<'POST_FENCE_NODE'
@@ -1011,37 +1067,52 @@ jobs:
             executions.length !== 1 ||
             executions[0]?.success !== true
           ) {
-            throw new Error('observation-order fence query did not succeed exactly once');
+            throw new Error('capability fence query did not succeed exactly once');
           }
 
           const rows = executions[0].results;
-          if (!Array.isArray(rows) || rows.length !== 1) {
-            throw new Error('observation-order fence query did not return exactly one row');
+          const expectedStates = new Map([
+            ['gitcrawl.observation-order.v1', process.env.OBSERVATION_ORDER_STATE],
+            ['gitcrawl.snapshot.provenance.v1', process.env.SNAPSHOT_PROVENANCE_STATE],
+          ]);
+          if (!Array.isArray(rows) || rows.length !== expectedStates.size) {
+            throw new Error('capability fence query did not return exactly two rows');
           }
 
-          const fence = rows[0];
-          const expectedState = process.env.OBSERVATION_ORDER_STATE;
-          const expectedCutover = expectedState === 'active' ? 1 : 0;
-          if (
-            !['dormant', 'active'].includes(expectedState) ||
-            fence?.capability !== 'gitcrawl.observation-order.v1' ||
-            fence?.migration_ready !== 1 ||
-            fence?.cutover_enabled !== expectedCutover ||
-            (
-              expectedState === 'active' &&
+          const fences = new Map();
+          for (const fence of rows) {
+            if (
+              !expectedStates.has(fence?.capability) ||
+              fences.has(fence.capability)
+            ) {
+              throw new Error('capability fence query returned an unknown or duplicate fence');
+            }
+            fences.set(fence.capability, fence);
+          }
+
+          for (const [capability, expectedState] of expectedStates) {
+            const fence = fences.get(capability);
+            const expectedCutover = expectedState === 'active' ? 1 : 0;
+            if (
+              !['dormant', 'active'].includes(expectedState) ||
+              fence?.migration_ready !== 1 ||
+              fence?.cutover_enabled !== expectedCutover ||
               (
-                typeof fence?.activated_at !== 'string' ||
-                fence.activated_at.trim().length === 0
-              )
-            ) ||
-            (expectedState === 'dormant' && fence?.activated_at !== '')
-          ) {
-            throw new Error(
-              `observation-order migration does not match expected ${expectedState} state`,
-            );
+                expectedState === 'active' &&
+                (
+                  typeof fence?.activated_at !== 'string' ||
+                  fence.activated_at.trim().length === 0
+                )
+              ) ||
+              (expectedState === 'dormant' && fence?.activated_at !== '')
+            ) {
+              throw new Error(
+                `${capability} migration does not match expected ${expectedState} state`,
+              );
+            }
           }
 
-          console.log(`Observation-order migration is ready and ${expectedState}.`);
+          console.log('Capability migrations are ready in the selected states.');
           POST_FENCE_NODE
 
       - name: Reauthorize current main immediately before Worker deploy
@@ -1194,8 +1265,12 @@ jobs:
           try {
             const expectedSha = process.env.DEPLOY_SHA;
             const expectedObservationOrderState = process.env.OBSERVATION_ORDER_STATE;
+            const expectedSnapshotProvenanceState =
+              process.env.SNAPSHOT_PROVENANCE_STATE;
             const observationFenceNote =
               'Gitcrawl observation ordering requires the D1 migration, explicit publisher capability, and operator cutover fence before it is advertised or activated.';
+            const snapshotProvenanceNote =
+              'Gitcrawl content-addressed snapshots bind manifest.source_sha256, status, queries, and SQLite bundle manifests to one source image.';
             const endpoints = [
               {
                 label: 'workers.dev',
@@ -1232,6 +1307,9 @@ jobs:
               if (!notes.includes(observationFenceNote)) {
                 throw new Error(`${label} contract does not identify the observation-order fence`);
               }
+              if (!notes.includes(snapshotProvenanceNote)) {
+                throw new Error(`${label} contract does not identify snapshot provenance`);
+              }
 
               const apps = Array.isArray(contract.apps) ? contract.apps : [];
               const gitcrawl = apps.find((app) => app?.app === 'gitcrawl');
@@ -1243,6 +1321,9 @@ jobs:
               }
               const observationOrderActive = gitcrawl.capabilities.includes(
                 'gitcrawl.observation-order.v1',
+              );
+              const snapshotProvenanceActive = gitcrawl.capabilities.includes(
+                'gitcrawl.snapshot.provenance.v1',
               );
               if (
                 !['dormant', 'active'].includes(expectedObservationOrderState) ||
@@ -1257,6 +1338,21 @@ jobs:
               ) {
                 throw new Error(
                   `${label} contract does not match expected ${expectedObservationOrderState} observation-order state`,
+                );
+              }
+              if (
+                !['dormant', 'active'].includes(expectedSnapshotProvenanceState) ||
+                (
+                  expectedSnapshotProvenanceState === 'active' &&
+                  !snapshotProvenanceActive
+                ) ||
+                (
+                  expectedSnapshotProvenanceState === 'dormant' &&
+                  snapshotProvenanceActive
+                )
+              ) {
+                throw new Error(
+                  `${label} contract does not match expected ${expectedSnapshotProvenanceState} snapshot-provenance state`,
                 );
               }
 

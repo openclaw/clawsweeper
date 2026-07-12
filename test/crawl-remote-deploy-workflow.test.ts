@@ -45,17 +45,23 @@ function step(job: { steps: WorkflowStep[] }, name: string): WorkflowStep {
   return match;
 }
 
-function exactFence(state: "dormant" | "active") {
+function exactFences(
+  observationState: "dormant" | "active",
+  snapshotState: "dormant" | "active" = observationState,
+  includeSnapshot = true,
+) {
+  const fence = (capability: string, state: "dormant" | "active") => ({
+    capability,
+    migration_ready: 1,
+    cutover_enabled: state === "active" ? 1 : 0,
+    activated_at: state === "active" ? "2026-07-12T07:00:00.000Z" : "",
+  });
   return [
     {
       success: true,
       results: [
-        {
-          capability: "gitcrawl.observation-order.v1",
-          migration_ready: 1,
-          cutover_enabled: state === "active" ? 1 : 0,
-          activated_at: state === "active" ? "2026-07-12T07:00:00.000Z" : "",
-        },
+        fence("gitcrawl.observation-order.v1", observationState),
+        ...(includeSnapshot ? [fence("gitcrawl.snapshot.provenance.v1", snapshotState)] : []),
       ],
     },
   ];
@@ -90,9 +96,17 @@ test("crawl-remote release is maintainer-bound across two fresh runners", () => 
     "confirmation",
     "main_sha",
     "observation_order_state",
+    "snapshot_provenance_state",
   ]);
   assert.deepEqual(workflow.on.workflow_dispatch.inputs.observation_order_state, {
     description: "Expected Gitcrawl observation-order rollout state",
+    required: true,
+    default: "dormant",
+    type: "choice",
+    options: ["dormant", "active"],
+  });
+  assert.deepEqual(workflow.on.workflow_dispatch.inputs.snapshot_provenance_state, {
+    description: "Expected Gitcrawl snapshot-provenance rollout state",
     required: true,
     default: "dormant",
     type: "choice",
@@ -115,6 +129,10 @@ test("crawl-remote release is maintainer-bound across two fresh runners", () => 
   assert.equal(
     deploy.env.OBSERVATION_ORDER_STATE,
     "${{ needs.preflight.outputs.observation_order_state }}",
+  );
+  assert.equal(
+    deploy.env.SNAPSHOT_PROVENANCE_STATE,
+    "${{ needs.preflight.outputs.snapshot_provenance_state }}",
   );
   assert.deepEqual(deploy.environment, {
     name: "crawl-remote-production",
@@ -178,16 +196,21 @@ test("preflight authorizes and checks out only the exact current main SHA", () =
     authorize.run ?? "",
     /OBSERVATION_ORDER_STATE.*"dormant".*OBSERVATION_ORDER_STATE.*"active"/s,
   );
+  assert.match(
+    authorize.run ?? "",
+    /SNAPSHOT_PROVENANCE_STATE.*"dormant".*SNAPSHOT_PROVENANCE_STATE.*"active"/s,
+  );
   assert.doesNotMatch(authorize.run ?? "", /compare\/|comparison_status|ancestor|"ahead"/);
   assert.match(
     authorize.run ?? "",
-    /crawl-remote-release-\$\{GITHUB_RUN_ID\}-\$\{GITHUB_RUN_ATTEMPT\}-\$\{REQUESTED_SHA\}-\$\{OBSERVATION_ORDER_STATE\}/,
+    /crawl-remote-release-\$\{GITHUB_RUN_ID\}-\$\{GITHUB_RUN_ATTEMPT\}-\$\{REQUESTED_SHA\}-\$\{OBSERVATION_ORDER_STATE\}-\$\{SNAPSHOT_PROVENANCE_STATE\}/,
   );
   assert.match(
     authorize.run ?? "",
-    /crawl-remote-release-receipt-\$\{GITHUB_RUN_ID\}-\$\{GITHUB_RUN_ATTEMPT\}-\$\{REQUESTED_SHA\}-\$\{OBSERVATION_ORDER_STATE\}\.json/,
+    /crawl-remote-release-receipt-\$\{GITHUB_RUN_ID\}-\$\{GITHUB_RUN_ATTEMPT\}-\$\{REQUESTED_SHA\}-\$\{OBSERVATION_ORDER_STATE\}-\$\{SNAPSHOT_PROVENANCE_STATE\}\.json/,
   );
   assert.match(authorize.run ?? "", /observation_order_state=\$OBSERVATION_ORDER_STATE/);
+  assert.match(authorize.run ?? "", /snapshot_provenance_state=\$SNAPSHOT_PROVENANCE_STATE/);
 
   const checkout = step(preflight, "Checkout approved crawl-remote release");
   assert.equal(checkout.uses, "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0");
@@ -235,6 +258,7 @@ test("authorization scripts reject every SHA except the current crawl-remote mai
         PATH: `${directory}:${process.env.PATH}`,
         RECEIPT_PATH: receiptPath,
         REQUESTED_SHA: deploySha,
+        SNAPSHOT_PROVENANCE_STATE: "dormant",
         TARGET_REPOSITORY: "openclaw/crawl-remote",
         ...(authorize ? {} : { GH_TOKEN: "test" }),
       },
@@ -336,6 +360,7 @@ test("release artifact is immutable, bounded, canonical, and hash verified", () 
   assert.match(packaging, /artifact_name: artifactName/);
   assert.match(packaging, /observation_order_state: observationOrderState/);
   assert.match(packaging, /receipt_name: receiptName/);
+  assert.match(packaging, /snapshot_provenance_state: snapshotProvenanceState/);
   assert.match(packaging, /run_attempt: runAttempt/);
   assert.match(packaging, /entry\.isFile\(\)/);
   assert.match(packaging, /isSymbolicLink\(\)/);
@@ -358,7 +383,7 @@ test("release artifact is immutable, bounded, canonical, and hash verified", () 
     "e6c4a8edb300ebbf93a2e2449d180408f23be7eac1ef05733045b6ed496eb396",
     "5964adcb0807448d937fed38ac9588a1063bf4f490a82b54f15f0e700374ae0c",
     "a0ebfbb5c40c85df5eaba6772a01a68910fa5f1327d4701d25c5dfde16f77d1a",
-    "bbe5d84db53e388127373e8e10f4d5adf8486dac49a09f302368635f95942eab",
+    "3b680137957040dfe7010507b5a7b4a70d1afa5927795304ef6e7f2d2c82bac1",
   ]) {
     assert.match(packaging, new RegExp(sha256));
   }
@@ -380,6 +405,7 @@ test("release artifact is immutable, bounded, canonical, and hash verified", () 
   assert.match(verify, /\$\{label\} has unexpected fields/);
   assert.match(verify, /release manifest is not canonical/);
   assert.match(verify, /manifest\.observation_order_state !== observationOrderState/);
+  assert.match(verify, /manifest\.snapshot_provenance_state !== snapshotProvenanceState/);
   assert.match(verify, /artifact contains symlink/);
   assert.match(verify, /files outside the manifest allowlist/);
   assert.match(verify, /release artifact hash mismatch/);
@@ -409,9 +435,10 @@ test("release packaging accepts Wrangler metadata and rejects unsupported output
   const runId = "123456";
   const runAttempt = 1;
   const state = "dormant";
+  const snapshotState = "dormant";
   const targetSha = mergedCrawlRemoteMain;
-  const artifactName = `crawl-remote-release-${runId}-${runAttempt}-${targetSha}-${state}`;
-  const receiptName = `crawl-remote-release-receipt-${runId}-${runAttempt}-${targetSha}-${state}.json`;
+  const artifactName = `crawl-remote-release-${runId}-${runAttempt}-${targetSha}-${state}-${snapshotState}`;
+  const receiptName = `crawl-remote-release-receipt-${runId}-${runAttempt}-${targetSha}-${state}-${snapshotState}.json`;
 
   const fixtureMigrations = [
     ["0001_remote_archives.sql", "create table one(id integer);\n"],
@@ -489,6 +516,7 @@ test("release packaging accepts Wrangler metadata and rejects unsupported output
         GITHUB_RUN_ID: runId,
         OBSERVATION_ORDER_STATE: state,
         RECEIPT_NAME: receiptName,
+        SNAPSHOT_PROVENANCE_STATE: snapshotState,
       },
     });
   }
@@ -554,8 +582,9 @@ test("artifact verifier rejects tampering, extras, cross-state reuse, and oversi
 
   function fixture(label: string, bundle = Buffer.from("export default {};\n")) {
     const state = "dormant";
-    const artifactName = `crawl-remote-release-${runId}-${runAttempt}-${targetSha}-${state}`;
-    const receiptName = `crawl-remote-release-receipt-${runId}-${runAttempt}-${targetSha}-${state}.json`;
+    const snapshotState = "dormant";
+    const artifactName = `crawl-remote-release-${runId}-${runAttempt}-${targetSha}-${state}-${snapshotState}`;
+    const receiptName = `crawl-remote-release-receipt-${runId}-${runAttempt}-${targetSha}-${state}-${snapshotState}.json`;
     const root = join(directory, label);
     mkdirSync(join(root, "bundle"), { recursive: true });
     mkdirSync(join(root, "migrations"), { recursive: true });
@@ -615,6 +644,7 @@ test("artifact verifier rejects tampering, extras, cross-state reuse, and oversi
       artifact_name: artifactName,
       observation_order_state: state,
       receipt_name: receiptName,
+      snapshot_provenance_state: snapshotState,
       files,
     };
     writeFileSync(join(root, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`);
@@ -623,6 +653,7 @@ test("artifact verifier rejects tampering, extras, cross-state reuse, and oversi
       receiptName,
       receiptPath: join(directory, `${label}.receipt.json`),
       root,
+      snapshotState,
       state,
     };
   }
@@ -630,6 +661,7 @@ test("artifact verifier rejects tampering, extras, cross-state reuse, and oversi
   function validate(
     artifact: ReturnType<typeof fixture>,
     state = artifact.state,
+    snapshotState = artifact.snapshotState,
   ): ReturnType<typeof spawnSync> {
     return spawnSync(process.execPath, ["--input-type=module"], {
       input: validator,
@@ -644,6 +676,7 @@ test("artifact verifier rejects tampering, extras, cross-state reuse, and oversi
         RECEIPT_NAME: artifact.receiptName,
         RECEIPT_PATH: artifact.receiptPath,
         RELEASE_ROOT: artifact.root,
+        SNAPSHOT_PROVENANCE_STATE: snapshotState,
       },
     });
   }
@@ -660,6 +693,7 @@ test("artifact verifier rejects tampering, extras, cross-state reuse, and oversi
     assert.notEqual(validate(extra).status, 0);
 
     assert.notEqual(validate(fixture("cross-state"), "active").status, 0);
+    assert.notEqual(validate(fixture("cross-snapshot-state"), "dormant", "active").status, 0);
 
     const oversized = fixture("oversized", Buffer.alloc(5 * 1024 * 1024 + 1));
     assert.notEqual(validate(oversized).status, 0);
@@ -676,7 +710,7 @@ test("protected deploy never executes target lifecycle code", () => {
   assert.doesNotMatch(deployRuns, /\bnpm (test|run|exec)\b/);
   assert.doesNotMatch(deployRuns, /\bnpx\b/);
   assert.doesNotMatch(deployRuns, /\$RELEASE_ROOT\/package\.json|src\/index/);
-  assert.doesNotMatch(deployRuns, /\bsource\b|\beval\b|bash -c|sh -c/);
+  assert.doesNotMatch(deployRuns, /(?:^|\n)\s*source\s|\beval\b|bash -c|sh -c/);
   assert.equal(deployRuns.match(/\$TOOLCHAIN_ROOT\/node_modules\/\.bin\/wrangler/g)?.length, 3);
   assert.equal(deployRuns.match(/\.\/node_modules\/\.bin\/wrangler/g)?.length, 1);
   assert.equal(
@@ -907,21 +941,25 @@ test("privileged mutations use only verified files and prove the selected D1 fen
     migration,
     /select capability, migration_ready, cutover_enabled, activated_at from remote_capability_fences/,
   );
-  assert.match(migration, /capability = 'gitcrawl\.observation-order\.v1'/);
+  assert.match(migration, /'gitcrawl\.observation-order\.v1'/);
+  assert.match(migration, /'gitcrawl\.snapshot\.provenance\.v1'/);
   assert.match(migration, /executions\.length !== 1/);
-  assert.match(migration, /rows\.length !== 1/);
-  assert.match(migration, /fence\?\.migration_ready !== 1/);
+  assert.match(migration, /rows\.length !== expectedStates\.size/);
+  assert.match(migration, /fence\?\.migration_ready !== 1|fence\.migration_ready !== 1/);
   assert.match(migration, /expectedState === 'active' \? 1 : 0/);
-  assert.match(migration, /fence\?\.cutover_enabled !== expectedCutover/);
+  assert.match(
+    migration,
+    /fence\?\.cutover_enabled !== expectedCutover|fence\.cutover_enabled !== expectedCutover/,
+  );
   assert.match(migration, /fence\.activated_at\.trim\(\)\.length === 0/);
-  assert.match(migration, /expectedState === 'dormant'.*fence\?\.activated_at !== ''/s);
+  assert.match(migration, /expectedState === 'dormant'.*fence(?:\?)?\.activated_at !== ''/s);
   assert.match(migration, /PRE_FENCE_STATUS="\$pre_fence_status"/);
   assert.match(migration, /apiError\.name !== 'APIError'/);
   assert.match(migration, /apiError\.code !== 7500/);
   assert.match(migration, /apiError\.accountTag !== expectedAccountId/);
   assert.match(migration, /missingTableNotes/);
   assert.match(migration, /errorOutput\.length !== 0/);
-  assert.match(migration, /expectedState !== 'dormant'/);
+  assert.match(migration, /state !== 'dormant'/);
   assert.match(migration, /pre-migration query failed/);
   assert.match(workerDeploy, /deploy bundle\/index\.js/);
   assert.match(workerDeploy, /--no-bundle/);
@@ -989,14 +1027,15 @@ test("pre-migration fence validator rejects mismatch and gates missing-table boo
   );
 
   function validate(
-    state: "dormant" | "active",
+    observationState: "dormant" | "active",
+    snapshotState: "dormant" | "active",
     options: {
       status?: number;
       response?: unknown;
       error?: string;
     },
   ) {
-    const response = options.response ?? exactFence(state);
+    const response = options.response ?? exactFences(observationState, snapshotState);
     writeFileSync(responsePath, typeof response === "string" ? response : JSON.stringify(response));
     writeFileSync(errorPath, options.error ?? "");
     return spawnSync(process.execPath, ["--input-type=module"], {
@@ -1005,36 +1044,55 @@ test("pre-migration fence validator rejects mismatch and gates missing-table boo
       env: {
         ...process.env,
         CLOUDFLARE_ACCOUNT_ID: cloudflareAccountId,
-        OBSERVATION_ORDER_STATE: state,
+        OBSERVATION_ORDER_STATE: observationState,
         PRE_FENCE_ERROR: errorPath,
         PRE_FENCE_RESPONSE: responsePath,
         PRE_FENCE_STATUS: String(options.status ?? 0),
         RELEASE_ROOT: releaseRoot,
+        SNAPSHOT_PROVENANCE_STATE: snapshotState,
       },
     });
   }
 
   try {
-    assert.equal(validate("dormant", {}).status, 0);
-    assert.equal(validate("active", {}).status, 0);
-    assert.notEqual(validate("dormant", { response: exactFence("active") }).status, 0);
-    assert.notEqual(validate("active", { response: exactFence("dormant") }).status, 0);
+    assert.equal(validate("dormant", "dormant", {}).status, 0);
+    assert.equal(validate("active", "active", {}).status, 0);
     assert.equal(
-      validate("dormant", {
+      validate("active", "dormant", {
+        response: exactFences("active", "dormant", false),
+      }).status,
+      0,
+    );
+    assert.notEqual(
+      validate("dormant", "dormant", { response: exactFences("active", "dormant") }).status,
+      0,
+    );
+    assert.notEqual(
+      validate("active", "active", { response: exactFences("dormant", "active") }).status,
+      0,
+    );
+    assert.notEqual(
+      validate("dormant", "active", {
+        response: exactFences("dormant", "dormant", false),
+      }).status,
+      0,
+    );
+    assert.equal(
+      validate("dormant", "dormant", {
         status: 1,
         response: apiErrorFailure(),
       }).status,
       0,
     );
     assert.notEqual(
-      validate("active", {
+      validate("active", "dormant", {
         status: 1,
         response: apiErrorFailure(),
       }).status,
       0,
     );
     assert.notEqual(
-      validate("dormant", {
+      validate("dormant", "dormant", {
         status: 1,
         response: apiErrorFailure({
           code: 10000,
@@ -1044,7 +1102,7 @@ test("pre-migration fence validator rejects mismatch and gates missing-table boo
       0,
     );
     assert.notEqual(
-      validate("dormant", {
+      validate("dormant", "dormant", {
         status: 1,
         response: apiErrorFailure(),
         error: "unexpected stderr",
@@ -1054,14 +1112,14 @@ test("pre-migration fence validator rejects mismatch and gates missing-table boo
     const extraField = apiErrorFailure();
     Object.assign(extraField.error, { meta: { diagnostic: "unexpected" } });
     assert.notEqual(
-      validate("dormant", {
+      validate("dormant", "dormant", {
         status: 1,
         response: extraField,
       }).status,
       0,
     );
-    assert.notEqual(validate("dormant", { response: [] }).status, 0);
-    assert.notEqual(validate("dormant", { response: "not json" }).status, 0);
+    assert.notEqual(validate("dormant", "dormant", { response: [] }).status, 0);
+    assert.notEqual(validate("dormant", "dormant", { response: "not json" }).status, 0);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
@@ -1078,47 +1136,36 @@ test("post-migration D1 fence validator accepts only the selected state", () => 
   const responsePath = join(directory, "fence.json");
 
   function validate(
-    state: "dormant" | "active",
-    cutoverEnabled: unknown,
-    activatedAt: string,
-    migrationReady: unknown = 1,
+    observationState: "dormant" | "active",
+    snapshotState: "dormant" | "active",
+    response: unknown = exactFences(observationState, snapshotState),
   ) {
-    writeFileSync(
-      responsePath,
-      JSON.stringify([
-        {
-          success: true,
-          results: [
-            {
-              capability: "gitcrawl.observation-order.v1",
-              migration_ready: migrationReady,
-              cutover_enabled: cutoverEnabled,
-              activated_at: activatedAt,
-            },
-          ],
-        },
-      ]),
-    );
+    writeFileSync(responsePath, JSON.stringify(response));
     return spawnSync(process.execPath, ["--input-type=module"], {
       input: validator,
       encoding: "utf8",
       env: {
         ...process.env,
         FENCE_RESPONSE: responsePath,
-        OBSERVATION_ORDER_STATE: state,
+        OBSERVATION_ORDER_STATE: observationState,
+        SNAPSHOT_PROVENANCE_STATE: snapshotState,
       },
     });
   }
 
   try {
-    assert.equal(validate("dormant", 0, "").status, 0);
-    assert.equal(validate("active", 1, "2026-07-12T07:00:00.000Z").status, 0);
-    assert.notEqual(validate("dormant", 1, "2026-07-12T07:00:00.000Z").status, 0);
-    assert.notEqual(validate("active", 0, "").status, 0);
-    assert.notEqual(validate("active", 1, "").status, 0);
-    assert.notEqual(validate("active", 1, "   ").status, 0);
-    assert.notEqual(validate("dormant", "0", "").status, 0);
-    assert.notEqual(validate("dormant", 0, "", "1").status, 0);
+    assert.equal(validate("dormant", "dormant").status, 0);
+    assert.equal(validate("active", "active").status, 0);
+    assert.equal(validate("active", "dormant").status, 0);
+    assert.notEqual(validate("dormant", "active", exactFences("active", "active")).status, 0);
+    assert.notEqual(validate("active", "active", exactFences("active", "dormant")).status, 0);
+    assert.notEqual(
+      validate("dormant", "dormant", exactFences("dormant", "dormant", false)).status,
+      0,
+    );
+    const malformed = exactFences("dormant", "dormant");
+    malformed[0].results[0].migration_ready = "1" as unknown as number;
+    assert.notEqual(validate("dormant", "dormant", malformed).status, 0);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
@@ -1151,11 +1198,20 @@ test("production proof polls semantic state and binds both responses to the rele
     /Gitcrawl observation ordering requires the D1 migration, explicit publisher capability, and operator cutover fence before it is advertised or activated\./,
   );
   assert.match(run, /notes\.includes\(observationFenceNote\)/);
+  assert.match(
+    run,
+    /Gitcrawl content-addressed snapshots bind manifest\.source_sha256, status, queries, and SQLite bundle manifests to one source image\./,
+  );
+  assert.match(run, /notes\.includes\(snapshotProvenanceNote\)/);
   assert.match(run, /expectedObservationOrderState/);
+  assert.match(run, /expectedSnapshotProvenanceState/);
   assert.match(run, /\$\{label\} Gitcrawl capabilities are malformed/);
   assert.match(run, /gitcrawl\.capabilities\.includes\(\s*'gitcrawl\.observation-order\.v1'/);
   assert.match(run, /expectedObservationOrderState === 'active'.*!observationOrderActive/s);
   assert.match(run, /expectedObservationOrderState === 'dormant'.*observationOrderActive/s);
+  assert.match(run, /gitcrawl\.capabilities\.includes\(\s*'gitcrawl\.snapshot\.provenance\.v1'/);
+  assert.match(run, /expectedSnapshotProvenanceState === 'active'.*!snapshotProvenanceActive/s);
+  assert.match(run, /expectedSnapshotProvenanceState === 'dormant'.*snapshotProvenanceActive/s);
   assert.match(run, /process\.exit\(1\)/);
   assert.match(run, /required production endpoints did not converge to release \$DEPLOY_SHA/);
   assert.doesNotMatch(run, /curl .*--retry/s);
@@ -1173,8 +1229,11 @@ test("production semantic validator always requires workers.dev and gates the Ac
   const productionRouteContractPath = join(directory, "production-route-contract.json");
   const releaseSha = mergedCrawlRemoteMain;
   const observationCapability = "gitcrawl.observation-order.v1";
+  const snapshotProvenanceCapability = "gitcrawl.snapshot.provenance.v1";
   const observationFenceNote =
     "Gitcrawl observation ordering requires the D1 migration, explicit publisher capability, and operator cutover fence before it is advertised or activated.";
+  const snapshotProvenanceNote =
+    "Gitcrawl content-addressed snapshots bind manifest.source_sha256, status, queries, and SQLite bundle manifests to one source image.";
 
   interface EndpointResponse {
     healthSha?: string;
@@ -1183,12 +1242,16 @@ test("production semantic validator always requires workers.dev and gates the Ac
   }
 
   function validate(
-    state: "dormant" | "active",
+    observationState: "dormant" | "active",
+    snapshotState: "dormant" | "active",
     workersDev: EndpointResponse = {},
     productionRoute: EndpointResponse = {},
     customRouteProof: "disabled" | "access-service-token" = "disabled",
   ) {
-    const defaultCapabilities = state === "active" ? [observationCapability] : [];
+    const defaultCapabilities = [
+      ...(observationState === "active" ? [observationCapability] : []),
+      ...(snapshotState === "active" ? [snapshotProvenanceCapability] : []),
+    ];
     function writeEndpoint(healthPath: string, contractPath: string, response: EndpointResponse) {
       const capabilities = Object.hasOwn(response, "capabilities")
         ? response.capabilities
@@ -1203,7 +1266,7 @@ test("production semantic validator always requires workers.dev and gates the Ac
           service: "crawl-remote",
           protocol_version: "v1",
           release_sha: response.contractSha ?? releaseSha,
-          notes: [observationFenceNote],
+          notes: [observationFenceNote, snapshotProvenanceNote],
           routes: [
             { method: "GET", path: "/health" },
             { method: "GET", path: "/v1/contract" },
@@ -1221,33 +1284,42 @@ test("production semantic validator always requires workers.dev and gates the Ac
         ...process.env,
         CUSTOM_ROUTE_PROOF: customRouteProof,
         DEPLOY_SHA: releaseSha,
-        OBSERVATION_ORDER_STATE: state,
+        OBSERVATION_ORDER_STATE: observationState,
         PRODUCTION_ROUTE_CONTRACT_RESPONSE: productionRouteContractPath,
         PRODUCTION_ROUTE_HEALTH_RESPONSE: productionRouteHealthPath,
         WORKERS_DEV_CONTRACT_RESPONSE: workersDevContractPath,
         WORKERS_DEV_HEALTH_RESPONSE: workersDevHealthPath,
+        SNAPSHOT_PROVENANCE_STATE: snapshotState,
       },
     });
   }
 
   try {
-    assert.equal(validate("dormant").status, 0);
-    assert.equal(validate("active").status, 0);
-    assert.notEqual(validate("dormant", { healthSha: "b".repeat(40) }).status, 0);
-    assert.equal(validate("dormant", {}, { contractSha: "b".repeat(40) }).status, 0);
+    assert.equal(validate("dormant", "dormant").status, 0);
+    assert.equal(validate("active", "active").status, 0);
+    assert.equal(validate("active", "dormant").status, 0);
+    assert.notEqual(validate("dormant", "dormant", { healthSha: "b".repeat(40) }).status, 0);
+    assert.equal(validate("dormant", "dormant", {}, { contractSha: "b".repeat(40) }).status, 0);
     assert.notEqual(
-      validate("dormant", {}, { contractSha: "b".repeat(40) }, "access-service-token").status,
-      0,
-    );
-    assert.equal(validate("dormant", {}, {}, "access-service-token").status, 0);
-    assert.notEqual(validate("active", { capabilities: [] }).status, 0);
-    assert.notEqual(
-      validate("dormant", {}, { capabilities: [observationCapability] }, "access-service-token")
+      validate("dormant", "dormant", {}, { contractSha: "b".repeat(40) }, "access-service-token")
         .status,
       0,
     );
+    assert.equal(validate("dormant", "dormant", {}, {}, "access-service-token").status, 0);
+    assert.notEqual(validate("active", "dormant", { capabilities: [] }).status, 0);
+    assert.notEqual(validate("dormant", "active", { capabilities: [] }).status, 0);
     assert.notEqual(
-      validate("dormant", {}, { capabilities: null }, "access-service-token").status,
+      validate(
+        "dormant",
+        "dormant",
+        {},
+        { capabilities: [observationCapability] },
+        "access-service-token",
+      ).status,
+      0,
+    );
+    assert.notEqual(
+      validate("dormant", "dormant", {}, { capabilities: null }, "access-service-token").status,
       0,
     );
   } finally {
