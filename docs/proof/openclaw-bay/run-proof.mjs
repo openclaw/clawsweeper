@@ -665,7 +665,13 @@ try {
   const waveStart = await wave.evaluate((node) =>
     Number(node.getAnimations()[0]?.currentTime || 0),
   );
-  await page.waitForTimeout(280);
+  await page.waitForFunction(
+    (start) =>
+      Number(document.querySelector("#beach .wave")?.getAnimations()[0]?.currentTime || 0) >
+      Number(start),
+    waveStart,
+    { timeout: 1_500 },
+  );
   const waveEnd = await wave.evaluate((node) => Number(node.getAnimations()[0]?.currentTime || 0));
   const tideLayerCount = await page
     .locator("#beach .tide-water, #beach .tide-foam-lace, #beach .tide-wet-sheen")
