@@ -1518,32 +1518,32 @@ export default {
 async function statusJson(request, env, ctx) {
   const cache = caches.default;
   const cached = await cache.match(statusCacheRequest(request, "fresh"));
-  if (cached) return cachedStatusResponse(cached, "fresh");
+  if (cached) return cachedStatusResponse(cached, "fresh", env);
 
   const stale = await cache.match(statusCacheRequest(request, "stale"));
   if (stale && ctx?.waitUntil) {
     ctx.waitUntil(refreshStatus(request, env).catch(() => undefined));
-    return cachedStatusResponse(stale, "stale");
+    return cachedStatusResponse(stale, "stale", env);
   }
 
   const refreshed = await refreshStatus(request, env);
-  if (refreshed.looksEmpty && stale) return cachedStatusResponse(stale, "stale");
-  return cors(
-    new Response(refreshed.body, {
-      headers: {
-        "content-type": "application/json; charset=utf-8",
-        "cache-control": "no-store",
-        "x-clawsweeper-cache": "miss",
-      },
-    }),
-  );
+  if (refreshed.looksEmpty && stale) return cachedStatusResponse(stale, "stale", env);
+  return statusSnapshotResponse(refreshed.snapshot, "miss", env);
 }
 
-function cachedStatusResponse(cached, cacheState) {
+async function cachedStatusResponse(cached, cacheState, env) {
+  const snapshot = await cached.json();
   const headers = new Headers(cached.headers);
-  headers.set("x-clawsweeper-cache", cacheState);
-  if (cacheState === "stale") headers.set("cache-control", "no-store");
-  return cors(new Response(cached.body, { status: cached.status, headers }));
+  return statusSnapshotResponse(snapshot, cacheState, env, cached.status, headers);
+}
+
+async function statusSnapshotResponse(snapshot, cacheState, env, status = 200, headers?) {
+  const current = await attachExactReviewQueueStatus(snapshot, env);
+  const responseHeaders = new Headers(headers);
+  responseHeaders.set("content-type", "application/json; charset=utf-8");
+  responseHeaders.set("cache-control", "no-store");
+  responseHeaders.set("x-clawsweeper-cache", cacheState);
+  return cors(new Response(JSON.stringify(current, null, 2), { status, headers: responseHeaders }));
 }
 
 function refreshStatus(request, env) {
@@ -3208,7 +3208,7 @@ async function statusSnapshot(env) {
   const ttl = numberFrom(env.CACHE_TTL_SECONDS, 20);
   const cached = await readCachedSnapshot(env, ttl);
   if (cached?.bay?.timings?.sample_kind === "latest_completed_jobs") {
-    return attachExactReviewQueueStatus(cached, env);
+    return cached;
   }
 
   const github = createGithubJsonCache(env);
@@ -3368,7 +3368,7 @@ async function statusSnapshot(env) {
       errors: errors.slice(0, 20),
     },
   };
-  return attachExactReviewQueueStatus(snapshot, env);
+  return snapshot;
 }
 
 async function attachExactReviewQueueStatus(snapshot, env) {

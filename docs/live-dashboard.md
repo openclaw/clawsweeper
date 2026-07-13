@@ -230,7 +230,9 @@ requeues. A blocked dispatcher with pending work is stalled; an intentionally
 paused dispatcher is degraded. `/api/status` includes this snapshot and the live
 dashboard renders the three phases, oldest age, available exact-review slots,
 and the current classification without changing queue capacity or storage
-schema. If the optional queue read fails, `/api/status` reports
+schema. Fleet snapshots may use the longer stale fallback during a GitHub API
+outage, but `/api/status` attaches queue telemetry after selecting that snapshot
+so handoff recovery stays live. If the optional queue read fails, it reports
 `exact_review_queue: null` and `diagnostics.exact_review_queue_error` without
 making the otherwise-current fleet snapshot eligible for stale fallback.
 

@@ -4770,9 +4770,34 @@ test("dashboard serves stale status while coalescing one background refresh", as
       fleet: { active_workflow_runs: 1 },
       workers: [],
       pipeline: [{ id: "stale-row" }],
-      diagnostics: { errors: [] },
+      exact_review_queue: {
+        pending: 1,
+        dispatching: 1,
+        leased: 0,
+        handoff_health: { status: "stalled" },
+      },
+      diagnostics: { errors: [], exact_review_queue_error: null },
     }),
   );
+
+  const currentQueue = {
+    pending: 7,
+    dispatching: 0,
+    leased: 28,
+    storage_schema_version: 1,
+    handoff_health: {
+      status: "healthy",
+      reason: "handoff_current",
+      phases: {
+        pending: { count: 7 },
+        dispatching: { count: 0 },
+        leased: { count: 28 },
+      },
+    },
+  };
+  const exactReviewQueue = new MemoryDurableNamespace({
+    fetch: async () => jsonResponse(currentQueue),
+  });
 
   let releaseFetch!: () => void;
   const fetchGate = new Promise<void>((resolve) => {
@@ -4799,6 +4824,7 @@ test("dashboard serves stale status while coalescing one background refresh", as
       CLAWSWEEPER_REPO: "openclaw/clawsweeper",
       TARGET_REPOS: "openclaw/openclaw",
       CACHE_TTL_SECONDS: "20",
+      EXACT_REVIEW_QUEUE: exactReviewQueue,
     };
     const context = {
       waitUntil(promise: Promise<unknown>) {
@@ -4813,7 +4839,12 @@ test("dashboard serves stale status while coalescing one background refresh", as
 
     assert.equal(first.headers.get("x-clawsweeper-cache"), "stale");
     assert.equal(second.headers.get("x-clawsweeper-cache"), "stale");
-    assert.equal((await first.json()).pipeline[0].id, "stale-row");
+    const firstStatus = await first.json();
+    const secondStatus = await second.json();
+    assert.equal(firstStatus.pipeline[0].id, "stale-row");
+    assert.equal(firstStatus.exact_review_queue.pending, 7);
+    assert.equal(firstStatus.exact_review_queue.handoff_health.status, "healthy");
+    assert.equal(secondStatus.exact_review_queue.handoff_health.status, "healthy");
     assert.equal(waitUntilPromises.length, 2);
 
     releaseFetch();

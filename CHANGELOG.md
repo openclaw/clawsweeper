@@ -104,6 +104,7 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Fixed
 
+- Kept exact-review handoff health live when the dashboard serves a stale fleet snapshot, so recovered claims no longer leave the operator rail stuck in a delayed or stalled state.
 - Restored exact-review intake by deriving cancellation from `job.status`, avoiding an unsupported status-check function in step environment expressions that made GitHub reject the sweep workflow, and added checksum-pinned workflow-semantic linting to CI.
 - Made comment-router ledger updates retain refreshed claims at the bounded
   history limit, publish through fsynced atomic replacement, and fail closed on
