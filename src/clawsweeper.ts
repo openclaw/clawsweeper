@@ -9403,7 +9403,6 @@ function runCodex(options: {
   serviceTier: string;
   forcedLoginMethod?: string;
   preserveCodexAuth?: boolean;
-  preferWindowsAppBinary?: boolean;
   timeoutMs: number;
   workDir: string;
   additionalPrompt?: string;
@@ -9488,7 +9487,6 @@ function runCodex(options: {
             preserveCodexAuth: options.preserveCodexAuth,
           }),
           CLAWSWEEPER_PROOF_SCRATCH_DIR: proofScratchDir,
-          ...(options.preferWindowsAppBinary ? { CLAWSWEEPER_PREFER_WINDOWS_CODEX_APP: "1" } : {}),
         },
         input: prompt,
         stderrPath: join(options.workDir, `${options.item.number}.${attempt}.codex.stderr.log`),
@@ -21257,7 +21255,7 @@ function finishReviewActionLedger(options: {
 function reviewCommand(args: Args): void {
   const profile = repoFromArgs(args);
   // `--local-range` is inherently a local, offline operation, so it implies `--local-only`
-  // (no GitHub writes, and the local Codex auth / Windows-launcher path in runCodex below).
+  // (no GitHub writes, and the local Codex auth path in runCodex below).
   const localRange = boolArg(args.local_range);
   const localOnly = boolArg(args.local_only) || localRange;
   const verbose = boolArg(args.verbose);
@@ -22319,7 +22317,6 @@ function reviewCommand(args: Args): void {
           serviceTier,
           forcedLoginMethod,
           preserveCodexAuth: localOnly,
-          preferWindowsAppBinary: localOnly,
           timeoutMs,
           workDir: codexWorkDir,
           additionalPrompt,

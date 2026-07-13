@@ -24,6 +24,13 @@ const tmpPrefix = join(tmpdir(), "clawsweeper-codex-process-test-");
 test("Codex process resolves command overrides and escaped Windows launchers", () => {
   assert.equal(codexProcessCommand({}), "codex");
   assert.equal(codexProcessCommand({ CODEX_BIN: "  custom-codex  " }), "custom-codex");
+  assert.equal(
+    codexProcessCommand({
+      CODEX_BIN: "custom-codex",
+      CLAWSWEEPER_PREFER_WINDOWS_CODEX_APP: "1",
+    }),
+    "custom-codex",
+  );
   assert.deepEqual(codexSpawnInvocation(["exec", "-"], { CODEX_BIN: "codex" }, "linux"), {
     command: "codex",
     args: ["exec", "-"],
