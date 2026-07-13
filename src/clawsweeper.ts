@@ -645,6 +645,7 @@ interface ReviewCommentRenderOptions {
   previousLabels?: readonly string[];
   hasOpenLinkedPullRequest?: boolean;
   previousReviewCommentBody?: string;
+  suppressAutomationMarkers?: boolean;
 }
 
 interface Decision {
@@ -17787,7 +17788,9 @@ export function renderReviewCommentFromReport(
     (!requiresMaintainerDecision || reason === "unsponsored_feature_request")
       ? renderCloseCommentFromReport(markdown, reason)
       : renderKeepOpenCommentFromReport(markdown, options);
-  const markers = reviewAutomationMarkersFromReport(markdown);
+  const markers = options.suppressAutomationMarkers
+    ? ""
+    : reviewAutomationMarkersFromReport(markdown);
   return [body.trimEnd(), markers, reviewVersionMarkerFromReport(markdown)]
     .filter(Boolean)
     .join("\n\n");
@@ -24845,6 +24848,7 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
     args.require_precomputed_pr_close_coverage_proof,
   );
   const syncCommentsOnly = boolArg(args.sync_comments_only);
+  const suppressAutomationMarkers = boolArg(args.suppress_automation_markers);
   const emitEventApplyProof = boolArg(args.event_apply_proof);
   const commentSyncMinAgeDays = numberArg(args.comment_sync_min_age_days, 0);
   const maxRuntimeMs = numberArg(args.max_runtime_ms, 0);
@@ -25074,7 +25078,7 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
     return;
   }
   logProgress(
-    `starting apply: files=${files.length} dry_run=${dryRun} apply_kind=${applyKind} min_age=${minAgeDescription} apply_close_reasons=${closeReasonFilterText(applyCloseReasons)} stale_min_age_days=${staleMinAgeDays} close_delay_ms=${closeDelayMs} sync_comments_only=${syncCommentsOnly} comment_sync_min_age_days=${commentSyncMinAgeDays} max_runtime_ms=${maxRuntimeMs} item_numbers=${requestedItemNumbers.join(",") || "all"}`,
+    `starting apply: files=${files.length} dry_run=${dryRun} apply_kind=${applyKind} min_age=${minAgeDescription} apply_close_reasons=${closeReasonFilterText(applyCloseReasons)} stale_min_age_days=${staleMinAgeDays} close_delay_ms=${closeDelayMs} sync_comments_only=${syncCommentsOnly} suppress_automation_markers=${suppressAutomationMarkers} comment_sync_min_age_days=${commentSyncMinAgeDays} max_runtime_ms=${maxRuntimeMs} item_numbers=${requestedItemNumbers.join(",") || "all"}`,
   );
   // oxfmt-ignore
   for (const entry of fileEntries) {
@@ -26213,7 +26217,10 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
       }
     }
     existingReviewComment ??= issueReviewComment(number, [
-      renderReviewCommentFromReport(markdown, closeReason ?? "none", { previousLabels }),
+      renderReviewCommentFromReport(markdown, closeReason ?? "none", {
+        previousLabels,
+        suppressAutomationMarkers,
+      }),
       reviewSectionValue(markdown, "closeComment"),
     ]);
     const markedReviewCommentForApply = (body: string): string =>
@@ -26451,6 +26458,7 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
     const renderOptions: ReviewCommentRenderOptions = {
       prStatusKind: currentPrStatusKind,
       previousLabels,
+      suppressAutomationMarkers,
     };
     if (item.kind === "issue" && currentClosingPullRequests) {
       renderOptions.hasOpenLinkedPullRequest =

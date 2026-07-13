@@ -1981,6 +1981,7 @@ test("sweep review continuations stay workflow-dispatch compatible", () => {
 
 test("failed review recovery waits for durable exact-review queue acknowledgement", () => {
   const workflow = readText(".github/workflows/sweep.yml");
+  const publisher = readText("src/repair/publish-event-result.ts");
   const recoveryBlock = workflow.slice(
     workflow.indexOf("\n  recover-review-failures:"),
     workflow.indexOf("\n\n  retry-failed-reviews:"),
@@ -1994,6 +1995,10 @@ test("failed review recovery waits for durable exact-review queue acknowledgemen
   assert.match(recoveryBlock, /sourceAction: "failed_review_shard_recovery"/);
   assert.match(recoveryBlock, /delivery_id: \("router:" \+ \$dispatch_key\)/);
   assert.match(recoveryBlock, /\/internal\/exact-review\/enqueue/);
+  assert.match(
+    publisher,
+    /options\.reviewOnly \? \["--sync-comments-only", "--suppress-automation-markers"\] : \[\]/,
+  );
   assert.match(
     recoveryBlock,
     /\.ok == true and \(\.queued == true or \.deduped == true or \.accepted == false\)/,

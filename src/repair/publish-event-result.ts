@@ -242,7 +242,7 @@ function runApplyDecisions(options: EventOptions): void {
     "all",
     "--apply-close-reasons",
     options.closeReasons,
-    ...(options.reviewOnly ? ["--sync-comments-only"] : []),
+    ...(options.reviewOnly ? ["--sync-comments-only", "--suppress-automation-markers"] : []),
     "--stale-min-age-days",
     "30",
     "--limit",

@@ -122,6 +122,24 @@ test("close proposals that require maintainer decisions render as kept open", ()
   assert.doesNotMatch(comment, /clawsweeper-action:close-required/);
 });
 
+test("review-only comments omit actionable automation markers", () => {
+  const report = implementedCloseReport({
+    repository: "openclaw/openclaw",
+    type: "pull_request",
+    pull_head_sha: "abc123def456",
+  });
+  const routableComment = renderReviewCommentFromReport(report, "implemented_or_shipped");
+  const comment = renderReviewCommentFromReport(report, "implemented_or_shipped", {
+    suppressAutomationMarkers: true,
+  });
+
+  assert.match(routableComment, /clawsweeper-(?:verdict|action):/);
+  assert.match(comment, /Review details/);
+  assert.match(comment, /clawsweeper-review-version/);
+  assert.doesNotMatch(comment, /clawsweeper-verdict:/);
+  assert.doesNotMatch(comment, /clawsweeper-action:/);
+});
+
 test("apply-decisions archives live-closed skipped records without reopening close gates", () => {
   const root = mkdtempSync(tmpPrefix);
   try {
@@ -2591,7 +2609,10 @@ test("sweep review recovery uses explicit failed shard artifacts", () => {
     /Export exact review primary result[\s\S]*REVIEW_ONLY:[\s\S]*\[ "\$REVIEW_ONLY" = "true" \]/,
   );
   assert.match(publishEventResult, /reviewOnly: process\.env\.REVIEW_ONLY === "true"/);
-  assert.match(publishEventResult, /options\.reviewOnly \? \["--sync-comments-only"\] : \[\]/);
+  assert.match(
+    publishEventResult,
+    /options\.reviewOnly \? \["--sync-comments-only", "--suppress-automation-markers"\] : \[\]/,
+  );
 });
 
 test("sweep failed-review retry lane defaults to dry-run exact-item dispatch", () => {
