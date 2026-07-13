@@ -430,18 +430,21 @@ test("OpenClaw Bay averages completed trigger-to-summary journeys from the last 
         repository: "openclaw/openclaw",
         number: 100,
         source_comment_id: 1,
+        source_delivery_id: "delivery-1",
         triggered_at: "2026-07-11T11:42:00.000Z",
       },
       {
         repository: "openclaw/openclaw",
         number: 200,
         source_comment_id: 2,
+        source_delivery_id: "delivery-2",
         triggered_at: "2026-07-11T11:26:00.000Z",
       },
       {
         repository: "openclaw/openclaw",
         number: 300,
         source_comment_id: 3,
+        source_delivery_id: "delivery-3",
         triggered_at: "2026-07-11T10:00:00.000Z",
       },
     ],
@@ -481,6 +484,37 @@ test("OpenClaw Bay averages completed trigger-to-summary journeys from the last 
   assert.equal(timings.sample_kind, "completed_review_journeys");
 });
 
+test("OpenClaw Bay retains pre-delivery journey records during normalization", () => {
+  const state = mergeBayJourneyState(
+    {
+      schema_version: 1,
+      journeys: [
+        {
+          id: "openclaw/openclaw#540:command:456",
+          item_key: "openclaw/openclaw#540",
+          repository: "openclaw/openclaw",
+          number: 540,
+          source_comment_id: 456,
+          triggered_at: "2026-07-13T11:56:00Z",
+          completed_at: "2026-07-13T11:59:00Z",
+          completion_kind: "final_command_status",
+          completion_comment_id: 790,
+        },
+      ],
+    },
+    [],
+    [],
+    "2026-07-13T12:00:00Z",
+  );
+
+  assert.equal(state.journeys.length, 1);
+  assert.equal(state.journeys[0]?.triggered_at, "2026-07-13T11:56:00Z");
+  assert.deepEqual(summarizeBayJourneyTimings(state.journeys, "2026-07-13T12:00:00Z").overall, {
+    average_ms: 180_000,
+    samples: 1,
+  });
+});
+
 test("OpenClaw Bay retains a completed journey for each edit of the same command", () => {
   const first = mergeBayJourneyState(
     null,
@@ -489,6 +523,7 @@ test("OpenClaw Bay retains a completed journey for each edit of the same command
         repository: "openclaw/openclaw",
         number: 540,
         source_comment_id: 456,
+        source_delivery_id: "first-edit",
         triggered_at: "2026-07-13T12:00:00Z",
       },
     ],
@@ -510,6 +545,7 @@ test("OpenClaw Bay retains a completed journey for each edit of the same command
         repository: "openclaw/openclaw",
         number: 540,
         source_comment_id: 456,
+        source_delivery_id: "second-edit",
         triggered_at: "2026-07-13T12:10:00Z",
       },
     ],
@@ -533,6 +569,52 @@ test("OpenClaw Bay retains a completed journey for each edit of the same command
   });
 });
 
+test("OpenClaw Bay retains same-second command edits from separate GitHub deliveries", () => {
+  const journeys = mergeBayJourneyState(
+    null,
+    [
+      {
+        repository: "openclaw/openclaw",
+        number: 540,
+        source_comment_id: 456,
+        source_delivery_id: "edit-one",
+        triggered_at: "2026-07-13T12:00:00Z",
+      },
+      {
+        repository: "openclaw/openclaw",
+        number: 540,
+        source_comment_id: 456,
+        source_delivery_id: "edit-two",
+        triggered_at: "2026-07-13T12:00:00Z",
+      },
+    ],
+    [
+      {
+        repository: "openclaw/openclaw",
+        number: 540,
+        source_comment_id: 456,
+        completed_at: "2026-07-13T12:05:00Z",
+        completion_comment_id: 790,
+      },
+      {
+        repository: "openclaw/openclaw",
+        number: 540,
+        source_comment_id: 456,
+        completed_at: "2026-07-13T12:06:00Z",
+        completion_comment_id: 790,
+      },
+    ],
+    "2026-07-13T12:07:00Z",
+  );
+
+  assert.equal(journeys.journeys.length, 2);
+  assert.notEqual(journeys.journeys[0]?.id, journeys.journeys[1]?.id);
+  assert.deepEqual(summarizeBayJourneyTimings(journeys.journeys, "2026-07-13T12:07:00Z").overall, {
+    average_ms: 330_000,
+    samples: 2,
+  });
+});
+
 test("OpenClaw Bay joins an out-of-order reused status completion to its later trigger", () => {
   const first = mergeBayJourneyState(
     null,
@@ -541,6 +623,7 @@ test("OpenClaw Bay joins an out-of-order reused status completion to its later t
         repository: "openclaw/openclaw",
         number: 540,
         source_comment_id: 456,
+        source_delivery_id: "first-edit",
         triggered_at: "2026-07-13T12:00:00Z",
       },
     ],
@@ -582,6 +665,7 @@ test("OpenClaw Bay joins an out-of-order reused status completion to its later t
         repository: "openclaw/openclaw",
         number: 540,
         source_comment_id: 456,
+        source_delivery_id: "second-edit",
         triggered_at: "2026-07-13T12:10:00Z",
       },
     ],
@@ -703,11 +787,12 @@ test("hosted webhook records an edited review command through its final command 
   const state = JSON.parse((await statusStore.get("openclaw-bay:journey-state:v1")) || "{}");
   assert.deepEqual(state.journeys, [
     {
-      id: "openclaw/openclaw#540:command:456:at:1783965787000",
+      id: "openclaw/openclaw#540:command:456:delivery:test-delivery",
       item_key: "openclaw/openclaw#540",
       repository: "openclaw/openclaw",
       number: 540,
       source_comment_id: 456,
+      source_delivery_id: "test-delivery",
       triggered_at: "2026-07-13T18:03:07Z",
       completed_at: "2026-07-13T19:23:27Z",
       completion_kind: "final_command_status",

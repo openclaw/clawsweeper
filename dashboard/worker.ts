@@ -1829,7 +1829,11 @@ async function githubWebhook(request, env, ctx) {
     return json({ ok: true, ...queued }, 202);
   }
 
-  const trigger = bayJourneyTriggerFromGithubWebhook({ decision, payload });
+  const trigger = bayJourneyTriggerFromGithubWebhook({
+    decision,
+    payload,
+    deliveryId: request.headers.get("x-github-delivery"),
+  });
   if (trigger) await recordBayJourneyTelemetry(env, ctx, [trigger], []);
 
   const credentials = githubAppCredentials(env);
@@ -1894,7 +1898,7 @@ async function recordBayJourneyTelemetry(env, ctx, triggers, completions) {
   await write;
 }
 
-function bayJourneyTriggerFromGithubWebhook({ decision, payload }) {
+function bayJourneyTriggerFromGithubWebhook({ decision, payload, deliveryId }) {
   if (!decision?.accepted || decision?.type !== "issue_comment") return null;
   const comment = objectValue(payload?.comment);
   const commandText = commandTextForClawSweeperFastAck(String(comment.body || ""));
@@ -1904,11 +1908,13 @@ function bayJourneyTriggerFromGithubWebhook({ decision, payload }) {
       ? comment.updated_at || comment.created_at
       : comment.created_at || comment.updated_at,
   );
-  if (!triggerAt) return null;
+  const sourceDeliveryId = nullableString(deliveryId);
+  if (!triggerAt || !sourceDeliveryId) return null;
   return {
     repository: decision.targetRepo,
     number: decision.itemNumber,
     source_comment_id: decision.commentId,
+    source_delivery_id: sourceDeliveryId,
     triggered_at: triggerAt,
   };
 }
@@ -4645,8 +4651,11 @@ export function summarizeBayJourneyTimings(journeys, generatedAt) {
   };
 }
 
-function bayJourneyId(repository, itemNumber, sourceCommentId, triggeredAt) {
-  return `${String(repository || "").toLowerCase()}#${Number(itemNumber)}:command:${Number(sourceCommentId)}:at:${Date.parse(triggeredAt)}`;
+function bayJourneyId(repository, itemNumber, sourceCommentId, sourceDeliveryId, triggeredAt) {
+  const prefix = `${String(repository || "").toLowerCase()}#${Number(itemNumber)}:command:${Number(sourceCommentId)}`;
+  return sourceDeliveryId
+    ? `${prefix}:delivery:${sourceDeliveryId}`
+    : `${prefix}:at:${Date.parse(triggeredAt)}`;
 }
 
 function bayJourneyCompletionId(
@@ -4674,6 +4683,7 @@ function normalizeBayJourneyTrigger(value) {
   const repository = nullableString(trigger.repository)?.toLowerCase() || null;
   const number = Number(trigger.number);
   const sourceCommentId = Number(trigger.source_comment_id);
+  const sourceDeliveryId = nullableString(trigger.source_delivery_id);
   const triggeredAt = bayJourneyTimestamp(trigger.triggered_at);
   if (
     !repository ||
@@ -4686,11 +4696,12 @@ function normalizeBayJourneyTrigger(value) {
     return null;
   }
   return {
-    id: bayJourneyId(repository, number, sourceCommentId, triggeredAt),
+    id: bayJourneyId(repository, number, sourceCommentId, sourceDeliveryId, triggeredAt),
     item_key: `${repository}#${number}`,
     repository,
     number,
     source_comment_id: sourceCommentId,
+    source_delivery_id: sourceDeliveryId,
     triggered_at: triggeredAt,
   };
 }
@@ -4746,6 +4757,7 @@ function normalizeBayJourneyRecord(value) {
     repository: source.repository,
     number: source.number,
     source_comment_id: source.source_comment_id,
+    source_delivery_id: trigger?.source_delivery_id || null,
     triggered_at: trigger?.triggered_at || null,
     completed_at: completion?.completed_at || null,
     completion_kind: completion?.completion_kind || null,
