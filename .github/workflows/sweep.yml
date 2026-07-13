@@ -1832,7 +1832,7 @@ jobs:
           permission-checks: read
           permission-contents: read
           permission-issues: write
-          permission-pull-requests: read
+          permission-pull-requests: write
           permission-statuses: read
 
       - name: Create target Codex inspection token

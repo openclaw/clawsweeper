@@ -1596,6 +1596,19 @@ test("sweep target tokens fall back when an org app installation is missing", ()
   assert.doesNotMatch(workflow, new RegExp("OPENCLAW_" + "GH_TOKEN"));
 });
 
+test("sweep target review token can post pull request review leases", () => {
+  const workflow = readText(".github/workflows/sweep.yml");
+  const targetReviewTokenBlocks = workflow
+    .split("- name: Create target review token")
+    .slice(1)
+    .map((block) => block.split("\n      - ")[0]);
+
+  assert.equal(targetReviewTokenBlocks.length, 1);
+  const [targetReviewToken] = targetReviewTokenBlocks;
+  assert.match(targetReviewToken ?? "", /permission-issues: write/);
+  assert.match(targetReviewToken ?? "", /permission-pull-requests: write/);
+});
+
 test("proof nudge workflow is manual-first and scheduled behind repo vars", () => {
   const sweepWorkflow = readText(".github/workflows/sweep.yml");
   const workflow = readText(".github/workflows/proof-nudges.yml");
