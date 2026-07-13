@@ -10,7 +10,8 @@ import {
 } from "./command-action-ledger-manifest.js";
 import { repoRoot } from "./paths.js";
 
-const [command, ...argv] = process.argv.slice(2);
+const rawArgv = process.argv.slice(2);
+const [command, ...argv] = rawArgv[0] === "--" ? rawArgv.slice(1) : rawArgv;
 const args = parseArgs(argv);
 
 if (command === "finalize") {
