@@ -4656,10 +4656,11 @@ function bayJourneyCompletionId(
   completionCommentId,
   completedAt,
 ) {
+  const completedMarker = Date.parse(completedAt);
   const marker =
     Number.isSafeInteger(Number(completionCommentId)) && Number(completionCommentId) > 0
-      ? `comment:${Number(completionCommentId)}`
-      : `at:${Date.parse(completedAt)}`;
+      ? `comment:${Number(completionCommentId)}:at:${completedMarker}`
+      : `at:${completedMarker}`;
   return `${String(repository || "").toLowerCase()}#${Number(itemNumber)}:command:${Number(sourceCommentId)}:completion:${marker}`;
 }
 
@@ -4815,7 +4816,8 @@ export function mergeBayJourneyState(previous, triggers, completions, generatedA
           record.repository === completion.repository &&
           record.number === completion.number &&
           record.source_comment_id === completion.source_comment_id &&
-          record.completion_comment_id === completion.completion_comment_id,
+          record.completion_comment_id === completion.completion_comment_id &&
+          record.completed_at === completion.completed_at,
       ) ||
       records.get(completion.id) ||
       {};

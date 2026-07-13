@@ -533,6 +533,70 @@ test("OpenClaw Bay retains a completed journey for each edit of the same command
   });
 });
 
+test("OpenClaw Bay joins an out-of-order reused status completion to its later trigger", () => {
+  const first = mergeBayJourneyState(
+    null,
+    [
+      {
+        repository: "openclaw/openclaw",
+        number: 540,
+        source_comment_id: 456,
+        triggered_at: "2026-07-13T12:00:00Z",
+      },
+    ],
+    [
+      {
+        repository: "openclaw/openclaw",
+        number: 540,
+        source_comment_id: 456,
+        completed_at: "2026-07-13T12:05:00Z",
+        completion_comment_id: 790,
+      },
+    ],
+    "2026-07-13T12:06:00Z",
+  );
+  const completionBeforeTrigger = mergeBayJourneyState(
+    first,
+    [],
+    [
+      {
+        repository: "openclaw/openclaw",
+        number: 540,
+        source_comment_id: 456,
+        completed_at: "2026-07-13T12:14:00Z",
+        completion_comment_id: 790,
+      },
+    ],
+    "2026-07-13T12:14:00Z",
+  );
+  assert.equal(completionBeforeTrigger.journeys.length, 2);
+  assert.equal(
+    completionBeforeTrigger.journeys.filter((journey) => !journey.triggered_at).length,
+    1,
+  );
+
+  const completed = mergeBayJourneyState(
+    completionBeforeTrigger,
+    [
+      {
+        repository: "openclaw/openclaw",
+        number: 540,
+        source_comment_id: 456,
+        triggered_at: "2026-07-13T12:10:00Z",
+      },
+    ],
+    [],
+    "2026-07-13T12:15:00Z",
+  );
+
+  assert.equal(completed.journeys.length, 2);
+  assert.equal(completed.journeys.filter((journey) => !journey.triggered_at).length, 0);
+  assert.deepEqual(summarizeBayJourneyTimings(completed.journeys, "2026-07-13T12:15:00Z").overall, {
+    average_ms: 270_000,
+    samples: 2,
+  });
+});
+
 test("hosted webhook records an edited review command through its final command update without GitHub reads", async () => {
   const statusStore = new MemoryKv();
   const env = {
