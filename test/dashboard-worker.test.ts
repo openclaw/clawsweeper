@@ -9,6 +9,7 @@ import worker, {
   automaticIssueWork,
   ExactReviewQueue,
   exactReviewQueueCapacity,
+  exactReviewQueueStatusSnapshot,
   mergeBayTerminalState,
   StatusStore,
   summarizeBayTimings,
@@ -23,6 +24,23 @@ test("exact-review queue defaults to 28 of the 128 global workers", () => {
   assert.equal(exactReviewQueueCapacity({}), 28);
   assert.equal(exactReviewQueueCapacity({ EXACT_REVIEW_QUEUE_MAX_CONCURRENT: "32" }), 32);
   assert.equal(exactReviewQueueCapacity({ EXACT_REVIEW_QUEUE_MAX_CONCURRENT: "100" }), 32);
+});
+
+test("dashboard status reads the exact-review handoff model from the durable queue", async () => {
+  const queue = new ExactReviewQueue({ storage: new MemoryDurableStorage() }, {});
+  await queue.fetch(buildExactReviewQueueRequest("handoff-status", 597, "opened"));
+
+  const status = await exactReviewQueueStatusSnapshot({
+    EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queue),
+  });
+
+  assert.ok(status);
+  assert.equal(status.pending, 1);
+  assert.equal(status.dispatching, 0);
+  assert.equal(status.leased, 0);
+  assert.equal(status.handoff_health.status, "healthy");
+  assert.equal(status.handoff_health.phases.pending.count, 1);
+  assert.equal(await exactReviewQueueStatusSnapshot({}), null);
 });
 
 test("triage routing groups classify impact labels without forcing one primary group", () => {
@@ -936,6 +954,66 @@ test("dashboard reuses a current Bay snapshot from the shared status store", asy
   }
 });
 
+test("optional exact-review telemetry failures do not freeze an idle status snapshot", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalCaches = globalThis.caches;
+  Object.defineProperty(globalThis, "caches", {
+    configurable: true,
+    value: { default: new MemoryCache() },
+  });
+  const statusStore = new MemoryKv();
+  await statusStore.put(
+    "snapshot",
+    JSON.stringify({
+      schema_version: 1,
+      generated_at: new Date().toISOString(),
+      health: {},
+      bay: { timings: { sample_kind: "latest_completed_jobs" } },
+      pipeline: [],
+      fleet: { active_workflow_runs: 0 },
+      diagnostics: { errors: [] },
+    }),
+  );
+  globalThis.fetch = async () => {
+    throw new Error("shared snapshot should avoid GitHub requests");
+  };
+  const failingQueue = {
+    fetch: async () =>
+      new Response(JSON.stringify({ error: "queue_read_failed" }), {
+        status: 503,
+        headers: { "content-type": "application/json" },
+      }),
+  };
+  const env = {
+    CACHE_TTL_SECONDS: "60",
+    STATUS_STORE: statusStore,
+    EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(failingQueue),
+  };
+
+  try {
+    const response = await worker.fetch(
+      new Request("https://clawsweeper.openclaw.ai/api/status"),
+      env,
+      { waitUntil: () => undefined },
+    );
+    const status = await response.json();
+    assert.equal(status.exact_review_queue, null);
+    assert.deepEqual(status.diagnostics.errors, []);
+    assert.equal(status.diagnostics.exact_review_queue_error, "queue_read_failed");
+
+    const cached = await worker.fetch(
+      new Request("https://clawsweeper.openclaw.ai/api/status"),
+      env,
+      { waitUntil: () => undefined },
+    );
+    assert.equal(cached.headers.get("x-clawsweeper-cache"), "fresh");
+    assert.equal((await cached.json()).diagnostics.exact_review_queue_error, "queue_read_failed");
+  } finally {
+    globalThis.fetch = originalFetch;
+    Object.defineProperty(globalThis, "caches", { configurable: true, value: originalCaches });
+  }
+});
+
 test("exact-review queue coalesces deliveries, dispatches a bound rollout snapshot, and rejects duplicate claims", async () => {
   const originalFetch = globalThis.fetch;
   const storage = new MemoryDurableStorage();
@@ -1042,6 +1120,14 @@ test("exact-review queue coalesces deliveries, dispatches a bound rollout snapsh
     await storage.put("exact-review-queue", pausedState);
     await queue.alarm();
     assert.equal(dispatched.length, 1);
+    stats = await (
+      await queue.fetch(new Request("https://clawsweeper-exact-review-queue/stats"))
+    ).json();
+    assert.equal(stats.dispatching, 1);
+    assert.equal(stats.leased, 0);
+    assert.equal(stats.handoff_health.status, "healthy");
+    assert.equal(stats.handoff_health.phases.dispatching.count, 1);
+    assert.equal(typeof stats.oldest_dispatching_age_seconds, "number");
     const nextAlarm = await storage.getAlarm();
     assert.ok(nextAlarm && nextAlarm > Date.now() + 60_000);
     const payload = dispatched[0].client_payload as Record<string, unknown>;
@@ -1109,6 +1195,13 @@ test("exact-review queue coalesces deliveries, dispatches a bound rollout snapsh
         mediaProofTimeoutMs: 480_000,
       },
     });
+    stats = await (
+      await queue.fetch(new Request("https://clawsweeper-exact-review-queue/stats"))
+    ).json();
+    assert.equal(stats.dispatching, 0);
+    assert.equal(stats.leased, 1);
+    assert.equal(stats.handoff_health.phases.leased.count, 1);
+    assert.equal(typeof stats.oldest_leased_age_seconds, "number");
     assert.equal(
       (
         await queue.fetch(
@@ -3356,6 +3449,9 @@ test("dashboard HTML preserves UTF-8 emoji labels", async () => {
   assert.match(html, /href="https:\/\/fleet\.example\.test\/terminal\?view=live&amp;mode=all"/);
   assert.match(html, /Loading pipeline state/);
   assert.match(html, /System Overview/);
+  assert.match(html, /id="exact-review-handoff"/);
+  assert.match(html, /function renderExactReviewHandoff/);
+  assert.match(html, /waiting for run claim/);
   assert.match(html, /id="apply-health"/);
   assert.match(html, /function renderApplyHealth/);
   assert.match(html, /candidate examined count unavailable for this lane/);
@@ -3382,7 +3478,7 @@ test("dashboard HTML preserves UTF-8 emoji labels", async () => {
   assert.doesNotMatch(html, /ðŸ|â|âš|âœ/);
 });
 
-test("dashboard hero treats apply health attention as needs attention", async () => {
+test("dashboard hero treats apply and exact-review handoff health as attention", async () => {
   const response = await worker.fetch(new Request("https://clawsweeper.openclaw.ai/"));
   const html = await response.text();
   const script = [...html.matchAll(/<script>\n([\s\S]*?)\n<\/script>/g)].at(-1)?.[1];
@@ -3435,7 +3531,21 @@ test("dashboard hero treats apply health attention as needs attention", async ()
     workers: [],
     automatic_work: [],
     pipeline: [],
-    diagnostics: { errors: [] },
+    exact_review_queue: {
+      handoff_health: {
+        status: "healthy",
+        message: "Dispatch-to-claim handoffs are within the expected window.",
+        available_slots: 2,
+        capacity: 28,
+        stalled_after_seconds: 300,
+        phases: {
+          pending: { count: 4, oldest_age_seconds: 60 },
+          dispatching: { count: 2, oldest_age_seconds: 10 },
+          leased: { count: 24, oldest_age_seconds: 240 },
+        },
+      },
+    },
+    diagnostics: { errors: [], exact_review_queue_error: null as string | null },
     recent: {
       apply_health: {
         attention_count: 1,
@@ -3529,6 +3639,27 @@ test("dashboard hero treats apply health attention as needs attention", async ()
   assert.equal(elementFor("hero-dot").className, "hero-dot amber");
   assert.match(elementFor("hero-headline").textContent, /^Needs attention/);
   assert.match(elementFor("apply-health").innerHTML, /Pruning sweep blocked/);
+  assert.match(elementFor("exact-review-handoff").innerHTML, /Dispatching/);
+  assert.match(elementFor("exact-review-handoff").innerHTML, /2 of 28 exact-review slots open/);
+  assert.match(elementFor("exact-review-handoff").innerHTML, /health-badge healthy/);
+
+  status.recent.apply_health.items = [];
+  status.exact_review_queue.handoff_health.status = "stalled";
+  status.exact_review_queue.handoff_health.message =
+    "A dispatched review has not been claimed within the expected handoff window.";
+  context.renderDashboard(status, "");
+
+  assert.equal(elementFor("hero-dot").className, "hero-dot red");
+  assert.match(elementFor("hero-headline").textContent, /^Needs attention/);
+  assert.match(elementFor("exact-review-handoff").innerHTML, /health-badge stalled/);
+
+  Object.assign(status, { exact_review_queue: null });
+  status.diagnostics.exact_review_queue_error = "exact-review queue timed out";
+  context.renderDashboard(status, "");
+
+  assert.equal(elementFor("hero-dot").className, "hero-dot amber");
+  assert.match(elementFor("hero-headline").textContent, /^Needs attention/);
+  assert.match(elementFor("exact-review-handoff").innerHTML, /telemetry unavailable/);
 });
 
 test("dashboard HTML emits early persistent theme controls", async () => {

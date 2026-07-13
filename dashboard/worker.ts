@@ -5,6 +5,7 @@ import {
 import { isExactReviewCloseGuardLabel } from "../src/repair/exact-review-guard-labels.ts";
 import { stableJson } from "../src/stable-json.ts";
 import { bayHtml } from "./bay-page.ts";
+import { summarizeExactReviewHandoff } from "./exact-review-health.ts";
 import { TRIAGE_ROUTING_GROUPS, triageRoutingGroupsForLabels } from "./triage-routing-groups.ts";
 
 const ACTIVE_RUN_STATUSES = new Set(["queued", "in_progress", "waiting", "requested", "pending"]);
@@ -55,6 +56,8 @@ type ExactReviewQueueItem = {
   claimedRunAttempt?: number;
   claimGeneration?: number;
   claimProtocolVersion?: 1 | 2;
+  dispatchedAt?: number;
+  claimedAt?: number;
 };
 type ExactReviewCompletionOutcome = "success" | "failure" | "cancelled";
 type ExactReviewClaimedRun = {
@@ -612,6 +615,8 @@ export class ExactReviewQueue {
       item.claimGeneration = exactReviewClaimGeneration(item.claimGeneration) + 1;
       item.claimProtocolVersion = claimProtocolVersion;
       item.leaseExpiresAt = now + exactReviewExecutionLeaseMs(this.env);
+      item.claimedAt = now;
+      item.updatedAt = now;
       await this.writeState(state);
       await this.scheduleNext(state, now);
       return json(exactReviewClaimResponse(item, claimProtocolVersion, item.claimGeneration));
@@ -790,6 +795,8 @@ export class ExactReviewQueue {
           now,
           exactReviewQueueCapacity(this.env),
           exactReviewTargetCapacity(this.env),
+          exactReviewDispatchLeaseMs(this.env),
+          exactReviewExecutionLeaseMs(this.env),
         ),
         delivery_receipts: this.deliveryReceiptCountSync(),
         storage_schema_version: EXACT_REVIEW_QUEUE_STORAGE_SCHEMA_VERSION,
@@ -885,6 +892,9 @@ export class ExactReviewQueue {
       item.claimedRunId = undefined;
       item.claimedRunAttempt = undefined;
       item.claimGeneration = undefined;
+      item.dispatchedAt = now;
+      item.claimedAt = undefined;
+      item.updatedAt = now;
     }
     await this.writeState(state);
     if (!admitted.length) {
@@ -2022,6 +2032,20 @@ async function exactReviewQueueRequest(env, path, request?: Request) {
   );
 }
 
+export async function exactReviewQueueStatusSnapshot(env) {
+  if (!exactReviewQueueStub(env)) return null;
+  const response = await exactReviewQueueRequest(env, "/stats");
+  const body = objectValue(await response.json().catch(() => null));
+  const health = objectValue(body.handoff_health);
+  if (
+    !response.ok ||
+    !["idle", "healthy", "degraded", "stalled"].includes(String(health.status || ""))
+  ) {
+    throw new Error(String(body.error || "exact-review queue status unavailable"));
+  }
+  return body;
+}
+
 async function authenticatedExactReviewEnqueue(request, env) {
   const secret = stringEnv(env.CLAWSWEEPER_WEBHOOK_SECRET);
   if (!secret) return json({ error: "webhook_not_configured" }, 503);
@@ -2442,6 +2466,8 @@ function clearExactReviewLease(item: ExactReviewQueueItem) {
   item.claimedRunAttempt = undefined;
   item.claimGeneration = undefined;
   item.claimProtocolVersion = undefined;
+  item.dispatchedAt = undefined;
+  item.claimedAt = undefined;
 }
 
 function isLiveExactReviewLease(item: ExactReviewQueueItem, now: number) {
@@ -2520,9 +2546,18 @@ function exactReviewQueueStats(
   now = Date.now(),
   capacity = Number.POSITIVE_INFINITY,
   targetCapacity = Number.POSITIVE_INFINITY,
+  dispatchLeaseMs = DEFAULT_EXACT_REVIEW_DISPATCH_LEASE_MS,
+  executionLeaseMs = DEFAULT_EXACT_REVIEW_EXECUTION_LEASE_MS,
 ) {
   const items = Object.values(state.items);
-  const pending = items.filter((item) => item.state === "pending");
+  const handoffHealth = summarizeExactReviewHandoff({
+    items,
+    dispatcher: state.dispatcher,
+    now,
+    capacity,
+    dispatchLeaseMs,
+    executionLeaseMs,
+  });
   const targets = new Map<
     string,
     {
@@ -2572,15 +2607,16 @@ function exactReviewQueueStats(
     );
   const nextWakeAt = exactReviewQueueNextWakeAt(state, now, capacity, targetCapacity);
   return {
-    pending: pending.length,
-    dispatching: items.filter((item) => item.state === "dispatching").length,
-    leased: items.filter((item) => item.state === "leased").length,
-    oldest_pending_at: pending.length
-      ? new Date(Math.min(...pending.map((item) => item.createdAt))).toISOString()
-      : null,
-    oldest_pending_age_seconds: pending.length
-      ? Math.max(0, Math.floor((now - Math.min(...pending.map((item) => item.createdAt))) / 1000))
-      : null,
+    pending: handoffHealth.phases.pending.count,
+    dispatching: handoffHealth.phases.dispatching.count,
+    leased: handoffHealth.phases.leased.count,
+    oldest_pending_at: handoffHealth.phases.pending.oldest_at,
+    oldest_pending_age_seconds: handoffHealth.phases.pending.oldest_age_seconds,
+    oldest_dispatching_at: handoffHealth.phases.dispatching.oldest_at,
+    oldest_dispatching_age_seconds: handoffHealth.phases.dispatching.oldest_age_seconds,
+    oldest_leased_at: handoffHealth.phases.leased.oldest_at,
+    oldest_leased_age_seconds: handoffHealth.phases.leased.oldest_age_seconds,
+    handoff_health: handoffHealth,
     next_wake_at: nextWakeAt === null ? null : new Date(nextWakeAt).toISOString(),
     dispatcher: {
       state: state.dispatcher?.state || "unknown",
@@ -3171,7 +3207,9 @@ function constantTimeEqual(left, right) {
 async function statusSnapshot(env) {
   const ttl = numberFrom(env.CACHE_TTL_SECONDS, 20);
   const cached = await readCachedSnapshot(env, ttl);
-  if (cached?.bay?.timings?.sample_kind === "latest_completed_jobs") return cached;
+  if (cached?.bay?.timings?.sample_kind === "latest_completed_jobs") {
+    return attachExactReviewQueueStatus(cached, env);
+  }
 
   const github = createGithubJsonCache(env);
   const generatedAt = new Date().toISOString();
@@ -3330,7 +3368,30 @@ async function statusSnapshot(env) {
       errors: errors.slice(0, 20),
     },
   };
-  return snapshot;
+  return attachExactReviewQueueStatus(snapshot, env);
+}
+
+async function attachExactReviewQueueStatus(snapshot, env) {
+  const diagnostics = objectValue(snapshot.diagnostics);
+  let exactReviewQueue = null;
+  let exactReviewQueueError = null;
+  try {
+    exactReviewQueue = await withTimeout(
+      exactReviewQueueStatusSnapshot(env),
+      OPTIONAL_SECTION_TIMEOUT_MS,
+      "exact-review queue",
+    );
+  } catch (error) {
+    exactReviewQueueError = error instanceof Error ? error.message : String(error);
+  }
+  return {
+    ...snapshot,
+    exact_review_queue: exactReviewQueue,
+    diagnostics: {
+      ...diagnostics,
+      exact_review_queue_error: exactReviewQueueError,
+    },
+  };
 }
 
 async function triageSnapshot(env) {
@@ -8056,6 +8117,65 @@ h2::before { content: ""; flex: 0 0 auto; width: 14px; height: 2px; border-radiu
 .capacity-bar .active { background: var(--claw); }
 .capacity-bar .waiting { background: var(--amber); }
 .capacity-meta { margin-top: 8px; color: var(--muted); font-size: 12px; }
+.exact-handoff {
+  margin-top: 18px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+}
+.exact-handoff-head {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 16px;
+}
+.exact-handoff-title { display: grid; gap: 3px; }
+.exact-handoff-title strong { font-size: 13px; font-weight: 650; }
+.exact-handoff-title span { color: var(--muted); font-size: 12px; }
+.health-badge {
+  flex: 0 0 auto;
+  padding: 3px 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.health-badge.healthy,
+.health-badge.idle { color: var(--green); border-color: color-mix(in srgb, var(--green) 40%, transparent); }
+.health-badge.degraded { color: var(--amber); border-color: color-mix(in srgb, var(--amber) 45%, transparent); }
+.health-badge.stalled { color: var(--red); border-color: color-mix(in srgb, var(--red) 45%, transparent); }
+.handoff-phases {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1px;
+  margin-top: 14px;
+  overflow: hidden;
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  background: var(--line-soft);
+}
+.handoff-phase { padding: 11px 12px; background: var(--bg); }
+.handoff-phase span {
+  display: block;
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+.handoff-phase strong { display: block; margin-top: 4px; font-size: 21px; font-weight: 560; line-height: 1; }
+.handoff-phase small { display: block; margin-top: 5px; color: var(--muted); font-size: 11px; }
+.handoff-foot {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 10px;
+  color: var(--muted);
+  font-size: 11px;
+}
 .status-dot {
   display: inline-block;
   flex: 0 0 auto;
@@ -8606,6 +8726,8 @@ a.pill:hover { color: var(--claw); text-decoration: none; }
   .side-meta { justify-content: flex-start; }
   .worker-row-sub { grid-template-columns: auto minmax(0, 1fr); }
   .worker-progress { display: none; }
+  .exact-handoff-head, .handoff-foot { align-items: start; flex-direction: column; }
+  .handoff-phases { grid-template-columns: 1fr; }
   dialog { margin: 7px; max-height: calc(100vh - 14px); }
 }
 </style>
@@ -8634,6 +8756,7 @@ a.pill:hover { color: var(--claw); text-decoration: none; }
     </div>
     <div class="flow-map" id="flow-map"></div>
     <div class="capacity-rail" id="capacity-rail"></div>
+    <div id="exact-review-handoff" aria-live="polite"></div>
     <div id="apply-health"></div>
     <div class="automatic-head">
       <h2>Automatic Builds</h2>
@@ -8825,6 +8948,31 @@ function renderSystemMap(data) {
   document.getElementById("overview-note").textContent = fallbacks
     ? "Live jobs with " + fallbacks + " workflow fallback" + (fallbacks === 1 ? "" : "s")
     : "Live GitHub job and step telemetry";
+}
+function renderExactReviewHandoff(queue) {
+  const target = document.getElementById("exact-review-handoff");
+  if (!target) return;
+  const health = queue?.handoff_health;
+  if (!health?.phases) {
+    target.innerHTML = '<div class="exact-handoff"><div class="exact-handoff-head"><div class="exact-handoff-title"><strong>Exact-review handoff</strong><span>Queue telemetry unavailable in this snapshot.</span></div><span class="health-badge">unknown</span></div></div>';
+    return;
+  }
+  const status = ["idle", "healthy", "degraded", "stalled"].includes(health.status) ? health.status : "unknown";
+  const labels = {
+    pending: ["Pending", "waiting for admission"],
+    dispatching: ["Dispatching", "waiting for run claim"],
+    leased: ["Leased", "run owns the review"]
+  };
+  const phases = ["pending", "dispatching", "leased"].map(phase => {
+    const summary = health.phases[phase] || {};
+    const age = Number.isFinite(summary.oldest_age_seconds)
+      ? "oldest " + elapsed(summary.oldest_age_seconds * 1000)
+      : "none waiting";
+    return '<div class="handoff-phase"><span>' + esc(labels[phase][0]) + '</span><strong>' + fmt.format(summary.count || 0) + '</strong><small>' + esc(labels[phase][1] + " · " + age) + '</small></div>';
+  }).join("");
+  const slots = fmt.format(health.available_slots || 0) + " of " + fmt.format(health.capacity || 0) + " exact-review slots open";
+  const threshold = "stalled after " + elapsed((health.stalled_after_seconds || 0) * 1000);
+  target.innerHTML = '<div class="exact-handoff"><div class="exact-handoff-head"><div class="exact-handoff-title"><strong>Exact-review handoff</strong><span>' + esc(health.message || "Queue phase telemetry") + '</span></div><span class="health-badge ' + esc(status) + '">' + esc(status) + '</span></div><div class="handoff-phases">' + phases + '</div><div class="handoff-foot"><span>' + esc(slots) + '</span><span>' + esc(threshold) + '</span></div></div>';
 }
 function renderWorkers(rows) {
   workerIndex = new Map(rows.map(worker => [String(worker.id), worker]));
@@ -9018,10 +9166,14 @@ function renderDashboard(data, note) {
   const applyAttention = (data.recent?.apply_health?.items || []).filter(item =>
     applyHealthNeedsAttention(item.status)
   ).length;
-  const needsAttention = unresolved || applyAttention;
+  const handoffStatus = data.exact_review_queue?.handoff_health?.status;
+  const handoffTelemetryFailed = Boolean(data.diagnostics?.exact_review_queue_error);
+  const handoffAttention =
+    handoffTelemetryFailed || handoffStatus === "degraded" || handoffStatus === "stalled";
+  const needsAttention = unresolved || applyAttention || handoffAttention;
   const workerCount = (data.workers || []).length;
   const repoCount = (data.source.target_repositories || []).length;
-  document.getElementById("hero-dot").className = "hero-dot " + (needsAttention ? "amber" : "ok");
+  document.getElementById("hero-dot").className = "hero-dot " + (handoffStatus === "stalled" ? "red" : needsAttention ? "amber" : "ok");
   document.getElementById("hero-headline").textContent =
     (needsAttention ? "Needs attention" : "All clear") + " — " +
     fmt.format(workerCount) + " claw worker" + (workerCount === 1 ? "" : "s") + " sweeping " +
@@ -9038,6 +9190,7 @@ function renderDashboard(data, note) {
     metric("Capacity", fleet.budget_used_percent + "%", "fleet utilization", fleet.budget_used_percent, "var(--green)")
   ].join("");
   renderSystemMap(data);
+  renderExactReviewHandoff(data.exact_review_queue);
   renderApplyHealth(data);
   renderAutomaticWork(data.automatic_work || []);
   renderWorkers(data.workers || []);

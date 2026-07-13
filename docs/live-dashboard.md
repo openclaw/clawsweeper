@@ -218,6 +218,22 @@ workflow state, check time, and retry time so an intentional pause cannot look
 like occupied executor capacity. Re-enabling the workflow does not require a
 queue mutation; the next status check resumes normal admission.
 
+The same endpoint exposes `handoff_health` plus oldest timestamps and ages for
+the pending, dispatching, and leased phases. New dispatch and claim transitions
+carry explicit phase timestamps. Rows written by an older deployment derive
+their phase start from the active dispatch or execution lease; a stale timestamp
+left by a rollback cannot override that newer lease, and a wholly unknown legacy
+age stays non-alarming. A claim is degraded after one third of the dispatch
+lease (bounded to 30-120 seconds) and stalled after two thirds (bounded to
+31-300 seconds), so operators see the failure before the lease expires and
+requeues. A blocked dispatcher with pending work is stalled; an intentionally
+paused dispatcher is degraded. `/api/status` includes this snapshot and the live
+dashboard renders the three phases, oldest age, available exact-review slots,
+and the current classification without changing queue capacity or storage
+schema. If the optional queue read fails, `/api/status` reports
+`exact_review_queue: null` and `diagnostics.exact_review_queue_error` without
+making the otherwise-current fleet snapshot eligible for stale fallback.
+
 Executors report the GitHub job outcome from their finalizer. Failure or
 cancellation clears the lease and requeues the item. Finalizer success remains
 provisional because GitHub can still cancel the run or fail a post-action; only
