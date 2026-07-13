@@ -2780,9 +2780,21 @@ jobs:
           MATRIX_JSON: ${{ needs.plan.outputs.matrix }}
         run: |
           set -euo pipefail
-          recovery_prompt="[clawsweeper-recovery-attempt=1]"
-          if [ -n "$ADDITIONAL_PROMPT" ]; then
-            recovery_prompt="$(printf '%s\n\n%s' "$ADDITIONAL_PROMPT" "$recovery_prompt")"
+          recovery_marker="[clawsweeper-recovery-attempt=1]"
+          max_additional_prompt_bytes=$((5000 - ${#recovery_marker} - 2))
+          additional_prompt_bytes="$(printf '%s' "$ADDITIONAL_PROMPT" | LC_ALL=C wc -c | tr -d '[:space:]')"
+          recovery_prefix="$ADDITIONAL_PROMPT"
+          if [ "$additional_prompt_bytes" -gt "$max_additional_prompt_bytes" ]; then
+            # The queue validates JavaScript string length. A UTF-8 byte cap is deliberately
+            # stricter, so no recovery delivery can exceed that character limit.
+            recovery_prefix="$(
+              set +o pipefail
+              printf '%s' "$ADDITIONAL_PROMPT" | LC_ALL=C head -c "$max_additional_prompt_bytes" | iconv -f UTF-8 -t UTF-8 -c
+            )"
+          fi
+          recovery_prompt="$recovery_marker"
+          if [ -n "$recovery_prefix" ]; then
+            recovery_prompt="$(printf '%s\n\n%s' "$recovery_prefix" "$recovery_marker")"
           fi
           failed_shards=""
           if [ -d failed-review-shards ]; then

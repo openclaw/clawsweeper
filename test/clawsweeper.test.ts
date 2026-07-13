@@ -2544,6 +2544,13 @@ test("sweep review recovery uses explicit failed shard artifacts", () => {
   assert.match(recoveryJob, /repos\/\$GITHUB_REPOSITORY\/dispatches/);
   assert.match(recoveryJob, /for attempt in 1 2 3/);
   assert.match(recoveryJob, /failed_recovery_dispatches/);
+  assert.match(
+    recoveryJob,
+    /max_additional_prompt_bytes=\$\(\(5000 - \$\{#recovery_marker\} - 2\)\)/,
+  );
+  assert.match(recoveryJob, /LC_ALL=C wc -c/);
+  assert.match(recoveryJob, /set \+o pipefail/);
+  assert.match(recoveryJob, /iconv -f UTF-8 -t UTF-8 -c/);
   assert.doesNotMatch(recoveryJob, /workflow run sweep\.yml/);
   assert.match(eventReviewJob, /RECOVERY_TARGET_BRANCH:/);
   assert.match(eventReviewJob, /RECOVERY_TARGET_BRANCH:-\$\(gh api/);
@@ -2565,6 +2572,10 @@ test("sweep review recovery uses explicit failed shard artifacts", () => {
     /React to target item completion[\s\S]*sourceAction == 'failed_review_shard_recovery'/,
   );
   assert.match(eventReviewJob, /\[ "\$REVIEW_ONLY" != "true" \]/);
+  assert.match(
+    eventReviewJob,
+    /Export exact review primary result[\s\S]*REVIEW_ONLY:[\s\S]*\[ "\$REVIEW_ONLY" = "true" \]/,
+  );
   assert.match(publishEventResult, /reviewOnly: process\.env\.REVIEW_ONLY === "true"/);
   assert.match(publishEventResult, /options\.reviewOnly \? \["--sync-comments-only"\] : \[\]/);
 });
