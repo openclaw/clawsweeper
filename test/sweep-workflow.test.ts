@@ -13,6 +13,7 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 import YAML from "yaml";
 
+import { ACTION_EVENT_RELATIVE_DATA_PATH_PATTERN_SOURCE } from "../dist/action-ledger.js";
 import { makeTreeReadOnlyForTest, restoreTreeModesForTest } from "../dist/clawsweeper.js";
 import { readText, tmpPrefix } from "./helpers.ts";
 
@@ -55,6 +56,73 @@ test("ledger-producing jobs initialize immutable workflow context", () => {
   assert.match(action, /CLAWSWEEPER_ACTION_LEDGER_FORCE=1/);
   assert.match(action, /CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT=\$output_root/);
   assert.match(action, /GITHUB_RUN_STARTED_AT=\$run_started_at/);
+});
+
+test("ledger-enabled apply commands use namespaced reports and preserve state projections", () => {
+  type WorkflowStep = { name?: string; uses?: string; run?: string };
+  type WorkflowJob = { steps?: WorkflowStep[] };
+  const workflow = YAML.parse(readText(".github/workflows/sweep.yml")) as {
+    jobs: Record<string, WorkflowJob>;
+  };
+  const reportPathPattern = new RegExp(ACTION_EVENT_RELATIVE_DATA_PATH_PATTERN_SOURCE);
+  const applyCommands: Array<{ job: string; step: string; command: string }> = [];
+
+  for (const [jobName, job] of Object.entries(workflow.jobs)) {
+    const steps = job.steps ?? [];
+    if (!steps.some((step) => step.uses?.endsWith("/setup-action-ledger"))) continue;
+    for (const step of steps) {
+      const lines = step.run?.split("\n") ?? [];
+      for (let index = 0; index < lines.length; index += 1) {
+        if (!lines[index]!.includes("pnpm run apply-decisions --")) continue;
+        const command = [lines[index]!];
+        while (command.at(-1)!.trimEnd().endsWith("\\") && index + 1 < lines.length) {
+          index += 1;
+          command.push(lines[index]!);
+        }
+        applyCommands.push({
+          job: jobName,
+          step: step.name ?? "unnamed",
+          command: command.join("\n"),
+        });
+      }
+    }
+  }
+
+  assert.equal(applyCommands.length, 4);
+  for (const { job, step, command } of applyCommands) {
+    const reportPathArgument = command.match(/--report-path\s+("[^"]+"|'[^']+'|[^\s\\]+)/)?.[1];
+    assert.ok(reportPathArgument, `${job}/${step} must set --report-path`);
+    const reportPath = reportPathArgument.replace(/^(['"])(.*)\1$/, "$2");
+    const representativePath = reportPath.replace(/\$\{?[A-Za-z_][A-Za-z0-9_]*\}?/g, "1");
+    assert.match(
+      representativePath,
+      reportPathPattern,
+      `${job}/${step} report path must satisfy the action-ledger namespace contract`,
+    );
+  }
+
+  const selectedSync = workflow.jobs.publish?.steps?.find(
+    (step) => step.name === "Sync selected review comments",
+  )?.run;
+  assert.ok(selectedSync);
+  assert.match(
+    selectedSync,
+    /--report-path artifacts\/selected-review-comment-apply-report\.json[\s\S]*cp artifacts\/selected-review-comment-apply-report\.json apply-report\.json[\s\S]*--report apply-report\.json/,
+  );
+
+  const checkpointApply = workflow.jobs["apply-existing"]?.steps?.find(
+    (step) => step.name === "Apply unchanged proposed decisions with checkpoints",
+  )?.run;
+  assert.ok(checkpointApply);
+  assert.match(
+    checkpointApply,
+    /--report-path "\.artifacts\/apply-reports\/apply-report-\$checkpoint\.json"[\s\S]*cp "\.artifacts\/apply-reports\/apply-report-\$checkpoint\.json" apply-report\.json/,
+  );
+  assert.match(
+    checkpointApply,
+    /merge-apply-reports --dir \.artifacts\/apply-reports --output apply-report\.json/,
+  );
+  assert.match(checkpointApply, /apply_publish_paths=\(records apply-report\.json\)/);
 });
 
 test("review and apply primary boundaries ignore ledger-only failures", () => {

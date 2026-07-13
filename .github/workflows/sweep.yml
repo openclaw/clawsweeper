@@ -2563,6 +2563,7 @@ jobs:
           timeout --kill-after=30s 840s pnpm run apply-decisions -- \
             --target-repo "$TARGET_REPO" \
             --skip-dashboard \
+            --report-path artifacts/selected-review-comment-apply-report.json \
             --item-numbers "$item_numbers" \
             --sync-comments-only \
             --apply-kind all \
@@ -2577,6 +2578,7 @@ jobs:
           if [ "$selected_comment_exit_code" -ne 0 ]; then
             exit "$selected_comment_exit_code"
           fi
+          cp artifacts/selected-review-comment-apply-report.json apply-report.json
           echo "sync_succeeded=true" >> "$GITHUB_OUTPUT"
           synced_count="$(pnpm run --silent workflow -- count-actions --report apply-report.json --action review_comment_synced)"
           pnpm run status -- \
@@ -3635,6 +3637,7 @@ jobs:
             pnpm run apply-decisions -- \
               --target-repo "$TARGET_REPO" \
               --skip-dashboard \
+              --report-path ".artifacts/apply-reports/apply-report-$checkpoint.json" \
               --limit 0 \
               --min-age-days "$min_age_days" \
               "${min_age_minutes_arg[@]}" \
@@ -3647,7 +3650,7 @@ jobs:
               --comment-sync-min-age-days "$comment_sync_min_age_days" \
               "${item_numbers_arg[@]}" \
               "${sync_comments_arg[@]}"
-            cp apply-report.json ".artifacts/apply-reports/apply-report-$checkpoint.json"
+            cp ".artifacts/apply-reports/apply-report-$checkpoint.json" apply-report.json
             result_count="$(pnpm run --silent workflow -- count-report --report ".artifacts/apply-reports/apply-report-$checkpoint.json")"
             synced_count="$(pnpm run --silent workflow -- count-actions --report ".artifacts/apply-reports/apply-report-$checkpoint.json" --action review_comment_synced)"
             if [ "$sync_open_pr_batch" = "true" ]; then
@@ -3694,6 +3697,7 @@ jobs:
             CLAWSWEEPER_APPLY_CHECKPOINT="$checkpoint" pnpm run apply-decisions -- \
               --target-repo "$TARGET_REPO" \
               --skip-dashboard \
+              --report-path ".artifacts/apply-reports/apply-report-$checkpoint.json" \
               --limit "$chunk_limit" \
               --min-age-days "$min_age_days" \
               "${min_age_minutes_arg[@]}" \
@@ -3710,7 +3714,6 @@ jobs:
               "${sync_comments_arg[@]}" \
               --artifact-dir .artifacts/apply-proof \
               --require-precomputed-pr-close-coverage-proof
-            cp apply-report.json ".artifacts/apply-reports/apply-report-$checkpoint.json"
             pnpm run workflow -- merge-apply-reports --dir .artifacts/apply-reports --output apply-report.json
             closed_in_chunk="$(pnpm run --silent workflow -- count-actions --report ".artifacts/apply-reports/apply-report-$checkpoint.json" --action closed)"
             result_count="$(pnpm run --silent workflow -- count-report --report ".artifacts/apply-reports/apply-report-$checkpoint.json")"
