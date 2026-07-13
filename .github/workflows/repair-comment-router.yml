@@ -220,6 +220,7 @@ jobs:
           echo "app_id=$app_id" >> "$GITHUB_OUTPUT"
 
       - name: Route ClawSweeper comments
+        id: route-comments
         env:
           GH_TOKEN: ${{ steps.app_token.outputs.token }}
           CLAWSWEEPER_AUTHENTICATED_APP_ID: ${{ steps.mutation-app.outputs.app_id }}
@@ -482,17 +483,31 @@ jobs:
             --rebase-strategy theirs
 
       - name: Finalize command action ledger
+        id: finalize-command-action-ledger
         if: ${{ always() && steps.setup-pnpm.outcome == 'success' }}
         run: |
           set -euo pipefail
           : "${CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT:?setup-action-ledger output root is required}"
           mkdir -p .artifacts
+          allow_empty_args=()
+          # Empty is valid only when this run's report proves no command lifecycle started.
+          if [ "${{ steps.route-comments.outcome }}" = "success" ] &&
+             jq -e '.commands_seen == 0' results/comment-router-latest.json >/dev/null 2>&1; then
+            allow_empty_args+=(--allow-empty)
+          fi
+          manifest_file=".artifacts/comment-router-command-action-ledger-manifest.json"
           pnpm run --silent repair:action-ledger -- finalize \
             --lane comment-router \
-            > .artifacts/comment-router-command-action-ledger-manifest.json
+            "${allow_empty_args[@]}" \
+            > "$manifest_file"
+          if [ -s "$manifest_file" ]; then
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Publish immutable command action ledger
-        if: ${{ always() && steps.setup-pnpm.outcome == 'success' }}
+        if: ${{ always() && steps.setup-pnpm.outcome == 'success' && steps.finalize-command-action-ledger.outputs.publish == 'true' }}
         run: |
           set -euo pipefail
           test -n "${CLAWSWEEPER_STATE_DIR:-}"

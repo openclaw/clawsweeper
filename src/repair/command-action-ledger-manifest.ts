@@ -33,7 +33,8 @@ export type CommandActionLedgerManifest = CommandActionLedgerManifestIdentity & 
 
 export async function finalizeCommandActionLedgerManifest(
   lane: string,
-): Promise<CommandActionLedgerManifest> {
+  options: { allowEmpty?: boolean } = {},
+): Promise<CommandActionLedgerManifest | null> {
   assertCommandActionLedgerLane(lane);
   const outputRoot = commandActionLedgerOutputRoot();
   const finalizedPaths = await flushCommandActionEvents();
@@ -44,6 +45,7 @@ export async function finalizeCommandActionLedgerManifest(
     }))
     .filter(({ events }) => events.some(commandActionEvent));
   if (commandShards.length === 0) {
+    if (options.allowEmpty) return null;
     throw new Error(`command action ledger lane ${lane} finalized no command event shards`);
   }
   for (const shard of commandShards) {

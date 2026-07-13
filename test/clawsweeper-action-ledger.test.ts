@@ -800,6 +800,11 @@ test("comment router publishes immutable command receipts for initial and retry 
   assertCommandFinalizerUsesCanonicalRoot(finalizeStep);
   assertCommandPublisherUsesCanonicalRoot(publishStep);
   assert.match(finalizeStep, /--lane comment-router/);
+  assert.match(finalizeStep, /steps\.route-comments\.outcome.*success/);
+  assert.match(finalizeStep, /\.commands_seen == 0/);
+  assert.match(finalizeStep, /allow_empty_args\+=\(--allow-empty\)/);
+  assert.match(finalizeStep, /echo "publish=false" >> "\$GITHUB_OUTPUT"/);
+  assert.match(publishStep, /steps\.finalize-command-action-ledger\.outputs\.publish == 'true'/);
   assert.match(publishStep, /--lane comment-router/);
   assert.match(publishStep, /repair:action-ledger -- publish/);
   assert.match(publishStep, /--message "chore: append command action ledger"/);
@@ -816,7 +821,7 @@ function assertCommandFinalizerUsesCanonicalRoot(step: string): void {
     /CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT:\?setup-action-ledger output root is required/,
   );
   assert.match(step, /repair:action-ledger -- finalize \\\n\s+--lane [a-z0-9-]+ \\\n/);
-  assert.match(step, /> \.artifacts\/[a-z0-9-]+-action-ledger-manifest\.json/);
+  assert.match(step, /> "\$manifest_file"/);
 }
 
 function assertCommandPublisherUsesCanonicalRoot(step: string): void {
@@ -838,5 +843,4 @@ function assertCommandPublisherUsesCanonicalRoot(step: string): void {
   assert.match(step, /if \[ ! -s "\$event_paths_file" \]; then[\s\S]*?exit 1[\s\S]*?fi/);
   assert.doesNotMatch(step, /command_shard_found/);
   assert.doesNotMatch(step, /\.created > 0/);
-  assert.doesNotMatch(step, /exit 0/);
 }

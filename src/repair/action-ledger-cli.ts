@@ -16,8 +16,10 @@ const args = parseArgs(argv);
 
 if (command === "finalize") {
   const lane = requiredArg(args.lane, "--lane");
-  const manifest = await finalizeCommandActionLedgerManifest(lane);
-  process.stdout.write(serializeCommandActionLedgerManifest(manifest));
+  const manifest = await finalizeCommandActionLedgerManifest(lane, {
+    allowEmpty: args.allowEmpty === true,
+  });
+  if (manifest) process.stdout.write(serializeCommandActionLedgerManifest(manifest));
 } else if (command === "publish") {
   const lane = requiredArg(args.lane, "--lane");
   const manifestPath = path.resolve(requiredArg(args.manifest, "--manifest"));
@@ -43,7 +45,7 @@ if (command === "finalize") {
   );
 } else {
   throw new Error(
-    "usage: action-ledger-cli.ts <finalize|publish> --lane name [--manifest path --source-root path --state-root path]",
+    "usage: action-ledger-cli.ts <finalize|publish> --lane name [--allow-empty --manifest path --source-root path --state-root path]",
   );
 }
 
@@ -55,13 +57,20 @@ function actionLedgerOutputRoot(): string {
 }
 
 function parseArgs(argv: readonly string[]) {
-  const parsed: { lane?: string; manifest?: string; sourceRoot?: string; stateRoot?: string } = {};
+  const parsed: {
+    lane?: string;
+    manifest?: string;
+    sourceRoot?: string;
+    stateRoot?: string;
+    allowEmpty?: boolean;
+  } = {};
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     if (arg === "--lane") parsed.lane = requiredValue(argv, ++index, arg);
     else if (arg === "--manifest") parsed.manifest = requiredValue(argv, ++index, arg);
     else if (arg === "--source-root") parsed.sourceRoot = requiredValue(argv, ++index, arg);
     else if (arg === "--state-root") parsed.stateRoot = requiredValue(argv, ++index, arg);
+    else if (arg === "--allow-empty") parsed.allowEmpty = true;
     else throw new Error(`unknown argument: ${arg}`);
   }
   return parsed;

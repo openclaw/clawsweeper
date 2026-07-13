@@ -59,8 +59,8 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Changed
 
-- Accepted package-manager argument separators in the action-ledger CLI so
-  command workflows can finalize and publish their immutable receipts.
+- Accepted package-manager argument separators in the action-ledger CLI and
+  allowed proven zero-command router runs to finish without empty publication.
 - Made action-ledger publication include every transactional import binding,
   added pre-dispatch apply and retry receipts with conservative unknown-outcome
   recovery, failed active apply items on runtime yield, preserved skipped apply

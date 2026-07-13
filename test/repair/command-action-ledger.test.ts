@@ -21,6 +21,34 @@ import {
 } from "../../dist/repair/command-action-ledger-manifest.js";
 import { forcedReplayCommandFields, readCommentRouterConfig } from "../../dist/repair/config.js";
 
+test("command manifest permits only explicitly empty finalization", async () => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "command-manifest-empty-")));
+  const outputRoot = path.join(root, "output");
+  fs.mkdirSync(outputRoot);
+  const previous = { ...process.env };
+  Object.assign(process.env, {
+    CLAWSWEEPER_ACTION_LEDGER_FORCE: "1",
+    CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT: outputRoot,
+  });
+
+  try {
+    assert.equal(
+      await finalizeCommandActionLedgerManifest("comment-router", { allowEmpty: true }),
+      null,
+    );
+    await assert.rejects(
+      finalizeCommandActionLedgerManifest("comment-router"),
+      /finalized no command event shards/,
+    );
+  } finally {
+    for (const key of Object.keys(process.env)) {
+      if (!(key in previous)) delete process.env[key];
+    }
+    Object.assign(process.env, previous);
+    fs.rmSync(root, { force: true, recursive: true });
+  }
+});
+
 test("command receipts preserve operation identity across explicit retry attempts", async () => {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "command-action-ledger-")));
   const outputRoot = path.join(root, "output");
@@ -80,6 +108,7 @@ test("command receipts preserve operation identity across explicit retry attempt
     await flushCommandActionEvents();
 
     const manifest = await finalizeCommandActionLedgerManifest("comment-router");
+    assert.ok(manifest);
     assert.equal(manifest.event_paths.length, 2);
     assert.deepEqual(
       parseCommandActionLedgerManifest(
