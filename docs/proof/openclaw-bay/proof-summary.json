@@ -1,6 +1,6 @@
 {
   "proof": "OpenClaw Bay deterministic Playwright browser proof",
-  "source_sha": "902c858b2afe18954210f3a650a5a16d8cfd6eb5",
+  "source_sha": "1e2e82c2d9a8b09592cf915016606b6f79a60f10",
   "route": "/bay-demo",
   "data_classification": "fully synthetic and redacted; no live/private dashboard payloads",
   "fixture_sha256": "F766EE78A4E8E4F41EA9F2F64C9C85DFE3D04D7962B647007F073F40AF94ADA5",
@@ -19,7 +19,7 @@
     }
   ],
   "derived_real_tide_snapshot_sha256": "18FAF63BD6529D1F4EB03BF880343E20244413F82FE62029F055AABC13F44DA9",
-  "generated_at": "2026-07-13T22:47:45.983Z",
+  "generated_at": "2026-07-13T23:27:48.832Z",
   "assertions": [
     {
       "name": "real Bay route loaded",
@@ -87,7 +87,7 @@
     {
       "name": "crustacean claw animation advances",
       "status": "PASS",
-      "elapsed_animation_ms": 317
+      "elapsed_animation_ms": 300
     },
     {
       "name": "forward transition raises READY flag",
@@ -97,7 +97,7 @@
       "name": "master sweeper animation advances",
       "status": "PASS",
       "phase": "sweeping",
-      "elapsed_animation_ms": 317
+      "elapsed_animation_ms": 283
     },
     {
       "name": "forward transition lands in reported lane",
@@ -109,7 +109,7 @@
       "status": "PASS",
       "source_hole": 1,
       "target_hole": 1,
-      "target_hole_opacity": 0.431039,
+      "target_hole_opacity": 0.392172,
       "label": "openclaw/openclaw#97722 burrowing"
     },
     {
@@ -158,7 +158,7 @@
     {
       "name": "layered preview tide visibly animates",
       "status": "PASS",
-      "elapsed_animation_ms": 50,
+      "elapsed_animation_ms": 67,
       "tide_layers": 3
     },
     {
@@ -176,7 +176,7 @@
       "status": "PASS",
       "duration": "520ms",
       "animation_name": "none",
-      "elapsed_ms": 638
+      "elapsed_ms": 617
     },
     {
       "name": "tide previews do not poll status",
@@ -474,11 +474,6 @@
       {
         "status": 200,
         "host": "bay-proof.test:8787",
-        "path": "/api/status"
-      },
-      {
-        "status": 200,
-        "host": "bay-proof.test:8787",
         "path": "/bay-assets/bay-background.webp"
       },
       {
@@ -489,7 +484,17 @@
       {
         "status": 200,
         "host": "bay-proof.test:8787",
+        "path": "/api/status"
+      },
+      {
+        "status": 200,
+        "host": "bay-proof.test:8787",
         "path": "/bay-assets/crustaceans-atlas.webp"
+      },
+      {
+        "status": 200,
+        "host": "bay-proof.test:8787",
+        "path": "/bay-assets/bay-background-portrait.webp"
       },
       {
         "status": 200,
