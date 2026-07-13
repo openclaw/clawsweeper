@@ -1977,22 +1977,27 @@ test("sweep review continuations stay workflow-dispatch compatible", () => {
   assert.match(continueBlock, /-f target_branch="\$\{\{ needs\.plan\.outputs\.target_branch \}\}"/);
 });
 
-test("failed review recovery enters the exact-review queue through repository dispatch", () => {
+test("failed review recovery waits for durable exact-review queue acknowledgement", () => {
   const workflow = readText(".github/workflows/sweep.yml");
   const recoveryBlock = workflow.slice(
     workflow.indexOf("\n  recover-review-failures:"),
     workflow.indexOf("\n\n  retry-failed-reviews:"),
   );
 
-  assert.match(recoveryBlock, /event_type: "clawsweeper_item"/);
   assert.match(recoveryBlock, /--arg target_repo "\$\{\{ needs\.plan\.outputs\.target_repo \}\}"/);
   assert.match(
     recoveryBlock,
     /--arg target_branch "\$\{\{ needs\.plan\.outputs\.target_branch \}\}"/,
   );
-  assert.match(recoveryBlock, /source_action: "failed_review_shard_recovery"/);
-  assert.match(recoveryBlock, /repos\/\$GITHUB_REPOSITORY\/dispatches/);
+  assert.match(recoveryBlock, /sourceAction: "failed_review_shard_recovery"/);
+  assert.match(recoveryBlock, /delivery_id: \("router:" \+ \$dispatch_key\)/);
+  assert.match(recoveryBlock, /\/internal\/exact-review\/enqueue/);
+  assert.match(
+    recoveryBlock,
+    /\.ok == true and \(\.queued == true or \.deduped == true or \.accepted == false\)/,
+  );
   assert.doesNotMatch(recoveryBlock, /workflow run sweep\.yml/);
+  assert.doesNotMatch(recoveryBlock, /repos\/\$GITHUB_REPOSITORY\/dispatches/);
   assert.match(recoveryBlock, /for attempt in 1 2 3/);
 });
 

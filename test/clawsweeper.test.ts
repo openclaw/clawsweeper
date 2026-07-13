@@ -2537,11 +2537,20 @@ test("sweep review recovery uses explicit failed shard artifacts", () => {
     workflow,
     /needs\.review\.result == 'failure' \|\| needs\.review\.result == 'cancelled'/,
   );
-  assert.match(recoveryJob, /contents: write/);
-  assert.match(recoveryJob, /event_type: "clawsweeper_item"/);
-  assert.match(recoveryJob, /source_action: "failed_review_shard_recovery"/);
-  assert.match(recoveryJob, /dispatch_key: \$dispatch_key/);
-  assert.match(recoveryJob, /repos\/\$GITHUB_REPOSITORY\/dispatches/);
+  assert.match(recoveryJob, /actions: read/);
+  assert.match(recoveryJob, /contents: read/);
+  assert.match(recoveryJob, /QUEUE_URL:/);
+  assert.match(recoveryJob, /CLAWSWEEPER_WEBHOOK_SECRET:/);
+  assert.match(recoveryJob, /delivery_id: \("router:" \+ \$dispatch_key\)/);
+  assert.match(recoveryJob, /sourceAction: "failed_review_shard_recovery"/);
+  assert.match(recoveryJob, /--arg dispatch_key/);
+  assert.match(recoveryJob, /x-clawsweeper-exact-review-signature/);
+  assert.match(recoveryJob, /\/internal\/exact-review\/enqueue/);
+  assert.match(
+    recoveryJob,
+    /\.ok == true and \(\.queued == true or \.deduped == true or \.accepted == false\)/,
+  );
+  assert.match(recoveryJob, /Recovery skipped because the target is disabled/);
   assert.match(recoveryJob, /for attempt in 1 2 3/);
   assert.match(recoveryJob, /failed_recovery_dispatches/);
   assert.match(
@@ -2552,6 +2561,7 @@ test("sweep review recovery uses explicit failed shard artifacts", () => {
   assert.match(recoveryJob, /set \+o pipefail/);
   assert.match(recoveryJob, /iconv -f UTF-8 -t UTF-8 -c/);
   assert.doesNotMatch(recoveryJob, /workflow run sweep\.yml/);
+  assert.doesNotMatch(recoveryJob, /repos\/\$GITHUB_REPOSITORY\/dispatches/);
   assert.match(eventReviewJob, /RECOVERY_TARGET_BRANCH:/);
   assert.match(eventReviewJob, /RECOVERY_TARGET_BRANCH:-\$\(gh api/);
   assert.match(eventReviewJob, /REVIEW_ONLY:/);

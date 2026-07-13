@@ -2762,8 +2762,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
-      actions: write
-      contents: write
+      actions: read
+      contents: read
     steps:
       - uses: actions/download-artifact@v8
         id: failed-shards
@@ -2778,8 +2778,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           ADDITIONAL_PROMPT: ${{ github.event.inputs.additional_prompt || '' }}
           MATRIX_JSON: ${{ needs.plan.outputs.matrix }}
+          QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
+          CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
         run: |
           set -euo pipefail
+          test -n "$CLAWSWEEPER_WEBHOOK_SECRET"
+          queue_url="${QUEUE_URL%/}"
           recovery_marker="[clawsweeper-recovery-attempt=1]"
           max_additional_prompt_bytes=$((5000 - ${#recovery_marker} - 2))
           additional_prompt_bytes="$(printf '%s' "$ADDITIONAL_PROMPT" | LC_ALL=C wc -c | tr -d '[:space:]')"
@@ -2850,28 +2854,42 @@ jobs:
               --arg codex_timeout_ms "${{ needs.plan.outputs.codex_timeout_ms }}" \
               --arg additional_prompt "$recovery_prompt" \
               '{
-                event_type: "clawsweeper_item",
-                client_payload: {
-                  target_repo: $target_repo,
-                  target_branch: $target_branch,
-                  item_number: ($item_number | tonumber),
-                  dispatch_key: $dispatch_key,
-                  source_action: "failed_review_shard_recovery",
-                  codex_timeout_ms: ($codex_timeout_ms | tonumber),
-                  additional_prompt: $additional_prompt
+                delivery_id: ("router:" + $dispatch_key),
+                decision: {
+                  targetRepo: $target_repo,
+                  targetBranch: $target_branch,
+                  itemNumber: ($item_number | tonumber),
+                  itemKind: "issue",
+                  sourceEvent: "issues",
+                  sourceAction: "failed_review_shard_recovery",
+                  supersedesInProgress: false,
+                  codexTimeoutMs: ($codex_timeout_ms | tonumber),
+                  additionalPrompt: $additional_prompt
                 }
               }')"
-            dispatched=false
+            queued=false
             for attempt in 1 2 3; do
-              if printf '%s' "$payload" | gh api --method POST "repos/$GITHUB_REPOSITORY/dispatches" --input -; then
-                dispatched=true
+              # shellcheck disable=SC2016 # The Node source must retain its literal template expression.
+              signature="$(PAYLOAD="$payload" node -e 'const crypto=require("node:crypto"); process.stdout.write(`sha256=${crypto.createHmac("sha256", process.env.CLAWSWEEPER_WEBHOOK_SECRET).update(process.env.PAYLOAD).digest("hex")}`)')"
+              response="$(curl --fail --silent --show-error --connect-timeout 5 --max-time 20 \
+                --request POST \
+                --header "content-type: application/json" \
+                --header "x-clawsweeper-exact-review-signature: $signature" \
+                --data "$payload" \
+                "$queue_url/internal/exact-review/enqueue")" || response=""
+              if jq -e '.ok == true and (.queued == true or .deduped == true or .accepted == false)' <<<"$response" >/dev/null; then
+                if jq -e '.accepted == false' <<<"$response" >/dev/null; then
+                  echo "Recovery skipped because the target is disabled."
+                fi
+                queued=true
                 break
               fi
+              echo "Recovery queue acknowledgement was not accepted on attempt $attempt." >&2
               if [ "$attempt" -lt 3 ]; then
                 sleep "$((attempt * 5))"
               fi
             done
-            if [ "$dispatched" != "true" ]; then
+            if [ "$queued" != "true" ]; then
               failed_recovery_dispatches+=("$item_number")
             fi
           done
