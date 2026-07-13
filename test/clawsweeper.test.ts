@@ -2571,7 +2571,11 @@ test("sweep review recovery uses explicit failed shard artifacts", () => {
   );
   assert.match(
     eventReviewJob,
-    /Queue exact verdict router[\s\S]*sourceAction != 'failed_review_shard_recovery'/,
+    /Route synced ClawSweeper verdict[\s\S]*sourceAction != 'failed_review_shard_recovery'/,
+  );
+  assert.match(
+    eventReviewJob,
+    /Queue deferred exact verdict router[\s\S]*sourceAction != 'failed_review_shard_recovery'/,
   );
   assert.match(
     eventReviewJob,
