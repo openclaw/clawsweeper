@@ -973,7 +973,10 @@ function startActionEventCrabFleetPost(
 export function importActionEventShards(
   sourceRoot: string,
   destinationRoot: string,
-  options: { expectedProducer?: ExpectedActionEventProducer | undefined } = {},
+  options: {
+    expectedProducer?: ExpectedActionEventProducer | undefined;
+    expectedEventPaths?: readonly string[] | undefined;
+  } = {},
 ): ActionEventShardImportResult {
   const emptyResult = (): ActionEventShardImportResult => ({
     created: 0,
@@ -983,21 +986,33 @@ export function importActionEventShards(
     completionPaths: [],
     paths: [],
   });
+  const expectedEventPaths = options.expectedEventPaths
+    ? validateExpectedActionEventPaths(options.expectedEventPaths)
+    : null;
   let safeSource: SafeReadRoot;
   try {
     safeSource = prepareSafeReadRoot(sourceRoot, "action event shard import source");
   } catch (error) {
-    if (isNotFoundError(error)) return emptyResult();
+    if (isNotFoundError(error) && expectedEventPaths === null) return emptyResult();
+    if (isNotFoundError(error)) {
+      throw new Error("action event shard manifest source root is missing");
+    }
     throw error;
   }
   let relativePaths: string[];
-  try {
-    relativePaths = collectActionEventShardFiles(safeSource);
-  } catch (error) {
-    if (isNotFoundError(error)) return emptyResult();
-    throw error;
+  if (expectedEventPaths) {
+    relativePaths = expectedEventPaths;
+  } else {
+    try {
+      relativePaths = collectActionEventShardFiles(safeSource);
+    } catch (error) {
+      if (isNotFoundError(error)) return emptyResult();
+      throw error;
+    }
   }
-  const shards = readImportedActionEventShards(safeSource, relativePaths);
+  const shards = readImportedActionEventShards(safeSource, relativePaths, {
+    requireManifestPaths: expectedEventPaths !== null,
+  });
   if (options.expectedProducer) {
     validateImportedActionEventProducer(shards, options.expectedProducer);
   }
@@ -1359,6 +1374,7 @@ function readImportedActionEventIdentityBinding(
 function readImportedActionEventShards(
   source: SafeReadRoot,
   relativePaths: readonly string[],
+  options: { requireManifestPaths?: boolean } = {},
 ): ImportedActionEventShard[] {
   let totalBytes = 0;
   const contents = relativePaths.map((relativePath) => {
@@ -1366,7 +1382,15 @@ function readImportedActionEventShards(
       throw new Error(`invalid action event shard path: ${relativePath}`);
     }
     const target = prepareSafeReadTarget(source, relativePath, "action event shard import source");
-    const content = readUtf8FileNoFollow(target, ACTION_EVENT_SHARD_IMPORT_LIMITS.maxFileBytes);
+    let content: string;
+    try {
+      content = readUtf8FileNoFollow(target, ACTION_EVENT_SHARD_IMPORT_LIMITS.maxFileBytes);
+    } catch (error) {
+      if (options.requireManifestPaths && isNotFoundError(error)) {
+        throw new Error(`action event shard manifest path is missing: ${relativePath}`);
+      }
+      throw error;
+    }
     const bytes = Buffer.byteLength(content, "utf8");
     totalBytes += bytes;
     if (totalBytes > ACTION_EVENT_SHARD_IMPORT_LIMITS.maxTotalBytes) {
@@ -1399,6 +1423,30 @@ function readImportedActionEventShards(
   }));
   validateCanonicalImportedShardBatch(validated);
   return validated;
+}
+
+function validateExpectedActionEventPaths(paths: readonly string[]): string[] {
+  if (paths.length === 0) {
+    throw new Error("action event shard manifest is empty");
+  }
+  if (paths.length > ACTION_EVENT_SHARD_IMPORT_LIMITS.maxFiles) {
+    throw new Error(
+      `action event shard manifest exceeds ${ACTION_EVENT_SHARD_IMPORT_LIMITS.maxFiles} event paths`,
+    );
+  }
+  const canonical = [...new Set(paths)].sort();
+  if (
+    canonical.length !== paths.length ||
+    canonical.some((value, index) => value !== paths[index])
+  ) {
+    throw new Error("action event shard manifest paths must be sorted and unique");
+  }
+  for (const relativePath of canonical) {
+    if (!ACTION_EVENT_SHARD_PATH_PATTERN.test(relativePath)) {
+      throw new Error(`invalid action event shard manifest path: ${relativePath}`);
+    }
+  }
+  return canonical;
 }
 
 function importedShardReplayEquivalent(

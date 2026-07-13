@@ -1,23 +1,48 @@
 #!/usr/bin/env node
+import fs from "node:fs";
 import path from "node:path";
 
 import { importActionEventShards } from "../action-ledger-runtime.js";
-import { flushCommandActionEvents } from "./command-action-ledger.js";
+import {
+  finalizeCommandActionLedgerManifest,
+  parseCommandActionLedgerManifest,
+  serializeCommandActionLedgerManifest,
+} from "./command-action-ledger-manifest.js";
 import { repoRoot } from "./paths.js";
 
 const [command, ...argv] = process.argv.slice(2);
+const args = parseArgs(argv);
 
 if (command === "finalize") {
-  const paths = await flushCommandActionEvents();
-  console.log(JSON.stringify({ paths }, null, 2));
+  const lane = requiredArg(args.lane, "--lane");
+  const manifest = await finalizeCommandActionLedgerManifest(lane);
+  process.stdout.write(serializeCommandActionLedgerManifest(manifest));
 } else if (command === "publish") {
-  const args = parseArgs(argv);
+  const lane = requiredArg(args.lane, "--lane");
+  const manifestPath = path.resolve(requiredArg(args.manifest, "--manifest"));
+  const manifest = parseCommandActionLedgerManifest(fs.readFileSync(manifestPath, "utf8"), lane);
   const sourceRoot = path.resolve(args.sourceRoot ?? actionLedgerOutputRoot());
   const stateRoot = path.resolve(args.stateRoot ?? repoRoot());
-  console.log(JSON.stringify(importActionEventShards(sourceRoot, stateRoot), null, 2));
+  console.log(
+    JSON.stringify(
+      importActionEventShards(sourceRoot, stateRoot, {
+        expectedProducer: {
+          repository: manifest.repository,
+          sha: manifest.sha,
+          workflow: manifest.workflow,
+          job: manifest.job,
+          runId: manifest.run_id,
+          runAttempt: manifest.run_attempt,
+        },
+        expectedEventPaths: manifest.event_paths,
+      }),
+      null,
+      2,
+    ),
+  );
 } else {
   throw new Error(
-    "usage: action-ledger-cli.ts <finalize|publish> [--source-root path --state-root path]",
+    "usage: action-ledger-cli.ts <finalize|publish> --lane name [--manifest path --source-root path --state-root path]",
   );
 }
 
@@ -29,10 +54,12 @@ function actionLedgerOutputRoot(): string {
 }
 
 function parseArgs(argv: readonly string[]) {
-  const parsed: { sourceRoot?: string; stateRoot?: string } = {};
+  const parsed: { lane?: string; manifest?: string; sourceRoot?: string; stateRoot?: string } = {};
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
-    if (arg === "--source-root") parsed.sourceRoot = requiredValue(argv, ++index, arg);
+    if (arg === "--lane") parsed.lane = requiredValue(argv, ++index, arg);
+    else if (arg === "--manifest") parsed.manifest = requiredValue(argv, ++index, arg);
+    else if (arg === "--source-root") parsed.sourceRoot = requiredValue(argv, ++index, arg);
     else if (arg === "--state-root") parsed.stateRoot = requiredValue(argv, ++index, arg);
     else throw new Error(`unknown argument: ${arg}`);
   }
@@ -42,5 +69,10 @@ function parseArgs(argv: readonly string[]) {
 function requiredValue(argv: readonly string[], index: number, flag: string): string {
   const value = argv[index];
   if (!value || value.startsWith("--")) throw new Error(`${flag} requires a value`);
+  return value;
+}
+
+function requiredArg(value: string | undefined, flag: string): string {
+  if (!value) throw new Error(`${flag} is required`);
   return value;
 }

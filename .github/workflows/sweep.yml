@@ -1250,35 +1250,35 @@ jobs:
         if: ${{ always() && steps.publish-event-result.outputs.requeue_latest == 'true' && steps.complete-exact-review-queue.outcome != 'success' }}
         run: exit 1
 
+      - name: Finalize late command status action ledger
+        if: ${{ always() && steps.setup-state.outcome == 'success' && steps.setup-pnpm.outcome == 'success' && steps.publish-event-result.outputs.requeue_latest == 'true' && steps.complete-exact-review-queue.outcome == 'success' }}
+        run: |
+          set -euo pipefail
+          : "${CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT:?setup-action-ledger output root is required}"
+          mkdir -p .artifacts
+          pnpm run --silent repair:action-ledger -- finalize \
+            --lane late-command-status \
+            > .artifacts/late-command-status-action-ledger-manifest.json
+
       - name: Publish late command status action ledger
         if: ${{ always() && steps.setup-state.outcome == 'success' && steps.setup-pnpm.outcome == 'success' && steps.publish-event-result.outputs.requeue_latest == 'true' && steps.complete-exact-review-queue.outcome == 'success' }}
         run: |
           set -euo pipefail
           test -n "${CLAWSWEEPER_STATE_DIR:-}"
           source_root="${CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT:?setup-action-ledger output root is required}"
-          if [ ! -d "$source_root/ledger" ]; then
-            echo "Expected late command status action event shards in $source_root, but none were finalized." >&2
-            exit 1
-          fi
-          command_shard_found=false
-          while IFS= read -r -d '' shard_path; do
-            if jq -e 'select(.event_type | startswith("command."))' "$shard_path" >/dev/null; then
-              command_shard_found=true
-              break
-            fi
-          done < <(find "$source_root/ledger/v1/events" -type f -name '*.jsonl' -print0)
-          if [ "$command_shard_found" != "true" ]; then
-            echo "Expected command receipt events, but the finalized shard set contained none." >&2
-            exit 1
-          fi
+          manifest_file=".artifacts/late-command-status-action-ledger-manifest.json"
+          test -s "$manifest_file"
           event_paths_file=".artifacts/late-command-status-action-ledger-paths.txt"
           import_result_file=".artifacts/late-command-status-action-ledger-import.json"
-          mkdir -p .artifacts
-          pnpm run --silent publish-action-events -- \
+          pnpm run --silent repair:action-ledger -- publish \
+            --lane late-command-status \
+            --manifest "$manifest_file" \
             --source-root "$source_root" \
             --state-root "$CLAWSWEEPER_STATE_DIR" > "$import_result_file"
-          if ! jq -e '.created > 0' "$import_result_file" >/dev/null; then
-            echo "Late command status action shards were expected but no new shards were imported." >&2
+          if ! jq -e --slurpfile manifest "$manifest_file" \
+            '.eventPaths == $manifest[0].event_paths' \
+            "$import_result_file" >/dev/null; then
+            echo "Imported late command status paths do not match the finalized manifest." >&2
             exit 1
           fi
           jq -r '.paths[]?' "$import_result_file" |

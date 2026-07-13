@@ -486,7 +486,10 @@ jobs:
         run: |
           set -euo pipefail
           : "${CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT:?setup-action-ledger output root is required}"
-          pnpm run --silent repair:action-ledger -- finalize
+          mkdir -p .artifacts
+          pnpm run --silent repair:action-ledger -- finalize \
+            --lane comment-router \
+            > .artifacts/comment-router-command-action-ledger-manifest.json
 
       - name: Publish immutable command action ledger
         if: ${{ always() && steps.setup-pnpm.outcome == 'success' }}
@@ -494,29 +497,19 @@ jobs:
           set -euo pipefail
           test -n "${CLAWSWEEPER_STATE_DIR:-}"
           source_root="${CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT:?setup-action-ledger output root is required}"
-          if [ ! -d "$source_root/ledger" ]; then
-            echo "Expected command action event shards in $source_root, but none were finalized." >&2
-            exit 1
-          fi
-          command_shard_found=false
-          while IFS= read -r -d '' shard_path; do
-            if jq -e 'select(.event_type | startswith("command."))' "$shard_path" >/dev/null; then
-              command_shard_found=true
-              break
-            fi
-          done < <(find "$source_root/ledger/v1/events" -type f -name '*.jsonl' -print0)
-          if [ "$command_shard_found" != "true" ]; then
-            echo "Expected command receipt events, but the finalized shard set contained none." >&2
-            exit 1
-          fi
+          manifest_file=".artifacts/comment-router-command-action-ledger-manifest.json"
+          test -s "$manifest_file"
           event_paths_file=".artifacts/command-action-ledger-paths.txt"
           import_result_file=".artifacts/command-action-ledger-import.json"
-          mkdir -p .artifacts
           pnpm run --silent repair:action-ledger -- publish \
+            --lane comment-router \
+            --manifest "$manifest_file" \
             --source-root "$source_root" \
             --state-root "$CLAWSWEEPER_STATE_DIR" > "$import_result_file"
-          if ! jq -e '.created > 0' "$import_result_file" >/dev/null; then
-            echo "Command action event shards were expected but no new shards were imported." >&2
+          if ! jq -e --slurpfile manifest "$manifest_file" \
+            '.eventPaths == $manifest[0].event_paths' \
+            "$import_result_file" >/dev/null; then
+            echo "Imported command action event paths do not match the finalized manifest." >&2
             exit 1
           fi
           jq -r '.paths[]?' "$import_result_file" |

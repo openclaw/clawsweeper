@@ -14,6 +14,11 @@ import {
   runCommandMutation,
   runCommandMutationWithRetry,
 } from "../../dist/repair/command-action-ledger.js";
+import {
+  finalizeCommandActionLedgerManifest,
+  parseCommandActionLedgerManifest,
+  serializeCommandActionLedgerManifest,
+} from "../../dist/repair/command-action-ledger-manifest.js";
 import { forcedReplayCommandFields, readCommentRouterConfig } from "../../dist/repair/config.js";
 
 test("command receipts preserve operation identity across explicit retry attempts", async () => {
@@ -73,6 +78,16 @@ test("command receipts preserve operation identity across explicit retry attempt
     ];
     recordCommandOutcome(retry);
     await flushCommandActionEvents();
+
+    const manifest = await finalizeCommandActionLedgerManifest("comment-router");
+    assert.equal(manifest.event_paths.length, 2);
+    assert.deepEqual(
+      parseCommandActionLedgerManifest(
+        serializeCommandActionLedgerManifest(manifest),
+        "comment-router",
+      ),
+      manifest,
+    );
 
     const events = readEvents(outputRoot);
     const attempts = Map.groupBy(events, (event) => String(event.attempt_id));

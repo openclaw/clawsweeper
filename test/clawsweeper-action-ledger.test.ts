@@ -799,6 +799,8 @@ test("comment router publishes immutable command receipts for initial and retry 
   assert.ok(publishStart > finalizeStart);
   assertCommandFinalizerUsesCanonicalRoot(finalizeStep);
   assertCommandPublisherUsesCanonicalRoot(publishStep);
+  assert.match(finalizeStep, /--lane comment-router/);
+  assert.match(publishStep, /--lane comment-router/);
   assert.match(publishStep, /repair:action-ledger -- publish/);
   assert.match(publishStep, /--message "chore: append command action ledger"/);
   assert.match(publishStep, /action_ledger_args\+=\(--path "\$event_path"\)/);
@@ -813,7 +815,8 @@ function assertCommandFinalizerUsesCanonicalRoot(step: string): void {
     step,
     /CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT:\?setup-action-ledger output root is required/,
   );
-  assert.match(step, /repair:action-ledger -- finalize/);
+  assert.match(step, /repair:action-ledger -- finalize \\\n\s+--lane [a-z0-9-]+ \\\n/);
+  assert.match(step, /> \.artifacts\/[a-z0-9-]+-action-ledger-manifest\.json/);
 }
 
 function assertCommandPublisherUsesCanonicalRoot(step: string): void {
@@ -821,15 +824,19 @@ function assertCommandPublisherUsesCanonicalRoot(step: string): void {
     step,
     /source_root="\$\{CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT:\?setup-action-ledger output root is required\}"/,
   );
+  assert.match(step, /manifest_file="\.artifacts\/[a-z0-9-]+-action-ledger-manifest\.json"/);
+  assert.match(step, /test -s "\$manifest_file"/);
+  assert.match(step, /repair:action-ledger -- publish/);
+  assert.match(step, /--lane [a-z0-9-]+/);
+  assert.match(step, /--manifest "\$manifest_file"/);
   assert.match(step, /--source-root "\$source_root"/);
-  assert.match(step, /if \[ ! -d "\$source_root\/ledger" \]; then[\s\S]*?exit 1[\s\S]*?fi/);
-  assert.match(step, /jq -e 'select\(\.event_type \| startswith\("command\."\)\)' "\$shard_path"/);
-  assert.match(step, /if \[ "\$command_shard_found" != "true" \]; then[\s\S]*?exit 1[\s\S]*?fi/);
   assert.match(
     step,
-    /if ! jq -e '\.created > 0' "\$import_result_file" >\/dev\/null; then[\s\S]*?exit 1[\s\S]*?fi/,
+    /jq -e --slurpfile manifest "\$manifest_file"[\s\S]*?'\.eventPaths == \$manifest\[0\]\.event_paths'/,
   );
   assert.match(step, /jq -r '\.paths\[\]\?' "\$import_result_file"/);
   assert.match(step, /if \[ ! -s "\$event_paths_file" \]; then[\s\S]*?exit 1[\s\S]*?fi/);
+  assert.doesNotMatch(step, /command_shard_found/);
+  assert.doesNotMatch(step, /\.created > 0/);
   assert.doesNotMatch(step, /exit 0/);
 }

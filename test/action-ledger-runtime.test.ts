@@ -3844,6 +3844,44 @@ test("state shard imports are validated, create-only, and conflict detecting", a
   );
 });
 
+test("manifest-bound imports reject a missing producer group before state publication", async () => {
+  const root = tempRoot();
+  const source = trustedChildRoot(root, "source");
+  const destination = trustedChildRoot(root, "destination");
+  recordReviewNumber(root, 42, workflowEnv({ CLAWSWEEPER_ACTION_LEDGER_INVOCATION: "initial" }));
+  const initialPaths = await flushWorkflowActionEvents(root, {
+    env: workflowEnv({ CLAWSWEEPER_ACTION_LEDGER_INVOCATION: "initial" }),
+    outputRoot: source,
+  });
+  recordReviewNumber(root, 43, workflowEnv({ CLAWSWEEPER_ACTION_LEDGER_INVOCATION: "retry" }));
+  const manifestPaths = await flushWorkflowActionEvents(root, {
+    env: workflowEnv({ CLAWSWEEPER_ACTION_LEDGER_INVOCATION: "retry" }),
+    outputRoot: source,
+  });
+  assert.equal(initialPaths.length, 1);
+  assert.equal(manifestPaths.length, 2);
+
+  fs.rmSync(path.join(source, initialPaths[0]!));
+  assert.throws(
+    () =>
+      importActionEventShards(source, destination, {
+        expectedEventPaths: manifestPaths,
+      }),
+    /action event shard manifest path is missing/,
+  );
+  assert.deepEqual(fs.readdirSync(destination), []);
+
+  await flushWorkflowActionEvents(root, {
+    env: workflowEnv({ CLAWSWEEPER_ACTION_LEDGER_INVOCATION: "retry" }),
+    outputRoot: source,
+  });
+  const imported = importActionEventShards(source, destination, {
+    expectedEventPaths: manifestPaths,
+  });
+  assert.equal(imported.created, 2);
+  assert.deepEqual(imported.eventPaths, manifestPaths);
+});
+
 test("state shard imports reject producer provenance outside the authenticated workflow job", async () => {
   const root = tempRoot();
   const source = trustedChildRoot(root, "source");
