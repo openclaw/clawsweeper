@@ -58,6 +58,7 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Changed
 
+- Expanded exact-review backlog capacity while making background review yield, released exact-review leases before ledger publication, and aggregated healthy retry scans into one bounded ledger summary.
 - Accepted package-manager argument separators in the action-ledger CLI and
   allowed proven zero-command router runs to finish without empty publication.
 - Made action-ledger publication include every transactional import binding,

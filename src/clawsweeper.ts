@@ -9404,7 +9404,6 @@ function runCodex(options: {
   serviceTier: string;
   forcedLoginMethod?: string;
   preserveCodexAuth?: boolean;
-  preferWindowsAppBinary?: boolean;
   timeoutMs: number;
   workDir: string;
   additionalPrompt?: string;
@@ -9489,7 +9488,6 @@ function runCodex(options: {
             preserveCodexAuth: options.preserveCodexAuth,
           }),
           CLAWSWEEPER_PROOF_SCRATCH_DIR: proofScratchDir,
-          ...(options.preferWindowsAppBinary ? { CLAWSWEEPER_PREFER_WINDOWS_CODEX_APP: "1" } : {}),
         },
         input: prompt,
         stderrPath: join(options.workDir, `${options.item.number}.${attempt}.codex.stderr.log`),
@@ -21260,7 +21258,7 @@ function finishReviewActionLedger(options: {
 function reviewCommand(args: Args): void {
   const profile = repoFromArgs(args);
   // `--local-range` is inherently a local, offline operation, so it implies `--local-only`
-  // (no GitHub writes, and the local Codex auth / Windows-launcher path in runCodex below).
+  // (no GitHub writes, and the local Codex auth path in runCodex below).
   const localRange = boolArg(args.local_range);
   const localOnly = boolArg(args.local_only) || localRange;
   const verbose = boolArg(args.verbose);
@@ -22322,7 +22320,6 @@ function reviewCommand(args: Args): void {
           serviceTier,
           forcedLoginMethod,
           preserveCodexAuth: localOnly,
-          preferWindowsAppBinary: localOnly,
           timeoutMs,
           workDir: codexWorkDir,
           additionalPrompt,
@@ -23563,6 +23560,10 @@ function reviewRetryIdempotencySlot(
     : "retry_observation";
 }
 
+export function reviewRetryActionNeedsItemEventForTest(action: FailedReviewRetryAction): boolean {
+  return action !== "skipped_not_failed_review";
+}
+
 export function reviewRetryBatchEventDisposition(
   actions: readonly FailedReviewRetryAction[],
   failure: ReturnType<typeof actionLedgerFailureDisposition> | null = null,
@@ -23642,6 +23643,9 @@ function recordFailedReviewRetryEvents(options: {
   const operationIdentity = options.ledger.operationIdentity;
   let dispatchOutcomeUnknownEventId: string | null = null;
   for (const [index, result] of options.results.entries()) {
+    // Healthy records dominate the hourly scan. Keep their count in the batch
+    // terminal event instead of creating thousands of immutable no-op receipts.
+    if (!reviewRetryActionNeedsItemEventForTest(result.action)) continue;
     const disposition = reviewRetryActionDisposition(result.action);
     const reportMarkdown =
       result.reportPath && existsSync(result.reportPath)

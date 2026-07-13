@@ -15,10 +15,25 @@ import {
 
 export type CodexSpawnInvocation = CommandInvocation;
 
-export function codexProcessCommand(env: NodeJS.ProcessEnv = process.env): string {
+export function codexProcessCommand(
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+  cwd = process.cwd(),
+): string {
   const configured = env.CODEX_BIN?.trim();
   if (configured) return configured;
-  if (process.platform === "win32" && env.CLAWSWEEPER_PREFER_WINDOWS_CODEX_APP === "1") {
+  if (platform === "win32") {
+    try {
+      const pathInvocation = resolveSpawnCommand("codex", [], {
+        cwd,
+        env,
+        missingCommandMessage: "Unable to resolve Windows Codex command: codex",
+        platform,
+      });
+      if (windowsInvocationIsSpawnable(pathInvocation)) return "codex";
+    } catch {
+      // Fall through to the Desktop app fallback below.
+    }
     const appBinary = windowsCodexAppBinary(env);
     if (appBinary) return appBinary;
   }
@@ -31,7 +46,7 @@ export function codexSpawnInvocation(
   platform: NodeJS.Platform = process.platform,
   cwd = process.cwd(),
 ): CodexSpawnInvocation {
-  const configuredCommand = codexProcessCommand(env);
+  const configuredCommand = codexProcessCommand(env, platform, cwd);
   return resolveSpawnCommand(configuredCommand, args, {
     cwd,
     env,
@@ -113,4 +128,8 @@ function windowsCodexAppBinary(env: NodeJS.ProcessEnv): string | null {
   if (!localAppData) return null;
   const candidate = join(localAppData, "OpenAI", "Codex", "bin", "codex.exe");
   return existsSync(candidate) ? candidate : null;
+}
+
+function windowsInvocationIsSpawnable(invocation: CommandInvocation): boolean {
+  return invocation.command === process.execPath || /\.(?:com|exe)$/i.test(invocation.command);
 }

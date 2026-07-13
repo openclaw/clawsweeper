@@ -10,6 +10,7 @@ import {
   itemSourceRevisionSha256ForTest,
   isInfrastructureFailedReviewForTest,
   preserveFailedReviewRetryMetadataForTest,
+  reviewRetryActionNeedsItemEventForTest,
 } from "../dist/clawsweeper.js";
 import { tmpPrefix, withMockGh, workPlanCandidateReport } from "./helpers.ts";
 
@@ -124,6 +125,13 @@ function runFailedIssueRetry(
     ...extraArgs,
   ]);
 }
+
+test("failed review retry aggregates large healthy scans without item receipts", () => {
+  const actions = Array.from({ length: 6_500 }, () => "skipped_not_failed_review" as const);
+  assert.equal(actions.filter(reviewRetryActionNeedsItemEventForTest).length, 0);
+  assert.equal(reviewRetryActionNeedsItemEventForTest("skipped_live_fetch_failed"), true);
+  assert.equal(reviewRetryActionNeedsItemEventForTest("dispatched_failed_review_retry"), true);
+});
 
 test("failed review retry eligibility requires infrastructure failure and matching live head", () => {
   const markdown = failedReviewReport();

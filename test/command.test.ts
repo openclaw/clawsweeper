@@ -240,12 +240,14 @@ process.exit(1);
   }
 });
 
-test("local exact review labels Codex failures without a stack trace", () => {
+test("local exact review selects PATH Codex instead of the Desktop app binary", () => {
   const root = mkdtempSync(join(tmpdir(), "cmd-"));
   const origin = join(root, "origin.git");
   const targetDir = join(root, "target");
   const artifactDir = join(root, "artifacts");
   const binDir = join(root, "bin");
+  const localAppData = join(root, "local-app-data");
+  const codexMarker = join(root, "path-codex-ran.txt");
   try {
     execFileSync("git", ["init", "--bare", origin], { stdio: "ignore" });
     execFileSync("git", ["init", targetDir], { stdio: "ignore" });
@@ -324,9 +326,13 @@ process.exit(1);
     chmodSync(ghPath, 0o755);
 
     const codexPath = join(binDir, "codex");
+    const desktopCodexDir = join(localAppData, "OpenAI", "Codex", "bin");
+    mkdirSync(desktopCodexDir, { recursive: true });
+    writeFileSync(join(desktopCodexDir, "codex.exe"), "");
     writeFileSync(
       codexPath,
       `#!/usr/bin/env node
+require("node:fs").writeFileSync(${JSON.stringify(codexMarker)}, "path\\n");
 process.stdin.resume();
 process.stdin.on("end", () => process.exit(1));
 `,
@@ -350,7 +356,7 @@ process.stdin.on("end", () => process.exit(1));
         encoding: "utf8",
         env: {
           ...process.env,
-          CODEX_BIN: codexPath,
+          LOCALAPPDATA: localAppData,
           ...mockGhBinEnv(ghPath),
           PATH: `${binDir}${delimiter}${process.env.PATH ?? ""}`,
         },
@@ -369,6 +375,7 @@ process.stdin.on("end", () => process.exit(1));
     assert.doesNotMatch(result.stderr, /Review complete/);
     assert.doesNotMatch(result.stderr, /\n\s+at /);
     assert.match(readFileSync(join(artifactDir, "96221.md"), "utf8"), /review_status: failed/);
+    assert.equal(readFileSync(codexMarker, "utf8"), "path\n");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

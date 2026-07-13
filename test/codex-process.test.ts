@@ -24,6 +24,16 @@ const tmpPrefix = join(tmpdir(), "clawsweeper-codex-process-test-");
 test("Codex process resolves command overrides and escaped Windows launchers", () => {
   assert.equal(codexProcessCommand({}), "codex");
   assert.equal(codexProcessCommand({ CODEX_BIN: "  custom-codex  " }), "custom-codex");
+  assert.equal(
+    codexProcessCommand(
+      {
+        CODEX_BIN: "custom-codex",
+        CLAWSWEEPER_PREFER_WINDOWS_CODEX_APP: "1",
+      },
+      "win32",
+    ),
+    "custom-codex",
+  );
   assert.deepEqual(codexSpawnInvocation(["exec", "-"], { CODEX_BIN: "codex" }, "linux"), {
     command: "codex",
     args: ["exec", "-"],
@@ -45,6 +55,7 @@ test("Codex process resolves command overrides and escaped Windows launchers", (
   const root = mkdtempSync(tmpPrefix);
   const binDir = join(root, "bin");
   mkdirSync(binDir);
+  writeFileSync(join(binDir, "codex"), "#!/bin/sh\r\n");
   writeFileSync(join(binDir, "codex.cmd"), "@echo off\r\n");
   try {
     const invocation = codexSpawnInvocation(
@@ -72,6 +83,74 @@ test("Codex process resolves command overrides and escaped Windows launchers", (
       ),
     /Unable to resolve Windows Codex command/,
   );
+});
+
+test("Windows Codex selection prefers PATH and falls back to the Desktop app", () => {
+  const root = mkdtempSync(tmpPrefix);
+  const pathBin = join(root, "path-bin");
+  const unsupportedBin = join(root, "unsupported-bin");
+  const fallbackPathBin = join(root, "fallback-path-bin");
+  const localAppData = join(root, "local-app-data");
+  const desktopCodex = join(localAppData, "OpenAI", "Codex", "bin", "codex.exe");
+  mkdirSync(pathBin);
+  mkdirSync(unsupportedBin);
+  mkdirSync(fallbackPathBin);
+  mkdirSync(join(localAppData, "OpenAI", "Codex", "bin"), { recursive: true });
+  writeFileSync(join(pathBin, "codex.exe"), "");
+  writeFileSync(join(unsupportedBin, "codex"), "#!/bin/sh\r\n");
+  writeFileSync(join(fallbackPathBin, "codex.exe"), "");
+  writeFileSync(desktopCodex, "");
+  try {
+    const pathEnv = {
+      LOCALAPPDATA: localAppData,
+      Path: pathBin,
+      PATHEXT: ".EXE",
+      SystemRoot: String.raw`C:\Windows`,
+    };
+    const pathInvocation = codexSpawnInvocation(["exec"], pathEnv, "win32", root);
+    assert.equal(pathInvocation.command, join(pathBin, "codex.exe"));
+
+    const desktopEnv = { ...pathEnv, Path: "" };
+    assert.equal(codexProcessCommand(desktopEnv, "win32", root), desktopCodex);
+    const desktopInvocation = codexSpawnInvocation(["exec"], desktopEnv, "win32", root);
+    assert.equal(desktopInvocation.command, desktopCodex);
+
+    const unsupportedEnv = { ...pathEnv, Path: unsupportedBin };
+    assert.equal(codexProcessCommand(unsupportedEnv, "win32", root), desktopCodex);
+    const unsupportedInvocation = codexSpawnInvocation(["exec"], unsupportedEnv, "win32", root);
+    assert.equal(unsupportedInvocation.command, desktopCodex);
+
+    const laterPathEnv = { ...pathEnv, Path: `${unsupportedBin}${delimiter}${fallbackPathBin}` };
+    const laterPathInvocation = codexSpawnInvocation(["exec"], laterPathEnv, "win32", root);
+    assert.equal(laterPathInvocation.command, join(fallbackPathBin, "codex.exe"));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("Windows Codex selection resolves relative PATH entries from the launch cwd", () => {
+  const root = mkdtempSync(tmpPrefix);
+  const launcherDir = join(root, "launcher");
+  const targetDir = join(root, "target");
+  const localAppData = join(root, "local-app-data");
+  const desktopCodex = join(localAppData, "OpenAI", "Codex", "bin", "codex.exe");
+  mkdirSync(launcherDir);
+  mkdirSync(join(targetDir, "bin"), { recursive: true });
+  mkdirSync(join(localAppData, "OpenAI", "Codex", "bin"), { recursive: true });
+  writeFileSync(join(targetDir, "bin", "codex.exe"), "");
+  writeFileSync(desktopCodex, "");
+  try {
+    const env = {
+      LOCALAPPDATA: localAppData,
+      Path: "bin",
+      PATHEXT: ".EXE",
+      SystemRoot: String.raw`C:\Windows`,
+    };
+    assert.equal(codexProcessCommand(env, "win32", launcherDir), desktopCodex);
+    assert.equal(codexProcessCommand(env, "win32", targetDir), "codex");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("Codex process resolves extensionless Windows node shebang shims", () => {

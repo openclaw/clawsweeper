@@ -68,8 +68,9 @@ unset OPENAI_API_KEY
 ```
 
 If the wrong Codex binary is used, set `CODEX_BIN` in the local shell for that
-run. On Windows, the runner prefers the Codex app binary under
-`%LOCALAPPDATA%\OpenAI\Codex\bin\codex.exe` when `--local-only` is used.
+run. Otherwise, `--local-only` uses the first spawnable `codex` command on
+`PATH`, including on Windows. If no Windows PATH command is spawnable, it falls
+back to the installed Codex Desktop binary.
 
 ## Target Checkout Modes
 

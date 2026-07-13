@@ -163,18 +163,23 @@ function resolveWindowsCommand(
   const extensions = (windowsEnvironmentValue(env, "PATHEXT") || ".COM;.EXE;.BAT;.CMD")
     .split(";")
     .filter(Boolean);
-  const candidates = [command, ...extensions.map((extension) => `${command}${extension}`)];
+  let unsupportedExtensionlessCommand: string | undefined;
   for (const directory of (windowsEnvironmentValue(env, "PATH") || "")
     .split(delimiter)
     .filter(Boolean)) {
-    for (const candidate of candidates) {
-      const parent = resolve(cwd, directory);
+    const parent = resolve(cwd, directory);
+    for (const candidate of extensions.map((extension) => `${command}${extension}`)) {
       const filePath = resolve(parent, candidate);
       const actualPath = actualCasePath(parent, candidate);
       if (actualPath || existsSync(filePath)) return actualPath ?? filePath;
     }
+    const extensionlessCommand = actualCasePath(parent, command) ?? resolve(parent, command);
+    if (existsSync(extensionlessCommand)) {
+      if (nodeShebangScript(extensionlessCommand)) return extensionlessCommand;
+      unsupportedExtensionlessCommand ??= extensionlessCommand;
+    }
   }
-  return undefined;
+  return unsupportedExtensionlessCommand;
 }
 
 function actualCasePath(parent: string, candidate: string): string | undefined {
