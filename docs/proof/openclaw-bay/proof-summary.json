@@ -1,6 +1,6 @@
 {
   "proof": "OpenClaw Bay deterministic Playwright browser proof",
-  "source_sha": "2d5793c1a0e1b39fd174c3d743118845152eaab6",
+  "source_sha": "d4390494189680c25a2aa8fa9454df5f332613a9",
   "route": "/bay-demo",
   "data_classification": "fully synthetic and redacted; no live/private dashboard payloads",
   "fixture_sha256": "FC584F8F0521221B77897384BDEB3A167E85AA6C17708A7783740FCDF363CD21",
@@ -18,8 +18,8 @@
       "sha256": "39DA760BF2E1A9E982404B2F27ABAE8649EF18B21A20E558787921D314BFC4C0"
     }
   ],
-  "derived_real_tide_snapshot_sha256": "1B1B049ECB65CA4548053E92C99373B6A900B76E409A75029E596E7754746049",
-  "generated_at": "2026-07-12T14:00:47.968Z",
+  "derived_real_tide_snapshot_sha256": "B7F86FC41DC7D3868D9BA17793C262B5A2BA0D4FC5871157A2A8B13768EED880",
+  "generated_at": "2026-07-13T17:50:13.231Z",
   "assertions": [
     {
       "name": "real Bay route loaded",
@@ -37,9 +37,10 @@
       "title": "Synthetic proof fixture: optional telemetry unavailable [REDACTED]"
     },
     {
-      "name": "explicit terminal pools populated",
+      "name": "completed and attention pools keep terminal outcomes distinct",
       "status": "PASS",
       "completed": 1,
+      "attention": 2,
       "failed": 1,
       "cancelled": 1
     },
@@ -56,7 +57,7 @@
       "name": "master sweeper animation advances",
       "status": "PASS",
       "phase": "sweeping",
-      "elapsed_animation_ms": 300
+      "elapsed_animation_ms": 283
     },
     {
       "name": "forward transition lands in reported lane",
@@ -68,7 +69,7 @@
       "status": "PASS",
       "source_hole": 1,
       "target_hole": 1,
-      "target_hole_opacity": 0.392151,
+      "target_hole_opacity": 0.352446,
       "label": "openclaw/openclaw#97722 burrowing"
     },
     {
@@ -117,7 +118,7 @@
     {
       "name": "layered preview tide visibly animates",
       "status": "PASS",
-      "elapsed_animation_ms": 250,
+      "elapsed_animation_ms": 200,
       "tide_layers": 3
     },
     {
@@ -135,7 +136,7 @@
       "status": "PASS",
       "duration": "520ms",
       "animation_name": "none",
-      "elapsed_ms": 629
+      "elapsed_ms": 614
     },
     {
       "name": "tide previews do not poll status",
@@ -146,20 +147,21 @@
     {
       "name": "dense completed pool renders every buffered outcome",
       "status": "PASS",
-      "completed": 9,
+      "completed": 20,
       "overflow_notes": 0
     },
     {
-      "name": "dense terminal pool keeps references readable at constrained width",
+      "name": "completed pool keeps visible references readable at constrained width",
       "status": "PASS",
-      "references": 9,
+      "references": 12,
       "overlaps": false,
-      "columns": "2"
+      "columns": "2",
+      "overflow": "+8 more in the tide buffer"
     },
     {
       "name": "real tide washes terminal outcomes before clearing",
       "status": "PASS",
-      "washed_terminal_count": 9,
+      "washed_terminal_count": 20,
       "preview_class_used": false,
       "terminal_after": 0,
       "countdown": "0 / 20",
@@ -294,7 +296,7 @@
     {
       "id": "15-dense-terminal-pool",
       "title": "Dense completed pool uses the available shoreline",
-      "detail": "Nine completed outcomes stay individually visible, with staggered three-column placement and no hidden overflow.",
+      "detail": "Twenty completed outcomes stay individually visible, with a larger four-column pool and no hidden overflow.",
       "storyboard_panel": 15
     },
     {
