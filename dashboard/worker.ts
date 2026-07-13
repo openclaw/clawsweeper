@@ -490,17 +490,20 @@ export class ExactReviewQueue {
         }
 
         const state = this.readStateSync();
+        // A delayed or lost alarm must not let an expired one-shot recovery
+        // suppress the next failed shard's recovery delivery.
+        reclaimExpiredExactReviewLeases(state, now);
         const key = exactReviewItemKey(decision);
         const current = state.items[key];
         const nextAttemptAt = exactReviewQueueEnqueueAttemptAt(state, now);
         if (current) {
           const ignoredRecovery =
-            current.state === "pending" &&
-            decision.sourceAction === FAILED_REVIEW_SHARD_RECOVERY_SOURCE_ACTION &&
-            current.decision.sourceAction !== FAILED_REVIEW_SHARD_RECOVERY_SOURCE_ACTION;
-          // A pending command has no executor yet, so an ordinary item event must not erase its
-          // acknowledgement context. Once dispatched, that lease already owns the context and a
-          // newer revision should start clean unless it carries its own command fields.
+            decision.sourceAction === FAILED_REVIEW_SHARD_RECOVERY_SOURCE_ACTION;
+          // A recovery is only a one-shot repair of a failed shard. It may create a queue item,
+          // but must never supersede an existing pending, dispatching, or leased decision: doing
+          // so can leave either ordinary work or another recovery as a stale follow-up revision.
+          // Ordinary source events retain normal replacement behavior, including the
+          // command-context merge for pending items.
           if (!ignoredRecovery) {
             current.decision =
               current.state === "pending"

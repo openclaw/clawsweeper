@@ -2687,6 +2687,172 @@ test("failed shard recovery does not replace an already-pending ordinary event",
   assert.equal(state.items["openclaw/gogcli#710"].nextAttemptAt, ordinary.nextAttemptAt);
 });
 
+test("failed shard recovery does not replace an ordinary active lease", async () => {
+  const storage = new MemoryDurableStorage();
+  await storage.put("exact-review-queue", {
+    deliveries: {},
+    items: {
+      "openclaw/openclaw#710": leasedExactReviewQueueItem(710, "7102"),
+    },
+  });
+  const queue = new ExactReviewQueue({ storage }, {});
+
+  assert.equal(
+    (
+      await queue.fetch(
+        buildExactReviewQueueRequest(
+          "failed-shard-recovery-active-lease",
+          710,
+          "failed_review_shard_recovery",
+          "issue",
+          "openclaw/openclaw",
+        ),
+      )
+    ).status,
+    202,
+  );
+
+  const beforeComplete = (await storage.get("exact-review-queue")) as {
+    items: Record<
+      string,
+      {
+        state: string;
+        revision: number;
+        decision: { sourceAction: string };
+        leaseDecision?: { sourceAction: string };
+      }
+    >;
+  };
+  const ordinary = beforeComplete.items["openclaw/openclaw#710"];
+  assert.equal(ordinary.state, "leased");
+  assert.equal(ordinary.revision, 1);
+  assert.equal(ordinary.decision.sourceAction, "opened");
+  assert.equal(ordinary.leaseDecision?.sourceAction, "opened");
+
+  const response = await queue.fetch(
+    new Request("https://clawsweeper-exact-review-queue/reconcile", {
+      method: "POST",
+      body: JSON.stringify({
+        runs: [
+          {
+            run_id: "7102",
+            run_attempt: 1,
+            claimed_run_attempt: 1,
+            claim_generation: 1,
+            outcome: "success",
+          },
+        ],
+      }),
+    }),
+  );
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { ok: true, reconciled: 1, requeued: 0, completed: 1 });
+  const afterComplete = (await storage.get("exact-review-queue")) as {
+    items: Record<string, unknown>;
+  };
+  assert.equal(afterComplete.items["openclaw/openclaw#710"], undefined);
+});
+
+test("failed shard recovery does not replace an active recovery lease", async () => {
+  const storage = new MemoryDurableStorage();
+  const recovery = leasedExactReviewQueueItem(710, "7103");
+  recovery.decision.sourceAction = "failed_review_shard_recovery";
+  recovery.leaseDecision.sourceAction = "failed_review_shard_recovery";
+  await storage.put("exact-review-queue", {
+    deliveries: {},
+    items: { "openclaw/openclaw#710": recovery },
+  });
+  const queue = new ExactReviewQueue({ storage }, {});
+
+  assert.equal(
+    (
+      await queue.fetch(
+        buildExactReviewQueueRequest(
+          "failed-shard-recovery-active-recovery",
+          710,
+          "failed_review_shard_recovery",
+          "issue",
+          "openclaw/openclaw",
+        ),
+      )
+    ).status,
+    202,
+  );
+
+  const beforeComplete = (await storage.get("exact-review-queue")) as {
+    items: Record<string, { state: string; revision: number; decision: { sourceAction: string } }>;
+  };
+  const activeRecovery = beforeComplete.items["openclaw/openclaw#710"];
+  assert.equal(activeRecovery.state, "leased");
+  assert.equal(activeRecovery.revision, 1);
+  assert.equal(activeRecovery.decision.sourceAction, "failed_review_shard_recovery");
+
+  const response = await queue.fetch(
+    new Request("https://clawsweeper-exact-review-queue/reconcile", {
+      method: "POST",
+      body: JSON.stringify({
+        runs: [
+          {
+            run_id: "7103",
+            run_attempt: 1,
+            claimed_run_attempt: 1,
+            claim_generation: 1,
+            outcome: "success",
+          },
+        ],
+      }),
+    }),
+  );
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { ok: true, reconciled: 1, requeued: 0, completed: 1 });
+  const afterComplete = (await storage.get("exact-review-queue")) as {
+    items: Record<string, unknown>;
+  };
+  assert.equal(afterComplete.items["openclaw/openclaw#710"], undefined);
+});
+
+test("failed shard recovery replaces an expired recovery lease", async () => {
+  const storage = new MemoryDurableStorage();
+  const expiredRecovery = leasedExactReviewQueueItem(710, "7104");
+  expiredRecovery.decision.sourceAction = "failed_review_shard_recovery";
+  expiredRecovery.leaseDecision.sourceAction = "failed_review_shard_recovery";
+  expiredRecovery.leaseExpiresAt = Date.now() - 1;
+  await storage.put("exact-review-queue", {
+    deliveries: {},
+    items: { "openclaw/openclaw#710": expiredRecovery },
+  });
+  const queue = new ExactReviewQueue({ storage }, {});
+
+  assert.equal(
+    (
+      await queue.fetch(
+        buildExactReviewQueueRequest(
+          "failed-shard-recovery-expired-recovery",
+          710,
+          "failed_review_shard_recovery",
+          "issue",
+          "openclaw/openclaw",
+        ),
+      )
+    ).status,
+    202,
+  );
+
+  const state = (await storage.get("exact-review-queue")) as {
+    items: Record<
+      string,
+      { state: string; revision: number; decision: { sourceAction: string }; leaseId?: string }
+    >;
+  };
+  const replacement = state.items["openclaw/openclaw#710"];
+  assert.equal(replacement.state, "pending");
+  assert.equal(replacement.revision, 1);
+  assert.equal(replacement.decision.sourceAction, "failed_review_shard_recovery");
+  assert.equal(replacement.leaseId, undefined);
+});
+
 test("exact-review queue defers a coordination-held failure until the lease expires", async () => {
   const storage = new MemoryDurableStorage();
   const retryAt = Date.now() + 45 * 60_000;
