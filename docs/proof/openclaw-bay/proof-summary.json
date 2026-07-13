@@ -1,25 +1,25 @@
 {
   "proof": "OpenClaw Bay deterministic Playwright browser proof",
-  "source_sha": "d4390494189680c25a2aa8fa9454df5f332613a9",
+  "source_sha": "f29ded97b2174d60342cc63d41eed342aa64aa53",
   "route": "/bay-demo",
   "data_classification": "fully synthetic and redacted; no live/private dashboard payloads",
-  "fixture_sha256": "FC584F8F0521221B77897384BDEB3A167E85AA6C17708A7783740FCDF363CD21",
+  "fixture_sha256": "F766EE78A4E8E4F41EA9F2F64C9C85DFE3D04D7962B647007F073F40AF94ADA5",
   "fixture_snapshots": [
     {
       "file": "fixtures/01-initial.json",
-      "sha256": "F052DEC5FD41FB83AB5237076DDE644A2363332580242AEE3B5C4ECB359BAEB0"
+      "sha256": "9D6CA7EDD926508DBB3DB7ED3B8328405F8404E16AEE303AE9057CA6B3BA0397"
     },
     {
       "file": "fixtures/02-forward.json",
-      "sha256": "34AA3F22C198D67C3FB6B9E9731C13ACD55E37E27BD829FABA54399124A2A0E2"
+      "sha256": "7D102233EE8A63E7987DAAB53A231C1DD35008C0734A771119488BC54F4499C9"
     },
     {
       "file": "fixtures/03-retrigger.json",
-      "sha256": "39DA760BF2E1A9E982404B2F27ABAE8649EF18B21A20E558787921D314BFC4C0"
+      "sha256": "9BAF0B764E413369EC8D9554D731A4E6B008B2DCB266B5D2837E94E820CEEBFE"
     }
   ],
-  "derived_real_tide_snapshot_sha256": "B7F86FC41DC7D3868D9BA17793C262B5A2BA0D4FC5871157A2A8B13768EED880",
-  "generated_at": "2026-07-13T17:50:13.231Z",
+  "derived_real_tide_snapshot_sha256": "18FAF63BD6529D1F4EB03BF880343E20244413F82FE62029F055AABC13F44DA9",
+  "generated_at": "2026-07-13T22:37:07.925Z",
   "assertions": [
     {
       "name": "real Bay route loaded",
@@ -45,6 +45,46 @@
       "cancelled": 1
     },
     {
+      "name": "journey timing names the trigger-to-final-review duration",
+      "status": "PASS",
+      "text": "LAST HOUR\nAVG TRIGGER → FINAL REVIEW 12M\n4 JOURNEYS"
+    },
+    {
+      "name": "portrait layout stacks the workflow from sand to waterline without horizontal overflow",
+      "status": "PASS",
+      "scroll_width": 390,
+      "viewport_width": 390,
+      "grid_columns": "364px",
+      "stages": [
+        {
+          "left": 13,
+          "top": 576,
+          "bottom": 796
+        },
+        {
+          "left": 13,
+          "top": 796,
+          "bottom": 1016
+        },
+        {
+          "left": 13,
+          "top": 1016,
+          "bottom": 1236
+        },
+        {
+          "left": 13,
+          "top": 1236,
+          "bottom": 1456
+        },
+        {
+          "left": 13,
+          "top": 1456,
+          "bottom": 1676
+        }
+      ],
+      "terminal_top": 1704
+    },
+    {
       "name": "crustacean claw animation advances",
       "status": "PASS",
       "elapsed_animation_ms": 300
@@ -57,7 +97,7 @@
       "name": "master sweeper animation advances",
       "status": "PASS",
       "phase": "sweeping",
-      "elapsed_animation_ms": 283
+      "elapsed_animation_ms": 300
     },
     {
       "name": "forward transition lands in reported lane",
@@ -69,7 +109,7 @@
       "status": "PASS",
       "source_hole": 1,
       "target_hole": 1,
-      "target_hole_opacity": 0.352446,
+      "target_hole_opacity": 0.392061,
       "label": "openclaw/openclaw#97722 burrowing"
     },
     {
@@ -118,7 +158,7 @@
     {
       "name": "layered preview tide visibly animates",
       "status": "PASS",
-      "elapsed_animation_ms": 200,
+      "elapsed_animation_ms": 283,
       "tide_layers": 3
     },
     {
@@ -136,7 +176,7 @@
       "status": "PASS",
       "duration": "520ms",
       "animation_name": "none",
-      "elapsed_ms": 614
+      "elapsed_ms": 606
     },
     {
       "name": "tide previews do not poll status",
@@ -216,100 +256,106 @@
       "storyboard_panel": 1
     },
     {
+      "id": "01b-portrait-workflow",
+      "title": "Portrait workflow: top to bottom",
+      "detail": "Phone portrait mode stacks Arriving through Applying vertically, then places the terminal pools at the waterline without horizontal scrolling.",
+      "storyboard_panel": 2
+    },
+    {
       "id": "02-ready-for-sweep",
       "title": "Forward transition: READY",
       "detail": "The item remains in Reviewing and raises its flag before any lane movement.",
-      "storyboard_panel": 2
+      "storyboard_panel": 3
     },
     {
       "id": "03-physical-forward-sweep",
       "title": "Forward transition: physical sweep",
       "detail": "The master and item are animated together; neither disappears between lanes.",
-      "storyboard_panel": 3
+      "storyboard_panel": 4
     },
     {
       "id": "04-forward-landed",
       "title": "Forward transition complete",
       "detail": "The same GitHub reference is now visibly placed in Repairing.",
-      "storyboard_panel": 4
+      "storyboard_panel": 5
     },
     {
       "id": "05-retrigger-tunnel",
       "title": "New run detected: retrigger tunnel",
       "detail": "A changed run ID digs from Repairing back toward Setting up with both tunnel openings visible.",
-      "storyboard_panel": 5
+      "storyboard_panel": 6
     },
     {
       "id": "06-retrigger-resurfaced",
       "title": "Retrigger resurfaced",
       "detail": "The same GitHub reference reappears in Setting up for its new run.",
-      "storyboard_panel": 6
+      "storyboard_panel": 7
     },
     {
       "id": "07-search-highlight",
       "title": "Where's my crustacean?",
       "detail": "Search focuses and highlights GitHub reference #97722 without another network request.",
-      "storyboard_panel": 7
+      "storyboard_panel": 8
     },
     {
       "id": "08-repository-filter",
       "title": "Repository waters filter",
       "detail": "Only openclaw/clawhub active and terminal items remain visible.",
-      "storyboard_panel": 8
+      "storyboard_panel": 9
     },
     {
       "id": "09-detail-drawer-links",
       "title": "Read-only detail drawer",
       "detail": "The selected item exposes only safe GitHub item, job, and workflow-run links.",
-      "storyboard_panel": 9
+      "storyboard_panel": 10
     },
     {
       "id": "10-preview-tide-incoming",
       "title": "Tide incoming along the shoreline",
       "detail": "Layered translucent water, painted texture, foam, ripples, and bubbles approach the terminal pools.",
-      "storyboard_panel": 10
+      "storyboard_panel": 11
     },
     {
       "id": "11-preview-tide-crest",
       "title": "Foam crest washes the terminal pools",
       "detail": "Terminal crustaceans drift seaward only inside the temporary local preview; live outcomes remain unchanged.",
-      "storyboard_panel": 11
+      "storyboard_panel": 12
     },
     {
       "id": "12-preview-tide-backwash",
       "title": "Backwash leaves a wet-sand sheen",
       "detail": "The water and foam recede toward the illustrated sea while the preview crustaceans return.",
-      "storyboard_panel": 12
+      "storyboard_panel": 13
     },
     {
       "id": "13-preview-tide-restored",
       "title": "Preview returns to live state",
       "detail": "The shoreline is restored and every terminal crustacean returns after the non-mutating preview.",
-      "storyboard_panel": 13
+      "storyboard_panel": 14
     },
     {
       "id": "14-preview-tide-reduced-motion",
       "title": "Reduced-motion tide cue",
       "detail": "Motion-sensitive users receive a brief static shoreline wash with the same non-mutating semantics.",
-      "storyboard_panel": 14
+      "storyboard_panel": 15
     },
     {
       "id": "15-dense-terminal-pool",
       "title": "Dense completed pool uses the available shoreline",
       "detail": "Twenty completed outcomes stay individually visible, with a larger four-column pool and no hidden overflow.",
-      "storyboard_panel": 15
+      "storyboard_panel": 16
     },
     {
       "id": "16-real-tide-cleared",
       "title": "Real tide clears only after the wash",
       "detail": "A generated tide first moves the proved terminal crustaceans seaward, then commits the empty shared buffer.",
-      "storyboard_panel": 16
+      "storyboard_panel": 17
     },
     {
       "id": "17-visible-proof-diagnostics",
       "title": "Network and state boundary",
       "detail": "Visible diagnostics confirm no GitHub API or mutation request, unchanged preview data, and a proved real clear.",
-      "storyboard_panel": 17
+      "storyboard_panel": 18
     }
   ],
   "tide_isolation": {
@@ -391,6 +437,12 @@
       {
         "method": "GET",
         "host": "bay-proof.test:8787",
+        "path": "/bay-assets/bay-background-portrait.webp",
+        "resource_type": "image"
+      },
+      {
+        "method": "GET",
+        "host": "bay-proof.test:8787",
         "path": "/api/status",
         "resource_type": "fetch"
       },
@@ -438,6 +490,11 @@
         "status": 200,
         "host": "bay-proof.test:8787",
         "path": "/bay-assets/crustaceans-atlas.webp"
+      },
+      {
+        "status": 200,
+        "host": "bay-proof.test:8787",
+        "path": "/bay-assets/bay-background-portrait.webp"
       },
       {
         "status": 200,
