@@ -16,7 +16,8 @@ The sequence proves:
 - the read-only drawer's safe GitHub item, job, and workflow-run links;
 - the local-only tide preview advancing through incoming, crest, backwash, and restored states while preserving terminal keys and count;
 - the short static reduced-motion tide cue preserving the same preview state;
-- nine completed outcomes fitting individually in the expanded terminal pool without a hidden overflow, including a two-column constrained-width layout with no reference-label intersections; and
+- completed and failed/cancelled outcomes grouped into their respective terminal pools;
+- twenty completed outcomes fitting individually in the expanded terminal pool without a hidden overflow at the standard desktop width, plus a constrained-width layout that keeps twelve labels readable and makes the remaining eight explicit; and
 - a generated real tide visibly washing terminal crustaceans before clearing the shared buffer; and
 - zero browser-to-GitHub API requests, mutation requests, console errors, or
   uncaught page errors.

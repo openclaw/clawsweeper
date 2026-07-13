@@ -120,7 +120,7 @@ const terminalBuffer = [
     runId: 5003,
   }),
 ];
-const denseTerminalBuffer = Array.from({ length: 9 }, (_, index) =>
+const denseTerminalBuffer = Array.from({ length: 20 }, (_, index) =>
   terminal({
     repository: "openclaw/openclaw",
     number: 97101 + index,
@@ -406,14 +406,20 @@ try {
     text: await page.locator("#notice").innerText(),
     title: await page.locator("#notice").getAttribute("title"),
   });
+  const terminalPoolCounts = {
+    completed: await page.locator('[data-stage="completed"] .critter').count(),
+    attention: await page.locator(".pool.attention .critter").count(),
+    failed: await page.locator(".pool.attention .terminal-failed").count(),
+    cancelled: await page.locator(".pool.attention .terminal-cancelled").count(),
+  };
   assertProof(
-    "explicit terminal pools populated",
-    (await page.locator(".pool .critter").count()) === 3,
-    {
-      completed: await page.locator('[data-stage="completed"] .critter').count(),
-      failed: await page.locator('[data-stage="failed"] .critter').count(),
-      cancelled: await page.locator('[data-stage="cancelled"] .critter').count(),
-    },
+    "completed and attention pools keep terminal outcomes distinct",
+    (await page.locator(".pool .critter").count()) === 3 &&
+      terminalPoolCounts.completed === 1 &&
+      terminalPoolCounts.attention === 2 &&
+      terminalPoolCounts.failed === 1 &&
+      terminalPoolCounts.cancelled === 1,
+    terminalPoolCounts,
   );
   await capture(
     "01-initial-diagnostics",
@@ -728,7 +734,7 @@ try {
     await window.__bayProofPoll();
   });
   await page.waitForFunction(
-    () => document.querySelectorAll('[data-stage="completed"] .critter[data-key]').length === 9,
+    () => document.querySelectorAll('[data-stage="completed"] .critter[data-key]').length === 20,
     null,
     { timeout: 3_000 },
   );
@@ -767,25 +773,28 @@ try {
         references: references.length,
         overlaps,
         columns: document.querySelector('[data-stage="completed"]')?.getAttribute("data-cols"),
+        overflow:
+          document.querySelector('[data-stage="completed"] .overflow-note')?.textContent || null,
       };
     });
   assertProof(
-    "dense terminal pool keeps references readable at constrained width",
-    narrowTerminalPool.references === denseTerminalBuffer.length &&
+    "completed pool keeps visible references readable at constrained width",
+    narrowTerminalPool.references === 12 &&
       narrowTerminalPool.columns === "2" &&
+      narrowTerminalPool.overflow === "+8 more in the tide buffer" &&
       !narrowTerminalPool.overlaps,
     narrowTerminalPool,
   );
   await page.setViewportSize({ width: 1900, height: 1000 });
   await page.waitForFunction(
-    () => document.querySelector('[data-stage="completed"]')?.getAttribute("data-cols") === "3",
+    () => document.querySelector('[data-stage="completed"]')?.getAttribute("data-cols") === "4",
     null,
     { timeout: 3_000 },
   );
   await capture(
     "15-dense-terminal-pool",
     "Dense completed pool uses the available shoreline",
-    "Nine completed outcomes stay individually visible, with staggered three-column placement and no hidden overflow.",
+    "Twenty completed outcomes stay individually visible, with a larger four-column pool and no hidden overflow.",
   );
   const activeBeforeRealTide = await page
     .locator(".stage .critter[data-key]")
