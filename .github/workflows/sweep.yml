@@ -876,6 +876,16 @@ jobs:
             gh api "repos/$TARGET_REPO/issues/comments/$lease_id" --method DELETE
             echo "Released unsuccessful review lease comment $lease_id owned by $LEASE_OWNER."
           done <<< "$lease_ids"
+          reaction_ids="$(
+            gh api "repos/$TARGET_REPO/issues/$ITEM_NUMBER/reactions?content=eyes&per_page=100" \
+              --paginate \
+              --jq '.[] | select(.content == "eyes") | select(.user.login == "clawsweeper" or .user.login == "clawsweeper[bot]" or .user.login == "openclaw-clawsweeper[bot]") | .id'
+          )"
+          while IFS= read -r reaction_id; do
+            [ -n "$reaction_id" ] || continue
+            gh api "repos/$TARGET_REPO/issues/$ITEM_NUMBER/reactions/$reaction_id" --method DELETE
+            echo "Removed unsuccessful eyes reaction $reaction_id from $TARGET_REPO#$ITEM_NUMBER."
+          done <<< "$reaction_ids"
 
       - name: Route synced ClawSweeper verdict
         id: route-synced-verdict

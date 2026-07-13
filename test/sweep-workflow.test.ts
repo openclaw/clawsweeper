@@ -416,6 +416,8 @@ test("exact event publish and routing require a successful fresh review artifact
   assert.match(releaseUnsuccessfulStep, /owner=\$LEASE_OWNER/);
   assert.match(releaseUnsuccessfulStep, /issues\/comments\/\$lease_id/);
   assert.match(releaseUnsuccessfulStep, /--method DELETE/);
+  assert.match(releaseUnsuccessfulStep, /reactions\?content=eyes/);
+  assert.match(releaseUnsuccessfulStep, /Removed unsuccessful eyes reaction/);
   assert.match(publisher, /"--event-apply-proof"/);
   assert.match(publisher, /exactEventApplyProof\(/);
   assert.match(publisher, /const requeueLatestExpected = applyDisposition === "source_drift"/);
