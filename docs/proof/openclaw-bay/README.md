@@ -66,9 +66,9 @@ crabbox run \
 
 ## Provenance and privacy
 
-- implementation source: `f29ded97b2174d60342cc63d41eed342aa64aa53`
+- implementation source: `902c858b2afe18954210f3a650a5a16d8cfd6eb5`
 - provider: Crabbox `local-container`
-- lease: `cbx_9ac7a8ff69a6` (`silver-prawn`)
+- lease: `cbx_9bf3670d17f9` (`jade-prawn`)
 - image: `mcr.microsoft.com/playwright:v1.60.0-noble`
 - fixture SHA-256:
   `F766EE78A4E8E4F41EA9F2F64C9C85DFE3D04D7962B647007F073F40AF94ADA5`
