@@ -150,7 +150,7 @@ function snapshot(workers) {
       last_tide_at: null,
       washed_at: null,
       timings: {
-        sample_kind: "latest_completed_jobs",
+        sample_kind: "completed_review_journeys",
         window_minutes: 60,
         overall: { samples: 4, average_ms: 742000 },
       },
@@ -421,11 +421,65 @@ try {
       terminalPoolCounts.cancelled === 1,
     terminalPoolCounts,
   );
+  const timingSummary = await page.locator("#overall-average").innerText();
+  assertProof(
+    "journey timing names the trigger-to-final-review duration",
+    /Avg trigger.*final review/i.test(timingSummary) && /4 journeys/i.test(timingSummary),
+    { text: timingSummary },
+  );
   await capture(
     "01-initial-diagnostics",
     "Synthetic, redacted status fixture",
     "Real Bay route and assets; visible partial-telemetry diagnostic; three explicit terminal outcomes.",
   );
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.waitForFunction(() =>
+    document.getElementById("stage-grid")?.classList.contains("portrait-stack"),
+  );
+  await page.waitForTimeout(140);
+  const portraitLayout = await page.evaluate(() => {
+    const stages = Array.from(document.querySelectorAll("#stage-grid .stage")).map((stage) => {
+      const rect = stage.getBoundingClientRect();
+      return {
+        left: Math.round(rect.left),
+        top: Math.round(rect.top),
+        bottom: Math.round(rect.bottom),
+      };
+    });
+    const terminal = document.getElementById("terminal-stack")?.getBoundingClientRect();
+    const grid = document.getElementById("stage-grid");
+    return {
+      scroll_width: document.documentElement.scrollWidth,
+      viewport_width: window.innerWidth,
+      grid_columns: getComputedStyle(grid).gridTemplateColumns,
+      stages,
+      terminal_top: Math.round(terminal?.top || 0),
+    };
+  });
+  assertProof(
+    "portrait layout stacks the workflow from sand to waterline without horizontal overflow",
+    portraitLayout.scroll_width <= portraitLayout.viewport_width + 1 &&
+      portraitLayout.stages.length === 5 &&
+      portraitLayout.stages.every((stage, index, stages) =>
+        index === 0
+          ? stage.left >= 0
+          : Math.abs(stage.left - stages[0].left) <= 2 && stage.top >= stages[index - 1].bottom,
+      ) &&
+      portraitLayout.terminal_top >= portraitLayout.stages.at(-1).bottom,
+    portraitLayout,
+  );
+  await capture(
+    "01b-portrait-workflow",
+    "Portrait workflow: top to bottom",
+    "Phone portrait mode stacks Arriving through Applying vertically, then places the terminal pools at the waterline without horizontal scrolling.",
+  );
+  await page.setViewportSize({ width: 1900, height: 1000 });
+  await page.waitForFunction(
+    () => !document.getElementById("stage-grid")?.classList.contains("portrait-stack"),
+  );
+  await page.waitForTimeout(140);
+  await page.evaluate(() => window.scrollTo(0, 0));
 
   await page.locator('[data-brush="change"]').click();
   await page.evaluate(() => {

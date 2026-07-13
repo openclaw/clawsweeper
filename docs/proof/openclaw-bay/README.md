@@ -8,6 +8,8 @@ dashboard data, credentials, or GitHub API traffic.
 The sequence proves:
 
 - visible partial-telemetry diagnostics;
+- the Bay timing badge naming its bounded **review trigger → final review** measurement, completed by the command-status update emitted after the durable review summary;
+- a 390px portrait layout that stacks Arriving through Applying vertically, keeps the terminal pools at the waterline, and has no horizontal page overflow;
 - advancing crustacean-claw and master-sweeper animations;
 - a READY flag followed by a physical forward sweep and landing;
 - a changed run ID using the retrigger tunnel and resurfacing path;
@@ -25,11 +27,11 @@ The sequence proves:
 ## Artifacts
 
 - [`playwright-proof-storyboard.jpg`](playwright-proof-storyboard.jpg) is a
-  labelled 17-state contact sheet that can be inspected without video codecs.
+  labelled 18-state contact sheet that can be inspected without video codecs.
 - [`trace.zip`](trace.zip) is the Playwright action, DOM snapshot, and network
   trace. Open it with
   `npx --yes playwright@1.60.0 show-trace docs/proof/openclaw-bay/trace.zip`.
-- [`proof-summary.json`](proof-summary.json) records all 25 passing assertions,
+- [`proof-summary.json`](proof-summary.json) records all 27 passing assertions,
   sanitized request/response metadata, safe drawer links, the unchanged
   terminal keys before and after both preview modes, and the proved real-tide
   clear.

@@ -10,9 +10,10 @@ import worker, {
   ExactReviewQueue,
   exactReviewQueueCapacity,
   exactReviewQueueStatusSnapshot,
+  mergeBayJourneyState,
   mergeBayTerminalState,
   StatusStore,
-  summarizeBayTimings,
+  summarizeBayJourneyTimings,
   workerWorkKind,
 } from "../dashboard/worker.ts";
 import {
@@ -137,8 +138,8 @@ test("OpenClaw Bay is an unlisted, hardened demo route", async () => {
   assert.match(body, /function terminalCapacity\(stage\)/);
   assert.match(body, /stage==="completed"&&terminalStack&&terminalStack\.clientWidth>=340\?20:12/);
   assert.match(body, /columns===4/);
-  assert.match(body, /Avg end-to-end/);
-  assert.match(body, /Awaiting a timed run/);
+  assert.match(body, /Avg trigger → final review/);
+  assert.match(body, /Awaiting a completed journey/);
   assert.match(body, /more in the tide buffer/);
   assert.match(body, /lane-nudge/);
   assert.match(body, /id="overall-average"/);
@@ -420,36 +421,237 @@ test("OpenClaw Bay shares a bounded 20-outcome tide buffer", () => {
   assert.equal(expiredWash.recently_washed.length, 0);
 });
 
-test("OpenClaw Bay averages only evidenced end-to-end timings from the last hour", () => {
+test("OpenClaw Bay averages completed trigger-to-summary journeys from the last hour", () => {
   const generatedAt = "2026-07-11T12:00:00.000Z";
-  const freshCompletedAt = "2026-07-11T11:45:00.000Z";
-  const timings = summarizeBayTimings(
+  const journeys = mergeBayJourneyState(
+    null,
     [
       {
-        outcome: "success",
-        terminal_outcome: "success",
-        completed_at: freshCompletedAt,
-        total_duration_ms: 180_000,
+        repository: "openclaw/openclaw",
+        number: 100,
+        source_comment_id: 1,
+        triggered_at: "2026-07-11T11:42:00.000Z",
       },
       {
-        outcome: "failure",
-        terminal_outcome: "failure",
+        repository: "openclaw/openclaw",
+        number: 200,
+        source_comment_id: 2,
+        triggered_at: "2026-07-11T11:26:00.000Z",
+      },
+      {
+        repository: "openclaw/openclaw",
+        number: 300,
+        source_comment_id: 3,
+        triggered_at: "2026-07-11T10:00:00.000Z",
+      },
+    ],
+    [
+      {
+        repository: "openclaw/openclaw",
+        number: 100,
+        source_comment_id: 1,
+        completed_at: "2026-07-11T11:45:00.000Z",
+        completion_kind: "final_command_status",
+        completion_comment_id: 11,
+      },
+      {
+        repository: "openclaw/openclaw",
+        number: 200,
+        source_comment_id: 2,
         completed_at: "2026-07-11T11:30:00.000Z",
-        total_duration_ms: 240_000,
+        completion_kind: "final_command_status",
+        completion_comment_id: 12,
       },
       {
-        outcome: "cancelled",
-        terminal_outcome: "cancelled",
+        repository: "openclaw/openclaw",
+        number: 300,
+        source_comment_id: 3,
         completed_at: "2026-07-11T10:59:59.000Z",
-        total_duration_ms: 9_999_999,
+        completion_kind: "final_command_status",
+        completion_comment_id: 13,
       },
     ],
     generatedAt,
   );
+  const timings = summarizeBayJourneyTimings(journeys.journeys, generatedAt);
 
   assert.equal(timings.window_minutes, 60);
   assert.equal("lanes" in timings, false);
   assert.deepEqual(timings.overall, { average_ms: 210_000, samples: 2 });
+  assert.equal(timings.sample_kind, "completed_review_journeys");
+});
+
+test("OpenClaw Bay retains a completed journey for each edit of the same command", () => {
+  const first = mergeBayJourneyState(
+    null,
+    [
+      {
+        repository: "openclaw/openclaw",
+        number: 540,
+        source_comment_id: 456,
+        triggered_at: "2026-07-13T12:00:00Z",
+      },
+    ],
+    [
+      {
+        repository: "openclaw/openclaw",
+        number: 540,
+        source_comment_id: 456,
+        completed_at: "2026-07-13T12:05:00Z",
+        completion_comment_id: 790,
+      },
+    ],
+    "2026-07-13T12:06:00Z",
+  );
+  const second = mergeBayJourneyState(
+    first,
+    [
+      {
+        repository: "openclaw/openclaw",
+        number: 540,
+        source_comment_id: 456,
+        triggered_at: "2026-07-13T12:10:00Z",
+      },
+    ],
+    [
+      {
+        repository: "openclaw/openclaw",
+        number: 540,
+        source_comment_id: 456,
+        completed_at: "2026-07-13T12:14:00Z",
+        completion_comment_id: 790,
+      },
+    ],
+    "2026-07-13T12:15:00Z",
+  );
+
+  assert.equal(second.journeys.length, 2);
+  assert.notEqual(second.journeys[0]?.id, second.journeys[1]?.id);
+  assert.deepEqual(summarizeBayJourneyTimings(second.journeys, "2026-07-13T12:15:00Z").overall, {
+    average_ms: 270_000,
+    samples: 2,
+  });
+});
+
+test("hosted webhook records an edited review command through its final command update without GitHub reads", async () => {
+  const statusStore = new MemoryKv();
+  const env = {
+    CLAWSWEEPER_WEBHOOK_SECRET: "test-secret",
+    STATUS_STORE: statusStore,
+  };
+  const trigger = await worker.fetch(
+    signedGithubWebhookRequest({
+      event: "issue_comment",
+      secret: "test-secret",
+      payload: {
+        action: "edited",
+        repository: {
+          full_name: "openclaw/openclaw",
+          private: false,
+          archived: false,
+          fork: false,
+          has_issues: true,
+        },
+        issue: { number: 540 },
+        installation: { id: 123 },
+        comment: {
+          id: 456,
+          body: "@clawsweeper review",
+          author_association: "MEMBER",
+          created_at: "2026-07-12T18:03:07Z",
+          updated_at: "2026-07-13T18:03:07Z",
+          user: { login: "brokemac79" },
+        },
+      },
+    }),
+    env,
+  );
+  assert.equal(trigger.status, 503);
+
+  const durableSummary = await worker.fetch(
+    signedGithubWebhookRequest({
+      event: "issue_comment",
+      secret: "test-secret",
+      payload: {
+        action: "edited",
+        repository: {
+          full_name: "openclaw/openclaw",
+          private: false,
+          archived: false,
+          fork: false,
+          has_issues: true,
+        },
+        issue: { number: 540 },
+        comment: {
+          id: 789,
+          body: [
+            "<!-- clawsweeper-verdict:needs-human item=540 sha=abc reviewed_at=2026-07-13T19:21:05Z -->",
+          ].join("\n"),
+          created_at: "2026-07-13T19:23:12Z",
+          updated_at: "2026-07-13T19:23:12Z",
+          user: { login: "clawsweeper[bot]" },
+        },
+      },
+    }),
+    env,
+  );
+  assert.equal(durableSummary.status, 202);
+
+  const completion = await worker.fetch(
+    signedGithubWebhookRequest({
+      event: "issue_comment",
+      secret: "test-secret",
+      payload: {
+        action: "edited",
+        repository: {
+          full_name: "openclaw/openclaw",
+          private: false,
+          archived: false,
+          fork: false,
+          has_issues: true,
+        },
+        issue: { number: 540 },
+        comment: {
+          id: 790,
+          body: [
+            "<!-- clawsweeper-command-ack:456 -->",
+            "<!-- clawsweeper-command-status:540:re_review:abc -->",
+            "<!-- clawsweeper-command-progress:start -->",
+            "Re-review progress:",
+            "- State: Complete",
+            "<!-- clawsweeper-command-progress:end -->",
+          ].join("\n"),
+          created_at: "2026-07-13T18:03:10Z",
+          updated_at: "2026-07-13T19:23:27Z",
+          user: { login: "clawsweeper[bot]" },
+        },
+      },
+    }),
+    env,
+  );
+  assert.equal(completion.status, 202);
+  assert.deepEqual(await completion.json(), {
+    ok: true,
+    accepted: false,
+    reason: "recorded Bay journey completion",
+  });
+
+  const state = JSON.parse((await statusStore.get("openclaw-bay:journey-state:v1")) || "{}");
+  assert.deepEqual(state.journeys, [
+    {
+      id: "openclaw/openclaw#540:command:456:at:1783965787000",
+      item_key: "openclaw/openclaw#540",
+      repository: "openclaw/openclaw",
+      number: 540,
+      source_comment_id: 456,
+      triggered_at: "2026-07-13T18:03:07Z",
+      completed_at: "2026-07-13T19:23:27Z",
+      completion_kind: "final_command_status",
+      completion_comment_id: 790,
+    },
+  ]);
+  const timings = summarizeBayJourneyTimings(state.journeys, "2026-07-13T19:30:00Z");
+  assert.deepEqual(timings.overall, { average_ms: 4_820_000, samples: 1 });
 });
 
 class MemoryKv {
@@ -939,7 +1141,7 @@ test("dashboard reuses a current Bay snapshot from the shared status store", asy
       generated_at: new Date().toISOString(),
       health: {},
       bay: {
-        timings: { sample_kind: "latest_completed_jobs" },
+        timings: { sample_kind: "completed_review_journeys" },
       },
       pipeline: [{ id: "shared-snapshot" }],
     }),
@@ -982,7 +1184,7 @@ test("optional exact-review telemetry failures do not freeze an idle status snap
       schema_version: 1,
       generated_at: new Date().toISOString(),
       health: {},
-      bay: { timings: { sample_kind: "latest_completed_jobs" } },
+      bay: { timings: { sample_kind: "completed_review_journeys" } },
       pipeline: [],
       fleet: { active_workflow_runs: 0 },
       diagnostics: { errors: [] },
@@ -4616,7 +4818,7 @@ test("dashboard reports worker error and recovery rates from completed job steps
     assert.equal(status.bay.tide_generation, 0);
     assert.equal(status.bay.terminal_count, 3);
     assert.equal(status.bay.timings.lanes, undefined);
-    assert.deepEqual(status.bay.timings.overall, { average_ms: 10_000, samples: 4 });
+    assert.deepEqual(status.bay.timings.overall, { average_ms: null, samples: 0 });
     assert.deepEqual(
       status.bay.terminal_buffer.map((item: { number: number }) => item.number),
       [100, 200, 300],

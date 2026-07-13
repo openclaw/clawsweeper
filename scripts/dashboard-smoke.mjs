@@ -45,7 +45,7 @@ async function main() {
   if (!Array.isArray(status.bay.terminal_buffer) || !Array.isArray(status.bay.recently_washed)) {
     throw new Error("status response is missing Bay terminal outcome arrays");
   }
-  if (status.bay.timings?.sample_kind !== "latest_completed_jobs") {
+  if (status.bay.timings?.sample_kind !== "completed_review_journeys") {
     throw new Error("status response is missing the evidenced Bay timing sample");
   }
 
@@ -107,7 +107,12 @@ async function main() {
   }
 
   const bayAssets = {};
-  for (const asset of ["bay-background.webp", "crustaceans-atlas.webp", "master-sweeper.webp"]) {
+  for (const asset of [
+    "bay-background.webp",
+    "bay-background-portrait.webp",
+    "crustaceans-atlas.webp",
+    "master-sweeper.webp",
+  ]) {
     const response = await fetch(`${baseUrl}/bay-assets/${asset}`);
     if (!response.ok) throw new Error(`${baseUrl}/bay-assets/${asset} returned ${response.status}`);
     if (response.headers.get("content-type") !== "image/webp") {

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
@@ -27,6 +28,13 @@ test("dashboard smoke detects only the exact GitHub API hostname", () => {
     false,
   );
   assert.equal(containsDirectGitHubApiUrl('fetch("https://github.com/openclaw")'), false);
+});
+
+test("dashboard smoke requires the bounded Bay journey timing contract", () => {
+  const source = readFileSync(new URL("../scripts/dashboard-smoke.mjs", import.meta.url), "utf8");
+
+  assert.match(source, /sample_kind !== "completed_review_journeys"/);
+  assert.doesNotMatch(source, /latest_completed_jobs/);
 });
 
 test("dashboard smoke waits for the exact deployed revision", async () => {
