@@ -154,9 +154,11 @@ export function spawnGit(args: readonly string[], options: GitRunOptions = {}): 
   });
   if (child.error) {
     if ("code" in child.error && child.error.code === "ETIMEDOUT") {
-      throw new Error(
+      const error = new Error(
         `git ${safeGitDisplayAction(args[0])} timed out after ${timeout ?? 0}ms during state publication`,
       );
+      (error as NodeJS.ErrnoException).code = "ETIMEDOUT";
+      throw error;
     }
     throw child.error;
   }
@@ -421,6 +423,7 @@ function publishMainCommitWithoutLease(options: GitPublishOptions): PublishResul
       message: commitMessage,
       paths: options.paths,
       sourceCommit,
+      rebaseStrategy,
     });
     if (rebuildResult === "unchanged") {
       return completeStatePublish("unchanged", options.paths, stateBaseCommit);
@@ -458,78 +461,119 @@ function publishMainCommitWhileLeased(
     `paths=${uniqueNonEmpty(options.paths).length} strategy=${rebaseStrategy} lease=${lease.owner}`,
   );
   const stateBaseCommit = captureStatePublishBaseline();
-  runGit(["fetch", remote, branch]);
   const remoteRef = `${remote}/${branch}`;
   const stateRoot = publishRoot();
-  if (stateRoot && resolve(stateRoot) !== resolve(process.cwd())) {
-    runGit(["reset", "--hard", remoteRef]);
-  }
+  let stateCheckoutAdvanced = false;
 
-  syncPublishPaths(options.paths, { rebaseStrategy });
-  gitPublishPhase("stage", `paths=${uniqueNonEmpty(options.paths).length}`);
-  stagePaths(options.paths);
-  if (!hasStagedChanges()) {
-    console.log("No publish changes");
-    verifyRemotePublishedPaths("HEAD", remote, branch, options.paths);
-    return completeStatePublish("unchanged", options.paths, stateBaseCommit);
-  }
+  try {
+    runGit(["fetch", remote, branch]);
+    if (stateRoot && resolve(stateRoot) !== resolve(process.cwd())) {
+      runGit(["reset", "--hard", remoteRef]);
+      stateCheckoutAdvanced = true;
+    }
 
-  const commitMessage = commitMessageForPublishedPaths(options.message, options.paths);
-  runGit(["commit", "-m", commitMessage]);
-  let sourceCommit = runGit(["rev-parse", "HEAD"]).trim();
-  const reconciliationSourceCommit =
-    rebaseStrategy === "reconcile-records" ? sourceCommit : undefined;
-  let reconciliationTupleKeys: ReadonlySet<string> | undefined;
-  if (rebaseStrategy === "reconcile-records") {
-    gitPublishPhase("normalize");
-    const normalized = normalizeReconciliationCommit(sourceCommit);
-    sourceCommit = normalized.commit;
-    if (!normalized.changed) {
-      restoreWorktree(options.restorePaths ?? []);
+    syncPublishPaths(options.paths, { rebaseStrategy });
+    gitPublishPhase("stage", `paths=${uniqueNonEmpty(options.paths).length}`);
+    stagePaths(options.paths);
+    if (!hasStagedChanges()) {
+      console.log("No publish changes");
       verifyRemotePublishedPaths("HEAD", remote, branch, options.paths);
       return completeStatePublish("unchanged", options.paths, stateBaseCommit);
     }
-    const tupleKeys = reconciliationTupleKeysForCommit(sourceCommit);
-    reconciliationTupleKeys = new Set(tupleKeys);
-    if (tupleKeys.length > RECONCILIATION_TUPLE_CHUNK_SIZE) {
-      restoreWorktree(options.restorePaths ?? []);
-      const result = publishReconciliationChunks({
+
+    const commitMessage = commitMessageForPublishedPaths(options.message, options.paths);
+    runGit(["commit", "-m", commitMessage]);
+    let sourceCommit = runGit(["rev-parse", "HEAD"]).trim();
+    const reconciliationSourceCommit =
+      rebaseStrategy === "reconcile-records" ? sourceCommit : undefined;
+    let reconciliationTupleKeys: ReadonlySet<string> | undefined;
+    if (rebaseStrategy === "reconcile-records") {
+      gitPublishPhase("normalize");
+      const normalized = normalizeReconciliationCommit(sourceCommit);
+      sourceCommit = normalized.commit;
+      if (!normalized.changed) {
+        restoreWorktree(options.restorePaths ?? []);
+        verifyRemotePublishedPaths("HEAD", remote, branch, options.paths);
+        return completeStatePublish("unchanged", options.paths, stateBaseCommit);
+      }
+      const tupleKeys = reconciliationTupleKeysForCommit(sourceCommit);
+      reconciliationTupleKeys = new Set(tupleKeys);
+      if (tupleKeys.length > RECONCILIATION_TUPLE_CHUNK_SIZE) {
+        restoreWorktree(options.restorePaths ?? []);
+        const result = publishReconciliationChunks({
+          remote,
+          branch,
+          pushAttempts: 1,
+          maxAttempts: 1,
+          sourceCommit: reconciliationSourceCommit ?? sourceCommit,
+          tupleKeys,
+          lease,
+        });
+        verifyRemotePublishedPaths("HEAD", remote, branch, options.paths);
+        return completeStatePublish(result, options.paths, stateBaseCommit);
+      }
+    }
+    restoreWorktree(options.restorePaths ?? []);
+
+    gitPublishPhase("push");
+    if (rebaseStrategy === "reconcile-records") {
+      publishLeasedReconciliationHead({
         remote,
         branch,
-        pushAttempts: 1,
-        maxAttempts: 1,
-        sourceCommit: reconciliationSourceCommit ?? sourceCommit,
-        tupleKeys,
         lease,
+        paths: options.paths,
+        ...(reconciliationSourceCommit ? { reconciliationSourceCommit } : {}),
+        ...(reconciliationTupleKeys ? { reconciliationTupleKeys } : {}),
       });
-      verifyRemotePublishedPaths("HEAD", remote, branch, options.paths);
-      return completeStatePublish(result, options.paths, stateBaseCommit);
+      return completeStatePublish("committed", options.paths, stateBaseCommit);
     }
-  }
-  restoreWorktree(options.restorePaths ?? []);
 
-  gitPublishPhase("push");
-  if (rebaseStrategy === "reconcile-records") {
-    publishLeasedReconciliationHead({
+    const result = publishLeasedCommit({
       remote,
       branch,
       lease,
+      message: commitMessage,
       paths: options.paths,
-      ...(reconciliationSourceCommit ? { reconciliationSourceCommit } : {}),
-      ...(reconciliationTupleKeys ? { reconciliationTupleKeys } : {}),
+      sourceCommit,
+      rebaseStrategy,
     });
-    return completeStatePublish("committed", options.paths, stateBaseCommit);
+    return completeStatePublish(result, options.paths, stateBaseCommit);
+  } catch (error) {
+    if (stateCheckoutAdvanced) {
+      try {
+        restoreFailedLeasedStatePublish({
+          remote,
+          branch,
+          paths: options.paths,
+          stateBaseCommit,
+        });
+      } catch (recoveryError) {
+        throw new Error(
+          `Leased state publish failed: ${errorMessage(error)}; state/source recovery failed: ${errorMessage(recoveryError)}`,
+        );
+      }
+    }
+    throw error;
   }
+}
 
-  const result = publishLeasedCommit({
-    remote,
-    branch,
-    lease,
-    message: commitMessage,
-    paths: options.paths,
-    sourceCommit,
-  });
-  return completeStatePublish(result, options.paths, stateBaseCommit);
+function restoreFailedLeasedStatePublish(options: {
+  remote: string;
+  branch: string;
+  paths: readonly string[];
+  stateBaseCommit: string | null;
+}): void {
+  gitPublishPhase("recover", `paths=${uniqueNonEmpty(options.paths).length}`);
+  const metrics = activeGitPublishMetrics;
+  const deadlineAtMs = metrics?.deadlineAtMs;
+  if (metrics) metrics.deadlineAtMs = null;
+  try {
+    runGit(["fetch", options.remote, options.branch]);
+    runGit(["reset", "--hard", `${options.remote}/${options.branch}`]);
+    refreshSourceAfterStatePublish(options.paths, options.stateBaseCommit);
+  } finally {
+    if (metrics) metrics.deadlineAtMs = deadlineAtMs ?? null;
+  }
 }
 
 function publishLeasedCommit(options: {
@@ -539,6 +583,7 @@ function publishLeasedCommit(options: {
   message: string;
   paths: readonly string[];
   sourceCommit: string;
+  rebaseStrategy: RebaseStrategy;
 }): PublishResult {
   const expectedCommit = runGit(["rev-parse", "HEAD"], { quiet: true }).trim();
   if (pushLeasedHead(options.remote, options.branch, options.lease)) {
@@ -557,6 +602,7 @@ function publishLeasedCommit(options: {
     message: options.message,
     paths: options.paths,
     sourceCommit: options.sourceCommit,
+    rebaseStrategy: options.rebaseStrategy,
   });
   if (rebuildResult === "unchanged") {
     verifyRemotePublishedPaths("HEAD", options.remote, options.branch, options.paths);
@@ -618,7 +664,13 @@ function publishLeasedReconciliationHead(options: {
 
 function pushLeasedHead(remote: string, branch: string, lease: StatePublishLease): boolean {
   assertStatePublishLeaseOwner(remote, lease);
-  return spawnGit(["push", remote, `HEAD:${branch}`]).status === 0;
+  try {
+    return spawnGit(["push", remote, `HEAD:${branch}`]).status === 0;
+  } catch (error) {
+    if (!isGitTimeoutError(error)) throw error;
+    console.log(`Leased ${branch} push timed out; verifying the expected remote state`);
+    return false;
+  }
 }
 
 function verifyRemotePublishedPaths(
@@ -735,6 +787,10 @@ function gitPublishPhase(phase: string, detail = ""): void {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message.replace(/[\r\n]+/g, " ") : String(error);
+}
+
+function isGitTimeoutError(error: unknown): boolean {
+  return error instanceof Error && (error as NodeJS.ErrnoException).code === "ETIMEDOUT";
 }
 
 function prepareReconciliationStateRoot(
@@ -1051,7 +1107,19 @@ function observeStatePublishLease(
   const cached = observedByOid.get(oid);
   if (cached) return cached;
 
-  runGit(["fetch", "--no-tags", "--quiet", remote, leaseRef]);
+  const fetch = spawnGit(["fetch", "--no-tags", "--quiet", remote, leaseRef], {
+    allowFailure: true,
+    quiet: true,
+  });
+  if (fetch.status !== 0) {
+    if (!remoteRefOid(remote, leaseRef)) {
+      observedByOid.delete(oid);
+      return null;
+    }
+    throw new Error(
+      fetch.stderr.trim() || `Failed to fetch remote state publish lease ${leaseRef}`,
+    );
+  }
   const raw = runGit(["show", "-s", "--format=%H%x00%ct%x00%B", "FETCH_HEAD"], {
     quiet: true,
   });
@@ -1932,6 +2000,7 @@ function rebuildPublishCommit(options: {
   message: string;
   paths: readonly string[];
   sourceCommit: string;
+  rebaseStrategy: RebaseStrategy;
 }): PublishResult {
   console.log(`Rebuilding publish commit on ${options.remote}/${options.branch}`);
   runGit(["fetch", options.remote, options.branch]);
@@ -1945,6 +2014,14 @@ function rebuildPublishCommit(options: {
     includeIndependent: true,
     pathspecs: options.paths,
   });
+  if (options.rebaseStrategy === "apply-records") {
+    return rebuildApplyRecordsPublishCommit({
+      remoteCommit,
+      sourceCommit: options.sourceCommit,
+      message: options.message,
+      statusMerges,
+    });
+  }
   runGit(["reset", "--hard", remoteCommit]);
 
   for (const path of uniqueNonEmpty(options.paths)) {
@@ -1968,6 +2045,33 @@ function rebuildPublishCommit(options: {
   }
 
   runGit(["commit", "-m", options.message]);
+  return "committed";
+}
+
+function rebuildApplyRecordsPublishCommit(options: {
+  remoteCommit: string;
+  sourceCommit: string;
+  message: string;
+  statusMerges: readonly SweepStatusMerge[];
+}): PublishResult {
+  runGit(["reset", "--hard", options.sourceCommit]);
+  const rebase = spawnGit(["rebase", "-X", "theirs", options.remoteCommit], {
+    allowFailure: true,
+  });
+  if (rebase.status !== 0 && !resolveApplyRecordConflicts(options.statusMerges)) {
+    runGit(["rebase", "--abort"], { allowFailure: true });
+    throw new Error("Failed to rebuild apply-records publish with delete-wins semantics");
+  }
+  applySweepStatusMerges({
+    statusMerges: options.statusMerges,
+    remoteCommit: options.remoteCommit,
+    localCommitMessage: options.message,
+  });
+  const rebuiltCommit = runGit(["rev-parse", "HEAD"], { quiet: true }).trim();
+  if (rebuiltCommit === options.remoteCommit) {
+    console.log("No apply-records publish changes remain after syncing remote");
+    return "unchanged";
+  }
   return "committed";
 }
 

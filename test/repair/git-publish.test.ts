@@ -1727,6 +1727,49 @@ test("state publisher caps far-future remote lease expiry to one local ttl", () 
   assert.equal(remoteRefExists(fixture.origin, STATE_PUBLISH_LEASE_REF), false);
 });
 
+test("state publisher retries when the observed lease disappears before fetch", () => {
+  const fixture = createStatePublishRemote("vanished-lease");
+  const state = path.join(fixture.root, "state");
+  const source = path.join(fixture.root, "source");
+  cloneState(fixture.origin, state);
+  fs.mkdirSync(source);
+  write(path.join(source, "results/vanished-lease.txt"), "published\n");
+  createRemoteLease(state, {
+    owner: "00000000-0000-4000-8000-000000000003",
+    expiresAt: new Date(Date.now() + 60_000).toISOString(),
+  });
+  const wrapper = installVanishingLeaseGitWrapper(fixture.root);
+
+  const result = withEnv(
+    leasedPublishEnv({
+      CLAWSWEEPER_STATE_DIR: state,
+      PATH: `${wrapper.bin}:${process.env.PATH ?? ""}`,
+      REAL_GIT: wrapper.realGit,
+      VANISHING_LEASE_MARKER: wrapper.marker,
+      VANISHING_LEASE_ORIGIN: fixture.origin,
+    }),
+    () =>
+      withCwd(source, () =>
+        publishMainCommit({
+          message: "chore: publish after lease release",
+          paths: ["results/vanished-lease.txt"],
+        }),
+      ),
+  );
+
+  assert.equal(result, "committed");
+  assert.equal(fs.existsSync(wrapper.marker), true);
+  assert.equal(
+    run(
+      "git",
+      ["--git-dir", fixture.origin, "show", "state:results/vanished-lease.txt"],
+      fixture.root,
+    ),
+    "published\n",
+  );
+  assert.equal(remoteRefExists(fixture.origin, STATE_PUBLISH_LEASE_REF), false);
+});
+
 test("crashed publisher leaves an expiring lease that a later workflow recovers", async () => {
   const fixture = createStatePublishRemote("crash");
   const crashedState = path.join(fixture.root, "state-crashed");
@@ -1865,6 +1908,48 @@ test("state publisher times out an individual blocked git command", () => {
   assert.equal(remoteRefExists(fixture.origin, STATE_PUBLISH_LEASE_REF), false);
 });
 
+test("leased publisher verifies an accepted branch push after the client times out", () => {
+  const fixture = createStatePublishRemote("accepted-timeout");
+  const state = path.join(fixture.root, "state");
+  const source = path.join(fixture.root, "source");
+  cloneState(fixture.origin, state);
+  fs.mkdirSync(source);
+  write(path.join(source, "results/accepted-timeout.txt"), "accepted\n");
+  const hookMarker = installAcceptedStatePushTimeoutHook(fixture.origin, 3);
+
+  const lines = captureConsoleLog(() =>
+    withEnv(
+      leasedPublishEnv({
+        CLAWSWEEPER_STATE_DIR: state,
+        CLAWSWEEPER_PUBLISH_DEADLINE_MS: "5000",
+        CLAWSWEEPER_PUBLISH_COMMAND_TIMEOUT_MS: "1200",
+      }),
+      () =>
+        withCwd(source, () =>
+          publishMainCommit({
+            message: "chore: verify accepted timed out push",
+            paths: ["results/accepted-timeout.txt"],
+          }),
+        ),
+    ),
+  );
+
+  assert.equal(fs.existsSync(hookMarker), true);
+  assert.equal(
+    lines.some((line) => line.includes("push timed out; verifying the expected remote state")),
+    true,
+  );
+  assert.equal(
+    run(
+      "git",
+      ["--git-dir", fixture.origin, "show", "state:results/accepted-timeout.txt"],
+      fixture.root,
+    ),
+    "accepted\n",
+  );
+  assert.equal(remoteRefExists(fixture.origin, STATE_PUBLISH_LEASE_REF), false);
+});
+
 test("leased publisher performs only one rebuild after an unexpected state race", () => {
   const fixture = createStatePublishRemote("single-rebuild");
   const state = path.join(fixture.root, "state");
@@ -1911,6 +1996,73 @@ test("leased publisher performs only one rebuild after an unexpected state race"
   assert.equal(lines.filter((line) => line.includes("rebuilding once")).length, 1);
 });
 
+test("leased apply-records rebuild preserves a concurrent remote close", () => {
+  const fixture = createStatePublishRemote("apply-rebuild");
+  const state = path.join(fixture.root, "state");
+  const other = path.join(fixture.root, "other");
+  const source = path.join(fixture.root, "source");
+  const recordsRoot = "records/openclaw-openclaw";
+  cloneState(fixture.origin, state);
+  write(path.join(state, `${recordsRoot}/items/1.md`), "record one open\n");
+  write(path.join(state, `${recordsRoot}/items/2.md`), "record two base\n");
+  write(path.join(state, "apply-report.json"), "[]\n");
+  run("git", ["add", "."], state);
+  run("git", ["commit", "-m", "seed apply records"], state);
+  run("git", ["push", "origin", "HEAD:state"], state);
+
+  cloneState(fixture.origin, other);
+  fs.rmSync(path.join(other, `${recordsRoot}/items/1.md`));
+  write(path.join(other, `${recordsRoot}/closed/1.md`), "record one closed remotely\n");
+  run("git", ["add", "-A"], other);
+  run("git", ["commit", "-m", "close record one remotely"], other);
+
+  fs.mkdirSync(source);
+  fs.cpSync(path.join(state, "records"), path.join(source, "records"), { recursive: true });
+  fs.copyFileSync(path.join(state, "apply-report.json"), path.join(source, "apply-report.json"));
+  write(path.join(source, `${recordsRoot}/items/2.md`), "record two local\n");
+  write(path.join(source, "apply-report.json"), '[{"action":"updated"}]\n');
+  installStateRaceHook(state, other);
+
+  const result = withEnv(leasedPublishEnv({ CLAWSWEEPER_STATE_DIR: state }), () =>
+    withCwd(source, () =>
+      publishMainCommit({
+        message: "chore: apply records through leased rebuild",
+        paths: ["records", "apply-report.json"],
+        rebaseStrategy: "apply-records",
+      }),
+    ),
+  );
+
+  assert.equal(result, "committed");
+  assert.throws(() =>
+    run(
+      "git",
+      ["--git-dir", fixture.origin, "show", `state:${recordsRoot}/items/1.md`],
+      fixture.root,
+    ),
+  );
+  assert.equal(
+    run(
+      "git",
+      ["--git-dir", fixture.origin, "show", `state:${recordsRoot}/closed/1.md`],
+      fixture.root,
+    ),
+    "record one closed remotely\n",
+  );
+  assert.equal(
+    run(
+      "git",
+      ["--git-dir", fixture.origin, "show", `state:${recordsRoot}/items/2.md`],
+      fixture.root,
+    ),
+    "record two local\n",
+  );
+  assert.equal(
+    Number(fs.readFileSync(path.join(state, ".git/hooks/state-push-count"), "utf8").trim()),
+    2,
+  );
+});
+
 test("leased publisher rejects a successful push whose remote blobs changed", () => {
   const fixture = createStatePublishRemote("verify");
   const state = path.join(fixture.root, "state");
@@ -1947,6 +2099,56 @@ test("leased publisher rejects a successful push whose remote blobs changed", ()
   assert.equal(
     run("git", ["--git-dir", fixture.origin, "show", "state:results/verified.txt"], fixture.root),
     "poison\n",
+  );
+  assert.equal(remoteRefExists(fixture.origin, STATE_PUBLISH_LEASE_REF), false);
+});
+
+test("failed leased publish refreshes advanced remote state before a later broad publish", () => {
+  const fixture = createStatePublishRemote("failure-refresh");
+  const state = path.join(fixture.root, "state");
+  const other = path.join(fixture.root, "other");
+  const source = path.join(fixture.root, "source");
+  const remoteJob = "jobs/openclaw/closed/123.md";
+  cloneState(fixture.origin, state);
+  cloneState(fixture.origin, other);
+  fs.mkdirSync(source);
+  write(path.join(other, remoteJob), "remote job\n");
+  run("git", ["add", "."], other);
+  run("git", ["commit", "-m", "publish remote job"], other);
+  run("git", ["push", "origin", "HEAD:state"], other);
+  write(path.join(source, "results/local-checkpoint.txt"), "local\n");
+  const rejectingHook = installStatePushRejectHook(fixture.origin);
+
+  assert.throws(
+    () =>
+      withEnv(leasedPublishEnv({ CLAWSWEEPER_STATE_DIR: state }), () =>
+        withCwd(source, () =>
+          publishMainCommit({
+            message: "chore: fail narrow checkpoint",
+            paths: ["results/local-checkpoint.txt"],
+          }),
+        ),
+      ),
+    /single rebuild\/push retry/,
+  );
+  fs.rmSync(rejectingHook);
+
+  assert.equal(fs.readFileSync(path.join(source, remoteJob), "utf8"), "remote job\n");
+  assert.equal(fs.existsSync(path.join(source, "results/local-checkpoint.txt")), false);
+  assert.equal(
+    withEnv(leasedPublishEnv({ CLAWSWEEPER_STATE_DIR: state }), () =>
+      withCwd(source, () =>
+        publishMainCommit({
+          message: "chore: publish broad jobs after recovery",
+          paths: ["jobs"],
+        }),
+      ),
+    ),
+    "unchanged",
+  );
+  assert.equal(
+    run("git", ["--git-dir", fixture.origin, "show", `state:${remoteJob}`], fixture.root),
+    "remote job\n",
   );
   assert.equal(remoteRefExists(fixture.origin, STATE_PUBLISH_LEASE_REF), false);
 });
@@ -2979,6 +3181,66 @@ function createRemoteLease(state, { owner, expiresAt }) {
     ],
     state,
   );
+}
+
+function installVanishingLeaseGitWrapper(root) {
+  const bin = path.join(root, "git-wrapper");
+  const marker = path.join(root, "lease-vanished");
+  const realGit = run("sh", ["-c", "command -v git"], root).trim();
+  fs.mkdirSync(bin);
+  const wrapper = path.join(bin, "git");
+  fs.writeFileSync(
+    wrapper,
+    `#!/bin/sh
+: "\${REAL_GIT:?real git path is required}"
+if test "$1" = "fetch" &&
+   test "$2" = "--no-tags" &&
+   test "$3" = "--quiet" &&
+   test "$5" = "${STATE_PUBLISH_LEASE_REF}" &&
+   test ! -f "\${VANISHING_LEASE_MARKER}"; then
+  touch "\${VANISHING_LEASE_MARKER}"
+  "$REAL_GIT" --git-dir="\${VANISHING_LEASE_ORIGIN}" update-ref -d "${STATE_PUBLISH_LEASE_REF}"
+fi
+exec "$REAL_GIT" "$@"
+`,
+  );
+  fs.chmodSync(wrapper, 0o755);
+  return { bin, marker, realGit };
+}
+
+function installAcceptedStatePushTimeoutHook(origin, seconds) {
+  const hook = path.join(origin, "hooks/post-receive");
+  const marker = path.join(origin, "accepted-state-push-timeout");
+  fs.writeFileSync(
+    hook,
+    `#!/bin/sh
+while read -r old_oid new_oid ref; do
+  if test "$ref" = "refs/heads/state" && test ! -f "${marker}"; then
+    touch "${marker}"
+    sleep "${seconds}"
+  fi
+done
+`,
+  );
+  fs.chmodSync(hook, 0o755);
+  return marker;
+}
+
+function installStatePushRejectHook(origin) {
+  const hook = path.join(origin, "hooks/pre-receive");
+  fs.writeFileSync(
+    hook,
+    `#!/bin/sh
+while read -r old_oid new_oid ref; do
+  if test "$ref" = "refs/heads/state"; then
+    echo "rejecting state push for recovery test" >&2
+    exit 1
+  fi
+done
+`,
+  );
+  fs.chmodSync(hook, 0o755);
+  return hook;
 }
 
 function installStatePushSleepHook(state, seconds) {
