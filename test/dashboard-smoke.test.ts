@@ -30,10 +30,12 @@ test("dashboard smoke detects only the exact GitHub API hostname", () => {
   assert.equal(containsDirectGitHubApiUrl('fetch("https://github.com/openclaw")'), false);
 });
 
-test("dashboard smoke requires the bounded Bay journey timing contract", () => {
+test("dashboard smoke requires bounded Bay timing and handoff-pressure contracts", () => {
   const source = readFileSync(new URL("../scripts/dashboard-smoke.mjs", import.meta.url), "utf8");
 
   assert.match(source, /sample_kind !== "completed_review_journeys"/);
+  assert.match(source, /pressure_history\.length > 37/);
+  assert.match(source, /contains an invalid point/);
   assert.doesNotMatch(source, /latest_completed_jobs/);
 });
 

@@ -81,6 +81,12 @@ type ExactReviewQueueState = {
     retryAt?: number;
   };
 };
+type ExactReviewQueuePressurePoint = {
+  observed_at: string;
+  pending: number;
+  dispatching: number;
+  leased: number;
+};
 type LegacyExactReviewQueueState = ExactReviewQueueState & {
   deliveries?: Record<string, number>;
 };
@@ -150,6 +156,11 @@ const EXACT_REVIEW_QUEUE_LEGACY_RECEIPT_SHIFT_MS = 2 * 24 * 60 * 60 * 1000;
 const EXACT_REVIEW_QUEUE_ROLLBACK_CLOCK_SKEW_MS = 5 * 60 * 1000;
 const EXACT_REVIEW_QUEUE_LEGACY_GENERATION_PREFIX = "__clawsweeper_sql_generation:";
 const EXACT_REVIEW_QUEUE_STATE_KEY = "exact-review-queue";
+const EXACT_REVIEW_QUEUE_PRESSURE_HISTORY_KEY = "exact-review-queue-pressure-history:v1";
+const EXACT_REVIEW_QUEUE_PRESSURE_BUCKET_MS = 5 * 60_000;
+const EXACT_REVIEW_QUEUE_PRESSURE_WINDOW_MS = 3 * 60 * 60_000;
+const EXACT_REVIEW_QUEUE_PRESSURE_POINT_LIMIT =
+  EXACT_REVIEW_QUEUE_PRESSURE_WINDOW_MS / EXACT_REVIEW_QUEUE_PRESSURE_BUCKET_MS + 1;
 const EXACT_REVIEW_QUEUE_META_TABLE = "exact_review_queue_meta";
 const EXACT_REVIEW_QUEUE_ITEM_TABLE = "exact_review_queue_items";
 const EXACT_REVIEW_QUEUE_DELIVERY_TABLE = "exact_review_queue_deliveries";
@@ -568,6 +579,7 @@ export class ExactReviewQueue {
       if (accepted.deduped) {
         return json({ ok: true, deduped: true, item_key: exactReviewItemKey(decision) }, 202);
       }
+      await this.recordPressureHistory(accepted.state, now);
       await this.scheduleNext(accepted.state, now);
       return json({ ok: true, queued: true, item_key: accepted.key }, 202);
     }
@@ -831,7 +843,7 @@ export class ExactReviewQueue {
 
     if (request.method === "GET" && url.pathname === "/stats") {
       const now = Date.now();
-      const state = this.storage.transactionSync(() => {
+      const { state, changed } = this.storage.transactionSync(() => {
         this.pruneDeliveryReceiptsSync(now);
         const current = this.readStateSync();
         // Dashboard reads are also the operational heartbeat. Reclaim leases and
@@ -839,9 +851,10 @@ export class ExactReviewQueue {
         const changed = reclaimExpiredExactReviewLeases(current, now);
         if (changed) this.writeStateSync(current);
         else this.syncLegacyCompatibilitySync(current);
-        return current;
+        return { state: current, changed };
       });
       await this.scheduleNext(state, now);
+      if (changed) await this.recordPressureHistory(state, now);
       return json({
         ...exactReviewQueueStats(
           state,
@@ -851,6 +864,7 @@ export class ExactReviewQueue {
           exactReviewDispatchLeaseMs(this.env),
           exactReviewExecutionLeaseMs(this.env),
         ),
+        pressure_history: await this.readPressureHistory(now),
         delivery_receipts: this.deliveryReceiptCountSync(),
         storage_schema_version: EXACT_REVIEW_QUEUE_STORAGE_SCHEMA_VERSION,
         legacy_rollback_available:
@@ -1325,8 +1339,38 @@ export class ExactReviewQueue {
     return state;
   }
 
-  private writeState(state: ExactReviewQueueState) {
+  private async writeState(state: ExactReviewQueueState, observedAt = Date.now()) {
     this.storage.transactionSync(() => this.writeStateSync(state));
+    await this.recordPressureHistory(state, observedAt);
+  }
+
+  private async recordPressureHistory(state: ExactReviewQueueState, observedAt: number) {
+    try {
+      const current = exactReviewQueuePressureHistory(
+        await this.storage.get(EXACT_REVIEW_QUEUE_PRESSURE_HISTORY_KEY),
+        observedAt,
+      );
+      const point = exactReviewQueuePressurePoint(state, observedAt);
+      const next = exactReviewQueuePressureHistory(
+        [...current.filter((entry) => entry.observed_at !== point.observed_at), point],
+        observedAt,
+      );
+      await this.storage.put(EXACT_REVIEW_QUEUE_PRESSURE_HISTORY_KEY, next);
+    } catch (error) {
+      console.warn("exact-review queue pressure history write failed", error);
+    }
+  }
+
+  private async readPressureHistory(now: number) {
+    try {
+      return exactReviewQueuePressureHistory(
+        await this.storage.get(EXACT_REVIEW_QUEUE_PRESSURE_HISTORY_KEY),
+        now,
+      );
+    } catch (error) {
+      console.warn("exact-review queue pressure history read failed", error);
+      return [];
+    }
   }
 
   private writeStateSync(state: ExactReviewQueueState) {
@@ -2822,6 +2866,48 @@ function exactReviewQueueStats(
     },
     target_stats: targetStats,
   };
+}
+
+function exactReviewQueuePressurePoint(state: ExactReviewQueueState, observedAt: number) {
+  const bucketAt =
+    Math.floor(observedAt / EXACT_REVIEW_QUEUE_PRESSURE_BUCKET_MS) *
+    EXACT_REVIEW_QUEUE_PRESSURE_BUCKET_MS;
+  let pending = 0;
+  let dispatching = 0;
+  let leased = 0;
+  for (const item of Object.values(state.items)) {
+    if (item.state === "pending") pending += 1;
+    else if (item.state === "dispatching") dispatching += 1;
+    else if (item.state === "leased") leased += 1;
+  }
+  return {
+    observed_at: new Date(bucketAt).toISOString(),
+    pending,
+    dispatching,
+    leased,
+  } satisfies ExactReviewQueuePressurePoint;
+}
+
+function exactReviewQueuePressureHistory(value: unknown, now = Date.now()) {
+  const cutoff = now - EXACT_REVIEW_QUEUE_PRESSURE_WINDOW_MS;
+  const byTimestamp = new Map<number, ExactReviewQueuePressurePoint>();
+  for (const point of Array.isArray(value) ? value : []) {
+    const candidate = objectValue(point);
+    const observedAt = Date.parse(String(candidate.observed_at || ""));
+    if (!Number.isFinite(observedAt) || observedAt < cutoff || observedAt > now) continue;
+    const pending = Math.max(0, Math.floor(Number(candidate.pending) || 0));
+    const dispatching = Math.max(0, Math.floor(Number(candidate.dispatching) || 0));
+    const leased = Math.max(0, Math.floor(Number(candidate.leased) || 0));
+    byTimestamp.set(observedAt, {
+      observed_at: new Date(observedAt).toISOString(),
+      pending,
+      dispatching,
+      leased,
+    });
+  }
+  return [...byTimestamp.values()]
+    .sort((left, right) => Date.parse(left.observed_at) - Date.parse(right.observed_at))
+    .slice(-EXACT_REVIEW_QUEUE_PRESSURE_POINT_LIMIT);
 }
 
 function exactReviewQueueNextWakeAt(

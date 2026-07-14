@@ -8,6 +8,7 @@ dashboard data, credentials, or GitHub API traffic.
 The sequence proves:
 
 - visible partial-telemetry diagnostics;
+- the three-hour exact-review handoff-pressure chart, including its queue-owned pending and leased lines;
 - the Bay timing badge naming its bounded **review trigger → final review** measurement, completed by the command-status update emitted after the durable review summary;
 - a 390px portrait layout that stacks Arriving through Applying vertically, keeps the terminal pools at the waterline, and has no horizontal page overflow;
 - advancing crustacean-claw and master-sweeper animations;
@@ -31,7 +32,7 @@ The sequence proves:
 - [`trace.zip`](trace.zip) is the Playwright action, DOM snapshot, and network
   trace. Open it with
   `npx --yes playwright@1.60.0 show-trace docs/proof/openclaw-bay/trace.zip`.
-- [`proof-summary.json`](proof-summary.json) records all 27 passing assertions,
+- [`proof-summary.json`](proof-summary.json) records all 28 passing assertions,
   sanitized request/response metadata, safe drawer links, the unchanged
   terminal keys before and after both preview modes, and the proved real-tide
   clear.
@@ -66,9 +67,9 @@ crabbox run \
 
 ## Provenance and privacy
 
-- implementation source: `a59c19f698393955404e46fe7bd413a7828adb4a`
+- implementation source: working-tree patch `ec0f64c822983d6b630602c7183578a312127a88` based on `ecc6d03d1ec73267d434cb1905cfc216c78fcd70`
 - provider: Crabbox `local-container`
-- lease: `cbx_260d3395d7b0` (`tidal-lobster`)
+- lease: `cbx_e42103e2f43c` (`coral-barnacle`)
 - image: `mcr.microsoft.com/playwright:v1.60.0-noble`
 - fixture SHA-256:
   `F766EE78A4E8E4F41EA9F2F64C9C85DFE3D04D7962B647007F073F40AF94ADA5`

@@ -55,6 +55,21 @@ async function main() {
       throw new Error(`exact-review queue response is missing ${field}`);
     }
   }
+  if (
+    !Array.isArray(exactReviewQueue.pressure_history) ||
+    exactReviewQueue.pressure_history.length > 37
+  ) {
+    throw new Error("exact-review queue response is missing bounded pressure history");
+  }
+  for (const point of exactReviewQueue.pressure_history) {
+    if (
+      !point ||
+      typeof point.observed_at !== "string" ||
+      ["pending", "dispatching", "leased"].some((field) => typeof point[field] !== "number")
+    ) {
+      throw new Error("exact-review queue pressure history contains an invalid point");
+    }
+  }
 
   const reconcileResponse = await fetch(`${baseUrl}/internal/exact-review/reconcile`, {
     method: "POST",

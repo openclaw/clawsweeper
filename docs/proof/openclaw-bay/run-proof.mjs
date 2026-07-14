@@ -128,6 +128,17 @@ const denseTerminalBuffer = Array.from({ length: 20 }, (_, index) =>
     runId: 5101 + index,
   }),
 );
+const proofQueuePressure = {
+  pending: 405,
+  dispatching: 6,
+  leased: 58,
+  pressure_history: [
+    { observed_at: "2026-07-11T15:05:00.000Z", pending: 318, dispatching: 12, leased: 45 },
+    { observed_at: "2026-07-11T16:00:00.000Z", pending: 342, dispatching: 9, leased: 51 },
+    { observed_at: "2026-07-11T17:05:00.000Z", pending: 381, dispatching: 7, leased: 55 },
+    { observed_at: "2026-07-11T18:00:00.000Z", pending: 405, dispatching: 6, leased: 58 },
+  ],
+};
 
 function snapshot(workers) {
   return {
@@ -324,7 +335,10 @@ await page.route("**/*", async (route) => {
       status: 200,
       contentType: "application/json; charset=utf-8",
       headers: { "cache-control": "no-store", "x-clawsweeper-cache": "synthetic-proof" },
-      body: JSON.stringify(proofSnapshots[fixtureIndex]),
+      body: JSON.stringify({
+        ...proofSnapshots[fixtureIndex],
+        exact_review_queue: proofQueuePressure,
+      }),
     });
     return;
   }
@@ -426,6 +440,15 @@ try {
     "journey timing names the trigger-to-final-review duration",
     /Avg trigger.*final review/i.test(timingSummary) && /4 journeys/i.test(timingSummary),
     { text: timingSummary },
+  );
+  const pressurePanel = await page.locator("#pressure-panel").innerText();
+  assertProof(
+    "handoff pressure shows an observed three-hour trend without browser polling",
+    /rising/i.test(pressurePanel) &&
+      /405/.test(pressurePanel) &&
+      (await page.locator("#pressure-chart .pressure-pending").count()) === 1 &&
+      (await page.locator("#pressure-chart .pressure-leased").count()) === 1,
+    { text: pressurePanel },
   );
   await capture(
     "01-initial-diagnostics",
