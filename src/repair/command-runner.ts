@@ -9,6 +9,7 @@ export type CommandRunOptions = {
   cwd?: string;
   env?: NodeJS.ProcessEnv;
   input?: string;
+  isolateNetwork?: boolean;
   maxBuffer?: number;
   timeoutMs?: number;
   writableRoots?: readonly string[];
@@ -49,6 +50,7 @@ export function runContainedCommand(
         args: invocation.args,
         cwd: options.cwd,
         input: options.input,
+        isolateNetwork: options.isolateNetwork !== false,
         maxBuffer,
         timeoutMs: options.timeoutMs,
         writableRoots: options.writableRoots?.map((root) => fs.realpathSync(root)) ?? [],

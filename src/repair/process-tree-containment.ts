@@ -12,6 +12,12 @@ import time
 PR_SET_CHILD_SUBREAPER = 36
 PR_SET_NO_NEW_PRIVS = 38
 PROTOCOL_FD = 3
+AT_FDCWD = -100
+AT_RECURSIVE = 0x8000
+MOUNT_ATTR_RDONLY = 1 << 0
+MS_BIND = 1 << 12
+MS_REC = 1 << 14
+MS_PRIVATE = 1 << 18
 LANDLOCK_CREATE_RULESET_VERSION = 1
 LANDLOCK_RULE_PATH_BENEATH = 1
 LANDLOCK_ACCESS_FS_WRITE_FILE = 1 << 1
@@ -43,6 +49,7 @@ LANDLOCK_WRITE_ACCESS = (
 SYS_LANDLOCK_CREATE_RULESET = 444
 SYS_LANDLOCK_ADD_RULE = 445
 SYS_LANDLOCK_RESTRICT_SELF = 446
+SYS_MOUNT_SETATTR = 442
 
 
 class LandlockRulesetAttr(ctypes.Structure):
@@ -51,6 +58,7 @@ class LandlockRulesetAttr(ctypes.Structure):
 
 libc = ctypes.CDLL(None, use_errno=True)
 libc.syscall.restype = ctypes.c_long
+libc.mount.restype = ctypes.c_int
 
 
 def checked_syscall(number, *arguments):
@@ -70,6 +78,49 @@ def landlock_abi():
     )
 
 
+def checked_mount(source, target, flags):
+    encoded_source = None if source is None else os.fsencode(source)
+    if libc.mount(
+        encoded_source,
+        os.fsencode(target),
+        None,
+        ctypes.c_ulong(flags),
+        None,
+    ) != 0:
+        error_number = ctypes.get_errno()
+        raise OSError(error_number, os.strerror(error_number))
+
+
+def set_mount_readonly(path, readonly):
+    attributes = (ctypes.c_ubyte * 32).from_buffer_copy(
+        struct.pack(
+            "=QQQQ",
+            MOUNT_ATTR_RDONLY if readonly else 0,
+            0 if readonly else MOUNT_ATTR_RDONLY,
+            0,
+            0,
+        )
+    )
+    checked_syscall(
+        SYS_MOUNT_SETATTR,
+        ctypes.c_int(AT_FDCWD),
+        ctypes.c_char_p(os.fsencode(path)),
+        ctypes.c_uint32(AT_RECURSIVE),
+        ctypes.byref(attributes),
+        ctypes.c_size_t(len(attributes)),
+    )
+
+
+def isolate_filesystem_writes(canonical_roots):
+    checked_mount(None, "/", MS_REC | MS_PRIVATE)
+    checked_mount("/", "/", MS_BIND | MS_REC)
+    for root in canonical_roots:
+        checked_mount(root, root, MS_BIND | MS_REC)
+    set_mount_readonly("/", True)
+    for root in canonical_roots:
+        set_mount_readonly(root, False)
+
+
 def add_writable_path(ruleset_fd, path, allowed_access):
     path_fd = os.open(path, os.O_PATH | os.O_CLOEXEC)
     try:
@@ -87,7 +138,18 @@ def add_writable_path(ruleset_fd, path, allowed_access):
         os.close(path_fd)
 
 
-def restrict_filesystem_writes(writable_roots):
+def canonical_writable_roots(writable_roots):
+    canonical_roots = []
+    for root in writable_roots:
+        canonical = os.path.realpath(root)
+        if not stat.S_ISDIR(os.stat(canonical).st_mode):
+            raise RuntimeError("validation writable root is not a directory: " + root)
+        if canonical not in canonical_roots:
+            canonical_roots.append(canonical)
+    return canonical_roots
+
+
+def restrict_filesystem_writes(canonical_roots):
     abi = landlock_abi()
     if abi < 3:
         raise RuntimeError("Landlock ABI 3 or newer is required")
@@ -99,13 +161,6 @@ def restrict_filesystem_writes(writable_roots):
         ctypes.c_uint32(0),
     )
     try:
-        canonical_roots = []
-        for root in writable_roots:
-            canonical = os.path.realpath(root)
-            if not stat.S_ISDIR(os.stat(canonical).st_mode):
-                raise RuntimeError("validation writable root is not a directory: " + root)
-            if canonical not in canonical_roots:
-                canonical_roots.append(canonical)
         for root in canonical_roots:
             add_writable_path(ruleset_fd, root, LANDLOCK_WRITE_ACCESS)
         for device in ("/dev/null", "/dev/zero", "/dev/full", "/dev/random", "/dev/urandom"):
@@ -230,7 +285,9 @@ def main():
     command = sys.argv[2:]
     if not command:
         raise RuntimeError("validation command is missing")
-    restrict_filesystem_writes(writable_roots)
+    canonical_roots = canonical_writable_roots(writable_roots)
+    isolate_filesystem_writes(canonical_roots)
+    restrict_filesystem_writes(canonical_roots)
     child = subprocess.Popen(command, close_fds=True)
     background_pids = set()
     while True:

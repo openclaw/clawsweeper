@@ -29,7 +29,7 @@ on:
         default: blacksmith-4vcpu-ubuntu-2404
         type: string
       execution_runner:
-        description: "Linux runner label for fix/apply execution work with delegated user namespaces and Landlock ABI 3+"
+        description: "Linux runner label for fix/apply execution work with delegated user/mount/network namespaces, mount_setattr, and Landlock ABI 3+"
         required: true
         default: blacksmith-16vcpu-ubuntu-2404
         type: string
@@ -552,7 +552,7 @@ jobs:
         run: |
           set -euo pipefail
           if [ "${RUNNER_OS:-}" != "Linux" ]; then
-            echo "Repair execution requires a Linux runner with delegated user namespaces." >&2
+            echo "Repair execution requires a Linux runner with delegated user, mount, and network namespaces." >&2
             exit 1
           fi
           for tool in /usr/bin/unshare /usr/bin/python3; do
@@ -564,11 +564,13 @@ jobs:
           /usr/bin/unshare \
             --user \
             --map-root-user \
+            --mount \
+            --net \
             --pid \
             --fork \
              --mount-proc \
              --kill-child=SIGKILL \
-             /usr/bin/python3 -c 'import ctypes, os; libc = ctypes.CDLL(None, use_errno=True); libc.syscall.restype = ctypes.c_long; abi = libc.syscall(ctypes.c_long(444), ctypes.c_void_p(), ctypes.c_size_t(0), ctypes.c_uint32(1)); assert abi >= 0, os.strerror(ctypes.get_errno()); assert os.getpid() == 1; assert abi >= 3, f"Landlock ABI 3 or newer is required, found {abi}"'
+             /usr/bin/python3 -c 'import ctypes, os; libc = ctypes.CDLL(None, use_errno=True); libc.syscall.restype = ctypes.c_long; abi = libc.syscall(ctypes.c_long(444), ctypes.c_void_p(), ctypes.c_size_t(0), ctypes.c_uint32(1)); mount_probe = libc.syscall(ctypes.c_long(442), ctypes.c_int(-100), ctypes.c_char_p(b"/"), ctypes.c_uint32(0), ctypes.c_void_p(), ctypes.c_size_t(0)); mount_errno = ctypes.get_errno(); assert abi >= 0, os.strerror(ctypes.get_errno()); assert os.getpid() == 1; assert abi >= 3, f"Landlock ABI 3 or newer is required, found {abi}"; assert not (mount_probe < 0 and mount_errno == 38), "mount_setattr is required"'
 
       - uses: actions/checkout@v7
         with:

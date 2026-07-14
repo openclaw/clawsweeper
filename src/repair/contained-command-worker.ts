@@ -9,6 +9,7 @@ type WorkerInput = {
   command: string;
   cwd?: string;
   input?: string;
+  isolateNetwork: boolean;
   maxBuffer: number;
   timeoutMs?: number;
   writableRoots: string[];
@@ -52,6 +53,8 @@ async function runContained(input: WorkerInput): Promise<WorkerResult> {
         args: [
           "--user",
           "--map-root-user",
+          "--mount",
+          ...(input.isolateNetwork ? ["--net"] : []),
           "--pid",
           "--fork",
           "--mount-proc",

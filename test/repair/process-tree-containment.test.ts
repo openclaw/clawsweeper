@@ -17,11 +17,16 @@ test("Linux validation containment uses an externally owned PID namespace and su
   assert.match(containment, /return_code = child\.poll\(\)/);
   assert.match(containment, /except ChildProcessError/);
   assert.match(containment, /struct\.pack\("=Qi", allowed_access, path_fd\)/);
+  assert.match(containment, /struct\.pack\(\s+"=QQQQ"/);
+  assert.match(containment, /set_mount_readonly\("\/", True\)/);
+  assert.match(containment, /set_mount_readonly\(root, False\)/);
   assert.doesNotMatch(containment, /_pack_|_layout_/);
   assert.doesNotMatch(containment, /setInterval|Get-CimInstance|ProcessTreeTracker/);
   assert.match(worker, /LINUX_SUBREAPER_SCRIPT/);
   assert.match(worker, /command: "\/usr\/bin\/unshare"/);
   assert.match(worker, /"--map-root-user"/);
+  assert.match(worker, /"--mount"/);
+  assert.match(worker, /input\.isolateNetwork \? \["--net"\] : \[\]/);
   assert.match(worker, /"--pid"/);
   assert.match(worker, /"--mount-proc"/);
   assert.match(worker, /"--kill-child=SIGKILL"/);

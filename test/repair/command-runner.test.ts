@@ -1,6 +1,14 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -111,6 +119,22 @@ test(
             "  blocked = true;",
             "}",
             "if (!blocked) process.exit(70);",
+            "for (const mutate of [",
+            "  () => fs.chmodSync(trustedTool, 0o600),",
+            "  () => fs.chownSync(trustedTool, process.getuid(), process.getgid()),",
+            "  () => fs.utimesSync(trustedTool, new Date(0), new Date(0)),",
+            "]) {",
+            "  try { mutate(); process.exit(71); }",
+            "  catch (error) {",
+            "    if (!['EACCES', 'EPERM', 'EROFS'].includes(error.code)) throw error;",
+            "  }",
+            "}",
+            "const xattr = require('node:child_process').spawnSync(",
+            "  '/usr/bin/python3',",
+            "  ['-c', 'import os,sys; os.setxattr(sys.argv[1], b\"user.clawsweeper\", b\"poisoned\")', trustedTool],",
+            "  { encoding: 'utf8' },",
+            ");",
+            "if (xattr.status === 0) process.exit(72);",
             'process.stdout.write("blocked");',
           ].join("\n"),
           targetMarker,
@@ -133,6 +157,7 @@ test(
       assert.equal(readFileSync(targetMarker, "utf8"), "target");
       assert.equal(readFileSync(profileMarker, "utf8"), "profile");
       assert.equal(readFileSync(trustedTool, "utf8"), "trusted\n");
+      assert.equal(statSync(trustedTool).mode & 0o777, 0o755);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -178,6 +203,81 @@ test(
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1_250);
       assert.equal(existsSync(marker), false);
     } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+);
+
+test(
+  "Linux containment cannot reach host-local listeners",
+  { skip: process.platform !== "linux" },
+  (context) => {
+    if (!linuxValidationContainmentAvailable()) {
+      context.skip("runner does not provide delegated validation namespaces");
+      return;
+    }
+    const root = mkdtempSync(join(tmpdir(), "clawsweeper-network-isolation-"));
+    const portFile = join(root, "port");
+    const acceptedMarker = join(root, "accepted");
+    const server = spawn(
+      "/usr/bin/python3",
+      [
+        "-c",
+        [
+          "import pathlib, socket, sys",
+          "server = socket.socket()",
+          "server.bind(('127.0.0.1', 0))",
+          "server.listen(1)",
+          "pathlib.Path(sys.argv[1]).write_text(str(server.getsockname()[1]))",
+          "connection, _address = server.accept()",
+          "pathlib.Path(sys.argv[2]).write_text('accepted')",
+          "connection.close()",
+        ].join("; "),
+        portFile,
+        acceptedMarker,
+      ],
+      { stdio: "ignore" },
+    );
+    try {
+      for (let attempt = 0; attempt < 100 && !existsSync(portFile); attempt += 1) {
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+      }
+      assert.equal(existsSync(portFile), true);
+      const port = Number(readFileSync(portFile, "utf8"));
+      const output = runContainedCommand(
+        process.execPath,
+        [
+          "-e",
+          [
+            'const net = require("node:net");',
+            "let finished = false;",
+            "const finish = (output, status = 0) => {",
+            "  if (finished) return;",
+            "  finished = true;",
+            "  if (output) process.stdout.write(output);",
+            "  process.exit(status);",
+            "};",
+            `const socket = net.connect({ host: "127.0.0.1", port: ${port} });`,
+            'socket.once("connect", () => finish("", 70));',
+            'socket.once("error", () => finish("blocked"));',
+            'setTimeout(() => { socket.destroy(); finish("blocked"); }, 500);',
+          ].join("\n"),
+        ],
+        {
+          cwd: root,
+          env: {
+            ...process.env,
+            CLAWSWEEPER_TEST_FORCE_LINUX_CONTAINMENT: "1",
+          },
+          timeoutMs: 3_000,
+          writableRoots: [root],
+        },
+      );
+
+      assert.equal(output, "blocked");
+      assert.equal(existsSync(acceptedMarker), false);
+    } finally {
+      server.kill("SIGKILL");
       rmSync(root, { recursive: true, force: true });
     }
   },
@@ -256,6 +356,8 @@ function linuxValidationContainmentAvailable() {
     [
       "--user",
       "--map-root-user",
+      "--mount",
+      "--net",
       "--pid",
       "--fork",
       "--mount-proc",
