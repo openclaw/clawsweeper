@@ -77,6 +77,7 @@ const STATE_PUBLISH_COMMAND_TIMEOUT_MS = 30 * 1000;
 const STATE_PUBLISH_LEASE_TTL_MS = 5 * 60 * 1000;
 const STATE_PUBLISH_LEASE_ATTEMPTS = 24;
 const STATE_PUBLISH_LEASE_WAIT_MS = 3 * 1000;
+const STATE_PUBLISH_LEASE_MAX_WAIT_MS = 30 * 1000;
 const STATE_PUBLISH_STALE_RECOVERY_ATTEMPTS = 2;
 const SKIP_CI_DIRECTIVE_PATTERN =
   /\[(?:skip ci|ci skip|no ci|skip actions|actions skip)\]|^skip-checks:\s*true$/im;
@@ -1028,10 +1029,15 @@ function acquireStatePublishLease(remote: string, branch: string): StatePublishL
       );
     }
     if (attempt < maxAttempts) {
-      sleepWithinStatePublishDeadline(waitMs + Math.floor(Math.random() * waitMs));
+      sleepWithinStatePublishDeadline(statePublishLeaseWaitMs(waitMs, attempt));
     }
   }
   throw new Error(`Failed to acquire state publish lease after ${maxAttempts} attempts`);
+}
+
+function statePublishLeaseWaitMs(waitMs: number, attempt: number): number {
+  const multiplier = 2 ** Math.min(Math.max(attempt - 1, 0), 10);
+  return Math.min(waitMs * multiplier, STATE_PUBLISH_LEASE_MAX_WAIT_MS);
 }
 
 function observeStatePublishLease(
@@ -1076,8 +1082,10 @@ function createStatePublishLeaseCommit(options: {
   owner: string;
   expiresAtMs: number;
 }): string {
-  const parent = runGit(["rev-parse", "HEAD"], { quiet: true }).trim();
-  const tree = runGit(["rev-parse", "HEAD^{tree}"], { quiet: true }).trim();
+  const [parent, tree] = runGit(["rev-parse", "HEAD", "HEAD^{tree}"], { quiet: true })
+    .trim()
+    .split(/\r?\n/);
+  if (!parent || !tree) throw new Error("Failed to resolve state publish lease commit objects");
   const message = [
     "ClawSweeper state publish lease",
     "",

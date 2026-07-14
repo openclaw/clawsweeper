@@ -1501,14 +1501,20 @@ test("state publishers serialize concurrent workflow commits through the remote 
     CLAWSWEEPER_PUBLISH_LEASE_ATTEMPTS: "80",
     CLAWSWEEPER_PUBLISH_LEASE_WAIT_MS: "10",
   });
+  const startedAt = Date.now();
   const first = startPublishCli(firstSource, firstState, "chore: publish first", env);
   const firstResult = waitForChild(first);
   await waitForRemoteRef(fixture.origin, STATE_PUBLISH_LEASE_REF);
   const second = startPublishCli(secondSource, secondState, "chore: publish second", env);
   const [firstCompleted, secondCompleted] = await Promise.all([firstResult, waitForChild(second)]);
+  const elapsedMs = Date.now() - startedAt;
 
   assert.equal(firstCompleted.status, 0, firstCompleted.stderr);
   assert.equal(secondCompleted.status, 0, secondCompleted.stderr);
+  assert.ok(
+    elapsedMs >= 250 && elapsedMs < 3000,
+    `leased concurrent publish completed in ${elapsedMs}ms`,
+  );
   assert.equal(
     run("git", ["--git-dir", fixture.origin, "show", "state:results/first.txt"], fixture.root),
     "first\n",
@@ -1519,12 +1525,76 @@ test("state publishers serialize concurrent workflow commits through the remote 
   );
   assert.equal(remoteRefExists(fixture.origin, STATE_PUBLISH_LEASE_REF), false);
   for (const output of [firstCompleted.stdout, secondCompleted.stdout]) {
-    const processCount = Number(/Git publish metrics:.*processes=(\d+)/.exec(output)?.[1]);
+    const metrics = /Git publish metrics:[^\n]+/.exec(output)?.[0] ?? "";
+    const processCount = Number(/processes=(\d+)/.exec(metrics)?.[1]);
     assert.ok(
       Number.isInteger(processCount) && processCount <= 40,
       `leased concurrent publish used ${processCount} git subprocesses`,
     );
+    const remoteProbeCount = Number(/\bls-remote:(\d+)/.exec(metrics)?.[1]);
+    assert.ok(
+      Number.isInteger(remoteProbeCount) && remoteProbeCount <= 8,
+      `leased concurrent publish used ${remoteProbeCount} remote lease probes`,
+    );
   }
+});
+
+test("lease backoff outlives the former fixed retry window", async () => {
+  const fixture = createStatePublishRemote("backoff-window");
+  const firstState = path.join(fixture.root, "state-first");
+  const secondState = path.join(fixture.root, "state-second");
+  const firstSource = path.join(fixture.root, "source-first");
+  const secondSource = path.join(fixture.root, "source-second");
+  cloneState(fixture.origin, firstState);
+  cloneState(fixture.origin, secondState);
+  fs.mkdirSync(firstSource);
+  fs.mkdirSync(secondSource);
+  write(path.join(firstSource, "results/first.txt"), "first\n");
+  write(path.join(secondSource, "results/second.txt"), "second\n");
+  installStatePushSleepHook(firstState, 0.18);
+
+  const env = leasedPublishEnv({
+    CLAWSWEEPER_PUBLISH_DEADLINE_MS: "2000",
+    CLAWSWEEPER_PUBLISH_COMMAND_TIMEOUT_MS: "1000",
+    CLAWSWEEPER_PUBLISH_LEASE_TTL_MS: "1500",
+    CLAWSWEEPER_PUBLISH_LEASE_ATTEMPTS: "5",
+    CLAWSWEEPER_PUBLISH_LEASE_WAIT_MS: "20",
+  });
+  const startedAt = Date.now();
+  const first = startPublishCli(firstSource, firstState, "chore: publish first", env);
+  const firstResult = waitForChild(first);
+  await waitForRemoteRef(fixture.origin, STATE_PUBLISH_LEASE_REF);
+  const second = startPublishCli(secondSource, secondState, "chore: publish second", env);
+  const [firstCompleted, secondCompleted] = await Promise.all([firstResult, waitForChild(second)]);
+  const elapsedMs = Date.now() - startedAt;
+
+  assert.equal(firstCompleted.status, 0, firstCompleted.stderr);
+  assert.equal(secondCompleted.status, 0, secondCompleted.stderr);
+  assert.match(secondCompleted.stdout, /Acquired state publish lease .* attempt=5 /);
+  assert.ok(
+    elapsedMs >= 180 && elapsedMs < 1500,
+    `scaled lease backoff completed in ${elapsedMs}ms`,
+  );
+  assert.equal(
+    run("git", ["--git-dir", fixture.origin, "show", "state:results/first.txt"], fixture.root),
+    "first\n",
+  );
+  assert.equal(
+    run("git", ["--git-dir", fixture.origin, "show", "state:results/second.txt"], fixture.root),
+    "second\n",
+  );
+  assert.equal(remoteRefExists(fixture.origin, STATE_PUBLISH_LEASE_REF), false);
+  const metrics = /Git publish metrics:[^\n]+/.exec(secondCompleted.stdout)?.[0] ?? "";
+  const processCount = Number(/processes=(\d+)/.exec(metrics)?.[1]);
+  assert.ok(
+    Number.isInteger(processCount) && processCount <= 40,
+    `scaled lease backoff used ${processCount} git subprocesses`,
+  );
+  const remoteProbeCount = Number(/\bls-remote:(\d+)/.exec(metrics)?.[1]);
+  assert.ok(
+    Number.isInteger(remoteProbeCount) && remoteProbeCount <= 6,
+    `scaled lease backoff used ${remoteProbeCount} remote lease probes`,
+  );
 });
 
 test("state publisher atomically recovers an expired remote lease", () => {
@@ -1667,7 +1737,8 @@ test("lease contention deadline bounds the waiting git process budget", () => {
       ),
     /deadline exceeded|timed out/,
   );
-  assert.ok(Date.now() - startedAt < 1000);
+  const elapsedMs = Date.now() - startedAt;
+  assert.ok(elapsedMs >= 80 && elapsedMs < 1000, `lease deadline completed in ${elapsedMs}ms`);
   const metrics = lines.find((line) => line.startsWith("Git publish metrics:"));
   const processCount = Number(/processes=(\d+)/.exec(metrics)?.[1]);
   assert.ok(
