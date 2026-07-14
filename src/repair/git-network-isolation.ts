@@ -196,6 +196,11 @@ function prepareIsolatedFetch({
   source: ReturnType<typeof targetGitObjectStore>;
   timeoutMs: number;
 }) {
+  if (source.shallowOids.length > 0) {
+    fs.writeFileSync(path.join(networkGitDir, "shallow"), `${source.shallowOids.join("\n")}\n`, {
+      mode: 0o600,
+    });
+  }
   if (args[0] !== "fetch") return [...args];
   const destination = isolatedFetchDestination(args);
   const negotiationTip = sourceRefSha({
@@ -205,11 +210,6 @@ function prepareIsolatedFetch({
     source,
     timeoutMs,
   });
-  if (source.shallowOids.length > 0) {
-    fs.writeFileSync(path.join(networkGitDir, "shallow"), `${source.shallowOids.join("\n")}\n`, {
-      mode: 0o600,
-    });
-  }
   if (negotiationTip) {
     run("git", [`--git-dir=${networkGitDir}`, "update-ref", destination, negotiationTip], {
       cwd,

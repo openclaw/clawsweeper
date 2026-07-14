@@ -126,6 +126,42 @@ test("isolated authenticated fetch preserves partial-clone and shallow negotiati
   assert.match(missing, new RegExp(`^\\?${omittedBlob}$`, "m"));
 });
 
+test("isolated authenticated push preserves the target shallow boundary", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-network-shallow-push-"));
+  const source = path.join(root, "source");
+  const upstream = path.join(root, "upstream.git");
+  const target = path.join(root, "target");
+  const destination = path.join(root, "destination.git");
+  fs.mkdirSync(source);
+  git(source, "init", "-b", "main");
+  git(source, "config", "user.email", "clawsweeper@example.invalid");
+  git(source, "config", "user.name", "ClawSweeper Test");
+  fs.writeFileSync(path.join(source, "source.txt"), "initial\n");
+  git(source, "add", ".");
+  git(source, "commit", "-m", "initial");
+  fs.writeFileSync(path.join(source, "source.txt"), "upstream\n");
+  git(source, "commit", "-am", "upstream");
+  git(root, "clone", "--bare", source, upstream);
+  git(root, "clone", "--depth=1", `file://${upstream}`, target);
+  git(target, "config", "user.email", "clawsweeper@example.invalid");
+  git(target, "config", "user.name", "ClawSweeper Test");
+  fs.writeFileSync(path.join(target, "target.txt"), "validated\n");
+  git(target, "add", ".");
+  git(target, "commit", "-m", "validated");
+  const head = git(target, "rev-parse", "HEAD");
+  git(root, "clone", "--bare", source, destination);
+
+  runIsolatedGitNetwork({
+    args: ["push", destination, `${head}:refs/heads/validated`],
+    cwd: target,
+    env: process.env,
+    timeoutMs: 10_000,
+    token: "test-token",
+  });
+
+  assert.equal(git(destination, "rev-parse", "refs/heads/validated"), head);
+});
+
 test(
   "isolated Git rejects redirected target object stores",
   { skip: process.platform === "win32" },
