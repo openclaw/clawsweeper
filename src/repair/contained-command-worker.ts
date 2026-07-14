@@ -59,6 +59,14 @@ async function runContained(input: WorkerInput): Promise<WorkerResult> {
   } = { value: null };
   let timedOut = false;
   let overflow = false;
+  let forcedTermination: NodeJS.Timeout | undefined;
+  const requestTermination = () => {
+    terminateProcessTree(child.pid);
+    if (process.platform !== "win32" && child.pid && !forcedTermination) {
+      forcedTermination = setTimeout(() => signalProcessGroup(child.pid!, "SIGKILL"), 250);
+      forcedTermination.unref();
+    }
+  };
   child.on("error", (error) => {
     spawnFailure.value = {
       code: (error as NodeJS.ErrnoException).code,
@@ -66,19 +74,21 @@ async function runContained(input: WorkerInput): Promise<WorkerResult> {
     };
   });
   child.stdout.on("data", (chunk: Buffer) => {
+    if (overflow) return;
     stdoutBytes += chunk.length;
     if (stdoutBytes > input.maxBuffer) {
       overflow = true;
-      terminateProcessTree(child.pid);
+      requestTermination();
       return;
     }
     stdout.push(chunk);
   });
   child.stderr.on("data", (chunk: Buffer) => {
+    if (overflow) return;
     stderrBytes += chunk.length;
     if (stderrBytes > input.maxBuffer) {
       overflow = true;
-      terminateProcessTree(child.pid);
+      requestTermination();
       return;
     }
     stderr.push(chunk);
@@ -98,17 +108,12 @@ async function runContained(input: WorkerInput): Promise<WorkerResult> {
   }
   if (input.input !== undefined) child.stdin.end(input.input);
   else child.stdin.end();
-  let forcedTermination: NodeJS.Timeout | undefined;
   const timeout =
     input.timeoutMs === undefined
       ? undefined
       : setTimeout(() => {
           timedOut = true;
-          terminateProcessTree(child.pid);
-          if (process.platform !== "win32" && child.pid) {
-            forcedTermination = setTimeout(() => signalProcessGroup(child.pid!, "SIGKILL"), 250);
-            forcedTermination.unref();
-          }
+          requestTermination();
         }, input.timeoutMs);
   timeout?.unref();
   const exit = await new Promise<{ signal: NodeJS.Signals | null; status: number | null }>(

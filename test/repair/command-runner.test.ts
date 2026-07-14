@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
 import { resolveSpawnCommand } from "../../dist/command.js";
-import { runCommand } from "../../dist/repair/command-runner.js";
+import { runCommand, runContainedCommand } from "../../dist/repair/command-runner.js";
 import { mockCommandBinEnv } from "../helpers.ts";
 
 test("runCommand handles validation output larger than Node's sync spawn default", () => {
@@ -26,6 +26,53 @@ test("runCommand reports command timeouts with the rendered command", () => {
     /command timed out after 10ms: .*node.* -e/,
   );
 });
+
+test("contained commands allow worst-case serialized output within each stream limit", () => {
+  const bytesPerStream = 192 * 1024;
+  const output = runContainedCommand(
+    process.execPath,
+    [
+      "-e",
+      `const output = Buffer.alloc(${bytesPerStream}, 1); process.stdout.write(output); process.stderr.write(output);`,
+    ],
+    { maxBuffer: 256 * 1024 },
+  );
+
+  assert.equal(Buffer.byteLength(output), bytesPerStream);
+});
+
+test(
+  "contained command overflow force-kills commands that ignore graceful termination",
+  { skip: process.platform === "win32" },
+  () => {
+    const root = mkdtempSync(join(tmpdir(), "clawsweeper-command-overflow-"));
+    const marker = join(root, "escaped");
+    try {
+      assert.throws(
+        () =>
+          runContainedCommand(
+            process.execPath,
+            [
+              "-e",
+              [
+                'const fs = require("node:fs");',
+                'process.on("SIGTERM", () => {});',
+                'process.stdout.write("x".repeat(128 * 1024));',
+                `setTimeout(() => fs.writeFileSync(${JSON.stringify(marker)}, "escaped"), 750);`,
+                "setInterval(() => {}, 1000);",
+              ].join(" "),
+            ],
+            { maxBuffer: 1024, timeoutMs: 3_000 },
+          ),
+        /validation command output exceeded the buffer limit/,
+      );
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1_000);
+      assert.equal(existsSync(marker), false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+);
 
 test("runCommand honors shared command bin overrides", () => {
   const root = mkdtempSync(join(tmpdir(), "clawsweeper-command-runner-"));

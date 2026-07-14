@@ -52,7 +52,7 @@ export function runContainedCommand(
         windowsVerbatimArguments: invocation.windowsVerbatimArguments === true,
       }),
       encoding: "utf8",
-      maxBuffer: Math.max(maxBuffer * 2, 1024 * 1024),
+      maxBuffer: serializedWorkerMaxBuffer(maxBuffer),
       timeout: options.timeoutMs === undefined ? undefined : options.timeoutMs + 5_000,
       windowsHide: true,
     },
@@ -87,6 +87,14 @@ export function runContainedCommand(
     );
   }
   return child.stdout;
+}
+
+function serializedWorkerMaxBuffer(maxBuffer: number) {
+  const overhead = 64 * 1024;
+  const maximumExpandedBuffer = Math.floor((Number.MAX_SAFE_INTEGER - overhead) / 12);
+  const expanded =
+    maxBuffer > maximumExpandedBuffer ? Number.MAX_SAFE_INTEGER : maxBuffer * 12 + overhead;
+  return Math.max(expanded, 1024 * 1024);
 }
 
 export function runCommandResult(
