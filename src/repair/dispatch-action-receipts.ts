@@ -209,6 +209,10 @@ export function dispatchChainCacheSizeForTest(): number {
   return dispatchChains.size;
 }
 
+export function dispatchChainActiveAttemptsForTest(): number {
+  return [...dispatchChains.values()].reduce((total, chain) => total + chain.activeAttempts, 0);
+}
+
 export function runDispatchWithReceiptSync<T>(options: DispatchReceiptOptions<T>): T {
   const receipt = startDispatchReceipt(options);
   let result: T;
@@ -225,7 +229,7 @@ export function runDispatchWithReceiptSync<T>(options: DispatchReceiptOptions<T>
     finishFailedDispatchReceipt(receipt, error);
     throw error;
   }
-  finishDispatchReceipt(receipt, disposition);
+  finishCompletedDispatchReceipt(receipt, disposition);
   return result;
 }
 
@@ -251,7 +255,7 @@ export async function runDispatchWithReceipt<T>(
     finishFailedDispatchReceipt(receipt, error);
     throw error;
   }
-  finishDispatchReceipt(receipt, disposition);
+  finishCompletedDispatchReceipt(receipt, disposition);
   return result;
 }
 
@@ -405,6 +409,25 @@ function finishDispatchReceipt(
     receipt.chain.parentEventId = event?.event_id ?? receipt.chain.parentEventId;
   } finally {
     releaseDispatchChain(receipt.chainKey, receipt.chain);
+  }
+}
+
+function finishCompletedDispatchReceipt(
+  receipt: ReturnType<typeof startDispatchReceipt>,
+  disposition: DispatchOutcomeDisposition,
+): void {
+  if (disposition.outcome !== "accepted") {
+    finishDispatchReceipt(receipt, disposition);
+    return;
+  }
+  try {
+    finishDispatchReceipt(receipt, disposition);
+  } catch (error) {
+    console.error(
+      `[action-ledger] dispatch accepted but failed to record outcome: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
   }
 }
 

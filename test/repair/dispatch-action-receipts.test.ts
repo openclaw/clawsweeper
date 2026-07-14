@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
 
 import { ACTION_EVENT_TYPES } from "../../dist/action-ledger.js";
 import {
@@ -13,6 +13,7 @@ import {
 import {
   DispatchOutcomeUnknownError,
   DispatchRejectedError,
+  dispatchChainActiveAttemptsForTest,
   dispatchChainCacheSizeForTest,
   dispatchErrorDisposition,
   dispatchHttpError,
@@ -139,6 +140,97 @@ test("dispatch receipts classify rejected, timed out, and returned unknown outco
       ["skipped", "not_applicable", false, false, "error"],
     ].sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)));
     assert.deepEqual(dispositions, expected);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("accepted outcome persistence failures preserve sync and async transport results", async (t) => {
+  const fixture = actionLedgerFixture("accepted-outcome-failure");
+  const errors: string[] = [];
+  failAcceptedOutcomeWrites(t, 2);
+  t.mock.method(console, "error", (...args: unknown[]) => {
+    errors.push(args.map(String).join(" "));
+  });
+  try {
+    const syncResult = runDispatchWithReceiptSync({
+      ...baseOptions(fixture),
+      operationKey: "dispatch:accepted-sync",
+      dispatchInput: { event_type: "accepted_sync" },
+      operation: () => "sync-result",
+    });
+    const asyncResult = await runDispatchWithReceipt({
+      ...baseOptions(fixture),
+      operationKey: "dispatch:accepted-async",
+      dispatchInput: { event_type: "accepted_async" },
+      operation: async () => "async-result",
+    });
+
+    assert.equal(syncResult, "sync-result");
+    assert.equal(asyncResult, "async-result");
+    assert.equal(dispatchChainActiveAttemptsForTest(), 0);
+    assert.equal(
+      errors.filter((line) =>
+        line.includes("[action-ledger] dispatch accepted but failed to record outcome"),
+      ).length,
+      2,
+    );
+
+    await flushDispatchActionEvents(fixture.root, {
+      env: fixture.env,
+      outputRoot: fixture.outputRoot,
+    });
+    assert.deepEqual(
+      readEvents(fixture.outputRoot).map((event) => event.attributes.completion_reason),
+      ["dispatch_attempted", "dispatch_attempted"],
+    );
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("dispatch attempt persistence remains fail closed before sync or async transport", async (t) => {
+  const fixture = actionLedgerFixture("attempt-failure");
+  const originalWriteFileSync = fs.writeFileSync;
+  let failuresRemaining = 2;
+  let calls = 0;
+  t.mock.method(fs, "writeFileSync", (...args: Parameters<typeof fs.writeFileSync>) => {
+    if (
+      failuresRemaining > 0 &&
+      String(args[1]).includes('"completion_reason":"dispatch_attempted"')
+    ) {
+      failuresRemaining -= 1;
+      throw new Error("injected dispatch attempt persistence failure");
+    }
+    Reflect.apply(originalWriteFileSync, fs, args);
+  });
+  try {
+    assert.throws(
+      () =>
+        runDispatchWithReceiptSync({
+          ...baseOptions(fixture),
+          operationKey: "dispatch:attempt-sync",
+          dispatchInput: { event_type: "attempt_sync" },
+          operation: () => {
+            calls += 1;
+          },
+        }),
+      /injected dispatch attempt persistence failure/,
+    );
+    await assert.rejects(
+      runDispatchWithReceipt({
+        ...baseOptions(fixture),
+        operationKey: "dispatch:attempt-async",
+        dispatchInput: { event_type: "attempt_async" },
+        operation: async () => {
+          calls += 1;
+        },
+      }),
+      /injected dispatch attempt persistence failure/,
+    );
+    assert.equal(calls, 0);
+    assert.equal(failuresRemaining, 0);
+    assert.equal(dispatchChainActiveAttemptsForTest(), 0);
   } finally {
     fixture.cleanup();
   }
@@ -495,6 +587,21 @@ function baseOptions(fixture: ReturnType<typeof actionLedgerFixture>) {
     repository: "openclaw/clawsweeper",
     dispatchTarget: "test_dispatch",
   };
+}
+
+function failAcceptedOutcomeWrites(t: TestContext, failures: number): void {
+  const originalWriteFileSync = fs.writeFileSync;
+  let failuresRemaining = failures;
+  t.mock.method(fs, "writeFileSync", (...args: Parameters<typeof fs.writeFileSync>) => {
+    if (
+      failuresRemaining > 0 &&
+      String(args[1]).includes('"completion_reason":"dispatch_accepted"')
+    ) {
+      failuresRemaining -= 1;
+      throw new Error("injected accepted outcome persistence failure");
+    }
+    Reflect.apply(originalWriteFileSync, fs, args);
+  });
 }
 
 function actionLedgerFixture(invocation: string) {

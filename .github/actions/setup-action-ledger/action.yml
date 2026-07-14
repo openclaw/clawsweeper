@@ -11,6 +11,7 @@ runs:
     - name: Export immutable action ledger context
       shell: bash
       env:
+        ACTION_LEDGER_WORKTREE_PATH: ${{ inputs.worktree-path }}
         GH_TOKEN: ${{ github.token }}
       run: |
         set -euo pipefail
@@ -22,11 +23,30 @@ runs:
           echo "Unable to resolve immutable workflow run creation time." >&2
           exit 1
         fi
+        worktree_path="${ACTION_LEDGER_WORKTREE_PATH:-.}"
+        if [[ "$worktree_path" = /* ]]; then
+          echo "Action ledger worktree path must be workspace-relative: $worktree_path" >&2
+          exit 1
+        fi
+        if [ ! -d "$worktree_path" ]; then
+          echo "Action ledger worktree path is not a directory: $worktree_path" >&2
+          exit 1
+        fi
+        workspace_root="$(pwd -P)"
+        ledger_root="$(cd "$worktree_path" && pwd -P)"
+        case "$ledger_root" in
+          "$workspace_root"|"$workspace_root"/*) ;;
+          *)
+            echo "Action ledger worktree path escapes the workspace: $worktree_path" >&2
+            exit 1
+            ;;
+        esac
         output_root="$RUNNER_TEMP/clawsweeper-action-ledger/${GITHUB_RUN_ID}/${GITHUB_RUN_ATTEMPT}/${GITHUB_JOB}"
         mkdir -p "$output_root"
         output_root="$(cd "$output_root" && pwd -P)"
         {
           echo "CLAWSWEEPER_ACTION_LEDGER_FORCE=1"
+          echo "CLAWSWEEPER_ACTION_LEDGER_ROOT=$ledger_root"
           echo "CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT=$output_root"
           echo "GITHUB_RUN_STARTED_AT=$run_started_at"
         } >> "$GITHUB_ENV"

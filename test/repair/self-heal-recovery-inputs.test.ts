@@ -160,6 +160,7 @@ test("self-heal backfills quota after a newer invalid candidate", () => {
 
 test("self-heal writes and publishes dispatch attempts before legacy summaries", () => {
   const source = fs.readFileSync("src/repair/self-heal-failed-runs.ts", "utf8");
+  const setupAction = fs.readFileSync(".github/actions/setup-action-ledger/action.yml", "utf8");
   const workflow = fs.readFileSync(".github/workflows/repair-self-heal.yml", "utf8");
   const dispatchStart = source.indexOf("function dispatchCandidate(");
   const dispatchEnd = source.indexOf("function waitForStartedRuns(", dispatchStart);
@@ -177,6 +178,13 @@ test("self-heal writes and publishes dispatch attempts before legacy summaries",
     /await flushDispatchActionEvents\(dispatchReceiptContext\.root,[\s\S]*?outputRoot: dispatchReceiptContext\.outputRoot/,
   );
   assert.match(source, /appendAttempts\(ledger, attempts\)/);
+  assert.match(setupAction, /ACTION_LEDGER_WORKTREE_PATH: \$\{\{ inputs\.worktree-path \}\}/);
+  assert.match(setupAction, /worktree path must be workspace-relative/);
+  assert.match(setupAction, /workspace_root="\$\(pwd -P\)"/);
+  assert.match(setupAction, /ledger_root="\$\(cd "\$worktree_path" && pwd -P\)"/);
+  assert.match(setupAction, /"\$workspace_root"\|"\$workspace_root"\/\*/);
+  assert.match(setupAction, /worktree path escapes the workspace/);
+  assert.match(setupAction, /CLAWSWEEPER_ACTION_LEDGER_ROOT=\$ledger_root/);
   assert.match(workflow, /uses: \.\/\.github\/actions\/setup-action-ledger/);
   assert.match(workflow, /--lane self-heal-dispatch/);
   assert.match(workflow, /--message "chore: append self-heal dispatch action ledger"/);
@@ -214,6 +222,53 @@ test("executing self-heal uses durable local dispatch receipts outside Actions",
       ["dispatch_attempted", "dispatch_accepted"],
     );
     assert.equal(receipts[0]?.producer.workflow, "local-dispatch");
+  } finally {
+    cleanupFixture(fixture);
+  }
+});
+
+test("executing self-heal accepts canonical setup-action-ledger Actions context", () => {
+  const fixture = createRecoveryFixture("actions-execute");
+  const outputRoot = path.join(fixture.root, "actions-ledger-output");
+  fs.mkdirSync(outputRoot);
+  try {
+    const result = runFixture(
+      fixture,
+      ["self-heal-failed-runs.js", "--max-age-hours", "24", "--max-jobs", "1", "--execute"],
+      {
+        GITHUB_ACTIONS: "true",
+        CLAWSWEEPER_ACTION_LEDGER_FORCE: "1",
+        CLAWSWEEPER_ACTION_LEDGER_ROOT: fs.realpathSync(fixture.root),
+        CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT: fs.realpathSync(outputRoot),
+        CLAWSWEEPER_ACTION_LEDGER_INVOCATION: "actions-self-heal",
+        GITHUB_WORKFLOW: "repair self-heal failed clusters",
+        GITHUB_WORKFLOW_REF:
+          "openclaw/clawsweeper/.github/workflows/repair-self-heal.yml@refs/heads/main",
+        GITHUB_JOB: "self-heal",
+        GITHUB_RUN_ID: "12345",
+        GITHUB_RUN_ATTEMPT: "1",
+        GITHUB_RUN_STARTED_AT: "2026-07-14T12:00:00Z",
+        GITHUB_ACTION: "self-heal-failed-runs",
+      },
+    );
+
+    assert.equal(result.status, 0, result.stderr);
+    const receiptPaths = fs
+      .readdirSync(outputRoot, { recursive: true })
+      .filter((entry): entry is string => typeof entry === "string" && entry.endsWith(".jsonl"));
+    assert.ok(receiptPaths.length > 0);
+    const receipts = receiptPaths.flatMap((entry) =>
+      fs
+        .readFileSync(path.join(outputRoot, entry), "utf8")
+        .trim()
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => JSON.parse(line)),
+    );
+    assert.deepEqual(
+      receipts.map((event) => event.attributes.completion_reason),
+      ["dispatch_attempted", "dispatch_accepted"],
+    );
   } finally {
     cleanupFixture(fixture);
   }
@@ -288,7 +343,11 @@ candidates:
   return { root, binDir, runId, ghLog, localReceiptRoot };
 }
 
-function runFixture(fixture: ReturnType<typeof createRecoveryFixture>, args: string[]) {
+function runFixture(
+  fixture: ReturnType<typeof createRecoveryFixture>,
+  args: string[],
+  envOverrides: NodeJS.ProcessEnv = {},
+) {
   const [script, ...scriptArgs] = args;
   const env = {
     ...process.env,
@@ -311,6 +370,7 @@ function runFixture(fixture: ReturnType<typeof createRecoveryFixture>, args: str
   ]) {
     delete env[name];
   }
+  Object.assign(env, envOverrides);
   return spawnSync(
     process.execPath,
     [path.join(fixture.root, "dist", "repair", script!), ...scriptArgs],

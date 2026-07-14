@@ -11,6 +11,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { pathToFileURL } from "node:url";
 
 import {
   defaultLimit,
@@ -422,6 +423,99 @@ process.exit(2);
     .split("\n")
     .map((line) => JSON.parse(line) as string[]);
   assert.equal(calls.filter((call) => call[0] === "api").length, 1);
+});
+
+test("target fanout does not replay a cursor after accepted outcome persistence fails", () => {
+  const dir = mkdtempSync(join(tmpdir(), "clawsweeper-fanout-outcome-failure-"));
+  const logPath = join(dir, "gh.log");
+  const cursorPath = join(dir, "cursor.json");
+  const ghPath = join(dir, "gh.js");
+  const failureHookPath = join(dir, "fail-accepted-outcome.mjs");
+  const ledgerEnv = actionLedgerEnv(dir, "accepted-outcome-failure");
+  writeFileSync(
+    failureHookPath,
+    `import fs from "node:fs";
+const originalWriteFileSync = fs.writeFileSync;
+let failed = false;
+fs.writeFileSync = function (file, data, ...args) {
+  if (!failed && String(data).includes('"completion_reason":"dispatch_accepted"')) {
+    failed = true;
+    throw new Error("injected accepted outcome persistence failure");
+  }
+  return Reflect.apply(originalWriteFileSync, fs, [file, data, ...args]);
+};
+`,
+  );
+  writeFileSync(
+    ghPath,
+    `#!/usr/bin/env node
+const fs = require("node:fs");
+const args = process.argv.slice(2);
+fs.appendFileSync(${JSON.stringify(logPath)}, JSON.stringify(args) + "\\n");
+if (args[0] === "repo" && args[1] === "list") {
+  process.stdout.write(JSON.stringify([
+    {nameWithOwner:"openclaw/A",isArchived:false,isDisabled:false,isFork:false,hasIssuesEnabled:true,visibility:"PUBLIC",defaultBranchRef:{name:"main"}},
+    {nameWithOwner:"openclaw/B",isArchived:false,isDisabled:false,isFork:false,hasIssuesEnabled:true,visibility:"PUBLIC",defaultBranchRef:{name:"main"}}
+  ]));
+  process.exit(0);
+}
+if (args[0] === "api" && args[1].endsWith("/dispatches")) process.exit(0);
+process.exit(2);
+`,
+  );
+  chmodSync(ghPath, 0o755);
+  const firstEnv = {
+    ...process.env,
+    ...ledgerEnv,
+    ...mockGhBinEnv(ghPath),
+    CLAWSWEEPER_DISPATCH_TOKEN: "dispatch-token",
+    CLAWSWEEPER_INVENTORY_TOKEN_OPENCLAW: "inventory-openclaw",
+    NODE_OPTIONS: [process.env.NODE_OPTIONS, `--import=${pathToFileURL(failureHookPath).href}`]
+      .filter(Boolean)
+      .join(" "),
+  };
+  const args = [
+    "dist/repair/target-fanout.js",
+    "--mode",
+    "hot-intake",
+    "--limit",
+    "1",
+    "--cursor-path",
+    cursorPath,
+    "--owners",
+    "openclaw",
+  ];
+
+  const first = spawnSync(process.execPath, args, {
+    cwd: process.cwd(),
+    encoding: "utf8",
+    env: firstEnv,
+  });
+  assert.equal(first.status, 0, first.stderr);
+  assert.match(first.stderr, /dispatch accepted but failed to record outcome/);
+  assert.match(readFileSync(cursorPath, "utf8"), /"next_cursor": 1/);
+
+  const second = spawnSync(process.execPath, args, {
+    cwd: process.cwd(),
+    encoding: "utf8",
+    env: {
+      ...firstEnv,
+      CLAWSWEEPER_ACTION_LEDGER_INVOCATION: "accepted-outcome-failure-rerun",
+      GITHUB_RUN_ID: "12346",
+    },
+  });
+  assert.equal(second.status, 0, second.stderr);
+  assert.match(second.stderr, /dispatch accepted but failed to record outcome/);
+  assert.match(readFileSync(cursorPath, "utf8"), /"next_cursor": 0/);
+
+  const dispatchCalls = readFileSync(logPath, "utf8")
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line) as string[])
+    .filter((call) => call[0] === "api");
+  assert.equal(dispatchCalls.length, 2);
+  assert.match(dispatchCalls[0]?.join(" ") ?? "", /client_payload\[target_repo\]=openclaw\/a/);
+  assert.match(dispatchCalls[1]?.join(" ") ?? "", /client_payload\[target_repo\]=openclaw\/b/);
 });
 
 function repo(nameWithOwner: string, overrides: Partial<ListedRepository> = {}): ListedRepository {

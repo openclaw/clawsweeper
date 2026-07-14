@@ -244,6 +244,89 @@ test("comment webhook dispatches locally with durable process receipt context", 
   }
 });
 
+test("comment webhook reports success after accepted outcome persistence failure", async (t) => {
+  const previousFetch = globalThis.fetch;
+  const previousAppId = process.env.CLAWSWEEPER_APP_ID;
+  const previousClientId = process.env.CLAWSWEEPER_APP_CLIENT_ID;
+  const previousPrivateKey = process.env.CLAWSWEEPER_APP_PRIVATE_KEY;
+  const originalWriteFileSync = fs.writeFileSync;
+  const errors: string[] = [];
+  const { privateKey } = crypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
+  let dispatches = 0;
+  let failed = false;
+  process.env.CLAWSWEEPER_APP_ID = "12345";
+  delete process.env.CLAWSWEEPER_APP_CLIENT_ID;
+  process.env.CLAWSWEEPER_APP_PRIVATE_KEY = privateKey
+    .export({ type: "pkcs1", format: "pem" })
+    .toString();
+  t.mock.method(fs, "writeFileSync", (...args: Parameters<typeof fs.writeFileSync>) => {
+    if (!failed && String(args[1]).includes('"completion_reason":"dispatch_accepted"')) {
+      failed = true;
+      throw new Error("injected accepted outcome persistence failure");
+    }
+    Reflect.apply(originalWriteFileSync, fs, args);
+  });
+  t.mock.method(console, "error", (...args: unknown[]) => {
+    errors.push(args.map(String).join(" "));
+  });
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = new URL(String(input));
+    const method = String(init?.method ?? "GET").toUpperCase();
+    const requestPath = `${url.pathname}${url.search}`;
+    if (requestPath === "/repos/openclaw/clawsweeper/installation" && method === "GET") {
+      return jsonResponse({ id: 999 });
+    }
+    if (requestPath === "/app/installations/999/access_tokens" && method === "POST") {
+      return jsonResponse({ token: "dispatch-token" });
+    }
+    if (requestPath === "/repos/openclaw/clawsweeper/dispatches" && method === "POST") {
+      dispatches += 1;
+      return jsonResponse({});
+    }
+    throw new Error(`unexpected fetch ${method} ${requestPath}`);
+  }) as typeof fetch;
+
+  try {
+    const result = await handleGitHubWebhook({
+      event: "issues",
+      deliveryId: "accepted-outcome-failure",
+      payload: {
+        action: "opened",
+        repository: {
+          full_name: "openclaw/openclaw",
+          default_branch: "main",
+          private: false,
+          archived: false,
+          fork: false,
+          has_issues: true,
+        },
+        issue: { number: 71898 },
+        installation: { id: 123 },
+      },
+    });
+
+    assert.deepEqual(result, {
+      statusCode: 202,
+      body: { ok: true, dispatched: "clawsweeper_item" },
+    });
+    assert.equal(dispatches, 1);
+    assert.equal(failed, true);
+    assert.match(
+      errors.join("\n"),
+      /\[action-ledger\] dispatch accepted but failed to record outcome: injected accepted outcome persistence failure/,
+    );
+    assert.deepEqual(
+      readReceiptEvents().map((event) => event.attributes.completion_reason),
+      ["dispatch_attempted"],
+    );
+  } finally {
+    globalThis.fetch = previousFetch;
+    restoreEnv("CLAWSWEEPER_APP_ID", previousAppId);
+    restoreEnv("CLAWSWEEPER_APP_CLIENT_ID", previousClientId);
+    restoreEnv("CLAWSWEEPER_APP_PRIVATE_KEY", previousPrivateKey);
+  }
+});
+
 test("comment webhook ignores ClawSweeper proof-nudge comments", () => {
   const result = classifyIssueCommentWebhook({
     event: "issue_comment",
