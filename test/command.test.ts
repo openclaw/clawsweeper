@@ -312,6 +312,16 @@ if (args[0] === "api" && args[1] === "repos/openclaw/openclaw/pulls/96221") {
   console.log(JSON.stringify(pull));
   process.exit(0);
 }
+if (
+  args[0] === "api" &&
+  (
+    args[1].startsWith("repos/openclaw/openclaw/pulls/96221/reviews") ||
+    args[1].startsWith("repos/openclaw/openclaw/pulls/96221/comments")
+  )
+) {
+  console.log(JSON.stringify([[]]));
+  process.exit(0);
+}
 if (args[0] === "api" && args[1] === "-i" && args[2].startsWith("repos/openclaw/openclaw/issues/96221/timeline")) {
   process.stdout.write("HTTP/2 200\\nlink: <https://api.github.test?page=1>; rel=\\"last\\"\\n\\n[]");
   process.exit(0);

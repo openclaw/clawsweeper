@@ -229,6 +229,9 @@ export function reportFrontMatter(overrides = {}) {
     action_taken: "kept_open",
     ...overrides,
   };
+  if (values.type === "pull_request" && !Object.hasOwn(values, "review_activity_cursor")) {
+    Object.assign(values, { review_activity_cursor: emptyReviewedPrActivityCursor });
+  }
   return `---
 ${Object.entries(values)
   .map(([key, value]) => `${key}: ${value}`)
