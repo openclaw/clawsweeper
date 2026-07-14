@@ -309,6 +309,7 @@ test("OpenClaw Bay is an unlisted, hardened demo route", async () => {
   const pressureEnd = pressureScript.indexOf("function esc", pressureStart);
   assert.ok(pressureStart > 0 && pressureEnd > pressureStart);
   const pressureClasses = new Set<string>();
+  const pressureAttributes = new Map<string, string>();
   const pressureElements = {
     "pressure-panel": {
       classList: {
@@ -318,29 +319,41 @@ test("OpenClaw Bay is an unlisted, hardened demo route", async () => {
     },
     "pressure-summary": { textContent: "" },
     "pressure-current": { textContent: "" },
-    "pressure-chart": { innerHTML: "", setAttribute: () => undefined },
+    "pressure-chart": {
+      innerHTML: "",
+      setAttribute: (name: string, value: string) => pressureAttributes.set(name, value),
+    },
   };
   const pressureContext = createContext({
     document: {
       getElementById: (id: keyof typeof pressureElements) => pressureElements[id],
     },
     queue: {
-      pending: 7,
+      pending: 9,
       pressure_history: [
         {
+          observed_at: "2026-07-14T11:55:00Z",
+          pending: 4,
+          leased: 1,
+        },
+        {
           observed_at: "2026-07-14T12:00:00Z",
-          pending: 7,
+          pending: 9,
           leased: 2,
         },
       ],
     },
   });
   new Script(
-    `${pressureScript.slice(pressureStart, pressureEnd)};updatePressureTrend(queue);`,
+    `${pressureScript.slice(pressureStart, pressureEnd)};updatePressureTrend(queue);queue={pending:7,pressure_history:[{observed_at:"2026-07-14T12:00:00Z",pending:7,leased:2}]};updatePressureTrend(queue);`,
   ).runInContext(pressureContext);
   assert.equal(pressureClasses.has("collecting"), true);
   assert.equal(pressureElements["pressure-current"].textContent, "7");
   assert.equal(pressureElements["pressure-summary"].textContent, "Collecting queue history");
+  assert.equal(
+    pressureAttributes.get("aria-label"),
+    "Review handoff pressure history is collecting. 7 items are currently waiting for admission.",
+  );
   assert.match(pressureElements["pressure-chart"].innerHTML, /after two observations/);
   assert.doesNotMatch(pressureElements["pressure-chart"].innerHTML, /pressure-pending/);
   assert.doesNotMatch(body, /function laneTimingHtml/);
