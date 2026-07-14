@@ -151,6 +151,7 @@ test("review and apply primary boundaries ignore ledger-only failures", () => {
   assert.doesNotMatch(artifactSync.if ?? "", /action-ledger/);
   const artifactApply = step("publish", "Apply review artifacts");
   assert.match(artifactApply.if ?? "", /sync-review-artifacts\.outcome == 'success'/);
+  assert.match(artifactApply.run ?? "", /mkdir -p artifacts review-metrics/);
   assert.match(artifactApply.run ?? "", /review_batch_succeeded=/);
   assert.match(artifactApply.run ?? "", /artifacts_applied=true/);
   const artifactLedger = step("publish", "Publish review artifact action ledger");

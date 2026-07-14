@@ -2461,7 +2461,9 @@ jobs:
           set -euo pipefail
           apply_artifacts_args=(--target-repo "$TARGET_REPO" --artifact-dir artifacts --skip-dashboard --skip-reconcile)
           publish_state="Review publish complete"
-          mkdir -p review-metrics
+          # download-artifact succeeds without creating its destination when a
+          # zero-cap plan produces no matrix, so initialize both empty inputs.
+          mkdir -p artifacts review-metrics
           reviewed_count="$(find artifacts -type f -name '*.md' | wc -l | tr -d ' ')"
           metric_count="$(find review-metrics -type f -name '*.json' | wc -l | tr -d ' ')"
           non_success_metric_count="$(find review-metrics -type f -name '*.json' -print0 | xargs -0 -r jq -r 'select(.review_outcome != "success") | .shard' | wc -l | tr -d ' ')"
