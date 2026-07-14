@@ -2291,6 +2291,18 @@ async function authenticatedExactReviewReconcile(request, env) {
         },
       );
   const unavailable = checked.filter((result) => result === undefined).length;
+  const requiredUnavailable = checked.filter((result, index) => {
+    const candidate = candidates[index];
+    return (
+      result === undefined &&
+      (!includeAllClaimed ||
+        requestedRuns.some(
+          (requested) =>
+            requested.runId === candidate?.runId &&
+            (requested.runAttempt === undefined || requested.runAttempt === candidate.runAttempt),
+        ))
+    );
+  }).length;
   const terminalRuns = checked.filter(
     (
       result,
@@ -2323,14 +2335,14 @@ async function authenticatedExactReviewReconcile(request, env) {
   }
   return json(
     {
-      ok: unavailable === 0,
+      ok: requiredUnavailable === 0,
       requested: requestedRuns.length,
       claimed: candidates.length,
       terminal: terminalRuns.length,
       unavailable,
       ...reconciliation,
     },
-    unavailable ? 502 : 200,
+    requiredUnavailable ? 502 : 200,
   );
 }
 

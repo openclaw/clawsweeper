@@ -3581,6 +3581,7 @@ test("signed exact-review reconciliation releases only immutable terminal runs",
     items: {
       "openclaw/openclaw#711": leasedExactReviewQueueItem(711, "9001"),
       "openclaw/openclaw#712": leasedExactReviewQueueItem(712, "9002"),
+      "openclaw/openclaw#720": leasedExactReviewQueueItem(720, "9004"),
       "openclaw/openclaw#719": leasedExactReviewQueueItem(719, "9003", 1, {
         sourceCommentId: 456,
         statusCommentId: 790,
@@ -3694,9 +3695,9 @@ test("signed exact-review reconciliation releases only immutable terminal runs",
     assert.deepEqual(await response.json(), {
       ok: true,
       requested: 1,
-      claimed: 3,
+      claimed: 4,
       terminal: 2,
-      unavailable: 0,
+      unavailable: 1,
       reconciled: 2,
       requeued: 1,
       completed: 1,
@@ -3708,6 +3709,7 @@ test("signed exact-review reconciliation releases only immutable terminal runs",
     assert.equal(state.items["openclaw/openclaw#711"].claimedRunId, undefined);
     assert.equal(state.items["openclaw/openclaw#712"].state, "leased");
     assert.equal(state.items["openclaw/openclaw#712"].claimedRunId, "9002");
+    assert.equal(state.items["openclaw/openclaw#720"].claimedRunId, "9004");
     assert.equal(state.items["openclaw/openclaw#719"], undefined);
     const bay = JSON.parse((await statusStore.get("openclaw-bay:journey-state:v1")) || "{}") as {
       journeys: Array<Record<string, unknown>>;
@@ -3731,6 +3733,46 @@ test("signed exact-review reconciliation releases only immutable terminal runs",
     assert.deepEqual(summarizeBayJourneyTimings(bay.journeys, "2026-07-13T19:30:00Z").overall, {
       average_ms: 4_820_000,
       samples: 1,
+    });
+    const staleAttemptBody = JSON.stringify({
+      runs: [{ run_id: "9004", run_attempt: 2 }],
+      include_all_claimed: true,
+    });
+    const staleAttemptSignature = `sha256=${createHmac("sha256", "test-secret").update(staleAttemptBody).digest("hex")}`;
+    const staleAttempt = await worker.fetch(
+      new Request("https://clawsweeper.openclaw.ai/internal/exact-review/reconcile", {
+        method: "POST",
+        headers: { "x-clawsweeper-exact-review-signature": staleAttemptSignature },
+        body: staleAttemptBody,
+      }),
+      env,
+    );
+    assert.equal(staleAttempt.status, 200);
+    const staleAttemptResult = (await staleAttempt.json()) as { unavailable: number };
+    assert.equal(staleAttemptResult.unavailable, 1);
+    const unavailableBody = JSON.stringify({
+      runs: [{ run_id: "9004", run_attempt: 1 }],
+      include_all_claimed: true,
+    });
+    const unavailableSignature = `sha256=${createHmac("sha256", "test-secret").update(unavailableBody).digest("hex")}`;
+    const unavailable = await worker.fetch(
+      new Request("https://clawsweeper.openclaw.ai/internal/exact-review/reconcile", {
+        method: "POST",
+        headers: { "x-clawsweeper-exact-review-signature": unavailableSignature },
+        body: unavailableBody,
+      }),
+      env,
+    );
+    assert.equal(unavailable.status, 502);
+    assert.deepEqual(await unavailable.json(), {
+      ok: false,
+      requested: 1,
+      claimed: 2,
+      terminal: 0,
+      unavailable: 1,
+      reconciled: 0,
+      requeued: 0,
+      completed: 0,
     });
     const staleFailure = await queue.fetch(
       new Request("https://clawsweeper-exact-review-queue/complete", {
