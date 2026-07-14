@@ -64,7 +64,7 @@ def request_termination(signum, _frame):
     signal_descendants(termination_signal)
 
 
-def reap_exited_children():
+def reap_exited_children(primary_pid, background_pids):
     while True:
         try:
             pid, _status = os.waitpid(-1, os.WNOHANG)
@@ -72,6 +72,8 @@ def reap_exited_children():
             return True
         if pid == 0:
             return False
+        if pid != primary_pid:
+            background_pids.add(pid)
 
 
 def reap_adopted_children(primary_pid, background_pids):
@@ -85,10 +87,10 @@ def reap_adopted_children(primary_pid, background_pids):
             pass
 
 
-def terminate_and_reap_descendants(background_pids):
+def terminate_and_reap_descendants(primary_pid, background_pids):
     graceful_deadline = time.monotonic() + 0.25
     while True:
-        if reap_exited_children():
+        if reap_exited_children(primary_pid, background_pids):
             return len(background_pids)
         descendants = descendant_pids()
         background_pids.update(descendants)
@@ -126,7 +128,7 @@ def main():
         if termination_signal is not None:
             signal_descendants(termination_signal)
         time.sleep(0.01)
-    background_processes = terminate_and_reap_descendants(background_pids)
+    background_processes = terminate_and_reap_descendants(child.pid, background_pids)
     write_protocol(
         {
             "backgroundProcesses": background_processes,

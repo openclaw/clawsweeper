@@ -10,6 +10,7 @@ test("Linux validation containment uses an externally owned PID namespace and su
 
   assert.match(containment, /PR_SET_CHILD_SUBREAPER/);
   assert.match(containment, /os\.waitpid\(-1, os\.WNOHANG\)/);
+  assert.match(containment, /if pid != primary_pid:\s+background_pids\.add\(pid\)/);
   assert.match(containment, /reap_adopted_children\(child\.pid, background_pids\)/);
   assert.match(containment, /return_code = child\.poll\(\)/);
   assert.match(containment, /except ChildProcessError/);
