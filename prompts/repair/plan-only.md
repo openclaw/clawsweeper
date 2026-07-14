@@ -36,6 +36,6 @@ For each item, decide one action:
 
 Use closure actions only for targets that are open in live GitHub state. If a listed candidate is already closed, do not emit `close_duplicate`, `close_superseded`, `close_fixed_by_candidate`, or `close_low_signal`; use `keep_closed` with `status: "skipped"` and evidence that it is already closed.
 
-Use the same action fields as execute mode when possible: `classification`, `target_kind`, `target_updated_at`, `canonical`, `duplicate_of`, `candidate_fix`, `depends_on`, `evidence`, and a stable `idempotency_key`. Set `depends_on` to `null` unless one planned closure must wait for other planned closure targets in the same canonical group. In plan mode these are recommendations only.
+Use the same action fields as execute mode when possible: `classification`, `target_kind`, `target_updated_at`, `canonical`, `duplicate_of`, `candidate_fix`, `blocked_by`, `depends_on`, `evidence`, and a stable `idempotency_key`. Set `blocked_by` to `"fix_first"` only for a typed `require_fix_before_close` block and to `null` otherwise. Set `depends_on` to `null` unless one planned closure must wait for other planned closure targets in the same canonical group. In plan mode these are recommendations only.
 
 Return structured JSON only.

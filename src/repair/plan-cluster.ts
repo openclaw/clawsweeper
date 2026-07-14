@@ -473,7 +473,7 @@ function buildFixArtifact(plan: LooseRecord, job: LooseRecord) {
           : "Post-merge closure disabled by job frontmatter.",
       fix_first_close:
         job.frontmatter.require_fix_before_close === true
-          ? "Do not emit close actions until ClawSweeper has opened/pushed a fix PR or merged a canonical PR in this run."
+          ? 'Do not emit planned close actions until ClawSweeper has opened/pushed a fix PR or merged a canonical PR in this run. A blocked close must set blocked_by="fix_first"; prose alone is not a blocker authorization.'
           : "Close actions may run independently when their own safety gates pass.",
     },
     required_validation: [

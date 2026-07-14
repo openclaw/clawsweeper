@@ -70,3 +70,9 @@ Apply reproduces the reviewed plan before any mutation, executes planned
 closure candidates in dependency-first layer order, and blocks a dependent
 unless every declared prerequisite was successfully closed. Dry-run planning
 treats a successfully planned prerequisite as the simulated close outcome.
+
+Fix-first closeouts use a separate typed fence. A blocked close is eligible for
+post-flight promotion only when its source action sets
+`blocked_by: "fix_first"` and its `candidate_fix` exactly matches a merged fix
+in the post-flight authorization. Free-form reason, comment, and evidence text
+cannot authorize promotion.

@@ -303,6 +303,7 @@ function writeSyntheticRun(context: LooseRecord) {
         target: `cluster:${context.clusterId}`,
         action: "build_fix_artifact",
         status: "planned",
+        blocked_by: null,
         idempotency_key: `clawsweeper-commit-finding:${context.targetRepo}:${context.sha}`,
         classification: null,
         target_kind: null,

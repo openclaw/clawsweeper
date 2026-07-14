@@ -11,6 +11,7 @@ For each target action, include:
 - `target`: issue/PR ref like `#123`; for a cluster-level `build_fix_artifact`, use `cluster:<cluster_id>`
 - emit one action per target. Never use comma-separated refs, ranges, or grouped target lists in `target`.
 - `action`: one of `keep_canonical`, `keep_related`, `keep_independent`, `keep_closed`, `merge_candidate`, `merge_canonical`, `fix_needed`, `build_fix_artifact`, `open_fix_pr`, `route_security`, `needs_human`, `close_duplicate`, `close_superseded`, `close_fixed_by_candidate`, or `close_low_signal`
+- `blocked_by`: `"fix_first"` only when `require_fix_before_close` makes a close action `blocked`; otherwise `null`. Prose in `reason`, `comment`, or `evidence` never authorizes later promotion.
 - `classification`: one of `canonical`, `duplicate`, `related`, `superseded`, `independent`, `fixed_by_candidate`, `low_signal`, `security_sensitive`, or `needs_human`
 - `target_kind`: `issue` or `pull_request`
 - `target_updated_at`: the live GitHub `updatedAt`/`updated_at` value you fetched for the target

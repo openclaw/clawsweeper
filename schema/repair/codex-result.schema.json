@@ -41,6 +41,7 @@
           "target",
           "action",
           "status",
+          "blocked_by",
           "idempotency_key",
           "classification",
           "target_kind",
@@ -84,6 +85,10 @@
           },
           "status": {
             "enum": ["planned", "skipped", "blocked", "failed"]
+          },
+          "blocked_by": {
+            "type": ["string", "null"],
+            "enum": ["fix_first", null]
           },
           "idempotency_key": {
             "type": "string"

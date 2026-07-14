@@ -92,6 +92,7 @@ export function deterministicAutomergeResult({
         target: ref,
         action: "build_fix_artifact",
         status: "planned",
+        blocked_by: null,
         idempotency_key: `${clusterPlan?.cluster_id ?? "automerge"}:${number}:direct-repair`,
         classification: "canonical",
         target_kind: "pull_request",

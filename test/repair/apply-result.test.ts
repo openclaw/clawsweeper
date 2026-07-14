@@ -1228,6 +1228,7 @@ test("repair second apply promotes a fix-first close after post-flight merge aut
       classification: "fixed_by_candidate",
       target_kind: "issue",
       status: "blocked",
+      blocked_by: "fix_first",
       candidate_fix: "#202",
       reason: "blocked-by-fix-first until the canonical fix PR lands",
     });
@@ -1276,6 +1277,59 @@ test("repair second apply promotes a fix-first close after post-flight merge aut
     ]);
     assert.equal(report.actions[0].status, "executed");
     assert.deepEqual(issueCloseTargets(paths.ghLogPath), ["101"]);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("repair second apply does not infer fix-first authorization from prose", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-apply-result-"));
+  try {
+    const paths = writeApplyFixture(tmp, {
+      action: "close_fixed_by_candidate",
+      classification: "fixed_by_candidate",
+      target_kind: "issue",
+      status: "blocked",
+      candidate_fix: "#202",
+      reason: "blocked pending maintainer approval after fix PR #202 lands",
+    });
+    fs.writeFileSync(
+      path.join(path.dirname(paths.resultPath), "post-flight-report.json"),
+      JSON.stringify(
+        {
+          repo: "openclaw/openclaw",
+          cluster_id: "repair-pr-close-proof",
+          closure_authorization: {
+            version: 1,
+            status: "authorized",
+            merged_fixes: [
+              {
+                fix_ref: "#202",
+                merge_commit_sha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              },
+            ],
+          },
+        },
+        null,
+        2,
+      ),
+    );
+    writeFakeGh(paths.binDir, {
+      issues: {
+        101: issue({ number: 101, title: "Approval-gated issue", pullRequest: false }),
+      },
+      pulls: {},
+      comments: { 101: [] },
+      logPath: paths.ghLogPath,
+    });
+
+    runApplyResult(paths, { proofDecision: "covered" });
+
+    const report = JSON.parse(fs.readFileSync(paths.reportPath, "utf8"));
+    assert.equal(report.closure_promotions, undefined);
+    assert.equal(report.actions[0].status, "skipped");
+    assert.equal(report.actions[0].source_status, "blocked");
+    assert.equal(fs.existsSync(paths.ghLogPath), false);
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
@@ -1342,6 +1396,7 @@ type ApplyFixtureAction = {
   target?: string;
   target_kind?: "issue" | "pull_request";
   status?: string;
+  blocked_by?: "fix_first";
   canonical?: string;
   duplicate_of?: string;
   candidate_fix?: string;
