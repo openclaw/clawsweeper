@@ -110,6 +110,9 @@ checkpoint, and status-only commits are intentionally omitted.
   parent, terminating the complete credentialed execute process group before
   timeout finalization, and allowing later observed outcomes to supersede stale
   unknown state.
+- Made semantic and structural review cache ordering locale-independent so
+  identical GitHub state cannot produce different reuse identities across
+  workers.
 - Stopped narrow OpenClaw automerge repairs from chasing unrelated full-repository lint and typecheck failures.
 - Removed the synthetic Codex write preflight that could block repair before Codex saw the real task.
 - Kept exact-review handoff health live when the dashboard serves a stale fleet snapshot, so recovered claims no longer leave the operator rail stuck in a delayed or stalled state.

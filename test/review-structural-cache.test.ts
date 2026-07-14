@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import test from "node:test";
 
@@ -132,6 +133,97 @@ function record(
   assert.ok(result);
   return result;
 }
+
+test("structural review ordering is locale-independent", () => {
+  const moduleUrl = new URL("../dist/review-structural-cache.js", import.meta.url).href;
+  const script = `
+    const { createReviewStructuralRecord } = await import(${JSON.stringify(moduleUrl)});
+    const { createHash } = await import("node:crypto");
+    const digest = (value) => createHash("sha256").update(value).digest("hex");
+    const names = ["I", "\\u0131", "i", "\\u0130"];
+    const activities = names.map((name, index) => ({
+      id: name,
+      updatedAt: "2026-07-10T08:0" + index + ":00Z",
+      author: name,
+      authorAssociation: "MEMBER",
+      state: "COMMENTED",
+      commitSha: null,
+      bodyDigest: digest("activity-" + index),
+    }));
+    const record = createReviewStructuralRecord({
+      repo: "openclaw/openclaw",
+      number: 123,
+      kind: "pull_request",
+      nodeId: "PR_kwDOPull",
+      author: "contributor",
+      authorAssociation: "CONTRIBUTOR",
+      titleDigest: digest("title"),
+      bodyDigest: digest("body"),
+      state: "OPEN",
+      locked: false,
+      labels: [],
+      labelsTruncated: false,
+      activityUpdatedAt: "2026-07-10T10:00:00Z",
+      comments: activities,
+      commentsTruncated: false,
+      timeline: [],
+      timelineTruncated: false,
+      relationSensitive: false,
+      targetHeadSha: "a".repeat(40),
+      latestReleaseTag: "v1.0.0",
+      latestReleaseSha: "a".repeat(40),
+      pull: {
+        headSha: "b".repeat(40),
+        baseSha: "c".repeat(40),
+        draft: false,
+        mergeable: "MERGEABLE",
+        mergeStateStatus: "CLEAN",
+        additions: 4,
+        deletions: 0,
+        changedFiles: 4,
+        commitCount: 1,
+        checksDigest: "d".repeat(64),
+        reviews: activities,
+        reviewsTruncated: false,
+        reviewThreads: names.map((name, index) => ({
+          id: name,
+          isResolved: index % 2 === 0,
+          comments: [activities[index]],
+          commentsTruncated: false,
+        })),
+        reviewThreadsTruncated: false,
+      },
+    }, {
+      reviewPolicy: "policy-1",
+      reviewModel: "gpt-5.6",
+    });
+    console.log(JSON.stringify({
+      locale: Intl.Collator().resolvedOptions().locale,
+      sourceRevision: record?.sourceRevision,
+      contextRevision: record?.contextRevision,
+      fingerprint: record?.fingerprint,
+    }));
+  `;
+  const run = (locale: string) => {
+    const result = spawnSync(process.execPath, ["--input-type=module", "--eval", script], {
+      encoding: "utf8",
+      env: { ...process.env, LANG: locale, LC_ALL: locale },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    return JSON.parse(result.stdout.trim()) as {
+      locale: string;
+      sourceRevision: string;
+      contextRevision: string;
+      fingerprint: string;
+    };
+  };
+
+  const english = run("en_US.UTF-8");
+  const turkish = run("tr_TR.UTF-8");
+  assert.match(english.locale, /^en(?:-|$)/i);
+  assert.match(turkish.locale, /^tr(?:-|$)/i);
+  assert.deepEqual(turkish, { ...english, locale: turkish.locale });
+});
 
 function review(overrides = {}) {
   return {

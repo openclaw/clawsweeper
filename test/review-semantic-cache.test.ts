@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import test from "node:test";
 
@@ -195,6 +196,110 @@ test("TypeScript whitespace and ordinary comments do not perturb the semantic di
   assert.equal(reformatted.eligible, true);
   assert.equal(plain.codeDigest, reformatted.codeDigest);
   assert.notEqual(plain.exactDigest, reformatted.exactDigest);
+});
+
+test("semantic file ordering is locale-independent", () => {
+  const moduleUrl = new URL("../dist/review-semantic-cache.js", import.meta.url).href;
+  const script = `
+    const { createReviewSemanticRecord } = await import(${JSON.stringify(moduleUrl)});
+    const files = ["I", "\\u0131", "i", "\\u0130"].map((name, index) => ({
+      filename: "src/" + name + ".ts",
+      status: "added",
+      additions: 1,
+      deletions: 0,
+      patch: "@@ -0,0 +1 @@\\n+export const value" + index + " = " + index + ";",
+      baseMode: null,
+      baseType: null,
+      headMode: "100644",
+      headType: "blob",
+      treeModesComplete: true,
+    }));
+    const record = createReviewSemanticRecord({
+      item: { repo: "openclaw/openclaw", number: 123, kind: "pull_request" },
+      context: {
+        issue: {
+          number: 123,
+          title: "Locale cache",
+          body: "",
+          state: "open",
+          author: "contributor",
+          authorAssociation: "CONTRIBUTOR",
+          labels: [],
+        },
+        comments: [],
+        timeline: [],
+        timelineRevision: "timeline-1",
+        pullRequest: {
+          number: 123,
+          state: "open",
+          draft: false,
+          merged: false,
+          head: { sha: "b".repeat(40) },
+          base: { sha: "c".repeat(40) },
+        },
+        pullFiles: files,
+        semanticPullFiles: files,
+        pullCommits: [],
+        pullCommitsRevision: "d".repeat(64),
+        pullReviewComments: [],
+        pullReviewCommentsRevision: "review-comments-1",
+        pullChecks: {
+          complete: true,
+          checkRuns: [],
+          checkRunsTruncated: false,
+          statuses: [],
+          statusesTruncated: false,
+        },
+        counts: {
+          comments: 0,
+          commentsTruncated: false,
+          timeline: 0,
+          timelineTruncated: false,
+          pullFiles: files.length,
+          pullFilesHydrated: files.length,
+          pullFilesTruncated: false,
+          pullCommits: 0,
+          pullCommitsHydrated: 0,
+          pullCommitsTruncated: false,
+          pullReviewComments: 0,
+          pullReviewCommentsTruncated: false,
+        },
+      },
+      git: {
+        mainSha: "e".repeat(40),
+        releaseStateComplete: true,
+        latestRelease: { tagName: "v1.0.0", sha: "f".repeat(40) },
+      },
+      structuralContextRevision: "a".repeat(64),
+      reviewPolicy: "policy-1",
+      reviewModel: "gpt-5.6",
+    });
+    console.log(JSON.stringify({
+      locale: Intl.Collator().resolvedOptions().locale,
+      eligible: record.eligible,
+      codeDigest: record.codeDigest,
+    }));
+  `;
+  const run = (locale: string) => {
+    const result = spawnSync(process.execPath, ["--input-type=module", "--eval", script], {
+      encoding: "utf8",
+      env: { ...process.env, LANG: locale, LC_ALL: locale },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    return JSON.parse(result.stdout.trim()) as {
+      locale: string;
+      eligible: boolean;
+      codeDigest: string;
+    };
+  };
+
+  const english = run("en_US.UTF-8");
+  const turkish = run("tr_TR.UTF-8");
+  assert.match(english.locale, /^en(?:-|$)/i);
+  assert.match(turkish.locale, /^tr(?:-|$)/i);
+  assert.equal(english.eligible, true);
+  assert.equal(turkish.eligible, true);
+  assert.equal(turkish.codeDigest, english.codeDigest);
 });
 
 test("semantic fingerprint uses the bounded full patch instead of prompt truncation", () => {

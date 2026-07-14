@@ -184,6 +184,10 @@ function sha256(value: string): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
+function compareCodeUnits(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -689,7 +693,7 @@ function semanticCode(input: ReviewSemanticInput): {
     compiler.close();
   }
   semanticFiles.sort((left, right) =>
-    String(asRecord(left).filename).localeCompare(String(asRecord(right).filename)),
+    compareCodeUnits(String(asRecord(left).filename), String(asRecord(right).filename)),
   );
   return { digest: sha256(stableJson(semanticFiles)), eligible: true, reason: "eligible" };
 }
