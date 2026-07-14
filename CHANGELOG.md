@@ -114,6 +114,7 @@ checkpoint, and status-only commits are intentionally omitted.
   attempt-scoped artifact so bounded requeues and failed-run self-heal retries
   reuse the actual effective mode, runners, sandbox, model, and dry-run state
   instead of mutable workflow defaults.
+- Bound pull-request apply and automerge actions to a bounded digest of the reviewed reviews and inline comments, so same-second or late review activity now forces a fresh verdict before mutation.
 - Stopped narrow OpenClaw automerge repairs from chasing unrelated full-repository lint and typecheck failures.
 - Removed the synthetic Codex write preflight that could block repair before Codex saw the real task.
 - Kept exact-review handoff health live when the dashboard serves a stale fleet snapshot, so recovered claims no longer leave the operator rail stuck in a delayed or stalled state.
