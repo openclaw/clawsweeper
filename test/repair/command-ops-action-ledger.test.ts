@@ -83,6 +83,11 @@ test("repair execution publishes crash-safe workflow attempt receipts", () => {
   const setupAction = readText(".github/actions/setup-action-ledger/action.yml");
   const workflow = readText(".github/workflows/repair-cluster-worker.yml");
   const executeJobStart = workflow.indexOf("\n  execute:");
+  const deadlineStart = workflow.indexOf(
+    "- name: Record execute recovery deadline",
+    executeJobStart,
+  );
+  const checkoutStart = workflow.indexOf("- uses: actions/checkout@v7", executeJobStart);
   const setupStart = workflow.indexOf(
     "- uses: ./.github/actions/setup-action-ledger",
     executeJobStart,
@@ -107,6 +112,8 @@ test("repair execution publishes crash-safe workflow attempt receipts", () => {
   const publishStep = workflow.slice(publishStart, postFlightTokenStart);
 
   assert.ok(executeJobStart >= 0);
+  assert.ok(deadlineStart > executeJobStart);
+  assert.ok(checkoutStart > deadlineStart);
   assert.ok(setupStart > executeJobStart);
   assert.ok(pnpmStart > setupStart);
   assert.ok(executeStart > pnpmStart);
@@ -114,7 +121,20 @@ test("repair execution publishes crash-safe workflow attempt receipts", () => {
   assert.ok(publishStart > finalizeStart);
   assert.ok(postFlightTokenStart > publishStart);
   assert.ok(requeueStart > publishStart);
-  assert.match(workflow.slice(executeJobStart, setupStart), /timeout-minutes: 90/);
+  assert.match(workflow.slice(executeJobStart, deadlineStart), /timeout-minutes: 120/);
+  assert.match(
+    workflow.slice(executeJobStart, deadlineStart),
+    /CLAWSWEEPER_EXECUTE_JOB_WINDOW_SECONDS: "5400"/,
+  );
+  assert.match(
+    workflow.slice(executeJobStart, deadlineStart),
+    /CLAWSWEEPER_EXECUTE_RECOVERY_RESERVE_SECONDS: "900"/,
+  );
+  assert.match(
+    workflow.slice(deadlineStart, checkoutStart),
+    /deadline="\$\(\(started_at \+ CLAWSWEEPER_EXECUTE_JOB_WINDOW_SECONDS\)\)"/,
+  );
+  assert.match(workflow.slice(deadlineStart, checkoutStart), /CLAWSWEEPER_EXECUTE_DEADLINE_EPOCH/);
   assert.match(setupAction, /CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT=\$output_root/);
   assert.match(workflow.slice(pnpmStart, executeStart), /build-script: build:worker/);
   assert.match(executeStep, /CLAWSWEEPER_ACTION_LEDGER_INVOCATION: execute-fix/);
@@ -122,6 +142,15 @@ test("repair execution publishes crash-safe workflow attempt receipts", () => {
     executeStep,
     /pnpm run repair:execute-fix-attempt -- "\$\{\{ inputs\.job \}\}" --latest --defer-publication/,
   );
+  assert.match(
+    executeStep,
+    /remaining_seconds="\$\(\(CLAWSWEEPER_EXECUTE_DEADLINE_EPOCH - now - CLAWSWEEPER_EXECUTE_RECOVERY_RESERVE_SECONDS\)\)"/,
+  );
+  assert.match(
+    executeStep,
+    /timeout --foreground --signal=TERM --kill-after=30s "\$\{execute_timeout_seconds\}s"/,
+  );
+  assert.doesNotMatch(executeStep, /timeout-minutes:/);
   assert.match(executeStep, /execute_exit_code=\$\?/);
   assert.match(executeStep, /echo "exit_code=\$execute_exit_code" >> "\$GITHUB_OUTPUT"/);
   assert.match(executeStep, /exit "\$execute_exit_code"/);

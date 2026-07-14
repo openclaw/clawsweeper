@@ -401,7 +401,7 @@ jobs:
     needs: cluster
     if: ${{ needs.cluster.result == 'success' && needs.cluster.outputs.job_exists == '1' && (inputs.mode == 'execute' || inputs.mode == 'autonomous') && !inputs.dry_run }}
     runs-on: ${{ inputs.execution_runner }}
-    timeout-minutes: 90
+    timeout-minutes: 120
     permissions:
       actions: read
       contents: read
@@ -415,6 +415,8 @@ jobs:
       CLAWSWEEPER_FIX_CODEX_TIMEOUT_MS: ${{ vars.CLAWSWEEPER_FIX_CODEX_TIMEOUT_MS || '1800000' }}
       CLAWSWEEPER_FIX_STEP_TIMEOUT_MS: ${{ vars.CLAWSWEEPER_FIX_STEP_TIMEOUT_MS || '4200000' }}
       CLAWSWEEPER_FIX_TIMEOUT_RESERVE_MS: ${{ vars.CLAWSWEEPER_FIX_TIMEOUT_RESERVE_MS || '1800000' }}
+      CLAWSWEEPER_EXECUTE_JOB_WINDOW_SECONDS: "5400"
+      CLAWSWEEPER_EXECUTE_RECOVERY_RESERVE_SECONDS: "900"
       CLAWSWEEPER_RESOLVE_REVIEW_THREADS: ${{ vars.CLAWSWEEPER_RESOLVE_REVIEW_THREADS || '1' }}
       CLAWSWEEPER_TARGET_VALIDATION_MODE: ${{ vars.CLAWSWEEPER_TARGET_VALIDATION_MODE || 'changed-only' }}
       CLAWSWEEPER_POST_FLIGHT_IGNORE_CHECKS: ${{ vars.CLAWSWEEPER_POST_FLIGHT_IGNORE_CHECKS || 'auto-response,Labeler,Stale' }}
@@ -426,6 +428,13 @@ jobs:
       CLAWSWEEPER_CRABFLEET_URL: ${{ vars.CLAWSWEEPER_CRABFLEET_URL || 'https://crabfleet.openclaw.ai' }}
       OPENCLAW_LOCAL_CHECK: "0"
     steps:
+      - name: Record execute recovery deadline
+        run: |
+          set -euo pipefail
+          started_at="$(date +%s)"
+          deadline="$((started_at + CLAWSWEEPER_EXECUTE_JOB_WINDOW_SECONDS))"
+          echo "CLAWSWEEPER_EXECUTE_DEADLINE_EPOCH=$deadline" >> "$GITHUB_ENV"
+
       - uses: actions/checkout@v7
         with:
           filter: blob:none
@@ -589,16 +598,39 @@ jobs:
       - name: Execute credited fix artifact
         id: execute_fix
         if: ${{ steps.check_job.outputs.job_exists == '1' && steps.self_heal_head.outputs.matched != 'false' && env.CLAWSWEEPER_ALLOW_EXECUTE == '1' && env.CLAWSWEEPER_ALLOW_FIX_PR == '1' }}
-        timeout-minutes: 70
         env:
           GH_TOKEN: ${{ steps.target_write_token.outputs.token }}
           CLAWSWEEPER_ALLOWED_OWNER: ${{ steps.target.outputs.target_owner }}
           CLAWSWEEPER_ACTION_LEDGER_INVOCATION: execute-fix
         run: |
-          set +e
-          pnpm run repair:execute-fix-attempt -- "${{ inputs.job }}" --latest --defer-publication
-          execute_exit_code=$?
-          set -e
+          set -euo pipefail
+          case "$CLAWSWEEPER_FIX_STEP_TIMEOUT_MS" in
+            ''|*[!0-9]*)
+              echo "Invalid CLAWSWEEPER_FIX_STEP_TIMEOUT_MS: $CLAWSWEEPER_FIX_STEP_TIMEOUT_MS" >&2
+              exit 2
+              ;;
+          esac
+          now="$(date +%s)"
+          remaining_seconds="$((CLAWSWEEPER_EXECUTE_DEADLINE_EPOCH - now - CLAWSWEEPER_EXECUTE_RECOVERY_RESERVE_SECONDS))"
+          configured_seconds="$(((CLAWSWEEPER_FIX_STEP_TIMEOUT_MS + 999) / 1000))"
+          if (( configured_seconds <= 0 )); then
+            echo "Invalid zero execute timeout derived from CLAWSWEEPER_FIX_STEP_TIMEOUT_MS" >&2
+            exit 2
+          elif (( remaining_seconds <= 0 )); then
+            echo "::error::execute recovery reserve reached before mutation dispatch"
+            execute_exit_code=124
+          else
+            execute_timeout_seconds="$configured_seconds"
+            if (( execute_timeout_seconds > remaining_seconds )); then
+              execute_timeout_seconds="$remaining_seconds"
+            fi
+            echo "::notice title=Bounded execute-fix::timeout=${execute_timeout_seconds}s recovery_reserve=${CLAWSWEEPER_EXECUTE_RECOVERY_RESERVE_SECONDS}s"
+            set +e
+            timeout --foreground --signal=TERM --kill-after=30s "${execute_timeout_seconds}s" \
+              pnpm run repair:execute-fix-attempt -- "${{ inputs.job }}" --latest --defer-publication
+            execute_exit_code=$?
+            set -e
+          fi
           echo "exit_code=$execute_exit_code" >> "$GITHUB_OUTPUT"
           exit "$execute_exit_code"
 
