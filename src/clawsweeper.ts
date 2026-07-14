@@ -183,6 +183,7 @@ import {
   type ReviewHistoryLedger,
 } from "./review-history.js";
 import { trailingHtmlComments } from "./review-comment-markers.js";
+import { createReviewedPrActivityCursor } from "./review-activity-cursor.js";
 import {
   ACTION_EVENT_REASON_CODES,
   ACTION_EVENT_STATUSES,
@@ -735,6 +736,7 @@ interface ItemContext {
   pullCommitsRevision?: string;
   pullReviewComments?: unknown[];
   pullReviewCommentsRevision?: string;
+  pullReviewActivityCursor?: string;
   pullChecks?: unknown;
   counts?: {
     comments: number;
@@ -8345,6 +8347,11 @@ function collectItemContext(
       context.pullReviewCommentsRevision = reviewCommentContentRevision(
         digestPullReviewComments.included.map(compactComment),
       );
+      const pullReviewActivityCursor = createReviewedPrActivityCursor({
+        reviews: ghPaged<unknown>(`repos/${targetRepo()}/pulls/${item.number}/reviews`),
+        inlineComments: fullPullReviewComments,
+      });
+      if (pullReviewActivityCursor) context.pullReviewActivityCursor = pullReviewActivityCursor;
       const headSha = stringOrUndefined(asRecord(pullRecord.head).sha);
       context.pullChecks = headSha
         ? pullChecksContext(item.number, headSha)
@@ -18350,6 +18357,7 @@ function reviewVersionMarkerFromReport(markdown: string): string {
   const reviewedAt = frontMatterValue(markdown, "reviewed_at") ?? "unknown";
   const headSha = pullHeadShaFromReport(markdown) ?? "na";
   const sourceRevision = frontMatterValue(markdown, "item_source_revision") ?? "unknown";
+  const reviewActivityCursor = frontMatterValue(markdown, "review_activity_cursor") ?? "unknown";
   const leaseOwner = frontMatterValue(markdown, "review_lease_owner") ?? "unknown";
   const leaseCommentId = frontMatterValue(markdown, "review_lease_comment_id") ?? "unknown";
   const attrs = [
@@ -18357,6 +18365,7 @@ function reviewVersionMarkerFromReport(markdown: string): string {
     `reviewed_at=${markerAttributeValue(reviewedAt)}`,
     `sha=${markerAttributeValue(headSha)}`,
     `source_revision=${markerAttributeValue(sourceRevision)}`,
+    `review_activity_cursor=${markerAttributeValue(reviewActivityCursor)}`,
     `lease_owner=${markerAttributeValue(leaseOwner)}`,
     `lease_comment_id=${markerAttributeValue(leaseCommentId)}`,
     "v=1",
@@ -18394,6 +18403,7 @@ export function reviewAutomationMarkersFromReport(markdown: string): string {
   const reviewLeaseOwner = frontMatterValue(markdown, "review_lease_owner") ?? "unknown";
   const reviewLeaseCommentId = frontMatterValue(markdown, "review_lease_comment_id") ?? "unknown";
   const sourceRevision = frontMatterValue(markdown, "item_source_revision") ?? "unknown";
+  const reviewActivityCursor = frontMatterValue(markdown, "review_activity_cursor") ?? "unknown";
   const baseAttrs = [
     `item=${markerAttributeValue(number)}`,
     `sha=${markerAttributeValue(headSha)}`,
@@ -18403,6 +18413,7 @@ export function reviewAutomationMarkersFromReport(markdown: string): string {
     `lease_owner=${markerAttributeValue(reviewLeaseOwner)}`,
     `lease_comment_id=${markerAttributeValue(reviewLeaseCommentId)}`,
     `source_revision=${markerAttributeValue(sourceRevision)}`,
+    `review_activity_cursor=${markerAttributeValue(reviewActivityCursor)}`,
   ].join(" ");
   const securityNeedsAttention = reportSecurityReview(markdown).status === "needs_attention";
   const humanReviewMarkers = (): string => {
@@ -20147,6 +20158,7 @@ review_semantic_eligible: ${options.semanticRecord?.eligible ?? false}
 review_semantic_eligibility_reason: ${options.semanticRecord?.eligibilityReason ?? "unknown"}
 review_semantic_cache_hit: false
 item_source_revision: ${options.context.sourceRevision ?? "unknown"}
+review_activity_cursor: ${options.context.pullReviewActivityCursor ?? "unknown"}
 close_comment_sha256: ${options.action.closeComment ? sha256(options.action.closeComment) : "none"}
 review_comment_sha256: none
 review_comment_id: unknown

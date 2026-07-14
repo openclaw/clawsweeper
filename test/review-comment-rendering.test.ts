@@ -33,6 +33,7 @@ function implementedCloseReport(overrides = {}) {
     work_status: "none",
     item_snapshot_hash: "reviewed-snapshot",
     item_source_revision: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    review_activity_cursor: "v1:0:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
     item_created_at: "2026-05-01T00:00:00Z",
     item_updated_at: "2026-05-01T00:00:00Z",
     reproduction_status: "reproduced",
@@ -855,11 +856,11 @@ test("pull request close comments emit close-required automation markers", () =>
 
   assert.match(
     comment,
-    /<!-- clawsweeper-verdict:close item=74270 sha=abc123def456 confidence=high updated_at=2026-05-01T00:00:00Z reviewed_at=[^ ]+ lease_owner=unknown lease_comment_id=unknown source_revision=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef action_taken=proposed_close reason=implemented_on_main -->/,
+    /<!-- clawsweeper-verdict:close item=74270 sha=abc123def456 confidence=high updated_at=2026-05-01T00:00:00Z reviewed_at=[^ ]+ lease_owner=unknown lease_comment_id=unknown source_revision=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef review_activity_cursor=v1:0:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef action_taken=proposed_close reason=implemented_on_main -->/,
   );
   assert.match(
     comment,
-    /<!-- clawsweeper-action:close-required item=74270 sha=abc123def456 confidence=high updated_at=2026-05-01T00:00:00Z reviewed_at=[^ ]+ lease_owner=unknown lease_comment_id=unknown source_revision=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef action_taken=proposed_close reason=implemented_on_main -->/,
+    /<!-- clawsweeper-action:close-required item=74270 sha=abc123def456 confidence=high updated_at=2026-05-01T00:00:00Z reviewed_at=[^ ]+ lease_owner=unknown lease_comment_id=unknown source_revision=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef review_activity_cursor=v1:0:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef action_taken=proposed_close reason=implemented_on_main -->/,
   );
   assert.doesNotMatch(comment, /clawsweeper-verdict:needs-human/);
 });
