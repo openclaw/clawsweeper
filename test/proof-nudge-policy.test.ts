@@ -19,6 +19,7 @@ import { item, tmpPrefix, withMockGh } from "./helpers.ts";
 
 function proofNudgeReport(overrides = {}) {
   const values = {
+    number: 42,
     labels: JSON.stringify(["triage: needs-real-behavior-proof"]),
     authorAssociation: "CONTRIBUTOR",
     author: "contributor",
@@ -41,7 +42,7 @@ function proofNudgeReport(overrides = {}) {
   };
   return `---
 repository: openclaw/openclaw
-number: 42
+number: ${values.number}
 type: pull_request
 title: Proof nudge sample
 author: ${values.author}
@@ -150,10 +151,12 @@ function proofMutationGhMockScript(options: {
   initialComments?: unknown[];
   initialLabels?: string[];
   failConversationReadsAfterUnknownPost?: boolean;
+  itemNumbers?: number[];
 }): string {
   return `#!/usr/bin/env node
 const fs = require("node:fs");
 const config = ${JSON.stringify(options)};
+const handledNumbers = new Set(config.itemNumbers || [42]);
 const oldHead = "${"a".repeat(40)}";
 const newHead = "${"b".repeat(40)}";
 const initialLabels = config.initialLabels || (config.bot
@@ -258,7 +261,9 @@ if (commandArgs[0] === "issue" && commandArgs[1] === "edit") {
   }
   output({ labels: state.labels });
 }
-if (path === "repos/openclaw/openclaw/issues/42") {
+const issueMatch = path.match(/^repos\\/openclaw\\/openclaw\\/issues\\/(\\d+)$/);
+if (issueMatch && handledNumbers.has(Number(issueMatch[1]))) {
+  const number = Number(issueMatch[1]);
   state.issueReads = (state.issueReads || 0) + 1;
   if (
     config.driftLabelAtIssueRead &&
@@ -270,9 +275,9 @@ if (path === "repos/openclaw/openclaw/issues/42") {
     state.driftLabelInjected = true;
   }
   output({
-    number: 42,
+    number,
     title: "Proof nudge sample",
-    html_url: "https://github.com/openclaw/openclaw/pull/42",
+    html_url: "https://github.com/openclaw/openclaw/pull/" + number,
     created_at: "2026-01-01T00:00:00Z",
     updated_at: "2026-01-02T00:00:00Z",
     state: config.closeAtIssueRead && state.issueReads >= config.closeAtIssueRead ? "closed" : "open",
@@ -284,7 +289,8 @@ if (path === "repos/openclaw/openclaw/issues/42") {
     pull_request: {}
   });
 }
-if (path === "repos/openclaw/openclaw/pulls/42") {
+const pullMatch = path.match(/^repos\\/openclaw\\/openclaw\\/pulls\\/(\\d+)$/);
+if (pullMatch && handledNumbers.has(Number(pullMatch[1]))) {
   const head = currentHead();
   output({
     draft: Boolean(config.draftAtPullRead && state.pullReads >= config.draftAtPullRead),
@@ -302,16 +308,23 @@ if (path === "repos/openclaw/openclaw/commits/" + oldHead ||
     committerDate: "2026-01-01T00:00:00Z"
   });
 }
-if (path.startsWith("repos/openclaw/openclaw/pulls/42/reviews")) {
+const reviewMatch = path.match(/^repos\\/openclaw\\/openclaw\\/pulls\\/(\\d+)\\/reviews/);
+if (reviewMatch && handledNumbers.has(Number(reviewMatch[1]))) {
   output(currentReviews());
 }
-if (path.startsWith("repos/openclaw/openclaw/pulls/42/comments")) {
+const reviewCommentMatch = path.match(
+  /^repos\\/openclaw\\/openclaw\\/pulls\\/(\\d+)\\/comments/,
+);
+if (reviewCommentMatch && handledNumbers.has(Number(reviewCommentMatch[1]))) {
   output([]);
 }
-if (path.startsWith("repos/openclaw/openclaw/issues/42/timeline")) {
+const timelineMatch = path.match(/^repos\\/openclaw\\/openclaw\\/issues\\/(\\d+)\\/timeline/);
+if (timelineMatch && handledNumbers.has(Number(timelineMatch[1]))) {
   output([]);
 }
-if (path.startsWith("repos/openclaw/openclaw/issues/42/comments") && method === "POST") {
+const issueCommentMatch = path.match(/^repos\\/openclaw\\/openclaw\\/issues\\/(\\d+)\\/comments/);
+if (issueCommentMatch && handledNumbers.has(Number(issueCommentMatch[1])) && method === "POST") {
+  const number = Number(issueCommentMatch[1]);
   const inputIndex = commandArgs.indexOf("--input");
   const payload = JSON.parse(fs.readFileSync(commandArgs[inputIndex + 1], "utf8"));
   const comment = {
@@ -321,7 +334,7 @@ if (path.startsWith("repos/openclaw/openclaw/issues/42/comments") && method === 
     body: payload.body,
     created_at: "2026-07-14T12:00:00Z",
     updated_at: "2026-07-14T12:00:00Z",
-    html_url: "https://github.com/openclaw/openclaw/pull/42#issuecomment-99"
+    html_url: "https://github.com/openclaw/openclaw/pull/" + number + "#issuecomment-99"
   };
   state.comments = state.comments.filter((entry) => entry.id !== 99);
   state.comments.push(comment);
@@ -334,7 +347,7 @@ if (path.startsWith("repos/openclaw/openclaw/issues/42/comments") && method === 
   }
   output({ id: comment.id, html_url: comment.html_url });
 }
-if (path.startsWith("repos/openclaw/openclaw/issues/42/comments")) {
+if (issueCommentMatch && handledNumbers.has(Number(issueCommentMatch[1]))) {
   output(currentComments());
 }
 if (path === "graphql") {
@@ -926,22 +939,23 @@ test("proof nudges block when the head changes after request-boundary activity h
   }
 });
 
-test("proof nudges revalidate open, unlocked, and unprotected state before posting", () => {
+test("proof nudges block final eligibility drift after activity hydration", () => {
   const scenarios = [
     {
       name: "protected label",
-      config: { driftLabelAtIssueRead: 4, driftLabel: "security" },
-      reason: /protected label: security/,
+      config: { driftLabelAtIssueRead: 3, driftLabel: "security" },
     },
     {
       name: "locked conversation",
-      config: { lockAtIssueRead: 4 },
-      reason: /conversation is locked/,
+      config: { lockAtIssueRead: 3 },
     },
     {
       name: "closed pull request",
-      config: { closeAtIssueRead: 4 },
-      reason: /state is closed/,
+      config: { closeAtIssueRead: 3 },
+    },
+    {
+      name: "proof override",
+      config: { driftLabelAtIssueRead: 3, driftLabel: "proof: override" },
     },
   ];
   for (const scenario of scenarios) {
@@ -990,7 +1004,7 @@ test("proof nudges revalidate open, unlocked, and unprotected state before posti
         "skipped_changed_before_mutation",
         `${scenario.name}: ${JSON.stringify(report)}`,
       );
-      assert.match(report[0].reason, scenario.reason);
+      assert.match(report[0].reason, /live PR eligibility changed while hydrating/);
       assert.equal(existsSync(mutationLogPath), false);
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -1041,6 +1055,79 @@ test("proof nudges reconcile a marker when GitHub accepts the comment before los
     const report = JSON.parse(readFileSync(reportPath, "utf8"));
     assert.equal(report[0].action, "proof_nudge_reconciled");
     assert.match(report[0].reason, /confirmed after an inconclusive response/);
+    assert.equal(readFileSync(mutationLogPath, "utf8").trim(), "comment_post");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("reconciled proof nudges do not consume the delivery limit", () => {
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    const itemsDir = join(root, "items");
+    const reportPath = join(root, "proof-nudge-report.json");
+    const statePath = join(root, "gh-state.json");
+    const mutationLogPath = join(root, "mutations.log");
+    const headSha = "a".repeat(40);
+    mkdirSync(itemsDir, { recursive: true });
+    writeFileSync(
+      join(itemsDir, "42.md"),
+      proofNudgeReport({ number: 42, headSha, reviewedAt: "2026-01-01T00:00:00Z" }),
+    );
+    writeFileSync(
+      join(itemsDir, "43.md"),
+      proofNudgeReport({ number: 43, headSha, reviewedAt: "2026-01-02T00:00:00Z" }),
+    );
+
+    withMockGh(
+      root,
+      proofMutationGhMockScript({
+        statePath,
+        mutationLogPath,
+        itemNumbers: [42, 43],
+        initialComments: [
+          {
+            id: 98,
+            user: { login: "clawsweeper[bot]" },
+            author_association: "NONE",
+            body: `<!-- clawsweeper-proof-nudge item="42" sha="${headSha}" at="2026-07-14T12:00:00.000Z" v="1" -->`,
+            created_at: "2026-07-14T12:00:00.000Z",
+            updated_at: "2026-07-14T12:00:00.000Z",
+            html_url: "https://github.com/openclaw/openclaw/pull/42#issuecomment-98",
+          },
+        ],
+      }),
+      () => {
+        execFileSync(process.execPath, [
+          "dist/clawsweeper.js",
+          "proof-nudges",
+          "--target-repo",
+          "openclaw/openclaw",
+          "--items-dir",
+          itemsDir,
+          "--item-numbers",
+          "42,43",
+          "--limit",
+          "1",
+          "--processed-limit",
+          "2",
+          "--min-age-days",
+          "0",
+          "--report-path",
+          reportPath,
+          "--execute",
+        ]);
+      },
+    );
+
+    const report = JSON.parse(readFileSync(reportPath, "utf8"));
+    assert.deepEqual(
+      report.map((entry: { number: number; action: string }) => [entry.number, entry.action]),
+      [
+        [42, "proof_nudge_reconciled"],
+        [43, "proof_nudge_posted"],
+      ],
+    );
     assert.equal(readFileSync(mutationLogPath, "utf8").trim(), "comment_post");
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -1370,7 +1457,7 @@ test("bot proof stops when labels change between its own requests", () => {
         statePath,
         mutationLogPath,
         bot: true,
-        driftLabelAtIssueRead: 6,
+        driftLabelAtIssueRead: 10,
         driftLabel: "status: 📣 needs proof",
       }),
       () => {

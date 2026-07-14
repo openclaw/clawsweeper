@@ -6822,6 +6822,22 @@ function proofMutationLabelStateCursor(labels: readonly string[]): string {
   return sha256(stableJson([...normalizedLabelSet(labels)].sort()));
 }
 
+function proofMutationEligibilityStateCursor(item: Item, state: string): string {
+  return sha256(
+    stableJson({
+      state,
+      number: item.number,
+      kind: item.kind,
+      title: item.title,
+      author: item.author,
+      authorAssociation: item.authorAssociation,
+      labels: [...normalizedLabelSet(item.labels)].sort(),
+      locked: item.locked === true,
+      activeLockReason: item.activeLockReason ?? null,
+    }),
+  );
+}
+
 function readProofMutationFreshnessSnapshot(
   number: number,
   activityAuthor?: string,
@@ -6839,7 +6855,11 @@ function readProofMutationFreshnessSnapshot(
         `conversation activity exceeds the bounded proof mutation cursor for #${number}`,
       );
     }
-    const live = fetchItem(number);
+    const openingLive = fetchItem(number);
+    const openingEligibilityCursor = proofMutationEligibilityStateCursor(
+      openingLive.item,
+      openingLive.state,
+    );
     const comments = activityAuthor ? proofNudgeComments(number) : [];
     const authorEditedAt = activityAuthor
       ? latestAuthorPullRequestEditAt(number, activityAuthor)
@@ -6855,14 +6875,25 @@ function readProofMutationFreshnessSnapshot(
         message: "live PR head changed while hydrating proof mutation activity",
       });
     }
+    const closingLive = fetchItem(number);
+    if (
+      proofMutationEligibilityStateCursor(closingLive.item, closingLive.state) !==
+      openingEligibilityCursor
+    ) {
+      throw new ProofMutationFreshnessError(
+        proofMutationEligibilityChanged(
+          "live PR eligibility changed while hydrating proof mutation activity",
+        ),
+      );
+    }
     return {
       headSha: closingPull.headSha,
       reviewActivityCursor,
       conversationActivityCursor,
-      item: live.item,
-      state: live.state,
+      item: closingLive.item,
+      state: closingLive.state,
       draft: closingPull.draft,
-      labelStateCursor: proofMutationLabelStateCursor(live.item.labels),
+      labelStateCursor: proofMutationLabelStateCursor(closingLive.item.labels),
       comments,
       authorEditedAt,
       authorReviewActivityAt,
@@ -28525,6 +28556,25 @@ function proofNudgeLiveFetchFailureReason(error: unknown): string {
   return `live GitHub state could not be fetched: ${detail.slice(0, 300)}`;
 }
 
+function proofMutationFailureResult(error: unknown): {
+  action: "skipped_changed_before_mutation" | "skipped_live_fetch_failed";
+  reason: string;
+} {
+  if (error instanceof ProofMutationFreshnessError) {
+    return {
+      action:
+        error.block.reason === "freshness_unavailable"
+          ? "skipped_live_fetch_failed"
+          : "skipped_changed_before_mutation",
+      reason: error.block.message,
+    };
+  }
+  return {
+    action: "skipped_live_fetch_failed",
+    reason: proofNudgeLiveFetchFailureReason(error),
+  };
+}
+
 function proofMutationEligibilityChanged(message: string): ProofMutationFreshnessBlock {
   return {
     reason: "eligibility_changed",
@@ -28796,8 +28846,7 @@ function proofNudgesCommand(args: Args): void {
     } catch (error) {
       results.push({
         ...resultBase,
-        action: "skipped_live_fetch_failed",
-        reason: proofNudgeLiveFetchFailureReason(error),
+        ...proofMutationFailureResult(error),
       });
       markProcessed(candidate);
       continue;
@@ -28846,8 +28895,7 @@ function proofNudgesCommand(args: Args): void {
     } catch (error) {
       results.push({
         ...resultBase,
-        action: "skipped_live_fetch_failed",
-        reason: proofNudgeLiveFetchFailureReason(error),
+        ...proofMutationFailureResult(error),
       });
       markProcessed(candidate);
       continue;
@@ -29021,7 +29069,6 @@ function proofNudgesCommand(args: Args): void {
     if (
       finalAction === "proof_nudge_planned" ||
       finalAction === "proof_nudge_posted" ||
-      finalAction === "proof_nudge_reconciled" ||
       finalAction === "proof_nudge_outcome_unknown"
     ) {
       nudgeCount += 1;

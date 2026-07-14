@@ -1685,18 +1685,22 @@ test("proof nudge workflow is manual-first and scheduled behind repo vars", () =
   assert.match(job, /results\/bot-proof-cursors/);
 });
 
-test("proof nudge workflow publishes exact cursor files only for executed lanes", () => {
+test("proof nudge workflow defers exact executed-lane cursors until receipts are durable", () => {
   const workflow = readFileSync(".github/workflows/proof-nudges.yml", "utf8");
   const job = workflow.slice(workflow.indexOf("  proof-nudges:"), workflow.length);
+  const publishLedger = job.indexOf("- name: Publish immutable proof handling action ledger");
+  const publishCursors = job.indexOf("- name: Publish proof handling cursors");
   assert.match(job, /proof_cursor_path="results\/proof-nudge-cursors\/\$\{target_slug\}\.json"/);
   assert.match(job, /bot_cursor_path="results\/bot-proof-cursors\/\$\{target_slug\}\.json"/);
   assert.match(job, /if \[ "\$PROOF_NUDGES_EXECUTE" = "true" \] && \[ -f "\$proof_cursor_path" \]/);
   assert.match(job, /if \[ "\$BOT_PROOF_EXECUTE" = "true" \] && \[ -f "\$bot_cursor_path" \]/);
-  assert.match(job, /cursor_publish_args\+=\(--path "\$(?:proof|bot)_cursor_path"\)/);
-  assert.doesNotMatch(
-    job,
-    /cursor_publish_args\+=\(--path results\/(?:proof-nudge|bot-proof)-cursors\)/,
+  assert.match(job, /printf '%s\\n' "\$(?:proof|bot)_cursor_path" >> "\$cursor_paths_file"/);
+  assert.ok(publishLedger >= 0 && publishLedger < publishCursors);
+  assert.match(
+    job.slice(publishCursors),
+    /while IFS= read -r cursor_path[\s\S]*cursor_publish_args\+=\(--path "\$cursor_path"\)[\s\S]*repair:publish-main/,
   );
+  assert.doesNotMatch(job, /printf '%s\\n' "results\/(?:proof-nudge|bot-proof)-cursors/);
 });
 
 test(
