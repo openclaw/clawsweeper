@@ -11,14 +11,13 @@ import {
   validateJob,
 } from "./lib.js";
 import { stripAnsi } from "./comment-router-utils.js";
-import { externalMessageProvenance, postMergeCloseoutComment } from "./external-messages.js";
 import {
   ghBestEffortWithRetry as ghBestEffort,
   ghErrorText,
   ghJsonWithRetry as ghJson,
   ghTextWithRetry as ghWithRetry,
 } from "./github-cli.js";
-import { issueNumberFromRef, parsePullRequestUrl } from "./github-ref.js";
+import { parsePullRequestUrl } from "./github-ref.js";
 import { sleepMs } from "./timing.js";
 import {
   CLAWSWEEPER_LABEL,
@@ -37,12 +36,6 @@ const PASSING_CHECK_CONCLUSIONS = new Set(["SUCCESS", "SKIPPED", "NEUTRAL"]);
 const FIX_PR_MERGE_STATES = new Set(["CLEAN", "HAS_HOOKS", "UNSTABLE"]);
 const FIX_PR_ACTIONS = new Set(["open_fix_pr", "repair_contributor_branch"]);
 const FIX_PR_READY_STATUSES = new Set(["opened", "pushed"]);
-const POST_MERGE_CLOSE_ACTIONS = new Set([
-  "close_duplicate",
-  "close_superseded",
-  "close_fixed_by_candidate",
-  "post_merge_close",
-]);
 const DEFAULT_IGNORED_CHECKS = ["auto-response", "Labeler", "Stale"];
 const POST_FLIGHT_WAIT_MS = numberEnv("CLAWSWEEPER_POST_FLIGHT_WAIT_MS", 10 * 60 * 1000);
 const POST_FLIGHT_POLL_MS = numberEnv("CLAWSWEEPER_POST_FLIGHT_POLL_MS", 15 * 1000);
@@ -116,9 +109,6 @@ for (const action of fixReport.actions ?? []) {
   if (!FIX_PR_ACTIONS.has(String(action.action ?? ""))) continue;
   const finalized = finalizeFixPr(action);
   report.actions.push(finalized);
-  if (finalized.status === "executed") {
-    report.actions.push(...finalizePostMergeCloseouts(action, finalized));
-  }
 }
 
 if (report.actions.length === 0) {
@@ -326,115 +316,6 @@ function finalizeIssueImplementationPr({ base, parsed }: LooseRecord) {
     sleepMs(sleepFor);
     waitedMs += sleepFor;
   }
-}
-
-function finalizePostMergeCloseouts(fixAction: LooseRecord, finalized: LooseRecord) {
-  const fixPr = parsePullRequestUrl(fixAction.pr_url ?? fixAction.target);
-  if (!fixPr) return [];
-  const fixRef = `#${fixPr.number}`;
-  const fixUrl = `https://github.com/${result.repo}/pull/${fixPr.number}`;
-  const closeouts: JsonValue[] = [];
-  for (const action of result.actions ?? []) {
-    const actionName = String(action.action ?? "");
-    if (!POST_MERGE_CLOSE_ACTIONS.has(actionName)) continue;
-    if (!["blocked", "planned"].includes(String(action.status ?? ""))) continue;
-    const target = normalizeIssueRef(action.target);
-    if (!target || target === fixPr.number) continue;
-    const candidateFix = normalizeIssueRef(
-      action.candidate_fix ?? action.fixed_by ?? action.fix_candidate,
-    );
-    if (candidateFix !== fixPr.number) continue;
-    closeouts.push(
-      finalizePostMergeCloseout({ action, actionName, target, fixRef, fixUrl, finalized }),
-    );
-  }
-  return closeouts;
-}
-
-function finalizePostMergeCloseout({
-  action,
-  actionName,
-  target,
-  fixRef,
-  fixUrl,
-  finalized,
-}: LooseRecord) {
-  const base = {
-    action: "post_merge_closeout",
-    source_action: actionName,
-    target: `#${target}`,
-    canonical: action.canonical ?? undefined,
-    candidate_fix: fixRef,
-    fix_pr: fixUrl,
-  };
-  const live = fetchIssue(result.repo, target);
-  if (live.state !== "open") {
-    return {
-      ...base,
-      status: live.state === "closed" ? "executed" : "skipped",
-      reason:
-        live.state === "closed"
-          ? "target already closed after canonical fix merged"
-          : `target is ${live.state}`,
-      live_state: live.state,
-      merge_commit_sha: finalized.merge_commit_sha ?? null,
-    };
-  }
-  if (hasLiveSecuritySignal(target, live.labels ?? [])) {
-    return {
-      ...base,
-      status: "blocked",
-      reason: "security-sensitive target requires central security triage",
-    };
-  }
-  if (dryRun) {
-    return {
-      ...base,
-      status: "planned",
-      reason: "dry run",
-      merge_commit_sha: finalized.merge_commit_sha ?? null,
-    };
-  }
-
-  ghBestEffort([
-    "issue",
-    "edit",
-    String(target),
-    "--repo",
-    result.repo,
-    "--add-label",
-    "clawsweeper",
-  ]);
-  ghWithRetry([
-    "issue",
-    "comment",
-    String(target),
-    "--repo",
-    result.repo,
-    "--body",
-    postMergeCloseoutComment({
-      actionName,
-      fixUrl,
-      provenance: externalMessageProvenance({
-        reviewedSha:
-          finalized.merge_commit_sha ?? action.commit ?? result.reviewed_sha ?? result.head_sha,
-      }),
-    }),
-  ]);
-  if (live.pull_request) {
-    ghWithRetry(["pr", "close", String(target), "--repo", result.repo]);
-  } else {
-    ghWithRetry(["issue", "close", String(target), "--repo", result.repo, "--reason", "completed"]);
-  }
-  const after = fetchIssue(result.repo, target);
-  return {
-    ...base,
-    status: after.state === "closed" ? "executed" : "blocked",
-    reason:
-      after.state === "closed" ? "closed after canonical fix merged" : `target is ${after.state}`,
-    live_state: after.state,
-    merge_commit_sha: finalized.merge_commit_sha ?? null,
-  };
 }
 
 function validateMergePolicy(action: LooseRecord, pull: LooseRecord) {
@@ -721,10 +602,6 @@ function fetchPullRequest(repo: string, number: JsonValue) {
   return ghJson(["api", `repos/${repo}/pulls/${number}`]);
 }
 
-function fetchIssue(repo: string, number: JsonValue) {
-  return ghJson(["api", `repos/${repo}/issues/${number}`]);
-}
-
 function fetchPullRequestView(repo: string, number: JsonValue) {
   return ghJson([
     "pr",
@@ -774,10 +651,6 @@ function writeReport(report: LooseRecord, resultPath: string) {
   const reportPath = path.join(path.dirname(resultPath), "post-flight-report.json");
   fs.writeFileSync(reportPath, `${JSON.stringify(report, null, 2)}\n`);
   console.log(JSON.stringify(report, null, 2));
-}
-
-function normalizeIssueRef(value: JsonValue) {
-  return issueNumberFromRef(value);
 }
 
 function compactText(text: string, maxLength: number) {
