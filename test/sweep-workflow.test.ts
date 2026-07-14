@@ -1711,6 +1711,8 @@ test("proof nudge workflow defers exact executed-lane cursors until receipts are
     job.slice(publishMutationState, publishCursors),
     /steps\.run-proof-nudges\.outcome == 'success'/,
   );
+  assert.match(job.slice(publishMutationState, publishCursors), /id: publish-mutation-state/);
+  assert.match(job.slice(publishCursors), /steps\.publish-mutation-state\.outcome == 'success'/);
   assert.match(
     job.slice(publishCursors),
     /while IFS= read -r cursor_path[\s\S]*cursor_publish_args\+=\(--path "\$cursor_path"\)[\s\S]*repair:publish-main/,

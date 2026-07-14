@@ -267,6 +267,7 @@ jobs:
             --message "chore: append proof handling action ledger"
 
       - name: Publish proof mutation recovery state
+        id: publish-mutation-state
         if: ${{ always() && steps.setup-state.outcome == 'success' && steps.finalize-action-ledger.outcome == 'success' && steps.upload-finalized-ledger.outcome == 'success' && steps.publish-action-ledger.outcome == 'success' }}
         env:
           TARGET_REPO: ${{ steps.target.outputs.target_repo }}
@@ -280,7 +281,7 @@ jobs:
             --path "results/proof-nudge-mutations/${target_slug}"
 
       - name: Publish proof handling cursors
-        if: ${{ always() && steps.run-proof-nudges.outcome == 'success' && steps.finalize-action-ledger.outcome == 'success' && steps.upload-finalized-ledger.outcome == 'success' && steps.publish-action-ledger.outcome == 'success' }}
+        if: ${{ always() && steps.run-proof-nudges.outcome == 'success' && steps.finalize-action-ledger.outcome == 'success' && steps.upload-finalized-ledger.outcome == 'success' && steps.publish-action-ledger.outcome == 'success' && steps.publish-mutation-state.outcome == 'success' }}
         run: |
           set -euo pipefail
           paths_file=".artifacts/proof-cursor-paths.txt"
