@@ -3585,6 +3585,56 @@ setTimeout(() => {}, 5000);
   );
 });
 
+test(
+  "validation rejects and reaps detached descendants before accepting checkout identity",
+  { skip: process.platform === "win32" },
+  () => {
+    const marker = path.join(
+      os.tmpdir(),
+      `clawsweeper-detached-validation-${process.pid}-${Date.now()}`,
+    );
+    const cwd = gitPackageFixture({ verify: "node verify.js" });
+    git(cwd, "add", ".");
+    git(cwd, "commit", "-m", "initial");
+    attachOrigin(cwd);
+    const binDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-detached-pnpm-"));
+    const pnpmPath = path.join(binDir, "pnpm.js");
+    fs.writeFileSync(
+      pnpmPath,
+      `const { spawn } = require("node:child_process");
+const child = spawn(process.execPath, ["-e", ${JSON.stringify(
+        `setTimeout(() => require("node:fs").writeFileSync(${JSON.stringify(marker)}, "escaped"), 800)`,
+      )}], {
+  detached: true,
+  env: process.env,
+  stdio: "ignore"
+});
+child.unref();
+`,
+    );
+
+    assert.throws(
+      () =>
+        withMockCommand("pnpm", pnpmPath, () =>
+          runAllowedValidationCommands(
+            ["pnpm verify"],
+            cwd,
+            validationOptions("steipete/example", {
+              toolchain: {
+                packageManager: "pnpm",
+                baseValidationCommands: [],
+                changedGate: null,
+              },
+            }),
+          ),
+        ),
+      /background process/,
+    );
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1_000);
+    assert.equal(fs.existsSync(marker), false);
+  },
+);
+
 test("target validation strips credentials and target-controlled environment injection", () => {
   const secretNames = [
     "OPENAI_API_KEY",

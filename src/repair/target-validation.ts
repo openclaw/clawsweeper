@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { parse as parseYaml } from "yaml";
 
-import { runCommand as run } from "./command-runner.js";
+import { runCommand as run, runContainedCommand } from "./command-runner.js";
 import {
   ensureMergeBaseAvailable,
   gitChangedFiles,
@@ -560,7 +560,7 @@ export function runAllowedValidationCommandsWithBinding(
             const executionParts = validationCommandForExecution(parts);
             const executionBudgetMs = remainingCommandBudget(deadlineAt, identityReserveMs);
             if (executionBudgetMs <= 0) throw validationCommandBudgetError(rendered);
-            run(executionParts[0]!, executionParts.slice(1), {
+            runContainedCommand(executionParts[0]!, executionParts.slice(1), {
               cwd,
               env: validationEnv,
               timeoutMs: executionBudgetMs,
@@ -601,7 +601,7 @@ export function runAllowedValidationCommandsWithBinding(
                   throw validationCommandBudgetError(rendered, executionError);
                 }
                 const executionParts = validationCommandForExecution(fallbackParts);
-                run(executionParts[0]!, executionParts.slice(1), {
+                runContainedCommand(executionParts[0]!, executionParts.slice(1), {
                   cwd,
                   env: validationEnv,
                   timeoutMs: fallbackBudgetMs,
@@ -2312,6 +2312,7 @@ function shouldRetryValidationCommand({ parts, error, attempts, options }: Loose
   if (options.strictTargetValidation) return false;
   if (!isChangedGateCommand(parts, options)) return false;
   if (isChangedGateStall(error)) return false;
+  if (/background process|process tree/i.test(String(error?.message ?? error))) return false;
 
   const configuredRetries = Number.parseInt(process.env.CLAWSWEEPER_VALIDATION_RETRIES ?? "1", 10);
   const maxRetries = Number.isFinite(configuredRetries) ? Math.max(0, configuredRetries) : 1;
